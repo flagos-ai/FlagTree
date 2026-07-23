@@ -113,11 +113,12 @@ void MaskState::setStates(OpBuilder &builder, Location loc,
   }
 }
 
+
 bool MaskAnalysis::parse(OpBuilder &builder, Location loc, Value operand,
                          MaskState &state,
                          llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
-  LLVM_DEBUG(llvm::dbgs() << std::string(kIndentSpaceNum, ' ') << "enter parse "
-                          << operand << "\n");
+  LLVM_DEBUG(llvm::dbgs() << std::string(kIndentSpaceNum, ' ')
+                          << "enter parse " << operand << "\n");
   if (knownMasks.find(operand) != knownMasks.end()) {
     state = knownMasks.lookup(operand);
     LLVM_DEBUG(llvm::dbgs() << std::string(kIndentSpaceNum, ' ')
@@ -206,9 +207,10 @@ bool MaskAnalysis::parse(OpBuilder &builder, Location loc, Value operand,
   return true;
 }
 
-void MaskAnalysis::parseBlockArgument(
-    OpBuilder &builder, Location loc, BlockArgument blockArg, MaskState &state,
-    llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+
+void MaskAnalysis::parseBlockArgument(OpBuilder &builder, Location loc,
+                            BlockArgument blockArg, MaskState &state,
+                            llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
   assert(isa<scf::ForOp>(blockArg.getOwner()->getParentOp()));
 
@@ -216,7 +218,7 @@ void MaskAnalysis::parseBlockArgument(
 
   if (blockArg.getArgNumber() == 0) {
     auto castOp = builder.create<arith::IndexCastOp>(
-        loc, builder.getIndexType(), forOp.getInductionVar());
+          loc, builder.getIndexType(), forOp.getInductionVar());
     state.scalar = castOp.getResult();
   } else {
     auto regionIterIndex =
@@ -228,9 +230,9 @@ void MaskAnalysis::parseBlockArgument(
   }
 }
 
-void MaskAnalysis::parseConstant(
-    OpBuilder &builder, Location loc, arith::ConstantOp constOp,
-    MaskState &state, llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseConstant(OpBuilder &builder, Location loc,
+                            arith::ConstantOp constOp, MaskState &state,
+                            llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
 
   if (isa<DenseElementsAttr>(constOp.getValue())) {
@@ -253,9 +255,9 @@ void MaskAnalysis::parseConstant(
   }
 }
 
-void MaskAnalysis::parseIntScalar(
-    OpBuilder &builder, Location loc, Value scalar, MaskState &state,
-    llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseIntScalar(OpBuilder &builder, Location loc,
+                            Value scalar, MaskState &state,
+                            llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
   auto castOp =
       builder.create<arith::IndexCastOp>(loc, builder.getIndexType(), scalar);
@@ -370,12 +372,12 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
   auto newDim = lhsState.dims[cmpDim];
   if (predicate == arith::CmpIPredicate::slt ||
       predicate == arith::CmpIPredicate::ult) {
-    auto newEnd = minOFRs(builder, loc, lhsState.end, rhsState.scalar);
-    newDim = subOFRs(builder, loc, newEnd, lhsState.start);
-  } else {
-    auto newstart = maxOFRs(builder, loc, lhsState.start, rhsState.scalar);
-    state.start = newstart;
-  }
+      auto newEnd = minOFRs(builder, loc, lhsState.end, rhsState.scalar);
+      newDim = subOFRs(builder, loc, newEnd, lhsState.start);
+    } else {
+      auto newstart = maxOFRs(builder, loc, lhsState.start, rhsState.scalar);
+      state.start = newstart;
+    }
 
   for (int64_t i = 0; i < lhsState.getRank(); ++i) {
     if (i == cmpDim)
@@ -385,9 +387,9 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
   }
 }
 
-void MaskAnalysis::parseMakeRange(
-    OpBuilder &builder, Location loc, triton::MakeRangeOp rangeOp,
-    MaskState &state, llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseMakeRange(OpBuilder &builder, Location loc,
+                            triton::MakeRangeOp rangeOp, MaskState &state,
+                            llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
 
   auto shape = cast<ShapedType>(rangeOp.getType()).getShape();
@@ -405,9 +407,9 @@ void MaskAnalysis::parseMakeRange(
   state.dims.push_back(builder.getIndexAttr(shape[0]));
 }
 
-void MaskAnalysis::parseBroadcast(
-    OpBuilder &builder, Location loc, triton::BroadcastOp broadcastOp,
-    MaskState &state, llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseBroadcast(OpBuilder &builder, Location loc,
+                            triton::BroadcastOp broadcastOp, MaskState &state,
+                            llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
 
   auto src = broadcastOp.getSrc();
@@ -432,9 +434,9 @@ void MaskAnalysis::parseBroadcast(
   }
 }
 
-void MaskAnalysis::parseSplat(
-    OpBuilder &builder, Location loc, triton::SplatOp splatOp, MaskState &state,
-    llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseSplat(OpBuilder &builder, Location loc,
+                            triton::SplatOp splatOp, MaskState &state,
+                            llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
 
   assert(isa<IntegerType>(splatOp.getSrc().getType()) &&
@@ -459,9 +461,9 @@ void MaskAnalysis::parseSplat(
   }
 }
 
-void MaskAnalysis::parseExpandDims(
-    OpBuilder &builder, Location loc, triton::ExpandDimsOp expandDimsOp,
-    MaskState &state, llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseExpandDims(OpBuilder &builder, Location loc,
+                            triton::ExpandDimsOp expandDimsOp, MaskState &state,
+                            llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
 
   parse(builder, loc, expandDimsOp.getSrc(), state, knownMasks);
@@ -485,12 +487,12 @@ void MaskAnalysis::parseDot(OpBuilder &builder, Location loc,
   state.end = srcState.end;
   state.scalar = srcState.scalar;
   for (int64_t i = 0; i < srcState.getRank(); ++i)
-    state.dims.push_back(srcState.dims[i]);
+      state.dims.push_back(srcState.dims[i]);
 }
 
-void MaskAnalysis::parseRemsi(
-    OpBuilder &builder, Location loc, arith::RemSIOp RemSIOp, MaskState &state,
-    llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseRemsi(OpBuilder &builder, Location loc,
+                            arith::RemSIOp RemSIOp, MaskState &state,
+                            llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
 
   MaskState lhsState;
@@ -504,9 +506,9 @@ void MaskAnalysis::parseRemsi(
   state.addStates(builder, loc, lhsState, rhsState);
 }
 
-void MaskAnalysis::parseSelect(
-    OpBuilder &builder, Location loc, arith::SelectOp SelectOp,
-    MaskState &state, llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseSelect(OpBuilder &builder, Location loc,
+                         arith::SelectOp SelectOp, MaskState &state,
+                         llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
   MaskState trueState;
   parse(builder, loc, SelectOp.getTrueValue(), trueState, knownMasks);
@@ -515,9 +517,9 @@ void MaskAnalysis::parseSelect(
   state.setStates(builder, loc, trueState);
 }
 
-void MaskAnalysis::parseReduce(
-    OpBuilder &builder, Location loc, triton::ReduceOp ReduceOp,
-    MaskState &state, llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseReduce(OpBuilder &builder, Location loc,
+                         triton::ReduceOp ReduceOp, MaskState &state,
+                         llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
   auto src = ReduceOp.getSrcs()[0];
   auto axis = ReduceOp.getAxis();
@@ -538,9 +540,9 @@ void MaskAnalysis::parseReduce(
   }
 }
 
-void MaskAnalysis::parseLoad(
-    OpBuilder &builder, Location loc, triton::LoadOp LoadOp, MaskState &state,
-    llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseLoad(OpBuilder &builder, Location loc,
+                         triton::LoadOp LoadOp, MaskState &state,
+                         llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
 
   MaskState srcState;
@@ -550,9 +552,10 @@ void MaskAnalysis::parseLoad(
   state.setStates(builder, loc, srcState);
 }
 
-void MaskAnalysis::parseExtsi(
-    OpBuilder &builder, Location loc, arith::ExtSIOp ExtSIOp, MaskState &state,
-    llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+
+void MaskAnalysis::parseExtsi(OpBuilder &builder, Location loc,
+                         arith::ExtSIOp ExtSIOp, MaskState &state,
+                         llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
   MaskState inState;
 
@@ -562,9 +565,9 @@ void MaskAnalysis::parseExtsi(
   state.setStates(builder, loc, inState);
 }
 
-void MaskAnalysis::parseExtui(
-    OpBuilder &builder, Location loc, arith::ExtUIOp ExtUIOp, MaskState &state,
-    llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+void MaskAnalysis::parseExtui(OpBuilder &builder, Location loc,
+                         arith::ExtUIOp ExtUIOp, MaskState &state,
+                         llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   assert(state.isEmpty());
   MaskState inState;
 
@@ -574,6 +577,6 @@ void MaskAnalysis::parseExtui(
   state.setStates(builder, loc, inState);
 }
 
-} // namespace gcu
-} // namespace triton
-} // namespace mlir
+}  // namespace gcu
+}  // namespace triton
+}  // namespace mlir

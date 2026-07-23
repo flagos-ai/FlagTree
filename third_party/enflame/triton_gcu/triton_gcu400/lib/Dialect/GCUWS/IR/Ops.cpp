@@ -21,6 +21,10 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
+#if TRITON_VERSION == 35
+#include "triton/Dialect/TritonNvidiaGPU/Transforms/Utility.h"
+#endif
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVectorExtras.h"
 

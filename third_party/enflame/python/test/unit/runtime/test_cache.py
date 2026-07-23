@@ -17,7 +17,6 @@ if importlib.util.find_spec("triton.backends.enflame") is None:
 
 from triton._internal_testing import is_hip
 
-
 @triton.jit
 def function_0(i):
     return i + 1
@@ -452,7 +451,6 @@ def add_fn(a, b, o, N: tl.constexpr):
 
 
 def test_jit_noinline(device) -> None:
-    pytest.skip("GCU400 not supported by enflame")
 
     @triton.jit
     def kernel_add_device(a, b, o, N: tl.constexpr):

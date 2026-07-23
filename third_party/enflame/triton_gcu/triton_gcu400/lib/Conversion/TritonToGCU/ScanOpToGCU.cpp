@@ -20,6 +20,7 @@
 #include <utility>
 
 #include "Utility.h"
+#include "Utils/TritonVersionCompat.h"
 
 #include "Analysis/FirstLastUserAnalysis.h"
 #include "Conversion/TritonToGCU/ReduceScanCommon.h"
@@ -27,6 +28,7 @@
 #include "Dialect/MathExt/IR/MathExt.h"
 #include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "PatternTritonGPUOpToGCU.h"
 #include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -774,9 +776,9 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                 }
 
                 for (unsigned i = 0; i < numOutput; ++i) {
-                  builder.create<vector::ScatterOp>(
-                      loc, outputs[i], outputIndices, indexVec, mask,
-                      executeRegionOp.getResult(i));
+                  triton_gcu::compat::createVectorScatterOp(
+                      builder, loc, outputs[i], ValueRange(outputIndices),
+                      indexVec, mask, executeRegionOp.getResult(i));
                 }
               });
         });
@@ -1560,27 +1562,69 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
 
     // Fast path: bool-valued inclusive add scan using miota hardware.
     if (numInput == 1 && numOutput == 1 && isAddCombine(op) &&
-        isBoolValuedInput(op)) {
+        isBoolValuedInput(op) && inputType.getRank() == 1) {
       bool needsMasterThread = mustRunOnMasterThread(
           inputType, axis, scanInOutDims, scanAxis, vectorLength);
       if (needsMasterThread) {
-        auto tag = pTagPool.getPrivateSyncTagInfo(op);
+        // Parallel miota: each warp runs miota locally, then a subthread
+        // merge pass computes cross-warp offsets and applies them.
+        // This avoids the costly gather-to-master-warp pattern.
+
         auto tType = dyn_cast<RankedTensorType>(op.getSrcs()[0].getType());
+        auto encoding = tType.getEncoding();
+        auto warpsPerCTA = triton::gcu::getWarpsPerCTA(encoding);
+        unsigned numWarps = 1;
+        for (auto w : warpsPerCTA)
+          numWarps *= w;
 
-        Value smemInput =
-            storeToSharedMem(rewriter, tag, tType, adaptor.getSrcs()[0], false,
-                             std::make_pair(op.getOperation(), -1),
-                             userAnalysis, replaced2Origin);
+        // Step 1: Each warp runs miota on its own local data.
+        auto useMiotaAttr = rewriter.getUnitAttr();
+        auto reverseAttr =
+            op.getReverse() ? rewriter.getUnitAttr() : UnitAttr();
+        rewriter.create<math_ext::InclusiveScanOp>(
+            loc, outputs[0], adaptor.getSrcs()[0], useMiotaAttr, reverseAttr);
 
-        // Allocate output in SMEM
-        auto smemOutputType =
-            MemRefType::get(tType.getShape(), outputElemTypes[0], AffineMap{},
-                            rewriter.getI64IntegerAttr(2));
-        Value smemOutput =
-            syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
-                        userAnalysis, replaced2Origin, smemOutputType);
+        // Step 2: Allocate a small SMEM buffer [numWarps] for partial sums.
+        auto i32Ty = rewriter.getI32Type();
+        auto partialSumsType = MemRefType::get(
+            {static_cast<int64_t>(numWarps)}, i32Ty, AffineMap{},
+            rewriter.getI64IntegerAttr(2));
+        Value partialSums = syncAllocOp(
+            rewriter, loc, std::make_pair(op.getOperation(), -1), userAnalysis,
+            replaced2Origin, partialSumsType);
 
-        // Master warp runs miota-based inclusive scan on SMEM directly
+        // Step 3: Each warp writes its local total (last element of scan
+        // output) into the partial sums buffer at its warp index.
+        auto warpIds = getWarpIds(rewriter, loc, tType);
+        Value warpIdx;
+        {
+          unsigned stride = 1;
+          Value acc = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+          for (int i = static_cast<int>(warpIds.size()) - 1; i >= 0; --i) {
+            if (stride == 1) {
+              acc = warpIds[i];
+            } else {
+              auto s = rewriter.create<arith::ConstantIndexOp>(loc, stride);
+              acc = rewriter.create<arith::AddIOp>(
+                  loc, acc,
+                  rewriter.create<arith::MulIOp>(loc, warpIds[i], s));
+            }
+            stride *= warpsPerCTA[i];
+          }
+          warpIdx = acc;
+        }
+
+        auto localMemRef = dyn_cast<MemRefType>(outputs[0].getType());
+        int64_t localSize = localMemRef.getNumElements();
+        Value lastIdx = rewriter.create<arith::ConstantIndexOp>(
+            loc, localSize - 1);
+        Value localTotal = rewriter.create<memref::LoadOp>(
+            loc, outputs[0], ValueRange{lastIdx});
+        rewriter.create<memref::StoreOp>(
+            loc, localTotal, partialSums, ValueRange{warpIdx});
+        rewriter.create<gpu::BarrierOp>(loc);
+
+        // Step 4: Master warp computes exclusive prefix sum on partial sums.
         auto masterWarpId = getMasterThreadId(op.getOperation());
         auto isMasterThread = rewriter.create<arith::CmpIOp>(
             loc, arith::CmpIPredicate::eq,
@@ -1588,20 +1632,80 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
             rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
         rewriter.create<scf::IfOp>(
             loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
-              auto useMiotaAttr = builder.getUnitAttr();
-              auto reverseAttr =
-                  op.getReverse() ? builder.getUnitAttr() : UnitAttr();
-              builder.create<math_ext::InclusiveScanOp>(
-                  loc, smemOutput, smemInput, useMiotaAttr, reverseAttr);
+              Value acc = builder.create<arith::ConstantOp>(
+                  loc, builder.getI32IntegerAttr(0));
+              for (unsigned w = 0; w < numWarps; ++w) {
+                Value idx = builder.create<arith::ConstantIndexOp>(loc, w);
+                Value val = builder.create<memref::LoadOp>(
+                    loc, partialSums, ValueRange{idx});
+                builder.create<memref::StoreOp>(
+                    loc, acc, partialSums, ValueRange{idx});
+                acc = builder.create<arith::AddIOp>(loc, acc, val);
+              }
               builder.create<scf::YieldOp>(loc);
             });
         rewriter.create<gpu::BarrierOp>(loc);
 
-        // Broadcast SMEM output back to per-warp private memory
-        outputs[0] =
-            loadFromSharedMem(rewriter, tag, op.getResultTypes()[0], smemOutput,
-                              false, lastUsers[0], std::make_pair(nullptr, -1),
-                              userAnalysis, replaced2Origin);
+        // Step 5: Each warp reads its offset and adds it to every element
+        // via TAR-based vectorized broadcast-add with 16-vector unroll.
+        Value offset = rewriter.create<memref::LoadOp>(
+            loc, partialSums, ValueRange{warpIdx});
+        Value zero32 = rewriter.create<arith::ConstantOp>(
+            loc, rewriter.getI32IntegerAttr(0));
+        Value hasOffset = rewriter.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::ne, offset, zero32);
+        rewriter.create<scf::IfOp>(
+            loc, hasOffset, [&](OpBuilder &builder, Location loc) {
+              auto i32Ty = builder.getI32Type();
+              unsigned vecLen = oaccSizeInBytes / 4; // 128 for i32
+              unsigned fullVecs = localSize / vecLen;
+
+              if (fullVecs > 0) {
+                triton::gcu::TritonGCUBuilder b(loc, builder);
+                auto vecTy = VectorType::get(
+                    {static_cast<int64_t>(vecLen)}, i32Ty);
+                Value vOffset = builder.create<vector::BroadcastOp>(
+                    loc, vecTy, offset);
+                Value readAddr = b.tarAddr(outputs[0]);
+                Value writeAddr = b.tarAddr(outputs[0]);
+                Value tarStride = b.tarValue(
+                    static_cast<int64_t>(oaccSizeInBytes));
+
+                constexpr unsigned kUnroll = 16;
+                unsigned batches = fullVecs / kUnroll;
+                unsigned remainder = fullVecs - batches * kUnroll;
+
+                for (unsigned batch = 0; batch < batches; ++batch) {
+                  SmallVector<Value, 16> bufs;
+                  for (unsigned j = 0; j < kUnroll; ++j)
+                    bufs.push_back(b.tarLoad(vecTy, readAddr, tarStride));
+                  for (unsigned j = 0; j < kUnroll; ++j)
+                    bufs[j] = builder.create<arith::AddIOp>(
+                        loc, bufs[j], vOffset);
+                  for (unsigned j = 0; j < kUnroll; ++j)
+                    b.tarStore(bufs[j], writeAddr, tarStride);
+                }
+                for (unsigned i = 0; i < remainder; ++i) {
+                  Value v = b.tarLoad(vecTy, readAddr, tarStride);
+                  v = builder.create<arith::AddIOp>(loc, v, vOffset);
+                  b.tarStore(v, writeAddr, tarStride);
+                }
+              }
+
+              unsigned scalarStart = fullVecs * vecLen;
+              for (unsigned i = scalarStart;
+                   i < static_cast<unsigned>(localSize); ++i) {
+                Value idx =
+                    builder.create<arith::ConstantIndexOp>(loc, i);
+                Value elem = builder.create<memref::LoadOp>(
+                    loc, outputs[0], ValueRange{idx});
+                elem = builder.create<arith::AddIOp>(loc, elem, offset);
+                builder.create<memref::StoreOp>(
+                    loc, elem, outputs[0], ValueRange{idx});
+              }
+              builder.create<scf::YieldOp>(loc);
+            });
+        rewriter.create<memref::DeallocOp>(loc, partialSums);
       } else {
         // Warp-local path: call miota builtin on per-warp data directly
         auto useMiotaAttr = rewriter.getUnitAttr();

@@ -36,6 +36,7 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "Utils/TritonVersionCompat.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -341,8 +342,9 @@ public:
 
     rewriter.setInsertionPointAfter(localAllocOp);
     rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
-        gcuLoad.getLoc(), gcuLoad.getPtr(), newShapes, newStrides, newOffsets,
-        localAllocOp.getResult(), gcuLoad.getDefaultValue(), orderHint);
+        gcuLoad.getLoc(), gcuLoad.getPtr(), newShapes,
+        newStrides, newOffsets, localAllocOp.getResult(),
+        gcuLoad.getDefaultValue(), orderHint);
 
     rewriter.modifyOpInPlace(localAllocOp, [&]() {
       localAllocOp->setOperands(ValueRange{});
@@ -442,7 +444,7 @@ public:
     auto elemTy = memdescTy.getElementType();
     unsigned elemBitWidth = elemTy.getIntOrFloatBitWidth();
     auto ctaLayout =
-        triton::gpu::CTAEncodingAttr::getDefault(rewriter.getContext(), rank);
+        triton_gcu::compat::getDefaultCGALayout(rewriter.getContext(), rank);
     auto transposedEnc = triton::gpu::NVMMASharedEncodingAttr::get(
         rewriter.getContext(),
         /*swizzlingByteWidth=*/128,
@@ -546,8 +548,8 @@ public:
     if (!isa<triton::gpu::DotOperandEncodingAttr>(targetTy.getEncoding()))
       return failure();
 
-    auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(localLoad.getLoc(),
-                                                             targetTy, memdesc);
+    auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(
+        localLoad.getLoc(), targetTy, memdesc);
     rewriter.replaceOp(convertOp, newLoad.getResult());
     rewriter.eraseOp(localLoad);
     return success();
@@ -814,7 +816,7 @@ static triton::gpu::MemDescType buildMemDescType(MLIRContext *ctx,
     for (unsigned i = 0; i < rank; ++i)
       order.push_back(rank - 1 - i);
   }
-  auto ctaLayout = triton::gpu::getCTALayout(encoding);
+  auto ctaLayout = triton_gcu::compat::getCGALayout(encoding);
   auto sharedEnc = triton::gpu::SwizzledSharedEncodingAttr::get(
       ctx, /*vec=*/1, /*perPhase=*/1, /*maxPhase=*/1, order, ctaLayout);
   auto smemSpace = triton::gpu::SharedMemorySpaceAttr::get(ctx);
@@ -1654,15 +1656,16 @@ struct TritonGCULocalMemOptimizePass
     auto *ctx = &getContext();
 
     RewritePatternSet patterns(ctx);
-    patterns.add<FuseTransLoadLocalAllocPattern, FuseTransLocalLoadCopyPattern,
-                 FuseLocalLoadConvertLayoutPattern, FuseLoadLocalStorePattern,
-                 FuseLoadLocalAllocPattern, FuseGcuLoadSmemStorePattern,
-                 ReplaceSmemLoadWithLocalLoadPattern,
-                 FuseGcuLoadGcuStoreToSmemPattern,
-                 FuseGcuLoadGcuStoreDynShapeToSmemPattern,
-                 ReplaceGcuSmemLoadWithLocalLoadPattern,
-                 FuseTritonLoadLocalAllocToGatherPattern,
-                 FuseExtractTileSmemRelay, FuseInsertTileSmemRelay>(ctx);
+    patterns
+        .add<FuseTransLoadLocalAllocPattern, FuseTransLocalLoadCopyPattern,
+             FuseLocalLoadConvertLayoutPattern, FuseLoadLocalStorePattern,
+             FuseLoadLocalAllocPattern, FuseGcuLoadSmemStorePattern,
+             ReplaceSmemLoadWithLocalLoadPattern,
+             FuseGcuLoadGcuStoreToSmemPattern,
+             FuseGcuLoadGcuStoreDynShapeToSmemPattern,
+             ReplaceGcuSmemLoadWithLocalLoadPattern,
+             FuseTritonLoadLocalAllocToGatherPattern,
+             FuseExtractTileSmemRelay, FuseInsertTileSmemRelay>(ctx);
     if (failed(applyPatternsGreedily(module, std::move(patterns))))
       signalPassFailure();
   }

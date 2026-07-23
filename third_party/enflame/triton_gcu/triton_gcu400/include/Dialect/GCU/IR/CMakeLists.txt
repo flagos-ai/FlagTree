@@ -1,5 +1,9 @@
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
+if(NOT TRITON_VERSION_NUMERIC LESS 37)
+  set(LLVM_TABLEGEN_FLAGS "-DMLIR_HAS_VECTOR_RANK_LENGTH_TYPE")
+endif()
+
 set(LLVM_TARGET_DEFINITIONS GCUOps.td)
 mlir_tablegen(Ops.h.inc -gen-op-decls)
 mlir_tablegen(Ops.cpp.inc -gen-op-defs)
@@ -17,6 +21,8 @@ add_mlir_doc(GCUDialect GCUDialect_gcu400 dialects/ -gen-dialect-doc)
 set(LLVM_TARGET_DEFINITIONS GCUTypes.td)
 mlir_tablegen(Types.h.inc -gen-typedef-decls)
 mlir_tablegen(Types.cpp.inc -gen-typedef-defs)
+
+set(LLVM_TABLEGEN_FLAGS "")
 
 set(LLVM_TARGET_DEFINITIONS GCUInterfaces.td)
 mlir_tablegen(AttrInterfaces.h.inc -gen-attr-interface-decls)

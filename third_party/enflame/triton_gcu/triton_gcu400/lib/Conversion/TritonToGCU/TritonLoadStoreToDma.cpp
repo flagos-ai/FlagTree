@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <algorithm>
 #include <optional>
 #include <utility>
+#include <algorithm>
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
@@ -64,8 +64,7 @@ struct ConvertTritonLoadStoreToDmaPass
   void runOnOperation() override;
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<arith::ArithDialect, memref::MemRefDialect,
+    registry.insert<arith::ArithDialect, memref::MemRefDialect,
                 triton::TritonDialect, mlir::triton::gcu::TritonGCUDialect>();
   }
 };
@@ -92,10 +91,10 @@ struct PreprocessForOp : public OpRewritePattern<scf::ForOp> {
       llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs,
       llvm::SmallDenseMap<Value, gcu::MaskState> &knownMasks,
       llvm::SmallVector<Operation *, 8> &candidateOps,
-      llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints)
-      : OpRewritePattern<scf::ForOp>(context), knownPtrs(knownPtrs),
-        knownMasks(knownMasks), candidateOps(candidateOps),
-        candidateHints(candidateHints) {}
+      llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints) :
+    OpRewritePattern<scf::ForOp>(context),
+    knownPtrs(knownPtrs), knownMasks(knownMasks),
+    candidateOps(candidateOps), candidateHints(candidateHints) {}
 
   LogicalResult matchAndRewrite(scf::ForOp op,
                                 PatternRewriter &rewriter) const override {
@@ -103,6 +102,31 @@ struct PreprocessForOp : public OpRewritePattern<scf::ForOp> {
       return failure();
     return gcu::PtrAnalysis::rewriteForOp(rewriter, op, knownPtrs, knownMasks,
                                           candidateOps, candidateHints);
+  }
+};
+
+struct PreprocessWhileOp : public OpRewritePattern<scf::WhileOp> {
+  llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs;
+  llvm::SmallDenseMap<Value, gcu::MaskState> &knownMasks;
+  llvm::SmallVector<Operation *, 8> &candidateOps;
+  llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints;
+
+  explicit PreprocessWhileOp(
+      MLIRContext *context,
+      llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs,
+      llvm::SmallDenseMap<Value, gcu::MaskState> &knownMasks,
+      llvm::SmallVector<Operation *, 8> &candidateOps,
+      llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints) :
+    OpRewritePattern<scf::WhileOp>(context),
+    knownPtrs(knownPtrs), knownMasks(knownMasks),
+    candidateOps(candidateOps), candidateHints(candidateHints) {}
+
+  LogicalResult matchAndRewrite(scf::WhileOp op,
+                                PatternRewriter &rewriter) const override {
+    if (gcu::PtrAnalysis::byPassWhileOp(rewriter, op, candidateOps))
+      return failure();
+    return gcu::PtrAnalysis::rewriteWhileOp(rewriter, op, knownPtrs, knownMasks,
+                                            candidateOps, candidateHints);
   }
 };
 
@@ -121,7 +145,7 @@ struct PostprocessForOp : public OpRewritePattern<scf::ForOp> {
   }
 };
 
-bool IsStaticStride(SmallVector<int32_t> &candidateHints) {
+bool IsStaticStride(SmallVector<int32_t>& candidateHints) {
   bool bStaticStride = true;
   int32_t rank = candidateHints.size();
   for (int32_t i = 0; i < rank; ++i) {
@@ -134,7 +158,7 @@ bool IsStaticStride(SmallVector<int32_t> &candidateHints) {
   return bStaticStride;
 }
 
-bool IsStaticReshape(SmallVector<int32_t> &candidateHints) {
+bool IsStaticReshape(SmallVector<int32_t>& candidateHints) {
   bool isReshape = true;
   int32_t rank = candidateHints.size();
   if (IsStaticStride(candidateHints)) {
@@ -151,7 +175,7 @@ bool IsStaticReshape(SmallVector<int32_t> &candidateHints) {
   return isReshape;
 }
 
-SmallVector<int32_t> GetOrderByHint(SmallVector<int32_t> &candidateHints) {
+SmallVector<int32_t> GetOrderByHint(SmallVector<int32_t>& candidateHints) {
   SmallVector<int32_t> orderHint;
   int32_t rank = candidateHints.size();
   assert(IsStaticStride(candidateHints) &&
@@ -166,9 +190,10 @@ SmallVector<int32_t> GetOrderByHint(SmallVector<int32_t> &candidateHints) {
     if (candidateHints[i] != 0)
       orderHint.push_back(i);
 
-  std::sort(orderHint.begin(), orderHint.end(), [&](int32_t a, int32_t b) {
-    return (candidateHints[a] > candidateHints[b]);
-  });
+  std::sort(orderHint.begin(), orderHint.end(),
+    [&](int32_t a, int32_t b) {
+      return (candidateHints[a] > candidateHints[b]);
+    });
 
   if (orderHint.size() < static_cast<unsigned>(rank))
     for (auto dim : broadcastDims)
@@ -180,11 +205,11 @@ SmallVector<int32_t> GetOrderByHint(SmallVector<int32_t> &candidateHints) {
 
   for (int32_t i = 0; i < rank; ++i)
     LLVM_DEBUG(llvm::dbgs() << "dim: " << i << "\n"
-                            << "order: " << orderHint[i] << "\n");
+              << "order: " << orderHint[i] << "\n");
 
   for (int32_t i = 0; i < rank; ++i)
     LLVM_DEBUG(llvm::dbgs() << "trans order: " << i << "\n"
-                            << "order: " << transOrder[i] << "\n");
+              << "order: " << transOrder[i] << "\n");
 
   return transOrder;
 }
@@ -195,7 +220,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
   llvm::SmallVector<Operation *, 8> &candidateOps;
   llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints;
   bool &bStaticCondition;
-  static constexpr unsigned smallSizeLoadLimit = 2048;
+  static constexpr unsigned smallSizeLoadLimit = 8 * 1024;
 
   explicit ConvertLoadOpToDma(
       MLIRContext *context,
@@ -230,8 +255,8 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
     gcu::MaskState mstate;
     if (op.getMask()) {
       LLVM_DEBUG(llvm::dbgs() << "=== analyze load mask state ===\n");
-      if (!gcu::MaskAnalysis::parse(rewriter, loc, op.getMask(), mstate,
-                                    knownMasks))
+      if (!gcu::MaskAnalysis::parse(
+          rewriter, loc, op.getMask(), mstate, knownMasks))
         bStaticCondition = false;
       assert(!mstate.isEmpty() &&
              "expect valid mask state after analysis succeed\n");
@@ -242,8 +267,8 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
     // 3. Get ptr info
     LLVM_DEBUG(llvm::dbgs() << "=== analyze load ptr state ===\n");
     gcu::PtrState pstate;
-    if (!gcu::PtrAnalysis::visitOperand(rewriter, loc, op.getPtr(), pstate,
-                                        knownPtrs))
+    if (!gcu::PtrAnalysis::visitOperand(
+      rewriter, loc, op.getPtr(), pstate, knownPtrs))
       bStaticCondition = false;
     if (!bStaticCondition)
       return success();
@@ -276,7 +301,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
     }
 
     assert(candidateHints.find(op.getOperation()) != candidateHints.end() &&
-           "get order failed");
+          "get order failed");
     auto opHint = candidateHints[op.getOperation()];
     // dynamic stride process
     if (!IsStaticStride(opHint)) {
@@ -309,26 +334,25 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
           else
             sliceShape[i] = resultShape[i];
         }
-        auto sliceType =
-            RankedTensorType::get(sliceShape, elemType, tType.getEncoding());
+        auto sliceType = RankedTensorType::get(sliceShape, elemType,
+                                              tType.getEncoding());
         auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
-            loc, sliceType, ptrInfo.base, updateShapes, updateStrides,
-            ptrInfo.offsets, defaultValue, dynamicOpHint);
+          loc, sliceType, ptrInfo.base, updateShapes, updateStrides,
+          ptrInfo.offsets, defaultValue, dynamicOpHint);
         copyTritonLoadAttrsToGcuLoad(op, load);
-        auto broadcastOp =
-            rewriter.create<triton::BroadcastOp>(loc, op.getType(), load);
+        auto broadcastOp = rewriter.create<triton::BroadcastOp>(
+          loc, op.getType(), load);
         rewriter.replaceOp(op, broadcastOp);
         return success();
       } else {
-        auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
-            loc, tType, ptrInfo.base, updateShapes, updateStrides,
-            ptrInfo.offsets, defaultValue, dynamicOpHint);
+        auto load = rewriter.create<mlir::triton::gcu::LoadOp>(loc, tType,
+          ptrInfo.base, updateShapes, updateStrides, ptrInfo.offsets,
+          defaultValue, dynamicOpHint);
         copyTritonLoadAttrsToGcuLoad(op, load);
         rewriter.replaceOp(op, load);
         return success();
       }
-    } else { // static stride process will be delete for pingpong support
-             // dynamic
+    } else { //static stride process will be delete for pingpong support dynamic
       LLVM_DEBUG(llvm::dbgs() << "=== static stride process ===\n");
       auto staticOrder = GetOrderByHint(opHint);
 
@@ -349,7 +373,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
 
       if (bNeedBroadCast) {
         for (auto dim : ptrInfo.broadcastDims) {
-          // broadcast dim is transpose return to gather/scatter
+          //broadcast dim is transpose return to gather/scatter
           if (staticOrder[dim] != dim) {
             bStaticCondition = false;
             return success();
@@ -378,31 +402,26 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
           if (i == rank - 1) {
             orderStrides[i] = one;
           } else {
-            orderStrides[i] = rewriter.create<arith::MulIOp>(
-                loc, orderShapes[i + 1], orderStrides[i + 1]);
+              orderStrides[i] = rewriter.create<arith::MulIOp>(loc,
+              orderShapes[i+1], orderStrides[i+1]);
           }
         }
       }
 
       if (rank > 2) {
         Value checkStride = orderStrides[0];
-        for (unsigned i = 1; i < rank - 1; ++i) {
+        for (unsigned i = 1; i < rank-1; ++i) {
           if (ptrInfo.broadcastDims.count(i)) {
-            auto cond = rewriter.create<arith::CmpIOp>(
-                loc, arith::CmpIPredicate::ne, orderStrides[i], checkStride);
-            orderStrides[i] =
-                rewriter
-                    .create<scf::IfOp>(
-                        loc, cond,
-                        [&](OpBuilder &ifBuilder, Location loc) {
-                          ifBuilder.create<scf::YieldOp>(
-                              loc, ValueRange{checkStride});
-                        },
-                        [&](OpBuilder &elseBuilder, Location loc) {
-                          elseBuilder.create<scf::YieldOp>(
-                              loc, ValueRange{orderStrides[i]});
-                        })
-                    .getResult(0);
+            auto cond = rewriter.create<arith::CmpIOp>(loc,
+                  arith::CmpIPredicate::ne, orderStrides[i], checkStride);
+            orderStrides[i] = rewriter.create<scf::IfOp>(loc, cond,
+              [&](OpBuilder &ifBuilder, Location loc) {
+                ifBuilder.create<scf::YieldOp>(loc, ValueRange{checkStride});
+              },
+              [&](OpBuilder &elseBuilder, Location loc) {
+                elseBuilder.create<scf::YieldOp>(loc,
+                  ValueRange{orderStrides[i]});
+              }).getResult(0);
           }
           checkStride = orderStrides[i];
         }
@@ -425,20 +444,20 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
       }
 
       if (bNeedBroadCast) {
-        auto loadType = RankedTensorType::get(updateResultShape, elemType,
-                                              tType.getEncoding());
+        auto loadType = RankedTensorType::get(
+          updateResultShape, elemType,  tType.getEncoding());
         auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
             loc, loadType, ptrInfo.base, updateShapes, updateOrder,
             ptrInfo.offsets, defaultValue, staticDefaultOrder);
         copyTritonLoadAttrsToGcuLoad(op, load);
-        auto broadcastOp =
-            rewriter.create<triton::BroadcastOp>(loc, op.getType(), load);
+        auto broadcastOp = rewriter.create<triton::BroadcastOp>(
+            loc, op.getType(), load);
         rewriter.replaceOp(op, broadcastOp);
         return success();
       } else {
         auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
-            loc, op.getType(), ptrInfo.base, updateShapes, updateOrder,
-            ptrInfo.offsets, defaultValue, staticDefaultOrder);
+          loc, op.getType(), ptrInfo.base, updateShapes, updateOrder,
+          ptrInfo.offsets, defaultValue, staticDefaultOrder);
         copyTritonLoadAttrsToGcuLoad(op, load);
         rewriter.replaceOp(op, load);
         return success();
@@ -499,11 +518,11 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
 
     gcu::MaskState mstate;
     if (op.getMask()) {
-      if (!gcu::MaskAnalysis::parse(rewriter, loc, op.getMask(), mstate,
-                                    knownMasks))
+      if (!gcu::MaskAnalysis::parse(
+          rewriter, loc, op.getMask(), mstate, knownMasks))
         bStaticCondition = false;
       assert(!mstate.isEmpty() &&
-             "expect valid mask state after analysis succeed\n");
+            "expect valid mask state after analysis succeed\n");
     }
     if (!bStaticCondition)
       return success();
@@ -511,8 +530,8 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
     // 3. Get ptr info
     LLVM_DEBUG(llvm::dbgs() << "=== analyze store ptr state ===\n");
     gcu::PtrState pstate;
-    if (!gcu::PtrAnalysis::visitOperand(rewriter, loc, op.getPtr(), pstate,
-                                        knownPtrs))
+    if (!gcu::PtrAnalysis::visitOperand(rewriter,
+        loc, op.getPtr(), pstate, knownPtrs))
       bStaticCondition = false;
     if (!bStaticCondition)
       return success();
@@ -528,7 +547,7 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
         vSliceShape.push_back(ptrInfo.shape[i]);
     }
     assert(candidateHints.find(op.getOperation()) != candidateHints.end() &&
-           "get order failed");
+          "get order failed");
     auto opHint = candidateHints[op.getOperation()];
     // dynamic stride process
     if (!IsStaticStride(opHint)) {
@@ -555,8 +574,7 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
           ptrInfo.offsets, dynamicOpHint);
       rewriter.replaceOp(op, store);
       return success();
-    } else { // static stride process will be delete for pingpong support
-             // dynamic
+    } else { //static stride process will be delete for pingpong support dynamic
       auto staticOrder = GetOrderByHint(opHint);
       assert(static_cast<int64_t>(staticOrder.size()) == rank &&
              "the order size and rank mismatch \n");
@@ -584,8 +602,8 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
           if (i == rank - 1)
             orderStrides[i] = one;
           else
-            orderStrides[i] = rewriter.create<arith::MulIOp>(
-                loc, orderShapes[i + 1], orderStrides[i + 1]);
+            orderStrides[i] = rewriter.create<arith::MulIOp>(loc,
+              orderShapes[i+1], orderStrides[i+1]);
         }
       }
 
@@ -636,7 +654,7 @@ void ConvertTritonLoadStoreToDmaPass::runOnOperation() {
 
   if (gcu::PtrAnalysis::preProcessEntry(moduleOp, global_condition)) {
     gcu::PtrAnalysis::collectCandidateLoadStoreOps(moduleOp, candidateOps,
-                                                   candidateHints);
+                                                    candidateHints);
     // 2. Pre-process some ops
     GreedyRewriteConfig rewriteConfig;
     rewriteConfig.setStrictness(GreedyRewriteStrictness::ExistingOps);
@@ -644,8 +662,10 @@ void ConvertTritonLoadStoreToDmaPass::runOnOperation() {
     llvm::SmallDenseMap<Value, gcu::MaskState> knowMasks;
     llvm::SmallDenseMap<Value, gcu::PtrState> knownPtrs;
     RewritePatternSet prePatterns(ctx);
-    prePatterns.add<PreprocessForOp>(ctx, knownPtrs, knowMasks, candidateOps,
-                                     candidateHints);
+    prePatterns.add<PreprocessForOp>(
+        ctx, knownPtrs, knowMasks, candidateOps, candidateHints);
+    prePatterns.add<PreprocessWhileOp>(
+        ctx, knownPtrs, knowMasks, candidateOps, candidateHints);
 
     if (applyPatternsGreedily(op, std::move(prePatterns), rewriteConfig)
             .failed())
@@ -653,19 +673,20 @@ void ConvertTritonLoadStoreToDmaPass::runOnOperation() {
 
     // 3. Start to process load/store op
     RewritePatternSet patterns(ctx);
-    patterns.add<ConvertLoadOpToDma, ConvertStoreOpToDma>(
-        ctx, knownPtrs, knowMasks, candidateOps, candidateHints,
-        bStaticContion);
+    patterns.add<ConvertLoadOpToDma, ConvertStoreOpToDma>(ctx, knownPtrs,
+                                    knowMasks, candidateOps, candidateHints,
+                                    bStaticContion);
     if (applyPatternsGreedily(op, std::move(patterns)).failed())
       signalPassFailure();
 
     // 4. Post-process some ops
     RewritePatternSet postPatterns(ctx);
     postPatterns.add<PostprocessForOp>(ctx, knownPtrs);
-    if (applyPatternsGreedily(op, std::move(postPatterns), rewriteConfig)
-            .failed())
+    if (applyPatternsGreedily(op, std::move(postPatterns),
+                                    rewriteConfig).failed())
       signalPassFailure();
     gcu::PtrAnalysis::postProcessEntry(moduleOp, global_condition,
-                                       bStaticContion, support_stride0);
+      bStaticContion, support_stride0);
   }
 }
+

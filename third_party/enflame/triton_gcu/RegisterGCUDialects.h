@@ -46,7 +46,7 @@
 namespace mlir {
 namespace test {
 void registerTestFirstLastUserAnalysisPass();
-} // namespace test
+}  // namespace test
 
 namespace gcu {
 
@@ -89,7 +89,7 @@ inline void registerGCUDialects(mlir::DialectRegistry &registry) {
   gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
 }
 
-} // namespace gcu
-} // namespace mlir
+}  // namespace gcu
+}  // namespace mlir
 
-#endif // GCU_REGISTER_GCU_DIALECT_H
+#endif  // GCU_REGISTER_GCU_DIALECT_H

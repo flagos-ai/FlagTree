@@ -104,5 +104,4 @@ def MathExt_InclusiveScanOp : MathExt_Op<"inclusive_scan", [MemoryEffectsOpInter
   }];
   let hasVerifier = 1;
 }
-
 #endif // MATH_EXT_OPS

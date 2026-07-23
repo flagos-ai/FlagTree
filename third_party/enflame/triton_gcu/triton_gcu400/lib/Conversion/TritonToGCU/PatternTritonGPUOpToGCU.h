@@ -32,7 +32,7 @@ namespace triton {
 namespace gcu {
 class FirstLastUserAnalysis;
 class PrivateTagPool;
-} // namespace gcu
+}
 
 void populateLoadStoreOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
@@ -78,7 +78,8 @@ void populateDistributedOpToGCUPatterns(
 
 void populateTleOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
-    ConversionTarget &target, gcu::FirstLastUserAnalysis &userAnalysis,
+    ConversionTarget &target,
+    gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateTagPool &pTagPool);
 

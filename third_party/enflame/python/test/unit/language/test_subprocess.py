@@ -21,30 +21,28 @@ torch_types = ["int8", "uint8", "int16", "int32", "float16", "float32"]
 
 
 @pytest.mark.interpreter
-@pytest.mark.parametrize("func_type, data_type", [
-    (fn, data_type)
-    #TODO(triton3.2) newly added func_types are required to be suopprted
-    #for fn in ["device_print", "device_print_scalar"]
-    for fn in ["device_print"]
-    for data_type in torch_types
-] + [
-    ("print", "int32"),
-    ("static_print", "int32"),
-    #TODO(triton3.2) newly added func_types are required to be suopprted
-    #   ("no_arg_print", "int32"),
-    #   ("print_no_arg", "int32"),
-    #   ("device_print_large", "int32"),
-    #   ("print_multiple_args", "int32"),
-    #   ("device_print_multiple_args", "int32"),
-    #   ("device_print_hex", "int16"),
-    #   ("device_print_hex", "int32"),
-    #   ("device_print_hex", "int64"),
-    #   ("device_print_pointer", "int32"),
-    #   ("device_print_negative", "int32"),
-    #   ("device_print_uint", "uint32"),
-    #   ("device_print_uint_cast", "uint8"),
-    #   ("device_print_2d_tensor", "int32"),
-])
+@pytest.mark.parametrize("func_type, data_type", [(fn, data_type)
+                                                    #TODO(triton3.2) newly added func_types are required to be suopprted
+                                                    #for fn in ["device_print", "device_print_scalar"]
+                                                    for fn in ["device_print"]
+                                                  for data_type in torch_types] + [
+                                                      ("print", "int32"),
+                                                      ("static_print", "int32"),
+                                                    #TODO(triton3.2) newly added func_types are required to be suopprted
+                                                    #   ("no_arg_print", "int32"),
+                                                    #   ("print_no_arg", "int32"),
+                                                    #   ("device_print_large", "int32"),
+                                                    #   ("print_multiple_args", "int32"),
+                                                    #   ("device_print_multiple_args", "int32"),
+                                                    #   ("device_print_hex", "int16"),
+                                                    #   ("device_print_hex", "int32"),
+                                                    #   ("device_print_hex", "int64"),
+                                                    #   ("device_print_pointer", "int32"),
+                                                    #   ("device_print_negative", "int32"),
+                                                    #   ("device_print_uint", "uint32"),
+                                                    #   ("device_print_uint_cast", "uint8"),
+                                                    #   ("device_print_2d_tensor", "int32"),
+                                                  ])
 def test_print(func_type: str, data_type: str, device: str):
     proc = subprocess.run(
         [sys.executable, print_path, "test_print", func_type, data_type, device],
@@ -75,9 +73,7 @@ def test_print(func_type: str, data_type: str, device: str):
                 offset = 1 << 7
             elif func_type == "device_print_uint":
                 offset = (1 << 31)
-
-
-# TODO: check more
+	    # TODO: check more
             target_arch = triton.runtime.driver.active.get_current_target().arch.split("--")[1]
             line = f"pid (0, 0, 0) idx ({i:3}) x: {i + offset}"
             if data_type.startswith("float"):
@@ -129,7 +125,7 @@ def test_print(func_type: str, data_type: str, device: str):
     actual_lines = Counter()
     for line in outs:
         # Trim the exact pointer address in the output--they can change per run.
-        if "[" not in line:  # TODO
+        if "[" not in line: # TODO
             continue
         line = (line.split(':')[0] + ": 0x") if func_type == "device_print_pointer" else line
         actual_lines[line] += 1

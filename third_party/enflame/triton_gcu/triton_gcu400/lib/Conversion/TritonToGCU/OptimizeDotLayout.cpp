@@ -19,13 +19,14 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "Utils/TritonVersionCompat.h"
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -247,7 +248,7 @@ void TritonGCUDotLayoutOptimizePass::reWriteDotLayout(triton::DotOp dot) {
       llvm::ArrayRef<unsigned>(dOriBlockEncoding.getThreadsPerWarp()),
       llvm::ArrayRef<unsigned>(warpsPerCTA),
       llvm::ArrayRef<unsigned>(dOriBlockEncoding.getOrder()),
-      dOriBlockEncoding.getCTALayout());
+      triton_gcu::compat::getCGALayout(dOriBlockEncoding));
   // new A
   Attribute newAencoding = triton::gpu::DotOperandEncodingAttr::get(
       dot.getContext(), 0, dEncoding, tTypeA.getElementType());

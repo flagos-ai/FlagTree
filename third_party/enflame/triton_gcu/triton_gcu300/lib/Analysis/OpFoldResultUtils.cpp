@@ -49,6 +49,7 @@ llvm::SmallVector<Value> getValues(OpBuilder &builder, Location loc,
   return values;
 }
 
+
 // Extract a scalar value from v.
 // If v is a scalar, return that directly. Otherwise, parse through operations
 // (currently only support splat and sitofp) that produce it and to extract they

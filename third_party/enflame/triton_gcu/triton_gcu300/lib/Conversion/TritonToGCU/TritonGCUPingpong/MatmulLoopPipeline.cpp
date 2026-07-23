@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
+#include <list>
+#include <utility>
+#include <vector>
 #include "PipelineExpander.h"
 #include "PipeliningUtility.h"
 #include "Schedule.h"
@@ -31,16 +32,16 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
-#include <list>
-#include <utility>
-#include <vector>
 
 #define DEBUG_TYPE "triton-matmul-loop-pipeline"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -306,7 +307,7 @@ getSharedEncIfAllUsersAreSameEnc(Value val) {
       return std::nullopt;
     }
     auto srcTy = cast<triton::gpu::TensorOrMemDesc>(val.getType());
-    auto CTALayout = ttg::getCTALayout(srcTy.getEncoding());
+    auto CTALayout = triton_gcu::compat::getCGALayout(srcTy.getEncoding());
     auto order = ttg::getOrder(srcTy);
     unsigned bitWidth = srcTy.getElementType().getIntOrFloatBitWidth();
     SmallVector<unsigned> sharedOrder;
@@ -432,7 +433,7 @@ assignMemoryLayouts(llvm::SmallVector<std::tuple<Operation *, int, Operation *>>
       }
       auto gcuLoad = dyn_cast<triton::gcu::LoadOp>(op);
       auto srcTy = dyn_cast<RankedTensorType>(gcuLoad.getType());
-      auto CTALayout = ttg::getCTALayout(srcTy.getEncoding());
+      auto CTALayout = triton_gcu::compat::getCGALayout(srcTy.getEncoding());
       auto order = ttg::getOrder(srcTy);
       loadInfo.layoutEncoding = ttg::SwizzledSharedEncodingAttr::get(
           srcTy.getContext(), 1, 1, 1, order, CTALayout);

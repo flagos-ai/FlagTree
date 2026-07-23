@@ -15,9 +15,9 @@
  */
 #include <utility>
 
+#include "Utils.h"
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
-#include "Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -170,7 +170,7 @@ struct ConvertFpToFpOp : public OpRewritePattern<triton::FpToFpOp> {
     auto resType = cast<RankedTensorType>(op.getResult().getType());
     if (getElementBitWidth(resType) >
         getElementBitWidth(srcType)) { // Cast from floating-point
-                                       // to wider floating-point, fp8->fp32
+                                        // to wider floating-point, fp8->fp32
       newOp = rewriter.create<arith::ExtFOp>(loc, op.getType(), op.getSrc());
     } else { // Cast from floating-point to narrower floating-point, fp32->fp8
       newOp = rewriter.create<arith::TruncFOp>(loc, op.getType(), op.getSrc());
@@ -202,7 +202,7 @@ struct GCUTritonFusionPass
 
   void runOnOperation() override {
     dotZeroBiasFusion();
-    // should do bias fusion before constant zero be fusioned
+    //should do bias fusion before constant zero be fusioned
     auto module = getOperation();
     auto *ctx = &getContext();
     RewritePatternSet patterns(ctx);
@@ -339,13 +339,12 @@ bool GCUTritonFusionPass::canVectorize(Operation *op) {
   if (!llvm::all_of(op->getResultTypes(), llvm::IsaPred<RankedTensorType>)) {
     return false;
   }
-  return llvm::all_of(op->getResultTypes(), [](auto type) {
+  return llvm::all_of(op->getResultTypes(), [this](auto type) {
     auto elementTy = cast<RankedTensorType>(type).getElementType();
     return elementTy.isBF16() || elementTy.isF16() || elementTy.isF32() ||
            elementTy.isInteger(1) || elementTy.isInteger(8) ||
            elementTy.isInteger(16) || elementTy.isInteger(32) ||
-           (!triton::gcu::get_bool_env("ENABLE_I64_CHECK", true) &&
-            elementTy.isInteger(64));
+           (enable_i64 && elementTy.isInteger(64));
   });
 }
 
@@ -436,7 +435,7 @@ void GCUTritonFusionPass::dotZeroBiasFusion() {
             isOnlyMatmul = true;
           }
         } else if (elementType.isBF16() || elementType.isF16() ||
-                   elementType.isTF32() || elementType.isF32()) {
+                    elementType.isTF32() || elementType.isF32()) {
           if (splatAttr.getSplatValue<APFloat>().isZero()) {
             isOnlyMatmul = true;
           }

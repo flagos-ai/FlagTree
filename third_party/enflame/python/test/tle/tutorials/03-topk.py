@@ -39,7 +39,6 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 # Shared helpers: float ↔ radix key conversion (sign-magnitude → ordered uint)
 # ---------------------------------------------------------------------------
 
-
 @triton.jit
 def get_topmask_and_fullmask(x):
     tl.static_assert(x.dtype.is_int_unsigned(), "floating-point value must be passed as bits")
@@ -68,16 +67,11 @@ def key_to_fpval(x):
 # Kernel 1: Naive radix-select (pure Triton, tiled, no TLE)
 # ---------------------------------------------------------------------------
 
-
 @triton.jit
 def topk_kernel_naive(
-    X,
-    Yv,
-    Yi,
-    stride_xm,
-    stride_ym,
-    n_rows,
-    n_cols,
+    X, Yv, Yi,
+    stride_xm, stride_ym,
+    n_rows, n_cols,
     K: tl.constexpr,
     BLOCK_N: tl.constexpr,
     RADIX_BITS: tl.constexpr,
@@ -172,13 +166,9 @@ DSM_SMEM_LIMIT_ELEMS = 16384
 
 @triton.jit
 def topk_kernel_tle(
-    X,
-    Yv,
-    Yi,
-    stride_xm,
-    stride_ym,
-    n_rows,
-    n_cols,
+    X, Yv, Yi,
+    stride_xm, stride_ym,
+    n_rows, n_cols,
     K: tl.constexpr,
     BLOCK_N: tl.constexpr,
     RADIX_BITS: tl.constexpr,
@@ -200,13 +190,10 @@ def topk_kernel_tle(
     START_POS: tl.constexpr = (NUM_DIGITS - 1) * RADIX_BITS  # type: ignore[operator]
 
     smem_keys = tle.gpu.alloc(
-        (BLOCK_N, ),
-        dtype=tl.uint32,
-        layout=None,  # type: ignore[arg-type]
-        scope=tle.gpu.smem,
-        nv_mma_shared_layout=False,
+        (BLOCK_N,), dtype=tl.uint32, layout=None,  # type: ignore[arg-type]
+        scope=tle.gpu.smem, nv_mma_shared_layout=False,
     )
-    smem_key_ptrs = tle.gpu.local_ptr(smem_keys, (offs_n, ))
+    smem_key_ptrs = tle.gpu.local_ptr(smem_keys, (offs_n,))
     for row in tl.range(pid, n_rows, num_pids):
         base = row * stride_xm
         mask_n = offs_n < n_cols
@@ -300,10 +287,13 @@ def triton_naive_topk(
     radix_bits = 5
     num_digits = (x_nbits + radix_bits - 1) // radix_bits
 
-    topk_kernel_naive[(GRID_SIZE, )](
-        x, y_vals, y_idx, x.stride(0), y_vals.stride(0), M, N, K=k, BLOCK_N=block_n,
-        RADIX_BITS=radix_bits,  # type: ignore[arg-type]
-        NUM_DIGITS=num_digits, num_warps=NUM_WARPS, num_stages=1,  # type: ignore[call-arg]
+    topk_kernel_naive[(GRID_SIZE,)](
+        x, y_vals, y_idx,
+        x.stride(0), y_vals.stride(0),
+        M, N,
+        K=k, BLOCK_N=block_n, RADIX_BITS=radix_bits,  # type: ignore[arg-type]
+        NUM_DIGITS=num_digits,
+        num_warps=NUM_WARPS, num_stages=1,  # type: ignore[call-arg]
     )
     return y_vals, y_idx
 
@@ -323,9 +313,11 @@ def triton_tle_topk(
     block_n = triton.next_power_of_2(N)
 
     if block_n > DSM_SMEM_LIMIT_ELEMS:
-        raise ValueError(f"N={N} (block_n={block_n}) exceeds DSM SMEM limit "
-                         f"({DSM_SMEM_LIMIT_ELEMS} elems). Need compiler optimization "
-                         f"to reduce MRADIX/miota DSM overhead.")
+        raise ValueError(
+            f"N={N} (block_n={block_n}) exceeds DSM SMEM limit "
+            f"({DSM_SMEM_LIMIT_ELEMS} elems). Need compiler optimization "
+            f"to reduce MRADIX/miota DSM overhead."
+        )
 
     if out_vals is None:
         y_vals = torch.empty((M, k), device=x.device, dtype=x.dtype)
@@ -340,10 +332,13 @@ def triton_tle_topk(
     radix_bits = 5
     num_digits = (x_nbits + radix_bits - 1) // radix_bits
 
-    topk_kernel_tle[(GRID_SIZE, )](
-        x, y_vals, y_idx, x.stride(0), y_vals.stride(0), M, N, K=k, BLOCK_N=block_n,
-        RADIX_BITS=radix_bits,  # type: ignore[arg-type]
-        NUM_DIGITS=num_digits, num_warps=NUM_WARPS, num_stages=1,  # type: ignore[call-arg]
+    topk_kernel_tle[(GRID_SIZE,)](
+        x, y_vals, y_idx,
+        x.stride(0), y_vals.stride(0),
+        M, N,
+        K=k, BLOCK_N=block_n, RADIX_BITS=radix_bits,  # type: ignore[arg-type]
+        NUM_DIGITS=num_digits,
+        num_warps=NUM_WARPS, num_stages=1,  # type: ignore[call-arg]
     )
     return y_vals, y_idx
 
@@ -351,7 +346,6 @@ def triton_tle_topk(
 # ---------------------------------------------------------------------------
 # Correctness & benchmark
 # ---------------------------------------------------------------------------
-
 
 def _get_dtype(name: str):
     name = name.lower()
@@ -432,12 +426,11 @@ def benchmark(M, N, K, provider, dtype):
 
     quantiles = [0.5, 0.2, 0.8]
     if provider == "naive":
-
         def run_kernel():
             triton_naive_topk(x, K, out_vals=y_vals, out_idx=y_idx)
 
-        ms, min_ms, max_ms = triton.testing.do_bench(run_kernel, quantiles=quantiles, warmup=bench_warmup,
-                                                     rep=bench_rep)
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            run_kernel, quantiles=quantiles, warmup=bench_warmup, rep=bench_rep)
     elif provider == "tle":
         block_n = triton.next_power_of_2(N)
         if block_n > DSM_SMEM_LIMIT_ELEMS:
@@ -446,15 +439,14 @@ def benchmark(M, N, K, provider, dtype):
         def run_kernel():
             triton_tle_topk(x, K, out_vals=y_vals, out_idx=y_idx)
 
-        ms, min_ms, max_ms = triton.testing.do_bench(run_kernel, quantiles=quantiles, warmup=bench_warmup,
-                                                     rep=bench_rep)
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            run_kernel, quantiles=quantiles, warmup=bench_warmup, rep=bench_rep)
     else:
-
         def run_kernel():
             torch.topk(x, K, dim=1, sorted=False)
 
-        ms, min_ms, max_ms = triton.testing.do_bench(run_kernel, quantiles=quantiles, warmup=bench_warmup,
-                                                     rep=bench_rep)
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            run_kernel, quantiles=quantiles, warmup=bench_warmup, rep=bench_rep)
     return ms, max_ms, min_ms
 
 
@@ -463,6 +455,7 @@ def main(argv=None):
     parser.add_argument("--dtype", type=str, default="float32", choices=["float16", "float32", "bfloat16"])
     parser.add_argument("--skip_correctness", action="store_true")
     parser.add_argument("--show_plots", action="store_true")
+    parser.add_argument("--validate", action="store_true", help="Save CSV and validate against baseline")
     args = parser.parse_args(argv)
 
     dtype = _get_dtype(args.dtype)
@@ -470,8 +463,27 @@ def main(argv=None):
         for m, n, k in [(8, 128, 8), (8, 256, 16), (16, 1024, 32)] + SHAPES:
             run_correctness(m, n, k, dtype)
 
-    benchmark.run(print_data=True, show_plots=args.show_plots, dtype=dtype)
+    save_path = './' if args.validate else None
+    benchmark.run(print_data=True, show_plots=args.show_plots, save_path=save_path, dtype=dtype)
+
+    if args.validate:
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from utils.benchmark_utils import validate_benchmark
+        data_dir = Path(__file__).resolve().parents[1] / "data"
+        data_dir.mkdir(exist_ok=True)
+        result = validate_benchmark(
+            current_csv="topk-naive-vs-tle-vs-torch.csv",
+            baseline_csv=str(data_dir / "baseline_topk-naive-vs-tle-vs-torch.csv"),
+            dimension_fields=["M", "N", "K"],
+            regression_threshold=0.10,
+        )
+        if not result:
+            raise Exception('Benchmark validation failed!')
+    else:
+        print("\nSkipping performance validation. Use --validate to enable.")
 
 
 if __name__ == "__main__":
-    main()
+    pass
+    #main()

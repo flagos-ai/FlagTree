@@ -106,6 +106,14 @@ public:
 
   void setToExitState(TaskIdLattice *lattice) override;
 
+#if TRITON_VERSION >= 37
+  void visitNonControlFlowArguments(RegionSuccessor &successor,
+                                    ArrayRef<BlockArgument> arguments) override {
+    for (BlockArgument arg : arguments)
+      setToExitState(getLatticeElement(arg));
+  }
+#endif
+
   void propagateToYield(scf::YieldOp yieldOp, SmallVector<TaskId> &lattices);
 
   void propagateToTerminator(Operation *op,

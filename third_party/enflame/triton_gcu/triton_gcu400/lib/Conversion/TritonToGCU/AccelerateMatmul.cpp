@@ -27,16 +27,17 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
-#include "Constants.h"
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Constants.h"
 #include "Utility.h"
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 
 #define DEBUG_TYPE "triton-accelerate-matmul"
 
@@ -97,8 +98,7 @@ SmallVector<unsigned, 2>
 warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps) {
   auto rank = shape.size();
   // Early exit for batched matmul
-  if (rank == 3)
-    return {(unsigned)numWarps, 1, 1};
+  if (rank == 3) return {(unsigned)numWarps, 1, 1};
   assert(rank == 2 && "expected 2D tile shape");
 
   SetVector<Operation *> slices;
@@ -114,7 +114,9 @@ warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps) {
   SmallVector<int64_t> shapePerWarp = {64, 128};
   SmallVector<int64_t> warps = {1, 1};
 
-  auto ceilDiv = [](int64_t x, int64_t y) { return (x + y - 1) / y; };
+  auto ceilDiv = [](int64_t x, int64_t y) {
+    return (x + y - 1) / y;
+  };
   auto product = [](const SmallVector<int64_t> &v) { return v[0] * v[1]; };
 
   // Compute repM and repN
@@ -169,7 +171,7 @@ static Value getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter,
 
   Attribute SharedMemorySpace =
       SharedMemorySpaceAttr::get(argType.getContext());
-  auto CTALayout = getCTALayout(argType.getEncoding());
+  auto CTALayout = triton_gcu::compat::getCGALayout(argType.getEncoding());
   auto newLayout = NVMMASharedEncodingAttr::get(
       argType.getContext(), argType.getShape(), newOrder, CTALayout,
       argType.getElementType(), false);
@@ -209,7 +211,13 @@ public:
     // get MMA encoding for the given number of warps
     auto retShapePerCTA = getShapePerCTA(oldRetType);
     int numWarps = lookupNumWarps(dotOp);
-    auto CTALayout = getCTALayout(oldRetType.getEncoding());
+    // Skip dot ops that are in a function with num_warps == 1 (e.g. a
+    // producer-default TLE WS kernel where the producer uses 1 warp but
+    // the consumer worker uses >1 warps). The num_warps here reflects
+    // the dot op's enclosing function, not the module-level value.
+    if (numWarps <= 1)
+      return failure();
+    auto CTALayout = triton_gcu::compat::getCGALayout(oldRetType.getEncoding());
 
     // operands
     Value a = dotOp.getA();
@@ -230,7 +238,31 @@ public:
     LLVM_DEBUG(llvm::dbgs() << "BlockedToMMA: operand B "
                             << (bMatchesPattern ? "matches" : "does NOT match")
                             << " tt.load -> convert_layout pattern\n");
-    if (!aMatchesPattern && !bMatchesPattern) {
+
+    // ttg.local_load (TLE WS after pipe lowering)
+    // ttg.convert_layout -> ttg.local_load (TLE WS after pipe lowering)
+    auto traceBackToLocalLoad = [](Value v) -> bool {
+      if (isa_and_nonnull<LocalLoadOp>(v.getDefiningOp()))
+        return true;
+      if (auto cvt = v.getDefiningOp<ConvertLayoutOp>()) {
+        auto src = cvt.getSrc();
+        if (isa_and_nonnull<LocalLoadOp>(src.getDefiningOp()))
+          return true;
+      }
+      return false;
+    };
+
+    bool aFromLocalLoad = traceBackToLocalLoad(a);
+    bool bFromLocalLoad = traceBackToLocalLoad(b);
+    LLVM_DEBUG(llvm::dbgs()
+               << "BlockedToMMA: operand A " << (aFromLocalLoad ? "" : "not")
+               << " from local_load\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "BlockedToMMA: operand B " << (bFromLocalLoad ? "" : "not")
+               << " from local_load\n");
+
+    if (!(aMatchesPattern || bMatchesPattern || aFromLocalLoad ||
+          bFromLocalLoad)) {
       LLVM_DEBUG(llvm::dbgs()
                  << "BlockedToMMA: skip dot because neither operand matches "
                     "tt.load -> convert_layout pattern\n");
@@ -268,8 +300,8 @@ public:
       auto tensorTy = cast<RankedTensorType>(operand.getType());
       auto dotOpEnc = DotOperandEncodingAttr::get(
           dotOp.getContext(), opIdx, mmaEnc, tensorTy.getElementType());
-      auto newTy = RankedTensorType::get(tensorTy.getShape(),
-                                         tensorTy.getElementType(), dotOpEnc);
+      auto newTy = RankedTensorType::get(
+          tensorTy.getShape(), tensorTy.getElementType(), dotOpEnc);
       if (tensorTy == newTy)
         return operand;
       return rewriter.create<ConvertLayoutOp>(dotOp.getLoc(), newTy, operand);
@@ -358,8 +390,8 @@ static void decomposeMixedModeDotOp(mlir::gpu::GPUModuleOp mod) {
             promoteOperand(builder, cvt.getLoc(), cvt.getSrc(), promoteType);
         auto newCvtType = cast<RankedTensorType>(cvt.getType())
                               .cloneWith(std::nullopt, promoteType);
-        Value newCvt = builder.create<ConvertLayoutOp>(cvt.getLoc(), newCvtType,
-                                                       promotedSrc);
+        Value newCvt = builder.create<ConvertLayoutOp>(cvt.getLoc(),
+                                                       newCvtType, promotedSrc);
         dotOp.setOperand(opIdx, newCvt);
       } else {
         Value promoted = promoteOperand(builder, loc, operand, promoteType);
@@ -382,14 +414,6 @@ public:
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     mlir::gpu::GPUModuleOp m = getOperation();
-    // skip if num_warps is 1
-    auto builtinModule = m->getParentOfType<ModuleOp>();
-    if (builtinModule && builtinModule->hasAttr(kNumWarps)) {
-      auto numWarps =
-          cast<IntegerAttr>(builtinModule->getAttr(kNumWarps)).getInt();
-      if (numWarps == 1)
-        return;
-    }
 
     mlir::RewritePatternSet patterns(context);
     patterns.add<BlockedToMMA>(context);

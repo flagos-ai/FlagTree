@@ -16,7 +16,7 @@
 import sys
 
 from triton.backends.compiler import GPUTarget
-from triton.backends.driver import DriverBase
+from triton.backends.driver import  DriverBase
 from triton.backends.enflame.backend import GCUBackend, GCUDriver, ty_to_cpp
 
 
@@ -50,32 +50,31 @@ def _ensure_transfer_to_gcu():
     torch_mod = sys.modules.get("torch")
     if torch_mod is None or not hasattr(torch_mod, "__version__"):
         return
-    _ensure_transfer_to_gcu._done = True
     try:
         from torch_gcu import transfer_to_gcu
     except Exception:
-        pass
+        return
+    _ensure_transfer_to_gcu._done = True
     _patch_cuda_device_interface()
 
 
 def _monkey_cuda_patch():
     """Patch ``torch.cuda`` so GCU-transparent tooling doesn't break.
 
-    Three patches are applied:
+    Two one-shot wrappers are installed on ``torch.cuda``:
 
-    1. ``is_available`` -> one-shot wrapper that calls
-       ``_ensure_transfer_to_gcu()`` before the first real invocation.
-       This handles ``@pytest.mark.skipif(not torch.cuda.is_available(), ...)``
-       evaluated at module-import time.
+    1. ``is_available`` -> calls ``_ensure_transfer_to_gcu()`` before the
+       first real invocation.  Handles ``@pytest.mark.skipif(not
+       torch.cuda.is_available(), ...)`` evaluated at module-import time.
 
-    2. ``init`` -> one-shot wrapper that triggers GCU transfer, then no-op.
-       Tests such as ``test_tle_gpu_local_ptr.py`` call ``torch.cuda.init()``
-       inside module-scoped autouse fixtures and ``pytest.skip`` on failure.
+    2. ``init`` -> triggers GCU transfer, then delegates.  Tests such as
+       ``test_tle_gpu_local_ptr.py`` call ``torch.cuda.init()`` inside
+       module-scoped autouse fixtures.
 
-    3. ``_lazy_init`` -> one-shot wrapper that triggers GCU transfer, then no-op.
-       ``torch.empty(device="cuda")`` and similar factories internally call
-       ``_lazy_init()``, which crashes with "Torch not compiled with CUDA
-       enabled" on GCU.
+    Additionally, ``_ensure_transfer_to_gcu()`` is called from
+    ``get_current_target`` so that ``transfer_to_gcu`` (which patches
+    ``torch.randn``/``torch.empty`` to redirect ``device="cuda"`` to
+    ``device="gcu"``) is loaded before any test creates CUDA-tagged tensors.
     """
     torch_mod = sys.modules.get("torch")
     if torch_mod is None:
@@ -114,7 +113,6 @@ _monkey_cuda_patch()
 
 
 class _GCUDriver(DriverBase):
-
     def __new__(cls):
         if not hasattr(cls, 'instance'):
             cls.instance = super(_GCUDriver, cls).__new__(cls)
@@ -143,6 +141,7 @@ class _GCUDriver(DriverBase):
         return self._driver.get_arch()
 
     def get_current_target(self):
+        _ensure_transfer_to_gcu()
         arch = self._driver.get_arch()
         warp_size = self._driver.get_warp_size()
         return GPUTarget(self.backend, arch.split(':')[0], warp_size)

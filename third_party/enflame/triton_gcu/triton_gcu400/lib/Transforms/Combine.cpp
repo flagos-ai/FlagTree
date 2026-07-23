@@ -572,17 +572,14 @@ public:
     // Check if the dot op is an acc reuse candidate
     Value input = cvtOp->getOperand(0);
     auto dotOp = getDotOp(input);
-    if (!dotOp || !dotOp->hasAttr("acc_reuse_candidate") ||
-        mlir::cast<StringAttr>(dotOp->getAttr("acc_reuse_candidate"))
-                .getValue() != "acc_reuse_oacc")
+    if (!dotOp)
       return failure();
 
     // Update oacc store mode
     const char *const kAccStore = "acc_store";
     if (!dotOp->hasAttr(kAccStore))
       return failure();
-    dotOp->setAttr(kAccStore,
-                   StringAttr::get(dotOp.getContext(), "cvt_global"));
+    dotOp->setAttr(kAccStore, StringAttr::get(dotOp.getContext(), "cvt_global"));
 
     rewriter.replaceOp(cvtOp, input);
     return success();
@@ -590,7 +587,10 @@ public:
 
 private:
   static triton::DotOp getDotOp(Value val) {
-    if (auto dotOp = dyn_cast<triton::DotOp>(val.getDefiningOp()))
+    auto *defOp = val.getDefiningOp();
+    if (!defOp)
+      return nullptr;
+    if (auto dotOp = dyn_cast<triton::DotOp>(defOp))
       return dotOp;
 
     if (auto forResult = dyn_cast<OpResult>(val)) {

@@ -26,6 +26,7 @@
 #include "Analysis/FirstLastUserAnalysis.h"
 #include "TritonGCUToGCU/TritonGCUToGCUUtils.h"
 #include "Utils.h"
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -152,7 +153,16 @@ void vectorizeCombineOpTerminator(Location loc, OpBuilder &builder,
 }
 
 struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
-  using SharedConversionPattern::SharedConversionPattern;
+  bool enableI64;
+  TTScanOpLowering(
+      const TypeConverter &converter, MLIRContext *ctx,
+      triton::gcu::FirstLastUserAnalysis &userAnalysis,
+      std::map<Operation *, Operation *> &replaced2Origin,
+      triton::gcu::PrivateDTETagPool &pTagPool,
+      bool enable_i64)
+      : SharedConversionPattern(converter, ctx, userAnalysis, replaced2Origin,
+                                pTagPool),
+        enableI64(enable_i64) {}
   void applyScan(triton::ScanOp op, OpBuilder &rewriter,
                  ArrayRef<Value> outputs, ArrayRef<Value> inputs, Type type,
                  unsigned vectorLength, bool reverse) const {
@@ -238,8 +248,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
 
     unsigned maxBpe = 1;
     unsigned minBpe = 4;
-    auto target_supporti64 =
-        !triton::gcu::get_bool_env("ENABLE_I64_CHECK", true);
+    auto target_supporti64 = enableI64;
     bool is_i64 = false;
     for (auto output : outputs) {
       auto elementType = cast<MemRefType>(output.getType()).getElementType();
@@ -258,7 +267,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     }
     if (is_i64)
       minBpe = 8;
-    // for vector step i32
+    //for vector step i32
     if (maxBpe < 4) {
       maxBpe = 4;
     }
@@ -440,9 +449,9 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                 }
 
                 for (unsigned i = 0; i < numOutput; ++i) {
-                  builder.create<vector::ScatterOp>(
-                      loc, outputs[i], outputIndices, indexVec, mask,
-                      executeRegionOp.getResult(i));
+                  triton_gcu::compat::createVectorScatterOp(
+                      builder, loc, outputs[i], ValueRange(outputIndices),
+                      indexVec, mask, executeRegionOp.getResult(i));
                 }
               });
         });
@@ -769,8 +778,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     auto numOutput = op.getResults().size();
     unsigned maxBpe = 1;
     unsigned minBpe = 4;
-    auto target_supporti64 =
-        !triton::gcu::get_bool_env("ENABLE_I64_CHECK", true);
+    auto target_supporti64 = enableI64;
     bool is_i64 = false;
     for (auto output : outputs) {
       auto elementType = cast<MemRefType>(output.getType()).getElementType();
@@ -1160,7 +1168,8 @@ void mlir::triton::populateScanOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateDTETagPool &pTagPool) {
+    triton::gcu::PrivateDTETagPool &pTagPool,
+    bool enable_i64) {
   patterns.add<TTScanOpLowering>(converter, patterns.getContext(), userAnalysis,
-                                 replaced2Origin, pTagPool);
+                                 replaced2Origin, pTagPool, enable_i64);
 }

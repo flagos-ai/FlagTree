@@ -18,7 +18,7 @@ import os
 import tempfile
 from pathlib import Path
 from triton.backends.compiler import BaseBackend, GPUTarget
-from triton.backends.enflame.backend import GCUBackend, _version_key
+from triton.backends.enflame.backend import GCUBackend, _version_key, _triton_version
 from triton.backends.enflame import toolkit
 from triton.backends.enflame.toolkit import *
 
@@ -37,13 +37,13 @@ from triton.runtime.errors import OutOfResources
 if toolkit.get_bool_env("TRITON_GCU_COMPILE_TIME"):
     import triton.knobs as knobs
     from triton.compiler.compiler import ASTSource
-
     def gcu_listener(*, src, metadata, metadata_group, times, cache_hit):
         if cache_hit:
             print(f"==== Triton Cache Hit for function:  {src.name} ===")
             return
         print(f"\n=== Triton Compile Times for function: {src.name} ===")
-        opt_keys = ("num_warps", "num_ctas", "num_stages", "warp_size", "vector_length", "arch")
+        opt_keys = ("num_warps", "num_ctas", "num_stages",
+                     "warp_size", "vector_length", "arch")
         opt_parts = [f"{k}={metadata[k]}" for k in opt_keys if k in metadata]
         if opt_parts:
             print(f"  options: {', '.join(opt_parts)}")
@@ -67,9 +67,7 @@ if toolkit.get_bool_env("TRITON_GCU_COMPILE_TIME"):
                     else:
                         pname = str(key)
                     print(f"    {pname}: {val!r}")
-
     knobs.compilation.listener = gcu_listener
-
 
 def _patch_kernel_for_gcuir(kernel):
     # add gpu module
@@ -81,22 +79,18 @@ def _patch_kernel_for_gcuir(kernel):
     kernel += '}\n'
     return kernel
 
-
 def _patch_kernel_for_llir(kernel, arch):
     # strip arith.trunci's overflowFlags attribute
-    kernel = re.sub(r'((?:")?arith\.trunci(?:")?\([^)]*\))\s*<\{overflowFlags\s*=\s*#arith\.overflow<[^>]*>\}>', r'\1',
-                    kernel)
-    kernel = re.sub(r'((?:")?arith\.trunci(?:")?\([^)]*\)\s*<\{)overflowFlags\s*=\s*#arith\.overflow<[^>]*>,\s*', r'\1',
-                    kernel)
+    kernel = re.sub(r'((?:")?arith\.trunci(?:")?\([^)]*\))\s*<\{overflowFlags\s*=\s*#arith\.overflow<[^>]*>\}>',
+                    r'\1', kernel)
+    kernel = re.sub(r'((?:")?arith\.trunci(?:")?\([^)]*\)\s*<\{)overflowFlags\s*=\s*#arith\.overflow<[^>]*>,\s*',
+                    r'\1', kernel)
     _overflow_map = {'0': 'none', '1': 'nsw', '2': 'nuw', '3': 'nsw, nuw'}
-
     def _fix_overflow(m):
         val = m.group(1)
         return f'overflowFlags = #llvm.overflow<{_overflow_map.get(val, "none")}>'
-
     kernel = re.sub(r'overflowFlags\s*=\s*(\d+)\s*:\s*i32', _fix_overflow, kernel)
     return kernel
-
 
 def make_ttir(mod, metadata, options):
     # Validate num_warps constraints
@@ -119,9 +113,12 @@ def make_ttir(mod, metadata, options):
     passes.common.add_cse(pm)
     passes.common.add_symbol_dce(pm)
     passes.ttir.add_loop_unroll(pm)
-    pm.run(mod, "ttir")
+    _major, _minor = _triton_version()
+    if (_major, _minor) == (3, 5):
+        pm.run(mod)
+    else:
+        pm.run(mod, "ttir")
     return mod
-
 
 def make_ttgir(mod, metadata, options):
     pm = ir.pass_manager(mod.context)
@@ -129,67 +126,75 @@ def make_ttgir(mod, metadata, options):
     # TritonToTritonGPU -- add GPU encoding (BlockedEncodingAttr).
     # GCU300/400 handle this later in make_gcuir; GCU500 does it here (like NV/AMD).
     if options.arch == "gcu500":
-        passes.ttir.add_convert_to_ttgpuir(pm, f"gcu:{options.arch}", options.num_warps, options.warp_size,
-                                           options.num_ctas)
+        passes.ttir.add_convert_to_ttgpuir(
+            pm, f"gcu:{options.arch}",
+            options.num_warps, options.warp_size, options.num_ctas)
     if options.arch in ("gcu400", "gcu410", "gcu500"):
         if options.arch == "gcu500":
             try:
                 passes.ttgpuir.add_optimize_thread_locality(pm)
             except AttributeError:
                 pass
-    passes.ttgpuir.add_fuse_nested_loops(pm)
+    _major, _minor = _triton_version()
+    if (_major, _minor) != (3, 5):
+        passes.ttgpuir.add_fuse_nested_loops(pm)
     passes.common.add_cse(pm)
     passes.common.add_symbol_dce(pm)
     passes.common.add_canonicalizer(pm)
-    pm.run(mod, "ttgir")
+    if (_major, _minor) == (3, 5):
+        pm.run(mod)
+    else:
+        pm.run(mod, "ttgir")
     metadata["launch_cooperative_grid"] = getattr(options, "launch_cooperative_grid", False)
     metadata["cluster_dims"] = tuple(getattr(options, "cluster_dims", (1, 1, 1)))
     return mod
-
 
 def make_gcuir(mod, metadata, options):
     patched_mod = _patch_kernel_for_gcuir(str(mod))
     metadata['name'] = re.search('tt.func public @(\\w+)\\(', patched_mod).group(1).strip()
     metadata['tle_raw'] = '"tle.dsl_region"' in patched_mod
-
+    metadata['tle_raw_deferred'] = 'tle_raw.dsl_file_name' in patched_mod
     arch = options.arch if options.arch != "gcu410" else "gcu400"
     PipelineClass = toolkit.get_gcu_pipeline_class(arch)
     pm = PipelineClass()
 
-    dump_enabled = False
-    ws_inner_barrier_enabled = True
+    dump_enabled=False
+    ws_inner_barrier_enabled=True
     if toolkit.get_bool_env("MLIR_ENABLE_DUMP"):
         gcu_passes.mlir.add_print_ir_after_all(pm)
         gcu_passes.mlir.add_disable_threading(pm)
         gcu_passes.mlir.add_print_ir_module_scope(pm)
-        dump_enabled = True
+        dump_enabled=True
     if toolkit.get_bool_env("MLIR_ENABLE_TIMING"):
         gcu_passes.mlir.add_timing(pm)
         gcu_passes.mlir.add_timing_display(pm, 'list')
 
     if options.arch == "gcu300":
-        if toolkit.get_bool_env("ENABLE_I64_CHECK", True):
+        if not options.enable_i64:
             gcu_passes.gcu300.add_gcu64_type_verifier(pm)
-
+        if metadata['tle_raw']:
+            gcu_passes.gcu300.add_tle_convert_arg_to_memdesc(pm)
+            gcu_passes.gcu300.add_tle_remove_redundant_copy(pm)
         support_stride0 = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_BROADCAST")
 
-        gcu_passes.gcu300.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
-                                                              options.num_ctas, f'gcu:{options.arch}')
+        gcu_passes.gcu300.add_gcu_convert_triton_to_tritongpu(
+            pm, options.num_warps, options.warp_size, options.num_ctas, f'gcu:{options.arch}')
         gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
+        gcu_passes.gcu300.add_tle_to_triton_gcu(pm, getattr(options, 'cluster_dims', (1, 1, 1)))
         gcu_passes.gcu300.add_triton_gpu_to_triton_gcu(pm)
         gcu_passes.gcu300.add_convert_tensor_pointer(pm)
         gcu_passes.gcu300.add_triton_gcu_dot_layout_optimize(pm)
         gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
-        gcu_passes.gcu300.add_convert_triton_load_store_to_gcu_dma(pm, support_stride0)
+        gcu_passes.gcu300.add_convert_triton_load_store_to_gcu_dma(pm, support_stride0, options.enable_i64)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.mlir.add_loop_invariant_code_motion(pm)
         gcu_passes.gcu300.add_gcu_combine_ops(pm)
-        gcu_passes.gcu300.add_gcu_triton_fusion(pm)
+        gcu_passes.gcu300.add_gcu_triton_fusion(pm, options.arch, options.enable_i64)
         gcu_passes.gcu300.add_triton_gcu_data_layout_optimize(pm)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.gcu300.add_triton_gcu_pingpong(pm, options.num_stages)
         gcu_passes.gcu300.add_flatten_triton_func(pm)
-        gcu_passes.gcu300.add_convert_triton_to_gcu(pm, options.vector_length)
+        gcu_passes.gcu300.add_convert_triton_to_gcu(pm, options.vector_length, options.enable_i64)
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.mlir.add_canonicalize(pm)
 
@@ -199,12 +204,15 @@ def make_gcuir(mod, metadata, options):
         if metadata['tle_raw']:
             gcu_passes.gcu400.add_tle_convert_arg_to_memdesc(pm)
             gcu_passes.gcu400.add_tle_remove_redundant_copy(pm)
-            gcu_passes.gcu400.add_tle_dslregion_inline(pm)
-        gcu_passes.gcu400.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
-                                                              options.num_ctas, f'gcu:{options.arch}')
+            if not metadata['tle_raw_deferred']:
+                gcu_passes.gcu400.add_tle_dslregion_inline(pm)
+        gcu_passes.gcu400.add_gcu_convert_triton_to_tritongpu(
+            pm, options.num_warps, options.warp_size, options.num_ctas, f'gcu:{options.arch}')
         gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
+        # customer Materialize tle_raw_deferred
         gcu_passes.gcu400.add_tle_to_triton_gcu(pm, getattr(options, 'cluster_dims', (1, 1, 1)))
         gcu_passes.gcu400.add_triton_gpu_to_triton_gcu(pm)
+        gcu_passes.gcu400.add_tle_lower_pipe_to_gcuws(pm)
         gcu_passes.gcu400.add_tritongcu_accelerate_matmul(pm)
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.gcu400.add_gcu_warp_specialization(pm, options.num_stages, dump_enabled, ws_inner_barrier_enabled)
@@ -219,19 +227,23 @@ def make_gcuir(mod, metadata, options):
         gcu_passes.gcu400.add_annotate_dot_acc_reuse(pm)
         gcu_passes.gcu400.add_gcu_combine_ops(pm)
         gcu_passes.gcu400.add_gcu_triton_fusion(pm, options.arch)
+        gcu_passes.gcu400.add_annotate_dot_fusion(pm)
+        gcu_passes.gcu400.add_annotate_dot_alloca_reuse(pm)
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.gcu400.add_flatten_triton_func(pm)
         gcu_passes.gcu400.add_triton_gcu_local_mem_optimize(pm)
         gcu_passes.gcu400.add_gcu_tle_lower_async_load(pm)
+        gcu_passes.gcu400.add_triton_gcu_insert_producer_fences(pm)
         gcu_passes.gcu400.add_convert_triton_to_gcu(pm)
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.mlir.add_canonicalize(pm)
-
+        if metadata['tle_raw']:
+            if metadata['tle_raw_deferred']:
+                gcu_passes.gcu400.add_tle_dslregion_inline(pm)
     gcu_passes.mlir.add_print_op_generic(pm)
 
     return pm.run(patched_mod)
-
 
 def make_llir(mod, metadata, options):
     mod = _patch_kernel_for_llir(str(mod), options.arch)
@@ -244,16 +256,34 @@ def make_llir(mod, metadata, options):
         passes.append('--mlir-timing')
         passes.append('--mlir-timing-display=list')
     passes += [
-        '-insert-local-fence=arch=' + options.arch, '--convert-vector-to-scf=target-rank=1', '-lower-affine',
-        '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
-        '-convert-private-tag-to-gcu', '-convert-memref-to-gcu', '-kernel-memory-alloc=arch=' + options.arch +
-        ' num-warps=' + str(options.num_warps), '-convert-warp-specialize-to-scf', '-loop-invariant-code-motion',
-        '-convert-scf-to-cf', '-canonicalize', '-cse', '--symbol-dce', '-gcu-remove-transform-ir',
-        '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
-        '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse',
-        '--convert-gpu-to-gcu=chipset=' + options.arch + ' vector-bit-width=' + str(options.vector_length * 8),
-        '--gcu-attach-target=arch=' + options.arch, '-convert-index-to-llvm', '-gpu-to-llvm', '-convert-llvm-to-gcu',
-        '-alloca-to-entry', '-canonicalize'
+        '-insert-local-fence=arch=' + options.arch,
+        '--convert-vector-to-scf=target-rank=1',
+        '-lower-affine',
+        '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8),
+        '-canonicalize',
+        '-convert-private-tag-to-gcu',
+        '-convert-memref-to-gcu',
+        '-kernel-memory-alloc=arch=' + options.arch + ' num-warps='+str(options.num_warps),
+        '-convert-warp-specialize-to-scf',
+        '-loop-invariant-code-motion',
+        '-convert-scf-to-cf',
+        '-canonicalize',
+        '-cse',
+        '--symbol-dce',
+        '-gcu-remove-transform-ir',
+        '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8),
+        '-canonicalize',
+        '--expand-strided-metadata',
+        '-lower-affine',
+        '-canonicalize',
+        '-cse',
+        '--convert-gpu-to-gcu=chipset=' + options.arch + ' vector-bit-width=' + str(options.vector_length * 8) + (' enable_i64=true' if options.enable_i64 else ''),
+        '--gcu-attach-target=arch=' + options.arch + ''.join([f' l={path}' for name, path in (options.extern_libs or []) if path]),
+        '-convert-index-to-llvm',
+        '-gpu-to-llvm',
+        '-convert-llvm-to-gcu',
+        '-alloca-to-entry',
+        '-canonicalize'
     ]
 
     # Get some metadata
@@ -268,7 +298,6 @@ def make_llir(mod, metadata, options):
     #    llvm.link_extern_libs(llvm_mod, paths)
 
     return toolkit.gcu_compiler_opt(mod, *passes)
-
 
 def make_fatbin(mod, metadata, options):
     """Unified fatbin generation for all GCU architectures.
@@ -288,10 +317,9 @@ def make_fatbin(mod, metadata, options):
         dsm_mem_size = int(re.search('gcu.dsm_memory_size = (\\d+)', str(mod)).group(1).strip())
         if dsm_mem_size > options.max_dsm:
             raise OutOfResources(dsm_mem_size, options.max_dsm, "dsm memory")
-        block_dsm_mem_size = int(match.group(1).strip()) if (match := re.search('gcu.block_dsm_memory_size = (\\d+)',
-                                                                                str(mod))) else 0
-        if block_dsm_mem_size > 7 * 1024 * 1024:
-            raise OutOfResources(block_dsm_mem_size, 7 * 1024 * 1024, "block dsm memory")
+        block_dsm_mem_size = int(match.group(1).strip()) if (match := re.search('gcu.block_dsm_memory_size = (\\d+)', str(mod))) else 0
+        if block_dsm_mem_size > 7 * 1024 * 1024 :
+            raise OutOfResources(block_dsm_mem_size, 7 * 1024 * 1024, "block dsm memory") 
     elif options.arch == "gcu500":
         if 'shared' not in metadata:
             metadata['shared'] = 0
@@ -305,17 +333,17 @@ def make_fatbin(mod, metadata, options):
         return _make_fatbin_gcu500(str(mod), metadata, options)
     else:
         if metadata['tle_raw']:
-            mod = _restore_gcu_intrinsics(str(mod))
+            if not metadata['tle_raw_deferred']:
+                mod = _restore_gcu_intrinsics(str(mod))
         with tempfile.TemporaryDirectory() as tmpdir:
             bin = os.path.join(tmpdir, "kernel.fatbin")
             compile_args = [
-                "--device-only", "--is-triton-backend", f"--arch={options.arch}", f"--toolkit-path={toolkit.datadir}",
-                f"--output={bin}"
+                "--device-only", "--is-triton-backend",
+                f"--arch={options.arch}", f"--toolkit-path={toolkit.datadir}", f"--output={bin}"
             ]
             toolkit.compile(mod, *compile_args)
             with open(bin, "rb") as f:
                 return f.read()
-
 
 def _make_fatbin_gcu500(src_str, metadata, options):
     """LLVM IR text -> fatbin via EFGCU llc + lld + bundler.
@@ -387,18 +415,68 @@ def _make_llir_gcu500(mod, metadata, options):
         metadata['shared'] = max(metadata.get('shared', 0), gcu_shared)
 
     llir = pipeline.translate_to_llvmir(result_mlir)
-    return llir
 
+    if options.extern_libs:
+        import subprocess, shutil
+        libdevice_path = None
+        for name, path in options.extern_libs:
+            if name == 'libdevice' and os.path.isfile(path):
+                libdevice_path = path
+                break
+        if libdevice_path and ('@__ef_' in llir or '@__efvm_reflect' in llir):
+            llvm_link = shutil.which('llvm-link') or '/opt/tops/bin/llvm-link'
+            opt_bin = shutil.which('opt') or '/opt/tops/bin/opt'
+            reflect_stub = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'lib', 'efvm_reflect.ll')
+            link_inputs = [libdevice_path]
+            if os.path.isfile(reflect_stub):
+                link_inputs.append(reflect_stub)
+            with tempfile.NamedTemporaryFile(suffix='.ll', mode='w', delete=False) as f:
+                f.write(llir)
+                kernel_ll = f.name
+            try:
+                linked_ll = kernel_ll + '.linked.ll'
+                optimized_ll = kernel_ll + '.opt.ll'
+                cp = subprocess.run(
+                    [llvm_link, kernel_ll] + link_inputs +
+                    ['-S', '--only-needed', '-o', linked_ll],
+                    capture_output=True, text=True, timeout=30)
+                if cp.returncode == 0 and os.path.isfile(linked_ll):
+                    kernel_name_for_opt = metadata.get("name", "")
+                    cp2 = subprocess.run(
+                        [opt_bin, '-S', '-O3',
+                         '-passes=always-inline,default<O3>',
+                         '-vectorize-slp=false', '--vectorize-loops=false',
+                         '-internalize-public-api-list=' + kernel_name_for_opt,
+                         linked_ll, '-o', optimized_ll],
+                        capture_output=True, text=True, timeout=60)
+                    if cp2.returncode != 0 or not os.path.isfile(optimized_ll):
+                        cp2 = subprocess.run(
+                            [opt_bin, '-S', '-O3',
+                             '-vectorize-slp=false', '--vectorize-loops=false',
+                             '-internalize-public-api-list=' + kernel_name_for_opt,
+                             linked_ll, '-o', optimized_ll],
+                            capture_output=True, text=True, timeout=60)
+                    if cp2.returncode == 0 and os.path.isfile(optimized_ll):
+                        with open(optimized_ll, 'r') as f:
+                            llir = f.read()
+                    else:
+                        with open(linked_ll, 'r') as f:
+                            llir = f.read()
+            finally:
+                for p in [kernel_ll, linked_ll, optimized_ll]:
+                    if os.path.isfile(p):
+                        os.remove(p)
+
+    return llir
 
 @functools.lru_cache(None)
 def file_hash(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
 
-
 def min_dot_size(target: GPUTarget):
     return lambda lhsType, rhsType: (1, 1, 1)
-
 
 @dataclass()
 class GCUOptions:
@@ -420,6 +498,7 @@ class GCUOptions:
     enable_fp_fusion: bool = True
     enable_stride0: bool = False
     redundant_sip: bool = False
+    enable_i64: bool = False
     launch_cooperative_grid: bool = False
     extern_libs: dict = None
     sanitize_overflow: bool = False
@@ -428,9 +507,9 @@ class GCUOptions:
     reg_dec_producer: int = 0
     reg_inc_consumer: int = 0
     arch: str = None
-    max_shared: int = 0
-    max_local: int = 0
-    max_dsm: int = 0
+    max_shared: int=0
+    max_local: int=0
+    max_dsm: int=0
     instrumentation_mode: str = ""
     launch_pdl: bool = False
 
@@ -443,7 +522,7 @@ class GCUOptions:
             self.vector_length = 2048
             self.allow_fp8e4nv = True
             self.allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "ieee")
-            self.max_num_imprecise_acc_default = 2**30
+            self.max_num_imprecise_acc_default = 2 ** 30
             self.supported_fp8_dtypes: Tuple[str] = ("fp8e4nv", "fp8e5")
             self.deprecated_fp8_dot_operand_dtypes: Tuple[str] = ()
             self.max_dsm = 896 * 1024
@@ -458,7 +537,7 @@ class GCUOptions:
             self.vector_length = 2048
             self.allow_fp8e4nv = True
             self.allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "ieee")
-            self.max_num_imprecise_acc_default = 2**30
+            self.max_num_imprecise_acc_default = 2 ** 30
             self.supported_fp8_dtypes: Tuple[str] = ("fp8e4nv", "fp8e5")
             self.deprecated_fp8_dot_operand_dtypes: Tuple[str] = ()
             self.max_dsm = 312 * 1024  # Increased DSM for SIMT
@@ -487,7 +566,22 @@ class GCUOptions:
         default_libdir = Path(__file__).parent / 'lib'
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         if not extern_libs.get('libdevice', None):
-            extern_libs['libdevice'] = os.getenv("TRITON_LIBDEVICE_PATH", str(default_libdir / 'libdevice.bc'))
+            libdevice_path = os.getenv("TRITON_LIBDEVICE_PATH", "")
+            if self.arch == "gcu500":
+                if not libdevice_path or not os.path.isfile(libdevice_path):
+                    _sys_libdir = '/opt/tops/lib/gcu'
+                    candidates = [
+                        str(default_libdir / 'libdevice.bc'),
+                        f'{_sys_libdir}/gculibdevice.efgcu_tops.bc',
+                        f'{_sys_libdir}/gculibdevice.gcu500.bc',
+                    ]
+                    libdevice_path = next((p for p in candidates if os.path.isfile(p)), candidates[0])
+                    extern_libs['libdevice'] = libdevice_path
+
+        if not extern_libs.get('libnvshmem_device', None):
+            nvshmem_libdevice_path = os.getenv("NVSHMEM_LIBDEVICE_PATH", None)
+            if nvshmem_libdevice_path and os.path.isfile(nvshmem_libdevice_path):
+                extern_libs['libnvshmem_device'] = nvshmem_libdevice_path
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
 
         pass
@@ -500,9 +594,7 @@ class GCUOptions:
         key = version_key + '_' + '_'.join([f'{name}-{val}' for name, val in self.__dict__.items()])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
-
 class _GCUBackend(BaseBackend):
-
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
         self._backend = GCUBackend()
@@ -525,7 +617,11 @@ class _GCUBackend(BaseBackend):
             args["enable_stride0"] = opts["ENABLE_STRIDE_GATHER"]
         else:
             args["enable_stride0"] = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_GATHER")
-        args.update({k: opts[k] for k in GCUOptions.__dataclass_fields__.keys() if k in opts})
+
+        if "ENABLE_I64" in opts:
+            args["enable_i64"] = opts["ENABLE_I64"]
+        elif "enable_i64" in opts and not opts["enable_i64"]:
+            args["enable_i64"] = not toolkit.get_bool_env("ENABLE_I64_CHECK",True)
 
         return GCUOptions(**args)
 

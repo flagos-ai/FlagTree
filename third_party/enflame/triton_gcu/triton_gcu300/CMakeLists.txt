@@ -17,7 +17,9 @@
 
 set(arch "gcu300")
 
-
+if(FLAGTREE_TLE)
+  add_definitions(-DENABLE_TLE)
+endif()
 
 # Load function library
 include(triton_gcu)
@@ -115,6 +117,8 @@ target_include_directories(triton_gcu300 SYSTEM INTERFACE ${TRITON_SOURCE_DIR}/i
 target_include_directories(triton_gcu300 SYSTEM INTERFACE ${TRITON_BINARY_DIR}/include)
 target_include_directories(triton_gcu300 SYSTEM INTERFACE ${TRITON_SOURCE_DIR})
 target_include_directories(triton_gcu300 SYSTEM INTERFACE ${TRITON_BINARY_DIR}/lib/Dialect/Triton/Transforms)
+target_include_directories(triton_gcu300 SYSTEM INTERFACE ${TRITON_SOURCE_DIR}/third_party)
+target_include_directories(triton_gcu300 SYSTEM INTERFACE ${TRITON_BINARY_DIR}/third_party)
 if(TARGET ${TRITON_BUILD_TARGET})
   add_dependencies(triton_gcu300 ${TRITON_BUILD_TARGET})
 endif()
@@ -153,8 +157,9 @@ add_subdirectory(python)
 # -----------------------------------------------------------------------------
 # Step 7: Unit Tests
 # -----------------------------------------------------------------------------
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/unittests)
-  add_subdirectory(unittests)
+set(_unittests_dir ${CMAKE_CURRENT_SOURCE_DIR}/../test/triton36/unittests)
+if(EXISTS ${_unittests_dir})
+  add_subdirectory(${_unittests_dir} unittests)
 endif()
 
 # -----------------------------------------------------------------------------
