@@ -244,14 +244,14 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
 
     # ── ② Structured (r1) + discrete mask ────────────────────────────────
     pm = ir.pass_manager(context)
-    ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
-    ascend.passes.ttir.add_discrete_mask_access_conversion(pm, False, False)
+    # ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
+    ascend.passes.ttir.add_discrete_mask_access_conversion(pm, False, False, False)
     pm.run(module)
     print(f"[dump_linalg] ② structure(r1)+discrete_mask: verify={module.verify()}", flush=True)
 
     # ── ③ Unstructured + HIVM + HFusion + LLVM ──────────────────────────
     pm = ir.pass_manager(context)
-    ascend.passes.ttir.add_triton_to_unstructure_incubated(pm, False, False)
+    ascend.passes.ttir.add_triton_to_unstructure(pm, False, False)
     ascend.passes.ttir.add_triton_to_hivm(pm)
     ascend.passes.ttir.add_triton_to_hfusion(pm)
     ascend.passes.ttir.add_triton_to_llvm(pm)
@@ -261,7 +261,7 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     # ── ④ Bubble-up + structured (r2) ────────────────────────────────────
     pm = ir.pass_manager(context)
     ascend.passes.ttir.add_bubble_up_operation(pm)
-    ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
+    # ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
     pm.run(module)
     print(f"[dump_linalg] ④ bubble_up+structure(r2): verify={module.verify()}", flush=True)
 
@@ -275,7 +275,7 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     # ── ⑤ Triton → Linalg ───────────────────────────────────────────────
     try:
         pm = ir.pass_manager(context)
-        ascend.passes.ttir.add_triton_to_linalg_incubated(pm, False, True, False, False, False)
+        ascend.passes.ttir.add_triton_to_linalg(pm, False, True, False, False, False)
         pm.run(module)
         print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: verify={module.verify()}", flush=True)
     except RuntimeError as e:

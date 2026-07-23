@@ -632,7 +632,7 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
     context = ir.context()
     ir.load_dialects(context)
     tle_ir.load_dialects(context)
-    tle_ir.load_tile_dialects(context)
+    tle_ir.dsa_ir.load_tile_dialects(context)
     # Ascend dialect is optional (only needed for ascend-specific ops); load if present.
     try:
         from triton._C.libtriton.ascend import ir as ascend_ir
@@ -736,7 +736,7 @@ def dump_hivm(path=None, combine_batch=32, is_causal=False):
     ir.load_dialects(context)
     from triton._C.libtriton import tle as tle_ir
     tle_ir.load_dialects(context)
-    tle_ir.load_tile_dialects(context)
+    tle_ir.dsa_ir.load_tile_dialects(context)
     try:
         from triton._C.libtriton.ascend import ir as ascend_ir
         ascend_ir.load_dialects(context)
@@ -832,7 +832,7 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     context = ir.context()
     ir.load_dialects(context)
     tle_ir.load_dialects(context)
-    tle_ir.load_tile_dialects(context)
+    tle_ir.dsa_ir.load_tile_dialects(context)
     try:
         from triton._C.libtriton.ascend import ir as ascend_ir
         ascend_ir.load_dialects(context)
@@ -868,14 +868,14 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
 
     # ── ② Structured (r1) + discrete mask ────────────────────────────────
     pm = ir.pass_manager(context); pm.enable_debug()
-    ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
-    ascend.passes.ttir.add_discrete_mask_access_conversion(pm, False, False)
+    # ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
+    ascend.passes.ttir.add_discrete_mask_access_conversion(pm, False, False, False)
     pm.run(module)
     print(f"[dump_linalg] ② structure(r1)+discrete_mask: verify={module.verify()}", flush=True)
 
     # ── ③ Unstructured + HIVM + HFusion + LLVM ──────────────────────────
     pm = ir.pass_manager(context); pm.enable_debug()
-    ascend.passes.ttir.add_triton_to_unstructure_incubated(pm, False, False)
+    ascend.passes.ttir.add_triton_to_unstructure(pm, False, False)
     ascend.passes.ttir.add_triton_to_hivm(pm)
     ascend.passes.ttir.add_triton_to_hfusion(pm)
     ascend.passes.ttir.add_triton_to_llvm(pm)
@@ -885,7 +885,7 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     # ── ④ Bubble-up + structured (r2) ────────────────────────────────────
     pm = ir.pass_manager(context); pm.enable_debug()
     ascend.passes.ttir.add_bubble_up_operation(pm)
-    ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
+    # ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
     pm.run(module)
     print(f"[dump_linalg] ④ bubble_up+structure(r2): verify={module.verify()}", flush=True)
 
@@ -907,7 +907,7 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     linalg_ok = False
     try:
         pm = ir.pass_manager(context); pm.enable_debug()
-        ascend.passes.ttir.add_triton_to_linalg_incubated(pm, False, True, False, False, False)
+        ascend.passes.ttir.add_triton_to_linalg(pm, False, True, False, False, False)
         pm.run(module)
         print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: verify={module.verify()}", flush=True)
         linalg_ok = True
