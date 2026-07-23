@@ -15,6 +15,7 @@
  */
 #include <utility>
 
+#include "Utils/TritonVersionCompat.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -27,17 +28,16 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
-#include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Constants.h"
-#include "Utility.h"
+#include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Utility.h"
 
 #define DEBUG_TYPE "triton-accelerate-matmul"
 
@@ -98,7 +98,8 @@ SmallVector<unsigned, 2>
 warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps) {
   auto rank = shape.size();
   // Early exit for batched matmul
-  if (rank == 3) return {(unsigned)numWarps, 1, 1};
+  if (rank == 3)
+    return {(unsigned)numWarps, 1, 1};
   assert(rank == 2 && "expected 2D tile shape");
 
   SetVector<Operation *> slices;
@@ -114,9 +115,7 @@ warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps) {
   SmallVector<int64_t> shapePerWarp = {64, 128};
   SmallVector<int64_t> warps = {1, 1};
 
-  auto ceilDiv = [](int64_t x, int64_t y) {
-    return (x + y - 1) / y;
-  };
+  auto ceilDiv = [](int64_t x, int64_t y) { return (x + y - 1) / y; };
   auto product = [](const SmallVector<int64_t> &v) { return v[0] * v[1]; };
 
   // Compute repM and repN
@@ -300,8 +299,8 @@ public:
       auto tensorTy = cast<RankedTensorType>(operand.getType());
       auto dotOpEnc = DotOperandEncodingAttr::get(
           dotOp.getContext(), opIdx, mmaEnc, tensorTy.getElementType());
-      auto newTy = RankedTensorType::get(
-          tensorTy.getShape(), tensorTy.getElementType(), dotOpEnc);
+      auto newTy = RankedTensorType::get(tensorTy.getShape(),
+                                         tensorTy.getElementType(), dotOpEnc);
       if (tensorTy == newTy)
         return operand;
       return rewriter.create<ConvertLayoutOp>(dotOp.getLoc(), newTy, operand);
@@ -390,8 +389,8 @@ static void decomposeMixedModeDotOp(mlir::gpu::GPUModuleOp mod) {
             promoteOperand(builder, cvt.getLoc(), cvt.getSrc(), promoteType);
         auto newCvtType = cast<RankedTensorType>(cvt.getType())
                               .cloneWith(std::nullopt, promoteType);
-        Value newCvt = builder.create<ConvertLayoutOp>(cvt.getLoc(),
-                                                       newCvtType, promotedSrc);
+        Value newCvt = builder.create<ConvertLayoutOp>(cvt.getLoc(), newCvtType,
+                                                       promotedSrc);
         dotOp.setOperand(opIdx, newCvt);
       } else {
         Value promoted = promoteOperand(builder, loc, operand, promoteType);

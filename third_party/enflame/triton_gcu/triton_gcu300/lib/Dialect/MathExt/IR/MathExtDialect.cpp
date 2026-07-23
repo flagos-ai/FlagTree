@@ -36,7 +36,7 @@ void MathExtDialect::initialize() {
 }
 
 Operation *MathExtDialect::materializeConstant(OpBuilder &builder,
-                                                 Attribute value, Type type,
-                                                 Location loc) {
+                                               Attribute value, Type type,
+                                               Location loc) {
   return arith::ConstantOp::materialize(builder, value, type, loc);
 }

@@ -579,7 +579,8 @@ public:
     const char *const kAccStore = "acc_store";
     if (!dotOp->hasAttr(kAccStore))
       return failure();
-    dotOp->setAttr(kAccStore, StringAttr::get(dotOp.getContext(), "cvt_global"));
+    dotOp->setAttr(kAccStore,
+                   StringAttr::get(dotOp.getContext(), "cvt_global"));
 
     rewriter.replaceOp(cvtOp, input);
     return success();

@@ -30,8 +30,8 @@
 #include "tle/utils/include/AnalyzeReturnType.h"
 #include "tle/utils/include/TleRawMaterialize.h"
 #include "llvm/ADT/STLExtras.h"
-#include <vector>
 #include <optional>
+#include <vector>
 
 using namespace mlir;
 namespace tle = triton::tle;

@@ -67,7 +67,8 @@ static bool mightHaveWriteEffectBetween(Operation *from, Operation *to) {
       [](auto &op) {
 #if TRITON_VERSION == 35
         if (auto memEffect = dyn_cast<MemoryEffectOpInterface>(&op)) {
-          SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>> effects;
+          SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>>
+              effects;
           memEffect.getEffects(effects);
           return llvm::any_of(effects, [](const auto &effect) {
             return isa<MemoryEffects::Write>(effect.getEffect());

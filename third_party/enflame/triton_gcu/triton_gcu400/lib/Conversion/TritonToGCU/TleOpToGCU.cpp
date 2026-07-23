@@ -27,13 +27,13 @@
 #include <map>
 
 #include "Analysis/FirstLastUserAnalysis.h"
-#include "PatternTritonGPUOpToGCU.h"
-#include "Utility.h"
-#include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
+#include "PatternTritonGPUOpToGCU.h"
+#include "TritonGCUToGCU/TritionToGCUBase.h"
+#include "Utility.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -100,8 +100,8 @@ struct TleDistributedBarrierOpLowering : SharedGenericConversionPattern {
     }
 
     if (kind == "submesh") {
-      // TODO(xingxing.li): implement submesh barrier (leader CTA SMEM atomic barrier)
-      // For now, fall through to cluster barrier as a conservative
+      // TODO(xingxing.li): implement submesh barrier (leader CTA SMEM atomic
+      // barrier) For now, fall through to cluster barrier as a conservative
       // over-synchronization.
       LLVM_DEBUG(llvm::dbgs() << "[TleOpToGCU] submesh barrier not yet "
                                  "implemented, falling back to cluster "
@@ -149,8 +149,8 @@ struct RemoteMemDescOpLowering
 
     Value shardId = adaptor.getShardId();
     if (!shardId.getType().isInteger(32))
-      shardId = rewriter.create<arith::TruncIOp>(
-          loc, rewriter.getI32Type(), shardId);
+      shardId =
+          rewriter.create<arith::TruncIOp>(loc, rewriter.getI32Type(), shardId);
 
     auto remote = rewriter.create<mlir::gcu::RemoteMemRefOp>(
         loc, resultType, adaptor.getSrc(), shardId);
@@ -165,19 +165,17 @@ struct RemoteMemDescOpLowering
 
 void mlir::triton::populateTleOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
-    ConversionTarget &target,
-    triton::gcu::FirstLastUserAnalysis &userAnalysis,
+    ConversionTarget &target, triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateTagPool &pTagPool) {
   auto *ctx = patterns.getContext();
 
-  patterns.add<TleDistributedBarrierOpLowering>(
-      converter, ctx, userAnalysis, replaced2Origin, pTagPool);
-  patterns.add<RemoteMemDescOpLowering>(
-      converter, ctx, userAnalysis, replaced2Origin, pTagPool);
+  patterns.add<TleDistributedBarrierOpLowering>(converter, ctx, userAnalysis,
+                                                replaced2Origin, pTagPool);
+  patterns.add<RemoteMemDescOpLowering>(converter, ctx, userAnalysis,
+                                        replaced2Origin, pTagPool);
 
-  target.addDynamicallyLegalOp(
-      OperationName("tle.distributed_barrier", ctx),
-      [](Operation *) { return false; });
+  target.addDynamicallyLegalOp(OperationName("tle.distributed_barrier", ctx),
+                               [](Operation *) { return false; });
   target.addIllegalOp<triton::gcu::RemoteMemDescOp>();
 }

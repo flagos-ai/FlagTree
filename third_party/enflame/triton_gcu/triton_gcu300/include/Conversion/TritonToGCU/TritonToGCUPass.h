@@ -33,6 +33,6 @@ class Pass;
 #define GEN_PASS_DECL_TLETOTRITONGCUPASS
 #include "mlir/Conversion/Passes.h.inc"
 
-}  // namespace mlir
+} // namespace mlir
 
-#endif  // GCU_CONVERSION_TRITONTOGCU_TRITONTOGCUPASS_H
+#endif // GCU_CONVERSION_TRITONTOGCU_TRITONTOGCUPASS_H

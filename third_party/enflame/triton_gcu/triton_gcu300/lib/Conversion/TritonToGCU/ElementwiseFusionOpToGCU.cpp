@@ -161,8 +161,7 @@ struct GCUElementwiseFusionOpLowering
       const TypeConverter &converter, MLIRContext *ctx,
       triton::gcu::FirstLastUserAnalysis &userAnalysis,
       std::map<Operation *, Operation *> &replaced2Origin,
-      triton::gcu::PrivateDTETagPool &pTagPool,
-      bool enable_i64)
+      triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64)
       : SharedConversionPattern(converter, ctx, userAnalysis, replaced2Origin,
                                 pTagPool),
         enableI64(enable_i64) {}
@@ -183,8 +182,8 @@ struct GCUElementwiseFusionOpLowering
     SmallVector<Value> results;
     SmallVector<Value> outputs;
     bool needCvtDataLayout = false;
-    for (auto [type, opResult] : llvm::zip(op.getResultTypes(),
-                                           op.getResults())) {
+    for (auto [type, opResult] :
+         llvm::zip(op.getResultTypes(), op.getResults())) {
       auto resultType =
           dyn_cast<MemRefType>(getTypeConverter()->convertType(type));
       auto lastUser = userAnalysis.getLastUser(opResult);
@@ -288,7 +287,7 @@ struct GCUElementwiseFusionOpLowering
       auto &ops = op.getRegion().front().getOperations();
       if (totalNumElems > vectorizationMaxLength / maxBpe) {
         if (ops.size() == 2 && hasBuiltinImpl(&ops.front()) &&
-           !isI64(&ops.front())) {
+            !isI64(&ops.front())) {
           SmallVector<Value, 4> builtinOperands;
           for (auto operand : ops.front().getOperands()) {
             builtinOperands.push_back(
@@ -360,10 +359,10 @@ struct GCUElementwiseFusionOpLowering
     if (enableI64) {
       for (auto &o : op.getRegion().back().without_terminator()) {
         if (auto trunciOp = dyn_cast<arith::TruncIOp>(o)) {
-          auto inTy = cast<TensorType>(trunciOp.getIn().getType())
-                          .getElementType();
-          auto outTy = cast<TensorType>(trunciOp.getOut().getType())
-                           .getElementType();
+          auto inTy =
+              cast<TensorType>(trunciOp.getIn().getType()).getElementType();
+          auto outTy =
+              cast<TensorType>(trunciOp.getOut().getType()).getElementType();
           if (inTy.isInteger(64) && outTy.isInteger(8)) {
             hasTruncI64ToI8 = true;
             break;
@@ -429,22 +428,21 @@ struct GCUElementwiseFusionOpLowering
                 }
                 if (hasTruncI64ToI8 && elementTy.isInteger(64)) {
                   auto halfLen = static_cast<int64_t>(vectorLength / 2);
-                  auto halfVecTy = VectorType::get(
-                      ArrayRef<int64_t>{halfLen}, elementTy);
+                  auto halfVecTy =
+                      VectorType::get(ArrayRef<int64_t>{halfLen}, elementTy);
                   auto baseOffset = builder.create<arith::AddIOp>(
                       loc,
-                      builder.create<arith::ConstantIndexOp>(
-                          loc, i * vectorLength),
+                      builder.create<arith::ConstantIndexOp>(loc,
+                                                             i * vectorLength),
                       iter);
                   auto loadLo = builder.create<vector::LoadOp>(
-                      loc, halfVecTy, inputs[j],
-                      ValueRange{baseOffset});
+                      loc, halfVecTy, inputs[j], ValueRange{baseOffset});
                   auto loadHi = builder.create<vector::LoadOp>(
                       loc, halfVecTy, inputs[j],
                       ValueRange{builder.create<arith::AddIOp>(
                           loc, baseOffset,
-                          builder.create<arith::ConstantIndexOp>(
-                              loc, halfLen))});
+                          builder.create<arith::ConstantIndexOp>(loc,
+                                                                 halfLen))});
                   auto regionArg = op.getRegion().getArgument(j);
                   i64HalfLoadMaps[i][regionArg] = {loadLo, loadHi};
                   operandMaps[i].map(regionArg, loadLo);
@@ -716,7 +714,7 @@ private:
                                           operands);
     } else if (symbol == "__nv_tanf") {
       newOp = builder.create<math::TanOp>(loc, operands.front().getType(),
-                                           operands);
+                                          operands);
     } else if (symbol == "__nv_tanhf") {
       newOp = builder.create<math::TanhOp>(loc, operands.front().getType(),
                                            operands);
@@ -880,8 +878,8 @@ private:
   }
 
   void handleCommonOp(
-      Operation &op, OpBuilder &builder, IRMapping &map,
-      unsigned vectorLength, bool needCvtDataLayout,
+      Operation &op, OpBuilder &builder, IRMapping &map, unsigned vectorLength,
+      bool needCvtDataLayout,
       DenseMap<Value, std::pair<Value, Value>> &i64HalfLoadMap) const {
     Operation *newOp;
     if (auto selectOp = dyn_cast<arith::SelectOp>(op)) {
@@ -919,15 +917,14 @@ private:
           cast<TensorType>(extsiOp.getIn().getType()).getElementType();
       auto outElemTy =
           cast<TensorType>(extsiOp.getOut().getType()).getElementType();
-      if (enableI64 &&
-          inElemTy.isInteger(8) && outElemTy.isInteger(64)) {
+      if (enableI64 && inElemTy.isInteger(8) && outElemTy.isInteger(64)) {
         auto loc = op.getLoc();
         auto inputVal = map.lookup(extsiOp.getIn());
         auto halfLen = static_cast<int64_t>(vectorLength / 2);
         auto i32VecTy = VectorType::get(ArrayRef<int64_t>{halfLen},
-                                         builder.getIntegerType(32));
+                                        builder.getIntegerType(32));
         auto i64VecTy = VectorType::get(ArrayRef<int64_t>{halfLen},
-                                         builder.getIntegerType(64));
+                                        builder.getIntegerType(64));
         auto cvtOp = builder.create<gcu::VectorConvertOp>(
             loc, TypeRange{i32VecTy, i32VecTy}, inputVal);
         auto ext0 =
@@ -935,7 +932,7 @@ private:
         auto ext1 =
             builder.create<arith::ExtSIOp>(loc, i64VecTy, cvtOp.getResult(1));
         auto mergedTy = VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                         builder.getIntegerType(64));
+                                        builder.getIntegerType(64));
         auto mergeOp = builder.create<gcu::VectorConvertOp>(
             loc, TypeRange{mergedTy}, ValueRange{ext0, ext1});
         map.map(extsiOp.getOut(), mergeOp.getResult(0));
@@ -948,8 +945,7 @@ private:
           cast<TensorType>(trunciOp.getIn().getType()).getElementType();
       auto outElemTy =
           cast<TensorType>(trunciOp.getOut().getType()).getElementType();
-      if (enableI64 &&
-          inElemTy.isInteger(64) && outElemTy.isInteger(8)) {
+      if (enableI64 && inElemTy.isInteger(64) && outElemTy.isInteger(8)) {
         auto loc = op.getLoc();
         auto trunciInput = trunciOp.getIn();
         Value loadLo, loadHi;
@@ -962,13 +958,13 @@ private:
           loadHi = loadLo;
         }
         auto i32VecTy = VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                         builder.getIntegerType(32));
+                                        builder.getIntegerType(32));
         auto i8VecTy = VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                        builder.getIntegerType(8));
+                                       builder.getIntegerType(8));
         auto mergeOp = builder.create<gcu::VectorConvertOp>(
             loc, TypeRange{i32VecTy}, ValueRange{loadLo, loadHi});
-        auto truncToI8 = builder.create<arith::TruncIOp>(
-            loc, i8VecTy, mergeOp.getResult(0));
+        auto truncToI8 =
+            builder.create<arith::TruncIOp>(loc, i8VecTy, mergeOp.getResult(0));
         map.map(trunciOp.getOut(), truncToI8.getResult());
         return;
       } else {
@@ -1018,9 +1014,8 @@ void mlir::triton::populateElementwiseFusionOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateDTETagPool &pTagPool,
-    bool enable_i64) {
-  patterns.add<GCUElementwiseFusionOpLowering>(
-      converter, patterns.getContext(),
-      userAnalysis, replaced2Origin, pTagPool, enable_i64);
+    triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64) {
+  patterns.add<GCUElementwiseFusionOpLowering>(converter, patterns.getContext(),
+                                               userAnalysis, replaced2Origin,
+                                               pTagPool, enable_i64);
 }

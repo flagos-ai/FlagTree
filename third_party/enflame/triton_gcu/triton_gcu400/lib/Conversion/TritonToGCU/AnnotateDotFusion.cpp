@@ -227,28 +227,28 @@ struct AnnotateDotFusionPass
             elemwFusionOp->setAttr(kAccStore,
                                    StringAttr::get(ctx, accStoreMode));
           }
-        // } else if (auto reduceOp = dyn_cast<triton::ReduceOp>(user)) {
-        //   if (nPerThread == oaccN) {
-        //     triton::gcu::CombineOpDesc desc(reduceOp);
-        //     auto kind = desc.getCombiningKind();
-        //     if (kind) {
-        //       using CK = vector::CombiningKind;
-        //       switch (*kind) {
-        //       case CK::MAXNUMF:
-        //       case CK::MAXIMUMF:
-        //       case CK::MAXSI:
-        //       case CK::MAXUI:
-        //       case CK::MINNUMF:
-        //       case CK::MINIMUMF:
-        //       case CK::MINSI:
-        //       case CK::MINUI:
-        //       case CK::ADD:
-        //         canFuseElementwise = true;
-        //       default:
-        //         break;
-        //       }
-        //     }
-        //   }
+          // } else if (auto reduceOp = dyn_cast<triton::ReduceOp>(user)) {
+          //   if (nPerThread == oaccN) {
+          //     triton::gcu::CombineOpDesc desc(reduceOp);
+          //     auto kind = desc.getCombiningKind();
+          //     if (kind) {
+          //       using CK = vector::CombiningKind;
+          //       switch (*kind) {
+          //       case CK::MAXNUMF:
+          //       case CK::MAXIMUMF:
+          //       case CK::MAXSI:
+          //       case CK::MAXUI:
+          //       case CK::MINNUMF:
+          //       case CK::MINIMUMF:
+          //       case CK::MINSI:
+          //       case CK::MINUI:
+          //       case CK::ADD:
+          //         canFuseElementwise = true;
+          //       default:
+          //         break;
+          //       }
+          //     }
+          //   }
         }
         if (canFuseElementwise) {
           dotOp->setAttr(kAccStore,

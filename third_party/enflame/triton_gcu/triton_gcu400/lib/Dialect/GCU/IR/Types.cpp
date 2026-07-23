@@ -13,11 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
+#include "Dialect/GCU/IR/Dialect.h"
 
-#include "mlir/IR/DialectImplementation.h"  // required by `Types.cpp.inc`
-#include "llvm/ADT/TypeSwitch.h"            // required by `Types.cpp.inc`
+#include "mlir/IR/DialectImplementation.h" // required by `Types.cpp.inc`
+#include "llvm/ADT/TypeSwitch.h"           // required by `Types.cpp.inc`
 
 using namespace mlir;
 using namespace mlir::gcu;
@@ -31,7 +31,7 @@ using namespace mlir::gcu;
 void GCUDialect::registerTypes() {
   addTypes<
 #define GET_TYPEDEF_LIST
-#include "Dialect/GCU/IR/Types.cpp.inc"  // NOLINT: This file generated situationally via different environment variables
+#include "Dialect/GCU/IR/Types.cpp.inc" // NOLINT: This file generated situationally via different environment variables
       >();
 }
 

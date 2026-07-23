@@ -19,10 +19,10 @@
 
 #include "CodePartitionUtility.h"
 #include "Dialect/GCUWS/IR/Dialect.h"
-#include "Utils/TritonVersionCompat.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 #include "Transforms/Passes.h"
+#include "Utils/TritonVersionCompat.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"

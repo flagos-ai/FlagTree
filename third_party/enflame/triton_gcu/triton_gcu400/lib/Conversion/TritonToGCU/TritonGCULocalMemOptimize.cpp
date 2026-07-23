@@ -32,11 +32,11 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "Utils/TritonVersionCompat.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -342,9 +342,8 @@ public:
 
     rewriter.setInsertionPointAfter(localAllocOp);
     rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
-        gcuLoad.getLoc(), gcuLoad.getPtr(), newShapes,
-        newStrides, newOffsets, localAllocOp.getResult(),
-        gcuLoad.getDefaultValue(), orderHint);
+        gcuLoad.getLoc(), gcuLoad.getPtr(), newShapes, newStrides, newOffsets,
+        localAllocOp.getResult(), gcuLoad.getDefaultValue(), orderHint);
 
     rewriter.modifyOpInPlace(localAllocOp, [&]() {
       localAllocOp->setOperands(ValueRange{});
@@ -548,8 +547,8 @@ public:
     if (!isa<triton::gpu::DotOperandEncodingAttr>(targetTy.getEncoding()))
       return failure();
 
-    auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(
-        localLoad.getLoc(), targetTy, memdesc);
+    auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(localLoad.getLoc(),
+                                                             targetTy, memdesc);
     rewriter.replaceOp(convertOp, newLoad.getResult());
     rewriter.eraseOp(localLoad);
     return success();
@@ -1656,16 +1655,15 @@ struct TritonGCULocalMemOptimizePass
     auto *ctx = &getContext();
 
     RewritePatternSet patterns(ctx);
-    patterns
-        .add<FuseTransLoadLocalAllocPattern, FuseTransLocalLoadCopyPattern,
-             FuseLocalLoadConvertLayoutPattern, FuseLoadLocalStorePattern,
-             FuseLoadLocalAllocPattern, FuseGcuLoadSmemStorePattern,
-             ReplaceSmemLoadWithLocalLoadPattern,
-             FuseGcuLoadGcuStoreToSmemPattern,
-             FuseGcuLoadGcuStoreDynShapeToSmemPattern,
-             ReplaceGcuSmemLoadWithLocalLoadPattern,
-             FuseTritonLoadLocalAllocToGatherPattern,
-             FuseExtractTileSmemRelay, FuseInsertTileSmemRelay>(ctx);
+    patterns.add<FuseTransLoadLocalAllocPattern, FuseTransLocalLoadCopyPattern,
+                 FuseLocalLoadConvertLayoutPattern, FuseLoadLocalStorePattern,
+                 FuseLoadLocalAllocPattern, FuseGcuLoadSmemStorePattern,
+                 ReplaceSmemLoadWithLocalLoadPattern,
+                 FuseGcuLoadGcuStoreToSmemPattern,
+                 FuseGcuLoadGcuStoreDynShapeToSmemPattern,
+                 ReplaceGcuSmemLoadWithLocalLoadPattern,
+                 FuseTritonLoadLocalAllocToGatherPattern,
+                 FuseExtractTileSmemRelay, FuseInsertTileSmemRelay>(ctx);
     if (failed(applyPatternsGreedily(module, std::move(patterns))))
       signalPassFailure();
   }

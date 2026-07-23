@@ -14,9 +14,6 @@
  * limitations under the License.
  */
 #include "PipelineExpander.h"
-#include <vector>
-#include <algorithm>
-#include <utility>
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -25,10 +22,13 @@
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
-#include "llvm/Support/MathExtras.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
+#include <algorithm>
+#include <utility>
+#include <vector>
 
 #define DEBUG_TYPE "triton-loop-pipelining"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -37,7 +37,6 @@
 using namespace mlir;
 using namespace mlir::scf;
 using namespace mlir::triton;
-
 
 namespace {
 
@@ -528,8 +527,8 @@ LogicalResult LoopPipelinerInternal::createKernel(
           rewriter.create<arith::MulIOp>(
               loc, step,
               rewriter.create<arith::ConstantOp>(
-                  loc, rewriter.getIntegerAttr(t,
-                  static_cast<int64_t>(maxStage - i)))));
+                  loc, rewriter.getIntegerAttr(
+                           t, static_cast<int64_t>(maxStage - i)))));
 
       Value pred = rewriter.create<arith::CmpIOp>(
           newForOp.getLoc(), arith::CmpIPredicate::slt,

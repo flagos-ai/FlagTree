@@ -42,9 +42,8 @@ def _cidx(idx, v):
     return arith.constant(idx, ir.IntegerAttr.get(idx, v))
 
 
-def _build_3pass_body(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf,
-                      vec_zero, row_off_i32, bcast_n, n_cols_m_vec,
-                      upper_idx, i32, f32, idx, c0_idx, c_step_idx):
+def _build_3pass_body(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf, vec_zero, row_off_i32, bcast_n,
+                      n_cols_m_vec, upper_idx, i32, f32, idx, c0_idx, c_step_idx):
     """Emit the 3-pass softmax logic using scf.ForOp with 2-vector ILP (STEP=256)."""
     c_vec_i32 = _ci32(i32, VEC)
     neg_inf_f32 = arith.constant(f32, ir.FloatAttr.get(f32, NEG_INF))
@@ -71,8 +70,7 @@ def _build_3pass_body(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf,
         new_acc = arith.maximumf(arith.maximumf(acc, v0), v1)
         scf.yield_([new_acc])
     max_vec = loop1.results[0]
-    scalar_max = vector_d.ReductionOp(
-        f32, vector_d.CombiningKind.MAXIMUMF, max_vec).result
+    scalar_max = vector_d.ReductionOp(f32, vector_d.CombiningKind.MAXIMUMF, max_vec).result
     bcast_max = gcu.vector_broadcast(scalar_max, vec_f32)
 
     # === Pass 2: accumulate sum = Σ exp(x-max) (read-only, no output writes) ===
@@ -98,8 +96,7 @@ def _build_3pass_body(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf,
         new_acc = arith.addf(arith.addf(acc, exp_v0), exp_v1)
         scf.yield_([new_acc])
     sum_vec = loop2.results[0]
-    scalar_sum = vector_d.ReductionOp(
-        f32, vector_d.CombiningKind.ADD, sum_vec).result
+    scalar_sum = vector_d.ReductionOp(f32, vector_d.CombiningKind.ADD, sum_vec).result
     inv_sum = arith.divf(one_f32, scalar_sum)
     bcast_inv = gcu.vector_broadcast(inv_sum, vec_f32)
 
@@ -127,9 +124,8 @@ def _build_3pass_body(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf,
         scf.yield_([])
 
 
-def _build_3pass_body_1v(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf,
-                         vec_zero, row_off_i32, bcast_n, n_cols_m_vec,
-                         upper_idx, i32, f32, idx, c0_idx, c_vec_idx):
+def _build_3pass_body_1v(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf, vec_zero, row_off_i32, bcast_n,
+                         n_cols_m_vec, upper_idx, i32, f32, idx, c0_idx, c_vec_idx):
     """Emit the 3-pass softmax logic with single-vector per iteration (STEP=128).
     Lower register pressure allows larger BLOCK_SIZE for static unrolling."""
     neg_inf_f32 = arith.constant(f32, ir.FloatAttr.get(f32, NEG_INF))
@@ -149,8 +145,7 @@ def _build_3pass_body_1v(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf,
         new_acc = arith.maximumf(acc, v)
         scf.yield_([new_acc])
     max_vec = loop1.results[0]
-    scalar_max = vector_d.ReductionOp(
-        f32, vector_d.CombiningKind.MAXIMUMF, max_vec).result
+    scalar_max = vector_d.ReductionOp(f32, vector_d.CombiningKind.MAXIMUMF, max_vec).result
     bcast_max = gcu.vector_broadcast(scalar_max, vec_f32)
 
     # === Pass 2: accumulate sum = Σ exp(x-max) (read-only, no output writes) ===
@@ -168,8 +163,7 @@ def _build_3pass_body_1v(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf,
         new_acc = arith.addf(acc, exp_v)
         scf.yield_([new_acc])
     sum_vec = loop2.results[0]
-    scalar_sum = vector_d.ReductionOp(
-        f32, vector_d.CombiningKind.ADD, sum_vec).result
+    scalar_sum = vector_d.ReductionOp(f32, vector_d.CombiningKind.ADD, sum_vec).result
     inv_sum = arith.divf(one_f32, scalar_sum)
     bcast_inv = gcu.vector_broadcast(inv_sum, vec_f32)
 
@@ -230,10 +224,8 @@ def _make_edsl_static(BLOCK_SIZE: int):
         bcast_n = gcu.vector_broadcast(n_cols, vec_i32)
         n_cols_m_vec = arith.maxsi(arith.subi(n_cols, c_vec_i32), c0_i32)
 
-        _build_3pass_body(in_memref, out_memref, vec_f32, vec_i32,
-                          vec_neg_inf, vec_zero, row_off_i32, bcast_n,
-                          n_cols_m_vec, upper_idx,
-                          i32, f32, idx, c0_idx, c_step_idx)
+        _build_3pass_body(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf, vec_zero, row_off_i32, bcast_n,
+                          n_cols_m_vec, upper_idx, i32, f32, idx, c0_idx, c_step_idx)
 
     return _edsl_softmax
 
@@ -280,10 +272,8 @@ def _make_edsl_static_1v(BLOCK_SIZE: int):
         bcast_n = gcu.vector_broadcast(n_cols, vec_i32)
         n_cols_m_vec = arith.maxsi(arith.subi(n_cols, c_vec_i32), c0_i32)
 
-        _build_3pass_body_1v(in_memref, out_memref, vec_f32, vec_i32,
-                             vec_neg_inf, vec_zero, row_off_i32, bcast_n,
-                             n_cols_m_vec, upper_idx,
-                             i32, f32, idx, c0_idx, c_vec_idx)
+        _build_3pass_body_1v(in_memref, out_memref, vec_f32, vec_i32, vec_neg_inf, vec_zero, row_off_i32, bcast_n,
+                             n_cols_m_vec, upper_idx, i32, f32, idx, c0_idx, c_vec_idx)
 
     return _edsl_softmax_1v
 
@@ -297,9 +287,9 @@ def _make_edsl_static_1v(BLOCK_SIZE: int):
 #     Tier 1: 4-vec main loop (unmasked, 4*VEC=512 elems/iter, high ILP)
 #     Tier 2: 1-vec middle loop (unmasked, VEC=128 elems/iter)
 #     Tier 3: single masked tail (at most 1 maskedload/maskedstore per pass)
-VEC_x2 = 2 * VEC   # 256
-VEC_x3 = 3 * VEC   # 384
-DYN4 = 4 * VEC     # 512
+VEC_x2 = 2 * VEC  # 256
+VEC_x3 = 3 * VEC  # 384
+DYN4 = 4 * VEC  # 512
 
 
 @dialect(name="tops_mlir", use_gcu_opt=True)
@@ -358,48 +348,36 @@ def _edsl_softmax_dyn(
     # === Pass 1: Online max + sum (single read pass) ===
     # Carry: [d_vec (vector accumulator), m (scalar running max)]
     # Correction: when new_max > old_max, scale d by exp(old - new).
-    lp1 = scf.ForOp(c0_idx, n4_floor_idx, c_4vec_idx,
-                     [vec_zero, neg_inf_f32])
+    lp1 = scf.ForOp(c0_idx, n4_floor_idx, c_4vec_idx, [vec_zero, neg_inf_f32])
     with ir.InsertionPoint(lp1.body):
         d_acc = lp1.inner_iter_args[0]
         m_acc = lp1.inner_iter_args[1]
         off = arith.addi(row_off_idx, lp1.induction_variable)
         v0 = vector_d.LoadOp(vec_f32, in_memref, [off]).result
-        v1 = vector_d.LoadOp(vec_f32, in_memref,
-                              [arith.addi(off, c1v)]).result
-        v2 = vector_d.LoadOp(vec_f32, in_memref,
-                              [arith.addi(off, c2v)]).result
-        v3 = vector_d.LoadOp(vec_f32, in_memref,
-                              [arith.addi(off, c3v)]).result
-        m0123 = arith.maximumf(arith.maximumf(v0, v1),
-                                arith.maximumf(v2, v3))
-        chunk_max = vector_d.ReductionOp(
-            f32, vector_d.CombiningKind.MAXIMUMF, m0123).result
+        v1 = vector_d.LoadOp(vec_f32, in_memref, [arith.addi(off, c1v)]).result
+        v2 = vector_d.LoadOp(vec_f32, in_memref, [arith.addi(off, c2v)]).result
+        v3 = vector_d.LoadOp(vec_f32, in_memref, [arith.addi(off, c3v)]).result
+        m0123 = arith.maximumf(arith.maximumf(v0, v1), arith.maximumf(v2, v3))
+        chunk_max = vector_d.ReductionOp(f32, vector_d.CombiningKind.MAXIMUMF, m0123).result
         new_m = arith.maximumf(m_acc, chunk_max)
-        corr_vec = math_d.exp(gcu.vector_broadcast(
-            arith.subf(m_acc, new_m), vec_f32))
+        corr_vec = math_d.exp(gcu.vector_broadcast(arith.subf(m_acc, new_m), vec_f32))
         new_m_bcast = gcu.vector_broadcast(new_m, vec_f32)
         e0 = math_d.exp(arith.subf(v0, new_m_bcast))
         e1 = math_d.exp(arith.subf(v1, new_m_bcast))
         e2 = math_d.exp(arith.subf(v2, new_m_bcast))
         e3 = math_d.exp(arith.subf(v3, new_m_bcast))
-        d_new = arith.addf(arith.mulf(d_acc, corr_vec),
-                           arith.addf(arith.addf(e0, e1),
-                                      arith.addf(e2, e3)))
+        d_new = arith.addf(arith.mulf(d_acc, corr_vec), arith.addf(arith.addf(e0, e1), arith.addf(e2, e3)))
         scf.yield_([d_new, new_m])
 
-    lp1m = scf.ForOp(n4_floor_idx, n1_floor_idx, c_vec_idx,
-                      [lp1.results[0], lp1.results[1]])
+    lp1m = scf.ForOp(n4_floor_idx, n1_floor_idx, c_vec_idx, [lp1.results[0], lp1.results[1]])
     with ir.InsertionPoint(lp1m.body):
         d_acc = lp1m.inner_iter_args[0]
         m_acc = lp1m.inner_iter_args[1]
         off = arith.addi(row_off_idx, lp1m.induction_variable)
         v = vector_d.LoadOp(vec_f32, in_memref, [off]).result
-        chunk_max = vector_d.ReductionOp(
-            f32, vector_d.CombiningKind.MAXIMUMF, v).result
+        chunk_max = vector_d.ReductionOp(f32, vector_d.CombiningKind.MAXIMUMF, v).result
         new_m = arith.maximumf(m_acc, chunk_max)
-        corr_vec = math_d.exp(gcu.vector_broadcast(
-            arith.subf(m_acc, new_m), vec_f32))
+        corr_vec = math_d.exp(gcu.vector_broadcast(arith.subf(m_acc, new_m), vec_f32))
         new_m_bcast = gcu.vector_broadcast(new_m, vec_f32)
         e = math_d.exp(arith.subf(v, new_m_bcast))
         d_new = arith.addf(arith.mulf(d_acc, corr_vec), e)
@@ -409,17 +387,13 @@ def _edsl_softmax_dyn(
     p1_m = lp1m.results[1]
     if_tail1 = scf.IfOp(has_tail, [vec_f32, f32], hasElse=True)
     with ir.InsertionPoint(if_tail1.then_block):
-        tail_off_idx = arith.index_cast(idx, arith.addi(row_off_i32,
-                                                         n1_floor_i32))
+        tail_off_idx = arith.index_cast(idx, arith.addi(row_off_i32, n1_floor_i32))
         col_v = gcu.vector_step(n1_floor_i32, vec_i32)
         mask = arith.cmpi(arith.CmpIPredicate.slt, col_v, bcast_n)
-        tv = gcu.maskedload(in_memref, tail_off_idx, mask,
-                            vec_neg_inf, vec_f32)
-        chunk_max = vector_d.ReductionOp(
-            f32, vector_d.CombiningKind.MAXIMUMF, tv).result
+        tv = gcu.maskedload(in_memref, tail_off_idx, mask, vec_neg_inf, vec_f32)
+        chunk_max = vector_d.ReductionOp(f32, vector_d.CombiningKind.MAXIMUMF, tv).result
         new_m = arith.maximumf(p1_m, chunk_max)
-        corr_vec = math_d.exp(gcu.vector_broadcast(
-            arith.subf(p1_m, new_m), vec_f32))
+        corr_vec = math_d.exp(gcu.vector_broadcast(arith.subf(p1_m, new_m), vec_f32))
         new_m_bcast = gcu.vector_broadcast(new_m, vec_f32)
         e = math_d.exp(arith.subf(tv, new_m_bcast))
         masked_e = arith.select(mask, e, vec_zero)
@@ -428,8 +402,7 @@ def _edsl_softmax_dyn(
     with ir.InsertionPoint(if_tail1.else_block):
         scf.yield_([p1_d, p1_m])
 
-    scalar_sum = vector_d.ReductionOp(
-        f32, vector_d.CombiningKind.ADD, if_tail1.results[0]).result
+    scalar_sum = vector_d.ReductionOp(f32, vector_d.CombiningKind.ADD, if_tail1.results[0]).result
     final_m = if_tail1.results[1]
     inv_sum = arith.divf(one_f32, scalar_sum)
     bcast_inv = gcu.vector_broadcast(inv_sum, vec_f32)
@@ -440,12 +413,9 @@ def _edsl_softmax_dyn(
     with ir.InsertionPoint(lp2.body):
         off = arith.addi(row_off_idx, lp2.induction_variable)
         v0 = vector_d.LoadOp(vec_f32, in_memref, [off]).result
-        v1 = vector_d.LoadOp(vec_f32, in_memref,
-                              [arith.addi(off, c1v)]).result
-        v2 = vector_d.LoadOp(vec_f32, in_memref,
-                              [arith.addi(off, c2v)]).result
-        v3 = vector_d.LoadOp(vec_f32, in_memref,
-                              [arith.addi(off, c3v)]).result
+        v1 = vector_d.LoadOp(vec_f32, in_memref, [arith.addi(off, c1v)]).result
+        v2 = vector_d.LoadOp(vec_f32, in_memref, [arith.addi(off, c2v)]).result
+        v3 = vector_d.LoadOp(vec_f32, in_memref, [arith.addi(off, c3v)]).result
         r0 = arith.mulf(math_d.exp(arith.subf(v0, bcast_max)), bcast_inv)
         r1 = arith.mulf(math_d.exp(arith.subf(v1, bcast_max)), bcast_inv)
         r2 = arith.mulf(math_d.exp(arith.subf(v2, bcast_max)), bcast_inv)
@@ -466,15 +436,12 @@ def _edsl_softmax_dyn(
 
     if_tail2 = scf.IfOp(has_tail, [], hasElse=False)
     with ir.InsertionPoint(if_tail2.then_block):
-        tail_off_idx = arith.index_cast(idx, arith.addi(row_off_i32,
-                                                         n1_floor_i32))
+        tail_off_idx = arith.index_cast(idx, arith.addi(row_off_i32, n1_floor_i32))
         col_v = gcu.vector_step(n1_floor_i32, vec_i32)
         mask = arith.cmpi(arith.CmpIPredicate.slt, col_v, bcast_n)
-        tv = gcu.maskedload(in_memref, tail_off_idx, mask,
-                            vec_neg_inf, vec_f32)
+        tv = gcu.maskedload(in_memref, tail_off_idx, mask, vec_neg_inf, vec_f32)
         te = math_d.exp(arith.subf(tv, bcast_max))
-        gcu.maskedstore(out_memref, tail_off_idx, mask,
-                        arith.mulf(te, bcast_inv))
+        gcu.maskedstore(out_memref, tail_off_idx, mask, arith.mulf(te, bcast_inv))
         scf.yield_([])
 
 
@@ -557,9 +524,9 @@ def softmax_edsl(x):
     y = torch.empty_like(x)
     stride = x.stride(0)
     if block_size is not None and block_size in _STATIC_MAP:
-        _STATIC_MAP[block_size][(n_rows,)](y, x, n_cols, stride, num_warps=1)
+        _STATIC_MAP[block_size][(n_rows, )](y, x, n_cols, stride, num_warps=1)
     else:
-        _k_softmax_dyn[(n_rows,)](y, x, n_cols, stride, num_warps=1)
+        _k_softmax_dyn[(n_rows, )](y, x, n_cols, stride, num_warps=1)
     return y
 
 
@@ -567,8 +534,7 @@ def softmax_edsl(x):
 # Triton Native Softmax (from openai-02-softmax.py golden)
 # ---------------------------------------------------------------------------
 @triton.jit
-def _native_softmax_kernel(output_ptr, input_ptr, input_row_stride,
-                           output_row_stride, n_cols,
+def _native_softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_cols,
                            BLOCK_SIZE: tl.constexpr):
     row_idx = tl.program_id(0)
     row_start_ptr = input_ptr + row_idx * input_row_stride
@@ -589,9 +555,7 @@ def softmax_native(x):
     n_rows, n_cols = x.shape
     BLOCK_SIZE = triton.next_power_of_2(n_cols)
     y = torch.empty_like(x)
-    _native_softmax_kernel[(n_rows,)](
-        y, x, x.stride(0), y.stride(0), n_cols,
-        num_warps=4, BLOCK_SIZE=BLOCK_SIZE)
+    _native_softmax_kernel[(n_rows, )](y, x, x.stride(0), y.stride(0), n_cols, num_warps=4, BLOCK_SIZE=BLOCK_SIZE)
     return y
 
 
@@ -620,9 +584,7 @@ if __name__ == "__main__":
     # --- Correctness ---
     print("[Correctness Check]", flush=True)
     all_pass = True
-    shapes = [(4, 256), (4, 384), (4, 512), (16, 1024),
-              (4, 1280), (4, 2048), (32, 4096),
-              (4, 8192), (4, 12672),
+    shapes = [(4, 256), (4, 384), (4, 512), (16, 1024), (4, 1280), (4, 2048), (32, 4096), (4, 8192), (4, 12672),
               (4096, 256), (4096, 1024), (4096, 4096)]
 
     for n_rows, n_cols in shapes:
@@ -646,8 +608,7 @@ if __name__ == "__main__":
     M = 4096
     x_vals = [128 * i for i in range(2, 100)]
 
-    print("\n[Benchmark] M={}, N={}..{}  (GB/s)\n".format(
-        M, x_vals[0], x_vals[-1]), flush=True)
+    print("\n[Benchmark] M={}, N={}..{}  (GB/s)\n".format(M, x_vals[0], x_vals[-1]), flush=True)
 
     @triton.testing.perf_report(
         triton.testing.Benchmark(
@@ -659,8 +620,7 @@ if __name__ == "__main__":
             ylabel='GB/s',
             plot_name='gcu400-edsl-softmax-performance',
             args={'M': M},
-        )
-    )
+        ))
     def benchmark(M, N, provider):
         x = torch.randn(M, N, device=DEVICE, dtype=torch.float32)
         if provider == 'torch':
