@@ -593,7 +593,7 @@ cache.store(file="mthreads_local_binary", condition=("mthreads" == flagtree_back
 
 cache.store(files=("ld.lld", "llc"), condition=("mthreads" == flagtree_backend),
             copy_src_path=f"{cache.dir_path}/{flagtree_backend}/mthreads_local_binary",
-            copy_dst_path=f"third_party/{flagtree_backend}/bin")
+            copy_dst_path=f"third_party/{flagtree_backend}/backend/bin")
 
 # ascend
 cache.store(
