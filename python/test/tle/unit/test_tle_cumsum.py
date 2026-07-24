@@ -60,7 +60,7 @@ def _tle_cumsum_ptx_kernel(x_ptr, exclusive_ptr, total_ptr, BLOCK: tl.constexpr)
     tl.store(total_ptr, total)
 
 
-@triton.jit
+@triton.jit(noinline=True)
 def _tle_cumsum_callee_shared_kernel(hist_ptr, BLOCK: tl.constexpr):
     offs = tl.arange(0, BLOCK)
     x = tl.load(hist_ptr + offs)
