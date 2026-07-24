@@ -103,6 +103,28 @@ include_directories(BEFORE ${CMAKE_CURRENT_BINARY_DIR}/include)
 add_subdirectory(device)
 add_subdirectory(include)
 
+function(xpu_override_main_source target source)
+  set(main_source "${PROJECT_SOURCE_DIR}/${source}")
+  set(spec_source "${CMAKE_CURRENT_SOURCE_DIR}/backend/spec/${source}")
+  if(NOT TARGET ${target})
+    message(FATAL_ERROR "XPU source override target does not exist: ${target}")
+  endif()
+  if(NOT EXISTS "${main_source}" OR NOT EXISTS "${spec_source}")
+    message(FATAL_ERROR "XPU source override is incomplete: ${source}")
+  endif()
+
+  set_source_files_properties(
+    "${main_source}"
+    TARGET_DIRECTORY ${target}
+    PROPERTIES HEADER_FILE_ONLY ON)
+  target_sources(${target} PRIVATE "${spec_source}")
+endfunction()
+
+xpu_override_main_source(TritonIR lib/Dialect/Triton/IR/Ops.cpp)
+xpu_override_main_source(TritonIR lib/Dialect/Triton/IR/Traits.cpp)
+xpu_override_main_source(TritonGPUIR lib/Dialect/TritonGPU/IR/Dialect.cpp)
+xpu_override_main_source(TritonGPUToLLVM lib/Conversion/TritonGPUToLLVM/ViewOpToLLVM.cpp)
+
 # [internal bc5e33a6 sync] The XPU-owned TritonGPUIR Dialect.cpp replacement
 # includes TritonXPU Dialect.h. Keep this backend-specific dependency here so
 # the generated XPU attribute-interface header exists before that main target

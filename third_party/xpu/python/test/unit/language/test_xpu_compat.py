@@ -102,6 +102,26 @@ def test_xpu_large_tensor_override_is_vendored():
     assert "maxTensorNumElements = INT_MAX" in source
 
 
+def test_xpu_backend_spec_sources_are_backend_owned():
+    root = Path(__file__).resolve().parents[6]
+    root_cmake = (root / "CMakeLists.txt").read_text()
+    xpu_cmake = (root / "third_party/xpu/CMakeLists.txt").read_text()
+    overrides = (
+        ("TritonIR", "lib/Dialect/Triton/IR/Ops.cpp"),
+        ("TritonIR", "lib/Dialect/Triton/IR/Traits.cpp"),
+        ("TritonGPUIR", "lib/Dialect/TritonGPU/IR/Dialect.cpp"),
+        ("TritonGPUToLLVM", "lib/Conversion/TritonGPUToLLVM/ViewOpToLLVM.cpp"),
+    )
+
+    assert "PRIVATE ${ARG_UNPARSED_ARGUMENTS}" in root_cmake
+    assert "_flagtree_srcs" not in root_cmake
+    assert "function(xpu_override_main_source target source)" in xpu_cmake
+    for target, source in overrides:
+        assert f"xpu_override_main_source({target} {source})" in xpu_cmake
+        assert (root / source).is_file()
+        assert (root / "third_party/xpu/backend/spec" / source).is_file()
+
+
 def test_xpu_elementwise_dedup_fallback_is_vendored():
     root = Path(__file__).resolve().parents[6]
     main_header = (root / "include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h")
