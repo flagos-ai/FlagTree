@@ -1395,34 +1395,38 @@ def rcbrt(arg0, _semantic=None):
 
 @core.extern
 def j0(arg0, _semantic=None):
-    return core.extern_elementwise("", "", [arg0], {
-        (core.dtype("fp32"), ): ("__ppu_j0f", core.dtype("fp32")),
-        (core.dtype("fp64"), ): ("__ppu_j0", core.dtype("fp64")),
-    }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("__ppu_j0f", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("__ppu_j0", core.dtype("fp64")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def j1(arg0, _semantic=None):
-    return core.extern_elementwise("", "", [arg0], {
-        (core.dtype("fp32"), ): ("__ppu_j1f", core.dtype("fp32")),
-        (core.dtype("fp64"), ): ("__ppu_j1", core.dtype("fp64")),
-    }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("__ppu_j1f", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("__ppu_j1", core.dtype("fp64")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def y0(arg0, _semantic=None):
-    return core.extern_elementwise("", "", [arg0], {
-        (core.dtype("fp32"), ): ("__ppu_y0f", core.dtype("fp32")),
-        (core.dtype("fp64"), ): ("__ppu_y0", core.dtype("fp64")),
-    }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("__ppu_y0f", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("__ppu_y0", core.dtype("fp64")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
 def y1(arg0, _semantic=None):
-    return core.extern_elementwise("", "", [arg0], {
-        (core.dtype("fp32"), ): ("__ppu_y1f", core.dtype("fp32")),
-        (core.dtype("fp64"), ): ("__ppu_y1", core.dtype("fp64")),
-    }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("__ppu_y1f", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("__ppu_y1", core.dtype("fp64")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern

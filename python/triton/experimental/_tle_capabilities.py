@@ -45,6 +45,4 @@ def check_supported(feature: str, *, semantic=None, builder=None, options=None) 
         return
     unsupported = _UNSUPPORTED.get(backend)
     if unsupported is not None and feature in unsupported:
-        raise NotImplementedError(
-            f"TLE feature '{feature}' is not supported on the '{backend}' backend"
-        )
+        raise NotImplementedError(f"TLE feature '{feature}' is not supported on the '{backend}' backend")

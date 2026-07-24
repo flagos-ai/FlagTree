@@ -24,8 +24,8 @@ from triton.language import core
 
 @core.extern
 def globaltimer(_semantic=None):
-    return core.inline_asm_elementwise("ppu.mov.u64 $0, %globaltimer;", "=l", [], dtype=core.int64, is_pure=False, pack=1,
-                                       _semantic=_semantic)
+    return core.inline_asm_elementwise("ppu.mov.u64 $0, %globaltimer;", "=l", [], dtype=core.int64, is_pure=False,
+                                       pack=1, _semantic=_semantic)
 
 
 @core.extern
@@ -123,4 +123,3 @@ def convert_custom_float8_internal(arg, dst_ty, fp_downcast_rounding, has_minx2,
 @core.builtin
 def convert_custom_float8(arg, dst_ty, fp_downcast_rounding=None, _semantic=None):
     return convert_custom_float8_internal(arg, dst_ty, fp_downcast_rounding, has_minx2=True, _semantic=_semantic)
-

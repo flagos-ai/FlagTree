@@ -130,8 +130,10 @@ from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
 def is_cuda():
     return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
+
 def is_ppu():
     return triton.runtime.driver.active.get_current_target().backend == "ppu"
+
 
 def is_hip_cdna4():
     target = triton.runtime.driver.active.get_current_target()
@@ -139,11 +141,8 @@ def is_hip_cdna4():
 
 
 def supports_block_scaling():
-    return (
-        (is_cuda() and torch.cuda.get_device_capability()[0] == 10)
-        or is_hip_cdna4()
-        or (is_ppu() and torch.cuda.get_device_capability() == (8, 9))
-    )
+    return ((is_cuda() and torch.cuda.get_device_capability()[0] == 10) or is_hip_cdna4()
+            or (is_ppu() and torch.cuda.get_device_capability() == (8, 9)))
 
 
 def _matmul_launch_metadata(grid, kernel, args):

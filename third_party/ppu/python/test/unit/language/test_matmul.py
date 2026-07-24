@@ -617,7 +617,8 @@ def _gemm_kernel_preshuffled_scales_cdna4(a_ptr, b_ptr, c_ptr, a_scales_ptr, b_s
 @pytest.mark.parametrize("mfma_nonkdim", [16, 32])
 @pytest.mark.parametrize("preshuffle", [True, False])
 @pytest.mark.skipif(is_cuda() and torch.cuda.get_device_capability()[0] == 10, reason="Compilation bug for GB200.")
-@pytest.mark.skipif(is_ppu() and torch.cuda.get_device_capability() == (8, 9), reason="Incompatible test case for PPU0015.")
+@pytest.mark.skipif(is_ppu() and torch.cuda.get_device_capability() == (8, 9),
+                    reason="Incompatible test case for PPU0015.")
 @pytest.mark.skipif(is_hip() and not is_hip_cdna4(), reason="Scaled dot is not emulated on other archs yet.")
 def test_preshuffle_scale_mxfp_cdna4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, DTYPE_A, DTYPE_B, FAST_MATH, mfma_nonkdim,
                                      preshuffle, device):
@@ -972,6 +973,7 @@ def block_scale_fp4_matmul(  #
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(output_ptrs, accumulator, mask=c_mask)
 
+
 def uint8_padding(scale_uint8: torch.Tensor) -> torch.Tensor:
     scale_uint8 = scale_uint8.cpu()
 
@@ -992,11 +994,12 @@ def uint8_padding(scale_uint8: torch.Tensor) -> torch.Tensor:
 
     return scale_uint8
 
-@pytest.mark.parametrize("M, N, K", [(2048, 2048, 512), (1024, 512, 256), (512, 512, 512),
-                                     (128, 128, 256), (128, 128, 128), (16, 16, 64), (64, 64, 64)])
+
+@pytest.mark.parametrize("M, N, K", [(2048, 2048, 512), (1024, 512, 256), (512, 512, 512), (128, 128, 256),
+                                     (128, 128, 128), (16, 16, 64), (64, 64, 64)])
 @pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 128, 128), (256, 128, 128), (128, 256, 128),
-                                                       (128, 256, 256), (128, 128, 64), (128, 64, 128),
-                                                       (16, 16, 64), (64, 64, 64)])
+                                                       (128, 256, 256), (128, 128, 64), (128, 64, 128), (16, 16, 64),
+                                                       (64, 64, 64)])
 @pytest.mark.parametrize("with_a_scale", [True, False])
 @pytest.mark.parametrize("with_b_scale", [True, False])
 @pytest.mark.parametrize("pack_along_k", [True, False])
@@ -1007,7 +1010,7 @@ def uint8_padding(scale_uint8: torch.Tensor) -> torch.Tensor:
 @pytest.mark.parametrize("compare_cutlass", ([False]))
 def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_scale, with_b_scale, pack_along_k,
                          scale_type, nonKDim, warps, compare_cutlass, device):
-    if  M < BLOCK_M or N < BLOCK_N or K < BLOCK_K:
+    if M < BLOCK_M or N < BLOCK_N or K < BLOCK_K:
         pytest.skip("Invalid BLOCK_M/BLOCK_N/BLOCK_K config")
     assert M % BLOCK_M == 0
     assert N % BLOCK_N == 0
@@ -1115,9 +1118,8 @@ def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_sc
         c = torch.zeros(M, N, dtype=torch.float32, device=device)
         ref_out = torch.zeros(M, N, dtype=torch.float32, device=device)
 
-        success = gemm_fp4.gemm_fp4_run(
-            a_tensor, a_scale_tensor, b_tensor, b_scale_tensor, c, ref_out, 1.0, 0.0, M_cutlass, N_cutlass, K_cutlass
-        )
+        success = gemm_fp4.gemm_fp4_run(a_tensor, a_scale_tensor, b_tensor, b_scale_tensor, c, ref_out, 1.0, 0.0,
+                                        M_cutlass, N_cutlass, K_cutlass)
     else:
         ref_out = torch.matmul(a_mxfp4.to(torch.float32) * a_scale_ref, b_ref * b_scale_ref)
 
@@ -1129,8 +1131,8 @@ def test_block_scale_fp4(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, VEC_SIZE, with_a_sc
     b = b.T
     k = block_scale_fp4_matmul[grid](a, b, output, a_scale, b_scale, M, N, K, stride_scale, a.stride(0), a.stride(1),
                                      b.stride(0), b.stride(1), output.stride(0), output.stride(1), VEC_SIZE, BLOCK_M,
-                                     BLOCK_N, BLOCK_K, NUM_STAGES=NUM_STAGES, PACK_ALONG_K=pack_along_k, num_warps=warps,
-                                     **kernel_kwargs)
+                                     BLOCK_N, BLOCK_K, NUM_STAGES=NUM_STAGES, PACK_ALONG_K=pack_along_k,
+                                     num_warps=warps, **kernel_kwargs)
     torch.testing.assert_close(ref_out, output, atol=atol, rtol=rtol)
     if is_cuda():
         ptx = k.asm["ptx"]

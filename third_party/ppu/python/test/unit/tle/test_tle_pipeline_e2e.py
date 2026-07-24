@@ -24,10 +24,8 @@ import triton
 import triton.language as tl
 from triton.backends.compiler import GPUTarget
 
-tle_backend = pytest.importorskip(
-    "triton._C.libtriton.tle", reason="libtriton built without FLAGTREE_TLE")
-tle = pytest.importorskip(
-    "triton.experimental.tle.language", reason="tle language unavailable")
+tle_backend = pytest.importorskip("triton._C.libtriton.tle", reason="libtriton built without FLAGTREE_TLE")
+tle = pytest.importorskip("triton.experimental.tle.language", reason="tle language unavailable")
 
 
 def _ppu_sdk_available() -> bool:
@@ -41,6 +39,7 @@ _PPU_TARGET = GPUTarget("ppu", 80, 32)
 
 
 def _make_kernel(dtype: tl.dtype):
+
     @triton.jit
     def _elementwise_add(
         a_ptr,
@@ -186,12 +185,10 @@ def test_pipeline_num_stages_reaches_pipeline_pass():
     ttgir = compiled.asm["ttgir"]
     # Either the loop carries an explicit num_stages attribute, or the
     # pipeliner has already expanded the loop into stage_phase IR.
-    markers = ("tt.num_stages", "num_stages = 2", "loop.num_stages",
-               "tt.loop_stage", "tt.latency")
-    assert any(m in ttgir for m in markers), (
-        f"no pipeline stage marker in ttgir; tle.pipeline(num_stages=2) may "
-        f"not have flowed into the PPU pipeliner.\n--- ttgir tail ---\n"
-        f"{ttgir[-2000:]}")
+    markers = ("tt.num_stages", "num_stages = 2", "loop.num_stages", "tt.loop_stage", "tt.latency")
+    assert any(m in ttgir for m in markers), (f"no pipeline stage marker in ttgir; tle.pipeline(num_stages=2) may "
+                                              f"not have flowed into the PPU pipeliner.\n--- ttgir tail ---\n"
+                                              f"{ttgir[-2000:]}")
 
 
 def test_pipeline_no_tle_residue_in_llir():

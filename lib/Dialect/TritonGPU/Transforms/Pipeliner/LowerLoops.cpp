@@ -118,7 +118,8 @@ int getDefUseStageDiff(Operation *op, scf::ForOp forOp,
   // uses will become direct uses of the async load.
   // TODO: This is overly conservative, we may need to restrict to cases where
   // local_alloc is used by a dot product and has correct encoding.
-  if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp, tt::AIULoadOp>(op)) {
+  if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp,
+          tt::AIULoadOp>(op)) {
     DenseSet<Operation *> allocUsers;
     for (Operation *topLevelUser : topLevelUsers) {
       if (auto localAlloc = dyn_cast<ttg::LocalAllocOp>(topLevelUser)) {
@@ -543,7 +544,8 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
   // Only visit the top level ops, we do not support pipelining conditional
   // loads for now
   for (auto &op : forOp.getBody()->without_terminator()) {
-    if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp, tt::AIULoadOp>(op)) {
+    if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp,
+            tt::AIULoadOp>(op)) {
       int stageDiff = getDefUseStageDiff(&op, forOp, schedule);
       if (stageDiff == 0) {
         // Don't care about non-pipelined loads. Scalar loads will be converted
@@ -559,7 +561,7 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
         sharedEncoding = getSharedEncoding(&op);
       } else
 #endif
-      if (!isa<RankedTensorType>(op.getResultTypes()[0])) {
+          if (!isa<RankedTensorType>(op.getResultTypes()[0])) {
         canUseAsyncCp = op.getResultTypes()[0].getIntOrFloatBitWidth() >= 32;
         sharedEncoding = ttg::SwizzledSharedEncodingAttr::get(
             forOp.getContext(), 1, 1, 1, {0},
@@ -727,7 +729,7 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
 #ifdef __PPU__
     } else if (auto loadOp = dyn_cast<tt::AIULoadOp>(op)) {
       createAIUAsyncCopy(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
-                      schedule);
+                         schedule);
       hasAsyncLoads = true;
 #endif
     } else if (auto loadOp = dyn_cast<tt::DescriptorLoadOp>(op)) {

@@ -278,8 +278,8 @@ getWarpsPerTile(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
 static bool bwdFilter(Operation *op) {
   return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
          isView(op) ||
-         isa<AIULoadOp, Fp4ToFpOp, LoadOp, DescriptorLoadOp, BroadcastOp, ConvertLayoutOp>(
-             op);
+         isa<AIULoadOp, Fp4ToFpOp, LoadOp, DescriptorLoadOp, BroadcastOp,
+             ConvertLayoutOp>(op);
 }
 
 // Finds the bitwidth with which the value x is loaded

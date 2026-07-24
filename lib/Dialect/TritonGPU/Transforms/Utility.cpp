@@ -665,7 +665,8 @@ bool canFoldIntoConversion(Operation *op, Attribute targetEncoding) {
     return !triton::gpu::isExpensiveCat(cast<triton::CatOp>(op),
                                         targetEncoding);
   if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
-    if (mlir::isa<triton::gpu::NvidiaMmaEncodingAttr, triton::gpu::PPUMmaEncodingAttr>(targetEncoding)) {
+    if (mlir::isa<triton::gpu::NvidiaMmaEncodingAttr,
+                  triton::gpu::PPUMmaEncodingAttr>(targetEncoding)) {
       auto srcEncoding = convert.getSrc().getType().getEncoding();
       if (targetEncoding != srcEncoding)
         return false;

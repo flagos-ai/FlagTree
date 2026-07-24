@@ -129,8 +129,8 @@ Value composeValuesToDotOperandLayoutStruct(
 
 std::function<void(int, int, int)> getLoadMatrixFn(
     MemDescType descTy, const SharedMemoryObject &smemObj,
-    PPUMmaEncodingAttr mmaLayout, int warpsPerTile, uint32_t kOrder,
-    int kWidth, SmallVector<int> instrShape, SmallVector<int> matShape,
+    PPUMmaEncodingAttr mmaLayout, int warpsPerTile, uint32_t kOrder, int kWidth,
+    SmallVector<int> instrShape, SmallVector<int> matShape,
     SmallVector<Value> multiDimWarpId, Value lane, ValueTable &vals, bool isA,
     const LLVMTypeConverter *typeConverter, ConversionPatternRewriter &rewriter,
     Location loc, ArrayRef<unsigned> aiuLoad) {
@@ -178,7 +178,7 @@ std::function<void(int, int, int)> getLoadMatrixFn(
     unsigned replicaK = b >> 1;
     unsigned replicaMNElements = shapePerWarpM * warpsPerTile;
     unsigned replicaKElements = 16;
-    if(elemBytes == 1)
+    if (elemBytes == 1)
       replicaKElements = 32;
     unsigned replicaMNOff = replicaMNElements * replicaMN;
     unsigned replicaKOff = replicaKElements * replicaK;

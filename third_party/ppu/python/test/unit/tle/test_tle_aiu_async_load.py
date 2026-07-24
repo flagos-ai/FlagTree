@@ -64,26 +64,23 @@ def _assert_no_tle_residue(compiled):
 # 1. Basic promotion & fallback
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
-def _basic_aiu_load(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr,
-                     BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
+def _basic_aiu_load(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
     pid = tl.program_id(0)
-    a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1),
-                             offsets=(pid * BLOCK_M, 0),
+    a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid * BLOCK_M, 0),
                              block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
     a = tle.load(a_bp, is_async=True)
     c = a.to(tl.float16)
     offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_k = tl.arange(0, BLOCK_K)
-    tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], c,
-             mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
+    tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], c, mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
 
 
 @_skip_no_sdk
 def test_basic_promotion_to_aiu():
-    compiled = _compile(
-        _basic_aiu_load, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
-        {"M": 1024, "K": 1024, "BLOCK_M": 64, "BLOCK_K": 64})
+    compiled = _compile(_basic_aiu_load, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
+                        {"M": 1024, "K": 1024, "BLOCK_M": 64, "BLOCK_K": 64})
     _assert_stages_exist(compiled)
     assert "aiu_load" in compiled.asm["ttir"]
     _assert_no_tle_residue(compiled)
@@ -91,6 +88,7 @@ def test_basic_promotion_to_aiu():
 
 @_skip_no_sdk
 def test_no_promotion_for_non_block_ptr():
+
     @triton.jit
     def kernel(a_ptr, c_ptr, N: tl.constexpr, BLOCK: tl.constexpr):
         pid = tl.program_id(0)
@@ -98,26 +96,23 @@ def test_no_promotion_for_non_block_ptr():
         a = tle.load(a_ptr + offs, mask=offs < N, is_async=True)
         tl.store(c_ptr + offs, a, mask=offs < N)
 
-    compiled = _compile(kernel, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
-                        {"N": 1024, "BLOCK": 256})
+    compiled = _compile(kernel, {"a_ptr": "*fp16", "c_ptr": "*fp16"}, {"N": 1024, "BLOCK": 256})
     _assert_stages_exist(compiled)
     assert "aiu_load" not in compiled.asm["ttir"]
 
 
 @_skip_no_sdk
 def test_no_promotion_when_is_async_false():
+
     @triton.jit
-    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr,
-               BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
+    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
         pid = tl.program_id(0)
-        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1),
-                                 offsets=(pid * BLOCK_M, 0),
+        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid * BLOCK_M, 0),
                                  block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
         a = tle.load(a_bp, is_async=False)
         offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
         offs_k = tl.arange(0, BLOCK_K)
-        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], a,
-                 mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
+        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], a, mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
 
     compiled = _compile(kernel, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
                         {"M": 1024, "K": 1024, "BLOCK_M": 64, "BLOCK_K": 64})
@@ -129,26 +124,23 @@ def test_no_promotion_when_is_async_false():
 # 2. Data type parametrization
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
-def _typed_aiu_load(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr,
-                     BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
+def _typed_aiu_load(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
     pid = tl.program_id(0)
-    a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1),
-                             offsets=(pid * BLOCK_M, 0),
+    a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid * BLOCK_M, 0),
                              block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
     a = tle.load(a_bp, is_async=True)
     offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_k = tl.arange(0, BLOCK_K)
-    tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], a,
-             mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
+    tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], a, mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
 
 
 @_skip_no_sdk
 @pytest.mark.parametrize("dtype", ["fp16", "bf16", "fp32"])
 def test_aiu_promotion_dtypes(dtype):
-    compiled = _compile(
-        _typed_aiu_load, {"a_ptr": f"*{dtype}", "c_ptr": f"*{dtype}"},
-        {"M": 256, "K": 256, "BLOCK_M": 64, "BLOCK_K": 64})
+    compiled = _compile(_typed_aiu_load, {"a_ptr": f"*{dtype}", "c_ptr": f"*{dtype}"},
+                        {"M": 256, "K": 256, "BLOCK_M": 64, "BLOCK_K": 64})
     _assert_stages_exist(compiled)
     assert "aiu_load" in compiled.asm["ttir"]
     _assert_no_tle_residue(compiled)
@@ -158,12 +150,12 @@ def test_aiu_promotion_dtypes(dtype):
 # 3. Block shape parametrization
 # ---------------------------------------------------------------------------
 
+
 @_skip_no_sdk
 @pytest.mark.parametrize("bm,bk", [(32, 32), (64, 32), (64, 64), (128, 64), (128, 128)])
 def test_aiu_promotion_block_shapes(bm, bk):
-    compiled = _compile(
-        _basic_aiu_load, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
-        {"M": 1024, "K": 1024, "BLOCK_M": bm, "BLOCK_K": bk})
+    compiled = _compile(_basic_aiu_load, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
+                        {"M": 1024, "K": 1024, "BLOCK_M": bm, "BLOCK_K": bk})
     _assert_stages_exist(compiled)
     assert "aiu_load" in compiled.asm["ttir"]
     _assert_no_tle_residue(compiled)
@@ -173,28 +165,24 @@ def test_aiu_promotion_block_shapes(bm, bk):
 # 4. Memory order
 # ---------------------------------------------------------------------------
 
+
 @_skip_no_sdk
 @pytest.mark.parametrize("order", [(1, 0), (0, 1)])
 def test_aiu_promotion_memory_order(order):
+
     @triton.jit
-    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr,
-               BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr,
+    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr,
                ORDER_0: tl.constexpr, ORDER_1: tl.constexpr):
         pid = tl.program_id(0)
-        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1),
-                                 offsets=(pid * BLOCK_M, 0),
-                                 block_shape=(BLOCK_M, BLOCK_K),
-                                 order=(ORDER_0, ORDER_1))
+        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid * BLOCK_M, 0),
+                                 block_shape=(BLOCK_M, BLOCK_K), order=(ORDER_0, ORDER_1))
         a = tle.load(a_bp, is_async=True)
         offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
         offs_k = tl.arange(0, BLOCK_K)
-        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], a,
-                 mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
+        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], a, mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
 
-    compiled = _compile(
-        kernel, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
-        {"M": 512, "K": 512, "BLOCK_M": 64, "BLOCK_K": 64,
-         "ORDER_0": order[0], "ORDER_1": order[1]})
+    compiled = _compile(kernel, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
+                        {"M": 512, "K": 512, "BLOCK_M": 64, "BLOCK_K": 64, "ORDER_0": order[0], "ORDER_1": order[1]})
     _assert_stages_exist(compiled)
     assert "aiu_load" in compiled.asm["ttir"]
     _assert_no_tle_residue(compiled)
@@ -204,20 +192,25 @@ def test_aiu_promotion_memory_order(order):
 # 5. AIU load + tl.dot (GEMM) — the primary use case
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
 def _gemm_aiu_kernel(
-    a_ptr, b_ptr, c_ptr,
-    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
 ):
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
-    a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1),
-                             offsets=(pid_m * BLOCK_M, 0),
+    a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid_m * BLOCK_M, 0),
                              block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
-    b_bp = tl.make_block_ptr(b_ptr, shape=(K, N), strides=(N, 1),
-                             offsets=(0, pid_n * BLOCK_N),
+    b_bp = tl.make_block_ptr(b_ptr, shape=(K, N), strides=(N, 1), offsets=(0, pid_n * BLOCK_N),
                              block_shape=(BLOCK_K, BLOCK_N), order=(1, 0))
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
@@ -235,8 +228,7 @@ def _gemm_aiu_kernel(
 
 
 _GEMM_SIG = {"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"}
-_GEMM_CONSTEXPRS = {"M": 512, "N": 512, "K": 256,
-                    "BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 64}
+_GEMM_CONSTEXPRS = {"M": 512, "N": 512, "K": 256, "BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 64}
 
 
 @_skip_no_sdk
@@ -286,16 +278,16 @@ def test_gemm_aiu_no_regular_load_for_block_ptrs():
 # 6. Pipelined loop with advance
 # ---------------------------------------------------------------------------
 
+
 @_skip_no_sdk
 @pytest.mark.parametrize("num_stages", [1, 2, 4])
 def test_aiu_pipelined_loop(num_stages):
     """AIU loads inside a pipeline loop with block_ptr advance should compile."""
+
     @triton.jit
-    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr,
-               BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
+    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
         pid = tl.program_id(0)
-        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1),
-                                 offsets=(pid * BLOCK_M, 0),
+        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid * BLOCK_M, 0),
                                  block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
         acc = tl.zeros((BLOCK_M, BLOCK_K), dtype=tl.float32)
         for _ in range(0, K, BLOCK_K):
@@ -304,8 +296,7 @@ def test_aiu_pipelined_loop(num_stages):
             a_bp = tl.advance(a_bp, (0, BLOCK_K))
         offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
         offs_k = tl.arange(0, BLOCK_K)
-        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :],
-                 acc.to(tl.float16),
+        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], acc.to(tl.float16),
                  mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
 
     compiled = _compile(kernel, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
@@ -319,21 +310,20 @@ def test_aiu_pipelined_loop(num_stages):
 # 7. Boundary check
 # ---------------------------------------------------------------------------
 
+
 @_skip_no_sdk
 def test_aiu_with_boundary_check():
     """tle.load with boundary_check should still promote to AIU."""
+
     @triton.jit
-    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr,
-               BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
+    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
         pid = tl.program_id(0)
-        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1),
-                                 offsets=(pid * BLOCK_M, 0),
+        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid * BLOCK_M, 0),
                                  block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
         a = tle.load(a_bp, boundary_check=(0, 1), is_async=True)
         offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
         offs_k = tl.arange(0, BLOCK_K)
-        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], a,
-                 mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
+        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], a, mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
 
     compiled = _compile(kernel, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
                         {"M": 300, "K": 300, "BLOCK_M": 64, "BLOCK_K": 64})
@@ -346,17 +336,16 @@ def test_aiu_with_boundary_check():
 # 8. Mixed: AIU async load + regular load in same kernel
 # ---------------------------------------------------------------------------
 
+
 @_skip_no_sdk
 def test_mixed_aiu_and_regular_load():
     """Kernel with both AIU async loads and regular loads should compile."""
+
     @triton.jit
-    def kernel(a_ptr, b_ptr, c_ptr,
-               M: tl.constexpr, K: tl.constexpr,
-               BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
+    def kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
         pid = tl.program_id(0)
         # A: AIU async load via block pointer
-        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1),
-                                 offsets=(pid * BLOCK_M, 0),
+        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid * BLOCK_M, 0),
                                  block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
         a = tle.load(a_bp, is_async=True)
         # B: regular pointer load
@@ -370,9 +359,8 @@ def test_mixed_aiu_and_regular_load():
         c_ptrs = c_ptr + K * offs_m[:, None] + offs_k[None, :]
         tl.store(c_ptrs, c, mask=b_mask)
 
-    compiled = _compile(
-        kernel, {"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp16"},
-        {"M": 512, "K": 512, "BLOCK_M": 64, "BLOCK_K": 64})
+    compiled = _compile(kernel, {"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp16"},
+                        {"M": 512, "K": 512, "BLOCK_M": 64, "BLOCK_K": 64})
     _assert_stages_exist(compiled)
     ttir = compiled.asm["ttir"]
     assert "aiu_load" in ttir, "block-ptr async load should be promoted"
@@ -384,31 +372,27 @@ def test_mixed_aiu_and_regular_load():
 # 9. Multiple independent AIU loads (non-dot)
 # ---------------------------------------------------------------------------
 
+
 @_skip_no_sdk
 def test_multiple_independent_aiu_loads():
     """Multiple AIU loads used independently (not feeding dot)."""
+
     @triton.jit
-    def kernel(a_ptr, b_ptr, c_ptr,
-               M: tl.constexpr, K: tl.constexpr,
-               BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
+    def kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
         pid = tl.program_id(0)
-        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1),
-                                 offsets=(pid * BLOCK_M, 0),
+        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid * BLOCK_M, 0),
                                  block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
-        b_bp = tl.make_block_ptr(b_ptr, shape=(M, K), strides=(K, 1),
-                                 offsets=(pid * BLOCK_M, 0),
+        b_bp = tl.make_block_ptr(b_ptr, shape=(M, K), strides=(K, 1), offsets=(pid * BLOCK_M, 0),
                                  block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
         a = tle.load(a_bp, is_async=True)
         b = tle.load(b_bp, is_async=True)
         c = a + b
         offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
         offs_k = tl.arange(0, BLOCK_K)
-        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], c,
-                 mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
+        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], c, mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
 
-    compiled = _compile(
-        kernel, {"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp16"},
-        {"M": 512, "K": 512, "BLOCK_M": 64, "BLOCK_K": 64})
+    compiled = _compile(kernel, {"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp16"},
+                        {"M": 512, "K": 512, "BLOCK_M": 64, "BLOCK_K": 64})
     _assert_stages_exist(compiled)
     aiu_count = compiled.asm["ttir"].count("aiu_load")
     assert aiu_count >= 2, f"expected >=2 aiu_load, got {aiu_count}"
@@ -419,6 +403,7 @@ def test_multiple_independent_aiu_loads():
 # 10. Non-block-pointer async load fallback (cp.async, not AIU)
 # ---------------------------------------------------------------------------
 
+
 @_skip_no_sdk
 def test_non_block_ptr_async_load_uses_cp_async_fallback():
     """Non-block-pointer tle.load(is_async=True) should NOT promote to AIU
@@ -426,8 +411,7 @@ def test_non_block_ptr_async_load_uses_cp_async_fallback():
     meets the 4-byte minimum."""
 
     @triton.jit
-    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr,
-               BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
+    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)
         pid_m = pid % num_pid_m

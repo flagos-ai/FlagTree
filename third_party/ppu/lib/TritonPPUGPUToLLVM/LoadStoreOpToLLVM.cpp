@@ -375,23 +375,24 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       bool isSharedPtr = isSharedMemoryPointer(ptrElems[vecStart]);
 
       // Define the instruction opcode
-      auto &ld = tixBuilder.create("ppu.ld")
-                     ->o("volatile", op.getIsVolatile())
-                     .o("global", !isSharedPtr)
-                     .o("shared", isSharedPtr)
-                     .o("ca", !isSharedPtr &&
-                              op.getCache() == triton::CacheModifier::CA)
-                     .o("cg", !isSharedPtr &&
-                              op.getCache() == triton::CacheModifier::CG)
-                     .o("L1::evict_first",
-                        !isSharedPtr &&
-                            op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-                     .o("L1::evict_last",
-                        !isSharedPtr &&
-                            op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-                     .o("L2::cache_hint", !isSharedPtr && l2PolicyReg != Value())
-                     .v(nWords)
-                     .b(width);
+      auto &ld =
+          tixBuilder.create("ppu.ld")
+              ->o("volatile", op.getIsVolatile())
+              .o("global", !isSharedPtr)
+              .o("shared", isSharedPtr)
+              .o("ca",
+                 !isSharedPtr && op.getCache() == triton::CacheModifier::CA)
+              .o("cg",
+                 !isSharedPtr && op.getCache() == triton::CacheModifier::CG)
+              .o("L1::evict_first",
+                 !isSharedPtr &&
+                     op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+              .o("L1::evict_last",
+                 !isSharedPtr &&
+                     op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+              .o("L2::cache_hint", !isSharedPtr && l2PolicyReg != Value())
+              .v(nWords)
+              .b(width);
 
       TIXBuilder::Operand *evictOpr = nullptr;
       if (l2PolicyReg)
@@ -572,14 +573,14 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
           tixBuilder.create("ppu.st")
               ->o("global", !isSharedStore)
               .o("shared", isSharedStore)
-              .o("wb", !isSharedStore &&
-                       op.getCache() == triton::CacheModifier::WB)
-              .o("cg", !isSharedStore &&
-                       op.getCache() == triton::CacheModifier::CG)
-              .o("cs", !isSharedStore &&
-                       op.getCache() == triton::CacheModifier::CS)
-              .o("wt", !isSharedStore &&
-                       op.getCache() == triton::CacheModifier::WT)
+              .o("wb",
+                 !isSharedStore && op.getCache() == triton::CacheModifier::WB)
+              .o("cg",
+                 !isSharedStore && op.getCache() == triton::CacheModifier::CG)
+              .o("cs",
+                 !isSharedStore && op.getCache() == triton::CacheModifier::CS)
+              .o("wt",
+                 !isSharedStore && op.getCache() == triton::CacheModifier::WT)
               .o("L1::evict_first",
                  !isSharedStore &&
                      op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
@@ -616,8 +617,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
   LogicalResult
   PPUAIUV1Conversion(triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp op,
-                  OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const {
+                     OpAdaptor adaptor,
+                     ConversionPatternRewriter &rewriter) const {
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     Type llvmElemTy =
@@ -780,7 +781,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     unsigned swizzledElems = swizzledBytes / elementSizeInBytes;
     unsigned aiuFactor = swizzledElems / cubeCElems;
     assert((cubeCElems == 32 / elementSizeInBytes && aiuFactor == 2) ||
-             (cubeCElems != 32 / elementSizeInBytes && aiuFactor == 1));
+           (cubeCElems != 32 / elementSizeInBytes && aiuFactor == 1));
     unsigned cubeElems = cubeWElems * cubeCElems * aiuFactor;
 
     unsigned warpCopyC = aiuLoad[2];
@@ -834,11 +835,16 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     //@$0
     std::string aiuInst;
     std::string dtype = (elementSizeInBytes == 2) ? ".b16" : ".b8";
-    aiuInst = "ppu.cp.async.aiu.bulk.tensor.shared.global.2d.tile.padz.swzl" + dtype +
-              "[$0], [$1], {$2, $3, $4}, {$5, $6, $7}, {$8, $9}, {$10, $11, $12}, $13;";
-    if(isNeedPred) {
-      aiuInst = "@$0 ppu.cp.async.aiu.bulk.tensor.shared.global.2d.tile.padz.swzl" + dtype +
-                "[$1], [$2], {$3, $4, $5}, {$6, $7, $8}, {$9, $10}, {$11, $12, $13}, $14;";
+    aiuInst = "ppu.cp.async.aiu.bulk.tensor.shared.global.2d.tile.padz.swzl" +
+              dtype +
+              "[$0], [$1], {$2, $3, $4}, {$5, $6, $7}, {$8, $9}, {$10, $11, "
+              "$12}, $13;";
+    if (isNeedPred) {
+      aiuInst =
+          "@$0 ppu.cp.async.aiu.bulk.tensor.shared.global.2d.tile.padz.swzl" +
+          dtype +
+          "[$1], [$2], {$3, $4, $5}, {$6, $7, $8}, {$9, $10}, {$11, $12, $13}, "
+          "$14;";
     }
     Value predW = b.icmp_ult(warpIdxM, b.i32_val(warpCopyW));
     auto i32Ty = IntegerType::get(op.getContext(), 32);
@@ -848,7 +854,8 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       Value predC = b.icmp_ult(b.add(copiesLoc, warpsLoc), b.i32_val(tileC));
       Value pred = b.and_(predC, predW);
 
-      Value tensorStrideW = b.mul(b.trunc(i32Ty, dimC), b.i32_val(elementSizeInBytes));
+      Value tensorStrideW =
+          b.mul(b.trunc(i32Ty, dimC), b.i32_val(elementSizeInBytes));
       Value tensorStrideN = b.mul(b.trunc(i32Ty, dimW), tensorStrideW);
 #if 1
       Value startW = b.add(coordW, b.mul(warpIdxM, b.i32_val(cubeWElems)));
@@ -1003,8 +1010,12 @@ struct AtomicCASOpConversion
       os << op.getSem();
       auto scope = stringifyMemSyncScope(op.getScope()).str();
       bool isSharedCAS = isSharedMemoryPointer(casPtr);
-      atom.o("global", !isSharedCAS).o("shared", isSharedCAS)
-          .o(semStr).o(scope).o("cas").o(sTy);
+      atom.o("global", !isSharedCAS)
+          .o("shared", isSharedCAS)
+          .o(semStr)
+          .o(scope)
+          .o("cas")
+          .o(sTy);
       atom(dstOpr, ptrOpr, cmpOpr, valOpr).maybePredicate(threadPred);
 
       if (tensorTy) {
@@ -1658,7 +1669,6 @@ static LinearLayout getUnswizzledLayout(triton::gpu::MemDescType type) {
       type.getShape(), cast<NVMMASharedEncodingAttr>(type.getEncoding()),
       /*disableSwizzle=*/true);
 }
-
 
 struct AsyncWaitOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::AsyncWaitOp> {

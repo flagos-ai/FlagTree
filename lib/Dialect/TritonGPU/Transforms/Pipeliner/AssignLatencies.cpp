@@ -345,7 +345,8 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
       [&](Operation *op, Operation *finalUser, int distance) {
         if (!seen.insert(op).second || excluded.count(op))
           return;
-        if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp, tt::AIULoadOp>(op)) {
+        if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp,
+                tt::AIULoadOp>(op)) {
           if (!AssignLoadLatencies::isPipeliningBeneficial(
                   op, finalUser, axisInfoAnalysis, filterSmall))
             return;
@@ -398,7 +399,8 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
   // that are not directly used by dot ops.
   if (pipelineWithoutDot) {
     for (Operation &op : forOp.getBody()->without_terminator()) {
-      if (!isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp, tt::AIULoadOp>(op))
+      if (!isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp,
+               tt::AIULoadOp>(op))
         dfs(&op, &op, 0);
     }
   }

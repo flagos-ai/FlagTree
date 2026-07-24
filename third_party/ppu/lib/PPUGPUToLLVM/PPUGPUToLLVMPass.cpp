@@ -197,8 +197,8 @@ template <typename SourceOp>
 class PPUGPUOpGenericPattern : public OpRewritePattern<SourceOp> {
 public:
   explicit PPUGPUOpGenericPattern(MLIRContext *context, std::string tixAsm,
-                                 Constraints outputConstraints,
-                                 Constraints inputConstraints)
+                                  Constraints outputConstraints,
+                                  Constraints inputConstraints)
       : OpRewritePattern<SourceOp>(context), tixAsm(std::move(tixAsm)),
         outputConstraints(outputConstraints),
         inputConstraints(inputConstraints) {}
@@ -419,9 +419,9 @@ public:
 
 LogicalResult
 ppugpu::rewriteAsTixAsm(Operation *op, PatternRewriter &rewriter,
-                       std::string tixAsm,
-                       const OperandsAndConstraints &operandsAndConstraints,
-                       const Constraints &outputConstraints) {
+                        std::string tixAsm,
+                        const OperandsAndConstraints &operandsAndConstraints,
+                        const Constraints &outputConstraints) {
   auto ctx = rewriter.getContext();
   auto loc = op->getLoc();
   tixAsm = patchTixAsm(op, std::move(tixAsm));

@@ -75,11 +75,17 @@ def _gemm_kernel(
     # nv_mma_shared_layout=False to use the generic swizzled_shared_layout path
     # that does not require Hopper-specific encodings.
     a_smem = tle.alloc(
-        [BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.smem,
+        [BLOCK_M, BLOCK_N],
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.smem,
         nv_mma_shared_layout=False,
     )
     b_smem = tle.alloc(
-        [BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.smem,
+        [BLOCK_M, BLOCK_N],
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.smem,
         nv_mma_shared_layout=False,
     )
     row_ids = tl.broadcast_to(tl.arange(0, BLOCK_M)[:, None], (BLOCK_M, BLOCK_N))
@@ -163,9 +169,8 @@ def test_tle_gemm_emits_dot_in_llir():
     # ppu lowering goes through ldmatrix-style intrinsics or mma-equivalent
     # instructions; any one of these markers means we got to the dot.
     markers = ("ldmatrix", "mma.", "ppu.mma", "fmadd", "fmuladd", "fma.")
-    assert any(m in llir for m in markers), (
-        f"llir contains none of {markers}; tl.dot may have been lost.\n"
-        f"--- llir tail ---\n{llir[-2000:]}")
+    assert any(m in llir for m in markers), (f"llir contains none of {markers}; tl.dot may have been lost.\n"
+                                             f"--- llir tail ---\n{llir[-2000:]}")
 
 
 def test_tle_gemm_ttgir_carries_dot_operand_encoding():

@@ -137,7 +137,7 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
     }
   }
 
-    void runOnOperation() override {
+  void runOnOperation() override {
     // Run axis info analysis
     ModuleOp moduleOp = getOperation();
     ModuleAxisInfoAnalysis axisInfoAnalysis(moduleOp);

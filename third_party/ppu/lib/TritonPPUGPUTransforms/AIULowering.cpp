@@ -22,8 +22,8 @@
  */
 
 #include "Dialect/TritonPPUGPU/IR/Dialect.h"
-#include "TritonPPUGPUTransforms/Passes.h"
 #include "TritonPPUGPUToLLVM/AIUUtility.h"
+#include "TritonPPUGPUTransforms/Passes.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"

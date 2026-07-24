@@ -46,8 +46,8 @@ public:
 
     SmallVector<triton::LoadOp> toPromote;
     m.walk([&](triton::LoadOp loadOp) {
-      auto asyncAttr = llvm::cast_if_present<BoolAttr>(
-          loadOp->getAttr("tt.load.async"));
+      auto asyncAttr =
+          llvm::cast_if_present<BoolAttr>(loadOp->getAttr("tt.load.async"));
       if (!asyncAttr || !asyncAttr.getValue())
         return;
       if (!triton::isTensorPointerType(loadOp.getPtr().getType()))

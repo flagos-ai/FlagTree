@@ -393,7 +393,7 @@ public:
     return nullptr;
   }
 
-    Operation *rewriteIfOp(OpBuilder &builder, scf::IfOp op,
+  Operation *rewriteIfOp(OpBuilder &builder, scf::IfOp op,
                          std::stack<Operation *> &eraser) {
     auto thenYieldOp = op.thenYield();
     assert(op.getNumResults() == thenYieldOp.getNumOperands());

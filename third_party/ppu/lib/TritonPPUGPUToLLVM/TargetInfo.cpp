@@ -154,7 +154,7 @@ bool TargetInfo::supportMaximumMinimum() const {
 
 Value TargetInfo::getClusterCTAId(RewriterBase &rewriter, Location loc) const {
   return triton::ppugpu::ClusterCTAIdOp::create(rewriter, loc,
-                                               rewriter.getI32Type());
+                                                rewriter.getI32Type());
 }
 
 Value TargetInfo::ballot(RewriterBase &rewriter, Location loc, Type type,

@@ -21,10 +21,10 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "TritonPPUGPUToLLVM/AIUUtility.h"
 #include "Dialect/PPUGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TargetInfo.h"
+#include "TritonPPUGPUToLLVM/AIUUtility.h"
 #include "Utility.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"

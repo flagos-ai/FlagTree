@@ -26,9 +26,7 @@
 
 namespace mlir {
 namespace triton {
-namespace ppu {
-
-} // namespace ppu
+namespace ppu {} // namespace ppu
 } // namespace triton
 } // namespace mlir
 

@@ -70,7 +70,7 @@ def _vector_add_tle(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < n
     smem = tle.alloc([BLOCK], dtype=tl.float32, scope=tle.smem)
-    ptrs = tle.local_ptr(smem, (tl.arange(0, BLOCK),))
+    ptrs = tle.local_ptr(smem, (tl.arange(0, BLOCK), ))
     x = tl.load(x_ptr + offs, mask=mask, other=0.0)
     y = tl.load(y_ptr + offs, mask=mask, other=0.0)
     tl.store(ptrs, x + y, mask=mask)
@@ -79,8 +79,7 @@ def _vector_add_tle(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
 
 
 def _compile(kernel):
-    src = triton.compiler.ASTSource(
-        fn=kernel, signature=_SIGNATURE, constexprs=_CONSTEXPRS)
+    src = triton.compiler.ASTSource(fn=kernel, signature=_SIGNATURE, constexprs=_CONSTEXPRS)
     return triton.compile(src, target=_PPU_TARGET)
 
 
@@ -148,7 +147,6 @@ def _grep(text: str, needle: str) -> str:
 # third_party/ppu/backend/__init__.py) raises a clear Python error before MLIR
 # legalization would otherwise fail with a cryptic "failed to legalize" message.
 
-
 import triton.experimental.tle.language as _tle_lang
 
 
@@ -206,8 +204,7 @@ def test_ppu_supports_cumsum():
 def test_ppu_rejects_distributed_barrier_with_clear_error():
     with pytest.raises(Exception) as excinfo:
         triton.compile(
-            triton.compiler.ASTSource(
-                fn=_kernel_distributed_barrier, signature={}, constexprs={}),
+            triton.compiler.ASTSource(fn=_kernel_distributed_barrier, signature={}, constexprs={}),
             target=_PPU_TARGET,
         )
     chain = _exception_chain(excinfo.value)
@@ -219,8 +216,7 @@ def test_ppu_rejects_distributed_barrier_with_clear_error():
 def test_ppu_rejects_warp_specialize_with_clear_error():
     with pytest.raises(Exception) as excinfo:
         triton.compile(
-            triton.compiler.ASTSource(
-                fn=_kernel_warp_specialize, signature={}, constexprs={}),
+            triton.compiler.ASTSource(fn=_kernel_warp_specialize, signature={}, constexprs={}),
             target=_PPU_TARGET,
         )
     chain = _exception_chain(excinfo.value)

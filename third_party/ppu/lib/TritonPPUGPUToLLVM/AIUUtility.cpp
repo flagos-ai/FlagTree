@@ -433,8 +433,8 @@ DenseMap<unsigned, Value> getAIUSwizzledSharedPtrs(
   } else {
     assert(resSharedLayout.isPPU0015());
     return getPPUAIUV2SwizzledSharedPtrs(loc, target, inVec, srcTy, memTy,
-                                      resSharedLayout, resElemTy, smemObj,
-                                      rewriter, offsetVals);
+                                         resSharedLayout, resElemTy, smemObj,
+                                         rewriter, offsetVals);
   }
 }
 

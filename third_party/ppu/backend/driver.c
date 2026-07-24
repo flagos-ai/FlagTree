@@ -200,9 +200,9 @@ typedef HGresult (*hgTensorMapEncodeTiled_t)(
 #define defineGetFunctionHandle(name, symbolName)                              \
   static symbolName##_t name() {                                               \
     /* Open the shared library */                                              \
-    void *libHandle = dlopen("libhggc.so", RTLD_LAZY);                       \
+    void *libHandle = dlopen("libhggc.so", RTLD_LAZY);                         \
     if (!libHandle) {                                                          \
-      PyErr_SetString(PyExc_RuntimeError, "Failed to open libhggc.so");      \
+      PyErr_SetString(PyExc_RuntimeError, "Failed to open libhggc.so");        \
       return NULL;                                                             \
     }                                                                          \
     /* Clear any existing error */                                             \
@@ -212,7 +212,7 @@ typedef HGresult (*hgTensorMapEncodeTiled_t)(
     const char *err = dlerror();                                               \
     if (err) {                                                                 \
       PyErr_SetString(PyExc_RuntimeError,                                      \
-                      "Failed to retrieve " #symbolName " from libhggc.so"); \
+                      "Failed to retrieve " #symbolName " from libhggc.so");   \
       dlclose(libHandle);                                                      \
       return NULL;                                                             \
     }                                                                          \

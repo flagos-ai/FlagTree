@@ -99,23 +99,28 @@ static const Fp8ConversionDesc Fp8E5M2_to_Bf16(bool hasNativeFP) {
         "ppu.mov.u32 e112, 0x77800000;                \n"
         "ppu.prmt.b32 a0, 0, $2, 0x5140;              \n" // a0 = 0xf300f400
         "ppu.prmt.b32 a1, 0, $2, 0x7362;              \n" // a1 = 0xf100f200
-        "ppu.lop3.b32 b0, a0, 0x7fff7fff, 0, 0xc0;    \n" // b0 = a0 & 0x7fff7fff
+        "ppu.lop3.b32 b0, a0, 0x7fff7fff, 0, 0xc0;    \n" // b0 = a0 &
+                                                          // 0x7fff7fff
         "ppu.lop3.b32 b1, a1, 0x7fff7fff, 0, 0xc0;    \n" // (strip sign)
         "ppu.shr.b32  b0, b0, 3;                      \n" // b0 >>= 3
         "ppu.shr.b32  b1, b1, 3;                      \n" // shift into bf16
-                                                      // position
+                                                          // position
         "ppu.and.b32 c0, b0, 0xFFFF0000;              \n" // c0 = f3
         "ppu.shl.b32 c1, b0, 16;                      \n" // c1 = f4
         "ppu.and.b32 c2, b1, 0xFFFF0000;              \n" // c2 = f1
         "ppu.shl.b32 c3, b1, 16;                      \n" // c3 = f2
-        "ppu.mul.f32 d0, c0, e112;                    \n" // d0 = c0 * 0x77800000
-        "ppu.mul.f32 d1, c1, e112;                    \n" // d1 = c1 * 0x77800000
-        "ppu.mul.f32 d2, c2, e112;                    \n" // d2 = c2 * 0x77800000
-        "ppu.mul.f32 d3, c3, e112;                    \n" // d3 = c3 * 0x77800000
+        "ppu.mul.f32 d0, c0, e112;                    \n" // d0 = c0 *
+                                                          // 0x77800000
+        "ppu.mul.f32 d1, c1, e112;                    \n" // d1 = c1 *
+                                                          // 0x77800000
+        "ppu.mul.f32 d2, c2, e112;                    \n" // d2 = c2 *
+                                                          // 0x77800000
+        "ppu.mul.f32 d3, c3, e112;                    \n" // d3 = c3 *
+                                                          // 0x77800000
         "ppu.prmt.b32 b0, d0, d1, 0x3276;             \n" // b0 = 0xd3d4
         "ppu.prmt.b32 b1, d2, d3, 0x3276;             \n" // b1 = 0xd1d2
         "ppu.lop3.b32 $0, b0, 0x80008000, a0, 0xf8;   \n" // out0 =
-                                                      // b0|(0x80008000&a0)
+                                                          // b0|(0x80008000&a0)
         "ppu.lop3.b32 $1, b1, 0x80008000, a1, 0xf8;   \n" // (restore sign)
         "}",
         32, 32, 4};
@@ -125,17 +130,20 @@ static const Fp8ConversionDesc Fp8E5M2_to_Bf16(bool hasNativeFP) {
         ".reg .b32 a<2>, b<2>;                  \n" // if input = 0xf1f2f3f4
         ".reg .b32 e112;                        \n"
         "ppu.mov.u32 e112, 0x77807780;              \n" // 2**112 represented as
-                                                    // bf16x2
+                                                        // bf16x2
         "ppu.prmt.b32 a0, 0, $2, 0x5140;            \n" // a0 = 0xf300f400
         "ppu.prmt.b32 a1, 0, $2, 0x7362;            \n" // a1 = 0xf100f200
         "ppu.lop3.b32 b0, a0, 0x7fff7fff, 0, 0xc0;  \n" // b0 = a0 & 0x7fff7fff
         "ppu.lop3.b32 b1, a1, 0x7fff7fff, 0, 0xc0;  \n" // (strip sign)
         "ppu.shr.b32  b0, b0, 3;                    \n" // b0 >>= 3
-        "ppu.shr.b32  b1, b1, 3;                    \n" // shift into bf16 position
-        "ppu.lop3.b32 b0, b0, 0x80008000, a0, 0xf8; \n" // out0 = b0|(0x80008000&a0)
+        "ppu.shr.b32  b1, b1, 3;                    \n" // shift into bf16
+                                                        // position
+        "ppu.lop3.b32 b0, b0, 0x80008000, a0, 0xf8; \n" // out0 =
+                                                        // b0|(0x80008000&a0)
         "ppu.lop3.b32 b1, b1, 0x80008000, a1, 0xf8; \n" // (restore sign)
         "ppu.mul.rn.bf16x2 $0, b0, e112;            \n" // b0.exp += 2**7-2**4
-        "ppu.mul.rn.bf16x2 $1, b1, e112;            \n" // exponent compensate = 112
+        "ppu.mul.rn.bf16x2 $1, b1, e112;            \n" // exponent compensate =
+                                                        // 112
         "}",
         32, 32, 4};
   }
@@ -149,8 +157,10 @@ static const Fp8ConversionDesc Bf16_to_Fp8E5M2(bool hasNativeFP) {
         "{                                           \n" // bf16=fp8>>3 + 112<<7
         ".reg .u32 sign, sign<2>, nosign, nosign<2>; \n" // fp8_min = 0b00000000
         ".reg .u32 fp8_min, fp8_max, rn_;            \n" // fp8_max = 0b11111111
-        "ppu.mov.u32 fp8_min, 0x38003800;                \n" // so bf16_min = 0x3800
-        "ppu.mov.u32 fp8_max, 0x57e057e0;                \n" // so bf16_max = 0x57e0
+        "ppu.mov.u32 fp8_min, 0x38003800;                \n" // so bf16_min =
+                                                             // 0x3800
+        "ppu.mov.u32 fp8_max, 0x57e057e0;                \n" // so bf16_max =
+                                                             // 0x57e0
         "ppu.mov.u32 rn_, 0x00100010;                    \n" // round to nearest
         "ppu.and.b32 sign0, $1, 0x80008000;              \n" // sign0=in0&0x80008000
         "ppu.and.b32 sign1, $2, 0x80008000;              \n" // (store sign)
@@ -176,14 +186,20 @@ static const Fp8ConversionDesc Bf16_to_Fp8E5M2(bool hasNativeFP) {
         "ppu.or.b32 nosign1, nosign_1_0, nosign_1_1;     \n"
 
         "ppu.add.u32 nosign0, nosign0, rn_;              \n" // nosign0 += rn_
-        "ppu.add.u32 nosign1, nosign1, rn_;              \n" // (round to nearest)
+        "ppu.add.u32 nosign1, nosign1, rn_;              \n" // (round to
+                                                             // nearest)
         "ppu.sub.u32 nosign0, nosign0, 0x38003800;       \n" // nosign0-=0x38003800
-        "ppu.sub.u32 nosign1, nosign1, 0x38003800;       \n" // (compensate offset)
+        "ppu.sub.u32 nosign1, nosign1, 0x38003800;       \n" // (compensate
+                                                             // offset)
         "ppu.shl.b32 nosign0, nosign0, 3;                \n" // nosign0 <<= 3
-        "ppu.shl.b32 nosign1, nosign1, 3;                \n" // shift into to fp8e4
-        "ppu.prmt.b32 nosign, nosign0, nosign1, 0x7531;  \n" // nosign0 = 0xf100f200
-                                                         // nosign1 = 0xf300f400
-                                                         // nosign = 0xf3f4f1f2
+        "ppu.shl.b32 nosign1, nosign1, 3;                \n" // shift into to
+                                                             // fp8e4
+        "ppu.prmt.b32 nosign, nosign0, nosign1, 0x7531;  \n" // nosign0 =
+                                                             // 0xf100f200
+                                                             // nosign1 =
+                                                             // 0xf300f400
+                                                             // nosign =
+                                                             // 0xf3f4f1f2
         "ppu.or.b32 $0, nosign, sign;                    \n" // restore sign
         "}",
         32, 32, 4};

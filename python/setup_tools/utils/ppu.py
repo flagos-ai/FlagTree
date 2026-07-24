@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 def install_extension(*args, **kargs):
     # Prevent nvidia driver from being activated when using ppu
     drvfile = Path(__file__).parent.parent.parent.parent / 'third_party' / 'nvidia' / 'backend' / 'driver.py'

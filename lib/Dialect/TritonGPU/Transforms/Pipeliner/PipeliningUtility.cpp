@@ -577,9 +577,7 @@ bool mlir::triton::isTMALoad(Operation *op) {
   return isa<tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op);
 }
 
-bool mlir::triton::isAIULoad(Operation *op) {
-  return isa<tt::AIULoadOp>(op);
-}
+bool mlir::triton::isAIULoad(Operation *op) { return isa<tt::AIULoadOp>(op); }
 
 bool mlir::triton::canBeAsyncLoad(Operation *op) {
   if (mlir::triton::isTMALoad(op)) {
@@ -707,7 +705,8 @@ ttg::SharedEncodingTrait mlir::triton::getSharedEncoding(Operation *op) {
 #ifdef __PPU__
   if (isAIULoad(op)) {
     auto aiuOp = cast<tt::AIULoadOp>(op);
-    SmallVector<unsigned> order(aiuOp.getOrder().begin(), aiuOp.getOrder().end());
+    SmallVector<unsigned> order(aiuOp.getOrder().begin(),
+                                aiuOp.getOrder().end());
     int numWarps = ttg::lookupNumWarps(op);
     auto tileShape = ty.getShape();
     size_t rank = tileShape.size();

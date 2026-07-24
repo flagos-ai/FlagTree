@@ -583,7 +583,6 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
     return src
 
 
-
 def make_tensordesc_arg(arg, metadata):
     # Currently the host side tensor descriptors get decomposed in
     # the frontend to tensor desc, shape, and strides. We have no
@@ -592,7 +591,6 @@ def make_tensordesc_arg(arg, metadata):
     # above. Sadly this means we have to pass the shape and strides
     # twice.
     return [arg.base, *arg.shape, *arg.strides, arg.padding == "nan", *arg.shape, *arg.strides]
-
 
 
 def wrap_handle_tensordesc(launcher, signature, tensordesc_meta):

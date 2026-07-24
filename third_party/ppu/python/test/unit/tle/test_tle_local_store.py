@@ -23,10 +23,8 @@ import triton
 import triton.language as tl
 from triton.backends.compiler import GPUTarget
 
-tle_backend = pytest.importorskip(
-    "triton._C.libtriton.tle", reason="libtriton built without FLAGTREE_TLE")
-tle = pytest.importorskip(
-    "triton.experimental.tle.language", reason="tle language unavailable")
+tle_backend = pytest.importorskip("triton._C.libtriton.tle", reason="libtriton built without FLAGTREE_TLE")
+tle = pytest.importorskip("triton.experimental.tle.language", reason="tle language unavailable")
 
 
 def _ppu_sdk_available() -> bool:
@@ -61,12 +59,12 @@ def _elementwise_add_with_local_store(
     b_ptrs = b_ptr + xstride_b * xoffs[:, None]
     c_ptrs = c_ptr + xstride_c * xoffs[:, None]
 
-    a_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None,
-                           scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    b_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None,
-                           scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    c_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None,
-                           scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    a_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                           nv_mma_shared_layout=False)
+    b_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                           nv_mma_shared_layout=False)
+    c_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                           nv_mma_shared_layout=False)
     rows = tl.broadcast_to(tl.arange(0, XBLOCK)[:, None], (XBLOCK, YBLOCK))
     cols = tl.broadcast_to(tl.arange(0, YBLOCK)[None, :], (XBLOCK, YBLOCK))
     a_smem_ptrs = tle.gpu.local_ptr(a_smem, (rows, cols))
@@ -75,17 +73,14 @@ def _elementwise_add_with_local_store(
 
     for yoff in range(0, ynumel, YBLOCK):
         yoffs = tl.arange(0, YBLOCK) + yoff
-        tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem,
-                     [XBLOCK, YBLOCK])
-        tle.gpu.copy(b_ptrs + ystride_b * yoffs[None, :], b_smem,
-                     [XBLOCK, YBLOCK])
+        tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
+        tle.gpu.copy(b_ptrs + ystride_b * yoffs[None, :], b_smem, [XBLOCK, YBLOCK])
         aval = tl.load(a_smem_ptrs)
         bval = tl.load(b_smem_ptrs)
         tl.store(c_smem_ptrs, aval + bval)
         # The smem -> gm direction is the actual coverage gap closed by
         # this file — none of the other PPU TLE tests exercise it.
-        tle.gpu.copy(c_smem, c_ptrs + ystride_c * yoffs[None, :],
-                     [XBLOCK, YBLOCK])
+        tle.gpu.copy(c_smem, c_ptrs + ystride_c * yoffs[None, :], [XBLOCK, YBLOCK])
 
 
 _SIGNATURE = {
@@ -144,7 +139,6 @@ def test_local_store_emits_reverse_direction_copy():
     compiled = _compile(64, 64)
     ttgir = compiled.asm["ttgir"]
     markers = ("async_copy_local_to_global", "tt.store", "ttg.local_load")
-    assert any(m in ttgir for m in markers), (
-        f"reverse-direction copy disappeared from ttgir; expected one of {markers}\n"
-        f"--- ttgir tail ---\n{ttgir[-1500:]}"
-    )
+    assert any(m in ttgir
+               for m in markers), (f"reverse-direction copy disappeared from ttgir; expected one of {markers}\n"
+                                   f"--- ttgir tail ---\n{ttgir[-1500:]}")

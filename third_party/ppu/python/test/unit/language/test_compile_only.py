@@ -6,6 +6,7 @@ import re
 from triton.compiler import ASTSource
 from triton._internal_testing import is_ppu
 
+
 @pytest.mark.skipif(is_ppu(), reason="ptxas-blackwell is not installed on PPU")
 def test_compile_only_sm100() -> None:
 

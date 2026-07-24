@@ -2983,7 +2983,8 @@ def test_generic_reduction(device):
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_permute(dtype_str, shape, perm, num_ctas, device):
     check_type_supported(dtype_str, device)  # bfloat16 on cc < 80 will not be tested
-    if dtype_str == "float8e4b15" and (is_hip() or ((is_cuda() or is_ppu()) and torch.cuda.get_device_capability() >= (9, 0))):
+    if dtype_str == "float8e4b15" and (is_hip() or
+                                       ((is_cuda() or is_ppu()) and torch.cuda.get_device_capability() >= (9, 0))):
         pytest.skip("float8e4b15 not supported on ROCm or CUDA >= 9.0")
 
     # triton kernel
@@ -5856,6 +5857,7 @@ def test_num_ctas_pre_sm90(device):
 
     with pytest.raises(ValueError, match=msg):
         _kernel.warmup(src, grid=(1, ), num_ctas=2, arch=arch)
+
 
 # -----------------------
 # test propagate_nan

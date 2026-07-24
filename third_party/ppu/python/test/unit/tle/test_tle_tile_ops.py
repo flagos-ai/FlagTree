@@ -28,10 +28,8 @@ import triton
 import triton.language as tl
 from triton.backends.compiler import GPUTarget
 
-tle_backend = pytest.importorskip(
-    "triton._C.libtriton.tle", reason="libtriton built without FLAGTREE_TLE")
-tle = pytest.importorskip(
-    "triton.experimental.tle.language", reason="tle language unavailable")
+tle_backend = pytest.importorskip("triton._C.libtriton.tle", reason="libtriton built without FLAGTREE_TLE")
+tle = pytest.importorskip("triton.experimental.tle.language", reason="tle language unavailable")
 
 
 def _ppu_sdk_available() -> bool:
@@ -42,7 +40,6 @@ def _ppu_sdk_available() -> bool:
 
 
 _PPU_TARGET = GPUTarget("ppu", 80, 32)
-
 
 # ---------------------------------------------------------------------------
 # Kernels (mirrors of the upstream tests)
@@ -61,16 +58,12 @@ def _extract_tile_static(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr):
 
 
 @triton.jit
-def _extract_tile_dynamic(x_ptr, out_ptr, stride_xb, stride_xm, stride_xn,
-                          stride_ob, stride_om, stride_on,
-                          BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-                          TILE_M: tl.constexpr, TILE_N: tl.constexpr):
+def _extract_tile_dynamic(x_ptr, out_ptr, stride_xb, stride_xm, stride_xn, stride_ob, stride_om, stride_on,
+                          BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, TILE_M: tl.constexpr, TILE_N: tl.constexpr):
     pid_z = tl.program_id(0)
     offs_m = tl.arange(0, BLOCK_M)
     offs_n = tl.arange(0, BLOCK_N)
-    x_ptrs = (x_ptr + pid_z * stride_xb
-              + offs_m[:, None] * stride_xm
-              + offs_n[None, :] * stride_xn)
+    x_ptrs = (x_ptr + pid_z * stride_xb + offs_m[:, None] * stride_xm + offs_n[None, :] * stride_xn)
     bg_tile = tl.load(x_ptrs)
     if pid_z % 2 == 0:
         extracted_tile = tle.extract_tile(bg_tile, index=[0, 0], tile_shape=[TILE_M, TILE_N])
@@ -78,16 +71,12 @@ def _extract_tile_dynamic(x_ptr, out_ptr, stride_xb, stride_xm, stride_xn,
         extracted_tile = tle.extract_tile(bg_tile, index=[1, 1], tile_shape=[TILE_M, TILE_N])
     offs_tm = tl.arange(0, TILE_M)
     offs_tn = tl.arange(0, TILE_N)
-    out_ptrs = (out_ptr + pid_z * stride_ob
-                + offs_tm[:, None] * stride_om
-                + offs_tn[None, :] * stride_on)
+    out_ptrs = (out_ptr + pid_z * stride_ob + offs_tm[:, None] * stride_om + offs_tn[None, :] * stride_on)
     tl.store(out_ptrs, extracted_tile)
 
 
 @triton.jit
-def _insert_tile_static(x_ptr, y_ptr, out_ptr,
-                        M: tl.constexpr, N: tl.constexpr,
-                        TM: tl.constexpr, TN: tl.constexpr):
+def _insert_tile_static(x_ptr, y_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, TM: tl.constexpr, TN: tl.constexpr):
     offs_m = tl.arange(0, M)
     offs_n = tl.arange(0, N)
     x = tl.load(x_ptr + offs_m[:, None] * N + offs_n[None, :])
@@ -99,24 +88,18 @@ def _insert_tile_static(x_ptr, y_ptr, out_ptr,
 
 
 @triton.jit
-def _insert_tile_dynamic(x_ptr, y_ptr,
-                         stride_xb, stride_xm, stride_xn,
-                         stride_ym, stride_yn,
-                         BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-                         TILE_M: tl.constexpr, TILE_N: tl.constexpr):
+def _insert_tile_dynamic(x_ptr, y_ptr, stride_xb, stride_xm, stride_xn, stride_ym, stride_yn, BLOCK_M: tl.constexpr,
+                         BLOCK_N: tl.constexpr, TILE_M: tl.constexpr, TILE_N: tl.constexpr):
     pid_z = tl.program_id(0)
     pid_m = tl.program_id(1)
     pid_n = tl.program_id(2)
     offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    x_ptrs = (x_ptr + pid_z * stride_xb
-              + offs_m[:, None] * stride_xm
-              + offs_n[None, :] * stride_xn)
+    x_ptrs = (x_ptr + pid_z * stride_xb + offs_m[:, None] * stride_xm + offs_n[None, :] * stride_xn)
     bg_tile = tl.load(x_ptrs)
     offs_tm = tl.arange(0, TILE_M)
     offs_tn = tl.arange(0, TILE_N)
-    y_ptrs = (y_ptr + offs_tm[:, None] * stride_ym
-              + offs_tn[None, :] * stride_yn)
+    y_ptrs = (y_ptr + offs_tm[:, None] * stride_ym + offs_tn[None, :] * stride_yn)
     small_tile = tl.load(y_ptrs)
     if pid_z % 2 == 0:
         res_tile = tle.insert_tile(bg_tile, small_tile, index=[0, 0])
@@ -145,9 +128,7 @@ def _assert_no_tile_residue(compiled, op_name):
     llir = compiled.asm["llir"]
     pat = re.compile(r"\btle\.(extract_tile|insert_tile)[\s(]")
     leak = [ln for ln in llir.split("\n") if pat.search(ln)]
-    assert not leak, (
-        f"{op_name} pattern did not consume the op — found residue in llir:\n"
-        + "\n".join(leak[:8]))
+    assert not leak, (f"{op_name} pattern did not consume the op — found residue in llir:\n" + "\n".join(leak[:8]))
 
 
 def _assert_full_pipeline(compiled):
@@ -168,8 +149,7 @@ def test_extract_tile_static_index_compiles():
         pytest.skip("PPU SDK not available")
     compiled = _compile(
         _extract_tile_static,
-        signature={"x_ptr": "*fp32", "out_ptr": "*fp32",
-                   "M": "constexpr", "N": "constexpr"},
+        signature={"x_ptr": "*fp32", "out_ptr": "*fp32", "M": "constexpr", "N": "constexpr"},
         constexprs={"M": 512, "N": 512},
     )
     _assert_full_pipeline(compiled)
@@ -184,11 +164,11 @@ def test_extract_tile_dynamic_index_compiles():
         pytest.skip("PPU SDK not available")
     compiled = _compile(
         _extract_tile_dynamic,
-        signature={"x_ptr": "*fp32", "out_ptr": "*fp32",
-                   "stride_xb": "i32", "stride_xm": "i32", "stride_xn": "i32",
-                   "stride_ob": "i32", "stride_om": "i32", "stride_on": "i32",
-                   "BLOCK_M": "constexpr", "BLOCK_N": "constexpr",
-                   "TILE_M": "constexpr", "TILE_N": "constexpr"},
+        signature={
+            "x_ptr": "*fp32", "out_ptr": "*fp32", "stride_xb": "i32", "stride_xm": "i32", "stride_xn": "i32",
+            "stride_ob": "i32", "stride_om": "i32", "stride_on": "i32", "BLOCK_M": "constexpr", "BLOCK_N": "constexpr",
+            "TILE_M": "constexpr", "TILE_N": "constexpr"
+        },
         constexprs={"BLOCK_M": 32, "BLOCK_N": 32, "TILE_M": 16, "TILE_N": 16},
     )
     _assert_full_pipeline(compiled)
@@ -201,9 +181,10 @@ def test_insert_tile_static_index_compiles():
         pytest.skip("PPU SDK not available")
     compiled = _compile(
         _insert_tile_static,
-        signature={"x_ptr": "*fp32", "y_ptr": "*fp32", "out_ptr": "*fp32",
-                   "M": "constexpr", "N": "constexpr",
-                   "TM": "constexpr", "TN": "constexpr"},
+        signature={
+            "x_ptr": "*fp32", "y_ptr": "*fp32", "out_ptr": "*fp32", "M": "constexpr", "N": "constexpr", "TM":
+            "constexpr", "TN": "constexpr"
+        },
         constexprs={"M": 512, "N": 512, "TM": 128, "TN": 128},
     )
     _assert_full_pipeline(compiled)
@@ -216,11 +197,11 @@ def test_insert_tile_dynamic_index_compiles():
         pytest.skip("PPU SDK not available")
     compiled = _compile(
         _insert_tile_dynamic,
-        signature={"x_ptr": "*fp32", "y_ptr": "*fp32",
-                   "stride_xb": "i32", "stride_xm": "i32", "stride_xn": "i32",
-                   "stride_ym": "i32", "stride_yn": "i32",
-                   "BLOCK_M": "constexpr", "BLOCK_N": "constexpr",
-                   "TILE_M": "constexpr", "TILE_N": "constexpr"},
+        signature={
+            "x_ptr": "*fp32", "y_ptr": "*fp32", "stride_xb": "i32", "stride_xm": "i32", "stride_xn": "i32", "stride_ym":
+            "i32", "stride_yn": "i32", "BLOCK_M": "constexpr", "BLOCK_N": "constexpr", "TILE_M": "constexpr", "TILE_N":
+            "constexpr"
+        },
         constexprs={"BLOCK_M": 32, "BLOCK_N": 32, "TILE_M": 16, "TILE_N": 16},
     )
     _assert_full_pipeline(compiled)

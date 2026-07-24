@@ -30,8 +30,7 @@ namespace mlir::triton::ppu {
 
 class TargetInfo : public mlir::triton::TargetInfoBase {
 public:
-  TargetInfo(int computeCapability)
-      : computeCapability(computeCapability) {}
+  TargetInfo(int computeCapability) : computeCapability(computeCapability) {}
 
   bool supportMaximumMinimum() const override;
 
