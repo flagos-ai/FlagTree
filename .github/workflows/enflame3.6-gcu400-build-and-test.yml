@@ -25,6 +25,7 @@ on:
     branches: [ "main", "triton_v3.6.x" ]
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
