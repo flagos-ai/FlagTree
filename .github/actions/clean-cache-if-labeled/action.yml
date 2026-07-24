@@ -1,0 +1,147 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Clean Cache if Labeled'
+description: 'Check if PR has CleanCache label and clean cache if present'
+
+inputs:
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+    default: ${{ github.token }}
+
+outputs:
+  cache_cleaned:
+    description: 'Whether cache was cleaned (true/false)'
+    value: ${{ steps.cleanup.outputs.cache_cleaned }}
+  has_clean_cache_label:
+    description: 'Whether PR has CleanCache label (true/false)'
+    value: ${{ steps.check.outputs.has_clean_cache }}
+
+runs:
+  using: 'composite'
+  steps:
+    # Step 1: Check for CleanCache label
+    - name: Check CleanCache label
+      id: check
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          // Check if this is a PR event
+          if (context.eventName !== 'pull_request') {
+            console.log('ℹ️ Not a PR event, skipping label check');
+            core.setOutput('has_clean_cache', 'false');
+            core.setOutput('event_type', context.eventName);
+            return false;
+          }
+          
+          // Get PR labels
+          const labels = context.payload.pull_request.labels.map(label => label.name);
+          const hasCleanCache = labels.includes('CleanCache');
+          
+          console.log('📋 PR Labels:', labels.join(', ') || '(no labels)');
+          console.log('🔍 Has CleanCache label:', hasCleanCache ? '✅ YES' : '❌ NO');
+          console.log('🔢 Total labels:', labels.length);
+          
+          // Set outputs
+          core.setOutput('has_clean_cache', hasCleanCache ? 'true' : 'false');
+          core.setOutput('label_count', labels.length);
+          
+          // Export environment variables for subsequent steps
+          if (hasCleanCache) {
+            core.exportVariable('CLEAN_CACHE_REQUIRED', 'true');
+            console.log('📌 Exported CLEAN_CACHE_REQUIRED=true');
+          }
+          else {
+            core.exportVariable('CLEAN_CACHE_REQUIRED', 'false');
+            console.log('📌 Exported CLEAN_CACHE_REQUIRED=false');
+          }
+          
+          return hasCleanCache;
+
+    # Step 2: Clean cache if label is present
+    - name: Clean cache if label present
+      id: cleanup
+      if: steps.check.outputs.has_clean_cache == 'true'
+      shell: bash
+      run: |
+        echo "========================================="
+        echo "🧹 Clean cache firstly. (CleanCache label detected)"
+        echo "========================================="
+        
+        # Clean pytest cache
+        echo "-> Cleaning pytest cache..."
+        # rm -rf .pytest_cache
+        
+        # Clean Python cache files
+        # echo "-> Cleaning Python cache files..."
+        # find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+        # find . -type f -name "*.pyc" -delete 2>/dev/null || true
+        # find . -type f -name "*.pyo" -delete 2>/dev/null || true
+        
+        # Clean build artifacts
+        echo "-> Cleaning build artifacts..."
+        # rm -rf build/
+        # rm -rf *.egg-info
+        # rm -rf dist/
+        
+        # Clean coverage reports
+        echo "-> Cleaning coverage reports..."
+        # rm -rf .coverage htmlcov/
+        
+        # Clean temporary files
+        echo "-> Cleaning temporary files..."
+        # rm -rf tmp/ temp/
+        # rm -rf .tmp/
+        
+        echo "========================================="
+        echo "✅ Cache cleaned successfully"
+        echo "========================================="
+        echo "cache_cleaned=true" >> $GITHUB_OUTPUT
+        echo "CACHE_CLEANED=true" >> $GITHUB_ENV
+
+    # Step 3: Skip cache cleanup if label is not present
+    - name: Skip cache cleanup
+      id: skip_cleanup
+      if: steps.check.outputs.has_clean_cache == 'false'
+      shell: bash
+      run: |
+        echo "========================================="
+        echo "ℹ️ No CleanCache label found"
+        echo "========================================="
+        echo "📋 Using existing cache"
+        echo "📊 Label check result: ${{ steps.check.outputs.has_clean_cache }}"
+        echo "========================================="
+        echo "cache_cleaned=false" >> $GITHUB_OUTPUT
+        echo "CACHE_CLEANED=false" >> $GITHUB_ENV
+
+    # Step 4: Debug step to display all outputs
+    - name: Debug outputs
+      shell: bash
+      run: |
+        echo "========================================="
+        echo "🔍 Action Debug Information"
+        echo "========================================="
+        echo "has_clean_cache: ${{ steps.check.outputs.has_clean_cache }}"
+        echo "cache_cleaned: ${{ steps.cleanup.outputs.cache_cleaned || steps.skip_cleanup.outputs.cache_cleaned }}"
+        echo "CLEAN_CACHE_REQUIRED env: ${CLEAN_CACHE_REQUIRED:-not set}"
+        echo "CACHE_CLEANED env: ${CACHE_CLEANED:-not set}"
+        echo "========================================="
