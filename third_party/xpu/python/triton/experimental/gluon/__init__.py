@@ -1,8 +1,3 @@
-# flagtree backend path specialization
-from triton.flagtree_spec import spec_path
-
-spec_path(__path__)
-
 from triton._flagtree_backend import FLAGTREE_BACKEND
 from . import nvidia
 # flagtree backend path specialization

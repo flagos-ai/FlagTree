@@ -1,3 +1,26 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
@@ -97,39 +120,48 @@ static Value branchSelect(ConversionPatternRewriter &rewriter, Location loc,
 
 static Value createWarpScanStepI32(Location loc,
                                    ConversionPatternRewriter &rewriter,
-                                   Value val, int offset) {
-  auto intTy = dyn_cast<IntegerType>(val.getType());
-  if (!intTy || intTy.getWidth() != 32)
-    return Value();
+                                   const TargetInfoBase &targetInfo, Value val,
+                                   int offset, Value laneId, Type elemTy) {
+  if (targetInfo.isHCU()) {
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    Value shuffled = targetInfo.shuffleUp(rewriter, loc, val, offset);
+    Value pred = b.icmp_sge(laneId, b.i32_val(offset));
+    Value added = createAdd(loc, rewriter, shuffled, val, elemTy);
+    return b.select(pred, added, val);
+  } else {
+    auto intTy = dyn_cast<IntegerType>(val.getType());
+    if (!intTy || intTy.getWidth() != 32)
+      return Value();
 
-  mlir::triton::PTXBuilder ptxBuilder;
-  auto *out = ptxBuilder.newOperand("=r", /*init=*/false);
-  auto *in = ptxBuilder.newOperand(val, "r");
-  auto i32Ty = rewriter.getI32Type();
-  auto *offsetOpr = ptxBuilder.newOperand(
-      LLVM::ConstantOp::create(rewriter, loc, i32Ty,
-                               rewriter.getI32IntegerAttr(offset)),
-      "r");
-  auto *clampOpr = ptxBuilder.newOperand(
-      LLVM::ConstantOp::create(rewriter, loc, i32Ty,
-                               rewriter.getI32IntegerAttr(0)),
-      "r");
-  auto *maskOpr = ptxBuilder.newOperand(
-      LLVM::ConstantOp::create(rewriter, loc, i32Ty,
-                               rewriter.getI32IntegerAttr(-1)),
-      "r");
-  std::string ptx = "{\n"
-                    "  .reg .s32 r0;\n"
-                    "  .reg .pred p;\n"
-                    "  shfl.sync.up.b32 r0|p, $1, $2, $3, $4;\n"
-                    "  @p add.s32 r0, r0, $1;\n"
-                    "  mov.s32 $0, r0;\n"
-                    "}\n";
-  auto &shflScan = *ptxBuilder.create(ptx);
-  shflScan({out, in, offsetOpr, clampOpr, maskOpr},
-           /*onlyAttachMLIRArgs=*/true);
-  return ptxBuilder.launch(rewriter, loc, val.getType(),
-                           /*hasSideEffects=*/false);
+    mlir::triton::PTXBuilder ptxBuilder;
+    auto *out = ptxBuilder.newOperand("=r", /*init=*/false);
+    auto *in = ptxBuilder.newOperand(val, "r");
+    auto i32Ty = rewriter.getI32Type();
+    auto *offsetOpr = ptxBuilder.newOperand(
+        LLVM::ConstantOp::create(rewriter, loc, i32Ty,
+                                 rewriter.getI32IntegerAttr(offset)),
+        "r");
+    auto *clampOpr = ptxBuilder.newOperand(
+        LLVM::ConstantOp::create(rewriter, loc, i32Ty,
+                                 rewriter.getI32IntegerAttr(0)),
+        "r");
+    auto *maskOpr = ptxBuilder.newOperand(
+        LLVM::ConstantOp::create(rewriter, loc, i32Ty,
+                                 rewriter.getI32IntegerAttr(-1)),
+        "r");
+    std::string ptx = "{\n"
+                      "  .reg .s32 r0;\n"
+                      "  .reg .pred p;\n"
+                      "  shfl.sync.up.b32 r0|p, $1, $2, $3, $4;\n"
+                      "  @p add.s32 r0, r0, $1;\n"
+                      "  mov.s32 $0, r0;\n"
+                      "}\n";
+    auto &shflScan = *ptxBuilder.create(ptx);
+    shflScan({out, in, offsetOpr, clampOpr, maskOpr},
+             /*onlyAttachMLIRArgs=*/true);
+    return ptxBuilder.launch(rewriter, loc, val.getType(),
+                             /*hasSideEffects=*/false);
+  }
 }
 
 struct ExclusiveCumsumOpConversion
@@ -187,6 +219,8 @@ struct ExclusiveCumsumOpConversion
       return getSharedElemPtr(loc, b, baseSharedMem, llvmElemTy, logicalIndex);
     };
 
+    const int warpShift = llvm::Log2_32(threadsPerWarp);
+
     // TRT/CUB-aligned fastpath for topk histogram rounds:
     // - rank-1, one element per thread
     // - no reverse remapping
@@ -195,14 +229,15 @@ struct ExclusiveCumsumOpConversion
     // generic logical-index path.
     if (!op.getReverse() && inputVals.size() == 1 &&
         axisExtent == static_cast<int64_t>(numThreadsPerCTA) &&
-        threadsPerWarp == 32 && numWarps > 0 && numWarps <= 32) {
+        !(threadsPerWarp % 32) && numWarps > 0 && numWarps <= 32) {
       Value laneId = b.and_(threadId, b.i32_val(threadsPerWarp - 1));
-      Value warpId = b.lshr(threadId, b.i32_val(5));
+      Value warpId = b.lshr(threadId, b.i32_val(warpShift));
       Value orderedVal = inputVals.front();
       Value scanVal = orderedVal;
       for (int offset = 1; offset < threadsPerWarp; offset <<= 1) {
         if (Value scanStep =
-                createWarpScanStepI32(loc, rewriter, scanVal, offset)) {
+                createWarpScanStepI32(loc, rewriter, targetInfo, scanVal,
+                                      offset, laneId, llvmElemTy)) {
           scanVal = scanStep;
         } else {
           Value shfl = targetInfo.shuffleUp(rewriter, loc, scanVal, offset);
@@ -297,10 +332,10 @@ struct ExclusiveCumsumOpConversion
     // warp-scan + shared-memory cross-warp prefix scan.
     // This is the dominant configuration for topk histogram threshold search.
     if (inputVals.size() == 1 && axisExtent <= numThreadsPerCTA &&
-        threadsPerWarp == 32 && numWarps > 0 && numWarps <= 32) {
+        !(threadsPerWarp % 32) && numWarps > 0 && numWarps <= 32) {
       Value axisExtentVal = b.i32_val(static_cast<int32_t>(axisExtent));
       Value laneId = b.and_(threadId, b.i32_val(threadsPerWarp - 1));
-      Value warpId = b.lshr(threadId, b.i32_val(5));
+      Value warpId = b.lshr(threadId, b.i32_val(warpShift));
       Value activeOrdered = b.icmp_ult(threadId, axisExtentVal);
 
       Value orderedPtr = getElemPtr(threadId);
@@ -311,7 +346,8 @@ struct ExclusiveCumsumOpConversion
       Value scanVal = orderedVal;
       for (int offset = 1; offset < threadsPerWarp; offset <<= 1) {
         if (Value scanStep =
-                createWarpScanStepI32(loc, rewriter, scanVal, offset)) {
+                createWarpScanStepI32(loc, rewriter, targetInfo, scanVal,
+                                      offset, laneId, llvmElemTy)) {
           scanVal = scanStep;
         } else {
           Value shfl = targetInfo.shuffleUp(rewriter, loc, scanVal, offset);

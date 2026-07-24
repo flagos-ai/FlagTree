@@ -1,3 +1,23 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 # Two-stage RPM build: produce the wheel and assemble the RPM on the same
 # RPM-family base image. The wheel's Python ABI tag must match the Python
 # interpreter used by rpmbuild/pip in the assembler stage.
@@ -41,14 +61,16 @@ COPY test /src/test
 COPY unittest /src/unittest
 COPY CMakeLists.txt pyproject.toml setup.py MANIFEST.in LICENSE README.md /src/
 
-# FLAGTREE_DEFAULT_BACKENDS=nvidia,amd matches the historical package
-# contents and keeps the tileir backend (GCC >= 13 + cuda-tile
+# Keep the tileir backend (GCC >= 13 + cuda-tile
 # submodule) out of the distro build.
+# The trailing rm keeps only /wheels in this layer: the CMake build
+# tree and the LLVM tarball cache (~/.triton) would otherwise add
+# several GB and push CI runners into ENOSPC.
 RUN unset FLAGTREE_BACKEND && \
-    FLAGTREE_DEFAULT_BACKENDS=nvidia,amd \
     MAX_JOBS=4 python3 -m pip wheel . --no-build-isolation --no-deps -w /wheels -v && \
     ls -lh /wheels/ && \
-    test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)"
+    test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)" && \
+    rm -rf /src/build /root/.triton
 
 # ---------- Stage 2: assemble the .rpm ----------
 FROM ${RPM_BASE_IMAGE} AS rpm-assembler
@@ -81,6 +103,12 @@ RUN rpmbuild -ba /root/rpmbuild/SPECS/flagtree.spec \
         --define "flagtree_backend nvidia" \
         --define "wheel_dir /wheels" && \
     ls -lh /root/rpmbuild/RPMS/x86_64/
+
+# Smoke test: install the freshly built rpm and import the package.
+# Catches the "installs fine, fails at import" class (missing libs,
+# bad rpath, glibc mismatch) that rpmbuild alone cannot see.
+RUN dnf install -y /root/rpmbuild/RPMS/x86_64/python3-flagtree-*.x86_64.rpm && \
+    python3 -c "import triton; print(getattr(triton, '__version__', 'import ok'))"
 
 # ---------- Stage 3: extract just the rpms ----------
 FROM scratch AS rpm-output

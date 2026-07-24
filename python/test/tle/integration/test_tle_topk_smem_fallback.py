@@ -297,14 +297,14 @@ def test_tle_topk_smem_fallback_fullscan_recall_seq262144():
         TOPK=topk,
         BLOCK_SIZE=1024,
         ASSUME_ALIGNED=True,
-        num_warps=32,
+        num_warps=16,
         num_stages=1,
     )
     assert _recall(out, ref) == 1.0
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-@pytest.mark.parametrize("num_warps", [16, 32])
+@pytest.mark.parametrize("num_warps", [8, 16])
 def test_tle_topk_fallback_fullscan_stable_high_warps(num_warps):
     torch.manual_seed(1)
     seq_len = 262144

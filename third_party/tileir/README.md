@@ -35,13 +35,7 @@ FlagTree's normal NVIDIA assemblers, managed by `setup.py` at:
 - `third_party/nvidia/backend/bin/ptxas-blackwell`
 
 `pip install` and `pip install -e` initialize the pinned cuda-tile submodule
-automatically through `setup.py`; no manual submodule command is needed. If you
-invoke CMake directly without `setup.py`, initialize the submodule first:
-
-```bash
-git submodule update --init --recursive \
-  third_party/tileir/third_party/cuda-tile
-```
+automatically through `setup.py`; no manual submodule command is needed.
 
 At runtime, TileIR looks for `tileiras` in this order:
 

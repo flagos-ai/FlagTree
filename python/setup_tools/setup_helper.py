@@ -1,3 +1,23 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import os
 import shutil
 import sys
@@ -341,6 +361,46 @@ def try_setup_flagtree_mlir(pkg_name: str = "mlir") -> bool:
 # --------------------------
 
 
+# flagtree backend specialization
+class SpecPackageHelper:
+
+    @staticmethod
+    def get_spec_packages():
+        spec_install_dir = os.path.join("python", "triton", "spec")
+        yield "triton.spec", spec_install_dir
+
+        spec_dirs = sorted(
+            (entry for entry in os.scandir(spec_install_dir) if entry.is_dir() and entry.name != "__pycache__"),
+            key=lambda entry: entry.name)
+        for spec_dir in spec_dirs:
+            name = spec_dir.name
+            source_dir = spec_dir.path
+            for root, dirs, _files in os.walk(source_dir):
+                dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
+                relative_dir = os.path.relpath(root, source_dir)
+                package = f"triton.spec.{name}"
+                if relative_dir != ".":
+                    package += "." + relative_dir.replace(os.sep, ".")
+                yield package, root
+
+    @staticmethod
+    def get_excluded_packages():
+        return ["triton.spec", "triton.spec.*"]
+
+
+def get_excluded_package_data():
+    cache_patterns = [
+        "__pycache__/*",
+        "**/__pycache__/*",
+        "*.py[cod]",
+        "**/*.py[cod]",
+    ]
+    return {
+        "": cache_patterns,
+        "triton": ["spec/*"],
+    }
+
+
 class CommonUtils:
 
     @staticmethod
@@ -499,6 +559,8 @@ cache = FlagTreeCache()
 
 download_flagtree_third_party("flagcx", condition=(not flagtree_backend), hook="handle_flagcx", required=True)
 
+download_flagtree_third_party("tileir", condition=(flagtree_backend == "tileir"), required=True)
+
 handle_flagtree_backend()
 
 # iluvatar
@@ -531,7 +593,7 @@ cache.store(file="mthreads_local_binary", condition=("mthreads" == flagtree_back
 
 cache.store(files=("ld.lld", "llc"), condition=("mthreads" == flagtree_backend),
             copy_src_path=f"{cache.dir_path}/{flagtree_backend}/mthreads_local_binary",
-            copy_dst_path=f"third_party/{flagtree_backend}/bin")
+            copy_dst_path=f"third_party/{flagtree_backend}/backend/bin")
 
 # ascend
 cache.store(

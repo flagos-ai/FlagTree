@@ -1,3 +1,23 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 from __future__ import annotations
 import ast
 import copy
@@ -13,11 +33,12 @@ from mlir import ir
 from mlir.passmanager import PassManager
 
 from ..mlir.codegen import MLIRCodeGenerator
+from triton.experimental.tle.raw.runtime import RawJITFunction
 
 _GCU_COMPILER_OPT = "/opt/triton_gcu/bin/gcu-compiler-opt"
 
 
-class TOPSMLIRJITFunction(object):
+class TOPSMLIRJITFunction(RawJITFunction):
     """TLE-Raw dialect for TOPS MLIR EDSL: writes MLIR that lowers to GCU-compatible LLVM IR.
 
     Usage:
@@ -32,8 +53,7 @@ class TOPSMLIRJITFunction(object):
 
     def __init__(self, fn: Any, pipeline: Optional[List[str]] = None, context: Optional[ir.Context] = None,
                  arch: str = "gcu400", use_gcu_opt: bool = True, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.fn: Final[Any] = fn
+        super().__init__(fn, **kwargs)
         self.arch: Final[str] = arch
         self.use_gcu_opt: Final[bool] = use_gcu_opt
         self.region_dialect: Final[str] = "tops"
@@ -53,7 +73,6 @@ class TOPSMLIRJITFunction(object):
         ctx = ir.Context() if context is None else context
         ctx.allow_unregistered_dialects = True
         self.context: Final[ir.Context] = ctx
-        self.__triton_builtin__: Final[bool] = True
 
     def __deepcopy__(self, memo: Dict[int, Any]) -> TOPSMLIRJITFunction:
         return self.__class__(
@@ -345,15 +364,9 @@ class TOPSMLIRJITFunction(object):
         body = "\n".join(lines[start:end])
         return f"module {{\n{body}\n}}\n"
 
-    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = ""):
-        return builder.create_tle_raw_region_by_llvm_func(
-            llvm,
-            self.region_dialect,
-            self.arg_dialect,
-            handles,
-            alias_indices,
-            hint,
-        )
+    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
+                              extern_func_name: str = ""):
+        return super().create_region_by_llvm(builder, llvm, handles, alias_indices, hint, extern_func_name)
 
     def make_llvm(self, context=None) -> str:
         if self.use_gcu_opt and os.path.isfile(_GCU_COMPILER_OPT):

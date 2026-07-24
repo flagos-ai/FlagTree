@@ -121,6 +121,10 @@ void init_triton_hcu_passes_ttgpuir(py::module &&m) {
               arch, waspNumLoadWarps, waspNumMmaWarps, wdraEnabled,
               wdraNumLoadRegs, wdraNumMmaRegsMain, wdraNumMmaRegsTail));
         });
+  ADD_PASS_WRAPPER_1(
+      "set_func_inline_attrs",
+      mlir::triton::HCU::createTritonHCUGPUSetFuncInlineAttrsPass,
+      const std::string &);
 }
 
 void addControlConstant(llvm::Module *module, const char *name,

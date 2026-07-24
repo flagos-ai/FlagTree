@@ -16,6 +16,7 @@
 
 在提交 Pull Request 时，贡献者应描述所做的更改以及更改的原因。
 如果可以设计测试用例，请提供相应测试，添加到 `.github/workflow/` 。
+请参考 `documents/CopyrightNoticeGuidelines_cn.md` 添加版权声明。
 拉取请求在合并前需要至少 __一位__ 成员的批准，而且需要通过代码的持续集成检查。
 最优秀的 Pull Request 上面有一千条评审意见、讨论和修改，其次是一百条。
 

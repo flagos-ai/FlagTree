@@ -1,3 +1,23 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 # flagtree tle
 from __future__ import annotations
 
@@ -5,7 +25,7 @@ import copy
 from dataclasses import dataclass, asdict
 from itertools import product
 from typing import Any, Iterable, Mapping, Sequence, List, Tuple, Union, Optional, Dict
-
+from enum import Enum
 import triton.language.core as tl
 
 Axis = Tuple[str, int]
@@ -27,12 +47,27 @@ def _as_positive_int(value: Any, label: str) -> int:
     return value
 
 
+def _parse_src_arg(builder, src, index=0):
+    try:
+        from triton.runtime import DistributedRtContext
+        src = tl._unwrap_if_constexpr(src)
+        if isinstance(src, DistributedRtContext):
+            return builder.get_int64(src[index])
+        elif src:
+            return src.handle
+        else:
+            return None
+    except Exception:
+        return src.handle
+
+
 # Get the current device id
 @tl.builtin
-def _get_local_rank(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
+def _get_local_rank(device_dptr, _semantic=None, ret_dtype=tl.int32):
     builder = _semantic.builder
     ret_ir_ty = ret_dtype.to_ir(builder)
-    result = builder.get_device_id(ret_ir_ty, dev_mem_ptr.handle)
+    ptr = _parse_src_arg(builder, device_dptr, 1)
+    result = builder.get_device_id(ret_ir_ty, ptr)
     return tl.tensor(result, ret_dtype)
 
 
@@ -43,6 +78,28 @@ def n_pes(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
     ret_ir_ty = ret_dtype.to_ir(builder)
     result = builder.get_n_pes(ret_ir_ty, dev_mem_ptr.handle)
     return tl.tensor(result, ret_dtype)
+
+
+class BarrierKind(str, Enum):
+    ARRIVE = "arrive"
+    WAIT = "wait"
+    SYNC = "sync"
+
+
+class MemoryOrder(str, Enum):
+    RELAXED = "relaxed"
+    ACQUIRE = "acquire"
+    RELEASE = "release"
+    ACQ_REL = "acqrel"
+
+
+class GroupKind(str, Enum):
+    THREAD = "thread"
+    WARP = "warp"
+    BLOCK = "block"
+    TILE_SPAN = "tile_span"
+    LANES = "lanes"
+    GRID = "grid"
 
 
 @dataclass
@@ -575,7 +632,7 @@ def _resolve_launch_axis(mesh: device_mesh, axis: str | int) -> int:
 def shard_id(
     mesh: device_mesh,
     axis: str | int,
-    comm_ptr=None,
+    device_dptr=None,
     _semantic=None,
 ):
     """
@@ -587,8 +644,8 @@ def shard_id(
     mesh = tl._unwrap_if_constexpr(mesh)
     axis = tl._unwrap_if_constexpr(axis)
 
-    if comm_ptr is not None:
-        return _get_local_rank(comm_ptr, _semantic=_semantic, ret_dtype=tl.int32)
+    if axis in ("device", "node"):
+        return _get_local_rank(device_dptr, _semantic=_semantic, ret_dtype=tl.int32)
 
     if not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh, got {type(mesh).__name__}")
@@ -613,8 +670,40 @@ def shard_id(
     return coord
 
 
+def _parse_device_barrier_args(argType) -> str:
+    argType = tl._unwrap_if_constexpr(argType)
+    argTypes = (BarrierKind, GroupKind, MemoryOrder)
+    if isinstance(argType, argTypes):
+        return argType.value
+    else:
+        return str(argType).lower()
+
+
+def check_and_handle_device_intra_barrier(space: str = None, device_dptr=None,
+                                          barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                                          group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
+                                          order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None):
+    if space and space in ("device", "node"):
+        builder = _semantic.builder
+        ptr = _parse_src_arg(builder, device_dptr, 1)
+        builder.create_distributed_barrier(
+            src=ptr,
+            barrier_index=index or 0,
+            space=_parse_device_barrier_args("device"),
+            group_kind=_parse_device_barrier_args(group_kind),
+            order=_parse_device_barrier_args(order),
+            barrier_kind=_parse_device_barrier_args(barrier_kind),
+        )
+        return True
+    return False
+
+
 @tl.builtin
-def distributed_barrier(mesh: device_mesh | None = None, _semantic=None):
+def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space: str = None,
+                        group_kind: str | GroupKind = GroupKind.BLOCK,
+                        barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                        order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None,
+                        index: int | None = 0):
     """
     M3 entrypoint: distributed synchronization primitive.
 
@@ -626,6 +715,10 @@ def distributed_barrier(mesh: device_mesh | None = None, _semantic=None):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
     subgroup = None
     use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
+
+    if check_and_handle_device_intra_barrier(space=space, device_dptr=device_dptr, barrier_kind=barrier_kind,
+                                             group_kind=group_kind, index=index, order=order, _semantic=_semantic):
+        return None
 
     if use_grid:
         if mesh is not None:
@@ -753,7 +846,7 @@ def _create_remote_pointers_tensor(
         "cluster": (dtype, 7),
         "device": (dtype, 1),
     }.get(space))
-    if tensor.type.is_block():
+    if space == 'cluster' and tensor and tensor.type.is_block():
         remote_type = tl.block_type(remote_ptr_dtype, list(tensor.shape)).to_ir(builder)
     else:
         remote_type = remote_ptr_dtype.to_ir(builder)
@@ -778,11 +871,12 @@ def _create_remote_pointers_tensor(
         # automatic injection (e.g. inside this helper).
         if offset_tensor.dtype != tl.int64:
             offset_tensor = tl.cast(offset_tensor, tl.int64, _semantic=_semantic)
-        remote_op = builder.create_remote_pointers(remote_type, tensor.handle, shard_id_tensor.handle, space,
+        ptr = _parse_src_arg(builder, tensor, 0)
+        remote_op = builder.create_remote_pointers(remote_type, ptr, shard_id_tensor.handle, space,
                                                    offset_tensor.handle)
     else:
         remote_op = builder.create_remote_pointers(remote_type, tensor.handle, shard_id_tensor.handle, space)
-    if tensor.type.is_block():
+    if space == "cluster" and tensor and tensor.type.is_block():
         return tl.tensor(remote_op.get_result(0), tl.block_type(remote_ptr_dtype, list(tensor.shape)))
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
 
@@ -828,7 +922,7 @@ def _remote_pointer(
     _semantic=None,
 ) -> tl.tensor:
 
-    if not isinstance(tensor, tl.tensor):
+    if not isinstance(tensor, tl.tensor) and space not in ("device", "node"):
         raise TypeError(f"tensor must be tl.tensor, got {type(tensor).__name__}")
 
     space = tl._unwrap_if_constexpr(space)
@@ -857,8 +951,8 @@ def _remote_pointer(
 
 @tl.builtin
 def remote(
-    tensor,
-    shard_id,
+    tensor=tl.tensor | None,
+    shard_id=None,
     scope: device_mesh | None = None,
     space: str = "cluster",
     dtype: tl.dtype = None,
@@ -893,7 +987,7 @@ def remote(
 
     # Direct pointer path: support local_ptr scalar/tensor values and return
     # remote pointer with preserved shape.
-    if isinstance(tensor, tl.tensor):
+    if isinstance(tensor, tl.tensor) or (space in ("device", "node")):
         return _remote_pointer(tensor, shard_id, scope=scope, space=space, _semantic=_semantic, dtype=dtype,
                                offset=offset)
 

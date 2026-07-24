@@ -1,123 +1,208 @@
-# Labels applied to PRs based on the files changed.
-# Backend labels are set when any file under the backend's third_party/ directory changes.
-# The DOC label is set when every changed file is a documentation file
-# (matches the same "docs-only" definition used by check-docs-only action:
-#  *.md / *.yml / *.txt / CODEOWNERS, but NOT CMakeLists.txt).
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 
-# ---- Backend labels ----
+# ==========================================
+# 1. Core File Labels (CORE)
+# Includes core framework code and specific
+# third-party core libraries.
+# ==========================================
+CORE:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'bin/**'
+          - 'cmake/**'
+          - 'include/**'
+          - 'lib/**'
+          - 'python/**'
+          - 'scripts/**'
+          - 'test/**'
+          - 'unittest/**'
+          - 'utils/**'
+          - 'third_party/proton/**'
+          - 'third_party/tle/**'
+          - 'third_party/f2reduce/**'
+          - 'CMakeLists.txt'
+          - 'Makefile'
+          - 'MANIFEST.in'
+          - 'pyproject.toml'
+          - 'setup.py'
+
+# ==========================================
+# 2. CI/CD Labels
+# Applied if any file under .github/workflows
+# or .github/actions is modified.
+# ==========================================
+CI/CD:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/actions/**'
+          - '.github/workflows/**'
+          - '.github/CODEOWNERS'
+          - '.github/dependabot.yml'
+          - '.github/new-prs-labeler.yml'
+          - '.github/PULL_REQUEST_TEMPLATE.md'
+          - 'packaging/**'
+
+# ==========================================
+# 3. Documentation Labels (DOC)
+# Applied if the PR contains modifications to
+# any of the following file types.
+# ==========================================
+DOC:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*.md'
+          - '**/*.txt'
+          - '**/*.rst'
+          - '**/*.png'
+          - '**/*.jpg'
+          - '**/*.jpeg'
+          - '**/*.gif'
+          - '**/*.ico'
+          - 'LICENSE'
+
+# ==========================================
+# 4. Git Configuration Labels (GIT)
+# Applied if Git-related configuration files are modified.
+# ==========================================
+GIT:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.clang-format'
+          - '.dockerignore'
+          - '.editorconfig'
+          - '.gitattributes'
+          - '.git-blame-ignore-revs'
+          - '.gitignore'
+          - '.pre-commit-config.yaml'
+
+# ==========================================
+# 5. Backend Labels
+# Rule: Applied if files under third_party/{backend}
+# or .github/workflows/{backend}* are modified.
+# ==========================================
 
 aipu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/aipu/**'
+          - '.github/workflows/aipu*'
 
 amd:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/amd/**'
+          - '.github/workflows/amd*'
 
 ascend:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/ascend/**'
+          - '.github/workflows/ascend*'
 
 cambricon:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/cambricon/**'
+          - '.github/workflows/cambricon*'
+
+cpu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/cpu/**'
+          - '.github/workflows/cpu*'
 
 enflame:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/enflame/**'
-
-f2reduce:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/f2reduce/**'
+          - '.github/workflows/enflame*'
 
 hcu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/hcu/**'
+          - '.github/workflows/hcu*'
 
 iluvatar:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/iluvatar/**'
+          - '.github/workflows/iluvatar*'
 
 metax:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/metax/**'
+          - '.github/workflows/metax*'
 
 mthreads:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/mthreads/**'
+          - '.github/workflows/mthreads*'
 
 nvidia:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/nvidia/**'
-
-proton:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/proton/**'
+          - '.github/workflows/nv*'
 
 rpu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/rpu/**'
+          - '.github/workflows/rpu*'
 
 sunrise:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/sunrise/**'
+          - '.github/workflows/sunrise*'
 
 thrive:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/thrive/**'
-
-tle:
-  - changed-files:
-      - any-glob-to-any-file:
-          - 'third_party/tle/**'
+          - '.github/workflows/thrive*'
 
 tileir:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tileir/**'
+          - '.github/workflows/tileir*'
+
+tle_arm64:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/tle_arm64/**'
+          - '.github/workflows/tle_arm64*'
 
 tsingmicro:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tsingmicro/**'
+          - '.github/workflows/tsingmicro*'
 
 xpu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/xpu/**'
-
-
-# ---- DOC label ----
-# This label is applied ONLY when the PR consists exclusively of documentation.
-# It uses a strict inclusion list combined with an explicit exclusion of build files
-# to ensure no functional code changes are mislabeled as "DOC".
-
-DOC:
-  - all:
-      # Condition A: All must be document file extensions
-      - changed-files:
-          - any-glob-to-all-files:
-              - '**/*.md'
-              - '**/*.yml'
-              - '**/*.txt'
-              - '**/CODEOWNERS'
-
-      # Condition B: Must not contain CMakeLists.txt
-      - changed-files:
-          - all-globs-to-all-files:
-              - '!**/CMakeLists.txt'
+          - '.github/workflows/xpu*'

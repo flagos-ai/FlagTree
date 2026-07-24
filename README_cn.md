@@ -40,15 +40,14 @@ FlagTree 致力于打造多元 AI 芯片编译器及相关工具平台，发展�
 
 各后端基于不同版本的 Triton 适配，因此位于不同的主干分支。
 各主干分支均为保护分支且地位相等，表格中所有后端均搭建了 CI/CD Runner。
+有些后端适配了多个 Triton 版本，表格中仅展示最新版本。
 
 |主干分支|厂商  |后端   |Triton 版本      |安装        |
 |:-------|:-----|:------|:----------------|:-----------|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|NVIDIA<br>NVIDIA TileIR<br>AMD<br>Enflame（燧原）<br>HYGON（海光信息）<br>Moore Threads（摩尔线程）<br>DAMO ACADEMY（阿里达摩院）<br>Huixi（辉羲智能）<br>MetaX（沐曦股份）<br>Sunrise（曦望芯科）<br>KLX<br>ILUVATAR（天数智芯）|[nvidia](/third_party/nvidia/)<br>[tileir](/third_party/tileir/)<br>[amd](/third_party/amd/)<br>[enflame](/third_party/enflame/)<br>[hcu](/third_party/hcu/)<br>[mthreads](/third_party/mthreads/)<br>[damoacademy](/third_party/thrive/)<br>[rpu](/third_party/rpu/)<br>[metax](/third_party/metax/)<br>[sunrise](/third_party/sunrise/)<br>[xpu](/third_party/xpu/)<br>[iluvatar](/third_party/iluvatar/)|3.6|[install nvidia](/documents/install_en.md)<br>[install tileir](/documents/install_tileir.md)<br>-<br>[install enflame](/documents/install_enflame.md)<br>[install hcu](/documents/install_hcu.md)<br>[install mthreads](/documents/install_mthreads.md)<br>-<br>[install rpu](/documents/install_rpu.md)<br>[install metax](/documents/install_metax.md)<br>[install sunrise](/documents/install_sunrise.md)<br>[install xpu](/documents/install_xpu.md)<br>[install iluvatar](/documents/install_iluvatar.md)|
-|[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|NVIDIA<br>AMD<br>Huawei Ascend（华为昇腾）|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.5.x/third_party/amd/)<br>[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend/)|3.5|[install nvidia](/documents/install_en.md)<br>[install amd](/documents/install_en.md)<br>[install ascend](/documents/install_ascend.md)|
-|[triton_v3.4.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.4.x)|NVIDIA<br>AMD|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/amd/)|3.4|[install nvidia](/documents/install_en.md)<br>[install amd](/documents/install_en.md)|
-|[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|NVIDIA<br>AMD<br>x86_64 cpu<br>ARM China（安谋科技）<br>Tsingmicro（清微智能）<br>ARM64 cpu|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/amd/)<br>[triton-shared](https://github.com/microsoft/triton-shared)<br>[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)<br>[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)<br>[cpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/cpu/)|3.3|[install nvidia](/documents/install_en.md)<br>[install amd](/documents/install_en.md)<br>-<br>[install aipu](/documents/install_aipu.md)<br>[install tsingmicro](/documents/install_tsingmicro.md)<br>[install cpu](/documents/install_cpu.md)|
-|[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)|NVIDIA<br>AMD<br>Cambricon（寒武纪）|[nvidia](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/amd/)<br>[cambricon](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/cambricon/)|3.2|[install nvidia](/documents/install_en.md)<br>[install amd](/documents/install_en.md)<br>-|
-|[triton_v3.1.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x)|NVIDIA<br>AMD<br>x86_64 cpu|[nvidia](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/nvidia/)<br>[amd](https://github.com/flagos-ai/flagtree/tree/triton_v3.1.x/third_party/amd/)<br>[triton-shared](https://github.com/microsoft/triton-shared)|3.1|[install nvidia](/documents/install_en.md)<br>[install amd](/documents/install_en.md)<br>-|
+|[main](https://github.com/flagos-ai/flagtree/tree/main)|NVIDIA<br>NVIDIA TileIR<br>AMD<br>Enflame（燧原）<br>HYGON（海光信息）<br>Moore Threads（摩尔线程）<br>DAMO ACADEMY（阿里达摩院）<br>Huixi（辉羲智能）<br>MetaX（沐曦股份）<br>Sunrise（曦望芯科）<br>KLX<br>ILUVATAR（天数智芯）|[nvidia](/third_party/nvidia/)<br>[tileir](/third_party/tileir/)<br>[amd](/third_party/amd/)<br>[enflame](/third_party/enflame/)<br>[hcu](/third_party/hcu/)<br>[mthreads](/third_party/mthreads/)<br>[damoacademy](/third_party/thrive/)<br>[rpu](/third_party/rpu/)<br>[metax](/third_party/metax/)<br>[sunrise](/third_party/sunrise/)<br>[xpu](/third_party/xpu/)<br>[iluvatar](/third_party/iluvatar/)|3.6|[install nvidia](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-nvidia)<br>[install tileir](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-tileir)<br>-<br>[install enflame](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-enflame)<br>[install hcu](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-hcu)<br>[install mthreads](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-mthreads)<br>-<br>[install rpu](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-rpu)<br>[install metax](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-metax)<br>[install sunrise](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-sunrise)<br>[install xpu](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-xpu)<br>[install iluvatar](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-iluvatar)|
+|[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|Huawei Ascend（华为昇腾）|[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend/)|3.5|[install ascend](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-ascend)|
+|[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|ARM China（安谋科技）<br>Tsingmicro（清微智能）<br>ARM64 cpu<br>x86_64 cpu|[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)<br>[tsingmicro](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/tsingmicro/)<br>[cpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/cpu/)<br>[triton-shared](https://github.com/microsoft/triton-shared)|3.3|[install aipu](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-aipu)<br>[install tsingmicro](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-tsingmicro)<br>[install cpu](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-cpu)<br>-|
+|[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)|Cambricon（寒武纪）|[cambricon](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/cambricon/)|3.2|-|
 
 FlagTree 的扩展组件当前在部分后端可用：
 
@@ -110,7 +109,7 @@ TLE 的主要优势包括：
 * 2026/01/23 新增接入 [sunrise](https://github.com/flagos-ai/FlagTree/tree/triton_v3.4.x/third_party/sunrise/) 后端（对应 Triton 3.4），加入 CI/CD。
 * 2026/01/08 添加 [HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)、[TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE)、[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw) 等新功能 WIKI。
 * 2025/12/08 新增接入 [enflame](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/enflame/) 后端（对应 Triton 3.3），加入 CI/CD。
-* 2025/11/26 添加 FlagTree 后端特化统一设计文档 [FlagTree_Backend_Specialization](/documents/decoupling/)。
+* 2025/11/26 添加 FlagTree 后端特化统一设计文档 [FlagTree-Backend-Specialization](https://github.com/flagos-ai/FlagTree/wiki/FlagTree-Backend-Specialization)。
 * 2025/10/28 提供离线构建支持（预下载依赖包），改善网络环境受限时的构建体验，使用方法见后文。
 * 2025/09/30 在 GPGPU 上支持编译指导 shared memory。
 * 2025/09/29 SDK 存储迁移至金山云，大幅提升下载稳定性。
@@ -139,7 +138,7 @@ TLE 的主要优势包括：
 
 ## 环境准备
 
-避免环境匹配问题的最佳实践是使用上文 [多后端支持](#多后端支持) 表格中推荐的镜像。
+避免环境匹配问题的最佳实践是使用 [用户手册](https://github.com/flagos-ai/FlagTree/wiki/User-Manual) 中推荐的镜像。
 
 ## 从源码安装
 
@@ -157,11 +156,10 @@ python3 -m pip install -r python/requirements.txt
 export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia/amd/triton-shared
 
 # For Triton 3.1/3.2/3.3 (branch: triton_v3.1.x, triton_v3.2.x, triton_v3.3.x)
-cd python
-python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
+cd python; python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
 
 # For Triton 3.4/3.5/3.6 (branch: triton_v3.4.x, triton_v3.5.x, main)
-python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
+python3 -m pip install . --no-build-isolation -v             # Install flagtree and uninstall triton
 ```
 
 安装 `flagtree` 后，可通过下列命令查看：
@@ -173,45 +171,11 @@ cd ${ANY_DIR_OTHER_THAN_FLAGTREE_PYTHON}; python3 -c 'import triton; print(trito
 
 ## 免源码安装
 
-如果不希望从源码安装，可以直接拉取安装 whl（支持部分后端）。
-
-```shell
-# Note: First install PyTorch, then execute the following commands
-python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
-RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-```
-
-|后端       |安装命令（版本号对应 git tag）|Triton<br>版本|libc.so & libstdc++.so|
-|:---------|:---------|:---------|:---------|
-|nvidia    |python3.12 -m pip install flagtree===0.6.0 $RES                 |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|tileir    |python3.12 -m pip install flagtree===0.6.0+tileir3.6 $RES       |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|iluvatar  |python3.12 -m pip install flagtree===0.6.0+iluvatar3.6 $RES     |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|iluvatar  |python3.12 -m pip install flagtree===0.5.1+iluvatar3.1 $RES     |3.1|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|iluvatar  |python3.10 -m pip install flagtree===0.5.1+iluvatar3.1 $RES     |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|mthreads  |python3.10 -m pip install flagtree===0.6.0+mthreads3.6 $RES     |3.6|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|mthreads  |python3.10 -m pip install flagtree===0.5.1+mthreads3.2 $RES     |3.2|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|mthreads  |python3.10 -m pip install flagtree===0.5.1+mthreads3.1 $RES     |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|xpu       |python3.10 -m pip install flagtree===0.6.0+xpu3.6 $RES          |3.6|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|xpu       |python3.10 -m pip install flagtree===0.5.1+xpu3.0 $RES          |3.0|GLIBC_2.31<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
-|metax     |python3.12 -m pip install flagtree===0.6.1a2+metax3.6 $RES      |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|metax     |python3.12 -m pip install flagtree===0.5.1+metax3.0 $RES        |3.0|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|hcu       |python3.10 -m pip install flagtree===0.6.0+hcu3.6 $RES          |3.6|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|hcu       |python3.10 -m pip install flagtree===0.5.1+hcu3.1 $RES          |3.1|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|ascend    |python3.11 -m pip install flagtree===0.6.0+ascend3.5 $RES       |3.5|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|ascend    |python3.11 -m pip install flagtree===0.6.0+ascend3.2 $RES       |3.2|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|tsingmicro|python3.10 -m pip install flagtree===0.6.0+tsingmicro3.3 $RES   |3.3|GLIBC_2.30<br>GLIBCXX_3.4.28<br>CXXABI_1.3.12|
-|aipu      |python3.10 -m pip install flagtree===0.5.0+aipu3.3 $RES         |3.3|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-|sunrise   |python3.10 -m pip install flagtree===0.6.0+sunrise3.6 $RES      |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|sunrise   |python3.10 -m pip install flagtree===0.4.0+sunrise3.4 $RES      |3.4|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|enflame   |python3.12 -m pip install flagtree===0.6.0+enflame3.6 $RES      |3.6|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|enflame   |python3.12 -m pip install flagtree===0.5.0+enflame3.5 $RES      |3.5|GLIBC_2.39<br>GLIBCXX_3.4.33<br>CXXABI_1.3.15|
-|enflame   |python3.10 -m pip install flagtree===0.4.0+enflame3.3 $RES      |3.3|GLIBC_2.35<br>GLIBCXX_3.4.30<br>CXXABI_1.3.13|
-
-flagtree 历史版本可以在该地址查询 https://resource.flagos.net/#browse/search/pypi/=repository_name%3Dflagos-pypi-hosted%20AND%20name.raw%3Dflagtree
+参见 [用户手册](https://github.com/flagos-ai/FlagTree/wiki/User-Manual)。
 
 ## 关于贡献
 
-欢迎参与 FlagTree 的开发并贡献代码，详情请参考 [CONTRIBUTING.md](/CONTRIBUTING_cn.md)。
+欢迎参与 FlagTree 的开发并贡献代码，详情参见 [CONTRIBUTING.md](/CONTRIBUTING_cn.md)。
 
 ## 许可证
 

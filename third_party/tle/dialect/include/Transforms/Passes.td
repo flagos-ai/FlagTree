@@ -1,3 +1,26 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 // flagtree tle
 #ifndef TRITON_TLE_PASSES
 #define TRITON_TLE_PASSES
@@ -396,5 +419,29 @@ def TleRemoveRedundantCopy
     : Pass<"tle-remove-redundant-copy", "mlir::ModuleOp"> {}
 
 def TleDSLRegionInline : Pass<"tle-dslregion-inline", "mlir::ModuleOp"> {}
+
+def TritonTleAddDistributedParams
+    : Pass<"triton-tle-add-distributed-params", "mlir::ModuleOp"> {
+
+  let summary = "Add distributed runtime parameters to Triton kernel functions";
+
+  let description = [{
+    This pass updates Triton kernel function signatures by inserting two
+    runtime parameters at the beginning of each kernel function:
+
+      * device_comm_ptr
+      * device_mem_ptr
+
+    These parameters provide device-side communication and runtime state
+    required by distributed TLE operations.
+
+    All call sites and function argument uses are updated accordingly.
+  }];
+
+  let dependentDialects = [
+    "mlir::triton::TritonDialect"
+  ];
+}
+
 
 #endif // TRITON_TLE_PASSES

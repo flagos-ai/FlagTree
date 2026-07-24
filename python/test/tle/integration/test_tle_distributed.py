@@ -975,7 +975,7 @@ class TestTLEDistributed:
         assert re.search(r"tensor<256x!tt\.ptr<f16,\s*3>,\s*#blocked[0-9]*>", ttgir) is not None
         assert re.search(
             r"\"tle\.remote_pointers\"\(%[^,]+,\s*%[^)]+\)\s*"
-            r"<\{space\s*=\s*\"cluster\"\}>\s*:\s*"
+            r"<\{[^}]*space\s*=\s*\"cluster\"[^}]*\}>\s*:\s*"
             r"\(tensor<256x!tt\.ptr<f16,\s*3>,\s*#blocked[0-9]*>,\s*i32\)\s*->\s*"
             r"tensor<256x!tt\.ptr<f16,\s*7>,\s*#blocked[0-9]*>",
             ttgir,

@@ -1,3 +1,26 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -812,6 +835,11 @@ LogicalResult ExclusiveCumsumOp::verify() {
 
 LogicalResult DistributedBarrierOp::verify() {
   auto *op = getOperation();
+  auto spaceAttr = op->getAttrOfType<StringAttr>("space");
+
+  if (spaceAttr && spaceAttr.getValue() == "device")
+    return DistributedBarrier::verifyDeviceSpace(op, getSrc());
+
   auto kindAttr = op->getAttrOfType<StringAttr>("group_kind");
   auto rankAttr = op->getAttrOfType<IntegerAttr>("group_rank");
   auto shapeAttr = op->getAttrOfType<DenseI32ArrayAttr>("group_shape");
@@ -892,13 +920,13 @@ LogicalResult DistributedBarrierOp::verify() {
 }
 
 LogicalResult RemotePointersOp::verify() {
-  Type srcTy = getSrc().getType();
-  Type resultTy = getResult().getType();
   auto spaceAttr = getSpace();
   if (spaceAttr == "device") {
     if (failed(RemotePointers::verifyDeviceSpace(getSrc(), getResult())))
       return failure();
   } else {
+    Type srcTy = getSrc().getType();
+    Type resultTy = getResult().getType();
     auto getPtrInfo = [&](Type ty, triton::PointerType &ptr, bool &isTensor,
                           ArrayRef<int64_t> &shape,
                           Attribute &encoding) -> LogicalResult {

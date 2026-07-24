@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
-
 import os
 
 import torch
@@ -12,8 +10,8 @@ import triton.experimental.tle.language as tle
 
 @triton.jit
 def lsa_read_kernel(
-    dev_mem_ptr,
     output_ptr,
+    device_dptr: tl.constexpr,
     N: tl.constexpr,
     MY_RANK: tl.constexpr,
     N_RANKS: tl.constexpr,
@@ -22,7 +20,7 @@ def lsa_read_kernel(
     peer = (MY_RANK + 1) % N_RANKS
 
     remote_mem = tle.remote(
-        dev_mem_ptr,
+        device_dptr,
         space="device",
         dtype=tl.float32,
         shard_id=peer,
@@ -57,9 +55,7 @@ def main():
           f"stride={buf_tensor.stride()}, "
           f"sample={buf_tensor[:4].tolist()}")
 
-    dev_comm_ptr, dev_mem_ptr = tle.create_comm_tensor(buf_tensor)
-
-    print(f"[Rank {rank}] dev_comm_ptr={dev_comm_ptr:#x}, dev_mem_ptr={dev_mem_ptr:#x}")
+    device_dptr = tle.create_dist_tensor(buf_tensor)
 
     output = torch.zeros(N, dtype=torch.float32, device="cuda")
 
@@ -67,8 +63,8 @@ def main():
 
     grid = (N, )
     lsa_read_kernel[grid](
-        dev_mem_ptr,
         output,
+        device_dptr=device_dptr,
         N=N,
         MY_RANK=rank,
         N_RANKS=world_size,

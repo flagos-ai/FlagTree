@@ -9,6 +9,7 @@ from triton.runtime.build import compile_module_from_src
 from triton.runtime import _allocation
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver
+from triton.runtime._distributed import DistributedRtContext
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 include_dirs = [os.path.join(dirname, "include")]
@@ -215,6 +216,10 @@ def make_launcher(constants, signature, tensordesc_meta):
     flat_signature = []
     for sig in signature.values():
         _flatten_signature(sig, flat_signature)
+    # flagtree tle distributed
+    if DistributedRtContext().is_lite_mode:
+        flat_signature.insert(0, "*i64")  # flagcx_dev_comm_ptr
+        flat_signature.insert(1, "*i64")  # flagcx_dev_comm_ptr
     signature = {i: s for i, s in enumerate(flat_signature)}
     args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
     # Record the end of regular arguments;

@@ -1,3 +1,23 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 from __future__ import annotations
 import os
 import tempfile
@@ -8,6 +28,7 @@ from typing import Any, Final, List, Optional
 from triton._C.libtriton import llvm
 from triton._C.libtriton.tle.llvm import parse_llvm_ir
 from triton.backends.enflame.gcu_intrinsics import rewrite_intrinsics_to_placeholders
+from triton.experimental.tle.raw.runtime import RawJITFunction
 
 
 def _find_tops_include_dir() -> str:
@@ -41,7 +62,7 @@ def _get_gcu_arch() -> str:
     return os.getenv("GCU_ARCH", "gcu400")
 
 
-class TOPSJITFunction(object):
+class TOPSJITFunction(RawJITFunction):
     """TLE-Raw dialect for TOPS C++ (.tops) files compiled via topscc.
 
     Usage:
@@ -52,13 +73,11 @@ class TOPSJITFunction(object):
 
     def __init__(self, fn: Any, file: Optional[Path] = None, arch: Optional[str] = None,
                  extra_flags: Optional[List[str]] = None, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.fn: Final[Any] = fn
+        super().__init__(fn, **kwargs)
         self.arch: Final[str] = arch or _get_gcu_arch()
         self.extra_flags: Final[List[str]] = extra_flags or []
         self.region_dialect: Final[str] = "tops"
         self.arg_dialect: Final[str] = "llvm"
-        self.__triton_builtin__: Final[bool] = True
 
         if file is not None:
             self.code: Final[str] = Path(file).read_text()
@@ -173,15 +192,9 @@ class TOPSJITFunction(object):
             print("// ---- end ----")
         return result
 
-    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = ""):
-        return builder.create_tle_raw_region_by_llvm_func(
-            llvm,
-            self.region_dialect,
-            self.arg_dialect,
-            handles,
-            alias_indices,
-            hint,
-        )
+    def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
+                              extern_func_name: str = ""):
+        return super().create_region_by_llvm(builder, llvm, handles, alias_indices, hint, extern_func_name)
 
     def make_llvm(self, mlir_context) -> str:
         llvm_ir_text = self._compile_tops_to_llvm_ir()

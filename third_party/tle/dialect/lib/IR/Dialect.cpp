@@ -1,6 +1,30 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "tle/dialect/include/IR/Dialect.h"
 #include "mlir/Support/LLVM.h"
 #include "tle/dialect/include/IR/Dialect.cpp.inc"
+#include "triton/Dialect/Triton/IR/Interfaces.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "tle/dialect/include/IR/TleAttrDefs.cpp.inc"
@@ -30,5 +54,9 @@ void TleDialect::initialize() {
 #include "tle/dialect/include/IR/FlagCxOps.cpp.inc"
       >();
 #endif
+
+  // TLE ops can appear in ordinary @triton.jit helpers. Mark them as legal to
+  // clone so the module inliner can expose helper bodies to later passes.
+  addInterfaces<TritonInlinerInterface>();
 }
 } // namespace mlir::triton::tle

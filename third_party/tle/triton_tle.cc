@@ -1,26 +1,25 @@
-// MIT License
-
-// Copyright (c) 2025 The FlagOS Contributors
-
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-
-// flagtree tle
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 
 #include "Python.h"
 #include "Transforms/Passes.h"
@@ -62,13 +61,16 @@ namespace tle = triton::tle;
 
 extern std::vector<int64_t>
 computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
-                           const std::vector<Value> &args);
+                           const std::vector<Value> &args,
+                           std::string_view funcName);
 
-extern tle::DSLRegionOp createTLERawRegionByLLVMFunc(
-    TritonOpBuilder &self, std::string_view text,
-    std::string_view regionDialect, std::string_view argDialect,
-    const std::vector<Value> &args,
-    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint);
+extern tle::DSLRegionOp
+createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             std::string_view regionDialect,
+                             std::string_view argDialect,
+                             const std::vector<Value> &args,
+                             const std::vector<int64_t> &aliasOperandIndices,
+                             std::string_view hint, std::string_view funcName);
 
 extern tle::DSLRegionOp createTLERawRegionDeferred(
     TritonOpBuilder &self, std::string_view sourceId,
@@ -525,9 +527,37 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_distributed_barrier",
            [](TritonOpBuilder &self) -> void {
              self.create<tle::DistributedBarrierOp>(
-                 StringAttr(), IntegerAttr(), DenseI32ArrayAttr(),
-                 DenseI32ArrayAttr(), DenseI32ArrayAttr());
+                 Value(), StringAttr(), StringAttr(), StringAttr(),
+                 StringAttr(), IntegerAttr(), IntegerAttr(),
+                 DenseI32ArrayAttr(), DenseI32ArrayAttr(), DenseI32ArrayAttr());
            })
+      .def(
+          "create_distributed_barrier",
+          [](TritonOpBuilder &self, std::optional<Value> src,
+             size_t barrier_index = 0, const std::string &space = "device",
+             const std::string &group_kind = "block",
+             const std::string &order = "acqrel",
+             const std::string &barrier_kind = "sync") -> void {
+            auto &builder = self.getBuilder();
+            auto *ctx = builder.getContext();
+            auto getOptStrAttr = [&](const std::string &s) -> StringAttr {
+              return s.empty() ? StringAttr() : builder.getStringAttr(s);
+            };
+            auto spaceAttr = getOptStrAttr(space);
+            auto kindAttr = getOptStrAttr(group_kind);
+            auto orderAttr = getOptStrAttr(order);
+            auto barrierTypeAttr = getOptStrAttr(barrier_kind);
+            auto barrierIndexAttr =
+                builder.getI32IntegerAttr(static_cast<int32_t>(barrier_index));
+
+            self.create<tle::DistributedBarrierOp>(
+                src.value_or(Value()), spaceAttr, barrierTypeAttr, orderAttr,
+                kindAttr, barrierIndexAttr, IntegerAttr(), DenseI32ArrayAttr(),
+                DenseI32ArrayAttr(), DenseI32ArrayAttr());
+          },
+          py::arg("src") = py::none(), py::arg("barrier_index"),
+          py::arg("space"), py::arg("group_kind"), py::arg("order"),
+          py::arg("barrier_kind"))
       .def(
           "create_distributed_barrier",
           [](TritonOpBuilder &self, const std::string &groupKind,
@@ -563,14 +593,15 @@ void init_triton_tle_ir(py::module &&m) {
             }
 
             self.create<tle::DistributedBarrierOp>(
-                kindAttr, rankAttr, shapeAttr, axesAttr, maskAttr);
+                Value(), StringAttr(), StringAttr(), StringAttr(), kindAttr,
+                IntegerAttr(), rankAttr, shapeAttr, axesAttr, maskAttr);
           },
           py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
           py::arg("group_mask"))
       .def(
           "create_remote_pointers",
-          [](TritonOpBuilder &self, Type resultTy, Value src, Value shardId,
-             const std::string &space,
+          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> &src,
+             Value shardId, const std::string &space,
              std::optional<Value> &offset) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
@@ -581,15 +612,19 @@ void init_triton_tle_ir(py::module &&m) {
                   ". Expected one of: cluster, device, node.");
             }
             auto space_attr = builder.getStringAttr(space);
+
             return self.create<tle::RemotePointersOp>(
-                resultTy, src, shardId, space_attr, offset.value_or(Value()));
+                resultTy, src.value_or(Value()), shardId, space_attr,
+                offset.value_or(Value()));
           },
-          py::arg("resultTy"), py::arg("src"), py::arg("shardId"),
+          py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
           py::arg("space"), py::arg("offset") = py::none())
       .def("get_device_id",
-           [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {
+           [](TritonOpBuilder &self, Type resultTy,
+              std::optional<Value> src) -> Value {
              auto &builder = self.getBuilder();
-             return self.create<tle::GetDeviceIdOp>(resultTy, src);
+             return self.create<tle::GetDeviceIdOp>(resultTy,
+                                                    src.value_or(Value()));
            })
       .def("get_n_pes",
            [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {
@@ -632,6 +667,8 @@ void init_triton_tle_ir(py::module &&m) {
 }
 
 void init_triton_tle_passes(py::module &&m) {
+  ADD_PASS_WRAPPER_0("add_params_for_distribution",
+                     tle::createTritonTleAddDistributedParams);
   ADD_PASS_WRAPPER_0("add_early_assign_memory_space",
                      tle::createTritonTleEarlyAssignMemorySpace);
   ADD_PASS_WRAPPER_0("add_select_encodings",
@@ -697,12 +734,13 @@ void init_tle_raw_ir(py::module &&m) {
       .def("dump", &tle::YieldOp::dump);
 
   auto *builder_cls = ir::getBuilderClass();
-  builder_cls->def("compute_alias_operand_indices",
-                   &computeAliasOperandIndices);
-  builder_cls->def(
-      "create_tle_raw_region_by_llvm_func", &createTLERawRegionByLLVMFunc,
-      py::arg("text"), py::arg("region_dialect"), py::arg("arg_dialect"),
-      py::arg("args"), py::arg("output_operand_indices"), py::arg("hint") = "");
+  builder_cls->def("compute_alias_operand_indices", &computeAliasOperandIndices,
+                   py::arg("text"), py::arg("args"), py::arg("func_name") = "");
+  builder_cls->def("create_tle_raw_region_by_llvm_func",
+                   &createTLERawRegionByLLVMFunc, py::arg("text"),
+                   py::arg("region_dialect"), py::arg("arg_dialect"),
+                   py::arg("args"), py::arg("output_operand_indices"),
+                   py::arg("hint") = "", py::arg("func_name") = "");
   builder_cls->def(
       "create_tle_raw_region_deferred", &createTLERawRegionDeferred,
       py::arg("source_id"), py::arg("region_dialect"), py::arg("arg_dialect"),

@@ -184,6 +184,26 @@ unsigned HCUAllocationAnalysisScratchSizeFn(Operation *op) {
     return static_cast<unsigned>(tileTy.getNumElements() *
                                  (getBitwidth(tileTy) / 8));
   }
+
+  if (auto cumsumOp = dyn_cast<mlir::triton::tle::ExclusiveCumsumOp>(op)) {
+    auto srcTy = dyn_cast<RankedTensorType>(cumsumOp.getSrc().getType());
+    if (!srcTy || srcTy.getRank() != 1)
+      return 0;
+    int64_t axisExtent = srcTy.getShape()[0];
+    if (ShapedType::isDynamic(axisExtent) || axisExtent <= 0)
+      return 0;
+    unsigned elemBytes =
+        static_cast<unsigned>(std::max<int>(1, getBitwidth(srcTy) / 8));
+    // Scratch layout for cumsum lowering:
+    // [axisExtent data][numWarps warp-prefix slots][1 total slot]
+    int64_t numWarps = std::max<int64_t>(1, triton::gpu::lookupNumWarps(op));
+    uint64_t totalBytes = (static_cast<uint64_t>(axisExtent) +
+                           static_cast<uint64_t>(numWarps) + 1ull) *
+                          elemBytes;
+    if (totalBytes > std::numeric_limits<unsigned>::max())
+      return 0;
+    return static_cast<unsigned>(totalBytes);
+  }
 #endif
 
   return defaultAllocationAnalysisScratchSizeFn(op);

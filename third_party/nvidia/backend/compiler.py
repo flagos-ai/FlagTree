@@ -3,6 +3,7 @@ from triton._C.libtriton import ir, passes, llvm, nvidia
 from triton._C.libtriton import tle
 from triton import knobs
 from triton.runtime.errors import PTXASError
+from triton.runtime._distributed import DistributedRtContext
 
 from dataclasses import dataclass
 import functools
@@ -138,6 +139,19 @@ class CUDAOptions:
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         if not extern_libs.get('libdevice', None):
             extern_libs['libdevice'] = knobs.nvidia.libdevice_path or str(default_libdir / 'libdevice.10.bc')
+
+        # flagtree tle raw: libnvshmem_device when @dialect(library="nvshmem") enabled in utils.
+        try:
+            from triton.experimental.tle.raw.nvshmem.utils import (
+                is_nvshmem_device_bc_enabled,
+                resolve_nvshmem_device_bitcode,
+            )
+            if is_nvshmem_device_bc_enabled():
+                nvshmem_bc = resolve_nvshmem_device_bitcode(arch=self.arch)
+                if nvshmem_bc is not None:
+                    extern_libs.update({"libnvshmem_device": str(nvshmem_bc)})
+        except Exception:
+            pass
 
         # flagtree tle distributed: Add distributed bitcode library(libflagcx_device.bc) if distributed features are enabled.
         extern_libs.update(Distributed().get_extern_libs())
@@ -279,6 +293,9 @@ class CUDABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         dump_enabled = pm.enable_debug()
         emuTF32 = (capability // 10 >= 8)
+        # flagtree tle distributed
+        if DistributedRtContext().is_lite_mode:
+            tle.passes.add_params_for_distribution(pm)
         passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 32, opt.num_ctas)
         # flagtree tle raw
         tle.raw_passes.add_tle_convert_arg_to_memdesc(pm)
@@ -428,7 +445,7 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_concurrency_sanitizer(pm)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         nvidia.passes.ttnvgpuir.add_proxy_fence_insertion(pm, capability)
-        # Materialize deferred tle_raw sources before inlining DSL regions.
+        # flagtree tle raw: Materialize deferred tle_raw sources before inlining DSL regions.
         from .deferred_raw import (
             finish_deferred_raw_materialize,
             deferred_raw_materialize,

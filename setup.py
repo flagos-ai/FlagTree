@@ -1,3 +1,25 @@
+# Copyright 2018-2020 Philippe Tillet
+# Copyright 2020-2022 OpenAI
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import os
 import platform
 import re
@@ -367,11 +389,14 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
     dst_path = os.path.join(base_dir, "third_party", "nvidia", "backend", dst_path)  # final binary path
     src_path = os.path.join(tmp_path, src_path)
     download = not os.path.exists(src_path)
-    if os.path.exists(dst_path) and system == "Linux" and shutil.which(dst_path) is not None:
-        curr_version = subprocess.check_output([dst_path, "--version"]).decode("utf-8").strip()
-        curr_version = re.search(r"V([.|\d]+)", curr_version)
-        assert curr_version is not None, f"No version information for {dst_path}"
-        download = download or curr_version.group(1) != version
+    # flagtree: check the cached binary version in ~/.triton, skip download if it matches
+    if os.path.exists(src_path) and system == "Linux" and shutil.which(src_path) is not None:
+        try:
+            cache_version = subprocess.check_output([src_path, "--version"]).decode("utf-8").strip()
+            cache_version = re.search(r"V([.|\d]+)", cache_version).group(1)
+            download = download or cache_version != version
+        except Exception:
+            download = True
     if download:
         print(f'{YELLOW}downloading and extracting {url} ... {NC}', file=sys.stderr, flush=True)
         with open_url(url) as url_file, tarfile.open(fileobj=url_file, mode="r|*") as tar_file:
@@ -675,9 +700,8 @@ def download_and_copy_dependencies():
 
 if helper.flagtree_backend:
     if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir"):
-        default_backends = helper.configs.non_tileir_default_backends()
         backends = [
-            *BackendInstaller.copy(default_backends + tuple(helper.configs.extend_backends)),
+            *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
             *BackendInstaller.copy_externals(),
         ]
     else:
@@ -688,15 +712,32 @@ else:
 #backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
 
 
+# flagtree: extend yield "triton.backends.{backend.name}"
+def get_backend_packages(backend):
+    package_prefix = f"triton.backends.{backend.name}"
+    for root, dirs, _files in os.walk(backend.backend_dir):
+        dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__" and directory.isidentifier())
+        relative_dir = os.path.relpath(root, backend.backend_dir)
+        package = package_prefix
+        if relative_dir != ".":
+            package += "." + relative_dir.replace(os.sep, ".")
+        yield package, root
+
+
 def get_package_dirs():
     yield ("", "python")
+
+    # flagtree backend specialization
+    yield from helper.SpecPackageHelper.get_spec_packages()
 
     for backend in backends:
         # we use symlinks for external plugins
         if backend.is_external:
             continue
 
-        yield (f"triton.backends.{backend.name}", backend.backend_dir)
+        # flagtree: extend yield "triton.backends.{backend.name}"
+        # yield (f"triton.backends.{backend.name}", backend.backend_dir)
+        yield from get_backend_packages(backend)
 
         if backend.language_dir:
             # Install the contents of each backend's `language` directory into
@@ -716,10 +757,27 @@ def get_package_dirs():
 
 
 def get_packages():
-    yield from find_packages(where="python", include=["triton", "triton.*"])
+    # flagtree backend specialization: add excluded packages
+    yield from find_packages(where="python", include=["triton", "triton.*"],
+                             exclude=helper.SpecPackageHelper.get_excluded_packages())
+
+    # flagtree backend specialization
+    for package, _source_dir in helper.SpecPackageHelper.get_spec_packages():
+        yield package
+
+    # flagtree: these directories are without __init__.py
+    # yield these directories to avoid warnings
+    yield "triton._C"
+    yield "triton._C.libtriton"
+    yield "triton.tools.triton_to_gluon_translater"
 
     for backend in backends:
-        yield f"triton.backends.{backend.name}"
+        # flagtree: extend yield "triton.backends.{backend.name}"
+        if backend.is_external:
+            yield f"triton.backends.{backend.name}"
+        else:
+            for package, _source_dir in get_backend_packages(backend):
+                yield package
 
         if backend.language_dir:
             # Install the contents of each backend's `language` directory into
@@ -930,6 +988,7 @@ setup(
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
     package_data=get_package_data(),
+    exclude_package_data=helper.get_excluded_package_data(),
     entry_points=get_entry_points(),
     include_package_data=True,
     ext_modules=[CMakeExtension("triton", "triton/_C/")],
