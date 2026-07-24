@@ -43,6 +43,8 @@ CORE:
           - 'MANIFEST.in'
           - 'pyproject.toml'
           - 'setup.py'
+          - '.github/actions/**'
+          - '.github/workflows/code-format-check.yml'
 
 # ==========================================
 # 2. CI/CD Labels
