@@ -52,19 +52,19 @@ runs:
             core.setOutput('event_type', context.eventName);
             return false;
           }
-          
+
           // Get PR labels
           const labels = context.payload.pull_request.labels.map(label => label.name);
           const hasCleanCache = labels.includes('CleanCache');
-          
+
           console.log('📋 PR Labels:', labels.join(', ') || '(no labels)');
           console.log('🔍 Has CleanCache label:', hasCleanCache ? '✅ YES' : '❌ NO');
           console.log('🔢 Total labels:', labels.length);
-          
+
           // Set outputs
           core.setOutput('has_clean_cache', hasCleanCache ? 'true' : 'false');
           core.setOutput('label_count', labels.length);
-          
+
           // Export environment variables for subsequent steps
           if (hasCleanCache) {
             core.exportVariable('CLEAN_CACHE_REQUIRED', 'true');
@@ -74,7 +74,7 @@ runs:
             core.exportVariable('CLEAN_CACHE_REQUIRED', 'false');
             console.log('📌 Exported CLEAN_CACHE_REQUIRED=false');
           }
-          
+
           return hasCleanCache;
 
     # Step 2: Clean cache if label is present
@@ -86,32 +86,32 @@ runs:
         echo "========================================="
         echo "🧹 Clean cache firstly. (CleanCache label detected)"
         echo "========================================="
-        
+
         # Clean pytest cache
         echo "-> Cleaning pytest cache..."
         # rm -rf .pytest_cache
-        
+
         # Clean Python cache files
         # echo "-> Cleaning Python cache files..."
         # find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
         # find . -type f -name "*.pyc" -delete 2>/dev/null || true
         # find . -type f -name "*.pyo" -delete 2>/dev/null || true
-        
+
         # Clean build artifacts
         echo "-> Cleaning build artifacts..."
         # rm -rf build/
         # rm -rf *.egg-info
         # rm -rf dist/
-        
+
         # Clean coverage reports
         echo "-> Cleaning coverage reports..."
         # rm -rf .coverage htmlcov/
-        
+
         # Clean temporary files
         echo "-> Cleaning temporary files..."
         # rm -rf tmp/ temp/
         # rm -rf .tmp/
-        
+
         echo "========================================="
         echo "✅ Cache cleaned successfully"
         echo "========================================="
