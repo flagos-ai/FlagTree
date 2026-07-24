@@ -24,6 +24,7 @@
 #include "tle/dialect/include/IR/Dialect.h"
 #include "mlir/Support/LLVM.h"
 #include "tle/dialect/include/IR/Dialect.cpp.inc"
+#include "triton/Dialect/Triton/IR/Interfaces.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "tle/dialect/include/IR/TleAttrDefs.cpp.inc"
@@ -53,5 +54,9 @@ void TleDialect::initialize() {
 #include "tle/dialect/include/IR/FlagCxOps.cpp.inc"
       >();
 #endif
+
+  // TLE ops can appear in ordinary @triton.jit helpers. Mark them as legal to
+  // clone so the module inliner can expose helper bodies to later passes.
+  addInterfaces<TritonInlinerInterface>();
 }
 } // namespace mlir::triton::tle

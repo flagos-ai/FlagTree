@@ -1,5 +1,3 @@
-# Copyright 2018-2020 Philippe Tillet
-# Copyright 2020-2022 OpenAI
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -43,7 +41,7 @@ def _get_spec_module():
     if not FLAGTREE_BACKEND:
         return None
     try:
-        _spec_module = importlib.import_module(f"triton.backends.{FLAGTREE_BACKEND}.spec.triton")
+        _spec_module = importlib.import_module(f"triton.spec.{FLAGTREE_BACKEND}.triton")
     except ImportError:
         return None
     return _spec_module
@@ -61,13 +59,13 @@ def spec_path(path_list: list):
         return
     triton_root = current_path[:idx + len(marker)]
     rel_path = current_path[idx + 1 + len(marker):]
-    backend_path = os.path.join(triton_root, "backends", FLAGTREE_BACKEND, "spec", "triton", rel_path)
+    backend_path = os.path.join(triton_root, "spec", FLAGTREE_BACKEND, "triton", rel_path)
     if os.path.isdir(backend_path) and backend_path not in path_list:
         path_list.insert(0, backend_path)
 
 
-# flagtree backend specialization
-def spec(function_name: str, *args, **kwargs):
+# flagtree backend call specialization
+def spec_call(function_name: str, *args, **kwargs):
     mod = _get_spec_module()
     if mod is not None and hasattr(mod, function_name):
         return getattr(mod, function_name)(*args, **kwargs)

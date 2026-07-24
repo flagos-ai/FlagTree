@@ -4,44 +4,21 @@
 
 #### Dockerfile
 
-Files whose names contain `Dockerfile` are usually covered by this category, but some may be missed and require manual annotation.
+Files whose names contain `Dockerfile` generally belong to this category, though some may be missed and require manual annotation.
 
-Policy: add a header notice at the top of the file
+Rule: use Notice Scheme A at the beginning of the file.
 
-```YAML
-# Copyright 2025-     FlagOS Contributors
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+#### GitHub Workflows & Actions
 
-```
-
-#### GitHub Workflow & Actions
-
-A file belongs to this category if it matches any of the following:
+A file belongs to this category if it meets the following condition:
 
 - `.github/**/*.yml`, except `.github/dependabot.yml`
 
-Policy: same as Dockerfile
+Rule: use Notice Scheme A at the beginning of the file.
 
 #### Other Non-Code Files
 
-A file belongs to this category if it does not fall under any subsection above and matches any of the following (documentation and script-like files):
+A file belongs to this category (documentation and script files) if it does not belong to any subsection above and meets any of the following conditions:
 
 - `*.txt` (including `CMakeLists.txt`), `*.md`, `*.rst`, `*.png`, `*.jpg`, `*.yml`, `*.json`, `*.cmake`, `*.html`, `*.sh`, `*.bash`, `CODEOWNERS`
 
@@ -49,27 +26,27 @@ A file belongs to this category if it does not fall under any subsection above a
 
 - `.clang-format`, `.dockerignore`, `.editorconfig`, `.git-blame-ignore-revs`, `.gitattributes`, `.gitignore`, `.pre-commit-config.yaml`
 
-- `LICENSE` (annotated separately)
+- `LICENSE` (handled separately)
 
-- files with no file extension
+- Files without an extension
 
-Policy: do not modify files; do not add any notice
+Rule: do not modify the file or add any notice.
 
 ### Test or Tool Files Maintained Separately by OpenAI
 
-A file belongs to this category if it matches any of the following (maintained and modified by OpenAI only):
+A file belongs to this category (modified and maintained exclusively by OpenAI) if it meets either of the following conditions:
 
 - `*.in`
 
 - `test/**`, `unittest/**`, `utils/**`
 
-Policy: do not modify files; do not add any notice
+Rule: do not modify the file or add any notice.
 
 ### Python Files
 
 #### Tutorial and Test Files
 
-A file belongs to this category if it matches any of the following:
+A file belongs to this category if it meets any of the following conditions:
 
 - `python/examples/**/*.py`
 
@@ -77,19 +54,97 @@ A file belongs to this category if it matches any of the following:
 
 - `python/tutorials/**/*.py`
 
-- the same directory patterns under `third_party`
+- Files in the corresponding directories under `third_party`
 
-Policy: do not modify files; do not add any notice
+Rule: do not modify the file or add any notice.
 
-#### Installation Files
+#### Files Added by FlagTree
 
-A file belongs to this category if it matches any of the following:
+A file belongs to this category if it meets either of the following conditions:
 
-- `python/setup_tools/**/*.py`
+- Installation files: `python/setup_tools/**/*.py`
+- Multi-backend management base files: `python/triton/_flagtree_backend.py`, `python/triton/_flagtree_spec.py`
 
-Policy: add a header notice at the top of the file
+Rule: use Notice Scheme A at the beginning of the file.
 
-```YAML
+#### Core Code Files
+
+A file belongs to this category if it does not belong to the tutorial or test file category above and meets the following condition:
+
+- `*.py`
+
+Main repository rule (except `python/triton/experimental/tle`): use Notice Scheme B at the beginning of the file.
+
+Rule for the `python/triton/experimental/tle` directory: use Notice Scheme A at the beginning of the file.
+
+Rule for the `third_party` directory: use Notice Scheme A only for files under `third_party/tle`.
+
+### C/C++ and MLIR Files
+
+#### Test Files
+
+A file belongs to this category if it meets the following condition:
+
+- `python/test/**/*.c`
+
+#### Core Code Files
+
+A file belongs to this category if it does not belong to the test file category above and meets the following condition:
+
+- `*.mlir`, `*.td`, `*.h`, `*.hpp`, `*.cpp`, `*.cc`, `*.c`
+
+Main repository rule: use Notice Scheme D at the beginning of the file.
+
+Rule for the `third_party` directory: use Notice Scheme C only for files under `third_party/tle`.
+
+### Files with Separate License Notices
+
+- Files with copyright notices already added by OpenAI at the beginning
+
+`include/triton/Dialect/TritonNvidiaGPU/IR/Dialect.h`
+`include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUDialect.td`
+`include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUOps.td`
+`include/triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h`
+`include/triton/Dialect/TritonNvidiaGPU/Transforms/Passes.td`
+`lib/Dialect/TritonNvidiaGPU/IR/Dialect.cpp`
+`lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp`
+`lib/Dialect/TritonNvidiaGPU/Transforms/PlanCTA.cpp`
+`python/triton/tools/disasm.py`
+`include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
+`lib/Dialect/TritonGPU/Transforms/Pipeliner/PipelineExpander.cpp`
+
+These files already have copyright notices added by OpenAI at the beginning. Leave them unchanged.
+
+- `python/tutorials/tle/01-fft.py`
+
+`fft_kernel_cutile` is a baseline implementation copied from NVIDIA for comparison, so the following notice has been added to that code block:
+
+```Python
+# SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES.
+# SPDX-License-Identifier: Apache-2.0
+```
+
+Rule: do not modify this file.
+
+- `utils/generate-test-checks.py`
+
+OpenAI added a separate notice to this file:
+
+```Python
+# Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+```
+
+Rule: do not modify this file.
+
+### Notice Schemes
+
+The notice schemes referenced above are provided below.
+
+#### Notice Scheme A
+
+```Python
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -112,13 +167,7 @@ Policy: add a header notice at the top of the file
 
 ```
 
-#### Core Code Files
-
-A file belongs to this category if it is not covered by the tutorial or test categories above and matches any of the following:
-
-- `*.py`
-
-Main repository policy (excluding `python/triton/experimental/tle`): add a header notice at the top of the file
+#### Notice Scheme B
 
 ```Python
 # Copyright 2018-2020 Philippe Tillet
@@ -145,71 +194,34 @@ Main repository policy (excluding `python/triton/experimental/tle`): add a heade
 
 ```
 
-`python/triton/experimental/tle` directory policy: add a header notice at the top of the file
+#### Notice Scheme C
 
-```Python
-# Copyright 2025-     FlagOS Contributors
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
+```C++
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 ```
 
-`third_party` directory policy: annotate only files under `third_party/tle`
-
-```Python
-# Copyright 2025-     FlagOS Contributors
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
-```
-
-### C/C++, MLIR Files
-
-#### Test Files
-
-A file belongs to this category if it matches any of the following:
-
-- `python/test/**/*.c`
-
-#### Core Code Files
-
-A file belongs to this category if it is not covered by the test category above and matches any of the following:
-
-- `*.mlir`, `*.td`, `*.h`, `*.hpp`, `*.cpp`, `*.cc`, `*.c`
-
-Main repository policy: add a header notice at the top of the file
+#### Notice Scheme D
 
 ```C++
 /*
@@ -237,71 +249,3 @@ Main repository policy: add a header notice at the top of the file
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 ```
-
-`third_party` directory policy: annotate only files under `third_party/tle`
-
-```C++
-/*
- * Copyright 2025-     FlagOS Contributors
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-```
-
-### Files with Separate License Annotations
-
-- Files whose headers already contain copyright notices annotated by OpenAI
-
-`include/triton/Dialect/TritonNvidiaGPU/IR/Dialect.h`
-`include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUDialect.td`
-`include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUOps.td`
-`include/triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h`
-`include/triton/Dialect/TritonNvidiaGPU/Transforms/Passes.td`
-`lib/Dialect/TritonNvidiaGPU/IR/Dialect.cpp`
-`lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp`
-`lib/Dialect/TritonNvidiaGPU/Transforms/PlanCTA.cpp`
-`python/triton/tools/disasm.py`
-`include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
-`lib/Dialect/TritonGPU/Transforms/Pipeliner/PipelineExpander.cpp`
-
-These files already contain OpenAI copyright notices in their headers. Leave them unchanged.
-
-- `python/tutorials/tle/01-fft.py`
-
-The `fft_kernel_cutile` block was copied from NVIDIA as a baseline implementation for comparison, so that code block is annotated with:
-
-```Python
-# SPDX-FileCopyrightText: Copyright (c) <2025> NVIDIA CORPORATION & AFFILIATES.
-# SPDX-License-Identifier: Apache-2.0
-```
-
-Policy: do not modify this file
-
-- `utils/generate-test-checks.py`
-
-OpenAI annotated this file separately with:
-
-```Python
-# Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-# See https://llvm.org/LICENSE.txt for license information.
-# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-```
-
-Policy: do not modify this file
