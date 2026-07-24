@@ -46,36 +46,6 @@ from triton.language.extra.cann.extension.builder import setup_unified_builder  
 WITH_DISPATCH.update(ASCEND_WITH_DISPATCH)
 
 
-def _is_tle_buffer_type(ty):
-    """Check if ty is a TLE buffer_type without top-level import (avoids circular import)."""
-    try:
-        from triton.experimental.tle.language.dsa.types import buffer_type as tle_buffer_type
-        return isinstance(ty, tle_buffer_type)
-    except ImportError:
-        return False
-
-
-def mangle_ty(ty):
-    if ty.is_ptr():
-        return 'P' + mangle_ty(ty.element_ty)
-    if ty.is_int():
-        SIGNED = language.dtype.SIGNEDNESS.SIGNED
-        prefix = 'i' if ty.int_signedness == SIGNED else 'u'
-        return prefix + str(ty.int_bitwidth)
-    if ty.is_floating():
-        return str(ty)
-    if ty.is_block():
-        elt = mangle_ty(ty.scalar)
-        shape = '_'.join(map(str, ty.shape))
-        return f'{elt}S{shape}S'
-    if ty.is_void():
-        return 'V'
-    raise TypeError(f'Unsupported type {ty}')
-
-
-mangle_ty = WITH_DISPATCH.get("mangle_ty", mangle_ty)
-
-
 def mangle_fn(name, arg_tys, constants, caller_context):
     # doesn't mangle ret type, which must be a function of arg tys
     mangled_arg_names = '_'.join([ty.mangle() for ty in arg_tys])
