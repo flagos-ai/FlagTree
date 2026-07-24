@@ -75,30 +75,56 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation --break-system-packages
 
       - name: Unit Test
+        id: unit_test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
+          test_log="$RUNNER_TEMP/enflame-gcu400-unit-test.log"
 
-          ## triton unit test
-          python3 -m pytest -s third_party/enflame/python/test/unit \
-              --ignore=third_party/enflame/python/test/unit/language/test_core.py
+          run_tests() {
+            ## triton unit test
+            PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 python3 -m pytest -s third_party/enflame/python/test/unit \
+                --ignore=third_party/enflame/python/test/unit/language/test_core.py || return $?
 
-          ## tle unit test
+            ## tle unit test
+            PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 python3 -m pytest -s python/test/tle \
+                --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
+                --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
+                --ignore=python/test/tle/unit/test_tle_d2d_barrier.py || return $?
 
-          python3 -m pytest -s python/test/tle \
-              --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
-              --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
-              --ignore=python/test/tle/unit/test_tle_d2d_barrier.py
+            ## tle raw test
+            PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 python3 -m pytest -s third_party/enflame/python/test/tle/raw || return $?
 
-          ## tle raw test
-          python3 -m pytest -s third_party/enflame/python/test/tle/raw
+            ## tle tutorials test
+            PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 python3 python/tutorials/tle/01-fft.py || return $?
+            PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 python3 python/tutorials/tle/02-moe_align_block_size.py || return $?
+            PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 python3 python/tutorials/tle/03-topk.py || return $?
+            PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 python3 third_party/enflame/python/test/tle/tutorials/03-topk.py || return $?
+            # python3 python/tutorials/tle/04-cluster-gemm.py
+            PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py || return $?
+            PYTHONFAULTHANDLER=1 PYTHONUNBUFFERED=1 \
+                python3 third_party/enflame/python/test/tle/tutorials/deepseek_v32/02-sparse-mla.py
+          }
 
-          ## tle tutorials test
-          python3 python/tutorials/tle/01-fft.py
-          python3 python/tutorials/tle/02-moe_align_block_size.py
-          python3 python/tutorials/tle/03-topk.py
-          python3 third_party/enflame/python/test/tle/tutorials/03-topk.py
-          # python3 python/tutorials/tle/04-cluster-gemm.py
-          python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py
-          python3 third_party/enflame/python/test/tle/tutorials/deepseek_v32/02-sparse-mla.py
+          set +e
+          run_tests 2>&1 | tee "$test_log"
+          test_status=${PIPESTATUS[0]}
+          set -e
+
+          {
+            echo "### Enflame GCU400 unit-test tail"
+            echo '```text'
+            tail -n 300 "$test_log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$test_status"
+
+      - name: Upload unit-test diagnostics
+        if: always() && steps.check_backend.outputs.should_skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: enflame-gcu400-unit-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/enflame-gcu400-unit-test.log
+          if-no-files-found: error
+          retention-days: 7
