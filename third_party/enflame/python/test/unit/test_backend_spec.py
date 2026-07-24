@@ -1,6 +1,7 @@
 from pathlib import Path
 
 
+# Keep this check device-free so backend CI can validate header selection early.
 def test_enflame_elementwise_dedup_fallback_is_vendored():
     root = Path(__file__).resolve().parents[5]
     main_header = root / "include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h"
