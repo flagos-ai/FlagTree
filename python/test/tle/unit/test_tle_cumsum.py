@@ -115,7 +115,11 @@ def _pick_expected_dtype(input_dtype: torch.dtype) -> torch.dtype:
 
 
 def _make_input(dtype: torch.dtype, block: int) -> torch.Tensor:
-    if dtype in (torch.float16, torch.float32, torch.bfloat16):
+    if dtype == torch.float16:
+        # Keep every prefix sum exactly representable in fp16 so the
+        # correctness test is independent of parallel scan accumulation order.
+        return torch.randint(-2, 3, (block, ), device="cuda", dtype=torch.int32).to(dtype)
+    if dtype in (torch.float32, torch.bfloat16):
         return torch.randn((block, ), device="cuda", dtype=dtype)
     if dtype == torch.int8:
         return torch.randint(-32, 32, (block, ), device="cuda", dtype=dtype)
