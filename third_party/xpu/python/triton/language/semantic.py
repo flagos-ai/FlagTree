@@ -71,7 +71,15 @@ class TritonSemantic(Generic[TensorTy]):
         #   it doesn't participate in the promotion
         if a_is_scalar != b_is_scalar:
             scalar_ty, tensor_ty = (a_ty, b_ty) if a_is_scalar else (b_ty, a_ty)
-            if scalar_ty.kind().value <= tensor_ty.kind().value:
+            # A floating-point scalar (e.g. the python literal `0.0`, which is
+            # typed as f32) must participate in promotion the same way Triton 3.0
+            # did: `f16_tensor <= 0.0` should compute in f32, not stay in f16.
+            # Skipping the PyTorch-style "scalar of lower/equal kind doesn't
+            # promote" short-circuit for the float-scalar/float-tensor case keeps
+            # the comparison and the surrounding select in the same (f32) domain,
+            # which the XPU SDNN select lowering requires.
+            float_scalar_vs_float_tensor = (scalar_ty.is_floating() and tensor_ty.is_floating())
+            if (scalar_ty.kind().value <= tensor_ty.kind().value and not float_scalar_vs_float_tensor):
                 # Upcast because of 3) and 4) below!
                 if div_or_mod and (tensor_ty in (tl.float16, tl.bfloat16)):
                     return tl.float32
@@ -581,8 +589,13 @@ class TritonSemantic(Generic[TensorTy]):
         if end <= start:
             raise ValueError("arange's end argument must be greater than the start argument")
         range = end - start
-        if (range & (range - 1)) != 0:
-            raise ValueError("arange's range must be a power of 2")
+        # ===-------------------- For Triton XPU -----------------------===
+        # [internal] Triton XPU does not require the power-of-two limitation
+        # (mirrors the 3.0 fork). Kernels use e.g. `tl.arange(0, 12)` for the
+        # cluster grid axis and block_size_candidates-generated non-pow2 tiles.
+        # if (range & (range - 1)) != 0:
+        #     raise ValueError("arange's range must be a power of 2")
+        # ===-----------------------------------------------------------===
         shape = [range]
         if ret_ty is None:
             ret_ty = tl.block_type(tl.int32, shape)
@@ -995,7 +1008,7 @@ class TritonSemantic(Generic[TensorTy]):
         return ()
 
     def _load_block_pointer(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
-                            flagtree_hints):
+                            flagtree_hints, offset_state_policy="", mem_sync_mode=""):
         # Load by a block pointer: `pointer_type<block_type<>>`
         # Block pointer can not have `mask` and `other` arguments
         if mask is not None or other is not None:
@@ -1015,9 +1028,10 @@ class TritonSemantic(Generic[TensorTy]):
         # Build IR
         return self.tensor(
             self.builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile,
-                                                    flagtree_hints), dst_ty)
+                                                    flagtree_hints, offset_state_policy, mem_sync_mode), dst_ty)
 
-    def _load_legacy(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, flagtree_hints):
+    def _load_legacy(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, flagtree_hints,
+                     offset_state_policy="", mem_sync_mode=""):
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
         if not ptr.type.scalar.is_ptr():
             raise ValueError(f"Unsupported ptr type {ptr.type.__repr__()} in `tl.load`")
@@ -1068,12 +1082,21 @@ class TritonSemantic(Generic[TensorTy]):
 
         # Build IR
         if mask is None:
-            ret = self.tensor(self.builder.create_load(ptr.handle, cache, eviction, is_volatile, flagtree_hints),
-                              dst_ty)
-        else:
             ret = self.tensor(
+                self.builder.create_load(ptr.handle, cache, eviction, is_volatile, flagtree_hints, offset_state_policy,
+                                         mem_sync_mode), dst_ty)
+        else:
+            load_value = self.tensor(
                 self.builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache,
-                                                eviction, is_volatile, flagtree_hints), dst_ty)
+                                                eviction, is_volatile, flagtree_hints, offset_state_policy,
+                                                mem_sync_mode), dst_ty)
+            import os
+            if bool(os.environ.get("TRITONXPU_OTHER_SIM", False)):
+                if other is None:
+                    other = self.full([], 0, elt_ty)
+                ret = self.where(mask, load_value, other)
+            else:
+                ret = load_value
         if is_bool:
             ret = self.cast(ret, tl.int1)
         return ret
@@ -1082,9 +1105,15 @@ class TritonSemantic(Generic[TensorTy]):
     # internal triton's (offset_state, sync_mode) pair.  It is passed through
     # to ir.cc where it becomes an mlir::StringAttr on the LoadOp/StoreOp,
     # enabling backend-specific optimizations (e.g. XPU async memory access).
+    # `offset_state_policy` / `mem_sync_mode` are XPU-only performance hints
+    # (internal Triton XPU parity). They are attached as generic discardable
+    # attributes (`xpu.offset_state_policy` / `xpu.mem_sync_mode`) on the load/
+    # store op by the XPU vendored ir.cc, keeping the shared main-tree op
+    # definitions untouched. Empty string means "not specified" -> the XPU
+    # offset-analysis pass infers the state automatically.
     def load(self, ptr: TensorTy, mask: Optional[TensorTy], other: Optional[TensorTy], boundary_check: Tuple,
-             padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool,
-             flagtree_hints: str) -> TensorTy:
+             padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool, flagtree_hints: str,
+             offset_state_policy: str = "", mem_sync_mode: str = "") -> TensorTy:
         # Cache, eviction and padding options
         cache = self._str_to_load_cache_modifier(cache_modifier)
         eviction = self._str_to_eviction_policy(eviction_policy)
@@ -1093,11 +1122,11 @@ class TritonSemantic(Generic[TensorTy]):
         if ptr.type.is_ptr() and ptr.type.element_ty.is_block():
             # Load by a block pointer: `pointer_type<block_type<>>`
             return self._load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
-                                            flagtree_hints)
+                                            flagtree_hints, offset_state_policy, mem_sync_mode)
         else:
             # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
             return self._load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
-                                     flagtree_hints)
+                                     flagtree_hints, offset_state_policy, mem_sync_mode)
 
     def descriptor_load(self, desc: tl.tensor_descriptor_base, offsets, cache_modifier: str,
                         eviction_policy: str) -> TensorTy:
@@ -1219,7 +1248,8 @@ class TritonSemantic(Generic[TensorTy]):
         self.builder.create_descriptor_scatter(desc.handle, value.handle, x_offsets.handle, y_offset)
         return self.tensor(None, tl.void)
 
-    def _store_block_pointer(self, ptr, val, mask, boundary_check, cache, eviction):
+    def _store_block_pointer(self, ptr, val, mask, boundary_check, cache, eviction, offset_state_policy="",
+                             mem_sync_mode=""):
         # Store by a block pointer: `pointer_type<block_type<>>`
         # Block pointers can not have the `mask` argument
         if mask is not None:
@@ -1245,9 +1275,10 @@ class TritonSemantic(Generic[TensorTy]):
 
         # Build IR
         return self.tensor(
-            self.builder.create_tensor_pointer_store(ptr.handle, val.handle, boundary_check, cache, eviction), tl.void)
+            self.builder.create_tensor_pointer_store(ptr.handle, val.handle, boundary_check, cache, eviction,
+                                                     offset_state_policy, mem_sync_mode), tl.void)
 
-    def _store_legacy(self, ptr, val, mask, boundary_check, cache, eviction):
+    def _store_legacy(self, ptr, val, mask, boundary_check, cache, eviction, offset_state_policy="", mem_sync_mode=""):
         # Store by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
         if not ptr.type.scalar.is_ptr():
             raise ValueError(f"Unsupported ptr type {ptr.type.__repr__()} in `tl.store`")
@@ -1289,14 +1320,41 @@ class TritonSemantic(Generic[TensorTy]):
 
         # Build IR
         if mask is None:
-            return self.tensor(self.builder.create_store(ptr.handle, val.handle, cache, eviction), tl.void)
+            return self.tensor(
+                self.builder.create_store(ptr.handle, val.handle, cache, eviction, offset_state_policy, mem_sync_mode),
+                tl.void)
         if not mask.type.scalar.is_bool():
             raise ValueError("Mask must have boolean scalar type")
-        return self.tensor(self.builder.create_masked_store(ptr.handle, val.handle, mask.handle, cache, eviction),
-                           tl.void)
+        # ===-------------------- For Triton XPU -----------------------===
+        # TODO[dyq]: Set TRITONXPU_STORE_MASK_SIM To Default Mode
+        # The XPU backend lowers a masked store/lm2gm as a coarse-grained DMA
+        # over the whole (contiguous) tile; the mask cannot precisely guard the
+        # partial tail lanes, so masked-off tail elements spill into the next
+        # physically-adjacent row. Mirror triton 3.0's `TRITONXPU_STORE_MASK_SIM`
+        # path: read back the old value, `where(mask, val, old)`, then masked
+        # store so masked-off lanes carry their original value (benign write).
+        # NOTE: FlagTree unifies internal triton's (offset_state, sync_mode) pair
+        # into the `flagtree_hints` string param; the read-back load uses the
+        # default hints, while the masked store forwards the caller-supplied
+        # offset_state_policy / mem_sync_mode XPU hints.
+        import os
+        if bool(os.environ.get('TRITONXPU_STORE_MASK_SIM', False)):
+            if ptr.type.is_block():
+                dst_ty = ptr.type.with_element_ty(elt_ty)
+            else:
+                dst_ty = elt_ty
+            load_value = self.tensor(self.builder.create_load(ptr.handle, cache, eviction, False), dst_ty)
+            masked_value = self.where(mask, val, load_value)
+            return self.tensor(
+                self.builder.create_masked_store(ptr.handle, masked_value.handle, mask.handle, cache, eviction,
+                                                 offset_state_policy, mem_sync_mode), tl.void)
+        # ===-----------------------------------------------------------===
+        return self.tensor(
+            self.builder.create_masked_store(ptr.handle, val.handle, mask.handle, cache, eviction, offset_state_policy,
+                                             mem_sync_mode), tl.void)
 
     def store(self, ptr: TensorTy, val: TensorTy, mask: Optional[TensorTy], boundary_check, cache_modifier: str,
-              eviction_policy: str) -> TensorTy:
+              eviction_policy: str, offset_state_policy: str = "", mem_sync_mode: str = "") -> TensorTy:
         # Cache and eviction options
         cache = self._str_to_store_cache_modifier(cache_modifier)
         eviction = self._str_to_eviction_policy(eviction_policy)
@@ -1306,10 +1364,12 @@ class TritonSemantic(Generic[TensorTy]):
 
         if ptr.type.is_ptr() and ptr.type.element_ty.is_block():
             # Store by a block pointer: `pointer_type<block_type<>>`
-            return self._store_block_pointer(ptr, val, mask, boundary_check, cache, eviction)
+            return self._store_block_pointer(ptr, val, mask, boundary_check, cache, eviction, offset_state_policy,
+                                             mem_sync_mode)
         else:
             # Store by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
-            return self._store_legacy(ptr, val, mask, boundary_check, cache, eviction)
+            return self._store_legacy(ptr, val, mask, boundary_check, cache, eviction, offset_state_policy,
+                                      mem_sync_mode)
 
 #########
 # atomic
@@ -1471,6 +1531,15 @@ class TritonSemantic(Generic[TensorTy]):
         return self.tensor(
             self.builder.create_atomic_rmw(ir.ATOMIC_OP.XCHG, ptr.handle, val.handle, mask.handle, sem, scope),
             val.type)
+
+    def atomic_mul(self, ptr: TensorTy, val: TensorTy, mask: TensorTy, sem: str, scope: str) -> TensorTy:
+        ptr, val, mask = self.atom_red_typechecking_impl(ptr, val, mask, 'mul')
+        sem = self._str_to_sem(sem)
+        scope = self._str_to_scope(scope)
+        sca_ty = val.type.scalar
+        result = self.builder.create_atomic_mul(sca_ty.is_floating(), ptr.handle, val.handle, mask.handle, sem, scope)
+        result.set_attr("xpu.atomic_mul", self.builder.get_unit_attr())
+        return self.tensor(result, val.type)
 
 # ===----------------------------------------------------------------------===//
 #                               Linear Algebra

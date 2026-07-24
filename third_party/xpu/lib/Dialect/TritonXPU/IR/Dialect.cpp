@@ -70,6 +70,14 @@ unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,
                                 Type eltTy) {
   if (auto tritonXPUAttr = mlir::dyn_cast<TritonXPU_AttrTrait>(layout)) {
     return tritonXPUAttr.getTotalElemsPerThread(shape, eltTy);
+  } else if (auto sliceLayout =
+                 mlir::dyn_cast<triton::gpu::SliceEncodingAttr>(layout)) {
+    // XPU-backed slice: recurse into the parent XPU layout using the padded
+    // parent shape, then drop the sliced dim. Matches the 3.0 fork's
+    // SliceEncodingAttr::getTotalElemsPerThread(shape, eltTy) recursion and
+    // avoids the generic DistributedEncodingTrait/LinearEncoding path, whose
+    // toLinearLayout asserts on non-power-of-two shapes.
+    return product<unsigned>(getElemsPerThread(layout, shape, eltTy));
   } else if (auto tritonGPUAttr =
                  mlir::dyn_cast<triton::gpu::DistributedEncodingTrait>(
                      layout)) {
@@ -77,6 +85,31 @@ unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,
   } else {
     llvm::report_fatal_error("getTotalElemsPerThread not implemented");
     return 0;
+  }
+}
+
+SmallVector<unsigned> getElemsPerThread(Attribute layout,
+                                        ArrayRef<int64_t> shape, Type eltTy) {
+  if (auto tritonXPUAttr = mlir::dyn_cast<TritonXPU_AttrTrait>(layout)) {
+    return tritonXPUAttr.getElemsPerThread(shape, eltTy);
+  } else if (auto sliceLayout =
+                 mlir::dyn_cast<triton::gpu::SliceEncodingAttr>(layout)) {
+    // See getTotalElemsPerThread above: recurse into the parent XPU layout
+    // with the padded parent shape, then erase the sliced dim (3.0 behavior).
+    auto parentLayout = sliceLayout.getParent();
+    auto parentShape = sliceLayout.paddedShape(shape);
+    auto parentElemsPerThread =
+        getElemsPerThread(parentLayout, parentShape, eltTy);
+    parentElemsPerThread.erase(parentElemsPerThread.begin() +
+                               sliceLayout.getDim());
+    return parentElemsPerThread;
+  } else if (auto tritonGPUAttr =
+                 mlir::dyn_cast<triton::gpu::DistributedEncodingTrait>(
+                     layout)) {
+    return tritonGPUAttr.getElemsPerThread(shape);
+  } else {
+    llvm::report_fatal_error("getElemsPerThread not implemented");
+    return SmallVector<unsigned>();
   }
 }
 
@@ -374,10 +407,30 @@ triton::xpu::ClusterLayoutAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   StringAttr kWarp = StringAttr::get(ctx, "warp");
   StringAttr kBlock = StringAttr::get(ctx, "block");
 
+  // XPU allows non-power-of-two per-level sizes, but upstream LinearLayout
+  // building blocks (identity1D -> strided1D, LayoutUtils::ensure*) assert
+  // power-of-two sizes. This LinearLayout is only a *compatibility view* for
+  // generic upstream helpers that need a LinearLayout (getFreeVariableMasks,
+  // isExpensiveView, ElementwiseOpConversionBase::maybeDeduplicate); the
+  // authoritative per-thread arity comes from getElemsPerThread (ceil-based),
+  // and XPU offset emission uses the ceil-based emitOffsetForClusterLayout
+  // (see third_party/xpu/lib/Conversion/TritonXPUToLLVM/Utility.cpp), NOT this
+  // LinearLayout's register in-dim. So it is safe to round each level up to
+  // the next power of two before feeding it to identityStandardND.
+  auto padVec = [](ArrayRef<unsigned> v) {
+    SmallVector<unsigned> out(v.begin(), v.end());
+    for (auto &e : out)
+      e = e <= 1 ? e : llvm::NextPowerOf2(e - 1);
+    return out;
+  };
+  SmallVector<unsigned> paddedSizePerCore = padVec(getSizePerCore());
+  SmallVector<unsigned> paddedCoresPerGroup = padVec(getCoresPerGroup());
+  SmallVector<unsigned> paddedGroupsPerCluster = padVec(getGroupsPerCluster());
+
   ::mlir::triton::LinearLayout ctaLayout =
-      ::mlir::triton::identityStandardND(kRegister, getSizePerCore(), order) *
-      ::mlir::triton::identityStandardND(kLane, getCoresPerGroup(), order) *
-      ::mlir::triton::identityStandardND(kWarp, getGroupsPerCluster(), order);
+      ::mlir::triton::identityStandardND(kRegister, paddedSizePerCore, order) *
+      ::mlir::triton::identityStandardND(kLane, paddedCoresPerGroup, order) *
+      ::mlir::triton::identityStandardND(kWarp, paddedGroupsPerCluster, order);
 
   // Append a degenerate "block" dim so consumers that expect this dim
   // (upstream code does) don't fail.
@@ -388,10 +441,25 @@ triton::xpu::ClusterLayoutAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   ::mlir::triton::LinearLayout blockLayout(std::move(blockBases), outDimNames);
   ctaLayout = ctaLayout * blockLayout;
 
-  // Resize to match `shape`.
+  // Resize to match `shape`. Use the padded (power-of-two) per-level product as
+  // the desired out-dim size so ensureLayoutNotLargerThan's
+  // actualSize % desiredSize == 0 assert holds for non-power-of-two shapes.
   llvm::SmallDenseMap<StringAttr, int64_t> labeledShape;
-  for (auto [dim, size] : llvm::zip(outDimNames, shape))
-    labeledShape[dim] = size;
+  for (int i = 0; i < rank; ++i) {
+    int64_t actualSize = int64_t(paddedSizePerCore[i]) *
+                         paddedCoresPerGroup[i] * paddedGroupsPerCluster[i];
+    int64_t rawShape = shape[i];
+    int64_t desired;
+    if (actualSize >= rawShape) {
+      desired =
+          actualSize; // pad up; keeps register arity == ceil(shape,cpg*gpc)
+    } else {
+      // registers must cover the remainder; round up to a multiple of
+      // actualSize
+      desired = ((rawShape + actualSize - 1) / actualSize) * actualSize;
+    }
+    labeledShape[outDimNames[i]] = desired;
+  }
   ctaLayout =
       ::mlir::triton::ensureLayoutNotSmallerThan(ctaLayout, labeledShape);
   ctaLayout =

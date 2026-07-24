@@ -44,6 +44,9 @@ unsigned getTotalElemsPerThread(Type eltTy);
 unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,
                                 Type eltTy);
 
+SmallVector<unsigned> getElemsPerThread(Attribute layout,
+                                        ArrayRef<int64_t> shape, Type eltTy);
+
 unsigned getGroupSize(Attribute layout);
 
 // Return a blocked encoding where the shape is distributed contiguously amongst
