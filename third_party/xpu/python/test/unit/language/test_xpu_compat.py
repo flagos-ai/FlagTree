@@ -102,6 +102,19 @@ def test_xpu_large_tensor_override_is_vendored():
     assert "maxTensorNumElements = INT_MAX" in source
 
 
+def test_xpu_elementwise_dedup_fallback_is_vendored():
+    root = Path(__file__).resolve().parents[6]
+    main_header = (root / "include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h")
+    xpu_header = (root /
+                  "third_party/xpu/backend/spec/include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h")
+    main_source = main_header.read_text()
+    xpu_source = xpu_header.read_text()
+    assert ("for (auto [c, d] : llvm::zip(constancy, dims)) {\n"
+            "      assert(llvm::isPowerOf2_32(c));" in main_source)
+    assert "if (!llvm::isPowerOf2_32(c))\n        return resultVals;" in xpu_source
+    assert "assert(llvm::isPowerOf2_32(c));" in xpu_source
+
+
 def test_xpu_masked_load_materializes_other_in_frontend():
     semantic = (Path(__file__).resolve().parents[6] / "third_party/xpu/python/triton/language/semantic.py").read_text()
     assert "load_value = self.tensor(" in semantic

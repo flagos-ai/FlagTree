@@ -21,6 +21,7 @@
 | `lib/Dialect/Triton/IR/Traits.cpp` | verifyTensorSize：允许非 pow2 元素数；verifyTensorLayouts：SliceEncoding 递归解析到 triton_xpu parent | 38 |
 | `lib/Conversion/TritonGPUToLLVM/ViewOpToLLVM.cpp` | ArithConstantSplatOpConversion splat guard | 2 |
 | `lib/Dialect/TritonGPU/IR/Dialect.cpp` | ceil-offset：`getTotalElemsPerThread`/`getElemsPerThread(Attribute,shape)` 对 XPU 层（ClusterLayoutAttr / XPU-backed SliceEncoding）走 ceil-based 派发（新增 `isXPUBackedLayout` + `#include TritonXPU/IR/Dialect.h` + 文件内前置声明 `getElemsPerThread(Attribute,shape)`）；绕开泛型 LinearEncoding 的 pow2 断言 | 59 |
+| `include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h` | `maybeDeduplicate` 遇到非 2 的幂 constancy 时保守地跳过 dedup，避免 XPU layout 触发主树 pow2 断言 | 3 |
 | `include/triton/Dialect/Triton/IR/TritonTypes.td` | 将 `TT_Vector`/`TT_VectorTensor` 组成的 `TT_VectorLike` 加入 `TT_Type`，允许 XPU vectorize 后的 `tt.extern_elementwise` 等主 Triton op 接受 vector-like operand/result | 6 |
 | `include/triton/Dialect/Triton/IR/Traits.h` | XPU legalize 支持大 tensor，将共享的 1M element verifier 上限放宽为 `INT_MAX` | 1 |
 | `python/triton/runtime/jit.py` | 将 XPU `xpubin` launch grid 注入编译 options，保持编译时 grid 与实际 launch 一致 | 5 |
