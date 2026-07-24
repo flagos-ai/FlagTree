@@ -124,51 +124,33 @@ def copy(src, dst, shape, inter_no_alias=False, _semantic=None):
 
 @builtin
 def add(input, other, result, _semantic=None):
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.add(input, other, result, _semantic.builder)
 
 
 @builtin
 def sub(input, other, result, _semantic=None):
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.sub(input, other, result, _semantic.builder)
 
 
 @builtin
 def mul(input, other, result, _semantic=None):
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.mul(input, other, result, _semantic.builder)
 
 
 @builtin
 def div(input, other, result, _semantic=None):
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.div(input, other, result, _semantic.builder)
 
 
 @builtin
 def max(input, other, result, _semantic=None):
     # elementwise binary vector maximum op
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.max(input, other, result, _semantic.builder)
 
 
 @builtin
 def min(input, other, result, _semantic=None):
     # elementwise binary vector minimum op
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.min(input, other, result, _semantic.builder)
 
 
