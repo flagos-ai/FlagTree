@@ -196,7 +196,7 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
     context = ir.context()
     ir.load_dialects(context)
     tle_ir.load_dialects(context)
-    tle_ir.load_tile_dialects(context)
+    tle_ir.dsa_ir.load_tile_dialects(context)
     # Ascend dialect is optional (only needed for ascend-specific ops); load if present.
     try:
         from triton._C.libtriton.ascend import ir as ascend_ir
@@ -300,7 +300,7 @@ def dump_hivm(path=None, combine_batch=32, is_causal=False):
     ir.load_dialects(context)
     from triton._C.libtriton import tle as tle_ir
     tle_ir.load_dialects(context)
-    tle_ir.load_tile_dialects(context)
+    tle_ir.dsa_ir.load_tile_dialects(context)
     try:
         from triton._C.libtriton.ascend import ir as ascend_ir
         ascend_ir.load_dialects(context)
@@ -387,7 +387,7 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     context = ir.context()
     ir.load_dialects(context)
     tle_ir.load_dialects(context)
-    tle_ir.load_tile_dialects(context)
+    tle_ir.dsa_ir.load_tile_dialects(context)
     try:
         from triton._C.libtriton.ascend import ir as ascend_ir
         ascend_ir.load_dialects(context)

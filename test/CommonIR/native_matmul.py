@@ -172,7 +172,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     context = ir.context()
     ir.load_dialects(context)
     tle_ir.load_dialects(context)
-    tle_ir.load_tile_dialects(context)
+    tle_ir.dsa_ir.load_tile_dialects(context)
     try:
         from triton._C.libtriton.ascend import ir as ascend_ir
         ascend_ir.load_dialects(context)
