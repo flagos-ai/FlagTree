@@ -79,5 +79,5 @@ jobs:
         shell: bash
         run: |
           set -x
-          python3 -m pytest -s third_party/enflame/python/test/unit \
+          python3 -m pytest third_party/enflame/python/test/unit \
               --ignore=third_party/enflame/python/test/unit/language/test_core.py

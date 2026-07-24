@@ -81,18 +81,18 @@ jobs:
           set -x
 
           ## triton unit test
-          python3 -m pytest -s third_party/enflame/python/test/unit \
+          python3 -m pytest third_party/enflame/python/test/unit \
               --ignore=third_party/enflame/python/test/unit/language/test_core.py
 
           ## tle unit test
 
-          python3 -m pytest -s python/test/tle \
+          python3 -m pytest python/test/tle \
               --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
               --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
               --ignore=python/test/tle/unit/test_tle_d2d_barrier.py
 
           ## tle raw test
-          python3 -m pytest -s third_party/enflame/python/test/tle/raw
+          python3 -m pytest third_party/enflame/python/test/tle/raw
 
           ## tle tutorials test
           python3 python/tutorials/tle/01-fft.py
