@@ -63,7 +63,7 @@ class buffer_type(tl.dtype):
         elif self.strides:
             return builder.get_buffer_ty_with_strides(self.shape, element_ty_ir, self.strides, addr_space_attr)
         else:
-            return builder.dsa_get_buffer_type(self.shape, element_ty_ir, addr_space_attr)
+            return builder.get_buffer_type(self.shape, element_ty_ir, addr_space_attr)
 
     def __str__(self):
         return self.name
