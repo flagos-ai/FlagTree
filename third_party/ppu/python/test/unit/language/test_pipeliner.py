@@ -308,10 +308,7 @@ def test_pipeline_matmul(scale, device):
                     count = 3
                 assert ttgir.count("ttg.local_alloc") == count, "alloc number not match"
             else:
-                if is_ppu():
-                    assert ttgir.count("ttg.local_alloc") == 2, "alloc number not match"
-                else:
-                    assert ttgir.count("ttg.local_alloc") == (3 if scale else 2), "alloc number not match"
+                assert ttgir.count("ttg.local_alloc") == (3 if scale else 2), "alloc number not match"
 
             # 4. check dot
             cc = torch.cuda.get_device_capability()
