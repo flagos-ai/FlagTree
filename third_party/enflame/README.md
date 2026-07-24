@@ -1,44 +1,50 @@
-# Flagtree Third Party Backend - Enflame Accelerator Support
-
+# Flagtree Third-Party Backend - Enflame Accelerator Support
 ## Overview
-
-Flagtree Third Party Backend for Enflame accelerators, including core component backend bindings and test suites for developing and deploying applications on Enflame hardware platforms.
+The Flagtree third-party backend includes the backend implementation for Enflame accelerators. It provides core component backend bindings and test suites for developing and deploying applications on Enflame hardware platforms.
 
 ## Prerequisites
-
 - Linux host system with Docker support
-- Enflame 3rd/4th Generation Accelerator Card
-- Minimum 16GB RAM (32GB recommended)
+- Enflame 3rd-generation and 4th-generation accelerator cards
+- Minimum 16GB memory (32GB recommended)
 - 100GB available disk space
 
 ## Environment Preparation
-
-### 1. Pull Source Code
-
+### 1. Version Definition
 ```bash
-# Pull code and switch to triton_v3.5.x branch
+# Software package
+SDK=TopsRider_Triton_gcu-3.6.0-1.0.20260722.cc.1.10.6_deb_amd64.run
+# Toolchain
+LLVM=enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
+# Container image
+IMAGE_PREFIX=flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04
+IMAGE_VERSION=202607-1.10.6-base
+IMAGE=${IMAGE_PREFIX}:${IMAGE_VERSION}
+CONTAINER=${IMAGE_PREFIX}.${IMAGE_VERSION}
+```
+
+### 2. Clone Source Code
+```bash
+# Clone repository and switch to main branch
 cd ~
 git clone https://github.com/flagos-ai/FlagTree.git
 cd FlagTree
 git checkout main
 ```
 
-### 2. Pull Software Package
+### 3. Download Software Package
 ```bash
 cd ~
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${SDK}
 ```
 
-### 3. Install Driver
-
+### 4. Install Driver
 ```bash
 cd ~
-bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --driver -y
+bash ${SDK} --driver -y
+# Verify driver installation
 efsmi
 ```
-
-Check driver status with efsmi. Example output:
-
+Sample valid `efsmi` output for reference:
 ```
 -------------------------------------------------------------------------------
 --------------------- Enflame System Management Interface ---------------------
@@ -52,86 +58,80 @@ Check driver status with efsmi. Example output:
 | TEMP   Lpm   Pwr(Usage/Cap) | Mem      GCU Virt | DUsed       SN            |
 |=============================================================================|
 | 0      Enflame L300         | 40.2.8.3          | 00:2d:00.0  Enable        |
-| 35     LP1      68W / 300W  | 147456MiB Disable | 0%          A098Q50610048 |
+| 35℃    LP1      68W / 300W  | 147456MiB Disable | 0%          A098Q50610048 |
 +-----------------------------+-------------------+---------------------------+
 ```
 
-### 3. Prepare Docker Image
-
+### 5. Prepare Docker Image
 ```bash
-# Load pre-built container image
-curl -sL https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz | docker load
-
-# Or manually download and load
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz
-docker load -i enflame-flagtree-0.5.0.tar.gz
+# Option A: Pull container image directly
+docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
 ```
 
-### 4. Start Docker Container
-
 ```bash
-# To re-run container, remove the existing one
-# docker rm -f enflame-flagtree-0.5.0
-
-# Assuming flagtree source code is located at ~/flagtree
-docker run -itd --privileged --name enflame-flagtree-0.5.0 -v ~/FlagTree:/root/FlagTree enflame/flagtree:0.5.0 bash
+# Option B: Download archive manually then load
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${CONTAINER}.tar.gz
+docker load -i ${CONTAINER}.tar.gz
 ```
 
-### 5. Enter Docker Container
-
+### 6. Launch Docker Container
 ```bash
-docker exec -it enflame-flagtree-0.5.0 bash
+# Delete old container if recreation is required
+# docker rm -f ${CONTAINER}
+
+# Assume FlagTree source locates at ~/FlagTree
+docker run -itd --privileged --name ${CONTAINER} -v ~/FlagTree:/root/FlagTree ${IMAGE} bash
 ```
 
-> Note: All subsequent commands should be executed within the container.
+### 7. Enter Docker Container
+```bash
+# Attach to running container
+docker exec -it ${CONTAINER} bash
+```
 
-## Build and Install
+> NOTICE: All subsequent commands shall be executed inside the container.
 
+## Build & Compilation
 ### 1. Prepare Toolchain
-
-```
+```bash
 mkdir -p ~/.flagtree/enflame
 cd ~/.flagtree/enflame
-wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
-tar -xzf enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${LLVM}
+tar -xzf ${LLVM}
 ```
 
 ### 2. Install Software Package
 ```bash
 cd ~
-bash TopsRider_Triton_gcu-3.6.0_1.0.20260521.cc.1.9.10_deb_amd64.run --container -y
+bash ${SDK} --container -y
 ```
 
 ### 3. Configure Build Environment
-
 ```bash
 export FLAGTREE_BACKEND=enflame
 git config --global --add safe.directory ~/FlagTree
 ```
 
 ### 4. Install Python Dependencies
-
 ```bash
 cd ~/FlagTree/python
 pip3 install -r requirements.txt --break-system-packages
 ```
 
 ### 5. Build and Install Package
-
 ```bash
 cd ~/FlagTree
 
 # Initial build
 pip3 install . --no-build-isolation -v --break-system-packages
 
-# Rebuild after code modification
+# Rebuild after source code modification
 pip3 install . --no-build-isolation --force-reinstall -v --break-system-packages
 ```
 
-## Test Validation
-
+## Validation & Testing
 ```bash
-# Run unit tests
+# Run tutorial test case
 cd ~/FlagTree
-pytest third_party/enflame/python/test/unit
+python python/tutorials/01-vector-add.py
 ```
