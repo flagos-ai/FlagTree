@@ -827,3 +827,255 @@ def test_tle_local_ptr_atomic_cas_runtime_round_trip():
     _local_ptr_atomic_cas_update_kernel[(1, )](out, num_warps=1)
 
     torch.testing.assert_close(out.cpu(), torch.tensor([9], dtype=torch.int32), rtol=0, atol=0)
+
+
+# ---------------------------------------------------------------------------
+# Shared-memory alias / lifetime regression tests
+#
+# These tests verify that a tle.gpu.alloc buffer accessed through
+# tle.gpu.local_ptr + pointer arithmetic is NOT overwritten by scratch
+# shared-memory allocations (e.g. layout conversions from tl.trans or
+# tl.device_print) that occur between two loads from the same buffer.
+#
+# The scratch-triggering operation is placed *between* the two loads so
+# that the shared-memory allocator must keep the histogram buffer live
+# across the scratch allocation.  Without proper alias propagation the
+# allocator reuses the histogram's smem region for the scratch buffer,
+# corrupting the second load.
+# ---------------------------------------------------------------------------
+
+
+@triton.jit
+def _local_ptr_smem_alias_trans_zero_init_kernel(
+    logits_ptr,
+    out_c1_ptr,
+    out_c2_ptr,
+    out_trans_ptr,
+    stride0,
+    BLOCK_SIZE: tl.constexpr,
+    NUM_BINS: tl.constexpr,
+    VEC: tl.constexpr,
+):
+    row_id = tl.program_id(0)
+    logits_ptr += row_id * stride0
+
+    s_histogram = tle.gpu.alloc(
+        (NUM_BINS, ),
+        dtype=tl.int32,
+        nv_mma_shared_layout=False,
+    )
+    s_histogram_ptr = tle.gpu.local_ptr(s_histogram, (0, ))
+
+    tl.debug_barrier()
+    tl.store(s_histogram_ptr + tl.arange(0, NUM_BINS), 0)
+    tl.debug_barrier()
+
+    lane = tl.arange(0, BLOCK_SIZE)
+    vec = tl.arange(0, VEC)
+    base = BLOCK_SIZE * VEC + lane * VEC
+    offs = base[:, None] + vec[None, :]
+    x_vec = tl.load(logits_ptr + offs)
+
+    tl.debug_barrier()
+    my_counts1 = tl.load(s_histogram_ptr + tl.arange(0, NUM_BINS))
+    tl.debug_barrier()
+
+    # tl.trans + store placed BETWEEN the two histogram loads.
+    # The store forces the convert_layout (scratch shared memory) to
+    # execute here, while s_histogram is still live.  Without proper
+    # alias propagation the scratch overlaps the histogram region and
+    # corrupts the second load below.
+    transposed = tl.trans(x_vec)
+    trans_offs = vec[:, None] * BLOCK_SIZE + lane[None, :]
+    tl.store(out_trans_ptr + trans_offs, transposed)
+    tl.debug_barrier()
+
+    my_counts2 = tl.load(s_histogram_ptr + tl.arange(0, NUM_BINS))
+    tl.debug_barrier()
+
+    tl.store(out_c1_ptr + tl.arange(0, NUM_BINS), my_counts1)
+    tl.store(out_c2_ptr + tl.arange(0, NUM_BINS), my_counts2)
+
+
+@triton.jit
+def _local_ptr_smem_alias_trans_pattern_init_kernel(
+    logits_ptr,
+    out_c1_ptr,
+    out_c2_ptr,
+    out_trans_ptr,
+    stride0,
+    BLOCK_SIZE: tl.constexpr,
+    NUM_BINS: tl.constexpr,
+    VEC: tl.constexpr,
+):
+    row_id = tl.program_id(0)
+    logits_ptr += row_id * stride0
+
+    s_histogram = tle.gpu.alloc(
+        (NUM_BINS, ),
+        dtype=tl.int32,
+        nv_mma_shared_layout=False,
+    )
+    s_histogram_ptr = tle.gpu.local_ptr(s_histogram, (0, ))
+
+    pattern = tl.arange(0, NUM_BINS).to(tl.int32) * 7 + 3
+
+    tl.debug_barrier()
+    tl.store(s_histogram_ptr + tl.arange(0, NUM_BINS), pattern)
+    tl.debug_barrier()
+
+    lane = tl.arange(0, BLOCK_SIZE)
+    vec = tl.arange(0, VEC)
+    base = BLOCK_SIZE * VEC + lane * VEC
+    offs = base[:, None] + vec[None, :]
+    x_vec = tl.load(logits_ptr + offs)
+
+    tl.debug_barrier()
+    my_counts1 = tl.load(s_histogram_ptr + tl.arange(0, NUM_BINS))
+    tl.debug_barrier()
+
+    transposed = tl.trans(x_vec)
+    trans_offs = vec[:, None] * BLOCK_SIZE + lane[None, :]
+    tl.store(out_trans_ptr + trans_offs, transposed)
+    tl.debug_barrier()
+
+    my_counts2 = tl.load(s_histogram_ptr + tl.arange(0, NUM_BINS))
+    tl.debug_barrier()
+
+    tl.store(out_c1_ptr + tl.arange(0, NUM_BINS), my_counts1)
+    tl.store(out_c2_ptr + tl.arange(0, NUM_BINS), my_counts2)
+
+
+@triton.jit
+def _local_ptr_smem_alias_trans_between_loads_control_kernel(
+    logits_ptr,
+    out_c1_ptr,
+    out_c2_ptr,
+    out_trans_ptr,
+    stride0,
+    BLOCK_SIZE: tl.constexpr,
+    NUM_BINS: tl.constexpr,
+    VEC: tl.constexpr,
+):
+    """Control: same trans+store between loads but histogram accessed via
+    global-memory pointer (no tle.gpu.alloc), so alias propagation is not
+    needed and the test should always pass."""
+    row_id = tl.program_id(0)
+    logits_ptr += row_id * stride0
+
+    lane = tl.arange(0, BLOCK_SIZE)
+    vec = tl.arange(0, VEC)
+    base = BLOCK_SIZE * VEC + lane * VEC
+    offs = base[:, None] + vec[None, :]
+    x_vec = tl.load(logits_ptr + offs)
+
+    hist_offs = tl.arange(0, NUM_BINS)
+    my_counts1 = tl.load(out_c1_ptr + hist_offs)
+    tl.debug_barrier()
+
+    transposed = tl.trans(x_vec)
+    trans_offs = vec[:, None] * BLOCK_SIZE + lane[None, :]
+    tl.store(out_trans_ptr + trans_offs, transposed)
+    tl.debug_barrier()
+
+    my_counts2 = tl.load(out_c1_ptr + hist_offs)
+    tl.debug_barrier()
+
+    tl.store(out_c2_ptr + hist_offs, my_counts2)
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+def test_tle_local_ptr_smem_alias_not_overwritten_by_trans_zero_init():
+    """Regression: a tle.gpu.alloc buffer initialised to zero must stay
+    zero when a tl.trans convert_layout (scratch shared memory) occurs
+    between two loads from the same buffer."""
+    torch.manual_seed(789)
+    num_bins = 2048
+    block_size = 512
+    vec = 4
+    vocab_size = 129280
+
+    logits = torch.randn(1, vocab_size, device="musa", dtype=torch.float32)
+    c1 = torch.full((num_bins, ), -1, device="musa", dtype=torch.int32)
+    c2 = torch.full((num_bins, ), -1, device="musa", dtype=torch.int32)
+    out_trans = torch.empty((1, vocab_size), device="musa", dtype=torch.float32)
+
+    _local_ptr_smem_alias_trans_zero_init_kernel[(1, )](
+        logits,
+        c1,
+        c2,
+        out_trans,
+        logits.stride(0),
+        BLOCK_SIZE=block_size,
+        NUM_BINS=num_bins,
+        VEC=vec,
+        num_warps=16,
+    )
+
+    expected = torch.zeros(num_bins, dtype=torch.int32)
+    torch.testing.assert_close(c1.cpu(), expected, rtol=0, atol=0)
+    torch.testing.assert_close(c2.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+def test_tle_local_ptr_smem_alias_not_overwritten_by_trans_pattern_init():
+    """Same as above but with a known non-zero pattern to make corruption
+    obvious."""
+    torch.manual_seed(789)
+    num_bins = 2048
+    block_size = 512
+    vec = 4
+    vocab_size = 129280
+
+    logits = torch.randn(1, vocab_size, device="musa", dtype=torch.float32)
+    c1 = torch.full((num_bins, ), -1, device="musa", dtype=torch.int32)
+    c2 = torch.full((num_bins, ), -1, device="musa", dtype=torch.int32)
+    out_trans = torch.empty((1, vocab_size), device="musa", dtype=torch.float32)
+
+    _local_ptr_smem_alias_trans_pattern_init_kernel[(1, )](
+        logits,
+        c1,
+        c2,
+        out_trans,
+        logits.stride(0),
+        BLOCK_SIZE=block_size,
+        NUM_BINS=num_bins,
+        VEC=vec,
+        num_warps=16,
+    )
+
+    expected = torch.arange(num_bins, dtype=torch.int32) * 7 + 3
+    torch.testing.assert_close(c1.cpu(), expected, rtol=0, atol=0)
+    torch.testing.assert_close(c2.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+def test_tle_local_ptr_smem_alias_trans_between_loads_control():
+    """Control: same trans+store between loads but without tle.gpu.alloc
+    (global-memory buffer instead of shared memory).  Verifies the trans
+    itself doesn't corrupt data when there's no smem-alias issue."""
+    torch.manual_seed(789)
+    num_bins = 2048
+    block_size = 512
+    vec = 4
+    vocab_size = 129280
+
+    logits = torch.randn(1, vocab_size, device="musa", dtype=torch.float32)
+    c1 = torch.zeros(num_bins, device="musa", dtype=torch.int32)
+    c2 = torch.full((num_bins, ), -1, device="musa", dtype=torch.int32)
+    out_trans = torch.empty((1, vocab_size), device="musa", dtype=torch.float32)
+
+    _local_ptr_smem_alias_trans_between_loads_control_kernel[(1, )](
+        logits,
+        c1,
+        c2,
+        out_trans,
+        logits.stride(0),
+        BLOCK_SIZE=block_size,
+        NUM_BINS=num_bins,
+        VEC=vec,
+        num_warps=16,
+    )
+
+    expected = torch.zeros(num_bins, dtype=torch.int32)
+    torch.testing.assert_close(c2.cpu(), expected, rtol=0, atol=0)

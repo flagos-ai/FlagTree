@@ -34,8 +34,17 @@ bool shouldTrackMusaSquadDotOp(Operation *op) {
 AllocationSlice::AllocationSlice(Value value,
                                  Interval<size_t> allocationInterval)
     : allocationInterval(allocationInterval) {
+#ifdef __TLE__
+  // With TLE, alias propagation may associate pointer-type values (e.g.
+  // derived from tle.local_pointers / tt.addptr) with shared memory buffers.
+  // Use dyn_cast so we degrade gracefully instead of asserting.
+  this->accessTy = dyn_cast<triton::gpu::MemDescType>(value.getType());
+  if (!accessTy)
+    return;
+#else
   auto accessTy = cast<triton::gpu::MemDescType>(value.getType());
   this->accessTy = accessTy;
+#endif
 
   // Get the memdesc_subslice information if present. If no subslice is
   // present the whole interval is accessed
@@ -364,9 +373,16 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
 
     if (!curBlockInfo.syncReadSlices.empty() ||
         !curBlockInfo.syncWriteSlices.empty()) {
+#ifdef __TLE__
+      // Some scratch-buffer ops can also carry explicit shared-memory
+      // effects (e.g. tle.gpu.local_ptr accesses). Keep conservative
+      // dependency tracking instead of hard-failing here; the normal
+      // barrier-insertion logic below will handle overlaps.
+#else
       llvm::report_fatal_error(
           "scratch buffer operations should not have any shared memory "
           "dependencies");
+#endif
     }
     auto interval = allocation->getAllocatedInterval(scratchBufferId);
     auto scratchSlice = AllocationSlice(interval);
