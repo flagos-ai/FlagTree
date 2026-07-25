@@ -81,6 +81,10 @@ jobs:
           python3 14-accuracy-comparison.py
           #python3 15-embedding_gather_demo.py
           popd
+          # hint tests
+          pushd third_party/ascend/tutorials/hint
+          python3 test_comment_hint.py
+          popd
           # pytest_ut
           pushd third_party/ascend/unittest/pytest_ut
           python3 -m pytest . \

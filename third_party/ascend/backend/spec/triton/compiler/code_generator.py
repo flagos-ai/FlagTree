@@ -23,6 +23,7 @@ from ..runtime.jit import _normalize_ty, get_jit_fn_file_line
 from ..runtime import JITFunction
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
 from types import ModuleType
+from .hint_manager import hint_trigger
 # Central registry for all 'with' statement handlers
 WITH_DISPATCH = {}
 
@@ -548,6 +549,9 @@ class CodeGenerator(ast.NodeVisitor):
                 value = language.semantic.to_tensor(value, self.builder)
             self.set_value(name, value)
 
+        # switch into hintmanager
+        hint_trigger("ext_CodeGenerator_visit_Assign_hint_anno", self, node, names, values)
+
     def visit_AugAssign(self, node):
         name = node.target.id
         lhs = ast.Name(id=name, ctx=ast.Load())
@@ -997,6 +1001,11 @@ class CodeGenerator(ast.NodeVisitor):
             step = iter_args[2] if len(iter_args) > 2 else self.visit(ast.Num(1))
         else:
             raise RuntimeError('Only `range` and `static_range` iterators are currently supported')
+        # hint manager
+        new_bind_sub_block = hint_trigger("check_override_bind_sub_block", self, node, bind_sub_block)
+        if new_bind_sub_block is not None:
+            bind_sub_block = new_bind_sub_block
+
         # handle negative constant step (not supported by scf.for in MLIR)
         negative_step = False
         if _is_constexpr(step) and step.value < 0:
@@ -1072,6 +1081,9 @@ class CodeGenerator(ast.NodeVisitor):
             tle = importlib.import_module("triton.experimental.tle", package=__package__)
             if (IteratorClass is extension.parallel or IteratorClass is tle.dsa.parallel):
                 for_op.set_attr("hivm.parallel_loop", self.builder.get_unit_attr())
+            # hint manager
+            if bind_sub_block:
+                hint_trigger("forop_setattr_for_bind_sub_block", self, for_op, bind_sub_block)
 
             self.scf_stack.append(node)
             self.builder.set_insertion_point_to_start(for_op.get_body(0))
