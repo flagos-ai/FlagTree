@@ -23,12 +23,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect
-
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <cstdint>
@@ -4101,5 +4095,3 @@ std::optional<int> triton::gpu::getWarpSpecializeTag(Operation *op) {
   }
   return std::nullopt;
 }
-
-#endif

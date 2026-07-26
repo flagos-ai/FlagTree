@@ -36,7 +36,8 @@ XPU 差异。
 
 > `Dialect.cpp` 关键点：internal 在主树 header `TritonGPU/IR/Dialect.h` 加了 `getElemsPerThread(Attribute,ArrayRef)` 声明；FlagTree 该 header **无**此声明（Q0b 不改共享 header），故 `getTotalElemsPerThread` 里 line~112 的 `getElemsPerThread(layout,shape)` 会误配到 `getElemsPerThread(Type)` 报 `Attribute→Type` 转换错。修法：在本 vendored 副本内 `namespace mlir::triton::gpu` 前置声明该 overload（不动主树 header）。已经 XTDK clang22 实测编译+链接通过。
 
-> 注：`Dialect.cpp` 副本保留了 pristine 顶部的 `flagtree_spec.h` 原生守卫（`#if __has_include("flagtree_spec.h")` / `#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_IR_Dialect`）。XPU 未提供 `third_party/xpu/backend/spec/include/flagtree_spec.h`，故 `__has_include` 为假、宏未定义、整个 body 正常编译——守卫无副作用。新增的 `#include "triton/Dialect/TritonXPU/IR/Dialect.h"` 经 XPU 后端 include dir（`third_party/xpu/include`）解析，仅存在于本副本。
+> 注：`Dialect.cpp` 新增的 `#include "triton/Dialect/TritonXPU/IR/Dialect.h"`
+> 经 XPU 后端 include dir（`third_party/xpu/include`）解析，仅存在于本副本。
 
 ## 维护须知（drift）
 FlagTree 主树每次升级上述任一文件，**必须**用新版主树文件重做副本（以新主树为底重叠 XPU 改动），并更新本文件的派生提交号。否则 XPU 编译的是过期主树逻辑。

@@ -23,12 +23,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility
-
 #include "triton/Analysis/Utility.h"
 
 #include <fstream>
@@ -1804,5 +1798,3 @@ LogicalResult verifyBarrierType(Operation *op,
 }
 
 } // namespace mlir::triton
-
-#endif

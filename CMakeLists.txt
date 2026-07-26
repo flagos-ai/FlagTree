@@ -78,15 +78,6 @@ if(FLAGTREE_PLUGIN)
   add_definitions(-D__FLAGTREE_PLUGIN__)
 endif()
 
-# FLAGTREE SPEC LIB GET FUNC
-function(get_flagtree_backend_lib lib_name output_lib)
-  set(ret FlagTree_${FLAGTREE_BACKEND}_${lib_name})
-  if(NOT TARGET ${ret})
-    set(ret "")
-  endif()
-  set(${output_lib} ${ret} PARENT_SCOPE)
-endfunction()
-
 # FLAGTREE SPEC TD FILE GET FUNC
 function(set_flagtree_backend_td output_td td_filename)
   set(ret ${td_filename})

@@ -9,8 +9,6 @@ if(FLAGTREE_TLE)
   )
 endif()
 
-get_flagtree_backend_lib("TritonTransforms" _EXTRA_LINK_LIBS)
-
 add_triton_library(TritonTransforms
   Combine.cpp
   LoopAwareCSE.cpp
@@ -34,5 +32,4 @@ add_triton_library(TritonTransforms
   MLIRTransforms
   MLIRSCFToControlFlow
   TritonIR
-  ${_EXTRA_LINK_LIBS}
 )
