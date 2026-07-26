@@ -1,8 +1,9 @@
 # FlagTree XPU — main-tree source overrides (whole-file vendored replacement)
 
-> 机制：`third_party/xpu/CMakeLists.txt` 中的 `xpu_override_main_source`
-> 显式关闭 4 个主树 `.cpp` 的编译，并把同项目相对路径的 XPU spec 副本
-> 加入原 target。替换逻辑完全由 XPU backend 持有，不修改顶层 CMake helper。
+> 机制：顶层 CMake 调用 `cmake/FlagTreeBackendSpec.cmake` 中的
+> `flagtree_apply_backend_source_overrides`，自动扫描本目录下 `lib/` 中的
+> 可编译源码，关闭镜像路径对应的主树源码，并把 XPU spec 副本加入原 target。
+> 无需在 XPU CMake 中逐文件维护 target 映射。
 > 该机制用于保持共享主树源码不含 XPU 专属语义，同时允许后端维护完整的源文件替换。
 
 ## 为什么用整文件替换而非就地改主树

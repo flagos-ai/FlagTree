@@ -223,6 +223,7 @@ list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(TableGen) # required by AddMLIR
 include(AddLLVM)
 include(AddMLIR)
+include(FlagTreeBackendSpec)
 
 # Utilities
 function(add_triton_object name)
@@ -474,6 +475,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
       message(STATUS "Building plugin '${PLUGIN_NAME}' from ${PLUGIN_DIR} with output ${PLUGIN_DIR_BUILD_OUTPUT}")
       add_subdirectory(${PLUGIN_DIR} ${PLUGIN_DIR_BUILD_OUTPUT})
     endforeach()
+  endif()
+
+  if(FLAGTREE_BACKEND)
+    flagtree_apply_backend_source_overrides("${FLAGTREE_BACKEND_DIR}")
   endif()
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
