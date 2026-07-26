@@ -223,7 +223,6 @@ list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(TableGen) # required by AddMLIR
 include(AddLLVM)
 include(AddMLIR)
-include(FlagTreeBackendSpec)
 
 # Utilities
 function(add_triton_object name)
@@ -477,7 +476,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
     endforeach()
   endif()
 
+  # flagtree backend cmake specialization
   if(FLAGTREE_BACKEND)
+    include(FlagTreeBackendSpec)
     flagtree_apply_backend_source_overrides("${FLAGTREE_BACKEND_DIR}")
   endif()
 
