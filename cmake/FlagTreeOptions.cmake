@@ -219,6 +219,21 @@ function(flagtree_add_distributed_plugin)
 endfunction()
 
 
+macro(flagtree_python_src_path_set output_var default_path)
+  set(${output_python_src_path}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/python/src)
+  if(NOT (FLAGTREE_BACKEND AND EXISTS "${${output_python_src_path}}"))
+    set(${output_python_src_path} "${default_path}")
+  endif()
+
+  include_directories(${Python3_INCLUDE_DIRS})
+  include_directories(${pybind11_INCLUDE_DIR})
+  link_directories(${Python3_LIBRARY_DIRS})
+  link_libraries(${Python3_LIBRARIES})
+  add_link_options(${Python3_LINK_OPTIONS})
+endmacro()
+
+
 function(flagtree_add_tle_generated_header_dependencies)
   if(NOT TARGET TleTableGen)
     return()
