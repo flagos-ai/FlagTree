@@ -47,7 +47,7 @@ def matmul(a, b):
     K, N = b.shape
     c = torch.empty((M, N), device=a.device, dtype=torch.float32)
     grid = (1, )
-    matmul_kernel[grid](a, b, c, M, N, K, BLOCK_SIZE=1)
+    matmul_kernel[grid](a, b, c, M, N, K, BLOCK_SIZE=1, num_warps=1)
     return c
 
 
