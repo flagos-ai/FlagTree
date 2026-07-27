@@ -73,9 +73,10 @@ macro(flagtree_configure_options)
   elseif(FLAGTREE_BACKEND STREQUAL "metax")
     add_definitions(-DUSE_MACA)
     option(BUILD_MCTLE "use maca triton language extensions" ON)
-    list(APPEND TRITON_PLUGIN_NAMES "mctle")
-    add_definitions(-D__MCTLE__)
-
+    if(BUILD_MCTLE)
+      list(APPEND TRITON_PLUGIN_NAMES "mctle")
+      add_definitions(-D__MCTLE__)
+    endif()
     set(FLAGTREE_TLE OFF)
     remove_definitions(-D__TLE__)
     list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
@@ -147,6 +148,11 @@ endmacro()
 
 
 macro(flagtree_configure_core_source)
+  if(BUILD_MCTLE)
+    include_directories(${PROJECT_SOURCE_DIR}/third_party/metax/plugin)
+    include_directories(${PROJECT_BINARY_DIR}/third_party/metax/plugin)
+  endif()
+
   if(FLAGTREE_BACKEND MATCHES
      "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir)$")
     include_directories(${PROJECT_SOURCE_DIR}/include)
