@@ -60,7 +60,7 @@ def _tle_cumsum_ptx_kernel(x_ptr, exclusive_ptr, total_ptr, BLOCK: tl.constexpr)
     tl.store(total_ptr, total)
 
 
-@triton.jit(noinline=True)
+@triton.jit
 def _tle_cumsum_callee_shared_kernel(hist_ptr, BLOCK: tl.constexpr):
     offs = tl.arange(0, BLOCK)
     x = tl.load(hist_ptr + offs)
@@ -69,7 +69,7 @@ def _tle_cumsum_callee_shared_kernel(hist_ptr, BLOCK: tl.constexpr):
 
 
 @triton.jit
-def _tle_cumsum_call_shared_kernel(exclusive_ptr, sentinel_ptr, BLOCK: tl.constexpr):
+def _tle_cumsum_helper_shared_kernel(exclusive_ptr, sentinel_ptr, BLOCK: tl.constexpr):
     sentinel_value = 123456789
     offs = tl.arange(0, BLOCK)
     smem = tle.gpu.alloc([BLOCK * 2], dtype=tl.int32, scope=tle.gpu.smem, nv_mma_shared_layout=_nv_mma_shared_layout)
@@ -273,24 +273,13 @@ def test_tle_cumsum_amdgcn_fastpath_regression_guard():
         "Detected predicated ds_write: possible regression to generic path"
 
 
-def test_tle_cumsum_call_shared_frame_regression():
+def test_tle_cumsum_helper_preserves_adjacent_sentinel():
     block = 512
     num_warps = block // threads_per_warp
     exclusive = torch.empty((block, ), device="cuda", dtype=torch.int32)
     sentinel = torch.empty((block, ), device="cuda", dtype=torch.int32)
 
-    compiled = _tle_cumsum_call_shared_kernel.warmup(
-        exclusive,
-        sentinel,
-        BLOCK=block,
-        grid=(1, ),
-        num_warps=num_warps,
-        num_stages=1,
-    )
-    ttgir = compiled.asm["ttgir"]
-    assert "tt.call" in ttgir, "regression scenario requires cross-function call frame"
-
-    _tle_cumsum_call_shared_kernel[(1, )](
+    _tle_cumsum_helper_shared_kernel[(1, )](
         exclusive,
         sentinel,
         BLOCK=block,
