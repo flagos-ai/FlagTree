@@ -154,7 +154,7 @@ function(flagtree_apply_backend_source_overrides backend_root)
       if(EXISTS "${_spec_source_in_core_root}")
         get_filename_component(_spec_source_in_core_root "${_spec_source_in_core_root}" REALPATH)
       endif()
-      # TODO
+      # Only process ${_spec_source} that appears in the core root
       list(FIND _source_index "${_spec_source_in_core_root}" _candidate_index)
       if(NOT _candidate_index EQUAL -1)
         list(APPEND _spec_sources_in_core_root "${_spec_source_in_core_root}")
@@ -195,7 +195,7 @@ function(flagtree_apply_backend_source_overrides backend_root)
       list(GET _suffix_main_sources 0 _root_source)
     endif()
 
-    # TODO
+    # Assert ${_spec_source} appears in the core root
     if(NOT EXISTS "${_root_source}")
       message(FATAL_ERROR
         "Backend spec source ${_spec_source} maps to missing main source "
@@ -212,6 +212,7 @@ function(flagtree_apply_backend_source_overrides backend_root)
     endforeach()
     list(REMOVE_DUPLICATES _owner_targets)
 
+    # ${_owner_targets}: all targets that own the ${_root_source}
     foreach(_owner_target IN LISTS _owner_targets)
       set(_already_injected FALSE)
       foreach(_index RANGE 0 ${_last_source_index})
