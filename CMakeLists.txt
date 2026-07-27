@@ -279,117 +279,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     pybind11::headers
 
   )
-  if(FLAGTREE_BACKEND STREQUAL "iluvatar")
-    set(TRITON_LIBRARIES
-      ${triton_libs}
-      ${triton_plugins}
-
-      # mlir
-      MLIRNVVMDialect
-      MLIRNVVMToLLVMIRTranslation
-      MLIRGPUToNVVMTransforms
-      MLIRGPUToGPURuntimeTransforms
-      MLIRGPUTransforms
-      MLIRIR
-      MLIRControlFlowToLLVM
-      MLIRBytecodeWriter
-      MLIRPass
-      MLIRTransforms
-      MLIRLLVMDialect
-      MLIRSupport
-      MLIRTargetLLVMIRExport
-      MLIRMathToLLVM
-      MLIRGPUDialect
-      MLIRSCFToControlFlow
-      MLIRIndexToLLVM
-
-      # LLVM
-      LLVMPasses
-      LLVMIluvatarCodeGen
-      LLVMIluvatarAsmParser
-    )
-  elseif(FLAGTREE_BACKEND STREQUAL "xpu")
-    set(TRITON_LIBRARIES
-      ${triton_libs}
-      ${triton_plugins}
-
-      # mlir
-      MLIRIR
-      MLIRControlFlowToLLVM
-      MLIRBytecodeWriter
-      MLIRPass
-      MLIRTransforms
-      MLIRLLVMDialect
-      MLIRSupport
-      MLIRTargetLLVMIRExport
-      MLIRMathToLLVM
-      MLIRGPUDialect
-      MLIRSCFToControlFlow
-      MLIRIndexToLLVM
-
-      # LLVM
-      LLVMPasses
-      LLVMXPUCodeGen
-      LLVMXPUAsmParser
-
-      # NVIDIA compat (PTXAsmFormat for TritonInstrumentToLLVM)
-      TritonNVIDIACompat
-    )
-  elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
-    list(APPEND TRITON_LIBRARIES
-	  # riscv
-      LLVMRISCVCodeGen
-      LLVMRISCVAsmParser
-    )
-  elseif(FLAGTREE_BACKEND STREQUAL "hcu")
-    list(APPEND TRITON_PLUGIN_NAMES "distributed")
-    add_subdirectory(test)
-  elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
-    set(TRITON_LIBRARIES
-      ${triton_libs}
-      ${triton_plugins}
-      # mlir
-      # MLIRAMDGPUDialect
-      # MLIRNVVMDialect
-      MLIRSTVMDialect  # STVM
-      MLIRNVVMToLLVMIRTranslation
-      MLIRSTVMToLLVMIRTranslation
-      MLIRGPUToNVVMTransforms
-      MLIRGPUToSTVMTransforms
-      MLIRGPUToGPURuntimeTransforms
-      MLIRGPUTransforms
-      MLIRIR
-      MLIRControlFlowToLLVM
-      MLIRBytecodeWriter
-      MLIRPass
-      MLIRTransforms
-      MLIRLLVMDialect
-      MLIRSupport
-      MLIRTargetLLVMIRExport
-      MLIRMathToLLVM
-      # MLIRROCDLToLLVMIRTranslation
-      MLIRGPUDialect
-      MLIRSCFToControlFlow
-      MLIRIndexToLLVM
-      MLIRGPUToROCDLTransforms
-      MLIRUBToLLVM
-      # LLVM
-      LLVMPasses
-      # LLVMNVPTXCodeGen
-      # LLVMAMDGPUCodeGen
-      # LLVMAMDGPUAsmParser
-      LLVMSTCUCodeGen
-      LLVMSTCUAsmParser
-      LLVMAArch64CodeGen
-      LLVMAArch64AsmParser
-      LLVMRISCVCodeGen
-      LLVMRISCVAsmParser
-      Python3::Module
-      pybind11::headers
-  )
-  elseif(FLAGTREE_BACKEND STREQUAL "metax" AND BUILD_MCTLE)
-    list(APPEND TRITON_LIBRARIES MLIRTargetLLVMIRImport)
-  endif()
+  flagtree_configure_backend_libraries()
 
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
      CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" OR # macOS arm64
@@ -423,43 +313,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   set(TRITON_BACKENDS_TUPLE "(${TRITON_BACKENDS_TUPLE})")
   add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
-  if(FLAGTREE_BACKEND STREQUAL "iluvatar")
-    set(TRITON_ILU_PYTHON_SRCS
-                    ${PYTHON_SRC_PATH}/main.cc
-                    ${PYTHON_SRC_PATH}/ir.cc
-                    ${PYTHON_SRC_PATH}/linear_layout.cc
-                    ${PYTHON_SRC_PATH}/passes.cc
-                    ${PYTHON_SRC_PATH}/interpreter.cc
-                    ${PYTHON_SRC_PATH}/llvm.cc
-                    ${PYTHON_SRC_PATH}/specialize.cc)
-    if(TRITON_BUILD_GLUON)
-      list(APPEND TRITON_ILU_PYTHON_SRCS ${PYTHON_SRC_PATH}/gluon_ir.cc)
-    endif()
-    add_library(triton SHARED ${TRITON_ILU_PYTHON_SRCS})
-    if(TRITON_BUILD_GLUON)
-      target_compile_definitions(triton PRIVATE TRITON_BUILD_GLUON)
-    endif()
-  else()
-    add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
+  add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                     ${PYTHON_SRC_PATH}/ir.cc
                     ${PYTHON_SRC_PATH}/passes.cc
                     ${PYTHON_SRC_PATH}/interpreter.cc
                     ${PYTHON_SRC_PATH}/llvm.cc)
-    if(EXISTS "${PYTHON_SRC_PATH}/gluon_ir.cc")
-      target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/gluon_ir.cc)
-    endif()
-    if(EXISTS "${PYTHON_SRC_PATH}/linear_layout.cc")
-      target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/linear_layout.cc)
-    endif()
-    if(EXISTS "${PYTHON_SRC_PATH}/specialize.cc")
-      target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/specialize.cc)
-    endif()
-    if(FLAGTREE_BACKEND STREQUAL "xpu")
-      target_sources(triton PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xpu/python/src/mlir_pass_abi_shim.cc)
-      add_dependencies(triton TritonAMDGPUTableGen TritonAMDGPUAttrDefsIncGen)
-      target_link_libraries(triton PRIVATE TritonAMDGPUIR TritonAMDUtils)
-    endif()
-  endif()
+  flagtree_configure_python_src()
 
   # Link triton with its dependencies
   target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})
