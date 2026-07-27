@@ -10,7 +10,6 @@ set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-# flagtree
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/FlagTreeOptions.cmake")
 flagtree_configure_options()
 
@@ -25,10 +24,8 @@ option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ${FLAGTREE_DEFAULT
 option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ${FLAGTREE_DEFAULT_OPTION})
 option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
 set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
-if(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "metax")
-  list(APPEND TRITON_CODEGEN_BACKENDS "nvidia")
-  list(APPEND TRITON_CODEGEN_BACKENDS "amd")
-endif()
+
+flagtree_configure_codegen_backends()
 
 if(TRITON_BUILD_WITH_CCACHE)
   find_program(CCACHE_PROGRAM ccache)
@@ -84,28 +81,7 @@ if(TRITON_BUILD_UT)
 endif()
 
 # Compiler flags
-set(FLAGTREE_BACKEND_DIR ${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND})
-## flagtree spec include dir
-set(BACKEND_SPEC_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/spec_cpp/include)
-if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_SPEC_INCLUDE_DIR})
-  include_directories(${BACKEND_SPEC_INCLUDE_DIR})
-endif()
-## flagtree third_party include dir
-set(BACKEND_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/include)
-if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
-  # XPU backend Analysis headers (Utility.h, etc.) are structurally different
-  # from the main-tree headers (not a superset), so core lib compilation needs
-  # the main-tree include as well.  XPU's own sub-cmake uses
-  # include_directories(BEFORE ...) to ensure XPU targets pick up the XPU
-  # versions first.  Other backends provide superset headers and do not need
-  # this.
-  if(FLAGTREE_BACKEND STREQUAL "xpu")
-    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-  endif()
-  include_directories(${BACKEND_INCLUDE_DIR})
-else()
-  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-endif()
+flagtree_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 if(NOT MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS  -fPIC -std=gnu++17")
 else()
@@ -160,45 +136,11 @@ function(add_triton_library name)
   llvm_update_compile_flags(${name})
 endfunction()
 
-function(flagtree_add_tle_generated_header_dependencies)
-  if(NOT TARGET TleTableGen)
-    return()
-  endif()
-
-  set(_flagtree_tle_codegen_deps TleTableGen)
-  if(TARGET TritonTLETransformsIncGen)
-    list(APPEND _flagtree_tle_codegen_deps TritonTLETransformsIncGen)
-  endif()
-
-  # Native compiler targets include TLE generated headers under __TLE__ guards.
-  # The TLE dialect is added after the core libraries, so the dependency must be
-  # attached explicitly once the TLE tablegen targets exist; otherwise a clean
-  # parallel build can compile those libraries before the generated .inc files.
-  foreach(_flagtree_tle_header_target IN ITEMS
-      TritonAnalysis
-      TritonToTritonGPU
-      TritonGPUTransforms
-      TritonNvidiaGPUTransforms
-      TritonNVIDIAGPUToLLVM
-      TritonGPUToLLVM
-      NVHopperTransforms
-      triton
-      triton-opt
-      triton-reduce
-      triton-lsp
-      triton-llvm-opt
-      triton-tensor-layout)
-    if(TARGET ${_flagtree_tle_header_target})
-      add_dependencies(${_flagtree_tle_header_target}
-        ${_flagtree_tle_codegen_deps})
-    endif()
-  endforeach()
-endfunction()
-
 set_property(GLOBAL PROPERTY TRITON_PLUGINS "")
 function(add_triton_plugin name)
   cmake_parse_arguments(ARG "" "SHARED_LIB" "LINK_LIBS" ${ARGN})
   if(ARG_SHARED_LIB)
+    # flagtree: add SHARED_LIB to process BackendTritonPlugin
     set_property(GLOBAL APPEND PROPERTY TRITON_PLUGINS ${ARG_SHARED_LIB})
   else()
     set_property(GLOBAL APPEND PROPERTY TRITON_PLUGINS ${name})

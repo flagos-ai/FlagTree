@@ -90,6 +90,79 @@ macro(flagtree_configure_options)
   endif()
 endmacro()
 
+
+macro(flagtree_configure_codegen_backends)
+  if(FLAGTREE_BACKEND STREQUAL "metax")
+    list(APPEND TRITON_CODEGEN_BACKENDS "nvidia")
+    list(APPEND TRITON_CODEGEN_BACKENDS "amd")
+  endif()
+endmacro()
+
+
+macro(flagtree_include_directories root_include_dir)
+  set(FLAGTREE_BACKEND_DIR ${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND})
+
+  # flagtree spec include dir
+  set(BACKEND_SPEC_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/spec_cpp/include)
+  if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_SPEC_INCLUDE_DIR})
+    include_directories(${BACKEND_SPEC_INCLUDE_DIR})
+  endif()
+
+  # flagtree third_party include dir
+  set(BACKEND_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/include)
+  if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
+    # XPU backend Analysis headers (Utility.h, etc.) are structurally different
+    # from the main-tree headers (not a superset), so core lib compilation needs
+    # the main-tree include as well. XPU's own sub-cmake uses
+    # include_directories(BEFORE ...) to ensure XPU targets pick up the XPU
+    # versions first. Other backends provide superset headers and do not need
+    # this.
+    if(FLAGTREE_BACKEND STREQUAL "xpu")
+      include_directories("${root_include_dir}")
+    endif()
+    include_directories(${BACKEND_INCLUDE_DIR})
+  else()
+    include_directories("${root_include_dir}")
+  endif()
+endmacro()
+
+
+function(flagtree_add_tle_generated_header_dependencies)
+  if(NOT TARGET TleTableGen)
+    return()
+  endif()
+
+  set(_flagtree_tle_codegen_deps TleTableGen)
+  if(TARGET TritonTLETransformsIncGen)
+    list(APPEND _flagtree_tle_codegen_deps TritonTLETransformsIncGen)
+  endif()
+
+  # Native compiler targets include TLE generated headers under __TLE__ guards.
+  # The TLE dialect is added after the core libraries, so the dependency must be
+  # attached explicitly once the TLE tablegen targets exist; otherwise a clean
+  # parallel build can compile those libraries before the generated .inc files.
+  foreach(_flagtree_tle_header_target IN ITEMS
+      TritonAnalysis
+      TritonToTritonGPU
+      TritonGPUTransforms
+      TritonNvidiaGPUTransforms
+      TritonNVIDIAGPUToLLVM
+      TritonGPUToLLVM
+      NVHopperTransforms
+      triton
+      triton-opt
+      triton-reduce
+      triton-lsp
+      triton-llvm-opt
+      triton-tensor-layout)
+    if(TARGET ${_flagtree_tle_header_target})
+      add_dependencies(${_flagtree_tle_header_target}
+        ${_flagtree_tle_codegen_deps})
+    endif()
+  endforeach()
+endfunction()
+
+
 # FLAGTREE SPEC TD FILE GET FUNC
 function(set_flagtree_backend_td output_td td_filename)
   set(ret ${td_filename})
