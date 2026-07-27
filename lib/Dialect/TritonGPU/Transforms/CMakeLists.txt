@@ -49,6 +49,9 @@ add_triton_library(TritonGPUTransforms
 
   DEPENDS
   TritonGPUTransformsIncGen
+  # flagtree: fix missing Triton dependency
+  TritonTableGen
+  TritonGPUAttrDefsIncGen
 
   LINK_LIBS PUBLIC
   MLIRTransforms

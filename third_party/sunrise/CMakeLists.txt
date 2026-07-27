@@ -37,8 +37,3 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/include
                  ${PROJECT_BINARY_DIR}/include)
 add_subdirectory(${PROJECT_SOURCE_DIR}/lib
                  ${PROJECT_BINARY_DIR}/lib)
-
-# flagtree backend cmake specialization
-add_dependencies(TritonGPUTransforms
-  TritonTableGen
-  TritonGPUAttrDefsIncGen)
