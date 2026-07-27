@@ -72,7 +72,6 @@ macro(flagtree_configure_options)
     add_definitions(-D__HCU__)
   elseif(FLAGTREE_BACKEND STREQUAL "metax")
     add_definitions(-DUSE_MACA)
-    # metax use mctle to replace tle
     option(BUILD_MCTLE "use maca triton language extensions" ON)
     list(APPEND TRITON_PLUGIN_NAMES "mctle")
     add_definitions(-D__MCTLE__)
@@ -125,6 +124,99 @@ macro(flagtree_include_directories root_include_dir)
     include_directories("${root_include_dir}")
   endif()
 endmacro()
+
+
+macro(flagtree_configure_backend_cxx_flags)
+  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir)$")
+    # Suppress visibility warnings in gluon_ir.cc (GCC 13+ -Wattributes on
+    # pybind11 hidden types), and -Wcomment for generated
+    # TritonGPUAttrDefs.h.inc (ASCII diagrams in TableGen output).
+    set(CMAKE_CXX_FLAGS
+      "${CMAKE_CXX_FLAGS} -Werror -Wno-attributes -Wno-comment -Wno-error=odr")
+  elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
+    set(CMAKE_CXX_FLAGS
+      "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default -Wno-deprecated-declarations -Wno-attributes")
+  elseif(FLAGTREE_BACKEND STREQUAL "mthreads")
+    set(CMAKE_CXX_FLAGS
+      "${CMAKE_CXX_FLAGS} -Wno-covered-switch-default")
+  else()
+    set(CMAKE_CXX_FLAGS
+      "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default")
+  endif()
+endmacro()
+
+
+macro(flagtree_configure_core_source)
+  if(FLAGTREE_BACKEND MATCHES
+     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir)$")
+    include_directories(${PROJECT_SOURCE_DIR}/include)
+    include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+    if(FLAGTREE_BACKEND STREQUAL "xpu")
+      include_directories(${PROJECT_SOURCE_DIR}/third_party/nvidia/include)
+      include_directories(${PROJECT_BINARY_DIR}/third_party/nvidia/include) # Tablegen'd files
+      add_subdirectory(third_party/nvidia/include)
+      include_directories(${PROJECT_SOURCE_DIR}/third_party/amd/include)
+      include_directories(${PROJECT_BINARY_DIR}/third_party/amd/include) # Tablegen'd files
+      add_subdirectory(third_party/amd/include)
+    endif()
+    add_subdirectory(include)
+    add_subdirectory(lib)
+    if(FLAGTREE_BACKEND STREQUAL "xpu")
+      add_subdirectory(third_party/nvidia/lib/Dialect/NVGPU/IR)
+      add_subdirectory(third_party/nvidia/lib/Dialect/NVWS/IR)
+      add_subdirectory(third_party/nvidia/lib/Dialect/NVWS/Transforms)
+      add_subdirectory(third_party/amd/lib/Dialect/TritonAMDGPU)
+      foreach(_flagtree_xpu_core_target IN ITEMS
+          TritonGPUTransforms)
+        if(TARGET ${_flagtree_xpu_core_target})
+          add_dependencies(${_flagtree_xpu_core_target}
+            NVGPUTableGen
+            NVGPUAttrDefsIncGen
+            NVWSTableGen
+            NVWSAttrDefsIncGen
+            NVWSTransformsIncGen)
+        endif()
+      endforeach()
+    endif()
+  elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
+    set(TRITON_CORE_SOURCE_DIR
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iluvatar)
+    set(TRITON_CORE_BINARY_DIR
+      ${CMAKE_CURRENT_BINARY_DIR}/third_party/iluvatar)
+    option(TRITON_BUILD_GLUON
+      "Build the Gluon IR Python bindings (gluon_ir.cc)" OFF)
+    include_directories(${TRITON_CORE_SOURCE_DIR}/include)
+    include_directories(${TRITON_CORE_BINARY_DIR}/include)
+    include_directories(${TRITON_CORE_SOURCE_DIR}/backend/include)
+    include_directories(${TRITON_CORE_BINARY_DIR}/backend/include)
+    if(FLAGTREE_ILUVATAR_TLE)
+      include_directories(${TRITON_CORE_SOURCE_DIR}/tle/include)
+      include_directories(${TRITON_CORE_BINARY_DIR}/tle/include)
+    endif()
+    add_subdirectory(
+      ${TRITON_CORE_SOURCE_DIR}/include ${TRITON_CORE_BINARY_DIR}/include)
+    add_subdirectory(
+      ${TRITON_CORE_SOURCE_DIR}/lib ${TRITON_CORE_BINARY_DIR}/lib)
+  endif()
+endmacro()
+
+
+function(flagtree_add_distributed_plugin)
+  if(TRITON_BUILD_PYTHON_MODULE AND
+     FLAGTREE_BACKEND STREQUAL "hcu")
+    message(STATUS "Adding Python module for TritonDistributed")
+    set(PYTHON_DIST_SRC_PATH
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/python/src/dist)
+    add_triton_plugin(
+      TritonDistributed
+      ${PYTHON_DIST_SRC_PATH}/triton_distributed.cc
+      ${PYTHON_DIST_SRC_PATH}/passes.cc
+      ${PYTHON_DIST_SRC_PATH}/ir.cc)
+    target_link_libraries(
+      TritonDistributed
+      PRIVATE DistributedIR SIMTIR ProtonIR Python3::Module pybind11::headers)
+  endif()
+endfunction()
 
 
 function(flagtree_add_tle_generated_header_dependencies)
