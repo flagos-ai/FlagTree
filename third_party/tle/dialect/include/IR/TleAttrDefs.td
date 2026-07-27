@@ -28,8 +28,8 @@ include "mlir/IR/EnumAttr.td"
 include "mlir/IR/AttrTypeBase.td"
 include "tle/dialect/include/IR/TleDialect.td"
 
-def Tle_CoopKindAttr : I32EnumAttr<
-  "CoopKind", "",
+def Tle_FlagCxCoopKindAttr : I32EnumAttr<
+  "FlagCxCoopKind", "",
   [
     I32EnumAttrCase<"THREAD", 0, "thread">,
     I32EnumAttrCase<"WARP", 1, "warp">,

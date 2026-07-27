@@ -13,6 +13,8 @@ if (FLAGCX_ENABLED)
 set(LLVM_TARGET_DEFINITIONS FlagCxOps.td)
 mlir_tablegen(FlagCxOps.h.inc -gen-op-decls)
 mlir_tablegen(FlagCxOps.cpp.inc -gen-op-defs)
+mlir_tablegen(FlagCxOpsEnums.h.inc -gen-enum-decls)
+mlir_tablegen(FlagCxOpsEnums.cpp.inc -gen-enum-defs)
 add_mlir_doc(FlagCxOps FlagCxOps dialects/ -gen-op-doc)
 
 endif()

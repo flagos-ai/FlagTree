@@ -114,7 +114,7 @@ def Tle_SignalWaitOp : Tle_Op<"signal_wait", [MemoryEffects<[MemRead]>]> {
     Tle_LocalPointerResultType:$comm,
     I32:$signal_id,
     I64:$target,
-    I32Attr:$coop_kind,
+    Tle_FlagCxCoopKindAttr:$coop_kind,
     I32Attr:$context_idx
   );
 }

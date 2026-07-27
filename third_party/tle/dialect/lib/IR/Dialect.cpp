@@ -34,6 +34,9 @@
 #ifdef FLAGCX_ENABLED
 #define GET_OP_CLASSES
 #include "tle/dialect/include/IR/FlagCxOps.cpp.inc"
+
+// enum attribute definitions
+#include "tle/dialect/include/IR/FlagCxOpsEnums.cpp.inc"
 #endif
 
 namespace mlir::triton::tle {

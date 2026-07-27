@@ -221,7 +221,8 @@ LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
 
 LLVM::CallOp getDevNetWaitSignalFuncCall(mlir::Location loc,
                                          ConversionPatternRewriter &rewriter,
-                                         Value dev_net, int coop_kind,
+                                         Value dev_net,
+                                         FlagCxCoopKind coop_kind,
                                          Value signal_id, Value target) {
   auto ctx = rewriter.getContext();
   ModuleOp module =
@@ -237,7 +238,7 @@ LLVM::CallOp getDevNetWaitSignalFuncCall(mlir::Location loc,
                          {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
 
   auto bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 64);
-  auto coop_kind_val = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, coop_kind);
+  auto coop_kind_val = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, static_cast<int32_t>(coop_kind));
   // TODO: actually use the named enum value flagcxDeviceMemoryOrderAcquire(=1)
   // if possible
   auto order = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 1);
