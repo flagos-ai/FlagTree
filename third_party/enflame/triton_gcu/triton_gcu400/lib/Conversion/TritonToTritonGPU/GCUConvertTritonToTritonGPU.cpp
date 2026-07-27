@@ -792,7 +792,8 @@ public:
 
     Type retType = op.getType().cloneWithEncoding(srcEnc);
     auto newOp = rewriter.replaceOpWithNewOp<triton::tle::ExtractTileOp>(
-        op, retType, adaptor.getSrc(), adaptor.getIndex());
+        op, retType, adaptor.getSrc(), adaptor.getIndex(),
+        op->getAttrOfType<DenseI64ArrayAttr>("strides"));
     addNamedAttrs(newOp, adaptor.getAttributes());
     return success();
   }
@@ -816,7 +817,8 @@ public:
 
     Type retType = op.getType().cloneWithEncoding(srcEnc);
     auto newOp = rewriter.replaceOpWithNewOp<triton::tle::InsertTileOp>(
-        op, retType, adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex());
+        op, retType, adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex(),
+        op->getAttrOfType<DenseI64ArrayAttr>("strides"));
     addNamedAttrs(newOp, adaptor.getAttributes());
     return success();
   }

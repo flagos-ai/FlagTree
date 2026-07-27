@@ -6,6 +6,33 @@ import pytest
 
 
 @triton.jit
+def insert_tile_stride_kernel(
+    x_ptr,
+    y_ptr,
+    out_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    TM: tl.constexpr,
+    TN: tl.constexpr,
+    SM: tl.constexpr,
+    SN: tl.constexpr,
+    idx_m: tl.constexpr,
+    idx_n: tl.constexpr,
+):
+    offs_m = tl.arange(0, M)
+    offs_n = tl.arange(0, N)
+    x = tl.load(x_ptr + offs_m[:, None] * N + offs_n[None, :])
+
+    tile_m = tl.arange(0, TM)
+    tile_n = tl.arange(0, TN)
+    y = tl.load(y_ptr + tile_m[:, None] * TN + tile_n[None, :])
+
+    z = tle.insert_tile(x, y, index=[idx_m, idx_n], strides=(SM, SN))
+
+    tl.store(out_ptr + offs_m[:, None] * N + offs_n[None, :], z)
+
+
+@triton.jit
 def insert_tile_kernel(
     x_ptr,
     y_ptr,
@@ -61,3 +88,32 @@ def test_insert_tile_static_index():
     print(out[128:132, 128:132].cpu().int())
 
     assert torch.allclose(out, expected)
+
+
+# Test insert_tile where stride != tile_shape
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for this test")
+def test_insert_tile_with_stride():
+    M, N = 256, 256
+    TM, TN = 64, 64
+    SM, SN = 32, 32  # stride < tile_shape
+    idx_m, idx_n = 2, 3
+
+    x = torch.arange(M * N, device="cuda", dtype=torch.float32).reshape(M, N)
+    y = (10000 + torch.arange(TM * TN, device="cuda", dtype=torch.float32)).reshape(TM, TN)
+    out = torch.empty_like(x)
+
+    print(
+        f"Running insert_tile kernel with stride: x={M}x{N}, tile={TM}x{TN}, stride={SM}x{SN}, index=[{idx_m},{idx_n}]..."
+    )
+    insert_tile_stride_kernel[(1, )](x, y, out, M, N, TM, TN, SM, SN, idx_m, idx_n)
+    print("Kernel executed.\n")
+
+    expected = x.clone()
+    start_m = idx_m * SM
+    start_n = idx_n * SN
+    expected[start_m:start_m + TM, start_n:start_n + TN] = y
+
+    max_abs_diff = (out - expected).abs().max().item()
+    print(f"max_abs_diff = {max_abs_diff}")
+    assert torch.allclose(out, expected)
+    print("Test passed: insert_tile with stride updated the correct region.")

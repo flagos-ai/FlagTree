@@ -4000,10 +4000,12 @@ void ConvertTritonToGCUPass::runOnOperation() {
       mlir::triton::gcu::InitBarrierOp, mlir::triton::gcu::WaitBarrierOp,
       mlir::triton::gcu::ArriveBarrierOp, mlir::triton::gcu::SliceFromLocalOp,
       mlir::triton::gcu::DesliceToLocalOp>();
+#ifdef __TLE__
   target.addDynamicallyLegalOp(OperationName("tle.extract_tile", &getContext()),
                                [](Operation *) { return false; });
   target.addDynamicallyLegalOp(OperationName("tle.insert_tile", &getContext()),
                                [](Operation *) { return false; });
+#endif
   target.addDynamicallyLegalOp(
       OperationName("tle.exclusive_cumsum", &getContext()),
       [](Operation *) { return false; });

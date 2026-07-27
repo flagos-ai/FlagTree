@@ -552,9 +552,12 @@ void FirstLastUserAnalysis::start() {
     } else if (llvm::isa<triton::TransOp, triton::gpu::ConvertLayoutOp,
                          triton::gcu::LoadOp, triton::gpu::LocalLoadOp,
                          triton::gcu::SliceFromLocalOp,
-                         triton::gcu::DesliceToLocalOp>(_op) ||
-               _op->getName().getStringRef() == "tle.extract_tile" ||
-               _op->getName().getStringRef() == "tle.insert_tile") {
+                         triton::gcu::DesliceToLocalOp>(_op)
+#ifdef __TLE__
+               || _op->getName().getStringRef() == "tle.extract_tile" ||
+               _op->getName().getStringRef() == "tle.insert_tile"
+#endif
+    ) {
       LLVM_DEBUG({ llvm::dbgs() << "_op:" << *_op << "\n"; });
       [[maybe_unused]] int i = 0;
       for (auto v : _op->getResults()) {

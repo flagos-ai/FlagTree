@@ -847,7 +847,8 @@ public:
     Type retType = op.getType().cloneWithEncoding(srcEnc);
 
     auto newOp = rewriter.replaceOpWithNewOp<tle::ExtractTileOp>(
-        op, retType, adaptor.getSrc(), adaptor.getIndex());
+        op, retType, adaptor.getSrc(), adaptor.getIndex(),
+        op->getAttrOfType<DenseI64ArrayAttr>("strides"));
 
     if (auto tileShapeAttr = op->getAttr("tile_shape"))
       newOp->setAttr("tile_shape", tileShapeAttr);
@@ -890,7 +891,8 @@ public:
     Type retType = op.getType().cloneWithEncoding(srcEnc);
 
     auto newOp = rewriter.replaceOpWithNewOp<tle::InsertTileOp>(
-        op, retType, adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex());
+        op, retType, adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex(),
+        op->getAttrOfType<DenseI64ArrayAttr>("strides"));
 
     addNamedAttrs(newOp, adaptor.getAttributes());
 

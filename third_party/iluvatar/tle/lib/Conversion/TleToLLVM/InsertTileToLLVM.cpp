@@ -20,6 +20,18 @@ namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::iluvatar_tle;
 using namespace mlir::triton::iluvatar_tle;
 
+static SmallVector<int64_t> getStrides(InsertTileOp op) {
+  if (auto a = dyn_cast_or_null<DenseI64ArrayAttr>(op->getAttr("strides"))) {
+    SmallVector<int64_t> strides;
+    for (auto v : a.asArrayRef())
+      strides.push_back(v);
+    return strides;
+  }
+  auto tileTy = cast<RankedTensorType>(op.getTile().getType());
+  return SmallVector<int64_t>(tileTy.getShape().begin(),
+                              tileTy.getShape().end());
+}
+
 static std::optional<int64_t> getStaticIndex(InsertTileOp op) {
   if (auto c = op->getOperand(2).getDefiningOp<arith::ConstantOp>())
     return cast<IntegerAttr>(c.getValue()).getInt();
@@ -31,12 +43,13 @@ static bool isCTATileAligned(InsertTileOp op, int64_t linearIndex) {
   auto tileTy = cast<RankedTensorType>(op.getTile().getType());
   auto srcShape = srcTy.getShape();
   auto tileShape = tileTy.getShape();
+  auto strides = getStrides(op);
   auto ctaTile = getShapePerCTATile(srcTy);
   int rank = srcShape.size();
 
   SmallVector<int64_t> logicalGrid(rank), tileCoords(rank);
   for (int i = 0; i < rank; ++i)
-    logicalGrid[i] = srcShape[i] / tileShape[i];
+    logicalGrid[i] = (srcShape[i] - tileShape[i]) / strides[i] + 1;
 
   int64_t remain = linearIndex;
   for (int i = rank - 1; i >= 0; --i) {
@@ -45,7 +58,7 @@ static bool isCTATileAligned(InsertTileOp op, int64_t linearIndex) {
   }
 
   for (int i = 0; i < rank; ++i) {
-    int64_t off = tileCoords[i] * tileShape[i];
+    int64_t off = tileCoords[i] * strides[i];
     if (tileShape[i] % static_cast<int64_t>(ctaTile[i]) != 0)
       return false;
     if (off % static_cast<int64_t>(ctaTile[i]) != 0)
@@ -69,6 +82,7 @@ lowerInsertTileStatic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 
   auto srcShape = srcTy.getShape();
   auto tileShape = tileTy.getShape();
+  auto strides = getStrides(op);
 
   auto shapePerCTATile = getShapePerCTATile(srcTy);
   auto srcCTAShape = multiDimElementwise<int64_t, unsigned>(
@@ -79,9 +93,12 @@ lowerInsertTileStatic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
   SmallVector<int64_t> logicalTileShape(tileShape.begin(), tileShape.end());
   SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
   for (size_t i = 0; i < srcShape.size(); ++i) {
-    if (logicalTileShape[i] == 0 || srcShape[i] % logicalTileShape[i] != 0)
-      return op.emitError("source shape must be divisible by tile shape");
-    logicalGridShape[i] = srcShape[i] / logicalTileShape[i];
+    if (logicalTileShape[i] == 0 || strides[i] == 0)
+      return op.emitError("tile shape and strides must be non-zero");
+    if ((srcShape[i] - logicalTileShape[i]) < 0 ||
+        (srcShape[i] - logicalTileShape[i]) % strides[i] != 0)
+      return op.emitError("(source - tile) must be divisible by stride");
+    logicalGridShape[i] = (srcShape[i] - logicalTileShape[i]) / strides[i] + 1;
   }
 
   SmallVector<int64_t> logicalCoords(srcShape.size(), 0);
@@ -93,7 +110,7 @@ lowerInsertTileStatic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 
   SmallVector<int64_t> elementCoords(srcShape.size(), 0);
   for (size_t i = 0; i < srcShape.size(); ++i)
-    elementCoords[i] = logicalCoords[i] * logicalTileShape[i];
+    elementCoords[i] = logicalCoords[i] * strides[i];
 
   auto firstTileCoordinate = multiDimElementwise<int64_t, unsigned>(
       elementCoords, shapePerCTATile, std::divides<unsigned>());
@@ -157,6 +174,7 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
   auto dstTy = cast<RankedTensorType>(op.getType());
   auto srcShape = srcTy.getShape();
   auto tileShape = tileTy.getShape();
+  auto strides = getStrides(op);
   int rank = srcShape.size();
 
   MLIRContext *ctx = rewriter.getContext();
@@ -197,7 +215,7 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 
   SmallVector<int64_t> logicalGrid(rank), suffix(rank, 1);
   for (int d = 0; d < rank; ++d)
-    logicalGrid[d] = srcShape[d] / tileShape[d];
+    logicalGrid[d] = (srcShape[d] - tileShape[d]) / strides[d] + 1;
   for (int d = rank - 2; d >= 0; --d)
     suffix[d] = suffix[d + 1] * logicalGrid[d + 1];
 
@@ -220,7 +238,10 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
         rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
     Value coord = LLVM::UDivOp::create(rewriter, loc, i32Ty, dynIndex, sv);
     coord = LLVM::URemOp::create(rewriter, loc, i32Ty, coord, gv);
-    tileStartVals[d] = LLVM::MulOp::create(rewriter, loc, i32Ty, coord, tv);
+    Value strideV = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)strides[d]));
+    tileStartVals[d] =
+        LLVM::MulOp::create(rewriter, loc, i32Ty, coord, strideV);
     tileEndVals[d] =
         LLVM::AddOp::create(rewriter, loc, i32Ty, tileStartVals[d], tv);
   }
@@ -282,8 +303,12 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
       Value tileShapeV = LLVM::ConstantOp::create(
           rewriter, loc, i32Ty,
           rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
+      // Convert to a tile-relative coordinate.  globalCoord % tileShape is
+      // wrong when an explicit stride places the tile off tile-shape alignment.
+      Value tileRelativeV = LLVM::SubOp::create(rewriter, loc, i32Ty,
+                                                globalCoordV, tileStartVals[d]);
       Value tileLocalSafeV =
-          LLVM::URemOp::create(rewriter, loc, i32Ty, globalCoordV, tileShapeV);
+          LLVM::URemOp::create(rewriter, loc, i32Ty, tileRelativeV, tileShapeV);
       Value sb = LLVM::ConstantOp::create(
           rewriter, loc, i32Ty,
           rewriter.getI32IntegerAttr((int32_t)(smemStrides[d] * elemBytes)));
@@ -336,9 +361,11 @@ struct InsertTileOpConversion : public ConvertOpToLLVMPattern<InsertTileOp> {
       return op.emitError("insert_tile only supports BlockedEncodingAttr");
 
     auto staticIndex = getStaticIndex(op);
-    if (staticIndex.has_value() && isCTATileAligned(op, staticIndex.value()))
-      return lowerInsertTileStatic(
-          op, adaptor, rewriter, this->getTypeConverter(), staticIndex.value());
+    if (staticIndex.has_value() && isCTATileAligned(op, staticIndex.value())) {
+      int64_t index = staticIndex.value();
+      return lowerInsertTileStatic(op, adaptor, rewriter,
+                                   this->getTypeConverter(), index);
+    }
 
     return lowerInsertTileViaSMEMDynamic(op, adaptor, rewriter,
                                          this->getTypeConverter(), targetInfo);

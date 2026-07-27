@@ -88,22 +88,26 @@ void init_triton_tle_ir(py::module &&m) {
       // TLE-Lite
       .def(
           "create_extract_tile",
-          [](TritonOpBuilder &self, Value &input,
-             // std::vector<int64_t> &offsets,
-             Value &index, std::vector<int64_t> &tileShape) -> Value {
-            auto op = self.create<tle::ExtractTileOp>(input, index, tileShape);
+          [](TritonOpBuilder &self, Value &input, Value &index,
+             std::vector<int64_t> &tileShape,
+             std::vector<int64_t> strides) -> Value {
+            auto op = self.create<tle::ExtractTileOp>(input, index, tileShape,
+                                                      strides);
             return op.getResult();
           },
           py::arg("input"), py::arg("index"), py::arg("tileShape"),
+          py::arg("strides") = std::vector<int64_t>{},
           "Create extract_tile operation")
       .def(
           "create_insert_tile",
-          [](TritonOpBuilder &self, Value &input, Value &tile,
-             Value &index) -> Value {
-            auto op = self.create<tle::InsertTileOp>(input, tile, index);
+          [](TritonOpBuilder &self, Value &input, Value &tile, Value &index,
+             std::vector<int64_t> strides) -> Value {
+            auto op =
+                self.create<tle::InsertTileOp>(input, tile, index, strides);
             return op.getResult();
           },
           py::arg("input"), py::arg("tile"), py::arg("index"),
+          py::arg("strides") = std::vector<int64_t>{},
           "Create insert_tile operation")
       // TLE-Struct
       .def("make_swizzled_shared_encoding_attr",

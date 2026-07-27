@@ -49,18 +49,33 @@ static std::optional<int64_t> getStaticIndex(InsertTileOp op) {
     return mlir::cast<mlir::IntegerAttr>(c.getValue()).getInt();
   return std::nullopt;
 }
+
+static SmallVector<int64_t> getStrides(InsertTileOp op) {
+  if (auto a = mlir::dyn_cast_or_null<mlir::DenseI64ArrayAttr>(
+          op->getAttr("strides"))) {
+    SmallVector<int64_t> s;
+    for (auto v : a.asArrayRef())
+      s.push_back(v);
+    return s;
+  }
+  auto tileTy = cast<RankedTensorType>(op.getTile().getType());
+  return SmallVector<int64_t>(tileTy.getShape().begin(),
+                              tileTy.getShape().end());
+}
+
 // Check if the tile to be inserted is CTA-aligned (for register shuffle path).
 static bool isCTATileAligned(InsertTileOp op, int64_t linearIndex) {
   auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
   auto tileTy = cast<RankedTensorType>(op.getTile().getType());
   auto srcShape = srcTy.getShape();
   auto tileShape = tileTy.getShape();
+  auto strides = getStrides(op);
   auto ctaTile = getShapePerCTATile(srcTy);
   int rank = srcShape.size();
 
   SmallVector<int64_t> logicalGrid(rank), tileCoords(rank);
   for (int i = 0; i < rank; ++i)
-    logicalGrid[i] = srcShape[i] / tileShape[i];
+    logicalGrid[i] = (srcShape[i] - tileShape[i]) / strides[i] + 1;
 
   int64_t remain = linearIndex;
   for (int i = rank - 1; i >= 0; --i) {
@@ -69,7 +84,7 @@ static bool isCTATileAligned(InsertTileOp op, int64_t linearIndex) {
   }
 
   for (int i = 0; i < rank; ++i) {
-    int64_t off = tileCoords[i] * tileShape[i];
+    int64_t off = tileCoords[i] * strides[i];
     if (tileShape[i] % static_cast<int64_t>(ctaTile[i]) != 0)
       return false;
     if (off % static_cast<int64_t>(ctaTile[i]) != 0)
@@ -94,6 +109,7 @@ lowerInsertTileStatic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 
   auto srcShape = srcTy.getShape();
   auto tileShape = tileTy.getShape();
+  auto strides = getStrides(op);
 
   // Compute CTA tile shapes and grid info.
   auto shapePerCTATile = getShapePerCTATile(srcTy);
@@ -106,9 +122,12 @@ lowerInsertTileStatic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
   SmallVector<int64_t> logicalGridShape(srcShape.size(), 0);
   // Check divisibility and compute logical grid shape.
   for (size_t i = 0; i < srcShape.size(); ++i) {
-    if (logicalTileShape[i] == 0 || srcShape[i] % logicalTileShape[i] != 0)
-      return op.emitError("source shape must be divisible by tile shape");
-    logicalGridShape[i] = srcShape[i] / logicalTileShape[i];
+    if (logicalTileShape[i] == 0 || strides[i] == 0)
+      return op.emitError("tile shape and strides must be non-zero");
+    if ((srcShape[i] - logicalTileShape[i]) < 0 ||
+        (srcShape[i] - logicalTileShape[i]) % strides[i] != 0)
+      return op.emitError("(source - tile) must be divisible by stride");
+    logicalGridShape[i] = (srcShape[i] - logicalTileShape[i]) / strides[i] + 1;
   }
   // Compute logical coordinates from linear index.
   SmallVector<int64_t> logicalCoords(srcShape.size(), 0);
@@ -120,7 +139,7 @@ lowerInsertTileStatic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 
   SmallVector<int64_t> elementCoords(srcShape.size(), 0);
   for (size_t i = 0; i < srcShape.size(); ++i)
-    elementCoords[i] = logicalCoords[i] * logicalTileShape[i];
+    elementCoords[i] = logicalCoords[i] * strides[i];
 
   // Compute first tile coordinate in CTA space.
   auto firstTileCoordinate = multiDimElementwise<int64_t, unsigned>(
@@ -199,6 +218,7 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
   auto dstTy = cast<RankedTensorType>(op.getType());
   auto srcShape = srcTy.getShape();
   auto tileShape = tileTy.getShape();
+  auto strides = getStrides(op);
   int rank = srcShape.size();
 
   MLIRContext *ctx = rewriter.getContext();
@@ -251,7 +271,7 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 
   SmallVector<int64_t> logicalGrid(rank), suffix(rank, 1);
   for (int d = 0; d < rank; ++d)
-    logicalGrid[d] = srcShape[d] / tileShape[d];
+    logicalGrid[d] = (srcShape[d] - tileShape[d]) / strides[d] + 1;
   for (int d = rank - 2; d >= 0; --d)
     suffix[d] = suffix[d + 1] * logicalGrid[d + 1];
 
@@ -269,11 +289,14 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
         loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)suffix[d]));
     Value gv = rewriter.create<LLVM::ConstantOp>(
         loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)logicalGrid[d]));
+    Value svStride = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)strides[d]));
     Value tv = rewriter.create<LLVM::ConstantOp>(
         loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
     Value coord = rewriter.create<LLVM::UDivOp>(loc, i32Ty, dynIndex, sv);
     coord = rewriter.create<LLVM::URemOp>(loc, i32Ty, coord, gv);
-    tileStartVals[d] = rewriter.create<LLVM::MulOp>(loc, i32Ty, coord, tv);
+    tileStartVals[d] =
+        rewriter.create<LLVM::MulOp>(loc, i32Ty, coord, svStride);
     tileEndVals[d] =
         rewriter.create<LLVM::AddOp>(loc, i32Ty, tileStartVals[d], tv);
   }
@@ -338,28 +361,44 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
       inRange = rewriter.create<LLVM::AndOp>(
           loc, rewriter.create<LLVM::AndOp>(loc, ge, lt), inRange);
 
-      Value tileShapeV = rewriter.create<LLVM::ConstantOp>(
-          loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
-      Value tileLocalSafeV =
-          rewriter.create<LLVM::URemOp>(loc, i32Ty, globalCoordV, tileShapeV);
+      // Convert source global coord to tile-local coord.
+      Value tileLocalCoordV = rewriter.create<LLVM::SubOp>(
+          loc, i32Ty, globalCoordV, tileStartVals[d]);
 
       Value sb = rewriter.create<LLVM::ConstantOp>(
           loc, i32Ty,
           rewriter.getI32IntegerAttr((int32_t)(smemStrides[d] * elemBytes)));
       smemByteOffsetV = rewriter.create<LLVM::AddOp>(
           loc, i32Ty, smemByteOffsetV,
-          rewriter.create<LLVM::MulOp>(loc, i32Ty, tileLocalSafeV, sb));
+          rewriter.create<LLVM::MulOp>(loc, i32Ty, tileLocalCoordV, sb));
     }
 
+    // Only load from SMEM when the current source element falls in tile range.
+    // This mirrors extract_tile's conditional memory access style and avoids
+    // any out-of-range SMEM address materialization.
+    Block *cur = rewriter.getInsertionBlock();
+    Block *thenBlock = rewriter.splitBlock(cur, rewriter.getInsertionPoint());
+    Block *elseBlock = rewriter.splitBlock(thenBlock, thenBlock->begin());
+    Block *mergeBlock = rewriter.splitBlock(elseBlock, elseBlock->begin());
+    mergeBlock->addArgument(llvmElemTy, loc);
+
+    rewriter.setInsertionPointToEnd(cur);
+    rewriter.create<LLVM::CondBrOp>(loc, inRange, thenBlock, ValueRange{},
+                                    elseBlock, ValueRange{});
+
+    rewriter.setInsertionPointToStart(thenBlock);
     Value lp = rewriter.create<LLVM::GEPOp>(loc, smemPtrTy, i8Ty, smemBase,
                                             ValueRange{smemByteOffsetV},
                                             LLVM::GEPNoWrapFlags::inbounds);
     Value tileLoaded =
         rewriter.create<LLVM::LoadOp>(loc, llvmElemTy, lp, elemBytes);
-    // Overwrite source value with tile value if in range.
-    Value merged =
-        rewriter.create<LLVM::SelectOp>(loc, inRange, tileLoaded, srcVals[i]);
-    resultVals.push_back(merged);
+    rewriter.create<LLVM::BrOp>(loc, ValueRange{tileLoaded}, mergeBlock);
+
+    rewriter.setInsertionPointToStart(elseBlock);
+    rewriter.create<LLVM::BrOp>(loc, ValueRange{srcVals[i]}, mergeBlock);
+
+    rewriter.setInsertionPointToStart(mergeBlock);
+    resultVals.push_back(mergeBlock->getArgument(0));
   }
 
   if (targetInfo.isHCU())

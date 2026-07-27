@@ -2747,6 +2747,7 @@ SmallVector<unsigned> getWarpsPerCTA(Attribute layout) {
   return SmallVector<unsigned>();
 }
 
+#ifdef __TLE__
 bool needsSmemRelay(RankedTensorType srcTy, ArrayRef<int64_t> tileShape) {
   auto encoding = srcTy.getEncoding();
   if (!encoding)
@@ -2771,6 +2772,7 @@ bool needsSmemRelay(RankedTensorType srcTy, ArrayRef<int64_t> tileShape) {
   }
   return false;
 }
+#endif
 
 bool isExpensiveView(Type srcType, Type dstType) {
   auto mergeContig = [](RankedTensorType type) {

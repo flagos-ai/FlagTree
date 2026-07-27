@@ -20,10 +20,7 @@ def simple_extract_kernel(x_ptr, out_ptr, stride_xb, stride_xm, stride_xn, strid
     # 3. Perform extraction based on the layer index
     # Layer 0 extracts from top-left [0, 0], Layer 1 extracts from bottom-right [1, 1]
     # We use a conditional check because 'index' usually requires constant values for TLE hardware
-    if pid_z % 2 == 0:
-        extracted_tile = tle.extract_tile(bg_tile, index=[0, 0], tile_shape=[TILE_M, TILE_N])
-    else:
-        extracted_tile = tle.extract_tile(bg_tile, index=[1, 1], tile_shape=[TILE_M, TILE_N])
+    extracted_tile = tle.extract_tile(bg_tile, index=[pid_z, pid_z], tile_shape=[TILE_M, TILE_N])
 
     # 4. Store the extracted small tile into the corresponding Z layer of the output tensor
     offs_tm = tl.arange(0, TILE_M)
@@ -78,3 +75,49 @@ def test_simple_extract_kernel_cuda():
     # Verification: Means should match the preset values
     assert torch.allclose(out[0].mean(), torch.tensor(88.0, device="cuda"), atol=1e-5)
     assert torch.allclose(out[1].mean(), torch.tensor(99.0, device="cuda"), atol=1e-5)
+
+
+@triton.jit
+def extract_tile_stride_dynamic_index_kernel(
+    x_ptr,
+    out_ptr,
+    index_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    TM: tl.constexpr,
+    TN: tl.constexpr,
+    SM: tl.constexpr,
+    SN: tl.constexpr,
+):
+    offs_m = tl.arange(0, M)
+    offs_n = tl.arange(0, N)
+    x = tl.load(x_ptr + offs_m[:, None] * N + offs_n[None, :])
+
+    idx_m = tl.load(index_ptr)
+    idx_n = tl.load(index_ptr + 1)
+    tile = tle.extract_tile(x, index=[idx_m, idx_n], tile_shape=[TM, TN], strides=(SM, SN))
+
+    tile_m = tl.arange(0, TM)
+    tile_n = tl.arange(0, TN)
+    tl.store(out_ptr + tile_m[:, None] * TN + tile_n[None, :], tile)
+
+
+def test_extract_tile_with_dynamic_stride_index():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is not available; skipping Triton CUDA test.")
+
+    M, N = 256, 256
+    TM, TN = 64, 64
+    SM, SN = 32, 32
+    idx_m, idx_n = 2, 3
+
+    x = torch.arange(M * N, device="cuda", dtype=torch.float32).reshape(M, N)
+    out = torch.empty((TM, TN), device="cuda", dtype=torch.float32)
+    index = torch.tensor([idx_m, idx_n], device="cuda", dtype=torch.int32)
+
+    extract_tile_stride_dynamic_index_kernel[(1, )](x, out, index, M, N, TM, TN, SM, SN)
+
+    start_m = idx_m * SM
+    start_n = idx_n * SN
+    expected = x[start_m:start_m + TM, start_n:start_n + TN]
+    assert torch.allclose(out, expected)

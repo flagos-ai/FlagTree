@@ -913,12 +913,13 @@ public:
 
     Type retType = op.getType().cloneWithEncoding(srcEnc);
 
+    auto stridesAttr =
+        mlir::dyn_cast_or_null<mlir::DenseI64ArrayAttr>(op->getAttr("strides"));
     auto newOp = rewriter.replaceOpWithNewOp<tle::ExtractTileOp>(
-        op, retType, adaptor.getSrc(), adaptor.getIndex());
+        op, retType, adaptor.getSrc(), adaptor.getIndex(), stridesAttr);
 
     if (auto tileShapeAttr = op->getAttr("tile_shape"))
       newOp->setAttr("tile_shape", tileShapeAttr);
-
     addNamedAttrs(newOp, adaptor.getAttributes());
 
     return success();
@@ -956,8 +957,12 @@ public:
 
     Type retType = op.getType().cloneWithEncoding(srcEnc);
 
+    auto stridesAttr =
+        mlir::dyn_cast_or_null<mlir::DenseI64ArrayAttr>(op->getAttr("strides"));
+
     auto newOp = rewriter.replaceOpWithNewOp<tle::InsertTileOp>(
-        op, retType, adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex());
+        op, retType, adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex(),
+        stridesAttr);
 
     addNamedAttrs(newOp, adaptor.getAttributes());
 

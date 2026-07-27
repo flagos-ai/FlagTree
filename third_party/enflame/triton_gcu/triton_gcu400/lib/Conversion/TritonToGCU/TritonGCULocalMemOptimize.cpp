@@ -1109,6 +1109,7 @@ static Value computeAdjustedPtr(PatternRewriter &rewriter, Location loc,
   return rewriter.create<triton::gcu::IntToPtrOp>(loc, ptrTy, adjusted);
 }
 
+#ifdef __TLE__
 // ===----------------------------------------------------------------------===
 // Pattern: Fuse triton_gcu.load/tt.load + tle.extract_tile (multi-warp)
 //
@@ -1218,10 +1219,10 @@ public:
     if (src.getDefiningOp()->use_empty())
       rewriter.eraseOp(src.getDefiningOp());
 
-    auto tileStridesAttr = op->getAttrOfType<DenseI64ArrayAttr>("tile_strides");
+    auto stridesAttr = op->getAttrOfType<DenseI64ArrayAttr>("strides");
     auto resultTy = op->getResult(0).getType();
     auto newOp = rewriter.create<triton::gcu::SliceFromLocalOp>(
-        loc, resultTy, smemAlloc, index, tileShapeAttr, tileStridesAttr);
+        loc, resultTy, smemAlloc, index, tileShapeAttr, stridesAttr);
     rewriter.replaceOp(op, newOp.getResult());
     return success();
   }
@@ -1432,10 +1433,10 @@ public:
     if (src.getDefiningOp()->use_empty())
       rewriter.eraseOp(src.getDefiningOp());
 
-    auto tileStridesAttr = op->getAttrOfType<DenseI64ArrayAttr>("tile_strides");
+    auto stridesAttr = op->getAttrOfType<DenseI64ArrayAttr>("strides");
     auto resultTy = op->getResult(0).getType();
     auto newOp = rewriter.create<triton::gcu::DesliceToLocalOp>(
-        loc, resultTy, smemAlloc, tile, index, tileShapeAttr, tileStridesAttr);
+        loc, resultTy, smemAlloc, tile, index, tileShapeAttr, stridesAttr);
     rewriter.replaceOp(op, newOp.getResult());
     return success();
   }
@@ -1634,6 +1635,7 @@ private:
         << (kDsmCapacityBytes / elemBytes) << " elements.";
   }
 };
+#endif // __TLE__
 
 // ===----------------------------------------------------------------------===
 // Pass definition
@@ -1661,8 +1663,10 @@ struct TritonGCULocalMemOptimizePass
                  FuseGcuLoadGcuStoreToSmemPattern,
                  FuseGcuLoadGcuStoreDynShapeToSmemPattern,
                  ReplaceGcuSmemLoadWithLocalLoadPattern,
-                 FuseTritonLoadLocalAllocToGatherPattern,
-                 FuseExtractTileSmemRelay, FuseInsertTileSmemRelay>(ctx);
+                 FuseTritonLoadLocalAllocToGatherPattern>(ctx);
+#ifdef __TLE__
+    patterns.add<FuseExtractTileSmemRelay, FuseInsertTileSmemRelay>(ctx);
+#endif
     if (failed(applyPatternsGreedily(module, std::move(patterns))))
       signalPassFailure();
   }

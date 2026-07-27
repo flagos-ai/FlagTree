@@ -273,10 +273,12 @@ Value createConstantZero(OpBuilder &builder, Location loc, Type elemType);
 
 SmallVector<unsigned> getWarpsPerCTA(Attribute layout);
 
+#ifdef __TLE__
 /// Returns true if an extract_tile/insert_tile op needs SMEM relay because
 /// at least one cut dimension (tileShape[i] < srcShape[i]) has warpsPerCTA > 1,
 /// meaning cross-warp communication is required.
 bool needsSmemRelay(RankedTensorType srcTy, ArrayRef<int64_t> tileShape);
+#endif
 
 SmallVector<unsigned> getElemsPerThread(Type type);
 unsigned getTotalElemsPerThread(Type type);

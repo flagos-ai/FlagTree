@@ -918,13 +918,19 @@ public:
       return op.emitError("source tensor must have encoding attribute");
     }
 
-    Type retType = op.getType().cloneWithEncoding(srcEnc);
+    // The TLE builder derives the result type from the converted source and
+    // tile shape. Preserve the shape and strides carried by the original op
+    // instead of using the legacy explicit-result-type builder.
+    auto resultType = cast<RankedTensorType>(op.getType());
+    SmallVector<int64_t> strides;
+    if (auto stridesAttr = op->getAttrOfType<DenseI64ArrayAttr>("strides")) {
+      strides.assign(stridesAttr.asArrayRef().begin(),
+                     stridesAttr.asArrayRef().end());
+    }
 
     auto newOp = rewriter.replaceOpWithNewOp<tle::ExtractTileOp>(
-        op, retType, adaptor.getSrc(), adaptor.getIndex());
-
-    if (auto tileShapeAttr = op->getAttr("tile_shape"))
-      newOp->setAttr("tile_shape", tileShapeAttr);
+        op, adaptor.getSrc(), adaptor.getIndex(), resultType.getShape(),
+        strides);
 
     addNamedAttrs(newOp, adaptor.getAttributes());
 
@@ -961,10 +967,14 @@ public:
       return op.emitError("tile tensor must have encoding attribute");
     }
 
-    Type retType = op.getType().cloneWithEncoding(srcEnc);
+    SmallVector<int64_t> strides;
+    if (auto stridesAttr = op->getAttrOfType<DenseI64ArrayAttr>("strides")) {
+      strides.assign(stridesAttr.asArrayRef().begin(),
+                     stridesAttr.asArrayRef().end());
+    }
 
     auto newOp = rewriter.replaceOpWithNewOp<tle::InsertTileOp>(
-        op, retType, adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex());
+        op, adaptor.getSrc(), adaptor.getTile(), adaptor.getIndex(), strides);
 
     addNamedAttrs(newOp, adaptor.getAttributes());
 

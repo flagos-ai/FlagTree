@@ -99,20 +99,27 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              throw std::runtime_error("tle.gpu.copy with tensor_descriptor is "
                                       "not supported on Iluvatar TLE");
            })
-      .def("create_extract_tile",
-           [](TritonOpBuilder &self, mlir::Value &input, mlir::Value &index,
-              std::vector<int64_t> &tileShape) -> mlir::Value {
-             auto op = self.create<iluvatar_tle::ExtractTileOp>(input, index,
-                                                                tileShape);
-             return op.getResult();
-           })
-      .def("create_insert_tile",
-           [](TritonOpBuilder &self, mlir::Value &input, mlir::Value &tile,
-              mlir::Value &index) -> mlir::Value {
-             auto op =
-                 self.create<iluvatar_tle::InsertTileOp>(input, tile, index);
-             return op.getResult();
-           })
+      .def(
+          "create_extract_tile",
+          [](TritonOpBuilder &self, mlir::Value &input, mlir::Value &index,
+             std::vector<int64_t> &tileShape,
+             std::vector<int64_t> strides) -> mlir::Value {
+            auto op = self.create<iluvatar_tle::ExtractTileOp>(
+                input, index, tileShape, strides);
+            return op.getResult();
+          },
+          py::arg("input"), py::arg("index"), py::arg("tileShape"),
+          py::arg("strides") = std::vector<int64_t>{})
+      .def(
+          "create_insert_tile",
+          [](TritonOpBuilder &self, mlir::Value &input, mlir::Value &tile,
+             mlir::Value &index, std::vector<int64_t> strides) -> mlir::Value {
+            auto op = self.create<iluvatar_tle::InsertTileOp>(input, tile,
+                                                              index, strides);
+            return op.getResult();
+          },
+          py::arg("input"), py::arg("tile"), py::arg("index"),
+          py::arg("strides") = std::vector<int64_t>{})
       .def("create_local_pointers",
            [](TritonOpBuilder &self, mlir::Type resultTy, mlir::Value memDesc,
               py::args args) -> mlir::OpState {

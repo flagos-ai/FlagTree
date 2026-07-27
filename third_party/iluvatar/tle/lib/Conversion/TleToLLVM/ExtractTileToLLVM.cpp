@@ -27,6 +27,18 @@ static SmallVector<int64_t> getTileShape(ExtractTileOp op) {
   return ts;
 }
 
+static SmallVector<int64_t> getStrides(ExtractTileOp op) {
+  if (auto a = dyn_cast_or_null<DenseI64ArrayAttr>(op->getAttr("strides"))) {
+    SmallVector<int64_t> s;
+    for (auto v : a.asArrayRef())
+      s.push_back(v);
+    return s;
+  }
+  // Backwards compatibility: fall back to tile_shape when strides attribute is
+  // absent.
+  return getTileShape(op);
+}
+
 static std::optional<int64_t> getStaticIndex(ExtractTileOp op) {
   if (auto c = op->getOperand(1).getDefiningOp<arith::ConstantOp>())
     return cast<IntegerAttr>(c.getValue()).getInt();
@@ -37,18 +49,19 @@ static bool isCTATileAligned(ExtractTileOp op, int64_t linearIndex) {
   auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
   auto srcShape = srcTy.getShape();
   auto tileShape = getTileShape(op);
+  auto strides = getStrides(op);
   auto ctaTile = getShapePerCTATile(srcTy);
   int rank = srcShape.size();
   SmallVector<int64_t> logicalGrid(rank), tileCoords(rank);
   for (int i = 0; i < rank; ++i)
-    logicalGrid[i] = srcShape[i] / tileShape[i];
+    logicalGrid[i] = (srcShape[i] - tileShape[i]) / strides[i] + 1;
   int64_t remain = linearIndex;
   for (int i = rank - 1; i >= 0; --i) {
     tileCoords[i] = remain % logicalGrid[i];
     remain /= logicalGrid[i];
   }
   for (int i = 0; i < rank; ++i) {
-    int64_t off = tileCoords[i] * tileShape[i];
+    int64_t off = tileCoords[i] * strides[i];
     if (tileShape[i] % static_cast<int64_t>(ctaTile[i]) != 0)
       return false;
     if (off % static_cast<int64_t>(ctaTile[i]) != 0)
@@ -68,6 +81,7 @@ lowerExtractTileStatic(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   auto srcShape = srcTy.getShape();
   auto dstShape = dstTy.getShape();
   auto tileShape = getTileShape(op);
+  auto strides = getStrides(op);
   int rank = srcShape.size();
   auto vals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
   auto shapePerCTATile = getShapePerCTATile(srcTy);
@@ -78,14 +92,14 @@ lowerExtractTileStatic(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   SmallVector<int64_t> logicalGrid(rank), logicalCoords(rank),
       elementCoords(rank);
   for (int i = 0; i < rank; ++i)
-    logicalGrid[i] = srcShape[i] / tileShape[i];
+    logicalGrid[i] = (srcShape[i] - tileShape[i]) / strides[i] + 1;
   int64_t remain = linearIndex;
   for (int i = rank - 1; i >= 0; --i) {
     logicalCoords[i] = remain % logicalGrid[i];
     remain /= logicalGrid[i];
   }
   for (int i = 0; i < rank; ++i)
-    elementCoords[i] = logicalCoords[i] * tileShape[i];
+    elementCoords[i] = logicalCoords[i] * strides[i];
   auto firstTileCoord = multiDimElementwise<int64_t, unsigned>(
       elementCoords, shapePerCTATile, std::divides<unsigned>());
   auto srcCTAOrder = getCTATileOrder(srcTy);
@@ -124,6 +138,7 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   auto srcShape = srcTy.getShape();
   auto dstShape = dstTy.getShape();
   auto tileShape = getTileShape(op);
+  auto strides = getStrides(op);
   int rank = srcShape.size();
 
   MLIRContext *ctx = rewriter.getContext();
@@ -165,7 +180,7 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
 
   SmallVector<int64_t> logicalGrid(rank), suffix(rank, 1);
   for (int d = 0; d < rank; ++d)
-    logicalGrid[d] = srcShape[d] / tileShape[d];
+    logicalGrid[d] = (srcShape[d] - tileShape[d]) / strides[d] + 1;
   for (int d = rank - 2; d >= 0; --d)
     suffix[d] = suffix[d + 1] * logicalGrid[d + 1];
 
@@ -188,7 +203,10 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
         rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
     Value coord = LLVM::UDivOp::create(rewriter, loc, i32Ty, dynIndex, sv);
     coord = LLVM::URemOp::create(rewriter, loc, i32Ty, coord, gv);
-    tileStartVals[d] = LLVM::MulOp::create(rewriter, loc, i32Ty, coord, tv);
+    Value strideV = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)strides[d]));
+    tileStartVals[d] =
+        LLVM::MulOp::create(rewriter, loc, i32Ty, coord, strideV);
     tileEndVals[d] =
         LLVM::AddOp::create(rewriter, loc, i32Ty, tileStartVals[d], tv);
   }
