@@ -116,8 +116,7 @@ def test_xpu_backend_spec_sources_are_backend_owned():
 def test_xpu_elementwise_dedup_fallback_is_vendored():
     root = Path(__file__).resolve().parents[6]
     main_header = (root / "include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h")
-    xpu_header = (root /
-                  "third_party/xpu/spec_cpp/include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h")
+    xpu_header = (root / "third_party/xpu/spec_cpp/include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h")
     main_source = main_header.read_text()
     xpu_source = xpu_header.read_text()
     assert ("for (auto [c, d] : llvm::zip(constancy, dims)) {\n"
