@@ -392,6 +392,47 @@ macro(flagtree_configure_backend_libraries)
 endmacro()
 
 
+macro(flagtree_configure_shared_linker_flags)
+  if(FLAGTREE_BACKEND STREQUAL "metax")
+    file(GLOB _flagtree_llvm_archives CONFIGURE_DEPENDS
+      "${LLVM_LIBRARY_PATH}/libLLVM*.a")
+    foreach(_flagtree_llvm_archive ${_flagtree_llvm_archives})
+      get_filename_component(
+        _flagtree_llvm_archive_name "${_flagtree_llvm_archive}" NAME)
+      set(CMAKE_SHARED_LINKER_FLAGS
+        "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,${_flagtree_llvm_archive_name}")
+    endforeach()
+  elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
+    set(CMAKE_SHARED_LINKER_FLAGS
+      "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--export-dynamic")
+  else()
+    set(CMAKE_SHARED_LINKER_FLAGS
+      "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
+  endif()
+endmacro()
+
+
+macro(flagtree_configure_tools_and_tests)
+  if(NOT FLAGTREE_BACKEND OR
+     FLAGTREE_BACKEND MATCHES
+       "^(aipu|tsingmicro|enflame|rpu|thrive|metax|sunrise|tileir)$")
+    add_subdirectory(bin)
+    if(FLAGTREE_TLE)
+      flagtree_add_tle_generated_header_dependencies()
+    endif()
+    add_subdirectory(test)
+  elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
+    option(FLAGTREE_ILUVATAR_BUILD_BIN
+      "Build third_party/iluvatar/bin tools and lit tests" OFF)
+    if(FLAGTREE_ILUVATAR_BUILD_BIN)
+      add_subdirectory(
+        ${TRITON_CORE_SOURCE_DIR}/bin ${TRITON_CORE_BINARY_DIR}/bin)
+      add_subdirectory(test)
+    endif()
+  endif()
+endmacro()
+
+
 function(flagtree_add_tle_generated_header_dependencies)
   if(NOT TARGET TleTableGen)
     return()

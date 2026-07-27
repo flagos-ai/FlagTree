@@ -314,14 +314,14 @@ if(TRITON_BUILD_PYTHON_MODULE)
   set(TRITON_BACKENDS_TUPLE "(${TRITON_BACKENDS_TUPLE})")
   add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
   add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
-                    ${PYTHON_SRC_PATH}/ir.cc
-                    ${PYTHON_SRC_PATH}/passes.cc
-                    ${PYTHON_SRC_PATH}/interpreter.cc
-                    ${PYTHON_SRC_PATH}/llvm.cc)
+                  ${PYTHON_SRC_PATH}/ir.cc
+                  ${PYTHON_SRC_PATH}/passes.cc
+                  ${PYTHON_SRC_PATH}/interpreter.cc
+                  ${PYTHON_SRC_PATH}/llvm.cc)
   flagtree_configure_python_src()
 
   # Link triton with its dependencies
-  target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})
+  target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})  # flagtree: PUBLIC
   if(WIN32)
     target_link_libraries(triton PRIVATE ${CMAKE_DL_LIBS})
     set_target_properties(triton PROPERTIES SUFFIX ".pyd")
@@ -347,17 +347,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
 endif()
 
 if (UNIX AND NOT APPLE)
-  if(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "metax")
-    file(GLOB _flagtree_llvm_archives CONFIGURE_DEPENDS "${LLVM_LIBRARY_PATH}/libLLVM*.a")
-    foreach(_flagtree_llvm_archive ${_flagtree_llvm_archives})
-      get_filename_component(_flagtree_llvm_archive_name "${_flagtree_llvm_archive}" NAME)
-      set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,${_flagtree_llvm_archive_name}")
-    endforeach()
-  elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--export-dynamic")
-  else()
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
-  endif()
+  # set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
+  flagtree_configure_shared_linker_flags()
 endif()
 
 if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
@@ -386,20 +377,9 @@ endif()
 find_package(Threads REQUIRED)
 
 add_subdirectory(third_party/f2reduce)
-
-if(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(aipu|tsingmicro|enflame|rpu|thrive|metax|sunrise|tileir)$")
-  add_subdirectory(bin)
-  if(FLAGTREE_TLE)
-    flagtree_add_tle_generated_header_dependencies()
-  endif()
-  add_subdirectory(test)
-elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
-  option(FLAGTREE_ILUVATAR_BUILD_BIN "Build third_party/iluvatar/bin tools and lit tests" OFF)
-  if(FLAGTREE_ILUVATAR_BUILD_BIN)
-    add_subdirectory(${TRITON_CORE_SOURCE_DIR}/bin ${TRITON_CORE_BINARY_DIR}/bin)
-    add_subdirectory(test)
-  endif()
-endif()
+# add_subdirectory(bin)
+# add_subdirectory(test)
+flagtree_configure_tools_and_tests()
 
 if(TRITON_BUILD_UT)
   add_subdirectory(unittest)
