@@ -207,36 +207,13 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endforeach()
 
   if (TRITON_BUILD_PROTON)
-    add_definitions(-D__PROTON__)
+    add_definitions(-D__PROTON__)    # flagtree
     add_subdirectory(third_party/proton)
   endif()
-  # We always build proton dialect because core Triton conversion libraries link
-  # ProtonIR. XPU-specific Proton GPU lowering wrappers are disabled inside the
-  # Proton plugin instead of skipping the whole dialect.
-  if(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "hcu")
-    list(APPEND TRITON_PLUGIN_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")
-    include_directories(${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND})
-    add_subdirectory(third_party/hcu/proton/Dialect)
-    add_subdirectory(third_party/nvidia)
-  elseif(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "mthreads")
-    include_directories(${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND})
-    add_subdirectory(third_party/mthreads/proton/Dialect)
-  elseif(FLAGTREE_BACKEND AND FLAGTREE_BACKEND STREQUAL "iluvatar")
-    if (TRITON_BUILD_PROTON)
-      list(APPEND TRITON_PLUGIN_NAMES "proton")
-      add_subdirectory(third_party/proton/Dialect)
-    endif()
-  else()
-    list(APPEND TRITON_PLUGIN_NAMES "proton")
-    add_subdirectory(third_party/proton/Dialect)
-  endif()
-
-  # Add TLE plugin
-  if(FLAGTREE_TLE)
-    list(APPEND TRITON_PLUGIN_NAMES "tle")
-    add_subdirectory(third_party/tle)
-    flagtree_add_tle_generated_header_dependencies()
-  endif()
+  # We always build proton dialect
+  # list(APPEND TRITON_PLUGIN_NAMES "proton")
+  # add_subdirectory(third_party/proton/Dialect)
+  flagtree_configure_python_plugins()
 
   if (DEFINED TRITON_PLUGIN_DIRS)
     foreach(PLUGIN_DIR ${TRITON_PLUGIN_DIRS})
