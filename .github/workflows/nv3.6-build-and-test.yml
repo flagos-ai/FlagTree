@@ -74,7 +74,7 @@ jobs:
           source ~/env-3.6.sh
           export FLAGCX_RECOMPILE=ON
           export USE_FLAGCX=ON
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Unit Test
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}

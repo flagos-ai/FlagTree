@@ -63,7 +63,7 @@ jobs:
           export CMAKE_BUILD_PARALLEL_LEVEL=32
           export TRITON_PTXAS_PATH="$PWD/third_party/nvidia/backend/bin/ptxas"
           export TRITON_PTXAS_BLACKWELL_PATH="$PWD/third_party/nvidia/backend/bin/ptxas-blackwell"
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'

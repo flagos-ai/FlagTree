@@ -62,7 +62,7 @@ jobs:
           export TRITON_OFFLINE_BUILD=1
           export TRITON_BUILD_PROTON=OFF
           export FLAGTREE_BACKEND=sunrise
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
