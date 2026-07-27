@@ -52,23 +52,6 @@ function(_flagtree_normalize_target_source target source output)
   set(${output} "${_absolute_source}" PARENT_SCOPE)
 endfunction()
 
-function(_flagtree_path_has_suffix path suffix output)
-  string(LENGTH "${path}" _path_length)
-  string(LENGTH "${suffix}" _suffix_length)
-  if(_path_length LESS _suffix_length)
-    set(${output} FALSE PARENT_SCOPE)
-    return()
-  endif()
-
-  math(EXPR _suffix_offset "${_path_length} - ${_suffix_length}")
-  string(SUBSTRING "${path}" ${_suffix_offset} ${_suffix_length} _path_suffix)
-  if(_path_suffix STREQUAL "${suffix}")
-    set(${output} TRUE PARENT_SCOPE)
-  else()
-    set(${output} FALSE PARENT_SCOPE)
-  endif()
-endfunction()
-
 # flagtree backend cmake specialization
 function(flagtree_apply_backend_source_overrides backend_root)
   # ${backend_root}: third_party/{backend}
@@ -136,8 +119,6 @@ function(flagtree_apply_backend_source_overrides backend_root)
     get_filename_component(_spec_source "${_spec_source}" REALPATH)
     # ${_relative_path}: lib/*.cpp in the spec root
     file(RELATIVE_PATH _relative_path "${_spec_root}" "${_spec_source}")
-    # ${_relative_suffix}: /lib/*.cpp in the spec root
-    set(_relative_suffix "/${_relative_path}")
 
     set(_spec_sources_in_core_root)
     # ${_core_roots}: all core root directories
@@ -162,38 +143,17 @@ function(flagtree_apply_backend_source_overrides backend_root)
     endforeach()
     list(REMOVE_DUPLICATES _spec_sources_in_core_root)
 
-    if(_spec_sources_in_core_root)
-      list(LENGTH _spec_sources_in_core_root _preferred_count)
-      if(_preferred_count GREATER 1)
-        message(FATAL_ERROR
-          "Backend spec source ${_spec_source} matches multiple preferred main "
-          "sources: ${_spec_sources_in_core_root}")
-      endif()
-      list(GET _spec_sources_in_core_root 0 _root_source)
-    # TODO
-    else()
-      set(_suffix_main_sources)
-      foreach(_index RANGE 0 ${_last_source_index})
-        list(GET _source_index ${_index} _indexed_source)
-        _flagtree_path_has_suffix(
-          "${_indexed_source}" "${_relative_suffix}" _has_relative_suffix)
-        if(_has_relative_suffix)
-          list(APPEND _suffix_main_sources "${_indexed_source}")
-        endif()
-      endforeach()
-      list(REMOVE_DUPLICATES _suffix_main_sources)
-      list(LENGTH _suffix_main_sources _suffix_match_count)
-      if(_suffix_match_count EQUAL 0)
-        message(FATAL_ERROR
-          "Backend spec source ${_spec_source} has no owner target for mirrored "
-          "main source ${_relative_path}")
-      elseif(_suffix_match_count GREATER 1)
-        message(FATAL_ERROR
-          "Backend spec source ${_spec_source} ambiguously matches main sources: "
-          "${_suffix_main_sources}")
-      endif()
-      list(GET _suffix_main_sources 0 _root_source)
+    list(LENGTH _spec_sources_in_core_root _candidate_count)
+    if(_candidate_count EQUAL 0)
+      message(FATAL_ERROR
+        "Backend spec source ${_spec_source} has no owner target in the "
+        "configured core roots for mirrored main source ${_relative_path}")
+    elseif(_candidate_count GREATER 1)
+      message(FATAL_ERROR
+        "Backend spec source ${_spec_source} matches multiple preferred main "
+        "sources: ${_spec_sources_in_core_root}")
     endif()
+    list(GET _spec_sources_in_core_root 0 _root_source)
 
     # Assert ${_spec_source} appears in the core root
     if(NOT EXISTS "${_root_source}")
