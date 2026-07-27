@@ -208,3 +208,18 @@ xpu:
       - any-glob-to-any-file:
           - 'third_party/xpu/**'
           - '.github/workflows/xpu*'
+
+# ====================================================================================
+# 6. TLE Labels
+# Rule: Applied if any file path contains 'tle', 'TLE', or 'Tle'
+# NOTE: Only matches these exact case patterns, not 'tLe', 'tlE', 'TlE', 'tLE', etc.
+# ====================================================================================
+TLE:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/tle/**'
+          - '**/TLE/**'
+          - '**/Tle/**'
+          - '**/*tle*'
+          - '**/*TLE*'
+          - '**/*Tle*'
