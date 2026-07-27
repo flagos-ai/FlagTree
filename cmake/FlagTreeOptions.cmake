@@ -219,13 +219,16 @@ function(flagtree_add_distributed_plugin)
 endfunction()
 
 
-macro(flagtree_python_src_path_set output_var default_path)
+macro(flagtree_python_src_path_set output_python_src_path default_path)
   set(${output_python_src_path}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/python/src)
   if(NOT (FLAGTREE_BACKEND AND EXISTS "${${output_python_src_path}}"))
     set(${output_python_src_path} "${default_path}")
   endif()
+endmacro()
 
+
+macro(flagtree_python_link_libraries)
   include_directories(${Python3_INCLUDE_DIRS})
   include_directories(${pybind11_INCLUDE_DIR})
   link_directories(${Python3_LIBRARY_DIRS})
