@@ -97,14 +97,14 @@ def test_xpu_libdevice_symbols():
 
 def test_xpu_large_tensor_override_is_vendored():
     root = Path(__file__).resolve().parents[6]
-    traits = root / "third_party/xpu/backend/spec/include/triton/Dialect/Triton/IR/Traits.h"
+    traits = root / "third_party/xpu/spec_cpp/include/triton/Dialect/Triton/IR/Traits.h"
     source = traits.read_text()
     assert "maxTensorNumElements = INT_MAX" in source
 
 
 def test_xpu_backend_spec_sources_are_backend_owned():
     root = Path(__file__).resolve().parents[6]
-    spec_root = root / "third_party/xpu/backend/spec"
+    spec_root = root / "third_party/xpu/spec_cpp"
     spec_sources = sorted((spec_root / "lib").rglob("*.cpp"))
 
     assert spec_sources
@@ -117,7 +117,7 @@ def test_xpu_elementwise_dedup_fallback_is_vendored():
     root = Path(__file__).resolve().parents[6]
     main_header = (root / "include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h")
     xpu_header = (root /
-                  "third_party/xpu/backend/spec/include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h")
+                  "third_party/xpu/spec_cpp/include/triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h")
     main_source = main_header.read_text()
     xpu_source = xpu_header.read_text()
     assert ("for (auto [c, d] : llvm::zip(constancy, dims)) {\n"

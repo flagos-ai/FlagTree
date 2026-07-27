@@ -55,7 +55,7 @@ endfunction()
 # flagtree backend cmake specialization
 function(flagtree_apply_backend_source_overrides backend_root)
   # ${backend_root}: third_party/{backend}
-  set(_spec_root "${backend_root}/backend/spec")
+  set(_spec_root "${backend_root}/spec_cpp")
   set(_spec_lib_root "${_spec_root}/lib")
   if(NOT IS_DIRECTORY "${_spec_lib_root}")
     return()
@@ -115,7 +115,7 @@ function(flagtree_apply_backend_source_overrides backend_root)
   message(STATUS "=====================================")
   message(STATUS "flagtree backend cmake specialization")
   foreach(_spec_source IN LISTS _spec_sources)
-    # ${_spec_source}: third_party/{backend}/backend/spec/lib/*.cpp
+    # ${_spec_source}: third_party/{backend}/spec_cpp/lib/*.cpp
     get_filename_component(_spec_source "${_spec_source}" REALPATH)
     # ${_relative_path}: lib/*.cpp in the spec root
     file(RELATIVE_PATH _relative_path "${_spec_root}" "${_spec_source}")
