@@ -44,8 +44,7 @@ def softmax(x):
     n_rows, n_cols = x.shape
     BLOCK_SIZE = triton.next_power_of_2(n_cols)
     y = torch.empty_like(x)
-    softmax_kernel[(n_rows, 1, 1)](y, x, n_rows, n_cols,
-                                   x.stride(0), y.stride(0), BLOCK_SIZE, num_warps=1)
+    softmax_kernel[(n_rows, 1, 1)](y, x, n_rows, n_cols, x.stride(0), y.stride(0), BLOCK_SIZE, num_warps=1)
     return y
 
 
