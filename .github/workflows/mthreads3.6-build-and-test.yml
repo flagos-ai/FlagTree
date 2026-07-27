@@ -74,6 +74,8 @@ jobs:
 
           echo "Cache cleaned: ${{ steps.clean_cache.outputs.cache_cleaned }}"
           echo "Has CleanCache label: ${{ steps.clean_cache.outputs.has_clean_cache_label }}"
+          echo "env CACHE_CLEANED is: $CACHE_CLEANED"
+          echo "env CLEAN_CACHE_REQUIRED is: $CLEAN_CACHE_REQUIRED"
 
           python3 -m pytest -s third_party/mthreads/python/test/unit --device musa
           # TLE tutorials unit tests
