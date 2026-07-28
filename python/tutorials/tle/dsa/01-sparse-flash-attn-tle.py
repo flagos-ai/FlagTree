@@ -852,6 +852,7 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_b
     print("act_seq_query=", actual_seq_lengths_query)
     print("act_seq_kv=", actual_seq_lengths_kv)
 
+    print(block_table.shape)
     triton_out = sparse_attention(
         query=query,
         key=key,
