@@ -57,34 +57,50 @@ runs:
             return;
           }
 
-          // 2. Fetch all labels for the current PR
-          const labels = context.payload.pull_request.labels.map(label => label.name);
-          console.log('Current PR labels:', labels.join(', ') || '(no labels)');
+          const prNumber = context.payload.pull_request.number;
+          let labels = [];
+          let shouldSkip = false;
+          const maxRetries = 10; // Maximum number of retries
+          const delayMs = 1000; // Delay between retries in milliseconds
+
+          // 2. Fetch labels with retry mechanism to handle delayed labeling
+          for (let i = 0; i < maxRetries; i++) {
+            // Use GitHub API to fetch the latest PR data
+            const { data: prData } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            labels = prData.labels.map(label => label.name);
+            console.log(`[Attempt ${i + 1}/${maxRetries}] Current PR labels:`, labels.join(', ') || '(no labels)');
+
+            // If the PR has ANY labels, it means the labeler action has finished.
+            // We can break the loop and proceed to evaluation.
+            if (labels.length > 0) {
+              console.log('✅ Labeling completed. Proceeding to evaluation.');
+              break;
+            }
+
+            // If it's the last attempt, don't wait
+            if (i < maxRetries - 1) {
+              console.log(`⏳ No labels found yet. Waiting ${delayMs / 1000}s before retrying...`);
+              await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+          }
 
           // 3. Evaluation logic with short-circuit evaluation
-          let shouldSkip = false;
-
-          // Check 1: If 'DOC' label exists, it means ALL changed files are docs (and no CMakeLists.txt).
-          // We can safely skip CI and exit early.
           if (labels.includes('DOC')) {
             console.log("🛑 Found 'DOC' label. All changes are documentation. Will safely skip CI.");
             shouldSkip = true;
-          }
-          // Check 2: If no 'DOC' label, check for the specific backend label (e.g., 'mthreads').
-          // If found, we need to run CI. No need to check for 'CORE'.
-          else if (labels.includes(backend)) {
+          } else if (labels.includes(backend)) {
             console.log(`✅ Found backend label '${backend}'. Will run CI.`);
             shouldSkip = false;
-          }
-          // Check 3: If no backend label, check for the 'CORE' label (core code changes).
-          // If found, we need to run CI for all backends.
-          else if (labels.includes('CORE')) {
+          } else if (labels.includes('CORE')) {
             console.log("✅ Found 'CORE' label. Core files changed, will run CI.");
             shouldSkip = false;
-          }
-          // Check 4: No relevant labels found, skip CI.
-          else {
-            console.log(`🛑 No relevant labels (DOC, ${backend}, or CORE) found. Will safely skip CI.`);
+          } else {
+            console.log(`🛑 No relevant labels (DOC, ${backend}, or CORE) found after retries. Will safely skip CI.`);
             shouldSkip = true;
           }
 
