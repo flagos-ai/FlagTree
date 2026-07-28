@@ -18,6 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from .runtime.jit import jit_specialize_options
+from .jit import jit_specialize_options
 
 __all__ = ["jit_specialize_options"]
