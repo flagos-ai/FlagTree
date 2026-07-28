@@ -330,15 +330,14 @@ void init_triton_ascend_ir(py::module &&m) {
       .def("create_tanh",
            [](TritonOpBuilder &self, Value &val) -> Value {
              return self.create<math::TanhOp>(val);
+           })
+      .def("create_annotation",
+           [](TritonOpBuilder &self, Value &ptr, const std::string &attrKey,
+              Attribute &attrVal) {
+             auto annotationOp = self.create<triton::ascend::AnnotationOp>(ptr);
+             annotationOp->setAttr(self.getBuilder().getStringAttr(attrKey),
+                                   attrVal);
            });
-      // Add an annotation
-  // .def("create_annotation",
-  //      [](TritonOpBuilder &self, Value &ptr, const std::string &attrKey,
-  //         Attribute &attrVal) {
-  //        auto annotationOp = self.create<triton::ascend::AnnotationOp>(ptr);
-  //        annotationOp->setAttr(self.getBuilder().getStringAttr(attrKey),
-  //                              attrVal);
-  //      });
 }
 
 void init_triton_ascend_passes_ttir(py::module &&m) {
@@ -355,9 +354,9 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
               enableMaskFallbackConversion, optimizeDynamicOffset));
         });
 
-  // m.def("add_triton_to_annotation", [](mlir::PassManager &pm) {
-  //   pm.addPass(mlir::triton::createTritonToAnnotationPass());
-  // });
+  m.def("add_triton_to_annotation", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::createTritonToAnnotationPass());
+  });
 
   m.def("add_triton_to_linalg",
         [](mlir::PassManager &pm, bool globalKernel, bool namedOps,
