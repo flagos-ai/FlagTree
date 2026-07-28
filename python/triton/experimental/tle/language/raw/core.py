@@ -61,6 +61,14 @@ def _normalize_hint(hint):
 
 
 def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic):
+    install_runtime_hook = getattr(
+        func,
+        "install_runtime_hook",
+        None,
+    )
+    if install_runtime_hook is not None:
+        install_runtime_hook()
+
     hint = _normalize_hint(hint)
     handles = [arg.handle for arg in args]
     if getattr(func, "deferred", False):
