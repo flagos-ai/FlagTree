@@ -31,7 +31,6 @@ from .. import __version__, knobs
 from ..runtime.autotuner import OutOfResources
 from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key
 from ..runtime.driver import driver
-from ..tools.disasm import get_sass
 from pathlib import Path
 import re
 import functools
@@ -162,7 +161,7 @@ def parse(full_name, ext, context):
         module = ir.parse_mlir_module(full_name, context)
         module.context = context
         return module
-    if ext == "llir" or ext == "ptx" or ext == "amdgcn":
+    if ext == "llir" or ext == "ptx" or ext == "amdgcn" or ext == "asm":
         return Path(full_name).read_text()
     if ext == "cubin" or ext == "hsaco":
         return Path(full_name).read_bytes()
@@ -344,6 +343,7 @@ def compile(src, target=None, options=None, _env_vars=None):
         timer.finished_ir_initialization()
     for ext, compile_ir in list(stages.items())[first_stage:]:
         next_module = compile_ir(module, metadata)
+        is_artifact = backend.is_stage_artifact(ext)
         ir_filename = f"{file_name}.{ext}"
         if fn_override_manager is None:
             # Users can override kernels at scale by setting `ir_override` in autotune config
@@ -358,15 +358,16 @@ def compile(src, target=None, options=None, _env_vars=None):
             metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
         if fn_dump_manager is not None:
             fn_dump_manager.put(next_module, ir_filename)
-            if ext == "cubin":
-                sass = get_sass(next_module)
-                fn_dump_manager.put(sass, file_name + ".sass")
+            if ext == backend.binary_ext:
+                for disasm_ext, disassembly in backend.get_binary_disassembly(next_module).items():
+                    fn_dump_manager.put(disassembly, f"{file_name}.{disasm_ext}")
         # use an env variable to parse ir from file
-        if use_ir_loc == ext:
+        if use_ir_loc == ext and not is_artifact:
             ir_full_name = fn_cache_manager.get_file(ir_filename)
             next_module.create_location_snapshot(ir_full_name)
             print(f"Creating new locations for {ir_full_name}")
-        module = next_module
+        if not is_artifact:
+            module = next_module
         if compilation_listener:
             timer.stage_finished(ext)
     # write-back metadata
@@ -404,15 +405,16 @@ class LazyDict:
 
 class AsmDict(dict):
 
+    def __init__(self, backend, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.backend = backend
+
     def __missing__(self, key):
-
-        if key == "sass":
-            value = get_sass(self["cubin"])
-        else:
+        disassembly = self.backend.get_binary_disassembly(self[self.backend.binary_ext])
+        if key not in disassembly:
             raise KeyError("Unknown key: '%s'" % key)
-
-        self[key] = value
-        return value
+        self.update(disassembly)
+        return self[key]
 
 
 def _raise_error(err, *args, **kwargs):
@@ -447,7 +449,7 @@ class CompiledKernel:
         # stores the text of each level of IR that was generated during compilation
         asm_files = [Path(p) for c, p in metadata_group.items() if not c.endswith(".json")]
         binary_ext = backend.binary_ext
-        self.asm = AsmDict({
+        self.asm = AsmDict(backend, {
             file.suffix[1:]: file.read_bytes() if file.suffix[1:] == binary_ext else file.read_text()
             for file in asm_files
         })

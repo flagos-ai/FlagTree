@@ -33,7 +33,11 @@ from types import ModuleType
 from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, List
 
 from .. import knobs, language
-from .._C.libtriton import ir, gluon_ir
+from .._C.libtriton import ir
+try:
+    from .._C.libtriton import gluon_ir
+except ImportError:
+    gluon_ir = None
 from ..language import constexpr, str_to_ty, tensor, tuple as tl_tuple
 from ..language.core import _unwrap_if_constexpr, base_value, base_type
 # ideally we wouldn't need any runtime component
@@ -365,6 +369,9 @@ class CodeGenerator(ast.NodeVisitor):
         self.context = context
         self.is_gluon = is_gluon
         if is_gluon:
+            if gluon_ir is None:
+                raise RuntimeError("Gluon kernels are not supported in this build because the gluon_ir bindings "
+                                   "were not compiled. Rebuild with Gluon bindings enabled.")
             from triton.experimental.gluon.language._semantic import GluonSemantic
             self.builder = gluon_ir.GluonOpBuilder(context)
             self.semantic = GluonSemantic(self.builder)

@@ -583,6 +583,19 @@ class nvidia_knobs(base_knobs):
     tle_raw_clang_flags: env_opt_str = env_opt_str("CLANG_FLAGS")
 
 
+@functools.lru_cache()
+def _corex_home_default() -> str:
+    import shutil
+    if ixsmi := shutil.which("ixsmi"):
+        return os.path.dirname(os.path.dirname(os.path.realpath(ixsmi)))
+    return "/usr/local/corex"
+
+
+class iluvatar_knobs(base_knobs):
+    libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
+    libcuda_path: env_str_callable_default = env_str_callable_default("TRITON_LIBCUDA_PATH", _corex_home_default)
+
+
 class amd_knobs(base_knobs):
     use_buffer_ops: env_bool = env_bool("AMDGCN_USE_BUFFER_OPS", True)
     # Note: This requires use_buffer_ops be true to have any effect
@@ -696,6 +709,7 @@ autotuning = autotuning_knobs()
 runtime = runtime_knobs()
 language = language_knobs()
 nvidia = nvidia_knobs()
+iluvatar = iluvatar_knobs()
 amd = amd_knobs()
 hcu = hcu_knobs()  # flagtree hcu
 metax = metax_knobs()  # flagtree metax

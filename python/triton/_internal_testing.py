@@ -89,6 +89,11 @@ def is_ppu():
     return False if target is None else target.backend == "ppu"
 
 
+def is_corex():
+    target = get_current_target()
+    return target is not None and target.backend == "corex"
+
+
 def is_hip():
     target = get_current_target()
     return False if target is None else target.backend == "hip"

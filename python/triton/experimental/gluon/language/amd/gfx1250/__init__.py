@@ -20,8 +20,13 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import importlib
+
 from triton.runtime.jit import constexpr_function
-from triton._C.libtriton.gluon_ir import get_amd_wmma_scale_layout as _get_wmma_scale_layout
+try:
+    _get_wmma_scale_layout = importlib.import_module("triton._C.libtriton.gluon_ir").get_amd_wmma_scale_layout
+except (ImportError, AttributeError):
+    _get_wmma_scale_layout = None
 
 from ..._core import builtin
 from .._ops import _wmma, _verify_wmma, _mma_scaled
@@ -92,6 +97,9 @@ def wmma_scaled(a, a_scale, a_format, b, b_scale, b_format, acc, _semantic=None)
 
 
 def _get_wmma_scale_layout_impl(*args, **kwargs):
+    if _get_wmma_scale_layout is None:
+        raise RuntimeError("get_wmma_scale_layout requires gluon_ir bindings, but they were not compiled. "
+                           "Rebuild with Gluon bindings enabled.")
     return _get_wmma_scale_layout(*args, **kwargs)
 
 

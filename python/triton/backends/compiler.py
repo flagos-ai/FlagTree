@@ -63,6 +63,14 @@ class BaseBackend(metaclass=ABCMeta):
         """Create the initial IR module for this backend."""
         return src.make_ir(self.target, options, codegen_fns, module_map, context)
 
+    def is_stage_artifact(self, stage: str) -> bool:
+        """Return whether a stage result is cached but not fed to the next stage."""
+        return False
+
+    def get_binary_disassembly(self, binary: bytes) -> Dict[str, str]:
+        """Return backend-specific textual disassemblies keyed by file extension."""
+        return {}
+
     @staticmethod
     @abstractmethod
     def supports_target(target: GPUTarget):
@@ -88,6 +96,7 @@ class BaseBackend(metaclass=ABCMeta):
         ir_name [str] => Function[(src: str, metadata: dict) -> str|bytes]
         The value of each entry may populate a `metadata` dictionary.
         Stages will be run sequentially (in inseriton order) and can communicate using `metadata`.
+        Results marked by `is_stage_artifact` are cached but do not replace the input to the next stage.
         All stages are expected to return a `str` object, except for the last stage which returns
         a `bytes` object for execution by the launcher.
         """

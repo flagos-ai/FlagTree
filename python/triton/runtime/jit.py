@@ -40,6 +40,7 @@ from .. import knobs
 from .driver import driver
 from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
+from .._flagtree_spec import spec_call
 from .cache import get_cache_key
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl
 from ._distributed import DistributedRtContext
@@ -625,6 +626,17 @@ def compute_cache_key(kernel_key_cache, specialization, options):
     return cache_key
 
 
+def specialize_backend_options(bound_args, specialization, options):
+    """Allow the active backend to derive compile options from bound arguments."""
+    updates = spec_call("jit_specialize_options", tuple(bound_args.values()), specialization, dict(options))
+    if updates is None:
+        return options
+    if not isinstance(updates, dict):
+        raise TypeError("jit_specialize_options must return a dict or None")
+    options.update(updates)
+    return options
+
+
 def convert_to_tuple_if_list(item):
     # If the incoming item is a list, recursively iterate through it to convert all lists therein into tuples
     if not isinstance(item, list):
@@ -713,7 +725,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
     def _pack_args(self, backend, kwargs, bound_args, specialization, options):
         # options
-        options = backend.parse_options(kwargs)
+        options = backend.parse_options(options)
         # signature
         sigkeys = [x.name for x in self.params]
         sigvals = [x[0] for x in specialization]
@@ -751,6 +763,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         # specialization is list[tuple[str, Any]], where first element of tuple is
         # the type and the second parameter is the 'specialization' value.
         bound_args, specialization, options = binder(*args, **kwargs)
+        options = specialize_backend_options(bound_args, specialization, options)
 
         key = compute_cache_key(kernel_key_cache, specialization, options)
         kernel = kernel_cache.get(key, None)
