@@ -37,10 +37,7 @@ def get_extra_install_packages():
 
 
 def get_package_dir():
-    return {
-        package: f"{OPS_PYTHON_ROOT}/{package.replace('.', '/')}"
-        for package in _ops_packages()
-    }
+    return {package: f"{OPS_PYTHON_ROOT}/{package.replace('.', '/')}" for package in _ops_packages()}
 
 
 def _build_setup_hook():
