@@ -83,7 +83,7 @@ jobs:
           export TRITON_HOME="/root/"
           pip uninstall -y triton
           env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
           unset TRITON_HOME
 
       - name: FlagGems Accuracy Test

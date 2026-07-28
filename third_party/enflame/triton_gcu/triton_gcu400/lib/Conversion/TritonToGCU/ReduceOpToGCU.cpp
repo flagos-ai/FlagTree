@@ -34,9 +34,6 @@
 using namespace mlir;
 namespace {
 
-constexpr unsigned kOaccSizeInBytes = 512;
-constexpr unsigned kLoopUnrollTimes = 16;
-
 enum class ReduceExecutionMode {
   kScalar,
   kVectorized,

@@ -525,14 +525,15 @@ void FirstLastUserAnalysis::start() {
           }
         });
       }
-    } else if (llvm::isa<scf::IfOp, scf::IndexSwitchOp, scf::WhileOp,
-                         scf::ForOp, triton::SplatOp, triton::AtomicRMWOp,
-                         triton::MulhiUIOp, triton::ScanOp, triton::HistogramOp,
-                         triton::BroadcastOp, triton::ExpandDimsOp,
-                         triton::ReshapeOp, triton::SplitOp, triton::JoinOp,
-                         triton::CatOp, triton::gcu::MatmulOp, triton::DotOp,
-                         triton::ReduceOp, triton::MakeRangeOp,
-                         triton::gcu::ElementwiseFusionRegionOp>(_op)) {
+    } else if (llvm::isa<
+                   scf::IfOp, scf::IndexSwitchOp, scf::WhileOp, scf::ForOp,
+                   triton::SplatOp, triton::AtomicRMWOp, triton::MulhiUIOp,
+                   triton::ScanOp, triton::HistogramOp, triton::BroadcastOp,
+                   triton::ExpandDimsOp, triton::ReshapeOp, triton::SplitOp,
+                   triton::JoinOp, triton::CatOp, triton::gcu::MatmulOp,
+                   triton::DotOp, triton::ReduceOp, triton::MakeRangeOp,
+                   triton::gcu::ElementwiseFusionRegionOp, triton::GatherOp>(
+                   _op)) {
       LLVM_DEBUG({ llvm::dbgs() << "_op:" << *_op << "\n"; });
       [[maybe_unused]] int i = 0;
       for (auto v : _op->getResults()) {

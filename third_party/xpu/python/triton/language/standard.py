@@ -273,6 +273,9 @@ def _pick_sum_dtype(in_dtype, dtype):
 
     # For integer bitwidths less than 32, pick int32 with the same sign to
     # avoid overflow.
+    if in_dtype.is_bf16():
+        return core.float32
+
     out_dtype = None
     if in_dtype.is_int_signed():
         out_dtype = core.int32 if in_dtype.int_bitwidth < 32 else None

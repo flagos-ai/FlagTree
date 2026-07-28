@@ -22,6 +22,17 @@ set(_core_dialect_libs
   MathExtIR_gcu300
 )
 
+if(FLAGTREE_TLE)
+  list(APPEND _core_dialect_libs
+    TleIR
+    TleToLLVM
+    TritonTLETransforms
+    TritonTLEAnalysis
+    TritonNVIDIAGPUToLLVM
+    NVGPUIR
+  )
+endif()
+
 add_library(triton_gcu300_core SHARED triton_gcu300_core.cpp ${TRITON_OUTPUT_FILES})
 target_compile_features(triton_gcu300_core PRIVATE cxx_std_17)
 set_source_files_properties(${TRITON_OUTPUT_FILES} PROPERTIES

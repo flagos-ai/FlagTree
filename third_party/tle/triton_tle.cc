@@ -76,7 +76,8 @@ extern tle::DSLRegionOp createTLERawRegionDeferred(
     TritonOpBuilder &self, std::string_view sourceId,
     std::string_view regionDialect, std::string_view argDialect,
     const std::vector<Value> &args,
-    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint);
+    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint,
+    std::string_view dsl_file_name, std::string_view extern_func_name);
 
 void init_triton_tle_ir(py::module &&m) {
 
@@ -744,7 +745,8 @@ void init_tle_raw_ir(py::module &&m) {
   builder_cls->def(
       "create_tle_raw_region_deferred", &createTLERawRegionDeferred,
       py::arg("source_id"), py::arg("region_dialect"), py::arg("arg_dialect"),
-      py::arg("args"), py::arg("output_operand_indices"), py::arg("hint") = "");
+      py::arg("args"), py::arg("output_operand_indices"), py::arg("hint") = "",
+      py::arg("dsl_file_name") = "", py::arg("extern_func_name") = "");
   builder_cls->def("get_context", &TritonOpBuilder::getContext);
 }
 

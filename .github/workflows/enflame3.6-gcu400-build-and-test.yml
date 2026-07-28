@@ -72,7 +72,7 @@ jobs:
           python3 -m pip uninstall -y triton --break-system-packages
           python3 -m pip uninstall -y triton_gcu --break-system-packages
           export FLAGTREE_BACKEND=enflame
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation --break-system-packages
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v --break-system-packages
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -81,18 +81,18 @@ jobs:
           set -x
 
           ## triton unit test
-          python3 -m pytest -s third_party/enflame/python/test/unit \
+          python3 -m pytest third_party/enflame/python/test/unit \
               --ignore=third_party/enflame/python/test/unit/language/test_core.py
 
           ## tle unit test
 
-          python3 -m pytest -s python/test/tle \
+          python3 -m pytest python/test/tle \
               --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
               --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
               --ignore=python/test/tle/unit/test_tle_d2d_barrier.py
 
           ## tle raw test
-          python3 -m pytest -s third_party/enflame/python/test/tle/raw
+          python3 -m pytest third_party/enflame/python/test/tle/raw
 
           ## tle tutorials test
           python3 python/tutorials/tle/01-fft.py

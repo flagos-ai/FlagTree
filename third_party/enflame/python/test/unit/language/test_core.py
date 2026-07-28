@@ -2968,6 +2968,7 @@ def test_optimize_thread_locality(op, BLOCK_N, N, num_pid_n, device):
     x = torch.randn((BLOCK_M, N), dtype=torch.float32, device=device)
     y = torch.randn((BLOCK_M, num_pid_n), dtype=torch.float32, device=device)
     h = kernel[(1, num_pid_n, 1)](x, y, N, BLOCK_M, BLOCK_N)
+    # TODO: reduce should not be split in GCU due to perf consideration
     # if not is_interpreter():
     #     assert h.asm['ttgir'].count(
     #         '"tt.reduce"') == 2, "tt.reduce should be called twice, otherwise the optimization didn't work"
@@ -4877,6 +4878,7 @@ def test_trans_reshape(device, with_allocator):
     actual = torch.zeros(expected.shape, dtype=torch.int32, device=device)
 
     k = kernel[(1, )](input, actual, shape[0], shape[1])
+    # TODO: gcu not support add_optimize_thread_locality due to perf
     # assert k.asm['ttgir'].count(
     #     'ttg.convert_layout') == 1, "Expected exactly one convert_layout op in the TTGIR after optimization"
 

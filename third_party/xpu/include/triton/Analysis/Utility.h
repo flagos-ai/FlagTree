@@ -138,14 +138,10 @@ public:
   unsigned getReduceNum() { return reduceNum; }
 
   void setSMOffsets(unsigned _reduceId, SmallVector<int64_t> &_offsets) {
-    int64_t _startOffset;
-    if (_reduceId == 0) {
-      _startOffset = 0;
-    } else {
-      _startOffset = getSMOffsets(getReduceId() - 1)->endOffset;
-    }
+    // Store the local footprint. The lowering uses the previous reduction's
+    // endOffset as the base, matching internal Triton's scratch reuse policy.
     reduceSMOffsetMap[_reduceId] =
-        std::make_unique<redSMOffsetInfo>(_startOffset, _offsets);
+        std::make_unique<redSMOffsetInfo>(0, _offsets);
   }
 
   redSMOffsetInfo *getSMOffsets(unsigned _reduceId) {
@@ -315,14 +311,9 @@ public:
   unsigned getXPUNumOperands() { return xpu_op.getNumOperands(); }
 
   void setSMOffsets(unsigned _scanId, SmallVector<int64_t> &_offsets) {
-    int64_t _startOffset;
-    if (_scanId == 0) {
-      _startOffset = 0; // [TODO]: find reduceOp and replace the last endOffset
-    } else {
-      _startOffset = getSMOffsets(getScanId() - 1)->endOffset;
-    }
-    scanSMOffsetMap[_scanId] =
-        std::make_unique<redSMOffsetInfo>(_startOffset, _offsets);
+    // Store the local footprint. The lowering uses the previous scan's
+    // endOffset as the base, matching internal Triton's scratch reuse policy.
+    scanSMOffsetMap[_scanId] = std::make_unique<redSMOffsetInfo>(0, _offsets);
   }
 
   redSMOffsetInfo *getSMOffsets(unsigned _reduceId) {

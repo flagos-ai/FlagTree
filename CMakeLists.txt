@@ -35,6 +35,7 @@ endif()
 if(NOT FLAGTREE_BACKEND)
   add_definitions(-D__NVIDIA__)
   add_definitions(-D__AMD__)
+  add_definitions(-D__FLAGTREE_REORDER_LOOP_LOADS__)
   add_definitions(-D__FLAGTREE_RLC_ENHANCE__)
 elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
   add_definitions(-D__ILUVATAR__)
@@ -76,15 +77,6 @@ set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
 if(FLAGTREE_PLUGIN)
   add_definitions(-D__FLAGTREE_PLUGIN__)
 endif()
-
-# FLAGTREE SPEC LIB GET FUNC
-function(get_flagtree_backend_lib lib_name output_lib)
-  set(ret FlagTree_${FLAGTREE_BACKEND}_${lib_name})
-  if(NOT TARGET ${ret})
-    set(ret "")
-  endif()
-  set(${output_lib} ${ret} PARENT_SCOPE)
-endfunction()
 
 # FLAGTREE SPEC TD FILE GET FUNC
 function(set_flagtree_backend_td output_td td_filename)
@@ -473,6 +465,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
       message(STATUS "Building plugin '${PLUGIN_NAME}' from ${PLUGIN_DIR} with output ${PLUGIN_DIR_BUILD_OUTPUT}")
       add_subdirectory(${PLUGIN_DIR} ${PLUGIN_DIR_BUILD_OUTPUT})
     endforeach()
+  endif()
+
+  # flagtree backend cmake specialization
+  if(FLAGTREE_BACKEND)
+    include(FlagTreeBackendSpec)
+    flagtree_apply_backend_source_overrides("${FLAGTREE_BACKEND_DIR}")
   endif()
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)

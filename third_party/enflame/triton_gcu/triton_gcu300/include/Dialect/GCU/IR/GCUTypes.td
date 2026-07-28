@@ -157,6 +157,7 @@ def GCU_TileDescType : GCUTypeDef<"TileDesc", "tile_desc", []> {
     let assemblyFormat = [{ `<` $desc `>` }];
 }
 
+#ifndef MLIR_HAS_VECTOR_RANK_LENGTH_TYPE
 class VectorOfRankAndLengthAndType<list<int> allowedRanks,
                                    list<int> allowedLengths,
                                    list<Type> allowedTypes> : AllOfType<
@@ -166,6 +167,7 @@ class VectorOfRankAndLengthAndType<list<int> allowedRanks,
   VectorOfLength<allowedLengths>.summary #
   VectorOfAnyRankOf<allowedTypes>.summary,
   "::mlir::VectorType">;
+#endif
 
 def GCU_TarType : VectorOfLengthAndType<[1],[I64]>;
 
