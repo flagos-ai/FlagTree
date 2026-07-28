@@ -69,19 +69,19 @@ runs:
           if (labels.includes('DOC')) {
             console.log("🛑 Found 'DOC' label. All changes are documentation. Will safely skip CI.");
             shouldSkip = true;
-          } 
+          }
           // Check 2: If no 'DOC' label, check for the specific backend label (e.g., 'mthreads').
           // If found, we need to run CI. No need to check for 'CORE'.
           else if (labels.includes(backend)) {
             console.log(`✅ Found backend label '${backend}'. Will run CI.`);
             shouldSkip = false;
-          } 
+          }
           // Check 3: If no backend label, check for the 'CORE' label (core code changes).
           // If found, we need to run CI for all backends.
           else if (labels.includes('CORE')) {
             console.log("✅ Found 'CORE' label. Core files changed, will run CI.");
             shouldSkip = false;
-          } 
+          }
           // Check 4: No relevant labels found, skip CI.
           else {
             console.log(`🛑 No relevant labels (DOC, ${backend}, or CORE) found. Will safely skip CI.`);
