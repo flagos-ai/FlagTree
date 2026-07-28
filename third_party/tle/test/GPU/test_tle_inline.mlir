@@ -19,7 +19,7 @@
 // TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 // SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-// RUN: triton-opt %s -split-input-file -inline | FileCheck %s
+// RUN: triton-opt %s -split-input-file -inline -verify-each | FileCheck %s
 
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
 #smem = #ttg.shared_memory
@@ -121,24 +121,53 @@ module attributes {"ttg.num-warps" = 4 : i32} {
 module {
   llvm.func @_sink(!llvm.ptr)
 
-  // CHECK-LABEL: tt.func public @inline_dsl_region
-  tt.func public @inline_dsl_region(%arg0: !tt.ptr<i32>) {
-    // CHECK-NOT: tt.call
-    // CHECK: %[[DSL_RESULT:.*]] = "tle.dsl_region"
-    // CHECK: tle.yield
-    // CHECK: llvm.call @_sink(%[[DSL_RESULT]])
+  // Region-bearing TLE ops remain opaque to the module inliner.
+  // CHECK-LABEL: tt.func public @preserve_dsl_region_helper
+  tt.func public @preserve_dsl_region_helper(%arg0: !tt.ptr<i32>) {
+    // CHECK: tt.call @dsl_region_worker
     tt.call @dsl_region_worker(%arg0) : (!tt.ptr<i32>) -> ()
-    // CHECK-NEXT: tt.return
     tt.return
   }
 
-  // CHECK-NOT: @dsl_region_worker
+  // CHECK: tt.func private @dsl_region_worker
+  // CHECK: "tle.dsl_region"
+  // CHECK: tle.yield
+  // CHECK: llvm.call @_sink
   tt.func private @dsl_region_worker(%arg0: !tt.ptr<i32>)
       attributes {noinline = false} {
     %ptr = "tle.dsl_region"(%arg0) ({
     ^bb0(%input: !tt.ptr<i32>):
       %raw = "tle.extract_ptr"(%input) : (!tt.ptr<i32>) -> !llvm.ptr
       "tle.yield"(%raw) : (!llvm.ptr) -> ()
+    }) {arg_dialect = "llvm", output_operand_indices = array<i32: 0>,
+        region_dialect = "llvm", tle_raw.source_id = "inline-test"}
+        : (!tt.ptr<i32>) -> !llvm.ptr
+    llvm.call @_sink(%ptr) : (!llvm.ptr) -> ()
+    tt.return
+  }
+}
+
+// -----
+
+module {
+  // TLE does not opt calls nested in its isolated region into generic
+  // inlining.
+  // CHECK: llvm.func internal @dsl_identity
+  llvm.func internal @dsl_identity(%arg0: !llvm.ptr) -> !llvm.ptr {
+    llvm.return %arg0 : !llvm.ptr
+  }
+
+  llvm.func @_sink(!llvm.ptr)
+
+  // CHECK-LABEL: tt.func public @preserve_call_inside_dsl_region
+  tt.func public @preserve_call_inside_dsl_region(%arg0: !tt.ptr<i32>) {
+    %ptr = "tle.dsl_region"(%arg0) ({
+    ^bb0(%input: !tt.ptr<i32>):
+      %raw = "tle.extract_ptr"(%input) : (!tt.ptr<i32>) -> !llvm.ptr
+      // CHECK: %[[DSL_CALLED:.*]] = llvm.call @dsl_identity
+      %called = llvm.call @dsl_identity(%raw) : (!llvm.ptr) -> !llvm.ptr
+      // CHECK-NEXT: tle.yield %[[DSL_CALLED]]
+      "tle.yield"(%called) : (!llvm.ptr) -> ()
     }) {arg_dialect = "llvm", output_operand_indices = array<i32: 0>,
         region_dialect = "llvm", tle_raw.source_id = "inline-test"}
         : (!tt.ptr<i32>) -> !llvm.ptr

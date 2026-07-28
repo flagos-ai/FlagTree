@@ -23,8 +23,8 @@
 
 #include "tle/dialect/include/IR/Dialect.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "tle/dialect/include/IR/Dialect.cpp.inc"
-#include "triton/Dialect/Triton/IR/Interfaces.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "tle/dialect/include/IR/TleAttrDefs.cpp.inc"
@@ -38,6 +38,18 @@
 #endif
 
 namespace mlir::triton::tle {
+namespace {
+struct TleInlinerInterface final : public DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+
+  bool isLegalToInline(Operation *op, Region *, bool, IRMapping &) const final {
+    // TLE regions and terminators have their own semantics. Only allow
+    // ordinary operations to be cloned with a containing Triton function.
+    return op->getNumRegions() == 0 && !op->hasTrait<OpTrait::IsTerminator>();
+  }
+};
+} // namespace
+
 void TleDialect::initialize() {
   addAttributes<
 #define GET_ATTRDEF_LIST
@@ -55,8 +67,6 @@ void TleDialect::initialize() {
       >();
 #endif
 
-  // TLE ops can appear in ordinary @triton.jit helpers. Mark them as legal to
-  // clone so the module inliner can expose helper bodies to later passes.
-  addInterfaces<TritonInlinerInterface>();
+  addInterfaces<TleInlinerInterface>();
 }
 } // namespace mlir::triton::tle
