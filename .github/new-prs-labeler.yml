@@ -68,19 +68,20 @@ CI/CD:
 # are documentation files, EXCLUDING CMakeLists.txt.
 # ==========================================
 DOC:
-  - changed-files:
-      - any-glob-to-all-files:
-          - '**/*.md'
-          - '**/*.txt'
-          - '**/*.rst'
-          - '**/*.png'
-          - '**/*.jpg'
-          - '**/*.jpeg'
-          - '**/*.gif'
-          - '**/*.ico'
-          - 'LICENSE'
-      - all-globs-to-all-files:
-          - '!**/CMakeLists.txt'
+  - all:
+      - changed-files:
+          - any-glob-to-all-files:
+              - '**/*.md'
+              - '**/*.txt'
+              - '**/*.rst'
+              - '**/*.png'
+              - '**/*.jpg'
+              - '**/*.jpeg'
+              - '**/*.gif'
+              - '**/*.ico'
+              - 'LICENSE'
+          - all-globs-to-all-files:
+              - '!**/CMakeLists.txt'
 
 # ====================================================================================
 # TLE Labels
