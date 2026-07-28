@@ -143,6 +143,52 @@ static Value getAsMemRef(Value val, PatternRewriter &rewriter) {
       val.getLoc(), targetTy, val)->getResult(0);
 }
 
+static bool isTensorOfPointer(Type ty) {
+  auto rankedTy = dyn_cast<RankedTensorType>(ty);
+  return rankedTy && isa<triton::PointerType>(rankedTy.getElementType());
+}
+
+static void lowerScatteredLoad(tile::CopyOp op, Value ptr, Value buf,
+                               PatternRewriter &rewriter) {
+  Location loc = op.getLoc();
+  Value loaded = rewriter.create<triton::LoadOp>(
+      loc, ptr, Value(), Value(), ArrayRef<int32_t>{},
+      std::optional<triton::PaddingOption>(), triton::CacheModifier::NONE,
+      triton::EvictionPolicy::NORMAL, false
+  );
+
+  auto ty = cast<RankedTensorType>(loaded.getType());
+#ifndef __LLVM_MAJOR_VERSION_22_COMPATIBLE__
+  Value mem = rewriter.create<bufferization::ToMemrefOp>(
+      loc, MemRefType::get(ty.getShape(), ty.getElementType()), loaded
+  );
+#else
+  Value mem = rewriter.create<bufferization::ToBufferOp>(
+      loc, MemRefType::get(ty.getShape(), ty.getElementType()), loaded
+  );
+#endif
+
+  rewriter.create<hivm::CopyOp>(loc, TypeRange{}, mem, getAsMemRef(buf, rewriter));
+  rewriter.eraseOp(op);
+}
+
+static void lowerScatteredStore(tile::CopyOp op, Value buf, Value ptr,
+                                PatternRewriter &rewriter) {
+  Location loc = op.getLoc();
+  Value mem = getAsMemRef(buf, rewriter);
+  auto m = cast<MemRefType>(mem.getType());
+
+  Value t = rewriter.create<bufferization::ToTensorOp>(
+      loc, RankedTensorType::get(m.getShape(), m.getElementType()), mem,
+      true, false
+  );
+
+  rewriter.replaceOpWithNewOp<triton::StoreOp>(
+      op, ptr, t, Value(), ArrayRef<int32_t>{}, triton::CacheModifier::NONE,
+      triton::EvictionPolicy::NORMAL
+  );
+}
+
 static bool isTritonPointerLike(Type ty) {
   if (isa<triton::PointerType>(ty))
     return true;
@@ -275,14 +321,24 @@ struct TileCopyToHIVM : OpRewritePattern<tile::CopyOp> {
 
   LogicalResult matchAndRewrite(tile::CopyOp op,
                                 PatternRewriter &rewriter) const final {
-    Value srcMem = getAsMemRef(op.getOperand(0), rewriter);
-    Value dstMem = getAsMemRef(op.getOperand(1), rewriter);
+    Value src = op.getOperand(0);
+    Value dst = op.getOperand(1);
 
-    if (isTritonPointerLike(op.getOperand(0).getType())) {
-      rewriter.replaceOpWithNewOp<memref::CopyOp>(op, srcMem, dstMem);
+    if (isTensorOfPointer(src.getType())) {
+      lowerScatteredLoad(op, src, dst, rewriter);
+      return success();
+    }
+    if (isTensorOfPointer(dst.getType())) {
+      lowerScatteredStore(op, src, dst, rewriter);
       return success();
     }
 
+    Value srcMem = getAsMemRef(src, rewriter);
+    Value dstMem = getAsMemRef(dst, rewriter);
+    if (isTritonPointerLike(src.getType())) {
+      rewriter.replaceOpWithNewOp<memref::CopyOp>(op, srcMem, dstMem);
+      return success();
+    }
     rewriter.create<hivm::CopyOp>(op.getLoc(), TypeRange{}, srcMem, dstMem);
     rewriter.eraseOp(op);
     return success();
