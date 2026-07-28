@@ -42,7 +42,7 @@ runs:
       run: |
         BACKEND="${{ inputs.backend }}"
         EVENT_NAME="${{ github.event_name }}"
-        
+
         echo "🔍 Checking PR labels for backend: $BACKEND"
 
         # 1. Handle non-PR events (e.g., direct push to the main branch)
@@ -56,10 +56,10 @@ runs:
         # 2. Fetch all labels for the current PR
         PR_NUMBER="${{ github.event.pull_request.number }}"
         echo "Fetching labels for PR #$PR_NUMBER..."
-        
+
         # Use the 'gh' command to fetch labels and parse them into a plain text list using 'jq'
         LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name')
-        
+
         echo "Current PR labels:"
         echo "$LABELS"
 
