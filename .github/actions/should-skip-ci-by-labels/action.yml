@@ -25,6 +25,10 @@ inputs:
   backend:
     description: 'Backend name matching the PR label (e.g. mthreads, nvidia)'
     required: true
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+    default: ${{ github.token }}
 
 outputs:
   should_skip:
@@ -36,56 +40,53 @@ runs:
   steps:
     - name: Check PR labels
       id: check
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        BACKEND="${{ inputs.backend }}"
-        EVENT_NAME="${{ github.event_name }}"
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const backend = '${{ inputs.backend }}';
+          const eventName = context.eventName;
 
-        echo "🔍 Checking PR labels for backend: $BACKEND"
+          console.log(`🔍 Checking PR labels for backend: ${backend}`);
 
-        # 1. Handle non-PR events (e.g., direct push to the main branch)
-        # Direct pushes do not have PR labels. For safety, default to NOT skipping (i.e., run CI).
-        if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_target" ]; then
-          echo "⚠️ Event is '$EVENT_NAME' (not a PR). Defaulting to run CI."
-          echo "should_skip=false" >> $GITHUB_OUTPUT
-          exit 0
-        fi
+          // 1. Handle non-PR events (e.g., direct push to the main branch)
+          // Direct pushes do not have PR labels. For safety, default to NOT skipping (i.e., run CI).
+          if (eventName !== 'pull_request' && eventName !== 'pull_request_target') {
+            console.log(`⚠️ Event is '${eventName}' (not a PR). Defaulting to run CI.`);
+            core.setOutput('should_skip', 'false');
+            return;
+          }
 
-        # 2. Fetch all labels for the current PR
-        PR_NUMBER="${{ github.event.pull_request.number }}"
-        echo "Fetching labels for PR #$PR_NUMBER..."
+          // 2. Fetch all labels for the current PR
+          const labels = context.payload.pull_request.labels.map(label => label.name);
+          console.log('Current PR labels:', labels.join(', ') || '(no labels)');
 
-        # Use the 'gh' command to fetch labels and parse them into a plain text list using 'jq'
-        LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name')
+          // 3. Evaluation logic with short-circuit evaluation
+          let shouldSkip = false;
 
-        echo "Current PR labels:"
-        echo "$LABELS"
+          // Check 1: If 'DOC' label exists, it means ALL changed files are docs (and no CMakeLists.txt).
+          // We can safely skip CI and exit early.
+          if (labels.includes('DOC')) {
+            console.log("🛑 Found 'DOC' label. All changes are documentation. Will safely skip CI.");
+            shouldSkip = true;
+          } 
+          // Check 2: If no 'DOC' label, check for the specific backend label (e.g., 'mthreads').
+          // If found, we need to run CI. No need to check for 'CORE'.
+          else if (labels.includes(backend)) {
+            console.log(`✅ Found backend label '${backend}'. Will run CI.`);
+            shouldSkip = false;
+          } 
+          // Check 3: If no backend label, check for the 'CORE' label (core code changes).
+          // If found, we need to run CI for all backends.
+          else if (labels.includes('CORE')) {
+            console.log("✅ Found 'CORE' label. Core files changed, will run CI.");
+            shouldSkip = false;
+          } 
+          // Check 4: No relevant labels found, skip CI.
+          else {
+            console.log(`🛑 No relevant labels (DOC, ${backend}, or CORE) found. Will safely skip CI.`);
+            shouldSkip = true;
+          }
 
-        # 3. Evaluation logic with short-circuit evaluation
-        SHOULD_SKIP=false
-
-        # Check 1: If 'DOC' label exists, it means ALL changed files are docs (and no CMakeLists.txt).
-        # We can safely skip CI and exit early.
-        if echo "$LABELS" | grep -qx "DOC"; then
-          echo "🛑 Found 'DOC' label. All changes are documentation. Will safely skip CI."
-          SHOULD_SKIP=true
-        # Check 2: If no 'DOC' label, check for the specific backend label (e.g., 'mthreads').
-        # If found, we need to run CI. No need to check for 'CORE'.
-        elif echo "$LABELS" | grep -qx "$BACKEND"; then
-          echo "✅ Found backend label '$BACKEND'. Will run CI."
-          SHOULD_SKIP=false
-        # Check 3: If no backend label, check for the 'CORE' label (core code changes).
-        # If found, we need to run CI for all backends.
-        elif echo "$LABELS" | grep -qx "CORE"; then
-          echo "✅ Found 'CORE' label. Core files changed, will run CI."
-          SHOULD_SKIP=false
-        # Check 4: No relevant labels found, skip CI.
-        else
-          echo "🛑 No relevant labels (DOC, $BACKEND, or CORE) found. Will safely skip CI."
-          SHOULD_SKIP=true
-        fi
-
-        # Output the final result
-        echo "should_skip=$SHOULD_SKIP" >> $GITHUB_OUTPUT
+          // Output the final result
+          core.setOutput('should_skip', shouldSkip ? 'true' : 'false');
