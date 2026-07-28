@@ -1,0 +1,91 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Should Skip CI By Labels'
+description: 'Determine whether CI should run based on the labels applied to the PR'
+
+inputs:
+  backend:
+    description: 'Backend name matching the PR label (e.g. mthreads, nvidia)'
+    required: true
+
+outputs:
+  should_skip:
+    description: 'true if the PR only contains doc changes or lacks relevant labels, false if CI should run'
+    value: ${{ steps.check.outputs.should_skip }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check PR labels
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        BACKEND="${{ inputs.backend }}"
+        EVENT_NAME="${{ github.event_name }}"
+        
+        echo "🔍 Checking PR labels for backend: $BACKEND"
+
+        # 1. Handle non-PR events (e.g., direct push to the main branch)
+        # Direct pushes do not have PR labels. For safety, default to NOT skipping (i.e., run CI).
+        if [ "$EVENT_NAME" != "pull_request" ] && [ "$EVENT_NAME" != "pull_request_target" ]; then
+          echo "⚠️ Event is '$EVENT_NAME' (not a PR). Defaulting to run CI."
+          echo "should_skip=false" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        # 2. Fetch all labels for the current PR
+        PR_NUMBER="${{ github.event.pull_request.number }}"
+        echo "Fetching labels for PR #$PR_NUMBER..."
+        
+        # Use the 'gh' command to fetch labels and parse them into a plain text list using 'jq'
+        LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name')
+        
+        echo "Current PR labels:"
+        echo "$LABELS"
+
+        # 3. Evaluation logic with short-circuit evaluation
+        SHOULD_SKIP=false
+
+        # Check 1: If 'DOC' label exists, it means ALL changed files are docs (and no CMakeLists.txt).
+        # We can safely skip CI and exit early.
+        if echo "$LABELS" | grep -qx "DOC"; then
+          echo "🛑 Found 'DOC' label. All changes are documentation. Will safely skip CI."
+          SHOULD_SKIP=true
+        # Check 2: If no 'DOC' label, check for the specific backend label (e.g., 'mthreads').
+        # If found, we need to run CI. No need to check for 'CORE'.
+        elif echo "$LABELS" | grep -qx "$BACKEND"; then
+          echo "✅ Found backend label '$BACKEND'. Will run CI."
+          SHOULD_SKIP=false
+        # Check 3: If no backend label, check for the 'CORE' label (core code changes).
+        # If found, we need to run CI for all backends.
+        elif echo "$LABELS" | grep -qx "CORE"; then
+          echo "✅ Found 'CORE' label. Core files changed, will run CI."
+          SHOULD_SKIP=false
+        # Check 4: No relevant labels found, skip CI.
+        else
+          echo "🛑 No relevant labels (DOC, $BACKEND, or CORE) found. Will safely skip CI."
+          SHOULD_SKIP=true
+        fi
+
+        # Output the final result
+        echo "should_skip=$SHOULD_SKIP" >> $GITHUB_OUTPUT

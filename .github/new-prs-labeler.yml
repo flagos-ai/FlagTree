@@ -19,7 +19,7 @@
 # SOFTWARE.
 
 # ==========================================
-# 1. Core File Labels (CORE)
+# Core File Labels (CORE)
 # Includes core framework code and specific
 # third-party core libraries.
 # ==========================================
@@ -47,7 +47,7 @@ CORE:
           - '.github/workflows/code-format-check.yml'
 
 # ==========================================
-# 2. CI/CD Labels
+# CI/CD Labels
 # Applied if any file under .github/workflows
 # or .github/actions is modified.
 # ==========================================
@@ -63,13 +63,13 @@ CI/CD:
           - 'packaging/**'
 
 # ==========================================
-# 3. Documentation Labels (DOC)
-# Applied if the PR contains modifications to
-# any of the following file types.
+# Doc Only Label
+# Rule: Applied only if ALL changed files
+# are documentation files, EXCLUDING CMakeLists.txt.
 # ==========================================
 DOC:
   - changed-files:
-      - any-glob-to-any-file:
+      - any-glob-to-all-files:
           - '**/*.md'
           - '**/*.txt'
           - '**/*.rst'
@@ -79,9 +79,26 @@ DOC:
           - '**/*.gif'
           - '**/*.ico'
           - 'LICENSE'
+      - all-globs-to-all-files:
+          - '!**/CMakeLists.txt'
+
+# ====================================================================================
+# TLE Labels
+# Rule: Applied if any file path contains 'tle', 'TLE', or 'Tle'
+# NOTE: Only matches these exact case patterns, not 'tLe', 'tlE', 'TlE', 'tLE', etc.
+# ====================================================================================
+TLE:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/tle/**'
+          - '**/TLE/**'
+          - '**/Tle/**'
+          - '**/*tle*'
+          - '**/*TLE*'
+          - '**/*Tle*'
 
 # ==========================================
-# 4. Git Configuration Labels (GIT)
+# Git Configuration Labels (GIT)
 # Applied if Git-related configuration files are modified.
 # ==========================================
 GIT:
@@ -96,7 +113,7 @@ GIT:
           - '.pre-commit-config.yaml'
 
 # ==========================================
-# 5. Backend Labels
+# Backend Labels
 # Rule: Applied if files under third_party/{backend}
 # or .github/workflows/{backend}* are modified.
 # ==========================================
@@ -208,18 +225,3 @@ xpu:
       - any-glob-to-any-file:
           - 'third_party/xpu/**'
           - '.github/workflows/xpu*'
-
-# ====================================================================================
-# 6. TLE Labels
-# Rule: Applied if any file path contains 'tle', 'TLE', or 'Tle'
-# NOTE: Only matches these exact case patterns, not 'tLe', 'tlE', 'TlE', 'tLE', etc.
-# ====================================================================================
-TLE:
-  - changed-files:
-      - any-glob-to-any-file:
-          - '**/tle/**'
-          - '**/TLE/**'
-          - '**/Tle/**'
-          - '**/*tle*'
-          - '**/*TLE*'
-          - '**/*Tle*'

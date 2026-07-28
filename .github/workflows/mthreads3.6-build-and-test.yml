@@ -34,6 +34,12 @@ jobs:
   mthreads36x-unit-test:
     runs-on: mthreads3.6
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+
+    # Add permissions to read PR information (required for fetching labels)
+    permissions:
+      contents: read
+      pull-requests: read
+
     steps:
       - name: Setup environment
         shell: bash
@@ -46,14 +52,14 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: Check if backend-relevant files changed
-        id: check_backend
-        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+      - name: Check if CI should run based on PR labels
+        id: check_labels
+        uses: ./.github/actions/should-skip-ci-by-labels
         with:
           backend: mthreads
 
       - name: Build FlagTree
-        if: steps.check_backend.outputs.should_skip != 'true'
+        if: steps.check_labels.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
@@ -61,7 +67,7 @@ jobs:
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: Unit Test
-        if: steps.check_backend.outputs.should_skip != 'true'
+        if: steps.check_labels.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
