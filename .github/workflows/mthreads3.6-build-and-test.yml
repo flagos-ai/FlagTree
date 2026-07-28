@@ -71,6 +71,7 @@ jobs:
         uses: ./.github/actions/clean-cache-if-labeled
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: 'mthreads'
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'

@@ -19,25 +19,29 @@
 # SOFTWARE.
 
 name: 'Clean Cache if Labeled'
-description: 'Check if PR has CleanCache label and clean cache if present'
+description: 'Check if PR has specific backend CleanCache label and clean cache if present'
 
 inputs:
   github-token:
     description: 'GitHub token for API access'
     required: true
     default: ${{ github.token }}
+  backend:
+    description: 'The backend name to check for (e.g., mthreads)'
+    required: true
 
 runs:
   using: 'composite'
   steps:
-    # Step 1: Check for CleanCache label
-    - name: Check CleanCache label
+    - name: Check specific CleanCache label
       id: check
       uses: actions/github-script@v6
       with:
         github-token: ${{ inputs.github-token }}
         script: |
-          // Check if this is a PR event
+          const backend = '${{ inputs.backend }}';
+          const expectedLabel = `CleanCache:${backend}`;
+
           if (context.eventName !== 'pull_request' && context.eventName !== 'pull_request_target') {
             console.log('ℹ️ Not a PR event, skipping label check');
             core.setOutput('has_clean_cache_label', 'false');
@@ -45,33 +49,31 @@ runs:
           }
 
           const prNumber = context.payload.pull_request.number;
-          let labels = [];
-
           const { data: prData } = await github.rest.pulls.get({
             owner: context.repo.owner,
             repo: context.repo.repo,
             pull_number: prNumber
           });
 
-          labels = prData.labels.map(label => label.name);
+          const labels = prData.labels.map(label => label.name);
           console.log(`Current PR labels:`, labels.join(', ') || '(no labels)');
 
-          const hasCleanCache = labels.includes('CleanCache');
-          console.log('🔍 Has CleanCache label:', hasCleanCache ? '✅ YES' : '❌ NO');
+          const hasCleanCache = labels.includes(expectedLabel);
+          console.log(`🔍 Has "${expectedLabel}" label:`, hasCleanCache ? '✅ YES' : '❌ NO');
 
-          // Set outputs
           core.setOutput('has_clean_cache_label', hasCleanCache ? 'true' : 'false');
 
-    # Step 2: Clean cache if label is present
     - name: Clean cache if label present
       id: cleanup
       if: steps.check.outputs.has_clean_cache_label == 'true'
       shell: bash
       run: |
         echo "========================================="
-        echo "🧹 Clean cache. (CleanCache label detected)"
+        echo "🧹 Cleaning cache for ${{ inputs.backend }} backend."
         echo "========================================="
 
-        # Clean pytest cache
-        echo "-> Cleaning pytest cache..."
-        # rm -rf .pytest_cache
+        echo "-> Cleaning cache..."
+        # rm -rf ~/.triton/cache
+        # rm -rf ~/.flaggems
+        echo "-> Clean cache done"
+
