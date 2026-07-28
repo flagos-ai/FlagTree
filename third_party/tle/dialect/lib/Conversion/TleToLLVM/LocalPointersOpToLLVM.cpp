@@ -43,7 +43,7 @@ namespace {
 
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
-namespace tle = mlir::triton::tle;
+using namespace mlir::triton;
 
 // Extract pointee type from tle.remote_pointers result type.
 static Type getRemotePointeeType(Type resultTy) {

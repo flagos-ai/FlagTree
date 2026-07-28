@@ -33,7 +33,7 @@ namespace {
 
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
-namespace tle = mlir::triton::tle;
+using namespace mlir::triton;
 
 struct PackOpConversion : public ConvertOpToLLVMPattern<tle::PackOp> {
   PackOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit);
