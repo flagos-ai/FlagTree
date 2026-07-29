@@ -1104,7 +1104,8 @@ def TT_MakeTensorDescOp : TT_Op<"make_tensor_descriptor", [
     TT_Ptr:$base,
     Variadic<I32>:$shape,
     Variadic<I64>:$strides,
-    DefaultValuedAttr<TT_PaddingOptionAttr, "::mlir::triton::PaddingOption::PAD_ZERO">:$padding
+    DefaultValuedAttr<TT_PaddingOptionAttr, "::mlir::triton::PaddingOption::PAD_ZERO">:$padding,
+    DefaultValuedAttr<BoolAttr, "false">:$isAIU
   );
 
   let results = (outs TT_TensorDescType:$result);
@@ -1113,7 +1114,7 @@ def TT_MakeTensorDescOp : TT_Op<"make_tensor_descriptor", [
 
   let builders = [
     OpBuilder<(ins "Value":$base, "ValueRange":$shape, "ValueRange":$strides, "ArrayRef<int32_t>":$blockShape, "bool":$isSignedInteger,
-    "triton::PaddingOption":$padding)>
+    "triton::PaddingOption":$padding, CArg<"bool", "false">:$isAIU)>
   ];
 
   let extraClassDeclaration = [{
@@ -1121,6 +1122,41 @@ def TT_MakeTensorDescOp : TT_Op<"make_tensor_descriptor", [
       return getType().getBlockType().getShape();
     }
   }];
+}
+
+def TT_AIULoadOp : TT_Op<"aiu_load", [
+  SameVariadicOperandSize,
+  MemoryEffects<[MemRead<GlobalMemory>]>]> {
+    let summary = "AIU Load";
+    let description = [{
+      This operation will be lowered to PPU AIU load operation on targets supporting it.
+    }];
+    let arguments = (
+      ins
+      AnyTypeOf<[TT_PtrLike, TT_TensorPtr]>:$src_ptr,
+      Variadic<I32>:$indices,
+      Variadic<I64>:$shape,
+      DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{1, 0}">:$order,
+      DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
+      DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict
+    );
+
+    let builders = [
+      // A tensor pointer with boundary check and padding
+      OpBuilder<(ins "Type":$type, "Value":$src_ptr, "triton::CacheModifier":$cache,
+                 "triton::EvictionPolicy":$evict)>,
+    ];
+
+    let results = (outs TT_Tensor:$result);
+
+    let assemblyFormat = [{
+      $src_ptr `[` $indices `]` `[` $shape `]` `[` $order `]`
+      oilist(
+        `cacheModifier` `=` $cache |
+        `evictionPolicy` `=` $evict
+      )
+      attr-dict `:` qualified(type($src_ptr)) `->` type($result)
+    }];
 }
 
 // The following ops, including `call`, `func`, and `return` are copied and modified from

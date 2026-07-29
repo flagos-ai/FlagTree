@@ -506,7 +506,7 @@ endmacro()
 
 
 # FLAGTREE SPEC TD FILE GET FUNC
-function(set_flagtree_backend_td output_td td_filename)
+function(flagtree_spec_td_set output_td td_filename)
   set(ret ${td_filename})
   file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
   get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)
