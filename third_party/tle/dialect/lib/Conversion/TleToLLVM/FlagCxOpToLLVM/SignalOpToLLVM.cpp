@@ -64,10 +64,38 @@ struct SignalOpConversion : public ConvertOpToLLVMPattern<tle::SignalOp> {
   }
 };
 
+struct SignalWaitOpConversion
+    : public ConvertOpToLLVMPattern<tle::SignalWaitOp> {
+  SignalWaitOpConversion(LLVMTypeConverter &typeConverter,
+                         PatternBenefit benefit)
+      : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+  LogicalResult
+  matchAndRewrite(tle::SignalWaitOp op, OpAdaptor adapter,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    auto comm = op.getComm();
+    auto coop_kind = op.getCoopKind();
+    auto signal_id = op.getSignalId();
+    auto target = op.getTarget();
+    auto context_idx = op.getContextIdx();
+
+    auto dev_net =
+        tle::getDevNetFromCommFuncCall(loc, rewriter, comm, context_idx);
+    tle::getDevNetWaitSignalFuncCall(loc, rewriter, dev_net.getResult(),
+                                     coop_kind, signal_id, target);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::tle::populateSignalOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
   patterns.add<SignalOpConversion>(typeConverter, benefit);
+  patterns.add<SignalWaitOpConversion>(typeConverter, benefit);
 }

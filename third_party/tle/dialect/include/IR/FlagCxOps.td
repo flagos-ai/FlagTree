@@ -102,3 +102,19 @@ def Tle_SignalOp : Tle_Op<"signal", [MemoryEffects<[MemRead, MemWrite]>]> {
 
   let hasVerifier = 1;
 }
+
+def Tle_SignalWaitOp : Tle_Op<"signal_wait", [MemoryEffects<[MemRead]>]> {
+  let summary = "Wait for a remote FlagCX signal slot to become the target value";
+  let description = [{
+    Obtains a pre-allocated FlagCX network context from `comm`, then spin-waits the selected
+    signal slot to reach the target value (actual value >= target).
+  }];
+
+  let arguments = (ins
+    Tle_LocalPointerResultType:$comm,
+    I32:$signal_id,
+    I64:$target,
+    I32Attr:$coop_kind,
+    I32Attr:$context_idx
+  );
+}

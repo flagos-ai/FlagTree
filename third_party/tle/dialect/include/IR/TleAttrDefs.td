@@ -28,4 +28,14 @@ include "mlir/IR/EnumAttr.td"
 include "mlir/IR/AttrTypeBase.td"
 include "tle/dialect/include/IR/TleDialect.td"
 
+def Tle_CoopKindAttr : I32EnumAttr<
+  "CoopKind", "",
+  [
+    I32EnumAttrCase<"THREAD", 0, "thread">,
+    I32EnumAttrCase<"WARP", 1, "warp">,
+    I32EnumAttrCase<"BLOCK", 2, "block">,
+  ]> {
+  let cppNamespace = "::mlir::triton::tle";
+}
+
 #endif

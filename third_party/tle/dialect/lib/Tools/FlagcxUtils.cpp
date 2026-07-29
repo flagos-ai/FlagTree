@@ -198,4 +198,54 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
       loc, TypeRange{}, FlatSymbolRefAttr::get(signalFunc), args);
 }
 
+LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
+                                       ConversionPatternRewriter &rewriter,
+                                       Value comm, int idx) {
+  auto ctx = rewriter.getContext();
+  ModuleOp module =
+      rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
+
+  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto I32Ty = IntegerType::get(ctx, 32);
+
+  auto func = createFuncInstance("flagcxDevNetGetFromCommS", module,
+                                 {PtrTy, I32Ty}, PtrTy);
+
+  auto comm_dev_ptr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
+  auto ctx_idx = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, idx);
+
+  return rewriter.create<LLVM::CallOp>(
+      loc, TypeRange{func.getFunctionType().getReturnType()},
+      FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr, ctx_idx});
+}
+
+LLVM::CallOp getDevNetWaitSignalFuncCall(mlir::Location loc,
+                                         ConversionPatternRewriter &rewriter,
+                                         Value dev_net, int coop_kind,
+                                         Value signal_id, Value target) {
+  auto ctx = rewriter.getContext();
+  ModuleOp module =
+      rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
+
+  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto I32Ty = IntegerType::get(ctx, 32);
+  auto I64Ty = IntegerType::get(ctx, 64);
+  auto VoidTy = LLVM::LLVMVoidType::get(ctx);
+
+  auto func =
+      createFuncInstance("flagcxDevNetWaitSignalS", module,
+                         {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
+
+  auto bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 64);
+  auto coop_kind_val = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, coop_kind);
+  // TODO: actually use the named enum value flagcxDeviceMemoryOrderAcquire(=1)
+  // if possible
+  auto order = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 1);
+
+  return rewriter.create<LLVM::CallOp>(
+      loc, TypeRange{func.getFunctionType().getReturnType()},
+      FlatSymbolRefAttr::get(func),
+      ValueRange{dev_net, coop_kind_val, signal_id, target, bits, order});
+}
+
 } // namespace mlir::triton::tle

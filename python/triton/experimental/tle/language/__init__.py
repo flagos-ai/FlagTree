@@ -58,20 +58,24 @@ from .distributed import (
     _resolve_launch_axis,
     shard_id,
     sharding,
+    signal,
+    signal_wait,
 )
 from . import communication
 from .communication import get_mem_pool, create_dist_tensor, cleanup_communicator
 
-_EXTENSION_APIS = frozenset({
-    "make_tensor_view",
-    "make_partition_view",
-    "make_view",
-    "dim",
-    "load_view_tko",
-    "store_view_tko",
-    "create_mem_token",
-    "join_mem_tokens",
-})
+_EXTENSION_APIS = frozenset(
+    {
+        "make_tensor_view",
+        "make_partition_view",
+        "make_view",
+        "dim",
+        "load_view_tko",
+        "store_view_tko",
+        "create_mem_token",
+        "join_mem_tokens",
+    }
+)
 
 
 # Keep ordinary TLE imports independent of backend-specific extensions.
@@ -108,6 +112,7 @@ __all__ = [
     "remote",
     "shard_id",
     "signal",
+    "signal_wait",
     "distributed_barrier",
     "distributed_dot",
     "distributed",

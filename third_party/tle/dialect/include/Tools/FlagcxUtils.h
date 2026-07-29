@@ -50,4 +50,13 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
                                int32_t contextIdx, int32_t teamKind,
                                int32_t coopKind, llvm::StringRef signalOp);
 
+LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
+                                       ConversionPatternRewriter &rewriter,
+                                       Value comm, int idx);
+
+LLVM::CallOp getDevNetWaitSignalFuncCall(mlir::Location loc,
+                                         ConversionPatternRewriter &rewriter,
+                                         Value dev_net, int coop_kind,
+                                         Value signal_id, Value target);
+
 } // namespace mlir::triton::tle

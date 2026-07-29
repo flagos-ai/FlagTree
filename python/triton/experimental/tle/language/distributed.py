@@ -24,7 +24,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, asdict
 from itertools import product
-from typing import Any, Iterable, Mapping, Sequence, List, Tuple, Union, Optional, Dict
+from typing import Any, Iterable, Literal, Mapping, Sequence, List, Tuple, Union, Optional, Dict
 from enum import Enum
 import triton.language.core as tl
 
@@ -50,6 +50,7 @@ def _as_positive_int(value: Any, label: str) -> int:
 def _parse_src_arg(builder, src, index=0):
     try:
         from triton.runtime import DistributedRtContext
+
         src = tl._unwrap_if_constexpr(src)
         if isinstance(src, DistributedRtContext):
             return builder.get_int64(src[index])
@@ -233,6 +234,7 @@ class MeshConfig:
 
     Fields set to None are ignored when exporting.
     """
+
     node: Optional[AxesLike] = None
     device: Optional[AxesLike] = None
     block_cluster: Optional[AxesLike] = None
@@ -302,8 +304,9 @@ class device_mesh:
         if isinstance(level_desc, int):
             return [_as_positive_int(level_desc, level_name)], [level_name]
         if not isinstance(level_desc, (tuple, list)):
-            raise TypeError(f"topology[{level_name!r}] must be int or list/tuple of (name, size), "
-                            f"got {type(level_desc).__name__}")
+            raise TypeError(
+                f"topology[{level_name!r}] must be int or list/tuple of (name, size), got {type(level_desc).__name__}"
+            )
         if not level_desc:
             raise ValueError(f"topology[{level_name!r}] cannot be empty")
 
@@ -363,7 +366,7 @@ class device_mesh:
         if len(new_shape) == self.ndim:
             new_dim_names = self._dim_names
         elif len(new_shape) == 1:
-            new_dim_names = ("flat", )
+            new_dim_names = ("flat",)
         else:
             new_dim_names = tuple(f"dim{i}" for i in range(len(new_shape)))
         return device_mesh(
@@ -377,7 +380,7 @@ class device_mesh:
 
     def _normalize_key(self, key: Any) -> tuple[Any, ...]:
         if not isinstance(key, tuple):
-            key = (key, )
+            key = (key,)
 
         if any(item is Ellipsis for item in key):
             if key.count(Ellipsis) > 1:
@@ -386,12 +389,12 @@ class device_mesh:
             missing = self.ndim - (len(key) - 1)
             if missing < 0:
                 raise IndexError("too many indices for device_mesh")
-            key = key[:ellipsis_pos] + (slice(None), ) * missing + key[ellipsis_pos + 1:]
+            key = key[:ellipsis_pos] + (slice(None),) * missing + key[ellipsis_pos + 1 :]
 
         if len(key) > self.ndim:
             raise IndexError("too many indices for device_mesh")
 
-        return key + (slice(None), ) * (self.ndim - len(key))
+        return key + (slice(None),) * (self.ndim - len(key))
 
     def _linear_index(self, coords: Sequence[int]) -> int:
         index = 0
@@ -441,7 +444,6 @@ class device_mesh:
 
 
 class _BroadcastSpec:
-
     def __repr__(self) -> str:
         return "B"
 
@@ -471,7 +473,7 @@ def _normalize_axis_group(spec: Any, label: str) -> tuple[str, ...]:
     if isinstance(spec, str):
         if not spec:
             raise ValueError(f"{label} axis name cannot be empty")
-        return (spec, )
+        return (spec,)
 
     if isinstance(spec, (tuple, list)):
         if not spec:
@@ -637,8 +639,9 @@ def _mesh_uses_grid_barrier(mesh: device_mesh) -> bool:
     # - empty mesh dims (scalar) fallback to launch mesh naming
     if mesh.dim_names:
         return (not _mesh_has_cluster_axes(mesh)) and _mesh_has_block_axes(mesh)
-    return ((not any("cluster" in name for name in mesh.launch_dim_names))
-            and any("block" in name for name in mesh.launch_dim_names))
+    return (not any("cluster" in name for name in mesh.launch_dim_names)) and any(
+        "block" in name for name in mesh.launch_dim_names
+    )
 
 
 @dataclass(frozen=True)
@@ -664,15 +667,17 @@ def _infer_submesh_barrier_group(
     if launch_size != cluster_size:
         raise NotImplementedError(
             "sub-mesh distributed_barrier currently requires launch mesh domain "
-            f"to match inferred cluster size; launch_size={launch_size}, cluster_size={cluster_size}")
+            f"to match inferred cluster size; launch_size={launch_size}, cluster_size={cluster_size}"
+        )
 
     if not mesh.dim_names:
         raise NotImplementedError("scalar sub-mesh barrier is not implemented yet; provide at least one sliced axis")
 
     launch_name_to_axis = {name: i for i, name in enumerate(mesh.launch_dim_names)}
     if any(name not in launch_name_to_axis for name in mesh.dim_names):
-        raise NotImplementedError("sub-mesh barrier currently supports slicing-derived meshes with "
-                                  "axis names inherited from launch mesh")
+        raise NotImplementedError(
+            "sub-mesh barrier currently supports slicing-derived meshes with axis names inherited from launch mesh"
+        )
 
     axes = tuple(int(launch_name_to_axis[name]) for name in mesh.dim_names)
     if len(set(axes)) != len(axes):
@@ -686,8 +691,10 @@ def _infer_submesh_barrier_group(
     if not mask:
         raise ValueError("sub-mesh barrier group mask cannot be empty")
     if any(v < 0 or v >= cluster_size for v in mask):
-        raise ValueError("sub-mesh barrier group mask contains out-of-range cluster member ids: "
-                         f"mask={mask}, cluster_size={cluster_size}")
+        raise ValueError(
+            "sub-mesh barrier group mask contains out-of-range cluster member ids: "
+            f"mask={mask}, cluster_size={cluster_size}"
+        )
 
     return _BarrierGroupDescriptor(
         kind="submesh",
@@ -778,7 +785,7 @@ def shard_id(
     if launch_size > 1:
         linear = _semantic.mod(linear, launch_size)
 
-    stride = _prod(launch_shape[axis_idx + 1:]) if axis_idx + 1 < len(launch_shape) else 1
+    stride = _prod(launch_shape[axis_idx + 1 :]) if axis_idx + 1 < len(launch_shape) else 1
     coord = linear
     if stride > 1:
         coord = _semantic.floordiv(coord, stride)
@@ -797,10 +804,15 @@ def _parse_device_barrier_args(argType) -> str:
         return str(argType).lower()
 
 
-def check_and_handle_device_intra_barrier(space: str = None, device_dptr=None,
-                                          barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-                                          group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
-                                          order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None):
+def check_and_handle_device_intra_barrier(
+    space: str = None,
+    device_dptr=None,
+    barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+    group_kind: str | GroupKind = GroupKind.BLOCK,
+    index: int | None = 0,
+    order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+    _semantic=None,
+):
     if space and space in ("device", "node"):
         builder = _semantic.builder
         ptr = _parse_src_arg(builder, device_dptr, 1)
@@ -817,11 +829,16 @@ def check_and_handle_device_intra_barrier(space: str = None, device_dptr=None,
 
 
 @tl.builtin
-def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space: str = None,
-                        group_kind: str | GroupKind = GroupKind.BLOCK,
-                        barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-                        order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None,
-                        index: int | None = 0):
+def distributed_barrier(
+    mesh: device_mesh | None = None,
+    device_dptr=None,
+    space: str = None,
+    group_kind: str | GroupKind = GroupKind.BLOCK,
+    barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+    order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+    _semantic=None,
+    index: int | None = 0,
+):
     """
     M3 entrypoint: distributed synchronization primitive.
 
@@ -834,8 +851,15 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space
     subgroup = None
     use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
 
-    if check_and_handle_device_intra_barrier(space=space, device_dptr=device_dptr, barrier_kind=barrier_kind,
-                                             group_kind=group_kind, index=index, order=order, _semantic=_semantic):
+    if check_and_handle_device_intra_barrier(
+        space=space,
+        device_dptr=device_dptr,
+        barrier_kind=barrier_kind,
+        group_kind=group_kind,
+        index=index,
+        order=order,
+        _semantic=_semantic,
+    ):
         return None
 
     if use_grid:
@@ -850,7 +874,8 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space
         except TypeError as exc:
             raise NotImplementedError(
                 "grid distributed_barrier requires rebuilt TLE extension with "
-                "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask)") from exc
+                "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask)"
+            ) from exc
 
     if mesh is not None:
         cluster_dims = _apply_mesh_cluster_launch(mesh, _semantic)
@@ -858,9 +883,11 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space
     builder = _semantic.builder
     if subgroup is not None:
         if not hasattr(builder, "create_distributed_barrier"):
-            raise NotImplementedError("sub-mesh distributed_barrier requires TLE builder support; "
-                                      f"inferred subgroup descriptor: rank={subgroup.rank}, "
-                                      f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}")
+            raise NotImplementedError(
+                "sub-mesh distributed_barrier requires TLE builder support; "
+                f"inferred subgroup descriptor: rank={subgroup.rank}, "
+                f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}"
+            )
         try:
             builder.create_distributed_barrier(
                 subgroup.kind,
@@ -874,7 +901,8 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space
                 "sub-mesh distributed_barrier requires rebuilt TLE extension with "
                 "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask); "
                 f"inferred subgroup descriptor: rank={subgroup.rank}, "
-                f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}") from exc
+                f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}"
+            ) from exc
     if hasattr(builder, "create_distributed_barrier"):
         builder.create_distributed_barrier()
     else:
@@ -919,8 +947,12 @@ def _normalize_remote_shard_id(
 
 
 def _is_buffered_tensor_like(value: Any) -> bool:
-    return (not isinstance(value, tl.tensor) and value.__class__.__name__ == "buffered_tensor"
-            and hasattr(value, "handle") and hasattr(value, "type"))
+    return (
+        not isinstance(value, tl.tensor)
+        and value.__class__.__name__ == "buffered_tensor"
+        and hasattr(value, "handle")
+        and hasattr(value, "type")
+    )
 
 
 def _normalize_compile_time_remote_shard_id(
@@ -960,11 +992,13 @@ def _create_remote_pointers_tensor(
     else:
         dtype = tensor.dtype.element_ty if dtype is None else dtype
 
-    remote_ptr_dtype = tl.pointer_type(*{
-        "cluster": (dtype, 7),
-        "device": (dtype, 1),
-    }.get(space))
-    if space == 'cluster' and tensor and tensor.type.is_block():
+    remote_ptr_dtype = tl.pointer_type(
+        *{
+            "cluster": (dtype, 7),
+            "device": (dtype, 1),
+        }.get(space)
+    )
+    if space == "cluster" and tensor and tensor.type.is_block():
         remote_type = tl.block_type(remote_ptr_dtype, list(tensor.shape)).to_ir(builder)
     else:
         remote_type = remote_ptr_dtype.to_ir(builder)
@@ -990,8 +1024,9 @@ def _create_remote_pointers_tensor(
         if offset_tensor.dtype != tl.int64:
             offset_tensor = tl.cast(offset_tensor, tl.int64, _semantic=_semantic)
         ptr = _parse_src_arg(builder, tensor, 0)
-        remote_op = builder.create_remote_pointers(remote_type, ptr, shard_id_tensor.handle, space,
-                                                   offset_tensor.handle)
+        remote_op = builder.create_remote_pointers(
+            remote_type, ptr, shard_id_tensor.handle, space, offset_tensor.handle
+        )
     else:
         remote_op = builder.create_remote_pointers(remote_type, tensor.handle, shard_id_tensor.handle, space)
     if space == "cluster" and tensor and tensor.type.is_block():
@@ -999,8 +1034,9 @@ def _create_remote_pointers_tensor(
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
 
 
-def _check_cluster_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, ...] | list[int],
-                                  scope: device_mesh | None) -> None:
+def _check_cluster_remote_pointer(
+    tensor: tl.tensor, shard_id: int | tuple[int, ...] | list[int], scope: device_mesh | None
+) -> None:
     if not isinstance(tensor, tl.tensor):
         raise TypeError(f"tensor must be tl.tensor, got {type(tensor).__name__}")
     if not tensor.dtype.is_ptr():
@@ -1016,18 +1052,19 @@ def _check_cluster_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, 
         raise ValueError("remote(pointer, ...) on cluster-shared pointers requires compile-time shard_id=0")
 
     if tensor.dtype.address_space != 3:
-        raise TypeError(f"{tensor.dtype}, cluster remote pointer internal path requires cluster-shared pointers "
-                        "(addrspace=7)")
+        raise TypeError(
+            f"{tensor.dtype}, cluster remote pointer internal path requires cluster-shared pointers (addrspace=7)"
+        )
 
 
-def _check_device_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, ...] | list[int],
-                                 scope: device_mesh | None) -> None:
-    ...
+def _check_device_remote_pointer(
+    tensor: tl.tensor, shard_id: int | tuple[int, ...] | list[int], scope: device_mesh | None
+) -> None: ...
 
 
-def _check_node_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, ...] | list[int],
-                               scope: device_mesh | None) -> None:
-    ...
+def _check_node_remote_pointer(
+    tensor: tl.tensor, shard_id: int | tuple[int, ...] | list[int], scope: device_mesh | None
+) -> None: ...
 
 
 def _remote_pointer(
@@ -1056,8 +1093,9 @@ def _remote_pointer(
         linear_shard_id = _normalize_compile_time_remote_shard_id(shard_id, scope)
         shard_id_tensor = _semantic.to_tensor(int(linear_shard_id))
         shard_id_tensor = _normalize_runtime_remote_shard_id_tensor(shard_id_tensor)
-        return _create_remote_pointers_tensor(tensor, shard_id_tensor, _semantic, dtype=dtype, space=space,
-                                              offset=offset)
+        return _create_remote_pointers_tensor(
+            tensor, shard_id_tensor, _semantic, dtype=dtype, space=space, offset=offset
+        )
 
     # Runtime shard id path. This materializes a TLE op that carries the
     # runtime i32 shard id through lowering.
@@ -1106,27 +1144,38 @@ def remote(
     # Direct pointer path: support local_ptr scalar/tensor values and return
     # remote pointer with preserved shape.
     if isinstance(tensor, tl.tensor) or (space in ("device", "node")):
-        return _remote_pointer(tensor, shard_id, scope=scope, space=space, _semantic=_semantic, dtype=dtype,
-                               offset=offset)
+        return _remote_pointer(
+            tensor, shard_id, scope=scope, space=space, _semantic=_semantic, dtype=dtype, offset=offset
+        )
 
     # Buffered tensor path: carry remote metadata and let `local_ptr` materialize
     # remote pointers later.
     if _is_buffered_tensor_like(tensor):
         if offset is not None:
-            raise NotImplementedError("offset is not supported for buffered_tensor in tle.remote; "
-                                      "use tle.remote(in_ptr, ..., offset=...) with a pointer tensor instead")
-        if (hasattr(tensor, "_tle_remote_shard_id") or hasattr(tensor, "_tle_remote_scope")
-                or hasattr(tensor.type, "_tle_remote_shard_id") or hasattr(tensor.type, "_tle_remote_scope")):
-            raise ValueError("remote(buffered_tensor, ...) cannot be applied twice; "
-                             "materialize pointer views with tle.gpu.local_ptr(remote_buffer, indices)")
+            raise NotImplementedError(
+                "offset is not supported for buffered_tensor in tle.remote; "
+                "use tle.remote(in_ptr, ..., offset=...) with a pointer tensor instead"
+            )
+        if (
+            hasattr(tensor, "_tle_remote_shard_id")
+            or hasattr(tensor, "_tle_remote_scope")
+            or hasattr(tensor.type, "_tle_remote_shard_id")
+            or hasattr(tensor.type, "_tle_remote_scope")
+        ):
+            raise ValueError(
+                "remote(buffered_tensor, ...) cannot be applied twice; "
+                "materialize pointer views with tle.gpu.local_ptr(remote_buffer, indices)"
+            )
         if isinstance(shard_id, (int, tuple, list)):
             shard_id = _normalize_compile_time_remote_shard_id(shard_id, scope)
         else:
             shard_id_tensor = shard_id if isinstance(shard_id, tl.tensor) else None
             if shard_id_tensor is None:
                 if _semantic is None:
-                    raise TypeError("runtime shard_id for remote(buffered_tensor, ...) must be scalar int32 "
-                                    "and requires JIT semantic context for materialization")
+                    raise TypeError(
+                        "runtime shard_id for remote(buffered_tensor, ...) must be scalar int32 "
+                        "and requires JIT semantic context for materialization"
+                    )
                 shard_id_tensor = _semantic.to_tensor(shard_id)
             shard_id = _normalize_runtime_remote_shard_id_tensor(shard_id_tensor)
         # Keep remote metadata on buffered_tensor.type so it survives value
@@ -1147,6 +1196,55 @@ def remote(
         return remote_buffer
 
     raise TypeError(f"tensor must be tle.buffered_tensor, got {type(tensor).__name__}")
+
+
+_SIGNAL_COOP_KINDS = {
+    "thread": 0,
+    "warp": 1,
+    "block": 2,
+    "tile_span": 3,
+    "lanes": 4,
+}
+
+
+def _normalize_signal_scalar(signal: tl.tensor, name: str, dtype: tl.dtype, _semantic) -> tl.tensor:
+    if not signal.dtype == dtype:
+        raise TypeError(f"{name} must be a {dtype.name} value")
+    if signal.shape:
+        raise ValueError(f"{name} must be scalar (shape=())")
+    return signal
+
+
+@tl.builtin
+def signal_wait(
+    device_dptr,
+    signal_id,
+    target: int,
+    group_kind: str | GroupKind = GroupKind.BLOCK,
+    content_idx: int = 0,
+    _semantic=None,
+):
+    builder = _semantic.builder
+
+    group_kind = tl._unwrap_if_constexpr(group_kind)
+    group_kind = group_kind.value if isinstance(group_kind, GroupKind) else group_kind
+    if group_kind not in _SIGNAL_COOP_KINDS:
+        expected = "thread, warp, or block"
+        raise ValueError(f"group kind must be {expected}, got {group_kind!r}")
+
+    context_idx = tl._unwrap_if_constexpr(context_idx)
+    if not isinstance(context_idx, int):
+        raise TypeError(f"context_idx must be a compile-time int, got {type(context_idx).__name__}")
+    if context_idx < 0 or context_idx > 0x7FFFFFFF:
+        raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
+
+    comm = _parse_src_arg(builder, device_dptr, 1)
+    signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.uint32, _semantic)
+    target_tensor = _normalize_signal_scalar(target, "target", tl.uint64, _semantic)
+
+    builder.create_signal_wait(
+        comm, signal_tensor.handle, target_tensor.handle, _SIGNAL_COOP_KINDS[group_kind], context_idx
+    )
 
 
 def distributed_dot(a: ShardedTensor, b: ShardedTensor, c: ShardedTensor | None = None):
