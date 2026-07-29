@@ -71,7 +71,6 @@ runs:
         echo "========================================="
 
         echo "-> Clearing cache..."
-        # 3. Optimization: Append '|| true' to prevent the job from failing unexpectedly due to permission or mount point issues
         echo "-> Remove ~/.triton/cache"
         rm -rf ~/.triton/cache || true
         echo "-> Remove ~/.flaggems"
