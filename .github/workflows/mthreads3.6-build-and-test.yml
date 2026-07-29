@@ -68,7 +68,7 @@ jobs:
 
       - name: Clean cache if CleanCache label present
         id: clean_cache
-        uses: ./.github/actions/clean-cache-if-labeled
+        uses: ./.github/actions/clean-cache-if-labeled@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: 'mthreads'
