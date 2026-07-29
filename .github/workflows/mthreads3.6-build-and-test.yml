@@ -63,7 +63,7 @@ jobs:
 
       - name: Clean cache if CleanCache label present
         id: clean_cache
-        uses: flagos-ai/FlagTree/.github/actions/clean-cache-if-labeled@main
+        uses: ./.github/actions/clean-cache-if-labeled@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: 'mthreads'
