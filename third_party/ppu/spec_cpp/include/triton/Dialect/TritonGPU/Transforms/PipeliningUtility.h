@@ -150,6 +150,9 @@ Value createAlloc(Operation *insertBefore, RankedTensorType ty, Location loc,
 // Determine if the operation is a TMA load.
 bool isTMALoad(Operation *op);
 
+// Determine if the operation is a PPU AIU load.
+bool isAIULoad(Operation *op);
+
 // Determine if the operation can be lowered to an async load.
 bool canBeAsyncLoad(Operation *op);
 

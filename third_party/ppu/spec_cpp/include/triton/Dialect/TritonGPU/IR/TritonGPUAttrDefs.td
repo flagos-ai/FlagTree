@@ -193,6 +193,12 @@ When vec=2, elements are swizzled in pairs of 2.  In other words, the element at
               typeWidthInBit, needTrans);
         }
 
+        // ---- begin PPUMma ----
+        if (auto PPUMmaEnc = mlir::dyn_cast<PPUMmaEncodingAttr>(dotOpEnc.getParent())) {
+          if (PPUMmaEnc.isPPU0010() || PPUMmaEnc.isPPU0015()) {
+            return get(context, dotOpEnc.getOpIdx(), dotOpEnc.getKWidth(), shape, order, CTALayout, typeWidthInBit, needTrans);
+          }
+        }
 
         auto mmaEnc = mlir::dyn_cast<NvidiaMmaEncodingAttr>(dotOpEnc.getParent());
 
@@ -579,6 +585,49 @@ Swizzling examples (matrix is filled with numbers 0, 1, 2, .. columns*rows-1):
     "CTAEncodingAttr":$CTALayout
   );
 
+  let hasCustomAssemblyFormat = 1;
+}
+
+def PPUAIUSharedEncodingAttr :
+  TritonGPU_Attr<"PPUAIUSharedEncoding", "ppu_aiu_shared_encoding",
+                 [SharedEncodingTrait, LayoutEncodingTrait,
+                  DeclareLayoutEncodingMethods]> {
+  let mnemonic = "ppu_aiu_shared";
+
+  let description = [{
+    An encoding for tensors whose elements may be simultaneously accessed by
+    different threads in the programs, via shared memory.
+  }];
+
+  let parameters = (
+    ins
+    DefaultValuedParameter<"unsigned", "1">:$versionMajor,
+    ArrayRefParameter<"unsigned">:$AIUStrategy,
+    ArrayRefParameter<"unsigned">:$order,
+    "CTAEncodingAttr":$CTALayout,
+    DefaultValuedParameter<"unsigned", "0">:$kOffset
+  );
+
+  let builders = [
+    AttrBuilder<(ins "ArrayRef<unsigned>":$AIUStrategy,
+                     "ArrayRef<unsigned>":$order,
+                     "CTAEncodingAttr":$CTALayout), [{
+      //default kOffset=0;
+      return $_get(context, 0, AIUStrategy, order, CTALayout, 0);
+    }]>,
+    AttrBuilder<(ins "unsigned":$versionMajor,
+                     "ArrayRef<unsigned>":$AIUStrategy,
+                     "ArrayRef<unsigned>":$order,
+                     "CTAEncodingAttr":$CTALayout), [{
+      //default kOffset=0;
+      return $_get(context, versionMajor, AIUStrategy, order, CTALayout, 0);
+    }]>,
+  ];
+
+  let extraClassDeclaration = extraBaseClassDeclaration # [{
+    bool isPPU0010() const;
+    bool isPPU0015() const;
+  }];
   let hasCustomAssemblyFormat = 1;
 }
 
@@ -1366,6 +1415,55 @@ For example, the matrix L corresponding to blockTileSize=[32,16] is:
   let hasCustomAssemblyFormat = 1;
 }
 
+def PPUMmaEncodingAttr : DistributedEncoding<"PPUMmaEncoding", "ppu_mma_encoding", [MmaEncodingTrait]> {
+  let mnemonic = "ppu_mma";
+
+  let description = [{
+An encoding for tensors that have been produced by tensor cores.
+
+It is characterized by two parameters:
+- A 'versionMajor' which specifies the generation the tensor cores
+  whose output is being partitioned:
+  - 1 for first-gen tensor cores (PPU0010), and
+  - 2 for second-gen tensor cores (PPU0015).
+- A 'versionMinor' which indicates the specific layout of a tensor core generation.
+- A `blockTileSize` to indicate how data should be partitioned between warps.
+}];
+
+  let parameters = (
+    ins
+    "unsigned":$versionMajor,
+    "unsigned":$versionMinor,
+    ArrayRefParameter<"unsigned">:$warpsPerCTA,
+    "CTAEncodingAttr":$CTALayout,
+    ArrayRefParameter<"unsigned">:$instrShape,
+    DefaultValuedParameter<"unsigned", "2">:$vecSize
+  );
+
+  let builders = [
+    AttrBuilder<(ins "unsigned":$versionMajor,
+                     "unsigned":$versionMinor,
+                     "ArrayRef<unsigned>":$warpsPerCTA,
+                     "CTAEncodingAttr":$CTALayout,
+                     "ArrayRef<unsigned>":$instrShape), [{
+                return $_get(context, versionMajor, versionMinor,
+                  warpsPerCTA, CTALayout, instrShape, 2);
+              }]>
+  ];
+
+  let extraClassDeclaration = extraDistributedDeclaration # [{
+    bool isPPU0010() const;
+    bool isPPU0015() const;
+
+    SmallVector<int64_t> getRepForOperand(ArrayRef<int64_t> shape,
+                                          int bitwidth, int kWidth,
+                                          int opIdx) const;
+    SmallVector<unsigned> getRepOrderForOperand(int opIdx) const;
+  }];
+
+  let hasCustomAssemblyFormat = 1;
+}
+
 def SliceEncodingAttr : DistributedEncoding<"SliceEncoding", "slice_encoding"> {
   let mnemonic = "slice";
 
@@ -1455,20 +1553,41 @@ vecIdx (index of the element in the quad; this is always along the k-dim)
     ins
     "unsigned":$opIdx,
     "Attribute":$parent,
-    DefaultValuedParameter<"unsigned", "0">:$kWidth
+    DefaultValuedParameter<"unsigned", "0">:$kWidth,
+    DefaultValuedParameter<"bool", "false">:$isChained
   );
 
   let builders = [
     AttrBuilder<(ins "unsigned":$opIdx,
                      "Attribute":$parent,
-                     "Type":$eltTy), [{
+                     "unsigned":$kWidth), [{
+      return $_get(context, opIdx, parent, kWidth, false);
+    }]>,
+
+    AttrBuilder<(ins "unsigned":$opIdx,
+                     "Attribute":$parent,
+                     "Type":$eltTy,
+                     "bool":$isChained), [{
+      PPUMmaEncodingAttr PPUParentAttr = mlir::dyn_cast<PPUMmaEncodingAttr>(parent);
+      if (PPUParentAttr && (PPUParentAttr.isPPU0010() || PPUParentAttr.isPPU0015())) {
+        unsigned bitwidth = eltTy.getIntOrFloatBitWidth();
+        unsigned kWidth = std::max(32 / bitwidth, 1u);
+        return $_get(context, opIdx, parent, kWidth, isChained);
+      }
+
       NvidiaMmaEncodingAttr parentAttr = mlir::dyn_cast<NvidiaMmaEncodingAttr>(parent);
       if (!parentAttr || (!parentAttr.isAmpere() && !parentAttr.isHopper()))
-        return $_get(context, opIdx, parent, 0);
+        return $_get(context, opIdx, parent, 0, isChained);
       // For MMAV2 and V3
       unsigned bitwidth = eltTy.getIntOrFloatBitWidth();
       unsigned kWidth = std::max(32 / bitwidth, 1u);
-      return $_get(context, opIdx, parent, kWidth);
+      return $_get(context, opIdx, parent, kWidth, isChained);
+    }]>,
+
+    AttrBuilder<(ins "unsigned":$opIdx,
+                     "Attribute":$parent,
+                     "Type":$eltTy), [{
+      return get(context, opIdx, parent, eltTy, false);
     }]>
   ];
 

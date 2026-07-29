@@ -516,6 +516,7 @@ using ::mlir::triton::gpu::AMDWmmaEncodingAttr;
 using ::mlir::triton::gpu::BlockedEncodingAttr;
 using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
+using ::mlir::triton::gpu::PPUMmaEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
 
 Value dot(RewriterBase &rewriter, Location loc, ArrayRef<Value> offsets,
