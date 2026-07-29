@@ -26,6 +26,9 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#ifdef __PPU__
+#include "Dialect/TritonPPUGPU/IR/Dialect.h"
+#endif
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -115,7 +118,8 @@ int getDefUseStageDiff(Operation *op, scf::ForOp forOp,
   // uses will become direct uses of the async load.
   // TODO: This is overly conservative, we may need to restrict to cases where
   // local_alloc is used by a dot product and has correct encoding.
-  if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op)) {
+  if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp,
+          tt::AIULoadOp>(op)) {
     DenseSet<Operation *> allocUsers;
     for (Operation *topLevelUser : topLevelUsers) {
       if (auto localAlloc = dyn_cast<ttg::LocalAllocOp>(topLevelUser)) {
@@ -304,6 +308,63 @@ void createTMAAsyncGather(scf::ForOp forOp, tt::DescriptorGatherOp gatherOp,
                             });
 }
 
+#ifdef __PPU__
+void createAIUAsyncCopy(scf::ForOp forOp, tt::AIULoadOp loadOp, Value alloc,
+                        Value insertIdx, Value extractIdx,
+                        CoarseSchedule &schedule) {
+  OpBuilderForStage builder(loadOp.getLoc(), forOp, schedule);
+  Value zero = arith::ConstantIntOp::create(builder, forOp.getLoc(), 0, 32);
+
+  Operation *firstUse = getFirstUseOfPipelinedOp({loadOp}, forOp, schedule);
+  assert(firstUse && "AIULoadOp has no users");
+  // Replace the load with async copy, wait and loal_load.
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPoint(loadOp);
+  builder.setStageCluster(schedule[loadOp]);
+  Value src = loadOp.getSrcPtr();
+  ttg::MemDescType allocTy = cast<ttg::MemDescType>(alloc.getType());
+
+  // Create async copy
+  Value view = createSingleBufferView(builder, alloc, insertIdx);
+  Operation *copy = triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp::create(
+      builder, src, loadOp.getIndices(), loadOp.getShape(), view);
+  Operation *commit =
+      ttg::AsyncCommitGroupOp::create(builder, copy->getResult(0));
+
+  // Create wait and local load
+  builder.setStageCluster(schedule[firstUse]);
+  auto wait = ttg::AsyncWaitOp::create(builder, commit->getResult(0), 0);
+  auto viewLoad = createSingleBufferView(builder, alloc, extractIdx);
+
+  // Remove redundant local_load -> local_alloc, but only if
+  // we are not using the other value. AsyncAIUCopyGlobalToLocalOp does not
+  // support the masking.
+  SmallVector<ttg::LocalAllocOp> allocsToErase;
+  for (Operation *user : loadOp->getUsers()) {
+    if (auto userAlloc = dyn_cast<ttg::LocalAllocOp>(user)) {
+      if (allocTy.getEncoding() == userAlloc.getType().getEncoding()) {
+        tt::replaceUsesAndPropagateType(builder, userAlloc, viewLoad);
+        allocsToErase.push_back(userAlloc);
+      }
+    }
+  }
+  for (auto alloc : allocsToErase) {
+    alloc.erase();
+  }
+
+  // If there are some uses that were not local_allocs, we need to create a
+  // local_load for them.
+  if (loadOp->use_begin() != loadOp->use_end()) {
+    auto sharedLoad = ttg::LocalLoadOp::create(builder, loadOp.getType(),
+                                               viewLoad, wait.getResult());
+    auto result = sharedLoad->getResults();
+    loadOp->replaceAllUsesWith(result);
+  }
+  schedule.erase(loadOp);
+  loadOp->erase();
+}
+#endif
+
 struct AsyncLoad {
   int stageDiff;
   int contiguity = 1;
@@ -483,7 +544,8 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
   // Only visit the top level ops, we do not support pipelining conditional
   // loads for now
   for (auto &op : forOp.getBody()->without_terminator()) {
-    if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op)) {
+    if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp,
+            tt::AIULoadOp>(op)) {
       int stageDiff = getDefUseStageDiff(&op, forOp, schedule);
       if (stageDiff == 0) {
         // Don't care about non-pipelined loads. Scalar loads will be converted
@@ -493,7 +555,13 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
       SharedEncodingTrait sharedEncoding;
       bool canUseAsyncCp = false;
       int contiguity = 1;
-      if (!isa<RankedTensorType>(op.getResultTypes()[0])) {
+#ifdef __PPU__
+      if (isAIULoad(&op)) {
+        canUseAsyncCp = true;
+        sharedEncoding = getSharedEncoding(&op);
+      } else
+#endif
+          if (!isa<RankedTensorType>(op.getResultTypes()[0])) {
         canUseAsyncCp = op.getResultTypes()[0].getIntOrFloatBitWidth() >= 32;
         sharedEncoding = ttg::SwizzledSharedEncodingAttr::get(
             forOp.getContext(), 1, 1, 1, {0},
@@ -531,7 +599,11 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
         canUseAsyncCp = false;
       }
 #endif
-      if (canUseAsyncCp || isTMALoad(&op)) {
+      if (canUseAsyncCp || isTMALoad(&op)
+#ifdef __PPU__
+          || isAIULoad(&op)
+#endif
+      ) {
 #ifdef __TLE__
         if (useTileStylePipeline && schedule[&op].first == 0 && stageDiff > 1 &&
             requiresAdditionalBuffer) {
@@ -654,6 +726,12 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
       createAsyncCopy(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
                       asyncLoad.contiguity, schedule);
       hasAsyncLoads = true;
+#ifdef __PPU__
+    } else if (auto loadOp = dyn_cast<tt::AIULoadOp>(op)) {
+      createAIUAsyncCopy(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
+                         schedule);
+      hasAsyncLoads = true;
+#endif
     } else if (auto loadOp = dyn_cast<tt::DescriptorLoadOp>(op)) {
       createTMAAsyncLoad(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
                          asyncLoad.barrier, asyncLoad.waitOp, schedule);

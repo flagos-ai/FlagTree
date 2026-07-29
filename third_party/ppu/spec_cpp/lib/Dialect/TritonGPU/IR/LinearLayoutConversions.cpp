@@ -472,6 +472,181 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   return combineCtaCgaWithShape(tileLayout, getCTALayout(), shape);
 }
 
+LinearLayout chooseDotLdMatrixLayoutPPUMmaV1(DotOperandEncodingAttr dot,
+                                             ArrayRef<int64_t> shape,
+                                             bool needTrans,
+                                             int32_t elemBitWidth,
+                                             bool Opb8bLdmatrix) {
+  auto ctx = dot.getContext();
+  auto mma = cast<PPUMmaEncodingAttr>(dot.getParent());
+  auto rank = shape.size();
+  auto opIdx = dot.getOpIdx();
+  int kDim = (opIdx == 0) ? rank - 1 : rank - 2;
+  int nonKDim = (opIdx == 0) ? rank - 2 : rank - 1;
+
+  StringAttr kReg = S("register");
+  StringAttr kLane = S("lane");
+  StringAttr kWarp = S("warp");
+  StringAttr kBlock = S("block");
+  StringAttr kInner = opIdx == 0 ? (needTrans ? S("dim0") : S("dim1"))
+                                 : (needTrans ? S("dim1") : S("dim0"));
+  StringAttr kOuter = opIdx == 0 ? (needTrans ? S("dim1") : S("dim0"))
+                                 : (needTrans ? S("dim0") : S("dim1"));
+
+  std::vector<std::vector<int>> basesReg;
+  for (int logReg = 0; logReg < llvm::Log2_32(8 * 16 / elemBitWidth);
+       logReg++) {
+    auto reg = 1 << logReg;
+    basesReg.push_back({0, reg});
+  }
+  std::vector<std::vector<int>> basesLane = {
+      {1, 0}, {2, 0}, {4, 0}, {0, 0}, {0, 0}};
+  bool kX2 = shape[kDim] > 8 * 16 / elemBitWidth;
+  bool nonKX2 = shape[nonKDim] > 8;
+  // Construct a tile consisting of 4 8x8x16bits sub-tiles to use ldmatrix
+  // efficiently. opIdx=0 and opIdx=1 are handled differently.
+
+  // The matrix elements of thread 0 are distributed in the following pattern
+  // (fp16):
+  //
+  //           col0       col8
+  //   row0  reg[0-1]   reg[4-5]
+  //   row8  reg[2-3]   reg[6-7]
+  if (Opb8bLdmatrix) {
+    basesLane[0] = {16, 0};
+    basesLane[1] = {1, 0};
+    basesLane[2] = {2, 0};
+    basesLane[3] = {4, 0};
+    basesLane[4] = {8, 0};
+  } else if (dot.getIsChained() && (opIdx == 1)) {
+    assert(needTrans && "Chained dot only apply on B");
+    // use m16n16.x1.trans
+    basesLane[0] = {4, 0};
+    basesLane[1] = {1, 0};
+    basesLane[2] = {2, 0};
+    basesLane[3] = {0, 8 * 16 / elemBitWidth};
+    basesLane[4] = {8, 0};
+  } else {
+    if (needTrans) {
+      assert(elemBitWidth <= 16 && "Only elements smaller than 16 bits are "
+                                   "supported in the transposed mode");
+      // //use m16n16.x1.trans
+      basesLane[3] = {0, 8 * 16 / elemBitWidth};
+      basesLane[4] = {8, 0};
+    } else {
+      // ldmatrix.x4
+      basesLane[3] = {0, 8 * 16 / elemBitWidth};
+      basesLane[4] = {8, 0};
+    }
+  }
+
+  int numTileCols = (8 * 16 / elemBitWidth) << (static_cast<int>(kX2));
+  // Expand the `register` dimension so the size of columns matches `K`.
+  auto layout =
+      LinearLayout({{kReg, basesReg}, {kLane, basesLane}, {kWarp, {}}},
+                   {kOuter, kInner}) *
+      LinearLayout::identity1D(shape[kDim] / numTileCols, kReg,
+                               S("dim" + std::to_string(kDim)));
+  // Expand the `warp` dimension according to warpsPerCTA.
+  auto warpsPerCTA = mma.getWarpsPerCTA();
+  auto warpOrder = getMatrixOrder(rank, /*rowMajor*/ true);
+  // auto warpOrder = mma.getWarpOrder();
+  layout *=
+      broadcastedDotOperandLayout(ctx, warpsPerCTA, warpOrder, kDim, kWarp)
+          .transposeOuts(llvm::to_vector(layout.getOutDimNames()));
+  return combineCtaCgaWithShape(layout, getCTALayout(dot), shape);
+}
+
+LinearLayout chooseDotLdMatrixLayoutPPUMmaV2(DotOperandEncodingAttr dot,
+                                             ArrayRef<int64_t> shape,
+                                             bool needTrans,
+                                             int32_t elemBitWidth) {
+  auto ctx = dot.getContext();
+  auto mma = cast<PPUMmaEncodingAttr>(dot.getParent());
+  auto rank = shape.size();
+  auto opIdx = dot.getOpIdx();
+  int kDim = (opIdx == 0) ? rank - 1 : rank - 2;
+  int nonKDim = (opIdx == 0) ? rank - 2 : rank - 1;
+
+  StringAttr kReg = S("register");
+  StringAttr kLane = S("lane");
+  StringAttr kWarp = S("warp");
+  StringAttr kBlock = S("block");
+  StringAttr kInner = opIdx == 0 ? (needTrans ? S("dim0") : S("dim1"))
+                                 : (needTrans ? S("dim1") : S("dim0"));
+  StringAttr kOuter = opIdx == 0 ? (needTrans ? S("dim1") : S("dim0"))
+                                 : (needTrans ? S("dim0") : S("dim1"));
+
+  std::vector<std::vector<int>> basesReg;
+  for (int logReg = 0; logReg < llvm::Log2_32(8 * 16 / elemBitWidth);
+       logReg++) {
+    auto reg = 1 << logReg;
+    basesReg.push_back({0, reg});
+  }
+  std::vector<std::vector<int>> basesLane = {
+      {1, 0}, {2, 0}, {4, 0}, {0, 0}, {0, 0}};
+  bool kX2 = shape[kDim] > 8 * 16 / elemBitWidth;
+  bool nonKX2 = shape[nonKDim] > 8;
+  // Construct a tile consisting of 4 8x8x16bits sub-tiles to use ldmatrix
+  // efficiently. opIdx=0 and opIdx=1 are handled differently.
+
+  // The matrix elements of thread 0 are distributed in the following pattern
+  // (fp16):
+  //
+  //           col0       col8
+  //   row0  reg[0-1]   reg[4-5]
+  //   row8  reg[2-3]   reg[6-7]
+  if (needTrans) {
+    assert(elemBitWidth <= 16 && "Only elements smaller than 16 bits are "
+                                 "supported in the transposed mode");
+    if (opIdx == 0) {
+      basesLane[3] = {0, 8 * 16 / elemBitWidth};
+      basesLane[4] = {8, 0};
+    } else {
+      basesLane[3] = {8, 0};
+      basesLane[4] = {0, 8 * 16 / elemBitWidth};
+    }
+  } else {
+    if (opIdx == 0) {
+      basesLane[3] = {8, 0};
+      basesLane[4] = {0, 8 * 16 / elemBitWidth};
+    } else {
+      basesLane[3] = {0, 8 * 16 / elemBitWidth};
+      basesLane[4] = {8, 0};
+    }
+  }
+
+  int numTileCols = (8 * 16 / elemBitWidth) << (static_cast<int>(kX2));
+  // Expand the `register` dimension so the size of columns matches `K`.
+  auto layout =
+      LinearLayout({{kReg, basesReg}, {kLane, basesLane}, {kWarp, {}}},
+                   {kOuter, kInner}) *
+      LinearLayout::identity1D(shape[kDim] / numTileCols, kReg,
+                               S("dim" + std::to_string(kDim)));
+  // Expand the `warp` dimension according to warpsPerCTA.
+  auto warpsPerCTA = mma.getWarpsPerCTA();
+  auto warpOrder = getMatrixOrder(rank, /*rowMajor*/ true);
+  layout *=
+      broadcastedDotOperandLayout(ctx, warpsPerCTA, warpOrder, kDim, kWarp)
+          .transposeOuts(llvm::to_vector(layout.getOutDimNames()));
+  return combineCtaCgaWithShape(layout, getCTALayout(dot), shape);
+}
+
+LinearLayout choosePPULdMatrixLayout(Attribute enc, ArrayRef<int64_t> shape,
+                                     bool needTrans, int32_t elemBitWidth,
+                                     bool Opb8bLdmatrix) {
+  auto dot = cast<DotOperandEncodingAttr>(enc);
+  auto mmaEnc = cast<PPUMmaEncodingAttr>(dot.getParent());
+  if (mmaEnc.getVersionMajor() == 1) {
+    return chooseDotLdMatrixLayoutPPUMmaV1(dot, shape, needTrans, elemBitWidth,
+                                           Opb8bLdmatrix);
+  } else if (mmaEnc.getVersionMajor() == 2) {
+    return chooseDotLdMatrixLayoutPPUMmaV2(dot, shape, needTrans, elemBitWidth);
+  } else {
+    assert(false && "Unsupported MMA version for ldmatrix");
+  }
+}
+
 std::optional<LinearLayout>
 chooseDotDsReadTrLayout(DotOperandEncodingAttr dotMfmaLayout,
                         ArrayRef<int64_t> shape, int32_t elemBitWidth,
@@ -991,6 +1166,122 @@ NvidiaMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   return combineCtaCgaWithShape(ctaLayout, getCTALayout(), shape);
 }
 
+LinearLayout PPUMmaV1Tile(MLIRContext *ctx, ArrayRef<unsigned> tileShape,
+                          unsigned kWidth, unsigned vecSize,
+                          ArrayRef<unsigned> order,
+                          ArrayRef<unsigned> repOrder) {
+  // Trivial layout mapping 0 -> (0, 0), but we set the order to repOrder
+  // Like LinearLayout::empty() but with a rank and an order
+  int rank = repOrder.size();
+  auto dimNames = standardOutDimNames(ctx, rank);
+  auto trivialShape = SmallVector<unsigned>(rank, 1);
+  LinearLayout ctaLayout =
+      identityStandardND(S("register"), trivialShape, repOrder);
+
+  assert(rank >= 2);
+  auto inner = order[0];
+  auto outer = order[1];
+
+  assert(tileShape.size() == rank);
+  int m = tileShape[outer];
+  int n = tileShape[inner];
+
+  // The relative order of registers and lanes is given by:
+  // - Inner dim: kWidth registers
+  // - Inner dim: 4 lanes
+  // - Outer dim: 8 lanes
+  // - Outer dim: repeat m / 8 times
+  // - Inner dim: repeat n / (kWidth * 4) times
+  assert(m % 8 == 0);
+  assert(n % (kWidth * 4) == 0);
+  if (vecSize == 1) {
+    kWidth = kWidth / 2;
+  }
+  // There is at least one subtile on the inner-most dimension
+  // FIXME. We should implement operator* in terms of operator*=
+  // and chain *= instead of using *
+  auto outDimNames = llvm::to_vector(ctaLayout.getOutDimNames());
+  ctaLayout = ctaLayout *
+              LinearLayout::identity1D(kWidth, S("register"), dimNames[inner]) *
+              LinearLayout::identity1D(4, S("lane"), dimNames[inner]) *
+              LinearLayout::identity1D(8, S("lane"), dimNames[outer]) *
+              LinearLayout::identity1D(n / (kWidth * 4), S("register"),
+                                       dimNames[inner]) *
+              LinearLayout::identity1D(m / 8, S("register"), dimNames[outer]);
+  return ctaLayout;
+}
+
+LinearLayout PPUMmaV2Tile(MLIRContext *ctx, ArrayRef<unsigned> tileShape,
+                          unsigned kWidth, ArrayRef<unsigned> order,
+                          ArrayRef<unsigned> repOrder) {
+  // Trivial layout mapping 0 -> (0, 0), but we set the order to repOrder
+  // Like LinearLayout::empty() but with a rank and an order
+  int rank = repOrder.size();
+  auto dimNames = standardOutDimNames(ctx, rank);
+  auto trivialShape = SmallVector<unsigned>(rank, 1);
+  LinearLayout ctaLayout =
+      identityStandardND(S("register"), trivialShape, repOrder);
+
+  assert(rank >= 2);
+  auto inner = order[0];
+  auto outer = order[1];
+
+  assert(tileShape.size() == rank);
+  int m = tileShape[outer];
+  int n = tileShape[inner];
+
+  // The relative order of registers and lanes is given by:
+  // - Inner dim: kWidth registers
+  // - Inner dim: 4 lanes
+  // - Outer dim: 8 lanes
+  // - Outer dim: repeat m / 8 times
+  // - Inner dim: repeat n / (kWidth * 4) times
+  assert(m % 8 == 0);
+  assert(n % (kWidth * 4) == 0);
+  // There is at least one subtile on the inner-most dimension
+  // FIXME. We should implement operator* in terms of operator*=
+  // and chain *= instead of using *
+  auto outDimNames = llvm::to_vector(ctaLayout.getOutDimNames());
+  ctaLayout = ctaLayout *
+              LinearLayout::identity1D(kWidth, S("register"), dimNames[inner]) *
+              LinearLayout::identity1D(4, S("lane"), dimNames[inner]) *
+              LinearLayout::identity1D(8, S("lane"), dimNames[outer]) *
+              LinearLayout::identity1D(m / 8, S("register"), dimNames[outer]) *
+              LinearLayout::identity1D(n / (kWidth * 4), S("register"),
+                                       dimNames[inner]);
+  return ctaLayout;
+}
+
+LinearLayout PPUMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
+  auto ctx = getContext();
+  int rank = shape.size();
+  assert(rank == getRank());
+
+  SmallVector<unsigned> tileShape;
+  if (getVersionMajor() == 1 || getVersionMajor() == 2) {
+    tileShape = SmallVector<unsigned>(getInstrShape());
+  } else {
+    assert(false && "Unsupported PPU vresion");
+  }
+  // mma layout always assumes kWidth = 2
+  constexpr auto kWidth = 2;
+  auto order = getDefaultMmaOrder(*this);
+  LinearLayout ctaLayout = LinearLayout::empty();
+  if (getVersionMajor() == 1) {
+    auto vecSize = getVecSize();
+    ctaLayout =
+        PPUMmaV1Tile(ctx, tileShape, kWidth, vecSize, order, getRepOrder());
+  } else {
+    ctaLayout = PPUMmaV2Tile(ctx, tileShape, kWidth, order, getRepOrder());
+  }
+
+  auto warpOrder = getMatrixOrder(rank, /*rowMajor*/ true);
+  ctaLayout *= identityStandardND(S("warp"), getWarpsPerCTA(), warpOrder)
+                   .transposeOuts(llvm::to_vector(ctaLayout.getOutDimNames()));
+
+  return combineCtaCgaWithShape(ctaLayout, getCTALayout(), shape);
+}
+
 LinearLayout nvidiaDotToLinearLayout(ArrayRef<int64_t> shape,
                                      DotOperandEncodingAttr dot) {
   int rank = shape.size();
@@ -1021,6 +1312,42 @@ LinearLayout nvidiaDotToLinearLayout(ArrayRef<int64_t> shape,
   return combineCtaCgaWithShape(ctaLayout, getCTALayout(dot), shape);
 }
 
+LinearLayout PPUDotToLinearLayout(ArrayRef<int64_t> shape,
+                                  DotOperandEncodingAttr dot) {
+  int rank = shape.size();
+  auto mma = cast<PPUMmaEncodingAttr>(dot.getParent());
+  int kWidth = dot.getKWidth();
+  bool isA = dot.getOpIdx() == 0;
+  MLIRContext *ctx = mma.getContext();
+
+  SmallVector<unsigned> tileShape(rank, 1);
+  if (isA) {
+    tileShape[rank - 2] = 16;
+    tileShape[rank - 1] = kWidth * 8;
+  } else {
+    assert(mma.getVersionMajor() == 1 || mma.getVersionMajor() == 2);
+    tileShape[rank - 2] = kWidth * 8;
+    tileShape[rank - 1] = 16;
+  }
+  auto order = getOrderForDotOperand(dot.getOpIdx(), rank, /*kContig*/ true);
+
+  LinearLayout ctaLayout = LinearLayout::empty();
+  if (mma.getVersionMajor() == 1) {
+    ctaLayout =
+        PPUMmaV1Tile(ctx, tileShape, kWidth, 2, order, dot.getRepOrder());
+  } else {
+    ctaLayout = PPUMmaV2Tile(ctx, tileShape, kWidth, order, dot.getRepOrder());
+  }
+
+  auto kDim = isA ? rank - 1 : rank - 2;
+  auto warpOrder = getMatrixOrder(rank, /*rowMajor*/ true);
+  ctaLayout *= broadcastedDotOperandLayout(ctx, mma.getWarpsPerCTA(), warpOrder,
+                                           kDim, S("warp"))
+                   .transposeOuts(llvm::to_vector(ctaLayout.getOutDimNames()));
+
+  return combineCtaCgaWithShape(ctaLayout, getCTALayout(dot), shape);
+}
+
 LinearLayout
 DotOperandEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   auto parent = getParent();
@@ -1030,6 +1357,8 @@ DotOperandEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
     return mfmaDotToLinearLayout(*this, shape);
   } else if (auto wmmaLayout = mlir::dyn_cast<AMDWmmaEncodingAttr>(parent)) {
     return wmmaDotOperandToLinearLayout(*this, shape);
+  } else if (auto mmaLayout = mlir::dyn_cast<PPUMmaEncodingAttr>(parent)) {
+    return PPUDotToLinearLayout(shape, *this);
   } else {
     auto mma = mlir::cast<NvidiaMmaEncodingAttr>(parent);
     return nvidiaDotToLinearLayout(shape, *this);
