@@ -1,0 +1,79 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Clear Cache if Labeled'
+description: 'Check if PR has specific backend ClearCache label and clear cache if present'
+
+inputs:
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+  backend:
+    description: 'The backend name to check for (e.g., mthreads)'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Check specific ClearCache label
+      id: check
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const backend = '${{ inputs.backend }}';
+          const expectedLabel = `ClearCache:${backend}`;
+
+          if (context.eventName !== 'pull_request' && context.eventName !== 'pull_request_target') {
+            console.log('ℹ️ Not a PR event, skipping label check');
+            core.setOutput('has_clear_cache_label', 'false');
+            return;
+          }
+
+          if (!context.payload || !context.payload.pull_request) {
+            console.log('⚠️ No pull_request payload found, skipping label check');
+            core.setOutput('has_clear_cache_label', 'false');
+            return;
+          }
+
+          const labels = (context.payload.pull_request.labels || []).map(label => label.name);
+          console.log(`Current PR labels:`, labels.join(', ') || '(no labels)');
+
+          const hasClearCache = labels.includes(expectedLabel);
+          console.log(`🔍 Has "${expectedLabel}" label:`, hasClearCache ? '✅ YES' : '❌ NO');
+
+          core.setOutput('has_clear_cache_label', hasClearCache ? 'true' : 'false');
+
+    - name: Clear cache if label present
+      id: cleanup
+      if: steps.check.outputs.has_clear_cache_label == 'true'
+      shell: bash
+      run: |
+        echo "========================================="
+        echo "🧹 Clearing cache for ${{ inputs.backend }} backend."
+        echo "========================================="
+
+        echo "-> Clearing cache..."
+        # 3. Optimization: Append '|| true' to prevent the job from failing unexpectedly due to permission or mount point issues
+        echo "-> Remove ~/.triton/cache"
+        rm -rf ~/.triton/cache || true
+        echo "-> Remove ~/.flaggems"
+        rm -rf ~/.flaggems || true
+        echo "-> Clear cache done"
