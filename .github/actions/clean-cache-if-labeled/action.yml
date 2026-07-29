@@ -25,7 +25,6 @@ inputs:
   github-token:
     description: 'GitHub token for API access'
     required: true
-    default: ${{ github.token }}
   backend:
     description: 'The backend name to check for (e.g., mthreads)'
     required: true
