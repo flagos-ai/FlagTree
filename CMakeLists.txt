@@ -381,15 +381,6 @@ add_subdirectory(third_party/f2reduce)
 # add_subdirectory(test)
 flagtree_configure_tools_and_tests()
 
-# When PPU backend is built, the upstream TritonGPU transforms reference
-# PPU-specific dialect symbols (e.g. mlir::triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp)
-# that live in TritonPPUGPUIR (defined under third_party/ppu/lib/...). Wire that
-# dependency here, after both targets have been declared by their respective
-# add_subdirectory() calls above, so unittests/triton.so/triton-llvm-opt all link cleanly.
-if(FLAGTREE_BACKEND STREQUAL "ppu" AND TARGET TritonGPUTransforms AND TARGET TritonPPUGPUIR)
-  target_link_libraries(TritonGPUTransforms PUBLIC TritonPPUGPUIR)
-endif()
-
 if(TRITON_BUILD_UT)
   add_subdirectory(unittest)
   # This target runs all the unit tests.

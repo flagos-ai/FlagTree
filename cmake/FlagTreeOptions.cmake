@@ -82,6 +82,8 @@ macro(flagtree_configure_options)
     list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
   elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
     find_package(Python3 3.10 REQUIRED COMPONENTS Development.Module Interpreter)
+  elseif(FLAGTREE_BACKEND STREQUAL "ppu")
+    add_definitions(-D__PPU__)
   endif()
 
   set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
@@ -128,7 +130,7 @@ endmacro()
 
 
 macro(flagtree_configure_backend_cxx_flags)
-  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir)$")
+  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir|ppu)$")
     # Suppress visibility warnings in gluon_ir.cc (GCC 13+ -Wattributes on
     # pybind11 hidden types), and -Wcomment for generated
     # TritonGPUAttrDefs.h.inc (ASCII diagrams in TableGen output).
@@ -154,7 +156,7 @@ macro(flagtree_configure_core_source)
   endif()
 
   if(FLAGTREE_BACKEND MATCHES
-     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir)$")
+     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu)$")
     include_directories(${PROJECT_SOURCE_DIR}/include)
     include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
     if(FLAGTREE_BACKEND STREQUAL "xpu")
@@ -415,7 +417,7 @@ endmacro()
 macro(flagtree_configure_tools_and_tests)
   if(NOT FLAGTREE_BACKEND OR
      FLAGTREE_BACKEND MATCHES
-       "^(aipu|tsingmicro|enflame|rpu|thrive|metax|sunrise|tileir)$")
+       "^(aipu|tsingmicro|enflame|rpu|thrive|metax|sunrise|tileir|ppu)$")
     add_subdirectory(bin)
     if(FLAGTREE_TLE)
       flagtree_add_tle_generated_header_dependencies()
@@ -429,6 +431,15 @@ macro(flagtree_configure_tools_and_tests)
         ${TRITON_CORE_SOURCE_DIR}/bin ${TRITON_CORE_BINARY_DIR}/bin)
       add_subdirectory(test)
     endif()
+  endif()
+
+  # When PPU backend is built, the upstream TritonGPU transforms reference
+  # PPU-specific dialect symbols (e.g. mlir::triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp)
+  # that live in TritonPPUGPUIR (defined under third_party/ppu/lib/...). Wire that
+  # dependency here, after both targets have been declared by their respective
+  # add_subdirectory() calls above, so unittests/triton.so/triton-llvm-opt all link cleanly.
+  if(FLAGTREE_BACKEND STREQUAL "ppu" AND TARGET TritonGPUTransforms AND TARGET TritonPPUGPUIR)
+    target_link_libraries(TritonGPUTransforms PUBLIC TritonPPUGPUIR)
   endif()
 endmacro()
 
