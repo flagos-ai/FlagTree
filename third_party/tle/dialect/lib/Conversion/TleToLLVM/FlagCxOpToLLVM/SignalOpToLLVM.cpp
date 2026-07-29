@@ -40,25 +40,26 @@ struct SignalOpConversion : public ConvertOpToLLVMPattern<tle::SignalOp> {
   LogicalResult
   matchAndRewrite(tle::SignalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
     int64_t teamKind = op.getTeamKindAttr().getInt();
-    int64_t coopKind = op.getCoopKindAttr().getInt();
+    tle::FlagCxCoopKind coopKind = op.getCoopKind();
     int64_t contextIdx = op.getContextIdxAttr().getInt();
     StringRef signalOp = op.getSignalOpAttr().getValue();
 
     if (teamKind < 0 || teamKind > 2)
       return rewriter.notifyMatchFailure(op, "invalid team_kind");
-    if (coopKind < 0 || coopKind > 2)
-      return rewriter.notifyMatchFailure(op, "invalid coop_kind");
     if (contextIdx < 0 || contextIdx > std::numeric_limits<int32_t>::max())
       return rewriter.notifyMatchFailure(op, "invalid context_idx");
     if (signalOp != "inc" && signalOp != "add")
       return rewriter.notifyMatchFailure(op, "invalid signal_op");
 
-    tle::getSignalFuncCall(op.getLoc(), rewriter, adaptor.getComm(),
-                           adaptor.getPeer(), adaptor.getSignalId(),
-                           adaptor.getValue(), static_cast<int32_t>(contextIdx),
-                           static_cast<int32_t>(teamKind),
-                           static_cast<int32_t>(coopKind), signalOp);
+    auto dev_net = tle::getDevNetFromCommFuncCall(
+        loc, rewriter, adaptor.getComm(), static_cast<int32_t>(contextIdx));
+    tle::getSignalFuncCall(loc, rewriter, dev_net.getResult(),
+                           adaptor.getComm(), adaptor.getPeer(),
+                           adaptor.getSignalId(), adaptor.getValue(),
+                           static_cast<int32_t>(teamKind), coopKind, signalOp);
     rewriter.eraseOp(op);
     return success();
   }
@@ -71,16 +72,16 @@ struct SignalWaitOpConversion
       : ConvertOpToLLVMPattern(typeConverter, benefit) {}
 
   LogicalResult
-  matchAndRewrite(tle::SignalWaitOp op, OpAdaptor adapter,
+  matchAndRewrite(tle::SignalWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    auto comm = op.getComm();
-    auto wait_kind = op.getWaitKind();
-    auto coop_kind = op.getCoopKind();
-    auto signal_id = op.getSignalId();
-    auto target = op.getTarget();
-    auto context_idx = op.getContextIdx();
+    auto comm = adaptor.getComm();
+    auto wait_kind = adaptor.getWaitKind();
+    auto coop_kind = adaptor.getCoopKind();
+    auto signal_id = adaptor.getSignalId();
+    auto target = adaptor.getTarget();
+    auto context_idx = adaptor.getContextIdx();
 
     auto dev_net =
         tle::getDevNetFromCommFuncCall(loc, rewriter, comm, context_idx);

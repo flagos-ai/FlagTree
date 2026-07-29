@@ -562,13 +562,13 @@ void init_triton_tle_ir(py::module &&m) {
           "create_signal",
           [](TritonOpBuilder &self, Value comm, Value peer, Value signalId,
              Value value, const std::string &signalOp, int32_t teamKind,
-             int32_t coopKind, int32_t contextIdx) -> void {
+             tle::FlagCxCoopKind coopKind, int32_t contextIdx) -> void {
             auto &builder = self.getBuilder();
-            self.create<tle::SignalOp>(comm, peer, signalId, value,
-                                       builder.getStringAttr(signalOp),
-                                       builder.getI32IntegerAttr(teamKind),
-                                       builder.getI32IntegerAttr(coopKind),
-                                       builder.getI32IntegerAttr(contextIdx));
+            self.create<tle::SignalOp>(
+                comm, peer, signalId, value, builder.getStringAttr(signalOp),
+                builder.getI32IntegerAttr(teamKind),
+                builder.getAttr<tle::FlagCxCoopKindAttr>(coopKind),
+                builder.getI32IntegerAttr(contextIdx));
           },
           py::arg("comm"), py::arg("peer"), py::arg("signal_id"),
           py::arg("value"), py::arg("signal_op"), py::arg("team_kind"),

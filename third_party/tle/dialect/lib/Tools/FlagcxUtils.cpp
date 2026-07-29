@@ -42,7 +42,10 @@ static const llvm::StringMap<StringRef> runtimeNames = {
     {"getIntraBarrierSyncSignalFunction", "flagcxIntraBarrierSyncS"},
     {"getNetFromCommFunction", "flagcxDevNetGetFromCommS"},
     {"signalSigIncFunction", "flagcxDevNetSignalSigIncS"},
-    {"signalSigAddFunction", "flagcxDevNetSignalSigAddS"}};
+    {"signalSigAddFunction", "flagcxDevNetSignalSigAddS"},
+    {"waitSignalFunction", "flagcxDevNetWaitSignalS"},
+    {"waitCounterFunction", "flagcxDevNetWaitCounterS"},
+    {"waitShadowFunction", "flagcxDevNetWaitSignalMeetShadowS"}};
 
 static inline LLVM::LLVMFuncOp createFuncInstance(const char *funcName,
                                                   ModuleOp module,
@@ -147,10 +150,11 @@ LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
 }
 
 LLVM::CallOp getSignalFuncCall(mlir::Location loc,
-                               ConversionPatternRewriter &rewriter, Value comm,
-                               Value peer, Value signalId, Value value,
-                               int32_t contextIdx, int32_t teamKind,
-                               int32_t coopKind, llvm::StringRef signalOp) {
+                               ConversionPatternRewriter &rewriter,
+                               Value dev_net, Value comm, Value peer,
+                               Value signalId, Value value, int32_t teamKind,
+                               FlagCxCoopKind coopKind,
+                               llvm::StringRef signalOp) {
   auto ctx = rewriter.getContext();
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
@@ -159,25 +163,13 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
   auto voidTy = LLVM::LLVMVoidType::get(ctx);
-  auto commPtr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
-
-  // Category 9: resolve the selected pre-allocated network context.
-  auto getNetFunc =
-      createFuncInstance(runtimeNames.lookup("getNetFromCommFunction").data(),
-                         module, {ptrTy, i32Ty}, ptrTy);
-  auto contextIdxValue = rewriter.create<LLVM::ConstantOp>(
-      loc, i32Ty, rewriter.getI32IntegerAttr(contextIdx));
-  auto netCall = rewriter.create<LLVM::CallOp>(
-      loc, TypeRange{ptrTy}, FlatSymbolRefAttr::get(getNetFunc),
-      ValueRange{commPtr, contextIdxValue});
-  Value netPtr = netCall.getResult();
 
   auto teamKindValue = rewriter.create<LLVM::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr(teamKind));
   auto coopKindValue = rewriter.create<LLVM::ConstantOp>(
-      loc, i32Ty, rewriter.getI32IntegerAttr(coopKind));
-  SmallVector<Value> args{netPtr, commPtr,       teamKindValue,
-                          peer,   coopKindValue, signalId};
+      loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coopKind)));
+  SmallVector<Value> args{dev_net, comm,          teamKindValue,
+                          peer,    coopKindValue, signalId};
 
   // Category 13: emit the standalone remote signal update.
   StringRef runtimeName;
@@ -208,11 +200,13 @@ LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
   auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
   auto I32Ty = IntegerType::get(ctx, 32);
 
-  auto func = createFuncInstance("flagcxDevNetGetFromCommS", module,
-                                 {PtrTy, I32Ty}, PtrTy);
+  auto func =
+      createFuncInstance(runtimeNames.lookup("getNetFromCommFunction").data(),
+                         module, {PtrTy, I32Ty}, PtrTy);
 
   auto comm_dev_ptr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
-  auto ctx_idx = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, idx);
+  auto ctx_idx = rewriter.create<LLVM::ConstantOp>(
+      loc, I32Ty, rewriter.getI32IntegerAttr(idx));
 
   return rewriter.create<LLVM::CallOp>(
       loc, TypeRange{func.getFunctionType().getReturnType()},
@@ -236,7 +230,7 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
 
   auto bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 64);
   auto coop_kind_val = rewriter.create<LLVM::ConstantOp>(
-      loc, I32Ty, static_cast<int32_t>(coop_kind));
+      loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coop_kind)));
   // TODO: actually use the named enum value flagcxDeviceMemoryOrderAcquire(=1)
   // if possible
   auto order = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 1);
@@ -249,20 +243,21 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
 
   switch (wait_kind) {
   case FlagCxWaitKind::COUNTER:
-    func =
-        createFuncInstance("flagcxDevNetWaitCounterS", module,
-                           {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
+    func = createFuncInstance(
+        runtimeNames.lookup("waitCounterFunction").data(), module,
+        {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
     return make_call(ValueRange{dev_net, coop_kind_val, signal_id,
                                 target.value(), bits, order});
   case FlagCxWaitKind::SIGNAL:
-    func =
-        createFuncInstance("flagcxDevNetWaitSignalS", module,
-                           {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
+    func = createFuncInstance(
+        runtimeNames.lookup("waitSignalFunction").data(), module,
+        {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
     return make_call(ValueRange{dev_net, coop_kind_val, signal_id,
                                 target.value(), bits, order});
   case FlagCxWaitKind::SHADOW:
-    func = createFuncInstance("flagcxDevNetWaitSignalMeetShadowS", module,
-                              {PtrTy, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
+    func =
+        createFuncInstance(runtimeNames.lookup("waitShadowFunction").data(),
+                           module, {PtrTy, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
     return make_call(
         ValueRange{dev_net, coop_kind_val, signal_id, bits, order});
   default:

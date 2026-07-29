@@ -96,7 +96,7 @@ def Tle_SignalOp : Tle_Op<"signal", [MemoryEffects<[MemRead, MemWrite]>]> {
     I64:$value,
     StrAttr:$signal_op,
     I32Attr:$team_kind,
-    I32Attr:$coop_kind,
+    Tle_FlagCxCoopKindAttr:$coop_kind,
     I32Attr:$context_idx
   );
 
