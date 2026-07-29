@@ -118,7 +118,7 @@ class TleCodeGenerator(code_generator.CodeGenerator):
 
         # extract tle hints
         hints = {}
-        if _is_tle_attr_call(context, "hint"):
+        if _is_tle_hint := _is_tle_attr_call(context, "hint"):
             for kw in context.keywords:
                 if not isinstance(kw.value, ast.Constant):
                     raise self._unsupported(node, "keyword arguments to hint() are only supported for constant values")
@@ -128,6 +128,11 @@ class TleCodeGenerator(code_generator.CodeGenerator):
         self.with_hints.append(hints)
 
         try:
+            if _is_tle_hint:
+                # tle.dsa.hint() is a marker for TLE codegen, not a runtime context
+                # manager. Do not visit the context expression, otherwise the dummy
+                # Python function is called and raises.
+                return self.visit_compound_statement(node.body)
             if _is_tle_attr_call(context, "scope") and self.visit(context.func) is scope:
                 _validate_tle_scope(context)
                 return _emit_tle_scope(self, node)
