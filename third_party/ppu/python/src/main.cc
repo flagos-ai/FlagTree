@@ -1,0 +1,95 @@
+/*
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Signals.h"
+#include <pybind11/pybind11.h>
+
+namespace py = pybind11;
+
+// flagtree: extended from FOR_EACH_5 to FOR_EACH_8 to give headroom for the
+// expanded backend set (nvidia + amd + tileir + proton + tle = 5 by default;
+// can be 6+ with TRITON_PLUGIN_DIRS or FLAGTREE_BACKEND=thrive/aipu/...).
+// Stopping at 5 caused the C preprocessor to emit an undefined FOR_EACH_N
+// when TRITON_BACKENDS_TUPLE grew past 5 entries.
+#define FOR_EACH_1(MACRO, X) MACRO(X)
+#define FOR_EACH_2(MACRO, X, ...) MACRO(X) FOR_EACH_1(MACRO, __VA_ARGS__)
+#define FOR_EACH_3(MACRO, X, ...) MACRO(X) FOR_EACH_2(MACRO, __VA_ARGS__)
+#define FOR_EACH_4(MACRO, X, ...) MACRO(X) FOR_EACH_3(MACRO, __VA_ARGS__)
+#define FOR_EACH_5(MACRO, X, ...) MACRO(X) FOR_EACH_4(MACRO, __VA_ARGS__)
+#define FOR_EACH_6(MACRO, X, ...) MACRO(X) FOR_EACH_5(MACRO, __VA_ARGS__)
+#define FOR_EACH_7(MACRO, X, ...) MACRO(X) FOR_EACH_6(MACRO, __VA_ARGS__)
+#define FOR_EACH_8(MACRO, X, ...) MACRO(X) FOR_EACH_7(MACRO, __VA_ARGS__)
+
+#define FOR_EACH_NARG(...) FOR_EACH_NARG_(__VA_ARGS__, FOR_EACH_RSEQ_N())
+#define FOR_EACH_NARG_(...) FOR_EACH_ARG_N(__VA_ARGS__)
+#define FOR_EACH_ARG_N(_1, _2, _3, _4, _5, _6, _7, _8, N, ...) N
+#define FOR_EACH_RSEQ_N() 8, 7, 6, 5, 4, 3, 2, 1, 0
+
+#define CONCATENATE(x, y) CONCATENATE1(x, y)
+#define CONCATENATE1(x, y) x##y
+
+#define FOR_EACH(MACRO, ...)                                                   \
+  CONCATENATE(FOR_EACH_, FOR_EACH_NARG_HELPER(__VA_ARGS__))(MACRO, __VA_ARGS__)
+#define FOR_EACH_NARG_HELPER(...) FOR_EACH_NARG(__VA_ARGS__)
+
+// New macro to remove parentheses
+#define REMOVE_PARENS(...) __VA_ARGS__
+
+// Intermediate macro to ensure correct expansion
+#define FOR_EACH_P_INTERMEDIATE(MACRO, ...) FOR_EACH(MACRO, __VA_ARGS__)
+
+// Modified FOR_EACH to handle parentheses
+#define FOR_EACH_P(MACRO, ARGS_WITH_PARENS)                                    \
+  FOR_EACH_P_INTERMEDIATE(MACRO, REMOVE_PARENS ARGS_WITH_PARENS)
+
+#define DECLARE_BACKEND(name) void init_triton_##name(pybind11::module &&m);
+
+#define INIT_BACKEND(name) init_triton_##name(m.def_submodule(#name));
+
+void init_triton_env_vars(pybind11::module &m);
+void init_triton_ir(pybind11::module &&m);
+void init_triton_llvm(pybind11::module &&m);
+void init_triton_interpreter(pybind11::module &&m);
+void init_triton_passes(pybind11::module &&m);
+void init_triton_stacktrace_hook(pybind11::module &m);
+void init_gluon_ir(pybind11::module &&m);
+void init_linear_layout(pybind11::module &&m);
+void init_native_specialize(pybind11::module &m);
+FOR_EACH_P(DECLARE_BACKEND, TRITON_BACKENDS_TUPLE)
+
+PYBIND11_MODULE(libtriton, m) {
+  m.doc() = "Python bindings to the C++ Triton API";
+  init_triton_stacktrace_hook(m);
+  init_triton_env_vars(m);
+  init_native_specialize(m);
+  init_triton_ir(m.def_submodule("ir"));
+  init_triton_passes(m.def_submodule("passes"));
+  init_triton_interpreter(m.def_submodule("interpreter"));
+  init_triton_llvm(m.def_submodule("llvm"));
+  init_linear_layout(m.def_submodule("linear_layout"));
+  init_gluon_ir(m.def_submodule("gluon_ir"));
+  FOR_EACH_P(INIT_BACKEND, TRITON_BACKENDS_TUPLE)
+}
