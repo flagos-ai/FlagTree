@@ -868,7 +868,7 @@ class CudaDriver(GPUDriver):
     def is_active():
         # flagtree nvidia
         from triton._flagtree_backend import FLAGTREE_BACKEND
-        if FLAGTREE_BACKEND:
+        if FLAGTREE_BACKEND and FLAGTREE_BACKEND != "tileir":
             return False
 
         try:

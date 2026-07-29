@@ -195,7 +195,8 @@ flagtree_add_distributed_plugin()
 # ------
 if(TRITON_BUILD_PYTHON_MODULE)
   message(STATUS "Adding Python module")
-  flagtree_python_src_path_set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
+  flagtree_python_src_path_set()
+  set(PYTHON_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
   include_directories(${PYTHON_SRC_PATH})
 
   # Python Interpreter is used to run lit tests
@@ -313,12 +314,14 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   set(TRITON_BACKENDS_TUPLE "(${TRITON_BACKENDS_TUPLE})")
   add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
-  add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
+  flagtree_added_python_src(${PYTHON_SRC_PATH}/main.cc
                   ${PYTHON_SRC_PATH}/ir.cc
+                  ${PYTHON_SRC_PATH}/gluon_ir.cc
+                  ${PYTHON_SRC_PATH}/linear_layout.cc
                   ${PYTHON_SRC_PATH}/passes.cc
                   ${PYTHON_SRC_PATH}/interpreter.cc
-                  ${PYTHON_SRC_PATH}/llvm.cc)
-  flagtree_configure_python_src()
+                  ${PYTHON_SRC_PATH}/llvm.cc
+                  ${PYTHON_SRC_PATH}/specialize.cc)
 
   # Link triton with its dependencies
   target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})  # flagtree: PUBLIC

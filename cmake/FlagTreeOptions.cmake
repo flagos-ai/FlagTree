@@ -227,12 +227,10 @@ function(flagtree_add_distributed_plugin)
 endfunction()
 
 
-macro(flagtree_python_src_path_set output_python_src_path default_path)
-  set(${output_python_src_path}
+macro(flagtree_python_src_path_set)
+  set(BACKEND_PYTHON_SRC_PATH
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/python/src)
-  if(NOT (FLAGTREE_BACKEND AND EXISTS "${${output_python_src_path}}"))
-    set(${output_python_src_path} "${default_path}")
-  endif()
+  include_directories(${BACKEND_PYTHON_SRC_PATH})
 endmacro()
 
 
@@ -480,23 +478,23 @@ function(flagtree_add_tle_generated_header_dependencies)
 endfunction()
 
 
-macro(flagtree_configure_python_src)
-  if(EXISTS "${PYTHON_SRC_PATH}/gluon_ir.cc")
-    if(FLAGTREE_BACKEND STREQUAL "iluvatar")
-      if(TRITON_BUILD_GLUON)
-        target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/gluon_ir.cc)
-        target_compile_definitions(triton PRIVATE TRITON_BUILD_GLUON)
-      endif()
+macro(flagtree_added_python_src)
+  set(_flagtree_python_sources)
+  foreach(_flagtree_python_source ${ARGN})
+    get_filename_component(
+      _flagtree_python_source_name "${_flagtree_python_source}" NAME)
+    set(_flagtree_backend_python_source
+      "${BACKEND_PYTHON_SRC_PATH}/${_flagtree_python_source_name}")
+    if(IS_DIRECTORY "${BACKEND_PYTHON_SRC_PATH}" AND
+       EXISTS "${_flagtree_backend_python_source}")
+      list(APPEND _flagtree_python_sources
+        "${_flagtree_backend_python_source}")
     else()
-      target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/gluon_ir.cc)
+      list(APPEND _flagtree_python_sources "${_flagtree_python_source}")
     endif()
-  endif()
-  if(EXISTS "${PYTHON_SRC_PATH}/linear_layout.cc")
-    target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/linear_layout.cc)
-  endif()
-  if(EXISTS "${PYTHON_SRC_PATH}/specialize.cc")
-    target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/specialize.cc)
-  endif()
+  endforeach()
+  add_library(triton SHARED ${_flagtree_python_sources})
+
   if(FLAGTREE_BACKEND STREQUAL "xpu")
     target_sources(triton PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xpu/python/src/mlir_pass_abi_shim.cc)
     add_dependencies(triton TritonAMDGPUTableGen TritonAMDGPUAttrDefsIncGen)
