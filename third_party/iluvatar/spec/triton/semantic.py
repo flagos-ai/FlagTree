@@ -18,7 +18,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from .jit import jit_specialize_options
-from .semantic import semantic_create_load
+_LOAD_METHODS = frozenset(("create_load", "create_masked_load", "create_tensor_pointer_load"))
 
-__all__ = ["jit_specialize_options", "semantic_create_load"]
+
+def semantic_create_load(builder, method_name, args, flagtree_hints):
+    if method_name not in _LOAD_METHODS:
+        raise ValueError(f"Unsupported CoreX load builder method: {method_name}")
+    if flagtree_hints not in (None, ""):
+        raise ValueError("CoreX does not support flagtree_hints on load operations")
+    return getattr(builder, method_name)(*args)

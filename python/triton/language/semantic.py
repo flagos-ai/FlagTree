@@ -29,6 +29,7 @@ import numbers
 from triton.runtime import driver
 
 from .._C.libtriton import ir
+from .._flagtree_spec import spec_call
 from . import core as tl
 
 T = TypeVar('T')
@@ -1014,6 +1015,12 @@ class TritonSemantic(Generic[TensorTy]):
             return sorted(boundary_check)
         return ()
 
+    def _create_load(self, method_name, args, flagtree_hints):
+        result = spec_call("semantic_create_load", self.builder, method_name, args, flagtree_hints)
+        if result is not None:
+            return result
+        return getattr(self.builder, method_name)(*args, flagtree_hints)
+
     def _load_block_pointer(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
                             flagtree_hints):
         # Load by a block pointer: `pointer_type<block_type<>>`
@@ -1033,9 +1040,8 @@ class TritonSemantic(Generic[TensorTy]):
         boundary_check = self._canonicalize_boundary_check(boundary_check, dst_ty.get_block_shapes())
 
         # Build IR
-        return self.tensor(
-            self.builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile,
-                                                    flagtree_hints), dst_ty)
+        args = (ptr.handle, boundary_check, padding, cache, eviction, is_volatile)
+        return self.tensor(self._create_load("create_tensor_pointer_load", args, flagtree_hints), dst_ty)
 
     def _load_legacy(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, flagtree_hints):
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
@@ -1088,12 +1094,11 @@ class TritonSemantic(Generic[TensorTy]):
 
         # Build IR
         if mask is None:
-            ret = self.tensor(self.builder.create_load(ptr.handle, cache, eviction, is_volatile, flagtree_hints),
-                              dst_ty)
+            args = (ptr.handle, cache, eviction, is_volatile)
+            ret = self.tensor(self._create_load("create_load", args, flagtree_hints), dst_ty)
         else:
-            ret = self.tensor(
-                self.builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache,
-                                                eviction, is_volatile, flagtree_hints), dst_ty)
+            args = (ptr.handle, mask.handle, other.handle if other else None, cache, eviction, is_volatile)
+            ret = self.tensor(self._create_load("create_masked_load", args, flagtree_hints), dst_ty)
         if is_bool:
             ret = self.cast(ret, tl.int1)
         return ret
