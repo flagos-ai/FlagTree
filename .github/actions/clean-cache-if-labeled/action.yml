@@ -72,6 +72,8 @@ runs:
         echo "========================================="
 
         echo "-> Cleaning cache..."
+        echo "-> Remove ~/.triton/cache"
         rm -rf ~/.triton/cache
+        echo "-> Remove ~/.flaggems"
         rm -rf ~/.flaggems
         echo "-> Clean cache done"
