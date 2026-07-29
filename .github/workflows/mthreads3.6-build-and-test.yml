@@ -34,7 +34,6 @@ jobs:
   mthreads36x-unit-test:
     runs-on: mthreads3.6
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
-
     steps:
       - name: Setup environment
         shell: bash
@@ -63,7 +62,7 @@ jobs:
 
       - name: Clean cache if CleanCache label present
         id: clean_cache
-        uses: ./.github/actions/clean-cache-if-labeled@main
+        uses: ./.github/actions/clean-cache-if-labeled
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: 'mthreads'
