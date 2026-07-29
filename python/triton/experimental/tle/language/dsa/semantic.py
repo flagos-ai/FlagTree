@@ -196,7 +196,7 @@ def tile_to_buffer(
     builder: ir.builder,
 ) -> buffer:
     """Convert a ranked tensor to a TileIR buffer using tile.store_tensor."""
-    if not isinstance(tensor.shape, (tuple, list)) or not tensor.shape:
+    if not isinstance(tensor.shape, (tl.tuple, tuple, list)) or not tensor.shape:
         raise TypeError("scalar type cannot be converted to buffer")
 
     shape = tl._unwrap_shape(tensor.shape)
