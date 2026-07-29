@@ -29,7 +29,7 @@ import shutil
 import struct
 import subprocess
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Callable
 
 import torch
 from triton import knobs
@@ -37,7 +37,6 @@ from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
 from triton.experimental.tle.raw.runtime import RawJITFunction
 from triton.experimental.tle.raw.source_store import register_source
-from triton.runtime.jit import register_kernel_init_hook
 
 # TODO: Temporarily shell out to clang; replace with LLVM Python bindings later.
 _MIN_CLANG_MAJOR = 20
@@ -177,6 +176,7 @@ def _sanitize_clang_ir(ir: str) -> str:
 # ---------------------------------------------------------------------------
 
 _nvshmemx_cumodule_init = None
+_KERNEL_INIT_HOOKS: dict[str, Callable] = {}
 _KERNEL_INIT_HOOK_ATTR = "tle.raw.kernel_init_hooks"
 _NVSHMEM_CUMODULE_INIT_HOOK = "nvshmem_cumodule_init"
 
@@ -204,6 +204,20 @@ def _initialize_nvshmem_cumodule(kernel):
     assert result == 0, f"nvshmemx_cumodule_init failed: {result}"
 
 
+def register_kernel_init_hook(name: str, hook: Callable) -> None:
+    if name in _KERNEL_INIT_HOOKS:
+        raise RuntimeError(f"kernel init hook {name!r} is already registered")
+    _KERNEL_INIT_HOOKS[name] = hook
+
+
+def run_kernel_init_hooks(kernel) -> None:
+    for name in getattr(kernel.metadata, "kernel_init_hooks", ()):
+        hook = _KERNEL_INIT_HOOKS.get(name)
+        if hook is None:
+            raise RuntimeError(f"kernel init hook {name!r} is not registered")
+        hook(kernel)
+
+
 register_kernel_init_hook(_NVSHMEM_CUMODULE_INIT_HOOK, _initialize_nvshmem_cumodule)
 
 # ---------------------------------------------------------------------------
@@ -226,7 +240,7 @@ class CUDAJITFunction(RawJITFunction):
             enable_nvshmem_device_bc(True)
 
     def mark_kernel_init_hook(self, semantic, generator) -> None:
-        if self.library == "nvshmem" and "nvshmem" in self.code:
+        if self.library == "nvshmem":
             operation = generator.module.get_operation()
             hooks = operation.get_str_attr(_KERNEL_INIT_HOOK_ATTR)
             hook_names = set(hooks.split(",")) if hooks else set()

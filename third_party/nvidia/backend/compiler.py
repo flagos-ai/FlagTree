@@ -269,6 +269,7 @@ class CUDABackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, opt, capability):
+        # flagtree tle raw
         kernel_init_hooks = mod.get_operation().get_str_attr("tle.raw.kernel_init_hooks")
         metadata["kernel_init_hooks"] = kernel_init_hooks.split(",") if kernel_init_hooks else []
 

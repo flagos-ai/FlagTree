@@ -601,23 +601,6 @@ class JitFunctionInfo:
     jit_function: JITFunction
 
 
-_KERNEL_INIT_HOOKS: Dict[str, Callable] = {}
-
-
-def register_kernel_init_hook(name: str, hook: Callable) -> None:
-    if name in _KERNEL_INIT_HOOKS:
-        raise RuntimeError(f"kernel init hook {name!r} is already registered")
-    _KERNEL_INIT_HOOKS[name] = hook
-
-
-def _run_kernel_init_hooks(kernel) -> None:
-    for name in getattr(kernel.metadata, "kernel_init_hooks", ()):
-        hook = _KERNEL_INIT_HOOKS.get(name)
-        if hook is None:
-            raise RuntimeError(f"kernel init hook {name!r} is not registered")
-        hook(kernel)
-
-
 def compute_cache_key(kernel_key_cache, specialization, options):
     key = (tuple(specialization), str(options))
     cache_key = kernel_key_cache.get(key, None)
@@ -908,7 +891,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
             def finalize_compile(kernel):
                 kernel_cache[key] = kernel
-                _run_kernel_init_hooks(kernel)
+                # flagtree tle raw
+                try:
+                    from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+                except ImportError:
+                    pass
+                else:
+                    run_kernel_init_hooks(kernel)
                 self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options,
                                 [attrs], warmup)
 
@@ -916,7 +905,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
         else:
             kernel = self.compile(src, target=target, options=options.__dict__)
             kernel_cache[key] = kernel
-            _run_kernel_init_hooks(kernel)
+            # flagtree tle raw
+            try:
+                from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+            except ImportError:
+                pass
+            else:
+                run_kernel_init_hooks(kernel)
             self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options, [attrs],
                             warmup)
         return kernel
