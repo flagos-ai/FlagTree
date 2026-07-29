@@ -22,7 +22,7 @@ def _device_dialect(function_name):
     return dialect(
         name="cuda",
         compiler="clang",
-        file=Path(__file__).parent / "gemm-allreduce-device.cu",
+        file=Path(__file__).parent / "gemm-ar-device.cu",
         extern_func_name=function_name,
     )
 
@@ -79,26 +79,11 @@ def create_workspace(host, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, world_size, dtype, 
     num_pid_n = triton.cdiv(N, BLOCK_SIZE_N)
     num_tiles = num_pid_m * num_pid_n
 
-    result = host.gemm_ar_workspace_create(
-        M * N,
-        ctypes.byref(workspace_ptr),
-        ctypes.byref(ready_ptr),
-        num_tiles
-    )
+    result = host.gemm_ar_workspace_create(M * N, ctypes.byref(workspace_ptr), ctypes.byref(ready_ptr), num_tiles)
     assert result == 0, f"workspace allocation failed: {result}"
 
-    workspace = tensor_from_pointer(
-        workspace_ptr,
-        (M, N),
-        dtype,
-        device
-    )
-    ready = tensor_from_pointer(
-        ready_ptr,
-        (world_size, num_tiles),
-        torch.uint64,
-        device
-    )
+    workspace = tensor_from_pointer(workspace_ptr, (M, N), dtype, device)
+    ready = tensor_from_pointer(ready_ptr, (world_size, num_tiles), torch.uint64, device)
 
     return workspace_ptr, ready_ptr, workspace, ready, num_tiles
 
@@ -189,7 +174,8 @@ def consumer_all_reduce_kernel(
                 col_id = idx % VEC_PER_ROW
                 offset = ((tile_row * BLOCK_SIZE_M + row_id) * N + tile_col * BLOCK_SIZE_N + col_id * VEC_SIZE)
                 tle_raw.call(multimem_ar_vector_multicast_store, [mc_ptr, mc_out_ptr, offset])
-        tle_raw.call(multimem_store_barrier,[multimem_ready, peer_multimem_ready_ptrs, rank_i32, world_size_i32, epoch_u64])
+        tle_raw.call(multimem_store_barrier,
+                     [multimem_ready, peer_multimem_ready_ptrs, rank_i32, world_size_i32, epoch_u64])
     else:
         for tile_id in range(pid, num_tiles, NUM_COMM_SMS):
             tle_raw.call(wait_tile_ready, [peer_ready_ptrs, world_size_i32, tile_id, num_tiles, epoch_u64])
@@ -201,7 +187,7 @@ def consumer_all_reduce_kernel(
             out_dtype = ar_out.dtype.element_ty
             for row in range(tile_rows):
                 row_offset = (tile_row * BLOCK_SIZE_M + row) * N
-                accumulator = tl.zeros((BLOCK_SIZE_N,), dtype=tl.float32)
+                accumulator = tl.zeros((BLOCK_SIZE_N, ), dtype=tl.float32)
 
                 for i in tl.static_range(0, WORLD_SIZE):
                     peer = (RANK + WORLD_SIZE - i) % WORLD_SIZE
@@ -210,7 +196,11 @@ def consumer_all_reduce_kernel(
                     value = tl.load(peer_ptr + row_offset + col_offsets, mask=col_mask, other=0.0)
                     accumulator += value.to(tl.float32)
 
-                tl.store(ar_out + row_offset + col_offsets, accumulator.to(out_dtype), mask=col_mask,)
+                tl.store(
+                    ar_out + row_offset + col_offsets,
+                    accumulator.to(out_dtype),
+                    mask=col_mask,
+                )
 
 
 @triton.jit
@@ -345,7 +335,7 @@ def main():
     device = torch.device("cuda", local_rank)
 
     group = init_torch_distributed()
-    host_source = Path(__file__).with_name("gemm-allreduce-host.cu")
+    host_source = Path(__file__).with_name("gemm-ar-host.cu")
     host = load_host(host_source)
     common = load_common_host()
     configure_host_library(host)
@@ -356,12 +346,9 @@ def main():
     a = torch.randn((M, K_per_rank), dtype=dtype, device=device) * 0.1
     b = torch.randn((K_per_rank, N), dtype=dtype, device=device) * 0.1
 
-    workspace_ptr, ready_ptr, workspace, ready, num_tiles = create_workspace(
-        host, M, N, BLOCK_M, BLOCK_N, world_size, dtype, device
-    )
-    peer_ready_ptrs = create_peer_pointer_table(
-        host, ready_ptr, world_size, device
-    )
+    workspace_ptr, ready_ptr, workspace, ready, num_tiles = create_workspace(host, M, N, BLOCK_M, BLOCK_N, world_size,
+                                                                             dtype, device)
+    peer_ready_ptrs = create_peer_pointer_table(host, ready_ptr, world_size, device)
     if args.use_multimem:
         peer_workspace_ptrs = ready
         output_ptr, multimem_ready_ptr, ar_out, multimem_ready = create_multimem_output(
@@ -375,14 +362,10 @@ def main():
         )
         mc_out_ptr_val = host.gemm_ar_mc_ptr(output_ptr)
         assert mc_out_ptr_val, "output multicast pointer is unavailable"
-        mc_ar_out = tensor_from_pointer(
-            ctypes.c_void_p(mc_out_ptr_val), (M, N), dtype, device)
-        peer_multimem_ready_ptrs = create_peer_pointer_table(
-            host, multimem_ready_ptr, world_size, device)
+        mc_ar_out = tensor_from_pointer(ctypes.c_void_p(mc_out_ptr_val), (M, N), dtype, device)
+        peer_multimem_ready_ptrs = create_peer_pointer_table(host, multimem_ready_ptr, world_size, device)
     else:
-        peer_workspace_ptrs = create_peer_pointer_table(
-            host, workspace_ptr, world_size, device
-        )
+        peer_workspace_ptrs = create_peer_pointer_table(host, workspace_ptr, world_size, device)
         ar_out = torch.empty_like(workspace)
         mc_ar_out = ar_out
         multimem_ready = ready
@@ -394,8 +377,7 @@ def main():
     if args.use_multimem:
         mc_ptr_val = host.gemm_ar_mc_ptr(workspace_ptr)
         assert mc_ptr_val, "multicast pointer is unavailable"
-        mc_workspace = tensor_from_pointer(
-            ctypes.c_void_p(mc_ptr_val), (M, N), dtype, device)
+        mc_workspace = tensor_from_pointer(ctypes.c_void_p(mc_ptr_val), (M, N), dtype, device)
     else:
         mc_workspace = workspace
 
@@ -438,7 +420,7 @@ def main():
                 "BLOCK_SIZE_N": BLOCK_N,
                 "BLOCK_SIZE_K": BLOCK_K,
             }
-            gemm_ar_producer[(num_gemm_sms,)](
+            gemm_ar_producer[(num_gemm_sms, )](
                 *producer_args,
                 **producer_meta,
                 EPILOGUE_SUBTILE=args.epilogue_subtile,
@@ -446,7 +428,7 @@ def main():
                 num_stages=4 if args.epilogue_subtile else 3,
             )
         with torch.cuda.stream(comm_stream):
-            consumer_all_reduce_kernel[(num_comm_sms,)](
+            consumer_all_reduce_kernel[(num_comm_sms, )](
                 mc_workspace,
                 mc_ar_out,
                 peer_workspace_ptrs,
@@ -512,9 +494,8 @@ def main():
         torch.distributed.all_reduce(sum_elapsed, op=torch.distributed.ReduceOp.SUM, group=group)
         if rank == 0:
             avg_elapsed = sum_elapsed.item() / world_size
-            print(
-                f"GEMM all-reduce latency: max_ms={max_elapsed.item():.4f}, "
-                f"avg_ms={avg_elapsed:.4f}")
+            print(f"GEMM all-reduce latency: max_ms={max_elapsed.item():.4f}, "
+                  f"avg_ms={avg_elapsed:.4f}")
 
     if args.use_multimem:
         result = host.gemm_ar_multimem_output_destroy(output_ptr, multimem_ready_ptr)
