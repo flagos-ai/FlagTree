@@ -22,7 +22,7 @@
 import builtins
 import triton.language.core as tl
 
-from ..._tle_capabilities import check_supported
+from triton.experimental._tle_capabilities import check_supported
 
 
 def _tle_pick_sum_dtype(in_dtype, dtype):
