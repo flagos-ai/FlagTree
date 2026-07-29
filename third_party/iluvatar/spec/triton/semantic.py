@@ -27,3 +27,8 @@ def semantic_create_load(builder, method_name, args, flagtree_hints):
     if flagtree_hints not in (None, ""):
         raise ValueError("CoreX does not support flagtree_hints on load operations")
     return getattr(builder, method_name)(*args)
+
+
+def semantic_validate_atomic_add(scalar_ty):
+    if scalar_ty.is_int64() or scalar_ty.is_uint64():
+        raise ValueError("CoreX does not support atomic_add with int64 or uint64 operands")

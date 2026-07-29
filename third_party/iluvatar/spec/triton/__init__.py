@@ -19,6 +19,6 @@
 # SOFTWARE.
 
 from .jit import jit_specialize_options
-from .semantic import semantic_create_load
+from .semantic import semantic_create_load, semantic_validate_atomic_add
 
-__all__ = ["jit_specialize_options", "semantic_create_load"]
+__all__ = ["jit_specialize_options", "semantic_create_load", "semantic_validate_atomic_add"]

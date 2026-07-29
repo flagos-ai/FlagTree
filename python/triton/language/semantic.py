@@ -1460,6 +1460,7 @@ class TritonSemantic(Generic[TensorTy]):
         sem = self._str_to_sem(sem)
         scope = self._str_to_scope(scope)
         sca_ty = val.type.scalar
+        spec_call("semantic_validate_atomic_add", sca_ty)
         op = ir.ATOMIC_OP.FADD if sca_ty.is_floating() else ir.ATOMIC_OP.ADD
         return self.tensor(self.builder.create_atomic_rmw(op, ptr.handle, val.handle, mask.handle, sem, scope),
                            val.type)
