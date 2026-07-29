@@ -41,6 +41,9 @@
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
 #endif
+#ifdef __PPU__
+#include "Dialect/TritonPPUGPU/IR/Dialect.h"
+#endif
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttg-utility"
@@ -129,12 +132,18 @@ SmallVector<unsigned, 4> argSort(const SmallVector<int64_t> &arr) {
 Value getMemAccessPtr(Operation *op) {
   if (auto ld = dyn_cast<triton::LoadOp>(op))
     return ld.getPtr();
+  if (auto ld = dyn_cast<triton::AIULoadOp>(op))
+    return ld.getSrcPtr();
   if (auto atomic = dyn_cast<triton::AtomicRMWOp>(op))
     return atomic.getPtr();
   if (auto atomic = dyn_cast<triton::AtomicCASOp>(op))
     return atomic.getPtr();
   if (auto copy = dyn_cast<triton::gpu::AsyncCopyGlobalToLocalOp>(op))
     return copy.getSrc();
+#ifdef __PPU__
+  if (auto copy = dyn_cast<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(op))
+    return copy.getSrc();
+#endif
   if (auto store = dyn_cast<triton::StoreOp>(op))
     return store.getPtr();
   return nullptr;
@@ -656,7 +665,8 @@ bool canFoldIntoConversion(Operation *op, Attribute targetEncoding) {
     return !triton::gpu::isExpensiveCat(cast<triton::CatOp>(op),
                                         targetEncoding);
   if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
-    if (mlir::isa<triton::gpu::NvidiaMmaEncodingAttr>(targetEncoding)) {
+    if (mlir::isa<triton::gpu::NvidiaMmaEncodingAttr,
+                  triton::gpu::PPUMmaEncodingAttr>(targetEncoding)) {
       auto srcEncoding = convert.getSrc().getType().getEncoding();
       if (targetEncoding != srcEncoding)
         return false;
@@ -1083,6 +1093,26 @@ int getNVIDIAComputeCapability(Operation *module) {
          "expected target attribute to be prefixed with \"cuda:\"");
 
   StringRef capabilityStr = ref.drop_front(5); // drop the "cuda:"
+  int computeCapability;
+  bool parseError = capabilityStr.getAsInteger(10, computeCapability);
+  assert(!parseError &&
+         "invalid compute capability string in target attribute");
+
+  return computeCapability;
+}
+
+int getPPUComputeCapability(Operation *module) {
+  StringAttr targetAttr =
+      module->getAttrOfType<StringAttr>(triton::gpu::AttrTargetName);
+  if (!targetAttr)
+    return 0;
+
+  StringRef ref = targetAttr.strref();
+  // FlagTree is multi-backend: not every module is a PPU module.
+  if (!ref.starts_with("ppu:"))
+    return 0;
+
+  StringRef capabilityStr = ref.drop_front(4); // drop the "ppu:"
   int computeCapability;
   bool parseError = capabilityStr.getAsInteger(10, computeCapability);
   assert(!parseError &&

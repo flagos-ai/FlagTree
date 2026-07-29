@@ -521,6 +521,28 @@ struct MemDescIndexOpConversion
     // for this
     auto stride = product(
         getAllocationShapePerCTA(dstTy.getEncoding(), dstTy.getShape()));
+
+    // Update `stride` for PPU0015 AIU load
+    if (auto aiuEnc = dyn_cast<triton::gpu::PPUAIUSharedEncodingAttr>(
+            dstTy.getEncoding())) {
+      if (aiuEnc.isPPU0015()) {
+        auto aiuLoad = aiuEnc.getAIUStrategy();
+        unsigned cubeC = aiuLoad[0];
+        int elemBytes = dstTy.getElementTypeBitWidth() / 8;
+        if (elemBytes == 2 && cubeC == 16 || elemBytes == 1 && cubeC == 32) {
+          auto resSharedLayout =
+              cast<mlir::triton::gpu::PPUAIUSharedEncodingAttr>(
+                  dstTy.getEncoding());
+          auto order = resSharedLayout.getOrder();
+          unsigned swizzledBytes = aiuLoad[4];
+          unsigned swizzledElems = swizzledBytes / elemBytes;
+          unsigned aiuFactor = swizzledElems / cubeC;
+          assert(aiuFactor == 2 && "Unexpected aiuFactor for cubeC 16");
+          stride *= aiuFactor;
+        }
+      }
+    }
+
     Value offset = b.mul(op.getIndex(), b.i32_val(stride));
     auto smemObj = getSharedMemoryObjectFromStruct(loc, adaptor.getSrc(),
                                                    llvmElemTy, rewriter);

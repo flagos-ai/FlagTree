@@ -34,6 +34,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/GenericSwizzling.h"
 #include "triton/Tools/LayoutUtils.h"
@@ -180,7 +181,36 @@ private:
     int64_t bytes =
         numElems * getIntOrFloatOrPtrBitWidth(allocType.getElementType()) / 8;
 
-    auto alignment = alloc.getAlignmentOrDefault();
+    auto mod = op->getParentOfType<ModuleOp>();
+    StringAttr targetAttr =
+        mod->getAttrOfType<StringAttr>(triton::gpu::AttrTargetName);
+    int computeCapability = targetAttr ? getPPUComputeCapability(mod) : 0;
+
+    // Update `bytes` for PPU0015 AIU load
+    if (computeCapability == 89) {
+      if (auto aiuEnc = dyn_cast<triton::gpu::PPUAIUSharedEncodingAttr>(
+              allocType.getEncoding())) {
+        assert(aiuEnc.isPPU0015() && "Unexpected aiuEncoding for PPU0015");
+        auto aiuLoad = aiuEnc.getAIUStrategy();
+        unsigned cubeC = aiuLoad[0];
+        unsigned swizzledBytes = aiuLoad[4];
+        auto elemByteSize = allocType.getElementTypeBitWidth() / 8;
+        if (elemByteSize == 2 && cubeC == 16 ||
+            elemByteSize == 1 && cubeC == 32) {
+          unsigned swizzledElems = swizzledBytes / elemByteSize;
+          unsigned aiuFactor = swizzledElems / cubeC;
+          bytes *= aiuFactor;
+        }
+      }
+    }
+
+    int32_t alignment;
+    if (mlir::isa<triton::gpu::PPUAIUSharedEncodingAttr>(
+            allocType.getEncoding())) {
+      alignment = 128;
+    } else {
+      alignment = alloc.getAlignmentOrDefault();
+    }
     allocation->addBuffer<BufferT::BufferKind::Explicit>(alloc, bytes,
                                                          alignment);
   }
