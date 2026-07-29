@@ -77,6 +77,10 @@ public:
 
   SmallVector<Value> getOffsets() { return offsets; }
 
+  Value getBase() { return base; }
+
+  SmallVector<Value> getShape() { return shape; }
+
   void setOffset(unsigned i, Value newOffset) {
     offsets[i] = newOffset;
     cachedOffsetWithRange.clear();
@@ -354,6 +358,41 @@ public:
     return nullptr;
   }
 
+  Operation *rewriteAIULoadOp(OpBuilder &builder, Operation *op,
+                              std::stack<Operation *> &eraser) {
+    assert(isa<triton::AIULoadOp>(op));
+
+    auto ptr = op->getOperand(0);
+    if (!triton::isTensorPointerType(ptr.getType()))
+      return nullptr;
+
+    assert(rewritedInfo.count(ptr));
+    auto info = rewritedInfo[ptr];
+
+    auto aiuLoadOp = dyn_cast<triton::AIULoadOp>(op);
+    auto makeTensorPtrOp = triton::getMakeTensorPtrOp(ptr);
+
+    auto basePtr = info.getBase();
+    auto shape = info.getShape();
+    auto offsets = info.getOffsets();
+    auto order = makeTensorPtrOp.getOrder();
+
+    // Truncate I64 offsets to I32 for AIULoadOp indices
+    SmallVector<Value> i32Offsets;
+    for (auto offset : offsets) {
+      auto i32Offset = arith::TruncIOp::create(builder, aiuLoadOp.getLoc(),
+                                               builder.getI32Type(), offset);
+      i32Offsets.push_back(i32Offset);
+    }
+
+    auto newResult = triton::AIULoadOp::create(
+        builder, aiuLoadOp.getLoc(), aiuLoadOp.getResult().getType(), basePtr,
+        i32Offsets, shape, order, aiuLoadOp.getCache(), aiuLoadOp.getEvict());
+    op->getResult(0).replaceAllUsesWith(newResult);
+    eraser.push(op);
+    return nullptr;
+  }
+
   Operation *rewriteIfOp(OpBuilder &builder, scf::IfOp op,
                          std::stack<Operation *> &eraser) {
     auto thenYieldOp = op.thenYield();
@@ -528,6 +567,8 @@ public:
       return rewriteAdvanceOp(builder, advanceOp, eraser);
     } else if (isa<triton::LoadOp>(op) || isa<triton::StoreOp>(op)) {
       return rewriteLoadStoreOp(builder, op, eraser);
+    } else if (isa<triton::AIULoadOp>(op)) {
+      return rewriteAIULoadOp(builder, op, eraser);
     } else if (isa<scf::SCFDialect, cf::ControlFlowDialect>(op->getDialect())) {
       if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
         return rewriteIfOp(builder, ifOp, eraser);

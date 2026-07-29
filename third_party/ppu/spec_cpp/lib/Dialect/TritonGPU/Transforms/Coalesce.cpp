@@ -99,6 +99,44 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
     return tensorType.cloneWithEncoding(encoding);
   }
 
+  void coalesceAIULoad(Operation *op, int numWarps, int threadsPerWarp) {
+    OpBuilder builder(op);
+    auto aiuLoad = dyn_cast<triton::AIULoadOp>(op);
+    auto tensorType = cast<RankedTensorType>(aiuLoad->getResult(0).getType());
+    auto blockedEnc =
+        mlir::dyn_cast<BlockedEncodingAttr>(tensorType.getEncoding());
+    if (!blockedEnc)
+      return;
+
+    ArrayRef<int32_t> order = aiuLoad.getOrder();
+    auto orderTensorType = blockedEnc.getOrder();
+    bool sameOrder = true;
+    SmallVector<unsigned> newOrder;
+    for (size_t i = 0; i < order.size(); i++) {
+      newOrder.push_back((unsigned)order[i]);
+      if ((unsigned)order[i] != orderTensorType[i])
+        sameOrder = false;
+    }
+
+    if (!sameOrder) {
+      auto newEnc = triton::gpu::BlockedEncodingAttr::get(
+          &getContext(), tensorType.getShape(),
+          ArrayRef(blockedEnc.getSizePerThread()), ArrayRef(newOrder), numWarps,
+          threadsPerWarp, blockedEnc.getCTALayout());
+      auto newTensorTy = getNewType(tensorType, newEnc);
+
+      auto newOp = builder.create<triton::AIULoadOp>(
+          aiuLoad->getLoc(), newTensorTy, aiuLoad.getSrcPtr(),
+          aiuLoad.getIndices(), aiuLoad.getShape(), order, aiuLoad.getCache(),
+          aiuLoad.getEvict());
+
+      auto newResult = builder.create<triton::gpu::ConvertLayoutOp>(
+          aiuLoad->getLoc(), tensorType, newOp->getResult(0));
+      aiuLoad->getResult(0).replaceAllUsesWith(newResult);
+      op->erase();
+    }
+  }
+
   void runOnOperation() override {
     // Run axis info analysis
     ModuleOp moduleOp = getOperation();
@@ -112,6 +150,11 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
       Value ptr = getMemAccessPtr(curr);
       if (!ptr)
         return;
+      if (auto aiuLoad = dyn_cast<triton::AIULoadOp>(curr)) {
+        int numWarps = lookupNumWarps(curr);
+        coalesceAIULoad(curr, numWarps, threadsPerWarp);
+        return;
+      }
       // We only convert `tensor<tt.ptr<>>` load/store
       bool isPtrTensor = false;
       if (auto tensorType = dyn_cast<RankedTensorType>(ptr.getType()))
