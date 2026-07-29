@@ -231,6 +231,9 @@ bool isPureUnaryInlineAsm(Operation *op);
 // read the compute capability from the module attributes
 int getNVIDIAComputeCapability(Operation *module);
 
+// read the PPU compute capability from the module attributes
+int getPPUComputeCapability(Operation *module);
+
 // Read the amd target from the module attributes
 std::optional<StringRef> getAMDArch(Operation *module);
 
