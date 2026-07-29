@@ -204,6 +204,7 @@ def test_tle_cumsum_exclusive_and_total(dtype, n, block, reverse, num_warps):
 
 
 @pytest.mark.skipif(_is_enflame_backend(), reason="PTX-specific regression guard not applicable on Enflame GCU")
+@pytest.mark.skipif(_is_hcu_backend(), reason="PTX-specific regression guard not applicable on HCU")
 @pytest.mark.skipif(FLAGTREE_BACKEND == "ppu", reason="PTX-specific regression guard not applicable on PPU")
 def test_tle_cumsum_ptx_fastpath_regression_guard():
     block = 512
