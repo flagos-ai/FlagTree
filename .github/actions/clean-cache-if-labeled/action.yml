@@ -73,6 +73,6 @@ runs:
         echo "========================================="
 
         echo "-> Cleaning cache..."
-        # rm -rf ~/.triton/cache
-        # rm -rf ~/.flaggems
+        rm -rf ~/.triton/cache
+        rm -rf ~/.flaggems
         echo "-> Clean cache done"
