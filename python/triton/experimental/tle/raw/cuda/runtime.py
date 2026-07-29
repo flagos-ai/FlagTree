@@ -37,6 +37,7 @@ from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
 from triton.experimental.tle.raw.runtime import RawJITFunction
 from triton.experimental.tle.raw.source_store import register_source
+from triton.runtime.jit import register_kernel_init_hook
 
 # TODO: Temporarily shell out to clang; replace with LLVM Python bindings later.
 _MIN_CLANG_MAJOR = 20
@@ -175,8 +176,9 @@ def _sanitize_clang_ir(ir: str) -> str:
 # NVSHMEM: post-compile cumodule init hook
 # ---------------------------------------------------------------------------
 
-_cumodule_hook_installed = False
 _nvshmemx_cumodule_init = None
+_KERNEL_INIT_HOOK_ATTR = "tle.raw.kernel_init_hooks"
+_NVSHMEM_CUMODULE_INIT_HOOK = "nvshmem_cumodule_init"
 
 
 def _get_nvshmemx_cumodule_init():
@@ -196,24 +198,13 @@ def _get_nvshmemx_cumodule_init():
     return fn
 
 
-def _install_cumodule_hook():
-    global _cumodule_hook_installed
-    if _cumodule_hook_installed:
-        return
+def _initialize_nvshmem_cumodule(kernel):
+    kernel._init_handles()
+    result = _get_nvshmemx_cumodule_init()(ctypes.c_void_p(kernel.module))
+    assert result == 0, f"nvshmemx_cumodule_init failed: {result}"
 
-    def hook(*args, **kwargs):
-        key = kwargs["key"]
-        function = kwargs["fn"].jit_function
-        device = kwargs["compile"]["device"]
-        kernel = function.device_caches[device][0].get(key)
-        assert kernel is not None
-        kernel._init_handles()
-        result = _get_nvshmemx_cumodule_init()(ctypes.c_void_p(kernel.module))
-        assert result == 0, f"nvshmemx_cumodule_init failed: {result}"
 
-    knobs.runtime.jit_post_compile_hook = hook
-    _cumodule_hook_installed = True
-
+register_kernel_init_hook(_NVSHMEM_CUMODULE_INIT_HOOK, _initialize_nvshmem_cumodule)
 
 # ---------------------------------------------------------------------------
 # Dialect runtime
@@ -234,9 +225,16 @@ class CUDAJITFunction(RawJITFunction):
             from triton.experimental.tle.raw.nvshmem.utils import enable_nvshmem_device_bc
             enable_nvshmem_device_bc(True)
 
-    def install_runtime_hook(self) -> None:
+    def mark_kernel_init_hook(self, semantic, generator) -> None:
         if self.library == "nvshmem" and "nvshmem" in self.code:
-            _install_cumodule_hook()
+            operation = generator.module.get_operation()
+            hooks = operation.get_str_attr(_KERNEL_INIT_HOOK_ATTR)
+            hook_names = set(hooks.split(",")) if hooks else set()
+            hook_names.add(_NVSHMEM_CUMODULE_INIT_HOOK)
+            generator.module.set_attr(
+                _KERNEL_INIT_HOOK_ATTR,
+                semantic.builder.get_string_attr(",".join(sorted(hook_names))),
+            )
 
     def register_pending_source(self, *, hint: str = "") -> str:
         if not self.extern_func_name:
