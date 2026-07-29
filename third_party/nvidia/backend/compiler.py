@@ -188,10 +188,6 @@ class CUDABackend(BaseBackend):
         super().__init__(target)
         self.binary_ext = "cubin"
 
-    def get_binary_disassembly(self, binary: bytes) -> Dict[str, str]:
-        from triton.tools.disasm import get_sass
-        return {"sass": get_sass(binary)}
-
     def parse_options(self, opts) -> Any:
         # Enable debug mode for ConSan, so device-side assertions are not optimized out
         if "instrumentation_mode" in opts and opts["instrumentation_mode"] == "consan":

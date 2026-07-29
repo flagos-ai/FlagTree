@@ -69,6 +69,11 @@ class BaseBackend(metaclass=ABCMeta):
 
     def get_binary_disassembly(self, binary: bytes) -> Dict[str, str]:
         """Return backend-specific textual disassemblies keyed by file extension."""
+        # Keep the CUDA SASS behavior that historically lived in the common
+        # compiler while allowing non-CUDA cubin backends to opt out.
+        if self.target.backend == "cuda":
+            from triton.tools.disasm import get_sass
+            return {"sass": get_sass(binary)}
         return {}
 
     @staticmethod
