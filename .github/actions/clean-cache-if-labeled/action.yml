@@ -53,25 +53,13 @@ runs:
             return;
           }
 
-          const prNumber = context.payload.pull_request.number;
-          try {
-            const { data: prData } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber
-            });
+          const labels = (context.payload.pull_request.labels || []).map(label => label.name);
+          console.log(`Current PR labels:`, labels.join(', ') || '(no labels)');
 
-            const labels = (prData.labels || []).map(label => label.name);
-            console.log(`Current PR labels:`, labels.join(', ') || '(no labels)');
+          const hasClearCache = labels.includes(expectedLabel);
+          console.log(`🔍 Has "${expectedLabel}" label:`, hasClearCache ? '✅ YES' : '❌ NO');
 
-            const hasClearCache = labels.includes(expectedLabel);
-            console.log(`🔍 Has "${expectedLabel}" label:`, hasClearCache ? '✅ YES' : '❌ NO');
-
-            core.setOutput('has_clear_cache_label', hasClearCache ? 'true' : 'false');
-          } catch (err) {
-            console.log('❌ Error checking PR labels:', err.message || err);
-            core.setOutput('has_clear_cache_label', 'false');
-          }
+          core.setOutput('has_clear_cache_label', hasClearCache ? 'true' : 'false');
 
     - name: Clear cache if label present
       id: cleanup
@@ -83,8 +71,9 @@ runs:
         echo "========================================="
 
         echo "-> Clearing cache..."
+        # 3. Optimization: Append '|| true' to prevent the job from failing unexpectedly due to permission or mount point issues
         echo "-> Remove ~/.triton/cache"
-        rm -rf ~/.triton/cache
+        rm -rf ~/.triton/cache || true
         echo "-> Remove ~/.flaggems"
-        rm -rf ~/.flaggems
+        rm -rf ~/.flaggems || true
         echo "-> Clear cache done"
