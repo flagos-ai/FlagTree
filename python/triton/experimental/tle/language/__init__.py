@@ -47,6 +47,7 @@ from .distributed import (
     MemoryOrder,
     GroupKind,
     signal,
+    signal_wait,
     distributed_barrier,
     distributed_dot,
     _infer_submesh_barrier_group,
@@ -58,8 +59,6 @@ from .distributed import (
     _resolve_launch_axis,
     shard_id,
     sharding,
-    signal,
-    signal_wait,
 )
 from . import communication
 from .communication import get_mem_pool, create_dist_tensor, cleanup_communicator

@@ -27,6 +27,7 @@ from itertools import product
 from typing import Any, Iterable, Literal, Mapping, Sequence, List, Tuple, Union, Optional, Dict
 from enum import Enum
 import triton.language.core as tl
+from triton._C.libtriton.tle import attr
 
 Axis = Tuple[str, int]
 AxesLike = Union[int, List[Axis]]
@@ -1199,17 +1200,27 @@ def remote(
 
 
 _SIGNAL_COOP_KINDS = {
-    "thread": 0,
-    "warp": 1,
-    "block": 2,
-    "tile_span": 3,
-    "lanes": 4,
+    "thread": attr.FlagCxCoopKind.Thread,
+    "warp": attr.FlagCxCoopKind.Warp,
+    "block": attr.FlagCxCoopKind.Block,
+    # "tile_span": 3,
+    # "lanes": 4,
 }
 
 
-def _normalize_signal_scalar(signal: tl.tensor, name: str, dtype: tl.dtype, _semantic) -> tl.tensor:
-    if not signal.dtype == dtype:
-        raise TypeError(f"{name} must be a {dtype.name} value")
+def _normalize_signal_scalar(signal, name: str, dtype: tl.dtype, _semantic) -> tl.tensor:
+    builder = _semantic.builder
+    if isinstance(signal, tl.tensor):
+        if signal.dtype != dtype:
+            handle = builder.create_int_cast(signal.handle, dtype.to_ir(builder), True)
+            signal = tl.tensor(handle, dtype)
+    else:
+        match dtype:
+            case tl.int32:
+                handle = builder.get_int32(signal)
+            case tl.int64:
+                handle = builder.get_int64(signal)
+        signal = tl.tensor(handle, dtype)
     if signal.shape:
         raise ValueError(f"{name} must be scalar (shape=())")
     return signal
@@ -1219,12 +1230,19 @@ def _normalize_signal_scalar(signal: tl.tensor, name: str, dtype: tl.dtype, _sem
 def signal_wait(
     device_dptr,
     signal_id,
-    target: int,
+    wait_kind: str | attr.FlagCxWaitKind,
+    target: int | None = None,
     group_kind: str | GroupKind = GroupKind.BLOCK,
-    content_idx: int = 0,
+    context_idx: int = 0,
     _semantic=None,
 ):
     builder = _semantic.builder
+
+    wait_kind = tl._unwrap_if_constexpr(wait_kind)
+    wait_kind_val = wait_kind if isinstance(wait_kind, attr.FlagCxWaitKind) else attr.FlagCxWaitKind.from_str(wait_kind)
+    if wait_kind_val is None:
+        expected = "signal, counter, or shadow"
+        raise ValueError(f"wait kind must be {expected}, got {wait_kind!r}")
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
     group_kind = group_kind.value if isinstance(group_kind, GroupKind) else group_kind
@@ -1239,11 +1257,16 @@ def signal_wait(
         raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
 
     comm = _parse_src_arg(builder, device_dptr, 1)
-    signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.uint32, _semantic)
-    target_tensor = _normalize_signal_scalar(target, "target", tl.uint64, _semantic)
+    signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.int32, _semantic) if target else None
+    target_tensor = _normalize_signal_scalar(target, "target", tl.int64, _semantic)
 
     builder.create_signal_wait(
-        comm, signal_tensor.handle, target_tensor.handle, _SIGNAL_COOP_KINDS[group_kind], context_idx
+        comm,
+        signal_tensor.handle,
+        wait_kind_val,
+        target_tensor and target_tensor.handle,
+        _SIGNAL_COOP_KINDS[group_kind],
+        context_idx,
     )
 
 

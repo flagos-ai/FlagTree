@@ -21,6 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "IR/Dialect.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
@@ -54,10 +55,11 @@ LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
                                        ConversionPatternRewriter &rewriter,
                                        Value comm, int idx);
 
-LLVM::CallOp getDevNetWaitSignalFuncCall(mlir::Location loc,
+LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
                                          ConversionPatternRewriter &rewriter,
-                                         Value dev_net,
-                                         FlagCxCoopKind coop_kind,
-                                         Value signal_id, Value target);
+                                         Value dev_net, Value signal_id,
+                                         FlagCxWaitKind wait_kind,
+                                         std::optional<Value> target,
+                                         FlagCxCoopKind coop_kind);
 
 } // namespace mlir::triton::tle

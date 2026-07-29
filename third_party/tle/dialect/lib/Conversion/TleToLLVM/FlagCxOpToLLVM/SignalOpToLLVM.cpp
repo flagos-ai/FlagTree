@@ -76,6 +76,7 @@ struct SignalWaitOpConversion
     auto loc = op.getLoc();
 
     auto comm = op.getComm();
+    auto wait_kind = op.getWaitKind();
     auto coop_kind = op.getCoopKind();
     auto signal_id = op.getSignalId();
     auto target = op.getTarget();
@@ -83,8 +84,8 @@ struct SignalWaitOpConversion
 
     auto dev_net =
         tle::getDevNetFromCommFuncCall(loc, rewriter, comm, context_idx);
-    tle::getDevNetWaitSignalFuncCall(loc, rewriter, dev_net.getResult(),
-                                     coop_kind, signal_id, target);
+    tle::getDevNetWaitFuncCallByKind(loc, rewriter, dev_net.getResult(),
+                                     signal_id, wait_kind, target, coop_kind);
 
     rewriter.eraseOp(op);
     return success();

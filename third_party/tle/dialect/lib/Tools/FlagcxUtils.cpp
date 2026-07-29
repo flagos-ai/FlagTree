@@ -219,11 +219,12 @@ LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
       FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr, ctx_idx});
 }
 
-LLVM::CallOp getDevNetWaitSignalFuncCall(mlir::Location loc,
+LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
                                          ConversionPatternRewriter &rewriter,
-                                         Value dev_net,
-                                         FlagCxCoopKind coop_kind,
-                                         Value signal_id, Value target) {
+                                         Value dev_net, Value signal_id,
+                                         FlagCxWaitKind wait_kind,
+                                         std::optional<Value> target,
+                                         FlagCxCoopKind coop_kind) {
   auto ctx = rewriter.getContext();
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
@@ -233,20 +234,41 @@ LLVM::CallOp getDevNetWaitSignalFuncCall(mlir::Location loc,
   auto I64Ty = IntegerType::get(ctx, 64);
   auto VoidTy = LLVM::LLVMVoidType::get(ctx);
 
-  auto func =
-      createFuncInstance("flagcxDevNetWaitSignalS", module,
-                         {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
-
   auto bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 64);
-  auto coop_kind_val = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, static_cast<int32_t>(coop_kind));
+  auto coop_kind_val = rewriter.create<LLVM::ConstantOp>(
+      loc, I32Ty, static_cast<int32_t>(coop_kind));
   // TODO: actually use the named enum value flagcxDeviceMemoryOrderAcquire(=1)
   // if possible
   auto order = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 1);
 
-  return rewriter.create<LLVM::CallOp>(
-      loc, TypeRange{func.getFunctionType().getReturnType()},
-      FlatSymbolRefAttr::get(func),
-      ValueRange{dev_net, coop_kind_val, signal_id, target, bits, order});
+  LLVM::LLVMFuncOp func;
+  auto make_call = [&](ValueRange args) {
+    return rewriter.create<LLVM::CallOp>(loc, TypeRange{},
+                                         FlatSymbolRefAttr::get(func), args);
+  };
+
+  switch (wait_kind) {
+  case FlagCxWaitKind::COUNTER:
+    func =
+        createFuncInstance("flagcxDevNetWaitCounterS", module,
+                           {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
+    return make_call(ValueRange{dev_net, coop_kind_val, signal_id,
+                                target.value(), bits, order});
+  case FlagCxWaitKind::SIGNAL:
+    func =
+        createFuncInstance("flagcxDevNetWaitSignalS", module,
+                           {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
+    return make_call(ValueRange{dev_net, coop_kind_val, signal_id,
+                                target.value(), bits, order});
+  case FlagCxWaitKind::SHADOW:
+    func = createFuncInstance("flagcxDevNetWaitSignalMeetShadowS", module,
+                              {PtrTy, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
+    return make_call(
+        ValueRange{dev_net, coop_kind_val, signal_id, bits, order});
+  default:
+    assert(false && "unreachable");
+    __builtin_unreachable();
+  }
 }
 
 } // namespace mlir::triton::tle

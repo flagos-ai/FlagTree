@@ -577,17 +577,20 @@ void init_triton_tle_ir(py::module &&m) {
       .def(
           "create_signal_wait",
           [](TritonOpBuilder &self, Value comm_dev_ptr, Value signal_id,
-             Value target, tle::FlagCxCoopKind coop_kind,
-             int32_t context_idx) -> void {
+             tle::FlagCxWaitKind wait_kind, std::optional<Value> target,
+             tle::FlagCxCoopKind coop_kind, int32_t context_idx) -> void {
             auto &builder = self.getBuilder();
+            auto wait_kind_attr =
+                builder.getAttr<tle::FlagCxWaitKindAttr>(wait_kind);
             auto coop_kind_attr =
                 builder.getAttr<tle::FlagCxCoopKindAttr>(coop_kind);
             auto context_idx_attr = builder.getI32IntegerAttr(context_idx);
-            self.create<tle::SignalWaitOp>(comm_dev_ptr, signal_id, target,
-                                           coop_kind_attr, context_idx_attr);
+            self.create<tle::SignalWaitOp>(
+                comm_dev_ptr, signal_id, wait_kind_attr,
+                target.value_or(Value()), coop_kind_attr, context_idx_attr);
           },
-          py::arg("comm"), py::arg("signal_id"), py::arg("target"),
-          py::arg("coop_kind"), py::arg("context_idx"))
+          py::arg("comm"), py::arg("signal_id"), py::arg("wait_kind"),
+          py::arg("target"), py::arg("coop_kind"), py::arg("context_idx"))
       .def(
           "create_distributed_barrier",
           [](TritonOpBuilder &self, const std::string &groupKind,
@@ -694,6 +697,21 @@ void init_triton_tle_ir(py::module &&m) {
                                           memorySpace, /*mutableMemory=*/true,
                                           allocShape);
            });
+}
+
+void init_triton_tle_attr(py::module &&m) {
+  py::enum_<tle::FlagCxCoopKind>(m, "FlagCxCoopKind")
+      .value("Thread", tle::FlagCxCoopKind::THREAD)
+      .value("Warp", tle::FlagCxCoopKind::WARP)
+      .value("Block", tle::FlagCxCoopKind::BLOCK);
+  py::enum_<tle::FlagCxWaitKind>(m, "FlagCxWaitKind")
+      .value("Signal", tle::FlagCxWaitKind::SIGNAL)
+      .value("Counter", tle::FlagCxWaitKind::COUNTER)
+      .value("Shadow", tle::FlagCxWaitKind::SHADOW)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeFlagCxWaitKind(name); },
+          py::arg("name"));
 }
 
 void init_triton_tle_passes(py::module &&m) {
@@ -817,6 +835,7 @@ void init_triton_tle(py::module &&m) {
     context.loadAllAvailableDialects();
   });
 
+  init_triton_tle_attr(m.def_submodule("attr"));
   init_triton_tle_ir(m.def_submodule("ir"));
   init_triton_tle_passes(m.def_submodule("passes"));
   init_tle_raw_ir(m.def_submodule("raw_ir"));

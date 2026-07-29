@@ -30,6 +30,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "tle/dialect/include/IR/Dialect.h.inc"
+#include "tle/dialect/include/IR/OpsEnums.h.inc"
 
 #define GET_ATTRDEF_CLASSES
 #include "tle/dialect/include/IR/TleAttrDefs.h.inc"
@@ -38,8 +39,6 @@
 #include "tle/dialect/include/IR/Ops.h.inc"
 
 #ifdef FLAGCX_ENABLED
-#include "tle/dialect/include/IR/FlagCxOpsEnums.h.inc"
-
 #define GET_OP_CLASSES
 #include "tle/dialect/include/IR/FlagCxOps.h.inc"
 #endif

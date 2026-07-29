@@ -103,18 +103,27 @@ def Tle_SignalOp : Tle_Op<"signal", [MemoryEffects<[MemRead, MemWrite]>]> {
   let hasVerifier = 1;
 }
 
-def Tle_SignalWaitOp : Tle_Op<"signal_wait", [MemoryEffects<[MemRead]>]> {
+def Tle_SignalWaitOp : Tle_Op<"signal_wait"> {
   let summary = "Wait for a remote FlagCX signal slot to become the target value";
   let description = [{
     Obtains a pre-allocated FlagCX network context from `comm`, then spin-waits the selected
-    signal slot to reach the target value (actual value >= target).
+    signal/counter slot to reach the target value (actual value >= target),
+    or waits the signal to reach its shadow value.
   }];
 
   let arguments = (ins
     Tle_LocalPointerResultType:$comm,
     I32:$signal_id,
-    I64:$target,
+    Tle_FlagCxWaitKindAttr:$wait_kind,
+    Optional<I64>:$target,
     Tle_FlagCxCoopKindAttr:$coop_kind,
     I32Attr:$context_idx
   );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    `(` $wait_kind `,` $coop_kind `)` $comm `,` $signal_id (`,` $target^)?  attr-dict `:`
+    functional-type(operands, results)
+  }];
 }
