@@ -1420,6 +1420,8 @@ def test_atomic_rmw_predicate(num_ctas, device):
                           for check_return_val in ([True, False] if is_hip() else [True])])
 def test_tensor_atomic_rmw(shape, axis, num_ctas, dtype_x_str, check_return_val, device):
     check_type_supported(dtype_x_str, device)
+    if is_corex() and dtype_x_str in ('int64', 'uint64'):
+        pytest.skip("CoreX does not support atomic add with int64/uint64 types")
     shape0, shape1 = shape
     # triton kernel
 
