@@ -18,8 +18,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: 'Clean Cache if Labeled'
-description: 'Check if PR has specific backend CleanCache label and clean cache if present'
+name: 'Clear Cache if Labeled'
+description: 'Check if PR has specific backend ClearCache label and clear cache if present'
 
 inputs:
   github-token:
@@ -32,48 +32,59 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Check specific CleanCache label
+    - name: Check specific ClearCache label
       id: check
       uses: actions/github-script@v6
       with:
         github-token: ${{ inputs.github-token }}
         script: |
           const backend = '${{ inputs.backend }}';
-          const expectedLabel = `CleanCache:${backend}`;
+          const expectedLabel = `ClearCache:${backend}`;
 
           if (context.eventName !== 'pull_request' && context.eventName !== 'pull_request_target') {
             console.log('ℹ️ Not a PR event, skipping label check');
-            core.setOutput('has_clean_cache_label', 'false');
+            core.setOutput('has_clear_cache_label', 'false');
+            return;
+          }
+
+          if (!context.payload || !context.payload.pull_request) {
+            console.log('⚠️ No pull_request payload found, skipping label check');
+            core.setOutput('has_clear_cache_label', 'false');
             return;
           }
 
           const prNumber = context.payload.pull_request.number;
-          const { data: prData } = await github.rest.pulls.get({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            pull_number: prNumber
-          });
+          try {
+            const { data: prData } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
 
-          const labels = prData.labels.map(label => label.name);
-          console.log(`Current PR labels:`, labels.join(', ') || '(no labels)');
+            const labels = (prData.labels || []).map(label => label.name);
+            console.log(`Current PR labels:`, labels.join(', ') || '(no labels)');
 
-          const hasCleanCache = labels.includes(expectedLabel);
-          console.log(`🔍 Has "${expectedLabel}" label:`, hasCleanCache ? '✅ YES' : '❌ NO');
+            const hasClearCache = labels.includes(expectedLabel);
+            console.log(`🔍 Has "${expectedLabel}" label:`, hasClearCache ? '✅ YES' : '❌ NO');
 
-          core.setOutput('has_clean_cache_label', hasCleanCache ? 'true' : 'false');
+            core.setOutput('has_clear_cache_label', hasClearCache ? 'true' : 'false');
+          } catch (err) {
+            console.log('❌ Error checking PR labels:', err.message || err);
+            core.setOutput('has_clear_cache_label', 'false');
+          }
 
-    - name: Clean cache if label present
+    - name: Clear cache if label present
       id: cleanup
-      if: steps.check.outputs.has_clean_cache_label == 'true'
+      if: steps.check.outputs.has_clear_cache_label == 'true'
       shell: bash
       run: |
         echo "========================================="
-        echo "🧹 Cleaning cache for ${{ inputs.backend }} backend."
+        echo "🧹 Clearing cache for ${{ inputs.backend }} backend."
         echo "========================================="
 
-        echo "-> Cleaning cache..."
+        echo "-> Clearing cache..."
         echo "-> Remove ~/.triton/cache"
         rm -rf ~/.triton/cache
         echo "-> Remove ~/.flaggems"
         rm -rf ~/.flaggems
-        echo "-> Clean cache done"
+        echo "-> Clear cache done"
