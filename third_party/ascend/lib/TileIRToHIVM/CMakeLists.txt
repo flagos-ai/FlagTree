@@ -12,4 +12,7 @@ add_triton_library(TileIRToHIVM
   MLIRTransforms
   MLIRSupport
   TritonIR
+  MLIRMemRefDialect
+  MLIRTensorDialect
+  MLIRBufferizationDialect
 )

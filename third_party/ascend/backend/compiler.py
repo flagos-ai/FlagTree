@@ -150,7 +150,9 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             passes.common.add_canonicalizer(pm)
 
         ascend.passes.ttir.add_tileir_to_hivm(pm)
-        ascend.passes.ttir.add_erase_linalg_casts(pm)
+        # some function signature contains !tile.buf which we did not resolve
+        # we just uses an inline pass instead
+        passes.common.add_inliner(pm)
         passes.common.add_canonicalizer(pm)
 
         ascend.passes.ttir.add_triton_to_structure(pm, enable_mask_fallback_conversion, optimize_dynamic_offset)
@@ -164,17 +166,10 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         ascend.passes.ttir.add_bubble_up_operation(pm)
         ascend.passes.ttir.add_triton_to_structure(pm, enable_mask_fallback_conversion, optimize_dynamic_offset)
 
-        passes.common.add_inliner(pm)
-        passes.common.add_canonicalizer(pm)
-
         ascend.passes.ttir.add_triton_to_linalg(pm, False, named_ops, enable_nd2nz_on_vector, enable_select_analysis,
                                                 compile_on_910_95)
-        # ── ⑤c Fold staging copies ──────────────────────────────────────────
-        ascend.passes.ttir.add_fold_staging_copy(pm)
 
-        # ── ⑤b Erase linalg casts (post) ────────────────────────────────────
-        ascend.passes.ttir.add_erase_linalg_casts(pm)
-
+        ascend.passes.ttir.add_tileir_to_hivm(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)

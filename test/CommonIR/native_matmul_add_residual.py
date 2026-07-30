@@ -251,11 +251,11 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     print(f"[dump_linalg] ① tileir_to_hivm: verify={module.verify()}", flush=True)
 
     # ── ①b Erase unrealized_conversion_cast ops ──────────────────────────
-    pm = ir.pass_manager(context)
-    ascend.passes.ttir.add_erase_linalg_casts(pm)
-    passes.common.add_canonicalizer(pm)
-    pm.run(module)
-    print(f"[dump_linalg] ①b erase_linalg_casts: verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context)
+    # ascend.passes.ttir.add_erase_linalg_casts(pm)
+    # passes.common.add_canonicalizer(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] ①b erase_linalg_casts: verify={module.verify()}", flush=True)
 
     # ── ② Structured (r1) + discrete mask ────────────────────────────────
     pm = ir.pass_manager(context)
@@ -297,24 +297,24 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
         print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: partial ({e})", flush=True)
 
     # ── ⑤c Fold staging copies (eliminate redundant default-space allocs) ─
-    pm = ir.pass_manager(context)
-    ascend.passes.ttir.add_fold_staging_copy(pm)
-    pm.run(module)
-    print(f"[dump_linalg] ⑤c fold_staging_copy: verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context)
+    # ascend.passes.ttir.add_fold_staging_copy(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] ⑤c fold_staging_copy: verify={module.verify()}", flush=True)
 
     # ── ⑤b Erase linalg casts (post) ────────────────────────────────────
-    pm = ir.pass_manager(context)
-    ascend.passes.ttir.add_erase_linalg_casts(pm)
-    pm.run(module)
-    print(f"[dump_linalg] ⑤b erase_linalg_casts (post): verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context)
+    # ascend.passes.ttir.add_erase_linalg_casts(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] ⑤b erase_linalg_casts (post): verify={module.verify()}", flush=True)
 
     # ── ⑥ Final canonicalize + CSE + DCE ─────────────────────────────────
-    pm = ir.pass_manager(context)
-    passes.common.add_canonicalizer(pm)
-    passes.common.add_cse(pm)
-    passes.common.add_symbol_dce(pm)
-    pm.run(module)
-    print(f"[dump_linalg] ⑥ final cleanup: verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context)
+    # passes.common.add_canonicalizer(pm)
+    # passes.common.add_cse(pm)
+    # passes.common.add_symbol_dce(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] ⑥ final cleanup: verify={module.verify()}", flush=True)
 
     ok = module.verify()
     if not ok:

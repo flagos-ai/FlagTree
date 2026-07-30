@@ -414,11 +414,11 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     #       cast memref<,#space>   -> tensor  =>  memref.memory_space_cast + bufferization.to_tensor
     #     so the linalg-incubator never sees the unresolved materializations
     #     that cause "unresolved materialization" failures.
-    pm = ir.pass_manager(context); pm.enable_debug()
-    ascend.passes.ttir.add_erase_linalg_casts(pm)
-    passes.common.add_canonicalizer(pm)
-    pm.run(module)
-    print(f"[dump_linalg] ①b erase_linalg_casts: verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context); pm.enable_debug()
+    # ascend.passes.ttir.add_erase_linalg_casts(pm)
+    # passes.common.add_canonicalizer(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] ①b erase_linalg_casts: verify={module.verify()}", flush=True)
 
     # ── ② Structured (r1) + discrete mask ────────────────────────────────
     pm = ir.pass_manager(context); pm.enable_debug()
@@ -474,10 +474,10 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     #     unrealized_conversion_cast ops that the partial linalg conversion
     #     may have introduced around the on-chip allocations / function
     #     boundary.
-    pm = ir.pass_manager(context); pm.enable_debug()
-    ascend.passes.ttir.add_erase_linalg_casts(pm)
-    pm.run(module)
-    print(f"[dump_linalg] ⑤b erase_linalg_casts (post): verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context); pm.enable_debug()
+    # ascend.passes.ttir.add_erase_linalg_casts(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] ⑤b erase_linalg_casts (post): verify={module.verify()}", flush=True)
 
     # ── ⑥ Final canonicalize → erase dead casts ─────────────────────────
     pm = ir.pass_manager(context); pm.enable_debug()

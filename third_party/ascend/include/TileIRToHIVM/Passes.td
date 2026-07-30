@@ -13,7 +13,11 @@ def TileIRToHIVM : Pass<"tileir-to-hivm", "mlir::ModuleOp"> {
   let constructor = "triton::createTileIRToHIVMPass()";
   let dependentDialects = [
     "hivm::HIVMDialect",
-    "triton::tile::TileIRDialect"
+    "triton::tile::TileIRDialect",
+    "mlir::bufferization::BufferizationDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::triton::TritonDialect",
   ];
 }
 

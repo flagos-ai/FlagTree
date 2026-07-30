@@ -44,12 +44,17 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 #include "llvm/Support/LogicalResult.h"
 
 using namespace mlir;
@@ -64,8 +69,31 @@ namespace triton {
 } // namespace mlir
 
 // =============================================================================
-// Helpers
+// Common Helpers
 // =============================================================================
+
+static bool isOneToOne(UnrealizedConversionCastOp op) {
+  return op.getInputs().size() == 1 && op->getNumResults() == 1;
+}
+
+/// Return true if \p op is an annotation.mark operation.
+static bool isAnnotationMark(Operation *op) {
+  return op->getName().getStringRef() == "annotation.mark";
+}
+
+static Value castDefaultMemrefToGM(Value value, Location loc,
+                                   PatternRewriter &rewriter) {
+  auto memrefTy = dyn_cast<MemRefType>(value.getType());
+  if (!memrefTy || memrefTy.getMemorySpace())
+    return value;
+
+  auto gmSpace =
+      hivm::AddressSpaceAttr::get(rewriter.getContext(), hivm::AddressSpace::GM);
+  auto gmTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
+                              memrefTy.getLayout(), gmSpace);
+  return rewriter.create<memref::MemorySpaceCastOp>(loc, gmTy, value);
+}
+
 static hivm::AddressSpace mapMemSpaceToHIVM(tile::MemorySpace tileSpace) {
   switch (tileSpace) {
   case tile::MemorySpace::GM:  return hivm::AddressSpace::GM;
@@ -473,6 +501,243 @@ struct TileGmOffsetToHIVM : OpRewritePattern<tile::GmOffsetOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Pattern A: !tt.ptr<tensor<>> -> memref<>
+//===----------------------------------------------------------------------===//
+struct LowerPtrTensorCastToMemref
+    : public OpRewritePattern<UnrealizedConversionCastOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(UnrealizedConversionCastOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isOneToOne(op))
+      return failure();
+    Value in = op.getInputs().front();
+    auto ptrTy = dyn_cast<triton::PointerType>(in.getType());
+    if (!ptrTy)
+      return failure();
+    auto tensorPointee = dyn_cast<RankedTensorType>(ptrTy.getPointeeType());
+    if (!tensorPointee)
+      return failure();
+    auto outMemref = dyn_cast<MemRefType>(op->getResult(0).getType());
+    if (!outMemref)
+      return failure();
+    if (outMemref.getShape() != tensorPointee.getShape() ||
+        outMemref.getElementType() != tensorPointee.getElementType())
+      return failure();
+
+    Location loc = op.getLoc();
+    // %t = tt.load %ptr : !tt.ptr<tensor<...>> (tensor-pointer overload)
+    Value loaded = rewriter.create<triton::LoadOp>(
+        loc, in, /*boundaryCheck=*/ArrayRef<int32_t>{},
+        /*padding=*/std::optional<triton::PaddingOption>(),
+        triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL,
+        /*isVolatile=*/false);
+    // %m = bufferization.to_memref %t
+#ifndef __LLVM_MAJOR_VERSION_22_COMPATIBLE__
+    Value asMemref =
+        rewriter.create<bufferization::ToMemrefOp>(loc, outMemref, loaded);
+#else
+    Value asMemref =
+        rewriter.create<bufferization::ToBufferOp>(loc, outMemref, loaded);
+#endif
+    rewriter.replaceOp(op, asMemref);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Pattern B: memref<..., #space> -> tensor<...>
+//===----------------------------------------------------------------------===//
+struct LowerMemrefCastToTensor
+    : public OpRewritePattern<UnrealizedConversionCastOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(UnrealizedConversionCastOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isOneToOne(op))
+      return failure();
+    Value in = op.getInputs().front();
+    auto memrefTy = dyn_cast<MemRefType>(in.getType());
+    if (!memrefTy)
+      return failure();
+    auto tensorOut = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!tensorOut)
+      return failure();
+    if (memrefTy.getShape() != tensorOut.getShape() ||
+        memrefTy.getElementType() != tensorOut.getElementType())
+      return failure();
+
+    Location loc = op.getLoc();
+    // %t = bufferization.to_tensor %m restrict
+    Value asTensor = rewriter.create<bufferization::ToTensorOp>(
+        loc, tensorOut, in, /*restrict=*/true, /*writable=*/false);
+    rewriter.replaceOp(op, asTensor);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Pattern C (utility): simplify chains of one-to-one unrealized casts whose
+// outer source type equals the outer result type.  This catches cases like
+//   %a = unrealized_conversion_cast %x : memref -> tensor
+//   %b = unrealized_conversion_cast %a : tensor -> memref
+// which arise after the linalg pass partially converts surrounding ops.
+//===----------------------------------------------------------------------===//
+struct FoldRoundtripCast
+    : public OpRewritePattern<UnrealizedConversionCastOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(UnrealizedConversionCastOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isOneToOne(op))
+      return failure();
+    Value in = op.getInputs().front();
+    auto prev = in.getDefiningOp<UnrealizedConversionCastOp>();
+    if (!prev || !isOneToOne(prev))
+      return failure();
+    Value origin = prev.getInputs().front();
+    if (origin.getType() != op->getResult(0).getType())
+      return failure();
+    rewriter.replaceOp(op, origin);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Rewrite pattern: fold staging alloc + copy1 + to_tensor + copy2
+//===----------------------------------------------------------------------===//
+struct FoldStagingCopyPattern : public OpRewritePattern<memref::CopyOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::CopyOp copyOp,
+                                PatternRewriter &rewriter) const override {
+    Value stage = copyOp.getSource();
+    auto stageCast = stage.getDefiningOp<memref::MemorySpaceCastOp>();
+    if (stageCast)
+      stage = stageCast.getSource();
+    Value dst = copyOp.getTarget();
+
+    // ① Destination must have an explicit memory space (on-chip buffer).
+    auto dstType = dyn_cast<MemRefType>(dst.getType());
+    if (!dstType || !dstType.getMemorySpace())
+      return failure();
+
+    // ② Source must be a staging memref.alloc in default/GM address space.
+    auto stageAlloc = stage.getDefiningOp<memref::AllocOp>();
+    if (!stageAlloc)
+      return failure();
+    auto stageType = stageAlloc.getType();
+    if (auto stageSpace = stageType.getMemorySpace()) {
+      auto stageAddr = dyn_cast<hivm::AddressSpaceAttr>(stageSpace);
+      if (!stageAddr || stageAddr.getAddressSpace() != hivm::AddressSpace::GM)
+        return failure();
+    }
+
+    // ③ Enumerate the source copy: memref.copy %src, %stage.
+    //    Collect all users of %stage to verify the expected pattern.
+    memref::CopyOp srcCopy;
+    Operation *stageMark = nullptr;
+    bufferization::ToTensorOp toTensor;
+    Operation *tensorMark = nullptr;
+    SmallVector<Operation *> otherUses;
+
+    for (Operation *user : stage.getUsers()) {
+      if (auto c = dyn_cast<memref::CopyOp>(user)) {
+        if (c.getTarget() == stage) {
+          if (srcCopy)
+            return failure(); // multiple incoming copies — ambiguous
+          srcCopy = c;
+        } else if (c == copyOp.getOperation()) {
+          continue; // the outgoing copy we are folding
+        } else {
+          otherUses.push_back(user);
+        }
+      } else if (isAnnotationMark(user)) {
+        if (stageMark)
+          otherUses.push_back(user);
+        else
+          stageMark = user;
+      } else if (stageCast && user == stageCast.getOperation()) {
+        continue;
+      } else if (auto tt = dyn_cast<bufferization::ToTensorOp>(user)) {
+        if (toTensor)
+          otherUses.push_back(user);
+        else
+          toTensor = tt;
+      } else {
+        otherUses.push_back(user);
+      }
+    }
+
+    // srcCopy is mandatory; toTensor is optional (Flavour A has it, B doesn't).
+    if (!srcCopy || !otherUses.empty())
+      return failure();
+
+    // Collect annotation.mark users of the tensor value (only if toTensor
+    // exists — Flavour A path).
+    if (toTensor) {
+      Value tensorVal = toTensor.getResult();
+      for (Operation *user : tensorVal.getUsers()) {
+        if (isAnnotationMark(user) && !tensorMark)
+          tensorMark = user;
+      }
+    }
+
+    Location loc = copyOp.getLoc();
+    Value src = castDefaultMemrefToGM(srcCopy.getSource(), loc, rewriter);
+    Value dstCbuf = dst;
+
+    // ④ Create the merged copy: memref.copy %src, %dst(#space)
+    rewriter.create<memref::CopyOp>(loc, src, dstCbuf);
+
+    // ⑤ If there was an annotation.mark on %stage, move it to %dst.
+    if (stageMark) {
+      OperationState state(loc, "annotation.mark");
+      state.addOperands(dstCbuf);
+      for (auto &namedAttr : stageMark->getAttrs())
+        state.addAttribute(namedAttr.getName(), namedAttr.getValue());
+      rewriter.create(state);
+    }
+
+    // ⑥ For Flavour A: drop the address space via memory_space_cast and
+    //    re-create the to_tensor pointing at the cbuf alloc.
+    //    For Flavour B: nothing to do — the tensor path never existed.
+    if (toTensor) {
+      auto genericType =
+          MemRefType::get(dstType.getShape(), dstType.getElementType());
+      Value cast =
+          rewriter.create<memref::MemorySpaceCastOp>(loc, genericType, dstCbuf);
+      Value tensor = rewriter.create<bufferization::ToTensorOp>(
+          toTensor.getLoc(), toTensor.getType(), cast, toTensor.getRestrict(),
+          toTensor.getWritable());
+
+      // ⑦ If there was an annotation.mark on the tensor value, re-create it.
+      if (tensorMark) {
+        OperationState state(loc, "annotation.mark");
+        state.addOperands(tensor);
+        for (auto &namedAttr : tensorMark->getAttrs())
+          state.addAttribute(namedAttr.getName(), namedAttr.getValue());
+        rewriter.create(state);
+      }
+
+      rewriter.replaceOp(toTensor, tensor);
+    }
+
+    // ⑧ Erase the dead ops.
+    rewriter.eraseOp(copyOp);
+    rewriter.eraseOp(srcCopy);
+    if (stageCast)
+      rewriter.eraseOp(stageCast);
+    if (stageMark)
+      rewriter.eraseOp(stageMark);
+    if (tensorMark)
+      rewriter.eraseOp(tensorMark);
+
+    return success();
+  }
+};
+
 // =============================================================================
 // Pass
 // =============================================================================
@@ -492,10 +757,10 @@ void TileIRToHIVMPass::runOnOperation() {
 
 // apply pattern separately to ensure their relative order
 // template lambda is a C++ 20 feature, so we'll have to use MACRO
-#define APPLY_REWRITE_PATTERN(pattern)                                     \
+#define APPLY_REWRITE_PATTERN(...)                                         \
 {                                                                          \
   RewritePatternSet patterns(&getContext());                               \
-  patterns.add<pattern>(&getContext());                                    \
+  patterns.add<__VA_ARGS__>(&getContext());                                \
   if (failed(applyPatternsAndFoldGreedily(module, std::move(patterns)))) { \
     return signalPassFailure();                                            \
   }                                                                        \
@@ -569,6 +834,17 @@ void TileIRToHIVMPass::runOnOperation() {
       }
     }
   });
+
+  APPLY_REWRITE_PATTERN(LowerPtrTensorCastToMemref);
+  APPLY_REWRITE_PATTERN(LowerMemrefCastToTensor);
+  APPLY_REWRITE_PATTERN(FoldRoundtripCast);
+
+  // Finally, fold any residual A<->B unrealized cast chains.
+  SmallVector<UnrealizedConversionCastOp> casts;
+  module->walk([&](UnrealizedConversionCastOp c) { casts.push_back(c); });
+  reconcileUnrealizedCasts(casts);
+
+  APPLY_REWRITE_PATTERN(FoldStagingCopyPattern);
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>

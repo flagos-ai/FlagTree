@@ -297,11 +297,11 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     print(f"[dump_linalg] (1) tileir_to_hivm: verify={module.verify()}", flush=True)
 
     # -- (1b) Erase unrealized_conversion_cast ops ------------------------
-    pm = ir.pass_manager(context)
-    ascend.passes.ttir.add_erase_linalg_casts(pm)
-    passes.common.add_canonicalizer(pm)
-    pm.run(module)
-    print(f"[dump_linalg] (1b) erase_linalg_casts: verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context)
+    # ascend.passes.ttir.add_erase_linalg_casts(pm)
+    # passes.common.add_canonicalizer(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] (1b) erase_linalg_casts: verify={module.verify()}", flush=True)
 
     # -- (2) Structured (r1) + discrete mask ------------------------------
     pm = ir.pass_manager(context)
@@ -343,16 +343,16 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
         print(f"[dump_linalg] (5) triton_to_linalg_incubated: partial ({e})", flush=True)
 
     # -- (5c) Fold staging copies -----------------------------------------
-    pm = ir.pass_manager(context)
-    ascend.passes.ttir.add_fold_staging_copy(pm)
-    pm.run(module)
-    print(f"[dump_linalg] (5c) fold_staging_copy: verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context)
+    # ascend.passes.ttir.add_fold_staging_copy(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] (5c) fold_staging_copy: verify={module.verify()}", flush=True)
 
     # -- (5b) Erase linalg casts (post) -----------------------------------
-    pm = ir.pass_manager(context)
-    ascend.passes.ttir.add_erase_linalg_casts(pm)
-    pm.run(module)
-    print(f"[dump_linalg] (5b) erase_linalg_casts (post): verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context)
+    # ascend.passes.ttir.add_erase_linalg_casts(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] (5b) erase_linalg_casts (post): verify={module.verify()}", flush=True)
 
     # -- (6) Final canonicalize + CSE + DCE -------------------------------
     pm = ir.pass_manager(context)

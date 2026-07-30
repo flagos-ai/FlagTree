@@ -15,8 +15,6 @@
 #include "ascend/include/TritonToHFusion/Passes.h"
 #include "ascend/include/TritonToHIVM/Passes.h"
 #include "ascend/include/TileIRToHIVM/Passes.h"
-#include "ascend/include/EraseLinalgCasts/Passes.h"
-#include "ascend/include/FoldStagingCopy/Passes.h"
 #include "ascend/include/TritonToLLVM/Passes.h"
 #include "incubated/Conversion/DiscreteMaskAccessConversion/Passes.h"
 #include "incubated/Conversion/TritonToLinalgIncubated/Passes.h"
@@ -397,14 +395,6 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
 
   m.def("add_tileir_to_hivm", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createTileIRToHIVMPass());
-  });
-
-  m.def("add_erase_linalg_casts", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::createEraseLinalgCastsPass());
-  });
-
-  m.def("add_fold_staging_copy", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::createFoldStagingCopyPass());
   });
 
   m.def("add_triton_to_llvm", [](mlir::PassManager &pm) {

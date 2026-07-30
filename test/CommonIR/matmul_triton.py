@@ -466,18 +466,18 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
               f"(expected — creates cast chains that need post-processing): {e}", flush=True)
 
     # ── ④b Fold staging memref.alloc + memref.copy pairs ─────────────────
-    pm = ir.pass_manager(context)
-    pm.enable_debug()
-    ascend.passes.ttir.add_fold_staging_copy(pm)
-    pm.run(module)
-    print(f"[dump_linalg] ④b fold_staging_copy: verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context)
+    # pm.enable_debug()
+    # ascend.passes.ttir.add_fold_staging_copy(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] ④b fold_staging_copy: verify={module.verify()}", flush=True)
 
     # ── ④c Erase linalg casts introduced by the partial linalg conversion ─
-    pm = ir.pass_manager(context)
-    pm.enable_debug()
-    ascend.passes.ttir.add_erase_linalg_casts(pm)
-    pm.run(module)
-    print(f"[dump_linalg] ④c erase_linalg_casts: verify={module.verify()}", flush=True)
+    # pm = ir.pass_manager(context)
+    # pm.enable_debug()
+    # ascend.passes.ttir.add_erase_linalg_casts(pm)
+    # pm.run(module)
+    # print(f"[dump_linalg] ④c erase_linalg_casts: verify={module.verify()}", flush=True)
 
     # ── ⑤ Final canonicalize + CSE + DCE ─────────────────────────────────
     pm = ir.pass_manager(context)

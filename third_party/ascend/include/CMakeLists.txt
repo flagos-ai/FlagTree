@@ -5,8 +5,6 @@ add_subdirectory(TritonToHIVM)
 add_subdirectory(TritonToGraph)
 add_subdirectory(TritonToLLVM)
 add_subdirectory(TileIRToHIVM)
-add_subdirectory(EraseLinalgCasts)
-add_subdirectory(FoldStagingCopy)
 add_subdirectory(AutoBlockify)
 # todo: this code will be removed in version 530.
 add_subdirectory(TritonAffinityOpt)
