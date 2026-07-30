@@ -408,6 +408,24 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure, AttrSizedOperandSegm
   let results = (outs Tle_LocalPointerResultType:$result);
   let hasVerifier = 1;
 }
+
+def Tle_NodePutOp
+    : Tle_Op<"node_put", [MemoryEffects<[MemRead, MemWrite]>]> {
+
+  let arguments = (ins
+    I64:$dst_mem,
+    I64:$src_mem,
+    I64:$comm,
+    I32:$peer,
+    I64:$dst_offset,
+    I64:$src_offset,
+    I64:$nelems,
+    I64Attr:$elem_bytes,
+    I32Attr:$put_coop_kind
+  );
+  let hasVerifier = 1;
+}
+
 def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
   let summary = "Get the number of intra-node PEs";
   let arguments = (ins

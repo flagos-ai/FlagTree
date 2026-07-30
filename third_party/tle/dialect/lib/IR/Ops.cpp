@@ -21,6 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -32,6 +33,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include <cctype>
 #include <limits>
+#include <optional>
 
 #include "tle/dialect/include/IR/VerifyUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -44,6 +46,16 @@ namespace {
 constexpr int kSharedMemoryAddressSpace = 3;
 // Cluster-shared pointers map to LLVM address space 7 (NVVM shared::cluster).
 constexpr int kClusterSharedMemoryAddressSpace = 7;
+
+std::optional<int64_t> getConstantIntValue(Value value) {
+  auto constant = value.getDefiningOp<arith::ConstantOp>();
+  if (!constant)
+    return std::nullopt;
+  auto integer = dyn_cast<IntegerAttr>(constant.getValue());
+  if (!integer)
+    return std::nullopt;
+  return integer.getInt();
+}
 } // namespace
 
 // ============================================================================
@@ -987,6 +999,9 @@ LogicalResult DistributedBarrierOp::verify() {
 
 LogicalResult RemotePointersOp::verify() {
   auto spaceAttr = getSpace();
+  if (spaceAttr != "cluster" && spaceAttr != "device")
+    return emitOpError()
+           << "expects space to be either 'cluster' or 'device'";
   if (spaceAttr == "device") {
     if (failed(RemotePointers::verifyDeviceSpace(getSrc(), getResult())))
       return failure();
@@ -1097,4 +1112,34 @@ LogicalResult SignalWaitOp::verify() {
     return emitOpError() << *err;
   return success();
 }
+LogicalResult NodePutOp::verify() {
+  if (getElemBytes() <= 0)
+    return emitOpError() << "expects elem_bytes to be > 0";
+
+  int64_t coopKind = getPutCoopKind();
+  if (coopKind < 0 || coopKind > 2)
+    return emitOpError()
+           << "expects put_coop_kind to be THREAD(0), WARP(1), or BLOCK(2)";
+
+  auto verifyNonNegativeConstant =
+      [&](Value value, StringRef name) -> LogicalResult {
+    if (std::optional<int64_t> constant = getConstantIntValue(value);
+        constant && *constant < 0)
+      return emitOpError()
+             << "expects constant " << name << " to be >= 0";
+    return success();
+  };
+
+  if (failed(verifyNonNegativeConstant(getPeer(), "peer")) ||
+      failed(verifyNonNegativeConstant(getDstOffset(), "dst_offset")) ||
+      failed(verifyNonNegativeConstant(getSrcOffset(), "src_offset")))
+    return failure();
+
+  if (std::optional<int64_t> nelems = getConstantIntValue(getNelems());
+      nelems && *nelems <= 0)
+    return emitOpError() << "expects constant nelems to be > 0";
+
+  return success();
+}
+
 } // namespace mlir::triton::tle

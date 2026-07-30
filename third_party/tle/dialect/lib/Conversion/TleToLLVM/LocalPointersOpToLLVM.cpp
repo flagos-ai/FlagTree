@@ -106,6 +106,98 @@ static LLVM::LLVMFuncOp getOrInsertGetPeerPointer(ModuleOp module,
   return func;
 }
 
+static LLVM::LLVMFuncOp getOrInsertNetFromComm(ModuleOp module,
+                                               MLIRContext *ctx) {
+  const char *funcName = "flagcxDevNetGetFromCommS";
+  if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
+    return func;
+
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i32Ty}, false);
+  OpBuilder builder(module.getBodyRegion());
+  auto func = builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName,
+                                                funcTy);
+  func.setLinkage(LLVM::Linkage::External);
+  return func;
+}
+
+static LLVM::LLVMFuncOp getOrInsertNetPut(ModuleOp module,
+                                          MLIRContext *ctx) {
+  const char *funcName = "flagcxDevNetPutS";
+  if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
+    return func;
+
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto i64Ty = IntegerType::get(ctx, 64);
+  SmallVector<Type> argTypes{ptrTy, ptrTy, i32Ty, i32Ty, ptrTy,
+                             i64Ty, ptrTy, i64Ty, i64Ty, i32Ty};
+  auto funcTy = LLVM::LLVMFunctionType::get(voidTy, argTypes, false);
+  OpBuilder builder(module.getBodyRegion());
+  auto func = builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName,
+                                                funcTy);
+  func.setLinkage(LLVM::Linkage::External);
+  return func;
+}
+
+struct NodePutOpConversion : public ConvertOpToLLVMPattern<tle::NodePutOp> {
+  using ConvertOpToLLVMPattern<tle::NodePutOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(tle::NodePutOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    if (!module)
+      return rewriter.notifyMatchFailure(op, "expected a parent module");
+
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    auto i32Ty = rewriter.getI32Type();
+    Value dstMem = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy,
+                                                     adaptor.getDstMem());
+    Value srcMem = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy,
+                                                     adaptor.getSrcMem());
+    Value comm =
+        rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getComm());
+
+    Value dstByteOffset = adaptor.getDstOffset();
+    Value srcByteOffset = adaptor.getSrcOffset();
+    Value byteCount = adaptor.getNelems();
+    if (op.getElemBytes() != 1) {
+      Value elemBytes = rewriter.create<arith::ConstantIntOp>(
+          loc, op.getElemBytes(), 64);
+      dstByteOffset = rewriter.create<arith::MulIOp>(
+          loc, adaptor.getDstOffset(), elemBytes);
+      srcByteOffset = rewriter.create<arith::MulIOp>(
+          loc, adaptor.getSrcOffset(), elemBytes);
+      byteCount =
+          rewriter.create<arith::MulIOp>(loc, adaptor.getNelems(), elemBytes);
+    }
+
+    LLVM::LLVMFuncOp getNet = getOrInsertNetFromComm(module, ctx);
+    LLVM::LLVMFuncOp put = getOrInsertNetPut(module, ctx);
+    Value netIdx = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(0));
+    auto getNetCall = rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{ptrTy}, FlatSymbolRefAttr::get(getNet),
+        ValueRange{comm, netIdx});
+    Value teamKind = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(2));
+    Value coopKind = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(op.getPutCoopKind()));
+    rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{}, FlatSymbolRefAttr::get(put),
+        ValueRange{getNetCall.getResult(), comm, teamKind, adaptor.getPeer(),
+                   dstMem, dstByteOffset, srcMem, srcByteOffset, byteCount,
+                   coopKind});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct LocalPointersOpConversion
     : public ConvertOpToLLVMPattern<tle::LocalPointersOp> {
   LocalPointersOpConversion(LLVMTypeConverter &typeConverter,
@@ -468,13 +560,6 @@ LogicalResult lowerDeviceSpace(Location loc, Value mem_ptr,
   return success();
 }
 
-LogicalResult lowerNodeSpace(Location loc, ValueRange srcElems,
-                             ValueRange shardElems,
-                             ConversionPatternRewriter &rewriter,
-                             SmallVectorImpl<Value> &resultPtrs) {
-  return failure(); // Not implemented yet
-}
-
 Value getDistDevicePtr(tle::RemotePointersOp op, SmallVector<Value> &srcElems) {
   if (!srcElems.empty())
     return srcElems[0];
@@ -549,10 +634,6 @@ struct RemotePointersOpConversion
                                   rewriter, mappedPtrs))) {
         return rewriter.notifyMatchFailure(op, "device lowering failed");
       }
-    } else if (space == "node") {
-      if (failed(lowerNodeSpace(loc, mem, shardElems, rewriter, mappedPtrs))) {
-        return rewriter.notifyMatchFailure(op, "node lowering failed");
-      }
     } else {
       return reportFailure("unsupported remote space: " + space.str());
     }
@@ -569,6 +650,12 @@ void tle::populateLocalPointersOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
     RewritePatternSet &patterns, PatternBenefit benefit) {
   patterns.add<LocalPointersOpConversion>(typeConverter, targetInfo, benefit);
+}
+
+void tle::populateNodePutOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                          RewritePatternSet &patterns,
+                                          PatternBenefit benefit) {
+  patterns.add<NodePutOpConversion>(typeConverter, benefit);
 }
 
 void tle::populateRemotePointersOpToLLVMPatterns(

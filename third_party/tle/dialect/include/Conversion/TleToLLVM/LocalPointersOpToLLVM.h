@@ -32,6 +32,10 @@ void populateLocalPointersOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
     RewritePatternSet &patterns, PatternBenefit benefit);
 
+void populateNodePutOpToLLVMPatterns(
+    mlir::LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
+    PatternBenefit benefit);
+
 void populateRemotePointersOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
     RewritePatternSet &patterns, PatternBenefit benefit);

@@ -179,6 +179,8 @@ struct ConvertTritonGPUToLLVM
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
           typeConverter, targetInfo, patterns, benefit);
+      mlir::triton::tle::populateNodePutOpToLLVMPatterns(typeConverter,
+                                                         patterns, benefit);
       mlir::triton::tle::populateExtractTileOpToLLVMPatterns(
           typeConverter, patterns, targetInfo, benefit);
       mlir::triton::tle::populateInsertTileOpToLLVMPatterns(

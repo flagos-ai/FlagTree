@@ -655,11 +655,11 @@ void init_triton_tle_ir(py::module &&m) {
              std::optional<Value> &offset) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
-                "cluster", "device", "node"};
+                "cluster", "device"};
             if (valid.find(space) == valid.end()) {
               throw std::invalid_argument(
                   "Invalid space: " + space +
-                  ". Expected one of: cluster, device, node.");
+                  ". Expected one of: cluster, device.");
             }
             auto space_attr = builder.getStringAttr(space);
 
@@ -669,6 +669,21 @@ void init_triton_tle_ir(py::module &&m) {
           },
           py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
           py::arg("space"), py::arg("offset") = py::none())
+      .def(
+          "create_node_put",
+          [](TritonOpBuilder &self, Value dstMem, Value srcMem, Value comm,
+             Value peer, Value dstOffset, Value srcOffset, Value nelems,
+             int64_t elemBytes, int32_t putCoopKind) -> void {
+            auto &builder = self.getBuilder();
+            self.create<tle::NodePutOp>(
+                dstMem, srcMem, comm, peer, dstOffset, srcOffset, nelems,
+                builder.getI64IntegerAttr(elemBytes),
+                builder.getI32IntegerAttr(putCoopKind));
+          },
+          py::arg("dst_mem"), py::arg("src_mem"), py::arg("comm"),
+          py::arg("peer"), py::arg("dst_offset"), py::arg("src_offset"),
+          py::arg("nelems"), py::arg("elem_bytes"),
+          py::arg("put_coop_kind"))
       .def("get_device_id",
            [](TritonOpBuilder &self, Type resultTy,
               std::optional<Value> src) -> Value {
