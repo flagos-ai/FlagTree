@@ -1,0 +1,104 @@
+name: spacemit-ci
+
+# SpaceMiT RISC-V 后端 CI (root-triton plugin)。
+#
+# 执行环境: 容器化 self-hosted runner (label spacemit-k3),
+#   镜像 spacemit-ai-workspace:ubuntu24.04_v0.1 (构建依赖全齐),
+#   挂 NFS(LLVM) + 交叉工具链, host 网络连 K3 RPC。
+# runner 本身已是容器, 故此处不写 container:, job 直接跑在 runner 容器内。
+#
+# 机器专属路径 (LLVM_SYSPATH / CROSS_TOOLCHAIN / SPINE_TRITON_RPC_* / MAX_JOBS)
+# 不写在本文件里, 由 github-ci/start-runner.sh 从 github-ci/env.sh 读取并 -e 注入
+# runner 容器; job 的 run: shell 直接从环境变量继承。这样 workflow 不含任何本地路径。
+#
+# 阶段 1 (当前): build (打 flagtree.patch + pip install) + 最小冒烟测试。
+
+on:
+  workflow_dispatch:          # 手动触发 (Actions 页面按钮)
+  push:
+    branches: [spacemit-backend-plugin]
+    paths:
+      - 'third_party/spacemit/**'
+      - 'CMakeLists.txt'
+      - 'setup.py'
+      - 'python/**'
+      - '.github/workflows/spacemit-ci.yml'
+
+concurrency:                  # K3 是单一物理资源, 串行, 不取消进行中的
+  group: spacemit-k3
+  cancel-in-progress: false
+
+jobs:
+  build-and-smoke:
+    runs-on: [self-hosted, spacemit-k3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check runner env (paths injected by start-runner.sh)
+        run: |
+          set -euo pipefail
+          : "${LLVM_SYSPATH:?LLVM_SYSPATH 未注入 — 检查 github-ci/env.sh + start-runner.sh}"
+          : "${CROSS_TOOLCHAIN:?CROSS_TOOLCHAIN 未注入 — 检查 github-ci/env.sh + start-runner.sh}"
+          : "${SPINE_TRITON_RPC_HOST:?SPINE_TRITON_RPC_HOST 未注入}"
+          : "${SPINE_TRITON_RPC_PORT:?SPINE_TRITON_RPC_PORT 未注入}"
+          echo "LLVM_SYSPATH=${LLVM_SYSPATH}"
+          echo "CROSS_TOOLCHAIN=${CROSS_TOOLCHAIN}"
+          echo "K3 RPC=${SPINE_TRITON_RPC_HOST}:${SPINE_TRITON_RPC_PORT}"
+
+      - name: Build (apply flagtree.patch + pip install)
+        run: |
+          set -euo pipefail
+          # 镜像缺 venv 包(无 ensurepip) + libzstd-dev(NFS LLVM 带 zstd,
+          # 其 CMake 导出引用 zstd::libzstd_shared, 宿主无 dev 库则 configure 失败); 幂等补装
+          NEED=""
+          python3 -c 'import ensurepip' 2>/dev/null || NEED="$NEED python3.12-venv"
+          [ -e /usr/lib/x86_64-linux-gnu/libzstd.so ] || NEED="$NEED libzstd-dev"
+          if [ -n "$NEED" ]; then apt-get update -qq && apt-get install -y -qq $NEED; fi
+          python3 -m venv --system-site-packages .venv-ci
+          source .venv-ci/bin/activate
+          python -m pip install --quiet --upgrade pip cmake ninja pybind11 setuptools wheel
+          # install_flagtree_plugin.sh: 幂等打 root patch + FLAGTREE_BACKEND=spacemit pip install .
+          LLVM_SYSPATH="${LLVM_SYSPATH}" MAX_JOBS="${MAX_JOBS:-4}" PIP="python -m pip" \
+            bash third_party/spacemit/scripts/install_flagtree_plugin.sh
+
+      - name: Minimal smoke test (import + spacemit backend + K3 RPC)
+        run: |
+          set -euo pipefail
+          source .venv-ci/bin/activate
+          export SPINE_TRITON_TARGET_ARCH=riscv64
+          export SPINE_TRITON_CROSS_TOOLCHAIN="${CROSS_TOOLCHAIN}"
+          export SPACEMIT_EP_QEMU_SET_CORE_ARCH=0xA064
+          export GEMS_VENDOR=spacemit
+          python - <<'PY'
+          import os, socket, sys
+          def check(desc, cond, detail=""):
+              print(f"[{'OK ' if cond else 'FAIL'}] {desc}" + (f"  ({detail})" if detail else ""))
+              return cond
+          ok = True
+          import triton
+          ok &= check("import triton", True, f"version={triton.__version__}")
+          from triton.backends import backends
+          names = sorted(backends.keys())
+          ok &= check("spacemit backend registered", "spacemit" in names, f"backends={names}")
+          b = backends["spacemit"]
+          ok &= check("compiler/driver",
+                      b.compiler.__name__ == "CPUBackend" and b.driver.__name__ == "CPUDriver",
+                      f"{b.compiler.__name__}/{b.driver.__name__}")
+          from triton._C.libtriton import ir, spacemit
+          pads = [x for x in dir(ir.PADDING_OPTION) if x.startswith("PAD")]
+          ok &= check("PADDING_OPTION adapt", {"PAD_NEG_INF","PAD_INF"} <= set(pads), f"pads={pads}")
+          sub = [a for a in dir(spacemit) if not a.startswith("__")]
+          ok &= check("spacemit C++ submod", {"load_dialects","tle_ir","xsmt_ir"} <= set(sub), f"sub={sub}")
+          host = os.environ.get("SPINE_TRITON_RPC_HOST","10.3.91.75")
+          port = int(os.environ.get("SPINE_TRITON_RPC_PORT","9999"))
+          s = socket.socket(); s.settimeout(5)
+          ok &= check("K3 RPC reachable", s.connect_ex((host,port))==0, f"{host}:{port}")
+          print()
+          print("=== minimal smoke: " + ("ALL PASS" if ok else "FAILED") + " ===")
+          sys.exit(0 if ok else 1)
+          PY
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf .venv-ci || true
