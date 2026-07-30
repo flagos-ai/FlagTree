@@ -62,8 +62,8 @@ jobs:
         run: |
           set -x
           source ~/env-3.6.sh
-          export FLAGCX_RECOMPILE=ON
-          export USE_FLAGCX=ON
+          # export FLAGCX_RECOMPILE=ON
+          # export USE_FLAGCX=ON
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Clear cache if ClearCache label present
