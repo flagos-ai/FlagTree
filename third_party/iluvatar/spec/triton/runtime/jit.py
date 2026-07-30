@@ -26,6 +26,7 @@ import copy
 import hashlib
 import inspect
 import itertools
+import os
 import threading
 import re
 import textwrap
@@ -625,6 +626,40 @@ def compute_cache_key(kernel_key_cache, specialization, options):
     return cache_key
 
 
+def get_corex_sme(args, specialization):
+    import torch
+
+    if getattr(torch, "corex", False) is not True or os.getenv("TRITON_DISABLE_SME", "0") == "1":
+        return 0
+
+    use_sme = 0
+    operand_index = 0
+    sme_dtypes = (torch.float16, torch.bfloat16, torch.float32, torch.int8)
+    for arg, spec in zip(args, specialization):
+        # Constexpr arguments are not runtime function operands and therefore do
+        # not consume a bit in the use_sme operand mask.
+        if spec[0] == "constexpr":
+            continue
+
+        if torch.is_tensor(arg) and arg.dtype in sme_dtypes and arg.dim() >= 2:
+            dim_m = arg.shape[-2]
+            dim_k = arg.shape[-1]
+            if dim_m != 1 and dim_k != 1:
+                sme_dim = 64 // arg.element_size()
+                is_row_major = arg.is_contiguous() and dim_k % sme_dim == 0
+                is_col_major = not arg.is_contiguous() and dim_m % sme_dim == 0
+                can_use_sme = is_col_major if arg.dtype == torch.int8 else is_row_major or is_col_major
+                if can_use_sme:
+                    use_sme |= 1 << operand_index
+        operand_index += 1
+    return use_sme
+
+
+def specialize_backend_options(bound_args, specialization, options):
+    options["use_sme"] = get_corex_sme(tuple(bound_args.values()), specialization)
+    return options
+
+
 def convert_to_tuple_if_list(item):
     # If the incoming item is a list, recursively iterate through it to convert all lists therein into tuples
     if not isinstance(item, list):
@@ -713,7 +748,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
     def _pack_args(self, backend, kwargs, bound_args, specialization, options):
         # options
-        options = backend.parse_options(kwargs)
+        options = backend.parse_options(options)
         # signature
         sigkeys = [x.name for x in self.params]
         sigvals = [x[0] for x in specialization]
@@ -751,6 +786,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         # specialization is list[tuple[str, Any]], where first element of tuple is
         # the type and the second parameter is the 'specialization' value.
         bound_args, specialization, options = binder(*args, **kwargs)
+        options = specialize_backend_options(bound_args, specialization, options)
 
         key = compute_cache_key(kernel_key_cache, specialization, options)
         kernel = kernel_cache.get(key, None)
@@ -891,13 +927,6 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
             def finalize_compile(kernel):
                 kernel_cache[key] = kernel
-                # flagtree tle raw
-                try:
-                    from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
-                except ImportError:
-                    pass
-                else:
-                    run_kernel_init_hooks(kernel)
                 self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options,
                                 [attrs], warmup)
 
@@ -905,13 +934,6 @@ class JITFunction(JITCallable, KernelInterface[T]):
         else:
             kernel = self.compile(src, target=target, options=options.__dict__)
             kernel_cache[key] = kernel
-            # flagtree tle raw
-            try:
-                from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
-            except ImportError:
-                pass
-            else:
-                run_kernel_init_hooks(kernel)
             self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options, [attrs],
                             warmup)
         return kernel

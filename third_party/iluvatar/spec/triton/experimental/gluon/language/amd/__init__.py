@@ -1,3 +1,5 @@
+# Copyright 2018-2020 Philippe Tillet
+# Copyright 2020-2022 OpenAI
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -18,17 +20,19 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-_LOAD_METHODS = frozenset(("create_load", "create_masked_load", "create_tensor_pointer_load"))
+import os
 
+from .. import __path__ as _language_paths
 
-def semantic_create_load(builder, method_name, args, flagtree_hints):
-    if method_name not in _LOAD_METHODS:
-        raise ValueError(f"Unsupported CoreX load builder method: {method_name}")
-    if flagtree_hints not in (None, ""):
-        raise ValueError("CoreX does not support flagtree_hints on load operations")
-    return getattr(builder, method_name)(*args)
+# Preserve per-module fallback after selecting the specialized AMD package.
+for _language_path in _language_paths:
+    _amd_path = os.path.join(_language_path, "amd")
+    if os.path.isdir(_amd_path) and _amd_path not in __path__:
+        __path__.append(_amd_path)
 
+from ._layouts import AMDMFMALayout, AMDWMMALayout
+from . import cdna3, cdna4
+from . import rdna3, rdna4
+from . import gfx1250
 
-def semantic_validate_atomic_add(scalar_ty):
-    if scalar_ty.is_int64() or scalar_ty.is_uint64():
-        raise ValueError("CoreX does not support atomic_add with int64 or uint64 operands")
+__all__ = ["AMDMFMALayout", "AMDWMMALayout", "cdna3", "cdna4", "rdna3", "rdna4", "gfx1250"]

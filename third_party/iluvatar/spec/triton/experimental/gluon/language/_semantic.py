@@ -20,12 +20,19 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from typing import Sequence, List, TypeVar, Tuple, Callable
+from typing import Sequence, List, TypeVar, Tuple, Callable, Any
+import importlib
 import math
 from triton.language.semantic import TritonSemantic
 from . import _core as ttgl
 from ._layouts import AutoLayout, DistributedLayout, DistributedLinearLayout, SliceLayout, SharedLayout, CoalescedLayout
-from triton._C.libtriton.gluon_ir import GluonOpBuilder, compute_tmem_reg_layout
+try:
+    _gluon_ir = importlib.import_module("triton._C.libtriton.gluon_ir")
+    GluonOpBuilder = _gluon_ir.GluonOpBuilder
+    compute_tmem_reg_layout = _gluon_ir.compute_tmem_reg_layout
+except (ImportError, AttributeError):
+    GluonOpBuilder = Any
+    compute_tmem_reg_layout = None
 from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
 
 TensorTy = TypeVar("TensorTy")
@@ -38,6 +45,12 @@ def _check(cond: bool, msg_fn: Callable[[], str], category=ValueError):
 
 def _is_int_list(value):
     return isinstance(value, Sequence) and all(isinstance(i, int) for i in value)
+
+
+def _require_gluon_ir(name):
+    if compute_tmem_reg_layout is None:
+        raise RuntimeError(f"{name} requires gluon_ir bindings, but they were not compiled. "
+                           "Rebuild with Gluon bindings enabled.")
 
 
 def _compute_tmem_reg_layout(element_ty, shape, layout, num_warps, instr_variant, cga_layout=None):
@@ -61,6 +74,7 @@ def _compute_tmem_reg_layout(element_ty, shape, layout, num_warps, instr_variant
         for basis in cga_layout:
             _check(len(basis) == rank, lambda: "cga_layout basis rank mismatch")
 
+    _require_gluon_ir("compute_tmem_reg_layout")
     layout_obj = compute_tmem_reg_layout(
         element_ty,
         shape,

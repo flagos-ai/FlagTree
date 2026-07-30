@@ -39,9 +39,23 @@ current_target.__triton_builtin__ = True
 
 
 @constexpr_function
-def is_cuda():
+def is_backend(name):
     target = current_target()
-    return target is not None and target.backend == "cuda"
+    return target is not None and target.backend == name
+
+
+@constexpr_function
+def backend_capability_geq(name, major, minor=0):
+    target = current_target()
+    if target is None or target.backend != name:
+        return False
+    assert isinstance(target.arch, int)
+    return target.arch >= major * 10 + minor
+
+
+@constexpr_function
+def is_cuda():
+    return is_backend("cuda")
 
 
 @constexpr_function
@@ -51,17 +65,22 @@ def cuda_capability_geq(major, minor=0):
     returns this as a constexpr boolean. This can be used for guarding
     inline asm implementations that require a certain compute capability.
     """
-    target = current_target()
-    if target is None or target.backend != "cuda":
-        return False
-    assert isinstance(target.arch, int)
-    return target.arch >= major * 10 + minor
+    return backend_capability_geq("cuda", major, minor)
+
+
+@constexpr_function
+def is_corex():
+    return is_backend("corex")
+
+
+@constexpr_function
+def corex_capability_geq(major, minor=0):
+    return backend_capability_geq("corex", major, minor)
 
 
 @constexpr_function
 def is_hip():
-    target = current_target()
-    return target is not None and target.backend == "hip"
+    return is_backend("hip")
 
 
 @constexpr_function

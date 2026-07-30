@@ -1014,6 +1014,14 @@ class TritonSemantic(Generic[TensorTy]):
             return sorted(boundary_check)
         return ()
 
+    def _create_load(self, method_name, args, flagtree_hints):
+        load_methods = ("create_load", "create_masked_load", "create_tensor_pointer_load")
+        if method_name not in load_methods:
+            raise ValueError(f"Unsupported CoreX load builder method: {method_name}")
+        if flagtree_hints not in (None, ""):
+            raise ValueError("CoreX does not support flagtree_hints on load operations")
+        return getattr(self.builder, method_name)(*args)
+
     def _load_block_pointer(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
                             flagtree_hints):
         # Load by a block pointer: `pointer_type<block_type<>>`
@@ -1033,9 +1041,8 @@ class TritonSemantic(Generic[TensorTy]):
         boundary_check = self._canonicalize_boundary_check(boundary_check, dst_ty.get_block_shapes())
 
         # Build IR
-        return self.tensor(
-            self.builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile,
-                                                    flagtree_hints), dst_ty)
+        args = (ptr.handle, boundary_check, padding, cache, eviction, is_volatile)
+        return self.tensor(self._create_load("create_tensor_pointer_load", args, flagtree_hints), dst_ty)
 
     def _load_legacy(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, flagtree_hints):
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
@@ -1088,19 +1095,18 @@ class TritonSemantic(Generic[TensorTy]):
 
         # Build IR
         if mask is None:
-            ret = self.tensor(self.builder.create_load(ptr.handle, cache, eviction, is_volatile, flagtree_hints),
-                              dst_ty)
+            args = (ptr.handle, cache, eviction, is_volatile)
+            ret = self.tensor(self._create_load("create_load", args, flagtree_hints), dst_ty)
         else:
-            ret = self.tensor(
-                self.builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache,
-                                                eviction, is_volatile, flagtree_hints), dst_ty)
+            args = (ptr.handle, mask.handle, other.handle if other else None, cache, eviction, is_volatile)
+            ret = self.tensor(self._create_load("create_masked_load", args, flagtree_hints), dst_ty)
         if is_bool:
             ret = self.cast(ret, tl.int1)
         return ret
 
     def load(self, ptr: TensorTy, mask: Optional[TensorTy], other: Optional[TensorTy], boundary_check: Tuple,
              padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool,
-             flagtree_hints: str) -> TensorTy:
+             flagtree_hints: str = None) -> TensorTy:
         # Cache, eviction and padding options
         cache = self._str_to_load_cache_modifier(cache_modifier)
         eviction = self._str_to_eviction_policy(eviction_policy)
@@ -1455,6 +1461,8 @@ class TritonSemantic(Generic[TensorTy]):
         sem = self._str_to_sem(sem)
         scope = self._str_to_scope(scope)
         sca_ty = val.type.scalar
+        if sca_ty.is_int64() or sca_ty.is_uint64():
+            raise ValueError("CoreX does not support atomic_add with int64 or uint64 operands")
         op = ir.ATOMIC_OP.FADD if sca_ty.is_floating() else ir.ATOMIC_OP.ADD
         return self.tensor(self.builder.create_atomic_rmw(op, ptr.handle, val.handle, mask.handle, sem, scope),
                            val.type)

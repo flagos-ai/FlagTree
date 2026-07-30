@@ -20,8 +20,22 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import importlib
+import os
+
+from .. import __path__ as _amd_paths
+
+# Reuse unchanged CDNA4 modules from the main package.
+for _amd_path in _amd_paths:
+    _cdna4_path = os.path.join(_amd_path, "cdna4")
+    if os.path.isdir(_cdna4_path) and _cdna4_path not in __path__:
+        __path__.append(_cdna4_path)
+
 from triton.runtime.jit import constexpr_function
-from triton._C.libtriton.gluon_ir import get_amd_mfma_scale_layout as _get_mfma_scale_layout
+try:
+    _get_mfma_scale_layout = importlib.import_module("triton._C.libtriton.gluon_ir").get_amd_mfma_scale_layout
+except (ImportError, AttributeError):
+    _get_mfma_scale_layout = None
 
 from ..._core import builtin
 from ..._layouts import DotOperandLayout
@@ -72,6 +86,9 @@ def mfma_scaled(a, a_scale, a_format, b, b_scale, b_format, acc, _semantic=None)
 
 
 def _get_mfma_scale_layout_impl(*args, **kwargs):
+    if _get_mfma_scale_layout is None:
+        raise RuntimeError("get_mfma_scale_layout requires gluon_ir bindings, but they were not compiled. "
+                           "Rebuild with Gluon bindings enabled.")
     return _get_mfma_scale_layout(*args, **kwargs)
 
 
