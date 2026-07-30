@@ -53,13 +53,25 @@ runs:
             return;
           }
 
-          const labels = (context.payload.pull_request.labels || []).map(label => label.name);
-          console.log(`Current PR labels:`, labels.join(', ') || '(no labels)');
+          const prNumber = context.payload.pull_request.number;
+          try {
+            const { data: prData } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
 
-          const hasClearCache = labels.includes(expectedLabel);
-          console.log(`🔍 Has "${expectedLabel}" label:`, hasClearCache ? '✅ YES' : '❌ NO');
+            const labels = (prData.labels || []).map(label => label.name);
+            console.log(`Current PR labels:`, labels.join(', ') || '(no labels)');
 
-          core.setOutput('has_clear_cache_label', hasClearCache ? 'true' : 'false');
+            const hasClearCache = labels.includes(expectedLabel);
+            console.log(`🔍 Has "${expectedLabel}" label:`, hasClearCache ? '✅ YES' : '❌ NO');
+
+            core.setOutput('has_clear_cache_label', hasClearCache ? 'true' : 'false');
+          } catch (err) {
+            console.log('❌ Error checking PR labels:', err.message || err);
+            core.setOutput('has_clear_cache_label', 'false');
+          }
 
     - name: Clear cache if label present
       id: cleanup
