@@ -83,6 +83,13 @@ jobs:
           cd ~/flagrelease
           bash start.sh
 
+      - name: Show the baseline
+        shell: bash
+        run: |
+          set -x
+          cd ~/flagrelease
+          cat ref.txt
+
       - name: Run the benchmark
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
