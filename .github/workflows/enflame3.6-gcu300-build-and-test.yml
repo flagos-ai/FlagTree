@@ -26,6 +26,10 @@ on:
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -73,6 +77,14 @@ jobs:
           python3 -m pip uninstall -y triton_gcu --break-system-packages
           export FLAGTREE_BACKEND=enflame
           MAX_JOBS=4 python3 -m pip install . --no-build-isolation -v --break-system-packages
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: enflame
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'

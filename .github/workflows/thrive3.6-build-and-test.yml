@@ -26,6 +26,10 @@ on:
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -56,6 +60,14 @@ jobs:
           ssh -p 1024 root@localhost "rm -f /work/flagtree-*.whl"
           scp -P 1024 dist/flagtree-*.whl root@localhost:/work
           ssh -p 1024 root@localhost "pip3 install /work/flagtree-*.whl --force-reinstall"
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: thrive
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
