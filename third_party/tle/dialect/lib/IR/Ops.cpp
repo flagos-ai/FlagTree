@@ -37,6 +37,12 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
+enum class TeamKind : int32_t {
+  Intra = 0,
+  Inter = 1,
+  World = 2,
+};
+
 namespace mlir::triton::tle {
 
 namespace {
@@ -1020,4 +1026,30 @@ LogicalResult RemotePointersOp::verify() {
   return success();
 }
 
+LogicalResult SignalOp::verify() {
+  StringRef signalOp = getSignalOpAttr().getValue();
+  bool validSignalOp = llvm::StringSwitch<bool>(signalOp)
+                           .Case("inc", true)
+                           .Case("add", true)
+                           .Default(false);
+  if (!validSignalOp)
+    return emitOpError("invalid signal_op '")
+           << signalOp << "', expected one of: inc, add";
+
+  switch (static_cast<TeamKind>(getTeamKindAttr().getInt())) {
+  case TeamKind::Intra:
+  case TeamKind::Inter:
+  case TeamKind::World:
+    break;
+  default:
+    return emitOpError("invalid team_kind (")
+           << getTeamKindAttr().getInt()
+           << "), expected one of: Intra(0), Inter(1), World(2)";
+  }
+
+  if (getContextIdxAttr().getInt() < 0)
+    return emitOpError("context_idx must be non-negative");
+
+  return success();
+}
 } // namespace mlir::triton::tle
