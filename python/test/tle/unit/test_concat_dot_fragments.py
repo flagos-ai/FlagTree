@@ -7,6 +7,19 @@ import triton.experimental.tle.language as tle
 import pytest
 
 
+def _is_cuda_backend():
+    try:
+        return triton.runtime.driver.active.get_current_target().backend == "cuda"
+    except Exception:
+        return False
+
+
+# The merge is expressed in terms of the NVIDIA mma fragment layout, so these
+# checks only apply on the cuda backend.
+requires_cuda_backend = pytest.mark.skipif(not torch.cuda.is_available() or not _is_cuda_backend(),
+                                           reason="requires an NVIDIA GPU backend")
+
+
 @triton.jit
 def segmented_dot_kernel(a_ptr, b_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, K_SEG: tl.constexpr,
                          NUM_SEG: tl.constexpr):
@@ -47,7 +60,7 @@ def _shapes():
     return M, N, K, K // num_seg, num_seg
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for this test")
+@requires_cuda_backend
 def test_concat_dot_fragments_matches_segmented_dot():
     M, N, K, k_seg, num_seg = _shapes()
 
@@ -64,7 +77,7 @@ def test_concat_dot_fragments_matches_segmented_dot():
         "concat_dot_fragments must be bit-exact with accumulating one dot per K segment"
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for this test")
+@requires_cuda_backend
 def test_concat_dot_fragments_keeps_dot_operand_encoding():
     # The op is only zero-cost while the dot_op encoding propagates through it:
     # a #blocked operand means it did not, and the merged fragment would then
@@ -92,7 +105,7 @@ def test_concat_dot_fragments_keeps_dot_operand_encoding():
     # staging, which is the same with or without the concat.
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for this test")
+@requires_cuda_backend
 def test_concat_dot_fragments_rejects_non_dot_operands(capfd):
     # Without a dot consuming the result the operands stay #blocked, which the
     # lowering rejects: the per-thread relabel is only valid for dot_op layouts.
