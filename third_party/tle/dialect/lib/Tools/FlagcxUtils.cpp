@@ -153,7 +153,7 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
                                ConversionPatternRewriter &rewriter,
                                Value dev_net, Value comm, Value peer,
                                Value signalId, Value value, int32_t teamKind,
-                               FlagCxCoopKind coopKind,
+                               SignalCoopKind coopKind,
                                llvm::StringRef signalOp) {
   auto ctx = rewriter.getContext();
   ModuleOp module =
@@ -216,9 +216,9 @@ LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
 LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
                                          ConversionPatternRewriter &rewriter,
                                          Value dev_net, Value signal_id,
-                                         FlagCxWaitKind wait_kind,
+                                         SignalWaitKind wait_kind,
                                          std::optional<Value> target,
-                                         FlagCxCoopKind coop_kind) {
+                                         SignalCoopKind coop_kind) {
   auto ctx = rewriter.getContext();
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
@@ -242,27 +242,26 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
   };
 
   switch (wait_kind) {
-  case FlagCxWaitKind::COUNTER:
+  case SignalWaitKind::COUNTER:
     func = createFuncInstance(
         runtimeNames.lookup("waitCounterFunction").data(), module,
         {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
     return make_call(ValueRange{dev_net, coop_kind_val, signal_id,
                                 target.value(), bits, order});
-  case FlagCxWaitKind::SIGNAL:
+  case SignalWaitKind::SIGNAL:
     func = createFuncInstance(
         runtimeNames.lookup("waitSignalFunction").data(), module,
         {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
     return make_call(ValueRange{dev_net, coop_kind_val, signal_id,
                                 target.value(), bits, order});
-  case FlagCxWaitKind::SHADOW:
+  case SignalWaitKind::SHADOW:
     func =
         createFuncInstance(runtimeNames.lookup("waitShadowFunction").data(),
                            module, {PtrTy, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
     return make_call(
         ValueRange{dev_net, coop_kind_val, signal_id, bits, order});
   default:
-    assert(false && "unreachable");
-    __builtin_unreachable();
+    llvm_unreachable("unknown wait kind");
   }
 }
 

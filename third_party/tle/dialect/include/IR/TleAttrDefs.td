@@ -28,8 +28,8 @@ include "mlir/IR/EnumAttr.td"
 include "mlir/IR/AttrTypeBase.td"
 include "tle/dialect/include/IR/TleDialect.td"
 
-def Tle_FlagCxWaitKindAttr : I32EnumAttr<
-  "FlagCxWaitKind", "",
+def Tle_SignalWaitKindAttr : I32EnumAttr<
+  "SignalWaitKind", "",
   [
     I32EnumAttrCase<"SIGNAL", 0, "signal">,
     I32EnumAttrCase<"COUNTER", 1, "counter">,
@@ -38,8 +38,8 @@ def Tle_FlagCxWaitKindAttr : I32EnumAttr<
   let cppNamespace = "::mlir::triton::tle";
 }
 
-def Tle_FlagCxCoopKindAttr : I32EnumAttr<
-  "FlagCxCoopKind", "",
+def Tle_SignalCoopKindAttr : I32EnumAttr<
+  "SignalCoopKind", "",
   [
     I32EnumAttrCase<"THREAD", 0, "thread">,
     I32EnumAttrCase<"WARP", 1, "warp">,

@@ -49,7 +49,7 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
                                ConversionPatternRewriter &rewriter,
                                Value dev_net, Value comm, Value peer,
                                Value signalId, Value value, int32_t teamKind,
-                               FlagCxCoopKind coopKind,
+                               SignalCoopKind coopKind,
                                llvm::StringRef signalOp);
 
 LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
@@ -59,8 +59,8 @@ LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
 LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
                                          ConversionPatternRewriter &rewriter,
                                          Value dev_net, Value signal_id,
-                                         FlagCxWaitKind wait_kind,
+                                         SignalWaitKind wait_kind,
                                          std::optional<Value> target,
-                                         FlagCxCoopKind coop_kind);
+                                         SignalCoopKind coop_kind);
 
 } // namespace mlir::triton::tle

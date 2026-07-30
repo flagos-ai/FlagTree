@@ -114,9 +114,9 @@ _SIGNAL_SPACE_TO_TEAM_KIND = {
 }
 
 _SIGNAL_COOP_KINDS = {
-    GroupKind.THREAD.value: attr.FlagCxCoopKind.Thread,
-    GroupKind.WARP.value: attr.FlagCxCoopKind.Warp,
-    GroupKind.BLOCK.value: attr.FlagCxCoopKind.Block,
+    GroupKind.THREAD.value: attr.SignalCoopKind.Thread,
+    GroupKind.WARP.value: attr.SignalCoopKind.Warp,
+    GroupKind.BLOCK.value: attr.SignalCoopKind.Block,
 }
 
 
@@ -1149,7 +1149,7 @@ def remote(
 def signal_wait(
     device_dptr,
     signal_id,
-    wait_kind: str | attr.FlagCxWaitKind,
+    wait_kind: str | attr.SignalWaitKind,
     target: int | None = None,
     group_kind: str | GroupKind = GroupKind.BLOCK,
     context_idx: int = 0,
@@ -1158,7 +1158,7 @@ def signal_wait(
     builder = _semantic.builder
 
     wait_kind = tl._unwrap_if_constexpr(wait_kind)
-    wait_kind_val = wait_kind if isinstance(wait_kind, attr.FlagCxWaitKind) else attr.FlagCxWaitKind.from_str(wait_kind)
+    wait_kind_val = wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else attr.SignalWaitKind.from_str(wait_kind)
     if wait_kind_val is None:
         expected = "signal, counter, or shadow"
         raise ValueError(f"wait kind must be {expected}, got {wait_kind!r}")

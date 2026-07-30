@@ -43,7 +43,7 @@ struct SignalOpConversion : public ConvertOpToLLVMPattern<tle::SignalOp> {
     auto loc = op.getLoc();
 
     int64_t teamKind = op.getTeamKindAttr().getInt();
-    tle::FlagCxCoopKind coopKind = op.getCoopKind();
+    tle::SignalCoopKind coopKind = op.getCoopKind();
     int64_t contextIdx = op.getContextIdxAttr().getInt();
     StringRef signalOp = op.getSignalOpAttr().getValue();
 
