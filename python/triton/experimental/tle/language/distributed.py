@@ -51,7 +51,6 @@ def _as_positive_int(value: Any, label: str) -> int:
 def _parse_src_arg(builder, src, index=0):
     try:
         from triton.runtime import DistributedRtContext
-
         src = tl._unwrap_if_constexpr(src)
         if isinstance(src, DistributedRtContext):
             return builder.get_int64(src[index])
@@ -230,7 +229,6 @@ class MeshConfig:
 
     Fields set to None are ignored when exporting.
     """
-
     node: Optional[AxesLike] = None
     device: Optional[AxesLike] = None
     block_cluster: Optional[AxesLike] = None
@@ -300,8 +298,8 @@ class device_mesh:
         if isinstance(level_desc, int):
             return [_as_positive_int(level_desc, level_name)], [level_name]
         if not isinstance(level_desc, (tuple, list)):
-            raise TypeError(
-                f"topology[{level_name!r}] must be int or list/tuple of (name, size), got {type(level_desc).__name__}")
+            raise TypeError(f"topology[{level_name!r}] must be int or list/tuple of (name, size), "
+                            f"got {type(level_desc).__name__}")
         if not level_desc:
             raise ValueError(f"topology[{level_name!r}] cannot be empty")
 
@@ -635,8 +633,8 @@ def _mesh_uses_grid_barrier(mesh: device_mesh) -> bool:
     # - empty mesh dims (scalar) fallback to launch mesh naming
     if mesh.dim_names:
         return (not _mesh_has_cluster_axes(mesh)) and _mesh_has_block_axes(mesh)
-    return (not any("cluster" in name for name in mesh.launch_dim_names)) and any("block" in name
-                                                                                  for name in mesh.launch_dim_names)
+    return ((not any("cluster" in name for name in mesh.launch_dim_names))
+            and any("block" in name for name in mesh.launch_dim_names))
 
 
 @dataclass(frozen=True)
@@ -669,8 +667,8 @@ def _infer_submesh_barrier_group(
 
     launch_name_to_axis = {name: i for i, name in enumerate(mesh.launch_dim_names)}
     if any(name not in launch_name_to_axis for name in mesh.dim_names):
-        raise NotImplementedError(
-            "sub-mesh barrier currently supports slicing-derived meshes with axis names inherited from launch mesh")
+        raise NotImplementedError("sub-mesh barrier currently supports slicing-derived meshes with "
+                                  "axis names inherited from launch mesh")
 
     axes = tuple(int(launch_name_to_axis[name]) for name in mesh.dim_names)
     if len(set(axes)) != len(axes):
@@ -795,15 +793,10 @@ def _parse_device_barrier_args(argType) -> str:
         return str(argType).lower()
 
 
-def check_and_handle_device_intra_barrier(
-    space: str = None,
-    device_dptr=None,
-    barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-    group_kind: str | GroupKind = GroupKind.BLOCK,
-    index: int | None = 0,
-    order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-    _semantic=None,
-):
+def check_and_handle_device_intra_barrier(space: str = None, device_dptr=None,
+                                          barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                                          group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
+                                          order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None):
     if space and space in ("device", "node"):
         builder = _semantic.builder
         ptr = _parse_src_arg(builder, device_dptr, 1)
@@ -820,16 +813,11 @@ def check_and_handle_device_intra_barrier(
 
 
 @tl.builtin
-def distributed_barrier(
-    mesh: device_mesh | None = None,
-    device_dptr=None,
-    space: str = None,
-    group_kind: str | GroupKind = GroupKind.BLOCK,
-    barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-    order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-    _semantic=None,
-    index: int | None = 0,
-):
+def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space: str = None,
+                        group_kind: str | GroupKind = GroupKind.BLOCK,
+                        barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                        order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None,
+                        index: int | None = 0):
     """
     M3 entrypoint: distributed synchronization primitive.
 
@@ -842,15 +830,8 @@ def distributed_barrier(
     subgroup = None
     use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
 
-    if check_and_handle_device_intra_barrier(
-            space=space,
-            device_dptr=device_dptr,
-            barrier_kind=barrier_kind,
-            group_kind=group_kind,
-            index=index,
-            order=order,
-            _semantic=_semantic,
-    ):
+    if check_and_handle_device_intra_barrier(space=space, device_dptr=device_dptr, barrier_kind=barrier_kind,
+                                             group_kind=group_kind, index=index, order=order, _semantic=_semantic):
         return None
 
     if use_grid:
@@ -979,7 +960,7 @@ def _create_remote_pointers_tensor(
         "cluster": (dtype, 7),
         "device": (dtype, 1),
     }.get(space))
-    if space == "cluster" and tensor and tensor.type.is_block():
+    if space == 'cluster' and tensor and tensor.type.is_block():
         remote_type = tl.block_type(remote_ptr_dtype, list(tensor.shape)).to_ir(builder)
     else:
         remote_type = remote_ptr_dtype.to_ir(builder)
@@ -1031,8 +1012,8 @@ def _check_cluster_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, 
         raise ValueError("remote(pointer, ...) on cluster-shared pointers requires compile-time shard_id=0")
 
     if tensor.dtype.address_space != 3:
-        raise TypeError(
-            f"{tensor.dtype}, cluster remote pointer internal path requires cluster-shared pointers (addrspace=7)")
+        raise TypeError(f"{tensor.dtype}, cluster remote pointer internal path requires cluster-shared pointers "
+                        "(addrspace=7)")
 
 
 def _check_device_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, ...] | list[int],
