@@ -35,7 +35,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  nv36x-qwen-benchmark:
+  nv36x-qwen:
     runs-on: nvidia3.6-qwen
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
