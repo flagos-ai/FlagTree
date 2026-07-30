@@ -1,0 +1,27 @@
+
+llvm_canonicalize_cmake_booleans(
+  MLIR_ENABLE_BINDINGS_PYTHON
+)
+
+configure_lit_site_cfg(
+  ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
+  ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
+  MAIN_CONFIG
+  ${CMAKE_CURRENT_SOURCe_DIR}/lit.cfg.py
+)
+
+set(SPINE_TRITON_TEST_DEPENDS
+  spine-triton-opt
+)
+
+set(FILECHECK_PATH "${LLVM_LIBRARY_DIR}/../bin/FileCheck")
+set(LIT_ARGS "-Dfilecheck=${FILECHECK_PATH}")
+add_lit_testsuite(check-spine-triton-lit-tests "Running the spine-triton regression tests"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  ARGS ${LIT_ARGS}
+  DEPENDS ${SPINE_TRITON_TEST_DEPENDS}
+  )
+
+set_target_properties(check-spine-triton-lit-tests PROPERTIES FOLDER "Tests")
+
+add_lit_testsuites(SPINE-TRITON-LIT-TESTS ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${SPINE_TRITON_TEST_DEPENDS})

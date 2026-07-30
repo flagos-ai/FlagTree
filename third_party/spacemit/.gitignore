@@ -1,0 +1,10 @@
+*.pyc
+.cache
+compile_commands.json
+build/*
+.vscode/*
+build-*
+ir_dumps
+myenv
+backend/bin/*
+backend/lib/*

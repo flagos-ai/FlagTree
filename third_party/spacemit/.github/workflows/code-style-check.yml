@@ -1,0 +1,110 @@
+name: Code Style Check
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/code-style-check.yml
+      - .pre-commit-config.yaml
+      - pyproject.toml
+      - .clang-format
+      - backend/**
+      - include/**
+      - language/**
+      - lib/**
+      - python/**
+      - tools/**
+      - triton_shared.cc
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - .github/workflows/code-style-check.yml
+      - .pre-commit-config.yaml
+      - pyproject.toml
+      - .clang-format
+      - backend/**
+      - include/**
+      - language/**
+      - lib/**
+      - python/**
+      - tools/**
+      - triton_shared.cc
+  workflow_dispatch:
+
+jobs:
+  pre-commit:
+    name: pre-commit (python/c/c++)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Compute hash of pre-commit config
+        id: cache-key
+        run: |
+          echo "pre_commit_hash=$(sha256sum .pre-commit-config.yaml | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pre-commit cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: ${{ runner.os }}-${{ steps.cache-key.outputs.pre_commit_hash }}
+
+      - name: Install pre-commit
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pre-commit
+
+      - name: Collect changed files for pull request
+        if: github.event_name == 'pull_request'
+        id: changed-files
+        uses: tj-actions/changed-files@v47
+        with:
+          separator: " "
+          files: |
+            .github/workflows/code-style-check.yml
+            .pre-commit-config.yaml
+            pyproject.toml
+            .clang-format
+            backend/**/*.py
+            backend/**/*.c
+            backend/**/*.cc
+            backend/**/*.cpp
+            backend/**/*.h
+            backend/**/*.hpp
+            include/**/*.{c,cc,cpp,h,hpp}
+            language/**/*.py
+            lib/**/*.{c,cc,cpp,h,hpp}
+            python/**/*.py
+            tools/**/*.{c,cc,cpp,h,hpp}
+            triton_shared.cc
+
+      - name: Run pre-commit on pull request changes
+        if: github.event_name == 'pull_request' && steps.changed-files.outputs.any_changed == 'true'
+        run: |
+          python -m pre_commit run --files ${{ steps.changed-files.outputs.all_changed_files }} --verbose
+
+      - name: Skip pre-commit when no tracked files changed
+        if: github.event_name == 'pull_request' && steps.changed-files.outputs.any_changed != 'true'
+        run: |
+          echo "No tracked Python/C/C++ style files changed in this pull request."
+
+      - name: Run pre-commit on all files
+        if: github.event_name != 'pull_request'
+        run: |
+          python -m pre_commit run --all-files --verbose
+
+      - name: Print diff if pre-commit failed
+        if: failure()
+        run: |
+          git diff

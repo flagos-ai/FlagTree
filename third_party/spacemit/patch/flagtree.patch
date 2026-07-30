@@ -1,0 +1,552 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7ee8713ab..2e32a38b9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -504,15 +504,20 @@ if(TRITON_BUILD_PYTHON_MODULE)
+ 
+     # LLVM
+     LLVMPasses
+-    LLVMNVPTXCodeGen
+-    # LLVMNVPTXAsmPrinter
+-    LLVMAMDGPUCodeGen
+-    LLVMAMDGPUAsmParser
+ 
+     Python3::Module
+     pybind11::headers
+ 
+   )
++  # GPU codegen libs only exist when their LLVM targets were built. The RISC-V
++  # prebuilt LLVM (spacemit) has only RISCV;X86, so guard these to avoid
++  # linking nonexistent NVPTX/AMDGPU target libraries.
++  if("NVPTX" IN_LIST LLVM_TARGETS_TO_BUILD)
++    list(APPEND TRITON_LIBRARIES LLVMNVPTXCodeGen)
++  endif()
++  if("AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD)
++    list(APPEND TRITON_LIBRARIES LLVMAMDGPUCodeGen LLVMAMDGPUAsmParser)
++  endif()
+   if(FLAGTREE_BACKEND STREQUAL "iluvatar")
+     set(TRITON_LIBRARIES
+       ${triton_libs}
+diff --git a/include/triton/Dialect/Triton/IR/TritonAttrDefs.td b/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
+index 694640cc4..49f153aff 100644
+--- a/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
++++ b/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
+@@ -69,7 +69,9 @@ def TT_PaddingOptionAttr : I32EnumAttr<
+     [
+         I32EnumAttrCase<"PAD_ZERO", 1, "zero">,
+         // We can not set the string value to "NAN" because it is a keyword in C++
+-        I32EnumAttrCase<"PAD_NAN", 2, "nan">
++        I32EnumAttrCase<"PAD_NAN", 2, "nan">,
++        I32EnumAttrCase<"PAD_NEG_INF", 3, "neg_inf">,
++        I32EnumAttrCase<"PAD_INF", 4, "inf">
+     ]> {
+     let cppNamespace = "::mlir::triton";
+ }
+diff --git a/python/setup_tools/utils/spacemit.py b/python/setup_tools/utils/spacemit.py
+new file mode 100644
+index 000000000..edef2e727
+--- /dev/null
++++ b/python/setup_tools/utils/spacemit.py
+@@ -0,0 +1,72 @@
++"""Spacemit backend module for FlagTree.
++
++Provides build hooks for:
++- get_backend_cmake_args: inject LLVM_DIR/MLIR_DIR/LLD_DIR into cmake
++- post_install: create build-tree symlinks for .inc file resolution
++"""
++
++import os
++
++
++def _get_backend_root() -> str:
++    """Return the backend's third_party submodule path."""
++    from pathlib import Path
++    return str(Path(__file__).resolve().parents[3] / "third_party" / "spacemit")
++
++
++def get_backend_cmake_args(*args, **kargs):
++    """Inject LLVM/MLIR/LLD cmake args, and create build-tree symlinks."""
++    cmake_args = []
++
++    llvm_syspath = os.environ.get("LLVM_SYSPATH")
++    if llvm_syspath:
++        cmake_args += [
++            f"-DLLVM_DIR={llvm_syspath}/lib/cmake/llvm",
++            f"-DMLIR_DIR={llvm_syspath}/lib/cmake/mlir",
++            f"-DLLD_DIR={llvm_syspath}/lib/cmake/lld",
++            f"-DLLVM_LIBRARY_DIR={llvm_syspath}/lib",
++        ]
++
++    # Force-disable Proton for spacemit (CpuProfiler.cpp missing)
++    cmake_args.append("-DTRITON_BUILD_PROTON=OFF")
++
++    # Create build-tree symlink spine_triton -> spacemit for .inc file resolution.
++    # The .inc files are generated under build/third_party/spacemit/include/,
++    # but the include path uses build/third_party/spine_triton/include/.
++    build_ext = kargs.get("build_ext", None)
++    if build_ext and hasattr(build_ext, "build_temp") and build_ext.build_temp:
++        build_third_party = os.path.join(build_ext.build_temp, "third_party")
++        if os.path.isdir(build_third_party):
++            spine_triton_link = os.path.join(build_third_party, "spine_triton")
++            if not os.path.exists(spine_triton_link):
++                try:
++                    os.symlink("spacemit", spine_triton_link)
++                    print(f"[spacemit] Created build-tree symlink: {spine_triton_link} -> spacemit")
++                except (OSError, PermissionError) as e:
++                    print(f"[spacemit] Warning: could not create build-tree symlink: {e}")
++
++    return cmake_args
++
++
++def precompile_hook(*args, **kargs):
++    """Pre-build setup hook (called by download_flagtree_third_party)."""
++    return None
++
++
++def post_install():
++    """Post-install: create build-tree symlink for .inc files."""
++    build_ext = None
++    try:
++        # Try to find the cmake build directory
++        from pathlib import Path
++        backend_root = _get_backend_root()
++        build_dirs = list(Path(backend_root, "triton", "build").glob("cmake.*"))
++        for build_dir in build_dirs:
++            build_third_party = build_dir / "third_party"
++            if build_third_party.is_dir():
++                spine_triton_link = build_third_party / "spine_triton"
++                if not spine_triton_link.exists():
++                    spine_triton_link.symlink_to("spacemit")
++                    print(f"[spacemit] Created build-tree symlink: {spine_triton_link} -> spacemit")
++    except Exception:
++        pass
+diff --git a/python/src/ir.cc b/python/src/ir.cc
+index 92cb8cf61..19023d1d8 100644
+--- a/python/src/ir.cc
++++ b/python/src/ir.cc
+@@ -305,6 +305,8 @@ void init_triton_ir(py::module &&m) {
+   py::enum_<PaddingOption>(m, "PADDING_OPTION", py::module_local())
+       .value("PAD_ZERO", PaddingOption::PAD_ZERO)
+       .value("PAD_NAN", PaddingOption::PAD_NAN)
++      .value("PAD_NEG_INF", PaddingOption::PAD_NEG_INF)
++      .value("PAD_INF", PaddingOption::PAD_INF)
+       .export_values();
+ 
+   py::enum_<CacheModifier>(m, "CACHE_MODIFIER", py::module_local())
+diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
+index ff1a6c7f4..3a3c08fbc 100644
+--- a/python/triton/compiler/code_generator.py
++++ b/python/triton/compiler/code_generator.py
+@@ -1266,14 +1266,20 @@ class CodeGenerator(ast.NodeVisitor):
+         flatten = False
+         warp_specialize = False
+         disable_licm = False
++        bind_sub_block = None
+         # flagtree tle
+         try:
+             from ..experimental.tle import language as tle
+             tle_pipeline = tle.gpu.pipeline
+         except ImportError:
+             tle_pipeline = None
++        # spacemit smt.parallel (only present when the spacemit backend is built)
++        try:
++            from ..language.extra.smt import parallel as smt_parallel
++        except ImportError:
++            smt_parallel = None
+ 
+-        if IteratorClass in [language.range, tle_pipeline]:
++        if IteratorClass in [language.range, tle_pipeline, smt_parallel]:
+             iterator = IteratorClass(*iter_args, **iter_kwargs)
+             # visit iterator arguments
+             # note: only `range` iterator is supported now
+@@ -1287,6 +1293,8 @@ class CodeGenerator(ast.NodeVisitor):
+             flatten = iterator.flatten
+             warp_specialize = iterator.warp_specialize
+             disable_licm = iterator.disable_licm
++            if smt_parallel is not None and IteratorClass is smt_parallel:
++                bind_sub_block = iterator.bind_sub_block
+         elif IteratorClass is range:
+             # visit iterator arguments
+             # note: only `range` iterator is supported now
+@@ -1351,6 +1359,8 @@ class CodeGenerator(ast.NodeVisitor):
+                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
+             if disable_licm:
+                 for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
++            if (bind_sub_block is not None) and bind_sub_block:
++                for_op.set_attr("bind_sub_block", self.builder.get_bool_attr(bind_sub_block))
+ 
+             self.scf_stack.append(node)
+             for_op_body = for_op.get_body(0)
+diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
+index 23cbd80db..4395d6185 100644
+--- a/python/triton/language/semantic.py
++++ b/python/triton/language/semantic.py
+@@ -96,6 +96,8 @@ class TritonSemantic(Generic[TensorTy]):
+             if scalar_ty.kind().value <= tensor_ty.kind().value:
+                 # Upcast because of 3) and 4) below!
+                 if div_or_mod and (tensor_ty in (tl.float16, tl.bfloat16)):
++                    if tensor_ty is tl.float16:
++                        return tl.float16
+                     return tl.float32
+                 return tensor_ty
+ 
+@@ -112,7 +114,7 @@ class TritonSemantic(Generic[TensorTy]):
+         #     Supported PTX op: add, sub, mul, fma, neg, abs, min, max, tanh, ex2, setp
+         if a_ty.is_fp16() or b_ty.is_fp16():
+             if div_or_mod:
+-                return tl.float32
++                return tl.float16
+             else:
+                 return tl.float16
+         # 4) return bf16 only if both operands are of bf16
+@@ -970,6 +972,10 @@ class TritonSemantic(Generic[TensorTy]):
+                 padding = ir.PADDING_OPTION.PAD_ZERO
+             elif padding_option == "nan":
+                 padding = ir.PADDING_OPTION.PAD_NAN
++            elif padding_option == "neg_inf":
++                padding = ir.PADDING_OPTION.PAD_NEG_INF
++            elif padding_option == "inf":
++                padding = ir.PADDING_OPTION.PAD_INF
+             else:
+                 raise ValueError(f"Padding option {padding_option} not supported")
+         return padding
+diff --git a/python/triton/language/standard.py b/python/triton/language/standard.py
+index ea2612341..ea8fab17f 100644
+--- a/python/triton/language/standard.py
++++ b/python/triton/language/standard.py
+@@ -206,7 +206,8 @@ def max(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
+     else:
+         if core.constexpr(input.dtype.primitive_bitwidth) < core.constexpr(32):
+             if core.constexpr(input.dtype.is_floating()):
+-                input = input.to(core.float32)
++                if not core.constexpr(input.dtype.is_fp16()):
++                    input = input.to(core.float32)
+             else:
+                 assert input.dtype.is_int(), "Expecting input to be integer type"
+                 input = input.to(core.int32)
+@@ -265,7 +266,8 @@ def min(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
+     else:
+         if core.constexpr(input.dtype.primitive_bitwidth) < 32:
+             if core.constexpr(input.dtype.is_floating()):
+-                input = input.to(core.float32)
++                if not core.constexpr(input.dtype.is_fp16()):
++                    input = input.to(core.float32)
+             else:
+                 assert input.dtype.is_int(), "Expecting input to be integer type"
+                 input = input.to(core.int32)
+diff --git a/python/triton/runtime/interpreter.py b/python/triton/runtime/interpreter.py
+index 3d2498d2c..6a233b5ec 100644
+--- a/python/triton/runtime/interpreter.py
++++ b/python/triton/runtime/interpreter.py
+@@ -702,6 +702,10 @@ class InterpreterBuilder:
+             other = TensorHandle(np.zeros_like(ptrs.data, dtype=dtype_np), dtype_tt)
+         elif padding_option == _ir.PADDING_OPTION.PAD_NAN:
+             other = TensorHandle(np.full_like(ptrs.data, float('nan'), dtype=dtype_np), dtype_tt)
++        elif padding_option == _ir.PADDING_OPTION.PAD_NEG_INF:
++            other = TensorHandle(np.full_like(ptrs.data, float('-inf'), dtype=dtype_np), dtype_tt)
++        elif padding_option == _ir.PADDING_OPTION.PAD_INF:
++            other = TensorHandle(np.full_like(ptrs.data, float('inf'), dtype=dtype_np), dtype_tt)
+         else:
+             raise ValueError(f"unsupported padding option {padding_option}")
+         return self.create_masked_load(ptrs, masks, other, cache_modifier, eviction_policy, is_volatile)
+diff --git a/setup.py b/setup.py
+index 17c988af6..af9800587 100644
+--- a/setup.py
++++ b/setup.py
+@@ -33,6 +33,8 @@ import tarfile
+ import zipfile
+ import urllib.request
+ import json
++import glob
++from collections import defaultdict
+ from io import BytesIO
+ from distutils.command.clean import clean
+ from pathlib import Path
+@@ -68,6 +70,27 @@ from python.setup_tools import setup_helper as helper
+ 
+ from python.build_helpers import get_base_dir, get_cmake_dir
+ 
++
++# --- spacemit: build as a true root-triton plugin ---
++# spacemit is an external plugin on FlagTree's ROOT triton (root LLVM hash
++# cmake/llvm-hash.txt = f6ded0be, LLVM 22). It is passed via TRITON_PLUGIN_DIRS
++# like any other external backend; no vendored triton tree, no delegation.
++def _is_spacemit_build():
++    return helper.flagtree_backend == "spacemit"
++
++
++def get_python_root():
++    return "python"
++
++
++def get_triton_base_dir():
++    return get_base_dir()
++
++
++def get_triton_cmake_dir():
++    return get_cmake_dir()
++
++
+ # flagtree setup print config
+ if platform.system() == "Windows":
+     YELLOW = ""
+@@ -97,22 +120,21 @@ class BackendInstaller:
+ 
+     @staticmethod
+     def prepare(backend_name: str, backend_src_dir: str = None, is_external: bool = False):
+-        # Initialize submodule if there is one for in-tree backends.
+-        if not is_external:
++        # If backend_src_dir not provided, check if it's an in-tree backend under third_party.
++        if backend_src_dir is None:
+             root_dir = "third_party"
+-            assert backend_name in os.listdir(
+-                root_dir), f"{backend_name} is requested for install but not present in {root_dir}"
+-
+-            if is_git_repo():
+-                try:
+-                    subprocess.run(["git", "submodule", "update", "--init", f"{backend_name}"], check=True,
+-                                   stdout=subprocess.DEVNULL, cwd=root_dir)
+-                except subprocess.CalledProcessError:
+-                    pass
+-                except FileNotFoundError:
+-                    pass
+-
+-            backend_src_dir = os.path.join(root_dir, backend_name)
++            if backend_name in os.listdir(root_dir):
++                if is_git_repo() and not is_external:
++                    try:
++                        subprocess.run(["git", "submodule", "update", "--init", f"{backend_name}"], check=True,
++                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=root_dir)
++                    except subprocess.CalledProcessError:
++                        pass
++                    except FileNotFoundError:
++                        pass
++                backend_src_dir = os.path.join(root_dir, backend_name)
++            else:
++                assert False, f"{backend_name} is requested for install but not present in {root_dir} and backend_src_dir not provided"
+ 
+         backend_path = os.path.join(backend_src_dir, "backend")
+         assert os.path.exists(backend_path), f"{backend_path} does not exist!"
+@@ -125,6 +147,56 @@ class BackendInstaller:
+         if not os.path.exists(tools_dir):
+             tools_dir = None
+ 
++        # --- spacemit: copy spine-mlir binaries (llc, spine-opt, etc.) ---
++        bin_dir = os.path.join(backend_src_dir, "backend", "bin")
++        if not os.path.exists(bin_dir):
++            bin_dir = None
++        elif backend_name == "spacemit":
++            spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR", None)
++            if spine_mlir_install_dir:
++                bin_install_list = ["llc", "spine-opt", "mlir-translate", "opt"]
++                for bin_file in bin_install_list:
++                    src = os.path.join(spine_mlir_install_dir, "bin", bin_file)
++                    dst = os.path.join(bin_dir, bin_file)
++                    if os.path.exists(src):
++                        shutil.copy(src, dst)
++                        print(f"[spacemit] Copied {bin_file} to backend/bin/")
++
++        # --- spacemit: copy spine-mlir shared libraries ---
++        lib_dir = os.path.join(backend_src_dir, "backend", "lib")
++        if not os.path.exists(lib_dir):
++            lib_dir = None
++        elif backend_name == "spacemit":
++            spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR", None)
++            if spine_mlir_install_dir:
++                lib_patterns = ["libSpeIR*.so*", "libspine_tcm.so*", "libspert.so*"]
++                so_file_list = []
++                for pattern in lib_patterns:
++                    so_file_list.extend(
++                        glob.glob(os.path.join(spine_mlir_install_dir, "lib", pattern))
++                    )
++                lib_groups = defaultdict(list)
++                for so_file in so_file_list:
++                    basename = os.path.basename(so_file)
++                    base_name = basename.split('.so')[0]
++                    lib_groups[base_name].append(so_file)
++                for base_name, files in lib_groups.items():
++                    real_file = max(files, key=lambda f: len(os.path.basename(f)))
++                    real_base = os.path.basename(real_file)
++                    shutil.copy(os.path.realpath(real_file), os.path.join(lib_dir, real_base))
++                    print(f"[spacemit] Copied {real_base} to backend/lib/")
++                    # Recreate SONAME symlink chain so the loader resolves
++                    # transitive deps (e.g. libspert.so.0 -> libspert.so.0.5.0).
++                    for f in files:
++                        link_base = os.path.basename(f)
++                        if link_base == real_base:
++                            continue
++                        link_path = os.path.join(lib_dir, link_base)
++                        if os.path.islink(link_path) or os.path.exists(link_path):
++                            os.unlink(link_path)
++                        os.symlink(real_base, link_path)
++                        print(f"[spacemit] Symlink {link_base} -> {real_base}")
++
+         for file in ["compiler.py", "driver.py"]:
+             assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
+ 
+@@ -136,7 +208,8 @@ class BackendInstaller:
+     # Copy all in-tree backends under triton/third_party.
+     @staticmethod
+     def copy(active):
+-        return [BackendInstaller.prepare(backend) for backend in active]
++        return [BackendInstaller.prepare(backend, is_external=(backend in helper.configs.plugin_backends))
++                for backend in active]
+ 
+     # Copy all external plugins provided by the `TRITON_PLUGIN_DIRS` env var.
+     # TRITON_PLUGIN_DIRS is a semicolon-separated list of paths to the plugins.
+@@ -465,7 +538,7 @@ class CMakeBuild(build_ext):
+ 
+     def initialize_options(self):
+         build_ext.initialize_options(self)
+-        self.base_dir = get_base_dir()
++        self.base_dir = get_triton_base_dir()
+ 
+     def finalize_options(self):
+         build_ext.finalize_options(self)
+@@ -477,7 +550,8 @@ class CMakeBuild(build_ext):
+         # with an actionable message otherwise. Done here (build_ext) rather than at
+         # import so non-build commands don't run the check.
+         helper.check_pybind11_abi()
+-        if active_backend not in ("xpu", ):
++        # spacemit builds on a RISC-V-only prebuilt LLVM and needs no CUDA toolkit.
++        if active_backend not in ("xpu", "spacemit"):
+             download_and_copy_dependencies()
+ 
+         try:
+@@ -529,15 +603,17 @@ class CMakeBuild(build_ext):
+             os.makedirs(self.build_temp)
+         # python directories
+         python_include_dir = sysconfig.get_path("platinclude")
++        codegen_backends = ';'.join([b.name for b in backends if not b.is_external])
++        plugin_dirs = ';'.join([b.src_dir for b in backends if b.is_external])
+         cmake_args = [
+             "-G", "Ninja",  # Ninja is much faster than make
+             "-DCMAKE_MAKE_PROGRAM=" +
+             ninja_dir,  # Pass explicit path to ninja otherwise cmake may cache a temporary path
+-            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "-DLLVM_ENABLE_WERROR=ON",
++            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+             "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=" + extdir, "-DTRITON_BUILD_PYTHON_MODULE=ON",
+             "-DPython3_EXECUTABLE:FILEPATH=" + sys.executable, "-DPython3_INCLUDE_DIR=" + python_include_dir,
+-            "-DTRITON_CODEGEN_BACKENDS=" + ';'.join([b.name for b in backends if not b.is_external]),
+-            "-DTRITON_PLUGIN_DIRS=" + ';'.join([b.src_dir for b in backends if b.is_external]),
++            "-DTRITON_CODEGEN_BACKENDS=" + codegen_backends,
++            "-DTRITON_PLUGIN_DIRS=" + plugin_dirs,
+             "-DTRITON_WHEEL_DIR=" + wheeldir
+         ]
+         cmake_args += helper.get_backend_cmake_args(build_ext=self)
+@@ -595,8 +671,9 @@ class CMakeBuild(build_ext):
+             gluon_flag = "ON" if check_env_flag("TRITON_ILU_BUILD_GLUON") else "OFF"
+             cmake_args += [f"-DTRITON_BUILD_GLUON={gluon_flag}"]
+ 
+-        if is_offline_build():
+-            # unit test builds fetch googletests from GitHub
++        if is_offline_build() or _is_spacemit_build():
++            # unit test builds fetch googletests from GitHub; spacemit hides
++            # FLAGTREE_BACKEND from CMake (which would otherwise default UT OFF).
+             cmake_args += ["-DTRITON_BUILD_UT=OFF"]
+ 
+         cmake_args_append = os.getenv("TRITON_APPEND_CMAKE_ARGS")
+@@ -604,7 +681,14 @@ class CMakeBuild(build_ext):
+             cmake_args += shlex.split(cmake_args_append)
+ 
+         env = os.environ.copy()
+-        cmake_dir = get_cmake_dir()
++        if _is_spacemit_build():
++            # spacemit is a plugin on full core triton, not a replacement backend.
++            # FLAGTREE_BACKEND in CMake selects the replacement-backend path
++            # (skips building core include/lib), so hide it from CMake: build
++            # vanilla core triton and bring spacemit in via TRITON_PLUGIN_DIRS.
++            # The Python side still sees FLAGTREE_BACKEND (parent env unchanged).
++            env.pop("FLAGTREE_BACKEND", None)
++        cmake_dir = get_triton_cmake_dir()
+         subprocess.check_call(["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env)
+         update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
+         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
+@@ -699,7 +783,20 @@ def download_and_copy_dependencies():
+ 
+ 
+ if helper.flagtree_backend:
+-    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir"):
++    if _is_spacemit_build():
++        # spacemit builds against ROOT triton as an external plugin
++        # (backend/name.conf + leaf CMakeLists via TRITON_PLUGIN_DIRS).
++        # nvidia/amd are kept as in-tree codegen backends because core triton
++        # (TritonGPUTransforms) links their NVWS* MLIR dialect libs. Their LLVM
++        # target codegen libs (NVPTX/AMDGPU) are gated in root CMakeLists.txt on
++        # LLVM_TARGETS_TO_BUILD, so the RISC-V-only prebuilt LLVM links cleanly.
++        backends = [
++            *BackendInstaller.copy(helper.configs.default_backends),
++            BackendInstaller.prepare("spacemit",
++                                     backend_src_dir=os.path.join("third_party", "spacemit"),
++                                     is_external=True),
++        ]
++    elif helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir"):
+         backends = [
+             *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
+             *BackendInstaller.copy_externals(),
+@@ -713,7 +810,7 @@ else:
+ 
+ 
+ def get_package_dirs():
+-    yield ("", "python")
++    yield ("", get_python_root())
+ 
+     for backend in backends:
+         # we use symlinks for external plugins
+@@ -740,7 +837,7 @@ def get_package_dirs():
+ 
+ 
+ def get_packages():
+-    yield from find_packages(where="python", include=["triton", "triton.*"])
++    yield from find_packages(where=get_python_root(), include=["triton", "triton.*"])
+ 
+     for backend in backends:
+         yield f"triton.backends.{backend.name}"
+diff --git a/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td b/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td
+index 8d35a5ec1..e476cad96 100644
+--- a/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td
++++ b/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td
+@@ -14,7 +14,6 @@ def Proton_Dialect : Dialect {
+ 
+   let dependentDialects = [];
+ 
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ #endif
+diff --git a/third_party/proton/Dialect/include/Dialect/ProtonGPU/IR/ProtonGPUDialect.td b/third_party/proton/Dialect/include/Dialect/ProtonGPU/IR/ProtonGPUDialect.td
+index 9fe146f5e..c63baa385 100644
+--- a/third_party/proton/Dialect/include/Dialect/ProtonGPU/IR/ProtonGPUDialect.td
++++ b/third_party/proton/Dialect/include/Dialect/ProtonGPU/IR/ProtonGPUDialect.td
+@@ -22,7 +22,6 @@ def ProtonGPU_Dialect : Dialect {
+ 
+   let useDefaultTypePrinterParser = 1;
+   let useDefaultAttributePrinterParser = 1;
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ #endif  // PROTONGPU_DIALECT
+diff --git a/third_party/tle/CMakeLists.txt b/third_party/tle/CMakeLists.txt
+index 1034b0fef..6d419e1ef 100644
+--- a/third_party/tle/CMakeLists.txt
++++ b/third_party/tle/CMakeLists.txt
+@@ -23,4 +23,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
+   add_dependencies(TritonTLE TleTableGen TritonTLETransformsIncGen)
+ endif()
+ 
+-add_subdirectory(test)
++if(TRITON_BUILD_UT)
++  add_subdirectory(test)
++endif()
+diff --git a/third_party/tle/dialect/include/IR/TleDialect.td b/third_party/tle/dialect/include/IR/TleDialect.td
+index bb506128e..0fd8d841a 100644
+--- a/third_party/tle/dialect/include/IR/TleDialect.td
++++ b/third_party/tle/dialect/include/IR/TleDialect.td
+@@ -38,7 +38,6 @@ def Tle_Dialect : Dialect {
+     "triton::TritonDialect",
+     "triton::gpu::TritonGPUDialect",
+   ];
+-  let usePropertiesForAttributes = 1;
+ }
+ 
+ #endif

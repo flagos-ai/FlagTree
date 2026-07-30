@@ -1,0 +1,32 @@
+name: Bug Report
+description: File a bug report
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+  - type: textarea
+    id: triton-python
+    attributes:
+      label: Triton python code
+      description: Please copy and paste the triton python code that was used to generate the IR
+      render: mlir
+  - type: textarea
+    id: triton-ir
+    attributes:
+      label: Triton IR
+      description: Please copy and paste the triton IR that results in the crash
+      render: mlir
+  - type: textarea
+    id: crash-log
+    attributes:
+      label: Crash log
+      description: Please copy and paste the crash log
+      render: shell
+  - type: textarea
+    id: additional-info
+    attributes:
+      label: Additional information
+      description: Please tell us any additional commands necessary to reproduce this crash

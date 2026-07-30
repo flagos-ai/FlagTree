@@ -1,0 +1,94 @@
+name: Publish to GitLab PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: 'Build workflow run ID (from "Build Libraries CI"). Leave empty to use the latest successful run.'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: gitlab-pypi
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install twine
+        run: |
+          python -m pip install --upgrade pip
+          pip install twine
+
+      - name: Resolve build run ID
+        id: resolve-run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.build_run_id }}" ]; then
+            echo "run_id=${{ inputs.build_run_id }}" >> $GITHUB_OUTPUT
+            echo "Using specified run ID: ${{ inputs.build_run_id }}"
+          else
+            RUN_ID=$(gh run list --workflow="Build Libraries CI" --status=success --limit=1 --json databaseId --jq '.[0].databaseId')
+            if [ -z "$RUN_ID" ]; then
+              echo "Error: no successful Build Libraries CI run found"
+              exit 1
+            fi
+            echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+            echo "Using latest successful run ID: $RUN_ID"
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: wheels
+          run-id: ${{ steps.resolve-run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: spine-triton-whl-*
+
+      - name: Flatten artifact structure
+        run: |
+          # Detect duplicate wheel filenames (basenames) before copying
+          DUPLICATES=$(find wheels -name "*.whl" -printf '%f\n' | sort | uniq -d)
+          if [ -n "$DUPLICATES" ]; then
+            echo "Error: duplicate wheel filenames detected when flattening artifacts:"
+            echo "$DUPLICATES"
+            exit 1
+          fi
+
+          mkdir -p dist
+          # Safe to copy now: all target filenames are unique
+          find wheels -name "*.whl" -exec cp -t dist {} +
+          ls -la dist/
+
+      - name: List wheels to publish
+        run: |
+          echo "Wheels to publish:"
+          ls -la dist/*.whl
+          echo ""
+          echo "Total: $(ls dist/*.whl | wc -l) wheel(s)"
+
+      - name: Publish to GitLab PyPI
+        env:
+          TWINE_REPOSITORY_URL: ${{ secrets.TWINE_REPO }}
+          TWINE_USERNAME: ${{ secrets.TWINE_USER }}
+          TWINE_PASSWORD: ${{ secrets.TWINE_PASSWD }}
+        run: |
+          : "${TWINE_REPOSITORY_URL:?GitLab PyPI repository URL secret TWINE_REPO is required}"
+          : "${TWINE_USERNAME:?GitLab PyPI username secret TWINE_USER is required}"
+          : "${TWINE_PASSWORD:?GitLab PyPI password secret TWINE_PASSWD is required}"
+          echo "Publishing wheels:"
+          ls dist/*.whl
+          twine upload \
+            --repository-url "${TWINE_REPOSITORY_URL}" \
+            --username "${TWINE_USERNAME}" \
+            --password "${TWINE_PASSWORD}" \
+            dist/*.whl

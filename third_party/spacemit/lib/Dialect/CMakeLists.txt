@@ -1,0 +1,5 @@
+add_subdirectory(TritonTilingExt)
+add_subdirectory(TritonStructured)
+add_subdirectory(XSMT)
+add_subdirectory(XSMTAsync)
+add_subdirectory(TLE)
