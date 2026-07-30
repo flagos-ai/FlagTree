@@ -434,6 +434,18 @@ static Attribute inferSrcEncoding(GatherOp op, Attribute dstEnc) {
   return dstEnc;
 }
 
+#ifdef __TLE__
+static Attribute inferSrcEncoding(triton::tle::ConcatDotFragmentsOp op,
+                                  Attribute dstEnc) {
+  // Only DotOperandEncodingAttr carries no K extent, so it is the only encoding
+  // a concat can share unchanged with its tiles; shape-coupled ones like
+  // blocked take the generic conversion path.
+  if (isa<ttg::DotOperandEncodingAttr>(dstEnc))
+    return dstEnc;
+  return {};
+}
+#endif
+
 static Attribute inferTransOpDstEncoding(Attribute srcEnc,
                                          ArrayRef<int64_t> shape,
                                          ArrayRef<int32_t> order) {
@@ -526,6 +538,16 @@ static Attribute inferDstEncoding(GatherOp op, Attribute encoding) {
   return encoding;
 }
 
+#ifdef __TLE__
+static Attribute inferDstEncoding(triton::tle::ConcatDotFragmentsOp op,
+                                  Attribute srcEnc) {
+  // Symmetric to inferSrcEncoding(ConcatDotFragmentsOp).
+  if (isa<ttg::DotOperandEncodingAttr>(srcEnc))
+    return srcEnc;
+  return {};
+}
+#endif
+
 static Attribute inferSrcEncoding(triton::ReshapeOp op, Attribute encoding) {
   // The encoding of x given the encoding of y in `reshape(x) -> y` is the same
   // as the encoding of x given the encoding of y in `reshape(y) -> x`.  It's an
@@ -583,6 +605,10 @@ Attribute inferSrcEncoding(Operation *op, Attribute encoding) {
     return inferSrcEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferSrcEncoding(fp4ToFp, encoding);
+#ifdef __TLE__
+  if (auto concatDotFragments = dyn_cast<triton::tle::ConcatDotFragmentsOp>(op))
+    return inferSrcEncoding(concatDotFragments, encoding);
+#endif
 
   return {};
 }
@@ -617,6 +643,10 @@ Attribute inferDstEncoding(Operation *op, Attribute encoding) {
     return inferDstEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferDstEncoding(fp4ToFp, encoding);
+#ifdef __TLE__
+  if (auto concatDotFragments = dyn_cast<triton::tle::ConcatDotFragmentsOp>(op))
+    return inferDstEncoding(concatDotFragments, encoding);
+#endif
 
   return {};
 }

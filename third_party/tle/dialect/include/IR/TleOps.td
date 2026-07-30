@@ -79,6 +79,37 @@ def Tle_InsertTileOp
   let hasVerifier = 1;
 }
 
+def Tle_ConcatDotFragmentsOp
+    : Tle_Op<"concat_dot_fragments", [Pure,
+                                     DeclareOpInterfaceMethods<InferTypeOpInterface>,
+                                     SameTypeOperands]> {
+  let summary = "Concatenate dot-operand fragments along the contraction axis";
+
+  let description = [{
+    Concatenate N dot-operand fragments along the contraction (K) axis into a
+    single fragment of N times the K extent, letting one mma cover the whole K
+    tile instead of one mma per segment. The wider `dot_op` layout only adds
+    register bases along K and leaves the lane and warp bases untouched, so
+    every result element already lives on the thread holding its source and
+    this lowers to a per-thread register relabel - unlike a tl.join / reshape
+    chain, which round-trips the operand through shared memory.
+
+    Requirements, checked when lowering since the operand encoding is only
+    settled after layout propagation: operands carry a `dot_op` encoding; `dim`
+    is the contraction axis for their `opIdx`; the tile spans at least
+    `8 * kWidth` along `dim`, below which the layout no longer scales with K;
+    tile and result agree on their lane, warp and block bases, and neither
+    broadcasts along a dim the relabel indexes by.
+  }];
+
+  let arguments = (ins Variadic<TT_Tensor>:$tiles, I32Attr:$dim);
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = [{
+    $tiles attr-dict `:` qualified(type($tiles)) `->` qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
 // End TLE-Lite
 
 // Begin TLE-Raw

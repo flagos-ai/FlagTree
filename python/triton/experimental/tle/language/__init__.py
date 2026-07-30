@@ -25,6 +25,7 @@ from .core import (
     cumsum,
     extract_tile,
     insert_tile,
+    concat_dot_fragments,
     load,
 )
 from .pipe import (
@@ -88,6 +89,7 @@ __all__ = [
     "cumsum",
     "extract_tile",
     "insert_tile",
+    "concat_dot_fragments",
     "MeshConfig",
     "pipe",
     "pipe_reader",

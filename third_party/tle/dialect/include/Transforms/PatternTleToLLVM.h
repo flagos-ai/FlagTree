@@ -40,6 +40,12 @@ void populateInsertTileOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
     const mlir::triton::TargetInfoBase &targetInfo, unsigned benefit = 1);
 
+/// Populate patterns to convert tle.concat_dot_fragments to LLVM
+/// (register-level relabel)
+void populateConcatDotFragmentsOpToLLVMPatterns(
+    mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
+    const mlir::triton::TargetInfoBase &targetInfo, unsigned benefit = 1);
+
 void populateMemDescWGMMAViewOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
     unsigned benefit = 1);

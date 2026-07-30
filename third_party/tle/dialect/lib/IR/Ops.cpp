@@ -635,6 +635,84 @@ LogicalResult InsertTileOp::verify() {
   return success();
 }
 
+// ============================================================================
+// ConcatDotFragmentsOp Type Inference + Verification
+// ============================================================================
+LogicalResult ConcatDotFragmentsOp::inferReturnTypes(
+    [[maybe_unused]] MLIRContext *context,
+    [[maybe_unused]] std::optional<Location> location, ValueRange operands,
+    [[maybe_unused]] DictionaryAttr attributes, OpaqueProperties properties,
+    [[maybe_unused]] RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+
+  if (operands.empty())
+    return failure();
+  auto tileTy = dyn_cast<RankedTensorType>(operands[0].getType());
+  if (!tileTy)
+    return failure();
+
+  // `dim` is an inherent attribute stored in the op's Properties struct (not
+  // the discardable-attribute dictionary), same pattern as ReduceOp::axis.
+  auto *prop = properties.as<ConcatDotFragmentsOp::Properties *>();
+  if (!prop || !prop->dim)
+    return failure();
+  int64_t dim = prop->dim.getValue().getSExtValue();
+  if (dim < 0 || dim >= tileTy.getRank())
+    return failure();
+
+  SmallVector<int64_t> resultShape(tileTy.getShape());
+  resultShape[dim] *= static_cast<int64_t>(operands.size());
+
+  inferredReturnTypes.clear();
+  inferredReturnTypes.push_back(RankedTensorType::get(
+      resultShape, tileTy.getElementType(), tileTy.getEncoding()));
+  return success();
+}
+
+LogicalResult ConcatDotFragmentsOp::verify() {
+  auto tiles = getTiles();
+  if (tiles.size() < 2)
+    return emitOpError(
+        "concat_dot_fragments requires at least two input tiles");
+
+  auto tile0Ty = cast<RankedTensorType>(tiles[0].getType());
+  auto dstTy = cast<RankedTensorType>(getResult().getType());
+  int64_t rank = tile0Ty.getRank();
+
+  // getDim() is unsigned, so sign-extend the stored i32 to keep a negative
+  // `dim` readable in the diagnostic instead of wrapping to a huge value.
+  int64_t dim = getDimAttr().getValue().getSExtValue();
+  if (dim < 0 || dim >= rank)
+    return emitOpError("dim ") << dim << " out of range for rank " << rank;
+
+  // Tiles sharing shape, element type and encoding is enforced by
+  // SameTypeOperands, which reports before this verifier runs.
+
+  // Result must match the tile in every dim except `dim`, which grows by N.
+  auto tileShape = tile0Ty.getShape();
+  auto dstShape = dstTy.getShape();
+  if (dstTy.getRank() != rank)
+    return emitOpError("result rank must equal tile rank");
+  if (dstTy.getElementType() != tile0Ty.getElementType())
+    return emitOpError("result element type must match tile element type");
+  if (dstTy.getEncoding() != tile0Ty.getEncoding())
+    return emitOpError("result encoding must match tile encoding");
+  for (int64_t i = 0; i < rank; ++i) {
+    int64_t expect = (i == dim)
+                         ? tileShape[i] * static_cast<int64_t>(tiles.size())
+                         : tileShape[i];
+    if (dstShape[i] != expect)
+      return emitOpError("result shape mismatch at dimension ")
+             << i << " (expected " << expect << ", got " << dstShape[i] << ")";
+  }
+
+  // The dot_op specific checks (encoding kind, contraction axis, kWidth) live
+  // in the lowering rather than here: the operands only pick up their dot_op
+  // encoding once layout propagation has run, so until then a #blocked tile is
+  // a legal intermediate state and must not be rejected.
+  return success();
+}
+
 void DSLRegionOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {

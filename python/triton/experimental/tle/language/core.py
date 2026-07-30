@@ -534,3 +534,55 @@ def insert_tile(
         return tl.tensor(output, x.type)
     except Exception as e:
         raise RuntimeError(f"Failed to create insert_tile operation: {str(e)}") from e
+
+
+@tl.builtin
+def concat_dot_fragments(
+    tiles,
+    dim,
+    _semantic=None,
+) -> tl.tensor:
+    """
+    Concatenate two or more same-shape, same-dtype, same-layout tiles along a
+    given axis, producing a single tensor whose extent along that axis is the
+    sum of the inputs.
+
+    Intended for dot-operand fragments sliced along the contraction (K) axis:
+    when the tiles share one fragment layout and the concat axis is a multiple
+    of the CTA tile size, this lowers to a pure per-thread register relabel
+    (no cross-lane communication, no extra load), replacing a tl.join/reshape
+    chain that would round-trip through shared memory.
+    """
+    tiles = list(tiles)
+    if len(tiles) < 2:
+        raise ValueError(f"concat_dot_fragments requires at least two tiles, got {len(tiles)}")
+    for i, t in builtins.enumerate(tiles):
+        if not isinstance(t, tl.tensor):
+            raise ValueError(f"tiles[{i}] must be tl.tensor, but got {type(t)}")
+
+    dim_value = tl._unwrap_if_constexpr(dim)
+    if not isinstance(dim_value, int):
+        raise ValueError("dim must be a compile-time int or constexpr")
+
+    tile0_shape = [tl._unwrap_if_constexpr(d) for d in tiles[0].type.shape]
+    rank = len(tile0_shape)
+    if dim_value < 0 or dim_value >= rank:
+        raise ValueError(f"dim {dim_value} out of range for rank {rank}")
+
+    for i, t in builtins.enumerate(tiles):
+        shape = [tl._unwrap_if_constexpr(d) for d in t.type.shape]
+        if shape != tile0_shape:
+            raise ValueError(f"tiles[{i}] shape {shape} must match tiles[0] shape {tile0_shape}")
+        if t.type.element_ty != tiles[0].type.element_ty:
+            raise ValueError(f"tiles[{i}] element type {t.type.element_ty} must match "
+                             f"tiles[0] element type {tiles[0].type.element_ty}")
+
+    try:
+        handles = [t.handle for t in tiles]
+        output = _semantic.builder.create_concat_dot_fragments(handles, dim_value)
+        result_shape = list(tile0_shape)
+        result_shape[dim_value] = tile0_shape[dim_value] * len(tiles)
+        block_type = tl.block_type(tiles[0].type.element_ty, result_shape)
+        return tl.tensor(output, block_type)
+    except Exception as e:
+        raise RuntimeError(f"Failed to create concat_dot_fragments operation: {str(e)}") from e

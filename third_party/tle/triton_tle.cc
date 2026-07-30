@@ -105,6 +105,29 @@ void init_triton_tle_ir(py::module &&m) {
           },
           py::arg("input"), py::arg("tile"), py::arg("index"),
           "Create insert_tile operation")
+      .def(
+          "create_concat_dot_fragments",
+          [](TritonOpBuilder &self, std::vector<Value> &tiles,
+             int32_t dim) -> Value {
+            // Result type inference aborts the process on failure, so reject
+            // the cases it cannot infer here and raise instead.
+            if (tiles.size() < 2)
+              throw std::invalid_argument(
+                  "concat_dot_fragments requires at least two tiles");
+            auto tileTy = dyn_cast<RankedTensorType>(tiles[0].getType());
+            if (!tileTy)
+              throw std::invalid_argument(
+                  "concat_dot_fragments tiles must be ranked tensors");
+            if (dim < 0 || dim >= tileTy.getRank())
+              throw std::invalid_argument(
+                  "concat_dot_fragments dim is out of range for the tile rank");
+            auto &builder = self.getBuilder();
+            auto op = self.create<tle::ConcatDotFragmentsOp>(
+                tiles, builder.getI32IntegerAttr(dim));
+            return op.getResult();
+          },
+          py::arg("tiles"), py::arg("dim"),
+          "Create concat_dot_fragments operation")
       // TLE-Struct
       .def("make_swizzled_shared_encoding_attr",
            [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,

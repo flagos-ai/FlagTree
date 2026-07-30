@@ -965,25 +965,57 @@ public:
   }
 };
 
+// concat_dot_fragments op pattern
+class TleConcatDotFragmentsOpPattern
+    : public OpConversionPattern<tle::ConcatDotFragmentsOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tle::ConcatDotFragmentsOp op,
+                  tle::ConcatDotFragmentsOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto tiles = adaptor.getTiles();
+    if (tiles.empty())
+      return op.emitError("concat_dot_fragments requires at least one tile");
+
+    auto tile0Type = dyn_cast<RankedTensorType>(tiles[0].getType());
+    if (!tile0Type)
+      return op.emitError("tiles must be ranked tensors");
+    auto tileEnc = tile0Type.getEncoding();
+    if (!tileEnc)
+      return op.emitError("tiles must have encoding attribute");
+
+    Type retType = op.getType().cloneWithEncoding(tileEnc);
+
+    auto newOp = rewriter.replaceOpWithNewOp<tle::ConcatDotFragmentsOp>(
+        op, retType, tiles, op.getDim());
+
+    addNamedAttrs(newOp, adaptor.getAttributes());
+
+    return success();
+  }
+};
+
 // flagtree tle raw
 void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
-  patterns
-      .add<TleDSLRegionOpPattern, TleExtractTileOpPattern,
-           TleInsertTileOpPattern, GenericOpPattern<tle::LocalPointersOp>,
-           GenericOpPattern<tle::RemotePointersOp>,
-           GenericOpPattern<tle::ExclusiveCumsumOp>,
-           GenericOpPattern<tle::WGMMAOp>, GenericOpPattern<tle::WGMMAWaitOp>,
-           GenericOpPattern<tle::DistributedBarrierOp>,
-           GenericOpPattern<tle::YieldOp>,
-           GenericOpPattern<tle::ExtractAllocatedPtrOp>,
-           GenericOpPattern<tle::ExtractAlignedPtrOp>,
-           GenericOpPattern<tle::ExtractOffsetOp>,
-           GenericOpPattern<tle::ExtractSizesOp>,
-           GenericOpPattern<tle::ExtractStridesOp>,
-           GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
-          typeConverter, context);
+  patterns.add<
+      TleDSLRegionOpPattern, TleExtractTileOpPattern, TleInsertTileOpPattern,
+      TleConcatDotFragmentsOpPattern, GenericOpPattern<tle::LocalPointersOp>,
+      GenericOpPattern<tle::RemotePointersOp>,
+      GenericOpPattern<tle::ExclusiveCumsumOp>, GenericOpPattern<tle::WGMMAOp>,
+      GenericOpPattern<tle::WGMMAWaitOp>,
+      GenericOpPattern<tle::DistributedBarrierOp>,
+      GenericOpPattern<tle::YieldOp>,
+      GenericOpPattern<tle::ExtractAllocatedPtrOp>,
+      GenericOpPattern<tle::ExtractAlignedPtrOp>,
+      GenericOpPattern<tle::ExtractOffsetOp>,
+      GenericOpPattern<tle::ExtractSizesOp>,
+      GenericOpPattern<tle::ExtractStridesOp>,
+      GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
+      typeConverter, context);
 }
 #endif
 

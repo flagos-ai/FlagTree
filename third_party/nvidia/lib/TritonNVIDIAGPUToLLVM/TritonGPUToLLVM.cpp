@@ -182,6 +182,8 @@ struct ConvertTritonGPUToLLVM
           typeConverter, patterns, targetInfo, benefit);
       mlir::triton::tle::populateInsertTileOpToLLVMPatterns(
           typeConverter, patterns, targetInfo, benefit);
+      mlir::triton::tle::populateConcatDotFragmentsOpToLLVMPatterns(
+          typeConverter, patterns, targetInfo, benefit);
       mlir::triton::tle::populateMemDescWGMMAViewOpToLLVMPatterns(
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateExclusiveCumsumOpToLLVMPatterns(

@@ -51,6 +51,7 @@
 #endif // __FLAGTREE_RLC_ENHANCE__
 #include "triton/Analysis/Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif // __TLE__
@@ -4142,6 +4143,9 @@ void LayoutRematerialization::hoistConvertDotOperand(
     return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
            isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface>(
                op) ||
+#ifdef __TLE__
+           isa<triton::tle::ConcatDotFragmentsOp>(op) ||
+#endif
            isView(op);
   };
   // Stop the slice as soon as we find an operation that cannot be done without

@@ -20,6 +20,7 @@ add_triton_library(TritonTLETransforms
   TleTileToLLVMUtils.cpp
   ExtractTileToLLVM.cpp
   InsertTileToLLVM.cpp
+  ConcatDotFragmentsToLLVM.cpp
   TleLowerExtractTile.cpp
   TleLowerInsertTile.cpp
   TleLowerTmaCopy.cpp
