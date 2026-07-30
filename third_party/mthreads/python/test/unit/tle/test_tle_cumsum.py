@@ -275,3 +275,86 @@ def test_tle_cumsum_shared_scalar_base_addptr_preserves_adjacent_sentinel():
 
     torch.testing.assert_close(out.cpu(), torch.arange(0, block, dtype=torch.int32), rtol=0, atol=0)
     torch.testing.assert_close(sentinel.cpu(), torch.tensor([654321], dtype=torch.int32), rtol=0, atol=0)
+
+
+@triton.jit
+def _auto_noinline_histogram_callee(
+    data_ptr,
+    hist_ptr,
+    out_total,
+    N: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    VEC: tl.constexpr = 4
+    lane = tl.arange(0, BLOCK)
+    vec = tl.arange(0, VEC)
+    for t in tl.range(0, N):
+        base = t * BLOCK * VEC + lane * VEC
+        offs = base[:, None] + vec[None, :]
+        x = tl.load(data_ptr + offs)
+        h = x.to(tl.float16)
+        bits = h.to(tl.uint16, bitcast=True)
+        bin_idx = (bits >> 5).to(tl.uint32)
+        tl.atomic_add(hist_ptr + bin_idx, 1, sem="relaxed", scope="cta")
+    tl.debug_barrier()
+    counts = tl.load(hist_ptr + lane)
+    _, total = tle.cumsum(counts, axis=0)
+    tl.store(out_total, total)
+
+
+@triton.jit
+def _auto_noinline_histogram_kernel(
+    data_ptr,
+    total_out,
+    hist_dump_out,
+    NBINS: tl.constexpr,
+    BLOCK: tl.constexpr,
+    N: tl.constexpr,
+):
+    hist = tle.gpu.alloc((NBINS, ), dtype=tl.int32, nv_mma_shared_layout=False)
+    hist_ptr = tle.gpu.local_ptr(hist, (0, ))
+    tl.store(hist_ptr + tl.arange(0, NBINS), 0)
+    tl.debug_barrier()
+    _auto_noinline_histogram_callee(data_ptr, hist_ptr, total_out, N, BLOCK)
+    tl.store(hist_dump_out + tl.arange(0, NBINS), tl.load(hist_ptr + tl.arange(0, NBINS)))
+
+
+def test_tle_cumsum_auto_noinline_callee_is_not_inlined():
+    compiled = compile_musa(
+        _auto_noinline_histogram_kernel,
+        signature={
+            "data_ptr": "*fp32",
+            "total_out": "*i32",
+            "hist_dump_out": "*i32",
+            "NBINS": "constexpr",
+            "BLOCK": "constexpr",
+            "N": "constexpr",
+        },
+        constexprs={"NBINS": 2048, "BLOCK": 512, "N": 1},
+    )
+    ttir = compiled.asm["ttir"]
+    assert "tt.call" in ttir, ("callee containing tle.cumsum should not be inlined on MUSA")
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+def test_tle_cumsum_auto_noinline_histogram_not_corrupted():
+    block = 512
+    nbins = 2048
+    n_tiles = 1
+    data = torch.randn(block * 4 * n_tiles, device="musa", dtype=torch.float32)
+    total = torch.empty((1, ), device="musa", dtype=torch.int32)
+    hist_dump = torch.empty((nbins, ), device="musa", dtype=torch.int32)
+
+    _auto_noinline_histogram_kernel[(1, )](
+        data,
+        total,
+        hist_dump,
+        NBINS=nbins,
+        BLOCK=block,
+        N=n_tiles,
+        num_warps=block // 32,
+    )
+
+    expected_count = block * 4 * n_tiles
+    assert hist_dump.sum().item() == expected_count, (
+        f"histogram sum should be {expected_count}, got {hist_dump.sum().item()}")
