@@ -26,6 +26,10 @@ on:
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
