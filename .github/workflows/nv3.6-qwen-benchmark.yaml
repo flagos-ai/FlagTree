@@ -78,7 +78,6 @@ jobs:
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
-          set -x
           source ~/env.sh
           cd ~/flagrelease
           bash start.sh
@@ -86,7 +85,6 @@ jobs:
       - name: Show the baseline
         shell: bash
         run: |
-          set -x
           cd ~/flagrelease
           cat ref.txt
 
@@ -102,6 +100,5 @@ jobs:
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
-          set -x
           cd ~/flagrelease
           bash stop.sh
