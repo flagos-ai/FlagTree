@@ -29,16 +29,27 @@ runs:
       run: |
         set -x
         echo "Starting environment cleanup..."
-        SITE_PACKAGES=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib'))")
+
+        # 自动寻找可用的 python3 或 python 命令
+        if command -v python3 &> /dev/null; then
+            PYTHON_CMD="python3"
+        elif command -v python &> /dev/null; then
+            PYTHON_CMD="python"
+        else
+            echo "Error: Neither python3 nor python is installed or in PATH!"
+            exit 1
+        fi
+
+        SITE_PACKAGES=$($PYTHON_CMD -c "import sysconfig; print(sysconfig.get_path('purelib'))")
 
         # 1. Attempt to gracefully uninstall via pip
-        python3 -m pip uninstall -y flagtree || true
+        $PYTHON_CMD -m pip uninstall -y flagtree --break-system-packages || true
 
         # 2. Remove temporary directories left by interrupted pip processes
         rm -rf $SITE_PACKAGES/~* || true
 
         # 3. Force remove any remaining metadata and code directories
         rm -rf $SITE_PACKAGES/flagtree*dist-info || true
-        rm -rf $SITE_PACKAGES/triton  || true
+        rm -rf $SITE_PACKAGES/triton || true
 
         echo "Environment cleanup completed."
