@@ -30,15 +30,15 @@ runs:
         set -x
         echo "Starting environment cleanup..."
         SITE_PACKAGES=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib'))")
-        
+
         # 1. Attempt to gracefully uninstall via pip
         python3 -m pip uninstall -y flagtree || true
-        
+
         # 2. Remove temporary directories left by interrupted pip processes
         rm -rf $SITE_PACKAGES/~* || true
-        
+
         # 3. Force remove any remaining metadata and code directories
         rm -rf $SITE_PACKAGES/flagtree*dist-info || true
         rm -rf $SITE_PACKAGES/triton  || true
-        
+
         echo "Environment cleanup completed."
