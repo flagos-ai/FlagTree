@@ -105,6 +105,26 @@ jobs:
           rm -rf /tmp/speir_tmp speir.tar.gz
           ls -la speir_installed/bin/
 
+      - name: Cache spine-runtime
+        id: cache-spine-runtime
+        uses: actions/cache@v4
+        with:
+          path: spine_runtime_installed
+          key: spine-runtime-${{ env.SPINE_RUNTIME_MD5 }}
+
+      - name: Download and extract spine-runtime
+        if: steps.cache-spine-runtime.outputs.cache-hit != 'true'
+        run: |
+          curl -k -L -o spine-runtime.tar.gz ${{ env.SPINE_RUNTIME_URL }}
+          mkdir -p /tmp/spine_runtime_tmp
+          tar -xf spine-runtime.tar.gz -C /tmp/spine_runtime_tmp
+          REAL_ROOT=$(dirname $(find /tmp/spine_runtime_tmp -type d -name "include" | head -n 1))
+          echo "Found actual spine-runtime root at: $REAL_ROOT"
+          mkdir -p spine_runtime_installed
+          cp -a "$REAL_ROOT"/* spine_runtime_installed/
+          rm -rf /tmp/spine_runtime_tmp spine-runtime.tar.gz
+          ls -la spine_runtime_installed/lib/ spine_runtime_installed/include/
+
       - name: Cache LLVM
         id: cache-llvm
         uses: actions/cache@v4
@@ -126,7 +146,7 @@ jobs:
           TRITON_PARALLEL_LINK_JOBS: 1
         run: |
           chmod +x scripts/build_whl.sh
-          ./scripts/build_whl.sh llvm_installed riscv64 speir_installed
+          ./scripts/build_whl.sh llvm_installed riscv64 speir_installed spine_runtime_installed
 
       - name: Upload wheel package
         if: success()

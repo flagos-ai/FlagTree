@@ -11,6 +11,8 @@
 #include "triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
 #include "triton-shared/Utils/Utils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -47,12 +49,15 @@ class TritonArithToLinalgPass
       TritonArithToLinalgPass>::TritonArithToLinalgBase;
 
   static auto constexpr LAUNCH_GRID_RANK = getMaxEnumValForProgramIDDim() + 1;
+  // spert ABI: program_id is fetched at runtime via spine_grid(ctx, axis), so
+  // only num_programs (= launch grid size, one i32 per axis) is passed as a
+  // tail argument. The 3 program_id i32 tail args of the old ABI are dropped.
   static unsigned int constexpr TRITON_PROGRAM_INFO_ARG_COUNT =
-      LAUNCH_GRID_RANK * 2;
+      LAUNCH_GRID_RANK;
 
-  // Add additional I32 arguments to represent:
-  // - num_programs, 3 in total, one for each axis of the launch grid
-  // - program_id, 3 in total, one for each axis of the launch grid
+  // Add num_programs tail arguments (one i32 per launch grid axis). program_id
+  // is no longer passed as arguments; it is emitted as a ctx-free
+  // xsmt.program_id op (lowered to spine_grid(ctx, axis) by spine-mlir).
   static void addProgramInfo(triton::FuncOp func) {
     OpBuilder b(func);
 
@@ -100,7 +105,8 @@ public:
                 linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
                 tensor::TensorDialect, bufferization::BufferizationDialect,
                 triton::TritonDialect, ttx::TritonTilingExtDialect,
-                tts::TritonStructuredDialect, mlir::LLVM::LLVMDialect>();
+                tts::TritonStructuredDialect, xsmt::XSMTDialect,
+                xsmt_async::XSMTAsyncDialect, mlir::LLVM::LLVMDialect>();
   }
 
   void runOnOperation() override {
@@ -122,7 +128,8 @@ public:
         linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
         cf::ControlFlowDialect, tensor::TensorDialect,
         bufferization::BufferizationDialect, memref::MemRefDialect,
-        ttx::TritonTilingExtDialect, tts::TritonStructuredDialect>();
+        ttx::TritonTilingExtDialect, tts::TritonStructuredDialect,
+        xsmt::XSMTDialect, xsmt_async::XSMTAsyncDialect>();
 
     target.addLegalOp<ModuleOp>();
 
@@ -200,6 +207,11 @@ public:
 
     if (pidsToFuncArgs) {
       for (auto func : getOperation().getOps<triton::FuncOp>()) {
+        // spert ABI: append num_programs tail args (one i32 per axis). We no
+        // longer prepend an i64 ctx arg0 here — spine-mlir prepends the
+        // per-tile Context handle as arg0 itself. program_id is emitted as a
+        // ctx-free xsmt.program_id op (lowered to spine_grid(ctx, axis) by
+        // spine-mlir).
         addProgramInfo(func);
       }
     }
@@ -236,6 +248,11 @@ public:
             func::FuncOp::create(builder, func.getLoc(), name, type);
         funcFunc.setAllArgAttrs(argAttrs);
         funcFunc.setAllResultAttrs(resAttrs);
+        // spert ABI: mark the kernel as requiring the per-tile runtime Context.
+        // spine-mlir's SpeRTtoLLVM (getRuntimeContext) gates ctx-arg0 handling
+        // on this attribute; the backend supplies/binds the ctx accordingly so
+        // xsmt_async.grid -> spert.grid -> spine_grid(ctx, axis) can resolve.
+        funcFunc->setAttr("__require_context__", builder.getUnitAttr());
 
         auto &funcFuncBody = funcFunc.getBody();
         auto &funcBody = func.getBody();

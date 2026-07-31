@@ -29,7 +29,6 @@ from . import (
 def _ttir_to_linalgdir(mod, metadata):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
-    metadata["smt_parallel_inside"] = ("bind_sub_block = true" in ttir_code)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, "tt.mlir")
         dst_path = os.path.join(tmpdir, "linalg.mlir")
@@ -63,7 +62,7 @@ def _spine_mlir_linalgdir_to_llir_ref(linalgdir: str, metadata):
 
         pipeline_option_str = get_spine_mlir_opt_options()
         if pipeline_option_str == "":
-            pipeline_option_str = "enable-always-tls={}".format("0" if metadata["smt_parallel_inside"] else "1")
+            pipeline_option_str = "enable-always-tls=1"
 
         cmd_str = '{} {} --spine-triton-e2e-ref-pipeline="{}" -o {}'.format(spine_mlir_path, linalg_path,
                                                                             pipeline_option_str, llmlir_path)
@@ -89,8 +88,7 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
 
         pipeline_option_str = get_spine_mlir_opt_options()
         if pipeline_option_str == "":
-            pipeline_option_str = "enable-always-tls={} enable-fuse-group=false".format(
-                "0" if metadata["smt_parallel_inside"] else "1")
+            pipeline_option_str = "enable-always-tls=1 enable-fuse-group=false"
 
         cmd_str = '{} {} --spine-triton-e2e-pipeline="{}" -o {}'.format(spine_mlir_path, linalg_path,
                                                                         pipeline_option_str, llmlir_path)
@@ -159,6 +157,10 @@ def _llir_to_so(llir: str, metadata):
             mattr_list = ["64bit", "a", "b", "c", "d", "f", "i", "m", "v", "zfh", "zvfh", "zicbop", "zicbom", "zicboz"]
             if ai_cpu_arch in {"spacemit-a200", "spacemit-a200m"}:
                 mattr_list.extend(["xsmtvsfu", "zmatrix"])
+            elif ai_cpu_arch in {"spacemit-a100"}:
+                mattr_list.append("xsmtvdotii")
+            elif ai_cpu_arch in {"spacemit-x100", "spacemit-x60", "spacemit-a60"}:
+                mattr_list.append("xsmtvdoti")
 
             llc_flags.extend(["--march=riscv64", "--mattr=" + ",".join(mattr_list)])
 
@@ -170,11 +172,11 @@ def _llir_to_so(llir: str, metadata):
             shutil.copy(asm_path, asm_dump_path)
 
         subprocess.check_call([llc_path, src_opt_path, *llc_flags, "-filetype=obj", "-o", dst_path])
-        rpc_host = os.environ.get("SPINE_TRITON_RPC_HOST", "")
-        if rpc_host:
-            # For RPC mode, we don't need to create a shared library
-            with open(dst_path, "rb") as f:
-                return f.read()
+        # rpc_host = os.environ.get("SPINE_TRITON_RPC_HOST", "")
+        # if rpc_host:
+        #     # For RPC mode, we don't need to create a shared library
+        #     with open(dst_path, "rb") as f:
+        #         return f.read()
 
         dump_ir_if_needed([dst_path], metadata["name"])
 
@@ -231,7 +233,7 @@ def _llir_to_so(llir: str, metadata):
                 f"-L{runtime_lib_dir}",
                 "-shared",
                 f"-l{py_lib}",
-                "-lSpineTritonRuntime",
+                "-lSpineTritonRuntime",  # spine-triton's own runtime: spine_assert, spine_print_unranked_memref, proton, etc.
                 "-fPIC",
                 "-o",
                 so_path,

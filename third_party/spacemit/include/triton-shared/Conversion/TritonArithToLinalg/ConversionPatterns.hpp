@@ -18,6 +18,9 @@
 #include "triton-shared/Utils/Utils.h"
 
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTOps.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -959,6 +962,26 @@ struct MakeRangeConverter : public OpConversionPattern<triton::MakeRangeOp> {
   }
 };
 
+// Emit `xsmt_async.grid <axis> : i64` and truncate the i64 result to i32
+// (Triton program_id / num_programs are i32). This op is ctx-free at the
+// linalg level: spine-mlir lowers it to `spine_grid(ctx, axis)`, supplying
+// the per-tile Context handle it prepends as kernel arg0 itself. We no longer
+// read a ctx arg0 or emit spine_grid here.
+static Value emitProgramId(ConversionPatternRewriter &rewriter, Location loc,
+                           ModuleOp moduleOp, FunctionOpInterface func,
+                           uint32_t axis) {
+  auto ctxCtx = rewriter.getContext();
+  auto i64Type = IntegerType::get(ctxCtx, 64);
+  auto i32Type = IntegerType::get(ctxCtx, 32);
+
+  // axis is an i64 operand (matches spine-mlir-main midend xsmt_async.grid).
+  Value axisVal = arith::ConstantOp::create(rewriter, loc, i64Type,
+                                            rewriter.getI64IntegerAttr(axis));
+  auto pidOp = xsmt_async::GridOp::create(rewriter, loc, axisVal);
+  Value pid64 = pidOp.getId();
+  return arith::TruncIOp::create(rewriter, loc, i32Type, pid64);
+}
+
 struct AssertConverter : public OpConversionPattern<triton::AssertOp> {
   using OpConversionPattern<triton::AssertOp>::OpConversionPattern;
 
@@ -970,11 +993,10 @@ struct AssertConverter : public OpConversionPattern<triton::AssertOp> {
     auto moduleOp = op->getParentOfType<ModuleOp>();
     auto func = op->getParentOfType<FunctionOpInterface>();
 
-    // 1. Extract program IDs from function arguments (same as PrintOpConverter)
-    auto numArgs = func.getNumArguments();
-    Value pid0 = func.getArgument(numArgs - 3);
-    Value pid1 = func.getArgument(numArgs - 2);
-    Value pid2 = func.getArgument(numArgs - 1);
+    // 1. Program IDs via spert runtime: spine_grid(ctx, axis). ctx = arg0.
+    Value pid0 = emitProgramId(rewriter, loc, moduleOp, func, 0);
+    Value pid1 = emitProgramId(rewriter, loc, moduleOp, func, 1);
+    Value pid2 = emitProgramId(rewriter, loc, moduleOp, func, 2);
 
     // 2. Reduce tensor condition to scalar i1 via AND reduction
     Value condVal = op.getCondition();
@@ -2376,8 +2398,12 @@ public:
                                       "1, or 2");
 
     auto func = op->getParentOfType<FunctionOpInterface>();
-    auto numArgs = func.getNumArguments();
-    auto id = func.getArgument(numArgs - LAUNCH_GRID_RANK + axis);
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+
+    // spert ABI: program_id is fetched at runtime via spine_grid(ctx, axis),
+    // ctx being the per-tile Context handle passed as kernel arg0. This
+    // replaces reading a host-computed i32 tail argument.
+    Value id = emitProgramId(rewriter, op.getLoc(), moduleOp, func, axis);
 
     rewriter.replaceOp(op, id);
     return success();
@@ -2406,7 +2432,10 @@ public:
 
     auto func = op->getParentOfType<FunctionOpInterface>();
     auto numArgs = func.getNumArguments();
-    auto id = func.getArgument(numArgs - LAUNCH_GRID_RANK * 2 + axis);
+    // spert ABI: num_programs(axis) = launch grid size along axis. It is
+    // passed as the trailing i32 args (one per axis, no more program_id tail),
+    // and equals the grid dispatch parameter. No runtime query needed.
+    auto id = func.getArgument(numArgs - LAUNCH_GRID_RANK + axis);
 
     rewriter.replaceOp(op, id);
     return success();
@@ -3658,12 +3687,10 @@ struct PrintOpConverter : public OpConversionPattern<triton::PrintOp> {
     auto moduleOp = op->getParentOfType<ModuleOp>();
     auto func = op->getParentOfType<FunctionOpInterface>();
 
-    // Extract program IDs from function arguments
-    // spine-triton convention: last 6 args = [num_progs_x/y/z, pid_x/y/z]
-    auto numArgs = func.getNumArguments();
-    Value pid0 = func.getArgument(numArgs - 3); // pid_x
-    Value pid1 = func.getArgument(numArgs - 2); // pid_y
-    Value pid2 = func.getArgument(numArgs - 1); // pid_z
+    // Program IDs via spert runtime: spine_grid(ctx, axis). ctx = arg0.
+    Value pid0 = emitProgramId(rewriter, loc, moduleOp, func, 0);
+    Value pid1 = emitProgramId(rewriter, loc, moduleOp, func, 1);
+    Value pid2 = emitProgramId(rewriter, loc, moduleOp, func, 2);
 
     StringRef prefix = op.getPrefix();
     bool hex = op.getHex();

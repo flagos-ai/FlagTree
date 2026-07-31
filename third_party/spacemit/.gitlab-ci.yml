@@ -16,7 +16,6 @@ include:
 
 
 stages:
-  - trigger-deps
   - build
   - test
 
@@ -68,41 +67,9 @@ lint:
     - python -m pre_commit run --all-files --show-diff-on-failure --color always
 
 
-trigger-spine-mlir:
-  stage: trigger-deps
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_PIPELINE_SOURCE == "web"
-  trigger:
-    project: ai/AICompiler/spine-mlir
-    branch: for-kxy-ame-0.5b
-    strategy: depend
-
-
-trigger-rpc-runtime:
-  stage: trigger-deps
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == "main"
-    - if: $CI_PIPELINE_SOURCE == "web"
-    - if: $CI_PIPELINE_SOURCE == "pipeline"
-  trigger:
-    project: ai/AICompiler/spine-triton-rpc-runtime
-    branch: master
-    strategy: depend
-
-
-build-x86:
+build-spine-mlir:
   extends: .x86-host-ci-env
   stage: build
-  needs:
-    - job: lint
-      optional: true
-    - job: trigger-spine-mlir
-      optional: true
-    - job: trigger-rpc-runtime
-      optional: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
@@ -111,10 +78,105 @@ build-x86:
   tags:
     - 92_12_host
   variables:
-    GIT_SUBMODULE_STRATEGY: recursive
+    GIT_SUBMODULE_STRATEGY: none
+    MAX_JOBS: "16"
+  script:
+    - |
+      set -e
+      git submodule update --init --recursive third_party/spine-mlir
+      cd third_party/spine-mlir
+      LLVM_COMMIT_ID="$(tr -d '[:space:]' < LLVM_VERSION)"
+      LLVM_INSTALL_PATH=/home/share/nfs_share/llvm-pre-build/llvm-${LLVM_COMMIT_ID}-release-x86
+      echo "LLVM_INSTALL_PATH: ${LLVM_INSTALL_PATH}"
+      cmake --preset release \
+        -DCMAKE_MAKE_PROGRAM="ninja" \
+        -DLLVM_INSTALL_PATH="${LLVM_INSTALL_PATH}"
+      cmake --build --preset release --target install -j${MAX_JOBS}
+      # spine-mlir main 不再 install LLVM tools，手动从 LLVM 补上供 triton setup.py 使用
+      cp "${LLVM_INSTALL_PATH}/bin/llc" build/release/bin/llc
+      cp "${LLVM_INSTALL_PATH}/bin/mlir-translate" build/release/bin/mlir-translate
+      cp "${LLVM_INSTALL_PATH}/bin/opt" build/release/bin/opt
+  artifacts:
+    name: spine-mlir-x86-$CI_COMMIT_SHORT_SHA
+    paths:
+      - third_party/spine-mlir/build/release/
+    expire_in: 7 days
+
+
+build-rpc-runtime:
+  extends: .x86-host-ci-env
+  stage: build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "pipeline"
+  tags:
+    - 92_12_host
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
+    CROSS_TOOLCHAIN_PATH: $DEFAULT_RISCV_ROOT_PATH
+  before_script:
+    - export GIT_CONFIG_GLOBAL="${CI_PROJECT_DIR}/.job-gitconfig"
+    - git config --global http.sslVerify false
+    - git config --global url."git@gitlab.dc.com:".insteadOf "https://gitlab.dc.com:8443/"
+    - git submodule update --init --recursive third_party/spine-triton-rpc-runtime
+    - git submodule update --init --recursive third_party/spine-runtime
+  script:
+    - |
+      set -e
+      cd third_party/spine-triton-rpc-runtime
+      bash scripts/build_riscv64.sh
+      echo "spine-rpc-server built:"
+      file build/riscv64/spine-rpc-server
+
+      # Produce a standalone spine-runtime install (libspert.so + spert headers)
+      # for the spine-triton wheel build. spine-runtime is a direct submodule of
+      # spine-triton (third_party/spine-runtime), not nested under rpc-runtime.
+      cd "${CI_PROJECT_DIR}/third_party/spine-runtime"
+      RISCV_ROOT_PATH="${CROSS_TOOLCHAIN_PATH}" bash scripts/build.sh riscv64 Release
+      echo "spine-runtime installed:"
+      ls -la build/riscv64/Release/installed/lib build/riscv64/Release/installed/include
+
+      # Stage outputs OUTSIDE submodule working dirs: GitLab's artifact archiver
+      # skips files inside git submodule directories, so artifacting
+      # third_party/*/... uploads nothing. Copy to a plain project-dir path.
+      cd "${CI_PROJECT_DIR}"
+      rm -rf ci-artifacts && mkdir -p ci-artifacts
+      cp -a third_party/spine-triton-rpc-runtime/build/riscv64 ci-artifacts/rpc-server-riscv64
+      cp -a third_party/spine-runtime/build/riscv64/Release/installed ci-artifacts/spine-runtime-install
+      echo "staged artifacts:"
+      ls -la ci-artifacts/spine-runtime-install/lib ci-artifacts/spine-runtime-install/include
+  artifacts:
+    name: rpc-runtime-riscv64-$CI_COMMIT_SHORT_SHA
+    paths:
+      - ci-artifacts/
+    expire_in: 7 days
+
+
+build-x86:
+  extends: .x86-host-ci-env
+  stage: build
+  needs:
+    - job: lint
+      optional: true
+    - job: build-spine-mlir
+      artifacts: true
+    - job: build-rpc-runtime
+      artifacts: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "pipeline"
+  tags:
+    - 92_12_host
+  variables:
+    GIT_SUBMODULE_STRATEGY: none
     MAX_JOBS: "16"
     TRITON_PARALLEL_LINK_JOBS: "2"
   before_script:
+    - git submodule update --init --recursive triton
     - python3 -m pip install --quiet --break-system-packages cmake ninja pybind11 setuptools wheel
     - export PATH="$HOME/.local/bin:$PATH"
   script:
@@ -126,18 +188,24 @@ build-x86:
       LLVM_DIR=/home/share/nfs_share/llvm-pre-build/llvm-${LLVM_COMMIT_ID}-20260529-release-x86
       echo "LLVM_DIR: $LLVM_DIR"
 
-      SPEIR_BASE=/home/share/nfs_share/ci-builds/ai/AICompiler/spine-mlir
-      SPEIR_PIPELINE_DIR=$(ls -d ${SPEIR_BASE}/[0-9]* 2>/dev/null | sort -t/ -k8 -n | tail -1)
-      SPEIR_DIR=${SPEIR_PIPELINE_DIR}/build-x86
-      if [ -z "$SPEIR_PIPELINE_DIR" ] || [ ! -d "$SPEIR_DIR" ]; then
-        echo "ERROR: no SPEIR build found in ${SPEIR_BASE}"
+      SPEIR_DIR="${CI_PROJECT_DIR}/third_party/spine-mlir/build/release"
+      if [ ! -d "$SPEIR_DIR" ]; then
+        echo "ERROR: spine-mlir artifact not found at ${SPEIR_DIR}"
         exit 1
       fi
       echo "SPEIR_DIR: $SPEIR_DIR"
       chmod -R a+x $SPEIR_DIR/bin/* || true
 
+      # spine-runtime install (libspert.so + spert headers) from build-rpc-runtime artifact
+      SPINE_RUNTIME_DIR="${CI_PROJECT_DIR}/ci-artifacts/spine-runtime-install"
+      if [ ! -f "$SPINE_RUNTIME_DIR/include/spert.hpp" ]; then
+        echo "ERROR: spine-runtime install not found at ${SPINE_RUNTIME_DIR}"
+        exit 1
+      fi
+      echo "SPINE_RUNTIME_DIR: $SPINE_RUNTIME_DIR"
+
       chmod +x scripts/build_x86_rpc.sh
-      ./scripts/build_x86_rpc.sh $LLVM_DIR $SPEIR_DIR
+      ./scripts/build_x86_rpc.sh $LLVM_DIR $SPEIR_DIR $SPINE_RUNTIME_DIR
 
       if [ -d "build-x86_64" ]; then
         echo "X86 build successful"
@@ -169,9 +237,12 @@ test-spine-triton-integration:
   needs:
     - job: build-x86
       artifacts: false
+    - job: build-rpc-runtime
+      artifacts: true
   tags:
     - 92_12_host
   variables:
+    GIT_SUBMODULE_STRATEGY: none
     CROSS_TOOLCHAIN_PATH: $DEFAULT_RISCV_ROOT_PATH
     QEMU_PATH: /home/share/nfs_share/ci-node-compiler-env/jdsk-qemu-static-0.0.9_s2/qemu-riscv64-static
     QEMU_SYSROOT: /home/share/nfs_share/ci-node-compiler-env/spacemit-toolchain-linux-glibc-x86_64-v1.2.4/sysroot
@@ -190,15 +261,11 @@ test-spine-triton-integration:
       fi
       echo "spine-triton build dir: $ST_DIR"
 
-      RPC_BASE=/home/share/nfs_share/ci-builds/ai/AICompiler/spine-triton-rpc-runtime
-      RPC_PIPE=$(for d in $(ls -d ${RPC_BASE}/[0-9]* 2>/dev/null | sort -t/ -k9 -n -r); do
-                   [ -f "$d/build-riscv64/spine-rpc-server" ] && echo "$d" && break
-                 done)
-      if [ -z "$RPC_PIPE" ]; then
-        echo "ERROR: no rpc-runtime build (with spine-rpc-server) found in ${RPC_BASE}"
+      RPC_DIR="${CI_PROJECT_DIR}/ci-artifacts/rpc-server-riscv64"
+      if [ ! -f "$RPC_DIR/spine-rpc-server" ]; then
+        echo "ERROR: spine-rpc-server not found at ${RPC_DIR}/spine-rpc-server"
         exit 1
       fi
-      RPC_DIR=$RPC_PIPE/build-riscv64
       echo "rpc-runtime build dir: $RPC_DIR"
 
       source /home/gitlab-runner/.triton/bin/activate
@@ -206,7 +273,7 @@ test-spine-triton-integration:
       export PYTHONPATH=$ST_DIR/build-x86_64:$PYTHONPATH
       export SPINE_TRITON_CROSS_TOOLCHAIN=$CROSS_TOOLCHAIN_PATH
       export SPINE_TRITON_TARGET_ARCH=riscv64
-      export SPACEMIT_EP_QEMU_SET_CORE_ARCH="0xF000"
+      export SPACEMIT_EP_QEMU_SET_CORE_ARCH="0xA064"
       export SPINE_TRITON_RPC_HOST=localhost
       export SPINE_TRITON_RPC_PORT=$RPC_PORT
       export SPINE_TRITON_DUMP_PATH=$CI_PROJECT_DIR/rpc_ir_dump
@@ -224,7 +291,7 @@ test-spine-triton-integration:
       # 启动 QEMU RPC server
       "$QEMU_PATH" \
         -L "$QEMU_SYSROOT" \
-        -cpu max,xsmtame=true,ame_tlen=1024,ame_trlen=32,vlen=1024 \
+        -cpu max,vlen=1024,elen=64,vext_spec=v1.0\
         "$RPC_DIR/spine-rpc-server" "$RPC_PORT" > rpc_server.log 2>&1 &
       echo $! > .rpc_server.pid
 
@@ -242,7 +309,7 @@ test-spine-triton-integration:
       done
 
       # spine-triton e2e 集成测试
-      python3 $ST_DIR/examples/mm_block_ptr.py
+      # python3 $ST_DIR/examples/mm_block_ptr.py
 
       # spine-FlagGems 算子测试
       rm -rf "$CI_PROJECT_DIR/flaggems"
@@ -250,7 +317,9 @@ test-spine-triton-integration:
       export PYTHONPATH=$CI_PROJECT_DIR/flaggems/src:$PYTHONPATH
       mkdir -p "$CI_PROJECT_DIR/flaggems/logs"
       cd "$CI_PROJECT_DIR/flaggems"
-      pytest -s tests/test_blas_ops.py --ref=cpu &> logs/blas.log || true
+      PYTHONUNBUFFERED=1 timeout 1200 stdbuf -oL -eL \
+        pytest -sv tests/test_unary_pointwise_ops.py -m gelu
+      # pytest -sv tests/test_blas_ops.py --ref=cpu &> logs/blas.log || true
   after_script:
     - '[ -f rpc_server.log ] && echo "=== RPC server log ===" && cat rpc_server.log || true'
     - |

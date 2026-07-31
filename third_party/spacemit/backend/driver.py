@@ -70,7 +70,7 @@ def _format_of(ty):
     }[ty]
 
 
-def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_name="unknown_kernel"):
+def _generate_launcher(constants, signature, kernel_name="unknown_kernel"):
     # Check if kernel-level proton capture is enabled at compile time
     enable_proton_kernel_capture = os.environ.get("PROTON_KERNEL_CAPTURE", "0") != "0"
 
@@ -79,17 +79,32 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
     format = "iiiKKOOOO" + args_format
     args_list = (", " + ", ".join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else "")
 
-    kernel_arg_decls = ", ".join(
-        _ty_to_cpp(ty) if ty[0] != "*" else "int64_t, void*" for i, ty in signature.items() if ty != "constexpr")
-    kernel_arg_decls += ", " if kernel_arg_decls else ""
+    # New spert::Stream::launch ABI: kernel first param is spert::Context*,
+    # followed by user args, then 3 i32 num_programs. IMPORTANT: an unranked
+    # memref (`*xTy`) lowers to TWO ABI params — (int64_t rank, void* descriptor)
+    # — so each pointer arg must be declared/passed as `int64_t, void*` and
+    # `0, &ptr_argN`, exactly like the pre-spert kernel_ptr_t. Stream::launch
+    # variadic-forwards them; the rank int64 + descriptor ptr reach the kernel.
+    kernel_arg_decls = "spert::Context* ctx"
+    if signature:
+        kernel_arg_decls += ", "
+        kernel_arg_decls += ", ".join(
+            _ty_to_cpp(ty) if ty[0] != "*" else "int64_t, void*" for i, ty in signature.items() if ty != "constexpr")
+    kernel_arg_decls += ", int, int, int"  # num_programs x/y/z
 
-    kernel_parameters = ", ".join(f"static_cast<{_ty_to_cpp(ty)}>(arg{i})" if ty[0] != "*" else f"0, &ptr_arg{i}"
-                                  for i, ty in signature.items()
-                                  if ty != "constexpr")
-    kernel_parameters += ", " if kernel_parameters else ""
+    # _launch call params: (0, &ptr_arg) for pointers, casted scalars, then grid
+    ptr_decls = "\n  ".join(
+        f"StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};"
+        for i, ty in signature.items()
+        if ty != "constexpr" and ty[0] == "*")
 
-    smt_parallel_inside_arg = "constexpr bool smt_parallel_inside = {};".format(
-        "true" if smt_parallel_inside else "false")
+    launch_args = ", ".join(
+        (f"static_cast<int64_t>(0), &ptr_arg{i}" if ty[0] == "*" else f"static_cast<{_ty_to_cpp(ty)}>(arg{i})")
+        for i, ty in signature.items()
+        if ty != "constexpr")
+    if launch_args:
+        launch_args += ", "
+    launch_args += "gridX, gridY, gridZ"
 
     return f"""
 #include <assert.h>
@@ -109,34 +124,18 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_n
 #include <string.h>
 #include "ExecutionEngine/CRunnerUtils.h"
 #include "ExecutionEngine/CRunnerUtils.cpp"
+#include "SpineRuntime/spert.hpp"
 
-namespace mlir {{
-namespace speir {{
-void *spineGetMultiStream(int64_t);
-
-template <int64_t rank>
-void spineMultiStreamDispatch(
-    void *multi_stream,
-    const std::function<void(const std::array<int64_t, rank> &)> &fn,
-    const std::array<int64_t, rank> &block_size);
-
-void spineStreamDispatch(
-    void *stream, const std::function<void(const std::array<int64_t, 3> &)> &fn,
-    const std::array<int64_t, 3> &grid_size);
-
-}} // namespace speir
-}}// namespace mlir
-
-extern "C" {{
-int64_t spine_get_stream_threads();
-int64_t spine_require_stream();
-void spine_release_stream(int64_t);
-{'''// Proton kernel-level profiling APIs
+{'''extern "C" {{
+// Proton kernel-level profiling APIs
 void proton_enter_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
-void proton_exit_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);''' if enable_proton_kernel_capture else ''}
-}}
+void proton_exit_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
+}}''' if enable_proton_kernel_capture else ''}
 
-using kernel_ptr_t = void(*)({kernel_arg_decls} int, int, int, int, int, int);
+// New spert::Stream::launch ABI: kernel first param is spert::Context*,
+// followed by user args (pointers as StridedMemRefType*), then 3 i32 num_programs.
+// Kernel internally calls spine_grid(ctx, axis) to get program_id (lowering emits it).
+using kernel_ptr_t = void(*)({kernel_arg_decls});
 
 
 typedef struct _DevicePtrInfo {{
@@ -157,7 +156,7 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
     return ptr_info;
   }}
   PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
-  if(ptr){{
+  if (ptr) {{
     PyObject *empty_tuple = PyTuple_New(0);
     PyObject *ret = PyObject_Call(ptr, empty_tuple, NULL);
     Py_DECREF(empty_tuple);
@@ -168,73 +167,49 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
       return ptr_info;
     }}
     ptr_info.dev_ptr = (void*) PyLong_AsLongLong(ret);
-    if(!ptr_info.dev_ptr) {{
+    if (!PyErr_Occurred()) {{
       return ptr_info;
     }}
-    Py_DECREF(ret);  // Thanks ChatGPT!
-    return ptr_info;
+    PyErr_Clear();
   }}
   PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
   ptr_info.valid = false;
   return ptr_info;
 }}
 
+constexpr const char* KERNEL_NAME = "{kernel_name}";
 
-{f'static constexpr const char* KERNEL_NAME = "{kernel_name}";' if enable_proton_kernel_capture else ''}
-
-static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_t kernel_ptr, {arg_decls}) {{
-  {smt_parallel_inside_arg}
+static void _launch(int gridX, int gridY, int gridZ, kernel_ptr_t kernel_ptr, {arg_decls}) {{
   if (gridX*gridY*gridZ <= 0) return;
   {'// Auto kernel capture: record kernel entry' if enable_proton_kernel_capture else ''}
   {'proton_enter_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
-  int64_t stream_threads = spine_get_stream_threads();
-  int64_t gridX_out = (gridX + stream_threads - 1) / stream_threads;
-  {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
-            for i, ty in signature.items() if i not in constants and ty[0] == "*")}
-    if constexpr (!smt_parallel_inside) {{
-        mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
-            int x_out = block[0];
-            int y_out = block[1];
-            int z_out = block[2];
-            int64_t current_stream = spine_require_stream();
-            mlir::speir::spineStreamDispatch(reinterpret_cast<void*>(current_stream),
-            [&] (const std::array<int64_t, 3> & cur_grid) {{
-                int x = cur_grid[0] + x_out * stream_threads;
-                if (x >= gridX) {{
-                        return;
-                }}
-                (*kernel_ptr)({kernel_parameters}
-                                     gridX, gridY, gridZ, x, y_out, z_out);
-            }},
-                {{stream_threads, 1, 1}});
 
-            spine_release_stream(current_stream);
-        }},
-             {{gridX_out, gridY, gridZ}});
-    }} else {{
-        mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
-      int x = block[0];
-      int y = block[1];
-      int z = block[2];
-      (*kernel_ptr)({kernel_parameters}
-                   gridX, gridY, gridZ, x, y, z);
-    }},
-       {{gridX, gridY, gridZ}});
-  }}
+  // Reconstruct StridedMemRefType for pointer args
+  {ptr_decls}
+
+  // spert::Stream::launch: variadic template directly forwards all args to kernel.
+  // Kernel signature: void(spert::Context*, user_args..., num_programs_x/y/z).
+  spert::Stream stream;
+  auto fut = stream.launch(spert::Grid{{static_cast<uint32_t>(gridX),
+                                        static_cast<uint32_t>(gridY),
+                                        static_cast<uint32_t>(gridZ)}},
+                           kernel_ptr, {launch_args});
+  fut.sync();
+
   {'// Auto kernel capture: record kernel exit' if enable_proton_kernel_capture else ''}
   {'proton_exit_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
-  }}
+}}
 
 static PyObject* launch(PyObject* self, PyObject* args) {{
   int gridX, gridY, gridZ;
   PyObject *launch_enter_hook = NULL;
   PyObject *launch_exit_hook = NULL;
-  PyObject *kernel_metadata = NULL;
   PyObject *launch_metadata = NULL;
+  PyObject *kernel_metadata = NULL;
+  PyObject *_function = NULL;
   uint64_t _stream;
-  uint64_t _function;
-  {' '.join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
-  if(!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &_stream, &_function,
+  {" ".join([f"{_extracted_type(ty)} _arg{i};" for i, ty in signature.items()])}
+  if (!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &_stream, &_function,
                                            &kernel_metadata, &launch_metadata,
                                            &launch_enter_hook, &launch_exit_hook {args_list})) {{
     return NULL;
@@ -242,37 +217,29 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   kernel_ptr_t kernel_ptr = reinterpret_cast<kernel_ptr_t>(_function);
 
-  // [CPULauncher-specific]: We don't need the metadata below but just put them
-  // here anyway to be consistent with others.
-  // This will make updating the driver easier in the future.
-
-  //  int num_warps, num_ctas, shared_memory, clusterDimX, clusterDimY, clusterDimZ;
-  //  if (!PyArg_ParseTuple(kernel_metadata, \"iiiiii\", &num_warps, &num_ctas, &shared_memory, &clusterDimX, &clusterDimY, &clusterDimZ)) {{
-  //    PyErr_SetString(PyExc_TypeError, "kernel_metadata must be a tuple");
-  //    return NULL;
-  //  }}
-
   // extract launch metadata
   if (launch_enter_hook != Py_None){{
-    PyObject* args = Py_BuildValue("(O)", launch_metadata);
+    PyObject* args = PyTuple_Pack(1, launch_metadata);
     PyObject* ret = PyObject_CallObject(launch_enter_hook, args);
     Py_DECREF(args);
     if (!ret)
       return NULL;
+    Py_DECREF(ret);
   }}
 
   // raise exception asap
-  {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-  _launch(gridX, gridY, gridZ, _stream, kernel_ptr, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0] == "*" else f"_arg{i}"for i, ty in signature.items())});
+  {"".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])}
+  _launch(gridX, gridY, gridZ, kernel_ptr, {", ".join([f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}" for i, ty in signature.items()])});
   if (PyErr_Occurred()) {{
     return NULL;
   }}
   if(launch_exit_hook != Py_None){{
-    PyObject* args = Py_BuildValue("(O)", launch_metadata);
+    PyObject* args = PyTuple_Pack(1, launch_metadata);
     PyObject* ret = PyObject_CallObject(launch_exit_hook, args);
     Py_DECREF(args);
     if (!ret)
       return NULL;
+    Py_DECREF(ret);
   }}
 
   // return None
@@ -287,7 +254,7 @@ static PyMethodDef ModuleMethods[] = {{
 
 static struct PyModuleDef ModuleDef = {{
   PyModuleDef_HEAD_INIT,
-  \"__spine_triton_kernel_launcher\",
+  "__spine_triton_kernel_launcher",
   NULL, //documentation
   -1, //size
   ModuleMethods
@@ -437,10 +404,9 @@ class CPULauncher(object):
 
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
-        smt_parallel_inside = metadata.smt_parallel_inside
         # Get kernel name for auto proton capture
         kernel_name = src.fn.__name__ if hasattr(src, 'fn') and hasattr(src.fn, '__name__') else "unknown_kernel"
-        launcher_src = _generate_launcher(constants, signature, smt_parallel_inside, kernel_name)
+        launcher_src = _generate_launcher(constants, signature, kernel_name)
         mod = compile_module(launcher_src, "__spine_triton_kernel_launcher", kernel_name=kernel_name)
         self.launch = mod.launch
 

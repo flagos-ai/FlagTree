@@ -64,4 +64,20 @@ def XSMTAsync_MBarrierWaitOp : XSMTAsync_Op<"mbarrier_wait", [
   );
 }
 
+def XSMTAsync_GridOp : XSMTAsync_Op<"grid", [
+    Pure
+  ]> {
+  let summary = "grid";
+  let arguments = (ins
+    Arg<I64>:$axis
+  );
+  let results = (outs
+    Res<I64>:$id
+  );
+  let assemblyFormat = "$axis attr-dict `:` type($axis) `->` type($id)";
+  let builders = [
+    OpBuilder<(ins "Value":$axis)>
+  ];
+}
+
 #endif // XSMTASYNC_OPS

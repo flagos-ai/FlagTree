@@ -2,7 +2,7 @@ import os
 import platform
 import shutil
 import re
-from ctypes import CDLL, RTLD_GLOBAL, c_int16, c_void_p
+from ctypes import CDLL, RTLD_GLOBAL
 import triton
 import glob
 
@@ -94,50 +94,26 @@ def get_cpu_name_from_arch_id(arch_id: str) -> str:
     return cpu_name
 
 
-def alloc_mbarrier(expect_count: int, flag: int = 0, arrive_count: int = 0, transaction_count: int = 0) -> int:
-    if expect_count <= 0:
-        raise ValueError(f"expect_count must be positive, got {expect_count}")
-    if expect_count > 32767:
-        raise ValueError(f"expect_count must fit int16_t, got {expect_count}")
-    if "libspeirruntime" not in globals():
-        raise RuntimeError("libSpeIRRuntimeLibs is not loaded")
-    alloc_fn = libspeirruntime.spine_mbarrier_alloc
-    alloc_fn.argtypes = [c_int16, c_int16, c_int16, c_int16]
-    alloc_fn.restype = c_void_p
-    handle = alloc_fn(flag, arrive_count, transaction_count, expect_count)
-    if not handle:
-        raise RuntimeError("spine_mbarrier_alloc returned null")
-    return int(handle)
-
-
-def release_mbarrier(handle: int) -> None:
-    if not handle:
-        return
-    if "libspeirruntime" not in globals():
-        raise RuntimeError("libSpeIRRuntimeLibs is not loaded")
-    release_fn = libspeirruntime.spine_mbarrier_release
-    release_fn.argtypes = [c_void_p]
-    release_fn.restype = None
-    release_fn(c_void_p(handle))
-
-
-try:
-    spine_mlir_opt_path = get_spine_mlir_opt_path()
-    if os.path.isfile(spine_mlir_opt_path):
+# Load libspert into the global namespace (RTLD_GLOBAL) so that dlopen'd kernel
+# .so files resolve their undefined spine_* symbols (spine_grid,
+# spine_parallel_dispatch_Nd, spine_require_stream, spine_thread_tcm_malloc, ...)
+# against it. libSpeIRRuntimeLibs is no longer used; libspert provides the full
+# spert C-ABI on its own.
+rpc_host = os.environ.get("SPINE_TRITON_RPC_HOST", "")
+if not rpc_host:
+    try:
         spine_mlir_lib_dir = os.path.join(SPINE_MLIR_BASE_PATH, "lib")
-        lib_pattern = os.path.join(spine_mlir_lib_dir, "libSpeIRRuntimeLibs.so*")
-        lib_candidates = glob.glob(lib_pattern)
-        lib_candidates = [f for f in lib_candidates if os.path.isfile(f)]
-
-        if not lib_candidates:
-            raise FileNotFoundError(f"Could not find libSpeIRRuntimeLibs in {spine_mlir_lib_dir}. "
-                                    f"Searched pattern: {lib_pattern}")
-
-        libspeirruntime_path = lib_candidates[0]
-
-        libspeirruntime = CDLL(libspeirruntime_path, mode=RTLD_GLOBAL)
-except Exception as e:
-    raise ImportError("can not find libspeirruntime. {}".format(e))
+        libspert_pattern = os.path.join(spine_mlir_lib_dir, "libspert.so*")
+        libspert_candidates = glob.glob(libspert_pattern)
+        libspert_candidates = [f for f in libspert_candidates if os.path.isfile(f)]
+        if not libspert_candidates:
+            raise FileNotFoundError(f"Could not find libspert in {spine_mlir_lib_dir}. "
+                                    f"Searched pattern: {libspert_pattern}")
+        # Pick the longest-named file (the versioned real object, e.g. libspert.so.0.6.0)
+        libspert_path = max(libspert_candidates, key=lambda f: len(os.path.basename(f)))
+        libspert = CDLL(libspert_path, mode=RTLD_GLOBAL)
+    except Exception as e:
+        raise ImportError("can not find libspert. {}".format(e))
 
 try:
     triton_path = os.path.dirname(triton.__file__)

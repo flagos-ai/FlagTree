@@ -33,3 +33,11 @@ void MBarrierAllocOp::build(OpBuilder &builder, OperationState &result,
   result.addOperands(tx_count);
   result.addOperands(ex_count);
 }
+
+// Hand-written builder (matches spine-mlir-main midend xsmt_async.grid):
+// axis is an i64 operand, result is an i64 program_id. Provided explicitly to
+// work around a tblgen builder-generation quirk for single-operand ops.
+void GridOp::build(OpBuilder &builder, OperationState &result, Value axis) {
+  result.addOperands(axis);
+  result.addTypes(builder.getIntegerType(64));
+}
