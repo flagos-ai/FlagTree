@@ -72,10 +72,6 @@ jobs:
         with:
           backend: rpu
 
-      - name: Clean FlagTree Environment
-        if: steps.check_backend.outputs.should_skip != 'true'
-        uses: ./.github/actions/clean-flagtree-env
-
       - name: Sync source to RPU board
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash

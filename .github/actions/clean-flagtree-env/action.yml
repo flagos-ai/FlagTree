@@ -30,7 +30,7 @@ runs:
         set -x
         echo "Starting environment cleanup..."
 
-        # 自动寻找可用的 python3 或 python 命令
+        # Automatically detect the available python3 or python command
         if command -v python3 &> /dev/null; then
             PYTHON_CMD="python3"
         elif command -v python &> /dev/null; then
