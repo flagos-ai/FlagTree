@@ -78,15 +78,14 @@ jobs:
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
-          export BENCH_SCRIPT_DIR="${PWD}"
-          source ~/env.sh
+          export BENCH_SCRIPT_DIR="${PWD}/.github/workflows/benchmark/nv3.6-qwen"
+          env | grep -E '^(BENCH_SCRIPT_DIR)=' >> $GITHUB_ENV || true
           cd ~/flagrelease
           bash ${BENCH_SCRIPT_DIR}/start.sh
 
       - name: Show the baseline
         shell: bash
         run: |
-          export BENCH_SCRIPT_DIR="${PWD}"
           cd ~/flagrelease
           cat ${BENCH_SCRIPT_DIR}/ref.txt
 
@@ -95,7 +94,6 @@ jobs:
         shell: bash
         run: |
           set -x
-          export BENCH_SCRIPT_DIR="${PWD}"
           cd ~/flagrelease
           bash ${BENCH_SCRIPT_DIR}/perf.sh
 
@@ -103,6 +101,5 @@ jobs:
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
-          export BENCH_SCRIPT_DIR="${PWD}"
           cd ~/flagrelease
           bash ${BENCH_SCRIPT_DIR}/stop.sh
