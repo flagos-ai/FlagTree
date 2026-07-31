@@ -2,52 +2,52 @@
 
 PID_FILE="pid.txt"
 if [[ ! -f "$PID_FILE" ]]; then
-    echo "错误：找不到 $PID_FILE"
+    echo "[ERROR] $PID_FILE not found!"
     exit 1
 fi
 
 pid=$(head -n 1 "$PID_FILE" | tr -d '[:space:]')
 if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
-    echo "错误：PID 无效：$pid"
+    echo "[FATAL] PID = $pid is invalid!"
     exit 1
 fi
 
 if ! kill -0 "$pid" 2>/dev/null; then
-    echo "进程 $pid 不存在或无权限访问"
+    echo "[ERROR] Process $pid does not exist, no need to stop."
     exit 1
 else
-    echo "正在终止进程：$pid"
+    echo "[INFO] Stopping process: $pid"
 
     if kill "$pid"; then
-        # 等待进程退出，最多等待 60 秒
+        # Wait for process to exit, up to 60 seconds.
         for ((i=1; i<=6; i++)); do
             if ! kill -0 "$pid" 2>/dev/null; then
-                echo "进程 $pid 已成功退出"
+                echo "[INFO] Process $pid has been successfully terminated."
                 break
             fi
             sleep 10
         done
 
-        # 进程仍存在，强制终止
+        # Process still exists, force kill.
         if kill -0 "$pid" 2>/dev/null; then
-            echo "进程 $pid 未退出，执行强制 kill"
+            echo "[WARNING] Process $pid did not exit, force kill!"
             kill -9 "$pid"
             sleep 5
             if kill -0 "$pid" 2>/dev/null; then
-                echo "失败：无法终止进程 $pid"
+                echo "[FATAL] Failed to terminate process $pid!"
             else
-                echo "进程 $pid 已被强制终止"
+                echo "[INFO] Process $pid has been force terminated."
             fi
         fi
     else
-        echo "失败：kill 进程 $pid 失败"
+        echo "[ERROR] Failed to kill process $pid!"
     fi
 fi
 
 echo
 if pgrep -af 'vllm' > /dev/null; then
-    echo "[WARNING] 仍存在 vLLM 进程："
+    echo "[WARNING] vLLM process still exists:"
     pgrep -af 'vllm'
 else
-    echo "[INFO] 未发现 vLLM 进程，服务停止成功，符合预期"
+    echo "[INFO] vLLM process not found, service stopped successfully, as expected."
 fi

@@ -23,4 +23,4 @@ end=$(date +%s)
 duration=$((end - start))
 minutes=$((duration / 60))
 seconds=$((duration % 60))
-echo "性能测试共耗时: ${minutes}分${seconds}秒"
+echo "[INFO] Benchmark elapsed time: ${minutes}m${seconds}s."

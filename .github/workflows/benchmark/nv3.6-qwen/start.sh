@@ -11,8 +11,8 @@ if [[ -f "$PID_FILE" ]]; then
     pid=$(head -n 1 "$PID_FILE" | tr -d '[:space:]')
     if [[ "$pid" =~ ^[0-9]+$ ]]; then
         if kill -0 "$pid" 2>/dev/null; then
-            echo "已有服务启动，进程 $pid"
-            bash stop.sh
+            echo "[WARNING] Service already running: pid = $pid."
+            bash ${BENCH_SCRIPT_DIR}/stop.sh
         fi
     fi
 fi
@@ -38,18 +38,13 @@ echo "$!" >pid.txt
 
 PID_FILE="pid.txt"
 if [[ ! -f "$PID_FILE" ]]; then
-    echo "错误：找不到 $PID_FILE"
+    echo "[FATAL] $PID_FILE not found!"
     exit 1
 fi
 
 pid=$(head -n 1 "$PID_FILE" | tr -d '[:space:]')
 if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
-    echo "错误：PID 无效：$pid"
-    exit 1
-fi
-
-if ! kill -0 "$pid" 2>/dev/null; then
-    echo "进程 $pid 不存在或无权限访问，服务启动失败"
+    echo "[FATAL] PID = $pid is invalid!"
     exit 1
 fi
 
@@ -57,21 +52,21 @@ max_retry=180
 for ((i=1; i<=max_retry; i++)); do
     sleep 10
     if ! kill -0 "$pid" 2>/dev/null; then
-        echo "进程 $pid 不存在或无权限访问，服务启动失败"
+        echo "[FATAL] Process $pid does not exist, service startup failed!"
         exit 1
     fi
     if bash ping.sh 2>/dev/null; then
         echo ""
-        echo "检测到服务启动成功"
+        echo "[INFO] Service startup successfully."
         break
     fi
     end=$(date +%s)
     duration=$((end - start))
     minutes=$((duration / 60))
     seconds=$((duration % 60))
-    echo "服务启动已耗时: ${minutes}分${seconds}秒"
+    echo "[INFO] Service startup elapsed time: ${minutes}m${seconds}s"
     if (( i > max_retry )); then
-        echo "检测失败，已达到最大重试次数：${max_retry}"
+        echo "[FATAL] Detection failed! maximum retry count reached: ${max_retry}"
         exit 1
     fi
 done
