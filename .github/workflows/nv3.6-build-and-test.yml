@@ -58,6 +58,10 @@ jobs:
         with:
           backend: nvidia
 
+      - name: Clean FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: ./.github/actions/clean-flagtree-env
+
       - name: Detect Target Branch
         shell: bash
         run: |
@@ -72,6 +76,7 @@ jobs:
 
       - name: Build FlagTree
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        timeout-minutes: 20
         shell: bash
         run: |
           set -x

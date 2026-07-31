@@ -1,0 +1,44 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Clean FlagTree Environment'
+description: 'Clean up any previous FlagTree installations to ensure a fresh build'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Clean environment
+      shell: bash
+      run: |
+        set -x
+        echo "Starting environment cleanup..."
+        SITE_PACKAGES=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib'))")
+        
+        # 1. Attempt to gracefully uninstall via pip
+        python3 -m pip uninstall -y flagtree || true
+        
+        # 2. Remove temporary directories left by interrupted pip processes
+        rm -rf $SITE_PACKAGES/~* || true
+        
+        # 3. Force remove any remaining metadata and code directories
+        rm -rf $SITE_PACKAGES/flagtree*dist-info || true
+        rm -rf $SITE_PACKAGES/triton  || true
+        
+        echo "Environment cleanup completed."
