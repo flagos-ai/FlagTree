@@ -163,15 +163,15 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
   auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  auto commPtr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
 
   auto teamKindValue = rewriter.create<LLVM::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr(teamKind));
   auto coopKindValue = rewriter.create<LLVM::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coopKind)));
-  SmallVector<Value> args{dev_net, comm,          teamKindValue,
+  SmallVector<Value> args{dev_net, commPtr,       teamKindValue,
                           peer,    coopKindValue, signalId};
 
-  // Category 13: emit the standalone remote signal update.
   StringRef runtimeName;
   SmallVector<Type> argTypes{ptrTy, ptrTy, i32Ty, i32Ty, i32Ty, i32Ty};
   if (signalOp == "inc") {
