@@ -74,7 +74,7 @@ jobs:
 
       - name: Build FlagTree
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
-        timeout-minutes: 20
+        timeout-minutes: 60
         shell: bash
         run: |
           set -x
