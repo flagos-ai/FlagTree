@@ -26,6 +26,10 @@ on:
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -62,6 +66,14 @@ jobs:
           export TRITON_BUILD_PROTON=OFF
           export TRITON_ILU_BUILD_GLUON=OFF
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: iluvatar
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
