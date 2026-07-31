@@ -22,9 +22,24 @@
 
 source ${BENCH_SCRIPT_DIR}/disable_proxy.sh
 
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  echo "[FATAL] CUDA_VISIBLE_DEVICES is unset." >&2
+  exit 1
+fi
+
+IFS=',' read -ra GPU_IDS <<< "$CUDA_VISIBLE_DEVICES"
+for i in "${!GPU_IDS[@]}"; do
+  GPU_IDS[$i]="${GPU_IDS[$i]//[[:space:]]/}"
+  if [[ ! "${GPU_IDS[$i]}" =~ ^[0-9]+$ ]]; then
+    echo "[FATAL] Invalid CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" >&2
+    exit 1
+  fi
+done
+GPU_DEVICE_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
+
 start=$(date +%s)
 
-nvidia-smi -i 4,5,6,7 -lgc 1830,1830
+nvidia-smi -i "$GPU_DEVICE_LIST" -lgc 1830,1830
 nvidia-smi --query-gpu=index,name,clocks.gr,clocks.mem,utilization.gpu --format=csv
 
 #numactl --cpunodebind=0 --membind=0 \
@@ -36,7 +51,7 @@ python3 all_perf.py --input-len=16384 --output-len=1024 --concurrency=64
 numactl --cpunodebind=0 --membind=0 \
 python3 ${BENCH_SCRIPT_DIR}/all_perf.py --input-len=4096  --output-len=1024 --concurrency=64
 
-nvidia-smi -i 4,5,6,7 -rgc
+nvidia-smi -i "$GPU_DEVICE_LIST" -rgc
 nvidia-smi --query-gpu=index,name,clocks.gr,clocks.mem,utilization.gpu --format=csv
 
 end=$(date +%s)
