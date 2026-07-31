@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export no_proxy="127.0.0.1,localhost,::1"
+source ${BENCH_SCRIPT_DIR}/disable_proxy.sh
 
 numactl --cpunodebind=0 --membind=0 \
 curl http://localhost:8000/v1/chat/completions \

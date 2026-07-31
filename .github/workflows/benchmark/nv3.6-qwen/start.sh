@@ -1,7 +1,7 @@
 #!/bin/bash
 
 source ~/env.sh
-export no_proxy="127.0.0.1,localhost,::1"
+source ${BENCH_SCRIPT_DIR}/disable_proxy.sh
 
 python3 -m pip show flag_gems |grep Version
 python3 -m pip show flagtree |grep Version
@@ -16,7 +16,7 @@ if [[ -f "$PID_FILE" ]]; then
         fi
     fi
 fi
-bash clear_fuser_process.sh
+bash ${BENCH_SCRIPT_DIR}/clear_fuser_process.sh
 
 start=$(date +%s)
 
