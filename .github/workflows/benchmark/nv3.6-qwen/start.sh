@@ -20,6 +20,10 @@ bash ${BENCH_SCRIPT_DIR}/clear_fuser_process.sh
 
 start=$(date +%s)
 
+export VLLM_USE_MODELSCOPE=true
+export USE_FLAGGEMS=1
+export USE_RESHAPE_AND_CACHE_FLASH=1
+
 numactl --cpunodebind=1 --membind=1 \
 nohup vllm serve ./Qwen3.6-35B-A3B-nomtp/  \
     --tensor-parallel-size 4 \
