@@ -20,6 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+source ~/env.sh
 source ${BENCH_SCRIPT_DIR}/disable_proxy.sh
 
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
