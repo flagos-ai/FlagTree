@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-
 """
 vLLM 性能测试脚本
 
@@ -92,20 +91,33 @@ def parse_output(output):
 def build_command(input_len, output_len, concurrency):
     """构建 vllm bench serve 命令"""
     return [
-        "vllm", "bench", "serve",
-        "--host", SERVER_HOST,
-        "--port", str(SERVER_PORT),
-        "--model", MODEL_NAME,
-        "--tokenizer", TOKENIZER_PATH,
-        "--dataset-name", "random",
-        "--random-input-len", str(input_len),
-        "--random-output-len", str(output_len),
-        "--endpoint", "/v1/completions",
+        "vllm",
+        "bench",
+        "serve",
+        "--host",
+        SERVER_HOST,
+        "--port",
+        str(SERVER_PORT),
+        "--model",
+        MODEL_NAME,
+        "--tokenizer",
+        TOKENIZER_PATH,
+        "--dataset-name",
+        "random",
+        "--random-input-len",
+        str(input_len),
+        "--random-output-len",
+        str(output_len),
+        "--endpoint",
+        "/v1/completions",
         "--ignore-eos",
         "--trust-remote-code",
-        "--num-prompts", str(concurrency),
-        "--max-concurrency", str(concurrency),
-        "--seed", "0",
+        "--num-prompts",
+        str(concurrency),
+        "--max-concurrency",
+        str(concurrency),
+        "--seed",
+        "0",
     ]
 
 
