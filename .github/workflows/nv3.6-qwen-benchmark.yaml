@@ -72,7 +72,7 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          backend: nvidia
+          backend: nvidia-qwen
 
       - name: Start the service
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
