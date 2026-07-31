@@ -1,0 +1,42 @@
+[BaseLine] triton==3.6.0
+# 服务冷启动时间: 1分43秒
+# 输入长度: 32K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 1218.17
+  Total token throughput (tok/s): 40199.48
+  Median TTFT (ms): 17179.61
+  Median TPOT (ms): 33.82
+  Median ITL (ms): 34.69
+# 输入长度: 16K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 1846.06
+  Total token throughput (tok/s): 31383.00
+  Median TTFT (ms): 8332.61
+  Median TPOT (ms): 25.63
+  Median ITL (ms): 31.13
+# 输入长度: 4K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 3129.82
+  Total token throughput (tok/s): 15649.09
+  Median TTFT (ms): 2077.27
+  Median TPOT (ms): 18.29
+  Median ITL (ms): 19.39
+
+[2026.7.11] flag_gems===5.3.0rc2, flagtree===0.6.0
+# 服务冷启动时间: 7分13秒
+# 输入长度: 32K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 827.43
+  Total token throughput (tok/s): 27305.25
+  Median TTFT (ms): 29391.30
+  Median TPOT (ms): 46.98
+  Median ITL (ms): 32.13
+# 输入长度: 16K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 1355.01
+  Total token throughput (tok/s): 23035.15
+  Median TTFT (ms): 14824.90
+  Median TPOT (ms): 32.08
+  Median ITL (ms): 23.82
+# 输入长度: 4K, 输出长度: 1K, 并发数: 64
+  Successful requests: 64.00
+  Output token throughput (tok/s): 2345.05
+  Total token throughput (tok/s): 11725.28
+  Median TTFT (ms): 4025.38
+  Median TPOT (ms): 23.45
+  Median ITL (ms): 23.40
