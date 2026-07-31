@@ -102,6 +102,13 @@ static hivm::AddressSpace mapMemSpaceToHIVM(tile::MemorySpace tileSpace) {
   case tile::MemorySpace::L0B: return hivm::AddressSpace::L0B;
   case tile::MemorySpace::L0C: return hivm::AddressSpace::L0C;
   case tile::MemorySpace::UB:  return hivm::AddressSpace::UB;
+  // Generic GPU memory spaces (Global/Shared/Local/Register) have no HIVM
+  // counterpart and should never reach this lowering pass.
+  case tile::MemorySpace::Global:
+  case tile::MemorySpace::Shared:
+  case tile::MemorySpace::Local:
+  case tile::MemorySpace::Register:
+    llvm_unreachable("unsupported generic memory space in TileIR-to-HIVM lowering");
   }
   llvm_unreachable("unknown TileIR memory space");
 }
