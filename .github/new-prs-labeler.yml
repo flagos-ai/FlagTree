@@ -106,108 +106,126 @@ aipu:
       - any-glob-to-any-file:
           - 'third_party/aipu/**'
           - '.github/workflows/aipu*'
+          - '.github/workflows/benchmark/aipu*'
 
 amd:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/amd/**'
           - '.github/workflows/amd*'
+          - '.github/workflows/benchmark/amd*'
 
 ascend:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/ascend/**'
           - '.github/workflows/ascend*'
+          - '.github/workflows/benchmark/ascend*'
 
 cambricon:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/cambricon/**'
           - '.github/workflows/cambricon*'
+          - '.github/workflows/benchmark/cambricon*'
 
 cpu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/cpu/**'
           - '.github/workflows/cpu*'
+          - '.github/workflows/benchmark/cpu*'
 
 enflame:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/enflame/**'
           - '.github/workflows/enflame*'
+          - '.github/workflows/benchmark/enflame*'
 
 hcu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/hcu/**'
           - '.github/workflows/hcu*'
+          - '.github/workflows/benchmark/hcu*'
 
 iluvatar:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/iluvatar/**'
           - '.github/workflows/iluvatar*'
+          - '.github/workflows/benchmark/iluvatar*'
 
 metax:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/metax/**'
           - '.github/workflows/metax*'
+          - '.github/workflows/benchmark/metax*'
 
 mthreads:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/mthreads/**'
           - '.github/workflows/mthreads*'
+          - '.github/workflows/benchmark/mthreads*'
 
 nvidia:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/nvidia/**'
           - '.github/workflows/nv*'
+          - '.github/workflows/benchmark/nv*'
 
 rpu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/rpu/**'
           - '.github/workflows/rpu*'
+          - '.github/workflows/benchmark/rpu*'
 
 sunrise:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/sunrise/**'
           - '.github/workflows/sunrise*'
+          - '.github/workflows/benchmark/sunrise*'
 
 thrive:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/thrive/**'
           - '.github/workflows/thrive*'
+          - '.github/workflows/benchmark/thrive*'
 
 tileir:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tileir/**'
           - '.github/workflows/tileir*'
+          - '.github/workflows/benchmark/tileir*'
 
 tle_arm64:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tle_arm64/**'
           - '.github/workflows/tle_arm64*'
+          - '.github/workflows/benchmark/tle_arm64*'
 
 tsingmicro:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tsingmicro/**'
           - '.github/workflows/tsingmicro*'
+          - '.github/workflows/benchmark/tsingmicro*'
 
 xpu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/xpu/**'
           - '.github/workflows/xpu*'
+          - '.github/workflows/benchmark/xpu*'
 
 # ====================================================================================
 # 6. TLE Labels
