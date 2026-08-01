@@ -44,10 +44,10 @@ index 694640cc4..49f153aff 100644
  }
 diff --git a/python/setup_tools/utils/spacemit.py b/python/setup_tools/utils/spacemit.py
 new file mode 100644
-index 000000000..edef2e727
+index 000000000..a860ce734
 --- /dev/null
 +++ b/python/setup_tools/utils/spacemit.py
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,101 @@
 +"""Spacemit backend module for FlagTree.
 +
 +Provides build hooks for:
@@ -120,6 +120,35 @@ index 000000000..edef2e727
 +                    print(f"[spacemit] Created build-tree symlink: {spine_triton_link} -> spacemit")
 +    except Exception:
 +        pass
++
++
++def install_extension(*args, **kargs):
++    """Copy spine-triton-opt from build directory to backend/bin/."""
++    import shutil
++    from pathlib import Path
++
++    build_ext = kargs.get("build_ext", None)
++    if not build_ext or not hasattr(build_ext, "build_temp"):
++        return
++
++    # spine-triton-opt is built at:
++    # build/cmake.*/third_party/spacemit/tools/spine-triton-opt/spine-triton-opt
++    build_temp = Path(build_ext.build_temp)
++    spine_triton_opt_src = build_temp / "third_party" / "spacemit" / "tools" / "spine-triton-opt" / "spine-triton-opt"
++
++    if not spine_triton_opt_src.exists():
++        print(f"[spacemit] Warning: spine-triton-opt not found at {spine_triton_opt_src}")
++        return
++
++    # Copy to backend/bin/ (which gets packaged into the wheel)
++    backend_root = Path(_get_backend_root())
++    backend_bin = backend_root / "backend" / "bin"
++    backend_bin.mkdir(parents=True, exist_ok=True)
++
++    spine_triton_opt_dst = backend_bin / "spine-triton-opt"
++    shutil.copy(spine_triton_opt_src, spine_triton_opt_dst)
++    spine_triton_opt_dst.chmod(0o755)
++    print(f"[spacemit] Copied spine-triton-opt to {spine_triton_opt_dst}")
 diff --git a/python/src/ir.cc b/python/src/ir.cc
 index 92cb8cf61..19023d1d8 100644
 --- a/python/src/ir.cc
@@ -250,7 +279,7 @@ index 3d2498d2c..6a233b5ec 100644
              raise ValueError(f"unsupported padding option {padding_option}")
          return self.create_masked_load(ptrs, masks, other, cache_modifier, eviction_policy, is_volatile)
 diff --git a/setup.py b/setup.py
-index 17c988af6..af9800587 100644
+index 17c988af6..303e3310c 100644
 --- a/setup.py
 +++ b/setup.py
 @@ -33,6 +33,8 @@ import tarfile
@@ -327,7 +356,7 @@ index 17c988af6..af9800587 100644
  
          backend_path = os.path.join(backend_src_dir, "backend")
          assert os.path.exists(backend_path), f"{backend_path} does not exist!"
-@@ -125,6 +147,56 @@ class BackendInstaller:
+@@ -125,6 +147,96 @@ class BackendInstaller:
          if not os.path.exists(tools_dir):
              tools_dir = None
  
@@ -346,19 +375,45 @@ index 17c988af6..af9800587 100644
 +                        shutil.copy(src, dst)
 +                        print(f"[spacemit] Copied {bin_file} to backend/bin/")
 +
-+        # --- spacemit: copy spine-mlir shared libraries ---
++            # spine-triton-opt is built by this backend (not shipped in
++            # SPINE_MLIR_INSTALL_DIR); copy it from the cmake build tree so it
++            # gets packaged into the wheel. env.py resolves it under backend/bin/.
++            spine_triton_opt_src = os.path.join(
++                str(get_cmake_dir()), "third_party", "spacemit", "tools",
++                "spine-triton-opt", "spine-triton-opt")
++            if os.path.exists(spine_triton_opt_src):
++                dst = os.path.join(bin_dir, "spine-triton-opt")
++                shutil.copy(spine_triton_opt_src, dst)
++                os.chmod(dst, 0o755)
++                print(f"[spacemit] Copied spine-triton-opt to backend/bin/")
++
++        # --- spacemit: copy spine-mlir and spine-runtime shared libraries ---
 +        lib_dir = os.path.join(backend_src_dir, "backend", "lib")
 +        if not os.path.exists(lib_dir):
 +            lib_dir = None
 +        elif backend_name == "spacemit":
++            so_file_list = []
++
++            # Copy spine-mlir libraries (libSpeIR*.so, libspine_tcm.so)
 +            spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR", None)
 +            if spine_mlir_install_dir:
-+                lib_patterns = ["libSpeIR*.so*", "libspine_tcm.so*", "libspert.so*"]
-+                so_file_list = []
-+                for pattern in lib_patterns:
++                mlir_lib_patterns = ["libSpeIR*.so*", "libspine_tcm.so*"]
++                for pattern in mlir_lib_patterns:
 +                    so_file_list.extend(
 +                        glob.glob(os.path.join(spine_mlir_install_dir, "lib", pattern))
 +                    )
++
++            # Copy spine-runtime libraries (libspert.so)
++            spine_runtime_install_dir = os.environ.get("SPINE_RUNTIME_INSTALL_DIR", None)
++            if spine_runtime_install_dir:
++                runtime_lib_patterns = ["libspert.so*"]
++                for pattern in runtime_lib_patterns:
++                    so_file_list.extend(
++                        glob.glob(os.path.join(spine_runtime_install_dir, "lib", pattern))
++                    )
++
++            # Process all collected libraries
++            if so_file_list:
 +                lib_groups = defaultdict(list)
 +                for so_file in so_file_list:
 +                    basename = os.path.basename(so_file)
@@ -370,7 +425,7 @@ index 17c988af6..af9800587 100644
 +                    shutil.copy(os.path.realpath(real_file), os.path.join(lib_dir, real_base))
 +                    print(f"[spacemit] Copied {real_base} to backend/lib/")
 +                    # Recreate SONAME symlink chain so the loader resolves
-+                    # transitive deps (e.g. libspert.so.0 -> libspert.so.0.5.0).
++                    # transitive deps (e.g. libspert.so.0 -> libspert.so.0.6.0).
 +                    for f in files:
 +                        link_base = os.path.basename(f)
 +                        if link_base == real_base:
@@ -381,10 +436,24 @@ index 17c988af6..af9800587 100644
 +                        os.symlink(real_base, link_path)
 +                        print(f"[spacemit] Symlink {link_base} -> {real_base}")
 +
++        # --- spacemit: vendor spert headers from spine-runtime ---
++        if backend_name == "spacemit":
++            spine_runtime_install_dir = os.environ.get("SPINE_RUNTIME_INSTALL_DIR", None)
++            if spine_runtime_install_dir:
++                include_dir = os.path.join(backend_src_dir, "backend", "include", "SpineRuntime")
++                os.makedirs(include_dir, exist_ok=True)
++                spert_headers = ["spert.hpp", "spert_engine.hpp", "spert_abi.h"]
++                for header in spert_headers:
++                    src = os.path.join(spine_runtime_install_dir, "include", header)
++                    if os.path.exists(src):
++                        dst = os.path.join(include_dir, header)
++                        shutil.copy(src, dst)
++                        print(f"[spacemit] Vendored {header} from spine-runtime")
++
          for file in ["compiler.py", "driver.py"]:
              assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
  
-@@ -136,7 +208,8 @@ class BackendInstaller:
+@@ -136,7 +248,8 @@ class BackendInstaller:
      # Copy all in-tree backends under triton/third_party.
      @staticmethod
      def copy(active):
@@ -394,7 +463,7 @@ index 17c988af6..af9800587 100644
  
      # Copy all external plugins provided by the `TRITON_PLUGIN_DIRS` env var.
      # TRITON_PLUGIN_DIRS is a semicolon-separated list of paths to the plugins.
-@@ -465,7 +538,7 @@ class CMakeBuild(build_ext):
+@@ -465,7 +578,7 @@ class CMakeBuild(build_ext):
  
      def initialize_options(self):
          build_ext.initialize_options(self)
@@ -403,7 +472,7 @@ index 17c988af6..af9800587 100644
  
      def finalize_options(self):
          build_ext.finalize_options(self)
-@@ -477,7 +550,8 @@ class CMakeBuild(build_ext):
+@@ -477,7 +590,8 @@ class CMakeBuild(build_ext):
          # with an actionable message otherwise. Done here (build_ext) rather than at
          # import so non-build commands don't run the check.
          helper.check_pybind11_abi()
@@ -413,7 +482,7 @@ index 17c988af6..af9800587 100644
              download_and_copy_dependencies()
  
          try:
-@@ -529,15 +603,17 @@ class CMakeBuild(build_ext):
+@@ -529,15 +643,17 @@ class CMakeBuild(build_ext):
              os.makedirs(self.build_temp)
          # python directories
          python_include_dir = sysconfig.get_path("platinclude")
@@ -434,7 +503,7 @@ index 17c988af6..af9800587 100644
              "-DTRITON_WHEEL_DIR=" + wheeldir
          ]
          cmake_args += helper.get_backend_cmake_args(build_ext=self)
-@@ -595,8 +671,9 @@ class CMakeBuild(build_ext):
+@@ -595,8 +711,9 @@ class CMakeBuild(build_ext):
              gluon_flag = "ON" if check_env_flag("TRITON_ILU_BUILD_GLUON") else "OFF"
              cmake_args += [f"-DTRITON_BUILD_GLUON={gluon_flag}"]
  
@@ -446,7 +515,7 @@ index 17c988af6..af9800587 100644
              cmake_args += ["-DTRITON_BUILD_UT=OFF"]
  
          cmake_args_append = os.getenv("TRITON_APPEND_CMAKE_ARGS")
-@@ -604,7 +681,14 @@ class CMakeBuild(build_ext):
+@@ -604,7 +721,14 @@ class CMakeBuild(build_ext):
              cmake_args += shlex.split(cmake_args_append)
  
          env = os.environ.copy()
@@ -462,7 +531,7 @@ index 17c988af6..af9800587 100644
          subprocess.check_call(["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env)
          update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
          subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
-@@ -699,7 +783,20 @@ def download_and_copy_dependencies():
+@@ -699,7 +823,20 @@ def download_and_copy_dependencies():
  
  
  if helper.flagtree_backend:
@@ -484,7 +553,7 @@ index 17c988af6..af9800587 100644
          backends = [
              *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
              *BackendInstaller.copy_externals(),
-@@ -713,7 +810,7 @@ else:
+@@ -713,7 +850,7 @@ else:
  
  
  def get_package_dirs():
@@ -493,7 +562,7 @@ index 17c988af6..af9800587 100644
  
      for backend in backends:
          # we use symlinks for external plugins
-@@ -740,7 +837,7 @@ def get_package_dirs():
+@@ -740,7 +877,7 @@ def get_package_dirs():
  
  
  def get_packages():
