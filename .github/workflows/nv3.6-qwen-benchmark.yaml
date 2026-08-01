@@ -84,6 +84,7 @@ jobs:
           bash ${BENCH_SCRIPT_DIR}/start.sh
 
       - name: Show the baseline
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
           cd ~/flagrelease

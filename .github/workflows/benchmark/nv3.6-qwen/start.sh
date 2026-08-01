@@ -34,7 +34,7 @@ if [[ -f "$PID_FILE" ]]; then
     if [[ "$pid" =~ ^[0-9]+$ ]]; then
         if kill -0 "$pid" 2>/dev/null; then
             echo "[WARNING] Service already running: pid = $pid."
-            bash ${BENCH_SCRIPT_DIR}/stop.sh
+            bash ${SCRIPT_DIR}/stop.sh
         fi
     fi
 fi
