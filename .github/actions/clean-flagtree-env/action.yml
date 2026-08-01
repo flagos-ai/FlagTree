@@ -32,32 +32,42 @@ runs:
 
         SITE_PACKAGES=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib'))")
 
-        # 🛡️ Safety Check 1: Abort if SITE_PACKAGES is empty to prevent accidental deletion
-        if [ -z "$SITE_PACKAGES" ]; then
-          echo "Error: Failed to get SITE_PACKAGES path. Aborting cleanup to prevent accidental deletion."
-          exit 1
-        fi
+        # 1. Normalize the path to resolve symlinks and eliminate '..'
+        SITE_PACKAGES=$(realpath -m "$SITE_PACKAGES" 2>/dev/null || readlink -f "$SITE_PACKAGES" 2>/dev/null || echo "$SITE_PACKAGES")
 
-        # 🛡️ Safety Check 2: Abort if SITE_PACKAGES is not a valid directory
-        if [ ! -d "$SITE_PACKAGES" ]; then
-          echo "Error: SITE_PACKAGES path '$SITE_PACKAGES' is not a valid directory. Aborting cleanup."
-          exit 1
-        fi
-
-        # 🛡️ Safety Check 3: Abort if SITE_PACKAGES is exactly / or /root
-        case "$SITE_PACKAGES" in
-          /|/root)
-            echo "Error: SITE_PACKAGES path '$SITE_PACKAGES' is a critical directory. Aborting cleanup to prevent disaster."
+        # 2. Reject if the path still contains '..' after normalization
+        if [[ "$SITE_PACKAGES" == *".."* ]]; then
+            echo "Error: Path contains '..' after normalization. Aborting."
             exit 1
-            ;;
-        esac
+        fi
+
+        # 3. Ensure it is a real, existing directory
+        if [[ ! -d "$SITE_PACKAGES" ]]; then
+            echo "Error: Directory '$SITE_PACKAGES' does not exist. Aborting."
+            exit 1
+        fi
+
+        # 4. Ensure it is an absolute path located in a standard Python directory
+        # Check if it contains 'site-packages' or 'dist-packages' as the directory name
+        if [[ ! "$SITE_PACKAGES" =~ ^/.*/python[^/]*/(site|dist)-packages/?$ ]]; then
+            echo "Error: '$SITE_PACKAGES' is not a recognized Python package directory. Aborting."
+            exit 1
+        fi
+
+        # 5. Reject overly broad or critical system directories
+        if [[ "$SITE_PACKAGES" == "/" ]] ||
+            [[ "$SITE_PACKAGES" == "/root" ]] ||
+            [[ "$SITE_PACKAGES" == "/home" ]] ||
+            [[ "$SITE_PACKAGES" == "/usr" ]] ||
+            [[ "$SITE_PACKAGES" == "/usr/lib" ]]; then
+            echo "Error: Path '$SITE_PACKAGES' is too broad. Aborting."
+            exit 1
+        fi
 
         # 1. Attempt to gracefully uninstall via pip
         python3 -m pip uninstall -y flagtree --break-system-packages || true
 
         # 2. Remove temporary directories left by interrupted pip processes
-        # Note: Quotes are strictly required to prevent word splitting if the path contains spaces,
-        # and to ensure the tilde '~' is treated as a literal character rather than expanding to the home directory.
         rm -rf "$SITE_PACKAGES"/~* || true
 
         # 3. Force remove any remaining metadata and code directories
