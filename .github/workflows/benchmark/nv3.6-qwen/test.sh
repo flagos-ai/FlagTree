@@ -20,7 +20,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-source ${BENCH_SCRIPT_DIR}/disable_local_proxy.sh
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
 numactl --cpunodebind=0 --membind=0 \
 curl http://localhost:8000/v1/chat/completions \

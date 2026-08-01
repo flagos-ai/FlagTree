@@ -20,8 +20,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
 source ~/env.sh
-source ${BENCH_SCRIPT_DIR}/disable_local_proxy.sh
+source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   echo "[FATAL] CUDA_VISIBLE_DEVICES is unset." >&2
@@ -50,7 +52,7 @@ numactl --cpunodebind=0 --membind=0 \
 python3 all_perf.py --input-len=16384 --output-len=1024 --concurrency=64
 
 numactl --cpunodebind=0 --membind=0 \
-python3 ${BENCH_SCRIPT_DIR}/all_perf.py --input-len=4096  --output-len=1024 --concurrency=64
+python3 "${SCRIPT_DIR}/all_perf.py" --input-len=4096  --output-len=1024 --concurrency=64
 
 nvidia-smi -i "$GPU_DEVICE_LIST" -rgc
 nvidia-smi --query-gpu=index,name,clocks.gr,clocks.mem,utilization.gpu --format=csv
