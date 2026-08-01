@@ -21,7 +21,7 @@
 # SOFTWARE.
 
 source ~/env.sh
-source ${BENCH_SCRIPT_DIR}/disable_proxy.sh
+source ${BENCH_SCRIPT_DIR}/disable_local_proxy.sh
 
 python3 -m pip show flag_gems |grep Version
 python3 -m pip show flagtree |grep Version

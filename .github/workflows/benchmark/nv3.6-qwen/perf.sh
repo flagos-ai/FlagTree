@@ -21,7 +21,7 @@
 # SOFTWARE.
 
 source ~/env.sh
-source ${BENCH_SCRIPT_DIR}/disable_proxy.sh
+source ${BENCH_SCRIPT_DIR}/disable_local_proxy.sh
 
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   echo "[FATAL] CUDA_VISIBLE_DEVICES is unset." >&2

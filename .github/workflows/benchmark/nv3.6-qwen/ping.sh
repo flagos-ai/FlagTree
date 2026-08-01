@@ -20,6 +20,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-source ${BENCH_SCRIPT_DIR}/disable_proxy.sh
+source ${BENCH_SCRIPT_DIR}/disable_local_proxy.sh
 
 curl http://127.0.0.1:8000/v1/models
