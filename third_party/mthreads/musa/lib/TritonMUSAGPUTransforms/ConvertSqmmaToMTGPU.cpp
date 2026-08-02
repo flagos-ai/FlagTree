@@ -116,6 +116,69 @@ static Value materializeTensorAccumulatorForUse(
   return unpacked;
 }
 
+static bool preservesSqmmaCarrierOperand(Operation *op, unsigned operandIdx) {
+  if (isa<triton::mtgpu::SqmmaOp, triton::mtgpu::SqmmaWaitOp,
+          triton::mtgpu::UnpackSqmmaAccumulatorOp>(op))
+    return true;
+
+  if (auto yield = dyn_cast<scf::YieldOp>(op)) {
+    Operation *parent = yield->getParentOp();
+    return parent && operandIdx < parent->getNumResults() &&
+           isa<triton::mtgpu::SqmmaAccumulatorType>(
+               parent->getResult(operandIdx).getType());
+  }
+
+  if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+    constexpr unsigned firstInitArgOperand = 3;
+    if (operandIdx < firstInitArgOperand)
+      return false;
+    unsigned resultIdx = operandIdx - firstInitArgOperand;
+    return resultIdx < forOp.getNumResults() &&
+           isa<triton::mtgpu::SqmmaAccumulatorType>(
+               forOp.getResult(resultIdx).getType());
+  }
+
+  return false;
+}
+
+static Value materializeTensorAccumulatorFromCarrier(
+    Value carrier, Location loc,
+    DenseMap<Value, DenseMap<Block *, Value>> &tensorMaterializations,
+    RewriterBase &rewriter, Operation *insertionPoint) {
+  auto carrierTy =
+      dyn_cast<triton::mtgpu::SqmmaAccumulatorType>(carrier.getType());
+  if (!carrierTy || !insertionPoint || !insertionPoint->getBlock())
+    return carrier;
+
+  Block *block = insertionPoint->getBlock();
+  auto &byBlock = tensorMaterializations[carrier];
+  auto it = byBlock.find(block);
+  if (it != byBlock.end())
+    return it->second;
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(insertionPoint);
+  Value unpacked = triton::mtgpu::UnpackSqmmaAccumulatorOp::create(
+      rewriter, loc, carrierTy.getAccumulatorType(), carrier);
+  byBlock[block] = unpacked;
+  return unpacked;
+}
+
+static void materializeNestedTensorAccumulatorUses(Operation *root,
+                                                   RewriterBase &rewriter) {
+  DenseMap<Value, DenseMap<Block *, Value>> tensorMaterializations;
+  root->walk([&](Operation *op) {
+    for (OpOperand &operand : op->getOpOperands()) {
+      if (preservesSqmmaCarrierOperand(op, operand.getOperandNumber()))
+        continue;
+      Value replacement = materializeTensorAccumulatorFromCarrier(
+          operand.get(), op->getLoc(), tensorMaterializations, rewriter, op);
+      if (replacement != operand.get())
+        operand.set(replacement);
+    }
+  });
+}
+
 static Operation *cloneSqmmaOp(triton::musa::SquadDotOp op, IRMapping &mapping,
                                DenseMap<Value, Value> &tensorMaterializations,
                                RewriterBase &rewriter) {
@@ -230,6 +293,7 @@ static bool convertLoopCarriedSqmmaAccumulator(scf::ForOp forOp,
         opMapping.map(operand, remapped);
     }
     Operation *newOp = rewriter.clone(op, opMapping);
+    materializeNestedTensorAccumulatorUses(newOp, rewriter);
     for (auto [oldResult, newResult] :
          llvm::zip_equal(op.getResults(), newOp->getResults()))
       mapping.map(oldResult, newResult);

@@ -206,14 +206,14 @@ static Value getWmmaUseCValue(triton::musa::WmmaDotOp,
   return adaptor.getUseC();
 }
 
-static triton::musa::SQMMALayout getWmmaLayoutA(triton::DotOp op) {
-  return triton::musa::inferWmmaFragmentLayout(op.getA(), 0);
+static triton::musa::SQMMALayout getWmmaLayoutA(triton::DotOp) {
+  return triton::musa::getDefaultWmmaFragmentLayout(0);
 }
 static triton::musa::SQMMALayout getWmmaLayoutA(triton::musa::WmmaDotOp op) {
   return op.getLayoutA();
 }
-static triton::musa::SQMMALayout getWmmaLayoutB(triton::DotOp op) {
-  return triton::musa::inferWmmaFragmentLayout(op.getB(), 1);
+static triton::musa::SQMMALayout getWmmaLayoutB(triton::DotOp) {
+  return triton::musa::getDefaultWmmaFragmentLayout(1);
 }
 static triton::musa::SQMMALayout getWmmaLayoutB(triton::musa::WmmaDotOp op) {
   return op.getLayoutB();

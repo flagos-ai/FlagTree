@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <pybind11/pybind11.h>
+#include <string>
 
 namespace py = pybind11;
 
@@ -134,8 +135,9 @@ void init_triton_musa_passes_ttgpuir(py::module m) {
                      mlir::createTritonMUSAGPUFinalizeBarriers);
   ADD_PASS_WRAPPER_0("add_issue_barrier_insertion",
                      mlir::createTritonMUSAGPUIssueBarrierInsertion);
-  ADD_PASS_WRAPPER_0("add_mark_inplace_loads",
-                     mlir::createTritonMUSAGPUMarkInplaceLoads);
+  ADD_PASS_OPTION_WRAPPER_1("add_mark_inplace_loads",
+                            mlir::createTritonMUSAGPUMarkInplaceLoads,
+                            std::string);
   ADD_PASS_WRAPPER_0("add_optimize_accumulator_init",
                      mlir::createTritonMUSAGPUOptimizeAccumulatorInit);
   ADD_PASS_WRAPPER_0("add_optimize_dot_operands",
