@@ -225,6 +225,40 @@ def TritonGPUPrefetch : Pass<"tritongpu-prefetch", "mlir::ModuleOp"> {
                            "mlir::arith::ArithDialect"];
 }
 
+def TritonGPUConcatDotOperand : Pass<"tritongpu-concat-dot-operand", "mlir::ModuleOp"> {
+  let summary = "fold an ordered K concat into one op";
+
+  let description = [{
+    Recognise an ordered concatenation along the contraction axis written as a
+    balanced `tt.join` tree followed by a transpose and a reshape, and replace it
+    with `ttg.concat_dot_operand`.
+
+    Runs before layout assignment: a join chain both stages the operand through
+    shared memory and perturbs the kWidth `AccelerateMatmul` picks, so the
+    rewrite has to happen while the IR is still layout-free.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
+def TritonGPUExpandConcatDotOperand : Pass<"tritongpu-expand-concat-dot-operand", "mlir::ModuleOp"> {
+  let summary = "expand an unlowerable K concat";
+
+  let description = [{
+    Rebuild the `tt.join` tree for any `ttg.concat_dot_operand` whose operand did
+    not end up with a layout the register relabel works on.
+
+    Whether the relabel is possible only follows from the encoding layout
+    propagation assigns, so it cannot be decided when
+    `tritongpu-concat-dot-operand` introduces the op. Run this once the layouts
+    are final and before lowering.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
 def TritonGPUAccelerateMatmul : Pass<"tritongpu-accelerate-matmul", "mlir::ModuleOp"> {
   let summary = "accelerate matmul";
 

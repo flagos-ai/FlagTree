@@ -9,6 +9,7 @@ endif()
 
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
+  ConcatDotOperand.cpp
   ProcessSharedMemoryHint.cpp
   Coalesce.cpp
   F32DotTC.cpp

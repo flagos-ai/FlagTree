@@ -102,6 +102,9 @@ void init_triton_passes_ttgpuir(py::module &&m) {
   ADD_PASS_OPTION_WRAPPER_1("add_warp_specialize",
                             createTritonGPUAutomaticWarpSpecialization, int);
   ADD_PASS_WRAPPER_0("add_prefetch", createTritonGPUPrefetch);
+  ADD_PASS_WRAPPER_0("add_concat_dot_operand", createTritonGPUConcatDotOperand);
+  ADD_PASS_WRAPPER_0("add_expand_concat_dot_operand",
+                     createTritonGPUExpandConcatDotOperand);
   ADD_PASS_WRAPPER_0("add_accelerate_matmul", createTritonGPUAccelerateMatmul);
   ADD_PASS_WRAPPER_0("add_reorder_instructions",
                      createTritonGPUReorderInstructions);

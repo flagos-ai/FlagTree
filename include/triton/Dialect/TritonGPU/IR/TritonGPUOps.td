@@ -461,6 +461,35 @@ def TTG_Fp4ToFpOp : TTG_Op<"fp4_to_fp", [Pure]> {
   }];
 }
 
+def TTG_ConcatDotOperandOp : TTG_Op<"concat_dot_operand",
+                                    [Pure, SameTypeOperands]> {
+  let summary = "Concatenate dot operand fragments along the contraction axis";
+
+  let hasVerifier = 1;
+
+  let description = [{
+    Concatenate N fragments along the contraction (K) axis into a single wider
+    fragment, letting one mma cover the whole K tile.
+
+    An internal op, introduced by `tritongpu-concat-dot-operand`; it is not
+    spelled by the user. The concatenation lowers to a per-thread register
+    relabel, which requires: a `dot_op` encoding, `dim` being the contraction
+    axis for its `opIdx`, at least `8 * kWidth` along `dim`, matching lane, warp
+    and block bases between fragment and result, and no broadcast along a dim
+    the relabel indexes by. Those depend on the encoding assigned by layout
+    propagation, so they are checked when lowering rather than in the verifier,
+    and `tritongpu-expand-concat-dot-operand` undoes the op when they do not
+    hold.
+  }];
+
+  let arguments = (ins Variadic<TT_Tensor>:$fragments, I32Attr:$dim);
+  let results = (outs TT_Tensor:$result);
+
+  let assemblyFormat = [{
+    $fragments attr-dict `:` type($fragments) `->` type($result)
+  }];
+}
+
 // Allocate global memory
 def TTG_GlobalScratchAllocOp : TTG_Op<"global_scratch_alloc"> {
   let summary = "allocate a global memory buffer";

@@ -576,6 +576,41 @@ MemDescTransOp::inferReturnTypes(MLIRContext *context,
 }
 
 // MemDescReshapeOp
+LogicalResult ConcatDotOperandOp::verify() {
+  auto fragments = getFragments();
+  if (fragments.size() < 2)
+    return emitOpError("expects at least two fragments");
+
+  auto fragTy = cast<RankedTensorType>(fragments[0].getType());
+  auto resTy = cast<RankedTensorType>(getResult().getType());
+  int64_t rank = fragTy.getRank();
+
+  // getDim() is unsigned, so sign-extend the stored i32 to keep a negative dim
+  // readable in the diagnostic instead of wrapping to a huge value.
+  int64_t dim = getDimAttr().getValue().getSExtValue();
+  if (dim < 0 || dim >= rank)
+    return emitOpError("dim ") << dim << " is out of range for rank " << rank;
+
+  // Fragments sharing shape, element type and encoding comes from
+  // SameTypeOperands, which reports before this verifier runs.
+  if (resTy.getRank() != rank)
+    return emitOpError("result rank must equal fragment rank");
+  if (resTy.getElementType() != fragTy.getElementType())
+    return emitOpError("result element type must match the fragments");
+  if (resTy.getEncoding() != fragTy.getEncoding())
+    return emitOpError("result encoding must match the fragments");
+
+  for (int64_t i = 0; i < rank; ++i) {
+    int64_t expect = (i == dim) ? fragTy.getShape()[i] *
+                                      static_cast<int64_t>(fragments.size())
+                                : fragTy.getShape()[i];
+    if (resTy.getShape()[i] != expect)
+      return emitOpError("result shape mismatch at dim ")
+             << i << ": expected " << expect << ", got " << resTy.getShape()[i];
+  }
+  return success();
+}
+
 LogicalResult MemDescReshapeOp::verify() {
   MemDescType dstType = getResult().getType();
   MemDescType srcType = getSrc().getType();
