@@ -199,8 +199,8 @@ def _mm2_pv(
 @triton.jit
 def _vec1_softmax(
     workspace_s, workspace_p, workspace_rescale, workspace_expsum,
+    workspace_neg_max,
     cid, idx_in_conbine,
-    neg_max_even, neg_max_odd,
     sm_scale,
     # causal mask inputs
     IS_CAUSAL: tl.constexpr,
@@ -211,25 +211,29 @@ def _vec1_softmax(
 ):
     """Vec1: online softmax over CB score blocks -> workspace_p + rescale/expsum.
 
-    Reads workspace_s, applies causal mask if needed, computes stabilised
-    softmax probabilities, and stores P, rescale, and block_expsum to their
-    respective single-slot GM buffers for MM2 and Vec2.  Serial version:
-    no ring index.
+    Uses workspace_neg_max (GM buffer, per-core) to persist the running max
+    across tasks within the same output tile.  This avoids neg_max becoming
+    a loop-carried value of the outer task loop, which would trigger a type
+    mismatch after EnableStrideAlign in bishengir.
 
-    Returns updated (neg_max_even, neg_max_odd).
+    The running max is reset (filled with a large value) at the first task
+    of each output tile (idx_in_conbine == 0) and persisted to GM at the end
+    of each task for the next task to reload.
     """
     # wait workspace_s (all CB score blocks) ready from MM1
     sync_block_wait("cube", "vector", SEM_S_READY, PIPE.PIPE_FIX, PIPE.PIPE_MTE2)
 
-    # reset running max at the first task of each output tile
+    # load or reset running max
+    neg_max_bp = tl.make_block_ptr(
+        workspace_neg_max + cid * BLOCK_M,
+        (BLOCK_M, 1), (1, 1), (0, 0), (BLOCK_M, 1), (1, 0))
     if idx_in_conbine == 0:
-        neg_max_even = tl.full((BLOCK_M, 1), 2**30, tl.float32)
-        neg_max_odd  = tl.full((BLOCK_M, 1), 2**30, tl.float32)
+        neg_max = tl.full((BLOCK_M, 1), 2**30, tl.float32)
+    else:
+        neg_max = tl.load(neg_max_bp).to(tl.float32)
 
     for cb_idx in range(CB):
         kv_idx = idx_in_conbine * CB + cb_idx
-        cur_parity   = kv_idx % 2
-        prv_parity   = 1 - cur_parity
 
         # load score from single-slot workspace_s: layout [cid, CB, BLOCK_M, BLOCK_N]
         score_load_bp = tl.make_block_ptr(
@@ -247,17 +251,16 @@ def _vec1_softmax(
             causal_mask    = q_row_idx[:, None] >= kv_col_idx[None, :]
             attn_score_block = tl.where(causal_mask, attn_score_block, float("-inf"))
 
-        # online softmax: compute new running -max*scale (ping-pong)
+        # online softmax: compute new running -max*scale
         block_row_max = tl.max(attn_score_block, axis=-1, keep_dims=True)
-        neg_max_new = tl.minimum(-block_row_max * sm_scale,
-                                 tl.where(cur_parity == 0, neg_max_even, neg_max_odd))
-        neg_max_prv = tl.where(cur_parity == 0, neg_max_odd, neg_max_even)
+        neg_max_prv = neg_max
+        neg_max = tl.minimum(-block_row_max * sm_scale, neg_max)
 
         # softmax_p = exp(sm_scale * score + neg_max_new)
-        softmax_p = tl.exp(sm_scale * attn_score_block + neg_max_new)
+        softmax_p = tl.exp(sm_scale * attn_score_block + neg_max)
 
         # rescale = exp(neg_max_new - neg_max_prv): correction factor for Vec2
-        rescale = tl.exp(neg_max_new - neg_max_prv)
+        rescale = tl.exp(neg_max - neg_max_prv)
         # block_expsum: partial row-sum contributed by this KV block
         block_expsum = tl.sum(softmax_p, axis=-1, keep_dims=True)
 
@@ -273,12 +276,6 @@ def _vec1_softmax(
             (BLOCK_M, 1), (1, 1), (0, 0), (BLOCK_M, 1), (1, 0))
         tl.store(expsum_store_bp, block_expsum)
 
-        # update running max ping-pong
-        if cur_parity == 0:
-            neg_max_even = neg_max_new
-        else:
-            neg_max_odd = neg_max_new
-
         # softmax_p -> single-slot workspace_p: layout [cid, CB, BLOCK_M, BLOCK_N]
         prob_store_bp = tl.make_block_ptr(
             workspace_p + cid * CB * BLOCK_M * BLOCK_N
@@ -286,10 +283,14 @@ def _vec1_softmax(
             (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
         tl.store(prob_store_bp, softmax_p.to(workspace_p.dtype.element_ty))
 
+    # persist neg_max to GM for the next task in this output tile
+    tl.store(neg_max_bp, neg_max)
+
+    # Signal workspace_s is free — Cube can overwrite it in the next iteration.
+    sync_block_set("vector", "cube", SEM_S_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
+
     # all CB P-blocks written -> notify MM2
     sync_block_set("vector", "cube", SEM_P_READY, PIPE.PIPE_MTE3, PIPE.PIPE_MTE2)
-
-    return neg_max_even, neg_max_odd
 
 
 @triton.jit
@@ -373,6 +374,7 @@ def flash_attention_fwd_serial_kernel(
     Q, K, V, Out,
     workspace_s, workspace_p, workspace_pv,   # GM single-slot workspaces (per core)
     workspace_rescale, workspace_expsum,       # GM softmax state (Vec1 -> Vec2)
+    workspace_neg_max,                         # GM neg_max persistence (per core)
     sm_scale,
     B, Hq, Hkv, S,
     sQb, sQh, sQs, sQd,
@@ -407,8 +409,6 @@ def flash_attention_fwd_serial_kernel(
     # Vector-side online-softmax accumulator (registers)
     acc_o         = tl.zeros((BLOCK_M, DIM), tl.float32)
     softmax_denom = tl.zeros((BLOCK_M, 1),   tl.float32)
-    neg_max_even  = tl.full((BLOCK_M, 1), 2**30, tl.float32)
-    neg_max_odd   = tl.full((BLOCK_M, 1), 2**30, tl.float32)
 
     # =========================================================================
     #  ② Serial loop: each iteration executes MM1 → Vec1 → MM2 → Vec2.
@@ -416,7 +416,24 @@ def flash_attention_fwd_serial_kernel(
     #  ordering within each scope is maintained by sync_block_set /
     #  sync_block_wait inside the sub-functions themselves:
     #    MM1 --(SEM_S_READY)--> Vec1 --(SEM_P_READY)--> MM2 --(SEM_PV_READY)--> Vec2
+    #
+    #  Pre-arm "free" tokens so the first iteration's waits pass:
+    #    - Vector pre-arms SEM_S_FREE (V→C): workspace_s starts free
+    #    - Cube pre-arms SEM_P_FREE (C→V): workspace_p starts free (unused here
+    #      since Vec1 doesn't wait on P_FREE — it only waits on S_READY)
     # =========================================================================
+
+    # Pre-arm: signal workspace_s is free so AIC's first MM1 can proceed.
+    # Must match the pipe pair used in _mm1_qkt's sync_block_wait for SEM_S_FREE.
+    with tle.scope(core_mode="vector"):
+        sync_block_set("vector", "cube", SEM_S_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
+
+    # Pre-arm: Cube signals "iteration start" so Vector's first wait passes.
+    # GraphSyncSolver adds a C→V handshake (flag=1, PIPE_MTE2→PIPE_S) at loop
+    # boundaries but does NOT pre-arm it. We emit the matching set here.
+    with tle.scope(core_mode="cube"):
+        sync_block_set("cube", "vector", SEM_S_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_S)
+
     for g in range(num_global_tasks):
         idx_in_conbine    = g % conbined_block_num
         conbined_block_idx = g // conbined_block_num
@@ -459,10 +476,10 @@ def flash_attention_fwd_serial_kernel(
         #  Vec2 waits SEM_PV_READY (set by MM2).
         # -----------------------------------------------------------------
         with tle.scope(core_mode="vector"):
-            neg_max_even, neg_max_odd = _vec1_softmax(
+            _vec1_softmax(
                 workspace_s, workspace_p, workspace_rescale, workspace_expsum,
+                workspace_neg_max,
                 cid, idx_in_conbine,
-                neg_max_even, neg_max_odd,
                 sm_scale,
                 IS_CAUSAL, block_start, conbined_block_num, num_seq_blocks,
                 g, CB,
@@ -503,7 +520,8 @@ def _dump_signature():
     """Static signature for ast_to_ttir (pointers / scalars / i32 / constexpr)."""
     ptr = {"Q": "*fp16", "K": "*fp16", "V": "*fp16", "Out": "*fp16",
            "workspace_s": "*fp16", "workspace_p": "*fp16", "workspace_pv": "*fp16",
-           "workspace_rescale": "*fp32", "workspace_expsum": "*fp32"}
+           "workspace_rescale": "*fp32", "workspace_expsum": "*fp32",
+           "workspace_neg_max": "*fp32"}
     i32_names = ["B", "Hq", "Hkv", "S",
             "sQb", "sQh", "sQs", "sQd",
             "sKb", "sKh", "sKs", "sKd",
@@ -912,12 +930,13 @@ def flash_attention_fwd(q, k, v, combine_batch, is_causal=False):
     workspace_pv      = torch.empty((NUM_CORES, CB, BLOCK_M, DIM),     dtype=torch.float16, device=q.device)
     workspace_rescale = torch.empty((NUM_CORES, CB, BLOCK_M),          dtype=torch.float32, device=q.device)
     workspace_expsum  = torch.empty((NUM_CORES, CB, BLOCK_M),          dtype=torch.float32, device=q.device)
+    workspace_neg_max = torch.empty((NUM_CORES, BLOCK_M),              dtype=torch.float32, device=q.device)
     sm_scale = (1.0 / D) ** 0.5
 
     grid = (NUM_CORES,)  # one program per AI core
     flash_attention_fwd_serial_kernel[grid](
         q, k, v, out, workspace_s, workspace_p, workspace_pv,
-        workspace_rescale, workspace_expsum, sm_scale,
+        workspace_rescale, workspace_expsum, workspace_neg_max, sm_scale,
         B, Hq, Hkv, S,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
         k.stride(0), k.stride(1), k.stride(2), k.stride(3),
