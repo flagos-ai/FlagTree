@@ -7,12 +7,15 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 @triton.jit
 def scatter_with_modulo_kernel(
-    x_ptr,        # [M, K] output
-    idx_ptr,      # [BLOCK_M] index tensor, values in [0, M), may repeat
-    val_ptr,      # [BLOCK_M, BLOCK_K] values to store
-    M, K,
-    stride_xm, stride_xk,
-    BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr,
+    x_ptr,  # [M, K] output
+    idx_ptr,  # [BLOCK_M] index tensor, values in [0, M), may repeat
+    val_ptr,  # [BLOCK_M, BLOCK_K] values to store
+    M,
+    K,
+    stride_xm,
+    stride_xk,
+    BLOCK_M: tl.constexpr,
+    BLOCK_K: tl.constexpr,
 ):
     """
     Modulo on the unstructured (scatter) dimension for stores.
@@ -24,8 +27,8 @@ def scatter_with_modulo_kernel(
 
     # unstructured dim (dim 0): load indices and modulo
     row_offs = tl.arange(0, BLOCK_M)
-    rows_raw = tl.load(idx_ptr + row_offs)      # tensor<BLOCK_M x i32>
-    rows = rows_raw % M                          # modulo on unstructured dim
+    rows_raw = tl.load(idx_ptr + row_offs)  # tensor<BLOCK_M x i32>
+    rows = rows_raw % M  # modulo on unstructured dim
 
     # structured dim (dim 1): contiguous range
     cols = tl.arange(0, BLOCK_K)
@@ -42,8 +45,7 @@ def test_scatter_with_modulo(device):
     # data matrix [M, K] initialized to 0
     x = torch.zeros(M, K, device="cpu", dtype=torch.float32)
     # index tensor [BLOCK_M]: raw indices that may exceed M
-    idx_raw = torch.tensor([0, 4, 18, 22, 5, 35, 12, 50],
-                           device="cpu", dtype=torch.int32)
+    idx_raw = torch.tensor([0, 4, 18, 22, 5, 35, 12, 50], device="cpu", dtype=torch.int32)
     # values to store [BLOCK_M, BLOCK_K] = row index * 100 + col index
     val = torch.zeros(BLOCK_M, BLOCK_K, device="cpu", dtype=torch.float32)
     for m in range(BLOCK_M):
@@ -55,11 +57,16 @@ def test_scatter_with_modulo(device):
     val_gpu = val.to(device)
 
     print("=== scatter_with_modulo ===")
-    scatter_with_modulo_kernel[(1,)](
-        x_gpu, idx_gpu, val_gpu,
-        M, K,
-        x.stride(0), x.stride(1),
-        BLOCK_M=BLOCK_M, BLOCK_K=BLOCK_K,
+    scatter_with_modulo_kernel[(1, )](
+        x_gpu,
+        idx_gpu,
+        val_gpu,
+        M,
+        K,
+        x.stride(0),
+        x.stride(1),
+        BLOCK_M=BLOCK_M,
+        BLOCK_K=BLOCK_K,
     )
 
     x_actual = x_gpu.to("cpu")

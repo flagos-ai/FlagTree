@@ -7,8 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "kernels"))
 from conftest import run_kernel_script, DmaResult
 
 
-def _create_test_script(n_elements, inject_mask_mode, inject_n_elements_scale,
-                        block_size=256, tensor_size=None):
+def _create_test_script(n_elements, inject_mask_mode, inject_n_elements_scale, block_size=256, tensor_size=None):
     """Generate a self-contained test script for dropout_oob.
 
     Args:
@@ -78,6 +77,7 @@ if __name__ == "__main__":
 
 
 class TestDropoutOOB:
+
     def test_normal_no_oob(self, dma_env, tmp_path):
         """Normal parameters: should not trigger OOB detection."""
         script = _create_test_script(2000, 0, 1)

@@ -71,12 +71,7 @@ def read_json_ops_and_tasks(file_path, test_set_name=None):
 
 def check_card_status_i(card_id: str):
     try:
-        output = subprocess.check_output(
-            f"tsm_smi -i {card_id}",
-            shell=True,
-            text=True,
-            stderr=subprocess.STDOUT
-        )
+        output = subprocess.check_output(f"tsm_smi -i {card_id}", shell=True, text=True, stderr=subprocess.STDOUT)
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         logger.warning(f"命令执行异常: {e}")
         return False
@@ -117,8 +112,12 @@ def run_case(op_name, perf_tasks, card_id, warmup, iter_n, level, metrics, bench
         # e.g. /path/benchmark + test_reduction_perf.py::func -> /path/benchmark/test_reduction_perf.py::func
         node_path = os.path.join(bench_dir, task)
         cmd = [
-            "python3", "-m", "pytest", node_path,
-            "-v", "-s",
+            "python3",
+            "-m",
+            "pytest",
+            node_path,
+            "-v",
+            "-s",
             f"--warmup={warmup}",
             f"--iter={iter_n}",
             f"--level={level}",
@@ -156,14 +155,10 @@ def run_case(op_name, perf_tasks, card_id, warmup, iter_n, level, metrics, bench
                 if _counter >= _threshold:
                     print_fmt(
                         f"[card {card_id}] {task} stuck "
-                        f"(log unchanged {_threshold}x{_interval}s), terminating...",
-                        "ERROR", "Bench CI"
-                    )
+                        f"(log unchanged {_threshold}x{_interval}s), terminating...", "ERROR", "Bench CI")
                     with open(op_log_file, 'a') as _lf:
-                        _lf.write(
-                            f"\n[TIMEOUT] log unchanged for {_threshold}x{_interval}s, "
-                            f"terminating...\n"
-                        )
+                        _lf.write(f"\n[TIMEOUT] log unchanged for {_threshold}x{_interval}s, "
+                                  f"terminating...\n")
                     proc.send_signal(signal.SIGINT)
                     try:
                         proc.wait(timeout=10)
@@ -188,7 +183,8 @@ def run_case(op_name, perf_tasks, card_id, warmup, iter_n, level, metrics, bench
             failed_task_list.append((task, result_rc))
 
     if failed_count > 0:
-        print_fmt(f"[card {card_id}] {op_name} completed, {failed_count}/{failed_count+succ_count} tasks failed.", "ERROR", "Bench CI")
+        print_fmt(f"[card {card_id}] {op_name} completed, {failed_count}/{failed_count+succ_count} tasks failed.",
+                  "ERROR", "Bench CI")
         return failed_count, op_name, card_id, failed_task_list
     else:
         print_fmt(f"[card {card_id}] {op_name} completed, all {succ_count} tasks success.", "INFO", "Bench CI")
@@ -285,18 +281,16 @@ def run_stage(args):
             for _ in range(process_count):
                 op_name = task_queue.get()
                 card_id = card_queue.get()
-                future = excutor.submit(run_case, op_name, all_perf_tasks[op_name],
-                                        card_id, warmup, iter_n, level, metrics,
-                                        bench_dir, ops_log_dir, run_name)
+                future = excutor.submit(run_case, op_name, all_perf_tasks[op_name], card_id, warmup, iter_n, level,
+                                        metrics, bench_dir, ops_log_dir, run_name)
                 future.add_done_callback(lambda f, cid=card_id: callback(f, cid))
                 futures[future] = (op_name, card_id)
-                print_fmt(f"Started: {total_ops-task_queue.qsize()}/{total_ops}: {op_name} on card {card_id}", "INFO", "Bench CI")
+                print_fmt(f"Started: {total_ops-task_queue.qsize()}/{total_ops}: {op_name} on card {card_id}", "INFO",
+                          "Bench CI")
 
             while not task_queue.empty():
-                completed, _ = concurrent.futures.wait(
-                    list(futures.keys()),
-                    return_when=concurrent.futures.FIRST_COMPLETED
-                )
+                completed, _ = concurrent.futures.wait(list(futures.keys()),
+                                                       return_when=concurrent.futures.FIRST_COMPLETED)
                 for future in completed:
                     op_name, card_id = futures.pop(future)
                     print_fmt(f"Completed: {op_name} on card {card_id}", "INFO", "Bench CI")
@@ -307,19 +301,16 @@ def run_stage(args):
                     try:
                         op_name = task_queue.get_nowait()
                         card_id = card_queue.get()
-                        new_future = excutor.submit(run_case, op_name, all_perf_tasks[op_name],
-                                                    card_id, warmup, iter_n, level, metrics,
-                                                    bench_dir, ops_log_dir, run_name)
+                        new_future = excutor.submit(run_case, op_name, all_perf_tasks[op_name], card_id, warmup, iter_n,
+                                                    level, metrics, bench_dir, ops_log_dir, run_name)
                         new_future.add_done_callback(lambda f, cid=card_id: callback(f, cid))
                         futures[new_future] = (op_name, card_id)
-                        print_fmt(f"Started: {total_ops-task_queue.qsize()}/{total_ops}: {op_name} on card {card_id}", "INFO", "Bench CI")
+                        print_fmt(f"Started: {total_ops-task_queue.qsize()}/{total_ops}: {op_name} on card {card_id}",
+                                  "INFO", "Bench CI")
                     except queue.Empty:
                         break
 
-            completed, _ = concurrent.futures.wait(
-                list(futures.keys()),
-                return_when=concurrent.futures.ALL_COMPLETED
-            )
+            completed, _ = concurrent.futures.wait(list(futures.keys()), return_when=concurrent.futures.ALL_COMPLETED)
             for future in completed:
                 op_name, card_id = futures.pop(future)
                 print_fmt(f"Completed: {op_name} on card {card_id}", "INFO", "Bench CI")
@@ -353,21 +344,14 @@ def run_stage(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FlagGems OP benchmark test for Triton CI.")
-    parser.add_argument("--test_set", type=str, default="ci_ops",
-                        help="op set name, defined in flag_gems_ci_ops.json")
-    parser.add_argument("--device_count", type=int, default=1,
-                        help="Maximum number of devices that can be used.")
-    parser.add_argument("--skip_device", type=int, nargs='*', default=[],
-                        help="Devices that need to be skipped.")
-    parser.add_argument("--warmup", type=int, default=1000,
-                        help="Number of warmup runs before benchmark.")
-    parser.add_argument("--iter", type=int, default=1000,
-                        help="Number of reps for each benchmark run.")
-    parser.add_argument("--level", type=str, default="core",
-                        choices=["core", "comprehensive"],
+    parser.add_argument("--test_set", type=str, default="ci_ops", help="op set name, defined in flag_gems_ci_ops.json")
+    parser.add_argument("--device_count", type=int, default=1, help="Maximum number of devices that can be used.")
+    parser.add_argument("--skip_device", type=int, nargs='*', default=[], help="Devices that need to be skipped.")
+    parser.add_argument("--warmup", type=int, default=1000, help="Number of warmup runs before benchmark.")
+    parser.add_argument("--iter", type=int, default=1000, help="Number of reps for each benchmark run.")
+    parser.add_argument("--level", type=str, default="core", choices=["core", "comprehensive"],
                         help="Benchmark level: core or comprehensive.")
-    parser.add_argument("--metrics", type=str, default="latency",
-                        help="Benchmark metrics, e.g. latency, tflops.")
+    parser.add_argument("--metrics", type=str, default="latency", help="Benchmark metrics, e.g. latency, tflops.")
     parser.add_argument("--flaggems_path", type=str, default="",
                         help="Flaggems root path. Defaults to $TRITON_WORKSPACE/flaggems.")
     args = parser.parse_args()

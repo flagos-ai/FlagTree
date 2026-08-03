@@ -54,12 +54,11 @@ namespace {
 //
 struct MemrefUnrealizedCastToMemrefCast : public RewritePattern {
   MemrefUnrealizedCastToMemrefCast(MLIRContext *ctx)
-      : RewritePattern(UnrealizedConversionCastOp::getOperationName(), 1,
-                       ctx) {}
+      : RewritePattern(UnrealizedConversionCastOp::getOperationName(), 1, ctx) {
+  }
 
-  LogicalResult
-  matchAndRewrite(Operation *op,
-                  PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
     auto castOp = cast<UnrealizedConversionCastOp>(op);
     Value operand = castOp.getOperand(0);
     Type srcType = operand.getType();
@@ -85,11 +84,11 @@ struct MemrefUnrealizedCastToMemrefCast : public RewritePattern {
 
     // Different element types — memref.cast is illegal here.
     // Leave the unrealized_conversion_cast in place for later passes
-    // (e.g. ReconcileUnrealizedCastsPass) to handle naturally when all memrefs become LLVM
-    // pointers and the element type distinction is erased.
+    // (e.g. ReconcileUnrealizedCastsPass) to handle naturally when all memrefs
+    // become LLVM pointers and the element type distinction is erased.
     LLVM_DEBUG({
-      llvm::dbgs() << "  Skipping unrealized_conversion_cast from "
-                   << srcType << " to " << dstType
+      llvm::dbgs() << "  Skipping unrealized_conversion_cast from " << srcType
+                   << " to " << dstType
                    << " (element types differ, memref.cast would be illegal)\n";
     });
     return failure();
@@ -117,8 +116,7 @@ public:
     {
       RewritePatternSet prePatterns(context);
       prePatterns.add<MemrefUnrealizedCastToMemrefCast>(context);
-      if (failed(
-              applyPatternsGreedily(moduleOp, std::move(prePatterns)))) {
+      if (failed(applyPatternsGreedily(moduleOp, std::move(prePatterns)))) {
         return signalPassFailure();
       }
     }

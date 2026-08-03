@@ -42,7 +42,7 @@ def kernel_modulo_unstructured(
 
     # Build 2D: [BLOCK_M, 1] for dim0, [1, BLOCK_N] for dim1
     offs_a = indices[:, None] * stride_m  # dim0 unstructured, dim1 structured(0)
-    offs_m = mod_offs[None, :] * stride_n # dim0 structured(0), dim1 hasModulo
+    offs_m = mod_offs[None, :] * stride_n  # dim0 structured(0), dim1 hasModulo
 
     # arith.addi → addState:
     #   dim0: lhs unstructured + rhs structured(offs_m has no offset on dim0)
@@ -120,13 +120,19 @@ def test(device):
     out = out.to(device)
 
     print("=== test_modulo_unstructured ===")
-    grid = lambda meta: (1,)
+    grid = lambda meta: (1, )
     kernel_modulo_unstructured[grid](
-        in_data, idx_data, out,
-        M, N,
-        in_data.stride(0), in_data.stride(1),
-        out.stride(0), out.stride(1),
-        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
+        in_data,
+        idx_data,
+        out,
+        M,
+        N,
+        in_data.stride(0),
+        in_data.stride(1),
+        out.stride(0),
+        out.stride(1),
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
     )
 
     out_cpu = out.to("cpu")
@@ -151,11 +157,18 @@ def test(device):
     out.fill_(-1.0)
 
     kernel_modulo_unstructured_loop[grid](
-        in_data, idx_data, out,
-        M, N,
-        in_data.stride(0), in_data.stride(1),
-        out.stride(0), out.stride(1),
-        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, NUM_LOOPS=NUM_LOOPS,
+        in_data,
+        idx_data,
+        out,
+        M,
+        N,
+        in_data.stride(0),
+        in_data.stride(1),
+        out.stride(0),
+        out.stride(1),
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        NUM_LOOPS=NUM_LOOPS,
     )
 
     out_cpu = out.to("cpu")

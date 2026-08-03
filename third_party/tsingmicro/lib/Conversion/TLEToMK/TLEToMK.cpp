@@ -178,10 +178,9 @@ extractRemoteInfoFromPtr(PatternRewriter &rewriter, Location loc, Value ptrLike,
                          SmallVector<Value, 4> &coords, Value &basePtrLike,
                          DenseI32ArrayAttr *meshPhysicalIdsOut = nullptr,
                          DenseI32ArrayAttr *meshShapeOut = nullptr) {
-  if (auto remotePtrOp =
-          ptrLike.getDefiningOp<mlir::dsa::RemotePointersOp>()) {
-    if (failed(getCoordsFromShardIdValue(rewriter, loc, remotePtrOp.getShardId(),
-                                         coords)))
+  if (auto remotePtrOp = ptrLike.getDefiningOp<mlir::dsa::RemotePointersOp>()) {
+    if (failed(getCoordsFromShardIdValue(rewriter, loc,
+                                         remotePtrOp.getShardId(), coords)))
       return failure();
     basePtrLike = remotePtrOp.getSrc();
     if (meshPhysicalIdsOut)
@@ -403,8 +402,7 @@ struct DsaLocalStoreToMemrefPattern : public OpRewritePattern<triton::StoreOp> {
 // cumsum
 // ===----------------------------------------------------------------------===//
 
-struct DsaCumsumToMkPattern
-    : public OpRewritePattern<mlir::dsa::CumsumOp> {
+struct DsaCumsumToMkPattern : public OpRewritePattern<mlir::dsa::CumsumOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::dsa::CumsumOp op,
@@ -443,8 +441,7 @@ struct DsaCumsumToMkPattern
     bool scalarTotal = !isa<RankedTensorType>(op.getTotal().getType());
     RankedTensorType totalBufferTy;
     if (scalarTotal) {
-      totalBufferTy =
-          RankedTensorType::get({1}, inputTy.getElementType());
+      totalBufferTy = RankedTensorType::get({1}, inputTy.getElementType());
     } else {
       totalBufferTy = cast<RankedTensorType>(op.getTotal().getType());
     }
@@ -458,9 +455,8 @@ struct DsaCumsumToMkPattern
 
     auto mkOp = rewriter.create<mk::CumsumOp>(
         loc, TypeRange{exclusiveTy, totalBufferTy, scratchTy}, op.getInput(),
-        exclusiveInit, totalInit, scratchInit,
-        rewriter.getI32IntegerAttr(axis), rewriter.getI64ArrayAttr(shape),
-        rewriter.getI64IntegerAttr(pad));
+        exclusiveInit, totalInit, scratchInit, rewriter.getI32IntegerAttr(axis),
+        rewriter.getI64ArrayAttr(shape), rewriter.getI64IntegerAttr(pad));
 
     Value total = mkOp->getResult(1);
     if (scalarTotal) {

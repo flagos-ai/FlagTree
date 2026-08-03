@@ -45,10 +45,10 @@ from collections import OrderedDict
 #  分类阈值 (可手动修改)
 # ============================================================
 # 加速比 = dir0 kcore / dir1 kcore
-BIG_WIN = 2.0        # 大幅优化:  speedup >= BIG_WIN
-MEDIUM_WIN = 1.2     # 中等优化:  MEDIUM_WIN <= speedup < BIG_WIN
-REGRESSION = 0.9     # 负优化:    speedup < REGRESSION
-                     # 不明显:    REGRESSION <= speedup < MEDIUM_WIN
+BIG_WIN = 2.0  # 大幅优化:  speedup >= BIG_WIN
+MEDIUM_WIN = 1.2  # 中等优化:  MEDIUM_WIN <= speedup < BIG_WIN
+REGRESSION = 0.9  # 负优化:    speedup < REGRESSION
+# 不明显:    REGRESSION <= speedup < MEDIUM_WIN
 
 
 def strip_ansi(text):
@@ -80,13 +80,15 @@ def parse_single_file(filepath):
     time_pat = re.compile(r'\[(\d{8}\s+\d{2}:\d{2}:\d{2}\.\d{3})\]')
     test_pat = re.compile(r'perf_test\.py::(test_accuracy_\S+)')
     begin_pat = re.compile(r'tsingmicro_launch:(\S+)\s+launch\s+card:\d+\s+begin')
-    hpg_pat = re.compile(r'HPGR:\s*record\[.*?\]:\s*ap_start_time:(\d+)ns,ap_dur_time:(\d+)ns,kcore_start_time:\d+ns,kcore_dur_time:(\d+)ns')
+    hpg_pat = re.compile(
+        r'HPGR:\s*record\[.*?\]:\s*ap_start_time:(\d+)ns,ap_dur_time:(\d+)ns,kcore_start_time:\d+ns,kcore_dur_time:(\d+)ns'
+    )
     passed_pat = re.compile(r'^\s*(PASSED|FAILED)\s*$')
 
     test_full = None
     status = 'UNKNOWN'
-    launch_events = []   # (kernel_name,)
-    hpg_events = []      # (ap_start, ap_dur, kcore_dur)
+    launch_events = []  # (kernel_name,)
+    hpg_events = []  # (ap_start, ap_dur, kcore_dur)
 
     for line in lines:
         tm = test_pat.search(line)
@@ -148,7 +150,9 @@ def parse_batch_log(filepath):
     time_pat = re.compile(r'\[(\d{8}\s+\d{2}:\d{2}:\d{2}\.\d{3})\]')
     test_pat = re.compile(r'perf_test\.py::(test_accuracy_\S+)')
     begin_pat = re.compile(r'tsingmicro_launch:(\S+)\s+launch\s+card:\d+\s+begin')
-    hpg_pat = re.compile(r'HPGR:\s*record\[.*?\]:\s*ap_start_time:(\d+)ns,ap_dur_time:(\d+)ns,kcore_start_time:\d+ns,kcore_dur_time:(\d+)ns')
+    hpg_pat = re.compile(
+        r'HPGR:\s*record\[.*?\]:\s*ap_start_time:(\d+)ns,ap_dur_time:(\d+)ns,kcore_start_time:\d+ns,kcore_dur_time:(\d+)ns'
+    )
     passed_pat = re.compile(r'^\s*(PASSED|FAILED)\s*$')
 
     # Collect global events
@@ -258,10 +262,15 @@ def test_ap(t):
 #  Markdown
 # ============================================================
 
+
 def md_single(tests, title):
     lines = [f"# {title}", "", f"共 {len(tests)} 个测试用例", ""]
-    lines.append("| 算子 | 参数 | 状态 | kcore_dur_time 合计 | ap_dur_time 合计 | kernel 名称 | 调用次数 | kcore_dur_time 单次 | ap_dur_time 单次 | ap_start_time |")
-    lines.append("|------|------|------|-------------------|----------------|------------|---------|-------------------|----------------|--------------|")
+    lines.append(
+        "| 算子 | 参数 | 状态 | kcore_dur_time 合计 | ap_dur_time 合计 | kernel 名称 | 调用次数 | kcore_dur_time 单次 | ap_dur_time 单次 | ap_start_time |"
+    )
+    lines.append(
+        "|------|------|------|-------------------|----------------|------------|---------|-------------------|----------------|--------------|"
+    )
 
     for t in tests:
         op, params, status = t['op_name'], t['params_display'], t['status']
@@ -276,7 +285,9 @@ def md_single(tests, title):
                 al = ", ".join(format_ns(x) for x in kd['ap_times'])
                 sl = ", ".join(f"{x/1e9:.6f}s" for x in kd['ap_start_times'])
                 if first:
-                    lines.append(f"| {op} | {params} | {sm} | {format_ns(kc)} | {format_ns(ap)} | `{kname}` | {kd['count']} | {kl} | {al} | {sl} |")
+                    lines.append(
+                        f"| {op} | {params} | {sm} | {format_ns(kc)} | {format_ns(ap)} | `{kname}` | {kd['count']} | {kl} | {al} | {sl} |"
+                    )
                     first = False
                 else:
                     lines.append(f"| | | | | | `{kname}` | {kd['count']} | {kl} | {al} | {sl} |")
@@ -330,8 +341,12 @@ def md_comparison(tests0, tests1, label0, label1):
 
     lines.append("## 明细")
     lines.append("")
-    lines.append(f"| 算子 | 参数 | {label0} 状态 | {label0} kcore | {label1} 状态 | {label1} kcore | 加速比 | kernel 名称 | {label0} 次数 | {label0} kcore | {label1} 次数 | {label1} kcore |")
-    lines.append(f"|------|------|-------------|-----------|-------------|-----------|-------|------------|-------------|-------------|-------------|-------------|")
+    lines.append(
+        f"| 算子 | 参数 | {label0} 状态 | {label0} kcore | {label1} 状态 | {label1} kcore | 加速比 | kernel 名称 | {label0} 次数 | {label0} kcore | {label1} 次数 | {label1} kcore |"
+    )
+    lines.append(
+        f"|------|------|-------------|-----------|-------------|-----------|-------|------------|-------------|-------------|-------------|-------------|"
+    )
 
     for key in all_keys:
         op, params = key
@@ -345,7 +360,9 @@ def md_comparison(tests0, tests1, label0, label1):
         k1n = set(t1['kernels'].keys()) if t1 else set()
         all_knames = list(OrderedDict.fromkeys(sorted(k0n | k1n)))
         if not all_knames:
-            lines.append(f"| {op} | {params} | `{s0}` | {format_ns(kc0)} | `{s1}` | {format_ns(kc1)} | {sp} | — | — | — | — | — |")
+            lines.append(
+                f"| {op} | {params} | `{s0}` | {format_ns(kc0)} | `{s1}` | {format_ns(kc1)} | {sp} | — | — | — | — | — |"
+            )
         else:
             first = True
             for kname in all_knames:
@@ -355,7 +372,9 @@ def md_comparison(tests0, tests1, label0, label1):
                 k0 = format_ns(sum(kd0['kcore_times'])) if kd0 else "—"
                 k1 = format_ns(sum(kd1['kcore_times'])) if kd1 else "—"
                 if first:
-                    lines.append(f"| {op} | {params} | `{s0}` | {format_ns(kc0)} | `{s1}` | {format_ns(kc1)} | {sp} | `{kname}` | {c0} | {k0} | {c1} | {k1} |")
+                    lines.append(
+                        f"| {op} | {params} | `{s0}` | {format_ns(kc0)} | `{s1}` | {format_ns(kc1)} | {sp} | `{kname}` | {c0} | {k0} | {c1} | {k1} |"
+                    )
                     first = False
                 else:
                     lines.append(f"| | | | | | | | `{kname}` | {c0} | {k0} | {c1} | {k1} |")
@@ -367,6 +386,7 @@ def md_comparison(tests0, tests1, label0, label1):
 #  Excel
 # ============================================================
 
+
 def excel_comparison(tests0, tests1, label0, label1, outpath):
     import openpyxl
     from openpyxl.styles import Font
@@ -376,12 +396,11 @@ def excel_comparison(tests0, tests1, label0, label1, outpath):
     ws = wb.active
     ws.title = "perf对比"
 
-    headers = ["算子", "参数",
-               f"{label0}_状态", f"{label0}_kcore(ns)", f"{label0}_kcore",
-               f"{label1}_状态", f"{label1}_kcore(ns)", f"{label1}_kcore",
-               "加速比", "kernel名称",
-               f"{label0}_次数", f"{label0}_kernel_kcore(ns)", f"{label0}_kernel_kcore",
-               f"{label1}_次数", f"{label1}_kernel_kcore(ns)", f"{label1}_kernel_kcore"]
+    headers = [
+        "算子", "参数", f"{label0}_状态", f"{label0}_kcore(ns)", f"{label0}_kcore", f"{label1}_状态", f"{label1}_kcore(ns)",
+        f"{label1}_kcore", "加速比", "kernel名称", f"{label0}_次数", f"{label0}_kernel_kcore(ns)", f"{label0}_kernel_kcore",
+        f"{label1}_次数", f"{label1}_kernel_kcore(ns)", f"{label1}_kernel_kcore"
+    ]
     for ci, h in enumerate(headers, 1):
         ws.cell(row=1, column=ci, value=h).font = Font(bold=True)
 
@@ -454,6 +473,7 @@ def excel_comparison(tests0, tests1, label0, label1, outpath):
 #  Main
 # ============================================================
 
+
 def main():
     args = [a for a in sys.argv[1:] if a != '--html']
 
@@ -464,8 +484,7 @@ def main():
         tests0 = load_tests(path0)
         tests1 = load_tests(path1)
         md = md_comparison(tests0, tests1, label0, label1)
-        out_md = os.path.join(os.path.dirname(path0.rstrip('/')),
-                              f"{label0}_vs_{label1}.md")
+        out_md = os.path.join(os.path.dirname(path0.rstrip('/')), f"{label0}_vs_{label1}.md")
         with open(out_md, 'w') as f:
             f.write(md)
         print(f"Markdown: {out_md}  ({len(tests0)} vs {len(tests1)} tests)")

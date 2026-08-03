@@ -119,4 +119,3 @@ private:
 } // namespace mlir::triton::membar
 
 #endif // TSINGMICRO_MEMBAR_H
-

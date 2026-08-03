@@ -72,8 +72,8 @@ public:
 
     {
       RewritePatternSet shapePatterns(&getContext());
-      triton::populateLinalgToMKShapeCanonicalizationPatterns(
-          shapePatterns, precisionMode);
+      triton::populateLinalgToMKShapeCanonicalizationPatterns(shapePatterns,
+                                                              precisionMode);
       if (failed(applyPatternsGreedily(moduleOp, std::move(shapePatterns)))) {
         signalPassFailure();
       }

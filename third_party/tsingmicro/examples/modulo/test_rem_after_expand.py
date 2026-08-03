@@ -7,12 +7,15 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 @triton.jit
 def kernel_rem_after_expand(
-    x_ptr,        # [M, K]
-    idx_ptr,      # [BLOCK_M] raw indices
+    x_ptr,  # [M, K]
+    idx_ptr,  # [BLOCK_M] raw indices
     y_ptr,
-    M, K,
-    stride_xm, stride_xk,
-    BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr,
+    M,
+    K,
+    stride_xm,
+    stride_xk,
+    BLOCK_M: tl.constexpr,
+    BLOCK_K: tl.constexpr,
 ):
     """
     Modulo AFTER expand_dims: hits visitOperandRem rank==2 path.
@@ -27,11 +30,11 @@ def kernel_rem_after_expand(
     offs_m = tl.arange(0, BLOCK_M)
 
     # Load indices, expand to 2D, THEN modulo
-    rows_raw = tl.load(idx_ptr + offs_m)           # tensor<8xi32>
-    rows_2d = rows_raw[:, None]                     # tensor<8x1xi32>
-    rows = rows_2d % M                              # tensor<8x1xi32> — remsi on 2D!
+    rows_raw = tl.load(idx_ptr + offs_m)  # tensor<8xi32>
+    rows_2d = rows_raw[:, None]  # tensor<8x1xi32>
+    rows = rows_2d % M  # tensor<8x1xi32> — remsi on 2D!
 
-    cols = tl.arange(0, BLOCK_K)[None, :]            # tensor<1x16xi32>
+    cols = tl.arange(0, BLOCK_K)[None, :]  # tensor<1x16xi32>
 
     ptrs = x_ptr + rows * stride_xm + cols * stride_xk
     vals = tl.load(ptrs)
@@ -45,8 +48,7 @@ def test_rem_after_expand(device):
     BLOCK_M, BLOCK_K = 8, 16
 
     x = torch.arange(M * K, device="cpu", dtype=torch.float32).reshape(M, K)
-    idx_raw = torch.tensor([0, 4, 18, 22, 5, 35, 12, 50],
-                           device="cpu", dtype=torch.int32)
+    idx_raw = torch.tensor([0, 4, 18, 22, 5, 35, 12, 50], device="cpu", dtype=torch.int32)
     y_out = torch.full((BLOCK_M, BLOCK_K), -1.0, device="cpu", dtype=torch.float32)
 
     x_gpu = x.to(device)
@@ -54,11 +56,16 @@ def test_rem_after_expand(device):
     y_gpu = y_out.to(device)
 
     print("=== rem after expand_dims (rank==2 visitOperandRem) ===")
-    kernel_rem_after_expand[(1,)](
-        x_gpu, idx_gpu, y_gpu,
-        M, K,
-        x.stride(0), x.stride(1),
-        BLOCK_M=BLOCK_M, BLOCK_K=BLOCK_K,
+    kernel_rem_after_expand[(1, )](
+        x_gpu,
+        idx_gpu,
+        y_gpu,
+        M,
+        K,
+        x.stride(0),
+        x.stride(1),
+        BLOCK_M=BLOCK_M,
+        BLOCK_K=BLOCK_K,
     )
 
     y_actual = y_gpu.to("cpu")

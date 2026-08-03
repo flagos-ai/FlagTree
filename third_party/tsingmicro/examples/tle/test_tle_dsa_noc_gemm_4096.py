@@ -16,19 +16,26 @@ TILE_PHYSICAL_RELATION = [0, 1, 2, 3, 7, 11, 15, 14, 13, 12, 8, 9, 10, 6, 5, 4]
 
 MESH = tle.device_mesh(
     None,
-    _shape=(TILE_NUM,),
-    _dim_names=("tile",),
+    _shape=(TILE_NUM, ),
+    _dim_names=("tile", ),
     _physical_ids=tuple(TILE_PHYSICAL_RELATION),
 )
 
 
 @triton.jit
 def dsa_shift_n_gemm_kernel(
-    A_ptr, B_ptr, C_ptr,
-    physical_ids_ptr, ring_index_lut_ptr,
-    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
-    BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr,
-    SUB_N: tl.constexpr, TILE_NUM: tl.constexpr,
+    A_ptr,
+    B_ptr,
+    C_ptr,
+    physical_ids_ptr,
+    ring_index_lut_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    SUB_N: tl.constexpr,
+    TILE_NUM: tl.constexpr,
     MESH: tl.constexpr,
 ):
     # Use tle.shard_id() to obtain the current tile's physical id.
@@ -111,13 +118,20 @@ def run():
 
     physical_ids, ring_index_lut = build_mesh_luts(MESH, device)
 
-    grid = (TILE_NUM,)
+    grid = (TILE_NUM, )
     dsa_shift_n_gemm_kernel[grid](
-        a, b, c,
-        physical_ids, ring_index_lut,
-        M=M, N=N, K=K,
-        BLOCK_M=BLOCK_M, BLOCK_K=BLOCK_K,
-        SUB_N=SUB_N, TILE_NUM=TILE_NUM,
+        a,
+        b,
+        c,
+        physical_ids,
+        ring_index_lut,
+        M=M,
+        N=N,
+        K=K,
+        BLOCK_M=BLOCK_M,
+        BLOCK_K=BLOCK_K,
+        SUB_N=SUB_N,
+        TILE_NUM=TILE_NUM,
         MESH=MESH,
     )
     a_f32 = a.cpu().float()

@@ -7,10 +7,9 @@ import triton.language as tl
 
 @triton.jit
 def dropout_kernel_oob(x_ptr, x_keep_ptr, output_ptr, n_elements, p,
-                        inject_mask_mode: tl.constexpr,        # 0=normal, 1=no mask on load/store
-                        inject_n_elements_scale: tl.constexpr,  # 1=normal, 2=double n_elements
-                        BLOCK_SIZE: tl.constexpr,
-                        seed: tl.constexpr):
+                       inject_mask_mode: tl.constexpr,  # 0=normal, 1=no mask on load/store
+                       inject_n_elements_scale: tl.constexpr,  # 1=normal, 2=double n_elements
+                       BLOCK_SIZE: tl.constexpr, seed: tl.constexpr):
     pid = tl.program_id(axis=0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
@@ -28,11 +27,8 @@ def dropout_kernel_oob(x_ptr, x_keep_ptr, output_ptr, n_elements, p,
 
 
 @triton.jit
-def seeded_dropout_kernel_oob(x_ptr, output_ptr, n_elements, p,
-                               inject_mask_mode: tl.constexpr,
-                               inject_n_elements_scale: tl.constexpr,
-                               BLOCK_SIZE: tl.constexpr,
-                               seed: tl.constexpr):
+def seeded_dropout_kernel_oob(x_ptr, output_ptr, n_elements, p, inject_mask_mode: tl.constexpr,
+                              inject_n_elements_scale: tl.constexpr, BLOCK_SIZE: tl.constexpr, seed: tl.constexpr):
     pid = tl.program_id(axis=0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)

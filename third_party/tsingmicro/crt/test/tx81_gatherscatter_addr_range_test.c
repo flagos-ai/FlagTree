@@ -8,10 +8,10 @@
     uintptr_t exp_min_addr = (uintptr_t)((int64_t)(base) + (exp_min));         \
     uintptr_t exp_max_addr = (uintptr_t)((int64_t)(base) + (exp_max));         \
     if ((got).min_addr != exp_min_addr || (got).max_addr != exp_max_addr) {    \
-      fprintf(stderr,                                                          \
-              "FAIL %s: min=%#lx max=%#lx expected [%#lx, %#lx)\n", (name),  \
-              (unsigned long)(got).min_addr, (unsigned long)(got).max_addr,    \
-              (unsigned long)exp_min_addr, (unsigned long)exp_max_addr);       \
+      fprintf(stderr, "FAIL %s: min=%#lx max=%#lx expected [%#lx, %#lx)\n",    \
+              (name), (unsigned long)(got).min_addr,                           \
+              (unsigned long)(got).max_addr, (unsigned long)exp_min_addr,      \
+              (unsigned long)exp_max_addr);                                    \
       return 1;                                                                \
     }                                                                          \
   } while (0)

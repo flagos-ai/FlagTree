@@ -60,6 +60,7 @@ from contextlib import nullcontext
 
 
 class ModelSettings:
+
     def __init__(self, key, display_name, model_dir, prompt, chat_template_kwargs):
         self.key = key
         self.display_name = display_name
@@ -210,11 +211,7 @@ def build_inputs(tokenizer, settings, device):
 
 def assert_model_on_device(torch, model, inputs, device):
     first_param_device = next(model.parameters()).device
-    input_devices = {
-        name: str(value.device)
-        for name, value in inputs.items()
-        if torch.is_tensor(value)
-    }
+    input_devices = {name: str(value.device) for name, value in inputs.items() if torch.is_tensor(value)}
     print("target_device:", device, flush=True)
     print("first_param_device:", first_param_device, flush=True)
     print("input_devices:", input_devices, flush=True)
@@ -305,16 +302,12 @@ def main(argv=None):
     print("input_tokens:", input_len, flush=True)
     assert_model_on_device(torch, model, inputs, device)
 
-    gems_ctx = (
-        flag_gems_context(
-            flag_gems,
-            unused_ops=unused_ops,
-            record=True,
-            path=args.gems_log,
-        )
-        if args.use_gems
-        else nullcontext()
-    )
+    gems_ctx = (flag_gems_context(
+        flag_gems,
+        unused_ops=unused_ops,
+        record=True,
+        path=args.gems_log,
+    ) if args.use_gems else nullcontext())
 
     with torch.inference_mode(), gems_ctx:
         log("start prefill warmup")
@@ -348,11 +341,9 @@ def main(argv=None):
         for i in range(args.warmup):
             output_ids, sec = timed(torch, device, run_generate)
             new_tokens = output_ids.shape[-1] - input_len
-            log(
-                f"generate warmup {i + 1}/{args.warmup}: "
+            log(f"generate warmup {i + 1}/{args.warmup}: "
                 f"{sec:.3f} sec, new_tokens={new_tokens}, "
-                f"tokens/s={new_tokens / sec:.3f}"
-            )
+                f"tokens/s={new_tokens / sec:.3f}")
         log("finish generate warmup")
 
         log("start generate benchmark")
@@ -366,11 +357,9 @@ def main(argv=None):
             gen_times.append(sec)
             gen_tokens.append(new_tokens)
             last_output_ids = output_ids
-            log(
-                f"generate repeat {i + 1}/{args.repeat}: "
+            log(f"generate repeat {i + 1}/{args.repeat}: "
                 f"{sec:.3f} sec, new_tokens={new_tokens}, "
-                f"tokens/s={new_tokens / sec:.3f}"
-            )
+                f"tokens/s={new_tokens / sec:.3f}")
 
         log("finish generate benchmark")
 

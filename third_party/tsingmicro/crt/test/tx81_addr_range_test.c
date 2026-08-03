@@ -7,11 +7,11 @@
   do {                                                                         \
     uintptr_t exp_min_addr = (uintptr_t)((int64_t)(base) + (exp_min));         \
     uintptr_t exp_max_addr = (uintptr_t)((int64_t)(base) + (exp_max));         \
-    if ((got).min_addr != exp_min_addr || (got).max_addr != exp_max_addr) {      \
-      fprintf(stderr,                                                          \
-              "FAIL %s: min=%#lx max=%#lx expected [%#lx, %#lx)\n", (name),  \
-              (unsigned long)(got).min_addr, (unsigned long)(got).max_addr,  \
-              (unsigned long)exp_min_addr, (unsigned long)exp_max_addr);     \
+    if ((got).min_addr != exp_min_addr || (got).max_addr != exp_max_addr) {    \
+      fprintf(stderr, "FAIL %s: min=%#lx max=%#lx expected [%#lx, %#lx)\n",    \
+              (name), (unsigned long)(got).min_addr,                           \
+              (unsigned long)(got).max_addr, (unsigned long)exp_min_addr,      \
+              (unsigned long)exp_max_addr);                                    \
       return 1;                                                                \
     }                                                                          \
   } while (0)
@@ -92,8 +92,8 @@ static int test_rank_too_large(void) {
   char buf[64];
   int shape[9] = {1, 1, 1, 1, 1, 1, 1, 1, 1};
   int stride[9] = {1, 1, 1, 1, 1, 1, 1, 1, 1};
-  Tx81SrcAddrRange r = compute_rdma_src_addr_range(
-      buf, shape, stride, shape, stride, 9, 4, Fmt_FP32);
+  Tx81SrcAddrRange r = compute_rdma_src_addr_range(buf, shape, stride, shape,
+                                                   stride, 9, 4, Fmt_FP32);
   CHECK_RANGE("rank_too_large", r, buf, 0, 0);
   return 0;
 }
@@ -180,8 +180,8 @@ static int test_wdma_rank_too_large(void) {
   char buf[64];
   int shape[9] = {1, 1, 1, 1, 1, 1, 1, 1, 1};
   int stride[9] = {1, 1, 1, 1, 1, 1, 1, 1, 1};
-  Tx81DstAddrRange r = compute_wdma_dst_addr_range(
-      buf, shape, stride, shape, stride, 9, 4, Fmt_FP32);
+  Tx81DstAddrRange r = compute_wdma_dst_addr_range(buf, shape, stride, shape,
+                                                   stride, 9, 4, Fmt_FP32);
   CHECK_RANGE("wdma_rank_too_large", r, buf, 0, 0);
   return 0;
 }
@@ -203,11 +203,13 @@ int main(void) {
 =======
 static int test_counter_initial_state(void) {
   if (get_dma_oob_count() != 0) {
-    fprintf(stderr, "FAIL: oob counter not zero initially: %u\n", get_dma_oob_count());
+    fprintf(stderr, "FAIL: oob counter not zero initially: %u\n",
+            get_dma_oob_count());
     return 1;
   }
   if (get_dma_bad_magic_count() != 0) {
-    fprintf(stderr, "FAIL: bad_magic counter not zero initially: %u\n", get_dma_bad_magic_count());
+    fprintf(stderr, "FAIL: bad_magic counter not zero initially: %u\n",
+            get_dma_bad_magic_count());
     return 1;
   }
   return 0;

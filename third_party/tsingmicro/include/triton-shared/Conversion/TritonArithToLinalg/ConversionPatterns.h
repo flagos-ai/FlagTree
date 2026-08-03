@@ -2034,8 +2034,8 @@ public:
   LogicalResult
   matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (op.getSrcs().size() != 2 ||
-        (op.getSymbol() != "__nv_fdiv_rz" && op.getSymbol() != "__nv_ddiv_rz")) {
+    if (op.getSrcs().size() != 2 || (op.getSymbol() != "__nv_fdiv_rz" &&
+                                     op.getSymbol() != "__nv_ddiv_rz")) {
       return failure();
     }
 
@@ -2165,10 +2165,10 @@ public:
 };
 
 static void populateExternElementwiseOpToMLIROps(RewritePatternSet &patterns) {
-  patterns
-      .add<ExternElementwiseFiniteOpConverter, ExternElementwiseFmodOpConverter,
-           ExternElementwiseDivRzOpConverter, ExternElementwiseBinaryOpConverter,
-           ExternElementwiseUnaryOpConverter>(patterns.getContext());
+  patterns.add<
+      ExternElementwiseFiniteOpConverter, ExternElementwiseFmodOpConverter,
+      ExternElementwiseDivRzOpConverter, ExternElementwiseBinaryOpConverter,
+      ExternElementwiseUnaryOpConverter>(patterns.getContext());
 }
 
 struct HistogramOpConversion : public OpConversionPattern<triton::HistogramOp> {

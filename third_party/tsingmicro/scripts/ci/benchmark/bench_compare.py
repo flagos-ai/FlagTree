@@ -108,10 +108,20 @@ def compute_speedup(baseline_lat, optimized_lat):
 def write_detailed_csv(output_path, rows):
     """Write the detailed comparison CSV."""
     headers = [
-        "op_name(baseline)", "dtype(baseline)", "shape(baseline)", "gems_lat_ms(baseline)",
-        "op_name(optimized)", "dtype(optimized)", "shape(optimized)", "gems_lat_ms(optimized)",
-        "op_match", "dtype_match", "shape_match",
-        "case_speedup", "type_avg_speedup", "op_avg_speedup",
+        "op_name(baseline)",
+        "dtype(baseline)",
+        "shape(baseline)",
+        "gems_lat_ms(baseline)",
+        "op_name(optimized)",
+        "dtype(optimized)",
+        "shape(optimized)",
+        "gems_lat_ms(optimized)",
+        "op_match",
+        "dtype_match",
+        "shape_match",
+        "case_speedup",
+        "type_avg_speedup",
+        "op_avg_speedup",
     ]
 
     with open(output_path, 'w', encoding='utf-8', newline='') as f:
@@ -165,8 +175,8 @@ def write_detailed_csv(output_path, rows):
     print(f"Detailed CSV saved to: {output_path}")
 
 
-def write_summary_csv(output_path, op_summaries, rows, common_count, only_baseline, only_optimized,
-                      cat_high, cat_mid, cat_low, cat_na, top10, bottom10):
+def write_summary_csv(output_path, op_summaries, rows, common_count, only_baseline, only_optimized, cat_high, cat_mid,
+                      cat_low, cat_na, top10, bottom10):
     """Write the summary statistics CSV."""
 
     with open(output_path, 'w', encoding='utf-8', newline='') as f:
@@ -436,19 +446,16 @@ def main():
     cat_na = [s for s in op_summaries if s['avg_speedup'] is None]
 
     # Top & Bottom
-    top10 = sorted([s for s in op_summaries if s['avg_speedup'] is not None],
-                   key=lambda x: x['avg_speedup'], reverse=True)[:10]
-    bottom10 = sorted([s for s in op_summaries if s['avg_speedup'] is not None],
-                      key=lambda x: x['avg_speedup'])[:10]
+    top10 = sorted([s for s in op_summaries if s['avg_speedup'] is not None], key=lambda x: x['avg_speedup'],
+                   reverse=True)[:10]
+    bottom10 = sorted([s for s in op_summaries if s['avg_speedup'] is not None], key=lambda x: x['avg_speedup'])[:10]
 
     # ============================================================
     # Write Summary CSV
     # ============================================================
     print("Writing summary CSV file...")
-    write_summary_csv(summary_output, op_summaries, rows, common_count,
-                      only_baseline_keys, only_optimized_keys,
-                      cat_high, cat_mid, cat_low, cat_na,
-                      top10, bottom10)
+    write_summary_csv(summary_output, op_summaries, rows, common_count, only_baseline_keys, only_optimized_keys,
+                      cat_high, cat_mid, cat_low, cat_na, top10, bottom10)
 
     # ============================================================
     # Print terminal summary

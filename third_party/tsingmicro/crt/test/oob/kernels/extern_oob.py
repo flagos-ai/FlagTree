@@ -7,10 +7,9 @@ import triton.language as tl
 
 
 @triton.jit
-def asin_kernel_oob(x_ptr, y_ptr, n_elements,
-                     inject_pid_shift: tl.constexpr,  # 0=normal, N=shift pid by +N
-                     inject_mask_mode: tl.constexpr,   # 0=normal, 1=no mask
-                     BLOCK_SIZE: tl.constexpr):
+def asin_kernel_oob(x_ptr, y_ptr, n_elements, inject_pid_shift: tl.constexpr,  # 0=normal, N=shift pid by +N
+                    inject_mask_mode: tl.constexpr,  # 0=normal, 1=no mask
+                    BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(axis=0) + inject_pid_shift
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)

@@ -37,10 +37,9 @@ def make_autotune_configs():
             for block_k in AUTOTUNE_BLOCK_K:
                 for sub_n in AUTOTUNE_SUB_N:
                     configs.append(
-                        triton.Config(kwargs={"BLOCK_M": block_m, "BLOCK_N": block_n,
-                                              "BLOCK_K": block_k, "SUB_N": sub_n},
-                                      num_stages=1, num_warps=32)
-                    )
+                        triton.Config(
+                            kwargs={"BLOCK_M": block_m, "BLOCK_N": block_n, "BLOCK_K": block_k, "SUB_N": sub_n},
+                            num_stages=1, num_warps=32))
     return configs
 
 
@@ -51,10 +50,9 @@ def make_m_autotune_configs():
             for block_k in AUTOTUNE_BLOCK_K:
                 for sub_m in AUTOTUNE_SUB_M:
                     configs.append(
-                        triton.Config(kwargs={"BLOCK_M": block_m, "BLOCK_N": block_n,
-                                              "BLOCK_K": block_k, "SUB_M": sub_m},
-                                      num_stages=1, num_warps=32)
-                    )
+                        triton.Config(
+                            kwargs={"BLOCK_M": block_m, "BLOCK_N": block_n, "BLOCK_K": block_k, "SUB_M": sub_m},
+                            num_stages=1, num_warps=32))
     return configs
 
 
@@ -223,7 +221,8 @@ def make_ring_mesh(physical_relation, shape=None):
 
 
 RING_MESHES = {
-    spec["mode"]: make_ring_mesh(
+    spec["mode"]:
+    make_ring_mesh(
         spec["physical_relation"],
         None if spec["ring_num"] == 1 else (spec["ring_num"], TILE_NUM // spec["ring_num"]),
     )
@@ -542,6 +541,7 @@ def bench(fn):
 
 
 def bench_flag_gems_mm(a, b):
+
     def fn():
         return run_flag_gems_mm(a, b)
 
@@ -593,9 +593,7 @@ def run_ring_mode(mode):
     else:
         c = torch.empty((M, N), device=device, dtype=c_dtype)
 
-    physical_ids, ring_index_lut, ring_id_lut = build_ring_luts(
-        physical_relation, ring_num, ring_size, device
-    )
+    physical_ids, ring_index_lut, ring_id_lut = build_ring_luts(physical_relation, ring_num, ring_size, device)
 
     grid = (TILE_NUM, )
     print(
@@ -672,16 +670,14 @@ def run_ring_mode(mode):
     else:
         best_config = get_last_best_config(kernel)
 
-    print(
-        f"PASS: M={M}, N={N}, K={K}, "
-        f"RING_NUM={ring_num}, RING_SIZE={ring_size}, "
-        f"TILE_NUM={TILE_NUM}, mode={mode}, "
-        f"algorithm={algorithm}, "
-        f"best_config={best_config}, "
-        f"latency_ms={latency:.4f}, "
-        f"flag_gems_latency_ms={flag_gems_latency:.4f}, "
-        f"max_abs_diff={max_abs}"
-    )
+    print(f"PASS: M={M}, N={N}, K={K}, "
+          f"RING_NUM={ring_num}, RING_SIZE={ring_size}, "
+          f"TILE_NUM={TILE_NUM}, mode={mode}, "
+          f"algorithm={algorithm}, "
+          f"best_config={best_config}, "
+          f"latency_ms={latency:.4f}, "
+          f"flag_gems_latency_ms={flag_gems_latency:.4f}, "
+          f"max_abs_diff={max_abs}")
     return latency
 
 

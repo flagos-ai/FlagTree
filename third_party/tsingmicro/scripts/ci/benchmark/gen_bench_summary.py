@@ -14,15 +14,14 @@ import re
 import sys
 from typing import Dict, List, Optional
 
-
 # Column-name → record-key mapping (substring match on header text)
 _COL_MAP = [
     ("Torch Latency", "torch_lat"),
-    ("Gems Latency",  "gems_lat"),
-    ("Gems Speedup",  "speedup"),
-    ("Kernel",        "kernel_time"),
-    ("AP",            "ap_time"),
-    ("TFLOPS",        "tflops"),
+    ("Gems Latency", "gems_lat"),
+    ("Gems Speedup", "speedup"),
+    ("Kernel", "kernel_time"),
+    ("AP", "ap_time"),
+    ("TFLOPS", "tflops"),
 ]
 
 
@@ -149,16 +148,34 @@ def parse_single_log(filepath: str) -> List[dict]:
     if all_failed or not has_summary:
         # Collect operator names and dtypes from Operator: headers only
         for line in lines:
-            op_match = re.match(
-                r'Operator:\s+(.+?)\s{2,}Performance Test \(dtype=([^,]+),',
-                line
-            )
+            op_match = re.match(r'Operator:\s+(.+?)\s{2,}Performance Test \(dtype=([^,]+),', line)
             if op_match:
                 log_op = op_match.group(1)
                 dtype = op_match.group(2).strip()
-                records.append(dict(
+                records.append(
+                    dict(
+                        op_name=file_op_name,
+                        dtype=dtype,
+                        shape="",
+                        card=card,
+                        mode="",
+                        status="FAILED",
+                        test_func=test_func,
+                        _file=basename,
+                        _raw="",
+                        torch_lat=None,
+                        gems_lat=None,
+                        speedup=None,
+                        kernel_time=None,
+                        ap_time=None,
+                        tflops=None,
+                    ))
+        if not records:
+            # No Operator: headers found either — crash before any output
+            records.append(
+                dict(
                     op_name=file_op_name,
-                    dtype=dtype,
+                    dtype="",
                     shape="",
                     card=card,
                     mode="",
@@ -166,32 +183,18 @@ def parse_single_log(filepath: str) -> List[dict]:
                     test_func=test_func,
                     _file=basename,
                     _raw="",
-                    torch_lat=None, gems_lat=None, speedup=None,
-                    kernel_time=None, ap_time=None, tflops=None,
+                    torch_lat=None,
+                    gems_lat=None,
+                    speedup=None,
+                    kernel_time=None,
+                    ap_time=None,
+                    tflops=None,
                 ))
-        if not records:
-            # No Operator: headers found either — crash before any output
-            records.append(dict(
-                op_name=file_op_name,
-                dtype="",
-                shape="",
-                card=card,
-                mode="",
-                status="FAILED",
-                test_func=test_func,
-                _file=basename,
-                _raw="",
-                torch_lat=None, gems_lat=None, speedup=None,
-                kernel_time=None, ap_time=None, tflops=None,
-            ))
         return records
     # --- end pre-check ---
 
     for line in lines:
-        op_match = re.match(
-            r'Operator:\s+(.+?)\s{2,}Performance Test \(dtype=([^,]+),',
-            line
-        )
+        op_match = re.match(r'Operator:\s+(.+?)\s{2,}Performance Test \(dtype=([^,]+),', line)
         if op_match:
             current_op = op_match.group(1)
             current_dtype = op_match.group(2).strip()
@@ -252,9 +255,9 @@ def parse_single_log(filepath: str) -> List[dict]:
                 shape=shape,
                 card=card,
                 mode=mode,
-                status=parts[0],       # SUCCESS or FAILED
-                test_func=test_func,    # pytest node ID
-                _file=basename,        # source log file
+                status=parts[0],  # SUCCESS or FAILED
+                test_func=test_func,  # pytest node ID
+                _file=basename,  # source log file
                 _raw=line.strip() if shape == "unknown" else "",
                 torch_lat=_val("torch_lat"),
                 gems_lat=_val("gems_lat"),
@@ -267,13 +270,12 @@ def parse_single_log(filepath: str) -> List[dict]:
 
     # Warn if we saw Operator: headers but produced 0 records (likely format change)
     if seen_operators and not records:
-        print(f"[WARN] {os.path.basename(filepath)}: "
-              f"Operator(s) {sorted(seen_operators)} found but 0 records parsed — "
-              f"unexpected data format, parser may need updating", file=sys.stderr)
+        print(
+            f"[WARN] {os.path.basename(filepath)}: "
+            f"Operator(s) {sorted(seen_operators)} found but 0 records parsed — "
+            f"unexpected data format, parser may need updating", file=sys.stderr)
 
     return records
-
-
 
 
 def main():
@@ -352,16 +354,15 @@ def main():
     def _has_data(key):
         return any(r.get(key) is not None for r in all_records)
 
-    _col_defs = [
-        ("torch_lat",    "torch_lat(ms)"),   # only if torch baseline ran
-        ("gems_lat",     "gems_lat(ms)"),    # always present
-        ("speedup",      "speedup"),         # only if torch baseline ran
-        ("kernel_time",  "kernel(ms)"),      # show_all only
-        ("ap_time",      "ap(ms)"),          # show_all only
-        ("tflops",       "tflops"),          # may or may not be present
-    ]
+    _col_defs = [("torch_lat", "torch_lat(ms)"),  # only if torch baseline ran
+                 ("gems_lat", "gems_lat(ms)"),  # always present
+                 ("speedup", "speedup"),  # only if torch baseline ran
+                 ("kernel_time", "kernel(ms)"),  # show_all only
+                 ("ap_time", "ap(ms)"),  # show_all only
+                 ("tflops", "tflops"),  # may or may not be present
+                 ]
     cols_display = ["op_name", "dtype", "shape", "test_func", "card", "status"]
-    cols_key     = ["op_name", "dtype", "shape", "test_func", "card", "status"]
+    cols_key = ["op_name", "dtype", "shape", "test_func", "card", "status"]
     for key, display in _col_defs:
         if _has_data(key):
             cols_display.append(display)
@@ -385,8 +386,7 @@ def main():
     # --- final summary ---
     total_files = len(log_files)
     # Count test_func per log file, no global dedup
-    func_count = len(set((r.get('_file', ''), r.get('test_func', ''))
-                         for r in all_records if r.get('test_func')))
+    func_count = len(set((r.get('_file', ''), r.get('test_func', '')) for r in all_records if r.get('test_func')))
 
     # Operator-level failures: operators whose entire log failed (no table data)
     op_failed_set = set(r['op_name'] for r in all_records if r.get('status') == 'FAILED')

@@ -16,7 +16,6 @@ import argparse
 import inspect
 from contextlib import nullcontext
 
-
 USE_GEMS = True
 WARMUP_RUNS = 1
 INFER_RUNS = 1
@@ -36,6 +35,7 @@ DEMO_STAGES = (
 
 
 class ModelSettings:
+
     def __init__(self, key, display_name, model_dir, prompt, chat_template_kwargs):
         self.key = key
         self.display_name = display_name
@@ -176,11 +176,7 @@ def flag_gems_context(flag_gems, enabled):
 
 def print_device_info(torch, model, inputs, device):
     first_param_device = next(model.parameters()).device
-    input_devices = {
-        name: str(value.device)
-        for name, value in inputs.items()
-        if torch.is_tensor(value)
-    }
+    input_devices = {name: str(value.device) for name, value in inputs.items() if torch.is_tensor(value)}
     print("target_device:", device, flush=True)
     print("first_param_device:", first_param_device, flush=True)
     print("input_devices:", input_devices, flush=True)
@@ -302,4 +298,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-
