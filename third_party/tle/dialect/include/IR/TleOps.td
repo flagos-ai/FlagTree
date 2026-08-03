@@ -397,32 +397,30 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
   let hasVerifier = 1;
 }
 
-def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure, AttrSizedOperandSegments]> {
+def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
+    AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+    ConditionallySpeculatable
+]> {
   let arguments = (ins
     Optional<Tle_LocalPointerResultType>:$src,
+    Optional<I64>:$dst_mem,
+    Optional<I64>:$src_mem,
+    Optional<I64>:$comm,
     TT_Int:$shard_id,
     StrAttr:$space,
-    Optional<TT_IntLike>:$offset
+    Optional<TT_IntLike>:$offset,
+    Optional<I64>:$src_offset,
+    Optional<I64>:$nelems,
+    Optional<I32>:$net_idx,
+    OptionalAttr<I64Attr>:$elem_bytes,
+    OptionalAttr<I32Attr>:$put_coop_kind
   );
 
-  let results = (outs Tle_LocalPointerResultType:$result);
-  let hasVerifier = 1;
-}
-
-def Tle_NodePutOp
-    : Tle_Op<"node_put", [MemoryEffects<[MemRead, MemWrite]>]> {
-
-  let arguments = (ins
-    I64:$dst_mem,
-    I64:$src_mem,
-    I64:$comm,
-    I32:$peer,
-    I64:$dst_offset,
-    I64:$src_offset,
-    I64:$nelems,
-    I64Attr:$elem_bytes,
-    I32Attr:$put_coop_kind
-  );
+  let results = (outs Optional<Tle_LocalPointerResultType>:$result);
+  let extraClassDeclaration = [{
+    Speculation::Speculatability getSpeculatability();
+  }];
   let hasVerifier = 1;
 }
 

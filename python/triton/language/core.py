@@ -41,6 +41,7 @@ from .._utils import TRITON_MAX_TENSOR_NUMEL, validate_block_shape, get_primitiv
 T = TypeVar('T')
 
 TRITON_BUILTIN = "__triton_builtin__"
+_STORE_VALUE_UNSET = object()
 
 PropagateNan = ir.PROPAGATE_NAN
 
@@ -2177,6 +2178,11 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     :param flagtree_hints: flagtree hints
     :type flagtree_hints: str, optional
     """
+    custom_load = getattr(pointer, "__triton_load__", None)
+    if custom_load is not None:
+        return custom_load(mask, other, boundary_check, padding_option, cache_modifier, eviction_policy, volatile,
+                           flagtree_hints, _semantic=_semantic)
+
     # `mask` and `other` can be constexpr
     mask = _unwrap_if_constexpr(mask)
     other = _unwrap_if_constexpr(other)
@@ -2209,7 +2215,7 @@ def store_tensor_descriptor(desc: tensor_descriptor_base, offsets: Sequence[cons
 
 @_tensor_member_fn
 @builtin
-def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None):
+def store(pointer, value=_STORE_VALUE_UNSET, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None):
     """
     Store a tensor of data into memory locations defined by `pointer`.
 
@@ -2233,6 +2239,9 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
 
     `value` is implicitly broadcast to `pointer.shape` and typecast to `pointer.dtype.element_ty`.
 
+    Experimental store-only destinations may omit `value`; ordinary pointers
+    still require it.
+
     :param pointer: The memory location where the elements of `value` are stored
     :type pointer: `triton.PointerType`, or block of `dtype=triton.PointerType`
     :param value: The tensor of elements to be stored
@@ -2248,13 +2257,23 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
     :param eviction_policy: changes eviction policy in NVIDIA PTX
     :type eviction_policy: str, optional, should be one of {"", "evict_first", "evict_last"}
     """
-    # `value` can be constexpr
-    value = _semantic.to_tensor(value)
     mask = _unwrap_if_constexpr(mask)
-    if mask is not None:
-        mask = _semantic.to_tensor(mask)
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
+
+    # Experimental pointer-like destinations can intercept stores before
+    # `value` is validated or converted to a tensor.
+    custom_store = getattr(pointer, "__triton_store__", None)
+    if custom_store is not None:
+        return custom_store(value, mask, boundary_check, cache_modifier, eviction_policy, _semantic=_semantic)
+
+    if value is _STORE_VALUE_UNSET:
+        raise TypeError("tl.store() missing required argument 'value' for an ordinary pointer")
+
+    # `value` can be constexpr
+    value = _semantic.to_tensor(value)
+    if mask is not None:
+        mask = _semantic.to_tensor(mask)
     return _semantic.store(pointer, value, mask, boundary_check, cache_modifier, eviction_policy)
 
 

@@ -21,6 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "tle/dialect/include/IR/Dialect.h"
@@ -36,8 +37,21 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include <iostream>
+#include <optional>
 
 namespace mlir::triton::tle {
+namespace {
+std::optional<int64_t> getConstantIntValue(Value value) {
+  auto constant = value.getDefiningOp<arith::ConstantOp>();
+  if (!constant)
+    return std::nullopt;
+  auto integer = dyn_cast<IntegerAttr>(constant.getValue());
+  if (!integer)
+    return std::nullopt;
+  return integer.getInt();
+}
+} // namespace
+
 namespace RemotePointers {
 llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result) {
   if (!src)
@@ -49,6 +63,69 @@ llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result) {
       return failure();
     return success();
   }
+  return success();
+}
+
+llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
+  if (op.getSrc())
+    return op.emitOpError()
+           << "node space does not accept a pointer source operand";
+  if (op.getResult())
+    return op.emitOpError() << "node space must not produce a result";
+
+  auto requireOperand = [&](Value value, StringRef name) -> LogicalResult {
+    if (!value)
+      return op.emitOpError()
+             << "node space requires " << name << " operand";
+    return success();
+  };
+  if (failed(requireOperand(op.getDstMem(), "dst_mem")) ||
+      failed(requireOperand(op.getSrcMem(), "src_mem")) ||
+      failed(requireOperand(op.getComm(), "comm")) ||
+      failed(requireOperand(op.getOffset(), "offset")) ||
+      failed(requireOperand(op.getSrcOffset(), "src_offset")) ||
+      failed(requireOperand(op.getNelems(), "nelems")) ||
+      failed(requireOperand(op.getNetIdx(), "net_idx")))
+    return failure();
+
+  auto elemBytesAttr = op->getAttrOfType<IntegerAttr>("elem_bytes");
+  if (!elemBytesAttr || elemBytesAttr.getInt() <= 0)
+    return op.emitOpError() << "expects elem_bytes to be > 0";
+
+  auto putCoopKindAttr = op->getAttrOfType<IntegerAttr>("put_coop_kind");
+  if (!putCoopKindAttr || putCoopKindAttr.getInt() < 0 ||
+      putCoopKindAttr.getInt() > 2)
+    return op.emitOpError()
+           << "expects put_coop_kind to be THREAD(0), WARP(1), or BLOCK(2)";
+
+  auto verifyNonNegativeConstant =
+      [&](Value value, StringRef name) -> LogicalResult {
+    if (std::optional<int64_t> constant = getConstantIntValue(value);
+        constant && *constant < 0)
+      return op.emitOpError()
+             << "expects constant " << name << " to be >= 0";
+    return success();
+  };
+
+  if (failed(verifyNonNegativeConstant(op.getShardId(), "peer")) ||
+      failed(verifyNonNegativeConstant(op.getOffset(), "dst_offset")) ||
+      failed(verifyNonNegativeConstant(op.getSrcOffset(), "src_offset")) ||
+      failed(verifyNonNegativeConstant(op.getNetIdx(), "net_idx")))
+    return failure();
+
+  if (std::optional<int64_t> nelems = getConstantIntValue(op.getNelems());
+      nelems && *nelems <= 0)
+    return op.emitOpError() << "expects constant nelems to be > 0";
+
+  Type offsetTy = op.getOffset().getType();
+  if (auto tensorTy = dyn_cast<RankedTensorType>(offsetTy)) {
+    if (!tensorTy.getShape().empty())
+      return op.emitOpError() << "expects offset to be a scalar";
+    offsetTy = tensorTy.getElementType();
+  }
+  if (!offsetTy.isSignlessInteger(64))
+    return op.emitOpError() << "expects offset to be i64";
+
   return success();
 }
 } // namespace RemotePointers

@@ -462,7 +462,8 @@ collectConsumerEncodingVotes(Value root,
         continue;
       }
       if (auto remote = dyn_cast<triton::tle::RemotePointersOp>(owner)) {
-        enqueue(remote.getResult());
+        if (Value result = remote.getResult())
+          enqueue(result);
         continue;
       }
     }
@@ -847,6 +848,8 @@ class SelectEncodingsPass
               continue;
             }
             if (auto remote = dyn_cast<triton::tle::RemotePointersOp>(owner)) {
+              if (!remote.getResult())
+                continue;
               auto remoteResultTy =
                   dyn_cast<RankedTensorType>(remote.getResult().getType());
               if (!remoteResultTy)
@@ -903,6 +906,8 @@ class SelectEncodingsPass
     // passes can reason about remote operands without dialect-specific
     // visitors.
     module.walk([&](triton::tle::RemotePointersOp op) {
+      if (op.getSpace() == "node" || !op.getResult() || !op.getSrc())
+        return;
       module->setAttr(kTleEnableEncodingRematerializationAttr,
                       UnitAttr::get(module.getContext()));
 

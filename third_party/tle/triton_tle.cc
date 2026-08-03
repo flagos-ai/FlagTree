@@ -650,40 +650,46 @@ void init_triton_tle_ir(py::module &&m) {
           py::arg("group_mask"))
       .def(
           "create_remote_pointers",
-          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> &src,
-             Value shardId, const std::string &space,
-             std::optional<Value> &offset) -> OpState {
+          [](TritonOpBuilder &self, std::optional<Type> resultTy,
+             std::optional<Value> src, Value shardId,
+             const std::string &space, std::optional<Value> offset,
+             std::optional<Value> dstMem, std::optional<Value> srcMem,
+             std::optional<Value> comm, std::optional<Value> srcOffset,
+             std::optional<Value> nelems, std::optional<Value> netIdx,
+             std::optional<int64_t> elemBytes,
+             std::optional<int32_t> putCoopKind) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
-                "cluster", "device"};
+                "cluster", "device", "node"};
             if (valid.find(space) == valid.end()) {
               throw std::invalid_argument(
                   "Invalid space: " + space +
-                  ". Expected one of: cluster, device.");
+                  ". Expected one of: cluster, device, node.");
             }
-            auto space_attr = builder.getStringAttr(space);
 
+            auto spaceAttr = builder.getStringAttr(space);
+            IntegerAttr elemBytesAttr =
+                elemBytes ? builder.getI64IntegerAttr(*elemBytes)
+                          : IntegerAttr();
+            IntegerAttr putCoopKindAttr =
+                putCoopKind ? builder.getI32IntegerAttr(*putCoopKind)
+                            : IntegerAttr();
             return self.create<tle::RemotePointersOp>(
-                resultTy, src.value_or(Value()), shardId, space_attr,
-                offset.value_or(Value()));
+                resultTy.value_or(Type()), src.value_or(Value()),
+                dstMem.value_or(Value()), srcMem.value_or(Value()),
+                comm.value_or(Value()), shardId, spaceAttr,
+                offset.value_or(Value()), srcOffset.value_or(Value()),
+                nelems.value_or(Value()), netIdx.value_or(Value()),
+                elemBytesAttr, putCoopKindAttr);
           },
-          py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
-          py::arg("space"), py::arg("offset") = py::none())
-      .def(
-          "create_node_put",
-          [](TritonOpBuilder &self, Value dstMem, Value srcMem, Value comm,
-             Value peer, Value dstOffset, Value srcOffset, Value nelems,
-             int64_t elemBytes, int32_t putCoopKind) -> void {
-            auto &builder = self.getBuilder();
-            self.create<tle::NodePutOp>(
-                dstMem, srcMem, comm, peer, dstOffset, srcOffset, nelems,
-                builder.getI64IntegerAttr(elemBytes),
-                builder.getI32IntegerAttr(putCoopKind));
-          },
-          py::arg("dst_mem"), py::arg("src_mem"), py::arg("comm"),
-          py::arg("peer"), py::arg("dst_offset"), py::arg("src_offset"),
-          py::arg("nelems"), py::arg("elem_bytes"),
-          py::arg("put_coop_kind"))
+          py::arg("resultTy"), py::arg("src") = py::none(),
+          py::arg("shardId"), py::arg("space"),
+          py::arg("offset") = py::none(), py::arg("dst_mem") = py::none(),
+          py::arg("src_mem") = py::none(), py::arg("comm") = py::none(),
+          py::arg("src_offset") = py::none(),
+          py::arg("nelems") = py::none(), py::arg("net_idx") = py::none(),
+          py::arg("elem_bytes") = py::none(),
+          py::arg("put_coop_kind") = py::none())
       .def("get_device_id",
            [](TritonOpBuilder &self, Type resultTy,
               std::optional<Value> src) -> Value {
