@@ -56,6 +56,10 @@ jobs:
         with:
           backend: iluvatar
 
+      - name: Clean FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: ./.github/actions/clean-flagtree-env
+
       - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         timeout-minutes: 20
