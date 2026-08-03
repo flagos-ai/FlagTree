@@ -93,6 +93,12 @@ class MemoryOrder(str, Enum):
     ACQ_REL = "acqrel"
 
 
+class TeamKind(str, Enum):
+    INTRA = "intra"
+    INTER = "inter"
+    WORLD = "world"
+
+
 class GroupKind(str, Enum):
     THREAD = "thread"
     WARP = "warp"
@@ -100,6 +106,14 @@ class GroupKind(str, Enum):
     TILE_SPAN = "tile_span"
     LANES = "lanes"
     GRID = "grid"
+
+
+@tl.builtin
+def put_mem(device_dptr, peer, value, teamKind=TeamKind.INTRA, coopKind=GroupKind.BLOCK, putType='INC', _semantic=None):
+    builder = _semantic.builder
+    builder.create_put_mem(comm=_parse_src_arg(builder, device_dptr, 1), peer=_parse_src_arg(builder, peer, 1),
+                           value=_parse_src_arg(builder, value, 1), team_kind=_parse_device_barrier_args(teamKind),
+                           coop_kind=_parse_device_barrier_args(coopKind), put_type=_parse_device_barrier_args(putType))
 
 
 @dataclass
@@ -672,7 +686,7 @@ def shard_id(
 
 def _parse_device_barrier_args(argType) -> str:
     argType = tl._unwrap_if_constexpr(argType)
-    argTypes = (BarrierKind, GroupKind, MemoryOrder)
+    argTypes = (BarrierKind, GroupKind, MemoryOrder, TeamKind)
     if isinstance(argType, argTypes):
         return argType.value
     else:

@@ -57,6 +57,7 @@ from .distributed import (
     _resolve_launch_axis,
     shard_id,
     sharding,
+    put_mem,
 )
 from . import communication
 from .communication import get_mem_pool, create_dist_tensor, cleanup_communicator
@@ -106,6 +107,7 @@ __all__ = [
     "reshard",
     "remote",
     "shard_id",
+    "put_mem",
     "distributed_barrier",
     "distributed_dot",
     "distributed",

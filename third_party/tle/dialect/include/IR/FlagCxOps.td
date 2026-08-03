@@ -37,6 +37,7 @@ class Tle_Op<string mnemonic, list<Trait> traits = []>
          !listconcat(traits, [VerifyTensorLayoutsTrait])> {}
 
 def Tle_LocalPointerResultType : AnyTypeOf<[TT_Tensor, TT_Ptr, TT_Int]>;
+def Tle_PutValueType : AnyTypeOf<[TT_Tensor, TT_Ptr, TT_Int]>;
 
 def Tle_GetLocalRankOp : Tle_Op<"get local rank"> {
   let summary = "Get local rank";
@@ -78,4 +79,38 @@ def Tle_DeviceIntraBarrierOp : Tle_Op<"device intra barrier"> {
   );
 
   let hasVerifier = 1;
+}
+
+def Tle_PutMemOrValueOp : Tle_Op<"put_mem_op"> {
+  let summary = "Transfer a value to a remote processing element.";
+
+  let description = [{
+    The `tle.putmem` operation transfers a value from the local processing
+    element to a remote processing element through the specified communication
+    context.
+
+    The destination processing element is specified by `peer`. The communication
+    resources are provided by `net` and `comm`. Optional attributes `team_kind`
+    and `coop_kind` control the communication scope and cooperative execution
+    mode. The optional `put_type` attribute specifies the memory transfer
+    semantics (for example, signal or counter updates).
+
+    This operation produces no result and is lowered to the target runtime's
+    remote memory transfer primitive.
+  }];
+
+  let arguments = (ins
+    Tle_PutValueType:$comm,
+    OptionalAttr<StrAttr>:$team_kind,
+    TT_Int:$peer,
+    OptionalAttr<StrAttr>:$coop_kind,
+    Tle_PutValueType:$value,
+    OptionalAttr<StrAttr>:$put_type,
+    Optional<Tle_PutValueType>:$dst,
+    Optional<TT_Int>:$dst_offset
+  );
+  let traits = [
+    AttrSizedOperandSegments
+  ];
+
 }

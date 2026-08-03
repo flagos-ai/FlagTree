@@ -31,6 +31,10 @@
 namespace mlir::triton::tle {
 using namespace mlir;
 
+size_t getCoopKindValue(StringRef kind);
+
+size_t getTeamKindValue(StringRef kind);
+
 LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
                                 ConversionPatternRewriter &rewriter,
                                 Value memPtrInt);
@@ -43,5 +47,10 @@ LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
                                 ConversionPatternRewriter &rewriter, Value comm,
                                 size_t barrier_index, size_t coopKind,
                                 size_t order, llvm::StringRef barrierType);
+LLVM::CallOp getPutsFuncCall(mlir::Location loc,
+                             ConversionPatternRewriter &rewriter, Value comm,
+                             size_t team_kind, Value peer, Value dst,
+                             size_t dstOffset, Value value, size_t coopKind,
+                             llvm::StringRef putType);
 
 } // namespace mlir::triton::tle
