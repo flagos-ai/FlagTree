@@ -5,6 +5,7 @@
 #include "ir.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Pass/PassManager.h"
 #include "passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -170,6 +171,34 @@ void init_triton_musa_tle_ir(py::module m) {
                indices.push_back(py::cast<mlir::Value>(arg));
              return self.create<mlir::triton::musa_tle::LocalPointersOp>(
                  resultTy, memDesc, indices);
+           })
+      .def("create_memdesc_index",
+           [](TritonOpBuilder &self, mlir::Type resultType, mlir::Value src,
+              mlir::Value index) -> mlir::Value {
+             auto srcType = mlir::dyn_cast<ttg::MemDescType>(src.getType());
+             if (!srcType || srcType.getShape().empty())
+               throw py::value_error(
+                   "mthreads TLE memdesc index requires a memdesc source");
+
+             auto indexType =
+                 mlir::dyn_cast<mlir::IntegerType>(index.getType());
+             if (!indexType || !indexType.isInteger(32))
+               throw py::value_error(
+                   "mthreads TLE memdesc index requires an int32 index");
+
+             llvm::APInt constantIndex;
+             if (mlir::matchPattern(index,
+                                    mlir::m_ConstantInt(&constantIndex))) {
+               int64_t slot = constantIndex.getSExtValue();
+               int64_t leadingDimension = srcType.getShape().front();
+               if (slot < 0 || slot >= leadingDimension)
+                 throw py::value_error("mthreads TLE memdesc index " +
+                                       std::to_string(slot) +
+                                       " out of bounds for leading dimension " +
+                                       std::to_string(leadingDimension));
+             }
+
+             return self.create<ttg::MemDescIndexOp>(resultType, src, index);
            })
       .def("create_exclusive_cumsum",
            [](TritonOpBuilder &self, mlir::Type exclusiveTy, mlir::Type totalTy,
