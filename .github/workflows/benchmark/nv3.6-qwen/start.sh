@@ -25,8 +25,10 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source ~/env.sh
 source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
-python3 -m pip show flag_gems |grep Version
-python3 -m pip show flagtree |grep Version
+echo "[INFO] vLLM $(python3 -m pip show vllm |grep Version)"
+echo "[INFO] Torch $(python3 -m pip show torch |grep Version)"
+echo "[INFO] FlagGems $(python3 -m pip show flag_gems |grep Version)"
+echo "[INFO] FlagTree $(python3 -m pip show flagtree |grep Version)"
 
 PID_FILE="pid.txt"
 if [[ -f "$PID_FILE" ]]; then
@@ -77,7 +79,7 @@ for ((i=1; i<=max_retry; i++)); do
         echo "[FATAL] Process $pid does not exist, service startup failed!"
         exit 1
     fi
-    if bash ping.sh 2>/dev/null; then
+    if bash ${SCRIPT_DIR}/ping.sh 2>/dev/null; then
         echo ""
         echo "[INFO] Service startup successfully."
         break

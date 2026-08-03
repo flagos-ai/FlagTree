@@ -137,7 +137,7 @@ def run_single_test(round_num, input_len, output_len, concurrency):
         return metrics
     except subprocess.CalledProcessError as e:
         print(f"  错误: 第 {round_num} 轮执行失败")
-        print(f"  错误输出: {e.stderr[:200]}")
+        print(f"  错误输出: {e.stderr[:20000]}")
         return None
     except FileNotFoundError:
         print("  错误: vllm 命令未找到，请确认 vllm 已安装且在 PATH 中")
