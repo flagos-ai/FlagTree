@@ -10,6 +10,7 @@ import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton._flagtree_backend import FLAGTREE_BACKEND
 
 
 def _is_enflame_backend():
@@ -204,6 +205,7 @@ def test_tle_cumsum_exclusive_and_total(dtype, n, block, reverse, num_warps):
 
 @pytest.mark.skipif(_is_enflame_backend(), reason="PTX-specific regression guard not applicable on Enflame GCU")
 @pytest.mark.skipif(_is_hcu_backend(), reason="PTX-specific regression guard not applicable on HCU")
+@pytest.mark.skipif(FLAGTREE_BACKEND == "ppu", reason="PTX-specific regression guard not applicable on PPU")
 def test_tle_cumsum_ptx_fastpath_regression_guard():
     block = 512
     x = torch.randint(-1024, 1024, (block, ), device="cuda", dtype=torch.int32)

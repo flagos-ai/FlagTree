@@ -84,6 +84,11 @@ def is_sm12x():
     return is_cuda() and torch.cuda.get_device_capability()[0] == 12
 
 
+def is_ppu():
+    target = get_current_target()
+    return False if target is None else target.backend == "ppu"
+
+
 def is_hip():
     target = get_current_target()
     return False if target is None else target.backend == "hip"

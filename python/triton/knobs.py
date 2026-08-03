@@ -653,6 +653,14 @@ class musa_knobs(base_knobs):
     libdevice_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBDEVICE_PATH")
 
 
+# flagtree ppu
+class ppu_knobs(base_knobs):
+    disable_ppu_llc_opt: env_bool = env_bool("DISABLE_PPU_LLC_OPT")
+    ppu_llc_options: env_opt_str = env_opt_str("PPU_LLC_OPTIONS")
+    dump_compile_log: env_bool = env_bool("TRITON_DUMP_COMPILE_LOG")
+    libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
+
+
 class proton_knobs(base_knobs):
     disable: env_bool = env_bool("TRITON_PROTON_DISABLE", False)
     cupti_lib_dir: env_str = env_str(
@@ -692,6 +700,7 @@ amd = amd_knobs()
 hcu = hcu_knobs()  # flagtree hcu
 metax = metax_knobs()  # flagtree metax
 musa = musa_knobs()  # flagtree mthreads
+ppu = ppu_knobs()  # flagtree ppu
 proton = proton_knobs()
 
 
