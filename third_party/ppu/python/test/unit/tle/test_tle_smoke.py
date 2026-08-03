@@ -142,10 +142,10 @@ def _grep(text: str, needle: str) -> str:
 
 
 # --- Rejection of unsupported TLE features on PPU --------------------------
-# These verify the capability registry in
-# triton.experimental.tle._capabilities (populated by
-# third_party/ppu/backend/__init__.py) raises a clear Python error before MLIR
-# legalization would otherwise fail with a cryptic "failed to legalize" message.
+# These verify that PPUBackend.make_ttir rejects TLE features PPU cannot lower
+# (see PPU_UNSUPPORTED_TLE_OPS in third_party/ppu/backend/compiler.py) with a
+# clear Python error, instead of MLIR later failing with a cryptic
+# "failed to legalize" message.
 
 import triton.experimental.tle.language as _tle_lang
 
@@ -174,10 +174,20 @@ def _kernel_distributed_barrier():
 
 
 @triton.jit
+def _ws_default_partition():
+    pass
+
+
+@triton.jit
+def _ws_worker_partition():
+    pass
+
+
+@triton.jit
 def _kernel_warp_specialize():
-    # NV-style warp_specialize partition list; on PPU this must be rejected
-    # at the Python frontend before any IR is emitted.
-    _tle_lang.gpu.warp_specialize(((), ), (1, ), (32, ))
+    # Well-formed NV-style warp_specialize so the op is actually emitted; PPU
+    # then rejects it when the backend checks the TTIR.
+    _tle_lang.gpu.warp_specialize([(_ws_default_partition, ()), (_ws_worker_partition, ())], [4], [168])
 
 
 def _compile_2arg(kernel, sig, const):

@@ -40,6 +40,35 @@ import subprocess
 from pathlib import Path
 
 
+# TLE ops the PPU backend has no lowering for, mapped to the TLE API that emits
+# them. Checked on the frontend-emitted TTIR so the error names the API the user
+# called instead of surfacing as an opaque MLIR legalization failure much later.
+# ttg.warp_specialize and ttg.tma_copy reach TTIR only from the TLE builtins:
+# tl.range(warp_specialize=True) merely sets a loop attribute, and PPU never runs
+# the pass that would turn it into an op.
+PPU_UNSUPPORTED_TLE_OPS = {
+    "ttg.warp_specialize": "tle.warp_specialize",
+    "ttg.tma_copy": "tle.gpu.copy.tensor_descriptor",
+    "tle.distributed_barrier": "tle.distributed_barrier",
+    "tle.remote_pointers": "tle.remote",
+}
+
+
+def reject_unsupported_tle(mod):
+    features = set()
+
+    # mod.walk takes a void callback and cannot be interrupted from Python, so
+    # collect during the walk and report every unsupported feature at once.
+    def visit(op):
+        feature = PPU_UNSUPPORTED_TLE_OPS.get(op.get_name())
+        if feature is not None:
+            features.add(feature)
+
+    mod.walk(visit)
+    if features:
+        raise NotImplementedError("unsupported TLE feature on the 'ppu' backend: " + ", ".join(sorted(features)))
+
+
 def min_dot_size(target: GPUTarget):
 
     def check_dot_compatibility(lhs_type, rhs_type) -> Tuple[int, int, int]:  # [m, n, k]
@@ -239,6 +268,7 @@ class PPUBackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, opt, capability):
+        reject_unsupported_tle(mod)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
