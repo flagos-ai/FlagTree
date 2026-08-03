@@ -21,7 +21,7 @@
  * IN THE SOFTWARE.
  */
 
-#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/SignalOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxSignalOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Tools/FlagcxUtils.h"
 
@@ -34,11 +34,12 @@ namespace {
 using namespace mlir;
 namespace tle = mlir::triton::tle;
 
-struct SignalOpConversion : public ConvertOpToLLVMPattern<tle::SignalOp> {
-  using ConvertOpToLLVMPattern<tle::SignalOp>::ConvertOpToLLVMPattern;
+struct FlagCxSignalOpConversion
+    : public ConvertOpToLLVMPattern<tle::FlagCxSignalOp> {
+  using ConvertOpToLLVMPattern<tle::FlagCxSignalOp>::ConvertOpToLLVMPattern;
 
   LogicalResult
-  matchAndRewrite(tle::SignalOp op, OpAdaptor adaptor,
+  matchAndRewrite(tle::FlagCxSignalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
@@ -65,14 +66,14 @@ struct SignalOpConversion : public ConvertOpToLLVMPattern<tle::SignalOp> {
   }
 };
 
-struct SignalWaitOpConversion
-    : public ConvertOpToLLVMPattern<tle::SignalWaitOp> {
-  SignalWaitOpConversion(LLVMTypeConverter &typeConverter,
-                         PatternBenefit benefit)
+struct FlagCxSignalWaitOpConversion
+    : public ConvertOpToLLVMPattern<tle::FlagCxSignalWaitOp> {
+  FlagCxSignalWaitOpConversion(LLVMTypeConverter &typeConverter,
+                               PatternBenefit benefit)
       : ConvertOpToLLVMPattern(typeConverter, benefit) {}
 
   LogicalResult
-  matchAndRewrite(tle::SignalWaitOp op, OpAdaptor adaptor,
+  matchAndRewrite(tle::FlagCxSignalWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
@@ -95,9 +96,9 @@ struct SignalWaitOpConversion
 
 } // namespace
 
-void mlir::triton::tle::populateSignalOpToLLVMPatterns(
+void mlir::triton::tle::populateFlagCxSignalOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
-  patterns.add<SignalOpConversion>(typeConverter, benefit);
-  patterns.add<SignalWaitOpConversion>(typeConverter, benefit);
+  patterns.add<FlagCxSignalOpConversion>(typeConverter, benefit);
+  patterns.add<FlagCxSignalWaitOpConversion>(typeConverter, benefit);
 }

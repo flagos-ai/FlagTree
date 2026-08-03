@@ -27,7 +27,11 @@ from itertools import product
 from typing import Any, Iterable, Mapping, Sequence, List, Tuple, Union, Optional, Dict
 from enum import Enum
 import triton.language.core as tl
-from triton._C.libtriton.tle import attr
+
+try:
+    from triton._C.libtriton.tle import attr
+except ImportError:
+    pass
 
 Axis = Tuple[str, int]
 AxesLike = Union[int, List[Axis]]

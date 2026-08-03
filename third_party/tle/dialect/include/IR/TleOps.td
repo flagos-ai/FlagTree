@@ -458,9 +458,9 @@ def Tle_PackOp
 }
 
 def Tle_SignalOp : Tle_Op<"signal", [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Atomically update a remote FlagCX signal slot";
+  let summary = "Atomically update a remote signal slot";
   let description = [{
-    Obtains a pre-allocated FlagCX network context from `comm`, then either
+    Obtains a pre-allocated network context from `comm`, then either
     increments the selected remote signal slot by one or adds `value` to it.
     This operation only sends a signal; it does not transfer user data or wait
     for the remote signal to reach a value.
@@ -481,9 +481,9 @@ def Tle_SignalOp : Tle_Op<"signal", [MemoryEffects<[MemRead, MemWrite]>]> {
 }
 
 def Tle_SignalWaitOp : Tle_Op<"signal_wait"> {
-  let summary = "Wait for a remote FlagCX signal slot to become the target value";
+  let summary = "Wait for a remote signal slot to become the target value";
   let description = [{
-    Obtains a pre-allocated FlagCX network context from `comm`, then spin-waits the selected
+    Obtains a pre-allocated network context from `comm`, then spin-waits the selected
     signal/counter slot to reach the target value (actual value >= target),
     or waits the signal to reach its shadow value.
   }];
