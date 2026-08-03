@@ -1088,7 +1088,7 @@ private:
 
     // Wrap-around detection for contiguous dimension
     Value colSize = ofrToIndexValue(sizes[contiguousDim], loc, rewriter);
-    auto split = computeWrapAroundSplit(loc, rewriter, ptr.getMixedShape(),
+    auto split = computeWrapAroundSplit(loc, rewriter, ptr.getMixedSizes(),
                                         contiguousDim, offsetVal, colSize);
 
     SmallVector<OpFoldResult> zeroOffs(rank, rewriter.getIndexAttr(0));
@@ -1244,7 +1244,7 @@ private:
     auto sizes =
         mlir::getMixedValues(staticSizes, SmallVector<Value>{}, rewriter);
     auto ptrOffsets = ptr.getMixedOffsets();
-    auto ptrShapes = ptr.getMixedShape();
+    auto ptrShapes = ptr.getMixedSizes();
 
     // Check for wrap-around on contiguous dimension
     Value colSize = ofrToIndexValue(sizes[contiguousDim], loc, rewriter);
