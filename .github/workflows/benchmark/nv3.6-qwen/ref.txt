@@ -1,3 +1,4 @@
+H100 * 4
 vllm==0.16.0rc2.dev221+ga5ccc85c8
 torch==2.10.0+cu128
 cuda==13.1
@@ -23,7 +24,7 @@ cuda==13.1
   Median TPOT (ms): 18.29
   Median ITL (ms): 19.39
 
-[2026.7.11] flag_gems==5.3.0rc2 (2026/05), flagtree===0.6.0 (2026/06/26)
+[2026/07/11] flag_gems==5.3.0rc2 (2026/05), flagtree===0.6.0 (2026/06/26)
 # 服务冷启动时间: 7分13秒，服务热启动时间: 2分3秒
 # 输入长度: 32K, 输出长度: 1K, 并发数: 64
   Output token throughput (tok/s): 827.43

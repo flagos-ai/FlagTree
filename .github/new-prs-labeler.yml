@@ -178,6 +178,13 @@ nvidia:
           - '.github/workflows/nv*'
           - '.github/workflows/benchmark/nv*'
 
+ppu:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/ppu/**'
+          - '.github/workflows/ppu*'
+          - '.github/workflows/benchmark/ppu*'
+
 rpu:
   - changed-files:
       - any-glob-to-any-file:
