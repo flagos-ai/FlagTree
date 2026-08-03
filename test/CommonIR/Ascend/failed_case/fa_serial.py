@@ -294,10 +294,10 @@ def flash_attention_fwd_3task_kernel(
     block_num   = block_num_per_core + tl.where(cid < rem_block_num, 1, 0)
 
     # ---- on-chip working set (cube side) ----
-    q_l1 = tile_alloc([BLOCK_M, DIM],     Q.dtype.element_ty, L1)
-    k_l1 = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, L1)
-    v_l1 = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, L1)
-    p_l1 = tile_alloc([BLOCK_M, BLOCK_N], Q.dtype.element_ty, L1)
+    q_l1 = tile_alloc([BLOCK_M, DIM],     Q.dtype.element_ty, tle.language.dsa.ascend.L1)
+    k_l1 = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, tle.language.dsa.ascend.L1)
+    v_l1 = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, tle.language.dsa.ascend.L1)
+    p_l1 = tile_alloc([BLOCK_M, BLOCK_N], Q.dtype.element_ty, tle.language.dsa.ascend.L1)
 
     # =========================================================================
     #  Outer loop: one output tile per iteration.
