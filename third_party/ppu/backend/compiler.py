@@ -39,7 +39,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 # TLE ops the PPU backend has no lowering for, mapped to the TLE API that emits
 # them. Checked on the frontend-emitted TTIR so the error names the API the user
 # called instead of surfacing as an opaque MLIR legalization failure much later.
