@@ -575,7 +575,7 @@ MemDescTransOp::inferReturnTypes(MLIRContext *context,
   return success();
 }
 
-// MemDescReshapeOp
+// ConcatDotOperandOp
 LogicalResult ConcatDotOperandOp::verify() {
   auto fragments = getFragments();
   if (fragments.size() < 2)
@@ -611,6 +611,7 @@ LogicalResult ConcatDotOperandOp::verify() {
   return success();
 }
 
+// MemDescReshapeOp
 LogicalResult MemDescReshapeOp::verify() {
   MemDescType dstType = getResult().getType();
   MemDescType srcType = getSrc().getType();

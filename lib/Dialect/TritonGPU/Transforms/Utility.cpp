@@ -428,6 +428,7 @@ static Attribute inferSrcEncoding(GatherOp op, Attribute dstEnc) {
   return dstEnc;
 }
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
 // Backward propagation only: the op is deliberately absent from
 // RemoveLayoutConversions' propagateToUsers and rewriteOp lists, which assume a
 // shape-preserving op and would report a fatal error on this one.
@@ -447,6 +448,7 @@ static Attribute inferDstEncoding(ttg::ConcatDotOperandOp op,
     return srcEnc;
   return {};
 }
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 static Attribute inferTransOpDstEncoding(Attribute srcEnc,
                                          ArrayRef<int64_t> shape,
@@ -597,8 +599,10 @@ Attribute inferSrcEncoding(Operation *op, Attribute encoding) {
     return inferSrcEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferSrcEncoding(fp4ToFp, encoding);
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
   if (auto concat = dyn_cast<ttg::ConcatDotOperandOp>(op))
     return inferSrcEncoding(concat, encoding);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
   return {};
 }
@@ -633,8 +637,10 @@ Attribute inferDstEncoding(Operation *op, Attribute encoding) {
     return inferDstEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferDstEncoding(fp4ToFp, encoding);
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
   if (auto concat = dyn_cast<ttg::ConcatDotOperandOp>(op))
     return inferDstEncoding(concat, encoding);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
   return {};
 }
@@ -1810,104 +1816,6 @@ SmallVector<Value> getTiedArgs(Operation *op, int resultIdx) {
     return values;
   }
   return {};
-}
-
-LogicalResult getConcatDotOperandRegisterMap(
-    ttg::ConcatDotOperandOp op,
-    SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg) {
-  auto dstTy = cast<RankedTensorType>(op.getType());
-  auto fragTy = cast<RankedTensorType>(op.getFragments()[0].getType());
-  int64_t dim = op.getDim();
-  int64_t rank = fragTy.getRank();
-  int64_t numFrags = op.getFragments().size();
-
-  // Layouts other than dot_op place lanes differently as `dim` grows, so the
-  // relabel would move the wrong registers.
-  auto dotEnc = dyn_cast<ttg::DotOperandEncodingAttr>(fragTy.getEncoding());
-  if (!dotEnc)
-    return failure();
-
-  // Only the contraction axis can be extended in place: growing M or N would
-  // change which lane owns an element.
-  if (dim != (dotEnc.getOpIdx() == 0 ? rank - 1 : rank - 2))
-    return failure();
-
-  // Below 8 * kWidth the layout stops scaling with K, so the fragment is not a
-  // K-slice of the wider one. kWidth is 0 for layouts that do not use it.
-  unsigned kWidth = dotEnc.getKWidth();
-  if (kWidth != 0 && fragTy.getShape()[dim] < 8 * (int64_t)kWidth)
-    return failure();
-
-  // The mapping is derived on lane 0 and applied to every thread, which only
-  // holds if both layouts spread elements over lanes, warps and blocks
-  // identically; a valid concat adds register bases and nothing else.
-  MLIRContext *ctx = op.getContext();
-  LinearLayout dstLL = ttg::toLinearLayout(dstTy);
-  LinearLayout fragLL = ttg::toLinearLayout(fragTy);
-  for (StringAttr inDim :
-       {StringAttr::get(ctx, "lane"), StringAttr::get(ctx, "warp"),
-        StringAttr::get(ctx, "block")}) {
-    if (dstLL.hasInDim(inDim) != fragLL.hasInDim(inDim))
-      return failure();
-    if (dstLL.hasInDim(inDim) &&
-        dstLL.getBases().lookup(inDim) != fragLL.getBases().lookup(inDim))
-      return failure();
-  }
-
-  // Coordinates of each register on lane 0. toLinearLayout always names its out
-  // dims dim0..dimN in order, so the results line up with the tensor axes.
-  StringAttr kReg = StringAttr::get(ctx, "register");
-  auto offsetsOf = [&](const LinearLayout &ll) {
-    SmallVector<SmallVector<unsigned>> offsets;
-    for (int reg = 0; reg < ll.getInDimSize(kReg); ++reg) {
-      auto idxs = ll.apply({{kReg, reg},
-                            {StringAttr::get(ctx, "lane"), 0},
-                            {StringAttr::get(ctx, "warp"), 0},
-                            {StringAttr::get(ctx, "block"), 0}});
-      assert((int64_t)idxs.size() == rank);
-      offsets.push_back(
-          llvm::to_vector_of<unsigned>(llvm::make_second_range(idxs)));
-    }
-    return offsets;
-  };
-  SmallVector<SmallVector<unsigned>> dstOffsets = offsetsOf(dstLL);
-  SmallVector<SmallVector<unsigned>> fragOffsets = offsetsOf(fragLL);
-  if (dstOffsets.size() != fragOffsets.size() * numFrags)
-    return failure();
-
-  // Flatten a coordinate to index the fragment by. Every coordinate stays
-  // within the fragment extents: all dims but `dim` share them with the result,
-  // and `dim` is taken modulo below.
-  auto coordKey = [&](ArrayRef<unsigned> coord) {
-    int64_t key = 0;
-    for (int64_t i = 0; i < rank; ++i)
-      key = key * fragTy.getShape()[i] + coord[i];
-    return key;
-  };
-
-  // Enumerate the fragment slots so result coordinates can be inverted back to
-  // the register feeding them. Two registers on one coordinate means the layout
-  // broadcasts along a dim being indexed, which would drop one and duplicate
-  // the other.
-  llvm::DenseMap<int64_t, unsigned> fragCoordToReg;
-  for (auto [reg, coord] : llvm::enumerate(fragOffsets))
-    if (!fragCoordToReg.try_emplace(coordKey(coord), reg).second)
-      return failure();
-
-  resultRegToFragmentReg.clear();
-  resultRegToFragmentReg.reserve(dstOffsets.size());
-  int64_t extent = fragTy.getShape()[dim];
-  for (SmallVector<unsigned> &coord : dstOffsets) {
-    int64_t fragIdx = coord[dim] / extent;
-    coord[dim] %= extent;
-    if (fragIdx >= numFrags)
-      return failure();
-    auto it = fragCoordToReg.find(coordKey(coord));
-    if (it == fragCoordToReg.end())
-      return failure();
-    resultRegToFragmentReg.emplace_back(fragIdx, it->second);
-  }
-  return success();
 }
 
 LogicalResult verifyBarrierType(Operation *op,
