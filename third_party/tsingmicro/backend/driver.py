@@ -1187,6 +1187,7 @@ class SimulatorUtils(object):
 _last_launch_res = None
 _launch_counter = 0
 
+
 # Launch cross compiled runtime program on controller
 class TXDALauncher(object):
 
@@ -1211,8 +1212,7 @@ class TXDALauncher(object):
         logger.info(f"{self.func_name} launch card:{device_id} count:{_launch_counter} begin")
         launchRes = self.launch(device_id, self.metadata.so_key, self.metadata.kernel_path, self.func_name,
                                 txda_tools.is_dump_args_profile(), txda_tools.get_dump_dir(), log_level,
-                                _launch_counter,
-                                gridX, gridY, gridZ, stream, function, *args, **kwargs)
+                                _launch_counter, gridX, gridY, gridZ, stream, function, *args, **kwargs)
         logger.info(f"{self.func_name} launch card:{device_id} count:{_launch_counter} end")
         if launchRes.res != 0:
             logger.error(f"launch error code:{launchRes.res}")

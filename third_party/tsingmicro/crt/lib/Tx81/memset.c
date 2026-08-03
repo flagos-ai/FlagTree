@@ -43,9 +43,15 @@ void RcsMemset(char *dst, int value, int elem_count, uint16_t fmt) {
 
 void SetZero(char *dst, int elem_count, uint16_t fmt) {
   RcsLogic *logic = (RcsLogic *)getRcsOpPointer()->logic_pointer;
-  RcsLogicInstr inst = {I_CGRA,{0,},{0,}};
+  RcsLogicInstr inst = {I_CGRA,
+                        {
+                            0,
+                        },
+                        {
+                            0,
+                        }};
   logic->XorVV(&inst, (uint64_t)dst, (uint64_t)dst, (uint64_t)dst, elem_count,
-             (Data_Format)fmt);
+               (Data_Format)fmt);
   RcsExecute(&inst);
 }
 
@@ -63,24 +69,30 @@ void __Memset(char *dst, int value, int *dst_shape, int *dst_stride, int rank,
       RcsMemset(dst, value, elem_count, fmt);
       return;
     } else {
-       // xor does not support int8, used fp16 replace
-      fmt        = Fmt_FP16;
+      // xor does not support int8, used fp16 replace
+      fmt = Fmt_FP16;
       elem_count = shift_div(elem_count, 2);
     }
   }
 
   if (value == 0) {
     SetZero(dst, elem_count, fmt);
-  }
-  else {
-    if ((get_dtype_size_new(fmt) == 4 && value == 0xffffffff)
-      || (get_dtype_size_new(fmt) == 2 && (uint16_t)value == 0xffff)
-      || (get_dtype_size_new(fmt) == 1 && (uint8_t)value == 0xff)) {
+  } else {
+    if ((get_dtype_size_new(fmt) == 4 && value == 0xffffffff) ||
+        (get_dtype_size_new(fmt) == 2 && (uint16_t)value == 0xffff) ||
+        (get_dtype_size_new(fmt) == 1 && (uint8_t)value == 0xff)) {
       SetZero(dst, elem_count, fmt);
       RcsLogic *logic = (RcsLogic *)getRcsOpPointer()->logic_pointer;
-      RcsLogicInstr inst = {I_CGRA,{0,},{0,}};
+      RcsLogicInstr inst = {I_CGRA,
+                            {
+                                0,
+                            },
+                            {
+                                0,
+                            }};
       // Some specific values, addvs are not supported.
-      logic->BoolNotV(&inst, (uint64_t)dst, (uint64_t)dst, elem_count*get_dtype_size_new(fmt)*8);
+      logic->BoolNotV(&inst, (uint64_t)dst, (uint64_t)dst,
+                      elem_count * get_dtype_size_new(fmt) * 8);
       RcsExecute(&inst);
     } else {
       RcsMemset(dst, value, elem_count, fmt);

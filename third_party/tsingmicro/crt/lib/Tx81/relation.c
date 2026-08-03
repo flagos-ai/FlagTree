@@ -52,7 +52,7 @@ void __BoolUnEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
   // Dispatch the command to accelerator
   RcsExecute(&inst);
-//   RcsWaitfinish();
+  //   RcsWaitfinish();
   SYNCHRONOUS_INTRINSIC_SWITCH;
   // Destroy the command buffer.
 }
@@ -75,7 +75,7 @@ void __BoolGreaterEqualVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
 
   // Dispatch the command to accelerator
   RcsExecute(&inst);
-//   RcsWaitfinish();
+  //   RcsWaitfinish();
   SYNCHRONOUS_INTRINSIC_SWITCH;
   // Destroy the command buffer.
 }

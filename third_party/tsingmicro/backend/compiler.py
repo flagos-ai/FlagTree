@@ -32,6 +32,7 @@ def _get_libc_root() -> str:
         raise Exception("LIB_C_ROOT is not set.")
     return path
 
+
 def _get_core_dialects_to_mk_pass_arg() -> str:
     value = os.getenv("PRECISION_MODE", "0").strip()
     if value not in ("0", "1", "2"):
@@ -50,7 +51,8 @@ def compile_accelerator(src, metadata, o_path):
     if cache_path is None:
         with tempfile.TemporaryDirectory() as tmpdir:
             dst_path = os.path.join(tmpdir, f"{name}.so")
-            xuantie_dir=txda_tools.get_tx8_deps_path("rcs1fw-rtt/tool/rcsfw-xuantie-sdk/Xuantie-900-gcc-elf-newlib-x86_64-V2.8.0")
+            xuantie_dir = txda_tools.get_tx8_deps_path(
+                "rcs1fw-rtt/tool/rcsfw-xuantie-sdk/Xuantie-900-gcc-elf-newlib-x86_64-V2.8.0")
             gcc_path = os.path.join(xuantie_dir, "bin", "riscv64-unknown-elf-gcc")
             libc_lib = os.path.join(xuantie_dir, "riscv64-unknown-elf", "lib", "rv64imfdc", "lp64d")
             libgcc_lib = os.path.join(xuantie_dir, "lib", "gcc", "riscv64-unknown-elf", "10.4.0", "rv64imfdc", "lp64d")
@@ -118,20 +120,11 @@ def _ttir_to_coreir(mod, num_stages=2):
         pipeline_flag = f"--mk-pipeline=num-stages={num_stages}"
 
         args = [
-            triton_opt_path,
-            src_path,
-            "--triton-to-core-dialects",
-            "--tle-to-mk",
-            "--dsa-memory-to-core",
-            "--linalg-tiling",
-            f"{coreir_to_mk_mode}",
-            "--linalg-fusion",
-            "--legalize-tensor-form-loops",
-            "--one-shot-bufferize",
-            "--convert-bufferization-to-memref",
-            "--materialize-strided-linalg-inputs",
-            "--cse",
-            "--canonicalize"]
+            triton_opt_path, src_path, "--triton-to-core-dialects", "--tle-to-mk", "--dsa-memory-to-core",
+            "--linalg-tiling", f"{coreir_to_mk_mode}", "--linalg-fusion", "--legalize-tensor-form-loops",
+            "--one-shot-bufferize", "--convert-bufferization-to-memref", "--materialize-strided-linalg-inputs", "--cse",
+            "--canonicalize"
+        ]
 
         if os.getenv("TRITON_PIPELINE", "1") == "1":
             args.append(pipeline_flag)
@@ -191,7 +184,9 @@ def _coreir_to_txir(mod):
         triton_opt_path = txda_tools.get_tsm_opt_path()
         txda_tools.dump_ir_if_needed([src_path])
 
-        args = [triton_opt_path, src_path,
+        args = [
+            triton_opt_path,
+            src_path,
             "--spmd-allocate-shared-memory",
             "--expand-strided-metadata",
             "--lower-affine",  # convert affine.load to memref.load, need exec before tx81-to-llvm since we will support spm offset to memref.load
@@ -231,10 +226,9 @@ def _txir_to_llir(mod, metadata):
         args = [
             triton_opt_path, src_path,
             # Use tx81-memref-to-llvm to replace "--finalize-memref-to-llvm".
-            "--tx81-memref-to-llvm", "--addr-to-llvm", "--convert-scf-to-cf",
-            "--expand-strided-metadata",
-            "--convert-math-to-llvm",
-            "--convert-math-to-libm", "--convert-cf-to-llvm",  # need exec before "convert-func-to-llvm"
+            "--tx81-memref-to-llvm", "--addr-to-llvm", "--convert-scf-to-cf", "--expand-strided-metadata",
+            "--convert-math-to-llvm", "--convert-math-to-libm",
+            "--convert-cf-to-llvm",  # need exec before "convert-func-to-llvm"
             "--convert-func-to-llvm",  # need exec before "kernel-arg-buffer", otherwise un-rank memref will translate to int(rank) + ptr
             # Other unconverted memref ops, eg: memref.global from scan op conversion
             "--finalize-memref-to-llvm"
@@ -257,8 +251,7 @@ def _txir_to_llir(mod, metadata):
             tx81_to_llvm = "--tx81-to-llvm=gather-scatter-async=true"
 
         args += [
-            tx81_to_llvm,
-            "--convert-arith-to-llvm",  # need exec last since arith.const conversion
+            tx81_to_llvm, "--convert-arith-to-llvm",  # need exec last since arith.const conversion
             # Remove all unrealized casts created
             "--reconcile-unrealized-casts", "--canonicalize", "--export-kernel-symbols", "-o", llvmir_path
         ]
@@ -434,6 +427,7 @@ class TXDAOptions:
 
 
 class TXDABackend(BaseBackend):
+
     @staticmethod
     def supports_target(target: GPUTarget):
         return target.backend == 'txda'

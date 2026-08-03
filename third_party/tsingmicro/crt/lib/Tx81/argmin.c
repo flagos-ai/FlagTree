@@ -73,22 +73,24 @@ void __ArgMin(uint64_t *src, uint64_t *imm, uint64_t *dst0, uint64_t *dst1,
 
   RcsLogic *logic_cmd = g_intrinsic()->logic_pointer;
   RcsLogicInstr logic_inst = {I_CGRA,
-                        {
-                            0,
-                        },
-                        {
-                            0,
-                        }};
+                              {
+                                  0,
+                              },
+                              {
+                                  0,
+                              }};
 
-  logic_cmd->XorVV(&logic_inst, (uint64_t)src, (uint64_t)src, (uint64_t)imm, elem_count,
-             (Data_Format)fmt);
+  logic_cmd->XorVV(&logic_inst, (uint64_t)src, (uint64_t)src, (uint64_t)imm,
+                   elem_count, (Data_Format)fmt);
   RcsExecute(&logic_inst);
 
-  // logic_cmd->XorVV(&logic_inst, (uint64_t)dst0, (uint64_t)dst0, (uint64_t)imm, 1,
+  // logic_cmd->XorVV(&logic_inst, (uint64_t)dst0, (uint64_t)dst0,
+  // (uint64_t)imm, 1,
   //            (Data_Format)fmt);
   // RcsExecute(&logic_inst);
 
-  // logic_cmd->XorVV(&logic_inst, (uint64_t)dst1, (uint64_t)dst1, (uint64_t)imm, 1,
+  // logic_cmd->XorVV(&logic_inst, (uint64_t)dst1, (uint64_t)dst1,
+  // (uint64_t)imm, 1,
   //            Fmt_INT32);
   // RcsExecute(&logic_inst);
 
