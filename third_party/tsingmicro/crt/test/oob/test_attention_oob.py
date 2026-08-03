@@ -7,7 +7,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "kernels"))
 from conftest import run_kernel_script, DmaResult
 
 
-def _create_test_script(Z, H, N_CTX, HEAD_DIM, inject_N_CTX_scale, inject_stride_scale, BLOCK_M=64, BLOCK_N=32):
+
+def _create_test_script(Z, H, N_CTX, HEAD_DIM, inject_N_CTX_scale,
+                        inject_stride_scale, BLOCK_M=64, BLOCK_N=32):
     """Generate a self-contained test script for attention_oob.
 
     The kernel uses block pointers (tl.make_block_ptr) for Q/K/V/O.
@@ -73,12 +75,12 @@ _attn_fwd_oob[grid](
 def main():
     """Generate test scripts for all attention OOB test cases."""
     cases = {
-        "test_normal_no_oob":
-        _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32, inject_N_CTX_scale=1, inject_stride_scale=1),
-        "test_n_ctx_inflated_oob":
-        _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32, inject_N_CTX_scale=2, inject_stride_scale=1),
-        "test_stride_corrupted_oob":
-        _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32, inject_N_CTX_scale=1, inject_stride_scale=10),
+        "test_normal_no_oob": _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32,
+                                                   inject_N_CTX_scale=1, inject_stride_scale=1),
+        "test_n_ctx_inflated_oob": _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32,
+                                                        inject_N_CTX_scale=2, inject_stride_scale=1),
+        "test_stride_corrupted_oob": _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32,
+                                                          inject_N_CTX_scale=1, inject_stride_scale=10),
     }
     out_dir = os.path.dirname(__file__)
     for name, script in cases.items():
@@ -93,24 +95,26 @@ if __name__ == "__main__":
 
 
 class TestAttentionOOB:
-
     def test_normal_no_oob(self, dma_env, tmp_path):
         """Normal parameters: should not trigger OOB detection."""
-        script = _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32, inject_N_CTX_scale=1, inject_stride_scale=1)
+        script = _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32,
+                                     inject_N_CTX_scale=1, inject_stride_scale=1)
         result = run_kernel_script(script, tmp_path, 'TestAttentionOOB.test_normal_no_oob')
         assert result.passed, f"Normal kernel should not OOB: oob={result.oob_count}"
 
     def test_n_ctx_inflated_oob(self, dma_env, tmp_path):
         """Inflate N_CTX by 2x: block pointers think there are 2x more rows,
         causing Q load and O store to go beyond actual tensor."""
-        script = _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32, inject_N_CTX_scale=2, inject_stride_scale=1)
+        script = _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32,
+                                     inject_N_CTX_scale=2, inject_stride_scale=1)
         result = run_kernel_script(script, tmp_path, 'TestAttentionOOB.test_n_ctx_inflated_oob')
         assert result.detected, \
             f"Expected OOB detection with N_CTX_scale=2: {result}"
 
     def test_stride_corrupted_oob(self, dma_env, tmp_path):
         """Inflate strides by 10x: addresses jump far beyond buffer."""
-        script = _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32, inject_N_CTX_scale=1, inject_stride_scale=10)
+        script = _create_test_script(Z=1, H=2, N_CTX=64, HEAD_DIM=32,
+                                     inject_N_CTX_scale=1, inject_stride_scale=10)
         result = run_kernel_script(script, tmp_path, 'TestAttentionOOB.test_stride_corrupted_oob')
         assert result.detected, \
             f"Expected OOB detection with stride_scale=0: {result}"

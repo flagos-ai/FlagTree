@@ -9,21 +9,11 @@ import triton.language as tl
 
 @triton.jit
 def gather_scatter_kernel_oob(
-    Offs,
-    A,
-    B,
-    C,
-    M: tl.constexpr,
-    N: tl.constexpr,
-    K: tl.constexpr,
-    stride_am,
-    stride_ak,
-    stride_bk,
-    stride_bn,
-    stride_cm,
-    stride_cn,
-    inject_index_oob: tl.constexpr,  # 0=normal, 1=indices >= M (partial OOB)
-    inject_index_oob_all: tl.constexpr,  # 0=normal, 1=all indices = M + 16 (full OOB)
+    Offs, A, B, C,
+    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+    stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn,
+    inject_index_oob: tl.constexpr,       # 0=normal, 1=indices >= M (partial OOB)
+    inject_index_oob_all: tl.constexpr,   # 0=normal, 1=all indices = M + 16 (full OOB)
     BLOCK_M: tl.constexpr,
 ):
     pid = tl.program_id(0)

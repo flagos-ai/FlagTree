@@ -12,6 +12,7 @@ add_triton_library(AllocateSharedMemory
   MLIRDialectUtils
   MLIRIR
   MLIRPass
+  MLIRSCFDialect
   MLIRTensorDialect
   MLIRTransforms
   MLIRSupport

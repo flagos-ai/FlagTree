@@ -3,6 +3,41 @@ import logging
 import os
 import sys
 
+
+class LazyFileHandler(logging.Handler):
+    """File handler that defers file creation until the first log record is emitted."""
+
+    def __init__(self, filename, mode='a', encoding=None):
+        super().__init__()
+        self.filename = filename
+        self.mode = mode
+        self.encoding = encoding
+        self._handler = None
+
+    def _ensure_handler(self):
+        if self._handler is None:
+            self._handler = logging.FileHandler(self.filename, self.mode, encoding=self.encoding)
+
+    def emit(self, record):
+        self._ensure_handler()
+        self._handler.emit(record)
+
+    def setFormatter(self, fmt):
+        super().setFormatter(fmt)
+        if self._handler is not None:
+            self._handler.setFormatter(fmt)
+
+    def setLevel(self, level):
+        super().setLevel(level)
+        if self._handler is not None:
+            self._handler.setLevel(level)
+
+    def close(self):
+        if self._handler is not None:
+            self._handler.close()
+        super().close()
+
+
 # Standard mapping: custom number (0~4) -> logging constant
 CUSTOM_NUMBER_TO_LOGGING = {
     0: logging.DEBUG, 1: logging.INFO, 2: logging.WARNING, 3: logging.ERROR, 4: logging.CRITICAL
@@ -119,8 +154,8 @@ def setup_logger(name='tsingmicro'):
         formatter = logging.Formatter(fmt='[%(asctime)s.%(msecs)03d][%(levelname)s]%(name)s:%(message)s',
                                       datefmt='%Y%m%d %H:%M:%S')
 
-        # File handler
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        # File handler (lazy: only creates file on first emit)
+        file_handler = LazyFileHandler(log_file, encoding='utf-8')
         file_handler.setLevel(log_level)
         file_handler.setFormatter(formatter)
 

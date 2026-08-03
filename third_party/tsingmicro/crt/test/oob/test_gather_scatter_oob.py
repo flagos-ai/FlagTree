@@ -13,7 +13,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "kernels"))
 from conftest import run_kernel_script, DmaResult
 
 
-def _create_test_script(M, N, K, inject_offs_scale=1, inject_index_oob=0, inject_index_oob_all=0, BLOCK_M=4):
+
+def _create_test_script(M, N, K,
+                        inject_offs_scale=1,
+                        inject_index_oob=0,
+                        inject_index_oob_all=0,
+                        BLOCK_M=4):
     """Generate a self-contained test script for gather_scatter_oob.
 
     Args:
@@ -74,9 +79,12 @@ def main():
     """Generate test scripts for all gather_scatter OOB test cases."""
     cases = {
         "test_normal_no_oob": _create_test_script(M=64, N=32, K=128),
-        "test_index_partial_oob": _create_test_script(M=64, N=32, K=128, inject_index_oob=1),
-        "test_index_full_oob": _create_test_script(M=64, N=32, K=128, inject_index_oob_all=1),
-        "test_indirect_index_oob": _create_test_script(M=64, N=32, K=128, inject_offs_scale=2),
+        "test_index_partial_oob": _create_test_script(M=64, N=32, K=128,
+                                                       inject_index_oob=1),
+        "test_index_full_oob": _create_test_script(M=64, N=32, K=128,
+                                                    inject_index_oob_all=1),
+        "test_indirect_index_oob": _create_test_script(M=64, N=32, K=128,
+                                                    inject_offs_scale=2),
     }
     out_dir = os.path.dirname(__file__)
     for name, script in cases.items():
@@ -101,7 +109,8 @@ class TestGatherScatterOOB:
     # 2. Partial index OOB
     def test_index_partial_oob(self, dma_env, tmp_path):
         """Some indices shifted by +M, pointing beyond A rows."""
-        script = _create_test_script(M=64, N=32, K=128, inject_index_oob=1)
+        script = _create_test_script(M=64, N=32, K=128,
+                                     inject_index_oob=1)
         result = run_kernel_script(script, tmp_path, 'TestGatherScatterOOB.test_index_partial_oob')
         assert result.detected, \
             f"Expected OOB detection with index_oob=1: {result}"
@@ -109,15 +118,17 @@ class TestGatherScatterOOB:
     # 3. Full index OOB
     def test_index_full_oob(self, dma_env, tmp_path):
         """All indices shifted to M+16, pointing well beyond A rows."""
-        script = _create_test_script(M=64, N=32, K=128, inject_index_oob_all=1)
+        script = _create_test_script(M=64, N=32, K=128,
+                                     inject_index_oob_all=1)
         result = run_kernel_script(script, tmp_path, 'TestGatherScatterOOB.test_index_full_oob')
         assert result.detected, \
             f"Expected OOB detection with index_oob_all=1: {result}"
-
+    
     # 4. indirect index OOB
     def test_indirect_index_oob(self, dma_env, tmp_path):
         """All indices shifted to M+16, pointing well beyond A rows."""
-        script = _create_test_script(M=64, N=32, K=128, inject_offs_scale=2)
+        script = _create_test_script(M=64, N=32, K=128,
+                                     inject_offs_scale=2)
         result = run_kernel_script(script, tmp_path, 'TestGatherScatterOOB.test_indirect_index_oob')
         assert result.detected, \
             f"Expected OOB detection with index_oob_all=1: {result}"

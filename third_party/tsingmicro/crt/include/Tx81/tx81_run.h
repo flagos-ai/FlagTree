@@ -7,22 +7,23 @@
 #ifndef CRT_TARGET_TX81_RUN_H
 #define CRT_TARGET_TX81_RUN_H
 
-#include "lib_log.h"
 #include "tx81_def.h"
+#include "lib_log.h"
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "lib_log.h"
 #include "instr_adapter.h"
 #include "instr_operator.h"
-#include "lib_log.h"
 #include "riscv.h"
+
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define ClientPtrHeaderBytes 16
+#define ClientPtrHeaderBytes  24
 #define ClientPtrMagic 0x54445841u
 
 typedef enum {
@@ -33,7 +34,8 @@ typedef enum {
 
 bool is_dma_action_logging(uint32_t action);
 bool is_dma_action_checking(uint32_t action);
-uint64_t *get_header(const void *ddr_addr);
+uint64_t* get_header(const void *ddr_addr);
+uint32_t crc32(const uint8_t *data, int len);
 
 float set_value2float32(Data_Format fmt, int8_t *value);
 triton_hybrid_value set_float2value(Data_Format dtype, float value);
@@ -106,6 +108,10 @@ int8_t *get_spm_memory_mapping_wrapper(uint64_t offset);
 
 void debug_dump_f32_data(uint64_t *in, uint32_t elem_count, char *dump_flag);
 void debug_dump_i32_data(uint64_t *in, uint32_t elem_count, char *dump_flag);
+void debug_dump_i64_data(uint64_t *in, uint32_t elem_count, char *dump_flag);
+void debug_dump_bf16_data(uint64_t *in, uint32_t elem_count, char *dump_flag);
+void debug_dump_f16_data(uint64_t *in, uint32_t elem_count, char *dump_flag);
+
 
 #ifdef __cplusplus
 }
@@ -124,13 +130,17 @@ void debug_dump_i32_data(uint64_t *in, uint32_t elem_count, char *dump_flag);
 #endif
 
 #ifdef ENABLE_DEBUG_DUMP_DATA
-#define DEBUG_DUMP_F32_DATA(in, elem_count, dump_flag)                         \
-  debug_dump_f32_data(in, elem_count, dump_flag)
-#define DEBUG_DUMP_I32_DATA(in, elem_count, dump_flag)                         \
-  debug_dump_i32_data(in, elem_count, dump_flag)
+#define DEBUG_DUMP_F32_DATA(in, elem_count, dump_flag) debug_dump_f32_data(in, elem_count, dump_flag)
+#define DEBUG_DUMP_F16_DATA(in, elem_count, dump_flag) debug_dump_f16_data(in, elem_count, dump_flag)
+#define DEBUG_DUMP_BF16_DATA(in, elem_count, dump_flag) debug_dump_bf16_data(in, elem_count, dump_flag)
+#define DEBUG_DUMP_I32_DATA(in, elem_count, dump_flag) debug_dump_i32_data(in, elem_count, dump_flag)
+#define DEBUG_DUMP_I64_DATA(in, elem_count, dump_flag) debug_dump_i64_data(in, elem_count, dump_flag)
 #else
 #define DEBUG_DUMP_F32_DATA(in, elem_count, dump_flag)
+#define DEBUG_DUMP_F16_DATA(in, elem_count, dump_flag)
+#define DEBUG_DUMP_BF16_DATA(in, elem_count, dump_flag)
 #define DEBUG_DUMP_I32_DATA(in, elem_count, dump_flag)
+#define DEBUG_DUMP_I64_DATA(in, elem_count, dump_flag)
 #endif
 
 #endif // CRT_TARGET_TX81_RUN_H

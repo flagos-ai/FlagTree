@@ -18,7 +18,8 @@ using namespace mlir;
 
 static bool isIntersectedMap(const BlockInfo::IntervalMapT &lhsIntervalSet,
                              const BlockInfo::IntervalMapT &rhsIntervalSet,
-                             MembarFilterFn filter, MembarHazardKind kind) {
+                             MembarFilterFn filter,
+                             MembarHazardKind kind) {
   for (auto &lhs : lhsIntervalSet)
     for (auto &rhs : rhsIntervalSet)
       if (lhs.first.intersects(rhs.first))
@@ -169,8 +170,19 @@ bool isPureAddressOp(Operation *op) {
   return false;
 }
 
-static void collectTx81Accesses(Operation *op, SmallVector<Value> &reads,
+static void collectTx81Accesses(Operation *op,
+                                SmallVector<Value> &reads,
                                 SmallVector<Value> &writes) {
+  auto hasAccess = [&](Value v) {
+    for (Value read : reads)
+      if (read == v)
+        return true;
+    for (Value write : writes)
+      if (write == v)
+        return true;
+    return false;
+  };
+
   // Prefer MemoryEffectOpInterface if present.
   if (auto iface = dyn_cast<MemoryEffectOpInterface>(op)) {
     SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>> effects;
@@ -184,9 +196,36 @@ static void collectTx81Accesses(Operation *op, SmallVector<Value> &reads,
       else if (isa<MemoryEffects::Write>(e.getEffect()))
         writes.push_back(v);
     }
+    // Many Tx81 ops annotate destination operands with MemWrite but leave source
+    // address operands unannotated. Treat remaining address-like operands as reads.
+    for (Value v : op->getOperands())
+      if (!hasAccess(v) && resolveForBufferLookup(v))
+        reads.push_back(v);
     return;
   }
 
+  for (Value v : op->getOperands())
+    reads.push_back(v);
+}
+
+static void collectCpuAccesses(Operation *op,
+                               SmallVector<Value> &reads,
+                               SmallVector<Value> &writes) {
+  if (auto load = dyn_cast<memref::LoadOp>(op)) {
+    reads.push_back(load.getMemRef());
+    return;
+  }
+  if (auto store = dyn_cast<memref::StoreOp>(op)) {
+    writes.push_back(store.getMemRef());
+    return;
+  }
+  if (auto copy = dyn_cast<memref::CopyOp>(op)) {
+    reads.push_back(copy.getSource());
+    writes.push_back(copy.getTarget());
+    return;
+  }
+
+  // CPU / unknown: operands may be real reads of shared buffers.
   for (Value v : op->getOperands())
     reads.push_back(v);
 }
@@ -331,9 +370,7 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     } else if (isPureAddressOp(op)) {
       // memref/arith/scf scaffolding between tx ops — not a CPU data touch.
     } else {
-      // CPU / unknown: operands may be real reads of shared buffers.
-      for (Value v : op->getOperands())
-        reads.push_back(v);
+      collectCpuAccesses(op, reads, writes);
     }
 
     auto addIntervals = [&](ArrayRef<Value> vals, bool isWrite) {

@@ -50,7 +50,7 @@ else:
         txda_tools.get_tx8_deps_path("lib"), profiling_lib_dir,
         os.path.join(sysconfig.get_path('platlib'), "torch", "lib")
     ]
-    libraries = ['hpgr', 'torch', 'torch_cpu', 'torch_python', 'c10']
+    libraries = ['hpgr', 'torch', 'torch_cpu', 'torch_python', 'c10', 'dl']
 
 
 def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
@@ -80,6 +80,8 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
     cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-std=c++17", "-Wno-psabi", "-o", so]
     if txda_tools.is_use_profile():
         cc_cmd += ["-DENABLE_PROFILING"]
+    if txda_tools.is_use_tsm_profiler():
+        cc_cmd += ["-DTSM_PROFILER_EN"]
     if txda_tools.is_debug():
         cc_cmd += ["-DCMAKE_BUILD_TYPE=Debug"]
     if txda_tools.is_enable_kernel_file_cache():
@@ -185,7 +187,7 @@ def make_launcher(constants, signature, kernel_name, kernel_path):
     # Basic declarations. Arguments in triton kernel.
     arg_decls = ', '.join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items() if ty != "constexpr")
     args_format = ''.join([_format_of(ty) for ty in signature.values()])
-    format = "isssisi" + "iiiKKOOOO" + args_format
+    format = "isssisii" + "iiiKKOOOO" + args_format
     args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
 
     # Parameters to pass to the kernel function. Arguments in triton kernel except constants.
@@ -365,19 +367,6 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
     _launch(gridX, gridY, gridZ, {', '.join(f"0, ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items() if ty != "constexpr")} {',' if len(kernel_parameters) > 0  else ''} kernel_ptr);
 
-    // DMA bounds check result output
-    {{
-        void *handle = dlopen("{kernel_path}", RTLD_NOLOAD);
-        if (handle) {{
-            uint32_t *oob_ptr = (uint32_t*)dlsym(handle, "dma_oob_count");
-            uint32_t *magic_ptr = (uint32_t*)dlsym(handle, "dma_bad_magic_count");
-            if (oob_ptr && magic_ptr) {{
-                fprintf(stdout, "DMA_CHECK_RESULT: oob=%u bad_magic=%u\\n",
-                        *oob_ptr, *magic_ptr);
-                fflush(stdout);
-            }}
-        }}
-    }}
 
     if(launch_exit_hook != Py_None){{
         PyObject* args = Py_BuildValue("(O)", launch_metadata);
@@ -448,6 +437,11 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
 #include "tx_runtime.h"
 
 
+#ifdef TSM_PROFILER_EN
+#include "tsm_profiler.h"
+#endif
+
+
 #ifdef ENABLE_PROFILING
     #include "hrt_profiler.h"
     #define PROFILE_CALL(func, ...) func(__VA_ARGS__)
@@ -485,9 +479,12 @@ struct KernelArg {{
 struct LaunchRes {{
     int res;
     std::string log_buffer;
+    uint64_t kernel_time_ns;
+    uint64_t ap_duration_ns;
 
-    LaunchRes() : res(0), log_buffer() {{}}
-    LaunchRes(int v, const char* n) : res(v), log_buffer(n ? n : "") {{}}
+    LaunchRes() : res(0), log_buffer(), kernel_time_ns(0), ap_duration_ns(0) {{}}
+    LaunchRes(int v, const char* n, uint64_t kt = 0, uint64_t ap = 0)
+        : res(v), log_buffer(n ? n : ""), kernel_time_ns(kt), ap_duration_ns(ap) {{}}
 }};
 
 typedef struct {{
@@ -502,13 +499,17 @@ static void LaunchRes_dealloc(LaunchResObj* self) {{
 }}
 
 static PyObject* LaunchRes_repr(LaunchResObj* self) {{
-    return PyUnicode_FromFormat("LaunchRes(res=%d, log_buffer='%s')",
+    return PyUnicode_FromFormat("LaunchRes(res=%d, log_buffer='%s', kernel_time_ns=%llu, ap_duration_ns=%llu)",
                                 self->data.res,
-                                self->data.log_buffer.c_str());
+                                self->data.log_buffer.c_str(),
+                                (unsigned long long)self->data.kernel_time_ns,
+                                (unsigned long long)self->data.ap_duration_ns);
 }}
 
 static PyMemberDef LaunchRes_members[] = {{
     {{"res", T_INT, offsetof(LaunchResObj, data.res), 0, "integer res"}},
+    {{"kernel_time_ns", T_ULONGLONG, offsetof(LaunchResObj, data.kernel_time_ns), 0, "kernel device time in ns"}},
+    {{"ap_duration_ns", T_ULONGLONG, offsetof(LaunchResObj, data.ap_duration_ns), 0, "AP duration in ns"}},
     {{NULL}}
 }};
 
@@ -525,10 +526,18 @@ static PyTypeObject LaunchResObjType = {{
     PyVarObject_HEAD_INIT(NULL, 0)
 }};
 
-static PyObject* make_LaunchRes(int res, const char* log_buffer) {{
+static PyObject* make_LaunchRes(int res, const char* log_buffer = "", uint64_t kernel_time_ns = 0, uint64_t ap_duration_ns = 0) {{
     LaunchResObj* obj = (LaunchResObj*)LaunchResObjType.tp_alloc(&LaunchResObjType, 0);
     if (obj != NULL) {{
-        new (&obj->data) LaunchRes(res, log_buffer);
+        new (&obj->data) LaunchRes(res, log_buffer, kernel_time_ns, ap_duration_ns);
+    }}
+    return (PyObject*)obj;
+}}
+
+static PyObject* make_LaunchRes(const LaunchRes& result) {{
+    LaunchResObj* obj = (LaunchResObj*)LaunchResObjType.tp_alloc(&LaunchResObjType, 0);
+    if (obj != NULL) {{
+        new (&obj->data) LaunchRes(result);
     }}
     return (PyObject*)obj;
 }}
@@ -555,9 +564,11 @@ struct Launch_args {{
     const char* kernel_fun_name = nullptr;
     int is_dump_args = 0;
     const char* dump_path = nullptr;
+    int launch_count = 0;
     std::vector<KernelArg> kargs;
     txStream_t stream = nullptr;
     int log_level = simple_logger::ERROR;
+    LaunchRes result;
 }};
 
 #ifdef ENABLE_KERNEL_FILE_CACHE
@@ -740,6 +751,8 @@ void dump_kernel_args(Launch_args &l_args) {{
     oss << l_args.kernel_file << ", ";
     oss << "kernel_func:";
     oss << l_args.kernel_fun_name << ", ";
+    oss << "launch_count:";
+    oss << l_args.launch_count << ", ";
 
     oss << "gridX:";
     oss << l_args.gridX << ", ";
@@ -845,6 +858,18 @@ static void _launch(Launch_args &l_args) {{
 #endif
 
     PROFILE_CALL(RcsProcessProfData, l_args.device_id, profiling_key, PROF_START, 7);
+#ifdef TSM_PROFILER_EN
+    static bool _prof_available = false;
+    static bool _prof_checked   = false;
+    if (!_prof_checked) {{
+        _prof_available = resolve_prof_query_api();
+        _prof_checked   = true;
+    }}
+    uint64_t _prof_token = 0;
+    if (_prof_available) {{
+        _prof_token = resolve_tsm_prof_begin();
+    }}
+#endif
     if (txLaunchKernelGGL(l_args.kernel_fun_name, (uint64_t)kernel_ptr, kernel_len,
         dim3({{(uint32_t)l_args.gridX, (uint32_t)l_args.gridY, (uint32_t)l_args.gridZ}}), dim3({{1u, 1u, 1u}}),
         (void*)(&rtKargs[0]), rtKargs.size()*sizeof(uint64_t), 0, l_args.stream) != TX_SUCCESS){{
@@ -855,6 +880,24 @@ static void _launch(Launch_args &l_args) {{
         txStreamSynchronize(l_args.stream);
     }}
     PROFILE_CALL(txStreamSynchronize, l_args.stream);
+#ifdef TSM_PROFILER_EN
+    txStreamSynchronize(l_args.stream);
+    if (_prof_available) {{
+        tsm_prof_timing_t _prof_t = {{}};
+        int _prof_rc = resolve_tsm_prof_get_timing(_prof_token, &_prof_t, 5000);
+        if (_prof_rc == 0) {{
+            l_args.result.kernel_time_ns = _prof_t.kcore_duration_nsec;
+            l_args.result.ap_duration_ns = _prof_t.ap_duration_nsec;
+            logger.log(simple_logger::DEBUG,
+                "tsm_prof token=%llu corid=%llu host_ns=%llu ap_ns=%llu kcore_ns=%llu",
+                (unsigned long long)_prof_token,
+                (unsigned long long)_prof_t.corid,
+                (unsigned long long)_prof_t.host_duration_nsec,
+                (unsigned long long)_prof_t.ap_duration_nsec,
+                (unsigned long long)_prof_t.kcore_duration_nsec);
+        }}
+    }}
+#endif
     PROFILE_CALL(RcsProcessProfData, l_args.device_id, profiling_key, PROF_STOP, 0);
 }}
 
@@ -1010,11 +1053,12 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
     // Init kernel arguments from python side
     if(!PyArg_ParseTuple(args, \"{format}\", &l_args.device_id, &l_args.so_key, &l_args.kernel_file,
                                         &l_args.kernel_fun_name, &l_args.is_dump_args, &l_args.dump_path, &l_args.log_level,
+                                        &l_args.launch_count,
                                         &l_args.gridX, &l_args.gridY, &l_args.gridZ, &_stream, &_function,
                                         &kernel_metadata, &launch_metadata,
                                         &launch_enter_hook, &launch_exit_hook
                                         {args_list})) {{
-        return make_LaunchRes(-1, "");
+        return make_LaunchRes(-1);
     }}
 
     logger.setLogLevel((simple_logger::LogLevel)l_args.log_level);
@@ -1025,31 +1069,16 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
                if ty[0]=="*" else f"l_args.kargs.emplace_back(*(uint64_t*)&_arg{i}, sizeof(_arg{i}));"
                   for i, ty in signature.items() if ty != "constexpr"])}
 
-    uint64_t buff = 0;
+    uint64_t buf = 0;
     {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items() if ty != "constexpr"])};
     {' '.join([f"l_args.kargs.emplace_back(ptr_info{i}.dev_ptr, ptr_info{i}.size);"
-               if ty[0]=="*" else f"buff = 0; std::memcpy(&buff, &_arg{i}, sizeof(_arg{i})); l_args.kargs.emplace_back(buff, sizeof(buff));"
+               if ty[0]=="*" else f"buf = 0;std::memcpy(&buf, &_arg{i}, sizeof(_arg{i}));l_args.kargs.emplace_back(buf, sizeof(_arg{i}));"
                   for i, ty in signature.items() if ty != "constexpr"])}
 
     // Launch the kernel
     _launch(l_args);
-
-    // DMA bounds check result output
-    {{
-        void *handle = dlopen(l_args.kernel_file, RTLD_NOLOAD);
-        if (handle) {{
-            uint32_t *oob_ptr = (uint32_t*)dlsym(handle, "dma_oob_count");
-            uint32_t *magic_ptr = (uint32_t*)dlsym(handle, "dma_bad_magic_count");
-            if (oob_ptr && magic_ptr) {{
-                fprintf(stdout, "DMA_CHECK_RESULT: oob=%u bad_magic=%u\\n",
-                        *oob_ptr, *magic_ptr);
-                fflush(stdout);
-            }}
-        }}
-    }}
-
     if (PyErr_Occurred()) {{
-        return make_LaunchRes(-1, "");
+        return make_LaunchRes(-1);
     }}
 
     // Call the exit hook if provided
@@ -1058,10 +1087,10 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
         PyObject* ret = PyObject_CallObject(launch_exit_hook, hook_args);
         Py_DECREF(hook_args);
         if (!ret)
-            return make_LaunchRes(-1, "");
+            return make_LaunchRes(-1);
     }}
 
-    return make_LaunchRes(0, "");
+    return make_LaunchRes(l_args.result);
 }}
 
 // Python module method definitions
@@ -1155,6 +1184,9 @@ class SimulatorUtils(object):
         return {"max_shared_mem": 1024 * 1024 * 3 - 0x10000 - 0x10000}
 
 
+_last_launch_res = None
+_launch_counter = 0
+
 # Launch cross compiled runtime program on controller
 class TXDALauncher(object):
 
@@ -1172,15 +1204,21 @@ class TXDALauncher(object):
         self.func_name = src.fn.__name__
 
     def __call__(self, gridX, gridY, gridZ, stream, function, *args, **kwargs):
+        global _launch_counter
+        _launch_counter += 1
         device_id = torch.txda.current_device()
         log_level = logger_to_custom_level_number(logger)
-        logger.info(f"{self.func_name} launch card:{device_id} begin")
+        logger.info(f"{self.func_name} launch card:{device_id} count:{_launch_counter} begin")
         launchRes = self.launch(device_id, self.metadata.so_key, self.metadata.kernel_path, self.func_name,
-                                txda_tools.is_dump_args_profile(), txda_tools.get_dump_dir(), log_level, gridX, gridY,
-                                gridZ, stream, function, *args, **kwargs)
+                                txda_tools.is_dump_args_profile(), txda_tools.get_dump_dir(), log_level,
+                                _launch_counter,
+                                gridX, gridY, gridZ, stream, function, *args, **kwargs)
+        logger.info(f"{self.func_name} launch card:{device_id} count:{_launch_counter} end")
         if launchRes.res != 0:
             logger.error(f"launch error code:{launchRes.res}")
-        logger.info(f"{self.func_name} launch card:{device_id} end")
+        global _last_launch_res
+        _last_launch_res = launchRes
+        return launchRes
 
 
 class TXDADriver(GPUDriver):
@@ -1232,5 +1270,7 @@ class TXDADriver(GPUDriver):
 
     def clear_cache(self, cache):
         return True
-        # print("clear_cache")
-        # cache.zero_()
+
+    def get_last_launch_res(self):
+        global _last_launch_res
+        return _last_launch_res

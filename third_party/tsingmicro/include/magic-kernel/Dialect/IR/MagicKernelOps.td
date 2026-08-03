@@ -406,6 +406,7 @@ class ArgReduceOp<string mnemonic> : MKOp<mnemonic, [DestinationStyleOpInterface
   let arguments = (
     ins
     TensorOrMemref:$src,
+    Optional<TensorOrMemref>:$imm, // WORKAROUND for tx backend
     Arg<TensorOrMemref, "the target memref", [MemWrite]>:$value,
     Arg<TensorOrMemref, "the target memref", [MemWrite]>:$index,
     I32Attr:$axis
@@ -415,7 +416,7 @@ class ArgReduceOp<string mnemonic> : MKOp<mnemonic, [DestinationStyleOpInterface
 
   let extraClassDeclaration = [{
     MutableOperandRange getDpsInitsMutable() {
-      return MutableOperandRange(getOperation(), /*start=*/1, /*count=*/2);
+      return MutableOperandRange(getOperation(), /*start=*/2, /*count=*/2);
     }
   }];
 }
@@ -453,6 +454,28 @@ def GatherOp : MKOp<"gather", [DestinationStyleOpInterface]> {
   }];
 }
 
+def CumsumOp : MKOp<"cumsum", [DestinationStyleOpInterface]> {
+  let summary = "exclusive cumsum lowered to a Tsingmicro CRT call";
+
+  let arguments = (
+    ins
+    TensorOrMemref:$src,
+    Arg<TensorOrMemref, "exclusive output", [MemWrite]>:$exclusive,
+    Arg<TensorOrMemref, "total output", [MemWrite]>:$total,
+    Arg<TensorOrMemref, "scratch buffer", [MemWrite]>:$scratch,
+    I32Attr:$axis,
+    I64ArrayAttr:$shape,
+    I64Attr:$pad
+  );
+
+  let results = (outs Variadic<TensorOrMemref>:$result);
+
+  let extraClassDeclaration = [{
+    MutableOperandRange getDpsInitsMutable() {
+      return MutableOperandRange(getOperation(), /*start=*/1, /*count=*/3);
+    }
+  }];
+}
 
 // =============================================================================
 // Unary/Binary/Ternary Element-wise Math Ops
@@ -551,7 +574,8 @@ def RemoteStoreOp : MKOp<"remote_store", [MemoryEffects<[MemRead<GlobalMemory>, 
     I64:$remote_tile_id,        // ID of the remote tile
     MKCommAddrLike:$dst_addr,   // Remote destination base address (or placeholder)
     Arg<TensorOrMemref, "the source memref", [MemRead]>:$src,  // Source buffer (read from here)
-    OptionalAttr<DenseI32ArrayAttr>:$mesh_physical_ids
+    OptionalAttr<DenseI32ArrayAttr>:$mesh_physical_ids,
+    OptionalAttr<DenseI32ArrayAttr>:$mesh_shape
   );
 
   let results = (outs);

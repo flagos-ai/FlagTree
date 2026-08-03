@@ -41,39 +41,40 @@ void __Rdma1d(void *restrict dest, const void *restrict src,
   INTRNISIC_RUN_SWITCH;
 
   if (is_dma_action_logging(action)) {
-    __EP_LOG__(
-        3, "[func @%s] rdma1d -- src: %p, dst: %p, elem_count: %d, fmt: %d\n",
-        kernel_name, src, dest, elem_count, fmt);
+    __EP_LOG__(3, "[func @%s] rdma1d -- src: %p, dst: %p, elem_count: %d, fmt: %d\n",
+      kernel_name, src, dest, elem_count, fmt);
   }
 
   if (is_dma_action_checking(action)) {
-    uint64_t *header = get_header(base_src);
-    if (header[1] != ClientPtrMagic) {
+    uint64_t* header = get_header(base_src);
+    uint64_t CRC = crc32((uint8_t*)header, ClientPtrHeaderBytes - sizeof(uint64_t));
+    if (CRC != header[2]) {
+      __EP_LOG__(3, "\n\nerror: [func @%s] rdma total_size %llu, magic %x, bad crc %x != %x(header[2]), "
+        "base_src (%p) data %x, src (%p)\n\n",
+        kernel_name, header[0], header[1], CRC, header[2],
+        base_src, header[2], src);
+    } else if (header[1] != ClientPtrMagic) {
       dma_bad_magic_count++;
-      __EP_LOG__(3,
-                 "\n\nerror: [func @%s] total_size %llu, bad magic %x, "
-                 "base_src (%p) data %x, src (%p)\n\n",
-                 kernel_name, header[0], header[1], base_src, header[2], src);
+      __EP_LOG__(3, "\n\nerror: [func @%s] rdma total_size %llu, bad magic %x, crc %x, "
+        "base_src (%p) data %x, src (%p)\n\n",
+        kernel_name, header[0], header[1], header[2],
+        base_src, header[2], src);
     } else {
       uint64_t total_size = header[0];
       uint32_t elem_bytes = get_dtype_size_new((Data_Format)fmt);
       uintptr_t min_addr = (uintptr_t)src;
       uintptr_t max_addr = (uintptr_t)src + (uintptr_t)elem_count * elem_bytes;
 
-      __EP_LOG__(3,
-                 "[func @%s] rdma1d base_src (%p), total_size %llu, magic %x, "
-                 "src (%p), range_size %d\n",
-                 kernel_name, base_src, total_size, header[1], src,
-                 (unsigned int)(max_addr - min_addr));
+      __EP_LOG__(3, "[func @%s] rdma1d base_src (%p), total_size %llu, magic %x, crc %x, "
+        "src (%p), range_size %d\n",
+        kernel_name, base_src, total_size, header[1], header[2],
+        src, (unsigned int)(max_addr - min_addr));
 
-      if (min_addr < (uintptr_t)base_src ||
-          max_addr > (uintptr_t)base_src + total_size) {
+      if (min_addr < (uintptr_t)base_src || max_addr > (uintptr_t)base_src + total_size) {
         dma_oob_count++;
-        __EP_LOG__(3,
-                   "[func @%s] fatal error: ddr memory OOB, "
-                   "rdma1d base_src (%p), total_size %llu, src (%p), "
-                   "dma_oob_count (%d)\n",
-                   kernel_name, base_src, total_size, src, dma_oob_count);
+        __EP_LOG__(3, "[func @%s] fatal error: ddr memory OOB, "
+          "rdma1d base_src (%p), total_size %llu, src (%p), dma_oob_count (%d)\n",
+          kernel_name, base_src, total_size, src, dma_oob_count);
         if (get_dma_check_abort()) {
           abort();
         }
@@ -131,6 +132,7 @@ void __RdmaVectorize(char *srcPtr, char *dstPtr, int *src_shape,
     // RcsWaitfinish();
     SYNCHRONOUS_INTRINSIC_SWITCH;
 
+
     // Advance index and read position.
     // Start from the second-to-last dimension, copy one line at a time
     for (int64_t axis = innermost_rank; axis >= 0; --axis) {
@@ -167,62 +169,63 @@ void __Rdma(uint64_t *src, uint64_t *dst, int *src_shape, int *src_stride,
   }
 
   if (is_dma_action_logging(action)) {
-    __EP_LOG__(3, "[func @%s] rdma -- src: %p, dst: %p, elem_bytes: %d (",
-               kernel_name, src, dst, elem_bytes);
+    __EP_LOG__(3, "[func @%s] rdma -- src: %p, dst: %p, elem_bytes: %d (", kernel_name, src, dst, elem_bytes);
 
     __EP_LOG__(3, "src_shape[");
     for (int i = 0; i < rank; i++) {
-      __EP_LOG__(3, "%d%s", src_shape[i], (i == rank - 1) ? "" : ", ");
+        __EP_LOG__(3, "%d%s", src_shape[i], (i == rank - 1) ? "" : ", ");
     }
     __EP_LOG__(3, "], ");
 
     __EP_LOG__(3, "src_stride[");
     for (int i = 0; i < rank; i++) {
-      __EP_LOG__(3, "%d%s", src_stride[i], (i == rank - 1) ? "" : ", ");
+        __EP_LOG__(3, "%d%s", src_stride[i], (i == rank - 1) ? "" : ", ");
     }
     __EP_LOG__(3, "], ");
 
     __EP_LOG__(3, "dst_shape[");
     for (int i = 0; i < rank; i++) {
-      __EP_LOG__(3, "%d%s", dst_shape[i], (i == rank - 1) ? "" : ", ");
+        __EP_LOG__(3, "%d%s", dst_shape[i], (i == rank - 1) ? "" : ", ");
     }
     __EP_LOG__(3, "], ");
 
     __EP_LOG__(3, "dst_stride[");
     for (int i = 0; i < rank; i++) {
-      __EP_LOG__(3, "%d%s", dst_stride[i], (i == rank - 1) ? "" : ", ");
+        __EP_LOG__(3, "%d%s", dst_stride[i], (i == rank - 1) ? "" : ", ");
     }
     __EP_LOG__(3, "])\n");
   }
 
   if (is_dma_action_checking(action)) {
-    uint64_t *header = get_header(base_src);
-    if (header[1] != ClientPtrMagic) {
+    uint64_t* header = get_header(base_src);
+    uint64_t CRC = crc32((uint8_t*)header, ClientPtrHeaderBytes - sizeof(uint64_t));
+    if (CRC != header[2]) {
+      __EP_LOG__(3, "\n\nerror: [func @%s] rdma total_size %llu, magic %x, bad crc %x != %x(header[2]), "
+        "base_src (%p) data %x, src (%p)\n\n",
+        kernel_name, header[0], header[1], CRC, header[2],
+        base_src, header[2], src);
+    } else if (header[1] != ClientPtrMagic) {
       dma_bad_magic_count++;
-      __EP_LOG__(3,
-                 "\n\nerror: [func @%s] total_size %llu, bad magic %x, "
-                 "base_src (%p) data %x, src (%p)\n\n",
-                 kernel_name, header[0], header[1], base_src, header[2], src);
+      __EP_LOG__(3, "\n\nerror: [func @%s] total_size %llu, bad magic %x, crc %x, "
+        "base_src (%p) data %x, src (%p)\n\n",
+        kernel_name, header[0], header[1], header[2],
+        base_src, header[2], src);
     } else {
       uint64_t total_size = header[0];
       Tx81SrcAddrRange range =
-          compute_rdma_src_addr_range(src, src_shape, src_stride, dst_shape,
-                                      dst_stride, rank, elem_bytes, fmt);
+        compute_rdma_src_addr_range(src, src_shape, src_stride,
+          dst_shape, dst_stride, rank, elem_bytes, fmt);
 
-      __EP_LOG__(3,
-                 "[func @%s] rdma base_src (%p), total_size %llu, magic %x, "
-                 "src (%p), rang_size %d\n",
-                 kernel_name, base_src, total_size, header[1], src,
-                 (unsigned int)(range.max_addr - range.min_addr));
+      __EP_LOG__(3, "[func @%s] rdma base_src (%p), total_size %llu, magic %x, crc %x, "
+        "src (%p), rang_size %d\n",
+        kernel_name, base_src, total_size, header[1], header[2],
+        src, (unsigned int)(range.max_addr - range.min_addr));
 
-      if (range.min_addr < (uintptr_t)base_src ||
-          range.max_addr > (uintptr_t)base_src + total_size) {
+      if (range.min_addr < (uintptr_t)base_src || range.max_addr > (uintptr_t)base_src + total_size) {
         dma_oob_count++;
-        __EP_LOG__(3,
-                   "[func @%s] fatal error: ddr memory OOB, "
-                   "rdma base_src (%p), total_size %llu, src (%p), "
-                   "dma_oob_count (%d)\n",
-                   kernel_name, base_src, total_size, src, dma_oob_count);
+        __EP_LOG__(3, "[func @%s] fatal error: ddr memory OOB, "
+          "rdma base_src (%p), total_size %llu, src (%p), dma_oob_count (%d)\n",
+          kernel_name, base_src, total_size, src, dma_oob_count);
         if (get_dma_check_abort()) {
           abort();
         }

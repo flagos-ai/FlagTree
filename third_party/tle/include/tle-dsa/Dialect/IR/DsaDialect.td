@@ -66,3 +66,4 @@ class Dsa_Op<string mnemonic, list<Trait> traits = []> :
     Op<Dsa_Dialect, mnemonic, traits>;
 
 #endif // TLE_DSA_DIALECT
+

@@ -26,7 +26,6 @@ fi
 setup_proxy
 
 apt install git
-apt install lld
 apt install ccache
 
 # pip uninstall triton

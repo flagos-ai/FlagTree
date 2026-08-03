@@ -123,11 +123,15 @@ if [ -f $TRITON/.venv/bin/activate ]; then
 fi
 
 export LLVM_SYSPATH=$LLVM
+export PATH=$LLVM/bin:$PATH
 export TX8_DEPS_ROOT=$TX8_DEPS_ROOT
 export FLAGTREE_BACKEND=tsingmicro
 
 # debug
-# export NO_INTRNISIC_RUN=1
+# 1-skip intrinsic run, 0-intrinsic run£¬ no define is 0
+#export ENABLE_NO_INTRINSIC_RUN=1
+# 1-dump N(now is 10) element fp data for every intrinsic result
+#export ENABLE_DEBUG_DUMP_DATA=1
 
 echo "export TX8_DEPS_ROOT=$TX8_DEPS_ROOT"
 echo "export LLVM_SYSPATH=$LLVM_SYSPATH"

@@ -44,7 +44,7 @@ public:
     PassManager pm(&getContext(), moduleOp.getOperationName());
 
     LinalgToMKOptions options;
-    options.precisionPriority = precisionPriority;
+    options.precisionMode = precisionMode;
     pm.addPass(createLinalgToMKPass(options));
 
     // Erase dead code and fold constants created during lowering

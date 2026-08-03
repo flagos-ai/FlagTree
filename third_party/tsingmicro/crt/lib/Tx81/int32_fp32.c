@@ -30,4 +30,5 @@ void __INT32_FP32(uint64_t *src, uint64_t *dst, uint32_t elem_count,
   // RcsWaitfinish();
   SYNCHRONOUS_INTRINSIC_SWITCH;
   // Destroy the command buffer.
+  DEBUG_DUMP_F32_DATA(dst, 10, "__INT32_FP32");
 }

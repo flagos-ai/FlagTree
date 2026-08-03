@@ -14,8 +14,8 @@ def LinalgToMK : Pass<"linalg-to-mk", "mlir::ModuleOp"> {
   let summary = "Convert linalg operations into magic kernel operations";
 
   let options = [
-     Option<"precisionPriority", "precision-mode", "int", /*default*/"0",
-       "Precision mode: 0 disables it, 1 preserves i64 precision, 2 preserves the previous full precision behavior">
+     Option<"precisionMode", "precision-mode", "int", /*default*/"0",
+       "Precision mode: 0 disables it, 1 preserves i64 precision, 2 preserves full integer precision (i32/i64 handled by CPU)">
   ];
 }
 

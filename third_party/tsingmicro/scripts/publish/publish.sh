@@ -17,7 +17,7 @@ if [ -z "${WORKSPACE+x}" ]; then
     WORKSPACE=$(realpath "$project_dir/..")
 fi
 
-TX8_SDK_Triton_version=1.9.0
+TX8_SDK_Triton_version=1.10.0
 sdk_name=TX8_SDK_${TX8_SDK_Triton_version}_Triton
 # TX8_DEPS_ROOT=$WORKSPACE/tx8_deps
 # LLVM=$WORKSPACE/llvm-a66376b0-ubuntu-x64
@@ -76,6 +76,9 @@ else
         fi
         cp $flaggems_wheel $publish_dir
         cp -r tests $publish_dir/flaggems_tests
+        cp -r benchmark $publish_dir/flaggems_benchmark
+        cp pytest.ini $publish_dir/flaggems_tests
+        cp pytest.ini $publish_dir/flaggems_benchmark
     popd
 fi
 

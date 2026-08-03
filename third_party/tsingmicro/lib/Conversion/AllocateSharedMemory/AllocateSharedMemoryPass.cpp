@@ -32,9 +32,23 @@ struct AllocateSharedMemory
     assert(op && "Value has no defining op");
     if (isa<memref::AllocOp>(op))
       return op;
+    // scf.if yields values from both branches — recurse into each
+    // branch's yield operand to find the underlying alloc.
+    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+      unsigned idx = cast<OpResult>(v).getResultNumber();
+      Operation *thenAlloc = findAlignmentRestrictOpOperandBuffer(
+          ifOp.thenYield()->getOperand(idx));
+      // Both branches should share the same alloc alignment, so
+      // return whichever branch we find first.
+      if (thenAlloc)
+        return thenAlloc;
+      return findAlignmentRestrictOpOperandBuffer(
+          ifOp.elseYield()->getOperand(idx));
+    }
     // Memref op which has result: ViewLikeOpInterface. Eg:
     // memref::ExpandShapeOp
-    assert(isa<ViewLikeOpInterface>(op));
+    assert(isa<ViewLikeOpInterface>(op) &&
+           "expected ViewLikeOpInterface or scf.if");
     return findAlignmentRestrictOpOperandBuffer(op->getOperand(0));
   }
 

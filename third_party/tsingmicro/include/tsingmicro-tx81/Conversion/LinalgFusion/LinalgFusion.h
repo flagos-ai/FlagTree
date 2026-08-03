@@ -16,7 +16,7 @@ void populateLinalgBinaryOpFusionPatterns(RewritePatternSet &patterns);
 
 void populateLinalgTypeConversionFusionPatterns(RewritePatternSet &patterns);
 
-// TODO: Support linalg elementwise op fusion.
+// TODO: Support linalg elementwise op fusion. 
 #if 0
 void populateLinalgFusionPatterns(RewritePatternSet &patterns);
 #endif

@@ -31,4 +31,5 @@ void __RecipVV(uint64_t *src, uint64_t *dst, uint32_t elem_count,
   RcsExecute(&inst);
   // RcsWaitfinish();
   SYNCHRONOUS_INTRINSIC_SWITCH;
+  DEBUG_DUMP_F32_DATA(dst, 10, "__RecipVV");
 }

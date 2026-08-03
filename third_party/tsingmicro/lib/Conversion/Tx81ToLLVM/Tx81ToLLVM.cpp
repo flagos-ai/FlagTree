@@ -93,6 +93,7 @@ const char reduceSumFuncName[] = "__ReduceSum";
 const char reduceMaxFuncName[] = "__ReduceMax";
 const char reduceMinFuncName[] = "__ReduceMin";
 const char reduceMulFuncName[] = "__ReduceMul";
+const char cumsumPadFuncName[] = "__CumsumPad";
 // Int8
 const char int8ToBf16FuncName[] = "__INT8_BF16";
 const char int8ToFp16FuncName[] = "__INT8_FP16";
@@ -335,20 +336,20 @@ static Value int32ArrayToInt32ValueArray(ConversionPatternRewriter &rewriter,
 static uint32_t getDmaActionFromEnv() {
   uint32_t action = 0;
   const char *val = 0;
-
+  
   val = std::getenv("TRITON_DMA_LOGGING");
   if (val) {
     if (std::atoi(val) == 1)
-      action |= DMA_ACT_LOG;
+        action |= DMA_ACT_LOG;
   }
 
   val = std::getenv("TRITON_DMA_CHECKING");
   if (val) {
     if (std::atoi(val) == 1)
-      action |= DMA_ACT_CHK;
+        action |= DMA_ACT_CHK;
   }
 
-  return action;
+  return action; 
 }
 
 //===----------------------------------------------------------------------===//
@@ -480,7 +481,8 @@ struct BarrierConversion : public OpConversionPattern<tx::BarrierOp> {
                                                 "__Barrier", i8PtrTy, {});
 
     auto call = rewriter.create<LLVM::CallOp>(op.getLoc(), TypeRange{i8PtrTy},
-                                              "__Barrier", ValueRange{});
+                                              "__Barrier",
+                                              ValueRange{});
 
     rewriter.eraseOp(op);
     return success();
@@ -506,17 +508,19 @@ struct DistributeBarrierOpConversion
     auto idsRef = meshPhysicalIds.asArrayRef();
     SmallVector<int32_t> ids(idsRef.begin(), idsRef.end());
 
-    Value physicalIdsPtr = int32ArrayToInt32ValueArray(rewriter, loc, ids, op);
+    Value physicalIdsPtr =
+        int32ArrayToInt32ValueArray(rewriter, loc, ids, op);
 
     Value count = rewriter.create<LLVM::ConstantOp>(
         loc, i32Ty, rewriter.getI32IntegerAttr(ids.size()));
 
     SmallVector<Type, 2> argTypes = {ptrTy, i32Ty};
-    triton::declareTx81Function(module, rewriter, loc, "__BarrierSubgroup",
-                                voidTy, argTypes);
+    triton::declareTx81Function(module, rewriter, loc,
+                                "__BarrierSubgroup", voidTy, argTypes);
 
-    rewriter.create<LLVM::CallOp>(loc, TypeRange{}, "__BarrierSubgroup",
-                                  ValueRange{physicalIdsPtr, count});
+    rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{}, "__BarrierSubgroup",
+        ValueRange{physicalIdsPtr, count});
 
     rewriter.eraseOp(op);
     return success();
@@ -645,9 +649,9 @@ struct Rdma1dOpConversion : public OpConversionPattern<Tx81Op> {
     if (!module.template lookupSymbol<LLVM::GlobalOp>(globalName)) {
       auto charType = IntegerType::get(ctx, 8);
       auto strType = LLVM::LLVMArrayType::get(charType, kernelName.size() + 1);
-      rewriter.create<LLVM::GlobalOp>(
-          loc, strType, /*isConstant=*/true, LLVM::Linkage::Internal,
-          globalName, rewriter.getStringAttr(kernelName + '\0'));
+      rewriter.create<LLVM::GlobalOp>(loc, strType, /*isConstant=*/true,
+          LLVM::Linkage::Internal, globalName,
+          rewriter.getStringAttr(kernelName + '\0'));
     }
     rewriter.restoreInsertionPoint(savedIP);
     auto kernelNamePtr = rewriter.create<LLVM::AddressOfOp>(
@@ -666,8 +670,7 @@ struct Rdma1dOpConversion : public OpConversionPattern<Tx81Op> {
         rewriter.create<LLVM::ConstantOp>(loc, i32Type, op.getFmtAttr());
 
     Value baseDdrAddr = adaptor.getBaseDdrAddr();
-    baseDdrAddr =
-        rewriter.create<LLVM::IntToPtrOp>(loc, LLVMPtrType, baseDdrAddr);
+    baseDdrAddr = rewriter.create<LLVM::IntToPtrOp>(loc, LLVMPtrType, baseDdrAddr);
 
     Value action = rewriter.create<LLVM::ConstantOp>(
         loc, i32Type, rewriter.getI32IntegerAttr(getDmaActionFromEnv()));
@@ -683,8 +686,7 @@ struct Rdma1dOpConversion : public OpConversionPattern<Tx81Op> {
 };
 
 // Resolve tx.remote_buffer to its destination address.
-struct RemoteBufferOpConversion
-    : public OpConversionPattern<tx::RemoteBufferOp> {
+struct RemoteBufferOpConversion : public OpConversionPattern<tx::RemoteBufferOp> {
   using OpConversionPattern<tx::RemoteBufferOp>::OpConversionPattern;
 
   LogicalResult
@@ -719,18 +721,18 @@ struct RemoteLoadOpConversion : public OpConversionPattern<tx::RemoteLoadOp> {
 
     // Types for function declaration
     SmallVector<Type, 7> argTypes = {
-        i64Ty,   // remote_chip_id_x
-        i64Ty,   // remote_chip_id_y
-        i64Ty,   // remote_die_id
-        i64Ty,   // remote_tile_id
-        i8PtrTy, // dst
-        i32Ty,   // elem_bytes
-        i64Ty    // data_size
+        i64Ty,    // remote_chip_id_x
+        i64Ty,    // remote_chip_id_y
+        i64Ty,    // remote_die_id
+        i64Ty,    // remote_tile_id
+        i8PtrTy,  // dst
+        i32Ty,    // elem_bytes
+        i64Ty     // data_size
     };
 
     // Declare the function with void return type
-    Value funcPtr = triton::declareTx81Function(module, rewriter, loc,
-                                                recvFuncName, voidTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(
+        module, rewriter, loc, recvFuncName, voidTy, argTypes);
 
     // Get the operands and convert dst to i8*
     Value chipX = adaptor.getOperands()[0];
@@ -802,6 +804,20 @@ emitMeshTopologyForCall(ModuleOp module, OpBuilder &builder, Location loc,
   return {ptr, size};
 }
 
+static Value emitRingSizeForCall(OpBuilder &builder, Location loc,
+                                 DenseI32ArrayAttr meshShapeAttr,
+                                 Value fallbackMeshSize) {
+  auto i32Ty = IntegerType::get(builder.getContext(), 32);
+  if (!meshShapeAttr || meshShapeAttr.asArrayRef().empty())
+    return fallbackMeshSize;
+  auto shape = meshShapeAttr.asArrayRef();
+  int32_t ringSize = shape.back();
+  if (ringSize <= 0)
+    return fallbackMeshSize;
+  return builder.create<LLVM::ConstantOp>(loc, i32Ty,
+                                          builder.getI32IntegerAttr(ringSize));
+}
+
 // Convert tx.remote_store to LLVM call to __Send function
 struct RemoteStoreOpConversion : public OpConversionPattern<tx::RemoteStoreOp> {
   using OpConversionPattern<tx::RemoteStoreOp>::OpConversionPattern;
@@ -816,19 +832,22 @@ struct RemoteStoreOpConversion : public OpConversionPattern<tx::RemoteStoreOp> {
     // Emit per-call mesh topology so __Send can find its recv source.
     auto [physicalIdsPtr, meshSize] = emitMeshTopologyForCall(
         module, rewriter, loc, op.getMeshPhysicalIdsAttr());
+    Value ringSize =
+        emitRingSizeForCall(rewriter, loc, op.getMeshShapeAttr(), meshSize);
 
     // Declare the __Send runtime function if not already declared.
     // Signature:
     //   void __Send(int64_t chip_x, int64_t chip_y, int64_t die_id,
     //              int64_t tile_id, void* dst, void* src,
     //              uint32_t elem_bytes, uint64_t data_size,
-    //              const uint32_t *physical_ids, uint32_t mesh_size)
+    //              const uint32_t *physical_ids, uint32_t mesh_size,
+    //              uint32_t ring_size)
     auto i8PtrTy = LLVM::LLVMPointerType::get(ctx);
     auto i64Ty = rewriter.getI64Type();
     auto i32Ty = rewriter.getI32Type();
     auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
-    SmallVector<Type, 10> argTypes = {
+    SmallVector<Type, 11> argTypes = {
         i64Ty,   // remote_chip_id_x
         i64Ty,   // remote_chip_id_y
         i64Ty,   // remote_die_id
@@ -838,7 +857,8 @@ struct RemoteStoreOpConversion : public OpConversionPattern<tx::RemoteStoreOp> {
         i32Ty,   // elem_bytes
         i64Ty,   // data_size
         i8PtrTy, // physical_ids (opaque pointer)
-        i32Ty    // mesh_size
+        i32Ty,   // mesh_size
+        i32Ty    // ring_size
     };
 
     triton::declareTx81Function(module, rewriter, loc, sendFuncName, voidTy,
@@ -856,10 +876,10 @@ struct RemoteStoreOpConversion : public OpConversionPattern<tx::RemoteStoreOp> {
     Value dst = rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, dstAddr);
     src = rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, src);
 
-    rewriter.create<LLVM::CallOp>(loc, TypeRange{}, sendFuncName,
-                                  ValueRange{chipX, chipY, dieId, tileId, dst,
-                                             src, elemBytes, dataSize,
-                                             physicalIdsPtr, meshSize});
+    rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{}, sendFuncName,
+        ValueRange{chipX, chipY, dieId, tileId, dst, src, elemBytes, dataSize,
+                   physicalIdsPtr, meshSize, ringSize});
 
     rewriter.eraseOp(op);
     return success();
@@ -879,8 +899,7 @@ struct RdmaWdmaOpConversion : public OpConversionPattern<Tx81Op> {
     // Get the module for function declarations
     auto module = op->template getParentOfType<ModuleOp>();
 
-    // Get kernel name from parent function (may be func::FuncOp or
-    // LLVM::LLVMFuncOp)
+    // Get kernel name from parent function (may be func::FuncOp or LLVM::LLVMFuncOp)
     std::string kernelName;
     if (auto funcOp = op->template getParentOfType<func::FuncOp>())
       kernelName = funcOp.getName().str();
@@ -908,17 +927,16 @@ struct RdmaWdmaOpConversion : public OpConversionPattern<Tx81Op> {
         i8PtrTy   // kernel_name
     };
 
-    // Create or find global kernel name string constant (must be in module
-    // scope)
+    // Create or find global kernel name string constant (must be in module scope)
     std::string globalName = "__dma_kernel_name";
     auto savedIP = rewriter.saveInsertionPoint();
     rewriter.setInsertionPointToStart(module.getBody());
     if (!module.template lookupSymbol<LLVM::GlobalOp>(globalName)) {
       auto charType = IntegerType::get(ctx, 8);
       auto strType = LLVM::LLVMArrayType::get(charType, kernelName.size() + 1);
-      rewriter.create<LLVM::GlobalOp>(
-          loc, strType, /*isConstant=*/true, LLVM::Linkage::Internal,
-          globalName, rewriter.getStringAttr(kernelName + '\0'));
+      rewriter.create<LLVM::GlobalOp>(loc, strType, /*isConstant=*/true,
+          LLVM::Linkage::Internal, globalName,
+          rewriter.getStringAttr(kernelName + '\0'));
     }
     rewriter.restoreInsertionPoint(savedIP);
     auto kernelNamePtr = rewriter.create<LLVM::AddressOfOp>(
@@ -1106,6 +1124,7 @@ struct TransformOpConversion : public OpConversionPattern<Tx81Op> {
   }
 };
 
+
 struct GatherScatterOpConversion
     : public OpConversionPattern<tx::GatherScatter> {
   GatherScatterOpConversion(MLIRContext *context, bool gatherScatterAsync)
@@ -1158,8 +1177,8 @@ struct GatherScatterOpConversion
     StringRef funcName =
         gatherScatterAsync ? "__GatherScatterAsync" : "__GatherScatter";
     // Declare the function
-    Value funcPtr = triton::declareTx81Function(module, rewriter, loc, funcName,
-                                                i8PtrTy, argTypes);
+    Value funcPtr = triton::declareTx81Function(
+        module, rewriter, loc, funcName, i8PtrTy, argTypes);
 
     // Get the operands
     Value src = adaptor.getSource();
@@ -1238,15 +1257,17 @@ struct ArgMinMaxOpConversion : public OpConversionPattern<Tx81Op> {
     auto i16Ty = rewriter.getI16Type();
 
     // Types for function declaration
-    SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i8PtrTy, i32Ty, i16Ty};
+    SmallVector<Type, 17> argTypes = {i8PtrTy, i8PtrTy, i8PtrTy, i8PtrTy, i32Ty, i16Ty};
 
     Value funcPtr = triton::declareTx81Function(module, rewriter, op.getLoc(),
                                                 funcPrefix, i8PtrTy, argTypes);
 
     // Convert operands
     Value src = adaptor.getSrc();
+    Value imm = adaptor.getBuffer();
     // Need to bitcast src to i8*
     src = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), i8PtrTy, src);
+    imm = rewriter.create<LLVM::IntToPtrOp>(op.getLoc(), i8PtrTy, imm);
 
     // Convert results
     Value value = adaptor.getValue();
@@ -1266,7 +1287,7 @@ struct ArgMinMaxOpConversion : public OpConversionPattern<Tx81Op> {
     // Create the call
     auto call = rewriter.create<LLVM::CallOp>(
         op.getLoc(), i8PtrTy, funcPrefix, // funcPtr,
-        ArrayRef<Value>{src, value, index, elemCount, fmt});
+        ArrayRef<Value>{src, imm, value, index, elemCount, fmt});
 
     // Erase the old op
     rewriter.eraseOp(op);
@@ -1338,6 +1359,62 @@ struct ReduceOpConversion : public OpConversionPattern<Tx81Op> {
     // Erase the old op
     rewriter.eraseOp(op);
 
+    return success();
+  }
+};
+
+struct CumsumOpConversion : public OpConversionPattern<tx::CumsumOp> {
+  using OpConversionPattern<tx::CumsumOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tx::CumsumOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto module = op->getParentOfType<ModuleOp>();
+    auto *ctx = rewriter.getContext();
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    auto i8PtrTy = LLVM::LLVMPointerType::get(ctx);
+    auto i32Ty = rewriter.getI32Type();
+    auto i16Ty = rewriter.getI16Type();
+
+    SmallVector<Type, 9> argTypes = {i8PtrTy, i8PtrTy, i8PtrTy,
+                                     i8PtrTy, i32Ty,   i32Ty,
+                                     i8PtrTy, i32Ty,   i16Ty};
+    Value funcPtr =
+        triton::declareTx81Function(module, rewriter, loc,
+                                    cumsumPadFuncName, voidTy, argTypes);
+    (void)funcPtr;
+
+    Value src =
+        rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, adaptor.getSrc());
+    Value exclusive = rewriter.create<LLVM::IntToPtrOp>(
+        loc, i8PtrTy, adaptor.getExclusive());
+    Value total =
+        rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, adaptor.getTotal());
+    Value scratch = rewriter.create<LLVM::IntToPtrOp>(
+        loc, i8PtrTy, adaptor.getScratch());
+
+    SmallVector<int32_t> shape;
+    shape.reserve(op.getShape().size());
+    for (Attribute dimAttr : op.getShape())
+      shape.push_back(
+          static_cast<int32_t>(cast<IntegerAttr>(dimAttr).getInt()));
+    Value shapeArray = int32ArrayToInt32ValueArray(rewriter, loc, shape, op);
+
+    Value rank = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(op.getRank()));
+    Value axis = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(op.getAxis()));
+    Value pad = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(op.getPad()));
+    Value fmt = rewriter.create<LLVM::ConstantOp>(
+        loc, i16Ty, rewriter.getI16IntegerAttr(op.getFmt()));
+
+    rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{}, cumsumPadFuncName,
+        ValueRange{src, exclusive, total, scratch, rank, axis, shapeArray, pad,
+                   fmt});
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -2805,6 +2882,7 @@ public:
                  TransformOpConversion<tx::Nhwc2nchw,nhwc2nchwFuncName>,
                  AtomicBarrierOpConversion<tx::AtomicBarrierInOp, atomicBarrierInFuncName>,
                  AtomicBarrierOpConversion<tx::AtomicBarrierOutOp, atomicBarrierOutFuncName>,
+                 CumsumOpConversion,
                  MaskMoveOpConversion,
                  BitToFPOpConversion,
                  ChannelNormOpConversion,   // NOTE: No op used

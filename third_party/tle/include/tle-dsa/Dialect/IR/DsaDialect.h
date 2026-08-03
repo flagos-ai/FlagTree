@@ -15,8 +15,8 @@
 
 // DsaOps.td uses TT_Tensor / TT_Ptr / TT_Int type constraints from the
 // Triton dialect, so the generated verifiers need these types visible.
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "tle-dsa/Dialect/IR/DsaOpsDialect.h.inc"
 
@@ -31,3 +31,4 @@ class PatternRewriter;
 #include "tle-dsa/Dialect/IR/DsaOps.h.inc"
 
 #endif // TLE_DSA_DIALECT_IR_DSADIALECT_H
+

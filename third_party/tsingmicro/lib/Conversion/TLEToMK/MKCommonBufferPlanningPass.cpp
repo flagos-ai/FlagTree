@@ -8,8 +8,7 @@
 // - Find pairs where recv.src_addr and send.dst_addr are the same SSA value.
 // - Replace the shared placeholder "addr" with two distinct buffers:
 //   one buffer for send's remote dst, one buffer for recv's remote src.
-// - The buffers are created as tensor.empty (or memref.alloc if already
-// bufferized).
+// - The buffers are created as tensor.empty (or memref.alloc if already bufferized).
 //
 //===--------------------------------------------------------------------===//
 
@@ -22,8 +21,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Pass/Pass.h"
 
 #include <optional>
@@ -36,7 +35,9 @@ using namespace triton;
 
 namespace {
 
-static int64_t alignUp(int64_t v, int64_t a) { return (v + a - 1) / a * a; }
+static int64_t alignUp(int64_t v, int64_t a) {
+  return (v + a - 1) / a * a;
+}
 
 static std::optional<int64_t> getStaticBytes(ShapedType ty) {
   if (!ty || !ty.hasStaticShape())
@@ -91,10 +92,10 @@ static Value createEmptyLikeShaped(OpBuilder &b, Location loc, ShapedType ty) {
 struct MKCommBufferPlanningPass
     : public MKCommBufferPlanningBase<MKCommBufferPlanningPass> {
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<mk::MagicKernelDialect, triton::TritonDialect,
-                arith::ArithDialect, memref::MemRefDialect,
-                bufferization::BufferizationDialect, tensor::TensorDialect>();
+    registry.insert<mk::MagicKernelDialect, triton::TritonDialect,
+                    arith::ArithDialect,
+                    memref::MemRefDialect, bufferization::BufferizationDialect,
+                    tensor::TensorDialect>();
   }
 
   void runOnOperation() override {
@@ -144,8 +145,7 @@ struct MKCommBufferPlanningPass
           // Different blocks: insert at end of common dominator block
           // (before terminator if any).
           b.setInsertionPointToEnd(insBlock);
-          if (!insBlock->empty() &&
-              insBlock->back().hasTrait<OpTrait::IsTerminator>())
+          if (!insBlock->empty() && insBlock->back().hasTrait<OpTrait::IsTerminator>())
             b.setInsertionPoint(&insBlock->back());
         }
 
@@ -181,3 +181,4 @@ struct MKCommBufferPlanningPass
 std::unique_ptr<Pass> triton::createMKCommBufferPlanningPass() {
   return std::make_unique<MKCommBufferPlanningPass>();
 }
+

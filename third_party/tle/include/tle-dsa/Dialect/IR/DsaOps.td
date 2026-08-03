@@ -72,8 +72,31 @@ def Dsa_DistributedBarrierOp : Dsa_Op<"distributed_barrier",
 
 def Dsa_RemotePointersOp : Dsa_Op<"remote_pointers", [Pure]> {
   let arguments = (ins DsaRemotePointerType:$src, DsaRemoteShardIdType:$shard_id,
-                   OptionalAttr<DenseI32ArrayAttr>:$mesh_physical_ids);
+                   OptionalAttr<DenseI32ArrayAttr>:$mesh_physical_ids,
+                   OptionalAttr<DenseI32ArrayAttr>:$mesh_shape);
   let results = (outs DsaRemotePointerType:$result);
+}
+
+def DsaCumsumInputType : RankedTensorOf<[TT_Float, TT_Int]>;
+def DsaCumsumTotalResultType : AnyTypeOf<[DsaCumsumInputType, TT_Float, TT_Int]>;
+
+//===----------------------------------------------------------------------===//
+// dsa.cumsum
+//===----------------------------------------------------------------------===//
+
+def Dsa_CumsumOp : Dsa_Op<"cumsum", [Pure]> {
+  let summary = "exclusive cumsum marker lowered by Tsingmicro CRT";
+  let arguments = (ins
+    DsaCumsumInputType:$input,
+    I32Attr:$axis,
+    BoolAttr:$reverse,
+    DenseI64ArrayAttr:$shape,
+    I64Attr:$pad
+  );
+  let results = (outs
+    DsaCumsumInputType:$exclusive,
+    DsaCumsumTotalResultType:$total
+  );
 }
 
 #endif // TLE_DSA_OPS

@@ -17,13 +17,19 @@
 
 // Find the tile that precedes `tileId` in the given physical_ids ring.
 static int32_t getPrevInTopology(uint32_t tileId, const uint32_t *physical_ids,
-                                 uint32_t mesh_size) {
+                                 uint32_t mesh_size, uint32_t ring_size) {
   if (mesh_size == 0 || !physical_ids)
     return -1;
+  if (ring_size == 0 || ring_size > mesh_size)
+    ring_size = mesh_size;
   for (uint32_t i = 0; i < mesh_size; i++) {
     if (physical_ids[i] == tileId) {
-      if (i == 0)
-        return physical_ids[mesh_size - 1];
+      uint32_t ring_start = (i / ring_size) * ring_size;
+      uint32_t ring_end = ring_start + ring_size - 1;
+      if (ring_end >= mesh_size)
+        ring_end = mesh_size - 1;
+      if (i == ring_start)
+        return physical_ids[ring_end];
       return physical_ids[i - 1];
     }
   }
@@ -52,7 +58,10 @@ void tile_sync_by_spm_single_direction(int32_t tile_this, int32_t tile_a,
   *(uint64_t *)(this_debug_spm_ptr + 8) = (uint64_t)this_spm_ptr;
   volatile uint32_t *tile_a_spm_ptr = (volatile uint32_t *)(tile_a_spm);
 
-  this_debug_spm_ptr[10] = 0;               // 写对端开始
+  this_debug_spm_ptr[10] = 0; // 写对端开始
+  // 等对端消费掉上一次 post
+  while (tile_a_spm_ptr[other_sync_spm_index] != 0) {
+  }
   tile_a_spm_ptr[other_sync_spm_index] = 1; // forward
 
   this_debug_spm_ptr[10] = 1; // 写对端结束
@@ -60,7 +69,7 @@ void tile_sync_by_spm_single_direction(int32_t tile_this, int32_t tile_a,
   while (!this_spm_ptr[this_sync_spm_index]) {
   }
 
-  this_spm_ptr[this_sync_spm_index] = 0; // forward
+  this_spm_ptr[this_sync_spm_index] = 0; // consume
 }
 
 #define SCFG_TILE_ID_ADDR 0x6A0058 // KUIPER_ADDR_MAP_REG_BASE 0x6A0000
@@ -89,14 +98,15 @@ int initTileId(uint32_t tileId, uint32_t rowLength) {
 void __Send(int64_t chipX, int64_t chipY, int64_t dieId, int64_t tileId,
             void *restrict dst, void *restrict src, uint32_t elem_bytes,
             uint64_t data_size, const uint32_t *physical_ids,
-            uint32_t mesh_size) {
+            uint32_t mesh_size, uint32_t ring_size) {
   uint32_t coreIndex = __get_pid(0);
   initTileId(coreIndex, 4);
   (void)chipX;
   (void)chipY;
   (void)dieId;
   int64_t nextTileId = tileId;
-  int64_t preTileId = getPrevInTopology(coreIndex, physical_ids, mesh_size);
+  int64_t preTileId =
+      getPrevInTopology(coreIndex, physical_ids, mesh_size, ring_size);
   const RcsOperatorPointer *intrinsic = g_intrinsic();
 
   int fringFsmId = DIRECT_DTE_FSM_ID_0;

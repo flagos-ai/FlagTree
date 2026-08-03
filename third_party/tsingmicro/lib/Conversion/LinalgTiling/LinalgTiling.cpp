@@ -65,7 +65,7 @@ struct TilingReduceRewrite : public OpRewritePattern<linalg::ReduceOp> {
 
     linalg::LinalgTilingOptions tilingOptions;
     auto tileSizes = SmallVector<int64_t>(inputShape);
-    assert(dim == 0 && "Expected tiling on the first dimension");
+
     assert(llvm::isPowerOf2_64(inputShape[dim]) &&
            "Expected power of 2 for tiling size");
     tileSizes[dim] = 16384;

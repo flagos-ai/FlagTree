@@ -185,6 +185,59 @@ static Value toIndexTensor(Value intTensor, Location loc, OpBuilder &rewriter) {
       .getResult();
 }
 
+// Wrap-around split result: split contiguous vector access into two parts when crossing modulo boundary
+struct WrapAroundSplit {
+  bool hasWrapAround;     // whether wrap-around occurs
+  Value d1;               // size of first block (before boundary)
+  Value d2;               // size of second block (after wrap-around, 0 if no wrap)
+  Value baseOffset;       // in-boundary start offset
+  Value wrapBaseOffset;   // wrapped start offset (beginning of current row)
+};
+
+// Calculate wrap-around split for contiguous dimension access
+static WrapAroundSplit computeWrapAroundSplit(
+    Location loc, OpBuilder &rewriter,
+    ArrayRef<OpFoldResult> shapes,    // ptr shape array (modulo boundaries)
+    int contiguousDim,                // contiguous access dimension index
+    Value linearOffset,               // current linear base offset (from ReinterpretCast)
+    Value accessSize) {               // contiguous access length
+  WrapAroundSplit result;
+  result.hasWrapAround = false;
+  result.d1 = accessSize;
+  result.d2 = nullptr;
+  result.baseOffset = linearOffset;
+  result.wrapBaseOffset = nullptr;
+
+  // Get modulo boundary N for contiguous dimension
+  auto shapeConst = getConstValue(shapes[contiguousDim]);
+  bool hasModulo = shapeConst.has_value()
+                       ? (*shapeConst != 0)
+                       : static_cast<bool>(true); // dynamic: conservative
+
+  if (!hasModulo) {
+    return result;
+  }
+
+  Value modN = ofrToIndexValue(shapes[contiguousDim], loc, rewriter);
+  // Calculate in-boundary position: offset % N
+  Value base = rewriter.create<arith::RemSIOp>(loc, linearOffset, modN);
+  Value remaining = rewriter.create<arith::SubIOp>(loc, modN, base);
+  Value d1 = rewriter.create<arith::MinSIOp>(loc, accessSize, remaining);
+  Value d2 = rewriter.create<arith::SubIOp>(loc, accessSize, d1);
+
+  // Check if d2 > 0 (need wrap-around)
+  auto zeroCst = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  auto hasWrap = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sgt, d2, zeroCst);
+
+  result.hasWrapAround = true;
+  result.d1 = d1;
+  result.d2 = d2;
+  result.baseOffset = base;
+  result.wrapBaseOffset = rewriter.create<arith::SubIOp>(loc, linearOffset, base);
+
+  return result;
+}
+
 // Fill load destination with other value for mask.
 static void fillWithValue(Location loc, Value alloc, Value other,
                           ArrayRef<int64_t> shape,
@@ -1002,6 +1055,12 @@ private:
     unsigned rank = staticSizes.size();
     SmallVector<OpFoldResult> oneStrides(rank, rewriter.getIndexAttr(1));
 
+    // Save reinterpret_cast before mask subview for wrap-around handling.
+    auto srcCastOp = srcPtr.getDefiningOp<memref::ReinterpretCastOp>();
+    int contiguousDim = (gatherDim == 0) ? 1 : 0;
+    // ReinterpretCast only has single linear base offset, use that to compute in-boundary position
+    Value offsetVal = ofrToIndexValue(srcCastOp.getOffsets()[0], loc, rewriter);
+
     // subview from srcPtr for mask.
     // Use mixed mask dims as sizes with mixedDims[gatherDim] set to 1 when
     // hasMask.
@@ -1027,8 +1086,43 @@ private:
     auto dstSubview =
         getSubview(allocOffsets, oneStrides, subViewSize, alloc, loc, rewriter);
 
-    // Copy srcPtr to alloc[inductionVar].
-    rewriter.create<memref::CopyOp>(loc, srcPtr, dstSubview);
+    // Wrap-around detection for contiguous dimension
+    Value colSize = ofrToIndexValue(sizes[contiguousDim], loc, rewriter);
+    auto split = computeWrapAroundSplit(loc, rewriter, ptr.getMixedShape(),
+                                        contiguousDim, offsetVal, colSize);
+
+    SmallVector<OpFoldResult> zeroOffs(rank, rewriter.getIndexAttr(0));
+    if (split.hasWrapAround) {
+      Value d1 = split.d1;
+      Value d2 = split.d2;
+
+      // First block: copy d1 elements from current position to boundary
+      SmallVector<OpFoldResult> d1Sizes = subViewSize;
+      d1Sizes[contiguousDim] = d1;
+      auto srcD1 = getSubview(zeroOffs, oneStrides, d1Sizes, srcPtr, loc, rewriter);
+      auto dstD1 = getSubview(zeroOffs, oneStrides, d1Sizes, dstSubview, loc, rewriter);
+      rewriter.create<memref::CopyOp>(loc, srcD1, dstD1);
+
+      // Second block: copy d2 elements from start of current row (wrap-around)
+      SmallVector<int64_t> castStaticSizes(srcCastOp.getStaticSizes());
+      SmallVector<Value> castDynSizes(srcCastOp.getSizes());
+      auto castMixedSizes = mlir::getMixedValues(castStaticSizes, castDynSizes, rewriter);
+      SmallVector<int64_t> castStaticStrides(srcCastOp.getStaticStrides());
+      SmallVector<Value> castDynStrides(srcCastOp.getStrides());
+      auto castMixedStrides = mlir::getMixedValues(castStaticStrides, castDynStrides, rewriter);
+      auto wrapCast = rewriter.create<memref::ReinterpretCastOp>(
+          loc, srcCastOp.getResult().getType(), memRefPtr, split.wrapBaseOffset,
+          castMixedSizes, castMixedStrides);
+      SmallVector<OpFoldResult> d2Sizes = subViewSize;
+      d2Sizes[contiguousDim] = d2;
+      auto srcD2 = getSubview(zeroOffs, oneStrides, d2Sizes, wrapCast, loc, rewriter);
+      SmallVector<OpFoldResult> dstOffs2(rank, rewriter.getIndexAttr(0));
+      dstOffs2[contiguousDim] = d1;
+      auto dstD2 = getSubview(dstOffs2, oneStrides, d2Sizes, dstSubview, loc, rewriter);
+      rewriter.create<memref::CopyOp>(loc, srcD2, dstD2);
+    } else {
+      rewriter.create<memref::CopyOp>(loc, srcPtr, dstSubview);
+    }
 
     return success();
   }
@@ -1143,13 +1237,17 @@ private:
         toIndexTensor(ptr.getGatherScatterOffset(), loc, rewriter);
 
     int gatherDim = ptr.getGatherScatterDim();
+    int contiguousDim = (gatherDim == 0) ? 1 : 0;
 
     std::vector<int64_t> staticSizes = ptr.getSizes();
     staticSizes[gatherDim] = 1;
     auto sizes =
         mlir::getMixedValues(staticSizes, SmallVector<Value>{}, rewriter);
-    auto offsets = ptr.getMixedOffsets();
-    auto strides = ptr.getMixedStrides();
+    auto ptrOffsets = ptr.getMixedOffsets();
+    auto ptrShapes = ptr.getMixedShape();
+
+    // Check for wrap-around on contiguous dimension
+    Value colSize = ofrToIndexValue(sizes[contiguousDim], loc, rewriter);
 
     // Create loop to iterate every offset in gatherOffset.
     auto mixedDims = op.getMixedMaskDims();
@@ -1175,39 +1273,92 @@ private:
     auto gatherOffsetElt = rewriter.create<tensor::ExtractOp>(
         loc, gatherOffset, ValueRange{inductionVar});
 
-    // reinterpret_cast to current row as memRefPtr[gatherOffsetElt].
-    Value dstPtr = rewriteGatherScatterPtrElement(staticSizes, ptr, memRefPtr,
-                                                  gatherOffsetElt.getResult(),
-                                                  gatherDim, rewriter);
+    // Get contiguous dimension offset (structed offset)
+    Value contiguousOffset = ofrToIndexValue(ptrOffsets[contiguousDim], loc, rewriter);
 
     unsigned rank = staticSizes.size();
     SmallVector<OpFoldResult> oneStrides(rank, rewriter.getIndexAttr(1));
+    SmallVector<OpFoldResult> zeroOffs(rank, rewriter.getIndexAttr(0));
 
-    // subview from dstPtr for mask.
-    // Use mixed mask dims as sizes with mixedDims[gatherDim] set to 1 when
-    // hasMask.
-    // Set offsets[] to 0 since it gatherOffsetElt already in reinterpret_cast.
     auto subviewSize = sizes;
     if (op.hasMask()) {
       SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
       mixedDims[gatherDim] = rewriter.getIndexAttr(1);
       subviewSize = mixedDims;
-
-      // maskOffsets should be all zero, since srcPtr already has the offsets.
-      SmallVector<OpFoldResult> maskOffsets(rank, rewriter.getIndexAttr(0));
-      dstPtr = getSubview(maskOffsets, oneStrides, subviewSize, dstPtr, loc,
-                          rewriter);
     }
 
     // Create extract_slice stVal[inductionVar].
     SmallVector<OpFoldResult> stValOffsets(rank, rewriter.getIndexAttr(0));
     stValOffsets[gatherDim] = inductionVar;
-    auto slice = rewriter.create<tensor::ExtractSliceOp>(
+    auto fullSlice = rewriter.create<tensor::ExtractSliceOp>(
         loc, stVal, stValOffsets, subviewSize, oneStrides);
-    // store slice to dstPtr.
-    auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
-        loc, slice, dstPtr);
-    storeOp.setWritable(true);
+
+    // Calculate wrap-around split using shared helper
+    auto split = computeWrapAroundSplit(loc, rewriter, ptrShapes,
+                                        contiguousDim, contiguousOffset, colSize);
+
+    if (split.hasWrapAround) {
+      Value d1 = split.d1;
+      Value d2 = split.d2;
+
+      // reinterpret_cast to current row
+      Value dstPtrBase = rewriteGatherScatterPtrElement(staticSizes, ptr, memRefPtr,
+                                                        gatherOffsetElt.getResult(),
+                                                        gatherDim, rewriter);
+      if (op.hasMask()) {
+        SmallVector<OpFoldResult> maskOffsets(rank, rewriter.getIndexAttr(0));
+        dstPtrBase = getSubview(maskOffsets, oneStrides, subviewSize, dstPtrBase, loc,
+                            rewriter);
+      }
+
+      // First block: store d1 elements at base offset
+      SmallVector<OpFoldResult> d1Sizes = subviewSize;
+      d1Sizes[contiguousDim] = d1;
+      auto dstD1 = getSubview(zeroOffs, oneStrides, d1Sizes, dstPtrBase, loc, rewriter);
+      auto srcD1 = rewriter.create<tensor::ExtractSliceOp>(
+          loc, fullSlice, zeroOffs, d1Sizes, oneStrides);
+      auto storeOp1 = rewriter.create<bufferization::MaterializeInDestinationOp>(
+          loc, srcD1, dstD1);
+      storeOp1.setWritable(true);
+
+      // Second block: store d2 elements at start of current row (wrap-around)
+      auto firstCast = dstPtrBase.getDefiningOp<memref::ReinterpretCastOp>();
+      // Wrap to start of same row (same gather offset, contiguous offset 0)
+      auto wrapCast = rewriter.create<memref::ReinterpretCastOp>(
+          loc, firstCast.getResult().getType(), memRefPtr, gatherOffsetElt.getResult(),
+          firstCast.getMixedSizes(), firstCast.getMixedStrides());
+      Value dstPtrWrap = wrapCast.getResult();
+      if (op.hasMask()) {
+        SmallVector<OpFoldResult> maskOffsets(rank, rewriter.getIndexAttr(0));
+        dstPtrWrap = getSubview(maskOffsets, oneStrides, subviewSize, dstPtrWrap, loc,
+                            rewriter);
+      }
+      SmallVector<OpFoldResult> d2Sizes = subviewSize;
+      d2Sizes[contiguousDim] = d2;
+      auto dstD2 = getSubview(zeroOffs, oneStrides, d2Sizes, dstPtrWrap, loc, rewriter);
+      SmallVector<OpFoldResult> srcD2Offs(rank, rewriter.getIndexAttr(0));
+      srcD2Offs[contiguousDim] = d1;
+      auto srcD2 = rewriter.create<tensor::ExtractSliceOp>(
+          loc, fullSlice, srcD2Offs, d2Sizes, oneStrides);
+      auto storeOp2 = rewriter.create<bufferization::MaterializeInDestinationOp>(
+          loc, srcD2, dstD2);
+      storeOp2.setWritable(true);
+    } else {
+      // No wrap-around: single store
+      Value dstPtr = rewriteGatherScatterPtrElement(staticSizes, ptr, memRefPtr,
+                                                    gatherOffsetElt.getResult(),
+                                                    gatherDim, rewriter);
+
+      // subview from dstPtr for mask.
+      if (op.hasMask()) {
+        SmallVector<OpFoldResult> maskOffsets(rank, rewriter.getIndexAttr(0));
+        dstPtr = getSubview(maskOffsets, oneStrides, subviewSize, dstPtr, loc,
+                            rewriter);
+      }
+      auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
+          loc, fullSlice, dstPtr);
+      storeOp.setWritable(true);
+    }
 
     rewriter.eraseOp(op);
 

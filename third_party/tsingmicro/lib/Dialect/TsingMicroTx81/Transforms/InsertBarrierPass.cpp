@@ -13,6 +13,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "tsingmicro-tx81/Transforms/Passes.h"
+#include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
 #include "Analysis/Allocation.h"
 #include "Analysis/Membar.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -22,10 +24,8 @@
 #include "mlir/IR/Visitors.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
-#include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
-#include "tsingmicro-tx81/Transforms/Passes.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "tx81-insert-barrier"
@@ -80,8 +80,8 @@ static bool txBarrierBetweenLhsAndRhs(Operation *lhsOp, Operation *rhsOp) {
     }
     if (op == lhsOp)
       seenLhs = true;
-    if (seenLhs &&
-        (isa<tx::BarrierOp, tx::AtomicBarrierInOp, tx::AtomicBarrierOutOp>(op)))
+    if (seenLhs && (isa<tx::BarrierOp, tx::AtomicBarrierInOp,
+                    tx::AtomicBarrierOutOp>(op)))
       seenBarrierAfterLhs = true;
     return WalkResult::advance();
   });
@@ -215,8 +215,7 @@ static bool mayAliasOrigin(Value a, Value b) {
 
 /// Collect memref "base" values for SPM-style alias checks (same idea as Membar
 /// buffer resolution).
-static void collectMemrefBasesForOp(Operation *op,
-                                    SmallVectorImpl<Value> &bases) {
+static void collectMemrefBasesForOp(Operation *op, SmallVectorImpl<Value> &bases) {
   for (Value v : op->getOperands()) {
     if (Value base = resolveOrigin(v))
       bases.push_back(base);
@@ -249,7 +248,7 @@ static bool touchesSpmAllocation(Operation *op,
   collectMemrefBasesForOp(op, bases);
   for (Value base : bases)
     if (!allocation->getBufferIds(base).empty())
-      return true;
+        return true;
   return false;
 }
 
@@ -300,8 +299,7 @@ static void insertLoopCarriedSpmBarriers(ModuleOp mod) {
 /// produce the memref `consumer` reads — if that tx is in the loop region, keep
 /// the barrier inside (per-iteration sync). If the tx producer is outside the
 /// loop and only `consumer` is inside, one barrier before the loop is correct.
-static bool shouldHoistBarrierFromLoop(scf::ForOp forOp,
-                                       tx::BarrierOp barrier) {
+static bool shouldHoistBarrierFromLoop(scf::ForOp forOp, tx::BarrierOp barrier) {
   Operation *consumer = barrier->getNextNode();
   if (!consumer)
     return false;
@@ -362,9 +360,8 @@ static void hoistTxBarriersFromScfForLoops(ModuleOp mod) {
   });
 }
 
-static bool
-topLevelOpHasCpuSpmAccessBeforeBarrier(Operation *topLevelOp,
-                                       triton::alloc::Allocation *allocation) {
+static bool topLevelOpHasCpuSpmAccessBeforeBarrier(
+    Operation *topLevelOp, triton::alloc::Allocation *allocation) {
   bool foundCpuSpmAccess = false;
   topLevelOp->walk<WalkOrder::PreOrder>([&](Operation *op) {
     if (op != topLevelOp && isExplicitBarrier(op)) {
@@ -396,8 +393,7 @@ static void insertKernelEntryBarriersBeforeCpuSpmUse(
       if (isa<func::ReturnOp>(&op))
         return;
       if (topLevelOpHasCpuSpmAccessBeforeBarrier(&op, allocation)) {
-        if (Operation *prev = op.getPrevNode();
-            prev && isExplicitBarrier(prev)) {
+        if (Operation *prev = op.getPrevNode(); prev && isExplicitBarrier(prev)) {
           return;
         }
         OpBuilder b(&op);
@@ -414,8 +410,9 @@ class InsertBarrierPass
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<tx::Tx81Dialect, func::FuncDialect, memref::MemRefDialect,
-                    arith::ArithDialect, scf::SCFDialect>();
+    registry.insert<tx::Tx81Dialect, func::FuncDialect,
+                    memref::MemRefDialect, arith::ArithDialect,
+                    scf::SCFDialect>();
   }
 
   void runOnOperation() override {

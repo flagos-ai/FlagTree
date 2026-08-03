@@ -5,7 +5,6 @@ import triton
 import triton.language as tl
 import benchmark
 
-
 @triton.jit
 def batch_matmul_kernel(
         # Pointers to matrices
@@ -82,6 +81,7 @@ def batch_matmul_kernel(
     tl.store(c_ptrs, c, mask=c_mask)
 
 
+
 def batch_matmul(a, b, activation=""):
     # Check constraints.
     assert a.shape[0] == b.shape[0], "Batch dim mismatch"
@@ -95,19 +95,19 @@ def batch_matmul(a, b, activation=""):
     # Allocates output.
     c = torch.empty((batch, M, N), dtype=a.dtype, device=a.device)
 
-    grid = lambda META: (
-        triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),
-        batch,
-    )
+    grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), batch,)
     batch_matmul_kernel[grid](
         a, b, c,  #
         M, N, K,  #
         a.stride(0), a.stride(1), a.stride(2),  #
         b.stride(0), b.stride(1), b.stride(2),  #
         c.stride(0), c.stride(1), c.stride(2),  #
-        BLOCK_SIZE_M=64, BLOCK_SIZE_N=64, BLOCK_SIZE_K=128, GROUP_SIZE_M=8)
+        BLOCK_SIZE_M=64,
+        BLOCK_SIZE_N=64,
+        BLOCK_SIZE_K=128,
+        GROUP_SIZE_M=8
+    )
     return c
-
 
 @pytest.mark.parametrize("M, K, N, dtype", [  #
     (M, K, N, dtype)
@@ -132,6 +132,8 @@ def test_batch_matmul(M, K, N, dtype, device='cpu'):
     triton_output = batch_matmul(a, b)
     torch_output = torch.bmm(a, b)
     # compare
-    print(f"The maximum difference between torch and triton is "
-          f"{torch.max(torch.abs(torch_output - triton_output))}")
+    print(
+        f"The maximum difference between torch and triton is "
+        f"{torch.max(torch.abs(torch_output - triton_output))}"
+    )
     torch.testing.assert_close(triton_output, torch_output, atol=1e-2, rtol=0)

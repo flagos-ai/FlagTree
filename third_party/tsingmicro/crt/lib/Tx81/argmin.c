@@ -11,7 +11,7 @@
 
 #include "tx81_run.h"
 
-void __ArgMin(uint64_t *src, uint64_t *dst0, uint64_t *dst1,
+void __ArgMin(uint64_t *src, uint64_t *imm, uint64_t *dst0, uint64_t *dst1,
               uint32_t elem_count, uint16_t fmt) {
   INTRNISIC_RUN_SWITCH;
   volatile void *min_val =
@@ -70,4 +70,28 @@ void __ArgMin(uint64_t *src, uint64_t *dst0, uint64_t *dst1,
   *(uint32_t *)min_idx = *(uint32_t *)&inst.param.wb_data1;
 
   // Destroy the command buffer.
+
+  RcsLogic *logic_cmd = g_intrinsic()->logic_pointer;
+  RcsLogicInstr logic_inst = {I_CGRA,
+                        {
+                            0,
+                        },
+                        {
+                            0,
+                        }};
+
+  logic_cmd->XorVV(&logic_inst, (uint64_t)src, (uint64_t)src, (uint64_t)imm, elem_count,
+             (Data_Format)fmt);
+  RcsExecute(&logic_inst);
+
+  // logic_cmd->XorVV(&logic_inst, (uint64_t)dst0, (uint64_t)dst0, (uint64_t)imm, 1,
+  //            (Data_Format)fmt);
+  // RcsExecute(&logic_inst);
+
+  // logic_cmd->XorVV(&logic_inst, (uint64_t)dst1, (uint64_t)dst1, (uint64_t)imm, 1,
+  //            Fmt_INT32);
+  // RcsExecute(&logic_inst);
+
+  // Dispatch the command to accelerator
+  RcsWaitfinish();
 }

@@ -86,9 +86,7 @@ def run_kernel_script(script_content: str, tmp_path: Path, caller: str = "") -> 
     # 1. Run the kernel
     proc = subprocess.run(
         [sys.executable, str(script_file)],
-        capture_output=True,
-        text=True,
-        timeout=120,
+        capture_output=True, text=True, timeout=120,
         cwd=tmp_path,
         env=os.environ.copy(),
     )
@@ -100,8 +98,9 @@ def run_kernel_script(script_content: str, tmp_path: Path, caller: str = "") -> 
     # 2. Extract with test name suffix, then parse
     subprocess.run(['sleep', '3'])
     extract_sh = os.path.join(workspace, "third_party/tsingmicro/scripts/extract_kcore.sh")
-    proc = subprocess.run(["bash", extract_sh, "all", "-s", caller], capture_output=True, text=True, timeout=60,
-                          cwd=workspace)
+    proc = subprocess.run(["bash", extract_sh, "all", "-s", caller],
+                   capture_output=True, text=True, timeout=60,
+                   cwd=workspace)
 
     # if proc.stdout:
     #     print(proc.stdout, flush=True)

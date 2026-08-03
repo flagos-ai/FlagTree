@@ -3,8 +3,7 @@
 
 #include "tx81_run.h"
 
-triton_hybrid_value get_ptr_value_by_idx(void *addr, size_t idx,
-                                         Data_Format dtype);
+triton_hybrid_value get_ptr_value_by_idx(void *addr, size_t idx, Data_Format dtype);
 
 void set_ptr_value_by_idx(void *addr, triton_hybrid_value value, uint64_t idx,
                           Data_Format dtype);

@@ -11,9 +11,9 @@ def add_kernel_oob(
     y_ptr,
     output_ptr,
     n_elements,
-    inject_pid_shift: tl.constexpr,  # 0=normal, 1=shift pid by +1
-    inject_block_scale: tl.constexpr,  # 1=normal, 2=double block_size
-    inject_mask_mode: tl.constexpr,  # 0=normal, 1=no mask, 2=wrong cmp
+    inject_pid_shift: tl.constexpr,     # 0=normal, 1=shift pid by +1
+    inject_block_scale: tl.constexpr,   # 1=normal, 2=double block_size
+    inject_mask_mode: tl.constexpr,     # 0=normal, 1=no mask, 2=wrong cmp
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)

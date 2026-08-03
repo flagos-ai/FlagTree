@@ -159,7 +159,9 @@ createMetadata(ConversionPatternRewriter &rewriter, Location loc,
   Value i64SPMPtr = rewriter.create<arith::IndexCastOp>(
       loc, rewriter.getI64Type(), offsetPtr);
 
-  // FIXME: For multi-dimensional(rank > 2), strides need to be multiplied.
+  // ExtractStridedMetadataOp.offset is the linear element offset (already
+  // accounts for all dimension strides), so byteOffset = offset * elemByte
+  // is correct for any rank.
   return {i64SPMPtr, stridedMetadata.getSizes(), stridedMetadata.getStrides()};
 }
 
@@ -197,6 +199,51 @@ padStridesToNHWC(ConversionPatternRewriter &rewriter, Location loc,
     nhwcStrides.push_back(dim);
   }
   return nhwcStrides;
+}
+
+// LLVM 22's correct implementation of MemRefType::getNumContiguousTrailingDims
+// and areTrailingDimsContiguous.  LLVM 21's version has a bug (reads past the
+// stride array into the offset field), so we replicate the fixed logic here.
+static int64_t getNumContiguousTrailingDims(MemRefType type) {
+  const int64_t n = type.getRank();
+
+  // memrefs with identity layout are entirely contiguous.
+  if (type.getLayout().isIdentity())
+    return n;
+
+  // Get the strides (if any). Failing to do that, conservatively assume a
+  // non-contiguous layout.
+  int64_t offset;
+  SmallVector<int64_t> strides;
+  if (!succeeded(type.getStridesAndOffset(strides, offset)))
+    return 0;
+
+  ArrayRef<int64_t> shape = type.getShape();
+
+  // A memref with dimensions `d0, d1, ..., dn-1` and strides
+  // `s0, s1, ..., sn-1` is contiguous up to dimension `k`
+  // if each stride `si` is the product of the dimensions `di+1, ..., dn-1`,
+  // for `i` in `[k, n-1]`.
+  // Ignore stride elements if the corresponding dimension is 1, as they are
+  // of no consequence.
+  int64_t dimProduct = 1;
+  for (int64_t i = n - 1; i >= 0; --i) {
+    if (shape[i] == 1)
+      continue;
+    if (strides[i] != dimProduct)
+      return n - i - 1;
+    if (shape[i] == ShapedType::kDynamic)
+      return n - i;
+    dimProduct *= shape[i];
+  }
+
+  return n;
+}
+
+static bool isMemRefTrailingDimsContiguous(MemRefType type, int64_t n) {
+  assert(n <= type.getRank() &&
+         "number of dimensions to check must not exceed rank");
+  return n <= getNumContiguousTrailingDims(type);
 }
 
 static Value calculateElemCount(ConversionPatternRewriter &rewriter,
@@ -285,7 +332,7 @@ Data_Format insertConvertTypeOp(Value valuePtr, MemRefType valueType,
 // Restore float type to integer type to for CGRA instruction
 Value insertRestoreTypeOp(Value valuePtr, MemRefType valueType, Value elemCount,
                           ConversionPatternRewriter &rewriter, Location loc,
-                          int16_t roundMode = RND_MODE::RND_NEAREST_EVEN) {
+                          RND_MODE roundMode = RND_MODE::RND_NEAREST_EVEN) {
   // TODO: Other integer type. May need realloc the memory
   auto elemType = valueType.getElementType();
   auto newValue = valuePtr;
@@ -382,8 +429,15 @@ public:
 
     // SPM to SPM
     if (isSrcSPM && isDstSPM) {
-      SmallVector<int64_t> perm(
-          cast<MemRefType>(op.getSource().getType()).getRank());
+      int64_t rank = cast<MemRefType>(op.getSource().getType()).getRank();
+      if (rank == 0) {
+        Location loc = op.getLoc();
+        Value val = rewriter.create<memref::LoadOp>(loc, op.getSource());
+        rewriter.create<memref::StoreOp>(loc, val, op.getTarget());
+        rewriter.eraseOp(op);
+        return success();
+      }
+      SmallVector<int64_t> perm(rank);
       std::iota(perm.begin(), perm.end(), 0);
       rewriter.replaceOpWithNewOp<linalg::TransposeOp>(op, op.getSource(),
                                                        op.getTarget(), perm);
@@ -400,8 +454,8 @@ public:
     int64_t rank = srcMemrefType.getRank();
     auto elemType = srcMemrefType.getElementType();
 
-    if (srcMemrefType.areTrailingDimsContiguous(rank) &&
-        dstMemrefType.areTrailingDimsContiguous(rank)) {
+    if (isMemRefTrailingDimsContiguous(srcMemrefType, rank) &&
+        isMemRefTrailingDimsContiguous(dstMemrefType, rank)) {
       Value elemCount = calculateElemCount(rewriter, loc, dstSizes);
       if (elemType.getIntOrFloatBitWidth() == 64) {
         elemType = rewriter.getF32Type();
@@ -493,7 +547,7 @@ public:
     auto firstNonOne = std::find_if_not(shape.begin(), shape.end(),
                                         [](int64_t dim) { return dim == 1; });
     int leadingOnes = std::distance(shape.begin(), firstNonOne);
-    return type.areTrailingDimsContiguous(rank - leadingOnes);
+    return isMemRefTrailingDimsContiguous(type, rank - leadingOnes);
   }
 
   bool isSupportedBitWidthAndType(int bitWidth, MemRefType type) const {
@@ -768,8 +822,8 @@ public:
         dims,               // dimensions [M,K,N]
         op.getEnPsumAttr(), // en_psum. Used as accumulate buffer
         dstPtr, //  The address of psum in SPM, Always same to output
-        op.getIsTransAAttr(),                          // trans_src_a
-        op.getIsTransBAttr(),                          // trans_src_b.
+        op.getIsTransAAttr(),                   // trans_src_a
+        op.getIsTransBAttr(),                    // trans_src_b.
         rewriter.getI32IntegerAttr(1),                 // batch_src_a
         rewriter.getI32IntegerAttr(1),                 // batch_src_b
         rewriter.getI32IntegerAttr(ActFuncMode::None), // relu_mode.
@@ -1139,11 +1193,13 @@ struct MKArgMinMaxConversionPattern : public OpConversionPattern<MKOpT> {
     auto inputPtr = createAddressFromMemref(rewriter, loc, input);
     auto outValPtr = createAddressFromMemref(rewriter, loc, outVal);
     auto outIdxPtr = createAddressFromMemref(rewriter, loc, outIdx);
+    auto immAddr = createAddressFromMemref(rewriter, loc, adaptor.getImm());
 
     auto tx81Op = rewriter.create<TxOpT>(
         loc, TypeRange{}, inputPtr, outValPtr, outIdxPtr,
         rewriter.getI32IntegerAttr(innerSize),
-        rewriter.getI16IntegerAttr(getFormatCode(valueType)));
+        rewriter.getI16IntegerAttr(getFormatCode(valueType)),
+        immAddr);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1201,7 +1257,8 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
 
   template <typename TxOpT>
   LogicalResult convertBinaryOp(linalg::GenericOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const {
+                                ConversionPatternRewriter &rewriter,
+                                RND_MODE roundMode = RND_MODE::RND_NEAREST_EVEN) const {
     Location loc = op->getLoc();
     auto input0 =
         createAddressFromMemref(rewriter, loc, adaptor.getInputs()[0]);
@@ -1215,12 +1272,35 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
     // Data format after conversion
     Data_Format srcFmt = getFormatCode(inputType);
 
-    // Create the elementwise operation
-    // TODO: Fix attribute
-    rewriter.create<TxOpT>(loc, rewriter.getI64Type(), input0, input1, output,
-                           elemCount,
-                           rewriter.getI16IntegerAttr(0), // Round mode
-                           rewriter.getI16IntegerAttr(srcFmt));
+    // Check whether the output memref has a non-contiguous layout (e.g.
+    // stride‑4 produced by GEMM).  BinaryVV ops write contiguously, so when
+    // the output is strided we must write to a contiguous buffer first, then
+    // scatter the result to the strided output.
+    auto outputType = cast<MemRefType>(op.getOutputs()[0].getType());
+    bool outputIsStrided = !isMemRefTrailingDimsContiguous(
+        outputType, outputType.getRank());
+
+    if (outputIsStrided) {
+      // ── write result to the contiguous input0 buffer ──
+      rewriter.create<TxOpT>(loc, rewriter.getI64Type(), input0, input1,
+                             input0, elemCount,
+                             rewriter.getI16IntegerAttr(roundMode),
+                             rewriter.getI16IntegerAttr(srcFmt));
+
+      // ── scatter the contiguous result back to the strided output ──
+      //     linalg.transpose with identity permutation → GatherScatter
+      int64_t rank = outputType.getRank();
+      SmallVector<int64_t> perm(rank);
+      std::iota(perm.begin(), perm.end(), 0);
+      rewriter.create<linalg::TransposeOp>(loc, op.getInputs()[0],
+                                           op.getOutputs()[0], perm);
+    } else {
+      // Contiguous output: write directly.
+      rewriter.create<TxOpT>(loc, rewriter.getI64Type(), input0, input1,
+                             output, elemCount,
+                             rewriter.getI16IntegerAttr(roundMode),
+                             rewriter.getI16IntegerAttr(srcFmt));
+    }
 
     rewriter.eraseOp(op);
     return success();
@@ -1441,7 +1521,7 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
         dyn_cast<MemRefType>(op.getInputs()[0].getType()).getElementType();
     auto outputType =
         dyn_cast<MemRefType>(op.getOutputs()[0].getType()).getElementType();
-    if (inputType.isInteger(1) && (outputType.isF32() || outputType.isF16())) {
+    if (inputType.isInteger(1) && (outputType.isF32() || outputType.isF16() || outputType.isBF16())) {
       Location loc = op.getLoc();
       auto [inputPtr, sizes, strides] =
           createMetadata(rewriter, loc, adaptor.getInputs()[0]);
@@ -1460,9 +1540,7 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
 
       return success();
     } else {
-      return rewriter.notifyMatchFailure(
-          op, "Unsupported input/output type combination for integer to "
-              "FP conversion");
+      return convertLinalgOpToLoops(op, rewriter);
     }
   }
 
@@ -1514,7 +1592,10 @@ struct ElementwiseConversion : public OpConversionPattern<linalg::GenericOp> {
           return convertBinaryOp<tx::SubVVOp>(op, adaptor, rewriter);
         })
         .Case<arith::MulFOp>([&](auto elemWiseOp) {
-          return convertBinaryOp<tx::MulVVOp>(op, adaptor, rewriter);
+          RND_MODE roundMode = RND_MODE::RND_NEAREST_EVEN;
+          if (auto attr = elemWiseOp->template getAttrOfType<IntegerAttr>("rnd_mode"))
+            roundMode = static_cast<RND_MODE>(attr.getInt());
+          return convertBinaryOp<tx::MulVVOp>(op, adaptor, rewriter, roundMode);
         })
         .Case<arith::DivSIOp, arith::DivUIOp>([&](auto elemWiseOp) {
           return convertDivIntOp(op, adaptor, rewriter);
@@ -1803,6 +1884,58 @@ struct BarrierConversion : public OpConversionPattern<MKOpT> {
   }
 };
 
+struct MKCumsumOpConversion
+    : public OpConversionPattern<mk::CumsumOp> {
+  using OpConversionPattern<mk::CumsumOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(mk::CumsumOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto inputType = dyn_cast<MemRefType>(op.getSrc().getType());
+    auto exclusiveType = dyn_cast<MemRefType>(op.getExclusive().getType());
+    auto totalType = dyn_cast<MemRefType>(op.getTotal().getType());
+    auto scratchType = dyn_cast<MemRefType>(op.getScratch().getType());
+    if (!inputType || !exclusiveType || !totalType || !scratchType)
+      return rewriter.notifyMatchFailure(
+          op, "mk.cumsum expects memref operands after bufferization");
+
+    if (inputType.getShape() != exclusiveType.getShape() ||
+        inputType.getElementType() != exclusiveType.getElementType())
+      return rewriter.notifyMatchFailure(
+          op, "input and exclusive output shape/type mismatch");
+    if (inputType.getElementType() != totalType.getElementType() ||
+        inputType.getElementType() != scratchType.getElementType())
+      return rewriter.notifyMatchFailure(
+          op, "input, total and scratch element types must match");
+
+    SmallVector<int64_t> shape(inputType.getShape().begin(),
+                               inputType.getShape().end());
+    int64_t rank = static_cast<int64_t>(shape.size());
+    int64_t axis = op.getAxis();
+    if (axis < 0)
+      axis += rank;
+    if (rank == 0 || axis != rank - 1)
+      return rewriter.notifyMatchFailure(
+          op, "mk.cumsum currently supports only the last dimension");
+
+    Location loc = op.getLoc();
+    Value srcPtr = createAddressFromMemref(rewriter, loc, op.getSrc());
+    Value exclusivePtr =
+        createAddressFromMemref(rewriter, loc, op.getExclusive());
+    Value totalPtr = createAddressFromMemref(rewriter, loc, op.getTotal());
+    Value scratchPtr =
+        createAddressFromMemref(rewriter, loc, op.getScratch());
+
+    rewriter.replaceOpWithNewOp<tx::CumsumOp>(
+        op, TypeRange{}, srcPtr, exclusivePtr, totalPtr, scratchPtr,
+        rewriter.getI32IntegerAttr(rank), rewriter.getI32IntegerAttr(axis),
+        rewriter.getI64ArrayAttr(shape), op.getPadAttr(),
+        rewriter.getI16IntegerAttr(getFormatCode(inputType)));
+    return success();
+  }
+};
+
+
 struct DistributeBarrierConversion
     : public OpConversionPattern<mk::DistributeBarrierOp> {
   using OpConversionPattern<mk::DistributeBarrierOp>::OpConversionPattern;
@@ -1812,8 +1945,8 @@ struct DistributeBarrierConversion
   matchAndRewrite(mk::DistributeBarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    rewriter.create<tx::DistributeBarrierOp>(loc, op.getMeshPhysicalIdsAttr(),
-                                             op.getMeshShapeAttr());
+    rewriter.create<tx::DistributeBarrierOp>(
+        loc, op.getMeshPhysicalIdsAttr(), op.getMeshShapeAttr());
     rewriter.eraseOp(op);
     return success();
   }
@@ -1837,11 +1970,9 @@ struct RemoteLoadConversion : public OpConversionPattern<mk::RemoteLoadOp> {
     Type dstOrigTy = op.getDst().getType();
     ShapedType shapedTy = dyn_cast<ShapedType>(dstOrigTy);
     if (!shapedTy)
-      return rewriter.notifyMatchFailure(
-          op, "mk.remote_load dst must be shaped type");
+      return rewriter.notifyMatchFailure(op, "mk.remote_load dst must be shaped type");
 
-    int64_t elemBytesConst =
-        static_cast<int64_t>(getElemByte(shapedTy.getElementType()));
+    int64_t elemBytesConst = static_cast<int64_t>(getElemByte(shapedTy.getElementType()));
     Value elemBytesI32 = rewriter.create<arith::ConstantIntOp>(
         loc, elemBytesConst, rewriter.getI32Type());
 
@@ -1855,8 +1986,7 @@ struct RemoteLoadConversion : public OpConversionPattern<mk::RemoteLoadOp> {
       // Dynamic shape: compute element count from runtime sizes.
       // Requires memref operand to extract metadata.
       if (!isa<MemRefType>(dstVal.getType()))
-        return rewriter.notifyMatchFailure(
-            op, "dynamic-shaped remote_load requires memref dst");
+        return rewriter.notifyMatchFailure(op, "dynamic-shaped remote_load requires memref dst");
       auto [basePtr, sizes, strides] = createMetadata(rewriter, loc, dstVal);
       (void)basePtr;
       (void)strides;
@@ -1865,8 +1995,8 @@ struct RemoteLoadConversion : public OpConversionPattern<mk::RemoteLoadOp> {
           loc, rewriter.getI64Type(), elemCount);
       Value elemBytesI64 = rewriter.create<arith::ExtUIOp>(
           loc, rewriter.getI64Type(), elemBytesI32);
-      dataSizeI64 = rewriter.create<arith::MulIOp>(loc, elemCountI64.getType(),
-                                                   elemCountI64, elemBytesI64);
+      dataSizeI64 = rewriter.create<arith::MulIOp>(
+          loc, elemCountI64.getType(), elemCountI64, elemBytesI64);
     }
 
     // Convert dst memref to address (I64)
@@ -1884,9 +2014,8 @@ struct RemoteLoadConversion : public OpConversionPattern<mk::RemoteLoadOp> {
         dataSizeI64               // data_size (I64)
     );
 
-    // mk.remote_load has results; tx.remote_load is void. Replace results with
-    // dst. (converted) dst operand value, which represents the destination
-    // buffer.
+    // mk.remote_load has results; tx.remote_load is void. Replace results with dst.
+    // (converted) dst operand value, which represents the destination buffer.
     if (op->getNumResults() > 0) {
       SmallVector<Value, 1> repl;
       repl.reserve(op->getNumResults());
@@ -1918,11 +2047,9 @@ struct RemoteStoreConversion : public OpConversionPattern<mk::RemoteStoreOp> {
     Type srcOrigTy = op.getSrc().getType();
     ShapedType shapedTy = dyn_cast<ShapedType>(srcOrigTy);
     if (!shapedTy)
-      return rewriter.notifyMatchFailure(
-          op, "mk.remote_store src must be shaped type");
+      return rewriter.notifyMatchFailure(op, "mk.remote_store src must be shaped type");
 
-    int64_t elemBytesConst =
-        static_cast<int64_t>(getElemByte(shapedTy.getElementType()));
+    int64_t elemBytesConst = static_cast<int64_t>(getElemByte(shapedTy.getElementType()));
     Value elemBytesI32 = rewriter.create<arith::ConstantIntOp>(
         loc, elemBytesConst, rewriter.getI32Type());
 
@@ -1934,8 +2061,7 @@ struct RemoteStoreConversion : public OpConversionPattern<mk::RemoteStoreOp> {
           loc, totalBytes, rewriter.getI64Type());
     } else {
       if (!isa<MemRefType>(srcVal.getType()))
-        return rewriter.notifyMatchFailure(
-            op, "dynamic-shaped remote_store requires memref src");
+        return rewriter.notifyMatchFailure(op, "dynamic-shaped remote_store requires memref src");
       auto [basePtr, sizes, strides] = createMetadata(rewriter, loc, srcVal);
       (void)basePtr;
       (void)strides;
@@ -1944,8 +2070,8 @@ struct RemoteStoreConversion : public OpConversionPattern<mk::RemoteStoreOp> {
           loc, rewriter.getI64Type(), elemCount);
       Value elemBytesI64 = rewriter.create<arith::ExtUIOp>(
           loc, rewriter.getI64Type(), elemBytesI32);
-      dataSizeI64 = rewriter.create<arith::MulIOp>(loc, elemCountI64.getType(),
-                                                   elemCountI64, elemBytesI64);
+      dataSizeI64 = rewriter.create<arith::MulIOp>(
+          loc, elemCountI64.getType(), elemCountI64, elemBytesI64);
     }
 
     // Convert src memref to address (I64)
@@ -1973,7 +2099,8 @@ struct RemoteStoreConversion : public OpConversionPattern<mk::RemoteStoreOp> {
         srcAddr,                  // src (I64 address)
         elemBytesI32,             // elem_bytes (I32)
         dataSizeI64,              // data_size (I64)
-        op.getMeshPhysicalIdsAttr());
+        op.getMeshPhysicalIdsAttr(), op.getMeshShapeAttr()
+    );
 
     // mk.remote_store has no results, just erase it
     rewriter.eraseOp(op);
@@ -1981,6 +2108,7 @@ struct RemoteStoreConversion : public OpConversionPattern<mk::RemoteStoreOp> {
     return success();
   }
 };
+
 
 struct PrintConversion : public OpConversionPattern<mk::PrintOp> {
   using OpConversionPattern<mk::PrintOp>::OpConversionPattern;
@@ -2377,6 +2505,7 @@ void mlir::triton::populateMKToTx81ConversionPatterns(
                MKReduceOpConversion<mk::ReduceMaxOp, tx::ReduceMaxOp>,
                MKReduceOpConversion<mk::ReduceMinOp, tx::ReduceMinOp>,
                MKReduceOpConversion<mk::ReduceSumOp, tx::ReduceSumOp>,
+               MKCumsumOpConversion,
                TransposeOpConversion,
                ReciprocalOpConversionPattern,
                LinalgFillOpConversion,

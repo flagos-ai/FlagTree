@@ -25,7 +25,6 @@ python3 -m venv .venv --prompt triton
 source .venv/bin/activate
 ./third_party/tsingmicro/scripts/tools/offline_python_deps.sh -i -r third_party/tsingmicro/scripts/requirements_ts.txt -d ../offline_pkgs/
 ./third_party/tsingmicro/scripts/tools/offline_python_deps.sh -i -r python/requirements.txt -d ../offline_pkgs/
-apt install lld
 ```
 
 ### 宿主机依赖包安装

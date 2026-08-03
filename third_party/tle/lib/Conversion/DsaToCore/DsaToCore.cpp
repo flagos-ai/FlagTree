@@ -26,7 +26,8 @@ struct DsaAllocToMemRefPattern : public OpRewritePattern<mlir::dsa::AllocOp> {
       return failure();
     // tx81-memref-to-llvm expects integer/default memref address spaces.
     // Canonicalize away non-integer memory-space attrs (e.g. "local").
-    if (Attribute ms = memrefTy.getMemorySpace(); ms && !isa<IntegerAttr>(ms)) {
+    if (Attribute ms = memrefTy.getMemorySpace();
+        ms && !isa<IntegerAttr>(ms)) {
       memrefTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
                                  memrefTy.getLayout());
     }
@@ -56,7 +57,8 @@ struct DsaMemoryToCorePass
     RewritePatternSet patterns(&getContext());
     patterns.add<DsaAllocToMemRefPattern, DsaCopyToMemRefPattern>(
         &getContext());
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
+    if (failed(applyPatternsGreedily(getOperation(),
+                                            std::move(patterns))))
       signalPassFailure();
   }
 };

@@ -39,7 +39,8 @@ LogicalResult SharedMemoryAliasAnalysis::visitOperation(
                  memref::ExtractStridedMetadataOp,
                  memref::ExtractAlignedPointerAsIndexOp, memref::CastOp,
                  memref::ReshapeOp, memref::CollapseShapeOp,
-                 memref::ExpandShapeOp, mk::BitcastOp>(op)) {
+                 memref::ExpandShapeOp, mk::BitcastOp,
+                 UnrealizedConversionCastOp>(op)) {
     // FIXME: memref::viewOp and memref::transposeOp
     // FIXME: A common trait or interface to handle all memref op
     // FIXME: memref::SubViewOp may need handled before this analysis.

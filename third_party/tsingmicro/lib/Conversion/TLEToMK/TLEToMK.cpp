@@ -176,14 +176,18 @@ static LogicalResult getCoordsFromShardIdValue(PatternRewriter &rewriter,
 static LogicalResult
 extractRemoteInfoFromPtr(PatternRewriter &rewriter, Location loc, Value ptrLike,
                          SmallVector<Value, 4> &coords, Value &basePtrLike,
-                         DenseI32ArrayAttr *meshPhysicalIdsOut = nullptr) {
-  if (auto remotePtrOp = ptrLike.getDefiningOp<mlir::dsa::RemotePointersOp>()) {
-    if (failed(getCoordsFromShardIdValue(rewriter, loc,
-                                         remotePtrOp.getShardId(), coords)))
+                         DenseI32ArrayAttr *meshPhysicalIdsOut = nullptr,
+                         DenseI32ArrayAttr *meshShapeOut = nullptr) {
+  if (auto remotePtrOp =
+          ptrLike.getDefiningOp<mlir::dsa::RemotePointersOp>()) {
+    if (failed(getCoordsFromShardIdValue(rewriter, loc, remotePtrOp.getShardId(),
+                                         coords)))
       return failure();
     basePtrLike = remotePtrOp.getSrc();
     if (meshPhysicalIdsOut)
       *meshPhysicalIdsOut = remotePtrOp.getMeshPhysicalIdsAttr();
+    if (meshShapeOut)
+      *meshShapeOut = remotePtrOp.getMeshShapeAttr();
     return success();
   }
   if (auto addPtr = ptrLike.getDefiningOp<triton::AddPtrOp>();
@@ -273,9 +277,10 @@ struct DsaRemoteStoreToMkPattern : public OpRewritePattern<triton::StoreOp> {
     SmallVector<Value, 4> sendCoords;
     Value basePtrLike = storeOp.getPtr();
     DenseI32ArrayAttr meshPhysicalIds;
+    DenseI32ArrayAttr meshShape;
     if (failed(extractRemoteInfoFromPtr(rewriter, loc, storeOp.getPtr(),
                                         sendCoords, basePtrLike,
-                                        &meshPhysicalIds)))
+                                        &meshPhysicalIds, &meshShape)))
       return failure();
 
     if (storeOp.getMask())
@@ -283,9 +288,9 @@ struct DsaRemoteStoreToMkPattern : public OpRewritePattern<triton::StoreOp> {
 
     Value dstAddrI64 = getOrCreatePtrLikeAddrI64(rewriter, loc, basePtrLike,
                                                  storeOp.getOperation());
-    rewriter.create<mk::RemoteStoreOp>(loc, sendCoords[0], sendCoords[1],
-                                       sendCoords[2], sendCoords[3], dstAddrI64,
-                                       storeOp.getValue(), meshPhysicalIds);
+    rewriter.create<mk::RemoteStoreOp>(
+        loc, sendCoords[0], sendCoords[1], sendCoords[2], sendCoords[3],
+        dstAddrI64, storeOp.getValue(), meshPhysicalIds, meshShape);
     rewriter.eraseOp(storeOp);
     return success();
   }
@@ -395,6 +400,80 @@ struct DsaLocalStoreToMemrefPattern : public OpRewritePattern<triton::StoreOp> {
 };
 
 // ===----------------------------------------------------------------------===//
+// cumsum
+// ===----------------------------------------------------------------------===//
+
+struct DsaCumsumToMkPattern
+    : public OpRewritePattern<mlir::dsa::CumsumOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::dsa::CumsumOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto inputTy = dyn_cast<RankedTensorType>(op.getInput().getType());
+    auto exclusiveTy = dyn_cast<RankedTensorType>(op.getExclusive().getType());
+    if (!inputTy || !exclusiveTy)
+      return rewriter.notifyMatchFailure(
+          op, "dsa.cumsum expects ranked tensor input/exclusive result");
+    if (inputTy.getShape() != exclusiveTy.getShape() ||
+        inputTy.getElementType() != exclusiveTy.getElementType())
+      return rewriter.notifyMatchFailure(
+          op, "dsa.cumsum input and exclusive result must match");
+
+    SmallVector<int64_t> shape(inputTy.getShape().begin(),
+                               inputTy.getShape().end());
+    int64_t rank = static_cast<int64_t>(shape.size());
+    int64_t axis = op.getAxis();
+    if (axis < 0)
+      axis += rank;
+    if (rank == 0 || axis != rank - 1)
+      return rewriter.notifyMatchFailure(
+          op, "dsa.cumsum currently supports only the last dimension");
+    if (op.getReverse())
+      return rewriter.notifyMatchFailure(
+          op, "dsa.cumsum reverse mode is not supported");
+
+    int64_t pad = op.getPad();
+    SmallVector<int64_t> scratchShape(shape.begin(), shape.end());
+    scratchShape.back() += pad;
+
+    auto exclusiveInit = rewriter.create<tensor::EmptyOp>(
+        loc, exclusiveTy.getShape(), exclusiveTy.getElementType());
+
+    bool scalarTotal = !isa<RankedTensorType>(op.getTotal().getType());
+    RankedTensorType totalBufferTy;
+    if (scalarTotal) {
+      totalBufferTy =
+          RankedTensorType::get({1}, inputTy.getElementType());
+    } else {
+      totalBufferTy = cast<RankedTensorType>(op.getTotal().getType());
+    }
+    auto totalInit = rewriter.create<tensor::EmptyOp>(
+        loc, totalBufferTy.getShape(), totalBufferTy.getElementType());
+
+    auto scratchTy =
+        RankedTensorType::get(scratchShape, inputTy.getElementType());
+    auto scratchInit = rewriter.create<tensor::EmptyOp>(
+        loc, scratchTy.getShape(), scratchTy.getElementType());
+
+    auto mkOp = rewriter.create<mk::CumsumOp>(
+        loc, TypeRange{exclusiveTy, totalBufferTy, scratchTy}, op.getInput(),
+        exclusiveInit, totalInit, scratchInit,
+        rewriter.getI32IntegerAttr(axis), rewriter.getI64ArrayAttr(shape),
+        rewriter.getI64IntegerAttr(pad));
+
+    Value total = mkOp->getResult(1);
+    if (scalarTotal) {
+      Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      total = rewriter.create<tensor::ExtractOp>(loc, total, ValueRange{zero});
+    }
+
+    rewriter.replaceOp(op, ValueRange{mkOp->getResult(0), total});
+    return success();
+  }
+};
+
+// ===----------------------------------------------------------------------===//
 // Remote pointers fallback (kept for edge cases)
 // ===----------------------------------------------------------------------===//
 
@@ -427,6 +506,7 @@ struct DsaRemotePointersToTritonPattern
 
 void mlir::triton::populateTLEToMKConversionPatterns(
     RewritePatternSet &patterns) {
+  patterns.add<DsaCumsumToMkPattern>(patterns.getContext());
   // Highest benefit (3): local load/store → memref ops.
   // These MUST fire before any pattern that would produce !tt.ptr types.
   patterns.add<DsaLocalLoadToMemrefPattern, DsaLocalStoreToMemrefPattern>(

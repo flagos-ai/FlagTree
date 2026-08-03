@@ -14,12 +14,33 @@
 extern "C" {
 #endif
 
-bool is_dma_action_logging(uint32_t action) { return action & DMA_ACT_LOG; }
-bool is_dma_action_checking(uint32_t action) { return action & DMA_ACT_CHK; }
-
-uint64_t *get_header(const void *ddr_addr) {
-  return (uint64_t *)((char *)ddr_addr - ClientPtrHeaderBytes);
+bool is_dma_action_logging(uint32_t action) {
+  return action & DMA_ACT_LOG;
 }
+bool is_dma_action_checking(uint32_t action) {
+  return action & DMA_ACT_CHK;
+}
+
+uint64_t* get_header(const void *ddr_addr) {
+  return (uint64_t*)((char*)ddr_addr - ClientPtrHeaderBytes);
+}
+
+uint32_t crc32(const uint8_t *data, int len)
+{
+  uint32_t crc = 0xFFFFFFFF;
+  for (int i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++) {
+      if (crc & 1)
+        crc = (crc >> 1) ^ 0x04C11DB7;
+      else
+        crc >>= 1;
+    }
+  }
+  return ~crc;
+}
+
+  
 
 bool is_contiguous(int *shape, int *strides, int rank) {
   int expected_stride = 1;
@@ -184,29 +205,103 @@ int8_t *get_spm_memory_mapping_wrapper(uint64_t ptr) {
 
 void debug_dump_f32_data(uint64_t *in, uint32_t elem_count, char *dump_flag) {
   RcsWaitfinish();
-  volatile float *in_data =
-      (volatile float *)get_spm_memory_mapping((uint64_t)in);
-  __EP_LOG__(
-      3,
-      "------crt dump f32 data, addr: %p, dump_flag: %s, dump elem_count: %d\n",
-      in_data, dump_flag, elem_count);
+  volatile float* in_data = (volatile float*)get_spm_memory_mapping((uint64_t)in);
+  __EP_LOG__(3, "------crt dump f32 data, addr: %p, dump_flag: %s, dump elem_count: %d\n",
+             in_data, dump_flag, elem_count);
   for (int i = 0; i < elem_count; i++) {
-    __EP_LOG__(3, "idx: %d, in: %f\n", i, in_data[i]);
+    __EP_LOG__(3, "idx: %d, in: %.9f\n", i, in_data[i]);
   }
 }
 
 void debug_dump_i32_data(uint64_t *in, uint32_t elem_count, char *dump_flag) {
   RcsWaitfinish();
-  volatile int32_t *in_data =
-      (volatile int32_t *)get_spm_memory_mapping((uint64_t)in);
-  __EP_LOG__(
-      3,
-      "------crt dump i32 data, addr: %p, dump_flag: %s, dump elem_count: %d\n",
-      in_data, dump_flag, elem_count);
+  volatile int32_t* in_data = (volatile int32_t*)get_spm_memory_mapping((uint64_t)in);
+  __EP_LOG__(3, "------crt dump i32 data, addr: %p, dump_flag: %s, dump elem_count: %d\n",
+             in_data, dump_flag, elem_count);
   for (int i = 0; i < elem_count; i++) {
     __EP_LOG__(3, "idx: %d, in: %d\n", i, in_data[i]);
   }
 }
+
+void debug_dump_i64_data(uint64_t *in, uint32_t elem_count, char *dump_flag) {
+  RcsWaitfinish();
+  volatile int64_t* in_data = (volatile int64_t*)get_spm_memory_mapping((uint64_t)in);
+  __EP_LOG__(3, "------crt dump i32 data, addr: %p, dump_flag: %s, dump elem_count: %d\n",
+             in_data, dump_flag, elem_count);
+  for (int i = 0; i < elem_count; i++) {
+    __EP_LOG__(3, "idx: %d, in: %lld\n", i, in_data[i]);
+  }
+}
+
+
+float bf16_to_f32(uint16_t x) {
+    uint32_t u = ((uint32_t)x) << 16;
+    float f;
+    memcpy(&f, &u, sizeof(float));
+    return f;
+}
+
+void debug_dump_bf16_data(uint64_t *in, uint32_t elem_count, char *dump_flag) {
+  RcsWaitfinish();
+  volatile uint16_t* in_data = (volatile uint16_t*)get_spm_memory_mapping((uint64_t)in);
+  __EP_LOG__(3, "------crt dump bf16 data, addr: %p, dump_flag: %s, dump elem_count: %d\n",
+             in_data, dump_flag, elem_count);
+  for (int i = 0; i < elem_count; i++) {
+    float num = bf16_to_fp32(in_data[i]);
+    __EP_LOG__(3, "idx: %d, in: %.9f\n", i, num);
+  }
+}
+
+float fp16_to_f32(uint16_t h) {
+    uint32_t sign = (uint32_t)(h & 0x8000) << 16;
+    uint32_t exp  = (h >> 10) & 0x1f;
+    uint32_t frac = h & 0x03ff;
+
+    uint32_t fbits;
+
+    if (exp == 0) {
+        if (frac == 0) {
+            // zero
+            fbits = sign;
+        } else {
+            // subnormal
+            exp = 1;
+            while ((frac & 0x0400) == 0) {
+                frac <<= 1;
+                exp--;
+            }
+            frac &= 0x03ff;
+
+            uint32_t fexp = exp + (127 - 15);
+            uint32_t ffrac = frac << 13;
+            fbits = sign | (fexp << 23) | ffrac;
+        }
+    } else if (exp == 0x1f) {
+        // inf / nan
+        fbits = sign | 0x7f800000 | (frac << 13);
+    } else {
+        // normal
+        uint32_t fexp = exp + (127 - 15);
+        uint32_t ffrac = frac << 13;
+        fbits = sign | (fexp << 23) | ffrac;
+    }
+
+    float f;
+    memcpy(&f, &fbits, sizeof(f));
+    return f;
+}
+
+void debug_dump_f16_data(uint64_t *in, uint32_t elem_count, char *dump_flag) {
+  RcsWaitfinish();
+  volatile uint16_t* in_data = (volatile uint16_t*)get_spm_memory_mapping((uint64_t)in);
+  __EP_LOG__(3, "------crt dump f16 data, addr: %p, dump_flag: %s, dump elem_count: %d\n",
+             in_data, dump_flag, elem_count);
+  for (int i = 0; i < elem_count; i++) {
+    float num = fp16_to_f32(in_data[i]);
+    __EP_LOG__(3, "idx: %d, in: %.9f\n", i, num);
+  }
+}
+
 
 static bool shape_has_zero_dim(const int *shape, int rank) {
   for (int i = 0; i < rank; ++i) {
@@ -218,8 +313,7 @@ static bool shape_has_zero_dim(const int *shape, int rank) {
 }
 
 static void offset_min_max_in_box(const int *shape, const int64_t *byte_stride,
-                                  int rank, int64_t *min_off,
-                                  int64_t *max_off) {
+                                  int rank, int64_t *min_off, int64_t *max_off) {
   int64_t lo = 0;
   int64_t hi = 0;
   for (int k = 0; k < rank; ++k) {
@@ -237,10 +331,10 @@ static void offset_min_max_in_box(const int *shape, const int64_t *byte_stride,
 }
 
 static Tx81MemAddrRange mem_addr_range_per_element(uintptr_t base,
-                                                   const int *shape,
-                                                   const int64_t *byte_stride,
-                                                   int rank,
-                                                   uint32_t elem_bytes) {
+                                                 const int *shape,
+                                                 const int64_t *byte_stride,
+                                                 int rank,
+                                                 uint32_t elem_bytes) {
   int64_t lo, hi;
   Tx81MemAddrRange range;
   offset_min_max_in_box(shape, byte_stride, rank, &lo, &hi);
@@ -252,7 +346,8 @@ static Tx81MemAddrRange mem_addr_range_per_element(uintptr_t base,
 static Tx81MemAddrRange mem_addr_range_inner_line(uintptr_t base,
                                                   const int *outer_shape,
                                                   const int64_t *byte_stride,
-                                                  int rank, int inner_dim_elems,
+                                                  int rank,
+                                                  int inner_dim_elems,
                                                   uint32_t elem_bytes) {
   Tx81MemAddrRange range;
   if (rank == 1) {
@@ -264,8 +359,8 @@ static Tx81MemAddrRange mem_addr_range_inner_line(uintptr_t base,
   int64_t lo, hi;
   offset_min_max_in_box(outer_shape, byte_stride, rank - 1, &lo, &hi);
   range.min_addr = (uintptr_t)((int64_t)base + lo);
-  range.max_addr =
-      (uintptr_t)((int64_t)base + hi + (int64_t)inner_dim_elems * elem_bytes);
+  range.max_addr = (uintptr_t)((int64_t)base + hi +
+                               (int64_t)inner_dim_elems * elem_bytes);
   return range;
 }
 
@@ -303,7 +398,7 @@ Tx81MemAddrRange compute_rdma_src_addr_range(const void *src, int *src_shape,
 
   if (src_stride[rank - 1] != 1 || dst_stride[rank - 1] != 1) {
     return mem_addr_range_per_element(base, src_shape, byte_stride, rank,
-                                      elem_bytes);
+                                    elem_bytes);
   }
 
   int shape_copy[TX81_MAX_TENSOR_RANK];
@@ -394,22 +489,33 @@ uint32_t dma_bad_magic_count = 0;
 
 static bool dma_check_abort_enabled = false;
 
-bool get_dma_check_abort(void) { return dma_check_abort_enabled; }
+bool get_dma_check_abort(void) {
+  return dma_check_abort_enabled;
+}
 
-__attribute__((constructor)) static void dma_check_init(void) {
+__attribute__((constructor))
+static void dma_check_init(void) {
   const char *val = getenv("TRITON_DMA_CHECK_ABORT");
   if (val && val[0] == '1') {
     dma_check_abort_enabled = true;
   }
 }
 
-uint32_t get_dma_oob_count(void) { return dma_oob_count; }
+uint32_t get_dma_oob_count(void) {
+  return dma_oob_count;
+}
 
-uint32_t get_dma_bad_magic_count(void) { return dma_bad_magic_count; }
+uint32_t get_dma_bad_magic_count(void) {
+  return dma_bad_magic_count;
+}
 
-void reset_dma_oob_count(void) { dma_oob_count = 0; }
+void reset_dma_oob_count(void) {
+  dma_oob_count = 0;
+}
 
-void reset_dma_bad_magic_count(void) { dma_bad_magic_count = 0; }
+void reset_dma_bad_magic_count(void) {
+  dma_bad_magic_count = 0;
+}
 
 #ifdef __cplusplus
 }

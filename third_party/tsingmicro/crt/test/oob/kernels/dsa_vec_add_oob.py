@@ -13,8 +13,8 @@ def add_kernel_dsa_oob(
     output_ptr,
     n_elements,
     inject_n_elements_scale: tl.constexpr,  # 1=normal, >1=inflate n_elements
-    inject_mask_mode: tl.constexpr,  # 0=normal, 1=no mask
-    inject_n_iter_scale: tl.constexpr,  # 1=normal, >1=more iters beyond BLOCK_SIZE
+    inject_mask_mode: tl.constexpr,          # 0=normal, 1=no mask
+    inject_n_iter_scale: tl.constexpr,       # 1=normal, >1=more iters beyond BLOCK_SIZE
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)

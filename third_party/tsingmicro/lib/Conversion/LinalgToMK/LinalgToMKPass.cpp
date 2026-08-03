@@ -53,7 +53,7 @@ public:
     {
       RewritePatternSet typePatterns(&getContext());
       triton::populateLinalgToMKTypeConversionPatterns(typePatterns,
-                                                       precisionPriority);
+                                                       precisionMode);
       if (failed(applyPatternsGreedily(moduleOp, std::move(typePatterns)))) {
         signalPassFailure();
       }
@@ -63,7 +63,7 @@ public:
       // Layout transformation, and other canonicalization
       RewritePatternSet canonicalizePatterns(&getContext());
       triton::populateLinalgToMKCanonicalizationPatterns(canonicalizePatterns,
-                                                         precisionPriority);
+                                                         precisionMode);
       if (failed(applyPatternsGreedily(moduleOp,
                                        std::move(canonicalizePatterns)))) {
         signalPassFailure();
@@ -73,7 +73,7 @@ public:
     {
       RewritePatternSet shapePatterns(&getContext());
       triton::populateLinalgToMKShapeCanonicalizationPatterns(
-          shapePatterns, precisionPriority);
+          shapePatterns, precisionMode);
       if (failed(applyPatternsGreedily(moduleOp, std::move(shapePatterns)))) {
         signalPassFailure();
       }

@@ -2,7 +2,7 @@ import imp
 import torch
 import triton
 import triton.language as tl
-import triton.experimental.tle.language as tle
+from triton.experimental import tle
 
 TILE_NUM = 16
 M = 4096
@@ -16,26 +16,19 @@ TILE_PHYSICAL_RELATION = [0, 1, 2, 3, 7, 11, 15, 14, 13, 12, 8, 9, 10, 6, 5, 4]
 
 MESH = tle.device_mesh(
     None,
-    _shape=(TILE_NUM, ),
-    _dim_names=("tile", ),
+    _shape=(TILE_NUM,),
+    _dim_names=("tile",),
     _physical_ids=tuple(TILE_PHYSICAL_RELATION),
 )
 
 
 @triton.jit
 def dsa_shift_n_gemm_kernel(
-    A_ptr,
-    B_ptr,
-    C_ptr,
-    physical_ids_ptr,
-    ring_index_lut_ptr,
-    M: tl.constexpr,
-    N: tl.constexpr,
-    K: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    SUB_N: tl.constexpr,
-    TILE_NUM: tl.constexpr,
+    A_ptr, B_ptr, C_ptr,
+    physical_ids_ptr, ring_index_lut_ptr,
+    M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
+    BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr,
+    SUB_N: tl.constexpr, TILE_NUM: tl.constexpr,
     MESH: tl.constexpr,
 ):
     # Use tle.shard_id() to obtain the current tile's physical id.
@@ -60,20 +53,20 @@ def dsa_shift_n_gemm_kernel(
     b_ptrs = B_ptr + offs_k[:, None] * N + offs_sub_n[None, :]
     b_init = tl.load(b_ptrs)
 
-    send_buf = tle.dsa.alloc((BLOCK_K, SUB_N), tl.float16)
-    recv_buf = tle.dsa.alloc((BLOCK_K, SUB_N), tl.float16)
+    send_buf = tle.language.dsa.alloc((BLOCK_K, SUB_N), tl.float16)
+    recv_buf = tle.language.dsa.alloc((BLOCK_K, SUB_N), tl.float16)
 
     offs_buf_k = tl.arange(0, BLOCK_K)[:, None] + tl.zeros((1, SUB_N), dtype=tl.int32)
     offs_buf_n = tl.arange(0, SUB_N)[None, :] + tl.zeros((BLOCK_K, 1), dtype=tl.int32)
 
-    send_ptr = tle.dsa.local_ptr(send_buf, [offs_buf_k, offs_buf_n])
-    recv_ptr = tle.dsa.local_ptr(recv_buf, [offs_buf_k, offs_buf_n])
+    send_ptr = tle.language.dsa.local_ptr(send_buf, [offs_buf_k, offs_buf_n])
+    recv_ptr = tle.language.dsa.local_ptr(recv_buf, [offs_buf_k, offs_buf_n])
 
     # Mark recv_buf for remote access.  send_next_tile becomes the DTE
     # target (__Send's tileId).  The recv source is resolved at runtime
     # by __Send from the topology passed via scope=MESH.
     remote_recv_buf = tle.remote(recv_buf, send_next_tile, scope=MESH)
-    remote_recv_ptr = tle.dsa.local_ptr(remote_recv_buf, [offs_buf_k, offs_buf_n])
+    remote_recv_ptr = tle.language.dsa.local_ptr(remote_recv_buf, [offs_buf_k, offs_buf_n])
 
     tl.store(send_ptr, b_init)
 
@@ -118,20 +111,13 @@ def run():
 
     physical_ids, ring_index_lut = build_mesh_luts(MESH, device)
 
-    grid = (TILE_NUM, )
+    grid = (TILE_NUM,)
     dsa_shift_n_gemm_kernel[grid](
-        a,
-        b,
-        c,
-        physical_ids,
-        ring_index_lut,
-        M=M,
-        N=N,
-        K=K,
-        BLOCK_M=BLOCK_M,
-        BLOCK_K=BLOCK_K,
-        SUB_N=SUB_N,
-        TILE_NUM=TILE_NUM,
+        a, b, c,
+        physical_ids, ring_index_lut,
+        M=M, N=N, K=K,
+        BLOCK_M=BLOCK_M, BLOCK_K=BLOCK_K,
+        SUB_N=SUB_N, TILE_NUM=TILE_NUM,
         MESH=MESH,
     )
     a_f32 = a.cpu().float()

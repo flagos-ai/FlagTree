@@ -705,6 +705,23 @@ def ReduceAvgOp : Reduce<"reduce_avg">;
 def ReduceMaxOp : Reduce<"reduce_max">;
 def ReduceMinOp : Reduce<"reduce_min">;
 def ReduceMulOp : Reduce<"reduce_mul">;
+
+def CumsumOp : Tx81Op<"cumsum", []> {
+  let summary = "exclusive cumsum implemented by the CRT pad-buffer path";
+
+  let arguments = (
+    ins
+    MemRefOrInt:$src,
+    MemRefOrInt:$exclusive,
+    MemRefOrInt:$total,
+    MemRefOrInt:$scratch,
+    I32Attr:$rank,
+    I32Attr:$axis,
+    I64ArrayAttr:$shape,
+    I64Attr:$pad,
+    I16Attr:$fmt
+  );
+}
 // =============================================================================
 // 4.15. TsmMaskDataMove
 // =============================================================================
@@ -988,7 +1005,8 @@ def ArgMaxOp : Tx81Op<"argmax", []> {
     Arg<MemRefOrInt, "the target memref", [MemWrite]>:$value,  // Address
     Arg<MemRefOrInt, "the target memref", [MemWrite]>:$index,  // Address
     I32Attr:$elem_count,   // Number of input elements
-    I16Attr:$fmt           // The data format of src & dst
+    I16Attr:$fmt,           // The data format of src & dst
+    Arg<MemRefOrInt, "intermediate buffer", [MemWrite]>:$buffer // Buffer vector address
   );
 
   let results = (outs Variadic<I64>:$dst);
@@ -1002,7 +1020,8 @@ def ArgMinOp : Tx81Op<"argmin", []> {
     Arg<MemRefOrInt, "the target memref", [MemWrite]>:$value,  // Address
     Arg<MemRefOrInt, "the target memref", [MemWrite]>:$index,  // Address
     I32Attr:$elem_count,   // Number of input elements
-    I16Attr:$fmt           // The data format of src & dst
+    I16Attr:$fmt,           // The data format of src & dst
+    Arg<MemRefOrInt, "intermediate buffer", [MemWrite]>:$buffer // Buffer vector address
   );
 
   let results = (outs Variadic<I64>:$dst);
@@ -1284,7 +1303,8 @@ def RemoteStoreOp : Tx81Op<"remote_store", [MemoryEffects<[MemRead<GlobalMemory>
     MemRefOrInt:$src,           // Source buffer address (read from here)
     I32:$elem_bytes,            // Element size in bytes
     I64:$data_size,             // Total data size in bytes
-    OptionalAttr<DenseI32ArrayAttr>:$mesh_physical_ids
+    OptionalAttr<DenseI32ArrayAttr>:$mesh_physical_ids,
+    OptionalAttr<DenseI32ArrayAttr>:$mesh_shape
   );
 
   let results = (outs);

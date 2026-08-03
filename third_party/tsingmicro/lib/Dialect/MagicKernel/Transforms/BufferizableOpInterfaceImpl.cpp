@@ -226,8 +226,7 @@ struct BitCastOpInterface
 };
 
 struct SendOpInterface
-    : public BufferizableOpInterface::ExternalModel<SendOpInterface,
-                                                    mk::RemoteStoreOp> {
+    : public BufferizableOpInterface::ExternalModel<SendOpInterface, mk::RemoteStoreOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
                               const AnalysisState &state) const {
     auto sendOp = cast<mk::RemoteStoreOp>(op);
@@ -270,8 +269,7 @@ struct SendOpInterface
     }
 
     if (isa<TensorType>(sendOp.getSrc().getType())) {
-      FailureOr<Value> srcBuffer =
-          getBuffer(rewriter, sendOp.getSrc(), options);
+      FailureOr<Value> srcBuffer = getBuffer(rewriter, sendOp.getSrc(), options);
       if (failed(srcBuffer))
         return failure();
       newOperands[sendOp.getSrcMutable().getOperandNumber()] = *srcBuffer;
@@ -304,6 +302,7 @@ void mlir::mk::registerBufferizableOpInterfaceExternalModels(
         MKOpInterfaceHelper<mk::SigmoidOp>::registerOpInterface(ctx);
         MKOpInterfaceHelper<mk::GeluOp>::registerOpInterface(ctx);
         MKOpInterfaceHelper<mk::GatherOp>::registerOpInterface(ctx);
+        MKOpInterfaceHelper<mk::CumsumOp>::registerOpInterface(ctx);
         MKOpInterfaceHelper<mk::PrintOp>::registerOpInterface(ctx);
         mk::AtomicRMWOp::attachInterface<AtomicRMWOpInterface>(*ctx);
         mk::AtomicCASOp::attachInterface<AtomicCASOpInterface>(*ctx);

@@ -442,11 +442,11 @@ struct LinalgFillSIToFPFusion : public OpRewritePattern<linalg::GenericOp> {
     Value fillScalar = fillOp.getInputs()[0];
     Value siToFpScalar =
         rewriter.create<arith::SIToFPOp>(op.getLoc(), outputType, fillScalar);
-    auto newFill =
-        rewriter
-            .create<linalg::FillOp>(op.getLoc(), ValueRange{siToFpScalar},
-                                    op.getOutputs()[0])
-            ->getResult(0);
+    auto newFill = rewriter
+                        .create<linalg::FillOp>(op.getLoc(),
+                                                ValueRange{siToFpScalar},
+                                                op.getOutputs()[0])
+                        ->getResult(0);
 
     rewriter.replaceOp(op, newFill);
     return success();
@@ -462,8 +462,8 @@ struct ArithExtSISitofpFusion : public OpRewritePattern<arith::SIToFPOp> {
     if (!extOp)
       return failure();
 
-    auto newSitofp = rewriter.create<arith::SIToFPOp>(op.getLoc(), op.getType(),
-                                                      extOp.getOperand());
+    auto newSitofp = rewriter.create<arith::SIToFPOp>(
+        op.getLoc(), op.getType(), extOp.getOperand());
     rewriter.replaceOp(op, newSitofp.getResult());
     return success();
   }

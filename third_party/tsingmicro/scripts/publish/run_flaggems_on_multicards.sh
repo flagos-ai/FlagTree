@@ -9,7 +9,7 @@ set -e
 ##  在多卡上并行运行Triton算子测试脚本                                                                                  ##
 ##     param1: test_set,     set test set name, default 'ci_ops'.                                                       ##
 ##     param2: device_count, set device count number,   default 1.                                                      ##
-##     ##param: precision_priority, set 1-triton compiler use high precision mode for special ops, default 1.           ##
+##     ##param: precision_mode, set 1-triton compiler use high precision mode for special ops, default 2.              ##
 ##     param3: quick_mode,   set 1-quick mode to run flaggems, set 0-normal mode, default 0.                            ##
 ##     param4: skip_device,  set devices that need to be skipped, when they are unavailable, default [].                ##
 ##                                                                                                                      ##
@@ -26,7 +26,7 @@ test_set=ci_ops
 device_count=1
 quick_mode=0
 skip_device=
-precision_priority=2
+precision_mode=2
 txda_skip_ops="repeat_interleave.self_int,pad,uniform_,sort.values_stable,resolve_conj"
 txda_fallback_cpu_ops="random_,quantile,_local_scalar_dense,arange,unfold,index,le,all,ge,pad,to,gather_backward,zero_,view_as_real,resolve_neg,embedding_backward,sort,repeat_interleave,rsub,hstack,vstack,min,uniform_,abs,ne,eq,mul,bitwise_and,masked_select,max,ceil,div,gt,lt,sum,scatter,where,resolve_conj,isclose,isfinite,tile,equal,gather,_index_put_impl_,sub,to_dtype,isneginf,tril,count_nonzero,exp,exp_out,exp.out,fill_,flip,diag,view_as_complex,cat,log_sigmoid,kron,add"
 
@@ -47,7 +47,7 @@ echo "test_set:"$test_set
 echo "device_count:"$device_count
 echo "quick_mode:"$quick_mode
 echo "skip_device:"$skip_device
-echo "precision_priority:"$precision_priority
+echo "precision_mode:"$precision_mode
 echo "txda_skip_ops:"$txda_skip_ops
 echo "txda_fallback_cpu_ops:"$txda_fallback_cpu_ops
 
@@ -65,7 +65,7 @@ export TRITON_QUICK_MODE=1
 export TRITON_PRINT_AUTOTUNING=1
 #测试任务相关环境变量
 export JSON_FILE_PATH=$project_dir/flaggems_tests
-export PRECISION_PRIORITY=$precision_priority
+export PRECISION_MODE=$precision_mode
 export TRITON_ALLOW_NON_CONSTEXPR_GLOBALS=1
 export TXDA_SKIP_OPS=$txda_skip_ops
 export TXDA_FALLBACK_CPU_OPS=$txda_fallback_cpu_ops
@@ -77,7 +77,7 @@ echo "PYTHONPATH="$PYTHONPATH
 echo "LD_LIBRARY_PATH="$LD_LIBRARY_PATH
 echo "TRITON_ALWAYS_COMPILE="$TRITON_ALWAYS_COMPILE
 echo "JSON_FILE_PATH="$JSON_FILE_PATH
-echo "PRECISION_PRIORITY="$PRECISION_PRIORITY
+echo "PRECISION_MODE="$PRECISION_MODE
 echo "TRITON_ALLOW_NON_CONSTEXPR_GLOBALS="$TRITON_ALLOW_NON_CONSTEXPR_GLOBALS
 echo "TXDA_SKIP_OPS="$TXDA_SKIP_OPS
 echo "TXDA_FALLBACK_CPU_OPS="$TXDA_FALLBACK_CPU_OPS

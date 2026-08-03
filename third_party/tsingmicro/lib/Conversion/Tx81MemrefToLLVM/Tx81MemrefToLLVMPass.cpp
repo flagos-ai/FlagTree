@@ -40,6 +40,62 @@ namespace triton {
 
 namespace {
 
+//===----------------------------------------------------------------------===//
+// Pre-processing: Convert unrealized_conversion_cast between memref types
+// to legal memref.cast ops, so they can be properly handled by the
+// MemRefToLLVM lowering instead of surviving as unrealized casts.
+//===----------------------------------------------------------------------===//
+//
+// memref.cast requires source and target element types to be the same.
+// When element types differ (e.g. memref<*xi1> -> memref<*xi8>),
+// memref.cast is illegal, so we skip those cases and leave the
+// unrealized_conversion_cast for later passes (e.g. Tx81ToLLVM) to
+// eliminate naturally when all memrefs become LLVM pointers.
+//
+struct MemrefUnrealizedCastToMemrefCast : public RewritePattern {
+  MemrefUnrealizedCastToMemrefCast(MLIRContext *ctx)
+      : RewritePattern(UnrealizedConversionCastOp::getOperationName(), 1,
+                       ctx) {}
+
+  LogicalResult
+  matchAndRewrite(Operation *op,
+                  PatternRewriter &rewriter) const override {
+    auto castOp = cast<UnrealizedConversionCastOp>(op);
+    Value operand = castOp.getOperand(0);
+    Type srcType = operand.getType();
+    Type dstType = castOp.getResult(0).getType();
+
+    // Only handle casts between two memref types.
+    auto srcMemRef = dyn_cast<BaseMemRefType>(srcType);
+    auto dstMemRef = dyn_cast<BaseMemRefType>(dstType);
+    if (!srcMemRef || !dstMemRef)
+      return failure();
+
+    // Same type → just erase the cast.
+    if (srcType == dstType) {
+      rewriter.replaceOp(op, operand);
+      return success();
+    }
+
+    // Same element type → use a proper memref.cast (legal for memref.cast).
+    if (srcMemRef.getElementType() == dstMemRef.getElementType()) {
+      rewriter.replaceOpWithNewOp<memref::CastOp>(op, dstType, operand);
+      return success();
+    }
+
+    // Different element types — memref.cast is illegal here.
+    // Leave the unrealized_conversion_cast in place for later passes
+    // (e.g. ReconcileUnrealizedCastsPass) to handle naturally when all memrefs become LLVM
+    // pointers and the element type distinction is erased.
+    LLVM_DEBUG({
+      llvm::dbgs() << "  Skipping unrealized_conversion_cast from "
+                   << srcType << " to " << dstType
+                   << " (element types differ, memref.cast would be illegal)\n";
+    });
+    return failure();
+  }
+};
+
 class Tx81MemrefToLLVMPass
     : public mlir::triton::Tx81MemrefToLLVMBase<Tx81MemrefToLLVMPass> {
   using Tx81MemrefToLLVMBase<Tx81MemrefToLLVMPass>::Tx81MemrefToLLVMBase;
@@ -54,6 +110,19 @@ public:
   void runOnOperation() override {
     auto moduleOp = getOperation();
     MLIRContext *context = &getContext();
+
+    // Pre-processing: convert unrealized_conversion_cast between memref types
+    // to legal memref.cast ops. This must happen before the partial conversion
+    // below so that the MemRefCastOpLowering pattern can handle them.
+    {
+      RewritePatternSet prePatterns(context);
+      prePatterns.add<MemrefUnrealizedCastToMemrefCast>(context);
+      if (failed(
+              applyPatternsGreedily(moduleOp, std::move(prePatterns)))) {
+        return signalPassFailure();
+      }
+    }
+
     RewritePatternSet patterns(context);
     ConversionTarget target(*context);
 

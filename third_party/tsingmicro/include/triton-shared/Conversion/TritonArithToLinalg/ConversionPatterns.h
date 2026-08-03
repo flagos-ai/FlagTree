@@ -2026,6 +2026,38 @@ public:
   }
 };
 
+class ExternElementwiseDivRzOpConverter
+    : public OpConversionPattern<triton::ExternElementwiseOp> {
+  using OpConversionPattern<triton::ExternElementwiseOp>::OpConversionPattern;
+
+public:
+  LogicalResult
+  matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op.getSrcs().size() != 2 ||
+        (op.getSymbol() != "__nv_fdiv_rz" && op.getSymbol() != "__nv_ddiv_rz")) {
+      return failure();
+    }
+
+    // get input values
+    Value input1 = op.getSrcs()[0];
+    Value input2 = op.getSrcs()[1];
+    auto elemType = cast<ShapedType>(input1.getType()).getElementType();
+
+    if (!elemType.isF32() && !elemType.isF64()) {
+      return failure();
+    }
+
+    // fdiv_rz(x, y) = trunc(x / y)
+    auto divResult =
+        rewriter.create<arith::DivFOp>(op.getLoc(), input1, input2);
+    divResult->setAttr("rnd_mode",
+                       rewriter.getI16IntegerAttr(1)); // RND_ZERO
+    rewriter.replaceOpWithNewOp<math::TruncOp>(op, divResult);
+    return success();
+  }
+};
+
 class ExternElementwiseBinaryOpConverter
     : public OpConversionPattern<triton::ExternElementwiseOp> {
   using OpConversionPattern<triton::ExternElementwiseOp>::OpConversionPattern;
@@ -2135,7 +2167,7 @@ public:
 static void populateExternElementwiseOpToMLIROps(RewritePatternSet &patterns) {
   patterns
       .add<ExternElementwiseFiniteOpConverter, ExternElementwiseFmodOpConverter,
-           ExternElementwiseBinaryOpConverter,
+           ExternElementwiseDivRzOpConverter, ExternElementwiseBinaryOpConverter,
            ExternElementwiseUnaryOpConverter>(patterns.getContext());
 }
 

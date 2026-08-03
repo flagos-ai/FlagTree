@@ -1,0 +1,4 @@
+[20260608 09:05:02.005][ERROR][PID:156656][TID:156656]HPGR: open device file failed! : Operation not permitted
+[20260608 09:05:02.005][ERROR][PID:156656][TID:156656]HPGR: DeviceMgr init failed!
+[20260608 09:05:02.005][ERROR][PID:156656][TID:156656]HPGR: Invalid deviceId: 0. (valid range: 0 to 4294967295) 
+
