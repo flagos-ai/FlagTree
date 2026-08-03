@@ -82,6 +82,7 @@ runs:
           "pyproject.toml"
           "setup.py"
           ".github/actions"
+          ".github/workflows/benchmark"
           ".github/workflows/code-format-check.yml"
         )
 
