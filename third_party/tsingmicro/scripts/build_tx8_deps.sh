@@ -210,14 +210,14 @@ load_copy_cfg() {
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
 
         [[ -z "$line" ]] && continue
-        
+
         # 解析块定义
         if [[ "$line" =~ ^\[([^:]+):([^]]+)\] ]]; then
             current_block="${BASH_REMATCH[1]}"
             CONFIG_BLOCKS["$current_block"]="${BASH_REMATCH[2]}"
             continue
         fi
-        
+
         # 存储配置项
         if [[ -n "$current_block" ]]; then
             CONFIG_ITEMS["$current_block"]+="$line"$'\n'
@@ -247,16 +247,16 @@ copy_files() {
             # 处理块内的每个配置项
             while IFS= read -r line; do
                 [[ -z "$line" ]] && continue
-                
+
                 # 解析配置行
                 if [[ "$line" =~ ^([^:]+):([^,]+),?(.*)$ ]]; then
                     local copy_type="${BASH_REMATCH[1]}"
                     local source_pattern="$WORKSPACE/${BASH_REMATCH[2]}"
                     local target_subdir="${BASH_REMATCH[3]:-.}"
-                    
+
                     local full_target="$destination/${target_subdir}"
                     [[ "$target_subdir" == "." ]] && full_target="$destination"
-                    
+
                     mkdir -p "$full_target"
                     echo "copy [$copy_type] '$source_pattern' to '$full_target'"
                     if [[ "$copy_type" == "dir" ]]; then
@@ -309,7 +309,7 @@ if [ "x$MODE" == "xbuild_flagtree_tx8_deps" ] || [ "x$MODE" == "xbuild_tx8_deps"
         "$tx_profiler_dir" "$download_dir" "tx_profiler"
 
     ########################################################################################
-	
+
     tx8_yoc_rt_thread_smp_dir=$download_dir/tx8-yoc-rt-thread-smp
     download_and_extract $tx8_yoc_rt_thread_smp \
         "$tx8_yoc_rt_thread_smp_dir" "$download_dir" "tx8-yoc-rt-thread-smp"
