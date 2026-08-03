@@ -361,12 +361,15 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
         print(f'{YELLOW}downloading and extracting {url} ... {NC}', file=sys.stderr, flush=True)
         file = tarfile.open(fileobj=open_url(url), mode="r|*")
         file.extractall(path=tmp_path)
-    os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
-    print(f'copy {src_path} to {dst_path} ...', file=sys.stderr, flush=True)
-    if os.path.isdir(src_path):
-        shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
-    else:
-        shutil.copy(src_path, dst_path)
+    # In offline build mode the cache may be absent (e.g. backend doesn't need the
+    # NVIDIA toolkits), skip the copy in that case instead of failing.
+    if os.path.exists(src_path):
+        os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
+        print(f'copy {src_path} to {dst_path} ...', file=sys.stderr, flush=True)
+        if os.path.isdir(src_path):
+            shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+        else:
+            shutil.copy(src_path, dst_path)
 
 
 # ---- cmake extension ----

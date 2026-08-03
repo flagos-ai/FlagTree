@@ -132,7 +132,7 @@ class DownloadManager:
         NetConfig.headers = {'User-Agent': NetConfig.user_agent}
 
     def download(self, url=None, path=None, file_name=None, mode=None, module=None, required=False):
-        if self.module_offline_handler.is_offline_build():
+        if self.module_offline_handler.is_offline_build() and self.module_offline_handler.offline_build_dir is not None:
             self.offline_copy(module, required)
             return
 
@@ -284,6 +284,9 @@ class OfflineBuildManager:
             kargs['post_hook'](self.src)
 
     def handle_triton_origin_toolkits(self):
+
+        if self.offline_build_dir is None:
+            return
 
         # detect system/arch/version, the same with setup.py
         system = platform.system()
