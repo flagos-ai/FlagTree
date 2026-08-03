@@ -575,6 +575,7 @@ MemDescTransOp::inferReturnTypes(MLIRContext *context,
   return success();
 }
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
 // ConcatDotOperandOp
 LogicalResult ConcatDotOperandOp::verify() {
   auto fragments = getFragments();
@@ -610,6 +611,7 @@ LogicalResult ConcatDotOperandOp::verify() {
   }
   return success();
 }
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 // MemDescReshapeOp
 LogicalResult MemDescReshapeOp::verify() {

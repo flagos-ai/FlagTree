@@ -28,7 +28,9 @@
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/LayoutUtils.h"
 
@@ -605,6 +607,7 @@ struct MemDescReinterpretOpConversion
   }
 };
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
 // concat_dot_operand: per-thread register gather.
 // getConcatDotOperandRegisterMap says which fragment register feeds each result
 // register; the values are then just copied over.
@@ -637,6 +640,7 @@ struct ConcatDotOperandOpConversion
     return success();
   }
 };
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 } // namespace
 
@@ -651,7 +655,9 @@ void mlir::triton::populateViewOpToLLVMPatterns(
   patterns.add<ArithConstantArrayOpConversion>(typeConverter, benefit);
   patterns.add<CatOpConversion>(typeConverter, benefit);
   patterns.add<JoinOpConversion>(typeConverter, benefit);
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
   patterns.add<ConcatDotOperandOpConversion>(typeConverter, benefit);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
   patterns.add<SplitOpConversion>(typeConverter, benefit);
   patterns.add<MemDescTransOpConversion, MemDescReshapeOpConversion>(
       typeConverter, benefit);

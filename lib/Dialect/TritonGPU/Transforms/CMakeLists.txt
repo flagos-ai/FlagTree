@@ -7,9 +7,18 @@ if(FLAGTREE_TLE)
   )
 endif()
 
+# The pass needs ttg.concat_dot_operand, which tablegen only emits when
+# __FLAGTREE_CONCAT_DOT_OPERAND__ is defined (see cmake/FlagTreeOptions.cmake).
+set(TritonGPUTransformsConcatDotOperandSources)
+if(NOT FLAGTREE_BACKEND)
+  list(APPEND TritonGPUTransformsConcatDotOperandSources
+    ConcatDotOperand.cpp
+  )
+endif()
+
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
-  ConcatDotOperand.cpp
+  ${TritonGPUTransformsConcatDotOperandSources}
   ProcessSharedMemoryHint.cpp
   Coalesce.cpp
   F32DotTC.cpp

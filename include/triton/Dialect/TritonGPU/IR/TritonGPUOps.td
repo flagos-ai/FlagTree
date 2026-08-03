@@ -461,6 +461,7 @@ def TTG_Fp4ToFpOp : TTG_Op<"fp4_to_fp", [Pure]> {
   }];
 }
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
 def TTG_ConcatDotOperandOp : TTG_Op<"concat_dot_operand",
                                     [Pure, SameTypeOperands]> {
   let summary = "Concatenate dot operand fragments along the contraction axis";
@@ -489,6 +490,7 @@ def TTG_ConcatDotOperandOp : TTG_Op<"concat_dot_operand",
     $fragments attr-dict `:` type($fragments) `->` type($result)
   }];
 }
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 // Allocate global memory
 def TTG_GlobalScratchAllocOp : TTG_Op<"global_scratch_alloc"> {

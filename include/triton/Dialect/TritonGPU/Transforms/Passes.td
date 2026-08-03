@@ -225,6 +225,7 @@ def TritonGPUPrefetch : Pass<"tritongpu-prefetch", "mlir::ModuleOp"> {
                            "mlir::arith::ArithDialect"];
 }
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
 def TritonGPUConcatDotOperand : Pass<"tritongpu-concat-dot-operand", "mlir::ModuleOp"> {
   let summary = "fold an ordered K concat into one op";
 
@@ -258,6 +259,7 @@ def TritonGPUExpandConcatDotOperand : Pass<"tritongpu-expand-concat-dot-operand"
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
 }
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 def TritonGPUAccelerateMatmul : Pass<"tritongpu-accelerate-matmul", "mlir::ModuleOp"> {
   let summary = "accelerate matmul";

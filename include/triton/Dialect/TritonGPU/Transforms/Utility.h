@@ -309,6 +309,7 @@ SmallVector<Value> getTiedArgs(Operation *op, int resultIdx);
 LogicalResult verifyBarrierType(Operation *op,
                                 mlir::triton::gpu::MemDescType barrierType);
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
 // Map each register of a `ttg.concat_dot_operand` result to the (fragment,
 // fragment register) holding it, or fail when the layouts do not let the
 // concatenation be a per-thread relabel. Shared by the lowering and by
@@ -316,6 +317,7 @@ LogicalResult verifyBarrierType(Operation *op,
 LogicalResult getConcatDotOperandRegisterMap(
     triton::gpu::ConcatDotOperandOp op,
     SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 } // namespace mlir::triton
 

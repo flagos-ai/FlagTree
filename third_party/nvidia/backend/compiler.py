@@ -314,12 +314,13 @@ class CUDABackend(BaseBackend):
         # source-level chunk staging into direct async copies targeting
         # memdesc subviews of the final shared operand buffer.
         tle.passes.add_optimize_local_pointer_async_stores(pm)
-        # Fold an ordered join/transpose/reshape K concatenation into a single
-        # op before any layout is assigned, so the operand encodings are chosen
-        # as if the concatenation had always been one op. Left as a join chain
-        # the operand would be staged through shared memory instead of reaching
-        # the mma in registers.
-        passes.ttgpuir.add_concat_dot_operand(pm)
+        # flagtree pass: fold an ordered join/transpose/reshape K concatenation
+        # into a single op before any layout is assigned, so the operand
+        # encodings are chosen as if the concatenation had always been one op.
+        # Left as a join chain the operand would be staged through shared memory
+        # instead of reaching the mma in registers.
+        if hasattr(passes.ttgpuir, "add_concat_dot_operand"):
+            passes.ttgpuir.add_concat_dot_operand(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_process_shared_memory_hint(pm)  # flagtree hints
@@ -404,9 +405,11 @@ class CUDABackend(BaseBackend):
         passes.common.add_sccp(pm)
         passes.common.add_cse(pm)
         passes.common.add_canonicalizer(pm)
-        # Last chance to undo a concat the layouts did not end up supporting, so
-        # it runs after everything that can still fold or retag the operand.
-        passes.ttgpuir.add_expand_concat_dot_operand(pm)
+        # flagtree pass: last chance to undo a concat the layouts did not end up
+        # supporting, so it runs after everything that can still fold or retag
+        # the operand.
+        if hasattr(passes.ttgpuir, "add_expand_concat_dot_operand"):
+            passes.ttgpuir.add_expand_concat_dot_operand(pm)
 
         pm.run(mod, 'make_ttgir')
         # begin flagtree tle
