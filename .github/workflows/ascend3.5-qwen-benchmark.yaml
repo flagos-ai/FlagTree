@@ -68,7 +68,7 @@ jobs:
           export FLAGTREE_BACKEND=ascend
           source ~/env.sh
           export PATH=~/.flagtree/ascend/llvm-7d5de303-ubuntu-aarch64-python311-compat/bin/:${PATH}  # clang
-          export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: Clear cache if ClearCache label present
         if: steps.check_backend.outputs.should_skip != 'true'
