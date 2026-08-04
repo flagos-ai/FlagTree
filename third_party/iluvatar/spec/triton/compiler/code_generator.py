@@ -348,8 +348,9 @@ class CodeGenerator(ast.NodeVisitor):
         self.is_gluon = is_gluon
         if is_gluon:
             if gluon_ir is None:
-                raise RuntimeError("Gluon kernels are not supported in this build because the gluon_ir bindings "
-                                   "were not compiled. Rebuild with Gluon bindings enabled.")
+                raise RuntimeError("Gluon kernels are not supported in this build: the gluon_ir "
+                                   "bindings were not compiled. Rebuild with the cmake option "
+                                   "TRITON_BUILD_GLUON=ON to enable Gluon support.")
             from triton.experimental.gluon.language._semantic import GluonSemantic
             self.builder = gluon_ir.GluonOpBuilder(context)
             self.semantic = GluonSemantic(self.builder)
