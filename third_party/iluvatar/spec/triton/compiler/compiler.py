@@ -343,7 +343,7 @@ def compile(src, target=None, options=None, _env_vars=None):
         timer.finished_ir_initialization()
     for ext, compile_ir in list(stages.items())[first_stage:]:
         next_module = compile_ir(module, metadata)
-        is_artifact = backend.is_stage_artifact(ext)
+        is_artifact = ext == "asm"
         ir_filename = f"{file_name}.{ext}"
         if fn_override_manager is None:
             # Users can override kernels at scale by setting `ir_override` in autotune config
@@ -358,9 +358,6 @@ def compile(src, target=None, options=None, _env_vars=None):
             metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
         if fn_dump_manager is not None:
             fn_dump_manager.put(next_module, ir_filename)
-            if ext == backend.binary_ext:
-                for disasm_ext, disassembly in backend.get_binary_disassembly(next_module).items():
-                    fn_dump_manager.put(disassembly, f"{file_name}.{disasm_ext}")
         # use an env variable to parse ir from file
         if use_ir_loc == ext and not is_artifact:
             ir_full_name = fn_cache_manager.get_file(ir_filename)
@@ -405,16 +402,8 @@ class LazyDict:
 
 class AsmDict(dict):
 
-    def __init__(self, backend, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.backend = backend
-
     def __missing__(self, key):
-        disassembly = self.backend.get_binary_disassembly(self[self.backend.binary_ext])
-        if key not in disassembly:
-            raise KeyError("Unknown key: '%s'" % key)
-        self.update(disassembly)
-        return self[key]
+        raise KeyError("Unknown key: '%s'" % key)
 
 
 def _raise_error(err, *args, **kwargs):
@@ -449,7 +438,7 @@ class CompiledKernel:
         # stores the text of each level of IR that was generated during compilation
         asm_files = [Path(p) for c, p in metadata_group.items() if not c.endswith(".json")]
         binary_ext = backend.binary_ext
-        self.asm = AsmDict(backend, {
+        self.asm = AsmDict({
             file.suffix[1:]: file.read_bytes() if file.suffix[1:] == binary_ext else file.read_text()
             for file in asm_files
         })
