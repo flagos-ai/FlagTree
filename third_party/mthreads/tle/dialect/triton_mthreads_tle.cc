@@ -175,16 +175,25 @@ void init_triton_musa_tle_ir(py::module m) {
       .def("create_memdesc_index",
            [](TritonOpBuilder &self, mlir::Type resultType, mlir::Value src,
               mlir::Value index) -> mlir::Value {
-             auto srcType = mlir::dyn_cast<ttg::MemDescType>(src.getType());
-             if (!srcType || srcType.getShape().empty())
-               throw py::value_error(
-                   "mthreads TLE memdesc index requires a memdesc source");
-
              auto indexType =
                  mlir::dyn_cast<mlir::IntegerType>(index.getType());
              if (!indexType || !indexType.isInteger(32))
                throw py::value_error(
                    "mthreads TLE memdesc index requires an int32 index");
+
+             if (src.getType().isInteger(32)) {
+               // The public barrier object still asks for a logical slot type,
+               // but mthreads barriers are hardware IDs rather than memdescs.
+               (void)resultType;
+               return self
+                   .create<mlir::triton::musa_tle::BarrierIndexOp>(src, index)
+                   .getBarId();
+             }
+
+             auto srcType = mlir::dyn_cast<ttg::MemDescType>(src.getType());
+             if (!srcType || srcType.getShape().empty())
+               throw py::value_error(
+                   "mthreads TLE memdesc index requires a memdesc source");
 
              llvm::APInt constantIndex;
              if (mlir::matchPattern(index,
@@ -199,6 +208,51 @@ void init_triton_musa_tle_ir(py::module m) {
              }
 
              return self.create<ttg::MemDescIndexOp>(resultType, src, index);
+           })
+      .def("create_barrier_alloc",
+           [](TritonOpBuilder &self, mlir::Type resultType, int32_t numBarriers,
+              int32_t arriveCount, int32_t initPolarity,
+              int32_t expectBytes) -> mlir::Value {
+             // The frontend result type is a logical barrier-array type.  The
+             // backend handle is an i32 base ID and is resolved by late
+             // mthreads barrier lowering.
+             (void)resultType;
+             if (numBarriers > 63)
+               throw py::value_error(
+                   "mthreads TLE barrier allocation exceeds the 63 hardware "
+                   "barrier id limit");
+             auto &builder = self.getBuilder();
+             mlir::IntegerAttr expectBytesAttr;
+             if (expectBytes > 0)
+               expectBytesAttr = builder.getI32IntegerAttr(expectBytes);
+             return self.create<mlir::triton::musa_tle::BarrierAllocOp>(
+                 builder.getI32IntegerAttr(numBarriers),
+                 builder.getI32IntegerAttr(arriveCount),
+                 builder.getI32IntegerAttr(initPolarity), expectBytesAttr);
+           })
+      .def("create_barrier_wait_mbarrier",
+           [](TritonOpBuilder &self, mlir::Value barrier,
+              mlir::Value phase) -> void {
+             self.create<mlir::triton::musa_tle::BarrierWaitOp>(barrier, phase);
+           })
+      .def("create_barrier_arrive_mbarrier",
+           [](TritonOpBuilder &self, mlir::Value barrier, int32_t arriveCount,
+              mlir::Value phase) -> void {
+             auto &builder = self.getBuilder();
+             self.create<mlir::triton::musa_tle::BarrierArriveOp>(
+                 barrier, phase, builder.getI32IntegerAttr(arriveCount));
+           })
+      .def("create_barrier_wait_named",
+           [](TritonOpBuilder &, mlir::Value, int32_t, int32_t) -> void {
+             throw py::value_error(
+                 "mthreads TLE named barrier backend is unsupported; "
+                 "phaseIdx is required");
+           })
+      .def("create_barrier_arrive_named",
+           [](TritonOpBuilder &, mlir::Value, int32_t, int32_t) -> void {
+             throw py::value_error(
+                 "mthreads TLE named barrier backend is unsupported; "
+                 "phaseIdx is required");
            })
       .def("create_exclusive_cumsum",
            [](TritonOpBuilder &self, mlir::Type exclusiveTy, mlir::Type totalTy,

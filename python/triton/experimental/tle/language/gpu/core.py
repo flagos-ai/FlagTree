@@ -24,6 +24,7 @@ import triton.language.core as tl
 from typing import Optional, Sequence
 from enum import Enum
 from . import types as tle
+from .mthreads import common as mthreads_common
 from .mthreads import copy as mthreads_copy
 from .iluvatar import copy as iluvatar_copy
 from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
@@ -44,6 +45,9 @@ _WGMMA_PIPELINE_MODE_USER_PROMISE = "user_promise"
 
 def _mark_wgmma_user_promise(_semantic, _generator):
     if _generator is None or _semantic is None:
+        return
+    # This module attribute is NVIDIA-specific and must not leak into mthreads IR.
+    if mthreads_common.enabled():
         return
     _generator.module.set_attr(
         _WGMMA_PIPELINE_MODE_ATTR,
@@ -200,8 +204,9 @@ def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _sema
 
     builder = _semantic.builder
     insert_pt = builder.get_insertion_point()
-    inline_user_promise = _is_wgmma_user_promise_marked(_generator)
-    if inline_user_promise:
+    # mthreads partitions are inlined without using NVIDIA WGMMA routing metadata.
+    inline_partition_functions = mthreads_common.enabled() or _is_wgmma_user_promise_marked(_generator)
+    if inline_partition_functions:
         call_jit_function = _generator.inline_JitFunction
     else:
         call_jit_function = _generator.call_JitFunction
@@ -921,7 +926,7 @@ def copy(
             tle.copy(tma_desc, local_buf, [64, 64], [x_offset, y_offset], barrier=bar)
             tle.gpu.barrier_wait(bar, phaseIdx=0)
     """
-    mthreads_enabled = mthreads_copy.enabled()
+    mthreads_enabled = mthreads_common.enabled()
     iluvatar_enabled = iluvatar_copy.enabled()
 
     def normcopy(

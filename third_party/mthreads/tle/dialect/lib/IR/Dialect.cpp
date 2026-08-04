@@ -281,6 +281,50 @@ LogicalResult LocalPointersOp::verify() {
   return success();
 }
 
+LogicalResult BarrierAllocOp::verify() {
+  if (getNumBarriers() <= 0)
+    return emitOpError("num_barriers must be positive");
+  if (getNumBarriers() > 63)
+    return emitOpError("num_barriers exceeds the 63 mthreads hardware "
+                       "barrier id limit");
+  if (getArriveCount() <= 0)
+    return emitOpError("arrive_count must be positive");
+  if (getInitPolarity() != 0 && getInitPolarity() != 1)
+    return emitOpError("init_polarity must be 0 or 1");
+  if (auto expectBytes =
+          getOperation()->getAttrOfType<IntegerAttr>("expect_bytes")) {
+    if (expectBytes.getInt() <= 0)
+      return emitOpError("expect_bytes must be positive when present");
+  }
+  return success();
+}
+
+LogicalResult BarrierIndexOp::verify() {
+  APInt constantIndex;
+  if (!matchPattern(getIndex(), m_ConstantInt(&constantIndex)))
+    return success();
+
+  int64_t index = constantIndex.getSExtValue();
+  if (index < 0)
+    return emitOpError("barrier index must be non-negative when constant");
+
+  if (auto alloc = getBaseId().getDefiningOp<BarrierAllocOp>()) {
+    if (index >= alloc.getNumBarriers())
+      return emitOpError("barrier index ")
+             << index << " out of bounds for " << alloc.getNumBarriers()
+             << " barriers";
+  }
+  return success();
+}
+
+LogicalResult BarrierWaitOp::verify() { return success(); }
+
+LogicalResult BarrierArriveOp::verify() {
+  if (getArriveCount() <= 0)
+    return emitOpError("arrive_count must be positive");
+  return success();
+}
+
 LogicalResult ExclusiveCumsumOp::verify() {
   auto srcTy = dyn_cast<RankedTensorType>(getSrc().getType());
   if (!srcTy)

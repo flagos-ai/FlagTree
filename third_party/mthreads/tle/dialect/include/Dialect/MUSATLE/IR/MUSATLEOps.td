@@ -22,6 +22,45 @@ def MUSATLE_LocalPointersOp : MUSATLE_Op<"local_pointers", [Pure]> {
   let hasVerifier = 1;
 }
 
+def MUSATLE_BarrierAllocOp : MUSATLE_Op<"barrier.alloc"> {
+  let summary = "declare an mthreads hardware barrier id range";
+  let arguments = (ins
+    I32Attr:$num_barriers,
+    I32Attr:$arrive_count,
+    I32Attr:$init_polarity,
+    OptionalAttr<I32Attr>:$expect_bytes
+  );
+  let results = (outs I32:$base_id);
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_BarrierIndexOp : MUSATLE_Op<"barrier.index", [Pure]> {
+  let summary = "select an mthreads hardware barrier id from a range";
+  let arguments = (ins I32:$base_id, I32:$index);
+  let results = (outs I32:$bar_id);
+  let assemblyFormat = "$base_id `[` $index `]` attr-dict";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_BarrierWaitOp : MUSATLE_Op<"barrier.wait"> {
+  let summary = "wait on an mthreads hardware barrier id";
+  let arguments = (ins I32:$bar_id, I32:$phase);
+  let assemblyFormat = "$bar_id `,` $phase attr-dict";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_BarrierArriveOp : MUSATLE_Op<"barrier.arrive"> {
+  let summary = "arrive on an mthreads hardware barrier id";
+  let arguments = (ins
+    I32:$bar_id,
+    I32:$phase,
+    I32Attr:$arrive_count
+  );
+  let assemblyFormat = "$bar_id `,` $phase attr-dict";
+  let hasVerifier = 1;
+}
+
 def MUSATLE_ExtractTileOp : MUSATLE_Op<"extract_tile", [Pure]> {
   let arguments = (ins TT_Tensor:$src, TT_IntLike:$index,
       DenseI64ArrayAttr:$tile_shape);

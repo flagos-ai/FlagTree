@@ -18,28 +18,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import os
-
 import triton.language.core as tl
 
 from .. import types as tle
-
-try:
-    from triton._flagtree_backend import FLAGTREE_BACKEND
-except ModuleNotFoundError:
-    FLAGTREE_BACKEND = os.environ.get("FLAGTREE_BACKEND", "")
-
-
-def _has_mthreads_libtriton() -> bool:
-    try:
-        from triton._C import libtriton
-    except ImportError:
-        return False
-    return hasattr(libtriton, "mthreads")
-
-
-def enabled() -> bool:
-    return FLAGTREE_BACKEND == "mthreads" or _has_mthreads_libtriton()
 
 
 def normalize_copy_shape(shape) -> tuple[int, ...]:
