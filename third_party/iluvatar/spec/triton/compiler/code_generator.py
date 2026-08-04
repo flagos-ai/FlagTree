@@ -21,7 +21,6 @@ from ..language.core import _unwrap_if_constexpr, base_value, base_type
 # ideally we wouldn't need any runtime component
 from ..runtime.jit import get_jit_fn_file_line, get_full_name, JITCallable, BoundConstexprFunction, ConstexprFunction, JITFunction
 from .._utils import find_paths_if, get_iterable_path, set_iterable_path, is_namedtuple
-from .hint_manager import hint_trigger
 
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
 
@@ -113,24 +112,6 @@ def _clone_triton_value(val):
     handles = []
     val._flatten_ir(handles)
     clone, _ = val.type._unflatten_ir(handles, 0)
-    # begin flagtree tle
-    # Preserve TLE compile-time metadata across scope cloning (if/loop
-    # live-ins). Value-level metadata can otherwise be dropped by unflatten.
-    if hasattr(val, "__dict__"):
-        for key, attr in val.__dict__.items():
-            if key.startswith("_tle_"):
-                try:
-                    setattr(clone, key, attr)
-                except Exception:
-                    pass
-    if hasattr(val.type, "__dict__"):
-        for key, attr in val.type.__dict__.items():
-            if key.startswith("_tle_"):
-                try:
-                    setattr(clone.type, key, attr)
-                except Exception:
-                    pass
-    # end flagtree tle
     return clone
 
 
@@ -310,35 +291,6 @@ class BoundJITMethod:
     __func__: JITFunction
 
 
-# begin flagtree tle
-class LambdaFunction:
-
-    def __init__(self, generator, node: ast.Lambda, signature: inspect.Signature, captured_scope: Dict[str, Any]):
-        self._generator = generator
-        self._node = node
-        self._signature = signature
-        self._captured_scope = captured_scope
-        self.__name__ = "<lambda>"
-
-    def __call__(self, *args, **kwargs):
-        bound = self._signature.bind(*args, **kwargs)
-        bound.apply_defaults()
-        previous_scope = self._generator.lscope
-        previous_defs = self._generator.local_defs
-        try:
-            lscope = dict(self._captured_scope)
-            lscope.update(bound.arguments)
-            self._generator.lscope = lscope
-            self._generator.local_defs = previous_defs
-            return self._generator.visit(self._node.body)
-        finally:
-            self._generator.lscope = previous_scope
-            self._generator.local_defs = previous_defs
-
-
-# end flagtree tle
-
-
 class CodeGenerator(ast.NodeVisitor):
 
     def __init__(self, context, prototype, gscope, function_name, jit_fn: JITFunction, *, options, codegen_fns,
@@ -388,7 +340,6 @@ class CodeGenerator(ast.NodeVisitor):
 
         self.lscope = {}
         self.jit_fn = jit_fn
-        self.flagtree_line_hints = {}
         # TODO: we currently generate illegal names for non-kernel functions involving constexprs!
         if is_kernel:
             function_name = function_name[function_name.rfind('.') + 1:]
@@ -405,7 +356,6 @@ class CodeGenerator(ast.NodeVisitor):
         self.local_defs: Dict[str, tensor] = {}
         self.dereference_name: Callable[[str], Any] = self._define_name_lookup()
         self.fn = None
-        self.used_vars = set()
         # Are we currently visiting an ast.arg's default value?  These have some
         # special handling.
         self.visiting_arg_default_value = False
@@ -768,56 +718,9 @@ class CodeGenerator(ast.NodeVisitor):
         self.visit(assign)
         return self.visit(lhs)
 
-    # begin flagtree tle
-    def _evaluate_lambda_default(self, node):
-        if node is None:
-            return inspect._empty
-        try:
-            assert not self.visiting_arg_default_value
-            self.visiting_arg_default_value = True
-            return self.visit(node)
-        finally:
-            self.visiting_arg_default_value = False
-
-    def _build_lambda_signature(self, node: ast.Lambda) -> inspect.Signature:
-        args = node.args
-        posonly = list(args.posonlyargs)
-        pos_or_kw = list(args.args)
-        total_pos = len(posonly) + len(pos_or_kw)
-        defaults = [inspect._empty] * total_pos
-        if args.defaults:
-            start = total_pos - len(args.defaults)
-            for i, default_node in enumerate(args.defaults):
-                defaults[start + i] = self._evaluate_lambda_default(default_node)
-
-        params: List[inspect.Parameter] = []
-        for i, arg in enumerate(posonly):
-            default = defaults[i]
-            params.append(inspect.Parameter(arg.arg, inspect.Parameter.POSITIONAL_ONLY, default=default))
-        for i, arg in enumerate(pos_or_kw):
-            default = defaults[len(posonly) + i]
-            params.append(inspect.Parameter(arg.arg, inspect.Parameter.POSITIONAL_OR_KEYWORD, default=default))
-        if args.vararg is not None:
-            params.append(inspect.Parameter(args.vararg.arg, inspect.Parameter.VAR_POSITIONAL))
-        for i, arg in enumerate(args.kwonlyargs):
-            default = self._evaluate_lambda_default(args.kw_defaults[i])
-            params.append(inspect.Parameter(arg.arg, inspect.Parameter.KEYWORD_ONLY, default=default))
-        if args.kwarg is not None:
-            params.append(inspect.Parameter(args.kwarg.arg, inspect.Parameter.VAR_KEYWORD))
-
-        return inspect.Signature(params)
-
-    def visit_Lambda(self, node: ast.Lambda):
-        signature = self._build_lambda_signature(node)
-        captured_scope = dict(self.lscope)
-        return LambdaFunction(self, node, signature, captured_scope)
-
-    # end flagtree tle
-
     def visit_Name(self, node):
         if type(node.ctx) is ast.Store:
             return node.id
-        self.used_vars.add(node.id)
         return self.dereference_name(node.id)
 
     def visit_Store(self, node):
@@ -1252,17 +1155,14 @@ class CodeGenerator(ast.NodeVisitor):
         flatten = False
         warp_specialize = False
         disable_licm = False
-        reorder = False  # flagtree reorder-loop-loads
         # flagtree tle
         try:
             from ..experimental.tle import language as tle
             tle_pipeline = tle.gpu.pipeline
-            tle_range = tle.range  # flagtree reorder-loop-loads
         except ImportError:
             tle_pipeline = None
-            tle_range = None
 
-        if IteratorClass in [language.range, tle_pipeline, tle_range]:  # flagtree reorder-loop-loads
+        if IteratorClass in [language.range, tle_pipeline]:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1276,7 +1176,6 @@ class CodeGenerator(ast.NodeVisitor):
             flatten = iterator.flatten
             warp_specialize = iterator.warp_specialize
             disable_licm = iterator.disable_licm
-            reorder = getattr(iterator, 'reorder', False)  # flagtree reorder-loop-loads
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1341,8 +1240,6 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
-            if reorder and _unwrap_if_constexpr(loop_unroll_factor) is not None:  # flagtree reorder-loop-loads
-                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))  # flagtree reorder-loop-loads
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)
@@ -1430,9 +1327,7 @@ class CodeGenerator(ast.NodeVisitor):
                                       module_map=self.builder.module_map, caller_context=caller_context,
                                       is_gluon=self.is_gluon)
             try:
-                tree = fn.parse()
-                generator.flagtree_line_hints = getattr(tree.body[0], 'line_flagtree_hints', {}) or {}
-                generator.visit(tree)
+                generator.visit(fn.parse())
             except Exception as e:
                 # Wrap the error in the callee with the location of the call.
                 if knobs.compilation.front_end_debugging:
@@ -1451,84 +1346,13 @@ class CodeGenerator(ast.NodeVisitor):
         handles = [call_op.get_result(i) for i in range(call_op.get_num_results())]
         return next(unflatten_ir_values(handles, [callee_ret_type]))
 
-    def inline_JitFunction(self, fn: JITFunction, args, kwargs, caller_context=None):
-        """Inline a JITFunction body into the current insertion block.
-
-        This is intentionally narrower than a general inliner: it is used by
-        TLE warp-specialize regions so partition-local lowering can see the
-        body directly instead of a helper ``tt.call`` boundary.
-        """
-        bound_args = inspect.getcallargs(fn.fn, *args, **kwargs)
-        ordered_args = [bound_args[name] for name in fn.arg_names]
-        for i, arg in enumerate(ordered_args):
-            if isinstance(arg, (language.dtype, float, int, bool, JITFunction)):
-                ordered_args[i] = language.core.constexpr(arg)
-
-        parsed = fn.parse()
-        if isinstance(parsed, ast.Module):
-            if len(parsed.body) != 1 or not isinstance(parsed.body[0], ast.FunctionDef):
-                raise ValueError("inline_JitFunction expects a single function definition")
-            fn_def = parsed.body[0]
-        else:
-            fn_def = parsed
-        if not isinstance(fn_def, ast.FunctionDef):
-            raise ValueError("inline_JitFunction expects a function definition")
-
-        mapped_gscope = {}
-        for k, v in fn.get_capture_scope().items():
-            if isinstance(v, ModuleType):
-                mapped_gscope[k] = self.builder.module_map.get(v.__name__, v)
-                continue
-            module_name = getattr(v, "__module__", "")
-            if module_name in self.builder.module_map:
-                mapped_gscope[k] = getattr(self.builder.module_map[module_name], v.__name__)
-            else:
-                mapped_gscope[k] = v
-
-        prev_gscope = self.gscope
-        prev_lscope = self.lscope
-        prev_defs = self.local_defs
-        prev_caller_context = self.caller_context
-        try:
-            self.gscope = mapped_gscope
-            self.lscope = {}
-            self.local_defs = {}
-            self.caller_context = caller_context or self.caller_context
-            for arg_name, arg_value in zip(fn.arg_names, ordered_args):
-                self.set_value(arg_name, arg_value)
-
-            def decay_return(value):
-                if isinstance(value, language.tuple):
-                    return _apply_to_tuple_values(value, decay_return)
-                if isinstance(value, (language.constexpr, int, float)):
-                    return self.semantic.to_tensor(value)
-                return value
-
-            for stmt in fn_def.body:
-                if isinstance(stmt, ast.Return):
-                    return decay_return(self.visit(stmt.value)) if stmt.value is not None else None
-                self.visit(stmt)
-            return None
-        finally:
-            self.gscope = prev_gscope
-            self.lscope = prev_lscope
-            self.local_defs = prev_defs
-            self.caller_context = prev_caller_context
-
     def call_Function(self, node, fn, args, kws):
-        # 4. Get current line number and hints
-        flagtree_hints = hint_trigger("get_node_hints", self, node)
-
         if isinstance(fn, (BoundJITMethod, BoundConstexprFunction)):
             args.insert(0, fn.__self__)
             fn = fn.__func__
-
-        # 5. Handle JIT function calls
         if isinstance(fn, JITFunction):
             _check_fn_args(node, fn, args)
             return self.call_JitFunction(fn, args, kws)
-
-        # 6. Handle built-in functions or calls with special context
         if (hasattr(fn, '__self__') and _is_triton_value(fn.__self__)) or language.core.is_builtin(fn) or isinstance(
                 fn, ConstexprFunction):
             extra_kwargs = dict()
@@ -1542,9 +1366,6 @@ class CodeGenerator(ast.NodeVisitor):
             if '_generator' in sig.parameters:
                 extra_kwargs['_generator'] = self
             try:
-                # Special handling for tl.load with hints
-                hint_trigger("inject_kwargs_with_hints", fn, flagtree_hints, node.lineno, kws)
-
                 ret = fn(*args, **extra_kwargs, **kws)
                 # builtin functions return plain tuples for readability
                 if isinstance(ret, tuple):
@@ -1561,7 +1382,6 @@ class CodeGenerator(ast.NodeVisitor):
                 # be in core.py.
                 raise CompilationError(self.jit_fn.src, node, str(e)) from e
 
-        # 7. Handle calls from built-in namespace
         if fn in self.builtin_namespace.values() or (hasattr(fn, '__self__') and not _is_triton_value(fn.__self__)):
             args = map(_unwrap_if_constexpr, args)
         ret = fn(*args, **kws)
@@ -1581,10 +1401,8 @@ class CodeGenerator(ast.NodeVisitor):
         return self.call_Function(node, fn, args, kws)
 
     def visit_Call(self, node):
-        # 1. Get the called function object
         fn = _unwrap_if_constexpr(self.visit(node.func))
         if not isinstance(fn, BoundJITMethod):
-            # 2. Check if it's a statically implemented function
             static_implementation = self.statically_implemented_functions.get(fn)
             if static_implementation is not None:
                 return static_implementation(self, node)
@@ -1596,7 +1414,6 @@ class CodeGenerator(ast.NodeVisitor):
                 error_message.append(mur)
             raise CompilationError(self.jit_fn.src, node, " ".join(error_message))
 
-        # 3. Process keyword and positional arguments
         kws = dict(self.visit(keyword) for keyword in node.keywords)
         args = []
         for arg in node.args:
@@ -1826,9 +1643,7 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
     generator = CodeGenerator(context, prototype, gscope=fn.get_capture_scope(), function_name=fn.repr(proxy),
                               jit_fn=fn, is_kernel=True, file_name=file_name, begin_line=begin_line, options=options,
                               codegen_fns=codegen_fns, module_map=module_map, module=module, is_gluon=fn.is_gluon())
-    tree = fn.parse()
-    generator.flagtree_line_hints = getattr(tree.body[0], 'line_flagtree_hints', {}) or {}
-    generator.visit(tree)
+    generator.visit(fn.parse())
     module = generator.module
     # module takes ownership of the context
     module.context = context

@@ -17,23 +17,9 @@ current_target.__triton_builtin__ = True
 
 
 @constexpr_function
-def is_backend(name):
-    target = current_target()
-    return target is not None and target.backend == name
-
-
-@constexpr_function
-def backend_capability_geq(name, major, minor=0):
-    target = current_target()
-    if target is None or target.backend != name:
-        return False
-    assert isinstance(target.arch, int)
-    return target.arch >= major * 10 + minor
-
-
-@constexpr_function
 def is_cuda():
-    return is_backend("cuda")
+    target = current_target()
+    return target is not None and target.backend == "cuda"
 
 
 @constexpr_function
@@ -43,22 +29,37 @@ def cuda_capability_geq(major, minor=0):
     returns this as a constexpr boolean. This can be used for guarding
     inline asm implementations that require a certain compute capability.
     """
-    return backend_capability_geq("cuda", major, minor)
+    target = current_target()
+    if target is None or target.backend != "cuda":
+        return False
+    assert isinstance(target.arch, int)
+    return target.arch >= major * 10 + minor
 
 
 @constexpr_function
 def is_corex():
-    return is_backend("corex")
+    target = current_target()
+    return target is not None and target.backend == "corex"
 
 
 @constexpr_function
 def corex_capability_geq(major, minor=0):
-    return backend_capability_geq("corex", major, minor)
+    """
+    Determines whether we have Iluvatar (corex) capability >= (major, minor)
+    and returns this as a constexpr boolean. This can be used for guarding
+    inline asm implementations that require a certain compute capability.
+    """
+    target = current_target()
+    if target is None or target.backend != "corex":
+        return False
+    assert isinstance(target.arch, int)
+    return target.arch >= major * 10 + minor
 
 
 @constexpr_function
 def is_hip():
-    return is_backend("hip")
+    target = current_target()
+    return target is not None and target.backend == "hip"
 
 
 @constexpr_function

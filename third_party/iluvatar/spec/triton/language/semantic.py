@@ -992,16 +992,7 @@ class TritonSemantic(Generic[TensorTy]):
             return sorted(boundary_check)
         return ()
 
-    def _create_load(self, method_name, args, flagtree_hints):
-        load_methods = ("create_load", "create_masked_load", "create_tensor_pointer_load")
-        if method_name not in load_methods:
-            raise ValueError(f"Unsupported CoreX load builder method: {method_name}")
-        if flagtree_hints not in (None, ""):
-            raise ValueError("CoreX does not support flagtree_hints on load operations")
-        return getattr(self.builder, method_name)(*args)
-
-    def _load_block_pointer(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
-                            flagtree_hints):
+    def _load_block_pointer(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile):
         # Load by a block pointer: `pointer_type<block_type<>>`
         # Block pointer can not have `mask` and `other` arguments
         if mask is not None or other is not None:
@@ -1019,11 +1010,11 @@ class TritonSemantic(Generic[TensorTy]):
         boundary_check = self._canonicalize_boundary_check(boundary_check, dst_ty.get_block_shapes())
 
         # Build IR
-        args = (ptr.handle, boundary_check, padding, cache, eviction, is_volatile)
-        return self.tensor(self._create_load("create_tensor_pointer_load", args, flagtree_hints), dst_ty)
+        return self.tensor(
+            self.builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile),
+            dst_ty)
 
-    def _load_legacy(self, ptr, mask, other, stride, boundary_check, padding, cache, eviction, is_volatile,
-                     flagtree_hints):
+    def _load_legacy(self, ptr, mask, other, stride, boundary_check, padding, cache, eviction, is_volatile):
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
         if not ptr.type.scalar.is_ptr():
             raise ValueError(f"Unsupported ptr type {ptr.type.__repr__()} in `tl.load`")
@@ -1073,28 +1064,28 @@ class TritonSemantic(Generic[TensorTy]):
             dst_ty = elt_ty
 
         # Build IR
-        if stride is not None and flagtree_hints not in (None, ""):
-            raise ValueError("CoreX does not support flagtree_hints on SME load operations")
         if mask is None and stride is None:
-            args = (ptr.handle, cache, eviction, is_volatile)
-            ret = self.tensor(self._create_load("create_load", args, flagtree_hints), dst_ty)
-        elif mask is None:
+            ret = self.tensor(self.builder.create_load(ptr.handle, cache, eviction, is_volatile), dst_ty)
+        elif mask is None and stride is not None:
+            # Iluvatar SME load forced by an explicit stride.
             ret = self.tensor(self.builder.create_sme_load(ptr.handle, stride.handle, cache, eviction, is_volatile),
                               dst_ty)
-        elif stride is not None:
+        elif mask is not None and stride is not None:
+            # Iluvatar masked SME load.
             ret = self.tensor(
                 self.builder.create_masked_sme_load(ptr.handle, mask.handle, other.handle if other else None,
                                                     stride.handle, cache, eviction, is_volatile), dst_ty)
         else:
-            args = (ptr.handle, mask.handle, other.handle if other else None, cache, eviction, is_volatile)
-            ret = self.tensor(self._create_load("create_masked_load", args, flagtree_hints), dst_ty)
+            ret = self.tensor(
+                self.builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache,
+                                                eviction, is_volatile), dst_ty)
         if is_bool:
             ret = self.cast(ret, tl.int1)
         return ret
 
     def load(self, ptr: TensorTy, mask: Optional[TensorTy], other: Optional[TensorTy], stride: Optional[TensorTy],
-             boundary_check: Tuple, padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool,
-             flagtree_hints: str = None) -> TensorTy:
+             boundary_check: Tuple, padding_option: str, cache_modifier: str, eviction_policy: str,
+             is_volatile: bool) -> TensorTy:
         # Cache, eviction and padding options
         cache = self._str_to_load_cache_modifier(cache_modifier)
         eviction = self._str_to_eviction_policy(eviction_policy)
@@ -1104,12 +1095,10 @@ class TritonSemantic(Generic[TensorTy]):
             # Load by a block pointer: `pointer_type<block_type<>>`
             if stride is not None:
                 raise ValueError("`stride` (SME) is not supported with block pointers; use a tensor of pointers")
-            return self._load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
-                                            flagtree_hints)
+            return self._load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile)
         else:
             # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
-            return self._load_legacy(ptr, mask, other, stride, boundary_check, padding, cache, eviction, is_volatile,
-                                     flagtree_hints)
+            return self._load_legacy(ptr, mask, other, stride, boundary_check, padding, cache, eviction, is_volatile)
 
     def descriptor_load(self, desc: tl.tensor_descriptor_base, offsets, cache_modifier: str,
                         eviction_policy: str) -> TensorTy:
@@ -1451,6 +1440,54 @@ class TritonSemantic(Generic[TensorTy]):
         sem = self._str_to_sem(sem)
         scope = self._str_to_scope(scope)
         sca_ty = val.type.scalar
+        if sca_ty.is_int64() or sca_ty.is_uint64():
+            shape = ptr.type.get_block_shapes() if ptr.type.is_block() else []
+
+            # Split into low and high 32 bits
+            low_mask = self.cast(self.full(shape, 0xFFFFFFFF, tl.uint32), sca_ty)
+            val_low = self.and_(val, low_mask)
+            val_low_int32 = self.cast(val_low, tl.int32)
+
+            # shift amount, block-aware
+            _32 = self.full(shape, 32, sca_ty)
+
+            val_shr = self.lshr(val, _32)
+            val_high = self.and_(val_shr, low_mask)
+            val_high_int32 = self.cast(val_high, tl.int32)
+
+            # Split pointer into two addresses
+            addr_space = ptr.type.scalar.address_space
+            addr_low = self.bitcast(ptr, tl.pointer_type(tl.int32, addr_space))
+            one_int32 = self.full(shape, 1, tl.int32)
+            addr_high = self.tensor(self.builder.create_addptr(addr_low.handle, one_int32.handle), addr_low.type)
+
+            # Perform atomic add for low 32 bits
+            sum_ty = tl.block_type(tl.int32, shape) if shape else tl.int32
+            old_value_low = self.tensor(
+                self.builder.create_atomic_rmw(ir.ATOMIC_OP.ADD, addr_low.handle, val_low_int32.handle, mask.handle,
+                                               sem, scope), sum_ty)
+
+            # Detect unsigned overflow for low part
+            sum_low = self.add(old_value_low, val_low_int32, True)
+            overflow = self.tensor(self.builder.create_icmpULT(sum_low.handle, val_low_int32.handle),
+                                   self._bool_like(sum_low))
+            carry = self.where(overflow, self.full(shape, 1, tl.int32), self.full(shape, 0, tl.int32))
+            val_high_adjusted = self.add(val_high_int32, carry, True)
+
+            # Perform atomic add for high 32 bits
+            old_value_high = self.tensor(
+                self.builder.create_atomic_rmw(ir.ATOMIC_OP.ADD, addr_high.handle, val_high_adjusted.handle,
+                                               mask.handle, sem, scope), sum_ty)
+
+            # Combine low and high results into 64-bit integer, block-aware
+            i64_ty = tl.block_type(sca_ty, shape) if shape else sca_ty
+
+            old_value_low_int64 = self.tensor(
+                self.builder.create_int_cast(old_value_low.handle, i64_ty.to_ir(self.builder), False), i64_ty)
+            old_value_high_int64 = self.cast(old_value_high, i64_ty)
+            old_value_high_shifted = self.shl(old_value_high_int64, _32)
+            return self.or_(old_value_high_shifted, old_value_low_int64)
+
         op = ir.ATOMIC_OP.FADD if sca_ty.is_floating() else ir.ATOMIC_OP.ADD
         return self.tensor(self.builder.create_atomic_rmw(op, ptr.handle, val.handle, mask.handle, sem, scope),
                            val.type)

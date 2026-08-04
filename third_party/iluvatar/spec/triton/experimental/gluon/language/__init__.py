@@ -1,14 +1,3 @@
-import os
-
-from .. import __path__ as _gluon_paths
-
-# This package contains only Iluvatar overrides. Keep the main Gluon language
-# directory as the fallback for every module not present here.
-for _gluon_path in _gluon_paths:
-    _language_path = os.path.join(_gluon_path, "language")
-    if os.path.isdir(_language_path) and _language_path not in __path__:
-        __path__.append(_language_path)
-
 from ._core import (
     base_value,
     base_type,

@@ -1,18 +1,9 @@
 import importlib
-import os
-
-from .. import __path__ as _amd_paths
-
-# Reuse unchanged GFX1250 modules from the main package.
-for _amd_path in _amd_paths:
-    _gfx1250_path = os.path.join(_amd_path, "gfx1250")
-    if os.path.isdir(_gfx1250_path) and _gfx1250_path not in __path__:
-        __path__.append(_gfx1250_path)
 
 from triton.runtime.jit import constexpr_function
 try:
     _get_wmma_scale_layout = importlib.import_module("triton._C.libtriton.gluon_ir").get_amd_wmma_scale_layout
-except (ImportError, AttributeError):
+except ImportError:
     _get_wmma_scale_layout = None
 
 from ..._core import builtin
@@ -85,8 +76,8 @@ def wmma_scaled(a, a_scale, a_format, b, b_scale, b_format, acc, _semantic=None)
 
 def _get_wmma_scale_layout_impl(*args, **kwargs):
     if _get_wmma_scale_layout is None:
-        raise RuntimeError("get_wmma_scale_layout requires gluon_ir bindings, but they were not compiled. "
-                           "Rebuild with Gluon bindings enabled.")
+        raise RuntimeError("get_wmma_scale_layout requires gluon_ir bindings, but they were "
+                           "not compiled. Rebuild with TRITON_ILU_BUILD_GLUON=1 to enable Gluon support.")
     return _get_wmma_scale_layout(*args, **kwargs)
 
 

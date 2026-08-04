@@ -4,7 +4,6 @@ import copy
 import hashlib
 import inspect
 import itertools
-import os
 import threading
 import re
 import textwrap
@@ -21,12 +20,52 @@ from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
 from .cache import get_cache_key
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl
-from ._distributed import DistributedRtContext
 
 TRITON_MODULE = "triton.language"
 GLUON_MODULE = "triton.experimental.gluon.language"
 
 T = TypeVar("T")
+
+
+def get_corex_sme(args, specialization):
+    import torch
+    import os
+    can_use_sme = 0
+    if not (hasattr(torch, "corex") and torch.corex == True):
+        return can_use_sme
+    close_sme = os.getenv("TRITON_DISABLE_SME", default="0")
+    if close_sme == "1":
+        return can_use_sme
+
+    index = 0
+    for arg, spec in zip(args, specialization):
+        # In v3.6 constexpr information lives in specialization instead of the
+        # old constexpr_indices argument. Constexprs are not function operands,
+        # so they must not consume a use_sme bit position.
+        if spec[0] == "constexpr":
+            continue
+
+        # fp16/bf16 share the 16-bit SME layout+intrinsic (rowxfb16/colxfb16);
+        # fp32 uses rowxfb32/colxfb32 with a dedicated bitwidth-aware blocked
+        # encoding and read-back layout. int8 row uses native rowxfb8 plus an
+        # S2R offset correction (linear surrogate is not exact);
+        sme_dtypes = [torch.float16, torch.bfloat16, torch.float32, torch.int8]
+        if torch.is_tensor(arg) and arg.dtype in sme_dtypes and arg.dim() >= 2:
+            # Match the v3.2 bitmask frontend: size-1 dimensions should not
+            # hide the innermost logical 2D tile used for SME eligibility.
+            squeezed_arg = arg.squeeze()
+            if squeezed_arg.dim() >= 2:
+                dim_m = squeezed_arg.shape[-2]
+                dim_k = squeezed_arg.shape[-1]
+                sme_dim = 64 // arg.element_size()
+                is_row_major_sme = arg.is_contiguous() and dim_k % sme_dim == 0
+                is_col_major_sme = not arg.is_contiguous() and dim_m % sme_dim == 0
+                can_use_arg_sme = is_row_major_sme or is_col_major_sme
+                if can_use_arg_sme:
+                    can_use_sme |= 1 << index
+        index += 1
+    return can_use_sme
+
 
 # -----------------------------------------------------------------------------
 # Dependencies Finder
@@ -123,12 +162,6 @@ class DependenciesFinder(ast.NodeVisitor):
         # helps keep the list of vars we have to check small.
         if val is None or type(val) is ModuleType:
             return
-
-        # flagtree tle raw
-        tle_raw_source_cache_key = getattr(val, "__triton_tle_raw_source_cache_key__", None)
-        if tle_raw_source_cache_key is not None:
-            part = (tle_raw_source_cache_key() if callable(tle_raw_source_cache_key) else tle_raw_source_cache_key)
-            self.hasher.update(str(part).encode("utf-8"))
 
         if getattr(val, "__triton_aggregate__", False):
             for attr in val.hash_attrs:
@@ -421,10 +454,7 @@ def create_function_from_signature(sig, kparams, backend):
                         # we do not specialize non-constexpr floats and bools:
                         specialize = False
                 if specialize:
-                    # Prefer constexpr over annotation type to avoid downgrading
-                    # compile-time constants to runtime-specialized types
-                    specialization.append(
-                        f'({ret} if {ret}[0] == "constexpr" else ("{kp.annotation_type}",) + {ret}[1:])')
+                    specialization.append(f'("{kp.annotation_type}",) + {ret}[1:]')
                 else:
                     # skip runtime specialization:
                     specialization.append(f'("{kp.annotation_type}", None)')
@@ -532,19 +562,10 @@ class JITCallable:
     # the user might want to monkey-patch self.src dynamically.
     # Our unit tests do this, for example.
     def parse(self):
-        from ..compiler.hint_manager import hint_trigger
-        # Maps line numbers to comment hints
-        line_flagtree_hints = hint_trigger("maps_line_numbers_to_comment_hints", self)
-        if line_flagtree_hints is None:
-            line_flagtree_hints = {}
-
         tree = ast.parse(self._src)
         assert isinstance(tree, ast.Module)
         assert len(tree.body) == 1
         assert isinstance(tree.body[0], ast.FunctionDef)
-
-        # Attach the line number to comment mapping to the function definition node
-        hint_trigger("attach_line_number_to_comment_mapping", tree, line_flagtree_hints)
         return tree
 
     @property
@@ -602,43 +623,6 @@ def compute_cache_key(kernel_key_cache, specialization, options):
     cache_key = str(replace_callables(specialization)) + str(options)
     kernel_key_cache[key] = cache_key
     return cache_key
-
-
-def get_corex_sme(args, specialization):
-    import torch
-
-    if getattr(torch, "corex", False) is not True or os.getenv("TRITON_DISABLE_SME", "0") == "1":
-        return 0
-
-    use_sme = 0
-    operand_index = 0
-    sme_dtypes = (torch.float16, torch.bfloat16, torch.float32, torch.int8)
-    for arg, spec in zip(args, specialization):
-        # Constexpr arguments are not runtime function operands and therefore do
-        # not consume a bit in the use_sme operand mask.
-        if spec[0] == "constexpr":
-            continue
-
-        if torch.is_tensor(arg) and arg.dtype in sme_dtypes and arg.dim() >= 2:
-            # Match the v3.2 bitmask frontend: size-1 dimensions should not
-            # hide the innermost logical 2D tile used for SME eligibility.
-            squeezed_arg = arg.squeeze()
-            if squeezed_arg.dim() >= 2:
-                dim_m = squeezed_arg.shape[-2]
-                dim_k = squeezed_arg.shape[-1]
-                sme_dim = 64 // arg.element_size()
-                is_row_major = arg.is_contiguous() and dim_k % sme_dim == 0
-                is_col_major = not arg.is_contiguous() and dim_m % sme_dim == 0
-                can_use_sme = is_row_major or is_col_major
-                if can_use_sme:
-                    use_sme |= 1 << operand_index
-        operand_index += 1
-    return use_sme
-
-
-def specialize_backend_options(bound_args, specialization, options):
-    options["use_sme"] = get_corex_sme(tuple(bound_args.values()), specialization)
-    return options
 
 
 def convert_to_tuple_if_list(item):
@@ -717,9 +701,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         Precompute as much as possible.
         """
         from ..compiler import CompiledKernel, compile, ASTSource, make_backend
-        from ..backends import route_target
         target = driver.active.get_current_target()
-        target = route_target(target, self)
         backend = make_backend(target)
         self.CompiledKernel = CompiledKernel
         self.compile = compile
@@ -729,7 +711,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
     def _pack_args(self, backend, kwargs, bound_args, specialization, options):
         # options
-        options = backend.parse_options(options)
+        options = backend.parse_options(kwargs)
         # signature
         sigkeys = [x.name for x in self.params]
         sigvals = [x[0] for x in specialization]
@@ -767,13 +749,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
         # specialization is list[tuple[str, Any]], where first element of tuple is
         # the type and the second parameter is the 'specialization' value.
         bound_args, specialization, options = binder(*args, **kwargs)
-        options = specialize_backend_options(bound_args, specialization, options)
 
         key = compute_cache_key(kernel_key_cache, specialization, options)
         kernel = kernel_cache.get(key, None)
 
         # Kernel is not cached; we have to compile.
         if kernel is None:
+            kwargs["use_sme"] = get_corex_sme(bound_args.values(), specialization)
             options, signature, constexprs, attrs = self._pack_args(backend, kwargs, bound_args, specialization,
                                                                     options)
 
@@ -801,15 +783,8 @@ class JITFunction(JITCallable, KernelInterface[T]):
                 kernel = kernel.result()
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
-            # flagtree tle distributed: Add dist_param to kernel.run
-            dist_param = []
-            ctx = DistributedRtContext()
-            if ctx.is_lite_mode:
-                dist_param += [ctx.comm_ptr, ctx.mem_ptr]
-            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata,
-                       launch_metadata, knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *dist_param,
-                       *bound_args.values())
-
+            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
+                       knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *bound_args.values())
         return kernel
 
     def repr(self, _):
@@ -908,13 +883,6 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
             def finalize_compile(kernel):
                 kernel_cache[key] = kernel
-                # flagtree tle raw
-                try:
-                    from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
-                except ImportError:
-                    pass
-                else:
-                    run_kernel_init_hooks(kernel)
                 self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options,
                                 [attrs], warmup)
 
@@ -922,13 +890,6 @@ class JITFunction(JITCallable, KernelInterface[T]):
         else:
             kernel = self.compile(src, target=target, options=options.__dict__)
             kernel_cache[key] = kernel
-            # flagtree tle raw
-            try:
-                from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
-            except ImportError:
-                pass
-            else:
-                run_kernel_init_hooks(kernel)
             self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options, [attrs],
                             warmup)
         return kernel

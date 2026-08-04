@@ -8,7 +8,7 @@ try:
     _gluon_ir = importlib.import_module("triton._C.libtriton.gluon_ir")
     GluonOpBuilder = _gluon_ir.GluonOpBuilder
     compute_tmem_reg_layout = _gluon_ir.compute_tmem_reg_layout
-except (ImportError, AttributeError):
+except ImportError:
     GluonOpBuilder = Any
     compute_tmem_reg_layout = None
 from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
@@ -28,7 +28,7 @@ def _is_int_list(value):
 def _require_gluon_ir(name):
     if compute_tmem_reg_layout is None:
         raise RuntimeError(f"{name} requires gluon_ir bindings, but they were not compiled. "
-                           "Rebuild with Gluon bindings enabled.")
+                           "Rebuild with TRITON_ILU_BUILD_GLUON=1 to enable Gluon support.")
 
 
 def _compute_tmem_reg_layout(element_ty, shape, layout, num_warps, instr_variant, cga_layout=None):
