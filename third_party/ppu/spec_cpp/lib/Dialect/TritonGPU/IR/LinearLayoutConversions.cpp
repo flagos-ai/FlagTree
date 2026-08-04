@@ -643,7 +643,7 @@ LinearLayout choosePPULdMatrixLayout(Attribute enc, ArrayRef<int64_t> shape,
   } else if (mmaEnc.getVersionMajor() == 2) {
     return chooseDotLdMatrixLayoutPPUMmaV2(dot, shape, needTrans, elemBitWidth);
   } else {
-    assert(false && "Unsupported MMA version for ldmatrix");
+    llvm_unreachable("Unsupported MMA version for ldmatrix");
   }
 }
 
@@ -1261,7 +1261,7 @@ LinearLayout PPUMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   if (getVersionMajor() == 1 || getVersionMajor() == 2) {
     tileShape = SmallVector<unsigned>(getInstrShape());
   } else {
-    assert(false && "Unsupported PPU vresion");
+    llvm_unreachable("Unsupported PPU version");
   }
   // mma layout always assumes kWidth = 2
   constexpr auto kWidth = 2;
