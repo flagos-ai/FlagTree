@@ -7,8 +7,10 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
@@ -23,6 +25,7 @@ namespace {
 
 using triton::musa_tle::BarrierAllocOp;
 using triton::musa_tle::BarrierIndexOp;
+namespace ttg = triton::gpu;
 
 static constexpr StringLiteral kExhaustedDiagnostic =
     "mthreads TLE barrier allocation exhausted hardware barrier ids";
@@ -35,6 +38,61 @@ class LowerBarrierAllocationsPass
     func.walk([&](BarrierAllocOp op) { allocs.push_back(op); });
     if (allocs.empty())
       return success();
+
+    Block &entry = func.getBody().front();
+    SmallVector<BarrierAllocOp> entryAllocs;
+    for (Operation &op : entry) {
+      if (auto alloc = dyn_cast<BarrierAllocOp>(op))
+        entryAllocs.push_back(alloc);
+    }
+    if (entryAllocs.size() != allocs.size()) {
+      auto nested = llvm::find_if(allocs, [&](BarrierAllocOp alloc) {
+        return alloc->getBlock() != &entry;
+      });
+      return nested->emitOpError(
+          "mthreads TLE barrier initialization requires allocations in the "
+          "function entry block");
+    }
+    allocs = std::move(entryAllocs);
+
+    ttg::WarpSpecializeOp warpSpecialize;
+    bool hasWarpSpecialize = false;
+    func.walk([&](ttg::WarpSpecializeOp) { hasWarpSpecialize = true; });
+    for (Operation &op : entry) {
+      if (auto ws = dyn_cast<ttg::WarpSpecializeOp>(op)) {
+        warpSpecialize = ws;
+        break;
+      }
+    }
+
+    if (hasWarpSpecialize) {
+      if (!warpSpecialize) {
+        return allocs.front().emitOpError(
+            "mthreads TLE barrier initialization for warp_specialize requires "
+            "a top-level warp_specialize in the function entry block");
+      }
+      for (BarrierAllocOp alloc : allocs) {
+        if (alloc->getBlock() != &entry ||
+            !alloc->isBeforeInBlock(warpSpecialize)) {
+          return alloc.emitOpError(
+              "mthreads TLE barrier initialization for warp_specialize "
+              "requires barrier allocations in the function entry block "
+              "before the first top-level warp_specialize");
+        }
+      }
+    }
+
+    BarrierAllocOp lastAlloc = allocs.back();
+    DominanceInfo dominance(func);
+    for (BarrierAllocOp alloc : allocs) {
+      for (Operation *user : alloc.getBaseId().getUsers()) {
+        if (!dominance.dominates(lastAlloc.getOperation(), user)) {
+          return alloc.emitOpError(
+              "mthreads TLE barrier initialization requires all allocations "
+              "before the first barrier use");
+        }
+      }
+    }
 
     int64_t totalBarriers = 0;
     for (BarrierAllocOp alloc : allocs) {
@@ -63,6 +121,7 @@ class LowerBarrierAllocationsPass
     SmallVector<BarrierIndexOp> indices;
     func.walk([&](BarrierIndexOp op) { indices.push_back(op); });
 
+    Operation *lastInitArrival = nullptr;
     int32_t nextBase = *reserved;
     for (BarrierAllocOp alloc : allocs) {
       Location loc = alloc.getLoc();
@@ -76,14 +135,19 @@ class LowerBarrierAllocationsPass
       for (int32_t slot = 0; slot < alloc.getNumBarriers(); ++slot) {
         Value barId =
             arith::ConstantIntOp::create(rewriter, loc, nextBase + slot, 32);
-        triton::musa::InitArrivalOp::create(rewriter, loc, barId, arriveCount,
-                                            initPolarity);
+        lastInitArrival = triton::musa::InitArrivalOp::create(
+            rewriter, loc, barId, arriveCount, initPolarity);
       }
 
       rewriter.replaceAllUsesWith(alloc.getBaseId(), base);
       rewriter.eraseOp(alloc);
       nextBase += alloc.getNumBarriers();
     }
+
+    assert(lastInitArrival && "positive barrier allocations must initialize");
+    rewriter.setInsertionPointAfter(lastInitArrival);
+    ttg::BarrierOp::create(rewriter, lastInitArrival->getLoc(),
+                           ttg::AddrSpace::Local);
 
     for (BarrierIndexOp index : indices) {
       if (!index)

@@ -95,11 +95,15 @@ def TritonMUSAGPUTLELowerBarrierAllocations
   let description = [{
     Reserve one contiguous MUSA async-barrier range per function, materialize
     hardware initialization records for every declared TLE barrier, and replace
-    logical barrier allocations and indices with i32 hardware ids.
+    logical barrier allocations and indices with i32 hardware ids.  Insert one
+    CTA rendezvous after all initialization records and before every barrier
+    use; for explicit warp specialization this also precedes the first
+    top-level partition split.
   }];
   let dependentDialects = [
     "mlir::arith::ArithDialect",
     "mlir::triton::TritonDialect",
+    "mlir::triton::gpu::TritonGPUDialect",
     "mlir::triton::musa::MUSADialect",
     "mlir::triton::musa_tle::MUSATLEDialect"
   ];

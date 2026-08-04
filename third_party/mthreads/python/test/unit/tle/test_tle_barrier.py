@@ -7,7 +7,7 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 from triton._C import libtriton
-from triton._C.libtriton import ir
+from triton._C.libtriton import ir, passes
 from triton.backends.compiler import Language
 from triton.compiler import ASTSource
 from triton.compiler.errors import CompilationError
@@ -235,6 +235,19 @@ def _init_arrivals(ir_text):
             )]
 
 
+def _assert_single_initialization_rendezvous(ir_text, require_barrier_use=False):
+    init_positions = [match.start() for match in re.finditer("ttmg.init_arrival", ir_text)]
+    assert init_positions, ir_text
+    assert ir_text.count("ttg.barrier local") == 1, ir_text
+    rendezvous = ir_text.index("ttg.barrier local")
+    assert ir_text.index("ttmg.bar_record") < min(init_positions), ir_text
+    assert max(init_positions) < rendezvous, ir_text
+    if require_barrier_use:
+        use_positions = [match.start() for match in re.finditer(r"musa_tle\.barrier\.(?:wait|arrive)", ir_text)]
+        assert use_positions, ir_text
+        assert rendezvous < min(use_positions), ir_text
+
+
 def _assert_lowered_static_barrier_ir(ir_text, stages):
     allocs, indices, waits, arrives = _extract_barrier_ops(ir_text)
     assert (allocs, indices, waits, arrives) == (0, 0, 2 * stages, stages), ir_text
@@ -248,6 +261,7 @@ def _assert_lowered_static_barrier_ir(ir_text, stages):
     assert "ttg.memdesc_index" not in ir_text, ir_text
     assert "ttg.local_alloc" not in ir_text, ir_text
     assert "!ttg.memdesc" not in ir_text, ir_text
+    _assert_single_initialization_rendezvous(ir_text, require_barrier_use=True)
 
 
 def _assert_static_barrier_ir(ttir, stages):
@@ -309,10 +323,22 @@ def test_mthreads_tle_four_barrier_groups_receive_contiguous_hardware_ids(stages
         assert _extract_barrier_ops(ir_text)[0:2] == (0, 0), ir_text
         assert f"musa.max_bar_id = {4 * stages}" in ir_text, ir_text
         assert "musa.next_bar_id" not in ir_text, ir_text
+        _assert_single_initialization_rendezvous(ir_text, require_barrier_use=True)
     assert "ttg.shared = 0 : i32" in allocated, allocated
 
 
-def _lower_backend_barrier_fixture(tmp_path, stages, existing_max=None):
+def _empty_warp_specialize(body=""):
+    return f"""    ttg.warp_specialize() attributes {{requestedRegisters = array<i32: 24>}}
+    default {{
+      ttg.warp_yield
+    }}
+    partition0() num_warps(4) {{
+{body}      ttg.warp_return
+    }} : () -> ()
+"""
+
+
+def _lower_backend_barrier_fixture(tmp_path, stages, existing_max=None, with_warp_specialize=False):
     function_attrs = ""
     if existing_max is not None:
         function_attrs = f" attributes {{musa.max_bar_id = {existing_max} : i32}}"
@@ -320,9 +346,11 @@ def _lower_backend_barrier_fixture(tmp_path, stages, existing_max=None):
                        f"{{arrive_count = {1 if index < 2 else 16} : i32, "
                        f"init_polarity = {0 if index < 2 else 1} : i32, "
                        f"num_barriers = {stages} : i32}}" for index in range(4))
+    warp_specialize = _empty_warp_specialize() if with_warp_specialize else ""
     fixture = f"""module {{
   tt.func public @barrier_fixture(){function_attrs} {{
 {allocs}
+{warp_specialize}
     tt.return
   }}
 }}
@@ -352,6 +380,152 @@ def test_mthreads_tle_stage_three_barriers_use_backend_local_fixture(tmp_path):
     ], lowered
     assert "musa.max_bar_id = 12" in lowered, lowered
     assert _extract_barrier_ops(lowered)[0:2] == (0, 0), lowered
+    _assert_single_initialization_rendezvous(lowered)
+
+
+def test_mthreads_tle_stage_three_barriers_rendezvous_before_warp_specialize(tmp_path):
+    lowered = _lower_backend_barrier_fixture(tmp_path, stages=3, with_warp_specialize=True)
+    assert len(_init_arrivals(lowered)) == 12, lowered
+    assert _init_arrivals(lowered) == [
+        *[(1 + slot, 1, 0) for slot in range(3)],
+        *[(4 + slot, 1, 0) for slot in range(3)],
+        *[(7 + slot, 16, 1) for slot in range(3)],
+        *[(10 + slot, 16, 1) for slot in range(3)],
+    ], lowered
+    assert lowered.count("ttg.barrier local") == 1, lowered
+    assert lowered.count("ttg.warp_specialize(") == 1, lowered
+    init_positions = [match.start() for match in re.finditer("ttmg.init_arrival", lowered)]
+    rendezvous = lowered.index("ttg.barrier local")
+    warp_specialize = lowered.index("ttg.warp_specialize(")
+    assert max(init_positions) < rendezvous < warp_specialize, lowered
+    assert "musa.max_bar_id = 12" in lowered, lowered
+
+
+def test_mthreads_tle_barrier_rendezvous_lowers_to_local_cta_sync(tmp_path):
+    fixture = """module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 16 : i32,
+    ttg.target = "musa:ph1", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func public @barrier_init_sync() attributes {musa.max_bar_id = 1 : i32, noinline = false} {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    ttmg.bar_record %c1 : i32
+    ttmg.init_arrival %c1, %c1, %c0 : i32
+    ttg.barrier local
+    tt.return
+  }
+}
+"""
+    fixture_path = tmp_path / "barrier_init_sync.ttgir"
+    fixture_path.write_text(fixture)
+
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    module = ir.parse_mlir_module(str(fixture_path), context)
+    pm = ir.pass_manager(context)
+    passes.convert.add_scf_to_cf(pm)
+    passes.convert.add_index_to_llvmir(pm)
+    libtriton.mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_to_llvmir(pm, 31)
+    passes.common.add_canonicalizer(pm)
+    passes.common.add_cse(pm)
+    passes.convert.add_cf_to_llvmir(pm)
+    passes.convert.add_arith_to_llvmir(pm)
+    passes.common.add_canonicalizer(pm)
+    passes.common.add_cse(pm)
+    pm.run(module, "lower_barrier_init_sync")
+    llir = module.str_nodebug()
+
+    assert llir.count('llvm.call_intrinsic "llvm.musa.async.bar.record"') == 1, llir
+    assert llir.count('llvm.call_intrinsic "llvm.musa.async.init.arrival"') == 1, llir
+    assert llir.count('llvm.call_intrinsic "llvm.musa.syncthreads.lm"') == 1, llir
+    assert "llvm.musa.barrier0" not in llir, llir
+    assert (llir.index("llvm.musa.async.bar.record") < llir.index("llvm.musa.async.init.arrival") <
+            llir.index("llvm.musa.syncthreads.lm")), llir
+
+
+@pytest.mark.parametrize("placement", ["after", "partition"])
+def test_mthreads_tle_rejects_barrier_allocations_that_do_not_dominate_warp_specialize(tmp_path, capfd, placement):
+    alloc = ("    %bar = musa_tle.barrier.alloc "
+             "{arrive_count = 1 : i32, init_polarity = 0 : i32, num_barriers = 1 : i32}\n")
+    if placement == "after":
+        body = _empty_warp_specialize() + alloc
+    else:
+        body = _empty_warp_specialize(body=alloc.replace("    ", "      ", 1))
+    fixture = f"""module {{
+  tt.func public @invalid_barrier_fixture() {{
+{body}    tt.return
+  }}
+}}
+"""
+    fixture_path = tmp_path / f"invalid_barrier_{placement}.ttgir"
+    fixture_path.write_text(fixture)
+
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    module = ir.parse_mlir_module(str(fixture_path), context)
+    pm = ir.pass_manager(context)
+    libtriton.mthreads.passes.ttgpuir.add_tle_lower_barrier_allocations(pm)
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        pm.run(module, "reject_invalid_ws_barrier_placement")
+    stderr = capfd.readouterr().err
+    if placement == "after":
+        assert ("requires barrier allocations in the function entry block before the first top-level "
+                "warp_specialize") in stderr
+    else:
+        assert "requires allocations in the function entry block" in stderr
+
+
+def test_mthreads_tle_rejects_barrier_use_before_final_allocation(tmp_path, capfd):
+    fixture = """module {
+  tt.func public @barrier_use_before_final_allocation() {
+    %c0 = arith.constant 0 : i32
+    %first = musa_tle.barrier.alloc {arrive_count = 1 : i32, init_polarity = 0 : i32, num_barriers = 1 : i32}
+    %slot = musa_tle.barrier.index %first[%c0]
+    musa_tle.barrier.wait %slot, %c0
+    %second = musa_tle.barrier.alloc {arrive_count = 1 : i32, init_polarity = 0 : i32, num_barriers = 1 : i32}
+    tt.return
+  }
+}
+"""
+    fixture_path = tmp_path / "barrier_use_before_final_allocation.ttgir"
+    fixture_path.write_text(fixture)
+
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    module = ir.parse_mlir_module(str(fixture_path), context)
+    pm = ir.pass_manager(context)
+    libtriton.mthreads.passes.ttgpuir.add_tle_lower_barrier_allocations(pm)
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        pm.run(module, "reject_barrier_use_before_final_allocation")
+    stderr = capfd.readouterr().err
+    assert "requires all allocations before the first barrier use" in stderr
+
+
+def test_mthreads_tle_does_not_add_rendezvous_without_barrier_allocations(tmp_path):
+    fixture = """module {
+  tt.func public @no_barrier_allocations() {
+    tt.return
+  }
+}
+"""
+    fixture_path = tmp_path / "no_barrier_allocations.ttgir"
+    fixture_path.write_text(fixture)
+
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    module = ir.parse_mlir_module(str(fixture_path), context)
+    pm = ir.pass_manager(context)
+    libtriton.mthreads.passes.ttgpuir.add_tle_lower_barrier_allocations(pm)
+    pm.run(module, "preserve_function_without_barrier_allocations")
+    assert "ttg.barrier local" not in module.str_nodebug()
 
 
 def test_mthreads_tle_barriers_follow_existing_musa_reservations(tmp_path):
@@ -363,6 +537,7 @@ def test_mthreads_tle_barriers_follow_existing_musa_reservations(tmp_path):
         (9, 16, 1),
     ], lowered
     assert "musa.max_bar_id = 9" in lowered, lowered
+    _assert_single_initialization_rendezvous(lowered)
 
 
 def test_mthreads_tle_barrier_id_exhaustion_has_stable_diagnostic(capfd):
@@ -387,6 +562,7 @@ def test_mthreads_tle_barrier_preserves_dynamic_slot_and_phase():
         assert re.search(r"arith\.andi\s+%arg1,", ir_text), ir_text
         assert "arith.xori" in ir_text, ir_text
         assert _init_arrivals(ir_text) == [(1, 16, 1), (2, 16, 1)], ir_text
+        _assert_single_initialization_rendezvous(ir_text, require_barrier_use=True)
     assert "ttg.shared = 0 : i32" in allocated, allocated
 
 
@@ -399,6 +575,7 @@ def test_mthreads_tle_singleton_barrier_uses_indexed_slot():
         assert _init_arrivals(ir_text) == [(1, 1, 0)], ir_text
         assert "!ttg.memdesc" not in ir_text, ir_text
         assert "ttg.local_alloc" not in ir_text, ir_text
+        _assert_single_initialization_rendezvous(ir_text, require_barrier_use=True)
 
 
 def test_mthreads_tle_barrier_bindings_are_backend_local():

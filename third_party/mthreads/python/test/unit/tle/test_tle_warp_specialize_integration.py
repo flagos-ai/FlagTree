@@ -557,6 +557,12 @@ def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
         assert f"musa.max_bar_id = {4 * stages}" in ir_text, ir_text
         assert "musa.next_bar_id" not in ir_text, ir_text
         assert "ttmg.bar_record" in ir_text, ir_text
+        assert ir_text.count("ttg.barrier local") == 1, ir_text
+        init_positions = [match.start() for match in re.finditer("ttmg.init_arrival", ir_text)]
+        rendezvous = ir_text.index("ttg.barrier local")
+        warp_specialize = ir_text.index("ttg.warp_specialize(")
+        assert ir_text.index("ttmg.bar_record") < min(init_positions), ir_text
+        assert max(init_positions) < rendezvous < warp_specialize, ir_text
     else:
         assert sum("arrive_count = 1" in line and "expect_bytes = 32768" in line and "init_polarity = 0" in line
                    for line in alloc_lines) == 2, ir_text
@@ -572,6 +578,8 @@ def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
     assert "#smem, mutable>" in ir_text, ir_text
 
     ws_match, default_region, partition_match = _extract_ws_regions(ir_text)
+    assert "ttg.barrier local" not in default_region, default_region
+    assert "ttg.barrier local" not in partition_match.group("body"), partition_match.group("body")
     captures = _split_top_level(ws_match.group("captures"))
     partition_args = _split_top_level(partition_match.group("args"))
     assert len(captures) == 10, (captures, ir_text)
