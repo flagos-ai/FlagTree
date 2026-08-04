@@ -18,6 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from . import common, copy
+from . import common, copy, warp_specialize
 
-__all__ = ["common", "copy"]
+__all__ = ["common", "copy", "warp_specialize"]

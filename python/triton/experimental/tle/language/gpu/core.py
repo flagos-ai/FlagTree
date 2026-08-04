@@ -26,6 +26,7 @@ from enum import Enum
 from . import types as tle
 from .mthreads import common as mthreads_common
 from .mthreads import copy as mthreads_copy
+from .mthreads import warp_specialize as mthreads_warp_specialize
 from .iluvatar import copy as iluvatar_copy
 from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
 
@@ -190,8 +191,12 @@ def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _sema
     if _generator is None:
         raise ValueError("warp_specialize requires a Triton code generator")
     functions_and_args = tl._unwrap_if_constexpr(functions_and_args)
-    worker_num_warps = [tl._unwrap_if_constexpr(w) for w in tl._unwrap_if_constexpr(worker_num_warps)]
-    worker_num_regs = [tl._unwrap_if_constexpr(r) for r in tl._unwrap_if_constexpr(worker_num_regs)]
+    mthreads_enabled = mthreads_common.enabled()
+    if mthreads_enabled:
+        worker_num_warps, worker_num_regs = mthreads_warp_specialize.normalize_config(worker_num_warps, worker_num_regs)
+    else:
+        worker_num_warps = [tl._unwrap_if_constexpr(w) for w in tl._unwrap_if_constexpr(worker_num_warps)]
+        worker_num_regs = [tl._unwrap_if_constexpr(r) for r in tl._unwrap_if_constexpr(worker_num_regs)]
     if len(functions_and_args) < 1:
         raise ValueError("warp_specialize requires at least a default partition function")
     num_partitions = len(functions_and_args) - 1
@@ -204,10 +209,9 @@ def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _sema
 
     builder = _semantic.builder
     insert_pt = builder.get_insertion_point()
-    # mthreads partitions are inlined without using NVIDIA WGMMA routing metadata.
-    mthreads_enabled = mthreads_common.enabled()
-    inline_partition_functions = mthreads_enabled or _is_wgmma_user_promise_marked(_generator)
-    if inline_partition_functions:
+    if mthreads_enabled:
+        call_jit_function = mthreads_warp_specialize.partition_function_caller(_generator)
+    elif _is_wgmma_user_promise_marked(_generator):
         call_jit_function = _generator.inline_JitFunction
     else:
         call_jit_function = _generator.call_JitFunction
@@ -232,9 +236,7 @@ def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _sema
 
     builder.restore_insertion_point(insert_pt)
     if mthreads_enabled:
-        # Mthreads keeps explicit captures on the isolated partitions holder,
-        # matching its backend-local ttg.warp_specialize definition.
-        ws_op = builder.create_warp_specialize(result_types, worker_num_warps)
+        ws_op = mthreads_warp_specialize.create_op(builder, result_types, worker_num_warps)
     else:
         ws_op = builder.create_warp_specialize(result_types, worker_arg_handles, worker_num_warps)
     real_default_block = builder.create_block_with_parent(ws_op.get_default_region(), [])
@@ -246,7 +248,7 @@ def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _sema
 
     builder.create_block_with_parent(ws_op.get_partition_op_holder(), [])
     if mthreads_enabled:
-        partitions_op = builder.create_warp_specialize_partitions(worker_arg_handles, num_partitions)
+        partitions_op = mthreads_warp_specialize.create_partitions(builder, worker_arg_handles, num_partitions)
     else:
         partitions_op = builder.create_warp_specialize_partitions(num_partitions)
     partition_arg_types = [arg.get_type() for arg in worker_arg_handles]

@@ -113,6 +113,30 @@ def _non_integer_phase_kernel():
     tle.gpu.barrier_wait(bars[0], phaseIdx=0.0)
 
 
+@triton.jit
+def _completion_wait_missing_phase_kernel():
+    bar = tle.gpu.alloc_barrier(expect_bytes=32768)
+    tle.gpu.barrier_wait(bar)
+
+
+@triton.jit
+def _completion_arrive_missing_phase_kernel():
+    bar = tle.gpu.alloc_barrier(expect_bytes=32768)
+    tle.gpu.barrier_arrive(bar)
+
+
+@triton.jit
+def _ready_wait_missing_phase_kernel():
+    bar = tle.gpu.alloc_barrier(init=tle.gpu.READY)
+    tle.gpu.barrier_wait(bar)
+
+
+@triton.jit
+def _ready_arrive_missing_phase_kernel():
+    bar = tle.gpu.alloc_barrier(init=tle.gpu.READY)
+    tle.gpu.barrier_arrive(bar)
+
+
 def _extract_barrier_ops(ttir):
     allocs = re.findall(r"musa_tle\.barrier\.alloc", ttir)
     indices = re.findall(r"musa_tle\.barrier\.index", ttir)
@@ -270,6 +294,22 @@ def test_mthreads_tle_barrier_named_path_has_stable_diagnostic(kernel):
         (_block_slot_kernel, "barrier index must be a scalar integer"),
         (_non_integer_slot_kernel, "barrier index must be integer"),
         (_non_integer_phase_kernel, "barrier phaseIdx must be integer"),
+        (
+            _completion_wait_missing_phase_kernel,
+            "barrier_wait on a barrier with expect_bytes requires phaseIdx",
+        ),
+        (
+            _completion_arrive_missing_phase_kernel,
+            "barrier_arrive on a barrier with expect_bytes requires phaseIdx",
+        ),
+        (
+            _ready_wait_missing_phase_kernel,
+            "barrier_wait without phaseIdx selects named barrier, which does not support READY",
+        ),
+        (
+            _ready_arrive_missing_phase_kernel,
+            "barrier_arrive without phaseIdx selects named barrier, which does not support READY",
+        ),
     ],
 )
 def test_mthreads_tle_barrier_invalid_frontend_inputs_have_stable_diagnostics(kernel, diagnostic):

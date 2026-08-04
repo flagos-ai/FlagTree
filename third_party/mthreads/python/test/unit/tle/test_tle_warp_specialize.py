@@ -2,6 +2,7 @@
 
 import re
 
+import pytest
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
@@ -9,6 +10,7 @@ from triton._C import libtriton
 from triton._C.libtriton import ir
 from triton.backends.compiler import Language
 from triton.compiler import ASTSource
+from triton.compiler.errors import CompilationError
 
 from test_tle_utils import mthreads_backend, require_mthreads_libtriton
 
@@ -46,7 +48,148 @@ def _ws_container_kernel(out, value, BIAS: tl.constexpr):
     )
 
 
-def _compile_ws_ir():
+@triton.jit
+def _ws_simple_default(out):
+    tl.store(out, 1)
+
+
+@triton.jit
+def _ws_simple_worker(out):
+    tl.store(out + 1, 2)
+
+
+@triton.jit
+def _ws_dynamic_warps_kernel(out, worker_warps):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[worker_warps],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _ws_dynamic_regs_kernel(out, worker_regs):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[4],
+        worker_num_regs=[worker_regs],
+    )
+
+
+@triton.jit
+def _ws_non_sequence_warps_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=4,
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _ws_non_sequence_regs_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[4],
+        worker_num_regs=24,
+    )
+
+
+@triton.jit
+def _ws_float_warps_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[4.0],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _ws_float_regs_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[4],
+        worker_num_regs=[24.0],
+    )
+
+
+@triton.jit
+def _ws_zero_warps_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[0],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _ws_non_power_of_two_warps_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[3],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _ws_warp_count_mismatch_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _ws_register_count_mismatch_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[4],
+        worker_num_regs=[],
+    )
+
+
+@triton.jit
+def _ws_empty_functions_kernel(out):
+    tle.gpu.warp_specialize([], worker_num_warps=[], worker_num_regs=[])
+
+
+@triton.jit
+def _ws_invalid_entry_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), _ws_simple_worker],
+        worker_num_warps=[4],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _ws_invalid_args_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, out)],
+        worker_num_warps=[4],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _ws_bool_warps_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[True],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _ws_constexpr_tuple_config_kernel(out, WORKER_WARPS: tl.constexpr, WORKER_REGS: tl.constexpr):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=(WORKER_WARPS, ),
+        worker_num_regs=(WORKER_REGS, ),
+    )
+
+
+def _compile_ws_ir(fn=_ws_container_kernel, signature=None, constexprs=None):
     target, backend = mthreads_backend()
     options = backend.parse_options({"num_warps": 16, "num_stages": 1})
     context = ir.context()
@@ -54,9 +197,9 @@ def _compile_ws_ir():
     backend.load_dialects(context)
 
     src = ASTSource(
-        fn=_ws_container_kernel,
-        signature={"out": "*i32", "value": "i32"},
-        constexprs={"BIAS": 7},
+        fn=fn,
+        signature=signature or {"out": "*i32", "value": "i32"},
+        constexprs={"BIAS": 7} if constexprs is None else constexprs,
     )
     module = src.make_ir(
         target,
@@ -154,3 +297,164 @@ def test_tle_warp_specialize_builder_bindings_are_available():
     ):
         assert hasattr(builder, method)
     assert hasattr(libtriton.mthreads.ir, "WarpSpecializeOp")
+
+
+def test_tle_warp_specialize_accepts_constexpr_tuple_configuration():
+    ttir, ttgir = _compile_ws_ir(
+        _ws_constexpr_tuple_config_kernel,
+        {"out": "*i32", "WORKER_WARPS": "constexpr", "WORKER_REGS": "constexpr"},
+        {"WORKER_WARPS": 4, "WORKER_REGS": 24},
+    )
+    for ir_text in (ttir, ttgir):
+        assert "num_warps(4)" in ir_text, ir_text
+        assert re.search(r"requestedRegisters\s*=\s*array<i32:\s*24>", ir_text), ir_text
+
+
+@pytest.mark.parametrize(
+    "kernel,signature,diagnostic",
+    [
+        (
+            _ws_dynamic_warps_kernel,
+            {"out": "*i32", "worker_warps": "i32"},
+            r"mthreads TLE warp_specialize worker_num_warps\[0\] must be a compile-time integer",
+        ),
+        (
+            _ws_dynamic_regs_kernel,
+            {"out": "*i32", "worker_regs": "i32"},
+            r"mthreads TLE warp_specialize worker_num_regs\[0\] must be a compile-time integer",
+        ),
+        (
+            _ws_non_sequence_warps_kernel,
+            {"out": "*i32"},
+            "mthreads TLE warp_specialize worker_num_warps must be a static sequence",
+        ),
+        (
+            _ws_non_sequence_regs_kernel,
+            {"out": "*i32"},
+            "mthreads TLE warp_specialize worker_num_regs must be a static sequence",
+        ),
+        (
+            _ws_float_warps_kernel,
+            {"out": "*i32"},
+            r"mthreads TLE warp_specialize worker_num_warps\[0\] must be a compile-time integer",
+        ),
+        (
+            _ws_float_regs_kernel,
+            {"out": "*i32"},
+            r"mthreads TLE warp_specialize worker_num_regs\[0\] must be a compile-time integer",
+        ),
+        (
+            _ws_zero_warps_kernel,
+            {"out": "*i32"},
+            r"mthreads TLE warp_specialize worker_num_warps\[0\] must be positive",
+        ),
+        (
+            _ws_bool_warps_kernel,
+            {"out": "*i32"},
+            r"mthreads TLE warp_specialize worker_num_warps\[0\] must be a compile-time integer",
+        ),
+        (
+            _ws_warp_count_mismatch_kernel,
+            {"out": "*i32"},
+            "warp_specialize got 1 worker functions but 0 warp counts",
+        ),
+        (
+            _ws_register_count_mismatch_kernel,
+            {"out": "*i32"},
+            "warp_specialize got 1 worker functions but 0 register counts",
+        ),
+        (
+            _ws_empty_functions_kernel,
+            {"out": "*i32"},
+            "warp_specialize requires at least a default partition function",
+        ),
+        (
+            _ws_invalid_entry_kernel,
+            {"out": "*i32"},
+            "warp_specialize entry 1 must be a tuple",
+        ),
+        (
+            _ws_invalid_args_kernel,
+            {"out": "*i32"},
+            "warp_specialize entry 1 args must be a tuple",
+        ),
+    ],
+)
+def test_tle_warp_specialize_frontend_rejects_invalid_static_configuration(kernel, signature, diagnostic):
+    with pytest.raises(CompilationError, match=diagnostic):
+        _compile_ws_ir(kernel, signature, constexprs={})
+
+
+def test_tle_warp_specialize_dialect_rejects_non_power_of_two_warps(capfd):
+    with pytest.raises(RuntimeError, match="error encountered during parsing"):
+        _compile_ws_ir(_ws_non_power_of_two_warps_kernel, {"out": "*i32"}, constexprs={})
+    diagnostic = "'ttg.warp_specialize' op partition #0 number of warps (3) must be a power of 2"
+    assert diagnostic in capfd.readouterr().err
+
+
+_WS_INVALID_DIALECT_FIXTURES = [
+    (
+        """
+module attributes {"ttg.num-warps" = 16 : i32} {
+  tt.func @bad_partition_count() {
+    "ttg.warp_specialize"() ({
+      "ttg.warp_yield"() : () -> ()
+    }, {
+      "ttg.warp_specialize.partitions"() : () -> ()
+    }) {partitionNumWarps = array<i32: 4>} : () -> ()
+    tt.return
+  }
+}
+""",
+        "'ttg.warp_specialize' op has 0 partitions but `partitionNumWarps` has 1 elements",
+    ),
+    (
+        """
+module attributes {"ttg.num-warps" = 16 : i32} {
+  tt.func @bad_capture_count(%arg0: i32) {
+    ttg.warp_specialize(%arg0)
+    default {
+      ttg.warp_yield
+    }
+    partition0() num_warps(4) {
+      ttg.warp_return
+    } : (i32) -> ()
+    tt.return
+  }
+}
+""",
+        "'ttg.warp_specialize.partitions' op partition region #0 has 0 arguments but expected 1",
+    ),
+    (
+        """
+module attributes {"ttg.num-warps" = 16 : i32} {
+  tt.func @bad_capture_type(%arg0: i32) {
+    ttg.warp_specialize(%arg0)
+    default {
+      ttg.warp_yield
+    }
+    partition0(%arg1: i64) num_warps(4) {
+      ttg.warp_return
+    } : (i32) -> ()
+    tt.return
+  }
+}
+""",
+        "'ttg.warp_specialize.partitions' op partition region #0 argument #0 has type 'i64' "
+        "but corresponding capture has type 'i32'",
+    ),
+]
+
+
+@pytest.mark.parametrize("fixture,diagnostic", _WS_INVALID_DIALECT_FIXTURES)
+def test_tle_warp_specialize_dialect_rejects_invalid_structure(tmp_path, capfd, fixture, diagnostic):
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    fixture_path = tmp_path / "invalid_ws_capture.mlir"
+    fixture_path.write_text(fixture)
+
+    with pytest.raises(RuntimeError):
+        ir.parse_mlir_module(str(fixture_path), context)
+    assert diagnostic in capfd.readouterr().err
