@@ -27,6 +27,28 @@ namespace ttg = mlir::triton::gpu;
 
 namespace {
 
+class TLEWarpSpecializeOp {
+public:
+  explicit TLEWarpSpecializeOp(ttg::WarpSpecializeOp op) : op(op) {}
+
+  mlir::Region &getDefaultRegion() { return op.getDefaultRegion(); }
+  mlir::Region &getPartitionOpHolder() { return op.getPartitionOpHolder(); }
+  mlir::Operation *getOperation() { return op.getOperation(); }
+
+  mlir::Value getResult(unsigned index) {
+    if (index >= op.getNumResults())
+      throw py::index_error("WarpSpecializeOp result index out of range");
+    return op.getResult(index);
+  }
+
+  void setRequestedRegisters(std::vector<int32_t> requestedRegisters) {
+    op.setRequestedRegisters(requestedRegisters);
+  }
+
+private:
+  ttg::WarpSpecializeOp op;
+};
+
 void checkCtaRank(llvm::ArrayRef<unsigned> order,
                   llvm::ArrayRef<unsigned> ctasPerCGA,
                   llvm::ArrayRef<unsigned> ctaSplitNum,
@@ -80,7 +102,17 @@ mlir::Attribute getSharedMemorySpace(mlir::MLIRContext *context,
 } // namespace
 
 void init_triton_musa_tle_ir(py::module m) {
-  (void)m;
+  py::class_<TLEWarpSpecializeOp>(m, "WarpSpecializeOp", py::module_local())
+      .def("get_default_region", &TLEWarpSpecializeOp::getDefaultRegion,
+           py::return_value_policy::reference)
+      .def("get_partition_op_holder",
+           &TLEWarpSpecializeOp::getPartitionOpHolder,
+           py::return_value_policy::reference)
+      .def("get_operation", &TLEWarpSpecializeOp::getOperation,
+           py::return_value_policy::reference)
+      .def("get_result", &TLEWarpSpecializeOp::getResult)
+      .def("set_requested_registers",
+           &TLEWarpSpecializeOp::setRequestedRegisters);
 
   auto *builderClsPtr = ir::getBuilderClass();
   if (!builderClsPtr)
@@ -264,6 +296,27 @@ void init_triton_musa_tle_ir(py::module m) {
              throw py::value_error(
                  "mthreads TLE named barrier backend is unsupported; "
                  "phaseIdx is required");
+           })
+      .def("create_warp_return",
+           [](TritonOpBuilder &self) -> mlir::Operation * {
+             return self.create<ttg::WarpReturnOp>();
+           })
+      .def("create_warp_yield",
+           [](TritonOpBuilder &self,
+              std::vector<mlir::Value> values) -> mlir::Operation * {
+             return self.create<ttg::WarpYieldOp>(values);
+           })
+      .def("create_warp_specialize_partitions",
+           [](TritonOpBuilder &self, std::vector<mlir::Value> explicitCaptures,
+              int32_t numPartitions) -> mlir::Operation * {
+             return self.create<ttg::WarpSpecializePartitionsOp>(
+                 explicitCaptures, numPartitions);
+           })
+      .def("create_warp_specialize",
+           [](TritonOpBuilder &self, std::vector<mlir::Type> resultTypes,
+              std::vector<int32_t> partitionNumWarps) -> TLEWarpSpecializeOp {
+             return TLEWarpSpecializeOp(self.create<ttg::WarpSpecializeOp>(
+                 resultTypes, partitionNumWarps));
            })
       .def("create_exclusive_cumsum",
            [](TritonOpBuilder &self, mlir::Type exclusiveTy, mlir::Type totalTy,

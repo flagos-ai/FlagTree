@@ -205,7 +205,8 @@ def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _sema
     builder = _semantic.builder
     insert_pt = builder.get_insertion_point()
     # mthreads partitions are inlined without using NVIDIA WGMMA routing metadata.
-    inline_partition_functions = mthreads_common.enabled() or _is_wgmma_user_promise_marked(_generator)
+    mthreads_enabled = mthreads_common.enabled()
+    inline_partition_functions = mthreads_enabled or _is_wgmma_user_promise_marked(_generator)
     if inline_partition_functions:
         call_jit_function = _generator.inline_JitFunction
     else:
@@ -230,7 +231,12 @@ def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _sema
     worker_arg_handles, worker_items = _deduplicate_warp_specialize_captures(worker_items)
 
     builder.restore_insertion_point(insert_pt)
-    ws_op = builder.create_warp_specialize(result_types, worker_arg_handles, worker_num_warps)
+    if mthreads_enabled:
+        # Mthreads keeps explicit captures on the isolated partitions holder,
+        # matching its backend-local ttg.warp_specialize definition.
+        ws_op = builder.create_warp_specialize(result_types, worker_num_warps)
+    else:
+        ws_op = builder.create_warp_specialize(result_types, worker_arg_handles, worker_num_warps)
     real_default_block = builder.create_block_with_parent(ws_op.get_default_region(), [])
     default_block.merge_block_before(real_default_block)
     default_block = real_default_block
@@ -239,7 +245,10 @@ def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _sema
     ws_op.set_requested_registers(worker_num_regs)
 
     builder.create_block_with_parent(ws_op.get_partition_op_holder(), [])
-    partitions_op = builder.create_warp_specialize_partitions(num_partitions)
+    if mthreads_enabled:
+        partitions_op = builder.create_warp_specialize_partitions(worker_arg_handles, num_partitions)
+    else:
+        partitions_op = builder.create_warp_specialize_partitions(num_partitions)
     partition_arg_types = [arg.get_type() for arg in worker_arg_handles]
     for idx, (worker_fn, worker_args, flattened, remapped) in enumerate(worker_items):
         block = builder.create_block_with_parent(partitions_op.get_region(idx), partition_arg_types)
