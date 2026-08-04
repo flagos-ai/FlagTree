@@ -59,7 +59,6 @@ def _torch_inductor_needs_legacy_shims() -> bool:
 if _torch_inductor_needs_legacy_shims():
     from ..runtime.cache import triton_key  # noqa: F401
 
-
 # - ^\s*tt\.func\s+ : match the start of the string, any leading whitespace, the keyword func,
 #    and any following whitespace
 # - (public\s+)? : optionally match the keyword public and any following whitespace

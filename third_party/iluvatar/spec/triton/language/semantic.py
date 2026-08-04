@@ -1115,8 +1115,8 @@ class TritonSemantic(Generic[TensorTy]):
         return ret
 
     def load(self, ptr: TensorTy, mask: Optional[TensorTy], other: Optional[TensorTy], stride: Optional[TensorTy],
-             boundary_check: Tuple, padding_option: str, cache_modifier: str, eviction_policy: str,
-             is_volatile: bool, flagtree_hints: str = None) -> TensorTy:
+             boundary_check: Tuple, padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool,
+             flagtree_hints: str = None) -> TensorTy:
         # Cache, eviction and padding options
         cache = self._str_to_load_cache_modifier(cache_modifier)
         eviction = self._str_to_eviction_policy(eviction_policy)
