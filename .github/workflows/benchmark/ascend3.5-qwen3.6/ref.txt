@@ -1,0 +1,16 @@
+910C * 2
+vllm==0.20.2+empty
+vllm-plugin-fl==0.2.0+g1326a3374
+torch==2.10.0+cpu
+torch_npu==2.10.0
+cann==9.0.0
+
+[2026/07/31] flag_gems==3e6528cf (2026/06/08) + pick 3b406c36 (2026/07/31), flagtree===0.6.0+ascend3.5 (2026/06/26)
+# 服务冷启动时间: 3分1秒，服务热启动时间: 1分30秒
+# 输入长度: 128, 输出长度: 128, 并发数: 4
+  Output token throughput (tok/s): 4.31
+  Total token throughput (tok/s): 8.62
+  Median TTFT (ms): 16676.06
+  Median TPOT (ms): 804.61
+  Median ITL (ms): 810.99
+
