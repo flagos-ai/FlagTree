@@ -38,6 +38,28 @@ import os
 import time
 import copy
 
+
+@functools.lru_cache(None)
+def _torch_inductor_needs_legacy_shims() -> bool:
+    """Return whether the installed Torch Inductor needs legacy Triton APIs."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            raw = version("torch")
+        except PackageNotFoundError:
+            return False
+    except Exception:
+        return False
+    nums = re.findall(r"\d+", raw)
+    if len(nums) < 2:
+        return False
+    return (int(nums[0]), int(nums[1])) < (2, 10)
+
+
+if _torch_inductor_needs_legacy_shims():
+    from ..runtime.cache import triton_key  # noqa: F401
+
+
 # - ^\s*tt\.func\s+ : match the start of the string, any leading whitespace, the keyword func,
 #    and any following whitespace
 # - (public\s+)? : optionally match the keyword public and any following whitespace
@@ -424,6 +446,8 @@ class CompiledKernel:
         # JSON serialization dumps the target as a dict. Restore it to a GPUTarget.
         target = metadata['target']
         metadata['target'] = GPUTarget(target['backend'], target['arch'], target['warp_size'])
+        if _torch_inductor_needs_legacy_shims():
+            metadata.setdefault("cluster_dims", (1, 1, 1))
         # Restore tuple-typed metadata fields serialized as JSON arrays.
         cluster_dims = metadata.get("cluster_dims")
         if isinstance(cluster_dims, list):

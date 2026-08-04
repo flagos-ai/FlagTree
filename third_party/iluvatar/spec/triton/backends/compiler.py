@@ -1,0 +1,141 @@
+# Copyright 2018-2020 Philippe Tillet
+# Copyright 2020-2022 OpenAI
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+from abc import ABCMeta, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
+from typing import Dict, Union
+from types import ModuleType
+
+
+def _is_corex():
+    # Iluvatar corex global ld/st is 32-bit wide, so 4-byte alignment is enough
+    # to trigger vectorized access. This must stay consistent with the native
+    # alignment threshold in python/src/specialize.cc (guarded by __ILUVATAR__).
+    try:
+        import torch
+        return hasattr(torch, "corex") and torch.corex == True  # noqa: E712
+    except ImportError:
+        return False
+
+
+@dataclass(frozen=True)
+class GPUTarget(object):
+    # Target backend, e.g., cuda, hip
+    backend: str
+    # Target architecture, e.g., 90 (for cuda compute capability), gfx940 (for hip)
+    arch: Union[int, str]
+    warp_size: int
+
+
+class Language(Enum):
+    """The input language being compiled by the backend."""
+    TRITON = 0
+    GLUON = 1
+
+
+class BaseBackend(metaclass=ABCMeta):
+    supports_native_tensor_specialization = True
+
+    def __init__(self, target: GPUTarget) -> None:
+        self.target = target
+        assert self.supports_target(target)
+
+    @classmethod
+    def route_target(cls, target: GPUTarget, jit_fn):
+        """Return an alternate per-kernel target, or ``None`` to keep ``target``."""
+        return None
+
+    @classmethod
+    def get_language_extension(cls):
+        """Return an optional module contributing symbols to ``triton.language.ext``."""
+        return None
+
+    def make_ir(self, src, options, codegen_fns, module_map, context):
+        """Create the initial IR module for this backend."""
+        return src.make_ir(self.target, options, codegen_fns, module_map, context)
+
+    @staticmethod
+    @abstractmethod
+    def supports_target(target: GPUTarget):
+        raise NotImplementedError
+
+    @abstractmethod
+    def hash(self) -> str:
+        """Returns a unique identifier for this backend"""
+        raise NotImplementedError
+
+    @abstractmethod
+    def parse_options(self, options: dict) -> object:
+        """
+        Converts an `options` dictionary into an arbitrary object and returns it.
+        This function may contain target-specific heuristics and check the legality of the provided options
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_stages(self, stages: dict, options: object) -> None:
+        """
+        Populates `stages` dictionary with entries of the form:
+        ir_name [str] => Function[(src: str, metadata: dict) -> str|bytes]
+        The value of each entry may populate a `metadata` dictionary.
+        Stages will be run sequentially (in inseriton order) and can communicate using `metadata`.
+        All stages are expected to return a `str` object, except for the last stage which returns
+        a `bytes` object for execution by the launcher.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def load_dialects(self, context):
+        """
+        Load additional MLIR dialects into the provided `context`
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_module_map(self) -> Dict[str, ModuleType]:
+        """
+        Return a map of interface modules to their device-specific implementations
+        """
+        raise NotImplementedError
+
+    @staticmethod
+    def parse_attr(desc):
+        assert isinstance(desc, str)
+        ret = []
+        if "D" in desc:
+            ret += [["tt.divisibility", 4 if _is_corex() else 16]]
+        return ret
+
+    @staticmethod
+    def get_int_specialization(arg, **kwargs):
+        divisibility = 4 if _is_corex() else 16
+        if arg % divisibility == 0 and kwargs.get("align", False):
+            return "D"
+        return ""
+
+    @staticmethod
+    def get_tensor_specialization(arg, **kwargs):
+        divisibility = 4 if _is_corex() else 16
+        if arg.data_ptr() % divisibility == 0 and kwargs.get("align", False):
+            return "D"
+        return ""

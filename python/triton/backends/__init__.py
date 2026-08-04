@@ -27,6 +27,12 @@ import sys
 from dataclasses import dataclass
 from typing import Type, TypeVar, Union
 from types import ModuleType
+
+from triton._flagtree_spec import spec_path
+
+# flagtree backend path specialization
+spec_path(__path__)
+
 from .driver import DriverBase
 from .compiler import BaseBackend
 

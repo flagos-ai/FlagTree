@@ -31,6 +31,7 @@ from typing import Any, Dict, List
 from . import language as tl
 from . import runtime
 from .backends import backends as _available_backends
+from ._flagtree_spec import spec_func
 
 
 def nvsmi(attrs):
@@ -594,3 +595,8 @@ def get_max_simd_tflops(dtype, clock_rate, device=None):
             raise RuntimeError("dtype not supported")
     tflops = num_subcores * clock_rate * ops_per_sub_core * 1e-9
     return tflops
+
+
+# flagtree backend function specialization
+nvsmi = spec_func("nvsmi") or nvsmi
+get_max_tensorcore_tflops = spec_func("get_max_tensorcore_tflops") or get_max_tensorcore_tflops

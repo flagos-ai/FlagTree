@@ -642,13 +642,16 @@ def get_corex_sme(args, specialization):
             continue
 
         if torch.is_tensor(arg) and arg.dtype in sme_dtypes and arg.dim() >= 2:
-            dim_m = arg.shape[-2]
-            dim_k = arg.shape[-1]
-            if dim_m != 1 and dim_k != 1:
+            # Match the v3.2 bitmask frontend: size-1 dimensions should not
+            # hide the innermost logical 2D tile used for SME eligibility.
+            squeezed_arg = arg.squeeze()
+            if squeezed_arg.dim() >= 2:
+                dim_m = squeezed_arg.shape[-2]
+                dim_k = squeezed_arg.shape[-1]
                 sme_dim = 64 // arg.element_size()
                 is_row_major = arg.is_contiguous() and dim_k % sme_dim == 0
                 is_col_major = not arg.is_contiguous() and dim_m % sme_dim == 0
-                can_use_sme = is_col_major if arg.dtype == torch.int8 else is_row_major or is_col_major
+                can_use_sme = is_row_major or is_col_major
                 if can_use_sme:
                     use_sme |= 1 << operand_index
         operand_index += 1
@@ -927,6 +930,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
             def finalize_compile(kernel):
                 kernel_cache[key] = kernel
+                # flagtree tle raw
+                try:
+                    from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+                except ImportError:
+                    pass
+                else:
+                    run_kernel_init_hooks(kernel)
                 self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options,
                                 [attrs], warmup)
 
@@ -934,6 +944,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
         else:
             kernel = self.compile(src, target=target, options=options.__dict__)
             kernel_cache[key] = kernel
+            # flagtree tle raw
+            try:
+                from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+            except ImportError:
+                pass
+            else:
+                run_kernel_init_hooks(kernel)
             self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options, [attrs],
                             warmup)
         return kernel
