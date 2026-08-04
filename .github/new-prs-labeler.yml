@@ -71,7 +71,6 @@ DOC:
   - changed-files:
       - any-glob-to-any-file:
           - '**/*.md'
-          - '**/*.txt'
           - '**/*.rst'
           - '**/*.png'
           - '**/*.jpg'
