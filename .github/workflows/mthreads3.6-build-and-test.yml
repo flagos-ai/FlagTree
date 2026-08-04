@@ -38,8 +38,7 @@ concurrency:
 jobs:
   mthreads36x-unit-test:
     runs-on: mthreads3.6
-    if: ${{ (github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree') &&
-              github.event.pull_request.draft == false }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
