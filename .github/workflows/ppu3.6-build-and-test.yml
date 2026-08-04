@@ -25,6 +25,7 @@ on:
     branches: [ "main", "triton_v3.6.x" ]
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -37,7 +38,7 @@ concurrency:
 jobs:
   ppu36x-unit-test:
     runs-on: ppu3.6
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
