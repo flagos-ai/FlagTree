@@ -117,12 +117,6 @@ _SIGNAL_SPACE_TO_TEAM_KIND = {
     "world": 2,
 }
 
-_SIGNAL_COOP_KINDS = {
-    GroupKind.THREAD.value: attr.SignalCoopKind.Thread,
-    GroupKind.WARP.value: attr.SignalCoopKind.Warp,
-    GroupKind.BLOCK.value: attr.SignalCoopKind.Block,
-}
-
 
 def _normalize_signal_scalar(value, name: str, dtype: tl.dtype, _semantic) -> tl.tensor:
     if not dtype.is_int() or dtype.is_bool():
@@ -157,9 +151,9 @@ def signal(
     peer,
     signal_id,
     value=1,
-    op: str = "inc",
-    space: str = "intra_node",
-    group_kind: str | GroupKind = GroupKind.BLOCK,
+    op: str | attr.SignalOpKind = "inc",
+    space: str | attr.RemoteTeamKind = "intra_node",
+    group_kind: str | GroupKind | attr.SignalCoopKind = GroupKind.BLOCK,
     context_idx: int = 0,
     _semantic=None,
 ):
@@ -182,18 +176,20 @@ def signal(
     if not hasattr(builder, "create_signal"):
         raise NotImplementedError("tle.signal requires rebuilt TLE builder support")
 
-    signal_op = str(tl._unwrap_if_constexpr(op)).lower()
-    if signal_op not in ("inc", "add"):
+    signal_op = attr.SignalOpKind.from_str(str(tl._unwrap_if_constexpr(op)).lower())
+    if signal_op is None:
         raise ValueError(f"op must be 'inc' or 'add', got {signal_op!r}")
 
     signal_space = str(tl._unwrap_if_constexpr(space)).lower()
     if signal_space not in _SIGNAL_SPACE_TO_TEAM_KIND:
         expected = "intra_node, inter_node, or world"
         raise ValueError(f"space must be {expected}, got {signal_space!r}")
+    signal_space = attr.RemoteTeamKind.from_int(_SIGNAL_SPACE_TO_TEAM_KIND[signal_space])
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
     group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
-    if group_kind not in _SIGNAL_COOP_KINDS:
+    group_kind = attr.SignalCoopKind.from_str(group_kind)
+    if group_kind is None:
         expected = "thread, warp, or block"
         raise ValueError(f"group_kind must be {expected}, got {group_kind!r}")
 
@@ -212,9 +208,9 @@ def signal(
         peer_tensor.handle,
         signal_tensor.handle,
         value_tensor.handle,
-        signal_op,  #编译期已知
-        _SIGNAL_SPACE_TO_TEAM_KIND[signal_space],
-        _SIGNAL_COOP_KINDS[group_kind],
+        signal_op,  # 编译期已知
+        signal_space,
+        group_kind,
         context_idx,
     )
     return None
@@ -1169,7 +1165,8 @@ def signal_wait(
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
     group_kind = group_kind.value if isinstance(group_kind, GroupKind) else group_kind
-    if group_kind not in _SIGNAL_COOP_KINDS:
+    group_kind = attr.SignalCoopKind.from_str(group_kind)
+    if group_kind is None:
         expected = "thread, warp, or block"
         raise ValueError(f"group kind must be {expected}, got {group_kind!r}")
 
@@ -1188,7 +1185,7 @@ def signal_wait(
         signal_tensor.handle,
         wait_kind_val,
         target_tensor and target_tensor.handle,
-        _SIGNAL_COOP_KINDS[group_kind],
+        group_kind,
         context_idx,
     )
 

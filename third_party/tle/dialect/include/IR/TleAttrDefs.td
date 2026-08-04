@@ -48,4 +48,23 @@ def Tle_SignalCoopKindAttr : I32EnumAttr<
   let cppNamespace = "::mlir::triton::tle";
 }
 
+def Tle_SignalOpKindAttr : I32EnumAttr<
+  "SignalOpKind", "",
+  [
+    I32EnumAttrCase<"INC", 0, "inc">,
+    I32EnumAttrCase<"ADD", 1, "add">,
+  ]> {
+  let cppNamespace = "::mlir::triton::tle";
+}
+
+def Tle_RemoteTeamKindAttr : I32EnumAttr<
+  "RemoteTeamKind", "",
+  [
+    I32EnumAttrCase<"INTRA", 0, "intra">,
+    I32EnumAttrCase<"INTER", 1, "inter">,
+    I32EnumAttrCase<"WORLD", 2, "world">,
+  ]> {
+  let cppNamespace = "::mlir::triton::tle";
+}
+
 #endif

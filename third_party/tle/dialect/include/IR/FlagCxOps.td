@@ -95,13 +95,11 @@ def Tle_FlagCxSignalOp : Tle_Op<"flagcx signal", [MemoryEffects<[MemRead, MemWri
     I32:$peer,
     I32:$signal_id,
     I64:$value,
-    StrAttr:$signal_op,
-    I32Attr:$team_kind,
+    Tle_SignalOpKindAttr:$signal_op,
+    Tle_RemoteTeamKindAttr:$team_kind,
     Tle_SignalCoopKindAttr:$coop_kind,
     I32Attr:$context_idx
   );
-
-  let hasVerifier = 1;
 }
 
 def Tle_FlagCxSignalWaitOp : Tle_Op<"flagcx signal_wait"> {

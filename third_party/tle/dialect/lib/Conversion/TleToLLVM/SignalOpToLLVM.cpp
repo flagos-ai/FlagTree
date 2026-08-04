@@ -41,22 +41,16 @@ struct SignalOpConversion : public ConvertOpToLLVMPattern<tle::SignalOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    int64_t teamKind = op.getTeamKindAttr().getInt();
-    tle::SignalCoopKind coopKind = op.getCoopKind();
-    int64_t contextIdx = op.getContextIdxAttr().getInt();
-    StringRef signalOp = op.getSignalOpAttr().getValue();
+    auto contextIdx = op.getContextIdx();
 
-    if (teamKind < 0 || teamKind > 2)
-      return rewriter.notifyMatchFailure(op, "invalid team_kind");
     if (contextIdx < 0 || contextIdx > std::numeric_limits<int32_t>::max())
       return rewriter.notifyMatchFailure(op, "invalid context_idx");
-    if (signalOp != "inc" && signalOp != "add")
-      return rewriter.notifyMatchFailure(op, "invalid signal_op");
 
 #ifdef FLAGCX_ENABLED
     rewriter.replaceOpWithNewOp<tle::FlagCxSignalOp>(
         op, adaptor.getComm(), adaptor.getPeer(), adaptor.getSignalId(),
-        adaptor.getValue(), signalOp, teamKind, coopKind, contextIdx);
+        adaptor.getValue(), adaptor.getSignalOp(), adaptor.getTeamKind(),
+        adaptor.getCoopKind(), contextIdx);
 #endif // FLAGCX_ENABLED
     return success();
   }

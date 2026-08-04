@@ -152,9 +152,9 @@ LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
 LLVM::CallOp getSignalFuncCall(mlir::Location loc,
                                ConversionPatternRewriter &rewriter,
                                Value dev_net, Value comm, Value peer,
-                               Value signalId, Value value, int32_t teamKind,
-                               SignalCoopKind coopKind,
-                               llvm::StringRef signalOp) {
+                               Value signalId, Value value,
+                               RemoteTeamKind teamKind, SignalCoopKind coopKind,
+                               SignalOpKind signalOp) {
   auto ctx = rewriter.getContext();
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
@@ -166,7 +166,7 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
   auto commPtr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
 
   auto teamKindValue = rewriter.create<LLVM::ConstantOp>(
-      loc, i32Ty, rewriter.getI32IntegerAttr(teamKind));
+      loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(teamKind)));
   auto coopKindValue = rewriter.create<LLVM::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coopKind)));
   SmallVector<Value> args{dev_net, commPtr,       teamKindValue,
@@ -174,13 +174,16 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
 
   StringRef runtimeName;
   SmallVector<Type> argTypes{ptrTy, ptrTy, i32Ty, i32Ty, i32Ty, i32Ty};
-  if (signalOp == "inc") {
+  switch (signalOp) {
+  case SignalOpKind::INC:
     runtimeName = runtimeNames.lookup("signalSigIncFunction");
-  } else if (signalOp == "add") {
+    break;
+  case SignalOpKind::ADD:
     runtimeName = runtimeNames.lookup("signalSigAddFunction");
     argTypes.push_back(i64Ty);
     args.push_back(value);
-  } else {
+    break;
+  default:
     llvm_unreachable("unknown signal operation");
   }
 

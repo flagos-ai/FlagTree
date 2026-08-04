@@ -43,24 +43,17 @@ struct FlagCxSignalOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    int64_t teamKind = op.getTeamKindAttr().getInt();
-    tle::SignalCoopKind coopKind = op.getCoopKind();
-    int64_t contextIdx = op.getContextIdxAttr().getInt();
-    StringRef signalOp = op.getSignalOpAttr().getValue();
+    uint32_t contextIdx = op.getContextIdx();
 
-    if (teamKind < 0 || teamKind > 2)
-      return rewriter.notifyMatchFailure(op, "invalid team_kind");
-    if (contextIdx < 0 || contextIdx > std::numeric_limits<int32_t>::max())
+    if (contextIdx > std::numeric_limits<int32_t>::max())
       return rewriter.notifyMatchFailure(op, "invalid context_idx");
-    if (signalOp != "inc" && signalOp != "add")
-      return rewriter.notifyMatchFailure(op, "invalid signal_op");
 
     auto dev_net = tle::getDevNetFromCommFuncCall(
-        loc, rewriter, adaptor.getComm(), static_cast<int32_t>(contextIdx));
-    tle::getSignalFuncCall(loc, rewriter, dev_net.getResult(),
-                           adaptor.getComm(), adaptor.getPeer(),
-                           adaptor.getSignalId(), adaptor.getValue(),
-                           static_cast<int32_t>(teamKind), coopKind, signalOp);
+        loc, rewriter, adaptor.getComm(), contextIdx);
+    tle::getSignalFuncCall(
+        loc, rewriter, dev_net.getResult(), adaptor.getComm(),
+        adaptor.getPeer(), adaptor.getSignalId(), adaptor.getValue(),
+        adaptor.getTeamKind(), adaptor.getCoopKind(), adaptor.getSignalOp());
     rewriter.eraseOp(op);
     return success();
   }

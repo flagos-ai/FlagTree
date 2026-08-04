@@ -48,9 +48,9 @@ LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
 LLVM::CallOp getSignalFuncCall(mlir::Location loc,
                                ConversionPatternRewriter &rewriter,
                                Value dev_net, Value comm, Value peer,
-                               Value signalId, Value value, int32_t teamKind,
-                               SignalCoopKind coopKind,
-                               llvm::StringRef signalOp);
+                               Value signalId, Value value,
+                               RemoteTeamKind teamKind, SignalCoopKind coopKind,
+                               SignalOpKind signalOp);
 
 LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
                                        ConversionPatternRewriter &rewriter,
