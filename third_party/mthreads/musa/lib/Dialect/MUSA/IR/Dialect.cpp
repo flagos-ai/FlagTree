@@ -481,11 +481,31 @@ LogicalResult InitArrivalOp::verify() {
   return verifyNonNegativeI32Constant(getOperation(), getPhaseId(), "phaseId");
 }
 
+#ifdef __TLE__
+static LogicalResult verifyTMEIssueThread(Operation *op) {
+  Attribute attr = op->getAttr(triton::musa::kTMEIssueThreadAttr);
+  if (!attr)
+    return success();
+  auto issueThread = dyn_cast<IntegerAttr>(attr);
+  if (!issueThread || !issueThread.getType().isInteger(32) ||
+      issueThread.getInt() < 0)
+    return op->emitOpError("musa.tme.issue_thread must be a non-negative i32");
+  return success();
+}
+#endif // __TLE__
+
 LogicalResult BarrierAddTransOp::verify() {
   if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))
     return failure();
+#ifdef __TLE__
+  if (failed(verifyNonNegativeI32Constant(getOperation(), getTransBytes(),
+                                          "transBytes")))
+    return failure();
+  return verifyTMEIssueThread(getOperation());
+#else
   return verifyNonNegativeI32Constant(getOperation(), getTransBytes(),
                                       "transBytes");
+#endif // __TLE__
 }
 
 LogicalResult ArriveBarrierOp::verify() {
@@ -493,7 +513,13 @@ LogicalResult ArriveBarrierOp::verify() {
 }
 
 LogicalResult ArriveBarrierNoRetOp::verify() {
+#ifdef __TLE__
+  if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))
+    return failure();
+  return verifyTMEIssueThread(getOperation());
+#else
   return verifyAsyncBarrierId(getOperation(), getBarId(), "barId");
+#endif // __TLE__
 }
 
 LogicalResult WaitBarrierOp::verify() {
@@ -553,7 +579,13 @@ LogicalResult AsyncTMECopyGlobalToLocalOp::verify() {
   if (failed(verifyTMECopyShapeContract(getOperation(), getCoord(),
                                         getBlockShape())))
     return failure();
+#ifdef __TLE__
+  if (failed(verifyTMESwizzleContract(*this)))
+    return failure();
+  return verifyTMEIssueThread(getOperation());
+#else
   return verifyTMESwizzleContract(*this);
+#endif // __TLE__
 }
 
 LogicalResult AsyncTMECopyLocalToGlobalOp::verify() {

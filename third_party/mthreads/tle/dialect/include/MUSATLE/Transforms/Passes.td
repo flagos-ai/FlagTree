@@ -109,4 +109,22 @@ def TritonMUSAGPUTLELowerBarrierAllocations
   ];
 }
 
+def TritonMUSAGPUTLELowerTMETransactions
+    : Pass<"tritonmusa-tle-lower-tme-transactions", "mlir::ModuleOp"> {
+  let summary = "Materialize explicit MUSA TME completion transactions";
+  let description = [{
+    Replace the temporary transaction-byte marker on each explicit TLE
+    completion copy with one barrier add-transaction before the copy and one
+    issuer arrival after it.  Mark all three issue operations with the same raw
+    CTA issuer thread and suppress the legacy CTA-wide synchronization inside
+    explicit-completion TME lowering.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::triton::TritonDialect",
+    "mlir::triton::gpu::TritonGPUDialect",
+    "mlir::triton::musa::MUSADialect"
+  ];
+}
+
 #endif // MUSA_TLE_TRANSFORMS_PASSES

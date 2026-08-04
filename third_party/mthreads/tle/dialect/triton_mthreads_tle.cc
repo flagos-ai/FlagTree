@@ -349,6 +349,8 @@ void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m) {
                      mlir::createTritonMUSAGPUTLELowerExclusiveCumsum);
   ADD_PASS_WRAPPER_0("add_tle_lower_barrier_allocations",
                      mlir::createTritonMUSAGPUTLELowerBarrierAllocations);
+  ADD_PASS_WRAPPER_0("add_tle_lower_tme_transactions",
+                     mlir::createTritonMUSAGPUTLELowerTMETransactions);
   ADD_PASS_WRAPPER_0("add_tle_insert_local_pointer_barriers",
                      mlir::createTritonMUSAGPUTLEInsertLocalPointerBarriers);
   ADD_PASS_WRAPPER_0("add_tle_optimize_local_pointer_loads",

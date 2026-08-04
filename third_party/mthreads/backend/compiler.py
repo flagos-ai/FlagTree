@@ -824,6 +824,8 @@ class MUSABackend(BaseBackend):
             mthreads.passes.ttgpuir.add_mark_inplace_loads(pm, opt.inplace_alias_pairs)
         if hasattr(mthreads.passes.ttgpuir, "add_tle_lower_barrier_allocations"):
             mthreads.passes.ttgpuir.add_tle_lower_barrier_allocations(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_lower_tme_transactions"):
+            mthreads.passes.ttgpuir.add_tle_lower_tme_transactions(pm)
         mthreads.passes.ttgpuir.add_finalize_barriers(pm)
         pm.run(mod, "make_ttgir")
         metadata["uses_sqmma"] = _module_uses_sqmma(mod)

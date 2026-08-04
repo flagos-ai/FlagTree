@@ -235,14 +235,15 @@ def test_tle_tma_completion_barrier_preserves_mthreads_contract(
     barrier_name = re.search(r"\],\s*(%[-\w.]+),\s*%", async_line).group(1)
     assert _i32_constants(ttgir)[barrier_name] == slot + 1, ttgir
     assert f"blockShape = array<i32: {block_m}, {block_n}>" in async_line, ttgir
-    assert "musa_tle.expect_bytes = 32768 : i32" in async_line, ttgir
+    assert "musa.tme.explicit_completion" in async_line, ttgir
+    assert "musa.tme.issue_thread = 0 : i32" in async_line, ttgir
     init_lines = [line for line in ttgir.splitlines() if "ttmg.init_arrival" in line]
     assert len(init_lines) == stages, ttgir
     constants = _i32_constants(ttgir)
     init_ids = [constants[re.search(r"ttmg\.init_arrival\s+(%[-\w.]+)", line).group(1)] for line in init_lines]
     assert init_ids == list(range(1, stages + 1)), ttgir
-    assert "ttmg.barrier_add_trans" not in ttgir, ttgir
-    assert "ttmg.arrive_barrier" not in ttgir, ttgir
+    assert "ttmg.barrier_add_trans" in ttgir, ttgir
+    assert "ttmg.arrive_barrier_noret" in ttgir, ttgir
     assert "ttmg.wait_barrier" not in ttgir, ttgir
     assert f"musa.max_bar_id = {stages}" in ttgir, ttgir
 
@@ -267,6 +268,17 @@ def test_tle_tma_copy_without_completion_barrier_keeps_implicit_sync():
     assert "ttmg.wait_barrier" in ttgir, ttgir
     assert "musa.max_bar_id = 1" in ttgir, ttgir
     assert "ttg.shared = 32768 : i32" in allocated, allocated
+
+
+def test_tle_tma_copy_without_completion_barrier_keeps_legacy_barrier0():
+    compiled = compile_musa(
+        _tma_implicit_completion_copy_kernel,
+        signature={"desc": "tensordesc<fp16[256, 64]>"},
+    )
+    llir = compiled.asm["llir"]
+
+    assert "call void @llvm.musa.barrier0()" in llir, llir
+    assert "call void @llvm.musa.tme.ld.tile.2d" in llir, llir
 
 
 @pytest.mark.parametrize(

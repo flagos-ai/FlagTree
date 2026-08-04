@@ -207,6 +207,32 @@ std::optional<int64_t> inferElemBytesFromMemDesc(Type type) {
   return static_cast<int64_t>((bitWidth + 7) / 8);
 }
 
+#ifdef __TLE__
+Value buildTMEIssuePredicate(Value userPred, Location loc,
+                             ConversionPatternRewriter &rewriter,
+                             Operation *issueOp = nullptr) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  int32_t issueThread = 0;
+  bool hasExplicitIssueThread = false;
+  if (issueOp) {
+    if (auto attr = issueOp->getAttrOfType<IntegerAttr>(
+            triton::musa::kTMEIssueThreadAttr)) {
+      issueThread = static_cast<int32_t>(attr.getInt());
+      hasExplicitIssueThread = true;
+    }
+  }
+  Value threadId;
+  if (hasExplicitIssueThread) {
+    threadId = ::mlir::gpu::ThreadIdOp::create(rewriter, loc,
+                                               ::mlir::gpu::Dimension::x);
+    threadId = arith::IndexCastOp::create(rewriter, loc, i32_ty, threadId);
+  } else {
+    threadId = getThreadId(rewriter, loc);
+  }
+  Value issuerPred = b.icmp_eq(threadId, b.i32_val(issueThread));
+  return b.and_(userPred, issuerPred);
+}
+#else
 Value buildTMEIssuePredicate(Value userPred, Location loc,
                              ConversionPatternRewriter &rewriter) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -214,6 +240,7 @@ Value buildTMEIssuePredicate(Value userPred, Location loc,
   Value issuerPred = b.icmp_eq(threadId, b.i32_val(0));
   return b.and_(userPred, issuerPred);
 }
+#endif // __TLE__
 
 Value buildTMEIssueOnlyPredicate(Location loc,
                                  ConversionPatternRewriter &rewriter) {
@@ -447,7 +474,12 @@ struct BarrierAddTransOpConversion
   matchAndRewrite(triton::musa::BarrierAddTransOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+#ifdef __TLE__
+    Value launchPred =
+        buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter, op);
+#else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
+#endif // __TLE__
     SmallVector<Value> operands = {adaptor.getBarId(), adaptor.getTransBytes()};
     emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,
                                 "llvm.musa.async.add.trans", operands);
@@ -482,7 +514,12 @@ struct ArriveBarrierNoRetOpConversion
   matchAndRewrite(triton::musa::ArriveBarrierNoRetOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+#ifdef __TLE__
+    Value launchPred =
+        buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter, op);
+#else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
+#endif // __TLE__
     SmallVector<Value> operands = {adaptor.getBarId()};
     emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,
                                 "llvm.musa.async.arrive.none.phaseid",
@@ -572,10 +609,21 @@ struct AsyncTMECopyGlobalToLocalOpConversion
     Value outerPersistence = materializeTMEEnumAttr(loc, outerAttr, rewriter);
     Value cachePolicy = materializeTMEEnumAttr(loc, cacheAttr, rewriter);
 
+#ifdef __TLE__
+    if (!op->hasAttr(triton::musa::kTMEExplicitCompletionAttr))
+      LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.barrier0",
+                                      TypeRange{}, {});
+#else
     LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.barrier0",
                                     TypeRange{}, {});
+#endif // __TLE__
 
+#ifdef __TLE__
+    Value launchPred =
+        buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter, op);
+#else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
+#endif // __TLE__
     auto recoveredContract =
         triton::musa::recoverAndVerifyGroupedTMELoadConsumerContract(op);
     if (failed(recoveredContract))
@@ -669,7 +717,12 @@ struct AsyncTMECopyLocalToGlobalOpConversion
     Value innerPersistence = materializeTMEEnumAttr(loc, innerAttr, rewriter);
     Value outerPersistence = materializeTMEEnumAttr(loc, outerAttr, rewriter);
     Value cachePolicy = materializeTMEEnumAttr(loc, cacheAttr, rewriter);
+#ifdef __TLE__
+    Value launchPred =
+        buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter, op);
+#else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
+#endif // __TLE__
     SmallVector<Value> operands = {
         srcAddr,     descAddr,           blockDim,
         blockPos,    swizzleGranularity, swizzleStride,

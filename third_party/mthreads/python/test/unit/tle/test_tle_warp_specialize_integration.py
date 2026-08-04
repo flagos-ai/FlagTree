@@ -731,12 +731,13 @@ def _assert_ttgir_copy_association(ttgir, stages, k_tiles):
     assert all(_depends_on(value, loop_induction, definitions) for value in dynamic_offsets[:period_offset_count])
     assert all(not _depends_on(value, loop_induction, definitions) for value in dynamic_offsets[period_offset_count:])
     assert ttgir.count("ttmg.async_tme_copy_global_to_local") == 2 * len(emitted_tiles), ttgir
-    assert ttgir.count("musa_tle.expect_bytes = 32768 : i32") == 2 * len(emitted_tiles), ttgir
+    assert ttgir.count("musa.tme.explicit_completion") == 3 * 2 * len(emitted_tiles), ttgir
+    assert ttgir.count("musa.tme.issue_thread = 512 : i32") == 3 * 2 * len(emitted_tiles), ttgir
     assert ttgir.count("blockShape = array<i32: 256, 64>") == len(emitted_tiles), ttgir
     assert ttgir.count("blockShape = array<i32: 64, 256>") == len(emitted_tiles), ttgir
     assert ttgir.count("ttmg.init_arrival") == 4 * stages, ttgir
-    assert "ttmg.barrier_add_trans" not in ttgir, ttgir
-    assert "ttmg.arrive_barrier" not in ttgir, ttgir
+    assert ttgir.count("ttmg.barrier_add_trans") == 2 * len(emitted_tiles), ttgir
+    assert ttgir.count("ttmg.arrive_barrier_noret") == 2 * len(emitted_tiles), ttgir
     assert "ttmg.wait_barrier" not in ttgir, ttgir
 
 
