@@ -72,7 +72,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: ppu
 
-      - name: Unit Test
+      - name: Unit Language Core Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
