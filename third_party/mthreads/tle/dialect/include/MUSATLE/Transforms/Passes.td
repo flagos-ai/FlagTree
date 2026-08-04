@@ -89,4 +89,20 @@ def TritonMUSAGPUTLELowerExclusiveCumsum
   ];
 }
 
+def TritonMUSAGPUTLELowerBarrierAllocations
+    : Pass<"tritonmusa-tle-lower-barrier-allocations", "mlir::ModuleOp"> {
+  let summary = "Assign MUSA hardware ids to TLE barrier declarations";
+  let description = [{
+    Reserve one contiguous MUSA async-barrier range per function, materialize
+    hardware initialization records for every declared TLE barrier, and replace
+    logical barrier allocations and indices with i32 hardware ids.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::triton::TritonDialect",
+    "mlir::triton::musa::MUSADialect",
+    "mlir::triton::musa_tle::MUSATLEDialect"
+  ];
+}
+
 #endif // MUSA_TLE_TRANSFORMS_PASSES

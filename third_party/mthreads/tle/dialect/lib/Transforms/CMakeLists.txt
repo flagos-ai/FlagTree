@@ -1,5 +1,6 @@
 add_triton_library(MUSATLETransforms
   InsertLocalPointerBarriers.cpp
+  LowerBarrierAllocations.cpp
   LowerExclusiveCumsum.cpp
   OptimizeLocalPointerAsyncStores.cpp
   OptimizeLocalPointerLoads.cpp
@@ -12,6 +13,7 @@ add_triton_library(MUSATLETransforms
 
   LINK_LIBS PUBLIC
   MUSATLEIR
+  MUSAIR
   TritonIR
   TritonGPUIR
   TritonGPUTransforms

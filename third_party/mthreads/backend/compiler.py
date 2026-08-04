@@ -822,6 +822,8 @@ class MUSABackend(BaseBackend):
         passes.common.add_canonicalizer(pm)
         if capability == 31:
             mthreads.passes.ttgpuir.add_mark_inplace_loads(pm, opt.inplace_alias_pairs)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_lower_barrier_allocations"):
+            mthreads.passes.ttgpuir.add_tle_lower_barrier_allocations(pm)
         mthreads.passes.ttgpuir.add_finalize_barriers(pm)
         pm.run(mod, "make_ttgir")
         metadata["uses_sqmma"] = _module_uses_sqmma(mod)

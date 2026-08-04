@@ -17,6 +17,16 @@ from test_tle_utils import compile_musa, mthreads_backend, require_mthreads_libt
 require_mthreads_libtriton()
 
 
+def _i32_constants(ir_text):
+    return {
+        name: int(value)
+        for name, value in re.findall(
+            r"(%[-\w.]+)\s*=\s*(?:arith\.)?constant\s+(-?\d+)\s*:\s*i32",
+            ir_text,
+        )
+    }
+
+
 @triton.jit
 def _normal_copy_roundtrip_kernel(src, dst, BLOCK: tl.constexpr):
     offsets = tl.arange(0, BLOCK)
@@ -219,20 +229,22 @@ def test_tle_tma_completion_barrier_preserves_mthreads_contract(
     else:
         assert re.search(r"\[%c0_i32, %arg\d+\] barrier", ttir), ttir
 
-    barrier_match = re.search(
-        r"(%[-\w.]+)\s*=\s*musa_tle\.barrier\.index",
-        ttgir,
-    )
-    assert barrier_match, ttgir
+    assert "musa_tle.barrier.alloc" not in ttgir, ttgir
+    assert "musa_tle.barrier.index" not in ttgir, ttgir
     async_line = next(line for line in ttgir.splitlines() if "ttmg.async_tme_copy_global_to_local" in line)
-    assert f", {barrier_match.group(1)}," in async_line, ttgir
+    barrier_name = re.search(r"\],\s*(%[-\w.]+),\s*%", async_line).group(1)
+    assert _i32_constants(ttgir)[barrier_name] == slot + 1, ttgir
     assert f"blockShape = array<i32: {block_m}, {block_n}>" in async_line, ttgir
     assert "musa_tle.expect_bytes = 32768 : i32" in async_line, ttgir
-    assert "ttmg.init_arrival" not in ttgir, ttgir
+    init_lines = [line for line in ttgir.splitlines() if "ttmg.init_arrival" in line]
+    assert len(init_lines) == stages, ttgir
+    constants = _i32_constants(ttgir)
+    init_ids = [constants[re.search(r"ttmg\.init_arrival\s+(%[-\w.]+)", line).group(1)] for line in init_lines]
+    assert init_ids == list(range(1, stages + 1)), ttgir
     assert "ttmg.barrier_add_trans" not in ttgir, ttgir
     assert "ttmg.arrive_barrier" not in ttgir, ttgir
     assert "ttmg.wait_barrier" not in ttgir, ttgir
-    assert "musa.max_bar_id" not in ttgir, ttgir
+    assert f"musa.max_bar_id = {stages}" in ttgir, ttgir
 
     assert f"ttg.shared = {stages * 32768} : i32" in allocated, allocated
 

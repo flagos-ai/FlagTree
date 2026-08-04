@@ -37,6 +37,31 @@ def _static_barrier_kernel(STAGES: tl.constexpr):
 
 
 @triton.jit
+def _four_group_barrier_kernel(STAGES: tl.constexpr):
+    full_a = tle.gpu.alloc_barriers(STAGES, arrive_count=1, init=tle.gpu.PENDING, expect_bytes=32768)
+    full_b = tle.gpu.alloc_barriers(STAGES, arrive_count=1, init=tle.gpu.PENDING, expect_bytes=32768)
+    empty_a = tle.gpu.alloc_barriers(STAGES, arrive_count=16, init=tle.gpu.READY)
+    empty_b = tle.gpu.alloc_barriers(STAGES, arrive_count=16, init=tle.gpu.READY)
+    for slot in tl.static_range(0, STAGES):
+        tle.gpu.barrier_wait(full_a[slot], phaseIdx=slot)
+        tle.gpu.barrier_wait(full_b[slot], phaseIdx=slot)
+        tle.gpu.barrier_arrive(empty_a[slot], phaseIdx=slot)
+        tle.gpu.barrier_arrive(empty_b[slot], phaseIdx=slot)
+
+
+@triton.jit
+def _exhausted_barrier_kernel():
+    bars_0 = tle.gpu.alloc_barriers(16)
+    bars_1 = tle.gpu.alloc_barriers(16)
+    bars_2 = tle.gpu.alloc_barriers(16)
+    bars_3 = tle.gpu.alloc_barriers(16)
+    tle.gpu.barrier_wait(bars_0[0], phaseIdx=0)
+    tle.gpu.barrier_wait(bars_1[0], phaseIdx=0)
+    tle.gpu.barrier_wait(bars_2[0], phaseIdx=0)
+    tle.gpu.barrier_wait(bars_3[0], phaseIdx=0)
+
+
+@triton.jit
 def _dynamic_barrier_kernel(stage, phase):
     bars = tle.gpu.alloc_barriers(
         2,
@@ -191,6 +216,40 @@ def _barrier_index_constants(ttir):
     return values
 
 
+def _constants(ir_text):
+    return {
+        name: int(value)
+        for name, value in re.findall(
+            r"(%[-\w.]+)\s*=\s*(?:arith\.)?constant\s+(-?\d+)\s*:\s*i32",
+            ir_text,
+        )
+    }
+
+
+def _init_arrivals(ir_text):
+    constants = _constants(ir_text)
+    return [(constants[bar_id], constants[arrive_count], constants[phase])
+            for bar_id, arrive_count, phase in re.findall(
+                r"ttmg\.init_arrival\s+(%[-\w.]+),\s*(%[-\w.]+),\s*(%[-\w.]+)",
+                ir_text,
+            )]
+
+
+def _assert_lowered_static_barrier_ir(ir_text, stages):
+    allocs, indices, waits, arrives = _extract_barrier_ops(ir_text)
+    assert (allocs, indices, waits, arrives) == (0, 0, 2 * stages, stages), ir_text
+    assert _init_arrivals(ir_text) == [
+        *[(slot + 1, 1, 0) for slot in range(stages)],
+        *[(stages + slot + 1, 16, 1) for slot in range(stages)],
+    ], ir_text
+    assert f"musa.max_bar_id = {2 * stages}" in ir_text, ir_text
+    assert "musa.next_bar_id" not in ir_text, ir_text
+    assert "ttmg.bar_record" in ir_text, ir_text
+    assert "ttg.memdesc_index" not in ir_text, ir_text
+    assert "ttg.local_alloc" not in ir_text, ir_text
+    assert "!ttg.memdesc" not in ir_text, ir_text
+
+
 def _assert_static_barrier_ir(ttir, stages):
     allocs, indices, waits, arrives = _extract_barrier_ops(ttir)
     assert allocs == 2, ttir
@@ -220,41 +279,124 @@ def _assert_static_barrier_ir(ttir, stages):
 
 @pytest.mark.parametrize("stages", [1, 2])
 def test_mthreads_tle_barrier_static_arrays_emit_mbarrier_ir(stages):
-    ir_modules = _compile_barrier_ir(
+    ttir, ttgir, allocated = _compile_barrier_ir(
         _static_barrier_kernel,
         {"STAGES": "constexpr"},
         {"STAGES": stages},
     )
-    for ir_text in ir_modules:
-        _assert_static_barrier_ir(ir_text, stages)
-    assert "ttg.shared = 0 : i32" in ir_modules[-1], ir_modules[-1]
+    _assert_static_barrier_ir(ttir, stages)
+    _assert_lowered_static_barrier_ir(ttgir, stages)
+    _assert_lowered_static_barrier_ir(allocated, stages)
+    assert "ttg.shared = 0 : i32" in allocated, allocated
+
+
+@pytest.mark.parametrize("stages", [1, 2])
+def test_mthreads_tle_four_barrier_groups_receive_contiguous_hardware_ids(stages):
+    ttir, ttgir, allocated = _compile_barrier_ir(
+        _four_group_barrier_kernel,
+        {"STAGES": "constexpr"},
+        {"STAGES": stages},
+    )
+    assert _extract_barrier_ops(ttir)[0] == 4, ttir
+    expected = [
+        *[(1 + slot, 1, 0) for slot in range(stages)],
+        *[(1 + stages + slot, 1, 0) for slot in range(stages)],
+        *[(1 + 2 * stages + slot, 16, 1) for slot in range(stages)],
+        *[(1 + 3 * stages + slot, 16, 1) for slot in range(stages)],
+    ]
+    for ir_text in (ttgir, allocated):
+        assert _init_arrivals(ir_text) == expected, ir_text
+        assert _extract_barrier_ops(ir_text)[0:2] == (0, 0), ir_text
+        assert f"musa.max_bar_id = {4 * stages}" in ir_text, ir_text
+        assert "musa.next_bar_id" not in ir_text, ir_text
+    assert "ttg.shared = 0 : i32" in allocated, allocated
+
+
+def _lower_backend_barrier_fixture(tmp_path, stages, existing_max=None):
+    function_attrs = ""
+    if existing_max is not None:
+        function_attrs = f" attributes {{musa.max_bar_id = {existing_max} : i32}}"
+    allocs = "\n".join(f"    %{index} = musa_tle.barrier.alloc "
+                       f"{{arrive_count = {1 if index < 2 else 16} : i32, "
+                       f"init_polarity = {0 if index < 2 else 1} : i32, "
+                       f"num_barriers = {stages} : i32}}" for index in range(4))
+    fixture = f"""module {{
+  tt.func public @barrier_fixture(){function_attrs} {{
+{allocs}
+    tt.return
+  }}
+}}
+"""
+    fixture_path = tmp_path / "barrier_fixture.ttgir"
+    fixture_path.write_text(fixture)
+
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    module = ir.parse_mlir_module(str(fixture_path), context)
+    pm = ir.pass_manager(context)
+    libtriton.mthreads.passes.ttgpuir.add_tle_lower_barrier_allocations(pm)
+    libtriton.mthreads.passes.ttgpuir.add_finalize_barriers(pm)
+    pm.run(module, "lower_backend_barrier_fixture")
+    return module.str_nodebug()
+
+
+def test_mthreads_tle_stage_three_barriers_use_backend_local_fixture(tmp_path):
+    lowered = _lower_backend_barrier_fixture(tmp_path, stages=3)
+    assert _init_arrivals(lowered) == [
+        *[(1 + slot, 1, 0) for slot in range(3)],
+        *[(4 + slot, 1, 0) for slot in range(3)],
+        *[(7 + slot, 16, 1) for slot in range(3)],
+        *[(10 + slot, 16, 1) for slot in range(3)],
+    ], lowered
+    assert "musa.max_bar_id = 12" in lowered, lowered
+    assert _extract_barrier_ops(lowered)[0:2] == (0, 0), lowered
+
+
+def test_mthreads_tle_barriers_follow_existing_musa_reservations(tmp_path):
+    lowered = _lower_backend_barrier_fixture(tmp_path, stages=1, existing_max=5)
+    assert _init_arrivals(lowered) == [
+        (6, 1, 0),
+        (7, 1, 0),
+        (8, 16, 1),
+        (9, 16, 1),
+    ], lowered
+    assert "musa.max_bar_id = 9" in lowered, lowered
+
+
+def test_mthreads_tle_barrier_id_exhaustion_has_stable_diagnostic(capfd):
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        _compile_barrier_ir(_exhausted_barrier_kernel, {})
+    stderr = capfd.readouterr().err
+    assert ("mthreads TLE barrier allocation exhausted hardware barrier ids: "
+            "cannot reserve 64 additional ids in [1, 63]") in stderr
 
 
 def test_mthreads_tle_barrier_preserves_dynamic_slot_and_phase():
-    ir_modules = _compile_barrier_ir(
+    ttir, ttgir, allocated = _compile_barrier_ir(
         _dynamic_barrier_kernel,
         {"stage": "i32", "phase": "i32"},
     )
-    for ir_text in ir_modules:
-        allocs, indices, waits, arrives = _extract_barrier_ops(ir_text)
-        assert (allocs, indices, waits, arrives) == (1, 1, 1, 1), ir_text
-        assert not re.search(r"(?<!musa_)tle\.barrier\.", ir_text), ir_text
-        assert "ttg.memdesc_index" not in ir_text, ir_text
-        assert "musa_tle.barrier.index" in ir_text, ir_text
-        assert "musa_tle.barrier.wait" in ir_text, ir_text
-        assert "musa_tle.barrier.arrive" in ir_text, ir_text
-        assert re.search(r"musa_tle\.barrier\.index\s+%[-\w.]+\[%arg0\]", ir_text), ir_text
+    assert _extract_barrier_ops(ttir) == (1, 1, 1, 1), ttir
+    assert re.search(r"musa_tle\.barrier\.index\s+%[-\w.]+\[%arg0\]", ttir), ttir
+    assert "num_barriers = 2" in ttir, ttir
+    for ir_text in (ttgir, allocated):
+        assert _extract_barrier_ops(ir_text) == (0, 0, 1, 1), ir_text
+        assert "arith.addi" in ir_text, ir_text
         assert re.search(r"arith\.andi\s+%arg1,", ir_text), ir_text
         assert "arith.xori" in ir_text, ir_text
-        assert "num_barriers = 2" in ir_text, ir_text
-    assert "ttg.shared = 0 : i32" in ir_modules[-1], ir_modules[-1]
+        assert _init_arrivals(ir_text) == [(1, 16, 1), (2, 16, 1)], ir_text
+    assert "ttg.shared = 0 : i32" in allocated, allocated
 
 
 def test_mthreads_tle_singleton_barrier_uses_indexed_slot():
-    for ir_text in _compile_barrier_ir(_singleton_barrier_kernel, {}):
-        allocs, indices, waits, arrives = _extract_barrier_ops(ir_text)
-        assert (allocs, indices, waits, arrives) == (1, 1, 1, 1), ir_text
-        assert _barrier_index_constants(ir_text) == [0], ir_text
+    ttir, ttgir, allocated = _compile_barrier_ir(_singleton_barrier_kernel, {})
+    assert _extract_barrier_ops(ttir) == (1, 1, 1, 1), ttir
+    assert _barrier_index_constants(ttir) == [0], ttir
+    for ir_text in (ttgir, allocated):
+        assert _extract_barrier_ops(ir_text) == (0, 0, 1, 1), ir_text
+        assert _init_arrivals(ir_text) == [(1, 1, 0)], ir_text
         assert "!ttg.memdesc" not in ir_text, ir_text
         assert "ttg.local_alloc" not in ir_text, ir_text
 
@@ -271,8 +413,10 @@ def test_mthreads_tle_barrier_bindings_are_backend_local():
             "create_barrier_arrive_mbarrier",
             "create_barrier_wait_named",
             "create_barrier_arrive_named",
+            "add_tle_lower_barrier_allocations",
     ):
-        assert hasattr(builder, name)
+        owner = (libtriton.mthreads.passes.ttgpuir if name.startswith("add_") else builder)
+        assert hasattr(owner, name)
 
 
 @pytest.mark.parametrize("kernel", [_named_barrier_kernel, _named_barrier_arrive_kernel])
