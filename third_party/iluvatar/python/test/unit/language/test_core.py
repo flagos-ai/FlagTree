@@ -1325,8 +1325,6 @@ def test_noinline(mode, device):
                                    for sem in [None, 'acquire', 'release', 'acq_rel', 'relaxed']]))
 def test_atomic_rmw(op, dtype_x_str, mode, sem, device):
     check_type_supported(dtype_x_str, device)
-    if is_corex() and op == 'add' and dtype_x_str in ('int64', 'uint64'):
-        pytest.skip("CoreX does not support atomic add with int64/uint64 types")
     if is_interpreter():
         if dtype_x_str == 'float16' or dtype_x_str == 'bfloat16':
             pytest.skip("Only test atomic bfloat16/float16 ops on GPU")
@@ -1420,8 +1418,6 @@ def test_atomic_rmw_predicate(num_ctas, device):
                           for check_return_val in ([True, False] if is_hip() else [True])])
 def test_tensor_atomic_rmw(shape, axis, num_ctas, dtype_x_str, check_return_val, device):
     check_type_supported(dtype_x_str, device)
-    if is_corex() and dtype_x_str in ('int64', 'uint64'):
-        pytest.skip("CoreX does not support atomic add with int64/uint64 types")
     shape0, shape1 = shape
     # triton kernel
 
