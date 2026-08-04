@@ -1083,9 +1083,12 @@ def copy(
             raise ValueError("copy barrier is only supported for TMA global-to-shared copy")
         return normcopy(src, dst, shape, direction, _semantic)
     if mthreads_enabled:
+        barrier_slot = None
         if barrier is not None:
-            raise ValueError("TMA copy barrier is only supported on NVIDIA backend")
-        return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, _semantic)
+            if direction != CopyDirection.GM_TO_LOCAL:
+                raise ValueError("TMA copy barrier is only supported for global-to-shared TMA copy")
+            barrier_slot = _tma_completion_barrier_slot(barrier, _semantic)
+        return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, barrier_slot, _semantic)
     else:
         return tmacopy(src, dst, direction, shape, offsets, barrier, _semantic)
 

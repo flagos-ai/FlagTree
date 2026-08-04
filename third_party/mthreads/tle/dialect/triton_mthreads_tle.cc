@@ -157,11 +157,22 @@ void init_triton_musa_tle_ir(py::module m) {
                                           memorySpace,
                                           /*mutableMemory=*/true, allocShape);
            })
-      .def("create_tma_copy",
-           [](TritonOpBuilder &self, mlir::Value src, mlir::Value dst,
-              std::vector<mlir::Value> indices) -> void {
-             self.create<ttg::TMACopyOp>(src, dst, indices);
-           })
+      .def(
+          "create_tma_copy",
+          [](TritonOpBuilder &self, mlir::Value src, mlir::Value dst,
+             std::vector<mlir::Value> indices, py::object completionBarrier,
+             int32_t expectBytes) -> void {
+            mlir::Value barrier;
+            if (!completionBarrier.is_none())
+              barrier = py::cast<mlir::Value>(completionBarrier);
+            auto op = self.create<ttg::TMACopyOp>(src, dst, indices, barrier);
+            if (expectBytes >= 0)
+              op->setAttr("expect_bytes",
+                          self.getBuilder().getI32IntegerAttr(expectBytes));
+          },
+          py::arg("src"), py::arg("dst"), py::arg("indices"),
+          py::arg("completionBarrier") = py::none(),
+          py::arg("expectBytes") = -1)
       .def("create_local_pointers",
            [](TritonOpBuilder &self, mlir::Type resultTy, mlir::Value memDesc,
               py::args args) -> mlir::OpState {
