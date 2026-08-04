@@ -123,6 +123,7 @@ jobs:
 
       - name: Clear cache if ClearCache label present
         if: steps.check_backend.outputs.should_skip != 'true'
+        timeout-minutes: 20
         id: clear_cache
         uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
         with:
