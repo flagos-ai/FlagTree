@@ -585,6 +585,7 @@ class nvidia_knobs(base_knobs):
 
 # flagtree iluvatar
 class iluvatar_knobs(base_knobs):
+
     @staticmethod
     @functools.lru_cache()
     def _corex_home_default() -> str:
