@@ -96,8 +96,9 @@ GIT:
 
 # ==========================================
 # 5. Backend Labels
-# Rule: Applied if files under third_party/{backend}
-# or .github/workflows/{backend}* are modified.
+# Rule: Applied if files under third_party/{backend},
+# or .github/workflows/benchmark/{backend}* are modified,
+# or backend workflow file is modified.
 # ==========================================
 
 aipu:
@@ -105,133 +106,133 @@ aipu:
       - any-glob-to-any-file:
           - 'third_party/aipu/**'
           - '.github/workflows/aipu*'
-          - '.github/workflows/benchmark/aipu*'
+          - '.github/workflows/benchmark/aipu/**'
 
 amd:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/amd/**'
           - '.github/workflows/amd*'
-          - '.github/workflows/benchmark/amd*'
+          - '.github/workflows/benchmark/amd/**'
 
 ascend:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/ascend/**'
           - '.github/workflows/ascend*'
-          - '.github/workflows/benchmark/ascend*'
+          - '.github/workflows/benchmark/ascend/**'
 
 cambricon:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/cambricon/**'
           - '.github/workflows/cambricon*'
-          - '.github/workflows/benchmark/cambricon*'
+          - '.github/workflows/benchmark/cambricon/**'
 
 cpu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/cpu/**'
           - '.github/workflows/cpu*'
-          - '.github/workflows/benchmark/cpu*'
+          - '.github/workflows/benchmark/cpu/**'
 
 enflame:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/enflame/**'
           - '.github/workflows/enflame*'
-          - '.github/workflows/benchmark/enflame*'
+          - '.github/workflows/benchmark/enflame/**'
 
 hcu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/hcu/**'
           - '.github/workflows/hcu*'
-          - '.github/workflows/benchmark/hcu*'
+          - '.github/workflows/benchmark/hcu/**'
 
 iluvatar:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/iluvatar/**'
           - '.github/workflows/iluvatar*'
-          - '.github/workflows/benchmark/iluvatar*'
+          - '.github/workflows/benchmark/iluvatar/**'
 
 metax:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/metax/**'
           - '.github/workflows/metax*'
-          - '.github/workflows/benchmark/metax*'
+          - '.github/workflows/benchmark/metax/**'
 
 mthreads:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/mthreads/**'
           - '.github/workflows/mthreads*'
-          - '.github/workflows/benchmark/mthreads*'
+          - '.github/workflows/benchmark/mthreads/**'
 
 nvidia:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/nvidia/**'
           - '.github/workflows/nv*'
-          - '.github/workflows/benchmark/nv*'
+          - '.github/workflows/benchmark/nvidia/**'
 
 ppu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/ppu/**'
           - '.github/workflows/ppu*'
-          - '.github/workflows/benchmark/ppu*'
+          - '.github/workflows/benchmark/ppu/**'
 
 rpu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/rpu/**'
           - '.github/workflows/rpu*'
-          - '.github/workflows/benchmark/rpu*'
+          - '.github/workflows/benchmark/rpu/**'
 
 sunrise:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/sunrise/**'
           - '.github/workflows/sunrise*'
-          - '.github/workflows/benchmark/sunrise*'
+          - '.github/workflows/benchmark/sunrise/**'
 
 thrive:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/thrive/**'
           - '.github/workflows/thrive*'
-          - '.github/workflows/benchmark/thrive*'
+          - '.github/workflows/benchmark/thrive/**'
 
 tileir:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tileir/**'
           - '.github/workflows/tileir*'
-          - '.github/workflows/benchmark/tileir*'
+          - '.github/workflows/benchmark/tileir/**'
 
 tle_arm64:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tle_arm64/**'
           - '.github/workflows/tle_arm64*'
-          - '.github/workflows/benchmark/tle_arm64*'
+          - '.github/workflows/benchmark/tle_arm64/**'
 
 tsingmicro:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/tsingmicro/**'
           - '.github/workflows/tsingmicro*'
-          - '.github/workflows/benchmark/tsingmicro*'
+          - '.github/workflows/benchmark/tsingmicro/**'
 
 xpu:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/xpu/**'
           - '.github/workflows/xpu*'
-          - '.github/workflows/benchmark/xpu*'
+          - '.github/workflows/benchmark/xpu/**'
 
 # ====================================================================================
 # 6. TLE Labels
