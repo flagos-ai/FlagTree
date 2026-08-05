@@ -89,11 +89,13 @@ def is_ppu():
     return False if target is None else target.backend == "ppu"
 
 
+# flagtree iluvatar
 def is_corex():
     target = get_current_target()
     return target is not None and target.backend == "corex"
 
 
+# flagtree iluvatar
 def is_ivcore11():
     target = get_current_target()
     return target is not None and target.backend == "corex" and target.arch == 71

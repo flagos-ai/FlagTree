@@ -583,15 +583,15 @@ class nvidia_knobs(base_knobs):
     tle_raw_clang_flags: env_opt_str = env_opt_str("CLANG_FLAGS")
 
 
-@functools.lru_cache()
-def _corex_home_default() -> str:
-    import shutil
-    if ixsmi := shutil.which("ixsmi"):
-        return os.path.dirname(os.path.dirname(os.path.realpath(ixsmi)))
-    return "/usr/local/corex"
-
-
+# flagtree iluvatar
 class iluvatar_knobs(base_knobs):
+    @functools.lru_cache()
+    def _corex_home_default() -> str:
+        import shutil
+        if ixsmi := shutil.which("ixsmi"):
+            return os.path.dirname(os.path.dirname(os.path.realpath(ixsmi)))
+        return "/usr/local/corex"
+
     libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
     libcuda_path: env_str_callable_default = env_str_callable_default("TRITON_LIBCUDA_PATH", _corex_home_default)
 
@@ -715,6 +715,7 @@ hcu = hcu_knobs()  # flagtree hcu
 metax = metax_knobs()  # flagtree metax
 musa = musa_knobs()  # flagtree mthreads
 ppu = ppu_knobs()  # flagtree ppu
+iluvatar = iluvatar_knobs()  # flagtree iluvatar
 proton = proton_knobs()
 
 
