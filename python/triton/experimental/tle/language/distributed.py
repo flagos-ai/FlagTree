@@ -208,7 +208,7 @@ def signal(
         peer_tensor.handle,
         signal_tensor.handle,
         value_tensor.handle,
-        signal_op,  # 编译期已知
+        signal_op,
         signal_space,
         group_kind,
         context_idx,
