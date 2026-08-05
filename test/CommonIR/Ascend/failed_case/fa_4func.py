@@ -83,7 +83,7 @@ def _mm2_pv(
 
 @triton.jit
 def _vec1_softmax(
-    workspace_s, workspace_p,
+    workspace_s, workspace_p, workspace_rescale, workspace_expsum,
     cid, kv_idx,
     running_neg_max,
     sm_scale,
@@ -91,10 +91,12 @@ def _vec1_softmax(
     global_head_idx,
     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
 ):
-    """Vec1: softmax over one score block -> workspace_p.
+    """Vec1: softmax over one score block -> workspace_p + workspace_rescale/expsum.
 
     Takes running_neg_max as an in-register accumulator (passed from main loop).
-    Returns (rescale, block_expsum, new_neg_max) for use by Vec2 in the same iter.
+    Stores rescale and block_expsum to GM (workspace_rescale / workspace_expsum)
+    so Vec2 can read them without relying on register transfer across step boundaries.
+    Returns new_neg_max for the next iteration.
     """
     # load score written by MM1
     score_load_bp = tl.make_block_ptr(
@@ -120,19 +122,31 @@ def _vec1_softmax(
         (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
     tl.store(prob_bp, softmax_p.to(workspace_p.dtype.element_ty))
 
-    return rescale, block_expsum, new_neg_max
+    # rescale and block_expsum -> GM (read by Vec2 instead of register transfer)
+    re_bp = tl.make_block_ptr(
+        workspace_rescale + cid * BLOCK_M,
+        (BLOCK_M, 1), (1, 1), (0, 0), (BLOCK_M, 1), (1, 0))
+    tl.store(re_bp, rescale)
+    es_bp = tl.make_block_ptr(
+        workspace_expsum + cid * BLOCK_M,
+        (BLOCK_M, 1), (1, 1), (0, 0), (BLOCK_M, 1), (1, 0))
+    tl.store(es_bp, block_expsum)
+
+    return new_neg_max
 
 
 @triton.jit
 def _vec2_accumulate(
-    workspace_pv,
+    workspace_pv, workspace_rescale, workspace_expsum,
     cid,
     acc_o, softmax_denom,
-    rescale, block_expsum,
     BLOCK_M: tl.constexpr, DIM: tl.constexpr,
 ):
     """Vec2: rescale acc_o and accumulate one KV block's P*V.
 
+    Reads rescale and block_expsum from GM (written by Vec1) rather than
+    accepting them as register arguments, matching the cross-scope GM handoff
+    pattern used in fa_cv.py.
     Takes and returns (acc_o, softmax_denom) as in-register accumulators.
     Finalization (divide by denom) is done in the main loop after the last KV block.
     """
@@ -141,6 +155,16 @@ def _vec2_accumulate(
         workspace_pv + cid * BLOCK_M * DIM,
         (BLOCK_M, DIM), (DIM, 1), (0, 0), (BLOCK_M, DIM), (1, 0))
     pv_acc = tl.load(pv_bp).to(tl.float32)
+
+    # load rescale and block_expsum from GM (written by Vec1)
+    re_bp = tl.make_block_ptr(
+        workspace_rescale + cid * BLOCK_M,
+        (BLOCK_M, 1), (1, 1), (0, 0), (BLOCK_M, 1), (1, 0))
+    rescale = tl.load(re_bp).to(tl.float32)
+    es_bp = tl.make_block_ptr(
+        workspace_expsum + cid * BLOCK_M,
+        (BLOCK_M, 1), (1, 1), (0, 0), (BLOCK_M, 1), (1, 0))
+    block_expsum = tl.load(es_bp).to(tl.float32)
 
     # rescale and accumulate
     rescale_bc    = tl.broadcast_to(rescale, (BLOCK_M, DIM))
@@ -164,6 +188,7 @@ def _vec2_accumulate(
 def flash_attention_fwd_3task_kernel(
     Q, K, V, Out,
     workspace_s, workspace_p, workspace_pv,      # transient per-KV-block workspaces
+    workspace_rescale, workspace_expsum,          # softmax state: Vec1 -> Vec2 via GM
     sm_scale,
     B, Hq, Hkv, S,
     sQb, sQh, sQs, sQd,
@@ -225,9 +250,9 @@ def flash_attention_fwd_3task_kernel(
             # Barrier: ensure MM1's store to workspace_s is visible to Vec1's load.
             tl.sync_block_all("all", 0)
 
-            # ===== Step 2: Vec1 — softmax(S) → P; returns rescale, expsum, new_neg_max =====
-            rescale, block_expsum, running_neg_max = _vec1_softmax(
-                workspace_s, workspace_p,
+            # ===== Step 2: Vec1 — softmax(S) → P; stores rescale/expsum to GM =====
+            running_neg_max = _vec1_softmax(
+                workspace_s, workspace_p, workspace_rescale, workspace_expsum,
                 cid, kv_idx,
                 running_neg_max,
                 sm_scale,
@@ -250,12 +275,11 @@ def flash_attention_fwd_3task_kernel(
             # Barrier: ensure MM2's store to workspace_pv is visible to Vec2's load.
             tl.sync_block_all("all", 0)
 
-            # ===== Step 4: Vec2 — rescale and accumulate; returns updated accumulators =====
+            # ===== Step 4: Vec2 — loads rescale/expsum from GM, accumulates =====
             acc_o, softmax_denom = _vec2_accumulate(
-                workspace_pv,
+                workspace_pv, workspace_rescale, workspace_expsum,
                 cid,
                 acc_o, softmax_denom,
-                rescale, block_expsum,
                 BLOCK_M, DIM,
             )
 
@@ -291,7 +315,8 @@ class _DumpOptions:
 def _dump_signature():
     """Static signature for ast_to_ttir (pointers / scalars / i32 / constexpr)."""
     ptr = {"Q": "*fp16", "K": "*fp16", "V": "*fp16", "Out": "*fp16",
-           "workspace_s": "*fp16", "workspace_p": "*fp16", "workspace_pv": "*fp16"}
+           "workspace_s": "*fp16", "workspace_p": "*fp16", "workspace_pv": "*fp16",
+           "workspace_rescale": "*fp32", "workspace_expsum": "*fp32"}
     i32_names = ["B", "Hq", "Hkv", "S",
             "sQb", "sQh", "sQs", "sQd",
             "sKb", "sKh", "sKs", "sKd",
@@ -332,9 +357,9 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, is_causal=False):
     os.environ.setdefault("TRITON_ALLOW_NON_CONSTEXPR_GLOBALS", "1")
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_triton_arch.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_4func.mlir")
     if ttir_path is None:
-        ttir_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_triton_arch_ttir.mlir")
+        ttir_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_4func_ttir.mlir")
 
     signature = _dump_signature()
     constants = {
@@ -347,7 +372,6 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, is_causal=False):
     ir.load_dialects(context)
     if _has_tle_ir:
         tle_ir.load_dialects(context)
-        tle_ir.load_tile_dialects(context)
     # Ascend dialect is optional (only needed for ascend-specific ops); load if present.
     try:
         from triton._C.libtriton.ascend import ir as ascend_ir
@@ -444,7 +468,7 @@ def dump_hivm(path=None, is_causal=False):
     tileir_mlir = dump_tileir(path=None, is_causal=is_causal)
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_triton_arch_hivm.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_4func_hivm.mlir")
 
     # Step 2: parse the TileIR module and run the pass pipeline
     context = ir.context()
@@ -452,7 +476,6 @@ def dump_hivm(path=None, is_causal=False):
     try:
         from triton._C.libtriton import tle as tle_ir
         tle_ir.load_dialects(context)
-        tle_ir.load_tile_dialects(context)
     except Exception:
         pass
     try:
@@ -543,7 +566,7 @@ def dump_linalg(path=None, is_causal=False):
 
     if path is None:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "fa_triton_arch_linalg.mlir")
+                            "fa_4func_linalg.mlir")
 
     # Step 2: parse the TileIR module into a fresh context
     context = ir.context()
@@ -551,7 +574,6 @@ def dump_linalg(path=None, is_causal=False):
     try:
         from triton._C.libtriton import tle as tle_ir
         tle_ir.load_dialects(context)
-        tle_ir.load_tile_dialects(context)
     except Exception:
         pass
     try:
@@ -696,14 +718,18 @@ def flash_attention_fwd(q, k, v, is_causal=False):
 
     out = torch.empty_like(q)
     # Single-slot transient workspaces (accumulators are local registers in the kernel)
-    workspace_s  = torch.empty((NUM_CORES, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
-    workspace_p  = torch.empty((NUM_CORES, BLOCK_M, BLOCK_N), dtype=q.dtype,        device=q.device)
-    workspace_pv = torch.empty((NUM_CORES, BLOCK_M, DIM),     dtype=torch.float16, device=q.device)
+    workspace_s       = torch.empty((NUM_CORES, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
+    workspace_p       = torch.empty((NUM_CORES, BLOCK_M, BLOCK_N), dtype=q.dtype,       device=q.device)
+    workspace_pv      = torch.empty((NUM_CORES, BLOCK_M, DIM),     dtype=torch.float16, device=q.device)
+    # GM softmax state: Vec1 stores rescale/expsum here; Vec2 loads them back
+    workspace_rescale = torch.empty((NUM_CORES, BLOCK_M),           dtype=torch.float32, device=q.device)
+    workspace_expsum  = torch.empty((NUM_CORES, BLOCK_M),           dtype=torch.float32, device=q.device)
     sm_scale = (1.0 / D) ** 0.5
 
     grid = (NUM_CORES,)
     flash_attention_fwd_3task_kernel[grid](
         q, k, v, out, workspace_s, workspace_p, workspace_pv,
+        workspace_rescale, workspace_expsum,
         sm_scale,
         B, Hq, Hkv, S,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
@@ -777,3 +803,4 @@ if __name__ == "__main__":
         print("Test Passed!")
     else:
         print("Reference check skipped.")
+

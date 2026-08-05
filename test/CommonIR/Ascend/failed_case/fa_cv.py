@@ -94,8 +94,6 @@ def _mm1_qkt(
             Q + batch_idx * sQb + head_idx * sQh, (S, DIM), (sQs, sQd),
             (global_head_idx * BLOCK_M, 0), (BLOCK_M, DIM), (1, 0))
         tile_copy(q_bp, q_l1, [CBM, CD])
-    attn_score_l0c = tl.zeros((BLOCK_M, BLOCK_N), tl.float32)
-    prev_score_ub = tl.zeros((BLOCK_M, BLOCK_N), tl.float32)
     for cb_idx in range(CB):
         kv_idx = idx_in_conbine * CB + cb_idx
 
@@ -104,21 +102,18 @@ def _mm1_qkt(
             (kv_idx * BLOCK_N, 0), (BLOCK_N, DIM), (1, 0))
         tile_copy(k_bp, k_l1, [CBN, CD])
 
-        # attn_score = Q * K^T using L1 buffers (accumulates in L0C)
-        attn_score_l0c = tl.dot(tile_to_tensor(q_l1, writable=False),
-                            tile_to_tensor(k_l1, writable=False), attn_score_l0c)
-
-        # L0C accumulates cumulatively; subtract previous to get per-block score
-        cur_score_ub = attn_score_l0c.to(tl.float32)
-        delta_score = cur_score_ub - prev_score_ub
-        prev_score_ub = cur_score_ub
+        # attn_score = Q * K^T for this KV block; fresh zero acc each iteration
+        # so each tl.dot yields only the current block's score (no cross-block accumulation)
+        attn_score = tl.dot(tile_to_tensor(q_l1, writable=False),
+                            tile_to_tensor(k_l1, writable=False),
+                            tl.zeros((BLOCK_M, BLOCK_N), tl.float32))
 
         # single slot: layout [cid, CB, BLOCK_M, BLOCK_N]
         score_store_bp = tl.make_block_ptr(
             workspace_s + (cid * CB * BLOCK_M * BLOCK_N
                            + cb_idx * BLOCK_M * BLOCK_N),
             (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
-        tl.store(score_store_bp, delta_score.to(workspace_s.dtype.element_ty))
+        tl.store(score_store_bp, attn_score.to(workspace_s.dtype.element_ty))
 
     # all CB S-blocks written -> notify Vec1
     sync_block_set("cube", "vector", SEM_S_READY, PIPE.PIPE_FIX, PIPE.PIPE_MTE2)
@@ -147,8 +142,6 @@ def _mm2_pv(
     # wait workspace_p (P from Vec1) ready
     sync_block_wait("vector", "cube", SEM_P_READY, PIPE.PIPE_MTE3, PIPE.PIPE_MTE2)
 
-    pv_part_l0c = tl.zeros((BLOCK_M, DIM), tl.float32)
-    prev_pv_ub = tl.zeros((BLOCK_M, DIM), tl.float32)
     for cb_idx in range(CB):
         kv_idx = idx_in_conbine * CB + cb_idx
 
@@ -164,22 +157,18 @@ def _mm2_pv(
             (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
         tile_copy(prob_load_bp, p_l1, [CBM, CBN])
 
-        # pv_part = P * V using L1 buffers (accumulates in L0C)
-        pv_part_l0c = tl.dot(tile_to_tensor(p_l1, writable=False),
+        # pv_part = P * V for this block; fresh zero acc each iteration
+        # so each tl.dot yields only the current block's P*V (no cross-block accumulation)
+        pv_part = tl.dot(tile_to_tensor(p_l1, writable=False),
                          tile_to_tensor(v_l1, writable=False),
-                         pv_part_l0c)
-
-        # L0C accumulates cumulatively; subtract previous to get per-block P*V
-        cur_pv_ub = pv_part_l0c.to(tl.float32)
-        delta_pv = cur_pv_ub - prev_pv_ub
-        prev_pv_ub = cur_pv_ub
+                         tl.zeros((BLOCK_M, DIM), tl.float32))
 
         # single slot: layout [cid, CB, BLOCK_M, DIM]
         pv_store_bp = tl.make_block_ptr(
             workspace_pv + cid * CB * BLOCK_M * DIM
                             + cb_idx * BLOCK_M * DIM,
             (BLOCK_M, DIM), (DIM, 1), (0, 0), (BLOCK_M, DIM), (1, 0))
-        tl.store(pv_store_bp, delta_pv.to(workspace_pv.dtype.element_ty))
+        tl.store(pv_store_bp, pv_part.to(workspace_pv.dtype.element_ty))
 
     # all CB P*V blocks done -> notify Vec2
     sync_block_set("cube", "vector", SEM_PV_READY, PIPE.PIPE_FIX, PIPE.PIPE_MTE2)
@@ -237,10 +226,11 @@ def _vec1_softmax(
             attn_score_block = tl.where(causal_mask, attn_score_block, float("-inf"))
 
         # online softmax: compute new running -max*scale (ping-pong)
+        # neg_max_prv = previous block's running max (opposite slot)
+        # neg_max_new = min of current block's -max*scale vs previous running max
         block_row_max = tl.max(attn_score_block, axis=-1, keep_dims=True)
-        neg_max_new = tl.minimum(-block_row_max * sm_scale,
-                                 tl.where(cur_parity == 0, neg_max_even, neg_max_odd))
         neg_max_prv = tl.where(cur_parity == 0, neg_max_odd, neg_max_even)
+        neg_max_new = tl.minimum(-block_row_max * sm_scale, neg_max_prv)
 
         # softmax_p = exp(sm_scale * score + neg_max_new)
         softmax_p = tl.exp(sm_scale * attn_score_block + neg_max_new)
@@ -326,15 +316,11 @@ def _vec2_accumulate(
             (BLOCK_M, 1), (1, 1), (0, 0), (BLOCK_M, 1), (1, 0))
         block_expsum = tl.load(expsum_load_bp).to(tl.float32)
 
-        if kv_idx == 0:
-            # first KV block: init acc_o and softmax_denom directly
-            acc_o         = pv_acc
-            softmax_denom = block_expsum
-        else:
-            # rescale acc_o and accumulate
-            rescale_bc    = tl.broadcast_to(rescale, (BLOCK_M, DIM))
-            acc_o         = acc_o * rescale_bc + pv_acc
-            softmax_denom = softmax_denom * rescale + block_expsum
+        # rescale and accumulate (rescale ≈ 0 on the first KV block of a new tile,
+        # which effectively clears any residual acc_o/softmax_denom from the previous tile)
+        rescale_bc    = tl.broadcast_to(rescale, (BLOCK_M, DIM))
+        acc_o         = acc_o * rescale_bc + pv_acc
+        softmax_denom = softmax_denom * rescale + block_expsum
 
         if kv_idx == NUM_KV_BLOCKS - 1:
             # last KV block: divide by softmax denominator and write output
