@@ -2215,7 +2215,8 @@ def store_tensor_descriptor(desc: tensor_descriptor_base, offsets: Sequence[cons
 
 @_tensor_member_fn
 @builtin
-def store(pointer, value=_STORE_VALUE_UNSET, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None):
+def store(pointer, value=_STORE_VALUE_UNSET, mask=None, boundary_check=(), cache_modifier="", eviction_policy="",
+          _semantic=None):
     """
     Store a tensor of data into memory locations defined by `pointer`.
 

@@ -116,14 +116,13 @@ static LLVM::LLVMFuncOp getOrInsertNetFromComm(ModuleOp module,
   auto i32Ty = IntegerType::get(ctx, 32);
   auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i32Ty}, false);
   OpBuilder builder(module.getBodyRegion());
-  auto func = builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName,
-                                                funcTy);
+  auto func =
+      builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName, funcTy);
   func.setLinkage(LLVM::Linkage::External);
   return func;
 }
 
-static LLVM::LLVMFuncOp getOrInsertNetPut(ModuleOp module,
-                                          MLIRContext *ctx) {
+static LLVM::LLVMFuncOp getOrInsertNetPut(ModuleOp module, MLIRContext *ctx) {
   const char *funcName = "flagcxDevNetPutS";
   if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
     return func;
@@ -136,8 +135,8 @@ static LLVM::LLVMFuncOp getOrInsertNetPut(ModuleOp module,
                              i64Ty, ptrTy, i64Ty, i64Ty, i32Ty};
   auto funcTy = LLVM::LLVMFunctionType::get(voidTy, argTypes, false);
   OpBuilder builder(module.getBodyRegion());
-  auto func = builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName,
-                                                funcTy);
+  auto func =
+      builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName, funcTy);
   func.setLinkage(LLVM::Linkage::External);
   return func;
 }
@@ -514,27 +513,25 @@ LogicalResult lowerNodeSpace(Location loc, tle::RemotePointersOp op,
   MLIRContext *ctx = rewriter.getContext();
   auto ptrTy = LLVM::LLVMPointerType::get(ctx);
   auto i32Ty = rewriter.getI32Type();
-  Value dstMem = rewriter.create<LLVM::IntToPtrOp>(
-      loc, ptrTy, adaptor.getDstMem());
-  Value srcMem = rewriter.create<LLVM::IntToPtrOp>(
-      loc, ptrTy, adaptor.getSrcMem());
-  Value comm =
-      rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getComm());
+  Value dstMem =
+      rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getDstMem());
+  Value srcMem =
+      rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getSrcMem());
+  Value comm = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getComm());
 
   Value dstByteOffset = adaptor.getOffset();
   Value srcByteOffset = adaptor.getSrcOffset();
   Value byteCount = adaptor.getNelems();
-  int64_t elemBytes =
-      op->getAttrOfType<IntegerAttr>("elem_bytes").getInt();
+  int64_t elemBytes = op->getAttrOfType<IntegerAttr>("elem_bytes").getInt();
   if (elemBytes != 1) {
-    Value elemBytesValue = rewriter.create<arith::ConstantIntOp>(
-        loc, elemBytes, 64);
-    dstByteOffset = rewriter.create<arith::MulIOp>(
-        loc, adaptor.getOffset(), elemBytesValue);
-    srcByteOffset = rewriter.create<arith::MulIOp>(
-        loc, adaptor.getSrcOffset(), elemBytesValue);
-    byteCount = rewriter.create<arith::MulIOp>(
-        loc, adaptor.getNelems(), elemBytesValue);
+    Value elemBytesValue =
+        rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
+    dstByteOffset = rewriter.create<arith::MulIOp>(loc, adaptor.getOffset(),
+                                                   elemBytesValue);
+    srcByteOffset = rewriter.create<arith::MulIOp>(loc, adaptor.getSrcOffset(),
+                                                   elemBytesValue);
+    byteCount = rewriter.create<arith::MulIOp>(loc, adaptor.getNelems(),
+                                               elemBytesValue);
   }
 
   LLVM::LLVMFuncOp getNet = getOrInsertNetFromComm(module, ctx);
@@ -548,11 +545,11 @@ LogicalResult lowerNodeSpace(Location loc, tle::RemotePointersOp op,
       op->getAttrOfType<IntegerAttr>("put_coop_kind").getInt();
   Value coopKind = rewriter.create<LLVM::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr(putCoopKind));
-  rewriter.create<LLVM::CallOp>(
-      loc, TypeRange{}, FlatSymbolRefAttr::get(put),
-      ValueRange{getNetCall.getResult(), comm, teamKind, adaptor.getShardId(),
-                 dstMem, dstByteOffset, srcMem, srcByteOffset, byteCount,
-                 coopKind});
+  rewriter.create<LLVM::CallOp>(loc, TypeRange{}, FlatSymbolRefAttr::get(put),
+                                ValueRange{getNetCall.getResult(), comm,
+                                           teamKind, adaptor.getShardId(),
+                                           dstMem, dstByteOffset, srcMem,
+                                           srcByteOffset, byteCount, coopKind});
   return success();
 }
 

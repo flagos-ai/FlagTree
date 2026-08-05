@@ -75,8 +75,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
 
   auto requireOperand = [&](Value value, StringRef name) -> LogicalResult {
     if (!value)
-      return op.emitOpError()
-             << "node space requires " << name << " operand";
+      return op.emitOpError() << "node space requires " << name << " operand";
     return success();
   };
   if (failed(requireOperand(op.getDstMem(), "dst_mem")) ||
@@ -98,12 +97,11 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
     return op.emitOpError()
            << "expects put_coop_kind to be THREAD(0), WARP(1), or BLOCK(2)";
 
-  auto verifyNonNegativeConstant =
-      [&](Value value, StringRef name) -> LogicalResult {
+  auto verifyNonNegativeConstant = [&](Value value,
+                                       StringRef name) -> LogicalResult {
     if (std::optional<int64_t> constant = getConstantIntValue(value);
         constant && *constant < 0)
-      return op.emitOpError()
-             << "expects constant " << name << " to be >= 0";
+      return op.emitOpError() << "expects constant " << name << " to be >= 0";
     return success();
   };
 

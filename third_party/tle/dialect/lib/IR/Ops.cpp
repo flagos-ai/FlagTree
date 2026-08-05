@@ -1003,8 +1003,7 @@ Speculation::Speculatability RemotePointersOp::getSpeculatability() {
 
 LogicalResult RemotePointersOp::verify() {
   StringRef spaceAttr = getSpace();
-  if (spaceAttr != "cluster" && spaceAttr != "device" &&
-      spaceAttr != "node")
+  if (spaceAttr != "cluster" && spaceAttr != "device" && spaceAttr != "node")
     return emitOpError()
            << "expects space to be 'cluster', 'device', or 'node'";
 
@@ -1015,8 +1014,7 @@ LogicalResult RemotePointersOp::verify() {
     return RemotePointers::verifyNodeSpace(*this);
 
   auto elemBytesAttr = (*this)->getAttrOfType<IntegerAttr>("elem_bytes");
-  auto putCoopKindAttr =
-      (*this)->getAttrOfType<IntegerAttr>("put_coop_kind");
+  auto putCoopKindAttr = (*this)->getAttrOfType<IntegerAttr>("put_coop_kind");
 
   if (getDstMem() || getSrcMem() || getComm() || getSrcOffset() ||
       getNelems() || getNetIdx() || elemBytesAttr || putCoopKindAttr)
