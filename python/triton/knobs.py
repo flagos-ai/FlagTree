@@ -709,7 +709,6 @@ autotuning = autotuning_knobs()
 runtime = runtime_knobs()
 language = language_knobs()
 nvidia = nvidia_knobs()
-iluvatar = iluvatar_knobs()
 amd = amd_knobs()
 hcu = hcu_knobs()  # flagtree hcu
 metax = metax_knobs()  # flagtree metax
