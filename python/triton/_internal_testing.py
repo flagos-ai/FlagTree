@@ -86,7 +86,7 @@ def is_sm12x():
 
 def is_ppu():
     target = get_current_target()
-    return False if target is None else target.backend == "ppu"
+    return False if target is None else target.backend == "cuda"
 
 
 def is_hip():

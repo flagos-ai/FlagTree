@@ -35,7 +35,7 @@ def _ppu_sdk_available() -> bool:
     return bool(shutil.which("ppu-llc"))
 
 
-_PPU_TARGET = GPUTarget("ppu", 80, 32)
+_GPU_TARGET = GPUTarget("cuda", 80, 32)
 
 
 def _make_kernel(dtype: tl.dtype):
@@ -106,7 +106,7 @@ def _compile(dtype=tl.float32, xblock=64, yblock=64):
         signature=_signature(ptr_ty),
         constexprs={"XBLOCK": xblock, "YBLOCK": yblock},
     )
-    return triton.compile(src, target=_PPU_TARGET)
+    return triton.compile(src, target=_GPU_TARGET)
 
 
 # --- the five ported tests -------------------------------------------------

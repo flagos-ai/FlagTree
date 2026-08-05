@@ -34,7 +34,7 @@ def _ppu_sdk_available() -> bool:
     return bool(shutil.which("ppu-llc"))
 
 
-_PPU_TARGET = GPUTarget("ppu", 80, 32)
+_GPU_TARGET = GPUTarget("cuda", 80, 32)
 
 
 @triton.jit
@@ -106,7 +106,7 @@ def _compile(xb=64, yb=64):
         signature=_SIGNATURE,
         constexprs={"XBLOCK": xb, "YBLOCK": yb},
     )
-    return triton.compile(src, target=_PPU_TARGET)
+    return triton.compile(src, target=_GPU_TARGET)
 
 
 def test_local_store_basic_compiles():

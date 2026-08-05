@@ -31,7 +31,7 @@ tle = pytest.importorskip(
     reason="triton.experimental.tle.language unavailable",
 )
 
-_PPU_TARGET_V1 = GPUTarget("ppu", 80, 32)
+_GPU_TARGET = GPUTarget("cuda", 80, 32)
 
 
 def _ppu_sdk_available() -> bool:
@@ -46,7 +46,7 @@ _skip_no_sdk = pytest.mark.skipif(not _ppu_sdk_available(), reason="PPU SDK not 
 
 def _compile(kernel, signature, constexprs, target=None):
     src = triton.compiler.ASTSource(fn=kernel, signature=signature, constexprs=constexprs)
-    return triton.compile(src, target=target or _PPU_TARGET_V1)
+    return triton.compile(src, target=target or _GPU_TARGET)
 
 
 def _assert_stages_exist(compiled, stages=("ttir", "ttgir", "llir")):
