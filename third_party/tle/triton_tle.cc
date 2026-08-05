@@ -562,13 +562,13 @@ void init_triton_tle_ir(py::module &&m) {
           "create_signal",
           [](TritonOpBuilder &self, Value comm, Value peer, Value signalId,
              Value value, tle::SignalOpKind signalOp,
-             tle::RemoteTeamKind teamKind, tle::SignalCoopKind coopKind,
+             tle::SignalTeamKind teamKind, tle::SignalCoopKind coopKind,
              int32_t contextIdx) -> void {
             auto &builder = self.getBuilder();
             self.create<tle::SignalOp>(
                 comm, peer, signalId, value,
                 builder.getAttr<tle::SignalOpKindAttr>(signalOp),
-                builder.getAttr<tle::RemoteTeamKindAttr>(teamKind),
+                builder.getAttr<tle::SignalTeamKindAttr>(teamKind),
                 builder.getAttr<tle::SignalCoopKindAttr>(coopKind),
                 builder.getI32IntegerAttr(contextIdx));
           },
@@ -709,21 +709,21 @@ void init_triton_tle_attr(py::module &&m) {
           "from_str",
           [](std::string name) { return tle::symbolizeSignalOpKind(name); },
           py::arg("name"));
-  py::enum_<tle::RemoteTeamKind>(m, "RemoteTeamKind")
-      .value("Intra", tle::RemoteTeamKind::INTRA)
-      .value("Inter", tle::RemoteTeamKind::INTER)
-      .value("World", tle::RemoteTeamKind::WORLD)
+  py::enum_<tle::SignalTeamKind>(m, "SignalTeamKind")
+      .value("Intra", tle::SignalTeamKind::INTRA)
+      .value("Inter", tle::SignalTeamKind::INTER)
+      .value("World", tle::SignalTeamKind::WORLD)
       .def_static(
           "from_str",
-          [](std::string name) { return tle::symbolizeRemoteTeamKind(name); },
+          [](std::string name) { return tle::symbolizeSignalTeamKind(name); },
           py::arg("name"))
       .def_static(
           "from_int",
-          [](int value) -> std::optional<tle::RemoteTeamKind> {
-            if (value < 0 || value >= tle::getMaxEnumValForRemoteTeamKind())
+          [](int value) -> std::optional<tle::SignalTeamKind> {
+            if (value < 0 || value > tle::getMaxEnumValForSignalTeamKind())
               return std::nullopt;
             else
-              return static_cast<tle::RemoteTeamKind>(value);
+              return static_cast<tle::SignalTeamKind>(value);
           },
           py::arg("value"));
   py::enum_<tle::SignalCoopKind>(m, "SignalCoopKind")

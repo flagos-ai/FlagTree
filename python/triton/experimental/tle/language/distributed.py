@@ -152,7 +152,7 @@ def signal(
     signal_id,
     value=1,
     op: str | attr.SignalOpKind = "inc",
-    space: str | attr.RemoteTeamKind = "intra_node",
+    space: str | attr.SignalTeamKind = "intra_node",
     group_kind: str | GroupKind | attr.SignalCoopKind = GroupKind.BLOCK,
     context_idx: int = 0,
     _semantic=None,
@@ -184,7 +184,7 @@ def signal(
     if signal_space not in _SIGNAL_SPACE_TO_TEAM_KIND:
         expected = "intra_node, inter_node, or world"
         raise ValueError(f"space must be {expected}, got {signal_space!r}")
-    signal_space = attr.RemoteTeamKind.from_int(_SIGNAL_SPACE_TO_TEAM_KIND[signal_space])
+    signal_space = attr.SignalTeamKind.from_int(_SIGNAL_SPACE_TO_TEAM_KIND[signal_space])
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
     group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
@@ -1178,7 +1178,7 @@ def signal_wait(
 
     comm = _parse_src_arg(builder, device_dptr, 1)
     signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.int32, _semantic) if target else None
-    target_tensor = _normalize_signal_scalar(target, "target", tl.int64, _semantic)
+    target_tensor = target and _normalize_signal_scalar(target, "target", tl.int64, _semantic)
 
     builder.create_signal_wait(
         comm,

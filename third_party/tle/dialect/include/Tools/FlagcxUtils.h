@@ -49,7 +49,7 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
                                ConversionPatternRewriter &rewriter,
                                Value dev_net, Value comm, Value peer,
                                Value signalId, Value value,
-                               RemoteTeamKind teamKind, SignalCoopKind coopKind,
+                               SignalTeamKind teamKind, SignalCoopKind coopKind,
                                SignalOpKind signalOp);
 
 LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,

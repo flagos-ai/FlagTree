@@ -96,7 +96,7 @@ def Tle_FlagCxSignalOp : Tle_Op<"flagcx signal", [MemoryEffects<[MemRead, MemWri
     I32:$signal_id,
     I64:$value,
     Tle_SignalOpKindAttr:$signal_op,
-    Tle_RemoteTeamKindAttr:$team_kind,
+    Tle_SignalTeamKindAttr:$team_kind,
     Tle_SignalCoopKindAttr:$coop_kind,
     I32Attr:$context_idx
   );
