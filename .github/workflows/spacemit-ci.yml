@@ -1,20 +1,16 @@
 name: spacemit-ci
 
 # SpaceMiT RISC-V 后端 CI (root-triton plugin)。
+# retrigger: spine-FlagGems @ 77d72cba (mm fix) — confirm squashed commit green
 #
-# 执行环境: 容器化 self-hosted runner (label spacemit-k3),
-#   镜像 spacemit-ai-workspace:ubuntu24.04_v0.1 (构建依赖全齐),
-#   挂 NFS(LLVM) + 交叉工具链, host 网络连 K3 RPC。
-# runner 本身已是容器, 故此处不写 container:, job 直接跑在 runner 容器内。
-#
-# 机器专属路径 (LLVM_SYSPATH / CROSS_TOOLCHAIN / SPINE_TRITON_RPC_* / MAX_JOBS)
-# 不写在本文件里, 由 github-ci/start-runner.sh 从 github-ci/env.sh 读取并 -e 注入
-# runner 容器; job 的 run: shell 直接从环境变量继承。这样 workflow 不含任何本地路径。
-#
-# 阶段 1 (当前): build (打 flagtree.patch + pip install) + 最小冒烟测试。
+# 执行环境: 容器化 self-hosted runner (label spacemit-k3)。
+# 机器专属配置 (SPINE_TRITON_RPC_*) 硬编码在 job env 里;
+# LLVM / spine-mlir / spine-runtime / toolchain 从
+# zuoweixia497/spacemit-ci-assets GitHub release 下载并缓存。
+# 更新包: 修改 third_party/spacemit/.github/spacemit-ci.env 里的 URL+MD5 即可。
 
 on:
-  workflow_dispatch:          # 手动触发 (Actions 页面按钮)
+  workflow_dispatch:
   push:
     branches: [spacemit-backend-plugin]
     paths:
@@ -24,33 +20,87 @@ on:
       - 'python/**'
       - '.github/workflows/spacemit-ci.yml'
 
-concurrency:                  # K3 是单一物理资源, 串行, 不取消进行中的
+concurrency:
   group: spacemit-k3
   cancel-in-progress: false
 
 jobs:
   build-and-smoke:
     runs-on: [self-hosted, spacemit-k3]
+    env:
+      SPINE_TRITON_RPC_HOST: 10.3.91.75
+      SPINE_TRITON_RPC_PORT: 9999
+      MAX_JOBS: 4
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check runner env (paths injected by start-runner.sh)
+      - name: Load CI variables
+        run: grep -v '^\s*#' third_party/spacemit/.github/spacemit-ci.env | grep -v '^\s*$' >> $GITHUB_ENV
+
+      - name: Cache RV toolchain
+        id: cache-rv-toolchain
+        uses: actions/cache@v4
+        with:
+          path: toolchain
+          key: rv-toolchain-${{ env.RISCV_TOOLCHAIN_MD5 }}
+
+      - name: Download and extract RV toolchain
+        if: steps.cache-rv-toolchain.outputs.cache-hit != 'true'
         run: |
-          set -euo pipefail
-          : "${LLVM_SYSPATH:?LLVM_SYSPATH 未注入 — 检查 github-ci/env.sh + start-runner.sh}"
-          : "${CROSS_TOOLCHAIN:?CROSS_TOOLCHAIN 未注入 — 检查 github-ci/env.sh + start-runner.sh}"
-          : "${SPINE_TRITON_RPC_HOST:?SPINE_TRITON_RPC_HOST 未注入}"
-          : "${SPINE_TRITON_RPC_PORT:?SPINE_TRITON_RPC_PORT 未注入}"
-          echo "LLVM_SYSPATH=${LLVM_SYSPATH}"
-          echo "CROSS_TOOLCHAIN=${CROSS_TOOLCHAIN}"
-          echo "K3 RPC=${SPINE_TRITON_RPC_HOST}:${SPINE_TRITON_RPC_PORT}"
+          curl -k -L --retry 5 --retry-delay 5 --retry-all-errors -o spacemit-toolchain.tar.xz "$RISCV_TOOLCHAIN_URL"
+          mkdir -p toolchain
+          tar -xf spacemit-toolchain.tar.xz -C toolchain --strip-components=1
+          rm spacemit-toolchain.tar.xz
+
+      - name: Cache LLVM
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: llvm_installed
+          key: llvm-${{ env.LLVM_MD5 }}
+
+      - name: Download and extract LLVM
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          curl -k -L --retry 5 --retry-delay 5 --retry-all-errors -o llvm.tar.gz "$LLVM_URL"
+          mkdir -p llvm_installed
+          tar -xf llvm.tar.gz -C llvm_installed --strip-components=1
+          rm llvm.tar.gz
+
+      - name: Cache spine-mlir
+        id: cache-spine-mlir
+        uses: actions/cache@v4
+        with:
+          path: spine_mlir_installed
+          key: spine-mlir-${{ env.SPINE_MLIR_MD5 }}
+
+      - name: Download and extract spine-mlir
+        if: steps.cache-spine-mlir.outputs.cache-hit != 'true'
+        run: |
+          curl -k -L --retry 5 --retry-delay 5 --retry-all-errors -o spine-mlir.tar.gz "$SPINE_MLIR_URL"
+          mkdir -p spine_mlir_installed
+          tar -xf spine-mlir.tar.gz -C spine_mlir_installed --strip-components=1
+          rm spine-mlir.tar.gz
+
+      - name: Cache spine-runtime
+        id: cache-spine-runtime
+        uses: actions/cache@v4
+        with:
+          path: spine_runtime_installed
+          key: spine-runtime-${{ env.SPINE_RUNTIME_MD5 }}
+
+      - name: Download and extract spine-runtime
+        if: steps.cache-spine-runtime.outputs.cache-hit != 'true'
+        run: |
+          curl -k -L --retry 5 --retry-delay 5 --retry-all-errors -o spine-runtime.tar.gz "$SPINE_RUNTIME_URL"
+          mkdir -p spine_runtime_installed
+          tar -xf spine-runtime.tar.gz -C spine_runtime_installed --strip-components=1
+          rm spine-runtime.tar.gz
 
       - name: Build (apply flagtree.patch + pip install)
         run: |
           set -euo pipefail
-          # 镜像缺 venv 包(无 ensurepip) + libzstd-dev(NFS LLVM 带 zstd,
-          # 其 CMake 导出引用 zstd::libzstd_shared, 宿主无 dev 库则 configure 失败); 幂等补装
           NEED=""
           python3 -c 'import ensurepip' 2>/dev/null || NEED="$NEED python3.12-venv"
           [ -e /usr/lib/x86_64-linux-gnu/libzstd.so ] || NEED="$NEED libzstd-dev"
@@ -58,8 +108,10 @@ jobs:
           python3 -m venv --system-site-packages .venv-ci
           source .venv-ci/bin/activate
           python -m pip install --quiet --upgrade pip cmake ninja pybind11 setuptools wheel
-          # install_flagtree_plugin.sh: 幂等打 root patch + FLAGTREE_BACKEND=spacemit pip install .
-          LLVM_SYSPATH="${LLVM_SYSPATH}" MAX_JOBS="${MAX_JOBS:-4}" PIP="python -m pip" \
+          LLVM_SYSPATH="$(pwd)/llvm_installed" \
+          SPINE_MLIR_INSTALL_DIR="$(pwd)/spine_mlir_installed" \
+          SPINE_RUNTIME_INSTALL_DIR="$(pwd)/spine_runtime_installed" \
+          MAX_JOBS="${MAX_JOBS:-4}" PIP="python -m pip" \
             bash third_party/spacemit/scripts/install_flagtree_plugin.sh
 
       - name: Minimal smoke test (import + spacemit backend + K3 RPC)
@@ -67,7 +119,7 @@ jobs:
           set -euo pipefail
           source .venv-ci/bin/activate
           export SPINE_TRITON_TARGET_ARCH=riscv64
-          export SPINE_TRITON_CROSS_TOOLCHAIN="${CROSS_TOOLCHAIN}"
+          export SPINE_TRITON_CROSS_TOOLCHAIN="$(pwd)/toolchain"
           export SPACEMIT_EP_QEMU_SET_CORE_ARCH=0xA064
           export GEMS_VENDOR=spacemit
           python - <<'PY'
@@ -99,6 +151,26 @@ jobs:
           sys.exit(0 if ok else 1)
           PY
 
+      - name: FlagGems smoke test (sigmoid / argmax / mm on K3 RPC)
+        # Cloned fresh each run from the feature/add-spacemit-backend branch of
+        # spine-FlagGems, so backend fixes there (e.g. the mm/mm_out row-major B
+        # materialization) land here without touching FlagTree.
+        run: |
+          set -euo pipefail
+          source .venv-ci/bin/activate
+          python -m pip install --quiet pytest numpy scipy PyYAML
+          export SPINE_TRITON_TARGET_ARCH=riscv64
+          export SPINE_TRITON_CROSS_TOOLCHAIN="$(pwd)/toolchain"
+          export SPACEMIT_EP_QEMU_SET_CORE_ARCH=0xA064
+          export GEMS_VENDOR=spacemit
+          FLAGGEMS_DIR=/tmp/spine-flaggems
+          rm -rf "$FLAGGEMS_DIR"
+          git clone --depth 1 --branch feature/add-spacemit-backend \
+            https://github.com/zuoweixia497/spine-FlagGems.git "$FLAGGEMS_DIR"
+          export PYTHONPATH="$FLAGGEMS_DIR/src:${PYTHONPATH:-}"
+          cd "$FLAGGEMS_DIR/tests"
+          python -m pytest -m "sigmoid or argmax or mm" --ref cpu --quick -x -v
+
       - name: Cleanup
         if: always()
-        run: rm -rf .venv-ci || true
+        run: rm -rf .venv-ci /tmp/spine-flaggems || true

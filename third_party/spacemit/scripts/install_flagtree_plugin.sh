@@ -16,7 +16,8 @@
 #
 # Overridable env vars (verified defaults below):
 #   LLVM_SYSPATH            FlagTree x86-64 LLVM (f6ded0be == LLVM22)
-#   SPINE_MLIR_INSTALL_DIR  optional; only to refresh RISC-V runtime tools
+#   SPINE_MLIR_INSTALL_DIR  spine-mlir install (libSpeIR*.so, spine-opt, llc, ...)
+#   SPINE_RUNTIME_INSTALL_DIR  spine-runtime install (libspert.so, spert headers)
 #   MAX_JOBS                parallel compile jobs (default 2, prevents OOM)
 #   PIP                     pip executable (default: python -m pip)
 #
@@ -63,7 +64,10 @@ PIP="${PIP:-python -m pip}"
 echo "[spacemit] LLVM_SYSPATH   : ${LLVM_SYSPATH}"
 echo "[spacemit] MAX_JOBS       : ${MAX_JOBS}"
 if [[ -n "${SPINE_MLIR_INSTALL_DIR:-}" ]]; then
-  echo "[spacemit] SPINE_MLIR_INSTALL_DIR: ${SPINE_MLIR_INSTALL_DIR}"
+  echo "[spacemit] SPINE_MLIR_INSTALL_DIR   : ${SPINE_MLIR_INSTALL_DIR}"
+fi
+if [[ -n "${SPINE_RUNTIME_INSTALL_DIR:-}" ]]; then
+  echo "[spacemit] SPINE_RUNTIME_INSTALL_DIR: ${SPINE_RUNTIME_INSTALL_DIR}"
 fi
 
 if [[ ! -d "${LLVM_SYSPATH}/lib/cmake/llvm" ]]; then
@@ -71,11 +75,15 @@ if [[ ! -d "${LLVM_SYSPATH}/lib/cmake/llvm" ]]; then
   exit 1
 fi
 
+# export 这两个变量, setup.py 用 os.environ.get 读取后复制对应的 .so / 头文件。
+# (之前用 ${VAR:+VAR=...} 内联前缀, 但 bash 在 ${} 展开里遇到 = 会把赋值当命令执行)
+export SPINE_MLIR_INSTALL_DIR="${SPINE_MLIR_INSTALL_DIR:-}"
+export SPINE_RUNTIME_INSTALL_DIR="${SPINE_RUNTIME_INSTALL_DIR:-}"
+
 FLAGTREE_BACKEND=spacemit \
 LLVM_SYSPATH="${LLVM_SYSPATH}" \
 TRITON_BUILD_PROTON=OFF \
 MAX_JOBS="${MAX_JOBS}" \
-${SPINE_MLIR_INSTALL_DIR:+SPINE_MLIR_INSTALL_DIR="${SPINE_MLIR_INSTALL_DIR}"} \
 ${PIP} install . --no-build-isolation -v
 
 echo "[spacemit] install finished."

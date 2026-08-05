@@ -44,10 +44,10 @@ index 694640cc4..49f153aff 100644
  }
 diff --git a/python/setup_tools/utils/spacemit.py b/python/setup_tools/utils/spacemit.py
 new file mode 100644
-index 000000000..a860ce734
+index 000000000..1a618e2af
 --- /dev/null
 +++ b/python/setup_tools/utils/spacemit.py
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,104 @@
 +"""Spacemit backend module for FlagTree.
 +
 +Provides build hooks for:
@@ -125,15 +125,18 @@ index 000000000..a860ce734
 +def install_extension(*args, **kargs):
 +    """Copy spine-triton-opt from build directory to backend/bin/."""
 +    import shutil
++    import sys
 +    from pathlib import Path
 +
-+    build_ext = kargs.get("build_ext", None)
-+    if not build_ext or not hasattr(build_ext, "build_temp"):
-+        return
++    _python_dir = Path(__file__).resolve().parents[2]
++    if str(_python_dir) not in sys.path:
++        sys.path.insert(0, str(_python_dir))
++    from build_helpers import get_cmake_dir
 +
-+    # spine-triton-opt is built at:
++    # spine-triton-opt is built by cmake at:
 +    # build/cmake.*/third_party/spacemit/tools/spine-triton-opt/spine-triton-opt
-+    build_temp = Path(build_ext.build_temp)
++    # (build_ext.build_temp is distutils' build/temp.*, NOT the cmake dir).
++    build_temp = Path(get_cmake_dir())
 +    spine_triton_opt_src = build_temp / "third_party" / "spacemit" / "tools" / "spine-triton-opt" / "spine-triton-opt"
 +
 +    if not spine_triton_opt_src.exists():
