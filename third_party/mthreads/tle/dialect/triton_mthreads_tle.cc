@@ -281,6 +281,10 @@ void init_triton_musa_tle_ir(py::module m) {
       .def("create_barrier_arrive_mbarrier",
            [](TritonOpBuilder &self, mlir::Value barrier, int32_t arriveCount,
               mlir::Value phase) -> void {
+             if (arriveCount != 1)
+               throw py::value_error(
+                   "mthreads hardware barrier arrive requires arrive_count = "
+                   "1");
              auto &builder = self.getBuilder();
              self.create<mlir::triton::musa_tle::BarrierArriveOp>(
                  barrier, phase, builder.getI32IntegerAttr(arriveCount));
@@ -351,6 +355,8 @@ void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m) {
                      mlir::createTritonMUSAGPUTLELowerBarrierAllocations);
   ADD_PASS_WRAPPER_0("add_tle_lower_tme_transactions",
                      mlir::createTritonMUSAGPUTLELowerTMETransactions);
+  ADD_PASS_WRAPPER_0("add_tle_lower_barrier_operations",
+                     mlir::createTritonMUSAGPUTLELowerBarrierOperations);
   ADD_PASS_WRAPPER_0("add_tle_insert_local_pointer_barriers",
                      mlir::createTritonMUSAGPUTLEInsertLocalPointerBarriers);
   ADD_PASS_WRAPPER_0("add_tle_optimize_local_pointer_loads",

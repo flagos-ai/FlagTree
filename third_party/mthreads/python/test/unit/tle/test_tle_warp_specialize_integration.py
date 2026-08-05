@@ -540,8 +540,13 @@ def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
     assert ir_text.count("ttg.warp_return") == 1, ir_text
     assert ir_text.count("scf.for") == 2, ir_text
     assert ir_text.count("musa_tle.barrier.alloc") == (0 if barriers_lowered else 4), ir_text
-    assert ir_text.count("musa_tle.barrier.wait") == 4 * len(emitted_tiles), ir_text
-    assert ir_text.count("musa_tle.barrier.arrive") == 2 * len(emitted_tiles), ir_text
+    wait_op = "ttmg.wait_barrier" if barriers_lowered else "musa_tle.barrier.wait"
+    arrive_op = "ttmg.warp_arrive_barrier" if barriers_lowered else "musa_tle.barrier.arrive"
+    assert ir_text.count(wait_op) == 4 * len(emitted_tiles), ir_text
+    assert ir_text.count(arrive_op) == 2 * len(emitted_tiles), ir_text
+    if barriers_lowered:
+        assert "musa_tle.barrier.wait" not in ir_text, ir_text
+        assert "musa_tle.barrier.arrive" not in ir_text, ir_text
     assert ir_text.count("ttg.memdesc_index") >= 4 * stages, ir_text
     assert ir_text.count("ttg.local_alloc") == 2, ir_text
     assert "tle.wgmma_pipeline_mode" not in ir_text, ir_text
@@ -608,9 +613,9 @@ def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
             item for slot, phase in zip(expected_slots, expected_ready[::2])
             for item in ((1 + 2 * stages + slot, phase), (1 + 3 * stages + slot, phase))
         ]
-        assert _physical_barrier_uses(default_region, "musa_tle.barrier.wait",
+        assert _physical_barrier_uses(default_region, "ttmg.wait_barrier",
                                       enclosing_constants) == expected_waits, default_region
-        assert _physical_barrier_uses(default_region, "musa_tle.barrier.arrive",
+        assert _physical_barrier_uses(default_region, "ttmg.warp_arrive_barrier",
                                       enclosing_constants) == expected_arrives, default_region
     else:
         default_barriers = _index_defs(default_region, "musa_tle.barrier.index", enclosing_constants)
@@ -646,7 +651,7 @@ def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
                          if barriers_lowered else _index_defs(producer_region, "musa_tle.barrier.index"))
     assert _barrier_phases(
         producer_region,
-        "musa_tle.barrier.wait",
+        "ttmg.wait_barrier" if barriers_lowered else "musa_tle.barrier.wait",
         producer_barriers,
         producer_empty,
     ) == expected_ready, producer_region
@@ -738,7 +743,6 @@ def _assert_ttgir_copy_association(ttgir, stages, k_tiles):
     assert ttgir.count("ttmg.init_arrival") == 4 * stages, ttgir
     assert ttgir.count("ttmg.barrier_add_trans") == 2 * len(emitted_tiles), ttgir
     assert ttgir.count("ttmg.arrive_barrier_noret") == 2 * len(emitted_tiles), ttgir
-    assert "ttmg.wait_barrier" not in ttgir, ttgir
 
 
 def _assert_explicit_shared_allocations(allocated, stages):
@@ -771,6 +775,15 @@ def _assert_dot_pipeline_resources(ttir, ttgir, allocated, stages):
     assert "#ttg.swizzled_shared" in ttgir, ttgir
     assert "#ttg.nvmma_shared" not in ttir, ttir
     assert "#ttg.nvmma_shared" not in ttgir, ttgir
+    assert "musa_tle.barrier.wait" not in ttgir, ttgir
+    assert "musa_tle.barrier.arrive" not in ttgir, ttgir
+
+    _, default_region, _ = _extract_ws_regions(ttgir)
+    wait_segments = default_region.split("ttmg.squad_dot_wait")[1:]
+    assert len(wait_segments) == 2 * stages, default_region
+    for segment in wait_segments:
+        before_next_dot = segment.split("ttmg.squad_dot", 1)[0]
+        assert before_next_dot.count("ttmg.warp_arrive_barrier") == 2, before_next_dot
 
     assert ttir.count("ttg.local_alloc") == 2, ttir
     assert f"!ttg.memdesc<{stages}x256x64xf16" in ttir, ttir
@@ -797,6 +810,8 @@ def _assert_dot_pipeline_resources(ttir, ttgir, allocated, stages):
     assert len(sqmma_allocs) == 4 * stages, allocated
     assert "musa_tle.barrier.alloc" not in allocated, allocated
     assert "musa_tle.barrier.index" not in allocated, allocated
+    assert "musa_tle.barrier.wait" not in allocated, allocated
+    assert "musa_tle.barrier.arrive" not in allocated, allocated
     assert allocated.count("ttmg.init_arrival") == 4 * stages, allocated
     assert f"musa.max_bar_id = {4 * stages}" in allocated, allocated
 

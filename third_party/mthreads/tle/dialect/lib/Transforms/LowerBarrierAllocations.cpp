@@ -129,8 +129,7 @@ class LowerBarrierAllocationsPass
       Value base = arith::ConstantIntOp::create(rewriter, loc, nextBase, 32);
       Value arriveCount = arith::ConstantIntOp::create(
           rewriter, loc, alloc.getArriveCount(), 32);
-      Value initPolarity = arith::ConstantIntOp::create(
-          rewriter, loc, alloc.getInitPolarity(), 32);
+      Value initPolarity = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
 
       for (int32_t slot = 0; slot < alloc.getNumBarriers(); ++slot) {
         Value barId =

@@ -522,6 +522,14 @@ LogicalResult ArriveBarrierNoRetOp::verify() {
 #endif // __TLE__
 }
 
+#ifdef __TLE__
+LogicalResult WarpArriveBarrierOp::verify() {
+  if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))
+    return failure();
+  return verifyNonNegativeI32Constant(getOperation(), getPhaseId(), "phaseId");
+}
+#endif // __TLE__
+
 LogicalResult WaitBarrierOp::verify() {
   if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))
     return failure();

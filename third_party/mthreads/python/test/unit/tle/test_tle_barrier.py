@@ -162,11 +162,17 @@ def _ready_arrive_missing_phase_kernel():
     tle.gpu.barrier_arrive(bar)
 
 
+@triton.jit
+def _unsupported_arrive_increment_kernel():
+    bar = tle.gpu.alloc_barrier(arrive_count=4, init=tle.gpu.READY)
+    tle.gpu.barrier_arrive(bar, arrive_count=2, phaseIdx=0)
+
+
 def _extract_barrier_ops(ttir):
     allocs = re.findall(r"musa_tle\.barrier\.alloc", ttir)
     indices = re.findall(r"musa_tle\.barrier\.index", ttir)
-    waits = re.findall(r"musa_tle\.barrier\.wait", ttir)
-    arrives = re.findall(r"musa_tle\.barrier\.arrive", ttir)
+    waits = re.findall(r"(?:musa_tle\.barrier\.wait|ttmg\.wait_barrier)", ttir)
+    arrives = re.findall(r"(?:musa_tle\.barrier\.arrive|ttmg\.warp_arrive_barrier)", ttir)
     return len(allocs), len(indices), len(waits), len(arrives)
 
 
@@ -243,7 +249,12 @@ def _assert_single_initialization_rendezvous(ir_text, require_barrier_use=False)
     assert ir_text.index("ttmg.bar_record") < min(init_positions), ir_text
     assert max(init_positions) < rendezvous, ir_text
     if require_barrier_use:
-        use_positions = [match.start() for match in re.finditer(r"musa_tle\.barrier\.(?:wait|arrive)", ir_text)]
+        use_positions = [
+            match.start() for match in re.finditer(
+                r"(?:musa_tle\.barrier\.(?:wait|arrive)|ttmg\.(?:wait_barrier|warp_arrive_barrier))",
+                ir_text,
+            )
+        ]
         assert use_positions, ir_text
         assert rendezvous < min(use_positions), ir_text
 
@@ -253,7 +264,7 @@ def _assert_lowered_static_barrier_ir(ir_text, stages):
     assert (allocs, indices, waits, arrives) == (0, 0, 2 * stages, stages), ir_text
     assert _init_arrivals(ir_text) == [
         *[(slot + 1, 1, 0) for slot in range(stages)],
-        *[(stages + slot + 1, 16, 1) for slot in range(stages)],
+        *[(stages + slot + 1, 16, 0) for slot in range(stages)],
     ], ir_text
     assert f"musa.max_bar_id = {2 * stages}" in ir_text, ir_text
     assert "musa.next_bar_id" not in ir_text, ir_text
@@ -315,8 +326,8 @@ def test_mthreads_tle_four_barrier_groups_receive_contiguous_hardware_ids(stages
     expected = [
         *[(1 + slot, 1, 0) for slot in range(stages)],
         *[(1 + stages + slot, 1, 0) for slot in range(stages)],
-        *[(1 + 2 * stages + slot, 16, 1) for slot in range(stages)],
-        *[(1 + 3 * stages + slot, 16, 1) for slot in range(stages)],
+        *[(1 + 2 * stages + slot, 16, 0) for slot in range(stages)],
+        *[(1 + 3 * stages + slot, 16, 0) for slot in range(stages)],
     ]
     for ir_text in (ttgir, allocated):
         assert _init_arrivals(ir_text) == expected, ir_text
@@ -345,7 +356,8 @@ def _lower_backend_barrier_fixture(tmp_path, stages, existing_max=None, with_war
     allocs = "\n".join(f"    %{index} = musa_tle.barrier.alloc "
                        f"{{arrive_count = {1 if index < 2 else 16} : i32, "
                        f"init_polarity = {0 if index < 2 else 1} : i32, "
-                       f"num_barriers = {stages} : i32}}" for index in range(4))
+                       f"num_barriers = {stages} : i32"
+                       f"{', expect_bytes = 32768 : i32' if index < 2 else ''}}}" for index in range(4))
     warp_specialize = _empty_warp_specialize() if with_warp_specialize else ""
     fixture = f"""module {{
   tt.func public @barrier_fixture(){function_attrs} {{
@@ -375,8 +387,8 @@ def test_mthreads_tle_stage_three_barriers_use_backend_local_fixture(tmp_path):
     assert _init_arrivals(lowered) == [
         *[(1 + slot, 1, 0) for slot in range(3)],
         *[(4 + slot, 1, 0) for slot in range(3)],
-        *[(7 + slot, 16, 1) for slot in range(3)],
-        *[(10 + slot, 16, 1) for slot in range(3)],
+        *[(7 + slot, 16, 0) for slot in range(3)],
+        *[(10 + slot, 16, 0) for slot in range(3)],
     ], lowered
     assert "musa.max_bar_id = 12" in lowered, lowered
     assert _extract_barrier_ops(lowered)[0:2] == (0, 0), lowered
@@ -389,8 +401,8 @@ def test_mthreads_tle_stage_three_barriers_rendezvous_before_warp_specialize(tmp
     assert _init_arrivals(lowered) == [
         *[(1 + slot, 1, 0) for slot in range(3)],
         *[(4 + slot, 1, 0) for slot in range(3)],
-        *[(7 + slot, 16, 1) for slot in range(3)],
-        *[(10 + slot, 16, 1) for slot in range(3)],
+        *[(7 + slot, 16, 0) for slot in range(3)],
+        *[(10 + slot, 16, 0) for slot in range(3)],
     ], lowered
     assert lowered.count("ttg.barrier local") == 1, lowered
     assert lowered.count("ttg.warp_specialize(") == 1, lowered
@@ -533,8 +545,8 @@ def test_mthreads_tle_barriers_follow_existing_musa_reservations(tmp_path):
     assert _init_arrivals(lowered) == [
         (6, 1, 0),
         (7, 1, 0),
-        (8, 16, 1),
-        (9, 16, 1),
+        (8, 16, 0),
+        (9, 16, 0),
     ], lowered
     assert "musa.max_bar_id = 9" in lowered, lowered
     _assert_single_initialization_rendezvous(lowered)
@@ -561,7 +573,7 @@ def test_mthreads_tle_barrier_preserves_dynamic_slot_and_phase():
         assert "arith.addi" in ir_text, ir_text
         assert re.search(r"arith\.andi\s+%arg1,", ir_text), ir_text
         assert "arith.xori" in ir_text, ir_text
-        assert _init_arrivals(ir_text) == [(1, 16, 1), (2, 16, 1)], ir_text
+        assert _init_arrivals(ir_text) == [(1, 16, 0), (2, 16, 0)], ir_text
         _assert_single_initialization_rendezvous(ir_text, require_barrier_use=True)
     assert "ttg.shared = 0 : i32" in allocated, allocated
 
@@ -591,6 +603,7 @@ def test_mthreads_tle_barrier_bindings_are_backend_local():
             "create_barrier_wait_named",
             "create_barrier_arrive_named",
             "add_tle_lower_barrier_allocations",
+            "add_tle_lower_barrier_operations",
     ):
         owner = (libtriton.mthreads.passes.ttgpuir if name.startswith("add_") else builder)
         assert hasattr(owner, name)
@@ -611,6 +624,10 @@ def test_mthreads_tle_barrier_named_path_has_stable_diagnostic(kernel):
         (_invalid_num_barriers_kernel, "num_barriers must be positive"),
         (_too_many_barriers_kernel, "mthreads TLE barrier allocation exceeds the 63 hardware barrier id limit"),
         (_invalid_arrive_count_kernel, "arrive_count must be positive"),
+        (
+            _unsupported_arrive_increment_kernel,
+            "mthreads hardware barrier arrive requires arrive_count = 1",
+        ),
         (_invalid_expect_bytes_kernel, "expect_bytes must be positive when provided"),
         (_block_slot_kernel, "barrier index must be a scalar integer"),
         (_non_integer_slot_kernel, "barrier index must be integer"),

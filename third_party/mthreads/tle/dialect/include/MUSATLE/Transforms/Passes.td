@@ -127,4 +127,20 @@ def TritonMUSAGPUTLELowerTMETransactions
   ];
 }
 
+def TritonMUSAGPUTLELowerBarrierOperations
+    : Pass<"tritonmusa-tle-lower-barrier-operations", "mlir::ModuleOp"> {
+  let summary = "Lower TLE waits and arrivals to MUSA hardware barriers";
+  let description = [{
+    Replace backend-local TLE barrier wait and arrive operations with the
+    corresponding MUSA hardware barrier operations after logical barrier
+    ranges have been assigned physical ids.  Consumer arrivals remain
+    convergent warp-level operations and are deliberately kept separate from
+    the single-issuer TME transaction arrival path.
+  }];
+  let dependentDialects = [
+    "mlir::triton::musa::MUSADialect",
+    "mlir::triton::musa_tle::MUSATLEDialect"
+  ];
+}
+
 #endif // MUSA_TLE_TRANSFORMS_PASSES

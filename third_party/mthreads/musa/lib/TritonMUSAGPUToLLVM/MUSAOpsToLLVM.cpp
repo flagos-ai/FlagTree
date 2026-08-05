@@ -529,6 +529,25 @@ struct ArriveBarrierNoRetOpConversion
   }
 };
 
+#ifdef __TLE__
+struct WarpArriveBarrierOpConversion
+    : public ConvertOpToLLVMPattern<triton::musa::WarpArriveBarrierOp> {
+  using ConvertOpToLLVMPattern<
+      triton::musa::WarpArriveBarrierOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::musa::WarpArriveBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> operands = {adaptor.getBarId()};
+    LLVM::createLLVMIntrinsicCallOp(rewriter, op.getLoc(),
+                                    "llvm.musa.async.arrive.none.phaseid",
+                                    TypeRange{}, operands);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+#endif // __TLE__
+
 struct WaitBarrierOpConversion
     : public ConvertOpToLLVMPattern<triton::musa::WaitBarrierOp> {
   using ConvertOpToLLVMPattern<
@@ -580,8 +599,6 @@ struct AsyncTMECopyGlobalToLocalOpConversion
                                       memDescTy.getElementType(), loc, rewriter,
                                       this->getTypeConverter());
     }
-    Value descAddr = normalizeTMEDescriptorAddr(
-        adaptor.getDesc(), op.getDesc().getType(), loc, rewriter);
 
     auto sgAttr = op->getAttrOfType<triton::musa::TMESwizzleGranularityAttr>(
         "swizzleGranularity");
@@ -642,6 +659,8 @@ struct AsyncTMECopyGlobalToLocalOpConversion
     rewriter.setInsertionPointToEnd(currentBlock);
     LLVM::CondBrOp::create(rewriter, loc, launchPred, trueBlock, afterCall);
     rewriter.setInsertionPointToStart(trueBlock);
+    Value descAddr = normalizeTMEDescriptorAddr(
+        adaptor.getDesc(), op.getDesc().getType(), loc, rewriter);
     for (const auto &segment : loadSegments) {
       SmallVector<Value> operands = {
           adaptor.getBarId(), segment.dstAddr,  descAddr,
@@ -693,8 +712,6 @@ struct AsyncTMECopyLocalToGlobalOpConversion
                                       memDescTy.getElementType(), loc, rewriter,
                                       this->getTypeConverter());
     }
-    Value descAddr = normalizeTMEDescriptorAddr(
-        adaptor.getDesc(), op.getDesc().getType(), loc, rewriter);
 
     auto sgAttr = op->getAttrOfType<triton::musa::TMESwizzleGranularityAttr>(
         "swizzleGranularity");
@@ -723,11 +740,6 @@ struct AsyncTMECopyLocalToGlobalOpConversion
 #else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
 #endif // __TLE__
-    SmallVector<Value> operands = {
-        srcAddr,     descAddr,           blockDim,
-        blockPos,    swizzleGranularity, swizzleStride,
-        swizzleLine, innerPersistence,   outerPersistence,
-        cachePolicy};
 
     Block *currentBlock = rewriter.getInsertionBlock();
     Block *afterCall =
@@ -736,6 +748,13 @@ struct AsyncTMECopyLocalToGlobalOpConversion
     rewriter.setInsertionPointToEnd(currentBlock);
     LLVM::CondBrOp::create(rewriter, loc, launchPred, trueBlock, afterCall);
     rewriter.setInsertionPointToStart(trueBlock);
+    Value descAddr = normalizeTMEDescriptorAddr(
+        adaptor.getDesc(), op.getDesc().getType(), loc, rewriter);
+    SmallVector<Value> operands = {
+        srcAddr,     descAddr,           blockDim,
+        blockPos,    swizzleGranularity, swizzleStride,
+        swizzleLine, innerPersistence,   outerPersistence,
+        cachePolicy};
     LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic, TypeRange{},
                                     operands);
     LLVM::BrOp::create(rewriter, loc, afterCall);
@@ -791,4 +810,7 @@ void mlir::triton::MUSA::populateMUSAOpsToLLVMPatterns(
            WaitBarrierOpConversion, AsyncTMECopyGlobalToLocalOpConversion,
            AsyncTMECopyLocalToGlobalOpConversion, TMEStoreCommitOpConversion,
            TMEStoreReadWaitOpConversion>(typeConverter, benefit);
+#ifdef __TLE__
+  patterns.add<WarpArriveBarrierOpConversion>(typeConverter, benefit);
+#endif // __TLE__
 }

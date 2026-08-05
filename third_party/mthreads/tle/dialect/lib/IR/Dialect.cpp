@@ -320,8 +320,9 @@ LogicalResult BarrierIndexOp::verify() {
 LogicalResult BarrierWaitOp::verify() { return success(); }
 
 LogicalResult BarrierArriveOp::verify() {
-  if (getArriveCount() <= 0)
-    return emitOpError("arrive_count must be positive");
+  if (getArriveCount() != 1)
+    return emitOpError(
+        "mthreads hardware barrier arrive requires arrive_count = 1");
   return success();
 }
 
