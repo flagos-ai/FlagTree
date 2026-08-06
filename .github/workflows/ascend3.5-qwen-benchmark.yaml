@@ -25,6 +25,7 @@ on:
     branches: [ "triton_v3.5.x" ]
   pull_request:
     branches: [ "triton_v3.5.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -37,7 +38,7 @@ concurrency:
 jobs:
   ascend35x-qwen:
     runs-on: ascend3.5-qwen
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
