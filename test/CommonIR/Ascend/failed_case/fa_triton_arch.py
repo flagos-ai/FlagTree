@@ -107,18 +107,24 @@ def _mm1_qkt(
 
     Handles resident-Q reload (first task of a tile) and the full L1
     DMA + MMA sequence for each KV block.
+
+    Each KV block uses a fresh zero accumulator so the tl.dot result is the
+    per-block score directly.  It is stored to GM (workspace_s) before any
+    vector-core arithmetic touches it, satisfying the cube→GM→vector ordering
+    constraint (matching the fa_4func.py pattern).
     """
     # wait workspace_s[ring_slot] task slot free (Vector released after Vec1)
     sync_block_wait("vector", "cube", SEM_S_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
 
     # reload resident Q at the first task of each output tile
     if idx_in_conbine == 0:
-        q_bp = tl.make_block_ptr(
-            Q + batch_idx * sQb + head_idx * sQh, (S, DIM), (sQs, sQd),
-            (global_head_idx * BLOCK_M, 0), (BLOCK_M, DIM), (1, 0))
-        tile_copy(q_bp, q_l1, [CBM, CD])
-    attn_score_l0c = tl.zeros((BLOCK_M, BLOCK_N), tl.float32)
-    prev_score_ub = tl.zeros((BLOCK_M, BLOCK_N), tl.float32)
+        q_row_offs = global_head_idx * BLOCK_M + tl.arange(0, BLOCK_M)
+        q_col_offs = tl.arange(0, DIM)
+        q_ptr = (Q + batch_idx * sQb + head_idx * sQh
+                 + q_row_offs[:, None] * sQs
+                 + q_col_offs[None, :] * sQd)
+        q_l1 = tl.load(q_ptr)
+
     for cb_idx in range(CB):
         kv_idx = idx_in_conbine * CB + cb_idx
 
@@ -127,21 +133,18 @@ def _mm1_qkt(
             (kv_idx * BLOCK_N, 0), (BLOCK_N, DIM), (1, 0))
         tile_copy(k_bp, k_l1, [CBN, CD])
 
-        # attn_score = Q * K^T using L1 buffers (accumulates in L0C)
+        # Fresh zero accumulator per KV block: dot output = per-block score,
+        # stored directly to GM.  No vector arithmetic before the store.
         attn_score_l0c = tl.dot(tile_to_tensor(q_l1, writable=False),
-                            tile_to_tensor(k_l1, writable=False), attn_score_l0c)
-
-        # L0C accumulates cumulatively; subtract previous to get per-block score
-        cur_score_ub = attn_score_l0c.to(tl.float32)
-        delta_score = cur_score_ub - prev_score_ub
-        prev_score_ub = cur_score_ub
+                            tile_to_tensor(k_l1, writable=False),
+                            tl.zeros((BLOCK_M, BLOCK_N), tl.float32))
 
         score_store_bp = tl.make_block_ptr(
             workspace_s + (cid * RING * CB * BLOCK_M * BLOCK_N
                            + ring_slot  * CB * BLOCK_M * BLOCK_N
                            + cb_idx  * BLOCK_M * BLOCK_N),
             (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
-        tl.store(score_store_bp, delta_score.to(workspace_s.dtype.element_ty))
+        tl.store(score_store_bp, attn_score_l0c.to(workspace_s.dtype.element_ty))
 
     # all CB S-blocks written -> notify Vec1
     sync_block_set("cube", "vector", SEM_S_READY, PIPE.PIPE_FIX, PIPE.PIPE_MTE2)
@@ -166,14 +169,17 @@ def _mm2_pv(
 
     Loads P from workspace_p (written by Vec1), loads V from GM, performs
     MMA and writes the partial output to workspace_pv for Vec2.
+
+    Each KV block uses a fresh zero accumulator so the tl.dot result is the
+    per-block P*V directly.  It is stored to GM (workspace_pv) before any
+    vector-core arithmetic touches it, satisfying the cube→GM→vector ordering
+    constraint (matching the fa_4func.py pattern).
     """
     # wait workspace_p[prev_ring_slot] (P from Vec1) ready
     sync_block_wait("vector", "cube", SEM_P_READY, PIPE.PIPE_MTE3, PIPE.PIPE_MTE2)
     # wait workspace_pv[prev_ring_slot] slot free (Vec2 released after accumulating)
     sync_block_wait("vector", "cube", SEM_PV_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
 
-    pv_part_l0c = tl.zeros((BLOCK_M, DIM), tl.float32)
-    prev_pv_ub = tl.zeros((BLOCK_M, DIM), tl.float32)
     for cb_idx in range(CB):
         prev_kv_idx = prev_idx_in_conbine * CB + cb_idx
 
@@ -189,22 +195,18 @@ def _mm2_pv(
             (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
         tile_copy(prob_load_bp, p_l1, [CBM, CBN])
 
-        # pv_part = P * V using L1 buffers (accumulates in L0C)
+        # Fresh zero accumulator per KV block: dot output = per-block P*V,
+        # stored directly to GM.  No vector arithmetic before the store.
         pv_part_l0c = tl.dot(tile_to_tensor(p_l1, writable=False),
                          tile_to_tensor(v_l1, writable=False),
-                         pv_part_l0c)
-
-        # L0C accumulates cumulatively; subtract previous to get per-block P*V
-        cur_pv_ub = pv_part_l0c.to(tl.float32)
-        delta_pv = cur_pv_ub - prev_pv_ub
-        prev_pv_ub = cur_pv_ub
+                         tl.zeros((BLOCK_M, DIM), tl.float32))
 
         pv_store_bp = tl.make_block_ptr(
             workspace_pv + cid * RING * CB * BLOCK_M * DIM
                             + prev_ring_slot * CB * BLOCK_M * DIM
                             + cb_idx * BLOCK_M * DIM,
             (BLOCK_M, DIM), (DIM, 1), (0, 0), (BLOCK_M, DIM), (1, 0))
-        tl.store(pv_store_bp, delta_pv.to(workspace_pv.dtype.element_ty))
+        tl.store(pv_store_bp, pv_part_l0c.to(workspace_pv.dtype.element_ty))
 
     # all CB P*V blocks done -> notify Vec2; release workspace_p[prev_ring_slot]
     sync_block_set("cube", "vector", SEM_P_FREE,  PIPE.PIPE_MTE2, PIPE.PIPE_MTE3)
