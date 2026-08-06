@@ -463,10 +463,8 @@ collectConsumerEncodingVotes(Value root,
       }
       if (auto remote = dyn_cast<triton::tle::RemotePointersOp>(owner)) {
         // Node mode reuses src but has no pointer result to propagate.
-        if (remote.getSpace() != "node") {
-          if (Value result = remote.getResult())
-            enqueue(result);
-        }
+        if (remote.getSpace() != "node")
+          enqueue(remote.getResult());
         continue;
       }
     }
@@ -852,7 +850,7 @@ class SelectEncodingsPass
             }
             if (auto remote = dyn_cast<triton::tle::RemotePointersOp>(owner)) {
               // Node mode reuses src but has no result encoding to update.
-              if (remote.getSpace() == "node" || !remote.getResult())
+              if (remote.getSpace() == "node")
                 continue;
               auto remoteResultTy =
                   dyn_cast<RankedTensorType>(remote.getResult().getType());
@@ -912,7 +910,7 @@ class SelectEncodingsPass
     module.walk([&](triton::tle::RemotePointersOp op) {
       // Node mode also has src now, but it has no pointer result whose axis
       // properties could be propagated.
-      if (op.getSpace() == "node" || !op.getResult() || !op.getSrc())
+      if (op.getSpace() == "node")
         return;
       module->setAttr(kTleEnableEncodingRematerializationAttr,
                       UnitAttr::get(module.getContext()));
