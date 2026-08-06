@@ -3,6 +3,7 @@ add_triton_library(MUSATLETransforms
   LowerBarrierAllocations.cpp
   LowerBarrierOperations.cpp
   LowerExclusiveCumsum.cpp
+  LowerSqmma.cpp
   LowerTMETransactions.cpp
   OptimizeLocalPointerAsyncStores.cpp
   OptimizeLocalPointerLoads.cpp

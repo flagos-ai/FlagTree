@@ -165,6 +165,16 @@ void init_triton_musa_tle_ir(py::module m) {
               mlir::Value value) -> mlir::Value {
              return self.create<ttg::LocalAllocOp>(resultTy, value);
            })
+      .def("mark_musa_tle_auto_shared_layout",
+           [](TritonOpBuilder &self, mlir::Value value) -> void {
+             mlir::Operation *def = value.getDefiningOp();
+             if (!def || !mlir::isa<ttg::LocalAllocOp>(def))
+               throw py::value_error(
+                   "mthreads TLE auto shared layout marker requires a "
+                   "ttg.local_alloc result");
+             def->setAttr("musa_tle.auto_shared_layout",
+                          self.getBuilder().getUnitAttr());
+           })
       .def("get_memdesc_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
               mlir::Type &elementType, mlir::Attribute &encoding,
@@ -205,6 +215,25 @@ void init_triton_musa_tle_ir(py::module m) {
           py::arg("src"), py::arg("dst"), py::arg("indices"),
           py::arg("completionBarrier") = py::none(),
           py::arg("expectBytes") = -1)
+      .def("create_tle_wgmma",
+           [](TritonOpBuilder &self, mlir::Value a, mlir::Value b,
+              mlir::Value c, mlir::triton::InputPrecision inputPrecision,
+              int maxNumImpreciseAcc, bool isAsync) -> mlir::Value {
+             return self
+                 .create<mlir::triton::musa_tle::SqmmaOp>(
+                     c.getType(), a, b, c, inputPrecision, maxNumImpreciseAcc,
+                     isAsync)
+                 .getD();
+           })
+      .def("create_tle_wgmma_wait",
+           [](TritonOpBuilder &self, mlir::Value input,
+              unsigned pendings) -> mlir::Value {
+             auto attr = self.getBuilder().getI32IntegerAttr(pendings);
+             return self
+                 .create<mlir::triton::musa_tle::SqmmaWaitOp>(input.getType(),
+                                                              input, attr)
+                 .getOutput();
+           })
       .def("create_local_pointers",
            [](TritonOpBuilder &self, mlir::Type resultTy, mlir::Value memDesc,
               py::args args) -> mlir::OpState {
@@ -351,6 +380,8 @@ void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m) {
                      mlir::createTritonMUSAGPUTLESelectEncodings);
   ADD_PASS_WRAPPER_0("add_tle_lower_exclusive_cumsum",
                      mlir::createTritonMUSAGPUTLELowerExclusiveCumsum);
+  ADD_PASS_WRAPPER_0("add_tle_lower_sqmma",
+                     mlir::createTritonMUSAGPUTLELowerSqmma);
   ADD_PASS_WRAPPER_0("add_tle_lower_barrier_allocations",
                      mlir::createTritonMUSAGPUTLELowerBarrierAllocations);
   ADD_PASS_WRAPPER_0("add_tle_lower_tme_transactions",

@@ -27,6 +27,7 @@ from . import types as tle
 from .mthreads import common as mthreads_common
 from .mthreads import copy as mthreads_copy
 from .mthreads import warp_specialize as mthreads_warp_specialize
+from .mthreads import wgmma as mthreads_wgmma
 from .iluvatar import copy as iluvatar_copy
 from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
 
@@ -328,6 +329,7 @@ def alloc(
         raise ValueError(f"Storage type must be tle.scope, but got {type(scope)}")
 
     layout = tl._unwrap_if_constexpr(layout)
+    auto_shared_layout = layout is None
     if layout is not None and not isinstance(layout, tle.shared_layout):
         # Handle constexpr None
         if hasattr(layout, 'value') and layout.value is None:
@@ -399,6 +401,8 @@ def alloc(
                 tensor_handle = _semantic.builder.create_local_alloc(mutable_ty, init_value.handle)
             else:
                 tensor_handle = _semantic.builder.create_local_alloc(full_shape, elem_type, layout_handle)
+            if auto_shared_layout and mthreads_common.enabled():
+                mthreads_wgmma.mark_auto_shared_layout(_semantic.builder, tensor_handle)
         else:
             raise ValueError(f"Storage type {storage} not yet supported")
 
@@ -789,16 +793,23 @@ def wgmma(
     """
     trans_a = _require_wgmma_bool(trans_a, "trans_a")
     trans_b = _require_wgmma_bool(trans_b, "trans_b")
-    a, b = _canonicalize_wgmma_operands(a, b, trans_a, trans_b, _semantic)
+    mthreads_enabled = mthreads_common.enabled()
+    if mthreads_enabled:
+        mthreads_wgmma.validate_operands(a, b, acc, trans_a, trans_b)
+    else:
+        a, b = _canonicalize_wgmma_operands(a, b, trans_a, trans_b, _semantic)
 
     m, k = [int(tl._unwrap_if_constexpr(dim)) for dim in a.type.shape]
     k_b, n = [int(tl._unwrap_if_constexpr(dim)) for dim in b.type.shape]
     if k != k_b:
         raise ValueError(f"wgmma shape mismatch: a is {a.type.shape}, b is {b.type.shape}")
-    if m < 64 or m % 64 != 0:
-        raise ValueError("wgmma result M dimension must be divisible by 64")
-    if n < 8 or n % 8 != 0:
-        raise ValueError("wgmma result N dimension must be divisible by 8")
+    if mthreads_enabled:
+        mthreads_wgmma.validate_dimensions(m, n)
+    else:
+        if m < 64 or m % 64 != 0:
+            raise ValueError("wgmma result M dimension must be divisible by 64")
+        if n < 8 or n % 8 != 0:
+            raise ValueError("wgmma result N dimension must be divisible by 8")
     if k < 16:
         raise ValueError("wgmma K dimension must be at least 16")
 
@@ -828,6 +839,9 @@ def wgmma(
         max_num_imprecise_acc = _require_wgmma_int(max_num_imprecise_acc, "max_num_imprecise_acc")
         if max_num_imprecise_acc < 0:
             raise ValueError("max_num_imprecise_acc must be non-negative")
+
+    if mthreads_enabled:
+        mthreads_wgmma.validate_options(max_num_imprecise_acc, out_dtype)
 
     ret_scalar_ty = _wgmma_ret_scalar_ty(a.dtype, out_dtype)
     ret_ty = tl.block_type(ret_scalar_ty, [m, n])
@@ -867,6 +881,8 @@ def wgmma_wait(pendings, acc=None, _semantic=None, _generator=None) -> tl.tensor
     pendings = _require_wgmma_int(pendings, "pendings")
     if pendings < 0:
         raise ValueError("wgmma_wait pendings must be non-negative")
+    if mthreads_common.enabled():
+        mthreads_wgmma.validate_wait_pendings(pendings)
     if not isinstance(acc, tl.tensor):
         raise ValueError(f"wgmma_wait acc must be a tl.tensor, got {type(acc).__name__}")
     result = _semantic.builder.create_tle_wgmma_wait(acc.handle, pendings)

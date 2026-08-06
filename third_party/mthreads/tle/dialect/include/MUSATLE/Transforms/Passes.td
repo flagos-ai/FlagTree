@@ -89,6 +89,24 @@ def TritonMUSAGPUTLELowerExclusiveCumsum
   ];
 }
 
+def TritonMUSAGPUTLELowerSqmma
+    : Pass<"tritonmusa-tle-lower-sqmma", "mlir::ModuleOp"> {
+  let summary = "Lower backend-local MUSA TLE SQMMA operations";
+  let description = [{
+    Infer the PH1 SQMMA accumulator and shared-memory operand layouts, preserve
+    explicit wait boundaries, and lower musa_tle.sqmma/sqmma_wait to the MUSA
+    squad-dot dialect.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::triton::TritonDialect",
+    "mlir::triton::gpu::TritonGPUDialect",
+    "mlir::triton::musa::MUSADialect",
+    "mlir::triton::musa_tle::MUSATLEDialect"
+  ];
+}
+
 def TritonMUSAGPUTLELowerBarrierAllocations
     : Pass<"tritonmusa-tle-lower-barrier-allocations", "mlir::ModuleOp"> {
   let summary = "Assign MUSA hardware ids to TLE barrier declarations";
