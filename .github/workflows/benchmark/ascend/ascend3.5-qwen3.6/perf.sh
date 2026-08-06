@@ -25,6 +25,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source ~/env.sh
 source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
+export VLLM_PLUGINS=fl
+
 start=$(date +%s)
 
 python3 ${SCRIPT_DIR}/all_perf.py --input-len=128  --output-len=128 --concurrency=4

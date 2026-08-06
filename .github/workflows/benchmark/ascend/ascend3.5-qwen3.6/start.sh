@@ -26,7 +26,7 @@ source ~/env.sh
 source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
 echo "[INFO] vLLM $(python3 -m pip show vllm |grep Version)"
-echo "[INFO] vllm-plugin-FL $(python3 -m pip show vllm-plugin-FL |grep Version)"
+echo "[INFO] vllm-plugin-fl $(python3 -m pip show vllm-plugin-fl |grep Version)"
 echo "[INFO] Torch $(python3 -m pip show torch |grep Version)"
 echo "[INFO] torch_npu $(python3 -m pip show torch_npu |grep Version)"
 echo "[INFO] FlagGems $(python3 -m pip show flag_gems |grep Version)"

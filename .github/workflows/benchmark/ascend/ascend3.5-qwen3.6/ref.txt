@@ -4,8 +4,8 @@ torch==2.10.0+cpu
 torch_npu==2.10.0
 cann==9.0.0
 
-[base] vllm_ascend==0.20.2rc1, flagtree===0.6.0+ascend3.5 (2026/06/26)
-# 服务冷启动时间: 3分11秒，服务热启动时间: 1分30秒
+[BaseLine] vllm-ascend==0.20.2rc1, flagtree===0.6.0+ascend3.5 (2026/06/26)
+# 服务冷启动时间: 3分11秒, 服务热启动时间: 1分30秒
 # 输入长度: 128, 输出长度: 128, 并发数: 4
   Output token throughput (tok/s): 4.23
   Total token throughput (tok/s): 8.46
@@ -13,8 +13,8 @@ cann==9.0.0
   Median TPOT (ms): 822.73
   Median ITL (ms): 827.61
 
-[2026/07/31] vllm-plugin-fl==0.2.0+g1326a3374, flag_gems==3e6528cf (2026/06/08) + pick 3b406c36 (2026/07/31), flagtree===0.6.0+ascend3.5 (2026/06/26)
-# 服务冷启动时间: 3分1秒，服务热启动时间: 1分30秒
+[2026/07/31] vllm-plugin-fl==0.2.0+g1326a3374 (2026/07/27), flag_gems==3e6528cf (2026/06/08) + pick 3b406c36 (2026/07/31), flagtree===0.6.0+ascend3.5 (2026/06/26)
+# 服务冷启动时间: 3分1秒, 服务热启动时间: 1分30秒
 # 输入长度: 128, 输出长度: 128, 并发数: 4
   Output token throughput (tok/s): 4.31
   Total token throughput (tok/s): 8.62
