@@ -7,7 +7,7 @@ import torch
 
 import triton
 import triton.language as tl
-from triton._internal_testing import is_interpreter
+from triton._internal_testing import is_interpreter, is_cuda
 from triton._filecheck import run_filecheck
 
 
@@ -82,7 +82,7 @@ def get_disassembler_command_and_debug_line_format():
     """
     backend = triton.runtime.driver.active.get_current_target().backend
 
-    if backend == "cuda":
+    if is_cuda():
         nvdisasm = triton.knobs.nvidia.nvdisasm.path
         return ("cubin", [nvdisasm, "-g"], "## File", ",")
 
