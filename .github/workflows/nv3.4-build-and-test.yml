@@ -1,4 +1,4 @@
-name: NV3.5-Build-And-Test
+name: NV3.4-Build-And-Test
 
 on:
   schedule:
