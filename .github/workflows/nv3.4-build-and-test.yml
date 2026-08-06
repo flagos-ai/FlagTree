@@ -7,6 +7,11 @@ on:
     branches: [ "triton_v3.4.x" ]
   pull_request:
     branches: [ "triton_v3.4.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -15,7 +20,7 @@ concurrency:
 jobs:
   nv-34x-unit-test:
     runs-on: nvidia3.5
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
@@ -33,6 +38,10 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: nvidia
+
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
       - name: Detect Target Branch
         shell: bash
@@ -54,6 +63,14 @@ jobs:
           pip uninstall -y triton
           source ~/env-3.4.sh
           MAX_JOBS=32 python3.12 -m pip install . --no-build-isolation
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: nvidia
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
