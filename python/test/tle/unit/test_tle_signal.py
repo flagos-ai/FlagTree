@@ -104,7 +104,7 @@ def _runtime_verify(result, device_dptr, peer, world_peer, rank, local_rank):
 class TestSignal:
 
     @pytest.mark.skipif(
-        not tle.communication.enabled or "RANK" not in os.environ,
+        "NODE_RANK" not in os.environ,
         reason="requires torchrun and a configured FlagCX runtime",
     )
     def test_tle_signal(self):
