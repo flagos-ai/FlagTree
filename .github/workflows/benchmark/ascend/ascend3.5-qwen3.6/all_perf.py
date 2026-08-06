@@ -243,6 +243,8 @@ def main():
     all_round_metrics = []
     for round_num in range(1, TOTAL_ROUNDS + 1):
         metrics = run_single_test(round_num, input_len, output_len, concurrency)
+        if metrics is None:
+            sys.exit(1)
         all_round_metrics.append(metrics)
 
     avg_metrics = compute_average(all_round_metrics)
