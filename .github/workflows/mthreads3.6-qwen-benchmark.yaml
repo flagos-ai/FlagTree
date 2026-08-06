@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: NV3.6-Qwen-Benchmark
+name: Mthreads3.6-Qwen-Benchmark
 
 on:
   push:
@@ -36,8 +36,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  nv36x-qwen:
-    runs-on: nvidia3.6-qwen
+  mthreads36x-qwen:
+    runs-on: mthreads3.6-qwen
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
@@ -55,7 +55,7 @@ jobs:
         id: check_backend
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
-          backend: nvidia
+          backend: mthreads
 
       - name: Cleanup FlagTree Environment
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
@@ -66,9 +66,7 @@ jobs:
         shell: bash
         run: |
           set -x
-          source ~/env-3.6.sh
-          # export FLAGCX_RECOMPILE=ON
-          # export USE_FLAGCX=ON
+          export FLAGTREE_BACKEND=mthreads
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Clear cache if ClearCache label present
@@ -77,13 +75,13 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          backend: nvidia-qwen3.6
+          backend: mthreads-qwen3.6
 
       - name: Start the service
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
-          export BENCH_SCRIPT_DIR="${PWD}/.github/workflows/benchmark/nvidia/nv3.6-qwen3.6"
+          export BENCH_SCRIPT_DIR="${PWD}/.github/workflows/benchmark/mthreads/mthreads3.6-qwen3.6"
           env | grep -E '^(BENCH_SCRIPT_DIR)=' >> $GITHUB_ENV || true
           cd ~/flagrelease/qwen3.6
           bash ${BENCH_SCRIPT_DIR}/start.sh

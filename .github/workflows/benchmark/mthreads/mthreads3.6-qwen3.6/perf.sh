@@ -22,11 +22,17 @@
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+source ~/env.sh
 source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen36",
-    "messages": [{"role": "user", "content": "请问 0.11 和 0.9 哪个大，为什么？"}]
-  }'
+export VLLM_PLUGINS=fl
+
+start=$(date +%s)
+
+python3 ${SCRIPT_DIR}/all_perf.py --input-len=128  --output-len=128 --concurrency=4
+
+end=$(date +%s)
+duration=$((end - start))
+minutes=$((duration / 60))
+seconds=$((duration % 60))
+echo "[INFO] Benchmark elapsed time: ${minutes}m${seconds}s."
