@@ -513,26 +513,25 @@ LogicalResult lowerNodeSpace(Location loc, tle::RemotePointersOp op,
   MLIRContext *ctx = rewriter.getContext();
   auto ptrTy = LLVM::LLVMPointerType::get(ctx);
   auto i32Ty = rewriter.getI32Type();
-  Value dstMem = rewriter.create<LLVM::IntToPtrOp>(
-      loc, ptrTy, adaptor.getDstMem());
-  Value srcMem = rewriter.create<LLVM::IntToPtrOp>(
-      loc, ptrTy, adaptor.getSrc());
-  Value comm =
-      rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getComm());
+  Value dstMem =
+      rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getDstMem());
+  Value srcMem =
+      rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getSrc());
+  Value comm = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getComm());
 
   Value srcByteOffset = adaptor.getOffset();
   Value dstByteOffset = adaptor.getDstOffset();
   Value byteCount = adaptor.getNelems();
   int64_t elemBytes = op->getAttrOfType<IntegerAttr>("elem_bytes").getInt();
   if (elemBytes != 1) {
-    Value elemBytesValue = rewriter.create<arith::ConstantIntOp>(
-        loc, elemBytes, 64);
-    srcByteOffset = rewriter.create<arith::MulIOp>(
-        loc, adaptor.getOffset(), elemBytesValue);
-    dstByteOffset = rewriter.create<arith::MulIOp>(
-        loc, adaptor.getDstOffset(), elemBytesValue);
-    byteCount = rewriter.create<arith::MulIOp>(
-        loc, adaptor.getNelems(), elemBytesValue);
+    Value elemBytesValue =
+        rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
+    srcByteOffset = rewriter.create<arith::MulIOp>(loc, adaptor.getOffset(),
+                                                   elemBytesValue);
+    dstByteOffset = rewriter.create<arith::MulIOp>(loc, adaptor.getDstOffset(),
+                                                   elemBytesValue);
+    byteCount = rewriter.create<arith::MulIOp>(loc, adaptor.getNelems(),
+                                               elemBytesValue);
   }
 
   LLVM::LLVMFuncOp getNet = getOrInsertNetFromComm(module, ctx);

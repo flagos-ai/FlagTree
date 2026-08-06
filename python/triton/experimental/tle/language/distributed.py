@@ -1096,6 +1096,7 @@ def _remote_pointer(
 
     return _create_remote_pointers_tensor(tensor, shard_id_tensor, _semantic, dtype=dtype, space=space, offset=offset)
 
+
 # offset / dstoffset / nelems -> scalar i64 tl.tensor
 # offset and dstoffset must be >= 0.
 # nelems must be > 0.
@@ -1231,10 +1232,9 @@ class _node_remote_destination_type(tl.base_type):
 
 class _node_remote_destination(tl.base_value):
 
-    def __init__(self, src_mem: tl.tensor, dst_mem: tl.tensor, comm: tl.tensor,
-                 peer: tl.tensor, offset: tl.tensor, dstoffset: tl.tensor,
-                 nelems: tl.tensor, net_idx: tl.tensor, *, dtype: tl.dtype,
-                 elem_bytes: int, coop_kind: int):
+    def __init__(self, src_mem: tl.tensor, dst_mem: tl.tensor, comm: tl.tensor, peer: tl.tensor, offset: tl.tensor,
+                 dstoffset: tl.tensor, nelems: tl.tensor, net_idx: tl.tensor, *, dtype: tl.dtype, elem_bytes: int,
+                 coop_kind: int):
         super().__init__()
         self.src_mem = src_mem
         self.dst_mem = dst_mem
@@ -1250,8 +1250,8 @@ class _node_remote_destination(tl.base_value):
 
     @property
     def type(self):
-        fields = (self.src_mem, self.dst_mem, self.comm, self.peer,
-                  self.offset, self.dstoffset, self.nelems, self.net_idx)
+        fields = (self.src_mem, self.dst_mem, self.comm, self.peer, self.offset, self.dstoffset, self.nelems,
+                  self.net_idx)
         return _node_remote_destination_type(
             tuple(field.type for field in fields),
             self.dtype,
@@ -1260,8 +1260,7 @@ class _node_remote_destination(tl.base_value):
         )
 
     def _flatten_ir(self, handles) -> None:
-        for field in (self.src_mem, self.dst_mem, self.comm, self.peer,
-                      self.offset, self.dstoffset, self.nelems,
+        for field in (self.src_mem, self.dst_mem, self.comm, self.peer, self.offset, self.dstoffset, self.nelems,
                       self.net_idx):
             field._flatten_ir(handles)
 
@@ -1289,10 +1288,9 @@ class _node_remote_destination(tl.base_value):
 
     def __triton_store__(self, value, mask, boundary_check, cache_modifier, eviction_policy, _semantic=None):
         if value is not tl._STORE_VALUE_UNSET:
-            raise TypeError(
-                "tl.store to a node remote destination does not accept a value; "
-                "source and destination are configured by tle.remote(...) "
-                "(dst defaults to tensor), so call tl.store(remote_dst) without a value")
+            raise TypeError("tl.store to a node remote destination does not accept a value; "
+                            "source and destination are configured by tle.remote(...) "
+                            "(dst defaults to tensor), so call tl.store(remote_dst) without a value")
         if mask is not None:
             raise ValueError("tl.store to a node remote destination does not support mask")
         boundary_check = tl._unwrap_if_constexpr(boundary_check)
@@ -1325,8 +1323,7 @@ class _node_remote_destination(tl.base_value):
         return _semantic.tensor(None, tl.void)
 
 
-def _create_node_remote_destination(src, dst, shard_id, scope, dtype, offset,
-                                    dstoffset, nelems, coopkind, netidx,
+def _create_node_remote_destination(src, dst, shard_id, scope, dtype, offset, dstoffset, nelems, coopkind, netidx,
                                     _semantic) -> _node_remote_destination:
     if offset is None:
         raise TypeError('tle.remote(..., space="node") requires offset')
@@ -1345,15 +1342,12 @@ def _create_node_remote_destination(src, dst, shard_id, scope, dtype, offset,
     dtype = tl._unwrap_if_constexpr(dtype)
     elem_bytes = _normalize_node_elem_bytes(dtype)
 
-    offset = _normalize_node_i64(
-        offset, "offset", must_be_positive=False, _semantic=_semantic)
+    offset = _normalize_node_i64(offset, "offset", must_be_positive=False, _semantic=_semantic)
     if dstoffset is None:
         dstoffset = offset
     else:
-        dstoffset = _normalize_node_i64(
-            dstoffset, "dstoffset", must_be_positive=False, _semantic=_semantic)
-    nelems = _normalize_node_i64(
-        nelems, "nelems", must_be_positive=True, _semantic=_semantic)
+        dstoffset = _normalize_node_i64(dstoffset, "dstoffset", must_be_positive=False, _semantic=_semantic)
+    nelems = _normalize_node_i64(nelems, "nelems", must_be_positive=True, _semantic=_semantic)
     net_idx = _normalize_node_netidx(netidx, _semantic)
     coop_kind = _normalize_put_coop_kind(coopkind)
 
@@ -1438,26 +1432,22 @@ def remote(
     if not isinstance(space, str):
         raise TypeError(f"space must be str, got {type(space).__name__}")
     if space not in ("cluster", "device", "node"):
-        raise ValueError(
-            f"space must be 'cluster', 'device', or 'node', got {space!r}")
+        raise ValueError(f"space must be 'cluster', 'device', or 'node', got {space!r}")
     shard_id = _unwrap_remote_shard_id(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
     if space == "node":
-        return _create_node_remote_destination(
-            tensor, dst, shard_id, scope, dtype, offset, dstoffset, nelems,
-            coopkind, netidx, _semantic)
+        return _create_node_remote_destination(tensor, dst, shard_id, scope, dtype, offset, dstoffset, nelems, coopkind,
+                                               netidx, _semantic)
     node_only_args = [
-        name for name, value in (("dst", dst), ("dstoffset", dstoffset),
-                                 ("nelems", nelems), ("coopkind", coopkind))
+        name for name, value in (("dst", dst), ("dstoffset", dstoffset), ("nelems", nelems), ("coopkind", coopkind))
         if value is not None
     ]
     unwrapped_netidx = tl._unwrap_if_constexpr(netidx)
     if not isinstance(unwrapped_netidx, int) or unwrapped_netidx != 0:
         node_only_args.append("netidx")
     if node_only_args:
-        raise TypeError(
-            f'{space} space does not accept node-only argument(s): '
-            f'{", ".join(node_only_args)}')
+        raise TypeError(f'{space} space does not accept node-only argument(s): '
+                        f'{", ".join(node_only_args)}')
     if scope is not None and not isinstance(scope, device_mesh):
         raise TypeError(f"scope must be device_mesh or None, got {type(scope).__name__}")
     if scope is not None:
