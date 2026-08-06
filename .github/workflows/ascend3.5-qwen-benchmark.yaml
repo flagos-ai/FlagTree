@@ -77,7 +77,7 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          backend: ascend-qwen
+          backend: ascend-qwen3.6
 
       - name: Start the service
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
@@ -85,14 +85,14 @@ jobs:
         run: |
           export BENCH_SCRIPT_DIR="${PWD}/.github/workflows/benchmark/ascend/ascend3.5-qwen3.6"
           env | grep -E '^(BENCH_SCRIPT_DIR)=' >> $GITHUB_ENV || true
-          cd ~/flagrelease
+          cd ~/flagrelease/qwen3.6
           bash ${BENCH_SCRIPT_DIR}/start.sh
 
       - name: Show the baseline
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
-          cd ~/flagrelease
+          cd ~/flagrelease/qwen3.6
           cat ${BENCH_SCRIPT_DIR}/ref.txt
 
       - name: Run the benchmark
@@ -100,12 +100,12 @@ jobs:
         shell: bash
         run: |
           set -x
-          cd ~/flagrelease
+          cd ~/flagrelease/qwen3.6
           bash ${BENCH_SCRIPT_DIR}/perf.sh
 
       - name: Stop the service
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
-          cd ~/flagrelease
+          cd ~/flagrelease/qwen3.6
           bash ${BENCH_SCRIPT_DIR}/stop.sh
