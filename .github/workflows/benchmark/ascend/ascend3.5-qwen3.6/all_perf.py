@@ -41,7 +41,7 @@ sys.stderr.reconfigure(line_buffering=True)
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
 MODEL_NAME = "qwen36"
-TOKENIZER_PATH = "~/flagrelease/Qwen3.6-27B"
+TOKENIZER_PATH = "~/flagrelease/qwen3.6/Qwen3.6-27B"
 
 # =============================================================================
 # 默认测试参数
