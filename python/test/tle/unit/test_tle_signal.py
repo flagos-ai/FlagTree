@@ -94,10 +94,8 @@ def _runtime_verify(result, device_dptr, peer, world_peer, rank, local_rank):
         device="cuda",
     )
     dist.all_reduce(passed, op=dist.ReduceOp.MIN)
-    assert passed.item() == 1, (
-        f"[Rank {rank}, local_rank={local_rank}] signal failed: "
-        f"expected {expected}, got {actual}"
-    )
+    assert passed.item() == 1, (f"[Rank {rank}, local_rank={local_rank}] signal failed: "
+                                f"expected {expected}, got {actual}")
     print(f"[Rank {rank}] [PASSED] signal kernel executed successfully", flush=True)
 
 
@@ -111,12 +109,10 @@ class TestSignal:
         mem_pool = tle.get_mem_pool()
         rank = dist.get_rank()
         local_rank = int(os.environ.get("LOCAL_RANK", rank % LOCAL_WORLD_SIZE))
-        node_rank = int(
-            os.environ.get(
-                "GROUP_RANK",
-                os.environ.get("NODE_RANK", str(rank // LOCAL_WORLD_SIZE)),
-            )
-        )
+        node_rank = int(os.environ.get(
+            "GROUP_RANK",
+            os.environ.get("NODE_RANK", str(rank // LOCAL_WORLD_SIZE)),
+        ))
         nnodes = (dist.get_world_size() + LOCAL_WORLD_SIZE - 1) // LOCAL_WORLD_SIZE
         peer = (node_rank + 1) % nnodes
         world_peer = (rank + 1) % dist.get_world_size()

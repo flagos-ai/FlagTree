@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Before running this script, it is necessary to set the environment variables 
+# Before running this script, it is necessary to set the environment variables
 # NNODES, NODE_RANK, MASTER_ADDR and MASTER_PORT for the distributed nodes.
 
 set -euo pipefail

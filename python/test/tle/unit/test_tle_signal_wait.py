@@ -99,11 +99,9 @@ def _runtime_verify(
         device="cuda",
     )
     dist.all_reduce(passed, op=dist.ReduceOp.MIN)
-    assert passed.item() == 1, (
-        f"[Rank {rank}, local_rank={local_rank}] "
-        f"{signal_space} signal_wait failed: "
-        f"expected {expected}, got {actual}"
-    )
+    assert passed.item() == 1, (f"[Rank {rank}, local_rank={local_rank}] "
+                                f"{signal_space} signal_wait failed: "
+                                f"expected {expected}, got {actual}")
     print(
         f"[Rank {rank}] [PASSED] space={signal_space} signal and "
         "signal_wait kernel executed successfully",
@@ -121,18 +119,15 @@ class TestSignalWait:
         mem_pool = tle.get_mem_pool()
         rank = dist.get_rank()
         local_rank = int(os.environ.get("LOCAL_RANK", rank % LOCAL_WORLD_SIZE))
-        node_rank = int(
-            os.environ.get(
-                "GROUP_RANK",
-                os.environ.get("NODE_RANK", str(rank // LOCAL_WORLD_SIZE)),
-            )
-        )
+        node_rank = int(os.environ.get(
+            "GROUP_RANK",
+            os.environ.get("NODE_RANK", str(rank // LOCAL_WORLD_SIZE)),
+        ))
         world_size = dist.get_world_size()
         nnodes = (world_size + LOCAL_WORLD_SIZE - 1) // LOCAL_WORLD_SIZE
         assert nnodes > 1, "signal_wait test requires at least two nodes"
         assert world_size == nnodes * LOCAL_WORLD_SIZE, (
-            "signal_wait test requires the same LOCAL_WORLD_SIZE on every node"
-        )
+            "signal_wait test requires the same LOCAL_WORLD_SIZE on every node")
 
         peer = ((node_rank + 1) % nnodes) * LOCAL_WORLD_SIZE + local_rank
 
