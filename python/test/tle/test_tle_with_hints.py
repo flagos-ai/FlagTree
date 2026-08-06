@@ -55,8 +55,8 @@ def test_add():
           f'{torch.max(torch.abs(output_torch - output_triton))}')
 
     from triton.backends.ascend.testing import do_bench_npu
-    bench_torch = do_bench_npu(lambda: x + y, clear_l2_cache=True, keep_res=True, collect_prof=False)
-    bench_triton = do_bench_npu(lambda: custom_func(x, y), clear_l2_cache=True, keep_res=True, collect_prof=False)
+    bench_torch = do_bench_npu(lambda: x + y, clear_l2_cache=True, keep_res=True)
+    bench_triton = do_bench_npu(lambda: custom_func(x, y), clear_l2_cache=True, keep_res=True)
     print(f"torch time : {bench_torch:.2f}")
     print(f"triton time: {bench_triton:.2f}")
 

@@ -103,10 +103,9 @@ def test_op(M, H, scalarValue):
     # print(triton_out)
     print("PASSED!")
 
-    triton_time = do_bench_npu(lambda: swiglu(input_tensor, scalarValue), clear_l2_cache=True, collect_prof=False)
+    triton_time = do_bench_npu(lambda: swiglu(input_tensor, scalarValue), clear_l2_cache=True)
     print(f"Triton time: {triton_time:.2f} us")
-    npu_time = do_bench_npu(lambda: torch_npu.npu_swiglu(input_tensor.npu(), dim=-1), clear_l2_cache=True,
-                            collect_prof=False)
+    npu_time = do_bench_npu(lambda: torch_npu.npu_swiglu(input_tensor.npu(), dim=-1), clear_l2_cache=True)
     print(f"NPU Swiglu time: {npu_time:.2f} us")
 
 

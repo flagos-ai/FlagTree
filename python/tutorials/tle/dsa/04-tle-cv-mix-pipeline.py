@@ -230,7 +230,7 @@ def test_cv_mix_matmul_add():
             torch.testing.assert_close(c_triton, c_ref, rtol=1e-2, atol=1e-2)
             print("    ✓ 精度验证通过")
 
-            triton_time = do_bench_npu(lambda: cv_mix_matmul_add(a, b), clear_l2_cache=True, collect_prof=False)
+            triton_time = do_bench_npu(lambda: cv_mix_matmul_add(a, b), clear_l2_cache=True)
             print(f"    Time: {triton_time:.4f} us")
         except Exception as e:
             print(f"    ✗ 失败: {e}")
@@ -243,8 +243,7 @@ def test_cv_mix_matmul_add():
             torch.testing.assert_close(c_db, c_ref, rtol=1e-2, atol=1e-2)
             print("    ✓ 精度验证通过")
 
-            db_time = do_bench_npu(lambda: cv_mix_matmul_add_double_buffer(a, b), clear_l2_cache=True,
-                                   collect_prof=False)
+            db_time = do_bench_npu(lambda: cv_mix_matmul_add_double_buffer(a, b), clear_l2_cache=True)
             print(f"    Time: {db_time:.4f} us")
             if 'triton_time' in locals():
                 speedup = triton_time / db_time

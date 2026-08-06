@@ -120,11 +120,11 @@ def test_may_discrete_ub_overflow():
     ref_time = do_bench_npu(
         lambda: matmul_ref[grid]
         (mat_a, mat_b, ref, M, N, K, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, multibuffer=False),
-        clear_l2_cache=True, collect_prof=False)
+        clear_l2_cache=True)
     hint_time = do_bench_npu(
         lambda: triton_compile_hint_may_discrete[grid]
         (mat_a, mat_b, mat_c, M, N, K, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, multibuffer=False),
-        clear_l2_cache=True, collect_prof=False)
+        clear_l2_cache=True)
     print(
         f"[BENCH] mayDiscretememaccess (hint): {hint_time:.2f} us, (no hint): {ref_time:.2f} us, ratio={hint_time / ref_time:.3f}"
     )
@@ -203,11 +203,11 @@ def test_dot_pad_only_k():
     ref_time = do_bench_npu(
         lambda: matmul_ref[grid]
         (mat_a, mat_b, ref, M, N, K, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, multibuffer=False),
-        clear_l2_cache=True, collect_prof=False)
+        clear_l2_cache=True)
     hint_time = do_bench_npu(
         lambda: triton_dot_pad_only_k[grid]
         (mat_a, mat_b, mat_c, M, N, K, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, multibuffer=False),
-        clear_l2_cache=True, collect_prof=False)
+        clear_l2_cache=True)
     print(
         f"[BENCH] dot_pad_only_k (hint): {hint_time:.2f} us, (no hint): {ref_time:.2f} us, ratio={hint_time / ref_time:.3f}"
     )
@@ -430,7 +430,6 @@ def test_tile_mix_cube_num():
             multibuffer=True,
         ),
         clear_l2_cache=True,
-        collect_prof=False,
     )
     hint_time = do_bench_npu(
         lambda: triton_flash_attn_tile_mix_cube_num[grid](
@@ -457,7 +456,6 @@ def test_tile_mix_cube_num():
             multibuffer=True,
         ),
         clear_l2_cache=True,
-        collect_prof=False,
     )
     print(
         f"[BENCH] tile_mix_cube_num (hint): {hint_time:.2f} us, (no hint): {ref_time:.2f} us, ratio={hint_time / ref_time:.3f}"
@@ -545,7 +543,6 @@ def test_disable_bubble_up():
             multibuffer=False,
         ),
         clear_l2_cache=True,
-        collect_prof=False,
     )
     hint_time = do_bench_npu(
         lambda: triton_rms_slice_disable_bubble_up[grid](
@@ -559,7 +556,6 @@ def test_disable_bubble_up():
             multibuffer=False,
         ),
         clear_l2_cache=True,
-        collect_prof=False,
     )
     print(
         f"[BENCH] disable_bubble_up (hint): {hint_time:.2f} us, (no hint): {ref_time:.2f} us, ratio={hint_time / ref_time:.3f}"
@@ -638,7 +634,6 @@ def test_bitwise_mask():
             multibuffer=False,
         ),
         clear_l2_cache=True,
-        collect_prof=False,
     )
     hint_time = do_bench_npu(
         lambda: triton_where_bitwise_mask[grid](
@@ -652,7 +647,6 @@ def test_bitwise_mask():
             multibuffer=False,
         ),
         clear_l2_cache=True,
-        collect_prof=False,
     )
     print(
         f"[BENCH] bitwise_mask (hint): {hint_time:.2f} us, (no hint): {ref_time:.2f} us, ratio={hint_time / ref_time:.3f}"

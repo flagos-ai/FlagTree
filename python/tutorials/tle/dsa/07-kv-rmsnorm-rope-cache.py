@@ -501,7 +501,7 @@ def test_op(
             epsilon=epsilon,
             cache_mode=cache_mode,
             is_output_kv=is_output_kv,
-        ), clear_l2_cache=True, collect_prof=False)
+        ), clear_l2_cache=True)
     print(f"[Triton kv_rmsnorm_rope_cache] Time: {triton_time:.4f} us")
 
     npu_time = do_bench_npu(
@@ -520,7 +520,7 @@ def test_op(
             epsilon=epsilon,
             cache_mode=cache_mode,
             is_output_kv=is_output_kv,
-        ), clear_l2_cache=True, collect_prof=False)
+        ), clear_l2_cache=True)
     print(f"[Torch-NPU kv_rmsnorm_rope_cache] Time: {npu_time:.4f} us")
 
     eps = 1e-2

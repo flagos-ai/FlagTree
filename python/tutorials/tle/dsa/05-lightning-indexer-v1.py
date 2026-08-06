@@ -395,7 +395,7 @@ def test_op(b, s1, s2, k):
             layout_key=layout_key,
             sparse_count=sparse_count,
             sparse_mode=sparse_mode,
-        ), clear_l2_cache=True, keep_res=True, collect_prof=False)
+        ), clear_l2_cache=True, keep_res=True)
 
     torch_npu_time = do_bench_npu(
         lambda: torch_npu.npu_lightning_indexer(
@@ -409,7 +409,7 @@ def test_op(b, s1, s2, k):
             layout_key=layout_key,
             sparse_count=sparse_count,
             sparse_mode=sparse_mode,
-        ), clear_l2_cache=True, keep_res=True, collect_prof=False)
+        ), clear_l2_cache=True, keep_res=True)
     print(f"Torch-NPU Time: {torch_npu_time} us")
     print(f"Triton    Time: {triton_time} us")
     return torch_npu_time, triton_time

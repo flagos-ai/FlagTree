@@ -867,10 +867,10 @@ def test_causal_conv1d_varlen(batch, with_padding, dim, seqlen, width, has_bias,
             has_initial_state=has_initial_states,
             activation=activation,
             pad_slot_id=PAD_SLOT_ID,
-        ), clear_l2_cache=True, collect_prof=False)
+        ), clear_l2_cache=True)
     pytorch_time = do_bench_npu(
         lambda: torch_fn(x_ref, seqlens, padded_state_indices, weight_ref, bias_ref, activation, final_states_ref,
-                         has_initial_states), clear_l2_cache=True, collect_prof=False)
+                         has_initial_states), clear_l2_cache=True)
     print("x.shape =", x.shape)
     print("with_padding =", with_padding)
     print("width =", width)

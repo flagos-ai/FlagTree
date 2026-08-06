@@ -654,10 +654,10 @@ def test_causal_conv1d_update_with_batch_gather(batch_size, with_padding, dim, w
             activation=activation,
             conv_state_indices=padded_state_indices,
             pad_slot_id=PAD_SLOT_ID,
-        ), clear_l2_cache=True, collect_prof=False)
+        ), clear_l2_cache=True)
     npu_ref_time = do_bench_npu(
         lambda: causal_conv1d_update_ref(x_ref[:batch_size], conv_state_ref, weight, bias, activation=activation),
-        clear_l2_cache=True, collect_prof=False)
+        clear_l2_cache=True)
     print("x.shape =", x.shape)
     print("with_padding =", with_padding)
     print("width =", width)

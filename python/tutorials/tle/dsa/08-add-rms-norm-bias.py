@@ -285,18 +285,18 @@ def test_benchmark_add_rms_norm_with_bias(input_shape, residual_shape, weight_sh
         def _torch_op():
             _, _ = _ascendc_add_rms_norm_bias(inp, residual, weight, bias, eps)
 
-        torch_time = do_bench_npu(lambda: _torch_op(), clear_l2_cache=True, keep_res=False, collect_prof=False)
+        torch_time = do_bench_npu(lambda: _torch_op(), clear_l2_cache=True, keep_res=False)
     else:
 
         def _torch_op():
             _, _ = _torch_fused_add_rms_norm_with_bias(inp, residual, weight, bias, eps)
 
-        torch_time = do_bench_npu(lambda: _torch_op(), clear_l2_cache=True, keep_res=False, collect_prof=False)
+        torch_time = do_bench_npu(lambda: _torch_op(), clear_l2_cache=True, keep_res=False)
 
     def _triton_op():
         _, _ = add_rms_norm_bias(inp, residual, weight, bias, eps)
 
-    triton_time = do_bench_npu(lambda: _triton_op(), clear_l2_cache=True, keep_res=False, collect_prof=False)
+    triton_time = do_bench_npu(lambda: _triton_op(), clear_l2_cache=True, keep_res=False)
 
     print("-" * 80)
     print("[do_bench_npu] | {:<20} | {:<20} |".format("torch_time", "triton_time"))

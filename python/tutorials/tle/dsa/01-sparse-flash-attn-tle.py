@@ -907,7 +907,7 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_b
             layout_kv='PA_BSND',
             sparse_mode=sparse_mode,
             block_table=block_table,
-        ), clear_l2_cache=True, collect_prof=False)
+        ), clear_l2_cache=True)
     print(f"[Triton SFA] Time: {triton_time:.4f} us")
 
     npu_time = do_bench_npu(
@@ -927,7 +927,7 @@ def test_op(T, B, KV_S, Q_N, KV_N, D, D_rope, sparse_size, scale_value, sparse_b
             sparse_mode=sparse_mode,
             block_table=block_table,
             attention_mode=2,
-        ), clear_l2_cache=True, collect_prof=False)
+        ), clear_l2_cache=True)
     print(f"[Torch-NPU SFA] Time: {npu_time:.4f} us")
 
 
