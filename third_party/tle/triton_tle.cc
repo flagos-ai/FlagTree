@@ -651,11 +651,12 @@ void init_triton_tle_ir(py::module &&m) {
       .def(
           "create_remote_pointers",
           [](TritonOpBuilder &self, std::optional<Type> resultTy,
-             std::optional<Value> src, Value shardId, const std::string &space,
-             std::optional<Value> offset, std::optional<Value> dstMem,
-             std::optional<Value> srcMem, std::optional<Value> comm,
-             std::optional<Value> srcOffset, std::optional<Value> nelems,
-             std::optional<Value> netIdx, std::optional<int64_t> elemBytes,
+             std::optional<Value> src, Value shardId,
+             const std::string &space, std::optional<Value> offset,
+             std::optional<Value> dstMem, std::optional<Value> comm,
+             std::optional<Value> dstOffset,
+             std::optional<Value> nelems, std::optional<Value> netIdx,
+             std::optional<int64_t> elemBytes,
              std::optional<int32_t> putCoopKind) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
@@ -675,16 +676,16 @@ void init_triton_tle_ir(py::module &&m) {
                             : IntegerAttr();
             return self.create<tle::RemotePointersOp>(
                 resultTy.value_or(Type()), src.value_or(Value()),
-                dstMem.value_or(Value()), srcMem.value_or(Value()),
-                comm.value_or(Value()), shardId, spaceAttr,
-                offset.value_or(Value()), srcOffset.value_or(Value()),
-                nelems.value_or(Value()), netIdx.value_or(Value()),
+                dstMem.value_or(Value()), comm.value_or(Value()), shardId,
+                spaceAttr, offset.value_or(Value()),
+                dstOffset.value_or(Value()), nelems.value_or(Value()),
+                netIdx.value_or(Value()),
                 elemBytesAttr, putCoopKindAttr);
           },
-          py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
-          py::arg("space"), py::arg("offset") = py::none(),
-          py::arg("dst_mem") = py::none(), py::arg("src_mem") = py::none(),
-          py::arg("comm") = py::none(), py::arg("src_offset") = py::none(),
+          py::arg("resultTy"), py::arg("src") = py::none(),
+          py::arg("shardId"), py::arg("space"),
+          py::arg("offset") = py::none(), py::arg("dst_mem") = py::none(),
+          py::arg("comm") = py::none(), py::arg("dst_offset") = py::none(),
           py::arg("nelems") = py::none(), py::arg("net_idx") = py::none(),
           py::arg("elem_bytes") = py::none(),
           py::arg("put_coop_kind") = py::none())

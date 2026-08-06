@@ -67,9 +67,6 @@ llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result) {
 }
 
 llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
-  if (op.getSrc())
-    return op.emitOpError()
-           << "node space does not accept a pointer source operand";
   if (op.getResult())
     return op.emitOpError() << "node space must not produce a result";
 
@@ -78,14 +75,18 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
       return op.emitOpError() << "node space requires " << name << " operand";
     return success();
   };
-  if (failed(requireOperand(op.getDstMem(), "dst_mem")) ||
-      failed(requireOperand(op.getSrcMem(), "src_mem")) ||
+  if (failed(requireOperand(op.getSrc(), "src")) ||
+      failed(requireOperand(op.getDstMem(), "dst_mem")) ||
       failed(requireOperand(op.getComm(), "comm")) ||
       failed(requireOperand(op.getOffset(), "offset")) ||
-      failed(requireOperand(op.getSrcOffset(), "src_offset")) ||
+      failed(requireOperand(op.getDstOffset(), "dst_offset")) ||
       failed(requireOperand(op.getNelems(), "nelems")) ||
       failed(requireOperand(op.getNetIdx(), "net_idx")))
     return failure();
+
+  if (!op.getSrc().getType().isSignlessInteger(64))
+    return op.emitOpError()
+           << "expects node source to be an i64 registered-memory handle";
 
   auto elemBytesAttr = op->getAttrOfType<IntegerAttr>("elem_bytes");
   if (!elemBytesAttr || elemBytesAttr.getInt() <= 0)
@@ -106,8 +107,8 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
   };
 
   if (failed(verifyNonNegativeConstant(op.getShardId(), "peer")) ||
-      failed(verifyNonNegativeConstant(op.getOffset(), "dst_offset")) ||
-      failed(verifyNonNegativeConstant(op.getSrcOffset(), "src_offset")) ||
+      failed(verifyNonNegativeConstant(op.getOffset(), "offset")) ||
+      failed(verifyNonNegativeConstant(op.getDstOffset(), "dst_offset")) ||
       failed(verifyNonNegativeConstant(op.getNetIdx(), "net_idx")))
     return failure();
 

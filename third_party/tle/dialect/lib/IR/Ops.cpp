@@ -1016,7 +1016,7 @@ LogicalResult RemotePointersOp::verify() {
   auto elemBytesAttr = (*this)->getAttrOfType<IntegerAttr>("elem_bytes");
   auto putCoopKindAttr = (*this)->getAttrOfType<IntegerAttr>("put_coop_kind");
 
-  if (getDstMem() || getSrcMem() || getComm() || getSrcOffset() ||
+  if (getDstMem() || getComm() || getDstOffset() ||
       getNelems() || getNetIdx() || elemBytesAttr || putCoopKindAttr)
     return emitOpError()
            << "cluster/device space does not accept node put operands or "

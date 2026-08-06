@@ -233,8 +233,10 @@ public:
   getAxisInfo(Operation *op,
               ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
     auto remote = dyn_cast<triton::tle::RemotePointersOp>(op);
-    if (!remote || !remote.getResult() || remote.getSpace() == "node" ||
-        operands.empty())
+    // RemotePointersOpAxisInfoVisitor 只处理有 src/result 的
+    // RemotePointersOp，且 space 不是 "node"。
+    if (!remote || !remote.getSrc() || !remote.getResult() ||
+        remote.getSpace() == "node" || operands.empty())
       return AxisInfo();
 
     const AxisInfo &baseInfo = operands[0]->getValue();
@@ -286,8 +288,14 @@ public:
   }
 
   bool match(Operation *op) override {
+    // 只有当 op 同时满足以下四个条件时，TleRemotePointersOpAxisInfoVisitor 才愿意处理它：
+    // 它是 RemotePointersOp
+    // 它有 src
+    // 它有 result
+    // 它的 space 不是 "node"
     auto remote = dyn_cast<triton::tle::RemotePointersOp>(op);
-    return remote && remote.getResult() && remote.getSpace() != "node";
+    return remote && remote.getSrc() && remote.getResult() &&
+           remote.getSpace() != "node";
   }
 };
 

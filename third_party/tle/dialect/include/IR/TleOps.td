@@ -405,12 +405,11 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
   let arguments = (ins
     Optional<Tle_LocalPointerResultType>:$src,
     Optional<I64>:$dst_mem,
-    Optional<I64>:$src_mem,
     Optional<I64>:$comm,
     TT_Int:$shard_id,
     StrAttr:$space,
     Optional<TT_IntLike>:$offset,
-    Optional<I64>:$src_offset,
+    Optional<I64>:$dst_offset,
     Optional<I64>:$nelems,
     Optional<I32>:$net_idx,
     OptionalAttr<I64Attr>:$elem_bytes,
