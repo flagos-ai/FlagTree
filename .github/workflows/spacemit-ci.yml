@@ -36,7 +36,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Load CI variables
-        run: grep -v '^\s*#' third_party/spacemit/.github/spacemit-ci.env | grep -v '^\s*$' >> $GITHUB_ENV
+        run: grep -v '^\s*#' third_party/spacemit/spacemit-ci.env | grep -v '^\s*$' >> $GITHUB_ENV
 
       - name: Cache RV toolchain
         id: cache-rv-toolchain
