@@ -1389,11 +1389,18 @@ ttg::LocalAllocOp findShmemAlloc(Value operand) {
   // come from an MemDescIndex op. Only ConvertLayout and MemdescView ops are
   // allowed in between.
   Value transitiveOperand = operand;
+#ifdef __TLE__
   while (isa_and_nonnull<ttg::ConvertLayoutOp, tt::TransOp, ttg::MemDescTransOp,
                          ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp,
                          tle::MemDescAliasOp>(
              transitiveOperand.getDefiningOp()) ||
          isa<BlockArgument>(transitiveOperand)) {
+#else
+  while (isa_and_nonnull<ttg::ConvertLayoutOp, tt::TransOp, ttg::MemDescTransOp,
+                         ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp>(
+             transitiveOperand.getDefiningOp()) ||
+         isa<BlockArgument>(transitiveOperand)) {
+#endif
     if (auto blockArg = dyn_cast<BlockArgument>(transitiveOperand)) {
       assert(isa<scf::ForOp>(blockArg.getOwner()->getParentOp()) &&
              "Block argument must come from a for loop");
@@ -1586,6 +1593,7 @@ void replaceUsesAndPropagateType(
           oldType.getMemorySpace(), isMutable, oldType.getAllocShape());
       newVal = ttg::MemDescSubsliceOp::create(
           builder, subslice.getLoc(), newDstType, val, subslice.getOffsets());
+#ifdef __TLE__
     } else if (auto alias = dyn_cast<tle::MemDescAliasOp>(user)) {
       ttg::MemDescType oldType = alias.getType();
       bool isMutable = cast<ttg::MemDescType>(val.getType()).getMutableMemory();
@@ -1594,6 +1602,7 @@ void replaceUsesAndPropagateType(
           oldType.getMemorySpace(), isMutable, oldType.getAllocShape());
       newVal = tle::MemDescAliasOp::create(
           builder, alias.getLoc(), newDstType, val, alias.getOffsetBytesAttr());
+#endif
     } else if (auto trans = dyn_cast<ttg::MemDescTransOp>(user)) {
       newVal = ttg::MemDescTransOp::create(builder, trans.getLoc(), val,
                                            trans.getOrder());

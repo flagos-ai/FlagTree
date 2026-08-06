@@ -13,23 +13,24 @@ def alias_e2e_kernel(in_ptr, out_ptr, N, BLOCK: tl.constexpr):
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < N
 
-    # 阶段 1: 分配 v_smem，写入第一批数据 (原始输入)
+    # Phase 1: allocate v_smem, write the first batch of data (original input)
     v_smem = tle.gpu.alloc([BLOCK], dtype=tl.float32, scope=tle.gpu.smem)
     tle.gpu.copy(in_ptr + offs, v_smem, [BLOCK])
 
-    # 阶段 2: alias — o_smem 复用 v_smem 的物理内存
+    # Phase 2: alias — o_smem reuses v_smem's physical memory
     o_smem = tle.gpu.alloc(
         [BLOCK], dtype=tl.float32, scope=tle.gpu.smem,
         alias=v_smem, alias_offset_bytes=0,
     )
 
-    # 阶段 3: 关键 — 通过 v_smem 写入第二批数据 (input + BLOCK 偏移)，
-    #         覆盖同一块物理内存。如果 alias 正确，o_smem 应该看到覆盖后的值。
+    # Phase 3: critical — write second batch of data via v_smem (input + BLOCK offset),
+    #          overwriting the same physical memory. If alias is correct, o_smem
+    #          should see the overwritten values.
     offs2 = offs + BLOCK
     mask2 = offs2 < N
     tle.gpu.copy(in_ptr + offs2, v_smem, [BLOCK])
 
-    # 阶段 4: 从 o_smem 读出
+    # Phase 4: read from o_smem
     tle.gpu.copy(o_smem, out_ptr + offs, [BLOCK])
 
 
@@ -39,15 +40,15 @@ if __name__ == "__main__":
     y = torch.zeros(1024, device="cuda", dtype=torch.float32)  # only first 1024
 
     grid = (triton.cdiv(1024, BLOCK),)
-    alias_e2e_kernel[grid](x, y, 1024, BLOCK=BLOCK)  # 注意：N=1024，第二批数据在 idx 128..1151
+    alias_e2e_kernel[grid](x, y, 1024, BLOCK=BLOCK)
     torch.cuda.synchronize()
 
-    # 验证: y 应该等于 x[128:1152] (第二批)，而不是 x[0:1024] (第一批)
-    # 这证明 v_smem 的覆盖写入被 o_smem 观察到了
+    # Verify: y should equal x[128:1152] (second batch), not x[0:1024] (first batch).
+    # This confirms that v_smem's overwrite was observed by o_smem.
     expected = x[128:1152]
     max_diff_alias = (expected - y).abs().max().item()
 
-    # 对照组: y 不应该等于第一批数据
+    # Control: y should NOT equal the first batch
     first_batch = x[:1024]
     max_diff_original = (first_batch - y).abs().max().item()
 
