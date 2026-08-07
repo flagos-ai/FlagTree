@@ -1,8 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 7ee8713ab..2e32a38b9 100644
+index f2c9b0419..11d696b43 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -504,15 +504,20 @@ if(TRITON_BUILD_PYTHON_MODULE)
+@@ -271,10 +271,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
  
      # LLVM
      LLVMPasses
@@ -13,8 +13,10 @@ index 7ee8713ab..2e32a38b9 100644
  
      Python3::Module
      pybind11::headers
- 
+@@ -282,6 +278,15 @@ if(TRITON_BUILD_PYTHON_MODULE)
    )
+   flagtree_configure_backend_libraries()
+ 
 +  # GPU codegen libs only exist when their LLVM targets were built. The RISC-V
 +  # prebuilt LLVM (spacemit) has only RISCV;X86, so guard these to avoid
 +  # linking nonexistent NVPTX/AMDGPU target libraries.
@@ -24,9 +26,9 @@ index 7ee8713ab..2e32a38b9 100644
 +  if("AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD)
 +    list(APPEND TRITON_LIBRARIES LLVMAMDGPUCodeGen LLVMAMDGPUAsmParser)
 +  endif()
-   if(FLAGTREE_BACKEND STREQUAL "iluvatar")
-     set(TRITON_LIBRARIES
-       ${triton_libs}
+   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
+      CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" OR # macOS arm64
+      CMAKE_OSX_ARCHITECTURES MATCHES "arm64")  # also macOS arm64
 diff --git a/include/triton/Dialect/Triton/IR/TritonAttrDefs.td b/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
 index 694640cc4..49f153aff 100644
 --- a/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
@@ -166,49 +168,50 @@ index 92cb8cf61..19023d1d8 100644
  
    py::enum_<CacheModifier>(m, "CACHE_MODIFIER", py::module_local())
 diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
-index ff1a6c7f4..3a3c08fbc 100644
+index 95cb04c3f..c23e84687 100644
 --- a/python/triton/compiler/code_generator.py
 +++ b/python/triton/compiler/code_generator.py
-@@ -1266,14 +1266,20 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1266,6 +1266,7 @@ class CodeGenerator(ast.NodeVisitor):
          flatten = False
          warp_specialize = False
          disable_licm = False
 +        bind_sub_block = None
+         reorder = False  # flagtree reorder-loop-loads
          # flagtree tle
          try:
-             from ..experimental.tle import language as tle
-             tle_pipeline = tle.gpu.pipeline
+@@ -1275,8 +1276,13 @@ class CodeGenerator(ast.NodeVisitor):
          except ImportError:
              tle_pipeline = None
+             tle_range = None
 +        # spacemit smt.parallel (only present when the spacemit backend is built)
 +        try:
 +            from ..language.extra.smt import parallel as smt_parallel
 +        except ImportError:
 +            smt_parallel = None
  
--        if IteratorClass in [language.range, tle_pipeline]:
-+        if IteratorClass in [language.range, tle_pipeline, smt_parallel]:
+-        if IteratorClass in [language.range, tle_pipeline, tle_range]:  # flagtree reorder-loop-loads
++        if IteratorClass in [language.range, tle_pipeline, tle_range, smt_parallel]:  # flagtree reorder-loop-loads
              iterator = IteratorClass(*iter_args, **iter_kwargs)
              # visit iterator arguments
              # note: only `range` iterator is supported now
-@@ -1287,6 +1293,8 @@ class CodeGenerator(ast.NodeVisitor):
-             flatten = iterator.flatten
+@@ -1291,6 +1297,8 @@ class CodeGenerator(ast.NodeVisitor):
              warp_specialize = iterator.warp_specialize
              disable_licm = iterator.disable_licm
+             reorder = getattr(iterator, 'reorder', False)  # flagtree reorder-loop-loads
 +            if smt_parallel is not None and IteratorClass is smt_parallel:
 +                bind_sub_block = iterator.bind_sub_block
          elif IteratorClass is range:
              # visit iterator arguments
              # note: only `range` iterator is supported now
-@@ -1351,6 +1359,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1355,6 +1363,8 @@ class CodeGenerator(ast.NodeVisitor):
                  for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
              if disable_licm:
                  for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
 +            if (bind_sub_block is not None) and bind_sub_block:
 +                for_op.set_attr("bind_sub_block", self.builder.get_bool_attr(bind_sub_block))
+             if reorder and _unwrap_if_constexpr(loop_unroll_factor) is not None:  # flagtree reorder-loop-loads
+                 for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))  # flagtree reorder-loop-loads
  
-             self.scf_stack.append(node)
-             for_op_body = for_op.get_body(0)
 diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
 index 23cbd80db..4395d6185 100644
 --- a/python/triton/language/semantic.py
@@ -282,7 +285,7 @@ index 3d2498d2c..6a233b5ec 100644
              raise ValueError(f"unsupported padding option {padding_option}")
          return self.create_masked_load(ptrs, masks, other, cache_modifier, eviction_policy, is_volatile)
 diff --git a/setup.py b/setup.py
-index 17c988af6..303e3310c 100644
+index 3d60f95c4..376bb9b75 100644
 --- a/setup.py
 +++ b/setup.py
 @@ -33,6 +33,8 @@ import tarfile
@@ -538,7 +541,7 @@ index 17c988af6..303e3310c 100644
  
  
  if helper.flagtree_backend:
--    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir"):
+-    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
 +    if _is_spacemit_build():
 +        # spacemit builds against ROOT triton as an external plugin
 +        # (backend/name.conf + leaf CMakeLists via TRITON_PLUGIN_DIRS).
@@ -552,28 +555,28 @@ index 17c988af6..303e3310c 100644
 +                                     backend_src_dir=os.path.join("third_party", "spacemit"),
 +                                     is_external=True),
 +        ]
-+    elif helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir"):
++    elif helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
          backends = [
              *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
              *BackendInstaller.copy_externals(),
-@@ -713,7 +850,7 @@ else:
+@@ -725,7 +862,7 @@ def get_backend_packages(backend):
  
  
  def get_package_dirs():
 -    yield ("", "python")
 +    yield ("", get_python_root())
  
-     for backend in backends:
-         # we use symlinks for external plugins
-@@ -740,7 +877,7 @@ def get_package_dirs():
- 
+     # flagtree backend specialization
+     yield from helper.SpecPackageHelper.get_spec_packages()
+@@ -758,7 +895,7 @@ def get_package_dirs():
  
  def get_packages():
--    yield from find_packages(where="python", include=["triton", "triton.*"])
-+    yield from find_packages(where=get_python_root(), include=["triton", "triton.*"])
+     # flagtree backend specialization: add excluded packages
+-    yield from find_packages(where="python", include=["triton", "triton.*"],
++    yield from find_packages(where=get_python_root(), include=["triton", "triton.*"],
+                              exclude=helper.SpecPackageHelper.get_excluded_packages())
  
-     for backend in backends:
-         yield f"triton.backends.{backend.name}"
+     # flagtree backend specialization
 diff --git a/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td b/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td
 index 8d35a5ec1..e476cad96 100644
 --- a/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td
