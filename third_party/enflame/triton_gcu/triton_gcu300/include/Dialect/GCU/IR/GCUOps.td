@@ -621,6 +621,26 @@ def GCU_WaitDTEOp : GCU_Op<"wait_dte", [MemoryEffectsOpInterface]> {
 }
 
 //
+// SetSrcAddrOp Op
+//
+def GCU_SetSrcAddrOp : GCU_Op<"set_src_addr", [MemoryEffectsOpInterface]> {
+  let summary = "Set source address for the operation bound to the DTE context.";
+  let description = [{
+    `gcu.set_src_addr` set source address for the operation bound to the DTE context..
+  }];
+  let arguments = (ins GCU_DTEType:$dte, GCU_PtrType:$addr);
+  let assemblyFormat = "$dte `,` $addr attr-dict `:` type($dte) `,` type($addr)";
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
 // SetDstAddrOp Op
 //
 def GCU_SetDstAddrOp : GCU_Op<"set_dst_addr", [MemoryEffectsOpInterface]> {
@@ -674,6 +694,144 @@ def GCU_SetDstOffsetOp : GCU_Op<"set_dst_offset", [MemoryEffectsOpInterface]> {
   }];
   let arguments = (ins GCU_DTEType:$dte, I32:$dim, I32:$offset);
   let assemblyFormat = "$dte `,` $dim `,` $offset attr-dict `:` type($dte)";
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// SetSrcDimSizeOp Op
+//
+def GCU_SetSrcDimSizeOp : GCU_Op<"set_src_dim_size", [MemoryEffectsOpInterface]> {
+  let summary = "Set source dimension size for the operation bound to the DTE context.";
+  let description = [{
+    `gcu.set_src_dim_size` set source dimension size for the operation bound to the DTE context.
+    `dim` is an int number representing the dimension index.
+    `dim_size` is an unsigned int number representing the dimension size.
+  }];
+  let arguments = (ins GCU_DTEType:$dte, I32:$dim, I32:$dim_size);
+  let assemblyFormat = "$dte `,` $dim `,` $dim_size attr-dict `:` type($dte)";
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// SetDstDimSizeOp Op
+//
+def GCU_SetDstDimSizeOp : GCU_Op<"set_dst_dim_size", [MemoryEffectsOpInterface]> {
+  let summary = "Set destination dimension size for the operation bound to the DTE context.";
+  let description = [{
+    `gcu.set_dst_dim_size` set destination dimension size for the operation bound to the DTE context.
+    `dim` is an int number representing the dimension index.
+    `dim_size` is an unsigned int number representing the dimension size.
+  }];
+  let arguments = (ins GCU_DTEType:$dte, I32:$dim, I32:$dim_size);
+  let assemblyFormat = "$dte `,` $dim `,` $dim_size attr-dict `:` type($dte)";
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// SetTotalSizeOp Op
+//
+def GCU_SetTotalSizeOp : GCU_Op<"set_total_size", [MemoryEffectsOpInterface]> {
+  let summary = "Set total size for the operation bound to the DTE context.";
+  let description = [{
+    `gcu.set_total_size` set total data transfer size for the operation bound to the DTE context.
+    `total_size` is an unsigned 64-bit integer representing the total transfer size in bytes.
+  }];
+  let arguments = (ins GCU_DTEType:$dte, I64:$total_size);
+  let assemblyFormat = "$dte `,` $total_size attr-dict `:` type($dte)";
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// SetTransposeLayoutOp Op
+//
+def GCU_SetTransposeLayoutOp : GCU_Op<"set_transpose_layout", [MemoryEffectsOpInterface]> {
+  let summary = "Set transpose layout for the operation bound to the DTE context.";
+  let description = [{
+    `gcu.set_transpose_layout` set the transpose permutation layout for the operation
+    bound to the DTE context.
+    `layout` is a variadic list of integers representing the transpose permutation.
+  }];
+  let arguments = (ins GCU_DTEType:$dte, Variadic<I32>:$layout);
+  let assemblyFormat = "$dte `[` $layout `]` attr-dict `:` type($dte)";
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// SetPadConfigOp Op
+//
+def GCU_SetPadConfigOp : GCU_Op<"set_pad_config", [MemoryEffectsOpInterface]> {
+  let summary = "Set pad configuration for the operation bound to the DTE context.";
+  let description = [{
+    `gcu.set_pad_config` set padding configuration for the operation bound to the DTE context.
+    `dim` is an int number representing the dimension index.
+    `pad_low` is an unsigned int representing the low-side padding size.
+    `pad_high` is an unsigned int representing the high-side padding size.
+    `pad_mid` is an unsigned int representing the mid padding size.
+  }];
+  let arguments = (ins GCU_DTEType:$dte, I32:$dim, I32:$pad_low, I32:$pad_high, I32:$pad_mid);
+  let assemblyFormat = "$dte `,` $dim `,` $pad_low `,` $pad_high `,` $pad_mid attr-dict `:` type($dte)";
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+                           SideEffects::DefaultResource::get());
+    }
+  }];
+}
+
+//
+// SetPadValueOp Op
+//
+def GCU_SetPadValueOp : GCU_Op<"set_pad_value", [MemoryEffectsOpInterface]> {
+  let summary = "Set pad value for the operation bound to the DTE context.";
+  let description = [{
+    `gcu.set_pad_value` set the padding fill value for the operation bound to the DTE context.
+    `pad_value` is a 64-bit integer representing the padding value.
+  }];
+  let arguments = (ins GCU_DTEType:$dte, I64:$pad_value);
+  let assemblyFormat = "$dte `,` $pad_value attr-dict `:` type($dte)";
+  let hasVerifier = 1;
   let extraClassDeclaration = [{
     void getEffects(
         SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
@@ -1802,6 +1960,29 @@ def GCU_MatMulOp : GCU_Op<"matmul", [MemoryEffectsOpInterface,
 }
 
 //
+// Matrix Load Op
+//
+def GCU_MatrixLoadOp : GCU_Op<"matrix_load", [AttrSizedOperandSegments,
+                               MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "matrix load";
+  let description = [{
+    Performs a two dimensional matrix load.
+    value: the destination buffer to load into
+    ptr: the pointer to the source memory
+    mem_dims: the memory dimensions of the source
+    real_dims: the real dimensions of the source
+  }];
+  let arguments = (ins AnyMemRef:$value,
+                       GCU_PtrType:$ptr,
+                       Variadic<Index>:$mem_dims,
+                       Variadic<Index>:$real_dims);
+  let assemblyFormat = [{$value `,` $ptr `,` `[` $mem_dims `]` `,` `[` $real_dims `]`
+                        attr-dict `:` type($value) `,` type($ptr)}];
+  let hasVerifier = 1;
+}
+
+
+//
 // Matrix Store Op
 //
 def GCU_MatrixStoreOp : GCU_Op<"matrix_store", [AttrSizedOperandSegments, MemoryEffects<[MemWrite]>]> {
@@ -1820,6 +2001,31 @@ def GCU_MatrixStoreOp : GCU_Op<"matrix_store", [AttrSizedOperandSegments, Memory
   let assemblyFormat = [{$value `,` $ptr `,` `[` $mem_dims `]` `,` `[` $real_dims `]`
                         attr-dict `:` type($value) `,` type($ptr)}];
   let hasVerifier = 1;
+}
+
+//
+// Matrix Store Reduce Op: read OACC rows and reduce each to a scalar.
+//
+def GCU_MatrixStoreReduceOp : GCU_Op<"matrix_store_reduce",
+    [AttrSizedOperandSegments, MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "reduce OACC rows and store scalars";
+  let description = [{
+    Reads each row from an OACC accumulator buffer, reduces it to a scalar
+    using the specified combining operation, and stores the result.
+    value: the OACC source buffer (memref with alignment 512)
+    ptr: pointer to the destination memory for reduced scalars
+    reduce_kind: string attribute for the reduction kind (maxnumf, minnumf, sum)
+    mem_dims: memory dimensions of the destination layout
+    real_dims: real dimensions of the OACC tile (rows, columns)
+  }];
+  let arguments = (ins AnyMemRef:$value,
+                       GCU_PtrType:$ptr,
+                       StrAttr:$reduce_kind,
+                       Variadic<Index>:$mem_dims,
+                       Variadic<Index>:$real_dims);
+  let assemblyFormat = [{$value `,` $ptr `,` $reduce_kind `,`
+                        `[` $mem_dims `]` `,` `[` $real_dims `]`
+                        attr-dict `:` type($value) `,` type($ptr)}];
 }
 
 //

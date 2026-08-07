@@ -1155,7 +1155,14 @@ class CodeGenerator(ast.NodeVisitor):
         flatten = False
         warp_specialize = False
         disable_licm = False
-        if IteratorClass is language.range:
+        # flagtree tle
+        try:
+            from ..experimental.tle import language as tle
+            tle_pipeline = tle.gpu.pipeline
+        except ImportError:
+            tle_pipeline = None
+
+        if IteratorClass in [language.range, tle_pipeline]:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now

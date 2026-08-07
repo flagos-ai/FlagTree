@@ -6,6 +6,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
@@ -16,13 +17,21 @@ namespace mlir::triton::musa {
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 
+inline SmallVector<int64_t> getNormalizedAllocShape(ttg::MemDescType type) {
+  SmallVector<int64_t> allocShape(type.getAllocShape().begin(),
+                                  type.getAllocShape().end());
+  if (allocShape.empty())
+    allocShape.assign(type.getShape().begin(), type.getShape().end());
+  return allocShape;
+}
+
 inline bool areMemDescTypesCompatible(ttg::MemDescType lhs,
                                       ttg::MemDescType rhs) {
   return lhs.getShape() == rhs.getShape() &&
          lhs.getElementType() == rhs.getElementType() &&
          lhs.getEncoding() == rhs.getEncoding() &&
          lhs.getMemorySpace() == rhs.getMemorySpace() &&
-         lhs.getAllocShape() == rhs.getAllocShape();
+         getNormalizedAllocShape(lhs) == getNormalizedAllocShape(rhs);
 }
 
 inline bool
@@ -39,7 +48,7 @@ inline bool areMemDescTypesLayoutEquivalent(ttg::MemDescType lhs,
   return lhs.getShape() == rhs.getShape() &&
          lhs.getElementType() == rhs.getElementType() &&
          lhs.getMemorySpace() == rhs.getMemorySpace() &&
-         lhs.getAllocShape() == rhs.getAllocShape() &&
+         getNormalizedAllocShape(lhs) == getNormalizedAllocShape(rhs) &&
          getMUSASharedLinearLayoutOrGeneric(lhs) ==
              getMUSASharedLinearLayoutOrGeneric(rhs);
 }
@@ -340,7 +349,8 @@ inline FailureOr<ttg::MemDescType> resolveDescriptorStoreLandingMemDescType(
 }
 
 inline Value adaptMemDescValue(RewriterBase &rewriter, Location loc,
-                               Value value, ttg::MemDescType targetTy) {
+                               Value value, ttg::MemDescType targetTy,
+                               Operation *sqmmaAttrSource = nullptr) {
   auto srcTy = dyn_cast<ttg::MemDescType>(value.getType());
   if (!srcTy)
     return {};
@@ -349,7 +359,11 @@ inline Value adaptMemDescValue(RewriterBase &rewriter, Location loc,
   if (!areMemDescTypesCompatible(srcTy, targetTy) &&
       !areMemDescTypesLayoutEquivalent(srcTy, targetTy))
     return {};
-  return ttg::MemDescReinterpretOp::create(rewriter, loc, targetTy, value);
+  auto reinterpret =
+      ttg::MemDescReinterpretOp::create(rewriter, loc, targetTy, value);
+  if (sqmmaAttrSource)
+    copySqmmaAttrs(sqmmaAttrSource, reinterpret.getOperation());
+  return reinterpret;
 }
 
 inline Value findReusableLocalAllocForSource(Value source,
@@ -366,34 +380,124 @@ inline Value findReusableLocalAllocForSource(Value source,
   return {};
 }
 
-inline Value materializeTransformedMemDescForTarget(RewriterBase &rewriter,
-                                                    tt::TransOp transOp,
-                                                    Value sourceMemDesc,
-                                                    ttg::MemDescType targetTy) {
+inline SmallVector<int64_t> invertTrailingPermutation(ArrayRef<int64_t> shape,
+                                                      ArrayRef<int32_t> order) {
+  SmallVector<int64_t> result;
+  auto rank = static_cast<size_t>(order.size());
+  if (shape.size() < rank)
+    return result;
+  result.assign(shape.begin(), shape.end() - rank);
+
+  SmallVector<int64_t> tail(shape.end() - rank, shape.end());
+  SmallVector<int64_t> inverse(rank);
+  for (auto [idx, permutedIdx] : llvm::enumerate(order))
+    inverse[permutedIdx] = tail[idx];
+  result.append(inverse.begin(), inverse.end());
+  return result;
+}
+
+inline ttg::MemDescType
+inferTransformedMemDescSourceType(tt::TransOp transOp,
+                                  ttg::MemDescType targetTy) {
+  auto srcTy = dyn_cast<RankedTensorType>(transOp.getSrc().getType());
+  if (!srcTy || !targetTy.getEncoding())
+    return {};
+
+  Dialect &dialect = targetTy.getEncoding().getDialect();
+  auto inferLayoutInterface =
+      dyn_cast<tt::DialectInferLayoutInterface>(&dialect);
+  if (!inferLayoutInterface)
+    return {};
+
+  SmallVector<int32_t> inverseOrder(transOp.getOrder().size());
+  for (auto [idx, permutedIdx] : llvm::enumerate(transOp.getOrder()))
+    inverseOrder[permutedIdx] = idx;
+
+  Attribute sourceEncoding;
+  if (failed(inferLayoutInterface->inferTransOpEncoding(
+          targetTy.getEncoding(), targetTy.getShape(), inverseOrder,
+          sourceEncoding, transOp.getLoc()))) {
+    return {};
+  }
+
+  SmallVector<int64_t> sourceAllocShape;
+  if (!targetTy.getAllocShape().empty()) {
+    sourceAllocShape =
+        invertTrailingPermutation(targetTy.getAllocShape(), transOp.getOrder());
+    if (sourceAllocShape.empty())
+      return {};
+  }
+
+  return ttg::MemDescType::get(srcTy.getShape(), srcTy.getElementType(),
+                               sourceEncoding, targetTy.getMemorySpace(),
+                               targetTy.getMutableMemory(), sourceAllocShape);
+}
+
+inline ttg::MemDescType
+inferReshapedMemDescSourceType(tt::ReshapeOp reshapeOp,
+                               ttg::MemDescType targetTy) {
+  auto srcTy = dyn_cast<RankedTensorType>(reshapeOp.getSrc().getType());
+  if (!srcTy)
+    return {};
+
+  ttg::MemDescType sourceTy;
+  if (failed(ttg::MemDescReshapeOp::inferReturnTypes(
+          reshapeOp.getContext(), reshapeOp.getLoc(), targetTy,
+          srcTy.getShape(), sourceTy))) {
+    return {};
+  }
+  return sourceTy;
+}
+
+inline Value
+materializeTransformedMemDesc(RewriterBase &rewriter, tt::TransOp transOp,
+                              Value sourceMemDesc,
+                              Operation *sqmmaAttrSource = nullptr) {
   SmallVector<int32_t> transposeOrder(transOp.getOrder().begin(),
                                       transOp.getOrder().end());
-  Value transformed = ttg::MemDescTransOp::create(
+  auto transformedOp = ttg::MemDescTransOp::create(
       rewriter, transOp.getLoc(), sourceMemDesc, transposeOrder);
+  if (sqmmaAttrSource)
+    copySqmmaAttrs(sqmmaAttrSource, transformedOp.getOperation());
+  return transformedOp.getResult();
+}
+
+inline Value materializeTransformedMemDescForTarget(
+    RewriterBase &rewriter, tt::TransOp transOp, Value sourceMemDesc,
+    ttg::MemDescType targetTy, Operation *sqmmaAttrSource = nullptr) {
+  Value transformed = materializeTransformedMemDesc(
+      rewriter, transOp, sourceMemDesc, sqmmaAttrSource);
   if (transformed.getType() == targetTy)
     return transformed;
-  Value adapted =
-      adaptMemDescValue(rewriter, transOp.getLoc(), transformed, targetTy);
+  Value adapted = adaptMemDescValue(rewriter, transOp.getLoc(), transformed,
+                                    targetTy, sqmmaAttrSource);
   if (adapted)
     return adapted;
   transformed.getDefiningOp()->erase();
   return {};
 }
 
-inline Value materializeReshapedMemDescForTarget(RewriterBase &rewriter,
-                                                 tt::ReshapeOp reshapeOp,
-                                                 Value sourceMemDesc,
-                                                 ttg::MemDescType targetTy) {
-  Value transformed = ttg::MemDescReshapeOp::create(
-      rewriter, reshapeOp.getLoc(), sourceMemDesc, targetTy.getShape());
+inline Value materializeReshapedMemDesc(RewriterBase &rewriter,
+                                        tt::ReshapeOp reshapeOp,
+                                        Value sourceMemDesc,
+                                        Operation *sqmmaAttrSource = nullptr) {
+  auto resultTy = cast<RankedTensorType>(reshapeOp.getResult().getType());
+  auto transformedOp = ttg::MemDescReshapeOp::create(
+      rewriter, reshapeOp.getLoc(), sourceMemDesc, resultTy.getShape());
+  if (sqmmaAttrSource)
+    copySqmmaAttrs(sqmmaAttrSource, transformedOp.getOperation());
+  return transformedOp.getResult();
+}
+
+inline Value materializeReshapedMemDescForTarget(
+    RewriterBase &rewriter, tt::ReshapeOp reshapeOp, Value sourceMemDesc,
+    ttg::MemDescType targetTy, Operation *sqmmaAttrSource = nullptr) {
+  Value transformed = materializeReshapedMemDesc(
+      rewriter, reshapeOp, sourceMemDesc, sqmmaAttrSource);
   if (transformed.getType() == targetTy)
     return transformed;
-  Value adapted =
-      adaptMemDescValue(rewriter, reshapeOp.getLoc(), transformed, targetTy);
+  Value adapted = adaptMemDescValue(rewriter, reshapeOp.getLoc(), transformed,
+                                    targetTy, sqmmaAttrSource);
   if (adapted)
     return adapted;
   transformed.getDefiningOp()->erase();
@@ -412,11 +516,87 @@ inline bool replaceTensorLocalAllocWithMemDesc(RewriterBase &rewriter,
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(localAlloc);
   Value replacement =
-      adaptMemDescValue(rewriter, localAlloc.getLoc(), sourceMemDesc, targetTy);
+      adaptMemDescValue(rewriter, localAlloc.getLoc(), sourceMemDesc, targetTy,
+                        localAlloc.getOperation());
   if (!replacement)
     return false;
   rewriter.replaceOp(localAlloc, replacement);
   return true;
+}
+
+inline bool isSqmmaMemDescLocalAlloc(ttg::LocalAllocOp localAlloc) {
+  return localAlloc && localAlloc.getSrc() &&
+         hasSqmmaOpIdxAttr(localAlloc.getOperation()) &&
+         isa<ttg::MemDescType>(localAlloc.getType());
+}
+
+inline void replaceSqmmaLocalAllocWithMemDesc(IRRewriter &rewriter,
+                                              ttg::LocalAllocOp localAlloc,
+                                              Value replacement) {
+  assert(replacement && "expected a materialized SQMMA operand memdesc");
+  replaceUsesAndPropagateType(rewriter, localAlloc, replacement);
+  localAlloc.erase();
+}
+
+inline bool replaceSqmmaTensorUsersWithMemDesc(IRRewriter &rewriter,
+                                               Value tensorValue,
+                                               Value sourceMemDesc) {
+  bool changed = false;
+  SmallVector<Operation *> users(tensorValue.getUsers().begin(),
+                                 tensorValue.getUsers().end());
+  for (Operation *user : users) {
+    if (auto localAlloc = dyn_cast<ttg::LocalAllocOp>(user)) {
+      if (!isSqmmaMemDescLocalAlloc(localAlloc))
+        continue;
+      auto targetTy = cast<ttg::MemDescType>(localAlloc.getType());
+      rewriter.setInsertionPoint(localAlloc);
+      Value replacement =
+          adaptMemDescValue(rewriter, localAlloc.getLoc(), sourceMemDesc,
+                            targetTy, localAlloc.getOperation());
+      if (!replacement)
+        continue;
+      replaceSqmmaLocalAllocWithMemDesc(rewriter, localAlloc, replacement);
+      changed = true;
+      continue;
+    }
+
+    if (auto transOp = dyn_cast<tt::TransOp>(user)) {
+      for (Operation *viewUser : llvm::make_early_inc_range(user->getUsers())) {
+        auto localAlloc = dyn_cast<ttg::LocalAllocOp>(viewUser);
+        if (!isSqmmaMemDescLocalAlloc(localAlloc))
+          continue;
+        rewriter.setInsertionPoint(localAlloc);
+        Value replacement = materializeTransformedMemDesc(
+            rewriter, transOp, sourceMemDesc, localAlloc.getOperation());
+        replaceSqmmaLocalAllocWithMemDesc(rewriter, localAlloc, replacement);
+        changed = true;
+      }
+      if (user->use_empty())
+        rewriter.eraseOp(user);
+      continue;
+    }
+
+    if (auto reshapeOp = dyn_cast<tt::ReshapeOp>(user)) {
+      for (Operation *viewUser : llvm::make_early_inc_range(user->getUsers())) {
+        auto localAlloc = dyn_cast<ttg::LocalAllocOp>(viewUser);
+        if (!isSqmmaMemDescLocalAlloc(localAlloc))
+          continue;
+        auto targetTy = cast<ttg::MemDescType>(localAlloc.getType());
+        rewriter.setInsertionPoint(localAlloc);
+        Value replacement = materializeReshapedMemDescForTarget(
+            rewriter, reshapeOp, sourceMemDesc, targetTy,
+            localAlloc.getOperation());
+        if (!replacement)
+          continue;
+        replaceSqmmaLocalAllocWithMemDesc(rewriter, localAlloc, replacement);
+        changed = true;
+      }
+      if (user->use_empty())
+        rewriter.eraseOp(user);
+      continue;
+    }
+  }
+  return changed;
 }
 
 inline bool tryReplaceTensorUserWithMemDesc(RewriterBase &rewriter,
@@ -439,7 +619,8 @@ inline bool tryReplaceTensorUserWithMemDesc(RewriterBase &rewriter,
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(localAlloc);
       Value replacement = materializeTransformedMemDescForTarget(
-          rewriter, transOp, sourceMemDesc, targetTy);
+          rewriter, transOp, sourceMemDesc, targetTy,
+          localAlloc.getOperation());
       if (!replacement)
         continue;
       rewriter.replaceOp(localAlloc, replacement);
@@ -461,7 +642,8 @@ inline bool tryReplaceTensorUserWithMemDesc(RewriterBase &rewriter,
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(localAlloc);
       Value replacement = materializeReshapedMemDescForTarget(
-          rewriter, reshapeOp, sourceMemDesc, targetTy);
+          rewriter, reshapeOp, sourceMemDesc, targetTy,
+          localAlloc.getOperation());
       if (!replacement)
         continue;
       rewriter.replaceOp(localAlloc, replacement);

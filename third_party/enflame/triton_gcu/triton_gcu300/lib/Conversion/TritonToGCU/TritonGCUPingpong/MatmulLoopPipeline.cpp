@@ -20,6 +20,7 @@
 #include "PipeliningUtility.h"
 #include "Schedule.h"
 #include "Utils.h"
+#include "Utils/TritonVersionCompat.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/IRMapping.h"
@@ -306,7 +307,7 @@ getSharedEncIfAllUsersAreSameEnc(Value val) {
       return std::nullopt;
     }
     auto srcTy = cast<triton::gpu::TensorOrMemDesc>(val.getType());
-    auto CTALayout = ttg::getCTALayout(srcTy.getEncoding());
+    auto CTALayout = triton_gcu::compat::getCGALayout(srcTy.getEncoding());
     auto order = ttg::getOrder(srcTy);
     unsigned bitWidth = srcTy.getElementType().getIntOrFloatBitWidth();
     SmallVector<unsigned> sharedOrder;
@@ -432,7 +433,7 @@ assignMemoryLayouts(llvm::SmallVector<std::tuple<Operation *, int, Operation *>>
       }
       auto gcuLoad = dyn_cast<triton::gcu::LoadOp>(op);
       auto srcTy = dyn_cast<RankedTensorType>(gcuLoad.getType());
-      auto CTALayout = ttg::getCTALayout(srcTy.getEncoding());
+      auto CTALayout = triton_gcu::compat::getCGALayout(srcTy.getEncoding());
       auto order = ttg::getOrder(srcTy);
       loadInfo.layoutEncoding = ttg::SwizzledSharedEncodingAttr::get(
           srcTy.getContext(), 1, 1, 1, order, CTALayout);

@@ -30,26 +30,6 @@ public:
     if (SDNNConvertOperation(opInst, builder, moduleTranslation).succeeded())
       return success();
 
-    // Manually handle ops that fail with createIntrinsicCall on trust LLVM
-    if (auto coreIdOp = dyn_cast<::mlir::LLVM::XPU::CoreIdOp>(opInst)) {
-      auto *module = builder.GetInsertBlock()->getModule();
-      auto *i32Ty = builder.getInt32Ty();
-      auto *funcTy = llvm::FunctionType::get(i32Ty, {}, false);
-      auto callee = module->getOrInsertFunction("llvm.xpu.core_id", funcTy);
-      moduleTranslation.mapValue(coreIdOp.getRes()) =
-          builder.CreateCall(funcTy, callee.getCallee(), {});
-      return success();
-    }
-    if (auto clusterIdOp = dyn_cast<::mlir::LLVM::XPU::ClusterIdOp>(opInst)) {
-      auto *module = builder.GetInsertBlock()->getModule();
-      auto *i32Ty = builder.getInt32Ty();
-      auto *funcTy = llvm::FunctionType::get(i32Ty, {}, false);
-      auto callee = module->getOrInsertFunction("llvm.xpu.cluster_id", funcTy);
-      moduleTranslation.mapValue(clusterIdOp.getRes()) =
-          builder.CreateCall(funcTy, callee.getCallee(), {});
-      return success();
-    }
-
 #include "triton/Dialect/LLVMXPU/IR/LLVMXPUConversions.inc"
 
     return failure();

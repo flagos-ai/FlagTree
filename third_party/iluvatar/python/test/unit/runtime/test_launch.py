@@ -155,12 +155,17 @@ def test_launch_with_options(options) -> None:
     if "extern_libs" in options:
         # copied from tutorials/07-extern-functions.py
         current_dir = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
-        if is_cuda() or is_corex():
+        if is_cuda():
             libdir = current_dir.parent.parent.parent.parent / 'third_party/nvidia/backend/lib'
             options["extern_libs"] = {"libdevice": str(libdir / 'libdevice.10.bc')}
         elif is_hip():
             libdir = current_dir.parent.parent.parent.parent / 'third_party/amd/backend/lib'
             options["extern_libs"] = {"ocml": str(libdir / 'ocml.bc'), "ockl": str(libdir / 'ockl.bc')}
+        elif is_corex():
+            from triton import knobs
+            libdevice = knobs.iluvatar.libdevice_path or (knobs.iluvatar.libcuda_path +
+                                                          '/nvvm/libdevice/libdevice.compute_bi.10.bc')
+            options["extern_libs"] = {"libdevice": libdevice}
 
     compile_info = {}
     counter = 0

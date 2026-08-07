@@ -5,6 +5,17 @@ from typing import Dict, Union
 from types import ModuleType
 
 
+def _is_corex():
+    # Iluvatar corex global ld/st is 32-bit wide, so 4-byte alignment is enough
+    # to trigger vectorized access. This must stay consistent with the native
+    # alignment threshold in python/src/specialize.cc (guarded by __ILUVATAR__).
+    try:
+        import torch
+        return hasattr(torch, "corex") and torch.corex == True  # noqa: E712
+    except ImportError:
+        return False
+
+
 @dataclass(frozen=True)
 class GPUTarget(object):
     # Target backend, e.g., cuda, hip
@@ -76,17 +87,19 @@ class BaseBackend(metaclass=ABCMeta):
         assert isinstance(desc, str)
         ret = []
         if "D" in desc:
-            ret += [["tt.divisibility", 16]]
+            ret += [["tt.divisibility", 4 if _is_corex() else 16]]
         return ret
 
     @staticmethod
     def get_int_specialization(arg, **kwargs):
-        if arg % 16 == 0 and kwargs.get("align", False):
+        divisibility = 4 if _is_corex() else 16
+        if arg % divisibility == 0 and kwargs.get("align", False):
             return "D"
         return ""
 
     @staticmethod
     def get_tensor_specialization(arg, **kwargs):
-        if arg.data_ptr() % 16 == 0 and kwargs.get("align", False):
+        divisibility = 4 if _is_corex() else 16
+        if arg.data_ptr() % divisibility == 0 and kwargs.get("align", False):
             return "D"
         return ""

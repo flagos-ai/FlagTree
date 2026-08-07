@@ -125,23 +125,9 @@ inline bool needsWmmaScaleOperands(SQMMAEltType eltType) {
   }
 }
 
-inline SQMMALayout flipWmmaLayout(SQMMALayout layout) {
-  return layout == SQMMALayout::row ? SQMMALayout::col : SQMMALayout::row;
-}
-
 inline SQMMALayout getDefaultWmmaFragmentLayout(unsigned opIdx) {
   assert(opIdx < 2 && "WMMA operand index must be 0 or 1");
   return opIdx == 0 ? SQMMALayout::row : SQMMALayout::col;
-}
-
-inline SQMMALayout inferWmmaFragmentLayout(Value value, unsigned opIdx) {
-  while (auto cvt = value.getDefiningOp<gpu::ConvertLayoutOp>())
-    value = cvt.getSrc();
-  while (auto bitcast = value.getDefiningOp<triton::BitcastOp>())
-    value = bitcast.getSrc();
-  if (auto trans = value.getDefiningOp<triton::TransOp>())
-    return flipWmmaLayout(inferWmmaFragmentLayout(trans.getSrc(), opIdx));
-  return getDefaultWmmaFragmentLayout(opIdx);
 }
 
 struct WmmaDotOperandContract {

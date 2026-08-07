@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "Analysis/AxisInfoEx.h"
+#include "Utils/TritonVersionCompat.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -26,6 +27,10 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+
+#ifdef ENABLE_TRITON_DISTRIBUTED
+#include "TritonDistributed/Dialect/Distributed/IR/Dialect.h"
+#endif
 
 #define DEBUG_TYPE "axis-info-ex"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -203,6 +208,23 @@ private:
                            lattice->getAnchor())));
   }
 
+#if TRITON_VERSION >= 37
+  void visitNonControlFlowArguments(Operation *op,
+                                    const RegionSuccessor &successor,
+                                    ValueRange nonSuccessorInputs,
+                                    ArrayRef<dataflow::Lattice<AxisInfoEx> *>
+                                        nonSuccessorInputLattices) override {
+    if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+      visitForOpInductionVar(forOp, nonSuccessorInputLattices);
+    } else if (auto ws =
+                   dyn_cast<triton::gpu::WarpSpecializePartitionsOp>(op)) {
+      visitWarpSpecializeExplicitCaptures(ws, successor,
+                                          nonSuccessorInputLattices);
+    } else {
+      setAllToEntryStates(nonSuccessorInputLattices);
+    }
+  }
+#else
   void visitNonControlFlowArguments(
       Operation *op, const RegionSuccessor &successor,
       ArrayRef<dataflow::Lattice<AxisInfoEx> *> argLattices,
@@ -218,6 +240,7 @@ private:
           firstIndex + successor.getSuccessorInputs().size()));
     }
   }
+#endif
 
 public:
   explicit AxisInfoExAnalysis(DataFlowSolver &solver);
@@ -333,8 +356,17 @@ private:
             AxisInfoEx::kDefaultContinualInterval ||
         rhs.getContinualInterval(dim) == AxisInfoEx::kDefaultContinualInterval)
       return AxisInfoEx::kDefaultContinualInterval;
-    return std::abs(
-        applyOp(lhs.getContinualInterval(dim), rhs.getContinualInterval(dim)));
+    // For AddPtrOp the stride sign determines the memory access direction
+    // (negative = backwards), which must be preserved for DMA eligibility
+    // checks. For other integer add/sub ops the sign does not affect
+    // contiguity, so abs is safe.
+    if constexpr (std::is_same_v<OpTy, triton::AddPtrOp>) {
+      return applyOp(lhs.getContinualInterval(dim),
+                     rhs.getContinualInterval(dim));
+    } else {
+      return std::abs(applyOp(lhs.getContinualInterval(dim),
+                              rhs.getContinualInterval(dim)));
+    }
   }
 
   std::optional<int64_t> getConstantValue(OpTy /*op*/, const AxisInfoEx &lhs,
@@ -397,6 +429,13 @@ private:
         lhs.getConstantValue().has_value()
             ? rhs.getContinualInterval(dim) * lhs.getConstantValue().value()
             : AxisInfoEx::kDefaultContinualInterval;
+    // Prefer the computed stride over the sentinel kDefaultContinualInterval.
+    // std::max would incorrectly mask a real negative stride (e.g. -1024)
+    // with the sentinel value -1.
+    if (lhsStrideValue == AxisInfoEx::kDefaultContinualInterval)
+      return rhsStrideValue;
+    if (rhsStrideValue == AxisInfoEx::kDefaultContinualInterval)
+      return lhsStrideValue;
     return std::max(lhsStrideValue, rhsStrideValue);
   }
 
@@ -1099,6 +1138,20 @@ public:
   }
 };
 
+#ifdef ENABLE_TRITON_DISTRIBUTED
+template <typename OpTy>
+class BarrierOpAxisInfoExVisitor final : public AxisInfoExVisitorImpl<OpTy> {
+public:
+  using AxisInfoExVisitorImpl<OpTy>::AxisInfoExVisitorImpl;
+
+  AxisInfoEx getAxisInfoEx(
+      OpTy op,
+      ArrayRef<const dataflow::Lattice<AxisInfoEx> *> operands) override {
+    return operands[0]->getValue();
+  }
+};
+#endif
+
 //===----------------------------------------------------------------------===//
 // AxisInfoExAnalysis
 //===----------------------------------------------------------------------===//
@@ -1148,6 +1201,12 @@ AxisInfoExAnalysis::AxisInfoExAnalysis(DataFlowSolver &solver)
                   MaxMinOpAxisInfoExVisitor<arith::MinSIOp>,
                   MaxMinOpAxisInfoExVisitor<arith::MinUIOp>>();
   visitors.append<LoadOpAxisInfoExVisitor>();
+
+#ifdef ENABLE_TRITON_DISTRIBUTED
+  visitors.append<
+      BarrierOpAxisInfoExVisitor<triton::distributed::ConsumeTokenOp>>();
+  visitors.append<CastOpAxisInfoExVisitor<triton::distributed::SymmAtOp>>();
+#endif
 }
 
 llvm::LogicalResult AxisInfoExAnalysis::visitOperation(
@@ -1226,7 +1285,8 @@ void AxisInfoExAnalysis::visitWarpSpecializeExplicitCaptures(
   ProgramPoint *point = getProgramPointAfter(ws);
 
   for (auto [capture, argLattice] :
-       llvm::zip(ws.getParentOp().getExplicitCaptures(), argLattices)) {
+       llvm::zip(triton_gcu::compat::getPartitionsExplicitCaptures(ws),
+                 argLattices)) {
     propagateIfChanged(
         argLattice,
         argLattice->join(getLatticeElementFor(point, capture)->getValue()));

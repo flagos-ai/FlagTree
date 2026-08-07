@@ -208,6 +208,17 @@ unsigned getBitwidth(RankedTensorType ty);
 std::optional<ConstantIntRanges> getBoundFromCmpOp(arith::CmpIOp cmpOp,
                                                    Value anchor);
 
+#ifdef __ILUVATAR_TLE__
+
+namespace tle {
+// Propagate the `tt.load.async` scheduling hint from `src` to `dst` when a
+// pass reconstructs a `tt.load`, so `tle.load(..., is_async=True)` survives
+// TTIR canonicalization/rewrites down to the async-copy lowering pass.
+void copyAsyncLoadAttr(LoadOp src, LoadOp dst);
+} // namespace tle
+
+#endif // __ILUVATAR_TLE__
+
 } // namespace triton
 } // namespace mlir
 

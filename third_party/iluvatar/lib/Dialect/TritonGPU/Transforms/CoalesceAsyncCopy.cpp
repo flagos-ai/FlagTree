@@ -41,6 +41,10 @@ struct ClipAsyncCopySizePerThread
 
   LogicalResult matchAndRewrite(AsyncCopyGlobalToLocalOp copyOp,
                                 PatternRewriter &rewriter) const override {
+    if (copyOp.getInputStride())
+      return rewriter.notifyMatchFailure(
+          copyOp, "SME async copy uses fixed hardware tiling");
+
     Value src = copyOp.getSrc();
     Value mask = copyOp.getMask();
     Value other = copyOp.getOther();

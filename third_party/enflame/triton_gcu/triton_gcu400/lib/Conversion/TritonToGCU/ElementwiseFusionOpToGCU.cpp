@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <queue>
@@ -26,16 +27,17 @@
 #include "PatternTritonGPUOpToGCU.h"
 #include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Utility.h"
+#include "Utils/TritonVersionCompat.h"
+#include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringSet.h"
 
 using namespace mlir;
 
 namespace {
-
-static const char *const kIsContinual = "IsContinual";
 
 static int64_t getConstantSplatInt(Value val) {
   if (auto constOp = dyn_cast_or_null<arith::ConstantOp>(val.getDefiningOp())) {
@@ -121,6 +123,254 @@ static bool isOffsetContiguousInBlock(Operation *op) {
   return true;
 }
 
+static bool canUseAllocaForValue(Value val) {
+  SetVector<Value> worklist;
+  worklist.insert(val);
+  for (unsigned i = 0; i < worklist.size(); ++i) {
+    Value cur = worklist[i];
+    for (auto *user : cur.getUsers()) {
+      if (isa<triton::gcu::ElementwiseFusionRegionOp>(user))
+        continue;
+      if (auto gatherOp = dyn_cast<triton::GatherOp>(user)) {
+        if (gatherOp.getSrc() != cur)
+          continue;
+        return false;
+      }
+      if (auto expandDimsOp = dyn_cast<triton::ExpandDimsOp>(user)) {
+        auto srcNumElems =
+            triton::gcu::getElemsPerThread(expandDimsOp.getSrc().getType());
+        auto dstNumElems =
+            triton::gcu::getElemsPerThread(expandDimsOp.getType());
+        srcNumElems.insert(srcNumElems.begin() + expandDimsOp.getAxis(), 1);
+        if (srcNumElems != dstNumElems)
+          return false;
+        worklist.insert(expandDimsOp.getResult());
+        continue;
+      }
+      if (auto forOp = dyn_cast<scf::ForOp>(user)) {
+        auto initArgs = forOp.getInitArgs();
+        for (unsigned i = 0; i < initArgs.size(); ++i) {
+          if (initArgs[i] == cur) {
+            auto bodyArg = forOp.getRegionIterArg(i);
+            worklist.insert(bodyArg);
+            worklist.insert(forOp.getResult(i));
+          }
+        }
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+struct FusionRegionInfo {
+  unsigned totalNumElems;
+  unsigned vectorLength;
+  bool needCvtDataLayout = false;
+  unsigned loopCnt;
+  bool unrollFull = false;
+  SmallVector<bool> useAlloca;
+  SmallVector<bool> isAllocaInputFull;
+  SmallVector<bool> useAllocaFull;
+  SmallVector<bool> useAllocaStore; // store stack data to local memory
+  static FusionRegionInfo analyze(
+      triton::gcu::ElementwiseFusionRegionOp op,
+      SharedConversionPattern<triton::gcu::ElementwiseFusionRegionOp>::OpAdaptor
+          adaptor) {
+    FusionRegionInfo info;
+    info.totalNumElems = triton::gcu::getTotalElemsPerThread(
+        op.getBody()->front().getResultTypes().front());
+
+    DenseSet<Type> elementTypeSet;
+    for (auto [idx, operand] : llvm::enumerate(adaptor.getOperands())) {
+      if (auto type = dyn_cast<MemRefType>(operand.getType())) {
+        auto elementTy = type.getElementType();
+        if (elementTy.isInteger(1)) {
+          auto defOp = operand.getDefiningOp();
+          while (isa_and_nonnull<memref::ReinterpretCastOp>(defOp)) {
+            defOp = defOp->getOperand(0).getDefiningOp();
+          }
+          if (isa_and_nonnull<memref::AllocaOp>(defOp)) {
+            continue;
+          }
+          if (llvm::all_of(op.getBody()->getArgument(idx).getUsers(),
+                           [](auto user) {
+                             return isa_and_nonnull<triton::BroadcastOp>(user);
+                           })) {
+            continue;
+          }
+          elementTypeSet.insert(elementTy);
+          info.needCvtDataLayout = true;
+        } else {
+          elementTypeSet.insert(elementTy);
+        }
+      }
+    }
+    bool allI1TensorResultUseAlloca =
+        !info.needCvtDataLayout &&
+        llvm::any_of(op.getResults(), [](auto result) {
+          return cast<TensorType>(result.getType())
+              .getElementType()
+              .isInteger(1);
+        });
+    for (auto result : op.getResults()) {
+      auto elementTy = cast<TensorType>(result.getType()).getElementType();
+      if (elementTy.isInteger(1) && allI1TensorResultUseAlloca) {
+        for (auto user : result.getUsers()) {
+          auto elementwiseFusionRegionOp =
+              dyn_cast<triton::gcu::ElementwiseFusionRegionOp>(user);
+          if (!elementwiseFusionRegionOp) {
+            allI1TensorResultUseAlloca = false;
+            break;
+          }
+          if (llvm::any_of(
+                  elementwiseFusionRegionOp.getOperands(), [&](auto operand) {
+                    auto type = dyn_cast<TensorType>(operand.getType());
+                    return type && type.getElementType().isInteger(1) &&
+                           !operand.template getDefiningOp<
+                               triton::gcu::ElementwiseFusionRegionOp>();
+                  })) {
+            allI1TensorResultUseAlloca = false;
+            break;
+          }
+          if (llvm::any_of(*elementwiseFusionRegionOp.getBody(), [&](auto &op) {
+                auto resultTypes = op.getResultTypes();
+                if (llvm::any_of(resultTypes, [&](auto resultType) {
+                      return cast<TensorType>(resultType)
+                          .getElementType()
+                          .isInteger(1);
+                    })) {
+                  return !isa<arith::AndIOp>(&op) && !isa<arith::OrIOp>(&op) &&
+                         !isa<arith::XOrIOp>(&op) && !isa<arith::CmpIOp>(&op) &&
+                         !isa<arith::CmpFOp>(&op) &&
+                         !isa<arith::ConstantOp>(&op) &&
+                         !isa<triton::BroadcastOp>(&op);
+                }
+                return false;
+              })) {
+            allI1TensorResultUseAlloca = false;
+            break;
+          }
+        }
+        if (!allI1TensorResultUseAlloca) {
+          elementTypeSet.insert(elementTy);
+        }
+      } else {
+        elementTypeSet.insert(elementTy);
+      }
+    }
+    for (auto &o : op.getRegion().back().without_terminator()) {
+      for (auto type : o.getResultTypes()) {
+        auto elementTy = dyn_cast<TensorType>(type).getElementType();
+        if (!elementTy.isInteger(1)) {
+          elementTypeSet.insert(elementTy);
+        }
+      }
+    }
+    unsigned maxBpe = 1;
+    unsigned minBpe = 8;
+    for (auto elementTy : elementTypeSet) {
+      auto bpe = mlir::triton::gcu::getBpe(elementTy);
+      maxBpe = std::max(maxBpe, bpe);
+      minBpe = std::min(minBpe, bpe);
+    }
+    info.vectorLength = kOaccSizeInBytes / minBpe;
+
+    info.isAllocaInputFull.assign(op.getNumOperands(), false);
+    for (unsigned i = 0; i < op.getNumOperands(); ++i) {
+      auto *defOp = op.getOperand(i).getDefiningOp();
+      if (!defOp)
+        continue;
+      if (auto dotOp = dyn_cast<triton::DotOp>(defOp)) {
+        auto accStoreAttr = dotOp->getAttrOfType<StringAttr>(kAccStore);
+        if (accStoreAttr && accStoreAttr.getValue() == kAccStoreNone) {
+          info.unrollFull = true;
+          info.isAllocaInputFull[i] = true;
+        }
+      }
+    }
+
+    auto tripCount = ceil<unsigned>(info.totalNumElems, info.vectorLength);
+    info.useAllocaFull.assign(op.getNumResults(), false);
+    info.useAllocaStore.assign(op.getNumResults(), false);
+    if (info.totalNumElems < info.vectorLength ||
+        tripCount > kLoopUnrollTimes) {
+      if (allI1TensorResultUseAlloca) {
+        minBpe = std::min(minBpe, 1u);
+        info.vectorLength = kOaccSizeInBytes / minBpe;
+      }
+      info.useAlloca.assign(op.getNumResults(), false);
+    } else {
+      for (auto result : op.getResults()) {
+        auto elementTy = cast<TensorType>(result.getType()).getElementType();
+        if (elementTy.isInteger(1) && !allI1TensorResultUseAlloca) {
+          info.useAlloca.push_back(false);
+          continue;
+        }
+        info.useAlloca.push_back(canUseAllocaForValue(result));
+      }
+    }
+    if (auto inplaceAttr =
+            op->getAttrOfType<IntegerAttr>(kAccReuseInplaceResult)) {
+      int64_t inplaceResultdx = inplaceAttr.getInt();
+      if (inplaceResultdx >= 0) {
+        info.unrollFull = true;
+        info.useAlloca[inplaceResultdx] = true;
+        info.useAllocaFull[inplaceResultdx] = true;
+        bool hasStoreLocal = true;
+        if (auto accStore = op->getAttr(kAccStore))
+          hasStoreLocal =
+              cast<StringAttr>(accStore).getValue() == kAccStoreLocal;
+        info.useAllocaStore[inplaceResultdx] = hasStoreLocal;
+        // TODO(support) subsequent ops must be unroll full
+        // info.useAllocaStore[inplaceResultdx] =
+        //     hasStoreLocal &&
+        //     !canUseAllocaForValue(op.getResult(inplaceResultdx));
+      }
+    }
+
+    info.loopCnt = std::min(tripCount, kLoopUnrollTimes);
+    return info;
+  }
+};
+
+static Value narrowToStoreVector(OpBuilder &builder, Location loc, Value v) {
+  auto vecTy = cast<VectorType>(v.getType());
+  auto elementTy = vecTy.getElementType();
+  unsigned maxVectorLength =
+      4 * kOaccSizeInBytes / mlir::triton::gcu::getBpe(elementTy);
+  unsigned numElems = vecTy.getNumElements();
+  if (numElems <= maxVectorLength)
+    return v;
+  unsigned numParts = numElems / maxVectorLength;
+  SmallVector<Type> partTypes(
+      numParts, VectorType::get(ArrayRef<int64_t>{maxVectorLength},
+                                vecTy.getElementType()));
+  return builder.create<gcu::VectorConvertOp>(loc, partTypes, v).getResult(0);
+}
+
+// If |v| is an i1 vector, convert it to i8 (the element type expected by
+// vector store / tar store).  The conversion is inserted right after the
+// defining op of |v| to keep the def-use order valid.  Returns |v| unchanged
+// when no conversion is needed.
+static Value convertI1ToI8VectorForStore(OpBuilder &builder, Location loc,
+                                         Value v, unsigned vectorLength) {
+  if (!cast<VectorType>(v.getType()).getElementType().isInteger(1))
+    return v;
+  OpBuilder::InsertionGuard guard(builder);
+  auto defOp = v.getDefiningOp();
+  assert(defOp);
+  builder.setInsertionPointAfter(defOp);
+  return builder
+      .create<gcu::VectorConvertOp>(
+          loc,
+          VectorType::get(ArrayRef<int64_t>{vectorLength},
+                          builder.getIntegerType(8)),
+          v)
+      .getResult(0);
+}
+
 struct GCUElementwiseFusionOpLowering
     : SharedConversionPattern<triton::gcu::ElementwiseFusionRegionOp> {
   using SharedConversionPattern::SharedConversionPattern;
@@ -163,23 +413,46 @@ struct GCUElementwiseFusionOpLowering
       return success();
     }
 
-    auto totalNumElems = triton::gcu::getTotalElemsPerThread(
-        op.getRegion().back().front().getResultTypes().front());
+    auto fusionRegionInfo = FusionRegionInfo::analyze(op, adaptor);
+    auto totalNumElems = fusionRegionInfo.totalNumElems;
+    auto loopCnt = fusionRegionInfo.loopCnt;
+    auto vectorLength = fusionRegionInfo.vectorLength;
+    auto needCvtDataLayout = fusionRegionInfo.needCvtDataLayout;
+    bool isSmallSize = totalNumElems < vectorLength;
+
+    // When AnnotateDotFusion marks this fusion for OACC accumulator reuse, the
+    // (single) result is written in place into the tagged operand buffer (the
+    // loop iter-arg / OACC), so no separate output buffer is allocated.
+    int64_t inplaceOperandIdx = -1;
+    if (auto inplaceAttr =
+            op->getAttrOfType<IntegerAttr>(kAccReuseInplaceOperand))
+      inplaceOperandIdx = inplaceAttr.getInt();
+
+    int64_t inplaceResultIdx = -1;
+    if (auto inplaceAttr =
+            op->getAttrOfType<IntegerAttr>(kAccReuseInplaceResult))
+      inplaceResultIdx = inplaceAttr.getInt();
+
     SmallVector<Value> results;
     SmallVector<Value> outputs;
-    DenseSet<Type> elementTypeSet;
-    bool needCvtDataLayout = false;
-    for (auto [type, opResult] :
-         llvm::zip(op.getResultTypes(), op.getResults())) {
-      auto resultType =
-          dyn_cast<MemRefType>(getTypeConverter()->convertType(type));
-      auto lastUser = userAnalysis.getLastUser(opResult);
-      auto result = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                                replaced2Origin, resultType);
-      results.push_back(result);
+    for (auto [i, pair] : llvm::enumerate(
+             llvm::zip_equal(op.getResults(), fusionRegionInfo.useAlloca))) {
+      auto [result, useAlloca] = pair;
+      auto resultType = dyn_cast<MemRefType>(
+          getTypeConverter()->convertType(result.getType()));
       auto elementTy = resultType.getElementType();
-      elementTypeSet.insert(elementTy);
-      if (elementTy.isInteger(1)) {
+      if (inplaceResultIdx == static_cast<int64_t>(i)) {
+        results.push_back(adaptor.getOperands()[inplaceOperandIdx]);
+      } else if (useAlloca) {
+        auto allocaOp = rewriter.create<memref::AllocaOp>(loc, resultType);
+        allocaOp.setAlignment(kOaccSizeInBytes);
+        results.push_back(allocaOp.getResult());
+      } else {
+        auto lastUser = userAnalysis.getLastUser(result);
+        results.push_back(syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                                      replaced2Origin, resultType));
+      }
+      if (elementTy.isInteger(1) && !useAlloca) {
         outputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
             loc,
             MemRefType::get(ArrayRef<int64_t>{totalNumElems},
@@ -191,85 +464,73 @@ struct GCUElementwiseFusionOpLowering
                 rewriter.create<mlir::gcu::MemRefToPtrOp>(
                     loc,
                     mlir::gcu::PtrType::get(rewriter.getContext(), elementTy),
-                    result)),
+                    results.back())),
             0, ArrayRef<int64_t>{totalNumElems}, ArrayRef<int64_t>{1}));
       } else {
         outputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
             loc, MemRefType::get(ArrayRef<int64_t>{totalNumElems}, elementTy),
-            result, 0, ArrayRef<int64_t>{totalNumElems}, ArrayRef<int64_t>{1}));
+            results.back(), 0, ArrayRef<int64_t>{totalNumElems},
+            ArrayRef<int64_t>{1}));
       }
     }
 
     SmallVector<Value> inputs;
-    SmallVector<Type> elementTypes;
+    SmallVector<bool> isAllocaInput(op.getNumOperands(), false);
     for (unsigned i = 0; i < op.getNumOperands(); ++i) {
       auto operand = adaptor.getOperands()[i];
       auto operandType = operand.getType();
-      if (isa<MemRefType>(operandType)) {
+      if (auto memrefTy = dyn_cast<MemRefType>(operandType)) {
+        auto elementTy = cast<MemRefType>(operandType).getElementType();
         auto totalNumElems =
             triton::gcu::getTotalElemsPerThread(op.getOperandTypes()[i]);
-        auto elementTy = cast<MemRefType>(operandType).getElementType();
-        elementTypes.push_back(elementTy);
-        elementTypeSet.insert(elementTy);
-        if (elementTy.isInteger(1)) {
-          needCvtDataLayout = true;
-          inputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
-              loc,
-              MemRefType::get(ArrayRef<int64_t>{totalNumElems},
-                              rewriter.getIntegerType(8)),
-              rewriter.create<mlir::gcu::PtrToMemRefOp>(
-                  loc,
-                  MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic},
-                                  rewriter.getIntegerType(8)),
-                  rewriter.create<mlir::gcu::MemRefToPtrOp>(
-                      loc,
-                      mlir::gcu::PtrType::get(rewriter.getContext(), elementTy),
-                      operand)),
-              0, ArrayRef<int64_t>{totalNumElems}, ArrayRef<int64_t>{1}));
-        } else {
+        if (mlir::triton::gcu::isAllocaInputValue(operand) ||
+            i == static_cast<unsigned>(inplaceOperandIdx)) {
           inputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
               loc, MemRefType::get(ArrayRef<int64_t>{totalNumElems}, elementTy),
               operand, 0, ArrayRef<int64_t>{totalNumElems},
               ArrayRef<int64_t>{1}));
+          isAllocaInput[i] = true;
+        } else {
+          if (elementTy.isInteger(1) &&
+              (llvm::any_of(
+                  op.getBody()->getArgument(i).getUsers(), [](auto user) {
+                    return !isa_and_nonnull<triton::BroadcastOp>(user);
+                  }))) {
+            inputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
+                loc,
+                MemRefType::get(ArrayRef<int64_t>{totalNumElems},
+                                rewriter.getIntegerType(8)),
+                rewriter.create<mlir::gcu::PtrToMemRefOp>(
+                    loc,
+                    MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic},
+                                    rewriter.getIntegerType(8)),
+                    rewriter.create<mlir::gcu::MemRefToPtrOp>(
+                        loc,
+                        mlir::gcu::PtrType::get(rewriter.getContext(),
+                                                elementTy),
+                        operand)),
+                0, ArrayRef<int64_t>{totalNumElems}, ArrayRef<int64_t>{1}));
+          } else {
+            inputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
+                loc,
+                MemRefType::get(ArrayRef<int64_t>{totalNumElems}, elementTy),
+                operand, 0, ArrayRef<int64_t>{totalNumElems},
+                ArrayRef<int64_t>{1}));
+          }
         }
       } else {
-        elementTypes.push_back(operandType);
         inputs.push_back(operand);
       }
     }
-
-    for (auto &o : op.getRegion().back().without_terminator()) {
-      for (auto type : o.getResultTypes()) {
-        auto elementTy = getTypeConverter()->convertType(
-            cast<TensorType>(type).getElementType());
-        if (!elementTy.isInteger(1) || needCvtDataLayout) {
-          elementTypeSet.insert(elementTy);
-        }
-      }
-    }
-
-    unsigned maxBpe = 1;
-    unsigned minBpe = 8;
-    for (auto elementTy : elementTypeSet) {
-      auto bpe = mlir::triton::gcu::getBpe(elementTy);
-      maxBpe = bpe > maxBpe ? bpe : maxBpe;
-      minBpe = bpe < minBpe ? bpe : minBpe;
-    }
-    unsigned vectorLength = oaccSizeInBytes / minBpe;
-
-    constexpr unsigned loopUnrollTime = 16;
-    auto loopLimit = ceil<unsigned>(totalNumElems, vectorLength);
-    auto loopCnt = loopUnrollTime > loopLimit ? loopLimit : loopUnrollTime;
 
     auto insertPoint = rewriter.saveInsertionPoint();
     SmallVector<IRMapping> operandMaps(loopCnt);
 
     Value mask;
-    DenseMap<Operation *, Value> offsets;
+    llvm::MapVector<Operation *, Value> offsets;
     auto useLoadStoreInstrOps =
         trySimplifyLoadStore(op, rewriter, offsets, mask);
     bool disableLoadStroreInstrOptimize = false;
-    bool isSmallSize = totalNumElems < vectorLength;
 
     DenseMap<unsigned, unsigned> broadcastInfo;
     DenseSet<unsigned> broadcastOnDim0;
@@ -323,13 +584,13 @@ struct GCUElementwiseFusionOpLowering
               }
             } else {
               if (elementNum > vectorLength * loopCnt) {
-                assert(loopCnt == loopUnrollTime);
+                assert(loopCnt == kLoopUnrollTimes);
                 vectorLength = elementNum / loopCnt;
               }
               auto cnt = elementNum / vectorLength;
               SmallVector<Value> values(cnt);
               auto vlen =
-                  4 * oaccSizeInBytes / mlir::triton::gcu::getBpe(elementTy);
+                  4 * kOaccSizeInBytes / mlir::triton::gcu::getBpe(elementTy);
               if (vlen > elementNum) {
                 vlen = elementNum;
               }
@@ -359,7 +620,7 @@ struct GCUElementwiseFusionOpLowering
             auto elemsPerThread = triton::gcu::getElemsPerThread(resultType);
             auto elementNum = elemsPerThread[broadcastAxis];
             if (elementNum > vectorLength * loopCnt) {
-              assert(loopCnt == loopUnrollTime);
+              assert(loopCnt == kLoopUnrollTimes);
               vectorLength = elementNum / loopCnt;
             }
             broadcastInfo[argNum] = elementNum;
@@ -379,6 +640,9 @@ struct GCUElementwiseFusionOpLowering
       if (broadcastOnDim0.contains(i) || broadcastInfo.contains(i)) {
         continue;
       }
+      if (isAllocaInput[i]) {
+        continue;
+      }
       auto type = inputs[i].getType();
       if (isa<MemRefType>(type)) {
         initValues.emplace_back(b.tarAddr(inputs[i]));
@@ -395,11 +659,13 @@ struct GCUElementwiseFusionOpLowering
     }
 
     unsigned cnt = initValues.size();
-    for (auto output : outputs) {
-      initValues.emplace_back(b.tarAddr(output));
+    for (auto [output, useAlloca] :
+         llvm::zip_equal(outputs, fusionRegionInfo.useAlloca)) {
+      if (!useAlloca) {
+        initValues.emplace_back(b.tarAddr(output));
+      }
     }
-
-    auto tarStride = b.tarValue(oaccSizeInBytes);
+    auto tarStride = b.tarValue(kOaccSizeInBytes);
 
     Value step;
     DenseMap<Operation *, unsigned> map;
@@ -473,6 +739,36 @@ struct GCUElementwiseFusionOpLowering
     auto loopBody = [&](OpBuilder &builder, Location loc, Value loopIter,
                         ValueRange iterArgs) {
       SmallVector<Value> args(iterArgs);
+
+      // Compute the load/store offset for an alloca-backed buffer at the
+      // given inner unroll index. When the outer loop runs more than once
+      // (ceil(totalNumElems, vectorLength * loopCnt) > 1), the offset must
+      // advance with loopIter so each outer iteration touches a distinct
+      // buffer slice. loopIter's unit differs by loop shape: element
+      // offset when useLoadStoreInstrOps is non-empty, iteration index
+      // otherwise.
+      auto computeAllocaOffset = [&](unsigned innerIdx) -> Value {
+        Value offset = builder.create<arith::ConstantIndexOp>(
+            loc, innerIdx * vectorLength);
+        if (ceil<unsigned>(totalNumElems, vectorLength * loopCnt) > 1) {
+          if (!useLoadStoreInstrOps.empty()) {
+            // Tar mode: loopIter is an element offset, add it directly.
+            offset = builder.create<arith::AddIOp>(loc, loopIter, offset);
+          } else {
+            // Normal mode: loopIter is an iteration index, multiply by the
+            // per-trip block size (vectorLength * loopCnt).
+            offset = builder.create<arith::AddIOp>(
+                loc,
+                builder.create<arith::MulIOp>(
+                    loc, loopIter,
+                    builder.create<arith::ConstantIndexOp>(loc, vectorLength *
+                                                                    loopCnt)),
+                offset);
+          }
+        }
+        return offset;
+      };
+
       for (unsigned i = 0; i < loopCnt; ++i) {
         for (unsigned j = 0, k = 0; j < inputs.size(); ++j) {
           if (broadcastOnDim0.contains(j)) {
@@ -530,14 +826,29 @@ struct GCUElementwiseFusionOpLowering
                 }
               }
             }
+          } else if (isAllocaInput[j]) {
+            auto elementTy =
+                cast<MemRefType>(inputs[j].getType()).getElementType();
+            auto vectorTy =
+                VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy);
+            Value offset = computeAllocaOffset(i);
+            operandMaps[i].map(op.getRegion().getArgument(j),
+                               builder
+                                   .create<vector::LoadOp>(loc, vectorTy,
+                                                           inputs[j],
+                                                           ValueRange{offset})
+                                   .getResult());
           } else if (auto memrefTy =
                          dyn_cast<MemRefType>(inputs[j].getType())) {
             auto elementTy = memrefTy.getElementType();
             Value tarAddr = args[k];
-            operandMaps[i].map(op.getRegion().getArgument(j),
-                               generateSplitTarLoad(b, builder, elementTy,
-                                                    vectorLength, tarAddr,
-                                                    tarStride, loc));
+            Value loaded =
+                isSmallSize
+                    ? loadSmallSizeTarInput(b, builder, elementTy, vectorLength,
+                                            tarAddr, tarStride, loc)
+                    : generateSplitTarLoad(b, builder, elementTy, vectorLength,
+                                           tarAddr, tarStride, loc);
+            operandMaps[i].map(op.getRegion().getArgument(j), loaded);
             args[k] = tarAddr;
             ++k;
           } else if (isa<gcu::PtrType>(inputs[j].getType())) {
@@ -553,13 +864,29 @@ struct GCUElementwiseFusionOpLowering
       while (cur != iterRange.end()) {
         auto &op = *cur;
         if (auto maskedLoadOp = dyn_cast<triton::gcu::MaskedLoadOp>(op)) {
+          auto constancy = maskedLoadOp->getAttrOfType<IntegerAttr>(kConstancy);
+          bool isBroadcast = false;
+          if (constancy &&
+              constancy.getInt() == triton::gcu::getTotalElemsPerThread(
+                                        maskedLoadOp.getResult().getType())) {
+            isBroadcast = true;
+          }
           for (unsigned i = 0; i < loopCnt; ++i) {
             auto result = maskedLoadOp.getResult();
             auto elementTy = result.getType().getElementType();
             auto vecTy =
                 VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy);
-            if (useLoadStoreInstrOps.contains(&op) &&
-                (!disableLoadStroreInstrOptimize || !maskedLoadOp.getMask())) {
+            if (isBroadcast) {
+              if (i == 0) {
+                operandMaps[i].map(result, simplifyLoadToBroadcast(
+                                               maskedLoadOp, builder,
+                                               operandMaps[i], vectorLength));
+              } else {
+                operandMaps[i].map(result, operandMaps[0].lookup(result));
+              }
+            } else if (useLoadStoreInstrOps.contains(&op) &&
+                       (!disableLoadStroreInstrOptimize ||
+                        !maskedLoadOp.getMask())) {
               if (map.contains(&op)) {
                 operandMaps[i].map(result,
                                    b.tarLoad(vecTy, args[map[&op]], tarStride));
@@ -601,17 +928,16 @@ struct GCUElementwiseFusionOpLowering
             } else if (offsets.contains(&op)) {
               assert(maskedLoadOp.getMask());
               auto mask = operandMaps[i].lookup(maskedLoadOp.getMask());
+              if (getElementTypeOrSelf(mask.getType()).isInteger(8)) {
+                mask = builder
+                           .create<gcu::VectorConvertOp>(
+                               loc,
+                               VectorType::get(ArrayRef<int64_t>{vectorLength},
+                                               builder.getIntegerType(1)),
+                               mask)
+                           .getResult(0);
+              }
               if (isSmallSize) {
-                if (getElementTypeOrSelf(mask.getType()).isInteger(8)) {
-                  mask =
-                      builder
-                          .create<gcu::VectorConvertOp>(
-                              loc,
-                              VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                              builder.getIntegerType(1)),
-                              mask)
-                          .getResult(0);
-                }
                 mask = builder.create<arith::AndIOp>(
                     loc,
                     builder.create<vector::ConstantMaskOp>(
@@ -681,21 +1007,7 @@ struct GCUElementwiseFusionOpLowering
                   (!disableLoadStroreInstrOptimize ||
                    !maskedStoreOp.getMask())) {
                 auto v = operandMaps[i].lookup(maskedStoreOp.getValue());
-                if (dyn_cast<VectorType>(v.getType())
-                        .getElementType()
-                        .isInteger(1)) {
-                  OpBuilder::InsertionGuard guard(builder);
-                  auto defOp = v.getDefiningOp();
-                  assert(defOp);
-                  builder.setInsertionPointAfter(defOp);
-                  v = builder
-                          .create<gcu::VectorConvertOp>(
-                              loc,
-                              VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                              builder.getIntegerType(8)),
-                              v)
-                          .getResult(0);
-                }
+                v = convertI1ToI8VectorForStore(builder, loc, v, vectorLength);
                 if (map.contains(&o)) {
                   b.tarStore(v, args[map[&o]], tarStride);
                 } else {
@@ -729,34 +1041,22 @@ struct GCUElementwiseFusionOpLowering
                 }
               } else if (offsets.contains(&o)) {
                 assert(maskedStoreOp.getMask());
+
                 auto v = operandMaps[i].lookup(maskedStoreOp.getValue());
-                if (dyn_cast<VectorType>(v.getType())
-                        .getElementType()
-                        .isInteger(1)) {
-                  OpBuilder::InsertionGuard guard(builder);
-                  auto defOp = v.getDefiningOp();
-                  assert(defOp);
-                  builder.setInsertionPointAfter(defOp);
-                  v = builder
+                v = convertI1ToI8VectorForStore(builder, loc, v, vectorLength);
+
+                auto mask = operandMaps[i].lookup(maskedStoreOp.getMask());
+                if (getElementTypeOrSelf(mask.getType()).isInteger(8)) {
+                  mask =
+                      builder
                           .create<gcu::VectorConvertOp>(
                               loc,
                               VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                              builder.getIntegerType(8)),
-                              v)
+                                              builder.getIntegerType(1)),
+                              mask)
                           .getResult(0);
                 }
-                auto mask = operandMaps[i].lookup(maskedStoreOp.getMask());
                 if (isSmallSize) {
-                  if (getElementTypeOrSelf(mask.getType()).isInteger(8)) {
-                    mask =
-                        builder
-                            .create<gcu::VectorConvertOp>(
-                                loc,
-                                VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                                builder.getIntegerType(1)),
-                                mask)
-                            .getResult(0);
-                  }
                   mask = builder.create<arith::AndIOp>(
                       loc,
                       builder.create<vector::ConstantMaskOp>(
@@ -849,30 +1149,44 @@ struct GCUElementwiseFusionOpLowering
       if (auto yieldOp = cast<triton::gcu::YieldOp>(
               op.getRegion().back().getTerminator())) {
         for (unsigned i = 0; i < loopCnt; ++i) {
-          for (unsigned j = 0; j < yieldOp.getNumOperands(); ++j) {
+          for (unsigned j = 0, k = 0; j < yieldOp.getNumOperands(); ++j) {
             auto v = operandMaps[i].lookup(yieldOp.getOperand(j));
-            if (dyn_cast<VectorType>(v.getType())
-                    .getElementType()
-                    .isInteger(1)) {
-              OpBuilder::InsertionGuard guard(builder);
-              auto defOp = v.getDefiningOp();
-              assert(defOp);
-              builder.setInsertionPointAfter(defOp);
-              v = builder
-                      .create<gcu::VectorConvertOp>(
-                          loc,
-                          VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                          builder.getIntegerType(8)),
-                          v)
-                      .getResult(0);
+            if (fusionRegionInfo.useAlloca[j]) {
+              Value offset = computeAllocaOffset(i);
+              builder.create<vector::StoreOp>(loc, v, outputs[j],
+                                              ValueRange{offset});
+            } else {
+              v = convertI1ToI8VectorForStore(builder, loc, v, vectorLength);
+              Value tarAddr = args[cnt + k];
+              if (isSmallSize)
+                v = narrowToStoreVector(builder, loc, v);
+              generateSplitTarStore(b, builder, v, tarAddr, tarStride, loc);
+              args[cnt + k] = tarAddr;
+              ++k;
             }
-            Value tarAddr = args[cnt + j];
-            generateSplitTarStore(b, builder, v, tarAddr, tarStride, loc);
-            args[cnt + j] = tarAddr;
           }
         }
         builder.create<scf::YieldOp>(loc, args);
       }
+    };
+
+    auto setUnrollFullAttr = [&](scf::ForOp forOp) {
+      if (!fusionRegionInfo.unrollFull)
+        return;
+      auto *ctx = rewriter.getContext();
+      auto loopUnrollAttr = LLVM::LoopUnrollAttr::get(
+          ctx, /*disable=*/{}, /*count=*/{}, /*runtimeDisable=*/{},
+          /*full=*/BoolAttr::get(ctx, true), /*followupUnrolled=*/{},
+          /*followupRemainder=*/{}, /*followupAll=*/{});
+      auto loopAnnotation = LLVM::LoopAnnotationAttr::get(
+          ctx, /*disableNonforced=*/{}, /*vectorize=*/{}, /*interleave=*/{},
+          /*unroll=*/loopUnrollAttr, /*unrollAndJam=*/{}, /*licm=*/{},
+          /*distribute=*/{}, /*pipeline=*/{}, /*peeled=*/{}, /*unswitch=*/{},
+          /*mustProgress=*/{}, /*isVectorized=*/{}, /*startLoc=*/{},
+          /*endLoc=*/{}, /*parallelAccesses=*/{});
+      forOp->setAttr(
+          StringAttr::get(ctx, LLVM::LoopAnnotationAttr::getMnemonic()),
+          loopAnnotation);
     };
 
     if (!useLoadStoreInstrOps.empty()) {
@@ -881,32 +1195,54 @@ struct GCUElementwiseFusionOpLowering
       auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       auto upperBound =
           rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems);
+
       if (mask) {
         rewriter.create<scf::IfOp>(
             loc, mask,
             [&](OpBuilder &builder, Location loc) {
-              builder.create<scf::ForOp>(loc, lowerBound, upperBound, step,
-                                         initValues, loopBody);
+              auto forOp = builder.create<scf::ForOp>(
+                  loc, lowerBound, upperBound, step, initValues, loopBody);
+              setUnrollFullAttr(forOp);
               builder.create<scf::YieldOp>(loc);
             },
             [&](OpBuilder &builder, Location loc) {
               disableLoadStroreInstrOptimize = true;
-              rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step,
-                                          initValues, loopBody);
+              auto forOp = builder.create<scf::ForOp>(
+                  loc, lowerBound, upperBound, step, initValues, loopBody);
+              setUnrollFullAttr(forOp);
               builder.create<scf::YieldOp>(loc);
             });
       } else {
-        rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step,
-                                    initValues, loopBody);
+        auto forOp = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound,
+                                                 step, initValues, loopBody);
+        setUnrollFullAttr(forOp);
       }
     } else {
-      rewriter.create<scf::ForOp>(
+      auto forOp = rewriter.create<scf::ForOp>(
           loc, rewriter.create<arith::ConstantIndexOp>(loc, 0),
           rewriter.create<arith::ConstantIndexOp>(
               loc, ceil<unsigned>(totalNumElems, vectorLength * loopCnt)),
           rewriter.create<arith::ConstantIndexOp>(loc, 1), initValues,
           loopBody);
+      setUnrollFullAttr(forOp);
     }
+
+    if (auto yieldOp =
+            cast<triton::gcu::YieldOp>(op.getRegion().back().getTerminator())) {
+      for (unsigned i = 0; i < yieldOp.getNumOperands(); ++i) {
+        if (fusionRegionInfo.useAllocaStore[i]) {
+          auto result = op.getResult(i);
+          auto resultType = dyn_cast<MemRefType>(
+              getTypeConverter()->convertType(result.getType()));
+          auto lastUser = userAnalysis.getLastUser(result);
+          Value out = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                                  replaced2Origin, resultType);
+          ConfigMatrixStoreLocal(rewriter, loc, resultType, out, results[i]);
+          results[i] = out;
+        }
+      }
+    }
+
     leaveTritionOp(rewriter, op);
     if (results.empty()) {
       rewriter.eraseOp(op);
@@ -917,15 +1253,87 @@ struct GCUElementwiseFusionOpLowering
   }
 
 private:
-  DenseSet<Operation *>
-  trySimplifyLoadStore(triton::gcu::ElementwiseFusionRegionOp op,
-                       OpBuilder &builder, DenseMap<Operation *, Value> &map,
-                       Value &mask) const {
-    DenseSet<Value> offsets;
-    DenseSet<Value> masks;
-    DenseMap<Value, SmallVector<Operation *>> mask2ops;
+  Value simplifyLoadToBroadcast(triton::gcu::MaskedLoadOp maskedLoadOp,
+                                OpBuilder &builder, const IRMapping &argMap,
+                                unsigned vectorLength) const {
+    auto offset = maskedLoadOp.getOffset();
+    std::queue<Value> workList;
+    SetVector<Operation *> visited;
+    workList.push(offset);
+    IRMapping mapper;
+    std::function<void(Value)> visit = [&](Value value) {
+      auto defOp = value.getDefiningOp();
+      if (!defOp || !visited.insert(defOp)) {
+        return;
+      }
+      for (auto operand : defOp->getOperands()) {
+        visit(operand);
+      }
+    };
+    visit(offset);
+    for (auto iter = visited.rbegin(); iter != visited.rend(); ++iter) {
+      auto op = *iter;
+      if (auto makeRangeOp = dyn_cast<triton::MakeRangeOp>(op)) {
+        auto startIdx = makeRangeOp.getStart();
+        auto elementTy = makeRangeOp.getResult().getType().getElementType();
+        auto loc = op->getLoc();
+        Value start =
+            builder.create<arith::ConstantIntOp>(loc, elementTy, startIdx)
+                .getResult();
+        if (!getSlicedAxies(makeRangeOp.getType()).empty()) {
+          auto totalNumElems = triton::gcu::getTotalElemsPerThread(
+              makeRangeOp.getResult().getType());
+          start = builder.create<arith::AddIOp>(
+              loc,
+              builder.create<arith::MulIOp>(
+                  loc,
+                  builder.create<arith::IndexCastOp>(
+                      loc, elementTy,
+                      getWarpIds(builder, loc, makeRangeOp.getType()).front()),
+                  builder.create<arith::ConstantIntOp>(loc, elementTy,
+                                                       totalNumElems)),
+              start);
+        }
+        mapper.map(makeRangeOp.getResult(), start);
+      } else if (auto splatOp = dyn_cast<triton::SplatOp>(op)) {
+        mapper.map(splatOp.getResult(), argMap.lookupOrNull(splatOp.getSrc()));
+      } else if (auto constantOp = dyn_cast<arith::ConstantOp>(op)) {
+        auto denseAttr = dyn_cast<DenseElementsAttr>(constantOp.getValue());
+        assert(denseAttr && denseAttr.isSplat() &&
+               "Constant op should have a splat value");
+        mapper.map(constantOp.getResult(),
+                   builder.create<arith::ConstantOp>(
+                       constantOp.getLoc(), denseAttr.getElementType(),
+                       denseAttr.getSplatValue<TypedAttr>()));
+      } else {
+        auto cloneOp = builder.clone(*op, mapper);
+        for (auto [result, newResult] :
+             llvm::zip(op->getResults(), cloneOp->getResults())) {
+          newResult.setType(getElementTypeOrSelf(result));
+          mapper.map(result, newResult);
+        }
+      }
+    }
+    auto loc = maskedLoadOp.getLoc();
+    auto v = builder.create<memref::LoadOp>(
+        maskedLoadOp.getLoc(), argMap.lookupOrNull(maskedLoadOp.getPtr()),
+        ValueRange{builder
+                       .create<arith::IndexCastOp>(loc, builder.getIndexType(),
+                                                   mapper.lookupOrNull(offset))
+                       .getResult()});
+    return builder.create<vector::BroadcastOp>(
+        loc, VectorType::get(ArrayRef<int64_t>{vectorLength}, v.getType()), v);
+  }
+
+  DenseSet<Operation *> trySimplifyLoadStore(
+      triton::gcu::ElementwiseFusionRegionOp op, OpBuilder &builder,
+      llvm::MapVector<Operation *, Value> &map, Value &mask) const {
+    SetVector<Value> offsets;
+    SetVector<Value> masks;
+    llvm::MapVector<Value, SmallVector<Operation *>> mask2ops;
     DenseSet<Operation *> useLoadStoreInstrOps;
     mask = nullptr;
+
     for (auto &o : op.getRegion().back()) {
       if (auto maskedLoadOp = dyn_cast<triton::gcu::MaskedLoadOp>(o)) {
         if (isOffsetContiguousInBlock(&o)) {
@@ -1195,12 +1603,41 @@ private:
     return mask;
   }
 
+  Value loadSmallSizeTarInput(triton::gcu::TritonGCUBuilder &b,
+                              OpBuilder &builder, Type elementTy,
+                              unsigned vectorLength, Value &tarAddr,
+                              const Value &tarStride, Location loc) const {
+    unsigned maxVectorLength =
+        4 * kOaccSizeInBytes / mlir::triton::gcu::getBpe(elementTy);
+    if (vectorLength <= maxVectorLength) {
+      return b.tarLoad(
+          VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy), tarAddr,
+          tarStride);
+    }
+
+    auto chunkTy =
+        VectorType::get(ArrayRef<int64_t>{maxVectorLength}, elementTy);
+    Value chunk = b.tarLoad(chunkTy, tarAddr, tarStride);
+    unsigned numParts = vectorLength / maxVectorLength;
+    SmallVector<Value> parts;
+    parts.push_back(chunk);
+    auto zeroChunk = builder.create<arith::ConstantOp>(
+        loc, DenseElementsAttr::get(chunkTy, builder.getZeroAttr(elementTy)));
+    for (unsigned p = 1; p < numParts; ++p)
+      parts.push_back(zeroChunk);
+    SmallVector<Type> resultTypes;
+    resultTypes.push_back(
+        VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy));
+    return builder.create<gcu::VectorConvertOp>(loc, resultTypes, parts)
+        .getResult(0);
+  }
+
   Value generateSplitTarLoad(triton::gcu::TritonGCUBuilder &b,
                              OpBuilder &builder, Type elementTy,
                              unsigned vectorLength, Value &tarAddr,
                              const Value &tarStride, Location loc) const {
     unsigned bpe = mlir::triton::gcu::getBpe(elementTy);
-    unsigned maxVectorLength = 4 * oaccSizeInBytes / bpe;
+    unsigned maxVectorLength = 4 * kOaccSizeInBytes / bpe;
 
     if (vectorLength <= maxVectorLength) {
       return b.tarLoad(
@@ -1233,7 +1670,7 @@ private:
     unsigned vectorLength = vectorType.getNumElements();
 
     unsigned bpe = mlir::triton::gcu::getBpe(elementTy);
-    unsigned maxVectorLength = 4 * oaccSizeInBytes / bpe;
+    unsigned maxVectorLength = 4 * kOaccSizeInBytes / bpe;
 
     if (vectorLength <= maxVectorLength) {
       return b.tarStore(v, tarAddr, tarStride);
@@ -1270,7 +1707,7 @@ private:
 
     auto offsetElementType = getElementTypeOrSelf(offset.getType());
     unsigned offsetBpe = mlir::triton::gcu::getBpe(offsetElementType);
-    unsigned maxVectorLength = 4 * oaccSizeInBytes / offsetBpe;
+    unsigned maxVectorLength = 4 * kOaccSizeInBytes / offsetBpe;
 
     if (!mask) {
       mask = builder.create<vector::ConstantMaskOp>(
@@ -1407,7 +1844,7 @@ private:
 
     auto offsetElementType = getElementTypeOrSelf(offset.getType());
     unsigned offsetBpe = mlir::triton::gcu::getBpe(offsetElementType);
-    unsigned maxVectorLength = 4 * oaccSizeInBytes / offsetBpe;
+    unsigned maxVectorLength = 4 * kOaccSizeInBytes / offsetBpe;
 
     if (!mask) {
       mask = builder.create<vector::ConstantMaskOp>(
@@ -1493,9 +1930,9 @@ private:
                                      builder.getIntegerType(1)),
                      masks.getResult(i))
                  .getResult(0);
-      builder.create<vector::ScatterOp>(loc, map.lookup(op.getPtr()),
-                                        ValueRange{zero}, offsets.getResult(i),
-                                        mask, values.getResult(i));
+      triton_gcu::compat::createVectorScatterOp(
+          builder, loc, map.lookup(op.getPtr()), ValueRange{zero},
+          offsets.getResult(i), mask, values.getResult(i));
     }
     return;
   }
@@ -1604,7 +2041,7 @@ private:
     auto offsetElementType = getElementTypeOrSelf(offset.getType());
     auto elementTy = op.getResult().getType().getElementType();
     unsigned offsetBpe = mlir::triton::gcu::getBpe(offsetElementType);
-    unsigned maxVectorLength = 4 * oaccSizeInBytes / offsetBpe;
+    unsigned maxVectorLength = 4 * kOaccSizeInBytes / offsetBpe;
 
     auto vectorType =
         VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy);
@@ -1672,7 +2109,7 @@ private:
     auto valueElementType = getElementTypeOrSelf(v.getType());
     auto offsetElementType = getElementTypeOrSelf(offset.getType());
     unsigned offsetBpe = mlir::triton::gcu::getBpe(offsetElementType);
-    unsigned maxVectorLength = 4 * oaccSizeInBytes / offsetBpe;
+    unsigned maxVectorLength = 4 * kOaccSizeInBytes / offsetBpe;
 
     auto loc = op.getLoc();
     auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
@@ -1731,9 +2168,9 @@ private:
                   v)
               .getResult(0);
     }
-    builder.create<vector::ScatterOp>(loc, map.lookup(op.getPtr()),
-                                      ValueRange{zero},
-                                      map.lookup(op.getOffset()), mask, v);
+    triton_gcu::compat::createVectorScatterOp(
+        builder, loc, map.lookup(op.getPtr()), ValueRange{zero},
+        map.lookup(op.getOffset()), mask, v);
   }
 
   void handleConstantOp(arith::ConstantOp op, OpBuilder &builder,
@@ -1890,7 +2327,7 @@ private:
         unsigned rhsBpe =
             mlir::triton::gcu::getBpe(getElementTypeOrSelf(rhsValue.getType()));
         unsigned bpe = std::max(lhsBpe, rhsBpe);
-        maxVectorLength = 4 * oaccSizeInBytes / bpe;
+        maxVectorLength = 4 * kOaccSizeInBytes / bpe;
       }
       if (vectorLength > maxVectorLength) {
         newOp = generateSplitSelectOp(selectOp, builder, map, vectorLength,
@@ -1921,7 +2358,7 @@ private:
       } else {
         auto outElementType = getElementTypeOrSelf(cvtOp.getOut().getType());
         unsigned outBpe = mlir::triton::gcu::getBpe(outElementType);
-        unsigned maxVectorLength = 4 * oaccSizeInBytes / outBpe;
+        unsigned maxVectorLength = 4 * kOaccSizeInBytes / outBpe;
         if (vectorLength > maxVectorLength &&
             getElementTypeOrSelf(cvtOp.getIn().getType()).isInteger(1)) {
           newOp = generateSplitExtUIOp(cvtOp, builder, map, vectorLength,

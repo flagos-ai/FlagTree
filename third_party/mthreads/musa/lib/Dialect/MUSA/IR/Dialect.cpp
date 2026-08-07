@@ -2,6 +2,7 @@
 #include "TritonMUSACommon/BarrierUtils.h"
 #include "TritonMUSACommon/MMAContractUtils.h"
 #include "TritonMUSACommon/MMAEncodingUtils.h"
+#include "TritonMUSACommon/MMAOperandUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
@@ -99,6 +100,13 @@ static LogicalResult verifyDotShapeContract(Operation *op,
   if (cShape != dShape)
     return op->emitError("expected result shape to match accumulator shape");
   return success();
+}
+
+static LogicalResult verifySqmmaMemDescOperandContract(SquadDotOp op,
+                                                       Value operand,
+                                                       unsigned operandIdx) {
+  return verifySqmmaMemDescOperandProducerContract(op.getOperation(), operand,
+                                                   operandIdx);
 }
 
 static bool isFP8Type(Type type) {
@@ -230,6 +238,9 @@ LogicalResult SquadDotOp::verify() {
   if (interface->inferDotOpEncoding(aEncoding, 0, retEnc, getLoc()).failed())
     return failure();
   if (interface->inferDotOpEncoding(bEncoding, 1, retEnc, getLoc()).failed())
+    return failure();
+  if (failed(verifySqmmaMemDescOperandContract(*this, getA(), 0)) ||
+      failed(verifySqmmaMemDescOperandContract(*this, getB(), 1)))
     return failure();
   if (failed(verifyDotShapeContract(getOperation(), aTy.getShape(),
                                     bTy.getShape(), accTy.getShape(),

@@ -32,15 +32,15 @@ from triton.backends.compiler import GPUTarget
 from triton.experimental.gluon._runtime import GluonASTSource
 from triton.runtime.jit import create_function_from_signature
 from triton._C.libtriton import ir
-from triton.flagtree_spec import spec
+from triton._flagtree_spec import spec_call
 
 # ===-----------------------------------------------------------------------===#
 # filecheck_test
 # ===-----------------------------------------------------------------------===#
 
 # Stub target for testing the frontend.
-# flagtree backend specialization
-stub_target = spec("spec_get_stub_target")
+# flagtree backend call specialization
+stub_target = spec_call("spec_get_stub_target")
 if not stub_target:
     stub_target = GPUTarget("cuda", 100, 32)
 

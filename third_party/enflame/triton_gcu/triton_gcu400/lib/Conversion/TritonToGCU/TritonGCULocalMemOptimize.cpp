@@ -32,6 +32,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
@@ -442,7 +443,7 @@ public:
     auto elemTy = memdescTy.getElementType();
     unsigned elemBitWidth = elemTy.getIntOrFloatBitWidth();
     auto ctaLayout =
-        triton::gpu::CTAEncodingAttr::getDefault(rewriter.getContext(), rank);
+        triton_gcu::compat::getDefaultCGALayout(rewriter.getContext(), rank);
     auto transposedEnc = triton::gpu::NVMMASharedEncodingAttr::get(
         rewriter.getContext(),
         /*swizzlingByteWidth=*/128,
@@ -814,7 +815,7 @@ static triton::gpu::MemDescType buildMemDescType(MLIRContext *ctx,
     for (unsigned i = 0; i < rank; ++i)
       order.push_back(rank - 1 - i);
   }
-  auto ctaLayout = triton::gpu::getCTALayout(encoding);
+  auto ctaLayout = triton_gcu::compat::getCGALayout(encoding);
   auto sharedEnc = triton::gpu::SwizzledSharedEncodingAttr::get(
       ctx, /*vec=*/1, /*perPhase=*/1, /*maxPhase=*/1, order, ctaLayout);
   auto smemSpace = triton::gpu::SharedMemorySpaceAttr::get(ctx);

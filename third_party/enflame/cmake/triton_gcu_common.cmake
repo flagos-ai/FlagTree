@@ -58,6 +58,7 @@ endmacro()
 # Parameters:
 #   triton_src_root - root of the Triton source tree to patch
 macro(triton_gcu_apply_common_triton_upstream_patches triton_src_root)
+  # Patches common to all Triton versions (3.5+)
   execute_process(
     COMMAND sed -i "\\#HasParent<\"ModuleOp\">#d"
               ${triton_src_root}/include/triton/Dialect/Triton/IR/TritonOps.td
@@ -73,22 +74,36 @@ macro(triton_gcu_apply_common_triton_upstream_patches triton_src_root)
               ${triton_src_root}/lib/Conversion/TritonGPUToLLVM/FuncOpToLLVM.cpp
     ERROR_QUIET
   )
-  execute_process(
-    COMMAND sed -i "\\#nvidia/include/Dialect/NVWS/IR/Dialect.h#d"
-              ${triton_src_root}/include/triton/Dialect/TritonGPU/Transforms/Passes.h
-    ERROR_QUIET
-  )
-  execute_process(
-    COMMAND sed -i "/nvws::NVWSDialect/d"
-              ${triton_src_root}/include/triton/Dialect/TritonGPU/Transforms/Passes.td
-    ERROR_QUIET
-  )
 
-  execute_process(
-      COMMAND sed -i "/maybeLookupNumWarps/,/multiple of 4/ { /multiple of 4/ { N; N; d; }; d; }"
-              ${triton_src_root}/lib/Dialect/TritonGPU/IR/Ops.cpp
+  # Patches for Triton 3.6+ (NVWS dialect removal)
+  if(TRITON_VERSION VERSION_GREATER_EQUAL "3.6")
+    execute_process(
+      COMMAND sed -i "\\#nvidia/include/Dialect/NVWS/IR/Dialect.h#d"
+                ${triton_src_root}/include/triton/Dialect/TritonGPU/Transforms/Passes.h
       ERROR_QUIET
-  )
+    )
+    execute_process(
+      COMMAND sed -i "/nvws::NVWSDialect/d"
+                ${triton_src_root}/include/triton/Dialect/TritonGPU/Transforms/Passes.td
+      ERROR_QUIET
+    )
+    execute_process(
+        COMMAND sed -i "/maybeLookupNumWarps/,/multiple of 4/ { /multiple of 4/ { N; N; d; }; d; }"
+                ${triton_src_root}/lib/Dialect/TritonGPU/IR/Ops.cpp
+        ERROR_QUIET
+    )
+  endif()
+
+  # Patches for Triton 3.7+ (to be added as compilation reveals needs)
+  if(TRITON_VERSION VERSION_GREATER_EQUAL "3.7")
+    # GCC 7 rejects `getResults() : ValueRange()` in a ternary (ResultRange vs
+    # ValueRange); newer GCC accepts it. Explicitly construct ValueRange.
+    execute_process(
+      COMMAND sed -i "s/return successor.isParent() ? getResults() : ValueRange();/return successor.isParent() ? ValueRange(getResults()) : ValueRange();/"
+                ${triton_src_root}/lib/Dialect/TritonGPU/IR/Ops.cpp
+      ERROR_QUIET
+    )
+  endif()
 endmacro()
 
 # triton-${_arch}-opt, shared link/compile flags, and triton-${_arch}-tools aggregate target.

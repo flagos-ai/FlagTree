@@ -23,12 +23,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility
-
 #include "triton/Analysis/Utility.h"
 
 #include <fstream>
@@ -434,6 +428,28 @@ static Attribute inferSrcEncoding(GatherOp op, Attribute dstEnc) {
   return dstEnc;
 }
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+// Backward propagation only: the op is deliberately absent from
+// RemoveLayoutConversions' propagateToUsers and rewriteOp lists, which assume a
+// shape-preserving op and would report a fatal error on this one.
+static Attribute inferSrcEncoding(ttg::ConcatDotOperandOp op,
+                                  Attribute dstEnc) {
+  // dot_op carries no K extent, so it is the only encoding a concat shares
+  // unchanged with its fragments; shape-coupled ones take the generic path.
+  if (isa<ttg::DotOperandEncodingAttr>(dstEnc))
+    return dstEnc;
+  return {};
+}
+
+static Attribute inferDstEncoding(ttg::ConcatDotOperandOp op,
+                                  Attribute srcEnc) {
+  // Symmetric to inferSrcEncoding above.
+  if (isa<ttg::DotOperandEncodingAttr>(srcEnc))
+    return srcEnc;
+  return {};
+}
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
+
 static Attribute inferTransOpDstEncoding(Attribute srcEnc,
                                          ArrayRef<int64_t> shape,
                                          ArrayRef<int32_t> order) {
@@ -583,6 +599,10 @@ Attribute inferSrcEncoding(Operation *op, Attribute encoding) {
     return inferSrcEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferSrcEncoding(fp4ToFp, encoding);
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+  if (auto concat = dyn_cast<ttg::ConcatDotOperandOp>(op))
+    return inferSrcEncoding(concat, encoding);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
   return {};
 }
@@ -617,6 +637,10 @@ Attribute inferDstEncoding(Operation *op, Attribute encoding) {
     return inferDstEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferDstEncoding(fp4ToFp, encoding);
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+  if (auto concat = dyn_cast<ttg::ConcatDotOperandOp>(op))
+    return inferDstEncoding(concat, encoding);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
   return {};
 }
@@ -1804,5 +1828,3 @@ LogicalResult verifyBarrierType(Operation *op,
 }
 
 } // namespace mlir::triton
-
-#endif

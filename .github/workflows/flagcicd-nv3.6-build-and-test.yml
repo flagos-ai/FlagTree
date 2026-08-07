@@ -23,6 +23,11 @@ name: FlagCICD-NV3.6-Build-And-Test
 on:
   pull_request:
     branches: [ "main", "triton_v3.6.x"]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -44,7 +49,7 @@ jobs:
       volumes:
         - /mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/:/mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/
 
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -61,6 +66,10 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: nvidia
+
+      - name: Cleanup FlagTree Environment
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
       - name: Detect Target Branch
         shell: bash
@@ -83,8 +92,16 @@ jobs:
           export TRITON_HOME="/root/"
           pip uninstall -y triton
           env | grep -E '^(LLVM_SYSPATH)=' >> $GITHUB_ENV || true
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
           unset TRITON_HOME
+
+      - name: Clear cache if ClearCache label present
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: nvidia
 
       - name: FlagGems Accuracy Test
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}

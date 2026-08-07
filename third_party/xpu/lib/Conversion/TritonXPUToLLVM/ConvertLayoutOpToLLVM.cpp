@@ -46,6 +46,13 @@ struct XPUConvertLayoutOpConversion
     auto dstTy = cast<RankedTensorType>(dst.getType());
 
     auto vals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    // UnrollControl can shrink the in-loop destination while the loop-invariant
+    // source keeps its original struct size. Pack only the destination
+    // elements.
+    unsigned dstElems = triton::xpu::getTotalElemsPerThread(dstTy);
+    if (vals.size() > dstElems) {
+      vals = SmallVector<Value>(vals.begin(), vals.begin() + dstElems);
+    }
     Value ret = packLLElements(loc, typeConverter, vals, rewriter, dstTy);
 
     rewriter.replaceOp(op, ret);

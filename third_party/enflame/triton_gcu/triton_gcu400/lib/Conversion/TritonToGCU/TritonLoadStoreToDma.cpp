@@ -106,6 +106,31 @@ struct PreprocessForOp : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+struct PreprocessWhileOp : public OpRewritePattern<scf::WhileOp> {
+  llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs;
+  llvm::SmallDenseMap<Value, gcu::MaskState> &knownMasks;
+  llvm::SmallVector<Operation *, 8> &candidateOps;
+  llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints;
+
+  explicit PreprocessWhileOp(
+      MLIRContext *context,
+      llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs,
+      llvm::SmallDenseMap<Value, gcu::MaskState> &knownMasks,
+      llvm::SmallVector<Operation *, 8> &candidateOps,
+      llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints)
+      : OpRewritePattern<scf::WhileOp>(context), knownPtrs(knownPtrs),
+        knownMasks(knownMasks), candidateOps(candidateOps),
+        candidateHints(candidateHints) {}
+
+  LogicalResult matchAndRewrite(scf::WhileOp op,
+                                PatternRewriter &rewriter) const override {
+    if (gcu::PtrAnalysis::byPassWhileOp(rewriter, op, candidateOps))
+      return failure();
+    return gcu::PtrAnalysis::rewriteWhileOp(rewriter, op, knownPtrs, knownMasks,
+                                            candidateOps, candidateHints);
+  }
+};
+
 struct PostprocessForOp : public OpRewritePattern<scf::ForOp> {
   llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs;
 
@@ -195,7 +220,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
   llvm::SmallVector<Operation *, 8> &candidateOps;
   llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints;
   bool &bStaticCondition;
-  static constexpr unsigned smallSizeLoadLimit = 2048;
+  static constexpr unsigned smallSizeLoadLimit = 8 * 1024;
 
   explicit ConvertLoadOpToDma(
       MLIRContext *context,
@@ -646,6 +671,8 @@ void ConvertTritonLoadStoreToDmaPass::runOnOperation() {
     RewritePatternSet prePatterns(ctx);
     prePatterns.add<PreprocessForOp>(ctx, knownPtrs, knowMasks, candidateOps,
                                      candidateHints);
+    prePatterns.add<PreprocessWhileOp>(ctx, knownPtrs, knowMasks, candidateOps,
+                                       candidateHints);
 
     if (applyPatternsGreedily(op, std::move(prePatterns), rewriteConfig)
             .failed())

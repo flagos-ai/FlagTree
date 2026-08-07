@@ -10,3 +10,6 @@ target_include_directories(TritonNVIDIACompat PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../nvidia/include
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../../include
 )
+
+# NVIDIACompat reaches XPU Dialect.h through the XPU analysis utilities.
+add_dependencies(TritonNVIDIACompat TritonXPUAttrDefsIncGen)

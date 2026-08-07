@@ -58,8 +58,8 @@ def get_configs_compute_bound():
     if hasattr(torch, "corex"):
         for block_m in [32, 64, 128, 256]:
             for block_n in [32, 64, 128, 256]:
-                for block_k in [32, 64, 128, 256]:
-                    for num_stages in [1, 2]:
+                for block_k in [32, 64, 128]:
+                    for num_stages in [1, 2, 3]:
                         num_warps = 16 if block_m >= 128 or block_n >= 128 or block_k >= 128 else 8
                         configs.append(
                             Config({'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k, 'SPLIT_K': 1},
@@ -96,18 +96,23 @@ def get_nv_configs():
     return configs
 
 
+_MATMUL_HEURISTICS = {
+    'EVEN_K': lambda args: args['K'] % (args['BLOCK_K'] * args['SPLIT_K']) == 0,
+    'EVEN_M': lambda args: args['M'] % args['BLOCK_M'] == 0,
+    'EVEN_N': lambda args: args['N'] % args['BLOCK_N'] == 0,
+}
+
+
 @autotune(
     configs=get_nv_configs() + get_configs_io_bound() + get_configs_compute_bound(),
     key=['M', 'N', 'K'],
     prune_configs_by={
         'early_config_prune': early_config_prune,
         'perf_model': estimate_matmul_time,
-        'top_k': 10,
+        'top_k': 15,
     },
 )
-@heuristics({
-    'EVEN_K': lambda args: args['K'] % (args['BLOCK_K'] * args['SPLIT_K']) == 0,
-})
+@heuristics(_MATMUL_HEURISTICS)
 @jit
 def _kernel(A, B, C, M, N, K,  #
             stride_am, stride_ak,  #
@@ -117,19 +122,22 @@ def _kernel(A, B, C, M, N, K,  #
             input_precision: tl.constexpr,  #
             fp8_fast_accum: tl.constexpr,  #
             BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,  #
-            GROUP_M: tl.constexpr, SPLIT_K: tl.constexpr, EVEN_K: tl.constexpr, AB_DTYPE: tl.constexpr  #
+            GROUP_M: tl.constexpr, SPLIT_K: tl.constexpr, EVEN_K: tl.constexpr, EVEN_M: tl.constexpr,
+            EVEN_N: tl.constexpr, AB_DTYPE: tl.constexpr  #
             ):
     # matrix multiplication
     pid = tl.program_id(0)
     pid_z = tl.program_id(1)
     grid_m = tl.cdiv(M, BLOCK_M)
     grid_n = tl.cdiv(N, BLOCK_N)
-    # re-order program ID for better L2 performance
-    width = GROUP_M * grid_n
-    group_id = pid // width
-    group_size = min(grid_m - group_id * GROUP_M, GROUP_M)
-    pid_m = group_id * GROUP_M + (pid % group_size)
-    pid_n = (pid % width) // (group_size)
+    # # re-order program ID for better L2 performance
+    # width = GROUP_M * grid_n
+    # group_id = pid // width
+    # group_size = min(grid_m - group_id * GROUP_M, GROUP_M)
+    # pid_m = group_id * GROUP_M + (pid % group_size)
+    # pid_n = (pid % width) // (group_size)
+    pid_m = pid // grid_n
+    pid_n = pid % grid_n
     # do matrix multiplication
     rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -140,35 +148,79 @@ def _kernel(A, B, C, M, N, K,  #
     A = A + (ram[:, None] * stride_am + rk[None, :] * stride_ak)
     B = B + (rk[:, None] * stride_bk + rbn[None, :] * stride_bn)
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=acc_dtype)
-    for k in range(0, tl.cdiv(K, BLOCK_K * SPLIT_K)):
-        if EVEN_K:
+    if EVEN_K:
+        for k in range(0, tl.cdiv(K, BLOCK_K * SPLIT_K)):
             a = tl.load(A)
             b = tl.load(B)
-        else:
-            k_remaining = K - k * (BLOCK_K * SPLIT_K)
-            _0 = tl.zeros((1, 1), dtype=C.dtype.element_ty)
+            if AB_DTYPE is not None:
+                a = a.to(AB_DTYPE)
+                b = b.to(AB_DTYPE)
+            if fp8_fast_accum:
+                acc = tl.dot(a, b, acc, out_dtype=acc_dtype, input_precision=input_precision)
+            else:
+                acc += tl.dot(a, b, out_dtype=acc_dtype, input_precision=input_precision)
+            A += BLOCK_K * SPLIT_K * stride_ak
+            B += BLOCK_K * SPLIT_K * stride_bk
+    else:
+        loop_num = tl.cdiv(K, BLOCK_K * SPLIT_K) - 1
+        for k in range(0, loop_num):
+            a = tl.load(A)
+            b = tl.load(B)
+            if AB_DTYPE is not None:
+                a = a.to(AB_DTYPE)
+                b = b.to(AB_DTYPE)
+            if fp8_fast_accum:
+                acc = tl.dot(a, b, acc, out_dtype=acc_dtype, input_precision=input_precision)
+            else:
+                acc += tl.dot(a, b, out_dtype=acc_dtype, input_precision=input_precision)
+            A += BLOCK_K * SPLIT_K * stride_ak
+            B += BLOCK_K * SPLIT_K * stride_bk
+
+        _0 = tl.zeros((1, 1), dtype=C.dtype.element_ty)
+        k_remaining = K - loop_num * (BLOCK_K * SPLIT_K)
+        if SPLIT_K == 1:
             a = tl.load(A, mask=rk[None, :] < k_remaining, other=_0)
             b = tl.load(B, mask=rk[:, None] < k_remaining, other=_0)
-        if AB_DTYPE is not None:
-            a = a.to(AB_DTYPE)
-            b = b.to(AB_DTYPE)
-        if fp8_fast_accum:
-            acc = tl.dot(a, b, acc, out_dtype=acc_dtype, input_precision=input_precision)
+            if fp8_fast_accum:
+                acc = tl.dot(a, b, acc, out_dtype=acc_dtype, input_precision=input_precision)
+            else:
+                acc += tl.dot(a, b, out_dtype=acc_dtype, input_precision=input_precision)
         else:
-            acc += tl.dot(a, b, out_dtype=acc_dtype, input_precision=input_precision)
-        A += BLOCK_K * SPLIT_K * stride_ak
-        B += BLOCK_K * SPLIT_K * stride_bk
+            # The final split-K group can contain complete and partial slices.
+            # This predicate is CTA-uniform, so complete slices retain the
+            # unmasked SME path and only the true tail pays mask correction.
+            if k_remaining >= (pid_z + 1) * BLOCK_K:
+                a = tl.load(A)
+                b = tl.load(B)
+                if fp8_fast_accum:
+                    acc = tl.dot(a, b, acc, out_dtype=acc_dtype, input_precision=input_precision)
+                else:
+                    acc += tl.dot(a, b, out_dtype=acc_dtype, input_precision=input_precision)
+            else:
+                a = tl.load(A, mask=rk[None, :] < k_remaining, other=_0)
+                b = tl.load(B, mask=rk[:, None] < k_remaining, other=_0)
+                if fp8_fast_accum:
+                    acc = tl.dot(a, b, acc, out_dtype=acc_dtype, input_precision=input_precision)
+                else:
+                    acc += tl.dot(a, b, out_dtype=acc_dtype, input_precision=input_precision)
+
     acc = acc.to(C.dtype.element_ty)
     # rematerialize rm and rn to save registers
     rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     C = C + (rm[:, None] * stride_cm + rn[None, :] * stride_cn)
-    mask = (rm < M)[:, None] & (rn < N)[None, :]
     # handles write-back with reduction-splitting
-    if SPLIT_K == 1:
-        tl.store(C, acc, mask=mask)
+    if EVEN_M and EVEN_N:
+        if SPLIT_K == 1:
+            tl.store(C, acc)
+        else:
+            tl.atomic_add(C, acc)
     else:
-        tl.atomic_add(C, acc, mask=mask)
+        mask = (rm < M)[:, None] & (rn < N)[None, :]
+        if SPLIT_K == 1:
+            tl.store(C, acc, mask=mask)
+        else:
+            tl.atomic_add(C, acc, mask=mask)
 
 
 class _matmul(torch.autograd.Function):

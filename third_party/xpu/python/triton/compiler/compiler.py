@@ -81,6 +81,8 @@ class ASTSource:
                            module_map=module_map)
 
     def parse_options(self):
+        if "tl.dot" in self.fn.src:
+            return dict({"is_sdnn": True})
         return dict()
 
 
@@ -119,6 +121,9 @@ class IRSource:
         return self.module
 
     def parse_options(self):
+        dict_is_sdnn = dict()
+        if "tl.dot" in self.src or "tt.dot" in self.src:
+            dict_is_sdnn["is_sdnn"] = True
         if self.ext == "ttgir":
             num_warps = self.module.get_int_attr("ttg.num-warps")
             assert num_warps is not None, "Unable to parse ttg.num-warps attribute"
@@ -126,8 +131,8 @@ class IRSource:
             num_ctas = self.module.get_int_attr("ttg.num-ctas")
             if num_ctas is not None:
                 options['num_ctas'] = num_ctas
-            return options
-        return dict()
+            return {**options, **dict_is_sdnn}
+        return dict_is_sdnn
 
 
 @functools.lru_cache()
@@ -229,7 +234,7 @@ def compile(src, target=None, options=None, _env_vars=None):
         timer = CompileTimer()
 
     if target is None:
-        target = driver.active.get_current_target()
+        target = driver.active.get_current_target_inside()
     assert isinstance(target, GPUTarget), "target must be of GPUTarget type"
     backend = make_backend(target)
     ir_source = not isinstance(src, ASTSource)
@@ -322,7 +327,8 @@ def compile(src, target=None, options=None, _env_vars=None):
 
     if compilation_listener:
         timer.finished_ir_initialization()
-    for ext, compile_ir in list(stages.items())[first_stage:]:
+
+    def run_stage(ext, compile_ir, module):
         next_module = compile_ir(module, metadata)
         ir_filename = f"{file_name}.{ext}"
         if fn_override_manager is None:
@@ -346,9 +352,43 @@ def compile(src, target=None, options=None, _env_vars=None):
             ir_full_name = fn_cache_manager.get_file(ir_filename)
             next_module.create_location_snapshot(ir_full_name)
             print(f"Creating new locations for {ir_full_name}")
-        module = next_module
         if compilation_listener:
             timer.stage_finished(ext)
+        return next_module
+
+    if target.backend == "xpu":
+        # XPU may overflow the per-core local-memory (stack) budget when the
+        # buffer/block chosen for a kernel is too large (e.g. i16 pointwise
+        # kernels launched with buffer_size_limit=2048). In that case the ELF
+        # KERNEL_STACK_SIZE exceeds the hardware limit and the kernel spills
+        # masked vectors, causing illegal-memory-access faults at runtime.
+        # Mirror the Triton 3.0 behavior: compile down to the ELF stage, and if
+        # the stack size is out of bounds, halve buffer_size_limit and recompile
+        # from the source until it fits (or we hit the minimum of 16).
+        stage_items = list(stages.items())
+        make_ttxir_stage_index = list(stages.keys()).index("ttxir")
+        make_elf_stage_index = list(stages.keys()).index("elf")
+        if first_stage > make_ttxir_stage_index:
+            for ext, compile_ir in stage_items[first_stage:]:
+                module = run_stage(ext, compile_ir, module)
+        else:
+            while True:
+                cur_module = module
+                for ext, compile_ir in stage_items[first_stage:make_elf_stage_index + 1]:
+                    cur_module = run_stage(ext, compile_ir, cur_module)
+                if backend.is_elf_stack_size_oob(cur_module):
+                    if metadata["buffer_size_limit"] == 16:
+                        raise RuntimeError("Failed to tune buffer size.")
+                    metadata["buffer_size_limit"] = metadata["buffer_size_limit"] // 2
+                    module = src.make_ir(target, options, codegen_fns, module_map, context)
+                else:
+                    module = cur_module
+                    break
+            for ext, compile_ir in stage_items[make_elf_stage_index + 1:]:
+                module = run_stage(ext, compile_ir, module)
+    else:
+        for ext, compile_ir in list(stages.items())[first_stage:]:
+            module = run_stage(ext, compile_ir, module)
     # write-back metadata
     metadata_group[metadata_filename] = fn_cache_manager.put(json.dumps(metadata, default=vars), metadata_filename,
                                                              binary=False)
@@ -455,7 +495,12 @@ class CompiledKernel:
 
         device = driver.active.get_current_device()
         # create launcher
-        self._run = driver.active.launcher_cls(self.src, self.metadata)
+        is_xpu_backend = getattr(self.metadata, "backend_name", None) == "xpu" or \
+            getattr(self.metadata, "is_sdnn", False)
+        if is_xpu_backend and hasattr(driver.active, 'launcher_cls_xpu'):
+            self._run = driver.active.launcher_cls_xpu(self.src, self.metadata)
+        else:
+            self._run = driver.active.launcher_cls(self.src, self.metadata)
         # not enough shared memory to run the kernel
         max_shared = max_shared_mem(device)
         if self.metadata.shared > max_shared:
