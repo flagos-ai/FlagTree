@@ -1,4 +1,4 @@
-name: spacemit-ci
+name: Spacemit3.6-Build-And-Test
 
 # SpaceMiT RISC-V 后端 CI (root-triton plugin)。
 # retrigger: spine-FlagGems @ 77d72cba (mm fix) — confirm squashed commit green
@@ -18,7 +18,7 @@ on:
       - 'CMakeLists.txt'
       - 'setup.py'
       - 'python/**'
-      - '.github/workflows/spacemit-ci.yml'
+      - '.github/workflows/spacemit3.6-build-and-test.yml'
 
 concurrency:
   group: spacemit-k3
