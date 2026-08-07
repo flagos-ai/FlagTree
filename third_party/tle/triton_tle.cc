@@ -705,6 +705,7 @@ void init_triton_tle_attr(py::module &&m) {
   py::enum_<tle::SignalOpKind>(m, "SignalOpKind")
       .value("Inc", tle::SignalOpKind::INC)
       .value("Add", tle::SignalOpKind::ADD)
+      .value("Ctr", tle::SignalOpKind::CTR)
       .def_static(
           "from_str",
           [](std::string name) { return tle::symbolizeSignalOpKind(name); },

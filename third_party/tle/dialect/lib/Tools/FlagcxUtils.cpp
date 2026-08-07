@@ -43,6 +43,7 @@ static const llvm::StringMap<StringRef> runtimeNames = {
     {"getNetFromCommFunction", "flagcxDevNetGetFromCommS"},
     {"signalSigIncFunction", "flagcxDevNetSignalSigIncS"},
     {"signalSigAddFunction", "flagcxDevNetSignalSigAddS"},
+    {"signalCtrIncFunction", "flagcxDevNetSignalCtrIncS"},
     {"waitSignalFunction", "flagcxDevNetWaitSignalS"},
     {"waitCounterFunction", "flagcxDevNetWaitCounterS"},
     {"waitShadowFunction", "flagcxDevNetWaitSignalMeetShadowS"}};
@@ -182,6 +183,9 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
     runtimeName = runtimeNames.lookup("signalSigAddFunction");
     argTypes.push_back(i64Ty);
     args.push_back(value);
+    break;
+  case SignalOpKind::CTR:
+    runtimeName = runtimeNames.lookup("signalCtrIncFunction");
     break;
   default:
     llvm_unreachable("unknown signal operation");

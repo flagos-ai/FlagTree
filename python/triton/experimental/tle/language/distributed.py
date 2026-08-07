@@ -160,7 +160,8 @@ def signal(
     """Atomically update a signal slot owned by a remote FlagCX peer.
 
     ``op="inc"`` increments the selected slot by one. ``op="add"`` adds
-    ``value``. The primitive only sends a signal; it neither transfers data nor
+    ``value``. ``op="ctr" increments the selected counter slot by one.
+    The primitive only sends a signal; it neither transfers data nor
     waits for completion on the receiving peer.
 
     ``space`` selects the FlagCX team (``intra_node``, ``inter_node``, or
@@ -178,7 +179,7 @@ def signal(
 
     signal_op = attr.SignalOpKind.from_str(str(tl._unwrap_if_constexpr(op)).lower())
     if signal_op is None:
-        raise ValueError(f"op must be 'inc' or 'add', got {signal_op!r}")
+        raise ValueError(f"op must be 'inc', 'add', or 'ctr', got {signal_op!r}")
 
     signal_space = str(tl._unwrap_if_constexpr(space)).lower()
     if signal_space not in _SIGNAL_SPACE_TO_TEAM_KIND:
