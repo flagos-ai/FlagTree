@@ -5,6 +5,11 @@ on:
     branches: [ "triton_v3.1.x" ]
   pull_request:
     branches: [ "triton_v3.1.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -13,7 +18,7 @@ concurrency:
 jobs:
   iluvatar-build-and-test:
     runs-on: iluvatar3.1
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
@@ -32,6 +37,10 @@ jobs:
         with:
           backend: iluvatar
 
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
       - name: FlagTree Build on Iluvatar
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
@@ -42,6 +51,14 @@ jobs:
           source ~/env.sh
           cd python
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: iluvatar
 
       - name: FlagTree Test on Iluvatar
         if: steps.check_backend.outputs.should_skip != 'true'
