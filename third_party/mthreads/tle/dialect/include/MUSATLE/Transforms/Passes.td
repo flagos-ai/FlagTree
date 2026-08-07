@@ -107,6 +107,24 @@ def TritonMUSAGPUTLELowerSqmma
   ];
 }
 
+def TritonMUSAGPUTLELowerPipe
+    : Pass<"tritonmusa-tle-lower-pipe", "mlir::ModuleOp"> {
+  let summary = "Lower single-field TME SPSC pipes to MUSA barriers";
+  let description = [{
+    Lower the initial mthreads tle.pipe contract: one CTA-scoped cyclic SPSC
+    field produced by one descriptor-to-shared TME transaction.  Materialize
+    independent full and empty hardware-barrier rings, bind TME completion to
+    the full barrier, and reject all unsupported pipe forms before rewriting.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::triton::TritonDialect",
+    "mlir::triton::gpu::TritonGPUDialect",
+    "mlir::triton::musa_tle::MUSATLEDialect",
+    "mlir::triton::tle::TleDialect"
+  ];
+}
+
 def TritonMUSAGPUTLELowerBarrierAllocations
     : Pass<"tritonmusa-tle-lower-barrier-allocations", "mlir::ModuleOp"> {
   let summary = "Assign MUSA hardware ids to TLE barrier declarations";

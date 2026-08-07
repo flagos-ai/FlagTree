@@ -8,10 +8,13 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
+#include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
 #include <limits>
@@ -123,10 +126,12 @@ class LowerBarrierAllocationsPass
 
     Operation *lastInitArrival = nullptr;
     int32_t nextBase = *reserved;
+    SmallVector<Value> loweredBases;
     for (BarrierAllocOp alloc : allocs) {
       Location loc = alloc.getLoc();
       rewriter.setInsertionPoint(alloc);
       Value base = arith::ConstantIntOp::create(rewriter, loc, nextBase, 32);
+      loweredBases.push_back(base);
       Value arriveCount = arith::ConstantIntOp::create(
           rewriter, loc, alloc.getArriveCount(), 32);
       Value initPolarity = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
@@ -165,6 +170,40 @@ class LowerBarrierAllocationsPass
                                            index.getBaseId(), index.getIndex());
       }
       rewriter.replaceOp(index, physicalId);
+    }
+
+    // A hardware barrier is identified by an i32 resource ID and does not
+    // require shared-memory storage. Pipe lowering may need to carry the base
+    // ID into an isolated warp-specialize producer region before IDs are
+    // assigned. Once allocation has resolved the base to an arith.constant,
+    // rematerialize that constant in each partition and remove only those
+    // barrier-ID captures. This prevents the generic WS capture mailbox from
+    // charging shared memory for hardware barrier IDs.
+    SmallVector<ttg::WarpSpecializePartitionsOp> partitionContainers;
+    func.walk([&](ttg::WarpSpecializePartitionsOp partitions) {
+      partitionContainers.push_back(partitions);
+    });
+    for (ttg::WarpSpecializePartitionsOp partitions : partitionContainers) {
+      llvm::BitVector eraseCaptures(partitions.getNumOperands());
+      for (auto [index, capture] :
+           llvm::enumerate(partitions.getExplicitCaptures())) {
+        if (!llvm::is_contained(loweredBases, capture))
+          continue;
+        Operation *constant = capture.getDefiningOp();
+        assert(isa_and_nonnull<arith::ConstantIntOp>(constant));
+        for (Region &partition : partitions.getPartitionRegions()) {
+          rewriter.setInsertionPointToStart(&partition.front());
+          IRMapping mapping;
+          Operation *clone = rewriter.clone(*constant, mapping);
+          partition.getArgument(index).replaceAllUsesWith(clone->getResult(0));
+        }
+        eraseCaptures.set(index);
+      }
+      if (eraseCaptures.none())
+        continue;
+      for (Region &partition : partitions.getPartitionRegions())
+        partition.front().eraseArguments(eraseCaptures);
+      partitions->eraseOperands(eraseCaptures);
     }
 
     return success();

@@ -188,6 +188,22 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
   root.getResult().setType(newRootTy);
   operand.setType(desiredTy);
 
+  // Explicit warp-specialize captures are represented by operands on the
+  // isolated partitions container and corresponding block arguments in every
+  // partition. Changing the captured root value type does not update those
+  // block arguments automatically, so keep the isolation boundary consistent
+  // with the inferred TME/SQMMA layout.
+  root->getParentOfType<tt::FuncOp>().walk(
+      [&](ttg::WarpSpecializePartitionsOp partitions) {
+        for (auto [index, capture] :
+             llvm::enumerate(partitions.getExplicitCaptures())) {
+          if (capture != root.getResult())
+            continue;
+          for (Region &partition : partitions.getPartitionRegions())
+            partition.getArgument(index).setType(newRootTy);
+        }
+      });
+
   bool rowMajor = inferLayout(desiredTy) == musa::SQMMALayout::row;
   auto checkAndSet = [&](Operation *target) -> LogicalResult {
     if (!target)

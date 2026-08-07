@@ -587,12 +587,13 @@ def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
     assert "ttg.barrier local" not in partition_match.group("body"), partition_match.group("body")
     captures = _split_top_level(ws_match.group("captures"))
     partition_args = _split_top_level(partition_match.group("args"))
-    assert len(captures) == 10, (captures, ir_text)
-    assert len(set(captures)) == 10, (captures, ir_text)
-    assert len(partition_args) == 10, (partition_args, ir_text)
+    expected_captures = 6 if barriers_lowered else 10
+    assert len(captures) == expected_captures, (captures, ir_text)
+    assert len(set(captures)) == expected_captures, (captures, ir_text)
+    assert len(partition_args) == expected_captures, (partition_args, ir_text)
     assert sum("tensordesc" in arg for arg in partition_args) == 2, partition_args
     assert sum("memdesc" in arg for arg in partition_args) == 2, partition_args
-    assert sum(": i32" in arg for arg in partition_args) == 5, partition_args
+    assert sum(": i32" in arg for arg in partition_args) == (1 if barriers_lowered else 5), partition_args
     assert sum("ptr<f16>" in arg for arg in partition_args) == 1, partition_args
     assert "requestedRegisters = array<i32: 24>" in ws_match.group("attrs"), ir_text
     assert re.search(r"\)\s*->\s*\(\)\s*\n\s*tt\.return", ir_text), ir_text
@@ -645,10 +646,21 @@ def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
     assert producer_region.count("scf.for") == 1, producer_region
     assert not re.search(r"arith\.(?:rem|div)", producer_region), producer_region
     producer_arg_names = [arg.split(":", 1)[0].strip() for arg in partition_args]
-    producer_full = set(producer_arg_names[4:6])
-    producer_empty = set(producer_arg_names[6:8])
-    producer_barriers = (_physical_barrier_defs(producer_region, producer_full | producer_empty)
-                         if barriers_lowered else _index_defs(producer_region, "musa_tle.barrier.index"))
+    if barriers_lowered:
+        # Hardware barrier bases are constants, rematerialized directly in the
+        # isolated producer. They must not consume WS capture-mailbox SMEM.
+        producer_constants = _constants(producer_region)
+        producer_full = {name for name, value in producer_constants.items() if value in {1, 1 + stages}}
+        producer_empty = {
+            name
+            for name, value in producer_constants.items()
+            if value in {1 + 2 * stages, 1 + 3 * stages}
+        }
+        producer_barriers = _physical_barrier_defs(producer_region, producer_full | producer_empty)
+    else:
+        producer_full = set(producer_arg_names[4:6])
+        producer_empty = set(producer_arg_names[6:8])
+        producer_barriers = _index_defs(producer_region, "musa_tle.barrier.index")
     assert _barrier_phases(
         producer_region,
         "ttmg.wait_barrier" if barriers_lowered else "musa_tle.barrier.wait",
@@ -760,12 +772,10 @@ def _assert_explicit_shared_allocations(allocated, stages):
     ws_line = next(line for line in allocated.splitlines() if "ttg.warp_specialize(" in line)
     assert f"allocation.offset = {explicit_bytes} : i32" in ws_line, ws_line
     shared_bytes = int(re.search(r"ttg\.shared = (\d+) : i32", allocated).group(1))
-    # The generic ttg.warp_specialize allocation currently serializes this
-    # probe's ten explicit captures into an 88-byte scratch area.  Keep this
-    # temporary equality strict so no other implicit shared allocation can be
-    # introduced unnoticed.  Static mthreads WS lowering must replace it with
-    # shared_bytes == explicit_bytes once captures are remapped directly.
-    assert shared_bytes == explicit_bytes + 88, allocated
+    # Descriptor, memdesc, pointer, and scalar captures occupy 68 bytes rounded
+    # to the generic WS mailbox's 8-byte alignment. The four hardware barrier
+    # base IDs are rematerialized constants and therefore add zero SMEM.
+    assert shared_bytes == explicit_bytes + 72, allocated
 
 
 def _assert_dot_pipeline_resources(ttir, ttgir, allocated, stages):

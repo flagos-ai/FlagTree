@@ -782,6 +782,8 @@ class MUSABackend(BaseBackend):
             mthreads.passes.ttgpuir.add_tle_optimize_local_pointer_stores(pm)
         if hasattr(mthreads.passes.ttgpuir, "add_tle_lower_sqmma"):
             mthreads.passes.ttgpuir.add_tle_lower_sqmma(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_lower_pipe"):
+            mthreads.passes.ttgpuir.add_tle_lower_pipe(pm)
         mthreads.passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         mthreads.passes.ttgpuir.add_optimize_dot_operands(pm)
