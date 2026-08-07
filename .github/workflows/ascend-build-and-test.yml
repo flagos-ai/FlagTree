@@ -5,6 +5,11 @@ on:
     branches: [ "triton_v3.2.x" ]
   pull_request:
     branches: [ "triton_v3.2.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -13,7 +18,7 @@ concurrency:
 jobs:
   ascend-build-and-test:
     runs-on: ascend3.2
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
@@ -31,6 +36,10 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: ascend
+
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
       - name: FlagTree Editable Build And Test on Ascend
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -56,6 +65,14 @@ jobs:
           source ~/env.sh
           cd python
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: ascend
 
       - name: FlagTree Test on Ascend
         if: steps.check_backend.outputs.should_skip != 'true'
