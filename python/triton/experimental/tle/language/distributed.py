@@ -119,7 +119,7 @@ _SIGNAL_SPACE_TO_TEAM_KIND = {
 
 
 def _normalize_signal_scalar(value, name: str, dtype: tl.dtype, _semantic) -> tl.tensor:
-    if not dtype.is_int() or dtype.is_bool():
+    if dtype is None or not dtype.is_int() or dtype.is_bool():
         raise TypeError(f"{name}: target dtype must be a non-bool integer, got {dtype}")
 
     value = tl._unwrap_if_constexpr(value)
@@ -1155,16 +1155,26 @@ def signal_wait(
     context_idx: int = 0,
     _semantic=None,
 ):
+    """Wait until a local FlagCX signal or counter reaches its target.
+
+    ``target`` is required for ``wait_kind="signal"`` and
+    ``wait_kind="counter"``.  ``wait_kind="shadow"`` instead reads the target
+    from FlagCX's locally maintained shadow buffer, so ``target`` must be
+    omitted.
+    """
     builder = _semantic.builder
+    if not hasattr(builder, "create_signal_wait"):
+        raise NotImplementedError("tle.signal_wait requires rebuilt TLE builder support")
 
     wait_kind = tl._unwrap_if_constexpr(wait_kind)
-    wait_kind_val = wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else attr.SignalWaitKind.from_str(wait_kind)
+    wait_kind_val = (wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else
+                     attr.SignalWaitKind.from_str(str(wait_kind).lower()))
     if wait_kind_val is None:
         expected = "signal, counter, or shadow"
         raise ValueError(f"wait kind must be {expected}, got {wait_kind!r}")
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
-    group_kind = group_kind.value if isinstance(group_kind, GroupKind) else group_kind
+    group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
     group_kind = attr.SignalCoopKind.from_str(group_kind)
     if group_kind is None:
         expected = "thread, warp, or block"
@@ -1176,18 +1186,27 @@ def signal_wait(
     if context_idx < 0 or context_idx > 0x7FFFFFFF:
         raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
 
+    target = tl._unwrap_if_constexpr(target)
+    target_required = wait_kind_val in (attr.SignalWaitKind.Signal, attr.SignalWaitKind.Counter)
+    if target_required and target is None:
+        raise ValueError(f"target is required for wait_kind={wait_kind!r}")
+    if not target_required and target is not None:
+        raise ValueError("target must be omitted for wait_kind='shadow'")
+
     comm = _parse_src_arg(builder, device_dptr, 1)
-    signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.int32, _semantic) if target else None
-    target_tensor = target and _normalize_signal_scalar(target, "target", tl.int64, _semantic)
+    signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.int32, _semantic)
+    target_tensor = (_normalize_signal_scalar(target, "target", tl.int64, _semantic)
+                     if target is not None else None)
 
     builder.create_signal_wait(
         comm,
         signal_tensor.handle,
         wait_kind_val,
-        target_tensor and target_tensor.handle,
+        None if target_tensor is None else target_tensor.handle,
         group_kind,
         context_idx,
     )
+    return None
 
 
 def distributed_dot(a: ShardedTensor, b: ShardedTensor, c: ShardedTensor | None = None):
