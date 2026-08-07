@@ -74,6 +74,14 @@ LogicalResult convertTCU161616(triton::DotOp op, triton::DotOp::Adaptor adaptor,
   Value D = op.getResult();
   auto [convertedA, ATensorTy] = getTCUOperand(A, adaptor.getA(), rewriter);
   auto [convertedB, BTensorTy] = getTCUOperand(B, adaptor.getB(), rewriter);
+  if (ATensorTy.getElementType() != BTensorTy.getElementType()) {
+    // Mixed-dtype dots unify operands via extf before tt.dot. Only peel extf
+    // when both sides resolve to the same TCU operand type.
+    convertedA = adaptor.getA();
+    convertedB = adaptor.getB();
+    ATensorTy = cast<RankedTensorType>(A.getType());
+    BTensorTy = cast<RankedTensorType>(B.getType());
+  }
   auto DTensorTy = cast<RankedTensorType>(D.getType());
   auto mmaLayout = cast<IluvatarMmaEncodingAttr>(DTensorTy.getEncoding());
   auto ALayout = cast<DotOperandEncodingAttr>(ATensorTy.getEncoding());

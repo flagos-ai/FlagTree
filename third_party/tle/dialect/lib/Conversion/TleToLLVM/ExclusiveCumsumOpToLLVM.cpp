@@ -39,7 +39,7 @@
 namespace {
 
 using namespace mlir;
-namespace tle = mlir::triton::tle;
+using namespace mlir::triton;
 
 static Value createZeroConstant(Location loc,
                                 ConversionPatternRewriter &rewriter, Type ty) {

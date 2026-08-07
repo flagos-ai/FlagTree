@@ -17,6 +17,33 @@ import os
 import time
 import copy
 
+
+@functools.lru_cache(None)
+def _torch_inductor_needs_legacy_shims() -> bool:
+    """True when the installed torch (<2.10) inductor needs the legacy Triton API.
+
+    torch<=2.7 inductor hardcodes a few Triton symbols/attributes that moved in
+    Triton 3.x (triton_key, CompiledKernel.launch_{enter,exit}_hook,
+    metadata.cluster_dims) and has no fallback, whereas torch>=2.10 guards each
+    with a try/except or hasattr.
+    """
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            raw = version("torch")
+        except PackageNotFoundError:
+            return False
+    except Exception:
+        return False
+    nums = re.findall(r"\d+", raw)
+    if len(nums) < 2:
+        return False
+    return (int(nums[0]), int(nums[1])) < (2, 10)
+
+
+if _torch_inductor_needs_legacy_shims():
+    from ..runtime.cache import triton_key  # noqa: F401
+
 # - ^\s*tt\.func\s+ : match the start of the string, any leading whitespace, the keyword func,
 #    and any following whitespace
 # - (public\s+)? : optionally match the keyword public and any following whitespace
@@ -404,6 +431,10 @@ def _raise_error(err, *args, **kwargs):
 
 class CompiledKernel:
 
+    if _torch_inductor_needs_legacy_shims():
+        launch_enter_hook = knobs.runtime.launch_enter_hook
+        launch_exit_hook = knobs.runtime.launch_exit_hook
+
     def __init__(self, src, metadata_group, hash):
         from collections import namedtuple
         metadata_path = next((Path(p) for c, p in metadata_group.items() if c.endswith(".json")))
@@ -411,6 +442,8 @@ class CompiledKernel:
         # JSON serialization dumps the target as a dict. Restore it to a GPUTarget.
         target = metadata['target']
         metadata['target'] = GPUTarget(target['backend'], target['arch'], target['warp_size'])
+        if _torch_inductor_needs_legacy_shims():
+            metadata.setdefault('cluster_dims', (1, 1, 1))
         KernelMetadata = namedtuple('KernelMetadata', sorted(list(metadata.keys())))
         self.metadata = KernelMetadata(**metadata)
         backend = make_backend(self.metadata.target)

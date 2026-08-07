@@ -2108,8 +2108,8 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
 
 
 @builtin
-def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", cache_modifier="", eviction_policy="",
-         volatile=False, _semantic=None):
+def load(pointer, mask=None, other=None, stride=None, boundary_check=(), padding_option="", cache_modifier="",
+         eviction_policy="", volatile=False, _semantic=None):
     """
     Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
 
@@ -2153,20 +2153,25 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     :param volatile: changes volatile option in NVIDIA PTX
     :type volatile: bool, optional
     """
-    if mask and not other:
-        other = 0
     # `mask` and `other` can be constexpr
     mask = _unwrap_if_constexpr(mask)
     other = _unwrap_if_constexpr(other)
+    if mask is not None and other is None:
+        other = 0
+    # `stride` (Iluvatar SME): when provided, the load is forced through the SME
+    # path with this row stride; the user owns alignment/correctness.
+    stride = _unwrap_if_constexpr(stride)
     if mask is not None:
         mask = _semantic.to_tensor(mask)
     if other is not None:
         other = _semantic.to_tensor(other)
+    if stride is not None:
+        stride = _semantic.to_tensor(stride)
     padding_option = _unwrap_if_constexpr(padding_option)
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
     volatile = _unwrap_if_constexpr(volatile)
-    return _semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,
+    return _semantic.load(pointer, mask, other, stride, boundary_check, padding_option, cache_modifier, eviction_policy,
                           volatile)
 
 

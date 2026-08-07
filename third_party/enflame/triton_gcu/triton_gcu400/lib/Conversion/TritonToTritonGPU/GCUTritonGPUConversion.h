@@ -19,6 +19,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
 
@@ -37,12 +38,19 @@ public:
   int getNumWarps() const { return numWarps; }
   int getThreadsPerWarp() const { return threadsPerWarp; }
   int getNumCTAs() const { return numCTAs; }
+#ifdef ENABLE_TLE
+  int getNumWarps(Value value) const;
+  RankedTensorType convertRankedTensorType(RankedTensorType type,
+                                           int contextualNumWarps) const;
+#endif
 
 private:
   MLIRContext *context;
   int numWarps;
   int threadsPerWarp;
   int numCTAs;
+  SmallVector<unsigned> defaultOrder;
+  llvm::SmallDenseMap<unsigned, unsigned> axisFreq;
 };
 
 class GCUTritonGPUConversionTarget : public ConversionTarget {

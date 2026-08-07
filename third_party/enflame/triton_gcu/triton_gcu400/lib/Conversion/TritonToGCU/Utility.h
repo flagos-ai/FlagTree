@@ -237,6 +237,8 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
                     mlir::ValueRange configShapes, Value defaultValue,
                     triton::gcu::TagInfo tag, bool IsShareOutput = false);
 
+memref::AllocaOp getAllocaOp(Value val);
+
 Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
                      mlir::Operation *op, MemRefType storeValueType,
                      Value storePtr, mlir::ValueRange configStrides,
@@ -245,12 +247,26 @@ Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
 void WaitGcuLoadStore(OpBuilder &rewriter, Location loc,
                       triton::gcu::TagInfo tag, Value totalSize);
 
+void forEachAccDotOrMatmul(Value loadResult,
+                           llvm::function_ref<void(Operation *)> callback);
+
+StringRef getMatrixLoadMode(triton::gcu::LoadOp loadOp);
+
+void ConfigMatrixLoad(OpBuilder &rewriter, Location loc,
+                      triton::gcu::LoadOp loadOp, Value value, Value ptr,
+                      ValueRange srcShapes, ValueRange srcStrides,
+                      ValueRange srcOffsets, bool loadFromLocalMem);
+
 bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue);
 
 void ConfigMatrixStore(OpBuilder &rewriter, Location loc,
                        triton::gcu::StoreOp storeOp, Value value, Value ptr,
                        ValueRange dstShapes, ValueRange dstStrides,
-                       ValueRange dstOffsets, bool hasTrans);
+                       ValueRange dstOffsets, bool storeToLocalMem);
+
+Operation *ConfigMatrixStoreLocal(OpBuilder &rewriter, Location loc,
+                                  MemRefType resultType, Value out,
+                                  Value adaptedResult);
 
 void removeRedundantZeroFill(ConversionPatternRewriter &rewriter,
                              memref::AllocOp allocOp);
@@ -295,6 +311,8 @@ inline int64_t ceilDiv(int64_t lhs, int64_t rhs) {
 }
 int getNumWarps(ModuleOp mod);
 int getTotalNumWarps(mlir::gpu::GPUModuleOp mod);
+
+bool isAllocaInputValue(Value v);
 
 class TritonGCUBuilder {
 public:

@@ -47,21 +47,20 @@ def get_corex_sme(args, specialization):
 
         # fp16/bf16 share the 16-bit SME layout+intrinsic (rowxfb16/colxfb16);
         # fp32 uses rowxfb32/colxfb32 with a dedicated bitwidth-aware blocked
-        # encoding and read-back layout. int8 is only enabled for col-major
-        # (non-contiguous) operands: colxfb8 is GF(2)-linear, while rowxfb8 is
-        # not representable as a LinearLayout.
+        # encoding and read-back layout. int8 row uses native rowxfb8 plus an
+        # S2R offset correction (linear surrogate is not exact);
         sme_dtypes = [torch.float16, torch.bfloat16, torch.float32, torch.int8]
         if torch.is_tensor(arg) and arg.dtype in sme_dtypes and arg.dim() >= 2:
-            dim_m = arg.shape[-2]
-            dim_k = arg.shape[-1]
-            if dim_m != 1 and dim_k != 1:
+            # Match the v3.2 bitmask frontend: size-1 dimensions should not
+            # hide the innermost logical 2D tile used for SME eligibility.
+            squeezed_arg = arg.squeeze()
+            if squeezed_arg.dim() >= 2:
+                dim_m = squeezed_arg.shape[-2]
+                dim_k = squeezed_arg.shape[-1]
                 sme_dim = 64 // arg.element_size()
                 is_row_major_sme = arg.is_contiguous() and dim_k % sme_dim == 0
                 is_col_major_sme = not arg.is_contiguous() and dim_m % sme_dim == 0
-                if arg.dtype == torch.int8:
-                    can_use_arg_sme = is_col_major_sme
-                else:
-                    can_use_arg_sme = is_row_major_sme or is_col_major_sme
+                can_use_arg_sme = is_row_major_sme or is_col_major_sme
                 if can_use_arg_sme:
                     can_use_sme |= 1 << index
         index += 1

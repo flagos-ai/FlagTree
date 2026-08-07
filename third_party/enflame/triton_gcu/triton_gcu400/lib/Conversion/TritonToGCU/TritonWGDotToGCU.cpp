@@ -17,6 +17,7 @@
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Utils/TritonVersionCompat.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -63,7 +64,7 @@ static Attribute convertResultEncodingToBlocked(RankedTensorType tensorType) {
     SmallVector<unsigned> order(rank);
     for (unsigned i = 0; i < rank; ++i)
       order[i] = rank - 1 - i;
-    auto ctaLayout = getCTALayout(enc);
+    auto ctaLayout = triton_gcu::compat::getCGALayout(enc);
     return BlockedEncodingAttr::get(ctx, sizePerThread, threadsPerWarp,
                                     mmaEnc.getWarpsPerCTA(), order, ctaLayout);
   }
@@ -148,8 +149,35 @@ public:
     auto newDot = rewriter.create<DotOp>(loc, newRetType, newA, newB, newAcc,
                                          wgDotOp.getInputPrecision(),
                                          wgDotOp.getMaxNumImpreciseAcc());
-    if (!newDot->getParentOfType<triton::gpu::WarpSpecializeOp>())
-      rewriter.create<mlir::gpu::BarrierOp>(loc);
+    if (!wgDotOp->getParentOfType<triton::gpu::WarpSpecializeOp>()) {
+      Block *block = wgDotOp->getBlock();
+      Operation *insertPoint = nullptr;
+      bool foundBarrier = false;
+      for (auto it = std::next(wgDotOp->getIterator()), end = block->end();
+           it != end; ++it) {
+        Operation *op = &*it;
+        if (isa<mlir::gpu::BarrierOp>(op)) {
+          foundBarrier = true;
+          break;
+        }
+        if (isa<DotOp, triton::gcu::WarpGroupDotOp>(op)) {
+          insertPoint = op;
+          break;
+        }
+        if (op->hasTrait<OpTrait::IsTerminator>()) {
+          insertPoint = op;
+          break;
+        }
+      }
+      if (!foundBarrier) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        if (insertPoint)
+          rewriter.setInsertionPoint(insertPoint);
+        else
+          rewriter.setInsertionPointAfter(&block->back());
+        rewriter.create<mlir::gpu::BarrierOp>(loc);
+      }
+    }
 
     Value dotResult = newDot.getResult();
 

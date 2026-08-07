@@ -369,6 +369,12 @@ private:
               blockArgDefOps.emplace_back(minimumFOp);
               isBreak = true;
             })
+            .Case<arith::SelectOp>([&](auto selectOp) {
+              // arith::SelectOp is used as the index combiner in argmax/argmin
+              // reduce patterns such as tl.max(..., return_indices=True).
+              blockArgDefOps.emplace_back(selectOp);
+              isBreak = true;
+            })
             .Case<arith::CmpFOp>([&](auto cmpFOp) {
               if (cmpFOp.getPredicate() == arith::CmpFPredicate::OGT ||
                   cmpFOp.getPredicate() == arith::CmpFPredicate::OGE ||
@@ -440,6 +446,8 @@ private:
               [&](auto maximumFOp) { val = minInit(elemTy); })
           .Case<arith::MinimumFOp>(
               [&](auto minimumFOp) { val = maxInit(elemTy); })
+          .Case<arith::SelectOp>(
+              [&](auto selectOp) { val = naiveInit(elemTy, 0); })
           .Case<arith::CmpFOp>([&](auto cmpFOp) {
             if (cmpFOp.getPredicate() == arith::CmpFPredicate::OGT ||
                 cmpFOp.getPredicate() == arith::CmpFPredicate::OGE ||
@@ -650,7 +658,8 @@ private:
     RankedTensorType operandType = op.getInputTypes()[0];
     // Assumes offsets don't actually depend on type
     SmallVector<SmallVector<unsigned>> _offsets =
-        emitOffsetForLayout(helper.getSrcLayout(), operandType);
+        mlir::LLVM::XPU::emitOffsetForLayoutXPU(helper.getSrcLayout(),
+                                                operandType);
 
     // Thread X might hold the same input value in two registers.  Get the
     // indices in `offsets` that hold unique values, and only accumualte over
@@ -1065,7 +1074,7 @@ private:
         auto resultLayout = cast<SliceEncodingAttr>(resultTy.getEncoding());
         unsigned resultElems = getTotalElemsPerThread(resultTy);
         SmallVector<SmallVector<unsigned>> resultOffset =
-            emitOffsetForLayout(resultLayout, resultTy);
+            mlir::LLVM::XPU::emitOffsetForLayoutXPU(resultLayout, resultTy);
         SmallVector<Value> resultVals;
         for (int j = 0; j < resultElems; j++) {
           auto key = resultOffset[j];

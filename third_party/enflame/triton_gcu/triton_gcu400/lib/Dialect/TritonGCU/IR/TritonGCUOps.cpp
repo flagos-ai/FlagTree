@@ -224,9 +224,13 @@ triton::gcu::MaskedLoadOp::canonicalize(MaskedLoadOp op,
   if (!attr.isSplat() || !attr.getSplatValue<bool>())
     return failure();
 
-  rewriter.replaceOpWithNewOp<triton::gcu::MaskedLoadOp>(
+  SmallVector<NamedAttribute> discardableAttrs(op->getDiscardableAttrs());
+  auto newOp = rewriter.replaceOpWithNewOp<triton::gcu::MaskedLoadOp>(
       op, op.getType(), op.getPtr(), op.getOffset(),
       /*mask=*/Value(), /*other=*/Value());
+  for (auto attr : discardableAttrs) {
+    newOp->setAttr(attr.getName(), attr.getValue());
+  }
   return success();
 }
 
@@ -243,9 +247,14 @@ triton::gcu::MaskedStoreOp::canonicalize(MaskedStoreOp op,
   if (!attr.isSplat() || !attr.getSplatValue<bool>())
     return failure();
 
-  rewriter.replaceOpWithNewOp<triton::gcu::MaskedStoreOp>(
+  SmallVector<NamedAttribute> discardableAttrs(op->getDiscardableAttrs());
+
+  auto newOp = rewriter.replaceOpWithNewOp<triton::gcu::MaskedStoreOp>(
       op, op.getPtr(), op.getOffset(), op.getValue(),
       /*mask=*/Value());
+  for (auto attr : discardableAttrs) {
+    newOp->setAttr(attr.getName(), attr.getValue());
+  }
   return success();
 }
 

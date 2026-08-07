@@ -811,14 +811,17 @@ static LinearLayout musaPH1WMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
 
     ctaLayout *= LinearLayout::identity1D(instK / 4, S("register"), dimK);
     ctaLayout *= LinearLayout::identity1D(instM / 8, S("register"), dimM);
-    ctaLayout *=
-        LinearLayout::identity1D(shape[kIndexA] / instK, S("register"), dimK);
+    ctaLayout *= LinearLayout::identity1D(
+        std::max<int64_t>(1, shape[kIndexA] / static_cast<int64_t>(instK)),
+        S("register"), dimK);
     // Keep warp bit ordering aligned with the C layout ([N bits][M bits]).
     // A consumes M-warp bits, so first absorb N-warp bits as broadcast.
     ctaLayout *= LinearLayout::zeros1D(tileN, S("warp"), dimM);
     ctaLayout *= LinearLayout::identity1D(tileM, S("warp"), dimM);
-    ctaLayout *= LinearLayout::identity1D(shape[mIndex] / instM / tileM,
-                                          S("register"), dimM);
+    ctaLayout *= LinearLayout::identity1D(
+        std::max<int64_t>(1, shape[mIndex] / static_cast<int64_t>(instM) /
+                                 static_cast<int64_t>(tileM)),
+        S("register"), dimM);
 
     if (hasBatch) {
       ctaLayout *= LinearLayout::identity1D(1, S("register"), outDimNames[0]);
@@ -842,10 +845,13 @@ static LinearLayout musaPH1WMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
   // Explicitly consume M-warp bits as broadcast to keep warp-domain ordering
   // consistent across A/B/C operand mappings.
   ctaLayout *= LinearLayout::zeros1D(tileM, S("warp"), dimN);
-  ctaLayout *= LinearLayout::identity1D(shape[nIndex] / instN / tileN,
-                                        S("register"), dimN);
-  ctaLayout *=
-      LinearLayout::identity1D(shape[kIndexB] / instK, S("register"), dimK);
+  ctaLayout *= LinearLayout::identity1D(
+      std::max<int64_t>(1, shape[nIndex] / static_cast<int64_t>(instN) /
+                               static_cast<int64_t>(tileN)),
+      S("register"), dimN);
+  ctaLayout *= LinearLayout::identity1D(
+      std::max<int64_t>(1, shape[kIndexB] / static_cast<int64_t>(instK)),
+      S("register"), dimK);
 
   if (hasBatch) {
     ctaLayout *= LinearLayout::identity1D(1, S("register"), outDimNames[0]);
@@ -942,8 +948,8 @@ static LinearLayout musaPH1WMMAToCLinearLayout(ArrayRef<int64_t> shape,
   StringAttr dimM = outDimNames[hasBatch ? 1 : 0];
   StringAttr dimN = outDimNames[hasBatch ? 2 : 1];
 
-  unsigned blockM = shape[hasBatch ? 1 : 0];
-  unsigned blockN = shape[hasBatch ? 2 : 1];
+  int64_t blockM = shape[hasBatch ? 1 : 0];
+  int64_t blockN = shape[hasBatch ? 2 : 1];
   unsigned instM = mma.getInstrShape()[0];
   unsigned instN = mma.getInstrShape()[1];
   auto warpsPerCTA = mma.getWarpsPerCTA();
@@ -959,11 +965,15 @@ static LinearLayout musaPH1WMMAToCLinearLayout(ArrayRef<int64_t> shape,
   ctaLayout *= LinearLayout::identity1D(instN / 8, S("register"), dimN);
   ctaLayout *= LinearLayout::identity1D(instM / 4, S("register"), dimM);
   ctaLayout *= LinearLayout::identity1D(tileN, S("warp"), dimN);
-  ctaLayout *=
-      LinearLayout::identity1D(blockN / instN / tileN, S("register"), dimN);
+  ctaLayout *= LinearLayout::identity1D(
+      std::max<int64_t>(1, blockN / static_cast<int64_t>(instN) /
+                               static_cast<int64_t>(tileN)),
+      S("register"), dimN);
   ctaLayout *= LinearLayout::identity1D(tileM, S("warp"), dimM);
-  ctaLayout *=
-      LinearLayout::identity1D(blockM / instM / tileM, S("register"), dimM);
+  ctaLayout *= LinearLayout::identity1D(
+      std::max<int64_t>(1, blockM / static_cast<int64_t>(instM) /
+                               static_cast<int64_t>(tileM)),
+      S("register"), dimM);
 
   if (hasBatch) {
     ctaLayout *= LinearLayout::identity1D(1, S("register"), outDimNames[0]);

@@ -25,6 +25,11 @@ on:
     branches: [ "main", "triton_v3.6.x" ]
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -33,7 +38,7 @@ concurrency:
 jobs:
   hcu36x-unit-test:
     runs-on: hcu3.6
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
@@ -52,13 +57,25 @@ jobs:
         with:
           backend: hcu
 
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
       - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
           export FLAGTREE_BACKEND=hcu
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: hcu
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'

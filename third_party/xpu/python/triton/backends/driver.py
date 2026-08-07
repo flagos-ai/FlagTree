@@ -32,6 +32,12 @@ class DriverBase(metaclass=ABCMeta):
     def get_current_target(self):
         pass
 
+    def get_current_target_inside(self):
+        return self.get_current_target()
+
+    def get_current_target_under_env(self):
+        return self.get_current_target_inside()
+
     @abstractmethod
     def get_active_torch_device(self):
         pass

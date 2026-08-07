@@ -15,6 +15,16 @@ include_directories(${CMAKE_SOURCE_DIR}/includexxx)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/2nd")
 
+# Establish TRITON_VERSION / TRITON_VERSION_NUMERIC / TARGET_PROFILE and emit the
+# build-dir VERSION file. kurama performs this from its root CMakeLists.txt;
+# flagtree does not sync that file, so we include the shared triton_global.cmake
+# here (this is the top-level enflame build file, an ancestor of every GCU C++
+# target below). The C++ compile definition is added here rather than inside
+# triton_global.cmake, matching kurama: it must stay out of any version-isolated
+# subproject (flagtree builds none, but the shared file keeps the same contract).
+include(triton_global)
+add_compile_definitions(TRITON_VERSION=${TRITON_VERSION_NUMERIC})
+
 # Add build for triton_enflame plugin
 add_triton_plugin(TritonEnflame
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_enflame.cc

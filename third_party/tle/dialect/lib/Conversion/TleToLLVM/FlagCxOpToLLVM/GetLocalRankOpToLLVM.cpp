@@ -41,7 +41,7 @@
 namespace {
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
-namespace tle = mlir::triton::tle;
+using namespace mlir::triton;
 
 struct GetNumPesOpConversion : public ConvertOpToLLVMPattern<tle::GetNumPesOp> {
   GetNumPesOpConversion(LLVMTypeConverter &typeConverter,

@@ -27,6 +27,8 @@ from io import BytesIO
 import urllib.request
 from dataclasses import dataclass
 import json
+import subprocess
+import time
 
 from python.build_helpers import get_base_dir
 import platform
@@ -191,6 +193,12 @@ class DownloadManager:
         self.src_list[self.current_url]['status'] = status
         self.src_list[self.current_url]['content'] = content
 
+    def backoff(self, module, retry_count):
+        delay = 2**(NetConfig.max_retry - retry_count)
+        print(f"\n[{NetConfig.max_retry - retry_count}] retry to clone "
+              f"{module.name} after {delay}s...")
+        time.sleep(delay)
+
     def git_clone(self, module, required=False):
         if module is None:
             return
@@ -210,16 +218,15 @@ class DownloadManager:
         except ImportError:
             return False
         retry_count = NetConfig.max_retry
-        has_specialization_commit = module.commit_id
         while (retry_count):
             try:
                 repo = git.Repo.clone_from(module.url, module.dst_path)
-                if has_specialization_commit:
+                if module.commit_id:
                     repo.git.checkout(module.commit_id)
                 return True
-            except Exception:
+            except git.GitCommandError:
                 retry_count -= 1
-                print(f"\n[{NetConfig.max_retry - retry_count}] retry to clone {module.name} to  {module.dst_path}")
+                self.backoff(module, retry_count)
         return False
 
     def sys_clone(self, module):
@@ -227,14 +234,13 @@ class DownloadManager:
         has_specialization_commit = module.commit_id is not None
         while (retry_count):
             try:
-                os.system(f"git clone {module.url} {module.dst_path}")
-                import subprocess
+                subprocess.run(["git", "clone", module.url, module.dst_path], check=True)
                 if has_specialization_commit:
                     subprocess.run(["git", "checkout", module.commit_id], cwd=module.dst_path, check=True)
                 return True
-            except Exception:
+            except subprocess.CalledProcessError:
                 retry_count -= 1
-                print(f"\n[{NetConfig.max_retry - retry_count}] retry to clone {module.name} to  {module.dst_path}")
+                self.backoff(module, retry_count)
         return False
 
     def clone_module(self, module):

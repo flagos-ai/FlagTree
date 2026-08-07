@@ -576,7 +576,9 @@ test_cast_1-float16-float8_e5m2-false-1024,dtype fp8 is not supported on gcu300,
 test_cast_1-float16-float8_e5m2-false-32,dtype fp8 is not supported on gcu300,Not supported on gcu300,test_cast_dtype_x=float16-dtype_z=float8_e5m2-bitcast=False-size=32-num_ctas=1-,gcu300/gcu400/gcu410
 test_cast_1-float32-float8_e5m2-false-1024,dtype fp8 is not supported on gcu300,Not supported on gcu300,test_cast_dtype_x=float32-dtype_z=float8_e5m2-bitcast=False-size=1024-num_ctas=1-,gcu300/gcu400/gcu410
 test_cast_1-float32-float8_e5m2-false-32,dtype fp8 is not supported on gcu300,Not supported on gcu300,test_cast_dtype_x=float32-dtype_z=float8_e5m2-bitcast=False-size=32-num_ctas=1-,gcu300/gcu400/gcu410
-test_load_store_same_ptr,grid size exceeds the limitation of gcu300(0xffff),Not supported on gcu,test_load_store_same_ptr_,gcu300/gcu400/gcu410
+test_assume,tl.assume not supported on gcu500 gcusim,Not supported on gcu500,test_assume_,gcu500
+test_default,default args in nested triton.jit not supported on gcu500 gcusim,Not supported on gcu500,test_default_,gcu500
+test_load_store_same_ptr,grid size exceeds the limitation of gcu300(0xffff),Not supported on gcu,test_load_store_same_ptr_,gcu300/gcu400/gcu410/gcu500
 test_scan2d_cumsum-int32-shape504-1-true-16,num_warps exceeds the limitation of gcu300(8),Not supported on gcu,"test_scan2d_op=cumsum-dtype_str=int32-shape=(8, 32)-axis=1-reverse=True-num_warps=16-",gcu300/gcu400/gcu410
 test_scan2d_cumprod-int32-shape505-1-true-16,num_warps exceeds the limitation of gcu300(8),Not supported on gcu,"test_scan2d_op=cumprod-dtype_str=int32-shape=(8, 32)-axis=1-reverse=True-num_warps=16-",gcu300/gcu400/gcu410
 test_scan2d_get_first_element-int32-shape506-1-true-16,num_warps exceeds the limitation of gcu300(8),Not supported on gcu,"test_scan2d_op=get_first_element-dtype_str=int32-shape=(8, 32)-axis=1-reverse=True-num_warps=16-",gcu300/gcu400/gcu410

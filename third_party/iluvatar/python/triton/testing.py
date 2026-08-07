@@ -11,8 +11,12 @@ from . import runtime
 
 
 def nvsmi(attrs):
+    from ._internal_testing import is_corex
     attrs = ','.join(attrs)
-    cmd = ['nvidia-smi', '-i', '0', '--query-gpu=' + attrs, '--format=csv,noheader,nounits']
+    if is_corex():
+        cmd = ['ixsmi', '-i', '0', '--query-gpu=' + attrs, '--format=csv,noheader,nounits']
+    else:
+        cmd = ['nvidia-smi', '-i', '0', '--query-gpu=' + attrs, '--format=csv,noheader,nounits']
     out = subprocess.check_output(cmd)
     ret = out.decode(sys.stdout.encoding).split(',')
     ret = [int(x) for x in ret]
@@ -434,12 +438,13 @@ def get_max_tensorcore_tflops(dtype, clock_rate, device=None):
     import torch
 
     from .runtime import driver
+    from ._internal_testing import is_corex
     if not device:
         device = torch.cuda.current_device()
 
     num_subcores = driver.active.utils.get_device_properties(device)["multiprocessor_count"] * 4
     capability = torch.cuda.get_device_capability(device)
-    if capability[0] < 8:
+    if not is_corex() and capability[0] < 8:
         assert dtype == torch.float16
         ops_per_sub_core = 256  # 2 4x4x4 Tensor Cores
     else:

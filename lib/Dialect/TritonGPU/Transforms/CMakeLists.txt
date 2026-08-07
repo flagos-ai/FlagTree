@@ -7,10 +7,18 @@ if(FLAGTREE_TLE)
   )
 endif()
 
-get_flagtree_backend_lib("TritonGPUTransforms" _EXTRA_LINK_LIBS)
+# The pass needs ttg.concat_dot_operand, which tablegen only emits when
+# __FLAGTREE_CONCAT_DOT_OPERAND__ is defined (see cmake/FlagTreeOptions.cmake).
+set(TritonGPUTransformsConcatDotOperandSources)
+if(NOT FLAGTREE_BACKEND)
+  list(APPEND TritonGPUTransformsConcatDotOperandSources
+    ConcatDotOperand.cpp
+  )
+endif()
 
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
+  ${TritonGPUTransformsConcatDotOperandSources}
   ProcessSharedMemoryHint.cpp
   Coalesce.cpp
   F32DotTC.cpp
@@ -51,6 +59,9 @@ add_triton_library(TritonGPUTransforms
 
   DEPENDS
   TritonGPUTransformsIncGen
+  # flagtree: fix missing Triton dependency
+  TritonTableGen
+  TritonGPUAttrDefsIncGen
 
   LINK_LIBS PUBLIC
   MLIRTransforms
@@ -65,5 +76,4 @@ add_triton_library(TritonGPUTransforms
   TritonToTritonGPU
   TritonInstrumentIR
   MLIRTransformUtils
-  ${_EXTRA_LINK_LIBS}
 )

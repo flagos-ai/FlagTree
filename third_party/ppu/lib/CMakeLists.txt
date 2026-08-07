@@ -1,0 +1,4 @@
+add_subdirectory(Dialect)
+add_subdirectory(TritonPPUGPUToLLVM)
+add_subdirectory(PPUGPUToLLVM)
+add_subdirectory(TritonPPUGPUTransforms)

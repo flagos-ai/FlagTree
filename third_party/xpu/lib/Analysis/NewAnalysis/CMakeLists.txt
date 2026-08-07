@@ -9,6 +9,10 @@ add_mlir_library(TritonXPUAnalysis
   PtrAnalysis.cpp
   UseAnalysis.cpp
   Utility.cpp
+
+  DEPENDS
+  # Dialect.h includes the XPU attribute-interface declarations.
+  TritonXPUAttrDefsIncGen
 )
 
 target_link_libraries(TritonXPUAnalysis PRIVATE TritonXPUAnalysisSDNN)

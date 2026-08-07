@@ -15,6 +15,8 @@ import shlex
 import subprocess
 import tempfile
 
+_DEFAULT_MUSA_PREFIX = "/usr/local/musa"
+
 
 def min_dot_size(target: GPUTarget):
 
@@ -94,6 +96,10 @@ def _capability_from_arch(arch: object) -> int:
     raise ValueError(f"Unsupported MUSA arch: {arch}")
 
 
+def _warp_size_from_capability(capability: int) -> int:
+    return 128 if capability < 30 else 32
+
+
 def _max_static_shared_memory_from_arch(arch: object) -> Optional[int]:
     capability = _capability_from_arch(arch)
     if capability == 31:
@@ -125,6 +131,14 @@ def _maybe_tool_path(tool) -> Optional[str]:
         return None
 
 
+def _validated_tool_path(path: Optional[str]) -> Optional[str]:
+    path = _normalize_path(path)
+    if not path:
+        return None
+    tool = knobs.MUSATool.from_path(path)
+    return _normalize_path(tool.path) if tool else None
+
+
 def _local_backend_bin_dir() -> Optional[Path]:
     bin_dir = Path(__file__).resolve().parent / "bin"
     return bin_dir if bin_dir.is_dir() else None
@@ -142,31 +156,21 @@ def _select_tool_path(binary: str, explicit_path: Optional[str], tool_getter) ->
     local_path = _local_backend_tool_path(binary)
     if local_path:
         return local_path
-    path = _normalize_path(explicit_path)
+    path = _validated_tool_path(explicit_path)
     if path:
         return path
     return _maybe_tool_path(tool_getter())
 
 
 def _resolve_toolchain_paths(options: "MUSAOptions") -> Tuple[str, str, Optional[str]]:
-    toolchain_path = _normalize_path(options.toolchain_path)
     llc_path = _normalize_path(options.llc_path)
     lld_path = _normalize_path(options.lld_path)
     llc_asm_path = _normalize_path(options.llc_asm_path)
 
-    if not toolchain_path:
-        mtcc_bin_path = os.getenv("MTCC_BIN_PATH")
-        if mtcc_bin_path:
-            toolchain_path = str(Path(mtcc_bin_path).expanduser())
-    if not toolchain_path:
-        musa_home = os.getenv("MUSA_HOME")
-        if musa_home:
-            toolchain_path = str(Path(musa_home).expanduser() / "bin")
-
-    if not llc_path and toolchain_path:
-        llc_path = str(Path(toolchain_path) / "llc")
-    if not lld_path and toolchain_path:
-        lld_path = str(Path(toolchain_path) / "ld.lld")
+    if not llc_path:
+        llc_path = _local_backend_tool_path("llc") or str(Path(_DEFAULT_MUSA_PREFIX) / "bin" / "llc")
+    if not lld_path:
+        lld_path = _local_backend_tool_path("ld.lld") or str(Path(_DEFAULT_MUSA_PREFIX) / "bin" / "ld.lld")
 
     return llc_path or "", lld_path or "", llc_asm_path
 
@@ -470,6 +474,20 @@ def _rewrite_llvm_scmp_ucmp_to_icmp(ir_text: str) -> str:
     return out
 
 
+def _get_unsupported_attrs(llc_major: Optional[int]) -> tuple[str, ...]:
+    if llc_major is not None and llc_major >= 20:
+        return ("nocreateundeforpoison", )
+    else:
+        return ("nocallback", "nocreateundeforpoison", "mustprogress", "speculatable", "willreturn")
+
+
+def _drop_unsupported_attrs(ir_text: str, llc_major: Optional[int]) -> str:
+    out = ir_text
+    for attr in _get_unsupported_attrs(llc_major):
+        out = re.sub(rf"(?<![A-Za-z0-9_.]){attr}(?![A-Za-z0-9_.])", "", out)
+    return out
+
+
 def _llvm_compat(ir_text: str) -> str:
     replacements = [
         ("memory\\(none\\)", "readnone"),
@@ -524,8 +542,6 @@ def _llvm_compat(ir_text: str) -> str:
     out = _rewrite_musa_ptr_gen_to_addrspace(out)
     out = _rewrite_llvm_is_fpclass_f32(out)
     out = _rewrite_lifetime_intrinsics_for_llvm14(out)
-    for attr in ("nocallback", "nocreateundeforpoison", "mustprogress", "speculatable", "willreturn"):
-        out = re.sub(rf"(?<![A-Za-z0-9_.]){attr}(?![A-Za-z0-9_.])", "", out)
     out = re.sub(r"\bmemory\([^)]*\)", "", out)
     out = re.sub(r"[ \t]{2,}", " ", out)
     return out
@@ -552,10 +568,10 @@ def _llc_extra_options(metadata: Dict[str, object], options: "MUSAOptions") -> l
     enable_backend_opt = bool(options.enable_llc_opt or options.enable_backend_opt)
     llc_options_map = {
         (False, False): [*const_calc_opt],
-        (True, False): {
+        (True, False): [
             *const_calc_opt,
             "-mtgpu-alloc-shared-memory-from-zero=1",
-        },
+        ],
         (False, True): [
             "-mtgpu-enable-const-calc=1",
             "-mtgpu-tiny-offset-hint=1",
@@ -569,7 +585,7 @@ def _llc_extra_options(metadata: Dict[str, object], options: "MUSAOptions") -> l
             "-misched=mtgpu-max-ilp",
         ],
     }
-    opts = llc_options_map[(uses_sqmma, enable_backend_opt)]
+    opts = list(llc_options_map[(uses_sqmma, enable_backend_opt)])
     if options.llc_options:
         opts.extend(shlex.split(options.llc_options))
     return opts
@@ -582,6 +598,7 @@ class MUSAOptions:
     num_stages: int = 3
     warp_size: int = 32
     maxnreg: Optional[int] = None
+    cluster_dims: tuple = (1, 1, 1)  # flagtree mthreads3.2
     enable_fp_fusion: bool = True
     launch_cooperative_grid: bool = False
     supported_fp8_dtypes: Tuple[str, ...] = ("fp8e5", )
@@ -592,7 +609,6 @@ class MUSAOptions:
     allowed_dot_input_precisions: Tuple[str, ...] = ("ieee", "tf32", "tf32x3", "bf16x3", "bf16x6")
     max_num_imprecise_acc_default: int = 0
     sanitize_overflow: bool = True
-    toolchain_path: Optional[str] = None
     llc_path: Optional[str] = None
     lld_path: Optional[str] = None
     llc_asm_path: Optional[str] = None
@@ -607,6 +623,7 @@ class MUSAOptions:
     supports_noinline: bool = True
     arch: Optional[str] = None
     instrumentation_mode: str = ""
+    inplace_alias_pairs: str = ""
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / "lib"
@@ -619,6 +636,8 @@ class MUSAOptions:
 
     def hash(self):
         hash_dict = dict(self.__dict__)
+        if not hash_dict.get("inplace_alias_pairs"):
+            hash_dict.pop("inplace_alias_pairs", None)
         llc_path, lld_path, llc_asm_path = _resolve_toolchain_paths(self)
         hash_dict["effective_llc_path"] = llc_path
         hash_dict["effective_lld_path"] = lld_path
@@ -670,16 +689,6 @@ class MUSABackend(BaseBackend):
             args["custom_fp8_dtypes"] = tuple(sorted(custom_fp8_dtypes))
         if "deprecated_fp8_dot_operand_dtypes" not in opts:
             args["deprecated_fp8_dot_operand_dtypes"] = ()
-        if "toolchain_path" not in opts:
-            toolchain_path = knobs.musa.toolchain_path
-            if not toolchain_path:
-                mtcc_bin_path = os.getenv("MTCC_BIN_PATH")
-                if mtcc_bin_path:
-                    toolchain_path = mtcc_bin_path
-                else:
-                    musa_home = os.getenv("MUSA_HOME")
-                    toolchain_path = str(Path(musa_home) / "bin") if musa_home else None
-            args["toolchain_path"] = _normalize_path(toolchain_path)
         if "llc_path" not in opts:
             args["llc_path"] = _select_tool_path("llc", knobs.musa.llc_path, lambda: knobs.musa.llc)
         if "lld_path" not in opts:
@@ -696,8 +705,7 @@ class MUSABackend(BaseBackend):
             args["enable_llvm_compat"] = knobs.musa.enable_llvm_compat
         args.update({k: opts[k] for k in MUSAOptions.__dataclass_fields__.keys() if k in opts and opts[k] is not None})
         if "warp_size" not in args:
-            target_warp_size = getattr(self.target, "warp_size", None)
-            args["warp_size"] = int(target_warp_size) if target_warp_size else 32
+            args["warp_size"] = _warp_size_from_capability(capability)
         return MUSAOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -727,11 +735,13 @@ class MUSABackend(BaseBackend):
         mthreads.load_dialects(ctx)
 
     @staticmethod
-    def make_ttir(mod, metadata, opt):
+    def make_ttir(mod, metadata, opt, capability):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
         passes.ttir.add_rewrite_tensor_pointer(pm)
+        if capability < 31:
+            passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)
         passes.ttir.add_reorder_broadcast(pm)
@@ -811,7 +821,7 @@ class MUSABackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_canonicalizer(pm)
         if capability == 31:
-            mthreads.passes.ttgpuir.add_mark_inplace_loads(pm)
+            mthreads.passes.ttgpuir.add_mark_inplace_loads(pm, opt.inplace_alias_pairs)
         mthreads.passes.ttgpuir.add_finalize_barriers(pm)
         pm.run(mod, "make_ttgir")
         metadata["uses_sqmma"] = _module_uses_sqmma(mod)
@@ -874,12 +884,13 @@ class MUSABackend(BaseBackend):
 
         llc_path, lld_path, llc_asm_path = _resolve_toolchain_paths(opt)
         if not llc_path or not lld_path:
-            raise RuntimeError("MUSA toolchain not configured. Set TRITON_MUSA_TOOLCHAIN_PATH "
-                               "or TRITON_MUSA_LLC_PATH/TRITON_MUSA_LLD_PATH (or MUSA_HOME).")
+            raise RuntimeError("MUSA toolchain not configured. Set TRITON_MUSA_LLC_PATH/TRITON_MUSA_LLD_PATH "
+                               f"(default {_DEFAULT_MUSA_PREFIX}).")
 
         ir_text = src
         llc_major = _detect_llvm_major_version(llc_path)
         if opt.enable_llvm_compat:
+            ir_text = _drop_unsupported_attrs(ir_text, llc_major)
             if _should_apply_llvm_compat(llc_major):
                 ir_text = _llvm_compat(ir_text)
         ir_text = _rewrite_llvm_scmp_ucmp_to_icmp(ir_text)
@@ -972,7 +983,7 @@ class MUSABackend(BaseBackend):
         arch = options.arch
         capability = _capability_from_arch(arch)
         if language == Language.TRITON:
-            stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
+            stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options, capability)
             stages["ttgir"] = lambda src, metadata: self.make_ttgir(src, metadata, options, arch, capability)
         elif language == Language.GLUON:
             raise RuntimeError("MUSA backend does not support GLUON yet")

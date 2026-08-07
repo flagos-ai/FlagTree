@@ -1,0 +1,8 @@
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
+add_subdirectory(include)
+add_subdirectory(lib)
+if(TRITON_BUILD_PYTHON_MODULE)
+  add_triton_plugin(TritonPPU ${CMAKE_CURRENT_SOURCE_DIR}/triton_ppu.cc LINK_LIBS TritonPPUGPUToLLVM PPUGPUToLLVM TritonPPUGPUTransforms)
+  target_link_libraries(TritonPPU PRIVATE Python3::Module pybind11::headers)
+endif()

@@ -193,6 +193,15 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     return op;
   }
   if (auto asyncCopyOp = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
+#ifdef __ILUVATAR__
+    // Because llvm.bi.sme.load has no predicate operand it would lower to a
+    // control-flow (br i1) guard that pins the prefetch in its own basic block,
+    // preventing the ixcc backend from hoisting sme.load ahead of the
+    // matrix.mad chain. Leaving it unmasked keeps it in the single loop-body
+    // block so the backend overlaps the prefetch DMA with the dot.
+    if (asyncCopyOp.isIluvatarSmeAsyncCopy())
+      return op;
+#endif
     rewriter.setInsertionPoint(asyncCopyOp);
     Value mask = getPredMask(rewriter, asyncCopyOp.getSrc().getType(),
                              asyncCopyOp.getMask(), pred);
@@ -204,6 +213,12 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     Value mask = getPredMask(rewriter, loadOp.getPtr().getType(),
                              loadOp.getMask(), pred);
     loadOp.getMaskMutable().assign(mask);
+    if (loadOp.getInputStride() && !loadOp.getOther()) {
+      auto zero =
+          arith::ConstantOp::create(rewriter, loadOp.getLoc(), loadOp.getType(),
+                                    rewriter.getZeroAttr(loadOp.getType()));
+      loadOp.getOtherMutable().assign(zero);
+    }
     return op;
   }
   if (auto copyOp = dyn_cast<ttng::AsyncTMACopyGlobalToLocalOp>(op)) {

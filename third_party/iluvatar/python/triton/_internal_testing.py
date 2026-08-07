@@ -63,6 +63,11 @@ def is_corex():
     return False if target is None else target.backend == "corex" and hasattr(torch, "corex") and torch.corex == True
 
 
+def is_ivcore11():
+    target = get_current_target()
+    return target is not None and target.backend == "corex" and target.arch == 71
+
+
 def is_hip():
     target = get_current_target()
     return False if target is None else target.backend == "hip"

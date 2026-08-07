@@ -59,7 +59,7 @@ def GCU_MemoryFenceEnum : GCU_I32Enum<
   "MFenceType", "GCU memory fence type", [
     I32EnumAttrCase<"Memory", 0, "memory">,
     I32EnumAttrCase<"Local", 1, "local">,
-    I32EnumAttrCase<"Share", 2, "share">,
+    I32EnumAttrCase<"Share", 2, "shared">,
     I32EnumAttrCase<"Device", 3, "device">
   ]>;
 

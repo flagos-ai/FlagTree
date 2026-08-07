@@ -66,8 +66,9 @@ struct XPUBroadcastOpConversion
     auto typeConverter = getTypeConverter();
     assert(rank == resultTy.getRank());
     auto order = triton::gpu::getOrder(srcTy);
-    auto srcOffsets = emitOffsetForLayout(srcLayout, srcTy);
-    auto resultOffsets = emitOffsetForLayout(resultLayout, resultTy);
+    auto srcOffsets = mlir::LLVM::XPU::emitOffsetForLayoutXPU(srcLayout, srcTy);
+    auto resultOffsets =
+        mlir::LLVM::XPU::emitOffsetForLayoutXPU(resultLayout, resultTy);
     SmallVector<Value> srcVals = unpackLLElements(loc, src, rewriter);
     std::map<SmallVector<unsigned>, Value> srcValues;
     if (isVectorized) {

@@ -23,12 +23,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_RemoveLayoutConversion
-
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -4139,10 +4133,19 @@ void LayoutRematerialization::hoistConvertDotOperand(
   // We hoist over any operation that can be done without data movement between
   // threads We do views and elementwise pure ops for now
   auto noDataMovement = [](Operation *op) {
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+    // ConcatDotOperandOp grows the tensor along K but keeps every element on
+    // the thread that already held it, so hoisting a convert over it is free.
+    return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
+           isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface,
+               ConcatDotOperandOp>(op) ||
+           isView(op);
+#else  // __FLAGTREE_CONCAT_DOT_OPERAND__
     return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
            isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface>(
                op) ||
            isView(op);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
   };
   // Stop the slice as soon as we find an operation that cannot be done without
   // data movement between threads
@@ -4785,5 +4788,3 @@ createTritonGPURemoveLayoutConversionsEnhanced(bool enhance) {
 #endif // __FLAGTREE_RLC_ENHANCE__
 
 } // namespace mlir::triton::gpu
-
-#endif

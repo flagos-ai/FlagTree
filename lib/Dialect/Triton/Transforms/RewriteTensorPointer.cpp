@@ -23,12 +23,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Dialect_Triton_Transforms_RewriteTensorPointer
-
 #include <stack>
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -596,5 +590,3 @@ public:
 };
 
 } // namespace mlir::triton
-
-#endif

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "CodePartitionUtility.h"
+#include "Utils/TritonVersionCompat.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
@@ -379,9 +380,17 @@ void specializeRegion(triton::FuncOp funcOp, int32_t numWarps,
       continue;
     partitionNumWarps.push_back(numWarps);
   }
+
+  // Search insertion point
+  Operation *insertionPoint = returnOp;
+  while (insertionPoint->getPrevNode() &&
+         getNestedAsyncTaskIds(insertionPoint->getPrevNode()).empty()) {
+    insertionPoint = insertionPoint->getPrevNode();
+  }
+
   ArrayRef<Type> dummyTypes;
   ImplicitLocOpBuilder impB(opList[0]->getLoc(), opList[0]);
-  impB.setInsertionPoint(returnOp);
+  impB.setInsertionPoint(insertionPoint);
   auto wsOp = impB.create<ttg::WarpSpecializeOp>(dummyTypes, partitionNumWarps,
                                                  nTaskIds.size() - 1);
 
@@ -449,7 +458,7 @@ void specializeRegion(triton::FuncOp funcOp, int32_t numWarps,
                         "FIXME: capturing tensor values into warp "
                         "partitions is not supported");
     }
-    wsOp->insertOperands(wsOp.getNumOperands(), capture);
+    triton_gcu::compat::insertWsCapture(wsOp, capture);
     for (Region *region : wsOp.getPartitionRegions()) {
       // Does this include default region?
       BlockArgument arg =

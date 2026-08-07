@@ -339,13 +339,12 @@ bool GCUTritonFusionPass::canVectorize(Operation *op) {
   if (!llvm::all_of(op->getResultTypes(), llvm::IsaPred<RankedTensorType>)) {
     return false;
   }
-  return llvm::all_of(op->getResultTypes(), [](auto type) {
+  return llvm::all_of(op->getResultTypes(), [this](auto type) {
     auto elementTy = cast<RankedTensorType>(type).getElementType();
     return elementTy.isBF16() || elementTy.isF16() || elementTy.isF32() ||
            elementTy.isInteger(1) || elementTy.isInteger(8) ||
            elementTy.isInteger(16) || elementTy.isInteger(32) ||
-           (!triton::gcu::get_bool_env("ENABLE_I64_CHECK", true) &&
-            elementTy.isInteger(64));
+           (enable_i64 && elementTy.isInteger(64));
   });
 }
 

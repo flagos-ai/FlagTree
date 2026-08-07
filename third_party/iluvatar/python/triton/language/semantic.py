@@ -1014,7 +1014,7 @@ class TritonSemantic(Generic[TensorTy]):
             self.builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile),
             dst_ty)
 
-    def _load_legacy(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile):
+    def _load_legacy(self, ptr, mask, other, stride, boundary_check, padding, cache, eviction, is_volatile):
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
         if not ptr.type.scalar.is_ptr():
             raise ValueError(f"Unsupported ptr type {ptr.type.__repr__()} in `tl.load`")
@@ -1064,8 +1064,17 @@ class TritonSemantic(Generic[TensorTy]):
             dst_ty = elt_ty
 
         # Build IR
-        if mask is None:
+        if mask is None and stride is None:
             ret = self.tensor(self.builder.create_load(ptr.handle, cache, eviction, is_volatile), dst_ty)
+        elif mask is None and stride is not None:
+            # Iluvatar SME load forced by an explicit stride.
+            ret = self.tensor(self.builder.create_sme_load(ptr.handle, stride.handle, cache, eviction, is_volatile),
+                              dst_ty)
+        elif mask is not None and stride is not None:
+            # Iluvatar masked SME load.
+            ret = self.tensor(
+                self.builder.create_masked_sme_load(ptr.handle, mask.handle, other.handle if other else None,
+                                                    stride.handle, cache, eviction, is_volatile), dst_ty)
         else:
             ret = self.tensor(
                 self.builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache,
@@ -1074,8 +1083,9 @@ class TritonSemantic(Generic[TensorTy]):
             ret = self.cast(ret, tl.int1)
         return ret
 
-    def load(self, ptr: TensorTy, mask: Optional[TensorTy], other: Optional[TensorTy], boundary_check: Tuple,
-             padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool) -> TensorTy:
+    def load(self, ptr: TensorTy, mask: Optional[TensorTy], other: Optional[TensorTy], stride: Optional[TensorTy],
+             boundary_check: Tuple, padding_option: str, cache_modifier: str, eviction_policy: str,
+             is_volatile: bool) -> TensorTy:
         # Cache, eviction and padding options
         cache = self._str_to_load_cache_modifier(cache_modifier)
         eviction = self._str_to_eviction_policy(eviction_policy)
@@ -1083,10 +1093,12 @@ class TritonSemantic(Generic[TensorTy]):
 
         if ptr.type.is_ptr() and ptr.type.element_ty.is_block():
             # Load by a block pointer: `pointer_type<block_type<>>`
+            if stride is not None:
+                raise ValueError("`stride` (SME) is not supported with block pointers; use a tensor of pointers")
             return self._load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile)
         else:
             # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
-            return self._load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile)
+            return self._load_legacy(ptr, mask, other, stride, boundary_check, padding, cache, eviction, is_volatile)
 
     def descriptor_load(self, desc: tl.tensor_descriptor_base, offsets, cache_modifier: str,
                         eviction_policy: str) -> TensorTy:
