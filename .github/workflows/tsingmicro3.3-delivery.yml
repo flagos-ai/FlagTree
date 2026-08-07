@@ -1,8 +1,5 @@
 name: CD-Tsingmicro3.3
 
-permissions:
-    contents: write
-
 on:
   workflow_dispatch:
     inputs:
@@ -16,6 +13,15 @@ on:
       PLATFORM:
         required: true
         default: 'x86_64'
+      BRANCH:
+        required: true
+        default: 'triton_v3.3.x'
+      TRITON:
+        required: true
+        default: '3.3'
+      BACKEND:
+        required: true
+        default: 'tsingmicro'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -32,6 +38,18 @@ on:
         type: string
         required: true
         default: 'x86_64'
+      BRANCH:
+        type: string
+        required: true
+        default: 'triton_v3.3.x'
+      TRITON:
+        type: string
+        required: true
+        default: '3.3'
+      BACKEND:
+        type: string
+        required: true
+        default: 'tsingmicro'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -43,5 +61,8 @@ jobs:
       WHL_VER: ${{ inputs.WHL_VER }}
       PYTHON_VER: ${{ inputs.PYTHON_VER }}
       PLATFORM: ${{ inputs.PLATFORM }}
+      BRANCH: ${{ inputs.BRANCH }}
+      TRITON: ${{ inputs.TRITON }}
+      BACKEND: ${{ inputs.BACKEND }}
       FLAGTREE_PYPI_KEY: ${{ inputs.FLAGTREE_PYPI_KEY }}
     secrets: inherit
