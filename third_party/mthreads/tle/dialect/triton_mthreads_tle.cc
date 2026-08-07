@@ -471,8 +471,12 @@ void init_triton_musa_tle_ir(py::module m) {
       .def("create_warp_specialize",
            [](TritonOpBuilder &self, std::vector<mlir::Type> resultTypes,
               std::vector<int32_t> partitionNumWarps) -> TLEWarpSpecializeOp {
-             return TLEWarpSpecializeOp(self.create<ttg::WarpSpecializeOp>(
-                 resultTypes, partitionNumWarps));
+             auto &builder = self.getBuilder();
+             auto op = self.create<ttg::WarpSpecializeOp>(resultTypes,
+                                                          partitionNumWarps);
+             op->setAttr("musa_tle.static_warp_specialize",
+                         builder.getUnitAttr());
+             return TLEWarpSpecializeOp(op);
            })
       .def("create_exclusive_cumsum",
            [](TritonOpBuilder &self, mlir::Type exclusiveTy, mlir::Type totalTy,
@@ -507,6 +511,10 @@ void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m) {
                      mlir::createTritonMUSAGPUTLELowerSqmma);
   ADD_PASS_WRAPPER_0("add_tle_lower_pipe",
                      mlir::createTritonMUSAGPUTLELowerPipe);
+  ADD_PASS_WRAPPER_0("add_tle_prepare_warp_specialize",
+                     mlir::createTritonMUSAGPUTLEPrepareWarpSpecialize);
+  ADD_PASS_WRAPPER_0("add_tle_lower_warp_specialize",
+                     mlir::createTritonMUSAGPUTLELowerWarpSpecialize);
   ADD_PASS_WRAPPER_0("add_tle_lower_barrier_allocations",
                      mlir::createTritonMUSAGPUTLELowerBarrierAllocations);
   ADD_PASS_WRAPPER_0("add_tle_lower_tme_transactions",

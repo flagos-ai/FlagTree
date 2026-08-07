@@ -33,6 +33,8 @@ namespace {
 constexpr llvm::StringLiteral
     kAutoSharedLayoutAttr("musa_tle.auto_shared_layout");
 constexpr llvm::StringLiteral kExplicitSqmmaAttr("musa_tle.explicit_sqmma");
+constexpr llvm::StringLiteral kEnableEncodingRematerializationAttr(
+    "tle.enable_encoding_rematerialization");
 
 struct SelectedSqmmaConfig {
   SmallVector<unsigned, 3> instrShape;
@@ -193,14 +195,17 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
   // partition. Changing the captured root value type does not update those
   // block arguments automatically, so keep the isolation boundary consistent
   // with the inferred TME/SQMMA layout.
+  SmallVector<Value, 4> rootAliases{root.getResult()};
   root->getParentOfType<tt::FuncOp>().walk(
       [&](ttg::WarpSpecializePartitionsOp partitions) {
         for (auto [index, capture] :
              llvm::enumerate(partitions.getExplicitCaptures())) {
           if (capture != root.getResult())
             continue;
-          for (Region &partition : partitions.getPartitionRegions())
+          for (Region &partition : partitions.getPartitionRegions()) {
             partition.getArgument(index).setType(newRootTy);
+            rootAliases.push_back(partition.getArgument(index));
+          }
         }
       });
 
@@ -230,7 +235,7 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
       auto srcTy = cast<ttg::MemDescType>(index.getSrc().getType());
       auto dstTy = cast<ttg::MemDescType>(index.getType());
       if (srcTy.getRank() != dstTy.getRank() + 1 ||
-          index.getSrc() != root.getResult())
+          !llvm::is_contained(rootAliases, index.getSrc()))
         return;
       if (index.getResult().getType() != desiredTy) {
         index.getResult().setType(desiredTy);
@@ -283,6 +288,9 @@ struct TritonMUSAGPUTLELowerSqmmaPass
       if (isa<musa_tle::SqmmaOp, musa_tle::SqmmaWaitOp>(candidate))
         worklist.push_back(candidate);
     });
+    if (!dots.empty())
+      module->setAttr(kEnableEncodingRematerializationAttr,
+                      UnitAttr::get(module.getContext()));
 
     DenseMap<musa_tle::SqmmaOp, ttg::MUSASqmmaEncodingAttr> encodings;
     for (musa_tle::SqmmaOp dot : dots) {

@@ -833,6 +833,8 @@ class MUSABackend(BaseBackend):
         if hasattr(mthreads.passes.ttgpuir, "add_tle_lower_barrier_operations"):
             mthreads.passes.ttgpuir.add_tle_lower_barrier_operations(pm)
         mthreads.passes.ttgpuir.add_finalize_barriers(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_prepare_warp_specialize"):
+            mthreads.passes.ttgpuir.add_tle_prepare_warp_specialize(pm)
         pm.run(mod, "make_ttgir")
         metadata["uses_sqmma"] = _module_uses_sqmma(mod)
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
@@ -843,14 +845,25 @@ class MUSABackend(BaseBackend):
         from triton._C.libtriton import llvm
 
         mod = src
+        total_num_warps = src.get_int_attr("ttg.total-num-warps")
+        launch_num_warps = total_num_warps if total_num_warps is not None else options.num_warps
+        metadata["num_warps"] = launch_num_warps
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
 
+        has_static_ws = total_num_warps is not None and hasattr(mthreads.passes.ttgpuir,
+                                                                "add_tle_lower_warp_specialize")
         passes.convert.add_scf_to_cf(pm)
         passes.convert.add_index_to_llvmir(pm)
         mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, _capability_from_arch(arch))
         mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, _capability_from_arch(arch))
         mthreads.passes.ttgpuir.add_to_llvmir(pm, _capability_from_arch(arch))
+        if has_static_ws:
+            # The retained operation still owns the producer and consumer
+            # regions here.  Lower their hardware barriers once, then emit the
+            # final two independent static CFG branches without control SMEM.
+            mthreads.passes.ttgpuir.add_tle_lower_warp_specialize(pm)
+            passes.convert.add_scf_to_cf(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.convert.add_cf_to_llvmir(pm)
@@ -874,7 +887,7 @@ class MUSABackend(BaseBackend):
             llvm.link_extern_libs(llvm_mod, paths)
 
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
-        maxntidx = max(1, int(options.num_warps) * int(options.warp_size))
+        maxntidx = max(1, int(launch_num_warps) * int(options.warp_size))
         kernel_name_hint = src.get_entry_func_name() if hasattr(src, "get_entry_func_name") else ""
         mthreads.decorate_kernel_abi(llvm_mod, kernel_name_hint, maxntidx)
         metadata["uses_mulhi_helper"] = mthreads.module_uses_mulhi_helper(llvm_mod)
@@ -882,6 +895,7 @@ class MUSABackend(BaseBackend):
         metadata["shared"] = src.get_int_attr("ttg.shared")
 
         ret = str(llvm_mod)
+        metadata["uses_sqmma"] = bool(metadata.get("uses_sqmma")) or "llvm.musa.sqmma." in ret
         del llvm_mod
         del context
         return ret

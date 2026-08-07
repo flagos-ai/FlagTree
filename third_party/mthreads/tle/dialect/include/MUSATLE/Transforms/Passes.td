@@ -125,6 +125,40 @@ def TritonMUSAGPUTLELowerPipe
   ];
 }
 
+def TritonMUSAGPUTLEPrepareWarpSpecialize
+    : Pass<"tritonmusa-tle-prepare-warp-specialize", "mlir::ModuleOp"> {
+  let summary = "Validate mthreads TLE static warp specialization";
+  let description = [{
+    Validate the restricted single-producer/single-consumer contract and
+    publish the total launch warp count while retaining ttg.warp_specialize for
+    shared-memory allocation and late LLVM lowering.
+  }];
+  let dependentDialects = [
+    "mlir::triton::TritonDialect",
+    "mlir::triton::gpu::TritonGPUDialect"
+  ];
+}
+
+def TritonMUSAGPUTLELowerWarpSpecialize
+    : Pass<"tritonmusa-tle-lower-warp-specialize", "mlir::ModuleOp"> {
+  let summary = "Late-lower mthreads TLE static warp specialization";
+  let description = [{
+    Lower warp-group barriers directly from the retained default and partition
+    regions, then replace the restricted warp-specialize operation with two
+    independent static CFG branches.  The lowering uses hardware barrier ids
+    and direct SSA captures, so it allocates no control shared memory.
+  }];
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::cf::ControlFlowDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::scf::SCFDialect",
+    "mlir::triton::TritonDialect",
+    "mlir::triton::gpu::TritonGPUDialect",
+    "mlir::triton::musa::MUSADialect"
+  ];
+}
+
 def TritonMUSAGPUTLELowerBarrierAllocations
     : Pass<"tritonmusa-tle-lower-barrier-allocations", "mlir::ModuleOp"> {
   let summary = "Assign MUSA hardware ids to TLE barrier declarations";

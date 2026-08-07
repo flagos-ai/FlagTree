@@ -155,6 +155,97 @@ def _non_ws_pipe_mm_kernel(
 
 
 @triton.jit
+def _ws_pipe_mm_consumer(
+    a_reader,
+    b_reader,
+    out,
+    K_TILES: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for k_iter in tl.range(0, K_TILES, num_stages=1):
+        a_wait = a_reader.wait(k_iter)
+        b_wait = b_reader.wait(k_iter)
+        acc = tle.gpu.wgmma(a_wait.slot.a, b_wait.slot.b, acc)
+        acc = tle.gpu.wgmma_wait(0, acc)
+        a_reader.release(k_iter)
+        b_reader.release(k_iter)
+
+    offsets = tl.arange(0, BLOCK_M)[:, None] * BLOCK_N + tl.arange(0, BLOCK_N)[None, :]
+    tl.store(out + offsets, acc.to(tl.float16))
+
+
+@triton.jit
+def _ws_pipe_mm_producer(
+    a_writer,
+    b_writer,
+    a_desc,
+    b_desc,
+    K_TILES: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    for k_iter in tl.range(0, K_TILES, num_stages=1):
+        a_slot = a_writer.acquire(k_iter)
+        b_slot = b_writer.acquire(k_iter)
+        k_offset = k_iter * BLOCK_K
+        tle.gpu.copy(a_desc, a_slot.a, (BLOCK_M, BLOCK_K), (0, k_offset))
+        tle.gpu.copy(b_desc, b_slot.b, (BLOCK_K, BLOCK_N), (k_offset, 0))
+        a_writer.commit(k_iter)
+        b_writer.commit(k_iter)
+
+
+@triton.jit
+def _ws_pipe_mm_kernel(
+    a_desc,
+    b_desc,
+    out,
+    K_TILES: tl.constexpr,
+    STAGES: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    a_smem = tle.gpu.alloc(
+        (STAGES, BLOCK_M, BLOCK_K),
+        dtype=tl.float16,
+        nv_mma_shared_layout=False,
+    )
+    b_smem = tle.gpu.alloc(
+        (STAGES, BLOCK_K, BLOCK_N),
+        dtype=tl.float16,
+        nv_mma_shared_layout=False,
+    )
+    a_pipe = tle.pipe(capacity=STAGES, name="ws_runtime_a", a=a_smem)
+    b_pipe = tle.pipe(capacity=STAGES, name="ws_runtime_b", b=b_smem)
+    tle.gpu.warp_specialize(
+        [
+            (
+                _ws_pipe_mm_consumer,
+                (a_pipe.reader(), b_pipe.reader(), out, K_TILES, BLOCK_M, BLOCK_N),
+            ),
+            (
+                _ws_pipe_mm_producer,
+                (
+                    a_pipe.writer(),
+                    b_pipe.writer(),
+                    a_desc,
+                    b_desc,
+                    K_TILES,
+                    BLOCK_M,
+                    BLOCK_N,
+                    BLOCK_K,
+                ),
+            ),
+        ],
+        worker_num_warps=[4],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
 def _baseline_consumer(out, ITERATIONS: tl.constexpr):
     for iteration in tl.static_range(0, ITERATIONS):
         tl.store(out + iteration, iteration)
@@ -443,10 +534,10 @@ def test_mthreads_pipe_barrier_ids_add_no_shared_memory(stages):
     _, _, baseline_allocated = _compile_pipeline(_baseline_kernel, stages)
 
     assert _shared_bytes(pipe_allocated) == _shared_bytes(baseline_allocated)
-    ws_line = next(line for line in pipe_allocated.splitlines() if "ttg.warp_specialize(" in line)
-    # Only the payload, descriptor, and ordinary scalar captures remain. The
-    # two full/empty hardware barrier base IDs are rematerialized constants.
-    assert "data_pipe" not in ws_line
+    assert pipe_allocated.count("ttg.warp_specialize") == 1, pipe_allocated
+    ws_line = next(line for line in pipe_allocated.splitlines() if "ttg.warp_specialize" in line)
+    assert "allocation.offset" not in ws_line, ws_line
+    assert "musa_tle.static_ws." not in pipe_allocated, pipe_allocated
 
 
 @pytest.mark.parametrize("stages", [1, 2])
@@ -524,6 +615,64 @@ def test_mthreads_non_ws_pipe_mm_runtime(block_m, block_n, k_tiles, stages):
             BLOCK_N=block_n,
             BLOCK_K=block_k,
             num_warps=4,
+            num_stages=1,
+        )
+        torch.musa.synchronize()
+        torch.testing.assert_close(out.to(torch.float32), reference, rtol=1.25e-1, atol=1.25e-1)
+
+
+@pytest.mark.parametrize("stages", [1, 2], ids=["stage1", "stage2"])
+def test_mthreads_ws_pipe_mm_runtime(stages):
+    torch.manual_seed(42)
+    block_m = block_n = 256
+    block_k = 64
+    k_tiles = 4
+    k = k_tiles * block_k
+    a = torch.randn((block_m, k), dtype=torch.float16, device="musa")
+    b = torch.randn((k, block_n), dtype=torch.float16, device="musa")
+    out = torch.empty((block_m, block_n), dtype=torch.float16, device="musa")
+    a_desc = TensorDescriptor.from_tensor(a, [block_m, block_k])
+    b_desc = TensorDescriptor.from_tensor(b, [block_k, block_n])
+    reference = torch.matmul(a.to(torch.float32), b.to(torch.float32))
+
+    compiled = _ws_pipe_mm_kernel.warmup(
+        a_desc,
+        b_desc,
+        out,
+        K_TILES=k_tiles,
+        STAGES=stages,
+        BLOCK_M=block_m,
+        BLOCK_N=block_n,
+        BLOCK_K=block_k,
+        grid=(1, ),
+        num_warps=16,
+        num_stages=1,
+    )
+    assert compiled.metadata.num_warps == 20
+    assert compiled.metadata.shared == stages * 65536
+    assert '"ttg.total-num-warps" = 20 : i32' in compiled.asm["ttgir"]
+    assert compiled.asm["ttgir"].count("ttg.warp_specialize") == 1
+    assert "musa_tle.static_ws." not in compiled.asm["ttgir"]
+    assert "ttg.warp_specialize" not in compiled.asm["llir"]
+    assert "ttg.convert_layout" not in compiled.asm["ttgir"]
+    assert "swizzleGranularity = 1 : i32" in compiled.asm["ttgir"]
+    assert "swizzleGranularity = 2 : i32" in compiled.asm["ttgir"]
+    assert "builtin.unrealized_conversion_cast" not in compiled.asm["llir"]
+    assert compiled.asm["llir"].count("call void @llvm.musa.syncthreads.lm()") == 1
+    assert f"llvm.musa.async.bar.record(i32 {4 * stages})" in compiled.asm["llir"]
+
+    for _ in range(2):
+        out.fill_(float("nan"))
+        _ws_pipe_mm_kernel[(1, )](
+            a_desc,
+            b_desc,
+            out,
+            K_TILES=k_tiles,
+            STAGES=stages,
+            BLOCK_M=block_m,
+            BLOCK_N=block_n,
+            BLOCK_K=block_k,
+            num_warps=16,
             num_stages=1,
         )
         torch.musa.synchronize()

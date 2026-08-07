@@ -6,6 +6,8 @@ add_triton_library(MUSATLETransforms
   LowerPipe.cpp
   LowerSqmma.cpp
   LowerTMETransactions.cpp
+  LowerWarpSpecialize.cpp
+  LowerWarpSpecializeToLLVM.cpp
   OptimizeLocalPointerAsyncStores.cpp
   OptimizeLocalPointerLoads.cpp
   OptimizeLocalPointerStores.cpp

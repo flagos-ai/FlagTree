@@ -399,7 +399,17 @@ def _compile_ws_dot_integration(stages):
     pm = ir.pass_manager(context)
     libtriton.mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, 31)
     pm.run(module, "allocate_ws_dot_integration_shared_memory")
-    return ttir, ttgir, module.str_nodebug()
+    allocated = module.str_nodebug()
+
+    pm = ir.pass_manager(context)
+    libtriton.passes.convert.add_scf_to_cf(pm)
+    libtriton.passes.convert.add_index_to_llvmir(pm)
+    libtriton.mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_to_llvmir(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_tle_lower_warp_specialize(pm)
+    libtriton.passes.convert.add_scf_to_cf(pm)
+    pm.run(module, "lower_ws_dot_integration_to_llvm_cfg")
+    return ttir, ttgir, allocated, module.str_nodebug()
 
 
 def _split_top_level(text):
@@ -424,7 +434,8 @@ def _constants(region):
     return {
         name: int(value)
         for name, value in re.findall(
-            r"(%[-\w.]+)\s*=\s*(?:arith\.)?constant\s+(-?\d+)\s*:\s*i32",
+            r"(%[-\w.]+)\s*=\s*(?:arith\.)?constant"
+            r"(?:\s+\{[^}\n]*\})?\s+(-?\d+)\s*:\s*i32",
             region,
         )
     }
@@ -501,7 +512,8 @@ def _physical_barrier_defs(region, base_args):
     constants = _constants(region)
     definitions = {}
     for result, base, slot in re.findall(
-            r"(%[-\w.]+)\s*=\s*arith\.addi\s+(%[-\w.]+),\s*(%[-\w.]+)\s*:\s*i32",
+            r"(%[-\w.]+)\s*=\s*arith\.addi\s+(%[-\w.]+),\s*(%[-\w.]+)"
+            r"\s*(?:\{[^}\n]*\}\s*)?:\s*i32",
             region,
     ):
         if base in base_args and slot in constants:
@@ -535,9 +547,25 @@ def _assert_single_compiler_stage(ir_text):
 def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
     emitted_tiles = _emitted_static_tiles(stages, k_tiles)
     _assert_single_compiler_stage(ir_text)
-    assert ir_text.count("ttg.warp_specialize") == 1, ir_text
-    assert ir_text.count("ttg.warp_yield") == 1, ir_text
-    assert ir_text.count("ttg.warp_return") == 1, ir_text
+    if barriers_lowered:
+        assert ir_text.count("ttg.warp_specialize") == 1, ir_text
+        assert ir_text.count("ttg.warp_yield") == 1, ir_text
+        assert ir_text.count("ttg.warp_return") == 1, ir_text
+        assert "musa_tle.static_warp_specialize" in ir_text, ir_text
+        assert "warpGroupStartIds = array<i32: 16>" in ir_text, ir_text
+        assert '"ttg.total-num-warps" = 20 : i32' in ir_text, ir_text
+        assert "gpu.thread_id" not in ir_text, ir_text
+        assert "musa_tle.static_ws.split" not in ir_text, ir_text
+        assert "musa_tle.static_ws.role" not in ir_text, ir_text
+        assert "musa_tle.static_ws.num_warps" not in ir_text, ir_text
+        assert "musa_tle.static_ws.thread_offset" not in ir_text, ir_text
+        assert "musa_tle.static_ws.split_candidate" not in ir_text, ir_text
+        assert "builtin.unrealized_conversion_cast" not in ir_text, ir_text
+    else:
+        assert ir_text.count("ttg.warp_specialize") == 1, ir_text
+        assert ir_text.count("ttg.warp_yield") == 1, ir_text
+        assert ir_text.count("ttg.warp_return") == 1, ir_text
+        assert "musa_tle.static_warp_specialize" in ir_text, ir_text
     assert ir_text.count("scf.for") == 2, ir_text
     assert ir_text.count("musa_tle.barrier.alloc") == (0 if barriers_lowered else 4), ir_text
     wait_op = "ttmg.wait_barrier" if barriers_lowered else "musa_tle.barrier.wait"
@@ -565,7 +593,7 @@ def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
         assert ir_text.count("ttg.barrier local") == 1, ir_text
         init_positions = [match.start() for match in re.finditer("ttmg.init_arrival", ir_text)]
         rendezvous = ir_text.index("ttg.barrier local")
-        warp_specialize = ir_text.index("ttg.warp_specialize(")
+        warp_specialize = ir_text.index("ttg.warp_specialize")
         assert ir_text.index("ttmg.bar_record") < min(init_positions), ir_text
         assert max(init_positions) < rendezvous < warp_specialize, ir_text
     else:
@@ -583,20 +611,23 @@ def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
     assert "#smem, mutable>" in ir_text, ir_text
 
     ws_match, default_region, partition_match = _extract_ws_regions(ir_text)
+    producer_region = partition_match.group("body")
+    if barriers_lowered:
+        partition_args = []
+    else:
+        captures = _split_top_level(ws_match.group("captures"))
+        partition_args = _split_top_level(partition_match.group("args"))
+        assert len(captures) == 10, (captures, ir_text)
+        assert len(set(captures)) == 10, (captures, ir_text)
+        assert len(partition_args) == 10, (partition_args, ir_text)
+        assert sum("tensordesc" in arg for arg in partition_args) == 2, partition_args
+        assert sum("memdesc" in arg for arg in partition_args) == 2, partition_args
+        assert sum(": i32" in arg for arg in partition_args) == 5, partition_args
+        assert sum("ptr<f16>" in arg for arg in partition_args) == 1, partition_args
+        assert "requestedRegisters = array<i32: 24>" in ws_match.group("attrs"), ir_text
+        assert re.search(r"\)\s*->\s*\(\)\s*\n\s*tt\.return", ir_text), ir_text
     assert "ttg.barrier local" not in default_region, default_region
-    assert "ttg.barrier local" not in partition_match.group("body"), partition_match.group("body")
-    captures = _split_top_level(ws_match.group("captures"))
-    partition_args = _split_top_level(partition_match.group("args"))
-    expected_captures = 6 if barriers_lowered else 10
-    assert len(captures) == expected_captures, (captures, ir_text)
-    assert len(set(captures)) == expected_captures, (captures, ir_text)
-    assert len(partition_args) == expected_captures, (partition_args, ir_text)
-    assert sum("tensordesc" in arg for arg in partition_args) == 2, partition_args
-    assert sum("memdesc" in arg for arg in partition_args) == 2, partition_args
-    assert sum(": i32" in arg for arg in partition_args) == (1 if barriers_lowered else 5), partition_args
-    assert sum("ptr<f16>" in arg for arg in partition_args) == 1, partition_args
-    assert "requestedRegisters = array<i32: 24>" in ws_match.group("attrs"), ir_text
-    assert re.search(r"\)\s*->\s*\(\)\s*\n\s*tt\.return", ir_text), ir_text
+    assert "ttg.barrier local" not in producer_region, producer_region
 
     enclosing_constants = _constants(ir_text)
     assert default_region.count("scf.for") == 1, default_region
@@ -642,7 +673,6 @@ def _assert_common_ws_ir(ir_text, stages, k_tiles, barriers_lowered=False):
             enclosing_constants,
         ) == expected_ready, default_region
 
-    producer_region = partition_match.group("body")
     assert producer_region.count("scf.for") == 1, producer_region
     assert not re.search(r"arith\.(?:rem|div)", producer_region), producer_region
     producer_arg_names = [arg.split(":", 1)[0].strip() for arg in partition_args]
@@ -769,13 +799,11 @@ def _assert_explicit_shared_allocations(allocated, stages):
     assert f"!ttg.memdesc<{stages}x64x256xf16" in local_allocs[1], local_allocs
     assert "allocation.offset = 0 : i32" in local_allocs[0], local_allocs
     assert f"allocation.offset = {stages * 32768} : i32" in local_allocs[1], local_allocs
-    ws_line = next(line for line in allocated.splitlines() if "ttg.warp_specialize(" in line)
-    assert f"allocation.offset = {explicit_bytes} : i32" in ws_line, ws_line
+    assert allocated.count("ttg.warp_specialize") == 1, allocated
+    ws_line = next(line for line in allocated.splitlines() if "ttg.warp_specialize" in line)
+    assert "allocation.offset" not in ws_line, ws_line
     shared_bytes = int(re.search(r"ttg\.shared = (\d+) : i32", allocated).group(1))
-    # Descriptor, memdesc, pointer, and scalar captures occupy 68 bytes rounded
-    # to the generic WS mailbox's 8-byte alignment. The four hardware barrier
-    # base IDs are rematerialized constants and therefore add zero SMEM.
-    assert shared_bytes == explicit_bytes + 72, allocated
+    assert shared_bytes == explicit_bytes, allocated
 
 
 def _assert_dot_pipeline_resources(ttir, ttgir, allocated, stages):
@@ -828,21 +856,69 @@ def _assert_dot_pipeline_resources(ttir, ttgir, allocated, stages):
     explicit_offsets = [int(re.search(r"allocation\.offset = (\d+)", line).group(1)) for line in explicit_allocs]
     assert explicit_offsets == [131072, 131072 + stages * 32768], explicit_allocs
     sqmma_offsets = [int(re.search(r"allocation\.offset = (\d+)", line).group(1)) for line in sqmma_allocs]
-    sqmma_base = 131072 + stages * 65536
-    assert sqmma_offsets == [sqmma_base + index * 32768 for index in range(4 * stages)], sqmma_allocs
+    explicit_end = 131072 + stages * 65536
+    expected_sqmma_offsets = [index * 32768 for index in range(4)]
+    expected_sqmma_offsets += [explicit_end + index * 32768 for index in range(4 * (stages - 1))]
+    assert sqmma_offsets == expected_sqmma_offsets, sqmma_allocs
 
     output_conversion = next(
         line for line in allocated_lines
         if "ttg.convert_layout" in line and "tensor<256x256xf16" in line and "allocation.offset" in line)
     assert "allocation.offset = 0 : i32" in output_conversion, output_conversion
-    ws_line = next(line for line in allocated_lines if "ttg.warp_specialize(" in line)
-    assert "allocation.offset = 0 : i32" in ws_line, ws_line
+    assert allocated.count("ttg.warp_specialize") == 1, allocated
+    ws_line = next(line for line in allocated.splitlines() if "ttg.warp_specialize" in line)
+    assert "allocation.offset" not in ws_line, ws_line
 
-    expected_scratch_end = sqmma_base + 4 * stages * 32768
     func_line = next(line for line in allocated_lines if "tt.func public @_ws_dot_integration_kernel" in line)
-    assert f"allocation.offset = {expected_scratch_end} : i32" in func_line, func_line
+    assert "allocation.offset" not in func_line, func_line
     shared_bytes = int(re.search(r"ttg\.shared = (\d+) : i32", allocated).group(1))
-    assert shared_bytes == expected_scratch_end + 4, allocated
+    expected_shared = max(
+        explicit_end,
+        max(offset + 32768 for offset in expected_sqmma_offsets),
+        131072,
+    )
+    assert shared_bytes == expected_shared, allocated
+
+
+def _assert_late_ws_dot_cfg(late, stages):
+    assert "ttg.warp_specialize" not in late, late
+    assert "ttg.warp_yield" not in late, late
+    assert "ttg.warp_return" not in late, late
+    assert "musa_tle.static_warp_specialize" not in late, late
+    assert "musa_tle.static_ws." not in late, late
+    assert "cf.switch" not in late, late
+
+    comparisons = re.findall(
+        r"(%[-\w.]+)\s*=\s*arith\.cmpi\s+(uge|ult),\s*"
+        r"(%[-\w.]+),\s*(%[-\w.]+)",
+        late,
+    )
+    producer = [comparison for comparison in comparisons if comparison[1] == "uge"]
+    consumer = [comparison for comparison in comparisons if comparison[1] == "ult"]
+    assert len(producer) == 1, late
+    assert len(consumer) == 1, late
+    assert producer[0][2:] == consumer[0][2:], (producer, consumer, late)
+    constants = _constants(late)
+    assert constants[producer[0][3]] == 16 * 32, (producer, constants, late)
+    assert late.index(producer[0][0]) < late.index(consumer[0][0]), late
+    assert re.search(rf"cf\.cond_br\s+{re.escape(producer[0][0])},", late), late
+    assert re.search(rf"cf\.cond_br\s+{re.escape(consumer[0][0])},", late), late
+    # Two partition dispatches plus the thread-0-only barrier initializer.
+    assert late.count("cf.cond_br") == 3, late
+
+    # The pre-existing post-initialization CTA rendezvous is reused.  The
+    # static dispatch and partition barriers must not allocate control SMEM.
+    assert late.count('"llvm.musa.syncthreads.lm"') == 1, late
+    initialized_barriers = late.count('"llvm.musa.async.init.arrival"')
+    record = re.search(
+        r'llvm\.call_intrinsic\s+"llvm\.musa\.async\.bar\.record"'
+        r'\((%[-\w.]+)\)',
+        late,
+    )
+    assert record, late
+    recorded_barriers = constants[record.group(1)]
+    assert recorded_barriers == initialized_barriers, (record.group(1), constants, late)
+    assert recorded_barriers > 4 * stages, (recorded_barriers, stages, late)
 
 
 @pytest.mark.parametrize("stages,k_tiles", [(1, 16), (2, 16), (2, 10)])
@@ -855,8 +931,9 @@ def test_mthreads_tle_warp_specialize_integration_contract(stages, k_tiles):
 
 @pytest.mark.parametrize("stages", [1, 2])
 def test_mthreads_tle_warp_specialize_dot_pipeline_resources(stages):
-    ttir, ttgir, allocated = _compile_ws_dot_integration(stages)
+    ttir, ttgir, allocated, late = _compile_ws_dot_integration(stages)
     _assert_dot_pipeline_resources(ttir, ttgir, allocated, stages)
+    _assert_late_ws_dot_cfg(late, stages)
 
 
 def test_mthreads_tle_warp_specialize_stage_three_remains_deferred():
