@@ -25,6 +25,7 @@ from typing import Optional, Sequence
 from enum import Enum
 from . import types as tle
 from .mthreads import common as mthreads_common
+from .mthreads import buffer as mthreads_buffer
 from .mthreads import copy as mthreads_copy
 from .mthreads import warp_specialize as mthreads_warp_specialize
 from .mthreads import wgmma as mthreads_wgmma
@@ -353,6 +354,10 @@ def alloc(
     try:
         unwrapped_shape = [tl._unwrap_if_constexpr(dim) for dim in shape]
         full_shape = unwrapped_shape
+        use_mthreads_buffer = (mthreads_common.enabled() and mthreads_buffer.needs_non_power_of_two_leading_dim(
+            _semantic.builder, unwrapped_shape))
+        if use_mthreads_buffer:
+            mthreads_buffer.validate_shape(unwrapped_shape)
         dtype = tl._unwrap_if_constexpr(dtype)
         elem_type = dtype.to_ir(_semantic.builder)
 
@@ -406,6 +411,15 @@ def alloc(
         else:
             raise ValueError(f"Storage type {storage} not yet supported")
 
+        if use_mthreads_buffer:
+            return mthreads_buffer.create_buffered_tensor(
+                tensor_handle,
+                dtype,
+                unwrapped_shape,
+                storage,
+                layout,
+                _semantic,
+            )
         return tle.buffered_tensor(tensor_handle, dtype, unwrapped_shape, storage, layout, _semantic)
 
     except Exception as e:

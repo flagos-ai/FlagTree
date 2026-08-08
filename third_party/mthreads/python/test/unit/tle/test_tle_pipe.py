@@ -501,7 +501,7 @@ def _i32_constants(ir_text):
     }
 
 
-@pytest.mark.parametrize("stages", [1, 2])
+@pytest.mark.parametrize("stages", [1, 2, 3])
 def test_mthreads_single_field_pipe_lowers_to_hardware_barriers(stages):
     ttir, ttgir, allocated = _compile_pipeline(_pipe_kernel, stages)
 
@@ -528,7 +528,7 @@ def test_mthreads_single_field_pipe_lowers_to_hardware_barriers(stages):
     assert all("%c256" in line for line in ttgir.splitlines() if "ttmg.barrier_add_trans" in line)
 
 
-@pytest.mark.parametrize("stages", [1, 2])
+@pytest.mark.parametrize("stages", [1, 2, 3])
 def test_mthreads_pipe_barrier_ids_add_no_shared_memory(stages):
     _, _, pipe_allocated = _compile_pipeline(_pipe_kernel, stages)
     _, _, baseline_allocated = _compile_pipeline(_baseline_kernel, stages)
@@ -540,7 +540,7 @@ def test_mthreads_pipe_barrier_ids_add_no_shared_memory(stages):
     assert "musa_tle.static_ws." not in pipe_allocated, pipe_allocated
 
 
-@pytest.mark.parametrize("stages", [1, 2])
+@pytest.mark.parametrize("stages", [1, 2, 3])
 def test_mthreads_two_single_field_pipes_keep_independent_barrier_rings(stages):
     ttgir = _compile_dual_pipeline(stages)
     assert "tle.pipe." not in ttgir, ttgir
@@ -589,6 +589,7 @@ def test_mthreads_pipe_rejects_writer_in_default_partition(capfd):
     [
         pytest.param(128, 128, 4, 1, id="m128-n128-k256-stage1"),
         pytest.param(128, 128, 4, 2, id="m128-n128-k256-stage2"),
+        pytest.param(128, 128, 7, 3, id="m128-n128-k448-stage3"),
         pytest.param(256, 256, 1, 1, id="m256-n256-k64-stage1"),
     ],
 )
@@ -621,12 +622,14 @@ def test_mthreads_non_ws_pipe_mm_runtime(block_m, block_n, k_tiles, stages):
         torch.testing.assert_close(out.to(torch.float32), reference, rtol=1.25e-1, atol=1.25e-1)
 
 
-@pytest.mark.parametrize("stages", [1, 2], ids=["stage1", "stage2"])
+@pytest.mark.parametrize("stages", [1, 2, 3], ids=["stage1", "stage2", "stage3"])
 def test_mthreads_ws_pipe_mm_runtime(stages):
     torch.manual_seed(42)
     block_m = block_n = 256
     block_k = 64
-    k_tiles = 4
+    # Seven tiles exercise a full two-phase cycle and then reuse slot zero for
+    # the third generation when capacity is three.
+    k_tiles = 7
     k = k_tiles * block_k
     a = torch.randn((block_m, k), dtype=torch.float16, device="musa")
     b = torch.randn((k, block_n), dtype=torch.float16, device="musa")
