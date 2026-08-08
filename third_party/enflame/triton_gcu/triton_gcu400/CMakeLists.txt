@@ -72,6 +72,7 @@ set(TRITON_MLIR_DEPS
 )
 
 add_library(triton_gcu400 INTERFACE)
+add_dependencies(triton_gcu400 ${TRITON_CORE_TABLEGEN_TARGETS})
 target_include_directories(triton_gcu400 SYSTEM INTERFACE ${TRITON_SOURCE_DIR}/include)
 target_include_directories(triton_gcu400 SYSTEM INTERFACE ${TRITON_BINARY_DIR}/include)
 target_include_directories(triton_gcu400 SYSTEM INTERFACE ${TRITON_SOURCE_DIR})

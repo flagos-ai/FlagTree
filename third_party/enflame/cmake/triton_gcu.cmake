@@ -21,6 +21,22 @@ function(setup_triton_in_tree)
     GluonTransforms
     PARENT_SCOPE
   )
+  set(TRITON_CORE_TABLEGEN_TARGETS
+    TritonTableGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUCTAAttrIncGen
+    TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
+    TritonGPUTransformsIncGen
+    TritonConversionPassIncGen
+    TritonTransformsIncGen
+    TritonNvidiaGPUTableGen
+    TritonNvidiaGPUAttrDefsIncGen
+    TritonNvidiaGPUOpInterfacesIncGen
+    TritonNvidiaGPUTransformsIncGen
+    PARENT_SCOPE
+  )
 endfunction()
 
 function(build_triton_python_bindings ARCH_NAME SOURCE_DIR)
