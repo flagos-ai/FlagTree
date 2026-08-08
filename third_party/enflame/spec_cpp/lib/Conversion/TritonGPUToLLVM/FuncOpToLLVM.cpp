@@ -170,9 +170,9 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
   LogicalResult
   matchAndRewrite(triton::FuncOp funcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return failure();  // flagtree enflame
+    return failure(); // flagtree enflame
 
-# if 0
+#if 0
     // Prevent LLVM's inliner to inline this function
     auto amendedFuncOp = amendFuncOp(funcOp, rewriter, targetInfo);
 
@@ -238,7 +238,7 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
     handleByvalTmaDescArgs(newFuncOp);
 
     return success();
-# endif
+#endif
   }
 
 private:
