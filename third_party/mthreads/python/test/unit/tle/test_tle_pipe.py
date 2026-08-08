@@ -118,13 +118,13 @@ def _non_ws_pipe_mm_kernel(
         (STAGES, BLOCK_M, BLOCK_K),
         dtype=tl.float16,
         layout=None,
-        nv_mma_shared_layout=False,
+        nv_mma_shared_layout=True,
     )
     b_smem = tle.gpu.alloc(
         (STAGES, BLOCK_K, BLOCK_N),
         dtype=tl.float16,
         layout=None,
-        nv_mma_shared_layout=False,
+        nv_mma_shared_layout=True,
     )
     a_pipe = tle.pipe(capacity=STAGES, name="runtime_a", a=a_smem)
     b_pipe = tle.pipe(capacity=STAGES, name="runtime_b", b=b_smem)
@@ -211,12 +211,12 @@ def _ws_pipe_mm_kernel(
     a_smem = tle.gpu.alloc(
         (STAGES, BLOCK_M, BLOCK_K),
         dtype=tl.float16,
-        nv_mma_shared_layout=False,
+        nv_mma_shared_layout=True,
     )
     b_smem = tle.gpu.alloc(
         (STAGES, BLOCK_K, BLOCK_N),
         dtype=tl.float16,
-        nv_mma_shared_layout=False,
+        nv_mma_shared_layout=True,
     )
     a_pipe = tle.pipe(capacity=STAGES, name="ws_runtime_a", a=a_smem)
     b_pipe = tle.pipe(capacity=STAGES, name="ws_runtime_b", b=b_smem)

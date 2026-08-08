@@ -152,7 +152,8 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
     return op.emitOpError("requires SQMMA operands rooted at ttg.local_alloc");
   if (!root->hasAttr(kAutoSharedLayoutAttr))
     return op.emitOpError(
-        "requires layout=None for initial mthreads TLE SQMMA operands");
+        "requires layout=None and nv_mma_shared_layout=True for initial "
+        "mthreads TLE SQMMA operands");
 
   auto order = ttg::getOrder(operandTy);
   auto cga = ttg::getCGALayout(operandTy.getEncoding());

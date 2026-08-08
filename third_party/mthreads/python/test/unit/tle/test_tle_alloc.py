@@ -5,7 +5,7 @@ import triton.language as tl
 import triton.experimental.tle.language as tle
 from triton.compiler.errors import CompilationError
 
-from test_tle_utils import compile_musa, require_mthreads_libtriton
+from test_tle_utils import compile_musa, compile_to_ttir, require_mthreads_libtriton
 
 require_mthreads_libtriton()
 
@@ -114,14 +114,26 @@ def test_tle_alloc_keeps_power_of_two_constraint_for_slot_dimensions():
         compile_musa(_alloc_non_power_of_two_tail_kernel, signature={"out_ptr": "*fp32"})
 
 
-def test_tle_alloc_nv_mma_shared_layout_true_raises():
-    with pytest.raises(CompilationError, match="mthreads TLE alloc does not support nv_mma_shared_layout=True"):
-        compile_musa(_alloc_nv_mma_kernel, signature={"out_ptr": "*fp32"})
+def test_tle_alloc_nv_mma_shared_layout_true_marks_auto_layout():
+    ttir = compile_to_ttir(_alloc_nv_mma_kernel, signature={"out_ptr": "*fp32"})
+
+    assert ttir.count("musa_tle.auto_shared_layout") == 1, ttir
+    assert "#ttg.swizzled_shared" in ttir, ttir
+    assert "#ttg.nvmma_shared" not in ttir, ttir
 
 
-def test_tle_alloc_default_nv_mma_shared_layout_raises():
-    with pytest.raises(CompilationError, match="mthreads TLE alloc does not support nv_mma_shared_layout=True"):
-        compile_musa(_alloc_default_kernel, signature={"out_ptr": "*fp32"})
+def test_tle_alloc_default_marks_auto_layout():
+    ttir = compile_to_ttir(_alloc_default_kernel, signature={"out_ptr": "*fp32"})
+
+    assert ttir.count("musa_tle.auto_shared_layout") == 1, ttir
+    assert "#ttg.swizzled_shared" in ttir, ttir
+    assert "#ttg.nvmma_shared" not in ttir, ttir
+
+
+def test_tle_alloc_nv_mma_shared_layout_false_does_not_mark_auto_layout():
+    ttir = compile_to_ttir(_alloc_kernel, signature={"out_ptr": "*fp32"})
+
+    assert "musa_tle.auto_shared_layout" not in ttir, ttir
 
 
 def test_tle_alloc_explicit_swizzled_shared_layout_ttgir_emits_smem_memdesc():
@@ -136,6 +148,7 @@ def test_tle_alloc_explicit_swizzled_shared_layout_ttgir_emits_smem_memdesc():
     assert "#ttg.swizzled_shared" in ttgir, ttgir
     assert "#ttg.nvmma_shared" not in ttgir, ttgir
     assert "tensor_memory" not in ttgir, ttgir
+    assert "musa_tle.auto_shared_layout" not in ttgir, ttgir
 
 
 def test_tle_alloc_explicit_nv_mma_shared_layout_raises():

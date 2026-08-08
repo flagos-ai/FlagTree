@@ -25,6 +25,11 @@ def _unwrap(value):
     return value.value if isinstance(value, tl.constexpr) else value
 
 
+def use_auto_shared_layout(layout, nv_mma_shared_layout) -> bool:
+    """Whether an implicit mthreads shared layout may be selected by SQMMA."""
+    return layout is None and bool(_unwrap(nv_mma_shared_layout))
+
+
 def mark_auto_shared_layout(builder, handle) -> None:
     if not hasattr(builder, "mark_musa_tle_auto_shared_layout"):
         raise RuntimeError("mthreads TLE native binding mark_musa_tle_auto_shared_layout is unavailable")

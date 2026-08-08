@@ -306,6 +306,9 @@ def alloc(
         dtype: Data type
         layout: Memory layout encoding (optional)
         scope: Storage type (default to shared memory)
+        nv_mma_shared_layout: Select an MMA-consumer-defined shared layout when
+            ``layout`` is None. On mthreads this is materialized by the SQMMA
+            lowering rather than as an NVIDIA encoding.
         _semantic: Semantic analyzer (internal use)
 
     Returns:
@@ -330,7 +333,6 @@ def alloc(
         raise ValueError(f"Storage type must be tle.scope, but got {type(scope)}")
 
     layout = tl._unwrap_if_constexpr(layout)
-    auto_shared_layout = layout is None
     if layout is not None and not isinstance(layout, tle.shared_layout):
         # Handle constexpr None
         if hasattr(layout, 'value') and layout.value is None:
@@ -350,6 +352,8 @@ def alloc(
 
     # Map scope to storage (backward compatibility)
     storage = scope
+    mthreads_auto_sqmma_shared_layout = (mthreads_common.enabled() and storage == tle.smem
+                                         and mthreads_wgmma.use_auto_shared_layout(layout, nv_mma_shared_layout))
 
     try:
         unwrapped_shape = [tl._unwrap_if_constexpr(dim) for dim in shape]
@@ -363,7 +367,7 @@ def alloc(
 
         if layout is None:
             if storage == tle.smem:
-                if not nv_mma_shared_layout:
+                if mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
                     layout = tle.swizzled_shared_layout.make_default(rank=len(shape))
                     layout_handle = _semantic.builder.make_swizzled_shared_encoding_attr(
                         layout.vectorSize,
@@ -406,7 +410,7 @@ def alloc(
                 tensor_handle = _semantic.builder.create_local_alloc(mutable_ty, init_value.handle)
             else:
                 tensor_handle = _semantic.builder.create_local_alloc(full_shape, elem_type, layout_handle)
-            if auto_shared_layout and mthreads_common.enabled():
+            if mthreads_auto_sqmma_shared_layout:
                 mthreads_wgmma.mark_auto_shared_layout(_semantic.builder, tensor_handle)
         else:
             raise ValueError(f"Storage type {storage} not yet supported")

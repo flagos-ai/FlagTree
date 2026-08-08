@@ -49,8 +49,8 @@ _SQMMA_SHAPE_CASES = tuple(
 
 @triton.jit
 def _tle_sqmma_kernel(out):
-    a = tle.gpu.alloc((128, 64), dtype=tl.float16, layout=None, nv_mma_shared_layout=False)
-    b = tle.gpu.alloc((64, 128), dtype=tl.float16, layout=None, nv_mma_shared_layout=False)
+    a = tle.gpu.alloc((128, 64), dtype=tl.float16, layout=None)
+    b = tle.gpu.alloc((64, 128), dtype=tl.float16, layout=None)
     acc = tl.zeros((128, 128), dtype=tl.float32)
     acc = tle.gpu.wgmma(a, b, acc)
     acc = tle.gpu.wgmma_wait(0, acc)
@@ -60,10 +60,20 @@ def _tle_sqmma_kernel(out):
 
 @triton.jit
 def _tle_sqmma_nonzero_wait_kernel(out):
-    a = tle.gpu.alloc((128, 64), dtype=tl.float16, layout=None, nv_mma_shared_layout=False)
-    b = tle.gpu.alloc((64, 128), dtype=tl.float16, layout=None, nv_mma_shared_layout=False)
+    a = tle.gpu.alloc((128, 64), dtype=tl.float16, layout=None)
+    b = tle.gpu.alloc((64, 128), dtype=tl.float16, layout=None)
     acc = tle.gpu.wgmma(a, b, tl.zeros((128, 128), dtype=tl.float32))
     acc = tle.gpu.wgmma_wait(1, acc)
+    offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _tle_sqmma_non_auto_layout_kernel(out):
+    a = tle.gpu.alloc((128, 64), dtype=tl.float16, layout=None, nv_mma_shared_layout=False)
+    b = tle.gpu.alloc((64, 128), dtype=tl.float16, layout=None)
+    acc = tle.gpu.wgmma(a, b, tl.zeros((128, 128), dtype=tl.float32))
+    acc = tle.gpu.wgmma_wait(0, acc)
     offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
     tl.store(out + offsets, acc)
 
@@ -77,13 +87,13 @@ def _tle_sqmma_runtime_kernel(a_desc, b_desc, out):
         (block_m, block_k),
         dtype=tl.float16,
         layout=None,
-        nv_mma_shared_layout=False,
+        nv_mma_shared_layout=True,
     )
     b = tle.gpu.alloc(
         (block_k, block_n),
         dtype=tl.float16,
         layout=None,
-        nv_mma_shared_layout=False,
+        nv_mma_shared_layout=True,
     )
     a_full = tle.gpu.alloc_barrier(expect_bytes=block_m * block_k * 2)
     b_full = tle.gpu.alloc_barrier(expect_bytes=block_k * block_n * 2)
@@ -108,13 +118,13 @@ def _tle_sqmma_for_loop_runtime_kernel(a_desc, b_desc, out, k_tiles: tl.constexp
         (block_m, block_k),
         dtype=tl.float16,
         layout=None,
-        nv_mma_shared_layout=False,
+        nv_mma_shared_layout=True,
     )
     b = tle.gpu.alloc(
         (block_k, block_n),
         dtype=tl.float16,
         layout=None,
-        nv_mma_shared_layout=False,
+        nv_mma_shared_layout=True,
     )
     a_full = tle.gpu.alloc_barrier(expect_bytes=block_m * block_k * 2)
     b_full = tle.gpu.alloc_barrier(expect_bytes=block_k * block_n * 2)
@@ -148,26 +158,26 @@ def _tle_sqmma_dtype_runtime_kernel(
             (block_m, block_k),
             dtype=tl.float8e4nv,
             layout=None,
-            nv_mma_shared_layout=False,
+            nv_mma_shared_layout=True,
         )
         b = tle.gpu.alloc(
             (block_k, block_n),
             dtype=tl.float8e4nv,
             layout=None,
-            nv_mma_shared_layout=False,
+            nv_mma_shared_layout=True,
         )
     else:
         a = tle.gpu.alloc(
             (block_m, block_k),
             dtype=tl.bfloat16,
             layout=None,
-            nv_mma_shared_layout=False,
+            nv_mma_shared_layout=True,
         )
         b = tle.gpu.alloc(
             (block_k, block_n),
             dtype=tl.bfloat16,
             layout=None,
-            nv_mma_shared_layout=False,
+            nv_mma_shared_layout=True,
         )
     a_full = tle.gpu.alloc_barrier(expect_bytes=block_m * block_k * input_bytes, )
     b_full = tle.gpu.alloc_barrier(expect_bytes=block_k * block_n * input_bytes, )
@@ -198,39 +208,39 @@ def _tle_sqmma_all_shapes_runtime_kernel(
             (block_m, block_k),
             dtype=tl.float16,
             layout=None,
-            nv_mma_shared_layout=False,
+            nv_mma_shared_layout=True,
         )
         b = tle.gpu.alloc(
             (block_k, block_n),
             dtype=tl.float16,
             layout=None,
-            nv_mma_shared_layout=False,
+            nv_mma_shared_layout=True,
         )
     elif dtype_kind == 1:
         a = tle.gpu.alloc(
             (block_m, block_k),
             dtype=tl.bfloat16,
             layout=None,
-            nv_mma_shared_layout=False,
+            nv_mma_shared_layout=True,
         )
         b = tle.gpu.alloc(
             (block_k, block_n),
             dtype=tl.bfloat16,
             layout=None,
-            nv_mma_shared_layout=False,
+            nv_mma_shared_layout=True,
         )
     else:
         a = tle.gpu.alloc(
             (block_m, block_k),
             dtype=tl.float8e4nv,
             layout=None,
-            nv_mma_shared_layout=False,
+            nv_mma_shared_layout=True,
         )
         b = tle.gpu.alloc(
             (block_k, block_n),
             dtype=tl.float8e4nv,
             layout=None,
-            nv_mma_shared_layout=False,
+            nv_mma_shared_layout=True,
         )
 
     a_full = tle.gpu.alloc_barrier(expect_bytes=block_m * block_k * input_bytes, )
@@ -256,6 +266,13 @@ def test_mthreads_tle_sqmma_ttir_uses_backend_local_names():
 def test_mthreads_tle_sqmma_rejects_nonzero_pending_groups():
     with pytest.raises(CompilationError, match="requires pendings=0"):
         compile_to_ttir(_tle_sqmma_nonzero_wait_kernel, {"out": "*fp32"})
+
+
+def test_mthreads_tle_sqmma_requires_auto_shared_layout(capfd):
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        compile_musa(_tle_sqmma_non_auto_layout_kernel, {"out": "*fp32"})
+    captured = capfd.readouterr()
+    assert "requires layout=None and nv_mma_shared_layout=True" in captured.err
 
 
 def test_mthreads_tle_sqmma_lowers_to_parameterless_wait():
