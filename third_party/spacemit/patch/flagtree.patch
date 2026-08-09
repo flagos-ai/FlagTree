@@ -46,16 +46,20 @@ index 694640cc4..49f153aff 100644
  }
 diff --git a/python/setup_tools/utils/spacemit.py b/python/setup_tools/utils/spacemit.py
 new file mode 100644
-index 000000000..e4fe878b2
+index 000000000..1cbc3c18f
 --- /dev/null
 +++ b/python/setup_tools/utils/spacemit.py
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,170 @@
 +"""Spacemit backend module for FlagTree.
 +
 +Provides build hooks for:
 +- get_backend_cmake_args: inject LLVM_DIR/MLIR_DIR/LLD_DIR into cmake
 +- post_install: create build-tree symlinks for .inc file resolution
-+- get_package_data: ensure driver.c + include/ ship in the wheel
++- get_package_data: list source files (driver.c, include/) for package_data
++- overlay_runtime_so: re-scan backend dir at build_py time (after build_ext)
++  to pick up build artifacts (bin/spine-triton-opt, lib/*.so) that didn't
++  exist when get_package_data ran at setup() time.
++- install_extension: copy spine-triton-opt from cmake build dir to backend/bin/
 +"""
 +
 +import os
@@ -76,10 +80,16 @@ index 000000000..e4fe878b2
 +    so driver.c, spine-triton-opt, .so libs etc. went missing from the CI
 +    wheel even though the local wheel had them. Scan the backend dir and
 +    list every non-.py file explicitly in package_data.
++
++    Called twice: once at setup() time (only source files exist) and once
++    at build_py time via overlay_runtime_so (after install_extension has
++    copied spine-triton-opt into backend/bin/).
 +    """
 +    from pathlib import Path
 +    backend_dir = Path(backend.backend_dir)
 +    files = []
++    if not backend_dir.is_dir():
++        return files
 +    for p in backend_dir.rglob("*"):
 +        if not p.is_file():
 +            continue
@@ -98,6 +108,28 @@ index 000000000..e4fe878b2
 +                package_data["triton.backends.spacemit"] = files
 +            break
 +    return package_data
++
++
++def overlay_runtime_so(cache, build_py_command=None, backends=None):
++    """Re-scan backend dir at build_py time and refresh package_data.
++
++    setup() -> get_package_data() runs BEFORE build_ext, so it can't see
++    bin/spine-triton-opt (created during build_ext by install_extension).
++    CMakeBuildPy.run() calls this hook AFTER build_ext, so we re-scan and
++    update distribution.package_data with the now-present build artifacts.
++    Mirrors the xpu backend's overlay_runtime_so pattern.
++    """
++    if build_py_command is None or backends is None:
++        return
++    build_py_command.distribution.package_data = build_py_command.distribution.package_data or {}
++    for backend in backends:
++        if backend.name == "spacemit":
++            files = _collect_spacemit_package_data(backend)
++            if files:
++                build_py_command.distribution.package_data["triton.backends.spacemit"] = files
++            build_py_command.package_data = build_py_command.distribution.package_data
++            build_py_command.__dict__.pop("data_files", None)
++            break
 +
 +
 +def get_backend_cmake_args(*args, **kargs):
