@@ -46,10 +46,10 @@ index 694640cc4..49f153aff 100644
  }
 diff --git a/python/setup_tools/utils/spacemit.py b/python/setup_tools/utils/spacemit.py
 new file mode 100644
-index 000000000..9fae814d6
+index 000000000..e4fe878b2
 --- /dev/null
 +++ b/python/setup_tools/utils/spacemit.py
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,138 @@
 +"""Spacemit backend module for FlagTree.
 +
 +Provides build hooks for:
@@ -70,25 +70,22 @@ index 000000000..9fae814d6
 +def _collect_spacemit_package_data(backend):
 +    """Collect non-Python files the backend needs at runtime.
 +
-+    driver.c is JIT-compiled by CPUUtils at first use; include/ headers are
-+    consumed by the cross-compiler when building kernels. Without this hook
-+    these files don't reliably land in the wheel — the package dir is a
-+    symlink to third_party/spacemit/backend, and include_package_data=True
-+    doesn't follow symlinks consistently across setuptools versions / fresh
-+    CI checkouts (driver.c went missing in CI even though the local wheel
-+    had it).
++    The package dir (python/triton/backends/spacemit) is a symlink to
++    third_party/spacemit/backend. include_package_data=True doesn't follow
++    symlinks consistently across setuptools versions / fresh CI checkouts,
++    so driver.c, spine-triton-opt, .so libs etc. went missing from the CI
++    wheel even though the local wheel had them. Scan the backend dir and
++    list every non-.py file explicitly in package_data.
 +    """
 +    from pathlib import Path
-+    files = []
 +    backend_dir = Path(backend.backend_dir)
-+    driver_c = backend_dir / "driver.c"
-+    if driver_c.exists():
-+        files.append("driver.c")
-+    include_dir = backend_dir / "include"
-+    if include_dir.is_dir():
-+        for p in include_dir.rglob("*"):
-+            if p.is_file():
-+                files.append(str(p.relative_to(backend_dir)))
++    files = []
++    for p in backend_dir.rglob("*"):
++        if not p.is_file():
++            continue
++        if p.suffix in (".py", ".pyc", ".pyo"):
++            continue
++        files.append(str(p.relative_to(backend_dir)))
 +    return files
 +
 +
