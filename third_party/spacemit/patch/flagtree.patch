@@ -46,15 +46,16 @@ index 694640cc4..49f153aff 100644
  }
 diff --git a/python/setup_tools/utils/spacemit.py b/python/setup_tools/utils/spacemit.py
 new file mode 100644
-index 000000000..1a618e2af
+index 000000000..9fae814d6
 --- /dev/null
 +++ b/python/setup_tools/utils/spacemit.py
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,141 @@
 +"""Spacemit backend module for FlagTree.
 +
 +Provides build hooks for:
 +- get_backend_cmake_args: inject LLVM_DIR/MLIR_DIR/LLD_DIR into cmake
 +- post_install: create build-tree symlinks for .inc file resolution
++- get_package_data: ensure driver.c + include/ ship in the wheel
 +"""
 +
 +import os
@@ -64,6 +65,42 @@ index 000000000..1a618e2af
 +    """Return the backend's third_party submodule path."""
 +    from pathlib import Path
 +    return str(Path(__file__).resolve().parents[3] / "third_party" / "spacemit")
++
++
++def _collect_spacemit_package_data(backend):
++    """Collect non-Python files the backend needs at runtime.
++
++    driver.c is JIT-compiled by CPUUtils at first use; include/ headers are
++    consumed by the cross-compiler when building kernels. Without this hook
++    these files don't reliably land in the wheel — the package dir is a
++    symlink to third_party/spacemit/backend, and include_package_data=True
++    doesn't follow symlinks consistently across setuptools versions / fresh
++    CI checkouts (driver.c went missing in CI even though the local wheel
++    had it).
++    """
++    from pathlib import Path
++    files = []
++    backend_dir = Path(backend.backend_dir)
++    driver_c = backend_dir / "driver.c"
++    if driver_c.exists():
++        files.append("driver.c")
++    include_dir = backend_dir / "include"
++    if include_dir.is_dir():
++        for p in include_dir.rglob("*"):
++            if p.is_file():
++                files.append(str(p.relative_to(backend_dir)))
++    return files
++
++
++def get_package_data(backends):
++    package_data = {}
++    for backend in backends:
++        if backend.name == "spacemit":
++            files = _collect_spacemit_package_data(backend)
++            if files:
++                package_data["triton.backends.spacemit"] = files
++            break
++    return package_data
 +
 +
 +def get_backend_cmake_args(*args, **kargs):
