@@ -53,6 +53,7 @@ def Tle_SignalOpKindAttr : I32EnumAttr<
   [
     I32EnumAttrCase<"INC", 0, "inc">,
     I32EnumAttrCase<"ADD", 1, "add">,
+    I32EnumAttrCase<"CTR", 2, "ctr">,
   ]> {
   let cppNamespace = "::mlir::triton::tle";
 }

@@ -699,7 +699,7 @@ def download_and_copy_dependencies():
 
 
 if helper.flagtree_backend:
-    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir"):
+    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
         backends = [
             *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
             *BackendInstaller.copy_externals(),
@@ -712,15 +712,32 @@ else:
 #backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
 
 
+# flagtree: extend yield "triton.backends.{backend.name}"
+def get_backend_packages(backend):
+    package_prefix = f"triton.backends.{backend.name}"
+    for root, dirs, _files in os.walk(backend.backend_dir):
+        dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__" and directory.isidentifier())
+        relative_dir = os.path.relpath(root, backend.backend_dir)
+        package = package_prefix
+        if relative_dir != ".":
+            package += "." + relative_dir.replace(os.sep, ".")
+        yield package, root
+
+
 def get_package_dirs():
     yield ("", "python")
+
+    # flagtree backend specialization
+    yield from helper.SpecPackageHelper.get_spec_packages()
 
     for backend in backends:
         # we use symlinks for external plugins
         if backend.is_external:
             continue
 
-        yield (f"triton.backends.{backend.name}", backend.backend_dir)
+        # flagtree: extend yield "triton.backends.{backend.name}"
+        # yield (f"triton.backends.{backend.name}", backend.backend_dir)
+        yield from get_backend_packages(backend)
 
         if backend.language_dir:
             # Install the contents of each backend's `language` directory into
@@ -740,10 +757,27 @@ def get_package_dirs():
 
 
 def get_packages():
-    yield from find_packages(where="python", include=["triton", "triton.*"])
+    # flagtree backend specialization: add excluded packages
+    yield from find_packages(where="python", include=["triton", "triton.*"],
+                             exclude=helper.SpecPackageHelper.get_excluded_packages())
+
+    # flagtree backend specialization
+    for package, _source_dir in helper.SpecPackageHelper.get_spec_packages():
+        yield package
+
+    # flagtree: these directories are without __init__.py
+    # yield these directories to avoid warnings
+    yield "triton._C"
+    yield "triton._C.libtriton"
+    yield "triton.tools.triton_to_gluon_translater"
 
     for backend in backends:
-        yield f"triton.backends.{backend.name}"
+        # flagtree: extend yield "triton.backends.{backend.name}"
+        if backend.is_external:
+            yield f"triton.backends.{backend.name}"
+        else:
+            for package, _source_dir in get_backend_packages(backend):
+                yield package
 
         if backend.language_dir:
             # Install the contents of each backend's `language` directory into
@@ -950,10 +984,12 @@ setup(
     long_description_content_type="text/markdown",
     install_requires=[
         "importlib-metadata; python_version < '3.10'",
+        *(["PyYAML>=6.0"] if helper.flagtree_backend != "thrive" else []),
     ],
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
     package_data=get_package_data(),
+    exclude_package_data=helper.get_excluded_package_data(),
     entry_points=get_entry_points(),
     include_package_data=True,
     ext_modules=[CMakeExtension("triton", "triton/_C/")],

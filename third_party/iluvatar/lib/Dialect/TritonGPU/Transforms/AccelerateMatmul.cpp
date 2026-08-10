@@ -7,6 +7,7 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Conversion/MLIRTypes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -183,6 +184,9 @@ static SmallVector<unsigned, 3> warpsAllOnN(int numWarps) {
   return {1u, static_cast<unsigned>(numWarps)};
 }
 
+// Bias warps along the primary dim up to ceil(shape/tile), then spill the
+// leftover warps to the secondary dim so the product is exactly numWarps.
+// [SWPERF-2319] small primary dim => don't broadcast/waste, spill instead.
 static unsigned largestPow2AtMost(unsigned cap) {
   unsigned p = 1;
   while (p * 2 <= cap)
@@ -421,6 +425,16 @@ static int computeOrigBitWidth(Value x) {
   return origBitWidth;
 }
 
+#ifdef __ILUVATAR__
+static int getDotOperandBitWidth(Value v) {
+  int orig = computeOrigBitWidth(v);
+  int current = cast<RankedTensorType>(v.getType()).getElementTypeBitWidth();
+  // Width-changing casts (e.g. sitofp i8 -> f32) happen before the dot; the
+  // dot operand encoding must match the tensor's actual element type.
+  return std::max(orig, current);
+}
+#endif
+
 namespace {
 
 // Common MMA encoding creation
@@ -445,6 +459,14 @@ static MMAEncodingResult createMMAEncodingForDot(DotOpInterface dotOp,
   int numWarps = lookupNumWarps(dotOp);
 
   int versionMinor = computeCapability == 75 ? 1 : 0;
+#ifdef __ILUVATAR__
+  // Iluvatar TCU is MMA v1 only. When supportMMA rejects the op (e.g. f16
+  // accumulator), getMMAVersionSafe returns 0 — exit early so BlockedToMMA
+  // can fall back to FMA instead of calling mmaVersionToInstrShape(0).
+  if (versionMajor != 1) {
+    return {nullptr, RankedTensorType(), Value(), versionMajor, versionMinor};
+  }
+#endif
 
   auto CTALayout = getCTALayout(oldRetType.getEncoding());
   auto retShapePerCTA = getShapePerCTA(oldRetType);
@@ -483,8 +505,227 @@ static Value convertDotOperandForMMA(Value v, int opIdx, int bitwidth,
 } // namespace
 
 #ifdef __ILUVATAR__
-static unsigned getOperandUseSme(DotOp &dotOp, int operandIdx,
-                                 unsigned useSme) {
+static bool canUseSmeWithInputStride(LoadOp loadOp,
+                                     ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                                     RankedTensorType dotOperandType) {
+  Value stride = loadOp.getInputStride();
+  if (!stride)
+    return false;
+
+  // Explicit tl.load(stride=...) may compute the stride dynamically. Keep its
+  // force-SME semantics; users are responsible for alignment in this mode.
+  if (mlir::isa_and_nonnull<LoadOp>(stride.getDefiningOp()))
+    return true;
+
+  AxisInfo *axisInfo = axisInfoAnalysis.getAxisInfo(stride);
+  if (!axisInfo || axisInfo->getRank() == 0)
+    return true;
+
+  int64_t minContiguousElems = 512 / dotOperandType.getElementTypeBitWidth();
+  return axisInfo->getDivisibility(0) >= minContiguousElems;
+}
+
+static bool hasSmeContiguousAccess(LoadOp loadOp,
+                                   ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                                   RankedTensorType dotOperandType) {
+  auto loadType = mlir::dyn_cast<RankedTensorType>(loadOp.getType());
+  if (!loadType)
+    return true;
+
+  auto loadShape = loadType.getShape();
+  auto dotShape = dotOperandType.getShape();
+  bool sameShape = loadShape == dotShape;
+  bool transposedShape = loadShape.size() == 2 && dotShape.size() == 2 &&
+                         loadShape[0] == dotShape[1] &&
+                         loadShape[1] == dotShape[0];
+  if (!sameShape && !transposedShape)
+    return true;
+
+  auto ptr = loadOp.getPtr();
+  AxisInfo *axisInfo = axisInfoAnalysis.getAxisInfo(ptr);
+  if (!axisInfo || axisInfo->getRank() < 2)
+    return false;
+
+  auto loadEnc = mlir::dyn_cast<BlockedEncodingAttr>(loadType.getEncoding());
+  if (!loadEnc)
+    return false;
+
+  unsigned contiguousDim = loadEnc.getOrder()[0];
+  if (contiguousDim >= static_cast<unsigned>(axisInfo->getRank()))
+    return false;
+  return axisInfo->getContiguity(contiguousDim) *
+             loadType.getElementTypeBitWidth() >=
+         512;
+}
+
+static bool isOnlyUsedByDot(Value value) {
+  // Preserve the original conservative behavior for the common case: a single
+  // consumer is assumed safe by the existing SME eligibility checks below.
+  if (value.hasOneUse())
+    return true;
+
+  // Multi-use loads are safe for SME only when every use eventually feeds a dot
+  // operand through layout/shared-memory preparation ops. If two paths reach
+  // the same DotOp, the load is used as both A and B (e.g. tl.dot(z, z)), which
+  // the current SME lowering does not support.
+  SetVector<Operation *> dotUsers;
+  auto collectDotUsers = [&](auto &&collectDotUsers, Value value) -> bool {
+    for (OpOperand &use : value.getUses()) {
+      Operation *owner = use.getOwner();
+      if (mlir::isa<DotOp>(owner)) {
+        if (dotUsers.contains(owner))
+          return false;
+        dotUsers.insert(owner);
+        continue;
+      }
+      if (auto localAllocOp = mlir::dyn_cast<LocalAllocOp>(owner)) {
+        if (localAllocOp->getNumResults() != 1 ||
+            !collectDotUsers(collectDotUsers, localAllocOp->getResult(0)))
+          return false;
+        continue;
+      }
+      if (auto localLoadOp = mlir::dyn_cast<LocalLoadOp>(owner)) {
+        if (localLoadOp->getNumResults() != 1 ||
+            !collectDotUsers(collectDotUsers, localLoadOp->getResult(0)))
+          return false;
+        continue;
+      }
+      if (auto convertLayoutOp = mlir::dyn_cast<ConvertLayoutOp>(owner)) {
+        if (convertLayoutOp->getNumResults() != 1 ||
+            !collectDotUsers(collectDotUsers, convertLayoutOp->getResult(0)))
+          return false;
+        continue;
+      }
+      if (mlir::isa<TransOp>(owner) && owner->getNumResults() == 1 &&
+          collectDotUsers(collectDotUsers, owner->getResult(0)))
+        continue;
+      return false;
+    }
+    return true;
+  };
+  return collectDotUsers(collectDotUsers, value);
+}
+
+static bool hasLoadInBackwardSlice(Value value) {
+  if (mlir::isa_and_nonnull<LoadOp>(value.getDefiningOp()))
+    return true;
+
+  SetVector<Operation *> bwdSlices;
+  (void)mlir::getBackwardSlice(value, &bwdSlices);
+  return llvm::any_of(bwdSlices,
+                      [](Operation *op) { return mlir::isa<LoadOp>(op); });
+}
+
+static bool isUniformTensorValue(Value value,
+                                 ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  auto type = mlir::dyn_cast<RankedTensorType>(value.getType());
+  if (!type)
+    return true;
+
+  AxisInfo *axisInfo = axisInfoAnalysis.getAxisInfo(value);
+  if (!axisInfo || axisInfo->getRank() != type.getRank())
+    return false;
+
+  for (auto [dim, size] : llvm::enumerate(type.getShape())) {
+    if (ShapedType::isDynamic(size) ||
+        axisInfo->getConstancy(dim) < static_cast<int64_t>(size))
+      return false;
+  }
+  return true;
+}
+
+static bool isSafeSmePtrOffset(Value offset,
+                               ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  if (!hasLoadInBackwardSlice(offset))
+    return true;
+  return isUniformTensorValue(offset, axisInfoAnalysis);
+}
+
+static bool hasSmeCompatibleMask(LoadOp loadOp,
+                                 ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  // Decide whether a masked load can keep using SME. Current masked-SME
+  // lowering can fix masked elements only when the mask varies along the
+  // 64B-contiguous axis. A mask varying along a non-contiguous axis would
+  // require predicating SME's fixed 16-row transactions, which is unsupported;
+  Value mask = loadOp.getMask();
+  if (!mask)
+    return true;
+  auto loadTy = dyn_cast<RankedTensorType>(loadOp.getType());
+  if (!loadTy)
+    return false;
+  auto encoding = dyn_cast<BlockedEncodingAttr>(loadTy.getEncoding());
+  AxisInfo *maskInfo = axisInfoAnalysis.getAxisInfo(mask);
+  if (!encoding || !maskInfo || maskInfo->getRank() != loadTy.getRank())
+    return false;
+
+  unsigned contiguousDim = encoding.getOrder()[0];
+  for (auto [dim, size] : llvm::enumerate(loadTy.getShape()))
+    if (dim != contiguousDim &&
+        maskInfo->getConstancy(dim) < static_cast<int64_t>(size))
+      return false;
+  return true;
+}
+
+static unsigned getUseSmeFlagFromPtr(Value ptr, unsigned useSme,
+                                     ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  unsigned useSmeFlag = 0;
+  SetVector<Value> worklist;
+  worklist.insert(ptr);
+
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    if (auto blockArg = mlir::dyn_cast<BlockArgument>(value)) {
+      if (mlir::isa<PointerType>(blockArg.getType())) {
+        useSmeFlag |= (1 << blockArg.getArgNumber()) & useSme;
+        continue;
+      }
+
+      if (auto forOp =
+              mlir::dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp()))
+        if (auto initArg = forOp.getTiedLoopInit(blockArg))
+          worklist.insert(initArg->get());
+      continue;
+    }
+
+    Operation *defOp = value.getDefiningOp();
+    if (!defOp || mlir::isa<LoadOp>(defOp))
+      continue;
+
+    if (auto addPtrOp = dyn_cast<AddPtrOp>(defOp)) {
+      if (!isSafeSmePtrOffset(addPtrOp.getOffset(), axisInfoAnalysis))
+        return 0;
+      worklist.insert(addPtrOp.getPtr());
+      continue;
+    }
+
+    if (defOp->getNumOperands() == 1)
+      worklist.insert(defOp->getOperand(0));
+  }
+
+  return useSmeFlag;
+}
+
+// Current SME lowering may cross unary layout/view ops, but does not yet
+// support element-type conversions. Require the chain to end at a global load.
+static bool hasSmeCompatibleLoadChain(Value value) {
+  Operation *sourceOp = value.getDefiningOp();
+  while (sourceOp && !isa<LoadOp>(sourceOp)) {
+    if (sourceOp->getNumOperands() != 1 || sourceOp->getNumResults() != 1)
+      return false;
+    auto inputTy =
+        dyn_cast<RankedTensorType>(sourceOp->getOperand(0).getType());
+    auto outputTy =
+        dyn_cast<RankedTensorType>(sourceOp->getResult(0).getType());
+    if (!inputTy || !outputTy ||
+        inputTy.getElementType() != outputTy.getElementType())
+      return false;
+    sourceOp = sourceOp->getOperand(0).getDefiningOp();
+  }
+  return isa_and_nonnull<LoadOp>(sourceOp);
+}
+
+static unsigned getOperandUseSme(DotOp &dotOp, int operandIdx, unsigned useSme,
+                                 ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   unsigned useSmeFlag = 0;
   Value dotOperand = (operandIdx == 0) ? dotOp.getA() : dotOp.getB();
 
@@ -492,45 +733,33 @@ static unsigned getOperandUseSme(DotOp &dotOp, int operandIdx,
   if (!oldType)
     return 0;
   auto retShape = oldType.getShape();
-  if (retShape.size() >= 2 &&
-      (retShape[retShape.size() - 2] < 32 || retShape.back() < 32))
+  if (retShape.size() >= 2) {
+    int64_t m = retShape[retShape.size() - 2];
+    int64_t n = retShape.back();
+    int64_t minContiguousElems = 512 / oldType.getElementTypeBitWidth();
+    if (m < 16 || n < 16 || std::max(m, n) < minContiguousElems)
+      return 0;
+  }
+
+  if (!hasSmeCompatibleLoadChain(dotOperand))
     return 0;
 
-  if (auto forOp =
-          llvm::dyn_cast<scf::ForOp>(dotOp->getBlock()->getParentOp())) {
+  if (dotOp->getParentOfType<scf::ForOp>()) {
     bool dfsFlag = true;
     auto beginOp = dotOperand.getDefiningOp();
     while (dfsFlag) {
       if (auto loadOp = llvm::dyn_cast<LoadOp>(beginOp)) {
-        if (loadOp.getMask())
+        if (!isOnlyUsedByDot(loadOp.getResult()))
+          return 0;
+        if (!hasSmeCompatibleMask(loadOp, axisInfoAnalysis))
+          return 0;
+        if (canUseSmeWithInputStride(loadOp, axisInfoAnalysis, oldType))
+          return 1;
+        if (!hasSmeContiguousAccess(loadOp, axisInfoAnalysis, oldType))
           return 0;
         dfsFlag = false;
-        SetVector<Operation *> bwdSlices;
-        if (auto blockArg = llvm::dyn_cast<BlockArgument>(loadOp.getPtr())) {
-          if (auto initArg = forOp.getTiedLoopInit(blockArg))
-            (void)mlir::getBackwardSlice(initArg->get(), &bwdSlices);
-        } else {
-          (void)mlir::getBackwardSlice(loadOp.getPtr(), &bwdSlices);
-        }
-        for (auto op : bwdSlices) {
-          // Pointer arg reached via splat(blockarg) ...
-          if (auto splatOp = dyn_cast<SplatOp>(op))
-            if (splatOp->getParentOfType<FuncOp>() &&
-                isa<BlockArgument>(splatOp->getOperand(0)) &&
-                mlir::isa<PointerType>(splatOp->getOperand(0).getType()))
-              useSmeFlag = 1 << dyn_cast<BlockArgument>(splatOp->getOperand(0))
-                                    .getArgNumber() &
-                           useSme;
-          // ... or directly via addptr(blockarg, ...) (e.g. a pointer kernel
-          // argument used without an intervening splat).
-          if (auto addPtrOp = dyn_cast<AddPtrOp>(op))
-            if (addPtrOp->getParentOfType<FuncOp>() &&
-                isa<BlockArgument>(addPtrOp->getOperand(0)) &&
-                mlir::isa<PointerType>(addPtrOp->getOperand(0).getType()))
-              useSmeFlag = 1 << dyn_cast<BlockArgument>(addPtrOp->getOperand(0))
-                                    .getArgNumber() &
-                           useSme;
-        }
+        useSmeFlag |=
+            getUseSmeFlagFromPtr(loadOp.getPtr(), useSme, axisInfoAnalysis);
       } else if (isa<scf::ForOp>(beginOp)) {
         dfsFlag = false;
       } else {
@@ -544,14 +773,26 @@ static unsigned getOperandUseSme(DotOp &dotOp, int operandIdx,
           break;
       }
     }
-  } else if (auto funOp =
-                 llvm::dyn_cast<FuncOp>(dotOp->getBlock()->getParentOp())) {
+  } else if (dotOp->getParentOfType<FuncOp>()) {
     SetVector<Operation *> bwdSlices;
     (void)mlir::getBackwardSlice(dotOperand, &bwdSlices);
+    // SME only applies to a global load that supplies this dot operand.
+    // A chain-dot intermediate may have loads in its transitive backward
+    // slice, but its value is produced by the preceding dot in registers.
+    if (llvm::any_of(bwdSlices, [](Operation *op) { return isa<DotOp>(op); }))
+      return 0;
     for (auto op : bwdSlices) {
       if (auto loadOp = dyn_cast<LoadOp>(op)) {
-        if (loadOp.getMask())
+        if (!isOnlyUsedByDot(loadOp.getResult()))
           return 0;
+        if (!hasSmeCompatibleMask(loadOp, axisInfoAnalysis))
+          return 0;
+        if (canUseSmeWithInputStride(loadOp, axisInfoAnalysis, oldType))
+          return 1;
+        if (!hasSmeContiguousAccess(loadOp, axisInfoAnalysis, oldType))
+          return 0;
+        useSmeFlag |=
+            getUseSmeFlagFromPtr(loadOp.getPtr(), useSme, axisInfoAnalysis);
       }
       if (auto splatOp = dyn_cast<SplatOp>(op))
         if (splatOp->getParentOfType<FuncOp>() &&
@@ -577,12 +818,23 @@ class BlockedToMMA : public mlir::OpRewritePattern<DotOp> {
   int computeCapability;
   mutable llvm::DenseMap<Operation *, unsigned> dotOpInstNs;
   unsigned useSme;
+#ifdef __ILUVATAR__
+  ModuleAxisInfoAnalysis &axisInfoAnalysis;
+#endif
 
 public:
+#ifdef __ILUVATAR__
+  BlockedToMMA(mlir::MLIRContext *context, int computeCapability, int benefit,
+               unsigned useSme, ModuleAxisInfoAnalysis &axisInfoAnalysis)
+      : OpRewritePattern<DotOp>(context, benefit),
+        computeCapability(computeCapability), useSme(useSme),
+        axisInfoAnalysis(axisInfoAnalysis) {}
+#else
   BlockedToMMA(mlir::MLIRContext *context, int computeCapability, int benefit,
                unsigned useSme = 0)
       : OpRewritePattern<DotOp>(context, benefit),
         computeCapability(computeCapability), useSme(useSme) {}
+#endif
 
   mlir::LogicalResult
   matchAndRewrite(triton::DotOp dotOp,
@@ -641,11 +893,11 @@ public:
           mmaResult.newAcc, nullptr, dotOp.getInputPrecision(),
           dotOp.getMaxNumImpreciseAcc(), false);
     } else {
-      int minBitwidth =
-          std::min(computeOrigBitWidth(a), computeOrigBitWidth(b));
 #ifdef __ILUVATAR__
-      unsigned aUseSme = getOperandUseSme(dotOp, 0, useSme);
-      unsigned bUseSme = getOperandUseSme(dotOp, 1, useSme);
+      int minBitwidth =
+          std::min(getDotOperandBitWidth(a), getDotOperandBitWidth(b));
+      unsigned aUseSme = getOperandUseSme(dotOp, 0, useSme, axisInfoAnalysis);
+      unsigned bUseSme = getOperandUseSme(dotOp, 1, useSme, axisInfoAnalysis);
       a = convertDotOperandForMMA(a, 0, minBitwidth, mmaResult.newRetType,
                                   rewriter, aUseSme);
       b = convertDotOperandForMMA(b, 1, minBitwidth, mmaResult.newRetType,
@@ -1233,8 +1485,14 @@ public:
     constexpr int benefitMMAv5 = 10;
     constexpr int benefitSM120 = 10;
 
+#ifdef __ILUVATAR__
+    ModuleAxisInfoAnalysis axisInfoAnalysis(m);
+    patterns.add<BlockedToMMA>(context, computeCapability, benefitDefault,
+                               this->useSme, axisInfoAnalysis);
+#else
     patterns.add<BlockedToMMA>(context, computeCapability, benefitDefault,
                                this->useSme);
+#endif
     patterns.add<ScaledBlockedToMMA>(context, computeCapability, benefitSM120);
     populateDecomposeScaledBlockedPatterns(patterns, benefitDefault);
     patterns.add<BlockedToMMAv5, ScaledBlockedToMMAv5>(

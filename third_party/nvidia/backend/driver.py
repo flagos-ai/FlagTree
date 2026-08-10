@@ -866,6 +866,11 @@ class CudaDriver(GPUDriver):
 
     @staticmethod
     def is_active():
+        # flagtree nvidia
+        from triton._flagtree_backend import FLAGTREE_BACKEND
+        if FLAGTREE_BACKEND and FLAGTREE_BACKEND != "tileir":
+            return False
+
         try:
             import torch
             return torch.cuda.is_available() and (torch.version.hip is None)

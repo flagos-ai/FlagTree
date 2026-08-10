@@ -113,7 +113,7 @@ def TTGCU_YieldOp : TTGCU_Op<"yield", [
   let description = [{
   }];
   let arguments = (ins Variadic<AnyType>:$operands);
-  let assemblyFormat = [{ $operands attr-dict `:` type($operands)}];
+  let assemblyFormat = [{ ($operands^ `:` type($operands))? attr-dict }];
 }
 
 //

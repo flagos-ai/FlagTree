@@ -22,6 +22,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -83,6 +84,78 @@ LogicalResult DynamicSharedMemoryOp::verify() {
   }
   return success();
 }
+
+static bool tryGetConstInt(Value v, int64_t &out) {
+  IntegerAttr attr;
+  if (matchPattern(v, m_Constant(&attr))) {
+    out = attr.getInt();
+    return true;
+  }
+  return false;
+}
+
+LogicalResult SetSrcDimSizeOp::verify() {
+  int64_t dim;
+  if (tryGetConstInt(getDim(), dim) && (dim < 0 || dim >= 4))
+    return emitOpError() << "dim must be in [0, 4), got " << dim;
+  return success();
+}
+
+LogicalResult SetDstDimSizeOp::verify() {
+  int64_t dim;
+  if (tryGetConstInt(getDim(), dim) && (dim < 0 || dim >= 4))
+    return emitOpError() << "dim must be in [0, 4), got " << dim;
+  return success();
+}
+
+LogicalResult SetTotalSizeOp::verify() {
+  int64_t totalSize;
+  if (tryGetConstInt(getTotalSize(), totalSize) && totalSize <= 0)
+    return emitOpError() << "total_size must be > 0, got " << totalSize;
+  return success();
+}
+
+LogicalResult SetTransposeLayoutOp::verify() {
+  auto layout = getLayout();
+  int rank = static_cast<int>(layout.size());
+  if (rank == 0)
+    return emitOpError() << "layout must not be empty";
+  if (rank > 5)
+    return emitOpError() << "rank should <=5 ";
+  for (int i = 0; i < rank; ++i) {
+    int64_t val;
+    if (tryGetConstInt(layout[i], val)) {
+      if (val < 0 || val >= rank)
+        return emitOpError() << "layout[" << i << "] = " << val
+                             << " out of range [0, " << rank << ")";
+    }
+  }
+  bool seen[5] = {};
+  for (int i = 0; i < rank; ++i) {
+    int64_t val;
+    if (!tryGetConstInt(layout[i], val))
+      continue;
+    if (seen[val])
+      return emitOpError() << "layout[" << i << "] = " << val << " duplicated";
+    seen[val] = true;
+  }
+  return success();
+}
+
+LogicalResult SetPadConfigOp::verify() {
+  int64_t val;
+  if (tryGetConstInt(getDim(), val) && (val < 0 || val >= 4))
+    return emitOpError() << "dim must be in [0, 4), got " << val;
+  if (tryGetConstInt(getPadLow(), val) && val < 0)
+    return emitOpError() << "pad_low must be >= 0, got " << val;
+  if (tryGetConstInt(getPadHigh(), val) && val < 0)
+    return emitOpError() << "pad_high must be >= 0, got " << val;
+  if (tryGetConstInt(getPadMid(), val) && val < 0)
+    return emitOpError() << "pad_mid must be >= 0, got " << val;
+  return success();
+}
+
+LogicalResult SetPadValueOp::verify() { return success(); }
 
 LogicalResult MemsetAsyncOp::verify() {
   MemRefType dst = getDst().getType();
@@ -687,6 +760,21 @@ LogicalResult MatMulOp::verify() {
   return success();
 }
 
+LogicalResult MatrixLoadOp::verify() {
+  if (getMemDims().size() != 2)
+    return emitOpError("mem_dims must have exactly 2 dimensions, got ")
+           << getMemDims().size();
+  if (getRealDims().size() != 2)
+    return emitOpError("real_dims must have exactly 2 dimensions, got ")
+           << getRealDims().size();
+
+  MemRefType valTy = getValue().getType();
+  if (valTy.getRank() != 2)
+    return emitOpError() << "value must be a 2D memref, got "
+                         << valTy.getRank();
+  return success();
+}
+
 LogicalResult MatrixStoreOp::verify() {
   if (getMemDims().size() != 2)
     return emitOpError("mem_dims must have exactly 2 dimensions, got ")
@@ -817,7 +905,11 @@ void WarpSpecializeOp::getSuccessorRegions(
   }
   // And the default region branches transparently back to the parent.
   assert(src.getRegionOrNull() == &getDefaultRegion());
+#if defined(TRITON_VERSION) && TRITON_VERSION >= 37
+  successors.push_back(RegionSuccessor::parent());
+#else
   successors.push_back(RegionSuccessor(getResults()));
+#endif
 }
 
 LogicalResult WarpSpecializeOp::verify() {
@@ -837,10 +929,9 @@ LogicalResult WarpSpecializeOp::verify() {
            << getDefaultNumWarps() << " but expected greater than 0";
   }
 
-  // Verify the partitions.
-  if (getPartitionRegions().size() != 1) {
-    return emitOpError("has ") << getPartitionRegions().size()
-                               << " partitions but expected 1 partition";
+  // Verify the partitions (at least 1 required).
+  if (getPartitionRegions().empty()) {
+    return emitOpError("has 0 partitions but expected at least 1");
   }
   if (getPartitionRegions().size() != getPartitionNumWarps().size()) {
     return emitOpError("has ") << getPartitionRegions().size()
@@ -860,10 +951,17 @@ LogicalResult WarpSpecializeOp::verify() {
              << getPartitionNumWarps().size();
     }
     if (std::optional<int32_t> defaultStartId = getDefaultStartId()) {
-      if (startIds->front() + static_cast<int32_t>(getTotalPartitionWarps()) >
-          defaultStartId.value()) {
-        return emitOpError(
-            "partition start IDs and default start ID cannot overlap");
+      ArrayRef<int32_t> pnw = getPartitionNumWarps();
+      int32_t defaultEnd = defaultStartId.value() + getDefaultNumWarps();
+      for (unsigned i = 0; i < startIds->size(); ++i) {
+        int32_t partStart = (*startIds)[i];
+        int32_t partEnd = partStart + pnw[i];
+        bool overlaps =
+            (partStart < defaultEnd) && (partEnd > defaultStartId.value());
+        if (overlaps) {
+          return emitOpError(
+              "partition start IDs and default start ID cannot overlap");
+        }
       }
     }
   }

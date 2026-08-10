@@ -27,7 +27,7 @@
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
 
 using namespace mlir;
-namespace tle = mlir::triton::tle;
+using namespace mlir::triton;
 
 namespace {
 

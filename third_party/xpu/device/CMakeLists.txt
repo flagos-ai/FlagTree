@@ -4,7 +4,7 @@ function(add_xpu_libdevice OUTPUT SRC ARCH)
   add_custom_target(
     libdevice-${ARCH} ALL
     COMMAND ${CLANG} --xpu-arch=${ARCH} ${SRC} -c -emit-llvm --xpu-device-only -O3 -o ${OUTPUT} -std=c++11 -Wno-literal-range
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/liblaunch.a ${XPU3_LIB_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/xpu3/liblaunch.a ${XPU3_LIB_DIR}
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/liblaunch_shared.so ${XPU3_LIB_DIR}/../so
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/libLLVM-15.so ${XPU3_LIB_DIR}/../so
     COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/libclang-cpp.so.15 ${XPU3_LIB_DIR}/../so

@@ -465,7 +465,8 @@ LogicalResult BlockedEncodingAttr::verify(
     function_ref<InFlightDiagnostic()> emitError,
     ArrayRef<unsigned> sizePerThread, ArrayRef<unsigned> threadsPerWarp,
     ArrayRef<unsigned> warpsPerCTA, ArrayRef<unsigned> order,
-    CTAEncodingAttr CTALayout, bool isSme, ArrayRef<unsigned> smeWarpsPerCTA) {
+    CTAEncodingAttr CTALayout, bool isSme, bool smeMask,
+    ArrayRef<unsigned> smeWarpsPerCTA) {
   if (!llvm::all_equal({sizePerThread.size(), threadsPerWarp.size(),
                         warpsPerCTA.size(), order.size()})) {
     return emitError() << "sizePerThread, threadsPerWarp, warpsPerCTA, and "
@@ -826,6 +827,7 @@ Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
   SmallVector<unsigned> warpsPerCTA;
   SmallVector<unsigned> order;
   bool isSme = false;
+  bool smeMask = false;
   SmallVector<unsigned> smeWarpsPerCTA;
   Attribute ctaAttr = nullptr;
 
@@ -853,6 +855,10 @@ Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
     } else if (attr.getName() == "isSme") {
       if (parseBoolAttrValue(parser, attr.getValue(), isSme, "isSme").failed())
         return {};
+    } else if (attr.getName() == "smeMask") {
+      if (parseBoolAttrValue(parser, attr.getValue(), smeMask, "smeMask")
+              .failed())
+        return {};
     } else if (attr.getName() == "smeWarpsPerCTA") {
       if (parseIntArrayAttr(parser, attr, smeWarpsPerCTA, "smeWarpsPerCTA")
               .failed())
@@ -871,7 +877,7 @@ Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
 
   return parser.getChecked<BlockedEncodingAttr>(
       parser.getContext(), sizePerThread, threadsPerWarp, warpsPerCTA, order,
-      *CTALayout, isSme, smeWarpsPerCTA);
+      *CTALayout, isSme, smeMask, smeWarpsPerCTA);
 }
 
 void BlockedEncodingAttr::print(mlir::AsmPrinter &printer) const {
@@ -880,8 +886,8 @@ void BlockedEncodingAttr::print(mlir::AsmPrinter &printer) const {
           << ", threadsPerWarp = [" << ArrayRef(getThreadsPerWarp()) << "]"
           << ", warpsPerCTA = [" << ArrayRef(getWarpsPerCTA()) << "]"
           << ", order = [" << getOrder() << "]"
-          << ", isSme = " << getIsSme() << ", smeWarpsPerCTA = ["
-          << getSmeWarpsPerCTA() << "]";
+          << ", isSme = " << getIsSme() << ", smeMask = " << getSmeMask()
+          << ", smeWarpsPerCTA = [" << getSmeWarpsPerCTA() << "]";
 
   maybePrintCTALayout(getContext(), printer, getCTALayout(),
                       /*rank=*/getSizePerThread().size());
@@ -2388,7 +2394,7 @@ struct TritonGPUInferLayoutInterface
           applyPermutation(enc.getThreadsPerWarp(), order),
           applyPermutation(enc.getWarpsPerCTA(), order),
           applyPermutation(invOrderUnsigned, enc.getOrder()), ctaLayout,
-          enc.getIsSme(), enc.getSmeWarpsPerCTA());
+          enc.getIsSme(), enc.getSmeMask(), enc.getSmeWarpsPerCTA());
       return success();
     }
     // Generic case
@@ -2733,11 +2739,12 @@ struct TritonGPUInferLayoutInterface
         CTAEncodingAttr::getDefault(src.getContext(), dstShape.size());
 
     bool isSme = src.getIsSme();
+    bool smeMask = src.getSmeMask();
     ArrayRef<unsigned> smeWarpsPerCTA = src.getSmeWarpsPerCTA();
 
     dstEnc = BlockedEncodingAttr::get(
         src.getContext(), dstSizePerThread, dstThreadsPerWarp, dstWarpsPerCTA,
-        dstOrder, CTALayout, isSme, smeWarpsPerCTA);
+        dstOrder, CTALayout, isSme, smeMask, smeWarpsPerCTA);
 
     return success();
   }
@@ -3648,6 +3655,17 @@ int triton::gpu::lookupNumCTAs(OpBuilder &rewriter) {
 bool triton::gpu::areLayoutsEquivalent(ArrayRef<int64_t> shape,
                                        LayoutEncodingTrait lhs,
                                        LayoutEncodingTrait rhs) {
+#ifdef __ILUVATAR__
+  auto getSmeMask = [](Attribute encoding) -> std::optional<bool> {
+    if (auto slice = dyn_cast<SliceEncodingAttr>(encoding))
+      encoding = slice.getParent();
+    if (auto blocked = dyn_cast<BlockedEncodingAttr>(encoding))
+      return blocked.getSmeMask();
+    return std::nullopt;
+  };
+  if (getSmeMask(lhs).value_or(false) != getSmeMask(rhs).value_or(false))
+    return false;
+#endif
   auto lhsLL = triton::gpu::toLinearLayout(shape, lhs);
   auto rhsLL = triton::gpu::toLinearLayout(shape, rhs);
   return lhsLL == rhsLL;

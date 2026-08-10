@@ -63,11 +63,7 @@ def XPU_GM2LMOp : XPU_IntrOp<"gm2lm", [], 0> {
         auto faddr = builder.CreateAdd(addr, $offset);
         auto srcptr  = builder.CreateIntToPtr(faddr, $src->getType());
         auto zero = builder.getInt32(0);
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *vTy = builder.getVoidTy();
-        auto *fTy = llvm::FunctionType::get(vTy, {$dst->getType(), srcptr->getType(), zero->getType(), $size->getType()}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.gm2lm", fTy);
-        builder.CreateCall(fTy, fn.getCallee(), {$dst, srcptr, zero, $size});
+        createIntrinsicCall(builder, llvm::Intrinsic::xpu_gm2lm, {$dst, srcptr, zero, $size});
     }];
 }
 
@@ -82,11 +78,7 @@ def XPU_LM2GMOp : XPU_IntrOp<"lm2gm", [], 0> {
         auto faddr = builder.CreateAdd(addr, $offset);
         auto dstptr  = builder.CreateIntToPtr(faddr, $dst->getType());
         auto zero = builder.getInt32(0);
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *vTy = builder.getVoidTy();
-        auto *fTy = llvm::FunctionType::get(vTy, {dstptr->getType(), zero->getType(), $src->getType(), $size->getType()}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.lm2gm", fTy);
-        builder.CreateCall(fTy, fn.getCallee(), {dstptr, zero, $src, $size});
+        createIntrinsicCall(builder, llvm::Intrinsic::xpu_lm2gm, {dstptr, zero, $src, $size});
     }];
 }
 
@@ -101,11 +93,7 @@ def XPU_SM2GMOp : XPU_IntrOp<"sm2gm", [], 0> {
         auto faddr = builder.CreateAdd(addr, $offset);
         auto dstptr  = builder.CreateIntToPtr(faddr, $dst->getType());
         auto zero = builder.getInt32(0);
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *vTy = builder.getVoidTy();
-        auto *fTy = llvm::FunctionType::get(vTy, {dstptr->getType(), zero->getType(), $src->getType(), $size->getType()}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.sm2gm", fTy);
-        builder.CreateCall(fTy, fn.getCallee(), {dstptr, zero, $src, $size});
+        createIntrinsicCall(builder, llvm::Intrinsic::xpu_sm2gm, {dstptr, zero, $src, $size});
     }];
 }
 
@@ -121,13 +109,7 @@ def XPU_GM2LMOp_v3 : XPU_IntrOp<"gm2lm_v3", [], 0> {
     auto asrc = builder.CreateAdd(isrc, ioft);
     auto fsrc = builder.CreateIntToPtr(asrc, $src->getType());
     auto zero = builder.getInt32(0);
-    auto *module = builder.GetInsertBlock()->getModule();
-    auto *voidTy = builder.getVoidTy();
-    auto *ptrTy = $dst->getType();
-    auto *i32Ty = builder.getInt32Ty();
-    auto *funcTy = llvm::FunctionType::get(voidTy, {ptrTy, fsrc->getType(), i32Ty, i32Ty}, false);
-    auto callee = module->getOrInsertFunction("llvm.xpu.gm2lm_v3", funcTy);
-    builder.CreateCall(funcTy, callee.getCallee(), {$dst, fsrc, zero, $size});
+    createIntrinsicCall(builder, llvm::Intrinsic::xpu_gm2lm_v3, {$dst, fsrc, zero, $size});
   }];
 }
 
@@ -142,12 +124,7 @@ def XPU_LM2GMOp_v3 : XPU_IntrOp<"lm2gm_v3", [], 0> {
     auto adst = builder.CreateAdd(idst, ioft);
     auto fdst = builder.CreateIntToPtr(adst, $dst->getType());
     auto zero = builder.getInt32(0);
-    auto *module_lm = builder.GetInsertBlock()->getModule();
-    auto *voidTy_lm = builder.getVoidTy();
-    auto *i32Ty_lm = builder.getInt32Ty();
-    auto *funcTy_lm = llvm::FunctionType::get(voidTy_lm, {fdst->getType(), $src->getType(), i32Ty_lm, i32Ty_lm}, false);
-    auto callee_lm = module_lm->getOrInsertFunction("llvm.xpu.lm2gm_v3", funcTy_lm);
-    builder.CreateCall(funcTy_lm, callee_lm.getCallee(), {fdst, $src, zero, $size});
+    createIntrinsicCall(builder, llvm::Intrinsic::xpu_lm2gm_v3, {fdst, $src, zero, $size});
   }];
 }
 
@@ -162,12 +139,7 @@ def XPU_SM2GMOp_v3 : XPU_IntrOp<"sm2gm_v3", [], 0> {
     auto adst = builder.CreateAdd(idst, ioft);
     auto fdst = builder.CreateIntToPtr(adst, $dst->getType());
     auto zero = builder.getInt32(0);
-    auto *mod = builder.GetInsertBlock()->getModule();
-    auto *vTy = builder.getVoidTy();
-    auto *i32Ty = builder.getInt32Ty();
-    auto *fTy = llvm::FunctionType::get(vTy, {fdst->getType(), $src->getType(), i32Ty, i32Ty}, false);
-    auto fn = mod->getOrInsertFunction("llvm.xpu.sm2gm_v3", fTy);
-    builder.CreateCall(fTy, fn.getCallee(), {fdst, $src, zero, $size});
+    createIntrinsicCall(builder, llvm::Intrinsic::xpu_sm2gm_v3, {fdst, $src, zero, $size});
   }];
 }
 
@@ -187,11 +159,7 @@ class XPU_SpecialRegisterOp<string mnemonic, list<Trait> traits = []> :
 
 def XPU_ClusterIdOp : XPU_SpecialRegisterOp<"cluster_id"> {
   string llvmBuilder = [{
-    auto *module = builder.GetInsertBlock()->getModule();
-    auto *i32Ty = builder.getInt32Ty();
-    auto *funcTy = llvm::FunctionType::get(i32Ty, {}, false);
-    auto callee = module->getOrInsertFunction("llvm.xpu.cluster_id", funcTy);
-    $res = builder.CreateCall(funcTy, callee.getCallee(), {});
+    $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu_cluster_id, {});
   }];
 }
 
@@ -201,11 +169,7 @@ def XPU_ClusterIdOp : XPU_SpecialRegisterOp<"cluster_id"> {
 
 def XPU_CoreIdOp : XPU_SpecialRegisterOp<"core_id"> {
   string llvmBuilder = [{
-    auto *module = builder.GetInsertBlock()->getModule();
-    auto *i32Ty = builder.getInt32Ty();
-    auto *funcTy = llvm::FunctionType::get(i32Ty, {}, false);
-    auto callee = module->getOrInsertFunction("llvm.xpu.core_id", funcTy);
-    $res = builder.CreateCall(funcTy, callee.getCallee(), {});
+    $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu_core_id, {});
   }];
 }
 
@@ -217,14 +181,7 @@ def XPU_LoadParamOp : XPU_Op<"load_param"> {
   let arguments = (ins I32:$num);
   let results = (outs I32:$res);
   string llvmBuilder = [{
-    auto *module = builder.GetInsertBlock()->getModule();
-    auto *i32Ty = builder.getInt32Ty();
-    auto *funcTy = llvm::FunctionType::get(i32Ty, {i32Ty}, false);
-    auto callee = module->getOrInsertFunction("llvm.xpu.load_param", funcTy);
-    auto *num = $num;
-    if (num->getType() != i32Ty && num->getType()->isIntegerTy())
-      num = builder.CreateIntCast(num, i32Ty, /*isSigned=*/false);
-    $res = builder.CreateCall(funcTy, callee.getCallee(), {num});
+    $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu_load_param, {$num});
   }];
   let assemblyFormat = "$num attr-dict";
 }
@@ -236,12 +193,7 @@ def XPU_LoadParamOp : XPU_Op<"load_param"> {
 def XPU_MfenceOp : XPU_Op<"mfence"> {
   let arguments = (ins I32:$num);
   string llvmBuilder = [{
-    auto *module_mf = builder.GetInsertBlock()->getModule();
-    auto *voidTy_mf = builder.getVoidTy();
-    auto *i32Ty_mf = builder.getInt32Ty();
-    auto *funcTy_mf = llvm::FunctionType::get(voidTy_mf, {i32Ty_mf}, false);
-    auto callee_mf = module_mf->getOrInsertFunction("llvm.xpu.mfence.v2", funcTy_mf);
-    builder.CreateCall(funcTy_mf, callee_mf.getCallee(), {$num});
+    createIntrinsicCall(builder, llvm::Intrinsic::xpu2_mfence, {$num});
   }];
   let assemblyFormat = "$num attr-dict";
 }
@@ -253,17 +205,10 @@ def XPU_MfenceOp : XPU_Op<"mfence"> {
 def XPU_BarrierOp : XPU_Op<"barrier"> {
   let arguments = (ins);
   string llvmBuilder = [{
-    auto *module = builder.GetInsertBlock()->getModule();
-    auto *voidTy = builder.getVoidTy();
-    auto *i32Ty = builder.getInt32Ty();
     auto five = builder.getInt32(7);
-    auto *mfTy = llvm::FunctionType::get(voidTy, {i32Ty}, false);
-    auto mfCallee = module->getOrInsertFunction("llvm.xpu.mfence.v2", mfTy);
-    builder.CreateCall(mfTy, mfCallee.getCallee(), {five});
+    createIntrinsicCall(builder, llvm::Intrinsic::xpu2_mfence, {five});
     auto mask = builder.getInt32(65535);
-    auto *syncTy = llvm::FunctionType::get(voidTy, {i32Ty}, false);
-    auto syncCallee = module->getOrInsertFunction("llvm.xpu.csr_set_sync_group", syncTy);
-    builder.CreateCall(syncTy, syncCallee.getCallee(), {mask});
+    createIntrinsicCall(builder, llvm::Intrinsic::xpu_csr_set_sync_group, {mask});
   }];
   let assemblyFormat = "attr-dict";
 }
@@ -275,12 +220,7 @@ def XPU_BarrierOp : XPU_Op<"barrier"> {
 def XPU_SetHaddrOp : XPU_Op<"set_haddr"> {
   let arguments = (ins I32:$num);
   string llvmBuilder = [{
-    auto *mod = builder.GetInsertBlock()->getModule();
-    auto *vTy = builder.getVoidTy();
-    auto *i32Ty = builder.getInt32Ty();
-    auto *fTy = llvm::FunctionType::get(vTy, {i32Ty}, false);
-    auto fn = mod->getOrInsertFunction("llvm.xpu.set_haddr", fTy);
-    builder.CreateCall(fTy, fn.getCallee(), {$num});
+    createIntrinsicCall(builder, llvm::Intrinsic::xpu_set_haddr, {$num});
   }];
   let assemblyFormat = "$num attr-dict";
 }
@@ -293,11 +233,7 @@ def XPU_LogOp : XPU_Op<"log", [Elementwise, SameOperandsAndResultType, SameOpera
   let arguments = (ins F32:$operand);
   let results = (outs F32:$result);
   string llvmBuilder = [{
-    auto *mod = builder.GetInsertBlock()->getModule();
-    auto *f32Ty = builder.getFloatTy();
-    auto *fTy = llvm::FunctionType::get(f32Ty, {f32Ty}, false);
-    auto fn = mod->getOrInsertFunction("llvm.xpu.log2f", fTy);
-    $result = builder.CreateCall(fTy, fn.getCallee(), {$operand});
+    $result = createIntrinsicCall(builder, llvm::Intrinsic::xpu_log2f, {$operand});
   }];
   let assemblyFormat = "$operand attr-dict `:` type($result)";
 }
@@ -311,11 +247,7 @@ def XPU_MinOp : XPU_IntrOp<"min", [], 0> {
     let results = (outs I32:$res);
     string llvmBuilder = [{
         // XTDK only supports llvm.xpu.min
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.smin.i32", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$lhs, $rhs});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::smin, {$lhs, $rhs});
     }];
 }
 
@@ -327,10 +259,7 @@ def XPU_VGatherFOp : XPU_IntrOp<"vgather_mask16_mr1", [], 0> {
                          LLVM_AnyVector:$mask);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *fTy = llvm::FunctionType::get($mask->getType(), {$src->getType(), $mask->getType()}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vgather_mask16_mr1", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$src, $mask});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu2_vgather_mask16_mr1, {$src, $mask});
     }];
 }
 
@@ -339,11 +268,7 @@ def XPU_VGatherHFOp : XPU_IntrOp<"vgather_mr1", [], 0> {
                          LLVM_AnyVector:$mask);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vgather_mr1", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$src, $mask});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu2_vgather_mr1, {$src, $mask});
     }];
 }
 
@@ -357,11 +282,7 @@ def XPU_VVOR_F_MHOp : XPU_IntrOp<"vvor_f_mh_rn", [], 0> {
                          LLVM_AnyVector:$c);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, i32Ty, i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vvor_f_mh_rn", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$mask, $a, $b, $c});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu2_vvor_f_mh_rn, {$mask, $a, $b, $c});
     }];
 }
 
@@ -372,11 +293,7 @@ def XPU_VVOR_HF_MHOp : XPU_IntrOp<"vvor_hf_mh_rn", [], 0> {
                          LLVM_AnyVector:$c);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, i32Ty, i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vvor_hf_mh_rn", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$mask, $a, $b, $c});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu3_vvor_hf_mh_rn, {$mask, $a, $b, $c});
     }];
 }
 
@@ -387,11 +304,7 @@ def XPU_VVOR_S_MHOp : XPU_IntrOp<"vvor_s_mh", [], 0> {
                          LLVM_AnyVector:$c);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, i32Ty, i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vvor_s_mh", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$mask, $a, $b, $c});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu2_vvor_s_mh, {$mask, $a, $b, $c});
     }];
 }
 
@@ -404,11 +317,7 @@ def XPU_VLOAD_MZOp : XPU_IntrOp<"vload_mz", [], 0> {
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
         auto zero = builder.getInt32(0);
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, $src_ptr->getType(), i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vload_mz", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$mask, $src_ptr, zero});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu2_vload_mz, {$mask, $src_ptr, zero});
     }];
 }
 
@@ -419,11 +328,7 @@ def XPU_VLOAD_MHOp : XPU_IntrOp<"vload_mh", [], 0> {
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
         auto zero = builder.getInt32(0);
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, $src_ptr->getType(), i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vload_mh", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$mask, $src_ptr, $dst_data, zero});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu2_vload_mh, {$mask, $src_ptr, $dst_data, zero});
     }];
 }
 
@@ -433,12 +338,7 @@ def XPU_VSTORE_MHOp : XPU_IntrOp<"vstore_mh", [], 0> {
                          LLVM_AnyVector:$mask);
     string llvmBuilder = [{
         auto zero = builder.getInt32(0);
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *vTy = builder.getVoidTy();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(vTy, {i32Ty, i32Ty, $dst_Ptr->getType(), i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vstore_mh", fTy);
-        builder.CreateCall(fTy, fn.getCallee(), {$src, $mask, $dst_Ptr, zero});
+        createIntrinsicCall(builder, llvm::Intrinsic::xpu2_vstore_mh, {$src, $mask, $dst_Ptr, zero});
     }];
 }
 
@@ -450,11 +350,7 @@ def XPU_SVSLLPOp : XPU_IntrOp<"svsllp", [], 0> {
                          LLVM_AnyVector:$src);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.svsllp_s", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$offset, $src});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu2_svsllp_s, {$offset, $src});
     }];
 }
 
@@ -463,11 +359,7 @@ def XPU_SVSRLPOp : XPU_IntrOp<"svsrlp", [], 0> {
                          LLVM_AnyVector:$src);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.svsrlp_s", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$offset, $src});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu2_svsrlp_s, {$offset, $src});
     }];
 }
 
@@ -479,11 +371,7 @@ def XPU_VMERGE_L_HFOp : XPU_IntrOp<"vmerge_l_hf", [], 0> {
                          LLVM_AnyVector:$src2);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vmerge_l_hf", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$src1, $src2});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu3_vmerge_l_hf, {$src1, $src2});
     }];
 }
 
@@ -492,11 +380,7 @@ def XPU_VMERGE_H_HFOp : XPU_IntrOp<"vmerge_h_hf", [], 0> {
                          LLVM_AnyVector:$src2);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty, i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vmerge_h_hf", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$src1, $src2});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu3_vmerge_h_hf, {$src1, $src2});
     }];
 }
 
@@ -509,12 +393,7 @@ def XPU_SCATTER_MHOp : XPU_IntrOp<"vscatter_mh", [], 0> {
                          LLVM_AnyPointer:$dst_ptr,
                          LLVM_AnyVector:$offset);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *vTy = builder.getVoidTy();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(vTy, {i32Ty, i32Ty, $dst_ptr->getType(), i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vscatter_mh", fTy);
-        builder.CreateCall(fTy, fn.getCallee(), {$value, $mask, $dst_ptr, $offset});
+        createIntrinsicCall(builder, llvm::Intrinsic::xpu2_vscatter_mh, {$value, $mask, $dst_ptr, $offset});
     }];
 }
 
@@ -525,11 +404,7 @@ def XPU_VSHUFFLE2Op : XPU_IntrOp<"vshuffle2", [], 0> {
     let arguments = (ins LLVM_AnyVector:$src);
     let results = (outs LLVM_AnyVector:$res);
     string llvmBuilder = [{
-        auto *mod = builder.GetInsertBlock()->getModule();
-        auto *i32Ty = builder.getInt32Ty();
-        auto *fTy = llvm::FunctionType::get(i32Ty, {i32Ty}, false);
-        auto fn = mod->getOrInsertFunction("llvm.xpu.vshuffle2_hf", fTy);
-        $res = builder.CreateCall(fTy, fn.getCallee(), {$src});
+        $res = createIntrinsicCall(builder, llvm::Intrinsic::xpu3_vshuffle2_hf, {$src});
     }];
 }
 

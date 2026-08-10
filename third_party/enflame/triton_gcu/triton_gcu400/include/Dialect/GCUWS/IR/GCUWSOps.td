@@ -51,6 +51,18 @@ def GCUWS_InitPipelineOp : GCUWS_Op<"init_pipeline", [Pure]> {
   }];
 }
 
+def GCUWS_DestroyPipelineOp : GCUWS_Op<"destroy_pipeline"> {
+  let summary = "Destroy pipeline.";
+
+  let description = [{
+    Destroy pipeline.
+  }];
+
+  let arguments = (ins GCUWS_PipelineType:$pipeline);
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+}
+
 def GCUWS_ProducerAcquireOp : GCUWS_Op<"producer_acquire"> {
   let summary = "Producer acquires a token to fill buffers";
 

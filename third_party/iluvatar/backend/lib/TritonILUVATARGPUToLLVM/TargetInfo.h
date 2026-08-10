@@ -1,6 +1,7 @@
 #ifndef TRITON_THIRD_PARTY_ILUVATAR_LIB_TRITONILUVATARGPUTOLLVM_TARGETINFO_H_
 #define TRITON_THIRD_PARTY_ILUVATAR_LIB_TRITONILUVATARGPUTOLLVM_TARGETINFO_H_
 
+#include "TritonILUVATARGPUToLLVM/TargetUtils.h"
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include <string>
 
@@ -10,6 +11,8 @@ public:
   explicit TargetInfo(std::string arch) : arch(std::move(arch)) {}
 
   StringRef getArch() const { return arch; }
+
+  ISAFamily getISAFamily() const { return deduceISAFamily(arch); }
 
   int getWarpSize() const;
 

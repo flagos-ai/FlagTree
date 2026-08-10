@@ -772,6 +772,18 @@ LogicalResult LocalLoadOp::verify() {
 }
 
 // AsyncCopyGlobalToLocalOp
+#ifdef __ILUVATAR__
+bool AsyncCopyGlobalToLocalOp::isIluvatarSmeAsyncCopy() {
+  if (!getInputStride())
+    return false;
+  auto srcTy = dyn_cast<RankedTensorType>(getSrc().getType());
+  if (!srcTy)
+    return false;
+  auto srcEnc = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
+  return srcEnc && srcEnc.getIsSme();
+}
+#endif
+
 LogicalResult AsyncCopyGlobalToLocalOp::verify() {
   if (!getResult().getType().getMutableMemory())
     return emitOpError("Cannot store into immutable memory");

@@ -38,7 +38,7 @@ namespace {
 
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
-namespace tle = mlir::triton::tle;
+using namespace mlir::triton;
 
 struct ExtractAllocatedPtrOpConversion
     : public ConvertOpToLLVMPattern<tle::ExtractAllocatedPtrOp> {

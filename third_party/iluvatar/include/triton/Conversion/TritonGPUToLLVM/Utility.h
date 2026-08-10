@@ -489,6 +489,144 @@ using ::mlir::triton::gpu::DotOperandEncodingAttr;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
 
+#ifdef __ILUVATAR__
+inline StringRef getIluvatarSmeLoadIntrinsicName(unsigned bitwidth,
+                                                 bool isRowMajor) {
+  if (isRowMajor) {
+    if (bitwidth == 8)
+      return "llvm.bi.sme.load.16x1b64.rowxfb8";
+    if (bitwidth == 16)
+      return "llvm.bi.sme.load.16x1b64.rowxfb16";
+    if (bitwidth == 32)
+      return "llvm.bi.sme.load.16x1b64";
+  } else {
+    if (bitwidth == 8)
+      return "llvm.bi.sme.load.16x1b64.colxfb8";
+    if (bitwidth == 16)
+      return "llvm.bi.sme.load.16x1b64.colxfb16";
+    if (bitwidth == 32)
+      return "llvm.bi.sme.load.16x1b64.colxfb32";
+  }
+  llvm_unreachable("SME intrinsic only supports i8/fp16/bf16/fp32");
+}
+
+// Emit Iluvatar SME global->shared loads for a full CTA tile.  Each SME
+// intrinsic transfers one hardware tile: 16 rows x 64 contiguous bytes.
+inline LogicalResult
+emitIluvatarSmeTileLoads(Location loc, MLIRContext *ctx,
+                         RankedTensorType tensorTy, Type elemTy, Value smemBase,
+                         Value gPtr, Value stride, RewriterBase &rewriter,
+                         std::optional<unsigned> validContiguousElems = {}) {
+  auto smeEnc = dyn_cast<BlockedEncodingAttr>(tensorTy.getEncoding());
+  if (!smeEnc || !smeEnc.getIsSme())
+    return failure();
+
+  auto order = smeEnc.getOrder();
+  auto smeWpt = smeEnc.getSmeWarpsPerCTA();
+  auto shape = tensorTy.getShape();
+  unsigned elemBytes = elemTy.getIntOrFloatBitWidth() / 8;
+  bool isRowMajor = order[0] != 0;
+
+  // Row-major: dim1 is contiguous. Col-major: dim0 is contiguous.
+  unsigned offset0 = isRowMajor ? 16 : 64 / elemBytes;
+  unsigned offset1 = isRowMajor ? 64 / elemBytes : 16;
+  SmallVector<unsigned> shapePerCTA({smeWpt[0] * offset0, smeWpt[1] * offset1});
+
+  TritonLLVMOpBuilder b(loc, rewriter);
+  auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
+  (void)laneId;
+  unsigned activeSmeWarps = product<unsigned>(smeWpt);
+  unsigned totalWarps = product<unsigned>(smeEnc.getWarpsPerCTA());
+  Block *afterSmeBlock = nullptr;
+  if (activeSmeWarps < totalWarps) {
+    Value activePred = b.icmp_ult(warpId, b.i32_val(activeSmeWarps));
+    Block *currentBlock = rewriter.getInsertionBlock();
+    afterSmeBlock =
+        rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+    Block *smeBlock = rewriter.createBlock(afterSmeBlock);
+    rewriter.setInsertionPointToEnd(currentBlock);
+    LLVM::CondBrOp::create(rewriter, loc, activePred, smeBlock, afterSmeBlock);
+    rewriter.setInsertionPointToStart(smeBlock);
+  }
+
+  Value warp0 = b.urem(warpId, b.i32_val(smeWpt[0]));
+  Value warp1 =
+      b.urem(b.udiv(warpId, b.i32_val(smeWpt[0])), b.i32_val(smeWpt[1]));
+
+  Value gPtrAsInt = b.ptrtoint(i64_ty, gPtr);
+  Value strideBytes = b.mul(stride, b.i32_val(static_cast<int32_t>(elemBytes)));
+  auto i32x4Ty = vec_ty(i32_ty, 4);
+  Value abaseVal = b.undef(i32x4Ty);
+  abaseVal = b.insert_element(i32x4Ty, abaseVal, b.trunc(i32_ty, gPtrAsInt),
+                              b.i32_val(0));
+  abaseVal = b.insert_element(i32x4Ty, abaseVal,
+                              b.trunc(i32_ty, b.lshr(gPtrAsInt, b.i64_val(32))),
+                              b.i32_val(1));
+  abaseVal = b.insert_element(i32x4Ty, abaseVal, b.i32_val(-1), b.i32_val(2));
+  abaseVal = b.insert_element(i32x4Ty, abaseVal, strideBytes, b.i32_val(3));
+
+  Type elemPtrTy = ptr_ty(ctx, 1);
+  for (unsigned m = 0; m < shape[0] / shapePerCTA[0]; m++) {
+    for (unsigned k = 0; k < shape[1] / shapePerCTA[1]; k++) {
+      unsigned contiguousGroupStart =
+          isRowMajor ? k * shapePerCTA[1] : m * shapePerCTA[0];
+      if (validContiguousElems && contiguousGroupStart >= *validContiguousElems)
+        continue;
+      Value tileSmemOff, tileGmemOff;
+      if (isRowMajor) {
+        tileSmemOff =
+            b.add(b.mul(b.i32_val(m), b.i32_val(shape[1] * shapePerCTA[0])),
+                  b.mul(b.i32_val(k), b.i32_val(offset0 * shapePerCTA[1])));
+        tileGmemOff =
+            b.add(b.mul(b.mul(b.i32_val(m), b.i32_val(shapePerCTA[0])), stride),
+                  b.mul(b.i32_val(k), b.i32_val(shapePerCTA[1])));
+        Value warpSmemOff =
+            b.add(b.mul(warp0, b.mul(b.i32_val(offset0), b.i32_val(shape[1]))),
+                  b.mul(warp1, b.mul(b.i32_val(offset1), b.i32_val(offset0))));
+        Value warpGmemOff =
+            b.add(b.mul(b.mul(warp0, b.i32_val(offset0)), stride),
+                  b.mul(warp1, b.i32_val(offset1)));
+        tileSmemOff = b.add(tileSmemOff, warpSmemOff);
+        tileGmemOff = b.add(tileGmemOff, warpGmemOff);
+      } else {
+        tileSmemOff =
+            b.add(b.mul(b.i32_val(m), b.i32_val(shapePerCTA[0] * offset1)),
+                  b.mul(b.mul(b.i32_val(k), b.i32_val(shapePerCTA[1])),
+                        b.i32_val(shape[0])));
+        tileGmemOff = b.add(
+            b.mul(b.i32_val(m), b.i32_val(shapePerCTA[0])),
+            b.mul(b.mul(b.i32_val(k), b.i32_val(shapePerCTA[1])), stride));
+        Value warpSmemOff =
+            b.add(b.mul(warp0, b.mul(b.i32_val(offset0), b.i32_val(offset1))),
+                  b.mul(warp1, b.mul(b.i32_val(shape[0]), b.i32_val(offset1))));
+        Value warpGmemOff =
+            b.add(b.mul(warp0, b.i32_val(offset0)),
+                  b.mul(b.mul(warp1, b.i32_val(offset1)), stride));
+        tileSmemOff = b.add(tileSmemOff, warpSmemOff);
+        tileGmemOff = b.add(tileGmemOff, warpGmemOff);
+      }
+
+      Value smemPtr = b.gep(elemPtrTy, elemTy, smemBase, tileSmemOff);
+      Value smemAsInt = b.ptrtoint(i32_ty, smemPtr);
+      Value gmemByteOff =
+          b.mul(tileGmemOff, b.i32_val(static_cast<int32_t>(elemBytes)));
+      SmallVector<Value> args = {smemAsInt, abaseVal, gmemByteOff,
+                                 b.i32_val(0)};
+      mlir::LLVM::createLLVMIntrinsicCallOp(
+          rewriter, loc,
+          getIluvatarSmeLoadIntrinsicName(elemTy.getIntOrFloatBitWidth(),
+                                          isRowMajor),
+          TypeRange{}, args);
+    }
+  }
+  if (afterSmeBlock) {
+    LLVM::BrOp::create(rewriter, loc, afterSmeBlock);
+    rewriter.setInsertionPointToStart(afterSmeBlock);
+  }
+  return success();
+}
+#endif
+
 Value dot(RewriterBase &rewriter, Location loc, ArrayRef<Value> offsets,
           ArrayRef<Value> strides);
 
@@ -569,6 +707,29 @@ lowerLocalLdSt(Location loc, MLIRContext *ctx,
                SharedMemoryObject smemObj, RewriterBase &rewriter,
                const TargetInfoBase &targetInfo,
                Operation *localLoadOp = nullptr);
+
+#ifdef __ILUVATAR__
+// Whether this is the physical rowxfb8 shared-to-register boundary of an SME
+// dot operand. Non-SME int8 row shared layouts must not use the correction.
+bool isIluvatarRowXfb8LocalLoad(Operation *op);
+
+// Return a compile-time uniform predicate after looking through layout-only
+// wrappers, or std::nullopt for a dynamic/non-uniform mask.
+std::optional<bool> getIluvatarSmeConstantMask(Value mask);
+
+// Recognize a compile-time prefix mask of the form broadcast(arange < C).
+// The returned extent is relative to the load tile's contiguous dimension.
+std::optional<unsigned> getIluvatarSmeConstantMaskExtent(Value mask);
+
+// Patch the masked-off elements of an SME global-to-shared transfer in place.
+// `llvmMask` and `llvmOther` use `srcTy`'s distributed layout. The helper maps
+// them directly to `dstTy`'s physical shared offsets, avoiding a register-side
+// blocked-to-dot conversion.
+LogicalResult lowerIluvatarSmeMaskFixup(
+    Location loc, RankedTensorType srcTy, Type llvmElemTy,
+    triton::gpu::MemDescType dstTy, SharedMemoryObject smemObj, Value llvmMask,
+    Value llvmOther, RewriterBase &rewriter, const TargetInfoBase &targetInfo);
+#endif
 
 SmallVector<Value> unpackLLElements(Location loc, Value llvmStruct,
                                     RewriterBase &rewriter);

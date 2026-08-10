@@ -25,6 +25,7 @@
 #include "Analysis/FirstLastUserAnalysis.h"
 #include "TritonGCUToGCU/TritonGCUToGCUUtils.h"
 #include "Utils.h"
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -226,7 +227,14 @@ void vectorizeCombineOpTerminator(Location loc, OpBuilder &builder,
 }
 
 struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
-  using SharedConversionPattern::SharedConversionPattern;
+  bool enableI64;
+  TTReduceOpLowering(const TypeConverter &converter, MLIRContext *ctx,
+                     triton::gcu::FirstLastUserAnalysis &userAnalysis,
+                     std::map<Operation *, Operation *> &replaced2Origin,
+                     triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64)
+      : SharedConversionPattern(converter, ctx, userAnalysis, replaced2Origin,
+                                pTagPool),
+        enableI64(enable_i64) {}
 
   LogicalResult
   matchAndRewrite(triton::ReduceOp op, OpAdaptor adaptor,
@@ -671,8 +679,7 @@ private:
     SmallVector<Type> elementTypes;
     unsigned maxBpe = 1;
     unsigned minBpe = 4;
-    auto target_supporti64 =
-        !triton::gcu::get_bool_env("ENABLE_I64_CHECK", true);
+    auto target_supporti64 = enableI64;
     bool is_i64 = false;
     for (auto output : outputs) {
       auto elementType = cast<MemRefType>(output.getType()).getElementType();
@@ -1375,9 +1382,9 @@ private:
                                                terminatorOperands);
                 }
                 for (unsigned i = 0; i < numOutput; ++i) {
-                  builder.create<vector::ScatterOp>(
-                      loc, reduceBuffers[i], outputIndices, indexVec0, mask,
-                      executeRegionOp.getResult(i));
+                  triton_gcu::compat::createVectorScatterOp(
+                      builder, loc, reduceBuffers[i], ValueRange(outputIndices),
+                      indexVec0, mask, executeRegionOp.getResult(i));
                 }
               });
           if (reduceAxis == vectorizeAxis) {
@@ -1442,9 +1449,10 @@ private:
                                                        terminatorOperands);
                         }
                         for (unsigned i = 0; i < numOutput; ++i) {
-                          builder.create<vector::ScatterOp>(
-                              loc, reduceBuffers[i], outputIndices, indexVec0,
-                              strideMask, executeRegion.getResult(i));
+                          triton_gcu::compat::createVectorScatterOp(
+                              builder, loc, reduceBuffers[i],
+                              ValueRange(outputIndices), indexVec0, strideMask,
+                              executeRegion.getResult(i));
                         }
                         builder.create<scf::YieldOp>(loc, ValueRange{stride});
                       });
@@ -1810,7 +1818,8 @@ void mlir::triton::populateReduceOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateDTETagPool &pTagPool) {
+    triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64) {
   patterns.add<TTReduceOpLowering>(converter, patterns.getContext(),
-                                   userAnalysis, replaced2Origin, pTagPool);
+                                   userAnalysis, replaced2Origin, pTagPool,
+                                   enable_i64);
 }

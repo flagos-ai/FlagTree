@@ -4,6 +4,7 @@ import triton
 import triton.language as tl
 import pytest
 import numpy as np
+from test_core import check_type_supported
 
 
 def annotated_function(return_type=None, **arg_types):
@@ -60,6 +61,7 @@ def test_unknown_annotation(device):
      for test_val in [0.0, 42.0, float("inf"), float("nan")]],
 )
 def test_float_annotation(device, dtype, test_val):
+    check_type_supported(dtype, device)
 
     @triton.jit
     @annotated_function(val=dtype)

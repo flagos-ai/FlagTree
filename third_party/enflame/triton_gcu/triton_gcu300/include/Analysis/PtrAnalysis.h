@@ -336,10 +336,29 @@ public:
   foldAwayForOp(PatternRewriter & /*rewriter*/, scf::ForOp op,
                 llvm::SmallDenseMap<Value, PtrState> & /*knownPtrs*/);
 
+  // bypass WhileOp not include ld/st.
+  static bool byPassWhileOp(PatternRewriter &rewriter, scf::WhileOp op,
+                            const SmallVector<Operation *, 8> &candidateOps);
+
+  // Rewrite WhileOp to propagate PtrState through both before/after regions.
+  static LogicalResult rewriteWhileOp(
+      PatternRewriter &rewriter, scf::WhileOp op,
+      SmallDenseMap<Value, PtrState> &knownPtrs,
+      SmallDenseMap<Value, MaskState> &knownMasks,
+      SmallVector<Operation *, 8> &candidateOps,
+      SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints);
+
+  // Rewrite the scf.condition terminator in WhileOp's before region.
+  static void
+  rewriteConditionOp(PatternRewriter &rewriter, scf::ConditionOp op,
+                     llvm::SmallDenseMap<Value, PtrState> &knownPtrs,
+                     llvm::SmallDenseMap<Value, MaskState> &knownMasks);
+
   // Collect candidate load/store op which could be converted to dma.
   static void collectCandidateLoadStoreOps(
       ModuleOp &moduleOp, llvm::SmallVector<Operation *, 8> &candidates,
-      llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateOrders);
+      llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateOrders,
+      bool enable_i64 = false);
 };
 
 } // namespace gcu

@@ -94,12 +94,14 @@ def Tle_FlagCxSignalOp : Tle_Op<"flagcx signal", [MemoryEffects<[MemRead, MemWri
     Tle_LocalPointerResultType:$comm,
     I32:$peer,
     I32:$signal_id,
-    I64:$value,
+    Optional<I64>:$value,
     Tle_SignalOpKindAttr:$signal_op,
     Tle_SignalTeamKindAttr:$team_kind,
     Tle_SignalCoopKindAttr:$coop_kind,
     I32Attr:$context_idx
   );
+
+  let hasVerifier = true;
 }
 
 def Tle_FlagCxSignalWaitOp : Tle_Op<"flagcx signal_wait"> {
@@ -125,4 +127,6 @@ def Tle_FlagCxSignalWaitOp : Tle_Op<"flagcx signal_wait"> {
     `(` $wait_kind `,` $coop_kind `)` $comm `,` $signal_id (`,` $target^)?  attr-dict `:`
     functional-type(operands, results)
   }];
+
+  let hasVerifier = true;
 }

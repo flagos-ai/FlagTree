@@ -27,6 +27,11 @@ on:
     branches: [ "main", "triton_v3.6.x" ]
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -35,7 +40,7 @@ concurrency:
 jobs:
   nv36x-unit-test:
     runs-on: nvidia3.6
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
@@ -53,6 +58,10 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: nvidia
+
+      - name: Cleanup FlagTree Environment
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
       - name: Detect Target Branch
         shell: bash
@@ -77,6 +86,15 @@ jobs:
           export COMPILE_KERNEL=1
           export USE_NVIDIA=1
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: nvidia
 
       - name: Unit Test
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
@@ -95,6 +113,7 @@ jobs:
           python3 python/tutorials/08-grouped-gemm.py --only_unit_test
           python3 python/tutorials/09-persistent-matmul.py --only_unit_test
           python3 python/tutorials/11-programmatic-dependent-launch.py --only_unit_test
+          python3 python/tutorials/12-fused_inv_rope_fp8_quant_reorder.py --only_unit_test
           ## python unit test
           python3 -m pytest -s python/test/unit/cuda
           python3 -m pytest -s python/test/unit/instrumentation

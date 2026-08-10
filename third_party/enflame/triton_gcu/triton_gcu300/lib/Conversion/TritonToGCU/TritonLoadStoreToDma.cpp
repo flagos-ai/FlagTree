@@ -41,6 +41,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
@@ -94,6 +95,31 @@ struct PreprocessForOp : public OpRewritePattern<scf::ForOp> {
       return failure();
     return gcu::PtrAnalysis::rewriteForOp(rewriter, op, knownPtrs, knownMasks,
                                           candidateOps, candidateHints);
+  }
+};
+
+struct PreprocessWhileOp : public OpRewritePattern<scf::WhileOp> {
+  llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs;
+  llvm::SmallDenseMap<Value, gcu::MaskState> &knownMasks;
+  llvm::SmallVector<Operation *, 8> &candidateOps;
+  llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints;
+
+  explicit PreprocessWhileOp(
+      MLIRContext *context,
+      llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs,
+      llvm::SmallDenseMap<Value, gcu::MaskState> &knownMasks,
+      llvm::SmallVector<Operation *, 8> &candidateOps,
+      llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints)
+      : OpRewritePattern<scf::WhileOp>(context), knownPtrs(knownPtrs),
+        knownMasks(knownMasks), candidateOps(candidateOps),
+        candidateHints(candidateHints) {}
+
+  LogicalResult matchAndRewrite(scf::WhileOp op,
+                                PatternRewriter &rewriter) const override {
+    if (gcu::PtrAnalysis::byPassWhileOp(rewriter, op, candidateOps))
+      return failure();
+    return gcu::PtrAnalysis::rewriteWhileOp(rewriter, op, knownPtrs, knownMasks,
+                                            candidateOps, candidateHints);
   }
 };
 
@@ -536,7 +562,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
 
         auto warpsPerCTA = triton::gcu::getWarpsPerCTA(tType.getEncoding());
         auto order = triton::gpu::getOrder(tType);
-        auto ctaLayout = triton::gpu::getCTALayout(tType.getEncoding());
+        auto ctaLayout = triton_gcu::compat::getCGALayout(tType.getEncoding());
 
         SmallVector<unsigned> sliceWarpsPerCTA(rank);
         SmallVector<unsigned> sliceOrder(rank);
@@ -736,7 +762,7 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
           transShapes[staticOrder[i]] = storeShape[i];
 
         auto warpsPerCTA = triton::gcu::getWarpsPerCTA(tType.getEncoding());
-        auto ctaLayout = triton::gpu::getCTALayout(tType.getEncoding());
+        auto ctaLayout = triton_gcu::compat::getCGALayout(tType.getEncoding());
         auto order = triton::gpu::getOrder(tType);
         if (isa<triton::gpu::BlockedEncodingAttr>(tType.getEncoding())) {
           // TODO(haizhu.shao): it seems that the order is not correct when this
@@ -806,7 +832,7 @@ void ConvertTritonLoadStoreToDmaPass::runOnOperation() {
   llvm::SmallVector<Operation *, 8> candidateOps;
   llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> candidateHints;
   gcu::PtrAnalysis::collectCandidateLoadStoreOps(moduleOp, candidateOps,
-                                                 candidateHints);
+                                                 candidateHints, enable_i64);
 
   // 2. Pre-process some ops
   GreedyRewriteConfig rewriteConfig;
@@ -817,16 +843,21 @@ void ConvertTritonLoadStoreToDmaPass::runOnOperation() {
   RewritePatternSet prePatterns(ctx);
   prePatterns.add<PreprocessForOp>(ctx, knownPtrs, knowMasks, candidateOps,
                                    candidateHints);
+  prePatterns.add<PreprocessWhileOp>(ctx, knownPtrs, knowMasks, candidateOps,
+                                     candidateHints);
 
-  if (applyPatternsGreedily(op, std::move(prePatterns), rewriteConfig).failed())
+  if (applyPatternsGreedily(op, std::move(prePatterns), rewriteConfig)
+          .failed()) {
     signalPassFailure();
+  }
 
   // 3. Start to process load/store op
   RewritePatternSet patterns(ctx);
   patterns.add<ConvertLoadOpToDma, ConvertStoreOpToDma>(
       ctx, knownPtrs, knowMasks, candidateOps, candidateHints, support_stride0);
-  if (applyPatternsGreedily(op, std::move(patterns)).failed())
+  if (applyPatternsGreedily(op, std::move(patterns)).failed()) {
     signalPassFailure();
+  }
 
   // 4. Post-process some ops
   RewritePatternSet postPatterns(ctx);

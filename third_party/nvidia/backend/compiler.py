@@ -269,6 +269,10 @@ class CUDABackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, opt, capability):
+        # flagtree tle raw
+        kernel_init_hooks = mod.get_operation().get_str_attr("tle.raw.kernel_init_hooks")
+        metadata["kernel_init_hooks"] = kernel_init_hooks.split(",") if kernel_init_hooks else []
+
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
@@ -310,6 +314,13 @@ class CUDABackend(BaseBackend):
         # source-level chunk staging into direct async copies targeting
         # memdesc subviews of the final shared operand buffer.
         tle.passes.add_optimize_local_pointer_async_stores(pm)
+        # flagtree pass: fold an ordered join/transpose/reshape K concatenation
+        # into a single op before any layout is assigned, so the operand
+        # encodings are chosen as if the concatenation had always been one op.
+        # Left as a join chain the operand would be staged through shared memory
+        # instead of reaching the mma in registers.
+        if hasattr(passes.ttgpuir, "add_concat_dot_operand"):
+            passes.ttgpuir.add_concat_dot_operand(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_process_shared_memory_hint(pm)  # flagtree hints
@@ -394,6 +405,11 @@ class CUDABackend(BaseBackend):
         passes.common.add_sccp(pm)
         passes.common.add_cse(pm)
         passes.common.add_canonicalizer(pm)
+        # flagtree pass: last chance to undo a concat the layouts did not end up
+        # supporting, so it runs after everything that can still fold or retag
+        # the operand.
+        if hasattr(passes.ttgpuir, "add_expand_concat_dot_operand"):
+            passes.ttgpuir.add_expand_concat_dot_operand(pm)
 
         pm.run(mod, 'make_ttgir')
         # begin flagtree tle

@@ -34,6 +34,8 @@ def ConvertTritonToGCUPass: Pass<"convert-triton-to-gcu", "gpu::GPUModuleOp"> {
            "Length of vector in byte">,
     Option<"vectorizationMaxLength", "vectorization-max-length", "unsigned", /*default=*/"16384u",
             "Maximum vector length in byte for vectorization">,
+    Option<"enable_i64", "enable_i64", "bool", /*default=*/"false",
+           "support datatype i64">,
   ];
 }
 
@@ -48,7 +50,9 @@ def GCUTritonFusionPass: Pass<"gcu-triton-fusion", "gpu::GPUModuleOp"> {
   let options = [
      Option<"arch", "arch", "std::string",
            /*default=*/"\"gcu300\"",
-           "Architecture that these operations will run on">
+           "Architecture that these operations will run on">,
+     Option<"enable_i64", "enable_i64", "bool", /*default=*/"false",
+            "support datatype i64 ">,
   ];
 }
 
@@ -65,7 +69,9 @@ def ConvertTritonLoadStoreToGCUDmaPass: Pass<"convert-triton-load-store-to-gcu-d
            /*default=*/"\"gcu300\"",
            "Architecture that these operations will run on">,
     Option<"support_stride0", "support_stride0", "bool", /*default=*/"false",
-        "support broadcast for stride = 0 ">
+        "support broadcast for stride = 0 ">,
+    Option<"enable_i64", "enable_i64", "bool", /*default=*/"false",
+        "support datatype i64">
   ];
 }
 
@@ -184,6 +190,27 @@ def GCUConvertTritonToTritonGPUPass
     "mlir::math::MathDialect",
     "mlir::ub::UBDialect"
   ];
+}
+
+//===----------------------------------------------------------------------===//
+// TleToTritonGCU
+//===----------------------------------------------------------------------===//
+def TleToTritonGCUPass
+    : Pass<"tle-to-triton-gcu", "gpu::GPUModuleOp"> {
+  let summary = "Unified FlagTree TLE op lowering for enflame GCU backend.";
+  let description = [{
+    This pass handles all TLE-related op lowering for the enflame backend.
+    All patterns use string-based RewritePattern matching.
+  }];
+  let options = [
+    Option<"clusterDimX", "cluster-dim-x", "unsigned", /*default=*/"1",
+           "Cluster dimension X">,
+    Option<"clusterDimY", "cluster-dim-y", "unsigned", /*default=*/"1",
+           "Cluster dimension Y">,
+    Option<"clusterDimZ", "cluster-dim-z", "unsigned", /*default=*/"1",
+           "Cluster dimension Z">,
+  ];
+  let dependentDialects = ["mlir::triton::gcu::TritonGCUDialect"];
 }
 
 #endif // GCU_CONVERSION_PASSES

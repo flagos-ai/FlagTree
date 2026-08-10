@@ -150,7 +150,7 @@ def signal(
     device_dptr,
     peer,
     signal_id,
-    value=1,
+    value: int | None = None,
     op: str | attr.SignalOpKind = "inc",
     space: str | attr.SignalTeamKind = "intra_node",
     group_kind: str | GroupKind | attr.SignalCoopKind = GroupKind.BLOCK,
@@ -160,7 +160,8 @@ def signal(
     """Atomically update a signal slot owned by a remote FlagCX peer.
 
     ``op="inc"`` increments the selected slot by one. ``op="add"`` adds
-    ``value``. The primitive only sends a signal; it neither transfers data nor
+    ``value``. ``op="ctr" increments the selected counter slot by one.
+    The primitive only sends a signal; it neither transfers data nor
     waits for completion on the receiving peer.
 
     ``space`` selects the FlagCX team (``intra_node``, ``inter_node``, or
@@ -178,7 +179,7 @@ def signal(
 
     signal_op = attr.SignalOpKind.from_str(str(tl._unwrap_if_constexpr(op)).lower())
     if signal_op is None:
-        raise ValueError(f"op must be 'inc' or 'add', got {signal_op!r}")
+        raise ValueError(f"op must be 'inc', 'add', or 'ctr', got {signal_op!r}")
 
     signal_space = str(tl._unwrap_if_constexpr(space)).lower()
     if signal_space not in _SIGNAL_SPACE_TO_TEAM_KIND:
@@ -199,15 +200,20 @@ def signal(
     if context_idx < 0 or context_idx > 0x7FFFFFFF:
         raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
 
+    if value is None and signal_op in (attr.SignalOpKind.Add, ):
+        raise ValueError("value must be provided when op is 'add'")
+    elif value is not None and signal_op in (attr.SignalOpKind.Inc, attr.SignalOpKind.Ctr):
+        raise ValueError("value shouldn't be provided when op is 'inc' or 'ctr'")
+
     peer_tensor = _normalize_signal_scalar(peer, "peer", tl.int32, _semantic)
     signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.uint32, _semantic)
-    value_tensor = _normalize_signal_scalar(value, "value", tl.uint64, _semantic)
+    value_tensor = _normalize_signal_scalar(value, "value", tl.uint64, _semantic) if value is not None else None
     comm = _parse_src_arg(builder, device_dptr, 1)
     builder.create_signal(
         comm,
         peer_tensor.handle,
         signal_tensor.handle,
-        value_tensor.handle,
+        None if value_tensor is None else value_tensor.handle,
         signal_op,
         signal_space,
         group_kind,
@@ -1163,12 +1169,10 @@ def signal_wait(
     omitted.
     """
     builder = _semantic.builder
-    if not hasattr(builder, "create_signal_wait"):
-        raise NotImplementedError("tle.signal_wait requires rebuilt TLE builder support")
 
     wait_kind = tl._unwrap_if_constexpr(wait_kind)
-    wait_kind_val = (wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else
-                     attr.SignalWaitKind.from_str(str(wait_kind).lower()))
+    wait_kind_val = (wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else attr.SignalWaitKind.from_str(
+        str(wait_kind).lower()))
     if wait_kind_val is None:
         expected = "signal, counter, or shadow"
         raise ValueError(f"wait kind must be {expected}, got {wait_kind!r}")
@@ -1186,17 +1190,14 @@ def signal_wait(
     if context_idx < 0 or context_idx > 0x7FFFFFFF:
         raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
 
-    target = tl._unwrap_if_constexpr(target)
-    target_required = wait_kind_val in (attr.SignalWaitKind.Signal, attr.SignalWaitKind.Counter)
-    if target_required and target is None:
-        raise ValueError(f"target is required for wait_kind={wait_kind!r}")
-    if not target_required and target is not None:
-        raise ValueError("target must be omitted for wait_kind='shadow'")
+    if target is None and wait_kind_val in (attr.SignalWaitKind.Signal, attr.SignalWaitKind.Counter):
+        raise ValueError("target must be provided when wait_kind is signal or counter")
+    elif target is not None and wait_kind_val in (attr.SignalWaitKind.Shadow, ):
+        raise ValueError("target shouldn't be provided when wait_kind is shadow")
 
     comm = _parse_src_arg(builder, device_dptr, 1)
     signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.int32, _semantic)
-    target_tensor = (_normalize_signal_scalar(target, "target", tl.int64, _semantic)
-                     if target is not None else None)
+    target_tensor = _normalize_signal_scalar(target, "target", tl.int64, _semantic) if target is not None else None
 
     builder.create_signal_wait(
         comm,
@@ -1206,7 +1207,6 @@ def signal_wait(
         group_kind,
         context_idx,
     )
-    return None
 
 
 def distributed_dot(a: ShardedTensor, b: ShardedTensor, c: ShardedTensor | None = None):
