@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: NV3.6-Build-And-Test
+name: Nvidia3.6-Build-And-Test
 
 on:
   schedule:
