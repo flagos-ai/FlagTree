@@ -150,11 +150,14 @@ jobs:
           set -euo pipefail
           docker pull harbor.spacemit.com/spacemit-ai/bianbu_riscv64_env:bianbu_3.x_v0.1
           docker rm -f rpc-ci 2>/dev/null || true
+          # 不用 bind mount: runner 容器走 host docker socket 时, 路径在 host 上不存在
+          # (host /runner/_work/... 是空目录, 真实文件在 actions-runner/_work/...).
+          # docker cp 由 docker CLI 在 runner 容器侧读源文件, 再流式写入目标容器.
           docker run -d --name rpc-ci \
             -p 127.0.0.1:${RPC_PORT}:${RPC_PORT} \
-            -v "$(pwd)/rpc_runtime_installed:/rpc:ro" \
             harbor.spacemit.com/spacemit-ai/bianbu_riscv64_env:bianbu_3.x_v0.1 \
             sleep 1200
+          docker cp rpc_runtime_installed/. rpc-ci:/rpc
           # sanity: confirm the rpc-server binary is visible inside the container
           docker exec rpc-ci ls -la /rpc/bin/spine-rpc-server /rpc/lib/libspert.so
           # launch spine-rpc-server inside the RISC-V container (binfmt QEMU)
