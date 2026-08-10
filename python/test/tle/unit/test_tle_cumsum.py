@@ -10,6 +10,8 @@ import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton._flagtree_backend import FLAGTREE_BACKEND
+from triton._internal_testing import get_current_target, is_cuda, is_hip
 
 
 def _is_enflame_backend():
@@ -18,32 +20,15 @@ def _is_enflame_backend():
 
 
 def _is_hcu_backend():
-    try:
-        driver = triton.runtime.driver.active
-        return type(driver).__module__.startswith("triton.backends.hcu")
-    except Exception:
-        return False
+    return FLAGTREE_BACKEND == "hcu"
 
 
 _nv_mma_shared_layout = tl.constexpr(False if _is_hcu_backend() else True)
-threads_per_warp = 64 if _is_hcu_backend() else 32
-
-
-def _is_nvidia_cuda_backend():
-    try:
-        driver = triton.runtime.driver.active
-        target = driver.get_current_target()
-        return (target.backend == "cuda" and type(driver).__module__.startswith("triton.backends.nvidia"))
-    except Exception:
-        return False
+threads_per_warp = get_current_target().warp_size if is_hip() else 32
 
 
 def _is_amd_hip_backend():
-    try:
-        driver = triton.runtime.driver.active
-        return type(driver).__module__.startswith("triton.backends.amd")
-    except Exception:
-        return False
+    return is_hip() and not FLAGTREE_BACKEND
 
 
 def _require_cuda():
@@ -223,7 +208,7 @@ def test_tle_cumsum_exclusive_and_total(dtype, n, block, reverse, num_warps):
 
 
 @pytest.mark.skipif(
-    not _is_nvidia_cuda_backend(),
+    not is_cuda(),
     reason="PTX-specific regression guard requires NVIDIA CUDA backend",
 )
 def test_tle_cumsum_ptx_fastpath_regression_guard():

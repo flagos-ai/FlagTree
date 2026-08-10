@@ -70,18 +70,13 @@ public:
 };
 
 #ifdef __TLE__
-// Conversion target for the dedicated TLE-to-LLVM partial conversion. Only
-// the tile-level extension ops that have AMD lowering patterns are illegal
-// (must be converted); every other op (including unsupported TLE ops) stays
-// legal and is reported later by the make_llir residual-op guard.
+// Reject unsupported TLE operations and accidental CUDA lowering in the
+// dedicated AMD TLE-to-LLVM partial conversion.
 class TleLLVMConversionTarget : public ConversionTarget {
 public:
   explicit TleLLVMConversionTarget(MLIRContext &ctx) : ConversionTarget(ctx) {
-    addLegalDialect<LLVM::LLVMDialect, ROCDL::ROCDLDialect,
-                    NVVM::NVVMDialect>();
-    addIllegalOp<mlir::triton::tle::ExtractTileOp,
-                 mlir::triton::tle::InsertTileOp,
-                 mlir::triton::tle::ExclusiveCumsumOp>();
+    addLegalDialect<LLVM::LLVMDialect, ROCDL::ROCDLDialect>();
+    addIllegalDialect<NVVM::NVVMDialect, mlir::triton::tle::TleDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
@@ -204,10 +199,9 @@ struct ConvertTritonAMDGPUToLLVM
 
 #ifdef __TLE__
     // Lower the supported tile-level extension (TLE) ops (extract_tile /
-    // insert_tile / exclusive_cumsum) to LLVM via the backend-agnostic
-    // conversion patterns, in a dedicated partial conversion (mirrors the
-    // NVIDIA / HCU path). Unsupported TLE ops remain legal in this focused
-    // conversion.
+    // insert_tile / exclusive_cumsum) via the backend-agnostic conversion
+    // patterns. The dedicated partial conversion rejects unsupported TLE ops
+    // and accidental NVVM emission.
     {
       TleLLVMConversionTarget tleTarget(*context);
       RewritePatternSet tlePatterns(context);
