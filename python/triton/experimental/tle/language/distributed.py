@@ -150,7 +150,7 @@ def signal(
     device_dptr,
     peer,
     signal_id,
-    value=1,
+    value: int | None = None,
     op: str | attr.SignalOpKind = "inc",
     space: str | attr.SignalTeamKind = "intra_node",
     group_kind: str | GroupKind | attr.SignalCoopKind = GroupKind.BLOCK,
@@ -200,15 +200,20 @@ def signal(
     if context_idx < 0 or context_idx > 0x7FFFFFFF:
         raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
 
+    if value is None and signal_op in (attr.SignalOpKind.Add,):
+        raise ValueError("value must be provided when op is 'add'")
+    elif value is not None and signal_op in (attr.SignalOpKind.Inc, attr.SignalOpKind.Ctr):
+        raise ValueError("value shouldn't be provided when op is 'inc' or 'ctr'")
+
     peer_tensor = _normalize_signal_scalar(peer, "peer", tl.int32, _semantic)
     signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.uint32, _semantic)
-    value_tensor = _normalize_signal_scalar(value, "value", tl.uint64, _semantic)
+    value_tensor = _normalize_signal_scalar(value, "value", tl.uint64, _semantic) if value is not None else None
     comm = _parse_src_arg(builder, device_dptr, 1)
     builder.create_signal(
         comm,
         peer_tensor.handle,
         signal_tensor.handle,
-        value_tensor.handle,
+        value_tensor and value_tensor.handle,
         signal_op,
         signal_space,
         group_kind,
@@ -1177,9 +1182,14 @@ def signal_wait(
     if context_idx < 0 or context_idx > 0x7FFFFFFF:
         raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
 
+    if target is None and wait_kind_val in (attr.SignalWaitKind.Signal, attr.SignalWaitKind.Counter):
+        raise ValueError("target must be provided when wait_kind is signal or counter")
+    elif target is not None and wait_kind_val in (attr.SignalWaitKind.Shadow,):
+        raise ValueError("target shouldn't be provided when wait_kind is shadow")
+
     comm = _parse_src_arg(builder, device_dptr, 1)
-    signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.int32, _semantic) if target else None
-    target_tensor = target and _normalize_signal_scalar(target, "target", tl.int64, _semantic)
+    signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.int32, _semantic)
+    target_tensor = _normalize_signal_scalar(target, "target", tl.int64, _semantic) if target is not None else None
 
     builder.create_signal_wait(
         comm,
