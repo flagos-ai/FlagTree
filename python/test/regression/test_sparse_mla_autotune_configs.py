@@ -1,6 +1,9 @@
 import inspect
 import importlib.util
+import math
 from pathlib import Path
+
+import pytest
 
 
 def _load_sparse_mla_module():
@@ -74,3 +77,78 @@ def test_sparse_mla_bench_seed_is_explicit_and_shared():
     assert inspect.signature(module.run_bench_table).parameters["seed"].default == module.BENCH_DEFAULT_SEED
     assert inspect.signature(module.bench_sparse_mla_fwd).parameters["seed"].default == module.BENCH_DEFAULT_SEED
     assert "seed" in inspect.signature(module.benchmark_sparse_mla_fwd.fn).parameters
+
+
+def _run_forward_benchmark_callback(module, provider):
+    return module.benchmark_sparse_mla_fwd.fn(
+        B=1,
+        S=1,
+        SKV=1,
+        H=1,
+        HKV=1,
+        DQK=1,
+        DV=1,
+        topk=1,
+        provider=provider,
+        warmup=1,
+        rep=1,
+        tilelang_block_I=1,
+        tilelang_num_stages=1,
+        tilelang_threads=32,
+        input_mode="flashmla",
+        seed=1,
+    )
+
+
+def _stub_forward_benchmark_inputs(monkeypatch, module):
+    monkeypatch.setattr(module, "_get_bench_sparse_mla_inputs", lambda *args, **kwargs: (None, None, None, None))
+
+
+def _benchmark_failure(message):
+    def fail(*args, **kwargs):
+        raise RuntimeError(message)
+
+    return fail
+
+
+@pytest.mark.parametrize("provider", ["tle-flashmla-prefill", "tilelang"])
+def test_sparse_mla_benchmark_propagates_supported_provider_failure(monkeypatch, provider):
+    module = _load_sparse_mla_module()
+    _stub_forward_benchmark_inputs(monkeypatch, module)
+    monkeypatch.setattr(module, "_HAVE_TILELANG", True)
+    monkeypatch.setattr(module.triton.testing, "do_bench", _benchmark_failure("compile failed"))
+
+    with pytest.raises(RuntimeError, match="compile failed"):
+        _run_forward_benchmark_callback(module, provider)
+
+
+def test_sparse_mla_benchmark_skips_unavailable_optional_provider(monkeypatch):
+    module = _load_sparse_mla_module()
+    _stub_forward_benchmark_inputs(monkeypatch, module)
+    monkeypatch.setattr(module, "_HAVE_TILELANG", False)
+    monkeypatch.setattr(module.triton.testing, "do_bench", _benchmark_failure("unavailable provider was executed"))
+
+    result = _run_forward_benchmark_callback(module, "tilelang")
+
+    assert all(math.isnan(value) for value in result)
+
+
+def test_sparse_mla_single_benchmark_propagates_provider_failure(monkeypatch):
+    module = _load_sparse_mla_module()
+    _stub_forward_benchmark_inputs(monkeypatch, module)
+    monkeypatch.setattr(module, "triton_sparse_mla_fwd_interface", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(module, "tle_sparse_mla_fwd_interface", _benchmark_failure("TLE compile failed"))
+    monkeypatch.setattr(module, "_bench_ms", lambda *args, **kwargs: 1.0)
+    monkeypatch.setattr(module, "_sparse_mla_tflops_from_topk_length", lambda *args, **kwargs: 1.0)
+
+    with pytest.raises(RuntimeError, match="TLE compile failed"):
+        module.bench_sparse_mla_fwd(B=1, S=1, SKV=1, H=1, HKV=1, DQK=1, DV=1, topk=1, check_outputs=False)
+
+
+def test_sparse_mla_benchmark_rejects_non_finite_timings(monkeypatch):
+    module = _load_sparse_mla_module()
+    _stub_forward_benchmark_inputs(monkeypatch, module)
+    monkeypatch.setattr(module.triton.testing, "do_bench", lambda *args, **kwargs: (float("nan"), 1.0, 2.0))
+
+    with pytest.raises(RuntimeError, match="non-finite timings"):
+        _run_forward_benchmark_callback(module, "triton")
