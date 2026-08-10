@@ -454,11 +454,18 @@ static std::optional<int> dotCanBeProperlyAsync(ttng::WarpGroupDotOp dotOp,
     // come from an MemDescIndex op.  Only ConvertLayout and view ops are
     // allowed in between.
     Value transitiveOperand = operand;
+#ifdef __TLE__
     while (isa_and_nonnull<ttg::ConvertLayoutOp, ttg::MemDescTransOp,
                            ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp,
                            mlir::triton::tle::MemDescAliasOp>(
                transitiveOperand.getDefiningOp()) ||
            isa<BlockArgument>(transitiveOperand)) {
+#else
+    while (isa_and_nonnull<ttg::ConvertLayoutOp, ttg::MemDescTransOp,
+                           ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp>(
+               transitiveOperand.getDefiningOp()) ||
+           isa<BlockArgument>(transitiveOperand)) {
+#endif
       auto blockArg = dyn_cast<BlockArgument>(transitiveOperand);
       if (blockArg && blockArg.getOwner() == forOp.getBody()) {
         transitiveOperand =
