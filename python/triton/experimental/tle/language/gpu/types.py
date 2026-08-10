@@ -20,11 +20,16 @@
 
 # flagtree tle
 
+from __future__ import annotations
+
 import triton.language.core as tl
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, TYPE_CHECKING
 from abc import abstractmethod
 from triton._C.libtriton import ir
 from triton.language.semantic import TritonSemantic
+
+if TYPE_CHECKING:
+    from .. import TLESemantic
 
 
 class scope():
@@ -320,7 +325,7 @@ class buffered_tensor(tl.base_value):
         handles.append(self.handle)
 
     @tl.builtin
-    def slot(self, stage, _semantic=None):
+    def slot(self, stage, _semantic: TLESemantic | None = None):
         if len(self.shape) < 2:
             raise ValueError("buffered_tensor.slot requires a rank >= 2 buffer")
         if self.type.storage is not smem:
@@ -487,7 +492,7 @@ class barrier(tl.base_value):
         handles.append(self.handle)
 
     @tl.builtin
-    def __getitem__(self, index, _semantic=None):
+    def __getitem__(self, index, _semantic: TLESemantic | None = None):
         if self.is_slot:
             raise ValueError("tle.gpu barrier slot cannot be indexed again")
 
@@ -798,7 +803,7 @@ class pipe_value(tl.base_value):
     def _ir_name(self):
         return "" if self.name is None else self.name
 
-    def _make_slot(self, stage, _semantic=None, field_names=None):
+    def _make_slot(self, stage, _semantic: TLESemantic | None = None, field_names=None):
         if field_names is None:
             fields = self.fields.items()
         else:
@@ -806,7 +811,7 @@ class pipe_value(tl.base_value):
         return pipe_slot({name: field.slot(stage, _semantic=_semantic) for name, field in fields})
 
     @tl.builtin
-    def _stage_phase(self, iter, _semantic=None):
+    def _stage_phase(self, iter, _semantic: TLESemantic | None = None):
         iter = tl._unwrap_if_constexpr(iter)
         if isinstance(iter, int):
             stage = iter % self.capacity
@@ -820,11 +825,11 @@ class pipe_value(tl.base_value):
         return _semantic.to_tensor(stage), _semantic.to_tensor(phase)
 
     @tl.builtin
-    def writer(self, _semantic=None):
+    def writer(self, _semantic: TLESemantic | None = None):
         return pipe_writer(self)
 
     @tl.builtin
-    def reader(self, name=None, fields=None, _semantic=None):
+    def reader(self, name=None, fields=None, _semantic: TLESemantic | None = None):
         reader_name = _validate_pipe_reader_name(self, name)
         field_names = _validate_pipe_reader_fields(self, fields)
         return pipe_reader(self, reader_name=reader_name, field_names=field_names)
@@ -914,7 +919,7 @@ class pipe_writer(_pipe_endpoint):
         super().__init__(pipe)
 
     @tl.builtin
-    def acquire(self, iter, _semantic=None):
+    def acquire(self, iter, _semantic: TLESemantic | None = None):
         stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
         _semantic.builder.create_pipe_writer_acquire(self.pipe._field_handles(), stage.handle, phase.handle,
                                                      self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
@@ -922,13 +927,13 @@ class pipe_writer(_pipe_endpoint):
         return self.pipe._make_slot(stage, _semantic=_semantic)
 
     @tl.builtin
-    def commit(self, iter, _semantic=None):
+    def commit(self, iter, _semantic: TLESemantic | None = None):
         stage, _ = self.pipe._stage_phase(iter, _semantic=_semantic)
         _semantic.builder.create_pipe_writer_commit(self.pipe._field_handles(), stage.handle, self.pipe.capacity,
                                                     self.pipe.scope, self.pipe._ir_name(), self.pipe._field_names())
 
     @tl.builtin
-    def close(self, iter, _semantic=None):
+    def close(self, iter, _semantic: TLESemantic | None = None):
         if self.pipe.one_shot:
             raise ValueError("tle.pipe one_shot pipes do not support close")
         stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
@@ -947,7 +952,7 @@ class pipe_reader(_pipe_endpoint):
         return list(self.field_names)
 
     @tl.builtin
-    def wait(self, iter, _semantic=None):
+    def wait(self, iter, _semantic: TLESemantic | None = None):
         stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
         is_closed = _semantic.builder.create_pipe_reader_wait(self.pipe._field_handles(), stage.handle, phase.handle,
                                                               self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
@@ -957,7 +962,7 @@ class pipe_reader(_pipe_endpoint):
         return pipe_wait_result(slot, tl.tensor(is_closed, tl.int1))
 
     @tl.builtin
-    def release(self, iter, _semantic=None):
+    def release(self, iter, _semantic: TLESemantic | None = None):
         stage, _ = self.pipe._stage_phase(iter, _semantic=_semantic)
         _semantic.builder.create_pipe_reader_release(self.pipe._field_handles(), stage.handle,
                                                      self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
