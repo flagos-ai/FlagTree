@@ -10,10 +10,10 @@ export FLAGCX_P2P_DISABLE=1
 export CUDA_VISIBLE_DEVICES=0,1
 
 port=8333
-    # Check whether port is occupied
+# Check whether port is occupied
 while ss -ltn | grep -q ":${port} "; do
-        echo "Port ${port} is occupied, trying next..."
-        port=$((port + 2))
+    echo "Port ${port} is occupied, trying next..."
+    port=$((port + 2))
 done
 
 echo "Using master_port=${port}"

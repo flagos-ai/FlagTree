@@ -1,8 +1,6 @@
 rm -rf ~/.triton/cache
 #!/bin/bash
 
-
-
 # Check if the debug flag is provided as an argument
 if [ "$1" == "debug" ]; then
     export NCCL_DEBUG=INFO
@@ -35,10 +33,10 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 
 port=8333
-    # Check whether port is occupied
+# Check whether port is occupied
 while ss -ltn | grep -q ":${port} "; do
-        echo "Port ${port} is occupied, trying next..."
-        port=$((port + 2))
+    echo "Port ${port} is occupied, trying next..."
+    port=$((port + 2))
 done
 
 echo "Using master_port=${port}"

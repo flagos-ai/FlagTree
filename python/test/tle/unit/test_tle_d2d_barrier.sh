@@ -30,11 +30,12 @@ export FLAGCX_P2P_DISABLE=1
 #export FLAGCX_DMABUF_ENABLE=1
 #export FLAGCX_DEBUG=TRACE
 #export FLAGCX_DEBUG_SUBSY
+
 port=8333
-    # Check whether port is occupied
+# Check whether port is occupied
 while ss -ltn | grep -q ":${port} "; do
-        echo "Port ${port} is occupied, trying next..."
-        port=$((port + 2))
+    echo "Port ${port} is occupied, trying next..."
+    port=$((port + 2))
 done
 
 echo "Using master_port=${port}"
