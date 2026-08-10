@@ -17,24 +17,26 @@ def _signal_wait_kernel(
     device_dptr: tl.constexpr,
     mesh: tl.constexpr,
     peer: tl.constexpr,
-    signal_id: tl.constexpr,
+    slot_id: tl.constexpr,
     signal_space: tl.constexpr,
+    signal_op: tl.constexpr,
+    wait_kind: tl.constexpr,
 ):
     local_rank = tle.shard_id(mesh, "device", device_dptr=device_dptr)
 
     tle.signal(
         device_dptr,
         peer,
-        signal_id=signal_id,
-        op="inc",
+        slot_id=slot_id,
+        op=signal_op,
         space=signal_space,
         group_kind="block",
         context_idx=0,
     )
     tle.signal_wait(
         device_dptr,
-        signal_id=signal_id,
-        wait_kind="signal",
+        slot_id=slot_id,
+        wait_kind=wait_kind,
         target=1,
         group_kind="block",
         context_idx=0,
@@ -42,14 +44,24 @@ def _signal_wait_kernel(
     tl.store(result_ptr, local_rank + 1)
 
 
-def _ir_verify(result, device_dptr, peer, signal_id, signal_space):
+def _ir_verify(
+    result,
+    device_dptr,
+    peer,
+    slot_id,
+    signal_space,
+    signal_op,
+    wait_kind,
+):
     compiled = _signal_wait_kernel.warmup(
         result_ptr=result,
         device_dptr=device_dptr,
         mesh=DEVICE_MESH,
         peer=peer,
-        signal_id=signal_id,
+        slot_id=slot_id,
         signal_space=signal_space,
+        signal_op=signal_op,
+        wait_kind=wait_kind,
         grid=(1, ),
         num_ctas=1,
         num_warps=4,
@@ -57,10 +69,16 @@ def _ir_verify(result, device_dptr, peer, signal_id, signal_space):
     assert "tle.signal" in compiled.asm["ttgir"]
     assert "tle.signal_wait" in compiled.asm["ttgir"]
     assert "flagcxDevNetGetFromCommS" in compiled.asm["ptx"]
-    assert "flagcxDevNetSignalSigIncS" in compiled.asm["ptx"]
-    assert "flagcxDevNetWaitSignalS" in compiled.asm["ptx"]
-    # assert "flagcxDevNetWaitSignalMeetShadowS" in compiled.asm["ptx"]
-    # assert "flagcxDevNetWaitCounterS" in compiled.asm["ptx"]
+    expected_signal_func = {
+        "inc": "flagcxDevNetSignalSigIncS",
+        "ctr": "flagcxDevNetSignalCtrIncS",
+    }[signal_op]
+    expected_wait_func = {
+        "signal": "flagcxDevNetWaitSignalS",
+        "counter": "flagcxDevNetWaitCounterS",
+    }[wait_kind]
+    assert expected_signal_func in compiled.asm["ptx"]
+    assert expected_wait_func in compiled.asm["ptx"]
 
 
 def _runtime_verify(
@@ -69,8 +87,10 @@ def _runtime_verify(
     peer,
     rank,
     local_rank,
-    signal_id,
+    slot_id,
     signal_space,
+    signal_op,
+    wait_kind,
 ):
     dist.barrier()
     _signal_wait_kernel[(1, )](
@@ -78,8 +98,10 @@ def _runtime_verify(
         device_dptr=device_dptr,
         mesh=DEVICE_MESH,
         peer=peer,
-        signal_id=signal_id,
+        slot_id=slot_id,
         signal_space=signal_space,
+        signal_op=signal_op,
+        wait_kind=wait_kind,
         num_ctas=1,
         num_warps=4,
     )
@@ -89,7 +111,8 @@ def _runtime_verify(
     expected = local_rank + 1
     print(
         f"[Rank {rank}, local_rank={local_rank}] space={signal_space}, "
-        f"peer={peer}, signal_id={signal_id}, result={actual}, "
+        f"peer={peer}, op={signal_op}, wait_kind={wait_kind}, "
+        f"slot_id={slot_id}, result={actual}, "
         f"expected={expected}",
         flush=True,
     )
@@ -100,11 +123,11 @@ def _runtime_verify(
     )
     dist.all_reduce(passed, op=dist.ReduceOp.MIN)
     assert passed.item() == 1, (f"[Rank {rank}, local_rank={local_rank}] "
-                                f"{signal_space} signal_wait failed: "
+                                f"{signal_space} {signal_op}/{wait_kind} failed: "
                                 f"expected {expected}, got {actual}")
     print(
-        f"[Rank {rank}] [PASSED] space={signal_space} signal and "
-        "signal_wait kernel executed successfully",
+        f"[Rank {rank}] [PASSED] space={signal_space} "
+        f"{signal_op}/{wait_kind} kernel executed successfully",
         flush=True,
     )
 
@@ -144,18 +167,22 @@ class TestSignalWait:
         device_dptr = tle.create_dist_tensor(backing)
         inter_node_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         world_result = torch.zeros(1, dtype=torch.int32, device="cuda")
+        counter_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         try:
             phases = (
-                (inter_node_result, world_peer, 0, "inter_node"),
-                (world_result, world_peer, 1, "world"),
+                (inter_node_result, world_peer, 0, "inter_node", "inc", "signal"),
+                (world_result, world_peer, 1, "world", "inc", "signal"),
+                (counter_result, world_peer, 0, "world", "ctr", "counter"),
             )
-            for result, peer, signal_id, signal_space in phases:
+            for result, peer, slot_id, signal_space, signal_op, wait_kind in phases:
                 _ir_verify(
                     result,
                     device_dptr,
                     peer,
-                    signal_id,
+                    slot_id,
                     signal_space,
+                    signal_op,
+                    wait_kind,
                 )
                 _runtime_verify(
                     result,
@@ -163,8 +190,10 @@ class TestSignalWait:
                     peer,
                     rank,
                     local_rank,
-                    signal_id,
+                    slot_id,
                     signal_space,
+                    signal_op,
+                    wait_kind,
                 )
         finally:
             tle.cleanup_communicator()

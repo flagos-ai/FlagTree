@@ -24,7 +24,7 @@ def _signal_kernel(
     tle.signal(
         device_dptr,
         peer,
-        signal_id=0,
+        slot_id=0,
         op="inc",
         space="inter_node",
         group_kind="block",
@@ -32,8 +32,8 @@ def _signal_kernel(
     )
     tle.signal(
         device_dptr,
-        peer,
-        signal_id=1,
+        world_peer,
+        slot_id=1,
         value=local_rank + 2,
         op="add",
         space="inter_node",
@@ -43,8 +43,17 @@ def _signal_kernel(
     tle.signal(
         device_dptr,
         world_peer,
-        signal_id=0,
+        slot_id=0,
         op="inc",
+        space="world",
+        group_kind="block",
+        context_idx=0,
+    )
+    tle.signal(
+        device_dptr,
+        world_peer,
+        slot_id=0,
+        op="ctr",
         space="world",
         group_kind="block",
         context_idx=0,
@@ -67,6 +76,7 @@ def _ir_verify(result, device_dptr, peer, world_peer):
     assert "flagcxDevNetGetFromCommS" in compiled.asm["ptx"]
     assert "flagcxDevNetSignalSigIncS" in compiled.asm["ptx"]
     assert "flagcxDevNetSignalSigAddS" in compiled.asm["ptx"]
+    assert "flagcxDevNetSignalCtrIncS" in compiled.asm["ptx"]
 
 
 def _runtime_verify(result, device_dptr, peer, world_peer, rank, local_rank):
