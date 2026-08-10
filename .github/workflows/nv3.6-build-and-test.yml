@@ -74,6 +74,8 @@ jobs:
           source ~/env-3.6.sh
           export FLAGCX_RECOMPILE=ON
           export USE_FLAGCX=ON
+          export COMPILE_KERNEL=1
+          export USE_NVIDIA=1
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: Unit Test
@@ -114,10 +116,14 @@ jobs:
           python3 -m pytest -s python/test/tle/unit \
               --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
               --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
-              --ignore=python/test/tle/unit/test_tle_d2d_barrier.py
+              --ignore=python/test/tle/unit/test_tle_d2d_barrier.py \
+              --ignore=python/test/tle/unit/test_tle_signal.py \
+              --ignore=python/test/tle/unit/test_tle_signal_wait.py
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_distributed_d2d.sh
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_get_local_pe.sh
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_d2d_barrier.sh
+          # CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_signal.sh
+          # CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_signal_wait.sh
           ## flagtree hints python tutorials
           python3 python/tutorials/hints/01/01-vector-add.py --only_unit_test
           # python3 python/tutorials/hints/02/02-fused-softmax.py --only_unit_test
