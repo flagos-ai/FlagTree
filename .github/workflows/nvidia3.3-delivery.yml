@@ -18,7 +18,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: CD-AIPU3.3
+name: CD-Nvidia3.3
+
+permissions:
+    contents: write
 
 on:
   workflow_dispatch:
@@ -29,19 +32,10 @@ on:
         default: '0.6.0'
       PYTHON_VER:
         required: true
-        default: '3.10'
+        default: '3.12'
       PLATFORM:
         required: true
         default: 'x86_64'
-      BRANCH:
-        required: true
-        default: 'triton_v3.3.x'
-      TRITON:
-        required: true
-        default: '3.3'
-      BACKEND:
-        required: true
-        default: 'aipu'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -53,36 +47,21 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.10'
+        default: '3.12'
       PLATFORM:
         type: string
         required: true
         default: 'x86_64'
-      BRANCH:
-        type: string
-        required: true
-        default: 'triton_v3.3.x'
-      TRITON:
-        type: string
-        required: true
-        default: '3.3'
-      BACKEND:
-        type: string
-        required: true
-        default: 'aipu'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
 
 jobs:
   call-delivery:
-    uses: flagos-ai/flagtree/.github/workflows/aipu3.3-delivery.yml@main
+    uses: flagos-ai/flagtree/.github/workflows/nvidia3.3-delivery.yml@main
     with:
       WHL_VER: ${{ inputs.WHL_VER }}
       PYTHON_VER: ${{ inputs.PYTHON_VER }}
       PLATFORM: ${{ inputs.PLATFORM }}
-      BRANCH: ${{ inputs.BRANCH }}
-      TRITON: ${{ inputs.TRITON }}
-      BACKEND: ${{ inputs.BACKEND }}
       FLAGTREE_PYPI_KEY: ${{ inputs.FLAGTREE_PYPI_KEY }}
     secrets: inherit
