@@ -1,11 +1,11 @@
 name: Spacemit3.6-Build-And-Test
 
 # SpaceMiT RISC-V 后端 CI (root-triton plugin)。
-# retrigger: spine-FlagGems @ 77d72cba (mm fix) — confirm squashed commit green
 #
-# 执行环境: 容器化 self-hosted runner (label spacemit3.6)。
-# 机器专属配置 (SPINE_TRITON_RPC_*) 硬编码在 job env 里;
-# LLVM / spine-mlir / spine-runtime / toolchain 从
+# 执行环境: self-hosted runner (label spacemit3.6)。
+# RPC 执行: bianbu_riscv64_env 容器 (RISC-V via QEMU binfmt) 跑 spine-rpc-server,
+#           host triton 交叉编译 kernel 后通过 TCP 9999 发给容器执行。
+# LLVM / spine-mlir / spine-runtime / rpc-runtime / toolchain 从
 # zuoweixia497/spacemit-ci-assets GitHub release 下载并缓存。
 # 更新包: 修改 third_party/spacemit/spacemit-ci.env 里的 URL+MD5 即可。
 
@@ -29,9 +29,8 @@ jobs:
   spacemit36x-unit-test:
     runs-on: spacemit3.6
     env:
-      SPINE_TRITON_RPC_HOST: 0.0.0.0
-      SPINE_TRITON_RPC_PORT: 9999
       MAX_JOBS: 4
+      RPC_PORT: "9999"
     steps:
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -112,6 +111,22 @@ jobs:
           tar -xf spine-runtime.tar.gz -C spine_runtime_installed --strip-components=1
           rm spine-runtime.tar.gz
 
+      - name: Cache RPC runtime
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: cache-rpc-runtime
+        uses: actions/cache@v4
+        with:
+          path: rpc_runtime_installed
+          key: rpc-runtime-${{ env.RPC_RUNTIME_MD5 }}
+
+      - name: Download and extract RPC runtime
+        if: steps.check_backend.outputs.should_skip != 'true' && steps.cache-rpc-runtime.outputs.cache-hit != 'true'
+        run: |
+          curl -k -L --retry 5 --retry-delay 5 --retry-all-errors -o rpc-runtime.tar.gz "$RPC_RUNTIME_URL"
+          mkdir -p rpc_runtime_installed
+          tar -xf rpc-runtime.tar.gz -C rpc_runtime_installed --strip-components=1
+          rm rpc-runtime.tar.gz
+
       - name: Build (apply flagtree.patch + pip install)
         if: steps.check_backend.outputs.should_skip != 'true'
         run: |
@@ -129,7 +144,35 @@ jobs:
           MAX_JOBS="${MAX_JOBS:-4}" PIP="python -m pip" \
             bash third_party/spacemit/scripts/install_flagtree_plugin.sh
 
-      - name: Minimal smoke test (import + spacemit backend + K3 RPC)
+      - name: Start QEMU RPC server (bianbu container)
+        if: steps.check_backend.outputs.should_skip != 'true'
+        run: |
+          set -euo pipefail
+          docker pull harbor.spacemit.com/spacemit-ai/bianbu_riscv64_env:bianbu_3.x_v0.1
+          docker rm -f rpc-ci 2>/dev/null || true
+          docker run -d --name rpc-ci \
+            -p 127.0.0.1:${RPC_PORT}:${RPC_PORT} \
+            -v "$(pwd)/rpc_runtime_installed:/rpc:ro" \
+            harbor.spacemit.com/spacemit-ai/bianbu_riscv64_env:bianbu_3.x_v0.1 \
+            sleep 1200
+          # sanity: confirm the rpc-server binary is visible inside the container
+          docker exec rpc-ci ls -la /rpc/bin/spine-rpc-server /rpc/lib/libspert.so
+          # launch spine-rpc-server inside the RISC-V container (binfmt QEMU)
+          docker exec -d -e SPACEMIT_QEMU_RISCV_FLAGS="ame,vlen=1024,elen=64,vext_spec=v1.0" rpc-ci \
+            bash -c "LD_LIBRARY_PATH=/rpc/lib /rpc/bin/spine-rpc-server ${RPC_PORT} > /tmp/rpc.log 2>&1"
+          # wait for the port to accept connections (server needs ~15s to boot under QEMU)
+          for i in $(seq 1 60); do
+            if python3 -c "import socket,sys; sys.exit(0 if socket.socket().connect_ex(('127.0.0.1',${RPC_PORT}))==0 else 1)" 2>/dev/null; then
+              echo "RPC server ready on 127.0.0.1:${RPC_PORT} (${i}s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "ERROR: RPC server did not come up on port ${RPC_PORT}" >&2
+          docker exec rpc-ci cat /tmp/rpc.log 2>/dev/null || true
+          exit 1
+
+      - name: Minimal smoke test (import + spacemit backend + QEMU RPC)
         if: steps.check_backend.outputs.should_skip != 'true'
         run: |
           set -euo pipefail
@@ -138,6 +181,8 @@ jobs:
           export SPINE_TRITON_CROSS_TOOLCHAIN="$(pwd)/toolchain"
           export SPACEMIT_EP_QEMU_SET_CORE_ARCH=0xA064
           export GEMS_VENDOR=spacemit
+          export SPINE_TRITON_RPC_HOST=127.0.0.1
+          export SPINE_TRITON_RPC_PORT=${RPC_PORT}
           python - <<'PY'
           import os, socket, sys
           def check(desc, cond, detail=""):
@@ -158,18 +203,18 @@ jobs:
           ok &= check("PADDING_OPTION adapt", {"PAD_NEG_INF","PAD_INF"} <= set(pads), f"pads={pads}")
           sub = [a for a in dir(spacemit) if not a.startswith("__")]
           ok &= check("spacemit C++ submod", {"load_dialects","tle_ir","xsmt_ir"} <= set(sub), f"sub={sub}")
-          host = os.environ.get("SPINE_TRITON_RPC_HOST","10.3.91.75")
+          host = os.environ.get("SPINE_TRITON_RPC_HOST","127.0.0.1")
           port = int(os.environ.get("SPINE_TRITON_RPC_PORT","9999"))
           s = socket.socket(); s.settimeout(5)
-          ok &= check("K3 RPC reachable", s.connect_ex((host,port))==0, f"{host}:{port}")
+          ok &= check("QEMU RPC reachable", s.connect_ex((host,port))==0, f"{host}:{port}")
           print()
           print("=== minimal smoke: " + ("ALL PASS" if ok else "FAILED") + " ===")
           sys.exit(0 if ok else 1)
           PY
 
       - name: Test
-        # Run the mm_block_ptr.py example as a smoke test for the spacemit backend
-        # (RISC-V cross-compile via K3 RPC).
+        # Run mm_block_ptr.py: host triton cross-compiles the kernel to riscv64,
+        # sends it to the QEMU RPC server for execution, and checks the result.
         if: steps.check_backend.outputs.should_skip != 'true'
         run: |
           set -euo pipefail
@@ -179,4 +224,10 @@ jobs:
           export SPINE_TRITON_CROSS_TOOLCHAIN="$(pwd)/toolchain"
           export SPACEMIT_EP_QEMU_SET_CORE_ARCH=0xA064
           export GEMS_VENDOR=spacemit
+          export SPINE_TRITON_RPC_HOST=127.0.0.1
+          export SPINE_TRITON_RPC_PORT=${RPC_PORT}
           python third_party/spacemit/python/examples/mm_block_ptr.py
+
+      - name: Stop QEMU RPC server
+        if: always() && steps.check_backend.outputs.should_skip != 'true'
+        run: docker rm -f rpc-ci 2>/dev/null || true
