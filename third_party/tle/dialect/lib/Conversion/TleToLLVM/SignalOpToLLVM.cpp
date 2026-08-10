@@ -48,7 +48,7 @@ struct SignalOpConversion : public ConvertOpToLLVMPattern<tle::SignalOp> {
 
 #ifdef FLAGCX_ENABLED
     rewriter.replaceOpWithNewOp<tle::FlagCxSignalOp>(
-        op, adaptor.getComm(), adaptor.getPeer(), adaptor.getSignalId(),
+        op, adaptor.getComm(), adaptor.getPeer(), adaptor.getSlotId(),
         adaptor.getValue(), adaptor.getSignalOp(), adaptor.getTeamKind(),
         adaptor.getCoopKind(), contextIdx);
 #endif // FLAGCX_ENABLED
@@ -67,7 +67,7 @@ struct SignalWaitOpConversion
                   ConversionPatternRewriter &rewriter) const override {
 #ifdef FLAGCX_ENABLED
     rewriter.replaceOpWithNewOp<tle::FlagCxSignalWaitOp>(
-        op, adaptor.getComm(), adaptor.getSignalId(), adaptor.getWaitKind(),
+        op, adaptor.getComm(), adaptor.getSlotId(), adaptor.getWaitKind(),
         adaptor.getTarget(), adaptor.getCoopKind(), adaptor.getContextIdx());
 #endif // FLAGCX_ENABLED
     return success();

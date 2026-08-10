@@ -149,7 +149,7 @@ def _normalize_signal_scalar(value, name: str, dtype: tl.dtype, _semantic) -> tl
 def signal(
     device_dptr,
     peer,
-    signal_id,
+    slot_id,
     value: int | None = None,
     op: str | attr.SignalOpKind = "inc",
     space: str | attr.SignalTeamKind = "intra_node",
@@ -157,17 +157,19 @@ def signal(
     context_idx: int = 0,
     _semantic=None,
 ):
-    """Atomically update a signal slot owned by a remote FlagCX peer.
+    """Atomically update a synchronization slot owned by a remote FlagCX peer.
 
-    ``op="inc"`` increments the selected slot by one. ``op="add"`` adds
-    ``value``. ``op="ctr" increments the selected counter slot by one.
+    ``op="inc"`` increments the selected signal slot by one. ``op="add"``
+    adds ``value`` to the selected signal slot. ``op="ctr"`` increments the
+    selected counter slot by one.
     The primitive only sends a signal; it neither transfers data nor
     waits for completion on the receiving peer.
 
     ``space`` selects the FlagCX team (``intra_node``, ``inter_node``, or
     ``world``), while ``peer`` is a rank within that team. ``context_idx``
-    selects a pre-allocated FlagCX network context. ``signal_id`` must refer
-    to a signal slot provisioned by the distributed context.
+    selects a pre-allocated FlagCX network context. ``slot_id`` selects a
+    signal slot for ``inc``/``add`` and a counter slot for ``ctr``. Signal and
+    counter slots use independent namespaces.
 
     For ``group_kind="block"`` (the default), every thread in the CTA must
     execute this operation convergently; the group collectively emits one
@@ -206,13 +208,13 @@ def signal(
         raise ValueError("value shouldn't be provided when op is 'inc' or 'ctr'")
 
     peer_tensor = _normalize_signal_scalar(peer, "peer", tl.int32, _semantic)
-    signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.uint32, _semantic)
+    slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.uint32, _semantic)
     value_tensor = _normalize_signal_scalar(value, "value", tl.uint64, _semantic) if value is not None else None
     comm = _parse_src_arg(builder, device_dptr, 1)
     builder.create_signal(
         comm,
         peer_tensor.handle,
-        signal_tensor.handle,
+        slot_tensor.handle,
         None if value_tensor is None else value_tensor.handle,
         signal_op,
         signal_space,
@@ -1154,19 +1156,20 @@ def remote(
 @tl.builtin
 def signal_wait(
     device_dptr,
-    signal_id,
+    slot_id,
     wait_kind: str | attr.SignalWaitKind,
     target: int | None = None,
     group_kind: str | GroupKind = GroupKind.BLOCK,
     context_idx: int = 0,
     _semantic=None,
 ):
-    """Wait until a local FlagCX signal or counter reaches its target.
+    """Wait until a local FlagCX synchronization slot reaches its target.
 
     ``target`` is required for ``wait_kind="signal"`` and
     ``wait_kind="counter"``.  ``wait_kind="shadow"`` instead reads the target
     from FlagCX's locally maintained shadow buffer, so ``target`` must be
-    omitted.
+    omitted. ``slot_id`` is interpreted in the namespace selected by
+    ``wait_kind``.
     """
     builder = _semantic.builder
 
@@ -1196,12 +1199,12 @@ def signal_wait(
         raise ValueError("target shouldn't be provided when wait_kind is shadow")
 
     comm = _parse_src_arg(builder, device_dptr, 1)
-    signal_tensor = _normalize_signal_scalar(signal_id, "signal_id", tl.int32, _semantic)
+    slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
     target_tensor = _normalize_signal_scalar(target, "target", tl.int64, _semantic) if target is not None else None
 
     builder.create_signal_wait(
         comm,
-        signal_tensor.handle,
+        slot_tensor.handle,
         wait_kind_val,
         None if target_tensor is None else target_tensor.handle,
         group_kind,
