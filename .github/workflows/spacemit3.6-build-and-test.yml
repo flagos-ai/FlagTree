@@ -3,42 +3,53 @@ name: Spacemit3.6-Build-And-Test
 # SpaceMiT RISC-V 后端 CI (root-triton plugin)。
 # retrigger: spine-FlagGems @ 77d72cba (mm fix) — confirm squashed commit green
 #
-# 执行环境: 容器化 self-hosted runner (label spacemit-k3)。
+# 执行环境: 容器化 self-hosted runner (label spacemit3.6)。
 # 机器专属配置 (SPINE_TRITON_RPC_*) 硬编码在 job env 里;
 # LLVM / spine-mlir / spine-runtime / toolchain 从
 # zuoweixia497/spacemit-ci-assets GitHub release 下载并缓存。
-# 更新包: 修改 third_party/spacemit/.github/spacemit-ci.env 里的 URL+MD5 即可。
+# 更新包: 修改 third_party/spacemit/spacemit-ci.env 里的 URL+MD5 即可。
 
 on:
   workflow_dispatch:
   push:
-    branches: [spacemit-backend-plugin]
-    paths:
-      - 'third_party/spacemit/**'
-      - 'CMakeLists.txt'
-      - 'setup.py'
-      - 'python/**'
-      - '.github/workflows/spacemit3.6-build-and-test.yml'
+    branches: [ "main", "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "main", "triton_v3.6.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
-  group: spacemit-k3
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build-and-smoke:
-    runs-on: [self-hosted, spacemit-k3]
+  spacemit36x-unit-test:
+    runs-on: spacemit3.6
     env:
       SPINE_TRITON_RPC_HOST: 10.3.91.75
       SPINE_TRITON_RPC_PORT: 9999
       MAX_JOBS: 4
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: spacemit
 
       - name: Load CI variables
+        if: steps.check_backend.outputs.should_skip != 'true'
         run: grep -v '^\s*#' third_party/spacemit/spacemit-ci.env | grep -v '^\s*$' >> $GITHUB_ENV
 
       - name: Cache RV toolchain
+        if: steps.check_backend.outputs.should_skip != 'true'
         id: cache-rv-toolchain
         uses: actions/cache@v4
         with:
@@ -46,7 +57,7 @@ jobs:
           key: rv-toolchain-${{ env.RISCV_TOOLCHAIN_MD5 }}
 
       - name: Download and extract RV toolchain
-        if: steps.cache-rv-toolchain.outputs.cache-hit != 'true'
+        if: steps.check_backend.outputs.should_skip != 'true' && steps.cache-rv-toolchain.outputs.cache-hit != 'true'
         run: |
           curl -k -L --retry 5 --retry-delay 5 --retry-all-errors -o spacemit-toolchain.tar.xz "$RISCV_TOOLCHAIN_URL"
           mkdir -p toolchain
@@ -54,6 +65,7 @@ jobs:
           rm spacemit-toolchain.tar.xz
 
       - name: Cache LLVM
+        if: steps.check_backend.outputs.should_skip != 'true'
         id: cache-llvm
         uses: actions/cache@v4
         with:
@@ -61,7 +73,7 @@ jobs:
           key: llvm-${{ env.LLVM_MD5 }}
 
       - name: Download and extract LLVM
-        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        if: steps.check_backend.outputs.should_skip != 'true' && steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
           curl -k -L --retry 5 --retry-delay 5 --retry-all-errors -o llvm.tar.gz "$LLVM_URL"
           mkdir -p llvm_installed
@@ -69,6 +81,7 @@ jobs:
           rm llvm.tar.gz
 
       - name: Cache spine-mlir
+        if: steps.check_backend.outputs.should_skip != 'true'
         id: cache-spine-mlir
         uses: actions/cache@v4
         with:
@@ -76,7 +89,7 @@ jobs:
           key: spine-mlir-${{ env.SPINE_MLIR_MD5 }}
 
       - name: Download and extract spine-mlir
-        if: steps.cache-spine-mlir.outputs.cache-hit != 'true'
+        if: steps.check_backend.outputs.should_skip != 'true' && steps.cache-spine-mlir.outputs.cache-hit != 'true'
         run: |
           curl -k -L --retry 5 --retry-delay 5 --retry-all-errors -o spine-mlir.tar.gz "$SPINE_MLIR_URL"
           mkdir -p spine_mlir_installed
@@ -84,6 +97,7 @@ jobs:
           rm spine-mlir.tar.gz
 
       - name: Cache spine-runtime
+        if: steps.check_backend.outputs.should_skip != 'true'
         id: cache-spine-runtime
         uses: actions/cache@v4
         with:
@@ -91,7 +105,7 @@ jobs:
           key: spine-runtime-${{ env.SPINE_RUNTIME_MD5 }}
 
       - name: Download and extract spine-runtime
-        if: steps.cache-spine-runtime.outputs.cache-hit != 'true'
+        if: steps.check_backend.outputs.should_skip != 'true' && steps.cache-spine-runtime.outputs.cache-hit != 'true'
         run: |
           curl -k -L --retry 5 --retry-delay 5 --retry-all-errors -o spine-runtime.tar.gz "$SPINE_RUNTIME_URL"
           mkdir -p spine_runtime_installed
@@ -99,6 +113,7 @@ jobs:
           rm spine-runtime.tar.gz
 
       - name: Build (apply flagtree.patch + pip install)
+        if: steps.check_backend.outputs.should_skip != 'true'
         run: |
           set -euo pipefail
           NEED=""
@@ -115,6 +130,7 @@ jobs:
             bash third_party/spacemit/scripts/install_flagtree_plugin.sh
 
       - name: Minimal smoke test (import + spacemit backend + K3 RPC)
+        if: steps.check_backend.outputs.should_skip != 'true'
         run: |
           set -euo pipefail
           source .venv-ci/bin/activate
@@ -155,6 +171,7 @@ jobs:
         # Cloned fresh each run from the feature/add-spacemit-backend branch of
         # spine-FlagGems, so backend fixes there (e.g. the mm/mm_out row-major B
         # materialization) land here without touching FlagTree.
+        if: steps.check_backend.outputs.should_skip != 'true'
         run: |
           set -euo pipefail
           source .venv-ci/bin/activate
