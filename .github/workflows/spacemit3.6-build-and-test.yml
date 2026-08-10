@@ -229,17 +229,27 @@ jobs:
           export GEMS_VENDOR=spacemit
           export SPINE_TRITON_RPC_HOST=127.0.0.1
           export SPINE_TRITON_RPC_PORT=${RPC_PORT}
+          export SPINE_TRITON_DUMP_PATH="$(pwd)/triton_dump"
+          mkdir -p "$SPINE_TRITON_DUMP_PATH"
           python third_party/spacemit/python/examples/mm_block_ptr.py
 
-      - name: Dump RPC server log (on failure)
+      - name: Dump RPC server log + compiled IR (on failure)
         if: failure() && steps.check_backend.outputs.should_skip != 'true'
         run: |
-          echo "--- rpc-ci state ---"
+          echo "=== rpc-ci state ==="
           docker ps -a --filter name=rpc-ci || true
-          echo "--- /tmp/rpc.log ---"
+          echo "=== /tmp/rpc.log (server stderr) ==="
           docker exec rpc-ci cat /tmp/rpc.log 2>/dev/null || true
-          echo "--- spine-rpc-server processes ---"
+          echo "=== spine-rpc-server processes (alive?) ==="
           docker exec rpc-ci bash -c 'ps -ef | grep -v grep | grep spine-rpc-server' 2>/dev/null || true
+          echo "=== triton_dump dir ==="
+          ls -la triton_dump/ 2>/dev/null || true
+          echo "=== dump file contents ==="
+          for f in triton_dump/*; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"
+            head -200 "$f"
+          done
 
       - name: Stop QEMU RPC server
         if: always() && steps.check_backend.outputs.should_skip != 'true'
