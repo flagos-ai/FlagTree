@@ -454,6 +454,14 @@ function(flagtree_add_tle_generated_header_dependencies)
     list(APPEND _flagtree_tle_codegen_deps TritonTLETransformsIncGen)
   endif()
 
+  set(_flagtree_enflame_tle_header_targets
+      MLIRTritonToGCU_gcu300
+      MLIRTritonToGCU_gcu400
+      MLIRGCUTritonToTritonGPU_gcu400
+      MLIRTritonGCUTransforms_gcu400
+      triton_gcu300_core
+      triton_gcu400_core)
+
   # Native compiler targets include TLE generated headers under __TLE__ guards.
   # The TLE dialect is added after the core libraries, so the dependency must be
   # attached explicitly once the TLE tablegen targets exist; otherwise a clean
@@ -466,16 +474,21 @@ function(flagtree_add_tle_generated_header_dependencies)
       TritonNVIDIAGPUToLLVM
       TritonGPUToLLVM
       NVHopperTransforms
+      ${_flagtree_enflame_tle_header_targets}
       triton
       triton-opt
       triton-reduce
       triton-lsp
       triton-llvm-opt
       triton-tensor-layout)
-    if(TARGET ${_flagtree_tle_header_target})
-      add_dependencies(${_flagtree_tle_header_target}
-        ${_flagtree_tle_codegen_deps})
-    endif()
+    foreach(_flagtree_tle_dependency_target IN ITEMS
+        ${_flagtree_tle_header_target}
+        obj.${_flagtree_tle_header_target})
+      if(TARGET ${_flagtree_tle_dependency_target})
+        add_dependencies(${_flagtree_tle_dependency_target}
+          ${_flagtree_tle_codegen_deps})
+      endif()
+    endforeach()
   endforeach()
 endfunction()
 
