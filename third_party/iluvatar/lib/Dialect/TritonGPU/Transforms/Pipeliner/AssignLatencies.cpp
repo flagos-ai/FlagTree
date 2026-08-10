@@ -138,6 +138,14 @@ public:
     if (localAllocEnc) {
       auto registerTy = cast<RankedTensorType>(op->getResultTypes()[0]);
       auto vecBytes = getCopyVecBytes(registerTy, localAllocEnc);
+#ifdef __ILUVATAR__
+      auto blockedEnc =
+          dyn_cast<ttg::BlockedEncodingAttr>(registerTy.getEncoding());
+      // SME copies global memory directly to shared memory, so cp.async's
+      // per-thread 4-byte vector-width requirement does not apply.
+      if (blockedEnc && blockedEnc.getIsSme())
+        return true;
+#endif
       if (filterSmall && vecBytes < 4) {
         // At least 4 bytes need to be consecutive for cp.async
         return false;

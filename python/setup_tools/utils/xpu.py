@@ -289,7 +289,7 @@ def collect_xpu_backend_package_data(backend):
 
 
 def ensure_xpu_launch_static_lib(backend):
-    src = Path(backend.src_dir) / "device" / "liblaunch.a"
+    src = Path(backend.src_dir) / "device" / "xpu3" / "liblaunch.a"
     if not src.exists():
         print(f"[XPU] liblaunch.a not found at {src}; packaged launcher may fail to link", file=sys.stderr)
         return
@@ -391,8 +391,8 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
                 copy_src_path=f"{cache.dir_path}/{flagtree_backend}/xpu-device-libs",
                 copy_dst_path=f"third_party/{flagtree_backend}/device")
     cache.store(file="xpu-sdnn-objects", condition=is_xpu,
-                url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.2.0.tar.gz",
-                post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
+                url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.6.0.tar.gz",
+                version="v0.3.6.6.0", post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
     cache.store(
         files=("clang", "xpu-xxd", "xpu3-elfconv", "xpu3-elfconv-triton", "xpu-kernel.t", "ld.lld", "llvm-readelf",
                "llvm-objdump", "llvm-objcopy"), condition=is_xpu,

@@ -1348,6 +1348,8 @@ struct TTElementwiseOpLowering : public SharedConversionPattern<FT> {
         dyn_cast<MemRefType>(this->getTypeConverter()->convertType(type));
     auto output = syncAllocOp(rewriter, loc, lastUser, this->userAnalysis,
                               this->replaced2Origin, resultType);
+    bool isPtrIntCast = std::is_same<TT, gcu::IntToPtrOp>::value ||
+                        std::is_same<TT, gcu::PtrToIntOp>::value;
     affine::buildAffineLoopNest(
         rewriter, loc, SmallVector<int64_t, 4>(numElems.size(), 0),
         SmallVector<int64_t, 4>(numElems.begin(), numElems.end()),
@@ -1358,8 +1360,16 @@ struct TTElementwiseOpLowering : public SharedConversionPattern<FT> {
             operands.push_back(
                 builder.create<memref::LoadOp>(loc, operand, iters));
           }
-          auto v = builder.create<TT>(loc, resultType.getElementType(),
-                                      operands, op->getAttrs());
+          Value v;
+          // vector IntToPtrOp / PtrToIntOp the TypeConverter already maps
+          // pointer tensors to memref<...xi64>,Emit a plain element-wise copy
+          // instead.
+          if (isPtrIntCast) {
+            v = operands[0];
+          } else {
+            v = builder.create<TT>(loc, resultType.getElementType(), operands,
+                                   op->getAttrs());
+          }
           builder.create<memref::StoreOp>(loc, v, output, iters);
         });
     leaveTritionOp(rewriter, op.getOperation());
@@ -1498,6 +1508,9 @@ struct TTExternElemwiseOpLowering
       return success();
     } else if (name == "__nv_log2f") {
       rewriter.replaceOpWithNewOp<math::Log2Op>(op, adaptor.getOperands());
+      return success();
+    } else if (name == "__nv_log1pf") {
+      rewriter.replaceOpWithNewOp<math::Log1pOp>(op, adaptor.getOperands());
       return success();
     } else if (name == "__nv_exp2f") {
       rewriter.replaceOpWithNewOp<math::Exp2Op>(op, adaptor.getOperands());
@@ -3023,12 +3036,12 @@ void ConvertTritonToGCUPass::runOnOperation() {
   });
   ConversionTarget target(getContext());
 
-  mlir::triton::populateReduceOpToGCUPatterns(converter, patterns, userAnalysis,
-                                              replaced2Origin, pTagPool);
-  mlir::triton::populateScanOpToGCUPatterns(converter, patterns, userAnalysis,
-                                            replaced2Origin, pTagPool);
+  mlir::triton::populateReduceOpToGCUPatterns(
+      converter, patterns, userAnalysis, replaced2Origin, pTagPool, enable_i64);
+  mlir::triton::populateScanOpToGCUPatterns(
+      converter, patterns, userAnalysis, replaced2Origin, pTagPool, enable_i64);
   mlir::triton::populateElementwiseFusionOpToGCUPatterns(
-      converter, patterns, userAnalysis, replaced2Origin, pTagPool);
+      converter, patterns, userAnalysis, replaced2Origin, pTagPool, enable_i64);
 
   patterns
       .add<TTFuncOpLowering, TTReturnOpLowering, TTCallOpLowering,

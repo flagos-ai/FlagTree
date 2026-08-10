@@ -58,6 +58,8 @@ def estimate_matmul_time(
     dtype = A.dtype
     dtsize = A.element_size()
 
+    if ((K % 64 == 0) and (K % (BLOCK_K * SPLIT_K) != 0)):
+        return float('inf')
     num_cta_m = cdiv(M, BLOCK_M)
     num_cta_n = cdiv(N, BLOCK_N)
     num_cta_k = SPLIT_K
@@ -149,7 +151,7 @@ def early_config_prune(configs, named_args, **kwargs):
     pruned_configs = []
     for k, v in configs_map.items():
         BLOCK_M, BLOCK_N, BLOCK_K, SPLIT_K, num_warps = k
-        if capability[0] >= 8:
+        if capability[0] >= 8 and not hasattr(torch, "corex"):
             # compute cycles (only works for ampere GPUs)
             mmas = BLOCK_M * BLOCK_N * BLOCK_K / (16 * 8 * 16)
             mma_cycles = mmas / min(4, num_warps) * 8
@@ -165,7 +167,22 @@ def early_config_prune(configs, named_args, **kwargs):
             for n in nearest:
                 pruned_configs.append(n[0])
         else:  # Volta & Turing only supports num_stages <= 2
-            random_config = v[0][0]
-            random_config.num_stages = 2
-            pruned_configs.append(random_config)
+            if hasattr(torch, "corex"):
+                for stage in range(len(v)):
+                    random_config = v[stage][0]
+                    random_config.num_stages = v[stage][1]
+                    if (capability[0] < 8 and v[stage][1] < 3):
+                        pruned_configs.append(random_config)
+                    if capability[0] == 8:
+                        blocks = BLOCK_M + BLOCK_N + BLOCK_K
+                        if blocks <= 256 and dtype is not torch.int8:
+                            pruned_configs.append(random_config)
+                        elif v[stage][1] > 2 and blocks > 256:
+                            pruned_configs.append(random_config)
+                        elif dtype is torch.int8 and v[stage][1] > 2:
+                            pruned_configs.append(random_config)
+            else:
+                random_config = v[0][0]
+                random_config.num_stages = 2
+                pruned_configs.append(random_config)
     return pruned_configs

@@ -1,5 +1,12 @@
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../Common)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+
+if(ENABLE_TLE)
+  set(_TLE_IR_LIBS TleIR)
+else()
+  set(_TLE_IR_LIBS "")
+endif()
+
 add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   TritonToGCU.cpp
   ReduceOpToGCU.cpp
@@ -18,6 +25,7 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   TritonGCUPingpong/PipelineExpander.cpp
   TritonGCUPingpong/PipeliningUtility.cpp
   TritonGPUtoTrtionGCU.cpp
+  TleToTritonGCU.cpp
 
   DEPENDS
   TritonGCUTableGen_${arch}
@@ -31,6 +39,7 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   TritonGCUAnalysis_${arch}
   MemrefExtIR_${arch}
   MathExtIR_${arch}
+  ${_TLE_IR_LIBS}
   MLIRAffineDialect
   MLIRAffineToStandard
   MLIRArithDialect

@@ -6,6 +6,7 @@ add_subdirectory(include/Transforms)
 
 add_triton_library(IluvatarTleIR
   lib/IR/Dialect.cpp
+  lib/IR/Ops.cpp
 
   DEPENDS
   IluvatarTleTableGen
@@ -32,9 +33,15 @@ add_triton_library(IluvatarTleToLLVM
 )
 
 add_triton_library(IluvatarTleTransforms
+  lib/Transforms/IluvatarTleEarlyAssignMemorySpace.cpp
   lib/Transforms/IluvatarTleInsertLocalPointerBarriers.cpp
+  lib/Transforms/IluvatarTleLowerAsyncLoad.cpp
+  lib/Transforms/IluvatarTleLowerExclusiveCumsum.cpp
+  lib/Transforms/IluvatarTleOptimizeExclusiveCumsumLayouts.cpp
+  lib/Transforms/IluvatarTleOptimizeLocalPointerAsyncStores.cpp
   lib/Transforms/IluvatarTleOptimizeLocalPointerLoads.cpp
   lib/Transforms/IluvatarTleOptimizeLocalPointerStores.cpp
+  lib/Transforms/IluvatarTleLowerPipeToBarriers.cpp
 
   DEPENDS
   IluvatarTleTableGen
@@ -44,4 +51,6 @@ add_triton_library(IluvatarTleTransforms
   IluvatarTleIR
   TritonIR
   TritonGPUIR
+  TritonGPUTransforms
+  TritonAnalysis
 )

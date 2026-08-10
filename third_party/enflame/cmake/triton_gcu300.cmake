@@ -246,3 +246,15 @@ third_party/proton/Dialect/lib/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/CMakeFiles/
 third_party/proton/Dialect/lib/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/CMakeFiles/ProtonNVIDIAGPUToLLVM.dir/TargetInfo.cpp.o
 third_party/proton/Dialect/lib/ProtonToProtonGPU/CMakeFiles/ProtonToProtonGPU.dir/ProtonToProtonGPUPass.cpp.o
 )
+
+# TLE support: conditionally include TLE dialect objects
+if(FLAGTREE_TLE)
+  list(APPEND triton_${arch}_objs
+    third_party/tle/dialect/lib/IR/CMakeFiles/TleIR.dir/Dialect.cpp.o
+    third_party/tle/dialect/lib/IR/CMakeFiles/TleIR.dir/Ops.cpp.o
+    third_party/tle/dialect/lib/Transforms/CMakeFiles/TritonTLETransforms.dir/ConvertArgToMemDesc.cpp.o
+    third_party/tle/dialect/lib/Transforms/CMakeFiles/TritonTLETransforms.dir/RemoveRedundantCopy.cpp.o
+    third_party/tle/dialect/lib/Transforms/CMakeFiles/TritonTLETransforms.dir/DSLRegionInline.cpp.o
+    third_party/tle/dialect/lib/Transforms/CMakeFiles/TritonTLETransforms.dir/TleUtility.cpp.o
+  )
+endif()

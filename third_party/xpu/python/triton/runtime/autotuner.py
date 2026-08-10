@@ -21,7 +21,8 @@ class Autotuner(KernelInterface):
 
     def __init__(self, fn, arg_names, configs, key, reset_to_zero, restore_value, pre_hook=None, post_hook=None,
                  prune_configs_by: Optional[Dict] = None, warmup=None, rep=None, use_cuda_graph=False, do_bench=None,
-                 cache_results=False):
+                 cache_results=False, generate_configs=None, op_affiliation="", row_sign="", col_sign="",
+                 n_elem_sign=""):
         """
         :param prune_configs_by: a dict of functions that are used to prune configs, fields:
             'perf_model': performance model used to predicate running time with different configs, returns running time
@@ -31,9 +32,18 @@ class Autotuner(KernelInterface):
                 and return pruned configs. It should return at least one config.
         """
         if not configs:
-            self.configs = [Config({}, num_warps=4, num_stages=3, num_ctas=1)]
+            self.configs = [Config({}, num_warps=4, num_stages=2, num_ctas=1)]
         else:
             self.configs = configs
+        # XPU-specific (Triton 3.0 compat) auto-config generation hooks. When
+        # generate_configs is set with an empty configs list, block_size_candidates
+        # synthesises shape-dependent configs at run() time.
+        self.no_configs = (not configs)
+        self.generate_configs = generate_configs
+        self.op_affiliation = op_affiliation
+        self.row_sign = row_sign
+        self.col_sign = col_sign
+        self.n_elem_sign = n_elem_sign
         if self.configs and (len(self.configs) > 0):
             self.shared_config_pre_hook = self.configs[0].pre_hook  # flagtree aabs
         self.keys = key
@@ -144,6 +154,7 @@ class Autotuner(KernelInterface):
                              " Make sure that you don't re-define auto-tuned symbols.")
         # augment meta-parameters with tunable ones
         current = dict(meta, **config.all_kwargs())
+        original_current = current.copy()
         # flagtree aabs: auto_adjust_block_sizes
         if knobs.autotuning.adjust_block_size:
 
@@ -158,37 +169,46 @@ class Autotuner(KernelInterface):
             jit_fn = _unwrap_to_jitfunction(self.fn)
             if jit_fn is not None:
                 auto_adjust_block_sizes(self.nargs, jit_fn, self.configs, current, config)
-        meta_key = tuple(sorted(current.items()))
-        if meta_key in self.seen_tuned_metas:
-            return self.seen_tuned_metas[meta_key]  # flagtree aabs: deduplicate tuned meta
-        full_nargs = {**self.nargs, **current}
 
-        def kernel_call():
-            if config.pre_hook:
-                config.pre_hook(full_nargs)
-            self.pre_hook(full_nargs)
-            try:
-                self.fn.run(
-                    *args,
-                    **current,
-                )
-            except Exception as e:
+        def benchmark(tuned_meta):
+            meta_key = tuple(sorted(tuned_meta.items()))
+            if meta_key in self.seen_tuned_metas:
+                return self.seen_tuned_metas[meta_key]
+            full_nargs = {**self.nargs, **tuned_meta}
+
+            def kernel_call():
+                if config.pre_hook:
+                    config.pre_hook(full_nargs)
+                self.pre_hook(full_nargs)
                 try:
-                    self.post_hook(full_nargs, exception=e)
-                finally:
-                    # Throw exception raised by `self.fn.run`
-                    raise
+                    self.fn.run(
+                        *args,
+                        **tuned_meta,
+                    )
+                except Exception as e:
+                    try:
+                        self.post_hook(full_nargs, exception=e)
+                    finally:
+                        # Throw exception raised by `self.fn.run`
+                        raise
 
-            self.post_hook(full_nargs, exception=None)
+                self.post_hook(full_nargs, exception=None)
 
-        try:
-            rett = self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
-        except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
-            if verbose:
-                print(f"Autotuning failed with {e}")
-            rett = [float("inf"), float("inf"), float("inf")]
+            try:
+                rett = self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
+            except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
+                if verbose:
+                    print(f"Autotuning failed with {e}")
+                rett = [float("inf"), float("inf"), float("inf")]
+            self.seen_tuned_metas[meta_key] = rett
+            return rett
 
-        self.seen_tuned_metas[meta_key] = rett  # flagtree aabs: deduplicate tuned meta
+        rett = benchmark(current)
+        if current != original_current and all(timing == float("inf") for timing in rett):
+            rett = benchmark(original_current)
+            if not all(timing == float("inf") for timing in rett):
+                for key in config.kwargs.keys() & original_current.keys():
+                    config.kwargs[key] = original_current[key]
         return rett
 
     def check_disk_cache(self, tuning_key, configs, bench_fn):
@@ -206,7 +226,7 @@ class Autotuner(KernelInterface):
         env_vars = get_cache_invalidating_env_vars()
         cache_key = [
             triton_key(),
-            make_backend(driver.active.get_current_target()).hash(),
+            make_backend(driver.active.get_current_target_inside()).hash(),
             fn.cache_key,
             str(sorted(env_vars.items())),
             str(tuning_key),
@@ -236,6 +256,15 @@ class Autotuner(KernelInterface):
     def run(self, *args, **kwargs):
         self.seen_tuned_metas = {}  # flagtree aabs: deduplicate tuned meta
         self.nargs = dict(zip(self.arg_names, args))
+        # XPU (Triton 3.0 compat): synthesise configs on every invocation when
+        # the user passed `configs=[]` together with `generate_configs=...`.
+        # block_size_candidates is shape-dependent, so it MUST be recomputed for
+        # each new shape (freezing it to the first shape would mis-tile later).
+        if self.no_configs and self.generate_configs is not None:
+            self.configs = block_size_candidates(self.nargs, self.generate_configs, self.op_affiliation, self.row_sign,
+                                                 self.col_sign, self.n_elem_sign)
+            if not self.configs:
+                self.configs = [Config({}, num_warps=4, num_stages=2, num_ctas=1)]
         used_cached_result = True
         if len(self.configs) > 1:
             all_args = {**self.nargs, **kwargs}
@@ -348,7 +377,7 @@ class Config:
     :ivar ir_override: filename of a user-defined IR (*.{ttgir|llir|ptx|amdgcn}).
     """
 
-    def __init__(self, kwargs, num_warps=4, num_stages=3, num_ctas=1, maxnreg=None, pre_hook=None, ir_override=None):
+    def __init__(self, kwargs, num_warps=4, num_stages=2, num_ctas=1, maxnreg=None, pre_hook=None, ir_override=None):
         self.kwargs = kwargs
         self.num_warps = num_warps
         self.num_ctas = num_ctas
@@ -360,7 +389,7 @@ class Config:
     def __setstate__(self, state):
         self.kwargs = state.get("kwargs", {})
         self.num_warps = state.get("num_warps", 4)
-        self.num_stages = state.get("num_stages", 3)
+        self.num_stages = state.get("num_stages", 2)
         self.num_ctas = state.get("num_ctas", 1)
         self.maxnreg = state.get("maxnreg", None)
         self.pre_hook = state.get("pre_hook", None)
@@ -406,7 +435,8 @@ class Config:
 
 
 def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None,
-             warmup=None, rep=None, use_cuda_graph=False, do_bench=None, cache_results=False):
+             warmup=None, rep=None, use_cuda_graph=False, do_bench=None, cache_results=False, generate_configs=None,
+             op_affiliation="sdnn", row_sign=None, col_sign=None, n_elem_sign=None):
     """
     Decorator for auto-tuning a :code:`triton.jit`'d function.
 
@@ -469,7 +499,9 @@ def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_va
     def decorator(fn):
         return Autotuner(fn, fn.arg_names, configs, key, reset_to_zero, restore_value, pre_hook=pre_hook,
                          post_hook=post_hook, prune_configs_by=prune_configs_by, warmup=warmup, rep=rep,
-                         use_cuda_graph=use_cuda_graph, do_bench=do_bench, cache_results=cache_results)
+                         use_cuda_graph=use_cuda_graph, do_bench=do_bench, cache_results=cache_results,
+                         generate_configs=generate_configs, op_affiliation=op_affiliation, row_sign=row_sign,
+                         col_sign=col_sign, n_elem_sign=n_elem_sign)
 
     return decorator
 
@@ -509,3 +541,514 @@ def heuristics(values):
         return Heuristics(fn, fn.arg_names, values)
 
     return decorator
+
+
+# ---------------------------------------------------------------------------
+# XPU-only auto-config generators, ported from Triton 3.0's
+# `python/triton/runtime/autotuner.py`. These are invoked from
+# `Autotuner.run` when the user passed `configs=[], generate_configs=...`.
+# Helpers and constants below intentionally mirror the 3.0 implementation so
+# behaviour is identical for kernels written against the 3.0 fork.
+# ---------------------------------------------------------------------------
+import os  # noqa: E402  (kept here to localise XPU helpers)
+
+
+def cdiv(x: int, y: int):
+    return (x + y - 1) // y
+
+
+def floordiv(x: int, y: int):
+    return x // y
+
+
+def aligned(x: int, y: int):
+    return cdiv(x, y) * y
+
+
+def next_power_of_2(n: int):
+    """Return the smallest power of 2 greater than or equal to n."""
+    n -= 1
+    n |= n >> 1
+    n |= n >> 2
+    n |= n >> 4
+    n |= n >> 8
+    n |= n >> 16
+    n |= n >> 32
+    n += 1
+    return n
+
+
+def find_next_multiple_of_12(n):
+    if n <= 0:
+        return 12
+    remainder = n % 12
+    if remainder == 0:
+        return n
+    return n + (12 - remainder)
+
+
+def append_candidate(candicates, target_candicate):
+    for item in candicates:
+        if item.all_kwargs() == target_candicate.all_kwargs():
+            return
+    candicates.append(target_candicate)
+
+
+def check_out_of_mem(block_size_m, block_size_n, block_size_k, mem, ele_bytes, dotout_ele_bytes, bias, buffer_num,
+                     a_trans, b_trans, dcache, wcache, hp_mode):
+    am_layout, ak_layout = block_size_m, block_size_k
+    bk_layout, bn_layout = block_size_k, block_size_n
+    if a_trans:
+        am_layout, ak_layout = block_size_k, block_size_m
+    if b_trans:
+        bn_layout, bk_layout = block_size_k, block_size_n
+    min_load_a_size = 80 * aligned(block_size_k * ele_bytes, mem[1]) if not a_trans else block_size_k * (128 *
+                                                                                                         ele_bytes)
+    min_load_b_size = block_size_k * 64 * ele_bytes if not b_trans else 64 * aligned(block_size_k * ele_bytes, mem[1])
+    cmem = mem[0] < aligned(block_size_n * dotout_ele_bytes, mem[1]) * \
+        (block_size_m * (1 + hp_mode) + bias * (1.6 * block_size_m)) * buffer_num + \
+        (min_load_a_size + min_load_b_size) * (2 + 2 * hp_mode)
+    bmem = bn_layout * bk_layout > wcache
+    amem = am_layout * ak_layout > dcache
+    # Full-tile check: ensure the actual tile sizes fit in uniSram when allocated
+    # by TritonSDNNMultiBuffer pass (which allocates full BM*BK, BK*BN, BM*BN tiles).
+    # Also account for an output store buffer (ele_bytes, same shape as C), which some
+    # kernels (e.g., fused MoE) emit as a separate loopGridForOp-level allocation.
+    full_a_size = block_size_m * block_size_k * ele_bytes
+    full_b_size = block_size_k * block_size_n * ele_bytes
+    full_c_size = block_size_m * block_size_n * dotout_ele_bytes * (1 + hp_mode)
+    full_out_size = block_size_m * block_size_n * ele_bytes  # output store (bf16/fp16)
+    # At minimum numStages=1: C + out + A + B must fit; with multi-buffer add (A+B)*(buffer_num-1)
+    full_tile_mem = mem[0] < full_c_size + full_out_size + (full_a_size + full_b_size) * buffer_num
+    return cmem or bmem or amem or full_tile_mem
+
+
+def find_optimal_block_size_k(current_k, min_block_k, ele_bytes, fn_check_out_of_mem):
+    candidates = []
+    for k in range(min_block_k, current_k + 1):
+        if current_k % k == 0:
+            candidates.append(k)
+    for k in list([1024 // ele_bytes, 512 // ele_bytes]):
+        if k in candidates:
+            candidates.remove(k)
+            candidates.append(k)
+    candidates.sort()
+    valid_block_k = None
+    for candidate_k in candidates:
+        if not fn_check_out_of_mem(candidate_k):
+            valid_block_k = candidate_k
+            break
+    return valid_block_k
+
+
+def add_candidate_for_workload_not_balanced(configs, block_size_m, block_size_n, block_size_k, buffer_num, meta_info):
+    input_size = meta_info['input_size']
+    mem = meta_info['mem']
+    ele_bytes = meta_info['ele_bytes']
+    dotout_ele_bytes = meta_info['dotout_ele_bytes']
+    bias = meta_info['bias']
+    block_names = meta_info['block_names']
+    grid_aligned = meta_info['grid_aligned']
+    aligned_size = meta_info['aligned_size']
+    a_trans = meta_info['a_trans']
+    b_trans = meta_info['b_trans']
+    min_block_k = meta_info['min_block_k']
+    dcache = meta_info["dcache"]
+    wcache = meta_info["wcache"]
+    hp_mode = meta_info["hp_mode"]
+
+    grid_m_aligned = cdiv(input_size[0], block_size_m)
+    grid_n_aligned = cdiv(input_size[1], block_size_n)
+
+    if min_block_k > block_size_k:
+        min_block_k = block_size_k
+
+    top_p = 3
+    block_size_m = max(2, min(block_size_m, input_size[0]))
+    block_size_n = max(2, min(block_size_n, input_size[1]))
+
+    valid_block_k = find_optimal_block_size_k(
+        block_size_k, min_block_k, ele_bytes,
+        lambda k: check_out_of_mem(block_size_m, block_size_n, k, mem, ele_bytes, dotout_ele_bytes, bias, buffer_num,
+                                   a_trans, b_trans, dcache, wcache, hp_mode))
+    if valid_block_k is None or valid_block_k < min_block_k:
+        return
+    block_size_k = valid_block_k
+
+    if (grid_m_aligned * grid_n_aligned) < grid_aligned:
+        tmp_grid_m = cdiv(input_size[0], block_size_m)
+        tmp_grid_n = cdiv(input_size[1], block_size_n)
+        append_candidate(
+            configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n, block_names[2]: block_size_k}))
+        for i in range(2, 13):
+            tmp_block_size_m = block_size_m // i
+            if tmp_block_size_m < 2:
+                break
+            tmp_grid_m = cdiv(input_size[0], tmp_block_size_m)
+            if (tmp_grid_m * tmp_grid_n) % grid_aligned == 0:
+                append_candidate(
+                    configs,
+                    Config(
+                        {block_names[0]: tmp_block_size_m, block_names[1]: block_size_n, block_names[2]: block_size_k}))
+        for i in range(2, 13):
+            tmp_block_size_n = block_size_n // i
+            if tmp_block_size_n < 2:
+                break
+            tmp_grid_n = cdiv(input_size[1], tmp_block_size_n)
+            if (tmp_grid_m * tmp_grid_n) % grid_aligned == 0:
+                append_candidate(
+                    configs,
+                    Config(
+                        {block_names[0]: block_size_m, block_names[1]: tmp_block_size_n, block_names[2]: block_size_k}))
+    else:
+        append_candidate(
+            configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n, block_names[2]: block_size_k}))
+        if input_size[0] % block_size_m != 0:
+            for i in range(block_size_m, 1, -1):
+                _block_size_m = i
+                if (cdiv(input_size[0], _block_size_m) * grid_n_aligned) % grid_aligned == 0:
+                    if _block_size_m % 64 == 0:
+                        append_candidate(
+                            configs,
+                            Config({
+                                block_names[0]: _block_size_m, block_names[1]: block_size_n, block_names[2]:
+                                block_size_k
+                            }))
+                    break
+        elif input_size[1] % block_size_n != 0:
+            for i in range(block_size_n, 1, -1):
+                _block_size_n = i
+                if (cdiv(input_size[1], _block_size_n) * grid_m_aligned) % grid_aligned == 0:
+                    append_candidate(
+                        configs,
+                        Config(
+                            {block_names[0]: block_size_m, block_names[1]: _block_size_n, block_names[2]:
+                             block_size_k}))
+                    break
+        else:
+            for i in range(block_size_m, (grid_m_aligned - 1) * aligned_size["m_aligned"] + 1, -1):
+                _block_size_m = i
+                for j in range(block_size_n, (grid_n_aligned - 1) * aligned_size["n_aligned"] + 1, -1):
+                    _block_size_n = j
+                    tmp_grid_m = cdiv(input_size[0], _block_size_m)
+                    tmp_grid_n = cdiv(input_size[1], _block_size_n)
+                    if (tmp_grid_m * tmp_grid_n) % grid_aligned == 0:
+                        top_p -= 1
+                        append_candidate(
+                            configs,
+                            Config({
+                                block_names[0]: _block_size_m, block_names[1]: _block_size_n, block_names[2]:
+                                block_size_k
+                            }))
+                        break
+                    if top_p == 0:
+                        break
+
+
+def add_candidate_for_workload_balanced(configs, block_size_m, block_size_n, block_size_k, buffer_num, meta_info):
+    input_size = meta_info['input_size']
+    mem = meta_info['mem']
+    ele_bytes = meta_info['ele_bytes']
+    dotout_ele_bytes = meta_info['dotout_ele_bytes']
+    bias = meta_info['bias']
+    block_names = meta_info['block_names']
+    a_trans = meta_info['a_trans']
+    b_trans = meta_info['b_trans']
+    dcache = meta_info["dcache"]
+    wcache = meta_info["wcache"]
+    min_block_k = meta_info["min_block_k"]
+    hp_mode = meta_info["hp_mode"]
+    grid_m_aligned = cdiv(input_size[0], block_size_m)
+    grid_n_aligned = cdiv(input_size[1], block_size_n)
+
+    if min_block_k > block_size_k:
+        min_block_k = block_size_k
+    if input_size[0] % grid_m_aligned == 0:
+        block_size_m = max(2, floordiv(input_size[0], grid_m_aligned))
+    if input_size[1] % grid_n_aligned == 0:
+        block_size_n = max(2, floordiv(input_size[1], grid_n_aligned))
+
+    valid_block_k = find_optimal_block_size_k(
+        block_size_k, min_block_k, ele_bytes,
+        lambda k: check_out_of_mem(block_size_m, block_size_n, k, mem, ele_bytes, dotout_ele_bytes, bias, buffer_num,
+                                   a_trans, b_trans, dcache, wcache, hp_mode))
+    if valid_block_k is None or valid_block_k < min_block_k:
+        return
+    block_size_k = valid_block_k
+    append_candidate(configs,
+                     Config({block_names[0]: block_size_m, block_names[1]: block_size_n, block_names[2]: block_size_k}))
+
+
+def get_input_ele_bytes(args):
+    ele_bytes = 4
+    if "a_ptr" in args.keys():
+        A = args["a_ptr"]
+    elif "inp" in args.keys():
+        A = args["inp"]
+    else:
+        A = args["A"]
+    if A.dtype.__str__() == "torch.float16":
+        ele_bytes = 2
+    return ele_bytes
+
+
+def balance_grid(block_size_m, block_size_n, input_size):
+    grid_x = cdiv(input_size[0], block_size_m)
+    grid_y = cdiv(input_size[1], block_size_n)
+    total_grid = grid_x * grid_y
+    next_multiple_of_12 = find_next_multiple_of_12(total_grid)
+    grid_y = cdiv(next_multiple_of_12, grid_x)
+    block_size_n = cdiv(input_size[1], grid_y)
+    return block_size_m, block_size_n
+
+
+def block_size_candidates_cluster(args, generate_configs, op_affiliation, row_sign, col_sign, n_elem_sign):
+    configs = []
+    if "BLOCK_SIZE" in args.keys():
+        if n_elem_sign is None:
+            raise RuntimeError("Failed to tune block size. Miss n_elem_sign")
+        n_elements = args[n_elem_sign]
+        block_size = cdiv(n_elements, 12)
+        append_candidate(configs, Config({"BLOCK_SIZE": block_size}))
+        block_size = next_power_of_2(cdiv(n_elements, 12))
+        append_candidate(configs, Config({"BLOCK_SIZE": block_size}))
+        return configs
+
+    ele_bytes = get_input_ele_bytes(args)
+    grid_aligned = 12
+    BLOCK_M = "BLOCK_M"
+    BLOCK_N = "BLOCK_N"
+    block_names = (BLOCK_M, BLOCK_N)
+    if row_sign is None or col_sign is None:
+        raise RuntimeError("Failed to tune block_m/block_n size. Miss row_sign/col_sign")
+    m = args[row_sign]
+    n = args[col_sign]
+    input_size = (m, n)
+    mem = (8192, 64)
+    aligned_size = {"m_aligned": 64, "n_aligned": 64}
+    core_num = 64
+    buffer_size_upper = 512
+    if "buffer_size" in args.keys():
+        buffer_size_upper = args["buffer_size"]
+    buffer_size_elem_cnt = cdiv(buffer_size_upper, ele_bytes)
+    experimental_fine_tune = bool(os.getenv("TRITON_FINE_AUTOTUNE", False))
+
+    block_size_m = input_size[0]
+    block_size_n = input_size[1]
+    if buffer_size_elem_cnt != next_power_of_2(buffer_size_elem_cnt):
+        raise RuntimeError("buffer_size should be power of two")
+
+    if buffer_size_elem_cnt * core_num >= block_size_n:
+        block_size_m = next_power_of_2(cdiv(input_size[0], 12))
+        block_size_n = input_size[1]
+        append_candidate(configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n}))
+        block_size_m = cdiv(input_size[0], 12)
+        block_size_n = input_size[1]
+        append_candidate(configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n}))
+        if experimental_fine_tune:
+            block_size_m = next_power_of_2(cdiv(input_size[0], 12))
+            block_size_n = next_power_of_2(input_size[1])
+            append_candidate(configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n}))
+            block_size_m = cdiv(input_size[0], 12)
+            block_size_n = next_power_of_2(input_size[1])
+            append_candidate(configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n}))
+        return configs
+
+    block_size_m = next_power_of_2(cdiv(input_size[0], 12))
+    block_size_n = buffer_size_elem_cnt * core_num
+    append_candidate(configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n}))
+
+    for block_size_n in range(buffer_size_elem_cnt * core_num, 0, -aligned_size["n_aligned"]):
+        if len(configs) == 5:
+            break
+        grid_x = cdiv(input_size[0], block_size_m)
+        grid_y = cdiv(input_size[1], block_size_n)
+        total_grid = grid_x * grid_y
+        if total_grid % grid_aligned != 0:
+            (block_size_m, block_size_n) = balance_grid(block_size_m, block_size_n, input_size)
+            append_candidate(configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n}))
+        else:
+            append_candidate(configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n}))
+
+    block_size_m = cdiv(input_size[0], 12)
+    block_size_n = buffer_size_elem_cnt * core_num
+    append_candidate(configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n}))
+
+    for block_size_n in range(buffer_size_elem_cnt * core_num, 0, -aligned_size["n_aligned"]):
+        if len(configs) == 5:
+            break
+        grid_x = cdiv(input_size[0], block_size_m)
+        grid_y = cdiv(input_size[1], block_size_n)
+        total_grid = grid_x * grid_y
+        if total_grid % grid_aligned != 0:
+            (block_size_m, block_size_n) = balance_grid(block_size_m, block_size_n, input_size)
+            append_candidate(configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n}))
+        else:
+            append_candidate(configs, Config({block_names[0]: block_size_m, block_names[1]: block_size_n}))
+
+    return configs
+
+
+def _build_2d_configs(arch_meta, generate_configs, args, block_names, ele_bytes, dotout_ele_bytes, bias, hp_mode,
+                      min_block_k, a_trans, b_trans, int8_w8a8, TRITON_i4_AUTOTUNING):
+    """Common 2-D MM tile-search body shared by xpu3 (arch=3) and mars (arch=4)."""
+    mem = arch_meta["mem"]
+    wcache = arch_meta["wcache"]
+    dcache = arch_meta["dcache"]
+    aligned_size = arch_meta["aligned_size"]
+    grid_aligned = arch_meta["grid_aligned"]
+    max_m_aglined = arch_meta["max_m_aglined"]
+    max_n_aglined = arch_meta["max_n_aglined"]
+
+    input_size = (args["M"], args["N"], args["K"])
+    block_size_m = max(2, input_size[0])
+    block_size_n = max(2, input_size[1])
+    if arch_meta["arch"] == 4:
+        block_size_k = int(os.getenv("TRITONXPU_QUANT_LEN", input_size[2]))
+    else:
+        block_size_k = input_size[2]
+
+    meta_info = {
+        "ele_bytes": ele_bytes, "dotout_ele_bytes": dotout_ele_bytes, "bias": bias, "grid_aligned": grid_aligned,
+        "block_names": block_names, "input_size": input_size, "aligned_size": aligned_size, "mem": mem, "dcache":
+        dcache, "wcache": wcache, "a_trans": a_trans, "b_trans": b_trans, "min_block_k": min_block_k, "hp_mode": hp_mode
+    }
+
+    configs = []
+    for buffer_num in range(2, 0, -1):
+        n_loop_num = 4
+        for i in range(min(max_m_aglined, cdiv(input_size[0], aligned_size["m_aligned"])), 0, -1):
+            if n_loop_num == 0:
+                break
+            n_loop_num -= 1
+            tmp_block_size_m = min(i * aligned_size["m_aligned"], block_size_m)
+            for j in range(min(max_n_aglined, cdiv(input_size[1], aligned_size["n_aligned"])), 0, -1):
+                tmp_block_size_n = min(j * aligned_size["n_aligned"], block_size_n)
+                grid_m_aligned = cdiv(input_size[0], tmp_block_size_m)
+                grid_n_aligned = cdiv(input_size[1], tmp_block_size_n)
+                total_grid = grid_m_aligned * grid_n_aligned
+                if total_grid % grid_aligned != 0:
+                    add_candidate_for_workload_not_balanced(configs, tmp_block_size_m, tmp_block_size_n, block_size_k,
+                                                            buffer_num, meta_info)
+                else:
+                    add_candidate_for_workload_balanced(configs, tmp_block_size_m, tmp_block_size_n, block_size_k,
+                                                        buffer_num, meta_info)
+
+    if TRITON_i4_AUTOTUNING and arch_meta["arch"] == 3:
+        m_aligned = 64
+        k_aligned = 64
+        for m in range(1, 2):
+            for n in range(1, 13):
+                for k in range(4, 12):
+                    tmp_block_size_n = cdiv(block_size_n, n)
+                    tmp_block_size_k = cdiv(block_size_k, k)
+                    if tmp_block_size_n % m_aligned == 0 and tmp_block_size_k % k_aligned == 0:
+                        if check_out_of_mem(64, tmp_block_size_n, tmp_block_size_k, meta_info['mem'],
+                                            meta_info['ele_bytes'], meta_info['dotout_ele_bytes'], meta_info['bias'],
+                                            buffer_num, meta_info['a_trans'], meta_info['b_trans'], meta_info["dcache"],
+                                            meta_info["wcache"], meta_info["hp_mode"]):
+                            append_candidate(
+                                configs,
+                                Config({
+                                    block_names[0]: m_aligned, block_names[1]: tmp_block_size_n, block_names[2]:
+                                    tmp_block_size_k
+                                }))
+
+    if int8_w8a8:
+        for config in list(configs):
+            append_candidate(configs, Config(kwargs=config.kwargs, num_stages=3))
+    return configs
+
+
+def block_size_candidates(args, generate_configs, op_affiliation, row_sign, col_sign, n_elem_sign):
+    if op_affiliation == "cluster":
+        return block_size_candidates_cluster(args, generate_configs, op_affiliation, row_sign, col_sign, n_elem_sign)
+
+    BLOCK_M = "BLOCK_M"
+    BLOCK_N = "BLOCK_N"
+    BLOCK_K = "BLOCK_K"
+    bias = 0
+    hp_mode = 0
+
+    if generate_configs == "bmm":
+        BLOCK_M, BLOCK_N, BLOCK_K = "TILE_M", "TILE_N", "TILE_K"
+    elif generate_configs == "addmm":
+        BLOCK_M, BLOCK_N, BLOCK_K = "BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K"
+        bias = 1
+
+    a_trans = False
+    b_trans = False
+    if "stride_ak" in args.keys():
+        a_trans = args["stride_ak"] != 1
+    if "stride_bn" in args.keys():
+        b_trans = args["stride_bn"] != 1
+    block_names = (BLOCK_M, BLOCK_N, BLOCK_K)
+
+    A = args["a_ptr"] if "a_ptr" in args.keys() else args["A"]
+    B = args["b_ptr"] if "b_ptr" in args.keys() else args["B"]
+    ele_bytes = A.element_size()
+    int8_w8a8 = ele_bytes == 1
+    min_block_k = 128
+    matmul_mode = int(os.getenv("XMLIR_MATMUL_FAST_MODE", "0"))
+    if str(A.dtype) == "torch.bfloat16" and matmul_mode == 0:
+        ele_bytes = ele_bytes * 2
+
+    TRITON_i4_AUTOTUNING = 0
+    if ele_bytes == 2:
+        min_block_k = 320
+    elif ele_bytes == 1:
+        min_block_k = 640
+        double_k = False
+        if len(A.shape) == 2 and len(B.shape) == 2:
+            double_k = ((not a_trans and not b_trans and A.shape[-1] == 2 * B.shape[-1])
+                        or (not a_trans and b_trans and A.shape[-1] == 2 * B.shape[0])
+                        or (a_trans and not b_trans and A.shape[0] == 2 * B.shape[-1])
+                        or (a_trans and b_trans and A.shape[0] == 2 * B.shape[0]))
+        elif len(A.shape) == 2 and len(B.shape) == 3:
+            double_k = ((not a_trans and not b_trans and A.shape[-1] == 2 * B.shape[1])
+                        or (not a_trans and b_trans and A.shape[-1] == 2 * B.shape[-1])
+                        or (a_trans and not b_trans and A.shape[0] == 2 * B.shape[-1])
+                        or (a_trans and b_trans and A.shape[0] == 2 * B.shape[1]))
+        if double_k:
+            TRITON_i4_AUTOTUNING = 1
+            min_block_k = 1280
+
+    dotout_ele_bytes = 4
+    if "dot_out_type" in args.keys():
+        import torch  # local import; only needed when XPU MM kernel uses dot_out_type
+        if args["dot_out_type"] != torch.float32:
+            dotout_ele_bytes = 2
+            min_block_k = min_block_k // 2
+
+    xpu_hp_mode = int(os.getenv("TRITONXPU_HP_MODE", "0"))
+    if str(A.dtype) == "torch.bfloat16" and xpu_hp_mode == 1:
+        hp_mode = 1
+
+    arch = driver.active.get_current_target().arch
+    if arch == 3:
+        max_m_aglined, max_n_aglined = 6, 8
+        if hp_mode == 1:
+            max_m_aglined, max_n_aglined = 5, 5
+        if matmul_mode == 1 and ele_bytes == 2 and args["K"] > 32768:
+            max_m_aglined = 4
+        arch_meta = {
+            "arch": 3, "mem": (1605632, 128), "wcache": 1310720, "dcache": 786432, "aligned_size":
+            {"m_aligned": 80, "n_aligned": 64, "k_aligned":
+             128}, "grid_aligned": 12, "max_m_aglined": max_m_aglined, "max_n_aglined": max_n_aglined
+        }
+        return _build_2d_configs(arch_meta, generate_configs, args, block_names, ele_bytes, dotout_ele_bytes, bias,
+                                 hp_mode, min_block_k, a_trans, b_trans, int8_w8a8, TRITON_i4_AUTOTUNING)
+
+    if arch == 4:
+        max_m_aglined, max_n_aglined = 6, 8
+        if hp_mode == 1:
+            max_m_aglined, max_n_aglined = 5, 5
+        arch_meta = {
+            "arch": 4, "mem": (1048576, 128), "wcache": 768 * 1024, "dcache": 320 * 1024, "aligned_size":
+            {"m_aligned": 96, "n_aligned": 64, "k_aligned":
+             128}, "grid_aligned": 6, "max_m_aglined": max_m_aglined, "max_n_aglined": max_n_aglined
+        }
+        return _build_2d_configs(arch_meta, generate_configs, args, block_names, ele_bytes, dotout_ele_bytes, bias,
+                                 hp_mode, min_block_k, a_trans, b_trans, int8_w8a8, TRITON_i4_AUTOTUNING)
+
+    return []

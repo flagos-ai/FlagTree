@@ -33,7 +33,7 @@
 
 namespace {
 using namespace mlir;
-namespace tle = mlir::triton::tle;
+using namespace mlir::triton;
 
 struct DSLRegionOpConversion : public ConvertOpToLLVMPattern<tle::DSLRegionOp> {
   DSLRegionOpConversion(LLVMTypeConverter &typeConverter,

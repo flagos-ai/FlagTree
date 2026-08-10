@@ -7,16 +7,19 @@
 #include "Dialect/TritonILUVATARGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TargetInfo.h"
+#include "TritonILUVATARGPUToLLVM/MembarUtility.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/Membar.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
@@ -25,6 +28,8 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+
+#include <cstdlib>
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_CONVERTTRITONILUVATARGPUTOLLVM
@@ -60,6 +65,10 @@ public:
 #ifdef __ILUVATAR_TLE__
     mlir::triton::iluvatar_tle::addIllegalDialects(*this);
 #endif
+    addLegalOp<triton::gpu::WarpSpecializeOp>();
+    addLegalOp<triton::gpu::WarpYieldOp>();
+    addLegalOp<triton::gpu::WarpSpecializePartitionsOp>();
+    addLegalOp<triton::gpu::WarpReturnOp>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
   }
 };
@@ -103,7 +112,8 @@ struct ConvertTritonILUVATARGPUToLLVM
     // Allocate shared memory and set barrier
     ModuleAllocation allocation(mod);
 
-    ModuleMembarAnalysis membarPass(&allocation);
+    ModuleMembarAnalysis membarPass(&allocation,
+                                    triton::ILUVATAR::membarFilter);
     membarPass.run();
 
     // Lower functions
@@ -179,8 +189,8 @@ struct ConvertTritonILUVATARGPUToLLVM
     ILUVATAR::populateLoadStoreOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, axisInfoAnalysis, ILUVATARBenefit);
     ILUVATAR::populateMaskedOpsToLLVMPatterns(patterns, targetInfo);
-    // ILUVATAR::populateBarrierOpToLLVMPatterns(typeConverter, patterns,
-    // ILUVATARBenefit);
+    ILUVATAR::populateBarrierOpToLLVMPatterns(typeConverter, patterns,
+                                              ILUVATARBenefit, targetInfo);
     // ILUVATAR::populateTensorPtrOpsToLLVMPatterns(typeConverter, patterns,
     //                                         ILUVATARBenefit);
 
@@ -208,6 +218,7 @@ struct ConvertTritonILUVATARGPUToLLVM
     ILUVATAR::populateSPMDOpToLLVMPattern(typeConverter, patterns,
                                           ILUVATARBenefit);
 
+    mlir::arith::populateCeilFloorDivExpandOpsPatterns(patterns);
     mlir::arith::populateArithToLLVMConversionPatterns(typeConverter, patterns);
     mlir::populateMathToLLVMConversionPatterns(typeConverter, patterns);
 
@@ -222,6 +233,14 @@ struct ConvertTritonILUVATARGPUToLLVM
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns)))) {
       return signalPassFailure();
     }
+
+    // Equivalent layouts can still leave materialization casts because dialect
+    // conversion bridges original tensor SSA values to their LLVM struct form.
+    // Fold those cycles before exporting LLVM dialect to LLVM IR.
+    SmallVector<UnrealizedConversionCastOp> unrealizedCasts;
+    mod.walk(
+        [&](UnrealizedConversionCastOp op) { unrealizedCasts.push_back(op); });
+    reconcileUnrealizedCasts(unrealizedCasts);
 
     fixUpLoopAnnotation(mod);
   }

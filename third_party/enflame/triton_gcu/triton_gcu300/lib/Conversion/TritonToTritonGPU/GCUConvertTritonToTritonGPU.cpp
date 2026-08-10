@@ -19,6 +19,7 @@
 
 #include "GCUTritonGPUConversion.h"
 
+#include "Utils/TritonVersionCompat.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -190,7 +191,17 @@ struct TritonExpandDimsPattern
     } else {
       std::iota(retOrder.begin(), retOrder.end(), 0);
     }
-    auto ctaLl = argEncoding.getCTALayout().getLinearLayout();
+#if TRITON_VERSION == 35
+    auto argCTALayout = argEncoding.getCTALayout();
+    auto retCTAsPerCGA = insertOne(argCTALayout.getCTAsPerCGA(), op.getAxis());
+    auto retCTASplitNum =
+        insertOne(argCTALayout.getCTASplitNum(), op.getAxis());
+    auto retCTAOrder = insertOrder(argCTALayout.getCTAOrder(), op.getAxis());
+    auto retCTALayout = triton::gpu::CTALayoutAttr::get(
+        getContext(), retCTAsPerCGA, retCTASplitNum, retCTAOrder);
+#else
+    auto ctaLl =
+        triton_gcu::compat::getCGALayout(argEncoding).getLinearLayout();
     auto kBlock = *ctaLl.getInDimNames().begin();
     auto *ctx = kBlock.getContext();
     auto newDim = standardOutDimNames(ctx, newRank)[newRank - 1];
@@ -200,7 +211,9 @@ struct TritonExpandDimsPattern
       std::swap(newOrder[i], newOrder[i - 1]);
     }
     ctaLl = transposeLinearLayout(ctaLl, newOrder);
-    auto retCTALayout = CTAEncodingAttr::get(ctx, std::move(ctaLl));
+    auto retCTALayout =
+        triton_gcu::compat::getCGALayoutFromLL(ctx, std::move(ctaLl));
+#endif
 
     triton::gpu::BlockedEncodingAttr retEncoding =
         triton::gpu::BlockedEncodingAttr::get(getContext(), retSizePerThread,
@@ -216,6 +229,26 @@ struct TritonExpandDimsPattern
                   adaptor.getAttributes());
     return success();
   }
+
+#if TRITON_VERSION == 35
+private:
+  template <typename T>
+  SmallVector<T> insertOne(ArrayRef<T> vec, unsigned axis) const {
+    SmallVector<T> res(vec.begin(), vec.end());
+    res.insert(res.begin() + axis, 1);
+    return res;
+  }
+
+  SmallVector<unsigned> insertOrder(ArrayRef<unsigned> order,
+                                    unsigned axis) const {
+    SmallVector<unsigned> resOrder(order.begin(), order.end());
+    for (unsigned i = 0; i < resOrder.size(); ++i)
+      if (resOrder[i] >= axis)
+        ++resOrder[i];
+    resOrder.insert(resOrder.begin(), axis);
+    return resOrder;
+  }
+#endif
 };
 
 struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
@@ -314,7 +347,8 @@ struct TritonCatPattern : public OpConversionPattern<triton::CatOp> {
     triton::gpu::BlockedEncodingAttr newRetEncoding =
         triton::gpu::BlockedEncodingAttr::get(
             getContext(), newRetSizePerThread, retThreadsPerWarp,
-            retWarpsPerCTA, retOrder, retEncoding.getCTALayout());
+            retWarpsPerCTA, retOrder,
+            triton_gcu::compat::getCGALayout(retEncoding));
     auto newRetType = retType.cloneWithEncoding(newRetEncoding);
     addNamedAttrs(rewriter.replaceOpWithNewOp<triton::CatOp>(
                       op, newRetType, adaptor.getOperands()),
@@ -457,7 +491,19 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
         return res;
       };
 
-      auto layout = defaultEnc.getCTALayout().getLinearLayout();
+#if TRITON_VERSION == 35
+      srcEnc = BlockedEncodingAttr::get(
+          getContext(), append(defaultEnc.getSizePerThread(), 2),
+          append(defaultEnc.getThreadsPerWarp(), 1),
+          append(defaultEnc.getWarpsPerCTA(), 1),
+          prepend(defaultEnc.getOrder(), rank - 1),
+          CTALayoutAttr::get(getContext(),
+                             append(defaultEnc.getCTAsPerCGA(), 1),
+                             append(defaultEnc.getCTASplitNum(), 1),
+                             prepend(defaultEnc.getCTAOrder(), rank - 1)));
+#else
+      auto layout =
+          triton_gcu::compat::getCGALayout(defaultEnc).getLinearLayout();
       auto kBlock = StringAttr::get(getContext(), "block");
       auto newDim = standardOutDimNames(getContext(), rank)[rank - 1];
       layout *= LinearLayout::identity1D(1, kBlock, newDim);
@@ -466,7 +512,8 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
           append(defaultEnc.getThreadsPerWarp(), 1),
           append(defaultEnc.getWarpsPerCTA(), 1),
           prepend(defaultEnc.getOrder(), rank - 1),
-          CTAEncodingAttr::get(getContext(), layout));
+          triton_gcu::compat::getCGALayoutFromLL(getContext(), layout));
+#endif
       srcTy = srcTy.cloneWithEncoding(srcEnc);
       src = ConvertLayoutOp::create(rewriter, op.getLoc(), srcTy, src);
     }

@@ -54,6 +54,14 @@ LinearLayout toLinearLayout(TensorOrMemDesc type);
 // with the allocShape as the shape, otherwise the layout will be incorrect!
 LinearLayout toLinearLayout(ArrayRef<int64_t> shape, Attribute layout);
 
+#ifdef __ILUVATAR__
+// Returns the GF(2)-linear part of the int8 rowxfb8 physical shared layout.
+// This is intentionally separate from toLinearLayout(): rowxfb8 also needs a
+// small non-linear offset correction at the physical local-load boundary.
+LinearLayout iluvatarRowXfb8ToLinearLayout(ArrayRef<int64_t> shape,
+                                           SwizzledSharedEncodingAttr shared);
+#endif
+
 // Convert the shared encoding of a tensor with `nvmma_shared` layout to a
 // LinearLayout that maps from a linear shared memory offset to tensor index.
 //

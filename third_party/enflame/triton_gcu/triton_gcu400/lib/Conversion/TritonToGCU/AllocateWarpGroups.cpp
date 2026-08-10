@@ -16,6 +16,9 @@
 
 #include "Conversion/Passes.h"
 
+#include "Constants.h"
+
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/Support/DebugLog.h"
 
@@ -57,7 +60,12 @@ static void padToMaxWarpGroups(WarpSpecializeOp op, int numExtraWarpGroups,
 
   auto partitions = cast<WarpSpecializePartitionsOp>(
       op.getPartitionOpHolder().front().front());
+#if TRITON_VERSION >= 37
+  OperationState state(partitions.getLoc(), partitions.getOperationName(),
+                       partitions.getOperands(), /*types=*/{});
+#else
   OperationState state(partitions.getLoc(), partitions.getOperationName());
+#endif
   for (Region *region : partitions.getRegions())
     state.addRegion()->takeBody(*region);
 
@@ -66,7 +74,7 @@ static void padToMaxWarpGroups(WarpSpecializeOp op, int numExtraWarpGroups,
     partitionNumWarps.push_back(paddingSize);
 
     Block &body = state.addRegion()->emplaceBlock();
-    for (Value capture : op.getExplicitCaptures())
+    for (Value capture : triton_gcu::compat::getWsExplicitCaptures(op))
       body.addArgument(capture.getType(), capture.getLoc());
     OpBuilder b(op.getContext());
     b.setInsertionPointToStart(&body);
@@ -107,21 +115,53 @@ public:
     int partitionStartId = 0;
 
     // First determine the maximum number of extra warps.
-    // Notice: currently only support one WarpSpecializeOp per function.
+    // Notice: AUTO WS currently only support one WarpSpecializeOp per function.
     int maxExtraWarps = 0;
+    bool isTleWarpSpecialize = false;
     mod.walk([&](ttg::WarpSpecializeOp op) {
       maxExtraWarps = std::max<int>(maxExtraWarps, op.getTotalPartitionWarps());
+      if (op->hasAttr("tle.warp_specialize")) {
+        isTleWarpSpecialize = true;
+      }
     });
+    // TLE WS: ensure compute (dot/consumer) partitions always occupy lower
+    // warp_ids (starting from 0), while DTE (load/producer) partitions get
+    // higher warp_ids. This matches the hardware preference for placing
+    // compute-intensive work on low warp_ids.
+    //
+    // In TLE WS, the default region's warp count equals the kernel's
+    // num_warps. By convention, a DTE (load) partition typically uses 1 warp,
+    // while a compute (dot) partition uses >1 warps. We use this to determine
+    // which side is compute:
+    // - If default has more warps (numWarps >= totalPartitionWarps):
+    //   default is compute, gets warp_id 0; partitions (DTE) start after.
+    // - If partitions have more warps (numWarps < totalPartitionWarps):
+    //   partitions are compute, get warp_id 0; default (DTE) placed after.
+    //
+    // FIXME: The current heuristic (numWarps >= totalPartitionWarps) for
+    // distinguishing compute vs DTE partitions is fragile. It will break when
+    // SPMC is supported (multiple consumer partitions with different warp
+    // counts). A more robust approach would be to inspect the partition's
+    // actual operations (e.g., presence of tt.dot = compute, presence of
+    // copy_global_to_local = DTE) or to carry explicit role metadata from
+    // the TLE Python API.
+    if (isTleWarpSpecialize) {
+      defaultNumWarps = numWarps;
+    }
     LDBG() << "maxExtraWarps: " << maxExtraWarps;
     if (maxExtraWarps == 0)
       return;
 
-    // Round this up to the nearest warpgroup (multiple of 4) and then pad each
-    // `ttg.warp_specialize` to the nearest warpgroup.
+    // Round this up to the nearest warpgroup (multiple of numWarps) and then
+    // pad each `ttg.warp_specialize` to the nearest warpgroup.
+    // For TLE WS, skip padding — the producer partition uses exactly the warps
+    // specified by worker_num_warps, no need to round up to a full warp group.
     int numExtraWarpGroups = llvm::divideCeil(maxExtraWarps, numWarps);
-    mod.walk([&](ttg::WarpSpecializeOp op) {
-      padToMaxWarpGroups(op, numExtraWarpGroups, numWarps);
-    });
+    if (!isTleWarpSpecialize) {
+      mod.walk([&](ttg::WarpSpecializeOp op) {
+        padToMaxWarpGroups(op, numExtraWarpGroups, numWarps);
+      });
+    }
 
     // Define the data structures for the warp group information.
     struct WarpGroupInfo {
@@ -140,13 +180,32 @@ public:
     mod.walk([&](ttg::WarpSpecializeOp op) {
       ArrayRef<int32_t> arr = op.getPartitionNumWarps();
 
+      // For TLE WS, compute partitionStartId per-WS-op since each WS op
+      // may have different total partition warps.
+      if (isTleWarpSpecialize) {
+        int tleTotalPartitionWarps = op.getTotalPartitionWarps();
+        if (numWarps >= tleTotalPartitionWarps) {
+          // Default is compute (e.g. consumer-default: 4 warps).
+          partitionStartId = numWarps;
+        } else {
+          // Partitions are compute (e.g. producer-default: default 1 warp,
+          // worker partition 4 warps).
+          partitionStartId = 0;
+        }
+      }
+
       // Allocate the start IDs such that the largest warpgroups have lower
       // starting warp IDs.
+      // For TLE warp_specialize, assign sequentially to ensure partitions
+      // preserve their declaration order, starting from the dynamically
+      // determined partitionStartId.
       SmallVector<std::pair<unsigned, int32_t>> idxAndSize;
       for (auto [i, size] : llvm::enumerate(arr))
         idxAndSize.emplace_back(i, size);
-      llvm::sort(idxAndSize,
-                 [&](auto lhs, auto rhs) { return lhs.second > rhs.second; });
+      if (!isTleWarpSpecialize) {
+        llvm::sort(idxAndSize,
+                   [&](auto lhs, auto rhs) { return lhs.second > rhs.second; });
+      }
 
       SmallVector<int32_t> startIds(arr.size());
       int startId = partitionStartId;
@@ -158,7 +217,24 @@ public:
 
       // Require that an estimate has been set and that we have even warpgroups.
       auto regsAttr = op.getRequestedRegisters();
-      if (!regsAttr || op.getTotalPartitionWarps() % numWarps != 0)
+      if (!regsAttr)
+        return;
+
+      // For TLE WS (no padding), set actualRegisters directly since partitions
+      // don't align to warp group boundaries.
+      if (isTleWarpSpecialize) {
+        SmallVector<int32_t> maxnregsPerPartition;
+        for (int32_t estRegs : *regsAttr) {
+          int estRegsCeil =
+              llvm::divideCeil(estRegs, minRegCount) * minRegCount;
+          maxnregsPerPartition.push_back(estRegsCeil);
+        }
+        maxnregsPerPartition.push_back(0); // default warp group
+        op.setActualRegisters(maxnregsPerPartition);
+        return;
+      }
+
+      if (op.getTotalPartitionWarps() % numWarps != 0)
         return;
 
       // Group the partitions into warpgroups.
@@ -209,9 +285,10 @@ public:
     });
 
     Builder b(&getContext());
-    mod->setAttr(
-        "ttg.total-num-warps",
-        b.getI32IntegerAttr(defaultNumWarps + numExtraWarpGroups * numWarps));
+    int totalNumWarps = isTleWarpSpecialize
+                            ? (defaultNumWarps + maxExtraWarps)
+                            : (defaultNumWarps + numExtraWarpGroups * numWarps);
+    mod->setAttr(kTotalNumWarps, b.getI32IntegerAttr(totalNumWarps));
   }
 };
 

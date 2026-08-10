@@ -1,4 +1,4 @@
-__device__ void
+extern "C"  __device__ void
 SoftmaxKernel(__attribute__((address_space(1))) float *output,
               __attribute__((address_space(1))) const float *input,
               const int n_rows,

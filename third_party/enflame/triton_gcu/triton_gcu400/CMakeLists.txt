@@ -142,8 +142,10 @@ set_target_properties(triton-gcu400-opt PROPERTIES
 
 target_link_libraries(triton-gcu400-opt PRIVATE triton_gcu400_core)
 
-# Install tools
+# Install tools (omit from gcu300-only deb; still built for the wheel).
+if(NOT KURAMA_GCU300_ONLY)
 install(TARGETS triton-gcu400-opt RUNTIME DESTINATION bin)
+endif()
 
 add_custom_target(triton-gcu400-tools ALL DEPENDS triton-gcu400-opt)
 
@@ -156,8 +158,9 @@ add_subdirectory(python)
 # Step 7: Unit Tests
 # -----------------------------------------------------------------------------
 set(triton_gcu_source_dir ${CMAKE_CURRENT_SOURCE_DIR})
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/unittests)
-  add_subdirectory(unittests)
+set(_unittests_dir ${CMAKE_CURRENT_SOURCE_DIR}/../test/triton36/unittests)
+if(EXISTS ${_unittests_dir})
+  add_subdirectory(${_unittests_dir} unittests)
 endif()
 
 # -----------------------------------------------------------------------------

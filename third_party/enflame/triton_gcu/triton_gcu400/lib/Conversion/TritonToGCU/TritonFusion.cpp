@@ -51,10 +51,6 @@ using namespace mlir::triton::gcu;
 
 namespace {
 
-const char *const kIsContinual = "IsContinual";
-constexpr unsigned kOaccSizeInBytes = 512;
-constexpr unsigned kLoopUnrollTimes = 16;
-
 static bool hasSideEffectBetween(Operation *from, Operation *to) {
   assert(from && to && from->getBlock() == to->getBlock() &&
          "from and to must be in the same block");
@@ -68,7 +64,21 @@ static bool mightHaveWriteEffectBetween(Operation *from, Operation *to) {
          "from and to must be in the same block");
   return llvm::any_of(
       llvm::make_range(Block::iterator(from), Block::iterator(to)),
-      [](auto &op) { return mightHaveEffect<MemoryEffects::Write>(&op); });
+      [](auto &op) {
+#if TRITON_VERSION == 35
+        if (auto memEffect = dyn_cast<MemoryEffectOpInterface>(&op)) {
+          SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>>
+              effects;
+          memEffect.getEffects(effects);
+          return llvm::any_of(effects, [](const auto &effect) {
+            return isa<MemoryEffects::Write>(effect.getEffect());
+          });
+        }
+        return !isMemoryEffectFree(&op);
+#else
+        return mightHaveEffect<MemoryEffects::Write>(&op);
+#endif
+      });
 }
 
 struct EliminateForOpInductionVars : public OpRewritePattern<scf::ForOp> {
@@ -320,11 +330,6 @@ tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
   if (!rankedTensorTy || rankedTensorTy.getRank() != 1) {
     return failure();
   }
-  if (cast<triton::PointerType>(rankedTensorTy.getElementType())
-          .getPointeeType()
-          .isInteger(64)) {
-    return failure();
-  }
   auto offset = addPtrOp.getOffset();
   auto basePtr = addPtrOp.getPtr();
   // Triton AddPtr offsets here are expected to be signless integer
@@ -393,12 +398,24 @@ struct ConvertTritonLoadOp : public OpRewritePattern<triton::LoadOp> {
       auto [basePtr, offset] = *result;
       auto mask = op.getMask();
       auto other = op.getOther();
-      auto axisInfoEx = analysis.getAxisInfoEx(op.getPtr());
-      auto isContinual = axisInfoEx && axisInfoEx->getContinualInterval(0) == 1;
       auto maskedLoadOp = rewriter.create<triton::gcu::MaskedLoadOp>(
           loc, basePtr, offset, mask, other);
-      if (isContinual) {
-        maskedLoadOp->setAttr(kIsContinual, rewriter.getBoolAttr(isContinual));
+      auto axisInfoEx = analysis.getAxisInfoEx(op.getPtr());
+      if (!axisInfoEx) {
+        rewriter.replaceOp(op, maskedLoadOp);
+        return success();
+      }
+      auto continualInterval = axisInfoEx->getContinualInterval(0);
+      if (continualInterval == 1) {
+        maskedLoadOp->setAttr(kIsContinual, rewriter.getBoolAttr(true));
+      } else if (continualInterval == 0) {
+        auto constancy = axisInfoEx->getConstancy(0);
+        if (constancy *
+                getBpe(getElementTypeOrSelf(op.getResult().getType())) >=
+            kOaccSizeInBytes) {
+          maskedLoadOp->setAttr(kConstancy,
+                                rewriter.getI32IntegerAttr(constancy));
+        }
       }
       rewriter.replaceOp(op, maskedLoadOp);
       return success();
@@ -544,11 +561,6 @@ static bool canFuseBroadcast(triton::BroadcastOp op) {
   auto resultType = op.getType();
   auto rank = srcType.getRank();
 
-  // TODO(peng.tian): support i1 broadcast
-  if (getElementTypeOrSelf(srcType).isInteger(1)) {
-    return false;
-  }
-
   std::optional<unsigned> broadcastAxis;
   for (unsigned i = 0; i < rank; ++i) {
     if (srcType.getDimSize(i) != resultType.getDimSize(i)) {
@@ -562,13 +574,24 @@ static bool canFuseBroadcast(triton::BroadcastOp op) {
     return false;
   }
 
+  auto bpe = triton::gcu::getBpe(getElementTypeOrSelf(srcType));
+
+  if (getElementTypeOrSelf(srcType).isInteger(1)) {
+    auto defOp = op.getSrc().getDefiningOp();
+    if (!defOp || !isa<arith::CmpIOp, arith::CmpFOp>(defOp)) {
+      return false;
+    }
+    bpe =
+        triton::gcu::getBpe(getElementTypeOrSelf(defOp->getOperandTypes()[0]));
+  }
+
   auto elemsPerThread = broadcastAxis == 0
                             ? triton::gcu::getElemsPerThread(srcType)
                             : triton::gcu::getElemsPerThread(resultType);
   auto sizeInBytes =
       std::accumulate(elemsPerThread.begin() + *broadcastAxis,
                       elemsPerThread.end(), 1, std::multiplies<int64_t>()) *
-      triton::gcu::getBpe(getElementTypeOrSelf(srcType));
+      bpe;
   auto numOacc = sizeInBytes / kOaccSizeInBytes;
   // TODO(peng.tian): need to support general implementation
   return numOacc >= 1 && numOacc <= 4 * kLoopUnrollTimes;

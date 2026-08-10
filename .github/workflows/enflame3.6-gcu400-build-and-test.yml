@@ -25,6 +25,11 @@ on:
     branches: [ "main", "triton_v3.6.x" ]
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -33,7 +38,7 @@ concurrency:
 jobs:
   enflame36x-gcu400-unit-test:
     runs-on: "enflame3.6-gcu400"
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
@@ -51,6 +56,10 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: enflame
+
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
       - name: Detect Target Branch
         shell: bash
@@ -72,7 +81,15 @@ jobs:
           python3 -m pip uninstall -y triton --break-system-packages
           python3 -m pip uninstall -y triton_gcu --break-system-packages
           export FLAGTREE_BACKEND=enflame
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation --break-system-packages
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v --break-system-packages
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: enflame
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -81,18 +98,18 @@ jobs:
           set -x
 
           ## triton unit test
-          python3 -m pytest -s third_party/enflame/python/test/unit \
+          python3 -m pytest third_party/enflame/python/test/unit \
               --ignore=third_party/enflame/python/test/unit/language/test_core.py
 
           ## tle unit test
 
-          python3 -m pytest -s python/test/tle \
+          python3 -m pytest python/test/tle \
               --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
               --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
               --ignore=python/test/tle/unit/test_tle_d2d_barrier.py
 
           ## tle raw test
-          python3 -m pytest -s third_party/enflame/python/test/tle/raw
+          python3 -m pytest third_party/enflame/python/test/tle/raw
 
           ## tle tutorials test
           python3 python/tutorials/tle/01-fft.py

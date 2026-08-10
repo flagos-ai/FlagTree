@@ -174,9 +174,15 @@ void createAsyncCopy(scf::ForOp forOp, tt::LoadOp loadOp, Value alloc,
 
   // Create async copy
   Value view = createSingleBufferView(builder, alloc, insertIdx);
+#ifdef __ILUVATAR__
+  Operation *copy = ttg::AsyncCopyGlobalToLocalOp::create(
+      builder, src, view, mask, other, loadOp.getInputStride(),
+      loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(), contiguity);
+#else
   Operation *copy = ttg::AsyncCopyGlobalToLocalOp::create(
       builder, src, view, mask, other, loadOp.getCache(), loadOp.getEvict(),
       loadOp.getIsVolatile(), contiguity);
+#endif
   Operation *commit =
       ttg::AsyncCommitGroupOp::create(builder, copy->getResult(0));
 
@@ -443,6 +449,19 @@ bool loadRequiresAdditionalBuffer(Operation *loadOp) {
   return false;
 }
 
+#ifdef __ILUVATAR__
+bool isIluvatarSmeLoad(Operation *op) {
+  auto loadOp = dyn_cast<tt::LoadOp>(op);
+  if (!loadOp)
+    return false;
+  auto type = dyn_cast<RankedTensorType>(loadOp.getType());
+  if (!type)
+    return false;
+  auto encoding = dyn_cast<ttg::BlockedEncodingAttr>(type.getEncoding());
+  return encoding && encoding.getIsSme();
+}
+#endif
+
 scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
                       triton::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   llvm::MapVector<Operation *, AsyncLoad> asyncLoads;
@@ -489,9 +508,17 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
                                      axisInfoAnalysis.getMaskAlignment(mask));
           contiguity = vec;
         }
+#ifdef __ILUVATAR__
+        if (isIluvatarSmeLoad(&op))
+          canUseAsyncCp = cast<tt::LoadOp>(op).getInputStride() != nullptr;
+#endif
       }
       if (canUseAsyncCp || isTMALoad(&op)) {
-        if (loadRequiresAdditionalBuffer(&op)) {
+        if (loadRequiresAdditionalBuffer(&op)
+#ifdef __ILUVATAR__
+            || isIluvatarSmeLoad(&op)
+#endif
+        ) {
           // Allocate additional buffer required by the wgmma pipelining.
           stageDiff += 1;
         }

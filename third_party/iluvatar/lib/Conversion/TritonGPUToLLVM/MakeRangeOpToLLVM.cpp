@@ -36,7 +36,13 @@ struct MakeRangeOpConversion
       auto resEncoding =
           mlir::dyn_cast<::mlir::triton::gpu::BlockedEncodingAttr>(
               sliEncoding.getParent());
-      if (resEncoding && resEncoding.getIsSme()) {
+      if (resEncoding && resEncoding.getIsSme() && !resEncoding.getSmeMask()) {
+        is_sme = true;
+      }
+    } else if (auto resEncoding =
+                   mlir::dyn_cast<::mlir::triton::gpu::BlockedEncodingAttr>(
+                       layout)) {
+      if (resEncoding.getIsSme() && !resEncoding.getSmeMask()) {
         is_sme = true;
       }
     }
@@ -49,7 +55,7 @@ struct MakeRangeOpConversion
       retVals[multiDim.index()] = b.add(multiDim.value()[0], start);
 #ifdef __ILUVATAR__
       if (is_sme) {
-        retVals[multiDim.index()] = b.i32_val(0);
+        retVals[multiDim.index()] = start;
       }
 #endif
     }

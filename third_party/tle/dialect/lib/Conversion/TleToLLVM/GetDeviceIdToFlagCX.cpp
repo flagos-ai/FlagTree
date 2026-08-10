@@ -41,7 +41,7 @@
 namespace {
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
-namespace tle = mlir::triton::tle;
+using namespace mlir::triton;
 
 Value getDistDevicePtr(tle::GetDeviceIdOp op, SmallVector<Value> &srcElems) {
   if (!srcElems.empty())

@@ -4,6 +4,7 @@ import tempfile
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "interpreter: indicate whether interpreter supports the test")
+    config.addinivalue_line("markers", "performance: benchmark-oriented tests")
 
 
 def pytest_addoption(parser):

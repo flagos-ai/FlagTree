@@ -11,6 +11,7 @@
 #include "mlir/IR/BuiltinOps.h"                     // mlir::ModuleOp
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Support/TypeID.h"
 
 #include "llvm/ADT/SmallVector.h" // llvm::SmallVector
 #include "llvm/IR/CallingConv.h"
@@ -28,6 +29,15 @@
 
 #include "triton/Target/LLVMXPU/LLVMXPUToLLVMIRTranslation.h"  // registerLLVMXPUDialectTranslation
 // clang-format on
+
+namespace mlir::triton {
+class GeluOp;
+}
+
+// The prebuilt TritonShared archive references this legacy op, which is not
+// declared by the current FlagTree Triton dialect.
+MLIR_DECLARE_EXPLICIT_TYPE_ID(mlir::triton::GeluOp)
+MLIR_DEFINE_EXPLICIT_TYPE_ID(mlir::triton::GeluOp)
 
 namespace py = pybind11;
 
@@ -129,9 +139,11 @@ void init_triton_xpu_passes_transform(py::module &&m) {
 
   m.def("add_tritonxpu_core_tiling_pass",
         [](mlir::PassManager &self, bool dump_flag, uint32_t buffer_size,
-           uint32_t core_num, uint32_t groups_per_cluster) {
+           uint32_t core_num, uint32_t groups_per_cluster,
+           bool triton_auto_core_tiling) {
           self.addPass(mlir::triton::xpu::createTritonXPUCoreTiling(
-              {dump_flag, buffer_size, core_num, groups_per_cluster}));
+              {dump_flag, buffer_size, core_num, groups_per_cluster,
+               triton_auto_core_tiling}));
         });
 
   m.def("add_tritonxpu_vectorize_pass",

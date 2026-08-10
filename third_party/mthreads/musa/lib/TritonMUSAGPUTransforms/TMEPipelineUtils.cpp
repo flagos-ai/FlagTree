@@ -177,7 +177,7 @@ scf::ForOp lowerTMADescriptors(scf::ForOp forOp, tt::CoarseSchedule &schedule) {
   llvm::MapVector<Operation *, Value> tmaBufferMapping;
   int maxStage = schedule.getNumStages() - 1;
   for (auto &op : forOp.getBody()->without_terminator()) {
-    if (isa<ttng::WarpGroupDotOp>(&op)) {
+    if (isa<ttng::WarpGroupDotOp, triton::musa::SquadDotOp>(&op)) {
       maxStage += 1;
       break;
     }

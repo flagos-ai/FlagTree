@@ -32,6 +32,7 @@ import pytest
 
 from numpy.random import RandomState
 from triton.runtime.jit import TensorWrapper, reinterpret, type_canonicalisation_dict
+from triton._flagtree_backend import FLAGTREE_BACKEND
 
 int_dtypes = ['int8', 'int16', 'int32', 'int64']
 uint_dtypes = ['uint8', 'uint16', 'uint32', 'uint64']
@@ -57,7 +58,7 @@ def get_current_target():
 
 def is_cuda():
     target = get_current_target()
-    return False if target is None else target.backend == "cuda"
+    return False if target is None else target.backend == "cuda" and FLAGTREE_BACKEND != "ppu"
 
 
 def is_ampere_or_newer():
@@ -82,6 +83,23 @@ def is_hopper():
 
 def is_sm12x():
     return is_cuda() and torch.cuda.get_device_capability()[0] == 12
+
+
+def is_ppu():
+    target = get_current_target()
+    return False if target is None else target.backend == "cuda" and FLAGTREE_BACKEND == "ppu"
+
+
+# flagtree iluvatar
+def is_corex():
+    target = get_current_target()
+    return target is not None and target.backend == "corex"
+
+
+# flagtree iluvatar
+def is_ivcore11():
+    target = get_current_target()
+    return target is not None and target.backend == "corex" and target.arch == 71
 
 
 def is_hip():

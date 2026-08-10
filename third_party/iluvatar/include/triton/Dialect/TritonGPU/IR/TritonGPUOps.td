@@ -98,6 +98,7 @@ def TTG_AsyncCopyGlobalToLocalOp : TTG_Op<"async_copy_global_to_local", [
     Arg<TTG_MemDescType, "", [MemWrite<SharedMemory>]>:$result,
     Optional<I1Tensor>:$mask,
     Optional<TT_Type>:$other,
+    Optional<TT_IntLike>:$inputStride,
     DefaultValuedAttr<TT_CacheModifierAttr, "triton::CacheModifier::NONE">:$cache,
     DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict,
     DefaultValuedAttr<BoolAttr, "false">:$isVolatile,
@@ -105,6 +106,25 @@ def TTG_AsyncCopyGlobalToLocalOp : TTG_Op<"async_copy_global_to_local", [
   );
 
   let results = (outs TTG_AsyncToken:$token);
+
+  let builders = [
+    // Compatibility builder for call sites without a contiguity hint.
+    OpBuilder<(ins "Value":$src, "Value":$result, "Value":$mask,
+                   "Value":$other, "triton::CacheModifier":$cache,
+                   "triton::EvictionPolicy":$evict, "bool":$isVolatile), [{
+      build($_builder, $_state, src, result, mask, other,
+            /*inputStride=*/Value(), cache, evict, isVolatile,
+            /*contiguity=*/1);
+    }]>,
+    // Compatibility builder for existing call sites without inputStride.
+    OpBuilder<(ins "Value":$src, "Value":$result, "Value":$mask,
+                   "Value":$other, "triton::CacheModifier":$cache,
+                   "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                   "int":$contiguity), [{
+      build($_builder, $_state, src, result, mask, other,
+            /*inputStride=*/Value(), cache, evict, isVolatile, contiguity);
+    }]>
+  ];
 
   let extraClassDeclaration = [{
     static DenseSet<unsigned> getEligibleLoadByteWidth(int computeCapability) {
@@ -114,6 +134,9 @@ def TTG_AsyncCopyGlobalToLocalOp : TTG_Op<"async_copy_global_to_local", [
       }
       return validLoadBytes;
     }
+#ifdef __ILUVATAR__
+    bool isIluvatarSmeAsyncCopy();
+#endif
   }];
 
   // Specify cacheModifier and evictionPolicy explicitly, instead of leaving
@@ -124,6 +147,7 @@ def TTG_AsyncCopyGlobalToLocalOp : TTG_Op<"async_copy_global_to_local", [
   // due to limitations in MLIR's asm parser.
   let assemblyFormat = [{
     $src `,` $result (`mask` $mask^)? (`other` $other^)?
+    (`inputStride` $inputStride^ `:` type($inputStride))?
     oilist(`cacheModifier` `=` $cache | `evictionPolicy` `=` $evict)
     attr-dict `:` type($src) `->` type($result)
   }];

@@ -29,6 +29,10 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 
+#ifdef ENABLE_TRITON_DISTRIBUTED
+#include "TritonDistributed/Dialect/Distributed/IR/Dialect.h"
+#endif
+
 #define DEBUG_TYPE "triton-convert-tensor-pointer"
 namespace mlir {
 #define GEN_PASS_DEF_CONVERTTENSORPOINTERPASS
@@ -75,6 +79,10 @@ public:
   Value getOffset(unsigned i) { return offsets[i]; }
 
   SmallVector<Value> getOffsets() { return offsets; }
+
+  Value getBase() { return base; }
+
+  void setBase(Value newBase) { base = newBase; }
 
   void setOffset(unsigned i, Value newOffset) {
     offsets[i] = newOffset;
@@ -259,6 +267,11 @@ struct ConvertTensorPointerPass
                               std::stack<Operation *> &eraser);
   Operation *rewriteLoadStoreOp(OpBuilder &builder, Operation *op,
                                 std::stack<Operation *> &eraser);
+#ifdef ENABLE_TRITON_DISTRIBUTED
+  Operation *rewriteConsumeTokenOp(OpBuilder &builder,
+                                   triton::distributed::ConsumeTokenOp op,
+                                   std::stack<Operation *> &eraser);
+#endif
   Operation *rewriteIfOp(OpBuilder &builder, scf::IfOp op,
                          std::stack<Operation *> &eraser);
   Operation *rewriteForOp(OpBuilder &builder, scf::ForOp op,
@@ -330,6 +343,22 @@ Operation *ConvertTensorPointerPass::rewriteAdvanceOp(
   eraser.push(op);
   return nullptr;
 }
+
+#ifdef ENABLE_TRITON_DISTRIBUTED
+Operation *ConvertTensorPointerPass::rewriteConsumeTokenOp(
+    OpBuilder &builder, triton::distributed::ConsumeTokenOp op,
+    std::stack<Operation *> &eraser) {
+  if (rewritedInfo.count(op.getInput())) {
+    auto info = rewritedInfo[op.getInput()];
+    Value result = builder.create<triton::distributed::ConsumeTokenOp>(
+        op.getLoc(), info.getBase(), op.getToken());
+    info.setBase(result);
+    rewritedInfo[op.getResult()] = info;
+    eraser.push(op);
+  }
+  return nullptr;
+}
+#endif
 
 Operation *
 ConvertTensorPointerPass::rewriteLoadStoreOp(OpBuilder &builder, Operation *op,
@@ -563,6 +592,11 @@ ConvertTensorPointerPass::rewriteOp(Operation *op,
     return rewriteAdvanceOp(builder, advanceOp, eraser);
   } else if (isa<triton::LoadOp>(op) || isa<triton::StoreOp>(op)) {
     return rewriteLoadStoreOp(builder, op, eraser);
+#ifdef ENABLE_TRITON_DISTRIBUTED
+  } else if (auto consumeTokenOp =
+                 dyn_cast<triton::distributed::ConsumeTokenOp>(op)) {
+    return rewriteConsumeTokenOp(builder, consumeTokenOp, eraser);
+#endif
   } else if (op->getDialect()->getNamespace() == "scf" ||
              op->getDialect()->getNamespace() == "cf") {
     if (auto ifOp = dyn_cast<scf::IfOp>(op)) {

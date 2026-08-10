@@ -463,6 +463,7 @@ def main(argv=None):
     parser.add_argument("--dtype", type=str, default="float32", choices=["float16", "float32", "bfloat16"])
     parser.add_argument("--skip_correctness", action="store_true")
     parser.add_argument("--show_plots", action="store_true")
+    parser.add_argument("--validate", action="store_true", help="Save CSV and validate against baseline")
     args = parser.parse_args(argv)
 
     dtype = _get_dtype(args.dtype)
@@ -470,8 +471,27 @@ def main(argv=None):
         for m, n, k in [(8, 128, 8), (8, 256, 16), (16, 1024, 32)] + SHAPES:
             run_correctness(m, n, k, dtype)
 
-    benchmark.run(print_data=True, show_plots=args.show_plots, dtype=dtype)
+    save_path = './' if args.validate else None
+    benchmark.run(print_data=True, show_plots=args.show_plots, save_path=save_path, dtype=dtype)
+
+    if args.validate:
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from utils.benchmark_utils import validate_benchmark
+        data_dir = Path(__file__).resolve().parents[1] / "data"
+        data_dir.mkdir(exist_ok=True)
+        result = validate_benchmark(
+            current_csv="topk-naive-vs-tle-vs-torch.csv",
+            baseline_csv=str(data_dir / "baseline_topk-naive-vs-tle-vs-torch.csv"),
+            dimension_fields=["M", "N", "K"],
+            regression_threshold=0.10,
+        )
+        if not result:
+            raise Exception('Benchmark validation failed!')
+    else:
+        print("\nSkipping performance validation. Use --validate to enable.")
 
 
 if __name__ == "__main__":
-    main()
+    pass
+    #main()

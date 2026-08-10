@@ -4,6 +4,7 @@
 #include "TritonMUSACommon/BarrierUtils.h"
 #include "TritonMUSACommon/MemDescUtils.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
+#include "TritonMUSACommon/SqmmaOperandPlan.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 #include "mlir/Analysis/SliceAnalysis.h"
@@ -217,6 +218,77 @@ getGenericMusaLoadMemDescType(Operation *loadOp, ttg::SharedEncodingTrait enc) {
                                enc, sharedSpace, /*mutableMemory=*/true);
 }
 
+static ttg::CGAEncodingAttr
+prependMusaBufferDimToCGALayout(ttg::CGAEncodingAttr cgaLayout) {
+  auto prependUnitDim = [](SmallVector<unsigned> values) {
+    values.insert(values.begin(), 1);
+    return values;
+  };
+  SmallVector<unsigned> ctasPerCGA = prependUnitDim(cgaLayout.getCTAsPerCGA());
+  SmallVector<unsigned> ctaSplitNum =
+      prependUnitDim(cgaLayout.getCTASplitNum());
+  SmallVector<unsigned> ctaOrder;
+  ctaOrder.reserve(cgaLayout.getRank() + 1);
+  ctaOrder.push_back(0);
+  for (unsigned dim : cgaLayout.getCTAOrder())
+    ctaOrder.push_back(dim + 1);
+  return ttg::CGAEncodingAttr::fromSplitParams(
+      cgaLayout.getContext(), ctasPerCGA, ctaSplitNum, ctaOrder);
+}
+
+static ttg::CGAEncodingAttr
+dropMusaBufferDimFromCGALayout(ttg::CGAEncodingAttr cgaLayout) {
+  assert(cgaLayout.getRank() > 0 && "expected buffered CGA layout");
+  auto dropLeadingUnitDim = [](SmallVector<unsigned> values) {
+    assert(!values.empty() && values.front() == 1 &&
+           "buffer dimension must not be split across CTAs");
+    values.erase(values.begin());
+    return values;
+  };
+  SmallVector<unsigned> ctasPerCGA =
+      dropLeadingUnitDim(cgaLayout.getCTAsPerCGA());
+  SmallVector<unsigned> ctaSplitNum =
+      dropLeadingUnitDim(cgaLayout.getCTASplitNum());
+  SmallVector<unsigned> ctaOrder;
+  ctaOrder.reserve(cgaLayout.getRank() - 1);
+  for (unsigned dim : cgaLayout.getCTAOrder()) {
+    if (dim == 0)
+      continue;
+    ctaOrder.push_back(dim - 1);
+  }
+  return ttg::CGAEncodingAttr::fromSplitParams(
+      cgaLayout.getContext(), ctasPerCGA, ctaSplitNum, ctaOrder);
+}
+
+static ttg::SwizzledSharedEncodingAttr
+prependMusaBufferDimToSharedEncoding(ttg::SwizzledSharedEncodingAttr swizzled) {
+  SmallVector<unsigned> order;
+  order.reserve(swizzled.getOrder().size() + 1);
+  for (unsigned dim : swizzled.getOrder())
+    order.push_back(dim + 1);
+  order.push_back(0);
+  return ttg::SwizzledSharedEncodingAttr::get(
+      swizzled.getContext(), swizzled.getVec(), swizzled.getPerPhase(),
+      swizzled.getMaxPhase(), order,
+      prependMusaBufferDimToCGALayout(swizzled.getCGALayout()));
+}
+
+static ttg::SwizzledSharedEncodingAttr
+dropMusaBufferDimFromSharedEncoding(ttg::SwizzledSharedEncodingAttr swizzled) {
+  SmallVector<unsigned> order;
+  order.reserve(swizzled.getOrder().empty() ? 0
+                                            : swizzled.getOrder().size() - 1);
+  for (unsigned dim : swizzled.getOrder()) {
+    if (dim == 0)
+      continue;
+    order.push_back(dim - 1);
+  }
+  return ttg::SwizzledSharedEncodingAttr::get(
+      swizzled.getContext(), swizzled.getVec(), swizzled.getPerPhase(),
+      swizzled.getMaxPhase(), order,
+      dropMusaBufferDimFromCGALayout(swizzled.getCGALayout()));
+}
+
 static ttg::MemDescType getMusaMultiBufferedType(ttg::MemDescType viewTy,
                                                  int32_t depth) {
   SmallVector<int64_t> shape(viewTy.getShape().begin(),
@@ -225,8 +297,12 @@ static ttg::MemDescType getMusaMultiBufferedType(ttg::MemDescType viewTy,
                                   viewTy.getAllocShape().end());
   shape.insert(shape.begin(), depth);
   allocShape.insert(allocShape.begin(), depth);
-  return ttg::MemDescType::get(shape, viewTy.getElementType(),
-                               viewTy.getEncoding(), viewTy.getMemorySpace(),
+  Attribute encoding = viewTy.getEncoding();
+  if (auto swizzled =
+          dyn_cast_or_null<ttg::SwizzledSharedEncodingAttr>(encoding))
+    encoding = prependMusaBufferDimToSharedEncoding(swizzled);
+  return ttg::MemDescType::get(shape, viewTy.getElementType(), encoding,
+                               viewTy.getMemorySpace(),
                                /*mutableMemory=*/true, allocShape);
 }
 
@@ -249,9 +325,20 @@ createMusaSingleBufferView(OpBuilder &builder, Value alloc, Value idx) {
   SmallVector<int64_t> viewAllocShape(
       allocTy.getAllocShape().drop_front().begin(),
       allocTy.getAllocShape().drop_front().end());
+  Attribute encoding = allocTy.getEncoding();
+  if (auto swizzled =
+          dyn_cast_or_null<ttg::SwizzledSharedEncodingAttr>(encoding)) {
+    if (swizzled.getCGALayout().getRank() == viewShape.size() + 1) {
+      encoding = dropMusaBufferDimFromSharedEncoding(swizzled);
+    } else if (swizzled.getCGALayout().getRank() != viewShape.size()) {
+      llvm::report_fatal_error(
+          "MUSA pipeliner produced a shared encoding rank that does not match "
+          "the single-buffer view rank");
+    }
+  }
   auto viewTy = ttg::MemDescType::get(
-      viewShape, allocTy.getElementType(), allocTy.getEncoding(),
-      allocTy.getMemorySpace(), allocTy.getMutableMemory(), viewAllocShape);
+      viewShape, allocTy.getElementType(), encoding, allocTy.getMemorySpace(),
+      allocTy.getMutableMemory(), viewAllocShape);
   return ttg::MemDescIndexOp::create(builder, alloc.getLoc(), viewTy, alloc,
                                      idx);
 }
@@ -572,26 +659,47 @@ static Value createAlloc(scf::ForOp forOp, Operation *loadOp,
                                    distance);
 }
 
-static ttg::LocalAllocOp getSqmmaOperandLocalAllocUser(tt::LoadOp loadOp) {
-  if (mustLoadToRegisters(loadOp))
-    return {};
-  auto localAlloc = dyn_cast<ttg::LocalAllocOp>(*loadOp->getUsers().begin());
-  if (!localAlloc ||
-      !triton::musa::hasSqmmaOpIdxAttr(localAlloc.getOperation())) {
-    return {};
+struct AsyncLanding {
+  ttg::MemDescType landingMemDescTy;
+  SmallVector<triton::musa::SqmmaOperandPlan> sqmmaPlans;
+  Value alloc;
+  Value barrier;
+  Operation *waitOp = nullptr;
+};
+
+struct AsyncLoad {
+  int stageDiff;
+  int contiguity = 1;
+  SmallVector<AsyncLanding> landings;
+};
+
+struct LoadGroupInfo {
+  Value insertIdx;
+  Value extractIdx;
+  Value phase;
+  Value yieldPhase;
+  bool hasTMALoad = false;
+  int32_t barrierBase = 0;
+};
+
+static void eraseDeadSqmmaTensorViewOps(tt::LoadOp loadOp) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    SmallVector<Operation *> users(loadOp->getUsers().begin(),
+                                   loadOp->getUsers().end());
+    for (Operation *user : users) {
+      if (!triton::musa::isSqmmaTensorViewBridgeOp(user) || !user->use_empty())
+        continue;
+      user->erase();
+      changed = true;
+    }
   }
-  return localAlloc;
 }
 
-static ttg::MemDescType getSqmmaOperandLandingMemDescType(tt::LoadOp loadOp) {
-  auto localAlloc = getSqmmaOperandLocalAllocUser(loadOp);
-  if (!localAlloc)
-    return {};
-  return dyn_cast<ttg::MemDescType>(localAlloc.getType());
-}
-
-static void createAsyncCopy(scf::ForOp forOp, tt::LoadOp loadOp, Value alloc,
-                            Value insertIdx, Value extractIdx, int contiguity,
+static void createAsyncCopy(scf::ForOp forOp, tt::LoadOp loadOp,
+                            ArrayRef<AsyncLanding> landings, Value insertIdx,
+                            Value extractIdx, int contiguity,
                             tt::CoarseSchedule &schedule) {
   tt::OpBuilderForStage builder(loadOp.getLoc(), forOp, schedule);
   Operation *firstUse = getFirstUseOfPipelinedOp({loadOp}, forOp, schedule);
@@ -603,34 +711,61 @@ static void createAsyncCopy(scf::ForOp forOp, tt::LoadOp loadOp, Value alloc,
   Value mask = loadOp.getMask();
   Value other = loadOp.getOther();
 
-  Value view = createMusaSingleBufferView(builder, alloc, insertIdx);
-  auto sqmmaLocalAlloc = getSqmmaOperandLocalAllocUser(loadOp);
-  if (sqmmaLocalAlloc) {
-    if (auto allocOp = alloc.getDefiningOp())
-      triton::musa::copySqmmaAttrs(sqmmaLocalAlloc.getOperation(), allocOp);
-    triton::musa::copySqmmaAttrs(sqmmaLocalAlloc.getOperation(),
-                                 view.getDefiningOp());
+  SmallVector<Value> copyTokens;
+  copyTokens.reserve(landings.size());
+  for (const AsyncLanding &landing : landings) {
+    Value view = createMusaSingleBufferView(builder, landing.alloc, insertIdx);
+    if (!landing.sqmmaPlans.empty()) {
+      triton::musa::SqmmaLandingGroup group{
+          loadOp, landing.landingMemDescTy,
+          SmallVector<triton::musa::SqmmaOperandPlan>(
+              landing.sqmmaPlans.begin(), landing.sqmmaPlans.end())};
+      if (auto contract =
+              triton::musa::getUniqueSqmmaLandingGroupContract(group)) {
+        if (auto allocOp = landing.alloc.getDefiningOp())
+          triton::musa::setSqmmaAttrsFromContract(allocOp, contract.value());
+        triton::musa::setSqmmaAttrsFromContract(view.getDefiningOp(),
+                                                contract.value());
+      }
+    }
+    Operation *copy = ttg::AsyncCopyGlobalToLocalOp::create(
+        builder, src, view, mask, other, loadOp.getCache(), loadOp.getEvict(),
+        loadOp.getIsVolatile(), contiguity);
+    copyTokens.push_back(copy->getResult(0));
   }
-  Operation *copy = ttg::AsyncCopyGlobalToLocalOp::create(
-      builder, src, view, mask, other, loadOp.getCache(), loadOp.getEvict(),
-      loadOp.getIsVolatile(), contiguity);
   Operation *commit =
-      ttg::AsyncCommitGroupOp::create(builder, copy->getResult(0));
+      ttg::AsyncCommitGroupOp::create(builder, loadOp.getLoc(), copyTokens);
 
   builder.setStageCluster(schedule[firstUse]);
   auto wait = ttg::AsyncWaitOp::create(builder, commit->getResult(0), 0);
-  auto viewLoad = createMusaSingleBufferView(builder, alloc, extractIdx);
-  if (sqmmaLocalAlloc)
-    triton::musa::copySqmmaAttrs(sqmmaLocalAlloc.getOperation(),
-                                 viewLoad.getDefiningOp());
 
-  if (sqmmaLocalAlloc) {
-    replaceUsesAndPropagateType(builder, sqmmaLocalAlloc, viewLoad);
-    sqmmaLocalAlloc.erase();
+  for (const AsyncLanding &landing : landings) {
+    if (landing.sqmmaPlans.empty())
+      continue;
+    for (const triton::musa::SqmmaOperandPlan &plan : landing.sqmmaPlans) {
+      Value planSource =
+          createMusaSingleBufferView(builder, landing.alloc, extractIdx);
+      IRRewriter rewriter(loadOp.getContext(), &builder);
+      rewriter.setInsertionPoint(builder.getInsertionBlock(),
+                                 builder.getInsertionPoint());
+      if (failed(triton::musa::replaceSqmmaOperandPlan(rewriter, plan,
+                                                       planSource))) {
+        loadOp.emitOpError("failed to materialize SQMMA memdesc operand plan");
+        llvm::report_fatal_error("Fatal pipeliner error");
+      }
+    }
+  }
+  eraseDeadSqmmaTensorViewOps(loadOp);
+
+  if (loadOp->use_empty()) {
   } else if (!loadOp.getOther() || isZeroConst(loadOp.getOther())) {
+    auto viewLoad =
+        createMusaSingleBufferView(builder, landings.front().alloc, extractIdx);
     replaceUsesWithLocalLoad(builder, loadOp->getResult(0), viewLoad,
                              wait.getResult());
   } else if (loadOp->use_begin() != loadOp->use_end()) {
+    auto viewLoad =
+        createMusaSingleBufferView(builder, landings.front().alloc, extractIdx);
     auto sharedLoad = ttg::LocalLoadOp::create(builder, loadOp.getType(),
                                                viewLoad, wait.getResult());
     auto select =
@@ -673,24 +808,6 @@ static void replaceDescriptorUsesWithMemDescOrLocalLoad(
       rewriter.eraseOp(user);
   }
 }
-
-struct AsyncLoad {
-  int stageDiff;
-  int contiguity = 1;
-  Value alloc;
-  Value barrier;
-  Operation *waitOp = nullptr;
-  ttg::MemDescType landingMemDescTy;
-};
-
-struct LoadGroupInfo {
-  Value insertIdx;
-  Value extractIdx;
-  Value phase;
-  Value yieldPhase;
-  bool hasTMALoad = false;
-  int32_t barrierBase = 0;
-};
 
 static void scheduleScalarPipelineValue(tt::CoarseSchedule &schedule, Value v,
                                         int stage,
@@ -902,8 +1019,10 @@ createMUSATMABarrierAndWait(scf::ForOp forOp,
                                                     waitBarId, waitPhase);
 
     for (Operation *op : group) {
-      asyncLoads[op].barrier = issueBarId;
-      asyncLoads[op].waitOp = wait;
+      for (AsyncLanding &landing : asyncLoads[op].landings) {
+        landing.barrier = issueBarId;
+        landing.waitOp = wait;
+      }
     }
   }
 }
@@ -921,19 +1040,25 @@ static bool loadRequiresAdditionalBuffer(Operation *loadOp) {
       [&](Value value, SmallVector<Operation *> &out) {
         for (Operation *user : value.getUsers()) {
           if (user->hasTrait<OpTrait::MemDescViewTrait>()) {
-            for (Value result : user->getResults())
-              if (isa<ttg::MemDescType>(result.getType()))
-                collectNonViewUsers(result, out);
-          } else {
-            out.push_back(user);
+            bool followedMemDescResult = false;
+            for (Value result : user->getResults()) {
+              if (!isa<ttg::MemDescType>(result.getType()))
+                continue;
+              followedMemDescResult = true;
+              collectNonViewUsers(result, out);
+            }
+            if (!followedMemDescResult)
+              out.push_back(user);
+            continue;
           }
+          out.push_back(user);
         }
       };
   std::function<bool(Operation *, DenseSet<Operation *> &)> hasDotConsumer =
       [&](Operation *op, DenseSet<Operation *> &visited) -> bool {
     if (!visited.insert(op).second)
       return false;
-    if (isa<tt::DotOp>(op))
+    if (isa<tt::DotOpInterface>(op))
       return true;
     for (Operation *user : op->getUsers()) {
       if (hasDotConsumer(user, visited))
@@ -1020,6 +1145,7 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
 
     ttg::SharedEncodingTrait sharedEncoding;
     ttg::MemDescType landingMemDescTy;
+    SmallVector<triton::musa::SqmmaLandingGroup> sqmmaLandingGroups;
     bool canUseAsyncCp = false;
     int contiguity = 1;
     if (!isa<RankedTensorType>(op.getResultTypes()[0])) {
@@ -1048,15 +1174,27 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
         sharedEncoding =
             dyn_cast<ttg::SharedEncodingTrait>(landingMemDescTy.getEncoding());
       } else {
-        sharedEncoding = tt::getSharedEncoding(&op);
-        landingMemDescTy = getGenericMusaLoadMemDescType(&op, sharedEncoding);
+        if (isMusaTarget && isa<tt::LoadOp>(op) && hasDotConsumer(&op)) {
+          auto groups = triton::musa::collectSqmmaOperandLandingGroups(
+              cast<tt::LoadOp>(&op));
+          if (failed(groups))
+            return failure();
+          sqmmaLandingGroups = std::move(*groups);
+          if (!sqmmaLandingGroups.empty()) {
+            landingMemDescTy = sqmmaLandingGroups.front().sourceMemDescTy;
+            sharedEncoding = dyn_cast<ttg::SharedEncodingTrait>(
+                landingMemDescTy.getEncoding());
+          }
+        }
+        if (sqmmaLandingGroups.empty()) {
+          sharedEncoding = tt::getSharedEncoding(&op);
+          landingMemDescTy = getGenericMusaLoadMemDescType(&op, sharedEncoding);
+        }
       }
       canUseAsyncCp =
           isa<tt::LoadOp>(op) &&
           canBeConvertedToAsyncLoad(cast<tt::LoadOp>(op), axisInfoAnalysis);
-      int copyVecBytes = tt::getCopyVecBytes(
-          cast<RankedTensorType>(op.getResultTypes()[0]), sharedEncoding);
-      canUseAsyncCp &= copyVecBytes >= 4;
+      auto tensorTy = cast<RankedTensorType>(op.getResultTypes()[0]);
       if (canUseAsyncCp) {
         auto loadOp = cast<tt::LoadOp>(op);
         auto ptr = loadOp.getPtr();
@@ -1066,13 +1204,30 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
               std::min<unsigned>(vec, axisInfoAnalysis.getMaskAlignment(mask));
         contiguity = vec;
       }
+      auto supportsFourByteAsyncCopy = [&](ttg::SharedEncodingTrait encoding) {
+        int copyVecBytes = tt::getCopyVecBytes(tensorTy, encoding);
+        return copyVecBytes >= 4;
+      };
+      if (!sqmmaLandingGroups.empty()) {
+        for (const auto &group : sqmmaLandingGroups) {
+          auto groupEncoding = dyn_cast<ttg::SharedEncodingTrait>(
+              group.sourceMemDescTy.getEncoding());
+          if (!groupEncoding || !supportsFourByteAsyncCopy(groupEncoding)) {
+            canUseAsyncCp = false;
+            break;
+          }
+        }
+      } else {
+        canUseAsyncCp &= supportsFourByteAsyncCopy(sharedEncoding);
+      }
     }
 
     if (canUseAsyncCp || tt::isTMALoad(&op)) {
-      if (loadRequiresAdditionalBuffer(&op))
+      bool requiresAdditionalBuffer = loadRequiresAdditionalBuffer(&op);
+      if (requiresAdditionalBuffer)
         stageDiff += 1;
       if (isMusaTarget && hasDotConsumer(&op)) {
-        if (tt::isTMALoad(&op))
+        if (tt::isTMALoad(&op) && !requiresAdditionalBuffer)
           stageDiff += 1;
         if (auto descLoad = dyn_cast<tt::DescriptorLoadOp>(&op)) {
           if (auto sqmmaLandingTy =
@@ -1084,19 +1239,23 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
           }
         }
         if (isa<tt::LoadOp>(op)) {
-          if (auto sqmmaLandingTy =
-                  getSqmmaOperandLandingMemDescType(cast<tt::LoadOp>(&op))) {
+          if (!sqmmaLandingGroups.empty() && !requiresAdditionalBuffer) {
             stageDiff += 1;
-            landingMemDescTy = sqmmaLandingTy;
-            sharedEncoding = dyn_cast<ttg::SharedEncodingTrait>(
-                landingMemDescTy.getEncoding());
           }
         }
       }
       auto &asyncLoad = asyncLoads[&op];
       asyncLoad.stageDiff = stageDiff;
       asyncLoad.contiguity = contiguity;
-      asyncLoad.landingMemDescTy = landingMemDescTy;
+      if (!sqmmaLandingGroups.empty()) {
+        for (auto &group : sqmmaLandingGroups) {
+          asyncLoad.landings.push_back(AsyncLanding{
+              group.sourceMemDescTy, std::move(group.plans), {}, {}, nullptr});
+        }
+      } else {
+        asyncLoad.landings.push_back(
+            AsyncLanding{landingMemDescTy, {}, {}, {}, nullptr});
+      }
     } else if (stageDiff > 1) {
       op.emitRemark() << "Pipelining load that cannot use vectorized copy. "
                          "This will likely lead to pipelining in registers and "
@@ -1110,9 +1269,20 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
     return forOp;
 
   for (auto &[loadOp, asyncLoad] : asyncLoads) {
-    Value alloc = createAlloc(forOp, loadOp, asyncLoad.landingMemDescTy,
-                              asyncLoad.stageDiff);
-    asyncLoad.alloc = alloc;
+    for (AsyncLanding &landing : asyncLoad.landings) {
+      landing.alloc = createAlloc(forOp, loadOp, landing.landingMemDescTy,
+                                  asyncLoad.stageDiff);
+      if (!landing.sqmmaPlans.empty()) {
+        triton::musa::SqmmaLandingGroup group{
+            cast<tt::LoadOp>(loadOp), landing.landingMemDescTy,
+            SmallVector<triton::musa::SqmmaOperandPlan>(
+                landing.sqmmaPlans.begin(), landing.sqmmaPlans.end())};
+        if (auto contract =
+                triton::musa::getUniqueSqmmaLandingGroupContract(group))
+          if (auto allocOp = landing.alloc.getDefiningOp())
+            triton::musa::setSqmmaAttrsFromContract(allocOp, contract.value());
+      }
+    }
     loadGroups.insert({asyncLoad.stageDiff, {}});
     if (tt::isTMALoad(loadOp))
       loadGroups[asyncLoad.stageDiff].hasTMALoad = true;
@@ -1197,16 +1367,17 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
     Value insertIdx = loadGroup.insertIdx;
     Value extractIdx = loadGroup.extractIdx;
     if (auto loadOp = dyn_cast<tt::LoadOp>(op)) {
-      createAsyncCopy(forOp, loadOp, asyncLoad.alloc, insertIdx, extractIdx,
+      createAsyncCopy(forOp, loadOp, asyncLoad.landings, insertIdx, extractIdx,
                       asyncLoad.contiguity, schedule);
       hasAsyncLoads = true;
     } else if (auto loadOp = dyn_cast<tt::DescriptorLoadOp>(op)) {
+      AsyncLanding &landing = asyncLoad.landings.front();
       tt::OpBuilderForStage copyBuilder(loadOp.getLoc(), forOp, schedule);
       copyBuilder.setInsertionPoint(loadOp);
       copyBuilder.setStageCluster(schedule[loadOp]);
       auto view =
-          createMusaSingleBufferView(copyBuilder, asyncLoad.alloc, insertIdx);
-      if (auto allocOp = asyncLoad.alloc.getDefiningOp())
+          createMusaSingleBufferView(copyBuilder, landing.alloc, insertIdx);
+      if (auto allocOp = landing.alloc.getDefiningOp())
         triton::musa::copyCanonicalLandingSqmmaAttrs(loadOp, allocOp);
       if (auto viewOp = view.getDefiningOp())
         triton::musa::copyCanonicalLandingSqmmaAttrs(loadOp, viewOp);
@@ -1228,13 +1399,13 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
       }
       triton::musa::createAsyncTMECopyGlobalToLocal(
           copyBuilder, loadOp.getLoc(), loadOp.getDesc(), *coord,
-          asyncLoad.barrier, view, pred, *config);
+          landing.barrier, view, pred, *config);
 
-      copyBuilder.setInsertionPointAfter(asyncLoad.waitOp);
+      copyBuilder.setInsertionPointAfter(landing.waitOp);
       copyBuilder.setStageCluster(
           schedule[getFirstUseOfPipelinedOp({loadOp}, forOp, schedule)]);
       auto viewLoad =
-          createMusaSingleBufferView(copyBuilder, asyncLoad.alloc, extractIdx);
+          createMusaSingleBufferView(copyBuilder, landing.alloc, extractIdx);
       if (auto viewLoadOp = viewLoad.getDefiningOp())
         triton::musa::copyCanonicalLandingSqmmaAttrs(loadOp, viewLoadOp);
       IRRewriter rewriter(loadOp.getContext(), &copyBuilder);

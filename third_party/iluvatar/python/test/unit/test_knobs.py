@@ -2,7 +2,7 @@ import os
 import pytest
 import shutil
 import triton
-from triton._internal_testing import is_hip
+from triton._internal_testing import is_hip, is_corex
 
 from pathlib import Path
 
@@ -233,8 +233,8 @@ def test_set_knob_directly(fresh_knobs, monkeypatch):
 
 
 @pytest.mark.skipif(
-    is_hip(),
-    reason="PTXAS is not installed on AMD",
+    is_hip() or is_corex(),
+    reason="PTXAS is not installed on AMD or CoreX",
 )
 def test_nvidia_tool(fresh_knobs, tmp_path, monkeypatch):
     triton_root = Path(fresh_knobs.__file__).parent

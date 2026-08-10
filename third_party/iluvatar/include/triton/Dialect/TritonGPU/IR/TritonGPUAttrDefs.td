@@ -711,6 +711,9 @@ for
     // single CTA (i.e. the trivial map onto dim0..dimn-1)
     "CTAEncodingAttr":$CTALayout,
     "bool":$isSme,
+    // smeMask marks the cloned mask-computation layout whose per-lane values
+    // must survive SME pointer-range canonicalization.
+    "bool":$smeMask,
     ArrayRefParameter<"unsigned">:$smeWarpsPerCTA
   );
   let genVerifyDecl = 1;
@@ -751,7 +754,7 @@ for
       threadsPerWarp[order[rank - 1]] = numThreadsPerWarp / prevLanes;
       warpsPerCTA[order[rank - 1]] = numWarps / prevWarps;
 
-      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout, false, smeWpt);
+      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout, false, false, smeWpt);
     }]>,
 
     AttrBuilder<(ins "ArrayRef<int64_t>":$shape,
@@ -788,11 +791,12 @@ for
                      "ArrayRef<unsigned>":$order,
                      "CTAEncodingAttr":$CTALayout), [{
       return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order,
-                   CTALayout, /*isSme=*/false,
+                   CTALayout, /*isSme=*/false, /*smeMask=*/false,
                    /*smeWarpsPerCTA=*/ArrayRef<unsigned>());
     }]>,
 
     AttrBuilder<(ins "bool":$isSme,
+                     "bool":$smeMask,
                      "unsigned":$numWarps,
                      "Type":$eltTy,
                      "ArrayRef<int64_t>":$shape,
@@ -847,7 +851,21 @@ for
 
       CTAEncodingAttr CTALayout = CTAEncodingAttr::fromSplitParams(context, CTAsPerCGA, CTASplitNum, CTAOrder);
 
-      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout, isSme, wpt);
+      return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout, isSme, smeMask, wpt);
+    }]>,
+
+    // Backward-compatible SME builder without smeMask.
+    AttrBuilder<(ins "bool":$isSme,
+                     "unsigned":$numWarps,
+                     "Type":$eltTy,
+                     "ArrayRef<int64_t>":$shape,
+                     "ArrayRef<unsigned>":$order,
+                     "ArrayRef<unsigned>":$sizePerThread,
+                     "ArrayRef<unsigned>":$threadsPerWarp,
+                     "ArrayRef<unsigned>":$warpsPerCTA,
+                     "unsigned":$numCTAs), [{
+      return get(context, isSme, /*smeMask=*/false, numWarps, eltTy, shape,
+                 order, sizePerThread, threadsPerWarp, warpsPerCTA, numCTAs);
     }]>
   ];
 

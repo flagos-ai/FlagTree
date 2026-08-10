@@ -40,7 +40,7 @@
 namespace {
 
 using namespace mlir;
-namespace tle = mlir::triton::tle;
+using namespace mlir::triton;
 
 constexpr llvm::StringLiteral kSpaceAttr = "space";
 constexpr llvm::StringLiteral kOrderAttr = "order";

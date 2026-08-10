@@ -319,8 +319,9 @@ bool TargetInfo::supportVectorizedAtomics() const {
 }
 
 bool TargetInfo::supportsDirectToLDSScattering() const {
-  llvm::report_fatal_error("Unsupported architecture for direct to lds loads");
-  return false;
+  // Iluvatar lowers ordinary async copies through llLoad + llStore rather
+  // than target direct-to-LDS intrinsics, so per-lane shared stores are OK.
+  return true;
 }
 
 bool TargetInfo::requiresAliasInfoForAsyncOps() const { return false; }
