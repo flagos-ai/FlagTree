@@ -129,11 +129,12 @@ class TestSignalWait:
         assert world_size == nnodes * LOCAL_WORLD_SIZE, (
             "signal_wait test requires the same LOCAL_WORLD_SIZE on every node")
 
-        peer = ((node_rank + 1) % nnodes) * LOCAL_WORLD_SIZE + local_rank
+        inter_node_peer = (node_rank + 1) % nnodes
+        world_peer = inter_node_peer * LOCAL_WORLD_SIZE + local_rank
 
         print(
             f"[Rank {rank}] node_rank={node_rank}, local_rank={local_rank}, "
-            f"peer={peer}, nnodes={nnodes}, "
+            f"inter_node_peer={inter_node_peer}, world_peer={world_peer}, nnodes={nnodes}, "
             f"local_world_size={LOCAL_WORLD_SIZE}",
             flush=True,
         )
@@ -145,8 +146,8 @@ class TestSignalWait:
         world_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         try:
             phases = (
-                (inter_node_result, peer, 0, "inter_node"),
-                (world_result, peer, 1, "world"),
+                (inter_node_result, world_peer, 0, "inter_node"),
+                (world_result, world_peer, 1, "world"),
             )
             for result, peer, signal_id, signal_space in phases:
                 _ir_verify(
