@@ -27,6 +27,12 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
+#ifdef __TLE__
+#include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
+#endif
+
 namespace mlir::triton {
 #define GEN_PASS_DEF_CONVERTTRITONAMDGPUTOLLVM
 #include "TritonAMDGPUToLLVM/Passes.h.inc"
@@ -62,6 +68,25 @@ public:
     addLegalOp<triton::amdgpu::InstructionSchedHint>();
   }
 };
+
+#ifdef __TLE__
+// Conversion target for the dedicated TLE-to-LLVM partial conversion. Only
+// the tile-level extension ops that have AMD lowering patterns are illegal
+// (must be converted); every other op (including unsupported TLE ops) stays
+// legal and is reported later by the make_llir residual-op guard.
+class TleLLVMConversionTarget : public ConversionTarget {
+public:
+  explicit TleLLVMConversionTarget(MLIRContext &ctx) : ConversionTarget(ctx) {
+    addLegalDialect<LLVM::LLVMDialect, ROCDL::ROCDLDialect,
+                    NVVM::NVVMDialect>();
+    addIllegalOp<mlir::triton::tle::ExtractTileOp,
+                 mlir::triton::tle::InsertTileOp,
+                 mlir::triton::tle::ExclusiveCumsumOp>();
+    addLegalOp<mlir::UnrealizedConversionCastOp>();
+    markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
+  }
+};
+#endif
 
 class TritonAMDGPUToLLVMTypeConverter : public TritonGPUToLLVMTypeConverter {
 public:
@@ -176,6 +201,28 @@ struct ConvertTritonAMDGPUToLLVM
     // Make benefit for AMD specific patterns higher so they apply before common
     // patterns
     int AMDBenefit = commonBenefit + 1;
+
+#ifdef __TLE__
+    // Lower the supported tile-level extension (TLE) ops (extract_tile /
+    // insert_tile / exclusive_cumsum) to LLVM via the backend-agnostic
+    // conversion patterns, in a dedicated partial conversion (mirrors the
+    // NVIDIA / HCU path). Unsupported TLE ops remain legal in this focused
+    // conversion.
+    {
+      TleLLVMConversionTarget tleTarget(*context);
+      RewritePatternSet tlePatterns(context);
+      mlir::triton::tle::populateExtractTileOpToLLVMPatterns(
+          typeConverter, tlePatterns, targetInfo, commonBenefit);
+      mlir::triton::tle::populateInsertTileOpToLLVMPatterns(
+          typeConverter, tlePatterns, targetInfo, commonBenefit);
+      mlir::triton::tle::populateExclusiveCumsumOpToLLVMPatterns(
+          typeConverter, targetInfo, tlePatterns, commonBenefit);
+      if (failed(
+              applyPartialConversion(mod, tleTarget, std::move(tlePatterns))))
+        return signalPassFailure();
+    }
+#endif
+
     auto populatePatterns1 = [&](auto populateFunc, int benefit) {
       populateFunc(typeConverter, patterns, axisInfoAnalysis, allocation,
                    benefit);
