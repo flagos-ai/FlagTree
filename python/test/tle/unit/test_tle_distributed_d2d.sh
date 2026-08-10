@@ -7,7 +7,6 @@ export FLAGCX_USE_HETERO_COMM=1
 export FLAGCX_MEM_ENABLE=1
 export FLAGCX_VMM_ENABLE=0
 export FLAGCX_P2P_DISABLE=1
-export CUDA_VISIBLE_DEVICES=0,1
 
 port=8333
 # Check whether port is occupied
