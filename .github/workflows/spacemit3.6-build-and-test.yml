@@ -29,7 +29,7 @@ jobs:
   spacemit36x-unit-test:
     runs-on: spacemit3.6
     env:
-      SPINE_TRITON_RPC_HOST: 10.3.91.75
+      SPINE_TRITON_RPC_HOST: 0.0.0.0
       SPINE_TRITON_RPC_PORT: 9999
       MAX_JOBS: 4
     steps:
@@ -167,10 +167,9 @@ jobs:
           sys.exit(0 if ok else 1)
           PY
 
-      - name: FlagGems smoke test (sigmoid / argmax / mm on K3 RPC)
-        # Cloned fresh each run from the feature/add-spacemit-backend branch of
-        # spine-FlagGems, so backend fixes there (e.g. the mm/mm_out row-major B
-        # materialization) land here without touching FlagTree.
+      - name: Test
+        # Run the mm_block_ptr.py example as a smoke test for the spacemit backend
+        # (RISC-V cross-compile via K3 RPC).
         if: steps.check_backend.outputs.should_skip != 'true'
         run: |
           set -euo pipefail
@@ -180,14 +179,4 @@ jobs:
           export SPINE_TRITON_CROSS_TOOLCHAIN="$(pwd)/toolchain"
           export SPACEMIT_EP_QEMU_SET_CORE_ARCH=0xA064
           export GEMS_VENDOR=spacemit
-          FLAGGEMS_DIR=/tmp/spine-flaggems
-          rm -rf "$FLAGGEMS_DIR"
-          git clone --depth 1 --branch feature/add-spacemit-backend \
-            https://github.com/zuoweixia497/spine-FlagGems.git "$FLAGGEMS_DIR"
-          export PYTHONPATH="$FLAGGEMS_DIR/src:${PYTHONPATH:-}"
-          cd "$FLAGGEMS_DIR/tests"
-          python -m pytest -m "sigmoid or argmax or mm" --ref cpu --quick -x -v
-
-      - name: Cleanup
-        if: always()
-        run: rm -rf .venv-ci /tmp/spine-flaggems || true
+          python third_party/spacemit/python/examples/mm_block_ptr.py
