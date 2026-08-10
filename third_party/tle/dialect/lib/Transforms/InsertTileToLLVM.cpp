@@ -309,7 +309,7 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
     rewriter.create<LLVM::StoreOp>(loc, tileVals[i], sp, elemBytes);
   }
   // Synchronize threads after tile store.
-  if (targetInfo.isHCU())
+  if (!targetInfo.isCuda())
     targetInfo.barrier(loc, rewriter, /*isWarpSync=*/false);
   else
     rewriter.create<NVVM::Barrier0Op>(loc);
@@ -362,7 +362,7 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
     resultVals.push_back(merged);
   }
 
-  if (targetInfo.isHCU())
+  if (!targetInfo.isCuda())
     targetInfo.barrier(loc, rewriter, /*isWarpSync=*/false);
   else
     rewriter.create<NVVM::Barrier0Op>(loc);
