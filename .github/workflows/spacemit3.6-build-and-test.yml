@@ -161,7 +161,7 @@ jobs:
           # sanity: confirm the rpc-server binary is visible inside the container
           docker exec rpc-ci ls -la /rpc/bin/spine-rpc-server /rpc/lib/libspert.so
           # launch spine-rpc-server inside the RISC-V container (binfmt QEMU)
-          docker exec -d -e SPACEMIT_QEMU_RISCV_FLAGS="a200_ame,vlen=1024,elen=64,vext_spec=v1.0" rpc-ci \
+          docker exec -d -e SPACEMIT_QEMU_RISCV_FLAGS="max,vlen=1024,elen=64,vext_spec=v1.0" rpc-ci \
             bash -c "LD_LIBRARY_PATH=/rpc/lib /rpc/bin/spine-rpc-server ${RPC_PORT} > /tmp/rpc.log 2>&1"
           # wait for the port to accept connections (server needs ~15s to boot under QEMU)
           for i in $(seq 1 60); do
