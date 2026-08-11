@@ -813,7 +813,7 @@ def wgmma(
     trans_b = _require_wgmma_bool(trans_b, "trans_b")
     mthreads_enabled = mthreads_common.enabled()
     if mthreads_enabled:
-        mthreads_wgmma.validate_operands(a, b, acc, trans_a, trans_b)
+        a, b = mthreads_wgmma.prepare_operands(a, b, acc, trans_a, trans_b, _semantic)
     else:
         a, b = _canonicalize_wgmma_operands(a, b, trans_a, trans_b, _semantic)
 
