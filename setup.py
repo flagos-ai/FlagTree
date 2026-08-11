@@ -416,26 +416,11 @@ class CMakeBuildPy(build_py):
 
     def run(self) -> None:
         self.run_command('build_ext')
-        helper.write_flagtree_backend_file()
-        # Re-apply the fixed xpu runtime .so overlay after cmake: device/CMakeLists.txt
-        # copies the stale liblaunch_shared.so/libxpujitc.so into backend/xpu3/so during
-        # build_ext, so we overwrite them again before build_py packages the wheel.
-        helper.overlay_backend_runtime_so(self, backends)
+        helper.write_flagtree_backend_file()  # flagtree
+        helper.overlay_backend_runtime_so(self, backends)  # flagtree
         ret = super().run()
-        # xpu-only: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
-        # copies .py by default, so this extension-less marker (read by
-        # triton._flagtree_backend to make XPUDriver.is_active() return True
-        # without any env var) was missing from the install, causing
-        # "0 active drivers". Write it into build_lib/triton so it is packaged.
-        if helper.flagtree_backend == "xpu":
-            try:
-                helper.write_flagtree_backend_file(os.path.join(self.build_lib, "triton"))
-            except Exception as _exc:  # noqa: BLE001
-                print(f"[flagtree] could not write build_lib FLAGTREE_BACKEND: {_exc}")
-        # xpu-only: drop a site .pth that preloads a GLIBCXX_3.4.30-capable libstdc++
-        # before torch, so kernel launch needs no manual LD_LIBRARY_PATH/LD_PRELOAD.
-        # Written into build_lib root so it lands at the site-packages root of the wheel.
-        helper.write_backend_site_pth(self.build_lib)
+        helper.write_backend_file_to_build_lib(self.build_lib)  # flagtree
+        helper.write_backend_site_pth(self.build_lib)  # flagtree
         return ret
 
 
