@@ -36,6 +36,15 @@ on:
       PLATFORM:
         required: true
         default: 'x86_64'
+      BRANCH:
+        required: true
+        default: 'triton_v3.3.x'
+      TRITON:
+        required: true
+        default: '3.3'
+      BACKEND:
+        required: true
+        default: 'nvidia'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -52,6 +61,18 @@ on:
         type: string
         required: true
         default: 'x86_64'
+      BRANCH:
+        type: string
+        required: true
+        default: 'triton_v3.3.x'
+      TRITON:
+        type: string
+        required: true
+        default: '3.3'
+      BACKEND:
+        type: string
+        required: true
+        default: 'nvidia'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
