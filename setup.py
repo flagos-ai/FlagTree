@@ -687,29 +687,8 @@ def download_and_copy_dependencies():
     )
 
 
-# flagtree
-if helper.flagtree_backend:
-    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
-        flagtree_backends = [
-            *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
-            *BackendInstaller.copy_externals(),
-        ]
-    else:
-        flagtree_backends = [*BackendInstaller.copy(helper.configs.extend_backends), *BackendInstaller.copy_externals()]
-else:
-    flagtree_backends = [*BackendInstaller.copy(helper.configs.default_backends), *BackendInstaller.copy_externals()]
-
-
-# flagtree: extend yield "triton.backends.{backend.name}"
-def get_backend_packages(backend):
-    package_prefix = f"triton.backends.{backend.name}"
-    for root, dirs, _files in os.walk(backend.backend_dir):
-        dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__" and directory.isidentifier())
-        relative_dir = os.path.relpath(root, backend.backend_dir)
-        package = package_prefix
-        if relative_dir != ".":
-            package += "." + relative_dir.replace(os.sep, ".")
-        yield package, root
+# backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+backends = helper.init_backends(BackendInstaller)  # flagtree
 
 
 def get_package_dirs():
@@ -718,13 +697,13 @@ def get_package_dirs():
     # flagtree backend specialization
     yield from helper.SpecPackageHelper.get_spec_packages()
 
-    for backend in flagtree_backends:
+    for backend in backends:
         # we use symlinks for external plugins
         if backend.is_external:
             continue
 
-        # flagtree: extend yield "triton.backends.{backend.name}"
-        yield from get_backend_packages(backend)
+        # yield (f"triton.backends.{backend.name}", backend.backend_dir)
+        yield from helper.get_backend_packages(backend)  # flagtree
 
         if backend.language_dir:
             # Install the contents of each backend's `language` directory into
@@ -745,7 +724,8 @@ def get_package_dirs():
 
 def get_packages():
     # flagtree backend specialization: add excluded packages
-    yield from find_packages(where="python", include=["triton", "triton.*"],
+    yield from find_packages(where="python",
+                             include=["triton", "triton.*"],
                              exclude=helper.SpecPackageHelper.get_excluded_packages())
 
     # flagtree backend specialization
@@ -758,12 +738,12 @@ def get_packages():
     yield "triton._C.libtriton"
     yield "triton.tools.triton_to_gluon_translater"
 
-    for backend in flagtree_backends:
-        # flagtree: extend yield "triton.backends.{backend.name}"
+    for backend in backends:
+        # yield f"triton.backends.{backend.name}"
         if backend.is_external:
             yield f"triton.backends.{backend.name}"
         else:
-            for package, _source_dir in get_backend_packages(backend):
+            for package, _source_dir in helper.get_backend_packages(backend):
                 yield package
 
         if backend.language_dir:
@@ -786,7 +766,7 @@ def get_packages():
 
 
 def add_link_to_backends(external_only):
-    for backend in flagtree_backends:
+    for backend in backends:
         if external_only and not backend.is_external:
             continue
 
@@ -815,11 +795,6 @@ def add_link_to_backends(external_only):
 package_data_tools = ["compile.h", "compile.c"]
 if helper.flagtree_backend == "xpu":
     package_data_tools += ["compile_xpu.h", "compile_xpu.c"]
-#  package_data = {
-#       "triton/tools/extra": sum((b.tools_package_data for b in flagtree_backends), []),
-#  **{f"triton/backends/{b.name}": b.package_data
-#  for b in backends}, "triton/language/extra": sum((b.language_package_data for b in flagtree_backends), [])
-# }
 
 
 def add_link_to_proton():
@@ -973,7 +948,7 @@ setup(
     ],
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
-    package_data=helper.get_package_data(flagtree_backends),  # flagtree
+    package_data=helper.get_package_data(backends),  # flagtree
     exclude_package_data=helper.get_excluded_package_data(),  # flagtree
     entry_points=get_entry_points(),
     include_package_data=True,

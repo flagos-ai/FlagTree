@@ -44,6 +44,38 @@ def get_console_colors() -> Tuple[str, str]:
     return "\033[1;33m", "\033[0m"
 
 
+def init_backends(backend_installer):
+    if flagtree_backend:
+        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
+            backends = [
+                *backend_installer.copy(configs.default_backends + tuple(configs.extend_backends)),
+                *backend_installer.copy_externals(),
+            ]
+        else:
+            backends = [
+                *backend_installer.copy(configs.extend_backends),
+                *backend_installer.copy_externals(),
+            ]
+    else:
+        backends = [
+            *backend_installer.copy(configs.default_backends),
+            *backend_installer.copy_externals(),
+        ]
+    return backends
+
+
+# flagtree: extend yield "triton.backends.{backend.name}"
+def get_backend_packages(backend):
+    package_prefix = f"triton.backends.{backend.name}"
+    for root, dirs, _files in os.walk(backend.backend_dir):
+        dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__" and directory.isidentifier())
+        relative_dir = os.path.relpath(root, backend.backend_dir)
+        package = package_prefix
+        if relative_dir != ".":
+            package += "." + relative_dir.replace(os.sep, ".")
+        yield package, root
+
+
 set_llvm_env = lambda path: set_env(
     {
         'LLVM_INCLUDE_DIRS': Path(path) / "include",
@@ -397,12 +429,12 @@ class SpecPackageHelper:
         return ["triton.spec", "triton.spec.*"]
 
 
-def get_package_data(flagtree_backends):
+def get_package_data(backends):
     hook_call = get_hook_instance("get_package_data")
     if not hook_call:
         return {}
     write_flagtree_backend_file()
-    return hook_call(flagtree_backends)
+    return hook_call(backends)
 
 
 def get_excluded_package_data():
