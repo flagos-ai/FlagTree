@@ -3,6 +3,7 @@ add_triton_library(TritonToHIVM
 
   DEPENDS
   TritonToHIVMConversionPassIncGen
+  TleDSATableGen
 
   LINK_LIBS
   BiShengIRHIVMDialect
@@ -11,4 +12,5 @@ add_triton_library(TritonToHIVM
   MLIRTransforms
   MLIRSupport
   TritonIR
+  TleDSAToHIVM
 )

@@ -1,19 +1,4 @@
-# flagtree tle
-from .distributed import (
-    B,
-    P,
-    S,
-    ShardedTensor,
-    ShardingSpec,
-    device_mesh,
-    distributed_barrier,
-    distributed_dot,
-    make_sharded_tensor,
-    remote,
-    reshard,
-    shard_id,
-    sharding,
-)
+from . import backends
 
 from . import language
 
@@ -160,26 +145,13 @@ def __getattr__(name):
         from .language import dsa
         globals()[name] = dsa
         return dsa
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        return getattr(backends, name)
+    except AttributeError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = [
-    "device_mesh",
-    "S",
-    "P",
-    "B",
-    "sharding",
-    "ShardingSpec",
-    "ShardedTensor",
-    "make_sharded_tensor",
-    "reshard",
-    "remote",
-    "shard_id",
-    "distributed_barrier",
-    "distributed_dot",
-    "language",
-    "dsa",
-]
+__all__ = ["language", "dsa", *backends.ops()]
 
 if raw is not None:
     __all__.append("raw")

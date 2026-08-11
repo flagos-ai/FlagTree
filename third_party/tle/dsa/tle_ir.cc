@@ -290,5 +290,23 @@ void init_tle_dsa_ir(py::module &&m) {
 
              return self.create<memref::SubViewOp>(source, mixedOffsets,
                                                    mixedSizes, mixedStrides);
+           })
+      // dist
+      .def("create_get_rank",
+           [](TritonOpBuilder &self, Value axis) -> Value {
+             return self.create<triton::tle::GetRankOp>(axis);
+           })
+      .def("create_symm_at",
+           [](TritonOpBuilder &self, Value ptr, Value rank) -> Value {
+             return self.create<triton::tle::SymmAtOp>(ptr.getType(), ptr,
+                                                       rank);
+           })
+      .def("create_extern_call",
+           [](TritonOpBuilder &self, const std::string &libName,
+              const std::string &libPath, const std::string &symbol,
+              std::vector<Value> &argList, const std::vector<Type> &retTypes,
+              bool isPure) -> OpState {
+             return self.create<triton::tle::ExternCallOp>(
+                 retTypes, argList, libName, libPath, symbol, isPure);
            });
 }

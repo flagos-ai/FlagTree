@@ -1,3 +1,5 @@
+# Copyright 2026- Xcoresigma Technology Co., Ltd
+
 from triton.language.extra.cann.extension.core import ascend_address_space, sub_vec_id, sub_vec_num, sync_block_set, sync_block_wait, sync_block_all
 import triton.language.extra.cann.extension as ascend_langugage_cann_extension
 from triton.language.extra.cann.extension import compile_hint, multibuffer

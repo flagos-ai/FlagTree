@@ -186,4 +186,6 @@ jobs:
           python3 06-swiglu.py
           python3 07-kv-rmsnorm-rope-cache.py
           pytest -s -k "accuracy" 08-add-rms-norm-bias.py
+          torchrun --nproc_per_node=2 09-ascend-allgather-gemm.py
+          torchrun --nproc_per_node=2 10-tle-d2d-barrier.py
           popd

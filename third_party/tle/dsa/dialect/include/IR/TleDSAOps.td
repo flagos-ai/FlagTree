@@ -149,5 +149,52 @@ def TLE_DSAMinOp : TLE_Op<"dsa_min", [Pure, MemoryEffects<[MemWrite]>,
 ///
 ///   let assemblyFormat = "$inA `,` $inB `,` $res attr-dict `:` type($inA) `,` type($inB) `,` type($res)";
 /// }
+def TT_GetRankOp : TLE_Op<"get_rank", [Pure]> {
+  let summary = "Rank of the calling PE";
+
+  let arguments = (ins I32:$axis);
+
+  let results = (outs I32:$result);
+
+  let assemblyFormat = "$axis attr-dict `:` type($result)";
+}
+
+def TT_SymmAtOp : TLE_Op<"symm_at", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+  TypesMatchWith<"remoteAddr matches symmAddr type", "symmAddr", "remoteAddr", "$_self">,
+]> {
+  let summary = "obtain the symmetric address on the specified Rank.";
+
+  let arguments = (ins
+    TT_Ptr:$symmAddr,
+    I32:$rank
+  );
+
+  let results = (outs TT_Ptr:$remoteAddr);
+
+  let assemblyFormat = "$symmAddr `,` $rank `,` attr-dict `:` qualified(type($symmAddr))";
+}
+
+
+def TT_ExternCallOp : TLE_Op<"extern_call", [
+   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+]> {
+
+    let description = [{
+        call an external function $symbol implemented in $libpath/$libname with $args
+        return $libpath/$libname:$symbol($args...)
+    }];
+
+    let arguments = (ins Variadic<TT_Type>:$srcs, StrAttr:$libname, StrAttr:$libpath, StrAttr:$symbol, BoolAttr:$pure);
+
+    let results = (outs Variadic<TT_Type>:$result);
+
+    let assemblyFormat = "operands attr-dict `:` functional-type(operands, $result)";
+
+    let extraClassDeclaration = [{
+      // Interface method for ConditionallySpeculatable.
+      Speculation::Speculatability getSpeculatability();
+    }];
+}
 
 #endif
