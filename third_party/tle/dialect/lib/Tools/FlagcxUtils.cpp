@@ -235,13 +235,13 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
   auto I64Ty = IntegerType::get(ctx, 64);
   auto VoidTy = LLVM::LLVMVoidType::get(ctx);
 
-  auto bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 64);
   auto coop_kind_val = rewriter.create<LLVM::ConstantOp>(
       loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coop_kind)));
   // TODO: actually use the named enum value flagcxDeviceMemoryOrderAcquire(=1)
   // if possible
   auto order = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 1);
 
+  LLVM::ConstantOp bits;
   LLVM::LLVMFuncOp func;
   auto make_call = [&](ValueRange args) {
     return rewriter.create<LLVM::CallOp>(loc, TypeRange{},
@@ -253,18 +253,21 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
     func = createFuncInstance(
         runtimeNames.lookup("waitCounterFunction").data(), module,
         {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
+    bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 56);
     return make_call(ValueRange{dev_net, coop_kind_val, slot_id, target.value(),
                                 bits, order});
   case SignalWaitKind::SIGNAL:
     func = createFuncInstance(
         runtimeNames.lookup("waitSignalFunction").data(), module,
         {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
+    bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 64);
     return make_call(ValueRange{dev_net, coop_kind_val, slot_id, target.value(),
                                 bits, order});
   case SignalWaitKind::SHADOW:
     func =
         createFuncInstance(runtimeNames.lookup("waitShadowFunction").data(),
                            module, {PtrTy, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
+    bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 64);
     return make_call(ValueRange{dev_net, coop_kind_val, slot_id, bits, order});
   default:
     llvm_unreachable("unknown wait kind");
