@@ -298,11 +298,11 @@ class LLVMDetector:
     ]
 
     @classmethod
-    def has_env_vars(cls) -> List[str]:
+    def env_vars(cls) -> List[str]:
         return [k for k in cls.ENV_VARS if k in os.environ]
 
     @staticmethod
-    def is_wheel_installed(pkg_name: str) -> bool:
+    def is_whl_installed(pkg_name: str) -> bool:
         try:
             importlib.metadata.version(pkg_name)
             return True
@@ -310,15 +310,15 @@ class LLVMDetector:
             return False
 
     @staticmethod
-    def get_paths_from_wheel(pkg_name: str) -> Tuple[str, str, str]:
-        spec = importlib.util.find_spec(pkg_name)
-        if spec is None:
+    def get_paths_from_whl(pkg_name: str) -> Tuple[str, str, str]:
+        module_spec = importlib.util.find_spec(pkg_name)
+        if module_spec is None:
             raise RuntimeError(f"LLVM wheel '{pkg_name}' found via metadata but import failed.")
 
-        if spec.origin:
-            pkg_root = os.path.dirname(spec.origin)
-        elif spec.submodule_search_locations:
-            pkg_root = spec.submodule_search_locations[0]
+        if module_spec.origin:
+            pkg_root = os.path.dirname(module_spec.origin)
+        elif module_spec.submodule_search_locations:
+            pkg_root = module_spec.submodule_search_locations[0]
         else:
             raise RuntimeError(f"LLVM wheel '{pkg_name}' is found but has no filesystem location")
 
@@ -335,18 +335,19 @@ class LLVMDetector:
         return include_dir, lib_dir, llvm_root
 
 
-def try_setup_flagtree_mlir(pkg_name: str = "mlir") -> bool:
-    is_installed = LLVMDetector.is_wheel_installed(pkg_name)
-    has_envs = LLVMDetector.has_env_vars()
-    # rule1 : if both exist, fail
-    if is_installed and has_envs and not os.environ.get("USE_FLAGTREE_MLIR_BUILD"):
-        raise RuntimeError("ERROR: LLVM wheel is installed, but LLVM-related environment variables are set:\n"
-                           f"  {has_envs}\n"
-                           "Please unset them to avoid conflicts.")
+def check_llvm_via_mlir(pkg_name: str = "mlir") -> bool:
+    mlir_installed = LLVMDetector.is_whl_installed(pkg_name)
+    llvm_envs = LLVMDetector.env_vars()
 
-    # rule2：wheel installed & no env → use wheel
-    if is_installed:
-        include_dir, lib_dir, llvm_root = LLVMDetector.get_paths_from_wheel(pkg_name)
+    # flagtree llvm rule1 : mlir whl installed & set llvm env → fail
+    if mlir_installed and llvm_envs and not os.environ.get("USE_FLAGTREE_MLIR_BUILD"):
+        raise RuntimeError("[FATAL] LLVM wheel is installed, but LLVM-related environment variables are set:\n"
+                           f"  {llvm_envs}\n"
+                           "Please unset these env vars to avoid conflicts.")
+
+    # flagtree llvm rule2：mlir whl installed & no llvm env → use mlir whl
+    if mlir_installed:
+        include_dir, lib_dir, llvm_root = LLVMDetector.get_paths_from_whl(pkg_name)
         # env variables will not appear out of python process
         os.environ["USE_FLAGTREE_MLIR_BUILD"] = "1"
         os.environ["LLVM_SYSPATH"] = llvm_root
@@ -354,7 +355,7 @@ def try_setup_flagtree_mlir(pkg_name: str = "mlir") -> bool:
         os.environ["LLVM_LIBRARY_DIR"] = lib_dir
         return True
 
-    # Rule 3: fallback to legacy
+    # flagtree llvm rule3: no mlir whl → use llvm env (fallback to legacy logic)
     return False
 
 
@@ -386,6 +387,14 @@ class SpecPackageHelper:
     @staticmethod
     def get_excluded_packages():
         return ["triton.spec", "triton.spec.*"]
+
+
+def get_package_data(flagtree_backends):
+    hook_call = get_hook_instance("get_package_data")
+    if not hook_call:
+        return {}
+    write_flagtree_backend_file()
+    return hook_call(flagtree_backends)
 
 
 def get_excluded_package_data():
@@ -508,14 +517,6 @@ def overlay_backend_runtime_so(build_py_command=None, backends=None):
     hook_call = get_hook_instance("overlay_runtime_so")
     if hook_call:
         hook_call(cache=cache, build_py_command=build_py_command, backends=backends)
-
-
-def get_backend_package_data(backends):
-    hook_call = get_hook_instance("get_package_data")
-    if not hook_call:
-        return {}
-    write_flagtree_backend_file()
-    return hook_call(backends)
 
 
 def write_backend_site_pth(dest_dir):
