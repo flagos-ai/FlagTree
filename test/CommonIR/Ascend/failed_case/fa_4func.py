@@ -4,6 +4,9 @@ import os
 import torch
 import triton
 import triton.language as tl
+import triton.experimental.tle as tle
+
+pipe = tle.dsa.ascend.PIPE
 
 # =============================================================================
 #  Compile-time configuration
@@ -50,7 +53,9 @@ def _mm1_qkt(
 
     score_store_bp = tl.make_block_ptr(workspace_s + cid * BLOCK_M * BLOCK_N, (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0),
                                        (BLOCK_M, BLOCK_N), (1, 0))
+    tl.sync_block_wait("vector", "cube", 2, pipe.PIPE_MTE2, pipe.PIPE_S)
     tl.store(score_store_bp, attn_score.to(workspace_s.dtype.element_ty))
+    tl.sync_block_set("cube", "vector", 0, pipe.PIPE_FIX, pipe.PIPE_S)
 
 
 @triton.jit
@@ -77,7 +82,9 @@ def _mm2_pv(
     """MM2: compute O_part = P * V for one KV block and store into workspace_pv."""
     v_bp = tl.make_block_ptr(V + batch_idx * sKb + kv_head_idx * sKh, (S, DIM), (sKs, sKd), (kv_idx * BLOCK_N, 0),
                              (BLOCK_N, DIM), (1, 0))
+    tl.sync_block_wait("vector", "cube", 1, pipe.PIPE_MTE3, pipe.PIPE_S)
     v_block = tl.load(v_bp)
+    tl.sync_block_set("vector", "cube", 3, pipe.PIPE_MTE2, pipe.PIPE_S)
 
     prob_load_bp = tl.make_block_ptr(workspace_p + cid * BLOCK_M * BLOCK_N, (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0),
                                      (BLOCK_M, BLOCK_N), (1, 0))
@@ -88,7 +95,9 @@ def _mm2_pv(
 
     pv_store_bp = tl.make_block_ptr(workspace_pv + cid * BLOCK_M * DIM, (BLOCK_M, DIM), (DIM, 1), (0, 0),
                                     (BLOCK_M, DIM), (1, 0))
+    tl.sync_block_wait("vector", "cube", 4, pipe.PIPE_MTE2, pipe.PIPE_S)
     tl.store(pv_store_bp, pv_part.to(workspace_pv.dtype.element_ty))
+    tl.sync_block_set("cube", "vector", 0, pipe.PIPE_FIX, pipe.PIPE_S)
 
 
 @triton.jit
@@ -116,7 +125,9 @@ def _vec1_softmax(
     # load score written by MM1
     score_load_bp = tl.make_block_ptr(workspace_s + cid * BLOCK_M * BLOCK_N, (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0),
                                       (BLOCK_M, BLOCK_N), (1, 0))
+    tl.sync_block_wait("cube", "vector", 0, pipe.PIPE_FIX, pipe.PIPE_S)
     attn_score_block = tl.load(score_load_bp).to(tl.float32)
+    tl.sync_block_set("vector", "cube", 2, pipe.PIPE_MTE2, pipe.PIPE_S)
 
     if IS_CAUSAL:
         q_row_idx = global_head_idx * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -133,7 +144,9 @@ def _vec1_softmax(
     # softmax_p -> workspace_p (read by MM2)
     prob_bp = tl.make_block_ptr(workspace_p + cid * BLOCK_M * BLOCK_N, (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0),
                                 (BLOCK_M, BLOCK_N), (1, 0))
+    tl.sync_block_wait("vector", "cube", 3, pipe.PIPE_MTE2, pipe.PIPE_S)
     tl.store(prob_bp, softmax_p.to(workspace_p.dtype.element_ty))
+    tl.sync_block_set("vector", "cube", 1, pipe.PIPE_MTE3, pipe.PIPE_S)
 
     # rescale and block_expsum -> GM (read by Vec2 instead of register transfer)
     re_bp = tl.make_block_ptr(workspace_rescale + cid * BLOCK_M, (BLOCK_M, 1), (1, 1), (0, 0), (BLOCK_M, 1), (1, 0))
@@ -166,7 +179,9 @@ def _vec2_accumulate(
     # load pv_part written by MM2
     pv_bp = tl.make_block_ptr(workspace_pv + cid * BLOCK_M * DIM, (BLOCK_M, DIM), (DIM, 1), (0, 0), (BLOCK_M, DIM),
                               (1, 0))
+    tl.sync_block_wait("cube", "vector", 0, pipe.PIPE_FIX, pipe.PIPE_S)
     pv_acc = tl.load(pv_bp).to(tl.float32)
+    tl.sync_block_set("vector", "cube", 4, pipe.PIPE_MTE2, pipe.PIPE_S)
 
     # load rescale and block_expsum from GM (written by Vec1)
     re_bp = tl.make_block_ptr(workspace_rescale + cid * BLOCK_M, (BLOCK_M, 1), (1, 1), (0, 0), (BLOCK_M, 1), (1, 0))
@@ -241,6 +256,9 @@ def flash_attention_fwd_3task_kernel(
     # =========================================================================
     #  Outer loop: one output tile per iteration.
     # =========================================================================
+    tl.sync_block_set("vector", "cube", 2, pipe.PIPE_MTE2, pipe.PIPE_S)
+    tl.sync_block_set("vector", "cube", 3, pipe.PIPE_MTE2, pipe.PIPE_S)
+    tl.sync_block_set("vector", "cube", 4, pipe.PIPE_MTE2, pipe.PIPE_S)
     for tile_idx in range(block_num):
         output_block_id = block_start + tile_idx
         global_head_idx = output_block_id % num_seq_blocks
@@ -282,9 +300,6 @@ def flash_attention_fwd_3task_kernel(
                 DIM,
             )
 
-            # Barrier: ensure MM1's store to workspace_s is visible to Vec1's load.
-            tl.sync_block_all("all", 0)
-
             # ===== Step 2: Vec1 — softmax(S) → P; stores rescale/expsum to GM =====
             running_neg_max = _vec1_softmax(
                 workspace_s,
@@ -300,9 +315,6 @@ def flash_attention_fwd_3task_kernel(
                 BLOCK_M,
                 BLOCK_N,
             )
-
-            # Barrier: ensure Vec1's store to workspace_p is visible to MM2's load.
-            tl.sync_block_all("all", 0)
 
             # ===== Step 3: MM2 — O_part = P * V =====
             _mm2_pv(
@@ -323,9 +335,6 @@ def flash_attention_fwd_3task_kernel(
                 DIM,
             )
 
-            # Barrier: ensure MM2's store to workspace_pv is visible to Vec2's load.
-            tl.sync_block_all("all", 0)
-
             # ===== Step 4: Vec2 — loads rescale/expsum from GM, accumulates =====
             acc_o, softmax_denom = _vec2_accumulate(
                 workspace_pv,
@@ -345,6 +354,9 @@ def flash_attention_fwd_3task_kernel(
                                  ((global_head_idx * BLOCK_M).to(tl.int32), 0), (BLOCK_M, DIM), (1, 0))
         tl.store(o_bp, out_block)
 
+    tl.sync_block_wait("vector", "cube", 2, pipe.PIPE_MTE2, pipe.PIPE_S)
+    tl.sync_block_wait("vector", "cube", 3, pipe.PIPE_MTE2, pipe.PIPE_S)
+    tl.sync_block_wait("vector", "cube", 4, pipe.PIPE_MTE2, pipe.PIPE_S)
 
 # =============================================================================
 #  Intermediate-TileIR dump (no device required)
