@@ -750,9 +750,10 @@ class SelectEncodingsPass
           for (OpOperand &use : ptrVal.getUses()) {
             Operation *owner = use.getOwner();
             if (auto load = dyn_cast<triton::LoadOp>(owner)) {
-              // Full-view loads do not participate in encoding inference because
-              // they are rewritten to local_load later.  Until that rewrite,
-              // however, their result type must still match the pointer type.
+              // Full-view loads do not participate in encoding inference
+              // because they are rewritten to local_load later.  Until that
+              // rewrite, however, their result type must still match the
+              // pointer type.
               if (Value mask = load.getMask()) {
                 Value convertedMask =
                     convertOperandEncoding(owner, mask, ptrEncoding);

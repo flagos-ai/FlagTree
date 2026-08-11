@@ -105,6 +105,7 @@ def _stub_forward_benchmark_inputs(monkeypatch, module):
 
 
 def _benchmark_failure(message):
+
     def fail(*args, **kwargs):
         raise RuntimeError(message)
 

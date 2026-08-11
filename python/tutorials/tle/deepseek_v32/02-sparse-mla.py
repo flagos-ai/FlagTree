@@ -3362,9 +3362,9 @@ def benchmark_sparse_mla_fwd(
             rep=rep,
         )
     except Exception as exc:  # pragma: no cover - depends on runtime/resource limits
-        print(f"[bench:{provider}] failed for "
-              f"(B={B}, S={S}, SKV={SKV}, H={H}, HKV={HKV}, DQK={DQK}, DV={DV}, topk={topk}): {exc}",
-              flush=True)
+        print(
+            f"[bench:{provider}] failed for "
+            f"(B={B}, S={S}, SKV={SKV}, H={H}, HKV={HKV}, DQK={DQK}, DV={DV}, topk={topk}): {exc}", flush=True)
         raise
     result = (ms, max_ms, min_ms)
     if not all(math.isfinite(float(value)) for value in result):
@@ -3540,9 +3540,9 @@ def benchmark_sparse_mla_decode(
             rep=rep,
         )
     except Exception as exc:  # pragma: no cover - depends on runtime/resource limits
-        print(f"[decode-bench:{provider}] failed for "
-              f"(B={B}, S={S}, SKV={SKV}, H={H}, HKV={HKV}, DQK={DQK}, DV={DV}, topk={topk}): {exc}",
-              flush=True)
+        print(
+            f"[decode-bench:{provider}] failed for "
+            f"(B={B}, S={S}, SKV={SKV}, H={H}, HKV={HKV}, DQK={DQK}, DV={DV}, topk={topk}): {exc}", flush=True)
         raise
     result = (ms, max_ms, min_ms)
     if not all(math.isfinite(float(value)) for value in result):
