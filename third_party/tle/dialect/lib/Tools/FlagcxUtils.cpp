@@ -153,7 +153,7 @@ LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
 LLVM::CallOp getSignalFuncCall(mlir::Location loc,
                                ConversionPatternRewriter &rewriter,
                                Value dev_net, Value comm, Value peer,
-                               Value signalId, Value value,
+                               Value slotId, Value value,
                                SignalTeamKind teamKind, SignalCoopKind coopKind,
                                SignalOpKind signalOp) {
   auto ctx = rewriter.getContext();
@@ -171,7 +171,7 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
   auto coopKindValue = rewriter.create<LLVM::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coopKind)));
   SmallVector<Value> args{dev_net, commPtr,       teamKindValue,
-                          peer,    coopKindValue, signalId};
+                          peer,    coopKindValue, slotId};
 
   StringRef runtimeName;
   SmallVector<Type> argTypes{ptrTy, ptrTy, i32Ty, i32Ty, i32Ty, i32Ty};
@@ -222,7 +222,7 @@ LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
 
 LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
                                          ConversionPatternRewriter &rewriter,
-                                         Value dev_net, Value signal_id,
+                                         Value dev_net, Value slot_id,
                                          SignalWaitKind wait_kind,
                                          std::optional<Value> target,
                                          SignalCoopKind coop_kind) {
@@ -253,20 +253,19 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
     func = createFuncInstance(
         runtimeNames.lookup("waitCounterFunction").data(), module,
         {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
-    return make_call(ValueRange{dev_net, coop_kind_val, signal_id,
-                                target.value(), bits, order});
+    return make_call(ValueRange{dev_net, coop_kind_val, slot_id, target.value(),
+                                bits, order});
   case SignalWaitKind::SIGNAL:
     func = createFuncInstance(
         runtimeNames.lookup("waitSignalFunction").data(), module,
         {PtrTy, I32Ty, I32Ty, I64Ty, I32Ty, I32Ty}, VoidTy);
-    return make_call(ValueRange{dev_net, coop_kind_val, signal_id,
-                                target.value(), bits, order});
+    return make_call(ValueRange{dev_net, coop_kind_val, slot_id, target.value(),
+                                bits, order});
   case SignalWaitKind::SHADOW:
     func =
         createFuncInstance(runtimeNames.lookup("waitShadowFunction").data(),
                            module, {PtrTy, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
-    return make_call(
-        ValueRange{dev_net, coop_kind_val, signal_id, bits, order});
+    return make_call(ValueRange{dev_net, coop_kind_val, slot_id, bits, order});
   default:
     llvm_unreachable("unknown wait kind");
   }

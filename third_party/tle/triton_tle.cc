@@ -561,25 +561,25 @@ void init_triton_tle_ir(py::module &&m) {
           py::arg("barrier_kind"))
       .def(
           "create_signal",
-          [](TritonOpBuilder &self, Value comm, Value peer, Value signalId,
+          [](TritonOpBuilder &self, Value comm, Value peer, Value slotId,
              std::optional<Value> value, tle::SignalOpKind signalOp,
              tle::SignalTeamKind teamKind, tle::SignalCoopKind coopKind,
              int32_t contextIdx) -> void {
             auto &builder = self.getBuilder();
             self.create<tle::SignalOp>(
-                comm, peer, signalId, value.value_or(Value()),
+                comm, peer, slotId, value.value_or(Value()),
                 builder.getAttr<tle::SignalOpKindAttr>(signalOp),
                 builder.getAttr<tle::SignalTeamKindAttr>(teamKind),
                 builder.getAttr<tle::SignalCoopKindAttr>(coopKind),
                 builder.getI32IntegerAttr(contextIdx));
           },
-          py::arg("comm"), py::arg("peer"), py::arg("signal_id"),
+          py::arg("comm"), py::arg("peer"), py::arg("slot_id"),
           py::arg("value"), py::arg("signal_op"), py::arg("team_kind"),
           py::arg("coop_kind"), py::arg("context_idx"),
           "Create a standalone remote FlagCX signal operation")
       .def(
           "create_signal_wait",
-          [](TritonOpBuilder &self, Value comm_dev_ptr, Value signal_id,
+          [](TritonOpBuilder &self, Value comm_dev_ptr, Value slot_id,
              tle::SignalWaitKind wait_kind, std::optional<Value> target,
              tle::SignalCoopKind coop_kind, int32_t context_idx) -> void {
             auto &builder = self.getBuilder();
@@ -589,10 +589,10 @@ void init_triton_tle_ir(py::module &&m) {
                 builder.getAttr<tle::SignalCoopKindAttr>(coop_kind);
             auto context_idx_attr = builder.getI32IntegerAttr(context_idx);
             self.create<tle::SignalWaitOp>(
-                comm_dev_ptr, signal_id, wait_kind_attr,
-                target.value_or(Value()), coop_kind_attr, context_idx_attr);
+                comm_dev_ptr, slot_id, wait_kind_attr, target.value_or(Value()),
+                coop_kind_attr, context_idx_attr);
           },
-          py::arg("comm"), py::arg("signal_id"), py::arg("wait_kind"),
+          py::arg("comm"), py::arg("slot_id"), py::arg("wait_kind"),
           py::arg("target"), py::arg("coop_kind"), py::arg("context_idx"))
       .def(
           "create_distributed_barrier",

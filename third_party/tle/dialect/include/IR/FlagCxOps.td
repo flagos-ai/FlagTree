@@ -93,7 +93,7 @@ def Tle_FlagCxSignalOp : Tle_Op<"flagcx signal", [MemoryEffects<[MemRead, MemWri
   let arguments = (ins
     Tle_LocalPointerResultType:$comm,
     I32:$peer,
-    I32:$signal_id,
+    I32:$slot_id,
     Optional<I64>:$value,
     Tle_SignalOpKindAttr:$signal_op,
     Tle_SignalTeamKindAttr:$team_kind,
@@ -114,7 +114,7 @@ def Tle_FlagCxSignalWaitOp : Tle_Op<"flagcx signal_wait"> {
 
   let arguments = (ins
     Tle_LocalPointerResultType:$comm,
-    I32:$signal_id,
+    I32:$slot_id,
     Tle_SignalWaitKindAttr:$wait_kind,
     Optional<I64>:$target,
     Tle_SignalCoopKindAttr:$coop_kind,
@@ -124,7 +124,7 @@ def Tle_FlagCxSignalWaitOp : Tle_Op<"flagcx signal_wait"> {
   let results = (outs);
 
   let assemblyFormat = [{
-    `(` $wait_kind `,` $coop_kind `)` $comm `,` $signal_id (`,` $target^)?  attr-dict `:`
+    `(` $wait_kind `,` $coop_kind `)` $comm `,` $slot_id (`,` $target^)?  attr-dict `:`
     functional-type(operands, results)
   }];
 
