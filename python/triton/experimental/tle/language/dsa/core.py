@@ -279,8 +279,10 @@ def extract_element(src, indice, _semantic=None, _generator=None):
 # TileIR builtin functions — 3-task flash attention operations
 # ==============================================================================
 
+
 @builtin
-def tile_alloc(shape: List[tl.constexpr], dtype: tl.dtype, mem_addr_space: address_space, _semantic=None, _generator=None) -> buffer:
+def tile_alloc(shape: List[tl.constexpr], dtype: tl.dtype, mem_addr_space: address_space, _semantic=None,
+               _generator=None) -> buffer:
     """Allocate a buffer in a specific memory space (TileIR path)."""
     assert (mem_addr_space is not None)
     return tle_semantic.tile_alloc(dtype, shape, mem_addr_space, _semantic.builder)
@@ -296,8 +298,8 @@ def tile_copy(src, dst, shape, inter_no_alias=False, _semantic=None, _generator=
 
 
 @builtin
-def tile_subview(src: buffer, offsets: List, sizes: List[tl.constexpr], strides: List[tl.constexpr],
-                 _semantic=None, _generator=None) -> buffer:
+def tile_subview(src: buffer, offsets: List, sizes: List[tl.constexpr], strides: List[tl.constexpr], _semantic=None,
+                 _generator=None) -> buffer:
     """Extract a subview from a buffer using TileIR tile.subview op."""
     new_sizes = []
     for i, size in enumerate(sizes):
@@ -334,7 +336,8 @@ def tile_subview(src: buffer, offsets: List, sizes: List[tl.constexpr], strides:
 
 
 @builtin
-def tile_to_tensor(memref: buffer, writable: bool = True, target_shape=None, _semantic=None, _generator=None) -> tl.tensor:
+def tile_to_tensor(memref: buffer, writable: bool = True, target_shape=None, _semantic=None,
+                   _generator=None) -> tl.tensor:
     """Create a tl.tensor from a buffer (TileIR path)."""
     return tle_semantic.tile_to_tensor(memref, writable, _semantic.builder, target_shape=target_shape)
 
@@ -376,14 +379,15 @@ def tile_gm_offset(base, indices, strides, _semantic=None, _generator=None) -> t
 
 @builtin
 def tile_cube_launch(a: buffer, b: buffer, acc: buffer, stage_a: buffer, stage_b: buffer, dst,
-                     transpose_a: bool = False, transpose_b: bool = False, init: bool = False,
-                     mma: str = "", _semantic=None, _generator=None):
+                     transpose_a: bool = False, transpose_b: bool = False, init: bool = False, mma: str = "",
+                     _semantic=None, _generator=None):
     """Launch a Cube matmul using TileIR tile.cube_launch."""
     transpose_a = _unwrap_if_constexpr(transpose_a)
     transpose_b = _unwrap_if_constexpr(transpose_b)
     init = _unwrap_if_constexpr(init)
     mma = _unwrap_if_constexpr(mma)
-    tle_semantic.tile_cube_launch(a, b, acc, stage_a, stage_b, dst, transpose_a, transpose_b, init, mma, _semantic.builder)
+    tle_semantic.tile_cube_launch(a, b, acc, stage_a, stage_b, dst, transpose_a, transpose_b, init, mma,
+                                  _semantic.builder)
 
 
 @builtin

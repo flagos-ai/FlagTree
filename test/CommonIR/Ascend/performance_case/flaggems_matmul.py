@@ -136,14 +136,25 @@ def mm(a, b):
         SPLIT_K,
     )
     mm_kernel[grid](
-        a, b, c,
-        M, N, K,
-        a.stride(0), a.stride(1),
-        b.stride(0), b.stride(1),
-        c.stride(0), c.stride(1),
+        a,
+        b,
+        c,
+        M,
+        N,
+        K,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        c.stride(0),
+        c.stride(1),
         dot_out_dtype=tl.float32,
-        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
-        GROUP_M=GROUP_M, SPLIT_K=SPLIT_K, EVEN_K=even_k,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        BLOCK_K=BLOCK_K,
+        GROUP_M=GROUP_M,
+        SPLIT_K=SPLIT_K,
+        EVEN_K=even_k,
     )
     return c
 
@@ -200,8 +211,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, return_module
     os.environ.setdefault("TRITON_ALLOW_NON_CONSTEXPR_GLOBALS", "1")
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "flaggems_matmul_triton.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "flaggems_matmul_triton.mlir")
 
     signature = _matmul_signature()
     even_k = (K % (BLOCK_K * SPLIT_K)) == 0
@@ -258,8 +268,7 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K):
     context = module.context
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "flaggems_matmul_triton_linalg.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "flaggems_matmul_triton_linalg.mlir")
 
     # ── ① TileIR → HIVM ──────────────────────────────────────────────────
     pm = ir.pass_manager(context)
@@ -357,7 +366,7 @@ if __name__ == "__main__":
     parser.add_argument("--dump-linalg", nargs="?", const="", default=None,
                         help="Dump Linalg IR to PATH and exit; no device needed.")
     args = parser.parse_args()
-    
+
     if args.dump_ttir is not None:
         dump_ttir(path=(args.dump_ttir or None), M=args.M, N=args.N, K=args.K)
         raise SystemExit(0)

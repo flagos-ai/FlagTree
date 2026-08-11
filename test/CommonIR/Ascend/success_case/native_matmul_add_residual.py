@@ -72,14 +72,8 @@ def matmul_add_residual_kernel(
         n_start = pid_n * BLOCK_N
 
         # Create block pointers for A and B
-        a_block_ptr = tl.make_block_ptr(
-            mat_a, (M, K), (K, 1),
-            (m_start, 0),
-            (BLOCK_M, BLOCK_K), (1, 0))
-        b_block_ptr = tl.make_block_ptr(
-            mat_b, (K, N), (N, 1),
-            (0, n_start),
-            (BLOCK_K, BLOCK_N), (1, 0))
+        a_block_ptr = tl.make_block_ptr(mat_a, (M, K), (K, 1), (m_start, 0), (BLOCK_M, BLOCK_K), (1, 0))
+        b_block_ptr = tl.make_block_ptr(mat_b, (K, N), (N, 1), (0, n_start), (BLOCK_K, BLOCK_N), (1, 0))
 
         mat_c_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
         # K-loop: load A/B tiles from GM to L1, then dot
@@ -90,10 +84,8 @@ def matmul_add_residual_kernel(
             tile_copy(b_block_ptr, mat_b_l1, [BLOCK_K, BLOCK_N])
 
             # Accumulate: C += A @ B
-            mat_c_acc = tl.dot(
-                tile_to_tensor(mat_a_l1, writable=False),
-                tile_to_tensor(mat_b_l1, writable=False),
-                mat_c_acc, out_dtype=tl.float32)
+            mat_c_acc = tl.dot(tile_to_tensor(mat_a_l1, writable=False), tile_to_tensor(mat_b_l1, writable=False),
+                               mat_c_acc, out_dtype=tl.float32)
 
             # Advance block pointers along K
             a_block_ptr = tl.advance(a_block_ptr, [0, BLOCK_K])
@@ -101,19 +93,12 @@ def matmul_add_residual_kernel(
 
         # Load residual tile [BLOCK_M, BLOCK_N] and add element-wise
         residual_tile = tl.load(
-            tl.make_block_ptr(
-                residual, (M, N), (N, 1),
-                (m_start, n_start),
-                (BLOCK_M, BLOCK_N), (1, 0)))
+            tl.make_block_ptr(residual, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0)))
         mat_c_acc += residual_tile.to(tl.float32)
 
         # Store result back to GM
-        tl.store(
-            tl.make_block_ptr(
-                mat_c, (M, N), (N, 1),
-                (m_start, n_start),
-                (BLOCK_M, BLOCK_N), (1, 0)),
-            mat_c_acc.to(mat_c.dtype.element_ty))
+        tl.store(tl.make_block_ptr(mat_c, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0)),
+                 mat_c_acc.to(mat_c.dtype.element_ty))
 
 
 # =============================================================================
@@ -124,10 +109,8 @@ def call(mat_a, mat_b, residual, num_cores=_DEFAULT_NUM_CORES):
     k = mat_a.shape[1]
     n = mat_b.shape[1]
     mat_c = torch.empty(m, n, dtype=mat_a.dtype, device=mat_a.device)
-    matmul_add_residual_kernel[(num_cores,)](
-        mat_a, mat_b, mat_c, residual,
-        m, n, k, num_cores,
-        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
+    matmul_add_residual_kernel[(num_cores, )](mat_a, mat_b, mat_c, residual, m, n, k, num_cores, BLOCK_M=BLOCK_M,
+                                              BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
     return mat_c
 
 
@@ -150,16 +133,15 @@ class _DumpOptions:
 def _matmul_add_residual_signature():
     """Static signature for ast_to_ttir — non-constexpr args only."""
     return {
-        "mat_a":    "*fp16",
-        "mat_b":    "*fp16",
-        "mat_c":    "*fp16",
+        "mat_a": "*fp16",
+        "mat_b": "*fp16",
+        "mat_c": "*fp16",
         "residual": "*fp16",
         "M": "i32",
     }
 
 
-def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-              NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
+def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
     """Compile matmul_add_residual_kernel to TTIR and write to *path*."""
     from triton.compiler.compiler import ASTSource
     from triton.compiler.code_generator import ast_to_ttir
@@ -169,8 +151,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     os.environ.setdefault("TRITON_ALLOW_NON_CONSTEXPR_GLOBALS", "1")
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_add_residual_triton.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_add_residual_triton.mlir")
 
     signature = _matmul_add_residual_signature()
     constants = {
@@ -214,8 +195,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
 # =============================================================================
 #  Full Linalg IR dump (TTIR → TileIR → Linalg lowering)
 # =============================================================================
-def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-                NUM_CORES=_DEFAULT_NUM_CORES):
+def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES):
     """Compile matmul_add_residual_kernel through full TileIR → Linalg lowering pipeline.
 
     Pipeline:
@@ -233,15 +213,13 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     Returns the final Linalg MLIR string.
     """
     from triton._C.libtriton import ir, passes, ascend
-    from triton._C.libtriton import tle as tle_ir
 
     # Step 1: compile to TTIR — get module directly (avoids reparse/dialect issues)
     module = dump_ttir(path=None, M=M, N=N, K=K, NUM_CORES=NUM_CORES, return_module=True)
     context = module.context
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_add_residual_triton_linalg.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_add_residual_triton_linalg.mlir")
 
     # ── ① TileIR → HIVM ──────────────────────────────────────────────────
     pm = ir.pass_manager(context)
@@ -357,8 +335,8 @@ if __name__ == "__main__":
     # ---- functional test on device ------------------------------------------
     device = "npu" if hasattr(torch, "npu") and torch.npu.is_available() else "cuda"
     torch.manual_seed(0)
-    mat_a    = torch.randn((M, K), dtype=torch.float16, device=device)
-    mat_b    = torch.randn((K, N), dtype=torch.float16, device=device)
+    mat_a = torch.randn((M, K), dtype=torch.float16, device=device)
+    mat_b = torch.randn((K, N), dtype=torch.float16, device=device)
     residual = torch.randn((M, N), dtype=torch.float16, device=device)
 
     mat_c = call(mat_a, mat_b, residual, num_cores)

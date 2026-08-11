@@ -9,7 +9,6 @@ import triton.language as tl
 #  TLE / tile-dialect registration (needed for the dump pipeline)
 # =============================================================================
 import triton.experimental.tle as tle  # noqa: F401  (registers tile/tle dialects)
-from triton.experimental.tle.language.dsa.ascend import L1
 from triton.experimental.tle.language.dsa import tile_alloc, tile_copy, tile_to_tensor
 
 # =============================================================================
@@ -24,11 +23,10 @@ DIM = 32
 #  Flash Attention v2 kernels (ported from 06-fused-attention.py)
 # =============================================================================
 
-
 # constexpr shape literals for tile_copy (must be tl.constexpr)
 CBM = tl.constexpr(BLOCK_M)
 CBN = tl.constexpr(BLOCK_N)
-CD  = tl.constexpr(DIM)
+CD = tl.constexpr(DIM)
 
 
 @triton.jit
@@ -51,8 +49,8 @@ def _attn_fwd_inner(acc, l_i, m_i, q_l1,  #
     for start_n in tl.range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
         # DMA K block: GM -> L1
-        k_bp = tl.make_block_ptr(K, (N_CTX, HEAD_DIM), (stride_kn, stride_kd),
-                                 (start_n, 0), (BLOCK_N, HEAD_DIM), (1, 0))
+        k_bp = tl.make_block_ptr(K, (N_CTX, HEAD_DIM), (stride_kn, stride_kd), (start_n, 0), (BLOCK_N, HEAD_DIM),
+                                 (1, 0))
         tile_copy(k_bp, k_l1, [tl.constexpr(BLOCK_N), tl.constexpr(HEAD_DIM)])
         # -- compute qk from L1 buffers --
         q = tile_to_tensor(q_l1, writable=False)
@@ -73,8 +71,8 @@ def _attn_fwd_inner(acc, l_i, m_i, q_l1,  #
         # -- update output accumulator --
         acc = acc * alpha[:, None]
         # DMA V block: GM -> L1
-        v_bp = tl.make_block_ptr(V, (N_CTX, HEAD_DIM), (stride_vn, stride_vd),
-                                 (start_n, 0), (BLOCK_N, HEAD_DIM), (1, 0))
+        v_bp = tl.make_block_ptr(V, (N_CTX, HEAD_DIM), (stride_vn, stride_vd), (start_n, 0), (BLOCK_N, HEAD_DIM),
+                                 (1, 0))
         tile_copy(v_bp, v_l1, [tl.constexpr(BLOCK_N), tl.constexpr(HEAD_DIM)])
         v = tile_to_tensor(v_l1, writable=False)
         acc = tl.dot(p.to(tl.float16), v, acc)
@@ -139,8 +137,8 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
     v_l1 = tile_alloc([tl.constexpr(BLOCK_N), tl.constexpr(HEAD_DIM)], tl.float16, tle.language.dsa.ascend.L1)
 
     # DMA Q tile into L1 once; it stays resident for the full KV loop
-    q_bp = tl.make_block_ptr(Q_ptr, (N_CTX, HEAD_DIM), (stride_qm, stride_qd),
-                             (start_m * BLOCK_M, 0), (BLOCK_M, HEAD_DIM), (1, 0))
+    q_bp = tl.make_block_ptr(Q_ptr, (N_CTX, HEAD_DIM), (stride_qm, stride_qd), (start_m * BLOCK_M, 0),
+                             (BLOCK_M, HEAD_DIM), (1, 0))
     tile_copy(q_bp, q_l1, [tl.constexpr(BLOCK_M), tl.constexpr(HEAD_DIM)])
 
     # initialize offsets
@@ -175,8 +173,8 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
     acc = acc / l_i[:, None]
     m_ptrs = M + off_hz * N_CTX + offs_m
     tl.store(m_ptrs, m_i)
-    o_bp = tl.make_block_ptr(O_ptr, (N_CTX, HEAD_DIM), (stride_om, stride_od),
-                             (start_m * BLOCK_M, 0), (BLOCK_M, HEAD_DIM), (1, 0))
+    o_bp = tl.make_block_ptr(O_ptr, (N_CTX, HEAD_DIM), (stride_om, stride_od), (start_m * BLOCK_M, 0),
+                             (BLOCK_M, HEAD_DIM), (1, 0))
     tl.store(o_bp, acc.to(tl.float16))
 
 
@@ -216,14 +214,14 @@ def _dump_signature():
     for t in ("q", "k", "v", "o"):
         for dim in ("b", "h", ("m" if t in ("q", "o") else "n"), "d"):
             sig[f"stride_{t}{dim}"] = "i32"
-    sig["Z"]     = "i32"
-    sig["H"]     = "i32"
+    sig["Z"] = "i32"
+    sig["H"] = "i32"
     sig["N_CTX"] = "i32"
     # constexprs
     sig["HEAD_DIM"] = "constexpr"
-    sig["BLOCK_M"]  = "constexpr"
-    sig["BLOCK_N"]  = "constexpr"
-    sig["STAGE"]    = "constexpr"
+    sig["BLOCK_M"] = "constexpr"
+    sig["BLOCK_N"] = "constexpr"
+    sig["STAGE"] = "constexpr"
     return sig
 
 
@@ -253,9 +251,9 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
     signature = _dump_signature()
     constants = {
         "HEAD_DIM": DIM,
-        "BLOCK_M":  BLOCK_M,
-        "BLOCK_N":  BLOCK_N,
-        "STAGE":    stage,
+        "BLOCK_M": BLOCK_M,
+        "BLOCK_N": BLOCK_N,
+        "STAGE": stage,
     }
 
     src = ASTSource(_attn_fwd, signature, constants)
@@ -305,7 +303,7 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
         print(f"[dump_tileir] after TileIR→HIVM: verify={module.verify()}", flush=True)
     except RuntimeError as e:
         print(f"[dump_tileir] TileIR→HIVM pass failed (non-fatal): {e}", flush=True)
-        print(f"[dump_tileir] TileIR output is still valid; skipping HIVM lowering.", flush=True)
+        print("[dump_tileir] TileIR output is still valid; skipping HIVM lowering.", flush=True)
         return mlir
 
     # Phase 2: TTIR optimization passes (mirrors compiler.py make_ttir).
@@ -324,7 +322,7 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
 
     ttir_ok = module.verify()
     if not ttir_ok:
-        print(f"[dump_tileir] WARNING: module.verify() failed after TTIR optimization — IR may be illegal")
+        print("[dump_tileir] WARNING: module.verify() failed after TTIR optimization — IR may be illegal")
     else:
         print(f"[dump_tileir] TTIR optimization complete: verify={ttir_ok}")
 
@@ -455,8 +453,7 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     tileir_mlir = dump_tileir(path=None, combine_batch=combine_batch, is_causal=is_causal)
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "fa_triton_arch_linalg.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_triton_arch_linalg.mlir")
 
     # Step 2: parse the TileIR module into a fresh context
     context = ir.context()
@@ -477,7 +474,8 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     os.unlink(tmp_path)
 
     # ── ① TileIR → HIVM ──────────────────────────────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     passes.common.add_inliner(pm)
     ascend.passes.ttir.add_tileir_to_hivm(pm)
     pm.run(module)
@@ -497,14 +495,16 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     # print(f"[dump_linalg] ①b erase_linalg_casts: verify={module.verify()}", flush=True)
 
     # ── ② Structured (r1) + discrete mask ────────────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     # ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
     ascend.passes.ttir.add_discrete_mask_access_conversion(pm, False, False, False)
     pm.run(module)
     print(f"[dump_linalg] ② structure(r1)+discrete_mask: verify={module.verify()}", flush=True)
 
     # ── ③ Unstructured + HIVM + HFusion + LLVM ──────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     ascend.passes.ttir.add_triton_to_unstructure(pm, False, False)
     ascend.passes.ttir.add_triton_to_hivm(pm)
     ascend.passes.ttir.add_triton_to_hfusion(pm)
@@ -513,7 +513,8 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     print(f"[dump_linalg] ③ unstructure+hivm+hfusion+llvm: verify={module.verify()}", flush=True)
 
     # ── ④ Bubble-up + structured (r2) ────────────────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     ascend.passes.ttir.add_bubble_up_operation(pm)
     # ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
     pm.run(module)
@@ -522,7 +523,8 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     # ── ④b Inline + canonicalize ← REQUIRED to avoid C++ assertion ─────
     # Without this, the linalg incubator crashes with cast<RankedTensorType>
     # in MaskAnalysis when it encounters non-tensor types.
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     passes.common.add_inliner(pm)
     passes.common.add_canonicalizer(pm)
     pm.run(module)
@@ -534,17 +536,17 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     # materialization" when it creates memref→!tt.ptr→memref cast chains
     # during partial conversion of !tt.ptr<tensor<>> values.  We handle
     # that in phase ⑤b.
-    linalg_ok = False
     try:
-        pm = ir.pass_manager(context); pm.enable_debug()
+        pm = ir.pass_manager(context)
+        pm.enable_debug()
         ascend.passes.ttir.add_triton_to_linalg(pm, False, True, False, False, False)
         pm.run(module)
         print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: verify={module.verify()}", flush=True)
-        linalg_ok = True
-    except RuntimeError as e:
-        print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: partial conversion "
-              f"(this is expected — the pass creates cast chains that need "
-              f"post-processing)", flush=True)
+    except RuntimeError:
+        print(
+            "[dump_linalg] ⑤ triton_to_linalg_incubated: partial conversion "
+            "(this is expected — the pass creates cast chains that need "
+            "post-processing)", flush=True)
 
     # ── ⑤c Fold staging memref.alloc + memref.copy pairs ─────────────────
     #     TritonToLinalgIncubated creates staging allocs (default address
@@ -568,7 +570,8 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     # print(f"[dump_linalg] ⑤b erase_linalg_casts (post): verify={module.verify()}", flush=True)
 
     # ── ⑥ Final canonicalize → erase dead casts ─────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     passes.common.add_canonicalizer(pm)
     passes.common.add_cse(pm)
     passes.common.add_symbol_dce(pm)
@@ -588,10 +591,10 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
 
 # def gen_bin():
 
-
 # =============================================================================
 #  Host launcher
 # =============================================================================
+
 
 class _attention(torch.autograd.Function):
 
@@ -640,7 +643,7 @@ def flash_attention_fwd(q, k, v, combine_batch=None, is_causal=False):
     `combine_batch` is accepted for CLI compatibility but unused — the FA v2
     kernel does not tile over KV blocks in a combine-batch fashion.
     """
-    sm_scale = q.shape[-1] ** -0.5
+    sm_scale = q.shape[-1]**-0.5
     return attention(q, k, v, is_causal, sm_scale, False)
 
 
@@ -654,14 +657,15 @@ if __name__ == "__main__":
     parser.add_argument("--D", type=int, default=DIM)
     parser.add_argument("--causal", action="store_true")
     parser.add_argument("--no-check", action="store_true")
-    parser.add_argument("--combine-batch", type=int, default=8,
-                        help="KV blocks per task (arch22 nRatio)")
-    parser.add_argument("--dump-mlir", nargs="?", const="", default=None,
-                        help="Dump intermediate TileIR to PATH (default skill/op/fa_triton_arch.mlir) and exit; no device needed.")
+    parser.add_argument("--combine-batch", type=int, default=8, help="KV blocks per task (arch22 nRatio)")
+    parser.add_argument(
+        "--dump-mlir", nargs="?", const="", default=None,
+        help="Dump intermediate TileIR to PATH (default skill/op/fa_triton_arch.mlir) and exit; no device needed.")
     parser.add_argument("--dump-ir", nargs="?", const="", default=None,
                         help="Dump HIVM IR (after TileIR→HIVM lowering) to PATH and exit; no device needed.")
-    parser.add_argument("--dump-linalg", nargs="?", const="", default=None,
-                        help="Dump Linalg IR (full lowering through linalg, casts eliminated) to PATH and exit; no device needed.")
+    parser.add_argument(
+        "--dump-linalg", nargs="?", const="", default=None,
+        help="Dump Linalg IR (full lowering through linalg, casts eliminated) to PATH and exit; no device needed.")
     args = parser.parse_args()
 
     B, S, H, D = args.B, args.S, args.H, args.D
@@ -693,13 +697,14 @@ if __name__ == "__main__":
     out = flash_attention_fwd(q, k, v, combine_batch, is_causal=args.causal)
 
     if not args.no_check:
+
         def ref(q, k, v):
             if k.shape[1] != q.shape[1]:
                 n_rep = q.shape[1] // k.shape[1]
                 k = k.repeat_interleave(n_rep, dim=1)
                 v = v.repeat_interleave(n_rep, dim=1)
-            return torch.nn.functional.scaled_dot_product_attention(
-                q.float(), k.float(), v.float(), is_causal=args.causal).to(torch.float16)
+            return torch.nn.functional.scaled_dot_product_attention(q.float(), k.float(), v.float(),
+                                                                    is_causal=args.causal).to(torch.float16)
 
         torch.testing.assert_close(ref(q, k, v), out, rtol=1e-2, atol=1e-2)
         print("Test Passed!")

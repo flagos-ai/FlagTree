@@ -55,10 +55,8 @@ def matmul_kernel(
     NUM_K_BLOCKS = tl.cdiv(K, BLOCK_K)
 
     # On-chip buffers: A/B in L1.
-    mat_a_l1 = tle.dsa.alloc(
-        [BLOCK_M, BLOCK_K], dtype=mat_a.dtype.element_ty, mem_addr_space=tle.dsa.ascend.L1)
-    mat_b_l1 = tle.dsa.alloc(
-        [BLOCK_K, BLOCK_N], dtype=mat_b.dtype.element_ty, mem_addr_space=tle.dsa.ascend.L1)
+    mat_a_l1 = tle.dsa.alloc([BLOCK_M, BLOCK_K], dtype=mat_a.dtype.element_ty, mem_addr_space=tle.dsa.ascend.L1)
+    mat_b_l1 = tle.dsa.alloc([BLOCK_K, BLOCK_N], dtype=mat_b.dtype.element_ty, mem_addr_space=tle.dsa.ascend.L1)
 
     # Each core processes output blocks in round-robin
     for block_idx in range(pid, NUM_BLOCKS, NUM_CORES):
@@ -69,14 +67,8 @@ def matmul_kernel(
         n_start = pid_n * BLOCK_N
 
         # Create block pointers for A and B
-        a_block_ptr = tl.make_block_ptr(
-            mat_a, (M, K), (K, 1),
-            (m_start, 0),
-            (BLOCK_M, BLOCK_K), (1, 0))
-        b_block_ptr = tl.make_block_ptr(
-            mat_b, (K, N), (N, 1),
-            (0, n_start),
-            (BLOCK_K, BLOCK_N), (1, 0))
+        a_block_ptr = tl.make_block_ptr(mat_a, (M, K), (K, 1), (m_start, 0), (BLOCK_M, BLOCK_K), (1, 0))
+        b_block_ptr = tl.make_block_ptr(mat_b, (K, N), (N, 1), (0, n_start), (BLOCK_K, BLOCK_N), (1, 0))
 
         mat_c_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
         # K-loop: load A/B tiles from GM to L1, then dot
@@ -87,22 +79,16 @@ def matmul_kernel(
             tle.dsa.copy(b_block_ptr, mat_b_l1, [BLOCK_K, BLOCK_N])
 
             # Accumulate: C += A @ B
-            mat_c_acc = tl.dot(
-                tle.dsa.to_tensor(mat_a_l1, writable=False),
-                tle.dsa.to_tensor(mat_b_l1, writable=False),
-                mat_c_acc, out_dtype=tl.float32)
+            mat_c_acc = tl.dot(tle.dsa.to_tensor(mat_a_l1, writable=False), tle.dsa.to_tensor(mat_b_l1, writable=False),
+                               mat_c_acc, out_dtype=tl.float32)
 
             # Advance block pointers along K
             a_block_ptr = tl.advance(a_block_ptr, [0, BLOCK_K])
             b_block_ptr = tl.advance(b_block_ptr, [BLOCK_K, 0])
 
         # Store result back to GM
-        tl.store(
-            tl.make_block_ptr(
-                mat_c, (M, N), (N, 1),
-                (m_start, n_start),
-                (BLOCK_M, BLOCK_N), (1, 0)),
-            mat_c_acc.to(mat_c.dtype.element_ty))
+        tl.store(tl.make_block_ptr(mat_c, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0)),
+                 mat_c_acc.to(mat_c.dtype.element_ty))
 
 
 # =============================================================================
@@ -114,8 +100,8 @@ def call(mat_a, mat_b):
     n = mat_b.shape[1]
     mat_c = torch.empty(m, n, dtype=mat_a.dtype, device=mat_a.device)
     num_cores = get_number_cores()
-    matmul_kernel[(num_cores,)](mat_a, mat_b, mat_c, m, n, k, num_cores,
-                               BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
+    matmul_kernel[(num_cores, )](mat_a, mat_b, mat_c, m, n, k, num_cores, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
+                                 BLOCK_K=BLOCK_K)
     return mat_c
 
 
@@ -145,8 +131,7 @@ def _matmul_signature():
     }
 
 
-def _compile_matmul_module(M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-                           NUM_CORES=_DEFAULT_NUM_CORES):
+def _compile_matmul_module(M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES):
     """Compile matmul_kernel to the frontend module that contains tile.* ops."""
     from triton.compiler.compiler import ASTSource
     from triton.compiler.code_generator import ast_to_ttir
@@ -185,12 +170,10 @@ def _compile_matmul_module(M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     return module
 
 
-def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-              NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
+def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
     """Compile matmul_kernel to TTIR and write to *path*."""
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "native_matmul_dsa_ttir.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native_matmul_dsa_ttir.mlir")
 
     module = _compile_matmul_module(M=M, N=N, K=K, NUM_CORES=NUM_CORES)
     mlir = str(module)
@@ -204,12 +187,10 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     return mlir
 
 
-def dump_tileir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-                NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
+def dump_tileir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
     """Dump the frontend TileIR stage before TileIR-to-HIVM lowering."""
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "native_matmul_dsa_tileir.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native_matmul_dsa_tileir.mlir")
 
     module = _compile_matmul_module(M=M, N=N, K=K, NUM_CORES=NUM_CORES)
     mlir = str(module)
@@ -229,8 +210,7 @@ def dump_tileir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
 # =============================================================================
 #  Full Linalg IR dump (TTIR → TileIR → Linalg lowering)
 # =============================================================================
-def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-                NUM_CORES=_DEFAULT_NUM_CORES):
+def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES):
     """Compile matmul_kernel through full TileIR → Linalg lowering pipeline.
 
     Pipeline:
@@ -253,8 +233,7 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     context = module.context
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "native_matmul_dsa_linalg.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native_matmul_dsa_linalg.mlir")
 
     # ── ① TileIR → HIVM ──────────────────────────────────────────────────
     pm = ir.pass_manager(context)

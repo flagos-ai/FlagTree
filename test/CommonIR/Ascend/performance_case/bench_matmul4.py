@@ -32,9 +32,9 @@ import torch
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import native_matmul as _native          # noqa: E402
-import matmul_double_buffer as _db       # noqa: E402
-import flaggems_matmul as _flaggems      # noqa: E402
+import native_matmul as _native  # noqa: E402
+import matmul_double_buffer as _db  # noqa: E402
+import flaggems_matmul as _flaggems  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -59,12 +59,13 @@ def get_number_cores():
 # Environment-variable context manager
 # ---------------------------------------------------------------------------
 
+
 class _env:
     """Temporarily set or remove an environment variable."""
 
     def __init__(self, key: str, value: str | None):
         self._key = key
-        self._value = value   # None -> remove the variable
+        self._value = value  # None -> remove the variable
         self._saved = None
         self._was_set = False
 
@@ -87,6 +88,7 @@ class _env:
 # Device helpers
 # ---------------------------------------------------------------------------
 
+
 def _sync(device: str):
     """Block until all pending device work is complete."""
     if device == "npu":
@@ -98,6 +100,7 @@ def _sync(device: str):
 # ---------------------------------------------------------------------------
 # Timing backends
 # ---------------------------------------------------------------------------
+
 
 def _stats(latencies):
     """Return (median, mean, min, max) from a list of ms samples."""
@@ -151,6 +154,7 @@ def _tflops(M, N, K, latency_ms):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Benchmark native_matmul vs matmul_double_buffer vs PyTorch",
@@ -165,16 +169,15 @@ def main():
     parser.add_argument("--rep", type=int, default=_DEFAULT_REP,
                         help="Number of timed iterations (default: %(default)s)")
     parser.add_argument(
-        "--mode", choices=["wall", "kernel"], default="wall",
-        help=(
-            "wall  : perf_counter + synchronize (includes dispatch overhead). "
-            "kernel: device events bracketing only kernel execution "
-            "(matches triton.testing.do_bench). "
-            "Default: wall"
-        ),
+        "--mode",
+        choices=["wall", "kernel"],
+        default="wall",
+        help=("wall  : perf_counter + synchronize (includes dispatch overhead). "
+              "kernel: device events bracketing only kernel execution "
+              "(matches triton.testing.do_bench). "
+              "Default: wall"),
     )
-    parser.add_argument("--no-check", action="store_true",
-                        help="Skip correctness check against torch.matmul")
+    parser.add_argument("--no-check", action="store_true", help="Skip correctness check against torch.matmul")
     args = parser.parse_args()
 
     M, N, K = args.M, args.N, args.K
@@ -204,8 +207,8 @@ def main():
             out_db = _db.call(mat_a, mat_b, num_cores)
         # flaggems: no special env var needed
         out_flaggems = _flaggems.call(mat_a, mat_b, num_cores)
-        for label, out in [("pytorch", ref), ("native", out_native),
-                           ("double_buffer", out_db), ("flaggems", out_flaggems)]:
+        for label, out in [("pytorch", ref), ("native", out_native), ("double_buffer", out_db),
+                           ("flaggems", out_flaggems)]:
             try:
                 torch.testing.assert_close(ref, out, rtol=1e-2, atol=1e-2)
                 print(f"  [{label}] correctness check PASSED")
@@ -222,47 +225,40 @@ def main():
     # (label, call_fn, COMMONIR_SKIP_CSE value)
     # None means the variable should be absent from the environment.
     _kernel_envs = [
-        ("pytorch             ", torch_call,        None),
-        ("flaggems_matmul     ", _flaggems.call,    None),
-        ("native_matmul       ", _native.call,      None),
-        ("double_buffer_matmul", _db.call,          "1"),
+        ("pytorch             ", torch_call, None),
+        ("flaggems_matmul     ", _flaggems.call, None),
+        ("native_matmul       ", _native.call, None),
+        ("double_buffer_matmul", _db.call, "1"),
     ]
 
     results = {}
     for label, fn, skip_cse in _kernel_envs:
         with _env("COMMONIR_SKIP_CSE", skip_cse):
             if args.mode == "kernel":
-                median = bench_fn(
-                    fn, mat_a, mat_b, num_cores,
-                    warmup=args.warmup, rep=args.rep)
+                median = bench_fn(fn, mat_a, mat_b, num_cores, warmup=args.warmup, rep=args.rep)
                 tfl = _tflops(M, N, K, median)
                 print(f"  {label}  median={median:7.3f} ms  |  {tfl:.3f} TFLOPS")
             else:
-                median, mean, mn, mx = bench_fn(
-                    fn, mat_a, mat_b, num_cores, device,
-                    warmup=args.warmup, rep=args.rep)
+                median, mean, mn, mx = bench_fn(fn, mat_a, mat_b, num_cores, device, warmup=args.warmup, rep=args.rep)
                 tfl = _tflops(M, N, K, median)
                 print(f"  {label}  median={median:7.3f} ms  mean={mean:7.3f} ms  "
                       f"min={mn:7.3f} ms  max={mx:7.3f} ms  |  {tfl:.3f} TFLOPS")
         results[label] = median
 
     # ---- summary ------------------------------------------------------------
-    pt_ms     = results["pytorch             "]
-    fg_ms     = results["flaggems_matmul     "]
+    pt_ms = results["pytorch             "]
+    fg_ms = results["flaggems_matmul     "]
     native_ms = results["native_matmul       "]
-    db_ms     = results["double_buffer_matmul"]
+    db_ms = results["double_buffer_matmul"]
 
     print()
-    for label, ms in [("flaggems_matmul", fg_ms),
-                      ("native_matmul",   native_ms),
-                      ("double_buffer",   db_ms)]:
+    for label, ms in [("flaggems_matmul", fg_ms), ("native_matmul", native_ms), ("double_buffer", db_ms)]:
         ratio = pt_ms / ms if ms > 0 else float("inf")
         direction = "faster" if ratio > 1 else "slower"
         print(f"  {label} vs pytorch: {ratio:.3f}x {direction}")
 
     print()
-    for label, ms in [("flaggems_matmul", fg_ms),
-                      ("double_buffer",   db_ms)]:
+    for label, ms in [("flaggems_matmul", fg_ms), ("double_buffer", db_ms)]:
         ratio = native_ms / ms if ms > 0 else float("inf")
         direction = "faster" if ratio > 1 else "slower"
         print(f"  {label} vs native_matmul: {ratio:.3f}x {direction}")

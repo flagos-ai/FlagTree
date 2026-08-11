@@ -4,7 +4,6 @@ from typing import List, Tuple
 import triton.language.core as tl
 from functools import wraps
 
-
 TRITON_BUILTIN = "__triton_builtin__"
 TLE_BUILTIN = "__tle_builtin__"
 
@@ -137,8 +136,7 @@ class buffer(tl.base_value):
         return res + '>'
 
     @builtin
-    def subview(self, offsets: List, sizes: List[tl.constexpr], strides: List[tl.constexpr],
-                _builder=None) -> 'buffer':
+    def subview(self, offsets: List, sizes: List[tl.constexpr], strides: List[tl.constexpr], _builder=None) -> 'buffer':
         from .core import subview
         return subview(self, offsets, sizes, strides, _builder=_builder)
 

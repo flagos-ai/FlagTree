@@ -1,5 +1,4 @@
 import argparse
-import os
 
 import torch
 import triton
@@ -82,32 +81,24 @@ def matmul_kernel(
         mat_c_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
         # -- Prologue: load first K-tile into buffer 0 ---------------------
-        a_ptr = tl.make_block_ptr(
-            mat_a, (M, K), (K, 1), (m_start, 0),
-            (BLOCK_M, BLOCK_K), (1, 0))
-        b_ptr = tl.make_block_ptr(
-            mat_b, (K, N), (N, 1), (0, n_start),
-            (BLOCK_K, BLOCK_N), (1, 0))
+        a_ptr = tl.make_block_ptr(mat_a, (M, K), (K, 1), (m_start, 0), (BLOCK_M, BLOCK_K), (1, 0))
+        b_ptr = tl.make_block_ptr(mat_b, (K, N), (N, 1), (0, n_start), (BLOCK_K, BLOCK_N), (1, 0))
         tile_copy(a_ptr, mat_a_l1_0, [BLOCK_M, BLOCK_K])
         tile_copy(b_ptr, mat_b_l1_0, [BLOCK_K, BLOCK_N])
 
         # -- Main K-loop: compute-first, double-buffered --------------------
         for k_pair in range(0, NUM_K_BLOCKS - 1, 2):
             # Even: compute buf0, then prefetch next -> buf1
-            mat_c_acc = tl.dot(
-                tile_to_tensor(mat_a_l1_0, writable=False),
-                tile_to_tensor(mat_b_l1_0, writable=False),
-                mat_c_acc, out_dtype=tl.float32)
+            mat_c_acc = tl.dot(tile_to_tensor(mat_a_l1_0, writable=False), tile_to_tensor(mat_b_l1_0, writable=False),
+                               mat_c_acc, out_dtype=tl.float32)
             a_ptr = tl.advance(a_ptr, [0, BLOCK_K])
             b_ptr = tl.advance(b_ptr, [BLOCK_K, 0])
             tile_copy(a_ptr, mat_a_l1_1, [BLOCK_M, BLOCK_K])
             tile_copy(b_ptr, mat_b_l1_1, [BLOCK_K, BLOCK_N])
 
             # Odd: compute buf1, then prefetch next -> buf0
-            mat_c_acc = tl.dot(
-                tile_to_tensor(mat_a_l1_1, writable=False),
-                tile_to_tensor(mat_b_l1_1, writable=False),
-                mat_c_acc, out_dtype=tl.float32)
+            mat_c_acc = tl.dot(tile_to_tensor(mat_a_l1_1, writable=False), tile_to_tensor(mat_b_l1_1, writable=False),
+                               mat_c_acc, out_dtype=tl.float32)
             if k_pair + 2 < NUM_K_BLOCKS:
                 a_ptr = tl.advance(a_ptr, [0, BLOCK_K])
                 b_ptr = tl.advance(b_ptr, [BLOCK_K, 0])
@@ -116,18 +107,12 @@ def matmul_kernel(
 
         # -- Epilogue: consume the last tile if NUM_K_BLOCKS is odd ---------
         if NUM_K_BLOCKS % 2 == 1:
-            mat_c_acc = tl.dot(
-                tile_to_tensor(mat_a_l1_0, writable=False),
-                tile_to_tensor(mat_b_l1_0, writable=False),
-                mat_c_acc, out_dtype=tl.float32)
+            mat_c_acc = tl.dot(tile_to_tensor(mat_a_l1_0, writable=False), tile_to_tensor(mat_b_l1_0, writable=False),
+                               mat_c_acc, out_dtype=tl.float32)
 
         # Store result back to GM
-        tl.store(
-            tl.make_block_ptr(
-                mat_c, (M, N), (N, 1),
-                (m_start, n_start),
-                (BLOCK_M, BLOCK_N), (1, 0)),
-            mat_c_acc.to(mat_c.dtype.element_ty))
+        tl.store(tl.make_block_ptr(mat_c, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0)),
+                 mat_c_acc.to(mat_c.dtype.element_ty))
 
 
 # =============================================================================
@@ -138,8 +123,8 @@ def call(mat_a, mat_b, num_cores=_DEFAULT_NUM_CORES):
     k = mat_a.shape[1]
     n = mat_b.shape[1]
     mat_c = torch.empty(m, n, dtype=mat_a.dtype, device=mat_a.device)
-    matmul_kernel[(num_cores,)](mat_a, mat_b, mat_c, m, n, k, num_cores,
-                               BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
+    matmul_kernel[(num_cores, )](mat_a, mat_b, mat_c, m, n, k, num_cores, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
+                                 BLOCK_K=BLOCK_K)
     return mat_c
 
 
@@ -147,8 +132,7 @@ def call(mat_a, mat_b, num_cores=_DEFAULT_NUM_CORES):
 #  Main
 # =============================================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Matmul kernel (compute-first double buffer)")
+    parser = argparse.ArgumentParser(description="Matmul kernel (compute-first double buffer)")
     parser.add_argument("--M", type=int, default=_DEFAULT_M)
     parser.add_argument("--N", type=int, default=_DEFAULT_N)
     parser.add_argument("--K", type=int, default=_DEFAULT_K)

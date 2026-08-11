@@ -78,16 +78,10 @@ def matmul_kernel(
 
         # ── Prologue: prefetch `NUM_SLOT - 1` K-tiles ──────────────
         for s in range(NUM_SLOT - 1):
-            tile_copy(tl.make_block_ptr(
-                mat_a, (M, K), (K, 1), (m_start, s * BLOCK_K),
-                (BLOCK_M, BLOCK_K), (1, 0)),
-                tile_subview(mat_a_l1, [s * BLOCK_M, 0], [BLOCK_M, BLOCK_K], [1, 1]),
-                [BLOCK_M, BLOCK_K])
-            tile_copy(tl.make_block_ptr(
-                mat_b, (K, N), (N, 1), (s * BLOCK_K, n_start),
-                (BLOCK_K, BLOCK_N), (1, 0)),
-                tile_subview(mat_b_l1, [s * BLOCK_K, 0], [BLOCK_K, BLOCK_N], [1, 1]),
-                [BLOCK_K, BLOCK_N])
+            tile_copy(tl.make_block_ptr(mat_a, (M, K), (K, 1), (m_start, s * BLOCK_K), (BLOCK_M, BLOCK_K), (1, 0)),
+                      tile_subview(mat_a_l1, [s * BLOCK_M, 0], [BLOCK_M, BLOCK_K], [1, 1]), [BLOCK_M, BLOCK_K])
+            tile_copy(tl.make_block_ptr(mat_b, (K, N), (N, 1), (s * BLOCK_K, n_start), (BLOCK_K, BLOCK_N), (1, 0)),
+                      tile_subview(mat_b_l1, [s * BLOCK_K, 0], [BLOCK_K, BLOCK_N], [1, 1]), [BLOCK_K, BLOCK_N])
 
         # ── Main loop: consume slot[s], prefetch into slot[(s+NUM_SLOT-1)%NUM_SLOT] ────────
         for k_idx in range(0, NUM_K_BLOCKS):
@@ -97,16 +91,12 @@ def matmul_kernel(
             k_pf = k_idx + NUM_SLOT - 1
             if k_pf < NUM_K_BLOCKS:
                 s_pf = k_pf % NUM_SLOT
-                tile_copy(tl.make_block_ptr(
-                    mat_a, (M, K), (K, 1), (m_start, k_pf * BLOCK_K),
-                    (BLOCK_M, BLOCK_K), (1, 0)),
-                    tile_subview(mat_a_l1, [s_pf * BLOCK_M, 0], [BLOCK_M, BLOCK_K], [1, 1]),
-                    [BLOCK_M, BLOCK_K])
-                tile_copy(tl.make_block_ptr(
-                    mat_b, (K, N), (N, 1), (k_pf * BLOCK_K, n_start),
-                    (BLOCK_K, BLOCK_N), (1, 0)),
-                    tile_subview(mat_b_l1, [s_pf * BLOCK_K, 0], [BLOCK_K, BLOCK_N], [1, 1]),
-                    [BLOCK_K, BLOCK_N])
+                tile_copy(
+                    tl.make_block_ptr(mat_a, (M, K), (K, 1), (m_start, k_pf * BLOCK_K), (BLOCK_M, BLOCK_K), (1, 0)),
+                    tile_subview(mat_a_l1, [s_pf * BLOCK_M, 0], [BLOCK_M, BLOCK_K], [1, 1]), [BLOCK_M, BLOCK_K])
+                tile_copy(
+                    tl.make_block_ptr(mat_b, (K, N), (N, 1), (k_pf * BLOCK_K, n_start), (BLOCK_K, BLOCK_N), (1, 0)),
+                    tile_subview(mat_b_l1, [s_pf * BLOCK_K, 0], [BLOCK_K, BLOCK_N], [1, 1]), [BLOCK_K, BLOCK_N])
 
             # Compute: C += A[slot s] @ B[slot s]
             mat_c_acc = tl.dot(
@@ -115,12 +105,8 @@ def matmul_kernel(
                 mat_c_acc, out_dtype=tl.float32)
 
         # Store result back to GM
-        tl.store(
-            tl.make_block_ptr(
-                mat_c, (M, N), (N, 1),
-                (m_start, n_start),
-                (BLOCK_M, BLOCK_N), (1, 0)),
-            mat_c_acc.to(mat_c.dtype.element_ty))
+        tl.store(tl.make_block_ptr(mat_c, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0)),
+                 mat_c_acc.to(mat_c.dtype.element_ty))
 
 
 # =============================================================================
@@ -131,8 +117,8 @@ def call(mat_a, mat_b, num_cores=_DEFAULT_NUM_CORES):
     k = mat_a.shape[1]
     n = mat_b.shape[1]
     mat_c = torch.empty(m, n, dtype=mat_a.dtype, device=mat_a.device)
-    matmul_kernel[(num_cores,)](mat_a, mat_b, mat_c, m, n, k, NUM_CORES=num_cores,
-                                NUM_SLOT=NUM_SLOT, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
+    matmul_kernel[(num_cores, )](mat_a, mat_b, mat_c, m, n, k, NUM_CORES=num_cores, NUM_SLOT=NUM_SLOT, BLOCK_M=BLOCK_M,
+                                 BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
     return mat_c
 
 
@@ -162,8 +148,7 @@ def _matmul_signature():
     }
 
 
-def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-              NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
+def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
     """Compile matmul_kernel to TTIR and write to *path*."""
     from triton.compiler.compiler import ASTSource
     from triton.compiler.code_generator import ast_to_ttir
@@ -173,8 +158,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     os.environ.setdefault("TRITON_ALLOW_NON_CONSTEXPR_GLOBALS", "1")
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_triton.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_triton.mlir")
 
     signature = _matmul_signature()
     constants = {
@@ -219,8 +203,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
 # =============================================================================
 #  Full Linalg IR dump (TTIR → TileIR → Linalg lowering)
 # =============================================================================
-def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-                NUM_CORES=_DEFAULT_NUM_CORES):
+def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES):
     """Compile matmul_kernel through full TileIR → Linalg lowering pipeline.
 
     Pipeline:
@@ -237,15 +220,13 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     Returns the final Linalg MLIR string.
     """
     from triton._C.libtriton import ir, passes, ascend
-    from triton._C.libtriton import tle as tle_ir
 
     # Step 1: compile to TTIR — get module directly (avoids reparse/dialect issues)
     module = dump_ttir(path=None, M=M, N=N, K=K, NUM_CORES=NUM_CORES, return_module=True)
     context = module.context
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_triton_linalg.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_triton_linalg.mlir")
 
     # ── ① TileIR → HIVM ──────────────────────────────────────────────────
     pm = ir.pass_manager(context)

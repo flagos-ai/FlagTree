@@ -1,6 +1,6 @@
 import argparse
 import tilelang
-from tilelang import DataType, language as T
+from tilelang import language as T
 from tilelang.intrinsics import make_zn_layout, make_nz_layout
 
 import torch
@@ -48,16 +48,11 @@ pass_configs = {
 
 RING = 3  # depth of the task ring -- the "3-task" of the schedule
 
+
 @tilelang.jit(out_idx=[3], workspace_idx=[4, 5, 6], pass_configs=pass_configs)
-def flash_attention_fwd(
-    batch,
-    seq_len,
-    heads_q,
-    heads_kv,
-    dim,
-    cross_interval=1,   # kept for CLI compatibility
-    n_ratio=8,          # arch22 nRatio: KV blocks per task (S2 = 128 * n_ratio)
-):
+def flash_attention_fwd(batch, seq_len, heads_q, heads_kv, dim, cross_interval=1,  # kept for CLI compatibility
+                        n_ratio=8,  # arch22 nRatio: KV blocks per task (S2 = 128 * n_ratio)
+                        ):
     assert heads_q % heads_kv == 0, "heads_q must be a multiple of heads_kv"
     block_M, block_N = 128, 128
     assert dim == 128, "dim must be 128"
@@ -66,7 +61,7 @@ def flash_attention_fwd(
     dtype = "float16"
     accum_dtype = "float"
 
-    sm_scale = (1.0 / dim) ** 0.5
+    sm_scale = (1.0 / dim)**0.5
 
     shape_q = [batch, heads_q, seq_len, dim]
     shape_kv = [batch, heads_kv, seq_len, dim]
@@ -87,19 +82,19 @@ def flash_attention_fwd(
 
     # ---- Cross-core semaphores (one "ready" + one "free" per workspace) -------
     SEM_WS1_READY = 0  # C -> V : ws1 (=S) has data
-    SEM_WS1_FREE = 1   # V -> C : ws1 slot free
+    SEM_WS1_FREE = 1  # V -> C : ws1 slot free
     SEM_WS2_READY = 2  # V -> C : ws2 (=P) has data
-    SEM_WS2_FREE = 3   # C -> V : ws2 slot free
+    SEM_WS2_FREE = 3  # C -> V : ws2 slot free
     SEM_WS3_READY = 4  # C -> V : ws3 (=P·V) has data
-    SEM_WS3_FREE = 5   # V -> C : ws3 slot free
+    SEM_WS3_FREE = 5  # V -> C : ws3 slot free
 
     # ---- Intra-core signal IDs (C / cube scope) -------------------------------
     SIG_K_L1 = 0
     SIG_P_L1 = 1
     SIG_V_L1 = 2
     SIG_L0AB = 3  # double-buffer base: slot s = SIG_L0AB + s   (uses 3, 4)
-    SIG_L0C = 5   # double-buffer base: slot s = SIG_L0C  + s   (uses 5, 6)
-    SIG_Q = 7     # resident-Q L1 reuse guard across tiles
+    SIG_L0C = 5  # double-buffer base: slot s = SIG_L0C  + s   (uses 5, 6)
+    SIG_Q = 7  # resident-Q L1 reuse guard across tiles
 
     # ---- Intra-core signal IDs (V / vector scope) -----------------------------
     SIG_IO_UB = 0
@@ -113,15 +108,14 @@ def flash_attention_fwd(
         return start, count
 
     @T.prim_func
-    def main(
-        Q: T.Tensor(shape_q, dtype),  # type: ignore
-        K: T.Tensor(shape_kv, dtype),  # type: ignore
-        V: T.Tensor(shape_kv, dtype),  # type: ignore
-        Output: T.Tensor(shape_q, dtype),  # type: ignore
-        workspace_1: T.Tensor([NUM_CORES, RING, NR, block_M, block_N], dtype),  # S
-        workspace_2: T.Tensor([NUM_CORES, RING, NR, block_M, block_N], dtype),  # P
-        workspace_3: T.Tensor([NUM_CORES, RING, NR, block_M, dim], dtype),      # P·V
-    ):
+    def main(Q: T.Tensor(shape_q, dtype),  # type: ignore
+             K: T.Tensor(shape_kv, dtype),  # type: ignore
+             V: T.Tensor(shape_kv, dtype),  # type: ignore
+             Output: T.Tensor(shape_q, dtype),  # type: ignore
+             workspace_1: T.Tensor([NUM_CORES, RING, NR, block_M, block_N], dtype),  # S
+             workspace_2: T.Tensor([NUM_CORES, RING, NR, block_M, block_N], dtype),  # P
+             workspace_3: T.Tensor([NUM_CORES, RING, NR, block_M, dim], dtype),  # P·V
+             ):
         with T.Kernel(NUM_CORES, is_npu=True) as (cid, vid):
             # ---- L1 buffers (cube) ----
             q_l1 = T.alloc_L1([block_M, dim], dtype)
@@ -129,14 +123,12 @@ def flash_attention_fwd(
             v_l1 = T.alloc_L1([block_N, dim], dtype)
             p_l1 = T.alloc_L1([block_M, block_N], dtype)
 
-            T.annotate_layout(
-                {
-                    q_l1: make_zn_layout(q_l1),
-                    k_l1: make_nz_layout(k_l1),
-                    p_l1: make_zn_layout(p_l1),
-                    v_l1: make_zn_layout(v_l1),
-                }
-            )
+            T.annotate_layout({
+                q_l1: make_zn_layout(q_l1),
+                k_l1: make_nz_layout(k_l1),
+                p_l1: make_zn_layout(p_l1),
+                v_l1: make_zn_layout(v_l1),
+            })
 
             # ---- L0 buffers (cube), 2-deep double buffer (slot = nr % 2) ----
             l0a = T.alloc_L0A([2, block_M, dim], dtype)
@@ -195,7 +187,7 @@ def flash_attention_fwd(
 
                         if tit == 0:  # resident Q reload at the first task of each tile
                             T.wait_flag("MTE1", "MTE2", SIG_Q)
-                            T.copy(Q[bz, by, bx * block_M : (bx + 1) * block_M, :], q_l1)
+                            T.copy(Q[bz, by, bx * block_M:(bx + 1) * block_M, :], q_l1)
                             T.set_flag("MTE2", "MTE1", SIG_Q)
                             T.wait_flag("MTE2", "MTE1", SIG_Q)
 
@@ -204,7 +196,7 @@ def flash_attention_fwd(
                             s1 = nr % 2
 
                             T.wait_flag("MTE1", "MTE2", SIG_K_L1)
-                            T.copy(K[bz, kv_by, kv * block_N : (kv + 1) * block_N, :], k_l1)
+                            T.copy(K[bz, kv_by, kv * block_N:(kv + 1) * block_N, :], k_l1)
                             T.set_flag("MTE2", "MTE1", SIG_K_L1)
 
                             T.wait_flag("M", "MTE1", SIG_L0AB + s1)
@@ -247,7 +239,7 @@ def flash_attention_fwd(
                             s2 = nr % 2
 
                             T.wait_flag("MTE1", "MTE2", SIG_V_L1)
-                            T.copy(V[bz2, kv_by2, kv * block_N : (kv + 1) * block_N, :], v_l1)
+                            T.copy(V[bz2, kv_by2, kv * block_N:(kv + 1) * block_N, :], v_l1)
                             T.set_flag("MTE2", "MTE1", SIG_V_L1)
 
                             T.wait_flag("MTE1", "MTE2", SIG_P_L1)
@@ -316,7 +308,7 @@ def flash_attention_fwd(
                             prv = 1 - cur
 
                             T.wait_flag("V", "MTE2", SIG_IO_UB)
-                            T.copy(workspace_1[cid, r1, nr, vid * half_M : vid * half_M + half_M, :], io_buf)
+                            T.copy(workspace_1[cid, r1, nr, vid * half_M:vid * half_M + half_M, :], io_buf)
                             T.set_flag("MTE2", "V", SIG_IO_UB)
 
                             T.wait_flag("MTE2", "V", SIG_IO_UB)
@@ -335,13 +327,13 @@ def flash_attention_fwd(
                             T.set_flag("V", "MTE3", SIG_S_HALF)
 
                             T.wait_flag("V", "MTE3", SIG_S_HALF)
-                            T.copy(acc_s_half, workspace_2[cid, r1, nr, vid * half_M : vid * half_M + half_M, :])
+                            T.copy(acc_s_half, workspace_2[cid, r1, nr, vid * half_M:vid * half_M + half_M, :])
                             T.set_flag("MTE3", "V", SIG_S_HALF)
 
                             T.reduce_sum(work_ub, sumexp_is[r1, nr, :, :], dim=-1)
                             T.tile.sub(r_factors[r1, nr, :, :], neg_sm[cur, :, :], neg_sm[prv, :, :])
 
-                        T.set_cross_flag("MTE2", SEM_WS1_FREE)   # ws1[r1] task slot free
+                        T.set_cross_flag("MTE2", SEM_WS1_FREE)  # ws1[r1] task slot free
                         T.set_cross_flag("MTE3", SEM_WS2_READY)  # ws2[r1] (all NR) ready
 
                     # ===== Vec2(g-1): acc_o = acc_o*α + P·V for NR blocks =====
@@ -356,7 +348,7 @@ def flash_attention_fwd(
                             kv = tit2 * NR + nr
 
                             T.wait_flag("V", "MTE2", SIG_IO_UB)
-                            T.copy(workspace_3[cid, r2, nr, vid * half_M : vid * half_M + half_M, :], io_buf)
+                            T.copy(workspace_3[cid, r2, nr, vid * half_M:vid * half_M + half_M, :], io_buf)
                             T.set_flag("MTE2", "V", SIG_IO_UB)
 
                             T.wait_flag("MTE2", "V", SIG_IO_UB)
@@ -364,7 +356,7 @@ def flash_attention_fwd(
                             T.set_flag("V", "MTE2", SIG_IO_UB)
 
                             if kv == 0:
-                                T.copy(work_ub, acc_o)               # acc_o = P·V
+                                T.copy(work_ub, acc_o)  # acc_o = P·V
                                 T.copy(sumexp_is[r2, nr, :, :], sumexp)  # sumexp = rowsum
                             else:
                                 T.tile.exp(r_factors[r2, nr, :, :], r_factors[r2, nr, :, :])
@@ -385,7 +377,8 @@ def flash_attention_fwd(
                                 T.barrier_all()
                                 T.copy(
                                     out_half,
-                                    Output[bz2, by2, bx2 * block_M + vid * half_M : bx2 * block_M + vid * half_M + half_M, :],
+                                    Output[bz2, by2,
+                                           bx2 * block_M + vid * half_M:bx2 * block_M + vid * half_M + half_M, :],
                                 )
 
                         T.set_cross_flag("MTE2", SEM_WS3_FREE)  # ws3[r2] task slot free
@@ -395,6 +388,7 @@ def flash_attention_fwd(
                 T.wait_flag("MTE3", "V", SIG_S_HALF)
 
     return main
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -433,7 +427,8 @@ if __name__ == "__main__":
         k = k.float()
         v = v.float()
 
-        output = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False)
+        output = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=0.0,
+                                                                  is_causal=False)
         return output.to(torch.float16)
 
     q = torch.randn((B, Q_H, S, D), dtype=torch.float16)

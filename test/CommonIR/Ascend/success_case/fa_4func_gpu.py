@@ -13,38 +13,43 @@ BLOCK_M = 32
 BLOCK_N = 32
 DIM = 32
 
-
 # =============================================================================
 #  Step sub-functions (each called from the main kernel; decorated @triton.jit
 #  so the compiler sees them as inlinable device functions).
 # =============================================================================
 
+
 @triton.jit
 def _mm1_qkt(
     # inputs
     K,
-    q_block,        # pre-loaded Q tensor (BLOCK_M, DIM), passed from outer loop
+    q_block,  # pre-loaded Q tensor (BLOCK_M, DIM), passed from outer loop
     workspace_s,
     # task geometry
-    cid, kv_idx, batch_idx, kv_head_idx,
+    cid,
+    kv_idx,
+    batch_idx,
+    kv_head_idx,
     # strides
-    sKb, sKh, sKs, sKd,
+    sKb,
+    sKh,
+    sKs,
+    sKd,
     S,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    DIM: tl.constexpr,
 ):
     """MM1: compute S = Q * K^T for one KV block and store into workspace_s."""
-    k_bp = tl.make_block_ptr(
-        K + batch_idx * sKb + kv_head_idx * sKh, (S, DIM), (sKs, sKd),
-        (kv_idx * BLOCK_N, 0), (BLOCK_N, DIM), (1, 0))
+    k_bp = tl.make_block_ptr(K + batch_idx * sKb + kv_head_idx * sKh, (S, DIM), (sKs, sKd), (kv_idx * BLOCK_N, 0),
+                             (BLOCK_N, DIM), (1, 0))
     k_block = tl.load(k_bp)
 
     # attn_score = Q * K^T  — K is (BLOCK_N, DIM), transpose to (DIM, BLOCK_N)
-    attn_score = tl.dot(q_block, tl.trans(k_block),
-                        tl.zeros((BLOCK_M, BLOCK_N), tl.float32))
+    attn_score = tl.dot(q_block, tl.trans(k_block), tl.zeros((BLOCK_M, BLOCK_N), tl.float32))
 
-    score_store_bp = tl.make_block_ptr(
-        workspace_s + cid * BLOCK_M * BLOCK_N,
-        (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
+    score_store_bp = tl.make_block_ptr(workspace_s + cid * BLOCK_M * BLOCK_N, (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0),
+                                       (BLOCK_M, BLOCK_N), (1, 0))
     tl.store(score_store_bp, attn_score.to(workspace_s.dtype.element_ty))
 
 
@@ -52,44 +57,52 @@ def _mm1_qkt(
 def _mm2_pv(
     # inputs
     V,
-    workspace_p, workspace_pv,
+    workspace_p,
+    workspace_pv,
     # task geometry
-    cid, kv_idx, batch_idx, kv_head_idx,
+    cid,
+    kv_idx,
+    batch_idx,
+    kv_head_idx,
     # strides
-    sKb, sKh, sKs, sKd,
+    sKb,
+    sKh,
+    sKs,
+    sKd,
     S,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    DIM: tl.constexpr,
 ):
     """MM2: compute O_part = P * V for one KV block and store into workspace_pv."""
-    v_bp = tl.make_block_ptr(
-        V + batch_idx * sKb + kv_head_idx * sKh, (S, DIM), (sKs, sKd),
-        (kv_idx * BLOCK_N, 0), (BLOCK_N, DIM), (1, 0))
+    v_bp = tl.make_block_ptr(V + batch_idx * sKb + kv_head_idx * sKh, (S, DIM), (sKs, sKd), (kv_idx * BLOCK_N, 0),
+                             (BLOCK_N, DIM), (1, 0))
     v_block = tl.load(v_bp)
 
-    prob_load_bp = tl.make_block_ptr(
-        workspace_p + cid * BLOCK_M * BLOCK_N,
-        (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
+    prob_load_bp = tl.make_block_ptr(workspace_p + cid * BLOCK_M * BLOCK_N, (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0),
+                                     (BLOCK_M, BLOCK_N), (1, 0))
     p_block = tl.load(prob_load_bp)
 
     # pv_part = P * V  — (BLOCK_M, BLOCK_N) @ (BLOCK_N, DIM) = (BLOCK_M, DIM)
-    pv_part = tl.dot(p_block, v_block,
-                     tl.zeros((BLOCK_M, DIM), tl.float32))
+    pv_part = tl.dot(p_block, v_block, tl.zeros((BLOCK_M, DIM), tl.float32))
 
-    pv_store_bp = tl.make_block_ptr(
-        workspace_pv + cid * BLOCK_M * DIM,
-        (BLOCK_M, DIM), (DIM, 1), (0, 0), (BLOCK_M, DIM), (1, 0))
+    pv_store_bp = tl.make_block_ptr(workspace_pv + cid * BLOCK_M * DIM, (BLOCK_M, DIM), (DIM, 1), (0, 0),
+                                    (BLOCK_M, DIM), (1, 0))
     tl.store(pv_store_bp, pv_part.to(workspace_pv.dtype.element_ty))
 
 
 @triton.jit
 def _vec1_softmax(
-    workspace_s, workspace_p,
-    cid, kv_idx,
+    workspace_s,
+    workspace_p,
+    cid,
+    kv_idx,
     running_neg_max,
     sm_scale,
     IS_CAUSAL: tl.constexpr,
     global_head_idx,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
 ):
     """Vec1: softmax over one score block -> workspace_p.
 
@@ -97,27 +110,25 @@ def _vec1_softmax(
     Returns (rescale, block_expsum, new_neg_max) for use by Vec2 in the same iter.
     """
     # load score written by MM1
-    score_load_bp = tl.make_block_ptr(
-        workspace_s + cid * BLOCK_M * BLOCK_N,
-        (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
+    score_load_bp = tl.make_block_ptr(workspace_s + cid * BLOCK_M * BLOCK_N, (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0),
+                                      (BLOCK_M, BLOCK_N), (1, 0))
     attn_score_block = tl.load(score_load_bp).to(tl.float32)
 
     if IS_CAUSAL:
-        q_row_idx  = global_head_idx * BLOCK_M + tl.arange(0, BLOCK_M)
+        q_row_idx = global_head_idx * BLOCK_M + tl.arange(0, BLOCK_M)
         kv_col_idx = kv_idx * BLOCK_N + tl.arange(0, BLOCK_N)
         causal_mask = q_row_idx[:, None] >= kv_col_idx[None, :]
         attn_score_block = tl.where(causal_mask, attn_score_block, float("-inf"))
 
     block_row_max = tl.max(attn_score_block, axis=-1, keep_dims=True)
-    new_neg_max   = tl.minimum(-block_row_max * sm_scale, running_neg_max)
-    rescale       = tl.exp(new_neg_max - running_neg_max)   # <= 1
-    softmax_p     = tl.exp(sm_scale * attn_score_block + new_neg_max)
-    block_expsum  = tl.sum(softmax_p, axis=-1, keep_dims=True)
+    new_neg_max = tl.minimum(-block_row_max * sm_scale, running_neg_max)
+    rescale = tl.exp(new_neg_max - running_neg_max)  # <= 1
+    softmax_p = tl.exp(sm_scale * attn_score_block + new_neg_max)
+    block_expsum = tl.sum(softmax_p, axis=-1, keep_dims=True)
 
     # softmax_p -> workspace_p (read by MM2)
-    prob_bp = tl.make_block_ptr(
-        workspace_p + cid * BLOCK_M * BLOCK_N,
-        (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
+    prob_bp = tl.make_block_ptr(workspace_p + cid * BLOCK_M * BLOCK_N, (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0),
+                                (BLOCK_M, BLOCK_N), (1, 0))
     tl.store(prob_bp, softmax_p.to(workspace_p.dtype.element_ty))
 
     return rescale, block_expsum, new_neg_max
@@ -127,9 +138,12 @@ def _vec1_softmax(
 def _vec2_accumulate(
     workspace_pv,
     cid,
-    acc_o, softmax_denom,
-    rescale, block_expsum,
-    BLOCK_M: tl.constexpr, DIM: tl.constexpr,
+    acc_o,
+    softmax_denom,
+    rescale,
+    block_expsum,
+    BLOCK_M: tl.constexpr,
+    DIM: tl.constexpr,
 ):
     """Vec2: rescale acc_o and accumulate one KV block's P*V.
 
@@ -137,14 +151,13 @@ def _vec2_accumulate(
     Finalization (divide by denom) is done in the main loop after the last KV block.
     """
     # load pv_part written by MM2
-    pv_bp = tl.make_block_ptr(
-        workspace_pv + cid * BLOCK_M * DIM,
-        (BLOCK_M, DIM), (DIM, 1), (0, 0), (BLOCK_M, DIM), (1, 0))
+    pv_bp = tl.make_block_ptr(workspace_pv + cid * BLOCK_M * DIM, (BLOCK_M, DIM), (DIM, 1), (0, 0), (BLOCK_M, DIM),
+                              (1, 0))
     pv_acc = tl.load(pv_bp).to(tl.float32)
 
     # rescale and accumulate
-    rescale_bc    = tl.broadcast_to(rescale, (BLOCK_M, DIM))
-    acc_o         = acc_o * rescale_bc + pv_acc
+    rescale_bc = tl.broadcast_to(rescale, (BLOCK_M, DIM))
+    acc_o = acc_o * rescale_bc + pv_acc
     softmax_denom = softmax_denom * rescale + block_expsum
 
     return acc_o, softmax_denom
@@ -162,29 +175,47 @@ def _vec2_accumulate(
 # =============================================================================
 @triton.jit
 def flash_attention_fwd_3task_kernel(
-    Q, K, V, Out,
-    workspace_s, workspace_p, workspace_pv,      # transient per-KV-block workspaces
+    Q,
+    K,
+    V,
+    Out,
+    workspace_s,
+    workspace_p,
+    workspace_pv,  # transient per-KV-block workspaces
     sm_scale,
-    B, Hq, Hkv, S,
-    sQb, sQh, sQs, sQd,
-    sKb, sKh, sKs, sKd,
-    sOb, sOh, sOs, sOd,
-    block_num_per_core, rem_block_num,
+    B,
+    Hq,
+    Hkv,
+    S,
+    sQb,
+    sQh,
+    sQs,
+    sQd,
+    sKb,
+    sKh,
+    sKs,
+    sKd,
+    sOb,
+    sOh,
+    sOs,
+    sOd,
+    block_num_per_core,
+    rem_block_num,
     NUM_KV_BLOCKS: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
-    DIM:     tl.constexpr,
+    DIM: tl.constexpr,
 ):
     cid = tl.program_id(0)
 
     # ---- derive loop-geometry scalars ----
     num_seq_blocks = S // BLOCK_M
-    gqa_group      = Hq // Hkv
+    gqa_group = Hq // Hkv
 
     # ---- static task distribution ----
     block_start = cid * block_num_per_core + tl.where(cid < rem_block_num, cid, rem_block_num)
-    block_num   = block_num_per_core + tl.where(cid < rem_block_num, 1, 0)
+    block_num = block_num_per_core + tl.where(cid < rem_block_num, 1, 0)
 
     # =========================================================================
     #  Outer loop: one output tile per iteration.
@@ -192,19 +223,18 @@ def flash_attention_fwd_3task_kernel(
     for tile_idx in range(block_num):
         output_block_id = block_start + tile_idx
         global_head_idx = output_block_id % num_seq_blocks
-        head_idx        = (output_block_id // num_seq_blocks) % Hq
-        batch_idx       = output_block_id // (num_seq_blocks * Hq)
-        kv_head_idx     = head_idx // gqa_group
+        head_idx = (output_block_id // num_seq_blocks) % Hq
+        batch_idx = output_block_id // (num_seq_blocks * Hq)
+        kv_head_idx = head_idx // gqa_group
 
         # ---- load Q for this tile once; reused across all KV blocks ----
-        q_bp = tl.make_block_ptr(
-            Q + batch_idx * sQb + head_idx * sQh, (S, DIM), (sQs, sQd),
-            (global_head_idx * BLOCK_M, 0), (BLOCK_M, DIM), (1, 0))
+        q_bp = tl.make_block_ptr(Q + batch_idx * sQb + head_idx * sQh, (S, DIM), (sQs, sQd),
+                                 (global_head_idx * BLOCK_M, 0), (BLOCK_M, DIM), (1, 0))
         q_block = tl.load(q_bp)
 
         # ---- per-tile softmax accumulators (local registers) ----
-        acc_o           = tl.zeros((BLOCK_M, DIM), tl.float32)
-        softmax_denom   = tl.zeros((BLOCK_M, 1),   tl.float32)
+        acc_o = tl.zeros((BLOCK_M, DIM), tl.float32)
+        softmax_denom = tl.zeros((BLOCK_M, 1), tl.float32)
         running_neg_max = tl.full((BLOCK_M, 1), 2**30, tl.float32)
 
         # =========================================================================
@@ -217,9 +247,18 @@ def flash_attention_fwd_3task_kernel(
                 K,
                 q_block,
                 workspace_s,
-                cid, kv_idx, batch_idx, kv_head_idx,
-                sKb, sKh, sKs, sKd,
-                S, BLOCK_M, BLOCK_N, DIM,
+                cid,
+                kv_idx,
+                batch_idx,
+                kv_head_idx,
+                sKb,
+                sKh,
+                sKs,
+                sKd,
+                S,
+                BLOCK_M,
+                BLOCK_N,
+                DIM,
             )
 
             # Barrier: ensure MM1's store to workspace_s is visible to Vec1's load.
@@ -227,12 +266,16 @@ def flash_attention_fwd_3task_kernel(
 
             # ===== Step 2: Vec1 — softmax(S) → P; returns rescale, expsum, new_neg_max =====
             rescale, block_expsum, running_neg_max = _vec1_softmax(
-                workspace_s, workspace_p,
-                cid, kv_idx,
+                workspace_s,
+                workspace_p,
+                cid,
+                kv_idx,
                 running_neg_max,
                 sm_scale,
-                IS_CAUSAL, global_head_idx,
-                BLOCK_M, BLOCK_N,
+                IS_CAUSAL,
+                global_head_idx,
+                BLOCK_M,
+                BLOCK_N,
             )
 
             # Barrier: ensure Vec1's store to workspace_p is visible to MM2's load.
@@ -241,10 +284,20 @@ def flash_attention_fwd_3task_kernel(
             # ===== Step 3: MM2 — O_part = P * V =====
             _mm2_pv(
                 V,
-                workspace_p, workspace_pv,
-                cid, kv_idx, batch_idx, kv_head_idx,
-                sKb, sKh, sKs, sKd,
-                S, BLOCK_M, BLOCK_N, DIM,
+                workspace_p,
+                workspace_pv,
+                cid,
+                kv_idx,
+                batch_idx,
+                kv_head_idx,
+                sKb,
+                sKh,
+                sKs,
+                sKd,
+                S,
+                BLOCK_M,
+                BLOCK_N,
+                DIM,
             )
 
             # Barrier: ensure MM2's store to workspace_pv is visible to Vec2's load.
@@ -254,17 +307,19 @@ def flash_attention_fwd_3task_kernel(
             acc_o, softmax_denom = _vec2_accumulate(
                 workspace_pv,
                 cid,
-                acc_o, softmax_denom,
-                rescale, block_expsum,
-                BLOCK_M, DIM,
+                acc_o,
+                softmax_denom,
+                rescale,
+                block_expsum,
+                BLOCK_M,
+                DIM,
             )
 
         # ---- finalize: write output for this tile ----
-        denom_bc    = tl.broadcast_to(softmax_denom, (BLOCK_M, DIM))
-        out_block   = (acc_o / denom_bc).to(Out.dtype.element_ty)
-        o_bp = tl.make_block_ptr(
-            Out + batch_idx * sOb + head_idx * sOh, (S, DIM), (sOs, sOd),
-            ((global_head_idx * BLOCK_M).to(tl.int32), 0), (BLOCK_M, DIM), (1, 0))
+        denom_bc = tl.broadcast_to(softmax_denom, (BLOCK_M, DIM))
+        out_block = (acc_o / denom_bc).to(Out.dtype.element_ty)
+        o_bp = tl.make_block_ptr(Out + batch_idx * sOb + head_idx * sOh, (S, DIM), (sOs, sOd),
+                                 ((global_head_idx * BLOCK_M).to(tl.int32), 0), (BLOCK_M, DIM), (1, 0))
         tl.store(o_bp, out_block)
 
 
@@ -290,22 +345,23 @@ class _DumpOptions:
 
 def _dump_signature():
     """Static signature for ast_to_ttir (pointers / scalars / i32 / constexpr)."""
-    ptr = {"Q": "*fp16", "K": "*fp16", "V": "*fp16", "Out": "*fp16",
-           "workspace_s": "*fp16", "workspace_p": "*fp16", "workspace_pv": "*fp16"}
-    i32_names = ["B", "Hq", "Hkv", "S",
-            "sQb", "sQh", "sQs", "sQd",
-            "sKb", "sKh", "sKs", "sKd",
-            "sOb", "sOh", "sOs", "sOd",
-            "block_num_per_core", "rem_block_num"]
+    ptr = {
+        "Q": "*fp16", "K": "*fp16", "V": "*fp16", "Out": "*fp16", "workspace_s": "*fp16", "workspace_p": "*fp16",
+        "workspace_pv": "*fp16"
+    }
+    i32_names = [
+        "B", "Hq", "Hkv", "S", "sQb", "sQh", "sQs", "sQd", "sKb", "sKh", "sKs", "sKd", "sOb", "sOh", "sOs", "sOd",
+        "block_num_per_core", "rem_block_num"
+    ]
     sig = dict(ptr)
     sig["sm_scale"] = "fp32"
     for n in i32_names:
         sig[n] = "i32"
     sig["NUM_KV_BLOCKS"] = "constexpr"
     sig["IS_CAUSAL"] = "constexpr"
-    sig["BLOCK_M"]   = "constexpr"
-    sig["BLOCK_N"]   = "constexpr"
-    sig["DIM"]       = "constexpr"
+    sig["BLOCK_M"] = "constexpr"
+    sig["BLOCK_N"] = "constexpr"
+    sig["DIM"] = "constexpr"
     return sig
 
 
@@ -338,8 +394,11 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, is_causal=False):
 
     signature = _dump_signature()
     constants = {
-        "NUM_KV_BLOCKS": num_kv_blocks, "IS_CAUSAL": is_causal,
-        "BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N, "DIM": DIM,
+        "NUM_KV_BLOCKS": num_kv_blocks,
+        "IS_CAUSAL": is_causal,
+        "BLOCK_M": BLOCK_M,
+        "BLOCK_N": BLOCK_N,
+        "DIM": DIM,
     }
 
     src = ASTSource(flash_attention_fwd_3task_kernel, signature, constants)
@@ -390,7 +449,7 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, is_causal=False):
         print(f"[dump_tileir] after TileIR→HIVM: verify={module.verify()}", flush=True)
     except RuntimeError as e:
         print(f"[dump_tileir] TileIR→HIVM pass failed (non-fatal): {e}", flush=True)
-        print(f"[dump_tileir] TileIR output is still valid; skipping HIVM lowering.", flush=True)
+        print("[dump_tileir] TileIR output is still valid; skipping HIVM lowering.", flush=True)
         return mlir
 
     # Phase 2: TTIR optimization passes (mirrors compiler.py make_ttir).
@@ -409,7 +468,7 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, is_causal=False):
 
     ttir_ok = module.verify()
     if not ttir_ok:
-        print(f"[dump_tileir] WARNING: module.verify() failed after TTIR optimization — IR may be illegal")
+        print("[dump_tileir] WARNING: module.verify() failed after TTIR optimization — IR may be illegal")
     else:
         print(f"[dump_tileir] TTIR optimization complete: verify={ttir_ok}")
 
@@ -542,8 +601,7 @@ def dump_linalg(path=None, is_causal=False):
     tileir_mlir = dump_tileir(path=None, is_causal=is_causal)
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "fa_triton_arch_linalg.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_triton_arch_linalg.mlir")
 
     # Step 2: parse the TileIR module into a fresh context
     context = ir.context()
@@ -568,7 +626,8 @@ def dump_linalg(path=None, is_causal=False):
     os.unlink(tmp_path)
 
     # ── ① TileIR → HIVM ──────────────────────────────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     passes.common.add_inliner(pm)
     ascend.passes.ttir.add_tileir_to_hivm(pm)
     pm.run(module)
@@ -588,14 +647,16 @@ def dump_linalg(path=None, is_causal=False):
     print(f"[dump_linalg] ①b erase_linalg_casts: verify={module.verify()}", flush=True)
 
     # ── ② Structured (r1) + discrete mask ────────────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
     ascend.passes.ttir.add_discrete_mask_access_conversion(pm, False, False)
     pm.run(module)
     print(f"[dump_linalg] ② structure(r1)+discrete_mask: verify={module.verify()}", flush=True)
 
     # ── ③ Unstructured + HIVM + HFusion + LLVM ──────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     ascend.passes.ttir.add_triton_to_unstructure_incubated(pm, False, False)
     ascend.passes.ttir.add_triton_to_hivm(pm)
     ascend.passes.ttir.add_triton_to_hfusion(pm)
@@ -604,7 +665,8 @@ def dump_linalg(path=None, is_causal=False):
     print(f"[dump_linalg] ③ unstructure+hivm+hfusion+llvm: verify={module.verify()}", flush=True)
 
     # ── ④ Bubble-up + structured (r2) ────────────────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     ascend.passes.ttir.add_bubble_up_operation(pm)
     ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
     pm.run(module)
@@ -613,7 +675,8 @@ def dump_linalg(path=None, is_causal=False):
     # ── ④b Inline + canonicalize ← REQUIRED to avoid C++ assertion ─────
     # Without this, the linalg incubator crashes with cast<RankedTensorType>
     # in MaskAnalysis when it encounters non-tensor types.
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     passes.common.add_inliner(pm)
     passes.common.add_canonicalizer(pm)
     pm.run(module)
@@ -625,17 +688,17 @@ def dump_linalg(path=None, is_causal=False):
     # materialization" when it creates memref→!tt.ptr→memref cast chains
     # during partial conversion of !tt.ptr<tensor<>> values.  We handle
     # that in phase ⑤b.
-    linalg_ok = False
     try:
-        pm = ir.pass_manager(context); pm.enable_debug()
+        pm = ir.pass_manager(context)
+        pm.enable_debug()
         ascend.passes.ttir.add_triton_to_linalg_incubated(pm, False, True, False, False, False)
         pm.run(module)
         print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: verify={module.verify()}", flush=True)
-        linalg_ok = True
-    except RuntimeError as e:
-        print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: partial conversion "
-              f"(this is expected — the pass creates cast chains that need "
-              f"post-processing)", flush=True)
+    except RuntimeError:
+        print(
+            "[dump_linalg] ⑤ triton_to_linalg_incubated: partial conversion "
+            "(this is expected — the pass creates cast chains that need "
+            "post-processing)", flush=True)
 
     # ── ⑤c Fold staging memref.alloc + memref.copy pairs ─────────────────
     #     TritonToLinalgIncubated creates staging allocs (default address
@@ -643,7 +706,8 @@ def dump_linalg(path=None, is_causal=False):
     #     copy target has an explicit memory space (e.g. cbuf), the staging
     #     is redundant.  This pass merges the two copies into one direct
     #     GBM -> on-chip transfer, eliminating an alloc + copy + annotation.
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     ascend.passes.ttir.add_fold_staging_copy(pm)
     pm.run(module)
     print(f"[dump_linalg] ⑤c fold_staging_copy: verify={module.verify()}", flush=True)
@@ -659,7 +723,8 @@ def dump_linalg(path=None, is_causal=False):
     print(f"[dump_linalg] ⑤b erase_linalg_casts (post): verify={module.verify()}", flush=True)
 
     # ── ⑥ Final canonicalize → erase dead casts ─────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     passes.common.add_canonicalizer(pm)
     passes.common.add_cse(pm)
     passes.common.add_symbol_dce(pm)
@@ -688,28 +753,47 @@ def flash_attention_fwd(q, k, v, is_causal=False):
     Hkv = k.shape[1]
     assert D == DIM and S % BLOCK_N == 0 and Hq % Hkv == 0
     num_seq_blocks = S // BLOCK_M
-    block_num      = num_seq_blocks * Hq * B
-    num_kv_blocks  = S // BLOCK_N   # KV blocks per output tile (CB=1: one per task)
+    block_num = num_seq_blocks * Hq * B
+    num_kv_blocks = S // BLOCK_N  # KV blocks per output tile (CB=1: one per task)
 
     block_num_per_core = block_num // NUM_CORES
-    rem_block_num      = block_num % NUM_CORES
+    rem_block_num = block_num % NUM_CORES
 
     out = torch.empty_like(q)
     # Single-slot transient workspaces (accumulators are local registers in the kernel)
-    workspace_s  = torch.empty((NUM_CORES, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
-    workspace_p  = torch.empty((NUM_CORES, BLOCK_M, BLOCK_N), dtype=q.dtype,        device=q.device)
-    workspace_pv = torch.empty((NUM_CORES, BLOCK_M, DIM),     dtype=torch.float16, device=q.device)
-    sm_scale = (1.0 / D) ** 0.5
+    workspace_s = torch.empty((NUM_CORES, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
+    workspace_p = torch.empty((NUM_CORES, BLOCK_M, BLOCK_N), dtype=q.dtype, device=q.device)
+    workspace_pv = torch.empty((NUM_CORES, BLOCK_M, DIM), dtype=torch.float16, device=q.device)
+    sm_scale = (1.0 / D)**0.5
 
-    grid = (NUM_CORES,)
+    grid = (NUM_CORES, )
     flash_attention_fwd_3task_kernel[grid](
-        q, k, v, out, workspace_s, workspace_p, workspace_pv,
+        q,
+        k,
+        v,
+        out,
+        workspace_s,
+        workspace_p,
+        workspace_pv,
         sm_scale,
-        B, Hq, Hkv, S,
-        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-        k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-        out.stride(0), out.stride(1), out.stride(2), out.stride(3),
-        block_num_per_core, rem_block_num,
+        B,
+        Hq,
+        Hkv,
+        S,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        q.stride(3),
+        k.stride(0),
+        k.stride(1),
+        k.stride(2),
+        k.stride(3),
+        out.stride(0),
+        out.stride(1),
+        out.stride(2),
+        out.stride(3),
+        block_num_per_core,
+        rem_block_num,
         NUM_KV_BLOCKS=num_kv_blocks,
         IS_CAUSAL=is_causal,
         BLOCK_M=BLOCK_M,
@@ -733,8 +817,9 @@ if __name__ == "__main__":
                         help="Dump intermediate TileIR to PATH and exit; no device needed.")
     parser.add_argument("--dump-ir", nargs="?", const="", default=None,
                         help="Dump HIVM IR (after TileIR→HIVM lowering) to PATH and exit; no device needed.")
-    parser.add_argument("--dump-linalg", nargs="?", const="", default=None,
-                        help="Dump Linalg IR (full lowering through linalg, casts eliminated) to PATH and exit; no device needed.")
+    parser.add_argument(
+        "--dump-linalg", nargs="?", const="", default=None,
+        help="Dump Linalg IR (full lowering through linalg, casts eliminated) to PATH and exit; no device needed.")
     args = parser.parse_args()
 
     B, S, H, D = args.B, args.S, args.H, args.D
@@ -765,16 +850,16 @@ if __name__ == "__main__":
     out = flash_attention_fwd(q, k, v, is_causal=args.causal)
 
     if not args.no_check:
+
         def ref(q, k, v):
             if k.shape[1] != q.shape[1]:
                 n_rep = q.shape[1] // k.shape[1]
                 k = k.repeat_interleave(n_rep, dim=1)
                 v = v.repeat_interleave(n_rep, dim=1)
-            return torch.nn.functional.scaled_dot_product_attention(
-                q.float(), k.float(), v.float(), is_causal=args.causal).to(torch.float16)
+            return torch.nn.functional.scaled_dot_product_attention(q.float(), k.float(), v.float(),
+                                                                    is_causal=args.causal).to(torch.float16)
 
         torch.testing.assert_close(ref(q, k, v), out, rtol=1e-2, atol=1e-2)
         print("Test Passed!")
     else:
         print("Reference check skipped.")
-

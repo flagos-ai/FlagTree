@@ -161,6 +161,7 @@ def subview(src: buffer, offsets: List[tl.tensor], sizes: List[tl.constexpr], st
 # TileIR semantic functions — emit tile.* ops
 # ==============================================================================
 
+
 def tile_alloc(etype: tl.dtype, shape: List[tl.constexpr], address_space: address_space, builder: ir.builder) -> buffer:
     """Allocate a buffer using tile.alloc."""
     shape = tl._unwrap_shape(shape)
@@ -309,8 +310,8 @@ def tile_gm_offset(base, indices: List[tl.tensor], strides: List[tl.tensor], bui
     return tl.tensor(handle, base.type)
 
 
-def tile_cube_launch(a: buffer, b: buffer, acc: buffer, stage_a: buffer, stage_b: buffer, dst,
-                     transpose_a: bool, transpose_b: bool, init: bool, mma: str, builder: ir.builder):
+def tile_cube_launch(a: buffer, b: buffer, acc: buffer, stage_a: buffer, stage_b: buffer, dst, transpose_a: bool,
+                     transpose_b: bool, init: bool, mma: str, builder: ir.builder):
     """Launch Cube work using tile.cube_launch."""
     for name, value in [
         ("a", a),

@@ -86,12 +86,8 @@ def matmul_kernel(
         mat_c_acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
         # -- Prologue: load first K-tile into buffer 0 ---------------------
-        a_ptr = tl.make_block_ptr(
-            mat_a, (M, K), (K, 1), (m_start, 0),
-            (BLOCK_M, BLOCK_K), (1, 0))
-        b_ptr = tl.make_block_ptr(
-            mat_b, (K, N), (N, 1), (0, n_start),
-            (BLOCK_K, BLOCK_N), (1, 0))
+        a_ptr = tl.make_block_ptr(mat_a, (M, K), (K, 1), (m_start, 0), (BLOCK_M, BLOCK_K), (1, 0))
+        b_ptr = tl.make_block_ptr(mat_b, (K, N), (N, 1), (0, n_start), (BLOCK_K, BLOCK_N), (1, 0))
         tile_copy(a_ptr, mat_a_l1_0, [BLOCK_M, BLOCK_K])
         tile_copy(b_ptr, mat_b_l1_0, [BLOCK_K, BLOCK_N])
 
@@ -103,10 +99,8 @@ def matmul_kernel(
             tile_copy(a_ptr, mat_a_l1_1, [BLOCK_M, BLOCK_K])
             tile_copy(b_ptr, mat_b_l1_1, [BLOCK_K, BLOCK_N])
             tl.debug_barrier()  # wait: buf1 DMA done
-            mat_c_acc = tl.dot(
-                tile_to_tensor(mat_a_l1_0, writable=False),
-                tile_to_tensor(mat_b_l1_0, writable=False),
-                mat_c_acc, out_dtype=tl.float32)
+            mat_c_acc = tl.dot(tile_to_tensor(mat_a_l1_0, writable=False), tile_to_tensor(mat_b_l1_0, writable=False),
+                               mat_c_acc, out_dtype=tl.float32)
             tl.debug_barrier()  # wait: dot(buf0) done before overwriting buf0
 
             # Odd: prefetch k+2 -> buf0, wait DMA, compute buf1, wait compute
@@ -116,27 +110,19 @@ def matmul_kernel(
                 tile_copy(a_ptr, mat_a_l1_0, [BLOCK_M, BLOCK_K])
                 tile_copy(b_ptr, mat_b_l1_0, [BLOCK_K, BLOCK_N])
             tl.debug_barrier()  # wait: buf0 DMA done (or nop if no copy)
-            mat_c_acc = tl.dot(
-                tile_to_tensor(mat_a_l1_1, writable=False),
-                tile_to_tensor(mat_b_l1_1, writable=False),
-                mat_c_acc, out_dtype=tl.float32)
+            mat_c_acc = tl.dot(tile_to_tensor(mat_a_l1_1, writable=False), tile_to_tensor(mat_b_l1_1, writable=False),
+                               mat_c_acc, out_dtype=tl.float32)
             tl.debug_barrier()  # wait: dot(buf1) done before overwriting buf1 next iteration
 
         # -- Epilogue: consume the last tile if NUM_K_BLOCKS is odd ---------
         if NUM_K_BLOCKS % 2 == 1:
             tl.debug_barrier()
-            mat_c_acc = tl.dot(
-                tile_to_tensor(mat_a_l1_0, writable=False),
-                tile_to_tensor(mat_b_l1_0, writable=False),
-                mat_c_acc, out_dtype=tl.float32)
+            mat_c_acc = tl.dot(tile_to_tensor(mat_a_l1_0, writable=False), tile_to_tensor(mat_b_l1_0, writable=False),
+                               mat_c_acc, out_dtype=tl.float32)
 
         # Store result back to GM
-        tl.store(
-            tl.make_block_ptr(
-                mat_c, (M, N), (N, 1),
-                (m_start, n_start),
-                (BLOCK_M, BLOCK_N), (1, 0)),
-            mat_c_acc.to(mat_c.dtype.element_ty))
+        tl.store(tl.make_block_ptr(mat_c, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0)),
+                 mat_c_acc.to(mat_c.dtype.element_ty))
 
 
 # =============================================================================
@@ -147,8 +133,8 @@ def call(mat_a, mat_b, num_cores=_DEFAULT_NUM_CORES):
     k = mat_a.shape[1]
     n = mat_b.shape[1]
     mat_c = torch.empty(m, n, dtype=mat_a.dtype, device=mat_a.device)
-    matmul_kernel[(num_cores,)](mat_a, mat_b, mat_c, m, n, k, num_cores,
-                               BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
+    matmul_kernel[(num_cores, )](mat_a, mat_b, mat_c, m, n, k, num_cores, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,
+                                 BLOCK_K=BLOCK_K)
     return mat_c
 
 
@@ -178,8 +164,7 @@ def _matmul_signature():
     }
 
 
-def _compile_matmul_module(M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-                           NUM_CORES=_DEFAULT_NUM_CORES):
+def _compile_matmul_module(M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES):
     """Compile matmul_kernel to the frontend module that contains tile.* ops."""
     from triton.compiler.compiler import ASTSource
     from triton.compiler.code_generator import ast_to_ttir
@@ -218,12 +203,10 @@ def _compile_matmul_module(M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     return module
 
 
-def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-              NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
+def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
     """Compile matmul_kernel to TTIR and write to *path*."""
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_double_buffer_ttir.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_double_buffer_ttir.mlir")
 
     module = _compile_matmul_module(M=M, N=N, K=K, NUM_CORES=NUM_CORES)
     mlir = str(module)
@@ -237,12 +220,10 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     return mlir
 
 
-def dump_tileir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-                NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
+def dump_tileir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
     """Dump the frontend TileIR stage before TileIR-to-HIVM lowering."""
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_double_buffer_tileir.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_double_buffer_tileir.mlir")
 
     module = _compile_matmul_module(M=M, N=N, K=K, NUM_CORES=NUM_CORES)
     mlir = str(module)
@@ -262,8 +243,7 @@ def dump_tileir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
 # =============================================================================
 #  Full Linalg IR dump (TTIR -> TileIR -> Linalg lowering)
 # =============================================================================
-def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-                NUM_CORES=_DEFAULT_NUM_CORES):
+def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES):
     """Compile matmul_kernel through full TileIR -> Linalg lowering pipeline.
 
     Pipeline:
@@ -286,8 +266,7 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     context = module.context
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_double_buffer_linalg.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_double_buffer_linalg.mlir")
 
     # -- (1) TileIR -> HIVM -----------------------------------------------
     pm = ir.pass_manager(context)
@@ -377,8 +356,7 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
 #  CLI entry point
 # =============================================================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Matmul kernel (copy-first double buffer)")
+    parser = argparse.ArgumentParser(description="Matmul kernel (copy-first double buffer)")
     parser.add_argument("--M", type=int, default=_DEFAULT_M)
     parser.add_argument("--N", type=int, default=_DEFAULT_N)
     parser.add_argument("--K", type=int, default=_DEFAULT_K)

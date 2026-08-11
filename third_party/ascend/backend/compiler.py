@@ -67,7 +67,6 @@ from triton.runtime import driver
 from triton.runtime.cache import get_dump_manager
 from triton.tools.get_ascend_devices import is_compile_on_910_95
 
-
 # Environment variable to replace intermediate linalg IR with an external file.
 # When set, the compilation pipeline reads the specified .mlir file and uses it
 # instead of the IR generated from the frontend, enabling external IR injection
@@ -79,7 +78,8 @@ if _TLE_REPLACE_IR_FILE is not None:
 # Environment variable to override compile options with a fixed custom set.
 # When set to "1", metadata compile options are replaced with predefined values
 # that disable most automatic optimizations (useful for debugging/validation).
-_USE_CUSTOM_COMPILE_OPT = os.environ.get("USE_CUSTOM_COMPILE_OPT", None) or os.environ.get("_USE_CUSTOM_COMPILE_OPT", None)
+_USE_CUSTOM_COMPILE_OPT = os.environ.get("USE_CUSTOM_COMPILE_OPT", None) or os.environ.get(
+    "_USE_CUSTOM_COMPILE_OPT", None)
 
 
 # TODO: materialize the concrete min shape
@@ -635,9 +635,7 @@ def _compile_linalg_to_npu_bin(linalg: str, metadata, opt):
     if _TLE_REPLACE_IR_FILE is not None:
         replace_path = Path(_TLE_REPLACE_IR_FILE)
         if not replace_path.is_file():
-            raise FileNotFoundError(
-                f"TLE_REPLACE_IR_FILE={_TLE_REPLACE_IR_FILE} does not exist"
-            )
+            raise FileNotFoundError(f"TLE_REPLACE_IR_FILE={_TLE_REPLACE_IR_FILE} does not exist")
         print(f"[TLE] Replacing linalg IR with external file: {_TLE_REPLACE_IR_FILE}")
         linalg = replace_path.read_text()
         # Override compile options for externally injected IR
@@ -1141,8 +1139,7 @@ class AscendBackend(BaseBackend):
                 stages["mlirbc"] = lambda src, metadata: linalg_to_bc_by_triton_mlir_opt(src, metadata, options)
                 # Step 2: Convert Bytecode back to MLIR text using bishengir-opt
                 stages["bcmlir"] = lambda src, metadata: bc_to_linalg_by_bishengir_opt(src, metadata, options)
-            stages["npubin"] = (
-                lambda src, metadata: _compile_linalg_to_npu_bin(src, metadata, options))
+            stages["npubin"] = (lambda src, metadata: _compile_linalg_to_npu_bin(src, metadata, options))
         else:
             raise NotImplementedError(f"Backend '{self.target.backend}' is not supported. "
                                       "Please ensure the target backend is set to 'npu'.")

@@ -269,7 +269,6 @@ def _vec1_softmax(
     for cb_idx in range(CB):
         kv_idx = idx_in_conbine * CB + cb_idx
         cur_parity = kv_idx % 2
-        prv_parity = 1 - cur_parity
 
         # load score[0:BLOCK_M, :] from workspace_s GM -> UB
         score_load_bp = tl.make_block_ptr(
@@ -707,8 +706,6 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
     if ttir_path is None:
         ttir_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_triton_arch_ttir.mlir")
 
-    cb = combine_batch
-    conbined_block_num = num_kv_blocks // combine_batch
     signature = _dump_signature()
     constants = {
         "CB": combine_batch,
@@ -999,14 +996,12 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     # materialization" when it creates memref→!tt.ptr→memref cast chains
     # during partial conversion of !tt.ptr<tensor<>> values.  We handle
     # that in phase ⑤b.
-    linalg_ok = False
     try:
         pm = ir.pass_manager(context)
         pm.enable_debug()
         ascend.passes.ttir.add_triton_to_linalg(pm, False, True, False, False, False)
         pm.run(module)
         print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: verify={module.verify()}", flush=True)
-        linalg_ok = True
     except RuntimeError:
         print(
             "[dump_linalg] ⑤ triton_to_linalg_incubated: partial conversion "

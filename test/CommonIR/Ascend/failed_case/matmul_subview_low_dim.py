@@ -63,7 +63,6 @@ def matmul_kernel(
     # Use Python integer arithmetic on constexpr params so that NUM_K_BLOCKS_CE
     # and NUM_MAIN are plain tl.constexpr values usable as tl.static_range bounds.
     NUM_K_BLOCKS_CE: tl.constexpr = (K + BLOCK_K - 1) // BLOCK_K
-    NUM_K_BLOCKS = tl.cdiv(K, BLOCK_K)   # runtime tensor used for range() bounds
 
     # On-chip buffers: A/B in L1 with NUM_SLOT space for rotating prefetch slots
     mat_a_l1 = tile_alloc([BLOCK_M, NUM_SLOT * BLOCK_K], mat_a.dtype.element_ty, tle.language.dsa.ascend.L1)
@@ -81,16 +80,10 @@ def matmul_kernel(
 
         # ── Prologue: prefetch `NUM_SLOT - 1` K-tiles ──────────────
         for s_pre in tl.static_range(NUM_SLOT - 1):
-            tile_copy(tl.make_block_ptr(
-                mat_a, (M, K), (K, 1), (m_start, s_pre * BLOCK_K),
-                (BLOCK_M, BLOCK_K), (1, 0)),
-                tile_subview(mat_a_l1, [0, s_pre * BLOCK_K], [BLOCK_M, BLOCK_K], [1, 1]),
-                [BLOCK_M, BLOCK_K])
-            tile_copy(tl.make_block_ptr(
-                mat_b, (K, N), (N, 1), (s_pre * BLOCK_K, n_start),
-                (BLOCK_K, BLOCK_N), (1, 0)),
-                tile_subview(mat_b_l1, [0, s_pre * BLOCK_N], [BLOCK_K, BLOCK_N], [1, 1]),
-                [BLOCK_K, BLOCK_N])
+            tile_copy(tl.make_block_ptr(mat_a, (M, K), (K, 1), (m_start, s_pre * BLOCK_K), (BLOCK_M, BLOCK_K), (1, 0)),
+                      tile_subview(mat_a_l1, [0, s_pre * BLOCK_K], [BLOCK_M, BLOCK_K], [1, 1]), [BLOCK_M, BLOCK_K])
+            tile_copy(tl.make_block_ptr(mat_b, (K, N), (N, 1), (s_pre * BLOCK_K, n_start), (BLOCK_K, BLOCK_N), (1, 0)),
+                      tile_subview(mat_b_l1, [0, s_pre * BLOCK_N], [BLOCK_K, BLOCK_N], [1, 1]), [BLOCK_K, BLOCK_N])
 
         # ── Main loop: consume slot[s_cur] and prefetch slot[s_pf] ──
         # tl.static_range fully unrolls the loop so every k_idx % NUM_SLOT
@@ -102,38 +95,30 @@ def matmul_kernel(
 
         for k_idx in tl.static_range(0, NUM_MAIN):
             s_cur = k_idx % NUM_SLOT
-            k_pf = k_idx + NUM_SLOT - 1    # always < NUM_K_BLOCKS in this range
+            k_pf = k_idx + NUM_SLOT - 1  # always < NUM_K_BLOCKS in this range
             s_pf = k_pf % NUM_SLOT
             mat_c_acc = tl.dot(
-                tile_to_tensor(tile_subview(mat_a_l1, [0, s_cur * BLOCK_K], [BLOCK_M, BLOCK_K], [1, 1]), writable=False),
-                tile_to_tensor(tile_subview(mat_b_l1, [0, s_cur * BLOCK_N], [BLOCK_K, BLOCK_N], [1, 1]), writable=False),
-                mat_c_acc, out_dtype=tl.float32)
-            tile_copy(tl.make_block_ptr(
-                mat_a, (M, K), (K, 1), (m_start, k_pf * BLOCK_K),
-                (BLOCK_M, BLOCK_K), (1, 0)),
-                tile_subview(mat_a_l1, [0, s_pf * BLOCK_K], [BLOCK_M, BLOCK_K], [1, 1]),
-                [BLOCK_M, BLOCK_K])
-            tile_copy(tl.make_block_ptr(
-                mat_b, (K, N), (N, 1), (k_pf * BLOCK_K, n_start),
-                (BLOCK_K, BLOCK_N), (1, 0)),
-                tile_subview(mat_b_l1, [0, s_pf * BLOCK_N], [BLOCK_K, BLOCK_N], [1, 1]),
-                [BLOCK_K, BLOCK_N])
+                tile_to_tensor(tile_subview(mat_a_l1, [0, s_cur * BLOCK_K], [BLOCK_M, BLOCK_K], [1, 1]),
+                               writable=False),
+                tile_to_tensor(tile_subview(mat_b_l1, [0, s_cur * BLOCK_N], [BLOCK_K, BLOCK_N], [1, 1]),
+                               writable=False), mat_c_acc, out_dtype=tl.float32)
+            tile_copy(tl.make_block_ptr(mat_a, (M, K), (K, 1), (m_start, k_pf * BLOCK_K), (BLOCK_M, BLOCK_K), (1, 0)),
+                      tile_subview(mat_a_l1, [0, s_pf * BLOCK_K], [BLOCK_M, BLOCK_K], [1, 1]), [BLOCK_M, BLOCK_K])
+            tile_copy(tl.make_block_ptr(mat_b, (K, N), (N, 1), (k_pf * BLOCK_K, n_start), (BLOCK_K, BLOCK_N), (1, 0)),
+                      tile_subview(mat_b_l1, [0, s_pf * BLOCK_N], [BLOCK_K, BLOCK_N], [1, 1]), [BLOCK_K, BLOCK_N])
 
         # Tail: last NUM_SLOT-1 iterations — compute only (no valid prefetch)
         for k_idx in tl.static_range(NUM_MAIN, NUM_K_BLOCKS_CE):
             s_tail = k_idx % NUM_SLOT
             mat_c_acc = tl.dot(
-                tile_to_tensor(tile_subview(mat_a_l1, [0, s_tail * BLOCK_K], [BLOCK_M, BLOCK_K], [1, 1]), writable=False),
-                tile_to_tensor(tile_subview(mat_b_l1, [0, s_tail * BLOCK_N], [BLOCK_K, BLOCK_N], [1, 1]), writable=False),
-                mat_c_acc, out_dtype=tl.float32)
+                tile_to_tensor(tile_subview(mat_a_l1, [0, s_tail * BLOCK_K], [BLOCK_M, BLOCK_K], [1, 1]),
+                               writable=False),
+                tile_to_tensor(tile_subview(mat_b_l1, [0, s_tail * BLOCK_N], [BLOCK_K, BLOCK_N], [1, 1]),
+                               writable=False), mat_c_acc, out_dtype=tl.float32)
 
         # Store result back to GM
-        tl.store(
-            tl.make_block_ptr(
-                mat_c, (M, N), (N, 1),
-                (m_start, n_start),
-                (BLOCK_M, BLOCK_N), (1, 0)),
-            mat_c_acc.to(mat_c.dtype.element_ty))
+        tl.store(tl.make_block_ptr(mat_c, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0)),
+                 mat_c_acc.to(mat_c.dtype.element_ty))
 
 
 # =============================================================================
@@ -144,8 +129,8 @@ def call(mat_a, mat_b, num_cores=_DEFAULT_NUM_CORES):
     k = mat_a.shape[1]
     n = mat_b.shape[1]
     mat_c = torch.empty(m, n, dtype=mat_a.dtype, device=mat_a.device)
-    matmul_kernel[(num_cores,)](mat_a, mat_b, mat_c, m, n, k, NUM_CORES=num_cores,
-                                NUM_SLOT=NUM_SLOT, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
+    matmul_kernel[(num_cores, )](mat_a, mat_b, mat_c, m, n, k, NUM_CORES=num_cores, NUM_SLOT=NUM_SLOT, BLOCK_M=BLOCK_M,
+                                 BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
     return mat_c
 
 
@@ -175,8 +160,7 @@ def _matmul_signature():
     }
 
 
-def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-              NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
+def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
     """Compile matmul_kernel to TTIR and write to *path*."""
     from triton.compiler.compiler import ASTSource
     from triton.compiler.code_generator import ast_to_ttir
@@ -186,8 +170,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     os.environ.setdefault("TRITON_ALLOW_NON_CONSTEXPR_GLOBALS", "1")
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_triton.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_triton.mlir")
 
     signature = _matmul_signature()
     constants = {
@@ -232,8 +215,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
 # =============================================================================
 #  Full Linalg IR dump (TTIR → TileIR → Linalg lowering)
 # =============================================================================
-def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-                NUM_CORES=_DEFAULT_NUM_CORES):
+def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES):
     """Compile matmul_kernel through full TileIR → Linalg lowering pipeline.
 
     Pipeline:
@@ -250,15 +232,13 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     Returns the final Linalg MLIR string.
     """
     from triton._C.libtriton import ir, passes, ascend
-    from triton._C.libtriton import tle as tle_ir
 
     # Step 1: compile to TTIR — get module directly (avoids reparse/dialect issues)
     module = dump_ttir(path=None, M=M, N=N, K=K, NUM_CORES=NUM_CORES, return_module=True)
     context = module.context
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_triton_linalg.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_triton_linalg.mlir")
 
     # ── ① TileIR → HIVM ──────────────────────────────────────────────────
     pm = ir.pass_manager(context)
@@ -385,4 +365,3 @@ if __name__ == "__main__":
         print("Test Passed!")
     else:
         print("Reference check skipped.")
-

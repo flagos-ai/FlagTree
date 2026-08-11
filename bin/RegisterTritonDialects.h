@@ -18,12 +18,12 @@
 #include "third_party/tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/IR/Dialect.h" // flagtree tle raw
 #endif
+#include "bishengir/Dialect/HIVM/IR/HIVM.h"
+#include "mlir-ext/Dialect/TileIR/IR/TileIRDialect.h"
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonInstrument/IR/Dialect.h"
-#include "mlir-ext/Dialect/TileIR/IR/TileIRDialect.h"
-#include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 // Below headers will allow registration to ROCm passes
@@ -137,10 +137,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 #endif
 
   registry.insert<
-      mlir::triton::TritonDialect,
-      mlir::cf::ControlFlowDialect,
-      mlir::triton::tile::TileIRDialect,
-      mlir::hivm::HIVMDialect,
+      mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
+      mlir::triton::tile::TileIRDialect, mlir::hivm::HIVMDialect,
       mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect,
       mlir::triton::gpu::TritonGPUDialect,
       mlir::triton::instrument::TritonInstrumentDialect,

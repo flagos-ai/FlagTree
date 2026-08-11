@@ -24,8 +24,9 @@
 // TileIRToHIVM — Lowers TileIR dialect ops to HIVM (Ascend NPU) dialect ops.
 //
 // Strategy: greedy rewrite runs patterns iteratively to fixed point.
-//   Step 1: tile.alloc → memref.alloc (produces memref with #hivm.address_space)
-//   Step 2: tile.to_tensor → RAUW: replace all uses of result with src operand,
+//   Step 1: tile.alloc → memref.alloc (produces memref with
+//   #hivm.address_space) Step 2: tile.to_tensor → RAUW: replace all uses of
+//   result with src operand,
 //           then erase. The src is now memref (from Step 1), consumers get
 //           memref instead of tensor, bridged by UnrealizedConversionCast.
 //   Step 3: tile.copy → hivm.copy (tile.* src, on-chip DMA)
@@ -46,8 +47,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
@@ -87,8 +88,8 @@ static Value castDefaultMemrefToGM(Value value, Location loc,
   if (!memrefTy || memrefTy.getMemorySpace())
     return value;
 
-  auto gmSpace =
-      hivm::AddressSpaceAttr::get(rewriter.getContext(), hivm::AddressSpace::GM);
+  auto gmSpace = hivm::AddressSpaceAttr::get(rewriter.getContext(),
+                                             hivm::AddressSpace::GM);
   auto gmTy = MemRefType::get(memrefTy.getShape(), memrefTy.getElementType(),
                               memrefTy.getLayout(), gmSpace);
   return rewriter.create<memref::MemorySpaceCastOp>(loc, gmTy, value);
@@ -96,19 +97,26 @@ static Value castDefaultMemrefToGM(Value value, Location loc,
 
 static hivm::AddressSpace mapMemSpaceToHIVM(tile::MemorySpace tileSpace) {
   switch (tileSpace) {
-  case tile::MemorySpace::GM:  return hivm::AddressSpace::GM;
-  case tile::MemorySpace::L1:  return hivm::AddressSpace::L1;
-  case tile::MemorySpace::L0A: return hivm::AddressSpace::L0A;
-  case tile::MemorySpace::L0B: return hivm::AddressSpace::L0B;
-  case tile::MemorySpace::L0C: return hivm::AddressSpace::L0C;
-  case tile::MemorySpace::UB:  return hivm::AddressSpace::UB;
+  case tile::MemorySpace::GM:
+    return hivm::AddressSpace::GM;
+  case tile::MemorySpace::L1:
+    return hivm::AddressSpace::L1;
+  case tile::MemorySpace::L0A:
+    return hivm::AddressSpace::L0A;
+  case tile::MemorySpace::L0B:
+    return hivm::AddressSpace::L0B;
+  case tile::MemorySpace::L0C:
+    return hivm::AddressSpace::L0C;
+  case tile::MemorySpace::UB:
+    return hivm::AddressSpace::UB;
   // Generic GPU memory spaces (Global/Shared/Local/Register) have no HIVM
   // counterpart and should never reach this lowering pass.
   case tile::MemorySpace::Global:
   case tile::MemorySpace::Shared:
   case tile::MemorySpace::Local:
   case tile::MemorySpace::Register:
-    llvm_unreachable("unsupported generic memory space in TileIR-to-HIVM lowering");
+    llvm_unreachable(
+        "unsupported generic memory space in TileIR-to-HIVM lowering");
   }
   llvm_unreachable("unknown TileIR memory space");
 }
@@ -118,9 +126,9 @@ static MemRefType convertBufToMemRef(tile::BufType bufTy) {
   auto elemTy = bufTy.getElementType();
   auto space = bufTy.getMemorySpace();
   auto *ctx = elemTy.getContext();
-  return MemRefType::get(llvm::SmallVector<int64_t>(shape), elemTy,
-                         MemRefLayoutAttrInterface{},
-                         hivm::AddressSpaceAttr::get(ctx, mapMemSpaceToHIVM(space)));
+  return MemRefType::get(
+      llvm::SmallVector<int64_t>(shape), elemTy, MemRefLayoutAttrInterface{},
+      hivm::AddressSpaceAttr::get(ctx, mapMemSpaceToHIVM(space)));
 }
 
 static MemRefType convertTensorToMemRef(tile::TensorType tensorTy) {
@@ -128,12 +136,13 @@ static MemRefType convertTensorToMemRef(tile::TensorType tensorTy) {
   auto elemTy = tensorTy.getElementType();
   auto space = tensorTy.getMemorySpace();
   auto *ctx = elemTy.getContext();
-  return MemRefType::get(llvm::SmallVector<int64_t>(shape), elemTy,
-                         MemRefLayoutAttrInterface{},
-                         hivm::AddressSpaceAttr::get(ctx, mapMemSpaceToHIVM(space)));
+  return MemRefType::get(
+      llvm::SmallVector<int64_t>(shape), elemTy, MemRefLayoutAttrInterface{},
+      hivm::AddressSpaceAttr::get(ctx, mapMemSpaceToHIVM(space)));
 }
 
-/// Get the underlying memref value, converting tile/builtin tensor types to memref.
+/// Get the underlying memref value, converting tile/builtin tensor types to
+/// memref.
 static Value getAsMemRef(Value val, PatternRewriter &rewriter) {
   if (isa<MemRefType>(val.getType()))
     return val;
@@ -156,16 +165,17 @@ static Value getAsMemRef(Value val, PatternRewriter &rewriter) {
     if (auto ptrElemTy = dyn_cast<triton::PointerType>(elemTy)) {
       auto gmSpace = hivm::AddressSpaceAttr::get(val.getType().getContext(),
                                                  hivm::AddressSpace::GM);
-      targetTy = MemRefType::get(rankedTy.getShape(), ptrElemTy.getPointeeType(),
-                                 MemRefLayoutAttrInterface{}, gmSpace);
+      targetTy =
+          MemRefType::get(rankedTy.getShape(), ptrElemTy.getPointeeType(),
+                          MemRefLayoutAttrInterface{}, gmSpace);
     } else {
       targetTy = MemRefType::get(rankedTy.getShape(), elemTy);
     }
-  }
-  else if (auto ptrTy = dyn_cast<triton::PointerType>(val.getType())) {
+  } else if (auto ptrTy = dyn_cast<triton::PointerType>(val.getType())) {
     // tt.ptr<tensor<...>> → memref<...>
     auto pointeeTy = ptrTy.getPointeeType();
-    auto gmSpace = hivm::AddressSpaceAttr::get(val.getType().getContext(), hivm::AddressSpace::GM);
+    auto gmSpace = hivm::AddressSpaceAttr::get(val.getType().getContext(),
+                                               hivm::AddressSpace::GM);
     if (auto rankedTy = dyn_cast<RankedTensorType>(pointeeTy))
       targetTy = MemRefType::get(rankedTy.getShape(), rankedTy.getElementType(),
                                  MemRefLayoutAttrInterface{}, gmSpace);
@@ -174,8 +184,9 @@ static Value getAsMemRef(Value val, PatternRewriter &rewriter) {
                                  MemRefLayoutAttrInterface{}, gmSpace);
   } else
     return val;
-  return rewriter.create<UnrealizedConversionCastOp>(
-      val.getLoc(), targetTy, val)->getResult(0);
+  return rewriter
+      .create<UnrealizedConversionCastOp>(val.getLoc(), targetTy, val)
+      ->getResult(0);
 }
 
 static bool isTensorOfPointer(Type ty) {
@@ -189,21 +200,19 @@ static void lowerScatteredLoad(tile::CopyOp op, Value ptr, Value buf,
   Value loaded = rewriter.create<triton::LoadOp>(
       loc, ptr, Value(), Value(), ArrayRef<int32_t>{},
       std::optional<triton::PaddingOption>(), triton::CacheModifier::NONE,
-      triton::EvictionPolicy::NORMAL, false
-  );
+      triton::EvictionPolicy::NORMAL, false);
 
   auto ty = cast<RankedTensorType>(loaded.getType());
 #ifndef __LLVM_MAJOR_VERSION_22_COMPATIBLE__
   Value mem = rewriter.create<bufferization::ToMemrefOp>(
-      loc, MemRefType::get(ty.getShape(), ty.getElementType()), loaded
-  );
+      loc, MemRefType::get(ty.getShape(), ty.getElementType()), loaded);
 #else
   Value mem = rewriter.create<bufferization::ToBufferOp>(
-      loc, MemRefType::get(ty.getShape(), ty.getElementType()), loaded
-  );
+      loc, MemRefType::get(ty.getShape(), ty.getElementType()), loaded);
 #endif
 
-  rewriter.create<hivm::CopyOp>(loc, TypeRange{}, mem, getAsMemRef(buf, rewriter));
+  rewriter.create<hivm::CopyOp>(loc, TypeRange{}, mem,
+                                getAsMemRef(buf, rewriter));
   rewriter.eraseOp(op);
 }
 
@@ -214,14 +223,12 @@ static void lowerScatteredStore(tile::CopyOp op, Value buf, Value ptr,
   auto m = cast<MemRefType>(mem.getType());
 
   Value t = rewriter.create<bufferization::ToTensorOp>(
-      loc, RankedTensorType::get(m.getShape(), m.getElementType()), mem,
-      true, false
-  );
+      loc, RankedTensorType::get(m.getShape(), m.getElementType()), mem, true,
+      false);
 
   rewriter.replaceOpWithNewOp<triton::StoreOp>(
       op, ptr, t, Value(), ArrayRef<int32_t>{}, triton::CacheModifier::NONE,
-      triton::EvictionPolicy::NORMAL
-  );
+      triton::EvictionPolicy::NORMAL);
 }
 
 static bool isTritonPointerLike(Type ty) {
@@ -234,13 +241,20 @@ static bool isTritonPointerLike(Type ty) {
 
 static hivm::PIPE mapPipe(int64_t tilePipe) {
   switch (static_cast<tile::Pipe>(tilePipe)) {
-  case tile::Pipe::PIPE_M:    return hivm::PIPE::PIPE_M;
-  case tile::Pipe::PIPE_V:    return hivm::PIPE::PIPE_V;
-  case tile::Pipe::PIPE_MTE1: return hivm::PIPE::PIPE_MTE1;
-  case tile::Pipe::PIPE_MTE2: return hivm::PIPE::PIPE_MTE2;
-  case tile::Pipe::PIPE_MTE3: return hivm::PIPE::PIPE_MTE3;
-  case tile::Pipe::PIPE_FIX:  return hivm::PIPE::PIPE_FIX;
-  case tile::Pipe::PIPE_S:    return hivm::PIPE::PIPE_S;
+  case tile::Pipe::PIPE_M:
+    return hivm::PIPE::PIPE_M;
+  case tile::Pipe::PIPE_V:
+    return hivm::PIPE::PIPE_V;
+  case tile::Pipe::PIPE_MTE1:
+    return hivm::PIPE::PIPE_MTE1;
+  case tile::Pipe::PIPE_MTE2:
+    return hivm::PIPE::PIPE_MTE2;
+  case tile::Pipe::PIPE_MTE3:
+    return hivm::PIPE::PIPE_MTE3;
+  case tile::Pipe::PIPE_FIX:
+    return hivm::PIPE::PIPE_FIX;
+  case tile::Pipe::PIPE_S:
+    return hivm::PIPE::PIPE_S;
   }
   llvm_unreachable("unknown TileIR pipe");
 }
@@ -281,41 +295,31 @@ struct TileSubviewToMemrefSubview : public OpRewritePattern<tile::SubViewOp> {
 #endif
 
     // 2. Map dynamic offsets directly to OpFoldResult
-    SmallVector<OpFoldResult> mixedOffsets = llvm::to_vector<4>(
-      llvm::map_range(op.getOffsets(), [](Value v) { return OpFoldResult(v); }));
+    SmallVector<OpFoldResult> mixedOffsets = llvm::to_vector<4>(llvm::map_range(
+        op.getOffsets(), [](Value v) { return OpFoldResult(v); }));
 
     // 3. Unpack static sizes and strides into OpFoldResult arrays
     SmallVector<OpFoldResult> mixedSizes = getAsOpFoldResult(op.getSizesAttr());
-    SmallVector<OpFoldResult> mixedStrides = getAsOpFoldResult(op.getStridesAttr());
+    SmallVector<OpFoldResult> mixedStrides =
+        getAsOpFoldResult(op.getStridesAttr());
 
     auto targetShape = op.getType().getShape();
 #ifndef __LLVM_MAJOR_VERSION_22_COMPATIBLE__
     auto inferredType = memref::SubViewOp::inferRankReducedResultType(
-      targetShape,
-      sourceMemRefType,
-      mixedOffsets,
-      mixedSizes,
-      mixedStrides
-    ).cast<MemRefType>();
+                            targetShape, sourceMemRefType, mixedOffsets,
+                            mixedSizes, mixedStrides)
+                            .cast<MemRefType>();
 #else
-    auto inferredType = mlir::cast<MemRefType>(memref::SubViewOp::inferRankReducedResultType(
-      targetShape,
-      sourceMemRefType,
-      mixedOffsets,
-      mixedSizes,
-      mixedStrides
-    ));
+    auto inferredType =
+        mlir::cast<MemRefType>(memref::SubViewOp::inferRankReducedResultType(
+            targetShape, sourceMemRefType, mixedOffsets, mixedSizes,
+            mixedStrides));
 #endif
 
     // 4. Replace the old op with the standard memref.subview
     auto memrefSubview = rewriter.create<memref::SubViewOp>(
-      op.getLoc(),
-      inferredType,
-      sourceMemRef,
-      mixedOffsets,
-      mixedSizes,
-      mixedStrides
-    );
+        op.getLoc(), inferredType, sourceMemRef, mixedOffsets, mixedSizes,
+        mixedStrides);
 
     rewriter.replaceOp(op, memrefSubview.getResult());
 
@@ -336,8 +340,8 @@ struct TileToTensorEliminate : OpRewritePattern<tile::ToTensorOp> {
     Value src = op.getOperand();
     auto resultTy = op.getResult().getType();
     if (src.getType() != resultTy) {
-      auto cast = rewriter.create<UnrealizedConversionCastOp>(
-          op.getLoc(), resultTy, src);
+      auto cast = rewriter.create<UnrealizedConversionCastOp>(op.getLoc(),
+                                                              resultTy, src);
       rewriter.replaceOp(op, cast->getResult(0));
     } else {
       rewriter.replaceOp(op, src);
@@ -394,11 +398,11 @@ struct TileStoreTensorToHIVM : OpRewritePattern<tile::StoreTensorOp> {
       auto memrefTy =
           MemRefType::get(tensorTy.getShape(), tensorTy.getElementType());
 #ifndef __LLVM_MAJOR_VERSION_22_COMPATIBLE__
-      srcMem = rewriter.create<bufferization::ToMemrefOp>(
-          op.getLoc(), memrefTy, srcMem);
+      srcMem = rewriter.create<bufferization::ToMemrefOp>(op.getLoc(), memrefTy,
+                                                          srcMem);
 #else
-      srcMem = rewriter.create<bufferization::ToBufferOp>(
-          op.getLoc(), memrefTy, srcMem);
+      srcMem = rewriter.create<bufferization::ToBufferOp>(op.getLoc(), memrefTy,
+                                                          srcMem);
 #endif
     }
 
@@ -435,7 +439,8 @@ struct TileStoreToHIVM : OpRewritePattern<tile::StoreOp> {
   LogicalResult matchAndRewrite(tile::StoreOp op,
                                 PatternRewriter &rewriter) const final {
     Value src = getAsMemRef(op.getOperand(0), rewriter);
-    rewriter.replaceOpWithNewOp<hivm::StoreOp>(op, Type(), src, op.getOperand(1));
+    rewriter.replaceOpWithNewOp<hivm::StoreOp>(op, Type(), src,
+                                               op.getOperand(1));
     return success();
   }
 };
@@ -445,12 +450,17 @@ struct TileStoreToHIVM : OpRewritePattern<tile::StoreOp> {
 // =============================================================================
 struct TileSetFlagToHIVM : OpRewritePattern<tile::SetFlagOp> {
   using OpRewritePattern<tile::SetFlagOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(tile::SetFlagOp op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewrite(tile::SetFlagOp op,
+                                PatternRewriter &rewriter) const final {
     auto *ctx = op->getContext();
-    rewriter.replaceOpWithNewOp<hivm::SetFlagOp>(op,
-        hivm::PipeAttr::get(ctx, mapPipe(static_cast<int64_t>(op.getProducer()))),
-        hivm::PipeAttr::get(ctx, mapPipe(static_cast<int64_t>(op.getConsumer()))),
-        hivm::EventAttr::get(ctx, mapEvent(static_cast<int64_t>(op.getEvent()))),
+    rewriter.replaceOpWithNewOp<hivm::SetFlagOp>(
+        op,
+        hivm::PipeAttr::get(ctx,
+                            mapPipe(static_cast<int64_t>(op.getProducer()))),
+        hivm::PipeAttr::get(ctx,
+                            mapPipe(static_cast<int64_t>(op.getConsumer()))),
+        hivm::EventAttr::get(ctx,
+                             mapEvent(static_cast<int64_t>(op.getEvent()))),
         Value());
     return success();
   }
@@ -458,12 +468,17 @@ struct TileSetFlagToHIVM : OpRewritePattern<tile::SetFlagOp> {
 
 struct TileWaitFlagToHIVM : OpRewritePattern<tile::WaitFlagOp> {
   using OpRewritePattern<tile::WaitFlagOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(tile::WaitFlagOp op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewrite(tile::WaitFlagOp op,
+                                PatternRewriter &rewriter) const final {
     auto *ctx = op->getContext();
-    rewriter.replaceOpWithNewOp<hivm::WaitFlagOp>(op,
-        hivm::PipeAttr::get(ctx, mapPipe(static_cast<int64_t>(op.getProducer()))),
-        hivm::PipeAttr::get(ctx, mapPipe(static_cast<int64_t>(op.getConsumer()))),
-        hivm::EventAttr::get(ctx, mapEvent(static_cast<int64_t>(op.getEvent()))),
+    rewriter.replaceOpWithNewOp<hivm::WaitFlagOp>(
+        op,
+        hivm::PipeAttr::get(ctx,
+                            mapPipe(static_cast<int64_t>(op.getProducer()))),
+        hivm::PipeAttr::get(ctx,
+                            mapPipe(static_cast<int64_t>(op.getConsumer()))),
+        hivm::EventAttr::get(ctx,
+                             mapEvent(static_cast<int64_t>(op.getEvent()))),
         Value());
     return success();
   }
@@ -471,20 +486,23 @@ struct TileWaitFlagToHIVM : OpRewritePattern<tile::WaitFlagOp> {
 
 struct TilePipeBarrierToHIVM : OpRewritePattern<tile::PipeBarrierOp> {
   using OpRewritePattern<tile::PipeBarrierOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(tile::PipeBarrierOp op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewrite(tile::PipeBarrierOp op,
+                                PatternRewriter &rewriter) const final {
     auto *ctx = op->getContext();
     rewriter.replaceOpWithNewOp<hivm::PipeBarrierOp>(
-        op, hivm::PipeAttr::get(ctx, mapPipe(static_cast<int64_t>(op.getPipe()))));
+        op,
+        hivm::PipeAttr::get(ctx, mapPipe(static_cast<int64_t>(op.getPipe()))));
     return success();
   }
 };
 
 struct TileCubeWaitToHIVM : OpRewritePattern<tile::CubeWaitOp> {
   using OpRewritePattern<tile::CubeWaitOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(tile::CubeWaitOp op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewrite(tile::CubeWaitOp op,
+                                PatternRewriter &rewriter) const final {
     auto *ctx = op->getContext();
-    rewriter.replaceOpWithNewOp<hivm::SyncBlockWaitOp>(op,
-        hivm::TCoreTypeAttr::get(ctx, hivm::TCoreType::VECTOR),
+    rewriter.replaceOpWithNewOp<hivm::SyncBlockWaitOp>(
+        op, hivm::TCoreTypeAttr::get(ctx, hivm::TCoreType::VECTOR),
         hivm::PipeAttr::get(ctx, hivm::PIPE::PIPE_FIX),
         hivm::PipeAttr::get(ctx, hivm::PIPE::PIPE_MTE3),
         OpFoldResult(rewriter.getIndexAttr(0)));
@@ -494,7 +512,8 @@ struct TileCubeWaitToHIVM : OpRewritePattern<tile::CubeWaitOp> {
 
 struct TileGmOffsetToHIVM : OpRewritePattern<tile::GmOffsetOp> {
   using OpRewritePattern<tile::GmOffsetOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(tile::GmOffsetOp op, PatternRewriter &rewriter) const final {
+  LogicalResult matchAndRewrite(tile::GmOffsetOp op,
+                                PatternRewriter &rewriter) const final {
     auto loc = op.getLoc();
     Value result = op.getBase();
     auto indices = op.getIndices();
@@ -591,8 +610,7 @@ struct LowerMemrefCastToTensor
 //   %b = unrealized_conversion_cast %a : tensor -> memref
 // which arise after the linalg pass partially converts surrounding ops.
 //===----------------------------------------------------------------------===//
-struct FoldRoundtripCast
-    : public OpRewritePattern<UnrealizedConversionCastOp> {
+struct FoldRoundtripCast : public OpRewritePattern<UnrealizedConversionCastOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(UnrealizedConversionCastOp op,
@@ -749,7 +767,8 @@ struct FoldStagingCopyPattern : public OpRewritePattern<memref::CopyOp> {
 // Pass
 // =============================================================================
 namespace {
-struct TileIRToHIVMPass : public mlir::triton::impl::TileIRToHIVMBase<TileIRToHIVMPass> {
+struct TileIRToHIVMPass
+    : public mlir::triton::impl::TileIRToHIVMBase<TileIRToHIVMPass> {
   void runOnOperation() override;
 };
 } // namespace
@@ -764,14 +783,14 @@ void TileIRToHIVMPass::runOnOperation() {
 
 // apply pattern separately to ensure their relative order
 // template lambda is a C++ 20 feature, so we'll have to use MACRO
-#define APPLY_REWRITE_PATTERN(...)                                         \
-{                                                                          \
-  RewritePatternSet patterns(&getContext());                               \
-  patterns.add<__VA_ARGS__>(&getContext());                                \
-  if (failed(applyPatternsAndFoldGreedily(module, std::move(patterns)))) { \
-    return signalPassFailure();                                            \
-  }                                                                        \
-}                                                                          \
+#define APPLY_REWRITE_PATTERN(...)                                             \
+  {                                                                            \
+    RewritePatternSet patterns(&getContext());                                 \
+    patterns.add<__VA_ARGS__>(&getContext());                                  \
+    if (failed(applyPatternsAndFoldGreedily(module, std::move(patterns)))) {   \
+      return signalPassFailure();                                              \
+    }                                                                          \
+  }
 
   APPLY_REWRITE_PATTERN(TileAllocToMemRef);
   APPLY_REWRITE_PATTERN(TileSubviewToMemrefSubview);
@@ -819,14 +838,16 @@ void TileIRToHIVMPass::runOnOperation() {
       return;
 
     // Update function type
-    auto newFuncType = FunctionType::get(funcOp.getContext(), newInputs, newResults);
+    auto newFuncType =
+        FunctionType::get(funcOp.getContext(), newInputs, newResults);
     funcOp.setFunctionType(newFuncType);
 
     // Update block argument types
     if (!funcOp.empty()) {
       Block &entry = funcOp.front();
       for (unsigned i = 0; i < entry.getNumArguments(); ++i) {
-        if (auto bufTy = dyn_cast<tile::BufType>(entry.getArgument(i).getType())) {
+        if (auto bufTy =
+                dyn_cast<tile::BufType>(entry.getArgument(i).getType())) {
           entry.getArgument(i).setType(convertBufToMemRef(bufTy));
         }
       }
@@ -836,7 +857,8 @@ void TileIRToHIVMPass::runOnOperation() {
   // Update tt.call result types to match new function signatures.
   module.walk([](triton::CallOp callOp) {
     for (unsigned i = 0; i < callOp->getNumResults(); ++i) {
-      if (auto bufTy = dyn_cast<tile::BufType>(callOp->getResult(i).getType())) {
+      if (auto bufTy =
+              dyn_cast<tile::BufType>(callOp->getResult(i).getType())) {
         callOp->getResult(i).setType(convertBufToMemRef(bufTy));
       }
     }

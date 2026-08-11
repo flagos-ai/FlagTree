@@ -30,7 +30,7 @@ BLOCK_K = 128
 #  SEM_WS_FREE  : vector → cube  : workspace slot is free for next matmul
 # =============================================================================
 SEM_MM_READY: tl.constexpr = tl.constexpr(0)
-SEM_WS_FREE:  tl.constexpr = tl.constexpr(1)
+SEM_WS_FREE: tl.constexpr = tl.constexpr(1)
 
 
 def get_number_cores():
@@ -51,14 +51,17 @@ def get_number_cores():
 # =============================================================================
 @triton.jit
 def _cube_matmul(
-    mat_a, mat_b,
-    a_l1, b_l1,
+    mat_a,
+    mat_b,
+    a_l1,
+    b_l1,
     workspace,
     cid,
-    m_start, n_start,
+    m_start,
+    n_start,
     M,
-    N:       tl.constexpr,
-    K:       tl.constexpr,
+    N: tl.constexpr,
+    K: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
@@ -69,31 +72,21 @@ def _cube_matmul(
 
     NUM_K_BLOCKS = tl.cdiv(K, BLOCK_K)
 
-    a_block_ptr = tl.make_block_ptr(
-        mat_a, (M, K), (K, 1),
-        (m_start, 0),
-        (BLOCK_M, BLOCK_K), (1, 0))
-    b_block_ptr = tl.make_block_ptr(
-        mat_b, (K, N), (N, 1),
-        (0, n_start),
-        (BLOCK_K, BLOCK_N), (1, 0))
+    a_block_ptr = tl.make_block_ptr(mat_a, (M, K), (K, 1), (m_start, 0), (BLOCK_M, BLOCK_K), (1, 0))
+    b_block_ptr = tl.make_block_ptr(mat_b, (K, N), (N, 1), (0, n_start), (BLOCK_K, BLOCK_N), (1, 0))
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     for _ in range(0, NUM_K_BLOCKS):
         tile_copy(a_block_ptr, a_l1, [BLOCK_M, BLOCK_K])
         tile_copy(b_block_ptr, b_l1, [BLOCK_K, BLOCK_N])
-        acc = tl.dot(
-            tile_to_tensor(a_l1, writable=False),
-            tile_to_tensor(b_l1, writable=False),
-            acc, out_dtype=tl.float32)
+        acc = tl.dot(tile_to_tensor(a_l1, writable=False), tile_to_tensor(b_l1, writable=False), acc,
+                     out_dtype=tl.float32)
         a_block_ptr = tl.advance(a_block_ptr, [0, BLOCK_K])
         b_block_ptr = tl.advance(b_block_ptr, [BLOCK_K, 0])
 
     # store matmul result into per-core GM workspace slot
-    ws_ptr = tl.make_block_ptr(
-        workspace + cid * BLOCK_M * BLOCK_N,
-        (BLOCK_M, BLOCK_N), (BLOCK_N, 1),
-        (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
+    ws_ptr = tl.make_block_ptr(workspace + cid * BLOCK_M * BLOCK_N, (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0),
+                               (BLOCK_M, BLOCK_N), (1, 0))
     tl.store(ws_ptr, acc.to(workspace.dtype.element_ty))
 
     # notify vector core: workspace has matmul result
@@ -108,12 +101,14 @@ def _cube_matmul(
 # =============================================================================
 @triton.jit
 def _vector_add_residual(
-    residual, mat_c,
+    residual,
+    mat_c,
     workspace,
     cid,
-    m_start, n_start,
+    m_start,
+    n_start,
     M,
-    N:       tl.constexpr,
+    N: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
@@ -122,25 +117,17 @@ def _vector_add_residual(
     sync_block_wait("cube", "vector", SEM_MM_READY, PIPE.PIPE_MTE2, PIPE.PIPE_V)
 
     # load matmul result from GM workspace
-    ws_ptr = tl.make_block_ptr(
-        workspace + cid * BLOCK_M * BLOCK_N,
-        (BLOCK_M, BLOCK_N), (BLOCK_N, 1),
-        (0, 0), (BLOCK_M, BLOCK_N), (1, 0))
+    ws_ptr = tl.make_block_ptr(workspace + cid * BLOCK_M * BLOCK_N, (BLOCK_M, BLOCK_N), (BLOCK_N, 1), (0, 0),
+                               (BLOCK_M, BLOCK_N), (1, 0))
     mm_tile = tl.load(ws_ptr).to(tl.float32)
 
     # load residual tile
-    res_ptr = tl.make_block_ptr(
-        residual, (M, N), (N, 1),
-        (m_start, n_start),
-        (BLOCK_M, BLOCK_N), (1, 0))
+    res_ptr = tl.make_block_ptr(residual, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0))
     res_tile = tl.load(res_ptr).to(tl.float32)
 
     # element-wise add and store to output
     out_tile = mm_tile + res_tile
-    out_ptr = tl.make_block_ptr(
-        mat_c, (M, N), (N, 1),
-        (m_start, n_start),
-        (BLOCK_M, BLOCK_N), (1, 0))
+    out_ptr = tl.make_block_ptr(mat_c, (M, N), (N, 1), (m_start, n_start), (BLOCK_M, BLOCK_N), (1, 0))
     tl.store(out_ptr, out_tile.to(mat_c.dtype.element_ty))
 
     # notify cube core: workspace slot is free
@@ -167,19 +154,19 @@ def matmul_add_residual_cv_kernel(
     mat_b,
     mat_c,
     residual,
-    workspace,          # GM scratch: [NUM_CORES, BLOCK_M, BLOCK_N] fp16
+    workspace,  # GM scratch: [NUM_CORES, BLOCK_M, BLOCK_N] fp16
     M,
-    N:         tl.constexpr,
-    K:         tl.constexpr,
+    N: tl.constexpr,
+    K: tl.constexpr,
     NUM_CORES: tl.constexpr,
-    BLOCK_M:   tl.constexpr,
-    BLOCK_N:   tl.constexpr,
-    BLOCK_K:   tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
 ):
     cid = tl.program_id(axis=0)
     NUM_BLOCKS_M = tl.cdiv(M, BLOCK_M)
     NUM_BLOCKS_N = tl.cdiv(N, BLOCK_N)
-    NUM_BLOCKS   = NUM_BLOCKS_M * NUM_BLOCKS_N
+    NUM_BLOCKS = NUM_BLOCKS_M * NUM_BLOCKS_N
 
     # On-chip buffers for cube engine
     a_l1 = tile_alloc([BLOCK_M, BLOCK_K], mat_a.dtype.element_ty, tle.language.dsa.ascend.L1)
@@ -197,8 +184,8 @@ def matmul_add_residual_cv_kernel(
     #  Within each tile: cube first, then vector (sequential via semaphores).
     # =========================================================================
     for block_idx in range(cid, NUM_BLOCKS, NUM_CORES):
-        pid_m   = block_idx // NUM_BLOCKS_N
-        pid_n   = block_idx % NUM_BLOCKS_N
+        pid_m = block_idx // NUM_BLOCKS_N
+        pid_n = block_idx % NUM_BLOCKS_N
         m_start = pid_m * BLOCK_M
         n_start = pid_n * BLOCK_N
 
@@ -207,13 +194,20 @@ def matmul_add_residual_cv_kernel(
         # -----------------------------------------------------------------
         with tle.scope(core_mode="cube"):
             _cube_matmul(
-                mat_a, mat_b,
-                a_l1, b_l1,
+                mat_a,
+                mat_b,
+                a_l1,
+                b_l1,
                 workspace,
                 cid,
-                m_start, n_start,
-                M, N, K,
-                BLOCK_M, BLOCK_N, BLOCK_K,
+                m_start,
+                n_start,
+                M,
+                N,
+                K,
+                BLOCK_M,
+                BLOCK_N,
+                BLOCK_K,
             )
 
         # -----------------------------------------------------------------
@@ -221,12 +215,16 @@ def matmul_add_residual_cv_kernel(
         # -----------------------------------------------------------------
         with tle.scope(core_mode="vector"):
             _vector_add_residual(
-                residual, mat_c,
+                residual,
+                mat_c,
                 workspace,
                 cid,
-                m_start, n_start,
-                M, N,
-                BLOCK_M, BLOCK_N,
+                m_start,
+                n_start,
+                M,
+                N,
+                BLOCK_M,
+                BLOCK_N,
             )
 
     # =========================================================================
@@ -247,13 +245,9 @@ def call(mat_a, mat_b, residual, num_cores=_DEFAULT_NUM_CORES):
     n = mat_b.shape[1]
     mat_c = torch.empty(m, n, dtype=mat_a.dtype, device=mat_a.device)
     # GM workspace: one [BLOCK_M, BLOCK_N] fp16 slot per core
-    workspace = torch.empty(num_cores, BLOCK_M, BLOCK_N,
-                            dtype=mat_a.dtype, device=mat_a.device)
-    matmul_add_residual_cv_kernel[(num_cores,)](
-        mat_a, mat_b, mat_c, residual,
-        workspace,
-        m, n, k, num_cores,
-        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
+    workspace = torch.empty(num_cores, BLOCK_M, BLOCK_N, dtype=mat_a.dtype, device=mat_a.device)
+    matmul_add_residual_cv_kernel[(num_cores, )](mat_a, mat_b, mat_c, residual, workspace, m, n, k, num_cores,
+                                                 BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
     return mat_c
 
 
@@ -276,17 +270,16 @@ class _DumpOptions:
 def _signature():
     """Static signature for ast_to_ttir — non-constexpr args only."""
     return {
-        "mat_a":     "*fp16",
-        "mat_b":     "*fp16",
-        "mat_c":     "*fp16",
-        "residual":  "*fp16",
+        "mat_a": "*fp16",
+        "mat_b": "*fp16",
+        "mat_c": "*fp16",
+        "residual": "*fp16",
         "workspace": "*fp16",
         "M": "i32",
     }
 
 
-def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-              NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
+def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
     """Compile matmul_add_residual_cv_kernel to TTIR and write to *path*."""
     from triton.compiler.compiler import ASTSource
     from triton.compiler.code_generator import ast_to_ttir
@@ -296,8 +289,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     os.environ.setdefault("TRITON_ALLOW_NON_CONSTEXPR_GLOBALS", "1")
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_add_residual_cv.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_add_residual_cv.mlir")
 
     signature = _signature()
     constants = {
@@ -321,8 +313,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
         pass
 
     codegen_fns = {"min_dot_size": lambda lhsType, rhsType: (1, 1, 1)}
-    module = ast_to_ttir(matmul_add_residual_cv_kernel, src, context,
-                         _DumpOptions(), codegen_fns, {})
+    module = ast_to_ttir(matmul_add_residual_cv_kernel, src, context, _DumpOptions(), codegen_fns, {})
 
     ok = module.verify()
     if not ok:
@@ -342,8 +333,7 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
 # =============================================================================
 #  Full Linalg IR dump (TTIR → TileIR → Linalg lowering)
 # =============================================================================
-def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
-                NUM_CORES=_DEFAULT_NUM_CORES):
+def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES):
     """Compile matmul_add_residual_cv_kernel through full TileIR → Linalg lowering pipeline.
 
     Pipeline:
@@ -361,15 +351,13 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K,
     Returns the final Linalg MLIR string.
     """
     from triton._C.libtriton import ir, passes, ascend
-    from triton._C.libtriton import tle as tle_ir
 
     # Step 1: compile to TTIR — get module directly (avoids reparse/dialect issues)
     module = dump_ttir(path=None, M=M, N=N, K=K, NUM_CORES=NUM_CORES, return_module=True)
     context = module.context
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "matmul_add_residual_cv_linalg.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matmul_add_residual_cv_linalg.mlir")
 
     # ── ① TileIR → HIVM ──────────────────────────────────────────────────
     pm = ir.pass_manager(context)
@@ -486,8 +474,8 @@ if __name__ == "__main__":
     # ---- functional test on device ------------------------------------------
     device = "npu" if hasattr(torch, "npu") and torch.npu.is_available() else "cuda"
     torch.manual_seed(0)
-    mat_a    = torch.randn((M, K), dtype=torch.float16, device=device)
-    mat_b    = torch.randn((K, N), dtype=torch.float16, device=device)
+    mat_a = torch.randn((M, K), dtype=torch.float16, device=device)
+    mat_b = torch.randn((K, N), dtype=torch.float16, device=device)
     residual = torch.randn((M, N), dtype=torch.float16, device=device)
 
     mat_c = call(mat_a, mat_b, residual, num_cores)

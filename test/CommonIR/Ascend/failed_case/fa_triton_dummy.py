@@ -6,7 +6,6 @@ import torch
 import torch_npu
 import triton
 import triton.language as tl
-import numpy as np
 
 # =============================================================================
 #  Real TLE tile-DSA API (replaces the old dl.dsa executable mock)
@@ -32,12 +31,12 @@ from triton.experimental.tle.language.dsa.ascend import (  # noqa: F401
 from triton.experimental.tle.language.dsa import tile_copy, tile_alloc, tile_to_tensor  # noqa: F401
 
 # ---- Cross-core semaphores (one id per signal, ids 0-5) --------------------
-SEM_S_READY : tl.constexpr = tl.constexpr(0)  # C -> V : workspace_s has data
-SEM_S_FREE  : tl.constexpr = tl.constexpr(1)  # V -> C : workspace_s slot free
-SEM_P_READY : tl.constexpr = tl.constexpr(2)  # V -> C : workspace_p has data
-SEM_P_FREE  : tl.constexpr = tl.constexpr(3)  # C -> V : workspace_p slot free
+SEM_S_READY: tl.constexpr = tl.constexpr(0)  # C -> V : workspace_s has data
+SEM_S_FREE: tl.constexpr = tl.constexpr(1)  # V -> C : workspace_s slot free
+SEM_P_READY: tl.constexpr = tl.constexpr(2)  # V -> C : workspace_p has data
+SEM_P_FREE: tl.constexpr = tl.constexpr(3)  # C -> V : workspace_p slot free
 SEM_PV_READY: tl.constexpr = tl.constexpr(4)  # C -> V : workspace_pv has data
-SEM_PV_FREE : tl.constexpr = tl.constexpr(5)  # V -> C : workspace_pv slot free
+SEM_PV_FREE: tl.constexpr = tl.constexpr(5)  # V -> C : workspace_pv slot free
 
 # =============================================================================
 #  Compile-time configuration
@@ -75,43 +74,62 @@ torch.set_printoptions(sci_mode=False, precision=4, linewidth=300)
 # =============================================================================
 @triton.jit
 def flash_attention_fwd_3task_kernel(
-    Q, K, V, Out,
-    workspace_s, workspace_p, workspace_pv,           # GM ping-pong workspaces
-    workspace_rescale, workspace_expsum,              # GM softmax state (Vec1->Vec2)
+    Q,
+    K,
+    V,
+    Out,
+    workspace_s,
+    workspace_p,
+    workspace_pv,  # GM ping-pong workspaces
+    workspace_rescale,
+    workspace_expsum,  # GM softmax state (Vec1->Vec2)
     sm_scale,
-    B, Hq, Hkv, S,
-    sQb, sQh, sQs, sQd,
-    sKb, sKh, sKs, sKd,
-    sOb, sOh, sOs, sOd,
-    num_seq_blocks, heads_q, gqa_group,
-    num_kv_blocks,            # KV blocks per output tile  (= seq_len // BLOCK_N)
-    conbined_block_num,       # tasks per output tile      (= num_kv_blocks // CB)
-    block_num_per_core, rem_block_num,
-    _pad0, _pad1, _pad2,     # dead args matching linalg IR layout (arg35-37)
-    CB:            tl.constexpr,   # KV blocks per task (combine_batch)
-    NUM_KV_BLOCKS: tl.constexpr,   # = num_kv_blocks  (used in causal mask)
-    IS_CAUSAL:     tl.constexpr,
-    BLOCK_M:       tl.constexpr,
-    BLOCK_N:       tl.constexpr,
-    DIM:           tl.constexpr,
+    B,
+    Hq,
+    Hkv,
+    S,
+    sQb,
+    sQh,
+    sQs,
+    sQd,
+    sKb,
+    sKh,
+    sKs,
+    sKd,
+    sOb,
+    sOh,
+    sOs,
+    sOd,
+    num_seq_blocks,
+    heads_q,
+    gqa_group,
+    num_kv_blocks,  # KV blocks per output tile  (= seq_len // BLOCK_N)
+    conbined_block_num,  # tasks per output tile      (= num_kv_blocks // CB)
+    block_num_per_core,
+    rem_block_num,
+    _pad0,
+    _pad1,
+    _pad2,  # dead args matching linalg IR layout (arg35-37)
+    CB: tl.constexpr,  # KV blocks per task (combine_batch)
+    NUM_KV_BLOCKS: tl.constexpr,  # = num_kv_blocks  (used in causal mask)
+    IS_CAUSAL: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    DIM: tl.constexpr,
 ):
-    cid = tl.program_id(0)
     # ---- static task distribution  (== AICPU GetFASectionInfo metadata) ----
-    block_start       = cid * block_num_per_core + tl.where(cid < rem_block_num, cid, rem_block_num)
-    block_num         = block_num_per_core + tl.where(cid < rem_block_num, 1, 0)
-    num_global_tasks  = block_num * conbined_block_num   # total pipelined tasks on this core
 
     # =========================================================================
     #  ① on-chip working set  (tile.alloc -> explicit memory hierarchy)
     # =========================================================================
     # -- Cube side: L1 for MMA inputs, L0C for MMA output --
-    q_l1  = tile_alloc([BLOCK_M, DIM],     Q.dtype.element_ty, tle.language.dsa.ascend.L1)
-    k_l1  = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, tle.language.dsa.ascend.L1)
-    v_l1  = tile_alloc([BLOCK_N, DIM],     Q.dtype.element_ty, tle.language.dsa.ascend.L1)
-    p_l1  = tile_alloc([BLOCK_M, BLOCK_N], Q.dtype.element_ty, tle.language.dsa.ascend.L1)
+    tile_alloc([BLOCK_M, DIM], Q.dtype.element_ty, tle.language.dsa.ascend.L1)
+    tile_alloc([BLOCK_N, DIM], Q.dtype.element_ty, tle.language.dsa.ascend.L1)
+    tile_alloc([BLOCK_N, DIM], Q.dtype.element_ty, tle.language.dsa.ascend.L1)
+    tile_alloc([BLOCK_M, BLOCK_N], Q.dtype.element_ty, tle.language.dsa.ascend.L1)
 
-    s_l0c  = tile_alloc([BLOCK_M, BLOCK_N], tl.float32, tle.language.dsa.ascend.L0C)  # MM1 out
-    pv_l0c = tile_alloc([BLOCK_M, DIM],     tl.float32, tle.language.dsa.ascend.L0C)  # MM2 out
+    tile_alloc([BLOCK_M, BLOCK_N], tl.float32, tle.language.dsa.ascend.L0C)  # MM1 out
+    tile_alloc([BLOCK_M, DIM], tl.float32, tle.language.dsa.ascend.L0C)  # MM2 out
 
     # Scope markers to trigger mix-mode (cube+vector) compilation
     with tle.scope(core_mode="cube"):
@@ -142,23 +160,23 @@ class _DumpOptions:
 
 def _dump_signature():
     """Static signature for ast_to_ttir (pointers / scalars / i32 / constexpr)."""
-    ptr = {"Q": "*fp16", "K": "*fp16", "V": "*fp16", "Out": "*fp16",
-           "workspace_s": "*fp16", "workspace_p": "*fp16", "workspace_pv": "*fp16",
-           "workspace_rescale": "*fp32", "workspace_expsum": "*fp32"}
-    i32_names = ["B", "Hq", "Hkv", "S",
-            "sQb", "sQh", "sQs", "sQd",
-            "sKb", "sKh", "sKs", "sKd",
-            "sOb", "sOh", "sOs", "sOd",
-            "num_seq_blocks", "heads_q", "gqa_group",
-            "num_kv_blocks", "conbined_block_num", "block_num_per_core", "rem_block_num"]
+    ptr = {
+        "Q": "*fp16", "K": "*fp16", "V": "*fp16", "Out": "*fp16", "workspace_s": "*fp16", "workspace_p": "*fp16",
+        "workspace_pv": "*fp16", "workspace_rescale": "*fp32", "workspace_expsum": "*fp32"
+    }
+    i32_names = [
+        "B", "Hq", "Hkv", "S", "sQb", "sQh", "sQs", "sQd", "sKb", "sKh", "sKs", "sKd", "sOb", "sOh", "sOs", "sOd",
+        "num_seq_blocks", "heads_q", "gqa_group", "num_kv_blocks", "conbined_block_num", "block_num_per_core",
+        "rem_block_num"
+    ]
     sig = dict(ptr)
     sig["sm_scale"] = "fp32"
     for n in i32_names:
         sig[n] = "i32"
     sig["IS_CAUSAL"] = "constexpr"
-    sig["BLOCK_M"]   = "constexpr"
-    sig["BLOCK_N"]   = "constexpr"
-    sig["DIM"]       = "constexpr"
+    sig["BLOCK_M"] = "constexpr"
+    sig["BLOCK_N"] = "constexpr"
+    sig["DIM"] = "constexpr"
     return sig
 
 
@@ -184,12 +202,14 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
     if ttir_path is None:
         ttir_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_triton_dummy_ttir.mlir")
 
-    cb = combine_batch
-    conbined_block_num = num_kv_blocks // combine_batch
     signature = _dump_signature()
     constants = {
-        "CB": combine_batch, "NUM_KV_BLOCKS": num_kv_blocks, "IS_CAUSAL": is_causal,
-        "BLOCK_M": 128, "BLOCK_N": 128, "DIM": 128,
+        "CB": combine_batch,
+        "NUM_KV_BLOCKS": num_kv_blocks,
+        "IS_CAUSAL": is_causal,
+        "BLOCK_M": 128,
+        "BLOCK_N": 128,
+        "DIM": 128,
     }
 
     src = ASTSource(flash_attention_fwd_3task_kernel, signature, constants)
@@ -239,7 +259,7 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
         print(f"[dump_tileir] after TileIR→HIVM: verify={module.verify()}", flush=True)
     except RuntimeError as e:
         print(f"[dump_tileir] TileIR→HIVM pass failed (non-fatal): {e}", flush=True)
-        print(f"[dump_tileir] TileIR output is still valid; skipping HIVM lowering.", flush=True)
+        print("[dump_tileir] TileIR output is still valid; skipping HIVM lowering.", flush=True)
         return mlir
 
     # Phase 2: TTIR optimization passes (mirrors compiler.py make_ttir).
@@ -258,7 +278,7 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
 
     ttir_ok = module.verify()
     if not ttir_ok:
-        print(f"[dump_tileir] WARNING: module.verify() failed after TTIR optimization — IR may be illegal")
+        print("[dump_tileir] WARNING: module.verify() failed after TTIR optimization — IR may be illegal")
     else:
         print(f"[dump_tileir] TTIR optimization complete: verify={ttir_ok}")
 
@@ -380,8 +400,7 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     tileir_mlir = dump_tileir(path=None, combine_batch=combine_batch, is_causal=is_causal)
 
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "fa_triton_dummy_linalg.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_triton_dummy_linalg.mlir")
 
     # Step 2: parse the TileIR module into a fresh context
     context = ir.context()
@@ -402,7 +421,8 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     os.unlink(tmp_path)
 
     # ── ① TileIR → HIVM ──────────────────────────────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     passes.common.add_inliner(pm)
     ascend.passes.ttir.add_tileir_to_hivm(pm)
     pm.run(module)
@@ -421,14 +441,16 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     # print(f"[dump_linalg] ①b erase_linalg_casts: verify={module.verify()}", flush=True)
 
     # ── ② Structured (r1) + discrete mask ────────────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     # ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
     ascend.passes.ttir.add_discrete_mask_access_conversion(pm, False, False, False)
     pm.run(module)
     print(f"[dump_linalg] ② structure(r1)+discrete_mask: verify={module.verify()}", flush=True)
 
     # ── ③ Unstructured + HIVM + HFusion + LLVM ──────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     ascend.passes.ttir.add_triton_to_unstructure(pm, False, False)
     ascend.passes.ttir.add_triton_to_hivm(pm)
     ascend.passes.ttir.add_triton_to_hfusion(pm)
@@ -437,7 +459,8 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     print(f"[dump_linalg] ③ unstructure+hivm+hfusion+llvm: verify={module.verify()}", flush=True)
 
     # ── ④ Bubble-up + structured (r2) ────────────────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     ascend.passes.ttir.add_bubble_up_operation(pm)
     # ascend.passes.ttir.add_triton_to_structure_incubated(pm, False, False, False)
     pm.run(module)
@@ -446,7 +469,8 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     # ── ④b Inline + canonicalize ← REQUIRED to avoid C++ assertion ─────
     # Without this, the linalg incubator crashes with cast<RankedTensorType>
     # in MaskAnalysis when it encounters non-tensor types.
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     passes.common.add_inliner(pm)
     passes.common.add_canonicalizer(pm)
     pm.run(module)
@@ -458,17 +482,17 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     # materialization" when it creates memref→!tt.ptr→memref cast chains
     # during partial conversion of !tt.ptr<tensor<>> values.  We handle
     # that in phase ⑤b.
-    linalg_ok = False
     try:
-        pm = ir.pass_manager(context); pm.enable_debug()
+        pm = ir.pass_manager(context)
+        pm.enable_debug()
         ascend.passes.ttir.add_triton_to_linalg(pm, False, True, False, False, False)
         pm.run(module)
         print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: verify={module.verify()}", flush=True)
-        linalg_ok = True
-    except RuntimeError as e:
-        print(f"[dump_linalg] ⑤ triton_to_linalg_incubated: partial conversion "
-              f"(this is expected — the pass creates cast chains that need "
-              f"post-processing)", flush=True)
+    except RuntimeError:
+        print(
+            "[dump_linalg] ⑤ triton_to_linalg_incubated: partial conversion "
+            "(this is expected — the pass creates cast chains that need "
+            "post-processing)", flush=True)
 
     # ── ⑤b Run erase-linalg-casts one more time to reconcile any
     #     unrealized_conversion_cast ops that the partial linalg conversion
@@ -480,7 +504,8 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     # print(f"[dump_linalg] ⑤b erase_linalg_casts (post): verify={module.verify()}", flush=True)
 
     # ── ⑥ Final canonicalize → erase dead casts ─────────────────────────
-    pm = ir.pass_manager(context); pm.enable_debug()
+    pm = ir.pass_manager(context)
+    pm.enable_debug()
     passes.common.add_canonicalizer(pm)
     passes.common.add_cse(pm)
     passes.common.add_symbol_dce(pm)
@@ -506,14 +531,14 @@ def flash_attention_fwd(q, k, v, combine_batch, is_causal=False):
     Hkv = k.shape[1]
     assert D == DIM and S % BLOCK_N == 0 and Hq % Hkv == 0
     num_seq_blocks = S // BLOCK_M
-    block_num      = num_seq_blocks * Hq * B
-    num_kv_blocks  = S // BLOCK_N   # KV blocks per output tile
+    block_num = num_seq_blocks * Hq * B
+    num_kv_blocks = S // BLOCK_N  # KV blocks per output tile
 
     CB = combine_batch
     if num_kv_blocks < CB:
         CB = num_kv_blocks
     assert num_kv_blocks % CB == 0, f"num_kv_blocks ({num_kv_blocks}) must be divisible by combine_batch ({CB})"
-    conbined_block_num = num_kv_blocks // CB   # tasks per output tile
+    conbined_block_num = num_kv_blocks // CB  # tasks per output tile
 
     block_num_per_core = block_num // NUM_CORES
     rem_block_num = block_num % NUM_CORES
@@ -521,24 +546,51 @@ def flash_attention_fwd(q, k, v, combine_batch, is_causal=False):
     out = torch.empty_like(q)
     # GM ping-pong workspaces (taskId % 2), one slice per core.
     # workspace_s: MM1 output (Q*K^T), fp16 matching tl.dot out_dtype
-    workspace_s       = torch.empty((NUM_CORES, RING, CB, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
-    workspace_p       = torch.empty((NUM_CORES, RING, CB, BLOCK_M, BLOCK_N), dtype=q.dtype,        device=q.device)
-    workspace_pv      = torch.empty((NUM_CORES, RING, CB, BLOCK_M, DIM),     dtype=torch.float16, device=q.device)
-    workspace_rescale = torch.empty((NUM_CORES, RING, CB, BLOCK_M),      dtype=torch.float32, device=q.device)
-    workspace_expsum  = torch.empty((NUM_CORES, RING, CB, BLOCK_M),      dtype=torch.float32, device=q.device)
-    sm_scale = (1.0 / D) ** 0.5
+    workspace_s = torch.empty((NUM_CORES, RING, CB, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
+    workspace_p = torch.empty((NUM_CORES, RING, CB, BLOCK_M, BLOCK_N), dtype=q.dtype, device=q.device)
+    workspace_pv = torch.empty((NUM_CORES, RING, CB, BLOCK_M, DIM), dtype=torch.float16, device=q.device)
+    workspace_rescale = torch.empty((NUM_CORES, RING, CB, BLOCK_M), dtype=torch.float32, device=q.device)
+    workspace_expsum = torch.empty((NUM_CORES, RING, CB, BLOCK_M), dtype=torch.float32, device=q.device)
+    sm_scale = (1.0 / D)**0.5
 
-    grid = (NUM_CORES,)  # one program per AI core; one Cube + one Vector stream (MIX_1_1)
+    grid = (NUM_CORES, )  # one program per AI core; one Cube + one Vector stream (MIX_1_1)
     flash_attention_fwd_3task_kernel[grid](
-        q, k, v, out, workspace_s, workspace_p, workspace_pv,
-        workspace_rescale, workspace_expsum, sm_scale,
-        B, Hq, Hkv, S,
-        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
-        k.stride(0), k.stride(1), k.stride(2), k.stride(3),
-        out.stride(0), out.stride(1), out.stride(2), out.stride(3),
-        num_seq_blocks, Hq, Hq // Hkv,
-        num_kv_blocks, conbined_block_num, block_num_per_core, rem_block_num,
-        0, 0, 0,  # _pad0, _pad1, _pad2 — dead args for linalg IR layout
+        q,
+        k,
+        v,
+        out,
+        workspace_s,
+        workspace_p,
+        workspace_pv,
+        workspace_rescale,
+        workspace_expsum,
+        sm_scale,
+        B,
+        Hq,
+        Hkv,
+        S,
+        q.stride(0),
+        q.stride(1),
+        q.stride(2),
+        q.stride(3),
+        k.stride(0),
+        k.stride(1),
+        k.stride(2),
+        k.stride(3),
+        out.stride(0),
+        out.stride(1),
+        out.stride(2),
+        out.stride(3),
+        num_seq_blocks,
+        Hq,
+        Hq // Hkv,
+        num_kv_blocks,
+        conbined_block_num,
+        block_num_per_core,
+        rem_block_num,
+        0,
+        0,
+        0,  # _pad0, _pad1, _pad2 — dead args for linalg IR layout
         CB=CB,
         NUM_KV_BLOCKS=num_kv_blocks,
         IS_CAUSAL=is_causal,
@@ -559,14 +611,15 @@ if __name__ == "__main__":
     parser.add_argument("--D", type=int, default=128)
     parser.add_argument("--causal", action="store_true")
     parser.add_argument("--no-check", action="store_true")
-    parser.add_argument("--combine-batch", type=int, default=8,
-                        help="KV blocks per task (arch22 nRatio)")
-    parser.add_argument("--dump-mlir", nargs="?", const="", default=None,
-                        help="Dump intermediate TileIR to PATH (default fa_triton_dummy.mlir) and exit; no device needed.")
+    parser.add_argument("--combine-batch", type=int, default=8, help="KV blocks per task (arch22 nRatio)")
+    parser.add_argument(
+        "--dump-mlir", nargs="?", const="", default=None,
+        help="Dump intermediate TileIR to PATH (default fa_triton_dummy.mlir) and exit; no device needed.")
     parser.add_argument("--dump-ir", nargs="?", const="", default=None,
                         help="Dump HIVM IR (after TileIR→HIVM lowering) to PATH and exit; no device needed.")
-    parser.add_argument("--dump-linalg", nargs="?", const="", default=None,
-                        help="Dump Linalg IR (full lowering through linalg, casts eliminated) to PATH and exit; no device needed.")
+    parser.add_argument(
+        "--dump-linalg", nargs="?", const="", default=None,
+        help="Dump Linalg IR (full lowering through linalg, casts eliminated) to PATH and exit; no device needed.")
     args = parser.parse_args()
 
     B, S, H, D = args.B, args.S, args.H, args.D
@@ -599,13 +652,14 @@ if __name__ == "__main__":
     out = flash_attention_fwd(q, k, v, combine_batch, is_causal=args.causal)
 
     if not args.no_check:
+
         def ref(q, k, v):
             if k.shape[1] != q.shape[1]:
                 n_rep = q.shape[1] // k.shape[1]
                 k = k.repeat_interleave(n_rep, dim=1)
                 v = v.repeat_interleave(n_rep, dim=1)
-            return torch.nn.functional.scaled_dot_product_attention(
-                q.float(), k.float(), v.float(), is_causal=args.causal).to(torch.float16)
+            return torch.nn.functional.scaled_dot_product_attention(q.float(), k.float(), v.float(),
+                                                                    is_causal=args.causal).to(torch.float16)
 
         torch.testing.assert_close(ref(q, k, v), out, rtol=1e-2, atol=1e-2)
         print("Test Passed!")
