@@ -24,7 +24,7 @@ import triton.language as tl
 # =============================================================================
 import triton.experimental.tle as tle  # noqa: F401  (registers tile/tle dialects)
 from triton.experimental.tle.language.dsa.ascend import (  # noqa: F401
-    L1, L0C, UB, PIPE, sync_block_set, sync_block_wait,
+    L1, L0C, UB, PIPE, sync_block_set, sync_block_wait, sync_block_all,
 )
 from triton.experimental.tle.language.dsa import tile_copy, tile_alloc, tile_to_tensor  # noqa: F401
 # from triton.experimental.tle.language.dsa import tle.dsa.copy  # noqa: F401
@@ -117,15 +117,13 @@ def _mm1_qkt(
 ):
     """MM1: compute S = Q * K^T for CB KV blocks and store into workspace_s.
 
-    Both Q and K are loaded via tl.load as plain register tensors, mirroring
-    fa_4func.py.  No tile_alloc/tile_copy/tile_to_tensor — those cause
-    bishengir-compile's auto-multi-buffer pass to introduce fractal (4D) cbuf
-    layouts that the matmul intrinsic rejects.
+    Handles resident-Q reload (first task of a tile) and the full L1
+    DMA + MMA sequence for each KV block.
 
-    Q is loaded only on the first task of each output tile (idx_in_conbine==0);
-    subsequent tasks reuse the value held in the register tensor q_l1.
-    K is transposed via tl.trans so that Q[BLOCK_M,DIM] @ K^T[DIM,BLOCK_N]
-    gives the correct S[BLOCK_M,BLOCK_N] attention score.
+    Each KV block uses a fresh zero accumulator so the tl.dot result is the
+    per-block score directly.  It is stored to GM (workspace_s) before any
+    vector-core arithmetic touches it, satisfying the cube→GM→vector ordering
+    constraint (matching the fa_4func.py pattern).
     """
     # wait workspace_s[ring_slot] task slot free (Vector released after Vec1)
     sync_block_wait("vector", "cube", SEM_S_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
@@ -134,7 +132,6 @@ def _mm1_qkt(
     # branches of the if below have the same type (fp16[BLOCK_M, DIM]),
     # satisfying the SSA phi-node type constraint.
     q_l1 = tl.zeros((BLOCK_M, DIM), Q.dtype.element_ty)
-
     # reload Q at the first task of each output tile
     if idx_in_conbine == 0:
         q_row_offs = global_head_idx * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -475,27 +472,24 @@ def flash_attention_fwd_3task_kernel(
     # =========================================================================
     #  3-task pipeline: Cube (MM1/MM2) and Vector (Vec1/Vec2) scopes
     #  run tick-by-tick inside a single outer loop.
-    #
-    #  FIX: The init sets (g==0) are placed in SEPARATE scope blocks that
-    #  precede the compute scope blocks within the same iteration.  This
-    #  guarantees both cores' "free" tokens are enqueued BEFORE either core's
-    #  compute path issues a wait — eliminating the init-ordering deadlock.
     # =========================================================================
+
+    # =========================================================================
+    #  PROLOGUE: initialize semaphores (outside the main loop to avoid races)
+    # =========================================================================
+    with tle.scope(core_mode="cube"):
+        # init: pre-arm P_FREE so Vec1 can proceed on first tick
+        sync_block_set("cube", "vector", SEM_P_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_MTE3)
+
+    with tle.scope(core_mode="vector"):
+        # init: pre-arm S_FREE and PV_FREE so MM1/MM2 can proceed on first tick
+        sync_block_set("vector", "cube", SEM_S_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
+        sync_block_set("vector", "cube", SEM_PV_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
+
     for g in range(num_global_tasks + 1):
 
         # -----------------------------------------------------------------
-        #  Prologue scopes (g==0 only): emit init sets on BOTH cores before
-        #  any compute scope can issue a wait.
-        # -----------------------------------------------------------------
-        if g == 0:
-            with tle.scope(core_mode="cube"):
-                sync_block_set("cube", "vector", SEM_P_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_MTE3)
-            with tle.scope(core_mode="vector"):
-                sync_block_set("vector", "cube", SEM_S_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
-                sync_block_set("vector", "cube", SEM_PV_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
-
-        # -----------------------------------------------------------------
-        #  Cube compute scope
+        #  Cube scope
         # -----------------------------------------------------------------
         with tle.scope(core_mode="cube"):
             # ===== MM1(g): S = Q*K^T for CB KV blocks -> workspace_s[cid, g%RING, :] =====
@@ -567,7 +561,7 @@ def flash_attention_fwd_3task_kernel(
                 )
 
         # -----------------------------------------------------------------
-        #  Vector compute scope
+        #  Vector scope
         # -----------------------------------------------------------------
         with tle.scope(core_mode="vector"):
             # ===== Vec1(g): softmax(workspace_s[g%RING]) -> workspace_p[g%RING] =====
@@ -630,16 +624,17 @@ def flash_attention_fwd_3task_kernel(
                     DIM,
                 )
 
-        # -----------------------------------------------------------------
-        #  Epilogue scopes (g==num_global_tasks only): consume outstanding
-        #  "free" tokens so semaphore counts are balanced.
-        # -----------------------------------------------------------------
-        if g == num_global_tasks:
-            with tle.scope(core_mode="cube"):
-                sync_block_wait("cube", "vector", SEM_P_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_MTE3)
-            with tle.scope(core_mode="vector"):
-                sync_block_wait("vector", "cube", SEM_S_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
-                sync_block_wait("vector", "cube", SEM_PV_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
+    # =========================================================================
+    #  EPILOGUE: drain outstanding semaphore tokens (after the main loop)
+    # =========================================================================
+    with tle.scope(core_mode="cube"):
+        # drain outstanding P_FREE token
+        sync_block_wait("cube", "vector", SEM_P_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_MTE3)
+
+    with tle.scope(core_mode="vector"):
+        # drain outstanding S_FREE and PV_FREE tokens
+        sync_block_wait("vector", "cube", SEM_S_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
+        sync_block_wait("vector", "cube", SEM_PV_FREE, PIPE.PIPE_MTE2, PIPE.PIPE_FIX)
 
 
 # =============================================================================
@@ -1072,11 +1067,12 @@ def flash_attention_fwd(q, k, v, combine_batch, is_causal=False):
     rem_block_num = block_num % NUM_CORES
 
     out = torch.empty_like(q)
-    # GM ping-pong workspaces (taskId % 2), one slice per core.
-    # workspace_s: MM1 output (Q*K^T), fp16 matching tl.dot out_dtype
-    workspace_s = torch.empty((NUM_CORES, RING, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
-    workspace_p = torch.empty((NUM_CORES, RING, BLOCK_M, BLOCK_N), dtype=q.dtype, device=q.device)
-    workspace_pv = torch.empty((NUM_CORES, RING, BLOCK_M, DIM), dtype=torch.float16, device=q.device)
+    # GM ping-pong workspaces: [NUM_CORES, RING, CB, BLOCK_M, BLOCK_N/DIM]
+    # Each ring_slot holds CB score/prob/pv blocks so MM1/Vec1/MM2 can process
+    # all CB sub-blocks within one task before signalling the next stage.
+    workspace_s = torch.empty((NUM_CORES, RING, CB, BLOCK_M, BLOCK_N), dtype=torch.float16, device=q.device)
+    workspace_p = torch.empty((NUM_CORES, RING, CB, BLOCK_M, BLOCK_N), dtype=q.dtype, device=q.device)
+    workspace_pv = torch.empty((NUM_CORES, RING, CB, BLOCK_M, DIM), dtype=torch.float16, device=q.device)
     workspace_rescale = torch.empty((NUM_CORES, RING, CB, BLOCK_M), dtype=torch.float32, device=q.device)
     workspace_expsum = torch.empty((NUM_CORES, RING, CB, BLOCK_M), dtype=torch.float32, device=q.device)
     sm_scale = (1.0 / D)**0.5
