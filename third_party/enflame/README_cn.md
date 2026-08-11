@@ -13,7 +13,21 @@ Flagtree 第三方后端包含针对燧原加速器后端，提供核心组件�
 
 ## 环境准备
 
-### 1. 拉取源代码
+### 1. 版本定义
+
+```bash
+# 软件包
+SDK=TopsRider_Triton_gcu-3.6.0-1.0.20260722.cc.1.10.6_deb_amd64.run
+# 工具链
+LLVM=enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
+# 镜像
+IMAGE_PREFIX=flagtree-enflame3.6-py312-torch2.10.0-ubuntu24.04
+IMAGE_VERSION=202607-1.10.6-base
+IMAGE=${IMAGE_PREFIX}:${IMAGE_VERSION}
+CONTAINER=${IMAGE_PREFIX}.${IMAGE_VERSION}
+```
+
+### 2. 拉取源代码
 
 ```bash
 # 拉取代码并切换到main分支
@@ -23,18 +37,18 @@ cd FlagTree
 git checkout main
 ```
 
-### 1. 拉取软件包
+### 3. 拉取软件包
 
 ```bash
 cd ~
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/TopsRider_Triton_gcu-3.6.0_1.0.20260610.cc.1.9.10_deb_amd64.run
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${SDK}
 ```
 
-### 2. 安装驱动
+### 4. 安装驱动
 
 ```bash
 cd ~
-bash TopsRider_Triton_gcu-3.6.0_1.0.20260610.cc.1.9.10_deb_amd64.run --driver -y
+bash ${SDK} --driver -y
 # 检查驱动是否正常安装
 efsmi
 ```
@@ -57,32 +71,35 @@ efsmi
 +-----------------------------+-------------------+---------------------------+
 ```
 
-### 3. 准备 Docker 镜像
+### 5. 准备 Docker 镜像
+
 
 ```bash
-# 加载预构建的容器镜像
-curl -sL https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz | docker load
-
-# 或手动下载后加载
-wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-flagtree-0.5.0.tar.gz
-docker load -i enflame-flagtree-0.5.0.tar.gz
+# 方案A: 直接拉取容器镜像
+docker pull harbor.baai.ac.cn/flagtree/${IMAGE}
 ```
 
-### 4. 启动Docker容器
+```bash
+# 方案B: 或手动下载后加载
+wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${CONTAINER}.tar.gz
+docker load -i ${CONTAINER}.tar.gz
+```
+
+### 6. 启动Docker容器
 
 ```bash
 # 如果需要重建容器，请先删除
-# docker rm -f enflame-flagtree-0.5.0
+# docker rm -f ${CONTAINER}
 
 # 假设 flagtree 源码位于 ~/flagtree
-docker run -itd --privileged --name enflame-flagtree-0.5.0 -v ~/FlagTree:/root/FlagTree enflame/flagtree:0.5.0 bash
+docker run -itd --privileged --name ${CONTAINER} -v ~/FlagTree:/root/FlagTree ${IMAGE} bash
 ```
 
-### 5. 进入Docker容器
+### 7. 进入Docker容器
 
 ```bash
 # 执行docker
-docker exec -it enflame-flagtree-0.5.0 bash
+docker exec -it ${CONTAINER} bash
 ```
 
 > 注意，后续所有命令都在容器内进行。
@@ -91,17 +108,17 @@ docker exec -it enflame-flagtree-0.5.0 bash
 
 ### 1. 准备工具链
 
-```
+```bash
 mkdir -p ~/.flagtree/enflame
 cd ~/.flagtree/enflame
-wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
-tar -xzf enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
+wget baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${LLVM}
+tar -xzf ${LLVM}
 ```
 
 ### 2. 安装软件包
 ```bash
 cd ~
-bash TopsRider_Triton_gcu-3.6.0_1.0.20260610.cc.1.9.17_deb_amd64.run --container -y
+bash ${SDK} --container -y
 ```
 
 ### 3. 配置构建环境
@@ -133,7 +150,7 @@ pip3 install . --no-build-isolation --force-reinstall -v --break-system-packages
 ## 测试验证
 
 ```bash
-# 运行单元测试
+# 运行tutorial测试
 cd ~/FlagTree
-pytest third_party/enflame/python/test/unit
+python python/tutorials/01-vector-add.py
 ```

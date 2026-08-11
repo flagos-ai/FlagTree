@@ -183,6 +183,20 @@ void LayoutRematerialization::cleanup() {
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
 bool isLayoutAnchor(Operation *op) {
+#ifdef __ILUVATAR__
+  // Preserve the cloned masked-SME predicate DAG as a distinct layout island.
+  // Without this anchor, forward propagation rewrites it into the pointer
+  // encoding and CSE merges the two make_range operations again.
+  if (auto range = dyn_cast<MakeRangeOp>(op)) {
+    auto type = cast<RankedTensorType>(range.getType());
+    Attribute encoding = type.getEncoding();
+    if (auto slice = dyn_cast<SliceEncodingAttr>(encoding))
+      encoding = slice.getParent();
+    if (auto blocked = dyn_cast<BlockedEncodingAttr>(encoding);
+        blocked && blocked.getSmeMask())
+      return true;
+  }
+#endif
   if (isa<DescriptorOpInterface>(op))
     return true;
   if (isa<LoadOp, StoreOp>(op))
@@ -754,6 +768,21 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
 }
 
 bool canBeRemat(Operation *op) {
+#ifdef __ILUVATAR__
+  // smeMask is a semantic boundary, not just a physical layout choice. The
+  // cloned mask DAG must not be rematerialized into the SME pointer encoding,
+  // otherwise CSE merges its make_range back with the pointer DAG and the
+  // predicate is collapsed to a lane-invariant value.
+  if (auto range = dyn_cast<MakeRangeOp>(op)) {
+    auto type = cast<RankedTensorType>(range.getType());
+    Attribute encoding = type.getEncoding();
+    if (auto slice = dyn_cast<SliceEncodingAttr>(encoding))
+      encoding = slice.getParent();
+    if (auto blocked = dyn_cast<BlockedEncodingAttr>(encoding);
+        blocked && blocked.getSmeMask())
+      return false;
+  }
+#endif
   if (isa<LoadOp, StoreOp>(op))
     return !isExpensiveLoadOrStore(op);
   if (isa<AtomicRMWOp, AtomicCASOp, DotOp>(op))
@@ -1315,12 +1344,29 @@ void LayoutRematerialization::hoistConvertDotOperand(
 
   // We hoist over any operation that can be done without data movement between
   // threads We do views and elementwise pure ops for now
+#ifdef __ILUVATAR__
+  // Do not hoist #dot_op across sitofp/uitofp: that yields
+  // `local_load i8 #dot_op` + sitofp still on #dot_op, which breaks
+  // Sme=1 / TCU (cast_matmul A=i8, BLOCK_K=64). Float truncf/extf stay
+  // hoistable.
+  bool isDotOperandTarget =
+      isa<DotOperandEncodingAttr>(targetType.getEncoding());
+  auto noDataMovement = [isDotOperandTarget](Operation *op) {
+    return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op) &&
+            !(isDotOperandTarget &&
+              isa<arith::SIToFPOp, arith::UIToFPOp>(op))) ||
+           isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface>(
+               op) ||
+           isView(op);
+  };
+#else
   auto noDataMovement = [](Operation *op) {
     return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
            isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface>(
                op) ||
            isView(op);
   };
+#endif
   // Stop the slice as soon as we find an operation that cannot be done without
   // data movement between threads
   auto stop = std::not_fn(noDataMovement);

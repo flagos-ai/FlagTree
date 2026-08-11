@@ -1,5 +1,3 @@
-get_flagtree_backend_lib("TritonGPUIR" _EXTRA_LINK_LIBS)
-
 add_triton_library(TritonGPUIR
   Dialect.cpp
   LinearLayoutConversions.cpp
@@ -17,7 +15,6 @@ add_triton_library(TritonGPUIR
   MLIRGPUDialect
   TritonIR
   TritonTools
-  ${_EXTRA_LINK_LIBS}
 )
 
 add_dependencies(TritonGPUIR TritonGPUCTAAttrIncGen)

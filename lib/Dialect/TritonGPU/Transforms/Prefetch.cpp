@@ -1,3 +1,28 @@
+/*
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 //===----------------------------------------------------------------------===//
 //
 // This pass tries to prefetch operands (a and b) of tt.dot.
@@ -25,12 +50,6 @@
 //   scf.yield %next_a, ..., %a_prefetch_next
 // }
 //===----------------------------------------------------------------------===//
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Prefetch
-
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -463,5 +482,3 @@ struct PrefetchPass : public impl::TritonGPUPrefetchBase<PrefetchPass> {
 } // namespace gpu
 } // namespace triton
 } // namespace mlir
-
-#endif

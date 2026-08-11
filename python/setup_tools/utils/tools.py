@@ -1,3 +1,23 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import os
 import shutil
 from pathlib import Path
@@ -7,6 +27,8 @@ from io import BytesIO
 import urllib.request
 from dataclasses import dataclass
 import json
+import subprocess
+import time
 
 from python.build_helpers import get_base_dir
 import platform
@@ -171,6 +193,12 @@ class DownloadManager:
         self.src_list[self.current_url]['status'] = status
         self.src_list[self.current_url]['content'] = content
 
+    def backoff(self, module, retry_count):
+        delay = 2**(NetConfig.max_retry - retry_count)
+        print(f"\n[{NetConfig.max_retry - retry_count}] retry to clone "
+              f"{module.name} after {delay}s...")
+        time.sleep(delay)
+
     def git_clone(self, module, required=False):
         if module is None:
             return
@@ -190,16 +218,15 @@ class DownloadManager:
         except ImportError:
             return False
         retry_count = NetConfig.max_retry
-        has_specialization_commit = module.commit_id
         while (retry_count):
             try:
                 repo = git.Repo.clone_from(module.url, module.dst_path)
-                if has_specialization_commit:
+                if module.commit_id:
                     repo.git.checkout(module.commit_id)
                 return True
-            except Exception:
+            except git.GitCommandError:
                 retry_count -= 1
-                print(f"\n[{NetConfig.max_retry - retry_count}] retry to clone {module.name} to  {module.dst_path}")
+                self.backoff(module, retry_count)
         return False
 
     def sys_clone(self, module):
@@ -207,14 +234,13 @@ class DownloadManager:
         has_specialization_commit = module.commit_id is not None
         while (retry_count):
             try:
-                os.system(f"git clone {module.url} {module.dst_path}")
-                import subprocess
+                subprocess.run(["git", "clone", module.url, module.dst_path], check=True)
                 if has_specialization_commit:
                     subprocess.run(["git", "checkout", module.commit_id], cwd=module.dst_path, check=True)
                 return True
-            except Exception:
+            except subprocess.CalledProcessError:
                 retry_count -= 1
-                print(f"\n[{NetConfig.max_retry - retry_count}] retry to clone {module.name} to  {module.dst_path}")
+                self.backoff(module, retry_count)
         return False
 
     def clone_module(self, module):

@@ -34,9 +34,24 @@ Value createDeviceCall(StringRef funcName, ConversionPatternRewriter &rewriter,
 void createDeviceCall(StringRef funcName, ConversionPatternRewriter &rewriter,
                       Operation *op, ValueRange &operands, Location &loc);
 
+// XPU-local, ceil-based offset emission. Mirrors Triton 3.0's
+// `triton::xpu::emitOffsetForClusterLayout` / `emitOffsetForSliceLayout`
+// (see 3.0 `triton/Conversion/TritonGPUToLLVM/Utility.h`). The 3.6 upstream
+// `mlir::triton::emitOffsetForLayout` derives the offset count from a
+// LinearLayout's `register` in-dim, which for XPU is forced to a power of two
+// (identity1D/ensure* assert pow2) and therefore diverges from XPU's ceil
+// arity for non-power-of-two shapes (e.g. 100 -> LL register in-dim 128 vs
+// ceil arity 100), overrunning the unpacked value vector. These helpers keep
+// the offset count exactly equal to `getTotalElemsPerThread` (ceil-based).
 SmallVector<SmallVector<unsigned>>
 emitOffsetForClusterLayout(const triton::xpu::ClusterLayoutAttr &clusterLayout,
                            RankedTensorType type);
+
+// Dispatch: ClusterLayoutAttr -> emitOffsetForClusterLayout; XPU-backed
+// SliceEncodingAttr -> recurse into parent (padded shape), erase sliced dim,
+// dedupe, repeat to fill the ceil count.
+SmallVector<SmallVector<unsigned>>
+emitOffsetForLayoutXPU(Attribute layout, RankedTensorType type);
 
 inline Value getGridDim(RewriterBase &rewriter, Location loc) {
   Value gridDim =

@@ -209,8 +209,8 @@ bool isZeroStride(OpBuilder &builder, Location loc, const OpFoldResult ofr) {
     return attr.value() == 0;
   }
 
-  // Assume stride can not be changed, if it is an argument of ForOp and it is
-  // value is 0, then take it as zero stride.
+  // Assume stride can not be changed, if it is an argument of ForOp/WhileOp
+  // and its init value is 0, then take it as zero stride.
   auto value = getValue(builder, loc, ofr);
   if (auto arg = dyn_cast<BlockArgument>(value)) {
     if (auto forOp = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp())) {
@@ -221,6 +221,16 @@ bool isZeroStride(OpBuilder &builder, Location loc, const OpFoldResult ofr) {
       if (auto constOp =
               dyn_cast<arith::ConstantIndexOp>(initArg.getDefiningOp())) {
         return constOp.value() == 0;
+      }
+    }
+    if (auto whileOp = dyn_cast<scf::WhileOp>(arg.getOwner()->getParentOp())) {
+      auto idx = arg.getArgNumber();
+      if (idx < whileOp.getInits().size()) {
+        auto initArg = whileOp.getInits()[idx];
+        if (auto constOp = dyn_cast_or_null<arith::ConstantIndexOp>(
+                initArg.getDefiningOp())) {
+          return constOp.value() == 0;
+        }
       }
     }
   }
@@ -414,6 +424,7 @@ void PtrAnalysis::visitBlockArgument(
   assert(state.isEmpty());
 
   assert(!isa<scf::ForOp>(blockArg.getOwner()->getParentOp()));
+  assert(!isa<scf::WhileOp>(blockArg.getOwner()->getParentOp()));
   state.source = blockArg;
 }
 
@@ -1097,6 +1108,408 @@ LogicalResult PtrAnalysis::rewriteForOp(
   return success();
 }
 
+bool PtrAnalysis::byPassWhileOp(
+    PatternRewriter & /*rewriter*/, scf::WhileOp op,
+    const SmallVector<Operation *, 8> &candidateOps) {
+  bool bypass = true;
+
+  op.walk<WalkOrder::PreOrder>([&](mlir::Operation *_op) {
+    bypass = mlir::TypeSwitch<mlir::Operation *, bool>(_op)
+                 .Case<triton::LoadOp, triton::StoreOp>([&](auto loadstoreOp) {
+                   auto iter =
+                       std::find(candidateOps.begin(), candidateOps.end(),
+                                 loadstoreOp.getOperation());
+                   return iter == candidateOps.end();
+                 })
+                 .Default([&](auto /*op*/) { return true; });
+    return !bypass ? WalkResult::interrupt() : WalkResult::advance();
+  });
+
+  return bypass;
+}
+
+void PtrAnalysis::rewriteConditionOp(
+    PatternRewriter &rewriter, scf::ConditionOp op,
+    llvm::SmallDenseMap<Value, PtrState> &knownPtrs,
+    llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
+  OpBuilder::InsertionGuard g(rewriter);
+  rewriter.setInsertionPoint(op);
+
+  Value condition = op.getCondition();
+  auto args = op.getArgs();
+  llvm::SmallVector<PtrState> condArgState;
+  llvm::SmallVector<MaskState> condArgMaskState;
+  llvm::SmallVector<Value> operands(args.begin(), args.end());
+
+  LLVM_DEBUG(llvm::dbgs() << "ptr rewriteConditionOp start: \n");
+
+  for (auto [i, v] : llvm::enumerate(operands)) {
+    (void)i;
+    auto tType = dyn_cast<TensorType>(v.getType());
+    if (tType && ((tType.getElementType().isIntOrIndex() &&
+                   !tType.getElementType().isInteger(1)) ||
+                  isa<triton::PointerType>(tType.getElementType()))) {
+      llvm::DenseMap<Value, bool> valueFromLoads;
+      if (!isPtrFromLoad(v, valueFromLoads)) {
+        PtrState state;
+        visitOperand(rewriter, op.getLoc(), v, state, knownPtrs);
+        condArgState.push_back(state);
+        LLVM_DEBUG(llvm::dbgs()
+                   << "ptr condArgState size:" << condArgState.size() << "\n");
+      }
+    }
+  }
+
+  for (auto [i, v] : llvm::enumerate(operands)) {
+    auto tType = dyn_cast<TensorType>(v.getType());
+    if (tType && ((tType.getElementType().isIntOrIndex() &&
+                   !tType.getElementType().isInteger(1)))) {
+      llvm::DenseMap<Value, bool> valueToCandiates;
+      if (isMaskCandidate(v, valueToCandiates)) {
+        MaskState state;
+        gcu::MaskAnalysis::parse(rewriter, op.getLoc(), v, state, knownMasks);
+        condArgMaskState.push_back(state);
+        LLVM_DEBUG(llvm::dbgs() << "ptr condArgMaskState size:"
+                                << condArgMaskState.size() << "\n");
+      }
+    }
+    (void)i;
+  }
+
+  for (auto state : condArgState) {
+    if (state.scalar) {
+      operands.push_back(state.scalar);
+    }
+    for (auto s : state.offsets) {
+      if (auto sIntAttr = getIntAttr(s)) {
+        assert(sIntAttr.value() == 0 && "attribute offsets should be zeroes");
+        auto constOp = rewriter.create<arith::ConstantOp>(
+            op.getLoc(), rewriter.getIndexAttr(0));
+        operands.push_back(constOp.getResult());
+      } else {
+        operands.push_back(cast<Value>(s));
+      }
+    }
+
+    for (auto s : state.strides) {
+      assert(!getIntAttr(s) &&
+             "PtrState strides for condition within while loop not expected "
+             "to be attribute.");
+      operands.push_back(cast<Value>(s));
+    }
+  }
+
+  for (auto state : condArgMaskState) {
+    if (state.start) {
+      auto sIntAttr = getIntAttr(state.start);
+      if (sIntAttr) {
+        auto constOp = rewriter.create<arith::ConstantOp>(
+            op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
+        operands.push_back(constOp.getResult());
+      } else {
+        operands.push_back(cast<Value>(state.start));
+      }
+    }
+    if (state.end) {
+      auto sIntAttr = getIntAttr(state.end);
+      if (sIntAttr) {
+        auto constOp = rewriter.create<arith::ConstantOp>(
+            op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
+        operands.push_back(constOp.getResult());
+      } else {
+        operands.push_back(cast<Value>(state.end));
+      }
+    }
+  }
+
+  rewriter.setInsertionPointAfter(op);
+  rewriter.replaceOpWithNewOp<scf::ConditionOp>(op, condition, operands);
+}
+
+LogicalResult PtrAnalysis::rewriteWhileOp(
+    PatternRewriter &rewriter, scf::WhileOp op,
+    SmallDenseMap<Value, PtrState> &knownPtrs,
+    SmallDenseMap<Value, MaskState> &knownMasks,
+    SmallVector<Operation *, 8> &candidateOps,
+    SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints) {
+  llvm::SmallVector<Value> newInitArgs;
+  llvm::SmallVector<std::pair<int, PtrState>> initArgIndexState;
+  llvm::SmallVector<std::pair<int, MaskState>> initMaskIndexState;
+
+  LLVM_DEBUG(llvm::dbgs() << "rewriteWhileOp: " << *op.getOperation() << "\n");
+
+  auto beforeArgs = op.getBeforeArguments();
+
+  for (auto [i, arg] : llvm::enumerate(op.getInits())) {
+    newInitArgs.push_back(arg);
+    LLVM_DEBUG(llvm::dbgs() << "i: " << i << "\n");
+    auto tType = dyn_cast<TensorType>(arg.getType());
+    if (tType && ((tType.getElementType().isIntOrIndex() &&
+                   !tType.getElementType().isInteger(1)) ||
+                  isa<triton::PointerType>(tType.getElementType()))) {
+      llvm::DenseMap<Value, bool> valueFromLoads;
+      if (!isPtrFromLoad(beforeArgs[i], valueFromLoads)) {
+        PtrState state;
+        visitOperand(rewriter, op.getLoc(), arg, state, knownPtrs);
+        initArgIndexState.push_back(std::make_pair(i, state));
+      }
+    }
+  }
+
+  for (auto [i, arg] : llvm::enumerate(op.getInits())) {
+    LLVM_DEBUG(llvm::dbgs() << "mask i: " << i << "\n");
+    auto tType = dyn_cast<TensorType>(arg.getType());
+    if (tType && ((tType.getElementType().isIntOrIndex() &&
+                   !tType.getElementType().isInteger(1)))) {
+      llvm::DenseMap<Value, bool> valueToCandiates;
+      if (isMaskCandidate(beforeArgs[i], valueToCandiates)) {
+        MaskState state;
+        gcu::MaskAnalysis::parse(rewriter, op.getLoc(), arg, state, knownMasks);
+        initMaskIndexState.push_back(std::make_pair(i, state));
+      }
+    }
+  }
+
+  if (initArgIndexState.size() == 0 && initMaskIndexState.size() == 0)
+    return failure();
+
+  auto origIp = rewriter.saveInsertionPoint();
+  rewriter.setInsertionPoint(op);
+
+  for (auto &[i, state] : initArgIndexState) {
+    (void)i;
+    if (state.scalar)
+      newInitArgs.push_back(state.scalar);
+    for (auto [j, s] : llvm::enumerate(state.offsets)) {
+      auto sIntAttr = getIntAttr(s);
+      if (sIntAttr) {
+        auto constOp = rewriter.create<arith::ConstantOp>(
+            op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
+        newInitArgs.push_back(constOp.getResult());
+        state.offsets[j] = constOp.getResult();
+      } else {
+        newInitArgs.push_back(cast<Value>(s));
+      }
+    }
+    for (auto [j, s] : llvm::enumerate(state.strides)) {
+      auto sIntAttr = getIntAttr(s);
+      if (sIntAttr) {
+        auto constOp = rewriter.create<arith::ConstantOp>(
+            op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
+        newInitArgs.push_back(constOp.getResult());
+        state.strides[j] = constOp.getResult();
+      } else {
+        newInitArgs.push_back(cast<Value>(s));
+      }
+    }
+  }
+
+  for (auto &[i, state] : initMaskIndexState) {
+    (void)i;
+    if (state.start) {
+      auto sIntAttr = getIntAttr(state.start);
+      if (sIntAttr) {
+        auto constOp = rewriter.create<arith::ConstantOp>(
+            op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
+        newInitArgs.push_back(constOp.getResult());
+        state.start = constOp.getResult();
+      } else {
+        newInitArgs.push_back(cast<Value>(state.start));
+      }
+    }
+    if (state.end) {
+      auto sIntAttr = getIntAttr(state.end);
+      if (sIntAttr) {
+        auto constOp = rewriter.create<arith::ConstantOp>(
+            op.getLoc(), rewriter.getIndexAttr(sIntAttr.value()));
+        newInitArgs.push_back(constOp.getResult());
+        state.end = constOp.getResult();
+      } else {
+        newInitArgs.push_back(cast<Value>(state.end));
+      }
+    }
+  }
+  rewriter.restoreInsertionPoint(origIp);
+
+  SmallVector<Type> newResultTypes;
+  for (auto arg : newInitArgs)
+    newResultTypes.push_back(arg.getType());
+
+  auto newOp =
+      rewriter.create<scf::WhileOp>(op.getLoc(), newResultTypes, newInitArgs);
+
+  unsigned originalArgCount = op.getBeforeArguments().size();
+
+  {
+    Block *newBeforeBlock =
+        rewriter.createBlock(&newOp.getBefore(), newOp.getBefore().begin());
+    for (auto t : newResultTypes)
+      newBeforeBlock->addArgument(t, op.getLoc());
+
+    rewriter.setInsertionPointToStart(newBeforeBlock);
+    IRMapping beforeMapping;
+    auto origBeforeArgs = op.getBeforeArguments();
+    auto newBeforeArgs = newBeforeBlock->getArguments();
+    for (unsigned i = 0; i < origBeforeArgs.size(); ++i)
+      beforeMapping.map(origBeforeArgs[i], newBeforeArgs[i]);
+
+    for (auto &bodyOp : op.getBefore().front().getOperations()) {
+      Operation *newBodyOp = rewriter.clone(bodyOp, beforeMapping);
+      if (candidateHints.contains(&bodyOp)) {
+        auto strideHint = candidateHints[&bodyOp];
+        candidateHints.erase(&bodyOp);
+        candidateHints.insert(std::make_pair(newBodyOp, strideHint));
+        auto it = std::find(candidateOps.begin(), candidateOps.end(), &bodyOp);
+        if (it != candidateOps.end()) {
+          candidateOps.erase(it);
+          candidateOps.push_back(newBodyOp);
+        }
+      }
+    }
+  }
+
+  {
+    Block *newAfterBlock =
+        rewriter.createBlock(&newOp.getAfter(), newOp.getAfter().begin());
+    for (auto t : newResultTypes)
+      newAfterBlock->addArgument(t, op.getLoc());
+
+    rewriter.setInsertionPointToStart(newAfterBlock);
+    IRMapping afterMapping;
+    auto origAfterArgs = op.getAfterArguments();
+    auto newAfterArgs = newAfterBlock->getArguments();
+    for (unsigned i = 0; i < origAfterArgs.size(); ++i)
+      afterMapping.map(origAfterArgs[i], newAfterArgs[i]);
+
+    for (auto &bodyOp : op.getAfter().front().getOperations()) {
+      Operation *newBodyOp = rewriter.clone(bodyOp, afterMapping);
+      if (candidateHints.contains(&bodyOp)) {
+        auto strideHint = candidateHints[&bodyOp];
+        candidateHints.erase(&bodyOp);
+        candidateHints.insert(std::make_pair(newBodyOp, strideHint));
+        auto it = std::find(candidateOps.begin(), candidateOps.end(), &bodyOp);
+        if (it != candidateOps.end()) {
+          candidateOps.erase(it);
+          candidateOps.push_back(newBodyOp);
+        }
+      }
+    }
+  }
+
+  {
+    int cnt = originalArgCount;
+    LLVM_DEBUG(llvm::dbgs()
+               << "rewriteWhileOp BeforeArguments init size: " << cnt << "\n");
+    for (auto &[i, state] : initArgIndexState) {
+      PtrState beforeState;
+      beforeState.source = state.source;
+      if (state.scalar) {
+        beforeState.scalar = newOp.getBeforeArguments()[cnt];
+        cnt++;
+      }
+      for (size_t j = 0; j < state.offsets.size(); j++) {
+        beforeState.offsets.push_back(newOp.getBeforeArguments()[cnt]);
+        cnt++;
+      }
+      for (size_t j = 0; j < state.strides.size(); j++) {
+        beforeState.strides.push_back(newOp.getBeforeArguments()[cnt]);
+        cnt++;
+      }
+      for (auto s : state.sizes)
+        beforeState.sizes.push_back(s);
+
+      auto key = newOp.getBeforeArguments()[i];
+      knownPtrs.insert(std::make_pair(key, beforeState));
+    }
+    for (auto &[i, state] : initMaskIndexState) {
+      MaskState beforeMaskState;
+      if (state.start) {
+        beforeMaskState.start = newOp.getBeforeArguments()[cnt];
+        cnt++;
+      }
+      if (state.end) {
+        beforeMaskState.end = newOp.getBeforeArguments()[cnt];
+        cnt++;
+      }
+      beforeMaskState.dims = state.dims;
+      auto key = newOp.getBeforeArguments()[i];
+      knownMasks.insert(std::make_pair(key, beforeMaskState));
+    }
+    assert(static_cast<size_t>(cnt) == newOp.getBeforeArguments().size() &&
+           "expect to remap all new before block args");
+  }
+
+  {
+    auto condOp =
+        cast<scf::ConditionOp>(newOp.getBefore().front().getTerminator());
+    rewriteConditionOp(rewriter, condOp, knownPtrs, knownMasks);
+  }
+
+  {
+    int cnt = originalArgCount;
+    LLVM_DEBUG(llvm::dbgs()
+               << "rewriteWhileOp AfterArguments init size: " << cnt << "\n");
+    for (auto &[i, state] : initArgIndexState) {
+      PtrState afterState;
+      afterState.source = state.source;
+      if (state.scalar) {
+        afterState.scalar = newOp.getAfterArguments()[cnt];
+        cnt++;
+      }
+      for (size_t j = 0; j < state.offsets.size(); j++) {
+        afterState.offsets.push_back(newOp.getAfterArguments()[cnt]);
+        cnt++;
+      }
+      for (size_t j = 0; j < state.strides.size(); j++) {
+        afterState.strides.push_back(newOp.getAfterArguments()[cnt]);
+        cnt++;
+      }
+      for (auto s : state.sizes)
+        afterState.sizes.push_back(s);
+
+      auto key = newOp.getAfterArguments()[i];
+      knownPtrs.insert(std::make_pair(key, afterState));
+    }
+    for (auto &[i, state] : initMaskIndexState) {
+      MaskState afterMaskState;
+      if (state.start) {
+        afterMaskState.start = newOp.getAfterArguments()[cnt];
+        cnt++;
+      }
+      if (state.end) {
+        afterMaskState.end = newOp.getAfterArguments()[cnt];
+        cnt++;
+      }
+      afterMaskState.dims = state.dims;
+      auto key = newOp.getAfterArguments()[i];
+      knownMasks.insert(std::make_pair(key, afterMaskState));
+    }
+    assert(static_cast<size_t>(cnt) == newOp.getAfterArguments().size() &&
+           "expect to remap all new after block args");
+  }
+
+  if (newOp.getAfterArguments().size()) {
+    LLVM_DEBUG(llvm::dbgs() << "newOp getAfterArguments size: "
+                            << newOp.getAfterArguments().size() << "\n");
+    auto yieldOp = cast<scf::YieldOp>(newOp.getAfter().front().getTerminator());
+    rewriteYieldOp(rewriter, yieldOp, knownPtrs, knownMasks);
+  }
+
+  LLVM_DEBUG(llvm::dbgs() << "rewriteWhileOp getNumResults size: "
+                          << op.getNumResults() << "\n");
+  auto resultsToReplaceWith = ResultRange(
+      newOp.result_begin(), newOp.result_begin() + op.getNumResults());
+  rewriter.replaceOp(op, resultsToReplaceWith);
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "ptr analysis create new while\n";
+    newOp.getOperation()->print(llvm::dbgs(),
+                                OpPrintingFlags().printGenericOpForm());
+    llvm::dbgs() << "\n";
+  });
+  return success();
+}
+
 void PtrAnalysis::foldAwayForOp(
     PatternRewriter & /*rewriter*/, scf::ForOp forOp,
     llvm::SmallDenseMap<Value, PtrState> & /*knownPtrs*/) {
@@ -1127,13 +1540,13 @@ void PtrAnalysis::foldAwayForOp(
   }
 }
 
-bool checkElemType(Type t) {
+bool checkElemType(Type t, bool enable_i64 = false) {
   if (!isa<TensorType>(t))
     return false;
 
   auto tensorType = dyn_cast<TensorType>(t);
   unsigned bitwidth = 32;
-  if (!triton::gcu::get_bool_env("ENABLE_I64_CHECK", true))
+  if (enable_i64)
     bitwidth = 64;
   if (!tensorType.getElementType().isIntOrFloat() ||
       tensorType.getElementType().getIntOrFloatBitWidth() > bitwidth)
@@ -1185,7 +1598,7 @@ bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads) {
   }
 
   bool bypass = false;
-  // need more check if it is the block argument of ForOp
+  // need more check if it is the block argument of ForOp or WhileOp
   if (!v.getDefiningOp()) {
     auto blockArgOp = dyn_cast_or_null<mlir::BlockArgument>(v);
     if (blockArgOp && isa<scf::ForOp>(blockArgOp.getOwner()->getParentOp())) {
@@ -1209,12 +1622,52 @@ bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads) {
 
         valueFromLoads[v] = bypass;
       }
+    } else if (blockArgOp &&
+               isa<scf::WhileOp>(blockArgOp.getOwner()->getParentOp())) {
+      auto whileOp =
+          dyn_cast<scf::WhileOp>(blockArgOp.getOwner()->getParentOp());
+      auto idx = blockArgOp.getArgNumber();
+      Block *ownerBlock = blockArgOp.getOwner();
+
+      if (ownerBlock == &whileOp.getBefore().front()) {
+        auto initValue = whileOp.getInits()[idx];
+        bypass = initValue.getDefiningOp()
+                     ? isPtrFromLoad(initValue, valueFromLoads)
+                     : true;
+        valueFromLoads.insert(std::make_pair(v, bypass));
+        if (!bypass) {
+          auto yieldOp =
+              cast<scf::YieldOp>(whileOp.getAfter().front().getTerminator());
+          if (idx < yieldOp.getOperands().size()) {
+            auto yieldValue = yieldOp.getOperands()[idx];
+            bool yieldBypass = isPtrFromLoad(yieldValue, valueFromLoads);
+            bypass = bypass || yieldBypass;
+          } else {
+            bypass = true;
+          }
+          valueFromLoads[v] = bypass;
+        }
+      } else {
+        auto condOp =
+            cast<scf::ConditionOp>(whileOp.getBefore().front().getTerminator());
+        if (idx < condOp.getArgs().size()) {
+          auto condValue = condOp.getArgs()[idx];
+          bypass = isPtrFromLoad(condValue, valueFromLoads);
+        } else {
+          bypass = true;
+        }
+        valueFromLoads.insert(std::make_pair(v, bypass));
+      }
     } else {
       valueFromLoads.insert(std::make_pair(v, bypass));
     }
 
     return bypass;
   }
+
+  // Prevent infinite recursion
+  valueFromLoads.insert(std::make_pair(v, false));
+
   TypeSwitch<Operation *>(v.getDefiningOp())
       .Case<triton::LoadOp>([&](auto /*op*/) { bypass = true; })
       .Case<arith::ConstantOp, arith::ConstantIndexOp, triton::MakeRangeOp>(
@@ -1235,7 +1688,7 @@ bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads) {
           [&](auto op) { bypass = isPtrFromLoad(op.getIn(), valueFromLoads); })
       .Case<arith::SelectOp, arith::DivSIOp, arith::SubIOp, arith::RemSIOp,
             arith::RemUIOp, arith::MinSIOp, arith::FPToSIOp, arith::FPToUIOp,
-            triton::DotOp, triton::ReduceOp, triton::ReshapeOp,
+            arith::XOrIOp, triton::DotOp, triton::ReduceOp, triton::ReshapeOp,
             triton::gpu::ConvertLayoutOp, triton::ScanOp, triton::HistogramOp,
             triton::CatOp, triton::IntToPtrOp>([&](auto op) {
         (void)op;
@@ -1257,7 +1710,7 @@ bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads) {
                            op->getName().getStringRef().str();
         llvm_unreachable(info.c_str());
       });
-  valueFromLoads.insert(std::make_pair(v, bypass));
+  valueFromLoads[v] = bypass;
   return bypass;
 }
 
@@ -1414,6 +1867,42 @@ bool isMaskCandidate(Value v, llvm::DenseMap<Value, bool> &valueToCandiates) {
 
         valueToCandiates[v] = candidate;
       }
+    } else if (blockArgOp &&
+               isa<scf::WhileOp>(blockArgOp.getOwner()->getParentOp())) {
+      auto whileOp =
+          dyn_cast<scf::WhileOp>(blockArgOp.getOwner()->getParentOp());
+      auto idx = blockArgOp.getArgNumber();
+      Block *ownerBlock = blockArgOp.getOwner();
+
+      if (ownerBlock == &whileOp.getBefore().front()) {
+        auto initValue = whileOp.getInits()[idx];
+        candidate = initValue.getDefiningOp()
+                        ? isMaskCandidate(initValue, valueToCandiates)
+                        : false;
+        valueToCandiates.insert(std::make_pair(v, candidate));
+        if (candidate) {
+          auto yieldOp =
+              cast<scf::YieldOp>(whileOp.getAfter().front().getTerminator());
+          if (idx < yieldOp.getOperands().size()) {
+            auto yieldValue = yieldOp.getOperands()[idx];
+            bool yieldCandidate = isMaskCandidate(yieldValue, valueToCandiates);
+            candidate = candidate && yieldCandidate;
+          } else {
+            candidate = false;
+          }
+          valueToCandiates[v] = candidate;
+        }
+      } else {
+        auto condOp =
+            cast<scf::ConditionOp>(whileOp.getBefore().front().getTerminator());
+        if (idx < condOp.getArgs().size()) {
+          auto condValue = condOp.getArgs()[idx];
+          candidate = isMaskCandidate(condValue, valueToCandiates);
+        } else {
+          candidate = false;
+        }
+        valueToCandiates.insert(std::make_pair(v, candidate));
+      }
     } else {
       valueToCandiates.insert(std::make_pair(v, candidate));
     }
@@ -1438,9 +1927,9 @@ bool isMaskCandidate(Value v, llvm::DenseMap<Value, bool> &valueToCandiates) {
       })
       .Case<arith::SelectOp, arith::DivSIOp, arith::SubIOp, arith::RemSIOp,
             arith::MulIOp, arith::RemUIOp, arith::FPToSIOp, arith::FPToUIOp,
-            triton::ReduceOp, triton::DotOp, triton::ReshapeOp,
-            triton::gpu::ConvertLayoutOp, triton::ScanOp, triton::HistogramOp,
-            triton::CatOp>([&](auto op) {
+            arith::XOrIOp, arith::CmpFOp, triton::ReduceOp, triton::DotOp,
+            triton::ReshapeOp, triton::gpu::ConvertLayoutOp, triton::ScanOp,
+            triton::HistogramOp, triton::CatOp>([&](auto op) {
         (void)op;
         // bypass DivSIOp, which is completely discontiguous index operation,
         // and cannot be converted to dte
@@ -1498,7 +1987,8 @@ bool isMaskCandidate(Value v, llvm::DenseMap<Value, bool> &valueToCandiates) {
 
 void PtrAnalysis::collectCandidateLoadStoreOps(
     ModuleOp &moduleOp, llvm::SmallVector<Operation *, 8> &candidates,
-    llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints) {
+    llvm::SmallDenseMap<Operation *, SmallVector<int32_t>> &candidateHints,
+    bool enable_i64) {
   gcu::ModuleAxisInfoExAnalysis axisInfoExAnalysis(moduleOp);
 
   llvm::SmallVector<Operation *, 8> loadstoreOps;
@@ -1524,7 +2014,7 @@ void PtrAnalysis::collectCandidateLoadStoreOps(
         continue;
       }
 
-      if (!checkElemType(loadOp.getType())) {
+      if (!checkElemType(loadOp.getType(), enable_i64)) {
         LLVM_DEBUG(llvm::dbgs()
                    << "bypass load op due to noncandidate element type: "
                    << loadOp << "\n");
@@ -1568,7 +2058,7 @@ void PtrAnalysis::collectCandidateLoadStoreOps(
         continue;
       }
 
-      if (!checkElemType(storeOp.getValue().getType())) {
+      if (!checkElemType(storeOp.getValue().getType(), enable_i64)) {
         LLVM_DEBUG(llvm::dbgs()
                    << "bypass store op due to noncandidate element type: "
                    << storeOp << "\n");

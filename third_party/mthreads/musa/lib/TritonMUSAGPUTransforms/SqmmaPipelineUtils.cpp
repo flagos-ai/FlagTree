@@ -476,6 +476,38 @@ collectPipelineSqmmaDots(scf::ForOp loop) {
 } // namespace
 
 void pipelineSqmma(ModuleOp moduleOp, unsigned numStages) {
+#ifdef __TLE__
+  SmallVector<scf::ForOp> loops;
+  moduleOp.walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
+
+  for (scf::ForOp loop : loops) {
+    if (tt::getNumStagesOrDefault(loop, numStages) < 1)
+      continue;
+
+    SmallVector<triton::musa::SquadDotOp> sqmmaDots =
+        collectPipelineSqmmaDots(loop);
+    llvm::erase_if(sqmmaDots, [](triton::musa::SquadDotOp dot) {
+      return dot->hasAttr("musa_tle.explicit_sqmma");
+    });
+    if (sqmmaDots.empty())
+      continue;
+
+    ProperlyAsyncDots properlyAsyncDots;
+    for (triton::musa::SquadDotOp sqmma : sqmmaDots) {
+      sqmma->setAttr("isAsync", BoolAttr::get(moduleOp.getContext(), true));
+      if (auto iterArgIdx = dotCanBeProperlyAsync(sqmma, loop)) {
+        properlyAsyncDots[sqmma] = *iterArgIdx;
+        continue;
+      }
+
+      auto wait = getOrCreateWaitAfter(sqmma);
+      (void)threadValuesThroughWait(wait, {sqmma.getResult()}, loop);
+    }
+
+    insertAsyncSqmmaWaitsInLoop(loop, properlyAsyncDots);
+    insertFinalWaitAfterLoop(loop, properlyAsyncDots);
+  }
+#else
   SmallVector<scf::ForOp> loops;
   moduleOp.walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
 
@@ -503,6 +535,7 @@ void pipelineSqmma(ModuleOp moduleOp, unsigned numStages) {
     insertAsyncSqmmaWaitsInLoop(loop, properlyAsyncDots);
     insertFinalWaitAfterLoop(loop, properlyAsyncDots);
   }
+#endif // __TLE__
 }
 
 } // namespace mlir::triton::musa::pipeline

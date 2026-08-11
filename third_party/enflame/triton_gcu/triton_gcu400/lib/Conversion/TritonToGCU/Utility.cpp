@@ -77,8 +77,11 @@
 namespace mlir {
 
 int32_t getMasterThreadId(Region *region, int32_t defaultWarpId) {
-  if (auto wsOp =
-          region->getParentOp()->getParentOfType<mlir::gcu::WarpSpecializeOp>())
+  Operation *parentOp = region->getParentOp();
+  auto wsOp = dyn_cast<mlir::gcu::WarpSpecializeOp>(parentOp);
+  if (!wsOp)
+    wsOp = parentOp->getParentOfType<mlir::gcu::WarpSpecializeOp>();
+  if (wsOp)
     return wsOp.getMasterThreadId(region);
   return defaultWarpId;
 }
@@ -96,6 +99,22 @@ void captureValuesToWarpSpecializeOp(WarpSpecializeOpTy wsOp, Value capture) {
     replaceAllUsesInRegionWith(capture, arg, *region);
   }
 }
+
+#if TRITON_VERSION >= 37
+// In Triton 3.7, triton::gpu::WarpSpecializeOp no longer has explicitCaptures
+// operands; they moved to WarpSpecializePartitionsOp.
+template <>
+void captureValuesToWarpSpecializeOp<triton::gpu::WarpSpecializeOp>(
+    triton::gpu::WarpSpecializeOp wsOp, Value capture) {
+  auto partOp = wsOp.getPartitionOp();
+  partOp->insertOperands(partOp.getNumOperands(), capture);
+  for (Region *region : wsOp.getPartitionRegions()) {
+    BlockArgument arg =
+        region->addArgument(capture.getType(), capture.getLoc());
+    replaceAllUsesInRegionWith(capture, arg, *region);
+  }
+}
+#endif
 
 template <typename WarpSpecializeOpTy>
 void captureValuesToWarpSpecializeOp(Operation *entryFunc, Value capture) {
@@ -376,8 +395,14 @@ void doSlicePadOrMemsetSlice(OpBuilder &rewriter, Location loc, Operation *op,
       },
       [&](OpBuilder &childBuilder, Location loc) {
         doMemset(childBuilder, tag, op, output, defaultValue, totalNumElems);
-        childBuilder.create<memref_ext::SliceStartOp>(
-            loc, output, src, offsets, defaultValue, tag.getTag(),
+        auto rank = outputType.getRank();
+        SmallVector<Value, 4> dstOffsets;
+        auto zeroI32 = childBuilder.create<arith::ConstantIntOp>(loc, 0, 32);
+        for (int i = 0; i < rank; i++) {
+          dstOffsets.push_back(zeroI32);
+        }
+        childBuilder.create<memref_ext::SliceDesliceStartOp>(
+            loc, output, src, offsets, sliceShape, dstOffsets, tag.getTag(),
             ValueRange{tag.getIdx()});
         childBuilder.create<scf::YieldOp>(loc);
       });
@@ -2078,11 +2103,129 @@ void WaitGcuLoadStore(OpBuilder &rewriter, Location loc,
                                      ValueRange{tag.getIdx()}, totalSize);
 }
 
+void forEachAccDotOrMatmul(Value loadResult,
+                           llvm::function_ref<void(Operation *)> callback) {
+  for (auto *user : loadResult.getUsers()) {
+    if (isa<triton::DotOp, gcu::MatMulOp>(user))
+      callback(user);
+    if (auto forOp = dyn_cast<scf::ForOp>(user)) {
+      for (auto [idx, initArg] : llvm::enumerate(forOp.getInitArgs())) {
+        if (initArg != loadResult)
+          continue;
+        auto blockArg = forOp.getRegionIterArg(idx);
+        for (auto *bodyUser : blockArg.getUsers()) {
+          if (isa<triton::DotOp, gcu::MatMulOp>(bodyUser))
+            callback(bodyUser);
+        }
+      }
+    }
+  }
+}
+
+StringRef getMatrixLoadMode(triton::gcu::LoadOp loadOp) {
+  if (loadOp.getType().getRank() != 2) {
+    LLVM_DEBUG(llvm::dbgs() << "getMatrixLoadMode: loadOp shape rank != 2\n");
+    return "";
+  }
+  StringRef result = "";
+  forEachAccDotOrMatmul(loadOp.getResult(), [&](Operation *op) {
+    if (result.empty()) {
+      if (auto accLoad = op->getAttr(kAccLoad))
+        result = cast<StringAttr>(accLoad).getValue();
+    }
+  });
+  return result;
+}
+
+void ConfigMatrixLoad(OpBuilder &rewriter, Location loc,
+                      triton::gcu::LoadOp loadOp, Value value, Value ptr,
+                      ValueRange srcShapes, ValueRange srcStrides,
+                      ValueRange srcOffsets, bool loadFromLocalMem) {
+  auto loadType = loadOp.getType();
+  int64_t rank = loadType.getRank();
+  assert(rank == 2 && "matrix_load value must be 2D tensor");
+  auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+
+  auto numElems = triton::gcu::getElemsPerThread(loadType);
+  SmallVector<Value, 4> vNumElems;
+  for (unsigned i = 0; i < rank; ++i)
+    vNumElems.push_back(
+        rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]));
+
+  auto warpIds = getWarpIds(rewriter, loc, loadType);
+  SmallVector<Value, 2> warpOffsets;
+  for (unsigned i = 0; i < rank; ++i)
+    warpOffsets.push_back(
+        rewriter.create<arith::MulIOp>(loc, warpIds[i], vNumElems[i]));
+
+  // Dst ptr with block-level offset applied
+  Value srcPtr = ptr;
+  if (!loadFromLocalMem) {
+    auto srcElemType = loadOp.getPtr().getType().getElementType();
+    int64_t elemBytes = (srcElemType.getIntOrFloatBitWidth() + 7) / 8;
+    auto i64Type = rewriter.getI64Type();
+    Value ptrInt = rewriter.create<gcu::PtrToIntOp>(loc, ptr);
+    Value linearOffset =
+        rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(0));
+    for (unsigned i = 0; i < rank; ++i) {
+      Value offset = rewriter.create<arith::IndexCastOp>(
+          loc, i64Type,
+          rewriter.create<arith::AddIOp>(loc, warpOffsets[i], srcOffsets[i]));
+      Value stride =
+          rewriter.create<arith::IndexCastOp>(loc, i64Type, srcStrides[i]);
+      Value product = rewriter.create<arith::MulIOp>(loc, offset, stride);
+      linearOffset = rewriter.create<arith::AddIOp>(loc, linearOffset, product);
+    }
+    Value elemSizeVal = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getI64IntegerAttr(elemBytes));
+    Value byteOffset =
+        rewriter.create<arith::MulIOp>(loc, linearOffset, elemSizeVal);
+    Value offsetPtrInt =
+        rewriter.create<arith::AddIOp>(loc, ptrInt, byteOffset);
+    srcPtr = rewriter.create<gcu::IntToPtrOp>(loc, ptr.getType(), offsetPtrInt);
+  }
+
+  SmallVector<Value, 2> memDims;
+  if (loadFromLocalMem) {
+    auto valueShape = dyn_cast<MemRefType>(value.getType()).getShape();
+    memDims.push_back(
+        rewriter.create<arith::ConstantIndexOp>(loc, valueShape[0]));
+    memDims.push_back(
+        rewriter.create<arith::ConstantIndexOp>(loc, valueShape[1]));
+  } else {
+    memDims.push_back(srcShapes[0]);
+    memDims.push_back(srcStrides[0]);
+  }
+
+  SmallVector<Value, 2> realDims;
+  for (unsigned i = 0; i < rank; ++i) {
+    Value remaining =
+        rewriter.create<arith::SubIOp>(loc, srcShapes[i], warpOffsets[i]);
+    Value clamped = rewriter.create<arith::MaxSIOp>(loc, zero, remaining);
+    Value sliceShape =
+        rewriter.create<arith::MinSIOp>(loc, vNumElems[i], clamped);
+    realDims.push_back(sliceShape);
+  }
+
+  rewriter.create<gcu::MatrixLoadOp>(loc, value, srcPtr, memDims, realDims);
+}
+
+memref::AllocaOp getAllocaOp(Value val) {
+  while (auto castOp = val.getDefiningOp<memref::ReinterpretCastOp>())
+    val = castOp.getSource();
+
+  if (auto allocaOp = val.getDefiningOp<memref::AllocaOp>()) {
+    return allocaOp;
+  }
+  return nullptr;
+}
+
 bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue) {
   if (storeOp.getValue().getType().getRank() != 2) {
     LLVM_DEBUG(llvm::dbgs() << "useMatrixStore: storeOp shape rank != 2\n");
     return false;
   }
+  // return storeOp->hasAttr(kMaxtrixStore);
 
   auto getStoreVal = [](Value val) {
     while (auto *defOp = val.getDefiningOp()) {
@@ -2098,12 +2241,19 @@ bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue) {
 
   auto isAccStoreGlobal = [](Value val) {
     auto defOp = val.getDefiningOp();
-    if (defOp && isa<triton::DotOp, gcu::MatMulOp>(defOp)) {
-      if (auto accStore = defOp->getAttr(kAccStore)) {
-        StringRef accStoreVal = mlir::cast<StringAttr>(accStore).getValue();
-        return accStoreVal == kAccStoreGlobal ||
-               accStoreVal == kAccStoreCvtGlobal;
+    if (defOp) {
+      if (isa<triton::DotOp, triton::gcu::ElementwiseFusionRegionOp>(defOp)) {
+        if (defOp->hasAttr(kAccStore)) {
+          StringRef accStoreVal =
+              mlir::cast<StringAttr>(defOp->getAttr(kAccStore)).getValue();
+          return accStoreVal == kAccStoreGlobal ||
+                 accStoreVal == kAccStoreCvtGlobal;
+        }
+      } else if (getAllocaOp(val)) {
+        return true;
       }
+    } else if (isa<BlockArgument>(val) && getAllocaOp(val)) {
+      return true;
     }
     return false;
   };
@@ -2124,7 +2274,7 @@ bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue) {
 void ConfigMatrixStore(OpBuilder &rewriter, Location loc,
                        triton::gcu::StoreOp storeOp, Value value, Value ptr,
                        ValueRange dstShapes, ValueRange dstStrides,
-                       ValueRange dstOffsets, bool hasTrans) {
+                       ValueRange dstOffsets, bool storeToLocalMem) {
   auto storeType = storeOp.getValue().getType();
   int64_t rank = storeType.getRank();
   assert(rank == 2 && "matrix_store value must be 2D memref");
@@ -2145,7 +2295,7 @@ void ConfigMatrixStore(OpBuilder &rewriter, Location loc,
 
   // Dst ptr with block-level offset applied
   Value dstPtr = ptr;
-  if (!hasTrans) {
+  if (!storeToLocalMem) {
     auto dstElemType = storeOp.getPtr().getType().getElementType();
     int64_t elemBytes = (dstElemType.getIntOrFloatBitWidth() + 7) / 8;
     auto i64Type = rewriter.getI64Type();
@@ -2172,12 +2322,12 @@ void ConfigMatrixStore(OpBuilder &rewriter, Location loc,
 
   // Dst mem dims
   SmallVector<Value, 2> memDims;
-  if (hasTrans) {
-    auto srcShape = dyn_cast<MemRefType>(value.getType()).getShape();
+  if (storeToLocalMem) {
+    auto valueShape = dyn_cast<MemRefType>(value.getType()).getShape();
     memDims.push_back(
-        rewriter.create<arith::ConstantIndexOp>(loc, srcShape[0]));
+        rewriter.create<arith::ConstantIndexOp>(loc, valueShape[0]));
     memDims.push_back(
-        rewriter.create<arith::ConstantIndexOp>(loc, srcShape[1]));
+        rewriter.create<arith::ConstantIndexOp>(loc, valueShape[1]));
   } else {
     memDims.push_back(dstShapes[0]);
     memDims.push_back(dstStrides[0]);
@@ -2197,8 +2347,27 @@ void ConfigMatrixStore(OpBuilder &rewriter, Location loc,
   rewriter.create<gcu::MatrixStoreOp>(loc, value, dstPtr, memDims, realDims);
 }
 
+Operation *ConfigMatrixStoreLocal(OpBuilder &rewriter, Location loc,
+                                  MemRefType resultType, Value out,
+                                  Value adaptedResult) {
+  auto outPtrType =
+      gcu::PtrType::get(rewriter.getContext(), resultType.getElementType());
+  auto outPtr = rewriter.create<gcu::MemRefToPtrOp>(loc, outPtrType, out);
+  auto outShape = resultType.getShape();
+  SmallVector<Value, 2> memDims, realDims;
+  memDims.push_back(rewriter.create<arith::ConstantIndexOp>(loc, outShape[0]));
+  memDims.push_back(rewriter.create<arith::ConstantIndexOp>(loc, outShape[1]));
+  realDims.push_back(rewriter.create<memref::DimOp>(loc, out, 0));
+  realDims.push_back(rewriter.create<memref::DimOp>(loc, out, 1));
+
+  return rewriter.create<gcu::MatrixStoreOp>(loc, adaptedResult, outPtr,
+                                             memDims, realDims);
+}
+
 void removeRedundantZeroFill(ConversionPatternRewriter &rewriter,
                              memref::AllocOp allocOp) {
+  if (!allocOp)
+    return;
   for (auto *user :
        llvm::make_early_inc_range(allocOp.getResult().getUsers())) {
     auto rcOp = dyn_cast<memref::ReinterpretCastOp>(user);
@@ -2353,7 +2522,6 @@ Value lookupPartitionTagArg(WarpSpecializeOpTy wsOp, Operation *op,
   if (!opRegion)
     return {};
   for (Region *part : wsOp.getPartitionRegions()) {
-    // Ops inside nested regions (e.g. scf.for body) have parentRegion != part.
     if (!part->isAncestor(opRegion))
       continue;
     if (part->empty())
@@ -2367,6 +2535,31 @@ Value lookupPartitionTagArg(WarpSpecializeOpTy wsOp, Operation *op,
   }
   return {};
 }
+
+#if TRITON_VERSION >= 37
+// In Triton 3.7, triton::gpu::WarpSpecializeOp operands moved to PartitionsOp.
+template <>
+Value lookupPartitionTagArg<triton::gpu::WarpSpecializeOp>(
+    triton::gpu::WarpSpecializeOp wsOp, Operation *op, Value tagMemref) {
+  Region *opRegion = op->getParentRegion();
+  if (!opRegion)
+    return {};
+  auto partOp = wsOp.getPartitionOp();
+  for (Region *part : wsOp.getPartitionRegions()) {
+    if (!part->isAncestor(opRegion))
+      continue;
+    if (part->empty())
+      return {};
+    for (unsigned i = 0; i < partOp.getNumOperands(); ++i) {
+      if (partOp.getOperand(i) == tagMemref)
+        return part->getArgument(i);
+    }
+    captureValuesToWarpSpecializeOp(wsOp, tagMemref);
+    return part->getArgument(partOp.getNumOperands() - 1);
+  }
+  return {};
+}
+#endif
 
 } // namespace
 
@@ -3328,6 +3521,32 @@ bool isMixedPrecisionSymbol(StringRef symbol) {
                       });
 }
 
+bool isAllocaInputValue(Value v) {
+  if (!v) {
+    return false;
+  }
+  auto defOp = v.getDefiningOp();
+  if (!defOp) {
+    auto blockArg = dyn_cast<mlir::BlockArgument>(v);
+    if (!blockArg) {
+      return false;
+    }
+    auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+    if (!forOp) {
+      return false;
+    }
+    return isAllocaInputValue(forOp.getInitArgs()[blockArg.getArgNumber() -
+                                                  forOp.getNumInductionVars()]);
+  }
+  if (isa_and_nonnull<memref::AllocaOp>(defOp)) {
+    return true;
+  }
+  if (isa_and_nonnull<memref::ReinterpretCastOp>(defOp)) {
+    return isAllocaInputValue(defOp->getOperand(0));
+  }
+  return false;
+}
+
 ReduceGenerator::ReduceGenerator(triton::ReduceOp op,
                                  PrologueArgListType prologueArgList,
                                  PrologueOpIteratorRange prologueOps)
@@ -3569,11 +3788,12 @@ void ReduceGenerator::applyVectorizeImpl<2, 2>(OpBuilder &builder, Location loc,
             b.tarLoad(loadTypes[i], tarAddrs[i], inputTarStrides[i][1]));
       }
       if (reduceOutputDims[2] > 1) {
-        values.resize(loopCnt * numInputs * reduceOutputDims[2]);
+        auto reduceNumInputs = op.getNumOperands();
+        values.resize(loopCnt * reduceNumInputs * reduceOutputDims[2]);
         for (unsigned i = 0; i < loopCnt; ++i) {
           processPrologue(builder, loc, operandMaps[i]);
         }
-        for (unsigned i = 0; i < op.getNumOperands(); ++i) {
+        for (unsigned i = 0; i < reduceNumInputs; ++i) {
           auto splitVectorType = VectorType::get(
               ArrayRef<int64_t>{vectorLength / reduceOutputDims[2]},
               getElementTypeOrSelf(op.getOperand(i).getType()));
@@ -3585,8 +3805,8 @@ void ReduceGenerator::applyVectorizeImpl<2, 2>(OpBuilder &builder, Location loc,
                         operandMaps[j].lookup(op.getOperand(i)))
                     .getResults();
             for (unsigned k = 0; k < splitValues.size(); ++k) {
-              values[j * numInputs * reduceOutputDims[2] + k * numInputs + i] =
-                  splitValues[k];
+              values[j * reduceNumInputs * reduceOutputDims[2] +
+                     reduceNumInputs * k + i] = splitValues[k];
             }
           }
         }
@@ -3620,8 +3840,8 @@ void ReduceGenerator::applyVectorizeImpl<2, 2>(OpBuilder &builder, Location loc,
               auto loop0 = builder.create<scf::ForOp>(
                   loc,
                   builder.create<arith::ConstantIndexOp>(loc, vectorLength),
-                  builder.create<arith::ConstantIndexOp>(
-                      loc, reduceInputDims[2] / reduceOutputDims[2]),
+                  builder.create<arith::ConstantIndexOp>(loc,
+                                                         reduceInputDims[2]),
                   builder.create<arith::ConstantIndexOp>(loc, vectorLength),
                   initArgs,
                   [&](OpBuilder &builder, Location loc, Value iter0,
@@ -3639,7 +3859,8 @@ void ReduceGenerator::applyVectorizeImpl<2, 2>(OpBuilder &builder, Location loc,
                       }
                       terminatorOperands.append(
                           combineOpDesc.applyVectorizedCombine(
-                              builder, loc, args, vectorLength));
+                              builder, loc, args,
+                              vectorLength / reduceOutputDims[2]));
                     }
                     builder.create<scf::YieldOp>(loc, terminatorOperands);
                   });
@@ -3647,13 +3868,15 @@ void ReduceGenerator::applyVectorizeImpl<2, 2>(OpBuilder &builder, Location loc,
                 initArgs[i] = loop0.getResult(i);
                 b.tarJump(initArgs[i], inputTarStrides[i][2]);
               }
-              for (unsigned i = 0; i < loopCnt * reduceOutputDims[2]; ++i) {
-                for (unsigned j = 0; j < numOutputs; ++j) {
+              for (unsigned i = 0; i < loopCnt; ++i) {
+                for (unsigned k = 0; k < reduceOutputDims[2]; ++k) {
                   auto results = triton::gcu::reduceVectorLanes(
                       builder, loc, combineOpDesc,
                       ValueRange(loop0.getResults().slice(
-                          numInputs + i * numOutputs, numOutputs)));
-                  for (unsigned k = 0; k < reduceOutputDims[2]; ++k) {
+                          numInputs +
+                              (i * reduceOutputDims[2] + k) * numOutputs,
+                          numOutputs)));
+                  for (unsigned j = 0; j < numOutputs; ++j) {
                     builder.create<memref::StoreOp>(
                         loc, results[j], outputs[j],
                         ValueRange{

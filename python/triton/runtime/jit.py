@@ -1,3 +1,25 @@
+# Copyright 2018-2020 Philippe Tillet
+# Copyright 2020-2022 OpenAI
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 from __future__ import annotations, division
 import ast
 import copy
@@ -869,6 +891,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
             def finalize_compile(kernel):
                 kernel_cache[key] = kernel
+                # flagtree tle raw
+                try:
+                    from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+                except ImportError:
+                    pass
+                else:
+                    run_kernel_init_hooks(kernel)
                 self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options,
                                 [attrs], warmup)
 
@@ -876,6 +905,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
         else:
             kernel = self.compile(src, target=target, options=options.__dict__)
             kernel_cache[key] = kernel
+            # flagtree tle raw
+            try:
+                from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+            except ImportError:
+                pass
+            else:
+                run_kernel_init_hooks(kernel)
             self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options, [attrs],
                             warmup)
         return kernel

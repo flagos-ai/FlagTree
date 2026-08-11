@@ -1,3 +1,28 @@
+/*
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Support/DebugStringHelper.h"
@@ -549,6 +574,44 @@ MemDescTransOp::inferReturnTypes(MLIRContext *context,
                        argTy.getMutableMemory(), allocShape));
   return success();
 }
+
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+// ConcatDotOperandOp
+LogicalResult ConcatDotOperandOp::verify() {
+  auto fragments = getFragments();
+  if (fragments.size() < 2)
+    return emitOpError("expects at least two fragments");
+
+  auto fragTy = cast<RankedTensorType>(fragments[0].getType());
+  auto resTy = cast<RankedTensorType>(getResult().getType());
+  int64_t rank = fragTy.getRank();
+
+  // getDim() is unsigned, so sign-extend the stored i32 to keep a negative dim
+  // readable in the diagnostic instead of wrapping to a huge value.
+  int64_t dim = getDimAttr().getValue().getSExtValue();
+  if (dim < 0 || dim >= rank)
+    return emitOpError("dim ") << dim << " is out of range for rank " << rank;
+
+  // Fragments sharing shape, element type and encoding comes from
+  // SameTypeOperands, which reports before this verifier runs.
+  if (resTy.getRank() != rank)
+    return emitOpError("result rank must equal fragment rank");
+  if (resTy.getElementType() != fragTy.getElementType())
+    return emitOpError("result element type must match the fragments");
+  if (resTy.getEncoding() != fragTy.getEncoding())
+    return emitOpError("result encoding must match the fragments");
+
+  for (int64_t i = 0; i < rank; ++i) {
+    int64_t expect = (i == dim) ? fragTy.getShape()[i] *
+                                      static_cast<int64_t>(fragments.size())
+                                : fragTy.getShape()[i];
+    if (resTy.getShape()[i] != expect)
+      return emitOpError("result shape mismatch at dim ")
+             << i << ": expected " << expect << ", got " << resTy.getShape()[i];
+  }
+  return success();
+}
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 // MemDescReshapeOp
 LogicalResult MemDescReshapeOp::verify() {

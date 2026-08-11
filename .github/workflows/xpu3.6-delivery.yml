@@ -1,3 +1,23 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 name: CD-Xpu3.6
 
 permissions:
@@ -110,23 +130,9 @@ jobs:
 
           rm -rf ./build ./*.egg-info
           { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
-          export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
+          # export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
           env | grep -E '^(FLAGTREE_WHEEL_VERSION)=' >> $GITHUB_ENV || true
-
-      - name: FlagTree upload whl
-        shell: bash
-        run: |
-          set -x
-          PLATFORM=${{ inputs.PLATFORM }}
-          PYTHON_VER=${{ inputs.PYTHON_VER }}
-          CP_VER=$(printf '%s' "$PYTHON_VER" | tr -d '.')
-          FLAGTREE_WHL="flagtree-${FLAGTREE_WHEEL_VERSION}-cp${CP_VER}-cp${CP_VER}-linux_${PLATFORM}.whl"
-          pushd ~/dist-flagtree
-          twine check ${FLAGTREE_WHL}
-          echo "Upload ${FLAGTREE_WHL}"
-          bash upload_flagtree_whl.sh "${FLAGTREE_WHL}"
-          popd
 
       - name: FlagTree push tag
         shell: bash
@@ -160,3 +166,17 @@ jobs:
             echo "git push failed after $MAX_RETRY attempts"
             exit 1
           fi
+
+      - name: FlagTree upload whl
+        shell: bash
+        run: |
+          set -x
+          PLATFORM=${{ inputs.PLATFORM }}
+          PYTHON_VER=${{ inputs.PYTHON_VER }}
+          CP_VER=$(printf '%s' "$PYTHON_VER" | tr -d '.')
+          FLAGTREE_WHL="flagtree-${FLAGTREE_WHEEL_VERSION}-cp${CP_VER}-cp${CP_VER}-linux_${PLATFORM}.whl"
+          pushd ~/dist-flagtree
+          twine check ${FLAGTREE_WHL}
+          echo "Upload ${FLAGTREE_WHL}"
+          bash upload_flagtree_whl.sh "${FLAGTREE_WHL}"
+          popd

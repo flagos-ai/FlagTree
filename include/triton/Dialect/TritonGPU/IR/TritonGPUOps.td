@@ -1,3 +1,28 @@
+/*
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #ifndef TRITONGPU_OPS
 #define TRITONGPU_OPS
 
@@ -435,6 +460,37 @@ def TTG_Fp4ToFpOp : TTG_Op<"fp4_to_fp", [Pure]> {
     $src attr-dict `:` type($src) `->` type($result)
   }];
 }
+
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+def TTG_ConcatDotOperandOp : TTG_Op<"concat_dot_operand",
+                                    [Pure, SameTypeOperands]> {
+  let summary = "Concatenate dot operand fragments along the contraction axis";
+
+  let hasVerifier = 1;
+
+  let description = [{
+    Concatenate N fragments along the contraction (K) axis into a single wider
+    fragment, letting one mma cover the whole K tile.
+
+    An internal op, introduced by `tritongpu-concat-dot-operand`; it is not
+    spelled by the user. The concatenation lowers to a per-thread register
+    relabel, which requires: a `dot_op` encoding, `dim` being the contraction
+    axis for its `opIdx`, at least `8 * kWidth` along `dim`, matching lane, warp
+    and block bases between fragment and result, and no broadcast along a dim
+    the relabel indexes by. Those depend on the encoding assigned by layout
+    propagation, so they are checked when lowering rather than in the verifier,
+    and `tritongpu-expand-concat-dot-operand` undoes the op when they do not
+    hold.
+  }];
+
+  let arguments = (ins Variadic<TT_Tensor>:$fragments, I32Attr:$dim);
+  let results = (outs TT_Tensor:$result);
+
+  let assemblyFormat = [{
+    $fragments attr-dict `:` type($fragments) `->` type($result)
+  }];
+}
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 // Allocate global memory
 def TTG_GlobalScratchAllocOp : TTG_Op<"global_scratch_alloc"> {

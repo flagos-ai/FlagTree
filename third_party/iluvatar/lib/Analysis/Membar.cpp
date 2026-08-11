@@ -1,4 +1,7 @@
 #include "triton/Analysis/Membar.h"
+#ifdef __ILUVATAR_TLE__
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -6,6 +9,12 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include <deque>
+
+#ifdef __ILUVATAR__
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include <cstdlib>
+#endif
 
 namespace mlir {
 
@@ -162,21 +171,123 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
   auto barrierOp = triton::gpu::LocalBarrierOp::create(*builder, op->getLoc());
 }
 
+#ifdef __ILUVATAR__
+namespace {
+// Iluvatar SME barrier lightweighting.
+//
+// In an SME software-pipelined loop (num_stages > 1) the `ttg.async_wait`
+// already lowers to `llvm.bi.sl.waitcnt` which drains the G2S queue (the SME
+// global->shared engine). The CTA barrier membar inserts right after it then
+// only needs to provide the cross-warp thread rendezvous, not the heavy
+// `sl_barrier` (which additionally forces a full memory-system fence). So we
+// replace that heavy barrier with a light `barrier.alu` (thread/warp sync
+// only); the G2S drain is already covered by the async_wait's waitcnt.
+// For reference the waitcnt queue-mask bits are bit2 = LM (regular shared
+// stores) and bit3 = G2S (SME).
+constexpr llvm::StringLiteral kIluvatarAluBarrierIntrin =
+    "llvm.bi.sl.barrier.alu";
+
+// Light CTA thread/warp sync only (no memory-queue drain).
+void emitIluvatarAluBarrier(OpBuilder *builder, Location loc) {
+  LLVM::createLLVMIntrinsicCallOp(*builder, loc, kIluvatarAluBarrierIntrin, {},
+                                  {});
+}
+
+void emitIluvatarWaitAndAluBarrier(OpBuilder *builder, Location loc,
+                                   int64_t waitCntValue) {
+  auto i64Ty = builder->getI64Type();
+  Value waitCnt = LLVM::ConstantOp::create(
+      *builder, loc, i64Ty, builder->getIntegerAttr(i64Ty, waitCntValue));
+  LLVM::createLLVMIntrinsicCallOp(*builder, loc, "llvm.bi.sl.waitcnt", {},
+                                  {waitCnt});
+  emitIluvatarAluBarrier(builder, loc);
+}
+
+bool isIluvatarSmeLocalAlloc(Operation *op) {
+  auto alloc = dyn_cast<triton::gpu::LocalAllocOp>(op);
+  if (!alloc || !alloc.getSrc())
+    return false;
+  auto srcTy = dyn_cast<RankedTensorType>(alloc.getSrc().getType());
+  if (!srcTy)
+    return false;
+  auto blocked =
+      dyn_cast<triton::gpu::BlockedEncodingAttr>(srcTy.getEncoding());
+  return blocked && blocked.getIsSme();
+}
+
+// Recognize the `barrier.alu` we inject so the fixed-point membar traversal
+// treats it as a real sync point. Otherwise re-visits of a loop body would not
+// see it as a barrier, would not clear the pending intervals, and would insert
+// a duplicate `barrier.alu` before the same op.
+bool isIluvatarAluBarrier(Operation *op) {
+  if (!op)
+    return false;
+  auto call = dyn_cast<LLVM::CallIntrinsicOp>(op);
+  return call && call.getIntrin() == kIluvatarAluBarrierIntrin;
+}
+
+// An async copy produced by the Iluvatar SME pipeline has an SME blocked
+// encoding and carries an explicit `inputStride`. The light
+// `barrier.alu` after an `async_wait` (in place of the heavy CTA barrier) is
+// only valid for the SME pipeline: there the SME G2S engine plus the
+// `waitcnt` drain the data, and only a thread/warp sync is still needed. A
+// non-SME pipelined loop (e.g. blocksparse) stages data through regular shared
+// stores whose cross-warp visibility still requires the heavy barrier; using
+// `barrier.alu` there under-synchronizes and corrupts results.
+bool blockHasOnlySmeAsyncCopies(Operation *op) {
+  Block *blk = op->getBlock();
+  if (!blk)
+    return false;
+  bool foundAsyncCopy = false;
+  for (Operation &o : *blk) {
+    auto cp = dyn_cast<triton::gpu::AsyncCopyGlobalToLocalOp>(o);
+    if (!cp)
+      continue;
+    foundAsyncCopy = true;
+    if (!cp.isIluvatarSmeAsyncCopy())
+      return false;
+  }
+  return foundAsyncCopy;
+}
+
+} // namespace
+#endif
+
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
                             OpBuilder *builder) {
-  if (isa<gpu::BarrierOp, triton::gpu::LocalBarrierOp>(op)) {
+  if (isa<gpu::BarrierOp, triton::gpu::LocalBarrierOp>(op)
+#ifdef __ILUVATAR__
+      || isIluvatarAluBarrier(op)
+#endif
+  ) {
     // If the current op is a barrier, we sync previous reads and writes
     blockInfo->sync();
     return;
   }
 
   if (isa<triton::gpu::AsyncWaitOp, triton::nvidia_gpu::TMAStoreWaitOp>(op) &&
-      !isa<gpu::BarrierOp, triton::gpu::LocalBarrierOp>(op->getNextNode())) {
+      !isa<gpu::BarrierOp, triton::gpu::LocalBarrierOp>(op->getNextNode())
+#ifdef __ILUVATAR__
+      && !isIluvatarAluBarrier(op->getNextNode())
+#endif
+  ) {
     // If the current op is an async wait and the next op is not a barrier we
     // insert a barrier op and sync
     builder->setInsertionPointAfter(op);
+#ifdef __ILUVATAR__
+    // For an SME pipeline the async_wait already lowered to a `waitcnt` that
+    // drains the G2S queue, so only a light thread/warp sync is needed here,
+    // not a heavy CTA barrier (`sl_barrier`). This keeps the pipelined
+    // (num_stages>1) SME loop light. Non-SME pipelined loops (regular cp.async)
+    // still need the heavy barrier for cross-warp shared-memory visibility.
+    if (blockHasOnlySmeAsyncCopies(op))
+      emitIluvatarAluBarrier(builder, op->getLoc());
+    else
+      insertBarrier(op, builder);
+#else
     insertBarrier(op, builder);
+#endif
     blockInfo->sync();
     return;
   }
@@ -225,11 +336,41 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     scratchBufferId = allocation->getBufferId(op);
   }
 
+#ifdef __ILUVATAR_TLE__
+  // Preserve the 3.5 behavior for atomic chains in TLE mode: consecutive
+  // atomics on overlapping shared intervals do not require an extra CTA
+  // barrier here.
+  MembarFilterFn effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
+    if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
+        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs))
+      return true;
+    return filter ? filter(lhs, rhs) : false;
+  };
+#else
+  MembarFilterFn effectiveFilter = filter;
+#endif
+
   // Scratch buffer operations consist of a series of shared memory operations
   // starting from a shared memory write, followed by a series of shared memory
   // read/write operations, and ending with a shared memory read, i.e., shared
   // memory write -> ... -> shared memory read.
-  if (scratchBufferId != Allocation::InvalidBufferId) {
+  bool handledIluvatarSmeReuse = false;
+#ifdef __ILUVATAR__
+  if (isIluvatarSmeLocalAlloc(op) &&
+      blockInfo->isIntersected(curBlockInfo, filter)) {
+    // The shared-memory allocator may reuse an interval after its SSA
+    // lifetime ends, but an earlier SME transaction can still own that
+    // address. Start a new SME epoch before writing the reused interval:
+    // bit2 drains regular shared-memory stores and bit3 drains G2S, while the
+    // ALU barrier provides the cross-warp rendezvous.
+    builder->setInsertionPoint(op);
+    emitIluvatarWaitAndAluBarrier(builder, op->getLoc(), /*LM|G2S=*/12);
+    blockInfo->sync();
+    handledIluvatarSmeReuse = true;
+  }
+#endif
+  if (!handledIluvatarSmeReuse &&
+      scratchBufferId != Allocation::InvalidBufferId) {
     // Detect warp-synchronous convert-layout operations. These emit a
     // warp-level barrier (warp.sync) rather than a CTA-wide barrier between
     // the internal shared-memory write and read phases. For these ops, we must
@@ -243,15 +384,21 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       isWarpSync = mlir::isCvtWarpSync(srcLayout, dstLayout);
     }
 
+#ifdef __ILUVATAR_TLE__
+    // Some scratch-buffer ops can also carry explicit shared-memory effects.
+    // Keep conservative dependency tracking instead of hard-failing here.
+#else
     if (!curBlockInfo.syncReadIntervals.empty() ||
         !curBlockInfo.syncWriteIntervals.empty()) {
       llvm::report_fatal_error(
           "scratch buffer operations should not have any shared memory "
           "dependencies");
     }
+#endif
     auto interval = allocation->getAllocatedInterval(scratchBufferId);
     curBlockInfo.syncWriteIntervals[interval].insert(op);
-    auto insertCTABarrier = blockInfo->isIntersected(curBlockInfo, filter);
+    auto insertCTABarrier =
+        blockInfo->isIntersected(curBlockInfo, effectiveFilter);
     if (insertCTABarrier) {
       builder->setInsertionPoint(op);
       insertBarrier(op, builder);
@@ -261,7 +408,8 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     if (insertCTABarrier || !isWarpSync)
       blockInfo->sync();
     curBlockInfo.syncReadIntervals[interval].insert(op);
-  } else if (blockInfo->isIntersected(curBlockInfo, filter)) {
+  } else if (!handledIluvatarSmeReuse &&
+             blockInfo->isIntersected(curBlockInfo, effectiveFilter)) {
     builder->setInsertionPoint(op);
     insertBarrier(op, builder);
     blockInfo->sync();

@@ -1,8 +1,27 @@
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_Utility
+/*
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 
 #include "triton/Analysis/Utility.h"
 
@@ -409,6 +428,28 @@ static Attribute inferSrcEncoding(GatherOp op, Attribute dstEnc) {
   return dstEnc;
 }
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+// Backward propagation only: the op is deliberately absent from
+// RemoveLayoutConversions' propagateToUsers and rewriteOp lists, which assume a
+// shape-preserving op and would report a fatal error on this one.
+static Attribute inferSrcEncoding(ttg::ConcatDotOperandOp op,
+                                  Attribute dstEnc) {
+  // dot_op carries no K extent, so it is the only encoding a concat shares
+  // unchanged with its fragments; shape-coupled ones take the generic path.
+  if (isa<ttg::DotOperandEncodingAttr>(dstEnc))
+    return dstEnc;
+  return {};
+}
+
+static Attribute inferDstEncoding(ttg::ConcatDotOperandOp op,
+                                  Attribute srcEnc) {
+  // Symmetric to inferSrcEncoding above.
+  if (isa<ttg::DotOperandEncodingAttr>(srcEnc))
+    return srcEnc;
+  return {};
+}
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
+
 static Attribute inferTransOpDstEncoding(Attribute srcEnc,
                                          ArrayRef<int64_t> shape,
                                          ArrayRef<int32_t> order) {
@@ -558,6 +599,10 @@ Attribute inferSrcEncoding(Operation *op, Attribute encoding) {
     return inferSrcEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferSrcEncoding(fp4ToFp, encoding);
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+  if (auto concat = dyn_cast<ttg::ConcatDotOperandOp>(op))
+    return inferSrcEncoding(concat, encoding);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
   return {};
 }
@@ -592,6 +637,10 @@ Attribute inferDstEncoding(Operation *op, Attribute encoding) {
     return inferDstEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferDstEncoding(fp4ToFp, encoding);
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+  if (auto concat = dyn_cast<ttg::ConcatDotOperandOp>(op))
+    return inferDstEncoding(concat, encoding);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
   return {};
 }
@@ -1797,5 +1846,3 @@ LogicalResult verifyBarrierType(Operation *op,
 }
 
 } // namespace mlir::triton
-
-#endif

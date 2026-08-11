@@ -7,6 +7,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/DiscardableAttributes.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 
 namespace mlir::triton {
@@ -100,11 +101,14 @@ public:
     if (splatCond != condSelect)
       return failure();
 
-    rewriter.replaceOpWithNewOp<LoadOp>(
+    auto newLoadOp = rewriter.replaceOpWithNewOp<LoadOp>(
         op, loadOp.getPtr(), loadOp.getMask(), /*other=*/falseValue,
         loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
         loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
         loadOp.getInputStride());
+#ifdef __ILUVATAR_TLE__
+    tle::copyAsyncLoadAttr(loadOp, newLoadOp);
+#endif
     return success();
   }
 };

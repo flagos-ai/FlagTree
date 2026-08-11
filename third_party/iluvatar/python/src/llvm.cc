@@ -1,6 +1,7 @@
 #include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
+#include "triton/Tools/LLVMWarningFilter.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MIRParser/MIRParser.h"
@@ -570,6 +571,7 @@ void init_triton_llvm(py::module &&m) {
       [](llvm::Module *mod, const llvm::OptimizationLevel &opt,
          std::string arch, std::string features, std::vector<std::string> flags,
          bool enable_fp_fusion) {
+        mlir::triton::tools::installLLVMWarningFilter(mod->getContext());
         if (mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT"))
           return;
         auto options = llvm::cl::getRegisteredOptions();
@@ -712,6 +714,7 @@ void init_triton_llvm(py::module &&m) {
           py::gil_scoped_release allow_threads;
           // create LLVM module from C++
           llvm::LLVMContext context;
+          mlir::triton::tools::installLLVMWarningFilter(context);
           std::unique_ptr<llvm::MemoryBuffer> buffer =
               llvm::MemoryBuffer::getMemBuffer(llvmIR.c_str());
           llvm::SMDiagnostic error;

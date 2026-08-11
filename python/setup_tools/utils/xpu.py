@@ -1,3 +1,23 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import os
 import sys
 import shutil
@@ -269,7 +289,7 @@ def collect_xpu_backend_package_data(backend):
 
 
 def ensure_xpu_launch_static_lib(backend):
-    src = Path(backend.src_dir) / "device" / "liblaunch.a"
+    src = Path(backend.src_dir) / "device" / "xpu3" / "liblaunch.a"
     if not src.exists():
         print(f"[XPU] liblaunch.a not found at {src}; packaged launcher may fail to link", file=sys.stderr)
         return
@@ -371,8 +391,8 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
                 copy_src_path=f"{cache.dir_path}/{flagtree_backend}/xpu-device-libs",
                 copy_dst_path=f"third_party/{flagtree_backend}/device")
     cache.store(file="xpu-sdnn-objects", condition=is_xpu,
-                url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.2.0.tar.gz",
-                post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
+                url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.6.0.tar.gz",
+                version="v0.3.6.6.0", post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
     cache.store(
         files=("clang", "xpu-xxd", "xpu3-elfconv", "xpu3-elfconv-triton", "xpu-kernel.t", "ld.lld", "llvm-readelf",
                "llvm-objdump", "llvm-objcopy"), condition=is_xpu,

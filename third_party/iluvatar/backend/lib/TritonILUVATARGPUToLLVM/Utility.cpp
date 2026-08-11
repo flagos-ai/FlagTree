@@ -319,6 +319,11 @@ unsigned getVectorSize(Value ptr, ModuleAxisInfoAnalysis &axisAnalysisPass) {
     return 1;
   auto contiguity = getContiguity(ptr, axisAnalysisPass);
   auto pointeeBitWidth = triton::getPointeeBitWidth(tensorTy);
+#ifdef __ILUVATAR__
+  // Global memory ld/st with 32 bit
+  if (pointeeBitWidth <= 32)
+    return std::min<unsigned>(32 / pointeeBitWidth, contiguity);
+#endif
   return std::min<unsigned>(128 / pointeeBitWidth, contiguity);
 }
 
@@ -326,6 +331,11 @@ unsigned getVectorSize(Value ptr, Value offset,
                        ModuleAxisInfoAnalysis &axisAnalysisPass) {
   auto contiguity = getContiguity(ptr, offset, axisAnalysisPass);
   auto pointeeBitWidth = triton::getPointeeBitWidth(ptr.getType());
+#ifdef __ILUVATAR__
+  // Global memory ld/st with 32 bit
+  if (pointeeBitWidth <= 32)
+    return std::min<unsigned>(32 / pointeeBitWidth, contiguity);
+#endif
   return std::min<unsigned>(128 / pointeeBitWidth, contiguity);
 }
 

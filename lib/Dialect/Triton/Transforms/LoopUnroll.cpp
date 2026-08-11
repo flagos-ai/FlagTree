@@ -1,3 +1,28 @@
+/*
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
@@ -8,6 +33,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
+#include "tle/dialect/include/Transforms/ReorderLoopLoads.h"
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
 #include "llvm/Support/Debug.h"
 
 namespace mlir::triton {
@@ -46,9 +74,24 @@ public:
     auto ctx = getOperation()->getContext();
     for (auto loop : loops) {
       auto unrollFactor = getUnrollFactorOrDefault(loop);
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
+      bool needsReorder = tle::hasReorderLoopLoadsAttr(loop);
+      bool fullyUnrolls = tle::willFullyUnroll(loop, unrollFactor);
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
       loop->removeAttr(loopUnrollFactorAttrName);
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
+      if (needsReorder)
+        tle::removeReorderLoopLoadsAttr(loop);
+      Block *parentBlock = loop->getBlock();
+      Operation *opBeforeLoop = loop->getPrevNode(); // may be nullptr
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
       LDBG("Unrolling loop by " << unrollFactor << " times\n" << loop);
       auto resultLoops = loopUnrollByFactor(loop, unrollFactor);
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
+      if (needsReorder && succeeded(resultLoops))
+        tle::reorderLoopLoadsAfterUnroll(*resultLoops, parentBlock,
+                                         opBeforeLoop, loop, fullyUnrolls);
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
       // Do not pipeline the epilog loop.
       if (succeeded(resultLoops) && resultLoops->epilogueLoopOp) {
         (*resultLoops->epilogueLoopOp)

@@ -21,8 +21,8 @@ import triton.experimental.tle.language.raw as tle_raw
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
-@dialect(name="tops", file=Path(__file__).parent / "01-vector-add.tops")
-def edsl(*args, **kwargs):
+@dialect(name="tops", file=Path(__file__).parent / "01-vector-add.tops", extern_func_name="VectorAdd", deferred=True)
+def edsl_deferred(*args, **kwargs):
     ...
 
 
@@ -34,7 +34,7 @@ def add_kernel(
     n_elements,
     BLOCK_SIZE: tl.constexpr,
 ):
-    tle_raw.call(edsl, [output_ptr, x_ptr, y_ptr, n_elements])
+    tle_raw.call(edsl_deferred, [output_ptr, x_ptr, y_ptr, n_elements], output_indices=[0])
 
 
 def add(x: torch.Tensor, y: torch.Tensor):

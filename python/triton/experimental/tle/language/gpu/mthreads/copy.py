@@ -1,25 +1,26 @@
-import os
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 
 import triton.language.core as tl
 
 from .. import types as tle
-
-try:
-    from triton._flagtree_backend import FLAGTREE_BACKEND
-except ModuleNotFoundError:
-    FLAGTREE_BACKEND = os.environ.get("FLAGTREE_BACKEND", "")
-
-
-def _has_mthreads_libtriton() -> bool:
-    try:
-        from triton._C import libtriton
-    except ImportError:
-        return False
-    return hasattr(libtriton, "mthreads")
-
-
-def enabled() -> bool:
-    return FLAGTREE_BACKEND == "mthreads" or _has_mthreads_libtriton()
 
 
 def normalize_copy_shape(shape) -> tuple[int, ...]:
@@ -84,7 +85,7 @@ def normalize_offsets(offsets, rank: int):
     return offsets_tuple
 
 
-def tmacopy(src, dst, direction, shape, offsets, _semantic) -> None:
+def tmacopy(src, dst, direction, shape, offsets, barrier=None, _semantic=None) -> None:
     shape = normalize_copy_shape(shape)
     desc = src if direction.name == "GM_TO_LOCAL" else dst
     buffer = dst if direction.name == "GM_TO_LOCAL" else src
@@ -100,4 +101,14 @@ def tmacopy(src, dst, direction, shape, offsets, _semantic) -> None:
     offset_values = _semantic._convert_to_ir_values(offset_values, require_i64=False)
     if not hasattr(_semantic.builder, "create_tma_copy"):
         raise RuntimeError("TLE TMA copy builder binding is not available")
+    if barrier is not None:
+        if direction.name != "GM_TO_LOCAL":
+            raise ValueError("TMA copy barrier is only supported for global-to-shared TMA copy")
+        if not isinstance(barrier, tle.barrier) or not barrier.is_slot:
+            raise ValueError("TMA copy barrier must be an indexed tle.gpu barrier slot")
+        if barrier.expect_bytes is None or int(barrier.expect_bytes) <= 0:
+            raise ValueError("TMA copy barrier must have positive expect_bytes")
+        _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, barrier.handle,
+                                          int(barrier.expect_bytes))
+        return
     _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values)

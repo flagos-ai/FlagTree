@@ -203,6 +203,19 @@ private:
                            lattice->getAnchor())));
   }
 
+#if TRITON_VERSION >= 37
+  void visitNonControlFlowArguments(Operation *op,
+                                    const RegionSuccessor &successor,
+                                    ValueRange nonSuccessorInputs,
+                                    ArrayRef<dataflow::Lattice<AxisInfoEx> *>
+                                        nonSuccessorInputLattices) override {
+    if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+      visitForOpInductionVar(forOp, nonSuccessorInputLattices);
+    } else {
+      setAllToEntryStates(nonSuccessorInputLattices);
+    }
+  }
+#else
   void visitNonControlFlowArguments(
       Operation *op, const RegionSuccessor &successor,
       ArrayRef<dataflow::Lattice<AxisInfoEx> *> argLattices,
@@ -215,6 +228,7 @@ private:
           firstIndex + successor.getSuccessorInputs().size()));
     }
   }
+#endif
 
 public:
   explicit AxisInfoExAnalysis(DataFlowSolver &solver);

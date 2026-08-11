@@ -1,3 +1,25 @@
+# Copyright 2018-2020 Philippe Tillet
+# Copyright 2020-2022 OpenAI
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import ast
 import builtins
 import contextlib
@@ -1244,14 +1266,17 @@ class CodeGenerator(ast.NodeVisitor):
         flatten = False
         warp_specialize = False
         disable_licm = False
+        reorder = False  # flagtree reorder-loop-loads
         # flagtree tle
         try:
             from ..experimental.tle import language as tle
             tle_pipeline = tle.gpu.pipeline
+            tle_range = tle.range  # flagtree reorder-loop-loads
         except ImportError:
             tle_pipeline = None
+            tle_range = None
 
-        if IteratorClass in [language.range, tle_pipeline]:
+        if IteratorClass in [language.range, tle_pipeline, tle_range]:  # flagtree reorder-loop-loads
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1265,6 +1290,7 @@ class CodeGenerator(ast.NodeVisitor):
             flatten = iterator.flatten
             warp_specialize = iterator.warp_specialize
             disable_licm = iterator.disable_licm
+            reorder = getattr(iterator, 'reorder', False)  # flagtree reorder-loop-loads
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1329,6 +1355,8 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
+            if reorder and _unwrap_if_constexpr(loop_unroll_factor) is not None:  # flagtree reorder-loop-loads
+                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))  # flagtree reorder-loop-loads
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)

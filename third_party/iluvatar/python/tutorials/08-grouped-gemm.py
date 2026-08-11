@@ -31,6 +31,7 @@ import torch
 
 import triton
 import triton.language as tl
+import triton.ops
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -53,45 +54,21 @@ def num_sms():
     return 148
 
 
+def get_corex_configs():
+    configs = []
+    for block_mn in [128, 256]:
+        for block_k in [32, 64]:
+            configs.append(
+                triton.Config(
+                    {'BLOCK_SIZE_M': block_mn, 'BLOCK_SIZE_N': block_mn, 'BLOCK_SIZE_K': block_k, 'NUM_SM': 64},
+                    num_stages=2,
+                    num_warps=16,
+                ))
+    return configs
+
+
 @triton.autotune(
-    configs=[
-        triton.Config({
-            'BLOCK_SIZE_M': 128,
-            'BLOCK_SIZE_N': 128,
-            'BLOCK_SIZE_K': 32,
-            'NUM_SM': 84,
-        }),
-        triton.Config({
-            'BLOCK_SIZE_M': 128,
-            'BLOCK_SIZE_N': 128,
-            'BLOCK_SIZE_K': 32,
-            'NUM_SM': 128,
-        }),
-        triton.Config({
-            'BLOCK_SIZE_M': 64,
-            'BLOCK_SIZE_N': 64,
-            'BLOCK_SIZE_K': 32,
-            'NUM_SM': 84,
-        }),
-        triton.Config({
-            'BLOCK_SIZE_M': 64,
-            'BLOCK_SIZE_N': 64,
-            'BLOCK_SIZE_K': 32,
-            'NUM_SM': 128,
-        }),
-        triton.Config({
-            'BLOCK_SIZE_M': 128,
-            'BLOCK_SIZE_N': 128,
-            'BLOCK_SIZE_K': 64,
-            'NUM_SM': num_sms(),
-        }),
-        triton.Config({
-            'BLOCK_SIZE_M': 64,
-            'BLOCK_SIZE_N': 128,
-            'BLOCK_SIZE_K': 64,
-            'NUM_SM': num_sms(),
-        }),
-    ],
+    configs=get_corex_configs(),
     key=['group_size'],
 )
 @triton.jit
@@ -152,8 +129,8 @@ def grouped_matmul_kernel(
                 tl.multiple_of(a_ptrs, [16, 16])
                 tl.multiple_of(b_ptrs, [16, 16])
                 # assume full tile for now
-                a = tl.load(a_ptrs)
-                b = tl.load(b_ptrs)
+                a = tl.load(a_ptrs, stride=lda)
+                b = tl.load(b_ptrs, stride=ldb)
                 accumulator += tl.dot(a, b)
                 a_ptrs += BLOCK_SIZE_K
                 b_ptrs += BLOCK_SIZE_K * ldb
@@ -162,6 +139,7 @@ def grouped_matmul_kernel(
             offs_cm = tile_m_idx * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
             offs_cn = tile_n_idx * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
             c_ptrs = c_ptr + ldc * offs_cm[:, None] + offs_cn[None, :]
+            tl.multiple_of(c_ptrs, [16, 16])
 
             # assumes full tile for now
             tl.store(c_ptrs, c)
@@ -373,9 +351,9 @@ def group_gemm_tma_fn(group_A, group_B):
     return group_C
 
 
-group_m = [1024, 512, 256, 128]
-group_n = [1024, 512, 256, 128]
-group_k = [1024, 512, 256, 128]
+group_m = [1024, 512, 256]
+group_n = [1024, 512, 256]
+group_k = [1024, 512, 256]
 group_A = []
 group_B = []
 group_B_T = []
@@ -396,7 +374,7 @@ for i in range(group_size):
 tri_out = group_gemm_fn(group_A, group_B)
 ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
 for i in range(group_size):
-    assert torch.allclose(ref_out[i], tri_out[i], atol=1e-2, rtol=1e-2)
+    assert torch.allclose(ref_out[i], tri_out[i], atol=1e-2, rtol=0)
 
 if supports_tma():
     tri_tma_out = group_gemm_tma_fn(group_A, group_B_T)
@@ -423,6 +401,11 @@ def triton_tma_perf_fn(a_ptrs, b_ptrs, c_ptrs, sizes, lds, group_size, dtype):
                                     NUM_SM=num_sms())
 
 
+def triton_seq_perf(group_A, group_B):
+    for a, b in zip(group_A, group_B):
+        triton.ops.matmul(a, b)
+
+
 def torch_perf_fn(group_A, group_B):
     for a, b in zip(group_A, group_B):
         torch.matmul(a, b)
@@ -432,15 +415,15 @@ def torch_perf_fn(group_A, group_B):
     triton.testing.Benchmark(
         # argument names to use as an x-axis for the plot
         x_names=['N'],
-        x_vals=[2**i for i in range(7, 11)],  # different possible values for `x_name`
+        x_vals=[2**i for i in range(9, 13)],  # different possible values for `x_name`
         line_arg='provider',
         # argument name whose value corresponds to a different line in the plot
         # possible values for `line_arg``
-        line_vals=['cublas', 'triton'] + (['triton-tma'] if supports_tma() else []),
+        line_vals=['cublas', 'triton_group', 'triton_seq'] + (['triton-tma'] if supports_tma() else []),
         # label name for the lines
-        line_names=["cuBLAS", "Triton"] + (['Triton + TMA'] if supports_tma() else []),
+        line_names=["cuBLAS", "Triton_group", "Triton_seq"] + (['Triton + TMA'] if supports_tma() else []),
         # line styles
-        styles=[('green', '-'), ('blue', '-')] + ([('red', '-')] if supports_tma() else []),
+        styles=[('green', '-'), ('blue', '-'), ('red', '-')] + ([('purple', '-')] if supports_tma() else []),
         ylabel="runtime(ms)",  # label name for the y-axis
         plot_name="group-gemm-performance",
         # name for the plot. Used also as a file name for saving the plot.
@@ -484,9 +467,11 @@ def benchmark_square_matrices(N, provider):
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'cublas':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_perf_fn(group_A, group_B), quantiles=quantiles)
-    if provider == 'triton':
+    if provider == 'triton_group':
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, group_size), quantiles=quantiles)
+    if provider == 'triton_seq':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: triton_seq_perf(group_A, group_B), quantiles=quantiles)
     if provider == 'triton-tma':
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: triton_tma_perf_fn(d_a_ptrs, d_b_t_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, group_size, dtype=torch.
@@ -502,11 +487,11 @@ def benchmark_square_matrices(N, provider):
         line_arg='provider',
         # argument name whose value corresponds to a different line in the plot
         # possible values for `line_arg``
-        line_vals=['cublas', 'triton'] + (['triton-tma'] if supports_tma() else []),
+        line_vals=['cublas', 'triton_group', 'triton_seq'] + (['triton-tma'] if supports_tma() else []),
         # label name for the lines
-        line_names=["cuBLAS", "Triton"] + (['Triton + TMA'] if supports_tma() else []),
+        line_names=["cuBLAS", "Triton_group", "Triton_seq"] + (['Triton + TMA'] if supports_tma() else []),
         # line styles
-        styles=[('green', '-'), ('blue', '-')] + ([('red', '-')] if supports_tma() else []),
+        styles=[('green', '-'), ('blue', '-'), ('red', '-')] + ([('purple', '-')] if supports_tma() else []),
         ylabel="runtime(ms)",  # label name for the y-axis
         plot_name="group-gemm-performance-m-8192-k-8192",
         # name for the plot. Used also as a file name for saving the plot.
@@ -555,9 +540,11 @@ def benchmark_batches(M, provider):
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'cublas':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_perf_fn(group_A, group_B), quantiles=quantiles)
-    if provider == 'triton':
+    if provider == 'triton_group':
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, group_size), quantiles=quantiles)
+    if provider == 'triton_seq':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: triton_seq_perf(group_A, group_B), quantiles=quantiles)
     if provider == 'triton-tma':
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: triton_tma_perf_fn(d_a_ptrs, d_b_t_ptrs, d_c_ptrs, d_g_sizes, d_g_t_lds, group_size, dtype=torch.

@@ -1,3 +1,5 @@
+#include "TritonMUSACommon/MMAOperandUtils.h"
+#include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUToLLVM/Allocation.h"
 #include "TritonMUSAGPUToLLVM/Passes.h"
 #include "TritonMUSAGPUToLLVM/TargetInfo.h"
@@ -176,6 +178,71 @@ static unsigned getFullLogicalScratchBytes(RankedTensorType ty) {
   return elems * getBitwidth(ty) / 8;
 }
 
+static FailureOr<int64_t> getPH1SwizzledSharedLineBytes(MemDescType memDescTy) {
+  unsigned rank = memDescTy.getRank();
+  if (rank != 2 && rank != 3)
+    return failure();
+  auto sharedEnc =
+      dyn_cast<SwizzledSharedEncodingAttr>(memDescTy.getEncoding());
+  if (!sharedEnc)
+    return failure();
+
+  FailureOr<triton::musa::ResolvedTMESwizzleConfig> swizzle = failure();
+  if (rank == 2) {
+    auto order = triton::gpu::getOrder(memDescTy);
+    if (order.size() != rank)
+      return failure();
+    swizzle = triton::musa::resolveTMESwizzleConfigFromEncoding(memDescTy);
+  } else {
+    SmallVector<int64_t> physicalShape =
+        triton::musa::getMemDescPhysicalShape(memDescTy);
+    auto order = triton::gpu::getOrder(memDescTy);
+    SmallVector<int64_t, 2> matrixPhysicalShape;
+    SmallVector<unsigned, 2> matrixOrder;
+    if (physicalShape.size() == rank &&
+        (order.size() == 2 || order.size() == rank)) {
+      matrixPhysicalShape = {physicalShape[rank - 2], physicalShape[rank - 1]};
+      if (order.size() == 2) {
+        matrixOrder.assign(order.begin(), order.end());
+      } else {
+        for (unsigned dim : order) {
+          if (dim < rank - 2)
+            continue;
+          matrixOrder.push_back(dim - (rank - 2));
+          if (matrixOrder.size() == 2)
+            break;
+        }
+      }
+      if (matrixOrder.size() == 2)
+        swizzle = triton::musa::resolveTMESwizzleConfigFromMatrixView(
+            memDescTy, matrixPhysicalShape, matrixOrder);
+    }
+  }
+
+  if (failed(swizzle) || swizzle->swizzleGranularity ==
+                             triton::musa::TMESwizzleGranularity::SG_NONE)
+    return failure();
+  return triton::musa::getSwizzleLineBytes(swizzle->swizzleLine);
+}
+
+static void normalizePH1SwizzledSharedLocalAllocAlignment(ModuleOp mod) {
+  Builder builder(mod.getContext());
+  mod.walk([&](LocalAllocOp alloc) {
+    if (!alloc.isSharedMemoryAlloc())
+      return;
+    auto memDescTy = dyn_cast<MemDescType>(alloc.getType());
+    if (!memDescTy)
+      return;
+
+    auto lineBytes = getPH1SwizzledSharedLineBytes(memDescTy);
+    if (failed(lineBytes) || *lineBytes <= alloc.getAlignmentOrDefault())
+      return;
+
+    alloc->setAttr("alignment",
+                   builder.getI32IntegerAttr(static_cast<int32_t>(*lineBytes)));
+  });
+}
+
 static unsigned getNumScratchElemsSwizzledCvt(RankedTensorType srcTy,
                                               RankedTensorType dstTy,
                                               const TargetInfoBase &targetInfo,
@@ -259,6 +326,8 @@ struct AllocateMUSASharedMemory
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     MUSA::TargetInfo targetInfo(computeCapability);
+    if (computeCapability == 31)
+      normalizePH1SwizzledSharedLocalAllocAlignment(mod);
     ModuleAllocation allocation(
         mod, mlir::triton::musa_gpu::getMusaAllocationAnalysisScratchSizeFn(
                  targetInfo));

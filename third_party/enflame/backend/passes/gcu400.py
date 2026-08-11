@@ -23,6 +23,7 @@ __all__ = [
     'add_flatten_triton_func',
     'add_annotate_dot_acc_reuse',
     'add_triton_gcu_local_mem_optimize',
+    'add_triton_gcu_insert_producer_fences',
     'add_convert_triton_to_gcu',
 ]
 
@@ -84,6 +85,11 @@ def add_convert_triton_load_store_to_gcu_dma(pipeline, support_stride0: bool = F
 def add_gcu_tle_lower_async_load(pipeline):
     """Lower GCU TLE async load operations."""
     pipeline.add_pass('gcu-tle-lower-async-load')
+
+
+def add_tle_lower_pipe_to_gcuws(pipeline):
+    """Lower TLE pipe ops to GCUWS ops."""
+    pipeline.add_pass('tle-lower-pipe-to-gcuws')
 
 
 def add_tle_convert_arg_to_memdesc(pipeline):
@@ -165,9 +171,24 @@ def add_annotate_dot_acc_reuse(pipeline):
     pipeline.add_pass('annotate-dot-acc-reuse')
 
 
+def add_annotate_dot_fusion(pipeline):
+    """Annotate dot+fusion to pass OACC directly."""
+    pipeline.add_pass('annotate-dot-fusion')
+
+
+def add_annotate_dot_alloca_reuse(pipeline):
+    """Analyse dot dependencies and annotate dot ops to reuse alloca buffers."""
+    pipeline.add_pass('annotate-dot-alloca-reuse')
+
+
 def add_triton_gcu_local_mem_optimize(pipeline):
     """Optimize local memory usage for GCU."""
     pipeline.add_pass('triton-gcu-local-mem-optimize')
+
+
+def add_triton_gcu_insert_producer_fences(pipeline):
+    """Insert memory fences before producer commits for non-DTE transport."""
+    pipeline.add_pass('triton-gcu-insert-producer-fences')
 
 
 def add_convert_triton_to_gcu(pipeline):

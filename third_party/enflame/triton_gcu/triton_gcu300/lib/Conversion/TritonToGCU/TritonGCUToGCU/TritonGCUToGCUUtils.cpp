@@ -347,8 +347,14 @@ void doSlicePadOrMemsetSlice(OpBuilder &rewriter, Location loc,
       [&](OpBuilder &childBuilder, Location loc) {
         doMemset(childBuilder, pTagPool, op, output, defaultValue,
                  totalNumElems);
-        childBuilder.create<memref_ext::SliceStartOp>(
-            loc, output, src, offsets, defaultValue, tag.getTag(),
+        auto rank = outputType.getRank();
+        SmallVector<Value, 4> dstOffsets;
+        auto zeroI32 = childBuilder.create<arith::ConstantIntOp>(loc, 0, 32);
+        for (int i = 0; i < rank; i++) {
+          dstOffsets.push_back(zeroI32);
+        }
+        childBuilder.create<memref_ext::SliceDesliceStartOp>(
+            loc, output, src, offsets, sliceShape, dstOffsets, tag.getTag(),
             ValueRange{tag.getIdx()});
         childBuilder.create<scf::YieldOp>(loc);
       });

@@ -1,7 +1,29 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 # flagtree tle
 import triton.language.core as tl
 
 from .gpu import types as gpu_types
+from .gpu.mthreads import common as mthreads_common
+from .gpu.mthreads import pipe as mthreads_pipe
 
 
 def _unwrap_pipe_constexpr(value):
@@ -89,6 +111,9 @@ def pipe(
         raise ValueError(f"tle.pipe one_shot must be a compile-time bool, got {type(one_shot).__name__}")
     if not fields:
         raise ValueError("tle.pipe requires at least one payload field")
+
+    if mthreads_common.enabled() and mthreads_pipe.is_backend_builder(_semantic.builder):
+        mthreads_pipe.validate_pipe_options(scope, reader_names, one_shot, fields)
 
     for field_name, field in fields.items():
         _validate_public_name("field", field_name)

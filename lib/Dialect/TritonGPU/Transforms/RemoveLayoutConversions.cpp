@@ -1,8 +1,27 @@
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Dialect_TritonGPU_Transforms_RemoveLayoutConversion
+/*
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
@@ -4114,10 +4133,19 @@ void LayoutRematerialization::hoistConvertDotOperand(
   // We hoist over any operation that can be done without data movement between
   // threads We do views and elementwise pure ops for now
   auto noDataMovement = [](Operation *op) {
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+    // ConcatDotOperandOp grows the tensor along K but keeps every element on
+    // the thread that already held it, so hoisting a convert over it is free.
+    return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
+           isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface,
+               ConcatDotOperandOp>(op) ||
+           isView(op);
+#else  // __FLAGTREE_CONCAT_DOT_OPERAND__
     return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
            isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface>(
                op) ||
            isView(op);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
   };
   // Stop the slice as soon as we find an operation that cannot be done without
   // data movement between threads
@@ -4760,5 +4788,3 @@ createTritonGPURemoveLayoutConversionsEnhanced(bool enhance) {
 #endif // __FLAGTREE_RLC_ENHANCE__
 
 } // namespace mlir::triton::gpu
-
-#endif

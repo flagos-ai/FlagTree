@@ -48,10 +48,8 @@ if(FLAGTREE_TLE)
   )
 endif()
 
-add_library(triton_gcu400_core SHARED triton_gcu400_core.cpp ${TRITON_OUTPUT_FILES})
+add_library(triton_gcu400_core SHARED triton_gcu400_core.cpp)
 target_compile_features(triton_gcu400_core PRIVATE cxx_std_17)
-set_source_files_properties(${TRITON_OUTPUT_FILES} PROPERTIES
-  EXTERNAL_OBJECT TRUE GENERATED TRUE)
 
 target_link_libraries(triton_gcu400_core PRIVATE
   ${_core_dialect_libs}
@@ -97,8 +95,10 @@ set_target_properties(triton_gcu400_core PROPERTIES
 
 message(STATUS "[gcu400] Built core library: libtriton_gcu400_core.so")
 
-# Install core library
+# Install core library (gcu300-only deb profiles still build gcu400 for the wheel).
+if(NOT KURAMA_GCU300_ONLY)
 install(TARGETS triton_gcu400_core
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib
 )
+endif()

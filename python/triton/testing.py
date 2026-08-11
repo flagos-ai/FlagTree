@@ -1,3 +1,25 @@
+# Copyright 2018-2020 Philippe Tillet
+# Copyright 2020-2022 OpenAI
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import functools
 import math
 import os
@@ -9,6 +31,7 @@ from typing import Any, Dict, List
 from . import language as tl
 from . import runtime
 from .backends import backends as _available_backends
+from ._flagtree_spec import spec_func
 
 
 def nvsmi(attrs):
@@ -58,7 +81,8 @@ def _summarize_statistics(times, quantiles, return_mode):
         return statistics.median(times)
 
 
-def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mode="mean"):
+# flagtree flagtune: Make Triton's fixed replay count configurable while preserving its default of 10.
+def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mode="mean", n_retries=10):
     """
     Benchmark the runtime of the provided function.
 
@@ -70,9 +94,14 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
     :type grad_to_none: torch.tensor, optional
     :param return_mode: The statistical measure to return. Options are "min", "max", "mean", "median", or "all". Default is "mean".
     :type return_mode: str
+    :param n_retries: Number of independently timed graph replays used to summarize latency.
+    :type n_retries: int
     """
     import torch
     assert return_mode in ["min", "max", "mean", "median", "all"]
+    # flagtree flagtune: Validate the configurable graph replay count.
+    if not isinstance(n_retries, int) or isinstance(n_retries, bool) or n_retries <= 0:
+        raise ValueError("n_retries must be a positive integer")
 
     with torch.cuda.stream(torch.cuda.Stream()):
         # warmup
@@ -113,7 +142,6 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
         torch.cuda.synchronize()
         # measure time and return
         ret = []
-        n_retries = 10
         for _ in range(n_retries):
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
@@ -572,3 +600,8 @@ def get_max_simd_tflops(dtype, clock_rate, device=None):
             raise RuntimeError("dtype not supported")
     tflops = num_subcores * clock_rate * ops_per_sub_core * 1e-9
     return tflops
+
+
+# flagtree backend function specialization
+nvsmi = spec_func("nvsmi") or nvsmi
+get_max_tensorcore_tflops = spec_func("get_max_tensorcore_tflops") or get_max_tensorcore_tflops

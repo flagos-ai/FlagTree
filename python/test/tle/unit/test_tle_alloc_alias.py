@@ -9,6 +9,7 @@ import triton.experimental.tle.language as tle
 class TestAllocAlias:
 
     class _FakeTensor:
+
         def __init__(self, handle, ty):
             self.handle = handle
             self.type = ty
@@ -19,6 +20,7 @@ class TestAllocAlias:
             self.memdesc_type_args = None
             self.memdesc_alias_args = None
             self.swizzled_encoding_args = None
+            self.auto_shared_layout_handles = []
 
         def get_half_ty(self):
             return "fp16"
@@ -26,8 +28,13 @@ class TestAllocAlias:
         def make_swizzled_shared_encoding_attr(self, vector_size, per_phase, max_phase, order, ctas_per_cga,
                                                cta_split_num, cta_order):
             self.swizzled_encoding_args = (
-                vector_size, per_phase, max_phase,
-                list(order), list(ctas_per_cga), list(cta_split_num), list(cta_order),
+                vector_size,
+                per_phase,
+                max_phase,
+                list(order),
+                list(ctas_per_cga),
+                list(cta_split_num),
+                list(cta_order),
             )
             return "fake_layout"
 
@@ -42,6 +49,11 @@ class TestAllocAlias:
         def create_memdesc_alias(self, result_ty, src, offset_bytes):
             self.memdesc_alias_args = (result_ty, src, offset_bytes)
             return "alias_handle"
+
+        def mark_musa_tle_auto_shared_layout(self, handle):
+            if handle != "alloc_handle":
+                raise ValueError("auto shared layout marker requires a local allocation")
+            self.auto_shared_layout_handles.append(handle)
 
     class _FakeSemantic:
 
@@ -87,6 +99,23 @@ class TestAllocAlias:
             "base",
             64,
         )
+
+    def test_alloc_alias_skips_mthreads_auto_layout_marker(self, monkeypatch):
+        """The mthreads auto-layout marker only accepts local allocations."""
+        from triton.experimental.tle.language.gpu import core as gpu_core
+
+        monkeypatch.setattr(gpu_core.mthreads_common, "enabled", lambda: True)
+        buffer, semantic = self._make_buffer([4, 16, 32])
+
+        alias = tle.gpu.alloc(
+            (2, 16, 16),
+            tl.float16,
+            alias=buffer,
+            _semantic=semantic,
+        )
+
+        assert alias.handle == "alias_handle"
+        assert semantic.builder.auto_shared_layout_handles == []
 
     def test_alloc_alias_rejects_init_value(self):
         buffer, semantic = self._make_buffer([4, 16, 32])

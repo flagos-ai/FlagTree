@@ -1,26 +1,25 @@
-// MIT License
-
-// Copyright (c) 2025 The FlagOS Contributors
-
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-
-// flagtree tle
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
 
 #include "Python.h"
 #include "Transforms/Passes.h"
@@ -77,7 +76,8 @@ extern tle::DSLRegionOp createTLERawRegionDeferred(
     TritonOpBuilder &self, std::string_view sourceId,
     std::string_view regionDialect, std::string_view argDialect,
     const std::vector<Value> &args,
-    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint);
+    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint,
+    std::string_view dsl_file_name, std::string_view extern_func_name);
 
 void init_triton_tle_ir(py::module &&m) {
 
@@ -752,7 +752,8 @@ void init_tle_raw_ir(py::module &&m) {
   builder_cls->def(
       "create_tle_raw_region_deferred", &createTLERawRegionDeferred,
       py::arg("source_id"), py::arg("region_dialect"), py::arg("arg_dialect"),
-      py::arg("args"), py::arg("output_operand_indices"), py::arg("hint") = "");
+      py::arg("args"), py::arg("output_operand_indices"), py::arg("hint") = "",
+      py::arg("dsl_file_name") = "", py::arg("extern_func_name") = "");
   builder_cls->def("get_context", &TritonOpBuilder::getContext);
 }
 

@@ -36,9 +36,13 @@ def TTX_AllocaOp : TTX_Op<"alloca"> {
 
 def TTX_GM2LMOp : TTX_Op<"gm2lm", [AttrSizedOperandSegments,  MemoryEffects<[MemRead<GlobalMemory>]>]> {
     let summary = "gm2lm";
+    // [internal bc5e33a6] LayerNorm vectorization can turn `other` into a
+    // tensor<vector<T>>. Internal widened shared TT_Type, but FlagTree keeps
+    // main-tree TableGen definitions pristine. TTX_Type is the XPU-local
+    // equivalent and already admits vectors/tensors of vectors.
     let arguments = (ins TT_PtrLike:$ptr,
                          Optional<TT_IntLike>:$len,
-                         Optional<TT_Type>:$other,
+                         Optional<TTX_Type>:$other,
                          Optional<TT_PtrLike>:$bufPtr,
                          SI32Attr:$offsetState,
                          SI32Attr:$fixedStride,
@@ -82,7 +86,8 @@ def TTX_GM2LMMaskOp : TTX_Op<"gm2lm_mask", [AttrSizedOperandSegments,  MemoryEff
     let summary = "gm2lm";
     let arguments = (ins TT_PtrLike:$ptr,
                          Optional<TT_BoolLike>:$mask,
-                         Optional<TT_Type>:$other,
+                         // Keep the masked form consistent with gm2lm above.
+                         Optional<TTX_Type>:$other,
                          Optional<TT_IntLike>:$len,
                          Optional<TT_PtrLike>:$bufPtr,
                          SI32Attr:$offsetState,
@@ -130,7 +135,11 @@ def TTX_LoadOp : TTX_Op<"load", [AttrSizedOperandSegments,
     let summary = "load";
     let arguments = (ins TT_PtrLike:$ptr,
                      Optional<TT_BoolLike>:$mask,
-                     Optional<TT_Type>:$other,
+                     // [internal bc5e33a6] Same as TTX_GM2LMOp.$other: vectorize
+                     // can widen `other` to tensor<vector<T>>. Internal relied on
+                     // its widened shared TT_Type; FlagTree keeps main-tree TT_Type
+                     // pristine and uses the XPU-local TTX_Type (= TT_Type | vector).
+                     Optional<TTX_Type>:$other,
                      Optional<TT_Int>:$index,
                      SI32Attr:$stride,
                      SI32Attr:$tensorColSize,
@@ -156,7 +165,9 @@ def TTX_StoreOp : TTX_Op<"store", [AttrSizedOperandSegments,
 
 def TTX_StoreSMOp : TTX_Op<"storeSM", [MemoryEffects<[MemWrite]>, AttrSizedOperandSegments]> {
     let summary = "store to SM";
-    let arguments = (ins TT_PtrLike:$ptr, TT_Type:$value, Optional<TT_BoolLike>:$mask, Optional<TT_Int>:$index);
+    // [internal bc5e33a6] `value` may be a vectorized tensor<vector<T>>; use the
+    // XPU-local TTX_Type (= TT_Type | vector) instead of pristine main-tree TT_Type.
+    let arguments = (ins TT_PtrLike:$ptr, TTX_Type:$value, Optional<TT_BoolLike>:$mask, Optional<TT_Int>:$index);
 }
 
 

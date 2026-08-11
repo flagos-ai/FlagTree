@@ -1,5 +1,29 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "tle/dialect/include/IR/Dialect.h"
 #include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "tle/dialect/include/IR/Dialect.cpp.inc"
 
 #define GET_ATTRDEF_CLASSES
@@ -14,6 +38,18 @@
 #endif
 
 namespace mlir::triton::tle {
+namespace {
+struct TleInlinerInterface final : public DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+
+  bool isLegalToInline(Operation *op, Region *, bool, IRMapping &) const final {
+    // TLE regions and terminators have their own semantics. Only allow
+    // ordinary operations to be cloned with a containing Triton function.
+    return op->getNumRegions() == 0 && !op->hasTrait<OpTrait::IsTerminator>();
+  }
+};
+} // namespace
+
 void TleDialect::initialize() {
   addAttributes<
 #define GET_ATTRDEF_LIST
@@ -30,5 +66,7 @@ void TleDialect::initialize() {
 #include "tle/dialect/include/IR/FlagCxOps.cpp.inc"
       >();
 #endif
+
+  addInterfaces<TleInlinerInterface>();
 }
 } // namespace mlir::triton::tle

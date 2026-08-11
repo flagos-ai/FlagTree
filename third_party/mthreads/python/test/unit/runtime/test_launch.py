@@ -10,6 +10,13 @@ import triton.language as tl
 from triton._internal_testing import is_cuda, is_hip, is_musa
 
 
+# flagtree: compatibility for Torch Inductor versions that still read launch hooks
+# from CompiledKernel. Triton 3.7 owns these hooks under knobs.runtime.
+def test_compiled_kernel_launch_hook_compatibility() -> None:
+    assert triton.compiler.CompiledKernel.launch_enter_hook is triton.knobs.runtime.launch_enter_hook
+    assert triton.compiler.CompiledKernel.launch_exit_hook is triton.knobs.runtime.launch_exit_hook
+
+
 def test_metadata() -> None:
 
     used_hook = False

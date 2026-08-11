@@ -24,7 +24,7 @@ lowerSmeStore(Location loc, MLIRContext *ctx, Value regVal,
               MemDescType memDescTy, SharedMemoryObject smemObj,
               ArrayRef<Value> inVals, const LLVMTypeConverter *typeConverter,
               ConversionPatternRewriter &rewriter,
-              const TargetInfoBase &targetInfo, Value inputStride);
+              const TargetInfoBase &targetInfo, triton::LoadOp loadOp);
 #endif
 
 LogicalResult lowerLocalStore(Location loc, MLIRContext *ctx, Value regVal,
@@ -44,8 +44,7 @@ LogicalResult lowerLocalStore(Location loc, MLIRContext *ctx, Value regVal,
       assert(loadOp &&
              "SME requires LoadOp to be the defining op of the store source");
       return lowerSmeStore(loc, ctx, regVal, memDescTy, smemObj, inVals,
-                           typeConverter, rewriter, targetInfo,
-                           loadOp.getInputStride());
+                           typeConverter, rewriter, targetInfo, loadOp);
     }
   }
 #endif
@@ -201,7 +200,16 @@ public:
       const auto &sharedLL = paddedEnc.getLinearComponent();
       cvt = regLayout.invertAndCompose(sharedLL);
     } else {
+#ifdef __ILUVATAR__
+      auto sharedLayout = isIluvatarRowXfb8LocalLoad(op)
+                              ? iluvatarRowXfb8ToLinearLayout(
+                                    memDescTy.getShape(),
+                                    mlir::cast<SwizzledSharedEncodingAttr>(
+                                        memDescTy.getEncoding()))
+                              : toLinearLayout(memDescTy);
+#else
       auto sharedLayout = toLinearLayout(memDescTy);
+#endif
       cvt = regLayout.invertAndCompose(sharedLayout);
     }
     auto kBlock = str_attr("block");
@@ -246,144 +254,54 @@ lowerSmeStore(Location loc, MLIRContext *ctx, Value regVal,
               MemDescType memDescTy, SharedMemoryObject smemObj,
               ArrayRef<Value> inVals, const LLVMTypeConverter *typeConverter,
               ConversionPatternRewriter &rewriter,
-              const TargetInfoBase &targetInfo, Value inputStride) {
+              const TargetInfoBase &targetInfo, triton::LoadOp loadOp) {
   auto regTy = cast<RankedTensorType>(regVal.getType());
-  auto smeEnc = mlir::cast<BlockedEncodingAttr>(regTy.getEncoding());
-  auto order = smeEnc.getOrder();
-  auto smeWpt = smeEnc.getSmeWarpsPerCTA();
-  auto shape = regTy.getShape();
-
   auto elemTy = typeConverter->convertType(memDescTy.getElementType());
-  unsigned elemBytes = elemTy.getIntOrFloatBitWidth() / 8;
-  bool isRowMajor = order[0] != 0;
+  Value mask = loadOp.getMask();
 
-  // SME hardware tile: 16 rows × 64B.
-  unsigned offset0, offset1; // rows per tile, cols per tile
-  if (isRowMajor) {
-    offset0 = 16;
-    offset1 = 64 / elemBytes;
-  } else {
-    offset0 = 64 / elemBytes;
-    offset1 = 16;
+  std::optional<bool> constantMask = getIluvatarSmeConstantMask(mask);
+  std::optional<unsigned> validContiguousElems =
+      getIluvatarSmeConstantMaskExtent(mask);
+  auto smeEnc = cast<BlockedEncodingAttr>(regTy.getEncoding());
+  unsigned contiguousDim = smeEnc.getOrder()[0];
+  if (validContiguousElems) {
+    if (*validContiguousElems == 0)
+      constantMask = false;
+    else if (*validContiguousElems >= regTy.getShape()[contiguousDim])
+      constantMask = true;
   }
-  // CTA-level tile (all warps): smeWpt[0]*offset0 rows × smeWpt[1]*offset1 cols
-  SmallVector<unsigned> shapePerCTA({smeWpt[0] * offset0, smeWpt[1] * offset1});
 
-  auto b = TritonLLVMOpBuilder(loc, rewriter);
-  auto smemBase = smemObj.getBase();
-  auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
-
-  // Per-warp position within the CTA tile.
-  Value warp0 = b.urem(warpId, b.i32_val(smeWpt[0]));
-  Value warp1 =
-      b.urem(b.udiv(warpId, b.i32_val(smeWpt[0])), b.i32_val(smeWpt[1]));
-
-  // Stride in elements (= inputStride, already element count per row).
-  Value stride = inputStride;
-  Value strideBytes = b.mul(stride, b.i32_val(static_cast<int32_t>(elemBytes)));
-
-  // ABase = {ptr_lo, ptr_hi, -1, stride_bytes}
-  Value gPtr = inVals[0];
-  Value gPtrAsInt = b.ptrtoint(i64_ty, gPtr);
-  auto i32x4Ty = vec_ty(i32_ty, 4);
-  Value abaseVal = b.undef(i32x4Ty);
-  abaseVal = b.insert_element(i32x4Ty, abaseVal, b.trunc(i32_ty, gPtrAsInt),
-                              b.i32_val(0));
-  abaseVal = b.insert_element(i32x4Ty, abaseVal,
-                              b.trunc(i32_ty, b.lshr(gPtrAsInt, b.i64_val(32))),
-                              b.i32_val(1));
-  abaseVal = b.insert_element(i32x4Ty, abaseVal, b.i32_val(-1), b.i32_val(2));
-  abaseVal = b.insert_element(i32x4Ty, abaseVal, strideBytes, b.i32_val(3));
-
-  Type elemPtrTy = ptr_ty(ctx, 1);
-
-  for (unsigned m = 0; m < shape[0] / shapePerCTA[0]; m++) {
-    for (unsigned k = 0; k < shape[1] / shapePerCTA[1]; k++) {
-      Value tileSmemOff, tileGmemOff;
-      if (isRowMajor) {
-        // row-major: dim1 contiguous
-        tileSmemOff =
-            b.add(b.mul(b.i32_val(m), b.i32_val(shape[1] * shapePerCTA[0])),
-                  b.mul(b.i32_val(k), b.i32_val(offset0 * shapePerCTA[1])));
-        tileGmemOff =
-            b.add(b.mul(b.mul(b.i32_val(m), b.i32_val(shapePerCTA[0])), stride),
-                  b.mul(b.i32_val(k), b.i32_val(shapePerCTA[1])));
-        // Per-warp offset within CTA tile
-        Value warpSmemOff =
-            b.add(b.mul(warp0, b.mul(b.i32_val(offset0), b.i32_val(shape[1]))),
-                  b.mul(warp1, b.mul(b.i32_val(offset1), b.i32_val(offset0))));
-        Value warpGmemOff =
-            b.add(b.mul(b.mul(warp0, b.i32_val(offset0)), stride),
-                  b.mul(warp1, b.i32_val(offset1)));
-        tileSmemOff = b.add(tileSmemOff, warpSmemOff);
-        tileGmemOff = b.add(tileGmemOff, warpGmemOff);
-      } else {
-        // col-major: dim0 contiguous
-        tileSmemOff =
-            b.add(b.mul(b.i32_val(m), b.i32_val(shapePerCTA[0] * offset1)),
-                  b.mul(b.mul(b.i32_val(k), b.i32_val(shapePerCTA[1])),
-                        b.i32_val(shape[0])));
-        tileGmemOff = b.add(
-            b.mul(b.i32_val(m), b.i32_val(shapePerCTA[0])),
-            b.mul(b.mul(b.i32_val(k), b.i32_val(shapePerCTA[1])), stride));
-        // Per-warp offset within CTA tile
-        Value warpSmemOff =
-            b.add(b.mul(warp0, b.mul(b.i32_val(offset0), b.i32_val(offset1))),
-                  b.mul(warp1, b.mul(b.i32_val(shape[0]), b.i32_val(offset1))));
-        Value warpGmemOff =
-            b.add(b.mul(warp0, b.i32_val(offset0)),
-                  b.mul(b.mul(warp1, b.i32_val(offset1)), stride));
-        tileSmemOff = b.add(tileSmemOff, warpSmemOff);
-        tileGmemOff = b.add(tileGmemOff, warpGmemOff);
-      }
-
-      Value smemPtr = b.gep(elemPtrTy, elemTy, smemBase, tileSmemOff);
-      Value smemAsInt = b.ptrtoint(i32_ty, smemPtr);
-
-      // Goffset: byte offset within the tile from ABase
-      Value gmemByteOff =
-          b.mul(tileGmemOff, b.i32_val(static_cast<int32_t>(elemBytes)));
-
-      SmallVector<Value> args = {smemAsInt, abaseVal, gmemByteOff,
-                                 b.i32_val(0)};
-      // SME global->shared intrinsic is selected by element bitwidth. The
-      // hardware moves 16 rows x 64 contiguous bytes regardless of dtype; the
-      // bN suffix tells it the element width so it can de-interleave correctly.
-      // NOTE: row-major fp32 uses the unsuffixed name (the canonical/default
-      // variant), which is asymmetric with col-major fp32 (colxfb32). Keep this
-      // exactly as provided by the ixcc intrinsic reference.
-      unsigned bitwidth = elemTy.getIntOrFloatBitWidth();
-      StringRef intrName;
-      if (isRowMajor) {
-        if (bitwidth == 8)
-          intrName = "llvm.bi.sme.load.16x1b64.rowxfb8";
-        else if (bitwidth == 16)
-          intrName = "llvm.bi.sme.load.16x1b64.rowxfb16";
-        else if (bitwidth == 32)
-          intrName = "llvm.bi.sme.load.16x1b64";
-        else
-          llvm_unreachable("SME row intrinsic only supports i8/fp16/bf16/fp32");
-      } else {
-        if (bitwidth == 8)
-          intrName = "llvm.bi.sme.load.16x1b64.colxfb8";
-        else if (bitwidth == 16)
-          intrName = "llvm.bi.sme.load.16x1b64.colxfb16";
-        else if (bitwidth == 32)
-          intrName = "llvm.bi.sme.load.16x1b64.colxfb32";
-        else
-          llvm_unreachable("SME col intrinsic only supports i8/fp16/bf16/fp32");
-      }
-      TypeRange resultTypes{};
-      auto intrOp =
-          LLVM::CallIntrinsicOp::create(rewriter, loc, resultTypes, args);
-      intrOp.getProperties().setIntrin(StringAttr::get(ctx, intrName));
-      intrOp.getProperties().setOpBundleSizes(
-          rewriter.getDenseI32ArrayAttr({}));
-      intrOp.getProperties().setOperandSegmentSizes(
-          {static_cast<int32_t>(args.size()), 0});
-    }
+  // A compile-time false tile does not need a global transaction at all:
+  // directly initialize its shared representation with `other`.
+  bool emittedSmeLoad = !constantMask || *constantMask;
+  if (emittedSmeLoad) {
+    if (failed(emitIluvatarSmeTileLoads(
+            loc, ctx, regTy, elemTy, smemObj.getBase(), inVals[0],
+            loadOp.getInputStride(), rewriter, validContiguousElems)))
+      return failure();
   }
-  return success();
+
+  // A CTA barrier only synchronizes threads; it does not drain the hardware
+  // G2S queue. Synchronous local_alloc/local_load users must wait before the
+  // shared-memory value can be consumed or reused by a later K iteration.
+  if (emittedSmeLoad) {
+    auto i64Ty = rewriter.getIntegerType(64);
+    Value waitCnt = LLVM::ConstantOp::create(rewriter, loc, i64Ty,
+                                             IntegerAttr::get(i64Ty, 8));
+    LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.bi.sl.waitcnt", {},
+                                    {waitCnt});
+  }
+  if (!mask || (constantMask && *constantMask))
+    return success();
+
+  Value llvmMask = rewriter.getRemappedValue(mask);
+  if (!llvmMask)
+    return failure();
+  Value llvmOther;
+  if (loadOp.getOther())
+    llvmOther = rewriter.getRemappedValue(loadOp.getOther());
+  return lowerIluvatarSmeMaskFixup(loc, regTy, elemTy, memDescTy, smemObj,
+                                   llvmMask, llvmOther, rewriter, targetInfo);
 }
 #endif
 

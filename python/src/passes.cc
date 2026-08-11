@@ -1,3 +1,28 @@
+/*
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Pass/Pass.h"
@@ -77,6 +102,11 @@ void init_triton_passes_ttgpuir(py::module &&m) {
   ADD_PASS_OPTION_WRAPPER_1("add_warp_specialize",
                             createTritonGPUAutomaticWarpSpecialization, int);
   ADD_PASS_WRAPPER_0("add_prefetch", createTritonGPUPrefetch);
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+  ADD_PASS_WRAPPER_0("add_concat_dot_operand", createTritonGPUConcatDotOperand);
+  ADD_PASS_WRAPPER_0("add_expand_concat_dot_operand",
+                     createTritonGPUExpandConcatDotOperand);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
   ADD_PASS_WRAPPER_0("add_accelerate_matmul", createTritonGPUAccelerateMatmul);
   ADD_PASS_WRAPPER_0("add_reorder_instructions",
                      createTritonGPUReorderInstructions);

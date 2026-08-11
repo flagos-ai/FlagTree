@@ -1,3 +1,28 @@
+/*
+ * Copyright 2018-2020 Philippe Tillet
+ * Copyright 2020-2022 OpenAI
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #ifndef TRITONGPU_PASSES
 #define TRITONGPU_PASSES
 
@@ -199,6 +224,42 @@ def TritonGPUPrefetch : Pass<"tritongpu-prefetch", "mlir::ModuleOp"> {
                            "mlir::scf::SCFDialect",
                            "mlir::arith::ArithDialect"];
 }
+
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+def TritonGPUConcatDotOperand : Pass<"tritongpu-concat-dot-operand", "mlir::ModuleOp"> {
+  let summary = "fold an ordered K concat into one op";
+
+  let description = [{
+    Recognise an ordered concatenation along the contraction axis written as a
+    balanced `tt.join` tree followed by a transpose and a reshape, and replace it
+    with `ttg.concat_dot_operand`.
+
+    Runs before layout assignment: a join chain both stages the operand through
+    shared memory and perturbs the kWidth `AccelerateMatmul` picks, so the
+    rewrite has to happen while the IR is still layout-free.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+
+def TritonGPUExpandConcatDotOperand : Pass<"tritongpu-expand-concat-dot-operand", "mlir::ModuleOp"> {
+  let summary = "expand an unlowerable K concat";
+
+  let description = [{
+    Rebuild the `tt.join` tree for any `ttg.concat_dot_operand` whose operand did
+    not end up with a layout the register relabel works on.
+
+    Whether the relabel is possible only follows from the encoding layout
+    propagation assigns, so it cannot be decided when
+    `tritongpu-concat-dot-operand` introduces the op. Run this once the layouts
+    are final and before lowering.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 def TritonGPUAccelerateMatmul : Pass<"tritongpu-accelerate-matmul", "mlir::ModuleOp"> {
   let summary = "accelerate matmul";

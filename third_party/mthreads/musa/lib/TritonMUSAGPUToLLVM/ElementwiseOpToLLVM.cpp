@@ -313,7 +313,9 @@ struct FpToFpOpConversion
                                  const Value &v, RoundingMode rounding) {
     switch (rounding) {
     case RoundingMode::RTNE:
-      return LLVM::FPTruncOp::create(rewriter, loc, f16_ty, v);
+      return LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.f2h.rn",
+                                             f16_ty, {v})
+          .getResult(0);
     case RoundingMode::RTZ:
       return LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.f2h.rz",
                                              f16_ty, {v})
@@ -469,7 +471,7 @@ struct FpToFpOpConversion
     }
     if (srcElemTy.isBF16() && dstElemTy.isF16()) {
       Value tmp = convertBf16ToFp32(loc, rewriter, src);
-      Value out = LLVM::FPTruncOp::create(rewriter, loc, f16_ty, tmp);
+      Value out = convertFp32ToFp16(loc, rewriter, tmp, RoundingMode::RTNE);
       return {maybeBitcastSameWidth(b, out, packedDstTy)};
     }
     if (srcElemTy == dstElemTy) {

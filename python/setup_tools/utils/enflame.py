@@ -1,3 +1,23 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import glob
 import importlib.util
 import os
@@ -15,6 +35,9 @@ def get_package_data_tools():
         "libtriton_gcu400_core.so",
         "_triton_gcu300*.so",
         "_triton_gcu400*.so",
+        # Generated in the build dir by triton_global.cmake and staged into
+        # the backend dir by install_extension; declared here for packaging.
+        "VERSION",
     ]
 
 
@@ -62,19 +85,6 @@ def install_extension(*args, **kargs):
 
     project_root_dir = cmake_dir.parent.parent
 
-    # Modify nvidia driver's is_active() to return False for enflame backend
-    drvfile = project_root_dir / 'third_party' / 'nvidia' / 'backend' / 'driver.py'
-    if drvfile.exists():
-        with open(drvfile, 'r') as f:
-            lines = f.readlines()
-        for i, line in enumerate(lines):
-            if 'def is_active():' in line:
-                if i + 1 < len(lines) and 'return False' not in lines[i + 1]:
-                    lines.insert(i + 1, '        return False\n')
-                break
-        with open(drvfile, 'w') as f:
-            f.writelines(lines)
-
     dst_dir = project_root_dir / "third_party" / "enflame" / "backend"
     dst_dir.mkdir(parents=True, exist_ok=True)
 
@@ -88,6 +98,17 @@ def install_extension(*args, **kargs):
             os.chmod(dst_path, 0o755)
         else:
             print(f"Warning: {src_path} not found, skipping")
+
+    # Stage the VERSION file generated in the build dir by triton_global.cmake.
+    # It is read at runtime by backend.py::_triton_version(); we only copy (not
+    # generate) it here, keeping the source tree clean.
+    version_src = binary_dir / "VERSION"
+    if version_src.exists():
+        version_dst = dst_dir / "VERSION"
+        print(f"Copying {version_src} -> {version_dst}")
+        shutil.copy2(version_src, version_dst)
+    else:
+        print(f"Warning: {version_src} not found, skipping")
 
     # Copy core shared libraries and Python binding .so from lib/
     # toolkit.py expects these next to the backend directory
@@ -103,6 +124,9 @@ def install_extension(*args, **kargs):
             dst_path = dst_dir / src_path.name
             print(f"Copying {src_path} -> {dst_path}")
             shutil.copy2(src_path, dst_path)
+
+    # gcu.cpp now lives in backend/utils/, so it is installed together with the
+    # backend directory (which is symlinked/packaged as a whole). No explicit copy needed.
 
     # Copy MLIR Python bindings to build_lib for packaging
     build_ext = kargs.get('build_ext')

@@ -53,8 +53,13 @@ def validate_block_shape(shape: List[int]):
     for i, d in enumerate(shape):
         if not isinstance(d, int):
             raise TypeError(f"Shape element {i} must have type `constexpr[int]`, got `constexpr[{type(d)}]")
-        if not is_power_of_two(d):
-            raise ValueError(f"Shape element {i} must be a power of 2")
+        # ===-------------------- For Triton XPU -----------------------===
+        # [internal] Triton XPU does not require block-shape dims to be a power
+        # of two (matches the 3.0 fork). Kept disabled so kernels using e.g.
+        # BLOCK_SIZE=1536 / cluster=12 / block_size_candidates tiles compile.
+        # if not is_power_of_two(d):
+        #     raise ValueError(f"Shape element {i} must be a power of 2")
+        # ===-----------------------------------------------------------===
         numel *= d
 
     if numel > TRITON_MAX_TENSOR_NUMEL:

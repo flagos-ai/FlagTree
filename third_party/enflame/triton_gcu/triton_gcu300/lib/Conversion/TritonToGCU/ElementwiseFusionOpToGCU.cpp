@@ -123,6 +123,8 @@ std::string getBuiltinOpSymbol(Operation *op) {
       return "fpowi";
     } else if (name == "__nv_log2f") {
       return "log2";
+    } else if (name == "__nv_log1pf") {
+      return "log1p";
     } else if (name == "__nv_exp2f") {
       return "exp2";
     } else if (name == "__nv_acosf") {
@@ -154,7 +156,15 @@ std::string getBuiltinOpSymbol(Operation *op) {
 
 struct GCUElementwiseFusionOpLowering
     : SharedConversionPattern<triton::gcu::ElementwiseFusionRegionOp> {
-  using SharedConversionPattern::SharedConversionPattern;
+  bool enableI64;
+  GCUElementwiseFusionOpLowering(
+      const TypeConverter &converter, MLIRContext *ctx,
+      triton::gcu::FirstLastUserAnalysis &userAnalysis,
+      std::map<Operation *, Operation *> &replaced2Origin,
+      triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64)
+      : SharedConversionPattern(converter, ctx, userAnalysis, replaced2Origin,
+                                pTagPool),
+        enableI64(enable_i64) {}
 
   LogicalResult
   matchAndRewrite(triton::gcu::ElementwiseFusionRegionOp op,
@@ -250,7 +260,7 @@ struct GCUElementwiseFusionOpLowering
 
     unsigned maxBpe = 1;
     unsigned minBpe = 4;
-    if (!triton::gcu::get_bool_env("ENABLE_I64_CHECK", true))
+    if (enableI64)
       minBpe = 8;
     for (auto elementTy : elementTypeSet) {
       auto bpe = mlir::triton::gcu::getBpe(elementTy);
@@ -258,7 +268,7 @@ struct GCUElementwiseFusionOpLowering
       minBpe = bpe < minBpe ? bpe : minBpe;
     }
     unsigned numVacc = maxBpe / minBpe;
-    if (!triton::gcu::get_bool_env("ENABLE_I64_CHECK", true) && numVacc == 8) {
+    if (enableI64 && numVacc == 8) {
       // when max element bpe is 8, min element bpe is 1.doubling the number of
       // elements to avoid the problem of not meeting the maximum number of
       // elements in vector i8.
@@ -345,6 +355,22 @@ struct GCUElementwiseFusionOpLowering
       }
     }
 
+    bool hasTruncI64ToI8 = false;
+    if (enableI64) {
+      for (auto &o : op.getRegion().back().without_terminator()) {
+        if (auto trunciOp = dyn_cast<arith::TruncIOp>(o)) {
+          auto inTy =
+              cast<TensorType>(trunciOp.getIn().getType()).getElementType();
+          auto outTy =
+              cast<TensorType>(trunciOp.getOut().getType()).getElementType();
+          if (inTy.isInteger(64) && outTy.isInteger(8)) {
+            hasTruncI64ToI8 = true;
+            break;
+          }
+        }
+      }
+    }
+
     constexpr unsigned loopUnrollTime = 16;
     auto loopLimit = ceil<unsigned>(totalNumElems, vectorLength);
     auto loopCnt = loopUnrollTime > loopLimit ? loopLimit : loopUnrollTime;
@@ -352,6 +378,8 @@ struct GCUElementwiseFusionOpLowering
     auto insertPoint = rewriter.saveInsertionPoint();
 
     SmallVector<IRMapping> operandMaps(loopCnt);
+    SmallVector<DenseMap<Value, std::pair<Value, Value>>> i64HalfLoadMaps(
+        loopCnt);
     SmallVector<Value> initValues;
     Value step;
 
@@ -398,18 +426,40 @@ struct GCUElementwiseFusionOpLowering
                 if (elementTy.isInteger(1)) {
                   elementTy = builder.getIntegerType(8);
                 }
-                operandMaps[i].map(
-                    op.getRegion().getArgument(j),
-                    builder.create<vector::LoadOp>(
-                        loc,
-                        VectorType::get(ArrayRef<int64_t>{vectorLength},
-                                        elementTy),
-                        inputs[j],
-                        ValueRange{builder.create<arith::AddIOp>(
-                            loc,
-                            builder.create<arith::ConstantIndexOp>(
-                                loc, i * vectorLength),
-                            iter)}));
+                if (hasTruncI64ToI8 && elementTy.isInteger(64)) {
+                  auto halfLen = static_cast<int64_t>(vectorLength / 2);
+                  auto halfVecTy =
+                      VectorType::get(ArrayRef<int64_t>{halfLen}, elementTy);
+                  auto baseOffset = builder.create<arith::AddIOp>(
+                      loc,
+                      builder.create<arith::ConstantIndexOp>(loc,
+                                                             i * vectorLength),
+                      iter);
+                  auto loadLo = builder.create<vector::LoadOp>(
+                      loc, halfVecTy, inputs[j], ValueRange{baseOffset});
+                  auto loadHi = builder.create<vector::LoadOp>(
+                      loc, halfVecTy, inputs[j],
+                      ValueRange{builder.create<arith::AddIOp>(
+                          loc, baseOffset,
+                          builder.create<arith::ConstantIndexOp>(loc,
+                                                                 halfLen))});
+                  auto regionArg = op.getRegion().getArgument(j);
+                  i64HalfLoadMaps[i][regionArg] = {loadLo, loadHi};
+                  operandMaps[i].map(regionArg, loadLo);
+                } else {
+                  operandMaps[i].map(
+                      op.getRegion().getArgument(j),
+                      builder.create<vector::LoadOp>(
+                          loc,
+                          VectorType::get(ArrayRef<int64_t>{vectorLength},
+                                          elementTy),
+                          inputs[j],
+                          ValueRange{builder.create<arith::AddIOp>(
+                              loc,
+                              builder.create<arith::ConstantIndexOp>(
+                                  loc, i * vectorLength),
+                              iter)}));
+                }
               } else {
                 operandMaps[i].map(op.getRegion().getArgument(j), inputs[j]);
               }
@@ -464,7 +514,7 @@ struct GCUElementwiseFusionOpLowering
                 ++argIndex;
               } else {
                 handleCommonOp(o, builder, operandMaps[i], vectorLength,
-                               needCvtDataLayout);
+                               needCvtDataLayout, i64HalfLoadMaps[i]);
               }
             }
           }
@@ -650,6 +700,9 @@ private:
     } else if (symbol == "__nv_log2f") {
       newOp = builder.create<math::Log2Op>(loc, operands.front().getType(),
                                            operands);
+    } else if (symbol == "__nv_log1pf") {
+      newOp = builder.create<math::Log1pOp>(loc, operands.front().getType(),
+                                            operands);
     } else if (symbol == "__nv_exp2f") {
       newOp = builder.create<math::Exp2Op>(loc, operands.front().getType(),
                                            operands);
@@ -824,13 +877,16 @@ private:
     map.map(op.getResult(), newOp->getResult(0));
   }
 
-  void handleCommonOp(Operation &op, OpBuilder &builder, IRMapping &map,
-                      unsigned vectorLength, bool needCvtDataLayout) const {
+  void handleCommonOp(
+      Operation &op, OpBuilder &builder, IRMapping &map, unsigned vectorLength,
+      bool needCvtDataLayout,
+      DenseMap<Value, std::pair<Value, Value>> &i64HalfLoadMap) const {
     Operation *newOp;
     if (auto selectOp = dyn_cast<arith::SelectOp>(op)) {
       auto condition = selectOp.getCondition();
       auto mapValue = map.lookup(condition);
-      if (cast<VectorType>(mapValue.getType()).getElementType().isInteger(8)) {
+      auto vecTy = dyn_cast<VectorType>(mapValue.getType());
+      if (vecTy && vecTy.getElementType().isInteger(8)) {
         map.map(condition,
                 builder
                     .create<gcu::VectorConvertOp>(
@@ -852,6 +908,64 @@ private:
               .getElementType()
               .isInteger(8)) {
         map.map(cvtOp.getOut(), map.lookup(cvtOp.getIn()));
+        return;
+      } else {
+        newOp = builder.clone(op, map);
+      }
+    } else if (auto extsiOp = dyn_cast<arith::ExtSIOp>(op)) {
+      auto inElemTy =
+          cast<TensorType>(extsiOp.getIn().getType()).getElementType();
+      auto outElemTy =
+          cast<TensorType>(extsiOp.getOut().getType()).getElementType();
+      if (enableI64 && inElemTy.isInteger(8) && outElemTy.isInteger(64)) {
+        auto loc = op.getLoc();
+        auto inputVal = map.lookup(extsiOp.getIn());
+        auto halfLen = static_cast<int64_t>(vectorLength / 2);
+        auto i32VecTy = VectorType::get(ArrayRef<int64_t>{halfLen},
+                                        builder.getIntegerType(32));
+        auto i64VecTy = VectorType::get(ArrayRef<int64_t>{halfLen},
+                                        builder.getIntegerType(64));
+        auto cvtOp = builder.create<gcu::VectorConvertOp>(
+            loc, TypeRange{i32VecTy, i32VecTy}, inputVal);
+        auto ext0 =
+            builder.create<arith::ExtSIOp>(loc, i64VecTy, cvtOp.getResult(0));
+        auto ext1 =
+            builder.create<arith::ExtSIOp>(loc, i64VecTy, cvtOp.getResult(1));
+        auto mergedTy = VectorType::get(ArrayRef<int64_t>{vectorLength},
+                                        builder.getIntegerType(64));
+        auto mergeOp = builder.create<gcu::VectorConvertOp>(
+            loc, TypeRange{mergedTy}, ValueRange{ext0, ext1});
+        map.map(extsiOp.getOut(), mergeOp.getResult(0));
+        return;
+      } else {
+        newOp = builder.clone(op, map);
+      }
+    } else if (auto trunciOp = dyn_cast<arith::TruncIOp>(op)) {
+      auto inElemTy =
+          cast<TensorType>(trunciOp.getIn().getType()).getElementType();
+      auto outElemTy =
+          cast<TensorType>(trunciOp.getOut().getType()).getElementType();
+      if (enableI64 && inElemTy.isInteger(64) && outElemTy.isInteger(8)) {
+        auto loc = op.getLoc();
+        auto trunciInput = trunciOp.getIn();
+        Value loadLo, loadHi;
+        auto it = i64HalfLoadMap.find(trunciInput);
+        if (it != i64HalfLoadMap.end()) {
+          loadLo = it->second.first;
+          loadHi = it->second.second;
+        } else {
+          loadLo = map.lookup(trunciInput);
+          loadHi = loadLo;
+        }
+        auto i32VecTy = VectorType::get(ArrayRef<int64_t>{vectorLength},
+                                        builder.getIntegerType(32));
+        auto i8VecTy = VectorType::get(ArrayRef<int64_t>{vectorLength},
+                                       builder.getIntegerType(8));
+        auto mergeOp = builder.create<gcu::VectorConvertOp>(
+            loc, TypeRange{i32VecTy}, ValueRange{loadLo, loadHi});
+        auto truncToI8 =
+            builder.create<arith::TruncIOp>(loc, i8VecTy, mergeOp.getResult(0));
+        map.map(trunciOp.getOut(), truncToI8.getResult());
         return;
       } else {
         newOp = builder.clone(op, map);
@@ -900,8 +1014,8 @@ void mlir::triton::populateElementwiseFusionOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateDTETagPool &pTagPool) {
+    triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64) {
   patterns.add<GCUElementwiseFusionOpLowering>(converter, patterns.getContext(),
                                                userAnalysis, replaced2Origin,
-                                               pTagPool);
+                                               pTagPool, enable_i64);
 }
