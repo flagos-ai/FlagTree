@@ -3,10 +3,10 @@ name: Spacemit3.6-Build-And-Test
 # SpaceMiT RISC-V 后端 CI (root-triton plugin)。
 #
 # 执行环境: self-hosted runner (label spacemit3.6)。
-# RPC 执行: bianbu_riscv64_env 容器 (RISC-V via QEMU binfmt) 跑 spine-rpc-server,
-#           host triton 交叉编译 kernel 后通过 TCP 9999 发给容器执行。
-# LLVM / spine-mlir / spine-runtime / rpc-runtime / toolchain 从
-# zuoweixia497/spacemit-ci-assets GitHub release 下载并缓存。
+# RPC 执行: jdsk-qemu v10.0.2 用户态模拟 (-cpu max,vlen=1024,elen=64,vext_spec=v1.0)
+#           跑 spine-rpc-server, host triton 交叉编译 kernel 后通过 TCP 9999 发给 QEMU 执行。
+# LLVM / spine-mlir / spine-runtime / rpc-runtime / toolchain / jdsk-qemu 从
+# zuoweixia497/spacemit-ci-assets GitHub release (及 archive.spacemit.com) 下载并缓存。
 # 更新包: 修改 third_party/spacemit/spacemit-ci.env 里的 URL+MD5 即可。
 
 on:
@@ -127,6 +127,21 @@ jobs:
           tar -xf rpc-runtime.tar.gz -C rpc_runtime_installed --strip-components=1
           rm rpc-runtime.tar.gz
 
+      - name: Cache jdsk-qemu
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: cache-qemu
+        uses: actions/cache@v4
+        with:
+          path: jdsk-qemu
+          key: jdsk-qemu-${{ env.JDSK_QEMU_MD5 }}
+
+      - name: Download and extract jdsk-qemu
+        if: steps.check_backend.outputs.should_skip != 'true' && steps.cache-qemu.outputs.cache-hit != 'true'
+        run: |
+          curl -k -L --retry 5 --retry-delay 5 --retry-all-errors -o jdsk-qemu.tar.gz "$JDSK_QEMU_URL"
+          tar -xf jdsk-qemu.tar.gz
+          rm jdsk-qemu.tar.gz
+
       - name: Build (apply flagtree.patch + pip install)
         if: steps.check_backend.outputs.should_skip != 'true'
         run: |
@@ -144,35 +159,42 @@ jobs:
           MAX_JOBS="${MAX_JOBS:-4}" PIP="python -m pip" \
             bash third_party/spacemit/scripts/install_flagtree_plugin.sh
 
-      - name: Start QEMU RPC server (bianbu container)
+      - name: Start QEMU RPC server (jdsk-qemu)
         if: steps.check_backend.outputs.should_skip != 'true'
         run: |
           set -euo pipefail
-          docker pull harbor.spacemit.com/spacemit-ai/bianbu_riscv64_env:bianbu_3.x_v0.1
-          docker rm -f rpc-ci 2>/dev/null || true
-          # 不用 bind mount: runner 容器走 host docker socket 时, 路径在 host 上不存在
-          # (host /runner/_work/... 是空目录, 真实文件在 actions-runner/_work/...).
-          # docker cp 由 docker CLI 在 runner 容器侧读源文件, 再流式写入目标容器.
-          docker run -d --name rpc-ci \
-            -p 127.0.0.1:${RPC_PORT}:${RPC_PORT} \
-            harbor.spacemit.com/spacemit-ai/bianbu_riscv64_env:bianbu_3.x_v0.1 \
-            sleep 1200
-          docker cp rpc_runtime_installed/. rpc-ci:/rpc
-          # sanity: confirm the rpc-server binary is visible inside the container
-          docker exec rpc-ci ls -la /rpc/bin/spine-rpc-server /rpc/lib/libspert.so
-          # launch spine-rpc-server inside the RISC-V container (binfmt QEMU)
-          docker exec -d -e SPACEMIT_QEMU_RISCV_FLAGS="max,vlen=1024,elen=64,vext_spec=v1.0" rpc-ci \
-            bash -c "LD_LIBRARY_PATH=/rpc/lib /rpc/bin/spine-rpc-server ${RPC_PORT} > /tmp/rpc.log 2>&1"
-          # wait for the port to accept connections (server needs ~15s to boot under QEMU)
+          QEMU_BIN="$(pwd)/jdsk-qemu/bin/qemu-riscv64"
+          SYSROOT="$(pwd)/toolchain/sysroot"
+          RPC_DIR="$(pwd)/rpc_runtime_installed"
+          chmod +x "$QEMU_BIN" 2>/dev/null || true
+          # sanity: confirm the rpc-server binary and qemu exist
+          test -f "$QEMU_BIN" || { echo "ERROR: qemu not found at $QEMU_BIN" >&2; exit 1; }
+          test -f "$RPC_DIR/bin/spine-rpc-server" || { echo "ERROR: rpc-server not found" >&2; exit 1; }
+          "$QEMU_BIN" --version
+          # launch spine-rpc-server under jdsk-qemu (RISC-V user-mode emulation on x86 runner)
+          setsid bash -c "
+            exec '$QEMU_BIN' -L '$SYSROOT' \
+              -cpu max,vlen=1024,elen=64,vext_spec=v1.0 \
+              -E LD_LIBRARY_PATH='$RPC_DIR/lib:$SYSROOT/lib:$SYSROOT/usr/lib' \
+              '$RPC_DIR/bin/spine-rpc-server' ${RPC_PORT}
+          " > /tmp/rpc.log 2>&1 &
+          echo $! > /tmp/rpc_server.pid
+          # wait for the port to accept connections
           for i in $(seq 1 60); do
             if python3 -c "import socket,sys; sys.exit(0 if socket.socket().connect_ex(('127.0.0.1',${RPC_PORT}))==0 else 1)" 2>/dev/null; then
               echo "RPC server ready on 127.0.0.1:${RPC_PORT} (${i}s)"
               exit 0
             fi
+            # bail early if the server process died
+            if ! kill -0 $(cat /tmp/rpc_server.pid) 2>/dev/null; then
+              echo "ERROR: rpc-server process exited early" >&2
+              cat /tmp/rpc.log 2>/dev/null || true
+              exit 1
+            fi
             sleep 1
           done
           echo "ERROR: RPC server did not come up on port ${RPC_PORT}" >&2
-          docker exec rpc-ci cat /tmp/rpc.log 2>/dev/null || true
+          cat /tmp/rpc.log 2>/dev/null || true
           exit 1
 
       - name: Minimal smoke test (import + spacemit backend + QEMU RPC)
@@ -236,12 +258,12 @@ jobs:
       - name: Dump RPC server log + compiled IR (on failure)
         if: failure() && steps.check_backend.outputs.should_skip != 'true'
         run: |
-          echo "=== rpc-ci state ==="
-          docker ps -a --filter name=rpc-ci || true
-          echo "=== /tmp/rpc.log (server stderr) ==="
-          docker exec rpc-ci cat /tmp/rpc.log 2>/dev/null || true
-          echo "=== spine-rpc-server processes (alive?) ==="
-          docker exec rpc-ci bash -c 'ps -ef | grep -v grep | grep spine-rpc-server' 2>/dev/null || true
+          echo "--- rpc-server process ---"
+          if [ -f /tmp/rpc_server.pid ]; then
+            ps -p "$(cat /tmp/rpc_server.pid)" 2>/dev/null || echo "process not running"
+          fi
+          echo "--- /tmp/rpc.log ---"
+          cat /tmp/rpc.log 2>/dev/null || true
           echo "=== triton_dump dir ==="
           ls -la triton_dump/ 2>/dev/null || true
           echo "=== dump file contents ==="
@@ -253,4 +275,8 @@ jobs:
 
       - name: Stop QEMU RPC server
         if: always() && steps.check_backend.outputs.should_skip != 'true'
-        run: docker rm -f rpc-ci 2>/dev/null || true
+        run: |
+          if [ -f /tmp/rpc_server.pid ]; then
+            kill "$(cat /tmp/rpc_server.pid)" 2>/dev/null || true
+          fi
+          pkill -f "spine-rpc-server" 2>/dev/null || true
