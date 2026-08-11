@@ -55,7 +55,6 @@ import triton.language as tl
 
 logger = logging.getLogger(__name__)
 
-
 try:
     import triton.experimental.tle as tle
     _HAS_DSA = hasattr(tle, "dsa") and hasattr(tle.dsa, "alloc")
@@ -69,11 +68,11 @@ except (ImportError, AttributeError):
 # ===========================================================================
 @triton.jit
 def _mhc_post_kernel_tle(
-    x_ptr,        # (T, 4, D) bf16/fp16
-    h_res_ptr,    # (T, 4, 4) fp32   layout: h_res[t, j, i]
-    h_out_ptr,    # (T, D)    bf16/fp16
-    h_post_ptr,   # (T, 4)    fp32
-    out_ptr,      # (T, 4, D) bf16/fp16
+    x_ptr,  # (T, 4, D) bf16/fp16
+    h_res_ptr,  # (T, 4, 4) fp32   layout: h_res[t, j, i]
+    h_out_ptr,  # (T, D)    bf16/fp16
+    h_post_ptr,  # (T, 4)    fp32
+    out_ptr,  # (T, 4, D) bf16/fp16
     D: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
@@ -81,7 +80,6 @@ def _mhc_post_kernel_tle(
     pid_d = tl.program_id(1)
 
     d_off = pid_d * BLOCK_D + tl.arange(0, BLOCK_D)
-    d_mask = d_off < D
     tail_d = tl.minimum(BLOCK_D, D - pid_d * BLOCK_D)
 
     x_base = pid_t * 4 * D
@@ -172,11 +170,11 @@ def _mhc_post_kernel_tle(
 # ===========================================================================
 @triton.jit
 def _mhc_post_kernel_tle_rows(
-    x_ptr,        # (T, 4, D) bf16/fp16
-    h_res_ptr,    # (T, 4, 4) fp32
-    h_out_ptr,    # (T, D)    bf16/fp16
-    h_post_ptr,   # (T, 4)    fp32
-    out_ptr,      # (T, 4, D) bf16/fp16
+    x_ptr,  # (T, 4, D) bf16/fp16
+    h_res_ptr,  # (T, 4, 4) fp32
+    h_out_ptr,  # (T, D)    bf16/fp16
+    h_post_ptr,  # (T, 4)    fp32
+    out_ptr,  # (T, 4, D) bf16/fp16
     D: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
@@ -265,10 +263,8 @@ def mhc_post(
 ) -> torch.Tensor:
     """Fused mhc_post forward. See module docstring for semantics."""
     if not _HAS_DSA:
-        raise RuntimeError(
-            "This mhc_post implementation requires the TLE DSA surface "
-            "(triton.experimental.tle.dsa.*)."
-        )
+        raise RuntimeError("This mhc_post implementation requires the TLE DSA surface "
+                           "(triton.experimental.tle.dsa.*).")
 
     xf, hres, hout, hpost, shape = _flatten_bsn(x, h_res, h_out, h_post)
     T, N, D = xf.shape
@@ -294,8 +290,13 @@ def mhc_post(
     # the existing tests exercise; numerics are identical, only the copy-out
     # DMA differs.
     _mhc_post_kernel_tle_rows[grid](
-        xf, hres.to(torch.float32), hout, hpost.to(torch.float32), out,
-        D=D, BLOCK_D=BLOCK_D,
+        xf,
+        hres.to(torch.float32),
+        hout,
+        hpost.to(torch.float32),
+        out,
+        D=D,
+        BLOCK_D=BLOCK_D,
     )
     return out.reshape(shape)
 

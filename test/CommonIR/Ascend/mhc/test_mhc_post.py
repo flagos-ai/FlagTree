@@ -34,7 +34,7 @@ sys.path.pop(0)
 # Import new version from current directory (ensure it takes priority)
 if "mhc_post" in sys.modules:
     del sys.modules["mhc_post"]
-from mhc_post import mhc_post, mhc_post_ref
+from mhc_post import mhc_post, mhc_post_ref  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -102,10 +102,8 @@ class AccuracyTests:
             self.passed += 1
         else:
             self.failed += 1
-        print(
-            f"  [{status}] {name:40s} "
-            f"max_diff={max_diff:.6e}  cos_sim={cos_sim:.8f}"
-        )
+        print(f"  [{status}] {name:40s} "
+              f"max_diff={max_diff:.6e}  cos_sim={cos_sim:.8f}")
         return ok
 
     def test_basic_shapes(self):
@@ -173,7 +171,10 @@ class AccuracyTests:
             ref = mhc_post_ref(x, h_res, h_out, h_post)
             self._check(
                 f"B={B} S={S:3d} N={N} D={D:5d} bf16",
-                out, ref, atol=1e-2, rtol=1e-2,
+                out,
+                ref,
+                atol=1e-2,
+                rtol=1e-2,
             )
 
     def test_large_shapes(self):
@@ -192,7 +193,10 @@ class AccuracyTests:
             ref = mhc_post_ref(x, h_res, h_out, h_post)
             self._check(
                 f"B={B} S={S:5d} N={N} D={D} bf16",
-                out, ref, atol=1e-2, rtol=1e-2,
+                out,
+                ref,
+                atol=1e-2,
+                rtol=1e-2,
             )
 
     def test_large_T(self):
@@ -296,10 +300,10 @@ class PerfTests:
         """
         elem_bytes = torch.finfo(dtype).bits // 8
         read_bytes = (
-            T * N * D * elem_bytes       # x
-            + T * N * N * 4              # h_res (fp32)
-            + T * D * elem_bytes         # h_out
-            + T * N * 4                  # h_post (fp32)
+            T * N * D * elem_bytes  # x
+            + T * N * N * 4  # h_res (fp32)
+            + T * D * elem_bytes  # h_out
+            + T * N * 4  # h_post (fp32)
         )
         write_bytes = T * N * D * elem_bytes  # out
         total_bytes = read_bytes + write_bytes
@@ -336,19 +340,17 @@ class PerfTests:
     def test_typical_workloads(self):
         """Benchmark typical inference/training shapes."""
         print("\n=== Performance: Typical workloads (bf16) ===")
-        print(
-            f"{'shape':>24s} {'kernel(ms)':>12s} {'ref(ms)':>12s} "
-            f"{'speedup':>8s} {'BW(GB/s)':>10s}"
-        )
+        print(f"{'shape':>24s} {'kernel(ms)':>12s} {'ref(ms)':>12s} "
+              f"{'speedup':>8s} {'BW(GB/s)':>10s}")
         print("-" * 70)
         workloads = [
             # (T, N, D) — typical transformer shapes
-            (32, 4, 768),     # small model
-            (64, 4, 1024),    # medium
-            (128, 4, 2048),   # large
-            (256, 4, 4096),   # XL
-            (512, 4, 1024),   # long sequence, medium dim
-            (1024, 4, 512),   # very long sequence
+            (32, 4, 768),  # small model
+            (64, 4, 1024),  # medium
+            (128, 4, 2048),  # large
+            (256, 4, 4096),  # XL
+            (512, 4, 1024),  # long sequence, medium dim
+            (1024, 4, 512),  # very long sequence
         ]
         for T, N, D in workloads:
             x, h_res, h_out, h_post = _generate_inputs(T, N, D, torch.bfloat16, self.device)
@@ -357,10 +359,8 @@ class PerfTests:
             bw = self._bandwidth(T, N, D, torch.bfloat16, t_kernel)
             speedup = t_ref / t_kernel if t_kernel > 0 else float("inf")
             shape_str = f"({T},{N},{D})"
-            print(
-                f"{shape_str:>24s} {t_kernel:>12.4f} {t_ref:>12.4f} "
-                f"{speedup:>7.2f}x {bw:>9.2f}"
-            )
+            print(f"{shape_str:>24s} {t_kernel:>12.4f} {t_ref:>12.4f} "
+                  f"{speedup:>7.2f}x {bw:>9.2f}")
 
     def test_dtype_comparison(self):
         """Compare bf16 vs fp16 performance."""
@@ -378,10 +378,8 @@ class PerfTests:
     def test_large_shapes(self):
         """Benchmark large typical shapes (B, S, 4, 3584)."""
         print("\n=== Performance: Large shapes (B, S, 4, 3584) bf16 ===")
-        print(
-            f"{'(B,S,N,D)':>24s} {'kernel(ms)':>12s} {'ref(ms)':>12s} "
-            f"{'speedup':>8s} {'BW(GB/s)':>10s}"
-        )
+        print(f"{'(B,S,N,D)':>24s} {'kernel(ms)':>12s} {'ref(ms)':>12s} "
+              f"{'speedup':>8s} {'BW(GB/s)':>10s}")
         print("-" * 70)
         workloads = [
             (1, 64, 4, 3584),
@@ -398,18 +396,14 @@ class PerfTests:
             bw = self._bandwidth(T, N, D, torch.bfloat16, t_kernel)
             speedup = t_ref / t_kernel if t_kernel > 0 else float("inf")
             shape_str = f"({B},{S},{N},{D})"
-            print(
-                f"{shape_str:>24s} {t_kernel:>12.4f} {t_ref:>12.4f} "
-                f"{speedup:>7.2f}x {bw:>9.2f}"
-            )
+            print(f"{shape_str:>24s} {t_kernel:>12.4f} {t_ref:>12.4f} "
+                  f"{speedup:>7.2f}x {bw:>9.2f}")
 
     def test_pipeline_vs_nopipeline(self):
         """Compare pipeline kernel vs non-pipeline kernel on large shapes."""
         print("\n=== Performance: Pipeline vs Non-Pipeline (B, S, 4, 3584) bf16 ===")
-        print(
-            f"{'(B,S,N,D)':>24s} {'pipeline(ms)':>14s} {'no-pipe(ms)':>14s} "
-            f"{'pipe_speedup':>13s} {'pipe BW(GB/s)':>14s}"
-        )
+        print(f"{'(B,S,N,D)':>24s} {'pipeline(ms)':>14s} {'no-pipe(ms)':>14s} "
+              f"{'pipe_speedup':>13s} {'pipe BW(GB/s)':>14s}")
         print("-" * 83)
         workloads = [
             (1, 64, 4, 3584),
@@ -424,28 +418,30 @@ class PerfTests:
             # Pipeline version (use_pipeline=True, default)
             t_pipe = self._bench(
                 lambda a, b, c, d: mhc_post(a, b, c, d, use_pipeline=True),
-                x, h_res, h_out, h_post,
+                x,
+                h_res,
+                h_out,
+                h_post,
             )
             # Non-pipeline version (use_pipeline=False)
             t_nopipe = self._bench(
                 lambda a, b, c, d: mhc_post(a, b, c, d, use_pipeline=False),
-                x, h_res, h_out, h_post,
+                x,
+                h_res,
+                h_out,
+                h_post,
             )
             bw_pipe = self._bandwidth(T, N, D, torch.bfloat16, t_pipe)
             speedup = t_nopipe / t_pipe if t_pipe > 0 else float("inf")
             shape_str = f"({B},{S},{N},{D})"
-            print(
-                f"{shape_str:>24s} {t_pipe:>14.4f} {t_nopipe:>14.4f} "
-                f"{speedup:>12.2f}x {bw_pipe:>13.2f}"
-            )
+            print(f"{shape_str:>24s} {t_pipe:>14.4f} {t_nopipe:>14.4f} "
+                  f"{speedup:>12.2f}x {bw_pipe:>13.2f}")
 
     def test_new_vs_old(self):
         """Compare new (op/tle_version) vs old (tle_version) mhc_post."""
         print("\n=== Performance: New vs Old mhc_post (B, S, 4, 3584) bf16 ===")
-        print(
-            f"{'(B,S,N,D)':>24s} {'new(ms)':>12s} {'old(ms)':>12s} "
-            f"{'speedup':>10s} {'new BW(GB/s)':>14s}"
-        )
+        print(f"{'(B,S,N,D)':>24s} {'new(ms)':>12s} {'old(ms)':>12s} "
+              f"{'speedup':>10s} {'new BW(GB/s)':>14s}")
         print("-" * 76)
         workloads = [
             (1, 64, 4, 3584),
@@ -462,10 +458,8 @@ class PerfTests:
             bw_new = self._bandwidth(T, N, D, torch.bfloat16, t_new)
             speedup = t_old / t_new if t_new > 0 else float("inf")
             shape_str = f"({B},{S},{N},{D})"
-            print(
-                f"{shape_str:>24s} {t_new:>12.4f} {t_old:>12.4f} "
-                f"{speedup:>9.2f}x {bw_new:>13.2f}"
-            )
+            print(f"{shape_str:>24s} {t_new:>12.4f} {t_old:>12.4f} "
+                  f"{speedup:>9.2f}x {bw_new:>13.2f}")
 
     def run_all(self):
         """Run all performance tests."""
@@ -483,16 +477,11 @@ class PerfTests:
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="mhc_post accuracy & performance tests")
-    parser.add_argument("--device", type=str, default="npu",
-                        help="Device to run on (default: npu)")
-    parser.add_argument("--accuracy", action="store_true",
-                        help="Run only accuracy tests")
-    parser.add_argument("--perf", action="store_true",
-                        help="Run only performance tests")
-    parser.add_argument("--warmup", type=int, default=10,
-                        help="Warmup iterations for perf (default: 10)")
-    parser.add_argument("--repeat", type=int, default=100,
-                        help="Repeat iterations for perf (default: 100)")
+    parser.add_argument("--device", type=str, default="npu", help="Device to run on (default: npu)")
+    parser.add_argument("--accuracy", action="store_true", help="Run only accuracy tests")
+    parser.add_argument("--perf", action="store_true", help="Run only performance tests")
+    parser.add_argument("--warmup", type=int, default=10, help="Warmup iterations for perf (default: 10)")
+    parser.add_argument("--repeat", type=int, default=100, help="Repeat iterations for perf (default: 100)")
     args = parser.parse_args()
 
     run_both = not args.accuracy and not args.perf

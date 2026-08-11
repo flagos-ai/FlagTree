@@ -358,6 +358,7 @@ def flash_attention_fwd_3task_kernel(
     tl.sync_block_wait("vector", "cube", 3, pipe.PIPE_MTE2, pipe.PIPE_S)
     tl.sync_block_wait("vector", "cube", 4, pipe.PIPE_MTE2, pipe.PIPE_S)
 
+
 # =============================================================================
 #  Intermediate-TileIR dump (no device required)
 #

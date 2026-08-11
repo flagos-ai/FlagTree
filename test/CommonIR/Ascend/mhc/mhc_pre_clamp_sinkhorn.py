@@ -67,7 +67,6 @@ import triton.language as tl
 
 logger = logging.getLogger(__name__)
 
-
 try:
     import triton.experimental.tle as tle
     _HAS_DSA = hasattr(tle, "dsa") and hasattr(tle.dsa, "alloc")
@@ -86,11 +85,11 @@ except (ImportError, AttributeError):
 # ===========================================================================
 @triton.jit
 def _rms_scale_kernel_tle(
-    x_ptr,          # (T, hcMult*D) input dtype
-    x_scaled_ptr,   # (T, hcMult*D) fp32 output
-    inv_rms_ptr,    # (T,) fp32
+    x_ptr,  # (T, hcMult*D) input dtype
+    x_scaled_ptr,  # (T, hcMult*D) fp32 output
+    inv_rms_ptr,  # (T,) fp32
     HC_D: tl.constexpr,
-    D_INV: tl.constexpr,     # 1/HC_D
+    D_INV: tl.constexpr,  # 1/HC_D
     NORM_EPS: tl.constexpr,
     BLOCK_H: tl.constexpr,
 ):
@@ -121,7 +120,6 @@ def _rms_scale_kernel_tle(
     tl.store(inv_rms_ptr + pid, inv)
 
     # ---- pass 2: x_scaled = x * inv_rms ----
-    xs_ub = tle.dsa.alloc([BLOCK_H], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     for h_start in range(0, HC_D, BLOCK_H):
         offs = h_start + tl.arange(0, BLOCK_H)
         mask = offs < HC_D
@@ -147,22 +145,17 @@ def _rms_scale_kernel_tle(
 # across the iteration loop.
 # ===========================================================================
 @triton.jit
-def _heads_sinkhorn_kernel_tle(
-    mixes_ptr,      # (T, 24) fp32
-    alpha_ptr,      # (3,)   fp32
-    base_ptr,       # (24,)  fp32
-    pre_ptr,        # (T, 4)        fp32  OUT
-    post_ptr,       # (T, 4)        fp32  OUT
-    comb_ptr,       # (T, 4, 4)     fp32  OUT
-    logits_ptr,     # (T, 4, 4)     fp32  OUT (pre-clamp logits, for bwd)
-    HC_EPS: tl.constexpr,
-    CLAMP_MIN: tl.constexpr,
-    CLAMP_MAX: tl.constexpr,
-    APPLY_CLAMP: tl.constexpr,
-    ITERS: tl.constexpr,
-    SAVE_INTERMEDIATES: tl.constexpr,
-    NUM_TOKENS: tl.constexpr,   # tokens per program (pipeline depth)
-):
+def _heads_sinkhorn_kernel_tle(mixes_ptr,  # (T, 24) fp32
+                               alpha_ptr,  # (3,)   fp32
+                               base_ptr,  # (24,)  fp32
+                               pre_ptr,  # (T, 4)        fp32  OUT
+                               post_ptr,  # (T, 4)        fp32  OUT
+                               comb_ptr,  # (T, 4, 4)     fp32  OUT
+                               logits_ptr,  # (T, 4, 4)     fp32  OUT (pre-clamp logits, for bwd)
+                               HC_EPS: tl.constexpr, CLAMP_MIN: tl.constexpr, CLAMP_MAX: tl.constexpr,
+                               APPLY_CLAMP: tl.constexpr, ITERS: tl.constexpr, SAVE_INTERMEDIATES: tl.constexpr,
+                               NUM_TOKENS: tl.constexpr,  # tokens per program (pipeline depth)
+                               ):
     """Pipeline version: each program processes NUM_TOKENS tokens sequentially.
 
     Uses tle.dsa.pipeline(num_stages=2) to overlap MTE2 DMA (loading next
@@ -182,12 +175,12 @@ def _heads_sinkhorn_kernel_tle(
     base_vec = tle.dsa.to_tensor(base_ub)  # (32,) fp32, only [0:24] valid
 
     # Extract base sub-vectors via extract_slice (contiguous UB slices)
-    base_pre = tl.reshape(tle.dsa.extract_slice(base_vec, (0,), (4,), (1,)), [4])
-    base_po = tl.reshape(tle.dsa.extract_slice(base_vec, (4,), (4,), (1,)), [4])
-    base_l0 = tl.reshape(tle.dsa.extract_slice(base_vec, (8,), (4,), (1,)), [4])
-    base_l1 = tl.reshape(tle.dsa.extract_slice(base_vec, (12,), (4,), (1,)), [4])
-    base_l2 = tl.reshape(tle.dsa.extract_slice(base_vec, (16,), (4,), (1,)), [4])
-    base_l3 = tl.reshape(tle.dsa.extract_slice(base_vec, (20,), (4,), (1,)), [4])
+    base_pre = tl.reshape(tle.dsa.extract_slice(base_vec, (0, ), (4, ), (1, )), [4])
+    base_po = tl.reshape(tle.dsa.extract_slice(base_vec, (4, ), (4, ), (1, )), [4])
+    base_l0 = tl.reshape(tle.dsa.extract_slice(base_vec, (8, ), (4, ), (1, )), [4])
+    base_l1 = tl.reshape(tle.dsa.extract_slice(base_vec, (12, ), (4, ), (1, )), [4])
+    base_l2 = tl.reshape(tle.dsa.extract_slice(base_vec, (16, ), (4, ), (1, )), [4])
+    base_l3 = tl.reshape(tle.dsa.extract_slice(base_vec, (20, ), (4, ), (1, )), [4])
 
     a0 = tl.load(alpha_ptr + 0)
     a1 = tl.load(alpha_ptr + 1)
@@ -207,12 +200,12 @@ def _heads_sinkhorn_kernel_tle(
 
         # -- Compute stage: extract mixes sub-vectors from UB --
         mix_vec = tle.dsa.to_tensor(mix_ub)  # (32,) fp32
-        mix_pre = tl.reshape(tle.dsa.extract_slice(mix_vec, (0,), (4,), (1,)), [4])
-        mix_po = tl.reshape(tle.dsa.extract_slice(mix_vec, (4,), (4,), (1,)), [4])
-        mix_l0 = tl.reshape(tle.dsa.extract_slice(mix_vec, (8,), (4,), (1,)), [4])
-        mix_l1 = tl.reshape(tle.dsa.extract_slice(mix_vec, (12,), (4,), (1,)), [4])
-        mix_l2 = tl.reshape(tle.dsa.extract_slice(mix_vec, (16,), (4,), (1,)), [4])
-        mix_l3 = tl.reshape(tle.dsa.extract_slice(mix_vec, (20,), (4,), (1,)), [4])
+        mix_pre = tl.reshape(tle.dsa.extract_slice(mix_vec, (0, ), (4, ), (1, )), [4])
+        mix_po = tl.reshape(tle.dsa.extract_slice(mix_vec, (4, ), (4, ), (1, )), [4])
+        mix_l0 = tl.reshape(tle.dsa.extract_slice(mix_vec, (8, ), (4, ), (1, )), [4])
+        mix_l1 = tl.reshape(tle.dsa.extract_slice(mix_vec, (12, ), (4, ), (1, )), [4])
+        mix_l2 = tl.reshape(tle.dsa.extract_slice(mix_vec, (16, ), (4, ), (1, )), [4])
+        mix_l3 = tl.reshape(tle.dsa.extract_slice(mix_vec, (20, ), (4, ), (1, )), [4])
 
         # ---- pre head: sigmoid(mix*a0 + base) + hc_eps ---- vectorized (4,)
         pre_vec = tl.sigmoid(mix_pre * a0 + base_pre) + HC_EPS
@@ -310,9 +303,9 @@ def _heads_sinkhorn_kernel_tle(
 # ===========================================================================
 @triton.jit
 def _y_scale_kernel_tle(
-    x_ptr,      # (T, 4, D) input dtype
-    pre_ptr,    # (T, 4)    fp32
-    y_ptr,      # (T, D)    input dtype
+    x_ptr,  # (T, 4, D) input dtype
+    pre_ptr,  # (T, 4)    fp32
+    y_ptr,  # (T, D)    input dtype
     D: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
@@ -371,9 +364,9 @@ def _y_scale_kernel_tle(
 # ===========================================================================
 @triton.jit
 def _y_scale_kernel_tle_rows(
-    x_ptr,      # (T, 4, D) input dtype
-    pre_ptr,    # (T, 4)    fp32
-    y_ptr,      # (T, D)    input dtype
+    x_ptr,  # (T, 4, D) input dtype
+    pre_ptr,  # (T, 4)    fp32
+    y_ptr,  # (T, D)    input dtype
     D: tl.constexpr,
     BLOCK_D: tl.constexpr,
 ):
@@ -442,10 +435,8 @@ def mhc_pre_clamp_sinkhorn(
         pre         : (T, hcMult) fp32
     """
     if not _HAS_DSA:
-        raise RuntimeError(
-            "This mhc_pre_clamp_sinkhorn implementation requires the TLE DSA "
-            "surface (triton.experimental.tle.dsa.*)."
-        )
+        raise RuntimeError("This mhc_pre_clamp_sinkhorn implementation requires the TLE DSA "
+                           "surface (triton.experimental.tle.dsa.*).")
 
     xf, shape = _flatten(x)
     T, N, D = xf.shape
@@ -465,8 +456,10 @@ def mhc_pre_clamp_sinkhorn(
     while T * triton.cdiv(hc_d, BLOCK_H) > 65535 and BLOCK_H < hc_d:
         BLOCK_H *= 2
     BLOCK_H = min(BLOCK_H, triton.next_power_of_2(hc_d))
-    _rms_scale_kernel_tle[(T,)](
-        xf.view(T, hc_d), x_scaled, inv_rms,
+    _rms_scale_kernel_tle[(T, )](
+        xf.view(T, hc_d),
+        x_scaled,
+        inv_rms,
         HC_D=hc_d,
         D_INV=1.0 / hc_d,
         NORM_EPS=norm_eps,
@@ -481,21 +474,23 @@ def mhc_pre_clamp_sinkhorn(
     pre = torch.empty(T, N, dtype=torch.float32, device=xf.device)
     post_out = torch.empty(T, N, dtype=torch.float32, device=xf.device)
     comb_frag = torch.empty(T, N, N, dtype=torch.float32, device=xf.device)
-    h_res_logits = (
-        torch.empty(T, N, N, dtype=torch.float32, device=xf.device)
-        if need_backward
-        else torch.empty(0, device=xf.device)
-    )
+    h_res_logits = (torch.empty(T, N, N, dtype=torch.float32, device=xf.device) if need_backward else torch.empty(
+        0, device=xf.device))
 
     apply_clamp = 1 if (clamp_min != 0.0 or clamp_max != 0.0) else 0
     # Pipeline kernel: each program processes NUM_TOKENS tokens with DMA/compute
     # overlap via tle.dsa.pipeline(num_stages=2). Pick NUM_TOKENS to balance
     # pipeline depth vs grid parallelism.
     NUM_TOKENS_PER_PROG = min(8, T)
-    grid_heads = (triton.cdiv(T, NUM_TOKENS_PER_PROG),)
+    grid_heads = (triton.cdiv(T, NUM_TOKENS_PER_PROG), )
     _heads_sinkhorn_kernel_tle[grid_heads](
-        mixes, alpha.to(torch.float32), base.to(torch.float32),
-        pre, post_out, comb_frag, h_res_logits,
+        mixes,
+        alpha.to(torch.float32),
+        base.to(torch.float32),
+        pre,
+        post_out,
+        comb_frag,
+        h_res_logits,
         HC_EPS=hc_eps,
         CLAMP_MIN=float(clamp_min),
         CLAMP_MAX=float(clamp_max),
@@ -536,9 +531,14 @@ def mhc_pre_clamp_sinkhorn(
 
 
 def mhc_pre_clamp_sinkhorn_ref(
-    x, phi, alpha, base,
-    norm_eps=1e-6, hc_eps=1e-6,
-    clamp_min=0.0, clamp_max=0.0,
+    x,
+    phi,
+    alpha,
+    base,
+    norm_eps=1e-6,
+    hc_eps=1e-6,
+    clamp_min=0.0,
+    clamp_max=0.0,
     iter_times=20,
 ):
     """PyTorch reference implementation (aclnn semantic).
