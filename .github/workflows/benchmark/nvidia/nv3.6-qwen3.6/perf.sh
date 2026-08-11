@@ -45,14 +45,14 @@ start=$(date +%s)
 nvidia-smi -i "$GPU_DEVICE_LIST" -lgc 1830,1830
 nvidia-smi --query-gpu=index,name,clocks.gr,clocks.mem,utilization.gpu --format=csv
 
-#numactl --cpunodebind=1 --membind=1 \
-#python3 ${SCRIPT_DIR}/all_perf.py --input-len=32768 --output-len=1024 --concurrency=64
+numactl --cpunodebind=1 --membind=1 \
+python3 ${SCRIPT_DIR}/all_perf.py --input-len=32768 --output-len=1024 --concurrency=16
 
 numactl --cpunodebind=1 --membind=1 \
-python3 ${SCRIPT_DIR}/all_perf.py --input-len=16384 --output-len=1024 --concurrency=64
+python3 ${SCRIPT_DIR}/all_perf.py --input-len=16384 --output-len=1024 --concurrency=16
 
 numactl --cpunodebind=1 --membind=1 \
-python3 ${SCRIPT_DIR}/all_perf.py --input-len=4096  --output-len=1024 --concurrency=64
+python3 ${SCRIPT_DIR}/all_perf.py --input-len=4096  --output-len=1024 --concurrency=16
 
 nvidia-smi -i "$GPU_DEVICE_LIST" -rgc
 nvidia-smi --query-gpu=index,name,clocks.gr,clocks.mem,utilization.gpu --format=csv
