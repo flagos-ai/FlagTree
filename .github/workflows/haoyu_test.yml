@@ -24,6 +24,9 @@ permissions:
   contents: read
 
 on:
+  pull_request:
+    branches: [ "triton_v3.2.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       WHL_VER:
