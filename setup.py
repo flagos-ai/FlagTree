@@ -69,12 +69,7 @@ from python.setup_tools import setup_helper as helper
 from python.build_helpers import get_base_dir, get_cmake_dir
 
 # flagtree setup print config
-if platform.system() == "Windows":
-    YELLOW = ""
-    NC = ""
-else:
-    YELLOW = "\033[1;33m"
-    NC = "\033[0m"
+YELLOW, NC = helper.get_console_colors()
 
 
 def is_git_repo():

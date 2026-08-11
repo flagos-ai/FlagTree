@@ -19,6 +19,7 @@
 # SOFTWARE.
 
 import os
+import platform
 import shutil
 import sys
 import sysconfig
@@ -35,6 +36,13 @@ from .utils.tools import flagtree_configs as configs
 downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
+
+
+def get_console_colors() -> Tuple[str, str]:
+    if platform.system() == "Windows":
+        return "", ""
+    return "\033[1;33m", "\033[0m"
+
 
 set_llvm_env = lambda path: set_env(
     {
