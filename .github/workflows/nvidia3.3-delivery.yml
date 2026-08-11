@@ -84,5 +84,8 @@ jobs:
       WHL_VER: ${{ inputs.WHL_VER }}
       PYTHON_VER: ${{ inputs.PYTHON_VER }}
       PLATFORM: ${{ inputs.PLATFORM }}
+      BRANCH: ${{ inputs.BRANCH }}
+      TRITON: ${{ inputs.TRITON }}
+      BACKEND: ${{ inputs.BACKEND }}
       FLAGTREE_PYPI_KEY: ${{ inputs.FLAGTREE_PYPI_KEY }}
     secrets: inherit
