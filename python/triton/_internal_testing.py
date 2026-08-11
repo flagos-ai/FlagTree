@@ -90,6 +90,18 @@ def is_ppu():
     return False if target is None else target.backend == "cuda" and FLAGTREE_BACKEND == "ppu"
 
 
+# flagtree iluvatar
+def is_corex():
+    target = get_current_target()
+    return target is not None and target.backend == "corex"
+
+
+# flagtree iluvatar
+def is_ivcore11():
+    target = get_current_target()
+    return target is not None and target.backend == "corex" and target.arch == 71
+
+
 def is_hip():
     target = get_current_target()
     return False if target is None else target.backend == "hip"

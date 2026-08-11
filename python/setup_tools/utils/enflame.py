@@ -85,19 +85,6 @@ def install_extension(*args, **kargs):
 
     project_root_dir = cmake_dir.parent.parent
 
-    # Modify nvidia driver's is_active() to return False for enflame backend
-    drvfile = project_root_dir / 'third_party' / 'nvidia' / 'backend' / 'driver.py'
-    if drvfile.exists():
-        with open(drvfile, 'r') as f:
-            lines = f.readlines()
-        for i, line in enumerate(lines):
-            if 'def is_active():' in line:
-                if i + 1 < len(lines) and 'return False' not in lines[i + 1]:
-                    lines.insert(i + 1, '        return False\n')
-                break
-        with open(drvfile, 'w') as f:
-            f.writelines(lines)
-
     dst_dir = project_root_dir / "third_party" / "enflame" / "backend"
     dst_dir.mkdir(parents=True, exist_ok=True)
 

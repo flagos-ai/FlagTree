@@ -41,7 +41,7 @@ sys.stderr.reconfigure(line_buffering=True)
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
 MODEL_NAME = "qwen36"
-TOKENIZER_PATH = "/data/zhengyang/flagrelease/Qwen3.6-35B-A3B-nomtp"
+TOKENIZER_PATH = "/root/flagrelease/qwen3.6/Qwen3.6-35B-A3B-nomtp"
 
 # =============================================================================
 # 默认测试参数
@@ -243,6 +243,8 @@ def main():
     all_round_metrics = []
     for round_num in range(1, TOTAL_ROUNDS + 1):
         metrics = run_single_test(round_num, input_len, output_len, concurrency)
+        if metrics is None:
+            sys.exit(1)
         all_round_metrics.append(metrics)
 
     avg_metrics = compute_average(all_round_metrics)

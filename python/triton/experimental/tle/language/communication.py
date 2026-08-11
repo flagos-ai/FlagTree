@@ -157,7 +157,7 @@ def cleanup_communicator():
 
 def init_communicator():
     global comm, rank, _init_communicator_
-    if _init_communicator_:
+    if enabled and _init_communicator_:
         return
     dist.init_process_group(backend="nccl")
     rank = dist.get_rank()
