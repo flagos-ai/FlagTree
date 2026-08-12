@@ -107,6 +107,13 @@ def get_backend_cmake_args(*args, **kargs):
     return cmake_args
 
 
+def customize_gluon_cmake_args():
+    if flagtree_backend != "iluvatar":
+        return []
+    enabled = os.getenv("TRITON_ILU_BUILD_GLUON", "").upper() in ["ON", "1", "YES", "TRUE", "Y"]
+    return [f"-DTRITON_BUILD_GLUON={'ON' if enabled else 'OFF'}"]
+
+
 def get_device_name():
     return configs.device_alias_map[flagtree_backend]
 
