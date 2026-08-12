@@ -86,9 +86,17 @@ def init_backends(backend_installer):
 # flagtree: extend yield "triton.backends.{backend.name}"
 def get_backend_packages(backend):
     package_prefix = f"triton.backends.{backend.name}"
+    excluded_dirs = set()
+    if backend.name == "nvidia" and flagtree_backend not in ("", "nvidia", "tileir"):
+        excluded_dirs = {"bin", "include", "lib.cupti"}
+
     for root, dirs, _files in os.walk(backend.backend_dir):
-        dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__" and directory.isidentifier())
         relative_dir = os.path.relpath(root, backend.backend_dir)
+        dirs[:] = sorted(
+            directory for directory in dirs
+            if directory != "__pycache__" and directory.isidentifier() and (
+                directory if relative_dir == "." else f"{relative_dir.replace(os.sep, '.')}.{directory}"
+            ) not in excluded_dirs)
         package = package_prefix
         if relative_dir != ".":
             package += "." + relative_dir.replace(os.sep, ".")
