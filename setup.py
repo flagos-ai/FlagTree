@@ -417,6 +417,7 @@ class CMakeBuildPy(build_py):
         self.run_command('build_ext')
         helper.write_flagtree_backend_file()  # flagtree
         helper.overlay_backend_runtime_so(self, backends)  # flagtree
+        helper.refresh_generated_backend_packages(self, backends)  # flagtree
         ret = super().run()
         helper.write_backend_file_to_build_lib(self.build_lib)  # flagtree
         helper.write_backend_site_pth(self.build_lib)  # flagtree

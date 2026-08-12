@@ -126,7 +126,23 @@ def get_generated_backend_packages(backend):
     }
     package_prefix = f"triton.backends.{backend.name}"
     for suffix in generated_package_suffixes.get(backend.name, ()):
-        yield f"{package_prefix}.{suffix}"
+        source_dir = Path(backend.backend_dir).joinpath(*suffix.split("."))
+        if source_dir.is_dir():
+            yield f"{package_prefix}.{suffix}"
+
+
+def refresh_generated_backend_packages(build_py_command, backends):
+    packages = list(build_py_command.distribution.packages or [])
+    known_packages = set(packages)
+    for backend in backends:
+        if backend.is_external:
+            continue
+        for package in get_generated_backend_packages(backend):
+            if package not in known_packages:
+                packages.append(package)
+                known_packages.add(package)
+    build_py_command.distribution.packages = packages
+    build_py_command.packages = packages
 
 
 set_llvm_env = lambda path: set_env(
