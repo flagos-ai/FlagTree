@@ -53,9 +53,8 @@ def get_flagtree_version(git_commit_hash_fn):
         if hashlib.md5(key.encode()).hexdigest() == pypi_key_md5:
             return flagtree_ver
         return flagtree_ver + git_commit_hash_fn().replace("+", ".")
-    backend = os.environ.get("FLAGTREE_BACKEND", "")
-    if backend:
-        return "0.6.0+" + backend + git_commit_hash_fn().replace("+", ".")
+    if flagtree_backend:
+        return "0.6.0+" + flagtree_backend + git_commit_hash_fn().replace("+", ".")
     return "0.6.0" + git_commit_hash_fn()
 
 
@@ -199,10 +198,9 @@ def post_install():
 def write_flagtree_backend_file(triton_pkg_dir=None):
     if triton_pkg_dir is None:
         triton_pkg_dir = Path(__file__).resolve().parents[1] / "triton"
-    backend_value = os.environ.get("FLAGTREE_BACKEND", "")
     os.makedirs(triton_pkg_dir, exist_ok=True)
     dest_file = Path(triton_pkg_dir) / "FLAGTREE_BACKEND"
-    dest_file.write_text(backend_value)
+    dest_file.write_text(flagtree_backend)
 
 
 def write_backend_file_to_build_lib(build_lib):
