@@ -386,8 +386,7 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
         except Exception:
             download = True
     if download:
-        print(f'{YELLOW}downloading and extracting {url} ... {NC}', file=sys.stderr,
-              flush=True)  # flagtree
+        print(f'{YELLOW}downloading and extracting {url} ... {NC}', file=sys.stderr, flush=True)  # flagtree
         with open_url(url) as url_file, tarfile.open(fileobj=url_file, mode="r|*") as tar_file:
             # Use extractall without filter for Python version < 3.12 compatibility
             if hasattr(tarfile, 'data_filter'):
