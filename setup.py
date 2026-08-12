@@ -631,6 +631,8 @@ else:
 
 
 def get_package_dirs():
+    if helper.flagtree_backend:
+        return helper.CommonUtils.get_package_dir(get_packages())
     yield ("", "python")
     ret = helper.yield_backend_dirs()
     if ret:
