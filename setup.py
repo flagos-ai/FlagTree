@@ -885,7 +885,7 @@ setup(
     long_description_content_type="text/markdown",
     install_requires=[
         "importlib-metadata; python_version < '3.10'",
-        *(["PyYAML>=6.0"] if helper.flagtree_backend != "thrive" else []),  # flagtree
+        *(["PyYAML>=6.0"] if helper.flagtree_backend != "thrive" else []),
     ],
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
