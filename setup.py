@@ -874,11 +874,6 @@ PYTHON_CLASSIFIERS = [
 ]
 CLASSIFIERS = BASE_CLASSIFIERS + PYTHON_CLASSIFIERS
 
-# flagtree
-readme_path = os.path.join(get_base_dir(), "README.md")
-with open(readme_path, "r", encoding="utf-8") as fh:
-    long_description = fh.read()
-
 setup(
     name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
     version=helper.get_flagtree_version(get_git_commit_hash),
@@ -886,7 +881,7 @@ setup(
     author_email="contact@flagos.io",
     description=
     "A unified compiler supporting multiple AI chip backends for custom Deep Learning operations, which is forked from triton-lang/triton.",
-    long_description=long_description,
+    long_description=helper.get_long_description(),
     long_description_content_type="text/markdown",
     install_requires=[
         "importlib-metadata; python_version < '3.10'",

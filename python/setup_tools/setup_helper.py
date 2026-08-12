@@ -59,6 +59,11 @@ def get_flagtree_version(git_commit_hash_fn):
     return "0.6.0" + git_commit_hash_fn()
 
 
+def get_long_description():
+    readme_path = Path(__file__).resolve().parents[2] / "README.md"
+    return readme_path.read_text(encoding="utf-8")
+
+
 def init_backends(backend_installer):
     if flagtree_backend:
         if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
