@@ -95,6 +95,37 @@ def get_backend_packages(backend):
         yield package, root
 
 
+def get_generated_backend_packages(backend):
+    """Declare data directories created after setuptools scans packages."""
+    generated_package_suffixes = {
+        "nvidia": (
+            "bin",
+            "include",
+            "include.Openacc",
+            "include.Openmp",
+            "include.cooperative_groups",
+            "include.cooperative_groups.details",
+            "include.crt",
+            "lib.cupti",
+        ),
+        "xpu": (
+            "xpu3",
+            "xpu3.bin",
+            "xpu3.include",
+            "xpu3.include.crt",
+            "xpu3.include.cuda_etbl",
+            "xpu3.include.xpu",
+            "xpu3.include.xpurt_priv",
+            "xpu3.lib",
+            "xpu3.lib.linux",
+            "xpu3.so",
+        ),
+    }
+    package_prefix = f"triton.backends.{backend.name}"
+    for suffix in generated_package_suffixes.get(backend.name, ()):
+        yield f"{package_prefix}.{suffix}"
+
+
 set_llvm_env = lambda path: set_env(
     {
         'LLVM_INCLUDE_DIRS': Path(path) / "include",
@@ -484,18 +515,6 @@ def get_spec_packages():
 
     if flagtree_backend == "xpu":
         yield "triton.language.extra.xpu"
-        # xpu3 is populated during the build, after setuptools evaluates the
-        # package list, so package discovery cannot find these data directories.
-        yield "triton.backends.xpu.xpu3"
-        yield "triton.backends.xpu.xpu3.bin"
-        yield "triton.backends.xpu.xpu3.include"
-        yield "triton.backends.xpu.xpu3.include.crt"
-        yield "triton.backends.xpu.xpu3.include.cuda_etbl"
-        yield "triton.backends.xpu.xpu3.include.xpu"
-        yield "triton.backends.xpu.xpu3.include.xpurt_priv"
-        yield "triton.backends.xpu.xpu3.lib"
-        yield "triton.backends.xpu.xpu3.lib.linux"
-        yield "triton.backends.xpu.xpu3.so"
 
 
 def get_package_data(backends):

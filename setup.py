@@ -713,7 +713,11 @@ def get_packages():
         if backend.is_external:
             yield f"triton.backends.{backend.name}"
         else:
-            for package, _source_dir in helper.get_backend_packages(backend):
+            backend_packages = [package for package, _source_dir in helper.get_backend_packages(backend)]
+            yield from backend_packages
+            for package in helper.get_generated_backend_packages(backend):
+                if package in set(backend_packages):
+                    continue
                 yield package
 
         if backend.language_dir:
