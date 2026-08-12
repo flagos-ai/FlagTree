@@ -18,8 +18,27 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import os
 import shutil
 from pathlib import Path
+
+
+def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
+    is_metax = "metax" == flagtree_backend
+    cache.store(
+        file="metax-llvm19",
+        condition=is_metax,
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metax-llvm19-3.8.0.6-x86_64_v0.6.0.tar.gz",
+        pre_hook=lambda: check_env("LLVM_SYSPATH"),
+        post_hook=set_llvm_env,
+    )
+    cache.store(
+        file="metaxTritonPlugin.so",
+        condition=is_metax and not os.environ.get("FLAGTREE_PLUGIN"),
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.1.tar.gz",
+        copy_dst_path=f"third_party/{flagtree_backend}",
+        md5_digest="afb7ab8f",
+    )
 
 
 def install_extension(*args, **kargs):

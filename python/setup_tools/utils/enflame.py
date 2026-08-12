@@ -26,6 +26,21 @@ import sys
 from pathlib import Path
 
 
+def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
+    cache.store(
+        file="llvm-fc83c68-gcc9-x64",
+        condition=("enflame" == flagtree_backend),
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz",
+        pre_hook=lambda: check_env("KURAMA_LLVM_DIR"),
+        post_hook=lambda path: os.environ.update({
+            "KURAMA_LLVM_DIR": str(path),
+            "LLVM_INCLUDE_DIRS": str(Path(path) / "include"),
+            "LLVM_LIBRARY_DIR": str(Path(path) / "lib"),
+            "LLVM_SYSPATH": str(path),
+        }),
+    )
+
+
 def get_package_data_tools():
     """Declare tool files to be packaged"""
     return [
