@@ -45,6 +45,20 @@ def get_console_colors() -> Tuple[str, str]:
     return "\033[1;33m", "\033[0m"
 
 
+def get_flagtree_version(git_commit_hash_fn):
+    pypi_key_md5 = "ed98ae2a2ba0429b189537c0d3dbef43"
+    key = os.environ.get("FLAGTREE_PYPI_KEY", "")
+    flagtree_ver = os.environ.get("FLAGTREE_WHEEL_VERSION", "")
+    if flagtree_ver:
+        if hashlib.md5(key.encode()).hexdigest() == pypi_key_md5:
+            return flagtree_ver
+        return flagtree_ver + git_commit_hash_fn().replace("+", ".")
+    backend = os.environ.get("FLAGTREE_BACKEND", "")
+    if backend:
+        return "0.6.0+" + backend + git_commit_hash_fn().replace("+", ".")
+    return "0.6.0" + git_commit_hash_fn()
+
+
 def init_backends(backend_installer):
     if flagtree_backend:
         if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
