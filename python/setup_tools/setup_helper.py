@@ -97,6 +97,9 @@ def get_backend_packages(backend):
 
 def get_generated_backend_packages(backend):
     """Declare data directories created after setuptools scans packages."""
+    if backend.name == "nvidia" and flagtree_backend not in ("", "nvidia", "tileir"):
+        return
+
     generated_package_suffixes = {
         "nvidia": (
             "bin",
@@ -539,10 +542,20 @@ def get_excluded_package_data():
         "*.py[cod]",
         "**/*.py[cod]",
     ]
-    return {
+    excluded_package_data = {
         "": cache_patterns,
         "triton": ["spec/*"],
     }
+    if flagtree_backend not in ("", "nvidia", "tileir"):
+        excluded_package_data["triton.backends.nvidia"] = [
+            "bin/*",
+            "bin/**/*",
+            "include/*",
+            "include/**/*",
+            "lib/cupti/*",
+            "lib/cupti/**/*",
+        ]
+    return excluded_package_data
 
 
 class CommonUtils:
