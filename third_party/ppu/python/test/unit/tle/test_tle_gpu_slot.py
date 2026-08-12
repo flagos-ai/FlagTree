@@ -30,7 +30,7 @@ def _ppu_sdk_available() -> bool:
     return bool(shutil.which("ppu-llc"))
 
 
-_PPU_TARGET = GPUTarget("ppu", 80, 32)
+_GPU_TARGET = GPUTarget("cuda", 80, 32)
 
 
 @triton.jit
@@ -51,7 +51,7 @@ def _compile(block=64):
         signature={"out_ptr": "*i32", "BLOCK": "constexpr"},
         constexprs={"BLOCK": block},
     )
-    return triton.compile(src, target=_PPU_TARGET)
+    return triton.compile(src, target=_GPU_TARGET)
 
 
 def test_buffered_tensor_slot_lowers_to_memdesc_index():

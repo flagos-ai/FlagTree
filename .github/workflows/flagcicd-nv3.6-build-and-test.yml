@@ -23,6 +23,7 @@ name: FlagCICD-NV3.6-Build-And-Test
 on:
   pull_request:
     branches: [ "main", "triton_v3.6.x"]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -48,7 +49,7 @@ jobs:
       volumes:
         - /mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/:/mnt/airs-business/cicd/flagtree/flagcicd-flagGems-test/
 
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main

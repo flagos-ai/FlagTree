@@ -11,6 +11,7 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 from triton._flagtree_backend import FLAGTREE_BACKEND
+from triton._internal_testing import get_current_target, is_cuda, is_hip
 
 
 def _is_enflame_backend():
@@ -19,12 +20,15 @@ def _is_enflame_backend():
 
 
 def _is_hcu_backend():
-    target = triton.runtime.driver.active.get_current_target()
-    return target.backend == "hip"
+    return FLAGTREE_BACKEND == "hcu"
 
 
 _nv_mma_shared_layout = tl.constexpr(False if _is_hcu_backend() else True)
-threads_per_warp = 64 if _is_hcu_backend() else 32
+threads_per_warp = get_current_target().warp_size if is_hip() else 32
+
+
+def _is_amd_hip_backend():
+    return is_hip() and not FLAGTREE_BACKEND
 
 
 def _require_cuda():
@@ -203,9 +207,10 @@ def test_tle_cumsum_exclusive_and_total(dtype, n, block, reverse, num_warps):
         torch.testing.assert_close(total[0], expected_total)
 
 
-@pytest.mark.skipif(_is_enflame_backend(), reason="PTX-specific regression guard not applicable on Enflame GCU")
-@pytest.mark.skipif(_is_hcu_backend(), reason="PTX-specific regression guard not applicable on HCU")
-@pytest.mark.skipif(FLAGTREE_BACKEND == "ppu", reason="PTX-specific regression guard not applicable on PPU")
+@pytest.mark.skipif(
+    not is_cuda(),
+    reason="PTX-specific regression guard requires NVIDIA CUDA backend",
+)
 def test_tle_cumsum_ptx_fastpath_regression_guard():
     block = 512
     x = torch.randint(-1024, 1024, (block, ), device="cuda", dtype=torch.int32)
@@ -275,6 +280,7 @@ def test_tle_cumsum_amdgcn_fastpath_regression_guard():
         "Detected predicated ds_write: possible regression to generic path"
 
 
+@pytest.mark.skipif(_is_amd_hip_backend(), reason="requires AMD local-pointer lowering")
 def test_tle_cumsum_helper_preserves_adjacent_sentinel():
     block = 512
     num_warps = block // threads_per_warp
@@ -296,6 +302,7 @@ def test_tle_cumsum_helper_preserves_adjacent_sentinel():
     torch.testing.assert_close(sentinel, expected_sentinel)
 
 
+@pytest.mark.skipif(_is_amd_hip_backend(), reason="requires AMD local-pointer lowering")
 def test_tle_cumsum_scalar_base_addptr_alias_regression():
     block = 512
     num_warps = block // threads_per_warp

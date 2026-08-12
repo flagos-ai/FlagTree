@@ -44,7 +44,7 @@ def _ppu_sdk_available() -> bool:
     return bool(shutil.which("ppu-llc"))
 
 
-_PPU_TARGET = GPUTarget("ppu", 80, 32)
+_GPU_TARGET = GPUTarget("cuda", 80, 32)
 
 
 @triton.jit
@@ -133,7 +133,7 @@ def _compile(block_m=64, block_n=64, block_k=64):
         signature=_SIGNATURE,
         constexprs={"BLOCK_M": block_m, "BLOCK_N": block_n, "BLOCK_K": block_k},
     )
-    return triton.compile(src, target=_PPU_TARGET)
+    return triton.compile(src, target=_GPU_TARGET)
 
 
 def test_tle_gemm_64_compiles_to_hgbin():

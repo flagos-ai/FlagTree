@@ -195,7 +195,7 @@ class PPUBackend(BaseBackend):
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == "ppu"
+        return target.backend == "cuda"
 
     def _parse_arch(self, arch):
         pattern = r"^sm(\d+)$"

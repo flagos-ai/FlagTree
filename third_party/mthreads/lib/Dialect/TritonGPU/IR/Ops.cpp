@@ -909,6 +909,18 @@ LogicalResult TMACopyOp::verify() {
   }
   if (globalToLocal && !memDescTy.getMutableMemory())
     return emitOpError("cannot copy into immutable memdesc");
+
+  if (getCompletionBarrier()) {
+    if (!globalToLocal)
+      return emitOpError(
+          "completion barrier is only supported for global-to-shared copy");
+    auto expectBytes = (*this)->getAttrOfType<IntegerAttr>("expect_bytes");
+    if (!expectBytes || expectBytes.getInt() <= 0)
+      return emitOpError(
+          "completion barrier requires a positive expect_bytes attribute");
+  } else if ((*this)->getAttr("expect_bytes")) {
+    return emitOpError("expect_bytes requires a completion barrier operand");
+  }
   return success();
 }
 #endif // __TLE__

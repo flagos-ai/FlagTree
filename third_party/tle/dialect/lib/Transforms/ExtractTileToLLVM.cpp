@@ -304,7 +304,7 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   // ------------------------------------------------------------------
   // Step 4: __syncthreads() -- ensure all writes are visible
   // ------------------------------------------------------------------
-  if (targetInfo.isHCU())
+  if (!targetInfo.isCuda())
     targetInfo.barrier(loc, rewriter, /*isWarpSync=*/false);
   else
     rewriter.create<NVVM::Barrier0Op>(loc);
@@ -372,7 +372,7 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   // ------------------------------------------------------------------
   // Step 6: __syncthreads() -- allow SMEM reuse after reads complete
   // ------------------------------------------------------------------
-  if (targetInfo.isHCU())
+  if (!targetInfo.isCuda())
     targetInfo.barrier(loc, rewriter, /*isWarpSync=*/false);
   else
     rewriter.create<NVVM::Barrier0Op>(loc);

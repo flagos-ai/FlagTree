@@ -1601,6 +1601,48 @@ bool backwardRematerialization(ModuleOp module) {
   return changed;
 }
 
+#ifdef __TLE__
+bool retargetTleSqmmaStores(ModuleOp module) {
+  bool changed = false;
+  SmallVector<StoreOp> stores;
+  module.walk([&](StoreOp store) { stores.push_back(store); });
+  for (StoreOp store : stores) {
+    if (!store || !store->getBlock())
+      continue;
+    auto valueConvert = store.getValue().getDefiningOp<ConvertLayoutOp>();
+    if (!valueConvert)
+      continue;
+    auto targetTy = dyn_cast<RankedTensorType>(valueConvert.getSrc().getType());
+    if (!targetTy || !targetTy.getEncoding())
+      continue;
+    if (!isa<MUSASqmmaEncodingAttr>(targetTy.getEncoding()))
+      continue;
+
+    auto ptrTy = dyn_cast<RankedTensorType>(store.getPtr().getType());
+    if (!ptrTy || ptrTy.getShape() != targetTy.getShape())
+      continue;
+    OpBuilder builder(store);
+    auto nativePtrTy = ptrTy.cloneWithEncoding(targetTy.getEncoding());
+    Value nativePtr = ConvertLayoutOp::create(builder, store.getLoc(),
+                                              nativePtrTy, store.getPtr());
+    store.getPtrMutable().assign(nativePtr);
+    store.getValueMutable().assign(valueConvert.getSrc());
+    if (Value oldMask = store.getMask()) {
+      auto maskTy = cast<RankedTensorType>(oldMask.getType());
+      auto nativeMaskTy = maskTy.cloneWithEncoding(targetTy.getEncoding());
+      Value nativeMask = ConvertLayoutOp::create(builder, store.getLoc(),
+                                                 nativeMaskTy, oldMask);
+      store.getMaskMutable().assign(nativeMask);
+    }
+    if (valueConvert->use_empty())
+      valueConvert.erase();
+    changed = true;
+  }
+
+  return changed;
+}
+#endif // __TLE__
+
 void hoistConvert(ModuleOp module) {
   SmallVector<ConvertLayoutOp> convertOps;
   module.walk([](FuncOp funcOp) {
@@ -1672,6 +1714,14 @@ public:
 
       // Cleanup dummy converts created during backward remat.
       cleanupConvertOps();
+#ifdef __TLE__
+      if (m->hasAttr("tle.enable_encoding_rematerialization")) {
+        changed |= retargetTleSqmmaStores(m);
+        cleanupConvertOps();
+      }
+#else
+      // Preserve the original non-TLE fixed-point behavior.
+#endif // __TLE__
     } while (changed);
     // 3. For remaining converts, try to hoist them above cast generating larger
     // size types in order to reduce the cost of the convert op.

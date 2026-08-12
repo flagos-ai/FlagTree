@@ -726,7 +726,10 @@ def TTG_BarrierOp : TTG_Op<"barrier"> {
 }
 
 #ifdef __TLE__
-def TTG_TMACopyOp : TTG_Op<"tma_copy", [MemoryEffects<[MemRead, MemWrite]>]> {
+def TTG_TMACopyOp : TTG_Op<"tma_copy", [
+  AttrSizedOperandSegments,
+  MemoryEffects<[MemRead, MemWrite]>
+]> {
   let summary = "Pseudo op for descriptor-based copy between global tensor descriptor and shared memdesc.";
 
   let description = [{
@@ -738,11 +741,13 @@ def TTG_TMACopyOp : TTG_Op<"tma_copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   let arguments = (ins
     TTG_TMACopyOperand:$src,
     TTG_TMACopyOperand:$dst,
-    Variadic<I32>:$indices
+    Variadic<I32>:$indices,
+    Optional<I32>:$completionBarrier
   );
 
   let assemblyFormat =
-      "$src `,` $dst `,` `[` $indices `]` attr-dict `:` type($src) `,` type($dst)";
+      "$src `,` $dst `,` `[` $indices `]` (`barrier` $completionBarrier^)? "
+      "attr-dict `:` type($src) `,` type($dst)";
 
   let hasVerifier = 1;
 }

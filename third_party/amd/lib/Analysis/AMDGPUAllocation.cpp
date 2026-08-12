@@ -6,6 +6,11 @@
 
 #include "third_party/amd/include/Dialect/TritonAMDGPU/Utility/CommonUtils.h"
 
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#include <limits>
+#endif
+
 namespace mlir::triton::AMD {
 
 // Max shmem instruction in bits
@@ -138,6 +143,43 @@ unsigned AMDAllocationAnalysisScratchSizeFn(Operation *op) {
     return getConvertLayoutScratchInBytes(srcTy, dstTy,
                                           op->hasAttr(AttrSharedMemPadded));
   }
+
+#ifdef __TLE__
+  // Tile-level extension (TLE) ops stage data through shared memory; register
+  // their scratch sizes so attachAllocationSizeAndOffsetAttr assigns an
+  // allocation.offset (mirrors the NVIDIA scratch-size function).
+  if (auto cumsumOp = dyn_cast<mlir::triton::tle::ExclusiveCumsumOp>(op)) {
+    auto srcTy = dyn_cast<RankedTensorType>(cumsumOp.getSrc().getType());
+    if (!srcTy || srcTy.getRank() != 1)
+      return 0;
+    int64_t axisExtent = srcTy.getShape()[0];
+    if (ShapedType::isDynamic(axisExtent) || axisExtent <= 0)
+      return 0;
+    unsigned elemBytes =
+        static_cast<unsigned>(std::max<int>(1, getBitwidth(srcTy) / 8));
+    int64_t numWarps = std::max<int64_t>(1, triton::gpu::lookupNumWarps(op));
+    uint64_t totalBytes = (static_cast<uint64_t>(axisExtent) +
+                           static_cast<uint64_t>(numWarps) + 1ull) *
+                          elemBytes;
+    if (totalBytes > std::numeric_limits<unsigned>::max())
+      return 0;
+    return static_cast<unsigned>(totalBytes);
+  }
+  if (auto extractTileOp = dyn_cast<mlir::triton::tle::ExtractTileOp>(op)) {
+    auto dstTy = dyn_cast<RankedTensorType>(extractTileOp.getType());
+    if (!dstTy)
+      return 0;
+    return static_cast<unsigned>(dstTy.getNumElements() *
+                                 (getBitwidth(dstTy) / 8));
+  }
+  if (auto insertTileOp = dyn_cast<mlir::triton::tle::InsertTileOp>(op)) {
+    auto tileTy = dyn_cast<RankedTensorType>(insertTileOp.getTile().getType());
+    if (!tileTy)
+      return 0;
+    return static_cast<unsigned>(tileTy.getNumElements() *
+                                 (getBitwidth(tileTy) / 8));
+  }
+#endif
 
   return defaultAllocationAnalysisScratchSizeFn(op);
 }
