@@ -465,6 +465,9 @@ def get_spec_packages():
     yield "triton._C.libtriton"
     yield "triton.tools.triton_to_gluon_translater"
 
+    if flagtree_backend == "xpu":
+        yield "triton.language.extra.xpu"
+
 
 def get_package_data(backends):
     hook_call = get_hook_instance("get_package_data")

@@ -729,9 +729,6 @@ def get_packages():
             for x in os.listdir(backend.tools_dir):
                 yield f"triton.tools.extra.{x}"
 
-    if helper.flagtree_backend == "xpu":
-        yield f"triton.language.extra.xpu"
-
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         yield "triton.profiler"
 
@@ -761,11 +758,6 @@ def add_link_to_backends(external_only):
                 src_dir = os.path.join(backend.tools_dir, x)
                 install_dir = os.path.join(extra_dir, x)
                 update_symlink(install_dir, src_dir)
-
-
-package_data_tools = ["compile.h", "compile.c"]
-if helper.flagtree_backend == "xpu":
-    package_data_tools += ["compile_xpu.h", "compile_xpu.c"]
 
 
 def add_link_to_proton():
