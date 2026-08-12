@@ -513,6 +513,13 @@ def get_spec_packages():
     yield "triton._C.libtriton"
     yield "triton.tools.triton_to_gluon_translater"
 
+    tle_include_dir = Path("python/triton/experimental/tle/language/include")
+    if tle_include_dir.is_dir():
+        # FlagCX headers are copied here while setup.py is running. The
+        # directory intentionally has no __init__.py, so find_packages cannot
+        # discover it even though setuptools includes it as package data.
+        yield "triton.experimental.tle.language.include"
+
     if flagtree_backend == "xpu":
         yield "triton.language.extra.xpu"
 
