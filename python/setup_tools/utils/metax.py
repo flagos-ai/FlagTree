@@ -19,8 +19,6 @@
 # SOFTWARE.
 
 import os
-import shutil
-from pathlib import Path
 
 
 def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
