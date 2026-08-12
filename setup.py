@@ -885,7 +885,6 @@ setup(
     long_description_content_type="text/markdown",
     install_requires=[
         "importlib-metadata; python_version < '3.10'",
-        *(["PyYAML>=6.0"] if helper.flagtree_backend != "thrive" else []),
     ],
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
@@ -917,6 +916,12 @@ setup(
             "cmake>=3.20,<4.0",
             "GitPython",  # flagtree
             "lit",
+        ],
+        "flagtune": [
+            "numpy>=1.26.4,<2.0",
+            "PyYAML>=6.0",
+            "scikit-learn>=1.4,<2.0",
+            "xgboost==3.3.0",
         ],
         "tests": [
             "autopep8",
