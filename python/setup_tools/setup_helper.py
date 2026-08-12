@@ -92,11 +92,10 @@ def get_backend_packages(backend):
 
     for root, dirs, _files in os.walk(backend.backend_dir):
         relative_dir = os.path.relpath(root, backend.backend_dir)
-        dirs[:] = sorted(
-            directory for directory in dirs
-            if directory != "__pycache__" and directory.isidentifier() and (
-                directory if relative_dir == "." else f"{relative_dir.replace(os.sep, '.')}.{directory}"
-            ) not in excluded_dirs)
+        dirs[:] = sorted(directory for directory in dirs
+                         if directory != "__pycache__" and directory.isidentifier() and (
+                             directory if relative_dir == "." else f"{relative_dir.replace(os.sep, '.')}.{directory}"
+                         ) not in excluded_dirs)
         package = package_prefix
         if relative_dir != ".":
             package += "." + relative_dir.replace(os.sep, ".")
