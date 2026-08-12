@@ -29,6 +29,7 @@
 
 #ifdef __TLE__
 #include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
 #endif
@@ -198,13 +199,15 @@ struct ConvertTritonAMDGPUToLLVM
     int AMDBenefit = commonBenefit + 1;
 
 #ifdef __TLE__
-    // Lower the supported tile-level extension (TLE) ops (extract_tile /
-    // insert_tile / exclusive_cumsum) via the backend-agnostic conversion
-    // patterns. The dedicated partial conversion rejects unsupported TLE ops
-    // and accidental NVVM emission.
+    // Lower the supported tile-level extension (TLE) ops (local_pointers /
+    // extract_tile / insert_tile / exclusive_cumsum) via the backend-agnostic
+    // conversion patterns. The dedicated partial conversion rejects
+    // unsupported TLE ops and accidental NVVM emission.
     {
       TleLLVMConversionTarget tleTarget(*context);
       RewritePatternSet tlePatterns(context);
+      mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
+          typeConverter, targetInfo, tlePatterns, commonBenefit);
       mlir::triton::tle::populateExtractTileOpToLLVMPatterns(
           typeConverter, tlePatterns, targetInfo, commonBenefit);
       mlir::triton::tle::populateInsertTileOpToLLVMPatterns(
