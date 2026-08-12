@@ -484,6 +484,18 @@ def get_spec_packages():
 
     if flagtree_backend == "xpu":
         yield "triton.language.extra.xpu"
+        # xpu3 is populated during the build, after setuptools evaluates the
+        # package list, so package discovery cannot find these data directories.
+        yield "triton.backends.xpu.xpu3"
+        yield "triton.backends.xpu.xpu3.bin"
+        yield "triton.backends.xpu.xpu3.include"
+        yield "triton.backends.xpu.xpu3.include.crt"
+        yield "triton.backends.xpu.xpu3.include.cuda_etbl"
+        yield "triton.backends.xpu.xpu3.include.xpu"
+        yield "triton.backends.xpu.xpu3.include.xpurt_priv"
+        yield "triton.backends.xpu.xpu3.lib"
+        yield "triton.backends.xpu.xpu3.lib.linux"
+        yield "triton.backends.xpu.xpu3.so"
 
 
 def get_package_data(backends):
