@@ -38,7 +38,7 @@ from distutils.command.clean import clean
 from pathlib import Path
 from typing import Optional
 
-from setuptools import Extension, find_packages, setup
+from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 from setuptools.command.develop import develop
@@ -707,19 +707,7 @@ def get_package_dirs():
 
 def get_packages():
     # flagtree backend specialization: add excluded packages
-    yield from find_packages(where="python",
-                             include=["triton", "triton.*"],
-                             exclude=helper.SpecPackageHelper.get_excluded_packages())
-
-    # flagtree backend specialization
-    for package, _source_dir in helper.SpecPackageHelper.get_spec_packages():
-        yield package
-
-    # flagtree: these directories are without __init__.py
-    # yield these directories to avoid warnings
-    yield "triton._C"
-    yield "triton._C.libtriton"
-    yield "triton.tools.triton_to_gluon_translater"
+    yield from helper.get_spec_packages()
 
     for backend in backends:
         # yield f"triton.backends.{backend.name}"

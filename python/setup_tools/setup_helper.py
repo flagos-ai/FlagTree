@@ -31,6 +31,7 @@ from . import utils
 import importlib.util
 import importlib.metadata
 from typing import List, Tuple
+from setuptools import find_packages
 from .utils.tools import flagtree_configs as configs
 
 downloader = utils.tools.DownloadManager()
@@ -447,6 +448,22 @@ class SpecPackageHelper:
     @staticmethod
     def get_excluded_packages():
         return ["triton.spec", "triton.spec.*"]
+
+
+def get_spec_packages():
+    yield from find_packages(
+        where="python",
+        include=["triton", "triton.*"],
+        exclude=SpecPackageHelper.get_excluded_packages(),
+    )
+
+    for package, _source_dir in SpecPackageHelper.get_spec_packages():
+        yield package
+
+    # These directories have no __init__.py; include them to avoid warnings.
+    yield "triton._C"
+    yield "triton._C.libtriton"
+    yield "triton.tools.triton_to_gluon_translater"
 
 
 def get_package_data(backends):
