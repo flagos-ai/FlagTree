@@ -562,22 +562,21 @@ LogicalResult lowerNodeSpace(Location loc, tle::RemotePointersOp op,
   int64_t coopKindValue = op.getCoopkindAttr().getInt();
   Value coopKind = rewriter.create<LLVM::ConstantOp>(
       loc, i32Ty, rewriter.getI32IntegerAttr(coopKindValue));
-  auto transferKind =
-      op->getAttrOfType<StringAttr>("transfer_kind").getValue();
+  auto transferKind = op->getAttrOfType<StringAttr>("transfer_kind").getValue();
   if (transferKind == "put") {
     LLVM::LLVMFuncOp put = getOrInsertNetPut(module, ctx);
     rewriter.create<LLVM::CallOp>(
         loc, TypeRange{}, FlatSymbolRefAttr::get(put),
-        ValueRange{getNetCall.getResult(), comm, teamKind,
-                   adaptor.getShardId(), dstMem, dstByteOffset, srcMem,
-                   srcByteOffset, byteCount, coopKind});
+        ValueRange{getNetCall.getResult(), comm, teamKind, adaptor.getShardId(),
+                   dstMem, dstByteOffset, srcMem, srcByteOffset, byteCount,
+                   coopKind});
   } else {
     LLVM::LLVMFuncOp get = getOrInsertNetGet(module, ctx);
     rewriter.create<LLVM::CallOp>(
         loc, TypeRange{}, FlatSymbolRefAttr::get(get),
-        ValueRange{getNetCall.getResult(), comm, teamKind,
-                   adaptor.getShardId(), srcMem, srcByteOffset, dstMem,
-                   dstByteOffset, byteCount, coopKind});
+        ValueRange{getNetCall.getResult(), comm, teamKind, adaptor.getShardId(),
+                   srcMem, srcByteOffset, dstMem, dstByteOffset, byteCount,
+                   coopKind});
   }
   return success();
 }

@@ -655,8 +655,7 @@ void init_triton_tle_ir(py::module &&m) {
              std::optional<Value> offset, std::optional<Value> dstMem,
              std::optional<Value> comm, std::optional<Value> dstOffset,
              std::optional<Value> nelems, std::optional<Value> netIdx,
-             std::optional<int64_t> elemBytes,
-             std::optional<int32_t> coopKind,
+             std::optional<int64_t> elemBytes, std::optional<int32_t> coopKind,
              std::optional<std::string> transferKind) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
@@ -672,8 +671,7 @@ void init_triton_tle_ir(py::module &&m) {
                 elemBytes ? builder.getI64IntegerAttr(*elemBytes)
                           : IntegerAttr();
             IntegerAttr coopKindAttr =
-                coopKind ? builder.getI32IntegerAttr(*coopKind)
-                         : IntegerAttr();
+                coopKind ? builder.getI32IntegerAttr(*coopKind) : IntegerAttr();
             StringAttr transferKindAttr =
                 transferKind ? builder.getStringAttr(*transferKind)
                              : StringAttr();

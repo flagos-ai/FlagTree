@@ -71,9 +71,8 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
     return op.emitOpError() << "node space must not produce a result";
 
   auto transferKindAttr = op->getAttrOfType<StringAttr>("transfer_kind");
-  if (!transferKindAttr ||
-      (transferKindAttr.getValue() != "put" &&
-       transferKindAttr.getValue() != "get"))
+  if (!transferKindAttr || (transferKindAttr.getValue() != "put" &&
+                            transferKindAttr.getValue() != "get"))
     return op.emitOpError() << "expects transfer_kind to be 'put' or 'get'";
 
   auto requireOperand = [&](Value value, StringRef name) -> LogicalResult {
@@ -99,8 +98,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
     return op.emitOpError() << "expects elem_bytes to be > 0";
 
   auto coopKindAttr = op.getCoopkindAttr();
-  if (!coopKindAttr || coopKindAttr.getInt() < 0 ||
-      coopKindAttr.getInt() > 2)
+  if (!coopKindAttr || coopKindAttr.getInt() < 0 || coopKindAttr.getInt() > 2)
     return op.emitOpError()
            << "expects coopkind to be THREAD(0), WARP(1), or BLOCK(2)";
 
