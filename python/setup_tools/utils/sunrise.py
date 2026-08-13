@@ -41,7 +41,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         file="sunriseTritonPlugin.so",
         condition=is_sunrise and not os.environ.get("FLAGTREE_PLUGIN"),
         url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin_v0.6.0.4.tar.gz",
-        md5_digest="dd543bcc",
+        md5_digest="4c77b8c0",
     )
 
 
