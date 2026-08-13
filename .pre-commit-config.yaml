@@ -56,5 +56,5 @@ exclude: |
     ^third_party/amd/backend/lib/|
     ^third_party/nvidia/backend/include/cuda.h|
     ^third_party/f2reduce/|
-    ^third_party/sunrise/backend/include/
+    ^third_party/sunrise/backend/include
   )
