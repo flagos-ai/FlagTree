@@ -37,10 +37,53 @@ using ::mlir::triton::gpu::PPUAIUSharedEncodingAttr;
 
 namespace SharedToDotOperandPPUAIUV1 {
 
+static Value callIntrinsic(ConversionPatternRewriter &rewriter, Location loc,
+                           StringRef name, Type resultTy, ValueRange args) {
+  Type funcType = mlir::triton::gpu::getFunctionType(resultTy, args);
+  LLVM::LLVMFuncOp func = mlir::triton::gpu::appendOrGetExternFuncOp(
+      rewriter, rewriter.getInsertionBlock()->getParentOp(), name, funcType);
+  return LLVM::createLLVMCallOp(rewriter, loc, func, args).getResult();
+}
+
+static std::tuple<Value, Value, Value, Value>
+loadX4B8(ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
+         Value startCoordY, Value startCoordX, Value blockLineStride,
+         Value channelOffset, bool needTrans) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  if (needTrans)
+    llvm::report_fatal_error(
+        "PPU0010 B8 AIU dot requires native A-row/B-col layout");
+  Value bytePtr = b.bitcast(smemBase, ptr_ty(rewriter.getContext(), 3));
+  Value topLeftIndex =
+      b.add(b.mul(startCoordY, blockLineStride), startCoordX);
+  Value sliceId = b.udiv(channelOffset, b.i32_val(32));
+  Value sliceOffset = b.mul(sliceId, b.mul(blockLineStride, b.i32_val(32)));
+  bytePtr = b.gep(ptr_ty(rewriter.getContext(), 3), i8_ty,
+                  bytePtr, sliceOffset);
+  Value sBase = b.or_(
+      b.shl(b.and_(sliceId, b.i32_val(3)), b.i32_val(27)),
+      b.or_(b.shl(b.and_(blockLineStride, b.i32_val(0x7ff)), b.i32_val(16)),
+            b.and_(topLeftIndex, b.i32_val(0xffff))));
+  auto resultTy = vec_ty(i32_ty, 4);
+  Value loaded = callIntrinsic(rewriter, loc,
+                               "llvm.ppu.tsm.ld.swizzle.b32x4.p3i8",
+                               resultTy, {bytePtr, b.i32_val(1), sBase});
+  Value r0 = b.extract_element(i32_ty, loaded, b.i32_val(0));
+  Value r1 = b.extract_element(i32_ty, loaded, b.i32_val(1));
+  Value r2 = b.extract_element(i32_ty, loaded, b.i32_val(2));
+  Value r3 = b.extract_element(i32_ty, loaded, b.i32_val(3));
+  return {r0, r1, r2, r3};
+}
+
 std::tuple<Value, Value, Value, Value>
 loadX4(ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
        Value start_coord_y, Value start_coord_x, Value cube_h, Value cube_w,
-       Value cube_n, Value channel_offset, Type matTy, bool needTrans) {
+       Value cube_n, Value channel_offset, Type matTy, bool needTrans,
+       int elemBytes) {
+  if (elemBytes == 1)
+    return loadX4B8(rewriter, loc, smemBase, start_coord_y, start_coord_x,
+                    cube_w, channel_offset, needTrans);
+
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   // The struct should have exactly the same element types.
   auto resTy = cast<LLVM::LLVMStructType>(matTy);
@@ -177,6 +220,8 @@ std::function<void(int, int, int)> getLoadMatrixFn(
     unsigned replicaK = b >> 1;
     unsigned replicaMNElements = shapePerWarpM * warpsPerTile;
     unsigned replicaKElements = 16;
+    if (elemBytes == 1)
+      replicaKElements = 32;
     unsigned replicaMNOff = replicaMNElements * replicaMN;
     unsigned replicaKOff = replicaKElements * replicaK;
 
@@ -274,7 +319,7 @@ std::function<void(int, int, int)> getLoadMatrixFn(
     // actually load from shared memory
     auto [ha0, ha1, ha2, ha3] =
         loadX4(rewriter, loc, smemBase, start_coord_y, start_coord_x, cube_h,
-               cube_w, cube_n, channel_offset, matTy, needTrans);
+               cube_w, cube_n, channel_offset, matTy, needTrans, elemBytes);
 
     vals[{batch, a, b}] = ha0;
     vals[{batch, a, b + 1}] = ha1;

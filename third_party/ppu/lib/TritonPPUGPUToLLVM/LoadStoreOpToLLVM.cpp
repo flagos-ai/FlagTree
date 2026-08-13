@@ -570,7 +570,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       bool isSharedStore = isSharedMemoryPointer(ptrElems[vecStart]);
 
       auto &tixStoreInstr =
-          tixBuilder.create("ppu.st")
+          tixBuilder.create(isSharedStore ? "ppu.st" : "st")
               ->o("global", !isSharedStore)
               .o("shared", isSharedStore)
               .o("wb",
@@ -689,15 +689,16 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
     unsigned numCopies = tileC / channelElemsPerCTA;
     //@$0
+    std::string dtype = (elementSizeInBytes == 1) ? ".b8" : ".b16";
     std::string aiuInst =
         "ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
-        std::to_string(rank) +
-        "d.b16 [$0], [$1], {$2, $3, $4, $5, $6, $7}, {$8, $9, $10, $11};";
+        std::to_string(rank) + "d" + dtype +
+        " [$0], [$1], {$2, $3, $4, $5, $6, $7}, {$8, $9, $10, $11};";
     if (isNeedPred) {
       aiuInst =
           "@$0 ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
-          std::to_string(rank) +
-          "d.b16 [$1], [$2], {$3, $4, $5, $6, $7, $8}, {$9, $10, $11, $12};";
+          std::to_string(rank) + "d" + dtype +
+          " [$1], [$2], {$3, $4, $5, $6, $7, $8}, {$9, $10, $11, $12};";
     }
     for (int copyIdx = 0; copyIdx < numCopies; copyIdx++) {
       Value xOffset = b.add(xCoord, b.mul(warpIdxM, b.i32_val(cubeWElems)));
