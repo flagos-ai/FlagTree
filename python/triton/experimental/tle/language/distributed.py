@@ -1150,7 +1150,7 @@ def _normalize_node_peer(shard_id, scope, _semantic) -> tl.tensor:
     return _normalize_runtime_remote_shard_id_tensor(shard_id)
 
 
-def _normalize_put_coop_kind(coopkind) -> int:
+def _normalize_coopkind(coopkind) -> int:
     coopkind = tl._unwrap_if_constexpr(coopkind)
     if isinstance(coopkind, GroupKind):
         coopkind = coopkind.value
@@ -1227,7 +1227,7 @@ class _node_remote_destination_type(tl.base_type):
 
     @property
     def scalar(self):
-        raise ValueError('tle.remote(..., space="node") destinations only support tl.store')
+        raise ValueError('tle.remote(..., space="node") destinations only support tl.load/tl.store')
 
 
 class _node_remote_destination(tl.base_value):
@@ -1265,7 +1265,7 @@ class _node_remote_destination(tl.base_value):
             field._flatten_ir(handles)
 
     def _unsupported_pointer_operation(self):
-        raise ValueError('tle.remote(..., space="node") destinations only support tl.store')
+        raise ValueError('tle.remote(..., space="node") destinations only support tl.load/tl.store')
 
     def __add__(self, other):
         self._unsupported_pointer_operation()
@@ -1284,7 +1284,50 @@ class _node_remote_destination(tl.base_value):
 
     def __triton_load__(self, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy, volatile,
                         flagtree_hints, _semantic=None):
-        self._unsupported_pointer_operation()
+        if mask is not None:
+            raise ValueError("tl.load from a node remote destination does not support mask")
+        if other is not None:
+            raise ValueError("tl.load from a node remote destination does not support other")
+        boundary_check = tl._unwrap_if_constexpr(boundary_check)
+        if isinstance(boundary_check, tl.tuple):
+            boundary_check = tuple(boundary_check)
+        if boundary_check:
+            raise ValueError("tl.load from a node remote destination does not support boundary_check")
+        padding_option = tl._unwrap_if_constexpr(padding_option)
+        if padding_option:
+            raise ValueError("tl.load from a node remote destination does not support padding_option")
+        cache_modifier = tl._unwrap_if_constexpr(cache_modifier)
+        if cache_modifier:
+            raise ValueError("tl.load from a node remote destination does not support cache_modifier")
+        eviction_policy = tl._unwrap_if_constexpr(eviction_policy)
+        if eviction_policy:
+            raise ValueError("tl.load from a node remote destination does not support eviction_policy")
+        volatile = tl._unwrap_if_constexpr(volatile)
+        if volatile:
+            raise ValueError("tl.load from a node remote destination does not support volatile")
+        flagtree_hints = tl._unwrap_if_constexpr(flagtree_hints)
+        if flagtree_hints:
+            raise ValueError("tl.load from a node remote destination does not support flagtree_hints")
+
+        builder = _semantic.builder
+        if not hasattr(builder, "create_remote_pointers"):
+            raise RuntimeError("node get requires TLE remote_pointers support in the active Triton build")
+        builder.create_remote_pointers(
+            None,
+            self.src_mem.handle,
+            self.peer.handle,
+            "node",
+            self.offset.handle,
+            self.dst_mem.handle,
+            self.comm.handle,
+            self.dstoffset.handle,
+            self.nelems.handle,
+            self.net_idx.handle,
+            self.elem_bytes,
+            self.coop_kind,
+            "get",
+        )
+        return _semantic.tensor(None, tl.void)
 
     def __triton_store__(self, value, mask, boundary_check, cache_modifier, eviction_policy, _semantic=None):
         if value is not tl._STORE_VALUE_UNSET:
@@ -1319,6 +1362,7 @@ class _node_remote_destination(tl.base_value):
             self.net_idx.handle,
             self.elem_bytes,
             self.coop_kind,
+            "put",
         )
         return _semantic.tensor(None, tl.void)
 
@@ -1336,7 +1380,7 @@ def _create_node_remote_destination(src, dst, shard_id, scope, dtype, offset, ds
 
     builder = _semantic.builder
     if not hasattr(builder, "create_remote_pointers"):
-        raise RuntimeError("node put requires TLE remote_pointers support in the active Triton build")
+        raise RuntimeError("node transfer requires TLE remote_pointers support in the active Triton build")
 
     peer = _normalize_node_peer(shard_id, scope, _semantic)
     dtype = tl._unwrap_if_constexpr(dtype)
@@ -1349,7 +1393,7 @@ def _create_node_remote_destination(src, dst, shard_id, scope, dtype, offset, ds
         dstoffset = _normalize_node_i64(dstoffset, "dstoffset", must_be_positive=False, _semantic=_semantic)
     nelems = _normalize_node_i64(nelems, "nelems", must_be_positive=True, _semantic=_semantic)
     net_idx = _normalize_node_netidx(netidx, _semantic)
-    coop_kind = _normalize_put_coop_kind(coopkind)
+    coop_kind = _normalize_coopkind(coopkind)
 
     src_mem = tl.tensor(_parse_node_context(builder, src, "src", 0), tl.int64)
     if dst is None:
@@ -1395,8 +1439,8 @@ def remote(
       should then use `tle.gpu.local_ptr(...)` to materialize remote pointers.
     - tl.tensor shared-memory pointer (scalar or tensor): returns remote
       pointer directly.
-    - DistributedRtContext with `space="node"`: returns a store-only remote
-      destination consumed by `tl.store`.
+    - DistributedRtContext with `space="node"`: returns a transfer-only remote
+      destination consumed by `tl.load` or `tl.store`.
 
     `shard_id` is the target block id inside the current thread block cluster.
     For cluster/device pointer paths, when `scope` is provided, launch cluster
@@ -1405,8 +1449,10 @@ def remote(
 
     For `space="node"`, `tensor` is the source registered-memory
     `DistributedRtContext` and `dst` is the destination context. `dst`
-    defaults to `tensor`. This function returns a store-only destination with
-    `tl.store(remote_dst)`; node destinations do not accept a store value.
+    defaults to `tensor`. `tl.store(remote_dst)` issues a put from the local
+    source to the remote destination, while `tl.load(remote_dst)` issues a get
+    from the remote source into the local destination. Both operations are
+    transfer-only and return no data; node stores do not accept a store value.
     `dtype`, `offset`, `nelems`, and `coopkind` must be explicit, while
     `dstoffset` defaults to `offset` and `netidx` defaults to zero. The
     cooperative kind accepts only `GroupKind.THREAD`, `GroupKind.WARP`,
@@ -1417,12 +1463,14 @@ def remote(
     addressing and does not alter the CUDA cluster launch. `offset`,
     `dstoffset`, and `nelems` are scalar element counts normalized to i64;
     lowering multiplies all three by `dtype.itemsize` before calling FlagCX.
-    This first version emits a network put without flush, completion
-    notification, or a remote-visibility guarantee.
+    This first version emits a network transfer without flush, completion
+    notification, or a visibility guarantee.
 
     In node mode, `offset` is relative to the source memory base and
-    `dstoffset` is relative to the target shard's memory base. For device
-    mode, `offset` is the remote-memory offset. It is required for
+    `dstoffset` is relative to the destination memory base. For put, the
+    source is local and the destination is remote; for get, the source is
+    remote and the destination is local. For device mode, `offset` is the
+    remote-memory offset. It is required for
     `space="node"` and optional for `space="device"`. Lowering converts it to a
     byte offset before passing it to `flagcxGetIntraPointerC`. It may be a
     Python `int` (compile-time constant) or a scalar `tl.tensor` (runtime

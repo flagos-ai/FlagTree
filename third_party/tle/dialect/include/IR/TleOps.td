@@ -413,7 +413,8 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
     Optional<I64>:$nelems,
     Optional<I32>:$net_idx,
     OptionalAttr<I64Attr>:$elem_bytes,
-    OptionalAttr<I32Attr>:$put_coop_kind
+    OptionalAttr<I32Attr>:$coopkind,
+    OptionalAttr<StrAttr>:$transfer_kind
   );
 
   let results = (outs Optional<Tle_LocalPointerResultType>:$result);

@@ -1014,12 +1014,13 @@ LogicalResult RemotePointersOp::verify() {
     return RemotePointers::verifyNodeSpace(*this);
 
   auto elemBytesAttr = (*this)->getAttrOfType<IntegerAttr>("elem_bytes");
-  auto putCoopKindAttr = (*this)->getAttrOfType<IntegerAttr>("put_coop_kind");
+  auto coopKindAttr = getCoopkindAttr();
+  auto transferKindAttr = (*this)->getAttrOfType<StringAttr>("transfer_kind");
 
   if (getDstMem() || getComm() || getDstOffset() || getNelems() ||
-      getNetIdx() || elemBytesAttr || putCoopKindAttr)
+      getNetIdx() || elemBytesAttr || coopKindAttr || transferKindAttr)
     return emitOpError()
-           << "cluster/device space does not accept node put operands or "
+           << "cluster/device space does not accept node transfer operands or "
               "attributes";
   if (!getResult())
     return emitOpError()
