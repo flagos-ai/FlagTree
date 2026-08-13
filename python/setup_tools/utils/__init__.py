@@ -10,8 +10,8 @@ flagtree_submodules = {
                  commit_id="5842469a16b261e45a2c67fbfc308057622b03ee",
                  dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "triton_shared")),
     "flir":
-    tools.Module(name="flir", url="https://github.com/flagos-ai/flir.git",
-                 commit_id="ba6aba6b2961e44b58fa740a98e284e6c0a5b505",
+    tools.Module(name="flir", url="https://github.com/kateyijian/flir.git",
+                 commit_id="16e83b640815ebf159ae44f4138e5f1d5d41af6b",
                  dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "flir")),
     "flagprism":
     tools.Module(name="FlagPrism", url="https://github.com/flagos-ai/FlagPrism.git",
