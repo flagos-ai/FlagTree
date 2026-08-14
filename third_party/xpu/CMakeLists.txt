@@ -1,3 +1,9 @@
+# XPU: conceal all IR text (MLIR/LLVM/ASM) in Release builds, aligning with
+# internal Triton 3.0 TRITON_CONCEAL_IR. XPU-only and Release-only.
+set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -DTRITON_CONCEAL_IR=1")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DTRITON_CONCEAL_IR=1")
+message(STATUS "[XPU] TRITON_CONCEAL_IR=1 enabled for Release build")
+
 # ============================================================================
 # XPU SDNN Object File Validation
 # ============================================================================

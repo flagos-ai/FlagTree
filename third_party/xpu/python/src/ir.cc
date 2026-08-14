@@ -506,7 +506,12 @@ void init_triton_ir(py::module &&m) {
                                  Location loc) { self.addArgument(ty, loc); })
       .def("get_num_arguments", &Block::getNumArguments)
       .def("get_argument", &Block::getArgument)
-      .def("dump", &Block::dump)
+      .def("dump",
+           [](Block &self) {
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
+             self.dump();
+#endif
+           })
       .def("move_before",
            [](Block &self, Block &dst) { self.moveBefore(&dst); })
       .def("insert_before", &Block::insertBefore)
@@ -591,20 +596,28 @@ void init_triton_ir(py::module &&m) {
             return self.getBody(idx);
           },
           ret::reference)
-      .def("dump", [](OpState &self) { self->dump(); })
+      .def("dump", [](OpState &self) {
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
+        self->dump();
+#endif
+      })
       .def("__str__",
            [](OpState &self) -> std::string {
              std::string str;
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
              llvm::raw_string_ostream os(str);
              auto printingFlags = getOpPrintingFlags();
              self->print(os, printingFlags);
+#endif
              return str;
            })
       .def("str_nodebug",
            [](OpState &self) -> std::string {
              std::string str;
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
              llvm::raw_string_ostream os(str);
              self->print(os);
+#endif
              return str;
            })
       .def("append_operand",
@@ -674,13 +687,19 @@ void init_triton_ir(py::module &&m) {
   // module
   py::class_<ModuleOp, OpState>(m, "module", py::module_local(),
                                 py::dynamic_attr())
-      .def("dump", &ModuleOp::dump)
+      .def("dump", [](ModuleOp &self) {
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
+        self.dump();
+#endif
+      })
       .def("str",
            [](ModuleOp &self) -> std::string {
              std::string str;
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
              llvm::raw_string_ostream os(str);
              auto printingFlags = getOpPrintingFlags();
              self.print(os, printingFlags);
+#endif
              return str;
            })
       .def("push_back",
@@ -1964,6 +1983,7 @@ void init_triton_ir(py::module &&m) {
       .def("enable_debug",
            [](PassManager &self) -> bool {
              auto *context = self.getContext();
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
              bool haveDump = ::triton::tools::getBoolEnv("MLIR_ENABLE_DUMP");
              std::string funcToDump;
              if (!haveDump) {
@@ -1973,6 +1993,10 @@ void init_triton_ir(py::module &&m) {
                if (!funcToDump.empty() && !isEnvValueBool)
                  haveDump = true;
              }
+#else
+             bool haveDump = false;
+             std::string funcToDump;
+#endif
              if (haveDump) {
                context->disableMultithreading();
                auto printingFlags = getOpPrintingFlags();
