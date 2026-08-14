@@ -54,20 +54,19 @@ loadX4B8(ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
     llvm::report_fatal_error(
         "PPU0010 B8 AIU dot requires native A-row/B-col layout");
   Value bytePtr = b.bitcast(smemBase, ptr_ty(rewriter.getContext(), 3));
-  Value topLeftIndex =
-      b.add(b.mul(startCoordY, blockLineStride), startCoordX);
+  Value topLeftIndex = b.add(b.mul(startCoordY, blockLineStride), startCoordX);
   Value sliceId = b.udiv(channelOffset, b.i32_val(32));
   Value sliceOffset = b.mul(sliceId, b.mul(blockLineStride, b.i32_val(32)));
-  bytePtr = b.gep(ptr_ty(rewriter.getContext(), 3), i8_ty,
-                  bytePtr, sliceOffset);
+  bytePtr =
+      b.gep(ptr_ty(rewriter.getContext(), 3), i8_ty, bytePtr, sliceOffset);
   Value sBase = b.or_(
       b.shl(b.and_(sliceId, b.i32_val(3)), b.i32_val(27)),
       b.or_(b.shl(b.and_(blockLineStride, b.i32_val(0x7ff)), b.i32_val(16)),
             b.and_(topLeftIndex, b.i32_val(0xffff))));
   auto resultTy = vec_ty(i32_ty, 4);
-  Value loaded = callIntrinsic(rewriter, loc,
-                               "llvm.ppu.tsm.ld.swizzle.b32x4.p3i8",
-                               resultTy, {bytePtr, b.i32_val(1), sBase});
+  Value loaded =
+      callIntrinsic(rewriter, loc, "llvm.ppu.tsm.ld.swizzle.b32x4.p3i8",
+                    resultTy, {bytePtr, b.i32_val(1), sBase});
   Value r0 = b.extract_element(i32_ty, loaded, b.i32_val(0));
   Value r1 = b.extract_element(i32_ty, loaded, b.i32_val(1));
   Value r2 = b.extract_element(i32_ty, loaded, b.i32_val(2));

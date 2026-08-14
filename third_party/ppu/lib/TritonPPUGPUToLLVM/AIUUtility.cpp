@@ -257,8 +257,7 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
     Value sliceStartPtr =
         b.gep(dstPtrTy, resElemTy, dstPtrBase, sliceStartOffset);
 
-    Value idxColInnerSlice =
-        b.urem(idxColInnerCube, b.i32_val(sliceElems));
+    Value idxColInnerSlice = b.urem(idxColInnerCube, b.i32_val(sliceElems));
     // new swizzled row index inside slice, swizzled slice shape is (cubeW/4,
     // 64)
     Value rowSwizzleID = b.udiv(idxRowInnerCube, b.i32_val(4));
@@ -266,8 +265,7 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
     Value idxColSlicelinear = b.urem(
         b.add(b.mul(idxRowInnerCube, b.i32_val(sliceElems)), idxColInnerSlice),
         b.i32_val(128 / elemBytes));
-    Value colSliceID =
-        b.udiv(idxColSlicelinear, b.i32_val(16 / elemBytes));
+    Value colSliceID = b.udiv(idxColSlicelinear, b.i32_val(16 / elemBytes));
 
     // rotated length: (((sliceID>1)|(sliceID<1))&0x3) << 1
     // sliceID 0, 1, 2, 3 ---> rotated length: 0, 4, 2, 6
@@ -284,13 +282,12 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
     Value colRotID = b.sub(b.i32_val(7), colRotBitPos);
     Value colSwizzleID = b.xor_(colRotID, b.urem(rowSwizzleID, b.i32_val(2)));
 
-    Value swizzleOffset = b.add(
-        b.mul(rowSwizzleID, b.i32_val(128 / elemBytes)),
-        b.mul(colSwizzleID, b.i32_val(16 / elemBytes)));
+    Value swizzleOffset = b.add(b.mul(rowSwizzleID, b.i32_val(128 / elemBytes)),
+                                b.mul(colSwizzleID, b.i32_val(16 / elemBytes)));
 
     // for minVec is not equal to outVec
-    swizzleOffset = b.or_(
-        swizzleOffset, b.urem(idxCol, b.i32_val(16 / elemBytes)));
+    swizzleOffset =
+        b.or_(swizzleOffset, b.urem(idxCol, b.i32_val(16 / elemBytes)));
     ret[elemIdx] = b.gep(dstPtrTy, resElemTy, sliceStartPtr, swizzleOffset);
   }
 
