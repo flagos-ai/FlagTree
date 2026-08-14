@@ -30,7 +30,6 @@ CORE:
           - 'cmake/**'
           - 'include/**'
           - 'lib/**'
-          - 'python/**'
           - 'scripts/**'
           - 'test/**'
           - 'unittest/**'
@@ -45,6 +44,8 @@ CORE:
           - 'setup.py'
           - '.github/actions/**'
           - '.github/workflows/code-format-check.yml'
+      - all-globs-to-any-file:
+          - 'python/**'
           - '!python/setup_tools/utils/cambricon.py'
           - '!python/setup_tools/utils/enflame.py'
           - '!python/setup_tools/utils/hcu.py'
