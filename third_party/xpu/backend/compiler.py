@@ -144,6 +144,7 @@ class XPUOptions:
 
     # use_int4_w4a8
     use_int4_w4a8: bool = False
+    load_tile_size: int = 131072
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / f"xpu{self.arch}"
@@ -280,27 +281,43 @@ class XPUBackend(BaseBackend):
                     xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, 2)
                 else:
                     xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, TTSDNN_F_MATMUL_FAST_MODE)
-            xpu.passes.ttsdnnir.add_convert_triton_to_tritonsdnn_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_convert_triton_to_tritonsdnn_pass(pm, opt.arch, opt.load_tile_size)
             passes.ttir.add_loop_aware_cse(pm)
             xpu.passes.ttsdnnir.add_linalg_to_tritonsdnn_pass(pm, opt.arch)
             passes.ttir.add_loop_aware_cse(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_legalize_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_merge_extern_ew_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_combine_before_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_resolve_layout_conflict_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_hoist_ds_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_transpose_mma_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_transpose_ew_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_combine_before_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_eliminate_mma_acc_zero_pass(pm, opt.arch)
+            if opt.arch == 4:
+                xpu.passes.ttsdnnir.add_tritonsdnn_fuse_mma_vector_bias_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_optimize_rc_layout_pass(pm, opt.arch)
+            if opt.arch == 4:
+                xpu.passes.ttsdnnir.add_tritonsdnn_ewlite_scheduling_pass(pm, opt.arch)
+                if TTSDNN_F_DMA_MODE:
+                    xpu.passes.ttsdnnir.add_tritonsdnn_remove_ds_op_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_dsa_copy_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_bufferize_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_mx_scale_layout_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_combine_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_fuse_relu_activation_pass(pm, opt.arch)
             if opt.exp_range != ":0":
                 res = parse_floating_range_string(opt.exp_range)
                 xpu.passes.ttsdnnir.add_tritonsdnn_ew_act_table_pass(pm, res)
             else:
                 xpu.passes.ttsdnnir.add_tritonsdnn_ew_act_table_pass(pm, None)
             xpu.passes.ttsdnnir.add_tritonsdnn_loop_grid_pass(pm)
-            if opt.arch == 4 and TTSDNN_F_DMA_MODE:
-                xpu.passes.ttsdnnir.add_tritonsdnn_remove_ds_op_pass(pm, opt.arch)
-            if not TTSDNN_F_SINGLE_CORE_MODE:
-                xpu.passes.ttsdnnir.add_tritonsdnn_pipeline_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_hoist_loop_invariant_dma_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_pipeline_pass(pm, opt.arch)
             if opt.arch == 4 and TTSDNN_F_KILL_EW_FILL_MODE:
                 xpu.passes.ttsdnnir.add_tritonsdnn_kloop_acc_elimination_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_multi_buffer_pass(pm, opt.arch, opt.num_stages)
+            xpu.passes.ttsdnnir.add_tritonsdnn_lower_rc_subview_pass(pm, opt.arch)
             passes.common.add_symbol_dce(pm)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
