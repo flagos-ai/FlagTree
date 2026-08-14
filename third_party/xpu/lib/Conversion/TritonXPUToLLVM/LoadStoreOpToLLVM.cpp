@@ -179,9 +179,19 @@ struct LoadStoreConversionBase {
   }
 
   void createMfenceOp(ConversionPatternRewriter &rewriter,
-                      mlir::Location &loc) const {
-    // The magic number 5(101) of MfenceOp means mfencing on LM and GM
-    rewriter.create<mlir::LLVM::XPU::MfenceOp>(loc, i32_val(5));
+                      mlir::Location &loc, int32_t mfenceType = 5) const {
+    // Mfence mask bits: bit0=LM(1), bit1=SM(2), bit2=GM(4). 5 fences LM+GM.
+    rewriter.create<mlir::LLVM::XPU::MfenceOp>(loc, i32_val(mfenceType));
+  }
+
+  void createMfenceLMOp(ConversionPatternRewriter &rewriter,
+                        mlir::Location &loc) const {
+    createMfenceOp(rewriter, loc, 1);
+  }
+
+  void createMfenceGMOp(ConversionPatternRewriter &rewriter,
+                        mlir::Location &loc) const {
+    createMfenceOp(rewriter, loc, 4);
   }
 
   Value getStartPtr(ConversionPatternRewriter &rewriter, mlir::MLIRContext *ctx,
@@ -1376,7 +1386,7 @@ struct XPULoadOpConversion : public ConvertOpToLLVMPattern<triton::xpu::LoadOp>,
           {fp16LM, fp32LM, i32_val(ptrNumElems * stride)});
       mlir::LLVM::XPU::createDeviceCall("_ZN3xpu10fp16tofp32EPKNS_7float16EPfi",
                                         rewriter, op, singleOperandRange, loc);
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
       ptrElemScalarTy = resElemScalarTy;
     }
     // bf16Tofp32
@@ -2011,7 +2021,7 @@ struct XPUStoreOpConversion
       }
     }
 
-    createMfenceOp(rewriter, loc);
+    createMfenceLMOp(rewriter, loc);
 
     // fp32 to fp16
     if (fp32Tofp16) {
@@ -2020,7 +2030,7 @@ struct XPUStoreOpConversion
       ValueRange singleOperandRange({fp32LM, fp16LM, i32_val(ptrNumElems)});
       mlir::LLVM::XPU::createDeviceCall("_ZN3xpu10fp32tofp16Ef", rewriter, op,
                                         singleOperandRange, loc);
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
     }
 
     rewriter.eraseOp(op);
@@ -2246,7 +2256,7 @@ struct XPUGM2LMOpConversion
           createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
                         readBytes);
           if (!async)
-            createMfenceOp(rewriter, loc);
+            createMfenceLMOp(rewriter, loc);
         }
 
         resultStruct = packLLElements(loc, typeConverter, llLMPtrs, rewriter,
@@ -2291,7 +2301,7 @@ struct XPUGM2LMOpConversion
           newLmBufPtrs[j] = llLMPtrs[start];
       }
       if (!async)
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
       resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
                                     llvmResultStructTy);
       rewriter.replaceOp(op, {resultStruct});
@@ -2330,7 +2340,7 @@ struct XPUGM2LMOpConversion
         }
 
         if (!async)
-          createMfenceOp(rewriter, loc);
+          createMfenceLMOp(rewriter, loc);
 
         resultStruct = packLLElements(loc, typeConverter, llLMPtrs, rewriter,
                                       llvmResultStructTy);
@@ -2360,7 +2370,7 @@ struct XPUGM2LMOpConversion
       }
 
       if (!async)
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
 
       rewriter.replaceOp(op, {resultStruct});
       return success();
@@ -2370,7 +2380,7 @@ struct XPUGM2LMOpConversion
     Value srcPtr = bitcast(llGMPtrs[0], ptr_ty(ctx, 1));
     createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes, readBytes);
     if (!async)
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
 
     rewriter.replaceOp(op, {resultStruct});
     return success();
@@ -2600,7 +2610,7 @@ struct XPULM2GMOpConversion
           }
         }
         if (!async)
-          createMfenceOp(rewriter, loc);
+          createMfenceLMOp(rewriter, loc);
         rewriter.eraseOp(op);
         rewriter.create<LLVM::BrOp>(loc, ValueRange{}, newBlock);
         return success();
@@ -2654,7 +2664,7 @@ struct XPULM2GMOpConversion
       break;
     }
     if (!async)
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
     rewriter.eraseOp(op);
 
     return success();
@@ -2793,7 +2803,7 @@ struct XPUGM2LMMaskOpConversion
         createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
                       readBytes);
         if (!async)
-          createMfenceOp(rewriter, loc);
+          createMfenceLMOp(rewriter, loc);
       } else {
         // Unknown
         for (size_t i = 0; i < llGMPtrs.size(); ++i) {
@@ -2811,7 +2821,7 @@ struct XPUGM2LMMaskOpConversion
           createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
                         _readBytes);
           if (!async)
-            createMfenceOp(rewriter, loc);
+            createMfenceLMOp(rewriter, loc);
         }
       }
       resultStruct = packLLElements(loc, typeConverter, llLMPtrs, rewriter,
@@ -2830,7 +2840,7 @@ struct XPUGM2LMMaskOpConversion
       readBytes = mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
       createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes, readBytes);
       if (!async)
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
 
       resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
                                     llvmResultStructTy);
@@ -2839,7 +2849,7 @@ struct XPUGM2LMMaskOpConversion
       readBytes = mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
       createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes, readBytes);
       if (!async)
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
 
       SmallVector<Value> newLmBufPtrs(llLMPtrs.size(), llLMPtrs[0]);
       resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
@@ -2870,7 +2880,7 @@ struct XPUGM2LMMaskOpConversion
         }
       }
       if (!async)
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
       resultStruct = packLLElements(loc, typeConverter, llLMPtrs, rewriter,
                                     llvmResultStructTy);
       rewriter.create<LLVM::BrOp>(loc, ValueRange{}, newBlock);
@@ -2912,7 +2922,7 @@ struct XPUGM2LMMaskOpConversion
     }
 
     if (!async)
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
 
     rewriter.replaceOp(op, {resultStruct});
     return success();
@@ -3075,12 +3085,12 @@ struct XPULM2GMMaskOpConversion
               oldBlock, newBlock);
         }
         if (!async)
-          createMfenceOp(rewriter, loc);
+          createMfenceLMOp(rewriter, loc);
         rewriter.eraseOp(op);
         rewriter.create<LLVM::BrOp>(loc, ValueRange{}, newBlock);
         return success();
       }
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
       rewriter.create<LLVM::BrOp>(loc, ValueRange{}, newBlock);
       break;
     }
@@ -3110,7 +3120,7 @@ struct XPULM2GMMaskOpConversion
         readBytes = mask ? select(_mask, elemBytes, i32_val(0)) : elemBytes;
         createLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
                       readBytes);
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
       }
       break;
     }
@@ -3120,7 +3130,7 @@ struct XPULM2GMMaskOpConversion
     }
     }
     if (!async)
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
 
     rewriter.eraseOp(op);
     return success();

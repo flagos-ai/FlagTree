@@ -1,8 +1,8 @@
-#include "PatternTritonXPUOpToLLVM.h"
 #include "Utility.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
-#include "triton/Conversion/TritonXPUToLLVM/LegacyLLVMHelpers.h" // LLVM22 dragon-style macros for XPU only
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
+#include "PatternTritonXPUOpToLLVM.h"
+#include "triton/Conversion/TritonXPUToLLVM/LegacyLLVMHelpers.h"  // LLVM22 dragon-style macros for XPU only
 
 using ::mlir::triton::gpu::getTotalElemsPerThread;
 
@@ -136,7 +136,10 @@ static void applyLastElemScanOnSM(SmallVector<SmallVector<Value>> &srcValues,
                                   SmallVector<Value> smemBases,
                                   SmallVector<Value> accSmemBases,
                                   SmallVector<Type> smemTypes, Value groupId,
-                                  Value laneId, triton::xpu::ScanOp op) {
+                                  Value laneId, triton::xpu::ScanOp op,
+                                  ArrayRef<Value> carryIn = {},
+                                  ArrayRef<Value> carryBases = {},
+                                  Value isFirst = {}) {
   Location loc = helper.getXPULoc();
 
   // Scan SM Last Elem Per Thread
@@ -193,8 +196,19 @@ static void applyLastElemScanOnSM(SmallVector<SmallVector<Value>> &srcValues,
 
   for (unsigned srcIdx = 0; srcIdx < groupSizeInt; ++srcIdx) {
     if (srcIdx == 0) { // core0 dont't need to acc
+      // Base (no carry) exclusive prefix for this iteration.
       accs[srcIdx] =
           accumulate(helper, rewriter, accs[srcIdx], readValues[srcIdx]);
+      // When carrying across grid-stride iterations, fold the incoming carry
+      // into core0's prefix on every iteration except the first. Selecting on
+      // the *result* (rather than seeding with a hardcoded identity) keeps the
+      // first iteration exact for any combine op (min/max/prod/...).
+      if (!carryIn.empty()) {
+        SmallVector<Value> carry(carryIn.begin(), carryIn.end());
+        auto withCarry = accumulate(helper, rewriter, carry, readValues[srcIdx]);
+        for (unsigned k = 0; k < accs[srcIdx].size(); ++k)
+          accs[srcIdx][k] = select(isFirst, accs[srcIdx][k], withCarry[k]);
+      }
 
       //   ValueRange operandValueRange({accs[srcIdx][0], i32_val(srcIdx)});
       //   mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
@@ -227,10 +241,19 @@ static void applyLastElemScanOnSM(SmallVector<SmallVector<Value>> &srcValues,
     }
   }
 
+  // Persist this iteration's grand total (carryIn + sum of all core partials)
+  // to the carry slot so the next grid-stride iteration continues from it.
+  // carryOut = accumulate(accs[last], readValues[last]).
+  if (!carryBases.empty()) {
+    auto carryOut = accumulate(helper, rewriter, accs[groupSizeInt - 1],
+                               readValues[groupSizeInt - 1]);
+    for (unsigned k = 0; k < carryBases.size(); ++k)
+      store_sm(carryOut[k], carryBases[k]);
+  }
+
   // [dump] dump accs result
   if (/*dump_Out_SMValue*/ false) {
     auto operandIdx = 1; // 第一个输入
-
     for (int core_id_offset = 0; core_id_offset < 64; ++core_id_offset) {
       auto elemTy = accs[core_id_offset][operandIdx].getType();
 
@@ -305,7 +328,8 @@ static void applyCoreElemScanWithSMAcc(
     ConversionPatternRewriter &rewriter, const TargetInfoBase &targetInfo,
     ScanLoweringHelper &helper, SmallVector<Value> smemBases,
     SmallVector<Value> accSmemBases, SmallVector<Type> smemTypes, Value groupId,
-    Value laneId, triton::xpu::ScanOp op) {
+    Value laneId, triton::xpu::ScanOp op, ArrayRef<Value> carryIn = {},
+    Value isFirst = {}) {
   Location loc = helper.getXPULoc();
   Value threadId = mlir::LLVM::XPU::getThreadId(rewriter, loc);
 
@@ -406,10 +430,23 @@ static void applyCoreElemScanWithSMAcc(
   }
 
   for (unsigned srcIndex = 0; srcIndex < srcValues.size(); srcIndex++) {
+    // core0 keeps its local prefix; when carrying across grid-stride
+    // iterations it must add the incoming carry (except on the first
+    // iteration). The combine region consumes all operands at once, so fold
+    // the carry over the full operand vector in a single accumulate rather
+    // than per operand (per-operand folding passes the wrong number of block
+    // arguments to the combine region and asserts for multi-operand scans).
+    SmallVector<Value> core0Vals = srcValues[srcIndex];
+    if (!carryIn.empty()) {
+      SmallVector<Value> carry(carryIn.begin(), carryIn.end());
+      auto withCarry = accumulate(helper, rewriter, carry, srcValues[srcIndex]);
+      for (unsigned k = 0; k < core0Vals.size(); ++k)
+        core0Vals[k] = select(isFirst, core0Vals[k], withCarry[k]);
+    }
     for (unsigned operandIdx = 0; operandIdx < (helper.getXPUNumOperands() - 1);
          ++operandIdx) { // skip loopIndex
       srcValues[srcIndex][operandIdx] =
-          select(coreIdInGroupZero, srcValues[srcIndex][operandIdx],
+          select(coreIdInGroupZero, core0Vals[operandIdx],
                  newSrcValues[srcIndex][operandIdx]);
     }
   }
@@ -434,10 +471,28 @@ struct XPUScanOpConversion
     return getTypeConverter()->convertType(ty);
   }
 
+  // Carry across grid-stride loop iterations is only meaningful when the loop
+  // tiles the scan axis itself (e.g. a 1-D scan split into tiles, as in the
+  // unique kernel's global cumsum). It must NOT fire when the loop iterates
+  // over independent scans (e.g. the per-row scan of a 2-D tensor along the
+  // last axis, where each row is a self-contained scan). Mirror
+  // ReduceOp::isNeedLoopCacheResult so scan and reduce agree.
+  bool isNeedLoopCarry(triton::xpu::ScanOp op) const {
+    if (!op.getLoopIndex())
+      return false;
+    if (op.getAxis() == 1)
+      return false;
+    if (auto resultTy =
+            dyn_cast<RankedTensorType>(op.getResult()[0].getType()))
+      return resultTy.getShape().size() == 1;
+    return true;
+  }
+
   // Helper to compute the smem bases in both reductions and scans
   std::pair<SmallVector<Value>, SmallVector<Value>>
   getSmemBases(triton::xpu::ScanOp op, unsigned elems,
-               ConversionPatternRewriter &rewriter) const {
+               ConversionPatternRewriter &rewriter,
+               SmallVector<Value> *carryBases = nullptr) const {
     ScanLoweringHelper helper(op);
     SmallVector<int64_t> offsets;
 
@@ -506,6 +561,30 @@ struct XPUScanOpConversion
 
     for (unsigned i = 0; i < (op.getNumOperands() - 1); ++i) { // skip loopIndex
       accCacheSmemBases[i] = indexToBaseForAccCache[i];
+    }
+
+    // Persistent carry region (1 slot per operand) used to accumulate a scan
+    // across grid-stride loop iterations. It lives just past the accCache
+    // region and is recorded in `offsets` so later scans/reduces don't reuse
+    // it. Only populated when the caller asks (scan inside a loop).
+    if (carryBases) {
+      carryBases->resize(op.getNumOperands() - 1);
+      std::map<unsigned, Value> indexToBaseForCarry;
+      indexToBaseForCarry[0] =
+          gep(ptr_ty(rewriter.getContext(), 2),
+              getElementType(op, op.getNumOperands() - 2),
+              accCacheSmemBases.back(), i32_val(elems));
+      offsets.push_back(
+          (getElementType(op, 0).getIntOrFloatBitWidth()) / 8);
+      for (unsigned i = 1; i < (op.getNumOperands() - 1); ++i) {
+        indexToBaseForCarry[i] =
+            gep(ptr_ty(rewriter.getContext(), 2), getElementType(op, i),
+                indexToBaseForCarry[i - 1], i32_val(1));
+        offsets.push_back(
+            (getElementType(op, i).getIntOrFloatBitWidth()) / 8);
+      }
+      for (unsigned i = 0; i < (op.getNumOperands() - 1); ++i)
+        (*carryBases)[i] = indexToBaseForCarry[i];
     }
 
     helper.setSMOffsets(helper.getScanId(), offsets);
@@ -614,7 +693,14 @@ struct XPUScanOpConversion
       // helper.dumpSMOffsets();
 
       auto elems = helper.getScratchSizeInElemsXPU();
-      auto [smemBases, accSmemBases] = getSmemBases(op, elems, rewriter);
+      // A scan whose axis is tiled across a grid-stride loop carries a running
+      // total across iterations via a persistent SM slot. Only allocate/use
+      // the carry machinery in that case (see isNeedLoopCarry); a per-row scan
+      // of a 2-D tensor must not carry between rows.
+      bool hasCarry = isNeedLoopCarry(op);
+      SmallVector<Value> carryBases;
+      auto [smemBases, accSmemBases] =
+          getSmemBases(op, elems, rewriter, hasCarry ? &carryBases : nullptr);
 
       // llvm::errs() << "\n [After getSmemBases]:\n"
       //              << op->getParentOfType<ModuleOp>() << "\n";
@@ -631,6 +717,26 @@ struct XPUScanOpConversion
 
       storeGroupAccumulator(srcValues, rewriter, helper, laneId, groupId,
                             smemBases, smemTypes);
+
+      // Read the carry produced by the previous grid-stride iteration. It is
+      // combined into core0's prefix by applyLastElemScanOnSM /
+      // applyCoreElemScanWithSMAcc, which select it away on the first
+      // iteration (isFirst) instead of relying on a hardcoded identity. Read
+      // it BEFORE applyLastElemScanOnSM overwrites the carry slot with this
+      // iteration's total.
+      SmallVector<Value> carryIn;
+      Value isFirst;
+      if (hasCarry) {
+        Value loopIdx = adaptor.getLoopIndex();
+        Value zeroIdx = rewriter.create<LLVM::ConstantOp>(
+            loc, loopIdx.getType(),
+            rewriter.getIntegerAttr(loopIdx.getType(), 0));
+        isFirst = icmp_eq(loopIdx, zeroIdx);
+        for (unsigned k = 0; k < (op.getNumOperands() - 1); ++k) {
+          Type ety = smemTypes[k];
+          carryIn.push_back(load_sm(ety, carryBases[k]));
+        }
+      }
 
       // [dump][sm] operand-0: sm[0]-sm[63]   or  operand-1 sm[64]-sm[127]
       if (/*dump_In_SMValue*/ false) {
@@ -651,12 +757,9 @@ struct XPUScanOpConversion
             calFunc = "_ZN3xpu15printInt64_specEliii";
           }
 
-          SmallVector<Value> operandValues;
-          operandValues.append({loadVal, /*cluster_id*/ i32_val(0),
-                                /*core_id*/ i32_val(0),
-                                /*custom_id*/
-                                i32_val(500 + core_id_offset)});
-          ValueRange operandValueRange(operandValues);
+          ValueRange operandValueRange(
+              {loadVal, /*cluster_id*/ i32_val(0), /*core_id*/ i32_val(0),
+               /*custom_id*/ i32_val(500 + core_id_offset)});
           mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
                                             operandValueRange, loc);
         }
@@ -672,7 +775,8 @@ struct XPUScanOpConversion
       // Read back the partial reduction of each warp and accumulate them
       // based on warpId.
       applyLastElemScanOnSM(srcValues, rewriter, targetInfo, helper, smemBases,
-                            accSmemBases, smemTypes, groupId, laneId, op);
+                            accSmemBases, smemTypes, groupId, laneId, op,
+                            carryIn, carryBases, isFirst);
       // llvm::errs() << "\n After applyLastElemScanOnSM:\n"
       //              << op->getParentOfType<ModuleOp>() << "\n";
 
@@ -699,12 +803,9 @@ struct XPUScanOpConversion
             calFunc = "_ZN3xpu15printInt64_specEliii";
           }
 
-          SmallVector<Value> operandValues;
-          operandValues.append({loadVal, /*cluster_id*/ i32_val(0),
-                                /*core_id*/ i32_val(0),
-                                /*custom_id*/
-                                i32_val(600 + core_id_offset)});
-          ValueRange operandValueRange(operandValues);
+          ValueRange operandValueRange(
+              {loadVal, /*cluster_id*/ i32_val(0), /*core_id*/ i32_val(0),
+               /*custom_id*/ i32_val(600 + core_id_offset)});
           mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
                                             operandValueRange, loc);
         }
@@ -717,7 +818,7 @@ struct XPUScanOpConversion
       // adding the accumulated value from the previous lane.
       applyCoreElemScanWithSMAcc(srcValues, rewriter, targetInfo, helper,
                                  smemBases, accSmemBases, smemTypes, groupId,
-                                 laneId, op);
+                                 laneId, op, carryIn, isFirst);
       // llvm::errs() << "\n After applyCoreElemScanWithSMAcc:\n"
       //              << op->getParentOfType<ModuleOp>() << "\n";
 
@@ -742,12 +843,9 @@ struct XPUScanOpConversion
             calFunc = "_ZN3xpu15printInt64_specEliii";
           }
 
-          SmallVector<Value> operandValues;
-          operandValues.append({loadVal, /*cluster_id*/ i32_val(0),
-                                /*core_id*/ i32_val(0),
-                                /*custom_id*/
-                                i32_val(700 + core_id_offset)});
-          ValueRange operandValueRange(operandValues);
+          ValueRange operandValueRange(
+              {loadVal, /*cluster_id*/ i32_val(0), /*core_id*/ i32_val(0),
+               /*custom_id*/ i32_val(700 + core_id_offset)});
           mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
                                             operandValueRange, loc);
         }
