@@ -107,6 +107,7 @@ class XPUOptions:
     buffer_size_limit: int = int(os.environ.get("TRITONXPU_BUFFER_SIZE", 512))
     groups_per_cluster: int = int(os.environ.get("TRITONXPU_GROUPS_PER_CLUSTER", 1))
     unroll_num: int = int(os.environ.get("TRITONXPU_UNROLL_NUM", 2))
+    vrf_budget: int = int(os.environ.get("TRITONXPU_VRF_BUDGET", 24))
     is_use_mask_zero: bool = int(os.environ.get("TRITONXPU_IS_USE_MASK_ZERO", 0))
     extern_libs: dict = None
     is_sdnn: bool = False
@@ -243,6 +244,7 @@ class XPUBackend(BaseBackend):
         elem_bytes = int(os.environ.get("TRITONXPU_ELEMBYTES", 0))
         groups_per_cluster = metadata["groups_per_cluster"]
         unroll_num = metadata["unroll_num"]
+        vrf_budget = metadata.get("vrf_budget", 24)
         XPUBackend.buffer_len = xpu.get_buffer_len(mod, max_buffer_size, elem_bytes)
         # print(f"XPUBackend.buffer_len = {XPUBackend.buffer_len}")
         core_num = metadata["core_num"]
@@ -303,6 +305,7 @@ class XPUBackend(BaseBackend):
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
         else:
+            xpu.passes.ttxpuir.add_tritonxpu_legalize_extern_ew_pass(pm)
             xpu.passes.ttxpuir.add_convert_triton_to_tritonxpu_pass(pm, opt.arch, XPUBackend.buffer_len, core_num)
             xpu.passes.ttxpuir.add_tritonxpu_print_pass(pm)
             xpu.passes.ttxpuir.add_tritonxpu_gm2lm_pass(pm, opt.arch, TTXPU_O_ATOMIC_SIM, opt.isClusterOneCoreActOnly,
@@ -313,6 +316,7 @@ class XPUBackend(BaseBackend):
             passes.common.add_canonicalizer(pm)
             if TTXPU_F_DTYPE_CONVERT:
                 xpu.passes.ttxpuir.add_tritonxpu_dtype_convert_pass(pm, opt.arch)
+            xpu.passes.ttxpuir.add_tritonxpu_vectorizability_analysis_pass(pm, True, True)
             if not metadata["isCloseCoreTiling"]:
                 xpu.passes.ttxpuir.add_tritonxpu_core_tiling_pass(
                     pm, 0, XPUBackend.buffer_len, core_num, groups_per_cluster,
@@ -320,8 +324,12 @@ class XPUBackend(BaseBackend):
             # xpu.passes.ttxpuir.add_tritonxpu_lm_to_sm_pass(pm)
             passes.common.add_cse(pm)
             if not metadata["isCloseOffsetAnalysis"]:
+                xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(
+                    pm, False) if not TTXPU_O_CLOSE_OPT else None
                 xpu.passes.ttxpuir.add_tritonxpu_offset_state_pass(
                     pm, 0, XPUBackend.buffer_len, is_use_mask_zero) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(
+                    pm, True) if not TTXPU_O_CLOSE_OPT else None
             passes.common.add_canonicalizer(pm)
             xpu.passes.ttxpuir.add_tritonxpu_legalize_pass(pm, XPUBackend.buffer_len, core_num, groups_per_cluster,
                                                            is_use_mask_zero)
@@ -337,14 +345,18 @@ class XPUBackend(BaseBackend):
             passes.common.add_canonicalizer(pm)
             if not metadata["isCloseVectorization"]:
                 compareFusion = int(os.environ.get("TRITONXPU_COMPARE_FUSION", 0))
+                xpu.passes.ttxpuir.add_tritonxpu_normalize_pass(
+                    pm, 0, compareFusion) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                xpu.passes.ttxpuir.add_tritonxpu_vectorizability_analysis_pass(pm, True, False)
                 xpu.passes.ttxpuir.add_tritonxpu_vectorize_pass(
                     pm, 0, compareFusion) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
             passes.common.add_canonicalizer(pm)
             xpu.passes.ttxpuir.add_tritonxpu_alloca_pass(pm, XPUBackend.buffer_len, core_num)
             if not metadata["isCloseMemoryAsync"]:
-                xpu.passes.ttxpuir.add_tritonxpu_memory_async_pass(pm,
-                                                                   0) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                xpu.passes.ttxpuir.add_tritonxpu_async_load_schedule_pass(
+                    pm, 0) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
             if not metadata["isCloseUnrollControl"]:
+                xpu.passes.ttxpuir.add_tritonxpu_tile_analysis_pass(pm, vrf_budget)
                 xpu.passes.ttxpuir.add_tritonxpu_unroll_control_pass(pm, XPUBackend.buffer_len, core_num,
                                                                      is_use_mask_zero,
                                                                      unroll_num) if not TTXPU_O_CLOSE_OPT else None
@@ -356,6 +368,8 @@ class XPUBackend(BaseBackend):
             if not metadata["isCloseClusterLoopGrid"]:
                 xpu.passes.ttxpuir.add_tritonxpu_cf_to_scf_pass(pm)
                 xpu.passes.ttxpuir.add_tritonxpu_loop_grid_pass(pm)
+                if int(os.environ.get("TRITONXPU_LOOP_INVARIANT_STAGING", 0)):
+                    xpu.passes.ttxpuir.add_tritonxpu_loop_invariant_staging_pass(pm)
             passes.common.add_cse(pm)
             passes.common.add_licm(pm)
             passes.common.add_symbol_dce(pm)

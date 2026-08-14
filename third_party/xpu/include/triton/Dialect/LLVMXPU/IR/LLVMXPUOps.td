@@ -143,6 +143,21 @@ def XPU_SM2GMOp_v3 : XPU_IntrOp<"sm2gm_v3", [], 0> {
   }];
 }
 
+def XPU_GM2SMOp_v3 : XPU_IntrOp<"gm2sm_v3", [], 0> {
+  let arguments = (ins LLVM_AnyPointer:$src,
+                       LLVM_AnyPointer:$dst,
+                       I32:$offset,
+                       I32:$size);
+  string llvmBuilder = [{
+    auto isrc = builder.CreatePtrToInt($src, builder.getInt64Ty());
+    auto ioft = builder.CreateZExtOrTrunc($offset, builder.getInt64Ty());
+    auto asrc = builder.CreateAdd(isrc, ioft);
+    auto fsrc = builder.CreateIntToPtr(asrc, $src->getType());
+    auto zero = builder.getInt32(0);
+    createIntrinsicCall(builder, llvm::Intrinsic::xpu_gm2sm_v3, {$dst, fsrc, zero, $size});
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // XPU special register op definitions
 //===----------------------------------------------------------------------===//

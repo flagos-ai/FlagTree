@@ -33,6 +33,18 @@ def TritonXPUCreateGM2LM : Pass<"tritonxpu-create-gm2lm", "mlir::ModuleOp"> {
   ];
 }
 
+def TritonXPUTLELegalize : Pass<"tritonxpu-tle-legalize", "mlir::ModuleOp"> {
+  let summary = "Legalize for XPU TLE kernels (separate from tritonxpu-legalize).";
+
+  let description = [{
+    TLE-specific legalize pass. Duplicated from tritonxpu-legalize so that TLE
+    kernels can be legalized independently without affecting the shared
+    (non-TLE) legalize behavior.
+  }];
+
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+}
+
 def TritonXPULegalize : Pass<"tritonxpu-legalize", "mlir::ModuleOp"> {
   let summary = "Legalize for XPU.";
 
@@ -113,6 +125,17 @@ def TritonXPUDtypeConvert : Pass<"tritonxpu-dtype-convert", "mlir::ModuleOp"> {
   ];
 }
 
+def TritonXPULoopInvariantStaging
+    : Pass<"tritonxpu-loop-invariant-staging", "mlir::ModuleOp"> {
+  let summary = "Stage a loop-invariant small-packet gm2lm out of the grid loop.";
+
+  let description = [{
+    Hoists a loop-invariant, read-only `gm2lm` out of the grid `scf.for`.
+  }];
+
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+}
+
 def TritonXPULoopGrid : Pass<"tritonxpu-loop-grid", "mlir::ModuleOp"> {
   let summary = "Create loop on triton programs for out-of-bounds grid_size.";
 
@@ -151,12 +174,37 @@ def TritonXPUUnrollControl : Pass<"tritonxpu-unroll-control", "mlir::ModuleOp"> 
     Option<"unrollNum", "unroll-num",
            "uint32_t", /*default*/"2",
            "unroll num">,
+    Option<"vrfBudget", "vrf-budget",
+           "uint32_t", /*default*/"24",
+           "vector-register budget used when budget-tiling is on">,
+    Option<"budgetTiling", "budget-tiling",
+           "bool", /*default*/"0",
+           "Derive the tile factor from the vector register budget">,
+    Option<"pinUnrollNum", "pin-unroll-num",
+           "int32_t", /*default*/"-1",
+           "<0 keep pinned constants, 0 drop pins, >0 override them">,
   ];
 }
 
 //===----------------------------------------------------------------------===//
 // Optimization Pass
 //===----------------------------------------------------------------------===//
+
+def TritonXPUScalarAnalysis : Pass<"tritonxpu-scalar-analysis", "mlir::ModuleOp"> {
+  let summary = "Scalar/Vector inference via tt.make_range + use-def chain.";
+
+  let description = [{
+    Classifies each tensor SSA value as Scalar or VectorContiguous and stamps
+    offsetState on gm2lm/lm2gm when the address is contig-1.
+  }];
+
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+
+  let options = [
+    Option<"aggressive", "aggressive", "bool", /*default=*/"false",
+           "When true, skip blockFromLoad guard and only update ops with offsetState=-1">
+  ];
+}
 
 def TritonXPUOffsetAnalysis : Pass<"tritonxpu-offset-analysis", "mlir::ModuleOp"> {
   let summary = "Analysis Ptr's Offset State.";
@@ -213,6 +261,26 @@ def TritonXPUCoreTiling : Pass<"tritonxpu-core-tiling", "mlir::ModuleOp"> {
 }
 
 
+def TritonXPUNormalize : Pass<"tritonxpu-normalize", "mlir::ModuleOp"> {
+  let summary = "Pre-vectorization normalization rewrites.";
+
+  let description = [{
+    Scalar-to-scalar rewrites that put the IR into the shapes the vectorizer
+    matches.
+  }];
+
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+
+  let options = [
+    Option<"dumpFlag", "dump-flag",
+           "bool", /*default*/"0",
+           "detail dump flag">,
+    Option<"compareFusion", "compare-fusion",
+            "bool", /*default*/"false",
+            "compare fusion">
+  ];
+}
+
 def TritonXPUVectorize : Pass<"tritonxpu-vectorize", "mlir::ModuleOp"> {
   let summary = "Vectorize Calculation.";
 
@@ -228,6 +296,23 @@ def TritonXPUVectorize : Pass<"tritonxpu-vectorize", "mlir::ModuleOp"> {
     Option<"compareFusion", "compare-fusion",
             "bool", /*default*/"false",
             "compare fusion">
+  ];
+}
+
+def TritonXPUAsyncLoadSchedule
+    : Pass<"tritonxpu-async-load-schedule", "mlir::ModuleOp"> {
+  let summary = "Move XPU loads near first user and insert explicit mfence.";
+
+  let dependentDialects = [
+    "mlir::triton::xpu::TritonXPUDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::LLVM::XPU::LLVMXPUDialect"
+  ];
+
+  let options = [
+    Option<"dumpFlag", "dump-flag",
+           "bool", /*default*/"0",
+           "detail dump flag">,
   ];
 }
 
@@ -333,6 +418,45 @@ def TritonXPUCFToSCF : Pass<"tritonxpu-cf-to-scf", "mlir::ModuleOp"> {
     CF To SCF.
   }];
   let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+}
+
+def TritonXPULegalizeExternEW : Pass<"tritonxpu-legalize-extern-ew", "mlir::ModuleOp"> {
+  let summary = "Legalize unsupported extern_elementwise ops for non-SDNN XPU.";
+  let description = [{
+    Rewrites tt.extern_elementwise ops whose symbols are not present in
+    libdevice-xpu3.bc to equivalent native MLIR ops.
+  }];
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect",
+                           "mlir::math::MathDialect",
+                           "mlir::arith::ArithDialect"];
+}
+
+def TritonXPUTileAnalysis : Pass<"tritonxpu-tile-analysis", "mlir::ModuleOp"> {
+  let summary = "Report register pressure and tile geometry per block.";
+
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+
+  let options = [
+    Option<"vrfBudget", "vrf-budget",
+           "uint32_t", /*default*/"24",
+           "same calibrated budget the tiling decision uses">,
+  ];
+}
+
+def TritonXPUVectorizabilityAnalysis
+    : Pass<"tritonxpu-vectorizability-analysis", "mlir::ModuleOp"> {
+  let summary = "Report which vectorization roots form a vectorizable closure.";
+
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+
+  let options = [
+    Option<"reduceVec", "reduce-vec",
+           "bool", /*default*/"1",
+           "match Vectorize's ReduceVec so the same roots are enumerated">,
+    Option<"preTiling", "pre-tiling",
+           "bool", /*default*/"0",
+           "this instance sits ahead of CoreTiling">,
+  ];
 }
 
 #endif // TRITONXPU_PASSES

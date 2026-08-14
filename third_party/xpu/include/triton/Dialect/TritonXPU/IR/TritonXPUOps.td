@@ -150,6 +150,35 @@ def TTX_LoadOp : TTX_Op<"load", [AttrSizedOperandSegments,
     let results = (outs TTX_Type:$result);
 }
 
+def TTX_StageSMOp : TTX_Op<"stage_sm",
+                           [MemoryEffects<[MemRead<GlobalMemory>, MemWrite]>]> {
+    let summary = "stage a loop-invariant GM array into cluster shared memory "
+                  "(SM) once, shared by all cores";
+    let description = [{
+      Copies a loop-invariant, read-only GM array into a cluster-shared SM
+      buffer once, outside the grid loop. Only core 0 issues the GM->SM DMA;
+      all cores then synchronize on a cluster barrier before reading. The
+      result is a scalar SM base pointer (addrspace 2) that subsequent
+      `triton_xpu.load_scalar_indexed` ops read from.
+    }];
+    let arguments = (ins TT_Ptr:$ptr,
+                     Optional<I32>:$len,
+                     I32:$smOffset,
+                     I32:$bufElems,
+                     TT_SyncAttr:$syncMode);
+    let results = (outs TT_Ptr:$result);
+}
+
+def TTX_LoadScalarIndexedOp : TTX_Op<"load_scalar_indexed",
+                                     [MemoryEffects<[MemRead]>]> {
+    let summary = "load one scalar from a staged buffer at a runtime element "
+                  "index and broadcast it to the result tensor";
+    let arguments = (ins TT_PtrLike:$ptr,
+                     TT_Int:$index,
+                     TT_SyncAttr:$syncMode);
+    let results = (outs TT_Type:$result);
+}
+
 def TTX_StoreOp : TTX_Op<"store", [AttrSizedOperandSegments,
                                    MemoryEffects<[MemWrite]>]> {
     let summary = "store";

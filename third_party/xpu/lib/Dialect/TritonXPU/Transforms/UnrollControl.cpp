@@ -1,4 +1,6 @@
 #include "mlir/IR/IRMapping.h"
+#include "triton/Analysis/TileAnalysis.h"
+#include "triton/Analysis/TileDecision.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
@@ -40,6 +42,42 @@ public:
     this->bufferSize = bufferSize;
     this->coreNum = coreNum;
     this->unrollNum = unrollNum;
+  }
+
+  unsigned applyPin(unsigned constant) {
+    if (this->pinUnrollNum == 0)
+      return this->unrollNum;
+    if (this->pinUnrollNum > 0)
+      return static_cast<unsigned>(this->pinUnrollNum);
+    return constant;
+  }
+
+  int64_t decideIterNum(Type valTy, int64_t numCol, int64_t numUnroll,
+                        Operation *insertPt) {
+    int64_t legacy = std::max<int64_t>(ceil<int64_t>(numCol, numUnroll), 1);
+    if (!this->budgetTiling)
+      return legacy;
+    int64_t widthPerCore = numCol;
+    if (auto tensorTy = dyn_cast<RankedTensorType>(valTy)) {
+      if (auto layout = getClusterLayout(tensorTy))
+        widthPerCore = layout.getSizePerCore().back();
+    }
+    RegPressure p;
+    if (insertPt)
+      getBlockRegPressure(getOperation(), insertPt, p);
+    TileContext ctx;
+    ctx.numCol = numCol;
+    ctx.widthPerCore = widthPerCore;
+    ctx.peakVRegs = std::max<int64_t>(p.vecPeak, 1);
+    ctx.maxVecWidth = std::max<int64_t>(p.maxVecWidth, 1);
+    ctx.vrfBudget = this->vrfBudget;
+    llvm::SmallVector<int64_t> cands;
+    for (int64_t k = 1; k <= widthPerCore; ++k) {
+      if (numCol % k == 0 && widthPerCore % k == 0 &&
+          (p.minVecWidth == 0 || p.minVecWidth % k == 0))
+        cands.push_back(k);
+    }
+    return TileDecider().decide(cands, ctx).iterNum;
   }
 
   template <typename T> static decltype(auto) createCombineVectorizedOp(T op) {
@@ -894,7 +932,9 @@ public:
       }
       if (insertPt) {
         auto loc = insertPt.getLoc();
-        int64_t iterNum = ceil<int64_t>(numCol, numUnroll);
+        int64_t iterNum =
+            decideIterNum(insertPt.getValue().getType(), numCol, numUnroll,
+                          insertPt.getOperation());
         if (iterNum <= 1)
           return;
         LLVM_DEBUG(llvm::dbgs()
@@ -928,7 +968,8 @@ public:
     if (auto reduceOp = dyn_cast<triton::xpu::ReduceOp>(insertPt)) {
       int64_t numCol = 1, numUnroll = 1;
       getUnrollInfoReduce(reduceOp, numCol, numUnroll);
-      int64_t iterNum = ceil<int64_t>(numCol, numUnroll);
+      int64_t iterNum = decideIterNum(reduceOp.getInputTypes()[0], numCol,
+                                      numUnroll, reduceOp.getOperation());
       if (iterNum <= 1)
         return;
       OpBuilder builder(reduceOp);
@@ -1625,7 +1666,7 @@ public:
       auto ptrElemTy = getElementTypeOrSelf(getElementTypeOrSelf(ptrTy));
       if (dtype == Dtype::FP32 && valElemTy.isInteger(32) &&
           cast<triton::PointerType>(ptrElemTy).getPointeeType().isInteger(8)) {
-        this->unrollNum = 4;
+        this->unrollNum = applyPin(4);
       }
     });
 
@@ -1638,8 +1679,9 @@ public:
       auto layout =
           cast<triton::xpu::ClusterLayoutAttr>(operandType.getEncoding());
       unsigned rowsPerCore = layout.getSizePerCore()[0];
-      this->unrollNum =
-          (shape.size() == 2 && rowsPerCore > 1) ? 1 : this->unrollNum;
+      this->unrollNum = (shape.size() == 2 && rowsPerCore > 1)
+                            ? applyPin(1)
+                            : this->unrollNum;
     });
 
     if (isReduce) {

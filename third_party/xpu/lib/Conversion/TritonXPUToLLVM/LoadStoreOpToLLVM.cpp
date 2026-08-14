@@ -154,6 +154,12 @@ struct LoadStoreConversionBase {
     }
   }
 
+  void createGM2SMOp(ConversionPatternRewriter &rewriter,
+                     mlir::MLIRContext *ctx, mlir::Location &loc, Value src,
+                     Value dst, Value offset, Value size) const {
+    rewriter.create<mlir::LLVM::XPU::GM2SMOp_v3>(loc, src, dst, offset, size);
+  }
+
   void createMemOp(ConversionPatternRewriter &rewriter, mlir::MLIRContext *ctx,
                    mlir::Location &loc, Value bufPtr, Value gmPtr, Value offset,
                    Value size, MemCpyType memCpyType) const {
@@ -1556,6 +1562,76 @@ struct XPULoadOpConversion : public ConvertOpToLLVMPattern<triton::xpu::LoadOp>,
   }
 };
 
+struct XPULoadScalarIndexedOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::LoadScalarIndexedOp>,
+      public LoadStoreConversionBase {
+  XPULoadScalarIndexedOpConversion(LLVMTypeConverter &converter,
+                                   const xpu::TargetInfo &targetInfo,
+                                   ModuleAxisInfoAnalysis &axisAnalysisPass,
+                                   PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::LoadScalarIndexedOp>(converter,
+                                                                 benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::LoadScalarIndexedOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    Value res = op.getResult();
+    Type resTy = res.getType();
+    Type resElemTy = typeConverter->convertType(getElementTypeOrSelf(resTy));
+    Type resElemScalarTy = getElementTypeOrSelf(resElemTy);
+    resElemScalarTy = typeConverter->convertType(resElemScalarTy);
+
+    unsigned addrSpace = 0;
+    Type ptrTy = op.getPtr().getType();
+    if (auto ptrTensorTy = mlir::dyn_cast<RankedTensorType>(ptrTy)) {
+      if (auto pt =
+              mlir::dyn_cast<triton::PointerType>(ptrTensorTy.getElementType()))
+        addrSpace = pt.getAddressSpace();
+    } else if (auto pt = mlir::dyn_cast<triton::PointerType>(ptrTy)) {
+      addrSpace = pt.getAddressSpace();
+    }
+
+    auto llPtrs = unpackLLElements(loc, adaptor.getPtr(), rewriter);
+    Value basePtr = bitcast(llPtrs[0], ptr_ty(ctx, addrSpace));
+    Value llIndex = adaptor.getIndex();
+    Value elemPtr =
+        gep(ptr_ty(ctx, addrSpace), resElemScalarTy, basePtr, llIndex);
+    Value loaded = load(resElemScalarTy, elemPtr);
+
+    unsigned resNumElems = getTotalElemsPerThread(resTy);
+    bool isVectorized = mlir::isa<mlir::VectorType>(resElemTy);
+    unsigned vecSize = 1u;
+    if (isVectorized) {
+      unsigned elemNbits = 0u;
+      getVectorInfo(resElemTy, vecSize, elemNbits);
+    }
+
+    SmallVector<Value> loadedVals;
+    for (size_t elemIdx = 0; elemIdx < resNumElems; ++elemIdx) {
+      if (isVectorized) {
+        Value newVector = rewriter.create<LLVM::UndefOp>(loc, resElemTy);
+        for (size_t i = 0; i < vecSize; ++i) {
+          newVector = insert_element(resElemTy, newVector, loaded, i32_val(i));
+        }
+        loadedVals.push_back(newVector);
+      } else {
+        loadedVals.push_back(loaded);
+      }
+    }
+
+    Type llvmResultStructTy = typeConverter->convertType(resTy);
+    Value resultStruct = packLLElements(loc, typeConverter, loadedVals,
+                                        rewriter, llvmResultStructTy);
+    rewriter.replaceOp(op, {resultStruct});
+    return success();
+  }
+};
+
 struct XPUStoreOpConversion
     : public ConvertOpToLLVMPattern<triton::xpu::StoreOp>,
       public LoadStoreConversionBase {
@@ -2196,6 +2272,30 @@ struct XPUGM2LMOpConversion
       SmallVector<Value> newLmBufPtrs(llLMPtrs.size(), llLMPtrs[0]);
       resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
                                     llLMPtr.getType());
+    } else if (offsetState == OffsetState::LocallyScalar) {
+      int64_t rowLen = op.getRowLen();
+      if (rowLen <= 0)
+        rowLen = static_cast<int64_t>(llLMPtrs.size());
+      readBytes = elemBytes;
+      SmallVector<Value> newLmBufPtrs(llLMPtrs.size());
+      for (size_t start = 0; start < llLMPtrs.size();
+           start += static_cast<size_t>(rowLen)) {
+        Value dstPtr = bitcast(llLMPtrs[start], ptr_ty(ctx, 0));
+        Value srcPtr = bitcast(llGMPtrs[start], ptr_ty(ctx, 1));
+        createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                      readBytes);
+        size_t end = start + static_cast<size_t>(rowLen);
+        if (end > llLMPtrs.size())
+          end = llLMPtrs.size();
+        for (size_t j = start; j < end; ++j)
+          newLmBufPtrs[j] = llLMPtrs[start];
+      }
+      if (!async)
+        createMfenceOp(rewriter, loc);
+      resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
+                                    llvmResultStructTy);
+      rewriter.replaceOp(op, {resultStruct});
+      return success();
     } else if (offsetState == OffsetState::LocallyContinuous) {
       int64_t _rowLen = op.getRowLen();
       int64_t _rowStride = op.getRowStride();
@@ -2273,6 +2373,81 @@ struct XPUGM2LMOpConversion
       createMfenceOp(rewriter, loc);
 
     rewriter.replaceOp(op, {resultStruct});
+    return success();
+  }
+};
+
+struct XPUStageSMOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::StageSMOp>,
+      public LoadStoreConversionBase {
+  XPUStageSMOpConversion(LLVMTypeConverter &converter,
+                         const xpu::TargetInfo &targetInfo,
+                         ModuleAxisInfoAnalysis &axisAnalysisPass,
+                         PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::StageSMOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  Value getGlobalSmemBase(Location loc, ConversionPatternRewriter &rewriter,
+                          Operation *op) const {
+    ModuleOp mod = op->getParentOfType<ModuleOp>();
+    LLVM::GlobalOp globalSmem;
+    mod.walk([&](LLVM::GlobalOp g) {
+      if (g.getSymName() == "global_smem")
+        globalSmem = g;
+    });
+    assert(globalSmem && "global_smem not found; initSharedMemory must run "
+                         "before StageSM lowering");
+    Value addr = rewriter.create<LLVM::AddressOfOp>(loc, globalSmem);
+    return rewriter.create<LLVM::BitcastOp>(
+        loc, LLVM::LLVMPointerType::get(rewriter.getContext(), 2), addr);
+  }
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::StageSMOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    Value ptr = op.getPtr();
+    Type ptrTy = ptr.getType();
+    Type elemTy = mlir::cast<triton::PointerType>(ptrTy).getPointeeType();
+    elemTy = typeConverter->convertType(elemTy);
+    unsigned elemNbits = isa<triton::PointerType, LLVM::LLVMPointerType>(elemTy)
+                             ? 64u
+                             : elemTy.getIntOrFloatBitWidth();
+
+    Value srcPtr = bitcast(adaptor.getPtr(), ptr_ty(ctx, 1));
+    Value smBase = getGlobalSmemBase(loc, rewriter, op);
+    Value smDst = gep(ptr_ty(ctx, 2), i8_ty, smBase, adaptor.getSmOffset());
+
+    Value elemBytes = i32_val(elemNbits / 8u);
+    Value bufElems = adaptor.getBufElems();
+    Value readLen = bufElems;
+    if (op.getLen()) {
+      Value reqLen = smax(adaptor.getLen(), i32_val(0));
+      readLen = smin(reqLen, bufElems);
+    }
+    Value readBytes = mul(readLen, elemBytes);
+
+    Value coreId = mlir::LLVM::XPU::getThreadId(rewriter, loc);
+    Value isCore0 = icmp_eq(coreId, i32_val(0));
+
+    Block *currentBlock = rewriter.getInsertionBlock();
+    Block *afterBlock =
+        rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+    Block *dmaBlock = rewriter.createBlock(afterBlock);
+
+    rewriter.setInsertionPointToEnd(currentBlock);
+    rewriter.create<LLVM::CondBrOp>(loc, isCore0, dmaBlock, afterBlock);
+
+    rewriter.setInsertionPointToStart(dmaBlock);
+    createGM2SMOp(rewriter, ctx, loc, srcPtr, smDst, i32_val(0), readBytes);
+    rewriter.create<LLVM::BrOp>(loc, afterBlock);
+
+    rewriter.setInsertionPointToStart(afterBlock);
+    xpu_barrier();
+    rewriter.replaceOp(op, {smDst});
     return success();
   }
 };
@@ -3035,6 +3210,7 @@ void mlir::triton::xpu::populateLoadStoreOpToLLVMPatterns(
     RewritePatternSet &patterns, ModuleAxisInfoAnalysis &axisInfoAnalysis,
     PatternBenefit benefit) {
   patterns.add<XPULoadOpConversion, XPUStoreOpConversion, XPUAllocaOpConversion,
+               XPULoadScalarIndexedOpConversion, XPUStageSMOpConversion,
                XPUGM2LMMaskOpConversion, XPULM2GMMaskOpConversion,
                XPUAtomicRMWOpConversion, XPUGM2LMOpConversion,
                XPULM2GMOpConversion>(typeConverter, targetInfo,

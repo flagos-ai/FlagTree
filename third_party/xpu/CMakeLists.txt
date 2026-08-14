@@ -109,6 +109,9 @@ add_subdirectory(include)
 # compiles, without changing main-tree CMake files.
 if(TARGET TritonGPUIR)
   add_dependencies(TritonGPUIR TritonXPUAttrDefsIncGen)
+  target_include_directories(TritonGPUIR BEFORE PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/include)
 endif()
 
 add_subdirectory(lib)

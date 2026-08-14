@@ -12,6 +12,9 @@ namespace mlir {
 namespace triton {
 namespace xpu {
 
+constexpr llvm::StringLiteral kBF16ToFP32VecOptOffAttrName =
+    "triton_xpu.bf16_to_fp32_vec_opt_off";
+
 // Generate the pass class declarations.
 #define GEN_PASS_DECL
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h.inc"
