@@ -125,6 +125,12 @@ if(TARGET TritonGPUIR)
     ${CMAKE_CURRENT_BINARY_DIR}/include)
 endif()
 
+# ir.cc / llvm.cc are compiled as part of the main `triton` target, which is
+# created after this subdirectory. Defer so the conceal macro actually reaches
+# those sources.
+cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL
+  target_compile_definitions triton PRIVATE TRITON_CONCEAL_IR=1)
+
 add_subdirectory(lib)
 
 # ==================== FLAGTREE XPU SYNC MARK ====================
