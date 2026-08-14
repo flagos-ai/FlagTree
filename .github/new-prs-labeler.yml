@@ -45,6 +45,17 @@ CORE:
           - 'setup.py'
           - '.github/actions/**'
           - '.github/workflows/code-format-check.yml'
+          - '!python/setup_tools/utils/cambricon.py'
+          - '!python/setup_tools/utils/enflame.py'
+          - '!python/setup_tools/utils/hcu.py'
+          - '!python/setup_tools/utils/iluvatar.py'
+          - '!python/setup_tools/utils/metax.py'
+          - '!python/setup_tools/utils/mthreads.py'
+          - '!python/setup_tools/utils/ppu.py'
+          - '!python/setup_tools/utils/rpu.py'
+          - '!python/setup_tools/utils/sunrise.py'
+          - '!python/setup_tools/utils/thrive.py'
+          - '!python/setup_tools/utils/xpu.py'
 
 # ==========================================
 # 2. CI/CD Labels
@@ -128,6 +139,7 @@ cambricon:
           - 'third_party/cambricon/**'
           - '.github/workflows/cambricon*'
           - '.github/workflows/benchmark/cambricon/**'
+          - 'python/setup_tools/utils/cambricon.py'
 
 cpu:
   - changed-files:
@@ -142,6 +154,7 @@ enflame:
           - 'third_party/enflame/**'
           - '.github/workflows/enflame*'
           - '.github/workflows/benchmark/enflame/**'
+          - 'python/setup_tools/utils/enflame.py'
 
 hcu:
   - changed-files:
@@ -149,6 +162,7 @@ hcu:
           - 'third_party/hcu/**'
           - '.github/workflows/hcu*'
           - '.github/workflows/benchmark/hcu/**'
+          - 'python/setup_tools/utils/hcu.py'
 
 iluvatar:
   - changed-files:
@@ -156,6 +170,7 @@ iluvatar:
           - 'third_party/iluvatar/**'
           - '.github/workflows/iluvatar*'
           - '.github/workflows/benchmark/iluvatar/**'
+          - 'python/setup_tools/utils/iluvatar.py'
 
 metax:
   - changed-files:
@@ -163,6 +178,7 @@ metax:
           - 'third_party/metax/**'
           - '.github/workflows/metax*'
           - '.github/workflows/benchmark/metax/**'
+          - 'python/setup_tools/utils/metax.py'
 
 mthreads:
   - changed-files:
@@ -170,12 +186,13 @@ mthreads:
           - 'third_party/mthreads/**'
           - '.github/workflows/mthreads*'
           - '.github/workflows/benchmark/mthreads/**'
+          - 'python/setup_tools/utils/mthreads.py'
 
 nvidia:
   - changed-files:
       - any-glob-to-any-file:
           - 'third_party/nvidia/**'
-          - '.github/workflows/nv*'
+          - '.github/workflows/nvidia*'
           - '.github/workflows/benchmark/nvidia/**'
 
 ppu:
@@ -184,6 +201,7 @@ ppu:
           - 'third_party/ppu/**'
           - '.github/workflows/ppu*'
           - '.github/workflows/benchmark/ppu/**'
+          - 'python/setup_tools/utils/ppu.py'
 
 rpu:
   - changed-files:
@@ -191,6 +209,7 @@ rpu:
           - 'third_party/rpu/**'
           - '.github/workflows/rpu*'
           - '.github/workflows/benchmark/rpu/**'
+          - 'python/setup_tools/utils/rpu.py'
 
 sunrise:
   - changed-files:
@@ -198,6 +217,7 @@ sunrise:
           - 'third_party/sunrise/**'
           - '.github/workflows/sunrise*'
           - '.github/workflows/benchmark/sunrise/**'
+          - 'python/setup_tools/utils/sunrise.py'
 
 thrive:
   - changed-files:
@@ -205,6 +225,7 @@ thrive:
           - 'third_party/thrive/**'
           - '.github/workflows/thrive*'
           - '.github/workflows/benchmark/thrive/**'
+          - 'python/setup_tools/utils/thrive.py'
 
 tileir:
   - changed-files:
@@ -233,6 +254,7 @@ xpu:
           - 'third_party/xpu/**'
           - '.github/workflows/xpu*'
           - '.github/workflows/benchmark/xpu/**'
+          - 'python/setup_tools/utils/xpu.py'
 
 # ====================================================================================
 # 6. TLE Labels
