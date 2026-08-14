@@ -68,3 +68,25 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "hip:gfx1201", "ttg.threads-per-warp" = 32 : i32} {
+  // tle.local_pointers has no axis-info visitor, so its result carries a
+  // degenerate rank-0 entry. The atomic lowering must tolerate that instead of
+  // indexing the contiguity vector, which is only a hint for intra-wave reduce.
+  // CHECK-LABEL: llvm.func @local_pointers_atomic_rmw
+  // CHECK: llvm.getelementptr {{.*}}!llvm.ptr<3>
+  // CHECK: llvm.atomicrmw fadd {{.*}} syncscope("workgroup") monotonic : !llvm.ptr<3>, f32
+  // CHECK-NOT: tle.local_pointers
+  tt.func public @local_pointers_atomic_rmw(%idx: tensor<32xi32, #blocked>, %val: tensor<32xf32, #blocked>) {
+    %buf = ttg.local_alloc : () -> !ttg.memdesc<32xf32, #shared, #smem, mutable>
+    %ptrs = "tle.local_pointers"(%buf, %idx) : (!ttg.memdesc<32xf32, #shared, #smem, mutable>, tensor<32xi32, #blocked>) -> tensor<32x!tt.ptr<f32, 3>, #blocked>
+    %res = tt.atomic_rmw fadd, relaxed, cta, %ptrs, %val : (tensor<32x!tt.ptr<f32, 3>, #blocked>, tensor<32xf32, #blocked>) -> tensor<32xf32, #blocked>
+    tt.return
+  }
+}

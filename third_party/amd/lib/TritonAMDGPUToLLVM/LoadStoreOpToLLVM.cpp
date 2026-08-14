@@ -1887,10 +1887,18 @@ struct AtomicRMWOpConversion
           !enableIntraWaveReduce;
       numElems = tensorTy.getNumElements();
 
+      // Ops without an axis-info visitor, such as tle.local_pointers, yield a
+      // rank-0 entry that cannot be indexed. The contiguity only refines the
+      // intra-wave reduce decision, so leave that disabled instead.
       auto threadOrder = getThreadOrder(tensorTy);
-      unsigned contigWithinLanes =
-          axisAnalysisPass.getAxisInfo(ptr)->getContiguity(threadOrder.front());
-      enableIntraWaveReduce &= contigWithinLanes == 1;
+      auto *ptrAxisInfo = axisAnalysisPass.getAxisInfo(ptr);
+      if (!ptrAxisInfo || ptrAxisInfo->getRank() == 0 || threadOrder.empty()) {
+        enableIntraWaveReduce = false;
+      } else {
+        unsigned contigWithinLanes =
+            ptrAxisInfo->getContiguity(threadOrder.front());
+        enableIntraWaveReduce &= contigWithinLanes == 1;
+      }
     }
 
     auto vecTy = vec_ty(valueElemTy, vec);
