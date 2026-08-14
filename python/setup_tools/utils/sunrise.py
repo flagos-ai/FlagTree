@@ -44,7 +44,6 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         md5_digest="4c77b8c0",
     )
 
-
 # sunrise
 def sunrise_cp_bc_files(path):
     # mkdir -p third_party/sunrise/backend/lib
