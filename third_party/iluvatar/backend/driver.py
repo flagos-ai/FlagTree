@@ -51,11 +51,11 @@ def library_dirs():
 # ------------------------
 
 
-class CudaUtils(object):
+class CorexUtils(object):
 
     def __new__(cls):
         if not hasattr(cls, "instance"):
-            cls.instance = super(CudaUtils, cls).__new__(cls)
+            cls.instance = super(CorexUtils, cls).__new__(cls)
         return cls.instance
 
     def __init__(self):
@@ -674,7 +674,7 @@ def wrap_handle_tensordesc(launcher, signature, tensordesc_meta):
     return inner
 
 
-class CudaLauncher(object):
+class CorexLauncher(object):
 
     def __init__(self, src, metadata):
         constants = src.constants if hasattr(src, "constants") else dict()
@@ -717,11 +717,11 @@ class CudaLauncher(object):
                     global_scratch, profile_scratch, *args)
 
 
-class CudaDriver(GPUDriver):
+class CorexDriver(GPUDriver):
 
     def __init__(self):
-        self.utils = CudaUtils()  # TODO: make static
-        self.launcher_cls = CudaLauncher
+        self.utils = CorexUtils()  # TODO: make static
+        self.launcher_cls = CorexLauncher
         super().__init__()
 
     def get_current_target(self):

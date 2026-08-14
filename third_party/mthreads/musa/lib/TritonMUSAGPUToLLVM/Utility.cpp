@@ -58,15 +58,11 @@ buildSqmmaAccumulatorCarrierInfo(Type type) {
     return failure();
   }
 
-  MLIRContext *ctx = type.getContext();
   unsigned fragmentElems = totalAccElems / fragmentCount;
   Type fragmentType = VectorType::get({static_cast<int64_t>(fragmentElems)},
                                       tensorTy.getElementType());
-  Type carrierType = fragmentType;
-  if (fragmentCount > 1) {
-    SmallVector<Type> fields(fragmentCount, fragmentType);
-    carrierType = LLVM::LLVMStructType::getLiteral(ctx, fields);
-  }
+  Type carrierType = VectorType::get({static_cast<int64_t>(totalAccElems)},
+                                     tensorTy.getElementType());
 
   return LLVM::MUSA::SqmmaAccumulatorCarrierInfo{
       tensorTy, fragmentCount, fragmentElems, fragmentType, carrierType};
@@ -181,14 +177,11 @@ SmallVector<Value> unpackSqmmaAccumulatorCarrier(Location loc, Value carrier,
                                                  RewriterBase &rewriter) {
   auto info = buildSqmmaAccumulatorCarrierInfo(type);
   assert(succeeded(info) && "expected valid SQMMA accumulator carrier type");
-  if (info->fragmentCount == 1)
-    return {carrier};
-
-  auto b = TritonLLVMOpBuilder(loc, rewriter);
   SmallVector<Value> fragments;
   fragments.reserve(info->fragmentCount);
   for (unsigned i = 0; i < info->fragmentCount; ++i) {
-    fragments.push_back(b.extract_val(info->fragmentType, carrier, i));
+    fragments.push_back(extractSqmmaAccumulatorCarrierFragment(loc, carrier, i,
+                                                               type, rewriter));
   }
   return fragments;
 }
@@ -199,15 +192,54 @@ Value packSqmmaAccumulatorCarrier(Location loc, ValueRange fragments, Type type,
   assert(succeeded(info) && "expected valid SQMMA accumulator carrier type");
   assert(fragments.size() == info->fragmentCount &&
          "fragment count mismatch when packing SQMMA carrier");
-  if (info->fragmentCount == 1)
-    return fragments.front();
-
-  auto b = TritonLLVMOpBuilder(loc, rewriter);
-  Value packed = LLVM::UndefOp::create(rewriter, loc, info->carrierType);
+  Value packed;
   for (unsigned i = 0; i < info->fragmentCount; ++i) {
-    packed = b.insert_val(info->carrierType, packed, fragments[i], i);
+    packed = insertSqmmaAccumulatorCarrierFragment(loc, packed, fragments[i], i,
+                                                   type, rewriter);
   }
   return packed;
+}
+
+Value extractSqmmaAccumulatorCarrierFragment(Location loc, Value carrier,
+                                             unsigned fragmentIdx, Type type,
+                                             RewriterBase &rewriter) {
+  auto info = buildSqmmaAccumulatorCarrierInfo(type);
+  assert(succeeded(info) && "expected valid SQMMA accumulator carrier type");
+  assert(fragmentIdx < info->fragmentCount && "fragment index out of range");
+
+  if (info->fragmentCount == 1)
+    return carrier;
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Value fragment = LLVM::UndefOp::create(rewriter, loc, info->fragmentType);
+  for (unsigned i = 0; i < info->fragmentElems; ++i) {
+    Value elem = b.extract_element(
+        carrier, b.i32_val(fragmentIdx * info->fragmentElems + i));
+    fragment = b.insert_element(fragment, elem, b.i32_val(i));
+  }
+  return fragment;
+}
+
+Value insertSqmmaAccumulatorCarrierFragment(Location loc, Value carrier,
+                                            Value fragment,
+                                            unsigned fragmentIdx, Type type,
+                                            RewriterBase &rewriter) {
+  auto info = buildSqmmaAccumulatorCarrierInfo(type);
+  assert(succeeded(info) && "expected valid SQMMA accumulator carrier type");
+  assert(fragmentIdx < info->fragmentCount && "fragment index out of range");
+
+  if (info->fragmentCount == 1)
+    return fragment;
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  if (!carrier)
+    carrier = LLVM::UndefOp::create(rewriter, loc, info->carrierType);
+  for (unsigned i = 0; i < info->fragmentElems; ++i) {
+    Value elem = b.extract_element(fragment, b.i32_val(i));
+    carrier = b.insert_element(
+        carrier, elem, b.i32_val(fragmentIdx * info->fragmentElems + i));
+  }
+  return carrier;
 }
 
 Value carrierFragmentToMathVec(Location loc, Value fragment, Type type,

@@ -1,0 +1,20 @@
+[tool.yapf]
+based_on_style = "pep8"
+column_limit = 120
+disable_split_list_with_comment = true
+each_dict_entry_on_separate_line = false
+split_before_named_assigns = false
+split_complex_comprehension = true
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+ignore = ["E501", "E701", "E731", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+"python/accuracy/*.py" = ["E402"]
+"python/examples/*.py" = ["E402"]
+"python/perf/*.py" = ["E402"]
+"python/tests/*.py" = ["E402"]

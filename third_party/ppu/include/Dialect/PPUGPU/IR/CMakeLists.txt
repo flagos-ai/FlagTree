@@ -1,0 +1,18 @@
+set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
+
+set(LLVM_TARGET_DEFINITIONS PPUGPUOps.td)
+mlir_tablegen(Dialect.h.inc -gen-dialect-decls -dialect=ppug)
+mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs -dialect=ppug)
+mlir_tablegen(OpsConversions.inc -gen-llvmir-conversions)
+mlir_tablegen(Ops.h.inc -gen-op-decls)
+mlir_tablegen(Ops.cpp.inc -gen-op-defs)
+mlir_tablegen(OpsEnums.h.inc -gen-enum-decls)
+mlir_tablegen(OpsEnums.cpp.inc -gen-enum-defs)
+add_mlir_doc(PPUGPUDialect PPUGPUDialect dialects/ -gen-dialect-doc)
+add_mlir_doc(PPUGPUOps PPUGPUOps dialects/ -gen-op-doc)
+add_public_tablegen_target(PPUGPUTableGen)
+
+set(LLVM_TARGET_DEFINITIONS PPUGPUAttrDefs.td)
+mlir_tablegen(PPUGPUAttrDefs.h.inc -gen-attrdef-decls)
+mlir_tablegen(PPUGPUAttrDefs.cpp.inc -gen-attrdef-defs)
+add_public_tablegen_target(PPUGPUAttrDefsIncGen)

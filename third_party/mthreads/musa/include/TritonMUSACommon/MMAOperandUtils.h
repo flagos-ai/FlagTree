@@ -164,6 +164,31 @@ struct RecoveredSqmmaConsumerContract {
   }
 };
 
+inline FailureOr<RecoveredSqmmaConsumerContract>
+getExpectedSqmmaOperandContract(Operation *sqmmaOp, unsigned operandIdx,
+                                ttg::MemDescType finalMemDescTy) {
+  if (!sqmmaOp || operandIdx > 1)
+    return failure();
+
+  auto elemBytes = inferElemBytesFromMemDesc(finalMemDescTy);
+  if (!elemBytes || *elemBytes <= 0)
+    return failure();
+
+  std::optional<bool> rowMajor;
+  if (auto op = dyn_cast<triton::musa::SquadDotOp>(sqmmaOp)) {
+    auto layout = operandIdx == 0 ? op.getLayoutA() : op.getLayoutB();
+    rowMajor = layout == triton::musa::SQMMALayout::row;
+  } else if (auto op = dyn_cast<triton::mtgpu::SqmmaOp>(sqmmaOp)) {
+    auto layout = operandIdx == 0 ? op.getLayoutA() : op.getLayoutB();
+    rowMajor = layout == triton::mtgpu::SQMMALayout::row;
+  }
+  if (!rowMajor)
+    return failure();
+
+  return RecoveredSqmmaConsumerContract{static_cast<int64_t>(operandIdx),
+                                        elemBytes.value(), rowMajor.value()};
+}
+
 inline FailureOr<std::optional<RecoveredSqmmaConsumerContract>>
 getSqmmaContractFromAnnotatedOp(Operation *op, bool defaultRowMajor) {
   if (!op || !hasSqmmaOpIdxAttr(op))
@@ -211,7 +236,12 @@ recoverSqmmaProducerContractFromMemDesc(Value memDesc) {
     Operation *defOp = current.getDefiningOp();
     auto currentContract =
         getSqmmaContractFromAnnotatedOp(defOp, inferSharedRowMajor(currentTy));
-    if (failed(currentContract) || failed(mergeCandidate(*currentContract)))
+    if (failed(currentContract))
+      return failure();
+    std::optional<RecoveredSqmmaConsumerContract> recoveredContract;
+    if (currentContract->has_value())
+      recoveredContract = currentContract->value();
+    if (failed(mergeCandidate(recoveredContract)))
       return failure();
     if (!defOp)
       continue;
@@ -220,6 +250,9 @@ recoverSqmmaProducerContractFromMemDesc(Value memDesc) {
       if (isa<ttg::MemDescType>(operand.getType()))
         worklist.push_back(operand);
     };
+
+    if (recoveredContract && isMemDescViewLikeOp(defOp))
+      continue;
 
     if (isMemDescSqmmaContractBridgeOp(defOp)) {
       for (Value operand : defOp->getOperands())
@@ -336,9 +369,11 @@ recoverUniqueSqmmaConsumerContract(Value memDesc) {
     if (failed(currentContract))
       return failure();
 
-    for (Operation *user : current.getUsers()) {
+    for (OpOperand &use : current.getUses()) {
+      Operation *user = use.getOwner();
       if (isa<triton::musa::AsyncTMECopyGlobalToLocalOp,
-              triton::musa::AsyncTMECopyLocalToGlobalOp>(user))
+              triton::musa::AsyncTMECopyLocalToGlobalOp, ttg::LocalDeallocOp>(
+              user))
         continue;
 
       if (isMemDescSqmmaContractBridgeOp(user)) {
@@ -384,15 +419,25 @@ recoverUniqueSqmmaConsumerContract(Value memDesc) {
         continue;
       }
 
-      auto userContract =
-          getSqmmaContractFromAnnotatedOp(user, inferSharedRowMajor(currentTy));
-      if (failed(userContract))
-        return failure();
-
-      std::optional<RecoveredSqmmaConsumerContract> candidate = *userContract;
-      if ((isa<triton::musa::SquadDotOp, triton::mtgpu::SqmmaOp>(user)) &&
-          !candidate)
-        candidate = *currentContract;
+      std::optional<RecoveredSqmmaConsumerContract> candidate;
+      if (isa<triton::musa::SquadDotOp, triton::mtgpu::SqmmaOp>(user)) {
+        unsigned operandIdx = use.getOperandNumber();
+        if (operandIdx > 1)
+          return failure();
+        auto expected =
+            getExpectedSqmmaOperandContract(user, operandIdx, currentTy);
+        if (failed(expected))
+          return failure();
+        candidate = *expected;
+        if (*currentContract && !(**currentContract == *candidate))
+          return failure();
+      } else {
+        auto userContract = getSqmmaContractFromAnnotatedOp(
+            user, inferSharedRowMajor(currentTy));
+        if (failed(userContract))
+          return failure();
+        candidate = *userContract;
+      }
 
       if (!candidate) {
         if (isa<triton::musa::SquadDotOp, triton::mtgpu::SqmmaOp>(user))
@@ -410,6 +455,46 @@ recoverUniqueSqmmaConsumerContract(Value memDesc) {
   if (contract && sawNonSqmmaTerminal)
     return failure();
   return contract;
+}
+
+inline LogicalResult
+verifySqmmaMemDescOperandProducerContract(Operation *op, Value operand,
+                                          unsigned operandIdx) {
+  auto memDescTy = dyn_cast<ttg::MemDescType>(operand.getType());
+  if (!memDescTy)
+    return success();
+
+  auto contract = recoverSqmmaProducerContractFromMemDesc(operand);
+  if (failed(contract))
+    return op->emitError("SQMMA operand ")
+           << (operandIdx == 0 ? "A" : "B")
+           << " requires a unique consistent producer contract";
+
+  if (!*contract)
+    return success();
+
+  auto expected = getExpectedSqmmaOperandContract(op, operandIdx, memDescTy);
+  if (failed(expected))
+    return op->emitError("SQMMA operand ")
+           << (operandIdx == 0 ? "A" : "B")
+           << " requires a valid consumer contract";
+
+  if ((*contract)->sqmmaOpIdx != expected->sqmmaOpIdx)
+    return op->emitError("SQMMA operand ")
+           << (operandIdx == 0 ? "A" : "B")
+           << " producer sqmma.op_idx must match the operand index";
+
+  if ((*contract)->elemBytes != expected->elemBytes)
+    return op->emitError("SQMMA operand ")
+           << (operandIdx == 0 ? "A" : "B")
+           << " producer sqmma.elem_bytes must match the memdesc element type";
+
+  if ((*contract)->rowMajor != expected->rowMajor)
+    return op->emitError("SQMMA operand ")
+           << (operandIdx == 0 ? "A" : "B")
+           << " producer sqmma.row_major must match the consumer layout";
+
+  return success();
 }
 
 inline LogicalResult verifyGroupedTMELoadConsumerContract(

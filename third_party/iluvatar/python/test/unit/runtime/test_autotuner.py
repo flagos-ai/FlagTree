@@ -121,7 +121,7 @@ def test_hooks(device):
     # shared memory bytes = N_STAGES * BLOCK_SIZE * sizeof(float)
     # On AMD GPUs:
     # `num_stages` is a fixed value of 2, so it won't cause out of resources
-    if triton.runtime.driver.active.get_current_target().backend == "cuda":
+    if triton.runtime.driver.active.get_current_target().backend in ("cuda", "corex"):
         assert values["has_exception"] is True
     else:
         assert values["has_exception"] is False

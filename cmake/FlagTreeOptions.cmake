@@ -47,6 +47,8 @@ macro(flagtree_configure_options)
     add_definitions(-D__AMD__)
     add_definitions(-D__FLAGTREE_REORDER_LOOP_LOADS__)
     add_definitions(-D__FLAGTREE_RLC_ENHANCE__)
+    add_definitions(-D__FLAGTREE_CONCAT_DOT_OPERAND__)
+    list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_CONCAT_DOT_OPERAND__)
   elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
     add_definitions(-D__ILUVATAR__)
     set(FLAGTREE_TLE OFF)
@@ -82,6 +84,8 @@ macro(flagtree_configure_options)
     list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
   elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
     find_package(Python3 3.10 REQUIRED COMPONENTS Development.Module Interpreter)
+  elseif(FLAGTREE_BACKEND STREQUAL "ppu")
+    add_definitions(-D__PPU__)
   endif()
 
   set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
@@ -128,7 +132,7 @@ endmacro()
 
 
 macro(flagtree_configure_backend_cxx_flags)
-  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir)$")
+  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir|ppu)$")
     # Suppress visibility warnings in gluon_ir.cc (GCC 13+ -Wattributes on
     # pybind11 hidden types), and -Wcomment for generated
     # TritonGPUAttrDefs.h.inc (ASCII diagrams in TableGen output).
@@ -154,7 +158,7 @@ macro(flagtree_configure_core_source)
   endif()
 
   if(FLAGTREE_BACKEND MATCHES
-     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir)$")
+     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu)$")
     include_directories(${PROJECT_SOURCE_DIR}/include)
     include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
     if(FLAGTREE_BACKEND STREQUAL "xpu")
@@ -225,12 +229,10 @@ function(flagtree_add_distributed_plugin)
 endfunction()
 
 
-macro(flagtree_python_src_path_set output_python_src_path default_path)
-  set(${output_python_src_path}
+macro(flagtree_python_src_path_set)
+  set(BACKEND_PYTHON_SRC_PATH
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/python/src)
-  if(NOT (FLAGTREE_BACKEND AND EXISTS "${${output_python_src_path}}"))
-    set(${output_python_src_path} "${default_path}")
-  endif()
+  include_directories(${BACKEND_PYTHON_SRC_PATH})
 endmacro()
 
 
@@ -415,7 +417,7 @@ endmacro()
 macro(flagtree_configure_tools_and_tests)
   if(NOT FLAGTREE_BACKEND OR
      FLAGTREE_BACKEND MATCHES
-       "^(aipu|tsingmicro|enflame|rpu|thrive|metax|sunrise|tileir)$")
+       "^(aipu|tsingmicro|enflame|rpu|thrive|metax|sunrise|tileir|ppu)$")
     add_subdirectory(bin)
     if(FLAGTREE_TLE)
       flagtree_add_tle_generated_header_dependencies()
@@ -430,6 +432,15 @@ macro(flagtree_configure_tools_and_tests)
       add_subdirectory(test)
     endif()
   endif()
+
+  # When PPU backend is built, the upstream TritonGPU transforms reference
+  # PPU-specific dialect symbols (e.g. mlir::triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp)
+  # that live in TritonPPUGPUIR (defined under third_party/ppu/lib/...). Wire that
+  # dependency here, after both targets have been declared by their respective
+  # add_subdirectory() calls above, so unittests/triton.so/triton-llvm-opt all link cleanly.
+  if(FLAGTREE_BACKEND STREQUAL "ppu" AND TARGET TritonGPUTransforms AND TARGET TritonPPUGPUIR)
+    target_link_libraries(TritonGPUTransforms PUBLIC TritonPPUGPUIR)
+  endif()
 endmacro()
 
 
@@ -443,49 +454,66 @@ function(flagtree_add_tle_generated_header_dependencies)
     list(APPEND _flagtree_tle_codegen_deps TritonTLETransformsIncGen)
   endif()
 
+  set(_flagtree_enflame_tle_header_targets
+      MLIRTritonToGCU_gcu300
+      MLIRTritonToGCU_gcu400
+      MLIRGCUTritonToTritonGPU_gcu400
+      MLIRTritonGCUTransforms_gcu400
+      triton_gcu300_core
+      triton_gcu400_core)
+
   # Native compiler targets include TLE generated headers under __TLE__ guards.
   # The TLE dialect is added after the core libraries, so the dependency must be
   # attached explicitly once the TLE tablegen targets exist; otherwise a clean
   # parallel build can compile those libraries before the generated .inc files.
   foreach(_flagtree_tle_header_target IN ITEMS
       TritonAnalysis
+      TritonAMDAnalysis
       TritonToTritonGPU
       TritonGPUTransforms
       TritonNvidiaGPUTransforms
       TritonNVIDIAGPUToLLVM
       TritonGPUToLLVM
       NVHopperTransforms
+      ${_flagtree_enflame_tle_header_targets}
       triton
       triton-opt
       triton-reduce
       triton-lsp
       triton-llvm-opt
       triton-tensor-layout)
-    if(TARGET ${_flagtree_tle_header_target})
-      add_dependencies(${_flagtree_tle_header_target}
-        ${_flagtree_tle_codegen_deps})
-    endif()
+    foreach(_flagtree_tle_dependency_target IN ITEMS
+        ${_flagtree_tle_header_target}
+        obj.${_flagtree_tle_header_target})
+      if(TARGET ${_flagtree_tle_dependency_target})
+        add_dependencies(${_flagtree_tle_dependency_target}
+          ${_flagtree_tle_codegen_deps})
+      endif()
+    endforeach()
   endforeach()
 endfunction()
 
 
-macro(flagtree_configure_python_src)
-  if(EXISTS "${PYTHON_SRC_PATH}/gluon_ir.cc")
-    if(FLAGTREE_BACKEND STREQUAL "iluvatar")
-      if(TRITON_BUILD_GLUON)
-        target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/gluon_ir.cc)
-        target_compile_definitions(triton PRIVATE TRITON_BUILD_GLUON)
+macro(flagtree_added_python_src)
+  set(_flagtree_python_sources)
+  foreach(_flagtree_python_source ${ARGN})
+    get_filename_component(_python_source_name "${_flagtree_python_source}" NAME)
+    set(_python_source "${BACKEND_PYTHON_SRC_PATH}/${_python_source_name}")
+    if(IS_DIRECTORY "${BACKEND_PYTHON_SRC_PATH}" AND EXISTS "${_python_source}")
+      if(FLAGTREE_BACKEND STREQUAL "iluvatar" AND "${_python_source_name}" STREQUAL "gluon_ir.cc")
+        if(TRITON_BUILD_GLUON)
+          list(APPEND _flagtree_python_sources "${_python_source}")
+          target_compile_definitions(triton PRIVATE TRITON_BUILD_GLUON)
+        endif()
+      else()
+        list(APPEND _flagtree_python_sources "${_python_source}")
       endif()
     else()
-      target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/gluon_ir.cc)
+      list(APPEND _flagtree_python_sources "${_flagtree_python_source}")
     endif()
-  endif()
-  if(EXISTS "${PYTHON_SRC_PATH}/linear_layout.cc")
-    target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/linear_layout.cc)
-  endif()
-  if(EXISTS "${PYTHON_SRC_PATH}/specialize.cc")
-    target_sources(triton PRIVATE ${PYTHON_SRC_PATH}/specialize.cc)
-  endif()
+  endforeach()
+  add_library(triton SHARED ${_flagtree_python_sources})
+
   if(FLAGTREE_BACKEND STREQUAL "xpu")
     target_sources(triton PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xpu/python/src/mlir_pass_abi_shim.cc)
     add_dependencies(triton TritonAMDGPUTableGen TritonAMDGPUAttrDefsIncGen)
@@ -495,7 +523,7 @@ endmacro()
 
 
 # FLAGTREE SPEC TD FILE GET FUNC
-function(set_flagtree_backend_td output_td td_filename)
+function(flagtree_spec_td_set output_td td_filename)
   set(ret ${td_filename})
   file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
   get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)

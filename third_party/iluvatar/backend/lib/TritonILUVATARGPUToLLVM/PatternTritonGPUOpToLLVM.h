@@ -60,7 +60,8 @@ void populateTensorPtrOpsToLLVMPatterns(LLVMTypeConverter &typeConverter,
 
 void populateBarrierOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                      RewritePatternSet &patterns,
-                                     PatternBenefit benefit);
+                                     PatternBenefit benefit,
+                                     const TargetInfo &targetInfo);
 } // namespace mlir::triton::ILUVATAR
 
 #endif // TRITON_THIRD_PARTY_ILUVATAR_LIB_TRITONILUVATARGPUTOLLVM_PATTERNTRITONGPUOPTOLLVM_H_

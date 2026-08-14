@@ -19,5 +19,16 @@
 # SOFTWARE.
 
 
+def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
+    cache.store(
+        file="hcu-llvm22-b0ca808-glibc2.35-glibcxx3.4.30-ubuntu-x86_64",
+        condition=("hcu" == flagtree_backend),
+        url=("https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
+             "hcu-llvm22-b0ca808-glibc2.35-glibcxx3.4.30-ubuntu-x86_64_v0.5.0.tar.gz"),
+        pre_hook=lambda: check_env("LLVM_SYSPATH"),
+        post_hook=set_llvm_env,
+    )
+
+
 def install_extension(*args, **kargs):
     return

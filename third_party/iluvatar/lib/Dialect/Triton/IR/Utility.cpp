@@ -2,9 +2,21 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/ADT/StringRef.h"
 
 using namespace mlir;
 namespace tt = mlir::triton;
+
+#ifdef __ILUVATAR_TLE__
+
+static constexpr llvm::StringLiteral kAsyncLoadAttrName = "tt.load.async";
+
+void tt::tle::copyAsyncLoadAttr(LoadOp src, LoadOp dst) {
+  if (Attribute attr = src->getAttr(kAsyncLoadAttrName))
+    dst->setAttr(kAsyncLoadAttrName, attr);
+}
+
+#endif // __ILUVATAR_TLE__
 
 Value tt::getPredMask(RewriterBase &rewriter, Type typeLike, Value currentMask,
                       Value pred) {

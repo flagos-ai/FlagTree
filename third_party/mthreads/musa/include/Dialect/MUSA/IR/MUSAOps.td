@@ -168,6 +168,16 @@ def MUSA_ArriveBarrierNoRetOp : MUSA_Op<"arrive_barrier_noret", []> {
   let hasVerifier = 1;
 }
 
+#ifdef __TLE__
+def MUSA_WarpArriveBarrierOp : MUSA_Op<"warp_arrive_barrier", []> {
+  let summary = "Perform a convergent warp arrival without returning phase";
+  let arguments = (ins I32:$barId, I32:$phaseId);
+  let assemblyFormat =
+      "$barId `,` $phaseId attr-dict `:` type($barId)";
+  let hasVerifier = 1;
+}
+#endif // __TLE__
+
 def MUSA_WaitBarrierOp : MUSA_Op<"wait_barrier", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {

@@ -28,6 +28,15 @@ namespace mlir::triton::musa {
 namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 
+#ifdef __TLE__
+inline constexpr llvm::StringLiteral kTMEIssueThreadAttr =
+    "musa.tme.issue_thread";
+inline constexpr llvm::StringLiteral kTMEExplicitCompletionAttr =
+    "musa.tme.explicit_completion";
+inline constexpr llvm::StringLiteral kTLEExpectBytesAttr =
+    "musa_tle.expect_bytes";
+#endif // __TLE__
+
 enum class TMECopyKind {
   GlobalToLocal,
   LocalToGlobal,

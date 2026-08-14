@@ -12,6 +12,23 @@ from triton.runtime.build import compile_module_from_src
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 _TENSORDESC_CACHE_LIMIT = 1024
+_DEFAULT_MUSA_PREFIX = "/usr/local/musa"
+
+
+def _arch_to_musa_capability(arch):
+    if isinstance(arch, int):
+        return arch
+    arch = str(arch).lower()
+    if arch.isdigit():
+        return int(arch)
+    if arch.startswith("ph1"):
+        return 31
+    return None
+
+
+def _warp_size_for_musa_arch(arch):
+    capability = _arch_to_musa_capability(arch)
+    return 128 if capability is not None and capability < 30 else 32
 
 
 def _split_paths(value: str):
@@ -19,12 +36,8 @@ def _split_paths(value: str):
 
 
 @functools.lru_cache()
-def _musa_home_dirs():
-    candidates = []
-    for key in ("MUSA_HOME", "MUSA_ROOT"):
-        if val := os.getenv(key):
-            candidates.append(val)
-    return candidates
+def _musa_prefix_dirs():
+    return [_DEFAULT_MUSA_PREFIX]
 
 
 @functools.lru_cache()
@@ -32,14 +45,15 @@ def _musa_include_dirs():
     include_dirs = [os.path.join(dirname, "include")]
     if env_inc := os.getenv("TRITON_MUSA_INCLUDE_PATH"):
         include_dirs.append(env_inc)
-    for home in _musa_home_dirs():
-        include_dirs.append(os.path.join(home, "include"))
+    for prefix in _musa_prefix_dirs():
+        include_dirs.append(os.path.join(prefix, "include"))
 
     # Validate that musa.h exists in one of the include dirs.
     for inc in include_dirs:
         if os.path.exists(os.path.join(inc, "musa.h")):
             return include_dirs
-    raise RuntimeError("Cannot find musa.h. Set TRITON_MUSA_INCLUDE_PATH or MUSA_HOME/MUSA_ROOT to a valid MUSA SDK.")
+    raise RuntimeError("Cannot find musa.h. Set TRITON_MUSA_INCLUDE_PATH to a valid MUSA SDK include directory, "
+                       f"or install MUSA under {_DEFAULT_MUSA_PREFIX}.")
 
 
 @functools.lru_cache()
@@ -50,15 +64,16 @@ def _libmusa_dirs():
 
     paths = []
 
-    if env_lib := os.getenv("TRITON_LIBMUSA_PATH") or os.getenv("TRITON_MUSA_LIB_PATH"):
+    if env_lib := os.getenv("TRITON_LIBMUSA_PATH"):
         if os.path.isfile(env_lib):
-            paths.append(os.path.dirname(env_lib))
-        else:
-            paths.append(env_lib)
+            env_lib = os.path.dirname(env_lib)
+        if not has_libmusa(env_lib):
+            raise RuntimeError(f"libmusa.so/libmusa.so.1 not found in TRITON_LIBMUSA_PATH={env_lib}.")
+        return [env_lib]
 
-    for home in _musa_home_dirs():
-        paths.append(os.path.join(home, "lib"))
-        paths.append(os.path.join(home, "lib64"))
+    for prefix in _musa_prefix_dirs():
+        paths.append(os.path.join(prefix, "lib"))
+        paths.append(os.path.join(prefix, "lib64"))
 
     env_ld = os.getenv("LD_LIBRARY_PATH")
     if env_ld:
@@ -75,9 +90,8 @@ def _libmusa_dirs():
     # Filter to existing directories that contain libmusa.
     valid = [p for p in paths if has_libmusa(p)]
     if not valid:
-        raise RuntimeError(
-            "libmusa.so/libmusa.so.1 not found. Set TRITON_LIBMUSA_PATH/TRITON_MUSA_LIB_PATH or MUSA_HOME/MUSA_ROOT, "
-            "or update LD_LIBRARY_PATH.")
+        raise RuntimeError("libmusa.so/libmusa.so.1 not found. Set TRITON_LIBMUSA_PATH, "
+                           f"install MUSA under {_DEFAULT_MUSA_PREFIX}, or update LD_LIBRARY_PATH.")
     return valid
 
 
@@ -917,8 +931,11 @@ class MusaDriver(DriverBase):
         return ty_to_cpp(ty)
 
     def get_current_target(self):
-        arch = knobs.runtime.override_arch or os.getenv("TRITON_MUSA_ARCH") or "ph1"
-        warp_size = 32
+        arch = knobs.runtime.override_arch or os.getenv("TRITON_MUSA_ARCH")
+        if arch is None:
+            capability = self._torch.musa.get_device_capability(self.get_current_device())
+            arch = int(capability[0]) * 10 + int(capability[1])
+        warp_size = _warp_size_for_musa_arch(arch)
         return GPUTarget("musa", arch, warp_size)
 
     def get_active_torch_device(self):

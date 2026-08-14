@@ -31,6 +31,11 @@
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#ifdef __TLE__
+#include "mlir/Conversion/Passes.h"
+#include "mlir/Pass/PassManager.h"
+#include "triton/Conversion/TritonGPUToLLVM/WarpSpecializeUtility.h"
+#endif // __TLE__
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -290,30 +295,6 @@ static LogicalResult lowerPredicatedLoadStoreCalls(ModuleOp mod,
   return success();
 }
 
-class CancelRedundantBFloatRoundTripPattern
-    : public OpRewritePattern<LLVM::CallIntrinsicOp> {
-public:
-  using OpRewritePattern<LLVM::CallIntrinsicOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(LLVM::CallIntrinsicOp call,
-                                PatternRewriter &rewriter) const override {
-    if (call.getIntrin() != "llvm.musa.bfloat162float")
-      return failure();
-    if (call.getArgs().size() != 1)
-      return failure();
-
-    auto producer = call.getArgs()[0].getDefiningOp<LLVM::CallIntrinsicOp>();
-    if (!producer || producer.getIntrin() != "llvm.musa.float2bfloat16")
-      return failure();
-    if (producer.getArgs().size() != 1 || !producer->hasOneUse())
-      return failure();
-
-    rewriter.replaceOp(call, producer.getArgs()[0]);
-    rewriter.eraseOp(producer);
-    return success();
-  }
-};
-
 std::optional<int64_t>
 inferElemBytesFromMemDesc(triton::gpu::MemDescType type) {
   int bitWidth = type.getElementTypeBitWidth();
@@ -332,6 +313,51 @@ bool inferRowMajorFromMemDesc(triton::gpu::MemDescType type) {
 unsigned getSqmmaSwizzleAlignment(ModuleOp mod) {
   // Shared memory alignment should satisfy all SQMMA swizzle requirements.
   unsigned maxAlignment = 256;
+
+  auto updateFromContract =
+      [&](triton::musa::RecoveredSqmmaConsumerContract contract) {
+        int64_t opIdx = contract.sqmmaOpIdx;
+        bool isMNMajor = ((opIdx == 0) && !contract.rowMajor) ||
+                         ((opIdx == 1) && contract.rowMajor);
+        unsigned sg = 16;
+        if (contract.elemBytes == 2)
+          sg = isMNMajor ? 32 : 16;
+        else if (contract.elemBytes == 4)
+          sg = isMNMajor ? 64 : 16;
+
+        unsigned alignment = 256 * (256 / sg);
+        maxAlignment = std::max(maxAlignment, alignment);
+      };
+
+  auto visitDotOperand = [&](Operation *op, Value operand,
+                             unsigned operandIdx) {
+    auto memDescTy = dyn_cast<triton::gpu::MemDescType>(operand.getType());
+    if (!memDescTy)
+      return;
+
+    auto producerContract =
+        triton::musa::recoverSqmmaProducerContractFromMemDesc(operand);
+    auto expectedContract = triton::musa::getExpectedSqmmaOperandContract(
+        op, operandIdx, memDescTy);
+    if (failed(producerContract) && failed(expectedContract))
+      return;
+    if (succeeded(producerContract) && *producerContract) {
+      updateFromContract(**producerContract);
+      return;
+    }
+    if (succeeded(expectedContract))
+      updateFromContract(*expectedContract);
+  };
+
+  mod.walk([&](triton::musa::SquadDotOp op) {
+    visitDotOperand(op.getOperation(), op.getA(), 0);
+    visitDotOperand(op.getOperation(), op.getB(), 1);
+  });
+  mod.walk([&](triton::mtgpu::SqmmaOp op) {
+    visitDotOperand(op.getOperation(), op.getA(), 0);
+    visitDotOperand(op.getOperation(), op.getB(), 1);
+  });
+
   mod.walk([&](triton::gpu::LocalAllocOp localAllocOp) {
     auto maybeOpIdx = triton::musa::getSqmmaOpIdx(localAllocOp.getOperation());
     if (!maybeOpIdx)
@@ -347,18 +373,8 @@ unsigned getSqmmaSwizzleAlignment(ModuleOp mod) {
 
     bool isRowMajor = triton::musa::getSqmmaRowMajor(
         localAllocOp.getOperation(), inferRowMajorFromMemDesc(memDescTy));
-
-    int64_t opIdx = *maybeOpIdx;
-    bool isMNMajor =
-        ((opIdx == 0) && !isRowMajor) || ((opIdx == 1) && isRowMajor);
-    unsigned sg = 16;
-    if (*maybeElemBytes == 2)
-      sg = isMNMajor ? 32 : 16;
-    else if (*maybeElemBytes == 4)
-      sg = isMNMajor ? 64 : 16;
-
-    unsigned alignment = 256 * (256 / sg);
-    maxAlignment = std::max(maxAlignment, alignment);
+    updateFromContract(triton::musa::RecoveredSqmmaConsumerContract{
+        maybeOpIdx.value(), maybeElemBytes.value(), isRowMajor});
   });
   return maxAlignment;
 }
@@ -481,10 +497,33 @@ struct ConvertTritonMUSAGPUToLLVM
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
 
-    RewritePatternSet cleanupPatterns(context);
-    cleanupPatterns.add<CancelRedundantBFloatRoundTripPattern>(context);
-    if (failed(applyPatternsGreedily(mod, std::move(cleanupPatterns))))
-      return signalPassFailure();
+#ifdef __TLE__
+    // Warp-specialize is deliberately legal during the ordinary MUSA
+    // conversion so its producer/default regions remain structurally
+    // available to the TLE late-lowering pass.  Convert only the container
+    // boundary types here, after the nested operations have been converted.
+    SmallVector<Operation *> staticWarpSpecializeOps;
+    mod.walk([&](Operation *op) {
+      if (!isa<triton::gpu::WarpSpecializeOp,
+               triton::gpu::WarpSpecializePartitionsOp,
+               triton::gpu::WarpYieldOp, triton::gpu::WarpReturnOp>(op))
+        return;
+      auto ws = dyn_cast<triton::gpu::WarpSpecializeOp>(op);
+      if (!ws)
+        ws = op->getParentOfType<triton::gpu::WarpSpecializeOp>();
+      if (ws && ws->hasAttr("musa_tle.static_warp_specialize"))
+        staticWarpSpecializeOps.push_back(op);
+    });
+    for (Operation *op : staticWarpSpecializeOps)
+      mlir::triton::convertOpTypes(op, typeConverter);
+
+    if (!staticWarpSpecializeOps.empty()) {
+      OpPassManager cleanup;
+      cleanup.addPass(createReconcileUnrealizedCastsPass());
+      if (failed(runPipeline(cleanup, mod)))
+        return signalPassFailure();
+    }
+#endif // __TLE__
 
     if (failed(lowerPredicatedLoadStoreCalls(mod, computeCapability)))
       return signalPassFailure();

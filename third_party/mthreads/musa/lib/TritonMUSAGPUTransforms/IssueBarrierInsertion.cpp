@@ -65,6 +65,14 @@ shouldInsertIssueBarrierBefore(triton::musa::AsyncTMECopyLocalToGlobalOp op) {
 }
 
 static bool shouldInsertIssueBarrierBefore(triton::musa::SquadDotOp op) {
+#ifdef __TLE__
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (parent->hasAttr("musa_tle.static_warp_specialize") &&
+        op->hasAttr("musa_tle.explicit_sqmma"))
+      return false;
+  }
+
   Operation *prev = op->getPrevNode();
   auto prevBarrier = dyn_cast_or_null<ttg::BarrierOp>(prev);
   if (isIssueBarrier(prevBarrier))
@@ -79,6 +87,22 @@ static bool shouldInsertIssueBarrierBefore(triton::musa::SquadDotOp op) {
     return true;
 
   return triton::musa::needsSqmmaIssueBarrier(aMemDesc, bMemDesc);
+#else
+  Operation *prev = op->getPrevNode();
+  auto prevBarrier = dyn_cast_or_null<ttg::BarrierOp>(prev);
+  if (isIssueBarrier(prevBarrier))
+    return false;
+
+  Value aMemDesc = peelSqmmaIssueOperand(op.getA());
+  Value bMemDesc = peelSqmmaIssueOperand(op.getB());
+  if (!aMemDesc || !bMemDesc)
+    return true;
+  if (!isa<ttg::MemDescType>(aMemDesc.getType()) ||
+      !isa<ttg::MemDescType>(bMemDesc.getType()))
+    return true;
+
+  return triton::musa::needsSqmmaIssueBarrier(aMemDesc, bMemDesc);
+#endif // __TLE__
 }
 
 static void insertIssueBarrierBefore(Operation *op, RewriterBase &rewriter) {

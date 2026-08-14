@@ -493,3 +493,55 @@ tt.func public @padded_subview_unsupported_size(%arg0: !ttg.memdesc<2x32x32xf32,
 // expected-error @below {{alignment must be specified outside of the linear layout braces}}
 #shared = #ttg.shared_linear<{offset = [[0, 1], [0, 2], [1, 0], [2, 0]], block = [], alignment = 16}>
 !alignment_in_layout = !ttg.memdesc<4x4xf32, #shared, #ttg.shared_memory>
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @one_fragment(%a: tensor<16x16xf16, #dA>) {
+    // expected-error @+1 {{expects at least two fragments}}
+    %c = ttg.concat_dot_operand %a {dim = 1 : i32} : tensor<16x16xf16, #dA> -> tensor<16x16xf16, #dA>
+    tt.return
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @negative_dim(%a: tensor<16x16xf16, #dA>, %b: tensor<16x16xf16, #dA>) {
+    // expected-error @+1 {{dim -1 is out of range for rank 2}}
+    %c = ttg.concat_dot_operand %a, %b {dim = -1 : i32} : tensor<16x16xf16, #dA>, tensor<16x16xf16, #dA> -> tensor<16x32xf16, #dA>
+    tt.return
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @dim_out_of_range(%a: tensor<16x16xf16, #dA>, %b: tensor<16x16xf16, #dA>) {
+    // expected-error @+1 {{dim 2 is out of range for rank 2}}
+    %c = ttg.concat_dot_operand %a, %b {dim = 2 : i32} : tensor<16x16xf16, #dA>, tensor<16x16xf16, #dA> -> tensor<16x32xf16, #dA>
+    tt.return
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @bad_result_shape(%a: tensor<16x16xf16, #dA>, %b: tensor<16x16xf16, #dA>) {
+    // expected-error @+1 {{result shape mismatch at dim 1: expected 32, got 64}}
+    %c = ttg.concat_dot_operand %a, %b {dim = 1 : i32} : tensor<16x16xf16, #dA>, tensor<16x16xf16, #dA> -> tensor<16x64xf16, #dA>
+    tt.return
+  }
+}
