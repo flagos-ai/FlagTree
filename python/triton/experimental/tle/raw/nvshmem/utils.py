@@ -348,6 +348,18 @@ def set_signal_cuda_ptr(signal_ptr, signal, stream):
     CUDA_CHECK(err)
 
 
+def copy_on_stream(dst_ptr, src_ptr, nbytes, stream):
+    _, cudart = _get_cuda_modules()
+    (err, ) = cudart.cudaMemcpyAsync(
+        dst_ptr,
+        src_ptr,
+        nbytes,
+        cudart.cudaMemcpyKind.cudaMemcpyDefault,
+        stream.cuda_stream,
+    )
+    CUDA_CHECK(err)
+
+
 def print_perf(
     name: str,
     value: float,

@@ -27,10 +27,6 @@ _nv_mma_shared_layout = tl.constexpr(False if _is_hcu_backend() else True)
 threads_per_warp = get_current_target().warp_size if is_hip() else 32
 
 
-def _is_amd_hip_backend():
-    return is_hip() and not FLAGTREE_BACKEND
-
-
 def _require_cuda():
     try:
         if _is_enflame_backend():
@@ -280,7 +276,6 @@ def test_tle_cumsum_amdgcn_fastpath_regression_guard():
         "Detected predicated ds_write: possible regression to generic path"
 
 
-@pytest.mark.skipif(_is_amd_hip_backend(), reason="requires AMD local-pointer lowering")
 def test_tle_cumsum_helper_preserves_adjacent_sentinel():
     block = 512
     num_warps = block // threads_per_warp
@@ -302,7 +297,6 @@ def test_tle_cumsum_helper_preserves_adjacent_sentinel():
     torch.testing.assert_close(sentinel, expected_sentinel)
 
 
-@pytest.mark.skipif(_is_amd_hip_backend(), reason="requires AMD local-pointer lowering")
 def test_tle_cumsum_scalar_base_addptr_alias_regression():
     block = 512
     num_warps = block // threads_per_warp
