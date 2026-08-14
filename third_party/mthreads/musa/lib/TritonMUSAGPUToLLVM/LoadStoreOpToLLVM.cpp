@@ -4,6 +4,9 @@
 #include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUToLLVM/Utility.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#ifdef __TLE__
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#endif // __TLE__
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -16,6 +19,9 @@
 #include "triton/Tools/LayoutUtils.h"
 #include <algorithm>
 #include <functional>
+#ifdef __TLE__
+#include <limits>
+#endif // __TLE__
 #include <numeric>
 
 using namespace mlir;
@@ -27,44 +33,74 @@ namespace {
 inline constexpr llvm::StringLiteral kInplaceLoadAttr =
     "musa.inplace_load_candidate";
 
-static triton::gpu::LocalAllocOp findRootLocalAlloc(Value memDesc) {
-  Value cur = memDesc;
-  while (cur) {
-    Operation *defOp = cur.getDefiningOp();
-    if (!defOp)
-      break;
-    if (auto localAllocOp = dyn_cast<triton::gpu::LocalAllocOp>(defOp))
-      return localAllocOp;
-    if (auto indexOp = dyn_cast<triton::gpu::MemDescIndexOp>(defOp)) {
-      cur = indexOp.getSrc();
-      continue;
+struct PH1SwizzledMatrixViewInfo {
+  SmallVector<int64_t, 2> matrixPhysicalShape;
+  SmallVector<unsigned, 2> matrixOrder;
+  int64_t batchStrideElements = 0;
+};
+
+static FailureOr<PH1SwizzledMatrixViewInfo>
+getPH1SwizzledMatrixViewInfo(MemDescType memDescTy) {
+  unsigned rank = memDescTy.getRank();
+  if (rank != 3)
+    return failure();
+
+  SmallVector<int64_t> physicalShape =
+      triton::musa::getMemDescPhysicalShape(memDescTy);
+  if (physicalShape.size() != rank)
+    return failure();
+
+  auto order = triton::gpu::getOrder(memDescTy);
+  PH1SwizzledMatrixViewInfo info;
+  info.matrixPhysicalShape = {physicalShape[rank - 2], physicalShape[rank - 1]};
+
+  if (order.size() == 2) {
+    for (unsigned dim : order) {
+      if (dim >= 2)
+        return failure();
+      info.matrixOrder.push_back(dim);
     }
-    if (auto subsliceOp = dyn_cast<triton::gpu::MemDescSubsliceOp>(defOp)) {
-      cur = subsliceOp.getSrc();
-      continue;
+  } else if (order.size() == rank) {
+    for (unsigned dim : order) {
+      if (dim < rank - 2)
+        continue;
+      info.matrixOrder.push_back(dim - (rank - 2));
+      if (info.matrixOrder.size() == 2)
+        break;
     }
-    if (auto reinterpretOp =
-            dyn_cast<triton::gpu::MemDescReinterpretOp>(defOp)) {
-      cur = reinterpretOp.getSrc();
-      continue;
-    }
-    if (auto transOp = dyn_cast<triton::gpu::MemDescTransOp>(defOp)) {
-      cur = transOp.getSrc();
-      continue;
-    }
-    if (auto reshapeOp = dyn_cast<triton::gpu::MemDescReshapeOp>(defOp)) {
-      cur = reshapeOp.getSrc();
-      continue;
-    }
-    break;
+  } else {
+    return failure();
   }
-  return {};
+
+  if (info.matrixOrder.size() != 2)
+    return failure();
+
+  info.batchStrideElements =
+      info.matrixPhysicalShape[0] * info.matrixPhysicalShape[1];
+  if (info.batchStrideElements <= 0 ||
+      !triton::musa::toI32(info.batchStrideElements))
+    return failure();
+
+  return info;
 }
 
-static bool requiresAbsoluteSwizzledAsyncCopy(MemDescType memDescTy) {
-  if (memDescTy.getShape().size() != 2)
+static bool requiresAbsoluteSwizzledSharedAccess(MemDescType memDescTy) {
+  unsigned rank = memDescTy.getRank();
+  if (rank != 2 && rank != 3)
     return false;
-  auto swizzle = triton::musa::resolveTMESwizzleConfigFromEncoding(memDescTy);
+  auto sharedEnc = dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
+      memDescTy.getEncoding());
+  if (!sharedEnc)
+    return false;
+  FailureOr<triton::musa::ResolvedTMESwizzleConfig> swizzle = failure();
+  if (rank == 2) {
+    swizzle = triton::musa::resolveTMESwizzleConfigFromEncoding(memDescTy);
+  } else {
+    auto matrixView = getPH1SwizzledMatrixViewInfo(memDescTy);
+    if (succeeded(matrixView))
+      swizzle = triton::musa::resolveTMESwizzleConfigFromMatrixView(
+          memDescTy, matrixView->matrixPhysicalShape, matrixView->matrixOrder);
+  }
   return succeeded(swizzle) && swizzle->swizzleGranularity !=
                                    triton::musa::TMESwizzleGranularity::SG_NONE;
 }
@@ -126,6 +162,211 @@ applyPH1TMESwizzleToByteAddressValue(TritonLLVMOpBuilder &b, Value addrBytes,
   return b.add(b.add(b.mul(lineId, config.lineBytes),
                      b.mul(targetSectorInLine, config.granularityBytes)),
                offsetInSector);
+}
+
+Value emitRedundantThreadPredicate(
+    const llvm::MapVector<StringAttr, int32_t> &freeVarMasks,
+    ConversionPatternRewriter &rewriter, Location loc,
+    const mlir::triton::MUSA::TargetInfo &targetInfo);
+
+struct PH1SwizzledSharedAccess {
+  Type llvmElemTy;
+  Value smemElemBase;
+  Value smemOffsetBytes;
+  Value affineOffsetElems;
+  Value elemBytesVal;
+  unsigned elemBytes = 0;
+  unsigned rank = 0;
+  bool hasAffineOffset = false;
+  SmallVector<int64_t> physicalShape;
+  SmallVector<unsigned> order;
+  SmallVector<int64_t, 2> matrixPhysicalShape;
+  SmallVector<unsigned, 2> matrixOrder;
+  int64_t batchStrideElements = 0;
+  PH1TMESwizzleValueConfig swizzleConfig;
+};
+
+static FailureOr<PH1SwizzledSharedAccess>
+getPH1SwizzledSharedAccess(Location loc, MemDescType memDescTy,
+                           SharedMemoryObject smemObj, Type llvmElemTy,
+                           ConversionPatternRewriter &rewriter,
+                           Operation *diagnosticOp) {
+  if (!requiresAbsoluteSwizzledSharedAccess(memDescTy))
+    return failure();
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto *ctx = rewriter.getContext();
+  unsigned rank = memDescTy.getRank();
+  auto order = triton::gpu::getOrder(memDescTy);
+  SmallVector<int64_t> physicalShape =
+      triton::musa::getMemDescPhysicalShape(memDescTy);
+  if (physicalShape.size() != rank)
+    return failure();
+  if (rank == 2 && order.size() != rank)
+    return failure();
+
+  unsigned elemBytes =
+      std::max<unsigned>(1, memDescTy.getElementTypeBitWidth() / 8);
+
+  SmallVector<int64_t, 2> matrixPhysicalShape;
+  SmallVector<unsigned, 2> matrixOrder;
+  int64_t batchStrideElements = 0;
+  if (rank == 3) {
+    auto matrixView = getPH1SwizzledMatrixViewInfo(memDescTy);
+    if (failed(matrixView))
+      return failure();
+    matrixPhysicalShape = matrixView->matrixPhysicalShape;
+    matrixOrder = matrixView->matrixOrder;
+    batchStrideElements = matrixView->batchStrideElements;
+  }
+
+  auto swizzleConfig =
+      rank == 3
+          ? resolvePH1TMESwizzleValueConfig(loc, memDescTy, rewriter,
+                                            matrixPhysicalShape, matrixOrder)
+          : resolvePH1TMESwizzleValueConfig(loc, memDescTy, rewriter);
+  if (failed(swizzleConfig) || !swizzleConfig->hasSwizzle)
+    return failure();
+
+  auto func = diagnosticOp->getParentOfType<FunctionOpInterface>();
+  if (!func) {
+    diagnosticOp->emitError("PH1 swizzled shared access requires parent "
+                            "function for shared-memory base");
+    return failure();
+  }
+
+  Value smemObjBase = smemObj.getBase();
+  Value smemRawBase = LLVM::getStackPointer(rewriter, func);
+  Value smemOffsetBytes =
+      b.sub(b.ptrtoint(i32_ty, smemObjBase), b.ptrtoint(i32_ty, smemRawBase));
+  bool hasAffineOffset =
+      SharedMemoryObject::isAffineSharedMemoryAccess(memDescTy);
+
+  PH1SwizzledSharedAccess access;
+  access.llvmElemTy = llvmElemTy;
+  access.smemElemBase = b.bitcast(smemObjBase, ptr_ty(ctx, 3));
+  access.smemOffsetBytes = smemOffsetBytes;
+  access.affineOffsetElems = smemObj.getShmemOffset(loc, rewriter, memDescTy);
+  access.elemBytesVal = b.i32_val(static_cast<int32_t>(elemBytes));
+  access.elemBytes = elemBytes;
+  access.rank = rank;
+  access.hasAffineOffset = hasAffineOffset;
+  access.physicalShape = std::move(physicalShape);
+  access.order = std::move(order);
+  access.matrixPhysicalShape = std::move(matrixPhysicalShape);
+  access.matrixOrder = std::move(matrixOrder);
+  access.batchStrideElements = batchStrideElements;
+  access.swizzleConfig = *swizzleConfig;
+  return access;
+}
+
+static FailureOr<Value> getPH1SwizzledSharedElementPtr(
+    Location loc, ConversionPatternRewriter &rewriter,
+    const PH1SwizzledSharedAccess &access, ArrayRef<Value> coord) {
+  if (coord.size() != access.rank)
+    return failure();
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  FailureOr<Value> lmsOffsetInElem = failure();
+  if (access.rank == 3) {
+    SmallVector<Value, 2> matrixCoord{coord[access.rank - 2],
+                                      coord[access.rank - 1]};
+    auto matrixOffsetInElem = triton::musa::linearizePH1TMELinearCoords(
+        b, matrixCoord, access.matrixPhysicalShape, access.matrixOrder,
+        access.elemBytes);
+    if (failed(matrixOffsetInElem))
+      return failure();
+    Value batchOffsetInElem = b.mul(
+        coord[0], b.i32_val(static_cast<int32_t>(access.batchStrideElements)));
+    Value offsetInElem = b.add(batchOffsetInElem, *matrixOffsetInElem);
+    lmsOffsetInElem = offsetInElem;
+  } else {
+    lmsOffsetInElem = triton::musa::linearizePH1TMELinearCoords(
+        b, coord, access.physicalShape, access.order, access.elemBytes);
+  }
+  if (failed(lmsOffsetInElem))
+    return failure();
+
+  Value offsetInElem = *lmsOffsetInElem;
+  if (access.hasAffineOffset)
+    offsetInElem = b.xor_(offsetInElem, access.affineOffsetElems);
+
+  Value lmsAddrInByte =
+      b.add(b.mul(offsetInElem, access.elemBytesVal), access.smemOffsetBytes);
+  Value swizzledAddrInByte = applyPH1TMESwizzleToByteAddressValue(
+      b, lmsAddrInByte, access.swizzleConfig);
+  Value swizzledAddrRelInByte =
+      b.sub(swizzledAddrInByte, access.smemOffsetBytes);
+  Value swizzledElemOffset = b.udiv(swizzledAddrRelInByte, access.elemBytesVal);
+  Value ptr = b.gep(access.smemElemBase.getType(), access.llvmElemTy,
+                    access.smemElemBase, swizzledElemOffset);
+  return ptr;
+}
+
+static LogicalResult lowerPH1SwizzledSharedStoreFromTensor(
+    Location loc, SharedMemoryObject smemObj, MemDescType memDescTy,
+    RankedTensorType regTy, Value llvmSrc,
+    const LLVMTypeConverter *typeConverter, ConversionPatternRewriter &rewriter,
+    const mlir::triton::MUSA::TargetInfo &targetInfo, Operation *diagnosticOp) {
+  Type llvmElemTy = typeConverter->convertType(memDescTy.getElementType());
+  auto access = getPH1SwizzledSharedAccess(loc, memDescTy, smemObj, llvmElemTy,
+                                           rewriter, diagnosticOp);
+  if (failed(access))
+    return failure();
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto *ctx = rewriter.getContext();
+  auto inVals = ::mlir::unpackLLElements(loc, llvmSrc, rewriter);
+  auto srcIndices =
+      emitIndices(loc, rewriter, targetInfo, regTy.getEncoding(), regTy, false);
+  if (srcIndices.size() != inVals.size())
+    return failure();
+
+  auto freeVarMasks = getFreeVariableMasks(regTy);
+  uint32_t regMask = freeVarMasks.lookup(str_attr("reg"));
+  Value threadPred =
+      emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+  Value pred = threadPred ? threadPred : b.true_val();
+  for (auto [idx, coord] : llvm::enumerate(srcIndices)) {
+    if (!isCanonicalIndex(static_cast<unsigned>(idx), regMask))
+      continue;
+    auto ptr = getPH1SwizzledSharedElementPtr(loc, rewriter, *access, coord);
+    if (failed(ptr))
+      return failure();
+    targetInfo.storeDShared(rewriter, loc, *ptr, std::nullopt, inVals[idx],
+                            pred);
+  }
+  return success();
+}
+
+static FailureOr<Value> lowerPH1SwizzledSharedLoadToTensor(
+    Location loc, Value llvmMemDesc, MemDescType memDescTy,
+    RankedTensorType regTy, const LLVMTypeConverter *typeConverter,
+    ConversionPatternRewriter &rewriter,
+    const mlir::triton::MUSA::TargetInfo &targetInfo, Operation *localLoadOp) {
+  Type llvmElemTy = typeConverter->convertType(memDescTy.getElementType());
+  auto smemObj = LLVM::getSharedMemoryObjectFromStruct(loc, llvmMemDesc,
+                                                       llvmElemTy, rewriter);
+  auto access = getPH1SwizzledSharedAccess(loc, memDescTy, smemObj, llvmElemTy,
+                                           rewriter, localLoadOp);
+  if (failed(access))
+    return failure();
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto srcIndices =
+      emitIndices(loc, rewriter, targetInfo, regTy.getEncoding(), regTy, false);
+  SmallVector<Value> outVals;
+  outVals.reserve(srcIndices.size());
+  for (ArrayRef<Value> coord : srcIndices) {
+    auto ptr = getPH1SwizzledSharedElementPtr(loc, rewriter, *access, coord);
+    if (failed(ptr))
+      return failure();
+    outVals.push_back(targetInfo.loadDShared(rewriter, loc, *ptr, std::nullopt,
+                                             llvmElemTy, b.true_val(),
+                                             localLoadOp));
+  }
+
+  return ::mlir::packLLElements(loc, typeConverter, outVals, rewriter, regTy);
 }
 
 static LogicalResult lowerLocalAllocSrcToShared(
@@ -665,8 +906,45 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
 
     auto *ctx = rewriter.getContext();
     auto freeVarMasks = getFreeVariableMasks(ptr.getType());
+#ifdef __TLE__
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+    if (!isa<RankedTensorType>(ptr.getType())) {
+      auto partitions =
+          op->getParentOfType<triton::gpu::WarpSpecializePartitionsOp>();
+      auto ws = partitions ? dyn_cast<triton::gpu::WarpSpecializeOp>(
+                                 partitions->getParentOp())
+                           : triton::gpu::WarpSpecializeOp();
+      if (ws && ws->hasAttr("musa_tle.static_warp_specialize")) {
+        ModuleOp module = op->getParentOfType<ModuleOp>();
+        auto numWarps =
+            module->getAttrOfType<IntegerAttr>(triton::gpu::AttrNumWarpsName);
+        auto threadsPerWarp = module->getAttrOfType<IntegerAttr>(
+            triton::gpu::AttrNumThreadsPerWarp);
+        if (!numWarps || !threadsPerWarp || numWarps.getInt() <= 0 ||
+            threadsPerWarp.getInt() <= 0) {
+          return op.emitOpError(
+              "static WS partition store requires ttg.num-warps and "
+              "ttg.threads-per-warp");
+        }
+        if (numWarps.getInt() >
+            std::numeric_limits<int32_t>::max() / threadsPerWarp.getInt())
+          return op.emitOpError(
+              "static WS partition leader exceeds int32 range");
+        int64_t firstPartitionThread =
+            numWarps.getInt() * threadsPerWarp.getInt();
+        Value rawThreadId = ::mlir::gpu::ThreadIdOp::create(
+            rewriter, loc, ::mlir::gpu::Dimension::x);
+        rawThreadId =
+            arith::IndexCastOp::create(rewriter, loc, i32_ty, rawThreadId);
+        threadPred = b.icmp_eq(
+            rawThreadId, b.i32_val(static_cast<int32_t>(firstPartitionThread)));
+      }
+    }
+#else
+    Value threadPred =
+        emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+#endif // __TLE__
     uint32_t regMask = freeVarMasks.lookup(str_attr("reg"));
 
     if (vec == 1) {
@@ -1060,13 +1338,15 @@ struct SqmmaLocalAllocOpConversion
     if (!op.isSharedMemoryAlloc() || !op.getSrc())
       return failure();
 
+    bool isSqmma = triton::musa::hasSqmmaOpIdxAttr(op.getOperation());
     auto srcTensorTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
     bool isSqmmaAccumulatorSpill =
-        srcTensorTy &&
+        !isSqmma && srcTensorTy &&
         isa<triton::gpu::MUSASqmmaEncodingAttr>(srcTensorTy.getEncoding());
 
-    bool isSqmma = triton::musa::hasSqmmaOpIdxAttr(op.getOperation());
-    if (!isSqmma && !isSqmmaAccumulatorSpill)
+    bool needsPH1SwizzledAccess =
+        requiresAbsoluteSwizzledSharedAccess(cast<MemDescType>(op.getType()));
+    if (!needsPH1SwizzledAccess && !isSqmmaAccumulatorSpill)
       return failure();
     Location loc = op.getLoc();
     auto memDescTy = cast<MemDescType>(op.getType());
@@ -1092,112 +1372,23 @@ struct SqmmaLocalAllocOpConversion
       return success();
     }
 
-    auto b = TritonLLVMOpBuilder(loc, rewriter);
-    auto *ctx = op.getContext();
     auto regTy = cast<RankedTensorType>(op.getSrc().getType());
 
-    auto sharedEnc = dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
-        memDescTy.getEncoding());
-    if (!sharedEnc)
-      return failure();
-    auto order = triton::gpu::getOrder(memDescTy);
-    unsigned rank = memDescTy.getRank();
-    if ((rank != 2 && rank != 3) || order.size() != rank ||
-        regTy.getRank() != rank)
+    if (!needsPH1SwizzledAccess || regTy.getRank() != memDescTy.getRank())
       return failure();
 
-    SmallVector<int64_t> physicalShape =
-        triton::musa::getMemDescPhysicalShape(memDescTy);
-    if (physicalShape.size() != rank)
-      return failure();
-    SmallVector<int64_t, 2> matrixPhysicalShape;
-    SmallVector<unsigned, 2> matrixOrder;
-    int64_t batchStrideElements = 0;
-    if (rank == 3) {
-      matrixPhysicalShape = {physicalShape[rank - 2], physicalShape[rank - 1]};
-      for (unsigned dim : order) {
-        if (dim < rank - 2)
-          continue;
-        matrixOrder.push_back(dim - (rank - 2));
-        if (matrixOrder.size() == 2)
-          break;
-      }
-      if (matrixOrder.size() != 2)
+    if (isSqmma) {
+      auto opIdx = triton::musa::getSqmmaOpIdx(op.getOperation());
+      if (!opIdx)
         return failure();
-      batchStrideElements = matrixPhysicalShape[0] * matrixPhysicalShape[1];
-      if (batchStrideElements <= 0 || !triton::musa::toI32(batchStrideElements))
-        return failure();
+      if (static_cast<unsigned>(*opIdx) == 0)
+        targetInfo.barrier(loc, rewriter, triton::gpu::AddrSpace::Local);
     }
 
-    auto opIdx = triton::musa::getSqmmaOpIdx(op.getOperation());
-    if (!opIdx)
+    if (failed(lowerPH1SwizzledSharedStoreFromTensor(
+            loc, smemObj, memDescTy, regTy, adaptor.getSrc(),
+            getTypeConverter(), rewriter, targetInfo, op.getOperation())))
       return failure();
-    unsigned sqmmaOpIdx = static_cast<unsigned>(*opIdx);
-
-    if (sqmmaOpIdx == 0)
-      targetInfo.barrier(loc, rewriter, triton::gpu::AddrSpace::Local);
-
-    unsigned elemBytes =
-        std::max<unsigned>(1, memDescTy.getElementTypeBitWidth() / 8);
-    auto swizzleConfig =
-        rank == 3
-            ? resolvePH1TMESwizzleValueConfig(loc, memDescTy, rewriter,
-                                              matrixPhysicalShape, matrixOrder)
-            : resolvePH1TMESwizzleValueConfig(loc, memDescTy, rewriter);
-    if (failed(swizzleConfig))
-      return failure();
-
-    auto inVals = ::mlir::unpackLLElements(loc, adaptor.getSrc(), rewriter);
-    auto srcIndices =
-        emitIndices(loc, rewriter, targetInfo, regTy.getEncoding(), regTy,
-                    /*withCTAOffset=*/false);
-    if (srcIndices.size() != inVals.size())
-      return failure();
-    auto freeVarMasks = getFreeVariableMasks(regTy);
-    uint32_t regMask = freeVarMasks.lookup(str_attr("reg"));
-    Value threadPred =
-        emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
-
-    auto shape = regTy.getShape();
-    Value elemBytesVal = b.i32_val(static_cast<int32_t>(elemBytes));
-    Value smemOffsetBytes = b.i32_val(0);
-    if (auto offAttr = op->getAttrOfType<IntegerAttr>("allocation.offset")) {
-      smemOffsetBytes = b.i32_val(static_cast<int32_t>(offAttr.getInt()));
-    }
-
-    Value smemElemBase = b.bitcast(smemBase, ptr_ty(ctx, 3));
-    for (auto [idx, coord] : llvm::enumerate(srcIndices)) {
-      if (!isCanonicalIndex(static_cast<unsigned>(idx), regMask))
-        continue;
-      FailureOr<Value> lmsOffsetInElem = failure();
-      if (rank == 3) {
-        SmallVector<Value, 2> matrixCoord{coord[rank - 2], coord[rank - 1]};
-        auto matrixOffsetInElem = triton::musa::linearizePH1TMELinearCoords(
-            b, matrixCoord, matrixPhysicalShape, matrixOrder, elemBytes);
-        if (failed(matrixOffsetInElem))
-          return failure();
-        Value batchOffsetInElem = b.mul(
-            coord[0], b.i32_val(static_cast<int32_t>(batchStrideElements)));
-        Value offsetInElem = b.add(batchOffsetInElem, *matrixOffsetInElem);
-        lmsOffsetInElem = offsetInElem;
-      } else {
-        lmsOffsetInElem = triton::musa::linearizePH1TMELinearCoords(
-            b, coord, shape, order, elemBytes);
-      }
-      if (failed(lmsOffsetInElem))
-        return failure();
-      Value lmsAddrInByte =
-          b.add(b.mul(*lmsOffsetInElem, elemBytesVal), smemOffsetBytes);
-      Value swizzledAddrInByte = applyPH1TMESwizzleToByteAddressValue(
-          b, lmsAddrInByte, *swizzleConfig);
-      Value swizzledAddrRelInByte = b.sub(swizzledAddrInByte, smemOffsetBytes);
-      Value swizzledElemOffset = b.udiv(swizzledAddrRelInByte, elemBytesVal);
-
-      Value ptr = b.gep(smemElemBase.getType(), llvmElemTy, smemElemBase,
-                        swizzledElemOffset);
-      targetInfo.storeDShared(rewriter, loc, ptr, std::nullopt, inVals[idx],
-                              threadPred ? threadPred : b.true_val());
-    }
 
     auto retVal = getStructFromSharedMemoryObject(loc, smemObj, rewriter);
     rewriter.replaceOp(op, retVal);
@@ -1227,6 +1418,8 @@ struct DotOperandLocalLoadOpConversion
     auto *ctx = op.getContext();
     auto memDescTy = dyn_cast<MemDescType>(op.getSrc().getType());
     if (!memDescTy)
+      return failure();
+    if (requiresAbsoluteSwizzledSharedAccess(memDescTy))
       return failure();
 
     auto regTy = dyn_cast<RankedTensorType>(op.getResult().getType());
@@ -1303,6 +1496,71 @@ private:
   const mlir::triton::MUSA::TargetInfo &targetInfo;
 };
 
+struct PH1SwizzledLocalLoadOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
+  PH1SwizzledLocalLoadOpConversion(
+      LLVMTypeConverter &converter,
+      const mlir::triton::MUSA::TargetInfo &targetInfo, PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp>(converter, benefit),
+        targetInfo(targetInfo) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto memDescTy = dyn_cast<MemDescType>(op.getSrc().getType());
+    auto regTy = dyn_cast<RankedTensorType>(op.getResult().getType());
+    if (!memDescTy || !regTy ||
+        !requiresAbsoluteSwizzledSharedAccess(memDescTy))
+      return failure();
+
+    auto result = lowerPH1SwizzledSharedLoadToTensor(
+        op.getLoc(), adaptor.getSrc(), memDescTy, regTy, getTypeConverter(),
+        rewriter, targetInfo, op.getOperation());
+    if (failed(result))
+      return failure();
+
+    rewriter.replaceOp(op, *result);
+    return success();
+  }
+
+private:
+  const mlir::triton::MUSA::TargetInfo &targetInfo;
+};
+
+struct PH1SwizzledLocalStoreOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalStoreOp> {
+  PH1SwizzledLocalStoreOpConversion(
+      LLVMTypeConverter &converter,
+      const mlir::triton::MUSA::TargetInfo &targetInfo, PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::gpu::LocalStoreOp>(converter, benefit),
+        targetInfo(targetInfo) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto memDescTy = dyn_cast<MemDescType>(op.getDst().getType());
+    auto regTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
+    if (!memDescTy || !regTy ||
+        !requiresAbsoluteSwizzledSharedAccess(memDescTy))
+      return failure();
+
+    Type llvmElemTy =
+        getTypeConverter()->convertType(memDescTy.getElementType());
+    auto smemObj = LLVM::getSharedMemoryObjectFromStruct(
+        op.getLoc(), adaptor.getDst(), llvmElemTy, rewriter);
+    if (failed(lowerPH1SwizzledSharedStoreFromTensor(
+            op.getLoc(), smemObj, memDescTy, regTy, adaptor.getSrc(),
+            getTypeConverter(), rewriter, targetInfo, op.getOperation())))
+      return failure();
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  const mlir::triton::MUSA::TargetInfo &targetInfo;
+};
+
 struct AsyncCopyGlobalToLocalOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::AsyncCopyGlobalToLocalOp> {
   AsyncCopyGlobalToLocalOpConversion(
@@ -1371,20 +1629,12 @@ struct AsyncCopyGlobalToLocalOpConversion
 
     bool usePred = asyncCopyMaskNeedsPredicate(op.getMask());
 
-    if (requiresAbsoluteSwizzledAsyncCopy(dstTy)) {
+    if (requiresAbsoluteSwizzledSharedAccess(dstTy)) {
       auto sharedEnc = dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
           dstTy.getEncoding());
-      auto order = triton::gpu::getOrder(dstTy);
-      if (!sharedEnc || order.size() != 2)
+      if (!sharedEnc)
         return op.emitError(
-            "PH1 swizzled async_copy expects 2D swizzled shared destination");
-
-      unsigned elemBytes =
-          std::max<unsigned>(1, dstTy.getElementTypeBitWidth() / 8);
-      auto swizzleConfig =
-          resolvePH1TMESwizzleValueConfig(loc, dstTy, rewriter);
-      if (failed(swizzleConfig))
-        return failure();
+            "PH1 swizzled async_copy expects swizzled shared destination");
 
       auto srcIndices =
           emitIndices(loc, rewriter, targetInfo, srcTy.getEncoding(), srcTy,
@@ -1392,30 +1642,12 @@ struct AsyncCopyGlobalToLocalOpConversion
       if (srcIndices.size() != srcElems.size())
         return failure();
 
-      int64_t strideRow64 = srcTy.getShape()[order[0]];
-      if (strideRow64 <= 0 || strideRow64 > std::numeric_limits<int32_t>::max())
-        return failure();
-
       auto smemObj = LLVM::getSharedMemoryObjectFromStruct(
           loc, llDst, llvmElemTy, rewriter);
-      Value smemObjBase = smemObj.getBase();
-      Value smemElemBase = b.bitcast(smemObjBase, ptr_ty(ctx, 3));
-      auto rootLocalAlloc = findRootLocalAlloc(op.getResult());
-      if (!rootLocalAlloc || !rootLocalAlloc->hasAttr("allocation.offset")) {
-        return op.emitError("PH1 swizzled async_copy requires root local_alloc "
-                            "with allocation.offset");
-      }
-      Value smemRawBase = LLVM::getSharedMemoryBase(
-          loc, rewriter, targetInfo, rootLocalAlloc.getOperation());
-      auto rootOffsetAttr =
-          rootLocalAlloc->getAttrOfType<IntegerAttr>("allocation.offset");
-      Value rootOffsetBytes =
-          b.i32_val(static_cast<int32_t>(rootOffsetAttr.getInt()));
-      Value smemOffsetFromRoot = b.sub(b.ptrtoint(i32_ty, smemObjBase),
-                                       b.ptrtoint(i32_ty, smemRawBase));
-      Value smemOffsetBytes = b.add(smemOffsetFromRoot, rootOffsetBytes);
-
-      Value elemBytesVal = b.i32_val(static_cast<int32_t>(elemBytes));
+      auto access = getPH1SwizzledSharedAccess(loc, dstTy, smemObj, llvmElemTy,
+                                               rewriter, op.getOperation());
+      if (failed(access))
+        return failure();
 
       unsigned inVec = std::max<unsigned>(1, op.getContiguity());
       unsigned outVec = sharedEnc.getVec();
@@ -1424,42 +1656,29 @@ struct AsyncCopyGlobalToLocalOpConversion
         minVec = std::min(outVec, inVec);
       unsigned numElems = getTotalElemsPerThread(srcTy);
 
-      auto shape = srcTy.getShape();
-
-      for (unsigned elemIdx = 0; elemIdx < numElems; elemIdx += minVec) {
+      for (unsigned elemIdx = 0; elemIdx < numElems;) {
+        unsigned vecElems = std::min(minVec, numElems - elemIdx);
         auto idx = srcIndices[elemIdx];
-        auto lmsOffsetInElem = triton::musa::linearizePH1TMELinearCoords(
-            b, idx, shape, order, elemBytes);
-        if (failed(lmsOffsetInElem))
+        auto basePtr =
+            getPH1SwizzledSharedElementPtr(loc, rewriter, *access, idx);
+        if (failed(basePtr))
           return failure();
-
-        Value lmsAddrInByte =
-            b.add(b.mul(*lmsOffsetInElem, elemBytesVal), smemOffsetBytes);
-        Value swizzledAddrInByte = applyPH1TMESwizzleToByteAddressValue(
-            b, lmsAddrInByte, *swizzleConfig);
-        Value swizzledAddrRelInByte =
-            b.sub(swizzledAddrInByte, smemOffsetBytes);
-        Value swizzledElemOffset = b.udiv(swizzledAddrRelInByte, elemBytesVal);
-        Value basePtr = b.gep(smemElemBase.getType(), llvmElemTy, smemElemBase,
-                              swizzledElemOffset);
 
         auto maxBitWidth =
             std::max<unsigned>(128, llvmElemTy.getIntOrFloatBitWidth());
-        auto vecBitWidth = llvmElemTy.getIntOrFloatBitWidth() * minVec;
+        auto vecBitWidth = llvmElemTy.getIntOrFloatBitWidth() * vecElems;
         auto bitWidth = std::min<unsigned>(maxBitWidth, vecBitWidth);
         auto numWords = vecBitWidth / bitWidth;
         auto numWordElems = bitWidth / llvmElemTy.getIntOrFloatBitWidth();
         auto byteWidth = bitWidth / 8;
-        auto resByteWidth = llvmElemTy.getIntOrFloatBitWidth() / 8;
 
         for (unsigned wordIdx = 0; wordIdx < numWords; ++wordIdx) {
           unsigned wordElemIdx = wordIdx * numWordElems;
-          unsigned offset = wordElemIdx * resByteWidth;
           Value packedVal = vals[elemIdx + wordElemIdx];
           Value srcPtr = b.extract_val(ptrTy, packedVal, 0);
           Value maskElem = b.extract_val(i1_ty, packedVal, 1);
-          Value dst = b.gep(basePtr.getType(), llvmElemTy, basePtr,
-                            b.i32_val(static_cast<int32_t>(offset)));
+          Value dst = b.gep(basePtr->getType(), llvmElemTy, *basePtr,
+                            b.i32_val(static_cast<int32_t>(wordElemIdx)));
           Value copyPred = b.true_val();
           if (usePred) {
             Value notMask = b.xor_(maskElem, b.true_val());
@@ -1490,6 +1709,7 @@ struct AsyncCopyGlobalToLocalOpConversion
                                  ValueRange{dst, srcPtr, cpSize, prefetchSize});
           });
         }
+        elemIdx += vecElems;
       }
 
       rewriter.replaceOp(op, b.i32_val(0));
@@ -1623,6 +1843,9 @@ void mlir::triton::MUSA::populateLoadStoreOpToLLVMPatterns(
       typeConverter, targetInfo, PatternBenefit(benefit.getBenefit() + 2));
   patterns.add<DotOperandLocalLoadOpConversion>(
       typeConverter, targetInfo, PatternBenefit(benefit.getBenefit() + 3));
+  patterns
+      .add<PH1SwizzledLocalLoadOpConversion, PH1SwizzledLocalStoreOpConversion>(
+          typeConverter, targetInfo, PatternBenefit(benefit.getBenefit() + 2));
   patterns.add<LoadOpConversion, StoreOpConversion, AtomicCASOpConversion,
                AtomicRMWOpConversion, AsyncCopyGlobalToLocalOpConversion>(
       typeConverter, targetInfo, axisInfoAnalysis, benefit);

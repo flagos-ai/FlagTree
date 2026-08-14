@@ -77,7 +77,8 @@ def _merge_xpu_packages(existing_packages):
 
     for package in existing_packages:
         if (not package.startswith("triton.") or _is_backend_package(package) or _is_language_extra_package(package)
-                or package == "triton.profiler" or package.startswith("triton.profiler.")):
+                or package == "triton.profiler" or package.startswith("triton.profiler.")
+                or package == "triton.tools.triton_to_gluon_translater"):
             add(package)
 
     return packages

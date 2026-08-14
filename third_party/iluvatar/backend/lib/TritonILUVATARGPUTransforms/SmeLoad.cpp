@@ -88,14 +88,8 @@ Value getSmeStride(LoadOp &loadOp, mlir::PatternRewriter &rewriter) {
             }
           } else if (auto splatOp = dyn_cast<SplatOp>(inPreOp)) {
             Type dataType = splatOp->getOperand(0).getType();
-            if (dataType.isInteger(32)) {
+            if (dataType.isInteger()) {
               res = splatOp.getSrc();
-              break;
-            }
-            if (dataType.isInteger(64)) {
-              res = arith::TruncIOp::create(rewriter, rewriter.getUnknownLoc(),
-                                            rewriter.getI32Type(),
-                                            splatOp.getSrc());
               break;
             }
           }
@@ -104,6 +98,63 @@ Value getSmeStride(LoadOp &loadOp, mlir::PatternRewriter &rewriter) {
     }
   }
   return res;
+}
+
+Value cloneMaskComputation(Value root, PatternRewriter &rewriter) {
+  auto withSmeMaskEncoding = [](Type type) -> Type {
+    auto tensorTy = dyn_cast<RankedTensorType>(type);
+    if (!tensorTy)
+      return type;
+    Attribute encoding = tensorTy.getEncoding();
+    MLIRContext *ctx = encoding.getContext();
+    if (auto slice = dyn_cast<SliceEncodingAttr>(encoding)) {
+      if (auto parent = dyn_cast<BlockedEncodingAttr>(slice.getParent())) {
+        auto newParent = BlockedEncodingAttr::get(
+            ctx, parent.getSizePerThread(), parent.getThreadsPerWarp(),
+            parent.getWarpsPerCTA(), parent.getOrder(), parent.getCTALayout(),
+            parent.getIsSme(), true, parent.getSmeWarpsPerCTA());
+        return RankedTensorType::get(
+            tensorTy.getShape(), tensorTy.getElementType(),
+            SliceEncodingAttr::get(ctx, slice.getDim(), newParent));
+      }
+    }
+    if (auto blocked = dyn_cast<BlockedEncodingAttr>(encoding)) {
+      auto newEncoding = BlockedEncodingAttr::get(
+          ctx, blocked.getSizePerThread(), blocked.getThreadsPerWarp(),
+          blocked.getWarpsPerCTA(), blocked.getOrder(), blocked.getCTALayout(),
+          blocked.getIsSme(), true, blocked.getSmeWarpsPerCTA());
+      return RankedTensorType::get(tensorTy.getShape(),
+                                   tensorTy.getElementType(), newEncoding);
+    }
+    return type;
+  };
+
+  IRMapping mapping;
+  std::function<Value(Value)> cloneValue = [&](Value value) -> Value {
+    if (Value mapped = mapping.lookupOrNull(value))
+      return mapped;
+    Operation *def = value.getDefiningOp();
+    if (!def)
+      return value;
+    if (def->getNumRegions() != 0 || !mlir::isMemoryEffectFree(def))
+      return value;
+    for (Value operand : def->getOperands())
+      mapping.map(operand, cloneValue(operand));
+    Operation *cloned = rewriter.clone(*def, mapping);
+    for (auto [oldResult, newResult] :
+         llvm::zip_equal(def->getResults(), cloned->getResults())) {
+      newResult.setType(withSmeMaskEncoding(newResult.getType()));
+      mapping.map(oldResult, newResult);
+    }
+    if (auto constant = dyn_cast<arith::ConstantOp>(cloned)) {
+      if (auto dense = dyn_cast<DenseElementsAttr>(constant.getValue())) {
+        auto resultTy = cast<ShapedType>(constant.getResult().getType());
+        constant->setAttr("value", dense.reshape(resultTy));
+      }
+    }
+    return mapping.lookup(value);
+  };
+  return cloneValue(root);
 }
 
 class BlockedToSME : public mlir::RewritePattern {
@@ -119,37 +170,66 @@ public:
     if (computeCapability <= 70)
       return failure();
     auto loadOp = dyn_cast<LoadOp>(op);
-    // if have stride, can skip
-    if (loadOp.getInputStride())
-      return failure();
-    // if use Mask,  can not use sme
-    if (loadOp.getMask())
-      return failure();
+    // Idempotency guard: a load whose result is already SME-encoded was
+    // produced by this pattern, so do not re-process it. Explicit
+    // tl.load(stride=...) starts as a normal blocked load with inputStride, and
+    // should still be converted below.
+    if (auto retTy =
+            mlir::dyn_cast<RankedTensorType>(loadOp.getResult().getType()))
+      if (auto enc = mlir::dyn_cast<BlockedEncodingAttr>(retTy.getEncoding()))
+        if (enc.getIsSme())
+          return failure();
     // only use sme for dot_load
     if (loadOp.getResult().use_empty())
       return failure();
 
     Operation *use = *loadOp.getResult().getUsers().begin();
-    while (use) {
-      if (use->getNumResults() != 1 || use->getResult(0).use_empty())
-        break;
-      auto tensorType =
-          mlir::dyn_cast<RankedTensorType>(use->getResult(0).getType());
-      if (!tensorType ||
-          !mlir::isa<SwizzledSharedEncodingAttr>(tensorType.getEncoding()))
-        break;
-      use = *use->getResult(0).getUsers().begin();
-    }
+    LocalAllocOp localAlloc = nullptr;
+    LocalLoadOp localLoad = nullptr;
+    ConvertLayoutOp convertLayout = nullptr;
+    RankedTensorType tensorType;
+    DotOperandEncodingAttr dotOpEnc;
 
-    auto convertLayout = llvm::dyn_cast<ConvertLayoutOp>(use);
-    if (!convertLayout)
-      return failure();
-    auto tensorType =
-        mlir::dyn_cast<RankedTensorType>(convertLayout.getResult().getType());
-    if (!tensorType)
-      return failure();
-    auto dotOpEnc =
-        mlir::dyn_cast<DotOperandEncodingAttr>(tensorType.getEncoding());
+    // Current v3.6 dot lowering may already have routed the load through shared
+    // memory before this pass:
+    //   load -> local_alloc -> local_load(dot_operand<useSme>) -> dot
+    // In that shape, make local_alloc consume the newly-created SME load below.
+    localAlloc = llvm::dyn_cast<LocalAllocOp>(use);
+    if (localAlloc) {
+      if (!localAlloc.getResult().hasOneUse())
+        return failure();
+      localLoad = llvm::dyn_cast<LocalLoadOp>(
+          *localAlloc.getResult().getUsers().begin());
+      if (!localLoad)
+        return failure();
+      tensorType =
+          mlir::dyn_cast<RankedTensorType>(localLoad.getResult().getType());
+      if (!tensorType)
+        return failure();
+      dotOpEnc =
+          mlir::dyn_cast<DotOperandEncodingAttr>(tensorType.getEncoding());
+    } else {
+      while (use) {
+        if (use->getNumResults() != 1 || use->getResult(0).use_empty())
+          break;
+        auto useTensorType =
+            mlir::dyn_cast<RankedTensorType>(use->getResult(0).getType());
+        if (!useTensorType ||
+            !mlir::isa<SwizzledSharedEncodingAttr>(useTensorType.getEncoding()))
+          break;
+        use = *use->getResult(0).getUsers().begin();
+      }
+
+      convertLayout = llvm::dyn_cast<ConvertLayoutOp>(use);
+      if (!convertLayout)
+        return failure();
+      tensorType =
+          mlir::dyn_cast<RankedTensorType>(convertLayout.getResult().getType());
+      if (!tensorType)
+        return failure();
+      dotOpEnc =
+          mlir::dyn_cast<DotOperandEncodingAttr>(tensorType.getEncoding());
+    }
 
     // Transposed dot operand. After AccelerateMatmul + RemoveLayoutConversions
     // a transposed SME operand shows up as a *register* transpose:
@@ -158,7 +238,7 @@ public:
     // through SME shared memory and the transpose is applied on the shared
     // memdesc (lowered via LinearLayout), matching the non-transposed SME path.
     TransOp transOp = nullptr;
-    if (!dotOpEnc && loadOp.getResult().hasOneUse() &&
+    if (!localAlloc && !dotOpEnc && loadOp.getResult().hasOneUse() &&
         convertLayout.getResult().hasOneUse()) {
       if (auto t =
               llvm::dyn_cast<TransOp>(*convertLayout->getUsers().begin())) {
@@ -189,12 +269,27 @@ public:
         mlir::dyn_cast<BlockedEncodingAttr>(oldRetType.getEncoding());
     if (!oldRetEncod)
       return failure();
+    bool isI8RowXfb8 = oldRetType.getElementType().isInteger(8) &&
+                       oldRetEncod.getOrder()[0] != 0;
+    if (isI8RowXfb8 && transOp &&
+        (loadOp.getMask() || loadOp.getOther() ||
+         !loadOp.getBoundaryCheck().empty())) {
+      // Transpose sinking below is elementwise, but SME itself does not support
+      // non-uniform predication. Keep unsupported boundary cases on the normal
+      // load path.
+      return failure();
+    }
 
-    // find matrix store_major(row or col) stride
-    Value in_stride = getSmeStride(loadOp, rewriter);
+    // Prefer explicit tl.load(stride=...). Auto SME falls back to recovering
+    // the row stride from address arithmetic.
+    Value in_stride = loadOp.getInputStride();
     if (!in_stride)
-      assert(false && "can not find tensor Stride, Please check ttgir or dot "
-                      "logic in User code");
+      in_stride = getSmeStride(loadOp, rewriter);
+    if (!in_stride)
+      return failure();
+    if (in_stride.getType().isInteger(64))
+      in_stride = arith::TruncIOp::create(rewriter, loadOp.getLoc(),
+                                          rewriter.getI32Type(), in_stride);
 
     // Use the load shape (untransposed) for the SME blocked load. For the
     // transposed-operand path tensorType is the transposed dot operand, so use
@@ -204,11 +299,68 @@ public:
     int numWarps = lookupNumWarps(mod);
     int numCTAs = TritonGPUDialect::getNumCTAs(mod);
 
+    if (isI8RowXfb8 && transOp) {
+      // Sink the value transpose through the load:
+      //
+      //   trans(load(ptr[N,K] row-major))
+      //     -> load(trans(ptr)[K,N] col-major)
+      //
+      // The transposed pointer is a genuine col-major view of the same
+      // row-contiguous storage: addr(k,n) = k + n*K. This lets G2S use the
+      // GF(2)-linear colxfb8 layout and avoids exposing the non-linear rowxfb8
+      // surrogate through memdesc_trans.
+      auto loc = loadOp.getLoc();
+      auto *ctx = oldRetType.getContext();
+      SmallVector<int32_t> order({1, 0});
+      Value transPtr = TransOp::create(rewriter, loc, loadOp.getPtr(), order);
+      auto transPtrTy = mlir::cast<RankedTensorType>(transPtr.getType());
+      auto transPtrEnc =
+          mlir::cast<BlockedEncodingAttr>(transPtrTy.getEncoding());
+
+      // Rebuild the SME encoding from the transposed shape/order so the SME
+      // warp distribution is computed for the col tile (64x16 for int8).
+      auto transSmeEnc = BlockedEncodingAttr::get(
+          ctx, true, numWarps, oldRetType.getElementType(),
+          transPtrTy.getShape(), transPtrEnc.getOrder(),
+          transPtrEnc.getSizePerThread(), transPtrEnc.getThreadsPerWarp(),
+          transPtrEnc.getWarpsPerCTA(), numCTAs);
+      auto smePtrTy = RankedTensorType::get(
+          transPtrTy.getShape(), transPtrTy.getElementType(), transSmeEnc);
+      Value smePtr = ConvertLayoutOp::create(rewriter, loc, smePtrTy, transPtr);
+      auto transLoadTy = RankedTensorType::get(
+          transPtrTy.getShape(), oldRetType.getElementType(), transSmeEnc);
+      auto transLoad =
+          LoadOp::create(rewriter, loc, transLoadTy, smePtr, Value(), Value(),
+                         loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
+                         loadOp.getCache(), loadOp.getEvict(),
+                         loadOp.getIsVolatile(), in_stride);
+
+      auto sharedMemorySpace = SharedMemorySpaceAttr::get(ctx);
+      auto sharedOrder = getOrderForMemory(transLoadTy);
+      auto ctaLayout = getCTALayout(transSmeEnc);
+      auto sharedEnc = SwizzledSharedEncodingAttr::get(
+          ctx, dotOpEnc, transLoadTy.getShape(), sharedOrder, ctaLayout,
+          oldRetType.getElementType(), /*needTrans=*/false);
+      auto allocTy =
+          MemDescType::get(transLoadTy.getShape(), oldRetType.getElementType(),
+                           sharedEnc, sharedMemorySpace);
+      auto alloc =
+          LocalAllocOp::create(rewriter, loc, allocTy, transLoad.getResult());
+      auto localLoad =
+          LocalLoadOp::create(rewriter, loc, tensorType, alloc.getResult());
+
+      rewriter.replaceOp(transOp, localLoad.getResult());
+      rewriter.eraseOp(convertLayout);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     BlockedEncodingAttr smeEnc;
     smeEnc = BlockedEncodingAttr::get(
-        oldRetType.getContext(), true, numWarps, oldRetType.getElementType(),
-        retShape, oldRetEncod.getOrder(), oldRetEncod.getSizePerThread(),
-        oldRetEncod.getThreadsPerWarp(), oldRetEncod.getWarpsPerCTA(), numCTAs);
+        oldRetType.getContext(), true, false, numWarps,
+        oldRetType.getElementType(), retShape, oldRetEncod.getOrder(),
+        oldRetEncod.getSizePerThread(), oldRetEncod.getThreadsPerWarp(),
+        oldRetEncod.getWarpsPerCTA(), numCTAs);
 
     auto newRetType =
         RankedTensorType::get(retShape, oldRetType.getElementType(), smeEnc);
@@ -217,34 +369,40 @@ public:
     Value ptr = loadOp.getPtr();
     auto oldPtrType = mlir::dyn_cast<RankedTensorType>(ptr.getType());
     auto newPtrEncoding = BlockedEncodingAttr::get(
-        oldPtrType.getContext(), true, numWarps, oldRetType.getElementType(),
-        oldPtrType.getShape(), oldRetEncod.getOrder(),
-        oldRetEncod.getSizePerThread(), oldRetEncod.getThreadsPerWarp(),
-        oldRetEncod.getWarpsPerCTA(), numCTAs);
+        oldPtrType.getContext(), true, false, numWarps,
+        oldRetType.getElementType(), oldPtrType.getShape(),
+        oldRetEncod.getOrder(), oldRetEncod.getSizePerThread(),
+        oldRetEncod.getThreadsPerWarp(), oldRetEncod.getWarpsPerCTA(), numCTAs);
     auto newPtrType = RankedTensorType::get(
         oldPtrType.getShape(), oldPtrType.getElementType(), newPtrEncoding);
     ptr = ConvertLayoutOp::create(rewriter, ptr.getLoc(), newPtrType, ptr);
-    // mask operand
+    // LoadOp requires ptr/mask/other/result encodings to match. The cloned mask
+    // DAG carries smeMask=true up to this final conversion; ptr-side ranges
+    // carry isSme=true, smeMask=false.
     Value mask = loadOp.getMask();
     if (mask) {
+      // A typical K-tail mask and its pointer share the same make_range. Clone
+      // the pure mask DAG before assigning the SME encoding so the pointer-only
+      // make_range canonicalization cannot also zero the predicate range.
+      mask = cloneMaskComputation(mask, rewriter);
       auto oldMaskType = mlir::dyn_cast<RankedTensorType>(mask.getType());
       auto newMaskEncoding = BlockedEncodingAttr::get(
-          oldMaskType.getContext(), true, numWarps, oldRetType.getElementType(),
-          oldMaskType.getShape(), oldRetEncod.getOrder(),
-          oldRetEncod.getSizePerThread(), oldRetEncod.getThreadsPerWarp(),
-          oldRetEncod.getWarpsPerCTA(), numCTAs);
+          oldMaskType.getContext(), true, false, numWarps,
+          oldRetType.getElementType(), oldMaskType.getShape(),
+          oldRetEncod.getOrder(), oldRetEncod.getSizePerThread(),
+          oldRetEncod.getThreadsPerWarp(), oldRetEncod.getWarpsPerCTA(),
+          numCTAs);
       auto newMaskType =
           RankedTensorType::get(oldMaskType.getShape(),
                                 oldMaskType.getElementType(), newMaskEncoding);
       mask =
           ConvertLayoutOp::create(rewriter, mask.getLoc(), newMaskType, mask);
     }
-    // other operand
     Value other = loadOp.getOther();
     if (other) {
       auto oldOtherType = mlir::dyn_cast<RankedTensorType>(other.getType());
       auto newOtherEncoding = BlockedEncodingAttr::get(
-          oldOtherType.getContext(), true, numWarps,
+          oldOtherType.getContext(), true, false, numWarps,
           oldRetType.getElementType(), oldOtherType.getShape(),
           oldRetEncod.getOrder(), oldRetEncod.getSizePerThread(),
           oldRetEncod.getThreadsPerWarp(), oldRetEncod.getWarpsPerCTA(),
@@ -261,6 +419,12 @@ public:
                        loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
                        loadOp.getCache(), loadOp.getEvict(),
                        loadOp.getIsVolatile(), in_stride);
+
+    if (localAlloc) {
+      localAlloc.getSrcMutable().assign(newload.getResult());
+      rewriter.eraseOp(op);
+      return success();
+    }
 
     if (transOp) {
       // Route the SME load through shared memory and transpose on the shared

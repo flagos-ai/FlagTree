@@ -1,6 +1,6 @@
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
-set(LLVM_TARGET_DEFINITIONS TritonOps.td)
+flagtree_spec_td_set(LLVM_TARGET_DEFINITIONS TritonOps.td)
 mlir_tablegen(Ops.h.inc -gen-op-decls)
 mlir_tablegen(Ops.cpp.inc -gen-op-defs)
 mlir_tablegen(OpsEnums.h.inc -gen-enum-decls)

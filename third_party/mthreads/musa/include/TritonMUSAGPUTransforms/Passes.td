@@ -188,6 +188,10 @@ def TritonMUSAGPUMarkInplaceLoads
     "mlir::triton::TritonDialect",
     "mlir::triton::gpu::TritonGPUDialect"
   ];
+  let options = [
+    Option<"inplaceAliasPairs", "inplace-alias-pairs", "std::string",
+           "\"\"", "runtime pointer alias pairs">
+  ];
 }
 
 #ifdef __TLE__

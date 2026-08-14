@@ -70,6 +70,17 @@ try:
 except ImportError:
     pass
 
+try:
+    from .ppu import PPUJITFunction
+    registry["ppu"] = PPUJITFunction
+    # On the PPU backend, raw kernels written in the CUDA dialect are compiled
+    # through the PPU toolchain, so "cuda" resolves to the PPU implementation.
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    if FLAGTREE_BACKEND == "ppu":
+        registry["cuda"] = PPUJITFunction
+except ImportError:
+    pass
+
 
 def dialect(
     *,

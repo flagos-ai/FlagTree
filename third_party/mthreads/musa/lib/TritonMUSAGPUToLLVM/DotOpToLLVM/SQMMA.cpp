@@ -672,20 +672,14 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
 
   bool zeroAcc = isZeroConst(opC);
   SmallVector<Value> fc;
-  SmallVector<Value> fcFragments;
   if (zeroAcc) {
-    if (carrierMode) {
-      fcFragments.resize(repCount);
-    } else {
+    if (!carrierMode) {
       Type accElemTy = typeConverter->convertType(dTy.getElementType());
       Value zero = LLVM::ZeroOp::create(rewriter, loc, accElemTy);
       fc.assign(totalAccElems, zero);
     }
   } else {
-    if (carrierMode) {
-      fcFragments = mlir::LLVM::MUSA::unpackSqmmaAccumulatorCarrier(
-          loc, adaptorC, dTy, rewriter);
-    } else {
+    if (!carrierMode) {
       fc = ::mlir::unpackLLElements(loc, adaptorC, rewriter);
     }
   }
@@ -755,11 +749,10 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
   Type accVecTy = vec_ty(accLaneTy, accElemsPerThread);
 
   SmallVector<Value> mmaResults;
-  SmallVector<Value> mmaCarrierFragments;
   if (!carrierMode && !usesSoftwareAccumulator)
     mmaResults.resize(expectedAccElems);
-  if (carrierMode && !usesSoftwareAccumulator)
-    mmaCarrierFragments.resize(repCount);
+  Value softwareCarrierResult;
+  Value mmaCarrierResult;
 
   for (const SqmmaTileState &tile : *tilePlan) {
     size_t accBase = tile.regBase;
@@ -780,7 +773,10 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
         Value accSliceVec;
         if (carrierMode) {
           accSliceVec = mlir::LLVM::MUSA::carrierFragmentToMathVec(
-              loc, fcFragments[fragmentIdx], dTy, rewriter);
+              loc,
+              mlir::LLVM::MUSA::extractSqmmaAccumulatorCarrierFragment(
+                  loc, adaptorC, fragmentIdx, dTy, rewriter),
+              dTy, rewriter);
         } else {
           auto accSlice = loadAccSlice(rewriter, loc, fc, accBase,
                                        accElemsPerThread, nullptr);
@@ -835,8 +831,12 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
       }
       if (carrierMode) {
         Value accumVec = packLLVector(loc, accumElems, rewriter);
-        fcFragments[fragmentIdx] = mlir::LLVM::MUSA::mathVecToCarrierFragment(
+        Value carrierFragment = mlir::LLVM::MUSA::mathVecToCarrierFragment(
             loc, accumVec, dTy, rewriter);
+        softwareCarrierResult =
+            mlir::LLVM::MUSA::insertSqmmaAccumulatorCarrierFragment(
+                loc, softwareCarrierResult, carrierFragment, fragmentIdx, dTy,
+                rewriter);
       } else {
         for (unsigned i = 0; i < accumElems.size(); ++i)
           fc[accBase + i] = accumElems[i];
@@ -847,8 +847,10 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
     Type accElemTy = accLaneTy;
     Value accVec;
     if (carrierMode) {
-      accVec = zeroAcc ? LLVM::ZeroOp::create(rewriter, loc, ivecTy)
-                       : fcFragments[fragmentIdx];
+      accVec = zeroAcc
+                   ? LLVM::ZeroOp::create(rewriter, loc, accVecTy)
+                   : mlir::LLVM::MUSA::extractSqmmaAccumulatorCarrierFragment(
+                         loc, adaptorC, fragmentIdx, dTy, rewriter);
       if (!zeroAcc && (!useCConst || !*useCConst)) {
         Value zeroVec = LLVM::ZeroOp::create(rewriter, loc, accVec.getType());
         accVec =
@@ -948,7 +950,10 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
                                : b.bitcast(finalReg, accVecTy);
       Value carrierFragment = mlir::LLVM::MUSA::mathVecToCarrierFragment(
           loc, finalMathVec, dTy, rewriter);
-      mmaCarrierFragments[fragmentIdx] = carrierFragment;
+      mmaCarrierResult =
+          mlir::LLVM::MUSA::insertSqmmaAccumulatorCarrierFragment(
+              loc, mmaCarrierResult, carrierFragment, fragmentIdx, dTy,
+              rewriter);
     } else {
       Value finalAcc = finalReg.getType() == currentAccVecTy
                            ? finalReg
@@ -964,11 +969,8 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
       LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.sqmma.wait",
                                       TypeRange{}, {});
     }
-    Value res = mlir::LLVM::MUSA::packSqmmaAccumulatorCarrier(
-        loc,
-        usesSoftwareAccumulator ? ValueRange(fcFragments)
-                                : ValueRange(mmaCarrierFragments),
-        dTy, rewriter);
+    Value res =
+        usesSoftwareAccumulator ? softwareCarrierResult : mmaCarrierResult;
     rewriter.replaceOp(op, res);
     return success();
   }

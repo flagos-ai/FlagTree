@@ -169,22 +169,17 @@ static bool isKnownBrokenSqmmaConfig(Type elemTy, bool allowTF32,
 }
 
 static SmallVector<unsigned, 2>
-selectWarpsPerCTAForPH1(unsigned m, unsigned n, unsigned numWarps,
-                        ArrayRef<unsigned> instrShape) {
+selectWmmaWarpsPerCTAForPH1(unsigned m, unsigned n, unsigned numWarps,
+                            ArrayRef<unsigned> instrShape) {
   assert(instrShape.size() == 3 && "Unexpected instrShape rank");
   SmallVector<unsigned, 2> ret{1, 1};
-  unsigned maxWarpsM = std::max(1u, m / instrShape[0]);
   while (ret[0] * ret[1] < numWarps) {
     bool growM =
         (m / instrShape[0] / ret[0]) >= (n / (instrShape[1] * 2) / ret[1]);
-    if (growM) {
-      if (ret[0] < maxWarpsM)
-        ret[0] *= 2;
-      else
-        ret[1] *= 2;
-    } else {
+    if (growM)
+      ret[0] *= 2;
+    else
       ret[1] *= 2;
-    }
   }
   return ret;
 }
@@ -267,27 +262,19 @@ selectWmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
   SmallVector<unsigned, 3> bestInstrShape = {0, 0, 0};
   unsigned bestInstCount = 0;
 
-  for (unsigned tileM = 1; tileM <= numWarps; tileM *= 2) {
-    if (numWarps % tileM)
+  for (const auto &shape : candidates) {
+    if (!triton::musa::lookupWmmaIntrinsic(elemTy, shape))
       continue;
-    unsigned tileN = numWarps / tileM;
-    if (m % tileM != 0 || n % tileN != 0)
+    unsigned instM = shape[0];
+    unsigned instN = shape[1];
+    unsigned instK = shape[2];
+    if (m % instM != 0 || n % instN != 0 || k % instK != 0)
       continue;
-    unsigned warpM = m / tileM;
-    unsigned warpN = n / tileN;
-
-    for (const auto &shape : candidates) {
-      unsigned instM = shape[0];
-      unsigned instN = shape[1];
-      unsigned instK = shape[2];
-      if (warpM % instM != 0 || warpN % instN != 0 || k % instK != 0)
-        continue;
-      unsigned instCount = (warpM / instM) * (warpN / instN) * (k / instK);
-      if (!found || instCount < bestInstCount) {
-        bestInstCount = instCount;
-        bestInstrShape = shape;
-        found = true;
-      }
+    unsigned instCount = (m / instM) * (n / instN) * (k / instK);
+    if (!found || instCount < bestInstCount) {
+      bestInstCount = instCount;
+      bestInstrShape = shape;
+      found = true;
     }
   }
 
@@ -296,7 +283,8 @@ selectWmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
 
   SelectedConfig best;
   best.instrShape = bestInstrShape;
-  best.warpsPerCTA = selectWarpsPerCTAForPH1(m, n, numWarps, best.instrShape);
+  best.warpsPerCTA =
+      selectWmmaWarpsPerCTAForPH1(m, n, numWarps, best.instrShape);
   return best;
 }
 
@@ -327,10 +315,6 @@ static SmallVector<unsigned> getSqmmaCandidateK(Type elemTy, bool allowTF32) {
   if (tt::type::isFloat8(elemTy) || elemTy.isInteger(8))
     return {128, 64, 32};
   return {};
-}
-
-static bool shouldAllowSqmmaTranspose(Type elemTy) {
-  return elemTy.isF16() || elemTy.isBF16() || tt::type::isFloat8(elemTy);
 }
 
 enum class SqmmaTransLoadKind {
@@ -491,13 +475,8 @@ static Value getSharedMemorySqmmaOperand(Value v, PatternRewriter &rewriter,
       arg = bitcastOp.getSrc();
       continue;
     }
-    if (auto transOp = arg.getDefiningOp<tt::TransOp>()) {
-      if (allowTranspose ||
-          transOp.getSrc().getDefiningOp<tt::DescriptorLoadOp>())
-        break;
-      arg = transOp.getSrc();
-      continue;
-    }
+    if (arg.getDefiningOp<tt::TransOp>())
+      break;
     break;
   }
 
@@ -531,69 +510,31 @@ static Value getSharedMemorySqmmaOperand(Value v, PatternRewriter &rewriter,
   }
   bool isRowMajor =
       !newOrder.empty() && (newOrder.front() + 1 == argType.getRank());
+  auto hasConflictingSqmmaAttrs = [&](Operation *targetOp) {
+    if (!targetOp || !triton::musa::hasSqmmaOpIdxAttr(targetOp))
+      return false;
+    auto existingOpIdx = triton::musa::getSqmmaOpIdx(targetOp);
+    auto existingElemBytes = triton::musa::getSqmmaElemBytes(targetOp);
+    if (!existingOpIdx || !existingElemBytes)
+      return true;
+    bool existingRowMajor =
+        triton::musa::getSqmmaRowMajor(targetOp, isRowMajor);
+    return *existingOpIdx != opIdx || *existingElemBytes != elemBytes ||
+           existingRowMajor != isRowMajor;
+  };
   auto setSqmmaAttrs = [&](Operation *targetOp) {
     triton::musa::setSqmmaAttrs(targetOp, opIdx, elemBytes, isRowMajor);
   };
-  auto propagateSqmmaAttrsFromLocalAlloc = [&](ttg::LocalAllocOp localAlloc) {
-    SmallVector<Value> pending{localAlloc.getResult()};
-    llvm::SmallPtrSet<Operation *, 16> visited;
-    while (!pending.empty()) {
-      Value cur = pending.pop_back_val();
-      for (Operation *user : cur.getUsers()) {
-        if (!visited.insert(user).second)
-          continue;
-        if (auto indexOp = dyn_cast<ttg::MemDescIndexOp>(user)) {
-          setSqmmaAttrs(indexOp.getOperation());
-          pending.push_back(indexOp.getResult());
-          continue;
-        }
-        if (auto subslice = dyn_cast<ttg::MemDescSubsliceOp>(user)) {
-          setSqmmaAttrs(subslice.getOperation());
-          pending.push_back(subslice.getResult());
-          continue;
-        }
-        if (auto reinterpretOp = dyn_cast<ttg::MemDescReinterpretOp>(user)) {
-          pending.push_back(reinterpretOp.getResult());
-          continue;
-        }
-        if (auto transOp = dyn_cast<ttg::MemDescTransOp>(user)) {
-          pending.push_back(transOp.getResult());
-          continue;
-        }
-      }
-    }
+  auto setSqmmaAttrsIfCompatible = [&](Operation *targetOp) {
+    if (hasConflictingSqmmaAttrs(targetOp))
+      return false;
+    setSqmmaAttrs(targetOp);
+    return true;
   };
   auto propagateSqmmaAttrsToMemDescChain = [&](Value memDesc) {
-    Value cur = memDesc;
-    while (cur) {
-      Operation *defOp = cur.getDefiningOp();
-      if (!defOp)
-        break;
-      if (auto localAlloc = dyn_cast<ttg::LocalAllocOp>(defOp)) {
-        setSqmmaAttrs(localAlloc.getOperation());
-        propagateSqmmaAttrsFromLocalAlloc(localAlloc);
-        break;
-      }
-      if (auto indexOp = dyn_cast<ttg::MemDescIndexOp>(defOp)) {
-        setSqmmaAttrs(indexOp.getOperation());
-        cur = indexOp.getSrc();
-        continue;
-      }
-      if (auto subslice = dyn_cast<ttg::MemDescSubsliceOp>(defOp)) {
-        setSqmmaAttrs(subslice.getOperation());
-        cur = subslice.getSrc();
-        continue;
-      }
-      if (auto reinterpretOp = dyn_cast<ttg::MemDescReinterpretOp>(defOp)) {
-        cur = reinterpretOp.getSrc();
-        continue;
-      }
-      if (auto transOp = dyn_cast<ttg::MemDescTransOp>(defOp)) {
-        cur = transOp.getSrc();
-        continue;
-      }
-      break;
-    }
+    if (Operation *defOp = memDesc.getDefiningOp())
+      return setSqmmaAttrsIfCompatible(defOp);
+    return true;
   };
   auto cgaLayout = ttg::getCGALayout(argType.getEncoding());
   auto sharedLayout = mmaEnc.composeSharedLayoutForOperand(
@@ -616,29 +557,35 @@ static Value getSharedMemorySqmmaOperand(Value v, PatternRewriter &rewriter,
         return triton::musa::areMemDescTypesLayoutEquivalent(srcTy, memDescTy);
       };
       if (srcMemDescTy && samePhysicalLayout(srcMemDescTy)) {
-        propagateSqmmaAttrsToMemDescChain(localLoad.getSrc());
-        if (srcMemDescTy == memDescTy)
-          return localLoad.getSrc();
+        if (srcMemDescTy == memDescTy) {
+          if (propagateSqmmaAttrsToMemDescChain(localLoad.getSrc()))
+            return localLoad.getSrc();
+        } else {
+          (void)propagateSqmmaAttrsToMemDescChain(localLoad.getSrc());
 
-        rewriter.setInsertionPointAfterValue(localLoad.getSrc());
-        Value adapted = ttg::MemDescReinterpretOp::create(
-            rewriter, localLoad.getLoc(), memDescTy, localLoad.getSrc());
-        setSqmmaAttrs(adapted.getDefiningOp());
-        return adapted;
+          rewriter.setInsertionPointAfterValue(localLoad.getSrc());
+          Value adapted = ttg::MemDescReinterpretOp::create(
+              rewriter, localLoad.getLoc(), memDescTy, localLoad.getSrc());
+          setSqmmaAttrs(adapted.getDefiningOp());
+          return adapted;
+        }
       }
     }
   }
   if (descLoad) {
-    setSqmmaAttrs(descLoad.getOperation());
+    setSqmmaAttrsIfCompatible(descLoad.getOperation());
   }
 
   Value reusedMemDesc =
       forceFreshRestage
           ? Value()
           : triton::musa::findReusableLocalAllocForSource(arg, memDescTy);
-  if (reusedMemDesc)
-    if (auto localAlloc = reusedMemDesc.getDefiningOp<ttg::LocalAllocOp>())
-      setSqmmaAttrs(localAlloc.getOperation());
+  if (reusedMemDesc) {
+    if (auto localAlloc = reusedMemDesc.getDefiningOp<ttg::LocalAllocOp>()) {
+      if (!setSqmmaAttrsIfCompatible(localAlloc.getOperation()))
+        reusedMemDesc = {};
+    }
+  }
 
   if (reusedMemDesc)
     return reusedMemDesc;
@@ -821,8 +768,8 @@ public:
         static_cast<int32_t>(config->instrShape[0]),
         static_cast<int32_t>(config->instrShape[1]),
         static_cast<int32_t>(config->instrShape[2]), *wmmaEltType, *wmmaEltType,
-        triton::musa::inferWmmaFragmentLayout(dotOp.getA(), 0),
-        triton::musa::inferWmmaFragmentLayout(dotOp.getB(), 1),
+        triton::musa::getDefaultWmmaFragmentLayout(0),
+        triton::musa::getDefaultWmmaFragmentLayout(1),
         static_cast<int32_t>(dotOp.getInputPrecision()),
         /*maxNumImpreciseAcc=*/0);
     newDot->setAttr(kDisableGenericDotPipelineAttr, rewriter.getBoolAttr(true));
@@ -934,12 +881,8 @@ public:
 
     SqmmaTransLoadKind transLoadKindA = classifySqmmaTransLoad(dotOp.getA());
     SqmmaTransLoadKind transLoadKindB = classifySqmmaTransLoad(dotOp.getB());
-    bool allowTransposeA = transLoadKindA == SqmmaTransLoadKind::Descriptor ||
-                           (transLoadKindA == SqmmaTransLoadKind::PlainLoad &&
-                            shouldAllowSqmmaTranspose(aElemTy));
-    bool allowTransposeB = transLoadKindB == SqmmaTransLoadKind::Descriptor ||
-                           (transLoadKindB == SqmmaTransLoadKind::PlainLoad &&
-                            shouldAllowSqmmaTranspose(bElemTy));
+    bool allowTransposeA = transLoadKindA != SqmmaTransLoadKind::None;
+    bool allowTransposeB = transLoadKindB != SqmmaTransLoadKind::None;
     Value newA = getSharedMemorySqmmaOperand(dotOp.getA(), rewriter, 0, mmaEnc,
                                              allowTransposeA);
     Value newB = getSharedMemorySqmmaOperand(dotOp.getB(), rewriter, 1, mmaEnc,
@@ -996,6 +939,10 @@ struct TritonMUSAGPUAccelerateMatmulPass
     : impl::TritonMUSAGPUAccelerateMatmulBase<
           TritonMUSAGPUAccelerateMatmulPass> {
   using Base::Base;
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<triton::musa::MUSADialect>();
+  }
 
   void runOnOperation() override {
     ModuleOp mod = getOperation();

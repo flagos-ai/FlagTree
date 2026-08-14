@@ -7,7 +7,7 @@ import triton.language as tl
 from triton._internal_testing import is_hopper, is_sm12x, is_interpreter, numpy_random, to_triton, unwrap_tensor, tma_dtypes, to_numpy
 from triton.tools.mxfp import MXFP4Tensor, MXScaleTensor
 from typing import Optional
-from triton._internal_testing import is_cuda, is_corex, is_hip, is_hip_cdna3
+from triton._internal_testing import is_cuda, is_hip, is_hip_cdna3, is_corex
 from triton.tools.tensor_descriptor import TensorDescriptor
 from triton import CompilationError
 
@@ -1314,6 +1314,7 @@ def mxfp8_mxfp4_matmul_tma(  #
                                                        (128, 256, 256)])
 @pytest.mark.parametrize("NUM_STAGES", [1, 3])
 @pytest.mark.skipif(is_hip(), reason="HIP devices don't have full support for MX formats")
+@pytest.mark.skipif(is_corex(), reason="Iluvatar does not support fp4 / MXFP4 yet")
 def test_mxfp8_mxfp4_matmul_tma(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, device):
     if BLOCK_N == 256 and BLOCK_K == 256:
         NUM_STAGES = min(NUM_STAGES, 2)

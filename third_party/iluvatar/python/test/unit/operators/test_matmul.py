@@ -120,8 +120,10 @@ def test_op(BLOCK_M, BLOCK_N, BLOCK_K, SPLIT_K, NWARP, NSTAGE, M, N, K, AT, BT, 
         pytest.skip("skip col-major for now")
     capability = torch.cuda.get_device_capability()
     if is_corex():
-        if "float8" in ADTYPE or "float8" in BDTYPE:
-            pytest.skip("Iluvatar devices do not support float8 for now")
+        if "float8e4b8" in ADTYPE or "float8e4b8" in BDTYPE or "float8e5b16" in ADTYPE or "float8e5b16" in BDTYPE:
+            pytest.skip("FNUZ float8 dtypes are not enabled on ivcore11 yet")
+        if "float8e4b15" in ADTYPE or "float8e4b15" in BDTYPE:
+            pytest.skip("float8e4b15 is not supported on Iluvatar")
         # Iluvatar TCU requires both operands to share the same dtype; mixed
         # precision (e.g. int8/bfloat16, float16/int8, bfloat16/float32) is not
         # supported. This subsumes the specific pairs skipped by the v3.2 pick.
@@ -161,7 +163,7 @@ def test_op(BLOCK_M, BLOCK_N, BLOCK_K, SPLIT_K, NWARP, NSTAGE, M, N, K, AT, BT, 
             offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
             mask = offs < N
             x = tl.load(X + offs, mask=mask)
-            tl.store(Y + offs, x, mask=mask)
+            tl.store(Y + offs, x.to(tl.float16), mask=mask)
 
         ret = torch.empty_strided(x.shape, x.stride(), dtype=torch.float16, device=x.device)
         grid = lambda META: (triton.cdiv(x.numel(), META['BLOCK_SIZE']), )
@@ -171,6 +173,12 @@ def test_op(BLOCK_M, BLOCK_N, BLOCK_K, SPLIT_K, NWARP, NSTAGE, M, N, K, AT, BT, 
 
     def upcast_if_fp8(x, dtype):
         if is_fp8(dtype):
+            torch_fp8 = {
+                'float8e4nv': torch.float8_e4m3fn,
+                'float8e5': torch.float8_e5m2,
+            }.get(dtype)
+            if torch_fp8 is not None:
+                return x.view(torch_fp8).to(torch.float16)
             return f8_to_f16(x, dtype)
         return x
 

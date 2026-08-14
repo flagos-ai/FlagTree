@@ -1,4 +1,5 @@
 #include "TritonILUVATARGPUToLLVM/Passes.h"
+#include "triton/Tools/LLVMWarningFilter.h"
 #ifdef __ILUVATAR_TLE__
 #include "Dialect.h"
 #endif
@@ -309,6 +310,12 @@ void init_triton_iluvatar_passes_ttgpuir(py::module &&m) {
           pm.addPass(mlir::triton::createConvertTritonILUVATARGPUToLLVMPass(
               arch, ftz));
         });
+  // Lower ttg.warp_specialize to LLVM. On ivcore11 this uses a shared-memory
+  // software-barrier workaround (no hardware named barrier / setmaxnreg).
+  m.def("add_warp_specialize_to_llvm", [](mlir::PassManager &pm,
+                                          const std::string &arch) {
+    pm.addPass(mlir::triton::createILUVATARWarpSpecializeToLLVMPass(arch));
+  });
   // iluvatar-specific passes
   ADD_PASS_WRAPPER_1("add_matmul_smeload",
                      mlir::createTritonILUVATARGPUSmeLoadPass, int);
@@ -363,6 +370,7 @@ void init_triton_iluvatar(py::module &&m) {
           py::gil_scoped_release allow_threads;
           // create LLVM module from C++
           llvm::LLVMContext context;
+          mlir::triton::tools::installLLVMWarningFilter(context);
           std::unique_ptr<llvm::MemoryBuffer> buffer =
               llvm::MemoryBuffer::getMemBuffer(llvmIR.c_str());
           llvm::SMDiagnostic error;

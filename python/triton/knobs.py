@@ -267,31 +267,18 @@ class MUSATool:
 
 
 class env_musa_tool(env_base[str, MUSATool]):
+    _DEFAULT_MUSA_PREFIX = "/usr/local/musa"
 
     def __init__(self, key: str, binary: str) -> None:
         self.binary = binary + sysconfig.get_config_var("EXE")
         super().__init__(key)
 
     def _candidate_paths(self, path: Optional[str]) -> list[str]:
-        import shutil
         candidates = []
         if path:
             candidates.append(path)
 
-        toolchain_path = getenv("TRITON_MUSA_TOOLCHAIN_PATH")
-        if toolchain_path:
-            candidates.append(os.path.join(toolchain_path, self.binary))
-
-        mtcc_bin_path = getenv("MTCC_BIN_PATH")
-        if mtcc_bin_path:
-            candidates.append(os.path.join(mtcc_bin_path, self.binary))
-
-        musa_home = getenv("MUSA_HOME") or getenv("MUSA_ROOT")
-        if musa_home:
-            candidates.append(os.path.join(musa_home, "bin", self.binary))
-
-        if which := shutil.which(self.binary):
-            candidates.append(which)
+        candidates.append(os.path.join(self._DEFAULT_MUSA_PREFIX, "bin", self.binary))
 
         return candidates
 
@@ -596,6 +583,21 @@ class nvidia_knobs(base_knobs):
     tle_raw_clang_flags: env_opt_str = env_opt_str("CLANG_FLAGS")
 
 
+# flagtree iluvatar
+class iluvatar_knobs(base_knobs):
+
+    @staticmethod
+    @functools.lru_cache()
+    def _corex_home_default() -> str:
+        import shutil
+        if ixsmi := shutil.which("ixsmi"):
+            return os.path.dirname(os.path.dirname(os.path.realpath(ixsmi)))
+        return "/usr/local/corex"
+
+    libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
+    libcuda_path: env_str_callable_default = env_str_callable_default("TRITON_LIBCUDA_PATH", _corex_home_default)
+
+
 class amd_knobs(base_knobs):
     use_buffer_ops: env_bool = env_bool("AMDGCN_USE_BUFFER_OPS", True)
     # Note: This requires use_buffer_ops be true to have any effect
@@ -648,7 +650,6 @@ class metax_knobs(base_knobs):
 
 # flagtree mthreads
 class musa_knobs(base_knobs):
-    toolchain_path: env_opt_str = env_opt_str("TRITON_MUSA_TOOLCHAIN_PATH")
     llc_path: env_opt_str = env_opt_str("TRITON_MUSA_LLC_PATH")
     lld_path: env_opt_str = env_opt_str("TRITON_MUSA_LLD_PATH")
     llc_asm_path: env_opt_str = env_opt_str("TRITON_MUSA_LLC_ASM_PATH")
@@ -665,6 +666,14 @@ class musa_knobs(base_knobs):
     replace_llir: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_LLIR")
     replace_mubin: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_MUBIN")
     libdevice_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBDEVICE_PATH")
+
+
+# flagtree ppu
+class ppu_knobs(base_knobs):
+    disable_ppu_llc_opt: env_bool = env_bool("DISABLE_PPU_LLC_OPT")
+    ppu_llc_options: env_opt_str = env_opt_str("PPU_LLC_OPTIONS")
+    dump_compile_log: env_bool = env_bool("TRITON_DUMP_COMPILE_LOG")
+    libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
 
 
 class proton_knobs(base_knobs):
@@ -706,6 +715,8 @@ amd = amd_knobs()
 hcu = hcu_knobs()  # flagtree hcu
 metax = metax_knobs()  # flagtree metax
 musa = musa_knobs()  # flagtree mthreads
+ppu = ppu_knobs()  # flagtree ppu
+iluvatar = iluvatar_knobs()  # flagtree iluvatar
 proton = proton_knobs()
 
 

@@ -25,6 +25,9 @@ private:
   SmallVector<Value> strides;
   SmallVector<Value> offsets;
   ArrayRef<int64_t> tensorShape;
+#if defined(__ILUVATAR__)
+  ArrayRef<int32_t> order;
+#endif
 
   // A cache to avoid generating the same offset with range
   DenseMap<unsigned, Value> cachedOffsetWithRange;
@@ -36,6 +39,18 @@ public:
 
   RewritedInfo &operator=(const RewritedInfo &other) = default;
 
+#if defined(__ILUVATAR__)
+  RewritedInfo(Value base, const SmallVector<Value> &shape,
+               const SmallVector<Value> &strides,
+               const SmallVector<Value> &offsets,
+               const ArrayRef<int64_t> &tensorShape,
+               const ArrayRef<int32_t> &order)
+      : base(base), shape(shape), strides(strides), offsets(offsets),
+        tensorShape(tensorShape), order(order) {
+    assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
+           shape.size() == tensorShape.size() && shape.size() == order.size());
+  }
+#else
   RewritedInfo(Value base, const SmallVector<Value> &shape,
                const SmallVector<Value> &strides,
                const SmallVector<Value> &offsets,
@@ -45,12 +60,21 @@ public:
     assert(shape.size() == strides.size() && shape.size() == offsets.size() &&
            shape.size() == tensorShape.size());
   }
+#endif
 
   unsigned int length() const { return shape.size(); }
 
   Value getOffset(unsigned i) { return offsets[i]; }
 
   SmallVector<Value> getOffsets() { return offsets; }
+
+#if defined(__ILUVATAR__)
+  Value getContiguousStride() {
+    if (strides.size() == 2)
+      return strides[order[1]];
+    return {};
+  }
+#endif
 
   void setOffset(unsigned i, Value newOffset) {
     offsets[i] = newOffset;
@@ -242,10 +266,17 @@ public:
       i64Offsets.push_back(i64Offset);
     }
 
+#if defined(__ILUVATAR__)
+    // Save information
+    rewritedInfo[op.getResult()] =
+        RewritedInfo(op.getBase(), op.getShape(), op.getStrides(), i64Offsets,
+                     tensorType.getShape(), op.getOrderAttr().asArrayRef());
+#else
     // Save information
     rewritedInfo[op.getResult()] =
         RewritedInfo(op.getBase(), op.getShape(), op.getStrides(), i64Offsets,
                      tensorType.getShape());
+#endif
 
     // Erase the original operation
     eraser.push(op);
@@ -313,9 +344,30 @@ public:
 
     // Create a new operation
     if (auto loadOp = dyn_cast<triton::LoadOp>(op)) {
+#if defined(__ILUVATAR__)
+      triton::LoadOp newResult;
+      Value resStride = info.getContiguousStride();
+      if (resStride) {
+        Value inputStride = arith::TruncIOp::create(
+            builder, loadOp.getLoc(), builder.getI32Type(), resStride);
+        newResult = triton::LoadOp::create(
+            builder, loadOp.getLoc(), loadOp.getResult().getType(), newPtr,
+            newMask, newOther, loadOp.getBoundaryCheckAttr(),
+            loadOp.getPaddingAttr(), loadOp.getCache(), loadOp.getEvict(),
+            loadOp.getIsVolatile(), inputStride);
+      } else {
+        newResult = triton::LoadOp::create(
+            builder, loadOp.getLoc(), newPtr, newMask, newOther,
+            loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+      }
+#else
       auto newResult = triton::LoadOp::create(
           builder, loadOp.getLoc(), newPtr, newMask, newOther,
           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+#endif
+#ifdef __ILUVATAR_TLE__
+      tle::copyAsyncLoadAttr(loadOp, newResult);
+#endif
       op->getResult(0).replaceAllUsesWith(newResult);
     } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
       triton::StoreOp::create(builder, storeOp.getLoc(), newPtr,

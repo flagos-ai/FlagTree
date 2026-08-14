@@ -2,6 +2,7 @@
 #include "TritonMUSACommon/BarrierUtils.h"
 #include "TritonMUSACommon/MMAContractUtils.h"
 #include "TritonMUSACommon/MMAEncodingUtils.h"
+#include "TritonMUSACommon/MMAOperandUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
@@ -99,6 +100,13 @@ static LogicalResult verifyDotShapeContract(Operation *op,
   if (cShape != dShape)
     return op->emitError("expected result shape to match accumulator shape");
   return success();
+}
+
+static LogicalResult verifySqmmaMemDescOperandContract(SquadDotOp op,
+                                                       Value operand,
+                                                       unsigned operandIdx) {
+  return verifySqmmaMemDescOperandProducerContract(op.getOperation(), operand,
+                                                   operandIdx);
 }
 
 static bool isFP8Type(Type type) {
@@ -230,6 +238,9 @@ LogicalResult SquadDotOp::verify() {
   if (interface->inferDotOpEncoding(aEncoding, 0, retEnc, getLoc()).failed())
     return failure();
   if (interface->inferDotOpEncoding(bEncoding, 1, retEnc, getLoc()).failed())
+    return failure();
+  if (failed(verifySqmmaMemDescOperandContract(*this, getA(), 0)) ||
+      failed(verifySqmmaMemDescOperandContract(*this, getB(), 1)))
     return failure();
   if (failed(verifyDotShapeContract(getOperation(), aTy.getShape(),
                                     bTy.getShape(), accTy.getShape(),
@@ -470,11 +481,31 @@ LogicalResult InitArrivalOp::verify() {
   return verifyNonNegativeI32Constant(getOperation(), getPhaseId(), "phaseId");
 }
 
+#ifdef __TLE__
+static LogicalResult verifyTMEIssueThread(Operation *op) {
+  Attribute attr = op->getAttr(triton::musa::kTMEIssueThreadAttr);
+  if (!attr)
+    return success();
+  auto issueThread = dyn_cast<IntegerAttr>(attr);
+  if (!issueThread || !issueThread.getType().isInteger(32) ||
+      issueThread.getInt() < 0)
+    return op->emitOpError("musa.tme.issue_thread must be a non-negative i32");
+  return success();
+}
+#endif // __TLE__
+
 LogicalResult BarrierAddTransOp::verify() {
   if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))
     return failure();
+#ifdef __TLE__
+  if (failed(verifyNonNegativeI32Constant(getOperation(), getTransBytes(),
+                                          "transBytes")))
+    return failure();
+  return verifyTMEIssueThread(getOperation());
+#else
   return verifyNonNegativeI32Constant(getOperation(), getTransBytes(),
                                       "transBytes");
+#endif // __TLE__
 }
 
 LogicalResult ArriveBarrierOp::verify() {
@@ -482,8 +513,22 @@ LogicalResult ArriveBarrierOp::verify() {
 }
 
 LogicalResult ArriveBarrierNoRetOp::verify() {
+#ifdef __TLE__
+  if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))
+    return failure();
+  return verifyTMEIssueThread(getOperation());
+#else
   return verifyAsyncBarrierId(getOperation(), getBarId(), "barId");
+#endif // __TLE__
 }
+
+#ifdef __TLE__
+LogicalResult WarpArriveBarrierOp::verify() {
+  if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))
+    return failure();
+  return verifyNonNegativeI32Constant(getOperation(), getPhaseId(), "phaseId");
+}
+#endif // __TLE__
 
 LogicalResult WaitBarrierOp::verify() {
   if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))
@@ -542,7 +587,13 @@ LogicalResult AsyncTMECopyGlobalToLocalOp::verify() {
   if (failed(verifyTMECopyShapeContract(getOperation(), getCoord(),
                                         getBlockShape())))
     return failure();
+#ifdef __TLE__
+  if (failed(verifyTMESwizzleContract(*this)))
+    return failure();
+  return verifyTMEIssueThread(getOperation());
+#else
   return verifyTMESwizzleContract(*this);
+#endif // __TLE__
 }
 
 LogicalResult AsyncTMECopyLocalToGlobalOp::verify() {

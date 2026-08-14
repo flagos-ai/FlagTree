@@ -187,14 +187,40 @@ private:
       return;
     }
     if (auto ws = dyn_cast<gpu::WarpSpecializeOp>(op)) {
+#ifdef __TLE__
+      // The restricted mthreads TLE lowering passes captures directly as SSA
+      // values and has no dispatcher state.  Keep walking the nested regions
+      // so their real allocations are still analyzed, but do not reserve the
+      // generic capture mailbox for the container itself.
+      if (ws->hasAttr("musa_tle.static_warp_specialize"))
+        return;
+      auto [captureSize, captureAlign] = ws.getCaptureSizeAlign();
+      maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, captureSize,
+                                                          captureAlign);
+      return;
+#else
       // `ttg.warp_specialize` needs memory to pass its explicit captures. Pack
       // the captures like a struct.
       auto [captureSize, captureAlign] = ws.getCaptureSizeAlign();
       maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, captureSize,
                                                           captureAlign);
       return;
+#endif // __TLE__
     }
     if (auto func = dyn_cast<FunctionOpInterface>(op)) {
+#ifdef __TLE__
+      unsigned numWarpIndices = 0;
+      // Static mthreads TLE partitions are selected directly from tid.x and
+      // need no per-warp state array.  Preserve the original allocation for
+      // every other warp-specialize operation.
+      func.walk([&](gpu::WarpSpecializeOp op) {
+        if (!op->hasAttr("musa_tle.static_warp_specialize"))
+          numWarpIndices =
+              std::max(numWarpIndices, op.getTotalPartitionWarps());
+      });
+      maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, numWarpIndices);
+      return;
+#else
       unsigned numWarpIndices = 0;
       // Warp specialization communicates states over shared memory to each
       // warp. Add space for an i8 for each warpgroup warp.
@@ -203,6 +229,7 @@ private:
       });
       maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, numWarpIndices);
       return;
+#endif // __TLE__
     }
     unsigned bytes = scratchSizeGetter(op);
     maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, bytes,
@@ -522,6 +549,24 @@ private:
       return buffer->owner ? buffer->owner->getParentOfType<scf::ForOp>()
                            : scf::ForOp();
     };
+#ifdef __TLE__
+    auto getStaticWarpExecutionRegion = [](Operation *owner,
+                                           Operation *ws) -> Region * {
+      while (owner && owner != ws) {
+        Region *region = owner->getParentRegion();
+        Operation *parent = region ? region->getParentOp() : nullptr;
+        if (parent == ws)
+          return region;
+        if (auto partitions =
+                dyn_cast_or_null<gpu::WarpSpecializePartitionsOp>(parent)) {
+          if (partitions->getParentOp() == ws)
+            return region;
+        }
+        owner = parent;
+      }
+      return nullptr;
+    };
+#endif // __TLE__
 
     // Reset interference graph
     interference.clear();
@@ -550,11 +595,26 @@ private:
         // each other.
         auto wsx = x->owner->getParentWithTrait<OpTrait::AsyncRegions>();
         auto wsy = y->owner->getParentWithTrait<OpTrait::AsyncRegions>();
+#ifdef __TLE__
+        bool differentConcurrentRegions =
+            x->owner->getParentRegion() != y->owner->getParentRegion();
+        if (wsx && wsx == wsy &&
+            wsx->hasAttr("musa_tle.static_warp_specialize")) {
+          Region *xRegion = getStaticWarpExecutionRegion(x->owner, wsx);
+          Region *yRegion = getStaticWarpExecutionRegion(y->owner, wsy);
+          differentConcurrentRegions = xRegion && yRegion && xRegion != yRegion;
+        }
+        if (wsx && wsy && wsx == wsy && differentConcurrentRegions &&
+            xSizeRange.intersects(ySizeRange)) {
+          interference[x].insert(y);
+        }
+#else
         if (wsx && wsy && wsx == wsy &&
             x->owner->getParentRegion() != y->owner->getParentRegion() &&
             xSizeRange.intersects(ySizeRange)) {
           interference[x].insert(y);
         }
+#endif // __TLE__
 
         // SQMMA local_alloc buffers in the same loop iteration are consumed
         // together by dot operations and must not alias. Keep this protection

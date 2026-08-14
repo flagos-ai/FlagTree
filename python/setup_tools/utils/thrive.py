@@ -21,6 +21,16 @@
 import os
 
 
+def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
+    cache.store(
+        file="llvm-f6ded0be-ubuntu-x64",
+        condition=("thrive" == flagtree_backend),
+        url="https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-f6ded0be-ubuntu-x64.tar.gz",
+        pre_hook=lambda: check_env("LLVM_SYSPATH"),
+        post_hook=set_llvm_env,
+    )
+
+
 def get_backend_cmake_args(*args, **kargs):
     build_ext = kargs['build_ext']
     src_ext_path = build_ext.get_ext_fullpath("triton")

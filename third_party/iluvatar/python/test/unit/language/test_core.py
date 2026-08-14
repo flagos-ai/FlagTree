@@ -1044,15 +1044,9 @@ def test_abs(dtype_x, device):
 def test_abs_fp8(in_dtype, device):
     if is_hip():
         pytest.skip('test_abs_fp8 not supported on HIP.')
-    elif is_cuda():
+    elif (is_cuda() or is_corex()):
         cc = torch.cuda.get_device_capability()
-        if in_dtype == tl.float8e4b15 and cc >= (9, 0):
-            pytest.skip("float8e4b15 not supported on CUDA >= 9.0")
-        if in_dtype == tl.float8e4nv and cc < (8, 9):
-            pytest.skip("float8e4nv not supported on CUDA < 8.9")
-    elif is_corex():
-        cc = torch.cuda.get_device_capability()
-        if in_dtype == tl.float8e4b15 and cc >= (9, 0):
+        if in_dtype == tl.float8e4b15 and (cc >= (9, 0) or is_corex()):
             pytest.skip("float8e4b15 not supported on CUDA >= 9.0")
         if in_dtype == tl.float8e4nv and cc < (8, 9):
             pytest.skip("float8e4nv not supported on CUDA < 8.9")
@@ -2874,7 +2868,11 @@ def test_optimize_thread_locality(op, BLOCK_N, N, num_pid_n, device):
     x = torch.randn((BLOCK_M, N), dtype=torch.float32, device=device)
     y = torch.randn((BLOCK_M, num_pid_n), dtype=torch.float32, device=device)
     h = kernel[(1, num_pid_n, 1)](x, y, N, BLOCK_M, BLOCK_N)
-    if not is_interpreter():
+    # On Iluvatar/CoreX, global ld/st is 32-bit wide, so an f32 load
+    # gets a single element per thread along the (32-wide) reduction axis. The
+    # thread-locality optimization only splits into two reductions when there are
+    # >=2 elements per thread on that axis.
+    if not is_interpreter() and not is_corex():
         assert h.asm['ttgir'].count(
             '"tt.reduce"') == 2, "tt.reduce should be called twice, otherwise the optimization didn't work"
     y_ref = numpy_op(x.cpu().numpy(), axis=1, keepdims=True)
@@ -2995,7 +2993,8 @@ def test_generic_reduction(device):
 @pytest.mark.parametrize("num_ctas", num_ctas_list)
 def test_permute(dtype_str, shape, perm, num_ctas, device):
     check_type_supported(dtype_str, device)  # bfloat16 on cc < 80 will not be tested
-    if dtype_str == "float8e4b15" and (is_hip() or (is_cuda() and torch.cuda.get_device_capability() >= (9, 0))):
+    if dtype_str == "float8e4b15" and (is_hip() or is_corex() or
+                                       (is_cuda() and torch.cuda.get_device_capability() >= (9, 0))):
         pytest.skip("float8e4b15 not supported on ROCm or CUDA >= 9.0")
 
     # triton kernel
@@ -4412,7 +4411,7 @@ def test_store_cache_modifier(cache, device):
 
     if is_corex():
         llir = pgm.asm['llir']
-        store_line = [line for line in llir.splitlines() if "llvm.bi.store.kop" in line][0]
+        store_line = [line for line in llir.splitlines() if "llvm.bi.stp.vs.pred" in line][0]
         expected_kop = {'.wb': 0, '.cg': 1, '.cs': 2, '.wt': 3}.get(cache, 0)
         assert f"i32 {expected_kop}" in store_line
         return
@@ -5833,7 +5832,7 @@ def test_override_arch(arch, env_var_override, device, fresh_knobs):
     data = torch.randn((128, ), device=device, dtype=torch.float32)
     out = torch.empty_like(data)
 
-    if is_cuda():
+    if is_cuda() or is_corex():
         if env_var_override:
             fresh_knobs.runtime.override_arch = str(arch)
             h = simple.warmup(data, out, grid=(1, ))

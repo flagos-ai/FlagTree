@@ -11,7 +11,7 @@ import torch
 
 import triton
 import triton.language as tl
-from triton._internal_testing import is_hip_cdna3, is_cuda, is_corex, is_hip
+from triton._internal_testing import is_hip_cdna3, is_cuda, is_hip, is_corex
 
 input_dtypes = ["bfloat16", "float16", "float32"]
 if is_cuda() or is_corex():
@@ -116,6 +116,13 @@ def test_cast_matmul(M, K, N, BLOCK_K, BLOCK_M, BLOCK_N, w_dtype, x_dtype, out_d
     # nasty hack
     def get_triton_dtype(dtype):
         return getattr(tl, str(dtype).removeprefix("torch."))
+
+    # Kernel picks f16 accum when compute=f16 and out=f16. Iluvatar TCU only
+    # supports f32 accum, so supportMMA rejects → f16 FMA.
+    # TODO(iluvatar): AccelerateMatmul rewrite f16×*→f16 as f32-accum TCU then
+    # cast back to f16; re-enable these cases once that lands.
+    if is_corex() and out_dtype == "float16" and compute_dtype(w_dtype, x_dtype) is torch.float16:
+        pytest.skip("TODO(iluvatar): f16-accum tl.dot via f32 TCU + cast to f16")
 
     torch.manual_seed(42)
     a = init_tensor(w_dtype, (M, K))

@@ -25,6 +25,7 @@ on:
     branches: [ "main", "triton_v3.6.x" ]
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -37,7 +38,7 @@ concurrency:
 jobs:
   enflame36x-gcu400-unit-test:
     runs-on: "enflame3.6-gcu400"
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
@@ -55,6 +56,10 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: enflame
+
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
       - name: Detect Target Branch
         shell: bash

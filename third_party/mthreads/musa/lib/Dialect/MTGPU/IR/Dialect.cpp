@@ -1,4 +1,5 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "TritonMUSACommon/MMAOperandUtils.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -159,6 +160,11 @@ LogicalResult SqmmaOp::verify() {
   if (failed(verifyDotShapeContract(getOperation(), aTy.getShape(),
                                     bTy.getShape(), accTensorTy.getShape(),
                                     retTensorTy.getShape())))
+    return failure();
+  if (failed(triton::musa::verifySqmmaMemDescOperandProducerContract(
+          getOperation(), getA(), 0)) ||
+      failed(triton::musa::verifySqmmaMemDescOperandProducerContract(
+          getOperation(), getB(), 1)))
     return failure();
 
   auto accMode = getAccMode();

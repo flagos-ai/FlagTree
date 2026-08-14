@@ -1019,8 +1019,6 @@ def test_tle_local_ptr_smem_alias_not_overwritten_by_trans_zero_init():
 
 @pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
 def test_tle_local_ptr_smem_alias_not_overwritten_by_trans_pattern_init():
-    """Same as above but with a known non-zero pattern to make corruption
-    obvious."""
     torch.manual_seed(789)
     num_bins = 2048
     block_size = 512
@@ -1051,9 +1049,6 @@ def test_tle_local_ptr_smem_alias_not_overwritten_by_trans_pattern_init():
 
 @pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
 def test_tle_local_ptr_smem_alias_trans_between_loads_control():
-    """Control: same trans+store between loads but without tle.gpu.alloc
-    (global-memory buffer instead of shared memory).  Verifies the trans
-    itself doesn't corrupt data when there's no smem-alias issue."""
     torch.manual_seed(789)
     num_bins = 2048
     block_size = 512

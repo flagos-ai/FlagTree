@@ -613,6 +613,21 @@ SmallVector<Value> lowerLdSt(
   return outVals;
 }
 
+#ifdef __ILUVATAR__
+bool isIluvatarRowXfb8LocalLoad(Operation *op) {
+  auto localLoad = dyn_cast_or_null<triton::gpu::LocalLoadOp>(op);
+  if (!localLoad)
+    return false;
+  auto srcTy = cast<triton::gpu::MemDescType>(localLoad.getSrc().getType());
+  auto dstTy = cast<RankedTensorType>(localLoad.getType());
+  auto shared =
+      dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(srcTy.getEncoding());
+  auto dot = dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstTy.getEncoding());
+  return srcTy.getElementType().isInteger(8) && shared && shared.getUseTcu() &&
+         shared.getOrder()[0] != 0 && dot && dot.getUseSme() != 0;
+}
+#endif
+
 SmallVector<Value>
 lowerLocalLdSt(Location loc, MLIRContext *ctx,
                LinearLayout cvt,          // Map from registers to offset
@@ -632,6 +647,19 @@ lowerLocalLdSt(Location loc, MLIRContext *ctx,
                                     smemOffset, /*offsetInBytes=*/true);
       smemOffset = b.add(smemOffset, padOffset);
     }
+#ifdef __ILUVATAR__
+    if (isIluvatarRowXfb8LocalLoad(localLoadOp)) {
+      // The GF(2)-linear rowxfb8 surrogate differs from the exact hardware
+      // layout only when offset bits 6 and 8 are both set. In that case,
+      // toggling bit 7 maps the surrogate offset to the physical address.
+      // The transform is self-inverse and was exhaustively verified over the
+      // complete 16x64 int8 hardware tile.
+      Value bit6 = b.and_(b.lshr(smemOffset, b.i32_val(6)), b.i32_val(1));
+      Value bit8 = b.and_(b.lshr(smemOffset, b.i32_val(8)), b.i32_val(1));
+      Value correction = b.shl(b.and_(bit6, bit8), b.i32_val(7));
+      smemOffset = b.xor_(smemOffset, correction);
+    }
+#endif
     return smemOffset;
   };
   auto isStore = !valsArray.empty();
@@ -664,6 +692,192 @@ lowerLocalLdSt(Location loc, MLIRContext *ctx,
                          maskSpanAffineOffset, rewriter, targetInfo,
                          maybeMaxVecElems, localLoadOp);
 }
+
+#ifdef __ILUVATAR__
+std::optional<bool> getIluvatarSmeConstantMask(Value mask) {
+  while (mask) {
+    if (auto cst = mask.getDefiningOp<arith::ConstantOp>()) {
+      if (auto dense = dyn_cast<DenseIntElementsAttr>(cst.getValue());
+          dense && dense.isSplat())
+        return !dense.getSplatValue<APInt>().isZero();
+      if (auto value = dyn_cast<IntegerAttr>(cst.getValue()))
+        return !value.getValue().isZero();
+      return std::nullopt;
+    }
+    Operation *def = mask.getDefiningOp();
+    if (!def)
+      return std::nullopt;
+    if (auto splat = dyn_cast<triton::SplatOp>(def)) {
+      mask = splat.getSrc();
+      continue;
+    }
+    if (isa<triton::BroadcastOp, triton::ExpandDimsOp,
+            triton::gpu::ConvertLayoutOp>(def)) {
+      mask = def->getOperand(0);
+      continue;
+    }
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+std::optional<unsigned> getIluvatarSmeConstantMaskExtent(Value mask) {
+  while (mask) {
+    Operation *def = mask.getDefiningOp();
+    if (!def)
+      return std::nullopt;
+    if (isa<triton::BroadcastOp, triton::ExpandDimsOp,
+            triton::gpu::ConvertLayoutOp>(def)) {
+      mask = def->getOperand(0);
+      continue;
+    }
+    break;
+  }
+
+  auto cmp = mask ? mask.getDefiningOp<arith::CmpIOp>() : nullptr;
+  if (!cmp || (cmp.getPredicate() != arith::CmpIPredicate::slt &&
+               cmp.getPredicate() != arith::CmpIPredicate::ult))
+    return std::nullopt;
+
+  std::function<bool(Value)> isPlainRange = [&](Value value) {
+    Operation *def = value.getDefiningOp();
+    if (!def)
+      return false;
+    if (auto range = dyn_cast<triton::MakeRangeOp>(def)) {
+      if (range.getStart() != 0)
+        return false;
+      auto ty = dyn_cast<RankedTensorType>(range.getType());
+      if (!ty)
+        return false;
+      auto layout = ty.getEncoding();
+      if (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(layout))
+        layout = slice.getParent();
+      if (auto blocked = dyn_cast<triton::gpu::BlockedEncodingAttr>(layout))
+        return blocked.getSmeMask();
+      return false;
+    }
+    if (isa<triton::BroadcastOp, triton::ExpandDimsOp,
+            triton::gpu::ConvertLayoutOp>(def))
+      return isPlainRange(def->getOperand(0));
+    return false;
+  };
+  if (!isPlainRange(cmp.getLhs()))
+    return std::nullopt;
+
+  auto cst = cmp.getRhs().getDefiningOp<arith::ConstantOp>();
+  if (!cst)
+    return std::nullopt;
+  if (auto dense = dyn_cast<DenseIntElementsAttr>(cst.getValue());
+      dense && dense.isSplat())
+    return static_cast<unsigned>(dense.getSplatValue<APInt>().getZExtValue());
+  if (auto value = dyn_cast<IntegerAttr>(cst.getValue()))
+    return static_cast<unsigned>(value.getValue().getZExtValue());
+  return std::nullopt;
+}
+
+LogicalResult lowerIluvatarSmeMaskFixup(
+    Location loc, RankedTensorType srcTy, Type llvmElemTy,
+    triton::gpu::MemDescType dstTy, SharedMemoryObject smemObj, Value llvmMask,
+    Value llvmOther, RewriterBase &rewriter, const TargetInfoBase &targetInfo) {
+  if (!llvmMask)
+    return success();
+
+  auto maskVals = unpackLLElements(loc, llvmMask, rewriter);
+  if (maskVals.empty())
+    return failure();
+
+  SmallVector<Value> otherVals;
+  if (llvmOther) {
+    otherVals = unpackLLElements(loc, llvmOther, rewriter);
+  } else {
+    Value zero = LLVM::ConstantOp::create(rewriter, loc, llvmElemTy,
+                                          rewriter.getZeroAttr(llvmElemTy));
+    otherVals.assign(maskVals.size(), zero);
+  }
+  if (otherVals.size() != maskVals.size())
+    return failure();
+
+  auto regLayout = triton::gpu::toLinearLayout(srcTy);
+  auto sharedEnc =
+      dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(dstTy.getEncoding());
+  bool isRowXfb8 = srcTy.getElementType().isInteger(8) && sharedEnc &&
+                   sharedEnc.getUseTcu() && sharedEnc.getOrder()[0] != 0;
+  auto sharedLayout = isRowXfb8 ? triton::gpu::iluvatarRowXfb8ToLinearLayout(
+                                      dstTy.getShape(), sharedEnc)
+                                : triton::gpu::toLinearLayout(dstTy);
+  auto cvt = regLayout.invertAndCompose(sharedLayout);
+
+  auto *ctx = rewriter.getContext();
+  auto kReg = str_attr("register");
+  auto kLane = str_attr("lane");
+  auto kWarp = str_attr("warp");
+  auto kOffset = str_attr("offset");
+  auto kBlock = str_attr("block");
+  if (!cvt.isTrivialOver({kBlock}))
+    return failure();
+  cvt = cvt.sublayout({kReg, kLane, kWarp}, {kOffset});
+
+  // Keep other and its predicate under exactly the same LinearLayout
+  // permutations by packaging them as one opaque SSA value. lowerLdSt only
+  // interprets llvmElemTy for address calculation, and the callback unpacks
+  // the pair before emitting the scalar predicated store.
+  auto pairTy = LLVM::LLVMStructType::getLiteral(
+      rewriter.getContext(), {llvmElemTy, rewriter.getI1Type()});
+  SmallVector<Value> pairs;
+  pairs.reserve(maskVals.size());
+  for (auto [other, mask] : llvm::zip_equal(otherVals, maskVals)) {
+    Value pair = LLVM::UndefOp::create(rewriter, loc, pairTy);
+    pair = LLVM::InsertValueOp::create(rewriter, loc, pairTy, pair, other,
+                                       ArrayRef<int64_t>({0}));
+    pair = LLVM::InsertValueOp::create(rewriter, loc, pairTy, pair, mask,
+                                       ArrayRef<int64_t>({1}));
+    pairs.push_back(pair);
+  }
+
+  auto removeBroadcastSrc = actionRemoveBroadcastedRegs(cvt);
+  if (!removeBroadcastSrc.isIdentity()) {
+    cvt = removeBroadcastSrc.apply(cvt);
+    pairs = removeBroadcastSrc.apply(pairs);
+  }
+
+  auto affineOffset = smemObj.getShmemOffset(loc, rewriter, dstTy);
+  auto maskSpanAffineOffset = smemObj.getMaskSpanOffsets(dstTy);
+  auto calcPhysicalOffset = [&](Value smemOffset) -> Value {
+    if (!isRowXfb8)
+      return smemOffset;
+    TritonLLVMOpBuilder b(loc, rewriter);
+    Value bit6 = b.and_(b.lshr(smemOffset, b.i32_val(6)), b.i32_val(1));
+    Value bit8 = b.and_(b.lshr(smemOffset, b.i32_val(8)), b.i32_val(1));
+    return b.xor_(smemOffset, b.shl(b.and_(bit6, bit8), b.i32_val(7)));
+  };
+
+  auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
+  auto emitStore = [&](RewriterBase &nestedRewriter, Location nestedLoc,
+                       ArrayRef<Value> vals, Value shmemAddr, int idx,
+                       VectorType vecTy) -> SmallVector<Value> {
+    assert(vecTy.getNumElements() == 1 &&
+           "masked SME fixup must use scalar predicates");
+    Value pair = vals[idx];
+    Value other =
+        LLVM::ExtractValueOp::create(nestedRewriter, nestedLoc, pair, 0);
+    Value mask =
+        LLVM::ExtractValueOp::create(nestedRewriter, nestedLoc, pair, 1);
+    TritonLLVMOpBuilder b(nestedLoc, nestedRewriter);
+    Value pred = b.icmp_eq(mask, b.false_val());
+    Value packedOther =
+        packLLVector(nestedLoc, ArrayRef<Value>({other}), nestedRewriter);
+    targetInfo.storeDShared(nestedRewriter, nestedLoc, shmemAddr, std::nullopt,
+                            packedOther, pred);
+    return {};
+  };
+
+  (void)lowerLdSt(loc, rewriter.getContext(), cvt, pairs, llvmElemTy,
+                  smemObj.getBase(), calcPhysicalOffset, affineOffset,
+                  maskSpanAffineOffset, laneId, warpId, rewriter, targetInfo,
+                  /*maybeMaxVecElems=*/1, emitStore);
+  return success();
+}
+#endif
 
 SmallVector<Value> unpackLLElements(Location loc, Value llvmStruct,
                                     RewriterBase &rewriter) {
