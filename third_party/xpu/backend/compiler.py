@@ -357,9 +357,9 @@ class XPUBackend(BaseBackend):
                     pm, 0) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
             if not metadata["isCloseUnrollControl"]:
                 xpu.passes.ttxpuir.add_tritonxpu_tile_analysis_pass(pm, vrf_budget)
-                xpu.passes.ttxpuir.add_tritonxpu_unroll_control_pass(pm, XPUBackend.buffer_len, core_num,
-                                                                     is_use_mask_zero,
-                                                                     unroll_num) if not TTXPU_O_CLOSE_OPT else None
+                xpu.passes.ttxpuir.add_tritonxpu_unroll_control_pass(
+                    pm, XPUBackend.buffer_len, core_num, is_use_mask_zero, unroll_num,
+                    vrf_budget, False, -1) if not TTXPU_O_CLOSE_OPT else None
             xpu.passes.ttxpuir.add_tritonxpu_store_control_pass(pm) if not TTXPU_O_CLOSE_OPT else None
             if not TTXPU_F_OHTER_VALUE_SIM:
                 xpu.passes.ttxpuir.add_tritonxpu_other_sim_pass(pm, XPUBackend.buffer_len, core_num)
