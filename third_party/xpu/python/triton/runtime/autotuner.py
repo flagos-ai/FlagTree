@@ -317,7 +317,7 @@ class Autotuner(KernelInterface):
         pruned_configs = copy.deepcopy(self.configs)
         # pruned_configs = self.configs
         if self.early_config_prune:
-            pruned_configs = self.early_config_prune(self.configs, self.nargs, **kwargs)
+            pruned_configs = self.early_config_prune(pruned_configs, self.nargs, **kwargs)
             if not pruned_configs:
                 raise AutotunerError(
                     "No valid autotuner configs after pruning. `early_config_prune` should return at least one config.")
