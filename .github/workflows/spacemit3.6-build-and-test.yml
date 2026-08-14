@@ -50,7 +50,7 @@ jobs:
       - name: Cache RV toolchain
         if: steps.check_backend.outputs.should_skip != 'true'
         id: cache-rv-toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: toolchain
           key: rv-toolchain-${{ env.RISCV_TOOLCHAIN_MD5 }}
@@ -66,7 +66,7 @@ jobs:
       - name: Cache LLVM
         if: steps.check_backend.outputs.should_skip != 'true'
         id: cache-llvm
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: llvm_installed
           key: llvm-${{ env.LLVM_MD5 }}
@@ -82,7 +82,7 @@ jobs:
       - name: Cache spine-mlir
         if: steps.check_backend.outputs.should_skip != 'true'
         id: cache-spine-mlir
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: spine_mlir_installed
           key: spine-mlir-${{ env.SPINE_MLIR_MD5 }}
@@ -98,7 +98,7 @@ jobs:
       - name: Cache spine-runtime
         if: steps.check_backend.outputs.should_skip != 'true'
         id: cache-spine-runtime
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: spine_runtime_installed
           key: spine-runtime-${{ env.SPINE_RUNTIME_MD5 }}
@@ -114,7 +114,7 @@ jobs:
       - name: Cache RPC runtime
         if: steps.check_backend.outputs.should_skip != 'true'
         id: cache-rpc-runtime
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: rpc_runtime_installed
           key: rpc-runtime-${{ env.RPC_RUNTIME_MD5 }}
@@ -130,7 +130,7 @@ jobs:
       - name: Cache jdsk-qemu
         if: steps.check_backend.outputs.should_skip != 'true'
         id: cache-qemu
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: jdsk-qemu
           key: jdsk-qemu-${{ env.JDSK_QEMU_MD5 }}
