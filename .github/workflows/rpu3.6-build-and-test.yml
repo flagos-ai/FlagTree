@@ -39,7 +39,7 @@ concurrency:
   # (cancel-in-progress: false) so an in-flight board test is never interrupted
   # mid-run (a cancelled smoke can orphan a launch_kernel_runner that wedges
   # /dev/rpu for the next job).
-  group: rpu3.6-board
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 # The RPU CI runner is a small x86 host that orchestrates the build/test on a
