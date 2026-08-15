@@ -84,9 +84,16 @@ TleArgConversion::TleArgConversion(MLIRContext *context)
 LogicalResult
 TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
                                   PatternRewriter &rewriter) const {
+  bool hasConversion = false;
+  for (Type type : op->getOperandTypes())
+    hasConversion |= isa<RankedTensorType>(type);
+  for (Type type : op->getResultTypes())
+    hasConversion |= isa<RankedTensorType>(type);
+  if (!hasConversion)
+    return failure();
+
   SmallVector<Value> newOperands;
   IRMapping mapper;
-  bool hasConversion = false;
   bool needSync = false;
   for (const auto &operand : op->getOperands()) {
     if (RankedTensorType tensorTy =
@@ -101,7 +108,6 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
 
       newOperands.push_back(allocOp);
       mapper.map(operand, allocOp);
-      hasConversion = true;
       needSync = true;
     } else {
       if (isa<ttg::MemDescType>(operand.getType())) {
@@ -120,13 +126,9 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
     if (RankedTensorType tensorTy =
             dyn_cast<RankedTensorType>(result.getType())) {
       newRetTys.push_back(getPlainMemDesc(tensorTy));
-      hasConversion = true;
     } else {
       newRetTys.push_back(result.getType());
     }
-  }
-  if (!hasConversion) {
-    return failure();
   }
   tle::DSLRegionOp newOp = rewriter.create<tle::DSLRegionOp>(
       op.getLoc(), newRetTys, newOperands, op.getRegionDialectAttr(),

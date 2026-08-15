@@ -413,7 +413,10 @@ def TritonTleLowerInsertTile
                            "mlir::triton::gpu::TritonGPUDialect"];
 }
 def TleConvertArgToMemDesc
-    : Pass<"tle-convert-arg-to-memdesc", "mlir::ModuleOp"> {}
+    : Pass<"tle-convert-arg-to-memdesc", "mlir::ModuleOp"> {
+  let dependentDialects = ["mlir::NVVM::NVVMDialect",
+                           "mlir::triton::gpu::TritonGPUDialect"];
+}
 
 def TleRemoveRedundantCopy
     : Pass<"tle-remove-redundant-copy", "mlir::ModuleOp"> {}
