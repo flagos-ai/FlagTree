@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 
+from triton.flagtune._dependencies import require_optional_dependency
 from triton.flagtune.core.interfaces import ParameterField, ParameterSpace
 from triton.flagtune.contract.expressions import (
     SafeExpressionError,
@@ -353,7 +354,11 @@ class VariantInfo:
         candidate iterable produces an empty one-dimensional NumPy array, so
         normal prediction paths avoid calling this method with no candidates.
         """
-        import numpy as np
+        np = require_optional_dependency(
+            "numpy",
+            distribution_name="numpy",
+            feature="FlagTune feature-matrix construction",
+        )
 
         rows = self.build_feature_rows(values, configs)
         return np.asarray([[row[name] for name in self.feature_names] for row in rows], dtype=float)

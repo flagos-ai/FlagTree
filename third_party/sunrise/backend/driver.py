@@ -82,7 +82,7 @@ def ty_to_cpp(ty):
     if ty[0] == '*':
         return "TAdeviceptr"
     return {
-        "i1": "int_t",
+        "i1": "int8_t",
         "i8": "int8_t",
         "i16": "int16_t",
         "i32": "int32_t",
@@ -122,22 +122,24 @@ def make_launcher(constants, signature, warp_size, tensordesc_meta):
 
     def _expand_signature(signature):
         output = []
-        # Expand tensor descriptor arguments into base pointer, shape, and
-        # strides
+        tensordesc_idx = 0
         for sig in signature:
             if isinstance(sig, str) and sig.startswith("tensordesc"):
-                ndim = sig.count(",") + 1
-                dtype = re.match("tensordesc<([^[>]*)", sig).group()
+                meta = tensordesc_meta[tensordesc_idx] if tensordesc_meta else None
+                tensordesc_idx += 1
 
-                output.append("*" + dtype)
-                # Currently the host side tensor descriptors get passed in as a
-                # tensor desc, shape, and strides. We have no way to use these
-                # shape and strides when processing tensor descriptors which is
-                # why we provide our own decomposition above. Sadly this means
-                # we have to pass the shape and strides twice.
-                for _ in range(2 * ndim):
-                    output.append("i64")
-                output.append("i1")
+                match = re.match("tensordesc<([^[>]*)\\[([^]]*)\\]", sig)
+                dtype = match.group(1)
+                shape = match.group(2)
+                ndim = shape.count(",") + 1
+
+                if meta is None:
+                    output.append("*" + dtype)
+                    for _ in range(2 * ndim):
+                        output.append("i64")
+                    output.append("i1")
+                else:
+                    output.append("tensordesc")
 
                 for _ in range(ndim):
                     output.append("i32")
@@ -160,7 +162,7 @@ def make_launcher(constants, signature, warp_size, tensordesc_meta):
         if isinstance(ty, tuple):
             val = ','.join(map(_extracted_type, ty))
             return f"[{val}]"
-        if ty[0] == '*':
+        if ty[0] == '*' or ty.startswith("tensordesc"):
             return "PyObject*"
         if ty == "constexpr":
             return "PyObject*"
@@ -170,7 +172,7 @@ def make_launcher(constants, signature, warp_size, tensordesc_meta):
         if isinstance(ty, tuple):
             val = ''.join(map(format_of, ty))
             return f"({val})"
-        if ty[0] == '*':
+        if ty[0] == '*' or ty.startswith("tensordesc"):
             return "O"
         if ty == "constexpr":
             return "O"
@@ -532,7 +534,7 @@ class SunriseDriver(GPUDriver):
         if not arch:
             arch = "S2"
         warp_size = 32
-        return GPUTarget("tang", arch, warp_size)
+        return GPUTarget("ptpu", arch, warp_size)
 
     def get_active_torch_device(self):
         import torch

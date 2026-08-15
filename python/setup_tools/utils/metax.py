@@ -18,17 +18,26 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import shutil
-from pathlib import Path
+import os
+
+
+def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
+    is_metax = "metax" == flagtree_backend
+    cache.store(
+        file="metax-llvm19",
+        condition=is_metax,
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metax-llvm19-3.8.0.6-x86_64_v0.6.0.tar.gz",
+        pre_hook=lambda: check_env("LLVM_SYSPATH"),
+        post_hook=set_llvm_env,
+    )
+    cache.store(
+        file="metaxTritonPlugin.so",
+        condition=is_metax and not os.environ.get("FLAGTREE_PLUGIN"),
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.1.tar.gz",
+        copy_dst_path=f"third_party/{flagtree_backend}",
+        md5_digest="afb7ab8f",
+    )
 
 
 def install_extension(*args, **kargs):
-    # Copy knobs.py
-    _python_dir = Path(__file__).parent.parent.parent
-    src_triton_dir = _python_dir / "../third_party/metax/python/triton"
-    dst_triton_dir = _python_dir / "triton"
-
-    # copy runtime/driver.py
-    shutil.copy(src_triton_dir / "runtime/driver.py", dst_triton_dir / "runtime/driver.py")
-    # copy language/core.py semantic.py target_info.py
-    shutil.copytree(src_triton_dir / "language", dst_triton_dir / "language", dirs_exist_ok=True)
+    return
