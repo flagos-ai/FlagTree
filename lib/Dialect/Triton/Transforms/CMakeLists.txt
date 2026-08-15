@@ -1,4 +1,4 @@
-set(LLVM_TARGET_DEFINITIONS Combine.td)
+flagtree_spec_td_set(LLVM_TARGET_DEFINITIONS Combine.td)
 mlir_tablegen(TritonCombine.inc -gen-rewriters)
 add_public_tablegen_target(TritonCombineIncGen)
 

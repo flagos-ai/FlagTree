@@ -109,7 +109,9 @@ macro(flagtree_include_directories root_include_dir)
   # flagtree spec include dir
   set(BACKEND_SPEC_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/spec_cpp/include)
   if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_SPEC_INCLUDE_DIR})
-    include_directories(${BACKEND_SPEC_INCLUDE_DIR})
+    include_directories(BEFORE
+      ${BACKEND_SPEC_INCLUDE_DIR}
+      ${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND}/spec_cpp/include)
   endif()
 
   # flagtree third_party include dir
@@ -158,9 +160,26 @@ macro(flagtree_configure_core_source)
   endif()
 
   if(FLAGTREE_BACKEND MATCHES
-     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu)$")
+     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|mthreads|tileir|ppu)$")
     include_directories(${PROJECT_SOURCE_DIR}/include)
     include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+    if(FLAGTREE_BACKEND STREQUAL "mthreads")
+      set(_flagtree_mthreads_root
+        ${PROJECT_SOURCE_DIR}/third_party/mthreads)
+      include_directories(BEFORE
+        ${_flagtree_mthreads_root}/spec_cpp/include
+        ${PROJECT_BINARY_DIR}/third_party/mthreads/spec_cpp/include
+        ${_flagtree_mthreads_root}/spec_cpp
+        ${PROJECT_BINARY_DIR}/third_party/mthreads/spec_cpp
+        ${_flagtree_mthreads_root}
+        ${PROJECT_BINARY_DIR}/third_party/mthreads
+        ${_flagtree_mthreads_root}/musa/include
+        ${PROJECT_BINARY_DIR}/third_party/mthreads/musa/include
+        ${_flagtree_mthreads_root}/tle/dialect/include
+        ${PROJECT_BINARY_DIR}/third_party/mthreads/tle/dialect/include
+        ${_flagtree_mthreads_root}/tle/frontend/include
+        ${PROJECT_BINARY_DIR}/third_party/mthreads/tle/frontend/include)
+    endif()
     if(FLAGTREE_BACKEND STREQUAL "xpu")
       include_directories(${PROJECT_SOURCE_DIR}/third_party/nvidia/include)
       include_directories(${PROJECT_BINARY_DIR}/third_party/nvidia/include) # Tablegen'd files
@@ -532,4 +551,15 @@ function(flagtree_spec_td_set output_td td_filename)
     set(ret ${BACKEND_SPEC_TD})
   endif()
   set(${output_td} ${ret} PARENT_SCOPE)
+endfunction()
+
+
+# FLAGTREE SPEC MLIR DOC FUNC
+function(flagtree_spec_add_mlir_doc
+    doc_filename output_file output_directory command)
+  flagtree_spec_td_set(_flagtree_doc_td "${doc_filename}.td")
+  string(REGEX REPLACE "\\.td$" "" _flagtree_doc_stem "${_flagtree_doc_td}")
+  add_mlir_doc(
+    "${_flagtree_doc_stem}" "${output_file}" "${output_directory}"
+    "${command}" ${ARGN})
 endfunction()

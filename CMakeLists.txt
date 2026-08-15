@@ -375,6 +375,11 @@ if(NOT TRITON_BUILD_PYTHON_MODULE)
     add_subdirectory(third_party/tle)
     flagtree_add_tle_generated_header_dependencies()
   endif()
+  # flagtree backend cmake specialization
+  if(FLAGTREE_BACKEND)
+    include(FlagTreeBackendSpec)
+    flagtree_apply_backend_source_overrides("${FLAGTREE_BACKEND_DIR}")
+  endif()
 endif()
 
 find_package(Threads REQUIRED)

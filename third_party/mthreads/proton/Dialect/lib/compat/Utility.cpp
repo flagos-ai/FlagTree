@@ -1,7 +1,7 @@
 #include "compat/Utility.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
-#include "third_party/mthreads/include/triton/Dialect/NVGPU/IR/Dialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/NVGPU/IR/Dialect.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
 #include "llvm/Support/raw_ostream.h"

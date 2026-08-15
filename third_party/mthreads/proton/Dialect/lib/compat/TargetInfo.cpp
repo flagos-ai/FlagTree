@@ -4,7 +4,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
-#include "third_party/mthreads/include/triton/Dialect/NVGPU/IR/Dialect.h"
+#include "triton/Dialect/NVGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/Support/MathExtras.h"
 

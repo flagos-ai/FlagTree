@@ -145,9 +145,26 @@ function(flagtree_apply_backend_source_overrides backend_root)
 
     list(LENGTH _spec_sources_in_core_root _candidate_count)
     if(_candidate_count EQUAL 0)
-      message(FATAL_ERROR
-        "Backend spec source ${_spec_source} has no owner target in the "
-        "configured core roots for mirrored main source ${_relative_path}")
+      set(_added_owner_targets)
+      foreach(_index RANGE 0 ${_last_source_index})
+        list(GET _source_index ${_index} _indexed_source)
+        if(_indexed_source STREQUAL "${_spec_source}")
+          list(GET _target_index ${_index} _added_owner_target)
+          list(APPEND _added_owner_targets "${_added_owner_target}")
+        endif()
+      endforeach()
+      list(REMOVE_DUPLICATES _added_owner_targets)
+      list(LENGTH _added_owner_targets _added_owner_count)
+      if(_added_owner_count EQUAL 0)
+        message(FATAL_ERROR
+          "Backend spec source ${_spec_source} has no mirrored main source "
+          "or explicit owner target for ${_relative_path}")
+      endif()
+      foreach(_added_owner_target IN LISTS _added_owner_targets)
+        message(STATUS
+          "SPEC ADD: ${_relative_path} -> ${_added_owner_target}")
+      endforeach()
+      continue()
     elseif(_candidate_count GREATER 1)
       message(FATAL_ERROR
         "Backend spec source ${_spec_source} matches multiple preferred main "
