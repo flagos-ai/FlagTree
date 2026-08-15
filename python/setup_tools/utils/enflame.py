@@ -26,6 +26,21 @@ import sys
 from pathlib import Path
 
 
+def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
+    cache.store(
+        file="llvm-fc83c68-gcc9-x64",
+        condition=("enflame" == flagtree_backend),
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz",
+        pre_hook=lambda: check_env("KURAMA_LLVM_DIR"),
+        post_hook=lambda path: os.environ.update({
+            "KURAMA_LLVM_DIR": str(path),
+            "LLVM_INCLUDE_DIRS": str(Path(path) / "include"),
+            "LLVM_LIBRARY_DIR": str(Path(path) / "lib"),
+            "LLVM_SYSPATH": str(path),
+        }),
+    )
+
+
 def get_package_data_tools():
     """Declare tool files to be packaged"""
     return [
@@ -84,19 +99,6 @@ def install_extension(*args, **kargs):
     lib_dir = cmake_dir / "lib"
 
     project_root_dir = cmake_dir.parent.parent
-
-    # Modify nvidia driver's is_active() to return False for enflame backend
-    drvfile = project_root_dir / 'third_party' / 'nvidia' / 'backend' / 'driver.py'
-    if drvfile.exists():
-        with open(drvfile, 'r') as f:
-            lines = f.readlines()
-        for i, line in enumerate(lines):
-            if 'def is_active():' in line:
-                if i + 1 < len(lines) and 'return False' not in lines[i + 1]:
-                    lines.insert(i + 1, '        return False\n')
-                break
-        with open(drvfile, 'w') as f:
-            f.writelines(lines)
 
     dst_dir = project_root_dir / "third_party" / "enflame" / "backend"
     dst_dir.mkdir(parents=True, exist_ok=True)

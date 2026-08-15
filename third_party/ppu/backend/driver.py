@@ -673,7 +673,8 @@ class PPUDriver(GPUDriver):
         capability = self.get_device_capability(device)
         capability = capability[0] * 10 + capability[1]
         warp_size = 32
-        return GPUTarget("ppu", capability, warp_size)
+        # when using ppu devices, the backend string in GPUTarget is "cuda"
+        return GPUTarget("cuda", capability, warp_size)
 
     def get_active_torch_device(self):
         import torch

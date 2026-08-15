@@ -39,7 +39,7 @@ def _ppu_sdk_available() -> bool:
     return bool(shutil.which("ppu-llc"))
 
 
-_PPU_TARGET = GPUTarget("ppu", 80, 32)
+_GPU_TARGET = GPUTarget("cuda", 80, 32)
 
 # ---------------------------------------------------------------------------
 # Kernels (mirrors of the upstream tests)
@@ -115,7 +115,7 @@ def _insert_tile_dynamic(x_ptr, y_ptr, stride_xb, stride_xm, stride_xn, stride_y
 
 def _compile(fn, signature, constexprs):
     src = triton.compiler.ASTSource(fn=fn, signature=signature, constexprs=constexprs)
-    return triton.compile(src, target=_PPU_TARGET)
+    return triton.compile(src, target=_GPU_TARGET)
 
 
 def _assert_no_tile_residue(compiled, op_name):

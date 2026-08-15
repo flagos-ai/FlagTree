@@ -1355,6 +1355,71 @@ class CodeGenerator(ast.NodeVisitor):
         handles = [call_op.get_result(i) for i in range(call_op.get_num_results())]
         return next(unflatten_ir_values(handles, [callee_ret_type]))
 
+    def inline_JitFunction(self, fn: JITFunction, args, kwargs, caller_context=None):
+        """Inline a JITFunction body into the current insertion block.
+
+        TLE warp-specialize partition regions are isolated from above, so their
+        worker bodies must be materialized directly in the region instead of
+        remaining behind a ``tt.call`` boundary.
+        """
+        bound_args = fn.signature.bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        ordered_args = [bound_args.arguments[name] for name in fn.arg_names]
+        for i, arg in enumerate(ordered_args):
+            if not isinstance(arg, base_value) or isinstance(arg, JITCallable):
+                ordered_args[i] = language.core.constexpr(arg)
+
+        parsed = fn.parse()
+        if isinstance(parsed, ast.Module):
+            if len(parsed.body) != 1 or not isinstance(parsed.body[0], ast.FunctionDef):
+                raise ValueError("inline_JitFunction expects a single function definition")
+            fn_def = parsed.body[0]
+        else:
+            fn_def = parsed
+        if not isinstance(fn_def, ast.FunctionDef):
+            raise ValueError("inline_JitFunction expects a function definition")
+
+        mapped_gscope = {}
+        for key, value in fn.get_capture_scope().items():
+            if isinstance(value, ModuleType):
+                mapped_gscope[key] = self.builder.module_map.get(value.__name__, value)
+                continue
+            module_name = getattr(value, "__module__", "")
+            if module_name in self.builder.module_map:
+                mapped_gscope[key] = getattr(self.builder.module_map[module_name], value.__name__)
+            else:
+                mapped_gscope[key] = value
+
+        prev_gscope = self.gscope
+        prev_lscope = self.lscope
+        prev_defs = self.local_defs
+        prev_caller_context = self.caller_context
+        try:
+            self.gscope = mapped_gscope
+            self.lscope = {}
+            self.local_defs = {}
+            self.caller_context = caller_context or self.caller_context
+            for arg_name, arg_value in zip(fn.arg_names, ordered_args):
+                self.set_value(arg_name, arg_value)
+
+            def decay_return(value):
+                if isinstance(value, language.tuple):
+                    return _apply_to_tuple_values(value, decay_return)
+                if isinstance(value, (language.constexpr, int, float)):
+                    return self.semantic.to_tensor(value)
+                return value
+
+            for stmt in fn_def.body:
+                if isinstance(stmt, ast.Return):
+                    return decay_return(self.visit(stmt.value)) if stmt.value is not None else None
+                self.visit(stmt)
+            return None
+        finally:
+            self.gscope = prev_gscope
+            self.lscope = prev_lscope
+            self.local_defs = prev_defs
+            self.caller_context = prev_caller_context
+
     def call_Function(self, node, fn, args, kws):
         if isinstance(fn, (BoundJITMethod, BoundConstexprFunction)):
             args.insert(0, fn.__self__)

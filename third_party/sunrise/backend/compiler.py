@@ -12,6 +12,7 @@ import platform
 import re
 import tempfile
 import os
+import math
 import subprocess
 from pathlib import Path
 
@@ -31,12 +32,6 @@ def min_dot_size(target: GPUTarget):
     return lambda lhsType, rhsType: (8, 8, 16) if lhsType.is_int8() else (8, 8, 4)
 
 
-@functools.lru_cache(None)
-def file_hash(path):
-    with open(path, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
-
-
 @dataclass(frozen=True)
 class SunriseOptions:
     num_warps: int = 4
@@ -51,7 +46,7 @@ class SunriseOptions:
     max_num_imprecise_acc_default: bool = None
     extern_libs: dict = None
     debug: bool = False
-    backend_name: str = 'tang'
+    backend_name: str = 'ptpu'
     sanitize_overflow: bool = True
     arch: str = None
     instrumentation_mode: str = ""
@@ -73,18 +68,17 @@ class SunriseOptions:
             else:
                 extern_libs[lib] = str(default_libdir / f'{lib}.bc')
         if lib_ver == 'S3':
-            for lib in ["builtin_math_fdiv", "cccl"]:
-                lib_path = default_libdir / f'{lib}_S3.bc'
-                if lib_path.exists():
-                    extern_libs[lib] = str(lib_path)
+            lib_path = default_libdir / f'cccl_S3.bc'
+            if lib_path.exists():
+                extern_libs['cccl'] = str(lib_path)
+
+        extern_libs['LibDevicePath'] = str(default_libdir)
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
                "num_warps must be a power of 2"
 
     def hash(self):
-        hash_dict = dict(self.__dict__)
-        hash_dict["extern_libs"] = tuple((k, file_hash(v)) for k, v in sorted(hash_dict["extern_libs"]))
-        key = "_".join([f"{name}-{val}" for name, val in sorted(hash_dict.items())])
+        key = "_".join([f"{name}-{val}" for name, val in self.__dict__.items()])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
@@ -95,10 +89,10 @@ class SunriseBackend(BaseBackend):
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == 'tang'
+        return target.backend == 'ptpu'
 
     def get_target_name(self, options) -> str:
-        return f"tang:{options.arch}"  # tang:S2
+        return f"ptpu:{options.arch}"  # ptpu:S2
 
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
@@ -125,7 +119,7 @@ class SunriseBackend(BaseBackend):
         return codegen_fns
 
     def get_module_map(self) -> Dict[str, ModuleType]:
-        from triton.language.extra.tang import libdevice
+        from triton.language.extra.ptpu import libdevice
         return {"triton.language.extra.libdevice": libdevice}
 
     def load_dialects(self, ctx):
@@ -156,14 +150,33 @@ class SunriseBackend(BaseBackend):
     def get_flag(metadata, opt):
         flag = knobs_sunrise.flag
         if flag is None or flag == []:
+            # flag = ['enable-predicate', 'stpu-warp-alu'] # stpu-warp-alu 某些情况下会出错 ones:#12470
             flag = ['enable-predicate']
         if isinstance(flag, str):
             flag = flag.split()
-        if metadata["num_warps"] > 16:
-            flag.append('thread-regfile-size=64')
+        if opt.arch.lower() == "s3":
+            block_size = metadata["num_warps"] * opt.warp_size
+            max_bkcnt = 1
+            shared_regfile_size = 0
+            warp_per_block = math.ceil(block_size / opt.warp_size)
+            thread_regfile_size = min(
+                512 - shared_regfile_size,
+                min(
+                    1024,
+                    math.floor((0x30000 / max_bkcnt / opt.warp_size / 4 - shared_regfile_size) / warp_per_block),
+                ),
+            )
+            flag.append(f'thread-regfile-size={thread_regfile_size}')
+        else:
+            if metadata["num_warps"] > 16:
+                flag.append('thread-regfile-size=64')
+            else:
+                flag.append('thread-regfile-size=128')
         for name, path in opt.extern_libs:
             if name == "ockl":
                 flag.append('ocklPath=' + path)
+            if name == "LibDevicePath":
+                flag.append('LibDevicePath=' + path)
         return flag
 
     @staticmethod
@@ -201,7 +214,7 @@ class SunriseBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         emuTF32 = False
-        passes.ttir.add_convert_to_ttgpuir(pm, f"tang:{opt.arch}", opt.num_warps, 32, opt.num_ctas)
+        passes.ttir.add_convert_to_ttgpuir(pm, f"ptpu:{opt.arch}", opt.num_warps, 32, opt.num_ctas)
         # flagtree tle raw: convert tle.dsl_region tensor args/results to shared
         # MemDesc (sunrise variant: gpu.barrier instead of NVVM::Barrier0Op).
         sunrise.passes.ttgpuir.add_tle_convert_arg_to_memdesc(pm)
@@ -240,36 +253,31 @@ class SunriseBackend(BaseBackend):
             # sunrise.passes.ttgpuir.add_mma_direct_store(pm)
             passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, True)
+        passes.ttir.add_loop_aware_cse(pm)
 
-        passes.common.add_cse(pm)
         if os.getenv('DFT_PP', '0') == '1':
             if os.getenv('OFF_ASYNC', '0') == '0':
+                passes.ttgpuir.add_fuse_nested_loops(pm)
+                passes.common.add_canonicalizer(pm)
+                passes.ttir.add_triton_licm(pm)
+                passes.common.add_canonicalizer(pm)
+                passes.ttgpuir.add_combine_tensor_select_and_if(pm)
                 passes.ttgpuir.add_assign_latencies(pm, num_stages)
                 passes.ttgpuir.add_schedule_loops(pm)
-                passes.ttgpuir.add_pipeline(pm, num_stages, True)
+                passes.ttgpuir.add_pipeline(pm, num_stages, False)
             if os.getenv('OFF_PREF', '0') == '0':
-                passes.ttir.add_loop_aware_cse(pm)
                 passes.common.add_canonicalizer(pm)
+                # sunrise.passes.ttgpuir.add_adjust_async_copy_op_order(pm)
                 passes.ttir.add_loop_aware_cse(pm)
                 passes.ttgpuir.add_prefetch(pm)
         else:
             if os.getenv('OFF_ASYNC', '0') == '0':
-                passes.ttgpuir.add_assign_latencies(pm, num_stages)
-                passes.ttgpuir.add_schedule_loops(pm)
-                sunrise.passes.ttgpuir.add_pipeline(pm, num_stages, 1, 0)  # 版本：1.0
-            if os.getenv('OFF_PREF', '0') == '0':
                 passes.ttir.add_loop_aware_cse(pm)
+                sunrise.passes.ttgpuir.add_pipeline(pm, num_stages)
+            if os.getenv('OFF_PREF', '0') == '0':
                 passes.common.add_canonicalizer(pm)
                 passes.ttir.add_loop_aware_cse(pm)
-                passes.ttgpuir.add_prefetch(pm)
-        if os.getenv('OFF_MMA', '0') == '1':
-            print('not run accelerate_matmul pass')
-        else:
-            sunrise.passes.ttgpuir.add_accelerate_matmul(pm, 1, 0)  # 版本：1.0
-            sunrise.passes.ttgpuir.add_mma_direct_store(pm)
-            passes.ttgpuir.add_remove_layout_conversions(pm)
-        # sunrise.passes.ttgpuir.add_optimize_dot_operands(pm)
-        # passes.ttgpuir.add_remove_layout_conversions(pm)
+                sunrise.passes.ttgpuir.add_prefetch(pm, 256)  # 256bit = Kdim_16_elem * fp16_2byte * 8bit
         passes.ttgpuir.add_reduce_data_duplication(pm)
         passes.ttgpuir.add_reorder_instructions(pm)
         # flagtree tle: downgrade async copies that cannot be lowered (e.g. width
@@ -279,7 +287,6 @@ class SunriseBackend(BaseBackend):
         tle.passes.add_lower_async_load(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
-        sunrise.passes.ttgpuir.add_split_dot(pm, 1, 0)
         passes.common.add_canonicalizer(pm)
 
         pm.run(mod, 'make_ttgir')
@@ -369,7 +376,7 @@ class SunriseBackend(BaseBackend):
         if options.extern_libs:
             for name, path in options.extern_libs:
                 # OCKL is still materialized by the backend through -ocklPath.
-                if name != "ockl":
+                if name != "ockl" and name != "LibDevicePath":
                     llvm.link_extern_libs(llvm_mod, [path])
         llvm.optimize_module(llvm_mod, SunriseBackend.get_optimization_level(llvm))
 
@@ -387,7 +394,7 @@ class SunriseBackend(BaseBackend):
         return ret
 
     @staticmethod
-    def make_stcu(src, metadata, opt):
+    def make_asm(src, metadata, opt):
         names = re.findall(r"define dso_local cc200 void @([a-zA-Z_][a-zA-Z0-9_]*)", src)
 
         assert len(names) == 1
@@ -396,7 +403,13 @@ class SunriseBackend(BaseBackend):
 
         triple = SunriseBackend.get_triple()
         flag = SunriseBackend.get_flag(metadata, opt)
-        asm = llvm.translate_to_asm(src, triple, proc, '', flag, opt.enable_fp_fusion, True)
+        asm = llvm.translate_to_asm(src, triple, proc, '', flag, opt.enable_fp_fusion, False)
+        return asm
+
+    @staticmethod
+    def make_stcu(src, metadata, opt):
+        triple = SunriseBackend.get_triple()
+        asm = sunrise.assemble_stcu(src, '', triple)
 
         bundler = SunriseBackend.path_to_clang_offload_bundler()
 
@@ -435,6 +448,7 @@ class SunriseBackend(BaseBackend):
         elif language == Language.GLUON:
             stages["ttgir"] = lambda src, metadata: self.ttgir_opt(src, metadata, options)
         stages["llir"] = lambda src, metadata: self.make_llir(src, metadata, options)
+        stages["asm"] = lambda src, metadata: self.make_asm(src, metadata, options)
         stages["stcu"] = lambda src, metadata: self.make_stcu(src, metadata, options)
         if knobs.runtime.add_stages_inspection_hook is not None:
             knobs.runtime.add_stages_inspection_hook(self, stages, options, language, None)

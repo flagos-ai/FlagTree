@@ -43,7 +43,7 @@ def _ppu_sdk_available() -> bool:
     return bool(shutil.which("ppu-llc"))
 
 
-_PPU_TARGET = GPUTarget("ppu", 80, 32)
+_GPU_TARGET = GPUTarget("cuda", 80, 32)
 _SIGNATURE = {
     "x_ptr": "*fp32",
     "y_ptr": "*fp32",
@@ -80,7 +80,7 @@ def _vector_add_tle(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
 
 def _compile(kernel):
     src = triton.compiler.ASTSource(fn=kernel, signature=_SIGNATURE, constexprs=_CONSTEXPRS)
-    return triton.compile(src, target=_PPU_TARGET)
+    return triton.compile(src, target=_GPU_TARGET)
 
 
 def test_baseline_kernel_still_lowers():
@@ -193,7 +193,7 @@ def _kernel_warp_specialize():
 def _compile_2arg(kernel, sig, const):
     return triton.compile(
         triton.compiler.ASTSource(fn=kernel, signature=sig, constexprs=const),
-        target=_PPU_TARGET,
+        target=_GPU_TARGET,
     )
 
 
@@ -215,7 +215,7 @@ def test_ppu_rejects_distributed_barrier_with_clear_error():
     with pytest.raises(Exception) as excinfo:
         triton.compile(
             triton.compiler.ASTSource(fn=_kernel_distributed_barrier, signature={}, constexprs={}),
-            target=_PPU_TARGET,
+            target=_GPU_TARGET,
         )
     chain = _exception_chain(excinfo.value)
     full = str(excinfo.value) + "".join(str(c) for c in chain)
@@ -227,7 +227,7 @@ def test_ppu_rejects_warp_specialize_with_clear_error():
     with pytest.raises(Exception) as excinfo:
         triton.compile(
             triton.compiler.ASTSource(fn=_kernel_warp_specialize, signature={}, constexprs={}),
-            target=_PPU_TARGET,
+            target=_GPU_TARGET,
         )
     chain = _exception_chain(excinfo.value)
     full = str(excinfo.value) + "".join(str(c) for c in chain)

@@ -1,0 +1,14 @@
+S5000 * 4
+vllm==0.20.2+empty
+torch==2.7.1
+torch_musa==2.7.1
+musa==4.3.5
+
+[2026/08/07] vllm-plugin-fl==0.2.0+g9dded2482 (2026/07/22), flag_gems==5.0.0 (2026/03/26), flagtree===0.6.1+mthreads3.6 (2026/08/07)
+# 服务冷启动时间: 3分51秒, 服务热启动时间: 1分40秒
+# 输入长度: 128, 输出长度: 128, 并发数: 4
+  Output token throughput (tok/s): 10.09
+  Total token throughput (tok/s): 20.17
+  Median TTFT (ms): 882.85
+  Median TPOT (ms): 391.92
+  Median ITL (ms): 391.28

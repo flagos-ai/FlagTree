@@ -35,7 +35,7 @@ def _ppu_sdk_available() -> bool:
     return bool(shutil.which("ppu-llc"))
 
 
-_PPU_TARGET = GPUTarget("ppu", 80, 32)
+_GPU_TARGET = GPUTarget("cuda", 80, 32)
 BLOCK_SIZE = 64
 
 # ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ def _full_view_dot_kernel(a_ptr, out_ptr, stride_ai, stride_aj, stride_oi, strid
 
 def _compile(fn, signature, constexprs):
     src = triton.compiler.ASTSource(fn=fn, signature=signature, constexprs=constexprs)
-    return triton.compile(src, target=_PPU_TARGET)
+    return triton.compile(src, target=_GPU_TARGET)
 
 
 def _no_tle_residue(compiled):

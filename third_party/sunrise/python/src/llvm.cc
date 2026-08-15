@@ -31,6 +31,7 @@
 #include <csignal>
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <pybind11/gil.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -299,50 +300,61 @@ std::string translateLLVMIRToASM(llvm::Module &module,
   auto isInteger = [&](const std::string &str) {
     return !str.empty() && std::all_of(str.begin(), str.end(), ::isdigit);
   };
-  // options
-  auto options = llvm::cl::getRegisteredOptions();
-  for (std::string flag : flags) {
-    auto pos = flag.find("="); // sunrise fix
-    if (pos == std::string::npos) {
-      auto *shortPtr = static_cast<llvm::cl::opt<bool> *>(options[flag]);
-      assert(shortPtr);
-      shortPtr->setValue(true);
-    } else {
-      auto optIt = options.find(flag.substr(0, pos));
-      assert(optIt != options.end() && "Option not found in cl::opt!");
-
-      if (isInteger(flag.substr(pos + 1))) {
-        if (auto *unsignedOpt = static_cast<llvm::cl::opt<unsigned> *>(
-                options[flag.substr(0, pos)])) {
-          unsignedOpt->setValue(std::stoi(flag.substr(pos + 1)));
-        }
+  // Setting global llvm::cl::opt options below mutates process-wide state that
+  // is not thread-safe. translate_to_asm runs with the Python GIL released, so
+  // multiple threads can reach here in parallel and corrupt that state
+  // (segfaults during multithreaded Triton JIT). Serialize just the option
+  // manipulation; the codegen below uses per-call LLVMContext/Module and can
+  // stay parallel.
+  static std::mutex cl_option_mutex;
+  {
+    std::lock_guard<std::mutex> option_guard(cl_option_mutex);
+    // options
+    auto options = llvm::cl::getRegisteredOptions();
+    for (std::string flag : flags) {
+      auto pos = flag.find("="); // sunrise fix
+      if (pos == std::string::npos) {
+        auto *shortPtr = static_cast<llvm::cl::opt<bool> *>(options[flag]);
+        assert(shortPtr);
+        shortPtr->setValue(true);
       } else {
-        if (auto *stringOpt = static_cast<llvm::cl::opt<std::string> *>(
-                options[flag.substr(0, pos)])) {
-          stringOpt->setValue(flag.substr(pos + 1));
+        auto optIt = options.find(flag.substr(0, pos));
+        assert(optIt != options.end() && "Option not found in cl::opt!");
+
+        if (isInteger(flag.substr(pos + 1))) {
+          if (auto *unsignedOpt = static_cast<llvm::cl::opt<unsigned> *>(
+                  options[flag.substr(0, pos)])) {
+            unsignedOpt->setValue(std::stoi(flag.substr(pos + 1)));
+          }
+        } else {
+          if (auto *stringOpt = static_cast<llvm::cl::opt<std::string> *>(
+                  options[flag.substr(0, pos)])) {
+            stringOpt->setValue(flag.substr(pos + 1));
+          }
         }
       }
     }
-  }
-  if (triton::tools::getBoolEnv("LLVM_IR_ENABLE_DUMP")) {
-    auto optIt = options.find("print-after-all");
-    if (optIt != options.end()) {
-      auto optPtr = static_cast<llvm::cl::opt<bool> *>(optIt->second);
-      *optPtr = true;
+    if (triton::tools::getBoolEnv("LLVM_IR_ENABLE_DUMP")) {
+      auto optIt = options.find("print-after-all");
+      if (optIt != options.end()) {
+        auto optPtr = static_cast<llvm::cl::opt<bool> *>(optIt->second);
+        *optPtr = true;
+      }
     }
-  }
-  bool disableLLVMOpt = triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
-  if (!disableLLVMOpt) {
-    // Check to see if we are passing a list of flags to disable optimizations.
-    auto flagList = triton::tools::getStrEnv("DISABLE_LLVM_OPT");
-    if (!flagList.empty()) {
-      llvm::SmallVector<StringRef, 3> split;
-      StringRef(flagList.c_str()).split(split, ',');
-      for (auto flag : split) {
-        auto optIt = options.find(flag);
-        if (optIt != options.end()) {
-          auto optPtr = static_cast<llvm::cl::opt<bool> *>(optIt->second);
-          *optPtr = true;
+    bool disableLLVMOpt = triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
+    if (!disableLLVMOpt) {
+      // Check to see if we are passing a list of flags to disable
+      // optimizations.
+      auto flagList = triton::tools::getStrEnv("DISABLE_LLVM_OPT");
+      if (!flagList.empty()) {
+        llvm::SmallVector<StringRef, 3> split;
+        StringRef(flagList.c_str()).split(split, ',');
+        for (auto flag : split) {
+          auto optIt = options.find(flag);
+          if (optIt != options.end()) {
+            auto optPtr = static_cast<llvm::cl::opt<bool> *>(optIt->second);
+            *optPtr = true;
+          }
         }
       }
     }
@@ -767,12 +779,6 @@ void init_triton_llvm(py::module &&m) {
     if (paths.empty())
       return;
 
-    auto shouldOverrideFromSrc = [](const std::string &path) {
-      return path.find("builtin_math_double_S2.bc") != std::string::npos ||
-             path.find("builtin_math_double_S3.bc") != std::string::npos ||
-             path.find("builtin_math_fdiv_S3.bc") != std::string::npos;
-    };
-
     LLVMContext &ctx = dstMod->getContext();
     llvm::Linker linker(*dstMod);
     for (const std::string &path : paths) {
@@ -785,30 +791,23 @@ void init_triton_llvm(py::module &&m) {
       libMod->setTargetTriple(Triple(dstMod->getTargetTriple()));
       libMod->setDataLayout(dstMod->getDataLayout());
 
-      bool keepExternalLinkage = shouldOverrideFromSrc(path);
-      unsigned linkFlags = keepExternalLinkage
-                               ? llvm::Linker::Flags::OverrideFromSrc
-                               : llvm::Linker::Flags::LinkOnlyNeeded;
       std::unordered_set<std::string> externalFns;
-      if (!keepExternalLinkage) {
-        for (llvm::Function &fn : libMod->functions()) {
-          if (!fn.isDeclaration())
-            externalFns.insert(fn.getName().str());
-        }
+      for (llvm::Function &fn : libMod->functions()) {
+        if (!fn.isDeclaration())
+          externalFns.insert(fn.getName().str());
       }
 
-      if (linker.linkInModule(std::move(libMod), linkFlags)) {
+      if (linker.linkInModule(std::move(libMod),
+                              llvm::Linker::Flags::LinkOnlyNeeded)) {
         std::string message = "Failed to link library at " + path;
         throw std::invalid_argument(message);
       }
 
       // Mark linked-in functions as internal because backends use external
       // linkage as a signifier of kernel functions.
-      if (!keepExternalLinkage) {
-        for (llvm::Function &fn : dstMod->functions()) {
-          if (externalFns.count(fn.getName().str())) {
-            fn.setLinkage(llvm::GlobalValue::InternalLinkage);
-          }
+      for (llvm::Function &fn : dstMod->functions()) {
+        if (externalFns.count(fn.getName().str())) {
+          fn.setLinkage(llvm::GlobalValue::InternalLinkage);
         }
       }
     }

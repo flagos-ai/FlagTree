@@ -4,6 +4,10 @@ import tempfile
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "interpreter: indicate whether interpreter supports the test")
+    config.addinivalue_line(
+        "markers",
+        "remote_integration: exercise an external service and require explicit opt-in",
+    )
 
 
 def pytest_addoption(parser):

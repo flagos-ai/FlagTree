@@ -4,6 +4,9 @@
 #include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUToLLVM/Utility.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#ifdef __TLE__
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#endif // __TLE__
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -16,6 +19,9 @@
 #include "triton/Tools/LayoutUtils.h"
 #include <algorithm>
 #include <functional>
+#ifdef __TLE__
+#include <limits>
+#endif // __TLE__
 #include <numeric>
 
 using namespace mlir;
@@ -900,8 +906,45 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
 
     auto *ctx = rewriter.getContext();
     auto freeVarMasks = getFreeVariableMasks(ptr.getType());
+#ifdef __TLE__
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+    if (!isa<RankedTensorType>(ptr.getType())) {
+      auto partitions =
+          op->getParentOfType<triton::gpu::WarpSpecializePartitionsOp>();
+      auto ws = partitions ? dyn_cast<triton::gpu::WarpSpecializeOp>(
+                                 partitions->getParentOp())
+                           : triton::gpu::WarpSpecializeOp();
+      if (ws && ws->hasAttr("musa_tle.static_warp_specialize")) {
+        ModuleOp module = op->getParentOfType<ModuleOp>();
+        auto numWarps =
+            module->getAttrOfType<IntegerAttr>(triton::gpu::AttrNumWarpsName);
+        auto threadsPerWarp = module->getAttrOfType<IntegerAttr>(
+            triton::gpu::AttrNumThreadsPerWarp);
+        if (!numWarps || !threadsPerWarp || numWarps.getInt() <= 0 ||
+            threadsPerWarp.getInt() <= 0) {
+          return op.emitOpError(
+              "static WS partition store requires ttg.num-warps and "
+              "ttg.threads-per-warp");
+        }
+        if (numWarps.getInt() >
+            std::numeric_limits<int32_t>::max() / threadsPerWarp.getInt())
+          return op.emitOpError(
+              "static WS partition leader exceeds int32 range");
+        int64_t firstPartitionThread =
+            numWarps.getInt() * threadsPerWarp.getInt();
+        Value rawThreadId = ::mlir::gpu::ThreadIdOp::create(
+            rewriter, loc, ::mlir::gpu::Dimension::x);
+        rawThreadId =
+            arith::IndexCastOp::create(rewriter, loc, i32_ty, rawThreadId);
+        threadPred = b.icmp_eq(
+            rawThreadId, b.i32_val(static_cast<int32_t>(firstPartitionThread)));
+      }
+    }
+#else
+    Value threadPred =
+        emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+#endif // __TLE__
     uint32_t regMask = freeVarMasks.lookup(str_attr("reg"));
 
     if (vec == 1) {
