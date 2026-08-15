@@ -40,6 +40,16 @@ def get_package_dir():
     return {package: f"{OPS_PYTHON_ROOT}/{package.replace('.', '/')}" for package in _ops_packages()}
 
 
+def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
+    cache.store(
+        file="iluvatar-llvm22-x86_64",
+        condition=("iluvatar" == flagtree_backend),
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm22-x86_64_v0.6.0.tar.gz",
+        pre_hook=lambda: check_env("LLVM_SYSPATH"),
+        post_hook=set_llvm_env,
+    )
+
+
 def _build_setup_hook():
     patched_attr = "_iluvatar_ops_packages_patched"
 

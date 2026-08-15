@@ -222,6 +222,7 @@ def _compile_cuda_host_to_cache(
         f"-L{lib_dir}",
         f"-l:{host_lib.name}",
         "-lnvshmem_device",
+        "-lcuda",
         "-Xlinker",
         "-rpath",
         "-Xlinker",
@@ -313,12 +314,23 @@ def init_nvshmem_by_torch_pg(common, group):
     torch.distributed.barrier(group=group)
 
 
-def tensor_from_pointer(pointer, shape, dtype, device):
+def tensor_from_pointer(
+    pointer: int | ctypes.c_void_p,
+    shape: tuple[int, ...],
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    """Create a non-owning Torch tensor view over a CUDA allocation."""
+    address = pointer.value if isinstance(pointer, ctypes.c_void_p) else pointer
+    if address is not None and not isinstance(address, int):
+        raise TypeError(f"pointer must be int or ctypes.c_void_p, got {type(pointer).__name__}")
+    if not address:
+        raise ValueError("pointer cannot be null; CUDA memory must be allocated")
     elements = 1
     for extent in shape:
         elements *= extent
     storage = torch._C._construct_storage_from_data_pointer(
-        pointer.value,
+        address,
         device,
         elements * dtype.itemsize,
     )
@@ -332,6 +344,18 @@ def set_signal_cuda_ptr(signal_ptr, signal, stream):
         signal_ptr,
         signal,
         cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
+    )
+    CUDA_CHECK(err)
+
+
+def copy_on_stream(dst_ptr, src_ptr, nbytes, stream):
+    _, cudart = _get_cuda_modules()
+    (err, ) = cudart.cudaMemcpyAsync(
+        dst_ptr,
+        src_ptr,
+        nbytes,
+        cudart.cudaMemcpyKind.cudaMemcpyDefault,
+        stream.cuda_stream,
     )
     CUDA_CHECK(err)
 

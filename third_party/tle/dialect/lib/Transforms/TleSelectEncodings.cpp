@@ -750,8 +750,10 @@ class SelectEncodingsPass
           for (OpOperand &use : ptrVal.getUses()) {
             Operation *owner = use.getOwner();
             if (auto load = dyn_cast<triton::LoadOp>(owner)) {
-              if (isRewritableFullViewLocalPointerLoad(load))
-                continue;
+              // Full-view loads do not participate in encoding inference
+              // because they are rewritten to local_load later.  Until that
+              // rewrite, however, their result type must still match the
+              // pointer type.
               if (Value mask = load.getMask()) {
                 Value convertedMask =
                     convertOperandEncoding(owner, mask, ptrEncoding);
@@ -768,14 +770,9 @@ class SelectEncodingsPass
                   dyn_cast<RankedTensorType>(load.getResult().getType());
               if (oldLoadTy != loadTy) {
                 load.getResult().setType(loadTy);
-                if (oldLoadTy) {
-                  OpBuilder::InsertionGuard guard(builder);
-                  builder.setInsertionPointAfter(load);
-                  auto bridge = builder.create<triton::gpu::ConvertLayoutOp>(
-                      load.getLoc(), oldLoadTy, load.getResult());
-                  load.getResult().replaceAllUsesExcept(bridge.getResult(),
-                                                        bridge.getOperation());
-                }
+                if (oldLoadTy)
+                  bridgeResultTypeToOldEncoding(load.getResult(), oldLoadTy,
+                                                builder);
               }
               continue;
             }

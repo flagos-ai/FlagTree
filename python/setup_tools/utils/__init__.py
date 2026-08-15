@@ -21,7 +21,7 @@
 from pathlib import Path
 import importlib.util
 import os
-from . import tools, default, aipu
+from . import tools, default
 from .tools import flagtree_configs, OfflineBuildManager
 
 

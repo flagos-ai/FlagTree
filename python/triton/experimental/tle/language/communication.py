@@ -89,34 +89,64 @@ if enabled:
 
 
 def compile_flagcx_allocator():
-    """Compile the FlagCX allocator extension. Called once, result cached."""
     global _allocator, _allocator_wrapper, _flagcx_allocator_failed_to_compile
+
     try:
         out_dir = tempfile.gettempdir()
         lib_name = "flagcx_allocator"
+        lib_path = os.path.join(out_dir, f"{lib_name}.so")
 
-        load_inline(
-            name=lib_name,
-            cpp_sources=flagcx_allocator_source,
-            with_cuda=True,
-            extra_ldflags=[f"-L{FLAGCX_LIB_PATH}", "-lflagcx", f"-Wl,-rpath,{FLAGCX_LIB_PATH}"],
-            verbose=False,
-            is_python_module=False,
-            build_directory=out_dir,
-            extra_include_paths=[FLAGCX_INCLUDE_PATH],
-        )
+        rank = 0
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            rank = torch.distributed.get_rank()
+
+        if rank == 0:
+            if not os.path.isfile(lib_path):
+                print(
+                    f"[INFO] FlagCX allocator not found, compiling: {lib_path}",
+                    flush=True,
+                )
+
+                load_inline(
+                    name=lib_name,
+                    cpp_sources=flagcx_allocator_source,
+                    with_cuda=True,
+                    extra_ldflags=[
+                        f"-L{FLAGCX_LIB_PATH}",
+                        "-lflagcx",
+                        f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
+                    ],
+                    verbose=True,
+                    is_python_module=False,
+                    build_directory=out_dir,
+                    extra_include_paths=[FLAGCX_INCLUDE_PATH],
+                )
+            else:
+                print(
+                    f"[INFO] Using cached FlagCX allocator: {lib_path}",
+                    flush=True,
+                )
+
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        if not os.path.isfile(lib_path):
+            raise FileNotFoundError(f"FlagCX allocator library not found after compilation: {lib_path}")
 
         _allocator_wrapper = CUDAPluggableAllocator(
-            f"{out_dir}/{lib_name}.so",
+            lib_path,
             "flagcx_alloc_plug",
             "flagcx_free_plug",
         )
+
         _allocator = _allocator_wrapper.allocator()
+
     except Exception as e:
         _flagcx_allocator_failed_to_compile = True
-        print(f"[WARNING] Failed to compile FlagCX memory allocator: {e}\n"
-              f"  Ensure FLAGCX_LIB_PATH ({FLAGCX_LIB_PATH}) contains libflagcx.so\n"
-              f"  and FLAGCX_INCLUDE_PATH ({FLAGCX_INCLUDE_PATH}) contains flagcx.h")
+        print(
+            f"[WARNING] Failed to load FlagCX memory allocator: {e}",
+            flush=True,
+        )
 
 
 def get_mem_pool():

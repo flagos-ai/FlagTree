@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
+from triton.flagtune._dependencies import require_xgboost
 from triton.flagtune.contract.archive import (
     MODEL_ARCHIVE_NAME,
     ModelArchiveError,
@@ -203,10 +204,7 @@ def migrate_model_archive(
     summary["model_config_sha256"] = digest
     summary["model_version"] = version
 
-    try:
-        import xgboost
-    except ImportError as exc:
-        raise ImportError("FlagTune model migration requires XGBoost") from exc
+    xgboost = require_xgboost("FlagTune model migration")
     try:
         import yaml
     except ImportError as exc:

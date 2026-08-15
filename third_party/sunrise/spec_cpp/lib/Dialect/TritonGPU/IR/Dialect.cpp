@@ -1564,7 +1564,8 @@ void SunriseMmaEncodingAttr::print(AsmPrinter &printer) const {
           << ArrayRef(getWarpsPerCTA()) << "]"
           << ", isACol = " << getIsACol() << ", isBCol = " << getIsBCol()
           << ", inputElemBitWidth = " << getInputElemBitWidth()
-          << ", outputElemBitWidth = " << getOutputElemBitWidth();
+          << ", outputElemBitWidth = " << getOutputElemBitWidth()
+          << ", outLayout = " << static_cast<unsigned>(getOutLayout());
   maybePrintCTALayout(getContext(), printer, getCTALayout(),
                       /*rank=*/getWarpsPerCTA().size());
 

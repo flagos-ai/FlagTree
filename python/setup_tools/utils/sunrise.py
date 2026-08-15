@@ -23,6 +23,28 @@ import shutil
 from pathlib import Path
 
 
+def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
+    is_sunrise = "sunrise" == flagtree_backend
+
+    def configure_llvm(path):
+        set_llvm_env(path)
+        sunrise_cp_bc_files(path)
+
+    cache.store(
+        file="sunrise_llvm22_dev_release",
+        condition=is_sunrise,
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-9027ac27-triton-v3.6.x.tar.gz",
+        pre_hook=lambda: check_env("LLVM_SYSPATH"),
+        post_hook=configure_llvm,
+    )
+    cache.store(
+        file="sunriseTritonPlugin.so",
+        condition=is_sunrise and not os.environ.get("FLAGTREE_PLUGIN"),
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin_v0.6.0.4.tar.gz",
+        md5_digest="4c77b8c0",
+    )
+
+
 # sunrise
 def sunrise_cp_bc_files(path):
     # mkdir -p third_party/sunrise/backend/lib
