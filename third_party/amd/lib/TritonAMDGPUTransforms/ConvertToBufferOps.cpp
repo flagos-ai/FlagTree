@@ -137,6 +137,17 @@ bool canUseBufferOps(Value ptr,
   // pointer(splatted) and non-uniform offset addition
 
   LDBG("Buffer op checks for: " << ptr);
+
+  // Buffer ops reach memory through a global-memory resource descriptor, so a
+  // pointer living in any other address space cannot be promoted. Shared-memory
+  // pointers reach here from tle.local_pointers.
+  auto ptrTy =
+      dyn_cast<triton::PointerType>(getElementTypeOrSelf(ptr.getType()));
+  if (!ptrTy || ptrTy.getAddressSpace() != 1) {
+    LDBG("pointer is not in the global address space");
+    return false;
+  }
+
   auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
   if (!addPtrOp)
     return false;

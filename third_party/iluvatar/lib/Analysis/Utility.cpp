@@ -982,6 +982,19 @@ LinearLayout minimalCvtLayout(Type srcTy_, Type dstTy_) {
 }
 
 bool cvtReordersRegisters(RankedTensorType srcTy, RankedTensorType dstTy) {
+#ifdef __ILUVATAR__
+  auto getSmeMask = [](Attribute encoding) -> std::optional<bool> {
+    if (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(encoding))
+      encoding = slice.getParent();
+    if (auto blocked = dyn_cast<triton::gpu::BlockedEncodingAttr>(encoding))
+      return blocked.getSmeMask();
+    return std::nullopt;
+  };
+  auto srcSmeMask = getSmeMask(srcTy.getEncoding());
+  auto dstSmeMask = getSmeMask(dstTy.getEncoding());
+  if (srcSmeMask.value_or(false) != dstSmeMask.value_or(false))
+    return false;
+#endif
   auto layout = minimalCvtLayout(srcTy, dstTy);
   MLIRContext *ctx = srcTy.getContext();
   auto kRegister = StringAttr::get(ctx, "register");

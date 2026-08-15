@@ -17,6 +17,7 @@
 #define TRITONGCU_OPS
 
 include "triton/Dialect/Triton/IR/TritonTypes.td"
+include "triton/Dialect/Triton/IR/TritonOpInterfaces.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUTypes.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUTypeInterfaces.td"
 include "Dialect/TritonGCU/IR/TritonGCUDialect.td"
@@ -178,6 +179,56 @@ def TritonGCU_AssertOp : TTGCU_Op<"assert", []>
   let arguments = (ins I1:$condition, StrAttr:$message, StrAttr:$file, StrAttr:$func, I32Attr:$line);
   let assemblyFormat = [{
     $condition attr-dict `:` type($condition)
+  }];
+}
+
+//
+// MemDescToPtr Op
+//
+def TritonGCU_MemDescToPtrOp : TTGCU_Op<"memdesc_to_ptr", [Pure]>
+{
+  let summary = "Convert a MemDesc to a Triton pointer";
+  let description = [{
+    Extract the base pointer from a shared-memory MemDesc and produce
+    a `!tt.ptr<elemTy, addrSpace>` that can be consumed by standard
+    Triton pointer arithmetic (tt.splat, tt.addptr, tt.load, tt.store).
+    The address space is set to 3 (shared memory).
+  }];
+  let arguments = (ins TTG_MemDescType:$src);
+  let results = (outs TT_Ptr:$result);
+  let assemblyFormat = [{ $src attr-dict `:` type($src) `->` type($result) }];
+}
+
+//
+// RemoteMemDesc Op
+//
+// NOTE(haizhu.shao): tmp copy from gcu400, need review and support when enable remote_memdesc in gcu300.
+def TritonGCU_RemoteMemDescOp : TTGCU_Op<"remote_memdesc", [Pure]>
+{
+  let summary = "Produce a memdesc that refers to a remote CTA's shared memory";
+  let description = [{
+    Given a local shared-memory memdesc and a scalar shard_id (the target CTA
+    index within the cluster), return a memdesc of the same type that
+    semantically points to the corresponding buffer in the remote CTA's
+    shared memory.
+
+    On GCU 300, all CTAs in a cluster share the same DSM address space,
+    so the remote memdesc carries the shard_id for offset computation in
+    later lowering passes (KernelMemAllocPass).
+
+    Example:
+    ```mlir
+    %local = ttg.local_alloc : () -> !ttg.memdesc<64x64xf32, #shared, #smem, mutable>
+    %remote = triton_gcu.remote_memdesc %local, %shard_id
+        : !ttg.memdesc<64x64xf32, #shared, #smem, mutable>, i32
+        -> !ttg.memdesc<64x64xf32, #shared, #smem, mutable>
+    %val = ttg.local_load %remote : ... -> tensor<64x64xf32>
+    ```
+  }];
+  let arguments = (ins TTG_MemDescType:$src, I32:$shard_id);
+  let results = (outs TTG_MemDescType:$result);
+  let assemblyFormat = [{
+    $src `,` $shard_id attr-dict `:` type($src) `,` type($shard_id) `->` type($result)
   }];
 }
 

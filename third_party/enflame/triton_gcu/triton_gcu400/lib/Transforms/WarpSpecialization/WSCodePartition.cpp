@@ -22,6 +22,7 @@
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 #include "Transforms/Passes.h"
+#include "Utils/TritonVersionCompat.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
@@ -522,7 +523,7 @@ DenseMap<Channel *, Value> createBuffer(
 
     // Get basic information from tensorType
     auto order = ttg::getOrderForMemory(tensorType);
-    auto CTALayout = ttg::getCTALayout(tensorType.getEncoding());
+    auto CTALayout = triton_gcu::compat::getCGALayout(tensorType.getEncoding());
     auto elemType = tensorType.getElementType();
 
     // Get shape, layout and type of a slice
@@ -810,6 +811,11 @@ void insertAsyncComm(
         /*inner_barrier=*/innerBarrier);
     auto pipeline = builder.createWithAsyncTaskIds<ttgcuws::InitPipelineOp>(
         funcOp->getLoc(), pipelineType);
+
+    // Destroy pipeline at the end of the function.
+    builder.setInsertionPoint(funcOp.getBody().front().getTerminator());
+    builder.createWithAsyncTaskIds<ttgcuws::DestroyPipelineOp>(funcOp->getLoc(),
+                                                               pipeline);
 
     // Insert ProducerAcquireOp before the producer.
     builder.setAsynTaskIdsFromArray(masterChannel->relation.first);

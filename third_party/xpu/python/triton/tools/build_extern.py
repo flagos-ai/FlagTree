@@ -264,9 +264,9 @@ class Libdevice(ExternLibrary):
     def _output_stubs(self) -> str:
         # Generate python functions in the following format:
         # @extern.extern
-        # def <op_name>(<args>, _builder=None):
+        # def <op_name>(<args>, _semantic=None):
         #   arg_type_symbol_dict = {[arg_type]: {(symbol, ret_type)}}
-        #   return core.extern_elementwise("libdevice", <path>, <args>, <arg_type_symbol_dict>, _builder)
+        #   return core.extern_elementwise("libdevice", <path>, <args>, <arg_type_symbol_dict>, _semantic)
         import_str = "from . import core\n"
 
         header_str = ""
@@ -276,7 +276,7 @@ class Libdevice(ExternLibrary):
             func_name_str = f"def {symbols[0].op_name}("
             for arg_name in symbols[0].arg_names:
                 func_name_str += f"{arg_name}, "
-            func_name_str += "_builder=None):\n"
+            func_name_str += "_semantic=None):\n"
 
             return_str = f"\treturn core.extern_elementwise(\"{self._name}\", libdevice_path(), ["
             for arg_name in symbols[0].arg_names:
@@ -294,7 +294,7 @@ class Libdevice(ExternLibrary):
 
             return_str += arg_type_symbol_dict_str
             return_str += f", is_pure={self.is_pure}"
-            return_str += ", _builder=_builder)\n"
+            return_str += ", _semantic=_semantic)\n"
 
             func_str += func_name_str + return_str + "\n"
         file_str = import_str + header_str + func_str

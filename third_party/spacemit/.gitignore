@@ -1,0 +1,13 @@
+*.pyc
+.cache
+compile_commands.json
+build/*
+.vscode/*
+build-*
+ir_dumps
+myenv
+backend/bin/*
+backend/lib/*
+# spert headers are vendored into backend/include at package time from the
+# spine-runtime submodule (setup.py); ExecutionEngine/ stays tracked.
+backend/include/SpineRuntime/*

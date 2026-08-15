@@ -352,6 +352,44 @@ def mangle_type(arg, specialize=False):
     return native_specialize_impl(BaseBackend, arg, is_const, specialize, align)[0]
 
 
+def _make_pointer_alias_spec(params, bound_vals):
+    arg_indices_by_ptr = defaultdict(list)
+    ir_arg_idx = 0
+
+    for param, value in zip(params, bound_vals):
+        if param.is_constexpr:
+            continue
+
+        data_ptr = getattr(value, "data_ptr", None)
+        if callable(data_ptr):
+            ptr = data_ptr()
+            if ptr:
+                arg_indices_by_ptr[ptr].append(ir_arg_idx)
+
+        ir_arg_idx += 1
+
+    pairs = []
+    for indices in arg_indices_by_ptr.values():
+        if len(indices) < 2:
+            continue
+        pairs.extend(f"{lhs}:{rhs}" for lhs, rhs in itertools.combinations(indices, 2))
+    return ",".join(pairs)
+
+
+def _musa_target_capability(target):
+    if target.backend != "musa":
+        return None
+    arch = target.arch
+    if isinstance(arch, int):
+        return arch
+    arch = str(arch).lower()
+    if arch.isdigit():
+        return int(arch)
+    if arch.startswith("ph1"):
+        return 31
+    return None
+
+
 class KernelInterface(Generic[T]):
     run: T
 
@@ -727,6 +765,12 @@ class JITFunction(JITCallable, KernelInterface[T]):
         if knobs.runtime.add_stages_inspection_hook is not None:
             inspect_stages_key, inspect_stages_hash = knobs.runtime.add_stages_inspection_hook()
             specialization.append(f'("custom_pipeline", {inspect_stages_hash})')
+
+        if _musa_target_capability(target) == 31:
+            inplace_alias_pairs = _make_pointer_alias_spec(self.params, bound_args.values())
+            if inplace_alias_pairs:
+                options = {**options, "inplace_alias_pairs": inplace_alias_pairs}
+                kwargs = {**kwargs, "inplace_alias_pairs": inplace_alias_pairs}
 
         key = compute_cache_key(kernel_key_cache, specialization, options)
         kernel = kernel_cache.get(key, None)

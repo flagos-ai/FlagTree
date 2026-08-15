@@ -117,9 +117,9 @@ compiler.py (使用类型化 API)
 
 - `triton_gcu/triton_gcu300/lib/triton_gcu300_core.{h,cpp}` - C++ 核心实现
 - `triton_gcu/triton_gcu300/python/triton_gcu300_module.cpp` - pybind11 绑定
-- `python/triton/passes/gcu300.py` - GCU300 类型化 API
-- `python/triton/passes/gcu400.py` - GCU400 类型化 API
-- `python/triton/compiler.py` - 使用类型化 API 的编译器
+- `triton_gcu/python/triton/passes/gcu300.py` - GCU300 typed API
+- `triton_gcu/python/triton/passes/gcu400.py` - GCU400 typed API
+- `triton_gcu/python/triton/compiler.py` - compiler using typed APIs
 
 ## 迁移指南
 

@@ -99,7 +99,9 @@ def run_parser(kernel_fn, args=(), kwargs={}, target=stub_target):
 
     codegen_fns = backend.get_codegen_implementation(options)
     module_map = backend.get_module_map()
-    module = backend.make_ir(src, options, codegen_fns, module_map, context)
+    module = spec_call("filecheck_make_ir", src, target, options, codegen_fns, module_map, context)
+    if module is None:
+        module = backend.make_ir(src, options, codegen_fns, module_map, context)
     return module
 
 

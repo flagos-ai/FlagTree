@@ -297,7 +297,14 @@ private:
                           RankedTensorType partialType) const {
     auto newArgNum = loop.getBody()->getNumArguments() - 1;
     auto newArg = loop.getBody()->getArgument(newArgNum);
-    builder.setInsertionPointAfter(newReduce);
+    // Insert at `oldUpdate`, not after `newReduce`. The rescale operand
+    // (`alpha = exp2(m_i - m_ij)`) is independent of the sum-reduce and is
+    // often defined *after* it in FA TTIR. Lifting alpha at
+    // After(newReduce) would place a use before its def and break SSA
+    // dominance ("operand #0 does not dominate this use").
+    // `newReduce` is created immediately after the original reduce, so it
+    // still dominates `oldUpdate`.
+    builder.setInsertionPoint(oldUpdate);
     IRMapping mapping;
     for (Value operand : oldUpdate->getOperands()) {
       Value mapped =

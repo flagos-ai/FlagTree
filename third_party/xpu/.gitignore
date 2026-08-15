@@ -1,7 +1,15 @@
-# Prebuilt SDNN objects and archives (downloaded via setup_helper.py)
+# Prebuilt SDNN objects and archives (installed from xpu-sdnn-objects tarball)
 *.o
 libTritonSharedForXPU.a
-lib/Analysis/NewAnalysis/SDNN/libTritonXPUAnalysisSDNN.a
+/libTritonXPUAnalysisSDNN.a
+/lib/Analysis/SDNN/libTritonXPUAnalysisSDNN.a
+/lib/Analysis/NewAnalysis/SDNN/libTritonXPUAnalysisSDNN.a
+
+# Prebuilt device objects installed under device/xpu3/ (device/ files are tracked)
+/device/xpu3/
+
+# Install marker written by install_sdnn_objects
+/version.txt
 
 # Download cache from BOS (xpu-sdnn-objects_*.tar.gz)
 xpu-sdnn-objects

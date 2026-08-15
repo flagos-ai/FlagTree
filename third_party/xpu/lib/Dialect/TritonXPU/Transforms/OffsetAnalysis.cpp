@@ -1021,10 +1021,15 @@ public:
     } else if (isa<triton::BitcastOp>(ptrOp) || isa<triton::SplatOp>(ptrOp)) {
       // Case 2. inptr -> cal -> addptr -> bitcast -> gm2lm
       // Case 3. inptr -> cal -> addptr -> splat -> gm2lm
+      bool isSplat = isa<triton::SplatOp>(ptrOp);
       Value prevVal = ptrOp->getOperand(0);
       ptrOp = prevVal.getDefiningOp();
       if (!ptrOp)
-        return OffsetState::Continuous;
+        // splat(scalar_ptr) -> gm2lm : all lanes read the same address
+        // (uniform broadcast, no addptr). This must not be treated as
+        // Continuous, otherwise gm2lm reads contiguous garbage. Aligns with
+        // Triton 3.0 which keeps addptr(ptr,0) and yields Unknown here.
+        return isSplat ? OffsetState::Unknown : OffsetState::Continuous;
     } else if (!isa<triton::AddPtrOp>(ptrOp)) {
       // Case 4. inptr -> unknown -> gm2lm
       LLVM_DEBUG(

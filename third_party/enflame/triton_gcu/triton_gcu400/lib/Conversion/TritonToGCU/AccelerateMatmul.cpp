@@ -15,6 +15,7 @@
  */
 #include <utility>
 
+#include "Utils/TritonVersionCompat.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -169,7 +170,7 @@ static Value getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter,
 
   Attribute SharedMemorySpace =
       SharedMemorySpaceAttr::get(argType.getContext());
-  auto CTALayout = getCTALayout(argType.getEncoding());
+  auto CTALayout = triton_gcu::compat::getCGALayout(argType.getEncoding());
   auto newLayout = NVMMASharedEncodingAttr::get(
       argType.getContext(), argType.getShape(), newOrder, CTALayout,
       argType.getElementType(), false);
@@ -209,7 +210,13 @@ public:
     // get MMA encoding for the given number of warps
     auto retShapePerCTA = getShapePerCTA(oldRetType);
     int numWarps = lookupNumWarps(dotOp);
-    auto CTALayout = getCTALayout(oldRetType.getEncoding());
+    // Skip dot ops that are in a function with num_warps == 1 (e.g. a
+    // producer-default TLE WS kernel where the producer uses 1 warp but
+    // the consumer worker uses >1 warps). The num_warps here reflects
+    // the dot op's enclosing function, not the module-level value.
+    if (numWarps <= 1)
+      return failure();
+    auto CTALayout = triton_gcu::compat::getCGALayout(oldRetType.getEncoding());
 
     // operands
     Value a = dotOp.getA();
@@ -230,7 +237,31 @@ public:
     LLVM_DEBUG(llvm::dbgs() << "BlockedToMMA: operand B "
                             << (bMatchesPattern ? "matches" : "does NOT match")
                             << " tt.load -> convert_layout pattern\n");
-    if (!aMatchesPattern && !bMatchesPattern) {
+
+    // ttg.local_load (TLE WS after pipe lowering)
+    // ttg.convert_layout -> ttg.local_load (TLE WS after pipe lowering)
+    auto traceBackToLocalLoad = [](Value v) -> bool {
+      if (isa_and_nonnull<LocalLoadOp>(v.getDefiningOp()))
+        return true;
+      if (auto cvt = v.getDefiningOp<ConvertLayoutOp>()) {
+        auto src = cvt.getSrc();
+        if (isa_and_nonnull<LocalLoadOp>(src.getDefiningOp()))
+          return true;
+      }
+      return false;
+    };
+
+    bool aFromLocalLoad = traceBackToLocalLoad(a);
+    bool bFromLocalLoad = traceBackToLocalLoad(b);
+    LLVM_DEBUG(llvm::dbgs()
+               << "BlockedToMMA: operand A " << (aFromLocalLoad ? "" : "not")
+               << " from local_load\n");
+    LLVM_DEBUG(llvm::dbgs()
+               << "BlockedToMMA: operand B " << (bFromLocalLoad ? "" : "not")
+               << " from local_load\n");
+
+    if (!(aMatchesPattern || bMatchesPattern || aFromLocalLoad ||
+          bFromLocalLoad)) {
       LLVM_DEBUG(llvm::dbgs()
                  << "BlockedToMMA: skip dot because neither operand matches "
                     "tt.load -> convert_layout pattern\n");
@@ -382,14 +413,6 @@ public:
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     mlir::gpu::GPUModuleOp m = getOperation();
-    // skip if num_warps is 1
-    auto builtinModule = m->getParentOfType<ModuleOp>();
-    if (builtinModule && builtinModule->hasAttr(kNumWarps)) {
-      auto numWarps =
-          cast<IntegerAttr>(builtinModule->getAttr(kNumWarps)).getInt();
-      if (numWarps == 1)
-        return;
-    }
 
     mlir::RewritePatternSet patterns(context);
     patterns.add<BlockedToMMA>(context);

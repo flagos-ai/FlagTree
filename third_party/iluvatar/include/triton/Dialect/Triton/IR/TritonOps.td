@@ -20,6 +20,9 @@ include "triton/Dialect/Triton/IR/TritonOpInterfaces.td"
 // Interfaces
 //
 def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
+// begin flagtree tle
+def SharedMemory : Resource<"::mlir::triton::SharedMemory">;
+// end flagtree tle
 
 //
 // Op Base
@@ -225,17 +228,15 @@ def TT_AdvanceOp : TT_Op<"advance",
 //
 def TT_LoadOp : TT_Op<"load", [
   // SameLoadStoreOperandsAndResultShape,
-  // SameLoadStoreOperandsAndResultEncoding,
+  SameLoadStoreOperandsAndResultEncoding,
   AttrSizedOperandSegments,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
   DeclareOpInterfaceMethods<InferTypeOpInterface>,
   TypesMatchWith<"result matches ptr type", "ptr", "result", "getPointeeType($_self)">,
-  TypesMatchWith<"mask type matches ptr type", "ptr", "mask", "getI1SameShape(getPointeeType($_self))",
-                //  "($_op.getOperands().size() <= 1) || std::equal_to<>()">,
-                "($_op.getOperands().size() != 3) || std::equal_to<>()">,
-  TypesMatchWith<"other matches ptr type", "ptr", "other", "getPointeeType($_self)",
-                //  "($_op.getOperands().size() <= 2) || std::equal_to<>()">
-                "($_op.getOperands().size() != 3) || std::equal_to<>()">
+  OptionalTypesMatchWith<"mask type matches ptr type", "ptr", "mask",
+                         "getI1SameShape(getPointeeType($_self))">,
+  OptionalTypesMatchWith<"other matches ptr type", "ptr", "other",
+                         "getPointeeType($_self)">
 ]> {
     let summary = "Load from a tensor of pointers or from a tensor pointer";
 
@@ -273,7 +274,21 @@ def TT_LoadOp : TT_Op<"load", [
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
                        "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
+        // Iluvatar SME load: ptr + inputStride (forces the SME path)
+        OpBuilder<(ins "Value":$ptr, "triton::CacheModifier":$cache,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       "Value":$inputStride)>,
+        // Iluvatar masked SME load: ptr + mask + other + inputStride
+        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
+                       "triton::CacheModifier":$cache, "triton::EvictionPolicy":$evict,
+                       "bool":$isVolatile, "Value":$inputStride)>,
+        // Full builder with inputStride
+        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
+                       "ArrayRef<int32_t>":$boundaryCheck,
+                       "std::optional<triton::PaddingOption>":$padding,
+                       "triton::CacheModifier":$cache, "triton::EvictionPolicy":$evict,
+                       "bool":$isVolatile, "Value":$inputStride)>
     ];
 
     // // Specify `cacheModifier` and `evictionPolicy` explicitly in the
@@ -354,8 +369,10 @@ def TT_StoreOp : TT_Op<"store", [
 def TT_AtomicRMWOp : TT_Op<"atomic_rmw", [
   SameOperandsAndResultShape,
   SameOperandsAndResultEncoding,
-  TypesMatchWith<"ptr type matches value type", "val", "ptr",
-                 "getPointerTypeSameShape($_self)">,
+// begin flagtree tle
+  TypesMatchWith<"value type matches ptr type", "ptr", "val",
+                 "getPointeeType($_self)">,
+// end flagtree tle
   TypesMatchWith<"mask type matches value type",
                  "val", "mask", "getI1SameShape($_self)",
                  "($_op.getOperands().size() <= 2) || std::equal_to<>()">
@@ -370,7 +387,10 @@ def TT_AtomicRMWOp : TT_Op<"atomic_rmw", [
 
     let arguments = (ins
       TT_AtomicRMWAttr:$atomic_rmw_op,
-      Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$ptr,
+// begin flagtree tle
+      Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>,
+                           MemRead<SharedMemory>, MemWrite<SharedMemory>]>:$ptr,
+// end flagtree tle
       TT_Type:$val,
       Optional<TT_BoolLike>:$mask,
       TT_MemSemanticAttr:$sem,
@@ -390,10 +410,12 @@ def TT_AtomicRMWOp : TT_Op<"atomic_rmw", [
 def TT_AtomicCASOp : TT_Op<"atomic_cas", [
   SameOperandsAndResultShape,
   SameOperandsAndResultEncoding,
-  TypesMatchWith<"ptr type matches cmp type", "cmp", "ptr",
-                  "getPointerTypeSameShape($_self)">,
-  TypesMatchWith<"ptr type matches value type", "val", "ptr",
-                  "getPointerTypeSameShape($_self)">
+// begin flagtree tle
+  TypesMatchWith<"cmp type matches ptr type", "ptr", "cmp",
+                  "getPointeeType($_self)">,
+  TypesMatchWith<"value type matches ptr type", "ptr", "val",
+                  "getPointeeType($_self)">
+// end flagtree tle
 ]> {
     let summary = "atomic cas";
 
@@ -408,7 +430,10 @@ def TT_AtomicCASOp : TT_Op<"atomic_cas", [
     }];
 
     let arguments = (ins
-      Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$ptr,
+// begin flagtree tle
+      Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>,
+                           MemRead<SharedMemory>, MemWrite<SharedMemory>]>:$ptr,
+// end flagtree tle
       TT_Type:$cmp,
       TT_Type:$val,
       TT_MemSemanticAttr:$sem,

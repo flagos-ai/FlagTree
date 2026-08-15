@@ -802,7 +802,14 @@ void populateIluvatarTlePatterns(TritonGPUTypeConverter &typeConverter,
   MLIRContext *context = patterns.getContext();
   patterns.add<GenericOpPattern<triton::iluvatar_tle::ExtractTileOp>,
                GenericOpPattern<triton::iluvatar_tle::InsertTileOp>,
-               GenericOpPattern<triton::iluvatar_tle::LocalPointersOp>>(
+               GenericOpPattern<triton::iluvatar_tle::ExclusiveCumsumOp>,
+               GenericOpPattern<triton::iluvatar_tle::LocalPointersOp>,
+               GenericOpPattern<triton::iluvatar_tle::PipeCreateOp>,
+               GenericOpPattern<triton::iluvatar_tle::PipeWriterAcquireOp>,
+               GenericOpPattern<triton::iluvatar_tle::PipeWriterCommitOp>,
+               GenericOpPattern<triton::iluvatar_tle::PipeWriterCloseOp>,
+               GenericOpPattern<triton::iluvatar_tle::PipeReaderWaitOp>,
+               GenericOpPattern<triton::iluvatar_tle::PipeReaderReleaseOp>>(
       typeConverter, context);
 }
 #endif

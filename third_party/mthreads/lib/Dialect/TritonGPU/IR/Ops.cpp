@@ -227,15 +227,6 @@ struct CanonicalizeConvertFromAlloc
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
     if (!convert)
       return failure();
-    auto srcTy = dyn_cast<RankedTensorType>(convert.getSrc().getType());
-    auto dstTy = dyn_cast<RankedTensorType>(convert.getType());
-    if (srcTy && dstTy && isa<MUSASqmmaEncodingAttr>(srcTy.getEncoding()) &&
-        !isa<MmaEncodingTrait>(dstTy.getEncoding())) {
-      // Chained SQMMA operands must preserve the explicit mma -> logical-tensor
-      // boundary. Folding alloc(convert_layout(%mma)) into alloc(%mma) breaks
-      // the required shared-memory restaging contract for the next SQMMA.
-      return failure();
-    }
     SmallVector<NamedAttribute> attrs(op->getAttrs().begin(),
                                       op->getAttrs().end());
     auto newAlloc = triton::gpu::LocalAllocOp::create(
@@ -918,6 +909,18 @@ LogicalResult TMACopyOp::verify() {
   }
   if (globalToLocal && !memDescTy.getMutableMemory())
     return emitOpError("cannot copy into immutable memdesc");
+
+  if (getCompletionBarrier()) {
+    if (!globalToLocal)
+      return emitOpError(
+          "completion barrier is only supported for global-to-shared copy");
+    auto expectBytes = (*this)->getAttrOfType<IntegerAttr>("expect_bytes");
+    if (!expectBytes || expectBytes.getInt() <= 0)
+      return emitOpError(
+          "completion barrier requires a positive expect_bytes attribute");
+  } else if ((*this)->getAttr("expect_bytes")) {
+    return emitOpError("expect_bytes requires a completion barrier operand");
+  }
   return success();
 }
 #endif // __TLE__

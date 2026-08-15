@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
+#include "Utils/TritonVersionCompat.h"
 
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
@@ -965,7 +966,7 @@ struct ConvertTMACopyOp : public RewritePattern {
     SmallVector<unsigned> order(rank);
     for (int i = 0; i < rank; i++)
       order[i] = rank - 1 - i;
-    auto ctaLayout = triton::gpu::CTAEncodingAttr::fromSplitParams(
+    auto ctaLayout = triton_gcu::compat::getCGALayoutFromSplitParams(
         op->getContext(),
         /*ctasPerCGA=*/SmallVector<unsigned>(rank, 1),
         /*ctaSplitNum=*/SmallVector<unsigned>(rank, 1),
@@ -1184,6 +1185,55 @@ static void fixRemoteAddrSpaceTypes(Value startVal) {
   }
 }
 
+/// Rewrite AS 7 (remote) → AS 3 (shared) in tt.func parameter / result types
+/// and tt.call operand / result types so that callee signatures stay consistent
+/// after fixRemoteAddrSpaceTypes has rewritten all value types.
+static void fixRemoteAddrSpaceFuncSignatures(gpu::GPUModuleOp module) {
+  module.walk([](Operation *op) {
+    if (auto funcOp = dyn_cast<triton::FuncOp>(op)) {
+      auto funcTy = funcOp.getFunctionType();
+      bool changed = false;
+
+      SmallVector<Type> newInputs;
+      for (Type t : funcTy.getInputs()) {
+        Type nt = rewriteRemoteAddrSpace(t);
+        newInputs.push_back(nt);
+        if (nt != t)
+          changed = true;
+      }
+      SmallVector<Type> newResults;
+      for (Type t : funcTy.getResults()) {
+        Type nt = rewriteRemoteAddrSpace(t);
+        newResults.push_back(nt);
+        if (nt != t)
+          changed = true;
+      }
+
+      if (changed) {
+        auto newFuncTy =
+            FunctionType::get(op->getContext(), newInputs, newResults);
+        funcOp.setFunctionType(newFuncTy);
+        if (!funcOp.isDeclaration()) {
+          Block &entry = funcOp.getBody().front();
+          for (unsigned i = 0; i < entry.getNumArguments(); ++i) {
+            if (entry.getArgument(i).getType() != newInputs[i]) {
+              entry.getArgument(i).setType(newInputs[i]);
+              fixRemoteAddrSpaceTypes(entry.getArgument(i));
+            }
+          }
+        }
+      }
+    } else if (op->getName().getStringRef() == "tt.call") {
+      for (unsigned i = 0; i < op->getNumResults(); ++i) {
+        Type oldTy = op->getResult(i).getType();
+        Type newTy = rewriteRemoteAddrSpace(oldTy);
+        if (newTy != oldTy)
+          op->getResult(i).setType(newTy);
+      }
+    }
+  });
+}
+
 static void postProcessRemotePointers(gpu::GPUModuleOp module) {
   SmallVector<Operation *> remoteOps;
   module.walk([&](Operation *op) {
@@ -1239,6 +1289,12 @@ static void postProcessRemotePointers(gpu::GPUModuleOp module) {
     fixRemoteAddrSpaceTypes(replacement);
     remoteOp->erase();
   }
+
+  // After all tle.remote_pointers have been lowered, AS 7 pointers no longer
+  // exist as values.  However tt.func / tt.call signatures may still reference
+  // AS 7 in their parameter and result types.  Rewrite those signatures so the
+  // MLIR verifier does not flag an operand-type mismatch.
+  fixRemoteAddrSpaceFuncSignatures(module);
 }
 
 // ===----------------------------------------------------------------------===
@@ -1420,7 +1476,7 @@ static void preProcessLocalPointers(gpu::GPUModuleOp module) {
               continue;
             newOrder.push_back(o - 1);
           }
-          auto reducedCTA = triton::gpu::CTAEncodingAttr::getDefault(
+          auto reducedCTA = triton_gcu::compat::getDefaultCGALayout(
               builder.getContext(), newOrder.size());
           reducedEncoding = triton::gpu::SwizzledSharedEncodingAttr::get(
               builder.getContext(), swizzled.getVec(), swizzled.getPerPhase(),
@@ -1428,7 +1484,7 @@ static void preProcessLocalPointers(gpu::GPUModuleOp module) {
         } else if (auto nvmmaShared =
                        dyn_cast<triton::gpu::NVMMASharedEncodingAttr>(
                            reducedEncoding)) {
-          auto reducedCTA = triton::gpu::CTAEncodingAttr::getDefault(
+          auto reducedCTA = triton_gcu::compat::getDefaultCGALayout(
               builder.getContext(), newShapeSize);
           reducedEncoding = triton::gpu::NVMMASharedEncodingAttr::get(
               builder.getContext(), nvmmaShared.getSwizzlingByteWidth(),
@@ -1489,6 +1545,156 @@ struct ConvertExtractPtrOp : public RewritePattern {
   }
 };
 
+// ===----------------------------------------------------------------------===
+// prepare for tle_dslregion_inline
+// ===----------------------------------------------------------------------===
+struct ConvertDSLRegionOpPtrs : public RewritePattern {
+  explicit ConvertDSLRegionOpPtrs(MLIRContext *ctx)
+      : RewritePattern("tle.dsl_region", /*benefit=*/1, ctx) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    // check if already has converted
+    if (op->hasAttr("tle_raw.converted")) {
+      return failure();
+    }
+
+    // check if already insert call dsl func
+    bool hasCall = false;
+    if (op->getNumRegions() > 0) {
+      Region &body = op->getRegion(0);
+      if (!body.empty()) {
+        Block *entryBlock = &body.front();
+        for (Operation &innerOp : *entryBlock) {
+          if (isa<LLVM::CallOp>(innerOp)) {
+            hasCall = true;
+            break;
+          }
+        }
+      }
+    }
+
+    auto loc = op->getLoc();
+    bool changed = false;
+
+    // Convert !tt.ptr operands to !llvm.ptr via PtrToInt + IntToPtr.
+    SmallVector<Value> newOperands;
+    newOperands.reserve(op->getNumOperands());
+    for (Value operand : op->getOperands()) {
+      if (auto ttPtrTy = dyn_cast<triton::PointerType>(operand.getType())) {
+        Value asInt = rewriter.create<triton::PtrToIntOp>(
+            loc, rewriter.getI64Type(), operand);
+        auto llvmPtrTy = LLVM::LLVMPointerType::get(rewriter.getContext(),
+                                                    ttPtrTy.getAddressSpace());
+        Value asPtr = rewriter.create<LLVM::IntToPtrOp>(loc, llvmPtrTy, asInt);
+        newOperands.push_back(asPtr);
+        changed = true;
+      } else {
+        newOperands.push_back(operand);
+      }
+    }
+    // check if deferred DSL
+    auto externAttr = op->getAttrOfType<StringAttr>("tle_raw.extern_func_name");
+    bool isDeferred = (externAttr != nullptr);
+
+    if (!changed && !isDeferred)
+      return failure();
+    if (hasCall && !changed)
+      return failure();
+
+    // create new dsl region
+    OperationState state(loc, op->getName());
+    state.addOperands(newOperands);
+    state.addTypes(op->getResultTypes());
+    for (NamedAttribute attr : op->getAttrs()) {
+      state.addAttribute(attr.getName(), attr.getValue());
+    }
+    // add converted
+    state.addAttribute("tle_raw.converted", rewriter.getUnitAttr());
+    for (unsigned i = 0; i < op->getNumRegions(); ++i)
+      state.addRegion();
+    Operation *newOp = rewriter.create(state);
+
+    for (unsigned i = 0; i < op->getNumRegions(); ++i) {
+      Region &oldRegion = op->getRegion(i);
+      Region &newRegion = newOp->getRegion(i);
+      rewriter.inlineRegionBefore(oldRegion, newRegion, newRegion.end());
+      for (Block &block : newRegion) {
+        for (auto [arg, newOperand] :
+             llvm::zip(block.getArguments(), newOperands)) {
+          if (arg.getType() != newOperand.getType())
+            arg.setType(newOperand.getType());
+        }
+      }
+    }
+
+    // for deferreed add llvm.call DSL func
+    if (isDeferred && !hasCall) {
+      StringRef externFuncName = externAttr.getValue();
+
+      SmallVector<Type> paramTys;
+      paramTys.reserve(newOperands.size());
+      for (Value operand : newOperands)
+        paramTys.push_back(operand.getType());
+      auto funcTy = LLVM::LLVMFunctionType::get(
+          LLVM::LLVMVoidType::get(rewriter.getContext()), paramTys);
+      auto gpuModule = op->getParentOfType<gpu::GPUModuleOp>();
+      LLVM::LLVMFuncOp funcOp =
+          gpuModule.lookupSymbol<LLVM::LLVMFuncOp>(externFuncName);
+      if (!funcOp) {
+        OpBuilder declBuilder(gpuModule.getBody(),
+                              gpuModule.getBody()->begin());
+        funcOp =
+            declBuilder.create<LLVM::LLVMFuncOp>(loc, externFuncName, funcTy);
+        funcOp.setLinkage(LLVM::Linkage::External);
+        auto dslFileAttr =
+            op->getAttrOfType<StringAttr>("tle_raw.dsl_file_name");
+        if (dslFileAttr) {
+          funcOp.setPassthroughAttr(declBuilder.getArrayAttr({
+              declBuilder.getStringAttr("tle_raw.source_file"),
+              dslFileAttr,
+          }));
+        }
+      }
+
+      // add llvm.call to region
+      Region &body = newOp->getRegion(0);
+      if (!body.empty()) {
+        Block *entryBlock = &body.front();
+        Operation *terminator = entryBlock->getTerminator();
+        OpBuilder bodyBuilder(rewriter.getContext());
+        bodyBuilder.setInsertionPoint(terminator);
+
+        SmallVector<Value> callOperands;
+        TypeRange funcArgTys = funcOp.getArgumentTypes();
+        unsigned numArgs =
+            std::min(static_cast<unsigned>(entryBlock->getNumArguments()),
+                     static_cast<unsigned>(funcArgTys.size()));
+        for (unsigned i = 0; i < numArgs; ++i) {
+          Value arg = entryBlock->getArgument(i);
+          Type paramTy = funcArgTys[i];
+          if (arg.getType() == paramTy) {
+            callOperands.push_back(arg);
+          } else if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
+                     isa<LLVM::LLVMPointerType>(paramTy)) {
+            callOperands.push_back(bodyBuilder.create<LLVM::AddrSpaceCastOp>(
+                loc, cast<LLVM::LLVMPointerType>(paramTy), arg));
+          } else {
+            callOperands.push_back(arg);
+          }
+        }
+
+        LLVM::CallOp callOp =
+            bodyBuilder.create<LLVM::CallOp>(loc, funcOp, callOperands);
+        callOp.setAlwaysInline(true);
+      }
+    }
+
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+
 struct TleToTritonGCUPass
     : public impl::TleToTritonGCUPassBase<TleToTritonGCUPass> {
   using Base::Base;
@@ -1516,6 +1722,7 @@ struct TleToTritonGCUPass
     patterns.add<ConvertLocalPointersOp>(ctx);
     patterns.add<ConvertTMACopyOp>(ctx);
     patterns.add<ConvertExtractPtrOp>(ctx);
+    patterns.add<ConvertDSLRegionOpPtrs>(ctx);
 
     if (failed(applyPatternsGreedily(module, std::move(patterns))))
       return signalPassFailure();

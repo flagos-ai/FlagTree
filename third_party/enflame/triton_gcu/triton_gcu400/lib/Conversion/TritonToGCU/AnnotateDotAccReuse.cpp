@@ -41,8 +41,6 @@ namespace {
 // single-region wrapper ops (e.g. triton_gcu.elementwise_fusion_region).
 static bool isSplatZeroConstant(Value v) {
   if (auto constOp = v.getDefiningOp<arith::ConstantOp>()) {
-    if (!constOp->hasOneUse())
-      return false;
     auto denseAttr = dyn_cast<DenseElementsAttr>(constOp.getValue());
     if (!denseAttr || !denseAttr.isSplat())
       return false;
@@ -68,7 +66,18 @@ static bool isSplatZeroConstant(Value v) {
   return isSplatZeroConstant(terminator->getOperand(resultIdx));
 }
 
-static bool canReuseOaccCache(triton::DotOp op) {
+static bool isFromGcuLoadOp(Value v) {
+  if (auto loadOp = v.getDefiningOp<triton::gcu::LoadOp>()) {
+    if (auto tType = dyn_cast<RankedTensorType>(v.getType()))
+      if (mlir::isa<triton::gpu::SharedEncodingTrait>(tType.getEncoding()))
+        return false;
+    return v.hasOneUse();
+  }
+  return false;
+}
+
+// Determine whether the dot op can reuse the oacc cache.
+static bool canUseOaccCache(triton::DotOp op) {
   ModuleOp mod = op->getParentOfType<ModuleOp>();
   int32_t numWarps = triton::gcu::getNumWarps(mod);
 
@@ -78,6 +87,11 @@ static bool canReuseOaccCache(triton::DotOp op) {
   }
 
   auto type = dyn_cast<RankedTensorType>(op.getType());
+  if (!type)
+    return false;
+  auto elemType = type.getElementType();
+  if (!elemType.isF32() && !elemType.isInteger(32))
+    return false;
   auto originShape = type.getShape();
   auto numElems = triton::gcu::getElemsPerThread(type);
   int64_t mSize = numElems[0];
@@ -87,18 +101,63 @@ static bool canReuseOaccCache(triton::DotOp op) {
           (nSize < OACC_F32_LENGTH && originShape[1] == nSize));
 }
 
+// Determine the acc_load mode by tracing the scf.for init arg's use chain.
+//   - "global":     triton_gcu.load → init arg
+//   - "local":      maxtrix_load → init arg
+//   - "constant":   splat constant → init arg
+//   - "none":       memref.alloca → init arg
+// Currently, only support none, global.
+static StringRef determineAccLoadMode(Value initArg) {
+  auto *defOp = initArg.getDefiningOp();
+  if (!defOp)
+    return kAccLoadLocal;
+  if (auto constOp = dyn_cast<arith::ConstantOp>(defOp)) {
+    auto denseAttr = dyn_cast<DenseElementsAttr>(constOp.getValue());
+    if (!denseAttr || !denseAttr.isSplat())
+      return kAccLoadLocal;
+    auto splatAttr = denseAttr.getSplatValue<Attribute>();
+    if (auto fAttr = dyn_cast<FloatAttr>(splatAttr)) {
+      if (fAttr.getValue().isZero()) {
+        return kAccLoadNone;
+      }
+    }
+    if (auto iAttr = dyn_cast<IntegerAttr>(splatAttr)) {
+      if (iAttr.getValue().isZero()) {
+        return kAccLoadNone;
+      }
+    }
+    return kAccLoadConstant;
+  }
+
+  if (isFromGcuLoadOp(initArg)) {
+    return kAccLoadGlobal;
+  }
+
+  // if (auto cvtOp = dyn_cast<arith::TruncFOp, arith::TruncIOp>(defOp)) {
+  //   if (isa<triton::gcu::LoadOp>(cvtOp->getOperand(0).getDefiningOp())) {
+  //     return kAccLoadGlobalCvt;
+  //   }
+  // }
+
+  return kAccLoadLocal;
+}
+
 // Determine the acc_store mode by tracing the scf.for result's use chain.
 //   - "global":     result → triton_gcu.store (same type)
 //   - "cvt_global": result → truncf/trunci → triton_gcu.store
 //   - "local":      result → maxtrix_store → ...
 //   - "cvt_local":  result → truncf/trunci → maxtrix_store → ...
-static StringRef determineAccStoreMode(Value forResult) {
-  Value val = forResult;
+// TODO(support): cvt store to local. local & cvt_local could be merged to
+// local. And CvtOp could be replaced by gcu.matrix_store.
+static StringRef determineAccStoreMode(Value result) {
+  Value val = result;
   bool hasCvt = false;
   while (val.hasOneUse()) {
     Operation *user = *val.getUsers().begin();
-    if (isa<triton::gcu::StoreOp>(user))
+    if (auto storeOp = dyn_cast<triton::gcu::StoreOp>(user)) {
+      storeOp->setAttr(kMaxtrixStore, UnitAttr::get(result.getContext()));
       return hasCvt ? kAccStoreCvtGlobal : kAccStoreGlobal;
+    }
     if (isa<arith::TruncFOp, arith::TruncIOp>(user)) {
       hasCvt = true;
       val = user->getResult(0);
@@ -142,7 +201,8 @@ struct AnnotateDotAccReusePass
   using Base::Base;
 
   void runOnOperation() override {
-    getOperation().walk([](triton::DotOp dotOp) {
+    auto mod = getOperation();
+    mod.walk([](triton::DotOp dotOp) {
       if (dotOp.getType().getRank() != 2)
         return;
 
@@ -177,9 +237,11 @@ struct AnnotateDotAccReusePass
       auto initArgs = forOp.getInitArgs();
       Value initArg = initArgs[iterArgIdx];
 
-      // Only support zero-initialized accumulators -- fixAccBufferLifetime
-      // re-initializes via memset to zero, so a non-zero init would be lost.
-      if (!isSplatZeroConstant(initArg))
+      // Only support zero-init accumulators, gcu load op, or computed values
+      // TODO(support): arbitrary init values. In ConvertTritonToGCU,
+      // kAccLoadLocal & kAccLoadConstant has been supported.
+      // kAccLoadConstant(splat constant) can be optimized via vld.
+      if (!isSplatZeroConstant(initArg) && !isFromGcuLoadOp(initArg))
         return;
 
       if (auto outerFor = forOp->getParentOfType<scf::ForOp>()) {
@@ -209,7 +271,7 @@ struct AnnotateDotAccReusePass
       }
 
       auto ctx = dotOp.getContext();
-      bool isOaccCache = canReuseOaccCache(dotOp);
+      bool isOaccCache = canUseOaccCache(dotOp);
       StringRef accReuseMode = isOaccCache ? kAccReuseOacc : kAccReuseLocal;
       dotOp->setAttr(kAccReuseCandidate, StringAttr::get(ctx, accReuseMode));
 
@@ -218,12 +280,68 @@ struct AnnotateDotAccReusePass
                  << ", acc_reuse_candidate=" << accReuseMode << "\n");
 
       if (isOaccCache) {
+        StringRef accLoadMode = determineAccLoadMode(initArg);
+        dotOp->setAttr(kAccLoad, StringAttr::get(ctx, accLoadMode));
+
         Value forResult = forOp->getResult(iterArgIdx);
         StringRef accStoreMode = determineAccStoreMode(forResult);
         dotOp->setAttr(kAccStore, StringAttr::get(ctx, accStoreMode));
-        LLVM_DEBUG(llvm::dbgs() << "AnnotateDotAccReuse: acc oacc store"
+        LLVM_DEBUG(llvm::dbgs() << "AnnotateDotAccReuse: acc oacc load"
+                                << ", acc_load=" << accLoadMode
                                 << ", acc_store=" << accStoreMode << "\n");
       }
+    });
+
+    // Use oacc to cache dot result (non-reuse path)
+    mod.walk([](triton::DotOp dotOp) {
+      if (dotOp.getType().getRank() != 2)
+        return;
+
+      if (dotOp->hasAttr(kAccReuseCandidate))
+        if (mlir::cast<StringAttr>(dotOp->getAttr(kAccReuseCandidate))
+                .getValue() == kAccReuseOacc)
+          return;
+
+      if (canUseOaccCache(dotOp)) {
+        auto *ctx = dotOp.getContext();
+
+        Value acc = dotOp.getC();
+        StringRef accLoadMode = determineAccLoadMode(acc);
+        if (accLoadMode == kAccLoadGlobal) {
+          auto *loadOp = acc.getDefiningOp();
+          if (loadOp && loadOp->getBlock() != dotOp->getBlock())
+            accLoadMode = kAccLoadLocal;
+        }
+        dotOp->setAttr(kAccLoad, StringAttr::get(ctx, accLoadMode));
+
+        Value result = dotOp.getResult();
+        StringRef accStoreMode = determineAccStoreMode(result);
+        dotOp->setAttr(kAccStore, StringAttr::get(ctx, accStoreMode));
+
+        LLVM_DEBUG(llvm::dbgs() << "AnnotateDotAccReuse: oacc cache"
+                                << ", acc_load=" << accLoadMode
+                                << ", acc_store=" << accStoreMode << "\n");
+      }
+    });
+
+    // Multi-dot OACC reuse: when DotOp A's result feeds directly into
+    // DotOp B's C operand and both are OACC-cache eligible (i.e. already
+    // annotated with kAccLoad/kAccStore by the walks above), skip the
+    // store in A and tell B to use A's OACC as its bias accumulator.
+    mod.walk([&](triton::DotOp dotOp) {
+      auto val = dotOp.getResult();
+      if (!val.hasOneUse())
+        return;
+      Operation *user = *val.getUsers().begin();
+      auto nextDotOp = dyn_cast<triton::DotOp>(user);
+      if (!nextDotOp || nextDotOp.getC() != val)
+        return;
+      if (!dotOp->hasAttr(kAccStore) || !nextDotOp->hasAttr(kAccLoad))
+        return;
+
+      auto *ctx = dotOp.getContext();
+      dotOp->setAttr(kAccStore, StringAttr::get(ctx, kAccStoreNone));
+      nextDotOp->setAttr(kAccLoad, StringAttr::get(ctx, kAccLoadOacc));
     });
   }
 };

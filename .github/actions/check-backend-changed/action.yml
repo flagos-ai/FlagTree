@@ -142,9 +142,9 @@ runs:
             break
           fi
 
-          # It is a code file. Check whether it lives inside third_party/
-          if [[ "$file" == third_party/* ]]; then
-            if [[ "$file" == third_party/${BACKEND}/* ]]; then
+          # It is a code file. Check whether it lives inside third_party/ or .github/workflows/benchmark/
+          if [[ "$file" == third_party/* ]] || [[ "$file" == .github/workflows/benchmark/* ]]; then
+            if [[ "$file" == third_party/${BACKEND}/* ]] || [[ "$file" == .github/workflows/benchmark/${BACKEND}/* ]]; then
               echo "'$file' -> Backend '$BACKEND' file changed, need to run"
               SHOULD_SKIP=false
               break

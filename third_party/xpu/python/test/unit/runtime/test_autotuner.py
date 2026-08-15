@@ -4,9 +4,52 @@ import triton
 import triton.language as tl
 import pytest
 
-pytest.skip("Skip for kunlunxin", allow_module_level=True)
+from triton.runtime import autotuner as autotuner_module
+from triton.runtime import jit as jit_module
+from triton.runtime.autotuner import Autotuner
+from triton.runtime.errors import OutOfResources
 
 
+class _FakeKernel:
+
+    def __init__(self, valid_block_size):
+        self.valid_block_size = valid_block_size
+        self.calls = []
+
+    def run(self, *args, **meta):
+        self.calls.append(meta.copy())
+        if meta["BLOCK_SIZE"] != self.valid_block_size:
+            raise OutOfResources(2, 1, "shared memory")
+
+
+def test_adjust_block_size_falls_back_to_original(monkeypatch):
+    config = triton.Config(kwargs={"BLOCK_SIZE": 64})
+    kernel = _FakeKernel(valid_block_size=64)
+    tuner = object.__new__(Autotuner)
+    tuner.fn = kernel
+    tuner.base_fn = lambda: None
+    tuner.configs = [config]
+    tuner.nargs = {}
+    tuner.seen_tuned_metas = {}
+    tuner.pre_hook = lambda kwargs: None
+    tuner.post_hook = lambda kwargs, exception: None
+    tuner._do_bench = lambda kernel_call, quantiles: (kernel_call(), [1.0, 1.0, 1.0])[1]
+
+    monkeypatch.setattr(autotuner_module.knobs.autotuning, "adjust_block_size", True)
+    monkeypatch.setattr(
+        autotuner_module, "auto_adjust_block_sizes", lambda nargs, jit_fn, configs, current, candidate:
+        (current.__setitem__("BLOCK_SIZE", 128), candidate.kwargs.__setitem__("BLOCK_SIZE", 128)))
+    monkeypatch.setattr(jit_module, "JITFunction", _FakeKernel)
+
+    assert tuner._bench(config=config) == [1.0, 1.0, 1.0]
+    assert [call["BLOCK_SIZE"] for call in kernel.calls] == [128, 64]
+    assert config.kwargs["BLOCK_SIZE"] == 64
+
+
+skip_gpu_autotuner = pytest.mark.skip(reason="GPU autotuner tests are unsupported on Kunlunxin")
+
+
+@skip_gpu_autotuner
 @pytest.mark.parametrize('use_cuda_graph', [False, True])
 def test_kwargs(use_cuda_graph: bool):
     N = 1024
@@ -27,6 +70,7 @@ def test_kwargs(use_cuda_graph: bool):
     _kernel[grid](dst=dst, src=src, N=N)
 
 
+@skip_gpu_autotuner
 def test_restore():
     N = 1024
     src = torch.zeros(N, device='cuda')
@@ -45,6 +89,7 @@ def test_restore():
     triton.testing.assert_close(src, torch.ones_like(src))
 
 
+@skip_gpu_autotuner
 def test_hooks():
     # Autotuner's pre- and post- hooks should be called the same number of times
     N = 4096
@@ -88,6 +133,7 @@ def test_hooks():
         assert values["has_exception"] is False
 
 
+@skip_gpu_autotuner
 @pytest.mark.parametrize('with_perf_model', [False, True])
 def test_prune_configs(with_perf_model: bool):
     N = 1024

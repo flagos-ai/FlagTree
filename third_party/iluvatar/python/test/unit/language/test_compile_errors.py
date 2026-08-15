@@ -7,7 +7,7 @@ import triton
 import triton.language as tl
 from triton.compiler.errors import CompilationError, CompileTimeAssertionFailure
 import traceback
-from triton._internal_testing import is_cuda, is_corex, is_hip, is_hip_cdna4
+from triton._internal_testing import is_cuda, is_corex, is_hip, is_hip_cdna4, is_ivcore11
 
 
 def format_exception(type, value, tb):
@@ -356,7 +356,9 @@ def test_where_warning(fresh_triton_cache):
 def test_fp8_support(fresh_triton_cache, dtype):
     warning_dtypes = []
     supported_dtypes = [tl.float8e5]
-    if is_cuda() or is_corex():
+    if is_ivcore11():
+        supported_dtypes += [tl.float8e4nv]
+    elif is_cuda() or is_corex():
         cc = torch.cuda.get_device_capability(0)
         supported_dtypes.append(tl.float8e4b15)
         if cc >= (9, 0):

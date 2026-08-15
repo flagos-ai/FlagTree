@@ -47,6 +47,29 @@ def _version_key():
     return hashlib.sha256(content + caps_version).hexdigest()
 
 
+@functools.lru_cache()
+def _triton_version():
+    """Return (major, minor) of the Triton version bundled with this package.
+
+    Reads the 'TRITON_VERSION=X.Y' line from the VERSION file shipped alongside
+    this module.  Falls back to (3, 5) if the file or key is missing.
+    """
+    version_file = os.path.join(os.path.dirname(__file__), "VERSION")
+    major, minor = 3, 5
+    if os.path.isfile(version_file):
+        with open(version_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("TRITON_VERSION=") or line.startswith("triton_version="):
+                    ver_str = line.split("=", 1)[1]
+                    parts = ver_str.split(".")
+                    if len(parts) >= 2:
+                        major = int(parts[0])
+                        minor = int(parts[1])
+                    break
+    return major, minor
+
+
 def _make_so_cache_key(version_hash, signature, constants, **kwargs):
     # Get unique key for the compiled code
     signature = {k: 'ptr' if v[0] == '*' else v for k, v in signature.items()}
@@ -123,8 +146,14 @@ class GCUUtils(object):
         return cls.instance
 
     def __init__(self):
-        utilsdir = os.path.join(toolkit.datadir, "utils")
-        src = Path(os.path.join(utilsdir, "gcu.cpp")).read_text()
+        gcu_cpp = Path(__file__).resolve().parent / "utils" / "gcu.cpp"
+        if not gcu_cpp.is_file():
+            gcu_cpp = Path(os.path.join(toolkit.datadir, "triton", "utils", "gcu.cpp"))
+        if not gcu_cpp.is_file():
+            gcu_cpp = Path(os.path.join(toolkit.datadir, "utils", "gcu.cpp"))
+        if not gcu_cpp.is_file():
+            raise FileNotFoundError(f"gcu.cpp not found in triton_gcu.triton.utils or {toolkit.datadir}/utils/")
+        src = gcu_cpp.read_text()
         key = hashlib.md5(src.encode("utf-8")).hexdigest()
         cache = get_cache_manager(key)
         fname = "gcu_utils.so"

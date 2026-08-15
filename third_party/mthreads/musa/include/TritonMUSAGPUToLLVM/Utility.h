@@ -32,6 +32,13 @@ SmallVector<Value> unpackSqmmaAccumulatorCarrier(Location loc, Value carrier,
                                                  RewriterBase &rewriter);
 Value packSqmmaAccumulatorCarrier(Location loc, ValueRange fragments, Type type,
                                   RewriterBase &rewriter);
+Value extractSqmmaAccumulatorCarrierFragment(Location loc, Value carrier,
+                                             unsigned fragmentIdx, Type type,
+                                             RewriterBase &rewriter);
+Value insertSqmmaAccumulatorCarrierFragment(Location loc, Value carrier,
+                                            Value fragment,
+                                            unsigned fragmentIdx, Type type,
+                                            RewriterBase &rewriter);
 Value carrierFragmentToMathVec(Location loc, Value fragment, Type type,
                                RewriterBase &rewriter);
 Value mathVecToCarrierFragment(Location loc, Value mathVec, Type type,

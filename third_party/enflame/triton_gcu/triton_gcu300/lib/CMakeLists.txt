@@ -7,11 +7,7 @@ add_subdirectory(Transforms)
 # -----------------------------------------------------------------------------
 # Core Library (libtriton_gcu300_core.so)
 # -----------------------------------------------------------------------------
-# Use Triton's MLIR/LLVM libraries (from tritonlang_llvm_build)
-# NOT gcu_compiler's LLVM to avoid conflicts.
-# The Triton .o files embedded in this shared library reference many MLIR
-# symbols (registrations, translations, conversion patterns), so we must
-# link all the MLIR static libraries they depend on.
+# Link the top-level in-tree Triton and MLIR/LLVM targets.
 set(_core_dialect_libs
   GCUIR_gcu300
   TritonGCUIR_gcu300
@@ -22,10 +18,19 @@ set(_core_dialect_libs
   MathExtIR_gcu300
 )
 
-add_library(triton_gcu300_core SHARED triton_gcu300_core.cpp ${TRITON_OUTPUT_FILES})
+if(FLAGTREE_TLE)
+  list(APPEND _core_dialect_libs
+    TleIR
+    TleToLLVM
+    TritonTLETransforms
+    TritonTLEAnalysis
+    TritonNVIDIAGPUToLLVM
+    NVGPUIR
+  )
+endif()
+
+add_library(triton_gcu300_core SHARED triton_gcu300_core.cpp)
 target_compile_features(triton_gcu300_core PRIVATE cxx_std_17)
-set_source_files_properties(${TRITON_OUTPUT_FILES} PROPERTIES
-  EXTERNAL_OBJECT TRUE GENERATED TRUE)
 
 target_link_libraries(triton_gcu300_core PRIVATE
   ${_core_dialect_libs}

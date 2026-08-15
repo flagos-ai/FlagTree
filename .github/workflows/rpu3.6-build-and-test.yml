@@ -25,6 +25,11 @@ on:
     branches: [ "main", "triton_v3.6.x" ]
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   # Serialize ALL runs on the single shared RPU board with one fixed, board-wide
@@ -34,7 +39,7 @@ concurrency:
   # (cancel-in-progress: false) so an in-flight board test is never interrupted
   # mid-run (a cancelled smoke can orphan a launch_kernel_runner that wedges
   # /dev/rpu for the next job).
-  group: rpu3.6-board
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 # The RPU CI runner is a small x86 host that orchestrates the build/test on a
@@ -47,7 +52,7 @@ concurrency:
 jobs:
   rpu36x-unit-test:
     runs-on: rpu3.6
-    if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
@@ -116,6 +121,14 @@ jobs:
             echo "ssh connection dropped (rc=255); retrying $n in $((n*15))s"
             sleep $((n*15))
           done
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: rpu
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'

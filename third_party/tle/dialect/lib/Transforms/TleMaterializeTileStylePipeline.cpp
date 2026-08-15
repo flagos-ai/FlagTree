@@ -414,9 +414,11 @@ static TileStyleLoopAnalysis analyzeTileStyleLoop(scf::ForOp forOp) {
       llvm::SmallDenseSet<Operation *, 8> visited;
       if (!hasDotLikeConsumer(allocOp.getResult(), body, visited))
         continue;
-      analysis.asyncTileProducers.push_back({.baseMemDesc = allocOp.getResult(),
-                                             .loadOp = loadOp,
-                                             .allocOp = allocOp});
+      AsyncTileProducerGroup group;
+      group.baseMemDesc = allocOp.getResult();
+      group.loadOp = loadOp;
+      group.allocOp = allocOp;
+      analysis.asyncTileProducers.push_back(std::move(group));
       continue;
     }
 
@@ -437,8 +439,10 @@ static TileStyleLoopAnalysis analyzeTileStyleLoop(scf::ForOp forOp) {
   }
 
   for (auto &it : directAsyncFamilies) {
-    analysis.asyncTileProducers.push_back(
-        {.baseMemDesc = it.first, .asyncCopyOps = it.second});
+    AsyncTileProducerGroup group;
+    group.baseMemDesc = it.first;
+    group.asyncCopyOps = it.second;
+    analysis.asyncTileProducers.push_back(group);
   }
   return analysis;
 }

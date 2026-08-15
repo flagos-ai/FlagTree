@@ -17,7 +17,6 @@ export FLAGCX_USE_HETERO_COMM=1
 export FLAGCX_MEM_ENABLE=1
 export FLAGCX_VMM_ENABLE=0
 export FLAGCX_P2P_DISABLE=1
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # Need to preload customized gloo library specified for FlagCX linkage
 #export LD_PRELOAD=/usr/local/lib/libgloo.so
 #export LD_PRELOAD=/usr/local/nccl/build/lib/libnccl.so
@@ -30,6 +29,17 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 #export FLAGCX_DMABUF_ENABLE=1
 #export FLAGCX_DEBUG=TRACE
 #export FLAGCX_DEBUG_SUBSY
+
+
+port=8333
+# Check whether port is occupied
+while ss -ltn | grep -q ":${port} "; do
+    echo "Port ${port} is occupied, trying next..."
+    port=$((port + 2))
+done
+
+echo "Using master_port=${port}"
+
 run_test() {
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,7 +49,7 @@ run_test() {
         --nnodes=1 \
         --node_rank=0 \
         --master_addr=localhost \
-        --master_port=8333 \
+        --master_port=${port} \
         "${script_dir}/test_tle_get_local_pe.py"
 }
 

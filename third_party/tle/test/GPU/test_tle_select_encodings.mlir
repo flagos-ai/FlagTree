@@ -1,27 +1,25 @@
-/*
- * Copyright 2025-     FlagOS Contributors
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
+// Copyright 2025-     FlagOS Contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining
+// a copy of this software and associated documentation files
+// (the "Software"), to deal in the Software without restriction,
+// including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software,
+// and to permit persons to whom the Software is furnished to do so,
+// subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+// IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+// TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+// SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-// RUN: triton-opt %s -split-input-file -triton-tle-select-encodings | FileCheck %s
+// RUN: triton-opt %s -split-input-file -triton-tle-select-encodings -verify-each | FileCheck %s
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 1], order = [1, 0]}>
 #blocked4 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 1], order = [1, 0]}>
@@ -46,6 +44,34 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
   // CHECK: %[[A_IDX_CAST:.*]] = ttg.convert_layout %[[A_IDX]] : tensor<32x4xi32, #[[A_IDX_ENC]]> -> tensor<32x4xi32, #[[A_DATA_ENC]]>
   // CHECK: %[[A_PTRS:.*]] = "tle.local_pointers"(%{{.*}}, %[[A_IDX_CAST]]) {{.*}} : (!ttg.memdesc<1xi32, #shared, #smem, mutable>, tensor<32x4xi32, #[[A_DATA_ENC]]>) -> tensor<32x4x!tt.ptr<i32, 3>, #[[A_DATA_ENC]]>
   // CHECK: tt.atomic_rmw add, relaxed, cta, %{{.*}}, %[[A_ONES]], %[[A_MASK]] : (tensor<32x4x!tt.ptr<i32, 3>, #[[A_DATA_ENC]]>, tensor<32x4xi32, #[[A_DATA_ENC]]>, tensor<32x4xi1, #[[A_DATA_ENC]]>) -> tensor<32x4xi32, #[[A_DATA_ENC]]>
+}
+
+// -----
+
+#selected = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 1], order = [1, 0]}>
+#original = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @full_view_load_tracks_selected_pointer_encoding
+  tt.func @full_view_load_tracks_selected_pointer_encoding() -> tensor<32x4xi32, #original> {
+    %values = arith.constant dense<1> : tensor<32x4xi32, #selected>
+    %mask = arith.constant dense<true> : tensor<32x4xi1, #selected>
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<32x4xi32, #shared, #smem, mutable>
+    %ptr = "tle.local_pointers"(%smem) : (!ttg.memdesc<32x4xi32, #shared, #smem, mutable>) -> tensor<32x4x!tt.ptr<i32, 3>, #original>
+    %loaded = tt.load %ptr : tensor<32x4x!tt.ptr<i32, 3>, #original>
+    %selected_ptr = ttg.convert_layout %ptr : tensor<32x4x!tt.ptr<i32, 3>, #original> -> tensor<32x4x!tt.ptr<i32, 3>, #selected>
+    %old = tt.atomic_rmw add, relaxed, cta, %selected_ptr, %values, %mask : (tensor<32x4x!tt.ptr<i32, 3>, #selected>, tensor<32x4xi32, #selected>, tensor<32x4xi1, #selected>) -> tensor<32x4xi32, #selected>
+    tt.return %loaded : tensor<32x4xi32, #original>
+  }
+  // CHECK: %[[VALUES:.*]] = arith.constant dense<1> : tensor<32x4xi32, #[[SELECTED:[A-Za-z0-9_]+]]>
+  // CHECK: %[[PTR:.*]] = "tle.local_pointers"(%{{.*}}) {{.*}} -> tensor<32x4x!tt.ptr<i32, 3>, #[[SELECTED]]>
+  // CHECK: %[[LOADED:.*]] = tt.load %[[PTR]] : tensor<32x4x!tt.ptr<i32, 3>, #[[SELECTED]]>
+  // CHECK: %[[BRIDGE:.*]] = ttg.convert_layout %[[LOADED]] : tensor<32x4xi32, #[[SELECTED]]> -> tensor<32x4xi32, #[[ORIGINAL:[A-Za-z0-9_]+]]>
+  // CHECK-NOT: ttg.convert_layout %[[PTR]]
+  // CHECK: tt.atomic_rmw add, relaxed, cta, %[[PTR]], %[[VALUES]], %{{.*}}
+  // CHECK: tt.return %[[BRIDGE]] : tensor<32x4xi32, #[[ORIGINAL]]>
 }
 
 // -----
