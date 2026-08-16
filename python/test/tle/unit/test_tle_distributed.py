@@ -228,11 +228,12 @@ class _LegacyBarrierSemantic:
 
 class TestShardId:
 
-    def test_node_axis_requires_device_dptr(self):
+    @pytest.mark.parametrize("axis", ("device", "node"))
+    def test_rank_axis_requires_device_dptr(self, axis):
         mesh = tle.device_mesh({"node": 2, "device": 4})
         semantic = _FakeSemantic()
-        with pytest.raises(ValueError, match="device_dptr is required for axis 'node'"):
-            tle.shard_id(mesh, "node", _semantic=semantic)
+        with pytest.raises(ValueError, match=rf"device_dptr is required for axis '{axis}'"):
+            tle.shard_id(mesh, axis, _semantic=semantic)
 
 
 class TestDistributedBarrierScope:

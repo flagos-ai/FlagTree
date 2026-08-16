@@ -656,7 +656,7 @@ def shard_id(
     mesh = tl._unwrap_if_constexpr(mesh)
     axis = tl._unwrap_if_constexpr(axis)
 
-    if axis == "node" and device_dptr is None:
+    if axis in ("device", "node") and device_dptr is None:
         raise ValueError(f"device_dptr is required for axis {axis!r}")
 
     if axis == "device":
