@@ -484,7 +484,7 @@ def Tle_SignalWaitOp : Tle_Op<"signal_wait"> {
   let summary = "Wait for a remote signal slot to become the target value";
   let description = [{
     Obtains a pre-allocated network context from `comm`, then spin-waits the selected
-    signal/counter slot to reach the target value (actual value >= target),
+    signal slot to reach the target value (actual value >= target),
     or waits the signal to reach its shadow value.
   }];
 

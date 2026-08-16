@@ -160,16 +160,14 @@ def signal(
     """Atomically update a synchronization slot owned by a remote FlagCX peer.
 
     ``op="inc"`` increments the selected signal slot by one. ``op="add"``
-    adds ``value`` to the selected signal slot. ``op="ctr"`` increments the
-    selected counter slot by one.
+    adds ``value`` to the selected signal slot.
     The primitive only sends a signal; it neither transfers data nor
     waits for completion on the receiving peer.
 
     ``space`` selects the FlagCX team (``intra_node``, ``inter_node``, or
     ``world``), while ``peer`` is a rank within that team. ``context_idx``
-    selects a pre-allocated FlagCX network context. ``slot_id`` selects a
-    signal slot for ``inc``/``add`` and a counter slot for ``ctr``. Signal and
-    counter slots use independent namespaces.
+    selects a pre-allocated FlagCX network context. ``slot_id`` selects the
+    signal slot to update.
 
     For ``group_kind="block"`` (the default), every thread in the CTA must
     execute this operation convergently; the group collectively emits one
@@ -181,7 +179,7 @@ def signal(
 
     signal_op = attr.SignalOpKind.from_str(str(tl._unwrap_if_constexpr(op)).lower())
     if signal_op is None:
-        raise ValueError(f"op must be 'inc', 'add', or 'ctr', got {signal_op!r}")
+        raise ValueError(f"op must be 'inc' or 'add', got {signal_op!r}")
 
     signal_space = str(tl._unwrap_if_constexpr(space)).lower()
     if signal_space not in _SIGNAL_SPACE_TO_TEAM_KIND:
@@ -204,8 +202,8 @@ def signal(
 
     if value is None and signal_op in (attr.SignalOpKind.Add, ):
         raise ValueError("value must be provided when op is 'add'")
-    elif value is not None and signal_op in (attr.SignalOpKind.Inc, attr.SignalOpKind.Ctr):
-        raise ValueError("value shouldn't be provided when op is 'inc' or 'ctr'")
+    elif value is not None and signal_op == attr.SignalOpKind.Inc:
+        raise ValueError("value shouldn't be provided when op is 'inc'")
 
     peer_tensor = _normalize_signal_scalar(peer, "peer", tl.int32, _semantic)
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.uint32, _semantic)
@@ -1165,11 +1163,10 @@ def signal_wait(
 ):
     """Wait until a local FlagCX synchronization slot reaches its target.
 
-    ``target`` is required for ``wait_kind="signal"`` and
-    ``wait_kind="counter"``.  ``wait_kind="shadow"`` instead reads the target
-    from FlagCX's locally maintained shadow buffer, so ``target`` must be
-    omitted. ``slot_id`` is interpreted in the namespace selected by
-    ``wait_kind``.
+    ``target`` is required for ``wait_kind="signal"``.  ``wait_kind="shadow"``
+    instead reads the target from FlagCX's locally maintained shadow buffer,
+    so ``target`` must be omitted. ``slot_id`` is interpreted in the signal
+    slot namespace.
     """
     builder = _semantic.builder
 
@@ -1177,7 +1174,7 @@ def signal_wait(
     wait_kind_val = (wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else attr.SignalWaitKind.from_str(
         str(wait_kind).lower()))
     if wait_kind_val is None:
-        expected = "signal, counter, or shadow"
+        expected = "signal or shadow"
         raise ValueError(f"wait kind must be {expected}, got {wait_kind!r}")
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
@@ -1193,8 +1190,8 @@ def signal_wait(
     if context_idx < 0 or context_idx > 0x7FFFFFFF:
         raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
 
-    if target is None and wait_kind_val in (attr.SignalWaitKind.Signal, attr.SignalWaitKind.Counter):
-        raise ValueError("target must be provided when wait_kind is signal or counter")
+    if target is None and wait_kind_val == attr.SignalWaitKind.Signal:
+        raise ValueError("target must be provided when wait_kind is signal")
     elif target is not None and wait_kind_val in (attr.SignalWaitKind.Shadow, ):
         raise ValueError("target shouldn't be provided when wait_kind is shadow")
 

@@ -32,8 +32,7 @@ def Tle_SignalWaitKindAttr : I32EnumAttr<
   "SignalWaitKind", "",
   [
     I32EnumAttrCase<"SIGNAL", 0, "signal">,
-    I32EnumAttrCase<"COUNTER", 1, "counter">,
-    I32EnumAttrCase<"SHADOW", 2, "shadow">,
+    I32EnumAttrCase<"SHADOW", 1, "shadow">,
   ]> {
   let cppNamespace = "::mlir::triton::tle";
 }
@@ -53,7 +52,6 @@ def Tle_SignalOpKindAttr : I32EnumAttr<
   [
     I32EnumAttrCase<"INC", 0, "inc">,
     I32EnumAttrCase<"ADD", 1, "add">,
-    I32EnumAttrCase<"CTR", 2, "ctr">,
   ]> {
   let cppNamespace = "::mlir::triton::tle";
 }

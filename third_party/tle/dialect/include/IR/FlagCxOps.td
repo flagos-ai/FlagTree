@@ -108,7 +108,7 @@ def Tle_FlagCxSignalWaitOp : Tle_Op<"flagcx signal_wait"> {
   let summary = "Wait for a remote FlagCX signal slot to become the target value";
   let description = [{
     Obtains a pre-allocated FlagCX network context from `comm`, then spin-waits the selected
-    signal/counter slot to reach the target value (actual value >= target),
+    signal slot to reach the target value (actual value >= target),
     or waits the signal to reach its shadow value.
   }];
 

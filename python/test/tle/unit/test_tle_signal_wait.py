@@ -68,14 +68,13 @@ def _ir_verify(
     )
     assert "tle.signal" in compiled.asm["ttgir"]
     assert "tle.signal_wait" in compiled.asm["ttgir"]
-    assert "flagcxDevNetGetFromCommS" in compiled.asm["ptx"]
     expected_signal_func = {
-        "inc": "flagcxDevNetSignalSigIncS",
-        "ctr": "flagcxDevNetSignalCtrIncS",
+        "inc": "flagcxDevSignalInc",
+        "add": "flagcxDevSignalAdd",
     }[signal_op]
     expected_wait_func = {
-        "signal": "flagcxDevNetWaitSignalS",
-        "counter": "flagcxDevNetWaitCounterS",
+        "signal": "flagcxDevWaitSignal",
+        "shadow": "flagcxDevWaitSignalMeetShadow",
     }[wait_kind]
     assert expected_signal_func in compiled.asm["ptx"]
     assert expected_wait_func in compiled.asm["ptx"]
@@ -167,12 +166,10 @@ class TestSignalWait:
         device_dptr = tle.create_dist_tensor(backing)
         inter_node_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         world_result = torch.zeros(1, dtype=torch.int32, device="cuda")
-        counter_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         try:
             phases = (
                 (inter_node_result, world_peer, 0, "inter_node", "inc", "signal"),
                 (world_result, world_peer, 1, "world", "inc", "signal"),
-                (counter_result, world_peer, 0, "world", "ctr", "counter"),
             )
             for result, peer, slot_id, signal_space, signal_op, wait_kind in phases:
                 _ir_verify(

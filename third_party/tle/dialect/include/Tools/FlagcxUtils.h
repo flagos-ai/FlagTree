@@ -29,6 +29,8 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 
+#include <cstdint>
+
 namespace mlir::triton::tle {
 using namespace mlir;
 
@@ -46,21 +48,14 @@ LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
                                 size_t order, llvm::StringRef barrierType);
 
 LLVM::CallOp getSignalFuncCall(mlir::Location loc,
-                               ConversionPatternRewriter &rewriter,
-                               Value dev_net, Value comm, Value peer,
-                               Value slotId, Value value,
-                               SignalTeamKind teamKind, SignalCoopKind coopKind,
-                               SignalOpKind signalOp);
+                               ConversionPatternRewriter &rewriter, Value comm,
+                               Value peer, Value slotId, Value value,
+                               uint32_t contextId, SignalTeamKind teamKind,
+                               SignalCoopKind coopKind, SignalOpKind signalOp);
 
-LLVM::CallOp getDevNetFromCommFuncCall(mlir::Location loc,
-                                       ConversionPatternRewriter &rewriter,
-                                       Value comm, int idx);
-
-LLVM::CallOp getDevNetWaitFuncCallByKind(mlir::Location loc,
-                                         ConversionPatternRewriter &rewriter,
-                                         Value dev_net, Value slot_id,
-                                         SignalWaitKind wait_kind,
-                                         std::optional<Value> target,
-                                         SignalCoopKind coop_kind);
+LLVM::CallOp getDevNetWaitFuncCallByKind(
+    mlir::Location loc, ConversionPatternRewriter &rewriter, Value comm,
+    Value slot_id, SignalWaitKind wait_kind, std::optional<Value> target,
+    SignalCoopKind coop_kind, uint32_t contextId);
 
 } // namespace mlir::triton::tle

@@ -145,10 +145,8 @@ LogicalResult FlagCxSignalOp::verify() {
   auto *op = getOperation();
   switch (getSignalOp()) {
   case SignalOpKind::INC:
-  case SignalOpKind::CTR:
     if (getValue())
-      return op->emitOpError(
-          "value shouldn't be provided when op is inc or ctr");
+      return op->emitOpError("value shouldn't be provided when op is inc");
     break;
   case SignalOpKind::ADD:
     if (!getValue())
@@ -162,10 +160,9 @@ LogicalResult FlagCxSignalWaitOp::verify() {
   auto op = getOperation();
   switch (getWaitKind()) {
   case SignalWaitKind::SIGNAL:
-  case SignalWaitKind::COUNTER:
     if (!getTarget())
       return op->emitOpError(
-          "target must be provided when wait kind is signal or counter");
+          "target must be provided when wait kind is signal");
     break;
   case SignalWaitKind::SHADOW:
     if (getTarget())

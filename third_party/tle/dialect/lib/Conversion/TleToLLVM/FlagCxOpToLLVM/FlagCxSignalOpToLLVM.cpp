@@ -48,12 +48,10 @@ struct FlagCxSignalOpConversion
     if (contextIdx > std::numeric_limits<int32_t>::max())
       return rewriter.notifyMatchFailure(op, "invalid context_idx");
 
-    auto dev_net = tle::getDevNetFromCommFuncCall(
-        loc, rewriter, adaptor.getComm(), contextIdx);
-    tle::getSignalFuncCall(
-        loc, rewriter, dev_net.getResult(), adaptor.getComm(),
-        adaptor.getPeer(), adaptor.getSlotId(), adaptor.getValue(),
-        adaptor.getTeamKind(), adaptor.getCoopKind(), adaptor.getSignalOp());
+    tle::getSignalFuncCall(loc, rewriter, adaptor.getComm(), adaptor.getPeer(),
+                           adaptor.getSlotId(), adaptor.getValue(), contextIdx,
+                           adaptor.getTeamKind(), adaptor.getCoopKind(),
+                           adaptor.getSignalOp());
     rewriter.eraseOp(op);
     return success();
   }
@@ -77,10 +75,8 @@ struct FlagCxSignalWaitOpConversion
     auto target = adaptor.getTarget();
     auto context_idx = adaptor.getContextIdx();
 
-    auto dev_net =
-        tle::getDevNetFromCommFuncCall(loc, rewriter, comm, context_idx);
-    tle::getDevNetWaitFuncCallByKind(loc, rewriter, dev_net.getResult(),
-                                     slot_id, wait_kind, target, coop_kind);
+    tle::getDevNetWaitFuncCallByKind(loc, rewriter, comm, slot_id, wait_kind,
+                                     target, coop_kind, context_idx);
 
     rewriter.eraseOp(op);
     return success();
