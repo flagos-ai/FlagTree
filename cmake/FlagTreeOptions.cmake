@@ -132,7 +132,7 @@ endmacro()
 
 
 macro(flagtree_configure_backend_cxx_flags)
-  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir|ppu)$")
+  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir|ppu|spacemit)$")
     # Suppress visibility warnings in gluon_ir.cc (GCC 13+ -Wattributes on
     # pybind11 hidden types), and -Wcomment for generated
     # TritonGPUAttrDefs.h.inc (ASCII diagrams in TableGen output).
