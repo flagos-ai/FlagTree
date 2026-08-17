@@ -49,6 +49,10 @@ jobs:
           set -x
           bash third_party/spacemit/scripts/stop_rpc_server.sh
 
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
       - name: Build
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
