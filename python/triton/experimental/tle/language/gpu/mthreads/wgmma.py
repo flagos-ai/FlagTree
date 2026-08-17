@@ -20,6 +20,8 @@
 
 import triton.language as tl
 
+from .. import types as tle
+
 
 def _unwrap(value):
     return value.value if isinstance(value, tl.constexpr) else value
@@ -36,9 +38,7 @@ def mark_auto_shared_layout(builder, handle) -> None:
     builder.mark_musa_tle_auto_shared_layout(handle)
 
 
-def validate_operands(a, b, acc, trans_a: bool, trans_b: bool) -> None:
-    if trans_a or trans_b:
-        raise ValueError("initial mthreads TLE wgmma does not support trans_a/trans_b")
+def validate_operands(a, b, acc) -> None:
     for name, operand in (("a", a), ("b", b)):
         operand_type = getattr(operand, "type", None)
         if not hasattr(operand_type, "storage"):
@@ -54,6 +54,38 @@ def validate_operands(a, b, acc, trans_a: bool, trans_b: bool) -> None:
                          f"got {a.dtype} and {b.dtype}")
     if acc is not None and getattr(acc, "dtype", None) != tl.float32:
         raise ValueError("mthreads TLE wgmma requires an f32 accumulator")
+
+
+def _transpose_smem_operand(operand, semantic):
+    order = [1, 0]
+    handle = semantic.builder.create_memdesc_trans(operand.handle, order)
+    shape = [operand.type.shape[index] for index in order]
+
+    alloc_shape = operand.type.alloc_shape
+    leading_rank = len(alloc_shape) - len(operand.type.shape)
+    alloc_tail = alloc_shape[leading_rank:]
+    transposed_alloc_shape = alloc_shape[:leading_rank] + [alloc_tail[index] for index in order]
+
+    layout = operand.type.layout.make_permute(order)
+    return tle.buffered_tensor(
+        handle,
+        operand.dtype,
+        shape,
+        operand.type.storage,
+        layout,
+        semantic,
+        alloc_shape=transposed_alloc_shape,
+    )
+
+
+def prepare_operands(a, b, acc, trans_a: bool, trans_b: bool, semantic):
+    """Validate mthreads SQMMA operands and build descriptor transpose views."""
+    validate_operands(a, b, acc)
+    if trans_a:
+        a = _transpose_smem_operand(a, semantic)
+    if trans_b:
+        b = _transpose_smem_operand(b, semantic)
+    return a, b
 
 
 def validate_options(max_num_imprecise_acc: int, out_dtype) -> None:
