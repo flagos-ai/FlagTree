@@ -2,17 +2,16 @@
 
 set -euo pipefail
 
-SPINE_TRITON_RPC_HOST="${SPINE_TRITON_RPC_HOST:-127.0.0.1}"
-SPINE_TRITON_RPC_PORT="${SPINE_TRITON_RPC_PORT:-9999}"
-SPACEMIT_CACHE="${SPACEMIT_CACHE:-${FLAGTREE_CACHE_DIR:-$HOME/.flagtree}/spacemit}"
 QEMU_BIN="${QEMU_BIN:-$SPACEMIT_CACHE/jdsk-qemu/bin/qemu-riscv64}"
 SYSROOT="${SYSROOT:-$SPACEMIT_CACHE/toolchain/sysroot}"
 RPC_DIR="${RPC_DIR:-$SPACEMIT_CACHE/rpc_runtime_installed}"
+CORE_ARCH="${SPACEMIT_EP_QEMU_SET_CORE_ARCH:-0xA064}"
 
 setsid bash -c "
   exec '$QEMU_BIN' -L '$SYSROOT' \
     -cpu max,vlen=1024,elen=64,vext_spec=v1.0 \
     -E LD_LIBRARY_PATH='$RPC_DIR/lib:$SYSROOT/lib:$SYSROOT/usr/lib' \
+    -E SPACEMIT_EP_QEMU_SET_CORE_ARCH='$CORE_ARCH' \
     '$RPC_DIR/bin/spine-rpc-server' '$SPINE_TRITON_RPC_PORT'
 " > /tmp/rpc.log 2>&1 &
 echo $! > /tmp/rpc_server.pid
