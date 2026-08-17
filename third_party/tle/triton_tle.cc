@@ -41,6 +41,7 @@
 #include "pybind11/pytypes.h"
 #include "pybind11/stl.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/VerifyUtils.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -566,6 +567,9 @@ void init_triton_tle_ir(py::module &&m) {
              tle::SignalTeamKind teamKind, tle::SignalCoopKind coopKind,
              int32_t contextIdx) -> void {
             auto &builder = self.getBuilder();
+            if (auto err = tle::Signal::verifySignalOp(signalOp,
+                                                       value.value_or(Value())))
+              throw py::value_error(*err);
             self.create<tle::SignalOp>(
                 comm, peer, slotId, value.value_or(Value()),
                 builder.getAttr<tle::SignalOpKindAttr>(signalOp),
@@ -583,6 +587,9 @@ void init_triton_tle_ir(py::module &&m) {
              tle::SignalWaitKind wait_kind, std::optional<Value> target,
              tle::SignalCoopKind coop_kind, int32_t context_idx) -> void {
             auto &builder = self.getBuilder();
+            if (auto err = tle::Signal::verifySignalWaitOp(
+                    wait_kind, target.value_or(Value())))
+              throw py::value_error(*err);
             auto wait_kind_attr =
                 builder.getAttr<tle::SignalWaitKindAttr>(wait_kind);
             auto coop_kind_attr =
@@ -744,6 +751,27 @@ void init_triton_tle_attr(py::module &&m) {
           py::arg("name"));
 }
 
+void init_triton_tle_utils(py::module &&m) {
+  m.def(
+      "verify_signal",
+      [](tle::SignalOpKind kind,
+         std::optional<Value> value) -> std::optional<std::string> {
+        return tle::Signal::verifySignalOp(kind, value.value_or(Value()));
+      },
+      py::arg("kind"), py::arg("value") = py::none(),
+      "Validate a signal op's (kind, value) combination; returns an error "
+      "message or None");
+  m.def(
+      "verify_signal_wait",
+      [](tle::SignalWaitKind kind,
+         std::optional<Value> target) -> std::optional<std::string> {
+        return tle::Signal::verifySignalWaitOp(kind, target.value_or(Value()));
+      },
+      py::arg("kind"), py::arg("target") = py::none(),
+      "Validate a signal_wait op's (kind, target) combination; returns an "
+      "error message or None");
+}
+
 void init_triton_tle_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_params_for_distribution",
                      tle::createTritonTleAddDistributedParams);
@@ -867,6 +895,7 @@ void init_triton_tle(py::module &&m) {
   });
 
   init_triton_tle_attr(m.def_submodule("attr"));
+  init_triton_tle_utils(m.def_submodule("utils"));
   init_triton_tle_ir(m.def_submodule("ir"));
   init_triton_tle_passes(m.def_submodule("passes"));
   init_tle_raw_ir(m.def_submodule("raw_ir"));

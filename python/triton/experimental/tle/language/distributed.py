@@ -29,7 +29,7 @@ from enum import Enum
 import triton.language.core as tl
 
 try:
-    from triton._C.libtriton.tle import attr
+    from triton._C.libtriton.tle import attr, utils
 except ImportError:
     pass
 
@@ -200,14 +200,14 @@ def signal(
     if context_idx < 0 or context_idx > 0x7FFFFFFF:
         raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
 
-    if value is None and signal_op in (attr.SignalOpKind.Add, ):
-        raise ValueError("value must be provided when op is 'add'")
-    elif value is not None and signal_op == attr.SignalOpKind.Inc:
-        raise ValueError("value shouldn't be provided when op is 'inc'")
-
     peer_tensor = _normalize_signal_scalar(peer, "peer", tl.int32, _semantic)
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.uint32, _semantic)
     value_tensor = _normalize_signal_scalar(value, "value", tl.uint64, _semantic) if value is not None else None
+
+    err = utils.verify_signal(signal_op, None if value_tensor is None else value_tensor.handle)
+    if err is not None:
+        raise ValueError(err)
+
     comm = _parse_src_arg(builder, device_dptr, 1)
     builder.create_signal(
         comm,
@@ -1190,14 +1190,13 @@ def signal_wait(
     if context_idx < 0 or context_idx > 0x7FFFFFFF:
         raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
 
-    if target is None and wait_kind_val == attr.SignalWaitKind.Signal:
-        raise ValueError("target must be provided when wait_kind is signal")
-    elif target is not None and wait_kind_val in (attr.SignalWaitKind.Shadow, ):
-        raise ValueError("target shouldn't be provided when wait_kind is shadow")
-
     comm = _parse_src_arg(builder, device_dptr, 1)
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
     target_tensor = _normalize_signal_scalar(target, "target", tl.int64, _semantic) if target is not None else None
+
+    err = utils.verify_signal_wait(wait_kind_val, None if target_tensor is None else target_tensor.handle)
+    if err is not None:
+        raise ValueError(err)
 
     builder.create_signal_wait(
         comm,

@@ -33,7 +33,7 @@
 #include <cctype>
 #include <limits>
 
-#include "tle/dialect/include/IR/VerfiyUtils.h"
+#include "tle/dialect/include/IR/VerifyUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
@@ -1027,34 +1027,14 @@ LogicalResult RemotePointersOp::verify() {
 }
 
 LogicalResult SignalOp::verify() {
-  auto *op = getOperation();
-  switch (getSignalOp()) {
-  case SignalOpKind::INC:
-    if (getValue())
-      return op->emitOpError("value shouldn't be provided when op is inc");
-    break;
-  case SignalOpKind::ADD:
-    if (!getValue())
-      return op->emitOpError("value must be provided when op is add");
-    break;
-  }
+  if (auto err = Signal::verifySignalOp(getSignalOp(), getValue()))
+    return emitOpError() << *err;
   return success();
 }
 
 LogicalResult SignalWaitOp::verify() {
-  auto op = getOperation();
-  switch (getWaitKind()) {
-  case SignalWaitKind::SIGNAL:
-    if (!getTarget())
-      return op->emitOpError(
-          "target must be provided when wait kind is signal");
-    break;
-  case SignalWaitKind::SHADOW:
-    if (getTarget())
-      return op->emitOpError(
-          "target shouldn't be provided when wait kind is shadow");
-    break;
-  }
+  if (auto err = Signal::verifySignalWaitOp(getWaitKind(), getTarget()))
+    return emitOpError() << *err;
   return success();
 }
 } // namespace mlir::triton::tle
