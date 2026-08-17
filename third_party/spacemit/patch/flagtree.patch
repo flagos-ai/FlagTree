@@ -401,23 +401,16 @@ index 3d60f95c4..376bb9b75 100644
 -        if is_offline_build():
 -            # unit test builds fetch googletests from GitHub
 +        if is_offline_build() or _is_spacemit_build():
-+            # unit test builds fetch googletests from GitHub; spacemit hides
-+            # FLAGTREE_BACKEND from CMake (which would otherwise default UT OFF).
++            # Unit tests fetch googletest from GitHub; the Spacemit build does
++            # not need the root Triton unit-test targets.
              cmake_args += ["-DTRITON_BUILD_UT=OFF"]
 
          cmake_args_append = os.getenv("TRITON_APPEND_CMAKE_ARGS")
-@@ -604,7 +721,14 @@ class CMakeBuild(build_ext):
+@@ -604,7 +721,7 @@ class CMakeBuild(build_ext):
              cmake_args += shlex.split(cmake_args_append)
 
          env = os.environ.copy()
 -        cmake_dir = get_cmake_dir()
-+        if _is_spacemit_build():
-+            # spacemit is a plugin on full core triton, not a replacement backend.
-+            # FLAGTREE_BACKEND in CMake selects the replacement-backend path
-+            # (skips building core include/lib), so hide it from CMake: build
-+            # vanilla core triton and bring spacemit in via TRITON_PLUGIN_DIRS.
-+            # The Python side still sees FLAGTREE_BACKEND (parent env unchanged).
-+            env.pop("FLAGTREE_BACKEND", None)
 +        cmake_dir = get_triton_cmake_dir()
          subprocess.check_call(["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env)
          update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")

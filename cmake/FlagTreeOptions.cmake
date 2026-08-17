@@ -158,7 +158,7 @@ macro(flagtree_configure_core_source)
   endif()
 
   if(FLAGTREE_BACKEND MATCHES
-     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu)$")
+     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu|spacemit)$")
     include_directories(${PROJECT_SOURCE_DIR}/include)
     include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
     if(FLAGTREE_BACKEND STREQUAL "xpu")
