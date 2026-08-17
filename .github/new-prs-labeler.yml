@@ -192,6 +192,13 @@ rpu:
           - '.github/workflows/rpu*'
           - '.github/workflows/benchmark/rpu/**'
 
+spacemit:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/spacemit/**'
+          - '.github/workflows/spacemit*'
+          - '.github/workflows/benchmark/spacemit/**'
+
 sunrise:
   - changed-files:
       - any-glob-to-any-file:
