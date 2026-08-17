@@ -24,6 +24,7 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/DeviceIntraBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxSignalOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetLocalRankOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetWorldRankOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
 
 namespace mlir::triton::tle {
@@ -37,6 +38,8 @@ void populateFlagCxOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                                           patterns, benefit);
   mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(typeConverter, patterns,
                                                        benefit);
+  mlir::triton::tle::populateGetWorldRankOpToLLVMPatterns(typeConverter,
+                                                          patterns, benefit);
   mlir::triton::tle::populateDeviceIntraBarrierOpToLLVMPatterns(
       typeConverter, patterns, benefit);
   mlir::triton::tle::populateFlagCxSignalOpToLLVMPatterns(typeConverter,

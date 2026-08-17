@@ -1,6 +1,7 @@
 import ast
 import textwrap
 
+import pytest
 import triton.language as tl
 from triton.experimental.tle.raw import dialect
 from triton.experimental.tle.raw.cache_key import (
@@ -127,6 +128,7 @@ def test_jit_cache_key_includes_raw_source(tmp_path):
 
 
 def test_mlir_dialect_cache_key_changes_with_edsl_source():
+    pytest.importorskip("mlir", reason="requires the optional MLIR Python bindings")
 
     @dialect(name="mlir")
     def edsl_v1():

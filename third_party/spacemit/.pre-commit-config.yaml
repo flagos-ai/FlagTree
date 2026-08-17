@@ -1,0 +1,52 @@
+default_stages: [pre-commit, pre-push, manual]
+repos:
+  - repo: https://gitlab.dc.com:8443/ai/pre-commit-hooks.git
+    rev: v5.0.0
+    hooks:
+      - id: check-symlinks
+      - id: destroyed-symlinks
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-ast
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: detect-private-key
+      - id: debug-statements
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.1
+    hooks:
+      - id: ruff
+        files: '^(backend|language|python)/.*\.py$'
+        args: ["--fix", "--exit-non-zero-on-fix", "--config=pyproject.toml"]
+
+  - repo: https://github.com/google/yapf
+    rev: "v0.43.0"
+    hooks:
+      - id: yapf
+        files: '^(backend|language|python)/.*\.py$'
+        args: ["-p", "-i", "--style=pyproject.toml"]
+
+  - repo: https://gitlab.dc.com:8443/ai/mirrors-clang-format.git
+    rev: v19.1.6
+    hooks:
+      - id: clang-format
+        files: '^(backend|include|lib|tools)/.*\.(c|cc|cpp|h|hpp)$|^triton_shared\.cc$'
+
+exclude: |
+  (?x)(
+    ^build-riscv64/|
+    ^triton/|
+    ^test/|
+    ^tools/spine-triton-opt/|
+    ^patch/|
+    ^lib/libSpeIRRuntimeLibs\.so|
+    ^python/examples/test_pmu\.cpp$|
+    ^\.clang-format$|
+    ^python/examples/test_annotations\.py$|
+    ^python/examples/test_core\.py$
+  )

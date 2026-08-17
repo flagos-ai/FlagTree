@@ -38,7 +38,7 @@ on:
         default: 'x86_64'
       BRANCH:
         required: true
-        default: 'main'
+        default: 'triton_v3.1.x'
       TRITON:
         required: true
         default: '3.1'
@@ -64,7 +64,7 @@ on:
       BRANCH:
         type: string
         required: true
-        default: 'main'
+        default: 'triton_v3.1.x'
       TRITON:
         type: string
         required: true

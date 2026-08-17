@@ -705,6 +705,15 @@ LogicalResult GetDeviceIdOp::verify() {
   return success();
 }
 
+LogicalResult GetWorldRankOp::verify() {
+  auto resultTy = getResult().getType();
+
+  if (!resultTy.isInteger(32))
+    return emitOpError("result type must be i32");
+
+  return success();
+}
+
 LogicalResult GetNumPesOp::verify() {
   auto resultTy = getResult().getType();
 

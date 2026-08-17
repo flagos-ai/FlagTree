@@ -207,6 +207,32 @@ std::optional<int64_t> inferElemBytesFromMemDesc(Type type) {
   return static_cast<int64_t>((bitWidth + 7) / 8);
 }
 
+#ifdef __TLE__
+Value buildTMEIssuePredicate(Value userPred, Location loc,
+                             ConversionPatternRewriter &rewriter,
+                             Operation *issueOp = nullptr) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  int32_t issueThread = 0;
+  bool hasExplicitIssueThread = false;
+  if (issueOp) {
+    if (auto attr = issueOp->getAttrOfType<IntegerAttr>(
+            triton::musa::kTMEIssueThreadAttr)) {
+      issueThread = static_cast<int32_t>(attr.getInt());
+      hasExplicitIssueThread = true;
+    }
+  }
+  Value threadId;
+  if (hasExplicitIssueThread) {
+    threadId = ::mlir::gpu::ThreadIdOp::create(rewriter, loc,
+                                               ::mlir::gpu::Dimension::x);
+    threadId = arith::IndexCastOp::create(rewriter, loc, i32_ty, threadId);
+  } else {
+    threadId = getThreadId(rewriter, loc);
+  }
+  Value issuerPred = b.icmp_eq(threadId, b.i32_val(issueThread));
+  return b.and_(userPred, issuerPred);
+}
+#else
 Value buildTMEIssuePredicate(Value userPred, Location loc,
                              ConversionPatternRewriter &rewriter) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -214,6 +240,7 @@ Value buildTMEIssuePredicate(Value userPred, Location loc,
   Value issuerPred = b.icmp_eq(threadId, b.i32_val(0));
   return b.and_(userPred, issuerPred);
 }
+#endif // __TLE__
 
 Value buildTMEIssueOnlyPredicate(Location loc,
                                  ConversionPatternRewriter &rewriter) {
@@ -447,7 +474,12 @@ struct BarrierAddTransOpConversion
   matchAndRewrite(triton::musa::BarrierAddTransOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+#ifdef __TLE__
+    Value launchPred =
+        buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter, op);
+#else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
+#endif // __TLE__
     SmallVector<Value> operands = {adaptor.getBarId(), adaptor.getTransBytes()};
     emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,
                                 "llvm.musa.async.add.trans", operands);
@@ -482,7 +514,12 @@ struct ArriveBarrierNoRetOpConversion
   matchAndRewrite(triton::musa::ArriveBarrierNoRetOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+#ifdef __TLE__
+    Value launchPred =
+        buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter, op);
+#else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
+#endif // __TLE__
     SmallVector<Value> operands = {adaptor.getBarId()};
     emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,
                                 "llvm.musa.async.arrive.none.phaseid",
@@ -491,6 +528,25 @@ struct ArriveBarrierNoRetOpConversion
     return success();
   }
 };
+
+#ifdef __TLE__
+struct WarpArriveBarrierOpConversion
+    : public ConvertOpToLLVMPattern<triton::musa::WarpArriveBarrierOp> {
+  using ConvertOpToLLVMPattern<
+      triton::musa::WarpArriveBarrierOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::musa::WarpArriveBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> operands = {adaptor.getBarId()};
+    LLVM::createLLVMIntrinsicCallOp(rewriter, op.getLoc(),
+                                    "llvm.musa.async.arrive.none.phaseid",
+                                    TypeRange{}, operands);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+#endif // __TLE__
 
 struct WaitBarrierOpConversion
     : public ConvertOpToLLVMPattern<triton::musa::WaitBarrierOp> {
@@ -543,8 +599,6 @@ struct AsyncTMECopyGlobalToLocalOpConversion
                                       memDescTy.getElementType(), loc, rewriter,
                                       this->getTypeConverter());
     }
-    Value descAddr = normalizeTMEDescriptorAddr(
-        adaptor.getDesc(), op.getDesc().getType(), loc, rewriter);
 
     auto sgAttr = op->getAttrOfType<triton::musa::TMESwizzleGranularityAttr>(
         "swizzleGranularity");
@@ -572,10 +626,21 @@ struct AsyncTMECopyGlobalToLocalOpConversion
     Value outerPersistence = materializeTMEEnumAttr(loc, outerAttr, rewriter);
     Value cachePolicy = materializeTMEEnumAttr(loc, cacheAttr, rewriter);
 
+#ifdef __TLE__
+    if (!op->hasAttr(triton::musa::kTMEExplicitCompletionAttr))
+      LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.barrier0",
+                                      TypeRange{}, {});
+#else
     LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.barrier0",
                                     TypeRange{}, {});
+#endif // __TLE__
 
+#ifdef __TLE__
+    Value launchPred =
+        buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter, op);
+#else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
+#endif // __TLE__
     auto recoveredContract =
         triton::musa::recoverAndVerifyGroupedTMELoadConsumerContract(op);
     if (failed(recoveredContract))
@@ -594,6 +659,8 @@ struct AsyncTMECopyGlobalToLocalOpConversion
     rewriter.setInsertionPointToEnd(currentBlock);
     LLVM::CondBrOp::create(rewriter, loc, launchPred, trueBlock, afterCall);
     rewriter.setInsertionPointToStart(trueBlock);
+    Value descAddr = normalizeTMEDescriptorAddr(
+        adaptor.getDesc(), op.getDesc().getType(), loc, rewriter);
     for (const auto &segment : loadSegments) {
       SmallVector<Value> operands = {
           adaptor.getBarId(), segment.dstAddr,  descAddr,
@@ -645,8 +712,6 @@ struct AsyncTMECopyLocalToGlobalOpConversion
                                       memDescTy.getElementType(), loc, rewriter,
                                       this->getTypeConverter());
     }
-    Value descAddr = normalizeTMEDescriptorAddr(
-        adaptor.getDesc(), op.getDesc().getType(), loc, rewriter);
 
     auto sgAttr = op->getAttrOfType<triton::musa::TMESwizzleGranularityAttr>(
         "swizzleGranularity");
@@ -669,12 +734,12 @@ struct AsyncTMECopyLocalToGlobalOpConversion
     Value innerPersistence = materializeTMEEnumAttr(loc, innerAttr, rewriter);
     Value outerPersistence = materializeTMEEnumAttr(loc, outerAttr, rewriter);
     Value cachePolicy = materializeTMEEnumAttr(loc, cacheAttr, rewriter);
+#ifdef __TLE__
+    Value launchPred =
+        buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter, op);
+#else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
-    SmallVector<Value> operands = {
-        srcAddr,     descAddr,           blockDim,
-        blockPos,    swizzleGranularity, swizzleStride,
-        swizzleLine, innerPersistence,   outerPersistence,
-        cachePolicy};
+#endif // __TLE__
 
     Block *currentBlock = rewriter.getInsertionBlock();
     Block *afterCall =
@@ -683,6 +748,13 @@ struct AsyncTMECopyLocalToGlobalOpConversion
     rewriter.setInsertionPointToEnd(currentBlock);
     LLVM::CondBrOp::create(rewriter, loc, launchPred, trueBlock, afterCall);
     rewriter.setInsertionPointToStart(trueBlock);
+    Value descAddr = normalizeTMEDescriptorAddr(
+        adaptor.getDesc(), op.getDesc().getType(), loc, rewriter);
+    SmallVector<Value> operands = {
+        srcAddr,     descAddr,           blockDim,
+        blockPos,    swizzleGranularity, swizzleStride,
+        swizzleLine, innerPersistence,   outerPersistence,
+        cachePolicy};
     LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic, TypeRange{},
                                     operands);
     LLVM::BrOp::create(rewriter, loc, afterCall);
@@ -738,4 +810,7 @@ void mlir::triton::MUSA::populateMUSAOpsToLLVMPatterns(
            WaitBarrierOpConversion, AsyncTMECopyGlobalToLocalOpConversion,
            AsyncTMECopyLocalToGlobalOpConversion, TMEStoreCommitOpConversion,
            TMEStoreReadWaitOpConversion>(typeConverter, benefit);
+#ifdef __TLE__
+  patterns.add<WarpArriveBarrierOpConversion>(typeConverter, benefit);
+#endif // __TLE__
 }

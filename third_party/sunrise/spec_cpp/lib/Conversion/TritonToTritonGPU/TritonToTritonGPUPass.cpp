@@ -1009,8 +1009,8 @@ public:
 
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
-    shouldClampSunriseNumWarpsForSmallReduce(mod, this->target.getValue(),
-                                             numWarps);
+    // shouldClampSunriseNumWarpsForSmallReduce(mod, this->target.getValue(),
+    //                                          numWarps);
     // type converter
     TritonGPUTypeConverter typeConverter(context, numWarps, threadsPerWarp,
                                          numCTAs, enableSourceRemat);

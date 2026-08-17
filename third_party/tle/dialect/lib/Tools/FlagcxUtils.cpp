@@ -36,6 +36,7 @@ using namespace mlir;
 
 static const llvm::StringMap<StringRef> runtimeNames = {
     {"getLocalPeFunction", "flagcxDevCommGetIntraRank"},
+    {"getWorldRankFunction", "flagcxDevCommGetRank"},
     {"getNumPesFunction", "flagcxDevCommGetIntraSize"},
     {"getIntraBarrierArriveSignalFunction", "flagcxIntraBarrierArriveS"},
     {"getIntraBarrierWaitSignalFunction", "flagcxIntraBarrierWaitS"},
@@ -88,6 +89,25 @@ LLVM::CallOp getNumPesFunCall(mlir::Location loc,
   return rewriter.create<LLVM::CallOp>(
       loc, TypeRange{func.getFunctionType().getReturnType()},
       FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr});
+}
+
+LLVM::CallOp getWorldRankFuncCall(mlir::Location loc,
+                                  ConversionPatternRewriter &rewriter,
+                                  Value memPtrInt) {
+  auto ctx = rewriter.getContext();
+  ModuleOp module =
+      rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
+
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto func =
+      createFuncInstance(runtimeNames.lookup("getWorldRankFunction").data(),
+                         module, {ptrTy}, i32Ty);
+
+  auto commDevPtr = getFlagcxMemOrCommPtr(loc, rewriter, memPtrInt);
+  return rewriter.create<LLVM::CallOp>(
+      loc, TypeRange{func.getFunctionType().getReturnType()},
+      FlatSymbolRefAttr::get(func), ValueRange{commDevPtr});
 }
 
 LLVM::CallOp getBarrierFuncCall(mlir::Location loc,

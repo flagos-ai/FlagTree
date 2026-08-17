@@ -38,6 +38,10 @@ LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
                                 ConversionPatternRewriter &rewriter,
                                 Value memPtrInt);
 
+LLVM::CallOp getWorldRankFuncCall(mlir::Location loc,
+                                  ConversionPatternRewriter &rewriter,
+                                  Value memPtrInt);
+
 LLVM::CallOp getNumPesFunCall(mlir::Location loc,
                               ConversionPatternRewriter &rewriter,
                               Value memPtrInt);
