@@ -20,6 +20,7 @@
 
 from pathlib import Path
 import tempfile
+from dataclasses import dataclass
 import os
 import os.path
 import re
@@ -28,6 +29,8 @@ import sysconfig
 from typing import Optional
 import functools
 import hashlib
+
+from flagtree import _flagprism  # FlagPrism
 from triton.runtime.cache import get_cache_manager, get_dump_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
@@ -94,6 +97,33 @@ class NPUUtils(object):
         return self.get_device_properties("npu")["num_vectorcore"]
 
 
+@dataclass(frozen=True)
+class _DebuggerHiddenArgABI:
+    """FlagPrism: generated-launcher fragments for one hidden pointer."""
+
+    parse_format: str = ""
+    extracted_declaration: str = ""
+    parse_argument: str = ""
+    launch_declaration: str = ""
+    struct_field: str = ""
+    struct_value: str = ""
+    call_argument: str = ""
+
+    @classmethod
+    def from_metadata(cls, metadata):
+        if not bool(getattr(metadata, "debug_launch_hidden_arg", False)):
+            return cls()
+        return cls(
+            parse_format="K",
+            extracted_declaration="uint64_t _debugHiddenArg = 0;",
+            parse_argument=", &_debugHiddenArg",
+            launch_declaration=", uint64_t debugHiddenArg",
+            struct_field="void* debug_hidden_arg __attribute__((aligned(8)));",
+            struct_value="reinterpret_cast<void*>(debugHiddenArg),",
+            call_argument=", _debugHiddenArg",
+        )
+
+
 class NPULauncher(object):
 
     def __init__(self, src, metadata):
@@ -108,6 +138,7 @@ class NPULauncher(object):
         signature = {cst_key(key): value for key, value in src.signature.items()}
         wrapper_src = make_launcher(constants, signature, metadata)
         so_launcher_path = make_npu_launcher_stub(header_src, wrapper_src, metadata.debug)
+        self.metadata = metadata  # FlagPrism
         # setup for remote run
         # TODO: use a var to pack all vars required to run on a remote machine
         self.mix_mode = metadata.mix_mode
@@ -132,7 +163,21 @@ class NPULauncher(object):
         else:
             if self.compile_only:
                 return
-            profiler_registered = self.launch(*args, **kwargs)
+            debug_enabled = bool(getattr(self.metadata, "debug_enabled", False))
+            if debug_enabled:
+                # FlagPrism: use the backend-neutral launch gateway; this
+                # backend only supplies its name and launch state.
+                with _flagprism.debugger_launch_context(
+                        "ascend",
+                        self.metadata,
+                        args[:3],
+                        args[3],
+                        args[6],
+                        args[9:],
+                ) as hidden_args:
+                    profiler_registered = self.launch(*args, *hidden_args, **kwargs)
+            else:
+                profiler_registered = self.launch(*args, **kwargs)
             import triton
             triton.backends.ascend.utils.TRITON_PROFILER_REGISTERED = True if profiler_registered == 1 else False
 
@@ -517,12 +562,15 @@ def make_launcher(constants, signature, metadata):
         PyObject* launch_enter_hook, *launch_exit_hook;
         *args_expand
     """
+    debug_abi = _DebuggerHiddenArgABI.from_metadata(metadata)  # FlagPrism
+
     args_format = ''.join([format_of(ty) for ty in signature.values()])
-    format = "iiiKKOOOO" + args_format
+    format = "iiiKKOOOO" + args_format + debug_abi.parse_format  # FlagPrism
     signature = ','.join(map(_serialize_signature, signature.values()))
     signature = list(filter(bool, signature.split(',')))
     signature = {i: s for i, s in enumerate(signature)}
     args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
+    args_list += debug_abi.parse_argument  # FlagPrism
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors.
     arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items() if ty != "constexpr")
@@ -799,7 +847,8 @@ extern "C" {
 
 {cpp_device_pointer}
 
-static void _launch(const char* kernelName, const void* func, rtStream_t stream, int gridX, int gridY, int gridZ, std::vector<std::vector<int64_t>> &tensorShapes, std::vector<int> &tensorKinds{', ' + arg_decls if len(signature) > 0 else ''}) {{
+// FlagPrism: append the optional debugger pointer to the generated launch ABI.
+static void _launch(const char* kernelName, const void* func, rtStream_t stream, int gridX, int gridY, int gridZ, std::vector<std::vector<int64_t>> &tensorShapes, std::vector<int> &tensorKinds{', ' + arg_decls if len(signature) > 0 else ''}{debug_abi.launch_declaration}) {{
   // only 1D parallelization is supported for NPU
   // Pointer type becomes flattend 1-D Memref tuple: base_ptr, data_ptr, offset, shape, stride
   // base_ptr offset shape and stride are not used, arbitrarily set for now
@@ -857,6 +906,8 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
       {'void* syncBlockLock __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
       {'void* workspace_addr __attribute__((aligned(8)));' if not metadata.force_simt_only else ''}
       {' '.join(f'{ty_to_cpp(ty)} arg{i} __attribute__((aligned({4 if ty[0] != "*" and ty[-2:] != "64" else 8})));' for i, ty in signature.items() if i not in constants and ty != "constexpr")}
+      // FlagPrism: optional debugger control pointer; empty in normal launches.
+      {debug_abi.struct_field}
       {' '.join(f'{ty_to_cpp(ty)} grid{mark} __attribute__((aligned(4)));' for mark, ty in grid_info.items())}
       {'void* DTData __attribute__((aligned(8)));' if enable_device_print else ''}
     }} args = {{
@@ -866,6 +917,7 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
       {(lambda _rt: (', '.join(_rt) + ',') if _rt else '')(
         [f'static_cast<{ty_to_cpp(ty)}>(arg{i})' for i, ty in signature.items() if i not in constants and ty != "constexpr"]
       )}
+      {debug_abi.struct_value}  // FlagPrism
       {', '.join(f'static_cast<{ty_to_cpp(ty)}>(grid{mark})' for mark, ty in grid_info.items())}
       {', static_cast<void*>(DTData)' if enable_device_print else ''}
     }};
@@ -921,6 +973,8 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   PyObject *launch_exit_hook = NULL;
   std::vector<std::vector<int64_t>> tensorShapes;
 
+  // FlagPrism: decode the optional hidden argument after user arguments.
+  {debug_abi.extracted_declaration}
   {newline.join([f"{_extracted_type(ty)} _arg{i};" for i, ty in signature.items()])}
   if(!PyArg_ParseTuple(
       args, \"{format}\",
@@ -963,7 +1017,8 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   // raise exception asap
   {newline.join(ptr_decls)}
-  _launch(kernelName, function, stream, gridX, gridY, gridZ, tensorShapes, tensorKinds{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+  // FlagPrism: forward the optional pointer after all user arguments.
+  _launch(kernelName, function, stream, gridX, gridY, gridZ, tensorShapes, tensorKinds{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''}{debug_abi.call_argument});
   if (PyErr_Occurred()) {{
     return NULL;
   }}

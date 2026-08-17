@@ -32,6 +32,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Dict, Optional, Tuple, Union
 
+from flagtree import _flagprism  # FlagPrism
 from triton._C.libtriton import ir, passes, ascend
 from triton.backends.ascend.utils import (
     _check_bishengir_api_change,
@@ -164,6 +165,14 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             print(f"[DEBUG] cmd list: {shlex.join(cmd)}")
 
         pm.run(mod)
+
+        # FlagPrism: publish the last structured IR before backend serialization.
+        _flagprism.emit_compiler_event(
+            phase="pre_backend_serialize",
+            ir_kind="ttadapter",
+            module=mod,
+            metadata=metadata,
+        )
 
         if opt.debug:
             dump_manager = get_dump_manager(metadata["hash"])
@@ -775,6 +784,8 @@ def get_libdevice():
 @dataclass(frozen=True)
 class NPUOptions:
     debug: bool = False
+    # FlagPrism: instrumentation mode participates in the option hash.
+    instrumentation_mode: str = ""
     sanitize_overflow: bool = True
     llvm_version: int = 15
     kernel_name: str = "triton_"

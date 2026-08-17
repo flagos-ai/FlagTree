@@ -349,6 +349,13 @@ def get_thirdparty_packages(packages: list):
     return thirdparty_cmake_args
 
 
+def get_flagprism_dependency_cmake_args(_build_ext):  # FlagPrism
+    return get_thirdparty_packages([get_json_package_info()])
+
+
+FLAGPRISM_SETUP = helper.FlagPrismSetup(get_base_dir(), get_flagprism_dependency_cmake_args)  # FlagPrism
+
+
 def download_and_copy(name, src_func, dst_path, variable, version, url_func):
     if is_offline_build():
         return
@@ -400,9 +407,12 @@ class CMakeClean(clean):
 class CMakeBuildPy(build_py):
 
     def run(self) -> None:
+        FLAGPRISM_SETUP.prepare_build_tree(self.build_lib)  # FlagPrism
         self.run_command('build_ext')
         helper.write_flagtree_backend_file()
-        return super().run()
+        result = super().run()
+        FLAGPRISM_SETUP.finalize_build_tree(self.build_lib)  # FlagPrism
+        return result
 
 
 class CMakeExtension(Extension):
@@ -538,6 +548,8 @@ class CMakeBuild(build_ext):
 
         if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
             cmake_args += self.get_proton_cmake_args()
+        cmake_args += FLAGPRISM_SETUP.cmake_args(self.build_lib)  # FlagPrism
+        cmake_args += FLAGPRISM_SETUP.dependency_cmake_args(self)  # FlagPrism
 
         if is_offline_build():
             # unit test builds fetch googletests from GitHub
@@ -647,6 +659,7 @@ else:
 
 def get_package_dirs():
     yield ("", "python")
+    yield from FLAGPRISM_SETUP.package_dirs()  # FlagPrism
 
     for backend in backends:
         # we use symlinks for external plugins
@@ -673,7 +686,8 @@ def get_package_dirs():
 
 
 def get_packages():
-    yield from find_packages(where="python", include=["triton", "triton.*"])
+    yield from find_packages(where="python", include=["triton", "triton.*", "flagtree", "flagtree.*"])  # FlagPrism
+    yield from FLAGPRISM_SETUP.packages()  # FlagPrism
 
     for backend in backends:
         yield f"triton.backends.{backend.name}"
@@ -799,6 +813,8 @@ class plugin_sdist(sdist):
 
 def get_entry_points():
     entry_points = {}
+    if console_scripts := FLAGPRISM_SETUP.console_scripts():  # FlagPrism
+        entry_points["console_scripts"] = console_scripts
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         entry_points["console_scripts"] = [
             "proton-viewer = triton.profiler.viewer:main",

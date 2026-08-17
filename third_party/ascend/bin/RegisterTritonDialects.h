@@ -23,6 +23,9 @@
 #include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
+#ifdef __FLAGPRISM__
+#include "FlagPrism/Profiler/Dialect/include/Integration/Registration.h"
+#else
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonAMDGPUToLLVM/Passes.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/Passes.h"
@@ -30,6 +33,7 @@
 #include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "proton/Dialect/include/Dialect/ProtonGPU/IR/Dialect.h"
 #include "proton/Dialect/include/Dialect/ProtonGPU/Transforms/Passes.h"
+#endif
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -143,6 +147,10 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerNVHopperTransformsPasses();
 
   // Proton passes
+#ifdef __FLAGPRISM__
+  mlir::triton::proton::registerFlagTreeProtonTestPasses();
+  mlir::triton::proton::registerFlagTreeProtonPassesAndDialects(registry);
+#else
   mlir::test::proton::registerTestScopeIdAllocationPass();
   mlir::triton::proton::registerConvertProtonToProtonGPU();
   mlir::triton::proton::gpu::registerConvertProtonNvidiaGPUToLLVM();
@@ -151,6 +159,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::proton::gpu::registerAllocateProtonGlobalScratchBufferPass();
   mlir::triton::proton::gpu::registerScheduleBufferStorePass();
   mlir::triton::proton::gpu::registerAddSchedBarriersPass();
+#endif
 
   // DynamicCVPipeline passes
   mlir::triton::registerAddControlFlowConditionPasses();
@@ -165,9 +174,11 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
       mlir::LLVM::LLVMDialect, mlir::NVVM::NVVMDialect,
       mlir::triton::nvgpu::NVGPUDialect, mlir::triton::nvws::NVWSDialect,
       mlir::triton::amdgpu::TritonAMDGPUDialect,
+#ifndef __FLAGPRISM__
       mlir::triton::proton::ProtonDialect,
-      mlir::triton::proton::gpu::ProtonGPUDialect, mlir::ROCDL::ROCDLDialect,
-      mlir::triton::gluon::GluonDialect,
+      mlir::triton::proton::gpu::ProtonGPUDialect,
+#endif
+      mlir::ROCDL::ROCDLDialect, mlir::triton::gluon::GluonDialect,
       mlir::triton::ascend::TritonAscendDialect, mlir::hivm::HIVMDialect,
       mlir::scope::ScopeDialect, mlir::hacc::HACCDialect,
       mlir::annotation::AnnotationDialect, mlir::hfusion::HFusionDialect,

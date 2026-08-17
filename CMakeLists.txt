@@ -106,6 +106,46 @@ else()
   option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
   option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
 endif()
+
+# Keep FlagPrism configuration isolated from non-Ascend backends.
+set(_flagprism_default OFF)
+if(FLAGTREE_BACKEND STREQUAL "ascend")
+  set(_flagprism_default ON)
+endif()
+option(TRITON_BUILD_FLAGPRISM
+       "Build the FlagPrism debugger and profiler"
+       ${_flagprism_default})
+
+if(TRITON_BUILD_FLAGPRISM)
+  if(NOT FLAGTREE_BACKEND STREQUAL "ascend")
+    message(FATAL_ERROR
+      "TRITON_BUILD_FLAGPRISM is only supported when "
+      "FLAGTREE_BACKEND=ascend on triton_v3.5.x.")
+  endif()
+  if(TRITON_BUILD_PROTON)
+    message(FATAL_ERROR
+      "TRITON_BUILD_FLAGPRISM and TRITON_BUILD_PROTON cannot both be enabled. "
+      "Select exactly one profiler implementation.")
+  endif()
+
+  set(FLAGPRISM_CMAKE_FILE
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/FlagPrism/cmake/FlagPrism.cmake")
+  if(EXISTS "${FLAGPRISM_CMAKE_FILE}")
+    include("${FLAGPRISM_CMAKE_FILE}")
+    add_compile_definitions(__FLAGPRISM__=1)
+  else()
+    message(FATAL_ERROR
+      "FlagPrism source is missing. Run the Python package build to download "
+      "third-party dependencies.")
+  endif()
+endif()
+
+macro(flagtree_add_flagprism_components)
+  if(TRITON_BUILD_FLAGPRISM)
+    flagprism_add_components()
+  endif()
+endmacro()
+
 option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
 set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
 
@@ -334,6 +374,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
     add_subdirectory(third_party/flir)
   endif()
 
+  # Backend codegen targets capture TRITON_LIBS at configuration time.
+  flagtree_add_flagprism_components()
+
   if (DEFINED TRITON_PLUGIN_DIRS)
     foreach(PLUGIN_DIR ${TRITON_PLUGIN_DIRS})
       # Read the plugin name under dir/backend/name.conf
@@ -359,9 +402,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
     add_definitions(-D__PROTON__)
     add_subdirectory(third_party/proton)
   endif()
-  # We always build proton dialect
-  list(APPEND TRITON_PLUGIN_NAMES "proton")
-  add_subdirectory(third_party/proton/Dialect)
+  # FlagPrism replaces the legacy Proton dialect when enabled.
+  if(NOT TRITON_BUILD_FLAGPRISM)
+    # We always build proton dialect
+    list(APPEND TRITON_PLUGIN_NAMES "proton")
+    add_subdirectory(third_party/proton/Dialect)
+  endif()
 
   # The 3.2 DSA CMake tree defines the same TLE dialect/plugin targets as
   # third_party/tle on 3.5, so do not add it as a second CMake subdirectory.
@@ -568,10 +614,14 @@ if(NOT TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_BACKEND STREQUAL "ascend")
     add_subdirectory(third_party/flir)
   endif()
+  flagtree_add_flagprism_components()
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
   endforeach()
-  add_subdirectory(third_party/proton/Dialect)
+  # FlagPrism replaces the legacy Proton dialect when enabled.
+  if(NOT TRITON_BUILD_FLAGPRISM)
+    add_subdirectory(third_party/proton/Dialect)
+  endif()
 endif()
 
 find_package(Threads REQUIRED)

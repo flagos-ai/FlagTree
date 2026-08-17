@@ -1,4 +1,5 @@
-if(TRITON_BUILD_PROTON)
+# Either profiler provider supplies ProtonIR when its full runtime is enabled.
+if(TRITON_BUILD_FLAGPRISM OR TRITON_BUILD_PROTON)
   set(_ProtonIRLib ProtonIR)
 endif()
 

@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, 
 import importlib
 
 from .. import knobs, language
+from flagtree import _flagprism  # FlagPrism
 from .._C.libtriton import ir, gluon_ir
 from ..language import constexpr, str_to_ty, tensor, tuple as tl_tuple
 from ..language.core import _unwrap_if_constexpr, base_value, base_type
@@ -745,6 +746,8 @@ class CodeGenerator(ast.NodeVisitor):
                 values = _sanitize_value(self.visit(node.value))
         else:
             values = _sanitize_value(self.visit(node.value))
+        # FlagPrism: emit normalized statement data before symbol binding.
+        _flagprism.emit_statement_event("assignment", self, node, target, values)
         self.assignTarget(target, values)
 
     def visit_AugAssign(self, node):
@@ -1599,7 +1602,10 @@ class CodeGenerator(ast.NodeVisitor):
 
     def visit_Expr(self, node):
         node.value._is_unused = True
-        ast.NodeVisitor.generic_visit(self, node)
+        # ast.NodeVisitor.generic_visit(self, node)
+        value = self.visit(node.value)
+        # FlagPrism: retain the operation created by a void expression.
+        _flagprism.emit_statement_event("expression", self, node, None, value)
 
     def visit_NoneType(self, node):
         return None

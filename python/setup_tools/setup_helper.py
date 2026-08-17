@@ -1,4 +1,5 @@
 import os
+import runpy
 import shutil
 import sys
 import functools
@@ -76,7 +77,7 @@ def enable_flagtree_third_party(name):
 
 
 def get_hook_instance(hook_name):
-    if not configs.activated_module:
+    if not hook_name or not configs.activated_module:
         return None
     hook_instance = getattr(configs.activated_module, hook_name, None)
     return hook_instance if callable(hook_instance) else None
@@ -93,6 +94,101 @@ def download_flagtree_third_party(name, condition, required=False, hook=None):
                                                      backend=submodule, default_backends=configs.default_backends)
         else:
             print_info(f"Skip downloading {name} since USE_{name.upper()} is set to OFF")
+
+
+class FlagPrismSetup:
+
+    def __init__(self, project_root, dependency_cmake_args):
+        self.project_root = Path(project_root)
+        backend = configs.flagtree_backend or ""
+        default = "ON" if backend == "ascend" else "OFF"
+        self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
+        self.build_config = None
+        self._dependency_cmake_args = dependency_cmake_args
+
+        if self.enabled and backend != "ascend":
+            raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
+                               "FLAGTREE_BACKEND=ascend on triton_v3.5.x.")
+        if not self.enabled:
+            return
+        if self._check_env_flag("TRITON_BUILD_PROTON"):
+            raise RuntimeError("TRITON_BUILD_FLAGPRISM and TRITON_BUILD_PROTON cannot both be enabled. "
+                               "Set one of them to OFF.")
+
+        # FlagPrism replaces Proton only for the supported Ascend build.
+        os.environ["TRITON_BUILD_PROTON"] = "OFF"
+        download_flagtree_third_party("flagprism", condition=True, required=True)
+
+        helper_path = self.project_root / "third_party" / "FlagPrism" / "python" / "flagprism_build.py"
+        if not helper_path.is_file():
+            raise RuntimeError("FlagPrism sources are missing. Run the Python package build "
+                               "to download third-party dependencies.")
+        policy = runpy.run_path(str(helper_path), run_name="_flagprism_build")
+        self.build_config = policy["create_build_config"](self.project_root)
+
+        legacy_link = self.project_root / "python" / "triton" / "profiler"
+        if legacy_link.is_symlink():
+            legacy_link.unlink()
+
+    @staticmethod
+    def _check_env_flag(name: str, default: str = "") -> bool:
+        return os.getenv(name, default).upper() in ("ON", "1", "YES", "TRUE", "Y")
+
+    @staticmethod
+    def _remove_path(path: Path) -> None:
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.is_dir():
+            shutil.rmtree(path)
+
+    def _remove_legacy_gateway(self, build_lib: str) -> None:
+        triton_root = Path(build_lib) / "triton"
+        self._remove_path(triton_root / "_flagprism.py")
+        for artifact in (triton_root / "__pycache__").glob("_flagprism.*.pyc"):
+            self._remove_path(artifact)
+
+    def cmake_args(self, build_lib: str) -> list[str]:
+        if self.build_config is None:
+            return ["-DTRITON_BUILD_FLAGPRISM=OFF"]
+        return self.build_config.cmake_args(build_lib)
+
+    def dependency_cmake_args(self, build_ext) -> list[str]:
+        if not self.enabled:
+            return []
+        return self._dependency_cmake_args(build_ext)
+
+    def prepare_build_tree(self, build_lib: str) -> None:
+        # The gateway now belongs to flagtree; reused build trees must not
+        # repackage the former triton._flagprism module.
+        self._remove_legacy_gateway(build_lib)
+        if self.build_config is not None:
+            self.build_config.prepare_build_tree(build_lib)
+            return
+        build_root = Path(build_lib) / "flagtree"
+        self._remove_path(build_root / "debugger")
+        self._remove_path(build_root / "profiler")
+
+    def finalize_build_tree(self, build_lib: str) -> None:
+        if self.build_config is not None:
+            self.build_config.finalize_build_tree(build_lib)
+        else:
+            self.prepare_build_tree(build_lib)
+        self._remove_legacy_gateway(build_lib)
+
+    def packages(self) -> tuple[str, ...]:
+        if self.build_config is None:
+            return ()
+        return self.build_config.packages()
+
+    def package_dirs(self) -> tuple[tuple[str, str], ...]:
+        if self.build_config is None:
+            return ()
+        return self.build_config.package_dirs()
+
+    def console_scripts(self) -> list[str]:
+        if self.build_config is None:
+            return []
+        return self.build_config.console_scripts()
 
 
 def post_install():
