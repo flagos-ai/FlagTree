@@ -35,7 +35,6 @@ jobs:
       SPINE_TRITON_TARGET_ARCH: "riscv64"
       SPACEMIT_EP_QEMU_SET_CORE_ARCH: "0xA064"
       GEMS_VENDOR: "spacemit"
-      SPACEMIT_CACHE: "${HOME}/.flagtree/spacemit"
     steps:
       - name: Setup environment
         shell: bash
@@ -70,6 +69,8 @@ jobs:
         shell: bash
         run: |
           set -x
+          export SPACEMIT_CACHE="${HOME}/.flagtree/spacemit"
+          env | grep -E '^(SPACEMIT_CACHE)=' >> $GITHUB_ENV || true
           set -a; source third_party/spacemit/spacemit-ci.env; set +a
           bash third_party/spacemit/scripts/install_flagtree_plugin.sh
 
