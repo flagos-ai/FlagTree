@@ -66,6 +66,7 @@ jobs:
         run: |
           set -x
           export SPACEMIT_CACHE="${HOME}/.flagtree/spacemit"
+          env | grep -E '^(SPACEMIT_CACHE)=' >> $GITHUB_ENV || true
           set -a; source third_party/spacemit/spacemit-ci.env; set +a
           bash third_party/spacemit/scripts/install_flagtree_plugin.sh
 
