@@ -28,9 +28,16 @@ concurrency:
 jobs:
   spacemit36x-unit-test:
     runs-on: spacemit3.6
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     env:
       SPINE_TRITON_RPC_PORT: "9999"
     steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
         with:
