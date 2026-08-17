@@ -234,6 +234,7 @@ class CUDAJITFunction(RawJITFunction):
         self.lowered_region_dialect: Final[str] = "llvm"
         self.arg_dialect: Final[str] = "llvm"
         self.source_file: Final[str] = str(file)
+        self.opt_level: Final[str] = kwargs.get("opt_level", "-O3")
 
         if self.library == "nvshmem":
             from triton.experimental.tle.raw.nvshmem.utils import enable_nvshmem_device_bc
@@ -259,7 +260,7 @@ class CUDAJITFunction(RawJITFunction):
             extern_func_name=self.extern_func_name,
             source=self.code,
             hint=hint,
-            extra={"source_file": self.source_file},
+            extra={"source_file": self.source_file, "opt_level": self.opt_level},
         )
 
     def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
@@ -285,7 +286,7 @@ class CUDAJITFunction(RawJITFunction):
                 "--cuda-device-only",
                 _get_cuda_gpu_arch(),
                 "-emit-llvm",
-                "-O2",
+                self.opt_level,
                 "-S",
                 "-",
                 "-o",
@@ -314,5 +315,6 @@ def compile_deferred_pending_source(entry: dict, *, context) -> str:
         file=_CudaSourceFile(),
         extern_func_name=entry.get("extern_func_name"),
         deferred=True,
+        opt_level=entry.get("opt_level"),
     )
     return cuda_fn.make_llvm(context)

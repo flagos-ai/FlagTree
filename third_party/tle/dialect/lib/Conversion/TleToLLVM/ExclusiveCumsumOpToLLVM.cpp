@@ -122,7 +122,7 @@ static Value createWarpScanStepI32(Location loc,
                                    ConversionPatternRewriter &rewriter,
                                    const TargetInfoBase &targetInfo, Value val,
                                    int offset, Value laneId, Type elemTy) {
-  if (targetInfo.isHCU()) {
+  if (!targetInfo.isCuda()) {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     Value shuffled = targetInfo.shuffleUp(rewriter, loc, val, offset);
     Value pred = b.icmp_sge(laneId, b.i32_val(offset));

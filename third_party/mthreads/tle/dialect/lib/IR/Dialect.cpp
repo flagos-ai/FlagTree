@@ -281,6 +281,51 @@ LogicalResult LocalPointersOp::verify() {
   return success();
 }
 
+LogicalResult BarrierAllocOp::verify() {
+  if (getNumBarriers() <= 0)
+    return emitOpError("num_barriers must be positive");
+  if (getNumBarriers() > 63)
+    return emitOpError("num_barriers exceeds the 63 mthreads hardware "
+                       "barrier id limit");
+  if (getArriveCount() <= 0)
+    return emitOpError("arrive_count must be positive");
+  if (getInitPolarity() != 0 && getInitPolarity() != 1)
+    return emitOpError("init_polarity must be 0 or 1");
+  if (auto expectBytes =
+          getOperation()->getAttrOfType<IntegerAttr>("expect_bytes")) {
+    if (expectBytes.getInt() <= 0)
+      return emitOpError("expect_bytes must be positive when present");
+  }
+  return success();
+}
+
+LogicalResult BarrierIndexOp::verify() {
+  APInt constantIndex;
+  if (!matchPattern(getIndex(), m_ConstantInt(&constantIndex)))
+    return success();
+
+  int64_t index = constantIndex.getSExtValue();
+  if (index < 0)
+    return emitOpError("barrier index must be non-negative when constant");
+
+  if (auto alloc = getBaseId().getDefiningOp<BarrierAllocOp>()) {
+    if (index >= alloc.getNumBarriers())
+      return emitOpError("barrier index ")
+             << index << " out of bounds for " << alloc.getNumBarriers()
+             << " barriers";
+  }
+  return success();
+}
+
+LogicalResult BarrierWaitOp::verify() { return success(); }
+
+LogicalResult BarrierArriveOp::verify() {
+  if (getArriveCount() != 1)
+    return emitOpError(
+        "mthreads hardware barrier arrive requires arrive_count = 1");
+  return success();
+}
+
 LogicalResult ExclusiveCumsumOp::verify() {
   auto srcTy = dyn_cast<RankedTensorType>(getSrc().getType());
   if (!srcTy)
@@ -312,6 +357,52 @@ LogicalResult ExclusiveCumsumOp::verify() {
     return emitOpError() << "expects total result type to match src element "
                             "type";
 
+  return success();
+}
+
+LogicalResult SqmmaOp::verify() {
+  auto aTy = dyn_cast<ttg::MemDescType>(getA().getType());
+  auto bTy = dyn_cast<ttg::MemDescType>(getB().getType());
+  auto cTy = dyn_cast<RankedTensorType>(getC().getType());
+  auto dTy = dyn_cast<RankedTensorType>(getD().getType());
+  if (!aTy || !bTy || !cTy || !dTy)
+    return emitOpError("expects memdesc A/B and ranked tensor accumulator");
+  if (aTy.getRank() != 2 || bTy.getRank() != 2 || cTy.getRank() != 2)
+    return emitOpError("expects rank-2 A, B, and accumulator operands");
+  if (!isa<ttg::SharedMemorySpaceAttr>(aTy.getMemorySpace()) ||
+      !isa<ttg::SharedMemorySpaceAttr>(bTy.getMemorySpace()))
+    return emitOpError("expects A and B in shared memory");
+  Type aElemTy = aTy.getElementType();
+  Type bElemTy = bTy.getElementType();
+  bool supportedInput =
+      aElemTy.isF16() || aElemTy.isBF16() || isa<Float8E4M3FNType>(aElemTy);
+  if (!supportedInput || aElemTy != bElemTy)
+    return emitOpError(
+        "mthreads TLE SQMMA requires matching f16, bf16, or fp8e4nv A/B");
+  if (!cTy.getElementType().isF32() || !dTy.getElementType().isF32())
+    return emitOpError(
+        "initial mthreads TLE SQMMA requires an f32 accumulator/result");
+
+  ArrayRef<int64_t> aShape = aTy.getShape();
+  ArrayRef<int64_t> bShape = bTy.getShape();
+  ArrayRef<int64_t> cShape = cTy.getShape();
+  if (aShape[1] != bShape[0] || cShape[0] != aShape[0] ||
+      cShape[1] != bShape[1])
+    return emitOpError("expects A[M,K] * B[K,N] and accumulator[M,N]");
+  if (!getIsAsync())
+    return emitOpError("requires isAsync=true");
+  if (getMaxNumImpreciseAcc() != 0)
+    return emitOpError(
+        "initial mthreads TLE SQMMA requires maxNumImpreciseAcc=0");
+  return success();
+}
+
+LogicalResult SqmmaWaitOp::verify() {
+  auto pendings = getOperation()->getAttrOfType<IntegerAttr>("pendings");
+  if (!pendings || pendings.getInt() != 0)
+    return emitOpError(
+        "mthreads TLE wgmma_wait currently requires pendings=0; non-zero "
+        "pending groups are not supported");
   return success();
 }
 
