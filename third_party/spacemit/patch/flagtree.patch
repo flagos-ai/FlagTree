@@ -1,49 +1,3 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index f2c9b0419..11d696b43 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -271,10 +271,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
-
-     # LLVM
-     LLVMPasses
--    LLVMNVPTXCodeGen
--    # LLVMNVPTXAsmPrinter
--    LLVMAMDGPUCodeGen
--    LLVMAMDGPUAsmParser
-
-     Python3::Module
-     pybind11::headers
-@@ -282,6 +278,15 @@ if(TRITON_BUILD_PYTHON_MODULE)
-   )
-   flagtree_configure_backend_libraries()
-
-+  # GPU codegen libs only exist when their LLVM targets were built. The RISC-V
-+  # prebuilt LLVM (spacemit) has only RISCV;X86, so guard these to avoid
-+  # linking nonexistent NVPTX/AMDGPU target libraries.
-+  if("NVPTX" IN_LIST LLVM_TARGETS_TO_BUILD)
-+    list(APPEND TRITON_LIBRARIES LLVMNVPTXCodeGen)
-+  endif()
-+  if("AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD)
-+    list(APPEND TRITON_LIBRARIES LLVMAMDGPUCodeGen LLVMAMDGPUAsmParser)
-+  endif()
-   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
-      CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" OR # macOS arm64
-      CMAKE_OSX_ARCHITECTURES MATCHES "arm64")  # also macOS arm64
-diff --git a/include/triton/Dialect/Triton/IR/TritonAttrDefs.td b/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
-index 694640cc4..49f153aff 100644
---- a/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
-+++ b/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
-@@ -69,7 +69,9 @@ def TT_PaddingOptionAttr : I32EnumAttr<
-     [
-         I32EnumAttrCase<"PAD_ZERO", 1, "zero">,
-         // We can not set the string value to "NAN" because it is a keyword in C++
--        I32EnumAttrCase<"PAD_NAN", 2, "nan">
-+        I32EnumAttrCase<"PAD_NAN", 2, "nan">,
-+        I32EnumAttrCase<"PAD_NEG_INF", 3, "neg_inf">,
-+        I32EnumAttrCase<"PAD_INF", 4, "inf">
-     ]> {
-     let cppNamespace = "::mlir::triton";
- }
 diff --git a/python/setup_tools/utils/spacemit.py b/python/setup_tools/utils/spacemit.py
 new file mode 100644
 index 000000000..1cbc3c18f
@@ -220,136 +174,6 @@ index 000000000..1cbc3c18f
 +    shutil.copy(spine_triton_opt_src, spine_triton_opt_dst)
 +    spine_triton_opt_dst.chmod(0o755)
 +    print(f"[spacemit] Copied spine-triton-opt to {spine_triton_opt_dst}")
-diff --git a/python/src/ir.cc b/python/src/ir.cc
-index 92cb8cf61..19023d1d8 100644
---- a/python/src/ir.cc
-+++ b/python/src/ir.cc
-@@ -305,6 +305,8 @@ void init_triton_ir(py::module &&m) {
-   py::enum_<PaddingOption>(m, "PADDING_OPTION", py::module_local())
-       .value("PAD_ZERO", PaddingOption::PAD_ZERO)
-       .value("PAD_NAN", PaddingOption::PAD_NAN)
-+      .value("PAD_NEG_INF", PaddingOption::PAD_NEG_INF)
-+      .value("PAD_INF", PaddingOption::PAD_INF)
-       .export_values();
-
-   py::enum_<CacheModifier>(m, "CACHE_MODIFIER", py::module_local())
-diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
-index 95cb04c3f..c23e84687 100644
---- a/python/triton/compiler/code_generator.py
-+++ b/python/triton/compiler/code_generator.py
-@@ -1266,6 +1266,7 @@ class CodeGenerator(ast.NodeVisitor):
-         flatten = False
-         warp_specialize = False
-         disable_licm = False
-+        bind_sub_block = None
-         reorder = False  # flagtree reorder-loop-loads
-         # flagtree tle
-         try:
-@@ -1275,8 +1276,13 @@ class CodeGenerator(ast.NodeVisitor):
-         except ImportError:
-             tle_pipeline = None
-             tle_range = None
-+        # spacemit smt.parallel (only present when the spacemit backend is built)
-+        try:
-+            from ..language.extra.smt import parallel as smt_parallel
-+        except ImportError:
-+            smt_parallel = None
-
--        if IteratorClass in [language.range, tle_pipeline, tle_range]:  # flagtree reorder-loop-loads
-+        if IteratorClass in [language.range, tle_pipeline, tle_range, smt_parallel]:  # flagtree reorder-loop-loads
-             iterator = IteratorClass(*iter_args, **iter_kwargs)
-             # visit iterator arguments
-             # note: only `range` iterator is supported now
-@@ -1291,6 +1297,8 @@ class CodeGenerator(ast.NodeVisitor):
-             warp_specialize = iterator.warp_specialize
-             disable_licm = iterator.disable_licm
-             reorder = getattr(iterator, 'reorder', False)  # flagtree reorder-loop-loads
-+            if smt_parallel is not None and IteratorClass is smt_parallel:
-+                bind_sub_block = iterator.bind_sub_block
-         elif IteratorClass is range:
-             # visit iterator arguments
-             # note: only `range` iterator is supported now
-@@ -1355,6 +1363,8 @@ class CodeGenerator(ast.NodeVisitor):
-                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
-             if disable_licm:
-                 for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
-+            if (bind_sub_block is not None) and bind_sub_block:
-+                for_op.set_attr("bind_sub_block", self.builder.get_bool_attr(bind_sub_block))
-             if reorder and _unwrap_if_constexpr(loop_unroll_factor) is not None:  # flagtree reorder-loop-loads
-                 for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))  # flagtree reorder-loop-loads
-
-diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
-index 23cbd80db..4395d6185 100644
---- a/python/triton/language/semantic.py
-+++ b/python/triton/language/semantic.py
-@@ -96,6 +96,8 @@ class TritonSemantic(Generic[TensorTy]):
-             if scalar_ty.kind().value <= tensor_ty.kind().value:
-                 # Upcast because of 3) and 4) below!
-                 if div_or_mod and (tensor_ty in (tl.float16, tl.bfloat16)):
-+                    if tensor_ty is tl.float16:
-+                        return tl.float16
-                     return tl.float32
-                 return tensor_ty
-
-@@ -112,7 +114,7 @@ class TritonSemantic(Generic[TensorTy]):
-         #     Supported PTX op: add, sub, mul, fma, neg, abs, min, max, tanh, ex2, setp
-         if a_ty.is_fp16() or b_ty.is_fp16():
-             if div_or_mod:
--                return tl.float32
-+                return tl.float16
-             else:
-                 return tl.float16
-         # 4) return bf16 only if both operands are of bf16
-@@ -970,6 +972,10 @@ class TritonSemantic(Generic[TensorTy]):
-                 padding = ir.PADDING_OPTION.PAD_ZERO
-             elif padding_option == "nan":
-                 padding = ir.PADDING_OPTION.PAD_NAN
-+            elif padding_option == "neg_inf":
-+                padding = ir.PADDING_OPTION.PAD_NEG_INF
-+            elif padding_option == "inf":
-+                padding = ir.PADDING_OPTION.PAD_INF
-             else:
-                 raise ValueError(f"Padding option {padding_option} not supported")
-         return padding
-diff --git a/python/triton/language/standard.py b/python/triton/language/standard.py
-index ea2612341..ea8fab17f 100644
---- a/python/triton/language/standard.py
-+++ b/python/triton/language/standard.py
-@@ -206,7 +206,8 @@ def max(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
-     else:
-         if core.constexpr(input.dtype.primitive_bitwidth) < core.constexpr(32):
-             if core.constexpr(input.dtype.is_floating()):
--                input = input.to(core.float32)
-+                if not core.constexpr(input.dtype.is_fp16()):
-+                    input = input.to(core.float32)
-             else:
-                 assert input.dtype.is_int(), "Expecting input to be integer type"
-                 input = input.to(core.int32)
-@@ -265,7 +266,8 @@ def min(input, axis=None, return_indices=False, return_indices_tie_break_left=Tr
-     else:
-         if core.constexpr(input.dtype.primitive_bitwidth) < 32:
-             if core.constexpr(input.dtype.is_floating()):
--                input = input.to(core.float32)
-+                if not core.constexpr(input.dtype.is_fp16()):
-+                    input = input.to(core.float32)
-             else:
-                 assert input.dtype.is_int(), "Expecting input to be integer type"
-                 input = input.to(core.int32)
-diff --git a/python/triton/runtime/interpreter.py b/python/triton/runtime/interpreter.py
-index 3d2498d2c..6a233b5ec 100644
---- a/python/triton/runtime/interpreter.py
-+++ b/python/triton/runtime/interpreter.py
-@@ -702,6 +702,10 @@ class InterpreterBuilder:
-             other = TensorHandle(np.zeros_like(ptrs.data, dtype=dtype_np), dtype_tt)
-         elif padding_option == _ir.PADDING_OPTION.PAD_NAN:
-             other = TensorHandle(np.full_like(ptrs.data, float('nan'), dtype=dtype_np), dtype_tt)
-+        elif padding_option == _ir.PADDING_OPTION.PAD_NEG_INF:
-+            other = TensorHandle(np.full_like(ptrs.data, float('-inf'), dtype=dtype_np), dtype_tt)
-+        elif padding_option == _ir.PADDING_OPTION.PAD_INF:
-+            other = TensorHandle(np.full_like(ptrs.data, float('inf'), dtype=dtype_np), dtype_tt)
-         else:
-             raise ValueError(f"unsupported padding option {padding_option}")
-         return self.create_masked_load(ptrs, masks, other, cache_modifier, eviction_policy, is_volatile)
 diff --git a/setup.py b/setup.py
 index 3d60f95c4..376bb9b75 100644
 --- a/setup.py
@@ -363,7 +187,7 @@ index 3d60f95c4..376bb9b75 100644
  from io import BytesIO
  from distutils.command.clean import clean
  from pathlib import Path
-@@ -68,6 +70,27 @@ from python.setup_tools import setup_helper as helper
+@@ -68,6 +70,23 @@ from python.setup_tools import setup_helper as helper
 
  from python.build_helpers import get_base_dir, get_cmake_dir
 
@@ -376,10 +200,6 @@ index 3d60f95c4..376bb9b75 100644
 +    return helper.flagtree_backend == "spacemit"
 +
 +
-+def get_python_root():
-+    return "python"
-+
-+
 +def get_triton_base_dir():
 +    return get_base_dir()
 +
@@ -389,8 +209,8 @@ index 3d60f95c4..376bb9b75 100644
 +
 +
  # flagtree setup print config
- if platform.system() == "Windows":
-     YELLOW = ""
+ YELLOW, NC = helper.get_console_colors()
+ 
 @@ -97,22 +120,21 @@ class BackendInstaller:
 
      @staticmethod
@@ -574,11 +394,10 @@ index 3d60f95c4..376bb9b75 100644
 +            "-DTRITON_PLUGIN_DIRS=" + plugin_dirs,
              "-DTRITON_WHEEL_DIR=" + wheeldir
          ]
-         cmake_args += helper.get_backend_cmake_args(build_ext=self)
-@@ -595,8 +711,9 @@ class CMakeBuild(build_ext):
-             gluon_flag = "ON" if check_env_flag("TRITON_ILU_BUILD_GLUON") else "OFF"
-             cmake_args += [f"-DTRITON_BUILD_GLUON={gluon_flag}"]
-
+         cmake_args += helper.get_backend_cmake_args(build_ext=self)  # flagtree
+@@ -568,7 +684,8 @@ class CMakeBuild(build_ext):
+         cmake_args += helper.customize_gluon_cmake_args()
+ 
 -        if is_offline_build():
 -            # unit test builds fetch googletests from GitHub
 +        if is_offline_build() or _is_spacemit_build():
@@ -603,46 +422,27 @@ index 3d60f95c4..376bb9b75 100644
          subprocess.check_call(["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env)
          update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
          subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
-@@ -699,7 +823,20 @@ def download_and_copy_dependencies():
-
-
- if helper.flagtree_backend:
--    if helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
-+    if _is_spacemit_build():
-+        # spacemit builds against ROOT triton as an external plugin
-+        # (backend/name.conf + leaf CMakeLists via TRITON_PLUGIN_DIRS).
-+        # nvidia/amd are kept as in-tree codegen backends because core triton
-+        # (TritonGPUTransforms) links their NVWS* MLIR dialect libs. Their LLVM
-+        # target codegen libs (NVPTX/AMDGPU) are gated in root CMakeLists.txt on
-+        # LLVM_TARGETS_TO_BUILD, so the RISC-V-only prebuilt LLVM links cleanly.
-+        backends = [
-+            *BackendInstaller.copy(helper.configs.default_backends),
-+            BackendInstaller.prepare("spacemit",
-+                                     backend_src_dir=os.path.join("third_party", "spacemit"),
-+                                     is_external=True),
-+        ]
-+    elif helper.flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
-         backends = [
-             *BackendInstaller.copy(helper.configs.default_backends + tuple(helper.configs.extend_backends)),
-             *BackendInstaller.copy_externals(),
-@@ -725,7 +862,7 @@ def get_backend_packages(backend):
-
-
- def get_package_dirs():
--    yield ("", "python")
-+    yield ("", get_python_root())
-
-     # flagtree backend specialization
-     yield from helper.SpecPackageHelper.get_spec_packages()
-@@ -758,7 +895,7 @@ def get_package_dirs():
-
- def get_packages():
-     # flagtree backend specialization: add excluded packages
--    yield from find_packages(where="python", include=["triton", "triton.*"],
-+    yield from find_packages(where=get_python_root(), include=["triton", "triton.*"],
-                              exclude=helper.SpecPackageHelper.get_excluded_packages())
-
-     # flagtree backend specialization
+@@ -673,4 +797,19 @@ def download_and_copy_dependencies():
+ # backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+-backends = helper.init_backends(BackendInstaller)  # flagtree
++if _is_spacemit_build():
++    # spacemit builds against ROOT triton as an external plugin
++    # (backend/name.conf + leaf CMakeLists via TRITON_PLUGIN_DIRS).
++    # nvidia/amd are kept as in-tree codegen backends because core triton
++    # links their MLIR dialect libraries. Their LLVM target codegen libraries
++    # are gated in root CMakeLists.txt on LLVM_TARGETS_TO_BUILD.
++    backends = [
++        *BackendInstaller.copy(helper.configs.default_backends),
++        BackendInstaller.prepare(
++            "spacemit",
++            backend_src_dir=os.path.join("third_party", "spacemit"),
++            is_external=True,
++        ),
++    ]
++else:
++    backends = helper.init_backends(BackendInstaller)  # flagtree
+ 
+ 
 diff --git a/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td b/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td
 index 8d35a5ec1..e476cad96 100644
 --- a/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td

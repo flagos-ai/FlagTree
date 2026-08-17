@@ -388,6 +388,41 @@ macro(flagtree_configure_backend_libraries)
       Python3::Module
       pybind11::headers
     )
+  elseif(FLAGTREE_BACKEND STREQUAL "spacemit")
+    set(TRITON_LIBRARIES
+      ${triton_libs}
+      ${triton_plugins}
+
+      # mlir
+      MLIRAMDGPUDialect
+      MLIRNVVMDialect
+      MLIRNVVMToLLVMIRTranslation
+      MLIRGPUToNVVMTransforms
+      MLIRGPUToGPURuntimeTransforms
+      MLIRGPUTransforms
+      MLIRIR
+      MLIRControlFlowToLLVM
+      MLIRBytecodeWriter
+      MLIRPass
+      MLIRTransforms
+      MLIRLLVMDialect
+      MLIRSupport
+      MLIRTargetLLVMIRExport
+      MLIRMathToLLVM
+      MLIRROCDLToLLVMIRTranslation
+      MLIRGPUDialect
+      MLIRSCFToControlFlow
+      MLIRIndexToLLVM
+      MLIRGPUToROCDLTransforms
+      MLIRUBToLLVM
+
+      # LLVM
+      LLVMPasses
+
+      Python3::Module
+      pybind11::headers
+
+    )
   elseif(FLAGTREE_BACKEND STREQUAL "metax" AND BUILD_MCTLE)
     list(APPEND TRITON_LIBRARIES MLIRTargetLLVMIRImport)
   endif()

@@ -82,11 +82,9 @@ fi
 # --- 2. run the FlagTree unified install (spacemit plugin path) ---
 # Preserve the local NFS fallback, but do not let it bypass the CI cache when
 # spacemit-ci.env has supplied an LLVM download.
-if [[ -z "${LLVM_SYSPATH:-}" && -z "${LLVM_URL:-}" ]]; then
-  LLVM_SYSPATH="/home/share/nfs_share/llvm-pre-build/llvm-f6ded0be897e2878612dd903f7e8bb85448269e5-build-x86-release"
-fi
-MAX_JOBS="${MAX_JOBS:-2}"
-PIP="${PIP:-python -m pip}"
+MAX_JOBS="${MAX_JOBS:-32}"
+PIP="${PIP:-python3 -m pip}"
+export PIP_BREAK_SYSTEM_PACKAGES=1
 
 if [[ -n "${LLVM_SYSPATH:-}" ]]; then
   echo "[spacemit] LLVM_SYSPATH   : ${LLVM_SYSPATH}"
