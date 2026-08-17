@@ -29,8 +29,7 @@ jobs:
   spacemit36x-unit-test:
     runs-on: spacemit3.6
     env:
-      MAX_JOBS: 4
-      RPC_PORT: "9999"
+      SPINE_TRITON_RPC_PORT: "9999"
     steps:
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -43,139 +42,49 @@ jobs:
         with:
           backend: spacemit
 
-      - name: Build (apply flagtree.patch + pip install)
+      - name: Stop QEMU RPC server
         if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
         run: |
-          set -euo pipefail
-          set -a
-          source third_party/spacemit/spacemit-ci.env
-          set +a
-          NEED=""
-          [ -e /usr/lib/x86_64-linux-gnu/libzstd.so ] || NEED="$NEED libzstd-dev"
-          if [ -n "$NEED" ]; then apt-get update -qq && apt-get install -y -qq $NEED; fi
-          python -m pip install --quiet --upgrade pip cmake ninja pybind11 setuptools wheel
-          MAX_JOBS="${MAX_JOBS:-4}" PIP="python -m pip" \
-            bash third_party/spacemit/scripts/install_flagtree_plugin.sh
+          set -x
+          bash third_party/spacemit/scripts/stop_rpc_server.sh
 
-      - name: Start QEMU RPC server (jdsk-qemu)
+      - name: Build
         if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
         run: |
-          set -euo pipefail
-          SPACEMIT_CACHE="${FLAGTREE_CACHE_DIR:-$HOME/.flagtree}/spacemit"
-          QEMU_BIN="$SPACEMIT_CACHE/jdsk-qemu/bin/qemu-riscv64"
-          SYSROOT="$SPACEMIT_CACHE/toolchain/sysroot"
-          RPC_DIR="$SPACEMIT_CACHE/rpc_runtime_installed"
-          CORE_ARCH="${SPACEMIT_EP_QEMU_SET_CORE_ARCH:-0xA064}"
-          chmod +x "$QEMU_BIN" 2>/dev/null || true
-          # sanity: confirm the rpc-server binary and qemu exist
-          test -f "$QEMU_BIN" || { echo "ERROR: qemu not found at $QEMU_BIN" >&2; exit 1; }
-          test -f "$RPC_DIR/bin/spine-rpc-server" || { echo "ERROR: rpc-server not found" >&2; exit 1; }
-          "$QEMU_BIN" --version
-          # launch spine-rpc-server under jdsk-qemu (RISC-V user-mode emulation on x86 runner)
-          setsid bash -c "
-            exec '$QEMU_BIN' -L '$SYSROOT' \
-              -cpu max,vlen=1024,elen=64,vext_spec=v1.0 \
-              -E LD_LIBRARY_PATH='$RPC_DIR/lib:$SYSROOT/lib:$SYSROOT/usr/lib' \
-              -E SPACEMIT_EP_QEMU_SET_CORE_ARCH='$CORE_ARCH' \
-              '$RPC_DIR/bin/spine-rpc-server' ${RPC_PORT}
-          " > /tmp/rpc.log 2>&1 &
-          echo $! > /tmp/rpc_server.pid
-          # wait for the port to accept connections
-          for i in $(seq 1 60); do
-            if python3 -c "import socket,sys; sys.exit(0 if socket.socket().connect_ex(('127.0.0.1',${RPC_PORT}))==0 else 1)" 2>/dev/null; then
-              echo "RPC server ready on 127.0.0.1:${RPC_PORT} (${i}s)"
-              exit 0
-            fi
-            # bail early if the server process died
-            if ! kill -0 $(cat /tmp/rpc_server.pid) 2>/dev/null; then
-              echo "ERROR: rpc-server process exited early" >&2
-              cat /tmp/rpc.log 2>/dev/null || true
-              exit 1
-            fi
-            sleep 1
-          done
-          echo "ERROR: RPC server did not come up on port ${RPC_PORT}" >&2
-          cat /tmp/rpc.log 2>/dev/null || true
-          exit 1
+          set -x
+          export SPACEMIT_CACHE="${HOME}/.flagtree/spacemit"
+          set -a; source third_party/spacemit/spacemit-ci.env; set +a
+          bash third_party/spacemit/scripts/install_flagtree_plugin.sh
 
-      - name: Minimal smoke test (import + spacemit backend + QEMU RPC)
+      - name: Clear cache if ClearCache label present
         if: steps.check_backend.outputs.should_skip != 'true'
-        run: |
-          set -euo pipefail
-          export SPINE_TRITON_TARGET_ARCH=riscv64
-          export SPINE_TRITON_CROSS_TOOLCHAIN="${FLAGTREE_CACHE_DIR:-$HOME/.flagtree}/spacemit/toolchain"
-          export SPACEMIT_EP_QEMU_SET_CORE_ARCH=0xA064
-          export GEMS_VENDOR=spacemit
-          export SPINE_TRITON_RPC_HOST=127.0.0.1
-          export SPINE_TRITON_RPC_PORT=${RPC_PORT}
-          python - <<'PY'
-          import os, socket, sys
-          def check(desc, cond, detail=""):
-              print(f"[{'OK ' if cond else 'FAIL'}] {desc}" + (f"  ({detail})" if detail else ""))
-              return cond
-          ok = True
-          import triton
-          ok &= check("import triton", True, f"version={triton.__version__}")
-          from triton.backends import backends
-          names = sorted(backends.keys())
-          ok &= check("spacemit backend registered", "spacemit" in names, f"backends={names}")
-          b = backends["spacemit"]
-          ok &= check("compiler/driver",
-                      b.compiler.__name__ == "CPUBackend" and b.driver.__name__ == "CPUDriver",
-                      f"{b.compiler.__name__}/{b.driver.__name__}")
-          from triton._C.libtriton import ir, spacemit
-          pads = [x for x in dir(ir.PADDING_OPTION) if x.startswith("PAD")]
-          ok &= check("PADDING_OPTION adapt", {"PAD_NEG_INF","PAD_INF"} <= set(pads), f"pads={pads}")
-          sub = [a for a in dir(spacemit) if not a.startswith("__")]
-          ok &= check("spacemit C++ submod", {"load_dialects","tle_ir","xsmt_ir"} <= set(sub), f"sub={sub}")
-          host = os.environ.get("SPINE_TRITON_RPC_HOST","127.0.0.1")
-          port = int(os.environ.get("SPINE_TRITON_RPC_PORT","9999"))
-          s = socket.socket(); s.settimeout(5)
-          ok &= check("QEMU RPC reachable", s.connect_ex((host,port))==0, f"{host}:{port}")
-          print()
-          print("=== minimal smoke: " + ("ALL PASS" if ok else "FAILED") + " ===")
-          sys.exit(0 if ok else 1)
-          PY
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: spacemit
 
-      - name: Test
-        # Run mm_block_ptr.py: host triton cross-compiles the kernel to riscv64,
-        # sends it to the QEMU RPC server for execution, and checks the result.
+      - name: Start QEMU RPC server and run tests
         if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
         run: |
-          set -euo pipefail
-          python -m pip install --quiet pytest numpy scipy PyYAML
-          export SPINE_TRITON_TARGET_ARCH=riscv64
-          export SPINE_TRITON_CROSS_TOOLCHAIN="${FLAGTREE_CACHE_DIR:-$HOME/.flagtree}/spacemit/toolchain"
-          export SPACEMIT_EP_QEMU_SET_CORE_ARCH=0xA064
-          export GEMS_VENDOR=spacemit
-          export SPINE_TRITON_RPC_HOST=127.0.0.1
-          export SPINE_TRITON_RPC_PORT=${RPC_PORT}
-          export SPINE_TRITON_DUMP_PATH="$(pwd)/triton_dump"
-          mkdir -p "$SPINE_TRITON_DUMP_PATH"
-          python third_party/spacemit/python/examples/mm_block_ptr.py
+          set -x
 
-      - name: Dump RPC server log + compiled IR (on failure)
-        if: failure() && steps.check_backend.outputs.should_skip != 'true'
-        run: |
-          echo "--- rpc-server process ---"
-          if [ -f /tmp/rpc_server.pid ]; then
-            ps -p "$(cat /tmp/rpc_server.pid)" 2>/dev/null || echo "process not running"
-          fi
-          echo "--- /tmp/rpc.log ---"
-          cat /tmp/rpc.log 2>/dev/null || true
-          echo "=== triton_dump dir ==="
-          ls -la triton_dump/ 2>/dev/null || true
-          echo "=== dump file contents ==="
-          for f in triton_dump/*; do
-            [ -f "$f" ] || continue
-            echo "--- $f ---"
-            head -200 "$f"
-          done
+          # start server: /tmp/rpc_server.pid
+          source third_party/spacemit/scripts/setup_rpc_session.sh
+          bash third_party/spacemit/scripts/start_rpc_server.sh
+          python3 third_party/spacemit/scripts/smoke_test.py
+
+          # test: /tmp/rpc.log
+          export SPINE_TRITON_DUMP_PATH="/tmp/spine_triton_dump"
+          mkdir -p "${SPINE_TRITON_DUMP_PATH}"
+          python3 third_party/spacemit/python/examples/mm_block_ptr.py
 
       - name: Stop QEMU RPC server
         if: always() && steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
         run: |
-          if [ -f /tmp/rpc_server.pid ]; then
-            kill "$(cat /tmp/rpc_server.pid)" 2>/dev/null || true
-          fi
-          pkill -f "spine-rpc-server" 2>/dev/null || true
+          set -x
+          bash third_party/spacemit/scripts/stop_rpc_server.sh
