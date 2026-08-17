@@ -21,12 +21,17 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/DeviceIntraBarrierOpToLLVM.h"
-#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetLocalRankOpToLLVM.h"
-#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetWorldRankOpToLLVM.h"
+#ifndef TLE_CONVERSION_TLETOLLVM_FLAGCXOPTOLLVM_GETWORLDRANKOPTOLLVM_H
+#define TLE_CONVERSION_TLETOLLVM_FLAGCXOPTOLLVM_GETWORLDRANKOPTOLLVM_H
+
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 
 namespace mlir::triton::tle {
-void populateFlagCxOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
-                                    RewritePatternSet &patterns,
-                                    PatternBenefit benefit);
-}
+
+void populateGetWorldRankOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                          RewritePatternSet &patterns,
+                                          PatternBenefit benefit);
+
+} // namespace mlir::triton::tle
+
+#endif

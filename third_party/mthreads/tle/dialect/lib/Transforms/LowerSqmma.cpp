@@ -140,6 +140,58 @@ static musa::SQMMALayout inferLayout(ttg::MemDescType type) {
   return rowMajor ? musa::SQMMALayout::row : musa::SQMMALayout::col;
 }
 
+static FailureOr<ttg::MemDescType>
+inferTransposeSourceType(ttg::MemDescTransOp trans, ttg::MemDescType targetTy) {
+  auto sourceTy = dyn_cast<ttg::MemDescType>(trans.getSrc().getType());
+  Attribute targetEncoding = targetTy.getEncoding();
+  ArrayRef<int32_t> order = trans.getOrder();
+  if (!sourceTy || !targetEncoding || order.size() != targetTy.getRank() ||
+      order.size() != sourceTy.getRank())
+    return failure();
+
+  SmallVector<int32_t> inverseOrder(order.size());
+  SmallVector<int64_t> expectedSourceShape(order.size());
+  for (auto [targetDim, sourceDim] : llvm::enumerate(order)) {
+    if (sourceDim < 0 || static_cast<size_t>(sourceDim) >= order.size())
+      return failure();
+    inverseOrder[sourceDim] = targetDim;
+    expectedSourceShape[sourceDim] = targetTy.getShape()[targetDim];
+  }
+  if (expectedSourceShape != sourceTy.getShape())
+    return failure();
+
+  Dialect &dialect = targetEncoding.getDialect();
+  auto inferLayoutInterface =
+      dyn_cast<tt::DialectInferLayoutInterface>(&dialect);
+  if (!inferLayoutInterface)
+    return failure();
+
+  Attribute sourceEncoding;
+  if (failed(inferLayoutInterface->inferTransOpEncoding(
+          targetEncoding, targetTy.getShape(), inverseOrder, sourceEncoding,
+          trans.getLoc())))
+    return failure();
+
+  SmallVector<int64_t> sourceAllocShape;
+  ArrayRef<int64_t> targetAllocShape = targetTy.getAllocShape();
+  if (!targetAllocShape.empty()) {
+    if (targetAllocShape.size() < order.size())
+      return failure();
+    size_t prefixSize = targetAllocShape.size() - order.size();
+    sourceAllocShape.append(targetAllocShape.begin(),
+                            targetAllocShape.begin() + prefixSize);
+    SmallVector<int64_t> sourceTail(order.size());
+    ArrayRef<int64_t> targetTail = targetAllocShape.take_back(order.size());
+    for (auto [targetDim, sourceDim] : llvm::enumerate(order))
+      sourceTail[sourceDim] = targetTail[targetDim];
+    sourceAllocShape.append(sourceTail.begin(), sourceTail.end());
+  }
+
+  return ttg::MemDescType::get(sourceTy.getShape(), sourceTy.getElementType(),
+                               sourceEncoding, sourceTy.getMemorySpace(),
+                               sourceTy.getMutableMemory(), sourceAllocShape);
+}
+
 static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
                                          unsigned operandIdx,
                                          ttg::MUSASqmmaEncodingAttr mmaEnc) {
@@ -171,17 +223,38 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
       operandTy.getShape(), operandTy.getElementType(), *shared,
       operandTy.getMemorySpace(), operandTy.getMutableMemory(),
       operandTy.getAllocShape());
-  if (failed(musa::resolveTMESwizzleConfigFromEncoding(desiredTy)))
+
+  // trans_a/trans_b are represented by a descriptor-only memdesc_trans view.
+  // Select the SQMMA layout for the final logical view, then propagate that
+  // layout backwards so TME still writes a single physical landing buffer.
+  Value landing = operand;
+  ttg::MemDescType landingTy = desiredTy;
+  if (auto trans = operand.getDefiningOp<ttg::MemDescTransOp>()) {
+    auto sourceTy = inferTransposeSourceType(trans, desiredTy);
+    if (failed(sourceTy))
+      return op.emitOpError(
+                 "failed to infer the physical SQMMA landing type through "
+                 "ttg.memdesc_trans for operand ")
+             << operandIdx;
+    landing = trans.getSrc();
+    landingTy = *sourceTy;
+  }
+
+  if (failed(musa::resolveTMESwizzleConfigFromEncoding(landingTy)))
     return op.emitOpError(
-               "inferred SQMMA shared layout is not uniquely TME-compatible "
-               "for operand ")
+               "inferred physical SQMMA landing layout is not uniquely "
+               "TME-compatible for operand ")
            << operandIdx;
 
   auto rootTy = cast<ttg::MemDescType>(root.getType());
-  Attribute rootEncoding = *shared;
-  if (rootTy.getRank() == operandTy.getRank() + 1)
-    rootEncoding = prependBufferDim(*shared);
-  else if (rootTy.getRank() != operandTy.getRank())
+  auto landingEncoding =
+      dyn_cast<ttg::SwizzledSharedEncodingAttr>(landingTy.getEncoding());
+  if (!landingEncoding)
+    return op.emitOpError("requires a swizzled physical SQMMA landing layout");
+  Attribute rootEncoding = landingEncoding;
+  if (rootTy.getRank() == landingTy.getRank() + 1)
+    rootEncoding = prependBufferDim(landingEncoding);
+  else if (rootTy.getRank() != landingTy.getRank())
     return op.emitOpError("unsupported staged SQMMA allocation rank");
 
   auto newRootTy =
@@ -189,6 +262,7 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
                             rootEncoding, rootTy.getMemorySpace(),
                             rootTy.getMutableMemory(), rootTy.getAllocShape());
   root.getResult().setType(newRootTy);
+  landing.setType(landingTy);
   operand.setType(desiredTy);
 
   // Explicit warp-specialize captures are represented by operands on the
@@ -225,6 +299,7 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
     return success();
   };
   if (failed(checkAndSet(root.getOperation())) ||
+      failed(checkAndSet(landing.getDefiningOp())) ||
       failed(checkAndSet(operand.getDefiningOp())))
     return failure();
 
@@ -238,8 +313,8 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
       if (srcTy.getRank() != dstTy.getRank() + 1 ||
           !llvm::is_contained(rootAliases, index.getSrc()))
         return;
-      if (index.getResult().getType() != desiredTy) {
-        index.getResult().setType(desiredTy);
+      if (index.getResult().getType() != landingTy) {
+        index.getResult().setType(landingTy);
         (void)checkAndSet(index.getOperation());
         changed = true;
       }
