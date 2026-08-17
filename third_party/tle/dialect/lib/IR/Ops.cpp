@@ -239,7 +239,8 @@ LogicalResult MemDescAliasOp::verify() {
   if (!isa<triton::gpu::SharedMemorySpaceAttr>(srcType.getMemorySpace()))
     return emitOpError("expects shared memory descriptors");
   if (resultType.getMutableMemory() && !srcType.getMutableMemory())
-    return emitOpError("cannot create a mutable alias from an immutable source");
+    return emitOpError(
+        "cannot create a mutable alias from an immutable source");
   if (offsetBytes < 0)
     return emitOpError("expects non-negative offset_bytes");
   if (offsetBytes > std::numeric_limits<int32_t>::max())
@@ -257,8 +258,7 @@ LogicalResult MemDescAliasOp::verify() {
   std::optional<int64_t> resultBytes = getStaticMemDescByteSize(resultType);
   if (!srcBytes || !resultBytes)
     return emitOpError("expects static source and result memdesc byte sizes");
-  if (*resultBytes > *srcBytes ||
-      offsetBytes > *srcBytes - *resultBytes)
+  if (*resultBytes > *srcBytes || offsetBytes > *srcBytes - *resultBytes)
     return emitOpError("result byte range must fit within the source view");
 
   return success();

@@ -11,7 +11,6 @@ BLOCK = 128
 def alias_e2e_kernel(in_ptr, out_ptr, N, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < N
 
     # Phase 1: allocate v_smem, write the first batch of data (original input)
     v_smem = tle.gpu.alloc([BLOCK], dtype=tl.float32, scope=tle.gpu.smem)
@@ -19,15 +18,17 @@ def alias_e2e_kernel(in_ptr, out_ptr, N, BLOCK: tl.constexpr):
 
     # Phase 2: alias — o_smem reuses v_smem's physical memory
     o_smem = tle.gpu.alloc(
-        [BLOCK], dtype=tl.float32, scope=tle.gpu.smem,
-        alias=v_smem, alias_offset_bytes=0,
+        [BLOCK],
+        dtype=tl.float32,
+        scope=tle.gpu.smem,
+        alias=v_smem,
+        alias_offset_bytes=0,
     )
 
     # Phase 3: critical — write second batch of data via v_smem (input + BLOCK offset),
     #          overwriting the same physical memory. If alias is correct, o_smem
     #          should see the overwritten values.
     offs2 = offs + BLOCK
-    mask2 = offs2 < N
     tle.gpu.copy(in_ptr + offs2, v_smem, [BLOCK])
 
     # Phase 4: read from o_smem
@@ -39,7 +40,7 @@ if __name__ == "__main__":
     x = torch.randn(N, device="cuda", dtype=torch.float32)
     y = torch.zeros(1024, device="cuda", dtype=torch.float32)  # only first 1024
 
-    grid = (triton.cdiv(1024, BLOCK),)
+    grid = (triton.cdiv(1024, BLOCK), )
     alias_e2e_kernel[grid](x, y, 1024, BLOCK=BLOCK)
     torch.cuda.synchronize()
 
@@ -57,6 +58,6 @@ if __name__ == "__main__":
         print(f"  - o_smem matches overwritten data (second batch): max diff = {max_diff_alias:.2e}")
         print(f"  - o_smem differs from original data (first batch):  max diff = {max_diff_original:.2e}")
     else:
-        print(f"FAILED:")
+        print("FAILED:")
         print(f"  diff vs overwritten (should be 0): {max_diff_alias:.2e}")
         print(f"  diff vs original (should be >0):   {max_diff_original:.2e}")

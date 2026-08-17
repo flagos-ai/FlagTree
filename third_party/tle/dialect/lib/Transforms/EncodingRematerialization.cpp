@@ -24,9 +24,9 @@
 #include "tle/dialect/include/Transforms/EncodingRematerialization.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "tle/dialect/include/IR/Dialect.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"

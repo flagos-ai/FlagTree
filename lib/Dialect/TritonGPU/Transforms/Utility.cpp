@@ -1439,11 +1439,11 @@ ttg::LocalAllocOp findShmemAlloc(Value operand) {
   // allowed in between.
   Value transitiveOperand = operand;
 #ifdef __TLE__
-  while (isa_and_nonnull<ttg::ConvertLayoutOp, tt::TransOp, ttg::MemDescTransOp,
-                         ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp,
-                         tle::MemDescAliasOp>(
-             transitiveOperand.getDefiningOp()) ||
-         isa<BlockArgument>(transitiveOperand)) {
+  while (
+      isa_and_nonnull<ttg::ConvertLayoutOp, tt::TransOp, ttg::MemDescTransOp,
+                      ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp,
+                      tle::MemDescAliasOp>(transitiveOperand.getDefiningOp()) ||
+      isa<BlockArgument>(transitiveOperand)) {
 #else
   while (isa_and_nonnull<ttg::ConvertLayoutOp, tt::TransOp, ttg::MemDescTransOp,
                          ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp>(
@@ -1649,8 +1649,8 @@ void replaceUsesAndPropagateType(
       Type newDstType = ttg::MemDescType::get(
           oldType.getShape(), oldType.getElementType(), oldType.getEncoding(),
           oldType.getMemorySpace(), isMutable, oldType.getAllocShape());
-      newVal = tle::MemDescAliasOp::create(
-          builder, alias.getLoc(), newDstType, val, alias.getOffsetBytesAttr());
+      newVal = tle::MemDescAliasOp::create(builder, alias.getLoc(), newDstType,
+                                           val, alias.getOffsetBytesAttr());
 #endif
     } else if (auto trans = dyn_cast<ttg::MemDescTransOp>(user)) {
       newVal = ttg::MemDescTransOp::create(builder, trans.getLoc(), val,

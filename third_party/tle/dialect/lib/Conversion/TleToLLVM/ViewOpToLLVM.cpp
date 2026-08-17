@@ -78,9 +78,8 @@ struct MemDescAliasOpConversion
     if (offsetBytes != 0)
       base = b.gep(base.getType(), i8_ty, base, b.i32_val(offsetBytes));
 
-    auto dstSmemObj =
-        SharedMemoryObject(base, resultElemTy, resultTy.getRank(), loc,
-                           rewriter);
+    auto dstSmemObj = SharedMemoryObject(base, resultElemTy, resultTy.getRank(),
+                                         loc, rewriter);
     auto retVal =
         LLVM::getStructFromSharedMemoryObject(loc, dstSmemObj, rewriter);
     rewriter.replaceOp(op, retVal);

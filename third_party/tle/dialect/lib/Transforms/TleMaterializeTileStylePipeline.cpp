@@ -226,8 +226,8 @@ static Operation *cloneWithUpdatedMemDescViewType(OpBuilder &builder,
     auto newTy = ttg::MemDescType::get(
         oldTy.getShape(), oldTy.getElementType(), oldTy.getEncoding(),
         oldTy.getMemorySpace(), isMutable, oldTy.getAllocShape());
-    auto newOp = MemDescAliasOp::create(
-        builder, alias.getLoc(), newTy, src, alias.getOffsetBytesAttr());
+    auto newOp = MemDescAliasOp::create(builder, alias.getLoc(), newTy, src,
+                                        alias.getOffsetBytesAttr());
     newOp->setAttrs(op->getAttrs());
     return mapResults(newOp);
   }
