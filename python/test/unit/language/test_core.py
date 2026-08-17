@@ -6236,6 +6236,8 @@ def test_unroll_attr(device):
     for unroll_factor in [1, 2, 4, 5, 8]:
         h = _kernel.warmup(tmp, unroll_factor, grid=(1, ))
         check_loop_unroll_count(h.asm["ttir"], 'tt.atomic_rmw', unroll_factor)
+        if unroll_factor == 1:
+            assert "llvm.loop.unroll.disable" in h.asm["llir"]
 
 
 @triton.jit

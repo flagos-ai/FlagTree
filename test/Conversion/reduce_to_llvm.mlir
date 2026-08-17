@@ -1,6 +1,7 @@
 // RUN: triton-opt %s --allocate-shared-memory --convert-triton-gpu-to-llvm --convert-nv-gpu-to-llvm | mlir-translate -mlir-to-llvmir | opt -S -O1 | FileCheck %s
 
 #linear = #ttg.linear<{register = [[0, 2], [2, 0]], lane = [[0, 8], [8, 0], [1, 0], [4, 0], [16, 0]], warp = [[0, 1], [0, 4]], block = []}>
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
 
@@ -64,6 +65,29 @@ tt.func @anchor(%ptr: !llvm.ptr, %arg0: tensor<32x16xi32, #linear>) {
   %0 = tt.call @reduce_linear_layout(%arg0) : (tensor<32x16xi32, #linear>) -> tensor<16xi32, #ttg.slice<{dim = 0, parent = #linear}>>
   %1 = builtin.unrealized_conversion_cast %0 : tensor<16xi32, #ttg.slice<{dim = 0, parent = #linear}>> to !llvm.struct<(i32, i32)>
   llvm.store volatile %1, %ptr : !llvm.struct<(i32, i32)>, !llvm.ptr
+  tt.return
+}
+
+// CHECK-LABEL: @reduce_cta
+tt.func private @reduce_cta(%arg0: tensor<128xf32, #blocked>) -> f32 {
+  %0 = "tt.reduce"(%arg0) ({
+  ^bb0(%lhs: f32, %rhs: f32):
+    %sum = arith.addf %lhs, %rhs : f32
+    tt.reduce.return %sum : f32
+  }) {axis = 0 : i32} : (tensor<128xf32, #blocked>) -> f32
+
+  // Every thread loads a valid warp partial. The original participation
+  // predicate still controls the reduction and writeback.
+  // CHECK: [[SAFE_OFFSET:%.*]] = and i32 %{{.*}}, 3{{$}}
+  // CHECK-NEXT: [[SAFE_OFFSET64:%.*]] = zext nneg i32 [[SAFE_OFFSET]] to i64
+  // CHECK-NEXT: [[SAFE_PTR:%.*]] = getelementptr float, ptr addrspace(3) @global_smem, i64 [[SAFE_OFFSET64]]
+  // CHECK: load i32, ptr addrspace(3) [[SAFE_PTR]], align 4
+  tt.return %0 : f32
+}
+
+tt.func @reduce_cta_anchor(%ptr: !tt.ptr<f32>, %arg0: tensor<128xf32, #blocked>) {
+  %0 = tt.call @reduce_cta(%arg0) : (tensor<128xf32, #blocked>) -> f32
+  tt.store %ptr, %0 : !tt.ptr<f32>
   tt.return
 }
 

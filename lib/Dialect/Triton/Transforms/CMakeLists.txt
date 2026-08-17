@@ -20,6 +20,7 @@ add_triton_library(TritonTransforms
 
   LINK_LIBS PUBLIC
   MLIRPass
+  MLIRLLVMDialect
   MLIRTransformUtils
   MLIRTransforms
   MLIRSCFToControlFlow

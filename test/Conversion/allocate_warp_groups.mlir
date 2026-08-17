@@ -95,6 +95,30 @@ tt.func @setmaxnreg() {
 
 // -----
 
+// An out-of-line call requires the fixed-register ABI. The single producer
+// warp is launched directly, without three padding warps or setmaxnreg state.
+// CHECK: module attributes {"ttg.num-warps" = 8 : i32, "ttg.total-num-warps" = 9 : i32}
+module attributes {"ttg.num-warps" = 8 : i32} {
+  tt.func private @callee() attributes {noinline = true} {
+    tt.return
+  }
+
+  tt.func @fixed_register_abi() {
+    // CHECK: ttg.warp_specialize() attributes {requestedRegisters = array<i32: 24>, warpGroupStartIds = array<i32: 8>}
+    ttg.warp_specialize() attributes {requestedRegisters = array<i32: 24>}
+    default {
+      tt.call @callee() : () -> ()
+      ttg.warp_yield
+    }
+    partition0() num_warps(1) {
+      ttg.warp_return
+    } : () -> ()
+    tt.return
+  }
+}
+
+// -----
+
 // CHECK: module attributes {ttg.maxnreg = 128 : i32
 module attributes {"ttg.num-warps" = 8 : i32} {
 

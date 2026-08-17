@@ -342,13 +342,14 @@ private:
     Value threadIsNeeded = b.icmp_slt(threadId, b.i32_val(elems));
     Value readOffset = threadId;
     for (unsigned round = 0; round < elemsPerThread; ++round) {
+      Value safeReadOffset = b.urem(readOffset, b.i32_val(elems));
       SmallVector<Value> acc(op.getNumOperands());
       for (unsigned i = 0; i < op.getNumOperands(); ++i) {
         auto elemTy = getElementType(op, i);
         Value readPtr =
-            b.gep(smemBases[i].getType(), elemTy, smemBases[i], readOffset);
+            b.gep(smemBases[i].getType(), elemTy, smemBases[i], safeReadOffset);
         acc[i] = targetInfo.loadShared(rewriter, loc, readPtr, elemTy,
-                                       threadIsNeeded);
+                                       b.true_val());
       }
       warpReduce(rewriter, loc, acc, op, sizeInterWarps, 1 /* interleave */,
                  threadIsNeeded);

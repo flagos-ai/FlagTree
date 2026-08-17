@@ -122,6 +122,8 @@ def parse_ptxas_resource_usage(log: str) -> dict[str, int]:
 class CUDAOptions:
     num_warps: int = 4
     num_ctas: int = 1
+    # Minimum resident CTAs per SM promised by the kernel execution model.
+    min_ctas_per_sm: Optional[int] = None
     cluster_dims: Tuple[int, int, int] = (1, 1, 1)
     num_stages: int = 3
     warp_size: int = 32
@@ -156,6 +158,8 @@ class CUDAOptions:
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
                "num_warps must be a power of 2"
+        if self.min_ctas_per_sm is not None and self.min_ctas_per_sm <= 0:
+            raise ValueError("min_ctas_per_sm must be positive")
 
     def hash(self):
         hash_dict = dict(self.__dict__)
@@ -586,9 +590,16 @@ class CUDABackend(BaseBackend):
 
             # Accept more ptxas options if provided
             ptx_extra_options = opt.ptx_options.split(" ") if opt.ptx_options else []
+            launch_bound_options = (
+                ["--minnctapersm", str(opt.min_ctas_per_sm)]
+                if opt.min_ctas_per_sm is not None
+                else []
+            )
 
             ptxas_cmd = [
-                ptxas, *debug_info, *fmad, '-v', *disable_opt, *ptx_extra_options, f'--gpu-name={arch}', fsrc.name,
+                ptxas, *debug_info, *fmad, '-v', *disable_opt,
+                *ptx_extra_options, *launch_bound_options,
+                f'--gpu-name={arch}', fsrc.name,
                 '-o', fbin
             ]
             try:

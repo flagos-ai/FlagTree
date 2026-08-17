@@ -749,9 +749,13 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   // begin execution.
   auto maxnreg = func->getParentOfType<ModuleOp>()->getAttrOfType<IntegerAttr>(
       AttrMaxRegistersName);
+  bool usesDynamicRegisterReallocation = llvm::any_of(
+      wsOps, [](WarpSpecializeOp ws) {
+        return ws.getActualRegisters().has_value();
+      });
   int lowRegs = -1;
   int defRegs = -1;
-  if (maxnreg) {
+  if (maxnreg && usesDynamicRegisterReallocation) {
     int numWorkerWarps = totalNumWarpsAttr.getInt() - defaultNumWarps;
     int startRegs = maxnreg.getInt();
 
@@ -845,7 +849,7 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   hoistCtaUniformCapturesToHeader(func, wsOps, header);
 #endif
   b.setInsertionPointToStart(entry);
-  if (maxnreg)
+  if (usesDynamicRegisterReallocation)
     createRegRealloc(b, maxnreg.getInt(), defRegs);
 
   // ^switchLoop:
@@ -854,11 +858,12 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   //   %rel_tid = sub %tid, <default_warp_group_size>
   //   %rel_wid = udiv %rel_tid, 32
   b.setInsertionPointToStart(switchLoop);
-  if (maxnreg)
+  if (usesDynamicRegisterReallocation)
     createRegRealloc(b, maxnreg.getInt(), lowRegs);
 #ifdef __TLE__
-  Value relWid = maxnreg ? createWorkerRelativeWarpId(b, defaultNumWarps)
-                         : b.sub(wid, b.i32_val(defaultNumWarps));
+  Value relWid = usesDynamicRegisterReallocation
+                     ? createWorkerRelativeWarpId(b, defaultNumWarps)
+                     : b.sub(wid, b.i32_val(defaultNumWarps));
 #endif
   createAllBarrier(b, kSwitchLoopBarrierIdx);
   Value statePtr = LLVM::getSharedMemoryBase(b.getLoc(), b, targetInfo, func);

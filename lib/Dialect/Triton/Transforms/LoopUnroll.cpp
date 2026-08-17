@@ -1,4 +1,5 @@
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
@@ -34,16 +35,37 @@ class LoopUnrollPass : public impl::TritonLoopUnrollBase<LoopUnrollPass> {
   const char *pipelineStagesAttrName = "tt.num_stages";
 
 public:
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<LLVM::LLVMDialect>();
+  }
+
   void runOnOperation() override {
     LDBG("Loop unroll pass");
     SmallVector<scf::ForOp, 4> loops;
+    SmallVector<scf::ForOp, 4> noUnrollLoops;
     getOperation()->walk([&](scf::ForOp forOp) {
-      // Bail out for loops with unroll factor <= 1.
-      if (getUnrollFactorOrDefault(forOp) > 1)
+      auto factor =
+          forOp->getAttrOfType<IntegerAttr>(loopUnrollFactorAttrName);
+      if (!factor)
+        return;
+      if (factor.getInt() > 1)
         loops.push_back(forOp);
+      else
+        noUnrollLoops.push_back(forOp);
     });
 
     auto ctx = getOperation()->getContext();
+    Builder builder(ctx);
+    auto disabledUnroll = LLVM::LoopUnrollAttr::get(
+        ctx, builder.getBoolAttr(true), {}, {}, {}, {}, {}, {});
+    auto noUnrollAnnotation = LLVM::LoopAnnotationAttr::get(
+        ctx, {}, {}, {}, disabledUnroll, {}, {}, {}, {}, {}, {}, {}, {}, {},
+        {}, {});
+    for (auto loop : noUnrollLoops) {
+      loop->removeAttr(loopUnrollFactorAttrName);
+      loop->setAttr("llvm.loop_annotation", noUnrollAnnotation);
+    }
+
     for (auto loop : loops) {
       auto unrollFactor = getUnrollFactorOrDefault(loop);
       loop->removeAttr(loopUnrollFactorAttrName);

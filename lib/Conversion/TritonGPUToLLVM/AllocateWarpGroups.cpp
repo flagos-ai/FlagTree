@@ -1,5 +1,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 namespace mlir::triton::gpu {
@@ -67,18 +68,29 @@ struct AllocateWarpGroups
   void runOnOperation() override {
     ModuleOp mod = getOperation();
 
+    // setmaxnreg cannot preserve its dynamic register contract across an
+    // out-of-line device call. Remaining tt.call ops have survived the TTIR
+    // inliner, so use a fixed-register ABI and launch only the warps that do
+    // real work instead of padding worker partitions to full warpgroups.
+    bool hasOutOfLineCalls = false;
+    mod.walk([&](CallOp) { hasOutOfLineCalls = true; });
+
     // First determine the maximum number of extra warps.
     int maxExtraWarps = 0;
     mod.walk([&](WarpSpecializeOp op) {
       maxExtraWarps = std::max<int>(maxExtraWarps, op.getTotalPartitionWarps());
     });
 
-    // Round this up to the nearest warpgroup (multiple of 4) and then pad each
-    // `ttg.warp_specialize` to the nearest warpgroup.
-    int numExtraWarpGroups = llvm::divideCeil(maxExtraWarps, 4);
-    mod.walk([&](WarpSpecializeOp op) {
-      padToMaxWarpGroups(op, numExtraWarpGroups);
-    });
+    int allocatedExtraWarps = maxExtraWarps;
+    if (!hasOutOfLineCalls) {
+      // Dynamic register reallocation is warpgroup collective. Pad worker
+      // partitions only when the generated kernel can actually use it.
+      int numExtraWarpGroups = llvm::divideCeil(maxExtraWarps, 4);
+      allocatedExtraWarps = numExtraWarpGroups * 4;
+      mod.walk([&](WarpSpecializeOp op) {
+        padToMaxWarpGroups(op, numExtraWarpGroups);
+      });
+    }
 
     // Determine the maximum number of registers per thread. This may have
     // been set by the user.
@@ -90,7 +102,7 @@ struct AllocateWarpGroups
       maxnreg = maxnregAttr.getInt();
     } else {
       // Assume the user wants to use all 64K registers.
-      maxnreg = (64 * 1024) / (baseNumWarps + numExtraWarpGroups * 4) /
+      maxnreg = (64 * 1024) / (baseNumWarps + allocatedExtraWarps) /
                 threadsPerWarp;
       maxnreg = maxnreg / 8 * 8;
     }
@@ -127,6 +139,9 @@ struct AllocateWarpGroups
         startId += size;
       }
       op.setWarpGroupStartIds(startIds);
+
+      if (hasOutOfLineCalls)
+        return;
 
       // Require that an estimate has been set and that we have even warpgroups.
       auto regsAttr = op.getRequestedRegisters();
@@ -194,7 +209,7 @@ struct AllocateWarpGroups
 
     Builder b(&getContext());
     mod->setAttr("ttg.total-num-warps",
-                 b.getI32IntegerAttr(baseNumWarps + numExtraWarpGroups * 4));
+                 b.getI32IntegerAttr(baseNumWarps + allocatedExtraWarps));
   }
 };
 } // namespace
