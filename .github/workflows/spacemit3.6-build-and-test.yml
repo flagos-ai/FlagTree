@@ -30,7 +30,11 @@ jobs:
     runs-on: spacemit3.6
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     env:
+      SPINE_TRITON_RPC_HOST: "127.0.0.1"
       SPINE_TRITON_RPC_PORT: "9999"
+      SPINE_TRITON_TARGET_ARCH: "riscv64"
+      SPACEMIT_EP_QEMU_SET_CORE_ARCH: "0xA064"
+      GEMS_VENDOR: "spacemit"
     steps:
       - name: Setup environment
         shell: bash
