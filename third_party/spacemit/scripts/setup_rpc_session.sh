@@ -3,14 +3,8 @@
 # Source this file so its environment and EXIT trap affect the current shell:
 #   source third_party/spacemit/scripts/setup_rpc_session.sh
 
-export SPACEMIT_CACHE="${SPACEMIT_CACHE:-${FLAGTREE_CACHE_DIR:-$HOME/.flagtree}/spacemit}"
-export SPINE_TRITON_RPC_HOST="${SPINE_TRITON_RPC_HOST:-127.0.0.1}"
-export SPINE_TRITON_RPC_PORT="${SPINE_TRITON_RPC_PORT:-9999}"
 export no_proxy="${no_proxy:-127.0.0.1,localhost,::1}"
-export SPINE_TRITON_TARGET_ARCH="${SPINE_TRITON_TARGET_ARCH:-riscv64}"
 export SPINE_TRITON_CROSS_TOOLCHAIN="${SPINE_TRITON_CROSS_TOOLCHAIN:-$SPACEMIT_CACHE/toolchain}"
-export SPACEMIT_EP_QEMU_SET_CORE_ARCH="${SPACEMIT_EP_QEMU_SET_CORE_ARCH:-0xA064}"
-export GEMS_VENDOR="${GEMS_VENDOR:-spacemit}"
 
 cleanup_spacemit_rpc() {
   status=$?
