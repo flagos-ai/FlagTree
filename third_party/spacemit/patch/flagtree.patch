@@ -210,7 +210,7 @@ index 3d60f95c4..376bb9b75 100644
 +
  # flagtree setup print config
  YELLOW, NC = helper.get_console_colors()
- 
+
 @@ -97,22 +120,21 @@ class BackendInstaller:
 
      @staticmethod
@@ -397,7 +397,7 @@ index 3d60f95c4..376bb9b75 100644
          cmake_args += helper.get_backend_cmake_args(build_ext=self)  # flagtree
 @@ -568,7 +684,8 @@ class CMakeBuild(build_ext):
          cmake_args += helper.customize_gluon_cmake_args()
- 
+
 -        if is_offline_build():
 -            # unit test builds fetch googletests from GitHub
 +        if is_offline_build() or _is_spacemit_build():
@@ -434,8 +434,8 @@ index 3d60f95c4..376bb9b75 100644
 +    ]
 +else:
 +    backends = helper.init_backends(BackendInstaller)  # flagtree
- 
- 
+
+
 diff --git a/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td b/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td
 index 8d35a5ec1..e476cad96 100644
 --- a/third_party/proton/Dialect/include/Dialect/Proton/IR/ProtonDialect.td

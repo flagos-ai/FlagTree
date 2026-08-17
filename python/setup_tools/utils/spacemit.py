@@ -35,6 +35,7 @@ def _cache_asset(name):
 
 
 def _set_env_path(name):
+
     def set_path(path):
         os.environ[name] = str(path)
 
@@ -48,8 +49,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
 
     assets = (
         ("LLVM", "llvm_installed", "LLVM_SYSPATH", set_llvm_env),
-        ("SPINE_MLIR", "spine_mlir_installed", "SPINE_MLIR_INSTALL_DIR",
-         _set_env_path("SPINE_MLIR_INSTALL_DIR")),
+        ("SPINE_MLIR", "spine_mlir_installed", "SPINE_MLIR_INSTALL_DIR", _set_env_path("SPINE_MLIR_INSTALL_DIR")),
         ("SPINE_RUNTIME", "spine_runtime_installed", "SPINE_RUNTIME_INSTALL_DIR",
          _set_env_path("SPINE_RUNTIME_INSTALL_DIR")),
         ("RPC_RUNTIME", "rpc_runtime_installed", None, None),
@@ -162,10 +162,7 @@ def install_extension(*args, **kargs):
     from build_helpers import get_cmake_dir
 
     build_temp = Path(get_cmake_dir())
-    spine_triton_opt_src = (
-        build_temp / "third_party" / "spacemit" / "tools" /
-        "spine-triton-opt" / "spine-triton-opt"
-    )
+    spine_triton_opt_src = (build_temp / "third_party" / "spacemit" / "tools" / "spine-triton-opt" / "spine-triton-opt")
     if not spine_triton_opt_src.exists():
         print(f"[spacemit] Warning: spine-triton-opt not found at {spine_triton_opt_src}")
         return

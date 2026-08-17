@@ -10,8 +10,7 @@ from triton.backends import backends
 
 
 def check(description, condition, detail=""):
-    print(f"[{'OK ' if condition else 'FAIL'}] {description}"
-          + (f"  ({detail})" if detail else ""))
+    print(f"[{'OK ' if condition else 'FAIL'}] {description}" + (f"  ({detail})" if detail else ""))
     return condition
 
 
@@ -20,26 +19,20 @@ def main():
     ok &= check("import triton", True, f"version={triton.__version__}")
 
     names = sorted(backends)
-    ok &= check("spacemit backend registered", "spacemit" in names,
-                f"backends={names}")
+    ok &= check("spacemit backend registered", "spacemit" in names, f"backends={names}")
 
     backend = backends["spacemit"]
     ok &= check(
         "compiler/driver",
-        backend.compiler.__name__ == "CPUBackend"
-        and backend.driver.__name__ == "CPUDriver",
+        backend.compiler.__name__ == "CPUBackend" and backend.driver.__name__ == "CPUDriver",
         f"{backend.compiler.__name__}/{backend.driver.__name__}",
     )
 
-    pads = [value for value in dir(ir.PADDING_OPTION)
-            if value.startswith("PAD")]
-    ok &= check("PADDING_OPTION adapt",
-                {"PAD_NEG_INF", "PAD_INF"} <= set(pads), f"pads={pads}")
+    pads = [value for value in dir(ir.PADDING_OPTION) if value.startswith("PAD")]
+    ok &= check("PADDING_OPTION adapt", {"PAD_NEG_INF", "PAD_INF"} <= set(pads), f"pads={pads}")
 
     submodules = [name for name in dir(spacemit) if not name.startswith("__")]
-    ok &= check("spacemit C++ submod",
-                {"load_dialects", "tle_ir", "xsmt_ir"} <= set(submodules),
-                f"sub={submodules}")
+    ok &= check("spacemit C++ submod", {"load_dialects", "tle_ir", "xsmt_ir"} <= set(submodules), f"sub={submodules}")
 
     host = os.environ.get("SPINE_TRITON_RPC_HOST", "127.0.0.1")
     port = int(os.environ.get("SPINE_TRITON_RPC_PORT", "9999"))
