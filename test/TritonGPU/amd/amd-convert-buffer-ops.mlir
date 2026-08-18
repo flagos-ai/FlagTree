@@ -942,3 +942,25 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [1], order = [0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
+// COMMON-LABEL: shared_memory_ptr
+// Buffer ops can only address global memory, so a pointer in another address
+// space must keep the generic memory ops even when every other precondition
+// (splatted base, 32-bit offset, tt.pointer_range) is met.
+  tt.func @shared_memory_ptr(%arg0: !tt.ptr<f32, 3> {tt.pointer_range = 32 : i32}) {
+    %0 = tt.make_range {end = 32 : i32, start = 0 : i32} : tensor<32xi32, #blocked>
+    %1 = tt.splat %arg0 : !tt.ptr<f32, 3> -> tensor<32x!tt.ptr<f32, 3>, #blocked>
+    %2 = tt.addptr %1, %0 : tensor<32x!tt.ptr<f32, 3>, #blocked>, tensor<32xi32, #blocked>
+    // COMMON-NOT: amdg.buffer_load
+    // COMMON: tt.load
+    %3 = tt.load %2 : tensor<32x!tt.ptr<f32, 3>, #blocked>
+    // COMMON-NOT: amdg.buffer_store
+    // COMMON: tt.store
+    tt.store %2, %3 : tensor<32x!tt.ptr<f32, 3>, #blocked>
+    tt.return
+  }
+}

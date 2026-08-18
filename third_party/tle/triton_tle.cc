@@ -371,6 +371,13 @@ void init_triton_tle_ir(py::module &&m) {
              return self.create<ttg::MemDescSubsliceOp>(resultType, src,
                                                         offsets);
            })
+      .def("create_memdesc_alias",
+           [](TritonOpBuilder &self, Type resultType, Value src,
+              int64_t offsetBytes) -> Value {
+             return self.create<tle::MemDescAliasOp>(
+                 resultType, src,
+                 self.getBuilder().getI64IntegerAttr(offsetBytes));
+           })
       .def("create_warp_return",
            [](TritonOpBuilder &self) -> Operation * {
              return self.create<ttg::WarpReturnOp>();
@@ -626,6 +633,11 @@ void init_triton_tle_ir(py::module &&m) {
              auto &builder = self.getBuilder();
              return self.create<tle::GetDeviceIdOp>(resultTy,
                                                     src.value_or(Value()));
+           })
+      .def("get_world_rank",
+           [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {
+             auto &builder = self.getBuilder();
+             return self.create<tle::GetWorldRankOp>(resultTy, src);
            })
       .def("get_n_pes",
            [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {

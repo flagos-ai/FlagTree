@@ -1,10 +1,8 @@
-#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <nvshmem.h>
 #include <nvshmemx.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 #define CUDA_CHECK(stmt)                                                       \
   do {                                                                         \
@@ -16,10 +14,12 @@
     }                                                                          \
   } while (0)
 
-extern "C" int ag_gemm_workspace_create(int elements_per_rank, void **workspace,
-                                        uint64_t **ready, int *mype, int *npes,
-                                        int *mype_in_node, int *npes_in_node) {
-  if (elements_per_rank <= 0 || workspace == nullptr || ready == nullptr) {
+extern "C" int ag_gemm_workspace_create(int elements_per_rank, int element_size,
+                                        void **workspace, uint64_t **ready,
+                                        int *mype, int *npes, int *mype_in_node,
+                                        int *npes_in_node) {
+  if (elements_per_rank <= 0 || element_size <= 0 || workspace == nullptr ||
+      ready == nullptr) {
     return -1;
   }
 
@@ -29,7 +29,7 @@ extern "C" int ag_gemm_workspace_create(int elements_per_rank, void **workspace,
   *npes_in_node = nvshmem_team_n_pes(NVSHMEMX_TEAM_NODE);
   CUDA_CHECK(cudaSetDevice(*mype_in_node));
 
-  size_t workspace_bytes = (size_t)(*npes) * elements_per_rank * sizeof(__half);
+  size_t workspace_bytes = (size_t)(*npes) * elements_per_rank * element_size;
   *workspace = nvshmem_malloc(workspace_bytes);
   *ready = (uint64_t *)nvshmem_calloc((size_t)(*npes), sizeof(uint64_t));
   if (*workspace == nullptr || *ready == nullptr) {
@@ -60,4 +60,14 @@ extern "C" void *ag_gemm_peer_workspace_ptr(void *workspace, int peer) {
 
 extern "C" uint64_t *ag_gemm_peer_ready_ptr(uint64_t *ready, int peer) {
   return (uint64_t *)nvshmem_ptr(ready, peer);
+}
+
+extern "C" void ag_gemm_barrier_all_on_stream(cudaStream_t stream) {
+  nvshmemx_barrier_all_on_stream(stream);
+}
+
+extern "C" void ag_gemm_signal_wait_until_on_stream(uint64_t *signal,
+                                                    uint64_t value,
+                                                    cudaStream_t stream) {
+  nvshmemx_signal_wait_until_on_stream(signal, NVSHMEM_CMP_GE, value, stream);
 }

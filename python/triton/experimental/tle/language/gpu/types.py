@@ -69,6 +69,174 @@ class layout:
         raise NotImplementedError(f"{self.__class__.__name__}.to_ir() must be overridden in subclasses")
 
 
+class distributed_encoding(layout):
+    """Base class for explicit TritonGPU distributed tensor encodings."""
+
+    @property
+    def rank(self):
+        raise NotImplementedError(f"{self.__class__.__name__}.rank must be overridden in subclasses")
+
+
+class BlockEncoding(distributed_encoding):
+    """Explicit #ttg.blocked encoding for TLE tensor values."""
+
+    def __init__(self, size_per_thread, threads_per_warp, warps_per_cta, order, cga_layout=None):
+        super().__init__()
+        self.size_per_thread = [int(tl._unwrap_if_constexpr(x)) for x in size_per_thread]
+        self.threads_per_warp = [int(tl._unwrap_if_constexpr(x)) for x in threads_per_warp]
+        self.warps_per_cta = [int(tl._unwrap_if_constexpr(x)) for x in warps_per_cta]
+        self.order = [int(tl._unwrap_if_constexpr(x)) for x in order]
+        self.cga_layout = [] if cga_layout is None else [[int(tl._unwrap_if_constexpr(x))
+                                                          for x in basis]
+                                                         for basis in cga_layout]
+
+        rank = len(self.order)
+        if not (len(self.size_per_thread) == len(self.threads_per_warp) == len(self.warps_per_cta) == rank):
+            raise ValueError("BlockEncoding fields must have the same rank")
+        if sorted(self.order) != list(range(rank)):
+            raise ValueError(f"BlockEncoding order must be a permutation of 0..{rank - 1}")
+        for basis in self.cga_layout:
+            if len(basis) != rank:
+                raise ValueError("BlockEncoding cga_layout basis rank mismatch")
+
+    @property
+    def rank(self):
+        return len(self.order)
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.get_blocked_encoding(
+            self.size_per_thread,
+            self.threads_per_warp,
+            self.warps_per_cta,
+            self.order,
+            self.cga_layout,
+        )
+
+    def __repr__(self):
+        return (f"BlockEncoding(size_per_thread={self.size_per_thread}, "
+                f"threads_per_warp={self.threads_per_warp}, warps_per_cta={self.warps_per_cta}, "
+                f"order={self.order}, cga_layout={self.cga_layout})")
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.size_per_thread == other.size_per_thread
+                and self.threads_per_warp == other.threads_per_warp and self.warps_per_cta == other.warps_per_cta
+                and self.order == other.order and self.cga_layout == other.cga_layout)
+
+    def __hash__(self):
+        return hash((tuple(self.size_per_thread), tuple(self.threads_per_warp), tuple(self.warps_per_cta),
+                     tuple(self.order), tuple(tuple(basis) for basis in self.cga_layout)))
+
+
+class MmaEncoding(distributed_encoding):
+    """Explicit #ttg.nvidia_mma encoding for a dot result or accumulator."""
+
+    def __init__(self, version, warps_per_cta, instr_shape, cga_layout=None):
+        super().__init__()
+        self.version = [int(tl._unwrap_if_constexpr(x)) for x in version]
+        self.warps_per_cta = [int(tl._unwrap_if_constexpr(x)) for x in warps_per_cta]
+        self.instr_shape = [int(tl._unwrap_if_constexpr(x)) for x in instr_shape]
+        self.cga_layout = [] if cga_layout is None else [[int(tl._unwrap_if_constexpr(x))
+                                                          for x in basis]
+                                                         for basis in cga_layout]
+
+        rank = len(self.warps_per_cta)
+        if len(self.version) != 2:
+            raise ValueError("MmaEncoding version must contain major and minor")
+        if len(self.instr_shape) != rank:
+            raise ValueError("MmaEncoding instr_shape rank must match warps_per_cta")
+        for basis in self.cga_layout:
+            if len(basis) != rank:
+                raise ValueError("MmaEncoding cga_layout basis rank mismatch")
+
+    @property
+    def rank(self):
+        return len(self.warps_per_cta)
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.get_mma_layout(
+            self.version,
+            self.warps_per_cta,
+            self.cga_layout,
+            self.instr_shape,
+        )
+
+    def __repr__(self):
+        return (f"MmaEncoding(version={self.version}, warps_per_cta={self.warps_per_cta}, "
+                f"instr_shape={self.instr_shape}, cga_layout={self.cga_layout})")
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.version == other.version
+                and self.warps_per_cta == other.warps_per_cta and self.instr_shape == other.instr_shape
+                and self.cga_layout == other.cga_layout)
+
+    def __hash__(self):
+        return hash((tuple(self.version), tuple(self.warps_per_cta), tuple(self.instr_shape),
+                     tuple(tuple(basis) for basis in self.cga_layout)))
+
+
+class DotOperandEncoding(distributed_encoding):
+    """Explicit #ttg.dot_op encoding tied to a distributed parent layout."""
+
+    def __init__(self, operand_index, parent, k_width):
+        super().__init__()
+        self.operand_index = int(tl._unwrap_if_constexpr(operand_index))
+        self.parent = tl._unwrap_if_constexpr(parent)
+        self.k_width = int(tl._unwrap_if_constexpr(k_width))
+        if self.operand_index not in (0, 1):
+            raise ValueError("DotOperandEncoding operand_index must be 0 or 1")
+        if not isinstance(self.parent, distributed_encoding):
+            raise ValueError(f"DotOperandEncoding parent must be a distributed_encoding, got {type(self.parent)}")
+        if self.k_width <= 0:
+            raise ValueError("DotOperandEncoding k_width must be positive")
+
+    @property
+    def rank(self):
+        return self.parent.rank
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.get_dot_operand_layout(self.operand_index, self.parent.to_ir(builder), self.k_width)
+
+    def __repr__(self):
+        return (f"DotOperandEncoding(operand_index={self.operand_index}, parent={self.parent!r}, "
+                f"k_width={self.k_width})")
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.operand_index == other.operand_index and self.parent == other.parent
+                and self.k_width == other.k_width)
+
+    def __hash__(self):
+        return hash((self.operand_index, self.parent, self.k_width))
+
+
+class SlicedEncoding(distributed_encoding):
+    """Slice of a parent distributed tensor encoding."""
+
+    def __init__(self, dim, parent):
+        super().__init__()
+        self.dim = int(tl._unwrap_if_constexpr(dim))
+        self.parent = tl._unwrap_if_constexpr(parent)
+        if not isinstance(self.parent, distributed_encoding):
+            raise ValueError(f"SlicedEncoding parent must be a distributed_encoding, got {type(self.parent)}")
+        if self.dim < 0 or self.dim >= self.parent.rank:
+            raise ValueError(f"SlicedEncoding dim {self.dim} out of range for rank {self.parent.rank}")
+
+    @property
+    def rank(self):
+        return self.parent.rank - 1
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.get_sliced_encoding(self.dim, self.parent.to_ir(builder))
+
+    def __repr__(self):
+        return f"SlicedEncoding(dim={self.dim}, parent={self.parent!r})"
+
+    def __eq__(self, other) -> bool:
+        return type(self) is type(other) and self.dim == other.dim and self.parent == other.parent
+
+    def __hash__(self):
+        return hash((self.dim, self.parent))
+
+
 class shared_layout(layout):
 
     def __init__(self):

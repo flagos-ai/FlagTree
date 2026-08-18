@@ -31,6 +31,8 @@
 #include "mlir/Transforms/DialectConversion.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/PriorityWorklist.h"
 #endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -57,6 +59,241 @@ static void addNamedAttrs(Operation *op, DictionaryAttr dictAttrs) {
     if (!op->hasAttr(attr.getName()))
       op->setAttr(attr.getName(), attr.getValue());
 }
+
+#ifdef __TLE__
+struct TleEncodingInfo {
+  Attribute encoding;
+  bool mayVary = false;
+
+  explicit operator bool() const { return bool(encoding); }
+};
+
+static bool tleEncodingsMayVary(Operation *op) {
+  return isa<triton::JoinOp, triton::SplitOp, triton::ReshapeOp, triton::CatOp,
+             triton::TransOp>(op);
+}
+
+static LogicalResult mergeTleEncodingInfo(TleEncodingInfo oldInfo,
+                                          TleEncodingInfo newInfo,
+                                          Operation *op,
+                                          TleEncodingInfo &merged) {
+  if (!oldInfo) {
+    merged = newInfo;
+    return success();
+  }
+  if (!newInfo) {
+    merged = oldInfo;
+    return success();
+  }
+  if (oldInfo.encoding == newInfo.encoding) {
+    merged = oldInfo;
+    merged.mayVary = oldInfo.mayVary && newInfo.mayVary;
+    return success();
+  }
+  if (oldInfo.mayVary && !newInfo.mayVary) {
+    merged = newInfo;
+    return success();
+  }
+  if (!oldInfo.mayVary && newInfo.mayVary) {
+    merged = oldInfo;
+    return success();
+  }
+  if (oldInfo.mayVary && newInfo.mayVary) {
+    merged = oldInfo;
+    return success();
+  }
+
+  op->emitOpError("found conflicting TLE encoding hints for value:\n  ")
+      << oldInfo.encoding << "\nand\n  " << newInfo.encoding;
+  return failure();
+}
+
+static LogicalResult
+updateTleEncoding(ArrayRef<Value> values, TleEncodingInfo info, FuncOp func,
+                  llvm::MapVector<Value, TleEncodingInfo> &valueToEncoding,
+                  llvm::PriorityWorklist<Value> &worklist) {
+  for (Value value : values) {
+    if (!isa<RankedTensorType>(value.getType()))
+      continue;
+
+    auto [it, inserted] = valueToEncoding.insert({value, info});
+    if (!inserted) {
+      Operation *defOp = value.getDefiningOp();
+      Operation *diagOp = defOp ? defOp : func.getOperation();
+      TleEncodingInfo merged;
+      if (failed(mergeTleEncodingInfo(it->second, info, diagOp, merged)))
+        return failure();
+      if (merged.encoding == it->second.encoding &&
+          merged.mayVary == it->second.mayVary)
+        continue;
+      it->second = merged;
+    }
+    worklist.insert(value);
+  }
+  return success();
+}
+
+static LogicalResult propagateTleEncodingHints(FuncOp func) {
+  llvm::SmallVector<std::pair<Value, TleEncodingInfo>> seedEncodings;
+  func.walk([&](tle::SetLayoutOp op) {
+    seedEncodings.push_back(
+        {op.getSrc(), TleEncodingInfo{op.getTargetEncoding(), true}});
+    seedEncodings.push_back(
+        {op.getResult(), TleEncodingInfo{op.getTargetEncoding(), false}});
+  });
+  if (seedEncodings.empty())
+    return success();
+
+  llvm::MapVector<Value, TleEncodingInfo> valueToEncoding;
+  llvm::PriorityWorklist<Value> worklist;
+  for (auto &[value, info] : seedEncodings) {
+    if (failed(
+            updateTleEncoding({value}, info, func, valueToEncoding, worklist)))
+      return failure();
+  }
+
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    TleEncodingInfo info = valueToEncoding[value];
+    assert(info && "worklist value must have an encoding");
+
+    for (OpOperand &use : value.getUses()) {
+      Operation *op = use.getOwner();
+      if (isa<scf::ForOp, scf::WhileOp>(op)) {
+        int offset = 3 * isa<scf::ForOp>(op);
+        auto tiedArgs = getTiedArgs(op, use.getOperandNumber() - offset);
+        if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+        continue;
+      }
+      if (isa<scf::YieldOp>(op)) {
+        auto tiedArgs = getTiedArgs(op, use.getOperandNumber());
+        if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+        continue;
+      }
+      if (auto dot = dyn_cast<triton::DotOpInterface>(op)) {
+        // A/B use dot-operand encodings, while C and D use the parent MMA
+        // encoding. Only C and D are layout-equivalent across a dot.
+        if (use.getOperandNumber() == 2 &&
+            failed(updateTleEncoding({dot.getD()}, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+        continue;
+      }
+      if (isa<tle::SetLayoutOp>(op))
+        continue;
+
+      if (isa<tle::LocalPointersOp>(op)) {
+        if (failed(
+                updateTleEncoding(llvm::to_vector_of<Value>(op->getResults()),
+                                  info, func, valueToEncoding, worklist)))
+          return failure();
+        continue;
+      }
+
+      Attribute dstEncoding = inferDstEncoding(op, info.encoding);
+      if (!dstEncoding)
+        continue;
+      TleEncodingInfo dstInfo{dstEncoding,
+                              info.mayVary || tleEncodingsMayVary(op)};
+      if (failed(updateTleEncoding(llvm::to_vector_of<Value>(op->getResults()),
+                                   dstInfo, func, valueToEncoding, worklist)))
+        return failure();
+    }
+
+    if (auto opResult = dyn_cast<OpResult>(value)) {
+      Operation *definingOp = opResult.getOwner();
+      if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(definingOp)) {
+        auto tiedArgs = getTiedArgs(definingOp, opResult.getResultNumber());
+        if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+      } else if (isa<triton::DotOpInterface>(definingOp)) {
+        if (failed(updateTleEncoding({definingOp->getOperand(2)}, info, func,
+                                     valueToEncoding, worklist)))
+          return failure();
+      } else if (auto localPointers =
+                     dyn_cast<tle::LocalPointersOp>(definingOp)) {
+        llvm::SmallVector<Value> tensorIndices;
+        for (Value index : localPointers.getIndices())
+          if (isa<RankedTensorType>(index.getType()))
+            tensorIndices.push_back(index);
+        if (failed(updateTleEncoding(tensorIndices, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+      } else if (!isa<tle::SetLayoutOp>(definingOp)) {
+        Attribute srcEncoding = inferSrcEncoding(definingOp, info.encoding);
+        if (srcEncoding) {
+          TleEncodingInfo srcInfo{
+              srcEncoding, info.mayVary || tleEncodingsMayVary(definingOp)};
+          llvm::SmallVector<Value> tensorOperands;
+          for (Value operand : definingOp->getOperands())
+            if (isa<RankedTensorType>(operand.getType()))
+              tensorOperands.push_back(operand);
+          if (failed(updateTleEncoding(tensorOperands, srcInfo, func,
+                                       valueToEncoding, worklist)))
+            return failure();
+        }
+      }
+    } else if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+      Operation *parentOp = blockArg.getOwner()->getParentOp();
+      if (isa<scf::ForOp, scf::WhileOp>(parentOp)) {
+        int offset = isa<scf::ForOp>(parentOp);
+        auto tiedArgs = getTiedArgs(parentOp, blockArg.getArgNumber() - offset);
+        if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                     worklist)))
+          return failure();
+      }
+    }
+  }
+
+  for (auto &[value, info] : valueToEncoding) {
+    auto existingTy = cast<RankedTensorType>(value.getType());
+    if (existingTy.getEncoding() != info.encoding) {
+      auto newTy = existingTy.cloneWithEncoding(info.encoding);
+      value.setType(newTy);
+
+      if (auto opResult = dyn_cast<OpResult>(value)) {
+        if (auto constant = dyn_cast<arith::ConstantOp>(opResult.getOwner())) {
+          if (auto elements =
+                  dyn_cast<DenseElementsAttr>(constant.getValueAttr()))
+            constant.setValueAttr(elements.reshape(newTy));
+        }
+      }
+    }
+
+    if (auto opResult = dyn_cast<OpResult>(value))
+      setTleExplicitResultEncoding(opResult, info.encoding);
+  }
+
+  WalkResult memoryWalk = func.walk([&](Operation *op) {
+    if (!getMemAccessPtr(op))
+      return WalkResult::advance();
+
+    Attribute explicitEncoding;
+    if (failed(inferTleExplicitMemoryEncoding(op, explicitEncoding)))
+      return WalkResult::interrupt();
+
+    if (explicitEncoding)
+      setTleExplicitMemoryEncoding(op, explicitEncoding);
+    return WalkResult::advance();
+  });
+  if (memoryWalk.wasInterrupted())
+    return failure();
+
+  return success();
+}
+
+static LogicalResult applyTleEncodingHints(ModuleOp mod) {
+  for (FuncOp func : mod.getOps<FuncOp>())
+    if (failed(propagateTleEncodingHints(func)))
+      return failure();
+  return success();
+}
+#endif
 
 template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
   using OpConversionPattern<Op>::OpConversionPattern;
@@ -959,25 +1196,58 @@ public:
   }
 };
 
+#ifdef __TLE__
+class TleSetLayoutOpPattern : public OpConversionPattern<tle::SetLayoutOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tle::SetLayoutOp op, tle::SetLayoutOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedType = getTypeConverter()->convertType(op.getResult());
+    auto resultType = dyn_cast<RankedTensorType>(convertedType);
+    if (!resultType)
+      return rewriter.notifyMatchFailure(op, "expected ranked tensor result");
+
+    Value src = adaptor.getSrc();
+    if (src.getType() == resultType) {
+      if (auto srcResult = dyn_cast<OpResult>(src))
+        setTleExplicitResultEncoding(srcResult, op.getTargetEncoding());
+      rewriter.replaceOp(op, src);
+      return success();
+    }
+
+    auto convert = rewriter.replaceOpWithNewOp<triton::gpu::ConvertLayoutOp>(
+        op, resultType, src);
+    convert->setAttr(getTleExplicitEncodingAttrName(0), op.getTargetEncoding());
+    return success();
+  }
+};
+
+#endif
+
 // flagtree tle raw
 void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
-  patterns
-      .add<TleDSLRegionOpPattern, TleExtractTileOpPattern,
-           TleInsertTileOpPattern, GenericOpPattern<tle::LocalPointersOp>,
-           GenericOpPattern<tle::RemotePointersOp>,
-           GenericOpPattern<tle::ExclusiveCumsumOp>,
-           GenericOpPattern<tle::WGMMAOp>, GenericOpPattern<tle::WGMMAWaitOp>,
-           GenericOpPattern<tle::DistributedBarrierOp>,
-           GenericOpPattern<tle::YieldOp>,
-           GenericOpPattern<tle::ExtractAllocatedPtrOp>,
-           GenericOpPattern<tle::ExtractAlignedPtrOp>,
-           GenericOpPattern<tle::ExtractOffsetOp>,
-           GenericOpPattern<tle::ExtractSizesOp>,
-           GenericOpPattern<tle::ExtractStridesOp>,
-           GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
-          typeConverter, context);
+  patterns.add<
+      TleDSLRegionOpPattern, TleExtractTileOpPattern, TleInsertTileOpPattern,
+#ifdef __TLE__
+      TleSetLayoutOpPattern,
+#endif
+      GenericOpPattern<tle::LocalPointersOp>,
+      GenericOpPattern<tle::RemotePointersOp>,
+      GenericOpPattern<tle::ExclusiveCumsumOp>, GenericOpPattern<tle::WGMMAOp>,
+      GenericOpPattern<tle::WGMMAWaitOp>,
+      GenericOpPattern<tle::DistributedBarrierOp>,
+      GenericOpPattern<tle::YieldOp>,
+      GenericOpPattern<tle::ExtractAllocatedPtrOp>,
+      GenericOpPattern<tle::ExtractAlignedPtrOp>,
+      GenericOpPattern<tle::ExtractOffsetOp>,
+      GenericOpPattern<tle::ExtractSizesOp>,
+      GenericOpPattern<tle::ExtractStridesOp>,
+      GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
+      typeConverter, context);
 }
 #endif
 
@@ -1021,6 +1291,11 @@ public:
     mod->setAttr(AttrNumThreadsPerWarp, b.getI32IntegerAttr(threadsPerWarp));
     mod->setAttr(AttrNumCTAsName, b.getI32IntegerAttr(numCTAs));
     mod->setAttr(AttrTargetName, b.getStringAttr(this->target.getValue()));
+
+#ifdef __TLE__
+    if (failed(applyTleEncodingHints(mod)))
+      return signalPassFailure();
+#endif
 
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();

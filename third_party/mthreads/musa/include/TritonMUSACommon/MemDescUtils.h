@@ -504,6 +504,44 @@ inline Value materializeReshapedMemDescForTarget(
   return {};
 }
 
+inline void setInsertionPointAfterSameBlockDep(RewriterBase &rewriter,
+                                               Operation *anchor, Value dep) {
+  rewriter.setInsertionPoint(anchor);
+  if (Operation *def = dep.getDefiningOp())
+    if (def->getBlock() == anchor->getBlock() && anchor->isBeforeInBlock(def))
+      rewriter.setInsertionPointAfter(def);
+}
+
+inline void moveMemDescViewChainAfterDef(ArrayRef<Operation *> directUsers,
+                                         Operation *def) {
+  Block *block = def->getBlock();
+  SmallVector<Operation *> chain;
+  SmallPtrSet<Operation *, 8> seen;
+  SmallVector<Operation *> worklist(directUsers.begin(), directUsers.end());
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    if (!seen.insert(op).second)
+      continue;
+    if (op->getBlock() != block)
+      continue;
+    if (!op->hasTrait<OpTrait::MemDescViewTrait>())
+      continue;
+    chain.push_back(op);
+    llvm::append_range(worklist, op->getUsers());
+  }
+  if (chain.empty())
+    return;
+  llvm::sort(chain,
+             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  Operation *anchor = def;
+  for (Operation *op : chain) {
+    if (anchor->isBeforeInBlock(op))
+      continue;
+    op->moveAfter(anchor);
+    anchor = op;
+  }
+}
+
 inline bool replaceTensorLocalAllocWithMemDesc(RewriterBase &rewriter,
                                                Operation *user,
                                                Value sourceMemDesc) {
@@ -514,13 +552,17 @@ inline bool replaceTensorLocalAllocWithMemDesc(RewriterBase &rewriter,
   if (!targetTy)
     return false;
   OpBuilder::InsertionGuard guard(rewriter);
-  rewriter.setInsertionPoint(localAlloc);
+  setInsertionPointAfterSameBlockDep(rewriter, localAlloc, sourceMemDesc);
   Value replacement =
       adaptMemDescValue(rewriter, localAlloc.getLoc(), sourceMemDesc, targetTy,
                         localAlloc.getOperation());
   if (!replacement)
     return false;
+  SmallVector<Operation *> users(localAlloc->getUsers().begin(),
+                                 localAlloc->getUsers().end());
   rewriter.replaceOp(localAlloc, replacement);
+  if (Operation *def = replacement.getDefiningOp())
+    moveMemDescViewChainAfterDef(users, def);
   return true;
 }
 
@@ -617,7 +659,7 @@ inline bool tryReplaceTensorUserWithMemDesc(RewriterBase &rewriter,
       if (!targetTy)
         continue;
       OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(localAlloc);
+      setInsertionPointAfterSameBlockDep(rewriter, localAlloc, sourceMemDesc);
       Value replacement = materializeTransformedMemDescForTarget(
           rewriter, transOp, sourceMemDesc, targetTy,
           localAlloc.getOperation());
@@ -640,7 +682,7 @@ inline bool tryReplaceTensorUserWithMemDesc(RewriterBase &rewriter,
       if (!targetTy)
         continue;
       OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(localAlloc);
+      setInsertionPointAfterSameBlockDep(rewriter, localAlloc, sourceMemDesc);
       Value replacement = materializeReshapedMemDescForTarget(
           rewriter, reshapeOp, sourceMemDesc, targetTy,
           localAlloc.getOperation());

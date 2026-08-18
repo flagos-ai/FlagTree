@@ -87,6 +87,15 @@ def div_rz(arg0, arg1, _semantic=None):
 
 
 @core.extern
+def sqrt(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("llvm.stvm.sqrt.f32", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("llvm.stvm.sqrt.f32", core.dtype("fp64")),
+        }, is_pure=True, _semantic=_semantic)
+
+
+@core.extern
 def rsqrt(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
@@ -125,6 +134,15 @@ def sin(arg0, _semantic=None):
 
 
 @core.extern
+def sinpi(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("__ocml_sinpi_f32", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("__ocml_sinpi_f32", core.dtype("fp64")),
+        }, is_pure=True, _semantic=_semantic)
+
+
+@core.extern
 def cos(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
@@ -143,11 +161,11 @@ def tan(arg0, _semantic=None):
 
 
 @core.extern
-def erf(arg0, _semantic=None):
+def erfinv(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("__ocml_erf_f32", core.dtype("fp32")),
-            (core.dtype("fp64"), ): ("__ocml_erf_f32", core.dtype("fp64")),
+            (core.dtype("fp32"), ): ("__ocml_erfinv_f32", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("__ocml_erfinv_f32", core.dtype("fp64")),
         }, is_pure=True, _semantic=_semantic)
 
 
@@ -226,3 +244,24 @@ def ffs(arg0, _semantic=None):
             (core.dtype("int32"), ): ("_Z5__ffsi", core.dtype("int32")),
             (core.dtype("int64"), ): ("_Z7__ffsllx", core.dtype("int32")),
         }, is_pure=True, _semantic=_semantic)
+
+
+@core.extern
+def lgamma(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "",
+        "",
+        [arg0],
+        {
+            (core.dtype("fp32"), ): (
+                "__ocml_lgamma_f32",
+                core.dtype("fp32"),
+            ),
+            (core.dtype("fp64"), ): (
+                "__ocml_lgamma_f32",
+                core.dtype("fp32"),
+            ),
+        },
+        is_pure=True,
+        _semantic=_semantic,
+    )

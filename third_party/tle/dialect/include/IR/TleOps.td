@@ -79,6 +79,22 @@ def Tle_InsertTileOp
   let hasVerifier = 1;
 }
 
+def Tle_SetLayoutOp : Tle_Op<"gpu.set_layout", [
+    Pure,
+    SameOperandsAndResultShape,
+    SameOperandsAndResultElementType
+]> {
+  let summary = "Attach a requested distributed encoding to a tensor value";
+  let description = [{
+    Carries a user-requested TritonGPU distributed encoding through the TLE
+    frontend. The op is lowered during Triton-to-TritonGPU conversion, after
+    encoding propagation has selected legal layouts for dependent values.
+  }];
+  let arguments = (ins TT_Tensor:$src, AnyAttr:$target_encoding);
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+}
+
 // End TLE-Lite
 
 // Begin TLE-Raw
@@ -114,6 +130,31 @@ def Tle_MemDescWGMMAViewOp : Tle_Op<"memdesc_wgmma_view", [Pure,
   let arguments = (
     ins TTG_MemDescType:$src,
     DenseI32ArrayAttr:$order
+  );
+
+  let results = (outs TTG_MemDescType:$result);
+
+  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+
+  let hasVerifier = 1;
+}
+
+def Tle_MemDescAliasOp : Tle_Op<"memdesc_alias", [Pure, MemDescViewTrait]> {
+  let summary = "create a typed view that aliases an existing shared memory descriptor";
+
+  let description = [{
+    This operation returns a descriptor-only view into an existing shared memory
+    descriptor. It does not allocate or move shared memory.
+
+    The result type carries the logical shape, element type, and encoding used
+    by consumers. The source descriptor provides the backing storage. The
+    offset_bytes attribute is a static byte offset from the source descriptor's
+    current view base.
+  }];
+
+  let arguments = (
+    ins TTG_MemDescType:$src,
+    I64Attr:$offset_bytes
   );
 
   let results = (outs TTG_MemDescType:$result);
@@ -368,7 +409,7 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure, AttrSizedOperandSegm
   let hasVerifier = 1;
 }
 def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
-  let summary = "Get nume pes";
+  let summary = "Get the number of intra-node PEs";
   let arguments = (ins
     Tle_LocalPointerResultType:$src
   );
@@ -380,6 +421,15 @@ def Tle_GetDeviceIdOp : Tle_Op<"get_device_id"> {
   let summary = "Get local PE id";
   let arguments = (ins
      Optional<AnyType>:$input
+  );
+  let results = (outs I32:$result);
+  let hasVerifier = 1;
+}
+
+def Tle_GetWorldRankOp : Tle_Op<"get_world_rank"> {
+  let summary = "Get global PE rank";
+  let arguments = (ins
+     Tle_LocalPointerResultType:$input
   );
   let results = (outs I32:$result);
   let hasVerifier = 1;

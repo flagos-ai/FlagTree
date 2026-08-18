@@ -1,11 +1,25 @@
-"""Benchmark native Triton MM, optimized TLE-WS MM, and Torch on MUSA.
+"""Benchmark native Triton TME, optimized TLE-WS MM, and Torch on MUSA.
+
+The physical input shapes follow the WGMMA transpose contract:
+
+    mode  physical A  physical B  logical operation
+    nn    [M, K]      [K, N]      A @ B
+    tn    [K, M]      [K, N]      A.T @ B
+    nt    [M, K]      [N, K]      A @ B.T
+    tt    [K, M]      [N, K]      A.T @ B.T
+
+Both Triton kernels load the physical tiles with TME.  The native baseline
+uses ``tl.trans`` to present logical dot operands, while TLE-WS applies
+``trans_a``/``trans_b`` through the SQMMA intrinsic layout bits.
 
 Pytest:
-    python -m pytest -q -s third_party/mthreads/python/test/unit/tle/benchmark/test_mm.py
+    python -m pytest -q -s \
+        third_party/mthreads/python/test/unit/tle/benchmark/test_mm.py
 
 Command line:
     python third_party/mthreads/python/test/unit/tle/benchmark/test_mm.py \
-        --shape 1024 1024 1024 --stages 1 2 3
+        --shape 8192 7168 16384 --stages 1 2 3 \
+        --transpose nn tn nt tt
 """
 
 import argparse
@@ -36,8 +50,15 @@ DEFAULT_SHAPES = (
     (8192, 8192, 8192),
     (8192, 7168, 16384),
 )
-PYTEST_SHAPES = ((1024, 1024, 1024), )
+TRANSPOSE_MODES = {
+    "nn": (False, False),
+    "tn": (True, False),
+    "nt": (False, True),
+    "tt": (True, True),
+}
+PYTEST_SHAPES = ((8192, 7168, 16384), )
 PYTEST_STAGES = (1, 2, 3)
+PYTEST_TRANSPOSE_MODES = tuple(TRANSPOSE_MODES)
 PYTEST_WARMUP = 5
 PYTEST_REP = 20
 BENCH_COLUMNS = (
@@ -45,6 +66,7 @@ BENCH_COLUMNS = (
     "N",
     "K",
     "Stages",
+    "Transpose",
     "Torch (ms)",
     "Triton (ms)",
     "TLE-WS (ms)",
@@ -64,75 +86,7 @@ if not _musa_available() and __name__ != "__main__":
 
 
 @triton.jit
-def _native_rasterization_2d_column(
-    block_idx,
-    grid_x,
-    grid_y,
-    panel_width: tl.constexpr,
-):
-    panel_size = panel_width * grid_y
-    residual_panel_width = grid_x % panel_width
-    full_panels_size = grid_x // panel_width * panel_width * grid_y
-    panel_idx = block_idx // panel_size
-    panel_offset = block_idx % panel_size
-
-    width = tl.where(
-        block_idx >= full_panels_size,
-        residual_panel_width,
-        panel_width,
-    )
-    row_idx = panel_offset // width
-    mini_x = panel_offset % width
-    mini_x = tl.where(row_idx % 2 == 1, width - 1 - mini_x, mini_x)
-    row_idx = tl.where(panel_idx % 2 == 1, grid_y - 1 - row_idx, row_idx)
-    col_idx = panel_idx * panel_width + mini_x
-    return col_idx, row_idx
-
-
-@triton.jit
-def native_triton_mm_kernel(
-    a_desc,
-    b_desc,
-    c_ptr,
-    M,
-    N,
-    K,
-    block_m: tl.constexpr,
-    block_n: tl.constexpr,
-    block_k: tl.constexpr,
-    panel_width: tl.constexpr,
-    pipeline_stages: tl.constexpr,
-):
-    raw_bx = tl.program_id(axis=0)
-    raw_by = tl.program_id(axis=1)
-    grid_y = tl.cdiv(M, block_m)
-    grid_x = tl.cdiv(N, block_n)
-    block_idx = raw_bx + raw_by * grid_x
-    pid_n, pid_m = _native_rasterization_2d_column(
-        block_idx,
-        grid_x,
-        grid_y,
-        panel_width,
-    )
-
-    offset_a_m = pid_m * block_m
-    offset_b_n = pid_n * block_n
-    offset_m = offset_a_m + tl.arange(0, block_m)
-    offset_n = offset_b_n + tl.arange(0, block_n)
-    mask = (offset_m[:, None] < M) & (offset_n[None, :] < N)
-
-    acc = tl.zeros((block_m, block_n), dtype=tl.float32)
-    for k in tl.range(0, K, block_k, num_stages=pipeline_stages):
-        a = tl.load_tensor_descriptor(a_desc, [offset_a_m, k])
-        b = tl.load_tensor_descriptor(b_desc, [k, offset_b_n])
-        acc = tl.dot(a, b, acc=acc)
-
-    c_block_ptr = c_ptr + N * offset_m[:, None] + offset_n[None, :]
-    tl.store(c_block_ptr, acc.to(tl.float16), mask=mask)
-
-
-@triton.jit
-def _tle_ws_rasterization_2d_column(
+def _rasterization_2d_column(
     block_idx,
     grid_x,
     grid_y,
@@ -162,6 +116,60 @@ def _tle_ws_rasterization_2d_column(
 
 
 @triton.jit
+def native_triton_mm_kernel(
+    a_desc,
+    b_desc,
+    c_ptr,
+    M,
+    N,
+    K,
+    block_m: tl.constexpr,
+    block_n: tl.constexpr,
+    block_k: tl.constexpr,
+    panel_width: tl.constexpr,
+    pipeline_stages: tl.constexpr,
+    full_panel: tl.constexpr,
+    TRANS_A: tl.constexpr,
+    TRANS_B: tl.constexpr,
+):
+    raw_bx = tl.program_id(axis=0)
+    raw_by = tl.program_id(axis=1)
+    grid_y = tl.cdiv(M, block_m)
+    grid_x = tl.cdiv(N, block_n)
+    block_idx = raw_bx + raw_by * grid_x
+    pid_n, pid_m = _rasterization_2d_column(
+        block_idx,
+        grid_x,
+        grid_y,
+        panel_width,
+        full_panel,
+    )
+
+    offset_m_start = pid_m * block_m
+    offset_n_start = pid_n * block_n
+    offset_m = offset_m_start + tl.arange(0, block_m)
+    offset_n = offset_n_start + tl.arange(0, block_n)
+    mask = (offset_m[:, None] < M) & (offset_n[None, :] < N)
+
+    acc = tl.zeros((block_m, block_n), dtype=tl.float32)
+    for k_offset in tl.range(0, K, block_k, num_stages=pipeline_stages):
+        if TRANS_A:
+            a_physical = tl.load_tensor_descriptor(a_desc, [k_offset, offset_m_start])
+            a = tl.trans(a_physical)
+        else:
+            a = tl.load_tensor_descriptor(a_desc, [offset_m_start, k_offset])
+        if TRANS_B:
+            b_physical = tl.load_tensor_descriptor(b_desc, [offset_n_start, k_offset])
+            b = tl.trans(b_physical)
+        else:
+            b = tl.load_tensor_descriptor(b_desc, [k_offset, offset_n_start])
+        acc = tl.dot(a, b, acc=acc)
+
+    c_block_ptr = c_ptr + N * offset_m[:, None] + offset_n[None, :]
+    tl.store(c_block_ptr, acc.to(tl.float16), mask=mask)
+
+
+@triton.jit
 def _tle_ws_mm_consumer(
     a_reader,
     b_reader,
@@ -174,6 +182,8 @@ def _tle_ws_mm_consumer(
     block_m: tl.constexpr,
     block_n: tl.constexpr,
     block_k: tl.constexpr,
+    TRANS_A: tl.constexpr,
+    TRANS_B: tl.constexpr,
 ):
     offset_m = pid_m * block_m + tl.arange(0, block_m)
     offset_n = pid_n * block_n + tl.arange(0, block_n)
@@ -189,7 +199,13 @@ def _tle_ws_mm_consumer(
     ):
         a_wait = a_reader.wait(k_iter)
         b_wait = b_reader.wait(k_iter)
-        acc = tle.gpu.wgmma(a_wait.slot.a, b_wait.slot.b, acc)
+        acc = tle.gpu.wgmma(
+            a_wait.slot.a,
+            b_wait.slot.b,
+            acc,
+            trans_a=TRANS_A,
+            trans_b=TRANS_B,
+        )
         acc = tle.gpu.wgmma_wait(0, acc)
         a_reader.release(k_iter)
         b_reader.release(k_iter)
@@ -210,9 +226,11 @@ def _tle_ws_mm_producer(
     block_m: tl.constexpr,
     block_n: tl.constexpr,
     block_k: tl.constexpr,
+    TRANS_A: tl.constexpr,
+    TRANS_B: tl.constexpr,
 ):
-    offset_a_m = pid_m * block_m
-    offset_b_n = pid_n * block_n
+    offset_m = pid_m * block_m
+    offset_n = pid_n * block_n
     k_tiles: tl.constexpr = tl.cdiv(K, block_k)
 
     for k_iter in tl.range(
@@ -224,18 +242,34 @@ def _tle_ws_mm_producer(
         offset_k = k_iter * block_k
         a_slot = a_writer.acquire(k_iter)
         b_slot = b_writer.acquire(k_iter)
-        tle.gpu.copy(
-            a_desc,
-            a_slot.a,
-            (block_m, block_k),
-            (offset_a_m, offset_k),
-        )
-        tle.gpu.copy(
-            b_desc,
-            b_slot.b,
-            (block_k, block_n),
-            (offset_k, offset_b_n),
-        )
+        if TRANS_A:
+            tle.gpu.copy(
+                a_desc,
+                a_slot.a,
+                (block_k, block_m),
+                (offset_k, offset_m),
+            )
+        else:
+            tle.gpu.copy(
+                a_desc,
+                a_slot.a,
+                (block_m, block_k),
+                (offset_m, offset_k),
+            )
+        if TRANS_B:
+            tle.gpu.copy(
+                b_desc,
+                b_slot.b,
+                (block_n, block_k),
+                (offset_n, offset_k),
+            )
+        else:
+            tle.gpu.copy(
+                b_desc,
+                b_slot.b,
+                (block_k, block_n),
+                (offset_k, offset_n),
+            )
         a_writer.commit(k_iter)
         b_writer.commit(k_iter)
 
@@ -254,13 +288,15 @@ def tle_ws_mm_kernel(
     panel_width: tl.constexpr,
     pipeline_stages: tl.constexpr,
     full_panel: tl.constexpr,
+    TRANS_A: tl.constexpr,
+    TRANS_B: tl.constexpr,
 ):
     raw_bx = tl.program_id(axis=0)
     raw_by = tl.program_id(axis=1)
     grid_x = tl.num_programs(axis=0)
     grid_y = tl.num_programs(axis=1)
     block_idx = raw_bx + raw_by * grid_x
-    pid_n, pid_m = _tle_ws_rasterization_2d_column(
+    pid_n, pid_m = _rasterization_2d_column(
         block_idx,
         grid_x,
         grid_y,
@@ -268,14 +304,18 @@ def tle_ws_mm_kernel(
         full_panel,
     )
 
+    a_rows: tl.constexpr = block_k if TRANS_A else block_m
+    a_cols: tl.constexpr = block_m if TRANS_A else block_k
+    b_rows: tl.constexpr = block_n if TRANS_B else block_k
+    b_cols: tl.constexpr = block_k if TRANS_B else block_n
     a_smem = tle.gpu.alloc(
-        (pipeline_stages, block_m, block_k),
+        (pipeline_stages, a_rows, a_cols),
         dtype=tl.float16,
         scope=tle.gpu.smem,
         nv_mma_shared_layout=True,
     )
     b_smem = tle.gpu.alloc(
-        (pipeline_stages, block_k, block_n),
+        (pipeline_stages, b_rows, b_cols),
         dtype=tl.float16,
         scope=tle.gpu.smem,
         nv_mma_shared_layout=True,
@@ -299,6 +339,8 @@ def tle_ws_mm_kernel(
                     block_m,
                     block_n,
                     block_k,
+                    TRANS_A,
+                    TRANS_B,
                 ),
             ),
             (
@@ -314,6 +356,8 @@ def tle_ws_mm_kernel(
                     block_m,
                     block_n,
                     block_k,
+                    TRANS_A,
+                    TRANS_B,
                 ),
             ),
         ],
@@ -347,11 +391,24 @@ def _speedup(reference_ms, candidate_ms):
     return reference_ms / candidate_ms if candidate_ms else float("inf")
 
 
+def _input_shapes(m, n, k, trans_a, trans_b):
+    a_shape = (k, m) if trans_a else (m, k)
+    b_shape = (n, k) if trans_b else (k, n)
+    return a_shape, b_shape
+
+
+def _tile_shapes(block_m, block_n, block_k, trans_a, trans_b):
+    a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
+    b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
+    return a_tile, b_tile
+
+
 def _run_case(
     m,
     n,
     k,
     stages,
+    transpose_mode,
     warmup,
     rep,
     block_m=BLOCK_M,
@@ -362,16 +419,26 @@ def _run_case(
     seed=42,
 ):
     _validate_case(m, n, k, stages, block_m, block_n, block_k, panel_width)
+    if transpose_mode not in TRANSPOSE_MODES:
+        raise ValueError(f"unsupported transpose mode {transpose_mode!r}")
+    trans_a, trans_b = TRANSPOSE_MODES[transpose_mode]
+    a_shape, b_shape = _input_shapes(m, n, k, trans_a, trans_b)
+    a_tile, b_tile = _tile_shapes(block_m, block_n, block_k, trans_a, trans_b)
+
     torch.manual_seed(seed)
-    a = torch.randn((m, k), dtype=torch.float16, device="musa")
-    b = torch.randn((k, n), dtype=torch.float16, device="musa")
-    desc_a = TensorDescriptor.from_tensor(a, [block_m, block_k])
-    desc_b = TensorDescriptor.from_tensor(b, [block_k, block_n])
+    a = torch.randn(a_shape, dtype=torch.float16, device="musa")
+    b = torch.randn(b_shape, dtype=torch.float16, device="musa")
+    desc_a = TensorDescriptor.from_tensor(a, list(a_tile))
+    desc_b = TensorDescriptor.from_tensor(b, list(b_tile))
     grid = (triton.cdiv(n, block_n), triton.cdiv(m, block_m), 1)
     full_panel = grid[0] % panel_width == 0
 
+    def logical_inputs():
+        return (a.T if trans_a else a), (b.T if trans_b else b)
+
     def launch_torch():
-        return torch.mm(a, b)
+        a_logical, b_logical = logical_inputs()
+        return torch.mm(a_logical, b_logical)
 
     def launch_triton():
         output = torch.empty((m, n), dtype=torch.float16, device="musa")
@@ -387,6 +454,9 @@ def _run_case(
             block_k,
             panel_width,
             stages,
+            full_panel,
+            trans_a,
+            trans_b,
             num_warps=num_warps,
             num_stages=stages,
         )
@@ -407,6 +477,8 @@ def _run_case(
             panel_width,
             stages,
             full_panel,
+            trans_a,
+            trans_b,
             num_warps=num_warps,
             num_stages=stages,
         )
@@ -417,7 +489,8 @@ def _run_case(
     tle_ws_output = launch_tle_ws()
     torch.musa.synchronize()
 
-    reference = torch.mm(a.to(torch.float32), b.to(torch.float32))
+    a_logical, b_logical = logical_inputs()
+    reference = torch.mm(a_logical.float(), b_logical.float())
     torch.testing.assert_close(torch_output.float(), reference, rtol=RTOL, atol=ATOL)
     torch.testing.assert_close(triton_output.float(), reference, rtol=RTOL, atol=ATOL)
     torch.testing.assert_close(tle_ws_output.float(), reference, rtol=RTOL, atol=ATOL)
@@ -431,6 +504,7 @@ def _run_case(
         "N": n,
         "K": k,
         "Stages": stages,
+        "Transpose": transpose_mode,
         "Torch (ms)": torch_ms,
         "Triton (ms)": triton_ms,
         "TLE-WS (ms)": tle_ws_ms,
@@ -467,17 +541,20 @@ def _print_pytest_results_once():
 
 @pytest.mark.parametrize("shape", PYTEST_SHAPES)
 @pytest.mark.parametrize("stages", PYTEST_STAGES, ids=lambda value: f"stage{value}")
-def test_mm_correctness_and_benchmark(shape, stages):
-    _PYTEST_ROWS.append(_run_case(
-        *shape,
-        stages=stages,
-        warmup=PYTEST_WARMUP,
-        rep=PYTEST_REP,
-    ))
+@pytest.mark.parametrize("transpose_mode", PYTEST_TRANSPOSE_MODES)
+def test_mm_correctness_and_benchmark(shape, stages, transpose_mode):
+    _PYTEST_ROWS.append(
+        _run_case(
+            *shape,
+            stages=stages,
+            transpose_mode=transpose_mode,
+            warmup=PYTEST_WARMUP,
+            rep=PYTEST_REP,
+        ))
 
 
 def _parse_args():
-    parser = argparse.ArgumentParser(description="Benchmark native Triton MM, optimized TLE-WS MM, and Torch on MUSA.")
+    parser = argparse.ArgumentParser(description="Benchmark native Triton TME, optimized TLE-WS MM, and Torch on MUSA.")
     parser.add_argument(
         "--shape",
         dest="shapes",
@@ -488,6 +565,14 @@ def _parse_args():
         help="matrix shape; repeat to benchmark multiple shapes",
     )
     parser.add_argument("--stages", type=int, nargs="+", default=[1, 2, 3])
+    parser.add_argument(
+        "--transpose",
+        dest="transpose_modes",
+        choices=tuple(TRANSPOSE_MODES),
+        nargs="+",
+        default=list(TRANSPOSE_MODES),
+        help="physical input layout(s) to benchmark",
+    )
     parser.add_argument("--warmup", type=int, default=25, help="do_bench warmup in milliseconds")
     parser.add_argument("--rep", type=int, default=100, help="do_bench measurement time in milliseconds")
     parser.add_argument("--block-m", type=int, default=BLOCK_M)
@@ -510,6 +595,7 @@ def main():
         _run_case(
             *shape,
             stages=stages,
+            transpose_mode=transpose_mode,
             warmup=args.warmup,
             rep=args.rep,
             block_m=args.block_m,
@@ -518,7 +604,7 @@ def main():
             panel_width=args.panel_width,
             num_warps=args.num_warps,
             seed=args.seed,
-        ) for shape in shapes for stages in args.stages
+        ) for shape in shapes for stages in args.stages for transpose_mode in args.transpose_modes
     ]
     _print_table(
         "mthreads MM benchmark (correctness passed; "

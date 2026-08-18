@@ -404,6 +404,11 @@ void init_triton_musa_tle_ir(py::module m) {
 
              return self.create<ttg::MemDescIndexOp>(resultType, src, index);
            })
+      .def("create_memdesc_trans",
+           [](TritonOpBuilder &self, mlir::Value src,
+              std::vector<int> order) -> mlir::Value {
+             return self.create<ttg::MemDescTransOp>(src, order);
+           })
       .def("create_barrier_alloc",
            [](TritonOpBuilder &self, mlir::Type resultType, int32_t numBarriers,
               int32_t arriveCount, int32_t initPolarity,

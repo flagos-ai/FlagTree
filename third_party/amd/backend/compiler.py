@@ -1,5 +1,10 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, amd
+
+try:
+    from triton._C.libtriton import tle
+except ImportError:
+    tle = None
 from triton import knobs
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
@@ -216,6 +221,14 @@ class HIPBackend(BaseBackend):
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
+        if tle is not None:
+            # Assigns the shared encodings and inserts the barriers that
+            # tle.local_pointers lowering relies on. The order is load-bearing.
+            tle.passes.add_early_assign_memory_space(pm)
+            tle.passes.add_select_encodings(pm)
+            tle.passes.add_insert_local_pointer_barriers(pm)
+            tle.passes.add_optimize_local_pointer_loads(pm)
+            tle.passes.add_optimize_local_pointer_stores(pm)
         amd.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         amd.passes.ttgpuir.add_optimize_epilogue(pm)
