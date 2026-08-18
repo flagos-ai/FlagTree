@@ -82,6 +82,14 @@ static bool sinkLoopCarriedSqmmaAccumulatorConvert(scf::ForOp &forOp,
       continue;
     if (!isSqmmaAccumulatorLoopArg(forOp.getRegionIterArg(*mmaIdx)))
       continue;
+#ifdef __TLE__
+    if (getTleExplicitValueEncoding(cvt.getResult()) ||
+        getTleExplicitValueEncoding(cvt.getSrc()) ||
+        getTleExplicitValueEncoding(mmaValue) ||
+        getTleExplicitValueEncoding(forOp.getResult(blockedIdx)) ||
+        getTleExplicitValueEncoding(forOp.getResult(*mmaIdx)))
+      continue;
+#endif // __TLE__
 
     blockedIdxSeen.set(blockedIdx);
     Operation *waitToCleanup = nullptr;

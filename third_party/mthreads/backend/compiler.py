@@ -835,6 +835,8 @@ class MUSABackend(BaseBackend):
         mthreads.passes.ttgpuir.add_finalize_barriers(pm)
         if hasattr(mthreads.passes.ttgpuir, "add_tle_prepare_warp_specialize"):
             mthreads.passes.ttgpuir.add_tle_prepare_warp_specialize(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_finalize_explicit_layouts"):
+            mthreads.passes.ttgpuir.add_tle_finalize_explicit_layouts(pm)
         pm.run(mod, "make_ttgir")
         metadata["uses_sqmma"] = _module_uses_sqmma(mod)
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()

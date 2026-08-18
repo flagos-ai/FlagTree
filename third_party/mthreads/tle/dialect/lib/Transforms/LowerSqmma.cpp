@@ -447,6 +447,10 @@ struct TritonMUSAGPUTLELowerSqmmaPass
       Value released = ttg::ConvertLayoutOp::create(builder, wait.getLoc(),
                                                     wait.getOutput().getType(),
                                                     nativeWait.getResult(0));
+      if (Attribute explicitEncoding =
+              getTleExplicitValueEncoding(wait.getOutput()))
+        setTleExplicitResultEncoding(released.getDefiningOp(), 0,
+                                     explicitEncoding);
       wait.getOutput().replaceAllUsesWith(released);
       wait.erase();
     }
