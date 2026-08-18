@@ -468,6 +468,7 @@ function(flagtree_add_tle_generated_header_dependencies)
   # parallel build can compile those libraries before the generated .inc files.
   foreach(_flagtree_tle_header_target IN ITEMS
       TritonAnalysis
+      TritonAMDAnalysis
       TritonToTritonGPU
       TritonGPUTransforms
       TritonNvidiaGPUTransforms

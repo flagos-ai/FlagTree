@@ -26,7 +26,9 @@ try:
     from tilelang import language as T
 
     _HAVE_TILELANG = True
-except Exception:  # pragma: no cover - optional dependency
+except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
+    if exc.name != "tilelang":
+        raise
     tilelang = None
     T = None
     _HAVE_TILELANG = False
@@ -35,7 +37,9 @@ try:
     import flash_mla
 
     _HAVE_FLASHMLA = True
-except Exception:  # pragma: no cover - optional dependency
+except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
+    if exc.name != "flash_mla":
+        raise
     flash_mla = None
     _HAVE_FLASHMLA = False
 
@@ -3103,7 +3107,10 @@ BENCH_DEFAULT_SEED = 1
 
 def _bench_ms(fn, warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS):
     ms = triton.testing.do_bench(fn, warmup=warmup, rep=rep)
-    return float(ms if not isinstance(ms, tuple) else ms[0])
+    ms = float(ms if not isinstance(ms, tuple) else ms[0])
+    if not math.isfinite(ms):
+        raise RuntimeError(f"Benchmark returned a non-finite timing: {ms}")
+    return ms
 
 
 _DECODE_BENCH_PROVIDERS = (["triton", "tle", "tle-pipe-pipelined"] +
@@ -3355,10 +3362,14 @@ def benchmark_sparse_mla_fwd(
             rep=rep,
         )
     except Exception as exc:  # pragma: no cover - depends on runtime/resource limits
-        print(f"[bench:{provider}] failed for "
-              f"(B={B}, S={S}, SKV={SKV}, H={H}, HKV={HKV}, DQK={DQK}, DV={DV}, topk={topk}): {exc}")
-        return float("nan"), float("nan"), float("nan")
-    return ms, max_ms, min_ms
+        print(
+            f"[bench:{provider}] failed for "
+            f"(B={B}, S={S}, SKV={SKV}, H={H}, HKV={HKV}, DQK={DQK}, DV={DV}, topk={topk}): {exc}", flush=True)
+        raise
+    result = (ms, max_ms, min_ms)
+    if not all(math.isfinite(float(value)) for value in result):
+        raise RuntimeError(f"Benchmark provider {provider!r} returned non-finite timings: {result}")
+    return result
 
 
 @triton.testing.perf_report(
@@ -3529,10 +3540,14 @@ def benchmark_sparse_mla_decode(
             rep=rep,
         )
     except Exception as exc:  # pragma: no cover - depends on runtime/resource limits
-        print(f"[decode-bench:{provider}] failed for "
-              f"(B={B}, S={S}, SKV={SKV}, H={H}, HKV={HKV}, DQK={DQK}, DV={DV}, topk={topk}): {exc}")
-        return float("nan"), float("nan"), float("nan")
-    return ms, max_ms, min_ms
+        print(
+            f"[decode-bench:{provider}] failed for "
+            f"(B={B}, S={S}, SKV={SKV}, H={H}, HKV={HKV}, DQK={DQK}, DV={DV}, topk={topk}): {exc}", flush=True)
+        raise
+    result = (ms, max_ms, min_ms)
+    if not all(math.isfinite(float(value)) for value in result):
+        raise RuntimeError(f"Decode benchmark provider {provider!r} returned non-finite timings: {result}")
+    return result
 
 
 def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, show_plots=False, tilelang_block_I=64,
@@ -3987,7 +4002,8 @@ def bench_sparse_mla_fwd(
         tle_tflops = _sparse_mla_tflops_from_topk_length(topk_length, H, DQK, DV, tle_ms)
         results.append(("tle", tle_ms, tle_tflops))
     except Exception as exc:  # pragma: no cover - depends on tle/runtime constraints
-        print(f"TLE bench skipped due to compile/runtime error: {exc}")
+        print(f"TLE bench failed due to compile/runtime error: {exc}", flush=True)
+        raise
 
     def run_tle_pipe():
         return tle_pipe_sparse_mla_fwd_interface(q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV,
@@ -3999,7 +4015,8 @@ def bench_sparse_mla_fwd(
         tle_pipe_tflops = _sparse_mla_tflops_from_topk_length(topk_length, H, DQK, DV, tle_pipe_ms)
         results.append(("tle-pipe-pipelined", tle_pipe_ms, tle_pipe_tflops))
     except Exception as exc:  # pragma: no cover - depends on tle/runtime constraints
-        print(f"TLE pipe-pipelined bench skipped due to compile/runtime error: {exc}")
+        print(f"TLE pipe-pipelined bench failed due to compile/runtime error: {exc}", flush=True)
+        raise
 
     def run_tle_flashmla_prefill():
         return tle_flashmla_prefill_interface(q, kv, indices, topk_length=topk_length, sm_scale=sm_scale, d_v=DV,
@@ -4012,7 +4029,8 @@ def bench_sparse_mla_fwd(
                                                                           tle_flashmla_prefill_ms)
         results.append(("tle-flashmla-prefill", tle_flashmla_prefill_ms, tle_flashmla_prefill_tflops))
     except Exception as exc:  # pragma: no cover - depends on tle/runtime constraints
-        print(f"TLE FlashMLA-prefill bench skipped due to compile/runtime error: {exc}")
+        print(f"TLE FlashMLA-prefill bench failed due to compile/runtime error: {exc}", flush=True)
+        raise
 
     if _HAVE_TILELANG:
         resolved_block_i = _resolve_tilelang_block_i(topk, tilelang_block_I)
@@ -4040,7 +4058,8 @@ def bench_sparse_mla_fwd(
             tilelang_tflops = _sparse_mla_tflops_from_topk_length(topk_length, H, DQK, DV, tilelang_ms)
             results.append(("tilelang", tilelang_ms, tilelang_tflops))
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
-            print(f"TileLang bench skipped due to compile/runtime error: {exc}")
+            print(f"TileLang bench failed due to compile/runtime error: {exc}", flush=True)
+            raise
     else:
         print("TileLang is not installed, skip TileLang bench.")
 
@@ -4067,7 +4086,8 @@ def bench_sparse_mla_fwd(
                                                                             tilelang_pipelined_ms)
             results.append(("tilelang-pipelined", tilelang_pipelined_ms, tilelang_pipelined_tflops))
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
-            print(f"Pipelined TileLang bench skipped due to compile/runtime error: {exc}")
+            print(f"Pipelined TileLang bench failed due to compile/runtime error: {exc}", flush=True)
+            raise
 
         def run_tilelang_seesaw():
             return tilelang_sparse_mla_fwd_seesaw_interface(
@@ -4089,7 +4109,8 @@ def bench_sparse_mla_fwd(
             tilelang_seesaw_tflops = _sparse_mla_tflops_from_topk_length(topk_length, H, DQK, DV, tilelang_seesaw_ms)
             results.append(("tilelang-seesaw", tilelang_seesaw_ms, tilelang_seesaw_tflops))
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
-            print(f"Seesaw TileLang bench skipped due to compile/runtime error: {exc}")
+            print(f"Seesaw TileLang bench failed due to compile/runtime error: {exc}", flush=True)
+            raise
 
     if _HAVE_FLASHMLA:
         try:
@@ -4111,7 +4132,8 @@ def bench_sparse_mla_fwd(
             flashmla_tflops = _sparse_mla_tflops_from_topk_length(topk_length, H, DQK, DV, flashmla_ms)
             results.append(("flashmla", flashmla_ms, flashmla_tflops))
         except Exception as exc:  # pragma: no cover - depends on flashmla/runtime constraints
-            print(f"FlashMLA bench skipped due to compile/runtime error: {exc}")
+            print(f"FlashMLA bench failed due to compile/runtime error: {exc}", flush=True)
+            raise
     else:
         print("FlashMLA is not installed, skip FlashMLA bench.")
 
@@ -4254,7 +4276,8 @@ def bench_sparse_mla_decode(
         tle_tflops = _sparse_mla_tflops_from_topk_length(inputs["topk_length_flat"], H, DQK, DV, tle_ms)
         results.append(("tle", tle_ms, tle_tflops))
     except Exception as exc:  # pragma: no cover - depends on tle/runtime constraints
-        print(f"TLE decode bench skipped due to compile/runtime error: {exc}")
+        print(f"TLE decode bench failed due to compile/runtime error: {exc}", flush=True)
+        raise
 
     def run_tle_pipe():
         return tle_pipe_sparse_mla_fwd_interface(
@@ -4274,7 +4297,8 @@ def bench_sparse_mla_decode(
         tle_pipe_tflops = _sparse_mla_tflops_from_topk_length(inputs["topk_length_flat"], H, DQK, DV, tle_pipe_ms)
         results.append(("tle-pipe-pipelined", tle_pipe_ms, tle_pipe_tflops))
     except Exception as exc:  # pragma: no cover - depends on tle/runtime constraints
-        print(f"TLE pipe-pipelined decode bench skipped due to compile/runtime error: {exc}")
+        print(f"TLE pipe-pipelined decode bench failed due to compile/runtime error: {exc}", flush=True)
+        raise
 
     if _HAVE_TILELANG:
         resolved_block_i = _resolve_tilelang_block_i(topk, tilelang_block_I)
@@ -4300,7 +4324,8 @@ def bench_sparse_mla_decode(
             tilelang_tflops = _sparse_mla_tflops_from_topk_length(inputs["topk_length_flat"], H, DQK, DV, tilelang_ms)
             results.append(("tilelang", tilelang_ms, tilelang_tflops))
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
-            print(f"TileLang decode bench skipped due to compile/runtime error: {exc}")
+            print(f"TileLang decode bench failed due to compile/runtime error: {exc}", flush=True)
+            raise
 
         def run_tilelang_pipelined():
             return tilelang_sparse_mla_fwd_pipelined_interface(
@@ -4324,7 +4349,8 @@ def bench_sparse_mla_decode(
                                                                             tilelang_pipelined_ms)
             results.append(("tilelang-pipelined", tilelang_pipelined_ms, tilelang_pipelined_tflops))
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
-            print(f"Pipelined TileLang decode bench skipped due to compile/runtime error: {exc}")
+            print(f"Pipelined TileLang decode bench failed due to compile/runtime error: {exc}", flush=True)
+            raise
 
         def run_tilelang_seesaw():
             return tilelang_sparse_mla_fwd_seesaw_interface(
@@ -4348,7 +4374,8 @@ def bench_sparse_mla_decode(
                                                                          tilelang_seesaw_ms)
             results.append(("tilelang-seesaw", tilelang_seesaw_ms, tilelang_seesaw_tflops))
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
-            print(f"Seesaw TileLang decode bench skipped due to compile/runtime error: {exc}")
+            print(f"Seesaw TileLang decode bench failed due to compile/runtime error: {exc}", flush=True)
+            raise
     else:
         print("TileLang is not installed, skip TileLang decode bench.")
 
@@ -4372,7 +4399,8 @@ def bench_sparse_mla_decode(
             flashmla_tflops = _sparse_mla_tflops_from_topk_length(inputs["topk_length_flat"], H, DQK, DV, flashmla_ms)
             results.append(("flashmla", flashmla_ms, flashmla_tflops))
         except Exception as exc:  # pragma: no cover - depends on flashmla/runtime constraints
-            print(f"FlashMLA decode bench skipped due to compile/runtime error: {exc}")
+            print(f"FlashMLA decode bench failed due to compile/runtime error: {exc}", flush=True)
+            raise
     else:
         print("FlashMLA is not installed, skip FlashMLA decode bench.")
 

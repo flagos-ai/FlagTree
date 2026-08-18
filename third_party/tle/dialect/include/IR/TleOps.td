@@ -393,7 +393,7 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure, AttrSizedOperandSegm
   let hasVerifier = 1;
 }
 def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
-  let summary = "Get nume pes";
+  let summary = "Get the number of intra-node PEs";
   let arguments = (ins
     Tle_LocalPointerResultType:$src
   );
@@ -405,6 +405,15 @@ def Tle_GetDeviceIdOp : Tle_Op<"get_device_id"> {
   let summary = "Get local PE id";
   let arguments = (ins
      Optional<AnyType>:$input
+  );
+  let results = (outs I32:$result);
+  let hasVerifier = 1;
+}
+
+def Tle_GetWorldRankOp : Tle_Op<"get_world_rank"> {
+  let summary = "Get global PE rank";
+  let arguments = (ins
+     Tle_LocalPointerResultType:$input
   );
   let results = (outs I32:$result);
   let hasVerifier = 1;

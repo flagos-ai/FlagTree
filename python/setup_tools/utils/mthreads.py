@@ -25,3 +25,25 @@ def skip_package_dir(package):
 
 def get_package_dir():
     return {}
+
+
+def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
+    is_mthreads = "mthreads" == flagtree_backend
+    cache.store(
+        file="mthreads-llvm22",
+        condition=is_mthreads,
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.5.1.tar.gz",
+        pre_hook=lambda: check_env("LLVM_SYSPATH"),
+        post_hook=set_llvm_env,
+    )
+    cache.store(
+        file="mthreads_local_binary",
+        condition=is_mthreads,
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads_local_binary_v0.6.0.tar.gz",
+    )
+    cache.store(
+        files=("ld.lld", "llc"),
+        condition=is_mthreads,
+        copy_src_path=f"{cache.dir_path}/{flagtree_backend}/mthreads_local_binary",
+        copy_dst_path=f"third_party/{flagtree_backend}/backend/bin",
+    )

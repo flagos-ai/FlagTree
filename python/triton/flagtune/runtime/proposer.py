@@ -48,11 +48,16 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
-
+from triton.flagtune._dependencies import require_optional_dependency
 from triton.flagtune.core.interfaces import BenchmarkFn, ConfigProposer
 from triton.flagtune.contract.identity import ModelIdentity
 from triton.flagtune.contract.operator_schema import VariantInfo
+
+np = require_optional_dependency(
+    "numpy",
+    distribution_name="numpy",
+    feature="FlagTune candidate proposal",
+)
 
 _MODEL_MANAGER: Optional[Any] = None
 _TOP_K_CACHE: Optional[int] = None

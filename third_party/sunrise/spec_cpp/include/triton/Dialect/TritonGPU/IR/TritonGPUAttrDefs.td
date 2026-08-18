@@ -171,25 +171,19 @@ When vec=2, elements are swizzled in pairs of 2.  In other words, the element at
         // ---- begin SunriseMMA ----
         auto sunriseMmaEnc = mlir::dyn_cast<SunriseMmaEncodingAttr>(dotOpEnc.getParent());
         if(sunriseMmaEnc) {
-          if (dotOpEnc.getOpIdx() == 0) {
-            constexpr int numBanks = 32;
-            constexpr int bankBitWidth = 32;
-            constexpr int totalBits = numBanks * bankBitWidth;
-
-            // number of inner dimension rows per one pattern repeat
-            int innerDimLength = shape[order[0]];
-            int elemsPerOneBanksRow = totalBits / typeWidthInBit;
-
-            int perPhase = std::max(1, elemsPerOneBanksRow / innerDimLength);
-            int vecSize =  32 / typeWidthInBit;
-            int maxPhase = 16 / perPhase;
-
-            return get(context, vecSize, perPhase, maxPhase, order, CTALayout);
+          SmallVector<unsigned> instrShape;
+          if((dotOpEnc.getOpIdx() == 0 && sunriseMmaEnc.getIsACol() == false)
+          || (dotOpEnc.getOpIdx() == 1 && sunriseMmaEnc.getIsBCol() == true)) {
+            instrShape = sunriseMmaEnc.getInstrShapeForOperand(0, typeWidthInBit);
           } else {
-            // Do not swizzle in case k dimension is not innermost.
-            // In this case accesses will go in different banks even without swizzling.
-            return get(context, 2, 1, 1, order, CTALayout);
+            instrShape = sunriseMmaEnc.getInstrShapeForOperand(1, typeWidthInBit);
           }
+          unsigned banksTotalBits = 32 * 32;
+          unsigned vec = instrShape[1];
+          unsigned perPhase = std::max<unsigned>(1, banksTotalBits / shape[order[0]] / typeWidthInBit);
+          unsigned maxPhase = instrShape[0] / perPhase;
+          // unsigned maxPhase = shape[order[0]] / vec;
+          return get(context, vec, perPhase, maxPhase, order, CTALayout);
         }
 
         auto blockEnc = mlir::dyn_cast<BlockedEncodingAttr>(dotOpEnc.getParent());
