@@ -57,6 +57,10 @@ jobs:
         with:
           backend: ppu
 
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
       - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
