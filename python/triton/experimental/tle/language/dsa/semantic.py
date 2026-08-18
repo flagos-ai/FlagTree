@@ -50,19 +50,20 @@ def _tile_buffer_binary_op(input: buffer, other: buffer, result: buffer, op_name
     # commonir: route buffer arithmetic through tile.to_tensor/tile.store_tensor.
     lhs = tile_to_tensor(input, False, builder)
     rhs = tile_to_tensor(other, False, builder)
+    semantic = tl_semantic.TritonSemantic(builder)
 
     if op_name == "add":
-        value = tl_semantic.add(lhs, rhs, True, builder)
+        value = semantic.add(lhs, rhs, True)
     elif op_name == "sub":
-        value = tl_semantic.sub(lhs, rhs, True, builder)
+        value = semantic.sub(lhs, rhs, True)
     elif op_name == "mul":
-        value = tl_semantic.mul(lhs, rhs, True, builder)
+        value = semantic.mul(lhs, rhs, True)
     elif op_name == "div":
-        value = tl_semantic.truediv(lhs, rhs, builder)
+        value = semantic.truediv(lhs, rhs)
     elif op_name == "max":
-        value = tl_semantic.maximum(lhs, rhs, tl.PropagateNan.NONE, builder)
+        value = semantic.maximum(lhs, rhs, tl.PropagateNan.NONE)
     elif op_name == "min":
-        value = tl_semantic.minimum(lhs, rhs, tl.PropagateNan.NONE, builder)
+        value = semantic.minimum(lhs, rhs, tl.PropagateNan.NONE)
     else:
         raise ValueError(f"unsupported tile buffer binary op: {op_name}")
 
