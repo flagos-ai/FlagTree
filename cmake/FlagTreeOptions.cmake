@@ -132,7 +132,7 @@ endmacro()
 
 
 macro(flagtree_configure_backend_cxx_flags)
-  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir|ppu)$")
+  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir|ppu|spacemit)$")
     # Suppress visibility warnings in gluon_ir.cc (GCC 13+ -Wattributes on
     # pybind11 hidden types), and -Wcomment for generated
     # TritonGPUAttrDefs.h.inc (ASCII diagrams in TableGen output).
@@ -158,7 +158,7 @@ macro(flagtree_configure_core_source)
   endif()
 
   if(FLAGTREE_BACKEND MATCHES
-     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu)$")
+     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu|spacemit)$")
     include_directories(${PROJECT_SOURCE_DIR}/include)
     include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
     if(FLAGTREE_BACKEND STREQUAL "xpu")
@@ -387,6 +387,41 @@ macro(flagtree_configure_backend_libraries)
       LLVMRISCVAsmParser
       Python3::Module
       pybind11::headers
+    )
+  elseif(FLAGTREE_BACKEND STREQUAL "spacemit")
+    set(TRITON_LIBRARIES
+      ${triton_libs}
+      ${triton_plugins}
+
+      # mlir
+      MLIRAMDGPUDialect
+      MLIRNVVMDialect
+      MLIRNVVMToLLVMIRTranslation
+      MLIRGPUToNVVMTransforms
+      MLIRGPUToGPURuntimeTransforms
+      MLIRGPUTransforms
+      MLIRIR
+      MLIRControlFlowToLLVM
+      MLIRBytecodeWriter
+      MLIRPass
+      MLIRTransforms
+      MLIRLLVMDialect
+      MLIRSupport
+      MLIRTargetLLVMIRExport
+      MLIRMathToLLVM
+      MLIRROCDLToLLVMIRTranslation
+      MLIRGPUDialect
+      MLIRSCFToControlFlow
+      MLIRIndexToLLVM
+      MLIRGPUToROCDLTransforms
+      MLIRUBToLLVM
+
+      # LLVM
+      LLVMPasses
+
+      Python3::Module
+      pybind11::headers
+
     )
   elseif(FLAGTREE_BACKEND STREQUAL "metax" AND BUILD_MCTLE)
     list(APPEND TRITON_LIBRARIES MLIRTargetLLVMIRImport)

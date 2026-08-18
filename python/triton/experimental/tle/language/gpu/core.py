@@ -80,6 +80,34 @@ class pipeline(range):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
 
 
+@tl.builtin
+def set_layout(value, layout, _semantic=None):
+    """tle.gpu.set_layout op"""
+    layout = tl._unwrap_if_constexpr(layout)
+    if not hasattr(layout, "to_ir"):
+        raise ValueError(f"tle.gpu.set_layout expects a layout with to_ir(), got {type(layout)}")
+    if not isinstance(value, tl.tensor):
+        value = _semantic.to_tensor(value)
+    if not value.type.is_block():
+        raise ValueError("tle.gpu.set_layout only supports block tensors")
+    if not hasattr(_semantic.builder, "ensure_ttg_layout_attrs"):
+        raise RuntimeError("tle.gpu.set_layout requires a Triton build with __TLE__ explicit "
+                           "layout support (ir.builder.ensure_ttg_layout_attrs is missing). "
+                           "This backend likely uses its own TLE variant "
+                           "(e.g. __ILUVATAR_TLE__/__MCTLE__) that does not implement this op.")
+    options = _semantic.builder.options
+    _semantic.builder.ensure_ttg_layout_attrs(
+        int(getattr(options, "num_warps")),
+        int(getattr(options, "warp_size", 32)),
+        int(getattr(options, "num_ctas", 1)),
+    )
+    target_encoding = layout.to_ir(_semantic.builder)
+    return tl.tensor(
+        _semantic.builder.create_tle_gpu_set_layout(value.handle, target_encoding),
+        value.type,
+    )
+
+
 class range(_tl_range):
     """
     FlagTree/TLE extension of :func:`triton.language.range`.
@@ -295,6 +323,8 @@ def alloc(
     layout: Optional[tle.shared_layout] = None,
     scope: tle.scope = tle.smem,
     init_value: Optional[tl.tensor] = None,
+    alias: Optional[tle.buffered_tensor] = None,
+    alias_offset_bytes: int = 0,
     nv_mma_shared_layout=True,
     _semantic=None,
 ) -> tle.buffered_tensor:
@@ -306,6 +336,9 @@ def alloc(
         dtype: Data type
         layout: Memory layout encoding (optional)
         scope: Storage type (default to shared memory)
+        init_value: Optional initial register tensor for a new allocation
+        alias: Optional source shared-memory buffer to alias instead of allocating
+        alias_offset_bytes: Static byte offset from alias source view base
         nv_mma_shared_layout: Select an MMA-consumer-defined shared layout when
             ``layout`` is None. On mthreads this is materialized by the SQMMA
             lowering rather than as an NVIDIA encoding.
@@ -331,6 +364,20 @@ def alloc(
 
     if not isinstance(scope, tle.scope):
         raise ValueError(f"Storage type must be tle.scope, but got {type(scope)}")
+
+    alias = tl._unwrap_if_constexpr(alias)
+    alias_offset_bytes = tl._unwrap_if_constexpr(alias_offset_bytes)
+    if alias is not None:
+        if init_value is not None:
+            raise ValueError("alloc alias mode cannot be combined with init_value")
+        if not isinstance(alias, tle.buffered_tensor):
+            raise ValueError(f"alias must be a tle.buffered_tensor, but got {type(alias)}")
+        if scope is not tle.smem or alias.type.storage is not tle.smem:
+            raise ValueError("alloc alias mode currently supports only smem buffers")
+        if isinstance(alias_offset_bytes, bool) or not isinstance(alias_offset_bytes, int):
+            raise ValueError("alias_offset_bytes must be a compile-time integer")
+        if alias_offset_bytes < 0:
+            raise ValueError("alias_offset_bytes must be non-negative")
 
     layout = tl._unwrap_if_constexpr(layout)
     if layout is not None and not isinstance(layout, tle.shared_layout):
@@ -405,12 +452,15 @@ def alloc(
             layout_handle = layout.to_ir(_semantic.builder)
 
         if storage == tle.smem:
-            if init_value is not None:
+            if alias is not None:
+                alias_ty = _semantic.builder.get_memdesc_type(full_shape, elem_type, layout_handle, "smem")
+                tensor_handle = _semantic.builder.create_memdesc_alias(alias_ty, alias.handle, alias_offset_bytes)
+            elif init_value is not None:
                 mutable_ty = _semantic.builder.get_memdesc_type(full_shape, elem_type, layout_handle, "smem")
                 tensor_handle = _semantic.builder.create_local_alloc(mutable_ty, init_value.handle)
             else:
                 tensor_handle = _semantic.builder.create_local_alloc(full_shape, elem_type, layout_handle)
-            if mthreads_auto_sqmma_shared_layout:
+            if mthreads_auto_sqmma_shared_layout and alias is None:
                 mthreads_wgmma.mark_auto_shared_layout(_semantic.builder, tensor_handle)
         else:
             raise ValueError(f"Storage type {storage} not yet supported")

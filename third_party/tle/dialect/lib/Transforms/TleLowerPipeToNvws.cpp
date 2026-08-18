@@ -248,6 +248,10 @@ static Value getMemDescRoot(Value value) {
       current = canonicalizePipeField(subslice.getSrc());
       continue;
     }
+    if (auto alias = current.getDefiningOp<MemDescAliasOp>()) {
+      current = canonicalizePipeField(alias.getSrc());
+      continue;
+    }
     break;
   }
   return current;
@@ -552,6 +556,10 @@ getCommitFieldRootForStore(Value memdesc, PipeWriterCommitOp commit) {
     }
     if (auto subslice = current.getDefiningOp<ttg::MemDescSubsliceOp>()) {
       current = canonicalizePipeField(subslice.getSrc());
+      continue;
+    }
+    if (auto alias = current.getDefiningOp<MemDescAliasOp>()) {
+      current = canonicalizePipeField(alias.getSrc());
       continue;
     }
     break;

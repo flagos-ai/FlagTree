@@ -87,8 +87,6 @@ jobs:
           set -x
           source ~/env.sh
 
-          pip3 install "pytest==9.1.1"
-
           for pkg in hypothesis absl-py scipy pytest-forked expecttest; do
             pip3 list "$pkg" | grep "$pkg" || pip3 install "$pkg"
           done
@@ -101,93 +99,93 @@ jobs:
           fi
 
           # triton language unit test
-          UMD_CUDAMODULELOADING=0 pytest -v third_party/iluvatar/python/test/unit/language/test_core.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_annotations.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_block_pointer.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_compile_errors.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_conversions.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_decorator.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_frontend.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_libdevice.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_iluvatar_math_fp16_bf16.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_iluvatar_int8_upcast_dot_pipeline.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_matmul.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_mxfp.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_pipeliner.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_random.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_reproducer.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_standard.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_subprocess.py
-          UMD_CUDAMODULELOADING=0 pytest -v third_party/iluvatar/python/test/unit/language/test_tensor_descriptor.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_tuple.py
-          pytest -v third_party/iluvatar/python/test/unit/language/test_warp_specialization.py
+          UMD_CUDAMODULELOADING=0 pytest third_party/iluvatar/python/test/unit/language/test_core.py
+          pytest third_party/iluvatar/python/test/unit/language/test_annotations.py
+          pytest third_party/iluvatar/python/test/unit/language/test_block_pointer.py
+          pytest third_party/iluvatar/python/test/unit/language/test_compile_errors.py
+          pytest third_party/iluvatar/python/test/unit/language/test_conversions.py
+          pytest third_party/iluvatar/python/test/unit/language/test_decorator.py
+          pytest third_party/iluvatar/python/test/unit/language/test_frontend.py
+          pytest third_party/iluvatar/python/test/unit/language/test_libdevice.py
+          pytest third_party/iluvatar/python/test/unit/language/test_iluvatar_math_fp16_bf16.py
+          pytest third_party/iluvatar/python/test/unit/language/test_iluvatar_int8_upcast_dot_pipeline.py
+          pytest third_party/iluvatar/python/test/unit/language/test_matmul.py
+          pytest third_party/iluvatar/python/test/unit/language/test_mxfp.py
+          pytest third_party/iluvatar/python/test/unit/language/test_pipeliner.py
+          pytest third_party/iluvatar/python/test/unit/language/test_random.py
+          pytest third_party/iluvatar/python/test/unit/language/test_reproducer.py
+          pytest third_party/iluvatar/python/test/unit/language/test_standard.py
+          pytest third_party/iluvatar/python/test/unit/language/test_subprocess.py
+          UMD_CUDAMODULELOADING=0 pytest third_party/iluvatar/python/test/unit/language/test_tensor_descriptor.py
+          pytest third_party/iluvatar/python/test/unit/language/test_tuple.py
+          pytest third_party/iluvatar/python/test/unit/language/test_warp_specialization.py
 
           # triton operators unit test
-          pytest -v third_party/iluvatar/python/test/unit/operators/test_blocksparse.py
-          pytest -v third_party/iluvatar/python/test/unit/operators/test_cross_entropy.py
-          pytest -v third_party/iluvatar/python/test/unit/operators/test_dot_trans.py
-          pytest -v third_party/iluvatar/python/test/unit/operators/test_flash_attention.py
-          pytest -v third_party/iluvatar/python/test/unit/operators/test_inductor.py
-          pytest -v third_party/iluvatar/python/test/unit/operators/test_matmul.py
-          pytest -v third_party/iluvatar/python/test/unit/operators/test_sme.py
+          pytest third_party/iluvatar/python/test/unit/operators/test_blocksparse.py
+          pytest third_party/iluvatar/python/test/unit/operators/test_cross_entropy.py
+          pytest third_party/iluvatar/python/test/unit/operators/test_dot_trans.py
+          pytest third_party/iluvatar/python/test/unit/operators/test_flash_attention.py
+          pytest third_party/iluvatar/python/test/unit/operators/test_inductor.py
+          pytest third_party/iluvatar/python/test/unit/operators/test_matmul.py
+          pytest third_party/iluvatar/python/test/unit/operators/test_sme.py
 
           # triton runtime unit test
-          pytest -v third_party/iluvatar/python/test/unit/runtime/test_autotuner.py
-          pytest -v third_party/iluvatar/python/test/unit/runtime/test_bindings.py
-          pytest -v third_party/iluvatar/python/test/unit/runtime/test_build.py
-          pytest -v third_party/iluvatar/python/test/unit/runtime/test_cache.py
-          pytest -v third_party/iluvatar/python/test/unit/runtime/test_compilation_listener.py
-          pytest -v third_party/iluvatar/python/test/unit/runtime/test_driver.py
-          pytest -v third_party/iluvatar/python/test/unit/runtime/test_launch.py
-          pytest -v third_party/iluvatar/python/test/unit/runtime/test_specialize.py
-          pytest -v third_party/iluvatar/python/test/unit/runtime/test_subproc.py
-          pytest -v third_party/iluvatar/python/test/unit/runtime/test_iluvatar_loop_unroll_warning.py
+          pytest third_party/iluvatar/python/test/unit/runtime/test_autotuner.py
+          pytest third_party/iluvatar/python/test/unit/runtime/test_bindings.py
+          pytest third_party/iluvatar/python/test/unit/runtime/test_build.py
+          pytest third_party/iluvatar/python/test/unit/runtime/test_cache.py
+          pytest third_party/iluvatar/python/test/unit/runtime/test_compilation_listener.py
+          pytest third_party/iluvatar/python/test/unit/runtime/test_driver.py
+          pytest third_party/iluvatar/python/test/unit/runtime/test_launch.py
+          pytest third_party/iluvatar/python/test/unit/runtime/test_specialize.py
+          pytest third_party/iluvatar/python/test/unit/runtime/test_subproc.py
+          pytest third_party/iluvatar/python/test/unit/runtime/test_iluvatar_loop_unroll_warning.py
 
           # triton instrumentation unit test
-          pytest -v third_party/iluvatar/python/test/unit/instrumentation/test_gpuhello.py
+          pytest third_party/iluvatar/python/test/unit/instrumentation/test_gpuhello.py
 
           # triton tools unit test
-          pytest -v third_party/iluvatar/python/test/unit/tools/test_irsource.py
-          pytest -v third_party/iluvatar/python/test/unit/tools/test_linear_layout.py
+          pytest third_party/iluvatar/python/test/unit/tools/test_irsource.py
+          pytest third_party/iluvatar/python/test/unit/tools/test_linear_layout.py
 
           # triton misc unit test
-          pytest -v third_party/iluvatar/python/test/unit/test_debug_dump.py
-          pytest -v third_party/iluvatar/python/test/unit/test_debug.py
-          pytest -v third_party/iluvatar/python/test/unit/test_debuginfo.py
-          pytest -v third_party/iluvatar/python/test/unit/test_filecheck.py
-          pytest -v third_party/iluvatar/python/test/unit/test_knobs.py
-          UMD_CUDAMODULELOADING=0 pytest -v third_party/iluvatar/python/test/unit/test_link.py
-          pytest -v third_party/iluvatar/python/test/unit/test_perf_warning.py
+          pytest third_party/iluvatar/python/test/unit/test_debug_dump.py
+          pytest third_party/iluvatar/python/test/unit/test_debug.py
+          pytest third_party/iluvatar/python/test/unit/test_debuginfo.py
+          pytest third_party/iluvatar/python/test/unit/test_filecheck.py
+          pytest third_party/iluvatar/python/test/unit/test_knobs.py
+          UMD_CUDAMODULELOADING=0 pytest third_party/iluvatar/python/test/unit/test_link.py
+          pytest third_party/iluvatar/python/test/unit/test_perf_warning.py
 
           # triton regression test
-          pytest -v third_party/iluvatar/python/test/regression/test_cast_matmul.py
-          pytest -v third_party/iluvatar/python/test/regression/test_functional_regressions.py
+          pytest third_party/iluvatar/python/test/regression/test_cast_matmul.py
+          pytest third_party/iluvatar/python/test/regression/test_functional_regressions.py
 
           # triton integrations unit test
-          pytest -v third_party/iluvatar/python/test/unit/integrations/vllm/chunk_o/test_chunk_fwd_kernel_o.py
-          pytest -v third_party/iluvatar/python/test/unit/integrations/vllm/wy_fast/test_recompute_w_u.py
-          pytest -v third_party/iluvatar/python/test/unit/integrations/fbgemm/test_jagged_flash_attention_bwd_basic_min.py
-          PUNICA_TEST_LEVEL=quick pytest -v third_party/iluvatar/python/test/unit/integrations/vllm/punica_lora/test_punica_ops.py
-          pytest -v third_party/iluvatar/python/test/unit/integrations/sglang/flash_mla/test_flash_mla_ut.py
-          pytest -v third_party/iluvatar/python/test/unit/integrations/inductor/test_bucketize_matmul.py
-          pytest -v third_party/iluvatar/python/test/unit/integrations/inductor/test_swfw3103_flex_attention_precision.py
+          pytest third_party/iluvatar/python/test/unit/integrations/vllm/chunk_o/test_chunk_fwd_kernel_o.py
+          pytest third_party/iluvatar/python/test/unit/integrations/vllm/wy_fast/test_recompute_w_u.py
+          pytest third_party/iluvatar/python/test/unit/integrations/fbgemm/test_jagged_flash_attention_bwd_basic_min.py
+          PUNICA_TEST_LEVEL=quick pytest third_party/iluvatar/python/test/unit/integrations/vllm/punica_lora/test_punica_ops.py
+          pytest third_party/iluvatar/python/test/unit/integrations/sglang/flash_mla/test_flash_mla_ut.py
+          pytest third_party/iluvatar/python/test/unit/integrations/inductor/test_bucketize_matmul.py
+          pytest third_party/iluvatar/python/test/unit/integrations/inductor/test_swfw3103_flex_attention_precision.py
 
           # TLE unit test
-          pytest -v python/test/tle/integration/test_tle_local_store.py
-          pytest -v python/test/tle/unit/test_tle_gpu_local_ptr.py
-          pytest -v python/test/tle/unit/test_extract_tile_static_index.py
-          pytest -v python/test/tle/unit/test_extract_tile_dynamic_index.py
-          pytest -v python/test/tle/unit/test_insert_tile_static_index.py
-          pytest -v python/test/tle/unit/test_insert_tile_dynamic_index.py
-          pytest -v python/test/tle/unit/test_tle.py
-          pytest -v third_party/iluvatar/python/test/unit/tle/test_tle_copy.py
-          pytest -v third_party/iluvatar/python/test/unit/tle/test_tle_async_load.py
-          pytest -v third_party/iluvatar/python/test/unit/tle/test_tle_memory_space.py
-          pytest -v third_party/iluvatar/python/test/unit/tle/test_tle_cumsum.py
-          pytest -v third_party/iluvatar/python/test/unit/tle/test_tle_pipeline.py
-          pytest -v third_party/iluvatar/python/test/unit/tle/test_tle_pipeline_e2e.py
-          pytest -v third_party/iluvatar/python/test/unit/tle/test_tle_warp_specialize.py
-          pytest -v third_party/iluvatar/python/test/unit/tle/test_tle_pipe.py
+          pytest python/test/tle/integration/test_tle_local_store.py
+          pytest python/test/tle/unit/test_tle_gpu_local_ptr.py
+          pytest python/test/tle/unit/test_extract_tile_static_index.py
+          pytest python/test/tle/unit/test_extract_tile_dynamic_index.py
+          pytest python/test/tle/unit/test_insert_tile_static_index.py
+          pytest python/test/tle/unit/test_insert_tile_dynamic_index.py
+          pytest python/test/tle/unit/test_tle.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_copy.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_async_load.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_memory_space.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_cumsum.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_pipeline.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_pipeline_e2e.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_warp_specialize.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_pipe.py
 
           # TLE tutorials unit tests
           python3 third_party/iluvatar/python/tutorials/tle/01-fft.py --only_unit_test

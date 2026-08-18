@@ -55,6 +55,8 @@
 
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h" // flagtree tle raw
+#include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
 #endif
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Gluon/IR/Dialect.h"
@@ -121,6 +123,19 @@ parseCommaSeparatedValues(const std::string &input,
   return result;
 }
 
+#ifdef __TLE__
+static ttg::CTAEncodingAttr
+buildTleCtaLayoutAttr(MLIRContext *ctx,
+                      const std::vector<std::vector<int32_t>> &layout,
+                      unsigned rank) {
+  auto kBlock = StringAttr::get(ctx, "block");
+  tt::LinearLayout::BasesT bases;
+  bases[kBlock] = layout;
+  auto outDims = mlir::triton::standardOutDimNames(ctx, rank);
+  tt::LinearLayout ll(std::move(bases), outDims);
+  return ttg::CTAEncodingAttr::get(ctx, std::move(ll));
+}
+#endif
 // Run the pass manager under a source manager diagnostic handler, which
 // enables emitted MLIR diagnostics to directly reference Python source
 // code. This diagnostic handler supports filtering diagnostic info by
@@ -883,6 +898,79 @@ void init_triton_ir(py::module &&m) {
       .def(
           "get_unit_attr",
           [](TritonOpBuilder &self) { return self.getBuilder().getUnitAttr(); })
+#ifdef __TLE__
+      .def("get_blocked_encoding",
+           [](TritonOpBuilder &self, std::vector<unsigned> &sizePerThread,
+              std::vector<unsigned> &threadsPerWarp,
+              std::vector<unsigned> &warpsPerCta, std::vector<unsigned> &order,
+              std::vector<std::vector<int32_t>> &cgaBases) -> Attribute {
+             auto ctx = self.getContext();
+             unsigned rank = order.size();
+             auto ctaLayout = buildTleCtaLayoutAttr(ctx, cgaBases, rank);
+             return ttg::BlockedEncodingAttr::get(ctx, sizePerThread,
+                                                  threadsPerWarp, warpsPerCta,
+                                                  order, ctaLayout);
+           })
+      .def("get_sliced_encoding",
+           [](TritonOpBuilder &self, unsigned dim,
+              Attribute parent) -> Attribute {
+             auto dist = cast<ttg::DistributedEncodingTrait>(parent);
+             return ttg::SliceEncodingAttr::get(self.getContext(), dim, dist);
+           })
+      .def("get_mma_layout",
+           [](TritonOpBuilder &self, std::vector<unsigned> &version,
+              std::vector<unsigned> &warpsPerCta,
+              std::vector<std::vector<int32_t>> &cgaBases,
+              std::vector<unsigned> &instrShape) -> Attribute {
+             auto ctx = self.getContext();
+             unsigned rank = warpsPerCta.size();
+             auto ctaLayout = buildTleCtaLayoutAttr(ctx, cgaBases, rank);
+             return ttg::NvidiaMmaEncodingAttr::get(ctx, version[0], version[1],
+                                                    warpsPerCta, ctaLayout,
+                                                    instrShape);
+           })
+      .def("get_dot_operand_layout",
+           [](TritonOpBuilder &self, unsigned opIdx, Attribute parent,
+              unsigned kWidth) -> Attribute {
+             return ttg::DotOperandEncodingAttr::get(self.getContext(), opIdx,
+                                                     parent, kWidth);
+           })
+      .def("clone_tensor_type_with_encoding",
+           [](TritonOpBuilder &self, Type type, Attribute encoding) -> Type {
+             auto tensorTy = cast<RankedTensorType>(type);
+             return tensorTy.cloneWithEncoding(encoding);
+           })
+      .def("ensure_ttg_layout_attrs",
+           [](TritonOpBuilder &self, int numWarps, int threadsPerWarp,
+              int numCtas) {
+             auto *block = self.getBuilder().getInsertionBlock();
+             if (!block)
+               throw std::invalid_argument("cannot set ttg layout attributes "
+                                           "without an insertion block");
+             Operation *op = block->getParentOp();
+             while (op && !isa<ModuleOp>(op))
+               op = op->getParentOp();
+             auto module = dyn_cast_or_null<ModuleOp>(op);
+             if (!module)
+               throw std::invalid_argument(
+                   "cannot find parent module for ttg layout attributes");
+             auto i32 = IntegerType::get(self.getContext(), 32);
+             module->setAttr("ttg.num-warps", IntegerAttr::get(i32, numWarps));
+             module->setAttr("ttg.threads-per-warp",
+                             IntegerAttr::get(i32, threadsPerWarp));
+             module->setAttr("ttg.num-ctas", IntegerAttr::get(i32, numCtas));
+           })
+      .def("create_convert_layout",
+           [](TritonOpBuilder &self, Type resultTy, Value value) -> Value {
+             return self.create<ttg::ConvertLayoutOp>(resultTy, value);
+           })
+      .def("create_tle_gpu_set_layout",
+           [](TritonOpBuilder &self, Value value,
+              Attribute targetEncoding) -> Value {
+             return self.create<triton::tle::SetLayoutOp>(
+                 value.getType(), value, targetEncoding);
+           })
+#endif
       .def("get_bool_attr",
            [](TritonOpBuilder &self, bool value) {
              return self.getBuilder().getBoolAttr(value);

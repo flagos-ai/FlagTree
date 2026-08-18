@@ -33,7 +33,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     cache.store(
         file="sunrise_llvm22_dev_release",
         condition=is_sunrise,
-        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-9027ac27-triton-v3.6.x.tar.gz",
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-71bd243f-triton-v3.6.x.tar.gz",
         pre_hook=lambda: check_env("LLVM_SYSPATH"),
         post_hook=configure_llvm,
     )

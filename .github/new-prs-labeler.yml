@@ -212,6 +212,13 @@ rpu:
           - '.github/workflows/benchmark/rpu/**'
           - 'python/setup_tools/utils/rpu.py'
 
+spacemit:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'third_party/spacemit/**'
+          - '.github/workflows/spacemit*'
+          - '.github/workflows/benchmark/spacemit/**'
+
 sunrise:
   - changed-files:
       - any-glob-to-any-file:

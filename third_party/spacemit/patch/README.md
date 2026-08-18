@@ -8,15 +8,18 @@ Applied at install time by `scripts/install_flagtree_plugin.sh`.
 | File | Why |
 |------|-----|
 | `CMakeLists.txt` | Gate NVPTX/AMDGPU target libs on `LLVM_TARGETS_TO_BUILD` so the RISC-V-only prebuilt LLVM links cleanly. |
-| `include/triton/Dialect/Triton/IR/TritonAttrDefs.td` | Add `PAD_NEG_INF` / `PAD_INF` to the padding-option enum. |
-| `python/src/ir.cc` | Bind the new `PADDING_OPTION` enum values. |
 | `python/triton/compiler/code_generator.py` | Recognize `smt.parallel` iterator; propagate `bind_sub_block` attr. |
 | `python/triton/language/{semantic,standard}.py` | `neg_inf`/`inf` padding branches. |
 | `python/triton/runtime/interpreter.py` | Interpreter support for the new padding options. |
 | `python/setup_tools/utils/spacemit.py` | **New file.** Build hooks: cmake args, `get_package_data` (ships `driver.c` + `bin/` + `lib/` + `include/` in the wheel), `install_extension` (copy `spine-triton-opt`). |
-| `setup.py` | Spacemit plugin path: build against root triton via `TRITON_PLUGIN_DIRS`, hide `FLAGTREE_BACKEND` from CMake, skip CUDA dep download, gate UT off. |
+| `setup.py` | Spacemit plugin path: build against root triton via `TRITON_PLUGIN_DIRS`, skip CUDA dep download, gate UT off. |
 | `third_party/proton/Dialect/*.td` | LLVM22 dialect fixes (dropped `let llvmOp` field). |
 | `third_party/tle/{CMakeLists.txt,dialect/include/IR/TleDialect.td}` | LLVM22 compat. |
+
+Like PPU, Spacemit keeps `FLAGTREE_BACKEND` visible to CMake. This makes
+`flagtree_include_directories` put `third_party/spacemit/spec_cpp/include`
+before the root Triton include directory, and makes `flagtree_added_python_src`
+pick up overrides such as `third_party/spacemit/python/src/ir.cc`.
 
 ## Application: 3-way fallback
 

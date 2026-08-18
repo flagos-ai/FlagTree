@@ -108,7 +108,14 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
     // the pointers should have for best memory coalescing
     llvm::MapVector<Operation *, Attribute> layoutMap;
     int threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(moduleOp);
+#ifdef __TLE__
+    bool failedExplicitEncoding = false;
+#endif
     moduleOp.walk([&](Operation *curr) {
+#ifdef __TLE__
+      if (failedExplicitEncoding)
+        return;
+#endif
       Value ptr = getMemAccessPtr(curr);
       if (!ptr)
         return;
@@ -118,6 +125,17 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
         isPtrTensor = isa<PointerType>(tensorType.getElementType());
       if (!isPtrTensor)
         return;
+#ifdef __TLE__
+      Attribute explicitEncoding;
+      if (failed(inferTleExplicitMemoryEncoding(curr, explicitEncoding))) {
+        failedExplicitEncoding = true;
+        return;
+      }
+      if (explicitEncoding) {
+        LDBG("skip coalescing memory op with hard TLE encoding: " << *curr);
+        return;
+      }
+#endif
       int numWarps = lookupNumWarps(curr);
 
       auto tensorType = cast<RankedTensorType>(ptr.getType());
@@ -128,6 +146,12 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
                                            ctaLayout, shapePerCTA);
       layoutMap[curr] = layout;
     });
+#ifdef __TLE__
+    if (failedExplicitEncoding) {
+      signalPassFailure();
+      return;
+    }
+#endif
 
     // Also pick a layout for descriptor load/store ops.
     pickDescriptorLoadStoreLayout(moduleOp, layoutMap);
