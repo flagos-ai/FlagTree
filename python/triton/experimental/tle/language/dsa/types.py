@@ -60,6 +60,9 @@ class buffer_type(tl.dtype):
     def scalar(self):
         return self.element_ty
 
+    def _unflatten_ir(self, handles, cursor):
+        return buffer(handles[cursor], self), cursor + 1
+
 
 # -----------------------
 # buffer
