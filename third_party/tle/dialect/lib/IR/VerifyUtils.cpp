@@ -90,8 +90,9 @@ std::optional<std::string> verifySignalWaitOp(SignalWaitKind kind,
                                               mlir::Value target) {
   switch (kind) {
   case SignalWaitKind::SIGNAL:
+  case SignalWaitKind::COUNTER:
     if (!target)
-      return "target must be provided when wait_kind is signal";
+      return "target must be provided when wait_kind is signal or counter";
     break;
   case SignalWaitKind::SHADOW:
     if (target)

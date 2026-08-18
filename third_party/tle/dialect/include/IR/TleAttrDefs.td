@@ -33,6 +33,7 @@ def Tle_SignalWaitKindAttr : I32EnumAttr<
   [
     I32EnumAttrCase<"SIGNAL", 0, "signal">,
     I32EnumAttrCase<"SHADOW", 1, "shadow">,
+    I32EnumAttrCase<"COUNTER", 2, "counter">,
   ]> {
   let cppNamespace = "::mlir::triton::tle";
 }

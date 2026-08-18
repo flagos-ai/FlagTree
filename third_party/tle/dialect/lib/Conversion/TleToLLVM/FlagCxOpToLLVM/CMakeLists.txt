@@ -1,11 +1,8 @@
 set(FLAGCX_TO_LLVM_SRC
     DeviceIntraBarrierOpToLLVM.cpp
     GetLocalRankOpToLLVM.cpp
-<<<<<<< HEAD
     FlagCxSignalOpToLLVM.cpp
-=======
     GetWorldRankOpToLLVM.cpp
->>>>>>> origin/main
     FlagCxOpToLLVM.cpp
 )
 

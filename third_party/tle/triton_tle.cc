@@ -750,6 +750,7 @@ void init_triton_tle_attr(py::module &&m) {
   py::enum_<tle::SignalWaitKind>(m, "SignalWaitKind")
       .value("Signal", tle::SignalWaitKind::SIGNAL)
       .value("Shadow", tle::SignalWaitKind::SHADOW)
+      .value("Counter", tle::SignalWaitKind::COUNTER)
       .def_static(
           "from_str",
           [](std::string name) { return tle::symbolizeSignalWaitKind(name); },
@@ -759,18 +760,22 @@ void init_triton_tle_attr(py::module &&m) {
 void init_triton_tle_utils(py::module &&m) {
   m.def(
       "verify_signal",
-      [](tle::SignalOpKind kind,
-         std::optional<Value> value) -> std::optional<std::string> {
-        return tle::Signal::verifySignalOp(kind, value.value_or(Value()));
+      [](tle::SignalOpKind kind, std::optional<Value> value) {
+        if (auto err =
+                tle::Signal::verifySignalOp(kind, value.value_or(Value()))) {
+          throw py::value_error(*err);
+        }
       },
       py::arg("kind"), py::arg("value") = py::none(),
       "Validate a signal op's (kind, value) combination; returns an error "
       "message or None");
   m.def(
       "verify_signal_wait",
-      [](tle::SignalWaitKind kind,
-         std::optional<Value> target) -> std::optional<std::string> {
-        return tle::Signal::verifySignalWaitOp(kind, target.value_or(Value()));
+      [](tle::SignalWaitKind kind, std::optional<Value> target) {
+        if (auto err = tle::Signal::verifySignalWaitOp(
+                kind, target.value_or(Value()))) {
+          throw py::value_error(*err);
+        }
       },
       py::arg("kind"), py::arg("target") = py::none(),
       "Validate a signal_wait op's (kind, target) combination; returns an "

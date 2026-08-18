@@ -136,6 +136,7 @@ jobs:
               --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
               --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
               --ignore=python/test/tle/unit/test_tle_d2d_barrier.py \
+              --ignore=python/test/tle/unit/test_tle_get_node_rank.py \
               --ignore=python/test/tle/unit/test_tle_signal.py \
               --ignore=python/test/tle/unit/test_tle_signal_wait.py
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_distributed_d2d.sh

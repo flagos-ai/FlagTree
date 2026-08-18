@@ -75,6 +75,7 @@ def _ir_verify(
     expected_wait_func = {
         "signal": "flagcxDevWaitSignal",
         "shadow": "flagcxDevWaitSignalMeetShadow",
+        "counter": "flagcxDevWaitCounter",
     }[wait_kind]
     assert expected_signal_func in compiled.asm["ptx"]
     assert expected_wait_func in compiled.asm["ptx"]
@@ -166,10 +167,12 @@ class TestSignalWait:
         device_dptr = tle.create_dist_tensor(backing)
         inter_node_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         world_result = torch.zeros(1, dtype=torch.int32, device="cuda")
+        counter_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         try:
             phases = (
                 (inter_node_result, world_peer, 0, "inter_node", "inc", "signal"),
                 (world_result, world_peer, 1, "world", "inc", "signal"),
+                (counter_result, world_peer, 2, "world", "inc", "counter"),
             )
             for result, peer, slot_id, signal_space, signal_op, wait_kind in phases:
                 _ir_verify(

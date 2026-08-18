@@ -215,9 +215,7 @@ def signal(
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.uint32, _semantic)
     value_tensor = _normalize_signal_scalar(value, "value", tl.uint64, _semantic) if value is not None else None
 
-    err = utils.verify_signal(signal_op, None if value_tensor is None else value_tensor.handle)
-    if err is not None:
-        raise ValueError(err)
+    utils.verify_signal(signal_op, None if value_tensor is None else value_tensor.handle)
 
     comm = _parse_src_arg(builder, device_dptr, 1)
     builder.create_signal(
@@ -1213,9 +1211,7 @@ def signal_wait(
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
     target_tensor = _normalize_signal_scalar(target, "target", tl.int64, _semantic) if target is not None else None
 
-    err = utils.verify_signal_wait(wait_kind_val, None if target_tensor is None else target_tensor.handle)
-    if err is not None:
-        raise ValueError(err)
+    utils.verify_signal_wait(wait_kind_val, None if target_tensor is None else target_tensor.handle)
 
     builder.create_signal_wait(
         comm,

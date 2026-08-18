@@ -53,6 +53,6 @@ namespace Signal {
 std::optional<std::string> verifySignalOp(SignalOpKind kind, mlir::Value value);
 std::optional<std::string> verifySignalWaitOp(SignalWaitKind kind,
                                               mlir::Value target);
-}
+} // namespace Signal
 
 } // namespace mlir::triton::tle

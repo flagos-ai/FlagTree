@@ -44,7 +44,8 @@ static const llvm::StringMap<StringRef> runtimeNames = {
     {"signalIncFunction", "flagcxDevSignalInc"},
     {"signalAddFunction", "flagcxDevSignalAdd"},
     {"waitSignalFunction", "flagcxDevWaitSignal"},
-    {"waitShadowFunction", "flagcxDevWaitSignalMeetShadow"}};
+    {"waitShadowFunction", "flagcxDevWaitSignalMeetShadow"},
+    {"waitCounterFunction", "flagcxDevWaitCounter"}};
 
 static inline LLVM::LLVMFuncOp createFuncInstance(const char *funcName,
                                                   ModuleOp module,
@@ -248,6 +249,14 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(
   };
 
   switch (wait_kind) {
+  case SignalWaitKind::COUNTER:
+    // Unified: (comm, counter, least, bits, contextId, coopKind, order)
+    func = createFuncInstance(
+        runtimeNames.lookup("waitCounterFunction").data(), module,
+        {PtrTy, I32Ty, I64Ty, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
+    bits = rewriter.create<LLVM::ConstantOp>(loc, I32Ty, 64);
+    return make_call(ValueRange{commPtr, slot_id, target.value(), bits,
+                                contextIdValue, coop_kind_val, order});
   case SignalWaitKind::SIGNAL:
     // Unified: (comm, signal, least, bits, contextId, coopKind, order)
     func = createFuncInstance(
