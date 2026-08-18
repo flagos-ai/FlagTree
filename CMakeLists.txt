@@ -155,7 +155,6 @@ function(add_triton_plugin name)
     set_property(GLOBAL APPEND PROPERTY TRITON_PLUGINS ${name})
     add_triton_object(${name} ${ARGN})
   endif()
-  target_compile_options(${name} PRIVATE ${TRITON_DISABLE_EH_RTTI_FLAGS})
 endfunction()
 
 
