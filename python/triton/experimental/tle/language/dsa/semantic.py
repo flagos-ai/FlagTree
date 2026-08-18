@@ -37,7 +37,7 @@ def _binary_op_type_checking(input: tl.tensor, other: tl.tensor, builder: ir.bui
 
 def copy(src, dst, shape: List[Union[tl.constexpr, int]], inter_no_alias: bool, builder: ir.builder):
     """
-    Generate a unified TileIR copy op.
+    Generate a unified CommonIR copy op.
 
     The CommonIR POC needs TLE DSA and future GPGPU paths to share one IR
     vocabulary. Therefore the public tle.dsa.copy frontend emits tile.copy
@@ -47,6 +47,7 @@ def copy(src, dst, shape: List[Union[tl.constexpr, int]], inter_no_alias: bool, 
 
 
 def _tile_buffer_binary_op(input: buffer, other: buffer, result: buffer, op_name: str, builder: ir.builder):
+    # commonir: route buffer arithmetic through tile.to_tensor/tile.store_tensor.
     lhs = tile_to_tensor(input, False, builder)
     rhs = tile_to_tensor(other, False, builder)
 
@@ -93,7 +94,7 @@ def min(input: buffer, other: buffer, result: buffer, builder: ir.builder):
 
 
 def alloc(etype: tl.dtype, shape: List[tl.constexpr], address_space: address_space, builder: ir.builder) -> buffer:
-    """Allocate a unified TileIR buffer for the public tle.dsa.alloc API."""
+    """Allocate a unified CommonIR buffer for the public tle.dsa.alloc API."""
     return tile_alloc(etype, shape, address_space, builder)
 
 
@@ -103,12 +104,12 @@ def to_buffer(
     bind_buffer: buffer,
     builder: ir.builder,
 ) -> buffer:
-    """Convert a ranked tensor to a unified TileIR buffer."""
+    """Convert a ranked tensor to a unified CommonIR buffer."""
     return tile_to_buffer(tensor, address_space, bind_buffer, builder)
 
 
 def to_tensor(memref: buffer, writable: bool, builder: ir.builder, target_shape=None) -> tl.tensor:
-    """Convert a unified TileIR buffer back to a ranked tensor."""
+    """Convert a unified CommonIR buffer back to a ranked tensor."""
     return tile_to_tensor(memref, writable, builder, target_shape=target_shape)
 
 
@@ -153,12 +154,12 @@ def extract_element(src: tl.tensor, indice: List[tl.tensor], builder: ir.builder
 
 def subview(src: buffer, offsets: List[tl.tensor], sizes: List[tl.constexpr], strides: List[tl.constexpr],
             builder: ir.builder) -> buffer:
-    """Extract a subview using unified TileIR for the public tle.dsa.subview API."""
+    """Extract a subview using unified CommonIR for the public tle.dsa.subview API."""
     return tile_subview(src, offsets, sizes, strides, builder)
 
 
 # ==============================================================================
-# TileIR semantic functions — emit tile.* ops
+# CommonIR semantic functions — emit tile.* ops
 # ==============================================================================
 
 
@@ -184,7 +185,7 @@ def tile_copy(src, dst, shape: List[Union[tl.constexpr, int]], inter_no_alias: b
 
 
 def tile_store_tensor(tensor: tl.tensor, dst: buffer, builder: ir.builder):
-    """Store a ranked tensor value back into a TileIR buffer."""
+    """Store a ranked tensor value back into a CommonIR buffer."""
     if not isinstance(dst, buffer):
         raise TypeError("dst must be a buffer")
     builder.create_tile_store_tensor(tensor.handle, dst.handle)
@@ -196,7 +197,7 @@ def tile_to_buffer(
     bind_buffer: buffer,
     builder: ir.builder,
 ) -> buffer:
-    """Convert a ranked tensor to a TileIR buffer using tile.store_tensor."""
+    """Convert a ranked tensor to a CommonIR buffer using tile.store_tensor."""
     if not isinstance(tensor.shape, (tl.tuple, tuple, list)) or not tensor.shape:
         raise TypeError("scalar type cannot be converted to buffer")
 

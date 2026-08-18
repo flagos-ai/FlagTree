@@ -256,10 +256,10 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, return_module
 
 
 # =============================================================================
-#  Full Linalg IR dump (TTIR → TileIR → Linalg lowering)
+#  Full Linalg IR dump (TTIR → CommonIR → Linalg lowering)
 # =============================================================================
 def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K):
-    """Compile matmul_kernel through full TileIR → Linalg lowering pipeline.
+    """Compile matmul_kernel through full CommonIR → Linalg lowering pipeline.
     """
     from triton._C.libtriton import ir, passes, ascend
 
@@ -270,12 +270,12 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K):
     if path is None:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "flaggems_matmul_triton_linalg.mlir")
 
-    # ── ① TileIR → HIVM ──────────────────────────────────────────────────
+    # ── ① CommonIR → HIVM ──────────────────────────────────────────────────
     pm = ir.pass_manager(context)
     passes.common.add_inliner(pm)
-    ascend.passes.ttir.add_tileir_to_hivm(pm)
+    ascend.passes.ttir.add_commonir_to_hivm(pm)
     pm.run(module)
-    print(f"[dump_linalg] ① tileir_to_hivm: verify={module.verify()}", flush=True)
+    print(f"[dump_linalg] ① commonir_to_hivm: verify={module.verify()}", flush=True)
 
     # ── ①b Erase unrealized_conversion_cast ops ──────────────────────────
     pm = ir.pass_manager(context)

@@ -187,20 +187,21 @@ def dump_ttir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DE
     return mlir
 
 
-def dump_tileir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES, return_module=False):
-    """Dump the frontend TileIR stage before TileIR-to-HIVM lowering."""
+def dump_commonir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES,
+                  return_module=False):
+    """Dump the frontend CommonIR stage before CommonIR-to-HIVM lowering."""
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native_matmul_dsa_tileir.mlir")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native_matmul_dsa_commonir.mlir")
 
     module = _compile_matmul_module(M=M, N=N, K=K, NUM_CORES=NUM_CORES)
     mlir = str(module)
     if "tile." not in mlir:
-        raise RuntimeError("dump_tileir: expected tile.* ops in frontend IR")
+        raise RuntimeError("dump_commonir: expected tile.* ops in frontend IR")
 
     if path:
         with open(path, "w") as f:
             f.write(mlir)
-        print(f"[dump_tileir] module.verify() = True; wrote TileIR ({len(mlir)} chars) to {path}")
+        print(f"[dump_commonir] module.verify() = True; wrote CommonIR ({len(mlir)} chars) to {path}")
 
     if return_module:
         return module
@@ -208,13 +209,13 @@ def dump_tileir(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_
 
 
 # =============================================================================
-#  Full Linalg IR dump (TTIR → TileIR → Linalg lowering)
+#  Full Linalg IR dump (TTIR → CommonIR → Linalg lowering)
 # =============================================================================
 def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_DEFAULT_NUM_CORES):
-    """Compile matmul_kernel through full TileIR → Linalg lowering pipeline.
+    """Compile matmul_kernel through full CommonIR → Linalg lowering pipeline.
 
     Pipeline:
-      ① tileir_to_hivm            — tile.* → memref/hivm
+      ① commonir_to_hivm            — tile.* → memref/hivm
       ①b erase_linalg_casts       — eliminate unrealized casts
       ② structure(r1) + discrete mask
       ③ unstructure + hivm + hfusion + llvm
@@ -235,12 +236,12 @@ def dump_linalg(path=None, M=_DEFAULT_M, N=_DEFAULT_N, K=_DEFAULT_K, NUM_CORES=_
     if path is None:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native_matmul_dsa_linalg.mlir")
 
-    # ── ① TileIR → HIVM ──────────────────────────────────────────────────
+    # ── ① CommonIR → HIVM ──────────────────────────────────────────────────
     pm = ir.pass_manager(context)
     passes.common.add_inliner(pm)
-    ascend.passes.ttir.add_tileir_to_hivm(pm)
+    ascend.passes.ttir.add_commonir_to_hivm(pm)
     pm.run(module)
-    print(f"[dump_linalg] ① tileir_to_hivm: verify={module.verify()}", flush=True)
+    print(f"[dump_linalg] ① commonir_to_hivm: verify={module.verify()}", flush=True)
 
     # ── ①b Erase unrealized_conversion_cast ops ──────────────────────────
     # pm = ir.pass_manager(context)
@@ -331,8 +332,8 @@ if __name__ == "__main__":
     parser.add_argument("--no-check", action="store_true")
     parser.add_argument("--dump-ttir", nargs="?", const="", default=None,
                         help="Dump TTIR to PATH and exit; no device needed.")
-    parser.add_argument("--dump-tileir", nargs="?", const="", default=None,
-                        help="Dump frontend TileIR with tile.* ops to PATH and exit; no device needed.")
+    parser.add_argument("--dump-commonir", nargs="?", const="", default=None,
+                        help="Dump frontend CommonIR with tile.* ops to PATH and exit; no device needed.")
     parser.add_argument("--dump-linalg", nargs="?", const="", default=None,
                         help="Dump Linalg IR to PATH and exit; no device needed.")
     args = parser.parse_args()
@@ -344,8 +345,8 @@ if __name__ == "__main__":
         dump_ttir(path=(args.dump_ttir or None), M=M, N=N, K=K, NUM_CORES=num_cores)
         raise SystemExit(0)
 
-    if args.dump_tileir is not None:
-        dump_tileir(path=(args.dump_tileir or None), M=M, N=N, K=K, NUM_CORES=num_cores)
+    if args.dump_commonir is not None:
+        dump_commonir(path=(args.dump_commonir or None), M=M, N=N, K=K, NUM_CORES=num_cores)
         raise SystemExit(0)
 
     if args.dump_linalg is not None:

@@ -231,7 +231,7 @@ def call(mat_a, mat_b, num_cores=_DEFAULT_NUM_CORES):
 #  Intermediate TTIR dump (no device required)
 #
 #  Compiles the matmul_kernel straight to TTIR using ast_to_ttir and writes
-#  str(module) to a file.  Mirrors the dump_tileir approach in fa_triton_arch.py.
+#  str(module) to a file.  Mirrors the dump_commonir approach in fa_triton_arch.py.
 # =============================================================================
 class _DumpOptions:
     num_warps = 4

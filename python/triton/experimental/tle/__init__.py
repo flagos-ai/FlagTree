@@ -70,7 +70,9 @@ def tle_patch_for_triton_compile():
         # ir.context() will return a new MLIRContext each time, here should keep the same context
         cur_context = ir.context()
         tle_ir.load_dialects(cur_context)
-        tle_ir.dsa_ir.load_tile_dialects(cur_context)
+        # commonir: load tile.* dialect only when the Ascend DSA plugin is present.
+        if hasattr(tle_ir, "dsa_ir"):
+            tle_ir.dsa_ir.load_tile_dialects(cur_context)
 
         original_context_fn = ir.context
 

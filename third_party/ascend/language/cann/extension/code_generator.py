@@ -35,6 +35,7 @@ def mangle_ty(ty):
     # Lazy imports to avoid circular dependencies at module import time.
     from triton import language
     from triton.extension.buffer.language import core as bl
+    # commonir: TLE buffer types use the same mangle format as extension buffers.
     from triton.experimental.tle.language.dsa.types import buffer_type as tle_buffer_type
 
     # Buffer types are Python-side dtypes; handle them first.

@@ -67,15 +67,7 @@ from triton.runtime import driver
 from triton.runtime.cache import get_dump_manager
 from triton.tools.get_ascend_devices import is_compile_on_910_95
 
-# Environment variable to replace intermediate linalg IR with an external file.
-# When set, the compilation pipeline reads the specified .mlir file and uses it
-# instead of the IR generated from the frontend, enabling external IR injection
-# for debugging and validation.
-_TLE_REPLACE_IR_FILE = os.environ.get("TLE_REPLACE_IR_FILE", None)
-if _TLE_REPLACE_IR_FILE is not None:
-    os.environ["TRITON_ALWAYS_COMPILE"] = "1"
-
-# Environment variable to override compile options with a fixed custom set.
+# commonir: Environment variable to override compile options with a fixed custom set.
 # When set to "1", metadata compile options are replaced with predefined values
 # that disable most automatic optimizations (useful for debugging/validation).
 _USE_CUSTOM_COMPILE_OPT = os.environ.get("USE_CUSTOM_COMPILE_OPT", None) or os.environ.get(
@@ -98,10 +90,11 @@ def make_ttir(mod, metadata, opt):
     passes.common.add_canonicalizer(pm)
     passes.ttir.add_reorder_broadcast(pm)
     passes.common.add_cse(pm)
-    # NOTE: LICM is intentionally omitted — it hoists tile.to_tensor above
+    # commonir: NOTE: LICM is intentionally omitted — it hoists tile.to_tensor above
     # tile.copy in loops, breaking the read-after-write ordering required by
     # Ascend's buffer semantics. This causes "operand does not dominate this use"
     # errors in bishengir downstream.
+    # passes.common.add_licm(pm)
     passes.common.add_symbol_dce(pm)
     passes.ttir.add_loop_unroll(pm)
     pm.run(mod)
@@ -145,9 +138,8 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             passes.common.add_cse(pm)
             passes.common.add_canonicalizer(pm)
 
-        ascend.passes.ttir.add_tileir_to_hivm(pm)
-        # some function signature contains !tile.buf which we did not resolve
-        # we just uses an inline pass instead
+        # commonir: lower tile.* ops and inline unresolved !tile.buf signatures.
+        ascend.passes.ttir.add_commonir_to_hivm(pm)
         passes.common.add_inliner(pm)
         passes.common.add_canonicalizer(pm)
 
@@ -165,7 +157,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         ascend.passes.ttir.add_triton_to_linalg(pm, False, named_ops, enable_nd2nz_on_vector, enable_select_analysis,
                                                 compile_on_910_95)
 
-        ascend.passes.ttir.add_tileir_to_hivm(pm)
+        ascend.passes.ttir.add_commonir_to_hivm(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
@@ -632,24 +624,8 @@ def _compile_linalg_to_npu_bin(linalg: str, metadata, opt):
     Delegates to the appropriate platform-specific compilation function
     (910_95 or A2_A3) after the replacement.
     """
-    if _TLE_REPLACE_IR_FILE is not None:
-        replace_path = Path(_TLE_REPLACE_IR_FILE)
-        if not replace_path.is_file():
-            raise FileNotFoundError(f"TLE_REPLACE_IR_FILE={_TLE_REPLACE_IR_FILE} does not exist")
-        print(f"[TLE] Replacing linalg IR with external file: {_TLE_REPLACE_IR_FILE}")
-        linalg = replace_path.read_text()
-        # Override compile options for externally injected IR
-        metadata["num_stages"] = 1
-        metadata["multibuffer"] = False
-        metadata["enable_tuning_mode"] = True
-        metadata["enable_ubuf_saving"] = None
-        metadata["unit_flag"] = False
-        metadata["enable_auto_bind_sub_block"] = True
-        metadata["enable_hivm_auto_cv_balance"] = False
-        metadata["limit_auto_multi_buffer_only_for_local_buffer"] = False
-        metadata["disable_auto_inject_block_sync"] = True
-        metadata["disable_auto_cv_work_space_manage"] = True
-
+    # commonir: disable several passes of bisheng compiler
+    # as we want to lift cv pipeline to kernel level
     if _USE_CUSTOM_COMPILE_OPT is not None:
         metadata["num_stages"] = 1
         metadata["multibuffer"] = False

@@ -6,7 +6,6 @@
 #include "TritonToHFusion/Passes.h"
 
 #include "Dialect/TritonAscend/IR/TritonAscendDialect.h"
-#include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "bishengir/Dialect/HFusion/IR/HFusion.h"
 #include "bishengir/Dialect/HFusion/IR/HFusionImpl.h"
 #include "bishengir/Dialect/Tensor/IR/TensorImpl.h"

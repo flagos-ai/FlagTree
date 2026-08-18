@@ -276,21 +276,21 @@ def extract_element(src, indice, _semantic=None, _generator=None):
 
 
 # ==============================================================================
-# TileIR builtin functions — 3-task flash attention operations
+# CommonIR builtin functions — 3-task flash attention operations
 # ==============================================================================
 
 
 @builtin
 def tile_alloc(shape: List[tl.constexpr], dtype: tl.dtype, mem_addr_space: address_space, _semantic=None,
                _generator=None) -> buffer:
-    """Allocate a buffer in a specific memory space (TileIR path)."""
+    """Allocate a buffer in a specific memory space (CommonIR path)."""
     assert (mem_addr_space is not None)
     return tle_semantic.tile_alloc(dtype, shape, mem_addr_space, _semantic.builder)
 
 
 @builtin
 def tile_copy(src, dst, shape, inter_no_alias=False, _semantic=None, _generator=None):
-    """Copy data using TileIR tile.copy op."""
+    """Copy data using CommonIR tile.copy op."""
     assert len(shape) != 0, "Can't deduce copy extents from args"
     shape = _unwrap_if_constexpr(shape)
     inter_no_alias = _unwrap_if_constexpr(inter_no_alias)
@@ -300,7 +300,7 @@ def tile_copy(src, dst, shape, inter_no_alias=False, _semantic=None, _generator=
 @builtin
 def tile_subview(src: buffer, offsets: List, sizes: List[tl.constexpr], strides: List[tl.constexpr], _semantic=None,
                  _generator=None) -> buffer:
-    """Extract a subview from a buffer using TileIR tile.subview op."""
+    """Extract a subview from a buffer using CommonIR tile.subview op."""
     new_sizes = []
     for i, size in enumerate(sizes):
         if isinstance(size, int):
@@ -338,25 +338,25 @@ def tile_subview(src: buffer, offsets: List, sizes: List[tl.constexpr], strides:
 @builtin
 def tile_to_tensor(memref: buffer, writable: bool = True, target_shape=None, _semantic=None,
                    _generator=None) -> tl.tensor:
-    """Create a tl.tensor from a buffer (TileIR path)."""
+    """Create a tl.tensor from a buffer (CommonIR path)."""
     return tle_semantic.tile_to_tensor(memref, writable, _semantic.builder, target_shape=target_shape)
 
 
 @builtin
 def tile_set_flag(producer_pipe, consumer_pipe, event_id, _semantic=None, _generator=None):
-    """Set a cross-engine synchronization flag (TileIR tile.set_flag)."""
+    """Set a cross-engine synchronization flag (CommonIR tile.set_flag)."""
     tle_semantic.set_flag(producer_pipe, consumer_pipe, event_id, _semantic.builder)
 
 
 @builtin
 def tile_wait_flag(producer_pipe, consumer_pipe, event_id, _semantic=None, _generator=None):
-    """Wait for a cross-engine synchronization flag (TileIR tile.wait_flag)."""
+    """Wait for a cross-engine synchronization flag (CommonIR tile.wait_flag)."""
     tle_semantic.wait_flag(producer_pipe, consumer_pipe, event_id, _semantic.builder)
 
 
 @builtin
 def tile_pipe_barrier(pipe, _semantic=None, _generator=None):
-    """Insert an intra-engine pipeline barrier (TileIR tile.pipe_barrier)."""
+    """Insert an intra-engine pipeline barrier (CommonIR tile.pipe_barrier)."""
     tle_semantic.pipe_barrier(pipe, _semantic.builder)
 
 
@@ -373,7 +373,7 @@ def tensor_to_tile(src: tl.tensor, space: address_space = None, _semantic=None, 
 
 @builtin
 def tile_gm_offset(base, indices, strides, _semantic=None, _generator=None) -> tl.tensor:
-    """Compute a GM pointer with multi-dimensional offsets (TileIR tile.gm_offset)."""
+    """Compute a GM pointer with multi-dimensional offsets (CommonIR tile.gm_offset)."""
     return tle_semantic.tile_gm_offset(base, indices, strides, _semantic.builder)
 
 
@@ -381,7 +381,7 @@ def tile_gm_offset(base, indices, strides, _semantic=None, _generator=None) -> t
 def tile_cube_launch(a: buffer, b: buffer, acc: buffer, stage_a: buffer, stage_b: buffer, dst,
                      transpose_a: bool = False, transpose_b: bool = False, init: bool = False, mma: str = "",
                      _semantic=None, _generator=None):
-    """Launch a Cube matmul using TileIR tile.cube_launch."""
+    """Launch a Cube matmul using CommonIR tile.cube_launch."""
     transpose_a = _unwrap_if_constexpr(transpose_a)
     transpose_b = _unwrap_if_constexpr(transpose_b)
     init = _unwrap_if_constexpr(init)
@@ -392,5 +392,5 @@ def tile_cube_launch(a: buffer, b: buffer, acc: buffer, stage_a: buffer, stage_b
 
 @builtin
 def tile_cube_wait(_semantic=None, _generator=None):
-    """Wait for TileIR Cube work using tile.cube_wait."""
+    """Wait for CommonIR Cube work using tile.cube_wait."""
     tle_semantic.tile_cube_wait(_semantic.builder)

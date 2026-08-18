@@ -19,7 +19,7 @@ python fa_triton_arch.py --dump-linalg=temp_mlir/tmp_fa_linalg_32.mlir --S 1024
 
 输出:
 ```
-[dump_linalg] ① tileir_to_hivm: verify=True
+[dump_linalg] ① commonir_to_hivm: verify=True
 [dump_linalg] ①b erase_linalg_casts: verify=True
 [dump_linalg] ② structure(r1)+discrete_mask: verify=True
 [dump_linalg] ③ unstructure+hivm+hfusion+llvm: verify=True

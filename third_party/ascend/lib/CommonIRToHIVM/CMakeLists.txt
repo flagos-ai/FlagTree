@@ -1,11 +1,11 @@
-add_triton_library(TileIRToHIVM
-  TileIRToHIVM.cpp
+add_triton_library(CommonIRToHIVM
+  CommonIRToHIVM.cpp
 
   DEPENDS
-  TileIRToHIVMConversionPassIncGen
+  CommonIRToHIVMConversionPassIncGen
 
   LINK_LIBS
-  TileIRIR
+  CommonIRIR
   BiShengIRHIVMDialect
   MLIRIR
   MLIRPass

@@ -42,6 +42,7 @@ elseif(FLAGTREE_BACKEND STREQUAL "ascend")
   add_definitions(-D__NVIDIA__)
   add_definitions(-D__AMD__)
   add_definitions(-D__TLE_STRUCT__)
+  # TLE DSA/CommonIR support is Ascend-only; C++ code uses this macro as a guard.
   add_definitions(-D__TLE_DSA__)
   set(CMAKE_C_COMPILER clang)
   set(CMAKE_CXX_COMPILER clang++)
@@ -292,13 +293,13 @@ endfunction()
 # Disable warnings that show up in external code (gtest;pybind11)
 if(NOT MSVC)
   if(FLAGTREE_BACKEND)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default -Wno-dangling-assignment-gsl")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default")
     # For enflame backend, suppress visibility warnings in gluon_ir.cc
     if(FLAGTREE_BACKEND STREQUAL "enflame")
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-attributes")
     endif()
   else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default -Wno-dangling-assignment-gsl -fvisibility=hidden")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default -fvisibility=hidden")
   endif()
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4244 /wd4624 /wd4715 /wd4530")
@@ -441,7 +442,6 @@ if(TRITON_BUILD_PYTHON_MODULE)
     MLIRIndexToLLVM
     MLIRGPUToROCDLTransforms
     MLIRUBToLLVM
-    MLIRFuncInlinerExtension
 
     # LLVM
     LLVMPasses
@@ -454,6 +454,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
     pybind11::headers
 
   )
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    # CommonIR lowering relies on the func inliner extension, which is only
+    # linked for the Ascend DSA backend.
+    list(APPEND TRITON_LIBRARIES MLIRFuncInlinerExtension)
+  endif()
+
   if(FLAGTREE_BACKEND STREQUAL "iluvatar")
     set(TRITON_LIBRARIES
       ${triton_libs}

@@ -9,6 +9,7 @@ flagtree_submodules = {
     tools.Module(name="triton_shared", url="https://github.com/microsoft/triton-shared.git",
                  commit_id="5842469a16b261e45a2c67fbfc308057622b03ee",
                  dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "triton_shared")),
+    # the change here will be reverted after CI passses and ready to merge
     "flir":
     tools.Module(name="flir", url="https://github.com/kateyijian/flir.git",
                  commit_id="16e83b640815ebf159ae44f4138e5f1d5d41af6b",

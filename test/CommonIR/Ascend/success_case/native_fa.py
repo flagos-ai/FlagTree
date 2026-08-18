@@ -179,11 +179,11 @@ def _attn_fwd(Q, K, V, sm_scale, M, Out,  #
 
 
 # =============================================================================
-#  Intermediate-TileIR dump (no device required)
+#  Intermediate-CommonIR dump (no device required)
 #
 #  Compiles the kernel straight to TTIR with the tile/tle/ascend dialects
 #  registered, then writes str(module). The tile.* ops emitted by the tile-DSA
-#  builtins above appear in this dump — that is the intermediate TileIR.
+#  builtins above appear in this dump — that is the intermediate CommonIR.
 #  Mirrors python/test/tle/test_bind_buffer.py::compile_kernel.
 # =============================================================================
 class _DumpOptions:
@@ -225,13 +225,13 @@ def _dump_signature():
     return sig
 
 
-def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is_causal=False):
+def dump_commonir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is_causal=False):
     """Compile _attn_fwd to TTIR and write it to `path`.
 
-    Also runs the TileIR→HIVM pass to lower tile.* ops and dumps the resulting
+    Also runs the CommonIR→HIVM pass to lower tile.* ops and dumps the resulting
     pure TTIR to `ttir_path`. Requires no NPU/GPU — pure front-end compilation.
 
-    Returns the TileIR MLIR string. The TTIR dump is written as a side effect.
+    Returns the CommonIR MLIR string. The TTIR dump is written as a side effect.
     """
     from triton.compiler.compiler import ASTSource
     from triton.compiler.code_generator import ast_to_ttir
@@ -276,15 +276,15 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
     # Ensure the produced IR is legal before writing it out.
     ok = module.verify()
     if not ok:
-        raise RuntimeError("dump_tileir: module.verify() failed — IR is not legal")
+        raise RuntimeError("dump_commonir: module.verify() failed — IR is not legal")
 
-    # ---- dump TileIR (TTIR + tile.* ops) ----
+    # ---- dump CommonIR (TTIR + tile.* ops) ----
     mlir = str(module)
     with open(path, "w") as f:
         f.write(mlir)
-    print(f"[dump_tileir] module.verify() = {ok}; wrote legal TileIR to {path}")
+    print(f"[dump_commonir] module.verify() = {ok}; wrote legal CommonIR to {path}")
 
-    # ---- dump TTIR (TileIR→HIVM + TTIR optimization passes) ----
+    # ---- dump TTIR (CommonIR→HIVM + TTIR optimization passes) ----
     from triton._C.libtriton import passes as ir_passes
     pm = ir.pass_manager(context)
     pm.enable_debug()
@@ -292,18 +292,18 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
     # Phase 0: Inline all sub-functions so tile.buf types don't cross call boundaries.
     ir_passes.common.add_inliner(pm)
 
-    # Phase 1: TileIR→HIVM — lower tile.* ops, producing pure TTIR/HIVM IR.
+    # Phase 1: CommonIR→HIVM — lower tile.* ops, producing pure TTIR/HIVM IR.
     try:
         from triton._C.libtriton.ascend import passes as ascend_passes
-        ascend_passes.ttir.add_tileir_to_hivm(pm)
+        ascend_passes.ttir.add_commonir_to_hivm(pm)
     except Exception:
         pass
     try:
         pm.run(module)
-        print(f"[dump_tileir] after TileIR→HIVM: verify={module.verify()}", flush=True)
+        print(f"[dump_commonir] after CommonIR→HIVM: verify={module.verify()}", flush=True)
     except RuntimeError as e:
-        print(f"[dump_tileir] TileIR→HIVM pass failed (non-fatal): {e}", flush=True)
-        print("[dump_tileir] TileIR output is still valid; skipping HIVM lowering.", flush=True)
+        print(f"[dump_commonir] CommonIR→HIVM pass failed (non-fatal): {e}", flush=True)
+        print("[dump_commonir] CommonIR output is still valid; skipping HIVM lowering.", flush=True)
         return mlir
 
     # Phase 2: TTIR optimization passes (mirrors compiler.py make_ttir).
@@ -318,24 +318,24 @@ def dump_tileir(path=None, ttir_path=None, num_kv_blocks=32, combine_batch=8, is
     ir_passes.common.add_symbol_dce(pm2)
     ir_passes.ttir.add_loop_unroll(pm2)
     pm2.run(module)
-    print(f"[dump_tileir] after TTIR opt passes: verify={module.verify()}", flush=True)
+    print(f"[dump_commonir] after TTIR opt passes: verify={module.verify()}", flush=True)
 
     ttir_ok = module.verify()
     if not ttir_ok:
-        print("[dump_tileir] WARNING: module.verify() failed after TTIR optimization — IR may be illegal")
+        print("[dump_commonir] WARNING: module.verify() failed after TTIR optimization — IR may be illegal")
     else:
-        print(f"[dump_tileir] TTIR optimization complete: verify={ttir_ok}")
+        print(f"[dump_commonir] TTIR optimization complete: verify={ttir_ok}")
 
     ttir_mlir = str(module)
     with open(ttir_path, "w") as f:
         f.write(ttir_mlir)
-    print(f"[dump_tileir] wrote optimized TTIR to {ttir_path}")
+    print(f"[dump_commonir] wrote optimized TTIR to {ttir_path}")
 
     return mlir
 
 
 def dump_hivm(path=None, combine_batch=32, is_causal=False):
-    """Compile the kernel to TTIR, then lower through TileIR→HIVM pipeline to HIVM IR.
+    """Compile the kernel to TTIR, then lower through CommonIR→HIVM pipeline to HIVM IR.
 
     Pipeline (matches compiler.py ttir_to_linalg):
       1. add_triton_to_structure_incubated
@@ -343,7 +343,7 @@ def dump_hivm(path=None, combine_batch=32, is_causal=False):
       3. add_triton_to_unstructure_incubated
       4. add_triton_to_hivm          (Triton CustomOp → HIVM SyncOp)
       5. add_triton_to_hfusion       (Triton → HFusion)
-      6. add_tileir_to_hivm          (TileIR → HIVM)          ← our pass
+      6. add_commonir_to_hivm          (CommonIR → HIVM)          ← our pass
       7. add_triton_to_llvm          (Triton → LLVM)
       8. add_bubble_up_operation
       9. add_triton_to_structure_incubated (second round)
@@ -353,13 +353,13 @@ def dump_hivm(path=None, combine_batch=32, is_causal=False):
     """
     from triton._C.libtriton import ir, passes, ascend
 
-    # Step 1: compile to TTIR (TileIR)
-    tileir_mlir = dump_tileir(path=None, combine_batch=combine_batch, is_causal=is_causal)
+    # Step 1: compile to TTIR (CommonIR)
+    commonir_mlir = dump_commonir(path=None, combine_batch=combine_batch, is_causal=is_causal)
 
     if path is None:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_triton_arch_hivm.mlir")
 
-    # Step 2: parse the TileIR module and run the pass pipeline
+    # Step 2: parse the CommonIR module and run the pass pipeline
     context = ir.context()
     ir.load_dialects(context)
     from triton._C.libtriton import tle as tle_ir
@@ -371,24 +371,24 @@ def dump_hivm(path=None, combine_batch=32, is_causal=False):
     except Exception:
         pass
 
-    # Write TileIR to temp file and parse it back into a module
+    # Write CommonIR to temp file and parse it back into a module
     import tempfile
     with tempfile.NamedTemporaryFile(mode='w', suffix='.mlir', delete=False) as f:
-        f.write(tileir_mlir)
+        f.write(commonir_mlir)
         tmp_path = f.name
     module = ir.parse_mlir_module(tmp_path, context)
     os.unlink(tmp_path)
 
-    # Phase 1: TileIR → HIVM (first pass) — converts:
+    # Phase 1: CommonIR → HIVM (first pass) — converts:
     #   tile.alloc → memref.alloc, tile.to_tensor → unrealized_conversion_cast,
     #   tile.copy  → hivm.copy (tile.* src, on-chip DMA)
     #             or memref.copy (!tt.ptr src, GM↔local DMA),
     #   tile.load/store → hivm.load/store, sync ops → hivm sync ops.
     pm1 = ir.pass_manager(context)
     pm1.enable_debug()
-    ascend.passes.ttir.add_tileir_to_hivm(pm1)
+    ascend.passes.ttir.add_commonir_to_hivm(pm1)
     pm1.run(module)
-    print(f"[dump_hivm] after tileir (pass 1): verify={module.verify()}", flush=True)
+    print(f"[dump_hivm] after commonir (pass 1): verify={module.verify()}", flush=True)
 
     # Phase 2: Triton CustomOp → HIVM SyncOp
     pm2 = ir.pass_manager(context)
@@ -417,10 +417,10 @@ def dump_hivm(path=None, combine_batch=32, is_causal=False):
 
 
 def dump_linalg(path=None, combine_batch=32, is_causal=False):
-    """Compile the kernel through the full TileIR→Linalg lowering pipeline.
+    """Compile the kernel through the full CommonIR→Linalg lowering pipeline.
 
     Pipeline:
-      ① add_tileir_to_hivm               — tile.* → memref/hivm
+      ① add_commonir_to_hivm               — tile.* → memref/hivm
       ② add_triton_to_structure_incubated    — structured ptr analysis (r1)
         add_discrete_mask_access_conversion  — non-contiguous mask handling
       ③ add_triton_to_unstructure_incubated  — scalarize unstructured accesses
@@ -449,13 +449,13 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
     from triton._C.libtriton import ir, passes, ascend
     from triton._C.libtriton import tle as tle_ir
 
-    # Step 1: compile to TTIR (TileIR)
-    tileir_mlir = dump_tileir(path=None, combine_batch=combine_batch, is_causal=is_causal)
+    # Step 1: compile to TTIR (CommonIR)
+    commonir_mlir = dump_commonir(path=None, combine_batch=combine_batch, is_causal=is_causal)
 
     if path is None:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fa_triton_arch_linalg.mlir")
 
-    # Step 2: parse the TileIR module into a fresh context
+    # Step 2: parse the CommonIR module into a fresh context
     context = ir.context()
     ir.load_dialects(context)
     tle_ir.load_dialects(context)
@@ -468,20 +468,20 @@ def dump_linalg(path=None, combine_batch=32, is_causal=False):
 
     import tempfile
     with tempfile.NamedTemporaryFile(mode='w', suffix='.mlir', delete=False) as f:
-        f.write(tileir_mlir)
+        f.write(commonir_mlir)
         tmp_path = f.name
     module = ir.parse_mlir_module(tmp_path, context)
     os.unlink(tmp_path)
 
-    # ── ① TileIR → HIVM ──────────────────────────────────────────────────
+    # ── ① CommonIR → HIVM ──────────────────────────────────────────────────
     pm = ir.pass_manager(context)
     pm.enable_debug()
     passes.common.add_inliner(pm)
-    ascend.passes.ttir.add_tileir_to_hivm(pm)
+    ascend.passes.ttir.add_commonir_to_hivm(pm)
     pm.run(module)
-    print(f"[dump_linalg] ① tileir_to_hivm: verify={module.verify()}", flush=True)
+    print(f"[dump_linalg] ① commonir_to_hivm: verify={module.verify()}", flush=True)
 
-    # ── ①b Erase the unrealized_conversion_cast ops produced by TileIRToHIVM
+    # ── ①b Erase the unrealized_conversion_cast ops produced by CommonIRToHIVM
     #     before any structured/linalg lowering runs.  This turns:
     #       cast !tt.ptr<tensor<>> -> memref  =>  tt.load + bufferization.to_memref
     #       cast memref<,#space>   -> tensor  =>  memref.memory_space_cast + bufferization.to_tensor
@@ -660,9 +660,9 @@ if __name__ == "__main__":
     parser.add_argument("--combine-batch", type=int, default=8, help="KV blocks per task (arch22 nRatio)")
     parser.add_argument(
         "--dump-mlir", nargs="?", const="", default=None,
-        help="Dump intermediate TileIR to PATH (default skill/op/fa_triton_arch.mlir) and exit; no device needed.")
+        help="Dump intermediate CommonIR to PATH (default skill/op/fa_triton_arch.mlir) and exit; no device needed.")
     parser.add_argument("--dump-ir", nargs="?", const="", default=None,
-                        help="Dump HIVM IR (after TileIR→HIVM lowering) to PATH and exit; no device needed.")
+                        help="Dump HIVM IR (after CommonIR→HIVM lowering) to PATH and exit; no device needed.")
     parser.add_argument(
         "--dump-linalg", nargs="?", const="", default=None,
         help="Dump Linalg IR (full lowering through linalg, casts eliminated) to PATH and exit; no device needed.")
@@ -670,9 +670,9 @@ if __name__ == "__main__":
 
     B, S, H, D = args.B, args.S, args.H, args.D
     combine_batch = args.combine_batch
-    # ---- dump intermediate TileIR and exit (no device required) ----
+    # ---- dump intermediate CommonIR and exit (no device required) ----
     if args.dump_mlir is not None:
-        dump_tileir(path=(args.dump_mlir or None), combine_batch=combine_batch, is_causal=args.causal)
+        dump_commonir(path=(args.dump_mlir or None), combine_batch=combine_batch, is_causal=args.causal)
         raise SystemExit(0)
 
     # ---- dump HIVM IR after full lowering pipeline (no device required) ----
@@ -680,7 +680,7 @@ if __name__ == "__main__":
         dump_hivm(path=(args.dump_ir or None), combine_batch=combine_batch, is_causal=args.causal)
         raise SystemExit(0)
 
-    # ---- dump Linalg IR after full TileIR→Linalg lowering (no device required) ----
+    # ---- dump Linalg IR after full CommonIR→Linalg lowering (no device required) ----
     if args.dump_linalg is not None:
         dump_linalg(path=(args.dump_linalg or None), combine_batch=combine_batch, is_causal=args.causal)
         raise SystemExit(0)

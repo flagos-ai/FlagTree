@@ -55,7 +55,7 @@ class buffer_type(tl.dtype):
         element_ty_ir = self.element_ty.to_ir(builder)
         addr_space_attr = self.space.to_ir(builder) if self.space else builder.dsa_get_null_attr()
 
-        # Use TileIR BufType when tile_get_buffer_type is available (TileIR path),
+        # Use CommonIR BufType when tile_get_buffer_type is available (CommonIR path),
         # otherwise fall back to memref (extension/buffer path).
         if hasattr(builder, 'tile_get_buffer_type'):
             return builder.tile_get_buffer_type(self.shape, element_ty_ir, addr_space_attr)
