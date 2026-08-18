@@ -100,7 +100,7 @@ jobs:
 
           # triton language unit test
           UMD_CUDAMODULELOADING=0 pytest third_party/iluvatar/python/test/unit/language/test_core.py
-          py test third_party/iluvatar/python/test/unit/language/test_annotations.py
+          pytest third_party/iluvatar/python/test/unit/language/test_annotations.py
           pytest third_party/iluvatar/python/test/unit/language/test_block_pointer.py
           pytest third_party/iluvatar/python/test/unit/language/test_compile_errors.py
           pytest third_party/iluvatar/python/test/unit/language/test_conversions.py
