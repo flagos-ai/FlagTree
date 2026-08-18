@@ -44,6 +44,10 @@ void populateMemDescWGMMAViewOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
     unsigned benefit = 1);
 
+void populateMemDescAliasOpToLLVMPatterns(
+    mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
+    unsigned benefit = 1);
+
 void populateWGMMASharedOperandFenceOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
     unsigned benefit = 1);
