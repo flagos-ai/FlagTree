@@ -32,6 +32,7 @@ exports a pybind11 surface (see :data:`DEFAULT_MODULES`).
 
 import ast
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -333,6 +334,39 @@ def generate_semantic_stub(build_lib, repo_root=None):
         _trace(f"removed legacy {legacy}")
 
 
+def create_build_lib_symlink(build_lib):
+    """Create a stable 'lib.current' symlink pointing to the platform-specific build dir.
+
+    This allows pyright (and other tools) to reference 'build/lib.current' instead of
+    the platform/version-specific path (e.g. 'build/lib.linux-x86_64-cpython-312').
+    On Windows, falls back to copying the directory if symlinks are unavailable.
+    """
+    if not build_lib:
+        return
+    build_dir = os.path.dirname(build_lib)  # "build"
+    link_path = os.path.join(build_dir, "lib.current")
+    target = os.path.basename(build_lib)    # "lib.linux-x86_64-cpython-312"
+
+    # Remove existing link/file/dir
+    if os.path.islink(link_path):
+        os.unlink(link_path)
+    elif os.path.isdir(link_path):
+        shutil.rmtree(link_path)
+    elif os.path.exists(link_path):
+        os.remove(link_path)
+
+    # Create symlink (or copy on Windows)
+    if platform.system() == "Windows":
+        try:
+            os.symlink(target, link_path, target_is_directory=True)
+        except OSError:
+            _trace("warning: could not create symlink on Windows, copying instead")
+            shutil.copytree(build_lib, link_path)
+    else:
+        os.symlink(target, link_path)
+    _trace(f"created lib.current -> {target}")
+
+
 def auto_generate_stubs_from_install_extension(build_ext):
     """Hook wired around ``helper.install_extension``; ``build_ext`` carries ``build_lib``."""
     try:
@@ -341,3 +375,4 @@ def auto_generate_stubs_from_install_extension(build_ext):
         build_lib = None
     generate_pybind_stubs(build_lib)
     generate_semantic_stub(build_lib)
+    create_build_lib_symlink(build_lib)

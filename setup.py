@@ -437,6 +437,13 @@ class CMakeClean(clean):
         clean.initialize_options(self)
         self.build_temp = get_cmake_dir()
 
+    def run(self):
+        # Remove stable symlink before cleaning build directory
+        link_path = os.path.join("build", "lib.current")
+        if os.path.islink(link_path):
+            os.unlink(link_path)
+        super().run()
+
 
 class CMakeBuildPy(build_py):
 
