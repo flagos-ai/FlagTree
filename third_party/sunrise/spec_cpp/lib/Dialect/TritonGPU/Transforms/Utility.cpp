@@ -27,6 +27,102 @@ namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 namespace mlir {
 
+#ifdef __TLE__
+static constexpr const char *kTleExplicitEncodingAttrPrefix =
+    "tle.explicit_encoding.";
+static constexpr const char *kTleExplicitMemoryEncodingAttrName =
+    "tle.explicit_memory_encoding";
+
+std::string getTleExplicitEncodingAttrName(unsigned resultNumber) {
+  return (llvm::Twine(kTleExplicitEncodingAttrPrefix) +
+          llvm::Twine(resultNumber))
+      .str();
+}
+
+const char *getTleExplicitMemoryEncodingAttrName() {
+  return kTleExplicitMemoryEncodingAttrName;
+}
+
+Attribute getTleExplicitResultEncoding(Operation *op, unsigned resultNumber) {
+  return op->getAttr(getTleExplicitEncodingAttrName(resultNumber));
+}
+
+void setTleExplicitResultEncoding(Operation *op, unsigned resultNumber,
+                                  Attribute encoding) {
+  op->setAttr(getTleExplicitEncodingAttrName(resultNumber), encoding);
+}
+
+void setTleExplicitResultEncoding(OpResult result, Attribute encoding) {
+  setTleExplicitResultEncoding(result.getOwner(), result.getResultNumber(),
+                               encoding);
+}
+
+Attribute getTleExplicitMemoryEncoding(Operation *op) {
+  return op->getAttr(kTleExplicitMemoryEncodingAttrName);
+}
+
+void setTleExplicitMemoryEncoding(Operation *op, Attribute encoding) {
+  op->setAttr(kTleExplicitMemoryEncodingAttrName, encoding);
+}
+
+Attribute getTleExplicitValueEncoding(Value value) {
+  if (auto result = dyn_cast<OpResult>(value))
+    return getTleExplicitResultEncoding(result.getOwner(),
+                                        result.getResultNumber());
+  return nullptr;
+}
+
+static LogicalResult mergeTleExplicitMemoryEncoding(Operation *op, Value value,
+                                                    Attribute candidate,
+                                                    Attribute &encoding) {
+  if (!candidate)
+    return success();
+
+  if (auto tensorType = dyn_cast<RankedTensorType>(value.getType())) {
+    if (tensorType.getEncoding() != candidate)
+      return op->emitOpError("has explicit TLE encoding that does not match "
+                             "the tensor type encoding");
+  }
+
+  if (!encoding) {
+    encoding = candidate;
+    return success();
+  }
+
+  if (encoding == candidate)
+    return success();
+
+  op->emitOpError("has conflicting explicit TLE memory encodings:\n  ")
+      << encoding << "\nand\n  " << candidate;
+  return failure();
+}
+
+LogicalResult inferTleExplicitMemoryEncoding(Operation *op,
+                                             Attribute &encoding) {
+  encoding = getTleExplicitMemoryEncoding(op);
+
+  for (OpResult result : op->getResults()) {
+    if (failed(mergeTleExplicitMemoryEncoding(
+            op, result,
+            getTleExplicitResultEncoding(op, result.getResultNumber()),
+            encoding)))
+      return failure();
+  }
+
+  for (OpOperand &operand : op->getOpOperands()) {
+    if (failed(mergeTleExplicitMemoryEncoding(
+            op, operand.get(), getTleExplicitValueEncoding(operand.get()),
+            encoding)))
+      return failure();
+  }
+
+  return success();
+}
+
+bool isTleExplicitConvertLayoutOp(Operation *op) {
+  return isa<ttg::ConvertLayoutOp>(op) && getTleExplicitResultEncoding(op, 0);
+}
+#endif
 using namespace triton;
 
 SmallVector<unsigned, 3> mmaVersionToInstrShape(int version,
