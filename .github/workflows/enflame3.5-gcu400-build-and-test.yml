@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame-gcu400-build-and-test:
+  enflame35x-gcu400-unit-test:
     runs-on: enflame-gcu400
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
@@ -73,8 +73,8 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
-      - name: FlagTree Build on Enflame (triton_v3.5.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
+      - name: Build FlagTree
+        if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
@@ -91,7 +91,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: enflame
 
-      - name: FlagTree Test on Enflame
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

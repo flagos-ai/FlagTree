@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ascend-build-and-test:
+  ascend35x-unit-test:
     runs-on: ascend3.5
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
@@ -61,7 +61,7 @@ jobs:
         if: steps.check_backend.outputs.should_skip != 'true'
         uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
-      - name: FlagTree Build on Ascend
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -79,7 +79,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: ascend
 
-      - name: FlagTree Test on Ascend
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
