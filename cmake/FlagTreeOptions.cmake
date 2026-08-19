@@ -272,7 +272,7 @@ macro(flagtree_configure_python_plugins)
 
   # Add TLE plugin
   if(FLAGTREE_TLE)
-    if(IS_DIRECTORY(${CMAKE_CURRENT_SOURCE_DIR}/third_party/tle))
+    if(IS_DIRECTORY(${PROJECT_SOURCE_DIR}/third_party/tle))
       list(APPEND TRITON_PLUGIN_NAMES "tle")
       add_subdirectory(third_party/tle)
       flagtree_add_tle_generated_header_dependencies()
