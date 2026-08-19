@@ -204,6 +204,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
   find_package(pybind11 CONFIG REQUIRED HINTS "${Python3_SITELIB}")
   flagtree_python_link_libraries()
 
+  flagtree_configure_tle_plugin()
+
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
   endforeach()
