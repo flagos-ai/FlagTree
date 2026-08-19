@@ -22,9 +22,9 @@ name: Enflame-GCU300-Build-And-Test
 
 on:
   push:
-    branches: [ "triton_v3.3.x", "triton_v3.5.x" ]
+    branches: [ "triton_v3.5.x" ]
   pull_request:
-    branches: [ "triton_v3.3.x" , "triton_v3.5.x"]
+    branches: [ "triton_v3.5.x"]
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame-gcu300-build-and-test:
+  enflame35x-gcu300-unit-test:
     runs-on: enflame-gcu300
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
@@ -73,19 +73,8 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
-      - name: FlagTree Build on Enflame (triton_v3.3.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.3.x' }}
-        shell: bash
-        run: |
-          set -x
-          python3 -m pip uninstall -y triton --break-system-packages
-          python3 -m pip uninstall -y triton_gcu --break-system-packages
-          export FLAGTREE_BACKEND=enflame
-          cd python
-          MAX_JOBS=8 python3 -m pip install . --no-build-isolation --break-system-packages
-
-      - name: FlagTree Build on Enflame (triton_v3.5.x branch)
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
+      - name: Build FlagTree
+        if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
@@ -102,7 +91,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: enflame
 
-      - name: FlagTree Test on Enflame
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |

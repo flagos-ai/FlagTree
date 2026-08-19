@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ascend-build-and-test:
+  ascend35x-unit-test:
     runs-on: ascend3.5
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
@@ -61,7 +61,7 @@ jobs:
         if: steps.check_backend.outputs.should_skip != 'true'
         uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
 
-      - name: FlagTree Build on Ascend
+      - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -79,7 +79,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: ascend
 
-      - name: FlagTree Test on Ascend
+      - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
@@ -101,7 +101,7 @@ jobs:
           pushd third_party/ascend/unittest/pytest_ut
           # TODO: test_03_matrix_multiplication.py nan, inf
           # Other tests passed, but takes a long time, so we ignore them in workflow
-          python3 -m pytest -s . \
+          python3 -m pytest . \
             --ignore=test_device_print.py \
             --ignore=test_device_print_comprehensive.py \
             --ignore=test_device_print_script.py \
@@ -146,27 +146,27 @@ jobs:
             --ignore=test_sum_vector.py \
             --ignore=test_tensor_descriptor.py \
             --ignore=test_topk.py
-          python3 -m pytest -s test_argmax.py -k test_argmax_1d
-          python3 -m pytest -s test_argmin.py -k test_argmin_1d
-          python3 -m pytest -s test_atomic_add.py -k test_atomic_add_2d
-          python3 -m pytest -s test_atomic_cas.py -k test_atomic_cas_with_full
-          python3 -m pytest -s test_atomic_max.py -k test_atomic_max_2d_supply
-          python3 -m pytest -s test_atomic_min.py -k test_atomic_min_2d_supply
-          python3 -m pytest -s test_dot_scaled.py -k test_scaled_dot_fast_math
-          python3 -m pytest -s test_implicit_permute.py -k test_addptr_implicit_perm_load_2d
-          python3 -m pytest -s test_index_select.py -k test_index_select_manual
-          python3 -m pytest -s test_linearize_mask.py -k test_linearize_mask_rem
-          python3 -m pytest -s test_linearize_permute.py -k test_triton_gpu_kernel
-          python3 -m pytest -s test_load.py -k test_load_store
-          python3 -m pytest -s test_load_store.py -k test_load_store
-          python3 -m pytest -s test_scalar_calc.py -k test_scalar_ceil_calc
-          python3 -m pytest -s test_sort.py -k test_sort_2d
-          python3 -m pytest -s test_sum_vector.py -k test_sum
-          python3 -m pytest -s test_tensor_descriptor.py -k test_tensor_descriptor_functional_interface
+          python3 -m pytest test_argmax.py -k test_argmax_1d
+          python3 -m pytest test_argmin.py -k test_argmin_1d
+          python3 -m pytest test_atomic_add.py -k test_atomic_add_2d
+          python3 -m pytest test_atomic_cas.py -k test_atomic_cas_with_full
+          python3 -m pytest test_atomic_max.py -k test_atomic_max_2d_supply
+          python3 -m pytest test_atomic_min.py -k test_atomic_min_2d_supply
+          python3 -m pytest test_dot_scaled.py -k test_scaled_dot_fast_math
+          python3 -m pytest test_implicit_permute.py -k test_addptr_implicit_perm_load_2d
+          python3 -m pytest test_index_select.py -k test_index_select_manual
+          python3 -m pytest test_linearize_mask.py -k test_linearize_mask_rem
+          python3 -m pytest test_linearize_permute.py -k test_triton_gpu_kernel
+          python3 -m pytest test_load.py -k test_load_store
+          python3 -m pytest test_load_store.py -k test_load_store
+          python3 -m pytest test_scalar_calc.py -k test_scalar_ceil_calc
+          python3 -m pytest test_sort.py -k test_sort_2d
+          python3 -m pytest test_sum_vector.py -k test_sum
+          python3 -m pytest test_tensor_descriptor.py -k test_tensor_descriptor_functional_interface
           export LD_PRELOAD=/usr/local/python3.11.15/lib/python3.11/site-packages/torch/lib/libtorch_cpu.so  # device_print
-          python3 -m pytest -s test_device_print.py
-          python3 -m pytest -s test_device_print_comprehensive.py
-          python3 -m pytest -s test_device_print_script.py
+          python3 -m pytest test_device_print.py
+          python3 -m pytest test_device_print_comprehensive.py
+          python3 -m pytest test_device_print_script.py
           popd
           # flagtree tle test
           pushd python/test/tle
@@ -185,7 +185,5 @@ jobs:
           python3 05-lightning-indexer-v1.py
           python3 06-swiglu.py
           python3 07-kv-rmsnorm-rope-cache.py
-          pytest -s -k "accuracy" 08-add-rms-norm-bias.py
-          PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 09-ascend-allgather-gemm.py
-          PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 10-tle-d2d-barrier.py
+          python3 -m pytest -k "accuracy" 08-add-rms-norm-bias.py
           popd

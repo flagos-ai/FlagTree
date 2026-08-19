@@ -38,7 +38,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  nv-build-and-test:
+  nv35x-unit-test:
     runs-on: nvidia3.5
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
@@ -75,7 +75,7 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
-      - name: FlagTree Build on NVidia (triton_v3.5.x branch)
+      - name: Build FlagTree
         if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
         shell: bash
         run: |
@@ -93,7 +93,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: nvidia
 
-      - name: FlagTree Test on NVidia (triton_v3.5.x branch)
+      - name: Unit Test
         if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
         shell: bash
         run: |

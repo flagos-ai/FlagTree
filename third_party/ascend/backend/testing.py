@@ -188,12 +188,20 @@ def _collect_prof_result(
     if target_kernel_name is not None and actual_rows != expected_rows:
         raise ProfilerResultMismatchError(target_kernel_name, expected_rows, actual_rows)
 
+    mul = 1
+    if num_funcs == 1:
+        if actual_rows % expected_rows != 0:
+            return float("inf")
+        mul = actual_rows // expected_rows
+        num_warmup = num_warmup * mul
+        num_active = num_active * mul
+
     time_cost = [0] * num_funcs
     for func_idx in np.arange(0, num_funcs):
         for active_index in np.arange(0, num_active):
             row_index = func_idx * (num_warmup + num_active) + num_warmup + active_index
             time_cost[func_idx] += filter_df.iloc[row_index][col_time]
-    time_cost = [x / num_active / 1e3 for x in time_cost]
+    time_cost = [x * mul / num_active / 1e3 for x in time_cost]
 
     if num_funcs == 1:
         return time_cost[0]
@@ -256,18 +264,26 @@ def do_bench_npu_mspti(
     duration_per_kernel = []
 
     expected_rows = num_funcs * total
-
-    if len(all_kernel_durations) < expected_rows:
+    actual_rows = len(all_kernel_durations)
+    if actual_rows < expected_rows:
         if num_funcs == 1:
             return float("inf")
         return [float("inf")] * num_funcs
+
+    mul = 1
+    if num_funcs == 1:
+        if actual_rows % expected_rows != 0:
+            return float("inf")
+        mul = actual_rows // expected_rows
+        warmup = warmup * mul
+        total = actual_rows
 
     current_idx = 0
     for i in range(num_funcs):
         current_func_records = all_kernel_durations[current_idx:current_idx + total]
         current_idx += total
         current_active_records = current_func_records[warmup:total]
-        avg_time = sum(current_active_records) / len(current_active_records)
+        avg_time = sum(current_active_records) * mul / len(current_active_records)
         avg_time_ms = avg_time / 1000000.0
         duration_per_kernel.append(avg_time_ms)
 

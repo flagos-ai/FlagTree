@@ -52,7 +52,7 @@ def handle_editable_install_mode(is_editable=True):
 # submodules = (Module(name="AscendNPU-IR", url="https://github.com/Ascend/AscendNPU-IR.git", commit_id="4c304921",
 #                      dst_path=os.path.join(flagtree_submodule_dir, "ascend/AscendNPU-IR")), )
 submodules = (Module(name="AscendNPU-IR", url="https://github.com/flagos-ai/FlagTree-AscendNPU-IR.git",
-                     branch="tle-ascend-3.5.x-dev", commit_id="17509803",
+                     branch="tle-ascend-3.5.x-dev", commit_id="a205c957",
                      dst_path=os.path.join(flagtree_submodule_dir, "ascend/AscendNPU-IR")), )
 
 
