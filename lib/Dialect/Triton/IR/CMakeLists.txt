@@ -14,6 +14,13 @@ add_triton_library(TritonIR
   DEPENDS
   TritonTableGen
   TritonCanonicalizeIncGen
+  # flagtree: complete the dependencies related to TritonGPU
+  TritonGPUCGAAttrIncGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUOpsEnumsIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR

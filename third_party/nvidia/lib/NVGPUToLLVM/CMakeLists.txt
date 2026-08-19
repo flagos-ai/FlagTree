@@ -6,4 +6,6 @@ add_triton_library(NVGPUToLLVM
 
     LINK_LIBS PUBLIC
     NVGPUIR
+    # flagtree: complete the dependencies related to TritonGPU
+    TritonGPUIR
 )

@@ -17,6 +17,7 @@ Triton automatically selects the correct underlying device function to invoke ba
 
 import torch
 
+import sys
 import triton
 import triton.language as tl
 import inspect
@@ -52,16 +53,19 @@ def asin_kernel(
 torch.manual_seed(0)
 size = 98432
 x = torch.rand(size, device=DEVICE)
-output_triton = torch.zeros(size, device=DEVICE)
+if '--only_unit_test' not in sys.argv:
+    output_triton = torch.zeros(size, device=DEVICE)
 output_torch = torch.asin(x)
-assert x.is_cuda and output_triton.is_cuda
+if '--only_unit_test' not in sys.argv:
+    assert x.is_cuda and output_triton.is_cuda
 n_elements = output_torch.numel()
 grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']), )
-asin_kernel[grid](x, output_triton, n_elements, BLOCK_SIZE=1024)
-print(output_torch)
-print(output_triton)
-print(f'The maximum difference between torch and triton is '
-      f'{torch.max(torch.abs(output_torch - output_triton))}')
+if '--only_unit_test' not in sys.argv:
+    asin_kernel[grid](x, output_triton, n_elements, BLOCK_SIZE=1024)
+    print(output_torch)
+    print(output_triton)
+    print(f'The maximum difference between torch and triton is '
+          f'{torch.max(torch.abs(output_torch - output_triton))}')
 
 
 # %%

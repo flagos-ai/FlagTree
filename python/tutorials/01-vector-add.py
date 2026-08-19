@@ -18,6 +18,7 @@ In doing so, you will learn about:
 # Compute Kernel
 # --------------
 
+import sys
 import torch
 
 import triton
@@ -91,6 +92,9 @@ print(output_torch)
 print(output_triton)
 print(f'The maximum difference between torch and triton is '
       f'{torch.max(torch.abs(output_torch - output_triton))}')
+
+if '--only_unit_test' in sys.argv:
+    sys.exit(0)
 
 # %%
 # Seems like we're good to go!
