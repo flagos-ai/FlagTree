@@ -29,6 +29,7 @@ from .core import (
 )
 from .pipe import (
     pipe,
+    pipe_cursor,
     pipe_reader,
     pipe_slot,
     pipe_value,
@@ -90,6 +91,7 @@ __all__ = [
     "insert_tile",
     "MeshConfig",
     "pipe",
+    "pipe_cursor",
     "pipe_reader",
     "pipe_slot",
     "pipe_value",

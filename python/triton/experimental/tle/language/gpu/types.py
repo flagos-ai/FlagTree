@@ -842,6 +842,61 @@ class pipe_wait_result(tl.base_value):
         return pipe_wait_result_type(self.slot.type)
 
 
+class pipe_cursor_type(tl.base_type):
+
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple["pipe_cursor", int]:
+        stage, cursor = tl.int32._unflatten_ir(handles, cursor)
+        phase, cursor = tl.int1._unflatten_ir(handles, cursor)
+        return pipe_cursor(self.capacity, stage, phase), cursor
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        tl.int32._flatten_ir_types(builder, out)
+        tl.int1._flatten_ir_types(builder, out)
+
+    def mangle(self) -> str:
+        return f"pipe_cursor_{self.capacity}"
+
+    def __eq__(self, other) -> bool:
+        return type(self) is type(other) and self.capacity == other.capacity
+
+    def __str__(self) -> str:
+        return f"pipe_cursor<capacity={self.capacity}>"
+
+
+class pipe_cursor(tl.base_value):
+    """Loop-carried position in a cyclic pipe.
+
+    The cursor keeps the physical stage and generation phase as first-class IR
+    values so a loop can advance them without recomputing division and modulo
+    from an absolute iteration at every endpoint operation.
+    """
+
+    def __init__(self, capacity: int, stage: tl.tensor, phase: tl.tensor):
+        super().__init__()
+        self.capacity = capacity
+        self.stage = stage
+        self.phase = phase
+
+    def _flatten_ir(self, handles) -> None:
+        self.stage._flatten_ir(handles)
+        self.phase._flatten_ir(handles)
+
+    @property
+    def type(self):
+        return pipe_cursor_type(self.capacity)
+
+    @tl.builtin
+    def advance(self, _semantic=None):
+        next_stage = self.stage.__add__(1, _semantic=_semantic)
+        wrapped = next_stage.__eq__(self.capacity, _semantic=_semantic)
+        stage = tl.where(wrapped, 0, next_stage, _semantic=_semantic)
+        phase = self.phase.__xor__(wrapped, _semantic=_semantic)
+        return pipe_cursor(self.capacity, stage, phase)
+
+
 def _unwrap_pipe_constexpr(value):
     if isinstance(value, tl.constexpr):
         value = value.value
@@ -975,6 +1030,10 @@ class pipe_value(tl.base_value):
 
     @tl.builtin
     def _stage_phase(self, iter, _semantic=None):
+        if isinstance(iter, pipe_cursor):
+            if iter.capacity != self.capacity:
+                raise ValueError(f"pipe cursor capacity {iter.capacity} does not match pipe capacity {self.capacity}")
+            return iter.stage, iter.phase
         iter = tl._unwrap_if_constexpr(iter)
         if isinstance(iter, int):
             stage = iter % self.capacity
@@ -986,6 +1045,15 @@ class pipe_value(tl.base_value):
         phase = phase.__mod__(2, _semantic=_semantic)
         phase = phase.__ne__(0, _semantic=_semantic)
         return _semantic.to_tensor(stage), _semantic.to_tensor(phase)
+
+    @tl.builtin
+    def cursor(self, iter=0, _semantic=None):
+        stage, phase = self._stage_phase(iter, _semantic=_semantic)
+        if stage.dtype != tl.int32:
+            stage = stage.to(tl.int32, _semantic=_semantic)
+        if phase.dtype != tl.int1:
+            phase = phase.to(tl.int1, _semantic=_semantic)
+        return pipe_cursor(self.capacity, stage, phase)
 
     @tl.builtin
     def writer(self, _semantic=None):
@@ -1070,6 +1138,10 @@ class _pipe_endpoint(tl.base_value):
     @property
     def type(self):
         return self.type_cls(self.pipe.type, self.reader_name, self.field_names)
+
+    @tl.builtin
+    def cursor(self, iter=0, _semantic=None):
+        return self.pipe.cursor(iter, _semantic=_semantic)
 
 
 class pipe_writer(_pipe_endpoint):

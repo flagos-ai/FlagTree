@@ -638,6 +638,37 @@ class TestPipeFrontend:
         assert semantic.builder.pipe_ops[3] == ("reader_wait", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"],
                                                 "", ["a"])
 
+    def test_pipe_cursor_is_typed_and_consumed_without_recomputing_position(self):
+        a, semantic = self._make_buffer([4, 16])
+        pipe = tle.pipe(capacity=4, scope="cta", name="a", a=a, _semantic=semantic)
+        writer = pipe.writer(_semantic=semantic)
+        reader = pipe.reader(_semantic=semantic)
+
+        cursor = reader.cursor(5, _semantic=semantic)
+        writer.acquire(cursor, _semantic=semantic)
+        writer.commit(cursor, _semantic=semantic)
+        reader.wait(cursor, _semantic=semantic)
+        reader.release(cursor, _semantic=semantic)
+
+        assert isinstance(cursor, tle.pipe_cursor)
+        assert cursor.type.capacity == 4
+        assert cursor.stage.dtype == tl.int32
+        assert cursor.phase.dtype == tl.int1
+        assert semantic.builder.pipe_ops[0][2:4] == ("stage_1", "pred_True")
+        assert semantic.builder.pipe_ops[2][2:4] == ("stage_1", "pred_True")
+
+    def test_pipe_rejects_cursor_from_a_different_capacity(self):
+        a, semantic = self._make_buffer([4, 16])
+        pipe = tle.pipe(capacity=4, a=a, _semantic=semantic)
+        other_cursor = tle.pipe_cursor(
+            3,
+            TestBufferedTensor._FakeTensor("stage_0", tl.int32),
+            TestBufferedTensor._FakeTensor("pred_False", tl.int1),
+        )
+
+        with pytest.raises(ValueError, match="does not match"):
+            pipe.reader(_semantic=semantic).wait(other_cursor, _semantic=semantic)
+
     def test_pipe_one_shot_keeps_frontend_contract(self):
         a, semantic = self._make_buffer([1, 16])
         pipe = tle.pipe(capacity=1, readers=("left", "right"), one_shot=True, a=a, _semantic=semantic)
@@ -666,6 +697,7 @@ class TestIntegration:
         assert hasattr(tle, 'gpu')
         assert hasattr(tle, 'cumsum')
         assert hasattr(tle, 'pipe')
+        assert hasattr(tle, 'pipe_cursor')
         assert hasattr(tle, 'pipe_reader')
         assert hasattr(tle, 'pipe_writer')
         assert hasattr(tle.gpu, 'alloc')

@@ -134,6 +134,7 @@ def pipe(
 
 
 pipe_slot = gpu_types.pipe_slot
+pipe_cursor = gpu_types.pipe_cursor
 pipe_value = gpu_types.pipe_value
 pipe_reader = gpu_types.pipe_reader
 pipe_writer = gpu_types.pipe_writer
