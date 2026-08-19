@@ -49,6 +49,50 @@ PENDING = "pending"
 READY = "ready"
 
 
+class memory_descriptor_type(tl.base_type):
+    """Base type for memory-backed descriptors with an arbitrary static shape.
+
+    TLE memory descriptors are not register-resident Triton blocks.  In
+    particular, pipeline capacities such as 3 or 6 are valid leading
+    dimensions, and descriptor allocation sizes are governed by the target
+    memory space rather than ``TRITON_MAX_TENSOR_NUMEL``.
+    """
+
+    def __init__(self, element_ty: tl.dtype, shape: List):
+        if not isinstance(element_ty, tl.dtype):
+            raise TypeError(f"element_ty has type `{type(element_ty).__name__}`; expected `dtype`.")
+        if not isinstance(shape, (list, tuple)) or not shape:
+            raise TypeError("memory descriptor shape must be a non-empty list or tuple")
+
+        normalized_shape = []
+        for index, dim in enumerate(shape):
+            dim = tl._unwrap_if_constexpr(dim)
+            if not isinstance(dim, int):
+                raise TypeError(f"Shape element {index} must be an integer, got {type(dim).__name__}")
+            if dim <= 0:
+                raise ValueError(f"Shape element {index} must be positive, got {dim}")
+            normalized_shape.append(dim)
+
+        self.element_ty = element_ty
+        self.shape = tuple(normalized_shape)
+        self.numel = 1
+        for dim in self.shape:
+            self.numel *= dim
+        self.name = f'<{self.shape}, {self.element_ty}>'
+
+    @staticmethod
+    def is_block():
+        return False
+
+    @property
+    def scalar(self):
+        return self.element_ty
+
+    @property
+    def nbytes(self):
+        return self.numel * (self.element_ty.primitive_bitwidth // 8)
+
+
 def _storage_to_memdesc_space(storage: scope) -> str:
     if storage is smem:
         return "smem"
@@ -524,7 +568,7 @@ class buffered_tensor(tl.base_value):
         )
 
 
-class buffered_tensor_type(tl.block_type):
+class buffered_tensor_type(memory_descriptor_type):
 
     def __init__(self, element_ty: tl.dtype, shape: List, storage: scope, layout: Optional[shared_layout] = None,
                  semantic: TritonSemantic = None, alloc_shape: List = None):
@@ -569,8 +613,13 @@ class buffered_tensor_type(tl.block_type):
     def __str__(self) -> str:
         return f"buffered_tensor_<{self.element_ty}, {self.shape}, {self.layout}, {self.alloc_shape}, >"
 
+    def with_element_ty(self, scalar_ty: tl.dtype):
+        return buffered_tensor_type(scalar_ty, self.shape, self.storage, self.layout, self.semantic,
+                                    alloc_shape=self.alloc_shape)
+
     def __eq__(self, other) -> bool:
-        if not (type(self) is type(other) and self.shape == other.shape and self.layout == other.layout
+        if not (type(self) is type(other) and self.element_ty == other.element_ty and self.shape == other.shape
+                and self.storage is other.storage and self.layout == other.layout
                 and self.alloc_shape == other.alloc_shape):
             return False
         self_shard = getattr(self, "_tle_remote_shard_id", None)
@@ -683,7 +732,7 @@ class barrier(tl.base_value):
                        allocation_key=self.allocation_key)
 
 
-class barrier_type(tl.block_type):
+class barrier_type(memory_descriptor_type):
 
     def __init__(
         self,

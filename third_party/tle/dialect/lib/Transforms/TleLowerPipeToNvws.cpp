@@ -1245,14 +1245,22 @@ static PipeState createPipeState(PipeCreateOp op) {
         ttg::MemDescType::get({1}, builder.getI32Type(), closeTagSlotEncoding,
                               sharedMemorySpace, /*mutableMemory=*/true);
 
-    RankedTensorType closeTagArrayTensorType =
-        getCloseTagTensorType(op, builder, {capacity, 1});
-    Value initialCloseTags =
-        createCloseTagTensor(builder, loc, closeTagArrayTensorType,
-                             /*value=*/false);
-    closeTags = ttg::LocalAllocOp::create(builder, loc, closeTagArrayType,
-                                          initialCloseTags);
     closeTagTensorType = getCloseTagTensorType(op, builder, {1});
+    closeTags =
+        ttg::LocalAllocOp::create(builder, loc, closeTagArrayType, Value());
+    // A pipe capacity describes shared-memory slots, not a distributed
+    // register tensor.  Initializing the whole ring through a
+    // tensor<capacity x 1> would therefore reintroduce Triton's power-of-two
+    // register-block restriction for otherwise valid capacities such as 3 or
+    // 6.  Initialize one scalar memdesc slot at a time instead.
+    for (int64_t stage = 0; stage < capacity; ++stage) {
+      Value stageValue = arith::ConstantIntOp::create(builder, loc, stage, 32);
+      Value slot = ttg::MemDescIndexOp::create(builder, loc, closeTagSlotType,
+                                               closeTags, stageValue);
+      Value tag = createCloseTagTensor(builder, loc, closeTagTensorType,
+                                       /*value=*/false);
+      ttg::LocalStoreOp::create(builder, loc, tag, slot);
+    }
   }
   Value token = ttnvws::CreateTokenOp::create(
       builder, loc, static_cast<uint32_t>(capacity),

@@ -41,6 +41,16 @@ def _slot_local_ptr_store_kernel(out_ptr, BLOCK: tl.constexpr):
     tl.store(out_ptr + idx, vals)
 
 
+@triton.jit
+def _non_power_of_two_stage_slot_kernel(out_ptr, BLOCK: tl.constexpr):
+    idx = tl.arange(0, BLOCK)
+    smem = tle.gpu.alloc([6, BLOCK], dtype=tl.int32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    slot = smem.slot(5)
+    ptrs = tle.gpu.local_ptr(slot, (idx, ))
+    tl.store(ptrs, idx + 11)
+    tl.store(out_ptr + idx, tl.load(ptrs))
+
+
 def test_buffered_tensor_slot_lowers_to_memdesc_index_and_executes():
     block = 64
     out = torch.empty((block, ), device="cuda", dtype=torch.int32)
@@ -53,4 +63,18 @@ def test_buffered_tensor_slot_lowers_to_memdesc_index_and_executes():
 
     _slot_local_ptr_store_kernel[(1, )](out, BLOCK=block, num_warps=4)
     expected = torch.arange(0, block, device="cuda", dtype=torch.int32) + 7
+    torch.testing.assert_close(out, expected, atol=0, rtol=0)
+
+
+def test_non_power_of_two_stage_descriptor_lowers_and_executes():
+    block = 64
+    out = torch.empty((block, ), device="cuda", dtype=torch.int32)
+
+    compiled = _non_power_of_two_stage_slot_kernel.warmup(out, BLOCK=block, grid=(1, ), num_warps=4)
+    ttgir = compiled.asm["ttgir"]
+    assert "ttg.memdesc_index" in ttgir
+    assert "!ttg.memdesc<6x64xi32" in ttgir
+
+    _non_power_of_two_stage_slot_kernel[(1, )](out, BLOCK=block, num_warps=4)
+    expected = torch.arange(0, block, device="cuda", dtype=torch.int32) + 11
     torch.testing.assert_close(out, expected, atol=0, rtol=0)

@@ -25,6 +25,18 @@
 #smem = #ttg.shared_memory
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @lower_non_power_of_two_pipe_capacity
+  tt.func @lower_non_power_of_two_pipe_capacity(%a: !ttg.memdesc<6x16xf16, #shared, #smem, mutable>) {
+    // CHECK: %[[TAGS:.*]] = ttg.local_alloc
+    // CHECK-SAME: !ttg.memdesc<6x1xi32
+    // CHECK-NOT: tensor<6x1xi32
+    // CHECK-COUNT-6: ttg.local_store
+    // CHECK: nvws.create_token
+    // CHECK-SAME: numBuffers = 6
+    tle.pipe.create %a {capacity = 6 : i32, pipe_name = "six_stage", field_names = ["a"], scope = "cta"} : !ttg.memdesc<6x16xf16, #shared, #smem, mutable>
+    tt.return
+  }
+
   // CHECK-LABEL: tt.func @lower_pipe_to_nvws
   tt.func @lower_pipe_to_nvws(%a: !ttg.memdesc<2x16xf16, #shared, #smem, mutable>) {
     %c0 = arith.constant 0 : i32

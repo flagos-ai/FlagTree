@@ -352,6 +352,40 @@ class TestBufferedTensor:
         assert hasattr(tle.gpu.buffered_tensor, 'make_permute')
         assert hasattr(tle.gpu.buffered_tensor, 'slot')
 
+    def test_memory_descriptor_shape_is_not_a_register_block_shape(self):
+        """Memory descriptors accept pipeline capacities that register blocks reject."""
+        buffer, _ = self._make_buffer([6, 1, 64, 128])
+
+        assert buffer.type.shape == (6, 1, 64, 128)
+        assert buffer.type.numel == 6 * 64 * 128
+        assert not buffer.type.is_block()
+        with pytest.raises(ValueError):
+            tl.block_type(tl.float16, [6, 1, 64, 128])
+
+    def test_memory_descriptor_shape_still_rejects_invalid_dimensions(self):
+        with pytest.raises(ValueError, match="must be positive"):
+            self._make_buffer([0, 16])
+        with pytest.raises(TypeError, match="must be an integer"):
+            self._make_buffer(["6", 16])
+
+    def test_buffered_tensor_type_equality_includes_dtype_and_storage(self):
+        buffer, semantic = self._make_buffer([6, 16])
+        layout = buffer.type.layout
+        fp32_type = tle.gpu.buffered_tensor_type(tl.float32, [6, 16], tle.gpu.smem, layout, semantic)
+        tmem_type = tle.gpu.buffered_tensor_type(tl.float16, [6, 16], tle.gpu.tmem, layout, semantic)
+
+        assert buffer.type != fp32_type
+        assert buffer.type != tmem_type
+
+    def test_barrier_descriptor_accepts_non_power_of_two_capacity(self):
+        semantic = self._FakeSemantic()
+        layout = tle.gpu.swizzled_shared_layout.make_default(2)
+        barrier_type = tle.gpu.barrier_type(6, 1, "all", None, layout, semantic)
+
+        assert barrier_type.shape == (6, 1)
+        assert barrier_type.numel == 6
+        assert not barrier_type.is_block()
+
     def test_buffered_tensor_slot_indexes_leading_dimension(self):
         """slot(stage) returns a typed view with the leading stage dimension removed."""
         buffer, semantic = self._make_buffer([4, 16, 32])
