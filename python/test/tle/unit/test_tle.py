@@ -12,12 +12,48 @@ Tests core functionality of TLE module, including:
 
 import pytest
 import torch
+import triton
 import inspect
 import triton.language as tl
 import triton.experimental.tle.language as tle
+#import triton.experimental.tle.mega as tlem
+from triton._filecheck import run_parser
+from triton.backends.compiler import GPUTarget
 from triton.language.core import base_value
 from triton.experimental.tle.language.gpu.core import _deduplicate_warp_specialize_captures
 from triton.experimental.tle.language.gpu.semantic import TLESemanticError, TLESemantic
+import triton._C.libtriton as libtriton
+
+
+@triton.jit
+def _encoding_frontend_kernel(layout: tl.constexpr):
+    x = tl.arange(0, 128)
+    y = tle.gpu.set_layout(x, layout)
+    z = y.to(tl.float32)  # noqa: F841
+
+
+@triton.jit
+def _dot_encoding_frontend_kernel(
+    mma_layout: tl.constexpr,
+    lhs_layout: tl.constexpr,
+    rhs_layout: tl.constexpr,
+):
+    lhs = tle.gpu.set_layout(tl.zeros((32, 32), tl.bfloat16), lhs_layout)
+    rhs = tle.gpu.set_layout(tl.zeros((32, 8), tl.bfloat16), rhs_layout)
+    acc = tle.gpu.set_layout(tl.zeros((32, 8), tl.float32), mma_layout)
+    result = tl.dot(lhs, rhs, acc=acc, out_dtype=tl.float32)  # noqa: F841
+
+
+_HAS_TLE_EXPLICIT_LAYOUT = hasattr(libtriton.ir.builder, "ensure_ttg_layout_attrs")
+
+
+def _cuda_backend_available():
+    try:
+        from triton.compiler.compiler import get_backend
+        get_backend(GPUTarget("cuda", 90, 32))
+        return True
+    except Exception:
+        return False
 
 
 class TestLayoutEncoding:
@@ -38,6 +74,47 @@ class TestLayoutEncoding:
         # Original order for 3D rank is [2, 1, 0]
         # Permuting with [1, 0, 2] gives: order[1], order[0], order[2] = [1, 2, 0]
         assert permuted.order == (1, 2, 0)
+
+    @pytest.mark.skipif(not _HAS_TLE_EXPLICIT_LAYOUT, reason="requires __TLE__ build")
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    def test_explicit_distributed_encoding_frontend(self):
+        """Test explicit BlockEncoding/SlicedEncoding frontend lowering."""
+        parent = tle.gpu.BlockEncoding([1, 1], [1, 32], [8, 1], [1, 0])
+        layout = tle.gpu.SlicedEncoding(0, parent)
+        module = run_parser(
+            _encoding_frontend_kernel,
+            kwargs={"layout": layout, "num_warps": 8},
+            target=GPUTarget("cuda", 90, 32),
+        )
+        ir = module.str_nodebug()
+        assert "warpsPerCTA = [8, 1]" in ir
+        assert "tle.gpu.set_layout" in ir
+        assert "ttg.convert_layout" not in ir
+        assert "#ttg.slice<{dim = 0, parent = #blocked}>" in ir
+
+    @pytest.mark.skipif(not _HAS_TLE_EXPLICIT_LAYOUT, reason="requires __TLE__ build")
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    def test_explicit_dot_operand_encoding_frontend(self):
+        """Test explicit MMA and dot-operand frontend lowering."""
+        mma_layout = tle.gpu.MmaEncoding([2, 0], [4, 1], [16, 8])
+        lhs_layout = tle.gpu.DotOperandEncoding(0, mma_layout, 2)
+        rhs_layout = tle.gpu.DotOperandEncoding(1, mma_layout, 2)
+        module = run_parser(
+            _dot_encoding_frontend_kernel,
+            kwargs={
+                "mma_layout": mma_layout,
+                "lhs_layout": lhs_layout,
+                "rhs_layout": rhs_layout,
+                "num_warps": 4,
+            },
+            target=GPUTarget("cuda", 90, 32),
+        )
+        ir = module.str_nodebug()
+        assert "versionMajor = 2" in ir
+        assert "warpsPerCTA = [4, 1]" in ir
+        assert "opIdx = 0" in ir
+        assert "opIdx = 1" in ir
+        assert "kWidth = 2" in ir
 
 
 class TestPipeline:

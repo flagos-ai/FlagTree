@@ -74,12 +74,23 @@ def _get_local_rank(device_dptr, _semantic: TLESemantic | None = None, ret_dtype
     return tl.tensor(result, ret_dtype)
 
 
-# The number of devices in the world
+# Get the current world rank
+@tl.builtin
+def _get_world_rank(device_dptr, _semantic=None, ret_dtype=tl.int32):
+    builder = _semantic.builder
+    ret_ir_ty = ret_dtype.to_ir(builder)
+    ptr = _parse_src_arg(builder, device_dptr, 1)
+    result = builder.get_world_rank(ret_ir_ty, ptr)
+    return tl.tensor(result, ret_dtype)
+
+
+# The number of devices on the current node
 @tl.builtin
 def n_pes(dev_mem_ptr, _semantic: TLESemantic | None = None, ret_dtype=tl.int32):
     builder = _semantic.builder
     ret_ir_ty = ret_dtype.to_ir(builder)
-    result = builder.get_n_pes(ret_ir_ty, dev_mem_ptr.handle)
+    ptr = _parse_src_arg(builder, dev_mem_ptr, 1)
+    result = builder.get_n_pes(ret_ir_ty, ptr)
     return tl.tensor(result, ret_dtype)
 
 
@@ -642,13 +653,21 @@ def shard_id(
     Return current shard coordinate on the given launch mesh axis.
 
     `axis` can be axis name (`str`) or axis index (`int`, supports negative).
+    `device` returns the intra-node rank; `node` returns the inter-node rank.
     The returned value is a scalar int32 tensor.
     """
     mesh = tl._unwrap_if_constexpr(mesh)
     axis = tl._unwrap_if_constexpr(axis)
 
-    if axis in ("device", "node"):
+    if axis in ("device", "node") and device_dptr is None:
+        raise ValueError(f"device_dptr is required for axis {axis!r}")
+
+    if axis == "device":
         return _get_local_rank(device_dptr, _semantic=_semantic, ret_dtype=tl.int32)
+    if axis == "node":
+        world_rank = _get_world_rank(device_dptr, _semantic=_semantic, ret_dtype=tl.int32)
+        local_world_size = n_pes(device_dptr, _semantic=_semantic, ret_dtype=tl.int32)
+        return _semantic.floordiv(world_rank, local_world_size)
 
     if not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh, got {type(mesh).__name__}")

@@ -1,0 +1,106 @@
+name: Spacemit3.6-Build-And-Test
+
+# SpaceMiT RISC-V 后端 CI (root-triton plugin)。
+#
+# 执行环境: self-hosted runner (label spacemit3.6)。
+# RPC 执行: jdsk-qemu v10.0.2 用户态模拟 (-cpu max,vlen=1024,elen=64,vext_spec=v1.0)
+#           跑 spine-rpc-server, host triton 交叉编译 kernel 后通过 TCP 9999 发给 QEMU 执行。
+# LLVM / spine-mlir / spine-runtime / rpc-runtime / toolchain / jdsk-qemu 由
+# python/setup_tools/utils/spacemit.py 下载到 FlagTree 缓存。
+# 更新包: 修改 third_party/spacemit/spacemit-ci.env 里的 URL+MD5 即可。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main", "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "main", "triton_v3.6.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spacemit36x-unit-test:
+    runs-on: spacemit3.6
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    env:
+      SPINE_TRITON_RPC_HOST: "127.0.0.1"
+      SPINE_TRITON_RPC_PORT: "9999"
+      SPINE_TRITON_TARGET_ARCH: "riscv64"
+      SPACEMIT_EP_QEMU_SET_CORE_ARCH: "0xA064"
+      GEMS_VENDOR: "spacemit"
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: spacemit
+
+      - name: Stop QEMU RPC server
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          bash third_party/spacemit/scripts/stop_rpc_server.sh
+
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
+      - name: Build
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export SPACEMIT_CACHE="${HOME}/.flagtree/spacemit"
+          env | grep -E '^(SPACEMIT_CACHE)=' >> $GITHUB_ENV || true
+          set -a; source third_party/spacemit/spacemit-ci.env; set +a
+          bash third_party/spacemit/scripts/install_flagtree_plugin.sh
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: spacemit
+
+      - name: Start QEMU RPC server and run tests
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+
+          # start server: /tmp/rpc_server.pid
+          source third_party/spacemit/scripts/setup_rpc_session.sh
+          bash third_party/spacemit/scripts/start_rpc_server.sh
+          python3 third_party/spacemit/scripts/smoke_test.py
+
+          # test: /tmp/rpc.log
+          export SPINE_TRITON_DUMP_PATH="/tmp/spine_triton_dump"
+          mkdir -p "${SPINE_TRITON_DUMP_PATH}"
+          python3 third_party/spacemit/python/examples/mm_block_ptr.py
+
+      - name: Stop QEMU RPC server
+        if: always() && steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          bash third_party/spacemit/scripts/stop_rpc_server.sh

@@ -66,8 +66,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler
 
-import numpy as np
-
+from triton.flagtune._dependencies import require_optional_dependency, require_xgboost
 from triton.flagtune._version import __version__ as _FLAGTUNE_VERSION
 from triton.flagtune.contract.archive import (
     ModelArchiveError,
@@ -85,6 +84,12 @@ from triton.flagtune.contract.operator_schema import (
     load_model_config_bytes,
     model_config_sha256,
     model_identity_from_config,
+)
+
+np = require_optional_dependency(
+    "numpy",
+    distribution_name="numpy",
+    feature="FlagTune model loading",
 )
 
 if TYPE_CHECKING:
@@ -604,7 +609,7 @@ class FlagTuneModelManager:
             self._packages[(platform_key, package.version, digest)] = parsed_package
             logger.info("FlagTune platform package cached to %s", destination)
             return destination
-        except (FileNotFoundError, IncompatibleModelError, ValueError):
+        except (FileNotFoundError, ImportError, IncompatibleModelError, ValueError):
             raise
         except Exception as exc:
             raise RuntimeError(
@@ -628,10 +633,8 @@ class _XGBoostPredictorCompat:
         config_digest: str,
         model_path: Path,
     ) -> None:
-        from xgboost import XGBRanker
-
         self.feature_cols: List[str] = list(variant.feature_names)
-        self._model = XGBRanker()
+        self._model = require_xgboost("FlagTune model loading").XGBRanker()
         self._model.load_model(bytearray(model_payload))
         booster = self._model.get_booster()
         stored_digest = booster.attr("flagtune_config_sha256")

@@ -38,6 +38,9 @@ A 36-minute compile in `override_dh_auto_build` is slow, hard to debug, and
 collides with `dh-python`'s expectations for a pure-Python `pyproject` build.
 The two-stage Docker approach builds the wheel once, then wraps it cheaply
 into a `.deb`/`.rpm` — keeping the heavy lifting in a controlled container.
+The wheel builders use the distro nlohmann-json headers through
+`JSON_SYSPATH=/usr`; backend-specific LLVM and device tools remain pinned to
+the versions expected by each backend.
 
 ## Build locally
 

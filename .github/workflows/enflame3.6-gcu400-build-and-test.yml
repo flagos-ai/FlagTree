@@ -106,7 +106,8 @@ jobs:
           python3 -m pytest python/test/tle \
               --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
               --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
-              --ignore=python/test/tle/unit/test_tle_d2d_barrier.py
+              --ignore=python/test/tle/unit/test_tle_d2d_barrier.py \
+              --ignore=python/test/tle/unit/test_tle_get_node_rank.py
 
           ## tle raw test
           python3 -m pytest third_party/enflame/python/test/tle/raw

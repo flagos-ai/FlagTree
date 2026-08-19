@@ -44,8 +44,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 
-import numpy as np
-
+from triton.flagtune._dependencies import require_optional_dependency, require_xgboost
 from triton.flagtune._version import __version__ as flagtune_version
 from triton.flagtune.contract.operator_schema import (
     VariantInfo,
@@ -55,6 +54,12 @@ from triton.flagtune.contract.operator_schema import (
 )
 from triton.flagtune.contract.identity import ModelIdentity
 from triton.flagtune.contract.archive import MODEL_ARCHIVE_NAME, validate_model_version, write_model_archive
+
+np = require_optional_dependency(
+    "numpy",
+    distribution_name="numpy",
+    feature="FlagTune model training",
+)
 
 
 class TrainingDataError(ValueError):
@@ -565,17 +570,13 @@ def train_xgboost_ranker(
     if resolved.learning_rate <= 0:
         raise ValueError("learning_rate must be positive")
 
-    try:
-        from xgboost import XGBRanker
-    except ImportError as exc:
-        raise ImportError("FlagTune model training requires xgboost; install the optional "
-                          "training dependency before running this API") from exc
+    xgboost = require_xgboost("FlagTune model training")
 
     prepare_start = time.perf_counter()
     data = prepare_ranking_data(variant, benchmark_path, resolved)
     prepare_elapsed = time.perf_counter() - prepare_start
     callbacks, progress = _progress_callback(resolved.n_estimators, resolved.show_progress)
-    model = XGBRanker(
+    model = xgboost.XGBRanker(
         n_estimators=resolved.n_estimators,
         max_depth=resolved.max_depth,
         learning_rate=resolved.learning_rate,

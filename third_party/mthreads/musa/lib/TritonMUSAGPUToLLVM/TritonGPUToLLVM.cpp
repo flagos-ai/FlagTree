@@ -31,6 +31,11 @@
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#ifdef __TLE__
+#include "mlir/Conversion/Passes.h"
+#include "mlir/Pass/PassManager.h"
+#include "triton/Conversion/TritonGPUToLLVM/WarpSpecializeUtility.h"
+#endif // __TLE__
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -491,6 +496,34 @@ struct ConvertTritonMUSAGPUToLLVM
     TritonLLVMConversionTarget convTarget(*context);
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
+
+#ifdef __TLE__
+    // Warp-specialize is deliberately legal during the ordinary MUSA
+    // conversion so its producer/default regions remain structurally
+    // available to the TLE late-lowering pass.  Convert only the container
+    // boundary types here, after the nested operations have been converted.
+    SmallVector<Operation *> staticWarpSpecializeOps;
+    mod.walk([&](Operation *op) {
+      if (!isa<triton::gpu::WarpSpecializeOp,
+               triton::gpu::WarpSpecializePartitionsOp,
+               triton::gpu::WarpYieldOp, triton::gpu::WarpReturnOp>(op))
+        return;
+      auto ws = dyn_cast<triton::gpu::WarpSpecializeOp>(op);
+      if (!ws)
+        ws = op->getParentOfType<triton::gpu::WarpSpecializeOp>();
+      if (ws && ws->hasAttr("musa_tle.static_warp_specialize"))
+        staticWarpSpecializeOps.push_back(op);
+    });
+    for (Operation *op : staticWarpSpecializeOps)
+      mlir::triton::convertOpTypes(op, typeConverter);
+
+    if (!staticWarpSpecializeOps.empty()) {
+      OpPassManager cleanup;
+      cleanup.addPass(createReconcileUnrealizedCastsPass());
+      if (failed(runPipeline(cleanup, mod)))
+        return signalPassFailure();
+    }
+#endif // __TLE__
 
     if (failed(lowerPredicatedLoadStoreCalls(mod, computeCapability)))
       return signalPassFailure();

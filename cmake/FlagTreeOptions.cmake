@@ -132,7 +132,7 @@ endmacro()
 
 
 macro(flagtree_configure_backend_cxx_flags)
-  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir|ppu)$")
+  if(FLAGTREE_BACKEND MATCHES "^(enflame|hcu|rpu|thrive|metax|xpu|tileir|ppu|spacemit)$")
     # Suppress visibility warnings in gluon_ir.cc (GCC 13+ -Wattributes on
     # pybind11 hidden types), and -Wcomment for generated
     # TritonGPUAttrDefs.h.inc (ASCII diagrams in TableGen output).
@@ -158,7 +158,7 @@ macro(flagtree_configure_core_source)
   endif()
 
   if(FLAGTREE_BACKEND MATCHES
-     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu)$")
+     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu|spacemit)$")
     include_directories(${PROJECT_SOURCE_DIR}/include)
     include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
     if(FLAGTREE_BACKEND STREQUAL "xpu")
@@ -388,6 +388,41 @@ macro(flagtree_configure_backend_libraries)
       Python3::Module
       pybind11::headers
     )
+  elseif(FLAGTREE_BACKEND STREQUAL "spacemit")
+    set(TRITON_LIBRARIES
+      ${triton_libs}
+      ${triton_plugins}
+
+      # mlir
+      MLIRAMDGPUDialect
+      MLIRNVVMDialect
+      MLIRNVVMToLLVMIRTranslation
+      MLIRGPUToNVVMTransforms
+      MLIRGPUToGPURuntimeTransforms
+      MLIRGPUTransforms
+      MLIRIR
+      MLIRControlFlowToLLVM
+      MLIRBytecodeWriter
+      MLIRPass
+      MLIRTransforms
+      MLIRLLVMDialect
+      MLIRSupport
+      MLIRTargetLLVMIRExport
+      MLIRMathToLLVM
+      MLIRROCDLToLLVMIRTranslation
+      MLIRGPUDialect
+      MLIRSCFToControlFlow
+      MLIRIndexToLLVM
+      MLIRGPUToROCDLTransforms
+      MLIRUBToLLVM
+
+      # LLVM
+      LLVMPasses
+
+      Python3::Module
+      pybind11::headers
+
+    )
   elseif(FLAGTREE_BACKEND STREQUAL "metax" AND BUILD_MCTLE)
     list(APPEND TRITON_LIBRARIES MLIRTargetLLVMIRImport)
   endif()
@@ -454,28 +489,42 @@ function(flagtree_add_tle_generated_header_dependencies)
     list(APPEND _flagtree_tle_codegen_deps TritonTLETransformsIncGen)
   endif()
 
+  set(_flagtree_enflame_tle_header_targets
+      MLIRTritonToGCU_gcu300
+      MLIRTritonToGCU_gcu400
+      MLIRGCUTritonToTritonGPU_gcu400
+      MLIRTritonGCUTransforms_gcu400
+      triton_gcu300_core
+      triton_gcu400_core)
+
   # Native compiler targets include TLE generated headers under __TLE__ guards.
   # The TLE dialect is added after the core libraries, so the dependency must be
   # attached explicitly once the TLE tablegen targets exist; otherwise a clean
   # parallel build can compile those libraries before the generated .inc files.
   foreach(_flagtree_tle_header_target IN ITEMS
       TritonAnalysis
+      TritonAMDAnalysis
       TritonToTritonGPU
       TritonGPUTransforms
       TritonNvidiaGPUTransforms
       TritonNVIDIAGPUToLLVM
       TritonGPUToLLVM
       NVHopperTransforms
+      ${_flagtree_enflame_tle_header_targets}
       triton
       triton-opt
       triton-reduce
       triton-lsp
       triton-llvm-opt
       triton-tensor-layout)
-    if(TARGET ${_flagtree_tle_header_target})
-      add_dependencies(${_flagtree_tle_header_target}
-        ${_flagtree_tle_codegen_deps})
-    endif()
+    foreach(_flagtree_tle_dependency_target IN ITEMS
+        ${_flagtree_tle_header_target}
+        obj.${_flagtree_tle_header_target})
+      if(TARGET ${_flagtree_tle_dependency_target})
+        add_dependencies(${_flagtree_tle_dependency_target}
+          ${_flagtree_tle_codegen_deps})
+      endif()
+    endforeach()
   endforeach()
 endfunction()
 
