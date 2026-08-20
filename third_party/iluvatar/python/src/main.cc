@@ -47,6 +47,9 @@ void init_gluon_ir(pybind11::module &&m);
 #endif
 void init_linear_layout(pybind11::module &&m);
 void init_native_specialize(pybind11::module &m);
+#ifdef __ILUVATAR_TLE__
+void init_triton_iluvatar_tle_compat(pybind11::module &&m);
+#endif
 FOR_EACH_P(DECLARE_BACKEND, TRITON_BACKENDS_TUPLE)
 
 PYBIND11_MODULE(libtriton, m) {
@@ -61,6 +64,9 @@ PYBIND11_MODULE(libtriton, m) {
   init_linear_layout(m.def_submodule("linear_layout"));
 #ifdef TRITON_BUILD_GLUON
   init_gluon_ir(m.def_submodule("gluon_ir"));
+#endif
+#ifdef __ILUVATAR_TLE__
+  init_triton_iluvatar_tle_compat(m.def_submodule("tle"));
 #endif
   FOR_EACH_P(INIT_BACKEND, TRITON_BACKENDS_TUPLE)
 }

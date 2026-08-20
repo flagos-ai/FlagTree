@@ -81,6 +81,15 @@ try:
 except ImportError:
     pass
 
+try:
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    if FLAGTREE_BACKEND == "iluvatar":
+        from .iluvatar import CorexJITFunction
+        registry["corex"] = CorexJITFunction
+        registry["cuda"] = CorexJITFunction
+except ImportError:
+    pass
+
 
 def dialect(
     *,
