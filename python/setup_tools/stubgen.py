@@ -345,7 +345,7 @@ def create_build_lib_symlink(build_lib):
         return
     build_dir = os.path.dirname(build_lib)  # "build"
     link_path = os.path.join(build_dir, "lib.current")
-    target = os.path.basename(build_lib)    # "lib.linux-x86_64-cpython-312"
+    target = os.path.basename(build_lib)  # "lib.linux-x86_64-cpython-312"
 
     # Remove existing link/file/dir
     if os.path.islink(link_path):
