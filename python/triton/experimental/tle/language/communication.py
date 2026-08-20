@@ -19,7 +19,13 @@
 # SOFTWARE.
 
 try:
-    from triton.backends.nvidia.distributed import flagcx_rt_conf
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+except ImportError:
+    FLAGTREE_BACKEND = "nvidia"
+try:
+    import importlib
+    flagcx_rt_conf = importlib.import_module(
+        f"triton.backends.{FLAGTREE_BACKEND or 'nvidia'}.distributed").flagcx_rt_conf
     enabled = flagcx_rt_conf.is_available
 except Exception:
     enabled = False

@@ -70,6 +70,11 @@ jobs:
           export TRITON_OFFLINE_BUILD=1
           export TRITON_BUILD_PROTON=OFF
           export TRITON_ILU_BUILD_GLUON=OFF
+          export USE_FLAGCX=ON
+          export FLAGCX_RECOMPILE=ON
+          export FLAGCX_CACHE=clean
+          export FLAGCX_ILUVATAR_CLANG="${FLAGCX_ILUVATAR_CLANG:-$(command -v clang)}"
+          export FLAGCX_ILUVATAR_SDK="${FLAGCX_ILUVATAR_SDK:-$(dirname "$(dirname "$(realpath "$FLAGCX_ILUVATAR_CLANG")")")}"
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Clear cache if ClearCache label present
@@ -184,6 +189,22 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_pipeline_e2e.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_warp_specialize.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_pipe.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_get_device_id.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_distributed.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_n_pes.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_distributed_barrier.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_remote_pointers.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_raw.py
+
+          if (( $(ixsmi -L 2>/dev/null | grep -c "^GPU") >= 2 )); then
+            DIST_ENV="CUDA_VISIBLE_DEVICES=0,1 UMD_CUDAMODULELOADING=0 FLAGCX_MEM_ENABLE=1 NCCL_CUMEM_ENABLE=0 FLAGCX_USE_HETERO_COMM=1"
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29531 python/test/tle/unit/test_tle_get_local_pe.py
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29532 third_party/iluvatar/python/test/unit/tle/test_tle_get_device_id_multi_gpu.py
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29533 third_party/iluvatar/python/test/unit/tle/test_tle_n_pes_multi_gpu.py
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29534 third_party/iluvatar/python/test/unit/tle/test_tle_distributed_barrier_multi_gpu.py
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29535 third_party/iluvatar/python/test/unit/tle/test_tle_remote_pointers_multi_gpu.py
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29536 python/test/tle/unit/test_tle_distributed_d2d.py
+          fi
 
           # TLE tutorials unit tests
           python3 third_party/iluvatar/python/tutorials/tle/01-fft.py --only_unit_test
