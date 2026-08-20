@@ -3429,9 +3429,7 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
       auto mask =
           adaptor.getMask()
               ? adaptor.getMask()
-              : rewriter
-                    .create<arith::ConstantIntOp>(loc, 1, 1)
-                    .getResult();
+              : rewriter.create<arith::ConstantIntOp>(loc, 1, 1).getResult();
       auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       auto masterWarpId = getMasterThreadId(op.getOperation());
       auto isMasterThread =
@@ -3472,8 +3470,7 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
         auto dimXVal =
             rewriter.create<arith::ConstantIndexOp>(loc, clusterDimX);
         auto flatCtaId = rewriter.create<arith::AddIOp>(
-            loc, ctaIdX,
-            rewriter.create<arith::MulIOp>(loc, ctaIdY, dimXVal));
+            loc, ctaIdX, rewriter.create<arith::MulIOp>(loc, ctaIdY, dimXVal));
         auto totalCTAsVal =
             rewriter.create<arith::ConstantIndexOp>(loc, totalCTAs);
         auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
@@ -3496,12 +3493,11 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                           ArrayRef<int64_t>{ShapedType::kDynamic}, elemType);
                       auto buffer = innerBuilder.create<gcu::PtrToMemRefOp>(
                           loc, dynMemType, ptr);
-                      auto oldVal = emitSoftwareRMW(
-                          innerBuilder, loc, op.getAtomicRmwOp(), buffer, zero,
-                          val, elemType);
-                      innerBuilder.create<memref::StoreOp>(loc, oldVal,
-                                                           localMem,
-                                                           ValueRange{zero});
+                      auto oldVal = emitSoftwareRMW(innerBuilder, loc,
+                                                    op.getAtomicRmwOp(), buffer,
+                                                    zero, val, elemType);
+                      innerBuilder.create<memref::StoreOp>(
+                          loc, oldVal, localMem, ValueRange{zero});
                       innerBuilder.create<scf::YieldOp>(loc);
                     });
                 ctaBuilder.create<scf::YieldOp>(loc);
@@ -3593,8 +3589,7 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
         auto warpIds = getWarpIds(rewriter, loc, op.getType());
         for (unsigned i = 0; i < resultType.getRank(); ++i) {
           warpOffsets.push_back(rewriter.create<arith::MulIOp>(
-              loc,
-              rewriter.create<arith::ConstantIntOp>(loc, numElems[i], 32),
+              loc, rewriter.create<arith::ConstantIntOp>(loc, numElems[i], 32),
               rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(),
                                                   warpIds[i])));
         }
@@ -3628,18 +3623,21 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                             .getResult()
                       : elemBuilder.create<arith::ConstantIntOp>(loc, 1, 1)
                             .getResult();
-              Value thread_select = elemBuilder.create<arith::CmpIOp>(
-                  loc, arith::CmpIPredicate::eq, mask, true_bool).getResult();
+              Value thread_select =
+                  elemBuilder
+                      .create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                             mask, true_bool)
+                      .getResult();
 
               if (hasWarpRedundancy) {
-                auto threadId = elemBuilder.create<gpu::ThreadIdOp>(
-                    loc, gpu::Dimension::x);
+                auto threadId =
+                    elemBuilder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
                 auto tidI32 = elemBuilder.create<arith::IndexCastOp>(
                     loc, elemBuilder.getI32Type(), threadId);
                 auto bitmaskVal = elemBuilder.create<arith::ConstantIntOp>(
                     loc, warpBitmask, 32);
-                auto shifted = elemBuilder.create<arith::ShRUIOp>(
-                    loc, bitmaskVal, tidI32);
+                auto shifted =
+                    elemBuilder.create<arith::ShRUIOp>(loc, bitmaskVal, tidI32);
                 auto oneI32 =
                     elemBuilder.create<arith::ConstantIntOp>(loc, 1, 32);
                 auto bit =
@@ -3648,8 +3646,11 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                     elemBuilder.create<arith::ConstantIntOp>(loc, 0, 32);
                 auto isNonRedundant = elemBuilder.create<arith::CmpIOp>(
                     loc, arith::CmpIPredicate::ne, bit, zeroI32);
-                thread_select = elemBuilder.create<arith::AndIOp>(
-                    loc, thread_select, isNonRedundant.getResult()).getResult();
+                thread_select =
+                    elemBuilder
+                        .create<arith::AndIOp>(loc, thread_select,
+                                               isNonRedundant.getResult())
+                        .getResult();
               }
 
               elemBuilder.create<scf::IfOp>(
@@ -3686,28 +3687,31 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                             .getResult()
                       : builder.create<arith::ConstantIntOp>(loc, 1, 1)
                             .getResult();
-              Value thread_select = builder.create<arith::CmpIOp>(
-                  loc, arith::CmpIPredicate::eq, mask, true_bool).getResult();
+              Value thread_select =
+                  builder
+                      .create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                             mask, true_bool)
+                      .getResult();
 
               if (hasWarpRedundancy) {
-                auto threadId = builder.create<gpu::ThreadIdOp>(
-                    loc, gpu::Dimension::x);
+                auto threadId =
+                    builder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
                 auto tidI32 = builder.create<arith::IndexCastOp>(
                     loc, builder.getI32Type(), threadId);
-                auto bitmaskVal = builder.create<arith::ConstantIntOp>(
-                    loc, warpBitmask, 32);
-                auto shifted = builder.create<arith::ShRUIOp>(
-                    loc, bitmaskVal, tidI32);
-                auto oneI32 =
-                    builder.create<arith::ConstantIntOp>(loc, 1, 32);
-                auto bit =
-                    builder.create<arith::AndIOp>(loc, shifted, oneI32);
-                auto zeroI32 =
-                    builder.create<arith::ConstantIntOp>(loc, 0, 32);
+                auto bitmaskVal =
+                    builder.create<arith::ConstantIntOp>(loc, warpBitmask, 32);
+                auto shifted =
+                    builder.create<arith::ShRUIOp>(loc, bitmaskVal, tidI32);
+                auto oneI32 = builder.create<arith::ConstantIntOp>(loc, 1, 32);
+                auto bit = builder.create<arith::AndIOp>(loc, shifted, oneI32);
+                auto zeroI32 = builder.create<arith::ConstantIntOp>(loc, 0, 32);
                 auto isNonRedundant = builder.create<arith::CmpIOp>(
                     loc, arith::CmpIPredicate::ne, bit, zeroI32);
-                thread_select = builder.create<arith::AndIOp>(
-                    loc, thread_select, isNonRedundant.getResult()).getResult();
+                thread_select =
+                    builder
+                        .create<arith::AndIOp>(loc, thread_select,
+                                               isNonRedundant.getResult())
+                        .getResult();
               }
 
               builder.create<scf::IfOp>(
@@ -3745,7 +3749,7 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                 auto v = builder.create<memref::LoadOp>(
                     loc, sharedOutput, relayIdx(builder, loc, iters));
                 builder.create<memref::StoreOp>(loc, v, output, iters);
-          });
+              });
         }
       }
       leaveTritionOp(rewriter, op.getOperation());
