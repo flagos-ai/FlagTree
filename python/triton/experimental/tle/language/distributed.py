@@ -1180,10 +1180,10 @@ def signal_wait(
 ):
     """Wait until a local FlagCX synchronization slot reaches its target.
 
-    ``target`` is required for ``wait_kind="signal"``.  ``wait_kind="shadow"``
-    instead reads the target from FlagCX's locally maintained shadow buffer,
-    so ``target`` must be omitted. ``slot_id`` is interpreted in the signal
-    slot namespace.
+    ``target`` is required for ``wait_kind="signal"`` and
+    ``wait_kind="counter"``.  ``wait_kind="shadow"`` instead reads the target
+    from FlagCX's locally maintained shadow buffer, so ``target`` must be
+    omitted. ``slot_id`` is interpreted in the signal slot namespace.
     """
     builder = _semantic.builder
 
@@ -1191,7 +1191,7 @@ def signal_wait(
     wait_kind_val = (wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else attr.SignalWaitKind.from_str(
         str(wait_kind).lower()))
     if wait_kind_val is None:
-        expected = "signal or shadow"
+        expected = "signal, counter, or shadow"
         raise ValueError(f"wait kind must be {expected}, got {wait_kind!r}")
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
