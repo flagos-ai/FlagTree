@@ -1497,6 +1497,12 @@ struct TTExternElemwiseOpLowering
     } else if (name == "__nv_max") {
       rewriter.replaceOpWithNewOp<arith::MaxSIOp>(op, adaptor.getOperands());
       return success();
+    } else if (name == "__nv_nearbyintf") {
+      rewriter.replaceOpWithNewOp<math::RoundEvenOp>(op, adaptor.getOperands());
+      return success();
+    } else if (name == "__nv_rintf") {
+      rewriter.replaceOpWithNewOp<math::RoundEvenOp>(op, adaptor.getOperands());
+      return success();
     } else if (name == "__nv_umin") {
       rewriter.replaceOpWithNewOp<arith::MinUIOp>(op, adaptor.getOperands());
       return success();

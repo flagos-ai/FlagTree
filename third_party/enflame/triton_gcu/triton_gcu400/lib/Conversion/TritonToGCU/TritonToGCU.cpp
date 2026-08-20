@@ -1130,6 +1130,12 @@ struct TTExternElemwiseOpLowering
     } else if (name == "__nv_floorf") {
       rewriter.replaceOpWithNewOp<math::FloorOp>(op, adaptor.getOperands());
       return success();
+    } else if (name == "__nv_nearbyintf") {
+      rewriter.replaceOpWithNewOp<math::RoundEvenOp>(op, adaptor.getOperands());
+      return success();
+    } else if (name == "__nv_rintf") {
+      rewriter.replaceOpWithNewOp<math::RoundEvenOp>(op, adaptor.getOperands());
+      return success();
     } else if (name == "__nv_min") {
       rewriter.replaceOpWithNewOp<arith::MinSIOp>(op, adaptor.getOperands());
       return success();
@@ -3423,7 +3429,9 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
       auto mask =
           adaptor.getMask()
               ? adaptor.getMask()
-              : rewriter.create<arith::ConstantIntOp>(loc, 1, 1).getResult();
+              : rewriter
+                    .create<arith::ConstantIntOp>(loc, 1, 1)
+                    .getResult();
       auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
       auto masterWarpId = getMasterThreadId(op.getOperation());
       auto isMasterThread =
@@ -3464,7 +3472,8 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
         auto dimXVal =
             rewriter.create<arith::ConstantIndexOp>(loc, clusterDimX);
         auto flatCtaId = rewriter.create<arith::AddIOp>(
-            loc, ctaIdX, rewriter.create<arith::MulIOp>(loc, ctaIdY, dimXVal));
+            loc, ctaIdX,
+            rewriter.create<arith::MulIOp>(loc, ctaIdY, dimXVal));
         auto totalCTAsVal =
             rewriter.create<arith::ConstantIndexOp>(loc, totalCTAs);
         auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
@@ -3487,11 +3496,12 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                           ArrayRef<int64_t>{ShapedType::kDynamic}, elemType);
                       auto buffer = innerBuilder.create<gcu::PtrToMemRefOp>(
                           loc, dynMemType, ptr);
-                      auto oldVal = emitSoftwareRMW(innerBuilder, loc,
-                                                    op.getAtomicRmwOp(), buffer,
-                                                    zero, val, elemType);
-                      innerBuilder.create<memref::StoreOp>(
-                          loc, oldVal, localMem, ValueRange{zero});
+                      auto oldVal = emitSoftwareRMW(
+                          innerBuilder, loc, op.getAtomicRmwOp(), buffer, zero,
+                          val, elemType);
+                      innerBuilder.create<memref::StoreOp>(loc, oldVal,
+                                                           localMem,
+                                                           ValueRange{zero});
                       innerBuilder.create<scf::YieldOp>(loc);
                     });
                 ctaBuilder.create<scf::YieldOp>(loc);
@@ -3536,6 +3546,20 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
 
       bool hasUsers = !op.getResult().use_empty();
       Value output;
+      // The atomic runs only on the non-redundant warp, but its returned old
+      // value must be visible to every consuming warp. Relay it via shared
+      // memory instead of the per-warp private buffer.
+      Value sharedOutput;
+      SmallVector<Value, 4> warpOffsets;
+      auto relayIdx = [&](OpBuilder &b, Location l, ValueRange iters) {
+        SmallVector<Value> idx;
+        for (unsigned i = 0; i < iters.size(); ++i)
+          idx.push_back(b.create<arith::AddIOp>(
+              l,
+              b.create<arith::IndexCastOp>(l, b.getIndexType(), warpOffsets[i]),
+              iters[i]));
+        return idx;
+      };
       if (hasUsers) {
         auto resultType = dyn_cast<MemRefType>(
             getTypeConverter()->convertType(op.getResult().getType()));
@@ -3556,6 +3580,24 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
         auto tag = pTagPool.getPrivateSyncTagInfo(op.getOperation());
         doMemset(rewriter, tag, op.getOperation(), output, zeroVal,
                  totalNumElems);
+
+        auto rType = cast<RankedTensorType>(op.getResult().getType());
+        auto shapePerCTA =
+            triton::gpu::getShapePerCTA(rType.getEncoding(), rType.getShape());
+        auto sharedType = MemRefType::get(
+            shapePerCTA, resultType.getElementType(), AffineMap{},
+            rewriter.getI64IntegerAttr(2) /*shared memory*/);
+        sharedOutput = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                                   replaced2Origin, sharedType);
+
+        auto warpIds = getWarpIds(rewriter, loc, op.getType());
+        for (unsigned i = 0; i < resultType.getRank(); ++i) {
+          warpOffsets.push_back(rewriter.create<arith::MulIOp>(
+              loc,
+              rewriter.create<arith::ConstantIntOp>(loc, numElems[i], 32),
+              rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(),
+                                                  warpIds[i])));
+        }
       }
 
       auto freeWarpMask = triton::gcu::getFreeWarpMask(op.getType());
@@ -3586,21 +3628,18 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                             .getResult()
                       : elemBuilder.create<arith::ConstantIntOp>(loc, 1, 1)
                             .getResult();
-              Value thread_select =
-                  elemBuilder
-                      .create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                             mask, true_bool)
-                      .getResult();
+              Value thread_select = elemBuilder.create<arith::CmpIOp>(
+                  loc, arith::CmpIPredicate::eq, mask, true_bool).getResult();
 
               if (hasWarpRedundancy) {
-                auto threadId =
-                    elemBuilder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
+                auto threadId = elemBuilder.create<gpu::ThreadIdOp>(
+                    loc, gpu::Dimension::x);
                 auto tidI32 = elemBuilder.create<arith::IndexCastOp>(
                     loc, elemBuilder.getI32Type(), threadId);
                 auto bitmaskVal = elemBuilder.create<arith::ConstantIntOp>(
                     loc, warpBitmask, 32);
-                auto shifted =
-                    elemBuilder.create<arith::ShRUIOp>(loc, bitmaskVal, tidI32);
+                auto shifted = elemBuilder.create<arith::ShRUIOp>(
+                    loc, bitmaskVal, tidI32);
                 auto oneI32 =
                     elemBuilder.create<arith::ConstantIntOp>(loc, 1, 32);
                 auto bit =
@@ -3609,11 +3648,8 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                     elemBuilder.create<arith::ConstantIntOp>(loc, 0, 32);
                 auto isNonRedundant = elemBuilder.create<arith::CmpIOp>(
                     loc, arith::CmpIPredicate::ne, bit, zeroI32);
-                thread_select =
-                    elemBuilder
-                        .create<arith::AndIOp>(loc, thread_select,
-                                               isNonRedundant.getResult())
-                        .getResult();
+                thread_select = elemBuilder.create<arith::AndIOp>(
+                    loc, thread_select, isNonRedundant.getResult()).getResult();
               }
 
               elemBuilder.create<scf::IfOp>(
@@ -3650,31 +3686,28 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                             .getResult()
                       : builder.create<arith::ConstantIntOp>(loc, 1, 1)
                             .getResult();
-              Value thread_select =
-                  builder
-                      .create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                             mask, true_bool)
-                      .getResult();
+              Value thread_select = builder.create<arith::CmpIOp>(
+                  loc, arith::CmpIPredicate::eq, mask, true_bool).getResult();
 
               if (hasWarpRedundancy) {
-                auto threadId =
-                    builder.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
+                auto threadId = builder.create<gpu::ThreadIdOp>(
+                    loc, gpu::Dimension::x);
                 auto tidI32 = builder.create<arith::IndexCastOp>(
                     loc, builder.getI32Type(), threadId);
-                auto bitmaskVal =
-                    builder.create<arith::ConstantIntOp>(loc, warpBitmask, 32);
-                auto shifted =
-                    builder.create<arith::ShRUIOp>(loc, bitmaskVal, tidI32);
-                auto oneI32 = builder.create<arith::ConstantIntOp>(loc, 1, 32);
-                auto bit = builder.create<arith::AndIOp>(loc, shifted, oneI32);
-                auto zeroI32 = builder.create<arith::ConstantIntOp>(loc, 0, 32);
+                auto bitmaskVal = builder.create<arith::ConstantIntOp>(
+                    loc, warpBitmask, 32);
+                auto shifted = builder.create<arith::ShRUIOp>(
+                    loc, bitmaskVal, tidI32);
+                auto oneI32 =
+                    builder.create<arith::ConstantIntOp>(loc, 1, 32);
+                auto bit =
+                    builder.create<arith::AndIOp>(loc, shifted, oneI32);
+                auto zeroI32 =
+                    builder.create<arith::ConstantIntOp>(loc, 0, 32);
                 auto isNonRedundant = builder.create<arith::CmpIOp>(
                     loc, arith::CmpIPredicate::ne, bit, zeroI32);
-                thread_select =
-                    builder
-                        .create<arith::AndIOp>(loc, thread_select,
-                                               isNonRedundant.getResult())
-                        .getResult();
+                thread_select = builder.create<arith::AndIOp>(
+                    loc, thread_select, isNonRedundant.getResult()).getResult();
               }
 
               builder.create<scf::IfOp>(
@@ -3690,9 +3723,9 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                         mem_sync_scope);
                     if (hasUsers) {
                       builder.create<memref::StoreOp>(
-                          loc, atomicRMWOp.getResult(), output, iters);
+                          loc, atomicRMWOp.getResult(), sharedOutput,
+                          relayIdx(builder, loc, iters));
                     }
-
                     if (op.getSem() == mlir::triton::MemSemantic::ACQUIRE ||
                         op.getSem() ==
                             mlir::triton::MemSemantic::ACQUIRE_RELEASE)
@@ -3702,6 +3735,18 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
                   });
             });
         rewriter.create<gpu::BarrierOp>(loc);
+
+        // Read the relayed old value back into the private result buffer
+        if (hasUsers) {
+          scf::buildLoopNest(
+              rewriter, loc, SmallVector<Value, 4>(numElems.size(), zero),
+              numElemValues, SmallVector<Value, 4>(numElems.size(), one),
+              [&](OpBuilder &builder, Location loc, ValueRange iters) {
+                auto v = builder.create<memref::LoadOp>(
+                    loc, sharedOutput, relayIdx(builder, loc, iters));
+                builder.create<memref::StoreOp>(loc, v, output, iters);
+          });
+        }
       }
       leaveTritionOp(rewriter, op.getOperation());
       if (hasUsers) {
