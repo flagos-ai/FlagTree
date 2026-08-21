@@ -186,40 +186,6 @@ def memory_space(input, space, _builder=None, _semantic=None):
 
 
 @tl.builtin
-def rematerialize_index(value, _semantic=None):
-    """Rematerialize a 32-bit block index at the current program point.
-
-    This is a resource-lifetime primitive for large fused GPU kernels. It keeps
-    the value and distributed layout unchanged while preventing common
-    subexpression elimination from extending a cheap index expression across
-    independent microkernel regions.
-    """
-    if not isinstance(value, tl.tensor):
-        value = _semantic.to_tensor(value)
-    if not value.type.is_block():
-        raise ValueError("rematerialize_index only supports block tensors")
-    if value.dtype not in (tl.int32, tl.uint32):
-        raise ValueError(
-            "rematerialize_index requires a 32-bit integer block tensor, "
-            f"got {value.dtype}"
-        )
-    result = tl.inline_asm_elementwise(
-        "mov.u32 $0, $1;",
-        "=r,r",
-        [value],
-        dtype=value.dtype,
-        is_pure=False,
-        pack=1,
-        _semantic=_semantic,
-    )
-    result.handle.set_attr(
-        "tle.rematerialize_index",
-        _semantic.builder.get_bool_attr(True),
-    )
-    return result
-
-
-@tl.builtin
 def alloc(
     shape: tuple,
     dtype: tl.dtype,

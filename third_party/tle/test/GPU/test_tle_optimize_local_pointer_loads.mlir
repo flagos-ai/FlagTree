@@ -43,8 +43,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
     %row2d = tt.expand_dims %row {axis = 1 : i32} : tensor<64xi32, #ttg.slice<{dim = 1, parent = #blocked}>> -> tensor<64x1xi32, #blocked>
     %rowb = tt.broadcast %row2d : tensor<64x1xi32, #blocked> -> tensor<64x128xi32, #blocked>
     %col = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>>
-    %col_rematerialized = tt.elementwise_inline_asm "mov.u32 $0, $1;" {constraints = "=r,r", packed_element = 1 : i32, pure = false, "tle.rematerialize_index" = true} %col : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>>
-    %col2d = tt.expand_dims %col_rematerialized {axis = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<1x128xi32, #blocked>
+    %col2d = tt.expand_dims %col {axis = 0 : i32} : tensor<128xi32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<1x128xi32, #blocked>
     %colb = tt.broadcast %col2d : tensor<1x128xi32, #blocked> -> tensor<64x128xi32, #blocked>
     %ptr = "tle.local_pointers"(%smem, %zero, %zero, %rowb, %zero, %colb) : (!ttg.memdesc<1x1x64x1x128xbf16, #shared, #smem, mutable>, tensor<64x128xi32, #blocked>, tensor<64x128xi32, #blocked>, tensor<64x128xi32, #blocked>, tensor<64x128xi32, #blocked>, tensor<64x128xi32, #blocked>) -> tensor<64x128x!tt.ptr<bf16, 3>, #blocked>
     %value = tt.load %ptr : tensor<64x128x!tt.ptr<bf16, 3>, #blocked>

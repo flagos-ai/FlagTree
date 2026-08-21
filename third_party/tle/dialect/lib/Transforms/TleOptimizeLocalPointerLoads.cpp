@@ -45,7 +45,6 @@ namespace {
 namespace ttg = mlir::triton::gpu;
 
 constexpr int kSharedMemoryAddressSpace = 3;
-constexpr StringLiteral kRematerializeIndexAttr = "tle.rematerialize_index";
 
 struct RematerializedValue {
   Value value;
@@ -63,16 +62,6 @@ static Value stripConvertLayouts(Value value) {
   while (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>())
     current = cvt.getSrc();
   return current;
-}
-
-static bool isRematerializeIndex(triton::ElementwiseInlineAsmOp op) {
-  if (!op || op->getNumOperands() != 1 || op->getNumResults() != 1)
-    return false;
-  auto marker = op->getAttrOfType<BoolAttr>(kRematerializeIndexAttr);
-  auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
-  return marker && marker.getValue() && resultTy &&
-         resultTy.getElementType().isInteger(32) &&
-         op.getOperand(0).getType() == resultTy;
 }
 
 static Value stripIndexValueWrappers(Value value) {
@@ -97,13 +86,6 @@ static Value stripIndexValueWrappers(Value value) {
     if (auto cast = current.getDefiningOp<arith::IndexCastOp>()) {
       current = cast.getIn();
       continue;
-    }
-    if (auto rematerialize =
-            current.getDefiningOp<triton::ElementwiseInlineAsmOp>()) {
-      if (isRematerializeIndex(rematerialize)) {
-        current = rematerialize.getOperand(0);
-        continue;
-      }
     }
     break;
   }
@@ -636,21 +618,6 @@ static std::optional<RematerializedValue> rematerializeForLayout(
                                             cache, depth + 1);
   } else if (auto range = dyn_cast<triton::MakeRangeOp>(def)) {
     rematerialized = rematerializeMakeRange(range, targetTy, builder);
-  } else if (auto inlineAsm = dyn_cast<triton::ElementwiseInlineAsmOp>(def);
-             isRematerializeIndex(inlineAsm)) {
-    auto input = rematerializeForLayout(inlineAsm.getOperand(0), targetTy,
-                                        builder, cache, depth + 1);
-    if (input) {
-      auto newInlineAsm = triton::ElementwiseInlineAsmOp::create(
-          builder, inlineAsm.getLoc(), targetTy, inlineAsm.getAsmString(),
-          inlineAsm.getConstraints(), inlineAsm.getPure(),
-          inlineAsm.getPackedElement(), ArrayRef<Value>{input->value});
-      newInlineAsm->setAttr(kRematerializeIndexAttr,
-                            builder.getBoolAttr(true));
-      rematerialized =
-          RematerializedValue{newInlineAsm.getResult()[0],
-                              input->usesLocalPointerLoad};
-    }
   } else if (auto splat = dyn_cast<triton::SplatOp>(def)) {
     rematerialized = rematerializeSplat(splat, targetTy, builder);
   } else if (auto broadcast = dyn_cast<triton::BroadcastOp>(def)) {
