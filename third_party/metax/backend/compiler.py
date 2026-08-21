@@ -272,7 +272,7 @@ class MACABackend(BaseBackend):
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         if enable_mctle:
-            #mctle.passes.add_reject_dot_op(pm)
+            mctle.passes.add_reject_dot_op(pm)
             mctle.passes.add_early_assign_memory_space(pm)
             mctle.passes.add_select_encodings(pm)
             mctle.passes.add_insert_local_pointer_barriers(pm)

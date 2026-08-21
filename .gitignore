@@ -21,7 +21,6 @@ python/triton/_C/*.pdb
 python/triton/_C/*.exe
 python/triton/_C/*.ilk
 python/triton/FileCheck
-python/triton/FLAGTREE_BACKEND
 
 third_party/mthreads/python/triton/_C/*.so
 third_party/mthreads/python/triton/FileCheck

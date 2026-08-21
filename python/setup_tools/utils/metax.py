@@ -31,12 +31,9 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         post_hook=set_llvm_env,
     )
     cache.store(
-        file="metaxTritonPlugin.so",
-        condition=is_metax and not os.environ.get("FLAGTREE_PLUGIN"),
-        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.1.tar.gz",
-        copy_dst_path=f"third_party/{flagtree_backend}",
-        md5_digest="afb7ab8f",
-    )
+        file="metaxTritonPlugin.so", condition=is_metax and not os.environ.get("FLAGTREE_PLUGIN"),
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/metaxTritonPlugin-cpython3.12-x86_64_v0.6.2.tar.gz",
+        copy_dst_path=f"third_party/{flagtree_backend}", md5_digest="de37eb01")
 
 
 def install_extension(*args, **kargs):

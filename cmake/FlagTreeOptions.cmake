@@ -245,6 +245,19 @@ macro(flagtree_python_link_libraries)
 endmacro()
 
 
+macro(flagtree_configure_tle_plugin append_tle_plugin)
+  if(FLAGTREE_TLE)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tle/CMakeLists.txt")
+      if(${append_tle_plugin})
+        list(APPEND TRITON_PLUGIN_NAMES "tle")
+      endif()
+      add_subdirectory(third_party/tle)
+      flagtree_add_tle_generated_header_dependencies()
+    endif()
+  endif()
+endmacro()
+
+
 macro(flagtree_configure_python_plugins)
   # We always build proton dialect because core Triton conversion libraries link
   # ProtonIR. XPU-specific Proton GPU lowering wrappers are disabled inside the
@@ -268,13 +281,6 @@ macro(flagtree_configure_python_plugins)
   else()
     list(APPEND TRITON_PLUGIN_NAMES "proton")
     add_subdirectory(third_party/proton/Dialect)
-  endif()
-
-  # Add TLE plugin
-  if(FLAGTREE_TLE)
-    list(APPEND TRITON_PLUGIN_NAMES "tle")
-    add_subdirectory(third_party/tle)
-    flagtree_add_tle_generated_header_dependencies()
   endif()
 endmacro()
 
