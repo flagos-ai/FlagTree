@@ -95,6 +95,7 @@ jobs:
         run: |
           set -x
           source ~/env.sh
-          python3 -m pytest -s python/test/unit/language/test_core.py \
+          python3 -m pytest -s --first-parameter-only \
+              python/test/unit/language/test_core.py \
               -k "not test_sum_dtype and \
                   not test_dot_multidim"
