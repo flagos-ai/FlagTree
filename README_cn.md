@@ -92,6 +92,7 @@ TLE 的主要优势包括：
 
 ## 新特性
 
+* 2026/08/21 [amd](/third_party/amd/) 后端支持 TLE，加入 CI/CD。
 * 2026/08/18 新增接入 [spacemit](/third_party/spacemit/) 后端（对应 Triton 3.6），加入 CI/CD。
 * 2026/08/04 新增接入 [ppu](/third_party/ppu/) 后端（对应 Triton 3.6），加入 CI/CD。
 * 2026/07/07 新增接入 NVIDIA [tileir](/third_party/tileir/) 后端（对应 Triton 3.6），加入 CI/CD。

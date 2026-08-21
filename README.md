@@ -92,6 +92,7 @@ The following uses the mm operator under some shapes called in the Qwen model as
 
 ## Latest News
 
+* 2026/08/21 [amd](/third_party/amd/) backend support for TLE and added CI/CD.
 * 2026/08/18 Added the [spacemit](/third_party/spacemit/) backend integration (based on Triton 3.6) and added CI/CD.
 * 2026/08/04 Added the [ppu](/third_party/ppu/) backend integration (based on Triton 3.6) and added CI/CD.
 * 2026/07/07 Added the NVIDIA [tileir](/third_party/tileir/) backend integration (based on Triton 3.6) and added CI/CD.
