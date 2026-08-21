@@ -115,11 +115,12 @@ jobs:
           set -x
           CHIP=""
           TRITON_VER=${{ inputs.TRITON }}
+          export FLAGTREE_BACKEND=${{ inputs.BACKEND }}
           source ~/env-${TRITON_VER}.sh  # amd
-          unset FLAGTREE_BACKEND  # amd
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
+          unset FLAGTREE_BACKEND  # amd
 
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
           if python${PYTHON_VER} -m pip download --no-deps "flagtree===${FLAGTREE_WHEEL_VERSION}" -d . $RES >/dev/null 2>&1; then
