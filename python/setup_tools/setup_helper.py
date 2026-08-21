@@ -378,18 +378,18 @@ class FlagTreeCache:
         if is_url:
             cache_path = self.cache_files[file]
             need_download = not self.check_file(file_name=file, url=url, md5_digest=md5_digest)
-            # Version check: re-download if cached version doesn't match expected
+            # Version check: re-download if the cache is unversioned or carries
+            # a different artifact version. Unversioned caches predate the
+            # marker and cannot be trusted to contain the requested file set.
             if not need_download and version is not None:
                 version_file = Path(cache_path) / "version.txt"
-                if version_file.exists():
-                    cached_ver = version_file.read_text().strip()
-                    if cached_ver != version:
-                        print(
-                            f"[cache] version mismatch for '{file}': cached='{cached_ver}', expected='{version}', re-downloading..."
-                        )
-                        shutil.rmtree(cache_path)
-                        need_download = True
-                # If no version.txt (legacy cache), keep using it
+                cached_ver = version_file.read_text().strip() if version_file.exists() else None
+                if cached_ver != version:
+                    print(
+                        f"[cache] version mismatch for '{file}': cached='{cached_ver}', expected='{version}', re-downloading..."
+                    )
+                    shutil.rmtree(cache_path)
+                    need_download = True
             if need_download:
                 downloader.download(url=url, path=path, file_name=file)
                 if version is not None:

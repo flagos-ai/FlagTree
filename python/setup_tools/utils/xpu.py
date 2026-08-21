@@ -180,6 +180,10 @@ def install_sdnn_objects(cached_path, flagtree_dir):
         shutil.copy(sdnn_src, os.path.join(sdnn_dst_dir, sdnn_lib_name))
     else:
         print(f"[XPU] warning: {sdnn_lib_name} not found under {dst_root}")
+
+    required = os.path.join(dst_root, "lib", "Dialect", "TritonSDNN", "Transforms", "DSACopy.cpp.o")
+    if not os.path.isfile(required):
+        raise RuntimeError(f"[XPU] incomplete SDNN artifact: missing {required}")
     print(f"[XPU] SDNN prebuilt objects installed to {dst_root}")
 
 
@@ -391,9 +395,12 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     cache.store(files=("liblaunch_shared.so", "libLLVM-15.so", "libclang-cpp.so.15", "libxpujitc.so"), condition=is_xpu,
                 copy_src_path=f"{cache.dir_path}/{flagtree_backend}/xpu-device-libs",
                 copy_dst_path=f"third_party/{flagtree_backend}/device")
-    cache.store(file="xpu-sdnn-objects", condition=is_xpu,
-                url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.7.1.tar.gz",
-                version="v0.3.6.7.1", post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
+    cache.store(
+        file="xpu-sdnn-objects", condition=is_xpu,
+        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.7.1.tar.gz",
+        # Bump the cache-consumer revision to evict incomplete caches
+        # produced before the full 5a664566 object set was published.
+        version="v0.3.6.7.1-r1", post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
     cache.store(
         files=("clang", "xpu-xxd", "xpu3-elfconv", "xpu3-elfconv-triton", "xpu-kernel.t", "ld.lld", "llvm-readelf",
                "llvm-objdump", "llvm-objcopy"), condition=is_xpu,
