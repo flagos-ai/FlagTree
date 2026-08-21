@@ -1,8 +1,8 @@
+#include "PatternTritonXPUOpToLLVM.h"
 #include "Utility.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Conversion/TritonXPUToLLVM/LegacyLLVMHelpers.h" // LLVM22 dragon-style macros for XPU only
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
-#include "PatternTritonXPUOpToLLVM.h"
-#include "triton/Conversion/TritonXPUToLLVM/LegacyLLVMHelpers.h"  // LLVM22 dragon-style macros for XPU only
 
 using ::mlir::triton::gpu::getTotalElemsPerThread;
 
@@ -129,17 +129,13 @@ scanThreadContiguousElements(SmallVector<SmallVector<Value>> &srcValues,
 // with the right elements. Within a given contiguous element chunk we update
 // all the elements by accumulating the value from the last element of the
 // reduced value from the previous lane.
-static void applyLastElemScanOnSM(SmallVector<SmallVector<Value>> &srcValues,
-                                  ConversionPatternRewriter &rewriter,
-                                  const TargetInfoBase &targetInfo,
-                                  ScanLoweringHelper &helper,
-                                  SmallVector<Value> smemBases,
-                                  SmallVector<Value> accSmemBases,
-                                  SmallVector<Type> smemTypes, Value groupId,
-                                  Value laneId, triton::xpu::ScanOp op,
-                                  ArrayRef<Value> carryIn = {},
-                                  ArrayRef<Value> carryBases = {},
-                                  Value isFirst = {}) {
+static void applyLastElemScanOnSM(
+    SmallVector<SmallVector<Value>> &srcValues,
+    ConversionPatternRewriter &rewriter, const TargetInfoBase &targetInfo,
+    ScanLoweringHelper &helper, SmallVector<Value> smemBases,
+    SmallVector<Value> accSmemBases, SmallVector<Type> smemTypes, Value groupId,
+    Value laneId, triton::xpu::ScanOp op, ArrayRef<Value> carryIn = {},
+    ArrayRef<Value> carryBases = {}, Value isFirst = {}) {
   Location loc = helper.getXPULoc();
 
   // Scan SM Last Elem Per Thread
@@ -205,7 +201,8 @@ static void applyLastElemScanOnSM(SmallVector<SmallVector<Value>> &srcValues,
       // first iteration exact for any combine op (min/max/prod/...).
       if (!carryIn.empty()) {
         SmallVector<Value> carry(carryIn.begin(), carryIn.end());
-        auto withCarry = accumulate(helper, rewriter, carry, readValues[srcIdx]);
+        auto withCarry =
+            accumulate(helper, rewriter, carry, readValues[srcIdx]);
         for (unsigned k = 0; k < accs[srcIdx].size(); ++k)
           accs[srcIdx][k] = select(isFirst, accs[srcIdx][k], withCarry[k]);
       }
@@ -482,8 +479,7 @@ struct XPUScanOpConversion
       return false;
     if (op.getAxis() == 1)
       return false;
-    if (auto resultTy =
-            dyn_cast<RankedTensorType>(op.getResult()[0].getType()))
+    if (auto resultTy = dyn_cast<RankedTensorType>(op.getResult()[0].getType()))
       return resultTy.getShape().size() == 1;
     return true;
   }
@@ -570,18 +566,15 @@ struct XPUScanOpConversion
     if (carryBases) {
       carryBases->resize(op.getNumOperands() - 1);
       std::map<unsigned, Value> indexToBaseForCarry;
-      indexToBaseForCarry[0] =
-          gep(ptr_ty(rewriter.getContext(), 2),
-              getElementType(op, op.getNumOperands() - 2),
-              accCacheSmemBases.back(), i32_val(elems));
-      offsets.push_back(
-          (getElementType(op, 0).getIntOrFloatBitWidth()) / 8);
+      indexToBaseForCarry[0] = gep(ptr_ty(rewriter.getContext(), 2),
+                                   getElementType(op, op.getNumOperands() - 2),
+                                   accCacheSmemBases.back(), i32_val(elems));
+      offsets.push_back((getElementType(op, 0).getIntOrFloatBitWidth()) / 8);
       for (unsigned i = 1; i < (op.getNumOperands() - 1); ++i) {
         indexToBaseForCarry[i] =
             gep(ptr_ty(rewriter.getContext(), 2), getElementType(op, i),
                 indexToBaseForCarry[i - 1], i32_val(1));
-        offsets.push_back(
-            (getElementType(op, i).getIntOrFloatBitWidth()) / 8);
+        offsets.push_back((getElementType(op, i).getIntOrFloatBitWidth()) / 8);
       }
       for (unsigned i = 0; i < (op.getNumOperands() - 1); ++i)
         (*carryBases)[i] = indexToBaseForCarry[i];

@@ -283,8 +283,7 @@ public:
           })
           .Case<triton::GetNumProgramsOp>([&](auto getNumProgramsOp) {
             SmallVector<int> mockVals = getNumProgramsMockVals();
-            mockDataItems.emplace_back(
-                MockData(getNumProgramsOp, 0, mockVals));
+            mockDataItems.emplace_back(MockData(getNumProgramsOp, 0, mockVals));
           })
           .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) {
             SmallVector<int> mockVals = getGM2LMOpMockVals();
@@ -1206,9 +1205,11 @@ public:
         isa<triton::xpu::GM2LMOp>(memoryOp)) {
       for (auto *op : opChain) {
         if (auto remOp = dyn_cast<arith::RemSIOp>(op)) {
-          if (auto constOp = remOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
+          if (auto constOp =
+                  remOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
             int64_t remConst = 0;
-            if (auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue()))
+            if (auto splatAttr =
+                    dyn_cast<SplatElementsAttr>(constOp.getValue()))
               remConst = splatAttr.getSplatValue<APInt>().getSExtValue();
             else if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
               remConst = intAttr.getInt();
@@ -1304,7 +1305,8 @@ public:
       OffsetState offsetState =
           handwritten ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
                       : getOffsetState(gm2lmOp);
-      int32_t opFixedStride = handwritten ? gm2lmOp.getFixedStride() : fixedStride;
+      int32_t opFixedStride =
+          handwritten ? gm2lmOp.getFixedStride() : fixedStride;
       int64_t opRowLen = handwritten ? gm2lmOp.getRowLen() : rowLen;
       int64_t opRowStride = handwritten ? gm2lmOp.getRowStride() : rowStride;
       int32_t opLrie = handwritten ? gm2lmOp.getLrie() : lrie;
@@ -1329,19 +1331,22 @@ public:
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
       gm2lmOp->setAttr("offsetState",
                        builder.getSI32IntegerAttr(offsetStateInt));
-      gm2lmOp->setAttr("fixedStride", builder.getSI32IntegerAttr(opFixedStride));
-      gm2lmOp->setAttr("rowLen", builder.getIntegerAttr(
-                                     builder.getIntegerType(64, true), opRowLen));
+      gm2lmOp->setAttr("fixedStride",
+                       builder.getSI32IntegerAttr(opFixedStride));
       gm2lmOp->setAttr(
-          "rowStride",
-          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowStride));
+          "rowLen",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowLen));
+      gm2lmOp->setAttr("rowStride",
+                       builder.getIntegerAttr(builder.getIntegerType(64, true),
+                                              opRowStride));
       gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(opLrie));
       auto loadOp = cast<triton::xpu::LoadOp>(gm2lmOp->getNextNode());
       loadOp->setOperand(0, gm2lmOp);
       loadOp->setAttr("stride", builder.getSI32IntegerAttr(opFixedStride));
-      loadOp->setAttr("isDiscrete",
-                      builder.getBoolAttr(offsetState == OffsetState::Discrete ||
-                                          offsetState == OffsetState::LocallyScalar));
+      loadOp->setAttr(
+          "isDiscrete",
+          builder.getBoolAttr(offsetState == OffsetState::Discrete ||
+                              offsetState == OffsetState::LocallyScalar));
       if (!handwritten) {
         fixedStride = INT32_MIN;
         rowLen = -1;
@@ -1374,11 +1379,12 @@ public:
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
       lm2gmOp->setAttr("offsetState",
                        builder.getSI32IntegerAttr(offsetStateInt));
-      lm2gmOp->setAttr("rowLen", builder.getIntegerAttr(
-                                     builder.getIntegerType(64, true), opRowLen));
       lm2gmOp->setAttr(
-          "rowStride",
-          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowStride));
+          "rowLen",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowLen));
+      lm2gmOp->setAttr("rowStride",
+                       builder.getIntegerAttr(builder.getIntegerType(64, true),
+                                              opRowStride));
       findUnsupportedOp = false;
       if (!handwritten) {
         rowLen = -1;
@@ -1412,7 +1418,8 @@ public:
       OffsetState offsetState =
           handwritten ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
                       : getOffsetState(gm2lmOp);
-      int32_t opFixedStride = handwritten ? gm2lmOp.getFixedStride() : fixedStride;
+      int32_t opFixedStride =
+          handwritten ? gm2lmOp.getFixedStride() : fixedStride;
       int64_t opRowLen = handwritten ? gm2lmOp.getRowLen() : rowLen;
       int64_t opRowStride = handwritten ? gm2lmOp.getRowStride() : rowStride;
       int32_t opLrie = handwritten ? gm2lmOp.getLrie() : lrie;
@@ -1437,19 +1444,22 @@ public:
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
       gm2lmOp->setAttr("offsetState",
                        builder.getSI32IntegerAttr(offsetStateInt));
-      gm2lmOp->setAttr("fixedStride", builder.getSI32IntegerAttr(opFixedStride));
-      gm2lmOp->setAttr("rowLen", builder.getIntegerAttr(
-                                     builder.getIntegerType(64, true), opRowLen));
+      gm2lmOp->setAttr("fixedStride",
+                       builder.getSI32IntegerAttr(opFixedStride));
       gm2lmOp->setAttr(
-          "rowStride",
-          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowStride));
+          "rowLen",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowLen));
+      gm2lmOp->setAttr("rowStride",
+                       builder.getIntegerAttr(builder.getIntegerType(64, true),
+                                              opRowStride));
       gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(opLrie));
       auto loadOp = cast<triton::xpu::LoadOp>(gm2lmOp->getNextNode());
       loadOp->setOperand(0, gm2lmOp);
       loadOp->setAttr("stride", builder.getSI32IntegerAttr(opFixedStride));
-      loadOp->setAttr("isDiscrete",
-                      builder.getBoolAttr(offsetState == OffsetState::Discrete ||
-                                          offsetState == OffsetState::LocallyScalar));
+      loadOp->setAttr(
+          "isDiscrete",
+          builder.getBoolAttr(offsetState == OffsetState::Discrete ||
+                              offsetState == OffsetState::LocallyScalar));
       if (!handwritten) {
         fixedStride = INT32_MIN;
         rowLen = -1;

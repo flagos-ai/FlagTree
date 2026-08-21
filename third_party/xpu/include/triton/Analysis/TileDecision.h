@@ -21,9 +21,9 @@
 //
 // Every criterion has to end up in the remark (see `Decision::perTierTrace`).
 // A criterion that cannot be observed cannot be verified, and the one time this
-// pass shipped a silent fallback -- a mis-set budget making `budget-unreachable`
-// the normal case -- the symptom was read as the design for weeks while every
-// probe ran 8..11% slow.
+// pass shipped a silent fallback -- a mis-set budget making
+// `budget-unreachable` the normal case -- the symptom was read as the design
+// for weeks while every probe ran 8..11% slow.
 //===----------------------------------------------------------------------===//
 
 namespace mlir {

@@ -213,8 +213,8 @@ bool tilePlanProbeEnabled() {
   return mlir::triton::tools::getBoolEnv("TRITONXPU_TILE_PLAN");
 }
 
-void tilePlanRecord(ModuleOp mod, Operation *root, StringRef site, bool eligible,
-                    int64_t closure) {
+void tilePlanRecord(ModuleOp mod, Operation *root, StringRef site,
+                    bool eligible, int64_t closure) {
   if (!tilePlanProbeEnabled() || !root)
     return;
 
@@ -278,9 +278,9 @@ void tilePlanCheck(ModuleOp mod) {
     size_t nByLoc = locIt == byLoc.end() ? 0 : locIt->second.size();
 
     // The same key narrowed by op kind, which a consumer legitimately knows: it
-    // enumerates stores, or reduces, not arbitrary ops. Reported so that "loc is
-    // ambiguous" cannot be answered with "then also match the op name" -- the
-    // number for that variant is right here.
+    // enumerates stores, or reduces, not arbitrary ops. Reported so that "loc
+    // is ambiguous" cannot be answered with "then also match the op name" --
+    // the number for that variant is right here.
     size_t nByLocKind = 0;
     if (locIt != byLoc.end())
       for (Operation *op : locIt->second)
@@ -299,8 +299,9 @@ void tilePlanCheck(ModuleOp mod) {
 
     // What the surviving op turned into, when the id found it: an op that was
     // rebuilt under a different name is the interesting failure mode for `loc`.
-    StringRef nowName = nById == 1 ? idIt->second.front()->getName().getStringRef()
-                                   : StringRef("-");
+    StringRef nowName = nById == 1
+                            ? idIt->second.front()->getName().getStringRef()
+                            : StringRef("-");
     llvm::errs() << "[TilePlan] id=" << id << " site=" << site
                  << " root=" << rootName << " now=" << nowName
                  << " byId=" << nById << " byLoc=" << nByLoc

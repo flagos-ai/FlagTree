@@ -84,15 +84,15 @@ void getBlockRegPressure(ModuleOp m, Operation *insertPt, RegPressure &p);
 // E-dependent gates.
 //
 // These two read sizePerCore, so they cannot be answered before CoreTiling has
-// fixed E. They used to sit in VectorizabilityAnalysis next to the E-independent
-// op-kind and element-type whitelists; they live here instead so the state half
-// of the vectorizability question carries no dependency on the numeric half and
-// can be moved ahead of CoreTiling on its own (redesign-v2.md §4.2 steps 1.4 and
-// 1.5).
+// fixed E. They used to sit in VectorizabilityAnalysis next to the
+// E-independent op-kind and element-type whitelists; they live here instead so
+// the state half of the vectorizability question carries no dependency on the
+// numeric half and can be moved ahead of CoreTiling on its own (redesign-v2.md
+// §4.2 steps 1.4 and 1.5).
 //
-// Both are phrased as "does a whole number of 512-bit vectors fit", which is the
-// only thing either of them tests. Neither had any state, which is what makes
-// them free functions here.
+// Both are phrased as "does a whole number of 512-bit vectors fit", which is
+// the only thing either of them tests. Neither had any state, which is what
+// makes them free functions here.
 //===----------------------------------------------------------------------===//
 
 // Whether a root tensor type holds enough elements per core, in a whole number
@@ -116,23 +116,25 @@ Fit vectorFitsValue(Value value, FitQuery query, unsigned wantWidth);
 // M6 -- the tile plan carrier (redesign-v2.md §3.7, step 1.6).
 //
 // The analysis that decides vectorizability runs before `tritonxpu-vectorize`;
-// the transforms that consume the decision run around `tritonxpu-unroll-control`,
-// with vectorize / canonicalize / alloca / memory-async in between. Something has
-// to survive that gap and still identify *which root* each conclusion belongs to.
+// the transforms that consume the decision run around
+// `tritonxpu-unroll-control`, with vectorize / canonicalize / alloca /
+// memory-async in between. Something has to survive that gap and still identify
+// *which root* each conclusion belongs to.
 //
 // §3.7 named two candidate keys and marked both unverified. This is the probe
 // that decides between them by measuring, not by argument: the producer writes
-// both keys for every root, the consumer looks both up again and reports two hit
-// rates.
+// both keys for every root, the consumer looks both up again and reports two
+// hit rates.
 //
-//   loc     -- the root's location, printed. Free, but a pass that rebuilds an op
+//   loc     -- the root's location, printed. Free, but a pass that rebuilds an
+//   op
 //              has to carry the loc across for this to work.
 //   plan_id -- an integer the producer stamps on the root op itself. Stable
 //              against renaming, but only survives if the op survives *and* its
 //              discardable attributes are copied.
 //
-// The payload is deliberately uninteresting (whatever the producing site already
-// computed). Step 1.6 measures identification, not content.
+// The payload is deliberately uninteresting (whatever the producing site
+// already computed). Step 1.6 measures identification, not content.
 //
 // Everything here is off unless TRITONXPU_TILE_PLAN=1, and `tilePlanCheck`
 // erases both keys unconditionally -- an entry reaching the emitted IR would
@@ -146,11 +148,11 @@ bool tilePlanProbeEnabled();
 
 // Append one entry for `root`, stamping it with the next id. No-op when the
 // probe is off.
-void tilePlanRecord(ModuleOp mod, Operation *root, StringRef site, bool eligible,
-                    int64_t closure);
+void tilePlanRecord(ModuleOp mod, Operation *root, StringRef site,
+                    bool eligible, int64_t closure);
 
-// Resolve every entry against the IR as it now stands, report per-entry how many
-// live ops each key found, and erase everything the probe wrote.
+// Resolve every entry against the IR as it now stands, report per-entry how
+// many live ops each key found, and erase everything the probe wrote.
 void tilePlanCheck(ModuleOp mod);
 
 } // namespace xpu

@@ -4,8 +4,8 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "triton/Analysis/NewAnalysis/Utility.h"
-#include "triton/Tools/Sys/GetEnv.hpp"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 
 #include <functional>
 
@@ -27,7 +27,8 @@
 // that split structural: the E-dependent half now lives in TileAnalysis.h
 // (`vectorFitsRoot`, `vectorFitsReduceOperand`) and this unit only reaches it
 // through the callback handed to the constructor. Nothing here includes
-// TileAnalysis.h, which is what lets step 1.5 move this unit ahead of CoreTiling.
+// TileAnalysis.h, which is what lets step 1.5 move this unit ahead of
+// CoreTiling.
 //
 //   * E-independent, so answerable before CoreTiling fixes sizePerCore: the
 //     op-kind whitelist in `getVectorizableClosure`, the element type whitelist
@@ -38,13 +39,13 @@
 //     vector width. Now in TileAnalysis.
 //
 // Step 1.5b finished the split for the three cases whose residue sat inside the
-// walk rather than at its edges: LoadOp's numElems % vectorWidth == 0, SplatOp's
-// getTotalElemsPerThread(srcTy) == 1, and BroadcastOp's result element count all
-// go through the `FitOracle` below now, so the walk itself no longer calls
-// getTotalElemsPerThread. What each case keeps is its E-independent half (op
-// kind, rank, shape relations, element width). Moving the walk ahead of
-// CoreTiling is then a matter of handing it an all-`Unknown` oracle and
-// re-testing the candidates in place, which is step 1.5c.
+// walk rather than at its edges: LoadOp's numElems % vectorWidth == 0,
+// SplatOp's getTotalElemsPerThread(srcTy) == 1, and BroadcastOp's result
+// element count all go through the `FitOracle` below now, so the walk itself no
+// longer calls getTotalElemsPerThread. What each case keeps is its
+// E-independent half (op kind, rank, shape relations, element width). Moving
+// the walk ahead of CoreTiling is then a matter of handing it an all-`Unknown`
+// oracle and re-testing the candidates in place, which is step 1.5c.
 //===----------------------------------------------------------------------===//
 
 namespace mlir {
@@ -67,7 +68,8 @@ using OperationTree = llvm::SetVector<mlir::Operation *>;
 
 #define REDUCE_COMBINE_OP COMBINE_OP, triton::xpu::ReduceReturnOp
 
-// The scalar -> vector op table, single-sourced (redesign-v2.md §3.1, step 2.1).
+// The scalar -> vector op table, single-sourced (redesign-v2.md §3.1,
+// step 2.1).
 //
 // Vectorize.cpp expands this into the `VOp<T>` specializations its rewrite
 // builds from; `hasVectorForm` below expands the same list into a runtime
@@ -114,15 +116,15 @@ bool hasVectorForm(Operation *op);
 // contribution of most cores, and which cores are affected changes from run to
 // run. Minimal repro (FlagGems `var_mean_kernel_2`, one f32 vector per core):
 // feed every partial `acc=1, average=0, count=1` so the exact fold must yield
-// `nvar == BLOCK_NUM`; at BLOCK_NUM=1024 it yields 970 / 977 on successive runs,
-// and sweeping the payload lane by lane shows the losses land exactly on the
-// multiples of 16, i.e. the seed element `collapseVectorsJointly` extracts
+// `nvar == BLOCK_NUM`; at BLOCK_NUM=1024 it yields 970 / 977 on successive
+// runs, and sweeping the payload lane by lane shows the losses land exactly on
+// the multiples of 16, i.e. the seed element `collapseVectorsJointly` extracts
 // first. BLOCK_NUM <= 128 puts fewer than 16 elements on a core, skips the
 // within-core fold, and stays exact. Observable as
 // `test_accuracy_varmean[dtype1-*-*-{dim2,dim3}-shape1]` in
-// third_party/xpu/test/FlagGems/tests/test_reduction_ops.py: those eight are the
-// only regressions in that 3187-case suite, and TRITONXPU_REDUCE_REGION=0 fixes
-// all eight while TRITONXPU_BUDGET_TILING=0 fixes none.
+// third_party/xpu/test/FlagGems/tests/test_reduction_ops.py: those eight are
+// the only regressions in that 3187-case suite, and TRITONXPU_REDUCE_REGION=0
+// fixes all eight while TRITONXPU_BUDGET_TILING=0 fixes none.
 //
 // The default is off rather than the admission gate in
 // ReduceOpToLLVM::canInterpretCombine being narrowed, because the run-to-run
@@ -131,15 +133,17 @@ bool hasVectorForm(Operation *op);
 //
 // `TRITONXPU_REDUCE_REGION=1` opts back in. The measured upside is real and
 // waiting on that defect, all on xpu3 hardware: welford 801.4us vs 1319us all
-// scalar = 1.65x (findings.md 1.17), pairmax 910.6us vs 1058.8us = 1.16x (1.22),
-// and of the eleven golden probes only those two plus `bitred` change code at all
-// -- the other eight are byte-identical either way, and `bitred` only differs in
-// emission order (same instruction multiset). Combine-op coverage is closed in
-// 1.24: twelve of the thirteen ops `isSupportedCombineOp` admits have a probe.
+// scalar = 1.65x (findings.md 1.17), pairmax 910.6us vs 1058.8us = 1.16x
+// (1.22), and of the eleven golden probes only those two plus `bitred` change
+// code at all
+// -- the other eight are byte-identical either way, and `bitred` only differs
+// in emission order (same instruction multiset). Combine-op coverage is closed
+// in 1.24: twelve of the thirteen ops `isSupportedCombineOp` admits have a
+// probe.
 //
-// Single-sourced here because three units have to agree on it: this analysis (op
-// whitelist), Vectorize (region retyping), and ReduceOpToLLVM (which lowering to
-// emit). A disagreement does not degrade, it hits llvm_unreachable.
+// Single-sourced here because three units have to agree on it: this analysis
+// (op whitelist), Vectorize (region retyping), and ReduceOpToLLVM (which
+// lowering to emit). A disagreement does not degrade, it hits llvm_unreachable.
 inline bool reduceCombineRegionEnabled() {
   static const bool enabled =
       mlir::triton::tools::isEnvValueBool(
@@ -151,8 +155,8 @@ inline bool reduceCombineRegionEnabled() {
 // The ops the region-interpreting lowering can also emit
 // (ReduceOpToLLVM::emitCombineOp). Only reachable while the region lowering is
 // on: with TRITONXPU_REDUCE_REGION=0 the lowering applies one op per output and
-// these would be silently dropped. Constants are deliberately left scalar by the
-// retyping and splatted at the use site.
+// these would be silently dropped. Constants are deliberately left scalar by
+// the retyping and splatted at the use site.
 //
 // arith::NegFOp is deliberately absent: Triton's unary minus lowers to
 // `subf(0.0, x)`, so no combine region can contain a NegFOp (findings.md 1.24).
@@ -244,9 +248,10 @@ Fit vectorFitUnknown(Value value, FitQuery query, unsigned wantWidth);
 class VectorizabilityAnalysis {
 public:
   // `reduceOperandFits` is the E-dependent gate the ReduceOp case needs, passed
-  // in rather than called directly so this unit keeps no compile-time dependency
-  // on TileAnalysis. Callers pass `vectorFitsReduceOperand`; it is owned, not
-  // borrowed, because every caller builds the analysis from a temporary.
+  // in rather than called directly so this unit keeps no compile-time
+  // dependency on TileAnalysis. Callers pass `vectorFitsReduceOperand`; it is
+  // owned, not borrowed, because every caller builds the analysis from a
+  // temporary.
   VectorizabilityAnalysis(
       bool reduceVec, bool dumpFlag,
       std::function<bool(triton::xpu::ReduceOp, Type)> reduceOperandFits,
@@ -294,7 +299,8 @@ private:
 //
 // The closure walk above answers one question per root: "can this whole tree be
 // retyped, yes or no". Anything it cannot retype vetoes the entire tree, which
-// is why a single `arith.cmpi` in a store chain costs the chain its vector form.
+// is why a single `arith.cmpi` in a store chain costs the chain its vector
+// form.
 //
 // This unit answers a different question, per SSA value rather than per root:
 // which state does this value *want*. Values that must agree are unioned into
@@ -331,9 +337,11 @@ struct VectorFlowStats {
   int64_t externPins = 0;  // extern_elementwise, pinned Scalar for now
   int64_t unknownPins = 0; // op kind not modelled, pinned Scalar
   // Step 2.2: the reduce entry as a boundary rather than a veto.
-  int64_t reduceOps = 0;           // reduces with at least one data operand
-  int64_t reduceVectorEntries = 0; // ... data operands whose class came out Vector
-  int64_t reduceEntryUnpacks = 0;  // ... of those, the ones needing a real unpack
+  int64_t reduceOps = 0; // reduces with at least one data operand
+  int64_t reduceVectorEntries =
+      0; // ... data operands whose class came out Vector
+  int64_t reduceEntryUnpacks =
+      0; // ... of those, the ones needing a real unpack
 };
 
 class VectorFlowAnalysis {

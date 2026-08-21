@@ -1,6 +1,6 @@
-#include "triton/Tools/Sys/GetEnv.hpp"
 #include "triton/Analysis/VectorizabilityAnalysis.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
 
@@ -23,9 +23,9 @@ unsigned getVectorWidth(Type elemTy) {
 
 bool reduceCombineIsVectorizable(triton::xpu::ReduceOp redOp) {
   // The region lowering emits the combine region op by op
-  // (ReduceOpToLLVM::interpretCombine) instead of applying the single defining op
-  // of each output, so a wider set of ops has a vector form. This predicate and
-  // Vectorize's retyping must widen together: that TypeSwitch ends in
+  // (ReduceOpToLLVM::interpretCombine) instead of applying the single defining
+  // op of each output, so a wider set of ops has a vector form. This predicate
+  // and Vectorize's retyping must widen together: that TypeSwitch ends in
   // llvm_unreachable, it does not fall back.
   bool region = reduceCombineRegionEnabled();
   for (Block &block : redOp.getCombineOp().getBlocks())
@@ -34,9 +34,9 @@ bool reduceCombineIsVectorizable(triton::xpu::ReduceOp redOp) {
                  : !isa<REDUCE_COMBINE_OP>(op))
         return false;
       // A value captured from outside the region is not retyped when Vectorize
-      // retypes the region, so it would leave a vector op with a scalar operand.
-      // Constants are the exception: Vectorize rematerializes those as in-region
-      // splats.
+      // retypes the region, so it would leave a vector op with a scalar
+      // operand. Constants are the exception: Vectorize rematerializes those as
+      // in-region splats.
       for (Value operand : op.getOperands())
         if (operand.getParentBlock() != &block &&
             !operand.getDefiningOp<arith::ConstantOp>())
@@ -272,9 +272,9 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
             // 16 regardless of element type: right for f32, wrong for f16/i8
             // (should be 32/64). Inconsistency #3 of §2.1.1, kept verbatim and
             // deliberately left at the call site rather than in the oracle.
-            isVectorized = askFit(broadCastOp.getResult(),
-                                  FitQuery::AtLeastWidth,
-                                  /*wantWidth=*/16) != Fit::No;
+            isVectorized =
+                askFit(broadCastOp.getResult(), FitQuery::AtLeastWidth,
+                       /*wantWidth=*/16) != Fit::No;
           }
         }
       })
@@ -613,8 +613,8 @@ VState VectorFlowAnalysis::stateOf(Value value) const {
 
 void VectorFlowAnalysis::visit(Operation *op) {
   // Element-wise, per the single-sourced table. `select` and the two compares
-  // ride along: they are retyped as one unit with their operands even though the
-  // compare's result element type differs.
+  // ride along: they are retyped as one unit with their operands even though
+  // the compare's result element type differs.
   if (hasVectorForm(op) ||
       isa<arith::SelectOp, arith::CmpFOp, triton::xpu::CmpFOp>(op)) {
     if (op->getNumResults() != 1)
@@ -699,8 +699,8 @@ void VectorFlowAnalysis::visit(Operation *op) {
         // a Scalar -> Vector boundary, not an equality edge: processOpVecTy
         // retypes only the *result* (Vectorize.cpp:383-387), leaving the source
         // scalar, and SVOptimization_Cond recognises exactly this shape
-        // (`srcShape[1] == 1`, Vectorize.cpp:693-701). Uniting here is what made
-        // every reduce-consuming kernel report Conflict: the Scalar-pinned
+        // (`srcShape[1] == 1`, Vectorize.cpp:693-701). Uniting here is what
+        // made every reduce-consuming kernel report Conflict: the Scalar-pinned
         // reduce result reached the Vector-pinned elementwise chain through the
         // broadcast.
         auto srcTy = mlir::dyn_cast<RankedTensorType>(bcOp.getSrc().getType());
@@ -755,8 +755,8 @@ void VectorFlowAnalysis::visit(Operation *op) {
         // Pinned Scalar on purpose. The symbol -> vector-symbol table lives
         // inside processOpVecTy, and one of its entries (isnan) carries
         // bitwidth-specific handling that a plain pair list cannot express, so
-        // single-sourcing it is its own step. Until then the conservative pin is
-        // the only answer that cannot drift; nothing consumes this yet.
+        // single-sourcing it is its own step. Until then the conservative pin
+        // is the only answer that cannot drift; nothing consumes this yet.
         for (Value result : extOp->getResults()) {
           pin(result, VState::Scalar);
           ++stats.externPins;

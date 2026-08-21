@@ -1,10 +1,10 @@
 #include "mlir/IR/IRMapping.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Tools/Sys/GetEnv.hpp"
 #include "triton/Analysis/TileAnalysis.h"
 #include "triton/Analysis/TileDecision.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 
 #define DEBUG_TYPE "tritonxpu-unroll-control"
 
@@ -18,7 +18,9 @@ namespace xpu {
 template <typename OP> struct COMOp;
 
 #define COMOP(SrcType, DstType)                                                \
-  template <> struct COMOp<SrcType> { typedef DstType type; };
+  template <> struct COMOp<SrcType> {                                          \
+    typedef DstType type;                                                      \
+  };
 
 COMOP(arith::AddFOp, triton::xpu::VvaddFOp);
 // subf/divf only reach a combine region on the region-interpreting path
@@ -40,7 +42,8 @@ public:
       TritonXPUUnrollControl>::TritonXPUUnrollControlBase;
 
   TritonXPUUnrollControl() = default;
-  TritonXPUUnrollControl(unsigned bufferSize, unsigned coreNum, unsigned unrollNum) {
+  TritonXPUUnrollControl(unsigned bufferSize, unsigned coreNum,
+                         unsigned unrollNum) {
     this->bufferSize = bufferSize;
     this->coreNum = coreNum;
     this->unrollNum = unrollNum;
@@ -59,9 +62,9 @@ public:
   std::string pinReasonStorage;
 
   // Step 3.5b: make the two pinned constants reachable from a knob, so they can
-  // be shown to be wrong. `pinUnrollNum` < 0 keeps the constant (the default, so
-  // artifacts stay byte-identical), 0 drops the pin and lets the pressure model
-  // decide, > 0 overrides it so its time curve can be swept.
+  // be shown to be wrong. `pinUnrollNum` < 0 keeps the constant (the default,
+  // so artifacts stay byte-identical), 0 drops the pin and lets the pressure
+  // model decide, > 0 overrides it so its time curve can be swept.
   //
   // Both numbers move together on purpose: the pin's factor equals the legacy
   // one only while `unrollNum == pinnedUnrollNum` (`findings.md` §1.30 proves
@@ -105,15 +108,15 @@ public:
       TypeSwitch<Operation *>(op)
           .Case<COMBINE_BINARY_OP, arith::SubFOp, arith::DivFOp>(
               [&](auto combineBinaryOp) {
-            if (auto tensorTy = dyn_cast<RankedTensorType>(
-                    combineBinaryOp.getResult().getType())) {
-              if (isa<VectorType>(getElementTypeOrSelf(tensorTy))) {
-                auto vecOp = createCombineVectorizedOp(combineBinaryOp);
-                combineBinaryOp.replaceAllUsesWith(vecOp.getResult());
-                combineBinaryOp.erase();
-              }
-            }
-          })
+                if (auto tensorTy = dyn_cast<RankedTensorType>(
+                        combineBinaryOp.getResult().getType())) {
+                  if (isa<VectorType>(getElementTypeOrSelf(tensorTy))) {
+                    auto vecOp = createCombineVectorizedOp(combineBinaryOp);
+                    combineBinaryOp.replaceAllUsesWith(vecOp.getResult());
+                    combineBinaryOp.erase();
+                  }
+                }
+              })
           .Case<arith::SelectOp>([&](auto selectOp) {
             if (auto tensorTy = dyn_cast<RankedTensorType>(
                     selectOp.getResult().getType())) {
@@ -559,10 +562,10 @@ public:
     llvm::raw_string_ostream os(msg);
     os << "[UnrollControl] site=" << site << " numCol=" << numCol
        << " widthPerCore=" << widthPerCore << " minVecWidth=" << minVecWidth
-       << " peakVRegs=" << peakVRegs
-       << " scalarPeak=" << scalarPeak << " budget=" << this->vrfBudget
-       << " target=" << target << " maxLegal=" << maxLegal
-       << " -> iterNum=" << chosen << " (" << why << ")";
+       << " peakVRegs=" << peakVRegs << " scalarPeak=" << scalarPeak
+       << " budget=" << this->vrfBudget << " target=" << target
+       << " maxLegal=" << maxLegal << " -> iterNum=" << chosen << " (" << why
+       << ")";
     // Every criterion that took part has to be visible, feasible or not: a
     // criterion nobody can read is a criterion nobody can falsify.
     if (decision) {
@@ -606,25 +609,25 @@ public:
     triton::xpu::TileContext altCtx = ctx;
     altCtx.peakVRegs = treeP.vecPeak;
     altCtx.maxVecWidth = treeP.maxVecWidth;
-    triton::xpu::Decision alt = triton::xpu::TileDecider().decide(candidates, altCtx);
+    triton::xpu::Decision alt =
+        triton::xpu::TileDecider().decide(candidates, altCtx);
     StringRef kernel = "<unknown>";
     if (auto funcOp = insertPt->getParentOfType<triton::FuncOp>())
       kernel = funcOp.getName();
-    llvm::errs() << "[SegDominance] " << kernel << " site=" << site
-                 << " treePeak=" << treeP.vecPeak
-                 << " blockPeak=" << blockP.vecPeak << " dominant="
-                 << (treeP.vecPeak > blockP.vecPeak
-                         ? "tree"
-                         : (treeP.vecPeak == blockP.vecPeak ? "equal" : "block"))
-                 << " treeMaxVecWidth=" << treeP.maxVecWidth
-                 << " blockMaxVecWidth=" << blockP.maxVecWidth
-                 << " target=" << triton::xpu::vrfBudgetTarget(ctx)
-                 << " treeOnlyTarget=" << triton::xpu::vrfBudgetTarget(altCtx)
-                 << " iterNum=" << decision.iterNum
-                 << " treeOnlyIterNum=" << alt.iterNum << " moved="
-                 << (alt.iterNum != decision.iterNum ? "yes" : "no")
-                 << " why=" << decision.why << " treeOnlyWhy=" << alt.why
-                 << "\n";
+    llvm::errs()
+        << "[SegDominance] " << kernel << " site=" << site
+        << " treePeak=" << treeP.vecPeak << " blockPeak=" << blockP.vecPeak
+        << " dominant="
+        << (treeP.vecPeak > blockP.vecPeak
+                ? "tree"
+                : (treeP.vecPeak == blockP.vecPeak ? "equal" : "block"))
+        << " treeMaxVecWidth=" << treeP.maxVecWidth
+        << " blockMaxVecWidth=" << blockP.maxVecWidth
+        << " target=" << triton::xpu::vrfBudgetTarget(ctx)
+        << " treeOnlyTarget=" << triton::xpu::vrfBudgetTarget(altCtx)
+        << " iterNum=" << decision.iterNum << " treeOnlyIterNum=" << alt.iterNum
+        << " moved=" << (alt.iterNum != decision.iterNum ? "yes" : "no")
+        << " why=" << decision.why << " treeOnlyWhy=" << alt.why << "\n";
   }
 
   // One run of the pressure model, from the two measurements to the decider's
@@ -657,8 +660,8 @@ public:
     }
     getBlockRegPressure(getOperation(), insertPt, run.blockP);
     // Everything the criteria may read, and nothing else: the target itself is
-    // computed by the tier-1 criterion out of these numbers (`vrfBudgetTarget`),
-    // so the pass no longer holds a second copy of it.
+    // computed by the tier-1 criterion out of these numbers
+    // (`vrfBudgetTarget`), so the pass no longer holds a second copy of it.
     //
     // Scalar pressure is measured and reported, but it does not drive the
     // factor. Measured on the layernorm probe (bufSz=512): scalarPeak 389..770
@@ -698,8 +701,8 @@ public:
     run.decision = decider.decide(run.candidates, run.ctx);
   }
 
-  // Step 3.5 groundwork, report-only. `pinnedUnrollNum` short-circuits the model
-  // before it ever runs, and the pin value is not reachable from any knob
+  // Step 3.5 groundwork, report-only. `pinnedUnrollNum` short-circuits the
+  // model before it ever runs, and the pin value is not reachable from any knob
   // (`unroll_num` is read after it), so today neither magic number can be shown
   // to be wrong: boolfused emits the same code at unroll_num 1/4/16. This puts
   // the pin's factor next to what the model would have picked at the same site.
@@ -707,10 +710,10 @@ public:
   // The legacy factor is printed next to it because that is what the site would
   // fall back to. The two turn out to be the *same* number by construction, not
   // by coincidence: `getNumUnroll` already folds `unrollNum * coresPerGroup`
-  // into `numUnroll`, and both pin sites set `unrollNum` to the pinned value, so
-  // `ceil(numCol, pin * coresPerGroup) == ceil(numCol, numUnroll)`. Measured on
-  // both pin sites (`findings.md` §1.30). That is why 3.5b only has to stop the
-  // early return -- the pin's arithmetic contributes nothing of its own.
+  // into `numUnroll`, and both pin sites set `unrollNum` to the pinned value,
+  // so `ceil(numCol, pin * coresPerGroup) == ceil(numCol, numUnroll)`. Measured
+  // on both pin sites (`findings.md` §1.30). That is why 3.5b only has to stop
+  // the early return -- the pin's arithmetic contributes nothing of its own.
   void reportPinShadow(const char *site, Operation *insertPt,
                        const SetVector<Operation *> &unrollOpTree,
                        int64_t numCol, int64_t widthPerCore,
@@ -731,13 +734,15 @@ public:
                  << " pinIterNum=" << pinned
                  << " legacyIterNum=" << legacyIterNum;
     // Without the pin this site would fall back to the legacy factor -- which
-    // the pin itself already overwrote (`this->unrollNum`), so the comparison is
-    // against the pinned unrollNum, not the user's. Worth seeing, not hiding.
+    // the pin itself already overwrote (`this->unrollNum`), so the comparison
+    // is against the pinned unrollNum, not the user's. Worth seeing, not
+    // hiding.
     if (run.noVectorValues) {
       llvm::errs() << " modelWhy=no-vector-values:legacy treePeak=0"
                    << " treeScalarPeak=" << run.treeP.scalarPeak
-                   << " modelIterNum=" << legacyIterNum << " moved="
-                   << (legacyIterNum != pinned ? "yes" : "no") << "\n";
+                   << " modelIterNum=" << legacyIterNum
+                   << " moved=" << (legacyIterNum != pinned ? "yes" : "no")
+                   << "\n";
       return;
     }
     // The candidate set in full: a pin value that is not even expressible, or a
@@ -753,8 +758,9 @@ public:
                  << " pinExpressible="
                  << (llvm::is_contained(run.candidates, pinned) ? "yes" : "no")
                  << " modelIterNum=" << run.decision.iterNum
-                 << " modelWhy=" << run.decision.why << " moved="
-                 << (run.decision.iterNum != pinned ? "yes" : "no") << "\n";
+                 << " modelWhy=" << run.decision.why
+                 << " moved=" << (run.decision.iterNum != pinned ? "yes" : "no")
+                 << "\n";
   }
 
   // The register file is shared by everything simultaneously live in the block,
@@ -814,11 +820,11 @@ public:
     // when the budget cannot be reached at all.
     int64_t maxLegal = 1;
 
-    // A pinned factor claims to be a correctness constraint, not a heuristic, so
-    // the model gets no say here; it only reports which constraint took over.
-    // Whether that claim holds is now testable from the outside: `pin-unroll-num`
-    // (3.5b) can drop the pin or move its constant, and `[PinShadow]` says what
-    // the model would have picked at the same site.
+    // A pinned factor claims to be a correctness constraint, not a heuristic,
+    // so the model gets no say here; it only reports which constraint took
+    // over. Whether that claim holds is now testable from the outside:
+    // `pin-unroll-num` (3.5b) can drop the pin or move its constant, and
+    // `[PinShadow]` says what the model would have picked at the same site.
     if (pinnedUnrollNum > 0) {
       int64_t pinned = ceil<int64_t>(numCol, pinnedUnrollNum * coresPerGroup);
       pinned = std::max<int64_t>(pinned, 1);
@@ -861,7 +867,8 @@ public:
       auto type = storeOp.getValue().getType();
       numUnroll = numUnroll == 1 ? getNumUnroll(type)
                                  : std::min(numUnroll, getNumCol(type));
-      numCol = numCol == 1 ? getNumCol(type) : std::min(numCol, getNumCol(type));
+      numCol =
+          numCol == 1 ? getNumCol(type) : std::min(numCol, getNumCol(type));
       allStoreOps.emplace_back(storeOp);
       //[TODO] To deal with the case that storeOps are in more than one block
       if (insertPt && insertPt->getBlock() != storeOp->getBlock())
@@ -2046,8 +2053,8 @@ public:
         // region-interpreting path (TRITONXPU_REDUCE_REGION) the combine
         // region's constants are vector<NxT>, so the broadcast has to be
         // triton_xpu.vsplat instead -- the same choice Vectorize.cpp makes for
-        // splats it retypes. VSplatOpConversion broadcasts a *scalar* into every
-        // lane (insertelement into lane 0 + shuffle), so the constant is
+        // splats it retypes. VSplatOpConversion broadcasts a *scalar* into
+        // every lane (insertelement into lane 0 + shuffle), so the constant is
         // narrowed back to its splat value here rather than handed over as a
         // vector. Ops are created at `anchor` because the cloned combine block
         // sits ahead of the builder's insertion point.
@@ -2073,9 +2080,9 @@ public:
             auto tensorTy1 = op.getOperand(1).getType();
             // The operand that is not a tensor is the one to broadcast. Asking
             // "is it a Float or an Integer" is too narrow: on the vector path
-            // the combine region's constants are vector<NxT>, and neither branch
-            // used to fire, leaving operandIndexNeedModify uninitialized and the
-            // assert below reading a garbage index.
+            // the combine region's constants are vector<NxT>, and neither
+            // branch used to fire, leaving operandIndexNeedModify uninitialized
+            // and the assert below reading a garbage index.
             int operandIndexNeedModify = -1;
             mlir::Type operandNeedReserved;
             if (tensorTy0 != tensorTy1) {
@@ -2119,11 +2126,11 @@ public:
                              .getDefiningOp()) &&
                      "Unable to extract the non-constant operand.");
 
-              selOp.setOperand(operandIndexNeedModify,
-                               createCombineSplat(
-                                   operandNeedReserved,
-                                   selOp.getOperand(operandIndexNeedModify),
-                                   &op));
+              selOp.setOperand(
+                  operandIndexNeedModify,
+                  createCombineSplat(operandNeedReserved,
+                                     selOp.getOperand(operandIndexNeedModify),
+                                     &op));
             }
           }
           for (auto [i, resTy] : llvm::enumerate(op.getResultTypes())) {

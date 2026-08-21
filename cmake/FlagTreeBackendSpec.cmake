@@ -120,6 +120,18 @@ function(flagtree_apply_backend_source_overrides backend_root)
     # ${_relative_path}: lib/*.cpp in the spec root
     file(RELATIVE_PATH _relative_path "${_spec_root}" "${_spec_source}")
 
+    # The XPU backend-owned overlay is applied by add_triton_object before
+    # this legacy spec_cpp scan runs. Do not try to inject the same source a
+    # second time: the target now owns the backend/spec copy rather than the
+    # mirrored main-tree source used by the spec_cpp mechanism.
+    set(_backend_spec_source
+      "${backend_root}/backend/spec/${_relative_path}")
+    if(EXISTS "${_backend_spec_source}")
+      message(STATUS
+        "SPEC: ${_relative_path} already provided by backend/spec; skipping spec_cpp")
+      continue()
+    endif()
+
     set(_spec_sources_in_core_root)
     # ${_core_roots}: all core root directories
     set(_core_roots "${PROJECT_SOURCE_DIR}")

@@ -596,11 +596,12 @@ void init_triton_ir(py::module &&m) {
             return self.getBody(idx);
           },
           ret::reference)
-      .def("dump", [](OpState &self) {
+      .def("dump",
+           [](OpState &self) {
 #if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
-        self->dump();
+             self->dump();
 #endif
-      })
+           })
       .def("__str__",
            [](OpState &self) -> std::string {
              std::string str;
@@ -687,11 +688,12 @@ void init_triton_ir(py::module &&m) {
   // module
   py::class_<ModuleOp, OpState>(m, "module", py::module_local(),
                                 py::dynamic_attr())
-      .def("dump", [](ModuleOp &self) {
+      .def("dump",
+           [](ModuleOp &self) {
 #if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
-        self.dump();
+             self.dump();
 #endif
-      })
+           })
       .def("str",
            [](ModuleOp &self) -> std::string {
              std::string str;

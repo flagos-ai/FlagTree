@@ -101,7 +101,8 @@ static State combineAdd(const State &a, const State &b, bool isSub) {
   // per-block pattern; blockStride is preserved).
   if (a.isScalar() && (b.isBlockScalar() || b.isBlockContig())) {
     int64_t bs = b.blockStride;
-    if (isSub) bs = -bs;
+    if (isSub)
+      bs = -bs;
     if (b.isBlockScalar())
       return State::blockScalar(b.rowLen, ba, bs, b.blockStrideKnown,
                                 b.blockFromLoad);
@@ -112,10 +113,10 @@ static State combineAdd(const State &a, const State &b, bool isSub) {
   }
   if (b.isScalar() && (a.isBlockScalar() || a.isBlockContig())) {
     if (a.isBlockScalar())
-      return State::blockScalar(a.rowLen, ba, a.blockStride,
-                                a.blockStrideKnown, a.blockFromLoad);
-    return State::blockContig(a.rowLen, ba, a.blockStride,
-                              a.blockStrideKnown, a.blockFromLoad);
+      return State::blockScalar(a.rowLen, ba, a.blockStride, a.blockStrideKnown,
+                                a.blockFromLoad);
+    return State::blockContig(a.rowLen, ba, a.blockStride, a.blockStrideKnown,
+                              a.blockFromLoad);
   }
   // BlockScalar + BlockContig with same rowLen -> BlockContig.
   // The resulting blockStride is the sum (or difference) of the two
@@ -340,9 +341,9 @@ static State divsiByConst(const State &lhs, int64_t c, int64_t lanes,
     uint64_t abs_u = static_cast<uint64_t>(absSpan);
     bool baseIsZero = (lhs.baseAlign == 0);
     bool baseDividesByC =
-        (lhs.baseAlign != 0) && ((lhs.baseAlign % cu) == 0);   // c | B
+        (lhs.baseAlign != 0) && ((lhs.baseAlign % cu) == 0); // c | B
     bool cDividesByBase =
-        (lhs.baseAlign != 0) && ((cu % lhs.baseAlign) == 0);   // B | c
+        (lhs.baseAlign != 0) && ((cu % lhs.baseAlign) == 0); // B | c
     // Case 2a: v[0] on a c-boundary (v[0]=0 or c | B), and absSpan < c
     // → all lanes fall in the same c-bucket → Scalar.
     // Quotient k = v[0]/c = m·(B/c), so result baseAlign = B/c
@@ -412,8 +413,7 @@ static State divsiByConst(const State &lhs, int64_t c, int64_t lanes,
 } // namespace
 
 LogicalResult ScalarAnalysis::visitOperation(
-    Operation *op,
-    ArrayRef<const Lattice<ScalarValueState> *> operands,
+    Operation *op, ArrayRef<const Lattice<ScalarValueState> *> operands,
     ArrayRef<Lattice<ScalarValueState> *> results) {
 
   auto setResult = [&](unsigned i, const State &st) {
@@ -507,8 +507,8 @@ LogicalResult ScalarAnalysis::visitOperation(
       // (uniform within each rowLen-lane block stays uniform). All other
       // kinds degrade conservatively.
       if (a.isBlockScalar()) {
-        setResult(0, State::blockScalar(a.rowLen, 1, 0, false,
-                                        a.blockFromLoad));
+        setResult(0,
+                  State::blockScalar(a.rowLen, 1, 0, false, a.blockFromLoad));
       } else {
         setResult(0, defaultFor(op->getResult(0)));
       }
@@ -526,8 +526,8 @@ LogicalResult ScalarAnalysis::visitOperation(
     if (!rhs) {
       // Non-constant divisor: BlockScalar / anything is still BlockScalar.
       if (a.isBlockScalar()) {
-        setResult(0, State::blockScalar(a.rowLen, 1, 0, false,
-                                        a.blockFromLoad));
+        setResult(0,
+                  State::blockScalar(a.rowLen, 1, 0, false, a.blockFromLoad));
       } else {
         setResult(0, defaultFor(op->getResult(0)));
       }

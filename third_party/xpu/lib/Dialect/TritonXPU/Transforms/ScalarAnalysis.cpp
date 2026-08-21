@@ -10,12 +10,12 @@
 // preserves the result.
 //===----------------------------------------------------------------------===//
 
-#include "triton/Analysis/NewAnalysis/Utility.h"
+#include "triton/Analysis/ScalarAnalysis.h"
 #include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/SparseAnalysis.h"
+#include "triton/Analysis/NewAnalysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Analysis/ScalarAnalysis.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 
@@ -57,8 +57,8 @@ struct TritonXPUScalarAnalysisPass
     // 2. Walk gm2lm / lm2gm and stamp Continuous + handwritten when the
     //    pointer's classification is exactly VectorContig(stride = 1).
     auto isContig1 = [&](Value ptrTensor) -> bool {
-      auto *lattice = solver.lookupState<
-          dataflow::Lattice<ScalarValueState>>(ptrTensor);
+      auto *lattice =
+          solver.lookupState<dataflow::Lattice<ScalarValueState>>(ptrTensor);
       if (!lattice)
         return false;
       const ScalarValueState &v = lattice->getValue();
@@ -95,8 +95,8 @@ struct TritonXPUScalarAnalysisPass
     // We still reject when blockStride is statically known and != rowLen
     // (e.g. flip's -R) as an extra guard.
     auto getBlockContigRowLen = [&](Value ptrTensor) -> int64_t {
-      auto *lattice = solver.lookupState<
-          dataflow::Lattice<ScalarValueState>>(ptrTensor);
+      auto *lattice =
+          solver.lookupState<dataflow::Lattice<ScalarValueState>>(ptrTensor);
       if (!lattice)
         return 0;
       const ScalarValueState &v = lattice->getValue();
@@ -111,9 +111,8 @@ struct TritonXPUScalarAnalysisPass
 
     auto markContinuous = [&](Operation *op) {
       OpBuilder b(op);
-      op->setAttr("offsetState",
-                  b.getSI32IntegerAttr(
-                      static_cast<int32_t>(OffsetState::Continuous)));
+      op->setAttr("offsetState", b.getSI32IntegerAttr(static_cast<int32_t>(
+                                     OffsetState::Continuous)));
       op->setAttr("handwrittenOffsetState", b.getBoolAttr(true));
       // Stamp the auxiliary attributes that downstream OffsetAnalysis would
       // otherwise compute via the (now skipped) inference path. For the
@@ -136,22 +135,23 @@ struct TritonXPUScalarAnalysisPass
     // when rowLen % numElems == 0.
     auto markLocallyContinuous = [&](Operation *op, int64_t rowLen) {
       OpBuilder b(op);
-      op->setAttr("offsetState",
-                  b.getSI32IntegerAttr(static_cast<int32_t>(
-                      OffsetState::LocallyContinuous)));
+      op->setAttr("offsetState", b.getSI32IntegerAttr(static_cast<int32_t>(
+                                     OffsetState::LocallyContinuous)));
       op->setAttr("handwrittenOffsetState", b.getBoolAttr(true));
-      op->setAttr("rowLen", b.getIntegerAttr(
-                                b.getIntegerType(64, /*isSigned=*/true), rowLen));
-      op->setAttr("rowStride", b.getIntegerAttr(
-                                   b.getIntegerType(64, /*isSigned=*/true), -1));
+      op->setAttr(
+          "rowLen",
+          b.getIntegerAttr(b.getIntegerType(64, /*isSigned=*/true), rowLen));
+      op->setAttr(
+          "rowStride",
+          b.getIntegerAttr(b.getIntegerType(64, /*isSigned=*/true), -1));
     };
 
     // Returns rowLen (>= sizePerCore) when the pointer-tensor is BlockScalar,
     // meaning every `rowLen` lanes share the same address. Only mark when
     // rowLen >= sizePerCore so that within each core the address is uniform.
     auto getBlockScalarRowLen = [&](Value ptrTensor) -> int64_t {
-      auto *lattice = solver.lookupState<
-          dataflow::Lattice<ScalarValueState>>(ptrTensor);
+      auto *lattice =
+          solver.lookupState<dataflow::Lattice<ScalarValueState>>(ptrTensor);
       if (!lattice)
         return 0;
       const ScalarValueState &v = lattice->getValue();
@@ -171,26 +171,26 @@ struct TritonXPUScalarAnalysisPass
 
     auto markDiscreteSame = [&](Operation *op, int64_t /*rowLen*/) {
       OpBuilder b(op);
-      op->setAttr("offsetState",
-                  b.getSI32IntegerAttr(
-                      static_cast<int32_t>(OffsetState::DiscreteSame)));
+      op->setAttr("offsetState", b.getSI32IntegerAttr(static_cast<int32_t>(
+                                     OffsetState::DiscreteSame)));
       op->setAttr("handwrittenOffsetState", b.getBoolAttr(true));
       op->setAttr("fixedStride", b.getSI32IntegerAttr(0));
       op->setAttr("rowLen", b.getIntegerAttr(
                                 b.getIntegerType(64, /*isSigned=*/true), -1));
-      op->setAttr("rowStride", b.getIntegerAttr(
-                                   b.getIntegerType(64, /*isSigned=*/true), -1));
+      op->setAttr(
+          "rowStride",
+          b.getIntegerAttr(b.getIntegerType(64, /*isSigned=*/true), -1));
     };
 
     // Returns rowLen when the pointer-tensor is BlockScalar but each core spans
-    // *multiple whole blocks* (rowLen < sizePerCore && sizePerCore % rowLen == 0).
-    // DiscreteSame requires one uniform address per core (rowLen >= sizePerCore);
-    // this complementary "locally scalar" case keeps the per-block scalar address
-    // structure so the gm2lm can issue one scalar DMA per block instead of
-    // falling back to the per-element Unknown gather.
+    // *multiple whole blocks* (rowLen < sizePerCore && sizePerCore % rowLen ==
+    // 0). DiscreteSame requires one uniform address per core (rowLen >=
+    // sizePerCore); this complementary "locally scalar" case keeps the
+    // per-block scalar address structure so the gm2lm can issue one scalar DMA
+    // per block instead of falling back to the per-element Unknown gather.
     auto getLocalScalarRowLen = [&](Value ptrTensor) -> int64_t {
-      auto *lattice = solver.lookupState<
-          dataflow::Lattice<ScalarValueState>>(ptrTensor);
+      auto *lattice =
+          solver.lookupState<dataflow::Lattice<ScalarValueState>>(ptrTensor);
       if (!lattice)
         return 0;
       const ScalarValueState &v = lattice->getValue();
@@ -214,17 +214,19 @@ struct TritonXPUScalarAnalysisPass
 
     auto markLocallyScalar = [&](Operation *op, int64_t rowLen) {
       OpBuilder b(op);
-      op->setAttr("offsetState",
-                  b.getSI32IntegerAttr(
-                      static_cast<int32_t>(OffsetState::LocallyScalar)));
+      op->setAttr("offsetState", b.getSI32IntegerAttr(static_cast<int32_t>(
+                                     OffsetState::LocallyScalar)));
       op->setAttr("handwrittenOffsetState", b.getBoolAttr(true));
-      // INT32_MIN keeps the consuming load off the DiscreteSame(stride==0) path;
-      // OffsetAnalysis stamps isDiscrete=true so it uses the per-lane LM read.
+      // INT32_MIN keeps the consuming load off the DiscreteSame(stride==0)
+      // path; OffsetAnalysis stamps isDiscrete=true so it uses the per-lane LM
+      // read.
       op->setAttr("fixedStride", b.getSI32IntegerAttr(INT32_MIN));
-      op->setAttr("rowLen", b.getIntegerAttr(
-                                b.getIntegerType(64, /*isSigned=*/true), rowLen));
-      op->setAttr("rowStride", b.getIntegerAttr(
-                                   b.getIntegerType(64, /*isSigned=*/true), -1));
+      op->setAttr(
+          "rowLen",
+          b.getIntegerAttr(b.getIntegerType(64, /*isSigned=*/true), rowLen));
+      op->setAttr(
+          "rowStride",
+          b.getIntegerAttr(b.getIntegerType(64, /*isSigned=*/true), -1));
     };
 
     // In aggressive mode, only update ops where offsetState is still -1
@@ -235,7 +237,8 @@ struct TritonXPUScalarAnalysisPass
       auto attr = op->getAttrOfType<IntegerAttr>("offsetState");
       if (!attr)
         return false; // no attr means not yet processed, ok to mark
-      return attr.getValue().getSExtValue() != -1; // already has valid state, skip
+      return attr.getValue().getSExtValue() !=
+             -1; // already has valid state, skip
     };
 
     mod.walk([&](Operation *op) {
@@ -286,10 +289,10 @@ struct TritonXPUScalarAnalysisPass
     // 3. Debug mode: stamp every tensor result with its lattice state.
     //    Enable via env TRITONXPU_SCALAR_ANALYSIS_DEBUG=1
     if (std::getenv("TRITONXPU_SCALAR_ANALYSIS_DEBUG")) {
-    mod.walk([&](Operation *op) {
+      mod.walk([&](Operation *op) {
         for (Value res : op->getResults()) {
-          auto *lattice = solver.lookupState<
-              dataflow::Lattice<ScalarValueState>>(res);
+          auto *lattice =
+              solver.lookupState<dataflow::Lattice<ScalarValueState>>(res);
           if (!lattice)
             continue;
           const ScalarValueState &v = lattice->getValue();

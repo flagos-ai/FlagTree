@@ -208,7 +208,7 @@ struct ScalarValueState {
 /// Forward sparse dataflow analysis that propagates `ScalarValueState`
 /// through arithmetic / triton ops along the use-def chain.
 class ScalarAnalysis : public dataflow::SparseForwardDataFlowAnalysis<
-                          dataflow::Lattice<ScalarValueState>> {
+                           dataflow::Lattice<ScalarValueState>> {
 public:
   using SparseForwardDataFlowAnalysis<
       dataflow::Lattice<ScalarValueState>>::SparseForwardDataFlowAnalysis;
@@ -223,8 +223,7 @@ public:
   /// Entry / external Values default to Scalar for non-tensor (a single SSA
   /// value is trivially lane-uniform) and VectorOther for tensor types
   /// (without a defining op we cannot say anything).
-  void setToEntryState(
-      dataflow::Lattice<ScalarValueState> *lattice) override {
+  void setToEntryState(dataflow::Lattice<ScalarValueState> *lattice) override {
     Value v = lattice->getAnchor();
     ScalarValueState init = isa<RankedTensorType>(v.getType())
                                 ? ScalarValueState::other()

@@ -48,7 +48,7 @@ static bool isDefinedOutside(Value v, scf::ForOp loop) {
 // pointer of `gm2lmOp` originates from a kernel pointer argument (FuncOp block
 // argument). Returns that base Value if found.
 static Value findInvariantBasePtr(triton::xpu::GM2LMOp gm2lmOp,
-                                   scf::ForOp loop) {
+                                  scf::ForOp loop) {
   Value ptr = gm2lmOp.getPtr();
   while (auto addptr = ptr.getDefiningOp<triton::AddPtrOp>())
     ptr = addptr.getPtr();
@@ -176,7 +176,6 @@ static bool isContiguousIndex(Value dividend, scf::ForOp loop) {
   return sawContiguousSource;
 }
 
-
 // From the gm2lm `len` operand `%len = arith.subi(tt.splat(%xnumel), %idx)`,
 // return the loop-invariant scalar `%xnumel`. The splat source may be wrapped
 // in extension ops (e.g. `arith.extsi %arg3`); peel them to reach an invariant
@@ -297,7 +296,8 @@ struct TritonXPULoopInvariantStaging
 
     auto i32Ty = builder.getI32Type();
 
-    // Runtime length n_idx = ceilDiv(xnumel, stride) = (xnumel + stride-1)/stride.
+    // Runtime length n_idx = ceilDiv(xnumel, stride) = (xnumel +
+    // stride-1)/stride.
     Type xnumelTy = xnumel.getType();
     auto sMinus1 = builder.create<arith::ConstantOp>(
         loc, xnumelTy, builder.getIntegerAttr(xnumelTy, stride - 1));
@@ -306,7 +306,8 @@ struct TritonXPULoopInvariantStaging
     Value sum = builder.create<arith::AddIOp>(loc, xnumel, sMinus1);
     Value nIdx = builder.create<arith::DivSIOp>(loc, sum, strideC);
 
-    // n_idx as i32 (the DMA length / buffer-sizing arithmetic is byte-granular).
+    // n_idx as i32 (the DMA length / buffer-sizing arithmetic is
+    // byte-granular).
     Value nIdxI32 = nIdx;
     if (!xnumelTy.isInteger(32)) {
       nIdxI32 = builder.create<arith::TruncIOp>(loc, i32Ty, nIdx);
@@ -326,8 +327,9 @@ struct TritonXPULoopInvariantStaging
     int32_t availElems = kStagingMaxBytes / static_cast<int32_t>(elemBytes);
 
     // bufElems = clamp(n_idx, 0, availElems) as i32 (runtime). The stage_sm DMA
-    // in the preheader runs unconditionally, so the buffer size must stay within
-    // the SM ceiling even when the runtime guard below selects the fallback.
+    // in the preheader runs unconditionally, so the buffer size must stay
+    // within the SM ceiling even when the runtime guard below selects the
+    // fallback.
     auto zeroI32 = builder.create<arith::ConstantOp>(
         loc, i32Ty, builder.getI32IntegerAttr(0));
     auto availI32 = builder.create<arith::ConstantOp>(

@@ -116,11 +116,10 @@ void init_triton_xpu_passes_transform(py::module &&m) {
     self.addPass(mlir::triton::xpu::createTritonXPULoopGrid());
   });
 
-  m.def("add_tritonxpu_loop_invariant_staging_pass",
-        [](mlir::PassManager &self) {
-          self.addPass(
-              mlir::triton::xpu::createTritonXPULoopInvariantStaging());
-        });
+  m.def(
+      "add_tritonxpu_loop_invariant_staging_pass", [](mlir::PassManager &self) {
+        self.addPass(mlir::triton::xpu::createTritonXPULoopInvariantStaging());
+      });
 
   m.def("add_tritonxpu_print_pass", [](mlir::PassManager &self) {
     self.addPass(mlir::triton::xpu::createTritonXPUPrint());
@@ -176,11 +175,10 @@ void init_triton_xpu_passes_transform(py::module &&m) {
               {dump_flag, compare_fusion}));
         });
 
-  m.def("add_tritonxpu_tile_analysis_pass",
-        [](mlir::PassManager &self, uint32_t vrf_budget) {
-          self.addPass(
-              mlir::triton::xpu::createTritonXPUTileAnalysis({vrf_budget}));
-        });
+  m.def("add_tritonxpu_tile_analysis_pass", [](mlir::PassManager &self,
+                                               uint32_t vrf_budget) {
+    self.addPass(mlir::triton::xpu::createTritonXPUTileAnalysis({vrf_budget}));
+  });
 
   m.def("add_tritonxpu_vectorizability_analysis_pass",
         [](mlir::PassManager &self, bool reduce_vec, bool pre_tiling) {
@@ -442,8 +440,7 @@ void init_triton_xpu(py::module &&m) {
     bool hasTLEOp = false;
     mod.walk([&](mlir::Operation *op) {
       auto name = op->getName().getStringRef();
-      if (name == "ttg.local_alloc" ||
-          name == "triton_xpu.tle_copy_g2l" ||
+      if (name == "ttg.local_alloc" || name == "triton_xpu.tle_copy_g2l" ||
           name == "triton_xpu.tle_copy_l2g" ||
           name == "triton_xpu.tle_local_ptr") {
         hasTLEOp = true;

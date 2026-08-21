@@ -2,8 +2,8 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/LLVMXPU/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 #include "llvm/ADT/DenseMap.h"
@@ -154,9 +154,8 @@ private:
     }
 
     // Sort in original block order so we move them in topological order.
-    llvm::sort(deps, [](Operation *a, Operation *b) {
-      return a->isBeforeInBlock(b);
-    });
+    llvm::sort(
+        deps, [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
   }
 
   // Verify that relocating every op in `moveSet` to just before `insertBefore`
@@ -259,9 +258,8 @@ private:
     }
     if (!gm2lmOp->isBeforeInBlock(insertBefore))
       gm2lmOp->moveBefore(insertBefore);
-    LLVM_DEBUG(llvm::dbgs()
-               << "[AsyncLoadSchedule] hoisted gm2lm (with " << deps.size()
-               << " deps): " << *gm2lmOp << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "[AsyncLoadSchedule] hoisted gm2lm (with "
+                            << deps.size() << " deps): " << *gm2lmOp << "\n");
   }
 
   bool isAsyncProducer(Operation *op) const {
@@ -275,7 +273,8 @@ private:
   bool setAsyncProducer(Operation *op) const {
     if (!isa<triton::xpu::GM2LMOp, triton::xpu::GM2LMMaskOp>(op))
       return false;
-    auto async = MemorySyncModeAttr::get(op->getContext(), MemorySyncMode::ASYNC);
+    auto async =
+        MemorySyncModeAttr::get(op->getContext(), MemorySyncMode::ASYNC);
     op->setAttr("syncMode", async);
     return true;
   }
@@ -301,7 +300,8 @@ private:
     return earliest;
   }
 
-  FailureOr<ForwardingChain> getForwardingChain(triton::xpu::LoadOp loadOp) const {
+  FailureOr<ForwardingChain>
+  getForwardingChain(triton::xpu::LoadOp loadOp) const {
     ForwardingChain chain;
     Block *block = loadOp->getBlock();
     Operation *firstUser = getEarliestUserInBlock(loadOp.getResult(), block);
@@ -442,8 +442,7 @@ private:
     Operation *lastKept = nullptr;
     for (Operation *m : mfences) {
       Operation *producer = insertedMfences.lookup(m);
-      if (lastKept && producer &&
-          dominance.dominates(producer, lastKept) &&
+      if (lastKept && producer && dominance.dominates(producer, lastKept) &&
           dominance.dominates(lastKept, m)) {
         eraseSet.insert(m);
       } else {
@@ -502,10 +501,12 @@ private:
     return best;
   }
 
-  void trySchedule(triton::xpu::LoadOp loadOp,
-                   llvm::DenseMap<Operation *, Operation *> &insertedMfences) const {
+  void
+  trySchedule(triton::xpu::LoadOp loadOp,
+              llvm::DenseMap<Operation *, Operation *> &insertedMfences) const {
     Operation *producer = loadOp.getPtr().getDefiningOp();
-    if (!isa_and_nonnull<triton::xpu::GM2LMOp, triton::xpu::GM2LMMaskOp>(producer))
+    if (!isa_and_nonnull<triton::xpu::GM2LMOp, triton::xpu::GM2LMMaskOp>(
+            producer))
       return;
     if (!hasSingleLoadUser(producer, loadOp))
       return;
@@ -533,9 +534,8 @@ private:
       setAsyncProducer(producer);
       insertMfenceBefore(loadOp.getOperation(), producer, insertedMfences);
       if (dumpFlag) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "[AsyncLoadSchedule] fallback move load: " << *loadOp
-                   << "\n");
+        LLVM_DEBUG(llvm::dbgs() << "[AsyncLoadSchedule] fallback move load: "
+                                << *loadOp << "\n");
       }
       return;
     }

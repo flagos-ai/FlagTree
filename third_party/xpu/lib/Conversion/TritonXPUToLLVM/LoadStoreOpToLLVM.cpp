@@ -178,8 +178,8 @@ struct LoadStoreConversionBase {
     }
   }
 
-  void createMfenceOp(ConversionPatternRewriter &rewriter,
-                      mlir::Location &loc, int32_t mfenceType = 5) const {
+  void createMfenceOp(ConversionPatternRewriter &rewriter, mlir::Location &loc,
+                      int32_t mfenceType = 5) const {
     // Mfence mask bits: bit0=LM(1), bit1=SM(2), bit2=GM(4). 5 fences LM+GM.
     rewriter.create<mlir::LLVM::XPU::MfenceOp>(loc, i32_val(mfenceType));
   }

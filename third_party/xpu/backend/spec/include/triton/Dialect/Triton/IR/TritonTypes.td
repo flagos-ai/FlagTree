@@ -10,12 +10,14 @@ include "triton/Dialect/Triton/IR/TritonDialect.td"
 //
 class TritonTypeDef<string name, string _mnemonic, list<Trait> traits = []>
     : TypeDef<Triton_Dialect, name, traits> {
-    // Used by printer/parser
-    let mnemonic = _mnemonic;
+  // Used by printer/parser
+  let mnemonic = _mnemonic;
 }
 
 // Floating-point Type
-def TT_Float : AnyTypeOf<[F8E4M3FN, F8E4M3FNUZ, F8E5M2, F8E5M2FNUZ, F16, BF16, F32, F64], "floating-point">;
+def TT_Float
+    : AnyTypeOf<[F8E4M3FN, F8E4M3FNUZ, F8E5M2, F8E5M2FNUZ, F16, BF16, F32, F64],
+                "floating-point">;
 def TT_FloatTensor : RankedTensorOf<[TT_Float]>;
 def TT_FloatLike : AnyTypeOf<[TT_Float, TT_FloatTensor]>;
 
@@ -41,36 +43,37 @@ def TT_I32Like : AnyTypeOf<[I32, I32Tensor]>;
 def TT_I64Like : AnyTypeOf<[I64, I64Tensor]>;
 
 // Pointer Type in TableGen
-class TT_PtrOf<list<Type> pointeeTypes> :
-    DialectType<Triton_Dialect,
-                And<[CPred<"::mlir::isa<::mlir::triton::PointerType>($_self)">,
-                     Concat<"[](::mlir::Type pointeeType) { return ",
-                            SubstLeaves<"$_self", "pointeeType", AnyTypeOf<pointeeTypes>.predicate>,
-                                        "; }(::mlir::cast<::mlir::triton::PointerType>($_self).getPointeeType())">]>,
-                "ptr", "::mlir::triton::PointerType">;
+class TT_PtrOf<list<Type> pointeeTypes>
+    : DialectType<
+          Triton_Dialect,
+          And<[CPred<"::mlir::isa<::mlir::triton::PointerType>($_self)">,
+               Concat<"[](::mlir::Type pointeeType) { return ",
+                      SubstLeaves<"$_self", "pointeeType",
+                                  AnyTypeOf<pointeeTypes>.predicate>,
+                      "; "
+                      "}(::mlir::cast<::mlir::triton::PointerType>($_self)."
+                      "getPointeeType())">]>,
+          "ptr", "::mlir::triton::PointerType">;
 
 // Pointer Type in C++ (corresponding to `TT_PtrOf`)
 def TT_PtrType : TritonTypeDef<"Pointer", "ptr"> {
-    let summary = "Pointer type (`::mlir::triton::PointerType`) in Triton IR type system";
+  let summary =
+      "Pointer type (`::mlir::triton::PointerType`) in Triton IR type system";
 
-    let description = [{
+  let description = [{
         Pointer type in Triton IR type system, which could be pointing to scalars or tensors.
     }];
 
-    let parameters = (ins "Type":$pointeeType, "int":$addressSpace);
+  let parameters = (ins "Type":$pointeeType, "int":$addressSpace);
 
-    let builders = [
-        TypeBuilderWithInferredContext<(ins
-            "Type":$pointeeType,
-            "int":$addressSpace
-        ), [{
+  let builders = [TypeBuilderWithInferredContext<
+      (ins "Type":$pointeeType, "int":$addressSpace), [{
             return $_get(pointeeType.getContext(), pointeeType, addressSpace);
-        }]>
-    ];
+        }]>];
 
-    let hasCustomAssemblyFormat = 1;
+  let hasCustomAssemblyFormat = 1;
 
-    let skipDefaultBuilders = 1;
+  let skipDefaultBuilders = 1;
 }
 
 // Scalar Pointer Type: `ptr<>`
@@ -94,11 +97,13 @@ def TT_VectorTensor : TensorOf<[TT_Vector]>;
 def TT_VectorLike : AnyTypeOf<[TT_Vector, TT_VectorTensor]>;
 
 // Any Type in Triton IR
-def TT_Type : AnyTypeOf<[TT_FloatLike, TT_IntLike, TT_PtrLike, TT_TensorPtr, TT_VectorLike]>;
+def TT_Type : AnyTypeOf<[TT_FloatLike, TT_IntLike, TT_PtrLike, TT_TensorPtr,
+                         TT_VectorLike]>;
 
 // Result type of MakeTensorDescriptor
 def TT_TensorDescType : TritonTypeDef<"TensorDesc", "tensordesc", []> {
-  let summary = "Tensor descriptor type (`::mlir::triton::TensorDescType`) in Triton IR type system";
+  let summary = "Tensor descriptor type (`::mlir::triton::TensorDescType`) in "
+                "Triton IR type system";
 
   let description = [{
       A portable abstraction for nvidia-TMA descriptors.
@@ -107,8 +112,8 @@ def TT_TensorDescType : TritonTypeDef<"TensorDesc", "tensordesc", []> {
   let parameters = (ins "RankedTensorType":$blockType);
   let assemblyFormat = "`<` $blockType `>`";
 
-  let builders = [
-    TypeBuilder<(ins "RankedTensorType":$blockType, "bool":$isSigned), [{
+  let builders = [TypeBuilder<
+                      (ins "RankedTensorType":$blockType, "bool":$isSigned), [{
       if (auto intTy = llvm::dyn_cast<IntegerType>(blockType.getElementType())) {
         auto sem = isSigned ? IntegerType::Signed : IntegerType::Unsigned;
         auto elemTy = IntegerType::get($_ctxt, intTy.getWidth(), sem);

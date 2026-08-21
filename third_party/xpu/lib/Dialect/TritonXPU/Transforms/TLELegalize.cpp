@@ -58,7 +58,8 @@ struct TritonXPUTLELegalizePass
       builder.cloneRegionBefore(reduceOp.getCombineOp(), newCombineOp,
                                 newCombineOp.end());
       // tt.reduce.return -> triton_xpu.reduce.return inside the combine region.
-      for (auto &opInCombine : llvm::make_early_inc_range(newCombineOp.getOps())) {
+      for (auto &opInCombine :
+           llvm::make_early_inc_range(newCombineOp.getOps())) {
         if (auto redReturnOp =
                 dyn_cast<mlir::triton::ReduceReturnOp>(&opInCombine)) {
           OpBuilder retBuilder(redReturnOp);
@@ -96,7 +97,6 @@ struct TritonXPUTLELegalizePass
       helper.setScanNum(scanNum);
       scanId++;
     });
-
   }
 };
 

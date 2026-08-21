@@ -97,8 +97,7 @@ struct TritonXPULegalizeExternEW
     RewritePatternSet patterns(context);
     patterns.add<FastExpfToMathExpPattern, FastDividefToArithDivfPattern>(
         context);
-    if (failed(applyPatternsGreedily(getOperation(),
-                                            std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
     }
   }

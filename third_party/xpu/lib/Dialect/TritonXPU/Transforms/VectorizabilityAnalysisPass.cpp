@@ -10,34 +10,35 @@
 // ReduceVec, then every store -- and reports, per root, whether the root is
 // eligible and how big the closure is.
 //
-// Two instances of it are registered, and the point of the second one is to make
-// a specific risk measurable instead of argued about.
+// Two instances of it are registered, and the point of the second one is to
+// make a specific risk measurable instead of argued about.
 //
 //   preTiling=false -- immediately before Vectorize. Since step 1.5 moved that
 //     pass' prologue into tritonxpu-normalize, this sees exactly the IR
-//     Vectorize rewrites, so `stage=pre-vectorize` is by construction the answer
-//     Vectorize will reach.
+//     Vectorize rewrites, so `stage=pre-vectorize` is by construction the
+//     answer Vectorize will reach.
 //
 //   preTiling=true -- ahead of CoreTiling. The three in-walk footprint tests
-//     (LoadOp, SplatOp, BroadcastOp) read sizePerCore, which does not exist yet,
-//     so this instance hands the walk an all-Unknown oracle: it never vetoes and
-//     records what it deferred (`stage=pre-tiling`, `cands=`). It then repeats
-//     the walk with the real oracle at the same position (`stage=pre-tiling-fit`).
+//     (LoadOp, SplatOp, BroadcastOp) read sizePerCore, which does not exist
+//     yet, so this instance hands the walk an all-Unknown oracle: it never
+//     vetoes and records what it deferred (`stage=pre-tiling`, `cands=`). It
+//     then repeats the walk with the real oracle at the same position
+//     (`stage=pre-tiling-fit`).
 //
-// `pre-tiling-fit` vs `pre-vectorize` is the diff that matters: it holds the walk
-// fixed and varies only the position, so a disagreement is CoreTiling or Legalize
-// moving an E-dependent answer -- e.g. Legalize.cpp:245-247's
+// `pre-tiling-fit` vs `pre-vectorize` is the diff that matters: it holds the
+// walk fixed and varies only the position, so a disagreement is CoreTiling or
+// Legalize moving an E-dependent answer -- e.g. Legalize.cpp:245-247's
 // `slicedShape[i] = max(shape[i]/iterCount[i], 1)`, whose saturation can flip
 // BroadcastOp's `srcShape[1] == resShape[1]` from false to true. Agreement is
 // what licenses moving the state half up (step 1.5c).
 //
-// Nothing is emitted unless TRITONXPU_VEC_REPORT=1, and neither instance mutates
-// the IR.
+// Nothing is emitted unless TRITONXPU_VEC_REPORT=1, and neither instance
+// mutates the IR.
 //===----------------------------------------------------------------------===//
 
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Analysis/TileAnalysis.h"
 #include "triton/Analysis/VectorizabilityAnalysis.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 
@@ -71,7 +72,7 @@ public:
   // answer, and this pass has to report what that function would see, not
   // something tidier.
   std::pair<bool, int64_t> reportWithFit(const char *stage, const char *site,
-                                        Operation *root, Type rootOpTy) {
+                                         Operation *root, Type rootOpTy) {
     VectorizabilityAnalysis analysis(this->reduceVec, /*dumpFlag=*/false,
                                      vectorFitsReduceOperand, vectorFitsValue);
     bool eligible = vectorFitsRoot(rootOpTy);
@@ -92,9 +93,10 @@ public:
   void reportState(const char *site, Operation *root, Type rootOpTy) {
     // Eligibility keeps only `vectorFitsRoot`'s E-independent conjunct. The
     // other two (numElems >= width, numElems % width == 0) divide the per-core
-    // element count, so they belong to the deferred side -- but unlike the three
-    // in-walk cases they have no oracle to go through yet, which is why the root
-    // itself is not in `cands`. That is the hole step 2.1 has to close.
+    // element count, so they belong to the deferred side -- but unlike the
+    // three in-walk cases they have no oracle to go through yet, which is why
+    // the root itself is not in `cands`. That is the hole step 2.1 has to
+    // close.
     Type elemTy = getElementTypeOrSelf(getElementTypeOrSelf(rootOpTy));
     bool eligible =
         isa<RankedTensorType>(rootOpTy) && vectorizedTyValid(elemTy);
@@ -144,7 +146,8 @@ public:
       const VectorFlowStats &st = analysis->getStats();
       llvm::errs() << "[VFlow] " << funcOp.getName()
                    << " summary values=" << st.values
-                   << " classes=" << st.classes << " vector=" << st.vectorClasses
+                   << " classes=" << st.classes
+                   << " vector=" << st.vectorClasses
                    << " scalar=" << st.scalarClasses
                    << " conflict=" << st.conflictClasses
                    << " unset=" << st.unsetClasses << " unions=" << st.unions
@@ -160,8 +163,8 @@ public:
   }
 
   // `keyValue` is the value whose state the closure verdict is about: the
-  // store's value operand, or the reduce operand. Agreement is the contract this
-  // step has to report -- a disagreement is either the partition seeing a
+  // store's value operand, or the reduce operand. Agreement is the contract
+  // this step has to report -- a disagreement is either the partition seeing a
   // boundary the walk had to veto on (expected, that is the point) or a bug.
   void reportVFlowRoot(const char *site, Operation *root, Value keyValue,
                        int64_t closureSize) {
@@ -192,10 +195,10 @@ public:
         // representation. welford's `w` accumulator is the case -- it is built
         // from constants and loop-carried values only, so the sole reason the
         // walk retypes it is the reduce being a vector consumer, and *that* is
-        // the E-dependent fit question (`vectorFitsReduceOperand`) this analysis
-        // deliberately does not answer. Reported as its own kind rather than
-        // folded into agreement: a free class is a candidate, which is all M1
-        // promises, but it is not the same statement as "Vector".
+        // the E-dependent fit question (`vectorFitsReduceOperand`) this
+        // analysis deliberately does not answer. Reported as its own kind
+        // rather than folded into agreement: a free class is a candidate, which
+        // is all M1 promises, but it is not the same statement as "Vector".
         kind = tracked ? "free" : "UNTRACKED";
       else
         kind = "MISMATCH";
@@ -230,8 +233,8 @@ public:
       }
       // This instance sits where M1/M2 will produce, so it is the one that puts
       // the conclusion into the plan (step 1.6). The pre-tiling instance must
-      // not: it would key roots that the walk there cannot even see, and its ids
-      // would collide with these.
+      // not: it would key roots that the walk there cannot even see, and its
+      // ids would collide with these.
       tilePlanRecord(getOperation(), root, site, eligible, closureSize);
       return;
     }

@@ -11,7 +11,7 @@ import sys
 
 from dataclasses import dataclass
 import functools
-from typing import Any, Tuple, Optional
+from typing import Tuple, Optional
 import hashlib
 from pathlib import Path
 
@@ -236,7 +236,7 @@ class XPUBackend(BaseBackend):
         # makes launch.cpp append a spurious scale param, shifting gridX/Y/Z and
         # handing the kernel a wild quantized buffer base -> illegal memory access.
         # Gate on the same condition that selects the quantizing mode.
-        _needs_scale_args = metadata["use_int4_w4a8"] == True or int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0)) == 1
+        _needs_scale_args = metadata["use_int4_w4a8"] or int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0)) == 1
         metadata["tensor_args"] = xpu.get_tensor_args(mod, []) if (metadata["is_sdnn"] is True
                                                                    and _needs_scale_args) else []
         metadata["shared"] = (-1)  # TODO: invalid value, just to keep CompiledKernel _init_handles() success
@@ -253,17 +253,15 @@ class XPUBackend(BaseBackend):
         is_use_mask_zero = metadata["is_use_mask_zero"]
         if is_use_mask_zero:
             warnings.warn(
-                f'XRE Version Must Be More than 5.0.21.37 (After 2025.07.22). And echo 1 > /proc/kunlun/dev4/dma_excp_mask',
+                'XRE Version Must Be More than 5.0.21.37 (After 2025.07.22). And echo 1 > /proc/kunlun/dev4/dma_excp_mask',
                 UserWarning)
         TTXPU_F_INTERLEAVE = 0 if metadata["grid"] != (12, 1, 1) else int(os.environ.get("TRITONXPU_INTERLEAVE", 1))
         TTXPU_F_OHTER_VALUE_SIM = int(os.environ.get("TRITONXPU_OTHER_SIM", 0))
-        TTXPU_F_STORE_MASK_SIM = int(os.environ.get("TRITONXPU_STORE_MASK_SIM", 0))
         TTXPU_F_DTYPE_CONVERT = 0 if metadata["isCloseDtypeConvert"] else int(
             os.environ.get("TRITONXPU_DTYPE_CONVERT", 1))
         TTXPU_O_ATOMIC_SIM = 0 if metadata["isCLOSE_TTXPU_O_ATOMIC_SIM"] else int(
             os.environ.get("TRITONXPU_ATOMIC_SIM", 1))
         TTXPU_O_CLOSE_OPT = int(os.environ.get("TRITONXPU_CLOSE_OPTIMIZE", 0))
-        TTSDNN_F_SINGLE_CORE_MODE = int(os.environ.get("TRITON_SDNN_SINGLE_CODE_MODE", 0))
         TTSDNN_F_MATMUL_FAST_MODE = int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0))
         TTSDNN_F_DMA_MODE = int(os.environ.get("XMLIR_DMA_FAST_MODE", 0))
         TTSDNN_F_KILL_EW_FILL_MODE = int(os.environ.get("XMLIR_KILL_EW_FILL_MODE", 0))
@@ -277,7 +275,7 @@ class XPUBackend(BaseBackend):
         if metadata["is_sdnn"]:
             xpu.passes.ttsdnnir.add_tritonsdnn_strip_all_ops_pass(pm, opt.arch)
             if opt.arch < 4:
-                if metadata["use_int4_w4a8"] == True:
+                if metadata["use_int4_w4a8"]:
                     xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, 2)
                 else:
                     xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, TTSDNN_F_MATMUL_FAST_MODE)
@@ -341,12 +339,10 @@ class XPUBackend(BaseBackend):
             # xpu.passes.ttxpuir.add_tritonxpu_lm_to_sm_pass(pm)
             passes.common.add_cse(pm)
             if not metadata["isCloseOffsetAnalysis"]:
-                xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(
-                    pm, False) if not TTXPU_O_CLOSE_OPT else None
+                xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(pm, False) if not TTXPU_O_CLOSE_OPT else None
                 xpu.passes.ttxpuir.add_tritonxpu_offset_state_pass(
                     pm, 0, XPUBackend.buffer_len, is_use_mask_zero) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
-                xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(
-                    pm, True) if not TTXPU_O_CLOSE_OPT else None
+                xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(pm, True) if not TTXPU_O_CLOSE_OPT else None
             passes.common.add_canonicalizer(pm)
             xpu.passes.ttxpuir.add_tritonxpu_legalize_pass(pm, XPUBackend.buffer_len, core_num, groups_per_cluster,
                                                            is_use_mask_zero)
@@ -374,9 +370,9 @@ class XPUBackend(BaseBackend):
                     pm, 0) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
             if not metadata["isCloseUnrollControl"]:
                 xpu.passes.ttxpuir.add_tritonxpu_tile_analysis_pass(pm, vrf_budget)
-                xpu.passes.ttxpuir.add_tritonxpu_unroll_control_pass(
-                    pm, XPUBackend.buffer_len, core_num, is_use_mask_zero, unroll_num,
-                    vrf_budget, False, -1) if not TTXPU_O_CLOSE_OPT else None
+                xpu.passes.ttxpuir.add_tritonxpu_unroll_control_pass(pm, XPUBackend.buffer_len, core_num,
+                                                                     is_use_mask_zero, unroll_num, vrf_budget, False,
+                                                                     -1) if not TTXPU_O_CLOSE_OPT else None
             xpu.passes.ttxpuir.add_tritonxpu_store_control_pass(pm) if not TTXPU_O_CLOSE_OPT else None
             if not TTXPU_F_OHTER_VALUE_SIM:
                 xpu.passes.ttxpuir.add_tritonxpu_other_sim_pass(pm, XPUBackend.buffer_len, core_num)
@@ -479,7 +475,7 @@ class XPUBackend(BaseBackend):
         # the default TO_F32 bf16 dot a non-empty tensor_args makes launch.cpp
         # append a spurious scale param and hand the kernel a wild quantized
         # buffer base -> illegal memory access.
-        _needs_scale_args = metadata["use_int4_w4a8"] == True or int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0)) == 1
+        _needs_scale_args = metadata["use_int4_w4a8"] or int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0)) == 1
         metadata["tensor_args"] = xpu.get_tensor_args(mod, metadata["tensor_args"]) if (metadata["is_sdnn"] is True
                                                                                         and _needs_scale_args) else []
 
@@ -601,7 +597,7 @@ class XPUBackend(BaseBackend):
     def hash(self) -> str:
         """Returns a unique identifier for this backend"""
         # TODO:
-        return f"1"
+        return "1"
 
     def parse_options(self, options: dict) -> object:
         args = {"arch": self.target.arch}

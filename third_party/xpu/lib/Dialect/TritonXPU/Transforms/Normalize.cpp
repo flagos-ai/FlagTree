@@ -103,7 +103,8 @@ struct BypassCmpIExtUI : public OpRewritePattern<arith::ExtUIOp> {
 
 struct TritonXPUNormalize
     : public impl::TritonXPUNormalizeBase<TritonXPUNormalize> {
-  using impl::TritonXPUNormalizeBase<TritonXPUNormalize>::TritonXPUNormalizeBase;
+  using impl::TritonXPUNormalizeBase<
+      TritonXPUNormalize>::TritonXPUNormalizeBase;
 
   void doMaximumFusion(arith::SelectOp selectOp) {
     if (auto orIOp = selectOp.getCondition().getDefiningOp<arith::OrIOp>()) {

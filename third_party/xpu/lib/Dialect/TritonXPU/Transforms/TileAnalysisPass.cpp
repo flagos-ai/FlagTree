@@ -4,8 +4,8 @@
 // Gives the pressure measurement a pipeline slot of its own, so the transform
 // that consumes it can eventually be handed the result instead of recomputing
 // it (redesign-v2.md §4.2 step 1.3, contract in 1.6). Byte equivalence of the
-// emitted code is its exit gate: the only thing it ever writes is the removal of
-// the keys the M6 probe left behind, and the probe is off by default.
+// emitted code is its exit gate: the only thing it ever writes is the removal
+// of the keys the M6 probe left behind, and the probe is off by default.
 //
 // What it can and cannot see: the geometry and the block-wide pressure are
 // readable from the IR alone, but the *per-tree* pressure UnrollControl also
@@ -25,8 +25,8 @@
 // minVecWidth to block scope.
 //===----------------------------------------------------------------------===//
 
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Analysis/TileAnalysis.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 
@@ -109,13 +109,14 @@ public:
   void runOnOperation() override {
     ModuleOp mod = getOperation();
 
-    // The consumer end of the M6 contract (step 1.6). This pass sits immediately
-    // before `tritonxpu-unroll-control`, which is where M4/M5 will read the plan,
-    // so it is the right place to ask whether either key still finds its root.
-    // Runs before the report gate and on its own switch, because it also erases
-    // what the probe wrote. (It is registered under `isCloseUnrollControl`, so
-    // with unroll control off the probe simply produces no report -- the writes
-    // are gated on the same env var, so nothing is left behind either way.)
+    // The consumer end of the M6 contract (step 1.6). This pass sits
+    // immediately before `tritonxpu-unroll-control`, which is where M4/M5 will
+    // read the plan, so it is the right place to ask whether either key still
+    // finds its root. Runs before the report gate and on its own switch,
+    // because it also erases what the probe wrote. (It is registered under
+    // `isCloseUnrollControl`, so with unroll control off the probe simply
+    // produces no report -- the writes are gated on the same env var, so
+    // nothing is left behind either way.)
     tilePlanCheck(mod);
 
     // Cheap by default: the walk below is pure measurement, so it is only worth
