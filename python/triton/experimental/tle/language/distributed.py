@@ -213,7 +213,9 @@ def signal(
 
     peer_tensor = _normalize_signal_scalar(peer, "peer", tl.int32, _semantic)
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.uint32, _semantic)
-    value_tensor = _normalize_signal_scalar(value, "value", tl.uint64, _semantic) if value is not None else None
+    value_value = value.value if isinstance(value, tl.constexpr) else value
+    value_tensor = (_normalize_signal_scalar(value_value, "value", tl.uint64, _semantic)
+                    if value_value is not None else None)
 
     utils.verify_signal(signal_op, None if value_tensor is None else value_tensor.handle)
 
@@ -1209,7 +1211,9 @@ def signal_wait(
 
     comm = _parse_src_arg(builder, device_dptr, 1)
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
-    target_tensor = _normalize_signal_scalar(target, "target", tl.int64, _semantic) if target is not None else None
+    target_value = target.value if isinstance(target, tl.constexpr) else target
+    target_tensor = (_normalize_signal_scalar(target_value, "target", tl.int64, _semantic)
+                     if target_value is not None else None)
 
     utils.verify_signal_wait(wait_kind_val, None if target_tensor is None else target_tensor.handle)
 

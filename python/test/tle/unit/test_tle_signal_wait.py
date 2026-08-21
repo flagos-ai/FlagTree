@@ -18,26 +18,28 @@ def _signal_wait_kernel(
     mesh: tl.constexpr,
     peer: tl.constexpr,
     slot_id: tl.constexpr,
+    target: tl.constexpr | None,
     signal_space: tl.constexpr,
     signal_op: tl.constexpr,
     wait_kind: tl.constexpr,
 ):
     local_rank = tle.shard_id(mesh, "device", device_dptr=device_dptr)
 
-    tle.signal(
-        device_dptr,
-        peer,
-        slot_id=slot_id,
-        op=signal_op,
-        space=signal_space,
-        group_kind="block",
-        context_idx=0,
-    )
+    if signal_op is not None:
+        tle.signal(
+            device_dptr,
+            peer,
+            slot_id=slot_id,
+            op=signal_op,
+            space=signal_space,
+            group_kind="block",
+            context_idx=0,
+        )
     tle.signal_wait(
         device_dptr,
         slot_id=slot_id,
         wait_kind=wait_kind,
-        target=1,
+        target=target,
         group_kind="block",
         context_idx=0,
     )
@@ -49,6 +51,7 @@ def _ir_verify(
     device_dptr,
     peer,
     slot_id,
+    target,
     signal_space,
     signal_op,
     wait_kind,
@@ -59,6 +62,7 @@ def _ir_verify(
         mesh=DEVICE_MESH,
         peer=peer,
         slot_id=slot_id,
+        target=target,
         signal_space=signal_space,
         signal_op=signal_op,
         wait_kind=wait_kind,
@@ -66,18 +70,19 @@ def _ir_verify(
         num_ctas=1,
         num_warps=4,
     )
-    assert "tle.signal" in compiled.asm["ttgir"]
+    if signal_op is not None:
+        assert "tle.signal" in compiled.asm["ttgir"]
+        expected_signal_func = {
+            "inc": "flagcxDevSignalInc",
+            "add": "flagcxDevSignalAdd",
+        }[signal_op]
+        assert expected_signal_func in compiled.asm["ptx"]
     assert "tle.signal_wait" in compiled.asm["ttgir"]
-    expected_signal_func = {
-        "inc": "flagcxDevSignalInc",
-        "add": "flagcxDevSignalAdd",
-    }[signal_op]
     expected_wait_func = {
         "signal": "flagcxDevWaitSignal",
         "shadow": "flagcxDevWaitSignalMeetShadow",
         "counter": "flagcxDevWaitCounter",
     }[wait_kind]
-    assert expected_signal_func in compiled.asm["ptx"]
     assert expected_wait_func in compiled.asm["ptx"]
 
 
@@ -88,6 +93,7 @@ def _runtime_verify(
     rank,
     local_rank,
     slot_id,
+    target,
     signal_space,
     signal_op,
     wait_kind,
@@ -99,6 +105,7 @@ def _runtime_verify(
         mesh=DEVICE_MESH,
         peer=peer,
         slot_id=slot_id,
+        target=target,
         signal_space=signal_space,
         signal_op=signal_op,
         wait_kind=wait_kind,
@@ -126,10 +133,52 @@ def _runtime_verify(
                                 f"{signal_space} {signal_op}/{wait_kind} failed: "
                                 f"expected {expected}, got {actual}")
     print(
-        f"[Rank {rank}] [PASSED] space={signal_space} "
-        f"{signal_op}/{wait_kind} kernel executed successfully",
+        f"[Rank {rank}] [PASSED] space={signal_space} {signal_op}/{wait_kind} kernel executed successfully",
         flush=True,
     )
+
+
+@triton.jit()
+def _signal_wait_verifier_kernel(
+    device_dptr: tl.constexpr,
+    mesh: tl.constexpr,
+    peer: tl.constexpr,
+    signal_op: tl.constexpr,
+    value: tl.constexpr,
+    wait_kind: tl.constexpr,
+    target: tl.constexpr,
+):
+    tle.signal(device_dptr, peer, slot_id=0, op=signal_op, value=value, space="world", group_kind="block",
+               context_idx=0)
+    tle.signal_wait(device_dptr, slot_id=0, wait_kind=wait_kind, target=target, group_kind="block", context_idx=0)
+
+
+def _verifier_verify(device_dptr, peer):
+    phases = (
+        ("inc", 1, "signal", 0),
+        ("add", None, "signal", 0),
+        ("inc", None, "signal", None),
+        ("inc", None, "counter", None),
+        ("inc", None, "shadow", 0),
+    )
+    for signal_op, value, wait_kind, target in phases:
+        try:
+            _signal_wait_verifier_kernel[(1, )](
+                device_dptr,
+                DEVICE_MESH,
+                peer,
+                signal_op,
+                value,
+                wait_kind,
+                target,
+                num_ctas=1,
+                num_warps=4,
+            )
+            assert False, "illegal arg to op: should fail to compile"
+        except ValueError:
+            pass
+        except triton.compiler.errors.CompilationError:
+            pass
 
 
 class TestSignalWait:
@@ -168,18 +217,21 @@ class TestSignalWait:
         inter_node_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         world_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         counter_result = torch.zeros(1, dtype=torch.int32, device="cuda")
+        shadow_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         try:
             phases = (
-                (inter_node_result, world_peer, 0, "inter_node", "inc", "signal"),
-                (world_result, world_peer, 1, "world", "inc", "signal"),
-                (counter_result, world_peer, 2, "world", "inc", "counter"),
+                (inter_node_result, inter_node_peer, 0, 1, "inter_node", "inc", "signal"),
+                (world_result, world_peer, 1, 1, "world", "inc", "signal"),
+                (counter_result, world_peer, 2, 0, "world", None, "counter"),
+                (shadow_result, world_peer, 3, None, "world", None, "shadow"),
             )
-            for result, peer, slot_id, signal_space, signal_op, wait_kind in phases:
+            for result, peer, slot_id, target, signal_space, signal_op, wait_kind in phases:
                 _ir_verify(
                     result,
                     device_dptr,
                     peer,
                     slot_id,
+                    target,
                     signal_space,
                     signal_op,
                     wait_kind,
@@ -191,10 +243,12 @@ class TestSignalWait:
                     rank,
                     local_rank,
                     slot_id,
+                    target,
                     signal_space,
                     signal_op,
                     wait_kind,
                 )
+            _verifier_verify(device_dptr, world_peer)
         finally:
             tle.cleanup_communicator()
 
