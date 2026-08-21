@@ -66,6 +66,10 @@ AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
     unsigned maxCubeW = 2048;
     auto sliceTotal = channelBytes / sliceByte;
     unsigned numSlice, cubeC, cubeW, warpC, warpW;
+
+    assert(channelBytes >= sliceByte &&
+           "channelBytes must be greater than or equal to sliceByte(32B)");
+
     if (channelBytes <= maxSliceBytes) {
       numSlice = channelBytes / sliceByte;
     } else {
