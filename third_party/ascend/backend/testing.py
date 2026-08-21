@@ -24,8 +24,6 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 import fnmatch
-import torch
-import torch_npu
 
 import triton.runtime as runtime
 from triton.knobs import cache
@@ -51,6 +49,9 @@ def do_bench_npu_profiler(
     keep_res=False,
     target_kernel_name: Optional[str] = None,
 ):
+    import torch
+    import torch_npu
+
     if not isinstance(funcs, list):
         funcs = [funcs]
 
@@ -223,6 +224,9 @@ def do_bench_npu_mspti(
     clear_l2_cache=False,
     target_kernel_name: Optional[str] = None,
 ):
+    import torch
+    import torch_npu
+
     if not isinstance(funcs, list):
         funcs = [funcs]
 
