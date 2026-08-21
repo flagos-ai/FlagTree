@@ -115,6 +115,10 @@ jobs:
                   not test_typeconvert_downcast" \
               --ignore=python/test/unit/language/test_core.py \
               --ignore=python/test/unit/language/test_line_info.py
+          python3 -m pytest -s --first-parameter-only \
+              python/test/unit/language/test_core.py \
+              -k "not test_sum_dtype and \
+                  not test_dot_multidim"
           python3 -m pytest -s python/test/unit/runtime
           if [ -d "python/test/operators" ]; then
             python3 -m pytest -s python/test/operators
