@@ -263,10 +263,9 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
     Value rowSwizzleID = b.udiv(idxRowInnerCube, b.i32_val(4));
     // new linear slice index inside slice, slice shape is (cubeW/4,
     // 4*sliceElems)
-    Value idxColSlicelinear =
-        b.urem(b.add(b.mul(idxRowInnerCube, b.i32_val(sliceElems)),
-                     idxColInnerSlice),
-               b.i32_val(4 * sliceElems));
+    Value idxColSlicelinear = b.urem(
+        b.add(b.mul(idxRowInnerCube, b.i32_val(sliceElems)), idxColInnerSlice),
+        b.i32_val(4 * sliceElems));
     // new column slice ID, vec=outVec
     // Value colSliceID = lshr(idxColSlicelinear, i32_val(3));
     Value colSliceID = b.udiv(idxColSlicelinear, b.i32_val(outVec));
