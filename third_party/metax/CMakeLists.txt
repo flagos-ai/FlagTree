@@ -1,5 +1,5 @@
-add_subdirectory(include)
-add_subdirectory(lib)
+add_subdirectory(${PROJECT_SOURCE_DIR}/include ${PROJECT_BINARY_DIR}/include)
+add_subdirectory(${PROJECT_SOURCE_DIR}/lib ${PROJECT_BINARY_DIR}/lib)
 
 if(FLAGTREE_PLUGIN)
   set(PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
@@ -33,4 +33,14 @@ if(TRITON_BUILD_PYTHON_MODULE)
     list(APPEND CMAKE_BUILD_RPATH "$ORIGIN")
     set(CMAKE_BUILD_RPATH "${CMAKE_BUILD_RPATH}" PARENT_SCOPE)
   endif()
+endif()
+
+# MetaX-only source: no main-tree source exists for the override mechanism.
+target_sources(TritonTools PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/spec_cpp/extra/SwizzleDumpUtils.cpp
+)
+
+if(BUILD_MCTLE)
+  add_dependencies(TritonAnalysis McTleTableGen)
+  target_link_libraries(TritonToTritonGPU PUBLIC McTleIR)
 endif()
