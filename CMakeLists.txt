@@ -41,7 +41,7 @@ elseif(FLAGTREE_BACKEND STREQUAL "ascend")
   set(FLAGTREE_TLE_STRUCT ON)
   add_definitions(-D__NVIDIA__)
   add_definitions(-D__AMD__)
-  add_definitions(-D__TLE_STRUCT__)  #
+  add_definitions(-D__TLE_STRUCT__)
   add_definitions(-D__TLE_DSA__)
   set(CMAKE_C_COMPILER clang)
   set(CMAKE_CXX_COMPILER clang++)
