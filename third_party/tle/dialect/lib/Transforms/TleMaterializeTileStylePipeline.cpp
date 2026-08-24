@@ -167,6 +167,10 @@ static Value stripProducerMemDescViews(Value value) {
       current = subslice.getSrc();
       continue;
     }
+    if (auto alias = current.getDefiningOp<MemDescAliasOp>()) {
+      current = alias.getSrc();
+      continue;
+    }
     if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
       current = index.getSrc();
       continue;
@@ -177,7 +181,7 @@ static Value stripProducerMemDescViews(Value value) {
 }
 
 static bool isTileProducerViewLikeOp(Operation *op) {
-  return isa<ttg::MemDescIndexOp, ttg::MemDescSubsliceOp>(op) ||
+  return isa<ttg::MemDescIndexOp, ttg::MemDescSubsliceOp, MemDescAliasOp>(op) ||
          op->getName().getStringRef() == "tle.memdesc_wgmma_view";
 }
 
@@ -212,6 +216,18 @@ static Operation *cloneWithUpdatedMemDescViewType(OpBuilder &builder,
         oldTy.getMemorySpace(), isMutable, oldTy.getAllocShape());
     auto newOp = ttg::MemDescSubsliceOp::create(
         builder, subslice.getLoc(), newTy, src, subslice.getOffsets());
+    newOp->setAttrs(op->getAttrs());
+    return mapResults(newOp);
+  }
+  if (auto alias = dyn_cast<MemDescAliasOp>(op)) {
+    Value src = mapping.lookupOrDefault(alias.getSrc());
+    auto oldTy = alias.getType();
+    bool isMutable = cast<ttg::MemDescType>(src.getType()).getMutableMemory();
+    auto newTy = ttg::MemDescType::get(
+        oldTy.getShape(), oldTy.getElementType(), oldTy.getEncoding(),
+        oldTy.getMemorySpace(), isMutable, oldTy.getAllocShape());
+    auto newOp = MemDescAliasOp::create(builder, alias.getLoc(), newTy, src,
+                                        alias.getOffsetBytesAttr());
     newOp->setAttrs(op->getAttrs());
     return mapResults(newOp);
   }

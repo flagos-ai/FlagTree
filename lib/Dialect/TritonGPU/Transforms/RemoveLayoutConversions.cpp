@@ -45,6 +45,7 @@
 #endif // __FLAGTREE_RLC_ENHANCE__
 #include "triton/Analysis/Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif // __TLE__
@@ -455,6 +456,8 @@ static int64_t getByteCount(Value result, int64_t minElementCount,
 // propagate the layout starting from anchor ops.
 bool isLayoutAnchor(Operation *op) {
 #ifdef __TLE__
+  if (isa<triton::tle::ExtractTileOp, triton::tle::InsertTileOp>(op))
+    return true;
   if (isTleExplicitConvertLayoutOp(op))
     return true;
 #endif

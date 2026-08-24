@@ -38,6 +38,9 @@
 #include "triton/Analysis/Utility.h"
 #include "triton/Conversion/MLIRTypes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#endif
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
@@ -90,6 +93,10 @@ static Value getUnderlyingMemDesc(Value value) {
     }
     if (auto subslice = value.getDefiningOp<MemDescSubsliceOp>()) {
       value = subslice.getSrc();
+      continue;
+    }
+    if (auto alias = value.getDefiningOp<tle::MemDescAliasOp>()) {
+      value = alias.getSrc();
       continue;
     }
     if (auto trans = value.getDefiningOp<MemDescTransOp>()) {

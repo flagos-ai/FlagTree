@@ -84,6 +84,12 @@ static Value stripMemDescViews(Value value) {
       value = subslice.getSrc();
       continue;
     }
+#ifdef __TLE__
+    if (auto alias = value.getDefiningOp<tle::MemDescAliasOp>()) {
+      value = alias.getSrc();
+      continue;
+    }
+#endif
     if (auto trans = value.getDefiningOp<MemDescTransOp>()) {
       value = trans.getSrc();
       continue;
@@ -96,10 +102,12 @@ static Value stripMemDescViews(Value value) {
       value = reinterpret.getSrc();
       continue;
     }
+#ifdef __TLE__
     if (auto view = value.getDefiningOp<triton::tle::MemDescWGMMAViewOp>()) {
       value = view.getSrc();
       continue;
     }
+#endif
     return value;
   }
 }

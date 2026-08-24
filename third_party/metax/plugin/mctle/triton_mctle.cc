@@ -131,6 +131,7 @@ void init_triton_mctle_ir(py::module &&m) {
 }
 
 void init_triton_mctle_passes(py::module &&m) {
+  ADD_PASS_WRAPPER_0("add_reject_dot_op", tle::createTritonTleRejectDotOp);
   ADD_PASS_WRAPPER_0("add_early_assign_memory_space",
                      tle::createTritonTleEarlyAssignMemorySpace);
   ADD_PASS_WRAPPER_0("add_select_encodings",

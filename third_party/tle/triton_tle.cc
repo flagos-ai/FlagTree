@@ -371,6 +371,13 @@ void init_triton_tle_ir(py::module &&m) {
              return self.create<ttg::MemDescSubsliceOp>(resultType, src,
                                                         offsets);
            })
+      .def("create_memdesc_alias",
+           [](TritonOpBuilder &self, Type resultType, Value src,
+              int64_t offsetBytes) -> Value {
+             return self.create<tle::MemDescAliasOp>(
+                 resultType, src,
+                 self.getBuilder().getI64IntegerAttr(offsetBytes));
+           })
       .def("create_warp_return",
            [](TritonOpBuilder &self) -> Operation * {
              return self.create<ttg::WarpReturnOp>();

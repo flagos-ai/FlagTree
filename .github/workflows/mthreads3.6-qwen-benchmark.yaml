@@ -86,6 +86,14 @@ jobs:
           cd ~/flagrelease/qwen3.6
           bash ${BENCH_SCRIPT_DIR}/start.sh
 
+      - name: Test
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        shell: bash
+        run: |
+          set -x
+          cd ~/flagrelease/qwen3.6
+          bash ${BENCH_SCRIPT_DIR}/test.sh
+
       - name: Show the baseline
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
