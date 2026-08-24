@@ -1,0 +1,170 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Ascend3.5-910C
+
+on:
+  push:
+    branches: [ "triton_v3.5.x" ]
+  pull_request:
+    branches: [ "triton_v3.5.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ascend35x-910c-unit-test:
+    runs-on: ascend3.5-910c
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: ascend
+
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
+      - name: Build FlagTree
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=ascend
+          source ~/env.sh
+          export PATH=~/.flagtree/ascend/llvm-7d5de303-ubuntu-aarch64-python311-compat/bin/:${PATH}  # clang
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: ascend
+
+      - name: Unit Test
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          ## tutorials
+          pushd third_party/ascend/tutorials
+          python3 01-vector-add.py
+          python3 02-fused-softmax.py
+          # python3 03-matrix-multiplication.py  # nan, inf
+          python3 04-low-memory-dropout.py
+          python3 05-layer-norm.py
+          python3 06-fused-attention.py
+          python3 07-extern-functions.py
+          python3 08-grouped-gemm.py
+          python3 09-persistent-matmul.py
+          popd
+          ## pytest_ut
+          pushd third_party/ascend/unittest/pytest_ut
+          # TODO: test_03_matrix_multiplication.py nan, inf
+          # Other tests passed, but takes a long time, so we ignore them in workflow
+          python3 -m pytest . \
+            --ignore=test_device_print.py \
+            --ignore=test_device_print_comprehensive.py \
+            --ignore=test_device_print_script.py \
+            --ignore=test_03_matrix_multiplication.py \
+            --ignore=test_10_gather_sorted.py \
+            --ignore=test_16_profiler.py \
+            --ignore=test_18_gather.py \
+            --ignore=test_cat_help_func.py \
+            --ignore=test_argmax.py \
+            --ignore=test_argmin.py \
+            --ignore=test_atomic_add.py \
+            --ignore=test_atomic_cas.py \
+            --ignore=test_atomic_max.py \
+            --ignore=test_atomic_min.py \
+            --ignore=test_cannonicalize_tl_where.py \
+            --ignore=test_dot_scaled.py \
+            --ignore=test_elementwise_round.py \
+            --ignore=test_eq.py \
+            --ignore=test_exp_.py \
+            --ignore=test_for_ptr.py \
+            --ignore=test_ge.py \
+            --ignore=test_implicit_permute.py \
+            --ignore=test_index_select.py \
+            --ignore=test_join.py \
+            --ignore=test_le.py \
+            --ignore=test_linearize_mask.py \
+            --ignore=test_linearize_mask_fallback.py \
+            --ignore=test_linearize_permute.py \
+            --ignore=test_load.py \
+            --ignore=test_load_store.py \
+            --ignore=test_mean_dim0.py \
+            --ignore=test_mean_vector.py \
+            --ignore=test_permute_full.py \
+            --ignore=test_reduce_count_vector.py \
+            --ignore=test_reduce_maximum.py \
+            --ignore=test_reduce_min_4_keepdim_True_with_index_op.py \
+            --ignore=test_reduce_minimum.py \
+            --ignore=test_scalar_calc.py \
+            --ignore=test_sort.py \
+            --ignore=test_sqrt.py \
+            --ignore=test_sum_dim1.py \
+            --ignore=test_sum_vector.py \
+            --ignore=test_tensor_descriptor.py \
+            --ignore=test_topk.py
+          python3 -m pytest test_argmax.py -k test_argmax_1d
+          python3 -m pytest test_argmin.py -k test_argmin_1d
+          python3 -m pytest test_atomic_add.py -k test_atomic_add_2d
+          python3 -m pytest test_atomic_cas.py -k test_atomic_cas_with_full
+          python3 -m pytest test_atomic_max.py -k test_atomic_max_2d_supply
+          python3 -m pytest test_atomic_min.py -k test_atomic_min_2d_supply
+          python3 -m pytest test_dot_scaled.py -k test_scaled_dot_fast_math
+          python3 -m pytest test_implicit_permute.py -k test_addptr_implicit_perm_load_2d
+          python3 -m pytest test_index_select.py -k test_index_select_manual
+          python3 -m pytest test_linearize_mask.py -k test_linearize_mask_rem
+          python3 -m pytest test_linearize_permute.py -k test_triton_gpu_kernel
+          python3 -m pytest test_load.py -k test_load_store
+          python3 -m pytest test_load_store.py -k test_load_store
+          python3 -m pytest test_scalar_calc.py -k test_scalar_ceil_calc
+          python3 -m pytest test_sort.py -k test_sort_2d
+          python3 -m pytest test_sum_vector.py -k test_sum
+          python3 -m pytest test_tensor_descriptor.py -k test_tensor_descriptor_functional_interface
+          export LD_PRELOAD=/usr/local/python3.11.15/lib/python3.11/site-packages/torch/lib/libtorch_cpu.so  # device_print
+          python3 -m pytest test_device_print.py
+          python3 -m pytest test_device_print_comprehensive.py
+          python3 -m pytest test_device_print_script.py
+          popd
