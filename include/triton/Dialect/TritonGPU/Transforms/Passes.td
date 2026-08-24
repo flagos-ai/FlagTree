@@ -259,6 +259,30 @@ def TritonGPUExpandConcatDotOperand : Pass<"tritongpu-expand-concat-dot-operand"
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
 }
+
+def TritonGPUMergeSegmentedDot : Pass<"tritongpu-merge-segmented-dot", "mlir::ModuleOp"> {
+  let summary = "merge proven non-regressing segmented MMA/WGMMA operands";
+
+  let description = [{
+    Recognise straight-line `tt.dot` and native `ttng.warp_group_dot` chains
+    that consume statically ordered contraction-axis slices. The number of
+    slices need not be a power of two: non-power-of-two chains are accepted by
+    the matcher and retained when the current power-of-two linear-layout
+    implementation cannot represent the merged register tensor. The rewrite
+    is deliberately conservative: it requires a complete ordered cover,
+    identical precision and async attributes, no new partial-accumulator
+    boundary, physically compatible shared-memory views, and register-map
+    proofs for register operands. A shared slice must preserve its root's
+    encoding, memory space and mutability; scheduling or synchronization
+    annotations also stop the rewrite. Hopper RS and rank-2 SS forms share the
+    same proof pipeline. If the proof cannot establish a benefit or a
+    non-increase in register pressure, the original chain is retained.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::TritonDialect"];
+}
 #endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 def TritonGPUAccelerateMatmul : Pass<"tritongpu-accelerate-matmul", "mlir::ModuleOp"> {

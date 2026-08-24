@@ -467,10 +467,17 @@ def TTG_ConcatDotOperandOp : TTG_Op<"concat_dot_operand",
   let summary = "Concatenate dot operand fragments along the contraction axis";
 
   let hasVerifier = 1;
+  let hasCanonicalizeMethod = 1;
 
   let description = [{
     Concatenate N fragments along the contraction (K) axis into a single wider
     fragment, letting one mma cover the whole K tile.
+
+    Concatenating a complete, ordered set of extracts off one value folds away
+    to that value. This is a canonicalization rather than a pattern private to
+    `tritongpu-concat-dot-operand`, because the extracts only become
+    recognizable as a cover of one root once layout propagation has unified
+    their sources, which happens after that pass has run.
 
     An internal op, introduced by `tritongpu-concat-dot-operand`; it is not
     spelled by the user. The concatenation lowers to a per-thread register
@@ -488,6 +495,27 @@ def TTG_ConcatDotOperandOp : TTG_Op<"concat_dot_operand",
 
   let assemblyFormat = [{
     $fragments attr-dict `:` type($fragments) `->` type($result)
+  }];
+}
+
+def TTG_ExtractDotOperandOp : TTG_Op<"extract_dot_operand", [Pure]> {
+  let summary = "Extract one contraction-axis slice of a dot operand";
+
+  let hasVerifier = 1;
+
+  let description = [{
+    Compiler-internal inverse of `ttg.concat_dot_operand`. It selects one
+    equal-sized slice along the contraction axis without changing lane, warp,
+    or block ownership. The operation is only materialized after the shared
+    register-map proof has succeeded and is therefore safe to lower as a
+    per-thread register subset.
+  }];
+
+  let arguments = (ins TT_Tensor:$src, I32Attr:$dim, I32Attr:$index);
+  let results = (outs TT_Tensor:$result);
+
+  let assemblyFormat = [{
+    $src attr-dict `:` type($src) `->` type($result)
   }];
 }
 #endif // __FLAGTREE_CONCAT_DOT_OPERAND__

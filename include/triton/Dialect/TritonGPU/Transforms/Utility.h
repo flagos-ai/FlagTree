@@ -328,6 +328,15 @@ LogicalResult verifyBarrierType(Operation *op,
                                 mlir::triton::gpu::MemDescType barrierType);
 
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+// Map each register of `wideTy` to the (slice, slice register) holding it, or
+// fail when the layouts do not let `wideTy` split into `numSlices` copies of
+// `sliceTy` along `dim` by a per-thread relabel. The proof reads types only, so
+// the matchers can run it before building any op.
+LogicalResult getDotOperandSliceRegisterMap(
+    RankedTensorType wideTy, RankedTensorType sliceTy, int64_t dim,
+    int64_t numSlices,
+    SmallVectorImpl<std::pair<unsigned, unsigned>> &wideRegToSliceReg);
+
 // Map each register of a `ttg.concat_dot_operand` result to the (fragment,
 // fragment register) holding it, or fail when the layouts do not let the
 // concatenation be a per-thread relabel. Shared by the lowering and by
@@ -335,6 +344,12 @@ LogicalResult verifyBarrierType(Operation *op,
 LogicalResult getConcatDotOperandRegisterMap(
     triton::gpu::ConcatDotOperandOp op,
     SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg);
+
+// Map each register of a `ttg.extract_dot_operand` result to the source
+// register holding it, using the same proof as the concatenation above.
+LogicalResult
+getExtractDotOperandRegisterMap(triton::gpu::ExtractDotOperandOp op,
+                                SmallVectorImpl<unsigned> &resultRegToSrcReg);
 #endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 } // namespace mlir::triton

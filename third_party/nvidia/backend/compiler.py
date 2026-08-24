@@ -338,6 +338,12 @@ class CUDABackend(BaseBackend):
         # end flagtree tle
         passes.ttgpuir.add_accelerate_matmul(pm)
         tle.passes.add_lower_wgmma(pm)
+        # flagtree pass: merge segmented dot chains whose operands are proven
+        # ordered slices of one wider operand. Runs after accelerate-matmul so
+        # the mma layout is known, and before remove-layout-conversions so the
+        # per-extract converts it leaves behind get folded into the dots.
+        if hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
+            passes.ttgpuir.add_merge_segmented_dot(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
         tle.passes.add_promote_local_store_staging(pm)

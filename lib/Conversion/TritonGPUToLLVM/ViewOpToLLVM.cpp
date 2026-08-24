@@ -640,6 +640,34 @@ struct ConcatDotOperandOpConversion
     return success();
   }
 };
+
+// extract_dot_operand: the inverse per-thread register subset.
+// getExtractDotOperandRegisterMap says which source register feeds each result
+// register; the values are then just copied over.
+struct ExtractDotOperandOpConversion
+    : public ConvertOpToLLVMPattern<ExtractDotOperandOp> {
+  using ConvertOpToLLVMPattern<ExtractDotOperandOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(ExtractDotOperandOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<unsigned> resultRegToSrcReg;
+    if (failed(getExtractDotOperandRegisterMap(op, resultRegToSrcReg)))
+      return op.emitError("extract_dot_operand: operand layout does not allow "
+                          "a per-thread register subset");
+
+    Location loc = op->getLoc();
+    SmallVector<Value> srcVals =
+        unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    SmallVector<Value> resultVals;
+    resultVals.reserve(resultRegToSrcReg.size());
+    for (unsigned srcReg : resultRegToSrcReg)
+      resultVals.push_back(srcVals[srcReg]);
+    rewriter.replaceOp(op, packLLElements(loc, getTypeConverter(), resultVals,
+                                          rewriter, op.getType()));
+    return success();
+  }
+};
 #endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 } // namespace
@@ -656,7 +684,8 @@ void mlir::triton::populateViewOpToLLVMPatterns(
   patterns.add<CatOpConversion>(typeConverter, benefit);
   patterns.add<JoinOpConversion>(typeConverter, benefit);
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
-  patterns.add<ConcatDotOperandOpConversion>(typeConverter, benefit);
+  patterns.add<ConcatDotOperandOpConversion, ExtractDotOperandOpConversion>(
+      typeConverter, benefit);
 #endif // __FLAGTREE_CONCAT_DOT_OPERAND__
   patterns.add<SplitOpConversion>(typeConverter, benefit);
   patterns.add<MemDescTransOpConversion, MemDescReshapeOpConversion>(

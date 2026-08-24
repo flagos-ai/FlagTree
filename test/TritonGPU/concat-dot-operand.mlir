@@ -21,6 +21,7 @@
 
 // RUN: triton-opt %s -split-input-file -tritongpu-concat-dot-operand | FileCheck %s --check-prefixes=COMMON,MATCH
 // RUN: triton-opt %s -split-input-file -tritongpu-concat-dot-operand -tritongpu-expand-concat-dot-operand | FileCheck %s --check-prefixes=COMMON,ROUNDTRIP
+// RUN: triton-opt %s -split-input-file -tritongpu-merge-segmented-dot -canonicalize | FileCheck %s --check-prefix=MERGE
 
 #mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
 #dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
@@ -187,6 +188,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
 // ROUNDTRIP-COUNT-7: tt.join
 // ROUNDTRIP: tt.trans {{.*}} {order = array<i32: 0, 4, 3, 2, 1>}
 // ROUNDTRIP-NOT: ttg.concat_dot_operand
+// ROUNDTRIP: tt.dot
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
   tt.func @fold_then_expand(%a0: tensor<8x4xf16, #b>, %a1: tensor<8x4xf16, #b>,
                             %a2: tensor<8x4xf16, #b>, %a3: tensor<8x4xf16, #b>,
@@ -206,5 +208,193 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
     %c = ttg.convert_layout %r : tensor<8x32xf16, #lin> -> tensor<8x32xf16, #dA>
     %d = tt.dot %c, %rhs, %acc : tensor<8x32xf16, #dA> * tensor<32x8xf16, #dB> -> tensor<8x8xf32, #mma>
     tt.return %d : tensor<8x8xf32, #mma>
+  }
+}
+
+// -----
+
+// The pass folds a segmented K chain back into one dot when, and only when, the
+// operands are provably a complete cover of one wide value and merging cannot
+// extend a live range. Cases below pair each accepted shape with the negative
+// that must stay segmented.
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // A complete cover folds straight back to the wide operands, so no concat
+  // survives and no extract is left behind.
+  // MERGE-LABEL: @merge_extract_cover
+  // MERGE-NOT: ttg.extract_dot_operand
+  // MERGE-COUNT-1: tt.dot
+  // MERGE-NOT: tt.dot
+  tt.func @merge_extract_cover(
+      %aw: tensor<16x32xf16, #a>, %bw: tensor<32x8xf16, #b>,
+      %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
+    %a0 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 0 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
+    %a1 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 1 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
+    %b0 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 0 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
+    %b1 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 1 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
+    %d0 = tt.dot %a0, %b0, %acc : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
+    %d1 = tt.dot %a1, %b1, %d0 : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
+    tt.return %d1 : tensor<16x8xf32, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
+
+// What the pipeline really produces: the split-tree matcher wraps one wide
+// value in a separate convert per extract, and the pass runs before layout
+// cleanup so the accumulator hops through a convert pair between the dots.
+// Both must be looked through, or a cover that is complete by construction
+// reads as unrelated fragments and the chain looks broken at its first link.
+module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // MERGE-LABEL: @merge_through_converts
+  // MERGE-COUNT-1: tt.dot
+  // MERGE-NOT: tt.dot
+  tt.func @merge_through_converts(
+      %aw: tensor<16x32xf16, #blocked>, %bw: tensor<32x8xf16, #blocked>,
+      %acc: tensor<16x8xf16, #mma>) -> tensor<16x8xf16, #mma> {
+    %aw0 = ttg.convert_layout %aw : tensor<16x32xf16, #blocked> -> tensor<16x32xf16, #a>
+    %aw1 = ttg.convert_layout %aw : tensor<16x32xf16, #blocked> -> tensor<16x32xf16, #a>
+    %bw0 = ttg.convert_layout %bw : tensor<32x8xf16, #blocked> -> tensor<32x8xf16, #b>
+    %bw1 = ttg.convert_layout %bw : tensor<32x8xf16, #blocked> -> tensor<32x8xf16, #b>
+    %a0 = ttg.extract_dot_operand %aw0 {dim = 1 : i32, index = 0 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
+    %a1 = ttg.extract_dot_operand %aw1 {dim = 1 : i32, index = 1 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
+    %b0 = ttg.extract_dot_operand %bw0 {dim = 0 : i32, index = 0 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
+    %b1 = ttg.extract_dot_operand %bw1 {dim = 0 : i32, index = 1 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
+    %d0 = tt.dot %a0, %b0, %acc : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf16, #mma>
+    %r0 = ttg.convert_layout %d0 : tensor<16x8xf16, #mma> -> tensor<16x8xf16, #blocked>
+    %r1 = ttg.convert_layout %r0 : tensor<16x8xf16, #blocked> -> tensor<16x8xf16, #mma>
+    %d1 = tt.dot %a1, %b1, %r1 : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf16, #mma>
+    tt.return %d1 : tensor<16x8xf16, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
+
+// The converted partial sum escapes the chain, so it stays observable and must
+// keep being computed: looking through accumulator converts may not drop the
+// single-use requirement.
+module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // MERGE-LABEL: @keep_escaping_partial_sum
+  // MERGE-COUNT-2: tt.dot
+  tt.func @keep_escaping_partial_sum(
+      %aw: tensor<16x32xf16, #a>, %bw: tensor<32x8xf16, #b>,
+      %acc: tensor<16x8xf16, #mma>)
+      -> (tensor<16x8xf16, #mma>, tensor<16x8xf16, #blocked>) {
+    %a0 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 0 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
+    %a1 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 1 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
+    %b0 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 0 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
+    %b1 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 1 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
+    %d0 = tt.dot %a0, %b0, %acc : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf16, #mma>
+    %r0 = ttg.convert_layout %d0 : tensor<16x8xf16, #mma> -> tensor<16x8xf16, #blocked>
+    %r1 = ttg.convert_layout %r0 : tensor<16x8xf16, #blocked> -> tensor<16x8xf16, #mma>
+    %d1 = tt.dot %a1, %b1, %r1 : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf16, #mma>
+    tt.return %d1, %r0 : tensor<16x8xf16, #mma>, tensor<16x8xf16, #blocked>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// Independent operands are not a cover of one wide value, so gathering them
+// would extend live ranges rather than shorten them.
+module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // MERGE-LABEL: @keep_independent_fragments
+  // MERGE-NOT: ttg.concat_dot_operand
+  // MERGE-COUNT-2: tt.dot
+  tt.func @keep_independent_fragments(
+      %a0: tensor<16x16xf16, #a>, %a1: tensor<16x16xf16, #a>,
+      %b0: tensor<16x8xf16, #b>, %b1: tensor<16x8xf16, #b>,
+      %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
+    %d0 = tt.dot %a0, %b0, %acc : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
+    %d1 = tt.dot %a1, %b1, %d0 : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
+    tt.return %d1 : tensor<16x8xf32, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
+#parent = #ttg.blocked<{sizePerThread = [1, 2], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
+#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+// Layout propagation leaves transient dot_op encodings whose parent is still a
+// blocked layout. No mma reads those, so the extracts must be built against the
+// encoding the dot actually consumes.
+#transient = #ttg.dot_op<{opIdx = 0, parent = #parent}>
+#f3 = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [4, 1, 8], warpsPerCTA = [1, 1, 1], order = [2, 1, 0]}>
+#t3 = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [4, 8, 1], warpsPerCTA = [1, 1, 1], order = [1, 2, 0]}>
+
+module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // Extracting against #transient would build a cover the concat cannot fold
+  // back, leaving fragments for ReduceDataDuplication to stage through shared
+  // memory.
+  // Extracting against the mma operand layout makes the rebuilt wide value fold
+  // all the way back, so the split tree, the extracts and the concat all die and
+  // one wide dot is left. Extracting against #transient instead would leave the
+  // fragments behind for ReduceDataDuplication to stage through shared memory.
+  // MERGE-LABEL: @split_tree_extracts_use_the_mma_operand_layout
+  // MERGE-NOT: tt.split
+  // MERGE-NOT: ttg.extract_dot_operand
+  // MERGE-NOT: ttg.concat_dot_operand
+  // MERGE: tt.dot
+  // MERGE-SAME: tensor<16x32xf16
+  // MERGE-NOT: tt.dot
+  tt.func @split_tree_extracts_use_the_mma_operand_layout(
+      %aw: tensor<16x32xf16, #blocked>, %bw: tensor<32x8xf16, #b>,
+      %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
+    %r = tt.reshape %aw : tensor<16x32xf16, #blocked> -> tensor<16x2x16xf16, #f3>
+    %t = tt.trans %r {order = array<i32: 0, 2, 1>} : tensor<16x2x16xf16, #f3> -> tensor<16x16x2xf16, #t3>
+    %f0, %f1 = tt.split %t : tensor<16x16x2xf16, #t3> -> tensor<16x16xf16, #blocked>
+    %b0 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 0 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
+    %b1 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 1 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
+    // Each leaf reaches its dot through a transient dot_op convert first.
+    %p0 = ttg.convert_layout %f0 : tensor<16x16xf16, #blocked> -> tensor<16x16xf16, #transient>
+    %o0 = ttg.convert_layout %p0 : tensor<16x16xf16, #transient> -> tensor<16x16xf16, #a>
+    %d0 = tt.dot %o0, %b0, %acc : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
+    %p1 = ttg.convert_layout %f1 : tensor<16x16xf16, #blocked> -> tensor<16x16xf16, #transient>
+    %o1 = ttg.convert_layout %p1 : tensor<16x16xf16, #transient> -> tensor<16x16xf16, #a>
+    %d1 = tt.dot %o1, %b1, %d0 : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
+    tt.return %d1 : tensor<16x8xf32, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+// The identity fold is a canonicalization on the op, not a pattern private to
+// the merge pass: a chain's extracts only become recognizable as a cover of one
+// root after layout propagation unifies their sources, which happens after that
+// pass has run.
+module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // MERGE-LABEL: @canonicalize_concat_of_complete_cover
+  // MERGE-NOT: ttg.concat_dot_operand
+  // MERGE-NOT: ttg.extract_dot_operand
+  // MERGE: tt.return %arg0
+  tt.func @canonicalize_concat_of_complete_cover(
+      %aw: tensor<16x32xf16, #a>) -> tensor<16x32xf16, #a> {
+    %a0 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 0 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
+    %a1 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 1 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
+    %w = ttg.concat_dot_operand %a0, %a1 {dim = 1 : i32} : tensor<16x16xf16, #a>, tensor<16x16xf16, #a> -> tensor<16x32xf16, #a>
+    tt.return %w : tensor<16x32xf16, #a>
   }
 }

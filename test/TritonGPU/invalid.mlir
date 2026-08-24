@@ -545,3 +545,29 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
     tt.return
   }
 }
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @extract_index_out_of_range(%a: tensor<16x32xf16, #dA>) {
+    // expected-error @+1 {{index 2 is out of range for 2 slices}}
+    %s = ttg.extract_dot_operand %a {dim = 1 : i32, index = 2 : i32} : tensor<16x32xf16, #dA> -> tensor<16x16xf16, #dA>
+    tt.return
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @extract_needs_multiple_slices(%a: tensor<16x16xf16, #dA>) {
+    // expected-error @+1 {{source must hold at least two slices along dim 1}}
+    %s = ttg.extract_dot_operand %a {dim = 1 : i32, index = 0 : i32} : tensor<16x16xf16, #dA> -> tensor<16x16xf16, #dA>
+    tt.return
+  }
+}

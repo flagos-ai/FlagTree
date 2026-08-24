@@ -611,6 +611,79 @@ LogicalResult ConcatDotOperandOp::verify() {
   }
   return success();
 }
+
+// `concat(extract(w, 0), ..., extract(w, N-1))` is `w`, provided the extracts
+// are a complete, ordered, gap-free cover of one source along the same axis and
+// the reassembled type is exactly the source type.
+//
+// This mirrors the K-cover proof the segmented-dot rewrites use, but must be
+// checked here on the ops as written rather than through layout converts: a
+// canonicalization can only replace the result with a value of the identical
+// type, so any encoding difference is left for layout propagation to settle
+// before the fold becomes applicable.
+LogicalResult ConcatDotOperandOp::canonicalize(ConcatDotOperandOp op,
+                                               PatternRewriter &rewriter) {
+  int64_t dim = op.getDimAttr().getValue().getSExtValue();
+  Value src;
+  for (auto [i, fragment] : llvm::enumerate(op.getFragments())) {
+    auto extract = fragment.getDefiningOp<ExtractDotOperandOp>();
+    if (!extract || extract.getDimAttr().getValue().getSExtValue() != dim ||
+        extract.getIndexAttr().getValue().getSExtValue() !=
+            static_cast<int64_t>(i))
+      return failure();
+    if (!src)
+      src = extract.getSrc();
+    else if (src != extract.getSrc())
+      return failure();
+  }
+  // The verifier already ties the fragments to equal-sized slices of the
+  // result, so an exact type match is what makes this cover complete rather
+  // than a prefix of a wider value.
+  if (!src || src.getType() != op.getType())
+    return failure();
+  rewriter.replaceOp(op, src);
+  return success();
+}
+
+LogicalResult ExtractDotOperandOp::verify() {
+  auto srcTy = cast<RankedTensorType>(getSrc().getType());
+  auto resTy = cast<RankedTensorType>(getResult().getType());
+  int64_t rank = srcTy.getRank();
+  int64_t dim = getDimAttr().getValue().getSExtValue();
+  if (dim < 0 || dim >= rank)
+    return emitOpError("dim ") << dim << " is out of range for rank " << rank;
+  if (resTy.getRank() != rank)
+    return emitOpError("result rank must equal source rank");
+  if (resTy.getElementType() != srcTy.getElementType())
+    return emitOpError("result element type must match the source");
+  if (resTy.getEncoding() != srcTy.getEncoding())
+    return emitOpError("result encoding must match the source");
+
+  for (int64_t i = 0; i < rank; ++i) {
+    if (i == dim)
+      continue;
+    if (resTy.getShape()[i] != srcTy.getShape()[i])
+      return emitOpError("result shape mismatch at dim ")
+             << i << ": expected " << srcTy.getShape()[i] << ", got "
+             << resTy.getShape()[i];
+  }
+
+  int64_t srcExtent = srcTy.getShape()[dim];
+  int64_t resExtent = resTy.getShape()[dim];
+  if (resExtent <= 0 || srcExtent % resExtent != 0)
+    return emitOpError("slice extent ")
+           << resExtent << " must divide source extent " << srcExtent
+           << " along dim " << dim;
+  int64_t numSlices = srcExtent / resExtent;
+  if (numSlices < 2)
+    return emitOpError("source must hold at least two slices along dim ")
+           << dim;
+  int64_t index = getIndexAttr().getValue().getSExtValue();
+  if (index < 0 || index >= numSlices)
+    return emitOpError("index ")
+           << index << " is out of range for " << numSlices << " slices";
+  return success();
+}
 #endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
 // MemDescReshapeOp
