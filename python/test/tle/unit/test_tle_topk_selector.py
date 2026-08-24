@@ -28,11 +28,12 @@ def test_topk_provider_gfx1201_boundaries(monkeypatch):
     _set_target(monkeypatch, module, "hip", "gfx1201")
 
     assert module._topk_provider(128, 8) == "triton"
+    assert module._topk_provider(8192, 8) == "triton"
     assert module._topk_provider(2048, 32) == "triton"
-    assert module._topk_provider(32768, 32) == "triton"
-    assert module._topk_provider(32769, 8) == "radix"
-    assert module._topk_provider(8192, 33) == "radix"
-    assert module._topk_provider(2048, 64) == "radix"
+    assert module._topk_provider(8193, 8) == "radix"
+    assert module._topk_provider(8192, 32) == "radix"
+    assert module._topk_provider(2049, 32) == "radix"
+    assert module._topk_provider(512, 64) == "radix"
     assert module._topk_provider(65536, 2) == "radix"
 
 
