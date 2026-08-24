@@ -338,6 +338,28 @@ def triton_topk(
     return y_vals, y_idx
 
 
+def _topk_provider(n_cols: int, k: int) -> str:
+    target = triton.runtime.driver.active.get_current_target()
+    # gfx1201: the streaming Triton top-k is faster for narrow-to-wide rows
+    # with small k; the radix top-k wins for large k or very wide rows (and
+    # is the only valid path for N > 65535). Other backends/arch keep radix.
+    if target.backend == "hip" and target.arch == "gfx1201":
+        if n_cols <= 32768 and k <= 32:
+            return "triton"
+    return "radix"
+
+
+def topk(
+    x: torch.Tensor,
+    k: int,
+    out_vals: torch.Tensor | None = None,
+    out_idx: torch.Tensor | None = None,
+):
+    if _topk_provider(x.shape[1], k) == "triton":
+        return triton_topk(x, k, out_vals=out_vals, out_idx=out_idx)
+    return triton_radix_topk(x, k, out_vals=out_vals, out_idx=out_idx)
+
+
 def _get_dtype(name: str):
     name = name.lower()
     if name == "float16":
@@ -367,7 +389,13 @@ def run_correctness(m: int, n: int, k: int, dtype: torch.dtype):
     gathered_triton = x.gather(1, y_idx_triton.to(torch.int64))
     torch.testing.assert_close(gathered_triton, y_vals_triton, rtol=1e-3, atol=1e-3)
 
-    print("Correctness check passed (radix + triton).")
+    y_vals_selected, y_idx_selected = topk(x, k)
+    y_vals_selected_sorted = torch.sort(y_vals_selected, dim=1, descending=True).values
+    torch.testing.assert_close(y_vals_selected_sorted, t_vals_sorted, rtol=1e-3, atol=1e-3)
+    gathered_selected = x.gather(1, y_idx_selected.to(torch.int64))
+    torch.testing.assert_close(gathered_selected, y_vals_selected, rtol=1e-3, atol=1e-3)
+
+    print(f"Correctness check passed (radix + triton + selected={_topk_provider(n, k)}).")
 
 
 if "--only_unit_test" in sys.argv:
