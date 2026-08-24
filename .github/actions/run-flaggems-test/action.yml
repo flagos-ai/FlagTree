@@ -95,11 +95,11 @@ runs:
 
         # Build test runner command
         CMD="python ${{ inputs.run-script }} --gpus ${{ inputs.gpus }} --output-dir $PR_OUTPUT_DIR"
-        
+
         if [ "${{ inputs.first-parameter-only }}" = "true" ]; then
           CMD="$CMD --first-parameter-only"
         fi
-        
+
         if [ -f "${{ inputs.skip-file }}" ]; then
           CMD="$CMD --skip-file ${{ inputs.skip-file }}"
         fi
