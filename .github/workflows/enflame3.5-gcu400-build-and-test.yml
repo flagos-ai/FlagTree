@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Enflame-GCU400-Build-And-Test
+name: Enflame3.5-GCU400
 
 on:
   push:
@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   enflame35x-gcu400-unit-test:
-    runs-on: enflame-gcu400
+    runs-on: enflame3.5-gcu400
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
