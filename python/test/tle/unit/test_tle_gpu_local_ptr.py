@@ -11,6 +11,8 @@ import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton._flagtree_backend import FLAGTREE_BACKEND
+from triton._internal_testing import is_hip
 
 BLOCK_SIZE = 64
 
@@ -23,6 +25,11 @@ def _is_enflame_backend():
 def _is_hcu_backend():
     target = triton.runtime.driver.active.get_current_target()
     return target.backend == "hip"
+
+
+def _is_amd_hip_backend():
+    # Native AMD (hip) excludes HCU, which sets FLAGTREE_BACKEND.
+    return is_hip() and not FLAGTREE_BACKEND
 
 
 def _require_cuda():
@@ -542,6 +549,51 @@ class TestTLELocalPointerKernel:
 
         expected = (a.float()) @ (b.float())
         torch.testing.assert_close(c, expected, atol=5e-3, rtol=5e-3)
+
+    def test_local_pointer_tiled_matmul_amd_avoids_second_staging(self):
+        if not _is_amd_hip_backend():
+            pytest.skip("AMD HIP backend is required")
+
+        block_m = 32
+        block_n = 32
+        block_k = 32
+        num_k_tiles = 2
+        m = block_m
+        n = block_n
+        k = block_k * num_k_tiles
+        a = torch.randn((m, k), device="cuda", dtype=torch.float16)
+        b = torch.randn((k, n), device="cuda", dtype=torch.float16)
+        c = torch.empty((m, n), device="cuda", dtype=torch.float32)
+
+        compiled = _local_pointer_tiled_matmul_kernel.warmup(
+            a,
+            b,
+            c,
+            a.stride(0),
+            a.stride(1),
+            b.stride(0),
+            b.stride(1),
+            c.stride(0),
+            c.stride(1),
+            block_m,
+            block_n,
+            block_k,
+            num_k_tiles,
+            2,
+            block_k // 2,
+            grid=(1, 1),
+            num_warps=4,
+            num_stages=1,
+        )
+
+        ttgir = compiled.asm["ttgir"]
+        # WMMA-rematerialized operands stay in registers: two allocs/stores
+        # for the two K tiles, and no local_load reload of the staged tiles.
+        assert ttgir.count("ttg.local_alloc") == 2
+        assert ttgir.count("ttg.local_store") == 2
+        assert "ttg.local_load" not in ttgir
+        assert compiled.metadata.shared == 4096
+        assert "v_wmma" in compiled.asm["amdgcn"]
 
     def test_local_pointer_axis_gather_matches_torch(self):
         rows = 8
