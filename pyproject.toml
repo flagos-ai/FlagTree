@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=40.8.0", "cmake>=3.20,<=4.0.3", "ninja>=1.11.1", "pybind11>=2.13.1", "pybind11-stubgen>=0.16.1"]
+requires = ["setuptools>=40.8.0", "cmake>=3.20,<=4.0.3", "ninja>=1.11.1", "pybind11>=2.13.1",
+            "pybind11-stubgen>=0.16.1"]  # flagtree: add pybind11-stubgen dependency
 build-backend = "setuptools.build_meta"
 
 [tool.mypy]
@@ -39,6 +40,7 @@ ignore = ["E501", "E701", "E731", "E741"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "E402"]
 
+# flagtree: pyright config for build-tree stubs
 [tool.pyright]
 # Dev-only: scope to the tle package and resolve the compiled _C modules from
 # the build tree (stubs generated at build time; see python/setup_tools/stubgen.py).

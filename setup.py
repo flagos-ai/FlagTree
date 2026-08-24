@@ -65,8 +65,10 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(__file__))
 from python.setup_tools import setup_helper as helper
+# flagtree: stubgen import
 from python.setup_tools.stubgen import auto_generate_stubs_from_install_extension
 
+# flagtree: stubgen wrapper
 # Regenerate .pyi stubs for the compiled _C extension modules right after the
 # cmake-built .so is installed into the build tree (helper.install_extension).
 # Runs exactly once per build. See python/setup_tools/stubgen.py.
@@ -425,6 +427,7 @@ class CMakeClean(clean):
         clean.initialize_options(self)
         self.build_temp = get_cmake_dir()
 
+    # flagtree: remove stable symlink before clean
     def run(self):
         # Remove stable symlink before cleaning build directory
         link_path = os.path.join("build", "lib.current")
