@@ -6,7 +6,7 @@ import sys
 import pytest
 import triton.language as tl
 import triton.experimental.tle.language as tle
-from triton.experimental.tle.language.gpu.mthreads.layout import (
+from triton.experimental.tle.language.gpu.mthreads import (
     MusaDotOperandEncoding,
     MusaSqmmaEncoding,
     MusaWmmaEncoding,
@@ -35,33 +35,35 @@ class _FakeBuilder:
         return "dot_operand_attr"
 
 
-def test_mthreads_layout_is_available_only_from_explicit_submodule():
-    assert MusaWmmaEncoding is tle.gpu.mthreads.layout.MusaWmmaEncoding
-    assert MusaSqmmaEncoding is tle.gpu.mthreads.layout.MusaSqmmaEncoding
-    assert MusaDotOperandEncoding is tle.gpu.mthreads.layout.MusaDotOperandEncoding
+def test_mthreads_layout_is_reexported_from_backend_namespace():
+    assert MusaWmmaEncoding is tle.gpu.mthreads.MusaWmmaEncoding
+    assert MusaSqmmaEncoding is tle.gpu.mthreads.MusaSqmmaEncoding
+    assert MusaDotOperandEncoding is tle.gpu.mthreads.MusaDotOperandEncoding
+    assert MusaWmmaEncoding is tle.gpu.mthreads.types.MusaWmmaEncoding
+    assert MusaSqmmaEncoding is tle.gpu.mthreads.types.MusaSqmmaEncoding
+    assert MusaDotOperandEncoding is tle.gpu.mthreads.types.MusaDotOperandEncoding
     assert not hasattr(tle.gpu, "MusaWmmaEncoding")
     assert not hasattr(tle.gpu, "MusaSqmmaEncoding")
     assert not hasattr(tle.gpu, "MusaDotOperandEncoding")
-    assert not hasattr(tle.gpu.mthreads, "MusaWmmaEncoding")
-    assert not hasattr(tle.gpu.mthreads, "MusaSqmmaEncoding")
-    assert not hasattr(tle.gpu.mthreads, "MusaDotOperandEncoding")
+    assert {"MusaWmmaEncoding", "MusaSqmmaEncoding", "MusaDotOperandEncoding"} <= set(tle.gpu.mthreads.__all__)
 
 
-def test_generic_gpu_import_does_not_load_mthreads_layout():
+def test_generic_gpu_import_does_not_reexport_mthreads_types():
     env = os.environ.copy()
     env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
-    script = ("import sys; "
-              "import triton.experimental.tle.language as tle; "
-              "assert 'triton.experimental.tle.language.gpu.mthreads.layout' not in sys.modules")
+    script = ("import triton.experimental.tle.language as tle; "
+              "assert not hasattr(tle.gpu, 'MusaWmmaEncoding'); "
+              "assert not hasattr(tle.gpu, 'MusaSqmmaEncoding'); "
+              "assert not hasattr(tle.gpu, 'MusaDotOperandEncoding')")
     subprocess.run([sys.executable, "-c", script], env=env, check=True, capture_output=True, text=True)
 
 
-def test_explicit_mthreads_layout_import_does_not_load_torch_musa():
+def test_explicit_mthreads_types_import_does_not_load_torch_musa():
     env = os.environ.copy()
     env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
     script = ("import sys; "
-              "from triton.experimental.tle.language.gpu.mthreads.layout import MusaWmmaEncoding; "
-              "assert MusaWmmaEncoding; "
+              "from triton.experimental.tle.language.gpu import mthreads; "
+              "assert mthreads.MusaWmmaEncoding; "
               "assert 'torch_musa' not in sys.modules")
     subprocess.run([sys.executable, "-c", script], env=env, check=True, capture_output=True, text=True)
 

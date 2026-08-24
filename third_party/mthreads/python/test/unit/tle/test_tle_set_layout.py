@@ -12,7 +12,7 @@ from triton._C.libtriton import ir, passes
 from triton.compiler.errors import CompilationError
 
 from test_tle_utils import compile_musa, compile_to_ttir, mthreads_backend
-from triton.experimental.tle.language.gpu.mthreads.layout import (
+from triton.experimental.tle.language.gpu.mthreads import (
     MusaDotOperandEncoding,
     MusaSqmmaEncoding,
     MusaWmmaEncoding,
