@@ -12,7 +12,12 @@ from triton.compiler import ASTSource
 from triton.compiler.errors import CompilationError
 from triton.tools.tensor_descriptor import TensorDescriptor
 
-from test_tle_utils import compile_musa, mthreads_backend, require_mthreads_libtriton
+from test_tle_utils import (
+    compile_musa,
+    mthreads_backend,
+    require_mthreads_libtriton,
+    tme_descriptor_attrs,
+)
 
 require_mthreads_libtriton()
 
@@ -152,7 +157,12 @@ def _compile_tma_completion_ir(fn, signature, constexprs=None):
     ir.load_dialects(context)
     backend.load_dialects(context)
 
-    src = ASTSource(fn=fn, signature=signature, constexprs=constexprs or {})
+    src = ASTSource(
+        fn=fn,
+        signature=signature,
+        constexprs=constexprs or {},
+        attrs=tme_descriptor_attrs(signature),
+    )
     module = src.make_ir(
         target,
         options,

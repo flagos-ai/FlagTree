@@ -151,16 +151,20 @@ def test_nvidia_mma_encoding_builder_contract_is_unchanged():
     assert builder.calls == [("nvidia", [2, 0], [4, 1], [], [16, 8])]
 
 
-@pytest.mark.parametrize("parent_type", [MusaWmmaEncoding, MusaSqmmaEncoding])
-def test_mthreads_dot_operand_encoding_accepts_musa_parent_and_zero_k_width(parent_type):
-    parent = parent_type([3, 1], [4, 1], [16, 16, 16])
+def test_mthreads_dot_operand_encoding_accepts_wmma_parent_and_zero_k_width():
+    parent = MusaWmmaEncoding([3, 1], [4, 1], [16, 16, 16])
     encoding = MusaDotOperandEncoding(0, parent)
     builder = _FakeBuilder()
 
     assert encoding.to_ir(builder) == "dot_operand_attr"
-    assert builder.calls[-1] == ("dot_operand", 0,
-                                 f"{parent_type.__name__.removeprefix('Musa').removesuffix('Encoding').lower()}_attr",
-                                 0)
+    assert builder.calls[-1] == ("dot_operand", 0, "wmma_attr", 0)
+
+
+@pytest.mark.parametrize("operand_index", [0, 1])
+def test_mthreads_dot_operand_encoding_rejects_sqmma_parent(operand_index):
+    parent = MusaSqmmaEncoding([3, 1], [4, 1], [16, 16, 16])
+    with pytest.raises(ValueError, match="does not support MusaSqmmaEncoding.*shared memory"):
+        MusaDotOperandEncoding(operand_index, parent)
 
 
 def test_mthreads_dot_operand_encoding_rejects_invalid_contracts():
@@ -169,7 +173,7 @@ def test_mthreads_dot_operand_encoding_rejects_invalid_contracts():
 
     with pytest.raises(ValueError, match="operand_index must be 0 or 1"):
         MusaDotOperandEncoding(2, parent)
-    with pytest.raises(ValueError, match="parent must be a MusaWmmaEncoding or MusaSqmmaEncoding"):
+    with pytest.raises(ValueError, match="parent must be a MusaWmmaEncoding"):
         MusaDotOperandEncoding(0, nvidia_parent)
     with pytest.raises(ValueError, match="requires k_width=0"):
         MusaDotOperandEncoding(0, parent, 1)

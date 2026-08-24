@@ -267,6 +267,25 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
 }
 #endif // __TLE__
 
+static LogicalResult lowerMakeTensorDesc(tt::MakeTensorDescOp op,
+                                         RewriterBase &rewriter) {
+  auto loc = op.getLoc();
+  rewriter.setInsertionPoint(op);
+
+  auto alloc = ttg::GlobalScratchAllocOp::create(
+      rewriter, loc, triton::getPointerType(rewriter.getI8Type()),
+      triton::musa::kTMEDescSizeBytes, triton::musa::kTMEDescAlignBytes);
+
+  if (failed(triton::musa::createTMEEncodedDescriptor(rewriter,
+                                                      alloc.getResult(), op)))
+    return failure();
+
+  auto newDesc = triton::musa::ReinterpretTensorDescOp::create(
+      rewriter, loc, op.getType(), alloc.getResult());
+  rewriter.replaceOp(op, newDesc);
+  return success();
+}
+
 } // namespace
 
 namespace mlir {
@@ -294,6 +313,17 @@ struct TritonMUSAGPUTMELoweringPass
         }
       }
 #endif // __TLE__
+
+      SmallVector<tt::MakeTensorDescOp> makeDescOps;
+      func.walk([&](tt::MakeTensorDescOp op) { makeDescOps.push_back(op); });
+      for (tt::MakeTensorDescOp op : makeDescOps) {
+        if (!op->getBlock())
+          continue;
+        if (failed(lowerMakeTensorDesc(op, rewriter))) {
+          signalPassFailure();
+          return;
+        }
+      }
 
       SmallVector<tt::DescriptorLoadOp> loadOps;
       func.walk([&](tt::DescriptorLoadOp op) { loadOps.push_back(op); });

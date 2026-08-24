@@ -1,5 +1,6 @@
 /// Trimmed down clone of llvm opt to be able to test triton custom llvm ir
 /// passes.
+#include "TritonMUSALLVMIR/Passes.h"
 #include "lib/Target/LLVMIR/LLVMPasses.h"
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/IR/Constants.h"
@@ -42,11 +43,24 @@ static cl::opt<bool>
                         llvm::cl::desc("run pass to break phi struct"),
                         cl::init(false));
 
+static cl::opt<bool>
+    MTGPUSLPVectorize("mtgpu-slp-vectorize",
+                      llvm::cl::desc("run MTGPU target-aware SLP vectorizer"),
+                      cl::init(false));
+static cl::opt<std::string>
+    MTGPUSLPProcessor("mtgpu-slp-cpu",
+                      llvm::cl::desc("MTGPU processor for MTGPU SLP TTI"),
+                      cl::init(""));
+
 namespace {
 static std::function<Error(Module *)> makeOptimizingPipeline() {
   return [](Module *m) -> Error {
     PipelineTuningOptions tuningOptions;
+    tuningOptions.SLPVectorization = MTGPUSLPVectorize;
     PassBuilder pb(nullptr, tuningOptions);
+    if (MTGPUSLPVectorize) {
+      mlir::triton::musa::registerMTGPUPostSLPCallbacks(pb);
+    }
 
     LoopAnalysisManager lam;
     FunctionAnalysisManager fam;
@@ -54,15 +68,24 @@ static std::function<Error(Module *)> makeOptimizingPipeline() {
     ModuleAnalysisManager mam;
     pb.registerModuleAnalyses(mam);
     pb.registerCGSCCAnalyses(cgam);
+    if (MTGPUSLPVectorize &&
+        !mlir::triton::musa::registerMTGPUTargetIRAnalysis(
+            fam, m->getTargetTriple().str(), MTGPUSLPProcessor))
+      return createStringError(inconvertibleErrorCode(),
+                               "MTGPU SLP requires mtgpu-mt-musa/mp_31 and an "
+                               "unregistered TargetIRAnalysis");
     pb.registerFunctionAnalyses(fam);
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
 
     ModulePassManager mpm;
-    llvm::FunctionPassManager fpm;
-    if (BreakStructPhiNodes)
+    if (BreakStructPhiNodes) {
+      llvm::FunctionPassManager fpm;
       fpm.addPass(BreakStructPhiNodesPass());
-    mpm.addPass(createModuleToFunctionPassAdaptor(std::move(fpm)));
+      mpm.addPass(createModuleToFunctionPassAdaptor(std::move(fpm)));
+    }
+    if (MTGPUSLPVectorize)
+      mpm.addPass(pb.buildPerModuleDefaultPipeline(OptimizationLevel::O3));
     mpm.run(*m, mam);
     return Error::success();
   };
@@ -94,7 +117,9 @@ int main(int argc, char **argv) {
     M->setTargetTriple(Triple(Triple::normalize(TargetTriple)));
   auto optPipeline = makeOptimizingPipeline();
   if (auto err = optPipeline(M.get())) {
-    llvm::errs() << "Failed to optimize LLVM IR " << err << "\n";
+    llvm::errs() << "Failed to optimize LLVM IR "
+                 << llvm::toString(std::move(err)) << "\n";
+    return 1;
   }
 
   if (verifyModule(*M, &errs())) {

@@ -14,7 +14,7 @@ from triton.compiler import ASTSource
 from triton.compiler.errors import CompilationError
 from triton.tools.tensor_descriptor import TensorDescriptor
 
-from test_tle_utils import mthreads_backend, require_mthreads_libtriton
+from test_tle_utils import mthreads_backend, require_mthreads_libtriton, tme_descriptor_attrs
 
 require_mthreads_libtriton()
 
@@ -403,6 +403,7 @@ def _compile_pipeline(fn, stages):
             "ITERATIONS": "constexpr",
         },
         constexprs={"STAGES": stages, "BLOCK": 128, "ITERATIONS": 2 * stages},
+        attrs={(0, ): [["musa.tme_tail_divisibility", 4]]},
     )
     module = source.make_ir(
         target,
@@ -442,7 +443,12 @@ def _compile_invalid_pipeline(fn, kind=None):
     if kind is not None:
         signature["KIND"] = "constexpr"
         constexprs["KIND"] = kind
-    source = ASTSource(fn=fn, signature=signature, constexprs=constexprs)
+    source = ASTSource(
+        fn=fn,
+        signature=signature,
+        constexprs=constexprs,
+        attrs=tme_descriptor_attrs(signature),
+    )
     module = source.make_ir(
         target,
         options,
@@ -474,6 +480,7 @@ def _compile_dual_pipeline(stages):
             "ITERATIONS": "constexpr",
         },
         constexprs={"STAGES": stages, "BLOCK": 128, "ITERATIONS": 2 * stages},
+        attrs={(0, ): [["musa.tme_tail_divisibility", 4]], (1, ): [["musa.tme_tail_divisibility", 4]]},
     )
     module = source.make_ir(
         target,

@@ -4,13 +4,16 @@
 #include "TritonMUSAGPUToLLVM/Passes.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/MTVM/MTVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "passes.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
@@ -18,6 +21,8 @@
 #include "llvm/IR/Module.h"
 #include <algorithm>
 #include <cstdint>
+#include <numeric>
+#include <optional>
 #include <pybind11/pybind11.h>
 #include <string>
 
@@ -108,6 +113,123 @@ bool moduleUsesMulhiHelper(const llvm::Module &module) {
   return false;
 }
 
+constexpr llvm::StringLiteral kTMETailDivisibilityAttr =
+    "musa.tme_tail_divisibility";
+
+std::optional<int64_t> getElementSizeBytes(mlir::Type type) {
+  int64_t bits = type.getIntOrFloatBitWidth();
+  if (bits <= 0 || bits % 8 != 0)
+    return std::nullopt;
+  return bits / 8;
+}
+
+bool blockShapeSatisfiesTME(mlir::triton::TensorDescType descTy,
+                            int64_t elemBytes) {
+  auto shape = descTy.getBlockType().getShape();
+  return !shape.empty() && shape.back() > 0 &&
+         (shape.back() * elemBytes) % 16 == 0;
+}
+
+bool valueIsKnownMultipleOf(mlir::Value value, int64_t divisor,
+                            unsigned callDepth = 0) {
+  if (divisor <= 1)
+    return true;
+  if (callDepth > 16)
+    return false;
+
+  mlir::Attribute constantAttr;
+  if (mlir::matchPattern(value, mlir::m_Constant(&constantAttr))) {
+    if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(constantAttr))
+      return intAttr.getInt() % divisor == 0;
+  }
+
+  if (auto arg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    auto func = mlir::dyn_cast_or_null<mlir::triton::FuncOp>(
+        arg.getOwner()->getParentOp());
+    if (!func)
+      return false;
+    auto attr = func.getArgAttrOfType<mlir::IntegerAttr>(arg.getArgNumber(),
+                                                         "tt.divisibility");
+    if (attr && attr.getInt() % divisor == 0)
+      return true;
+
+    auto module = func->getParentOfType<mlir::ModuleOp>();
+    if (!module)
+      return false;
+    bool foundCall = false;
+    bool allCallOperandsSatisfy = true;
+    module.walk([&](mlir::triton::CallOp call) {
+      if (call.resolveCallable() != func.getOperation())
+        return;
+      foundCall = true;
+      if (arg.getArgNumber() >= call.getNumOperands() ||
+          !valueIsKnownMultipleOf(call.getOperand(arg.getArgNumber()), divisor,
+                                  callDepth + 1))
+        allCallOperandsSatisfy = false;
+    });
+    return foundCall && allCallOperandsSatisfy;
+  }
+
+  if (mlir::Operation *def = value.getDefiningOp()) {
+    auto attr = def->getAttrOfType<mlir::IntegerAttr>("tt.divisibility");
+    return attr && attr.getInt() % divisor == 0;
+  }
+  return false;
+}
+
+bool requiresTMETailPointerFallback(mlir::ModuleOp module) {
+  bool requiresFallback = false;
+
+  module.walk([&](mlir::triton::MakeTensorDescOp op) {
+    if (requiresFallback)
+      return;
+    auto descTy = op.getType();
+    auto elemBytes =
+        getElementSizeBytes(descTy.getBlockType().getElementType());
+    if (!elemBytes || !blockShapeSatisfiesTME(descTy, *elemBytes)) {
+      requiresFallback = true;
+      return;
+    }
+    if (*elemBytes >= 4)
+      return;
+    int64_t elementDivisor = 4 / std::gcd<int64_t>(4, *elemBytes);
+    if (op.getShape().empty() ||
+        !valueIsKnownMultipleOf(op.getShape().back(), elementDivisor))
+      requiresFallback = true;
+  });
+
+  if (requiresFallback)
+    return true;
+
+  module.walk([&](mlir::triton::FuncOp func) {
+    if (requiresFallback)
+      return;
+    if (func.getVisibility() != mlir::SymbolTable::Visibility::Public)
+      return;
+    for (auto [idx, arg] : llvm::enumerate(func.getArguments())) {
+      auto descTy = mlir::dyn_cast<mlir::triton::TensorDescType>(arg.getType());
+      if (!descTy)
+        continue;
+      auto elemBytes =
+          getElementSizeBytes(descTy.getBlockType().getElementType());
+      if (!elemBytes || !blockShapeSatisfiesTME(descTy, *elemBytes)) {
+        requiresFallback = true;
+        return;
+      }
+      if (*elemBytes >= 4)
+        continue;
+      auto attr = func.getArgAttrOfType<mlir::IntegerAttr>(
+          idx, kTMETailDivisibilityAttr);
+      if (!attr || attr.getInt() % 4 != 0) {
+        requiresFallback = true;
+        return;
+      }
+    }
+  });
+
+  return requiresFallback;
+}
+
 } // namespace
 
 void init_triton_musa_passes_ttgpuir(py::module m) {
@@ -145,8 +267,6 @@ void init_triton_musa_passes_ttgpuir(py::module m) {
   ADD_PASS_WRAPPER_0("add_tme_lowering", mlir::createTritonMUSAGPUTMELowering);
   ADD_PASS_WRAPPER_0("add_optimize_descriptor_encoding",
                      mlir::createTritonMUSAGPUOptimizeDescriptorEncoding);
-  ADD_PASS_WRAPPER_0("add_optimize_sqmma_accumulator_layout",
-                     mlir::createTritonMUSAGPUOptimizeSqmmaAccumulatorLayout);
 }
 
 void init_triton_mthreads(py::module &&m) {
@@ -175,6 +295,10 @@ void init_triton_mthreads(py::module &&m) {
     mlir::registerMTVMDialectTranslation(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
+  });
+
+  m.def("requires_tme_tail_pointer_fallback", [](mlir::ModuleOp &module) {
+    return requiresTMETailPointerFallback(module);
   });
 
   m.def("attach_datalayout", [](llvm::Module &module) {
