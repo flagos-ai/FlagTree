@@ -41,6 +41,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #ifdef __TLE__
+#include "TLERawPipelineUtility.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #endif
 #include "triton/Tools/LayoutUtils.h"
@@ -225,6 +226,8 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
   OpBuilder::InsertionGuard guard(rewriter);
 #ifdef __TLE__
   if (!isConstantIntValue(pred, 1)) {
+    if (ttg::isTLERawPipelineOp(op))
+      return ttg::predicateTLERawPipelineOp(rewriter, op, pred);
     if (auto dotOp = dyn_cast<ttng::WarpGroupDotOp>(op))
       return predicateWarpGroupDotWithIf(rewriter, dotOp, pred);
   }
@@ -243,6 +246,8 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     return op;
 #ifdef __TLE__
   if (op->getName().getStringRef() == "tle.distributed_barrier")
+    return op;
+  if (op->getName().getStringRef() == "nvvm.barrier0")
     return op;
 #endif
   if (op->hasTrait<OpTrait::LocalLoadTrait>())

@@ -4,6 +4,7 @@ if(FLAGTREE_TLE)
     ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/lib/Transforms/EncodingRematerialization.cpp
     Pipeliner/TleWGMMAAnalysis.cpp
     Pipeliner/TleWGMMAUserPromisePipeline.cpp
+    Pipeliner/TLERawPipelineUtility.cpp
   )
 endif()
 

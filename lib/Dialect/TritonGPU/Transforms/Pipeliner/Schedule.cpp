@@ -327,7 +327,7 @@ static bool isBarrierLikeOp(Operation *op) {
   StringRef opName = op->getName().getStringRef();
   if (opName == "gpu.barrier")
     return true;
-  if (opName == "tle.distributed_barrier")
+  if (opName == "tle.distributed_barrier" || opName == "nvvm.barrier0")
     return true;
   return false;
 }

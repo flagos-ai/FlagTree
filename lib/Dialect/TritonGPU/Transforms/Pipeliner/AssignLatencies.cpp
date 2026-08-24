@@ -36,6 +36,9 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/Support/Debug.h"
+#ifdef __TLE__
+#include "TLERawPipelineUtility.h"
+#endif
 
 #define DEBUG_TYPE "triton-loop-pipeline"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -129,6 +132,13 @@ public:
   isPipeliningBeneficial(Operation *op, Operation *finalUser,
                          tt::ModuleAxisInfoAnalysis &axisInfoAnalysis,
                          bool filterSmall) {
+#ifdef __TLE__
+    // A pipeline hint is an explicit user promise that the raw call behaves as
+    // a synchronous load producer.  Unlike tt.load, its profitability cannot
+    // be inferred from pointer width or vectorization.
+    if (isTLERawPipelineOp(op))
+      return true;
+#endif
     if (auto loadOp = dyn_cast<tt::LoadOp>(op)) {
 #ifdef __TLE__
       auto ptrTy = loadOp.getPtr().getType();
@@ -345,7 +355,12 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
       [&](Operation *op, Operation *finalUser, int distance) {
         if (!seen.insert(op).second || excluded.count(op))
           return;
-        if (isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op)) {
+        bool isPipelineProducer =
+            isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op);
+#ifdef __TLE__
+        isPipelineProducer |= isTLERawPipelineOp(op);
+#endif
+        if (isPipelineProducer) {
           if (!AssignLoadLatencies::isPipeliningBeneficial(
                   op, finalUser, axisInfoAnalysis, filterSmall))
             return;

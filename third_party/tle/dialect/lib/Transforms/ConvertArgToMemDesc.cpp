@@ -37,7 +37,6 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Casting.h"
 
 namespace mlir::triton::tle {
@@ -53,9 +52,7 @@ namespace {
 
 ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
   ttg::CTAEncodingAttr ctaLayout = ttg::getCTALayout(ty.getEncoding());
-  llvm::iota_range<uint32_t> rOrderRange =
-      llvm::iota_range<uint32_t>(0, ty.getRank(), false);
-  llvm::SmallVector<uint32_t> order = ttg::getOrder(ty);
+  llvm::SmallVector<uint32_t> order = ttg::getOrderForMemory(ty);
   return ttg::MemDescType::get(ty.getShape(), ty.getElementType(),
                                ttg::SwizzledSharedEncodingAttr::get(
                                    ty.getContext(), 1, 1, 1, order, ctaLayout),
