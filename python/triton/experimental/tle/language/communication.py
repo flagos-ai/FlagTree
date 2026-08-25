@@ -24,6 +24,24 @@ try:
 except Exception:
     enabled = False
 
+# flagtree: module-level state + guard so the distributed entry points fail
+# with a clear error instead of a NameError on undefined globals when FlagCX
+# is unavailable (e.g. AMD/ROCm or any non-FlagCX environment).
+_allocator = None
+_allocator_wrapper = None
+_mem_pool = None
+_flagcx_allocator_failed_to_compile = False
+_init_communicator_ = False
+
+
+def _require_flagcx_distributed():
+    if not enabled:
+        raise RuntimeError(
+            "TLE distributed features require FlagCX "
+            "(triton.backends.nvidia.distributed.flagcx_rt_conf), which is "
+            "not available in this environment.")
+
+
 if enabled:
     from .flagcx_wrapper import (
         FLAGCXLibrary,
@@ -150,6 +168,7 @@ def compile_flagcx_allocator():
 
 
 def get_mem_pool():
+    _require_flagcx_distributed()
     init_communicator()
     """Return a cached PyTorch MemPool backed by flagcxMemAlloc."""
     global _mem_pool, _flagcx_allocator_failed_to_compile
@@ -171,6 +190,7 @@ def _cleanup_flagcx_allocator_wrapper():
 
 
 def cleanup_communicator():
+    _require_flagcx_distributed()
     global comm, rank, dev_mem, dev_comm, win
     dist.barrier()
     flagcx.flagcxDevMemFreeDevicePtr(dev_mem)
@@ -186,6 +206,7 @@ def cleanup_communicator():
 
 
 def init_communicator():
+    _require_flagcx_distributed()
     global comm, rank, _init_communicator_
     if enabled and _init_communicator_:
         return
@@ -219,6 +240,7 @@ def init_communicator():
 
 
 def create_dist_tensor(buf_tensor):
+    _require_flagcx_distributed()
     global comm, rank, dev_mem, dev_comm, win
     buf_ptr = buf_tensor.data_ptr()
     buf_size = buf_tensor.numel() * buf_tensor.element_size()

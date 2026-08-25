@@ -1,4 +1,9 @@
 import triton.experimental.tle.language as tle
+import pytest
+from triton.experimental.tle.language.communication import enabled as _flagcx_enabled
+
+pytestmark = pytest.mark.skipif(
+    not _flagcx_enabled, reason="TLE distributed requires FlagCX (NVIDIA); unavailable here")
 import torch
 import triton
 import triton.language as tl

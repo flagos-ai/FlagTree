@@ -1,4 +1,9 @@
+import pytest
 import triton.experimental.tle.language as tle
+from triton.experimental.tle.language.communication import enabled as _flagcx_enabled
+
+pytestmark = pytest.mark.skipif(
+    not _flagcx_enabled, reason="TLE distributed requires FlagCX (NVIDIA); unavailable here")
 import torch
 import triton
 import triton.language as tl
@@ -41,4 +46,5 @@ class TestLocalPeCount:
         tle.cleanup_communicator()
 
 
-TestLocalPeCount().test_tle_local_pe_kernel()
+if __name__ == "__main__":
+    TestLocalPeCount().test_tle_local_pe_kernel()
