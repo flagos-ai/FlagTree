@@ -1,0 +1,71 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: FlagGems-Baseline-Daily
+
+on:
+  schedule:
+    # 每天 UTC 03:59 执行，对应北京时间上午 11:59
+    - cron: '59 3 * * *'
+  workflow_dispatch:  # 支持手动触发，方便调试或补跑
+
+permissions:
+  contents: read
+
+jobs:
+  baseline-test:
+    runs-on: nvidia3.6
+    if: ${{ github.repository == 'flagos-ai/flagtree' }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Update and Install Baseline FlagTree
+        shell: bash
+        run: |
+          set -x
+          cd /data/zhengyang/flaggems_ci/FlagTree
+          git pull --rebase
+          python3 -m pip uninstall -y flagtree --break-system-packages || true
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+
+      - name: Install FlagGems
+        shell: bash
+        run: |
+          set -x
+          cd /data/zhengyang/flaggems_ci/FlagGems
+          python3 -m pip uninstall -y flag_gems --break-system-packages || true
+          pip install -v -e . --no-build-isolation --no-deps
+
+      - name: Run Baseline Tests
+        shell: bash
+        run: |
+          set -x
+          cd /data/zhengyang/flaggems_ci/FlagGems
+          OUTPUT_DIR="/data/zhengyang/flaggems_ci/Baseline/$(date +%Y-%m-%d)"
+          mkdir -p "$OUTPUT_DIR"
+          python tools/ci/ci_run_tests_v8.py \
+            --gpus 4 \
+            --output-dir "$OUTPUT_DIR" \
+            --first-parameter-only \
+            --skip-file tools/ci/skip_list.yaml
