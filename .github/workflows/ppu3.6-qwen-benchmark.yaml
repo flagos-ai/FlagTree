@@ -81,7 +81,7 @@ jobs:
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
         run: |
-          export BENCH_SCRIPT_DIR="${PWD}/.github/workflows/benchmark/mthreads/mthreads3.6-qwen3.6"
+          export BENCH_SCRIPT_DIR="${PWD}/.github/workflows/benchmark/ppu/ppu3.6-qwen3.6"
           env | grep -E '^(BENCH_SCRIPT_DIR)=' >> $GITHUB_ENV || true
           cd ~/flagrelease/qwen3.6
           bash ${BENCH_SCRIPT_DIR}/start.sh
