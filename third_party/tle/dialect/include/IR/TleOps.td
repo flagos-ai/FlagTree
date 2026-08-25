@@ -383,13 +383,13 @@ def Tle_TMAStoreCommitGroupOp
 def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
                                       [MemoryEffects<[MemRead, MemWrite]>]> {
   let arguments = (ins
-    Optional<AnyType>:$src,                 
+    Optional<AnyType>:$src,
     OptionalAttr<StrAttr>:$space,           # intra inter world
-    OptionalAttr<StrAttr>:$barrier_type,    # arrive wait sync 
+    OptionalAttr<StrAttr>:$barrier_type,    # arrive wait sync
     OptionalAttr<StrAttr>:$order,           # relaxed acquire release acqrel
     OptionalAttr<StrAttr>:$group_kind,      # space 存在时为 thread warp block，不存在时为 cluster submesh grid
     OptionalAttr<I32Attr>:$barrier_index,   # flagcx only, 高层 barrier channel 编号
-    OptionalAttr<I32Attr>:$context_id,      
+    OptionalAttr<I32Attr>:$context_id,
     OptionalAttr<StrAttr>:$memory_scope,    # 内存可见范围
     OptionalAttr<I32Attr>:$group_rank,      # submesh 维度数
     OptionalAttr<DenseI32ArrayAttr>:$group_shape,  # submesh shape

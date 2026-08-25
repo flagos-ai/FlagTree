@@ -473,16 +473,16 @@ struct DistributedBarrierOpConversion
     auto memoryScopeAttr = op->getAttrOfType<StringAttr>(kMemoryScopeAttr);
     auto loc = op.getLoc();
     SmallVector<Value> srcElems;
-    auto getTeamKind = [](StringRef space)
-        -> std::optional<tle::SignalTeamKind> {
+    auto getTeamKind =
+        [](StringRef space) -> std::optional<tle::SignalTeamKind> {
       return llvm::StringSwitch<std::optional<tle::SignalTeamKind>>(space)
           .Case("device", tle::SignalTeamKind::INTRA)
           .Case("inter", tle::SignalTeamKind::INTER)
           .Case("world", tle::SignalTeamKind::WORLD)
           .Default(std::nullopt);
     };
-    auto getCoopKind = [](StringRef kind)
-        -> std::optional<tle::SignalCoopKind> {
+    auto getCoopKind =
+        [](StringRef kind) -> std::optional<tle::SignalCoopKind> {
       return llvm::StringSwitch<std::optional<tle::SignalCoopKind>>(kind)
           .Case("thread", tle::SignalCoopKind::THREAD)
           .Case("warp", tle::SignalCoopKind::WARP)
