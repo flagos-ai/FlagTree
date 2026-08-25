@@ -25,6 +25,8 @@ on:
     # 每天 UTC 03:59 执行，对应北京时间上午 11:59
     - cron: '59 3 * * *'
   workflow_dispatch:  # 支持手动触发，方便调试或补跑
+  pull_request:        # 临时加上，用于测试
+    branches: [ "main" ]
 
 permissions:
   contents: read
