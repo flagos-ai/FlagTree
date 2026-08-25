@@ -21,27 +21,18 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-//===- VerfiyUtils.h - Verfiy utils for TLE dialect -----------------------===//
+#ifndef TLE_CONVERSION_TLE_TO_LLVM_FLAGCX_BARRIER_OP_TO_LLVM_H
+#define TLE_CONVERSION_TLE_TO_LLVM_FLAGCX_BARRIER_OP_TO_LLVM_H
 
-#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
-#include "mlir/IR/Builders.h"
-#include "tle/dialect/include/IR/Dialect.h"
-#include "triton/Dialect/Triton/IR/Types.h"
-#include "triton/Dialect/Triton/IR/Utility.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
-#include <cctype>
-#include <limits>
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/IR/PatternMatch.h"
 
 namespace mlir::triton::tle {
 
-namespace RemotePointers {
-llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result);
-}
-
-namespace DistributedBarrier {
-llvm::LogicalResult verifyFlagCxSpace(mlir::Operation *op, mlir::Value src);
-}
+void populateFlagCxBarrierOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                           RewritePatternSet &patterns,
+                                           PatternBenefit benefit);
 
 } // namespace mlir::triton::tle
+
+#endif // TLE_CONVERSION_TLE_TO_LLVM_FLAGCX_BARRIER_OP_TO_LLVM_H

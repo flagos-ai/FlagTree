@@ -54,18 +54,63 @@ llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result) {
 } // namespace RemotePointers
 
 namespace DistributedBarrier {
-llvm::LogicalResult verifyDeviceSpace(mlir::Operation *op, mlir::Value src) {
+llvm::LogicalResult verifyFlagCxSpace(mlir::Operation *op, mlir::Value src) {
+  if (!src)
+    return op->emitOpError()
+           << "expects src to be present for a FlagCX distributed barrier";
 
   auto kindAttr = op->getAttrOfType<StringAttr>("group_kind");
   auto barrierTypeAttr = op->getAttrOfType<StringAttr>("barrier_type");
   auto orderAttr = op->getAttrOfType<StringAttr>("order");
+  auto indexAttr = op->getAttrOfType<IntegerAttr>("barrier_index");
+  auto contextIdAttr = op->getAttrOfType<IntegerAttr>("context_id");
+  auto scopeAttr = op->getAttrOfType<StringAttr>("memory_scope");
 
-  if (kindAttr && barrierTypeAttr && orderAttr)
-    return success();
-  else
+  if (op->hasAttr("group_rank") || op->hasAttr("group_shape") ||
+      op->hasAttr("group_axes") || op->hasAttr("group_mask"))
     return op->emitOpError()
-           << "expects src, group_kind, barrier_type and order attributes to "
-              "be present for device space distributed barrier";
+           << "FlagCX distributed barriers do not accept mesh group metadata";
+
+  if (!kindAttr || !barrierTypeAttr || !orderAttr || !indexAttr ||
+      !contextIdAttr || !scopeAttr)
+    return op->emitOpError()
+           << "expects src, group_kind, barrier_type, order, barrier_index, "
+              "context_id and memory_scope to be present for a FlagCX "
+              "distributed barrier";
+
+  StringRef kind = kindAttr.getValue();
+  if (kind != "thread" && kind != "warp" && kind != "block")
+    return op->emitOpError()
+           << "FlagCX group_kind must be 'thread', 'warp', or 'block', got '"
+           << kind << "'";
+
+  StringRef barrierType = barrierTypeAttr.getValue();
+  if (barrierType != "arrive" && barrierType != "wait" && barrierType != "sync")
+    return op->emitOpError()
+           << "FlagCX barrier_type must be 'arrive', 'wait', or 'sync', got '"
+           << barrierType << "'";
+
+  StringRef order = orderAttr.getValue();
+  if (order != "relaxed" && order != "acquire" && order != "release" &&
+      order != "acqrel")
+    return op->emitOpError()
+           << "FlagCX order must be 'relaxed', 'acquire', 'release', or "
+              "'acqrel', got '"
+           << order << "'";
+
+  StringRef scope = scopeAttr.getValue();
+  if (scope != "system" && scope != "device" && scope != "block" &&
+      scope != "thread")
+    return op->emitOpError()
+           << "FlagCX memory_scope must be 'system', 'device', 'block', or "
+              "'thread', got '"
+           << scope << "'";
+
+  if (indexAttr.getInt() < 0)
+    return op->emitOpError() << "barrier_index must be non-negative";
+  if (contextIdAttr.getInt() < 0)
+    return op->emitOpError() << "context_id must be non-negative";
+  return success();
 }
 
 } // namespace DistributedBarrier

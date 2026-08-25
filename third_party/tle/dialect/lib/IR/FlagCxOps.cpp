@@ -37,13 +37,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
-enum class CoopKind : int32_t {
-  Thread = 0,
-  Warp = 1,
-  Block = 2,
-  TileSpan = 3,
-  Lanes = 4,
-};
+namespace {
 
 enum class MemoryOrder : int32_t {
   Relaxed = 0,
@@ -51,6 +45,15 @@ enum class MemoryOrder : int32_t {
   Release = 2,
   AcqRel = 3,
 };
+
+enum class MemoryScope : int32_t {
+  System = 0,
+  Device = 1,
+  Block = 2,
+  Thread = 3,
+};
+
+} // namespace
 
 namespace mlir::triton::tle {
 
@@ -63,12 +66,14 @@ LogicalResult GetLocalRankOp::verify() {
   return success();
 }
 
-LogicalResult DeviceIntraBarrierOp::verify() {
+LogicalResult FlagCxBarrierOp::verify() {
   auto *op = getOperation();
 
   auto barrierTypeAttr = getBarrierTypeAttr();
-  auto coopKindAttr = getCoopKindAttr();
+  auto indexAttr = getIndexAttr();
+  auto contextIdAttr = getContextIdAttr();
   auto orderAttr = getOrderAttr();
+  auto scopeAttr = getScopeAttr();
 
   auto emitInvalidIntAttr = [&](StringRef attrName, int64_t value,
                                 StringRef expected) -> LogicalResult {
@@ -82,54 +87,41 @@ LogicalResult DeviceIntraBarrierOp::verify() {
                              << "', expected one of: " << expected;
   };
 
-  // barrier_type
-  if (barrierTypeAttr) {
-    StringRef barrierType = barrierTypeAttr.getValue();
+  StringRef barrierType = barrierTypeAttr.getValue();
+  bool validBarrierType = llvm::StringSwitch<bool>(barrierType)
+                              .Case("arrive", true)
+                              .Case("wait", true)
+                              .Case("sync", true)
+                              .Default(false);
+  if (!validBarrierType)
+    return emitInvalidStrAttr("barrier_type", barrierType,
+                              "arrive, wait, sync");
 
-    bool valid = llvm::StringSwitch<bool>(barrierType)
-                     .Case("arrive", true)
-                     .Case("wait", true)
-                     .Case("sync", true)
-                     .Default(false);
+  if (indexAttr.getInt() < 0)
+    return op->emitOpError() << "index must be non-negative";
+  if (contextIdAttr.getInt() < 0)
+    return op->emitOpError() << "context_id must be non-negative";
 
-    if (!valid)
-      return emitInvalidStrAttr("barrier_type", barrierType,
-                                "arrive, wait, sync");
+  switch (static_cast<MemoryOrder>(orderAttr.getInt())) {
+  case MemoryOrder::Relaxed:
+  case MemoryOrder::Acquire:
+  case MemoryOrder::Release:
+  case MemoryOrder::AcqRel:
+    break;
+  default:
+    return emitInvalidIntAttr("order", orderAttr.getInt(),
+                              "Relaxed(0), Acquire(1), Release(2), AcqRel(3)");
   }
 
-  // coop_kind
-  if (coopKindAttr) {
-    auto coopKind = static_cast<CoopKind>(coopKindAttr.getInt());
-
-    switch (coopKind) {
-    case CoopKind::Thread:
-    case CoopKind::Warp:
-    case CoopKind::Block:
-    case CoopKind::TileSpan:
-    case CoopKind::Lanes:
-      break;
-    default:
-      return emitInvalidIntAttr(
-          "coop_kind", coopKindAttr.getInt(),
-          "Thread(0), Warp(1), Block(2), TileSpan(3), Lanes(4)");
-    }
-  }
-
-  // order
-  if (orderAttr) {
-    auto order = static_cast<MemoryOrder>(orderAttr.getInt());
-
-    switch (order) {
-    case MemoryOrder::Relaxed:
-    case MemoryOrder::Acquire:
-    case MemoryOrder::Release:
-    case MemoryOrder::AcqRel:
-      break;
-    default:
-      return emitInvalidIntAttr(
-          "order", orderAttr.getInt(),
-          "Relaxed(0), Acquire(1), Release(2), AcqRel(3)");
-    }
+  switch (static_cast<MemoryScope>(scopeAttr.getInt())) {
+  case MemoryScope::System:
+  case MemoryScope::Device:
+  case MemoryScope::Block:
+  case MemoryScope::Thread:
+    break;
+  default:
+    return emitInvalidIntAttr("scope", scopeAttr.getInt(),
+                              "System(0), Device(1), Block(2), Thread(3)");
   }
 
   return success();

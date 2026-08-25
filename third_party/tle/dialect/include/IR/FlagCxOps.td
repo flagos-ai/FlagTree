@@ -48,33 +48,35 @@ def Tle_GetLocalRankOp : Tle_Op<"get local rank"> {
 }
 
 
-def Tle_DeviceIntraBarrierOp : Tle_Op<"device intra barrier"> {
-  let summary = "Device-local synchronization barrier";
+def Tle_FlagCxBarrierOp : Tle_Op<"flagcx_barrier"> {
+  let summary = "FlagCX communicator barrier";
   let description = [{
-    Performs a device-local synchronization barrier by lowering to one of the
-    following runtime calls:
+    Performs a communicator barrier by lowering to one of the transport-
+    transparent FlagCX unified device IR calls:
 
-      * flagcxIntraBarrierArriveS(comm, coopKind, index, multimem, order)
-      * flagcxIntraBarrierWaitS(comm, coopKind, index, multimem, order)
-      * flagcxIntraBarrierSyncS(comm, coopKind, index, multimem, order)
+      * flagcxDevBarrierArrive(comm, teamKind, index, contextId, coopKind,
+                              order, scope)
+      * flagcxDevBarrierWait(comm, teamKind, index, contextId, coopKind,
+                            order, scope)
+      * flagcxDevBarrierSync(comm, teamKind, index, contextId, coopKind,
+                            order, scope)
 
     The specific runtime routine is selected according to the barrier operation
-    (arrive, wait, or sync).
-
-    The barrier is identified by `index`, scoped by `coopKind`, and obeys the
-    specified memory ordering semantics (`order`). `multimem` indicates whether
-    the barrier operates on multimem storage.
-
-    Returns the runtime status code.
+    (arrive, wait, or sync). `team_kind` selects the intra-node, inter-node rail,
+    or world communicator team. `index` identifies the barrier channel and
+    `context_id` selects the pre-created network context used by inter/world
+    barriers.
   }];
 
   let arguments = (ins
     Tle_LocalPointerResultType:$comm,
-    OptionalAttr<StrAttr>:$barrier_type,
-    OptionalAttr<I32Attr>:$coop_kind,
-    OptionalAttr<I32Attr>:$index,
-    OptionalAttr<I1Attr>:$multimem,
-    OptionalAttr<I32Attr>:$order
+    StrAttr:$barrier_type,               # arrive wait sync
+    Tle_SignalTeamKindAttr:$team_kind,   # intra inter world
+    Tle_SignalCoopKindAttr:$coop_kind,   # thread  block   warp
+    I32Attr:$index,
+    I32Attr:$context_id,
+    I32Attr:$order,
+    I32Attr:$scope
   );
 
   let hasVerifier = 1;
