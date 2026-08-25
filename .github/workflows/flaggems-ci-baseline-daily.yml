@@ -48,6 +48,7 @@ jobs:
           set -x
           cd /data/zhengyang/flaggems_ci/FlagTree
           git pull --rebase
+          source ~/env-3.6.sh
           python3 -m pip uninstall -y flagtree --break-system-packages || true
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
