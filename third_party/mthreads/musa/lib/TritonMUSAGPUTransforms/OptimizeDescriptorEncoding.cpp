@@ -515,6 +515,10 @@ public:
 
   LogicalResult matchAndRewrite(ttg::ConvertLayoutOp cvt,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(cvt))
+      return failure();
+#endif // __TLE__
     auto dstTy = dyn_cast<RankedTensorType>(cvt.getType());
     if (!dstTy)
       return failure();
@@ -524,6 +528,10 @@ public:
     auto fpToFp = cvt.getSrc().getDefiningOp<tt::FpToFpOp>();
     if (!fpToFp)
       return failure();
+#ifdef __TLE__
+    if (getTleExplicitValueEncoding(fpToFp.getResult()))
+      return failure();
+#endif // __TLE__
 
     auto midTy = dyn_cast<RankedTensorType>(fpToFp.getType());
     auto srcTy = dyn_cast<RankedTensorType>(fpToFp.getSrc().getType());

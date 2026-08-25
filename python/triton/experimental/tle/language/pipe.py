@@ -19,11 +19,18 @@
 # SOFTWARE.
 
 # flagtree tle
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import triton.language.core as tl
 
 from .gpu import types as gpu_types
 from .gpu.mthreads import common as mthreads_common
 from .gpu.mthreads import pipe as mthreads_pipe
+
+if TYPE_CHECKING:
+    from . import TLESemantic
 
 
 def _unwrap_pipe_constexpr(value):
@@ -78,7 +85,7 @@ def pipe(
     name=None,
     readers=None,
     one_shot=False,
-    _semantic=None,
+    _semantic: TLESemantic | None = None,
     **fields,
 ) -> gpu_types.pipe_value:
     """

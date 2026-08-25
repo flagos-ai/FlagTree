@@ -20,6 +20,7 @@
 
 # flagtree tle
 import triton.language as _language
+from typing import TYPE_CHECKING
 
 from .core import (
     cumsum,
@@ -124,5 +125,8 @@ from . import distributed, gpu, raw
 
 # TLE-specific loop iterator: tl.range plus the `reorder` extension hint.
 from .gpu import range
+
+if TYPE_CHECKING:
+    from triton.experimental.tle.language.gpu.semantic import TLESemantic as TLESemantic
 
 __all__.append("range")

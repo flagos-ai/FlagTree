@@ -213,4 +213,19 @@ def TritonMUSAGPUTLELowerBarrierOperations
   ];
 }
 
+def TritonMUSAGPUTLEFinalizeExplicitLayouts
+    : Pass<"tritonmusa-tle-finalize-explicit-layouts", "mlir::ModuleOp"> {
+  let summary = "Finalize mthreads TLE explicit layout constraints";
+  let description = [{
+    Verify that temporary explicit result and memory encodings agree with the
+    final TTGPU tensor types, then remove the temporary attributes before LLVM
+    lowering.  Tensor encodings and non-identity layout conversions remain the
+    durable representation of the selected layouts.
+  }];
+  let dependentDialects = [
+    "mlir::triton::TritonDialect",
+    "mlir::triton::gpu::TritonGPUDialect"
+  ];
+}
+
 #endif // MUSA_TLE_TRANSFORMS_PASSES

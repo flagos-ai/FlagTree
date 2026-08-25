@@ -326,6 +326,28 @@ LogicalResult BarrierArriveOp::verify() {
   return success();
 }
 
+LogicalResult SetLayoutOp::verify() {
+  auto srcTy = dyn_cast<RankedTensorType>(getSrc().getType());
+  auto resultTy = dyn_cast<RankedTensorType>(getResult().getType());
+  if (!srcTy || !resultTy)
+    return emitOpError("expects source and result to be ranked tensors");
+
+  Attribute targetEncoding = getTargetEncoding();
+  if (!dyn_cast<ttg::DistributedEncodingTrait>(targetEncoding))
+    return emitOpError("target_encoding must be a distributed encoding");
+
+  auto layoutEncoding = dyn_cast<ttg::LayoutEncodingTrait>(targetEncoding);
+  if (!layoutEncoding)
+    return emitOpError("distributed target_encoding must expose a layout rank");
+
+  unsigned targetRank = layoutEncoding.getRank();
+  if (targetRank != static_cast<unsigned>(srcTy.getRank()))
+    return emitOpError("target encoding rank ")
+           << targetRank << " must match source tensor rank "
+           << srcTy.getRank();
+  return success();
+}
+
 LogicalResult ExclusiveCumsumOp::verify() {
   auto srcTy = dyn_cast<RankedTensorType>(getSrc().getType());
   if (!srcTy)
