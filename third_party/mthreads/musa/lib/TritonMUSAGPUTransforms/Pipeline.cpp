@@ -1133,6 +1133,13 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
   for (auto &op : forOp.getBody()->without_terminator()) {
     if (!isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op))
       continue;
+#ifdef __TLE__
+    Attribute explicitMemoryEncoding;
+    if (failed(inferTleExplicitMemoryEncoding(&op, explicitMemoryEncoding)))
+      return failure();
+    if (explicitMemoryEncoding || getTleExplicitResultEncoding(&op, 0))
+      continue;
+#endif // __TLE__
 
     if (isa<tt::DescriptorGatherOp>(op)) {
       op.emitOpError("pipelined descriptor_gather is not supported on MUSA");

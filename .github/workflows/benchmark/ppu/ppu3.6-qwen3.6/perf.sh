@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -18,17 +20,38 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from . import buffer, common, copy, pipe, warp_specialize, wgmma
-from .types import MusaDotOperandEncoding, MusaSqmmaEncoding, MusaWmmaEncoding
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-__all__ = [
-    "buffer",
-    "common",
-    "copy",
-    "pipe",
-    "warp_specialize",
-    "wgmma",
-    "MusaDotOperandEncoding",
-    "MusaSqmmaEncoding",
-    "MusaWmmaEncoding",
-]
+source ~/env.sh
+source "${SCRIPT_DIR}/disable_local_proxy.sh"
+
+if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  echo "[FATAL] CUDA_VISIBLE_DEVICES is unset." >&2
+  exit 1
+fi
+
+IFS=',' read -ra GPU_IDS <<< "$CUDA_VISIBLE_DEVICES"
+for i in "${!GPU_IDS[@]}"; do
+  GPU_IDS[$i]="${GPU_IDS[$i]//[[:space:]]/}"
+  if [[ ! "${GPU_IDS[$i]}" =~ ^[0-9]+$ ]]; then
+    echo "[FATAL] Invalid CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES" >&2
+    exit 1
+  fi
+done
+GPU_DEVICE_LIST=$(IFS=,; echo "${GPU_IDS[*]}")
+
+start=$(date +%s)
+
+python3 ${SCRIPT_DIR}/all_perf.py --input-len=1024  --output-len=1024 --concurrency=4
+
+# python3 ${SCRIPT_DIR}/all_perf.py --input-len=512  --output-len=512 --concurrency=4
+
+# python3 ${SCRIPT_DIR}/all_perf.py --input-len=256  --output-len=256 --concurrency=4
+
+python3 ${SCRIPT_DIR}/all_perf.py --input-len=128  --output-len=128 --concurrency=4
+
+end=$(date +%s)
+duration=$((end - start))
+minutes=$((duration / 60))
+seconds=$((duration % 60))
+echo "[INFO] Benchmark elapsed time: ${minutes}m${seconds}s."

@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -18,17 +20,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from . import buffer, common, copy, pipe, warp_specialize, wgmma
-from .types import MusaDotOperandEncoding, MusaSqmmaEncoding, MusaWmmaEncoding
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-__all__ = [
-    "buffer",
-    "common",
-    "copy",
-    "pipe",
-    "warp_specialize",
-    "wgmma",
-    "MusaDotOperandEncoding",
-    "MusaSqmmaEncoding",
-    "MusaWmmaEncoding",
-]
+source "${SCRIPT_DIR}/disable_local_proxy.sh"
+
+curl http://127.0.0.1:8000/v1/models
