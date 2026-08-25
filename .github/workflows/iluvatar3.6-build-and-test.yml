@@ -163,6 +163,7 @@ jobs:
 
           # triton integrations unit test
           pytest third_party/iluvatar/python/test/unit/integrations/vllm/chunk_o/test_chunk_fwd_kernel_o.py
+          pytest third_party/iluvatar/python/test/unit/integrations/vllm/chunk_h/test_chunk_fwd_kernel_h.py
           pytest third_party/iluvatar/python/test/unit/integrations/vllm/wy_fast/test_recompute_w_u.py
           pytest third_party/iluvatar/python/test/unit/integrations/fbgemm/test_jagged_flash_attention_bwd_basic_min.py
           PUNICA_TEST_LEVEL=quick pytest third_party/iluvatar/python/test/unit/integrations/vllm/punica_lora/test_punica_ops.py
