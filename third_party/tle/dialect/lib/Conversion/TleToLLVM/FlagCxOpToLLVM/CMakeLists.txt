@@ -1,5 +1,5 @@
 set(FLAGCX_TO_LLVM_SRC
-    DeviceIntraBarrierOpToLLVM.cpp
+    FlagCxBarrierOpToLLVM.cpp
     GetLocalRankOpToLLVM.cpp
     GetWorldRankOpToLLVM.cpp
     FlagCxOpToLLVM.cpp

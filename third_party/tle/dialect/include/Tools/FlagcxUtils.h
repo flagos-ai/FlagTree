@@ -26,7 +26,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "triton/Dialect/Triton/IR/Types.h"
+#include <cstdint>
 
 namespace mlir::triton::tle {
 using namespace mlir;
@@ -43,9 +43,9 @@ LLVM::CallOp getNumPesFunCall(mlir::Location loc,
                               ConversionPatternRewriter &rewriter,
                               Value memPtrInt);
 
-LLVM::CallOp getBarrierFuncCall(mlir::Location loc,
-                                ConversionPatternRewriter &rewriter, Value comm,
-                                size_t barrier_index, size_t coopKind,
-                                size_t order, llvm::StringRef barrierType);
+LLVM::CallOp getUnifiedBarrierFuncCall(
+    mlir::Location loc, ConversionPatternRewriter &rewriter, Value comm,
+    int32_t teamKind, int32_t barrierIndex, int32_t contextId, int32_t coopKind,
+    int32_t order, int32_t scope, llvm::StringRef barrierType);
 
 } // namespace mlir::triton::tle

@@ -21,7 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/DeviceIntraBarrierOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxBarrierOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetLocalRankOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetWorldRankOpToLLVM.h"
 

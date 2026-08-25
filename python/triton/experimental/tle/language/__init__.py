@@ -45,6 +45,7 @@ from .distributed import (
     MeshConfig,
     BarrierKind,
     MemoryOrder,
+    MemoryScope,
     GroupKind,
     distributed_barrier,
     distributed_dot,
@@ -117,6 +118,7 @@ __all__ = [
     "cleanup_communicator",
     "BarrierKind",
     "MemoryOrder",
+    "MemoryScope",
     "GroupKind",
 ]
 
