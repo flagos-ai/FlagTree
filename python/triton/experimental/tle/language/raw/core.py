@@ -18,12 +18,19 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import triton.language as tl
 from triton.language.core import builtin, constexpr as tl_constexpr, tensor
 from triton.experimental.tle.language.gpu import buffered_tensor
 
+if TYPE_CHECKING:
+    from .. import TLESemantic
 
-def _resolve_alias_indices(func, llvm, handles, output_indices, extern_func_name, _semantic):
+
+def _resolve_alias_indices(func, llvm, handles, output_indices, extern_func_name, _semantic: TLESemantic | None):
     if output_indices is None:
         return _semantic.builder.compute_alias_operand_indices(llvm, handles, extern_func_name)
     return output_indices
@@ -60,7 +67,7 @@ def _normalize_hint(hint):
     return str(hint) if hint else ""
 
 
-def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic, _generator):
+def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic: TLESemantic | None, _generator):
     mark_kernel_init_hook = getattr(func, "mark_kernel_init_hook", None)
     if mark_kernel_init_hook is not None:
         mark_kernel_init_hook(_semantic, _generator)
@@ -83,12 +90,12 @@ def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic, _generat
 
 
 @builtin
-def call(func, args, output_indices=None, hint="", _semantic=None, _generator=None):
+def call(func, args, output_indices=None, hint="", _semantic: TLESemantic | None = None, _generator=None):
     return _tle_raw_call(func, args, output_indices=output_indices, hint=hint, smem=False, _semantic=_semantic,
                          _generator=_generator)
 
 
 @builtin
-def call_smem(func, args, output_indices=None, hint="", _semantic=None, _generator=None):
+def call_smem(func, args, output_indices=None, hint="", _semantic: TLESemantic | None = None, _generator=None):
     return _tle_raw_call(func, args, output_indices=output_indices, hint=hint, smem=True, _semantic=_semantic,
                          _generator=_generator)
