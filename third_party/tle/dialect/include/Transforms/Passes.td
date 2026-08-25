@@ -294,6 +294,30 @@ def TritonTleScheduleTmaStoreSync
                            "mlir::triton::tle::TleDialect"];
 }
 
+def TritonTleCoalesceBarrierInitialization
+    : Pass<"triton-tle-coalesce-barrier-initialization", "mlir::ModuleOp"> {
+  let summary = "coalesce static barrier initialization across CTA workers";
+
+  let description = [{
+    This post-allocation pass replaces a sufficiently large set of top-level
+    ``ttng.init_barrier`` operations with one ``tle.init_barrier_group``. The
+    grouped op records compiler-assigned shared-memory offsets and lets the
+    target lowering initialize independent barriers in parallel across the
+    default worker threads. Small kernels retain the native scalar lowering.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+
+  let options = [
+    Option<"minBarrierCount", "min-barrier-count",
+           "int32_t", /*default*/"128",
+           "minimum number of static barriers required for grouping">
+  ];
+}
+
 def TritonTleLowerPipeToNvws
     : Pass<"triton-tle-lower-pipe-to-nvws", "mlir::ModuleOp"> {
   let summary = "lower CTA SMEM TLE pipe operations to NVWS token operations";
@@ -310,6 +334,25 @@ def TritonTleLowerPipeToNvws
                            "mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
                            "mlir::triton::nvws::NVWSDialect"];
+}
+
+def TritonTleRestorePipeFunctionCalls
+    : Pass<"triton-tle-restore-pipe-function-calls", "mlir::ModuleOp"> {
+  let summary = "restore noinline pipe helper calls after NVWS state materialization";
+
+  let description = [{
+    Pipe analysis temporarily inlines private helpers so each pipe lifecycle
+    operation can be associated with its concrete NVWS control state. After
+    NVWS token lowering has materialized barriers and task metadata, this pass
+    outlines the marked call scopes again. Repeated calls to one specialized
+    helper share one private function and pass the concrete control state as
+    ordinary TTGIR operands.
+  }];
+
+  let dependentDialects = ["mlir::triton::tle::TleDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"];
 }
 
 def TritonTleLowerTaskGrid

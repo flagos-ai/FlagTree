@@ -95,9 +95,9 @@ llvm.func @generate_switch_loop() attributes {allocation.offset = 32 : i32} {
   // CHECK-NEXT: llvm.cond_br [[IS_DEFAULT]], [[BODY:\^.*]], [[SWITCH_LOOP:\^.*]]
 
   // CHECK: [[SWITCH_LOOP]]:
+  // CHECK-NEXT: [[REL_WID:%.*]] = llvm.sub [[WARP_ID]], [[C4]]
   // CHECK-NEXT: "llvm.nvvm.barrier.cta.sync.all"([[C1]])
   // CHECK-NEXT: [[SMEM_BASE:%.*]] = llvm.getelementptr [[SMEM_ADDR]][32] : (!llvm.ptr<3>) -> !llvm.ptr<3>, i8
-  // CHECK-NEXT: [[REL_WID:%.*]] = llvm.sub [[WARP_ID]], [[C4]]
 
   // CHECK-NEXT: [[STATE_PTR:%.*]] = llvm.getelementptr [[SMEM_BASE]][[[REL_WID]]]
   // CHECK-NEXT: [[STATE:%.*]] = llvm.load [[STATE_PTR]]
@@ -710,6 +710,7 @@ llvm.func @dynamic_register_reallocation() attributes {allocation.offset = 0 : i
 
   // CHECK: [[SWITCH_LOOP]]:
   // CHECK-NEXT: nvvm.setmaxregister decrease 24
+  // CHECK-NEXT: llvm.inline_asm
   // CHECK-NEXT: "llvm.nvvm.barrier.cta.sync.all"([[C1]])
   // CHECK: llvm.switch
   // CHECK-NEXT: 0: [[PARTITION0:\^.*]],
@@ -784,6 +785,7 @@ llvm.func @dynamic_register_reallocation_overalloc() attributes {allocation.offs
 
   // CHECK: [[SWITCH_LOOP]]:
   // CHECK-NEXT: nvvm.setmaxregister decrease 80
+  // CHECK-NEXT: llvm.inline_asm
   // CHECK-NEXT: "llvm.nvvm.barrier.cta.sync.all"([[C1]])
   // CHECK: llvm.switch
   // CHECK-NEXT: 0: [[PARTITION0:\^.*]],
@@ -837,6 +839,70 @@ llvm.func @dynamic_register_reallocation_overalloc() attributes {allocation.offs
   }
   partition2() num_warps(4) {
     "partition2"() : () -> ()
+    ttg.warp_return
+  } : () -> ()
+  llvm.return
+}
+
+}
+
+// -----
+
+module attributes {ttg.maxnreg = 80 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.total-num-warps" = 8 : i32} {
+
+llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+// CHECK-LABEL: @static_one_shot
+// CHECK-NOT: llvm.switch
+// CHECK: nvvm.setmaxregister decrease 24
+// The default and worker paths rendezvous from separate CFG blocks so
+// default-prelude SSA values continue to dominate the consumer region. The
+// explicit capture requires a second rendezvous before shared-memory reuse.
+// CHECK-COUNT-3: llvm.call_intrinsic "llvm.nvvm.barrier.cta.sync.all"
+// CHECK: nvvm.setmaxregister increase 136
+// CHECK: "consumer"
+// CHECK: llvm.call_intrinsic "llvm.nvvm.barrier.cta.sync.all"
+// CHECK: "producer"
+// CHECK-NOT: llvm.switch
+llvm.func @static_one_shot() attributes {allocation.offset = 0 : i32} {
+  %capture = "make_capture"() : () -> i32
+  ttg.warp_specialize(%capture) attributes {allocation.offset = 0 : i32, warpGroupStartIds = array<i32: 4>, actualRegisters = array<i32: 136, 24>, ttg.warp_specialize.static_roles}
+  default {
+    "consumer"() : () -> ()
+    ttg.warp_yield
+  }
+  partition0(%arg0: i32) num_warps(4) {
+    "producer"(%arg0) : (i32) -> ()
+    ttg.warp_return
+  } : (i32) -> ()
+  llvm.return
+}
+
+}
+
+// -----
+
+module attributes {ttg.maxnreg = 80 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.total-num-warps" = 8 : i32} {
+
+llvm.mlir.global external @global_smem() {addr_space = 3 : i32, alignment = 16 : i64} : !llvm.array<0 x i8>
+
+// CHECK-LABEL: @static_one_shot_no_capture
+// CHECK-NOT: llvm.switch
+// CHECK: nvvm.setmaxregister decrease 24
+// CHECK-COUNT-2: llvm.call_intrinsic "llvm.nvvm.barrier.cta.sync.all"
+// CHECK: nvvm.setmaxregister increase 136
+// CHECK: "consumer"
+// CHECK: "producer"
+// CHECK-NOT: llvm.call_intrinsic "llvm.nvvm.barrier.cta.sync.all"
+// CHECK-NOT: llvm.switch
+llvm.func @static_one_shot_no_capture() attributes {allocation.offset = 0 : i32} {
+  ttg.warp_specialize() attributes {allocation.offset = 0 : i32, warpGroupStartIds = array<i32: 4>, actualRegisters = array<i32: 136, 24>, ttg.warp_specialize.static_roles}
+  default {
+    "consumer"() : () -> ()
+    ttg.warp_yield
+  }
+  partition0() num_warps(4) {
+    "producer"() : () -> ()
     ttg.warp_return
   } : () -> ()
   llvm.return

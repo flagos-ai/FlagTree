@@ -1215,4 +1215,24 @@ unsigned WarpSpecializeOp::getTotalPartitionWarps() {
   return std::accumulate(numWarps.begin(), numWarps.end(), 0);
 }
 
+bool isStaticOneShotWarpSpecialize(WarpSpecializeOp op) {
+  auto function = op->getParentOfType<FunctionOpInterface>();
+  if (!function || op->getParentOp() != function.getOperation())
+    return false;
+
+  Region *body = op->getParentRegion();
+  if (!body || !body->hasOneBlock() || op->getBlock() != &body->front())
+    return false;
+
+  unsigned numWarpSpecializeOps = 0;
+  function.walk([&](WarpSpecializeOp) { ++numWarpSpecializeOps; });
+  if (numWarpSpecializeOps != 1 || op.getNumResults() != 0 ||
+      !op.getWarpGroupStartIds())
+    return false;
+
+  Operation *next = op->getNextNode();
+  return next && next->hasTrait<OpTrait::ReturnLike>() &&
+         next->getNumOperands() == 0 && next->getNextNode() == nullptr;
+}
+
 } // namespace mlir::triton::gpu

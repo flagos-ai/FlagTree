@@ -94,7 +94,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
   // CHECK-LABEL: llvm.func @participant_release_after_local_read_skips_cta_barrier
   // CHECK-NOT: nvvm.barrier0
-  // CHECK: "mbarrier.arrive.shared::cta.b64 _, [$1];", "b,r"
+  // CHECK: "@$0 mbarrier.arrive.shared::cta.b64 _, [$1];", "b,r"
   // CHECK: llvm.return
   tt.func @participant_release_after_local_read_skips_cta_barrier(%barrier: !ttg.memdesc<1xi64, #barrier_shared, #smem, mutable>) {
     %c0 = arith.constant 0 : i32

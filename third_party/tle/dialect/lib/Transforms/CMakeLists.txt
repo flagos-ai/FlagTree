@@ -14,6 +14,7 @@ add_triton_library(TritonTLETransforms
   TleLowerExclusiveCumsum.cpp
   TleLowerAsyncLoad.cpp
   TleLowerPipeToNvws.cpp
+  TleRestorePipeFunctionCalls.cpp
   TleLowerTaskGrid.cpp
   TleVerifyTaskGraph.cpp
   TleAnalyzeTaskGraph.cpp
@@ -24,6 +25,7 @@ add_triton_library(TritonTLETransforms
   TleLowerInsertTile.cpp
   TleLowerTmaCopy.cpp
   TleScheduleTmaStoreSync.cpp
+  TleCoalesceBarrierInitialization.cpp
   ConvertArgToMemDesc.cpp
   RemoveRedundantCopy.cpp
   DSLRegionInline.cpp

@@ -355,6 +355,7 @@ class CUDABackend(BaseBackend):
             passes.common.add_canonicalizer(pm)
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
             tle.passes.add_lower_pipe_to_nvws(pm)
+            tle.passes.add_restore_pipe_function_calls(pm)
             nvidia.passes.hopper.add_hopper_warpspec(pm, opt.num_stages, dump_enabled)
             tle.passes.add_downgrade_invalid_async_copy(pm)
             passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
@@ -367,6 +368,7 @@ class CUDABackend(BaseBackend):
             passes.common.add_canonicalizer(pm)
             passes.ttir.add_triton_licm(pm)
             tle.passes.add_lower_pipe_to_nvws(pm)
+            tle.passes.add_restore_pipe_function_calls(pm)
             nvidia.passes.hopper.add_hopper_warpspec(pm, opt.num_stages, dump_enabled)
             passes.ttgpuir.add_optimize_accumulator_init(pm)
             passes.ttgpuir.add_hoist_tmem_alloc(pm, False)
@@ -451,6 +453,7 @@ class CUDABackend(BaseBackend):
         passes.convert.add_scf_to_cf(pm)
         passes.gluon.add_inliner(pm)
         nvidia.passes.ttgpuir.add_allocate_shared_memory_nv(pm, capability, ptx_version)
+        tle.passes.add_coalesce_barrier_initialization(pm)
         nvidia.passes.ttnvgpuir.add_allocate_tensor_memory(pm)
         nvidia.passes.ttnvgpuir.add_check_matmul_two_cta(pm)
         if knobs.compilation.instrumentation_mode == "consan":

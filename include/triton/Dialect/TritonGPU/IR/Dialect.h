@@ -50,6 +50,8 @@ constexpr static char kPartitionAttrName[] = "ttg.partition";
 constexpr static char kPartitionOutputsAttrName[] = "ttg.partition.outputs";
 constexpr static char kPartitionStagesAttrName[] = "ttg.partition.stages";
 constexpr static char kWarpSpecializeTagAttrName[] = "ttg.warp_specialize.tag";
+constexpr static char kStaticWarpRolesAttrName[] =
+    "ttg.warp_specialize.static_roles";
 
 // Find the contextual number of warps on which this operation is executed.
 int lookupNumWarps(Operation *op);
@@ -306,6 +308,11 @@ SetVector<int> getPartitionIds(OpOperand *use);
 bool hasPartition(Operation *op);
 bool hasWarpSpecializeTag(Operation *op);
 std::optional<int> getWarpSpecializeTag(Operation *op);
+
+// Returns true when the enclosing function has one top-level, terminal,
+// result-free warp-specialize region. Such a function can assign warp roles
+// once at entry instead of using the reusable worker-dispatch state machine.
+bool isStaticOneShotWarpSpecialize(WarpSpecializeOp op);
 
 } // namespace mlir::triton::gpu
 

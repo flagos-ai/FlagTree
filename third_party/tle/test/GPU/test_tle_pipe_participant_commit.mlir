@@ -27,15 +27,15 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %row1 = arith.constant dense<1> : tensor<64xi32, #blocked1>
     %offs = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #blocked1>
 
-    tle.pipe.create %a {capacity = 2 : i32, pipe_name = "participant", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
-    tle.pipe.writer_acquire %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "participant", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
+    %pipe_identity_44 = tle.pipe.create %a {capacity = 2 : i32, pipe_name = "participant", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_44, %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "participant", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
     %slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable> -> !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
     %ptr0 = "tle.local_pointers"(%slot, %row0, %offs) : (!ttg.memdesc<2x64xi8, #shared2, #smem, mutable>, tensor<64xi32, #blocked1>, tensor<64xi32, #blocked1>) -> tensor<64x!tt.ptr<i8, 3>, #blocked1>
     %ptr1 = "tle.local_pointers"(%slot, %row1, %offs) : (!ttg.memdesc<2x64xi8, #shared2, #smem, mutable>, tensor<64xi32, #blocked1>, tensor<64xi32, #blocked1>) -> tensor<64x!tt.ptr<i8, 3>, #blocked1>
     tt.store %ptr0, %v0 : tensor<64x!tt.ptr<i8, 3>, #blocked1>
     tt.store %ptr1, %v1 : tensor<64x!tt.ptr<i8, 3>, #blocked1>
     %clock = tt.elementwise_inline_asm "mov.u64 $0, %clock64;" {constraints = "=l", packed_element = 1 : i32, pure = false} -> i64
-    tle.pipe.writer_commit %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "participant", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_44, %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "participant", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
     tt.return
   }
 
@@ -54,11 +54,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %row0 = arith.constant dense<0> : tensor<64xi32, #blocked1>
     %offs = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #blocked1>
 
-    tle.pipe.create %a {capacity = 2 : i32, pipe_name = "no_slot", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
-    tle.pipe.writer_acquire %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "no_slot", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    %pipe_identity_43 = tle.pipe.create %a {capacity = 2 : i32, pipe_name = "no_slot", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_43, %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "no_slot", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
     %ptr0 = "tle.local_pointers"(%a, %row0, %offs) : (!ttg.memdesc<2x64xi8, #shared2, #smem, mutable>, tensor<64xi32, #blocked1>, tensor<64xi32, #blocked1>) -> tensor<64x!tt.ptr<i8, 3>, #blocked1>
     tt.store %ptr0, %v0 : tensor<64x!tt.ptr<i8, 3>, #blocked1>
-    tle.pipe.writer_commit %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "no_slot", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_43, %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "no_slot", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
     tt.return
   }
 
@@ -84,14 +84,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %row0 = arith.constant dense<0> : tensor<64xi32, #blocked1>
     %offs = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #blocked1>
 
-    tle.pipe.create %q, %g {capacity = 2 : i32, pipe_name = "mixed", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
-    tle.pipe.writer_acquire %q, %g[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
+    %pipe_identity_42 = tle.pipe.create %q, %g {capacity = 2 : i32, pipe_name = "mixed", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_42, %q, %g[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
     %g_slot = ttg.memdesc_index %g[%c0] : !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable> -> !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
     %g_ptr = "tle.local_pointers"(%g_slot, %row0, %offs) : (!ttg.memdesc<2x64xi8, #shared2, #smem, mutable>, tensor<64xi32, #blocked1>, tensor<64xi32, #blocked1>) -> tensor<64x!tt.ptr<i8, 3>, #blocked1>
     tt.store %g_ptr, %v0 : tensor<64x!tt.ptr<i8, 3>, #blocked1>
     %q_slot = ttg.memdesc_index %q[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %q_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_commit %q, %g[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_42, %q, %g[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x2x64xi8, #shared3, #smem, mutable>
     tt.return
   }
 
@@ -116,8 +116,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
 
-    tle.pipe.create %q, %g {capacity = 2 : i32, pipe_name = "mixed_async", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
-    tle.pipe.writer_acquire %q, %g[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_async", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    %pipe_identity_41 = tle.pipe.create %q, %g {capacity = 2 : i32, pipe_name = "mixed_async", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_41, %q, %g[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_async", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
     %g_slot = ttg.memdesc_index %g[%c0] : !ttg.memdesc<2x64xi8, #shared2, #smem, mutable> -> !ttg.memdesc<64xi8, #shared1, #smem, mutable>
     %copy = ttg.async_copy_global_to_local %gptr, %g_slot : tensor<64x!tt.ptr<i8>, #blocked1> -> <64xi8, #shared1, #smem, mutable>
     %copy_group = ttg.async_commit_group tokens %copy
@@ -125,7 +125,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %clock = tt.elementwise_inline_asm "mov.u64 $0, %clock64;" {constraints = "=l", packed_element = 1 : i32, pure = false} -> i64
     %q_slot = ttg.memdesc_index %q[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %q_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_commit %q, %g[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_async", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_41, %q, %g[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_async", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
     tt.return
   }
 
@@ -152,15 +152,15 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
 
-    tle.pipe.create %q, %g {capacity = 2 : i32, pipe_name = "mixed_async_after_tma", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
-    tle.pipe.writer_acquire %q, %g[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_async_after_tma", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    %pipe_identity_40 = tle.pipe.create %q, %g {capacity = 2 : i32, pipe_name = "mixed_async_after_tma", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_40, %q, %g[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_async_after_tma", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
     %q_slot = ttg.memdesc_index %q[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %q_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     %g_slot = ttg.memdesc_index %g[%c0] : !ttg.memdesc<2x64xi8, #shared2, #smem, mutable> -> !ttg.memdesc<64xi8, #shared1, #smem, mutable>
     %copy = ttg.async_copy_global_to_local %gptr, %g_slot : tensor<64x!tt.ptr<i8>, #blocked1> -> <64xi8, #shared1, #smem, mutable>
     %copy_group = ttg.async_commit_group tokens %copy
     ttg.async_wait %copy_group {num = 0 : i32}
-    tle.pipe.writer_commit %q, %g[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_async_after_tma", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_40, %q, %g[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_async_after_tma", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
     tt.return
   }
 
@@ -184,13 +184,13 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
 
-    tle.pipe.create %q, %g {capacity = 2 : i32, pipe_name = "mixed_cp_async", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
-    tle.pipe.writer_acquire %q, %g[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_cp_async", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    %pipe_identity_39 = tle.pipe.create %q, %g {capacity = 2 : i32, pipe_name = "mixed_cp_async", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_39, %q, %g[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_cp_async", field_names = ["q", "g"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
     %q_slot = ttg.memdesc_index %q[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %q_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     %g_slot = ttg.memdesc_index %g[%c0] : !ttg.memdesc<2x64xi8, #shared2, #smem, mutable> -> !ttg.memdesc<64xi8, #shared1, #smem, mutable>
     %copy = ttg.async_copy_global_to_local %gptr, %g_slot : tensor<64x!tt.ptr<i8>, #blocked1> -> <64xi8, #shared1, #smem, mutable>
-    tle.pipe.writer_commit %q, %g[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_cp_async", field_names = ["q", "g"], scope = "cta", tle.pipe_commit_cp_async} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_39, %q, %g[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "mixed_cp_async", field_names = ["q", "g"], scope = "cta", tle.pipe_commit_cp_async} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<2x64xi8, #shared2, #smem, mutable>
     tt.return
   }
 }

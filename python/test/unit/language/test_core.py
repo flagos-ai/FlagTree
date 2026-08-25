@@ -1266,6 +1266,21 @@ def noinline_call_multi_values_fn(x, y):
     return x + 1, y + 2
 
 
+@triton.jit(noinline=True, allow_tensor_args=True)
+def noinline_tensor_arg_fn(x):
+    return x + 1
+
+
+@triton.jit(noinline=True)
+def noinline_tensor_arg_rejected_fn(x):
+    return x + 1
+
+
+@triton.jit(noinline=True, do_not_specialize=("offset", ))
+def noinline_runtime_literal_fn(x, offset):
+    return tl.load(x + offset)
+
+
 @triton.jit(noinline=True)
 def noinline_multi_values_fn(x, y, Z):
     x, y = noinline_call_multi_values_fn(x, y)
@@ -1299,6 +1314,61 @@ def test_noinline(mode, device):
     elif mode == "shared":
         ref = torch.full((16, 16), 16, device=device, dtype=torch.float32)
         assert torch.equal(z, ref + x + y)
+
+
+@pytest.mark.interpreter
+def test_noinline_tensor_arg(device):
+
+    @triton.jit
+    def kernel(X, Z, BLOCK: tl.constexpr):
+        offsets = tl.arange(0, BLOCK)
+        values = tl.load(X + offsets)
+        values = noinline_tensor_arg_fn(values)
+        tl.store(Z + offsets, values)
+
+    x = torch.arange(32, device=device, dtype=torch.float32)
+    z = torch.empty_like(x)
+    kernel[(1, )](x, z, BLOCK=32, num_warps=1)
+    assert torch.equal(z, x + 1)
+
+
+def test_noinline_tensor_arg_requires_opt_in(device):
+    if is_interpreter():
+        pytest.skip("the interpreter does not enforce compiled tensor ABIs")
+
+    @triton.jit
+    def kernel(X, Z, BLOCK: tl.constexpr):
+        offsets = tl.arange(0, BLOCK)
+        values = tl.load(X + offsets)
+        values = noinline_tensor_arg_rejected_fn(values)
+        tl.store(Z + offsets, values)
+
+    x = torch.arange(32, device=device, dtype=torch.float32)
+    z = torch.empty_like(x)
+    with pytest.raises(triton.CompilationError) as error:
+        kernel[(1, )](x, z, BLOCK=32, num_warps=1)
+    assert "called with non-scalar argument" in str(error.value)
+
+
+def test_noinline_do_not_specialize_python_literals(device):
+
+    @triton.jit
+    def kernel(x, out):
+        first = noinline_runtime_literal_fn(x, 1)
+        second = noinline_runtime_literal_fn(x, 2)
+        tl.store(out, first + second)
+
+    x = torch.arange(4, device=device, dtype=torch.float32)
+    out = torch.empty(1, device=device, dtype=torch.float32)
+    compiled = kernel.warmup(x, out, grid=(1, ), num_warps=1)
+    kernel[(1, )](x, out, num_warps=1)
+
+    assert out.item() == 3.0
+    ttir = compiled.asm["ttir"]
+    definitions = re.findall(r"tt.func private @[^\s(]*noinline_runtime_literal_fn", ttir)
+    calls = re.findall(r"tt.call @[^\s(]*noinline_runtime_literal_fn", ttir)
+    assert len(definitions) == 1
+    assert len(calls) == 2
 
 
 # ---------------

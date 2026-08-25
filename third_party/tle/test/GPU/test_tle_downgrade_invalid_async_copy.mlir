@@ -73,18 +73,18 @@ tt.func @drop_loop_free_partition_eviction_policy(%ptrs: tensor<64x128x!tt.ptr<f
 
 // -----
 
-// CHECK-LABEL: tt.func @preserve_loop_partition_eviction_policy
+// CHECK-LABEL: tt.func @drop_loop_partition_eviction_policy
 // CHECK: partition0
 // CHECK: scf.for
 // CHECK: ttg.async_copy_global_to_local
-// CHECK-SAME: evictionPolicy = evict_last
 // CHECK-SAME: {tle.local_ptr_async_store}
+// CHECK-NOT: evictionPolicy = evict_last
 #blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>
 #shared = #ttg.swizzled_shared<{vec = 4, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
-tt.func @preserve_loop_partition_eviction_policy(%ptrs: tensor<64x128x!tt.ptr<f32>, #blocked>, %view: !ttg.memdesc<64x128xf32, #shared, #smem, mutable>) {
+tt.func @drop_loop_partition_eviction_policy(%ptrs: tensor<64x128x!tt.ptr<f32>, #blocked>, %view: !ttg.memdesc<64x128xf32, #shared, #smem, mutable>) {
   ttg.warp_specialize(%view, %ptrs) attributes {requestedRegisters = array<i32: 72>}
   default {
     ttg.warp_yield
@@ -98,6 +98,33 @@ tt.func @preserve_loop_partition_eviction_policy(%ptrs: tensor<64x128x!tt.ptr<f3
     }
     ttg.warp_return
   } : (!ttg.memdesc<64x128xf32, #shared, #smem, mutable>, tensor<64x128x!tt.ptr<f32>, #blocked>) -> ()
+  tt.return
+}
+}
+
+// -----
+
+// CHECK-LABEL: tt.func @drop_default_region_eviction_policy
+// CHECK: ttg.warp_specialize
+// CHECK: default
+// CHECK: ttg.async_copy_global_to_local
+// CHECK-SAME: {tle.required_async_copy}
+// CHECK-NOT: evictionPolicy = evict_last
+// CHECK: ttg.warp_yield
+#blocked = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 4, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
+tt.func @drop_default_region_eviction_policy(%ptrs: tensor<64x128x!tt.ptr<f32>, #blocked>, %view: !ttg.memdesc<64x128xf32, #shared, #smem, mutable>) {
+  ttg.warp_specialize() attributes {requestedRegisters = array<i32: 72>}
+  default {
+    %token = ttg.async_copy_global_to_local %ptrs, %view evictionPolicy = evict_last {tle.required_async_copy} : tensor<64x128x!tt.ptr<f32>, #blocked> -> <64x128xf32, #shared, #smem, mutable>
+    ttg.warp_yield
+  }
+  partition0() num_warps(4) {
+    ttg.warp_return
+  } : () -> ()
   tt.return
 }
 }

@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 import numpy as np
@@ -540,6 +542,13 @@ def tensor_descriptor_arg_helper(in_desc, out_desc, M_BLOCK: tl.constexpr, N_BLO
     out_desc.store([moffset, noffset], value.abs())
 
 
+@triton.jit(noinline=True)
+def rank5_tensor_descriptor_arg_helper(in_desc, out_ptr):
+    value = in_desc.load([0, 0, 0, 0, 0])
+    offsets = tl.arange(0, 64)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out_ptr + offsets, value.reshape((64, 128)))
+
+
 @pytest.mark.interpreter
 @pytest.mark.skipif(is_hip(), reason="HIP devices don't correctly handle function calls with pointer arguments")
 def test_tensor_descriptor_argument(device):
@@ -565,6 +574,26 @@ def test_tensor_descriptor_argument(device):
     expect = inp.abs()
     kernel[(M // M_BLOCK, N // N_BLOCK)](out, inp, M, N, M_BLOCK, N_BLOCK)
     torch.testing.assert_close(expect, out)
+
+
+@pytest.mark.skipif(is_hip(), reason="HIP devices don't support TMA tensor descriptors")
+def test_rank5_host_tensor_descriptor_argument(device):
+
+    @triton.jit
+    def kernel(in_desc, out_ptr):
+        rank5_tensor_descriptor_arg_helper(in_desc, out_ptr)
+
+    shape = (1, 1, 64, 1, 128)
+    inp = torch.arange(
+        math.prod(shape), device=device, dtype=torch.float32
+    ).to(torch.bfloat16).reshape(shape)
+    out = torch.empty((64, 128), device=device, dtype=torch.bfloat16)
+    in_desc = TensorDescriptor.from_tensor(inp, block_shape=list(shape))
+
+    compiled = kernel[(1, )](in_desc, out, num_warps=1)
+
+    torch.testing.assert_close(out, inp.reshape(64, 128), atol=0, rtol=0)
+    assert "cp.async.bulk.tensor.5d" in compiled.asm["ptx"]
 
 
 @triton.jit

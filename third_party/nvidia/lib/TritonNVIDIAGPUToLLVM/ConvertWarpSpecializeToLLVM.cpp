@@ -703,6 +703,216 @@ static void rewritePartitionRegions(WarpSpecializeOp ws, Block *switchLoop,
   }
 }
 
+static bool isTrivialStaticPartition(Region *partition) {
+  if (!partition->hasOneBlock())
+    return false;
+  return llvm::all_of(partition->front(),
+                      [](Operation &op) { return isa<WarpReturnOp>(op); });
+}
+
+static void rewriteStaticPartitionRegions(
+    WarpSpecializeOp ws, Block *after,
+    const NVIDIA::TargetInfo &targetInfo, int lowRegs) {
+  TritonLLVMIRRewriter b(ws.getLoc(), ws.getContext());
+
+  for (Region *partition : ws.getPartitionRegions()) {
+    b.setInsertionPointToStart(&partition->front());
+
+    if (auto actRegs = ws.getActualRegisters()) {
+      int partitionRegs =
+          (*actRegs)[partition->getRegionNumber() + 1];
+      if (partitionRegs != lowRegs)
+        createRegRealloc(b, lowRegs, partitionRegs);
+    }
+
+    if (partition->getNumArguments()) {
+      auto captureType = LLVM::LLVMStructType::getLiteral(
+          b.getContext(), llvm::to_vector(partition->getArgumentTypes()),
+          /*isPacked=*/true);
+      Value capturePtr =
+          LLVM::getSharedMemoryBase(b.getLoc(), b, targetInfo, ws);
+      LLVM::LLVMPointerType ptrTy = ptr_ty(b.getContext(), 3);
+      for (auto [i, arg] :
+           llvm::zip(llvm::seq<int32_t>(partition->getNumArguments()),
+                     partition->getArguments())) {
+        Value ptr =
+            b.gep(ptrTy, captureType, capturePtr, ArrayRef<LLVM::GEPArg>{0, i});
+        Value value = b.load(arg.getType(), ptr, /*align=*/1);
+        arg.replaceAllUsesWith(value);
+      }
+      partition->front().eraseArguments([](auto) { return true; });
+    }
+
+    // The default region may reuse the capture allocation as soon as it
+    // starts. Ensure every worker has loaded its copy first. Capture-free
+    // one-shot regions do not need this second rendezvous.
+    if (ws.getNumOperands())
+      createAllBarrier(b, kSwitchLoopBarrierIdx);
+
+    partition->walk([&](WarpReturnOp op) {
+      TritonLLVMIRRewriter b(op.getLoc(), op);
+      b.replaceOpWithNewOp<LLVM::BrOp>(op, after);
+    });
+  }
+}
+
+static LogicalResult lowerStaticOneShotWarpSpecialize(
+    LLVM::LLVMFuncOp func, WarpSpecializeOp ws,
+    const NVIDIA::TargetInfo &targetInfo, unsigned threadsPerWarp,
+    unsigned defaultNumWarps, IntegerAttr maxnreg,
+    bool usesDynamicRegisterReallocation, int lowRegs, int defRegs) {
+  MLIRContext *ctx = func.getContext();
+  TritonLLVMIRRewriter b(func.getLoc(), ctx);
+  Builder rewriter(ctx);
+
+  SmallVector<Region *> partitions =
+      llvm::to_vector(ws.getPartitionRegions());
+  SmallVector<Block *> partitionEntries;
+  SmallVector<bool> trivialPartitions;
+  for (Region *partition : partitions) {
+    partitionEntries.push_back(&partition->front());
+    trivialPartitions.push_back(isTrivialStaticPartition(partition));
+  }
+
+  Block *entry = &func.getBody().front();
+  SmallVector<Location> argLocs = llvm::to_vector(llvm::map_range(
+      func.getArguments(), [](BlockArgument arg) { return arg.getLoc(); }));
+  Block *header = b.createBlock(entry, func.getArgumentTypes(), argLocs);
+  Block *roleDispatch = b.createBlock(entry);
+  Block *workerPrelude = b.createBlock(entry);
+  Block *defaultRendezvous = b.createBlock(entry);
+  Block *workerRendezvous = b.createBlock(entry);
+#ifdef __TLE__
+  Block *kernelArgumentInit = nullptr;
+  auto kernelArgumentTableOffsets = func->getAttrOfType<DenseI32ArrayAttr>(
+      tle::kTleWarpSpecializeKernelArgumentTableOffsetsAttr);
+  if (kernelArgumentTableOffsets)
+    kernelArgumentInit = b.createBlock(roleDispatch);
+#endif
+
+  b.setInsertionPointToStart(header);
+  Value tid = NVVM::ThreadIdXOp::create(b, b.getLoc(), i32_ty);
+  Value wid = b.udiv(tid, b.i32_val(threadsPerWarp));
+  wid = targetInfo.shuffleIdx(b, b.getLoc(), wid, 0);
+  Value isDefault = b.icmp_ult(wid, b.i32_val(defaultNumWarps));
+#ifdef __TLE__
+  if (kernelArgumentInit) {
+    Value isThreadZero = b.icmp_eq(tid, b.i32_val(0));
+    LLVM::CondBrOp::create(b, b.getLoc(), isThreadZero, kernelArgumentInit,
+                           roleDispatch);
+
+    b.setInsertionPointToStart(kernelArgumentInit);
+    Value tableBase =
+        LLVM::getSharedMemoryBase(b.getLoc(), b, targetInfo, func);
+    LLVM::LLVMPointerType ptrTy = ptr_ty(ctx, 3);
+    for (auto [i, byteOffset] :
+         llvm::enumerate(kernelArgumentTableOffsets.asArrayRef())) {
+      if (byteOffset < 0)
+        continue;
+      Value ptr =
+          b.gep(ptrTy, i8_ty, tableBase, LLVM::GEPArg(byteOffset));
+      b.store(header->getArgument(i), ptr, /*align=*/8);
+    }
+    LLVM::BrOp::create(b, b.getLoc(), roleDispatch);
+  } else {
+#endif
+    LLVM::BrOp::create(b, b.getLoc(), roleDispatch);
+#ifdef __TLE__
+  }
+#endif
+
+  b.setInsertionPointToStart(roleDispatch);
+  LLVM::CondBrOp::create(b, b.getLoc(), isDefault, entry, workerPrelude);
+
+  for (auto [arg, oldArg] :
+       llvm::zip(header->getArguments(), entry->getArguments()))
+    oldArg.replaceAllUsesWith(arg);
+  entry->eraseArguments([](auto) { return true; });
+#ifdef __TLE__
+  hoistCtaUniformCapturesToHeader(func, {ws}, header);
+#endif
+
+  Operation *precedingBarrier = ws->getPrevNode();
+  if (isa_and_nonnull<NVVM::BarrierOp, NVVM::Barrier0Op>(precedingBarrier))
+    precedingBarrier->erase();
+
+  Block *before = ws->getBlock();
+  Block *after = b.splitBlock(before, ws->getIterator());
+
+  b.setInsertionPointToEnd(before);
+  if (ws.getNumOperands()) {
+    auto captureType = LLVM::LLVMStructType::getLiteral(
+        b.getContext(), llvm::to_vector(ws.getOperandTypes()),
+        /*isPacked=*/true);
+    Value capturePtr =
+        LLVM::getSharedMemoryBase(b.getLoc(), b, targetInfo, ws);
+    LLVM::LLVMPointerType ptrTy = ptr_ty(ctx, 3);
+    for (auto [i, capture] : llvm::enumerate(ws.getExplicitCaptures())) {
+      Value ptr =
+          b.gep(ptrTy, captureType, capturePtr,
+                ArrayRef<LLVM::GEPArg>{0, static_cast<int32_t>(i)});
+      b.store(capture, ptr, /*align=*/1);
+    }
+  }
+  LLVM::BrOp::create(b, b.getLoc(), defaultRendezvous);
+
+  b.setInsertionPointToStart(workerPrelude);
+  if (usesDynamicRegisterReallocation && lowRegs != maxnreg.getInt())
+    createRegRealloc(b, maxnreg.getInt(), lowRegs);
+  LLVM::BrOp::create(b, b.getLoc(), workerRendezvous);
+
+  Block *defaultEntry = &ws.getDefaultRegion().front();
+  b.setInsertionPointToStart(defaultEntry);
+  if (usesDynamicRegisterReallocation && defRegs != maxnreg.getInt())
+    createRegRealloc(b, maxnreg.getInt(), defRegs);
+
+  ws.getDefaultRegion().walk([&](WarpYieldOp op) {
+    TritonLLVMIRRewriter b(op.getLoc(), op);
+    b.replaceOpWithNewOp<LLVM::BrOp>(op, after);
+  });
+  rewriteStaticPartitionRegions(ws, after, targetInfo, lowRegs);
+
+  Region::BlockListType &funcBlocks = func.getBody().getBlocks();
+  funcBlocks.splice(after->getIterator(), ws.getDefaultRegion().getBlocks());
+  for (Region *partition : partitions)
+    funcBlocks.splice(after->getIterator(), partition->getBlocks());
+
+  Block *workerTarget = after;
+  ArrayRef<int32_t> startIds = *ws.getWarpGroupStartIds();
+  ArrayRef<int32_t> numWarps = ws.getPartitionNumWarps();
+  for (int i = static_cast<int>(partitions.size()) - 1; i >= 0; --i) {
+    // A padding partition can be skipped only when there is no capture
+    // lifetime rendezvous for its warps to participate in.
+    if (trivialPartitions[i] && ws.getNumOperands() == 0)
+      continue;
+    Block *test = b.createBlock(after);
+    b.setInsertionPointToStart(test);
+    Value relativeWid = b.sub(wid, b.i32_val(startIds[i]));
+    Value isPartition = b.icmp_ult(relativeWid, b.i32_val(numWarps[i]));
+    LLVM::CondBrOp::create(b, b.getLoc(), isPartition, partitionEntries[i],
+                           workerTarget);
+    workerTarget = test;
+  }
+
+  // Keep the two control-flow paths separate across the rendezvous. Values
+  // computed by the default prelude are intentionally unavailable to worker
+  // warps, so merging the paths before entering the default region would
+  // break SSA dominance. Both paths still arrive at the same named CTA
+  // barrier and therefore form one hardware rendezvous.
+  b.setInsertionPointToStart(defaultRendezvous);
+  createAllBarrier(b, kSwitchLoopBarrierIdx);
+  if (ws.getNumOperands())
+    createAllBarrier(b, kSwitchLoopBarrierIdx);
+  LLVM::BrOp::create(b, b.getLoc(), defaultEntry);
+
+  b.setInsertionPointToStart(workerRendezvous);
+  createAllBarrier(b, kSwitchLoopBarrierIdx);
+  LLVM::BrOp::create(b, b.getLoc(), workerTarget);
+
+  ws.erase();
+  return success();
+}
+
 // LLVM's LICM will be tempted to hoist code out of the switch loop generated by
 // the `ttg.warp_specialize` lowering. However, neither NVPTX or `ptxas` will
 // rematerialize this code back in to the partition regions, resulting in long
@@ -727,6 +937,11 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   // Nothing to do. This kernel is not warp specialized.
   if (wsOps.empty())
     return success();
+
+  bool useStaticOneShotLowering =
+      wsOps.size() == 1 &&
+      wsOps.front()->hasAttr(kStaticWarpRolesAttrName) &&
+      isStaticOneShotWarpSpecialize(wsOps.front());
 
   // Before lowering away `ttg.warp_specialize`, lower warp group barriers.
   auto module = cast<ModuleOp>(func->getParentOp());
@@ -781,6 +996,12 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
 #ifdef __TLE__
   reloadKernelArgumentsInWarpSpecializeRegions(func, targetInfo);
 #endif
+
+  if (useStaticOneShotLowering) {
+    return lowerStaticOneShotWarpSpecialize(
+        func, wsOps.front(), targetInfo, threadsPerWarp, defaultNumWarps,
+        maxnreg, usesDynamicRegisterReallocation, lowRegs, defRegs);
+  }
 
   MLIRContext *ctx = func.getContext();
   TritonLLVMIRRewriter b(func.getLoc(), ctx);

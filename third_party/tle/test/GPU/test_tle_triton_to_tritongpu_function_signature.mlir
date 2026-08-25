@@ -63,4 +63,23 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
     %result = tt.call @explicit_result_worker() : () -> tensor<8x32xf32>
     tt.return
   }
+
+  // An entry encoding on a noinline tensor argument is the call ABI, not an
+  // internal layout conversion.
+  // CHECK-LABEL: tt.func private @explicit_argument_worker
+  // CHECK-SAME: (%arg0: tensor<8x32xf32, #[[$EXPLICIT]]>)
+  tt.func private @explicit_argument_worker(%arg0: tensor<8x32xf32>) attributes {noinline = true} {
+    %encoded = tle.encoding %arg0 {target_encoding = #explicit} : tensor<8x32xf32> -> tensor<8x32xf32>
+    // CHECK: tt.return
+    tt.return
+  }
+
+  // CHECK-LABEL: tt.func public @explicit_argument_caller
+  tt.func public @explicit_argument_caller() attributes {noinline = false} {
+    %zero = arith.constant dense<0.0> : tensor<8x32xf32>
+    %encoded = tle.encoding %zero {target_encoding = #explicit} : tensor<8x32xf32> -> tensor<8x32xf32>
+    // CHECK: tt.call @explicit_argument_worker(%{{.*}}) : (tensor<8x32xf32, #[[$EXPLICIT]]>) -> ()
+    tt.call @explicit_argument_worker(%encoded) : (tensor<8x32xf32>) -> ()
+    tt.return
+  }
 }

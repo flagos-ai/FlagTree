@@ -3,6 +3,13 @@
 #smem = #ttg.shared_memory
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: @unused_token
+  // CHECK-NOT: nvws.
+  tt.func @unused_token() {
+    %token = nvws.create_token {loadType = 3 : i32, numBuffers = 2 : i32} : tensor<2x!nvws.token>
+    tt.return
+  }
+
   // CHECK-LABEL: @local_store_token
   // CHECK-NOT: nvws.
   // CHECK-COUNT-4: ttng.init_barrier {{.*}}, 128
@@ -59,6 +66,33 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     nvws.consumer_release %token, %idx {async_task_id = array<i32: 1>, release_count = 128 : i32} : tensor<2x!nvws.token>, i32
     nvws.consumer_wait %token, %idx, %phase {async_task_id = array<i32: 2>} : tensor<2x!nvws.token>, i32, i1
     nvws.consumer_release %token, %idx {async_task_id = array<i32: 2>, release_count = 128 : i32} : tensor<2x!nvws.token>, i32
+    tt.return
+  }
+
+  // CHECK-LABEL: tt.func private @shared_token_role(
+  // CHECK-NOT: !nvws.token
+  // CHECK-SAME: !ttg.memdesc<2x1xi64
+  // CHECK-SAME: !ttg.memdesc<2x1xi64
+  // CHECK: ttng.wait_barrier
+  // CHECK: ttng.arrive_barrier
+  tt.func private @shared_token_role(
+      %token: tensor<2x!nvws.token>, %idx: i32, %phase: i1) attributes {noinline = true, "ttg.num-warps" = 4 : i32} {
+    nvws.producer_acquire %token, %idx, %phase {async_task_id = array<i32: 0>} : tensor<2x!nvws.token>, i32, i1
+    nvws.producer_commit %token, %idx {async_task_id = array<i32: 0>} : tensor<2x!nvws.token>, i32
+    nvws.consumer_wait %token, %idx, %phase {async_task_id = array<i32: 1>} : tensor<2x!nvws.token>, i32, i1
+    nvws.consumer_release %token, %idx {async_task_id = array<i32: 1>} : tensor<2x!nvws.token>, i32
+    tt.return
+  }
+
+  // CHECK-LABEL: @shared_token_calls
+  // CHECK-NOT: nvws.
+  // CHECK: tt.call @shared_token_role
+  // CHECK: tt.call @shared_token_role
+  tt.func @shared_token_calls(%idx: i32, %phase: i1) {
+    %first = nvws.create_token {loadType = 3 : i32, numBuffers = 2 : i32} : tensor<2x!nvws.token>
+    %second = nvws.create_token {loadType = 3 : i32, numBuffers = 2 : i32} : tensor<2x!nvws.token>
+    tt.call @shared_token_role(%first, %idx, %phase) : (tensor<2x!nvws.token>, i32, i1) -> ()
+    tt.call @shared_token_role(%second, %idx, %phase) : (tensor<2x!nvws.token>, i32, i1) -> ()
     tt.return
   }
 

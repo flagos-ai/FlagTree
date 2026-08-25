@@ -329,7 +329,12 @@ private:
       // Warp specialization communicates states over shared memory to each
       // warp. Add space for an i8 for each warpgroup warp.
       func.walk([&](gpu::WarpSpecializeOp op) {
-        numWarpIndices = std::max(numWarpIndices, op.getTotalPartitionWarps());
+        bool hasStaticRolePlan =
+            op->hasAttr(gpu::kStaticWarpRolesAttrName) &&
+            gpu::isStaticOneShotWarpSpecialize(op);
+        if (!hasStaticRolePlan)
+          numWarpIndices =
+              std::max(numWarpIndices, op.getTotalPartitionWarps());
       });
 #ifdef __TLE__
       if (auto tableOffsets = op->getAttrOfType<DenseI32ArrayAttr>(

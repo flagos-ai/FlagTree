@@ -154,12 +154,14 @@ def Tle_PipeCreateOp : Tle_Op<"pipe.create"> {
     OptionalAttr<ArrayAttr>:$readers,
     OptionalAttr<BoolAttr>:$one_shot
   );
-  let assemblyFormat = "$fields attr-dict `:` type($fields)";
+  let results = (outs I32:$identity);
+  let assemblyFormat = "($fields^)? attr-dict (`:` type($fields)^)?";
   let hasVerifier = 1;
 }
 
 def Tle_PipeWriterAcquireOp : Tle_Op<"pipe.writer_acquire"> {
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,
     I1:$phase,
@@ -168,12 +170,13 @@ def Tle_PipeWriterAcquireOp : Tle_Op<"pipe.writer_acquire"> {
     OptionalAttr<StrAttr>:$pipe_name,
     ArrayAttr:$field_names
   );
-  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields `[` $stage `,` $phase `]` attr-dict (`:` type($fields)^)?";
   let hasVerifier = 1;
 }
 
 def Tle_PipeWriterCommitOp : Tle_Op<"pipe.writer_commit"> {
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,
     I32Attr:$capacity,
@@ -181,12 +184,13 @@ def Tle_PipeWriterCommitOp : Tle_Op<"pipe.writer_commit"> {
     OptionalAttr<StrAttr>:$pipe_name,
     ArrayAttr:$field_names
   );
-  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields `[` $stage `]` attr-dict (`:` type($fields)^)?";
   let hasVerifier = 1;
 }
 
 def Tle_PipeWriterCloseOp : Tle_Op<"pipe.writer_close"> {
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,
     I1:$phase,
@@ -195,12 +199,13 @@ def Tle_PipeWriterCloseOp : Tle_Op<"pipe.writer_close"> {
     OptionalAttr<StrAttr>:$pipe_name,
     ArrayAttr:$field_names
   );
-  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields `[` $stage `,` $phase `]` attr-dict (`:` type($fields)^)?";
   let hasVerifier = 1;
 }
 
 def Tle_PipeReaderWaitOp : Tle_Op<"pipe.reader_wait"> {
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,
     I1:$phase,
@@ -211,7 +216,7 @@ def Tle_PipeReaderWaitOp : Tle_Op<"pipe.reader_wait"> {
     OptionalAttr<StrAttr>:$reader_name
   );
   let results = (outs I1:$is_closed);
-  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields `[` $stage `,` $phase `]` attr-dict (`:` type($fields)^)?";
   let hasVerifier = 1;
 }
 
@@ -219,6 +224,7 @@ def Tle_PipeReaderReleaseOp : Tle_Op<"pipe.reader_release", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32:$stage,
     I32Attr:$capacity,
@@ -227,7 +233,7 @@ def Tle_PipeReaderReleaseOp : Tle_Op<"pipe.reader_release", [
     ArrayAttr:$field_names,
     OptionalAttr<StrAttr>:$reader_name
   );
-  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields `[` $stage `]` attr-dict (`:` type($fields)^)?";
   let hasVerifier = 1;
 }
 
@@ -243,14 +249,33 @@ def Tle_PipeDrainOp : Tle_Op<"pipe.drain", [
     barrier before the pipe backing storage may be reused through aliases.
   }];
   let arguments = (ins
+    I32:$identity,
     Variadic<TTG_MemDescType>:$fields,
     I32Attr:$capacity,
     StrAttr:$scope,
     OptionalAttr<StrAttr>:$pipe_name,
     ArrayAttr:$field_names
   );
-  let assemblyFormat = "$fields attr-dict `:` type($fields)";
+  let assemblyFormat = "$identity `,` $fields attr-dict (`:` type($fields)^)?";
   let hasVerifier = 1;
+}
+
+def Tle_PipeCallBeginOp : Tle_Op<"pipe.call_begin"> {
+  let summary = "mark the beginning of a temporarily inlined pipe helper call";
+  let arguments = (ins
+    Variadic<AnyType>:$arguments,
+    StrAttr:$callee,
+    I64Attr:$call_id
+  );
+  let results = (outs Variadic<AnyType>:$aliases);
+  let assemblyFormat = "$arguments attr-dict `:` functional-type($arguments, $aliases)";
+  let hasVerifier = 1;
+}
+
+def Tle_PipeCallEndOp : Tle_Op<"pipe.call_end"> {
+  let summary = "mark the end of a temporarily inlined pipe helper call";
+  let arguments = (ins StrAttr:$callee, I64Attr:$call_id);
+  let assemblyFormat = "attr-dict";
 }
 
 def Tle_TaskGridCreateOp : Tle_Op<"task_grid.create"> {
@@ -349,6 +374,29 @@ def Tle_TMAStoreCommitGroupOp
   }];
 
   let assemblyFormat = "attr-dict";
+}
+
+def Tle_InitBarrierGroupOp
+    : Tle_Op<"init_barrier_group", [MemoryEffects<[MemWrite]>]> {
+  let summary = "initialize a static group of shared-memory barriers";
+
+  let description = [{
+    Initializes barriers at compiler-assigned shared-memory byte offsets. The
+    offset and participant-count arrays are parallel. Backends distribute the
+    work over the first `worker_count` physical CTA threads while keeping each
+    participant count as a target instruction immediate.
+
+    This op is created after shared-memory allocation and is intended for
+    kernels with enough independent barriers to amortize table dispatch.
+  }];
+
+  let arguments = (ins
+    DenseI32ArrayAttr:$offsets,
+    DenseI32ArrayAttr:$counts,
+    I32Attr:$worker_count
+  );
+  let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
 }
 
 def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",

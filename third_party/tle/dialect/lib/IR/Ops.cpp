@@ -375,6 +375,18 @@ LogicalResult PipeCreateOp::verify() {
   return success();
 }
 
+LogicalResult PipeCallBeginOp::verify() {
+  if (getArguments().size() != getAliases().size())
+    return emitOpError("expects one alias result for every call argument");
+  for (auto [index, argument, alias] :
+       llvm::enumerate(getArguments(), getAliases())) {
+    if (argument.getType() != alias.getType())
+      return emitOpError("expects call argument and alias result ")
+             << index << " to have the same type";
+  }
+  return success();
+}
+
 LogicalResult PipeWriterAcquireOp::verify() {
   if (failed(verifyPipeAttrs(getOperation(), getFields())))
     return failure();
@@ -967,6 +979,30 @@ LogicalResult ExclusiveCumsumOp::verify() {
     return emitOpError() << "expects total result type to match src element "
                             "type";
 
+  return success();
+}
+
+LogicalResult InitBarrierGroupOp::verify() {
+  ArrayRef<int32_t> offsets = getOffsets();
+  ArrayRef<int32_t> counts = getCounts();
+  if (offsets.empty())
+    return emitOpError() << "expects at least one barrier";
+  if (offsets.size() != counts.size())
+    return emitOpError() << "expects offsets and counts to have equal length";
+  if (getWorkerCount() <= 0)
+    return emitOpError() << "expects worker_count to be positive";
+
+  llvm::SmallSet<int32_t, 16> uniqueOffsets;
+  for (auto [offset, count] : llvm::zip_equal(offsets, counts)) {
+    if (offset < 0 || offset % 8 != 0)
+      return emitOpError() << "expects non-negative, 8-byte-aligned offsets; "
+                           << "got " << offset;
+    if (!uniqueOffsets.insert(offset).second)
+      return emitOpError() << "contains duplicate offset " << offset;
+    if (count <= 0)
+      return emitOpError() << "expects positive participant counts; got "
+                           << count << " for offset " << offset;
+  }
   return success();
 }
 

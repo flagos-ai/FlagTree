@@ -7,6 +7,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "tle/dialect/include/Analysis/TlePipeEffectAnalysis.h"
 #include "tle/dialect/include/IR/Dialect.h"
@@ -112,6 +113,22 @@ static OperandRange getPipeFields(Operation *op) {
   return cast<PipeDrainOp>(op).getFields();
 }
 
+static Value getPipeIdentity(Operation *op) {
+  if (auto pipeOp = dyn_cast<PipeCreateOp>(op))
+    return pipeOp.getIdentity();
+  if (auto pipeOp = dyn_cast<PipeWriterAcquireOp>(op))
+    return pipeOp.getIdentity();
+  if (auto pipeOp = dyn_cast<PipeWriterCommitOp>(op))
+    return pipeOp.getIdentity();
+  if (auto pipeOp = dyn_cast<PipeWriterCloseOp>(op))
+    return pipeOp.getIdentity();
+  if (auto pipeOp = dyn_cast<PipeReaderWaitOp>(op))
+    return pipeOp.getIdentity();
+  if (auto pipeOp = dyn_cast<PipeReaderReleaseOp>(op))
+    return pipeOp.getIdentity();
+  return cast<PipeDrainOp>(op).getIdentity();
+}
+
 static bool isPipeLifecycleOp(Operation *op) {
   return isa<PipeCreateOp, PipeWriterAcquireOp, PipeWriterCommitOp,
              PipeWriterCloseOp, PipeReaderWaitOp, PipeReaderReleaseOp,
@@ -127,7 +144,8 @@ static bool containsPipeLifecycleOp(tt::FuncOp func) {
   return found;
 }
 
-static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee) {
+static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee,
+                                    int64_t callId) {
   if (callee.isExternal())
     return call.emitOpError(
         "cannot inline external callee containing pipe ops");
@@ -144,17 +162,24 @@ static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee) {
   if (returnOp.getNumOperands() != call.getNumResults())
     return call.emitOpError("callee return count does not match call results");
 
-  IRMapping mapping;
-  for (auto [arg, operand] :
-       llvm::zip(block.getArguments(), call.getOperands()))
-    mapping.map(arg, operand);
-
   OpBuilder builder(call);
+  SmallVector<Type> argumentTypes = llvm::to_vector(
+      llvm::map_range(call.getOperands(), [](Value value) {
+        return value.getType();
+      }));
+  auto begin = PipeCallBeginOp::create(
+      builder, call.getLoc(), argumentTypes, call.getOperands(),
+      callee.getName(), callId);
+  IRMapping mapping;
+  for (auto [arg, alias] :
+       llvm::zip(block.getArguments(), begin.getAliases()))
+    mapping.map(arg, alias);
   for (Operation &op : block.getOperations()) {
     if (&op == returnOp.getOperation())
       continue;
     builder.clone(op, mapping);
   }
+  PipeCallEndOp::create(builder, call.getLoc(), callee.getName(), callId);
 
   for (auto [result, returned] :
        llvm::zip(call.getResults(), returnOp.getOperands()))
@@ -165,6 +190,7 @@ static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee) {
 
 static LogicalResult inlinePipeHelperCalls(ModuleOp module) {
   bool changed = true;
+  int64_t nextCallId = 0;
   while (changed) {
     changed = false;
     SmallVector<tt::CallOp> calls;
@@ -180,7 +206,7 @@ static LogicalResult inlinePipeHelperCalls(ModuleOp module) {
       auto callee = module.lookupSymbol<tt::FuncOp>(call.getCallee());
       if (!callee || !containsPipeLifecycleOp(callee))
         continue;
-      if (failed(inlinePipeCall(call, callee)))
+      if (failed(inlinePipeCall(call, callee, nextCallId++)))
         return failure();
       changed = true;
     }
@@ -204,11 +230,19 @@ static LogicalResult inlinePipeHelperCalls(ModuleOp module) {
 }
 
 static Value canonicalizePipeField(Value field) {
-  while (auto blockArg = dyn_cast<BlockArgument>(field)) {
-    Block *block = blockArg.getOwner();
-    auto partitions =
-        dyn_cast_or_null<ttg::WarpSpecializePartitionsOp>(block->getParentOp());
-    if (partitions) {
+  while (true) {
+    if (auto result = dyn_cast<OpResult>(field)) {
+      if (auto begin = dyn_cast<PipeCallBeginOp>(result.getOwner())) {
+        field = begin.getArguments()[result.getResultNumber()];
+        continue;
+      }
+    }
+    if (auto blockArg = dyn_cast<BlockArgument>(field)) {
+      Block *block = blockArg.getOwner();
+      auto partitions = dyn_cast_or_null<ttg::WarpSpecializePartitionsOp>(
+          block->getParentOp());
+      if (!partitions)
+        break;
       auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
       if (!wsOp)
         break;
@@ -222,6 +256,11 @@ static Value canonicalizePipeField(Value field) {
     break;
   }
   return field;
+}
+
+static bool isNvwsTokenValue(Value value) {
+  auto tensorType = dyn_cast<RankedTensorType>(value.getType());
+  return tensorType && isa<ttnvws::TokenType>(tensorType.getElementType());
 }
 
 static Value getMemDescRoot(Value value) {
@@ -294,9 +333,10 @@ static std::string getPipeKey(Operation *op) {
   os << getPipeCapacity(op) << "|";
   op->getAttr("scope").print(os);
   os << "|";
-  if (Attribute pipeName = op->getAttr("pipe_name"))
-    pipeName.print(os);
+  os << canonicalizePipeField(getPipeIdentity(op)).getAsOpaquePointer();
   os << "|";
+  // pipe_name is diagnostic only. Structural identity is sufficient after
+  // endpoint arguments substitute the concrete payload memdescs at a call.
   op->getAttr("field_names").print(os);
   os << "|";
   for (Value field : getPipeFields(op))
@@ -1598,7 +1638,6 @@ static PipeState createPipeState(PipeCreateOp op,
                   /*readerTasks=*/{},
                   /*dataTransport=*/std::nullopt,
                   drainBarrier};
-  op.erase();
   return state;
 }
 
@@ -1690,6 +1729,7 @@ public:
     }
 
     std::map<std::string, PipeState> pipes;
+    SmallVector<PipeCreateOp> creates;
     for (Operation *op : ops) {
       std::string key = getPipeKey(op);
       if (auto create = dyn_cast<PipeCreateOp>(op)) {
@@ -1698,6 +1738,7 @@ public:
         if (drainIt != drainParticipantCounts.end())
           drainCount = drainIt->second;
         pipes.emplace(key, createPipeState(create, drainCount));
+        creates.push_back(create);
         continue;
       }
 
@@ -1992,6 +2033,58 @@ public:
                         builder.getUnitAttr());
       setRoleTaskId(op, nvwsOp.getOperation(), *taskId);
       release.erase();
+    }
+
+    // The call marker owns the canonical lowered ABI used to restore one
+    // shared noinline helper. Replace original pipe identities in that ABI by
+    // the NVWS tokens created for the concrete pipe instance. The token
+    // lowering pass will subsequently replace those token parameters by the
+    // required barrier arrays across the restored call boundary.
+    SmallVector<PipeCallBeginOp> callBegins;
+    module.walk([&](PipeCallBeginOp begin) { callBegins.push_back(begin); });
+    for (PipeCallBeginOp begin : llvm::reverse(callBegins)) {
+      for (auto [index, operand] :
+           llvm::enumerate(begin->getOpOperands())) {
+        Value identity = canonicalizePipeField(operand.get());
+        if (identity != operand.get() && isNvwsTokenValue(identity)) {
+          operand.set(identity);
+          begin.getAliases()[index].setType(identity.getType());
+          continue;
+        }
+        for (auto &[key, definition] : pipeDefinitions) {
+          if (definition.create.getIdentity() != identity)
+            continue;
+          auto state = pipes.find(key);
+          assert(state != pipes.end() && "lowered pipe must have state");
+          Value token =
+              getWarpSpecializeCaptureForUse(begin, state->second.token);
+          operand.set(token);
+          begin.getAliases()[index].setType(token.getType());
+          break;
+        }
+      }
+    }
+
+    // Pipe identities are explicit warp-specialize captures so lifecycle ops
+    // in isolated partition regions retain structural instance identity. Once
+    // those ops are lowered, remove their dead block arguments and captures
+    // before erasing the defining pipe.create ops.
+    RewritePatternSet patterns(&getContext());
+    ttg::WarpSpecializeOp::getCanonicalizationPatterns(patterns,
+                                                        &getContext());
+    if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
+      module.emitError("failed to canonicalize lowered pipe captures");
+      signalPassFailure();
+      return;
+    }
+
+    for (PipeCreateOp create : creates) {
+      if (!create.getIdentity().use_empty()) {
+        create.emitOpError("SSA identity still has uses after pipe lowering");
+        signalPassFailure();
+        return;
+      }
+      create.erase();
     }
   }
 };

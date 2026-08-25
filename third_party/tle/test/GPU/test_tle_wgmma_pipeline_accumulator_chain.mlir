@@ -492,7 +492,8 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
       %other: !ttg.memdesc<64x64xbf16, #shared1, #smem, mutable>,
       %out0: tensor<64x64x!tt.ptr<f32>, #mma>,
       %out1: tensor<64x64x!tt.ptr<f32>, #mma>,
-      %idx: i32) {
+      %idx: i32,
+      %pipe_identity: i32) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c8 = arith.constant 8 : index
@@ -514,13 +515,13 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
         // CHECK-SAME: {pendings = 1 : i32}
         // CHECK-NEXT: tle.pipe.reader_release
         // CHECK: ttng.warp_group_dot_wait %[[NEXT]]
-        tle.pipe.reader_release %slots[%idx] {capacity = 2 : i32, field_names = ["kv"], pipe_name = "pipe_release_branch", scope = "cta"} : !ttg.memdesc<2x64x64xbf16, #shared1, #smem, mutable>
+        tle.pipe.reader_release %pipe_identity, %slots[%idx] {capacity = 2 : i32, field_names = ["kv"], pipe_name = "pipe_release_branch", scope = "cta"} : !ttg.memdesc<2x64x64xbf16, #shared1, #smem, mutable>
         tt.store %out1, %next : tensor<64x64x!tt.ptr<f32>, #mma>
       } else {
         // CHECK: %[[WAIT_ELSE:.+]]:{{.*}} = ttng.warp_group_dot_wait %[[DOT]]
         // CHECK-SAME: {pendings = 0 : i32}
         // CHECK-NEXT: tle.pipe.reader_release
-        tle.pipe.reader_release %slots[%idx] {capacity = 2 : i32, field_names = ["kv"], pipe_name = "pipe_release_branch", scope = "cta"} : !ttg.memdesc<2x64x64xbf16, #shared1, #smem, mutable>
+        tle.pipe.reader_release %pipe_identity, %slots[%idx] {capacity = 2 : i32, field_names = ["kv"], pipe_name = "pipe_release_branch", scope = "cta"} : !ttg.memdesc<2x64x64xbf16, #shared1, #smem, mutable>
       }
       // CHECK: scf.yield %[[DOT]]
       scf.yield %dot, %dot : tensor<64x64xf32, #mma>, tensor<64x64xf32, #mma>

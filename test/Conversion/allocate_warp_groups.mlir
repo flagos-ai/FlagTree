@@ -10,7 +10,7 @@ module attributes {"ttg.num-warps" = 4 : i32} {
 module attributes {"ttg.num-warps" = 4 : i32} {
 
 tt.func @kernel() {
-  // CHECK: ttg.warp_specialize() attributes {warpGroupStartIds = array<i32: 18, 4, 12, 16, 19>}
+  // CHECK: ttg.warp_specialize() attributes {ttg.warp_specialize.static_roles, warpGroupStartIds = array<i32: 18, 4, 12, 16, 19>}
   ttg.warp_specialize()
   default {
     ttg.warp_yield
@@ -70,11 +70,33 @@ tt.func @two_warp_specialize() {
 
 // -----
 
+// A non-terminal warp-specialize region may be followed by another operation
+// and therefore must retain the reusable dynamic dispatch contract.
+module attributes {"ttg.num-warps" = 4 : i32} {
+
+tt.func @nonterminal_warp_specialize() {
+  // CHECK: tt.func @nonterminal_warp_specialize
+  // CHECK: ttg.warp_specialize() attributes {warpGroupStartIds = array<i32: 4>}
+  ttg.warp_specialize()
+  default {
+    ttg.warp_yield
+  }
+  partition0() num_warps(4) {
+    ttg.warp_return
+  } : () -> ()
+  %after = arith.constant 0 : i32
+  tt.return
+}
+
+}
+
+// -----
+
 // CHECK: module attributes {ttg.maxnreg = 168 : i32
 module attributes {"ttg.num-warps" = 8 : i32} {
 
 tt.func @setmaxnreg() {
-  // CHECK: actualRegisters = array<i32: 208, 80, 80, 80>
+  // CHECK: actualRegisters = array<i32: 208, 80, 80, 80>, requestedRegisters = array<i32: 48, 80, 48>, ttg.warp_specialize.static_roles
   ttg.warp_specialize() attributes {requestedRegisters = array<i32: 48, 80, 48>}
   default {
     ttg.warp_yield
@@ -104,7 +126,7 @@ module attributes {"ttg.num-warps" = 8 : i32} {
   }
 
   tt.func @fixed_register_abi() {
-    // CHECK: ttg.warp_specialize() attributes {requestedRegisters = array<i32: 24>, warpGroupStartIds = array<i32: 8>}
+    // CHECK: ttg.warp_specialize() attributes {requestedRegisters = array<i32: 24>, ttg.warp_specialize.static_roles, warpGroupStartIds = array<i32: 8>}
     ttg.warp_specialize() attributes {requestedRegisters = array<i32: 24>}
     default {
       tt.call @callee() : () -> ()
@@ -123,7 +145,7 @@ module attributes {"ttg.num-warps" = 8 : i32} {
 module attributes {"ttg.num-warps" = 8 : i32} {
 
 tt.func @steal_from_default() {
-  // CHECK: actualRegisters = array<i32: 64, 192>
+  // CHECK: actualRegisters = array<i32: 64, 192>, requestedRegisters = array<i32: 192>, ttg.warp_specialize.static_roles
   ttg.warp_specialize() attributes {requestedRegisters = array<i32: 192>}
   default {
     ttg.warp_yield

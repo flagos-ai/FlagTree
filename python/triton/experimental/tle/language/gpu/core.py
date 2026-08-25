@@ -186,6 +186,45 @@ def memory_space(input, space, _builder=None, _semantic=None):
 
 
 @tl.builtin
+def rematerialize_index(value, _semantic=None):
+    """Rematerialize an integer block index at the current program point.
+
+    Large fused kernels use this primitive to bound the live range of cheap
+    mesh-coordinate expressions across independently outlined device helpers.
+    The operation preserves both the value and its distributed layout.
+    """
+    if not isinstance(value, tl.tensor):
+        value = _semantic.to_tensor(value)
+    instruction = {
+        tl.int32: ("mov.u32 $0, $1;", "=r,r"),
+        tl.uint32: ("mov.u32 $0, $1;", "=r,r"),
+        tl.int64: ("mov.u64 $0, $1;", "=l,l"),
+        tl.uint64: ("mov.u64 $0, $1;", "=l,l"),
+    }.get(value.dtype)
+    if instruction is None:
+        raise ValueError(
+            "rematerialize_index requires a 32-bit or 64-bit integer scalar "
+            "or block "
+            f"tensor, got {value.dtype}"
+        )
+    asm, constraints = instruction
+    result = tl.inline_asm_elementwise(
+        asm,
+        constraints,
+        [value],
+        dtype=value.dtype,
+        is_pure=False,
+        pack=1,
+        _semantic=_semantic,
+    )
+    result.handle.set_attr(
+        "tle.rematerialize_index",
+        _semantic.builder.get_bool_attr(True),
+    )
+    return result
+
+
+@tl.builtin
 def alloc(
     shape: tuple,
     dtype: tl.dtype,

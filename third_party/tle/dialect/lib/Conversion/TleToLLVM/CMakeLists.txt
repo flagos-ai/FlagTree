@@ -3,6 +3,7 @@ add_triton_library(TleToLLVM
     DSLRegionOpToLLVM.cpp
     ExclusiveCumsumOpToLLVM.cpp
     ExtractOpToLLVM.cpp
+    InitBarrierGroupOpToLLVM.cpp
     LocalPointersOpToLLVM.cpp
     PackOpToLLVM.cpp
     RemotePointerUtils.cpp

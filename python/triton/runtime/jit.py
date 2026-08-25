@@ -112,6 +112,7 @@ class DependenciesFinder(ast.NodeVisitor):
         # update hash
         func_key = func.cache_key
         func_key += str(getattr(func, "noinline", False))
+        func_key += str(getattr(func, "allow_tensor_args", False))
         self.hasher.update(func_key.encode("utf-8"))
 
     def record_reference(self, val, var_dict=None, name=None):
@@ -989,7 +990,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         return self._fn_name if self._repr is None else self._repr(_)
 
     def __init__(self, fn, version=None, do_not_specialize=None, do_not_specialize_on_alignment=None, debug=None,
-                 noinline=None, repr=None, launch_metadata=None):
+                 noinline=None, allow_tensor_args=False, repr=None, launch_metadata=None):
         do_not_specialize = do_not_specialize if do_not_specialize else []
         do_not_specialize_on_alignment = do_not_specialize_on_alignment if do_not_specialize_on_alignment else []
 
@@ -1015,6 +1016,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         self.kernel = None
         self.debug = debug
         self.noinline = noinline
+        self.allow_tensor_args = allow_tensor_args
 
         # TODO(jlebar): Remove uses of these fields outside this file, then
         # remove the fields here.
@@ -1119,6 +1121,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int | str]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    allow_tensor_args: bool = False,
 ) -> Callable[[T], JITFunction[T]]:
     ...
 
@@ -1133,6 +1136,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int | str]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    allow_tensor_args: bool = False,
 ) -> KernelInterface[T]:
     """
     Decorator for JIT-compiling a function using the Triton compiler.
@@ -1150,6 +1154,10 @@ def jit(
 
     :param fn: the function to be jit-compiled
     :type fn: Callable
+    :param allow_tensor_args: opt in to passing non-scalar distributed tensors
+        to a noinline device function. The caller and callee must use the same
+        tensor layout ABI.
+    :type allow_tensor_args: bool
     """
 
     def decorator(fn: T) -> JITFunction[T]:
@@ -1158,7 +1166,8 @@ def jit(
             from .interpreter import InterpretedFunction
             return InterpretedFunction(fn, version=version, do_not_specialize=do_not_specialize,
                                        do_not_specialize_on_alignment=do_not_specialize_on_alignment, debug=debug,
-                                       noinline=noinline, repr=repr, launch_metadata=launch_metadata)
+                                       noinline=noinline, allow_tensor_args=allow_tensor_args,
+                                       repr=repr, launch_metadata=launch_metadata)
         else:
             return JITFunction(
                 fn,
@@ -1167,6 +1176,7 @@ def jit(
                 do_not_specialize_on_alignment=do_not_specialize_on_alignment,
                 debug=debug,
                 noinline=noinline,
+                allow_tensor_args=allow_tensor_args,
                 repr=repr,
                 launch_metadata=launch_metadata,
             )

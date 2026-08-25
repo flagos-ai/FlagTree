@@ -178,7 +178,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
     %c0 = arith.constant 0 : i32
     %field0 = ttg.local_alloc : () -> !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>
     %field1 = ttg.local_alloc : () -> !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>
-    tle.pipe.create %field0, %field1 {capacity = 2 : i32, pipe_name = "async", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>, !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>
+    %pipe_identity_28 = tle.pipe.create %field0, %field1 {capacity = 2 : i32, pipe_name = "async", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>, !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>
     %slot0 = ttg.memdesc_index %field0[%c0] : !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable> -> !ttg.memdesc<64x128xbf16, #shared2, #smem, mutable>
     %slot1 = ttg.memdesc_index %field1[%c0] : !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable> -> !ttg.memdesc<64x128xbf16, #shared2, #smem, mutable>
     %ptr0 = "tle.local_pointers"(%slot0) : (!ttg.memdesc<64x128xbf16, #shared2, #smem, mutable>) -> tensor<64x128x!tt.ptr<bf16, 3>, #blocked>
@@ -193,7 +193,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
     // CHECK-NOT: ttg.async_wait
     // CHECK: tle.pipe.writer_commit
     // CHECK-SAME: tle.pipe_commit_cp_async
-    tle.pipe.writer_commit %field0, %field1[%c0] {capacity = 2 : i32, pipe_name = "async", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>, !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_28, %field0, %field1[%c0] {capacity = 2 : i32, pipe_name = "async", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>, !ttg.memdesc<2x64x128xbf16, #shared3, #smem, mutable>
     tt.return
   }
 }

@@ -3816,10 +3816,11 @@ LogicalResult TritonGPUDialect::verifyOperationAttribute(Operation *op,
     return op->emitOpError("has unexpected attribute ")
            << attr.getName() << " which is expected only on `module` ops";
   }
-  if (attr.getName() == AttrNumWarpsName && !isa<ModuleOp, FuncOp>(op)) {
+  if (attr.getName() == AttrNumWarpsName &&
+      !isa<ModuleOp, FunctionOpInterface>(op)) {
     return op->emitOpError("has unexpected attribute ")
            << attr.getName()
-           << " which is expected only on `module` or `tt.func` ops";
+           << " which is expected only on `module` or function-like ops";
   }
 
   // Verify that all ops in a tt.warp_specialize op have partition ids
@@ -3967,7 +3968,7 @@ int TritonGPUDialect::getThreadsPerWarp(ModuleOp module) {
 }
 
 std::optional<int> triton::gpu::maybeLookupNumWarps(Operation *op) {
-  if (isa<ModuleOp, FuncOp>(op)) {
+  if (isa<ModuleOp, FunctionOpInterface>(op)) {
     if (auto attr = op->getAttrOfType<IntegerAttr>(AttrNumWarpsName))
       return attr.getInt();
   } else if (auto partitions =

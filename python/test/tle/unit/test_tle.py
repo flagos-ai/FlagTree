@@ -236,6 +236,7 @@ class TestBufferedTensor:
             self.local_alloc_args = None
             self.swizzled_encoding_args = None
             self.pipe_create_args = None
+            self.pipe_create_count = 0
             self.pipe_ops = []
             self.task_grid_create_args = None
             self.task_grid_ops = []
@@ -280,32 +281,36 @@ class TestBufferedTensor:
         def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, reader_names, one_shot):
             self.pipe_create_args = (list(fields), capacity, scope, pipe_name, list(field_names), list(reader_names),
                                      one_shot)
+            identity = f"pipe_identity_{self.pipe_create_count}"
+            self.pipe_create_count += 1
+            return identity
 
-        def create_pipe_writer_acquire(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        def create_pipe_writer_acquire(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names):
             self.pipe_ops.append(
-                ("writer_acquire", list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+                ("writer_acquire", identity, list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
 
-        def create_pipe_writer_commit(self, fields, stage, capacity, scope, pipe_name, field_names):
-            self.pipe_ops.append(("writer_commit", list(fields), stage, capacity, scope, pipe_name, list(field_names)))
-
-        def create_pipe_writer_close(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        def create_pipe_writer_commit(self, identity, fields, stage, capacity, scope, pipe_name, field_names):
             self.pipe_ops.append(
-                ("writer_close", list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+                ("writer_commit", identity, list(fields), stage, capacity, scope, pipe_name, list(field_names)))
 
-        def create_pipe_reader_wait(self, fields, stage, phase, capacity, scope, pipe_name, field_names, reader_name,
-                                    reader_field_names):
-            self.pipe_ops.append(("reader_wait", list(fields), stage, phase, capacity, scope, pipe_name,
+        def create_pipe_writer_close(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names):
+            self.pipe_ops.append(
+                ("writer_close", identity, list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+
+        def create_pipe_reader_wait(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names,
+                                    reader_name, reader_field_names):
+            self.pipe_ops.append(("reader_wait", identity, list(fields), stage, phase, capacity, scope, pipe_name,
                                   list(field_names), reader_name, list(reader_field_names)))
             return "is_closed"
 
-        def create_pipe_reader_release(self, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
-                                       reader_field_names):
+        def create_pipe_reader_release(self, identity, fields, stage, capacity, scope, pipe_name, field_names,
+                                       reader_name, reader_field_names):
             self.pipe_ops.append(
-                ("reader_release", list(fields), stage, capacity, scope, pipe_name, list(field_names), reader_name,
+                ("reader_release", identity, list(fields), stage, capacity, scope, pipe_name, list(field_names), reader_name,
                  list(reader_field_names)))
 
-        def create_pipe_drain(self, fields, capacity, scope, pipe_name, field_names):
-            self.pipe_ops.append(("drain", list(fields), capacity, scope, pipe_name, list(field_names)))
+        def create_pipe_drain(self, identity, fields, capacity, scope, pipe_name, field_names):
+            self.pipe_ops.append(("drain", identity, list(fields), capacity, scope, pipe_name, list(field_names)))
 
         def create_task_grid_create(self, fields, scope, grid_name, field_names, shape):
             self.task_grid_create_args = (list(fields), scope, grid_name, list(field_names), list(shape))
@@ -534,7 +539,27 @@ class TestPipeFrontend:
         assert pipe.type.fields == [("a", a.type), ("b", b.type)]
         assert pipe.type.readers is None
         assert pipe.type.one_shot is False
+        assert pipe.identity == "pipe_identity_0"
         assert semantic.builder.pipe_create_args == (["base", "base"], 4, "cta", "ab", ["a", "b"], [], False)
+
+    def test_pipe_name_is_diagnostic_not_structural_identity(self):
+        a, semantic = self._make_buffer([4, 16])
+
+        first = tle.pipe(capacity=4, name="first", a=a, _semantic=semantic)
+        second = tle.pipe(capacity=4, name="second", a=a, _semantic=semantic)
+
+        assert first.type == second.type
+        assert first.type.mangle() == second.type.mangle()
+        assert first.identity == "pipe_identity_0"
+        assert second.identity == "pipe_identity_1"
+        assert first.identity != second.identity
+
+        first_handles = []
+        second_handles = []
+        first._flatten_ir(first_handles)
+        second._flatten_ir(second_handles)
+        assert first_handles == ["pipe_identity_0", "base"]
+        assert second_handles == ["pipe_identity_1", "base"]
 
     def test_pipe_rejects_non_cta_scope(self):
         a, semantic = self._make_buffer([4, 16])
@@ -626,10 +651,12 @@ class TestPipeFrontend:
         assert result.slot.b.shape == [32, 16]
         assert not hasattr(result.slot, "a")
         assert result.slot.type.fields == [("b", result.slot.b.type)]
-        assert semantic.builder.pipe_ops[0] == ("reader_wait", ["base", "base"], "stage_0", "pred_False", 4, "cta", "",
-                                                ["a", "b"], "right", ["b"])
-        assert semantic.builder.pipe_ops[1] == ("reader_release", ["base", "base"], "stage_0", 4, "cta", "", ["a", "b"],
-                                                "right", ["b"])
+        assert semantic.builder.pipe_ops[0] == (
+            "reader_wait", "pipe_identity_0", ["base", "base"], "stage_0", "pred_False", 4, "cta", "",
+            ["a", "b"], "right", ["b"])
+        assert semantic.builder.pipe_ops[1] == (
+            "reader_release", "pipe_identity_0", ["base", "base"], "stage_0", 4, "cta", "", ["a", "b"],
+            "right", ["b"])
 
     def test_pipe_reader_rejects_invalid_field_subset(self):
         a, semantic = self._make_buffer([4, 16])
@@ -675,11 +702,12 @@ class TestPipeFrontend:
             "reader_release",
             "drain",
         ]
-        assert semantic.builder.pipe_ops[0] == ("writer_acquire", ["base"], "stage_0", "pred_False", 4, "cta", "a",
-                                                ["a"])
-        assert semantic.builder.pipe_ops[3] == ("reader_wait", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"],
-                                                "", ["a"])
-        assert semantic.builder.pipe_ops[5] == ("drain", ["base"], 4, "cta", "a", ["a"])
+        assert semantic.builder.pipe_ops[0] == (
+            "writer_acquire", "pipe_identity_0", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"])
+        assert semantic.builder.pipe_ops[3] == (
+            "reader_wait", "pipe_identity_0", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"], "", ["a"])
+        assert semantic.builder.pipe_ops[5] == (
+            "drain", "pipe_identity_0", ["base"], 4, "cta", "a", ["a"])
 
     def test_pipe_one_shot_keeps_frontend_contract(self):
         a, semantic = self._make_buffer([1, 16])

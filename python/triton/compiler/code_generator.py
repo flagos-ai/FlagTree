@@ -64,7 +64,7 @@ def _is_list_like(o: Any) -> bool:
 
 
 def _check_fn_args(node, fn, args):
-    if fn.noinline:
+    if fn.noinline and not fn.allow_tensor_args:
         for idx, arg in enumerate(args):
             if not _is_constexpr(arg) and _is_non_scalar_tensor(arg):
                 raise UnsupportedLanguageConstruct(
@@ -1388,8 +1388,14 @@ class CodeGenerator(ast.NodeVisitor):
         args = inspect.getcallargs(fn.fn, *args, **kwargs)
         args = [args[name] for name in fn.arg_names]
         for i, arg in enumerate(args):
-            if isinstance(arg, (language.dtype, float, int, bool, JITFunction)):
-                args[i] = language.core.constexpr(arg)
+            if fn.params[i].do_not_specialize and isinstance(arg, language.core.constexpr):
+                if isinstance(arg.value, (float, int, bool)):
+                    args[i] = self.semantic.to_tensor(arg.value)
+            elif isinstance(arg, (language.dtype, float, int, bool, JITFunction)):
+                if fn.params[i].do_not_specialize and not isinstance(arg, (language.dtype, JITFunction)):
+                    args[i] = self.semantic.to_tensor(arg)
+                else:
+                    args[i] = language.core.constexpr(arg)
         args_cst = find_paths_if(args, lambda _, x: _is_constexpr(x))
         args_cst = {path: get_iterable_path(args, path) for path in args_cst}
         args_path = find_paths_if(args, lambda _, x: not _is_constexpr(x))

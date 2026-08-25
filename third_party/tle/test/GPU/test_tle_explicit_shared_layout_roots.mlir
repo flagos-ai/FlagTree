@@ -3,9 +3,9 @@
 #blocked_a = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
 #blocked_b = #ttg.blocked<{sizePerThread = [2], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
 
-// CHECK-DAG: #[[BLOCKED_A:blocked[0-9]*]] = #ttg.blocked<{{.*}}sizePerThread = [1]{{.*}}>
-// CHECK-DAG: #[[BLOCKED_B:blocked[0-9]*]] = #ttg.blocked<{{.*}}sizePerThread = [2]{{.*}}>
 // CHECK-LABEL: tt.func public @shared_constant_encoding_domains
+// CHECK: ttg.convert_layout {{.*}} -> tensor<128xi32, #[[BLOCKED_A:blocked[0-9]*]]>
+// CHECK: ttg.convert_layout {{.*}} -> tensor<128xi32, #[[BLOCKED_B:blocked[0-9]*]]>
 // CHECK-DAG: arith.constant {{.*}}dense<1> : tensor<128xi32, #[[BLOCKED_A]]>
 // CHECK-DAG: arith.constant {{.*}}dense<1> : tensor<128xi32, #[[BLOCKED_B]]>
 // CHECK: arith.addi {{.*}} : tensor<128xi32, #[[BLOCKED_A]]>
@@ -23,10 +23,12 @@ module {
   }
 
   // CHECK-LABEL: tt.func public @shared_splat_encoding_domains
-  // CHECK-DAG: tt.splat {{.*}} -> tensor<128x!tt.ptr<i32>, #[[BLOCKED_A]]>
-  // CHECK-DAG: tt.splat {{.*}} -> tensor<128x!tt.ptr<i32>, #[[BLOCKED_B]]>
-  // CHECK-DAG: tt.addptr {{.*}} : tensor<128x!tt.ptr<i32>, #[[BLOCKED_A]]>, tensor<128xi32, #[[BLOCKED_A]]>
-  // CHECK-DAG: tt.addptr {{.*}} : tensor<128x!tt.ptr<i32>, #[[BLOCKED_B]]>, tensor<128xi32, #[[BLOCKED_B]]>
+  // CHECK: ttg.convert_layout {{.*}} -> tensor<128xi32, #[[SPLAT_A:blocked[0-9]*]]>
+  // CHECK: ttg.convert_layout {{.*}} -> tensor<128xi32, #[[SPLAT_B:blocked[0-9]*]]>
+  // CHECK-DAG: tt.splat {{.*}} -> tensor<128x!tt.ptr<i32>, #[[SPLAT_A]]>
+  // CHECK-DAG: tt.splat {{.*}} -> tensor<128x!tt.ptr<i32>, #[[SPLAT_B]]>
+  // CHECK-DAG: tt.addptr {{.*}} : tensor<128x!tt.ptr<i32>, #[[SPLAT_A]]>, tensor<128xi32, #[[SPLAT_A]]>
+  // CHECK-DAG: tt.addptr {{.*}} : tensor<128x!tt.ptr<i32>, #[[SPLAT_B]]>, tensor<128xi32, #[[SPLAT_B]]>
   tt.func public @shared_splat_encoding_domains(%base: !tt.ptr<i32>) attributes {noinline = false} {
     %lhs_value = arith.constant dense<0> : tensor<128xi32>
     %lhs = tle.encoding %lhs_value {target_encoding = #blocked_a} : tensor<128xi32> -> tensor<128xi32>

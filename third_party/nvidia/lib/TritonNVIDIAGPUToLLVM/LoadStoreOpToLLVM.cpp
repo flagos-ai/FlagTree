@@ -1533,12 +1533,16 @@ struct AsyncCopyGlobalToLocalOpConversion
 
     Value l2PolicyReg =
         createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+    bool mustMaterializeSharedAddress =
+        computeCapability >= 90 && !triton::isKernel(funcOp);
 
     auto emitCpAsync =
         [&b, threadPred, ptrTy, hasMask = bool(llMask), opCache = op.getCache(),
-         l2PolicyReg](RewriterBase &rewriter, Location loc,
-                      ArrayRef<Value> vals, Value shmemAddr, int startIdx,
-                      VectorType vecTy) -> SmallVector<Value> {
+         l2PolicyReg,
+         mustMaterializeSharedAddress](RewriterBase &rewriter, Location loc,
+                                       ArrayRef<Value> vals, Value shmemAddr,
+                                       int startIdx,
+                                       VectorType vecTy) -> SmallVector<Value> {
       assert(isa<VectorType>(vecTy));
       auto *ctx = rewriter.getContext();
       auto elemTy = vecTy.getElementType();
@@ -1555,6 +1559,28 @@ struct AsyncCopyGlobalToLocalOpConversion
       auto structElem = vals[startIdx];
       auto srcElem = b.extract_val(ptrTy, structElem, 0);
       auto maskElem = b.extract_val(i1_ty, structElem, 1);
+
+      if (mustMaterializeSharedAddress) {
+        // Materialize the complete address after its lane offset has been
+        // applied. popc(lanemask_eq) is exactly one for every lane, so the XOR
+        // preserves the address while preventing ptxas from decomposing it
+        // into the illegal Hopper LDGSTS [R+UR] address form.
+        static constexpr char kMaterializeSharedAddress[] =
+            "{\n\t.reg .b32 zero;\n\t"
+            "mov.u32 zero, %lanemask_eq;\n\t"
+            "popc.b32 zero, zero;\n\t"
+            "sub.u32 zero, zero, 1;\n\t"
+            "xor.b32 $0, $1, zero;\n}";
+        shmemAddr =
+            LLVM::InlineAsmOp::create(
+                rewriter, loc, shmemAddr.getType(), ValueRange{shmemAddr},
+                kMaterializeSharedAddress, "=r,r",
+                /*has_side_effects=*/true,
+                /*is_align_stack=*/false, LLVM::TailCallKind::None,
+                LLVM::AsmDialectAttr::get(ctx, LLVM::AsmDialect::AD_ATT),
+                ArrayAttr::get(ctx, {}))
+                .getResult(0);
+      }
 
       PTXBuilder ptxBuilder;
       auto &copyAsyncOp = *ptxBuilder.create<PTXCpAsyncLoadInstr>(

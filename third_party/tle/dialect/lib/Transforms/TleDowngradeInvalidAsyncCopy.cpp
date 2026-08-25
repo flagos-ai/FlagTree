@@ -1,4 +1,3 @@
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -53,31 +52,14 @@ static bool hasLegalCpAsyncWidth(ttg::AsyncCopyGlobalToLocalOp copyOp,
   return llvm::is_contained({4u, 8u, 16u}, vecBytes);
 }
 
-static std::optional<Region *>
-getEnclosingWarpSpecializePartition(Operation *op) {
+static bool isInWarpSpecializeRegion(Operation *op) {
   for (Region *region = op->getParentRegion(); region;) {
     Operation *parent = region->getParentOp();
     if (!parent)
       break;
-    if (isa<ttg::WarpSpecializePartitionsOp>(parent))
-      return region;
-    region = parent->getParentRegion();
-  }
-  return std::nullopt;
-}
-
-static bool isInLoopFreeWarpSpecializePartition(Operation *op) {
-  auto partition = getEnclosingWarpSpecializePartition(op);
-  if (!partition)
-    return false;
-
-  Operation *partitionOp = (*partition)->getParentOp();
-  for (Operation *parent = op->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (isa<scf::ForOp>(parent))
-      return false;
-    if (parent == partitionOp)
+    if (isa<ttg::WarpSpecializeOp, ttg::WarpSpecializePartitionsOp>(parent))
       return true;
+    region = parent->getParentRegion();
   }
   return false;
 }
@@ -88,15 +70,15 @@ static bool hasL2CachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
 }
 
 static void
-dropUnsafeLoopFreePartitionCachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
-  if (!copyOp->hasAttr(kTleLocalPointerAsyncStoreAttr) ||
-      !hasL2CachePolicy(copyOp) || !isInLoopFreeWarpSpecializePartition(copyOp))
+dropUnsafeWarpSpecializeCachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
+  if (!hasL2CachePolicy(copyOp) || !isInWarpSpecializeRegion(copyOp))
     return;
 
-  // PTXAS may emit undefined uniform registers for straight-line
-  // warp-specialize producer partitions that use cp.async L2 cache-policy
-  // operands. Eviction policy is a non-semantic hint, so keep the async copy
-  // and drop only the unsafe hint in loop-free partitions.
+  // PTXAS 12.9 can emit LDGSTS instructions with undefined uniform address
+  // and policy registers when cp.async L2 policy operands occur in a
+  // warp-specialize region. Eviction policy is only a cache hint, so keep
+  // the asynchronous copy and its cache modifier while dropping the unsafe
+  // policy operand at this backend boundary.
   copyOp.setEvictAttr(tt::EvictionPolicyAttr::get(copyOp.getContext(),
                                                   tt::EvictionPolicy::NORMAL));
 }
@@ -427,7 +409,7 @@ struct DowngradeInvalidAsyncCopyPass
 
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> invalidCopies;
     module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
-      dropUnsafeLoopFreePartitionCachePolicy(copyOp);
+      dropUnsafeWarpSpecializeCachePolicy(copyOp);
       if (hasLegalCpAsyncWidth(copyOp, axisInfo))
         return;
       invalidCopies.push_back(copyOp);

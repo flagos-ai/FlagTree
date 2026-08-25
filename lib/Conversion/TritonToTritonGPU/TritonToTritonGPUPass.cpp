@@ -261,7 +261,19 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
         // Rank-changing layout constraints are use-local. The conversion
         // pattern materializes the required sliced source layout without
         // changing a source that may be shared by unrelated users.
-      } else if (!isa<tle::EncodingOp>(definingOp)) {
+      } else if (auto encodingOp = dyn_cast<tle::EncodingOp>(definingOp)) {
+        // An explicit encoding immediately inside a noinline function is an
+        // argument ABI declaration. Preserve it on the entry block argument
+        // so callers and the callee lower the distributed tensor identically.
+        auto sourceArg = dyn_cast<BlockArgument>(encodingOp.getSrc());
+        auto noinline = func->getAttrOfType<BoolAttr>("noinline");
+        if (sourceArg && sourceArg.getOwner() == &func.getBody().front() &&
+            noinline && noinline.getValue()) {
+          if (failed(updateTleEncoding({sourceArg}, backwardInfo, func,
+                                       valueToEncoding, worklist)))
+            return failure();
+        }
+      } else {
         Attribute srcEncoding = inferSrcEncoding(definingOp, info.encoding);
         if (srcEncoding) {
           TleEncodingInfo srcInfo{
@@ -331,50 +343,74 @@ static LogicalResult applyTleEncodingHints(ModuleOp mod) {
     if (failed(propagateTleEncodingHints(func)))
       return failure();
 
-  // Explicit encodings selected inside a noinline callee are part of its
-  // result ABI. Function and call result types are otherwise converted from
-  // their original unencoded tensor types independently, which can assign a
-  // default layout that disagrees with the returned value.
+  // Explicit encodings selected at a noinline function boundary are part of
+  // its ABI. Function and call types are otherwise converted from their
+  // original unencoded tensor types independently, which can assign default
+  // layouts that disagree with the callee body.
   for (FuncOp func : mod.getOps<FuncOp>()) {
     unsigned numResults = func.getFunctionType().getNumResults();
-    if (func.isExternal() || numResults == 0)
+    if (func.isExternal())
       continue;
 
+    SmallVector<Type> resultTypes(func.getResultTypes());
     SmallVector<ReturnOp> returns;
     func.walk([&](ReturnOp op) { returns.push_back(op); });
-    if (returns.empty())
-      continue;
-
-    SmallVector<Type> resultTypes;
-    resultTypes.reserve(numResults);
-    for (unsigned index = 0; index < numResults; ++index) {
-      Type resultType = returns.front().getOperand(index).getType();
-      for (ReturnOp op : llvm::drop_begin(returns)) {
-        if (op.getOperand(index).getType() != resultType)
-          return op.emitOpError(
-              "has inconsistent return types after TLE encoding propagation "
-              "for result ")
-                 << index << ": " << resultType << " and "
-                 << op.getOperand(index).getType();
+    if (numResults != 0 && !returns.empty()) {
+      resultTypes.clear();
+      resultTypes.reserve(numResults);
+      for (unsigned index = 0; index < numResults; ++index) {
+        Type resultType = returns.front().getOperand(index).getType();
+        for (ReturnOp op : llvm::drop_begin(returns)) {
+          if (op.getOperand(index).getType() != resultType)
+            return op.emitOpError(
+                "has inconsistent return types after TLE encoding "
+                "propagation for result ")
+                   << index << ": " << resultType << " and "
+                   << op.getOperand(index).getType();
+        }
+        resultTypes.push_back(resultType);
       }
-      resultTypes.push_back(resultType);
     }
 
-    if (!llvm::equal(func.getResultTypes(), resultTypes))
+    SmallVector<Type> argumentTypes(
+        func.getBody().front().getArgumentTypes());
+    if (!llvm::equal(func.getFunctionType().getInputs(), argumentTypes) ||
+        !llvm::equal(func.getResultTypes(), resultTypes))
       func.setFunctionType(FunctionType::get(
-          func.getContext(), func.getArgumentTypes(), resultTypes));
+          func.getContext(), argumentTypes, resultTypes));
   }
 
+  bool callAbiMismatch = false;
   mod.walk([&](CallOp call) {
     FuncOp callee = mod.lookupSymbol<FuncOp>(call.getCallee());
-    if (!callee || call.getNumResults() !=
-                       callee.getFunctionType().getNumResults())
+    if (!callee)
+      return;
+
+    if (call.getNumOperands() != callee.getNumArguments()) {
+      call.emitOpError("operand count disagrees with callee after TLE "
+                       "encoding propagation");
+      callAbiMismatch = true;
+      return;
+    }
+    for (auto [index, operand, calleeType] : llvm::enumerate(
+             call.getOperands(), callee.getArgumentTypes())) {
+      if (operand.getType() != calleeType) {
+        call.emitOpError("tensor ABI type disagrees with callee argument ")
+            << index << " after TLE encoding propagation: "
+            << operand.getType() << " versus " << calleeType;
+        callAbiMismatch = true;
+      }
+    }
+
+    if (call.getNumResults() != callee.getNumResults())
       return;
 
     for (auto [result, calleeType] :
          llvm::zip(call.getResults(), callee.getResultTypes()))
       result.setType(calleeType);
   });
+  if (callAbiMismatch)
+    return failure();
   return success();
 }
 #endif

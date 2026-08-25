@@ -140,6 +140,12 @@ struct AllocateWarpGroups
       }
       op.setWarpGroupStartIds(startIds);
 
+      // Record a compiler-owned candidate only after physical warp IDs are
+      // known. Later inlining may invalidate the one-shot shape, so both
+      // shared-memory allocation and LLVM lowering revalidate it.
+      if (isStaticOneShotWarpSpecialize(op))
+        op->setAttr(kStaticWarpRolesAttrName, UnitAttr::get(mod.getContext()));
+
       if (hasOutOfLineCalls)
         return;
 
