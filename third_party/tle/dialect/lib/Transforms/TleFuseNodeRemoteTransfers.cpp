@@ -47,8 +47,7 @@ namespace {
 
 namespace tt = mlir::triton;
 
-constexpr StringLiteral kNodeBufferBindingsAttr =
-    "tle.node_buffer_bindings";
+constexpr StringLiteral kNodeBufferBindingsAttr = "tle.node_buffer_bindings";
 
 struct PointerExpr {
   Value root;
@@ -58,8 +57,7 @@ struct PointerExpr {
   BlockArgument localArg;
 };
 
-static bool collectOffset(Value value, PointerExpr &expr,
-                          unsigned depth = 0) {
+static bool collectOffset(Value value, PointerExpr &expr, unsigned depth = 0) {
   if (!value || depth > 32)
     return false;
 
@@ -69,7 +67,6 @@ static bool collectOffset(Value value, PointerExpr &expr,
   if (auto add = value.getDefiningOp<arith::AddIOp>())
     return collectOffset(add.getLhs(), expr, depth + 1) &&
            collectOffset(add.getRhs(), expr, depth + 1);
-
 
   if (auto range = value.getDefiningOp<tt::MakeRangeOp>()) {
     if (expr.range || range.getStartAttr().getInt() != 0 ||
@@ -102,8 +99,7 @@ static bool decomposePointer(Value value, PointerExpr &expr) {
   Value current = value;
   unsigned depth = 0;
 
-
-  while (current && depth++ <= 32) {  
+  while (current && depth++ <= 32) {
     if (auto addPtr = current.getDefiningOp<tt::AddPtrOp>()) {
       if (!collectOffset(addPtr.getOffset(), expr))
         return false;
@@ -142,8 +138,7 @@ static tle::RemotePointersOp findNodeRemoteMarker(Value value,
     return {};
 
   if (auto marker = value.getDefiningOp<tle::RemotePointersOp>())
-    return marker.getSpace() == "node" && marker.getResult() ? marker
-                                                             : nullptr;
+    return marker.getSpace() == "node" && marker.getResult() ? marker : nullptr;
   if (auto addPtr = value.getDefiningOp<tt::AddPtrOp>())
     return findNodeRemoteMarker(addPtr.getPtr(), depth + 1);
 
@@ -151,8 +146,6 @@ static tle::RemotePointersOp findNodeRemoteMarker(Value value,
     return findNodeRemoteMarker(splat.getSrc(), depth + 1);
   return {};
 }
-
-
 
 static tle::RemotePointersOp findNodeRemoteMarkerInValue(Value value,
                                                          unsigned depth = 0) {
@@ -173,7 +166,6 @@ static tle::RemotePointersOp findNodeRemoteMarkerInValue(Value value,
   return {};
 }
 
-
 static Value castOffsetToI64(OpBuilder &builder, Location loc, Value value) {
   Type type = value.getType();
   Type i64Ty = builder.getI64Type();
@@ -192,11 +184,9 @@ static Value castOffsetToI64(OpBuilder &builder, Location loc, Value value) {
   return value;
 }
 
-
 static Value materializeOffset(OpBuilder &builder, Location loc,
                                ArrayRef<Value> terms) {
   Value result = builder.create<arith::ConstantIntOp>(loc, 0, 64);
-
 
   for (Value term : terms) {
     Value termI64 = castOffsetToI64(builder, loc, term);
@@ -269,8 +259,7 @@ static Value materializePrefixLength(OpBuilder &builder, Location loc,
   Type type = mask.validN.getType();
   Type i64Ty = builder.getI64Type();
   if (isa<IndexType>(type)) {
-    limitI64 =
-        builder.create<arith::IndexCastOp>(loc, i64Ty, mask.validN);
+    limitI64 = builder.create<arith::IndexCastOp>(loc, i64Ty, mask.validN);
   } else {
     auto intTy = dyn_cast<IntegerType>(type);
     if (!intTy || intTy.getWidth() > 64)
@@ -290,16 +279,13 @@ static Value materializePrefixLength(OpBuilder &builder, Location loc,
     return builder.create<arith::MinUIOp>(loc, limitI64, upper);
 
   Value zero = builder.create<arith::ConstantIntOp>(loc, 0, 64);
-  Value nonNegative =
-      builder.create<arith::MaxSIOp>(loc, limitI64, zero);
+  Value nonNegative = builder.create<arith::MaxSIOp>(loc, limitI64, zero);
   return builder.create<arith::MinSIOp>(loc, nonNegative, upper);
 }
 
-
 static bool isPlainLoad(tt::LoadOp load) {
   return !load.getOther() && load.getBoundaryCheck().empty() &&
-         !load.getPaddingAttr() &&
-         load.getCache() == tt::CacheModifier::NONE &&
+         !load.getPaddingAttr() && load.getCache() == tt::CacheModifier::NONE &&
          load.getEvict() == tt::EvictionPolicy::NORMAL &&
          !load.getIsVolatile() && load.getFlagtreeHints().empty();
 }
@@ -310,7 +296,6 @@ static bool isPlainStore(tt::StoreOp store) {
          store.getEvict() == tt::EvictionPolicy::NORMAL;
 }
 
-
 static bool hasOnlyEffectFreeOpsBetween(tt::LoadOp load, tt::StoreOp store) {
   for (Operation *op = load->getNextNode(); op != store.getOperation();
        op = op->getNextNode()) {
@@ -319,7 +304,6 @@ static bool hasOnlyEffectFreeOpsBetween(tt::LoadOp load, tt::StoreOp store) {
   }
   return true;
 }
-
 
 static std::optional<int64_t> getElementBytes(Type type) {
   unsigned bitWidth = 0;
@@ -334,7 +318,6 @@ static std::optional<int64_t> getElementBytes(Type type) {
   return bitWidth / 8;
 }
 
-
 static bool haveMatchingScalarAccessTypes(tt::LoadOp load, tt::StoreOp store,
                                           int64_t &elemBytes) {
   Type valueTy = load.getType();
@@ -343,8 +326,7 @@ static bool haveMatchingScalarAccessTypes(tt::LoadOp load, tt::StoreOp store,
 
   auto loadPtrTy = dyn_cast<tt::PointerType>(load.getPtr().getType());
   auto storePtrTy = dyn_cast<tt::PointerType>(store.getPtr().getType());
-  if (!loadPtrTy || !storePtrTy ||
-      loadPtrTy.getPointeeType() != valueTy ||
+  if (!loadPtrTy || !storePtrTy || loadPtrTy.getPointeeType() != valueTy ||
       storePtrTy.getPointeeType() != valueTy)
     return false;
 
@@ -354,7 +336,6 @@ static bool haveMatchingScalarAccessTypes(tt::LoadOp load, tt::StoreOp store,
   elemBytes = *bytes;
   return true;
 }
-
 
 static bool haveMatchingAccessTypes(tt::LoadOp load, tt::StoreOp store,
                                     int64_t extent, int64_t &elemBytes) {
@@ -387,8 +368,8 @@ static bool isFusionAddressOp(Operation *op) {
   if (auto remote = dyn_cast<tle::RemotePointersOp>(op))
     return remote.getSpace() == "node" && remote.getResult();
   return isa<tt::AddPtrOp, tt::SplatOp, tt::MakeRangeOp, arith::CmpIOp,
-             arith::AddIOp, arith::ExtSIOp, arith::ExtUIOp,
-             arith::TruncIOp, arith::IndexCastOp, arith::ConstantOp>(op);
+             arith::AddIOp, arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
+             arith::IndexCastOp, arith::ConstantOp>(op);
 }
 
 static void eraseDeadAddressOps(ModuleOp module) {
@@ -409,7 +390,6 @@ static void eraseDeadAddressOps(ModuleOp module) {
   }
 }
 
-
 static std::optional<int64_t> getConstantI64(Value value) {
   auto constant = value.getDefiningOp<arith::ConstantOp>();
   if (!constant)
@@ -422,9 +402,9 @@ static std::optional<int64_t> getConstantI64(Value value) {
 
 // Encode role:local runtime argument ordinal:registered-memory handle.
 // Role `s` validates a PUT source and `d` validates a GET destination.
-static void setBindingAttr(
-    ModuleOp module,
-    SmallVectorImpl<std::tuple<char, unsigned, int64_t>> &bindings) {
+static void
+setBindingAttr(ModuleOp module,
+               SmallVectorImpl<std::tuple<char, unsigned, int64_t>> &bindings) {
   if (bindings.empty()) {
     module->removeAttr(kNodeBufferBindingsAttr);
     return;
@@ -438,7 +418,6 @@ static void setBindingAttr(
     os << std::get<0>(binding) << ":" << std::get<1>(binding) << ":"
        << std::get<2>(binding);
   });
-
 
   module->setAttr(kNodeBufferBindingsAttr,
                   StringAttr::get(module.getContext(), os.str()));
@@ -456,7 +435,6 @@ struct TritonTleFuseNodeRemoteTransfers
       if (marker && !fusionFailures.count(marker.getOperation()))
         fusionFailures.try_emplace(marker.getOperation(), reason.str());
     };
-
 
     SmallVector<tt::StoreOp> stores;
     module.walk([&](tt::StoreOp store) { stores.push_back(store); });
@@ -539,18 +517,17 @@ struct TritonTleFuseNodeRemoteTransfers
       bool isScalarCopy = !srcHasRange && !dstHasRange;
 
       if (srcHasRange != dstHasRange ||
-          (srcHasRange && srcExpr.range.getOperation() !=
-                              dstExpr.range.getOperation())) {
+          (srcHasRange &&
+           srcExpr.range.getOperation() != dstExpr.range.getOperation())) {
         recordFailure(candidateMarker,
                       "source and destination must use the same "
                       "tt.make_range(0, N)");
         continue;
       }
 
-      if (isScalarCopy &&
-          (isa<RankedTensorType>(load.getType()) ||
-           isa<RankedTensorType>(load.getPtr().getType()) ||
-           isa<RankedTensorType>(store.getPtr().getType()))) {
+      if (isScalarCopy && (isa<RankedTensorType>(load.getType()) ||
+                           isa<RankedTensorType>(load.getPtr().getType()) ||
+                           isa<RankedTensorType>(store.getPtr().getType()))) {
         recordFailure(candidateMarker,
                       "tensor source and destination pointers must use a "
                       "contiguous tt.make_range(0, N)");
@@ -604,7 +581,6 @@ struct TritonTleFuseNodeRemoteTransfers
       Value srcOffset = materializeOffset(builder, loc, srcExpr.scalarOffsets);
       Value dstOffset = materializeOffset(builder, loc, dstExpr.scalarOffsets);
 
-
       if (!srcOffset || !dstOffset) {
         recordFailure(candidateMarker,
                       "source and destination offsets must be integer values");
@@ -625,7 +601,8 @@ struct TritonTleFuseNodeRemoteTransfers
           loc, Type(), marker.getSrc(), marker.getSrc(), marker.getComm(),
           marker.getShardId(), marker.getSpaceAttr(), srcOffset, dstOffset,
           nelems, marker.getNetIdx(), builder.getI64IntegerAttr(elemBytes),
-          marker.getCoopkindAttr(), builder.getStringAttr(isPut ? "put" : "get"));
+          marker.getCoopkindAttr(),
+          builder.getStringAttr(isPut ? "put" : "get"));
 
       unsigned localArgNumber = localExpr.localArg.getArgNumber();
       if (std::optional<int64_t> memHandle = getConstantI64(marker.getSrc()))
@@ -634,27 +611,27 @@ struct TritonTleFuseNodeRemoteTransfers
       store.erase();
       if (load->use_empty())
         load.erase();
-
     }
 
     eraseDeadAddressOps(module);
 
     bool hasUnfusedMarker = false;
-    module.walk([&](tle::RemotePointersOp op) {
-      if (op.getSpace() == "node" && op.getResult()) {
+    module.walk(
+        [&](tle::RemotePointersOp op) {
+          if (op.getSpace() == "node" && op.getResult()) {
 
-        auto failure = fusionFailures.find(op.getOperation());
-        if (failure != fusionFailures.end())
-          op.emitOpError() << "could not fuse node remote pointer: "
-                           << failure->second;
-        else
-          op.emitOpError()
-              << "could not fuse node remote pointer: expected a direct, "
-                 "single-use scalar or contiguous load/store copy with no "
-                 "mask or a shared one-dimensional prefix mask";
-        hasUnfusedMarker = true;
-      }
-    });
+            auto failure = fusionFailures.find(op.getOperation());
+            if (failure != fusionFailures.end())
+              op.emitOpError()
+                  << "could not fuse node remote pointer: " << failure->second;
+            else
+              op.emitOpError()
+                  << "could not fuse node remote pointer: expected a direct, "
+                     "single-use scalar or contiguous load/store copy with no "
+                     "mask or a shared one-dimensional prefix mask";
+            hasUnfusedMarker = true;
+          }
+        });
     if (hasUnfusedMarker) {
       signalPassFailure();
       return;
