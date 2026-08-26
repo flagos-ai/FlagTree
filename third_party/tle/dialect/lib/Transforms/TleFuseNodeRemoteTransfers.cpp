@@ -1,0 +1,668 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Pass/Pass.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/Passes.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Types.h"
+
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <algorithm>
+#include <optional>
+#include <tuple>
+
+namespace mlir::triton::tle {
+
+#define GEN_PASS_DEF_TRITONTLEFUSENODEREMOTETRANSFERS
+#include "tle/dialect/include/Transforms/Passes.h.inc"
+
+namespace {
+
+namespace tt = mlir::triton;
+
+constexpr StringLiteral kNodeBufferBindingsAttr =
+    "tle.node_buffer_bindings";
+
+struct PointerExpr {
+  Value root;
+  tt::MakeRangeOp range;
+  SmallVector<Value> scalarOffsets;
+  tle::RemotePointersOp remote;
+  BlockArgument localArg;
+};
+
+static bool collectOffset(Value value, PointerExpr &expr,
+                          unsigned depth = 0) {
+  if (!value || depth > 32)
+    return false;
+
+  if (auto splat = value.getDefiningOp<tt::SplatOp>())
+    return collectOffset(splat.getSrc(), expr, depth + 1);
+
+  if (auto add = value.getDefiningOp<arith::AddIOp>())
+    return collectOffset(add.getLhs(), expr, depth + 1) &&
+           collectOffset(add.getRhs(), expr, depth + 1);
+
+
+  if (auto range = value.getDefiningOp<tt::MakeRangeOp>()) {
+    if (expr.range || range.getStartAttr().getInt() != 0 ||
+        range.getEndAttr().getInt() <= 0)
+      return false;
+    expr.range = range;
+    return true;
+  }
+
+  // Tensor integer casts are compiler-introduced width normalization around
+  // make_range/addi. Scalar casts are retained as a scalar offset term so
+  // their runtime semantics are preserved.
+  if (isa<RankedTensorType>(value.getType())) {
+    if (auto cast = value.getDefiningOp<arith::ExtSIOp>())
+      return collectOffset(cast.getIn(), expr, depth + 1);
+    if (auto cast = value.getDefiningOp<arith::ExtUIOp>())
+      return collectOffset(cast.getIn(), expr, depth + 1);
+    if (auto cast = value.getDefiningOp<arith::IndexCastOp>())
+      return collectOffset(cast.getIn(), expr, depth + 1);
+    return false;
+  }
+
+  if (!value.getType().isIntOrIndex())
+    return false;
+  expr.scalarOffsets.push_back(value);
+  return true;
+}
+
+static bool decomposePointer(Value value, PointerExpr &expr) {
+  Value current = value;
+  unsigned depth = 0;
+
+
+  while (current && depth++ <= 32) {  
+    if (auto addPtr = current.getDefiningOp<tt::AddPtrOp>()) {
+      if (!collectOffset(addPtr.getOffset(), expr))
+        return false;
+      current = addPtr.getPtr();
+      continue;
+    }
+
+    if (auto splat = current.getDefiningOp<tt::SplatOp>()) {
+      current = splat.getSrc();
+      continue;
+    }
+    break;
+  }
+  if (depth > 33)
+    return false;
+
+  expr.root = current;
+  if (auto marker = current.getDefiningOp<tle::RemotePointersOp>()) {
+    if (marker.getSpace() != "node" || !marker.getResult())
+      return false;
+    expr.remote = marker;
+  } else if (auto arg = dyn_cast<BlockArgument>(current)) {
+    auto ptrTy = dyn_cast<tt::PointerType>(arg.getType());
+    if (!ptrTy || ptrTy.getAddressSpace() != 1)
+      return false;
+    expr.localArg = arg;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+static tle::RemotePointersOp findNodeRemoteMarker(Value value,
+                                                  unsigned depth = 0) {
+  if (!value || depth > 32)
+    return {};
+
+  if (auto marker = value.getDefiningOp<tle::RemotePointersOp>())
+    return marker.getSpace() == "node" && marker.getResult() ? marker
+                                                             : nullptr;
+  if (auto addPtr = value.getDefiningOp<tt::AddPtrOp>())
+    return findNodeRemoteMarker(addPtr.getPtr(), depth + 1);
+
+  if (auto splat = value.getDefiningOp<tt::SplatOp>())
+    return findNodeRemoteMarker(splat.getSrc(), depth + 1);
+  return {};
+}
+
+
+
+static tle::RemotePointersOp findNodeRemoteMarkerInValue(Value value,
+                                                         unsigned depth = 0) {
+  if (!value || depth > 32)
+    return {};
+
+  if (auto load = value.getDefiningOp<tt::LoadOp>())
+    return findNodeRemoteMarker(load.getPtr());
+
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return {};
+
+  for (Value operand : def->getOperands())
+    if (auto marker = findNodeRemoteMarkerInValue(operand, depth + 1))
+      return marker;
+
+  return {};
+}
+
+
+static Value castOffsetToI64(OpBuilder &builder, Location loc, Value value) {
+  Type type = value.getType();
+  Type i64Ty = builder.getI64Type();
+  if (type == i64Ty)
+    return value;
+  if (isa<IndexType>(type))
+    return builder.create<arith::IndexCastOp>(loc, i64Ty, value);
+  auto intTy = dyn_cast<IntegerType>(type);
+  if (!intTy)
+    return {};
+
+  if (intTy.getWidth() < 64)
+    return builder.create<arith::ExtSIOp>(loc, i64Ty, value);
+  if (intTy.getWidth() > 64)
+    return builder.create<arith::TruncIOp>(loc, i64Ty, value);
+  return value;
+}
+
+
+static Value materializeOffset(OpBuilder &builder, Location loc,
+                               ArrayRef<Value> terms) {
+  Value result = builder.create<arith::ConstantIntOp>(loc, 0, 64);
+
+
+  for (Value term : terms) {
+    Value termI64 = castOffsetToI64(builder, loc, term);
+    if (!termI64)
+      return {};
+    result = builder.create<arith::AddIOp>(loc, result, termI64);
+  }
+  return result;
+}
+
+struct PrefixMaskInfo {
+  Value validN;
+  bool isUnsigned;
+};
+
+static Value stripTensorIntegerCasts(Value value) {
+  while (isa<RankedTensorType>(value.getType())) {
+    if (auto cast = value.getDefiningOp<arith::ExtSIOp>()) {
+      value = cast.getIn();
+      continue;
+    }
+    if (auto cast = value.getDefiningOp<arith::ExtUIOp>()) {
+      value = cast.getIn();
+      continue;
+    }
+    if (auto cast = value.getDefiningOp<arith::IndexCastOp>()) {
+      value = cast.getIn();
+      continue;
+    }
+    break;
+  }
+  return value;
+}
+
+static std::optional<PrefixMaskInfo>
+matchPrefixMask(Value mask, tt::MakeRangeOp expectedRange) {
+  auto cmp = mask.getDefiningOp<arith::CmpIOp>();
+  if (!cmp)
+    return std::nullopt;
+
+  bool isUnsigned = false;
+  if (cmp.getPredicate() == arith::CmpIPredicate::ult)
+    isUnsigned = true;
+  else if (cmp.getPredicate() != arith::CmpIPredicate::slt)
+    return std::nullopt;
+
+  if (stripTensorIntegerCasts(cmp.getLhs()) != expectedRange.getResult())
+    return std::nullopt;
+
+  auto limitSplat = cmp.getRhs().getDefiningOp<tt::SplatOp>();
+  if (!limitSplat)
+    return std::nullopt;
+  Value validN = limitSplat.getSrc();
+  if (!validN.getType().isIntOrIndex())
+    return std::nullopt;
+  if (auto intTy = dyn_cast<IntegerType>(validN.getType());
+      intTy && (intTy.getWidth() == 1 || intTy.getWidth() > 64))
+    return std::nullopt;
+
+  auto maskTy = dyn_cast<RankedTensorType>(mask.getType());
+  if (!maskTy || maskTy.getRank() != 1 ||
+      maskTy.getDimSize(0) != expectedRange.getEndAttr().getInt())
+    return std::nullopt;
+  return PrefixMaskInfo{validN, isUnsigned};
+}
+
+static Value materializePrefixLength(OpBuilder &builder, Location loc,
+                                     PrefixMaskInfo mask, int64_t extent) {
+  Value limitI64;
+  Type type = mask.validN.getType();
+  Type i64Ty = builder.getI64Type();
+  if (isa<IndexType>(type)) {
+    limitI64 =
+        builder.create<arith::IndexCastOp>(loc, i64Ty, mask.validN);
+  } else {
+    auto intTy = dyn_cast<IntegerType>(type);
+    if (!intTy || intTy.getWidth() > 64)
+      return {};
+    if (intTy.getWidth() < 64) {
+      limitI64 =
+          mask.isUnsigned
+              ? Value(builder.create<arith::ExtUIOp>(loc, i64Ty, mask.validN))
+              : Value(builder.create<arith::ExtSIOp>(loc, i64Ty, mask.validN));
+    } else {
+      limitI64 = mask.validN;
+    }
+  }
+
+  Value upper = builder.create<arith::ConstantIntOp>(loc, extent, 64);
+  if (mask.isUnsigned)
+    return builder.create<arith::MinUIOp>(loc, limitI64, upper);
+
+  Value zero = builder.create<arith::ConstantIntOp>(loc, 0, 64);
+  Value nonNegative =
+      builder.create<arith::MaxSIOp>(loc, limitI64, zero);
+  return builder.create<arith::MinSIOp>(loc, nonNegative, upper);
+}
+
+
+static bool isPlainLoad(tt::LoadOp load) {
+  return !load.getOther() && load.getBoundaryCheck().empty() &&
+         !load.getPaddingAttr() &&
+         load.getCache() == tt::CacheModifier::NONE &&
+         load.getEvict() == tt::EvictionPolicy::NORMAL &&
+         !load.getIsVolatile() && load.getFlagtreeHints().empty();
+}
+
+static bool isPlainStore(tt::StoreOp store) {
+  return store.getBoundaryCheck().empty() &&
+         store.getCache() == tt::CacheModifier::NONE &&
+         store.getEvict() == tt::EvictionPolicy::NORMAL;
+}
+
+
+static bool hasOnlyEffectFreeOpsBetween(tt::LoadOp load, tt::StoreOp store) {
+  for (Operation *op = load->getNextNode(); op != store.getOperation();
+       op = op->getNextNode()) {
+    if (!op || !isMemoryEffectFree(op))
+      return false;
+  }
+  return true;
+}
+
+
+static std::optional<int64_t> getElementBytes(Type type) {
+  unsigned bitWidth = 0;
+  if (auto intTy = dyn_cast<IntegerType>(type))
+    bitWidth = intTy.getWidth();
+  else if (auto floatTy = dyn_cast<FloatType>(type))
+    bitWidth = floatTy.getWidth();
+  else
+    return std::nullopt;
+  if (bitWidth < 8 || bitWidth % 8 != 0)
+    return std::nullopt;
+  return bitWidth / 8;
+}
+
+
+static bool haveMatchingScalarAccessTypes(tt::LoadOp load, tt::StoreOp store,
+                                          int64_t &elemBytes) {
+  Type valueTy = load.getType();
+  if (isa<RankedTensorType>(valueTy) || store.getValue().getType() != valueTy)
+    return false;
+
+  auto loadPtrTy = dyn_cast<tt::PointerType>(load.getPtr().getType());
+  auto storePtrTy = dyn_cast<tt::PointerType>(store.getPtr().getType());
+  if (!loadPtrTy || !storePtrTy ||
+      loadPtrTy.getPointeeType() != valueTy ||
+      storePtrTy.getPointeeType() != valueTy)
+    return false;
+
+  std::optional<int64_t> bytes = getElementBytes(valueTy);
+  if (!bytes)
+    return false;
+  elemBytes = *bytes;
+  return true;
+}
+
+
+static bool haveMatchingAccessTypes(tt::LoadOp load, tt::StoreOp store,
+                                    int64_t extent, int64_t &elemBytes) {
+
+  auto valueTy = dyn_cast<RankedTensorType>(load.getType());
+  auto loadPtrTy = dyn_cast<RankedTensorType>(load.getPtr().getType());
+  auto storePtrTy = dyn_cast<RankedTensorType>(store.getPtr().getType());
+  if (!valueTy || !loadPtrTy || !storePtrTy || valueTy.getRank() != 1 ||
+      loadPtrTy.getRank() != 1 || storePtrTy.getRank() != 1 ||
+      valueTy.getDimSize(0) != extent ||
+      loadPtrTy.getShape() != valueTy.getShape() ||
+      storePtrTy.getShape() != valueTy.getShape())
+    return false;
+
+  auto loadElemPtr = dyn_cast<tt::PointerType>(loadPtrTy.getElementType());
+  auto storeElemPtr = dyn_cast<tt::PointerType>(storePtrTy.getElementType());
+  if (!loadElemPtr || !storeElemPtr ||
+      loadElemPtr.getPointeeType() != valueTy.getElementType() ||
+      storeElemPtr.getPointeeType() != valueTy.getElementType())
+    return false;
+
+  std::optional<int64_t> bytes = getElementBytes(valueTy.getElementType());
+  if (!bytes)
+    return false;
+  elemBytes = *bytes;
+  return true;
+}
+
+static bool isFusionAddressOp(Operation *op) {
+  if (auto remote = dyn_cast<tle::RemotePointersOp>(op))
+    return remote.getSpace() == "node" && remote.getResult();
+  return isa<tt::AddPtrOp, tt::SplatOp, tt::MakeRangeOp, arith::CmpIOp,
+             arith::AddIOp, arith::ExtSIOp, arith::ExtUIOp,
+             arith::TruncIOp, arith::IndexCastOp, arith::ConstantOp>(op);
+}
+
+static void eraseDeadAddressOps(ModuleOp module) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    SmallVector<Operation *> dead;
+    module.walk([&](Operation *op) {
+      if (isFusionAddressOp(op) && op->use_empty())
+        dead.push_back(op);
+    });
+    for (Operation *op : llvm::reverse(dead)) {
+      if (op->use_empty()) {
+        op->erase();
+        changed = true;
+      }
+    }
+  }
+}
+
+
+static std::optional<int64_t> getConstantI64(Value value) {
+  auto constant = value.getDefiningOp<arith::ConstantOp>();
+  if (!constant)
+    return std::nullopt;
+  auto integer = dyn_cast<IntegerAttr>(constant.getValue());
+  if (!integer)
+    return std::nullopt;
+  return integer.getInt();
+}
+
+// Encode role:local runtime argument ordinal:registered-memory handle.
+// Role `s` validates a PUT source and `d` validates a GET destination.
+static void setBindingAttr(
+    ModuleOp module,
+    SmallVectorImpl<std::tuple<char, unsigned, int64_t>> &bindings) {
+  if (bindings.empty()) {
+    module->removeAttr(kNodeBufferBindingsAttr);
+    return;
+  }
+
+  llvm::sort(bindings);
+  bindings.erase(std::unique(bindings.begin(), bindings.end()), bindings.end());
+  std::string encoded;
+  llvm::raw_string_ostream os(encoded);
+  llvm::interleaveComma(bindings, os, [&](const auto &binding) {
+    os << std::get<0>(binding) << ":" << std::get<1>(binding) << ":"
+       << std::get<2>(binding);
+  });
+
+
+  module->setAttr(kNodeBufferBindingsAttr,
+                  StringAttr::get(module.getContext(), os.str()));
+}
+
+struct TritonTleFuseNodeRemoteTransfers
+    : public impl::TritonTleFuseNodeRemoteTransfersBase<
+          TritonTleFuseNodeRemoteTransfers> {
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+
+    SmallVector<std::tuple<char, unsigned, int64_t>> localBindings;
+    llvm::DenseMap<Operation *, std::string> fusionFailures;
+    auto recordFailure = [&](tle::RemotePointersOp marker, StringRef reason) {
+      if (marker && !fusionFailures.count(marker.getOperation()))
+        fusionFailures.try_emplace(marker.getOperation(), reason.str());
+    };
+
+
+    SmallVector<tt::StoreOp> stores;
+    module.walk([&](tt::StoreOp store) { stores.push_back(store); });
+    for (tt::StoreOp store : stores) {
+      if (!store)
+        continue;
+
+      auto dstMarker = findNodeRemoteMarker(store.getPtr());
+      auto valueMarker = findNodeRemoteMarkerInValue(store.getValue());
+
+      auto candidateMarker = dstMarker ? dstMarker : valueMarker;
+      if (!candidateMarker)
+        continue;
+
+      if (!isPlainStore(store)) {
+        recordFailure(candidateMarker, "store options are not supported");
+        continue;
+      }
+
+      auto load = store.getValue().getDefiningOp<tt::LoadOp>();
+      if (!load) {
+        recordFailure(candidateMarker,
+                      "the loaded value must be stored directly without "
+                      "intermediate computation");
+        continue;
+      }
+
+      if (!load->hasOneUse()) {
+        recordFailure(candidateMarker,
+                      "the source load must have exactly one use");
+        continue;
+      }
+
+      if (!isPlainLoad(load)) {
+        recordFailure(candidateMarker, "load options are not supported");
+        continue;
+      }
+      if (load.getMask() != store.getMask()) {
+        recordFailure(candidateMarker,
+                      "load and store must use the same prefix mask");
+        continue;
+      }
+
+      if (load->getBlock() != store->getBlock() ||
+          !load->isBeforeInBlock(store)) {
+        recordFailure(candidateMarker,
+                      "the load and store must be ordered in the same block");
+        continue;
+      }
+
+      if (!hasOnlyEffectFreeOpsBetween(load, store)) {
+        recordFailure(candidateMarker,
+                      "the load and store must not have side-effecting "
+                      "operations between them");
+        continue;
+      }
+
+      PointerExpr srcExpr;
+      PointerExpr dstExpr;
+
+      if (!decomposePointer(load.getPtr(), srcExpr) ||
+          !decomposePointer(store.getPtr(), dstExpr)) {
+        recordFailure(candidateMarker,
+                      "source and destination pointers must use a scalar "
+                      "offset plus a contiguous tt.make_range(0, N), and the "
+                      "local pointer must be an entry-function argument");
+        continue;
+      }
+
+      bool isPut = !srcExpr.remote && dstExpr.remote;
+      bool isGet = srcExpr.remote && !dstExpr.remote;
+      if (!isPut && !isGet) {
+        recordFailure(candidateMarker,
+                      "exactly one side of the copy must be node-remote");
+        continue;
+      }
+
+      bool srcHasRange = static_cast<bool>(srcExpr.range);
+      bool dstHasRange = static_cast<bool>(dstExpr.range);
+      bool isScalarCopy = !srcHasRange && !dstHasRange;
+
+      if (srcHasRange != dstHasRange ||
+          (srcHasRange && srcExpr.range.getOperation() !=
+                              dstExpr.range.getOperation())) {
+        recordFailure(candidateMarker,
+                      "source and destination must use the same "
+                      "tt.make_range(0, N)");
+        continue;
+      }
+
+      if (isScalarCopy &&
+          (isa<RankedTensorType>(load.getType()) ||
+           isa<RankedTensorType>(load.getPtr().getType()) ||
+           isa<RankedTensorType>(store.getPtr().getType()))) {
+        recordFailure(candidateMarker,
+                      "tensor source and destination pointers must use a "
+                      "contiguous tt.make_range(0, N)");
+        continue;
+      }
+
+      std::optional<PrefixMaskInfo> prefixMask;
+      if (load.getMask()) {
+        if (isScalarCopy) {
+          recordFailure(candidateMarker,
+                        "scalar node remote copies do not support masks");
+          continue;
+        }
+        prefixMask = matchPrefixMask(load.getMask(), srcExpr.range);
+        if (!prefixMask) {
+          recordFailure(candidateMarker,
+                        "mask must be a one-dimensional contiguous prefix "
+                        "equivalent to tt.make_range(0, N) < valid_n");
+          continue;
+        }
+      }
+
+      int64_t extent = isScalarCopy ? 1 : srcExpr.range.getEndAttr().getInt();
+      int64_t elemBytes = 0;
+
+      bool matchingTypes =
+          isScalarCopy
+              ? haveMatchingScalarAccessTypes(load, store, elemBytes)
+              : haveMatchingAccessTypes(load, store, extent, elemBytes);
+      if (!matchingTypes) {
+        recordFailure(candidateMarker,
+                      "source and destination access types and shapes must "
+                      "match the contiguous transfer range");
+        continue;
+      }
+
+      PointerExpr &localExpr = isPut ? srcExpr : dstExpr;
+      PointerExpr &remoteExpr = isPut ? dstExpr : srcExpr;
+      auto func = store->getParentOfType<tt::FuncOp>();
+      if (!func || !localExpr.localArg ||
+          localExpr.localArg.getOwner() != &func.getBody().front()) {
+        recordFailure(candidateMarker,
+                      "the local buffer root must be an entry-function "
+                      "global pointer argument");
+        continue;
+      }
+
+      OpBuilder builder(store);
+      Location loc = store.getLoc();
+
+      Value srcOffset = materializeOffset(builder, loc, srcExpr.scalarOffsets);
+      Value dstOffset = materializeOffset(builder, loc, dstExpr.scalarOffsets);
+
+
+      if (!srcOffset || !dstOffset) {
+        recordFailure(candidateMarker,
+                      "source and destination offsets must be integer values");
+        continue;
+      }
+
+      Value nelems =
+          prefixMask
+              ? materializePrefixLength(builder, loc, *prefixMask, extent)
+              : Value(builder.create<arith::ConstantIntOp>(loc, extent, 64));
+      if (!nelems) {
+        recordFailure(candidateMarker, "valid_n must be an integer up to i64");
+        continue;
+      }
+      auto marker = remoteExpr.remote;
+
+      builder.create<tle::RemotePointersOp>(
+          loc, Type(), marker.getSrc(), marker.getSrc(), marker.getComm(),
+          marker.getShardId(), marker.getSpaceAttr(), srcOffset, dstOffset,
+          nelems, marker.getNetIdx(), builder.getI64IntegerAttr(elemBytes),
+          marker.getCoopkindAttr(), builder.getStringAttr(isPut ? "put" : "get"));
+
+      unsigned localArgNumber = localExpr.localArg.getArgNumber();
+      if (std::optional<int64_t> memHandle = getConstantI64(marker.getSrc()))
+        localBindings.emplace_back(isPut ? 's' : 'd', localArgNumber,
+                                   *memHandle);
+      store.erase();
+      if (load->use_empty())
+        load.erase();
+
+    }
+
+    eraseDeadAddressOps(module);
+
+    bool hasUnfusedMarker = false;
+    module.walk([&](tle::RemotePointersOp op) {
+      if (op.getSpace() == "node" && op.getResult()) {
+
+        auto failure = fusionFailures.find(op.getOperation());
+        if (failure != fusionFailures.end())
+          op.emitOpError() << "could not fuse node remote pointer: "
+                           << failure->second;
+        else
+          op.emitOpError()
+              << "could not fuse node remote pointer: expected a direct, "
+                 "single-use scalar or contiguous load/store copy with no "
+                 "mask or a shared one-dimensional prefix mask";
+        hasUnfusedMarker = true;
+      }
+    });
+    if (hasUnfusedMarker) {
+      signalPassFailure();
+      return;
+    }
+
+    setBindingAttr(module, localBindings);
+  }
+};
+
+} // namespace
+} // namespace mlir::triton::tle
