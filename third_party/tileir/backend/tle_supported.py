@@ -1,4 +1,5 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    "gpu.alloc",
     "ext.make_tensor_view",
     "ext.make_partition_view",
     "ext.make_view",
