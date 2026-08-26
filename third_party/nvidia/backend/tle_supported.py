@@ -32,6 +32,7 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.barrier_wait",
     "gpu.wgmma",
     "gpu.wgmma_wait",
-    "gpu.pipe_value.writer",
     "gpu.pipe_value.reader",
+    "gpu.pipe_value.writer",
+    "gpu.pipe_writer.acquire",
 ]
