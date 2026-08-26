@@ -103,6 +103,8 @@ jobs:
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_distributed_d2d.sh
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_get_local_pe.sh
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_d2d_barrier.sh
+          NNODES=1 CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_signal.sh
+          NNODES=1 CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_signal_wait.sh
           ## flagtree tle nvshmem
           torchrun --nproc_per_node=2 python/tutorials/tle/raw/nvshmem/01-simple-shift/simple-shift.py
           torchrun --nproc_per_node=2 python/tutorials/tle/raw/nvshmem/02-allgather-gemm/ag-gemm.py

@@ -165,8 +165,8 @@ def signal(
     slot_id,
     value: int | None = None,
     op: str | attr.SignalOpKind = "inc",
-    space: str | attr.SignalTeamKind = "intra_node",
-    group_kind: str | GroupKind | attr.SignalCoopKind = GroupKind.BLOCK,
+    space: str | attr.FlagCXTeamKind = "intra_node",
+    group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
     context_idx: int = 0,
     _semantic=None,
 ):
@@ -198,11 +198,11 @@ def signal(
     if signal_space not in _SIGNAL_SPACE_TO_TEAM_KIND:
         expected = "intra_node, inter_node, or world"
         raise ValueError(f"space must be {expected}, got {signal_space!r}")
-    signal_space = attr.SignalTeamKind.from_int(_SIGNAL_SPACE_TO_TEAM_KIND[signal_space])
+    signal_space = attr.FlagCXTeamKind.from_int(_SIGNAL_SPACE_TO_TEAM_KIND[signal_space])
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
     group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
-    group_kind = attr.SignalCoopKind.from_str(group_kind)
+    group_kind = attr.FlagCXCoopKind.from_str(group_kind)
     if group_kind is None:
         expected = "thread, warp, or block"
         raise ValueError(f"group_kind must be {expected}, got {group_kind!r}")
@@ -1201,7 +1201,7 @@ def signal_wait(
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
     group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
-    group_kind = attr.SignalCoopKind.from_str(group_kind)
+    group_kind = attr.FlagCXCoopKind.from_str(group_kind)
     if group_kind is None:
         expected = "thread, warp, or block"
         raise ValueError(f"group kind must be {expected}, got {group_kind!r}")

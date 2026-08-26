@@ -197,7 +197,7 @@ class TestSignalWait:
         ))
         world_size = dist.get_world_size()
         nnodes = (world_size + LOCAL_WORLD_SIZE - 1) // LOCAL_WORLD_SIZE
-        assert nnodes > 1, "signal_wait test requires at least two nodes"
+        signal_target = 1 if nnodes > 1 else 0
         assert world_size == nnodes * LOCAL_WORLD_SIZE, (
             "signal_wait test requires the same LOCAL_WORLD_SIZE on every node")
 
@@ -220,8 +220,8 @@ class TestSignalWait:
         shadow_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         try:
             phases = (
-                (inter_node_result, inter_node_peer, 0, 1, "inter_node", "inc", "signal"),
-                (world_result, world_peer, 1, 1, "world", "inc", "signal"),
+                (inter_node_result, inter_node_peer, 0, signal_target, "inter_node", "inc", "signal"),
+                (world_result, world_peer, 1, signal_target, "world", "inc", "signal"),
                 (counter_result, world_peer, 2, 0, "world", None, "counter"),
                 (shadow_result, world_peer, 3, None, "world", None, "shadow"),
             )
