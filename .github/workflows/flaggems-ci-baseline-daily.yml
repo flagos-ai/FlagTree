@@ -63,13 +63,13 @@ jobs:
           repository: flagos-ai/FlagGems
           ref: 'v5.3.4'
           fetch-depth: 0
-          path: ./FlagGems
+          path: ${{ github.workspace }}/FlagGems
 
       - name: Install FlagGems
         run: |
           python3 -m pip uninstall -y flag_gems --break-system-packages || true
           pip install -v -e . --no-build-isolation --no-deps
-        working-directory: ./FlagGems
+        working-directory: ${{ github.workspace }}/FlagGems
 
       - name: Run Baseline Tests
         shell: bash
@@ -87,4 +87,4 @@ jobs:
             --output-dir "$OUTPUT_DIR" \
             --first-parameter-only \
             --skip-file tools/ci/skip_list.yaml
-        working-directory: ./FlagGems
+        working-directory: ${{ github.workspace }}/FlagGems
