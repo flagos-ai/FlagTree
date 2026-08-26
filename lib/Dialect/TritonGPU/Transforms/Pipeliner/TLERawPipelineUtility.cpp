@@ -290,35 +290,6 @@ FailureOr<scf::ForOp> lowerTLERawPipelineOps(scf::ForOp forOp,
   return forOp;
 }
 
-Operation *predicateTLERawPipelineOp(RewriterBase &rewriter, Operation *op,
-                                     Value pred) {
-  auto region = dyn_cast<tle::DSLRegionOp>(op);
-  if (!region || !isTLERawPipelineOp(op))
-    return nullptr;
-  rewriter.setInsertionPoint(region);
-  auto ifOp = scf::IfOp::create(rewriter, region.getLoc(),
-                                region.getResultTypes(), pred,
-                                /*withElseRegion=*/true);
-
-  OpBuilder thenBuilder = ifOp.getThenBodyBuilder();
-  auto thenYield =
-      scf::YieldOp::create(thenBuilder, region.getLoc(), region.getResults());
-  region->moveBefore(thenYield);
-
-  SmallVector<Value> inactiveResults;
-  for (int32_t operandIndex : region.getOutputOperandIndices())
-    inactiveResults.push_back(region.getOperand(operandIndex));
-  OpBuilder elseBuilder = ifOp.getElseBodyBuilder();
-  scf::YieldOp::create(elseBuilder, region.getLoc(), inactiveResults);
-
-  for (auto [oldResult, newResult] :
-       llvm::zip(region.getResults(), ifOp.getResults())) {
-    oldResult.replaceUsesWithIf(
-        newResult, [&](OpOperand &use) { return use.getOwner() != thenYield; });
-  }
-  return ifOp;
-}
-
 } // namespace mlir::triton::gpu
 
 #endif // __TLE__

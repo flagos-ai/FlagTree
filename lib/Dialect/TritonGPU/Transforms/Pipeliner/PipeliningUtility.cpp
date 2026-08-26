@@ -197,6 +197,33 @@ bool mlir::triton::isOuterLoop(scf::ForOp forOp) {
 }
 
 #ifdef __TLE__
+static Operation *predicateTleDSLRegionWithIf(RewriterBase &rewriter,
+                                              tt::tle::DSLRegionOp region,
+                                              Value pred) {
+  rewriter.setInsertionPoint(region);
+  auto ifOp = scf::IfOp::create(rewriter, region.getLoc(),
+                                region.getResultTypes(), pred,
+                                /*withElseRegion=*/true);
+
+  OpBuilder thenBuilder = ifOp.getThenBodyBuilder();
+  auto thenYield =
+      scf::YieldOp::create(thenBuilder, region.getLoc(), region.getResults());
+  region->moveBefore(thenYield);
+
+  SmallVector<Value> inactiveResults;
+  for (int32_t operandIndex : region.getOutputOperandIndices())
+    inactiveResults.push_back(region.getOperand(operandIndex));
+  OpBuilder elseBuilder = ifOp.getElseBodyBuilder();
+  scf::YieldOp::create(elseBuilder, region.getLoc(), inactiveResults);
+
+  for (auto [oldResult, newResult] :
+       llvm::zip(region.getResults(), ifOp.getResults())) {
+    oldResult.replaceUsesWithIf(
+        newResult, [&](OpOperand &use) { return use.getOwner() != thenYield; });
+  }
+  return ifOp;
+}
+
 static Operation *predicateWarpGroupDotWithIf(RewriterBase &rewriter,
                                               ttng::WarpGroupDotOp dotOp,
                                               Value pred) {
@@ -226,8 +253,8 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
   OpBuilder::InsertionGuard guard(rewriter);
 #ifdef __TLE__
   if (!isConstantIntValue(pred, 1)) {
-    if (ttg::isTLERawPipelineOp(op))
-      return ttg::predicateTLERawPipelineOp(rewriter, op, pred);
+    if (auto region = dyn_cast<tt::tle::DSLRegionOp>(op))
+      return predicateTleDSLRegionWithIf(rewriter, region, pred);
     if (auto dotOp = dyn_cast<ttng::WarpGroupDotOp>(op))
       return predicateWarpGroupDotWithIf(rewriter, dotOp, pred);
   }

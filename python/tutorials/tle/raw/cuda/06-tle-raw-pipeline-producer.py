@@ -14,7 +14,7 @@ def get_autotune_config():
     ]
 
 
-@dialect(name="cuda", file=Path(__file__).parent / "05-tle-raw-pipeline.cu")
+@dialect(name="cuda", file=Path(__file__).parent / "06-tle-raw-pipeline-producer.cu")
 def edsl(*args, **kwargs):
     ...
 

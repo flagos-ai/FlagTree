@@ -416,6 +416,10 @@ def TleConvertArgToMemDesc
     : Pass<"tle-convert-arg-to-memdesc", "mlir::ModuleOp"> {
   let dependentDialects = ["mlir::NVVM::NVVMDialect",
                            "mlir::triton::gpu::TritonGPUDialect"];
+  let options = [
+    Option<"scope", "scope", "std::string", /*default*/"\"non-pipeline\"",
+           "raw calls to convert: pipeline or non-pipeline">
+  ];
 }
 
 def TleRemoveRedundantCopy

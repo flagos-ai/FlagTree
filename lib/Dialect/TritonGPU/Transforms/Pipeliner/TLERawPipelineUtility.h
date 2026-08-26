@@ -35,12 +35,6 @@ LogicalResult validateTLERawPipelineOps(ModuleOp moduleOp);
 FailureOr<scf::ForOp> lowerTLERawPipelineOps(scf::ForOp forOp,
                                              CoarseSchedule &schedule);
 
-// Predicate a speculative native-pipeline instance of tle.dsl_region with a
-// CTA-uniform scf.if.  The inactive branch preserves the declared output
-// aliases without executing the raw call (and any barrier inside it).
-Operation *predicateTLERawPipelineOp(RewriterBase &rewriter, Operation *op,
-                                     Value pred);
-
 } // namespace gpu
 } // namespace triton
 } // namespace mlir

@@ -50,9 +50,26 @@ namespace tle = mlir::triton::tle;
 
 namespace {
 
+enum class RawScope { Pipeline, NonPipeline };
+
+FailureOr<RawScope> parseRawScope(StringRef scope) {
+  if (scope == "pipeline")
+    return RawScope::Pipeline;
+  if (scope == "non-pipeline")
+    return RawScope::NonPipeline;
+  return failure();
+}
+
+bool matchesScope(tle::DSLRegionOp op, RawScope scope) {
+  auto hint = op->getAttrOfType<StringAttr>("hint");
+  bool isPipeline = hint && hint.getValue() == "pipeline";
+  return (scope == RawScope::Pipeline && isPipeline) ||
+         (scope == RawScope::NonPipeline && !isPipeline);
+}
+
 ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
   ttg::CTAEncodingAttr ctaLayout = ttg::getCTALayout(ty.getEncoding());
-  llvm::SmallVector<uint32_t> order = ttg::getOrderForMemory(ty);
+  llvm::SmallVector<uint32_t> order = ttg::getOrder(ty);
   return ttg::MemDescType::get(ty.getShape(), ty.getElementType(),
                                ttg::SwizzledSharedEncodingAttr::get(
                                    ty.getContext(), 1, 1, 1, order, ctaLayout),
@@ -61,26 +78,30 @@ ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
 }
 
 struct TleArgConversion : public OpRewritePattern<tle::DSLRegionOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  TleArgConversion(MLIRContext *context);
+  TleArgConversion(MLIRContext *context, RawScope scope);
   LogicalResult matchAndRewrite(tle::DSLRegionOp op,
                                 PatternRewriter &rewriter) const override;
+
+private:
+  RawScope scope;
 };
 
 struct TleConvertArgToMemDesc
     : public tle::impl::TleConvertArgToMemDescBase<TleConvertArgToMemDesc> {
+  using TleConvertArgToMemDescBase::TleConvertArgToMemDescBase;
   void runOnOperation() override;
 };
 
 } // namespace
 
-TleArgConversion::TleArgConversion(MLIRContext *context)
-    : OpRewritePattern(context) {}
+TleArgConversion::TleArgConversion(MLIRContext *context, RawScope scope)
+    : OpRewritePattern(context), scope(scope) {}
 
 LogicalResult
 TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
                                   PatternRewriter &rewriter) const {
+  if (!matchesScope(op, scope))
+    return failure();
   bool hasConversion = false;
   for (Type type : op->getOperandTypes())
     hasConversion |= isa<RankedTensorType>(type);
@@ -186,12 +207,18 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
 
 void mlir::triton::tle::populateConvertArgToMemDescPatterns(
     RewritePatternSet &patterns) {
-  patterns.add<TleArgConversion>(patterns.getContext());
+  patterns.add<TleArgConversion>(patterns.getContext(), RawScope::NonPipeline);
 }
 
 void TleConvertArgToMemDesc::runOnOperation() {
+  auto parsedScope = parseRawScope(scope.getValue());
+  if (failed(parsedScope)) {
+    getOperation().emitError("invalid tle-convert-arg-to-memdesc scope '")
+        << scope.getValue() << "'; expected pipeline or non-pipeline";
+    return signalPassFailure();
+  }
   RewritePatternSet patterns(&getContext());
-  tle::populateConvertArgToMemDescPatterns(patterns);
+  patterns.add<TleArgConversion>(patterns.getContext(), *parsedScope);
   if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
     signalPassFailure();
   }
