@@ -126,6 +126,10 @@ public:
 
   LogicalResult matchAndRewrite(ttg::ConvertLayoutOp cvtOp,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(cvtOp))
+      return failure();
+#endif // __TLE__
     if (!cvtOp->hasOneUse() ||
         !isDotLikeUserForSwizzle(cvtOp->use_begin()->getOwner()))
       return failure();
@@ -156,6 +160,10 @@ public:
 
   LogicalResult matchAndRewrite(tt::TransOp trans,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    if (getTleExplicitValueEncoding(trans.getResult()))
+      return failure();
+#endif // __TLE__
     if (!trans->hasOneUse() ||
         !isDotLikeUserForSwizzle(trans->use_begin()->getOwner()))
       return failure();
@@ -205,6 +213,10 @@ public:
         continue;
       }
       if (auto cvtOp = dyn_cast<ttg::ConvertLayoutOp>(defOp)) {
+#ifdef __TLE__
+        if (isTleExplicitConvertLayoutOp(cvtOp))
+          return failure();
+#endif // __TLE__
         reverseChain.push_back(
             {triton::musa::SqmmaTensorViewKind::ConvertLayout, defOp});
         base = cvtOp.getSrc();

@@ -83,6 +83,12 @@ getAsyncLoadContiguity(tt::LoadOp op,
 static bool
 canLowerAsyncMemorySpaceLoad(tt::LoadOp op,
                              tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+#ifdef __TLE__
+  Attribute explicitMemoryEncoding;
+  if (failed(inferTleExplicitMemoryEncoding(op, explicitMemoryEncoding)) ||
+      explicitMemoryEncoding || getTleExplicitValueEncoding(op.getResult()))
+    return false;
+#endif // __TLE__
   if (op->use_empty())
     return false;
   auto resultTy = dyn_cast<RankedTensorType>(op.getType());

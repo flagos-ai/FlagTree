@@ -98,9 +98,19 @@ static LogicalResult lowerDescriptorLoad(tt::DescriptorLoadOp op,
   Value localLoadValue;
   auto getLocalLoadValue = [&]() -> Value {
     if (!localLoadValue) {
+#ifdef __TLE__
+      auto localLoad =
+          ttg::LocalLoadOp::create(rewriter, loc, op.getType(), alloc);
+      if (Attribute explicitEncoding =
+              getTleExplicitValueEncoding(op.getResult()))
+        setTleExplicitResultEncoding(localLoad.getOperation(), 0,
+                                     explicitEncoding);
+      localLoadValue = localLoad.getResult();
+#else
       localLoadValue =
           ttg::LocalLoadOp::create(rewriter, loc, op.getType(), alloc)
               .getResult();
+#endif // __TLE__
     }
     return localLoadValue;
   };
