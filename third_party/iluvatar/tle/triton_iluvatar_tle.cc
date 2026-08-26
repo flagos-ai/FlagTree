@@ -449,21 +449,6 @@ void init_triton_iluvatar_tle_ir(py::module m) {
                                           memorySpace,
                                           /*mutableMemory=*/true, allocShape);
            });
-
-  // Expose the ttg.warp_specialize op accessors used by the shared TLE
-  // frontend (tle.gpu.warp_specialize). Registered module-local so it does not
-  // clash with the (optional) Gluon binding of the same op.
-  using ret = py::return_value_policy;
-  py::class_<ttg::WarpSpecializeOp, mlir::OpState>(m, "WarpSpecializeOp",
-                                                   py::module_local())
-      .def("get_default_region", &ttg::WarpSpecializeOp::getDefaultRegion,
-           ret::reference)
-      .def("get_partition_op_holder",
-           &ttg::WarpSpecializeOp::getPartitionOpHolder, ret::reference)
-      .def("set_requested_registers", [](ttg::WarpSpecializeOp &self,
-                                         std::vector<int> &requestedRegisters) {
-        self.setRequestedRegisters(requestedRegisters);
-      });
 }
 
 void init_triton_iluvatar_tle_raw_ir(py::module m) {

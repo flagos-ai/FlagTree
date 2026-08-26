@@ -16,6 +16,8 @@ std::unique_ptr<Pass> createTritonILUVATARGPUOptimizeEpiloguePass();
 
 std::unique_ptr<Pass> createTritonILUVATARGPUMMAReduceThreadLocalityPass();
 
+std::unique_ptr<Pass> createTritonILUVATARGPUUpdateAsyncWaitCountPass();
+
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION
 #include "TritonILUVATARGPUTransforms/Passes.h.inc"

@@ -120,6 +120,10 @@ timeout ${TIMEOUT} pytest -v python/test/unit/integrations/sglang/flash_mla/test
 timeout ${TIMEOUT} pytest -v python/test/unit/integrations/inductor/test_bucketize_matmul.py -o junit_suite_name="test_bucketize_matmul" --junitxml=${LOG_DIR}_xml/___test_bucketize_matmul.xml 2>&1 | tee ${LOG_DIR}/test_bucketize_matmul.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/integrations/inductor/test_swfw3103_flex_attention_precision.py -o junit_suite_name="test_swfw3103_flex_attention_precision" --junitxml=${LOG_DIR}_xml/___test_swfw3103_flex_attention_precision.xml 2>&1 | tee ${LOG_DIR}/test_swfw3103_flex_attention_precision.log; check_status
 
+timeout ${TIMEOUT} pytest -v python/test/gluon/test_core.py -o junit_suite_name="test_gluon_core" --junitxml=${LOG_DIR}_xml/___test_gluon_core.xml 2>&1 | tee ${LOG_DIR}/test_gluon_core.log; check_status
+timeout ${TIMEOUT} pytest -v python/test/gluon/test_lowerings.py -o junit_suite_name="test_gluon_lowerings" --junitxml=${LOG_DIR}_xml/___test_gluon_lowerings.xml 2>&1 | tee ${LOG_DIR}/test_gluon_lowerings.log; check_status
+timeout ${TIMEOUT} pytest -v python/test/gluon/test_frontend.py -o junit_suite_name="test_gluon_frontend" --junitxml=${LOG_DIR}_xml/___test_gluon_frontend.xml 2>&1 | tee ${LOG_DIR}/test_gluon_frontend.log; check_status
+
 if iluvatar_tle_enabled; then
     timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/integration/test_tle_local_store.py -o junit_suite_name="test_tle_local_store" --junitxml=${LOG_DIR}_xml/___test_tle_local_store.xml 2>&1 | tee ${LOG_DIR}/test_tle_local_store.log; check_status
     timeout ${TIMEOUT} pytest -v ${FLAGTREE_ROOT}/python/test/tle/unit/test_tle_gpu_local_ptr.py -o junit_suite_name="test_tle_gpu_local_ptr" --junitxml=${LOG_DIR}_xml/___test_tle_gpu_local_ptr.xml 2>&1 | tee ${LOG_DIR}/test_tle_gpu_local_ptr.log; check_status

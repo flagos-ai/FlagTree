@@ -69,7 +69,6 @@ jobs:
           export FLAGTREE_BACKEND=iluvatar
           export TRITON_OFFLINE_BUILD=1
           export TRITON_BUILD_PROTON=OFF
-          export TRITON_ILU_BUILD_GLUON=OFF
           export USE_FLAGCX=ON
           export FLAGCX_RECOMPILE=ON
           export FLAGCX_CACHE=clean
