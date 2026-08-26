@@ -73,6 +73,7 @@ jobs:
         run: |
           set -x
           OUTPUT_DIR="/root/flaggems_ci/Baseline/$(date +%Y-%m-%d)"
+          rm -rf "$OUTPUT_DIR" || true
           mkdir -p "$OUTPUT_DIR"
 
           cd /root/flaggems_ci/FlagGems
