@@ -35,4 +35,5 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.pipe_value.reader",
     "gpu.pipe_value.writer",
     "gpu.pipe_writer.acquire",
+    "gpu.pipe_writer.commit",
 ]
