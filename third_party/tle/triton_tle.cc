@@ -571,7 +571,7 @@ void init_triton_tle_ir(py::module &&m) {
           "create_signal",
           [](TritonOpBuilder &self, Value comm, Value peer, Value slotId,
              std::optional<Value> value, tle::SignalOpKind signalOp,
-             tle::SignalTeamKind teamKind, tle::SignalCoopKind coopKind,
+             tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
              int32_t contextIdx) -> void {
             auto &builder = self.getBuilder();
             if (auto err = tle::Signal::verifySignalOp(signalOp,
@@ -580,8 +580,8 @@ void init_triton_tle_ir(py::module &&m) {
             self.create<tle::SignalOp>(
                 comm, peer, slotId, value.value_or(Value()),
                 builder.getAttr<tle::SignalOpKindAttr>(signalOp),
-                builder.getAttr<tle::SignalTeamKindAttr>(teamKind),
-                builder.getAttr<tle::SignalCoopKindAttr>(coopKind),
+                builder.getAttr<tle::FlagCXTeamKindAttr>(teamKind),
+                builder.getAttr<tle::FlagCXCoopKindAttr>(coopKind),
                 builder.getI32IntegerAttr(contextIdx));
           },
           py::arg("comm"), py::arg("peer"), py::arg("slot_id"),
@@ -592,7 +592,7 @@ void init_triton_tle_ir(py::module &&m) {
           "create_signal_wait",
           [](TritonOpBuilder &self, Value comm_dev_ptr, Value slot_id,
              tle::SignalWaitKind wait_kind, std::optional<Value> target,
-             tle::SignalCoopKind coop_kind, int32_t context_idx) -> void {
+             tle::FlagCXCoopKind coop_kind, int32_t context_idx) -> void {
             auto &builder = self.getBuilder();
             if (auto err = tle::Signal::verifySignalWaitOp(
                     wait_kind, target.value_or(Value())))
@@ -600,7 +600,7 @@ void init_triton_tle_ir(py::module &&m) {
             auto wait_kind_attr =
                 builder.getAttr<tle::SignalWaitKindAttr>(wait_kind);
             auto coop_kind_attr =
-                builder.getAttr<tle::SignalCoopKindAttr>(coop_kind);
+                builder.getAttr<tle::FlagCXCoopKindAttr>(coop_kind);
             auto context_idx_attr = builder.getI32IntegerAttr(context_idx);
             self.create<tle::SignalWaitOp>(
                 comm_dev_ptr, slot_id, wait_kind_attr, target.value_or(Value()),
@@ -729,30 +729,30 @@ void init_triton_tle_attr(py::module &&m) {
           "from_str",
           [](std::string name) { return tle::symbolizeSignalOpKind(name); },
           py::arg("name"));
-  py::enum_<tle::SignalTeamKind>(m, "SignalTeamKind")
-      .value("Intra", tle::SignalTeamKind::INTRA)
-      .value("Inter", tle::SignalTeamKind::INTER)
-      .value("World", tle::SignalTeamKind::WORLD)
+  py::enum_<tle::FlagCXTeamKind>(m, "FlagCXTeamKind")
+      .value("Intra", tle::FlagCXTeamKind::INTRA)
+      .value("Inter", tle::FlagCXTeamKind::INTER)
+      .value("World", tle::FlagCXTeamKind::WORLD)
       .def_static(
           "from_str",
-          [](std::string name) { return tle::symbolizeSignalTeamKind(name); },
+          [](std::string name) { return tle::symbolizeFlagCXTeamKind(name); },
           py::arg("name"))
       .def_static(
           "from_int",
-          [](int value) -> std::optional<tle::SignalTeamKind> {
-            if (value < 0 || value > tle::getMaxEnumValForSignalTeamKind())
+          [](int value) -> std::optional<tle::FlagCXTeamKind> {
+            if (value < 0 || value > tle::getMaxEnumValForFlagCXTeamKind())
               return std::nullopt;
             else
-              return static_cast<tle::SignalTeamKind>(value);
+              return static_cast<tle::FlagCXTeamKind>(value);
           },
           py::arg("value"));
-  py::enum_<tle::SignalCoopKind>(m, "SignalCoopKind")
-      .value("Thread", tle::SignalCoopKind::THREAD)
-      .value("Warp", tle::SignalCoopKind::WARP)
-      .value("Block", tle::SignalCoopKind::BLOCK)
+  py::enum_<tle::FlagCXCoopKind>(m, "FlagCXCoopKind")
+      .value("Thread", tle::FlagCXCoopKind::THREAD)
+      .value("Warp", tle::FlagCXCoopKind::WARP)
+      .value("Block", tle::FlagCXCoopKind::BLOCK)
       .def_static(
           "from_str",
-          [](std::string name) { return tle::symbolizeSignalCoopKind(name); },
+          [](std::string name) { return tle::symbolizeFlagCXCoopKind(name); },
           py::arg("name"));
   py::enum_<tle::SignalWaitKind>(m, "SignalWaitKind")
       .value("Signal", tle::SignalWaitKind::SIGNAL)

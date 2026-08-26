@@ -96,8 +96,8 @@ def Tle_FlagCxSignalOp : Tle_Op<"flagcx signal", [MemoryEffects<[MemRead, MemWri
     I32:$slot_id,
     Optional<I64>:$value,
     Tle_SignalOpKindAttr:$signal_op,
-    Tle_SignalTeamKindAttr:$team_kind,
-    Tle_SignalCoopKindAttr:$coop_kind,
+    Tle_FlagCXTeamKindAttr:$team_kind,
+    Tle_FlagCXCoopKindAttr:$coop_kind,
     I32Attr:$context_idx
   );
 
@@ -117,7 +117,7 @@ def Tle_FlagCxSignalWaitOp : Tle_Op<"flagcx signal_wait"> {
     I32:$slot_id,
     Tle_SignalWaitKindAttr:$wait_kind,
     Optional<I64>:$target,
-    Tle_SignalCoopKindAttr:$coop_kind,
+    Tle_FlagCXCoopKindAttr:$coop_kind,
     I32Attr:$context_idx
   );
 

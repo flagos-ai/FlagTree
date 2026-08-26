@@ -38,8 +38,8 @@ def Tle_SignalWaitKindAttr : I32EnumAttr<
   let cppNamespace = "::mlir::triton::tle";
 }
 
-def Tle_SignalCoopKindAttr : I32EnumAttr<
-  "SignalCoopKind", "",
+def Tle_FlagCXCoopKindAttr : I32EnumAttr<
+  "FlagCXCoopKind", "",
   [
     I32EnumAttrCase<"THREAD", 0, "thread">,
     I32EnumAttrCase<"WARP", 1, "warp">,
@@ -57,8 +57,8 @@ def Tle_SignalOpKindAttr : I32EnumAttr<
   let cppNamespace = "::mlir::triton::tle";
 }
 
-def Tle_SignalTeamKindAttr : I32EnumAttr<
-  "SignalTeamKind", "",
+def Tle_FlagCXTeamKindAttr : I32EnumAttr<
+  "FlagCXTeamKind", "",
   [
     I32EnumAttrCase<"INTRA", 0, "intra">,
     I32EnumAttrCase<"INTER", 1, "inter">,
