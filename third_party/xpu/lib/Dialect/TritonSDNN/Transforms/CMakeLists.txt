@@ -2,19 +2,37 @@ add_xpu_sdnn_object(TritonSDNNTransforms
   ${CMAKE_CURRENT_SOURCE_DIR}/TritonSDNNConversion.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/Bufferize.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/ConvertType.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/DSACopy.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/EWActTable.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/Legalize.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/MergeExternEW.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/Combine.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/CombinePatterns.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/CombineBefore.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/ResolveLayoutConflict.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/HoistDS.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/TransposeMMA.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/TransposeEW.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/LoopGrid.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/LoopUnroll.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/CoprocessorInterleaving.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/Pipeline.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/EWLiteScheduling.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/MultipleBuffer.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/HoistLoopInvariantDma.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/FuseReluActivation.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/EliminateMmaAccZero.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/FuseMmaVectorBias.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/OptimizeRcLayout.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/LowerRcSubview.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/KLoopAccModification.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/MaterializeDeferredRaw.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/Utility.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/SchedulePrintOp.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/RemoveDsOp.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/StripAllOp.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/InjectDMAFormat.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/MxScaleLayout.cpp.o
 
   LINK_LIBS
   TritonIR

@@ -1,7 +1,10 @@
 #include "mlir/IR/IRMapping.h"
+#include "triton/Analysis/TileAnalysis.h"
+#include "triton/Analysis/TileDecision.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 
 #define DEBUG_TYPE "tritonxpu-unroll-control"
 
@@ -20,6 +23,10 @@ template <typename OP> struct COMOp;
   };
 
 COMOP(arith::AddFOp, triton::xpu::VvaddFOp);
+// subf/divf only reach a combine region on the region-interpreting path
+// (TRITONXPU_REDUCE_REGION); COMBINE_BINARY_OP does not list them.
+COMOP(arith::SubFOp, triton::xpu::VvsubFOp);
+COMOP(arith::DivFOp, triton::xpu::VvdivFOp);
 COMOP(arith::MulFOp, triton::xpu::VvmulFOp);
 COMOP(arith::MaxNumFOp, triton::xpu::VvmaxNumFOp);
 COMOP(arith::MinNumFOp, triton::xpu::VvminNumFOp);
@@ -42,6 +49,54 @@ public:
     this->unrollNum = unrollNum;
   }
 
+  // Enabled by TRITONXPU_UNROLL_DRYRUN: report the tile factor a
+  // register-budget model would pick, without changing the IR.
+  bool dryRun = false;
+
+  // Set when a legality constraint dictates the factor, in which case the
+  // budget model must not override it. `pinReason` names the constraint.
+  static constexpr StringLiteral kUnrollLoopAttr = "triton_xpu.unroll_loop";
+  int64_t pinnedUnrollNum = 0;
+  const char *pinReason = "";
+  // Backs `pinReason` when the knob renames it; a plain literal otherwise.
+  std::string pinReasonStorage;
+
+  // Step 3.5b: make the two pinned constants reachable from a knob, so they can
+  // be shown to be wrong. `pinUnrollNum` < 0 keeps the constant (the default,
+  // so artifacts stay byte-identical), 0 drops the pin and lets the pressure
+  // model decide, > 0 overrides it so its time curve can be swept.
+  //
+  // Both numbers move together on purpose: the pin's factor equals the legacy
+  // one only while `unrollNum == pinnedUnrollNum` (`findings.md` §1.30 proves
+  // the identity via `getNumUnroll`), so splitting them would make a sweep
+  // measure two things at once.
+  //
+  // Dropping a pin is not silent: the site then goes through the model, which
+  // remarks its own decision. `emitRemark` alone is not enough here -- nothing
+  // in this pipeline installs a handler for it, so those remarks never reach
+  // the log -- hence the `[PinKnob]` line, printed whenever the knob is doing
+  // something (`pinUnrollNum >= 0`). A default run prints nothing.
+  void applyPin(ModuleOp m, int64_t constant, const char *reason) {
+    if (this->pinUnrollNum == 0) {
+      m->emitRemark("[UnrollControl] pin " + std::string(reason) +
+                    " suppressed by pin-unroll-num=0 (constant was " +
+                    std::to_string(constant) + "); the model decides instead");
+      llvm::errs() << "[PinKnob] pin=" << reason << " constant=" << constant
+                   << " action=dropped(model-decides)\n";
+      return;
+    }
+    int64_t value = this->pinUnrollNum > 0 ? this->pinUnrollNum : constant;
+    this->unrollNum = value;
+    pinnedUnrollNum = value;
+    pinReasonStorage = reason;
+    if (value != constant)
+      pinReasonStorage += ":pin-override=" + std::to_string(value);
+    pinReason = pinReasonStorage.c_str();
+    if (this->pinUnrollNum > 0)
+      llvm::errs() << "[PinKnob] pin=" << reason << " constant=" << constant
+                   << " action=override unrollNum=" << value << "\n";
+  }
+
   template <typename T> static decltype(auto) createCombineVectorizedOp(T op) {
     OpBuilder builder(op);
     return builder.create<typename COMOp<T>::type>(
@@ -51,13 +106,27 @@ public:
   void processOpVecTy(ModuleOp &m) {
     m.walk([&](Operation *op) {
       TypeSwitch<Operation *>(op)
-          .Case<COMBINE_BINARY_OP>([&](auto combineBinaryOp) {
+          .Case<COMBINE_BINARY_OP, arith::SubFOp, arith::DivFOp>(
+              [&](auto combineBinaryOp) {
+                if (auto tensorTy = dyn_cast<RankedTensorType>(
+                        combineBinaryOp.getResult().getType())) {
+                  if (isa<VectorType>(getElementTypeOrSelf(tensorTy))) {
+                    auto vecOp = createCombineVectorizedOp(combineBinaryOp);
+                    combineBinaryOp.replaceAllUsesWith(vecOp.getResult());
+                    combineBinaryOp.erase();
+                  }
+                }
+              })
+          .Case<arith::SelectOp>([&](auto selectOp) {
             if (auto tensorTy = dyn_cast<RankedTensorType>(
-                    combineBinaryOp.getResult().getType())) {
+                    selectOp.getResult().getType())) {
               if (isa<VectorType>(getElementTypeOrSelf(tensorTy))) {
-                auto vecOp = createCombineVectorizedOp(combineBinaryOp);
-                combineBinaryOp.replaceAllUsesWith(vecOp.getResult());
-                combineBinaryOp.erase();
+                OpBuilder builder(selectOp);
+                auto vecOp = builder.create<triton::xpu::VSelectOp>(
+                    selectOp.getLoc(), tensorTy, selectOp.getCondition(),
+                    selectOp.getTrueValue(), selectOp.getFalseValue());
+                selectOp.replaceAllUsesWith(vecOp.getResult());
+                selectOp.erase();
               }
             }
           })
@@ -324,6 +393,517 @@ public:
       numUnroll = this->unrollNum * clusterEncoding.getCoresPerGroup().back();
     }
     return numUnroll;
+  }
+
+  //===--------------------------------------------------------------------===//
+  // Dry-run register-pressure model.
+  //
+  // The current tile factor comes from `unrollNum`, a global knob with no
+  // notion of how many registers the segment actually needs. The code below
+  // computes what a budget-driven forward decision *would* pick and reports
+  // the delta. It does not touch the IR.
+  //===--------------------------------------------------------------------===//
+
+  // Reports the gate that actually decides whether tiling happens at all:
+  // `numCol > numUnroll && numCol % numUnroll == 0`. A factor that does not
+  // divide the width silently disables tiling, which is why unrollNum
+  // 3/5/6/7/8 all produce identical code today.
+  void reportGate(const char *site, Operation *op, int64_t numCol,
+                  int64_t numUnroll) {
+    StringRef kernel = "<unknown>";
+    if (auto funcOp = op->getParentOfType<triton::FuncOp>())
+      kernel = funcOp.getName();
+    const char *why = numCol <= numUnroll    ? "skip:factor>=width"
+                      : (numCol % numUnroll) ? "skip:width%factor!=0"
+                                             : "tile";
+    llvm::errs() << "[UnrollControl][gate] " << kernel << " site=" << site
+                 << " numCol=" << numCol << " numUnroll=" << numUnroll
+                 << " unrollNum=" << this->unrollNum << " -> " << why << "\n";
+  }
+
+  void reportDryRun(const char *site, Operation *insertPt,
+                    const SetVector<Operation *> &unrollOpTree, Type valTy,
+                    int64_t numCol, int64_t numUnroll, int64_t iterNum) {
+    RegPressure p;
+    getRegPressure(getOperation(), unrollOpTree, p);
+    int64_t peakVRegs = p.vecPeak, totalVRegs = p.vecTotal;
+
+    int64_t coresPerGroup = 1, widthPerCore = numCol;
+    if (auto tensorTy = dyn_cast<RankedTensorType>(valTy)) {
+      if (auto clusterEncoding = getClusterLayout(tensorTy)) {
+        coresPerGroup = clusterEncoding.getCoresPerGroup().back();
+        widthPerCore = clusterEncoding.getSizePerCore().back();
+      }
+    }
+
+    // Smallest trip count that fits the budget.
+    int64_t iterModel =
+        this->vrfBudget > 0 ? ceil<int64_t>(peakVRegs, this->vrfBudget) : 1;
+    iterModel = std::max<int64_t>(iterModel, 1);
+    // A trip count that does not divide the width makes setTensorType round
+    // the tile up, so the tiling is silently dropped (unrollNum 3/5/6/7/8 all
+    // emit byte-identical asm today). Snap up to the next legal divisor.
+    int64_t iterLegal = iterModel;
+    while (iterLegal < numCol &&
+           (numCol % iterLegal || widthPerCore % iterLegal))
+      ++iterLegal;
+    if (numCol % iterLegal || widthPerCore % iterLegal)
+      iterLegal = 1;
+
+    StringRef kernel = "<unknown>";
+    if (auto funcOp = insertPt->getParentOfType<triton::FuncOp>())
+      kernel = funcOp.getName();
+
+    llvm::errs() << "[UnrollControl][dry-run] " << kernel << " site=" << site
+                 << " numCol=" << numCol << " widthPerCore=" << widthPerCore
+                 << " coresPerGroup=" << coresPerGroup
+                 << " treeOps=" << unrollOpTree.size()
+                 << " peakVRegs=" << peakVRegs << " totalVRegs=" << totalVRegs
+                 << " scalarPeak=" << p.scalarPeak
+                 << " scalarTotal=" << p.scalarTotal
+                 << " budget=" << this->vrfBudget
+                 << " | now: unrollNum=" << this->unrollNum
+                 << " numUnroll=" << numUnroll << " iterNum=" << iterNum
+                 << " | model: iterNum=" << iterLegal << " (raw " << iterModel
+                 << ") unrollNum="
+                 << ceil<int64_t>(numCol, iterLegal * coresPerGroup)
+                 << (iterLegal == iterNum ? " SAME" : " DIFF") << "\n";
+  }
+
+  //===--------------------------------------------------------------------===//
+  // Forward tile decision.
+  //
+  // Instead of asking "does the global unrollNum happen to divide the width",
+  // decide the trip count from the register pressure of the segment and then
+  // intersect it with the trip counts the rewrite can actually express.
+  //===--------------------------------------------------------------------===//
+
+  void getTileGeometry(Type valTy, int64_t numCol, int64_t &widthPerCore,
+                       int64_t &coresPerGroup) {
+    widthPerCore = numCol;
+    coresPerGroup = 1;
+    if (auto tensorTy = dyn_cast<RankedTensorType>(valTy)) {
+      if (auto clusterEncoding = getClusterLayout(tensorTy)) {
+        coresPerGroup = clusterEncoding.getCoresPerGroup().back();
+        widthPerCore = clusterEncoding.getSizePerCore().back();
+      }
+    }
+  }
+
+  // setTensorType/createEncoding slice both the shape and sizePerCore with
+  // ceil(). A trip count that does not divide them evenly makes the last
+  // iteration run off the end, so only exact divisors are expressible.
+  // `minVecWidth` is the narrowest vector row in the tree, in slots, or 0 when
+  // the tree holds no vector value. It has to divide the trip count too: since
+  // M3.2 the type this geometry is read from can be the *scalar* side of a
+  // vector->scalar boundary (the unpack in front of a scalar reduce), whose row
+  // is vecSize times wider. Slicing by a factor the vector row cannot express
+  // saturates it at one slot while the scalar row keeps dividing, and the two
+  // then cover a different number of lanes per iteration.
+  bool isLegalIterNum(int64_t iterNum, int64_t numCol, int64_t widthPerCore,
+                      int64_t minVecWidth = 0) {
+    return iterNum >= 1 && numCol % iterNum == 0 &&
+           widthPerCore % iterNum == 0 &&
+           (minVecWidth == 0 || minVecWidth % iterNum == 0);
+  }
+
+  // Does the segment straddle a vector->scalar boundary? Only there do the two
+  // representations of one row -- V vector slots on one side, V * vecSize
+  // scalars on the other -- get sliced by the same factor while being counted
+  // in different units, which is what makes the vector row a legality bound
+  // rather than just the widest thing in the tree.
+  bool hasVecScalarBoundary(const SetVector<Operation *> &unrollOpTree) {
+    return false;
+  }
+
+  // Is this the LM buffer tritonxpu-alloca attached to a vector<->scalar
+  // boundary? Recognised by its users rather than by a flag on the alloca,
+  // because Alloca.cpp creates one buffer per pack/unpack and nothing else
+  // ever consumes it. Conservative on purpose: a buffer shared with a store
+  // pointer is not treated as a boundary buffer.
+  bool isBoundaryBuffer(Operation *op) {
+    if (!isa<triton::xpu::AllocaOp>(op))
+      return false;
+    if (op->use_empty())
+      return false;
+    return false;
+  }
+
+  // Is there anything for the model to pick besides "do not tile"? Used at the
+  // points that decide whether to collect an unroll tree at all.
+  // True once the op sits inside a tile loop this pass created.
+  bool inUnrollLoop(Operation *op) {
+    for (auto *parent = op->getParentOp(); parent;
+         parent = parent->getParentOp())
+      if (isa<scf::ForOp>(parent) && parent->hasAttr(kUnrollLoopAttr))
+        return true;
+    return false;
+  }
+
+  bool canTile(Operation *op, Type valTy, int64_t numCol, int64_t numUnroll) {
+    if (this->budgetTiling && inUnrollLoop(op))
+      return false;
+    if (!this->budgetTiling)
+      return numCol > numUnroll && numCol % numUnroll == 0;
+    int64_t widthPerCore = 1, coresPerGroup = 1;
+    getTileGeometry(valTy, numCol, widthPerCore, coresPerGroup);
+    for (int64_t iterNum = 2; iterNum <= widthPerCore; ++iterNum)
+      if (isLegalIterNum(iterNum, numCol, widthPerCore))
+        return true;
+    return false;
+  }
+
+  void remarkDecision(const char *site, Operation *insertPt, int64_t numCol,
+                      int64_t widthPerCore, int64_t peakVRegs, int64_t target,
+                      int64_t chosen, int64_t maxLegal, const char *why,
+                      int64_t scalarPeak = -1, int64_t minVecWidth = -1,
+                      const triton::xpu::Decision *decision = nullptr) {
+    std::string msg;
+    llvm::raw_string_ostream os(msg);
+    os << "[UnrollControl] site=" << site << " numCol=" << numCol
+       << " widthPerCore=" << widthPerCore << " minVecWidth=" << minVecWidth
+       << " peakVRegs=" << peakVRegs << " scalarPeak=" << scalarPeak
+       << " budget=" << this->vrfBudget << " target=" << target
+       << " maxLegal=" << maxLegal << " -> iterNum=" << chosen << " (" << why
+       << ")";
+    // Every criterion that took part has to be visible, feasible or not: a
+    // criterion nobody can read is a criterion nobody can falsify.
+    if (decision) {
+      for (const auto &t : decision->perTierTrace) {
+        os << " [tier" << t.tier << ":" << t.name << " cands=" << t.candidatesIn
+           << "->" << t.candidatesOut;
+        if (t.chosenCost)
+          os << " cost=" << *t.chosenCost;
+        if (!t.why.empty())
+          os << " veto=" << t.why;
+        os << "]";
+      }
+    }
+    insertPt->emitRemark(msg);
+    if (dryRun)
+      llvm::errs() << "[UnrollControl][decide] " << msg << "\n";
+  }
+
+  // Step 3.4 groundwork, report-only. `peakVRegs` fed to the decision is
+  // max(treeP.vecPeak, blockP.vecPeak) and 3.4 replaces the block half with a
+  // per-segment peak. §1.7 measured the gap between the two halves going *both*
+  // ways (layernorm's reduce-for site is tree 48 against block 24, its
+  // pointwise sites are equal), so `blockP` is not an upper bound and the swap
+  // cannot be done blind -- the first step is to tell per site which half is
+  // in charge, and whether dropping the block term would move the factor at
+  // all.
+  //
+  // The replay uses the tree peak as the stand-in for a segment peak. That is
+  // the loosest end of the range 3.4 can land in: a segment is a superset of
+  // one op tree and a subset of the block, so the real per-segment peak sits
+  // between these two numbers. A site where the tree-only replay picks the same
+  // factor therefore cannot be moved by 3.4 in the loosening direction either,
+  // which is what makes this a usable filter rather than a guess.
+  void reportSegDominance(const char *site, Operation *insertPt,
+                          const RegPressure &treeP, const RegPressure &blockP,
+                          const triton::xpu::TileContext &ctx,
+                          llvm::ArrayRef<int64_t> candidates,
+                          const triton::xpu::Decision &decision) {
+    if (!std::getenv("TRITONXPU_TILE_REPORT"))
+      return;
+    triton::xpu::TileContext altCtx = ctx;
+    altCtx.peakVRegs = treeP.vecPeak;
+    altCtx.maxVecWidth = treeP.maxVecWidth;
+    triton::xpu::Decision alt =
+        triton::xpu::TileDecider().decide(candidates, altCtx);
+    StringRef kernel = "<unknown>";
+    if (auto funcOp = insertPt->getParentOfType<triton::FuncOp>())
+      kernel = funcOp.getName();
+    llvm::errs()
+        << "[SegDominance] " << kernel << " site=" << site
+        << " treePeak=" << treeP.vecPeak << " blockPeak=" << blockP.vecPeak
+        << " dominant="
+        << (treeP.vecPeak > blockP.vecPeak
+                ? "tree"
+                : (treeP.vecPeak == blockP.vecPeak ? "equal" : "block"))
+        << " treeMaxVecWidth=" << treeP.maxVecWidth
+        << " blockMaxVecWidth=" << blockP.maxVecWidth
+        << " target=" << triton::xpu::vrfBudgetTarget(ctx)
+        << " treeOnlyTarget=" << triton::xpu::vrfBudgetTarget(altCtx)
+        << " iterNum=" << decision.iterNum << " treeOnlyIterNum=" << alt.iterNum
+        << " moved=" << (alt.iterNum != decision.iterNum ? "yes" : "no")
+        << " why=" << decision.why << " treeOnlyWhy=" << alt.why << "\n";
+  }
+
+  // One run of the pressure model, from the two measurements to the decider's
+  // verdict. Held together in a struct so the pin branch can ask what the model
+  // would have said without a second copy of the wiring: the one time this pass
+  // kept two copies of a derived number (`target`), they drifted, which is why
+  // 2.3 folded it into `vrfBudgetTarget`.
+  struct ModelRun {
+    triton::xpu::Decision decision;
+    RegPressure treeP, blockP;
+    triton::xpu::TileContext ctx;
+    SmallVector<int64_t> candidates;
+    int64_t maxLegal = 1;
+    // The tree holds no vector value, so the model has nothing to say and stops
+    // before `blockP` / `ctx` / `decision` are filled. The caller decides what
+    // to fall back to; this only reports that it happened.
+    bool noVectorValues = false;
+  };
+
+  void runModel(Operation *insertPt, const SetVector<Operation *> &unrollOpTree,
+                int64_t numCol, int64_t widthPerCore, int64_t loopResults,
+                ModelRun &run) {
+    getRegPressure(getOperation(), unrollOpTree, run.treeP);
+    // A tree that holds no vector value (a bool store, say) puts no pressure on
+    // the vector file, so this model has nothing to say about it: what tiling
+    // buys there is code size, which is not modelled.
+    if (run.treeP.vecPeak == 0) {
+      run.noVectorValues = true;
+      return;
+    }
+    getBlockRegPressure(getOperation(), insertPt, run.blockP);
+    // Everything the criteria may read, and nothing else: the target itself is
+    // computed by the tier-1 criterion out of these numbers
+    // (`vrfBudgetTarget`), so the pass no longer holds a second copy of it.
+    //
+    // Scalar pressure is measured and reported, but it does not drive the
+    // factor. Measured on the layernorm probe (bufSz=512): scalarPeak 389..770
+    // against vecPeak 32..48, while the emitted scalar spill count stays
+    // at 7..9 no matter which trip count is picked. Those un-vectorized tensors
+    // are not register-resident at that scale, so charging them to a register
+    // budget only distorts the target; what they actually cost is instructions.
+    run.ctx.numCol = numCol;
+    run.ctx.widthPerCore = widthPerCore;
+    run.ctx.peakVRegs = std::max(run.treeP.vecPeak, run.blockP.vecPeak);
+    run.ctx.maxVecWidth =
+        std::max(run.treeP.maxVecWidth, run.blockP.maxVecWidth);
+    run.ctx.scalarPeak = std::max(run.treeP.scalarPeak, run.blockP.scalarPeak);
+    run.ctx.vecRow =
+        hasVecScalarBoundary(unrollOpTree) ? run.treeP.minVecWidth : 0;
+    run.ctx.vrfBudget = this->vrfBudget;
+    run.ctx.loopResults = loopResults;
+
+    // A per-candidate pressure term for reduce segments that collapse an
+    // interpreted combine region (step 3.4b) lived here and was reverted on
+    // 2026-08-05: it drove welford's reduce segment to `vspill=0` at
+    // `iterNum=8` as designed, but the real-hardware sweep says that point is
+    // 15.6% *slower* than the `iterNum=2` the plain budget model picks, at all
+    // three occupancies measured (`findings.md` §1.17). Spilling 14 accumulator
+    // vregs is cheaper on this segment than running the collapse 4x more times,
+    // so zero spill is not the objective this model should be optimising.
+    //
+    // The candidate set is the expressible trip counts; which one to take is
+    // the decider's business, tier by tier.
+    for (int64_t iterNum = 1; iterNum <= widthPerCore; ++iterNum) {
+      if (!isLegalIterNum(iterNum, numCol, widthPerCore, run.ctx.vecRow))
+        continue;
+      run.candidates.emplace_back(iterNum);
+      run.maxLegal = iterNum;
+    }
+    triton::xpu::TileDecider decider;
+    run.decision = decider.decide(run.candidates, run.ctx);
+  }
+
+  // Step 3.5 groundwork, report-only. `pinnedUnrollNum` short-circuits the
+  // model before it ever runs, and the pin value is not reachable from any knob
+  // (`unroll_num` is read after it), so today neither magic number can be shown
+  // to be wrong: boolfused emits the same code at unroll_num 1/4/16. This puts
+  // the pin's factor next to what the model would have picked at the same site.
+  //
+  // The legacy factor is printed next to it because that is what the site would
+  // fall back to. The two turn out to be the *same* number by construction, not
+  // by coincidence: `getNumUnroll` already folds `unrollNum * coresPerGroup`
+  // into `numUnroll`, and both pin sites set `unrollNum` to the pinned value,
+  // so `ceil(numCol, pin * coresPerGroup) == ceil(numCol, numUnroll)`. Measured
+  // on both pin sites (`findings.md` §1.30). That is why 3.5b only has to stop
+  // the early return -- the pin's arithmetic contributes nothing of its own.
+  void reportPinShadow(const char *site, Operation *insertPt,
+                       const SetVector<Operation *> &unrollOpTree,
+                       int64_t numCol, int64_t widthPerCore,
+                       int64_t coresPerGroup, int64_t legacyIterNum,
+                       int64_t pinned, int64_t loopResults) {
+    if (!std::getenv("TRITONXPU_TILE_REPORT"))
+      return;
+    ModelRun run;
+    runModel(insertPt, unrollOpTree, numCol, widthPerCore, loopResults, run);
+    StringRef kernel = "<unknown>";
+    if (auto funcOp = insertPt->getParentOfType<triton::FuncOp>())
+      kernel = funcOp.getName();
+    llvm::errs() << "[PinShadow] " << kernel << " site=" << site
+                 << " pin=" << pinReason
+                 << " pinnedUnrollNum=" << pinnedUnrollNum
+                 << " numCol=" << numCol << " widthPerCore=" << widthPerCore
+                 << " coresPerGroup=" << coresPerGroup
+                 << " pinIterNum=" << pinned
+                 << " legacyIterNum=" << legacyIterNum;
+    // Without the pin this site would fall back to the legacy factor -- which
+    // the pin itself already overwrote (`this->unrollNum`), so the comparison
+    // is against the pinned unrollNum, not the user's. Worth seeing, not
+    // hiding.
+    if (run.noVectorValues) {
+      llvm::errs() << " modelWhy=no-vector-values:legacy treePeak=0"
+                   << " treeScalarPeak=" << run.treeP.scalarPeak
+                   << " modelIterNum=" << legacyIterNum
+                   << " moved=" << (legacyIterNum != pinned ? "yes" : "no")
+                   << "\n";
+      return;
+    }
+    // The candidate set in full: a pin value that is not even expressible, or a
+    // set collapsed to {1}, is the degradation path 3.5 must keep observable.
+    std::string legal;
+    for (int64_t c : run.candidates)
+      legal += (legal.empty() ? "" : ",") + std::to_string(c);
+    llvm::errs() << " treePeak=" << run.treeP.vecPeak
+                 << " blockPeak=" << run.blockP.vecPeak
+                 << " vecRow=" << run.ctx.vecRow
+                 << " target=" << triton::xpu::vrfBudgetTarget(run.ctx)
+                 << " maxLegal=" << run.maxLegal << " legal={" << legal << "}"
+                 << " pinExpressible="
+                 << (llvm::is_contained(run.candidates, pinned) ? "yes" : "no")
+                 << " modelIterNum=" << run.decision.iterNum
+                 << " modelWhy=" << run.decision.why
+                 << " moved=" << (run.decision.iterNum != pinned ? "yes" : "no")
+                 << "\n";
+  }
+
+  // The register file is shared by everything simultaneously live in the block,
+  // not by one op tree: sibling trees hold their values at the same time (the
+  // mean and var accumulators of a layernorm, say). Measuring per tree
+  // double-spends the file, so the pressure is taken over the whole block the
+  // tile loop will live in. Every vector value there scales with the same
+  // factor, so one target per block is the right granularity.
+  // Returns the whole decision, not just the factor: the trip count alone
+  // cannot say which criterion produced it, and the two call sites must not
+  // have to change again every time a criterion is added (§3.2.2).
+  // `loopResults` is the number of iter_args the tile loop will carry, which
+  // only the caller knows before the loop exists.
+  triton::xpu::Decision
+  decideIterNum(const char *site, Operation *insertPt,
+                const SetVector<Operation *> &unrollOpTree, Type valTy,
+                int64_t numCol, int64_t numUnroll, int64_t loopResults = 0) {
+    int64_t legacyIterNum = ceil<int64_t>(numCol, numUnroll);
+    if (dryRun)
+      reportDryRun(site, insertPt, unrollOpTree, valTy, numCol, numUnroll,
+                   legacyIterNum);
+    int64_t widthPerCore = 1, coresPerGroup = 1;
+    getTileGeometry(valTy, numCol, widthPerCore, coresPerGroup);
+
+    if (!this->budgetTiling) {
+      // The vector row is a legality bound, not part of the model, so it binds
+      // the legacy factor as well: ceil(numCol, unrollNum) is derived from the
+      // same possibly-scalar `valTy` and can exceed what the vector values in
+      // the tree can express. Fall back to the largest expressible factor that
+      // is no larger.
+      RegPressure p;
+      int64_t vecRow = 0;
+      if (hasVecScalarBoundary(unrollOpTree)) {
+        getRegPressure(getOperation(), unrollOpTree, p);
+        vecRow = p.minVecWidth;
+      }
+      if (vecRow &&
+          !isLegalIterNum(legacyIterNum, numCol, widthPerCore, vecRow)) {
+        int64_t clamped = 1;
+        for (int64_t iterNum = 1; iterNum <= legacyIterNum; ++iterNum)
+          if (isLegalIterNum(iterNum, numCol, widthPerCore, vecRow))
+            clamped = iterNum;
+        std::string msg;
+        llvm::raw_string_ostream os(msg);
+        os << "[UnrollControl] site=" << site << " numCol=" << numCol
+           << " widthPerCore=" << widthPerCore << " minVecWidth=" << vecRow
+           << " -> iterNum=" << clamped << " (vector-row-bound, legacy "
+           << legacyIterNum << ")";
+        insertPt->emitRemark(msg);
+        legacyIterNum = clamped;
+        return {legacyIterNum, "vector-row-bound", {}};
+      }
+      return {legacyIterNum, "legacy", {}};
+    }
+
+    // Collect the expressible trip counts once: the largest is the fallback
+    // when the budget cannot be reached at all.
+    int64_t maxLegal = 1;
+
+    // A pinned factor claims to be a correctness constraint, not a heuristic,
+    // so the model gets no say here; it only reports which constraint took
+    // over. Whether that claim holds is now testable from the outside:
+    // `pin-unroll-num` (3.5b) can drop the pin or move its constant, and
+    // `[PinShadow]` says what the model would have picked at the same site.
+    if (pinnedUnrollNum > 0) {
+      int64_t pinned = ceil<int64_t>(numCol, pinnedUnrollNum * coresPerGroup);
+      pinned = std::max<int64_t>(pinned, 1);
+      remarkDecision(site, insertPt, numCol, widthPerCore, /*peakVRegs=*/-1,
+                     /*target=*/-1, pinned, maxLegal, pinReason);
+      reportPinShadow(site, insertPt, unrollOpTree, numCol, widthPerCore,
+                      coresPerGroup, legacyIterNum, pinned, loopResults);
+      return {pinned, pinReason, {}};
+    }
+
+    ModelRun run;
+    runModel(insertPt, unrollOpTree, numCol, widthPerCore, loopResults, run);
+    // Nothing for the model to say: keep the legacy factor.
+    if (run.noVectorValues) {
+      remarkDecision(site, insertPt, numCol, widthPerCore, /*peakVRegs=*/0,
+                     /*target=*/-1, legacyIterNum, /*maxLegal=*/-1,
+                     "no-vector-values:legacy", run.treeP.scalarPeak);
+      return {legacyIterNum, "no-vector-values:legacy", {}};
+    }
+    remarkDecision(site, insertPt, numCol, widthPerCore, run.ctx.peakVRegs,
+                   triton::xpu::vrfBudgetTarget(run.ctx), run.decision.iterNum,
+                   run.maxLegal, run.decision.why.c_str(), run.ctx.scalarPeak,
+                   run.ctx.vecRow, &run.decision);
+    reportSegDominance(site, insertPt, run.treeP, run.blockP, run.ctx,
+                       run.candidates, run.decision);
+    return run.decision;
+  }
+
+  // Earliest store of the tree plus the geometry it implies. Returns false when
+  // the stores of one tree live in different blocks, which the rewrite cannot
+  // handle yet.
+  bool getTreeUnrollInfo(const SetVector<Operation *> &unrollOpTree,
+                         triton::xpu::StoreOp &insertPt,
+                         SmallVector<triton::xpu::StoreOp> &allStoreOps,
+                         int64_t &numCol, int64_t &numUnroll) {
+    for (auto op : unrollOpTree) {
+      auto storeOp = dyn_cast<triton::xpu::StoreOp>(op);
+      if (!storeOp)
+        continue;
+      auto type = storeOp.getValue().getType();
+      numUnroll = numUnroll == 1 ? getNumUnroll(type)
+                                 : std::min(numUnroll, getNumCol(type));
+      numCol =
+          numCol == 1 ? getNumCol(type) : std::min(numCol, getNumCol(type));
+      allStoreOps.emplace_back(storeOp);
+      //[TODO] To deal with the case that storeOps are in more than one block
+      if (insertPt && insertPt->getBlock() != storeOp->getBlock())
+        return false;
+      if (!insertPt || storeOp->isBeforeInBlock(insertPt))
+        insertPt = storeOp;
+    }
+    return true;
+  }
+
+  // One decision per tree, taken before any IR is touched so that the discrete
+  // pointer rewrite can be kept in sync with it.
+  SmallVector<int64_t>
+  planIterNums(SmallVector<SetVector<Operation *>> &unrollOpTrees,
+               const char *site) {
+    SmallVector<int64_t> plan;
+    for (auto &unrollOpTree : unrollOpTrees) {
+      triton::xpu::StoreOp insertPt;
+      SmallVector<triton::xpu::StoreOp> allStoreOps;
+      int64_t numCol = 1, numUnroll = 1;
+      if (!getTreeUnrollInfo(unrollOpTree, insertPt, allStoreOps, numCol,
+                             numUnroll) ||
+          !insertPt) {
+        plan.emplace_back(1);
+        continue;
+      }
+      // A pointwise store segment carries no iter_args (createFor is called
+      // with an empty range at :1263), so the loop-overhead criterion sees
+      // only the index arithmetic.
+      plan.emplace_back(decideIterNum(site, insertPt, unrollOpTree,
+                                      insertPt.getValue().getType(), numCol,
+                                      numUnroll, /*loopResults=*/0)
+                            .iterNum);
+    }
+    return plan;
   }
 
   Type createPointerType(Type type, int64_t vecSize) {
@@ -631,6 +1211,10 @@ public:
     } else {
       forOp = builder.create<scf::ForOp>(loc, lower, upper, step, iterArgs);
     }
+    // Later stages of this pass walk the module again and would otherwise tile
+    // an already tiled segment a second time, inserting the loop index twice.
+    // The legacy gate hid this because a tiled value has numCol == numUnroll.
+    forOp->setAttr(kUnrollLoopAttr, UnitAttr::get(forOp->getContext()));
     builder.setInsertionPointToStart(forOp.getBody());
 
     idxVar = builder.create<arith::IndexCastOp>(loc, builder.getI32Type(),
@@ -642,6 +1226,20 @@ public:
                       SetVector<Operation *> &outerChain,
                       arith::IndexCastOp &idxVar, IRMapping &mapping) {
     for (auto op : unrollOpTree) {
+      // A vector<->scalar boundary buffer must not be cloned into the tile
+      // loop. An alloca inside a loop body is never promoted, so every
+      // iteration grows the stack and the launch fails outright. The original
+      // alloca already sits before forOp (the tree precedes insertPt, and
+      // forOp was created at insertPt), so all this takes is not cloning it:
+      // the clones inside the body then reference the outside buffer, and
+      // eraseDAG leaves it alone because it is no longer use-empty.
+      //
+      // Keeping one full-width buffer for all iterations is correct because
+      // the boundary is written and read back within a single iteration, and
+      // leaving its type unsliced is harmless because lowering reads only
+      // element 0 of the bufPtr (LoadStoreOpToLLVM.cpp getBoundaryLMBase).
+      if (isBoundaryBuffer(op))
+        continue;
       bool isOuter = inOpChain(outerChain, op);
       auto newOp = builder.clone(*op, mapping);
       setTensorType(context, newOp, iterNum, isOuter);
@@ -651,7 +1249,7 @@ public:
                     dyn_cast<RankedTensorType>(loadOp.getPtr().getType())) {
               auto shape = tensorTy.getShape();
               bool isOuter = (shape.size() == 2 && shape.back() == 1);
-              if (!isOuter && !loadOp.getSVOpt() && !loadOp.getIsDiscrete()) {
+              if (!isOuter && !loadOp.getSVOpt()) {
                 insertIndex(newOp, idxVar);
               }
             }
@@ -861,7 +1459,7 @@ public:
 
   void unrollControl(MLIRContext *context,
                      SmallVector<SetVector<Operation *>> &unrollOpTrees,
-                     bool postReduce = false) {
+                     ArrayRef<int64_t> plan, bool postReduce = false) {
     // Get outerChains
     SmallVector<SetVector<Operation *>> outerChains;
     getOuterChains(unrollOpTrees, outerChains, postReduce);
@@ -873,30 +1471,19 @@ public:
       int64_t numUnroll = 1;
       triton::xpu::StoreOp insertPt;
       SmallVector<triton::xpu::StoreOp> allStoreOps;
-      for (auto op : unrollOpTree) {
-        // 1.1 Get insertPt and tensor num
-        if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(op)) {
-          auto type = storeOp.getValue().getType();
-          numUnroll = numUnroll == 1 ? getNumUnroll(type)
-                                     : std::min(numUnroll, getNumCol(type));
-          numCol =
-              numCol == 1 ? getNumCol(type) : std::min(numCol, getNumCol(type));
-          allStoreOps.emplace_back(storeOp);
-          //[TODO] To deal with the case that storeOps are in more than one
-          // block
-          if (insertPt && insertPt->getBlock() != storeOp->getBlock()) {
-            return;
-          }
-          if (!insertPt || storeOp->isBeforeInBlock(insertPt)) {
-            insertPt = storeOp;
-          }
-        }
-      }
+      // 1.1 Get insertPt and tensor num
+      if (!getTreeUnrollInfo(unrollOpTree, insertPt, allStoreOps, numCol,
+                             numUnroll))
+        return;
       if (insertPt) {
         auto loc = insertPt.getLoc();
-        int64_t iterNum = ceil<int64_t>(numCol, numUnroll);
+        // Decided in planIterNums, before any IR was touched.
+        int64_t iterNum = plan[i];
+        // Skip this tree only: unlike the legacy gate, the budget model can
+        // legitimately answer "no loop" for one tree while the others still
+        // want one, so this must not abandon the remaining trees.
         if (iterNum <= 1)
-          return;
+          continue;
         LLVM_DEBUG(llvm::dbgs()
                    << "[Unroll Control] Hit Unroll Control Pointwise\n");
         // 2. Unroll control
@@ -919,16 +1506,15 @@ public:
     }
   }
 
+  // `iterNum` is decided by the caller: it has to be known before
+  // findDiscretePtrChain() rewrites the pointer chain.
   void unrollControlReduce(MLIRContext *context,
                            SetVector<Operation *> &unrollOpTree,
                            Operation *insertPt, ValueRange &iterArgs,
-                           ValueRange &returnOperands) {
+                           ValueRange &returnOperands, int64_t iterNum) {
     SetVector<Operation *> outerChain;
     getOuterChain(unrollOpTree, outerChain);
     if (auto reduceOp = dyn_cast<triton::xpu::ReduceOp>(insertPt)) {
-      int64_t numCol = 1, numUnroll = 1;
-      getUnrollInfoReduce(reduceOp, numCol, numUnroll);
-      int64_t iterNum = ceil<int64_t>(numCol, numUnroll);
       if (iterNum <= 1)
         return;
       OpBuilder builder(reduceOp);
@@ -1063,7 +1649,8 @@ public:
   }
 
   void findDiscretePtrChain(SetVector<Operation *> &unrollOpTree,
-                            SetVector<Operation *> &newUnrollOpTree) {
+                            SetVector<Operation *> &newUnrollOpTree,
+                            bool treeWillTile) {
     for (auto op : unrollOpTree) {
       if (auto loadOp = dyn_cast<triton::xpu::LoadOp>(op)) {
         bool isDiscrete = loadOp.getIsDiscrete();
@@ -1073,7 +1660,12 @@ public:
           auto resType = loadOp.getResult().getType();
           int64_t numCol = getNumCol(resType);
           int64_t numUnroll = getNumUnroll(resType);
-          if (numCol > numUnroll && numCol % numUnroll == 0) {
+          // The rewrite only makes sense inside the tiling loop, so it must
+          // agree with the decision taken for the whole tree.
+          bool willTile = this->budgetTiling
+                              ? treeWillTile
+                              : (numCol > numUnroll && numCol % numUnroll == 0);
+          if (willTile) {
             auto lmPtr = loadOp.getPtr();
             if (auto gm2lmOp = findDefOpBwd<triton::xpu::GM2LMOp>(lmPtr)) {
               auto gmPtrOp = findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr());
@@ -1118,9 +1710,10 @@ public:
 
   void
   findDiscretePtrChains(SmallVector<SetVector<Operation *>> &unrollOpTrees,
-                        SmallVector<SetVector<Operation *>> &newUnrollOpTrees) {
+                        SmallVector<SetVector<Operation *>> &newUnrollOpTrees,
+                        ArrayRef<int64_t> plan) {
     for (auto [i, unrollOpTree] : llvm::enumerate(unrollOpTrees)) {
-      findDiscretePtrChain(unrollOpTree, newUnrollOpTrees[i]);
+      findDiscretePtrChain(unrollOpTree, newUnrollOpTrees[i], plan[i] > 1);
     }
   }
 
@@ -1137,6 +1730,13 @@ public:
         if (auto gm2lmOp = findDefOpBwd<triton::xpu::GM2LMOp>(lmPtr)) {
           auto gmPtrOp = findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr());
           auto gmOffset = gmPtrOp.getOffset();
+          // Nothing to rebase when the LM side has no addptr of its own: the
+          // one we found walking back *is* the gm2lm's GM addptr, which is what
+          // an untiled tree looks like. A discrete gm2lm already gathers into a
+          // 0-based LM buffer, so rewriting this offset would only strip the
+          // block's base off the GM address the gather reads from.
+          if (lmAddPtr == gmPtrOp)
+            return;
           auto extractOp = builder.create<triton::xpu::ExtractOp>(
               loc, getElementTypeOrSelf(gmOffset), builder.getI32IntegerAttr(0),
               gmOffset);
@@ -1152,6 +1752,13 @@ public:
                        findDefOpBwd<triton::xpu::GM2LMMaskOp>(lmPtr)) {
           auto gmPtrOp = findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr());
           auto gmOffset = gmPtrOp.getOffset();
+          // Nothing to rebase when the LM side has no addptr of its own: the
+          // one we found walking back *is* the gm2lm's GM addptr, which is what
+          // an untiled tree looks like. A discrete gm2lm already gathers into a
+          // 0-based LM buffer, so rewriting this offset would only strip the
+          // block's base off the GM address the gather reads from.
+          if (lmAddPtr == gmPtrOp)
+            return;
           auto extractOp = builder.create<triton::xpu::ExtractOp>(
               loc, getElementTypeOrSelf(gmOffset), builder.getI32IntegerAttr(0),
               gmOffset);
@@ -1181,7 +1788,9 @@ public:
       auto valType = storeOp.getValue().getType();
       int64_t numCol = getNumCol(valType);
       int64_t numUnroll = getNumUnroll(valType);
-      if (numCol > numUnroll && numCol % numUnroll == 0) {
+      if (dryRun)
+        reportGate("pointwise", storeOp, numCol, numUnroll);
+      if (canTile(storeOp, valType, numCol, numUnroll)) {
         getDAG(storeOp, visitedOps, unrollOpTrees, excludeChainOps);
       }
       for (auto visitedOp : visitedOps) {
@@ -1194,11 +1803,14 @@ public:
       return;
 
     // 1.3 Find ptr chain of discrete for moving to loop body
+    //     The factor must be decided before this rewrite: it is only valid for
+    //     trees that really end up inside a tiling loop.
+    SmallVector<int64_t> plan = planIterNums(unrollOpTrees, "pointwise");
     SmallVector<SetVector<Operation *>> newUnrollOpTrees(unrollOpTrees);
-    findDiscretePtrChains(unrollOpTrees, newUnrollOpTrees);
+    findDiscretePtrChains(unrollOpTrees, newUnrollOpTrees, plan);
 
     // 2. Deal with unroll opTrees
-    unrollControl(context, newUnrollOpTrees);
+    unrollControl(context, newUnrollOpTrees, plan);
 
     // 3. Calculate discrete offset in the runtime
     createDiscreteOffset(m);
@@ -1297,7 +1909,9 @@ public:
     m.walk([&](triton::xpu::ReduceOp reduceOp) {
       int64_t numCol = 1, numUnroll = 1;
       getUnrollInfoReduce(reduceOp, numCol, numUnroll);
-      if (numCol > numUnroll && numCol % numUnroll == 0) {
+      if (dryRun)
+        reportGate("reduce", reduceOp, numCol, numUnroll);
+      if (canTile(reduceOp, reduceOp.getInputTypes()[0], numCol, numUnroll)) {
         llvm::SetVector<Operation *> reduceOpDefsBwd;
         getOpChainBwd(reduceOpDefsBwd, reduceOp);
         for (auto operand : reduceOpDefsBwd) {
@@ -1327,10 +1941,13 @@ public:
                     getDAG(storeOp, visitedOps, unrollOpTrees, excludeChainOps,
                            true, true);
                     // Find ptr chain of discrete for moving to loop body
+                    SmallVector<int64_t> plan =
+                        planIterNums(unrollOpTrees, "reduce-for");
                     SmallVector<SetVector<Operation *>> newUnrollOpTrees(
                         unrollOpTrees);
-                    findDiscretePtrChains(unrollOpTrees, newUnrollOpTrees);
-                    unrollControl(context, newUnrollOpTrees);
+                    findDiscretePtrChains(unrollOpTrees, newUnrollOpTrees,
+                                          plan);
+                    unrollControl(context, newUnrollOpTrees, plan);
                   }
                   hasIf = true;
                 }
@@ -1349,10 +1966,12 @@ public:
                   getDAG(storeOp, visitedOps, unrollOpTrees, excludeChainOps,
                          true, true);
                   // Find ptr chain of discrete for moving to loop body
+                  SmallVector<int64_t> plan =
+                      planIterNums(unrollOpTrees, "reduce-for");
                   SmallVector<SetVector<Operation *>> newUnrollOpTrees(
                       unrollOpTrees);
-                  findDiscretePtrChains(unrollOpTrees, newUnrollOpTrees);
-                  unrollControl(context, newUnrollOpTrees);
+                  findDiscretePtrChains(unrollOpTrees, newUnrollOpTrees, plan);
+                  unrollControl(context, newUnrollOpTrees, plan);
                 }
               }
             }
@@ -1385,7 +2004,7 @@ public:
       SetVector<Operation *> unrollOpTree;
       int64_t numCol = 1, numUnroll = 1;
       getUnrollInfoReduce(reduceOp, numCol, numUnroll);
-      if (numCol > numUnroll && numCol % numUnroll == 0) {
+      if (canTile(reduceOp, reduceOp.getInputTypes()[0], numCol, numUnroll)) {
         LLVM_DEBUG(llvm::dbgs()
                    << "[Unroll Control] Hit Unroll Control Reduction\n");
         for (int i = 0; i < reduceOperandNum; ++i) {
@@ -1394,6 +2013,24 @@ public:
                    false);
           }
         }
+        // 0. Decide the factor up front: everything below mutates the IR
+        //    (clones the operand chain, inlines the combine region) and is only
+        //    valid if a loop is actually created afterwards. Deciding later
+        //    would leave the inlined combine region orphaned.
+        SetVector<Operation *> probeOpTree;
+        for (auto &copyOpTree : copyOpTrees)
+          for (auto *copyOp : copyOpTree)
+            probeOpTree.insert(copyOp);
+        // The reduce loop carries one accumulator per data operand (the
+        // iterArgs built at :1908), which is what the loop-overhead criterion
+        // charges for.
+        int64_t iterNum =
+            decideIterNum("reduce", reduceOp, probeOpTree,
+                          reduceOp.getInputTypes()[0], numCol, numUnroll,
+                          /*loopResults=*/reduceOperandNum)
+                .iterNum;
+        if (iterNum <= 1)
+          return;
         // 1. Copy Defined Op Chain of Reduce Operand for InitArgs
         IRMapping mapping;
         for (auto &copyOpTree : copyOpTrees) {
@@ -1412,61 +2049,88 @@ public:
         // Set Type for Cloned Ops
         auto tensorTy = reduceOp.getInputTypes()[0];
         auto shape = tensorTy.getShape();
+        // `tt.splat` cannot carry a vector element type. On the
+        // region-interpreting path (TRITONXPU_REDUCE_REGION) the combine
+        // region's constants are vector<NxT>, so the broadcast has to be
+        // triton_xpu.vsplat instead -- the same choice Vectorize.cpp makes for
+        // splats it retypes. VSplatOpConversion broadcasts a *scalar* into
+        // every lane (insertelement into lane 0 + shuffle), so the constant is
+        // narrowed back to its splat value here rather than handed over as a
+        // vector. Ops are created at `anchor` because the cloned combine block
+        // sits ahead of the builder's insertion point.
+        auto createCombineSplat = [&](mlir::Type resTy, mlir::Value src,
+                                      mlir::Operation *anchor) -> mlir::Value {
+          OpBuilder b(anchor);
+          auto elemTy =
+              mlir::cast<mlir::RankedTensorType>(resTy).getElementType();
+          if (!mlir::isa<mlir::VectorType>(elemTy))
+            return b.create<triton::SplatOp>(loc, resTy, src).getResult();
+          auto cstOp = src.getDefiningOp<arith::ConstantOp>();
+          auto dense = mlir::cast<mlir::DenseElementsAttr>(cstOp.getValue());
+          assert(dense.isSplat() && "combine constant is not uniform");
+          auto scalar = b.create<arith::ConstantOp>(
+              cstOp.getLoc(),
+              mlir::cast<mlir::TypedAttr>(dense.getSplatValue<Attribute>()));
+          return b.create<triton::xpu::VSplatOp>(loc, resTy, scalar)
+              .getResult();
+        };
         for (auto &op : newReduce) {
           if (isa<arith::CmpFOp>(op) || isa<arith::CmpIOp>(op)) {
             auto tensorTy0 = op.getOperand(0).getType();
             auto tensorTy1 = op.getOperand(1).getType();
-            int operandIndexNeedModify;
+            // The operand that is not a tensor is the one to broadcast. Asking
+            // "is it a Float or an Integer" is too narrow: on the vector path
+            // the combine region's constants are vector<NxT>, and neither
+            // branch used to fire, leaving operandIndexNeedModify uninitialized
+            // and the assert below reading a garbage index.
+            int operandIndexNeedModify = -1;
             mlir::Type operandNeedReserved;
             if (tensorTy0 != tensorTy1) {
-              if ((mlir::isa<mlir::FloatType>(tensorTy0) ||
-                   mlir::isa<mlir::IntegerType>(tensorTy0)) &&
+              if (!mlir::isa<mlir::TensorType>(tensorTy0) &&
                   mlir::isa<mlir::TensorType>(tensorTy1)) {
                 operandIndexNeedModify = 0;
                 operandNeedReserved = tensorTy1;
-              } else if ((mlir::isa<mlir::FloatType>(tensorTy1) ||
-                          mlir::isa<mlir::IntegerType>(tensorTy1)) &&
+              } else if (!mlir::isa<mlir::TensorType>(tensorTy1) &&
                          mlir::isa<mlir::TensorType>(tensorTy0)) {
                 operandIndexNeedModify = 1;
                 operandNeedReserved = tensorTy0;
               }
               assert(
+                  operandIndexNeedModify >= 0 &&
                   isa<arith::ConstantOp>(
                       op.getOperand(operandIndexNeedModify).getDefiningOp()) &&
                   "Unable to extract the non-constant operand.");
-              auto splatOp = builder.create<triton::SplatOp>(
-                  loc, operandNeedReserved,
-                  op.getOperand(operandIndexNeedModify));
-              splatOp->moveBefore(&op);
-              op.setOperand(operandIndexNeedModify, splatOp.getResult());
+              op.setOperand(operandIndexNeedModify,
+                            createCombineSplat(
+                                operandNeedReserved,
+                                op.getOperand(operandIndexNeedModify), &op));
             }
           } else if (auto selOp = dyn_cast<arith::SelectOp>(op)) {
             auto tensorTy1 = selOp.getODSOperands(1)[0].getType();
             auto tensorTy2 = selOp.getODSOperands(2)[0].getType();
-            int operandIndexNeedModify;
+            int operandIndexNeedModify = -1;
             mlir::Type operandNeedReserved;
             if (tensorTy1 != tensorTy2) {
-              if ((mlir::isa<mlir::FloatType>(tensorTy1) ||
-                   mlir::isa<mlir::IntegerType>(tensorTy1)) &&
+              if (!mlir::isa<mlir::TensorType>(tensorTy1) &&
                   mlir::isa<mlir::TensorType>(tensorTy2)) {
                 operandIndexNeedModify = 1;
                 operandNeedReserved = tensorTy2;
-              } else if ((mlir::isa<mlir::FloatType>(tensorTy2) ||
-                          mlir::isa<mlir::IntegerType>(tensorTy2)) &&
+              } else if (!mlir::isa<mlir::TensorType>(tensorTy2) &&
                          mlir::isa<mlir::TensorType>(tensorTy1)) {
                 operandIndexNeedModify = 2;
                 operandNeedReserved = tensorTy1;
               }
-              assert(isa<arith::ConstantOp>(
+              assert(operandIndexNeedModify >= 0 &&
+                     isa<arith::ConstantOp>(
                          selOp.getOperand(operandIndexNeedModify)
                              .getDefiningOp()) &&
                      "Unable to extract the non-constant operand.");
 
-              auto splatOp = builder.create<triton::SplatOp>(
-                  loc, operandNeedReserved,
-                  selOp.getOperand(operandIndexNeedModify));
-              splatOp->moveBefore(&op);
-              selOp.setOperand(operandIndexNeedModify, splatOp.getResult());
+              selOp.setOperand(
+                  operandIndexNeedModify,
+                  createCombineSplat(operandNeedReserved,
+                                     selOp.getOperand(operandIndexNeedModify),
+                                     &op));
             }
           }
           for (auto [i, resTy] : llvm::enumerate(op.getResultTypes())) {
@@ -1499,11 +2163,11 @@ public:
         }
         // Find ptr chain of discrete for moving to loop body
         SetVector<Operation *> newUnrollOpTree(unrollOpTree);
-        findDiscretePtrChain(unrollOpTree, newUnrollOpTree);
+        findDiscretePtrChain(unrollOpTree, newUnrollOpTree, iterNum > 1);
         // 3. Create Loop for ReduceWithinCore
         ValueRange iterArgsRange(iterArgs);
         unrollControlReduce(context, newUnrollOpTree, reduceOp, iterArgsRange,
-                            returnOperands);
+                            returnOperands, iterNum);
         // 4. For Vectorize: triton.addf->triton_xpu.vvaddf
         processOpVecTy(m);
       }
@@ -1578,7 +2242,7 @@ public:
       int64_t numCol = getNumCol(valType);
       int64_t numUnroll = getNumUnroll(valType);
       bool _isPostReduceStore = isPostReduceStore(storeOp);
-      if (numCol > numUnroll && numCol % numUnroll == 0 && _isPostReduceStore) {
+      if (canTile(storeOp, valType, numCol, numUnroll) && _isPostReduceStore) {
         getPostReduceDAG(storeOp, visitedOps, unrollOpTrees, excludeChainOps);
       }
     });
@@ -1591,7 +2255,8 @@ public:
     // 3. Deal with unroll opTrees
     LLVM_DEBUG(llvm::dbgs()
                << "[Unroll Control] Hit Unroll Control Post Reduction\n");
-    unrollControl(context, unrollOpTrees, true);
+    SmallVector<int64_t> plan = planIterNums(unrollOpTrees, "post-reduce");
+    unrollControl(context, unrollOpTrees, plan, /*postReduce=*/true);
   }
 
   void reductionUnrollControl(ModuleOp &m, MLIRContext *context) {
@@ -1611,6 +2276,8 @@ public:
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
 
+    dryRun = std::getenv("TRITONXPU_UNROLL_DRYRUN") != nullptr;
+
     bool isScan = false;
     m.walk([&](triton::xpu::ScanOp scanOp) { isScan = true; });
     if (isScan) {
@@ -1625,7 +2292,7 @@ public:
       auto ptrElemTy = getElementTypeOrSelf(getElementTypeOrSelf(ptrTy));
       if (dtype == Dtype::FP32 && valElemTy.isInteger(32) &&
           cast<triton::PointerType>(ptrElemTy).getPointeeType().isInteger(8)) {
-        this->unrollNum = 4;
+        applyPin(m, /*constant=*/4, "bool-store-vectorize");
       }
     });
 
@@ -1638,8 +2305,9 @@ public:
       auto layout =
           cast<triton::xpu::ClusterLayoutAttr>(operandType.getEncoding());
       unsigned rowsPerCore = layout.getSizePerCore()[0];
-      this->unrollNum =
-          (shape.size() == 2 && rowsPerCore > 1) ? 1 : this->unrollNum;
+      if (shape.size() == 2 && rowsPerCore > 1) {
+        applyPin(m, /*constant=*/1, "core-deal-multi-rows");
+      }
     });
 
     if (isReduce) {
@@ -1647,6 +2315,13 @@ public:
     } else {
       pointwiseUnrollControl(m, context);
     }
+
+    // The marker only exists to stop a later walk inside this pass from tiling
+    // an already tiled segment a second time; it must not survive into the
+    // emitted IR. With budget_tiling off the artifacts have to stay
+    // byte-identical to the legacy pipeline, and a leftover attribute is a
+    // visible difference (10/10 probes' .ttxir differed on just this line).
+    m.walk([&](scf::ForOp forOp) { forOp->removeAttr(kUnrollLoopAttr); });
   }
 };
 

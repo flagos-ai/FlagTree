@@ -1,3 +1,14 @@
+# XPU: conceal all IR text (MLIR/LLVM/ASM) in non-Debug builds, aligning with
+# internal Triton 3.0 TRITON_CONCEAL_IR. XPU-only. Also cover
+# TritonRelBuildWithAsserts, which FlagTree uses as the default RelWithAsserts
+# type and does not inherit CMAKE_CXX_FLAGS_RELEASE.
+set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -DTRITON_CONCEAL_IR=1")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DTRITON_CONCEAL_IR=1")
+set(CMAKE_C_FLAGS_TRITONRELBUILDWITHASSERTS "${CMAKE_C_FLAGS_TRITONRELBUILDWITHASSERTS} -DTRITON_CONCEAL_IR=1")
+set(CMAKE_CXX_FLAGS_TRITONRELBUILDWITHASSERTS "${CMAKE_CXX_FLAGS_TRITONRELBUILDWITHASSERTS} -DTRITON_CONCEAL_IR=1")
+add_compile_definitions($<$<NOT:$<CONFIG:Debug>>:TRITON_CONCEAL_IR=1>)
+message(STATUS "[XPU] TRITON_CONCEAL_IR=1 enabled for non-Debug XPU builds")
+
 # ============================================================================
 # XPU SDNN Object File Validation
 # ============================================================================
@@ -109,7 +120,16 @@ add_subdirectory(include)
 # compiles, without changing main-tree CMake files.
 if(TARGET TritonGPUIR)
   add_dependencies(TritonGPUIR TritonXPUAttrDefsIncGen)
+  target_include_directories(TritonGPUIR BEFORE PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/include)
 endif()
+
+# ir.cc / llvm.cc are compiled as part of the main `triton` target, which is
+# created after this subdirectory. Defer so the conceal macro actually reaches
+# those sources.
+cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL
+  target_compile_definitions triton PRIVATE TRITON_CONCEAL_IR=1)
 
 add_subdirectory(lib)
 

@@ -1795,6 +1795,11 @@ struct TritonXPUVectorizePass
       }
     }
 
+    if (mod->hasAttr(kBF16ToFP32VecOptOffAttrName)) {
+      BF16ToFP32VecOpt = false;
+      mod->removeAttr(kBF16ToFP32VecOptOffAttrName);
+    }
+
     // bfloat16 -> float32 Vector Optimization
     if (BF16ToFP32VecOpt) {
       BF16ToFP32VecOptimize(mod);

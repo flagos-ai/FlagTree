@@ -1,14 +1,14 @@
 #ifndef TRITONXPU_OPS
 #define TRITONXPU_OPS
 
-include "mlir/IR/OpBase.td" // Trait
+include "mlir/IR/OpBase.td"                  // Trait
 include "mlir/Dialect/Arith/IR/ArithBase.td" // Arith_CmpFPredicateAttr
-include "triton/Dialect/TritonXPU/IR/TritonXPUDialect.td" // For TritonXPU_Dialect
-include "triton/Dialect/TritonXPU/IR/TritonXPUAttrDefs.td" // For Attr
-include "triton/Dialect/TritonXPU/IR/TritonXPUEnums.td" // For XPU op enums
-include "triton/Dialect/TritonXPU/IR/TritonXPUTypes.td" // For types
+include
+    "triton/Dialect/TritonXPU/IR/TritonXPUDialect.td" // For TritonXPU_Dialect
+include "triton/Dialect/TritonXPU/IR/TritonXPUAttrDefs.td"   // For Attr
+include "triton/Dialect/TritonXPU/IR/TritonXPUEnums.td"      // For XPU op enums
+include "triton/Dialect/TritonXPU/IR/TritonXPUTypes.td"      // For types
 include "triton/Dialect/TritonXPU/IR/TritonXPUInterfaces.td" // For types
-
 
 //===----------------------------------------------------------------------===//
 // TRITONXPU op definitions
@@ -19,175 +19,160 @@ include "triton/Dialect/TritonXPU/IR/TritonXPUInterfaces.td" // For types
 //
 def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
 
-
-class TTX_Op<string mnemonic, list<Trait> traits = []> :
-    Op<TritonXPU_Dialect, mnemonic, traits>;
-
+class TTX_Op<string mnemonic, list<Trait> traits = []>
+    : Op<TritonXPU_Dialect, mnemonic, traits>;
 
 //===----------------------------------------------------------------------===//
 // Memory Ops
 //===----------------------------------------------------------------------===//
 
 def TTX_AllocaOp : TTX_Op<"alloca"> {
-    let summary = "alloca";
-    let arguments = (ins SI64Attr:$size);
-    let results = (outs TT_PtrLike:$result);
+  let summary = "alloca";
+  let arguments = (ins SI64Attr:$size);
+  let results = (outs TT_PtrLike:$result);
 }
 
-def TTX_GM2LMOp : TTX_Op<"gm2lm", [AttrSizedOperandSegments,  MemoryEffects<[MemRead<GlobalMemory>]>]> {
-    let summary = "gm2lm";
-    // [internal bc5e33a6] LayerNorm vectorization can turn `other` into a
-    // tensor<vector<T>>. Internal widened shared TT_Type, but FlagTree keeps
-    // main-tree TableGen definitions pristine. TTX_Type is the XPU-local
-    // equivalent and already admits vectors/tensors of vectors.
-    let arguments = (ins TT_PtrLike:$ptr,
-                         Optional<TT_IntLike>:$len,
-                         Optional<TTX_Type>:$other,
-                         Optional<TT_PtrLike>:$bufPtr,
-                         SI32Attr:$offsetState,
-                         SI32Attr:$fixedStride,
-                         SI64Attr:$rowLen,
-                         SI64Attr:$rowStride,
-                         SI32Attr:$lrie,
-                         SI32Attr:$tensorColSize,
-                         BoolAttr:$SVOpt,
-                         TT_SyncAttr: $syncMode,
-                         BoolAttr:$atomicSim,
-                         BoolAttr:$cache,
-                         BoolAttr:$handwrittenOffsetState);
-    let results = (outs TT_PtrLike:$result);
+def TTX_GM2LMOp : TTX_Op<"gm2lm", [AttrSizedOperandSegments,
+                                   MemoryEffects<[MemRead<GlobalMemory>]>]> {
+  let summary = "gm2lm";
+  // [internal bc5e33a6] LayerNorm vectorization can turn `other` into a
+  // tensor<vector<T>>. Internal widened shared TT_Type, but FlagTree keeps
+  // main-tree TableGen definitions pristine. TTX_Type is the XPU-local
+  // equivalent and already admits vectors/tensors of vectors.
+  let arguments = (ins TT_PtrLike:$ptr, Optional<TT_IntLike>:$len,
+      Optional<TTX_Type>:$other, Optional<TT_PtrLike>:$bufPtr,
+      SI32Attr:$offsetState, SI32Attr:$fixedStride, SI64Attr:$rowLen,
+      SI64Attr:$rowStride, SI32Attr:$lrie, SI32Attr:$tensorColSize,
+      BoolAttr:$SVOpt, TT_SyncAttr:$syncMode, BoolAttr:$atomicSim,
+      BoolAttr:$cache, BoolAttr:$handwrittenOffsetState);
+  let results = (outs TT_PtrLike:$result);
 }
 
-def TTX_LM2GMOp : TTX_Op<"lm2gm", [AttrSizedOperandSegments, MemoryEffects<[MemWrite<GlobalMemory>]>]> {
-    let summary = "lm2gm";
-    let arguments = (ins TT_PtrLike:$ptr,
-                         TTX_UIVectorType:$value,
-                         Optional<TT_IntLike>:$len,
-                         Optional<TT_PtrLike>:$bufPtr,
-                         SI32Attr:$tensorColSize,
-                         SI32Attr:$offsetState,
-                         SI64Attr:$rowLen,
-                         SI64Attr:$rowStride,
-                         TT_SyncAttr: $syncMode,
-                         BoolAttr:$atomicSim,
-                         BoolAttr:$handwrittenOffsetState);
+def TTX_LM2GMOp : TTX_Op<"lm2gm", [AttrSizedOperandSegments,
+                                   MemoryEffects<[MemWrite<GlobalMemory>]>]> {
+  let summary = "lm2gm";
+  let arguments = (ins TT_PtrLike:$ptr, TTX_UIVectorType:$value,
+      Optional<TT_IntLike>:$len, Optional<TT_PtrLike>:$bufPtr,
+      SI32Attr:$tensorColSize, SI32Attr:$offsetState, SI64Attr:$rowLen,
+      SI64Attr:$rowStride, TT_SyncAttr:$syncMode, BoolAttr:$atomicSim,
+      BoolAttr:$handwrittenOffsetState);
 }
 
 def TTX_SM2GMOp : TTX_Op<"sm2gm", [AttrSizedOperandSegments]> {
-    let summary = "sm2gm";
-    let arguments = (ins TT_PtrLike:$ptr,
-                         Optional<TTX_Type>:$value,
-                         Optional<TT_IntLike>:$len,
-                         Optional<TT_PtrLike>:$bufPtr,
-                         SI32Attr:$offsetState);
+  let summary = "sm2gm";
+  let arguments = (ins TT_PtrLike:$ptr, Optional<TTX_Type>:$value,
+      Optional<TT_IntLike>:$len, Optional<TT_PtrLike>:$bufPtr,
+      SI32Attr:$offsetState);
 }
 
-def TTX_GM2LMMaskOp : TTX_Op<"gm2lm_mask", [AttrSizedOperandSegments,  MemoryEffects<[MemRead<GlobalMemory>]>]> {
-    let summary = "gm2lm";
-    let arguments = (ins TT_PtrLike:$ptr,
-                         Optional<TT_BoolLike>:$mask,
-                         // Keep the masked form consistent with gm2lm above.
-                         Optional<TTX_Type>:$other,
-                         Optional<TT_IntLike>:$len,
-                         Optional<TT_PtrLike>:$bufPtr,
-                         SI32Attr:$offsetState,
-                         SI32Attr:$fixedStride,
-                         SI64Attr:$rowLen,
-                         SI64Attr:$rowStride,
-                         SI32Attr:$lrie,
-                         SI32Attr:$tensorColSize,
-                         BoolAttr:$SVOpt,
-                         TT_SyncAttr: $syncMode,
-                         BoolAttr:$atomicSim,
-                         BoolAttr:$cache,
-                         BoolAttr:$handwrittenOffsetState);
-    let results = (outs TT_PtrLike:$result);
+def TTX_GM2LMMaskOp
+    : TTX_Op<"gm2lm_mask", [AttrSizedOperandSegments,
+                            MemoryEffects<[MemRead<GlobalMemory>]>]> {
+  let summary = "gm2lm";
+  let arguments = (ins TT_PtrLike:$ptr, Optional<TT_BoolLike>:$mask,
+      // Keep the masked form consistent with gm2lm above.
+      Optional<TTX_Type>:$other, Optional<TT_IntLike>:$len,
+      Optional<TT_PtrLike>:$bufPtr, SI32Attr:$offsetState,
+      SI32Attr:$fixedStride, SI64Attr:$rowLen, SI64Attr:$rowStride,
+      SI32Attr:$lrie, SI32Attr:$tensorColSize, BoolAttr:$SVOpt,
+      TT_SyncAttr:$syncMode, BoolAttr:$atomicSim, BoolAttr:$cache,
+      BoolAttr:$handwrittenOffsetState);
+  let results = (outs TT_PtrLike:$result);
 }
 
-def TTX_LM2GMMaskOp : TTX_Op<"lm2gm_mask", [AttrSizedOperandSegments, MemoryEffects<[MemWrite<GlobalMemory>]>]> {
-    let summary = "lm2gm";
-    let arguments = (ins TT_PtrLike:$ptr,
-                         TTX_UIVectorType:$value,
-                         Optional<TT_BoolLike>:$mask,
-                         Optional<TT_IntLike>:$len,
-                         Optional<TT_PtrLike>:$bufPtr,
-                         SI32Attr:$tensorColSize,
-                         SI32Attr:$offsetState,
-                         SI64Attr:$rowLen,
-                         SI64Attr:$rowStride,
-                         TT_SyncAttr: $syncMode,
-                         BoolAttr:$atomicSim,
-                         BoolAttr:$handwrittenOffsetState);
+def TTX_LM2GMMaskOp
+    : TTX_Op<"lm2gm_mask", [AttrSizedOperandSegments,
+                            MemoryEffects<[MemWrite<GlobalMemory>]>]> {
+  let summary = "lm2gm";
+  let arguments = (ins TT_PtrLike:$ptr, TTX_UIVectorType:$value,
+      Optional<TT_BoolLike>:$mask, Optional<TT_IntLike>:$len,
+      Optional<TT_PtrLike>:$bufPtr, SI32Attr:$tensorColSize,
+      SI32Attr:$offsetState, SI64Attr:$rowLen, SI64Attr:$rowStride,
+      TT_SyncAttr:$syncMode, BoolAttr:$atomicSim,
+      BoolAttr:$handwrittenOffsetState);
 }
 
 def TTX_SM2GMMaskOp : TTX_Op<"sm2gm_mask", [AttrSizedOperandSegments]> {
-    let summary = "sm2gm";
-    let arguments = (ins TT_PtrLike:$ptr,
-                         Optional<TTX_Type>:$value,
-                         Optional<TT_BoolLike>:$mask,
-                         Optional<TT_IntLike>:$len,
-                         Optional<TT_PtrLike>:$bufPtr,
-                         SI32Attr:$offsetState);
+  let summary = "sm2gm";
+  let arguments = (ins TT_PtrLike:$ptr, Optional<TTX_Type>:$value,
+      Optional<TT_BoolLike>:$mask, Optional<TT_IntLike>:$len,
+      Optional<TT_PtrLike>:$bufPtr, SI32Attr:$offsetState);
 }
 
-def TTX_LoadOp : TTX_Op<"load", [AttrSizedOperandSegments,
-                                 MemoryEffects<[MemRead]>]> {
-    let summary = "load";
-    let arguments = (ins TT_PtrLike:$ptr,
-                     Optional<TT_BoolLike>:$mask,
-                     // [internal bc5e33a6] Same as TTX_GM2LMOp.$other: vectorize
-                     // can widen `other` to tensor<vector<T>>. Internal relied on
-                     // its widened shared TT_Type; FlagTree keeps main-tree TT_Type
-                     // pristine and uses the XPU-local TTX_Type (= TT_Type | vector).
-                     Optional<TTX_Type>:$other,
-                     Optional<TT_Int>:$index,
-                     SI32Attr:$stride,
-                     SI32Attr:$tensorColSize,
-                     BoolAttr:$isDiscrete,
-                     BoolAttr:$SVOpt,
-                     BoolAttr:$bf16Tofp32Unordered,
-                     TT_SyncAttr: $syncMode);
-    let results = (outs TTX_Type:$result);
+def TTX_LoadOp
+    : TTX_Op<"load", [AttrSizedOperandSegments, MemoryEffects<[MemRead]>]> {
+  let summary = "load";
+  let arguments = (ins TT_PtrLike:$ptr, Optional<TT_BoolLike>:$mask,
+      // [internal bc5e33a6] Same as TTX_GM2LMOp.$other: vectorize
+      // can widen `other` to tensor<vector<T>>. Internal relied on
+      // its widened shared TT_Type; FlagTree keeps main-tree TT_Type
+      // pristine and uses the XPU-local TTX_Type (= TT_Type | vector).
+      Optional<TTX_Type>:$other, Optional<TT_Int>:$index, SI32Attr:$stride,
+      SI32Attr:$tensorColSize, BoolAttr:$isDiscrete, BoolAttr:$SVOpt,
+      BoolAttr:$bf16Tofp32Unordered, TT_SyncAttr:$syncMode);
+  let results = (outs TTX_Type:$result);
 }
 
-def TTX_StoreOp : TTX_Op<"store", [AttrSizedOperandSegments,
-                                   MemoryEffects<[MemWrite]>]> {
-    let summary = "store";
-    let arguments = (ins TT_PtrLike:$ptr,
-                     TTX_UIVectorType:$value,
-                     Optional<TT_BoolLike>:$mask,
-                     Optional<TT_Int>:$index,
-                     SI32Attr:$tensorColSize,
-                     BoolAttr:$bf16Tofp32Unordered,
-                     TT_DtypeAttr:$dtype,
-                     TT_SyncAttr: $syncMode);
+def TTX_StageSMOp
+    : TTX_Op<"stage_sm", [MemoryEffects<[MemRead<GlobalMemory>, MemWrite]>]> {
+  let summary = "stage a loop-invariant GM array into cluster shared memory "
+                "(SM) once, shared by all cores";
+  let description = [{
+      Copies a loop-invariant, read-only GM array into a cluster-shared SM
+      buffer once, outside the grid loop. Only core 0 issues the GM->SM DMA;
+      all cores then synchronize on a cluster barrier before reading. The
+      result is a scalar SM base pointer (addrspace 2) that subsequent
+      `triton_xpu.load_scalar_indexed` ops read from.
+    }];
+  let arguments = (ins TT_Ptr:$ptr, Optional<I32>:$len, I32:$smOffset,
+      I32:$bufElems, TT_SyncAttr:$syncMode);
+  let results = (outs TT_Ptr:$result);
 }
 
-def TTX_StoreSMOp : TTX_Op<"storeSM", [MemoryEffects<[MemWrite]>, AttrSizedOperandSegments]> {
-    let summary = "store to SM";
-    // [internal bc5e33a6] `value` may be a vectorized tensor<vector<T>>; use the
-    // XPU-local TTX_Type (= TT_Type | vector) instead of pristine main-tree TT_Type.
-    let arguments = (ins TT_PtrLike:$ptr, TTX_Type:$value, Optional<TT_BoolLike>:$mask, Optional<TT_Int>:$index);
+def TTX_LoadScalarIndexedOp
+    : TTX_Op<"load_scalar_indexed", [MemoryEffects<[MemRead]>]> {
+  let summary = "load one scalar from a staged buffer at a runtime element "
+                "index and broadcast it to the result tensor";
+  let arguments = (ins TT_PtrLike:$ptr, TT_Int:$index, TT_SyncAttr:$syncMode);
+  let results = (outs TT_Type:$result);
 }
 
+def TTX_StoreOp
+    : TTX_Op<"store", [AttrSizedOperandSegments, MemoryEffects<[MemWrite]>]> {
+  let summary = "store";
+  let arguments = (ins TT_PtrLike:$ptr, TTX_UIVectorType:$value,
+      Optional<TT_BoolLike>:$mask, Optional<TT_Int>:$index,
+      SI32Attr:$tensorColSize, BoolAttr:$bf16Tofp32Unordered,
+      TT_DtypeAttr:$dtype, TT_SyncAttr:$syncMode);
+}
+
+def TTX_StoreSMOp
+    : TTX_Op<"storeSM", [MemoryEffects<[MemWrite]>, AttrSizedOperandSegments]> {
+  let summary = "store to SM";
+  // [internal bc5e33a6] `value` may be a vectorized tensor<vector<T>>; use the
+  // XPU-local TTX_Type (= TT_Type | vector) instead of pristine main-tree
+  // TT_Type.
+  let arguments = (ins TT_PtrLike:$ptr, TTX_Type:$value,
+      Optional<TT_BoolLike>:$mask, Optional<TT_Int>:$index);
+}
 
 //===----------------------------------------------------------------------===//
 // Context Ops
 //===----------------------------------------------------------------------===//
 
 def TTX_GetCoreIdOp : TTX_Op<"get_core_id"> {
-    let summary = "get_core_id";
-    let results = (outs TTX_Type:$result);
+  let summary = "get_core_id";
+  let results = (outs TTX_Type:$result);
 }
 
 def TTX_GetThreadIdOp : TTX_Op<"get_thread_id"> {
-    let summary = "get_thread_id";
-    let description = [{
+  let summary = "get_thread_id";
+  let description = [{
         threadType(0): tid = core_id() * cluster_num() + cluster_id()
         threadType(1): tid = core_num() * cluster_id() + core_id()
     }];
-    let arguments = (ins SI32Attr:$threadType);
-    let results = (outs TTX_Type:$result);
+  let arguments = (ins SI32Attr:$threadType);
+  let results = (outs TTX_Type:$result);
 }
 
 def TTX_GetClusterIdOp : TTX_Op<"get_cluster_id", [NoMemoryEffect]> {
@@ -208,101 +193,96 @@ def TTX_GetNumClusterOp : TTX_Op<"get_num_cluster", [NoMemoryEffect]> {
 // TODO[dyq]: combine TTX_MakeRangeOp && TTX_InterleaveOp && TTX_OutRangeOp
 
 // borrowed from triton/include/triton/Dialect/Triton/IR/TritonOps.td
-def TTX_MakeRangeOp : TTX_Op<"make_range", [AttrSizedOperandSegments,
-                                            Pure]> {
-    let summary = "make range";
+def TTX_MakeRangeOp : TTX_Op<"make_range", [AttrSizedOperandSegments, Pure]> {
+  let summary = "make range";
 
-    let description = [{
+  let description = [{
         Returns an 1D int32 tensor.
 
         Values span from $start to $end (exclusive), with step = 1
     }];
 
-    // WARNING: MLIR generates getStart()/getEnd() functions which return
-    // uint32_t, even though these arguments are to be interpreted as *signed*
-    // int32 values.  If this matters, use get{Start,End}Attr().getInt(), which
-    // return int64_t.
-    let arguments = (ins I32Attr:$start,
-                         I32Attr:$end,
-                         I32Attr:$realSize,
-                         Optional<TT_Int>:$loopIndex,
-                         Optional<TT_Int>:$unrollIndex);
+  // WARNING: MLIR generates getStart()/getEnd() functions which return
+  // uint32_t, even though these arguments are to be interpreted as *signed*
+  // int32 values.  If this matters, use get{Start,End}Attr().getInt(), which
+  // return int64_t.
+  let arguments = (ins I32Attr:$start, I32Attr:$end, I32Attr:$realSize,
+      Optional<TT_Int>:$loopIndex, Optional<TT_Int>:$unrollIndex);
 
-    let results = (outs TT_IntTensor:$result);
+  let results = (outs TT_IntTensor:$result);
 
-    let assemblyFormat = "$loopIndex $unrollIndex attr-dict `:` type($loopIndex) type($unrollIndex) `->` type($result)";
+  let assemblyFormat = "$loopIndex $unrollIndex attr-dict `:` type($loopIndex) "
+                       "type($unrollIndex) `->` type($result)";
 
-    // let hasFolder = 1;
-    let hasVerifier = 1;
+  // let hasFolder = 1;
+  let hasVerifier = 1;
 }
 
-def TTX_InterleaveOp : TTX_Op<"interleave", [AttrSizedOperandSegments,
-                                            Pure]> {
-    let summary = "interleave";
+def TTX_InterleaveOp : TTX_Op<"interleave", [AttrSizedOperandSegments, Pure]> {
+  let summary = "interleave";
 
-    let description = [{
+  let description = [{
         Returns an 1D int32 tensor.
 
         Values span from $start to $end (exclusive), with step = 1
     }];
 
-    // WARNING: MLIR generates getStart()/getEnd() functions which return
-    // uint32_t, even though these arguments are to be interpreted as *signed*
-    // int32 values.  If this matters, use get{Start,End}Attr().getInt(), which
-    // return int64_t.
-    let arguments = (ins I32Attr:$start,
-                         I32Attr:$end,
-                         Optional<TT_Int>:$loopIndex,
-                         Optional<TT_Int>:$unrollIndex);
+  // WARNING: MLIR generates getStart()/getEnd() functions which return
+  // uint32_t, even though these arguments are to be interpreted as *signed*
+  // int32 values.  If this matters, use get{Start,End}Attr().getInt(), which
+  // return int64_t.
+  let arguments = (ins I32Attr:$start, I32Attr:$end,
+      Optional<TT_Int>:$loopIndex, Optional<TT_Int>:$unrollIndex);
 
-    let results = (outs TT_IntTensor:$result);
+  let results = (outs TT_IntTensor:$result);
 
-    let assemblyFormat = "$loopIndex $unrollIndex attr-dict `:` type($loopIndex) type($unrollIndex) `->` type($result)";
+  let assemblyFormat = "$loopIndex $unrollIndex attr-dict `:` type($loopIndex) "
+                       "type($unrollIndex) `->` type($result)";
 
-    // let hasFolder = 1;
-    let hasVerifier = 1;
+  // let hasFolder = 1;
+  let hasVerifier = 1;
 }
 
 def TTX_OutRangeOp : TTX_Op<"out_range"> {
-    let summary = "out_range";
-    let description = [{
+  let summary = "out_range";
+  let description = [{
         Returns idx.
     }];
-    let arguments = (ins I32Attr:$groupsize, I32Attr:$rowspercore, TT_Int:$index);
-    let results = (outs TT_IntTensor:$result);
+  let arguments = (ins I32Attr:$groupsize, I32Attr:$rowspercore, TT_Int:$index);
+  let results = (outs TT_IntTensor:$result);
 }
 
 //===----------------------------------------------------------------------===//
 // Vectorization Ops
 //===----------------------------------------------------------------------===//
 
-class TTX_VUnaryFOp<string mnemonic, list<Trait> traits = []> :
-    TTX_Op<mnemonic, traits # [SameOperandsAndResultType]>,
-    Arguments<(ins TTX_VectorLike:$value)>,
-    Results<(outs TTX_VectorLike:$result)> {
+class TTX_VUnaryFOp<string mnemonic, list<Trait> traits = []>
+    : TTX_Op<mnemonic, traits#[SameOperandsAndResultType]>,
+      Arguments<(ins TTX_VectorLike:$value)>,
+      Results<(outs TTX_VectorLike:$result)> {
   let assemblyFormat = "$value `,` attr-dict `:` type($result)";
 }
 
-class TTX_BinaryOp<string mnemonic, list<Trait> traits = []> :
-    TTX_Op<mnemonic, traits # [SameOperandsAndResultType]> {
+class TTX_BinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTX_Op<mnemonic, traits#[SameOperandsAndResultType]> {
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
 }
 
-class TTX_VVIntBinaryOp<string mnemonic, list<Trait> traits = []> :
-    TTX_BinaryOp<mnemonic, traits>,
-    Arguments<(ins TTX_VectorLike:$lhs, TTX_VectorLike:$rhs)>,
-    Results<(outs TTX_VectorLike:$result)>;
+class TTX_VVIntBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTX_BinaryOp<mnemonic, traits>,
+      Arguments<(ins TTX_VectorLike:$lhs, TTX_VectorLike:$rhs)>,
+      Results<(outs TTX_VectorLike:$result)>;
 
-class TTX_VVFloatBinaryOp<string mnemonic, list<Trait> traits = []> :
-    TTX_BinaryOp<mnemonic, traits>,
-    Arguments<(ins TTX_VectorLike:$lhs, TTX_VectorLike:$rhs)>,
-    Results<(outs TTX_VectorLike:$result)>;
+class TTX_VVFloatBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTX_BinaryOp<mnemonic, traits>,
+      Arguments<(ins TTX_VectorLike:$lhs, TTX_VectorLike:$rhs)>,
+      Results<(outs TTX_VectorLike:$result)>;
 
-class TTX_SVFloatBinaryOp<string mnemonic, list<Trait> traits = []> :
-    TTX_Op<mnemonic, traits>,
-    Arguments<(ins TTX_Type:$lhs, TTX_Type:$rhs, I32Attr:$elemState)>,
-    Results<(outs TTX_VectorLike:$result)> {
-    let summary = mnemonic;
+class TTX_SVFloatBinaryOp<string mnemonic, list<Trait> traits = []>
+    : TTX_Op<mnemonic, traits>,
+      Arguments<(ins TTX_Type:$lhs, TTX_Type:$rhs, I32Attr:$elemState)>,
+      Results<(outs TTX_VectorLike:$result)> {
+  let summary = mnemonic;
 }
 
 def TTX_VExpFOp : TTX_VUnaryFOp<"vexpf">;
@@ -312,9 +292,9 @@ def TTX_VCosFOp : TTX_VUnaryFOp<"vcosf">;
 def TTX_VSqrtFOp : TTX_VUnaryFOp<"vsqrtf">;
 def TTX_VAbsFOp : TTX_VUnaryFOp<"vabsf">;
 def TTX_VSIToFPOp : TTX_Op<"vsitofp"> {
-    let summary = "vsitofp";
-    let arguments = (ins TTX_VectorLike:$value);
-    let results = (outs TTX_VectorLike:$result);
+  let summary = "vsitofp";
+  let arguments = (ins TTX_VectorLike:$value);
+  let results = (outs TTX_VectorLike:$result);
 }
 
 def TTX_VvaddFOp : TTX_VVFloatBinaryOp<"vvaddf">;
@@ -340,58 +320,57 @@ def TTX_VvsubIOp : TTX_VVIntBinaryOp<"vvsubi">;
 def TTX_VvmulIOp : TTX_VVIntBinaryOp<"vvmuli">;
 
 def TTX_VMacFOp : TTX_Op<"vmacf", [SameOperandsAndResultType]> {
-    let summary = "vmacf";
-    let arguments = (ins TTX_VectorLike:$value, TTX_VectorLike:$mulData, TTX_VectorLike:$addData);
-    let results = (outs TTX_VectorLike:$result);
-    let assemblyFormat = "$value `,` $mulData `,` $addData attr-dict `:` type($result)";
+  let summary = "vmacf";
+  let arguments = (ins TTX_VectorLike:$value, TTX_VectorLike:$mulData,
+      TTX_VectorLike:$addData);
+  let results = (outs TTX_VectorLike:$result);
+  let assemblyFormat =
+      "$value `,` $mulData `,` $addData attr-dict `:` type($result)";
 }
 
 def TTX_VConstOp : TTX_Op<"vconst"> {
-    let summary = "vconst";
-    let arguments = (ins AnyAttr:$value);
-    let results = (outs TTX_VectorLike:$result);
+  let summary = "vconst";
+  let arguments = (ins AnyAttr:$value);
+  let results = (outs TTX_VectorLike:$result);
 }
 
 def TTX_VSplatOp : TTX_Op<"vsplat"> {
-    let summary = "vsplat";
-    let arguments = (ins TTX_Type:$src);
-    let results = (outs TTX_VectorLike:$result);
+  let summary = "vsplat";
+  let arguments = (ins TTX_Type:$src);
+  let results = (outs TTX_VectorLike:$result);
 }
 
 def TTX_VSelectOp : TTX_Op<"vselect"> {
-    let summary = "vselect";
-    let arguments = (ins TTX_Type:$condition,
-                       TTX_Type:$true_value,
-                       TTX_Type:$false_value);
-    let results = (outs TTX_VectorLike:$result);
+  let summary = "vselect";
+  let arguments = (ins TTX_Type:$condition, TTX_Type:$true_value,
+      TTX_Type:$false_value);
+  let results = (outs TTX_VectorLike:$result);
 }
 
 def TTX_VExtFOp : TTX_Op<"vextf"> {
-    let summary = "vextf";
-    let arguments = (ins TTX_VectorLike:$value);
-    let results = (outs TTX_VectorLike:$result);
+  let summary = "vextf";
+  let arguments = (ins TTX_VectorLike:$value);
+  let results = (outs TTX_VectorLike:$result);
 }
 
 def TTX_VTruncFOp : TTX_Op<"vtruncf"> {
-    let summary = "vtruncf";
-    let arguments = (ins TTX_VectorLike:$value);
-    let results = (outs TTX_VectorLike:$result);
+  let summary = "vtruncf";
+  let arguments = (ins TTX_VectorLike:$value);
+  let results = (outs TTX_VectorLike:$result);
 }
 
 def TTX_VCmpFOp : TTX_Op<"vcmpf"> {
-    let summary = "vcmpf";
-    let arguments = (ins Arith_CmpFPredicateAttr:$predicate,
-                        TTX_VectorLike:$lhs,
-                        TTX_VectorLike:$rhs);
-    let results = (outs TTX_UIVectorLike:$result);
+  let summary = "vcmpf";
+  let arguments = (ins Arith_CmpFPredicateAttr:$predicate, TTX_VectorLike:$lhs,
+      TTX_VectorLike:$rhs);
+  let results = (outs TTX_UIVectorLike:$result);
 }
 
 def TTX_CmpFOp : TTX_Op<"cmpf"> {
-    let summary = "cmpf";
-    let arguments = (ins Arith_CmpFPredicateAttr:$predicate,
-                     TTX_Type:$lhs,
-                     TTX_Type:$rhs);
-    let results = (outs TTX_Type:$res);
+  let summary = "cmpf";
+  let arguments = (ins Arith_CmpFPredicateAttr:$predicate, TTX_Type:$lhs,
+      TTX_Type:$rhs);
+  let results = (outs TTX_Type:$res);
 }
 
 //===----------------------------------------------------------------------===//
@@ -399,36 +378,35 @@ def TTX_CmpFOp : TTX_Op<"cmpf"> {
 //===----------------------------------------------------------------------===//
 
 def TTX_MinOp : TTX_Op<"min"> {
-    let summary = "min";
-    let arguments = (ins TTX_Type:$lhs, TTX_Type:$rhs);
-    let results = (outs TTX_Type:$res);
+  let summary = "min";
+  let arguments = (ins TTX_Type:$lhs, TTX_Type:$rhs);
+  let results = (outs TTX_Type:$res);
 }
 
 def TTX_ExtractOp : TTX_Op<"extract"> {
-    let summary = "extract the element from the tensor";
-    let description = [{
+  let summary = "extract the element from the tensor";
+  let description = [{
         Returns an 1D int32.
         Extract the element from the tensor according to index.
     }];
-    let arguments = (ins I32Attr:$index, TTX_Type:$tensor);
-    let results = (outs TTX_Type:$result);
+  let arguments = (ins I32Attr:$index, TTX_Type:$tensor);
+  let results = (outs TTX_Type:$result);
 }
 
 def TTX_ExtractSliceOp : TTX_Op<"extract_slice"> {
-    let summary = "extract slice a part of elements from the tensor";
-    let description = [{
+  let summary = "extract slice a part of elements from the tensor";
+  let description = [{
         Returns an 1D int32.
         Truncate a part of elements from the tensor.
     }];
-    let arguments = (ins TTX_Type:$tensor);
-    let results = (outs TTX_Type:$result);
+  let arguments = (ins TTX_Type:$tensor);
+  let results = (outs TTX_Type:$result);
 }
 
 // borrowed from triton/include/triton/Dialect/Triton/IR/TritonOps.td
-def TTX_ConvertLayoutOp : TTX_Op<"convert_layout",
-                                 [SameOperandsAndResultShape,
-                                  SameOperandsAndResultElementType,
-                                  Pure]> {
+def TTX_ConvertLayoutOp
+    : TTX_Op<"convert_layout", [SameOperandsAndResultShape,
+                                SameOperandsAndResultElementType, Pure]> {
   let summary = "convert layout";
 
   let arguments = (ins TTX_TensorVector:$src);
@@ -439,80 +417,84 @@ def TTX_ConvertLayoutOp : TTX_Op<"convert_layout",
 }
 
 // borrowed from triton/include/triton/Dialect/Triton/IR/TritonOps.td
-def TTX_ReduceOp: TTX_Op<"reduce",
-                       [Pure,
-                        SameOperandsEncoding,
-                        SingleBlock,
+def TTX_ReduceOp
+    : TTX_Op<"reduce", [Pure, SameOperandsEncoding, SingleBlock,
                         DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
-    let summary = "Reduction using generic combination algorithm";
-    let arguments = (ins Variadic<TTX_Type>:$srcs, I32Attr:$axis, I32Attr:$loopNum, TT_Int:$loopIndex);
-    let results = (outs Variadic<TT_Type>:$result);
-    let regions = (region SizedRegion<1>:$combineOp);
-    let hasVerifier = 1;
-    let hasRegionVerifier = 1;
-    let extraClassDeclaration = [{
+  let summary = "Reduction using generic combination algorithm";
+  let arguments = (ins Variadic<TTX_Type>:$srcs, I32Attr:$axis,
+      I32Attr:$loopNum, TT_Int:$loopIndex);
+  let results = (outs Variadic<TT_Type>:$result);
+  let regions = (region SizedRegion<1>:$combineOp);
+  let hasVerifier = 1;
+  let hasRegionVerifier = 1;
+  let extraClassDeclaration = [{
       llvm::SmallVector<RankedTensorType> getInputTypes();
       llvm::SmallVector<Type> getElementTypes();
       unsigned getNumOperands();
     }];
 }
 
-def TTX_ReduceReturnOp: TTX_Op<"reduce.return",
-                             [HasParent<"ReduceOp">, Pure, Terminator, ReturnLike]> {
-    let summary = "terminator for reduce operator";
-    let arguments = (ins Variadic<AnyType>:$result);
-    let assemblyFormat = "$result attr-dict `:` type($result)";
+def TTX_ReduceReturnOp : TTX_Op<"reduce.return", [HasParent<"ReduceOp">, Pure,
+                                                  Terminator, ReturnLike]> {
+  let summary = "terminator for reduce operator";
+  let arguments = (ins Variadic<AnyType>:$result);
+  let assemblyFormat = "$result attr-dict `:` type($result)";
 }
 
 // borrowed from triton/include/triton/Dialect/Triton/IR/TritonOps.td
-def TTX_ScanOp: TTX_Op<"scan",
-                       [Pure,
-                        // SameOperandsAndResultEncoding, Cause LoopIdx
-                        // SameOperandsAndResultShape, Cause LoopIdx
-                        SingleBlock,
-                        DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
-    let summary = "Associative scan using generic combination algorithm";
-    let arguments = (ins Variadic<TTX_Type>:$srcs, I32Attr:$axis, BoolAttr:$reverse, TT_Int:$loopIndex);
-    let results = (outs Variadic<TTX_Type>:$result);
-    let regions = (region SizedRegion<1>:$combineOp);
-    let hasVerifier = 1;
-    let hasRegionVerifier = 1;
-    let extraClassDeclaration = [{
+def TTX_ScanOp
+    : TTX_Op<"scan", [Pure,
+                      // SameOperandsAndResultEncoding, Cause LoopIdx
+                      // SameOperandsAndResultShape, Cause LoopIdx
+                      SingleBlock,
+                      DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Associative scan using generic combination algorithm";
+  let arguments = (ins Variadic<TTX_Type>:$srcs, I32Attr:$axis,
+      BoolAttr:$reverse, TT_Int:$loopIndex);
+  let results = (outs Variadic<TTX_Type>:$result);
+  let regions = (region SizedRegion<1>:$combineOp);
+  let hasVerifier = 1;
+  let hasRegionVerifier = 1;
+  let extraClassDeclaration = [{
       llvm::SmallVector<RankedTensorType> getInputTypes();
       llvm::SmallVector<Type> getElementTypes();
       unsigned getNumOperands();
     }];
 }
 
-def TTX_ScanReturnOp: TTX_Op<"scan.return",
-                             [HasParent<"ScanOp">, Pure, Terminator, ReturnLike]> {
-    let summary = "terminator for scan operator";
-    let arguments = (ins Variadic<AnyType>:$result);
-    let assemblyFormat = "$result attr-dict `:` type($result)";
+def TTX_ScanReturnOp : TTX_Op<"scan.return", [HasParent<"ScanOp">, Pure,
+                                              Terminator, ReturnLike]> {
+  let summary = "terminator for scan operator";
+  let arguments = (ins Variadic<AnyType>:$result);
+  let assemblyFormat = "$result attr-dict `:` type($result)";
 }
 
 // borrowed from triton/include/triton/Dialect/Triton/IR/TritonOps.td
 def TTX_BroadcastOp : TTX_Op<"broadcast", [Pure]> {
-    let summary = "broadcast a tensor";
+  let summary = "broadcast a tensor";
 
-    let description = [{
+  let description = [{
       For a given tensor, broadcast changes one or more dimensions with size 1
       to a new size, e.g. tensor<1x32x1xf32> -> tensor<2x32x4xf32>.  You cannot
       change the size of a non-1 dimension.
     }];
 
-    let arguments = (ins TTX_TensorVector:$src);
+  let arguments = (ins TTX_TensorVector:$src);
 
-    let results = (outs TTX_TensorVector:$result);
+  let results = (outs TTX_TensorVector:$result);
 
-    let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
+  let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
 
-    let hasCanonicalizeMethod = 1;
-    let hasFolder = 1;
+  let hasCanonicalizeMethod = 1;
+  let hasFolder = 1;
 }
 
-def TTX_XPUPrintOp : TTX_Op<"xpuprint", [MemoryEffects<[MemWrite<GlobalMemory>]>]>,
-  Arguments<(ins I32:$pidx, I32:$pidy, I32:$pidz, I64:$outerIndex, I64:$innerIndex, I64:$ucIndex, I64:$innerBound, I64:$ucBound, StrAttr:$prefix, BoolAttr:$hex, Variadic<AnyTypeOf<[TTX_Type]>>:$args)> {
+def TTX_XPUPrintOp
+    : TTX_Op<"xpuprint", [MemoryEffects<[MemWrite<GlobalMemory>]>]>,
+      Arguments<(ins I32:$pidx, I32:$pidy, I32:$pidz, I64:$outerIndex,
+          I64:$innerIndex, I64:$ucIndex, I64:$innerBound, I64:$ucBound,
+          StrAttr:$prefix, BoolAttr:$hex,
+          Variadic<AnyTypeOf<[TTX_Type]>>:$args)> {
   let summary = "Device-side print, as in XPU for debugging";
   let description = [{
     Compared with TT_PrintOP, the pid and index parameters are added here.

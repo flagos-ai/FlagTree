@@ -8,6 +8,8 @@
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 
+#include <climits>
+
 #define DEBUG_TYPE "tritonxpu-offset-analysis"
 
 namespace mlir {
@@ -214,6 +216,11 @@ public:
       return mockVals;
     };
 
+    auto getNumProgramsMockVals = []() {
+      SmallVector<int> mockVals(1, 1);
+      return mockVals;
+    };
+
     auto getThreadIdMockVals = []() {
       SmallVector<int> mockVals(/*core_num*/ 64);
       std::iota(mockVals.begin(), mockVals.end(), 0);
@@ -273,6 +280,10 @@ public:
           .Case<triton::GetProgramIdOp>([&](auto getProgramIdOp) {
             SmallVector<int> mockVals = getProgramIdMockVals();
             mockDataItems.emplace_back(MockData(getProgramIdOp, 0, mockVals));
+          })
+          .Case<triton::GetNumProgramsOp>([&](auto getNumProgramsOp) {
+            SmallVector<int> mockVals = getNumProgramsMockVals();
+            mockDataItems.emplace_back(MockData(getNumProgramsOp, 0, mockVals));
           })
           .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) {
             SmallVector<int> mockVals = getGM2LMOpMockVals();
@@ -500,12 +511,16 @@ public:
 
     for (size_t i = 0; i < srcShape.size(); ++i) {
       if (srcShape[i] != resShape[i]) {
-        if (srcShape[i] == 1) { // [1x1xf32 -> 1xNxf32]
+        if (srcShape[i] == 1) { // [1xNxf32 -> MxNxf32] or [Mx1xf32 -> MxNxf32]
           unsigned numElems = resShape[resShape.size() - 1];
-          if (i == srcShape[srcShape.size() - 1])
-            return SmallVector<int>(numElems, op2OffsetVal[operandOp][0]);
-          else
+          if (i == srcShape.size() - 1) {
+            SmallVector<int> res;
+            for (int v : op2OffsetVal[operandOp])
+              res.append(numElems, v);
+            return res;
+          } else {
             return op2OffsetVal[operandOp];
+          }
         } else { // [1x2xf32 -> 1xNxf32]
           llvm_unreachable("[broadcastOpCalFunc] Only support broadcast 1->N");
         }
@@ -625,7 +640,7 @@ public:
     auto hasDynamicInput = [](Operation *op) -> bool {
       for (auto operand : op->getOperands()) {
         if (mlir::isa<BlockArgument>(operand)) {
-          continue;
+          return true;
         }
         auto operandOp = operand.getDefiningOp();
         if (!operandOp) {
@@ -680,6 +695,10 @@ public:
               op2OffsetVal[getProgramIdOp] =
                   getProgramIdOpCalFunc(getProgramIdOp, op2OffsetVal, mockVal);
             })
+            .Case<triton::GetNumProgramsOp>([&](auto getNumProgramsOp) {
+              auto mockVal = op2MockVal[getNumProgramsOp];
+              op2OffsetVal[getNumProgramsOp] = SmallVector<int>(1, mockVal);
+            })
             .Case<triton::xpu::GM2LMOp>([&](auto xpuGm2lmOp) {
               auto mockVal = op2MockVal[xpuGm2lmOp];
               op2OffsetVal[xpuGm2lmOp] =
@@ -709,7 +728,20 @@ public:
                   makeRangeOpCalFunc(makeRangeOp, op2OffsetVal);
             })
             .Case<triton::SplatOp>([&](auto splatOp) {
-              if (hasDynamicInput(splatOp)) {
+              auto operand = splatOp.getOperand();
+              if (mlir::isa<BlockArgument>(operand)) {
+                bool usedInMul = false;
+                for (auto user : splatOp.getResult().getUsers()) {
+                  if (isa<arith::MulIOp>(user)) {
+                    usedInMul = true;
+                    break;
+                  }
+                }
+                if (usedInMul) {
+                  findUnsupportedOp = true;
+                  return;
+                }
+              } else if (hasDynamicInput(splatOp)) {
                 findUnsupportedOp = true;
                 return;
               }
@@ -821,7 +853,7 @@ public:
             LLVM_DEBUG(llvm::dbgs()
                        << "[OffsetState]: The 0th Address Is Not the Beginning "
                           "of the Bank.\n");
-            fixedStride = -1;
+            fixedStride = INT32_MIN;
             return OffsetState::Unknown;
           }
         }
@@ -839,7 +871,7 @@ public:
       } else {
         LLVM_DEBUG(llvm::dbgs()
                    << "[OffsetState]: Addresses Are Not in the Same Bank.\n");
-        fixedStride = -1;
+        fixedStride = INT32_MIN;
         return OffsetState::Unknown;
       }
     }
@@ -947,13 +979,30 @@ public:
       int64_t currRowLen = 2;
       int64_t currRowStride = 1;
       bool isFirst = true;
+      const int64_t base = res[0];
+      auto gcd = [](int64_t a, int64_t b) {
+        while (b != 0) {
+          int64_t t = b;
+          b = a % b;
+          a = t;
+        }
+        return a;
+      };
       for (int64_t i = 2; i < res.size(); i++) {
+        if (res[i] < base) {
+          rowLen = -1;
+          return false;
+        }
         if (res[i] - res[i - 1] == 1) {
           currRowLen++;
         } else {
           currRowStride = res[i] - res[i - 1] + currRowLen - 1;
           if (currRowStride < 0) {
-            return false;
+            rowStride = -1;
+            rowLen = gcd(rowLen, currRowLen);
+            currRowLen = 1;
+            currRowStride = 1;
+            continue;
           }
 
           if (isFirst) {
@@ -968,15 +1017,6 @@ public:
             if (currRowStride != rowStride) {
               rowStride = -1;
             }
-
-            auto gcd = [](int64_t a, int64_t b) {
-              while (b != 0) {
-                int t = b;
-                b = a % b;
-                a = t;
-              }
-              return a;
-            };
             rowLen = gcd(rowLen, currRowLen);
           }
           currRowLen = 1;
@@ -1004,6 +1044,39 @@ public:
       return OffsetState::LocallyContinuous;
     }
     return OffsetState::Unknown;
+  }
+
+  template <class T, std::enable_if_t<is_xpu_memory_op<T>::value, bool> = true>
+  int64_t findForcedRowLen(T memoryOp) {
+    Value ptr = memoryOp.getPtr();
+    Operation *ptrOp = ptr.getDefiningOp();
+    while (ptrOp &&
+           (isa<triton::BitcastOp>(ptrOp) || isa<triton::SplatOp>(ptrOp)))
+      ptrOp = ptrOp->getOperand(0).getDefiningOp();
+    auto addPtrOp = dyn_cast_or_null<triton::AddPtrOp>(ptrOp);
+    if (!addPtrOp)
+      return -1;
+    Operation *offsetDefineOp = addPtrOp.getOperand(1).getDefiningOp();
+    if (!offsetDefineOp)
+      return -1;
+    llvm::SetVector<Operation *> opChain;
+    getOpChainBwdBFS(opChain, offsetDefineOp);
+    for (auto *op : opChain) {
+      auto remOp = dyn_cast<arith::RemSIOp>(op);
+      if (!remOp)
+        continue;
+      auto constOp = remOp.getRhs().getDefiningOp<arith::ConstantOp>();
+      if (!constOp)
+        continue;
+      int64_t remConst = 0;
+      if (auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue()))
+        remConst = splatAttr.getSplatValue<APInt>().getSExtValue();
+      else if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+        remConst = intAttr.getInt();
+      if (remConst > 1)
+        return remConst;
+    }
+    return -1;
   }
 
   // -1         for Unknown
@@ -1128,6 +1201,30 @@ public:
           memoryStateTransfer(memoryState, allOffsetStateResult[token]);
     }
 
+    if (memoryState == OffsetState::Continuous &&
+        isa<triton::xpu::GM2LMOp>(memoryOp)) {
+      for (auto *op : opChain) {
+        if (auto remOp = dyn_cast<arith::RemSIOp>(op)) {
+          if (auto constOp =
+                  remOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
+            int64_t remConst = 0;
+            if (auto splatAttr =
+                    dyn_cast<SplatElementsAttr>(constOp.getValue()))
+              remConst = splatAttr.getSplatValue<APInt>().getSExtValue();
+            else if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+              remConst = intAttr.getInt();
+            if (remConst > 0 && remConst > (int64_t)numElems) {
+              rowLen = remConst;
+              rowStride = -1;
+              fixedStride = 1;
+              memoryState = OffsetState::LocallyContinuous;
+              break;
+            }
+          }
+        }
+      }
+    }
+
     bool canBeLrie = findUserOp<triton::AddPtrOp>(memoryOp) &&
                      !findUserOp<arith::SelectOp>(memoryOp);
     if (atomicSim && !analysisFlag && canBeLrie) {
@@ -1166,49 +1263,95 @@ public:
 
     mod.walk([&](mlir::Operation *op) { op2Line[op] = line++; });
 
+    auto recoverForcedOffsetState =
+        [&](auto memoryOp, bool handwritten, OffsetState &offsetState,
+            int32_t &opFixedStride, int64_t &opRowLen, int64_t &opRowStride,
+            int32_t &opLrie) {
+          if (!handwritten)
+            return;
+          if (offsetState == OffsetState::Continuous) {
+            if (opFixedStride == INT32_MIN)
+              opFixedStride = 1;
+            if (opLrie <= 0)
+              opLrie = 1;
+            return;
+          }
+          if (offsetState != OffsetState::LocallyContinuous || opRowLen > 0)
+            return;
+          int64_t modLen = findForcedRowLen(memoryOp);
+          if (modLen > 1) {
+            opRowLen = modLen;
+            opRowStride = -1;
+            opFixedStride = 1;
+            return;
+          }
+          OffsetState inferred = getOffsetState(memoryOp);
+          opFixedStride = fixedStride;
+          opRowLen = rowLen;
+          opRowStride = rowStride;
+          opLrie = lrie;
+          if (inferred != OffsetState::LocallyContinuous)
+            offsetState = inferred;
+          fixedStride = INT32_MIN;
+          rowLen = -1;
+          rowStride = -1;
+        };
+
     mod.walk([&](triton::xpu::GM2LMOp gm2lmOp) {
       if (dumpFlag)
         LLVM_DEBUG(llvm::dbgs()
                    << "\n=======================================\n");
+      bool handwritten = gm2lmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
-          gm2lmOp.getHandwrittenOffsetState()
-              ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
-              : getOffsetState(gm2lmOp);
+          handwritten ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
+                      : getOffsetState(gm2lmOp);
+      int32_t opFixedStride =
+          handwritten ? gm2lmOp.getFixedStride() : fixedStride;
+      int64_t opRowLen = handwritten ? gm2lmOp.getRowLen() : rowLen;
+      int64_t opRowStride = handwritten ? gm2lmOp.getRowStride() : rowStride;
+      int32_t opLrie = handwritten ? gm2lmOp.getLrie() : lrie;
+      recoverForcedOffsetState(gm2lmOp, handwritten, offsetState, opFixedStride,
+                               opRowLen, opRowStride, opLrie);
       if (dumpFlag) {
         LLVM_DEBUG(llvm::dbgs()
                    << "\n"
                    << gm2lmOp << "\n[OffsetState]: " << offsetState
                    << "\n=======================================\n");
       }
-      // In case `fixedStride` being modified by cluster(s) whose
-      // OffsetState is Continuous.
-      if (offsetState == OffsetState::Discrete) {
-        fixedStride = -1;
-      } else if (offsetState == OffsetState::Unknown &&
-                 (fixedStride == 1 | fixedStride == 0)) {
-        // Multi Memory State Like (Unknown & Continuous)
-        fixedStride = -1;
+      if (!handwritten) {
+        if (offsetState == OffsetState::Discrete) {
+          opFixedStride = INT32_MIN;
+        } else if (offsetState == OffsetState::Unknown &&
+                   (opFixedStride == 1 | opFixedStride == 0)) {
+          opFixedStride = INT32_MIN;
+        }
       }
 
       OpBuilder builder(gm2lmOp);
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
       gm2lmOp->setAttr("offsetState",
                        builder.getSI32IntegerAttr(offsetStateInt));
-      gm2lmOp->setAttr("fixedStride", builder.getSI32IntegerAttr(fixedStride));
-      gm2lmOp->setAttr("rowLen", builder.getIntegerAttr(
-                                     builder.getIntegerType(64, true), rowLen));
+      gm2lmOp->setAttr("fixedStride",
+                       builder.getSI32IntegerAttr(opFixedStride));
       gm2lmOp->setAttr(
-          "rowStride",
-          builder.getIntegerAttr(builder.getIntegerType(64, true), rowStride));
-      gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(lrie));
+          "rowLen",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowLen));
+      gm2lmOp->setAttr("rowStride",
+                       builder.getIntegerAttr(builder.getIntegerType(64, true),
+                                              opRowStride));
+      gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(opLrie));
       auto loadOp = cast<triton::xpu::LoadOp>(gm2lmOp->getNextNode());
       loadOp->setOperand(0, gm2lmOp);
-      loadOp->setAttr("stride", builder.getSI32IntegerAttr(fixedStride));
-      loadOp->setAttr("isDiscrete", builder.getBoolAttr(offsetState ==
-                                                        OffsetState::Discrete));
-      fixedStride = -1; // reset
-      rowLen = -1;
-      rowStride = -1;
+      loadOp->setAttr("stride", builder.getSI32IntegerAttr(opFixedStride));
+      loadOp->setAttr(
+          "isDiscrete",
+          builder.getBoolAttr(offsetState == OffsetState::Discrete ||
+                              offsetState == OffsetState::LocallyScalar));
+      if (!handwritten) {
+        fixedStride = INT32_MIN;
+        rowLen = -1;
+        rowStride = -1;
+      }
       findUnsupportedOp = false;
     });
 
@@ -1216,15 +1359,16 @@ public:
       if (dumpFlag)
         LLVM_DEBUG(llvm::dbgs()
                    << "\n=======================================\n");
+      bool handwritten = lm2gmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
-          lm2gmOp.getHandwrittenOffsetState()
-              ? static_cast<OffsetState>(lm2gmOp.getOffsetState())
-              : getOffsetState(lm2gmOp);
-      // Only able to handle continuous and unknown cases.
+          handwritten ? static_cast<OffsetState>(lm2gmOp.getOffsetState())
+                      : getOffsetState(lm2gmOp);
       if (offsetState != OffsetState::Continuous &&
           offsetState != OffsetState::LocallyContinuous) {
         offsetState = OffsetState::Unknown;
       }
+      int64_t opRowLen = handwritten ? lm2gmOp.getRowLen() : rowLen;
+      int64_t opRowStride = handwritten ? lm2gmOp.getRowStride() : rowStride;
       if (dumpFlag) {
         LLVM_DEBUG(llvm::dbgs()
                    << "\n"
@@ -1232,18 +1376,20 @@ public:
                    << "\n=======================================\n");
       }
       OpBuilder builder(lm2gmOp);
-      // offsetState = OffsetState::Continuous;
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
       lm2gmOp->setAttr("offsetState",
                        builder.getSI32IntegerAttr(offsetStateInt));
-      lm2gmOp->setAttr("rowLen", builder.getIntegerAttr(
-                                     builder.getIntegerType(64, true), rowLen));
       lm2gmOp->setAttr(
-          "rowStride",
-          builder.getIntegerAttr(builder.getIntegerType(64, true), rowStride));
-      findUnsupportedOp = false; // reset
-      rowLen = -1;
-      rowStride = -1;
+          "rowLen",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowLen));
+      lm2gmOp->setAttr("rowStride",
+                       builder.getIntegerAttr(builder.getIntegerType(64, true),
+                                              opRowStride));
+      findUnsupportedOp = false;
+      if (!handwritten) {
+        rowLen = -1;
+        rowStride = -1;
+      }
     });
 
     mod.walk([&](triton::xpu::SM2GMOp sm2gmOp) {
@@ -1268,45 +1414,57 @@ public:
       if (dumpFlag)
         LLVM_DEBUG(llvm::dbgs()
                    << "\n=======================================\n");
+      bool handwritten = gm2lmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
-          gm2lmOp.getHandwrittenOffsetState()
-              ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
-              : getOffsetState(gm2lmOp);
+          handwritten ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
+                      : getOffsetState(gm2lmOp);
+      int32_t opFixedStride =
+          handwritten ? gm2lmOp.getFixedStride() : fixedStride;
+      int64_t opRowLen = handwritten ? gm2lmOp.getRowLen() : rowLen;
+      int64_t opRowStride = handwritten ? gm2lmOp.getRowStride() : rowStride;
+      int32_t opLrie = handwritten ? gm2lmOp.getLrie() : lrie;
+      recoverForcedOffsetState(gm2lmOp, handwritten, offsetState, opFixedStride,
+                               opRowLen, opRowStride, opLrie);
       if (dumpFlag) {
         LLVM_DEBUG(llvm::dbgs()
                    << "\n"
                    << gm2lmOp << "\n[OffsetState]: " << offsetState
                    << "\n=======================================\n");
       }
-      // In case `fixedStride` being modified by cluster(s) whose
-      // OffsetState is Continuous.
-      if (offsetState == OffsetState::Discrete) {
-        fixedStride = -1;
-      } else if (offsetState == OffsetState::Unknown &&
-                 (fixedStride == 1 | fixedStride == 0)) {
-        // Multi Memory State Like (Unknown & Continuous)
-        fixedStride = -1;
+      if (!handwritten) {
+        if (offsetState == OffsetState::Discrete) {
+          opFixedStride = INT32_MIN;
+        } else if (offsetState == OffsetState::Unknown &&
+                   (opFixedStride == 1 | opFixedStride == 0)) {
+          opFixedStride = INT32_MIN;
+        }
       }
 
       OpBuilder builder(gm2lmOp);
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
       gm2lmOp->setAttr("offsetState",
                        builder.getSI32IntegerAttr(offsetStateInt));
-      gm2lmOp->setAttr("fixedStride", builder.getSI32IntegerAttr(fixedStride));
-      gm2lmOp->setAttr("rowLen", builder.getIntegerAttr(
-                                     builder.getIntegerType(64, true), rowLen));
+      gm2lmOp->setAttr("fixedStride",
+                       builder.getSI32IntegerAttr(opFixedStride));
       gm2lmOp->setAttr(
-          "rowStride",
-          builder.getIntegerAttr(builder.getIntegerType(64, true), rowStride));
-      gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(lrie));
+          "rowLen",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowLen));
+      gm2lmOp->setAttr("rowStride",
+                       builder.getIntegerAttr(builder.getIntegerType(64, true),
+                                              opRowStride));
+      gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(opLrie));
       auto loadOp = cast<triton::xpu::LoadOp>(gm2lmOp->getNextNode());
       loadOp->setOperand(0, gm2lmOp);
-      loadOp->setAttr("stride", builder.getSI32IntegerAttr(fixedStride));
-      loadOp->setAttr("isDiscrete", builder.getBoolAttr(offsetState ==
-                                                        OffsetState::Discrete));
-      fixedStride = -1; // reset
-      rowLen = -1;
-      rowStride = -1;
+      loadOp->setAttr("stride", builder.getSI32IntegerAttr(opFixedStride));
+      loadOp->setAttr(
+          "isDiscrete",
+          builder.getBoolAttr(offsetState == OffsetState::Discrete ||
+                              offsetState == OffsetState::LocallyScalar));
+      if (!handwritten) {
+        fixedStride = INT32_MIN;
+        rowLen = -1;
+        rowStride = -1;
+      }
       findUnsupportedOp = false;
     });
 
