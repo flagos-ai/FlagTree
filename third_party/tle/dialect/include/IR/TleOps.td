@@ -418,6 +418,21 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
   );
 
   let results = (outs Optional<Tle_LocalPointerResultType>:$result);
+  let assemblyFormat = [{
+    oilist(
+      `src` $src |
+      `dst_mem` $dst_mem |
+      `comm` $comm
+    )
+    `shard_id` $shard_id
+    oilist(
+      `offset` $offset |
+      `dst_offset` $dst_offset |
+      `nelems` $nelems |
+      `net_idx` $net_idx
+    )
+    attr-dict `:` functional-type(operands, results)
+  }];
   let extraClassDeclaration = [{
     Speculation::Speculatability getSpeculatability();
   }];

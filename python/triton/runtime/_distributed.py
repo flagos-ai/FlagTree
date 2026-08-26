@@ -20,28 +20,25 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import functools
+
 
 class DistributedRtContext:
-    _instance = None
-    _initialized = False
     _init_count = 0
 
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._comm_ptr = None
-            cls._instance._mem_ptr = None
-        return cls._instance
-
     def __init__(self, _comm_ptr=None, _mem_ptr=None):
-        if _comm_ptr and _mem_ptr:
+        if _comm_ptr is not None and _mem_ptr is not None:
             type(self)._init_count += 1
-
-        if self._initialized:
-            return
         self._comm_ptr = _comm_ptr
         self._mem_ptr = _mem_ptr
-        self._initialized = True
+        self._registered_buffer = None
+
+    def register_buffer(self, buffer) -> None:
+        self._registered_buffer = buffer
+
+    @property
+    def registered_buffer(self):
+        return getattr(self, "_registered_buffer", None)
 
     def get_packed_data(self):
         return int(self._mem_ptr), int(self._comm_ptr)
@@ -97,3 +94,103 @@ class DistributedRtContext:
                     KernelParam(new_loc, param._param, param.do_not_specialize, param.do_not_specialize_on_alignment))
             new_params = dist_params + new_params
             params[:] = new_params
+
+
+@functools.lru_cache(maxsize=256)
+def _parse_node_buffer_bindings(encoded_bindings):
+    roles = {"s": "source", "d": "destination"}
+    bindings = []
+    for encoded in encoded_bindings.split(","):
+        try:
+            role_code, ordinal_text, handle_text = encoded.split(":", 2)
+            ordinal = int(ordinal_text)
+            handle = int(handle_text)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"invalid node buffer binding {encoded!r}") from exc
+        role = roles.get(role_code)
+        if role is None or ordinal < 0:
+            raise RuntimeError(f"invalid node buffer binding {encoded!r}")
+        bindings.append((encoded, role, ordinal, handle))
+    return tuple(bindings)
+
+
+def _collect_distributed_contexts(values):
+    return tuple({
+        id(value): value
+        for value in values
+        if isinstance(value, DistributedRtContext)
+    }.values())
+
+
+def _collect_runtime_items(bound_args, specialization):
+    return tuple(
+        (name, value)
+        for (name, value), spec in zip(bound_args.items(), specialization)
+        if spec[0] != "constexpr"
+    )
+
+
+def validate_node_buffer_bindings(
+    contexts,
+    runtime_args,
+    encoded_bindings,
+    kernel_name: str,
+    arg_names=None,
+) -> None:
+    if not encoded_bindings:
+        return
+
+    contexts_by_handle = {int(ctx[0]): ctx for ctx in contexts}
+    for encoded, role, ordinal, handle in _parse_node_buffer_bindings(encoded_bindings):
+        if ordinal >= len(runtime_args):
+            raise RuntimeError(
+                f"kernel {kernel_name!r} has invalid node buffer binding "
+                f"{encoded!r}"
+            )
+
+        ctx = contexts_by_handle.get(handle)
+        if ctx is None:
+            raise RuntimeError(
+                f"kernel {kernel_name!r} did not receive the node context "
+                f"with mem handle 0x{handle:x}"
+            )
+        registered = ctx.registered_buffer
+        if registered is None:
+            raise RuntimeError(
+                f"kernel {kernel_name!r} node context has no registered buffer"
+            )
+
+        value = runtime_args[ordinal]
+        data_ptr = getattr(value, "data_ptr", None)
+        actual = value if isinstance(value, int) else data_ptr()
+        expected = registered.data_ptr()
+        if actual == expected:
+            continue
+
+        name = (
+            arg_names[ordinal]
+            if arg_names is not None and ordinal < len(arg_names)
+            else f"runtime ordinal {ordinal}"
+        )
+        raise ValueError(
+            f"kernel {kernel_name!r} node local {role} buffer argument "
+            f"{name!r} does not match its context buffer: expected "
+            f"0x{expected:x}, got 0x{actual:x}"
+        )
+
+
+def validate_node_launch_bindings(kernel, bound_args, specialization):
+    """Validate node buffer bindings for one kernel launch."""
+    encoded_bindings = getattr(kernel.metadata, "tle_node_buffer_bindings", "")
+    if not encoded_bindings:
+        return
+
+    contexts = _collect_distributed_contexts(bound_args.values())
+    runtime_items = _collect_runtime_items(bound_args, specialization)
+    validate_node_buffer_bindings(
+        contexts,
+        tuple(value for _, value in runtime_items),
+        encoded_bindings,
+        kernel.name,
+        tuple(name for name, _ in runtime_items),
+    )

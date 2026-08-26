@@ -42,7 +42,7 @@ from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
 from .cache import get_cache_key
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl
-from ._distributed import DistributedRtContext
+from ._distributed import DistributedRtContext, validate_node_launch_bindings
 
 TRITON_MODULE = "triton.language"
 GLUON_MODULE = "triton.experimental.gluon.language"
@@ -782,6 +782,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
             grid_2 = grid[2] if grid_size > 2 else 1
             if hasattr(kernel, "result"):
                 kernel = kernel.result()
+            validate_node_launch_bindings(kernel, bound_args, specialization)
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
             # flagtree tle distributed: Add dist_param to kernel.run

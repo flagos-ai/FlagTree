@@ -553,31 +553,68 @@ LogicalResult lowerNodeSpace(Location loc, tle::RemotePointersOp op,
                                                elemBytesValue);
   }
 
-  LLVM::LLVMFuncOp getNet = getOrInsertNetFromComm(module, ctx);
-  auto getNetCall = rewriter.create<LLVM::CallOp>(
-      loc, TypeRange{ptrTy}, FlatSymbolRefAttr::get(getNet),
-      ValueRange{comm, adaptor.getNetIdx()});
-  Value teamKind = rewriter.create<LLVM::ConstantOp>(
-      loc, i32Ty, rewriter.getI32IntegerAttr(2));
   int64_t coopKindValue = op.getCoopkindAttr().getInt();
-  Value coopKind = rewriter.create<LLVM::ConstantOp>(
-      loc, i32Ty, rewriter.getI32IntegerAttr(coopKindValue));
   auto transferKind = op->getAttrOfType<StringAttr>("transfer_kind").getValue();
-  if (transferKind == "put") {
-    LLVM::LLVMFuncOp put = getOrInsertNetPut(module, ctx);
-    rewriter.create<LLVM::CallOp>(
-        loc, TypeRange{}, FlatSymbolRefAttr::get(put),
-        ValueRange{getNetCall.getResult(), comm, teamKind, adaptor.getShardId(),
-                   dstMem, dstByteOffset, srcMem, srcByteOffset, byteCount,
-                   coopKind});
-  } else {
-    LLVM::LLVMFuncOp get = getOrInsertNetGet(module, ctx);
-    rewriter.create<LLVM::CallOp>(
-        loc, TypeRange{}, FlatSymbolRefAttr::get(get),
-        ValueRange{getNetCall.getResult(), comm, teamKind, adaptor.getShardId(),
-                   srcMem, srcByteOffset, dstMem, dstByteOffset, byteCount,
-                   coopKind});
+  auto emitTransfer = [&]() {
+    LLVM::LLVMFuncOp getNet = getOrInsertNetFromComm(module, ctx);
+    auto getNetCall = rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{ptrTy}, FlatSymbolRefAttr::get(getNet),
+        ValueRange{comm, adaptor.getNetIdx()});
+    Value teamKind = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(2));
+    Value coopKind = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(coopKindValue));
+    if (transferKind == "put") {
+      LLVM::LLVMFuncOp put = getOrInsertNetPut(module, ctx);
+      rewriter.create<LLVM::CallOp>(
+          loc, TypeRange{}, FlatSymbolRefAttr::get(put),
+          ValueRange{getNetCall.getResult(), comm, teamKind,
+                     adaptor.getShardId(), dstMem, dstByteOffset, srcMem,
+                     srcByteOffset, byteCount, coopKind});
+    } else {
+      LLVM::LLVMFuncOp get = getOrInsertNetGet(module, ctx);
+      rewriter.create<LLVM::CallOp>(
+          loc, TypeRange{}, FlatSymbolRefAttr::get(get),
+          ValueRange{getNetCall.getResult(), comm, teamKind,
+                     adaptor.getShardId(), srcMem, srcByteOffset, dstMem,
+                     dstByteOffset, byteCount, coopKind});
+    }
+  };
+
+  // Unmasked contiguous copies have a statically positive element count and
+  // do not need a branch. Prefix-masked copies may clamp their dynamic count
+  // to zero; in that case the original masked load/store accesses no memory,
+  // so the fused FlagCX call must also be skipped.
+  std::optional<int64_t> constantNelems;
+  if (auto constant = op.getNelems().getDefiningOp<arith::ConstantOp>())
+    if (auto value = dyn_cast<IntegerAttr>(constant.getValue()))
+      constantNelems = value.getInt();
+
+  if (constantNelems) {
+    if (*constantNelems > 0)
+      emitTransfer();
+    return success();
   }
+
+  Value zero = rewriter.create<LLVM::ConstantOp>(
+      loc, rewriter.getI64Type(), rewriter.getI64IntegerAttr(0));
+  Value hasElements = rewriter.create<LLVM::ICmpOp>(
+      loc, LLVM::ICmpPredicate::sgt, adaptor.getNelems(), zero);
+
+  Block *previousBlock = op->getBlock();
+  Block *transferBlock = rewriter.splitBlock(previousBlock, op->getIterator());
+  rewriter.setInsertionPointToStart(transferBlock);
+  emitTransfer();
+
+  Block *continuationBlock =
+      rewriter.splitBlock(transferBlock, op->getIterator());
+  rewriter.setInsertionPointToEnd(transferBlock);
+  rewriter.create<LLVM::BrOp>(loc, continuationBlock);
+
+  rewriter.setInsertionPointToEnd(previousBlock);
+  rewriter.create<LLVM::CondBrOp>(loc, hasElements, transferBlock,
+                                  continuationBlock);
+  rewriter.setInsertionPointToStart(continuationBlock);
   return success();
 }
 
@@ -608,6 +645,9 @@ struct RemotePointersOpConversion
 
     auto space = adaptor.getSpace();
     if (space == "node") {
+      if (op.getResult())
+        return reportFailure(
+            "unfused node remote pointer reached LLVM conversion");
       if (failed(lowerNodeSpace(loc, op, adaptor, rewriter)))
         return reportFailure("node lowering failed");
       rewriter.eraseOp(op);

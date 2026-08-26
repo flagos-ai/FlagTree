@@ -990,15 +990,18 @@ LogicalResult DistributedBarrierOp::verify() {
 void RemotePointersOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
-  if (getSpace() != "node")
+  // Pointer-valued node ops are compile-time markers. Only the fused,
+  // result-less transfer has externally visible read/write effects.
+  if (getSpace() != "node" || getResult())
     return;
   effects.emplace_back(MemoryEffects::Read::get());
   effects.emplace_back(MemoryEffects::Write::get());
 }
 
 Speculation::Speculatability RemotePointersOp::getSpeculatability() {
-  return getSpace() == "node" ? Speculation::NotSpeculatable
-                              : Speculation::Speculatable;
+  return getSpace() == "node" && !getResult()
+             ? Speculation::NotSpeculatable
+             : Speculation::Speculatable;
 }
 
 LogicalResult RemotePointersOp::verify() {

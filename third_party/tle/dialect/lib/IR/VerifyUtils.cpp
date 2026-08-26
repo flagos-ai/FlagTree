@@ -67,8 +67,58 @@ llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result) {
 }
 
 llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
-  if (op.getResult())
-    return op.emitOpError() << "node space must not produce a result";
+  if (Value result = op.getResult()) {
+    auto requireMarkerOperand = [&](Value value,
+                                    StringRef name) -> LogicalResult {
+      if (!value)
+        return op.emitOpError()
+               << "node remote pointer marker requires " << name
+               << " operand";
+      return success();
+    };
+    if (failed(requireMarkerOperand(op.getSrc(), "src")) ||
+        failed(requireMarkerOperand(op.getComm(), "comm")) ||
+        failed(requireMarkerOperand(op.getNetIdx(), "net_idx")))
+      return failure();
+    if (op.getDstMem() || op.getOffset() || op.getDstOffset() ||
+        op.getNelems() || op.getElemBytesAttr() || op.getTransferKindAttr())
+      return op.emitOpError()
+             << "node remote pointer marker does not accept transfer operands "
+                "or attributes";
+    if (!op.getSrc().getType().isSignlessInteger(64) ||
+        !op.getComm().getType().isSignlessInteger(64))
+      return op.emitOpError()
+             << "expects node marker src and comm to be i64 handles";
+    if (!op.getNetIdx().getType().isSignlessInteger(32))
+      return op.emitOpError() << "expects node marker net_idx to be i32";
+    auto coopKindAttr = op.getCoopkindAttr();
+    if (!coopKindAttr || coopKindAttr.getInt() < 0 ||
+        coopKindAttr.getInt() > 2)
+      return op.emitOpError()
+             << "expects coopkind to be THREAD(0), WARP(1), or BLOCK(2)";
+    auto ptrTy = dyn_cast<triton::PointerType>(result.getType());
+    if (!ptrTy || ptrTy.getAddressSpace() != 1)
+      return op.emitOpError()
+             << "node remote pointer marker must produce a scalar global "
+                "pointer to an integer or floating-point element";
+    Type pointeeTy = ptrTy.getPointeeType();
+    unsigned bitWidth = 0;
+    if (auto intTy = dyn_cast<IntegerType>(pointeeTy))
+      bitWidth = intTy.getWidth();
+    else if (auto floatTy = dyn_cast<FloatType>(pointeeTy))
+      bitWidth = floatTy.getWidth();
+    if (bitWidth < 8 || bitWidth % 8 != 0)
+      return op.emitOpError()
+             << "node remote pointer marker element type must be "
+                "byte-addressable";
+    if (std::optional<int64_t> peer = getConstantIntValue(op.getShardId());
+        peer && *peer < 0)
+      return op.emitOpError() << "expects constant peer to be >= 0";
+    if (std::optional<int64_t> netIdx = getConstantIntValue(op.getNetIdx());
+        netIdx && *netIdx < 0)
+      return op.emitOpError() << "expects constant net_idx to be >= 0";
+    return success();
+  }
 
   auto transferKindAttr = op->getAttrOfType<StringAttr>("transfer_kind");
   if (!transferKindAttr || (transferKindAttr.getValue() != "put" &&
@@ -117,8 +167,8 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
     return failure();
 
   if (std::optional<int64_t> nelems = getConstantIntValue(op.getNelems());
-      nelems && *nelems <= 0)
-    return op.emitOpError() << "expects constant nelems to be > 0";
+      nelems && *nelems < 0)
+    return op.emitOpError() << "expects constant nelems to be >= 0";
 
   Type offsetTy = op.getOffset().getType();
   if (auto tensorTy = dyn_cast<RankedTensorType>(offsetTy)) {

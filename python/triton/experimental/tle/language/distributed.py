@@ -1097,27 +1097,6 @@ def _remote_pointer(
     return _create_remote_pointers_tensor(tensor, shard_id_tensor, _semantic, dtype=dtype, space=space, offset=offset)
 
 
-# offset / dstoffset / nelems -> scalar i64 tl.tensor
-# offset and dstoffset must be >= 0.
-# nelems must be > 0.
-def _normalize_node_i64(value, label: str, *, must_be_positive: bool, _semantic) -> tl.tensor:
-    value = tl._unwrap_if_constexpr(value)
-    if isinstance(value, int):
-        if must_be_positive and value <= 0:
-            raise ValueError(f"node space {label} must be > 0, got {value}")
-        if not must_be_positive and value < 0:
-            raise ValueError(f"node space {label} must be >= 0, got {value}")
-
-    value_tensor = value if isinstance(value, tl.tensor) else _semantic.to_tensor(value)
-    if not value_tensor.dtype.is_int():
-        raise TypeError(f"node space {label} must be an integer scalar, got {value_tensor.dtype}")
-    if value_tensor.shape != ():
-        raise ValueError(f"node space {label} must be scalar, got shape {value_tensor.shape}")
-    if value_tensor.dtype != tl.int64:
-        value_tensor = tl.cast(value_tensor, tl.int64, _semantic=_semantic)
-    return value_tensor
-
-
 def _normalize_node_elem_bytes(dtype) -> int:
     dtype = tl._unwrap_if_constexpr(dtype)
     if not isinstance(dtype, tl.dtype):
@@ -1163,21 +1142,24 @@ def _normalize_coopkind(coopkind) -> int:
     return mapping[normalized]
 
 
+_NODE_INTER_CONTEXT_COUNT = 4
+
+
 def _normalize_node_netidx(netidx, _semantic) -> tl.tensor:
     netidx = tl._unwrap_if_constexpr(netidx)
+    if isinstance(netidx, bool):
+        raise TypeError("node space netidx must be an integer, not bool")
     if isinstance(netidx, int):
-        if netidx < 0 or netidx > 0x7FFFFFFF:
-            raise ValueError(f"node space netidx must be in int32 range [0, 2147483647], got {netidx}")
+        if netidx < 0 or netidx >= _NODE_INTER_CONTEXT_COUNT:
+            raise ValueError(f"node space netidx must be in range [0, {_NODE_INTER_CONTEXT_COUNT}), got {netidx}")
         netidx = _semantic.to_tensor(netidx)
     elif not isinstance(netidx, tl.tensor):
         netidx = _semantic.to_tensor(netidx)
 
-    if not netidx.dtype.is_int():
-        raise TypeError(f"node space netidx must be an integer scalar, got {netidx.dtype}")
     if netidx.shape != ():
         raise ValueError(f"node space netidx must be scalar, got shape {netidx.shape}")
     if netidx.dtype != tl.int32:
-        netidx = tl.cast(netidx, tl.int32, _semantic=_semantic)
+        raise TypeError(f"node space runtime netidx must be tl.int32; got {netidx.dtype}")
     return netidx
 
 
@@ -1189,231 +1171,39 @@ def _parse_node_context(builder, value, label: str, index: int):
     return _parse_src_arg(builder, value, index)
 
 
-class _node_remote_destination_type(tl.base_type):
-
-    def __init__(self, field_types, dtype: tl.dtype, elem_bytes: int, coop_kind: int):
-        # src_mem, dst_mem, comm, peer, offset, dstoffset, nelems, net_idx.
-        self.field_types = tuple(field_types)
-        self.dtype = dtype
-        self.elem_bytes = elem_bytes
-        self.coop_kind = coop_kind
-
-    def _unflatten_ir(self, handles, cursor):
-        fields = []
-        for field_type in self.field_types:
-            field, cursor = field_type._unflatten_ir(handles, cursor)
-            fields.append(field)
-        return _node_remote_destination(
-            *fields,
-            dtype=self.dtype,
-            elem_bytes=self.elem_bytes,
-            coop_kind=self.coop_kind,
-        ), cursor
-
-    def _flatten_ir_types(self, builder, out) -> None:
-        for field_type in self.field_types:
-            field_type._flatten_ir_types(builder, out)
-
-    def mangle(self) -> str:
-        fields = "_".join(field_type.mangle() for field_type in self.field_types)
-        return f"node_remote_dst_{self.dtype.mangle()}_e{self.elem_bytes}_c{self.coop_kind}_{fields}"
-
-    def __eq__(self, other) -> bool:
-        return (type(self) is type(other) and self.field_types == other.field_types and self.dtype == other.dtype
-                and self.elem_bytes == other.elem_bytes and self.coop_kind == other.coop_kind)
-
-    def __str__(self) -> str:
-        return f"node_remote_destination<{self.dtype}, coop_kind={self.coop_kind}>"
-
-    @property
-    def scalar(self):
-        raise ValueError('tle.remote(..., space="node") destinations only support tl.load/tl.store')
-
-
-class _node_remote_destination(tl.base_value):
-
-    def __init__(self, src_mem: tl.tensor, dst_mem: tl.tensor, comm: tl.tensor, peer: tl.tensor, offset: tl.tensor,
-                 dstoffset: tl.tensor, nelems: tl.tensor, net_idx: tl.tensor, *, dtype: tl.dtype, elem_bytes: int,
-                 coop_kind: int):
-        super().__init__()
-        self.src_mem = src_mem
-        self.dst_mem = dst_mem
-        self.comm = comm
-        self.peer = peer
-        self.offset = offset
-        self.dstoffset = dstoffset
-        self.nelems = nelems
-        self.net_idx = net_idx
-        self.dtype = dtype
-        self.elem_bytes = elem_bytes
-        self.coop_kind = coop_kind
-
-    @property
-    def type(self):
-        fields = (self.src_mem, self.dst_mem, self.comm, self.peer, self.offset, self.dstoffset, self.nelems,
-                  self.net_idx)
-        return _node_remote_destination_type(
-            tuple(field.type for field in fields),
-            self.dtype,
-            self.elem_bytes,
-            self.coop_kind,
-        )
-
-    def _flatten_ir(self, handles) -> None:
-        for field in (self.src_mem, self.dst_mem, self.comm, self.peer, self.offset, self.dstoffset, self.nelems,
-                      self.net_idx):
-            field._flatten_ir(handles)
-
-    def _unsupported_pointer_operation(self):
-        raise ValueError('tle.remote(..., space="node") destinations only support tl.load/tl.store')
-
-    def __add__(self, other):
-        self._unsupported_pointer_operation()
-
-    def __radd__(self, other):
-        self._unsupported_pointer_operation()
-
-    def __sub__(self, other):
-        self._unsupported_pointer_operation()
-
-    def __rsub__(self, other):
-        self._unsupported_pointer_operation()
-
-    def __getitem__(self, index):
-        self._unsupported_pointer_operation()
-
-    def __triton_load__(self, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy, volatile,
-                        flagtree_hints, _semantic=None):
-        if mask is not None:
-            raise ValueError("tl.load from a node remote destination does not support mask")
-        if other is not None:
-            raise ValueError("tl.load from a node remote destination does not support other")
-        boundary_check = tl._unwrap_if_constexpr(boundary_check)
-        if isinstance(boundary_check, tl.tuple):
-            boundary_check = tuple(boundary_check)
-        if boundary_check:
-            raise ValueError("tl.load from a node remote destination does not support boundary_check")
-        padding_option = tl._unwrap_if_constexpr(padding_option)
-        if padding_option:
-            raise ValueError("tl.load from a node remote destination does not support padding_option")
-        cache_modifier = tl._unwrap_if_constexpr(cache_modifier)
-        if cache_modifier:
-            raise ValueError("tl.load from a node remote destination does not support cache_modifier")
-        eviction_policy = tl._unwrap_if_constexpr(eviction_policy)
-        if eviction_policy:
-            raise ValueError("tl.load from a node remote destination does not support eviction_policy")
-        volatile = tl._unwrap_if_constexpr(volatile)
-        if volatile:
-            raise ValueError("tl.load from a node remote destination does not support volatile")
-        flagtree_hints = tl._unwrap_if_constexpr(flagtree_hints)
-        if flagtree_hints:
-            raise ValueError("tl.load from a node remote destination does not support flagtree_hints")
-
-        builder = _semantic.builder
-        if not hasattr(builder, "create_remote_pointers"):
-            raise RuntimeError("node get requires TLE remote_pointers support in the active Triton build")
-        builder.create_remote_pointers(
-            None,
-            self.src_mem.handle,
-            self.peer.handle,
-            "node",
-            self.offset.handle,
-            self.dst_mem.handle,
-            self.comm.handle,
-            self.dstoffset.handle,
-            self.nelems.handle,
-            self.net_idx.handle,
-            self.elem_bytes,
-            self.coop_kind,
-            "get",
-        )
-        return _semantic.tensor(None, tl.void)
-
-    def __triton_store__(self, value, mask, boundary_check, cache_modifier, eviction_policy, _semantic=None):
-        if value is not tl._STORE_VALUE_UNSET:
-            raise TypeError("tl.store to a node remote destination does not accept a value; "
-                            "source and destination are configured by tle.remote(...) "
-                            "(dst defaults to tensor), so call tl.store(remote_dst) without a value")
-        if mask is not None:
-            raise ValueError("tl.store to a node remote destination does not support mask")
-        boundary_check = tl._unwrap_if_constexpr(boundary_check)
-        if isinstance(boundary_check, tl.tuple):
-            boundary_check = tuple(boundary_check)
-        if boundary_check:
-            raise ValueError("tl.store to a node remote destination does not support boundary_check")
-        if cache_modifier:
-            raise ValueError("tl.store to a node remote destination does not support cache_modifier")
-        if eviction_policy:
-            raise ValueError("tl.store to a node remote destination does not support eviction_policy")
-
-        builder = _semantic.builder
-        if not hasattr(builder, "create_remote_pointers"):
-            raise RuntimeError("node put requires TLE remote_pointers support in the active Triton build")
-        builder.create_remote_pointers(
-            None,
-            self.src_mem.handle,
-            self.peer.handle,
-            "node",
-            self.offset.handle,
-            self.dst_mem.handle,
-            self.comm.handle,
-            self.dstoffset.handle,
-            self.nelems.handle,
-            self.net_idx.handle,
-            self.elem_bytes,
-            self.coop_kind,
-            "put",
-        )
-        return _semantic.tensor(None, tl.void)
-
-
-def _create_node_remote_destination(src, dst, shard_id, scope, dtype, offset, dstoffset, nelems, coopkind, netidx,
-                                    _semantic) -> _node_remote_destination:
-    if offset is None:
-        raise TypeError('tle.remote(..., space="node") requires offset')
-    if nelems is None:
-        raise TypeError('tle.remote(..., space="node") requires nelems')
-    if coopkind is None:
-        raise TypeError('tle.remote(..., space="node") requires coopkind')
+def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _semantic) -> tl.tensor:
     if dtype is None:
         raise TypeError('tle.remote(..., space="node") requires dtype')
 
     builder = _semantic.builder
     if not hasattr(builder, "create_remote_pointers"):
-        raise RuntimeError("node transfer requires TLE remote_pointers support in the active Triton build")
+        raise RuntimeError("node remote pointer requires TLE remote_pointers support in the active Triton build")
 
     peer = _normalize_node_peer(shard_id, scope, _semantic)
     dtype = tl._unwrap_if_constexpr(dtype)
-    elem_bytes = _normalize_node_elem_bytes(dtype)
-
-    offset = _normalize_node_i64(offset, "offset", must_be_positive=False, _semantic=_semantic)
-    if dstoffset is None:
-        dstoffset = offset
-    else:
-        dstoffset = _normalize_node_i64(dstoffset, "dstoffset", must_be_positive=False, _semantic=_semantic)
-    nelems = _normalize_node_i64(nelems, "nelems", must_be_positive=True, _semantic=_semantic)
+    _normalize_node_elem_bytes(dtype)
     net_idx = _normalize_node_netidx(netidx, _semantic)
     coop_kind = _normalize_coopkind(coopkind)
 
-    src_mem = tl.tensor(_parse_node_context(builder, src, "src", 0), tl.int64)
-    if dst is None:
-        dst_mem = src_mem
-    else:
-        dst_mem = tl.tensor(_parse_node_context(builder, dst, "dst", 0), tl.int64)
-    comm = tl.tensor(_parse_node_context(builder, src, "src", 1), tl.int64)
-    return _node_remote_destination(
+    src_mem = _parse_node_context(builder, ctx, "ctx", 0)
+    comm = _parse_node_context(builder, ctx, "ctx", 1)
+    remote_ptr_dtype = tl.pointer_type(dtype, 1)
+    remote_op = builder.create_remote_pointers(
+        remote_ptr_dtype.to_ir(builder),
         src_mem,
-        dst_mem,
+        peer.handle,
+        "node",
+        None,
+        None,
         comm,
-        peer,
-        offset,
-        dstoffset,
-        nelems,
-        net_idx,
-        dtype=dtype,
-        elem_bytes=elem_bytes,
-        coop_kind=coop_kind,
+        None,
+        None,
+        net_idx.handle,
+        None,
+        coop_kind,
+        None,
     )
+    return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
 
 
 @tl.builtin
@@ -1424,9 +1214,6 @@ def remote(
     space: str = "cluster",
     dtype: tl.dtype = None,
     offset: int | tl.tensor | None = None,
-    dst=None,
-    dstoffset: int | tl.tensor | None = None,
-    nelems: int | tl.tensor | None = None,
     coopkind: GroupKind | str | None = None,
     netidx: int | tl.tensor = 0,
     _semantic: TLESemantic | None = None,
@@ -1439,42 +1226,42 @@ def remote(
       should then use `tle.gpu.local_ptr(...)` to materialize remote pointers.
     - tl.tensor shared-memory pointer (scalar or tensor): returns remote
       pointer directly.
-    - DistributedRtContext with `space="node"`: returns a transfer-only remote
-      destination consumed by `tl.load` or `tl.store`.
+    - DistributedRtContext with `space="node"`: returns a global pointer
+      marker consumed by a direct `tl.load`/`tl.store` copy pattern.
 
     `shard_id` is the target block id inside the current thread block cluster.
     For cluster/device pointer paths, when `scope` is provided, launch cluster
     dimensions are inferred from that mesh and this mode requires `num_ctas=1`
     (one program maps to one block).
 
-    For `space="node"`, `tensor` is the source registered-memory
-    `DistributedRtContext` and `dst` is the destination context. `dst`
-    defaults to `tensor`. `tl.store(remote_dst)` issues a put from the local
-    source to the remote destination, while `tl.load(remote_dst)` issues a get
-    from the remote source into the local destination. Both operations are
-    transfer-only and return no data; node stores do not accept a store value.
-    `dtype`, `offset`, `nelems`, and `coopkind` must be explicit, while
-    `dstoffset` defaults to `offset` and `netidx` defaults to zero. The
-    cooperative kind accepts only `GroupKind.THREAD`, `GroupKind.WARP`,
-    `GroupKind.BLOCK`, or their strings.
+    For `space="node"`, `tensor` is the registered-memory
+    `DistributedRtContext`. A load from the local buffer followed directly by
+    a store to the returned pointer is a put; the reverse is a get. The local
+    buffer root must be an entry pointer argument bound to the same buffer used
+    by `create_dist_tensor`. A direct scalar load/store copy may omit a range;
+    its source and destination element offsets are optional scalar integers
+    that default to zero, and its transfer length is one. Tensor copies require
+    a shared one-dimensional contiguous `tl.arange(0, N)`. The load and store
+    may be unmasked or may reuse the same prefix mask `offsets < valid_n`; a
+    dynamic `valid_n` is clamped to `[0, N]` and becomes the transfer
+    `nelems`; zero means no transfer. Sparse and multidimensional masks are
+    rejected. For tensor copies, missing, non-zero-start, strided, or
+    mismatched ranges are also rejected. `dtype` must be explicit;
+    `coopkind` defaults to `GroupKind.BLOCK` and `netidx` defaults to zero. A
+    compile-time `netidx`
+    must be in `[0, 4)`, while a runtime `netidx` must be a scalar `tl.int32`
+    whose range is guaranteed by the caller.
     `shard_id` may be a scalar i32 world rank. With `scope=device_mesh`, a
     compile-time tuple/list coordinate is also accepted and resolved through
     the mesh's physical ids to a world rank. Node scope is used only for peer
-    addressing and does not alter the CUDA cluster launch. `offset`,
-    `dstoffset`, and `nelems` are scalar element counts normalized to i64;
-    lowering multiplies all three by `dtype.itemsize` before calling FlagCX.
-    This first version emits a network transfer without flush, completion
-    notification, or a visibility guarantee.
+    addressing and does not alter the CUDA cluster launch. Source and
+    destination element offsets and the transfer width are recovered from the
+    pointer expressions; lowering converts them to bytes before calling
+    FlagCX. Completion and visibility semantics are unchanged.
 
-    In node mode, `offset` is relative to the source memory base and
-    `dstoffset` is relative to the destination memory base. For put, the
-    source is local and the destination is remote; for get, the source is
-    remote and the destination is local. For device mode, `offset` is the
-    remote-memory offset. It is required for
-    `space="node"` and optional for `space="device"`. Lowering converts it to a
-    byte offset before passing it to `flagcxGetIntraPointerC`. It may be a
-    Python `int` (compile-time constant) or a scalar `tl.tensor` (runtime
-    value, shape == ()).
+    For device mode, `offset` is the remote-memory offset. Lowering converts
+    it to a byte offset before passing it to `flagcxGetIntraPointerC`. It may
+    be a Python `int` or a scalar integer `tl.tensor`.
     """
     space = tl._unwrap_if_constexpr(space)
     if not isinstance(space, str):
@@ -1484,12 +1271,16 @@ def remote(
     shard_id = _unwrap_remote_shard_id(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
     if space == "node":
-        return _create_node_remote_destination(tensor, dst, shard_id, scope, dtype, offset, dstoffset, nelems, coopkind,
-                                               netidx, _semantic)
-    node_only_args = [
-        name for name, value in (("dst", dst), ("dstoffset", dstoffset), ("nelems", nelems), ("coopkind", coopkind))
-        if value is not None
-    ]
+        if offset is not None:
+            raise TypeError('tle.remote(..., space="node") does not accept offset; '
+                            'add element offsets to the returned pointer')
+        # Keep None as an internal sentinel so cluster/device can still reject
+        # an explicitly supplied node-only coopkind. Node behavior defaults to
+        # BLOCK as documented.
+        if coopkind is None:
+            coopkind = GroupKind.BLOCK
+        return _create_node_remote_pointer(tensor, shard_id, scope, dtype, coopkind, netidx, _semantic)
+    node_only_args = ["coopkind"] if coopkind is not None else []
     unwrapped_netidx = tl._unwrap_if_constexpr(netidx)
     if not isinstance(unwrapped_netidx, int) or unwrapped_netidx != 0:
         node_only_args.append("netidx")
