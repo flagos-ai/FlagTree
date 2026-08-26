@@ -77,4 +77,22 @@ def TritonILUVATARGPUOptimizeEpilogue : Pass<"tritoniluvatargpu-optimize-epilogu
   let dependentDialects = [];
 }
 
+def TritonILUVATARGPUUpdateAsyncWaitCount : Pass<"tritoniluvatargpu-update-async-wait-count", "mlir::ModuleOp"> {
+  let summary = "Convert async wait group counts to outstanding SME G2S intrinsic counts";
+
+  let description = [{
+    Gluon/TTGIR `ttg.async_wait {num}` counts outstanding `ttg.async_commit_group`s.
+    Iluvatar lowering needs `G2S_CNT` (number of outstanding `llvm.bi.sme.load`
+    intrinsics). This pass walks backwards from each wait, sums SME tile-load
+    costs for the requested outstanding groups, and rewrites `num` in place
+    (marking the op with `ttg.iluvatar.g2sWaitCnt`).
+  }];
+
+  let constructor = "mlir::createTritonILUVATARGPUUpdateAsyncWaitCountPass()";
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                             "mlir::triton::TritonDialect",
+                             "mlir::scf::SCFDialect"];
+}
+
 #endif

@@ -330,6 +330,8 @@ void init_triton_iluvatar_passes_ttgpuir(py::module &&m) {
                      mlir::createTritonILUVATARGPUOptimizeEpiloguePass);
   ADD_PASS_WRAPPER_0("add_mma_reduce_thread_locality",
                      mlir::createTritonILUVATARGPUMMAReduceThreadLocalityPass);
+  ADD_PASS_WRAPPER_0("add_update_async_wait_count",
+                     mlir::createTritonILUVATARGPUUpdateAsyncWaitCountPass);
   m.def("add_accelerate_matmul", [](mlir::PassManager &pm, unsigned useSme) {
     pm.addPass(createTritonGPUAccelerateMatmulWithSme(useSme));
   });

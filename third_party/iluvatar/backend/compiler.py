@@ -400,6 +400,9 @@ class CorexBackend(BaseBackend):
         pm.enable_debug()
 
         passes.ttgpuir.add_combine_tensor_select_and_if(pm)
+        # Convert wait_group(N commit-groups) into outstanding SME G2S counts
+        # before LLVM lowering encodes llvm.bi.sl.waitcnt(G2S_CNT).
+        iluvatar.passes.ttgpuir.add_update_async_wait_count(pm)
         passes.ttgpuir.add_allocate_warp_groups(pm)
         passes.convert.add_scf_to_cf(pm)
         passes.gluon.add_inliner(pm)

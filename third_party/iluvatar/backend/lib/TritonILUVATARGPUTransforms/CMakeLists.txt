@@ -2,6 +2,7 @@ add_triton_library(TritonILUVATARGPUTransforms
   SmeLoad.cpp
   OptimizeEpilogue.cpp
   MMAReduceThreadLocality.cpp
+  UpdateAsyncWaitCount.cpp
 
   DEPENDS
   TritonILUVATARGPUTransformsIncGen
