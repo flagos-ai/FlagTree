@@ -72,8 +72,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
                                     StringRef name) -> LogicalResult {
       if (!value)
         return op.emitOpError()
-               << "node remote pointer marker requires " << name
-               << " operand";
+               << "node remote pointer marker requires " << name << " operand";
       return success();
     };
     if (failed(requireMarkerOperand(op.getSrc(), "src")) ||
@@ -92,8 +91,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
     if (!op.getNetIdx().getType().isSignlessInteger(32))
       return op.emitOpError() << "expects node marker net_idx to be i32";
     auto coopKindAttr = op.getCoopkindAttr();
-    if (!coopKindAttr || coopKindAttr.getInt() < 0 ||
-        coopKindAttr.getInt() > 2)
+    if (!coopKindAttr || coopKindAttr.getInt() < 0 || coopKindAttr.getInt() > 2)
       return op.emitOpError()
              << "expects coopkind to be THREAD(0), WARP(1), or BLOCK(2)";
     auto ptrTy = dyn_cast<triton::PointerType>(result.getType());

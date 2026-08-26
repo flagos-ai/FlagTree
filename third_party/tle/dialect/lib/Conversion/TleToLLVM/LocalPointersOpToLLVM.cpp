@@ -596,8 +596,8 @@ LogicalResult lowerNodeSpace(Location loc, tle::RemotePointersOp op,
     return success();
   }
 
-  Value zero = rewriter.create<LLVM::ConstantOp>(
-      loc, rewriter.getI64Type(), rewriter.getI64IntegerAttr(0));
+  Value zero = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI64Type(),
+                                                 rewriter.getI64IntegerAttr(0));
   Value hasElements = rewriter.create<LLVM::ICmpOp>(
       loc, LLVM::ICmpPredicate::sgt, adaptor.getNelems(), zero);
 

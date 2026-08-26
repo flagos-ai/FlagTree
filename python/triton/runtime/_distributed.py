@@ -115,19 +115,12 @@ def _parse_node_buffer_bindings(encoded_bindings):
 
 
 def _collect_distributed_contexts(values):
-    return tuple({
-        id(value): value
-        for value in values
-        if isinstance(value, DistributedRtContext)
-    }.values())
+    return tuple({id(value): value for value in values if isinstance(value, DistributedRtContext)}.values())
 
 
 def _collect_runtime_items(bound_args, specialization):
     return tuple(
-        (name, value)
-        for (name, value), spec in zip(bound_args.items(), specialization)
-        if spec[0] != "constexpr"
-    )
+        (name, value) for (name, value), spec in zip(bound_args.items(), specialization) if spec[0] != "constexpr")
 
 
 def validate_node_buffer_bindings(
@@ -143,22 +136,16 @@ def validate_node_buffer_bindings(
     contexts_by_handle = {int(ctx[0]): ctx for ctx in contexts}
     for encoded, role, ordinal, handle in _parse_node_buffer_bindings(encoded_bindings):
         if ordinal >= len(runtime_args):
-            raise RuntimeError(
-                f"kernel {kernel_name!r} has invalid node buffer binding "
-                f"{encoded!r}"
-            )
+            raise RuntimeError(f"kernel {kernel_name!r} has invalid node buffer binding "
+                               f"{encoded!r}")
 
         ctx = contexts_by_handle.get(handle)
         if ctx is None:
-            raise RuntimeError(
-                f"kernel {kernel_name!r} did not receive the node context "
-                f"with mem handle 0x{handle:x}"
-            )
+            raise RuntimeError(f"kernel {kernel_name!r} did not receive the node context "
+                               f"with mem handle 0x{handle:x}")
         registered = ctx.registered_buffer
         if registered is None:
-            raise RuntimeError(
-                f"kernel {kernel_name!r} node context has no registered buffer"
-            )
+            raise RuntimeError(f"kernel {kernel_name!r} node context has no registered buffer")
 
         value = runtime_args[ordinal]
         data_ptr = getattr(value, "data_ptr", None)
@@ -167,16 +154,11 @@ def validate_node_buffer_bindings(
         if actual == expected:
             continue
 
-        name = (
-            arg_names[ordinal]
-            if arg_names is not None and ordinal < len(arg_names)
-            else f"runtime ordinal {ordinal}"
-        )
-        raise ValueError(
-            f"kernel {kernel_name!r} node local {role} buffer argument "
-            f"{name!r} does not match its context buffer: expected "
-            f"0x{expected:x}, got 0x{actual:x}"
-        )
+        name = (arg_names[ordinal]
+                if arg_names is not None and ordinal < len(arg_names) else f"runtime ordinal {ordinal}")
+        raise ValueError(f"kernel {kernel_name!r} node local {role} buffer argument "
+                         f"{name!r} does not match its context buffer: expected "
+                         f"0x{expected:x}, got 0x{actual:x}")
 
 
 def validate_node_launch_bindings(kernel, bound_args, specialization):

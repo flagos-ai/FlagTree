@@ -999,9 +999,8 @@ void RemotePointersOp::getEffects(
 }
 
 Speculation::Speculatability RemotePointersOp::getSpeculatability() {
-  return getSpace() == "node" && !getResult()
-             ? Speculation::NotSpeculatable
-             : Speculation::Speculatable;
+  return getSpace() == "node" && !getResult() ? Speculation::NotSpeculatable
+                                              : Speculation::Speculatable;
 }
 
 LogicalResult RemotePointersOp::verify() {
