@@ -78,8 +78,8 @@ jobs:
           cd /root/flaggems_ci/FlagGems
 
           # 临时方案，patch merge后就不用拷贝了
-          cp /data/zhengyang/flaggems_ci/FlagGems/tests/conftest.py tests/conftest.py
-          cp -raf /data/zhengyang/flaggems_ci/FlagGems/tools/ci tools
+          cp /root/flaggems_ci/patch/conftest.py tests/conftest.py
+          cp -raf /root/flaggems_ci/patch/ci tools
 
           python tools/ci/ci_run_tests_v9.py \
             --gpus ${CUDA_VISIBLE_DEVICES:-4} \
