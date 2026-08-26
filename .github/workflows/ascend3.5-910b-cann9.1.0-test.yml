@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ascend35x-910b-cann910-unit-test:
+  ascend35x-910b-cann910-test:
     runs-on: ascend3.5-910b-cann9.1.0
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
@@ -79,13 +79,13 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: ascend
 
-      - name: Unit Test
+      - name: TLE-Distributed Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
-          ## flagtree tle tutorial
+          ## flagtree tle-distributed tutorial
           pushd python/tutorials/tle/dsa
           PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 09-ascend-allgather-gemm.py
           PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 10-tle-d2d-barrier.py

@@ -18,11 +18,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Nvidia3.5-Build-And-Test
+name: Nvidia3.5
 
 on:
-  schedule:
-    - cron: '0 21 * * *'
   push:
     branches: [ "triton_v3.5.x" ]
   pull_request:
@@ -76,7 +74,7 @@ jobs:
           echo "TARGET_BRANCH=$TARGET_BRANCH"
 
       - name: Build FlagTree
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
+        if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
@@ -94,7 +92,7 @@ jobs:
           backend: nvidia
 
       - name: Unit Test
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && env.TARGET_BRANCH == 'triton_v3.5.x' }}
+        if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x

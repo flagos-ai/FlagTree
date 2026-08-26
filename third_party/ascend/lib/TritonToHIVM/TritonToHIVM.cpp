@@ -32,7 +32,9 @@
 #include "llvm/Support/LogicalResult.h"
 
 #include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
+#ifdef __TLE_DSA__
 #include "tle/dsa/dialect/include/Conversion/TleToHIVM/TleDistributedOpToHIVMConverter.h"
+#endif
 namespace mlir {
 namespace triton {
 #define GEN_PASS_DEF_TRITONTOHIVM
@@ -45,7 +47,9 @@ using namespace hivm;
 
 namespace {
 
+#ifdef __TLE_DSA__
 constexpr int patternBenefitPrioritizeOverLLVMConversions = 10;
+#endif
 struct CoreAndPipes {
   TCoreTypeAttr core;
   PipeAttr producer;
@@ -162,6 +166,7 @@ void TritonToHIVMPass::runOnOperation() {
   ConversionTarget target(getContext());
   target.addLegalDialect<hivm::HIVMDialect>();
 
+#ifdef __TLE_DSA__
   // CUBE_AND_VECTOR core type; otherwise VECTOR only.
   bool existDot = false;
   module.walk([&](triton::DotOp dotOp) {
@@ -172,12 +177,15 @@ void TritonToHIVMPass::runOnOperation() {
     existDot = true;
     return WalkResult::interrupt();
   });
+#endif
 
   RewritePatternSet patterns(&getContext());
 
+#ifdef __TLE_DSA__
   // TLE distributed ops
   mlir::triton::tle::populateTleDistributedOpToHIVMConversionPatterns(
       patterns, patternBenefitPrioritizeOverLLVMConversions, existDot);
+#endif
 
   patterns.add<TritonCustomOpToHIVMSyncOpConversion>(patterns.getContext());
   if (failed(applyPartialConversion(module, target, std::move(patterns)))) {

@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Enflame-GCU400-Build-And-Test
+name: Ascend3.5-910C-TLE
 
 on:
   push:
@@ -36,8 +36,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame35x-gcu400-unit-test:
-    runs-on: enflame-gcu400
+  ascend35x-910c-tle-test:
+    runs-on: ascend3.5-910c-tle
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
@@ -55,33 +55,21 @@ jobs:
         id: check_backend
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
-          backend: enflame
+          backend: ascend
 
       - name: Cleanup FlagTree Environment
         if: steps.check_backend.outputs.should_skip != 'true'
         uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
-
-      - name: Detect Target Branch
-        shell: bash
-        run: |
-          set -x
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TARGET_BRANCH="${{ github.base_ref }}"
-          else
-            TARGET_BRANCH="${{ github.ref_name }}"
-          fi
-          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
-          echo "TARGET_BRANCH=$TARGET_BRANCH"
 
       - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
-          python3 -m pip uninstall -y triton --break-system-packages
-          python3 -m pip uninstall -y triton_gcu --break-system-packages
-          export FLAGTREE_BACKEND=enflame
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation --break-system-packages
+          export FLAGTREE_BACKEND=ascend
+          source ~/env.sh
+          export PATH=~/.flagtree/ascend/llvm-7d5de303-ubuntu-aarch64-python311-compat/bin/:${PATH}  # clang
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation
 
       - name: Clear cache if ClearCache label present
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -89,11 +77,30 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          backend: enflame
+          backend: ascend
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
-          python3 -m pytest -s third_party/enflame/python/test/unit
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          ## flagtree tle test
+          pushd python/test/tle
+          python3 test_vec_add.py
+          python3 test_vec_add_2d.py
+          python3 test_vec_add_mix.py
+          python3 test_vec_mathOps.py
+          python3 test_tle_with_hints.py
+          popd
+          ## flagtree tle tutorial
+          pushd python/tutorials/tle/dsa
+          python3 01-sparse-flash-attn-tle.py
+          python3 02-causal-conv1d-prefill.py
+          python3 03-causal-conv1d-decode.py
+          python3 04-tle-cv-mix-pipeline.py
+          python3 05-lightning-indexer-v1.py
+          python3 06-swiglu.py
+          python3 07-kv-rmsnorm-rope-cache.py
+          python3 -m pytest -k "accuracy" 08-add-rms-norm-bias.py
+          popd
