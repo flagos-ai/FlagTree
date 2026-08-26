@@ -25,7 +25,6 @@ import importlib
 from collections.abc import Callable
 from typing import Any
 
-
 _TLE_LANGUAGE_PREFIX = "triton.experimental.tle.language."
 _TLE_PRIMITIVE_PREFIXES = (
     "triton.experimental.tle.",
@@ -95,10 +94,8 @@ def get_supported_primitives(backend_name: str) -> frozenset[str]:
     module = _backend_config_module(backend_name)
     configured = getattr(module, "TLE_SUPPORTED_PRIMITIVES", []) if module is not None else []
     if not isinstance(configured, list):
-        raise TypeError(
-            f"backend {backend_name!r} TLE_SUPPORTED_PRIMITIVES must be a list of strings, "
-            f"got {type(configured).__name__}"
-        )
+        raise TypeError(f"backend {backend_name!r} TLE_SUPPORTED_PRIMITIVES must be a list of strings, "
+                        f"got {type(configured).__name__}")
     if not all(isinstance(item, str) for item in configured):
         raise TypeError(f"backend {backend_name!r} TLE_SUPPORTED_PRIMITIVES must contain only strings")
     return frozenset(primitive_name(item) for item in configured)

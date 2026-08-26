@@ -44,8 +44,6 @@ def get_active_backend_name() -> str:
         if backend_name in backends and backends[backend_name].driver.is_active()
     ]
     if len(active) != 1 or not active[0]:
-        raise RuntimeError(
-            f"FLAGTREE_BACKEND is empty, but expected exactly one active default backend; "
-            f"found {active or 'none'}"
-        )
+        raise RuntimeError(f"FLAGTREE_BACKEND is empty, but expected exactly one active default backend; "
+                           f"found {active or 'none'}")
     return active[0]

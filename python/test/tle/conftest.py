@@ -5,7 +5,6 @@ from triton.experimental.tle import (
     primitive_name,
 )
 
-
 _MARKER = "require_tle"
 
 
@@ -14,6 +13,7 @@ def pytest_configure(config):
         "markers",
         "require_tle(*primitives): run only when the active backend supports every named TLE primitive",
     )
+
 
 def _required_primitives(item):
     required = []
@@ -39,6 +39,4 @@ def pytest_runtest_setup(item):
     supported = get_supported_primitives(backend_name)
     missing = sorted(required - supported)
     if missing:
-        pytest.skip(
-            f"backend {backend_name!r} does not support required TLE primitive(s): {', '.join(missing)}"
-        )
+        pytest.skip(f"backend {backend_name!r} does not support required TLE primitive(s): {', '.join(missing)}")

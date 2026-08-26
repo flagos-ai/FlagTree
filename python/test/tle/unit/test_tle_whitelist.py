@@ -50,8 +50,8 @@ def test_backend_config_is_loaded_from_dedicated_module(monkeypatch):
     config = SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=[])
     compiler = SimpleNamespace(__module__="vendor.backend.compiler")
     monkeypatch.setattr(backend_registry, "backends", {"vendor": SimpleNamespace(compiler=compiler)})
-    monkeypatch.setattr(tle.importlib, "import_module",
-                        lambda module: config if module == "vendor.backend.tle_supported" else None)
+    monkeypatch.setattr(tle.importlib, "import_module", lambda module: config
+                        if module == "vendor.backend.tle_supported" else None)
     assert tle._backend_config_module("vendor") is config
 
 
