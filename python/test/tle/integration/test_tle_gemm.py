@@ -101,6 +101,7 @@ class TestTLEGEMM:
     """TLE GEMM Integration Tests"""
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_gemm_basic(self):
         """Test basic GEMM functionality with square matrices"""
         torch.manual_seed(42)  # Ensure reproducibility

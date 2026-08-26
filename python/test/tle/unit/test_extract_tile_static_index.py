@@ -24,6 +24,7 @@ def extract_tile_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for this test")
+@pytest.mark.require_tle("extract_tile")
 def test_extract_tile_kernel():
     # Set matrix dimensions
     M, N = 512, 512

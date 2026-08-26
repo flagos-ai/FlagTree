@@ -107,6 +107,7 @@ class TestTLEPipelineEndToEnd:
     """TLE Pipeline End-to-End Integration Tests"""
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr", "gpu.pipeline")
     def test_elementwise_add_basic(self):
         """Test basic element-wise addition functionality"""
         torch.manual_seed(42)  # Ensure reproducibility
@@ -127,6 +128,7 @@ class TestTLEPipelineEndToEnd:
         torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr", "gpu.pipeline")
     def test_elementwise_add_different_sizes(self):
         """Test different tensor sizes"""
         torch.manual_seed(123)
@@ -153,6 +155,7 @@ class TestTLEPipelineEndToEnd:
             assert c.shape == expected.shape, f"Shape mismatch: {xnumel}x{ynumel}, block size: {XBLOCK}x{YBLOCK}"
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr", "gpu.pipeline")
     def test_elementwise_add_different_dtypes(self):
         """Test different data types"""
         torch.manual_seed(456)
@@ -176,6 +179,7 @@ class TestTLEPipelineEndToEnd:
             assert c.shape == expected.shape, f"Shape mismatch for data type {dtype}"
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr", "gpu.pipeline")
     def test_elementwise_add_edge_cases(self):
         """Test edge cases"""
         torch.manual_seed(789)
