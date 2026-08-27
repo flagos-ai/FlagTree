@@ -345,6 +345,12 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
     pm.addPass(mlir::triton::createAutoBlockifyPass(opts));
   });
 
+  m.def("add_reduce_sum_strength",
+        [](mlir::PassManager &pm, bool enable, int32_t splitFactor) {
+          pm.addPass(mlir::triton::Incubated::createReduceSumStrengthPass(
+              enable, splitFactor));
+        });
+
   m.def("add_triton_to_structure",
         [](mlir::PassManager &pm, bool enableMaskFallbackConversion,
            bool optimizeDynamicOffset) {
