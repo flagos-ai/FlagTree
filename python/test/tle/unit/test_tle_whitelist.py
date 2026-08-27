@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import triton.experimental.tle as tle
+import triton.language as tl
 from triton import backends as backend_registry
 from triton import _flagtree_backend
 from triton.compiler.code_generator import CodeGenerator
@@ -26,8 +27,28 @@ def test_primitive_name(primitive, expected):
 
 
 def test_non_tle_callable_is_rejected():
-    with pytest.raises(ValueError, match="is not a TLE language primitive"):
+    with pytest.raises(ValueError, match="not listed in TLE_PRIMITIVES"):
         tle.primitive_name(len)
+
+
+def test_primitive_name_is_driven_by_total(monkeypatch):
+
+    def new_op():
+        pass
+
+    new_op.__module__ = "triton.experimental.tle.language.future.core"
+    monkeypatch.setattr(tle, "TLE_PRIMITIVES", tle.TLE_PRIMITIVES | {"future.new_op"})
+    assert tle.primitive_name(new_op) == "future.new_op"
+
+
+def test_backend_extension_is_resolved_from_total(monkeypatch):
+
+    def make_view():
+        pass
+
+    make_view.__module__ = "triton.backends.tileir.extend_core"
+    monkeypatch.setattr(tl, "ext", SimpleNamespace(make_view=make_view))
+    assert tle.primitive_name(make_view) == "make_view"
 
 
 def test_missing_or_empty_backend_config_is_strict(monkeypatch):
@@ -104,3 +125,11 @@ def test_codegen_guard_only_rejects_unsupported_tle_primitives(monkeypatch):
     generator._require_tle_primitive(tl_load)
     with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'test'.*'gpu\.alloc'"):
         generator._require_tle_primitive(tle.language.gpu.alloc)
+
+    def make_view():
+        pass
+
+    make_view.__module__ = "triton.backends.tileir.extend_core"
+    monkeypatch.setattr(tl, "ext", SimpleNamespace(make_view=make_view))
+    with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'test'.*'make_view'"):
+        generator._require_tle_primitive(make_view)

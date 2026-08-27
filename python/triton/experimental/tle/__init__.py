@@ -37,6 +37,43 @@ class TLEUnsupportedPrimitiveError(RuntimeError):
     """Raised when a backend does not declare support for a TLE primitive."""
 
 
+def _callable_primitive_name(primitive: Callable[..., Any]) -> str:
+    module = getattr(primitive, "__module__", "")
+    qualname = getattr(primitive, "__qualname__", "")
+    if module.startswith(_TLE_LANGUAGE_PREFIX):
+        module_parts = set(module[len(_TLE_LANGUAGE_PREFIX):].split("."))
+        candidates = {
+            name for name in TLE_PRIMITIVES
+            if name == qualname or name.endswith(f".{qualname}")
+        }
+        scoped = {
+            name for name in candidates
+            if "." in name and name.split(".", 1)[0] in module_parts
+        }
+        if len(scoped) == 1:
+            return scoped.pop()
+        if qualname in candidates:
+            return qualname
+        if len(candidates) == 1:
+            return candidates.pop()
+        raise ValueError(f"{primitive!r} is not listed in TLE_PRIMITIVES")
+
+    name = getattr(primitive, "__name__", "")
+    if name not in TLE_PRIMITIVES:
+        raise ValueError(f"{primitive!r} is not listed in TLE_PRIMITIVES")
+
+    import triton.language as tl
+
+    language_extensions = getattr(tl, "ext", None)
+    try:
+        extension = getattr(language_extensions, name) if language_extensions is not None else None
+    except (AttributeError, RuntimeError):
+        extension = None
+    if extension is primitive:
+        return name
+    raise ValueError(f"{primitive!r} is not a registered backend language extension")
+
+
 def primitive_name(primitive: str | Callable[..., Any]) -> str:
     """Return the stable public whitelist name for a TLE primitive."""
     if isinstance(primitive, str):
@@ -48,10 +85,7 @@ def primitive_name(primitive: str | Callable[..., Any]) -> str:
         if name.startswith("language."):
             name = name[len("language."):]
     elif callable(primitive):
-        module = getattr(primitive, "__module__", "")
-        if not module.startswith(_TLE_LANGUAGE_PREFIX):
-            raise ValueError(f"{primitive!r} is not a TLE language primitive")
-        name = f"{module[len(_TLE_LANGUAGE_PREFIX):]}.{primitive.__qualname__}"
+        return _callable_primitive_name(primitive)
     else:
         raise TypeError(f"TLE primitive must be a string or callable, got {type(primitive).__name__}")
 
