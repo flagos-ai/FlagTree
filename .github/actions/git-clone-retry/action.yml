@@ -53,7 +53,7 @@ runs:
           local delay=$2
           shift 2
           local attempt=1
-          
+
           while [ "$attempt" -le "$max_retries" ]; do
             echo "===== [Attempt $attempt/$max_retries] Executing: $* ====="
             if "$@"; then
@@ -69,7 +69,7 @@ runs:
               fi
             fi
           done
-          
+
           echo "🚨 FATAL: Command failed after $max_retries attempts."
           return 1
         }
@@ -77,7 +77,7 @@ runs:
         # 2. Prepare the target directory
         mkdir -p "${{ inputs.clone-dir }}"
         cd "${{ inputs.clone-dir }}"
-        
+
         # 3. Extract repository name and clean up any existing directory
         REPO_NAME=$(basename "${{ inputs.repo-url }}" .git)
         rm -rf "$REPO_NAME" || true
