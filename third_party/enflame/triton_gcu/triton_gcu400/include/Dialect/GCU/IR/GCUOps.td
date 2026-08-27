@@ -1939,7 +1939,8 @@ def GCU_MatMulOp : GCU_Op<"matmul", [MemoryEffectsOpInterface,
   }];
   let arguments = (ins AnyMemRef:$out, AnyMemRef:$lhs, AnyMemRef:$rhs, Optional<AnyMemRef>:$bias,
       Optional<I1>:$useBias,
-      DefaultValuedAttr<GCU_InputPrecisionAttr, "::mlir::gcu::InputPrecision::IEEE">:$inputPrecision);
+      DefaultValuedAttr<GCU_InputPrecisionAttr, "::mlir::gcu::InputPrecision::IEEE">:$inputPrecision,
+      UnitAttr:$rhsColumnMajor);
   let assemblyFormat = [{
     $out `,` $lhs `,` $rhs (`,` $bias^)? (`use_bias` $useBias^)?  attr-dict `:`
     type($out) `,` type($lhs) `,` type($rhs) (`,` type($bias)^)?
@@ -2001,31 +2002,6 @@ def GCU_MatrixStoreOp : GCU_Op<"matrix_store", [AttrSizedOperandSegments, Memory
   let assemblyFormat = [{$value `,` $ptr `,` `[` $mem_dims `]` `,` `[` $real_dims `]`
                         attr-dict `:` type($value) `,` type($ptr)}];
   let hasVerifier = 1;
-}
-
-//
-// Matrix Store Reduce Op: read OACC rows and reduce each to a scalar.
-//
-def GCU_MatrixStoreReduceOp : GCU_Op<"matrix_store_reduce",
-    [AttrSizedOperandSegments, MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "reduce OACC rows and store scalars";
-  let description = [{
-    Reads each row from an OACC accumulator buffer, reduces it to a scalar
-    using the specified combining operation, and stores the result.
-    value: the OACC source buffer (memref with alignment 512)
-    ptr: pointer to the destination memory for reduced scalars
-    reduce_kind: string attribute for the reduction kind (maxnumf, minnumf, sum)
-    mem_dims: memory dimensions of the destination layout
-    real_dims: real dimensions of the OACC tile (rows, columns)
-  }];
-  let arguments = (ins AnyMemRef:$value,
-                       GCU_PtrType:$ptr,
-                       StrAttr:$reduce_kind,
-                       Variadic<Index>:$mem_dims,
-                       Variadic<Index>:$real_dims);
-  let assemblyFormat = [{$value `,` $ptr `,` $reduce_kind `,`
-                        `[` $mem_dims `]` `,` `[` $real_dims `]`
-                        attr-dict `:` type($value) `,` type($ptr)}];
 }
 
 //
@@ -2264,7 +2240,7 @@ def GCU_RemoteMemRefOp : GCU_Op<"remote_memref", [Pure]>
   }];
 }
 
-def GCU_TarInitOp : GCU_Op<"tar_init", []> {
+def GCU_TarInitOp : GCU_Op<"tar_init", [Pure]> {
   let summary = "Thread Address Register only for gcu400";
   let arguments = (ins I64:$in);
   let results = (outs GCU_TarType:$out);
@@ -2487,3 +2463,4 @@ def GCU_ExternDeviceCallOp : GCU_Op<"extern_device_call",
 }
 
 #endif // GCU_OPS
+

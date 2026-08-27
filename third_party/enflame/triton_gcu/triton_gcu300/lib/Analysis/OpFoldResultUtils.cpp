@@ -49,11 +49,12 @@ llvm::SmallVector<Value> getValues(OpBuilder &builder, Location loc,
   return values;
 }
 
+
 // Extract a scalar value from v.
 // If v is a scalar, return that directly. Otherwise, parse through operations
-// (currently only support splat and sitofp) that produce it and to extract they
-// underlying scalar value . If no scalar value can be extracted, a nullptr is
-// returned.
+// (currently only support splat, sitofp and select) that produce it and to
+// extract the underlying scalar value. If no scalar value can be extracted, a
+// nullptr is returned.
 std::optional<Value> getScalarValue(OpBuilder &builder, Location loc, Value v) {
   // Record if an sitofp op was in the chain of ops that produce the scalar
   Operation *siToFp = nullptr;
@@ -81,6 +82,27 @@ std::optional<Value> getScalarValue(OpBuilder &builder, Location loc, Value v) {
     } else if (auto op = v.getDefiningOp<arith::SIToFPOp>()) {
       siToFp = op;
       v = op.getIn();
+    } else if (auto op = v.getDefiningOp<arith::SelectOp>()) {
+      // The condition must be a scalar i1, true/false values must both be
+      // constant (splat) tensors so that we can extract a scalar from each.
+      auto cond = op.getCondition();
+      if (dyn_cast<ShapedType>(cond.getType())) {
+        InFlightDiagnostic diag = emitError(loc)
+                                  << "other value used in masked load produced "
+                                     "by unsupported instruction";
+        return nullptr;
+      }
+
+      auto trueScalar = getScalarValue(builder, loc, op.getTrueValue());
+      if (!trueScalar.has_value() || !*trueScalar)
+        return nullptr;
+      auto falseScalar = getScalarValue(builder, loc, op.getFalseValue());
+      if (!falseScalar.has_value() || !*falseScalar)
+        return nullptr;
+
+      return builder.create<arith::SelectOp>(loc, cond, *trueScalar,
+                                             *falseScalar)
+          .getResult();
     } else {
       InFlightDiagnostic diag = emitError(loc)
                                 << "other value used in masked load produced "

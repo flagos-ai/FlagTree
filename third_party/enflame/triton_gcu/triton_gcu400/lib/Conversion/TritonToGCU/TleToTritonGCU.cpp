@@ -499,30 +499,34 @@ static LogicalResult lowerSubViewAccess(Operation *op, Value memDescVal,
   // flat element offset.  e.g. memdesc<256xf16> + tensor<16x16xi32>
   //   → tensor<16x16x!tt.ptr<f16,3>>
   // ptrAccum = splat(basePtr, resultShape) + index
-  if (numIndices == bufferRank && bufferRank == 1 && resultRank > bufferRank) {
+  if (numIndices == bufferRank && bufferRank == 1 &&
+      resultRank > bufferRank) {
     Value idx = op->getOperand(1);
     auto idxTy = cast<RankedTensorType>(idx.getType());
     if (idxTy.getRank() != resultRank)
       return rewriter.notifyMatchFailure(
           op, "index tensor rank does not match result rank");
 
-    auto ptrElemTy = dyn_cast<triton::PointerType>(resultTy.getElementType());
+    auto ptrElemTy =
+        dyn_cast<triton::PointerType>(resultTy.getElementType());
     if (!ptrElemTy)
-      return rewriter.notifyMatchFailure(op,
-                                         "result element type is not tt.ptr");
+      return rewriter.notifyMatchFailure(
+          op, "result element type is not tt.ptr");
 
     constexpr int kSharedMemAddrSpace = 3;
     auto basePtrTy = triton::PointerType::get(elemTy, kSharedMemAddrSpace);
-    auto basePtr = rewriter.create<triton::gcu::MemDescToPtrOp>(loc, basePtrTy,
-                                                                memDescVal);
+    auto basePtr = rewriter.create<triton::gcu::MemDescToPtrOp>(
+        loc, basePtrTy, memDescVal);
 
     auto i32Ty = rewriter.getI32Type();
     if (idxTy.getElementType() != i32Ty) {
-      auto castTy = RankedTensorType::get(resultShape, i32Ty, encoding);
+      auto castTy =
+          RankedTensorType::get(resultShape, i32Ty, encoding);
       idx = rewriter.create<arith::TruncIOp>(loc, castTy, idx);
     }
 
-    auto splatPtrTy = RankedTensorType::get(resultShape, ptrElemTy, encoding);
+    auto splatPtrTy =
+        RankedTensorType::get(resultShape, ptrElemTy, encoding);
     Value splatBase =
         rewriter.create<triton::SplatOp>(loc, splatPtrTy, basePtr);
     Value result =
@@ -1097,11 +1101,10 @@ static bool collectDefChain(Value target, Operation *memdescToPtrOp,
 /// Clone the def chain (from memdesc_to_ptr forward) replacing the
 /// memdesc_to_ptr source with `newBase` (a remote_memdesc result).
 /// Returns the cloned value corresponding to `target`.
-static Value cloneDefChainWithNewBase(OpBuilder &builder,
-                                      Operation *memdescToPtrOp,
-                                      const SmallVectorImpl<Operation *> &chain,
-                                      Value newBase,
-                                      Operation *insertBeforeOp) {
+static Value cloneDefChainWithNewBase(
+    OpBuilder &builder, Operation *memdescToPtrOp,
+    const SmallVectorImpl<Operation *> &chain,
+    Value newBase, Operation *insertBeforeOp) {
   auto loc = memdescToPtrOp->getLoc();
 
   // Clone the chain right before insertBeforeOp (typically the original
@@ -1198,20 +1201,17 @@ static void fixRemoteAddrSpaceFuncSignatures(gpu::GPUModuleOp module) {
       for (Type t : funcTy.getInputs()) {
         Type nt = rewriteRemoteAddrSpace(t);
         newInputs.push_back(nt);
-        if (nt != t)
-          changed = true;
+        if (nt != t) changed = true;
       }
       SmallVector<Type> newResults;
       for (Type t : funcTy.getResults()) {
         Type nt = rewriteRemoteAddrSpace(t);
         newResults.push_back(nt);
-        if (nt != t)
-          changed = true;
+        if (nt != t) changed = true;
       }
 
       if (changed) {
-        auto newFuncTy =
-            FunctionType::get(op->getContext(), newInputs, newResults);
+        auto newFuncTy = FunctionType::get(op->getContext(), newInputs, newResults);
         funcOp.setFunctionType(newFuncTy);
         if (!funcOp.isDeclaration()) {
           Block &entry = funcOp.getBody().front();
@@ -1276,8 +1276,9 @@ static void postProcessRemotePointers(gpu::GPUModuleOp module) {
     builder.setInsertionPoint(remoteOp);
     auto remoteMemDesc = builder.create<triton::gcu::RemoteMemDescOp>(
         remoteOp->getLoc(), localMemDesc.getType(), localMemDesc, shardId);
-    Value replacement = cloneDefChainWithNewBase(builder, m2pOp, chain,
-                                                 remoteMemDesc, remoteOp);
+    Value replacement =
+        cloneDefChainWithNewBase(builder, m2pOp, chain, remoteMemDesc,
+                                 remoteOp);
 
     // Don't erase the original chain even if exclusive: other
     // tle.remote_pointers may still reference it.  Dead ops will be
@@ -1306,26 +1307,22 @@ static void postProcessRemotePointers(gpu::GPUModuleOp module) {
 // The downstream lowering for remote_memdesc expects its source to be the
 // original local_alloc (full-rank memdesc), so we swap them:
 //   %rem = triton_gcu.remote_memdesc %alloc, %id : memdesc<2xMxK>
-//   %idx = ttg.memdesc_index %rem[%i]             : memdesc<2xMxK> ->
-//   memdesc<MxK>
+//   %idx = ttg.memdesc_index %rem[%i]             : memdesc<2xMxK> -> memdesc<MxK>
 //
-// Case A: memdesc_index has no other users besides remote_memdesc → swap in
-// place. Case B: memdesc_index has other users → clone memdesc_index for
-// remote_memdesc.
+// Case A: memdesc_index has no other users besides remote_memdesc → swap in place.
+// Case B: memdesc_index has other users → clone memdesc_index for remote_memdesc.
 // ===----------------------------------------------------------------------===
 static void postProcessMemDescIndex(gpu::GPUModuleOp module) {
   SmallVector<triton::gcu::RemoteMemDescOp> opsToProcess;
   module.walk([&](triton::gcu::RemoteMemDescOp remoteOp) {
-    auto indexOp =
-        remoteOp.getSrc().getDefiningOp<triton::gpu::MemDescIndexOp>();
+    auto indexOp = remoteOp.getSrc().getDefiningOp<triton::gpu::MemDescIndexOp>();
     if (!indexOp)
       return;
     opsToProcess.push_back(remoteOp);
   });
 
   for (auto remoteOp : opsToProcess) {
-    auto indexOp =
-        remoteOp.getSrc().getDefiningOp<triton::gpu::MemDescIndexOp>();
+    auto indexOp = remoteOp.getSrc().getDefiningOp<triton::gpu::MemDescIndexOp>();
     Value allocMemDesc = indexOp.getSrc();
     Value sliceIdx = indexOp.getIndex();
     Value shardId = remoteOp.getShardId();
@@ -1382,8 +1379,8 @@ static void postProcessMemDescIndex(gpu::GPUModuleOp module) {
 //
 // When tle.local_pointers has bufferRank > resultRank AND the first index
 // is a tt.splat of a scalar, we can split it into:
-//   %slice = ttg.memdesc_index %memdesc[%scalar] : memdesc<NxMxK> ->
-//   memdesc<MxK> %new   = tle.local_pointers(%slice, remaining_indices...)
+//   %slice = ttg.memdesc_index %memdesc[%scalar] : memdesc<NxMxK> -> memdesc<MxK>
+//   %new   = tle.local_pointers(%slice, remaining_indices...)
 // This runs BEFORE the pattern rewriter so that Phase 2 only sees
 // tle.local_pointers where bufferRank == numIndices == resultRank.
 // ===----------------------------------------------------------------------===
@@ -1413,8 +1410,8 @@ static void preProcessLocalPointers(gpu::GPUModuleOp module) {
     } else if (resultRank == bufferRank - 1) {
       opsToProcess.push_back(op);
     } else {
-      // resultRank > bufferRank (e.g. 1D buffer with 2D index tensor):
-      // handled directly in ConvertLocalPointersOp, skip preProcess.
+      //resultRank > bufferRank (e.g. 1D buffer with 2D index tensor):
+      //handled directly in ConvertLocalPointersOp, skip preProcess.
       return;
     }
   });
@@ -1436,7 +1433,8 @@ static void preProcessLocalPointers(gpu::GPUModuleOp module) {
           auto splatVal = denseAttr.getSplatValue<Attribute>();
           scalarIndex = builder.create<arith::ConstantOp>(
               op->getLoc(), builder.getI32Type(),
-              builder.getI32IntegerAttr(cast<IntegerAttr>(splatVal).getInt()));
+              builder.getI32IntegerAttr(
+                  cast<IntegerAttr>(splatVal).getInt()));
         }
       }
     }
@@ -1467,8 +1465,9 @@ static void preProcessLocalPointers(gpu::GPUModuleOp module) {
       unsigned encRank = encTrait.getRank();
       unsigned newShapeSize = reducedShape.size();
       if (!(encRank == newShapeSize || encRank == newShapeSize - 1)) {
-        if (auto swizzled = dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
-                reducedEncoding)) {
+        if (auto swizzled =
+                dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
+                    reducedEncoding)) {
           auto oldOrder = swizzled.getOrder();
           SmallVector<unsigned> newOrder;
           for (unsigned o : oldOrder) {
@@ -1479,17 +1478,21 @@ static void preProcessLocalPointers(gpu::GPUModuleOp module) {
           auto reducedCTA = triton_gcu::compat::getDefaultCGALayout(
               builder.getContext(), newOrder.size());
           reducedEncoding = triton::gpu::SwizzledSharedEncodingAttr::get(
-              builder.getContext(), swizzled.getVec(), swizzled.getPerPhase(),
-              swizzled.getMaxPhase(), newOrder, reducedCTA);
+              builder.getContext(), swizzled.getVec(),
+              swizzled.getPerPhase(), swizzled.getMaxPhase(), newOrder,
+              reducedCTA);
         } else if (auto nvmmaShared =
                        dyn_cast<triton::gpu::NVMMASharedEncodingAttr>(
                            reducedEncoding)) {
           auto reducedCTA = triton_gcu::compat::getDefaultCGALayout(
               builder.getContext(), newShapeSize);
           reducedEncoding = triton::gpu::NVMMASharedEncodingAttr::get(
-              builder.getContext(), nvmmaShared.getSwizzlingByteWidth(),
-              nvmmaShared.getTransposed(), nvmmaShared.getElementBitWidth(),
-              nvmmaShared.getFp4Padded(), reducedCTA);
+              builder.getContext(),
+              nvmmaShared.getSwizzlingByteWidth(),
+              nvmmaShared.getTransposed(),
+              nvmmaShared.getElementBitWidth(),
+              nvmmaShared.getFp4Padded(),
+              reducedCTA);
         }
       }
     }
@@ -1518,6 +1521,7 @@ static void preProcessLocalPointers(gpu::GPUModuleOp module) {
   }
 }
 
+
 // ===----------------------------------------------------------------------===
 // Phase 2c: Lower tle.extract_tile / tle.insert_tile
 //
@@ -1541,156 +1545,6 @@ struct ConvertExtractPtrOp : public RewritePattern {
     Value asPtr = rewriter.create<LLVM::IntToPtrOp>(
         loc, op->getResult(0).getType(), asInt);
     rewriter.replaceOp(op, asPtr);
-    return success();
-  }
-};
-
-// ===----------------------------------------------------------------------===
-// prepare for tle_dslregion_inline
-// ===----------------------------------------------------------------------===
-struct ConvertDSLRegionOpPtrs : public RewritePattern {
-  explicit ConvertDSLRegionOpPtrs(MLIRContext *ctx)
-      : RewritePattern("tle.dsl_region", /*benefit=*/1, ctx) {}
-
-  LogicalResult matchAndRewrite(Operation *op,
-                                PatternRewriter &rewriter) const override {
-    // check if already has converted
-    if (op->hasAttr("tle_raw.converted")) {
-      return failure();
-    }
-
-    // check if already insert call dsl func
-    bool hasCall = false;
-    if (op->getNumRegions() > 0) {
-      Region &body = op->getRegion(0);
-      if (!body.empty()) {
-        Block *entryBlock = &body.front();
-        for (Operation &innerOp : *entryBlock) {
-          if (isa<LLVM::CallOp>(innerOp)) {
-            hasCall = true;
-            break;
-          }
-        }
-      }
-    }
-
-    auto loc = op->getLoc();
-    bool changed = false;
-
-    // Convert !tt.ptr operands to !llvm.ptr via PtrToInt + IntToPtr.
-    SmallVector<Value> newOperands;
-    newOperands.reserve(op->getNumOperands());
-    for (Value operand : op->getOperands()) {
-      if (auto ttPtrTy = dyn_cast<triton::PointerType>(operand.getType())) {
-        Value asInt = rewriter.create<triton::PtrToIntOp>(
-            loc, rewriter.getI64Type(), operand);
-        auto llvmPtrTy = LLVM::LLVMPointerType::get(rewriter.getContext(),
-                                                    ttPtrTy.getAddressSpace());
-        Value asPtr = rewriter.create<LLVM::IntToPtrOp>(loc, llvmPtrTy, asInt);
-        newOperands.push_back(asPtr);
-        changed = true;
-      } else {
-        newOperands.push_back(operand);
-      }
-    }
-    // check if deferred DSL
-    auto externAttr = op->getAttrOfType<StringAttr>("tle_raw.extern_func_name");
-    bool isDeferred = (externAttr != nullptr);
-
-    if (!changed && !isDeferred)
-      return failure();
-    if (hasCall && !changed)
-      return failure();
-
-    // create new dsl region
-    OperationState state(loc, op->getName());
-    state.addOperands(newOperands);
-    state.addTypes(op->getResultTypes());
-    for (NamedAttribute attr : op->getAttrs()) {
-      state.addAttribute(attr.getName(), attr.getValue());
-    }
-    // add converted
-    state.addAttribute("tle_raw.converted", rewriter.getUnitAttr());
-    for (unsigned i = 0; i < op->getNumRegions(); ++i)
-      state.addRegion();
-    Operation *newOp = rewriter.create(state);
-
-    for (unsigned i = 0; i < op->getNumRegions(); ++i) {
-      Region &oldRegion = op->getRegion(i);
-      Region &newRegion = newOp->getRegion(i);
-      rewriter.inlineRegionBefore(oldRegion, newRegion, newRegion.end());
-      for (Block &block : newRegion) {
-        for (auto [arg, newOperand] :
-             llvm::zip(block.getArguments(), newOperands)) {
-          if (arg.getType() != newOperand.getType())
-            arg.setType(newOperand.getType());
-        }
-      }
-    }
-
-    // for deferreed add llvm.call DSL func
-    if (isDeferred && !hasCall) {
-      StringRef externFuncName = externAttr.getValue();
-
-      SmallVector<Type> paramTys;
-      paramTys.reserve(newOperands.size());
-      for (Value operand : newOperands)
-        paramTys.push_back(operand.getType());
-      auto funcTy = LLVM::LLVMFunctionType::get(
-          LLVM::LLVMVoidType::get(rewriter.getContext()), paramTys);
-      auto gpuModule = op->getParentOfType<gpu::GPUModuleOp>();
-      LLVM::LLVMFuncOp funcOp =
-          gpuModule.lookupSymbol<LLVM::LLVMFuncOp>(externFuncName);
-      if (!funcOp) {
-        OpBuilder declBuilder(gpuModule.getBody(),
-                              gpuModule.getBody()->begin());
-        funcOp =
-            declBuilder.create<LLVM::LLVMFuncOp>(loc, externFuncName, funcTy);
-        funcOp.setLinkage(LLVM::Linkage::External);
-        auto dslFileAttr =
-            op->getAttrOfType<StringAttr>("tle_raw.dsl_file_name");
-        if (dslFileAttr) {
-          funcOp.setPassthroughAttr(declBuilder.getArrayAttr({
-              declBuilder.getStringAttr("tle_raw.source_file"),
-              dslFileAttr,
-          }));
-        }
-      }
-
-      // add llvm.call to region
-      Region &body = newOp->getRegion(0);
-      if (!body.empty()) {
-        Block *entryBlock = &body.front();
-        Operation *terminator = entryBlock->getTerminator();
-        OpBuilder bodyBuilder(rewriter.getContext());
-        bodyBuilder.setInsertionPoint(terminator);
-
-        SmallVector<Value> callOperands;
-        TypeRange funcArgTys = funcOp.getArgumentTypes();
-        unsigned numArgs =
-            std::min(static_cast<unsigned>(entryBlock->getNumArguments()),
-                     static_cast<unsigned>(funcArgTys.size()));
-        for (unsigned i = 0; i < numArgs; ++i) {
-          Value arg = entryBlock->getArgument(i);
-          Type paramTy = funcArgTys[i];
-          if (arg.getType() == paramTy) {
-            callOperands.push_back(arg);
-          } else if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
-                     isa<LLVM::LLVMPointerType>(paramTy)) {
-            callOperands.push_back(bodyBuilder.create<LLVM::AddrSpaceCastOp>(
-                loc, cast<LLVM::LLVMPointerType>(paramTy), arg));
-          } else {
-            callOperands.push_back(arg);
-          }
-        }
-
-        LLVM::CallOp callOp =
-            bodyBuilder.create<LLVM::CallOp>(loc, funcOp, callOperands);
-        callOp.setAlwaysInline(true);
-      }
-    }
-
-    rewriter.replaceOp(op, newOp->getResults());
     return success();
   }
 };
@@ -1722,11 +1576,10 @@ struct TleToTritonGCUPass
     patterns.add<ConvertLocalPointersOp>(ctx);
     patterns.add<ConvertTMACopyOp>(ctx);
     patterns.add<ConvertExtractPtrOp>(ctx);
-    patterns.add<ConvertDSLRegionOpPtrs>(ctx);
 
     if (failed(applyPatternsGreedily(module, std::move(patterns))))
       return signalPassFailure();
-    // post process tle.remote_pointers
+    //post process tle.remote_pointers
     postProcessRemotePointers(module);
     // Swap memdesc_index / remote_memdesc so remote_memdesc sits on the
     // original local_alloc, making it lowerable.
@@ -1741,9 +1594,12 @@ struct TleToTritonGCUPass
       if (clusterDimX * clusterDimY > 6) {
         llvm::report_fatal_error("only 6 block in a cluster for gcu400/410");
       }
-      mod->setAttr("ttg.cluster-dims-x", IntegerAttr::get(i32Ty, clusterDimX));
-      mod->setAttr("ttg.cluster-dims-y", IntegerAttr::get(i32Ty, clusterDimY));
-      mod->setAttr("ttg.cluster-dims-z", IntegerAttr::get(i32Ty, clusterDimZ));
+      mod->setAttr("ttg.cluster-dims-x",
+                    IntegerAttr::get(i32Ty, clusterDimX));
+      mod->setAttr("ttg.cluster-dims-y",
+                    IntegerAttr::get(i32Ty, clusterDimY));
+      mod->setAttr("ttg.cluster-dims-z",
+                    IntegerAttr::get(i32Ty, clusterDimZ));
     }
   }
 };

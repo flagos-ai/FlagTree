@@ -19,7 +19,7 @@
 include "mlir/Pass/PassBase.td"
 
 //===----------------------------------------------------------------------===//
-// TritonToGCU
+// TritonToGCU 
 //===----------------------------------------------------------------------===//
 def ConvertTritonToGCUPass: Pass<"convert-triton-to-gcu", "gpu::GPUModuleOp"> {
   let summary = "Convert triton ir to gcu operations.";
@@ -73,6 +73,18 @@ def ConvertTritonLoadStoreToGCUDmaPass: Pass<"convert-triton-load-store-to-gcu-d
 
 
 //===----------------------------------------------------------------------===//
+// TritonGCURemoveLayoutConversions
+//===----------------------------------------------------------------------===//
+def TritonGCURemoveLayoutConversionsPass : Pass<"triton-gcu-remove-layout-conversions", "mlir::ModuleOp"> {
+  let summary = "remove superfluous layout conversions (GCU)";
+  let description = [{
+    This pass removes superfluous layout conversions by delegating to
+    the upstream TritonGPU RemoveLayoutConversions pass. Placing this
+    here puts it at the same level as other GCU layout optimization passes.
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // TritonGCULayoutOptimize
 //===----------------------------------------------------------------------===//
  def TritonGCULayoutOptimizePass: Pass<"triton-gcu-data-layout-optimize", "gpu::GPUModuleOp"> {
@@ -85,21 +97,6 @@ def ConvertTritonLoadStoreToGCUDmaPass: Pass<"convert-triton-load-store-to-gcu-d
            /*default=*/"\"gcu400\"",
            "Architecture that these operations will run on">
    ];
-}
-
-//===----------------------------------------------------------------------===//
-// TritonDotLayoutOptimize
-//===----------------------------------------------------------------------===//
-def TritonGCUDotLayoutOptimizePass: Pass<"triton-gcu-dot-layout-optimize", "gpu::GPUModuleOp"> {
-  let summary = "optimize dot layout for gcu target";
-  let description = [{
-    This pass specified optimize triton layout for dot.
-  }];
-  let options = [
-    Option<"arch", "arch", "std::string",
-           /*default=*/"\"gcu400\"",
-           "Architecture that these operations will run on">
-  ];
 }
 
 //===----------------------------------------------------------------------===//
@@ -135,6 +132,24 @@ def TritonGPUToTritonGCUPass: Pass<"triton-gpu-to-triton-gcu", "gpu::GPUModuleOp
     This pass change some special triton GPU op to gcu .
   }];
   let options = [
+  ];
+}
+
+//===----------------------------------------------------------------------===//
+// TritonGCUOptimizeDotOperands
+//===----------------------------------------------------------------------===//
+def TritonGCUOptimizeDotOperands : Pass<"triton-gcu-optimize-dot-operands", "gpu::GPUModuleOp"> {
+  let summary = "Fuse transpose into dot operands";
+  let description = [{
+    This pass fuses a trans op on the right-hand operand into the dot
+    operation by adjusting the dot operand encoding and eliminating the
+    explicit transpose, so the hardware can handle the transposition
+    natively without an explicit data-movement operation.
+  }];
+
+  let dependentDialects = [
+    "mlir::triton::gpu::TritonGPUDialect",
+    "mlir::triton::TritonDialect"
   ];
 }
 

@@ -15,7 +15,6 @@
  */
 #include <utility>
 
-#include "Utils/TritonVersionCompat.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -28,16 +27,16 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
-#include "Constants.h"
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
+#include "Constants.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
-#include "Utility.h"
 
 #define DEBUG_TYPE "triton-accelerate-matmul"
 
@@ -56,28 +55,123 @@ using namespace mlir::triton::gpu;
 
 namespace {
 
+// Validate that all users of a LoadOp result follow the SAME pattern to DotOp.
+// Only two pure patterns are accepted:
+//   Pattern A (all ConvertLayoutOp): LoadOp -> ConvertLayoutOp -> DotOp
+//   Pattern B (all TransOp):        LoadOp -> TransOp -> ConvertLayoutOp -> DotOp
+// Mixed patterns (some A, some B) are REJECTED.
+// LocalAllocOp users (created by getSharedMemoryMMAOperand during prior dot
+// rewrites) are valid and do not affect the pattern classification.
+static bool allUsersLeadToDotOp(Value loadResult) {
+  // First pass: classify users — only ConvertLayoutOp and TransOp determine
+  // the pattern. LocalAllocOp is a valid byproduct of prior rewrites and
+  // does not affect the classification.
+  // Dead ops (use_empty()) are skipped — they are leftovers from prior
+  // dot rewrites whose ConvertLayoutOp/TransOp results are no longer consumed.
+  bool hasConvertLayoutUsers = false;
+  bool hasTransUsers = false;
+
+  for (auto *user : loadResult.getUsers()) {
+    if (isa<ConvertLayoutOp>(user)) {
+      if (!cast<ConvertLayoutOp>(user).getResult().use_empty())
+        hasConvertLayoutUsers = true;
+    } else if (isa<triton::TransOp>(user)) {
+      if (!cast<triton::TransOp>(user).getResult().use_empty())
+        hasTransUsers = true;
+    } else if (!isa<triton::gpu::LocalAllocOp>(user)) {
+      // Reject any user that is not ConvertLayoutOp, TransOp, or LocalAllocOp
+      return false;
+    }
+  }
+
+  // Mixed patterns: some users are ConvertLayoutOp, some are TransOp — reject
+  if (hasConvertLayoutUsers && hasTransUsers)
+    return false;
+
+  // Second pass: validate each user according to the determined mode.
+  // LocalAllocOp users are valid without further validation — they were
+  // created by getSharedMemoryMMAOperand to materialize shared memory.
+  if (hasConvertLayoutUsers) {
+    // Pure Pattern A: every live ConvertLayoutOp user must feed ONLY DotOps.
+    // Dead ConvertLayoutOps (use_empty) are expected leftovers from prior dot
+    // rewrites in the greedy rewriter. They must be SKIPPED — rejecting them
+    // would incorrectly block subsequent dots sharing this LoadOp.
+    for (auto *user : loadResult.getUsers()) {
+      auto cvtOp = dyn_cast<ConvertLayoutOp>(user);
+      if (!cvtOp)
+        continue; // LocalAllocOp or dead TransOp — valid, no further check needed
+      if (cvtOp.getResult().use_empty())
+        continue; // Dead — leftover from prior dot rewrite, no further check needed
+      // Every user of a live ConvertLayoutOp must be a DotOp.
+      // LocalAllocOp is never a user of ConvertLayoutOp in Pattern A
+      // (getSharedMemoryMMAOperand creates it on the LoadOp, not on ConvertLayoutOp).
+      if (!llvm::all_of(cvtOp.getResult().getUsers(),
+                         [](Operation *u) { return isa<mlir::triton::DotOp>(u); }))
+        return false;
+    }
+  } else {
+    // Pure Pattern B: every live TransOp user must feed ConvertLayoutOp -> DotOp.
+    // Non-TransOp users of the LoadOp result are rejected — in Pattern B,
+    // getSharedMemoryMMAOperand creates LocalAllocOp on the TransOp result
+    // (not the LoadOp result), so LocalAllocOp cannot appear here.
+    // Dead TransOps (use_empty) are leftovers from prior dot rewrites.
+    for (auto *user : loadResult.getUsers()) {
+      auto transOp = dyn_cast<triton::TransOp>(user);
+      if (!transOp)
+        return false; // Unexpected user type in Pattern B — reject
+      if (transOp.getResult().use_empty())
+        continue; // Dead — leftover from prior dot rewrite, no further check needed
+      bool hasValidUser = false;
+      for (auto *transUser : transOp.getResult().getUsers()) {
+        auto cvtOp = dyn_cast<ConvertLayoutOp>(transUser);
+        if (!cvtOp) {
+          if (!isa<triton::gpu::LocalAllocOp>(transUser))
+            return false; // Unexpected user type — reject
+          hasValidUser = true; // LocalAllocOp from prior dot rewrite — valid
+          continue;
+        }
+        if (cvtOp.getResult().use_empty())
+          continue; // Dead — leftover from prior dot rewrite
+        // All users of a live ConvertLayoutOp must be DotOps (consistent with Pattern A)
+        if (!llvm::all_of(cvtOp.getResult().getUsers(),
+                          [](Operation *u) { return isa<mlir::triton::DotOp>(u); }))
+          return false;
+        hasValidUser = true;
+      }
+      if (!hasValidUser)
+        return false;
+    }
+  }
+
+  return true;
+}
+
 // Match patterns leading to tt.dot through ConvertLayoutOp:
 //   tt.load -> ttg.convert_layout -> tt.dot
 //   tt.load -> tt.trans -> ttg.convert_layout -> tt.dot
 // Returns the tt.load op if matched; nullptr otherwise.
+// Note: userNumber constraint is intentionally relaxed — getSharedMemoryMMAOperand
+// creates a shared-memory copy via local_alloc, leaving the original register value
+// available for other consumers. Multiple users of the source (e.g. flash-attention
+// patterns where Q/K/V share a load) are correctly handled because LocalAllocOp
+// only reads src to initialize the new smem buffer without consuming it.
 static Operation *traceBackToLoadOp(Value v) {
   auto cvt = v.getDefiningOp<ConvertLayoutOp>();
   if (!cvt)
     return nullptr;
+
   auto *srcOp = cvt.getSrc().getDefiningOp();
-  auto users = cvt.getSrc().getUsers();
-  auto userNumber = std::distance(users.begin(), users.end());
-  if (srcOp && isa<triton::LoadOp>(srcOp) && userNumber == 1)
-    return srcOp;
-  // Also trace through tt.trans: tt.load -> tt.trans -> convert_layout
-  if (srcOp && isa<triton::TransOp>(srcOp) && userNumber == 1) {
+  if (srcOp && isa<triton::LoadOp>(srcOp))
+    return srcOp; // Pattern A: tt.load -> ttg.convert_layout -> tt.dot
+
+  if (srcOp && isa<triton::TransOp>(srcOp)) {
+    // Pattern B: tt.load -> tt.trans -> ttg.convert_layout -> tt.dot
     auto transOp = cast<triton::TransOp>(srcOp);
     auto *transSrc = transOp.getSrc().getDefiningOp();
-    auto transUsers = transOp.getSrc().getUsers();
-    auto transUserNum = std::distance(transUsers.begin(), transUsers.end());
-    if (transSrc && isa<triton::LoadOp>(transSrc) && transUserNum == 1)
+    if (transSrc && isa<triton::LoadOp>(transSrc))
       return transSrc;
   }
+
   return nullptr;
 }
 
@@ -98,8 +192,7 @@ SmallVector<unsigned, 2>
 warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps) {
   auto rank = shape.size();
   // Early exit for batched matmul
-  if (rank == 3)
-    return {(unsigned)numWarps, 1, 1};
+  if (rank == 3) return {(unsigned)numWarps, 1, 1};
   assert(rank == 2 && "expected 2D tile shape");
 
   SetVector<Operation *> slices;
@@ -115,7 +208,9 @@ warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps) {
   SmallVector<int64_t> shapePerWarp = {64, 128};
   SmallVector<int64_t> warps = {1, 1};
 
-  auto ceilDiv = [](int64_t x, int64_t y) { return (x + y - 1) / y; };
+  auto ceilDiv = [](int64_t x, int64_t y) {
+    return (x + y - 1) / y;
+  };
   auto product = [](const SmallVector<int64_t> &v) { return v[0] * v[1]; };
 
   // Compute repM and repN
@@ -148,8 +243,7 @@ warpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps) {
 
 // Returns a shared memory allocation that can be used by a dotMMA op for the
 // given value.
-static Value getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter,
-                                       int opIdx, bool allowTranspose) {
+static Value getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter) {
   OpBuilder::InsertionGuard g(rewriter);
   Value arg = v;
   if (auto cvtOp = v.getDefiningOp<ConvertLayoutOp>())
@@ -157,16 +251,6 @@ static Value getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter,
   auto argType = cast<RankedTensorType>(arg.getType());
   assert(argType.getEncoding() && "unexpected tensor type");
   auto newOrder = getOrderForMemory(argType);
-
-  // If the MMA op doesn't support transpose pick the layout expected by the MMA
-  // op.
-  if (!allowTranspose) {
-    if (opIdx == 1) {
-      newOrder = {0, 1};
-    } else {
-      newOrder = {1, 0};
-    }
-  }
 
   Attribute SharedMemorySpace =
       SharedMemorySpaceAttr::get(argType.getContext());
@@ -222,12 +306,26 @@ public:
     Value a = dotOp.getA();
     Value b = dotOp.getB();
 
+    // Hard rejection: if either operand traces to a LoadOp whose users
+    // include both TransOp and non-TransOp (ConvertLayoutOp) paths, the
+    // entire dot conversion is aborted — mixed patterns are not supported.
+    {
+      auto tracesToMixedLoadOp = [](Value v) -> bool {
+        auto *loadOp = traceBackToLoadOp(v);
+        if (!loadOp)
+          return false;
+        auto loadResult = loadOp->getResult(0);
+        return !loadResult.hasOneUse() && !allUsersLeadToDotOp(loadResult);
+      };
+      if (tracesToMixedLoadOp(a) || tracesToMixedLoadOp(b))
+        return failure();
+    }
+
     // Check each operand independently for the fixed pattern:
     //   tt.load -> ttg.convert_layout
-    // Only operands matching this pattern will be converted to SharedMemory.
-    // If neither operand matches, bail out entirely.
     bool aMatchesPattern = traceBackToLoadOp(a) != nullptr;
     bool bMatchesPattern = traceBackToLoadOp(b) != nullptr;
+
     setLoadAsyncAttr(a, rewriter);
     setLoadAsyncAttr(b, rewriter);
     // setLoadAsyncAttr(dotOp.getC(), rewriter);
@@ -292,30 +390,39 @@ public:
     auto newAcc =
         rewriter.create<ConvertLayoutOp>(oldAcc.getLoc(), newRetType, oldAcc);
 
-    auto eltType = dotOp.getA().getType().getElementType();
-
-    bool allowTranspose = eltType.isF16() || eltType.isBF16();
-    auto convertToDotOpEncoding = [&](Value operand, int opIdx) -> Value {
+    auto convertToDotOpEncoding = [&](Value operand, int opIdx,
+                                      bool columnMajor) -> Value {
       auto tensorTy = cast<RankedTensorType>(operand.getType());
       auto dotOpEnc = DotOperandEncodingAttr::get(
-          dotOp.getContext(), opIdx, mmaEnc, tensorTy.getElementType());
-      auto newTy = RankedTensorType::get(tensorTy.getShape(),
-                                         tensorTy.getElementType(), dotOpEnc);
+          dotOp.getContext(), opIdx, mmaEnc, /*kWidth=*/0, columnMajor);
+      auto newTy = RankedTensorType::get(
+          tensorTy.getShape(), tensorTy.getElementType(), dotOpEnc);
       if (tensorTy == newTy)
         return operand;
       return rewriter.create<ConvertLayoutOp>(dotOp.getLoc(), newTy, operand);
     };
+
+    bool rhsColMajor = false;
+    if (auto origBType = dyn_cast<RankedTensorType>(dotOp.getB().getType())) {
+      if (auto origBEnc = dyn_cast<triton::gpu::DotOperandEncodingAttr>(
+              origBType.getEncoding()))
+        rhsColMajor = origBEnc.getColumnMajor();
+    }
+
     if (aMatchesPattern)
-      a = getSharedMemoryMMAOperand(a, rewriter, 0, allowTranspose);
+      a = getSharedMemoryMMAOperand(a, rewriter);
     else
-      a = convertToDotOpEncoding(a, 0);
+      a = convertToDotOpEncoding(a, 0, false);
     if (bMatchesPattern)
-      b = getSharedMemoryMMAOperand(b, rewriter, 1, allowTranspose);
+      b = getSharedMemoryMMAOperand(b, rewriter);
     else
-      b = convertToDotOpEncoding(b, 1);
+      b = convertToDotOpEncoding(b, 1, rhsColMajor);
     auto newDot = rewriter.create<triton::gcu::WarpGroupDotOp>(
         dotOp.getLoc(), newRetType, a, b, newAcc, nullptr,
         dotOp.getInputPrecision(), dotOp.getMaxNumImpreciseAcc(), false);
+
+    if (rhsColMajor)
+      newDot->setAttr(kRhsColumnMajor, rewriter.getUnitAttr());
 
     // convert dot instruction
     rewriter.replaceOpWithNewOp<ConvertLayoutOp>(dotOp, oldRetType,
@@ -389,8 +496,8 @@ static void decomposeMixedModeDotOp(mlir::gpu::GPUModuleOp mod) {
             promoteOperand(builder, cvt.getLoc(), cvt.getSrc(), promoteType);
         auto newCvtType = cast<RankedTensorType>(cvt.getType())
                               .cloneWith(std::nullopt, promoteType);
-        Value newCvt = builder.create<ConvertLayoutOp>(cvt.getLoc(), newCvtType,
-                                                       promotedSrc);
+        Value newCvt = builder.create<ConvertLayoutOp>(cvt.getLoc(),
+                                                       newCvtType, promotedSrc);
         dotOp.setOperand(opIdx, newCvt);
       } else {
         Value promoted = promoteOperand(builder, loc, operand, promoteType);
@@ -413,6 +520,11 @@ public:
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     mlir::gpu::GPUModuleOp m = getOperation();
+
+    m.walk([&](DotOp) {
+      m->setAttr(kGcuSinkImplicitDef, UnitAttr::get(context));
+      return WalkResult::interrupt();
+    });
 
     mlir::RewritePatternSet patterns(context);
     patterns.add<BlockedToMMA>(context);

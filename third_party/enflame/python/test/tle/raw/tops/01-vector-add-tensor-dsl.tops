@@ -1,0 +1,49 @@
+#include <cstdio>
+ 
+ 
+#include "tcle.h"
+#include "tops.h"
+#include "tops/tops_runtime.h"
+#include "tops/topscc_types.h"
+using namespace tcle;
+using namespace tops;
+extern "C" __device__ void VectorAdd(__attribute__((address_space(1))) float *C,
+                          __attribute__((address_space(1))) float *A,
+                          const int A_dim0,
+                          const int A_stride0,
+                          __attribute__((address_space(1))) float *B,
+                          const int B_dim0,
+                          const int B_stride0) {
+
+  assert(A_dim0 == B_dim0 && "VectorAdd params should have same buffer size!");
+
+  using float_vtype = typename tcle::altivector<float, 512>::VT;
+  int vlen = tcle::altivector_step<float_vtype>();
+  set_vl(vlen);
+
+  tcle::leaptr<float_vtype> a_ptr =
+      tcle::simple_leaptr<float_vtype>(A);
+  tcle::leaptr<float_vtype> b_ptr =
+      tcle::simple_leaptr<float_vtype>(B);
+  tcle::leaptr<float_vtype> c_ptr =
+      tcle::simple_leaptr<float_vtype>(C + A_dim0*subThreadIdx.x);
+  int full_loop_count = A_dim0 / vlen;
+  int remaining = A_dim0 % vlen;
+
+  // Main vectorized loop: process vlen elements per iteration.
+  for (int i = 0; i < full_loop_count; i++) {
+    float_vtype a_vlen = a_ptr.load();
+    float_vtype b_vlen = b_ptr.load();
+    c_ptr.store(a_vlen + b_vlen);
+  }
+
+  // Tail handling: process remaining elements with reduced vector length.
+  if (remaining > 0) {
+    set_vl(remaining);
+    float_vtype a_vlen = a_ptr.load();
+    float_vtype b_vlen = b_ptr.load();
+    a_vlen = a_vlen + b_vlen;
+    c_ptr.store(a_vlen + b_vlen);
+    set_vl(vlen);
+  }
+}

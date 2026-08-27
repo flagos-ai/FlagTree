@@ -107,9 +107,8 @@ public:
   void setToExitState(TaskIdLattice *lattice) override;
 
 #if TRITON_VERSION >= 37
-  void
-  visitNonControlFlowArguments(RegionSuccessor &successor,
-                               ArrayRef<BlockArgument> arguments) override {
+  void visitNonControlFlowArguments(RegionSuccessor &successor,
+                                    ArrayRef<BlockArgument> arguments) override {
     for (BlockArgument arg : arguments)
       setToExitState(getLatticeElement(arg));
   }

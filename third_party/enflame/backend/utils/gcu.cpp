@@ -53,13 +53,14 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   TOPS_CHECK(topsGetDeviceProperties(&props, device_id));
 
   // create a struct to hold device properties
-  return Py_BuildValue("{s:i, s:i, s:i, s:i, s:i, s:i, s:s}", "max_shared_mem",
-                       props.sharedMemPerBlock, "multiprocessor_count",
-                       props.multiProcessorCount, "max_threads_per_block",
-                       props.maxThreadsPerBlock, "sm_clock_rate",
-                       props.clockRate, "mem_clock_rate", props.memoryClockRate,
-                       "mem_bus_width", props.memoryBusWidth, "arch_name",
-                       props.gcuArchName);
+  return Py_BuildValue("{s:i, s:i, s:i, s:i, s:i, s:i, s:s}",
+                       "max_shared_mem", props.sharedMemPerBlock,
+                       "multiprocessor_count", props.multiProcessorCount,
+                       "max_threads_per_block", props.maxThreadsPerBlock,
+                       "sm_clock_rate", props.clockRate,
+                       "mem_clock_rate", props.memoryClockRate,
+                       "mem_bus_width", props.memoryBusWidth,
+                       "arch_name", props.gcuArchName);
 }
 
 static PyObject *loadBinary(PyObject *self, PyObject *args) {
@@ -96,12 +97,12 @@ static PyMethodDef ModuleMethods[] = {
      "Load provided kernel into TOPS driver"},
     {"get_device_properties", getDeviceProperties, METH_VARARGS,
      "Get the properties for a given device"},
-    {NULL, NULL, 0, NULL} // sentinel
+    {NULL, NULL, 0, NULL}  // sentinel
 };
 
 static struct PyModuleDef ModuleDef = {PyModuleDef_HEAD_INIT, "gcu_utils",
-                                       NULL, // documentation
-                                       -1,   // size
+                                       NULL,  // documentation
+                                       -1,    // size
                                        ModuleMethods};
 
 PyMODINIT_FUNC PyInit_gcu_utils(void) {

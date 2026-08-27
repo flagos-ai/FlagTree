@@ -190,8 +190,8 @@ LogicalResult MemcpyAsyncOp::verify() {
 LogicalResult SliceAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if ( // dst.getLayout().isIdentity() &&
-       // src.getLayout().isIdentity() &&
+  if (  // dst.getLayout().isIdentity() &&
+        // src.getLayout().isIdentity() &&
       dst.getElementType() == src.getElementType() &&
       dst.getRank() == src.getRank() &&
       static_cast<unsigned>(dst.getRank()) == getOffsets().size() &&
@@ -206,12 +206,12 @@ LogicalResult SliceAsyncOp::verify() {
 LogicalResult SlicePadAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if ( // dst.getLayout().isIdentity() &&
-       // src.getLayout().isIdentity() &&
+  if (  // dst.getLayout().isIdentity() &&
+        // src.getLayout().isIdentity() &&
       dst.getElementType() == src.getElementType() &&
       getPadValue().getType() == dst.getElementType() &&
       dst.getRank() == src.getRank() &&
-      static_cast<unsigned>(dst.getRank()) == getOffsets().size() &&
+      static_cast<unsigned>(dst.getRank())== getOffsets().size() &&
       dst.getRank() <= 5)
     return success();
   if (dst.getRank() > 5)
@@ -223,8 +223,8 @@ LogicalResult SlicePadAsyncOp::verify() {
 LogicalResult DesliceAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if ( // dst.getLayout().isIdentity() &&
-       // src.getLayout().isIdentity() &&
+  if (  // dst.getLayout().isIdentity() &&
+        // src.getLayout().isIdentity() &&
       dst.getElementType() == src.getElementType() &&
       dst.getRank() == src.getRank() &&
       static_cast<unsigned>(dst.getRank()) == getOffsets().size() &&
@@ -239,8 +239,8 @@ LogicalResult DesliceAsyncOp::verify() {
 LogicalResult SliceDesliceAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if ( // dst.getLayout().isIdentity() &&
-       // src.getLayout().isIdentity() &&
+  if (  // dst.getLayout().isIdentity() &&
+        // src.getLayout().isIdentity() &&
       dst.getElementType() == src.getElementType() &&
       dst.getRank() == src.getRank() &&
       static_cast<unsigned>(dst.getRank()) == getOffsets().size() &&
@@ -255,8 +255,8 @@ LogicalResult SliceDesliceAsyncOp::verify() {
 LogicalResult TransposeAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if ( // dst.getLayout().isIdentity() &&
-       // src.getLayout().isIdentity() &&
+  if (  // dst.getLayout().isIdentity() &&
+        // src.getLayout().isIdentity() &&
       dst.getElementType() == src.getElementType() &&
       dst.getRank() == src.getRank() &&
       static_cast<unsigned>(dst.getRank()) == getLayout().size() &&
@@ -271,8 +271,8 @@ LogicalResult TransposeAsyncOp::verify() {
 LogicalResult BroadcastAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if ( // dst.getLayout().isIdentity() &&
-       // src.getLayout().isIdentity() &&
+  if (  // dst.getLayout().isIdentity() &&
+        // src.getLayout().isIdentity() &&
       dst.getElementType() == src.getElementType() &&
       dst.getRank() >= src.getRank() && dst.getRank() <= 5)
     return success();
@@ -287,11 +287,12 @@ LogicalResult BroadcastAsyncOp::verify() {
 LogicalResult SliceBroadcastAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if ( // dst.getLayout().isIdentity() &&
-       // src.getLayout().isIdentity() &&
+  if (  // dst.getLayout().isIdentity() &&
+        // src.getLayout().isIdentity() &&
       dst.getElementType() == src.getElementType() &&
       static_cast<unsigned>(src.getRank()) == getOffsets().size() &&
-      dst.getRank() >= src.getRank() && dst.getRank() <= 5)
+      dst.getRank() >= src.getRank() &&
+      dst.getRank() <= 5)
     return success();
   if (dst.getRank() > 5)
     return emitOpError() << "rank should <=5 ";
@@ -304,12 +305,13 @@ LogicalResult SliceBroadcastAsyncOp::verify() {
 LogicalResult SliceTransposeAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if ( // dst.getLayout().isIdentity() &&
-       // src.getLayout().isIdentity() &&
+  if (  // dst.getLayout().isIdentity() &&
+        // src.getLayout().isIdentity() &&
       dst.getElementType() == src.getElementType() &&
       static_cast<unsigned>(src.getRank()) == getOffsets().size() &&
       static_cast<unsigned>(dst.getRank()) == getLayout().size() &&
-      dst.getRank() == src.getRank() && dst.getRank() <= 5)
+      dst.getRank() == src.getRank() &&
+      dst.getRank() <= 5)
     return success();
   if (dst.getRank() > 5)
     return emitOpError() << "rank should <=5 ";
@@ -317,15 +319,17 @@ LogicalResult SliceTransposeAsyncOp::verify() {
                           "element type and be identity memref";
 }
 
+
 LogicalResult TransposeDesliceAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if ( // dst.getLayout().isIdentity() &&
-       // src.getLayout().isIdentity() &&
+  if (  // dst.getLayout().isIdentity() &&
+        // src.getLayout().isIdentity() &&
       dst.getElementType() == src.getElementType() &&
       static_cast<unsigned>(src.getRank()) == getLayout().size() &&
       static_cast<unsigned>(dst.getRank()) == getOffsets().size() &&
-      dst.getRank() == src.getRank() && dst.getRank() <= 5)
+      dst.getRank() == src.getRank() &&
+      dst.getRank() <= 5)
     return success();
   if (dst.getRank() > 5)
     return emitOpError() << "rank should <=5 ";
@@ -341,8 +345,8 @@ LogicalResult MemsetDesliceAsyncOp::verify() {
   if (src.getElementType() != value)
     return emitOpError() << "value type should be same as src's element type";
 
-  if ( // dst.getLayout().isIdentity() &&
-       // src.getLayout().isIdentity() &&
+  if (  // dst.getLayout().isIdentity() &&
+        // src.getLayout().isIdentity() &&
       dst.getElementType() == src.getElementType() &&
       dst.getRank() == src.getRank() &&
       static_cast<unsigned>(dst.getRank()) == getOffsets().size() &&
@@ -354,11 +358,12 @@ LogicalResult MemsetDesliceAsyncOp::verify() {
                           "element type and be identity memref";
 }
 
+
 LogicalResult MirrortbAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if (dst.getElementType() == src.getElementType() && dst.getRank() == 2 &&
-      src.getRank() == 2)
+  if (dst.getElementType() == src.getElementType() &&
+      dst.getRank() == 2 && src.getRank() == 2)
     return success();
   if (src.getRank() != 2)
     return emitOpError() << "mirror op only support 2D tensor";
@@ -369,8 +374,8 @@ LogicalResult MirrortbAsyncOp::verify() {
 LogicalResult MirrorlrAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if (dst.getElementType() == src.getElementType() && dst.getRank() == 2 &&
-      src.getRank() == 2)
+  if (dst.getElementType() == src.getElementType() &&
+      dst.getRank() == 2 && src.getRank() == 2)
     return success();
   if (src.getRank() != 2)
     return emitOpError() << "mirror op only support 2D tensor";
@@ -382,8 +387,8 @@ LogicalResult MirrortbPadAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
   if (dst.getElementType() == src.getElementType() &&
-      getPadValue().getType() == dst.getElementType() && dst.getRank() == 2 &&
-      src.getRank() == 2)
+      getPadValue().getType() == dst.getElementType() &&
+      dst.getRank() == 2 && src.getRank() == 2)
     return success();
   if (src.getRank() != 2)
     return emitOpError() << "mirror op only support 2D tensor";
@@ -395,8 +400,8 @@ LogicalResult MirrorlrPadAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
   if (dst.getElementType() == src.getElementType() &&
-      getPadValue().getType() == dst.getElementType() && dst.getRank() == 2 &&
-      src.getRank() == 2)
+      getPadValue().getType() == dst.getElementType() &&
+      dst.getRank() == 2 && src.getRank() == 2)
     return success();
   if (src.getRank() != 2)
     return emitOpError() << "mirror op only support 2D tensor";
@@ -407,8 +412,8 @@ LogicalResult MirrorlrPadAsyncOp::verify() {
 LogicalResult MirrortbDesliceAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if (dst.getElementType() == src.getElementType() && dst.getRank() == 2 &&
-      src.getRank() == 2)
+  if (dst.getElementType() == src.getElementType() &&
+      dst.getRank() == 2 && src.getRank() == 2)
     return success();
   if (src.getRank() != 2)
     return emitOpError() << "mirror op only support 2D tensor";
@@ -419,8 +424,8 @@ LogicalResult MirrortbDesliceAsyncOp::verify() {
 LogicalResult MirrorlrDesliceAsyncOp::verify() {
   MemRefType dst = getDst().getType();
   MemRefType src = getSrc().getType();
-  if (dst.getElementType() == src.getElementType() && dst.getRank() == 2 &&
-      src.getRank() == 2)
+  if (dst.getElementType() == src.getElementType() &&
+      dst.getRank() == 2 && src.getRank() == 2)
     return success();
   if (src.getRank() != 2)
     return emitOpError() << "mirror op only support 2D tensor";
@@ -750,12 +755,12 @@ LogicalResult MatMulOp::verify() {
            getLhs().getType().getShape()[0] != getRhs().getType().getShape()[0])
     return emitOpError() << "lhs[dim0=b, dim1=m, dim2=k] and rhs[dim0=b, "
                             "dim1=k, dim2=n] must have the same dim0";
-  // add bias check
+// add bias check
   if (getBias()) {
     if (getBias().getType().getShape()[0] != out.getShape()[0] ||
-        getBias().getType().getShape()[1] != out.getShape()[1]) {
-      return emitOpError() << "out and bias should have same shape!!!!";
-    }
+              getBias().getType().getShape()[1] != out.getShape()[1]) {
+        return emitOpError() << "out and bias should have same shape!!!!";
+      }
   }
   return success();
 }
@@ -806,11 +811,13 @@ LogicalResult ReduceOp::verify() {
       return success();
     } else if (axis == 1) {
       if (dims[1] % 16 != 0 || dims[2] % 128 != 0)
-        return emitOpError() << "dim1 need align to 16 and dim2 need align"
-                             << " to 128 in reduce_mean";
+        return emitOpError()
+               << "dim1 need align to 16 and dim2 need align"
+               << " to 128 in reduce_mean";
       return success();
     } else {
-      return emitOpError() << "just support axis 1 or 2";
+      return emitOpError()
+               << "just support axis 1 or 2";
     }
   } else {
     if (dims[1] % 16 != 0 || dims[2] % 512 != 0)
@@ -904,8 +911,15 @@ void WarpSpecializeOp::getSuccessorRegions(
     return;
   }
   // And the default region branches transparently back to the parent.
+#if TRITON_VERSION >= 37
+  // In the tritonlang LLVM a `RegionBranchPoint` stores the region's
+  // terminator instead of the region itself.
+  assert(src.getTerminatorPredecessorOrNull()->getParentRegion() ==
+         &getDefaultRegion());
+#else
   assert(src.getRegionOrNull() == &getDefaultRegion());
-#if defined(TRITON_VERSION) && TRITON_VERSION >= 37
+#endif
+#if TRITON_VERSION >= 37
   successors.push_back(RegionSuccessor::parent());
 #else
   successors.push_back(RegionSuccessor(getResults()));
@@ -1140,9 +1154,9 @@ void WarpSpecializeOp::print(OpAsmPrinter &p) {
   p << '(';
   p.printOperands(getOperands());
   p << ')';
-  p.printOptionalAttrDictWithKeyword(
-      getOperation()->getAttrs(),
-      {getDefaultNumWarpsAttrName(), getPartitionNumWarpsAttrName()});
+  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(),
+                                     {getDefaultNumWarpsAttrName(),
+                                      getPartitionNumWarpsAttrName()});
 
   p.printNewline();
   p << "default num_warps(" << getDefaultNumWarps() << ") ";
@@ -1201,5 +1215,5 @@ int32_t WarpSpecializeOp::getMasterThreadId(Region *region) {
   return -1;
 }
 
-} // namespace gcu
-} // namespace mlir
+}  // namespace gcu
+}  // namespace mlir

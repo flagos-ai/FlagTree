@@ -19,15 +19,15 @@
 #include <numeric>
 
 #include "Analysis/FirstLastUserAnalysis.h"
+#include "PatternTritonGPUOpToGCU.h"
+#include "Utility.h"
+#include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
-#include "Dialect/GCUWS/IR/Dialect.h"
 #include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
-#include "PatternTritonGPUOpToGCU.h"
-#include "TritonGCUToGCU/TritionToGCUBase.h"
-#include "Utility.h"
+#include "Dialect/GCUWS/IR/Dialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -68,17 +68,17 @@ struct TTSmemLocalAllocOpLowering
 
     auto memrefType = MemRefType::get(
         shape, elemType, AffineMap{},
-        IntegerAttr::get(IntegerType::get(alloc.getContext(), 64),
-                         /*addressSpace=*/2));
+        IntegerAttr::get(
+            IntegerType::get(alloc.getContext(), 64), /*addressSpace=*/2));
 
     auto output = rewriter.create<memref::AllocOp>(alloc.getLoc(), memrefType);
 
-    if (auto clusterAttr =
-            alloc->getAttrOfType<BoolAttr>("ttg.local_alloc.mesh_share")) {
+    if (auto clusterAttr = alloc->getAttrOfType<BoolAttr>(
+            "ttg.local_alloc.mesh_share")) {
       output->setAttr("ttg.local_alloc.mesh_share", clusterAttr);
     }
-    if (auto axisAttr =
-            alloc->getAttrOfType<StringAttr>("ttg.local_alloc.mesh_axis")) {
+    if (auto axisAttr = alloc->getAttrOfType<StringAttr>(
+            "ttg.local_alloc.mesh_axis")) {
       output->setAttr("ttg.local_alloc.mesh_axis", axisAttr);
     }
 
@@ -151,10 +151,9 @@ struct TTSmemCopyGlobalToLocalOpLowering
       pTagPool.setMap(firstUse, tag);
     }
 
-    auto defaultValue =
-        loadOp.getDefaultValue()
-            ? adaptor.getDefaultValue()
-            : triton::gcu::createConstantZero(rewriter, loc, elemType);
+    auto defaultValue = loadOp.getDefaultValue()
+        ? adaptor.getDefaultValue()
+        : triton::gcu::createConstantZero(rewriter, loc, elemType);
 
     // Shape check: all shape dims > 0
     Value shapeCheck = rewriter.create<arith::CmpIOp>(
@@ -166,22 +165,19 @@ struct TTSmemCopyGlobalToLocalOpLowering
     }
 
     // ConfigGcuLoad with IsShareOutput = true
-    auto total_size =
-        rewriter
-            .create<scf::IfOp>(
-                loc, shapeCheck,
-                [&](OpBuilder builder, Location loc) {
-                  Value load_size =
-                      ConfigGcuLoad(builder, loc, output, loadOp, outputType,
-                                    adaptor.getPtr(), adaptor.getStrides(),
-                                    adaptor.getShape(), defaultValue, tag,
-                                    /*IsShareOutput=*/true);
-                  builder.create<scf::YieldOp>(loc, ValueRange{load_size});
-                },
-                [&](OpBuilder &builder, Location loc) {
-                  builder.create<scf::YieldOp>(loc, ValueRange{zero});
-                })
-            .getResult(0);
+    auto total_size = rewriter.create<scf::IfOp>(
+        loc, shapeCheck,
+        [&](OpBuilder builder, Location loc) {
+          Value load_size = ConfigGcuLoad(
+              builder, loc, output,
+              loadOp, outputType, adaptor.getPtr(),
+              adaptor.getStrides(), adaptor.getShape(),
+              defaultValue, tag, /*IsShareOutput=*/true);
+          builder.create<scf::YieldOp>(loc, ValueRange{load_size});
+        },
+        [&](OpBuilder &builder, Location loc) {
+          builder.create<scf::YieldOp>(loc, ValueRange{zero});
+        }).getResult(0);
 
     auto ip = rewriter.saveInsertionPoint();
     if (tag.isAsync()) {
@@ -201,7 +197,8 @@ struct TTSmemCopyGlobalToLocalOpLowering
           WaitGcuLoadStore(builder, loc, tag, total_size);
           builder.create<scf::YieldOp>(loc);
         });
-    if (!loadOp->getParentOfType<gcu::WarpSpecializeOp>())
+    if (!loadOp->getParentOfType<gcu::WarpSpecializeOp>() &&
+        triton::gcu::getNumWarps(loadOp.getOperation()) > 1)
       rewriter.create<gpu::BarrierOp>(loc);
     rewriter.restoreInsertionPoint(ip);
 
@@ -276,30 +273,30 @@ private:
     Type elemType;
     unsigned bpe;
     unsigned VL;
-    unsigned K; // inner dim per warp
-    unsigned M; // outer dim per warp (1 for flat 1D)
+    unsigned K;              // inner dim per warp
+    unsigned M;              // outer dim per warp (1 for flat 1D)
     unsigned totalNumElems;
-    unsigned totalCols; // full smem row width
+    unsigned totalCols;      // full smem row width
     bool isColSplit;
 
     Value flatDst;
     Value warpFlatBase;
-    Value masksPtr;         // nullptr when no mask
-    Value vtOther;          // passthru vector
-    VectorType vtType;      // <VL x elemType>
-    VectorType maskVecType; // <VL x i1>
+    Value masksPtr;          // nullptr when no mask
+    Value vtOther;           // passthru vector
+    VectorType vtType;       // <VL x elemType>
+    VectorType maskVecType;  // <VL x i1>
     Value totalColsVal;
-    Value innerDimVal; // ConstantIndexOp(K)
+    Value innerDimVal;       // ConstantIndexOp(K)
 
     // For vector::GatherOp tail path
-    Value srcFlatI64;      // src ptrs as flat i64 memref
-    Value baseI64;         // first ptr value (i64 scalar)
-    Value baseMemref;      // base dynamic memref for GatherOp
-    Value baseI64Vec;      // broadcast of baseI64 to <VL x i64>
-    Value bpeVec;          // broadcast of bpe to <VL x i64>
-    VectorType i64VecType; // <VL x i64>
-    VectorType i32VecType; // <VL x i32>
-    Value zeroI64Passthru; // <VL x 0_i64>
+    Value srcFlatI64;        // src ptrs as flat i64 memref
+    Value baseI64;           // first ptr value (i64 scalar)
+    Value baseMemref;        // base dynamic memref for GatherOp
+    Value baseI64Vec;        // broadcast of baseI64 to <VL x i64>
+    Value bpeVec;            // broadcast of bpe to <VL x i64>
+    VectorType i64VecType;   // <VL x i64>
+    VectorType i32VecType;   // <VL x i32>
+    Value zeroI64Passthru;   // <VL x 0_i64>
   };
 
   LogicalResult buildContext(ConversionPatternRewriter &rewriter, Location loc,
@@ -636,9 +633,9 @@ private:
     // Pre-compute per-unroll-slot row and column offsets at compile time
     // to avoid DivSI/RemSI inside the loop.
     struct SlotInfo {
-      unsigned rowDelta;  // row offset from loop base row
-      unsigned colOffset; // column offset within the row
-      bool isTail;        // whether this slot is a tail chunk
+      unsigned rowDelta;   // row offset from loop base row
+      unsigned colOffset;  // column offset within the row
+      bool isTail;         // whether this slot is a tail chunk
     };
     SmallVector<SlotInfo> slots;
     slots.reserve(totalUnroll);
@@ -936,10 +933,91 @@ struct TTLocalLoadOpLowering
     // share to Distributed
     if (mlir::isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
         isa<triton::gpu::BlockedEncodingAttr>(dstLayout)) {
-      // copy to local
-      auto output = loadFromSharedMem(rewriter, tag, op.getResult().getType(),
-                                      adaptor.getSrc(), false, lastUser,
-                                      firstUser, userAnalysis, replaced2Origin);
+      auto loc = op.getLoc();
+      auto srcMemRef = dyn_cast<MemRefType>(adaptor.getSrc().getType());
+      if (!srcMemRef)
+        return failure();
+
+      auto numElems = triton::gcu::getElemsPerThread(op.getType());
+      unsigned rank = srcMemRef.getRank();
+
+      bool onlyHighestDimSplit = true;
+      for (unsigned i = 1; i < rank; ++i) {
+        if (numElems[i] != srcMemRef.getShape()[i]) {
+          onlyHighestDimSplit = false;
+          break;
+        }
+      }
+      if (!onlyHighestDimSplit) {
+        // Strided per-warp data: fall back to DTE-based load.
+        auto output = loadFromSharedMem(rewriter, tag, op.getResult().getType(),
+                                        adaptor.getSrc(), false, lastUser,
+                                        firstUser, userAnalysis, replaced2Origin);
+        leaveTritionOp(rewriter, op.getOperation());
+        rewriter.replaceOp(op, output);
+        return success();
+      }
+
+      // Blocked layout: pure alias of SMEM, no DTE data movement.
+      // Fold the per-warp offset into the base address, keep offset = 0.
+      // Compute linear per-warp offset in elements:
+      //   offset_elems = sum_i(numElems[i] * warpIds[i] * srcStrides[i])
+      auto warpIds = getWarpIds(rewriter, loc, op.getType());
+      auto [srcStrides, srcOffset] = srcMemRef.getStridesAndOffset();
+      (void)srcOffset;
+      Value offsetElems = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      for (unsigned i = 0; i < rank; ++i) {
+        Value dimOffset = rewriter.create<arith::MulIOp>(
+            loc,
+            rewriter.create<arith::MulIOp>(
+                loc,
+                rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
+                warpIds[i]),
+            rewriter.create<arith::ConstantIndexOp>(loc, srcStrides[i]));
+        offsetElems =
+            rewriter.create<arith::AddIOp>(loc, offsetElems, dimOffset);
+      }
+
+      // Convert element offset to byte offset
+      auto elemType = srcMemRef.getElementType();
+      auto bpe = elemType.getIntOrFloatBitWidth() / 8;
+      Value offsetBytes = rewriter.create<arith::MulIOp>(
+          loc, offsetElems,
+          rewriter.create<arith::ConstantIndexOp>(loc, bpe));
+
+      // Get SMEM base pointer and fold the offset into the base address
+      auto ptrType = gcu::PtrType::get(op.getContext(), elemType);
+      Value basePtr =
+          rewriter.create<gcu::MemRefToPtrOp>(loc, ptrType, adaptor.getSrc());
+      Value baseAddr =
+          rewriter.create<gcu::PtrToIntOp>(loc, rewriter.getI64Type(), basePtr);
+      Value offsetBytesI64 = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getI64Type(), offsetBytes);
+      Value adjustedAddr =
+          rewriter.create<arith::AddIOp>(loc, baseAddr, offsetBytesI64);
+      Value adjustedPtr =
+          rewriter.create<gcu::IntToPtrOp>(loc, ptrType, adjustedAddr);
+
+      // Wrap pointer into a 1D i8 memref
+      MemRefType memType1D =
+          MemRefType::get({ShapedType::kDynamic}, rewriter.getI8Type());
+      auto buffer1D =
+          rewriter.create<gcu::PtrToMemRefOp>(loc, memType1D, adjustedPtr);
+
+      // Change to the result memory space (metadata only, address preserved)
+      auto resultType =
+          cast<MemRefType>(getTypeConverter()->convertType(op.getType()));
+      auto bufferWithSpace = rewriter.create<memref::MemorySpaceCastOp>(
+          loc,
+          MemRefType::get({ShapedType::kDynamic}, rewriter.getI8Type(),
+                          AffineMap{}, resultType.getMemorySpace()),
+          buffer1D);
+
+      // Final view with offset 0 (offset already folded into base address)
+      auto output = rewriter.create<memref::ViewOp>(
+          loc, resultType, bufferWithSpace,
+          rewriter.create<arith::ConstantIndexOp>(loc, 0), ValueRange{});
+
       leaveTritionOp(rewriter, op.getOperation());
       rewriter.replaceOp(op, output);
       return success();
@@ -957,7 +1035,8 @@ struct TTLocalLoadOpLowering
       SmallVector<OpFoldResult> offsets, sizes, strides;
       for (unsigned i = 0; i < rank; ++i) {
         Value offset = rewriter.create<arith::MulIOp>(
-            loc, rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
+            loc,
+            rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
             warpIds[i]);
         offsets.push_back(offset);
         sizes.push_back(rewriter.getIndexAttr(numElems[i]));
@@ -1032,8 +1111,8 @@ struct MemDescToPtrOpLowering
 
     auto elemType = srcMemRef.getElementType();
     auto gcuPtrTy = mlir::gcu::PtrType::get(op.getContext(), elemType);
-    auto ptr = rewriter.create<mlir::gcu::MemRefToPtrOp>(loc, gcuPtrTy,
-                                                         adaptor.getSrc());
+    auto ptr = rewriter.create<mlir::gcu::MemRefToPtrOp>(
+        loc, gcuPtrTy, adaptor.getSrc());
 
     rewriter.replaceOp(op, ptr.getResult());
     return success();
@@ -1366,8 +1445,8 @@ struct TleInsertTileLowering : SharedGenericConversionPattern {
     auto srcShape = srcTensorTy.getShape();
 
     if (!triton::gcu::needsSmemRelay(srcTensorTy, tileShape)) {
-      auto outputType =
-          dyn_cast<MemRefType>(getTypeConverter()->convertType(resultTensorTy));
+      auto outputType = dyn_cast<MemRefType>(
+          getTypeConverter()->convertType(resultTensorTy));
       auto lastUser = userAnalysis.getLastUser(op->getResults()[0]);
       auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                                 replaced2Origin, outputType);
@@ -1569,14 +1648,18 @@ void mlir::triton::populateTTSmemOpToGCUPatterns(
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateTagPool &pTagPool) {
-  patterns.add<TTSmemLocalAllocOpLowering, TTSmemCopyGlobalToLocalOpLowering,
-               TTSmemGatherGlobalToLocalOpLowering, TTLocalLoadOpLowering,
-               TTLocalStoreOpLowering, TTMemDescIndexOpLowering,
-               MemDescToPtrOpLowering, SliceFromLocalOpLowering,
+  patterns.add<TTSmemLocalAllocOpLowering,
+               TTSmemCopyGlobalToLocalOpLowering,
+               TTSmemGatherGlobalToLocalOpLowering,
+               TTLocalLoadOpLowering,
+               TTLocalStoreOpLowering,
+               TTMemDescIndexOpLowering,
+               MemDescToPtrOpLowering,
+               SliceFromLocalOpLowering,
                DesliceToLocalOpLowering>(converter, patterns.getContext(),
-                                         userAnalysis, replaced2Origin,
-                                         pTagPool);
-  patterns.add<TleExtractTileLowering, TleInsertTileLowering>(
-      converter, patterns.getContext(), userAnalysis, replaced2Origin,
-      pTagPool);
+                                          userAnalysis, replaced2Origin,
+                                          pTagPool);
+  patterns.add<TleExtractTileLowering,
+               TleInsertTileLowering>(converter, patterns.getContext(),
+                                       userAnalysis, replaced2Origin, pTagPool);
 }

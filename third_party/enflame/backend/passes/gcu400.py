@@ -16,9 +16,10 @@ __all__ = [
     'add_gcu_warp_specialization',
     'add_triton_gcu_allocate_warp_groups',
     'add_triton_wgdot_to_gcu',
-    'add_tritongpu_remove_layout_conversions',
+    'add_triton_gcu_remove_layout_conversions',
     'add_triton_gcu_data_layout_optimize',
     'add_gcu_combine_ops',
+    'add_triton_gcu_optimize_dot_operands',
     'add_gcu_triton_fusion',
     'add_flatten_triton_func',
     'add_annotate_dot_acc_reuse',
@@ -55,6 +56,7 @@ def add_tle_to_triton_gcu(pipeline, cluster_dims=(1, 1, 1)):
     pipeline.add_pass('tle-to-triton-gcu', options)
 
 
+
 def add_triton_gpu_to_triton_gcu(pipeline):
     """Convert TritonGPU dialect to TritonGCU dialect."""
     pipeline.add_pass('triton-gpu-to-triton-gcu')
@@ -81,16 +83,13 @@ def add_convert_triton_load_store_to_gcu_dma(pipeline, support_stride0: bool = F
     options = ' '.join(parts)
     pipeline.add_pass('convert-triton-load-store-to-gcu-dma', options)
 
-
 def add_gcu_tle_lower_async_load(pipeline):
     """Lower GCU TLE async load operations."""
     pipeline.add_pass('gcu-tle-lower-async-load')
 
-
 def add_tle_lower_pipe_to_gcuws(pipeline):
     """Lower TLE pipe ops to GCUWS ops."""
     pipeline.add_pass('tle-lower-pipe-to-gcuws')
-
 
 def add_tle_convert_arg_to_memdesc(pipeline):
     """Convert TLE arguments to memory descriptors."""
@@ -105,7 +104,6 @@ def add_tle_remove_redundant_copy(pipeline):
 def add_tle_dslregion_inline(pipeline):
     """Inline TLE DSL region operations."""
     pipeline.add_pass('tle-dslregion-inline')
-
 
 def add_tritongcu_accelerate_matmul(pipeline):
     """Accelerate matrix multiplication operations for GCU."""
@@ -135,9 +133,9 @@ def add_triton_wgdot_to_gcu(pipeline):
     pipeline.add_pass('triton-wgdot-to-gcu')
 
 
-def add_tritongpu_remove_layout_conversions(pipeline):
-    """Remove unnecessary layout conversions in TritonGPU."""
-    pipeline.add_pass('tritongpu-remove-layout-conversions')
+def add_triton_gcu_remove_layout_conversions(pipeline):
+    """Remove unnecessary layout conversions in TritonGPU (GCU)."""
+    pipeline.add_pass('triton-gcu-remove-layout-conversions')
 
 
 def add_triton_gcu_data_layout_optimize(pipeline):
@@ -148,6 +146,11 @@ def add_triton_gcu_data_layout_optimize(pipeline):
 def add_gcu_combine_ops(pipeline):
     """Combine adjacent GCU operations."""
     pipeline.add_pass('gcu-combine-ops')
+
+
+def add_triton_gcu_optimize_dot_operands(pipeline):
+    """Fuse transpose on dot's right-hand operand into dot encoding."""
+    pipeline.add_pass('triton-gcu-optimize-dot-operands')
 
 
 def add_gcu_triton_fusion(pipeline, arch: str):
