@@ -34,7 +34,7 @@ permissions:
 jobs:
   baseline-test:
     runs-on: nvidia3.6
-    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
         shell: bash
@@ -42,6 +42,17 @@ jobs:
           source ~/env.sh
           source ~/env-3.6.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Debug CI environment
+        run: |
+          echo "base.sha = ${{ github.event.pull_request.base.sha }}"
+          echo "HEAD sha  = ${{ github.sha }}"
+          echo "Merge base:"
+          git merge-base ${{ github.event.pull_request.base.sha }} ${{ github.sha }}
+          echo "All changed files:"
+          git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }}
+          echo "Commits in this PR:"
+          git log --oneline ${{ github.event.pull_request.base.sha }}...${{ github.sha }}
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
