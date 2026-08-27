@@ -34,7 +34,7 @@ permissions:
 jobs:
   baseline-test:
     runs-on: nvidia3.6
-    if: ${{ github.repository == 'flagos-ai/flagtree' }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
         shell: bash
