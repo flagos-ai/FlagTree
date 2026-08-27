@@ -47,12 +47,10 @@ using namespace mlir::triton::gpu;
 // we rebuild an order for this rank using the frequency map: dims that appear
 // in axisFreq are placed at the back (lower priority), sorted by frequency
 // ascending; the remaining dims use reverse-iota (higher priority).
-triton::gpu::BlockedEncodingAttr
-mlir::getBlockedEncodingWithOrder(
-    MLIRContext *context, ArrayRef<int64_t> shape,
-    ArrayRef<unsigned> order,
-    const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq,
-    int numWarps, int threadsPerWarp, int numCTAs) {
+triton::gpu::BlockedEncodingAttr mlir::getBlockedEncodingWithOrder(
+    MLIRContext *context, ArrayRef<int64_t> shape, ArrayRef<unsigned> order,
+    const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq, int numWarps,
+    int threadsPerWarp, int numCTAs) {
   int rank = shape.size();
   SmallVector<unsigned> effectiveOrder;
 
@@ -69,13 +67,12 @@ mlir::getBlockedEncodingWithOrder(
       else
         nonReduceDims.push_back(dim);
     }
-    llvm::sort(reduceDimsWithFreq,
-               [](const std::pair<unsigned, unsigned> &a,
-                  const std::pair<unsigned, unsigned> &b) {
-                 if (a.second != b.second)
-                   return a.second < b.second;
-                 return a.first > b.first;
-               });
+    llvm::sort(reduceDimsWithFreq, [](const std::pair<unsigned, unsigned> &a,
+                                      const std::pair<unsigned, unsigned> &b) {
+      if (a.second != b.second)
+        return a.second < b.second;
+      return a.first > b.first;
+    });
     effectiveOrder.append(nonReduceDims.begin(), nonReduceDims.end());
     for (auto &kv : reduceDimsWithFreq)
       effectiveOrder.push_back(kv.first);
@@ -126,46 +123,43 @@ mlir::computeDotWarpsPerCTA(const triton::gpu::BlockedEncodingAttr &encoding,
 GCUTritonGPUTypeConverter::GCUTritonGPUTypeConverter(
     MLIRContext *context, int numWarps, int threadsPerWarp, int numCTAs,
     ArrayRef<unsigned> defaultOrder,
-    const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq,
-    bool hasDotOp)
+    const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq, bool hasDotOp)
     : context(context), numWarps(numWarps), threadsPerWarp(threadsPerWarp),
       numCTAs(numCTAs), defaultOrder(defaultOrder.begin(), defaultOrder.end()),
       axisFreq(axisFreq), hasDotOp(hasDotOp) {
   addConversion([](Type type) { return type; });
 
-  addConversion(
-      [this](RankedTensorType tensorType) -> RankedTensorType {
+  addConversion([this](RankedTensorType tensorType) -> RankedTensorType {
 #ifdef ENABLE_TLE
-        return convertRankedTensorType(tensorType, this->numWarps);
+    return convertRankedTensorType(tensorType, this->numWarps);
 #else
-        if (tensorType.getEncoding())
-          return tensorType;
-        ArrayRef<int64_t> shape = tensorType.getShape();
-        auto encoding = getBlockedEncodingWithOrder(
-            this->context, shape, this->defaultOrder, this->axisFreq,
-            this->numWarps, this->threadsPerWarp, this->numCTAs);
-        if (this->hasDotOp) {
-          SmallVector<unsigned> warpsPerCTA =
-              computeDotWarpsPerCTA(encoding, shape, this->numWarps);
-          encoding = BlockedEncodingAttr::get(
-              this->context, encoding.getSizePerThread(),
-              encoding.getThreadsPerWarp(), warpsPerCTA, encoding.getOrder(),
-              triton_gcu::compat::getCGALayout(encoding));
-        }
-        return tensorType.cloneWithEncoding(encoding);
+    if (tensorType.getEncoding())
+      return tensorType;
+    ArrayRef<int64_t> shape = tensorType.getShape();
+    auto encoding = getBlockedEncodingWithOrder(
+        this->context, shape, this->defaultOrder, this->axisFreq,
+        this->numWarps, this->threadsPerWarp, this->numCTAs);
+    if (this->hasDotOp) {
+      SmallVector<unsigned> warpsPerCTA =
+          computeDotWarpsPerCTA(encoding, shape, this->numWarps);
+      encoding = BlockedEncodingAttr::get(
+          this->context, encoding.getSizePerThread(),
+          encoding.getThreadsPerWarp(), warpsPerCTA, encoding.getOrder(),
+          triton_gcu::compat::getCGALayout(encoding));
+    }
+    return tensorType.cloneWithEncoding(encoding);
 #endif
-      });
+  });
 
-  addConversion(
-      [this](triton::PointerType ptrType) -> triton::PointerType {
-        auto pointeeTensorType =
-            dyn_cast<RankedTensorType>(ptrType.getPointeeType());
-        if (!pointeeTensorType)
-          return ptrType;
-        auto convertedTensorType = convertType(pointeeTensorType);
-        return triton::PointerType::get(convertedTensorType,
-                                        ptrType.getAddressSpace());
-      });
+  addConversion([this](triton::PointerType ptrType) -> triton::PointerType {
+    auto pointeeTensorType =
+        dyn_cast<RankedTensorType>(ptrType.getPointeeType());
+    if (!pointeeTensorType)
+      return ptrType;
+    auto convertedTensorType = convertType(pointeeTensorType);
+    return triton::PointerType::get(convertedTensorType,
+                                    ptrType.getAddressSpace());
+  });
 
 #ifdef ENABLE_TLE
   addConversion([this](Value value) -> std::optional<Type> {
@@ -189,8 +183,8 @@ GCUTritonGPUTypeConverter::GCUTritonGPUTypeConverter(
 
   addTargetMaterialization([](OpBuilder &builder, RankedTensorType tensorType,
                               ValueRange inputs, Location loc) {
-    auto cast = triton::gpu::ConvertLayoutOp::create(builder, loc, tensorType,
-                                                     inputs);
+    auto cast =
+        triton::gpu::ConvertLayoutOp::create(builder, loc, tensorType, inputs);
     return cast.getResult();
   });
 }
@@ -213,15 +207,14 @@ int GCUTritonGPUTypeConverter::getNumWarps(Value value) const {
   return numWarps;
 }
 
-RankedTensorType
-GCUTritonGPUTypeConverter::convertRankedTensorType(RankedTensorType tensorType,
-                                                    int contextualNumWarps) const {
+RankedTensorType GCUTritonGPUTypeConverter::convertRankedTensorType(
+    RankedTensorType tensorType, int contextualNumWarps) const {
   if (tensorType.getEncoding())
     return tensorType;
   ArrayRef<int64_t> shape = tensorType.getShape();
-  auto encoding = getBlockedEncodingWithOrder(
-      context, shape, defaultOrder, axisFreq, contextualNumWarps,
-      threadsPerWarp, numCTAs);
+  auto encoding =
+      getBlockedEncodingWithOrder(context, shape, defaultOrder, axisFreq,
+                                  contextualNumWarps, threadsPerWarp, numCTAs);
   return tensorType.cloneWithEncoding(encoding);
 }
 #endif

@@ -16,7 +16,6 @@
 
 #include <map>
 
-
 #include "Analysis/FirstLastUserAnalysis.h"
 #include "Analysis/OpFoldResultUtils.h"
 #include "Dialect/GCU/IR/Dialect.h"
@@ -53,7 +52,7 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
           getTypeConverter()->convertType(loadOp.getType()));
       auto output = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                                 replaced2Origin, resultType);
-    ///////////////////////////////////////////////////////////////////////////'
+      ///////////////////////////////////////////////////////////////////////////'
       auto elementType = resultType.getElementType();
       auto bpe = mlir::triton::gcu::getBpe(elementType);
       unsigned vectorLength = oaccSizeInBytes / bpe;
@@ -65,8 +64,8 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
       auto args_ptr = tarBuild.tarAddr(adaptor.getPtr());
       auto args_v = tarBuild.tarAddr(output);
       auto masks_ptr_ty = gcu::PtrType::get(getContext(), rewriter.getI1Type());
-      Value other = triton::gcu::createConstantZero(rewriter, loc,
-        resultType.getElementType());
+      Value other = triton::gcu::createConstantZero(
+          rewriter, loc, resultType.getElementType());
       if (adaptor.getOther()) {
         // Try to extract a scalar default value from the tensor 'other'.
         // The value may be produced by a constant, splat, sitofp, arith.select,
@@ -79,7 +78,8 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
         // supported.
         auto makeScalarSelect = [&](Value cond, Value trueValue,
                                     Value falseValue) -> Value {
-          auto trueScalar = triton::gcu::getScalarValue(rewriter, loc, trueValue);
+          auto trueScalar =
+              triton::gcu::getScalarValue(rewriter, loc, trueValue);
           if (!trueScalar.has_value() || !*trueScalar)
             return nullptr;
           auto falseScalar =
@@ -106,8 +106,8 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
             return failure();
           }
           auto yieldValue = yieldOp->getOperand(resultIndex);
-          if (auto selectOp =
-                  dyn_cast_or_null<arith::SelectOp>(yieldValue.getDefiningOp())) {
+          if (auto selectOp = dyn_cast_or_null<arith::SelectOp>(
+                  yieldValue.getDefiningOp())) {
             auto cond = selectOp.getCondition();
             if (auto blockArg = dyn_cast_or_null<BlockArgument>(cond)) {
               unsigned argNum = blockArg.getArgNumber();
@@ -116,13 +116,13 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
                     "Invalid block argument for fused select condition");
                 return failure();
               }
-              other = makeScalarSelect(elementwiseFusionOp.getOperands()[argNum],
-                                       selectOp.getTrueValue(),
-                                       selectOp.getFalseValue());
+              other = makeScalarSelect(
+                  elementwiseFusionOp.getOperands()[argNum],
+                  selectOp.getTrueValue(), selectOp.getFalseValue());
             } else {
               // The condition is already usable outside (e.g., a constant).
               other = makeScalarSelect(cond, selectOp.getTrueValue(),
-                                     selectOp.getFalseValue());
+                                       selectOp.getFalseValue());
             }
           } else {
             auto maybeScalar =
@@ -130,18 +130,18 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
             if (maybeScalar.has_value() && *maybeScalar) {
               other = *maybeScalar;
             } else {
-              llvm_unreachable(
-                  "Unsupported elementwise fusion other op in TritonLoadOpLowering");
+              llvm_unreachable("Unsupported elementwise fusion other op in "
+                               "TritonLoadOpLowering");
               return failure();
             }
           }
-        } else if (auto selectOp =
-                       dyn_cast_or_null<arith::SelectOp>(otherOp)) {
-          other = makeScalarSelect(selectOp.getCondition(),
-                                   selectOp.getTrueValue(),
-                                   selectOp.getFalseValue());
+        } else if (auto selectOp = dyn_cast_or_null<arith::SelectOp>(otherOp)) {
+          other =
+              makeScalarSelect(selectOp.getCondition(), selectOp.getTrueValue(),
+                               selectOp.getFalseValue());
         } else {
-          auto maybeScalar = triton::gcu::getScalarValue(rewriter, loc, otherValue);
+          auto maybeScalar =
+              triton::gcu::getScalarValue(rewriter, loc, otherValue);
           if (maybeScalar.has_value() && *maybeScalar) {
             other = *maybeScalar;
           } else {
@@ -157,8 +157,8 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
       }
       Value masks_ptr = nullptr;
       if (adaptor.getMask())
-        masks_ptr = rewriter.create<gcu::MemRefToPtrOp>(
-              loc, masks_ptr_ty, adaptor.getMask());
+        masks_ptr = rewriter.create<gcu::MemRefToPtrOp>(loc, masks_ptr_ty,
+                                                        adaptor.getMask());
       auto vt_v = VectorType::get(ArrayRef<int64_t>{vectorLength}, elementType);
       auto vt_other = rewriter.create<vector::BroadcastOp>(loc, vt_v, other);
       init_args.push_back(args_v);
@@ -167,25 +167,27 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
         init_args.push_back(masks_ptr);
       auto tarStride = tarBuild.tarValue(oaccSizeInBytes);
       rewriter.create<scf::ForOp>(
-        loc, zero, end, step, init_args,
-        [&](OpBuilder &builder, Location loc, Value iter, ValueRange iterArgs) {
+          loc, zero, end, step, init_args,
+          [&](OpBuilder &builder, Location loc, Value iter,
+              ValueRange iterArgs) {
             SmallVector<Value> args(iterArgs);
-            auto num = builder.create<arith::IndexCastOp>(loc,
-                builder.getI32Type(), builder.create<arith::MinSIOp>(loc, step,
-                builder.create<arith::SubIOp>(loc, end, iter)));
+            auto num = builder.create<arith::IndexCastOp>(
+                loc, builder.getI32Type(),
+                builder.create<arith::MinSIOp>(
+                    loc, step, builder.create<arith::SubIOp>(loc, end, iter)));
             auto v = tarBuild.tarGather(vt_v, args[1], num, vt_other,
                                         args.size() > 2 ? args[2] : masks_ptr);
             tarBuild.tarStore(v, args[0], tarStride);
             if (args.size() > 2) {
-                args[2] = builder.create<gcu::IntToPtrOp>(
-                    loc, masks_ptr_ty,
-                    builder.create<arith::AddIOp>(
-                        loc, builder.create<gcu::PtrToIntOp>(loc, args[2]),
-                        builder.create<arith::ConstantIntOp>(
-                            loc, vectorLength, 64)));
+              args[2] = builder.create<gcu::IntToPtrOp>(
+                  loc, masks_ptr_ty,
+                  builder.create<arith::AddIOp>(
+                      loc, builder.create<gcu::PtrToIntOp>(loc, args[2]),
+                      builder.create<arith::ConstantIntOp>(loc, vectorLength,
+                                                           64)));
             }
             builder.create<scf::YieldOp>(loc, args);
-        });
+          });
       leaveTritionOp(rewriter, loadOp.getOperation());
       rewriter.replaceOp(loadOp, output);
       return success();
@@ -194,9 +196,7 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
       auto mask =
           adaptor.getMask()
               ? adaptor.getMask()
-              : rewriter
-                    .create<arith::ConstantIntOp>(loc, 1, 1)
-                    .getResult();
+              : rewriter.create<arith::ConstantIntOp>(loc, 1, 1).getResult();
       auto other = adaptor.getOther() ? adaptor.getOther()
                                       : triton::gcu::createConstantZero(
                                             rewriter, loc, loadOp.getType());
@@ -208,8 +208,8 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
           rewriter.create<gcu::PtrToMemRefOp>(loc, memType, adaptor.getPtr());
 
       bool needScalarFence = loadOp.getIsVolatile() ||
-          loadOp.getCache() == triton::CacheModifier::CG ||
-          loadOp.getCache() == triton::CacheModifier::CV;
+                             loadOp.getCache() == triton::CacheModifier::CG ||
+                             loadOp.getCache() == triton::CacheModifier::CV;
 
       auto scalarV = rewriter.create<scf::IfOp>(
           loc, mask,
@@ -256,7 +256,7 @@ struct TritonStoreOpLowering : SharedConversionPattern<triton::StoreOp> {
       auto bpe = mlir::triton::gcu::getBpe(elementType);
       unsigned vectorLength = oaccSizeInBytes / bpe;
       auto totalNumElems =
-        triton::gcu::getTotalElemsPerThread(storeOp.getPtr().getType());
+          triton::gcu::getTotalElemsPerThread(storeOp.getPtr().getType());
       auto end = rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems);
       auto step = rewriter.create<arith::ConstantIndexOp>(loc, vectorLength);
       triton::gcu::TritonGCUBuilder tarBuild(loc, rewriter);
@@ -266,8 +266,8 @@ struct TritonStoreOpLowering : SharedConversionPattern<triton::StoreOp> {
       auto masks_ptr_ty = gcu::PtrType::get(getContext(), rewriter.getI1Type());
       Value masks_ptr = nullptr;
       if (adaptor.getMask())
-        masks_ptr = rewriter.create<gcu::MemRefToPtrOp>(
-              loc, masks_ptr_ty, adaptor.getMask());
+        masks_ptr = rewriter.create<gcu::MemRefToPtrOp>(loc, masks_ptr_ty,
+                                                        adaptor.getMask());
       auto vt_v = VectorType::get(ArrayRef<int64_t>{vectorLength}, elementType);
       init_args.push_back(args_ptr);
       init_args.push_back(args_v);
@@ -275,23 +275,25 @@ struct TritonStoreOpLowering : SharedConversionPattern<triton::StoreOp> {
         init_args.push_back(masks_ptr);
       auto tarStride = tarBuild.tarValue(oaccSizeInBytes);
       rewriter.create<scf::ForOp>(
-        loc, zero, end, step, init_args,
-        [&](OpBuilder &builder, Location loc, Value iter, ValueRange iterArgs) {
+          loc, zero, end, step, init_args,
+          [&](OpBuilder &builder, Location loc, Value iter,
+              ValueRange iterArgs) {
             SmallVector<Value> args(iterArgs);
             auto v = tarBuild.tarLoad(vt_v, args[1], tarStride);
-            auto num = builder.create<arith::IndexCastOp>(loc,
-                builder.getI32Type(), builder.create<arith::MinSIOp>(loc, step,
-                builder.create<arith::SubIOp>(loc, end, iter)));
+            auto num = builder.create<arith::IndexCastOp>(
+                loc, builder.getI32Type(),
+                builder.create<arith::MinSIOp>(
+                    loc, step, builder.create<arith::SubIOp>(loc, end, iter)));
             if (args.size() > 2) {
-                tarBuild.tarScatter(args[0], v, num, args[2]);
-                args[2] = builder.create<gcu::IntToPtrOp>(
-                    loc, masks_ptr_ty,
-                    builder.create<arith::AddIOp>(
-                        loc, builder.create<gcu::PtrToIntOp>(loc, args[2]),
-                        builder.create<arith::ConstantIntOp>(
-                            loc, vectorLength, 64)));
+              tarBuild.tarScatter(args[0], v, num, args[2]);
+              args[2] = builder.create<gcu::IntToPtrOp>(
+                  loc, masks_ptr_ty,
+                  builder.create<arith::AddIOp>(
+                      loc, builder.create<gcu::PtrToIntOp>(loc, args[2]),
+                      builder.create<arith::ConstantIntOp>(loc, vectorLength,
+                                                           64)));
             } else {
-                tarBuild.tarScatter(args[0], v, num, masks_ptr);
+              tarBuild.tarScatter(args[0], v, num, masks_ptr);
             }
             builder.create<scf::YieldOp>(loc, args);
           });
@@ -310,20 +312,17 @@ struct TritonStoreOpLowering : SharedConversionPattern<triton::StoreOp> {
       auto mask =
           adaptor.getMask()
               ? adaptor.getMask()
-              : rewriter
-                    .create<arith::ConstantIntOp>(loc, 1, 1)
-                    .getResult();
+              : rewriter.create<arith::ConstantIntOp>(loc, 1, 1).getResult();
       auto masterWarpId = getMasterThreadId(storeOp.getOperation());
       auto isMasterThread = rewriter.create<arith::CmpIOp>(
-            loc, arith::CmpIPredicate::eq,
-            rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
-            rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+          loc, arith::CmpIPredicate::eq,
+          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+          rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
       mask = rewriter.create<arith::AndIOp>(loc, mask, isMasterThread);
 
-      bool needScalarFence =
-          storeOp.getCache() == triton::CacheModifier::CG ||
-          storeOp.getCache() == triton::CacheModifier::CS ||
-          storeOp.getCache() == triton::CacheModifier::WT;
+      bool needScalarFence = storeOp.getCache() == triton::CacheModifier::CG ||
+                             storeOp.getCache() == triton::CacheModifier::CS ||
+                             storeOp.getCache() == triton::CacheModifier::WT;
 
       rewriter.create<scf::IfOp>(
           loc, mask, [&](OpBuilder &builder, Location loc) {
@@ -347,6 +346,6 @@ void mlir::triton::populateLoadStoreOpToGCUPatterns(
     std::map<Operation *, Operation *> &replaced2Origin,
     triton::gcu::PrivateTagPool &pTagPool) {
   patterns.add<TritonLoadOpLowering, TritonStoreOpLowering>(
-      converter, patterns.getContext(),
-      userAnalysis, replaced2Origin, pTagPool);
+      converter, patterns.getContext(), userAnalysis, replaced2Origin,
+      pTagPool);
 }

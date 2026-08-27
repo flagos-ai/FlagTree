@@ -29,12 +29,12 @@
 #include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Utility.h"
 #include "Utils/TritonVersionCompat.h"
+#include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringSet.h"
-#include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
 
 using namespace mlir;
 
@@ -57,7 +57,6 @@ static int64_t getConstantSplatInt(Value val) {
 
   return -1;
 }
-
 
 // Walk the offset definition chain of a masked load/store op and require
 // every arith::RemSIOp's M to be a multiple of `granularity`.  When M %
@@ -244,7 +243,7 @@ struct FusionRegionInfo {
   unsigned loopCnt;
   bool unrollFull = false;
   SmallVector<bool> useAlloca;
-  SmallVector<bool> useAllocaStore;  // store stack data to local memory
+  SmallVector<bool> useAllocaStore; // store stack data to local memory
   static FusionRegionInfo analyze(
       triton::gcu::ElementwiseFusionRegionOp op,
       SharedConversionPattern<triton::gcu::ElementwiseFusionRegionOp>::OpAdaptor
@@ -523,7 +522,7 @@ struct GCUElementwiseFusionOpLowering
         auto elementTy = cast<MemRefType>(operandType).getElementType();
         auto totalNumElems =
             triton::gcu::getTotalElemsPerThread(op.getOperandTypes()[i]);
-        if (mlir::triton::gcu::isAllocaInputValue(operand)||
+        if (mlir::triton::gcu::isAllocaInputValue(operand) ||
             i == static_cast<unsigned>(inplaceOperandIdx)) {
           inputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
               loc, MemRefType::get(ArrayRef<int64_t>{totalNumElems}, elementTy),
@@ -553,7 +552,8 @@ struct GCUElementwiseFusionOpLowering
                 0, ArrayRef<int64_t>{totalNumElems}, ArrayRef<int64_t>{1}));
           } else {
             inputs.emplace_back(rewriter.create<memref::ReinterpretCastOp>(
-                loc, MemRefType::get(ArrayRef<int64_t>{totalNumElems}, elementTy),
+                loc,
+                MemRefType::get(ArrayRef<int64_t>{totalNumElems}, elementTy),
                 operand, 0, ArrayRef<int64_t>{totalNumElems},
                 ArrayRef<int64_t>{1}));
           }
@@ -1034,12 +1034,12 @@ struct GCUElementwiseFusionOpLowering
                                      vecTy, builder.getZeroAttr(elementTy)))));
               }
             } else if (perVecContiguousOps.contains(&op)) {
-              operandMaps[i].map(
-                  result, simplifyLoadToMaskedLoad(
-                              maskedLoadOp, builder, operandMaps[i],
-                              vectorLength, needCvtDataLayout, isSmallSize,
-                              totalNumElems, loopCnt, loopIter, i,
-                              !useLoadStoreInstrOps.empty()));
+              operandMaps[i].map(result, simplifyLoadToMaskedLoad(
+                                             maskedLoadOp, builder,
+                                             operandMaps[i], vectorLength,
+                                             needCvtDataLayout, isSmallSize,
+                                             totalNumElems, loopCnt, loopIter,
+                                             i, !useLoadStoreInstrOps.empty()));
             } else if (offsets.contains(&op)) {
               assert(maskedLoadOp.getMask());
               auto mask = operandMaps[i].lookup(maskedLoadOp.getMask());
@@ -1153,7 +1153,7 @@ struct GCUElementwiseFusionOpLowering
                                       loc, builder.getIntegerType(64),
                                       loopIter))))},
                       mask, v);
-                  }
+                }
               } else if (offsets.contains(&o)) {
                 assert(maskedStoreOp.getMask());
 
@@ -1334,7 +1334,7 @@ struct GCUElementwiseFusionOpLowering
             });
       } else {
         auto forOp = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound,
-                                                  step, initValues, loopBody);
+                                                 step, initValues, loopBody);
         setUnrollFullAttr(forOp);
       }
     } else {
@@ -1960,21 +1960,21 @@ private:
                               unsigned vectorLength, Value &tarAddr,
                               const Value &tarStride, Location loc) const {
     unsigned maxVectorLength =
-      4 * kOaccSizeInBytes / mlir::triton::gcu::getBpe(elementTy);
+        4 * kOaccSizeInBytes / mlir::triton::gcu::getBpe(elementTy);
     if (vectorLength <= maxVectorLength) {
       return b.tarLoad(
           VectorType::get(ArrayRef<int64_t>{vectorLength}, elementTy), tarAddr,
           tarStride);
     }
 
-    auto chunkTy = VectorType::get(ArrayRef<int64_t>{maxVectorLength}, elementTy);
+    auto chunkTy =
+        VectorType::get(ArrayRef<int64_t>{maxVectorLength}, elementTy);
     Value chunk = b.tarLoad(chunkTy, tarAddr, tarStride);
     unsigned numParts = vectorLength / maxVectorLength;
     SmallVector<Value> parts;
     parts.push_back(chunk);
     auto zeroChunk = builder.create<arith::ConstantOp>(
-        loc, DenseElementsAttr::get(chunkTy,
-                                    builder.getZeroAttr(elementTy)));
+        loc, DenseElementsAttr::get(chunkTy, builder.getZeroAttr(elementTy)));
     for (unsigned p = 1; p < numParts; ++p)
       parts.push_back(zeroChunk);
     SmallVector<Type> resultTypes;

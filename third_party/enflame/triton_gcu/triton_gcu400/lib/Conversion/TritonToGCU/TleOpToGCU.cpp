@@ -27,13 +27,13 @@
 #include <map>
 
 #include "Analysis/FirstLastUserAnalysis.h"
-#include "PatternTritonGPUOpToGCU.h"
-#include "Utility.h"
-#include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
+#include "PatternTritonGPUOpToGCU.h"
+#include "TritonGCUToGCU/TritionToGCUBase.h"
+#include "Utility.h"
 #ifdef ENABLE_TLE
 #include "tle/dialect/include/IR/Dialect.h"
 #endif

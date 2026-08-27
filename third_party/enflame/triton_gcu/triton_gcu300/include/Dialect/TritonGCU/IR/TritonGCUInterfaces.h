@@ -21,4 +21,4 @@
 #define GET_TYPEDEF_CLASSES
 #include "Dialect/TritonGCU/IR/TritonGCUAttrInterfaces.h.inc"
 
-#endif  // TRITON_GCU_DIALECT_GCU_IR_INTERFACES_H
+#endif // TRITON_GCU_DIALECT_GCU_IR_INTERFACES_H

@@ -19,6 +19,7 @@
 
 #include "GCUTritonGPUConversion.h"
 
+#include "Utils/TritonVersionCompat.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -30,7 +31,6 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
@@ -200,7 +200,8 @@ struct TritonExpandDimsPattern
     auto retCTALayout = triton::gpu::CTALayoutAttr::get(
         getContext(), retCTAsPerCGA, retCTASplitNum, retCTAOrder);
 #else
-    auto ctaLl = triton_gcu::compat::getCGALayout(argEncoding).getLinearLayout();
+    auto ctaLl =
+        triton_gcu::compat::getCGALayout(argEncoding).getLinearLayout();
     auto kBlock = *ctaLl.getInDimNames().begin();
     auto *ctx = kBlock.getContext();
     auto newDim = standardOutDimNames(ctx, newRank)[newRank - 1];
@@ -210,7 +211,8 @@ struct TritonExpandDimsPattern
       std::swap(newOrder[i], newOrder[i - 1]);
     }
     ctaLl = transposeLinearLayout(ctaLl, newOrder);
-    auto retCTALayout = triton_gcu::compat::getCGALayoutFromLL(ctx, std::move(ctaLl));
+    auto retCTALayout =
+        triton_gcu::compat::getCGALayoutFromLL(ctx, std::move(ctaLl));
 #endif
 
     triton::gpu::BlockedEncodingAttr retEncoding =
@@ -345,7 +347,8 @@ struct TritonCatPattern : public OpConversionPattern<triton::CatOp> {
     triton::gpu::BlockedEncodingAttr newRetEncoding =
         triton::gpu::BlockedEncodingAttr::get(
             getContext(), newRetSizePerThread, retThreadsPerWarp,
-            retWarpsPerCTA, retOrder, triton_gcu::compat::getCGALayout(retEncoding));
+            retWarpsPerCTA, retOrder,
+            triton_gcu::compat::getCGALayout(retEncoding));
     auto newRetType = retType.cloneWithEncoding(newRetEncoding);
     addNamedAttrs(rewriter.replaceOpWithNewOp<triton::CatOp>(
                       op, newRetType, adaptor.getOperands()),
@@ -499,7 +502,8 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
                              append(defaultEnc.getCTASplitNum(), 1),
                              prepend(defaultEnc.getCTAOrder(), rank - 1)));
 #else
-      auto layout = triton_gcu::compat::getCGALayout(defaultEnc).getLinearLayout();
+      auto layout =
+          triton_gcu::compat::getCGALayout(defaultEnc).getLinearLayout();
       auto kBlock = StringAttr::get(getContext(), "block");
       auto newDim = standardOutDimNames(getContext(), rank)[rank - 1];
       layout *= LinearLayout::identity1D(1, kBlock, newDim);
@@ -573,8 +577,7 @@ public:
 };
 
 void populateTritonPatterns(GCUTritonGPUTypeConverter &typeConverter,
-                            RewritePatternSet &patterns,
-                            bool hasReduceOps) {
+                            RewritePatternSet &patterns, bool hasReduceOps) {
   MLIRContext *context = patterns.getContext();
   patterns.insert<
       // clang-format off

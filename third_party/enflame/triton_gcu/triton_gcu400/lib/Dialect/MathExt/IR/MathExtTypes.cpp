@@ -13,11 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "Dialect/MathExt/IR/MathExt.h"
 #include "Dialect/MathExt/IR/MathExtTypes.h"
+#include "Dialect/MathExt/IR/MathExt.h"
 
-#include "mlir/IR/DialectImplementation.h"  // required by `Types.cpp.inc`
-#include "llvm/ADT/TypeSwitch.h"            // required by `Types.cpp.inc`
+#include "mlir/IR/DialectImplementation.h" // required by `Types.cpp.inc`
+#include "llvm/ADT/TypeSwitch.h"           // required by `Types.cpp.inc`
 
 using namespace mlir;
 using namespace mlir::math_ext;
@@ -31,6 +31,7 @@ using namespace mlir::math_ext;
 // void MathExtDialect::registerTypes() {
 //   addTypes<
 // #define GET_TYPEDEF_LIST
-// #include "Dialect/MathExt/IR/MathExtTypes.cpp.inc"  // NOLINT: This file generated situationally via different environment variables
+// #include "Dialect/MathExt/IR/MathExtTypes.cpp.inc"  // NOLINT: This file
+// generated situationally via different environment variables
 //       >();
 // }

@@ -17,9 +17,9 @@
 #include <memory>
 
 #include "Analysis/FirstLastUserAnalysis.h"
-#include "llvm/ADT/StringRef.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace {
 
@@ -31,14 +31,14 @@ struct TestFirstLastUserAnalysisPass
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestFirstLastUserAnalysisPass)
 
   StringRef getArgument() const final {
-      return "test-first-last-user-analysis";
+    return "test-first-last-user-analysis";
   }
   StringRef getDescription() const final {
     return "Test first last user analysis results.";
   }
   void runOnOperation() override {
-    triton::gcu::FirstLastUserAnalysis
-        &userAnalysis = getAnalysis<triton::gcu::FirstLastUserAnalysis>();
+    triton::gcu::FirstLastUserAnalysis &userAnalysis =
+        getAnalysis<triton::gcu::FirstLastUserAnalysis>();
 
     Operation *moduleOp = getOperation();
     llvm::raw_ostream &os = llvm::errs();
@@ -53,8 +53,7 @@ struct TestFirstLastUserAnalysisPass
       auto tag = op->getAttrOfType<StringAttr>("tag");
       if (!tag || op->getResults().empty())
         return;
-      for (int i = 0, numResult = op->getResults().size();
-           i < numResult; i++) {
+      for (int i = 0, numResult = op->getResults().size(); i < numResult; i++) {
         auto result = userAnalysis.getLastUser(op->getResults()[i]);
         if (numResult != 1) {
           os << tag.getValue() << "#" << i << " -> ";
@@ -77,7 +76,7 @@ struct TestFirstLastUserAnalysisPass
   }
 };
 
-}  // namespace
+} // namespace
 
 namespace mlir {
 namespace test {
@@ -91,5 +90,5 @@ void registerTestFirstLastUserAnalysisPass() {
     return createTestFirstLastUserAnalysisPass();
   });
 }
-}  // namespace test
-}  // namespace mlir
+} // namespace test
+} // namespace mlir

@@ -14,10 +14,10 @@ from triton.experimental.tle.raw.tops.runtime import (
 )
 from triton.experimental.tle.raw.tops.mlir_runtime import TOPSMLIRJITFunction
 
-
 # ---------------------------------------------------------------------------
 # TOPSJITFunction registration tests
 # ---------------------------------------------------------------------------
+
 
 class TestTOPSDialectRegistration:
 
@@ -47,6 +47,7 @@ class TestTOPSDialectRegistration:
 # ---------------------------------------------------------------------------
 # TOPSJITFunction constructor tests
 # ---------------------------------------------------------------------------
+
 
 class TestTOPSJITFunctionInit:
 
@@ -111,6 +112,7 @@ class TestTOPSJITFunctionInit:
 # Helper function tests
 # ---------------------------------------------------------------------------
 
+
 class TestHelperFunctions:
 
     def test_get_gcu_arch_default(self):
@@ -168,6 +170,7 @@ class TestHelperFunctions:
 # @dialect decorator tests
 # ---------------------------------------------------------------------------
 
+
 class TestDialectDecorator:
 
     def test_dialect_creates_tops_jit(self, tmp_path):
@@ -209,6 +212,7 @@ class TestDialectDecorator:
     def test_dialect_invalid_name_raises(self):
         from triton.experimental.tle.raw import dialect
         with pytest.raises(KeyError):
+
             @dialect(name="nonexistent_backend")
             def edsl(*args, **kwargs):
                 ...
@@ -217,6 +221,7 @@ class TestDialectDecorator:
 # ---------------------------------------------------------------------------
 # TOPSMLIRJITFunction tests
 # ---------------------------------------------------------------------------
+
 
 class TestTOPSMLIRJITFunction:
 
@@ -261,6 +266,7 @@ class TestTOPSMLIRJITFunction:
 # ---------------------------------------------------------------------------
 # TOPSJITFunction compile flow tests (mock topscc)
 # ---------------------------------------------------------------------------
+
 
 class TestTOPSJITFunctionCompile:
 
@@ -347,6 +353,7 @@ class TestTOPSJITFunctionCompile:
         mock_ir = "; ModuleID = 'test'\ntarget triple = \"dtu-enflame-tops--gcu400\"\n"
 
         import subprocess
+
         def mock_run(cmd, **kwargs):
             result = MagicMock()
             if "-S" in cmd:

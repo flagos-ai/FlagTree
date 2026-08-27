@@ -23,10 +23,10 @@ import triton.experimental.tle.language as tle
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-
 # ===========================================================================
 # 1. is_closed rejection
 # ===========================================================================
+
 
 @triton.jit
 def _bad_producer(x_ptr, writer, numel, BLOCK: tl.constexpr):
@@ -35,7 +35,7 @@ def _bad_producer(x_ptr, writer, numel, BLOCK: tl.constexpr):
     mask = offs < numel
     x = tl.load(x_ptr + offs, mask=mask, other=0.0)
     slot = writer.acquire(0)
-    smem_ptrs = tle.gpu.local_ptr(slot.data, (tl.arange(0, BLOCK),))
+    smem_ptrs = tle.gpu.local_ptr(slot.data, (tl.arange(0, BLOCK), ))
     tl.store(smem_ptrs, x, mask=mask)
     writer.commit(0)
     writer.close(0)
@@ -48,7 +48,7 @@ def _bad_consumer(out_ptr, reader, numel, BLOCK: tl.constexpr):
     is_closed = result.is_closed  # This must trigger error
     # Use is_closed in a Triton operation to ensure it has IR uses
     x = tl.where(is_closed, 0.0, 1.0)
-    smem_ptrs = tle.gpu.local_ptr(result.slot.data, (tl.arange(0, BLOCK),))
+    smem_ptrs = tle.gpu.local_ptr(result.slot.data, (tl.arange(0, BLOCK), ))
     data = tl.load(smem_ptrs)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
@@ -58,12 +58,10 @@ def _bad_consumer(out_ptr, reader, numel, BLOCK: tl.constexpr):
 
 
 @triton.jit
-def _bad_kernel(x_ptr, out_ptr, numel, BLOCK: tl.constexpr,
-                NUM_STAGES: tl.constexpr):
+def _bad_kernel(x_ptr, out_ptr, numel, BLOCK: tl.constexpr, NUM_STAGES: tl.constexpr):
     pid = tl.program_id(0)
-    smem = tle.gpu.alloc(
-        (NUM_STAGES, BLOCK), dtype=tl.float32, layout=None,
-        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem = tle.gpu.alloc((NUM_STAGES, BLOCK), dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                         nv_mma_shared_layout=False)
     p = tle.pipe(capacity=NUM_STAGES, data=smem)
     writer = p.writer()
     reader = p.reader()
@@ -72,7 +70,8 @@ def _bad_kernel(x_ptr, out_ptr, numel, BLOCK: tl.constexpr,
             (_bad_consumer, (out_ptr, reader, numel, tl.constexpr(BLOCK))),
             (_bad_producer, (x_ptr, writer, numel, tl.constexpr(BLOCK))),
         ],
-        [1], [8],
+        [1],
+        [8],
     )
 
 
@@ -82,7 +81,7 @@ def test_is_closed_rejected():
     out = torch.zeros_like(x)
     rejected = False
     try:
-        _bad_kernel[(1,)](x, out, 64, BLOCK=64, NUM_STAGES=2, num_warps=4)
+        _bad_kernel[(1, )](x, out, 64, BLOCK=64, NUM_STAGES=2, num_warps=4)
         print("FAIL: is_closed should have been rejected")
     except Exception as e:
         err = str(e)
@@ -106,13 +105,23 @@ def test_is_closed_rejected():
 # 2. Pipe key collision & multi-pipe fixPipeSlotIndex
 # ===========================================================================
 
+
 @triton.jit
 def _dual_pipe_consumer(
-    c_ptr, f_ptr, reader1, reader2,
-    M, N, K,
-    stride_cm, stride_cn,
-    stride_fm, stride_fn,
-    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
+    c_ptr,
+    f_ptr,
+    reader1,
+    reader2,
+    M,
+    N,
+    K,
+    stride_cm,
+    stride_cn,
+    stride_fm,
+    stride_fn,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
     MAX_GRID_DIM: tl.constexpr,
 ):
     pid = tl.program_id(0)
@@ -132,10 +141,9 @@ def _dual_pipe_consumer(
             acc1 += tl.dot(a, b, out_dtype=tl.float32)
             reader1.release(k)
         c = acc1.to(tl.float16)
-        O1 = tl.make_block_ptr(
-            base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
-            offsets=(x * BLOCK_SIZE_M, y * BLOCK_SIZE_N),
-            block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N), order=(1, 0))
+        O1 = tl.make_block_ptr(base=c_ptr, shape=(M, N), strides=(stride_cm, stride_cn),
+                               offsets=(x * BLOCK_SIZE_M, y * BLOCK_SIZE_N), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N),
+                               order=(1, 0))
         tl.store(O1, c, boundary_check=(0, 1))
 
         acc2 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
@@ -146,23 +154,34 @@ def _dual_pipe_consumer(
             acc2 += tl.dot(d, e, out_dtype=tl.float32)
             reader2.release(k)
         f = acc2.to(tl.float16)
-        O2 = tl.make_block_ptr(
-            base=f_ptr, shape=(M, N), strides=(stride_fm, stride_fn),
-            offsets=(x * BLOCK_SIZE_M, y * BLOCK_SIZE_N),
-            block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N), order=(1, 0))
+        O2 = tl.make_block_ptr(base=f_ptr, shape=(M, N), strides=(stride_fm, stride_fn),
+                               offsets=(x * BLOCK_SIZE_M, y * BLOCK_SIZE_N), block_shape=(BLOCK_SIZE_M, BLOCK_SIZE_N),
+                               order=(1, 0))
         tl.store(O2, f, boundary_check=(0, 1))
 
 
 @triton.jit
 def _dual_pipe_producer(
-    a_ptr, b_ptr, d_ptr, e_ptr,
-    writer1, writer2,
-    M, N, K,
-    stride_am, stride_ak,
-    stride_bk, stride_bn,
-    stride_dm, stride_dk,
-    stride_ek, stride_en,
-    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
+    a_ptr,
+    b_ptr,
+    d_ptr,
+    e_ptr,
+    writer1,
+    writer2,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_dm,
+    stride_dk,
+    stride_ek,
+    stride_en,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
     MAX_GRID_DIM: tl.constexpr,
 ):
     pid = tl.program_id(0)
@@ -182,13 +201,11 @@ def _dual_pipe_producer(
             a_row = x * BLOCK_SIZE_M + offs_m
             a_col = k * BLOCK_SIZE_K + offs_k
             a_mask = (a_row[:, None] < M) & (a_col[None, :] < K)
-            a = tl.load(a_ptr + a_row[:, None] * stride_am + a_col[None, :] * stride_ak,
-                        mask=a_mask, other=0.0)
+            a = tl.load(a_ptr + a_row[:, None] * stride_am + a_col[None, :] * stride_ak, mask=a_mask, other=0.0)
             b_row = k * BLOCK_SIZE_K + offs_k
             b_col = y * BLOCK_SIZE_N + offs_n
             b_mask = (b_row[:, None] < K) & (b_col[None, :] < N)
-            b = tl.load(b_ptr + b_row[:, None] * stride_bk + b_col[None, :] * stride_bn,
-                        mask=b_mask, other=0.0)
+            b = tl.load(b_ptr + b_row[:, None] * stride_bk + b_col[None, :] * stride_bn, mask=b_mask, other=0.0)
             tl.store(tle.gpu.local_ptr(slot1.a_buf), a)
             tl.store(tle.gpu.local_ptr(slot1.b_buf), b)
             writer1.commit(k)
@@ -198,13 +215,11 @@ def _dual_pipe_producer(
             d_row = x * BLOCK_SIZE_M + offs_m
             d_col = k * BLOCK_SIZE_K + offs_k
             d_mask = (d_row[:, None] < M) & (d_col[None, :] < K)
-            d = tl.load(d_ptr + d_row[:, None] * stride_dm + d_col[None, :] * stride_dk,
-                        mask=d_mask, other=0.0)
+            d = tl.load(d_ptr + d_row[:, None] * stride_dm + d_col[None, :] * stride_dk, mask=d_mask, other=0.0)
             e_row = k * BLOCK_SIZE_K + offs_k
             e_col = y * BLOCK_SIZE_N + offs_n
             e_mask = (e_row[:, None] < K) & (e_col[None, :] < N)
-            e = tl.load(e_ptr + e_row[:, None] * stride_ek + e_col[None, :] * stride_en,
-                        mask=e_mask, other=0.0)
+            e = tl.load(e_ptr + e_row[:, None] * stride_ek + e_col[None, :] * stride_en, mask=e_mask, other=0.0)
             tl.store(tle.gpu.local_ptr(slot2.a_buf), d)
             tl.store(tle.gpu.local_ptr(slot2.b_buf), e)
             writer2.commit(k)
@@ -212,31 +227,41 @@ def _dual_pipe_producer(
 
 @triton.jit
 def dual_pipe_kernel(
-    a_ptr, b_ptr, c_ptr, d_ptr, e_ptr, f_ptr,
-    M, N, K,
-    stride_am, stride_ak, stride_bk, stride_bn,
-    stride_cm, stride_cn,
-    stride_dm, stride_dk, stride_ek, stride_en,
-    stride_fm, stride_fn,
-    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
-    MAX_GRID_DIM: tl.constexpr, NUM_STAGES: tl.constexpr,
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    d_ptr,
+    e_ptr,
+    f_ptr,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
+    stride_dm,
+    stride_dk,
+    stride_ek,
+    stride_en,
+    stride_fm,
+    stride_fn,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    MAX_GRID_DIM: tl.constexpr,
+    NUM_STAGES: tl.constexpr,
 ):
-    a_buf = tle.gpu.alloc(
-        (NUM_STAGES, BLOCK_SIZE_M, BLOCK_SIZE_K),
-        dtype=tl.float16, layout=None,
-        scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    b_buf = tle.gpu.alloc(
-        (NUM_STAGES, BLOCK_SIZE_K, BLOCK_SIZE_N),
-        dtype=tl.float16, layout=None,
-        scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    d_buf = tle.gpu.alloc(
-        (NUM_STAGES, BLOCK_SIZE_M, BLOCK_SIZE_K),
-        dtype=tl.float16, layout=None,
-        scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    e_buf = tle.gpu.alloc(
-        (NUM_STAGES, BLOCK_SIZE_K, BLOCK_SIZE_N),
-        dtype=tl.float16, layout=None,
-        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    a_buf = tle.gpu.alloc((NUM_STAGES, BLOCK_SIZE_M, BLOCK_SIZE_K), dtype=tl.float16, layout=None, scope=tle.gpu.smem,
+                          nv_mma_shared_layout=False)
+    b_buf = tle.gpu.alloc((NUM_STAGES, BLOCK_SIZE_K, BLOCK_SIZE_N), dtype=tl.float16, layout=None, scope=tle.gpu.smem,
+                          nv_mma_shared_layout=False)
+    d_buf = tle.gpu.alloc((NUM_STAGES, BLOCK_SIZE_M, BLOCK_SIZE_K), dtype=tl.float16, layout=None, scope=tle.gpu.smem,
+                          nv_mma_shared_layout=False)
+    e_buf = tle.gpu.alloc((NUM_STAGES, BLOCK_SIZE_K, BLOCK_SIZE_N), dtype=tl.float16, layout=None, scope=tle.gpu.smem,
+                          nv_mma_shared_layout=False)
 
     p1 = tle.pipe(capacity=NUM_STAGES, a_buf=a_buf, b_buf=b_buf)
     p2 = tle.pipe(capacity=NUM_STAGES, a_buf=d_buf, b_buf=e_buf)
@@ -248,17 +273,43 @@ def dual_pipe_kernel(
     tle.gpu.warp_specialize(
         [
             (_dual_pipe_consumer, (
-                c_ptr, f_ptr, reader1, reader2,
-                M, N, K, stride_cm, stride_cn, stride_fm, stride_fn,
-                tl.constexpr(BLOCK_SIZE_M), tl.constexpr(BLOCK_SIZE_N), tl.constexpr(BLOCK_SIZE_K),
+                c_ptr,
+                f_ptr,
+                reader1,
+                reader2,
+                M,
+                N,
+                K,
+                stride_cm,
+                stride_cn,
+                stride_fm,
+                stride_fn,
+                tl.constexpr(BLOCK_SIZE_M),
+                tl.constexpr(BLOCK_SIZE_N),
+                tl.constexpr(BLOCK_SIZE_K),
                 tl.constexpr(MAX_GRID_DIM),
             )),
             (_dual_pipe_producer, (
-                a_ptr, b_ptr, d_ptr, e_ptr, writer1, writer2,
-                M, N, K,
-                stride_am, stride_ak, stride_bk, stride_bn,
-                stride_dm, stride_dk, stride_ek, stride_en,
-                tl.constexpr(BLOCK_SIZE_M), tl.constexpr(BLOCK_SIZE_N), tl.constexpr(BLOCK_SIZE_K),
+                a_ptr,
+                b_ptr,
+                d_ptr,
+                e_ptr,
+                writer1,
+                writer2,
+                M,
+                N,
+                K,
+                stride_am,
+                stride_ak,
+                stride_bk,
+                stride_bn,
+                stride_dm,
+                stride_dk,
+                stride_ek,
+                stride_en,
+                tl.constexpr(BLOCK_SIZE_M),
+                tl.constexpr(BLOCK_SIZE_N),
+                tl.constexpr(BLOCK_SIZE_K),
                 tl.constexpr(MAX_GRID_DIM),
             )),
         ],
@@ -278,16 +329,35 @@ def dual_pipe_matmul(a, b, d, e, max_grid_dim=24):
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
     f = torch.empty((M, N), device=a.device, dtype=a.dtype)
     BLOCK_M, BLOCK_N, BLOCK_K = 128, 128, 256
-    dual_pipe_kernel[(max_grid_dim,)](
-        a, b, c, d, e, f,
-        M, N, K,
-        a.stride(0), a.stride(1), b.stride(0), b.stride(1),
-        c.stride(0), c.stride(1),
-        d.stride(0), d.stride(1), e.stride(0), e.stride(1),
-        f.stride(0), f.stride(1),
-        BLOCK_SIZE_M=BLOCK_M, BLOCK_SIZE_N=BLOCK_N, BLOCK_SIZE_K=BLOCK_K,
-        MAX_GRID_DIM=max_grid_dim, NUM_STAGES=2,
-        num_warps=4, num_stages=2,
+    dual_pipe_kernel[(max_grid_dim, )](
+        a,
+        b,
+        c,
+        d,
+        e,
+        f,
+        M,
+        N,
+        K,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        c.stride(0),
+        c.stride(1),
+        d.stride(0),
+        d.stride(1),
+        e.stride(0),
+        e.stride(1),
+        f.stride(0),
+        f.stride(1),
+        BLOCK_SIZE_M=BLOCK_M,
+        BLOCK_SIZE_N=BLOCK_N,
+        BLOCK_SIZE_K=BLOCK_K,
+        MAX_GRID_DIM=max_grid_dim,
+        NUM_STAGES=2,
+        num_warps=4,
+        num_stages=2,
     )
     return c, f
 
@@ -304,7 +374,7 @@ def _run_dual_pipe_shape(M):
     torch_f = torch.matmul(d, e)
 
     num_k_tiles = M // 256
-    total_tiles = (M // 256) ** 2
+    total_tiles = (M // 256)**2
     multi_tile = total_tiles > 24
 
     c_ok = torch.allclose(c_out, torch_c, atol=1e-2, rtol=1e-2)
@@ -337,6 +407,7 @@ class TestTLEPipeKeyAndMultiPipe:
 
 # --- Scenario 3a: 2 named consumers reading all fields (single field). -----
 
+
 @triton.jit
 def _spmc_producer(x_ptr, writer, numel, BLOCK: tl.constexpr):
     """Producer (default, 1 warp): loads data into pipe."""
@@ -345,7 +416,7 @@ def _spmc_producer(x_ptr, writer, numel, BLOCK: tl.constexpr):
     mask = offs < numel
     x = tl.load(x_ptr + offs, mask=mask, other=0.0)
     slot = writer.acquire(0)
-    smem_ptrs = tle.gpu.local_ptr(slot.data, (tl.arange(0, BLOCK),))
+    smem_ptrs = tle.gpu.local_ptr(slot.data, (tl.arange(0, BLOCK), ))
     tl.store(smem_ptrs, x, mask=mask)
     writer.commit(0)
 
@@ -355,7 +426,7 @@ def _spmc_consumer_a(out_ptr, reader, numel, BLOCK: tl.constexpr):
     """Consumer A / "compute_a" (worker 0, 2 warps): reads from pipe, computes data * 2."""
     pid = tl.program_id(0)
     result = reader.wait(0)
-    smem_ptrs = tle.gpu.local_ptr(result.slot.data, (tl.arange(0, BLOCK),))
+    smem_ptrs = tle.gpu.local_ptr(result.slot.data, (tl.arange(0, BLOCK), ))
     x = tl.load(smem_ptrs)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
@@ -369,7 +440,7 @@ def _spmc_consumer_b(out_ptr, reader, numel, BLOCK: tl.constexpr):
     """Consumer B / "compute_b" (worker 1, 2 warps): reads from pipe, computes data + 1."""
     pid = tl.program_id(0)
     result = reader.wait(0)
-    smem_ptrs = tle.gpu.local_ptr(result.slot.data, (tl.arange(0, BLOCK),))
+    smem_ptrs = tle.gpu.local_ptr(result.slot.data, (tl.arange(0, BLOCK), ))
     x = tl.load(smem_ptrs)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
@@ -379,12 +450,10 @@ def _spmc_consumer_b(out_ptr, reader, numel, BLOCK: tl.constexpr):
 
 
 @triton.jit
-def _spmc_kernel(x_ptr, out_a_ptr, out_b_ptr, numel,
-                 BLOCK: tl.constexpr, NUM_STAGES: tl.constexpr):
+def _spmc_kernel(x_ptr, out_a_ptr, out_b_ptr, numel, BLOCK: tl.constexpr, NUM_STAGES: tl.constexpr):
     pid = tl.program_id(0)
-    smem = tle.gpu.alloc(
-        (NUM_STAGES, BLOCK), dtype=tl.float32, layout=None,
-        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem = tle.gpu.alloc((NUM_STAGES, BLOCK), dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                         nv_mma_shared_layout=False)
     p = tle.pipe(capacity=NUM_STAGES, readers=("compute_a", "compute_b"), data=smem)
     writer = p.writer()
     reader_a = p.reader("compute_a")
@@ -407,8 +476,7 @@ def test_spmc():
     out_a = torch.zeros_like(x)
     out_b = torch.zeros_like(x)
 
-    _spmc_kernel[(1,)](x, out_a, out_b, numel, BLOCK=64, NUM_STAGES=2,
-                       num_warps=1)
+    _spmc_kernel[(1, )](x, out_a, out_b, numel, BLOCK=64, NUM_STAGES=2, num_warps=1)
 
     expected_a = x * 2.0
     expected_b = x + 1.0
@@ -430,6 +498,7 @@ def test_spmc():
 
 # --- Scenario 3b: partial field subscription (two fields). ----------------
 
+
 @triton.jit
 def _spmc_field_producer(x_ptr, m_ptr, writer, numel, BLOCK: tl.constexpr):
     """Producer (default, 1 warp): loads data and meta into pipe."""
@@ -439,8 +508,8 @@ def _spmc_field_producer(x_ptr, m_ptr, writer, numel, BLOCK: tl.constexpr):
     x = tl.load(x_ptr + offs, mask=mask, other=0.0)
     m = tl.load(m_ptr + offs, mask=mask, other=0.0)
     slot = writer.acquire(0)
-    data_ptrs = tle.gpu.local_ptr(slot.data, (tl.arange(0, BLOCK),))
-    meta_ptrs = tle.gpu.local_ptr(slot.meta, (tl.arange(0, BLOCK),))
+    data_ptrs = tle.gpu.local_ptr(slot.data, (tl.arange(0, BLOCK), ))
+    meta_ptrs = tle.gpu.local_ptr(slot.meta, (tl.arange(0, BLOCK), ))
     tl.store(data_ptrs, x, mask=mask)
     tl.store(meta_ptrs, m, mask=mask)
     writer.commit(0)
@@ -451,8 +520,8 @@ def _spmc_full_consumer(out_ptr, reader, numel, BLOCK: tl.constexpr):
     """Consumer A / "full_reader" (worker 0, 2 warps): reads both fields, computes data * meta."""
     pid = tl.program_id(0)
     result = reader.wait(0)
-    data_ptrs = tle.gpu.local_ptr(result.slot.data, (tl.arange(0, BLOCK),))
-    meta_ptrs = tle.gpu.local_ptr(result.slot.meta, (tl.arange(0, BLOCK),))
+    data_ptrs = tle.gpu.local_ptr(result.slot.data, (tl.arange(0, BLOCK), ))
+    meta_ptrs = tle.gpu.local_ptr(result.slot.meta, (tl.arange(0, BLOCK), ))
     x = tl.load(data_ptrs)
     m = tl.load(meta_ptrs)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
@@ -467,7 +536,7 @@ def _spmc_data_consumer(out_ptr, reader, numel, BLOCK: tl.constexpr):
     """Consumer B / "data_reader" (worker 1, 2 warps): reads only "data" field."""
     pid = tl.program_id(0)
     result = reader.wait(0)
-    data_ptrs = tle.gpu.local_ptr(result.slot.data, (tl.arange(0, BLOCK),))
+    data_ptrs = tle.gpu.local_ptr(result.slot.data, (tl.arange(0, BLOCK), ))
     x = tl.load(data_ptrs)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
@@ -477,15 +546,12 @@ def _spmc_data_consumer(out_ptr, reader, numel, BLOCK: tl.constexpr):
 
 
 @triton.jit
-def _spmc_field_kernel(x_ptr, m_ptr, out_a_ptr, out_b_ptr, numel,
-                       BLOCK: tl.constexpr, NUM_STAGES: tl.constexpr):
+def _spmc_field_kernel(x_ptr, m_ptr, out_a_ptr, out_b_ptr, numel, BLOCK: tl.constexpr, NUM_STAGES: tl.constexpr):
     pid = tl.program_id(0)
-    data_buf = tle.gpu.alloc(
-        (NUM_STAGES, BLOCK), dtype=tl.float32, layout=None,
-        scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    meta_buf = tle.gpu.alloc(
-        (NUM_STAGES, BLOCK), dtype=tl.float32, layout=None,
-        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    data_buf = tle.gpu.alloc((NUM_STAGES, BLOCK), dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                             nv_mma_shared_layout=False)
+    meta_buf = tle.gpu.alloc((NUM_STAGES, BLOCK), dtype=tl.float32, layout=None, scope=tle.gpu.smem,
+                             nv_mma_shared_layout=False)
     p = tle.pipe(
         capacity=NUM_STAGES,
         readers=("full_reader", "data_reader"),
@@ -494,7 +560,7 @@ def _spmc_field_kernel(x_ptr, m_ptr, out_a_ptr, out_b_ptr, numel,
     )
     writer = p.writer()
     full_reader = p.reader("full_reader")
-    data_reader = p.reader("data_reader", fields=("data",))
+    data_reader = p.reader("data_reader", fields=("data", ))
     tle.gpu.warp_specialize(
         [
             (_spmc_field_producer, (x_ptr, m_ptr, writer, numel, tl.constexpr(BLOCK))),
@@ -514,8 +580,7 @@ def test_spmc_fields():
     out_a = torch.zeros_like(x)
     out_b = torch.zeros_like(x)
 
-    _spmc_field_kernel[(1,)](x, m, out_a, out_b, numel, BLOCK=64,
-                             NUM_STAGES=2, num_warps=1)
+    _spmc_field_kernel[(1, )](x, m, out_a, out_b, numel, BLOCK=64, NUM_STAGES=2, num_warps=1)
 
     expected_a = x * m
     expected_b = x + 1.0

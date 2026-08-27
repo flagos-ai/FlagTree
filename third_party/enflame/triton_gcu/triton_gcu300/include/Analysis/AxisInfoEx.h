@@ -60,16 +60,17 @@ public:
                    std::nullopt) {}
 
   AxisInfoEx(DimRefT pDivisibility, DimRefT pContinualSize,
-          DimRefT pContinualInterval, std::optional<int64_t> pConstantValue) {
-            divisibility.append(pDivisibility.begin(), pDivisibility.end());
-            continualSize.append(pContinualSize.begin(), pContinualSize.end());
-            continualInterval.append(pContinualInterval.begin(),
-                                      pContinualInterval.end());
-            constantValue = pConstantValue;
-            rank = continualSize.size();
-            assert(divisibility.size() == static_cast<size_t>(rank));
-            assert(continualSize.size() == static_cast<size_t>(rank));
-            assert(continualInterval.size() == static_cast<size_t>(rank));
+             DimRefT pContinualInterval,
+             std::optional<int64_t> pConstantValue) {
+    divisibility.append(pDivisibility.begin(), pDivisibility.end());
+    continualSize.append(pContinualSize.begin(), pContinualSize.end());
+    continualInterval.append(pContinualInterval.begin(),
+                             pContinualInterval.end());
+    constantValue = pConstantValue;
+    rank = continualSize.size();
+    assert(divisibility.size() == static_cast<size_t>(rank));
+    assert(continualSize.size() == static_cast<size_t>(rank));
+    assert(continualInterval.size() == static_cast<size_t>(rank));
   }
 
   int64_t getContiguity(size_t dim) const {
@@ -135,14 +136,14 @@ public:
     return divisibility == other.divisibility &&
            continualSize == other.continualSize &&
            continualInterval == other.continualInterval &&
-           constantValue == other.constantValue &&
-           rank == other.rank;
+           constantValue == other.constantValue && rank == other.rank;
   }
 
   template <class T>
-  static void
-  initPessimisticStateFromFunc(int argNumber, T funcOp, int rank,
-      DimVectorT *contiguity, DimVectorT *divisibility, DimVectorT *constancy);
+  static void initPessimisticStateFromFunc(int argNumber, T funcOp, int rank,
+                                           DimVectorT *contiguity,
+                                           DimVectorT *divisibility,
+                                           DimVectorT *constancy);
 
   static AxisInfoEx getPessimisticValueState(Value value);
 
@@ -241,8 +242,7 @@ public:
     for (auto funcOp : llvm::reverse(sortedFuncs)) {
       initialize(funcOp);
       funcOp.walk([&](CallOpInterface callOp) {
-        auto callee =
-            dyn_cast<FunctionOpInterface>(callOp.resolveCallable());
+        auto callee = dyn_cast<FunctionOpInterface>(callOp.resolveCallable());
         update(callOp, callee);
       });
     }
