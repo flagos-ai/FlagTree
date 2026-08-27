@@ -107,7 +107,7 @@ jobs:
         uses: ./.github/actions/run-flaggems-test
         with:
           flaggems-path: '/root/flaggems_ci/FlagGems'
-          gpus: ${CUDA_VISIBLE_DEVICES:-4} 
+          gpus: ${CUDA_VISIBLE_DEVICES:-4}
           baseline-dir: '/root/flaggems_ci/Baseline'
           output-base-dir: '/root/flaggems_ci/PR'
           pr-number: '${{ github.event.pull_request.number }}'
