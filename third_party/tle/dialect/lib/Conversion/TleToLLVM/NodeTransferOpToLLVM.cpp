@@ -103,12 +103,13 @@ static std::optional<int64_t> getConstantInt(Value value) {
   return integer.getInt();
 }
 
-static LogicalResult lowerNodeTransfer(
-    Location loc, Operation *op, Value srcHandle, Value dstHandle,
-    Value commHandle, Value peer, Value srcOffset, Value dstOffset,
-    Value nelems, Value netIdx, int64_t elemBytes, int64_t coopKindValue,
-    NodeTransferKind kind, std::optional<int64_t> constantNelems,
-    ConversionPatternRewriter &rewriter) {
+static LogicalResult
+lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
+                  Value commHandle, Value peer, Value srcOffset,
+                  Value dstOffset, Value nelems, Value netIdx,
+                  int64_t elemBytes, int64_t coopKindValue,
+                  NodeTransferKind kind, std::optional<int64_t> constantNelems,
+                  ConversionPatternRewriter &rewriter) {
   ModuleOp module = op->getParentOfType<ModuleOp>();
   if (!module)
     return rewriter.notifyMatchFailure(op, "expected a parent module");
@@ -188,8 +189,7 @@ static LogicalResult lowerNodeTransfer(
   return success();
 }
 
-struct NodePutOpConversion
-    : public ConvertOpToLLVMPattern<tle::NodePutOp> {
+struct NodePutOpConversion : public ConvertOpToLLVMPattern<tle::NodePutOp> {
   NodePutOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit)
       : ConvertOpToLLVMPattern(typeConverter, benefit) {}
 
@@ -199,18 +199,17 @@ struct NodePutOpConversion
     if (failed(lowerNodeTransfer(
             op.getLoc(), op.getOperation(), adaptor.getSrc(),
             adaptor.getDstMem(), adaptor.getComm(), adaptor.getPeer(),
-            adaptor.getSrcOffset(), adaptor.getDstOffset(),
-            adaptor.getNelems(), adaptor.getNetIdx(),
-            op.getElemBytesAttr().getInt(), op.getCoopkindAttr().getInt(),
-            NodeTransferKind::Put, getConstantInt(op.getNelems()), rewriter)))
+            adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
+            adaptor.getNetIdx(), op.getElemBytesAttr().getInt(),
+            op.getCoopkindAttr().getInt(), NodeTransferKind::Put,
+            getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
     return success();
   }
 };
 
-struct NodeGetOpConversion
-    : public ConvertOpToLLVMPattern<tle::NodeGetOp> {
+struct NodeGetOpConversion : public ConvertOpToLLVMPattern<tle::NodeGetOp> {
   NodeGetOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit)
       : ConvertOpToLLVMPattern(typeConverter, benefit) {}
 
@@ -220,10 +219,10 @@ struct NodeGetOpConversion
     if (failed(lowerNodeTransfer(
             op.getLoc(), op.getOperation(), adaptor.getSrc(),
             adaptor.getDstMem(), adaptor.getComm(), adaptor.getPeer(),
-            adaptor.getSrcOffset(), adaptor.getDstOffset(),
-            adaptor.getNelems(), adaptor.getNetIdx(),
-            op.getElemBytesAttr().getInt(), op.getCoopkindAttr().getInt(),
-            NodeTransferKind::Get, getConstantInt(op.getNelems()), rewriter)))
+            adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
+            adaptor.getNetIdx(), op.getElemBytesAttr().getInt(),
+            op.getCoopkindAttr().getInt(), NodeTransferKind::Get,
+            getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
     return success();

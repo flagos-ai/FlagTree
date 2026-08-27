@@ -128,8 +128,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
 LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
                                  Value comm, Value peer, Value srcOffset,
                                  Value dstOffset, Value nelems, Value netIdx,
-                                 IntegerAttr elemBytes,
-                                 IntegerAttr coopkind) {
+                                 IntegerAttr elemBytes, IntegerAttr coopkind) {
   auto emitError = [&]() { return op->emitOpError(); };
 
   if (!src.getType().isSignlessInteger(64))

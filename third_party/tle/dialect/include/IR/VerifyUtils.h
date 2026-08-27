@@ -45,11 +45,9 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op);
 
 llvm::LogicalResult verifyNodeTransfer(mlir::Operation *op, mlir::Value src,
                                        mlir::Value dstMem, mlir::Value comm,
-                                       mlir::Value peer,
-                                       mlir::Value srcOffset,
+                                       mlir::Value peer, mlir::Value srcOffset,
                                        mlir::Value dstOffset,
-                                       mlir::Value nelems,
-                                       mlir::Value netIdx,
+                                       mlir::Value nelems, mlir::Value netIdx,
                                        mlir::IntegerAttr elemBytes,
                                        mlir::IntegerAttr coopkind);
 

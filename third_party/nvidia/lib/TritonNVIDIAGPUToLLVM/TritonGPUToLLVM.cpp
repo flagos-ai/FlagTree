@@ -227,8 +227,8 @@ struct ConvertTritonGPUToLLVM
 #ifdef __TLE__
     mlir::triton::tle::populateRemotePointersOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit + 1);
-    mlir::triton::tle::populateNodeTransferOpToLLVMPatterns(
-        typeConverter, patterns, benefit);
+    mlir::triton::tle::populateNodeTransferOpToLLVMPatterns(typeConverter,
+                                                            patterns, benefit);
 #endif
     mlir::triton::populateReduceOpToLLVMPatterns(typeConverter, patterns,
                                                  targetInfo, benefit);
