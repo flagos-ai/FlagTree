@@ -48,20 +48,6 @@ jobs:
           source ~/env.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
 
-      - name: Clone FlagGems Repo
-        uses: ./.github/actions/git-clone-retry
-        with:
-          repo-url: 'https://github.com/flagos-ai/FlagGems.git'
-          ref: 'v5.3.4'
-          clone-dir: '/root/flaggems_ci'
-
-      - name: Install FlagGems
-        shell: bash
-        run: |
-          cd /root/flaggems_ci/FlagGems
-          python3 -m pip uninstall -y flag_gems --break-system-packages || true
-          pip install -v -e . --no-build-isolation --no-deps
-
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
         with:
@@ -72,6 +58,22 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: nvidia
+
+      - name: Clone FlagGems Repo
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: ./.github/actions/git-clone-retry
+        with:
+          repo-url: 'https://github.com/flagos-ai/FlagGems.git'
+          ref: 'v5.3.4'
+          clone-dir: '/root/flaggems_ci'
+
+      - name: Install FlagGems
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        shell: bash
+        run: |
+          cd /root/flaggems_ci/FlagGems
+          python3 -m pip uninstall -y flag_gems --break-system-packages || true
+          pip install -v -e . --no-build-isolation --no-deps
 
       - name: Cleanup FlagTree Environment
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
