@@ -81,11 +81,11 @@ runs:
       run: |
         set -x
 
-        # 临时方案，patch merge后就不用拷贝了
         cp /root/flaggems_ci/script/conftest.py tests/conftest.py
         cp -raf /root/flaggems_ci/script/ci tools
 
         PR_OUTPUT_DIR="${{ steps.vars.outputs.pr-output-dir }}"
+        rm -rf "$PR_OUTPUT_DIR" || true
         mkdir -p "$PR_OUTPUT_DIR"
 
         # Build test runner command
