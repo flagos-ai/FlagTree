@@ -32,7 +32,7 @@ fi
 echo "Starting TLE signal_wait test: node_rank=${node_rank}/${nnodes}, "
 echo "nproc_per_node=${nproc_per_node}, master=${master_addr}:${master_port}"
 
-torchrun \
+exec torchrun \
     --nproc_per_node="${nproc_per_node}" \
     --nnodes="${nnodes}" \
     --node_rank="${node_rank}" \
