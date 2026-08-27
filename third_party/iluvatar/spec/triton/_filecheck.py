@@ -9,7 +9,8 @@ from triton.backends.compiler import GPUTarget
 COREX_PATS = [
     (re.compile(', isSme = false, smeMask = false, smeWarpsPerCTA = \\[\\]'
                 '|, useTcu = false'
-                '|, useSme = 0'), ''),
+                '|, useSme = 0'
+                '|, kRotate = 0'), ''),
     (re.compile('(: i\\d+) \\{tt.divisibility = 4 : i32\\}'), '\\1'),
     (re.compile('tt.divisibility = 4 : i32'), 'tt.divisibility = 16 : i32'),
     (re.compile(' \\{boundaryCheck = array<i32>, cache = 1 : i32, evict = 1 : i32, isVolatile = false\\}'), ''),

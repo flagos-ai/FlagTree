@@ -229,10 +229,10 @@ py::object layoutToGluon(Attribute layout) {
         ll.getBases().lookup(kWarp), ll.getBases().lookup(kBlock),
         toStdVector(ll.getOutDimSizes()));
   } else if (auto dotOp = dyn_cast<ttg::DotOperandEncodingAttr>(layout)) {
-    if (dotOp.getUseSme() != 0)
+    if (dotOp.getUseSme() != 0 || dotOp.getKRotate() != 0)
       return layouts.IluvatarDotOperandLayout(
-          dotOp.getOpIdx(), layoutToGluon(dotOp.getParent()),
-          dotOp.getKWidth(), dotOp.getUseSme());
+          dotOp.getOpIdx(), layoutToGluon(dotOp.getParent()), dotOp.getKWidth(),
+          dotOp.getUseSme(), dotOp.getKRotate());
     return layouts.DotOperandLayout(
         dotOp.getOpIdx(), layoutToGluon(dotOp.getParent()), dotOp.getKWidth());
   } else if (auto mma = dyn_cast<ttg::NvidiaMmaEncodingAttr>(layout)) {
@@ -241,7 +241,8 @@ py::object layoutToGluon(Attribute layout) {
         std::vector<unsigned>{mma.getVersionMajor(), mma.getVersionMinor()},
         toStdVector(mma.getWarpsPerCTA()), toStdVector(mma.getInstrShape()),
         cgaBases);
-  } else if (auto iluvatarMma = dyn_cast<ttg::IluvatarMmaEncodingAttr>(layout)) {
+  } else if (auto iluvatarMma =
+                 dyn_cast<ttg::IluvatarMmaEncodingAttr>(layout)) {
     auto cgaBases = getCgaLayoutBases(iluvatarMma.getCTALayout());
     return layouts.IluvatarMMALayout(
         std::vector<unsigned>{iluvatarMma.getVersionMajor(),
@@ -354,8 +355,7 @@ void init_gluon_ir(py::module &&m) {
              std::vector<unsigned> &threadsPerWarp,
              std::vector<unsigned> &warpsPerCta, std::vector<unsigned> &order,
              std::vector<std::vector<int32_t>> &cgaBases, bool isSme,
-             bool smeMask,
-             std::vector<unsigned> &smeWarpsPerCTA) -> Attribute {
+             bool smeMask, std::vector<unsigned> &smeWarpsPerCTA) -> Attribute {
             auto ctx = self.getContext();
             unsigned rank = order.size();
             auto ctaLayout = buildCtaLayoutAttr(ctx, cgaBases, rank);
@@ -405,12 +405,12 @@ void init_gluon_ir(py::module &&m) {
       .def(
           "get_dot_operand_layout",
           [](GluonOpBuilder &self, unsigned opIdx, Attribute parent,
-             unsigned kWidth, unsigned useSme) -> Attribute {
+             unsigned kWidth, unsigned useSme, unsigned kRotate) -> Attribute {
             return self.getChecked<ttg::DotOperandEncodingAttr>(
-                self.getContext(), opIdx, parent, kWidth, useSme);
+                self.getContext(), opIdx, parent, kWidth, useSme, kRotate);
           },
           py::arg("operand_index"), py::arg("parent"), py::arg("k_width"),
-          py::arg("use_sme") = 0)
+          py::arg("use_sme") = 0, py::arg("k_rotate") = 0)
       .def("get_mma_layout",
            [](GluonOpBuilder &self, std::vector<unsigned> &version,
               std::vector<unsigned> &warpsPerCta,

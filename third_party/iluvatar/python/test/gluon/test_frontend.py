@@ -85,7 +85,7 @@ def iluvatar_sme_layout_kernel():
 
     mma: ttgl.constexpr = ttgl.iluvatar.IluvatarMMALayout(version=[1, 0], warps_per_cta=[4, 1],
                                                           instr_shape=[16, 16, 16])
-    dot: ttgl.constexpr = ttgl.DotOperandLayout(0, mma, 2, use_sme=1)
+    dot: ttgl.constexpr = ttgl.DotOperandLayout(0, mma, 2, use_sme=1, k_rotate=1)
     dot_value = ttgl.full([16, 16], 1.0, ttgl.float16, dot)
     dot_reduced = ttgl.sum(dot_value, axis=1)
     ttgl.static_assert(dot_reduced.type.layout == ttgl.SliceLayout(1, dot))
@@ -104,6 +104,7 @@ def test_iluvatar_sme_layouts_ir():
     assert "isSme = true" in ir
     assert "smeWarpsPerCTA = [1, 1]" in ir
     assert "useSme = 1" in ir
+    assert "kRotate = 1" in ir
     assert "useTcu = true" in ir
 
 

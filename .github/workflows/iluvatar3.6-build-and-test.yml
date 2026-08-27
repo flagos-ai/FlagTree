@@ -126,6 +126,7 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/operators/test_cross_entropy.py
           pytest third_party/iluvatar/python/test/unit/operators/test_dot_trans.py
           pytest third_party/iluvatar/python/test/unit/operators/test_flash_attention.py
+          pytest third_party/iluvatar/python/test/unit/operators/test_flash_attention_forward.py
           pytest third_party/iluvatar/python/test/unit/operators/test_inductor.py
           pytest third_party/iluvatar/python/test/unit/operators/test_matmul.py
           pytest third_party/iluvatar/python/test/unit/operators/test_sme.py
@@ -171,6 +172,12 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/integrations/sglang/flash_mla/test_flash_mla_ut.py
           pytest third_party/iluvatar/python/test/unit/integrations/inductor/test_bucketize_matmul.py
           pytest third_party/iluvatar/python/test/unit/integrations/inductor/test_swfw3103_flex_attention_precision.py
+          pytest third_party/iluvatar/python/test/unit/integrations/inductor/test_swfw3436_var_mean_reshape_reduce.py
+
+          # triton gluon unit test
+          pytest third_party/iluvatar/python/test/gluon/test_core.py
+          pytest third_party/iluvatar/python/test/gluon/test_lowerings.py
+          pytest third_party/iluvatar/python/test/gluon/test_frontend.py
 
           # TLE unit test
           pytest python/test/tle/integration/test_tle_local_store.py
@@ -180,6 +187,10 @@ jobs:
           pytest python/test/tle/unit/test_insert_tile_static_index.py
           pytest python/test/tle/unit/test_insert_tile_dynamic_index.py
           pytest python/test/tle/unit/test_tle.py
+          pytest python/test/tle/unit/test_tle_distributed.py
+          pytest python/test/tle/unit/test_tle_raw_cache_key.py --deselect python/test/tle/unit/test_tle_raw_cache_key.py::test_mlir_dialect_cache_key_changes_with_edsl_source
+          pytest python/test/tle/unit/test_tle_gpu_slot.py
+          pytest python/test/tle/integration/test_tle_gemm.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_copy.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_async_load.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_memory_space.py
@@ -206,5 +217,11 @@ jobs:
           fi
 
           # TLE tutorials unit tests
+          python3 python/tutorials/tle/raw/cuda/01-vector-add.py
+          python3 third_party/iluvatar/python/tutorials/tle/raw/cuda/02-fused-softmax.py
+          python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
+          python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
+          python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem-defered.py
           python3 third_party/iluvatar/python/tutorials/tle/01-fft.py --only_unit_test
+          python3 third_party/iluvatar/python/tutorials/tle/02-moe_align_block_size.py
           python3 third_party/iluvatar/python/tutorials/tle/03-topk.py --only_unit_test

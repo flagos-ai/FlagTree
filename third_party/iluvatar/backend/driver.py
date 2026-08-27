@@ -270,6 +270,7 @@ def make_launcher(constants, signature, tensordesc_meta):
 #include \"cuda.h\"
 #include <dlfcn.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
@@ -279,16 +280,19 @@ def make_launcher(constants, signature, tensordesc_meta):
 //   _Alignas(128) CUtensorMap tensorMap;
 // }} PyCUtensorMapObject;
 
-static inline void gpuAssert(CUresult code, const char *file, int line)
+static inline void gpuAssert(CUresult code, const char *msg, const char *file, int line)
 {{
    if (code != CUDA_SUCCESS)
    {{
-      const char* prefix = "Triton Error [CUDA]: ";
-      const char* str;
+      const char* str = NULL;
+      const char* name = NULL;
       cuGetErrorString(code, &str);
+      cuGetErrorName(code, &name);
       char err[1024] = {{0}};
-      strcat(err, prefix);
-      strcat(err, str);
+      // Example: Triton Error [CUDA]: ErrorName - CUDA_ERROR_INVALID_VALUE (1), ErrorString - invalid argument [cuLaunchKernelEx] at __triton_launcher.c:120
+      snprintf(err, sizeof(err), "Triton Error [CUDA]: ErrorName - %s (%d), ErrorString - %s [%s] at %s:%d",
+               name ? name : "UNKNOWN_ERROR", (int)code, str ? str : "unknown error",
+               msg ? msg : "", file, line);
       PyGILState_STATE gil_state;
       gil_state = PyGILState_Ensure();
       PyErr_SetString(PyExc_RuntimeError, err);
@@ -296,7 +300,8 @@ static inline void gpuAssert(CUresult code, const char *file, int line)
    }}
 }}
 
-#define CUDA_CHECK(ans) {{ gpuAssert((ans), __FILE__, __LINE__); }}
+#define CUDA_CHECK(ans) {{ gpuAssert((ans), NULL, __FILE__, __LINE__); }}
+#define CUDA_CHECK_MSG(ans, msg) {{ gpuAssert((ans), (msg), __FILE__, __LINE__); }}
 
 typedef CUresult (*cuLaunchKernelEx_t)(const CUlaunchConfig* config, CUfunction f, void** kernelParams, void** extra);
 
@@ -383,7 +388,14 @@ static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas
     //  ));
     // }}
 
-    CUDA_CHECK(cuLaunchKernelExHandle(&config, function, params, 0));
+    CUresult launch_ret = cuLaunchKernelExHandle(&config, function, params, 0);
+    if (launch_ret != CUDA_SUCCESS) {{
+      if (num_ctas == 1) {{
+        CUDA_CHECK_MSG(cuLaunchKernel(function, gridX, gridY, gridZ, 64*num_warps, 1, 1, shared_memory, stream, params, 0), "cuLaunchKernel (fallback)");
+      }} else {{
+        CUDA_CHECK_MSG(launch_ret, "cuLaunchKernelEx");
+      }}
+    }}
   }}
 }}
 

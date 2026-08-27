@@ -1469,8 +1469,11 @@ def test_iluvatar_mma(dtype):
     @gluon.jit
     def kernel(a_ptr, b_ptr, c_ptr, out_ptr):
         layout: ttgl.constexpr = ttgl.BlockedLayout([1, 1], [threads_per_warp, 1], [ttgl.num_warps(), 1], [1, 0])
-        acc_layout: ttgl.constexpr = ttgl.iluvatar.IluvatarMMALayout(version=[1, 0], warps_per_cta=[ttgl.num_warps(), 1],
-                                                                     instr_shape=[16, 16, instr_k])
+        acc_layout: ttgl.constexpr = ttgl.iluvatar.IluvatarMMALayout(
+            version=[1, 0],
+            warps_per_cta=[ttgl.num_warps(), 1],
+            instr_shape=[16, 16, instr_k],
+        )
         k_width: ttgl.constexpr = 32 // a_ptr.dtype.element_ty.primitive_bitwidth
         lhs_layout: ttgl.constexpr = ttgl.DotOperandLayout(parent=acc_layout, operand_index=0, k_width=k_width)
         rhs_layout: ttgl.constexpr = ttgl.DotOperandLayout(parent=acc_layout, operand_index=1, k_width=k_width)
@@ -1522,6 +1525,7 @@ def test_iluvatar_sme_async_copy_lhs_mma():
         # engine is handed.
         a_sme_layout: ttgl.constexpr = ttgl.BlockedLayout([1, 8], [16, 4], [2, 2], [1, 0], is_sme=True,
                                                           sme_warps_per_cta=[2, 2])
+
         acc_layout: ttgl.constexpr = ttgl.iluvatar.IluvatarMMALayout(
             version=[1, 0],
             warps_per_cta=[ttgl.num_warps(), 1],
@@ -1569,8 +1573,11 @@ def test_iluvatar_sme_async_copy_rhs_mma():
     @gluon.jit
     def kernel(a_ptr, b_ptr, out_ptr):
         layout: ttgl.constexpr = ttgl.BlockedLayout([1, 1], [threads_per_warp, 1], [ttgl.num_warps(), 1], [1, 0])
-        acc_layout: ttgl.constexpr = ttgl.iluvatar.IluvatarMMALayout(version=[1, 0], warps_per_cta=[ttgl.num_warps(), 1],
-                                                                     instr_shape=[16, 16, 16])
+        acc_layout: ttgl.constexpr = ttgl.iluvatar.IluvatarMMALayout(
+            version=[1, 0],
+            warps_per_cta=[ttgl.num_warps(), 1],
+            instr_shape=[16, 16, 16],
+        )
         lhs_layout: ttgl.constexpr = ttgl.DotOperandLayout(parent=acc_layout, operand_index=0, k_width=2)
         rhs_layout: ttgl.constexpr = ttgl.DotOperandLayout(parent=acc_layout, operand_index=1, k_width=2, use_sme=2)
         # Column-major, so dim0 is the contiguous one: one warp covers 32x16 fp16
@@ -1759,6 +1766,7 @@ def test_iluvatar_sme_async_copy_pipelined_mma():
 
         a_sme_layout: ttgl.constexpr = ttgl.BlockedLayout([1, 8], [16, 4], [2, 2], [1, 0], is_sme=True,
                                                           sme_warps_per_cta=[2, 2])
+
         acc_layout: ttgl.constexpr = ttgl.iluvatar.IluvatarMMALayout(
             version=[1, 0],
             warps_per_cta=[ttgl.num_warps(), 1],

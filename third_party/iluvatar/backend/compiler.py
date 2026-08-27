@@ -350,8 +350,15 @@ class CorexBackend(BaseBackend):
             tle.passes.add_lower_async_load(pm)
         passes.ttgpuir.add_coalesce_async_copy(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
+        # Layouts are final here, and the local_load ops feeding the dots exist,
+        # so the chain-dot convert can be measured and collapsed. Must precede
+        # reduce_data_duplication, which would otherwise price that convert as
+        # expensive and route it through shared memory.
+        iluvatar.passes.ttgpuir.add_chain_dot_krotate(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
         passes.ttgpuir.add_reorder_instructions(pm)
+        if capability == 71:
+            iluvatar.passes.ttgpuir.add_fa_pipeline(pm, opt.num_stages)
         passes.ttir.add_loop_aware_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_sccp(pm)
