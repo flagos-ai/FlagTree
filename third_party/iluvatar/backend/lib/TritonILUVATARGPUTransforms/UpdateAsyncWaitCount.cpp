@@ -31,7 +31,7 @@ constexpr llvm::StringLiteral kIluvatarG2SWaitAttrName =
 // clashes with third_party/amd/.../Utility.cpp when both link into libtriton).
 namespace deduceMin {
 int deduceMinCountInBlock(Block &block,
-                           const std::function<int(Operation *)> &countFunc);
+                          const std::function<int(Operation *)> &countFunc);
 
 int deduceMinCountBetweeOps(Operation *beginOp, Operation *endOp,
                             const std::function<int(Operation *)> &countFunc) {
@@ -64,7 +64,7 @@ int deduceMinCountBetweeOps(Operation *beginOp, Operation *endOp,
 }
 
 int deduceMinCountInBlock(Block &block,
-                           const std::function<int(Operation *)> &countFunc) {
+                          const std::function<int(Operation *)> &countFunc) {
   if (block.empty())
     return 0;
   return deduceMinCountBetweeOps(&block.front(), &block.back(), countFunc);
@@ -103,7 +103,7 @@ int deduceMinCountOnDefChain(Value defValue, Operation *consumerOp,
 
     Value incomingVal = forOp.getInitArgs()[arg.getArgNumber() - 1];
     int countLoopInit = deduceMinCountOnDefChain(incomingVal, forOp, countFunc,
-                                                   pathSum, foundMin);
+                                                 pathSum, foundMin);
 
     Operation *yieldOp = block->getTerminator();
     Value prevVal = yieldOp->getOperand(arg.getArgNumber() - 1);

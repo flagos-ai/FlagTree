@@ -857,6 +857,15 @@ static bool isFreeConvert(Operation *op) {
   auto convertOp = dyn_cast<triton::gpu::ConvertLayoutOp>(op);
   if (!convertOp)
     return false;
+#ifdef __ILUVATAR__
+  // A conversion across the smeMask boundary is free in the codegen sense, but
+  // callers use this to decide whether layout propagation may walk *through*
+  // the op. Propagating here would rewrite the cloned mask DAG back into the
+  // SME pointer encoding and collapse the clone, so keep it opaque.
+  if (triton::gpu::hasSmeMask(convertOp.getSrc().getType().getEncoding()) !=
+      triton::gpu::hasSmeMask(convertOp.getType().getEncoding()))
+    return false;
+#endif
   return cvtReordersRegisters(convertOp.getSrc().getType(),
                               convertOp.getType());
 }

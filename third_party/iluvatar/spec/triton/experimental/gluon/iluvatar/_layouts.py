@@ -141,29 +141,40 @@ class IluvatarDotOperandLayout(DotOperandLayout):
 
     Args:
         use_sme (int): SME operand selector. Defaults to 0.
+        k_rotate (int): Iluvatar chain-dot K rotation. Defaults to 0.
     """
     use_sme: int = 0
+    k_rotate: int = 0
 
     def __post_init__(self):
         super().__post_init__()
         super().__setattr__("use_sme", _unwrap_if_constexpr(self.use_sme))
+        super().__setattr__("k_rotate", _unwrap_if_constexpr(self.k_rotate))
 
     def _to_ir(self, builder):
         return builder.get_dot_operand_layout(self.operand_index, self.parent._to_ir(builder), self.k_width,
-                                              self.use_sme)
+                                              self.use_sme, self.k_rotate)
 
     def mangle(self) -> str:
-        mangled = super().mangle()
-        return mangled + f"SME{self.use_sme}SME" if self.use_sme else mangled
+        result = f"DO{self.operand_index}_{self.parent.mangle()}_{self.k_width}DO"
+        if self.use_sme or self.k_rotate:
+            result += f"SME{self.use_sme}_{self.k_rotate}SME"
+        return result
 
     def __eq__(self, other):
         if not isinstance(other, DotOperandLayout):
             return NotImplemented
-        return _base_eq(DotOperandLayout, self, other) and self.use_sme == getattr(other, "use_sme", 0)
+        return (_base_eq(DotOperandLayout, self, other) and self.use_sme == getattr(other, "use_sme", 0)
+                and self.k_rotate == getattr(other, "k_rotate", 0))
 
     def __hash__(self):
         base = DotOperandLayout.__hash__(self)
-        return hash((base, self.use_sme)) if self.use_sme else base
+        extra = ()
+        if self.use_sme:
+            extra += (self.use_sme, )
+        if self.k_rotate:
+            extra += (self.k_rotate, )
+        return hash((base, ) + extra) if extra else base
 
 
 @dataclass(frozen=True, eq=False)

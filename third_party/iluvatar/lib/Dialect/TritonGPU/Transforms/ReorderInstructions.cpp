@@ -29,8 +29,20 @@ namespace gpu {
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
 
 static bool willIncreaseRegisterPressure(Operation *op) {
+#ifndef __ILUVATAR__
   if (isa<triton::gpu::LocalLoadOp>(op))
     return true;
+#else
+  // Sinking a local_load into a loop is a bad trade here. The only loads that
+  // qualify are the ones reading a memdesc allocated *outside* the loop (an
+  // inner one already shares the loop with its use and is skipped below), i.e.
+  // loop-invariant operands. Re-reading them every iteration costs shared
+  // bandwidth, and -- worse -- it keeps the shared buffer live across the whole
+  // loop, so the allocator can no longer reuse it for the buffers filled
+  // inside. Flash attention's Q tile is exactly this: sinking it re-reads 64KB
+  // per KV iteration and pushes the kernel from 64KB to 96KB of shared memory,
+  // halving CTAs per SM.
+#endif
   auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(op);
   if (!cvt)
     return false;
@@ -132,6 +144,16 @@ public:
       // pressure for no benefits.
       if (isa<arith::ConstantOp, triton::SplatOp>(argOp))
         return;
+#ifdef __ILUVATAR__
+      // Hoisting the alloc out of an scf.if/for while its local_loads stay
+      // behind stretches the shared buffer's live range across the whole
+      // region, and all it buys is a shorter register live range for argOp.
+      // Flash attention's Q tile hits this: the alloc lands at the top of the
+      // kernel while both causal arms still load from it, so Q overlaps the V
+      // and P buffers of the KV loops. Reordering within a block is still fine.
+      if (op->getBlock() != argOp->getBlock())
+        return;
+#endif
       moveAfter(op, argOp);
     });
     // Move transpositions just after their definition
@@ -167,6 +189,15 @@ public:
         return;
       if (crossWriteSideEffectingOp(op, AOp))
         return;
+#ifdef __ILUVATAR__
+      // This is meant to reorder the two operand loads, not to relocate one
+      // into a deeper loop nest: a loop-invariant B operand (flash attention's
+      // Q) would then be re-read from shared every iteration, and its shared
+      // buffer would stay live across the loop instead of being reused.
+      if (op->getParentOfType<scf::ForOp>() !=
+          AOp->getParentOfType<scf::ForOp>())
+        return;
+#endif
       moveAfter(op, AOp);
     });
     return;

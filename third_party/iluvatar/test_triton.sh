@@ -43,10 +43,15 @@ run_distributed_test()
 }
 export CUDA_VISIBLE_DEVICES=0
 
-for pkg in pytest hypothesis absl-py scipy lit filecheck pytest-forked expecttest; do
+for pkg in pytest hypothesis absl-py scipy lit pytest-forked expecttest; do
     pip3 list "$pkg" | grep "$pkg" || pip3 install "$pkg"
 done
-ln -sf "$(command -v filecheck)" "$PWD/bin/FileCheck"
+FC_DIR=$(python3 -c 'import os, triton; print(os.path.dirname(triton.__file__))' 2>/dev/null || true)
+if [[ -x "${FC_DIR}/FileCheck" ]] && "${FC_DIR}/FileCheck" --version >/dev/null 2>&1; then
+    export PATH="${FC_DIR}:${PATH}"
+else
+    echo "WARNING: usable FileCheck not found in triton package (${FC_DIR:-<import failed>}/FileCheck)" >&2
+fi
 
 # Preload libgomp.so on arm to prevent TLS allocation errors: "ImportError: /lib64/libgomp.so.1: cannot allocate memory in static TLS block"
 if [[ "$(uname -m)" == "aarch64" ]]; then
@@ -82,6 +87,7 @@ timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_blocksparse.py -o j
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_cross_entropy.py -o junit_suite_name="test_cross_entropy" --junitxml=${LOG_DIR}_xml/___test_cross_entropy.xml 2>&1 | tee ${LOG_DIR}/test_cross_entropy.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_dot_trans.py -o junit_suite_name="test_dot_trans" --junitxml=${LOG_DIR}_xml/___test_dot_trans.xml 2>&1 | tee ${LOG_DIR}/test_dot_trans.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_flash_attention.py -o junit_suite_name="test_flash_attention" --junitxml=${LOG_DIR}_xml/___test_flash_attention.xml 2>&1 | tee ${LOG_DIR}/test_flash_attention.log; check_status
+timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_flash_attention_forward.py -o junit_suite_name="test_flash_attention_forward" --junitxml=${LOG_DIR}_xml/___test_flash_attention_forward.xml 2>&1 | tee ${LOG_DIR}/test_flash_attention_forward.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_inductor.py -o junit_suite_name="test_inductor" --junitxml=${LOG_DIR}_xml/___test_inductor.xml 2>&1 | tee ${LOG_DIR}/test_inductor.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_matmul.py -o junit_suite_name="test_matmul" --junitxml=${LOG_DIR}_xml/___test_matmul.xml 2>&1 | tee ${LOG_DIR}/test_matmul.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/operators/test_sme.py -o junit_suite_name="test_sme" --junitxml=${LOG_DIR}_xml/___test_sme.xml 2>&1 | tee ${LOG_DIR}/test_sme.log; check_status
@@ -119,6 +125,7 @@ PUNICA_TEST_LEVEL=quick timeout ${TIMEOUT} pytest -v python/test/unit/integratio
 timeout ${TIMEOUT} pytest -v python/test/unit/integrations/sglang/flash_mla/test_flash_mla_ut.py -o junit_suite_name="test_flash_mla" --junitxml=${LOG_DIR}_xml/___test_flash_mla.xml 2>&1 | tee ${LOG_DIR}/test_flash_mla.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/integrations/inductor/test_bucketize_matmul.py -o junit_suite_name="test_bucketize_matmul" --junitxml=${LOG_DIR}_xml/___test_bucketize_matmul.xml 2>&1 | tee ${LOG_DIR}/test_bucketize_matmul.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/unit/integrations/inductor/test_swfw3103_flex_attention_precision.py -o junit_suite_name="test_swfw3103_flex_attention_precision" --junitxml=${LOG_DIR}_xml/___test_swfw3103_flex_attention_precision.xml 2>&1 | tee ${LOG_DIR}/test_swfw3103_flex_attention_precision.log; check_status
+timeout ${TIMEOUT} pytest -v python/test/unit/integrations/inductor/test_swfw3436_var_mean_reshape_reduce.py -o junit_suite_name="test_swfw3436_var_mean_reshape_reduce" --junitxml=${LOG_DIR}_xml/___test_swfw3436_var_mean_reshape_reduce.xml 2>&1 | tee ${LOG_DIR}/test_swfw3436_var_mean_reshape_reduce.log; check_status
 
 timeout ${TIMEOUT} pytest -v python/test/gluon/test_core.py -o junit_suite_name="test_gluon_core" --junitxml=${LOG_DIR}_xml/___test_gluon_core.xml 2>&1 | tee ${LOG_DIR}/test_gluon_core.log; check_status
 timeout ${TIMEOUT} pytest -v python/test/gluon/test_lowerings.py -o junit_suite_name="test_gluon_lowerings" --junitxml=${LOG_DIR}_xml/___test_gluon_lowerings.xml 2>&1 | tee ${LOG_DIR}/test_gluon_lowerings.log; check_status
