@@ -22,8 +22,8 @@ name: FlagGems-Baseline-Daily
 
 on:
   schedule:
-    # 每天 UTC 03:59 执行，对应北京时间上午 11:59
-    - cron: '59 3 * * *'
+    # 每天 UTC 18:00，对应北京时间凌晨 2:00 执行
+    - cron: '0 18 * * *'
   workflow_dispatch:  # 支持手动触发，方便调试或补跑
   pull_request:        # 临时加上，用于测试
     branches: [ "main" ]
@@ -41,7 +41,7 @@ jobs:
         run: |
           source ~/env.sh
           source ~/env-3.6.sh
-          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=' >> $GITHUB_ENV || true
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
