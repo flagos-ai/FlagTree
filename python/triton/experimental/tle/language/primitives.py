@@ -19,8 +19,11 @@
 # SOFTWARE.
 
 TLE_PRIMITIVES = frozenset({
+    ## TLE-Raw
     "raw.call",
     "raw.call_smem",
+
+    ## TLE-Lite
     "load",
     "extract_tile",
     "insert_tile",
@@ -39,21 +42,35 @@ TLE_PRIMITIVES = frozenset({
     "pipe.writer.acquire",
     "pipe.writer.commit",
     "pipe.writer.close",
+
+    # TLE-Lite: tileir view
+    "create_mem_token",
+    "join_mem_tokens",
+    "load_view_tko",
+    "store_view_tko",
+
+    # TLE-Lite: tileir token/tko
+    "dim",
+    "make_tensor_view",
+    "make_partition_view",
+    "make_view",
+
+    ## TLE-Struct GPU
     "gpu.alloc",
     "gpu.copy",
     "gpu.local_ptr",
     "gpu.memory_space",
-    "gpu.range",
-    "gpu.pipeline",
     "gpu.set_layout",
     "gpu.warp_specialize",
     "gpu.alloc_barrier",
     "gpu.alloc_barriers",
-    "gpu.barrier_arrive",
     "gpu.barrier_wait",
+    "gpu.barrier_arrive",
     "gpu.wgmma",
     "gpu.wgmma_wait",
     "gpu.buffered_tensor.slot",
+    "gpu.range",  # TODO: del
+    "gpu.pipeline",  # TODO: del
 })
 
 __all__ = ["TLE_PRIMITIVES"]
