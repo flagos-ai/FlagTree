@@ -82,7 +82,7 @@ jobs:
           set -x
           source ~/env-3.6.sh
           export FLAGCX_RECOMPILE=ON
-          export COMPILE_KERNEL=ON
+          export COMPILE_KERNEL=1
           export USE_FLAGCX=ON
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
