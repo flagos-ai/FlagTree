@@ -23,13 +23,13 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.copy",
     "gpu.local_ptr",
     "gpu.memory_space",
-    "gpu.range",  # TODO: del
     "gpu.set_layout",
     "gpu.warp_specialize",
     "gpu.alloc_barrier",
     "gpu.alloc_barriers",
-    "gpu.barrier_arrive",
     "gpu.barrier_wait",
+    "gpu.barrier_arrive",
     "gpu.wgmma",
     "gpu.wgmma_wait",
+    "gpu.range",
 ]
