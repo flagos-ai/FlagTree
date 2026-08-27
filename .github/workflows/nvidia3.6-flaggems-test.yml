@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Nvidia3.6-Build-And-Test
+name: Nvidia3.6-FlagGems-Test
 
 on:
   schedule:
@@ -38,7 +38,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  nv36x-unit-test:
+  nv36x-flaggems-test:
     runs-on: nvidia3.6
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
