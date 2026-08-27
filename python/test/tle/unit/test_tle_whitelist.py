@@ -41,9 +41,10 @@ def test_missing_or_empty_backend_config_is_strict(monkeypatch):
 
 def test_primitive_outside_total_is_not_checked(monkeypatch):
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: None)
-    assert "gpu.pipe_value.reader" not in tle.TLE_PRIMITIVES
-    assert tle.is_primitive_supported("missing", "gpu.pipe_value.reader")
-    tle.require_tle("missing", "gpu.pipe_value.reader")
+    for primitive in ("gpu.pipe_value.reader", "ext.make_view"):
+        assert primitive not in tle.TLE_PRIMITIVES
+        assert tle.is_primitive_supported("missing", primitive)
+        tle.require_tle("missing", primitive)
 
 
 def test_backend_config_is_normalized(monkeypatch):

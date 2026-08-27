@@ -49,13 +49,9 @@ def primitive_name(primitive: str | Callable[..., Any]) -> str:
             name = name[len("language."):]
     elif callable(primitive):
         module = getattr(primitive, "__module__", "")
-        if module.startswith(_TLE_LANGUAGE_PREFIX):
-            name = f"{module[len(_TLE_LANGUAGE_PREFIX):]}.{primitive.__qualname__}"
-        else:
-            extension_name = f"ext.{getattr(primitive, '__name__', '')}"
-            if extension_name not in TLE_PRIMITIVES:
-                raise ValueError(f"{primitive!r} is not a TLE language primitive")
-            name = extension_name
+        if not module.startswith(_TLE_LANGUAGE_PREFIX):
+            raise ValueError(f"{primitive!r} is not a TLE language primitive")
+        name = f"{module[len(_TLE_LANGUAGE_PREFIX):]}.{primitive.__qualname__}"
     else:
         raise TypeError(f"TLE primitive must be a string or callable, got {type(primitive).__name__}")
 
