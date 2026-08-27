@@ -220,7 +220,15 @@ class TestSignalWait:
         shadow_result = torch.zeros(1, dtype=torch.int32, device="cuda")
         try:
             phases = (
-                (inter_node_result, inter_node_peer, 0, signal_target, "inter_node", "inc", "signal"),
+                (
+                    inter_node_result,
+                    inter_node_peer,
+                    0,
+                    signal_target,
+                    "inter_node" if nnodes > 1 else "world",
+                    "inc",
+                    "signal",
+                ),
                 (world_result, world_peer, 1, signal_target, "world", "inc", "signal"),
                 (counter_result, world_peer, 2, 0, "world", None, "counter"),
                 (shadow_result, world_peer, 3, None, "world", None, "shadow"),

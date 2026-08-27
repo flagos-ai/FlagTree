@@ -18,6 +18,7 @@ def _signal_kernel(
     mesh: tl.constexpr,
     peer: tl.constexpr,
     world_peer: tl.constexpr,
+    signal_space: tl.constexpr,
 ):
     local_rank = tle.shard_id(mesh, "device", device_dptr=device_dptr)
 
@@ -26,7 +27,7 @@ def _signal_kernel(
         peer,
         slot_id=0,
         op="inc",
-        space="inter_node",
+        space=signal_space,
         group_kind="block",
         context_idx=0,
     )
@@ -36,7 +37,7 @@ def _signal_kernel(
         slot_id=1,
         value=local_rank + 2,
         op="add",
-        space="inter_node",
+        space=signal_space,
         group_kind="block",
         context_idx=1,
     )
@@ -59,6 +60,7 @@ def _ir_verify(result, device_dptr, peer, world_peer):
         mesh=DEVICE_MESH,
         peer=peer,
         world_peer=world_peer,
+        signal_space="world",
         grid=(1, ),
         num_ctas=1,
         num_warps=4,
@@ -68,7 +70,7 @@ def _ir_verify(result, device_dptr, peer, world_peer):
     assert "flagcxDevSignalAdd" in compiled.asm["ptx"]
 
 
-def _runtime_verify(result, device_dptr, peer, world_peer, rank, local_rank):
+def _runtime_verify(result, device_dptr, peer, world_peer, nnodes, rank, local_rank):
     dist.barrier()
     _signal_kernel[(1, )](
         result_ptr=result,
@@ -76,6 +78,7 @@ def _runtime_verify(result, device_dptr, peer, world_peer, rank, local_rank):
         mesh=DEVICE_MESH,
         peer=peer,
         world_peer=world_peer,
+        signal_space="inter_node" if nnodes > 1 else "intra_node",
         num_ctas=1,
         num_warps=4,
     )
@@ -130,7 +133,7 @@ class TestSignal:
         result = torch.zeros(1, dtype=torch.int32, device="cuda")
         try:
             _ir_verify(result, device_dptr, peer, world_peer)
-            _runtime_verify(result, device_dptr, peer, world_peer, rank, local_rank)
+            _runtime_verify(result, device_dptr, peer, world_peer, nnodes, rank, local_rank)
         finally:
             tle.cleanup_communicator()
 
