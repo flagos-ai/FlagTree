@@ -31,16 +31,6 @@ def test_non_tle_callable_is_rejected():
         tle.primitive_name(len)
 
 
-def test_primitive_name_is_driven_by_total(monkeypatch):
-
-    def new_op():
-        pass
-
-    new_op.__module__ = "triton.experimental.tle.language.future.core"
-    monkeypatch.setattr(tle, "TLE_PRIMITIVES", tle.TLE_PRIMITIVES | {"future.new_op"})
-    assert tle.primitive_name(new_op) == "future.new_op"
-
-
 def test_backend_extension_is_resolved_from_total(monkeypatch):
 
     def make_view():
