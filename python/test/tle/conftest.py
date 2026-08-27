@@ -37,7 +37,6 @@ def pytest_runtest_setup(item):
     except Exception as exc:
         pytest.skip(f"cannot determine TLE primitive support for the active backend: {exc}")
         return
-    missing = sorted(primitive for primitive in required
-                     if not is_primitive_supported(backend_name, primitive))
+    missing = sorted(primitive for primitive in required if not is_primitive_supported(backend_name, primitive))
     if missing:
         pytest.skip(f"backend {backend_name!r} does not support required TLE primitive(s): {', '.join(missing)}")
