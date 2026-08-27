@@ -1,0 +1,92 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Git Clone with Retry'
+description: 'Clones a git repository and optionally checks out a specific branch/tag, with a robust retry mechanism.'
+
+inputs:
+  repo-url:
+    description: 'Git repository URL to clone'
+    required: true
+  ref:
+    description: 'Branch, tag, or commit SHA to checkout (optional, defaults to the default branch)'
+    required: false
+    default: ''
+  clone-dir:
+    description: 'Directory where the repository will be cloned'
+    required: true
+  max-retries:
+    description: 'Maximum number of retries for network operations'
+    required: false
+    default: '3'
+  retry-delay:
+    description: 'Delay in seconds between retries'
+    required: false
+    default: '60'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Clone and Checkout Repository
+      shell: bash
+      run: |
+        # 1. Define the generic retry function
+        retry_command() {
+          local max_retries=$1
+          local delay=$2
+          shift 2
+          local attempt=1
+          
+          while [ "$attempt" -le "$max_retries" ]; do
+            echo "===== [Attempt $attempt/$max_retries] Executing: $* ====="
+            if "$@"; then
+              echo "✅ Command succeeded on attempt $attempt."
+              return 0
+            else
+              local exit_code=$?
+              echo "❌ Command failed on attempt $attempt with exit code $exit_code."
+              attempt=$((attempt + 1))
+              if [ "$attempt" -le "$max_retries" ]; then
+                echo "⏳ Retrying in $delay seconds..."
+                sleep "$delay"
+              fi
+            fi
+          done
+          
+          echo "🚨 FATAL: Command failed after $max_retries attempts."
+          return 1
+        }
+
+        # 2. Prepare the target directory
+        mkdir -p "${{ inputs.clone-dir }}"
+        cd "${{ inputs.clone-dir }}"
+        
+        # 3. Extract repository name and clean up any existing directory
+        REPO_NAME=$(basename "${{ inputs.repo-url }}" .git)
+        rm -rf "$REPO_NAME" || true
+
+        # 4. Execute git clone with retry
+        retry_command ${{ inputs.max-retries }} ${{ inputs.retry-delay }} git clone "${{ inputs.repo-url }}"
+
+        # 5. If a specific ref is provided, checkout the branch/tag
+        if [ -n "${{ inputs.ref }}" ]; then
+          cd "$REPO_NAME"
+          retry_command ${{ inputs.max-retries }} ${{ inputs.retry-delay }} git checkout "${{ inputs.ref }}"
+        fi
