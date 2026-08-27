@@ -39,6 +39,13 @@ def test_missing_or_empty_backend_config_is_strict(monkeypatch):
     assert not tle.is_primitive_supported("empty", "gpu.alloc")
 
 
+def test_primitive_outside_total_is_not_checked(monkeypatch):
+    monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: None)
+    assert "gpu.pipe_value.reader" not in tle.TLE_PRIMITIVES
+    assert tle.is_primitive_supported("missing", "gpu.pipe_value.reader")
+    tle.require_tle("missing", "gpu.pipe_value.reader")
+
+
 def test_backend_config_is_normalized(monkeypatch):
     config = SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=["tle.cumsum", "language.gpu.core.alloc"])
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: config)

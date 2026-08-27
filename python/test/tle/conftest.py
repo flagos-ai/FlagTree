@@ -1,7 +1,7 @@
 import pytest
 
 from triton.experimental.tle import (
-    get_supported_primitives,
+    is_primitive_supported,
     primitive_name,
 )
 
@@ -36,7 +36,8 @@ def pytest_runtest_setup(item):
         backend_name = get_active_backend_name()
     except Exception as exc:
         pytest.skip(f"cannot determine TLE primitive support for the active backend: {exc}")
-    supported = get_supported_primitives(backend_name)
-    missing = sorted(required - supported)
+        return
+    missing = sorted(primitive for primitive in required
+                     if not is_primitive_supported(backend_name, primitive))
     if missing:
         pytest.skip(f"backend {backend_name!r} does not support required TLE primitive(s): {', '.join(missing)}")

@@ -49,9 +49,13 @@ def primitive_name(primitive: str | Callable[..., Any]) -> str:
             name = name[len("language."):]
     elif callable(primitive):
         module = getattr(primitive, "__module__", "")
-        if not module.startswith(_TLE_LANGUAGE_PREFIX):
-            raise ValueError(f"{primitive!r} is not a TLE language primitive")
-        name = f"{module[len(_TLE_LANGUAGE_PREFIX):]}.{primitive.__qualname__}"
+        if module.startswith(_TLE_LANGUAGE_PREFIX):
+            name = f"{module[len(_TLE_LANGUAGE_PREFIX):]}.{primitive.__qualname__}"
+        else:
+            extension_name = f"ext.{getattr(primitive, '__name__', '')}"
+            if extension_name not in TLE_PRIMITIVES:
+                raise ValueError(f"{primitive!r} is not a TLE language primitive")
+            name = extension_name
     else:
         raise TypeError(f"TLE primitive must be a string or callable, got {type(primitive).__name__}")
 
@@ -102,16 +106,18 @@ def get_supported_primitives(backend_name: str) -> frozenset[str]:
 
 
 def is_primitive_supported(backend_name: str, primitive: str | Callable[..., Any]) -> bool:
-    return primitive_name(primitive) in get_supported_primitives(backend_name)
+    name = primitive_name(primitive)
+    return name not in TLE_PRIMITIVES or name in get_supported_primitives(backend_name)
 
 
 def require_tle(backend_name: str, primitive: str | Callable[..., Any]) -> None:
     name = primitive_name(primitive)
-    if name not in get_supported_primitives(backend_name):
+    if name in TLE_PRIMITIVES and name not in get_supported_primitives(backend_name):
         raise TLEUnsupportedPrimitiveError(f"backend {backend_name!r} does not support TLE primitive {name!r}")
 
 
 from . import language
+from .language.primitives import TLE_PRIMITIVES
 
 try:
     from . import raw
@@ -120,6 +126,7 @@ except ModuleNotFoundError:
 
 __all__ = [
     "language",
+    "TLE_PRIMITIVES",
     "TLEUnsupportedPrimitiveError",
     "get_supported_primitives",
     "is_primitive_supported",
