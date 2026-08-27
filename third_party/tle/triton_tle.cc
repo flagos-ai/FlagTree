@@ -655,8 +655,8 @@ void init_triton_tle_ir(py::module &&m) {
              std::optional<Value> offset, std::optional<Value> dstMem,
              std::optional<Value> comm, std::optional<Value> dstOffset,
              std::optional<Value> nelems, std::optional<Value> netIdx,
-             std::optional<int64_t> elemBytes, std::optional<int32_t> coopKind,
-             std::optional<std::string> transferKind) -> OpState {
+             std::optional<int64_t> elemBytes,
+             std::optional<int32_t> coopKind) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
                 "cluster", "device", "node"};
@@ -672,24 +672,19 @@ void init_triton_tle_ir(py::module &&m) {
                           : IntegerAttr();
             IntegerAttr coopKindAttr =
                 coopKind ? builder.getI32IntegerAttr(*coopKind) : IntegerAttr();
-            StringAttr transferKindAttr =
-                transferKind ? builder.getStringAttr(*transferKind)
-                             : StringAttr();
             return self.create<tle::RemotePointersOp>(
                 resultTy.value_or(Type()), src.value_or(Value()),
                 dstMem.value_or(Value()), comm.value_or(Value()), shardId,
                 spaceAttr, offset.value_or(Value()),
                 dstOffset.value_or(Value()), nelems.value_or(Value()),
-                netIdx.value_or(Value()), elemBytesAttr, coopKindAttr,
-                transferKindAttr);
+                netIdx.value_or(Value()), elemBytesAttr, coopKindAttr);
           },
           py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
           py::arg("space"), py::arg("offset") = py::none(),
           py::arg("dst_mem") = py::none(), py::arg("comm") = py::none(),
           py::arg("dst_offset") = py::none(), py::arg("nelems") = py::none(),
           py::arg("net_idx") = py::none(), py::arg("elem_bytes") = py::none(),
-          py::arg("coopkind") = py::none(),
-          py::arg("transfer_kind") = py::none())
+          py::arg("coopkind") = py::none())
       .def("get_device_id",
            [](TritonOpBuilder &self, Type resultTy,
               std::optional<Value> src) -> Value {

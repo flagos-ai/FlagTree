@@ -597,12 +597,19 @@ struct TritonTleFuseNodeRemoteTransfers
       }
       auto marker = remoteExpr.remote;
 
-      builder.create<tle::RemotePointersOp>(
-          loc, Type(), marker.getSrc(), marker.getSrc(), marker.getComm(),
-          marker.getShardId(), marker.getSpaceAttr(), srcOffset, dstOffset,
-          nelems, marker.getNetIdx(), builder.getI64IntegerAttr(elemBytes),
-          marker.getCoopkindAttr(),
-          builder.getStringAttr(isPut ? "put" : "get"));
+      if (isPut) {
+        builder.create<tle::NodePutOp>(
+            loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
+            marker.getShardId(), srcOffset, dstOffset, nelems,
+            marker.getNetIdx(), builder.getI64IntegerAttr(elemBytes),
+            marker.getCoopkindAttr());
+      } else {
+        builder.create<tle::NodeGetOp>(
+            loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
+            marker.getShardId(), srcOffset, dstOffset, nelems,
+            marker.getNetIdx(), builder.getI64IntegerAttr(elemBytes),
+            marker.getCoopkindAttr());
+      }
 
       unsigned localArgNumber = localExpr.localArg.getArgNumber();
       if (std::optional<int64_t> memHandle = getConstantI64(marker.getSrc()))

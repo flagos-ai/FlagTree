@@ -990,17 +990,26 @@ LogicalResult DistributedBarrierOp::verify() {
 void RemotePointersOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
-  // Pointer-valued node ops are compile-time markers. Only the fused,
-  // result-less transfer has externally visible read/write effects.
-  if (getSpace() != "node" || getResult())
-    return;
-  effects.emplace_back(MemoryEffects::Read::get());
-  effects.emplace_back(MemoryEffects::Write::get());
+  // Remote pointer ops only describe address provenance. Inter-node transfers
+  // are represented by the effectful NodePutOp and NodeGetOp after fusion.
 }
 
 Speculation::Speculatability RemotePointersOp::getSpeculatability() {
-  return getSpace() == "node" && !getResult() ? Speculation::NotSpeculatable
-                                              : Speculation::Speculatable;
+  return Speculation::Speculatable;
+}
+
+LogicalResult NodePutOp::verify() {
+  return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
+                            getPeer(), getSrcOffset(), getDstOffset(),
+                            getNelems(), getNetIdx(), getElemBytesAttr(),
+                            getCoopkindAttr());
+}
+
+LogicalResult NodeGetOp::verify() {
+  return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
+                            getPeer(), getSrcOffset(), getDstOffset(),
+                            getNelems(), getNetIdx(), getElemBytesAttr(),
+                            getCoopkindAttr());
 }
 
 LogicalResult RemotePointersOp::verify() {

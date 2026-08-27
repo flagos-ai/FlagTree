@@ -1201,7 +1201,6 @@ def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _
         net_idx.handle,
         None,
         coop_kind,
-        None,
     )
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
 

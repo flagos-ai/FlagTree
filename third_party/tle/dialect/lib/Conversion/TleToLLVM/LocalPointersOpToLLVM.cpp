@@ -106,60 +106,6 @@ static LLVM::LLVMFuncOp getOrInsertGetPeerPointer(ModuleOp module,
   return func;
 }
 
-static LLVM::LLVMFuncOp getOrInsertNetFromComm(ModuleOp module,
-                                               MLIRContext *ctx) {
-  const char *funcName = "flagcxDevNetGetFromCommS";
-  if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
-    return func;
-
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-  auto i32Ty = IntegerType::get(ctx, 32);
-  auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i32Ty}, false);
-  OpBuilder builder(module.getBodyRegion());
-  auto func =
-      builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName, funcTy);
-  func.setLinkage(LLVM::Linkage::External);
-  return func;
-}
-
-static LLVM::LLVMFuncOp getOrInsertNetPut(ModuleOp module, MLIRContext *ctx) {
-  const char *funcName = "flagcxDevNetPutS";
-  if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
-    return func;
-
-  auto voidTy = LLVM::LLVMVoidType::get(ctx);
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-  auto i32Ty = IntegerType::get(ctx, 32);
-  auto i64Ty = IntegerType::get(ctx, 64);
-  SmallVector<Type> argTypes{ptrTy, ptrTy, i32Ty, i32Ty, ptrTy,
-                             i64Ty, ptrTy, i64Ty, i64Ty, i32Ty};
-  auto funcTy = LLVM::LLVMFunctionType::get(voidTy, argTypes, false);
-  OpBuilder builder(module.getBodyRegion());
-  auto func =
-      builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName, funcTy);
-  func.setLinkage(LLVM::Linkage::External);
-  return func;
-}
-
-static LLVM::LLVMFuncOp getOrInsertNetGet(ModuleOp module, MLIRContext *ctx) {
-  const char *funcName = "flagcxDevNetGetS";
-  if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
-    return func;
-
-  auto voidTy = LLVM::LLVMVoidType::get(ctx);
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-  auto i32Ty = IntegerType::get(ctx, 32);
-  auto i64Ty = IntegerType::get(ctx, 64);
-  SmallVector<Type> argTypes{ptrTy, ptrTy, i32Ty, i32Ty, ptrTy,
-                             i64Ty, ptrTy, i64Ty, i64Ty, i32Ty};
-  auto funcTy = LLVM::LLVMFunctionType::get(voidTy, argTypes, false);
-  OpBuilder builder(module.getBodyRegion());
-  auto func =
-      builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName, funcTy);
-  func.setLinkage(LLVM::Linkage::External);
-  return func;
-}
-
 struct LocalPointersOpConversion
     : public ConvertOpToLLVMPattern<tle::LocalPointersOp> {
   LocalPointersOpConversion(LLVMTypeConverter &typeConverter,
@@ -522,102 +468,6 @@ LogicalResult lowerDeviceSpace(Location loc, Value mem_ptr,
   return success();
 }
 
-LogicalResult lowerNodeSpace(Location loc, tle::RemotePointersOp op,
-                             tle::RemotePointersOp::Adaptor adaptor,
-                             ConversionPatternRewriter &rewriter) {
-  ModuleOp module = op->getParentOfType<ModuleOp>();
-  if (!module)
-    return rewriter.notifyMatchFailure(op, "expected a parent module");
-
-  MLIRContext *ctx = rewriter.getContext();
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-  auto i32Ty = rewriter.getI32Type();
-  Value dstMem =
-      rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getDstMem());
-  Value srcMem =
-      rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getSrc());
-  Value comm = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getComm());
-
-  Value srcByteOffset = adaptor.getOffset();
-  Value dstByteOffset = adaptor.getDstOffset();
-  Value byteCount = adaptor.getNelems();
-  int64_t elemBytes = op->getAttrOfType<IntegerAttr>("elem_bytes").getInt();
-  if (elemBytes != 1) {
-    Value elemBytesValue =
-        rewriter.create<arith::ConstantIntOp>(loc, elemBytes, 64);
-    srcByteOffset = rewriter.create<arith::MulIOp>(loc, adaptor.getOffset(),
-                                                   elemBytesValue);
-    dstByteOffset = rewriter.create<arith::MulIOp>(loc, adaptor.getDstOffset(),
-                                                   elemBytesValue);
-    byteCount = rewriter.create<arith::MulIOp>(loc, adaptor.getNelems(),
-                                               elemBytesValue);
-  }
-
-  int64_t coopKindValue = op.getCoopkindAttr().getInt();
-  auto transferKind = op->getAttrOfType<StringAttr>("transfer_kind").getValue();
-  auto emitTransfer = [&]() {
-    LLVM::LLVMFuncOp getNet = getOrInsertNetFromComm(module, ctx);
-    auto getNetCall = rewriter.create<LLVM::CallOp>(
-        loc, TypeRange{ptrTy}, FlatSymbolRefAttr::get(getNet),
-        ValueRange{comm, adaptor.getNetIdx()});
-    Value teamKind = rewriter.create<LLVM::ConstantOp>(
-        loc, i32Ty, rewriter.getI32IntegerAttr(2));
-    Value coopKind = rewriter.create<LLVM::ConstantOp>(
-        loc, i32Ty, rewriter.getI32IntegerAttr(coopKindValue));
-    if (transferKind == "put") {
-      LLVM::LLVMFuncOp put = getOrInsertNetPut(module, ctx);
-      rewriter.create<LLVM::CallOp>(
-          loc, TypeRange{}, FlatSymbolRefAttr::get(put),
-          ValueRange{getNetCall.getResult(), comm, teamKind,
-                     adaptor.getShardId(), dstMem, dstByteOffset, srcMem,
-                     srcByteOffset, byteCount, coopKind});
-    } else {
-      LLVM::LLVMFuncOp get = getOrInsertNetGet(module, ctx);
-      rewriter.create<LLVM::CallOp>(
-          loc, TypeRange{}, FlatSymbolRefAttr::get(get),
-          ValueRange{getNetCall.getResult(), comm, teamKind,
-                     adaptor.getShardId(), srcMem, srcByteOffset, dstMem,
-                     dstByteOffset, byteCount, coopKind});
-    }
-  };
-
-  // Unmasked contiguous copies have a statically positive element count and
-  // do not need a branch. Prefix-masked copies may clamp their dynamic count
-  // to zero; in that case the original masked load/store accesses no memory,
-  // so the fused FlagCX call must also be skipped.
-  std::optional<int64_t> constantNelems;
-  if (auto constant = op.getNelems().getDefiningOp<arith::ConstantOp>())
-    if (auto value = dyn_cast<IntegerAttr>(constant.getValue()))
-      constantNelems = value.getInt();
-
-  if (constantNelems) {
-    if (*constantNelems > 0)
-      emitTransfer();
-    return success();
-  }
-
-  Value zero = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI64Type(),
-                                                 rewriter.getI64IntegerAttr(0));
-  Value hasElements = rewriter.create<LLVM::ICmpOp>(
-      loc, LLVM::ICmpPredicate::sgt, adaptor.getNelems(), zero);
-
-  Block *previousBlock = op->getBlock();
-  Block *transferBlock = rewriter.splitBlock(previousBlock, op->getIterator());
-  rewriter.setInsertionPointToStart(transferBlock);
-  emitTransfer();
-
-  Block *continuationBlock =
-      rewriter.splitBlock(transferBlock, op->getIterator());
-  rewriter.setInsertionPointToEnd(transferBlock);
-  rewriter.create<LLVM::BrOp>(loc, continuationBlock);
-
-  rewriter.setInsertionPointToEnd(previousBlock);
-  rewriter.create<LLVM::CondBrOp>(loc, hasElements, transferBlock,
-                                  continuationBlock);
-  rewriter.setInsertionPointToStart(continuationBlock);
-  return success();
-}
-
 Value getDistDevicePtr(tle::RemotePointersOp op, SmallVector<Value> &srcElems) {
   if (!srcElems.empty())
     return srcElems[0];
@@ -644,15 +494,9 @@ struct RemotePointersOpConversion
     };
 
     auto space = adaptor.getSpace();
-    if (space == "node") {
-      if (op.getResult())
-        return reportFailure(
-            "unfused node remote pointer reached LLVM conversion");
-      if (failed(lowerNodeSpace(loc, op, adaptor, rewriter)))
-        return reportFailure("node lowering failed");
-      rewriter.eraseOp(op);
-      return success();
-    }
+    if (space == "node")
+      return reportFailure(
+          "unfused node remote pointer reached LLVM conversion");
 
     SmallVector<Value> srcElems;
     if (auto src = adaptor.getSrc())
