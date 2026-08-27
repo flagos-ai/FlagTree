@@ -42,14 +42,8 @@ def _callable_primitive_name(primitive: Callable[..., Any]) -> str:
     qualname = getattr(primitive, "__qualname__", "")
     if module.startswith(_TLE_LANGUAGE_PREFIX):
         module_parts = set(module[len(_TLE_LANGUAGE_PREFIX):].split("."))
-        candidates = {
-            name for name in TLE_PRIMITIVES
-            if name == qualname or name.endswith(f".{qualname}")
-        }
-        scoped = {
-            name for name in candidates
-            if "." in name and name.split(".", 1)[0] in module_parts
-        }
+        candidates = {name for name in TLE_PRIMITIVES if name == qualname or name.endswith(f".{qualname}")}
+        scoped = {name for name in candidates if "." in name and name.split(".", 1)[0] in module_parts}
         if len(scoped) == 1:
             return scoped.pop()
         if qualname in candidates:
