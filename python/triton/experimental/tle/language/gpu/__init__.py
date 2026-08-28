@@ -19,6 +19,18 @@
 # SOFTWARE.
 
 # flagtree tle
+import os
+
+try:
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+except ModuleNotFoundError:
+    FLAGTREE_BACKEND = os.environ.get("FLAGTREE_BACKEND", "")
+
+if FLAGTREE_BACKEND == "tsingmicro":
+    raise ImportError(
+        "triton.experimental.tle.language.gpu is not supported on tsingmicro backend"
+    )
+
 from .core import (
     pipeline,
     range,

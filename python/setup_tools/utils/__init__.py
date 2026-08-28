@@ -22,7 +22,7 @@ from pathlib import Path
 import importlib.util
 import os
 from . import tools, default
-from .tools import flagtree_configs, OfflineBuildManager
+from .tools import flagtree_configs, OfflineBuildManager, is_skip_cuda_toolkits
 
 
 class SubmoduleRegistrar:

@@ -791,6 +791,8 @@ void init_llvm(py::module &&m) {
         });
 }
 
+void init_triton_tle_dsa(py::module m);
+
 void init_triton_tle(py::module &&m) {
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
@@ -806,4 +808,5 @@ void init_triton_tle(py::module &&m) {
   init_tle_raw_ir(m.def_submodule("raw_ir"));
   init_tle_raw_passes(m.def_submodule("raw_passes"));
   init_llvm(m.def_submodule("llvm"));
+  init_triton_tle_dsa(m.def_submodule("dsa"));
 }

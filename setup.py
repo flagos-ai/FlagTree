@@ -608,6 +608,8 @@ class CMakeBuild(build_ext):
         update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
+        if helper.flagtree_backend == "tsingmicro":
+            subprocess.check_call(["cmake", "--install", "."], cwd=cmake_dir)
         helper.install_extension(build_ext=self)  # flagtree
 
 

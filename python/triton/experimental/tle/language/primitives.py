@@ -38,6 +38,12 @@ TLE_PRIMITIVES = frozenset({
     "gpu.alloc_barrier", "gpu.alloc_barriers", "gpu.barrier_wait", "gpu.barrier_arrive", "gpu.wgmma", "gpu.wgmma_wait",
     "gpu.buffered_tensor.slot", "gpu.range",  # TODO: del
     "gpu.pipeline",  # TODO: del
+
+    ## TLE-Struct DSA (tsingmicro)
+    "dsa.pipeline", "dsa.alloc", "dsa.copy", "dsa.memory_space", "dsa.local_ptr", "dsa.cumsum",
+    "dsa.to_tensor", "dsa.to_buffer", "dsa.add", "dsa.sub", "dsa.mul", "dsa.max", "dsa.min", "dsa.div",
+    "dsa.extract_slice", "dsa.insert_slice", "dsa.extract_tile", "dsa.insert_tile",
+    "dsa.randgen", "dsa.rand", "dsa.randn",
 })
 
 __all__ = ["TLE_PRIMITIVES"]

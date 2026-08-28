@@ -24,7 +24,11 @@ from typing import TYPE_CHECKING
 
 import triton.language as tl
 from triton.language.core import builtin, constexpr as tl_constexpr, tensor
-from triton.experimental.tle.language.gpu import buffered_tensor
+try:
+    from triton.experimental.tle.language.gpu import buffered_tensor
+except ImportError:
+    # tsingmicro: the gpu package is unavailable; raw is only used by GPU backends.
+    from triton.experimental.tle.language._types import buffered_tensor
 
 if TYPE_CHECKING:
     from .. import TLESemantic
