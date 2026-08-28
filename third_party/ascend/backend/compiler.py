@@ -909,6 +909,7 @@ class NPUOptions:
     enable_preload: bool = None
     enable_auto_bind_sub_block: bool = None
     disable_tightly_coupled_buffer_reuse: bool = False
+    disable_auto_cv_work_space_manage: bool = None
     enable_select_analysis: bool = True
     enable_hivm_auto_cv_balance: bool = None
     sync_solver: bool = None
