@@ -178,11 +178,11 @@ jobs:
         uses: ./.github/actions/run-flaggems-test
         with:
           flaggems-path: '/root/flaggems_ci/FlagGems'
-          gpus: ${CUDA_VISIBLE_DEVICES:-4}
+          gpus: ${CUDA_VISIBLE_DEVICES:-0}
           baseline-dir: '/root/flaggems_ci/Baseline'
           output-base-dir: '/root/flaggems_ci/PR'
           pr-number: '${{ github.event.pull_request.number }}'
-          run-script: 'tools/ci/ci_run_tests_v9.py'
-          compare-script: 'tools/ci/compare_test_result_v1.py'
+          run-script: 'tools/ci/ci_run_tests.py'
+          compare-script: 'tools/ci/compare_test_result.py'
           skip-file: 'tools/ci/skip_list.yaml'
           first-parameter-only: 'true'

@@ -25,18 +25,19 @@ inputs:
   flaggems-path:
     description: 'Absolute path to FlagGems repository on the self-hosted runner'
     required: true
-    default: '/data/zhengyang/flaggems_ci/FlagGems'
+    default: '/root/flaggems_ci/FlagGems'
   gpus:
     description: 'Number of GPUs to use for testing'
     required: true
-    default: '4'
+    default: '0'
   baseline-dir:
-    description: 'Directory containing baseline test results (e.g. /data/zhengyang/flaggems_ci/Baseline)'
+    description: 'Directory containing baseline test results'
     required: true
+    default: '/root/flaggems_ci/Baseline'
   output-base-dir:
     description: 'Base directory for PR test outputs'
     required: true
-    default: '/data/zhengyang/flaggems_ci/PR'
+    default: '/root/flaggems_ci/PR'
   pr-number:
     description: 'Pull Request number (used for output directory naming)'
     required: false
@@ -44,11 +45,11 @@ inputs:
   run-script:
     description: 'Path to the test runner script (relative to flaggems-path)'
     required: true
-    default: 'tools/ci/ci_run_tests_v8.py'
+    default: 'tools/ci/ci_run_tests.py'
   compare-script:
     description: 'Path to the comparison script (relative to flaggems-path)'
     required: true
-    default: 'tools/ci/compare_test_result_v1.py'
+    default: 'tools/ci/compare_test_result.py'
   skip-file:
     description: 'Path to the skip list YAML (relative to flaggems-path)'
     required: true
