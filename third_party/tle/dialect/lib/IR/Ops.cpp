@@ -987,8 +987,6 @@ LogicalResult DistributedBarrierOp::verify() {
   return success();
 }
 
-
-
 LogicalResult NodePutOp::verify() {
   return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
                             getPeer(), getSrcOffset(), getDstOffset(),

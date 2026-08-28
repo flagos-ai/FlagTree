@@ -650,8 +650,8 @@ void init_triton_tle_ir(py::module &&m) {
           py::arg("group_mask"))
       .def(
           "create_remote_pointers",
-          [](TritonOpBuilder &self, Type resultTy,
-             std::optional<Value> src, Value shardId, const std::string &space,
+          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> src,
+             Value shardId, const std::string &space,
              std::optional<Value> offset, std::optional<Value> dstMem,
              std::optional<Value> comm, std::optional<Value> dstOffset,
              std::optional<Value> nelems, std::optional<Value> netIdx,
@@ -673,11 +673,11 @@ void init_triton_tle_ir(py::module &&m) {
             IntegerAttr coopKindAttr =
                 coopKind ? builder.getI32IntegerAttr(*coopKind) : IntegerAttr();
             return self.create<tle::RemotePointersOp>(
-                resultTy, src.value_or(Value()),
-                dstMem.value_or(Value()), comm.value_or(Value()), shardId,
-                spaceAttr, offset.value_or(Value()),
-                dstOffset.value_or(Value()), nelems.value_or(Value()),
-                netIdx.value_or(Value()), elemBytesAttr, coopKindAttr);
+                resultTy, src.value_or(Value()), dstMem.value_or(Value()),
+                comm.value_or(Value()), shardId, spaceAttr,
+                offset.value_or(Value()), dstOffset.value_or(Value()),
+                nelems.value_or(Value()), netIdx.value_or(Value()),
+                elemBytesAttr, coopKindAttr);
           },
           py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
           py::arg("space"), py::arg("offset") = py::none(),
