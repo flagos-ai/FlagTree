@@ -31,9 +31,23 @@ cd "$REPO_ROOT"
 
 mkdir -p dist
 
-echo ">>> Building wheel + .deb for backend=${BACKEND}"
+# Build-environment knobs (see Dockerfile.deb):
+#   DEB_BASE_IMAGE     ubuntu:24.04 (default) | ubuntu:22.04
+#   PYTHON_VERSION     empty = base image default | e.g. 3.12 (deadsnakes on 22.04)
+#   MAX_JOBS           parallel compile jobs for the wheel (default 4; the MLIR
+#                      build needs roughly 2-3 GB RAM per job)
+#   DEB_VERSION_SUFFIX auto (~ubuntu<ver>) | "" | explicit suffix
+DEB_BASE_IMAGE="${DEB_BASE_IMAGE:-ubuntu:24.04}"
+PYTHON_VERSION="${PYTHON_VERSION:-}"
+MAX_JOBS="${MAX_JOBS:-4}"
+DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX:-auto}"
+echo ">>> Building wheel + .deb for backend=${BACKEND} on ${DEB_BASE_IMAGE} (python ${PYTHON_VERSION:-default}, MAX_JOBS=${MAX_JOBS})"
 docker build \
     --network=host \
+    --build-arg DEB_BASE_IMAGE="${DEB_BASE_IMAGE}" \
+    --build-arg PYTHON_VERSION="${PYTHON_VERSION}" \
+    --build-arg MAX_JOBS="${MAX_JOBS}" \
+    --build-arg DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX}" \
     -f packaging/debian/build-helpers/Dockerfile.deb \
     --target deb-output \
     --output "type=local,dest=${REPO_ROOT}/dist" \
