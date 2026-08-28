@@ -22,7 +22,7 @@ name: FlagGems-Baseline-Daily
 
 on:
   schedule:
-    # 每天 UTC 18:00，对应北京时间凌晨 2:00 执行
+    # Runs at UTC 18:00，Beijing 2:00
     - cron: '0 18 * * *'
   workflow_dispatch:  # 支持手动触发，方便调试或补跑
   pull_request:        # 临时加上，用于测试
@@ -71,22 +71,19 @@ jobs:
           set -x
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
-      - name: Run Baseline Tests
+      - name: Compute baseline date
+        id: date
         shell: bash
         run: |
-          set -x
-          OUTPUT_DIR="/root/flaggems_ci/Baseline/$(date +%Y-%m-%d)"
-          rm -rf "$OUTPUT_DIR" || true
-          mkdir -p "$OUTPUT_DIR"
+          echo "date=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
 
-          cd /root/flaggems_ci/FlagGems
-
-          # 临时方案，patch merge后就不用拷贝了
-          cp /root/flaggems_ci/script/conftest.py tests/conftest.py
-          cp -raf /root/flaggems_ci/script/ci tools
-
-          python tools/ci/ci_run_tests_v9.py \
-            --gpus ${CUDA_VISIBLE_DEVICES:-4} \
-            --output-dir "$OUTPUT_DIR" \
-            --first-parameter-only \
-            --skip-file tools/ci/skip_list.yaml
+      - name: Run Baseline Tests
+        uses: ./.github/actions/run-flaggems-test
+        with:
+          flaggems-path: '/root/flaggems_ci/FlagGems'
+          gpus: ${CUDA_VISIBLE_DEVICES:-0}
+          output-base-dir: '/root/flaggems_ci/Baseline'
+          output-subdir: ${{ steps.date.outputs.date }}
+          run-script: 'tools/ci/ci_run_tests.py'
+          skip-file: 'tools/ci/skip_list.yaml'
+          first-parameter-only: 'true'
