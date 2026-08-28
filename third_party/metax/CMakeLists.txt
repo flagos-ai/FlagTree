@@ -35,6 +35,14 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endif()
 endif()
 
+# MetaX's specialized Triton LoadOp does not provide flagtree_hints, and the
+# original MetaX transform target did not build this main-tree-only pass.
+set_source_files_properties(
+  "${PROJECT_SOURCE_DIR}/lib/Dialect/TritonGPU/Transforms/ProcessSharedMemoryHint.cpp"
+  TARGET_DIRECTORY TritonGPUTransforms
+  PROPERTIES HEADER_FILE_ONLY ON
+)
+
 # MetaX-only source: no main-tree source exists for the override mechanism.
 target_sources(TritonTools PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/spec_cpp/extra/SwizzleDumpUtils.cpp
