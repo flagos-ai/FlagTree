@@ -52,9 +52,11 @@ ARG DEB_BASE_IMAGE=ubuntu:24.04
 # then use that interpreter, so the wheel, the .deb and the smoke test agree.
 ARG PYTHON_VERSION=
 ARG MAX_JOBS=4
-# DEB_VERSION_SUFFIX: "auto" appends ~<id><version> (e.g. ~ubuntu22.04) to the
+# DEB_VERSION_SUFFIX: "auto" appends +<id><version> (e.g. +ubuntu22.04) to the
 # package version so rows built for different releases can coexist in one apt
-# suite (same convention as Docker CE). Empty keeps the changelog version.
+# suite (Docker CE does the same with ~ubuntu.22.04~jammy). "+" sorts above the
+# plain changelog version, so an unsuffixed package already installed from an
+# earlier build upgrades cleanly. Empty keeps the changelog version.
 ARG DEB_VERSION_SUFFIX=auto
 
 # ---------- Stage 1: build the wheel ----------
@@ -159,12 +161,12 @@ ENV WHEEL_DIR=/build/dist
 
 # Per-release version suffix (see DEB_VERSION_SUFFIX above).
 RUN if [ "${DEB_VERSION_SUFFIX}" = "auto" ]; then \
-        . /etc/os-release && suffix="~${ID}${VERSION_ID}"; \
+        . /etc/os-release && suffix="+${ID}${VERSION_ID}"; \
     else suffix="${DEB_VERSION_SUFFIX}"; fi && \
     if [ -n "${suffix}" ]; then \
         base="$(dpkg-parsechangelog -l debian/changelog -SVersion)" && \
         DEBFULLNAME="FlagOS Contributors" DEBEMAIL="contact@flagos.io" \
-        dch -v "${base}${suffix}" -D unstable --force-distribution \
+        dch -b -v "${base}${suffix}" -D unstable --force-distribution \
             "Rebuild for $(. /etc/os-release && echo "${PRETTY_NAME}")." && \
         echo "Package version: $(dpkg-parsechangelog -l debian/changelog -SVersion)"; \
     fi

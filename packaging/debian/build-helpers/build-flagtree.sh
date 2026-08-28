@@ -36,7 +36,7 @@ mkdir -p dist
 #   PYTHON_VERSION     empty = base image default | e.g. 3.12 (deadsnakes on 22.04)
 #   MAX_JOBS           parallel compile jobs for the wheel (default 4; the MLIR
 #                      build needs roughly 2-3 GB RAM per job)
-#   DEB_VERSION_SUFFIX auto (~ubuntu<ver>) | "" | explicit suffix
+#   DEB_VERSION_SUFFIX auto (+ubuntu<ver>) | "" | explicit suffix
 DEB_BASE_IMAGE="${DEB_BASE_IMAGE:-ubuntu:24.04}"
 PYTHON_VERSION="${PYTHON_VERSION:-}"
 MAX_JOBS="${MAX_JOBS:-4}"
