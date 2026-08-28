@@ -398,9 +398,8 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
 }
 
 def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
-    AttrSizedOperandSegments,
-    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
-    ConditionallySpeculatable
+    Pure,
+    AttrSizedOperandSegments
 ]> {
   let arguments = (ins
     Optional<Tle_LocalPointerResultType>:$src,
@@ -416,25 +415,7 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
     OptionalAttr<I32Attr>:$coopkind
   );
 
-  let results = (outs Optional<Tle_LocalPointerResultType>:$result);
-  let assemblyFormat = [{
-    oilist(
-      `src` $src |
-      `dst_mem` $dst_mem |
-      `comm` $comm
-    )
-    `shard_id` $shard_id
-    oilist(
-      `offset` $offset |
-      `dst_offset` $dst_offset |
-      `nelems` $nelems |
-      `net_idx` $net_idx
-    )
-    attr-dict `:` functional-type(operands, results)
-  }];
-  let extraClassDeclaration = [{
-    Speculation::Speculatability getSpeculatability();
-  }];
+  let results = (outs Tle_LocalPointerResultType:$result);
   let hasVerifier = 1;
 }
 

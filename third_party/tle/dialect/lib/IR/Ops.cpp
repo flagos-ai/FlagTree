@@ -987,16 +987,7 @@ LogicalResult DistributedBarrierOp::verify() {
   return success();
 }
 
-void RemotePointersOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  // Remote pointer ops only describe address provenance. Inter-node transfers
-  // are represented by the effectful NodePutOp and NodeGetOp after fusion.
-}
 
-Speculation::Speculatability RemotePointersOp::getSpeculatability() {
-  return Speculation::Speculatable;
-}
 
 LogicalResult NodePutOp::verify() {
   return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
