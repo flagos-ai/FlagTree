@@ -173,16 +173,25 @@ jobs:
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
 
-      - name: FlagGems Regression Test
+      - name: Run FlagGems Test
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         uses: ./.github/actions/run-flaggems-test
+        id: run-flaggems-test
         with:
           flaggems-path: '/root/flaggems_ci/FlagGems'
           gpus: ${CUDA_VISIBLE_DEVICES:-0}
-          baseline-dir: '/root/flaggems_ci/Baseline'
           output-base-dir: '/root/flaggems_ci/PR'
           pr-number: '${{ github.event.pull_request.number }}'
           run-script: 'tools/ci/ci_run_tests.py'
-          compare-script: 'tools/ci/compare_test_result.py'
           skip-file: 'tools/ci/skip_list.yaml'
           first-parameter-only: 'true'
+
+      - name: Compare with Baseline
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: ./.github/actions/compare-flaggems-test
+        with:
+          baseline-dir: '/root/flaggems_ci/Baseline'
+          candidate-dir: ${{ steps.run-flaggems-test.outputs.test-output-dir }}
+          baseline-date: ${{ steps.run-flaggems-test.outputs.test-date }}
+          compare-script: 'tools/ci/compare_test_result.py'
+          working-directory: '/root/flaggems_ci/FlagGems'

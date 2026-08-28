@@ -18,8 +18,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: 'Run FlagGems Test & Compare'
-description: 'Install FlagGems, run tests against current PR code, and compare with baseline to detect regressions'
+name: 'Run FlagGems Test'
+description: 'Run FlagGems tests and output results. Can be used for both baseline generation and PR testing.'
 
 inputs:
   flaggems-path:
@@ -30,26 +30,22 @@ inputs:
     description: 'Number of GPUs to use for testing'
     required: true
     default: '0'
-  baseline-dir:
-    description: 'Directory containing baseline test results'
-    required: true
-    default: '/root/flaggems_ci/Baseline'
   output-base-dir:
-    description: 'Base directory for PR test outputs'
+    description: 'Base directory for test outputs'
     required: true
     default: '/root/flaggems_ci/PR'
+  output-subdir:
+    description: 'Subdirectory name under output-base-dir. If empty, falls back to pr-number or run_id-timestamp'
+    required: false
+    default: ''
   pr-number:
-    description: 'Pull Request number (used for output directory naming)'
+    description: 'Pull Request number (used for output directory naming if output-subdir is empty)'
     required: false
     default: ''
   run-script:
     description: 'Path to the test runner script (relative to flaggems-path)'
     required: true
     default: 'tools/ci/ci_run_tests.py'
-  compare-script:
-    description: 'Path to the comparison script (relative to flaggems-path)'
-    required: true
-    default: 'tools/ci/compare_test_result.py'
   skip-file:
     description: 'Path to the skip list YAML (relative to flaggems-path)'
     required: true
@@ -60,15 +56,15 @@ inputs:
     default: 'true'
 
 outputs:
-  pr-output-dir:
-    description: 'Directory where PR test results were written'
-    value: ${{ steps.run-tests.outputs.pr-output-dir }}
-  baseline-date:
-    description: 'Date string used for baseline lookup'
-    value: ${{ steps.vars.outputs.baseline-date }}
-  compare-exit-code:
-    description: 'Exit code from comparison step (0 = no regression)'
-    value: ${{ steps.compare.outputs.exit-code }}
+  test-output-dir:
+    description: 'Directory where test results were written'
+    value: ${{ steps.run-tests.outputs.test-output-dir }}
+  test-date:
+    description: 'Date string (YYYY-MM-DD) when tests were run'
+    value: ${{ steps.vars.outputs.test-date }}
+  test-id:
+    description: 'Identifier used for the output subdirectory'
+    value: ${{ steps.vars.outputs.test-id }}
 
 runs:
   using: "composite"
@@ -78,22 +74,24 @@ runs:
       shell: bash
       run: |
         set -x
-        # Get current date for baseline lookup
-        BASELINE_DATE=$(date +%Y-%m-%d)
-        echo "baseline-date=$BASELINE_DATE" >> $GITHUB_OUTPUT
+        # Get current date for downstream baseline lookup
+        TEST_DATE=$(date +%Y-%m-%d)
+        echo "test-date=$TEST_DATE" >> $GITHUB_OUTPUT
 
-        # Determine PR identifier for output directory
-        if [ -n "${{ inputs.pr-number }}" ]; then
-          PR_ID="${{ inputs.pr-number }}"
+        # Determine output subdirectory identifier
+        if [ -n "${{ inputs.output-subdir }}" ]; then
+          TEST_ID="${{ inputs.output-subdir }}"
+        elif [ -n "${{ inputs.pr-number }}" ]; then
+          TEST_ID="${{ inputs.pr-number }}"
         else
-          # Fallback: use run ID or timestamp for non-PR triggers
-          PR_ID="${{ github.run_id }}-$(date +%H%M%S)"
+          # Fallback: use run ID + timestamp for non-PR triggers
+          TEST_ID="${{ github.run_id }}-$(date +%H%M%S)"
         fi
-        echo "pr-id=$PR_ID" >> $GITHUB_OUTPUT
+        echo "test-id=$TEST_ID" >> $GITHUB_OUTPUT
 
-        # Construct full paths
-        PR_OUTPUT_DIR="${{ inputs.output-base-dir }}/${PR_ID}"
-        echo "pr-output-dir=$PR_OUTPUT_DIR" >> $GITHUB_OUTPUT
+        # Construct full output path
+        TEST_OUTPUT_DIR="${{ inputs.output-base-dir }}/${TEST_ID}"
+        echo "test-output-dir=$TEST_OUTPUT_DIR" >> $GITHUB_OUTPUT
 
     - name: Run FlagGems Tests
       id: run-tests
@@ -105,12 +103,12 @@ runs:
         cp /root/flaggems_ci/script/conftest.py tests/conftest.py
         cp -raf /root/flaggems_ci/script/ci tools
 
-        PR_OUTPUT_DIR="${{ steps.vars.outputs.pr-output-dir }}"
-        rm -rf "$PR_OUTPUT_DIR" || true
-        mkdir -p "$PR_OUTPUT_DIR"
+        TEST_OUTPUT_DIR="${{ steps.vars.outputs.test-output-dir }}"
+        rm -rf "$TEST_OUTPUT_DIR" || true
+        mkdir -p "$TEST_OUTPUT_DIR"
 
         # Build test runner command
-        CMD="python ${{ inputs.run-script }} --gpus ${{ inputs.gpus }} --output-dir $PR_OUTPUT_DIR"
+        CMD="python ${{ inputs.run-script }} --gpus ${{ inputs.gpus }} --output-dir $TEST_OUTPUT_DIR"
 
         if [ "${{ inputs.first-parameter-only }}" = "true" ]; then
           CMD="$CMD --first-parameter-only"
@@ -124,45 +122,4 @@ runs:
         $CMD
 
         # Export output directory for downstream steps
-        echo "pr-output-dir=$PR_OUTPUT_DIR" >> $GITHUB_OUTPUT
-
-    - name: Compare with Baseline
-      id: compare
-      shell: bash
-      working-directory: ${{ inputs.flaggems-path }}
-      run: |
-        set -x
-        BASELINE_JSON="${{ inputs.baseline-dir }}/${{ steps.vars.outputs.baseline-date }}/summary.json"
-        CANDIDATE_JSON="${{ steps.vars.outputs.pr-output-dir }}/summary.json"
-
-        echo "Baseline: $BASELINE_JSON"
-        echo "Candidate: $CANDIDATE_JSON"
-
-        if [ ! -f "$BASELINE_JSON" ]; then
-          echo "::error::Baseline file not found: $BASELINE_JSON"
-          exit 0
-        fi
-
-        if [ ! -f "$CANDIDATE_JSON" ]; then
-          echo "::error::Candidate summary file not found: $CANDIDATE_JSON"
-          exit 1
-        fi
-
-        # Run comparison; --exit-code makes it return non-zero on regression
-        python ${{ inputs.compare-script }} \
-          --baseline "$BASELINE_JSON" \
-          --candidate "$CANDIDATE_JSON" \
-          --exit-code || COMPARE_EXIT=$?
-
-        # Capture exit code (0 = pass, non-zero = regression detected)
-        COMPARE_EXIT=${COMPARE_EXIT:-0}
-        echo "exit-code=$COMPARE_EXIT" >> $GITHUB_OUTPUT
-
-        if [ "$COMPARE_EXIT" -ne 0 ]; then
-          echo "::error::FlagGems regression detected! Compare exit code: $COMPARE_EXIT"
-        else
-          echo "::notice::No FlagGems regression detected."
-        fi
-
-        # Propagate exit code so the step fails on regression
-        exit $COMPARE_EXIT
+        echo "test-output-dir=$TEST_OUTPUT_DIR" >> $GITHUB_OUTPUT

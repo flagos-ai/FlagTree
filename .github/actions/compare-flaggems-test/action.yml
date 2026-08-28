@@ -1,0 +1,115 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Compare FlagGems Test with Baseline'
+description: 'Compare FlagGems candidate test results against a baseline to detect regressions'
+
+inputs:
+  baseline-dir:
+    description: 'Directory containing baseline test results'
+    required: true
+    default: '/root/flaggems_ci/Baseline'
+  candidate-dir:
+    description: 'Directory containing the candidate (PR) test results'
+    required: true
+  baseline-date:
+    description: 'Date string used for baseline lookup (YYYY-MM-DD). Defaults to today.'
+    required: false
+    default: ''
+  compare-script:
+    description: 'Path to the comparison script (relative to working-directory or absolute)'
+    required: true
+    default: 'tools/ci/compare_test_result.py'
+  working-directory:
+    description: 'Working directory for running the compare script'
+    required: false
+    default: '.'
+  fail-on-missing-baseline:
+    description: 'Fail the step if baseline file is not found'
+    required: false
+    default: 'false'
+
+outputs:
+  compare-exit-code:
+    description: 'Exit code from comparison (0 = no regression, non-zero = regression or error)'
+    value: ${{ steps.compare.outputs.exit-code }}
+  baseline-file:
+    description: 'Path to the baseline file used'
+    value: ${{ steps.compare.outputs.baseline-file }}
+  candidate-file:
+    description: 'Path to the candidate summary file'
+    value: ${{ steps.compare.outputs.candidate-file }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Compare with Baseline
+      id: compare
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -x
+
+        # Determine baseline date
+        if [ -n "${{ inputs.baseline-date }}" ]; then
+          BASELINE_DATE="${{ inputs.baseline-date }}"
+        else
+          BASELINE_DATE=$(date +%Y-%m-%d)
+        fi
+
+        BASELINE_JSON="${{ inputs.baseline-dir }}/${BASELINE_DATE}/summary.json"
+        CANDIDATE_JSON="${{ inputs.candidate-dir }}/summary.json"
+
+        echo "Baseline: $BASELINE_JSON"
+        echo "Candidate: $CANDIDATE_JSON"
+
+        echo "baseline-file=$BASELINE_JSON" >> $GITHUB_OUTPUT
+        echo "candidate-file=$CANDIDATE_JSON" >> $GITHUB_OUTPUT
+
+        if [ ! -f "$BASELINE_JSON" ]; then
+          echo "::error::Baseline file not found: $BASELINE_JSON"
+          if [ "${{ inputs.fail-on-missing-baseline }}" = "true" ]; then
+            exit 1
+          else
+            exit 0
+          fi
+        fi
+
+        if [ ! -f "$CANDIDATE_JSON" ]; then
+          echo "::error::Candidate summary file not found: $CANDIDATE_JSON"
+          exit 1
+        fi
+
+        # Run comparison; --exit-code makes it return non-zero on regression
+        python ${{ inputs.compare-script }} \
+          --baseline "$BASELINE_JSON" \
+          --candidate "$CANDIDATE_JSON" \
+          --exit-code || COMPARE_EXIT=$?
+
+        COMPARE_EXIT=${COMPARE_EXIT:-0}
+        echo "exit-code=$COMPARE_EXIT" >> $GITHUB_OUTPUT
+
+        if [ "$COMPARE_EXIT" -ne 0 ]; then
+          echo "::error::FlagGems regression detected! Compare exit code: $COMPARE_EXIT"
+        else
+          echo "::notice::No FlagGems regression detected."
+        fi
+
+        exit $COMPARE_EXIT
