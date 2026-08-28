@@ -62,6 +62,96 @@ def MUSATLE_BarrierArriveOp : MUSATLE_Op<"barrier.arrive"> {
   let hasVerifier = 1;
 }
 
+def MUSATLE_PipeCreateOp : MUSATLE_Op<"pipe.create"> {
+  let summary = "create a typed MUSA TLE pipe";
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<ArrayAttr>:$readers,
+    OptionalAttr<BoolAttr>:$one_shot
+  );
+  let assemblyFormat = "$fields attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_PipeWriterAcquireOp : MUSATLE_Op<"pipe.writer_acquire"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_PipeWriterCommitOp : MUSATLE_Op<"pipe.writer_commit"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_PipeWriterCloseOp : MUSATLE_Op<"pipe.writer_close"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_PipeReaderWaitOp : MUSATLE_Op<"pipe.reader_wait"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<StrAttr>:$reader_name,
+    OptionalAttr<ArrayAttr>:$reader_fields
+  );
+  let results = (outs I1:$is_closed);
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_PipeReaderReleaseOp : MUSATLE_Op<"pipe.reader_release", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<StrAttr>:$reader_name,
+    OptionalAttr<ArrayAttr>:$reader_fields
+  );
+  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
 def MUSATLE_ExtractTileOp : MUSATLE_Op<"extract_tile", [Pure]> {
   let arguments = (ins TT_Tensor:$src, TT_IntLike:$index,
       DenseI64ArrayAttr:$tile_shape);

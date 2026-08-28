@@ -2,6 +2,7 @@
 
 #include "Dialect/MUSATLE/IR/Dialect.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
+#include "tle/dialect/include/IR/Dialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -37,6 +38,44 @@ static Value stripConvertLayouts(Value value) {
     current = convert.getSrc();
   }
   return current;
+}
+
+static Value getMemDescRoot(Value value) {
+  Value current = value;
+  while (true) {
+    if (auto index = current.getDefiningOp<triton::gpu::MemDescIndexOp>()) {
+      current = index.getSrc();
+      continue;
+    }
+    if (auto subslice =
+            current.getDefiningOp<triton::gpu::MemDescSubsliceOp>()) {
+      current = subslice.getSrc();
+      continue;
+    }
+    if (auto alias = current.getDefiningOp<triton::tle::MemDescAliasOp>()) {
+      current = alias.getSrc();
+      continue;
+    }
+    if (auto transpose = current.getDefiningOp<triton::gpu::MemDescTransOp>()) {
+      current = transpose.getSrc();
+      continue;
+    }
+    if (auto reshape = current.getDefiningOp<triton::gpu::MemDescReshapeOp>()) {
+      current = reshape.getSrc();
+      continue;
+    }
+    if (auto reinterpret =
+            current.getDefiningOp<triton::gpu::MemDescReinterpretOp>()) {
+      current = reinterpret.getSrc();
+      continue;
+    }
+    if (auto wgmmaView =
+            current.getDefiningOp<triton::tle::MemDescWGMMAViewOp>()) {
+      current = wgmmaView.getSrc();
+      continue;
+    }
+    return current;
+  }
 }
 
 static Attribute getStrippedTensorEncoding(Value value) {
@@ -1009,7 +1048,8 @@ class SelectEncodingsPass
 
   void tagDependencyGroup(triton::musa_tle::LocalPointersOp op,
                           OpBuilder &builder) {
-    auto alloc = op.getSrc().getDefiningOp<triton::gpu::LocalAllocOp>();
+    auto alloc =
+        getMemDescRoot(op.getSrc()).getDefiningOp<triton::gpu::LocalAllocOp>();
     if (!alloc)
       return;
     auto groupAttr = alloc->getAttrOfType<IntegerAttr>(kBarrierGroupAttr);

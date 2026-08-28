@@ -1,5 +1,8 @@
 #include "Dialect/MUSA/IR/Dialect.h"
 #include "TritonMUSACommon/MMAOperandUtils.h"
+#ifdef __TLE__
+#include "TritonMUSACommon/TMEUtils.h"
+#endif // __TLE__
 #include "TritonMUSAGPUTransforms/Passes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -57,8 +60,29 @@ static bool isIssueBarrier(ttg::BarrierOp barrier) {
          barrier.getAddrSpace() != ttg::AddrSpace::Local;
 }
 
+#ifdef __TLE__
+static bool isInsideStaticWarpSpecialize(Operation *op) {
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (parent->hasAttr("musa_tle.static_warp_specialize"))
+      return true;
+  }
+  return false;
+}
+#endif // __TLE__
+
 static bool
 shouldInsertIssueBarrierBefore(triton::musa::AsyncTMECopyLocalToGlobalOp op) {
+#ifdef __TLE__
+  bool isPipeReaderStore =
+      op->hasAttr(triton::musa::kTLEPipeReaderTMEStoreAttr);
+  bool suppressBarrier =
+      isPipeReaderStore && isInsideStaticWarpSpecialize(op.getOperation());
+  if (isPipeReaderStore)
+    op->removeAttr(triton::musa::kTLEPipeReaderTMEStoreAttr);
+  if (suppressBarrier)
+    return false;
+#endif // __TLE__
   Operation *prev = op->getPrevNode();
   auto prevBarrier = dyn_cast_or_null<ttg::BarrierOp>(prev);
   return !isIssueBarrier(prevBarrier);

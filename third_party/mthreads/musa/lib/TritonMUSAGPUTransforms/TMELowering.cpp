@@ -222,6 +222,10 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
           pred, *config);
       asyncCopy->setAttr("musa_tle.expect_bytes",
                          rewriter.getI32IntegerAttr(expectBytes.getInt()));
+      if (Attribute completionGroup =
+              op->getAttr(triton::musa::kTLECompletionGroupAttr))
+        asyncCopy->setAttr(triton::musa::kTLECompletionGroupAttr,
+                           completionGroup);
       rewriter.eraseOp(op);
       return success();
     }
@@ -256,8 +260,16 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
     if (failed(config))
       return op.emitOpError("unable to resolve final TME store config");
 
-    triton::musa::createAsyncTMECopyLocalToGlobal(
+    auto asyncCopy = triton::musa::createAsyncTMECopyLocalToGlobal(
         rewriter, loc, op.getDst(), *coord, op.getSrc(), pred, *config);
+#ifdef __TLE__
+    if (Attribute readerTMEStore =
+            op->getAttr(triton::musa::kTLEPipeReaderTMEStoreAttr))
+      asyncCopy->setAttr(triton::musa::kTLEPipeReaderTMEStoreAttr,
+                         readerTMEStore);
+    if (Attribute issueThread = op->getAttr(triton::musa::kTMEIssueThreadAttr))
+      asyncCopy->setAttr(triton::musa::kTMEIssueThreadAttr, issueThread);
+#endif // __TLE__
     triton::musa::TMEStoreCommitOp::create(rewriter, loc);
     triton::musa::TMEStoreReadWaitOp::create(rewriter, loc);
   }

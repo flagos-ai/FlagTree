@@ -6,6 +6,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "llvm/ADT/DenseSet.h"
 #include <deque>
 
 namespace mlir {
@@ -269,6 +270,57 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
                                  triton::gpu::AddrSpace::Local);
 }
 
+#ifdef __TLE__
+static bool syncPipeLocalStoreGroups(Operation *wait, BlockInfo *blockInfo,
+                                     Allocation *allocation) {
+  auto waitGroups = wait->getAttrOfType<DenseI64ArrayAttr>(
+      "musa_tle.pipe_local_store_wait_groups");
+  if (!waitGroups || waitGroups.empty())
+    return false;
+
+  llvm::DenseSet<int64_t> selectedGroups;
+  selectedGroups.insert(waitGroups.asArrayRef().begin(),
+                        waitGroups.asArrayRef().end());
+
+  Operation *function = wait->getParentOp();
+  while (function && !isa<FunctionOpInterface>(function))
+    function = function->getParentOp();
+  if (!function)
+    return false;
+
+  auto syncSlice = [&](const AllocationSlice &completed) {
+    auto eraseIntersecting = [&](BlockInfo::SliceMapT &slices) {
+      for (auto it = slices.begin(); it != slices.end();) {
+        if (it->first.intersects(completed))
+          it = slices.erase(it);
+        else
+          ++it;
+      }
+    };
+    eraseIntersecting(blockInfo->syncReadSlices);
+    eraseIntersecting(blockInfo->syncWriteSlices);
+  };
+
+  bool matchedAllocation = false;
+  function->walk([&](triton::gpu::LocalAllocOp alloc) {
+    auto group =
+        alloc->getAttrOfType<IntegerAttr>("musa_tle.pipe_local_store_group");
+    if (!group || !selectedGroups.contains(group.getInt()))
+      return;
+    for (Value result : alloc->getResults()) {
+      for (auto bufferId : allocation->getBufferIds(result)) {
+        if (bufferId == Allocation::InvalidBufferId)
+          continue;
+        auto interval = allocation->getAllocatedInterval(bufferId);
+        syncSlice(AllocationSlice(result, interval));
+        matchedAllocation = true;
+      }
+    }
+  });
+  return matchedAllocation;
+}
+#endif
+
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
                             OpBuilder *builder) {
@@ -288,6 +340,14 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     return;
   }
 
+#ifdef __TLE__
+  if (syncPipeLocalStoreGroups(op, blockInfo, allocation)) {
+    // The pipe hardware wait is the acquire edge for this local-store
+    // generation.  Clear only the corresponding payload allocation so
+    // unrelated shared-memory dependencies remain tracked.
+    return;
+  }
+#endif
   if (op->hasTrait<mlir::OpTrait::MemWaitOpTrait>() &&
       !containsLocalBarrier(op->getNextNode())) {
     // If the current op is an async wait and the next op is not a barrier we
