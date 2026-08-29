@@ -150,6 +150,7 @@ private:
   llvm::DenseMap<llvm::StringRef, int32_t> sTagsArgPosMap;
 };
 
+bool isExpensiveView(triton::ExpandDimsOp op);
 /// Returns true if tt.reshape needs extra overhead instead of a zero-copy
 /// memref.reinterpret_cast
 bool isExpensiveView(Type srcTy, Type dstTy);
@@ -242,7 +243,8 @@ memref::AllocaOp getAllocaOp(Value val);
 Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
                      mlir::Operation *op, MemRefType storeValueType,
                      Value storePtr, mlir::ValueRange configStrides,
-                     mlir::ValueRange configShapes, triton::gcu::TagInfo tag);
+                     mlir::ValueRange configShapes,
+                     mlir::ValueRange configOffsets, triton::gcu::TagInfo tag);
 
 void WaitGcuLoadStore(OpBuilder &rewriter, Location loc,
                       triton::gcu::TagInfo tag, Value totalSize);
@@ -310,6 +312,7 @@ inline int64_t ceilDiv(int64_t lhs, int64_t rhs) {
   return lhs % rhs > 0 ? lhs / rhs + 1 : lhs / rhs;
 }
 int getNumWarps(ModuleOp mod);
+int getNumWarps(Operation *op);
 int getTotalNumWarps(mlir::gpu::GPUModuleOp mod);
 
 bool isAllocaInputValue(Value v);

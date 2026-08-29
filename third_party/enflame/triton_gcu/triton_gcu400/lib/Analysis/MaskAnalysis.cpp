@@ -61,8 +61,10 @@ static void printAfterVisit(Operation *op) {
 void MaskState::addStateScalar(OpBuilder &builder, Location loc,
                                const MaskState &state,
                                const OpFoldResult scalar) {
-  this->start = addOFRs(builder, loc, state.start, scalar);
-  this->end = addOFRs(builder, loc, state.end, scalar);
+  for (uint64_t i = 0; i < state.starts.size(); ++i) {
+    this->starts.push_back(addOFRs(builder, loc, state.starts[i], scalar));
+    this->ends.push_back(addOFRs(builder, loc, state.ends[i], scalar));
+  }
   this->dims = state.dims;
 }
 
@@ -76,7 +78,19 @@ void MaskState::addStates(OpBuilder &builder, Location loc,
 
   if (lhsState.scalar && rhsState.scalar) {
     this->scalar = addOFRs(builder, loc, lhsState.scalar, rhsState.scalar);
-    this->dims = lhsState.getRank() != 0 ? lhsState.dims : rhsState.dims;
+    // When both operands are scalars, the result is a full-tile (all-or-none)
+    // mask: the valid region is the whole tile. Fill per-dim starts/ends so
+    // this state carries the same number of range bounds as a non-scalar
+    // state — otherwise rewriteForOp (init side) and rewriteYieldOp (yield
+    // side) would push a different number of operands and break the
+    // scf.for iter_args/yield count. Use [0, dims[i]) per dimension.
+    const MaskState &withDims = lhsState.getRank() != 0 ? lhsState : rhsState;
+    this->dims = withDims.dims;
+    auto zeroAttr = builder.getIndexAttr(0);
+    for (uint64_t i = 0; i < withDims.dims.size(); ++i) {
+      this->starts.push_back(zeroAttr);
+      this->ends.push_back(withDims.dims[i]);
+    }
     return;
   }
 
@@ -101,16 +115,11 @@ void MaskState::minStates(OpBuilder &builder, Location loc,
 
 void MaskState::setStates(OpBuilder &builder, Location loc,
                           const MaskState &srcState) {
-  if (srcState.start)
-    this->start = srcState.start;
-  if (srcState.end)
-    this->end = srcState.end;
+  this->starts = srcState.starts;
+  this->ends = srcState.ends;
   if (srcState.scalar)
     this->scalar = srcState.scalar;
-
-  for (int64_t i = 0; i < srcState.getRank(); ++i) {
-    this->dims.push_back(srcState.dims[i]);
-  }
+  this->dims = srcState.dims;
 }
 
 bool MaskAnalysis::parse(OpBuilder &builder, Location loc, Value operand,
@@ -245,8 +254,11 @@ void MaskAnalysis::parseConstant(
 
     auto dst = constOp.getResult();
     auto dstShape = cast<ShapedType>(dst.getType()).getShape();
-    for (auto s : dstShape)
+    for (auto s : dstShape) {
       state.dims.push_back(builder.getIndexAttr(s));
+      state.starts.push_back(builder.getIndexAttr(0));
+      state.ends.push_back(builder.getIndexAttr(s));
+    }
   } else {
     auto value = cast<IntegerAttr>(constOp.getValue()).getInt();
     state.scalar = builder.getIndexAttr(value);
@@ -291,13 +303,22 @@ void MaskAnalysis::parseAnd(OpBuilder &builder, Location loc,
   parse(builder, loc, andOp.getRhs(), rhsState, knownMasks);
   assert(!rhsState.isEmpty());
 
-  state.minStates(builder, loc, lhsState, rhsState);
-  if (lhsState.start && rhsState.start)
-    state.start = maxOFRs(builder, loc, lhsState.start, rhsState.start);
-  else if (lhsState.start)
-    state.start = lhsState.start;
-  else if (rhsState.start)
-    state.start = rhsState.start;
+  assert((lhsState.getRank() == rhsState.getRank()) &&
+         "unexpected case where lhs and rhs have different ranks");
+
+  auto zeroAttr = builder.getIndexAttr(0);
+  for (int64_t i = 0; i < lhsState.getRank(); ++i) {
+    // Intersect the per-dimension valid regions. Each dim can carry its own
+    // range (e.g. (rows >= r0) & (cols >= c0)), so start and end are tracked
+    // independently per dimension.
+    auto newStart =
+        maxOFRs(builder, loc, lhsState.starts[i], rhsState.starts[i]);
+    auto newEnd = minOFRs(builder, loc, lhsState.ends[i], rhsState.ends[i]);
+    state.starts.push_back(newStart);
+    state.ends.push_back(newEnd);
+    state.dims.push_back(maxOFRs(
+        builder, loc, subOFRs(builder, loc, newEnd, newStart), zeroAttr));
+  }
 }
 
 void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
@@ -350,6 +371,8 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
     Value result = builder.create<arith::SelectOp>(loc, cmpiOp, one, zero);
     for (int64_t i = 0; i < lhsState.getRank(); ++i) {
       state.dims.push_back(result);
+      state.starts.push_back(zero);
+      state.ends.push_back(result);
     }
     return;
   }
@@ -367,21 +390,49 @@ void MaskAnalysis::parseCmp(OpBuilder &builder, Location loc,
   assert(cmpDim != -1 &&
          "unexpected case where no dimension has size larger than 1");
 
-  auto newDim = lhsState.dims[cmpDim];
-  if (predicate == arith::CmpIPredicate::slt ||
-      predicate == arith::CmpIPredicate::ult) {
-    auto newEnd = minOFRs(builder, loc, lhsState.end, rhsState.scalar);
-    newDim = subOFRs(builder, loc, newEnd, lhsState.start);
-  } else {
-    auto newstart = maxOFRs(builder, loc, lhsState.start, rhsState.scalar);
-    state.start = newstart;
-  }
-
+  // Convert the absolute range [origin, origin + N) into a within-tile valid
+  // region [starts, ends), relative to the tile origin:
+  //   <  comparison: valid = [0, count),         count = max(0,
+  //   min(scalar-origin, N))
+  //   >= comparison: valid = [withinStart, N),   withinStart = max(0,
+  //   scalar-origin)
+  // This is tile-relative so getPtrInfo can fold it into the base pointer
+  // scaled by the memory stride of this dimension without double-counting the
+  // tile origin (which PtrState.offsets already fold into the base).
+  bool isLt = (predicate == arith::CmpIPredicate::slt ||
+               predicate == arith::CmpIPredicate::ult);
+  auto zeroAttr = builder.getIndexAttr(0);
   for (int64_t i = 0; i < lhsState.getRank(); ++i) {
-    if (i == cmpDim)
-      state.dims.push_back(newDim);
-    else
+    if (i == cmpDim) {
+      if (isLt) {
+        auto shifted =
+            subOFRs(builder, loc, rhsState.scalar, lhsState.starts[i]);
+        auto withinCount =
+            minOFRs(builder, loc, maxOFRs(builder, loc, shifted, zeroAttr),
+                    lhsState.dims[i]);
+        state.starts.push_back(zeroAttr);
+        state.ends.push_back(withinCount);
+        state.dims.push_back(withinCount);
+      } else {
+        auto withinStart =
+            maxOFRs(builder, loc,
+                    subOFRs(builder, loc, rhsState.scalar, lhsState.starts[i]),
+                    zeroAttr);
+        state.starts.push_back(withinStart);
+        state.ends.push_back(lhsState.dims[i]);
+        state.dims.push_back(
+            subOFRs(builder, loc, lhsState.dims[i], withinStart));
+      }
+    } else {
+      // Non-comparison dim (size 1): copy dims, but reset starts/ends to the
+      // tile-relative [0, dims[i]). The lhsState.starts[i] may carry an
+      // absolute offset (e.g. r0_offset from `addi(splat(c), range)`) which is
+      // already in PtrState.offsets — keeping it here would make getPtrInfo
+      // fold it into the base a second time (double-count → wrong address).
+      state.starts.push_back(zeroAttr);
+      state.ends.push_back(lhsState.dims[i]);
       state.dims.push_back(lhsState.dims[i]);
+    }
   }
 }
 
@@ -400,8 +451,8 @@ void MaskAnalysis::parseMakeRange(
          "stride must be 1 for make_range whose result is used "
          "as load or store masks");
 
-  state.start = builder.getIndexAttr(start);
-  state.end = builder.getIndexAttr(end);
+  state.starts.push_back(builder.getIndexAttr(start));
+  state.ends.push_back(builder.getIndexAttr(end));
   state.dims.push_back(builder.getIndexAttr(shape[0]));
 }
 
@@ -423,12 +474,14 @@ void MaskAnalysis::parseBroadcast(
   parse(builder, loc, src, state, knownMasks);
 
   for (uint64_t i = 0; i < srcShape.size(); ++i) {
-    if (srcShape[i] == dstShape[i])
+    if (srcShape[i] == dstShape[i]) {
       continue;
-    else if (srcShape[i] < dstShape[i])
+    } else if (srcShape[i] < dstShape[i]) {
       state.dims[i] = builder.getIndexAttr(dstShape[i]);
-    else
+      state.ends[i] = builder.getIndexAttr(dstShape[i]);
+    } else {
       llvm_unreachable("unexpected dimensions used in broadcast\n");
+    }
   }
 }
 
@@ -451,11 +504,16 @@ void MaskAnalysis::parseSplat(
       Value dim = builder.create<arith::ConstantIndexOp>(loc, s);
       Value result = builder.create<arith::SelectOp>(loc, src, dim, zero);
       state.dims.push_back(result);
+      state.starts.push_back(zero);
+      state.ends.push_back(result);
     }
   } else {
     parse(builder, loc, src, state, knownMasks);
-    for (auto s : dstShape)
+    for (auto s : dstShape) {
       state.dims.push_back(builder.getIndexAttr(s));
+      state.starts.push_back(builder.getIndexAttr(0));
+      state.ends.push_back(builder.getIndexAttr(s));
+    }
   }
 }
 
@@ -471,6 +529,8 @@ void MaskAnalysis::parseExpandDims(
   (void)dstShape;
   assert(dstShape[axis] == 1 &&
          "expect changed dimension to be 1 in expand_dims");
+  state.starts.insert(state.starts.begin() + axis, builder.getIndexAttr(0));
+  state.ends.insert(state.ends.begin() + axis, builder.getIndexAttr(1));
   state.dims.insert(state.dims.begin() + axis, builder.getIndexAttr(1));
 }
 
@@ -481,11 +541,10 @@ void MaskAnalysis::parseDot(OpBuilder &builder, Location loc,
   parse(builder, loc, dotOp.getC(), srcState, knownMasks);
   assert(!srcState.isEmpty());
 
-  state.start = srcState.start;
-  state.end = srcState.end;
+  state.starts = srcState.starts;
+  state.ends = srcState.ends;
   state.scalar = srcState.scalar;
-  for (int64_t i = 0; i < srcState.getRank(); ++i)
-    state.dims.push_back(srcState.dims[i]);
+  state.dims = srcState.dims;
 }
 
 void MaskAnalysis::parseRemsi(
@@ -525,14 +584,12 @@ void MaskAnalysis::parseReduce(
   MaskState srcState;
   parse(builder, loc, src, srcState, knownMasks);
 
-  if (srcState.start)
-    state.start = srcState.start;
-  if (srcState.end)
-    state.end = srcState.end;
   if (srcState.scalar)
     state.scalar = srcState.scalar;
   for (uint32_t i = 0; i < srcState.dims.size(); ++i) {
     if (i != axis) {
+      state.starts.push_back(srcState.starts[i]);
+      state.ends.push_back(srcState.ends[i]);
       state.dims.push_back(srcState.dims[i]);
     }
   }

@@ -30,37 +30,42 @@ namespace mlir {
 namespace triton {
 namespace gcu {
 // Data structure used to decode the pattern in a mask used for load and store.
-// start and end field represent the start and end index of a range (produced
-// by make_range, addi, etc.). While multi-dimensional data is possible, we
-// assume range comparison can only be done on 1 dimension at a time (and
-// results of range comparisons across dimensions can be combined), hence start
-// and end are not vectors. dims represents the real access size for load/store
-// (instead of the tensor/memref size specified by the IR). scalar is a shortcut
-// used when the entire state contains a single scalar value.
+// starts and ends are per-dimension: starts[i] / ends[i] delimit the valid
+// region [starts[i], ends[i]) within the tile along dimension i, in units of
+// the corresponding make_range index (whose stride is always 1). dims[i] is
+// the valid size used as the load/store shape and equals ends[i] - starts[i].
+// start/end are per-dimension (not single) because a multi-dim mask can carry
+// a range on more than one dimension at a time, e.g. (rows >= r0) & (cols >=
+// c0). scalar is a shortcut used when the entire state contains a single
+// scalar value.
 //
 // The general lifetime of this data structure is roughly:
 // 1. A range is created by make_range and optionally operated on by addi w/
-// result of splat, expand_dims, etc. During this phase, either (1) both start
-// and end are populated, or (2) scalar is populated. Only one of the dimensions
-// (that contains the range) can have dim > 1.
+// result of splat, expand_dims, etc. During this phase, starts/ends hold the
+// (possibly shifted) range bounds and dims the range size. Only one of the
+// dimensions (that contains the range) can have dim > 1.
 // 2. Result from step 1 is compared with a another MaskState that represents a
-// scalar value. The resulting state only has dims populated.
+// scalar value. For a `<`-style comparison the valid region is clipped from
+// the end (starts stays 0); for a `>=`-style comparison it is clipped from
+// the start (starts becomes > 0). dims is shrunk accordingly.
 // 3. Optionally, result from step 2 can be broadcasted and anded with other
-// results from step 2. The resulting state only has dims populated.
+// results from step 2; each dimension's valid region is intersected.
 //
 // Example of creating 2D mask:
-//  mask = (rows[:, None] < M) & (cols[None, :] < N)
+//  mask = (rows[:, None] < M) & (cols[None, :] >= half)
 struct MaskState {
-  OpFoldResult start;
-  OpFoldResult end;
+  SmallVector<OpFoldResult> starts;
+  SmallVector<OpFoldResult> ends;
   SmallVector<OpFoldResult> dims;
   OpFoldResult scalar;
 
   int64_t getRank() const { return dims.size(); }
 
-  bool isEmpty() const { return getRank() == 0 && !scalar && !start && !end; }
+  bool isEmpty() const {
+    return getRank() == 0 && !scalar && starts.empty() && ends.empty();
+  }
 
-  bool isMask() const { return !start && !end && !scalar && dims.size() != 0; }
+  bool isMask() const { return !scalar && dims.size() != 0; }
 
   void addStateScalar(OpBuilder &builder, Location loc, const MaskState &state,
                       const OpFoldResult scalar);

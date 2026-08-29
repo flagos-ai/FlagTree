@@ -137,7 +137,21 @@ bool WarpGroupDotOp::needsPartialAccumulator() {
 bool WarpGroupDotOp::verifyDims() {
   auto aShape = this->getA().getType().getShape();
   auto bShape = this->getB().getType().getShape();
-  return aShape[aShape.size() - 1] == bShape[bShape.size() - 2];
+
+  unsigned bKDim = (*this)->getAttr("rhs_column_major") ? bShape.size() - 1
+                                                        : bShape.size() - 2;
+  return aShape[aShape.size() - 1] == bShape[bKDim];
+}
+
+bool WarpGroupDotOp::verifyOutputDims() {
+  auto aShape = this->getA().getType().getShape();
+  auto bShape = this->getB().getType().getShape();
+  auto cShape = this->getC().getType().getShape();
+
+  unsigned bNDim = (*this)->getAttr("rhs_column_major") ? bShape.size() - 2
+                                                        : bShape.size() - 1;
+  return cShape[cShape.size() - 2] == aShape[aShape.size() - 2] &&
+         cShape[cShape.size() - 1] == bShape[bNDim];
 }
 
 LogicalResult WarpGroupDotOp::verify() {
@@ -180,10 +194,14 @@ LogicalResult WarpGroupDotOp::verify() {
     }
   }
 
+  bool rhsColMajor = (*this)->hasAttr("rhs_column_major");
+  unsigned bKDim = rhsColMajor ? bShape.size() - 1 : bShape.size() - 2;
+  unsigned bNDim = rhsColMajor ? bShape.size() - 2 : bShape.size() - 1;
+
   const int64_t m = aShape[aRank - 2];
   const int64_t kA = aShape[aRank - 1];
-  const int64_t kB = bShape[bRank - 2];
-  const int64_t n = bShape[bRank - 1];
+  const int64_t kB = bShape[bKDim];
+  const int64_t n = bShape[bNDim];
   const int64_t cM = cShape[cRank - 2];
   const int64_t cN = cShape[cRank - 1];
   const int64_t dM = dShape[dRank - 2];

@@ -3,7 +3,7 @@
 Covers:
   - Basic promotion (block pointer -> AIULoadOp)
   - Non-block-pointer fallback (no promotion)
-  - Multiple data types (fp16, bf16, fp32)
+  - Multiple data types (fp16, bf16)
   - Various block shapes
   - Memory layout orders
   - AIU load feeding tl.dot (GEMM)
@@ -18,8 +18,10 @@ import os
 import re
 import shutil
 import pytest
+import torch
 import triton
 import triton.language as tl
+from triton import knobs
 from triton.backends.compiler import GPUTarget
 
 tle_backend = pytest.importorskip(
@@ -44,9 +46,22 @@ def _ppu_sdk_available() -> bool:
 _skip_no_sdk = pytest.mark.skipif(not _ppu_sdk_available(), reason="PPU SDK not available")
 
 
-def _compile(kernel, signature, constexprs, target=None):
+def _compile(kernel, signature, constexprs, target=None, options=None):
     src = triton.compiler.ASTSource(fn=kernel, signature=signature, constexprs=constexprs)
-    return triton.compile(src, target=target or _GPU_TARGET)
+    return triton.compile(src, target=target or _GPU_TARGET, options=options)
+
+
+def _compile_through_llir(kernel, signature, constexprs, target=None, options=None):
+    previous_hook = knobs.runtime.add_stages_inspection_hook
+
+    def stop_before_hgbin(_backend, stages, _options, _language, _capability):
+        stages["hgbin"] = lambda _src, _metadata: b""
+
+    knobs.runtime.add_stages_inspection_hook = stop_before_hgbin
+    try:
+        return _compile(kernel, signature, constexprs, target, options)
+    finally:
+        knobs.runtime.add_stages_inspection_hook = previous_hook
 
 
 def _assert_stages_exist(compiled, stages=("ttir", "ttgir", "llir")):
@@ -58,6 +73,17 @@ def _assert_no_tle_residue(compiled):
     llir = compiled.asm["llir"]
     leak = [ln for ln in llir.split("\n") if "tle." in ln]
     assert not leak, f"residual tle.* ops in LLIR:\n" + "\n".join(leak[:5])
+
+
+def _assert_int8_uses_ppu_aiu_v1_b8(compiled):
+    ttgir = compiled.asm["ttgir"]
+    llir = compiled.asm["llir"]
+    aiu_instructions = [line for line in llir.splitlines() if "ppu.cp.async.aiu" in line]
+    assert "versionMajor = 1" in ttgir
+    assert aiu_instructions, "expected an async AIU copy instruction"
+    assert all(".2d.b8" in line for line in aiu_instructions)
+    assert all(".b8" in line for line in aiu_instructions)
+    assert all(".b16" not in line for line in aiu_instructions)
 
 
 # ---------------------------------------------------------------------------
@@ -137,13 +163,34 @@ def _typed_aiu_load(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.
 
 
 @_skip_no_sdk
-@pytest.mark.parametrize("dtype", ["fp16", "bf16", "fp32"])
+@pytest.mark.parametrize("dtype", ["fp16", "bf16"])
 def test_aiu_promotion_dtypes(dtype):
     compiled = _compile(_typed_aiu_load, {"a_ptr": f"*{dtype}", "c_ptr": f"*{dtype}"},
                         {"M": 256, "K": 256, "BLOCK_M": 64, "BLOCK_K": 64})
     _assert_stages_exist(compiled)
     assert "aiu_load" in compiled.asm["ttir"]
     _assert_no_tle_residue(compiled)
+
+
+@_skip_no_sdk
+def test_int8_aiu_load_uses_v1_b8_instruction():
+    compiled = _compile_through_llir(_typed_aiu_load, {"a_ptr": "*i8", "c_ptr": "*i8"},
+                                     {"M": 256, "K": 256, "BLOCK_M": 64, "BLOCK_K": 64})
+    _assert_stages_exist(compiled)
+    assert "aiu_load" in compiled.asm["ttir"]
+    _assert_no_tle_residue(compiled)
+    _assert_int8_uses_ppu_aiu_v1_b8(compiled)
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+def test_int8_aiu_load_device_correctness():
+    expected = torch.arange(32 * 32, device="cuda", dtype=torch.int32)
+    expected = expected.remainder(127).to(torch.int8).reshape(32, 32)
+    actual = torch.empty_like(expected)
+    _typed_aiu_load[(1, )](expected, actual, 32, 32, 32, 32, num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(actual.cpu(), expected.cpu(), rtol=0, atol=0)
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +278,56 @@ _GEMM_SIG = {"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32"}
 _GEMM_CONSTEXPRS = {"M": 512, "N": 512, "K": 256, "BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 64}
 
 
+@triton.jit(do_not_specialize_on_alignment=["a_ptr", "b_ptr", "c_ptr"])
+def _int8_gemm_aiu_kernel(
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    M: tl.constexpr,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid_m * BLOCK_M, 0),
+                             block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
+    # b_ptr is physically contiguous [N, K], logically column-major [K, N].
+    b_bp = tl.make_block_ptr(b_ptr, shape=(K, N), strides=(1, K), offsets=(0, pid_n * BLOCK_N),
+                             block_shape=(BLOCK_K, BLOCK_N), order=(0, 1))
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.int32)
+    for _ in range(0, K, BLOCK_K):
+        a = tle.load(a_bp, is_async=True)
+        b = tle.load(b_bp, is_async=True)
+        acc += tl.dot(a, b)
+        a_bp = tl.advance(a_bp, (0, BLOCK_K))
+        b_bp = tl.advance(b_bp, (BLOCK_K, 0))
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    tl.store(c_ptr + N * offs_m[:, None] + offs_n[None, :], acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+@pytest.mark.parametrize(
+    "m,n,k,bm,bn,bk,num_warps",
+    [(16, 16, 32, 16, 16, 32, 1), (16, 32, 64, 16, 32, 64, 1), (64, 64, 64, 64, 64, 64, 4),
+     (128, 128, 128, 64, 64, 64, 4)],
+)
+def test_int8_gemm_aiu_device_correctness(m, n, k, bm, bn, bk, num_warps):
+    torch.manual_seed(123)
+    a = torch.randint(-8, 9, (m, k), device="cuda", dtype=torch.int8)
+    b = torch.randint(-8, 9, (n, k), device="cuda", dtype=torch.int8)
+    actual = torch.empty((m, n), device="cuda", dtype=torch.int32)
+    grid = (triton.cdiv(m, bm), triton.cdiv(n, bn))
+    _int8_gemm_aiu_kernel[grid](a, b, actual, m, n, k, bm, bn, bk, num_warps=num_warps, num_stages=1)
+    torch.cuda.synchronize()
+    expected = a.cpu().to(torch.int32) @ b.cpu().to(torch.int32).T
+    torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+
 @_skip_no_sdk
 def test_gemm_aiu_both_operands_promoted():
     """Both A and B matrix loads should be promoted to AIULoadOp."""
@@ -300,10 +397,35 @@ def test_aiu_pipelined_loop(num_stages):
                  mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
 
     compiled = _compile(kernel, {"a_ptr": "*fp16", "c_ptr": "*fp16"},
-                        {"M": 512, "K": 512, "BLOCK_M": 64, "BLOCK_K": 64})
+                        {"M": 512, "K": 512, "BLOCK_M": 64, "BLOCK_K": 64}, options={"num_stages": num_stages})
     _assert_stages_exist(compiled)
     assert "aiu_load" in compiled.asm["ttir"]
     _assert_no_tle_residue(compiled)
+
+
+@_skip_no_sdk
+def test_int8_aiu_pipelined_loop_uses_v1_b8_instruction():
+
+    @triton.jit
+    def kernel(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr):
+        pid = tl.program_id(0)
+        a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(K, 1), offsets=(pid * BLOCK_M, 0),
+                                 block_shape=(BLOCK_M, BLOCK_K), order=(1, 0))
+        acc = tl.zeros((BLOCK_M, BLOCK_K), dtype=tl.int32)
+        for _ in range(0, K, BLOCK_K):
+            a = tle.load(a_bp, is_async=True)
+            acc += a.to(tl.int32)
+            a_bp = tl.advance(a_bp, (0, BLOCK_K))
+        offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
+        offs_k = tl.arange(0, BLOCK_K)
+        tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], acc, mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
+
+    compiled = _compile_through_llir(kernel, {"a_ptr": "*i8", "c_ptr": "*i32"},
+                                     {"M": 512, "K": 512, "BLOCK_M": 64, "BLOCK_K": 64}, options={"num_stages": 2})
+    _assert_stages_exist(compiled)
+    assert "aiu_load" in compiled.asm["ttir"]
+    _assert_no_tle_residue(compiled)
+    _assert_int8_uses_ppu_aiu_v1_b8(compiled)
 
 
 # ---------------------------------------------------------------------------

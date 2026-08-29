@@ -23,7 +23,31 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/2nd")
 # triton_global.cmake, matching kurama: it must stay out of any version-isolated
 # subproject (flagtree builds none, but the shared file keeps the same contract).
 include(triton_global)
-add_compile_definitions(TRITON_VERSION=${TRITON_VERSION_NUMERIC})
+
+# Determine which architectures are enabled for the selected profile.
+# kurama derives these flags in its root CMakeLists.txt right after including
+# triton_global.cmake; flagtree does not sync that file, so derive them here.
+# The flagtree wheel must ship both gcu300 and gcu400 (the old sync built both
+# unconditionally), and gcu500 is intentionally not synced into flagtree.
+if(TARGET_PROFILE STREQUAL "")
+  set(TARGET_PROFILE "default")
+endif()
+string(TOLOWER "${TARGET_PROFILE}" TARGET_PROFILE)
+set(ENABLE_GCU300 OFF)
+set(ENABLE_GCU400 OFF)
+set(ENABLE_GCU500 OFF)
+if(TARGET_PROFILE STREQUAL "default")
+  set(ENABLE_GCU300 ON)
+  set(ENABLE_GCU400 ON)
+elseif(TARGET_PROFILE STREQUAL "gcu300" OR TARGET_PROFILE STREQUAL "gcu300_legacy")
+  set(ENABLE_GCU300 ON)
+elseif(TARGET_PROFILE STREQUAL "gcu400")
+  set(ENABLE_GCU400 ON)
+elseif(TARGET_PROFILE STREQUAL "all")
+  set(ENABLE_GCU300 ON)
+  set(ENABLE_GCU400 ON)
+endif()
+message(STATUS "Flagtree GCU build: TARGET_PROFILE=${TARGET_PROFILE} gcu300=${ENABLE_GCU300} gcu400=${ENABLE_GCU400}")
 
 # Add build for triton_enflame plugin
 add_triton_plugin(TritonEnflame
@@ -85,4 +109,5 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/python/
 )
 
 # Add triton_gcu subdirectory build
+add_compile_options(-Wno-unused-variable)
 add_subdirectory(triton_gcu)

@@ -27,7 +27,7 @@ cuda==13.1
 [2026/08/11] flag_gems==5.3.0rc2 (2026/05), triton==3.6.0
 # 服务冷启动时间: 9分13秒, 服务热启动时间: 2分2秒
 # 输入长度: 32K, 输出长度: 1K, 并发数: 64
-Output token throughput (tok/s): 264.37
+  Output token throughput (tok/s): 264.37
   Total token throughput (tok/s): 8724.08
   Median TTFT (ms): 19197.68
   Median TPOT (ms): 41.21

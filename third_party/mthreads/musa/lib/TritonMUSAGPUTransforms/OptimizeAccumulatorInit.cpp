@@ -134,6 +134,14 @@ struct TritonMUSAGPUOptimizeAccumulatorInitPass
       Value accUse = getAccumulatorValue(dotOp);
       if (!accUse)
         continue;
+#ifdef __TLE__
+      bool hasExplicitResult = false;
+      for (Value result : dotOp->getResults())
+        hasExplicitResult |=
+            static_cast<bool>(getTleExplicitValueEncoding(result));
+      if (getTleExplicitValueEncoding(accUse) || hasExplicitResult)
+        continue;
+#endif // __TLE__
 
       Value useCValue = getUseCValue(dotOp);
       if (useCValue) {
@@ -152,6 +160,11 @@ struct TritonMUSAGPUOptimizeAccumulatorInitPass
           findZeroInitOp(accUse, forOp, loopArgIsZero);
       if (!zeroInitOp && !loopArgIsZero)
         continue;
+#ifdef __TLE__
+      if (zeroInitOp &&
+          getTleExplicitResultEncoding(zeroInitOp->first, zeroInitOp->second))
+        continue;
+#endif // __TLE__
 
       Value loopArgFlagValue = loopArgIsZero ? vFalse : vTrue;
       forOp = addIterArgsToLoop(rewriter, forOp, {loopArgFlagValue});

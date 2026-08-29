@@ -82,8 +82,13 @@ struct CanonicalizeConvertFromTMEMStore
   matchAndRewrite(nvidia_gpu::TMEMStoreOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
+#ifdef __TLE__
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#else
     if (!convert)
       return failure();
+#endif // __TLE__
 
     // bail for incompatible layouts
     auto cvtSrcType = convert.getSrc().getType();
@@ -107,8 +112,13 @@ struct CanonicalizeConvertFromReshape
   matchAndRewrite(triton::ReshapeOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
+#ifdef __TLE__
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#else
     if (!convert)
       return failure();
+#endif // __TLE__
     // If the layouts are structurally the same, the convert is trivial
     if (isConvertTrivial(convert)) {
       rewriter.replaceOpWithNewOp<triton::ReshapeOp>(
@@ -151,8 +161,14 @@ struct CanonicalizeConvertFromTranspose
 
     // If the layouts are structurally the same, the convert is trivial
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
+#ifdef __TLE__
+    if (!convert || isTleExplicitConvertLayoutOp(convert) ||
+        !isConvertTrivial(convert))
+      return failure();
+#else
     if (!convert || !isConvertTrivial(convert))
       return failure();
+#endif // __TLE__
 
     rewriter.replaceOpWithNewOp<triton::TransOp>(
         op, op.getType(), convert.getSrc(), op.getOrder());
@@ -170,9 +186,15 @@ struct CanonicalizeConvertFromHistogram
                   PatternRewriter &rewriter) const override {
     auto src = op.getSrc();
     auto convert = src.getDefiningOp<ConvertLayoutOp>();
+#ifdef __TLE__
+    if (!convert || isTleExplicitConvertLayoutOp(convert)) {
+      return failure();
+    }
+#else
     if (!convert) {
       return failure();
     }
+#endif // __TLE__
     src = convert.getSrc();
 
     // If mask is present, convert the layout of mask to match new src layout
@@ -205,8 +227,13 @@ struct CanonicalizeConvertFromGatherSource : public OpRewritePattern<GatherOp> {
       return failure();
 
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
+#ifdef __TLE__
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#else
     if (!convert)
       return failure();
+#endif // __TLE__
 
     rewriter.replaceOpWithNewOp<GatherOp>(op, convert.getSrc(), op.getIndices(),
                                           op.getAxis());
@@ -225,8 +252,13 @@ struct CanonicalizeConvertFromAlloc
     if (!op.getSrc())
       return failure();
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
+#ifdef __TLE__
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#else
     if (!convert)
       return failure();
+#endif // __TLE__
     SmallVector<NamedAttribute> attrs(op->getAttrs().begin(),
                                       op->getAttrs().end());
     auto newAlloc = triton::gpu::LocalAllocOp::create(
@@ -246,8 +278,13 @@ struct CanonicalizeConvertFromLocalStore
   matchAndRewrite(triton::gpu::LocalStoreOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
+#ifdef __TLE__
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#else
     if (!convert)
       return failure();
+#endif // __TLE__
     rewriter.replaceOpWithNewOp<triton::gpu::LocalStoreOp>(op, convert.getSrc(),
                                                            op.getDst());
     return mlir::success();
@@ -262,8 +299,13 @@ struct CanonicalizeConvertFromSplit
   matchAndRewrite(triton::SplitOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
+#ifdef __TLE__
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
+      return failure();
+#else
     if (!convert)
       return failure();
+#endif // __TLE__
     auto srcEncoding = convert.getSrc().getType().getEncoding();
     // Multiple source layout can give the same output layout, if the source
     // layout of the convert gives the same destination layout we can skip the
@@ -283,6 +325,12 @@ struct CanonicalizeConvertFromConvert
   mlir::LogicalResult
   matchAndRewrite(ConvertLayoutOp op,
                   PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(op))
+      return failure();
+#else
+    // Preserve the original non-TLE convert canonicalization entry.
+#endif // __TLE__
     // Convert to the same layout is redundant.
     if (op->getResultTypes() == op->getOperandTypes()) {
       rewriter.replaceOp(op, op->getOperands());
@@ -359,6 +407,12 @@ struct CanonicalizeConvertFromConvert
 
     // cvt(cvt(x, type1), type2) -> cvt(x, type2)
     if (auto cvt = dyn_cast<ConvertLayoutOp>(arg)) {
+#ifdef __TLE__
+      if (isTleExplicitConvertLayoutOp(cvt))
+        return failure();
+#else
+      // Preserve the original non-TLE nested-convert folding.
+#endif // __TLE__
       rewriter.replaceOpWithNewOp<triton::gpu::ConvertLayoutOp>(
           op, op->getResultTypes().front(), cvt.getSrc());
       return success();

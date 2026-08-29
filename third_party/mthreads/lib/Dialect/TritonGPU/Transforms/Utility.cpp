@@ -26,6 +26,105 @@ namespace mlir {
 
 using namespace triton;
 
+#ifdef __TLE__
+static constexpr const char *kTleExplicitEncodingAttrPrefix =
+    "tle.explicit_encoding.";
+static constexpr const char *kTleExplicitMemoryEncodingAttrName =
+    "tle.explicit_memory_encoding";
+
+const char *getTleExplicitEncodingAttrPrefix() {
+  return kTleExplicitEncodingAttrPrefix;
+}
+
+std::string getTleExplicitEncodingAttrName(unsigned resultNumber) {
+  return std::string(kTleExplicitEncodingAttrPrefix) +
+         std::to_string(resultNumber);
+}
+
+const char *getTleExplicitMemoryEncodingAttrName() {
+  return kTleExplicitMemoryEncodingAttrName;
+}
+
+Attribute getTleExplicitResultEncoding(Operation *op, unsigned resultNumber) {
+  return op->getAttr(getTleExplicitEncodingAttrName(resultNumber));
+}
+
+void setTleExplicitResultEncoding(Operation *op, unsigned resultNumber,
+                                  Attribute encoding) {
+  op->setAttr(getTleExplicitEncodingAttrName(resultNumber), encoding);
+}
+
+void setTleExplicitResultEncoding(OpResult result, Attribute encoding) {
+  setTleExplicitResultEncoding(result.getOwner(), result.getResultNumber(),
+                               encoding);
+}
+
+Attribute getTleExplicitMemoryEncoding(Operation *op) {
+  return op->getAttr(kTleExplicitMemoryEncodingAttrName);
+}
+
+void setTleExplicitMemoryEncoding(Operation *op, Attribute encoding) {
+  op->setAttr(kTleExplicitMemoryEncodingAttrName, encoding);
+}
+
+Attribute getTleExplicitValueEncoding(Value value) {
+  if (auto result = dyn_cast<OpResult>(value))
+    return getTleExplicitResultEncoding(result.getOwner(),
+                                        result.getResultNumber());
+  return nullptr;
+}
+
+static LogicalResult mergeTleExplicitMemoryEncoding(Operation *op, Value value,
+                                                    Attribute candidate,
+                                                    Attribute &encoding) {
+  if (!candidate)
+    return success();
+
+  if (auto tensorType = dyn_cast<RankedTensorType>(value.getType())) {
+    if (tensorType.getEncoding() != candidate)
+      return op->emitOpError(
+          "has explicit MUSA TLE encoding that does not match the tensor "
+          "type encoding");
+  }
+
+  if (!encoding) {
+    encoding = candidate;
+    return success();
+  }
+  if (encoding == candidate)
+    return success();
+
+  op->emitOpError("has conflicting explicit MUSA TLE memory encodings:\n  ")
+      << encoding << "\nand\n  " << candidate;
+  return failure();
+}
+
+LogicalResult inferTleExplicitMemoryEncoding(Operation *op,
+                                             Attribute &encoding) {
+  encoding = getTleExplicitMemoryEncoding(op);
+
+  for (OpResult result : op->getResults()) {
+    if (failed(mergeTleExplicitMemoryEncoding(
+            op, result,
+            getTleExplicitResultEncoding(op, result.getResultNumber()),
+            encoding)))
+      return failure();
+  }
+
+  for (OpOperand &operand : op->getOpOperands()) {
+    if (failed(mergeTleExplicitMemoryEncoding(
+            op, operand.get(), getTleExplicitValueEncoding(operand.get()),
+            encoding)))
+      return failure();
+  }
+  return success();
+}
+
+bool isTleExplicitConvertLayoutOp(Operation *op) {
+  return isa<ttg::ConvertLayoutOp>(op) && getTleExplicitResultEncoding(op, 0);
+}
+#endif // __TLE__
+
 static bool isPassthroughWaitLikeOp(Operation *op) {
   return op->hasTrait<mlir::OpTrait::PassthroughWaitLike>();
 }
@@ -1257,8 +1356,22 @@ Operation *convertDistributedOpEncoding(Attribute encoding, Operation *op) {
   for (size_t i = 0; i < op->getNumResults(); i++) {
     Value newResult = newOp->getResult(i);
     if (newTypes[i] != op->getResultTypes()[i]) {
+#ifdef __TLE__
+      auto convert = triton::gpu::ConvertLayoutOp::create(
+          builder, op->getLoc(), op->getResult(i).getType(), newResult);
+      newResult = convert.getResult();
+      if (Attribute explicitEncoding = getTleExplicitResultEncoding(op, i)) {
+        // The rebuilt op uses the optimized encoding while the bridge restores
+        // the original hard encoding. Transfer ownership result by result so
+        // the explicit marker always matches the type of its owning result.
+        newOp->removeAttr(getTleExplicitEncodingAttrName(i));
+        setTleExplicitResultEncoding(convert.getOperation(), 0,
+                                     explicitEncoding);
+      }
+#else
       newResult = triton::gpu::ConvertLayoutOp::create(
           builder, op->getLoc(), op->getResult(i).getType(), newResult);
+#endif // __TLE__
     }
     op->getResult(i).replaceAllUsesWith(newResult);
   }

@@ -904,8 +904,15 @@ void WarpSpecializeOp::getSuccessorRegions(
     return;
   }
   // And the default region branches transparently back to the parent.
+#if TRITON_VERSION >= 37
+  // In the tritonlang LLVM a `RegionBranchPoint` stores the region's
+  // terminator instead of the region itself.
+  assert(src.getTerminatorPredecessorOrNull()->getParentRegion() ==
+         &getDefaultRegion());
+#else
   assert(src.getRegionOrNull() == &getDefaultRegion());
-#if defined(TRITON_VERSION) && TRITON_VERSION >= 37
+#endif
+#if TRITON_VERSION >= 37
   successors.push_back(RegionSuccessor::parent());
 #else
   successors.push_back(RegionSuccessor(getResults()));

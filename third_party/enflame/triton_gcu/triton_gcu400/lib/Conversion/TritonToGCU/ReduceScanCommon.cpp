@@ -108,6 +108,13 @@ CombineOpDesc::matchCombiningKind(Region &combineOp) {
       .Default([&](auto op) { return std::nullopt; });
 }
 
+bool CombineOpDesc::supportsStagedFastLaneReduction() const {
+  return combiningKind.has_value() &&
+         *combiningKind != vector::CombiningKind::AND &&
+         *combiningKind != vector::CombiningKind::OR &&
+         *combiningKind != vector::CombiningKind::XOR;
+}
+
 SmallVector<Value>
 CombineOpDesc::applyScalarCombine(OpBuilder &builder, Location loc,
                                   ValueRange operands) const {
@@ -276,7 +283,7 @@ CombineOpDesc::inferIdentityAttrs(OpBuilder &builder) const {
 
 SmallVector<Value> reduceVectorLanes(OpBuilder &builder, Location loc,
                                      const CombineOpDesc &combineOpDesc,
-                                     ValueRange vecValues) {
+                                     ValueRange vecValues, Value mask) {
   assert(vecValues.size() == combineOpDesc.getNumOperands() &&
          "number of operands must match number of combine op operands");
   assert(llvm::all_of(vecValues.getTypes(),
@@ -285,9 +292,23 @@ SmallVector<Value> reduceVectorLanes(OpBuilder &builder, Location loc,
                                cast<VectorType>(ty).getRank() == 1;
                       }) &&
          "all input vectors must have rank 1");
-  if (combineOpDesc.hasFastReduceLanesImpl()) {
-    return {builder.create<vector::ReductionOp>(
-        loc, *combineOpDesc.getCombiningKind(), vecValues.front())};
+  if (combineOpDesc.supportsFastLaneReduction()) {
+    if (mask) {
+      if (combineOpDesc.supportsStagedFastLaneReduction()) {
+        auto reductionOp = builder.create<vector::ReductionOp>(
+            loc, *combineOpDesc.getCombiningKind(), vecValues.front());
+        auto maskOp = builder.create<vector::MaskOp>(
+            loc, reductionOp->getResultTypes(), mask, reductionOp,
+            [&](mlir::OpBuilder &b, mlir::Operation *op) {
+              auto yieldOp = b.create<vector::YieldOp>(loc, op->getResults());
+              op->moveBefore(yieldOp);
+            });
+        return maskOp->getResults();
+      }
+    } else {
+      return {builder.create<vector::ReductionOp>(
+          loc, *combineOpDesc.getCombiningKind(), vecValues.front())};
+    }
   }
   SmallVector<Value> accumulators(vecValues.begin(), vecValues.end());
   SmallVector<Value> combineOperands;
@@ -295,6 +316,11 @@ SmallVector<Value> reduceVectorLanes(OpBuilder &builder, Location loc,
   auto vectorLength =
       cast<VectorType>(vecValues.front().getType()).getDimSize(0);
   auto numElements = vectorLength;
+  if (mask) {
+    auto defOp = mask.getDefiningOp<vector::ConstantMaskOp>();
+    assert(defOp && defOp.getVectorType().getRank() == 1);
+    numElements = defOp.getMaskDimSizes()[0];
+  }
   while (numElements != 1) {
     combineOperands.clear();
     combineOperands.append(accumulators);

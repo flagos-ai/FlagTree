@@ -77,6 +77,7 @@ class TestLayoutEncoding:
 
     @pytest.mark.skipif(not _HAS_TLE_EXPLICIT_LAYOUT, reason="requires __TLE__ build")
     @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.require_tle("gpu.set_layout")
     def test_explicit_distributed_encoding_frontend(self):
         """Test explicit BlockEncoding/SlicedEncoding frontend lowering."""
         parent = tle.gpu.BlockEncoding([1, 1], [1, 32], [8, 1], [1, 0])
@@ -94,6 +95,7 @@ class TestLayoutEncoding:
 
     @pytest.mark.skipif(not _HAS_TLE_EXPLICIT_LAYOUT, reason="requires __TLE__ build")
     @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.require_tle("gpu.set_layout")
     def test_explicit_dot_operand_encoding_frontend(self):
         """Test explicit MMA and dot-operand frontend lowering."""
         mma_layout = tle.gpu.MmaEncoding([2, 0], [4, 1], [16, 8])
@@ -352,6 +354,7 @@ class TestBufferedTensor:
         assert hasattr(tle.gpu.buffered_tensor, 'make_permute')
         assert hasattr(tle.gpu.buffered_tensor, 'slot')
 
+    @pytest.mark.require_tle("gpu.buffered_tensor.slot")
     def test_buffered_tensor_slot_indexes_leading_dimension(self):
         """slot(stage) returns a typed view with the leading stage dimension removed."""
         buffer, semantic = self._make_buffer([4, 16, 32])
@@ -423,6 +426,7 @@ class TestTmaCopyBarrierFrontend:
             allocation_key="bar",
         )
 
+    @pytest.mark.require_tle("gpu.copy")
     def test_copy_accepts_explicit_tma_completion_barrier(self):
         desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
         barrier = self._make_barrier(semantic, 512, shape=[1, 1])
@@ -477,6 +481,7 @@ class TestPipeFrontend:
         buffer = tle.gpu.buffered_tensor("base", tl.float16, shape, storage, layout, semantic)
         return buffer, semantic
 
+    @pytest.mark.require_tle("pipe")
     def test_pipe_validates_and_keeps_fields(self):
         a, semantic = self._make_buffer([4, 16, 32])
         b, _ = self._make_buffer([4, 32, 16])
@@ -543,6 +548,7 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="reserved"):
             tle.pipe(capacity=4, readers=("readers", ), a=a, _semantic=semantic)
 
+    @pytest.mark.require_tle("pipe")
     def test_pipe_default_reader_is_spsc_and_rejects_named_endpoint(self):
         a, semantic = self._make_buffer([4, 16])
         pipe = tle.pipe(capacity=4, a=a, _semantic=semantic)
@@ -555,6 +561,7 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="requires pipe readers"):
             pipe.reader(name="left", _semantic=semantic)
 
+    @pytest.mark.require_tle("pipe")
     def test_pipe_explicit_readers_require_named_endpoint(self):
         a, semantic = self._make_buffer([4, 16])
         pipe = tle.pipe(capacity=4, readers=("left", "right"), a=a, _semantic=semantic)
@@ -572,6 +579,7 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="not declared"):
             pipe.reader(name="missing", _semantic=semantic)
 
+    @pytest.mark.require_tle("pipe")
     def test_pipe_reader_field_subset_is_endpoint_type_view_only(self):
         a, semantic = self._make_buffer([4, 16, 32])
         b, _ = self._make_buffer([4, 32, 16])
@@ -604,6 +612,14 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="unique"):
             pipe.reader(name="left", fields=("a", "a"), _semantic=semantic)
 
+    @pytest.mark.require_tle(
+        "pipe",
+        "pipe_reader.release",
+        "pipe_reader.wait",
+        "pipe_writer.acquire",
+        "pipe_writer.close",
+        "pipe_writer.commit",
+    )
     def test_pipe_lifecycle_emits_pipe_ir_ops(self):
         a, semantic = self._make_buffer([4, 16])
         pipe = tle.pipe(capacity=4, scope="cta", name="a", a=a, _semantic=semantic)
@@ -638,6 +654,7 @@ class TestPipeFrontend:
         assert semantic.builder.pipe_ops[3] == ("reader_wait", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"],
                                                 "", ["a"])
 
+    @pytest.mark.require_tle("pipe")
     def test_pipe_one_shot_keeps_frontend_contract(self):
         a, semantic = self._make_buffer([1, 16])
         pipe = tle.pipe(capacity=1, readers=("left", "right"), one_shot=True, a=a, _semantic=semantic)
