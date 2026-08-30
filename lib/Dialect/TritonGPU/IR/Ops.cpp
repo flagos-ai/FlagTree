@@ -592,8 +592,6 @@ LogicalResult ConcatDotOperandOp::verify() {
   if (dim < 0 || dim >= rank)
     return emitOpError("dim ") << dim << " is out of range for rank " << rank;
 
-  // Fragments sharing shape, element type and encoding comes from
-  // SameTypeOperands, which reports before this verifier runs.
   if (resTy.getRank() != rank)
     return emitOpError("result rank must equal fragment rank");
   if (resTy.getElementType() != fragTy.getElementType())
@@ -601,14 +599,40 @@ LogicalResult ConcatDotOperandOp::verify() {
   if (resTy.getEncoding() != fragTy.getEncoding())
     return emitOpError("result encoding must match the fragments");
 
+  int64_t concatExtent = 0;
+  for (Value fragment : fragments) {
+    auto ty = dyn_cast<RankedTensorType>(fragment.getType());
+    if (!ty || ty.getRank() != rank ||
+        ty.getElementType() != fragTy.getElementType() ||
+        ty.getEncoding() != fragTy.getEncoding())
+      return emitOpError("all fragments must have matching rank, element type, "
+                         "and encoding");
+    concatExtent += ty.getShape()[dim];
+  }
   for (int64_t i = 0; i < rank; ++i) {
-    int64_t expect = (i == dim) ? fragTy.getShape()[i] *
-                                      static_cast<int64_t>(fragments.size())
-                                : fragTy.getShape()[i];
+    int64_t expect = (i == dim) ? concatExtent : fragTy.getShape()[i];
     if (resTy.getShape()[i] != expect)
       return emitOpError("result shape mismatch at dim ")
              << i << ": expected " << expect << ", got " << resTy.getShape()[i];
   }
+  for (Value fragment : fragments) {
+    auto ty = cast<RankedTensorType>(fragment.getType());
+    for (int64_t i = 0; i < rank; ++i)
+      if (i != dim && ty.getShape()[i] != fragTy.getShape()[i])
+        return emitOpError(
+            "all fragments must match in non-contraction dimensions");
+  }
+
+  // Interleaving maps result element `k * numFragments + i` to element `k` of
+  // fragment `i`, which only has a meaning when every fragment supplies the
+  // same number of elements.
+  if (getInterleaved())
+    for (Value fragment : fragments)
+      if (cast<RankedTensorType>(fragment.getType()).getShape()[dim] !=
+          fragTy.getShape()[dim])
+        return emitOpError(
+            "interleaved concatenation requires equally sized fragments");
+
   return success();
 }
 
@@ -616,29 +640,53 @@ LogicalResult ConcatDotOperandOp::verify() {
 // are a complete, ordered, gap-free cover of one source along the same axis and
 // the reassembled type is exactly the source type.
 //
-// This mirrors the K-cover proof the segmented-dot rewrites use, but must be
-// checked here on the ops as written rather than through layout converts: a
-// canonicalization can only replace the result with a value of the identical
-// type, so any encoding difference is left for layout propagation to settle
-// before the fold becomes applicable.
+// The extracts only become recognizable as a cover of one root once layout
+// propagation has unified their sources, which happens after
+// `tritongpu-concat-dot-operand` has run, so this is a canonicalization rather
+// than a pattern private to that pass.
 LogicalResult ConcatDotOperandOp::canonicalize(ConcatDotOperandOp op,
                                                PatternRewriter &rewriter) {
+  // `extract` is the inverse of the concatenating form only. An interleaved
+  // result reads element `k * numFragments + i` from fragment `i`, so a cover
+  // of ordered extracts does not reassemble its source.
+  if (op.getInterleaved())
+    return failure();
+
+  // RemoveLayoutConversions can leave two identical converts of one value
+  // behind, and CSE only runs later in the pipeline, so compare what a convert
+  // reads rather than the convert itself. Anything else compares by identity.
+  auto sourceOf = [](Value v) -> Value {
+    if (auto cvt = v.getDefiningOp<ConvertLayoutOp>())
+      return cvt.getSrc();
+    return v;
+  };
+
   int64_t dim = op.getDimAttr().getValue().getSExtValue();
   Value src;
+  // An extract reads `[index * itsOwnExtent, +itsOwnExtent)`, so with fragments
+  // that may differ along `dim`, ascending indices do not imply a gap-free
+  // cover. Require each extract to start exactly where the previous one ended:
+  // `concat(extract(w, 0, 32), extract(w, 1, 16), extract(w, 2, 16))` reads
+  // `w[0:32] w[16:32] w[32:48]`, which still matches `w`'s type, and folding it
+  // to `w` would duplicate one slice and drop another.
+  int64_t offset = 0;
   for (auto [i, fragment] : llvm::enumerate(op.getFragments())) {
     auto extract = fragment.getDefiningOp<ExtractDotOperandOp>();
-    if (!extract || extract.getDimAttr().getValue().getSExtValue() != dim ||
-        extract.getIndexAttr().getValue().getSExtValue() !=
-            static_cast<int64_t>(i))
+    if (!extract || extract.getDimAttr().getValue().getSExtValue() != dim)
       return failure();
+    int64_t extent = cast<RankedTensorType>(extract.getType()).getShape()[dim];
+    if (extract.getIndexAttr().getValue().getSExtValue() * extent != offset)
+      return failure();
+    offset += extent;
     if (!src)
       src = extract.getSrc();
-    else if (src != extract.getSrc())
+    else if (src != extract.getSrc() &&
+             (sourceOf(src) != sourceOf(extract.getSrc()) ||
+              src.getType() != extract.getSrc().getType()))
       return failure();
   }
-  // The verifier already ties the fragments to equal-sized slices of the
-  // result, so an exact type match is what makes this cover complete rather
-  // than a prefix of a wider value.
+  // The offsets make the cover contiguous from zero; the type match rules out
+  // a prefix of a wider value.
   if (!src || src.getType() != op.getType())
     return failure();
   rewriter.replaceOp(op, src);

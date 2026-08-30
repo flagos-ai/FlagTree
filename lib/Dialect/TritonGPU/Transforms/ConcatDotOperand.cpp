@@ -21,6 +21,52 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+//===----------------------------------------------------------------------===//
+//
+// This file implements the three passes that fold a K-tile reassembly into
+// `ttg.concat_dot_operand` and materialize it again.
+//
+// A kernel that builds its K tile in fragments, e.g. a dequantizer emitting one
+// register fragment per packed word, has to glue them back together before the
+// mma. Triton has no concat primitive, so the spelling is a `tl.join` tree, a
+// `tl.permute` moving the fragment axes in front of the in-fragment K
+// coordinate, and a `tl.reshape` that flattens them:
+//
+//   q = tl.join(tl.join(b0, b1), tl.join(b2, b3))     # (K_PACK, N, 2, 2)
+//   b = tl.reshape(tl.permute(q, (3, 2, 0, 1)),       # (BLOCK_K, BLOCK_N)
+//                  (BLOCK_K, BLOCK_N))
+//   acc = tl.dot(a, b, acc)
+//
+// `tritongpu-concat-dot-operand` translates that to
+//
+//   %b = ttg.concat_dot_operand %b0, %b1, %b2, %b3 {dim = 0 : i32}
+//   %acc = tt.dot %a, %b, %acc
+//
+// Moving the permute behind the K coordinate states the interleaved map,
+// `k = kIn * numFrags + i`, which is what plain sub-byte packing produces; the
+// `interleaved` attribute selects it. This pass runs before any operand layout
+// is assigned, so the encoding is chosen for one wide operand rather than for
+// the rank-5 join chain.
+//
+// The same fact can be stated with no join tree anywhere, as a chain of dots
+// over adjacent K segments, or backwards, as one wide operand split into a dot
+// per leaf:
+//
+//   qk = tl.dot(q_nope, k_c)
+//   qk = tl.dot(q_pe, k_pe, acc=qk)
+//
+// `tritongpu-merge-segmented-dot` matches both of those on the final TTGIR,
+// merging the chain into one wide dot and rewriting the split leaves into
+// `ttg.extract_dot_operand`. It runs after `tritongpu-accelerate-matmul`, since
+// deciding whether a chain can merge needs the mma layout.
+//
+// `tritongpu-expand-concat-dot-operand` runs last, once every layout decision
+// is final, and rebuilds the join tree for the operands the register relabel in
+// ViewOpToLLVM cannot serve: those staged through shared memory, and every
+// interleaved concat.
+//
+//===----------------------------------------------------------------------===//
+
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
@@ -32,6 +78,9 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#endif
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -41,6 +90,10 @@
 namespace mlir::triton::gpu {
 namespace {
 
+//===--------------------------------------------------------------------===//
+// Shared helpers
+//===--------------------------------------------------------------------===//
+
 // Walk through the layout-only converts the TTIR to TTGPU conversion leaves
 // between every step of the chain.
 static Value skipConverts(Value v) {
@@ -49,9 +102,64 @@ static Value skipConverts(Value v) {
   return v;
 }
 
+// An op only feeds the chain if its single use, after skipping converts, does
+// not fan out anywhere else. A producer that also escapes stays live after the
+// rewrite, so folding it would duplicate the work rather than remove it.
+static bool onlyFeedsChain(Operation *op) {
+  while (op->hasOneUse()) {
+    Operation *user = *op->getUsers().begin();
+    if (!isa<ConvertLayoutOp>(user))
+      return true;
+    op = user;
+  }
+  return false;
+}
+
+// The concatenated value has to reach a contraction operand: only the A or B
+// position of a dot carries the `dot_op` encoding the register relabel needs.
+// A `ttg.concat_dot_operand` user also counts, which is how a staged kernel
+// qualifies: its inner chain is consumed by the outer concat, and that outer
+// concat only exists because it reached a dot.
+static bool feedsOnlyDotOperand(Value v) {
+  SmallVector<Value> worklist{v};
+  DenseSet<Operation *> seen;
+  while (!worklist.empty()) {
+    Value cur = worklist.pop_back_val();
+    if (cur.use_empty())
+      return false;
+    for (OpOperand &use : cur.getUses()) {
+      Operation *user = use.getOwner();
+      if (isa<triton::DotOpInterface>(user)) {
+        // Reaching the accumulator says nothing about how a K tile is split,
+        // and an accumulator never carries a `dot_op` encoding, so a concat
+        // built for it could never be relabeled.
+        if (use.getOperandNumber() > 1)
+          return false;
+        continue;
+      }
+      if (isa<ConcatDotOperandOp>(user))
+        continue;
+      // Layout-only ops preserve the logical tensor value, so follow them
+      // through. WGMMA/SS may already have staged it through local_alloc.
+      if (isa<ConvertLayoutOp, LocalAllocOp, LocalLoadOp>(user)) {
+        if (seen.insert(user).second)
+          worklist.push_back(user->getResult(0));
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+//===--------------------------------------------------------------------===//
+// Recognition: join tree -> ttg.concat_dot_operand
+//===--------------------------------------------------------------------===//
+
 // Collect the leaves of a perfectly balanced JoinOp tree, in the fragment order
-// the joins encode. Every join must feed only the tree: one that is also used
-// elsewhere stays live after the rewrite and recomputes the same values.
+// the joins encode. `tt.join` appends a trailing axis of extent 2 whose index
+// selects between its two operands, so walking lhs-before-rhs at every level
+// enumerates the leaves in exactly the order the flattened axis will read them.
 static bool collectJoinLeaves(Value v, int depth, SmallVectorImpl<Value> &out) {
   v = skipConverts(v);
   if (depth == 0) {
@@ -65,104 +173,38 @@ static bool collectJoinLeaves(Value v, int depth, SmallVectorImpl<Value> &out) {
          collectJoinLeaves(join.getRhs(), depth - 1, out);
 }
 
-// The join tree appends `levels` trailing axes of extent 2, outermost join
-// last. Flattening them into an ordered concat needs the transpose to move
-// those axes in front of the in-fragment concat coordinate, most significant
-// first.
-static bool isConcatOrder(ArrayRef<int32_t> order, int64_t fragRank,
-                          int64_t concatDim, int levels) {
-  if ((int64_t)order.size() != fragRank + levels)
-    return false;
+// The permutation that turns the join tree into an ordered reassembly.
+//
+// The tree appends `levels` trailing axes of extent 2, outermost join last, so
+// the fragment index is `sum(bit_i << i)`. Concatenation flattens that to
+// `k = index * fragExtent + kIn`, moving every fragment axis in front of the
+// in-fragment coordinate, most significant first; interleaving flattens to
+// `k = kIn * numFrags + index`, moving them directly behind it. Other axes are
+// left alone. Interleaving on a trailing dim is the identity permutation, so
+// the matcher must also accept a join tree with no transpose at all.
+static SmallVector<int32_t> expectedJoinOrder(int64_t fragRank,
+                                              int64_t concatDim, int levels,
+                                              bool interleaved) {
   SmallVector<int32_t> expected;
   for (int64_t d = 0; d < concatDim; ++d)
     expected.push_back(d);
+  if (interleaved)
+    expected.push_back(concatDim);
   for (int i = levels; i >= 1; --i)
     expected.push_back(fragRank + i - 1);
-  expected.push_back(concatDim);
+  if (!interleaved)
+    expected.push_back(concatDim);
   for (int64_t d = concatDim + 1; d < fragRank; ++d)
     expected.push_back(d);
-  return ArrayRef<int32_t>(expected) == order;
+  return expected;
 }
 
-// An op only feeds the chain if its single use, after skipping converts, does
-// not fan out anywhere else.
-static bool onlyFeedsChain(Operation *op) {
-  while (op->hasOneUse()) {
-    Operation *user = *op->getUsers().begin();
-    if (!isa<ConvertLayoutOp>(user))
-      return true;
-    op = user;
-  }
-  return false;
-}
-
-// Every use of the concatenated value must reach a dot: only a dot gives it the
-// dot_op layout the relabel needs.
-static bool onlyFeedsDot(Value v) {
-  SmallVector<Value> worklist{v};
-  DenseSet<Operation *> seen;
-  while (!worklist.empty()) {
-    Value cur = worklist.pop_back_val();
-    if (cur.use_empty())
-      return false;
-    for (Operation *user : cur.getUsers()) {
-      if (isa<triton::DotOpInterface>(user))
-        continue;
-      // Layout-only ops keep the operand a candidate; follow them through.
-      if (isa<ConvertLayoutOp>(user)) {
-        if (seen.insert(user).second)
-          worklist.push_back(user->getResult(0));
-        continue;
-      }
-      return false;
-    }
-  }
-  return true;
-}
-
-// The single dot_op-encoded type an operand actually has *at the dot*, reached
-// from `v` through layout-only converts, or null when it reaches none or more
-// than one.
-//
-// The type has to be read off the dot's own operand rather than off the first
-// dot_op encoding on the way there. Layout propagation leaves behind transient
-// converts to `dot_op` whose parent is still a blocked layout; no mma ever
-// reads those. Stopping at the first one builds extracts against a layout the
-// dot does not consume, so the wide value rebuilt from them no longer matches
-// the concat result type and the identity fold stops applying, leaving the
-// fragments for ReduceDataDuplication to stage through shared memory.
-static RankedTensorType getDotOperandType(Value v) {
-  RankedTensorType found;
-  SmallVector<Value> worklist{v};
-  DenseSet<Value> seen;
-  while (!worklist.empty()) {
-    Value cur = worklist.pop_back_val();
-    for (OpOperand &use : cur.getUses()) {
-      Operation *user = use.getOwner();
-      if (isa<triton::DotOpInterface>(user)) {
-        // Only the A and B positions are contraction operands; reaching the
-        // accumulator says nothing about how a fragment must be sliced, so skip
-        // it rather than give up, which would make the result depend on the
-        // order `getUses()` happens to walk.
-        if (use.getOperandNumber() > 1)
-          continue;
-        auto ty = dyn_cast<RankedTensorType>(cur.getType());
-        if (!ty || !isa_and_nonnull<DotOperandEncodingAttr>(ty.getEncoding()))
-          return {};
-        if (found && found != ty)
-          return {};
-        found = ty;
-        continue;
-      }
-      // Layout-only ops keep the search going; anything else cannot be seen
-      // through and is handled by the caller's own use checks.
-      if (!isa<ConvertLayoutOp>(user))
-        continue;
-      if (seen.insert(user->getResult(0)).second)
-        worklist.push_back(user->getResult(0));
-    }
-  }
-  return found;
+static bool isConcatOrder(ArrayRef<int32_t> order, int64_t fragRank,
+                          int64_t concatDim, int levels, bool interleaved) {
+  if ((int64_t)order.size() != fragRank + levels)
+    return false;
+  return ArrayRef<int32_t>(expectedJoinOrder(fragRank, concatDim, levels,
+                                             interleaved)) == order;
 }
 
 struct MatchJoinTreeConcat : public OpRewritePattern<triton::ReshapeOp> {
@@ -176,13 +218,14 @@ struct MatchJoinTreeConcat : public OpRewritePattern<triton::ReshapeOp> {
       return failure();
 
     // Match the interface rather than tt.trans: the conversion to TTGPU may
-    // leave the transpose as any op implementing it.
-    auto trans =
-        skipConverts(reshape.getSrc()).getDefiningOp<TransposeOpInterface>();
-    if (!trans)
-      return failure();
+    // leave the transpose as any op implementing it. The transpose is optional;
+    // a join tree feeding the reshape directly is the identity-order case, i.e.
+    // interleaving on the trailing axis, spelled `reshape(join(lo, hi))`.
+    Value reshapeSrc = skipConverts(reshape.getSrc());
+    auto trans = reshapeSrc.getDefiningOp<TransposeOpInterface>();
     auto joinRoot =
-        skipConverts(trans.getSrc()).getDefiningOp<triton::JoinOp>();
+        trans ? skipConverts(trans.getSrc()).getDefiningOp<triton::JoinOp>()
+              : reshapeSrc.getDefiningOp<triton::JoinOp>();
     if (!joinRoot)
       return failure();
 
@@ -210,11 +253,9 @@ struct MatchJoinTreeConcat : public OpRewritePattern<triton::ReshapeOp> {
     auto fragTy = cast<RankedTensorType>(fragments.front().getType());
     if (fragTy.getRank() != fragRank)
       return failure();
-    for (Value f : fragments) {
-      auto ty = dyn_cast<RankedTensorType>(f.getType());
-      if (!ty || ty != fragTy)
+    for (Value f : fragments)
+      if (f.getType() != fragTy)
         return failure();
-    }
     if (dstTy.getElementType() != fragTy.getElementType())
       return failure();
 
@@ -231,28 +272,44 @@ struct MatchJoinTreeConcat : public OpRewritePattern<triton::ReshapeOp> {
     if (concatDim < 0)
       return failure();
 
-    if (!isConcatOrder(trans.getOrder(), fragRank, concatDim, levels))
-      return failure();
+    // The interleaved form for a trailing-axis concat is the identity
+    // permutation, so the matcher must also accept a join tree with no
+    // transpose at all. Detect which mode applies.
+    SmallVector<int32_t> transOrder;
+    if (trans)
+      transOrder = llvm::to_vector(trans.getOrder());
+    else
+      for (int64_t d = 0; d < rootTy.getRank(); ++d)
+        transOrder.push_back(d);
+    bool interleaved = false;
+    if (!isConcatOrder(transOrder, fragRank, concatDim, levels, false)) {
+      if (!isConcatOrder(transOrder, fragRank, concatDim, levels, true))
+        return failure();
+      interleaved = true;
+    }
 
     // Replacing the chain must not leave the joins live and duplicate the work.
-    if (!onlyFeedsChain(trans) || !onlyFeedsChain(joinRoot))
+    if ((trans && !onlyFeedsChain(trans)) || !onlyFeedsChain(joinRoot))
       return failure();
 
-    // Only rewrite when the result actually reaches a dot; see onlyFeedsDot.
-    if (!onlyFeedsDot(reshape.getResult()))
+    // Only rewrite when the result really is a contraction operand; see
+    // feedsOnlyDotOperand.
+    if (!feedsOnlyDotOperand(reshape.getResult()))
       return failure();
 
-    LDBG("rewriting an ordered concat of " << numFrags << " fragments on dim "
-                                           << concatDim);
+    LDBG("folding an ordered " << (interleaved ? "interleave" : "concat")
+                               << " of " << numFrags << " fragments on dim "
+                               << concatDim);
 
     // The op requires its result encoding to match the fragments; the convert
     // bridging to the reshape's encoding is folded away once layout propagation
     // pulls dot_op back through the concat.
     auto resTy = RankedTensorType::get(dstTy.getShape(), dstTy.getElementType(),
                                        fragTy.getEncoding());
-    Value concat =
-        ConcatDotOperandOp::create(rewriter, reshape.getLoc(), resTy, fragments,
-                                   rewriter.getI32IntegerAttr(concatDim));
+    Value concat = ConcatDotOperandOp::create(
+        rewriter, reshape.getLoc(), resTy, fragments,
+        rewriter.getI32IntegerAttr(concatDim),
+        interleaved ? rewriter.getUnitAttr() : UnitAttr{});
     if (resTy != dstTy)
       concat =
           ConvertLayoutOp::create(rewriter, reshape.getLoc(), dstTy, concat);
@@ -261,17 +318,15 @@ struct MatchJoinTreeConcat : public OpRewritePattern<triton::ReshapeOp> {
   }
 };
 
-// One leaf of a balanced split tree, with the path taken to reach it: one bit
-// per level, outermost split first.
+//===--------------------------------------------------------------------===//
+// Split tree -> extracts (inverse view)
+//===--------------------------------------------------------------------===//
+
 struct SplitLeaf {
   Value value;
   SmallVector<unsigned> path;
 };
 
-// The single SplitOp consuming `v`, looking through the layout-only converts
-// the pipeline inserts between tree levels. Null when `v` is used any other
-// way: a value that also escapes elsewhere stays live after the rewrite, so
-// folding the tree would not remove it.
 static triton::SplitOp getSoleSplitUser(Value v) {
   while (true) {
     if (!v.hasOneUse())
@@ -285,9 +340,6 @@ static triton::SplitOp getSoleSplitUser(Value v) {
   }
 }
 
-// Collect the leaves of a perfectly balanced split tree rooted at `v`, the dual
-// of collectJoinLeaves. `v` is the value being split, so the recursion walks
-// forward through results rather than backward through operands.
 static bool collectSplitLeaves(Value v, int depth,
                                SmallVectorImpl<unsigned> &path,
                                SmallVectorImpl<SplitLeaf> &out) {
@@ -308,16 +360,6 @@ static bool collectSplitLeaves(Value v, int depth,
   return true;
 }
 
-// Which contraction-axis slice a leaf holds.
-//
-// A reshape splits K into `levels` axes of extent 2, most significant first,
-// and a transpose then moves them to the back in some order. Splits peel the
-// trailing axis first, so a leaf's path is indexed by peel order while the K
-// index needs bit significance. `significanceOfLevel` bridges the two.
-//
-// Skipping this mapping stays invisible in testing: when both operands are
-// permuted the same way the K-sums still commute to the right result, and only
-// a mixed chain, or one operand reaching a wide mma, exposes the wrong slice.
 static int64_t getSplitLeafKIndex(ArrayRef<unsigned> path,
                                   ArrayRef<unsigned> significanceOfLevel) {
   int64_t index = 0;
@@ -326,47 +368,230 @@ static int64_t getSplitLeafKIndex(ArrayRef<unsigned> path,
   return index;
 }
 
-// Undo `reshape -> trans` to learn, for each split level, the significance of
-// the K bit that level peels. Returns false when the chain is not a pure
-// fragment split of the contraction axis.
-//
-// `order` is the transpose permutation, mapping result positions to source
-// positions. The reshape put the fragment axes at positions
-// [concatDim, concatDim + levels), most significant first; the transpose must
-// leave every other axis in place and move all fragment axes to the tail.
 static bool getSplitLevelSignificance(ArrayRef<int32_t> order, int64_t fragRank,
                                       int64_t concatDim, int levels,
                                       SmallVectorImpl<unsigned> &out) {
-  if ((int64_t)order.size() != fragRank + levels)
+  if (static_cast<int64_t>(order.size()) != fragRank + levels)
     return false;
-
-  // Non-fragment axes keep their relative order and stay ahead of the tail.
   for (int64_t d = 0; d < fragRank; ++d) {
     int64_t src = order[d];
     int64_t expect = d < concatDim ? d : d + levels;
     if (src != expect)
       return false;
   }
-
-  // The tail spells the peel order. Splits consume the last axis first, so
-  // reverse it: the last tail entry is peeled by level 0 of the recursion.
   out.assign(levels, 0);
   SmallVector<bool> seen(levels, false);
   for (int i = 0; i < levels; ++i) {
-    int64_t src = order[fragRank + i];
-    // Fragment axes occupy [concatDim, concatDim + levels) in the reshape.
-    int64_t axis = src - concatDim;
+    int64_t axis = order[fragRank + i] - concatDim;
     if (axis < 0 || axis >= levels || seen[axis])
       return false;
     seen[axis] = true;
-    // The reshape lists fragment axes most significant first.
     unsigned significance = levels - 1 - axis;
-    // A split consumes the trailing axis, so the outermost split (level 0)
-    // peels the last tail position.
     out[levels - 1 - i] = significance;
   }
   return true;
 }
+
+static RankedTensorType getDotOperandType(Value v) {
+  RankedTensorType found;
+  SmallVector<Value> worklist{v};
+  DenseSet<Value> seen;
+  while (!worklist.empty()) {
+    Value cur = worklist.pop_back_val();
+    for (OpOperand &use : cur.getUses()) {
+      Operation *user = use.getOwner();
+      if (isa<triton::DotOpInterface>(user)) {
+        if (use.getOperandNumber() > 1)
+          continue;
+        auto ty = dyn_cast<RankedTensorType>(cur.getType());
+        if (!ty || !isa_and_nonnull<DotOperandEncodingAttr>(ty.getEncoding()))
+          return {};
+        if (found && found != ty)
+          return {};
+        found = ty;
+        continue;
+      }
+      if (!isa<ConvertLayoutOp>(user))
+        continue;
+      if (seen.insert(user->getResult(0)).second)
+        worklist.push_back(user->getResult(0));
+    }
+  }
+  return found;
+}
+
+struct MatchSplitTreeExtracts : public OpRewritePattern<triton::ReshapeOp> {
+  using OpRewritePattern<triton::ReshapeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::ReshapeOp reshape,
+                                PatternRewriter &rewriter) const override {
+    if (reshape.getAllowReorder())
+      return failure();
+    auto srcTy = cast<RankedTensorType>(reshape.getSrc().getType());
+    auto splitTy = cast<RankedTensorType>(reshape.getType());
+    int64_t fragRank = srcTy.getRank();
+    int levels = splitTy.getRank() - fragRank;
+    if (fragRank < 1 || levels < 1 ||
+        srcTy.getElementType() != splitTy.getElementType())
+      return failure();
+    int64_t concatDim = 0;
+    while (concatDim < fragRank &&
+           srcTy.getShape()[concatDim] == splitTy.getShape()[concatDim])
+      ++concatDim;
+    if (concatDim >= fragRank)
+      return failure();
+    int64_t numFrags = 1LL << levels;
+    int64_t fragExtent = splitTy.getShape()[concatDim + levels];
+    if (srcTy.getShape()[concatDim] != fragExtent * numFrags)
+      return failure();
+    for (int i = 0; i < levels; ++i)
+      if (splitTy.getShape()[concatDim + i] != 2)
+        return failure();
+    for (int64_t d = concatDim + 1; d < fragRank; ++d)
+      if (srcTy.getShape()[d] != splitTy.getShape()[d + levels])
+        return failure();
+
+    Value transVal = reshape.getResult();
+    while (transVal.hasOneUse() &&
+           isa<ConvertLayoutOp>(*transVal.getUsers().begin()))
+      transVal = (*transVal.getUsers().begin())->getResult(0);
+    if (!transVal.hasOneUse())
+      return failure();
+    auto trans = dyn_cast<TransposeOpInterface>(*transVal.getUsers().begin());
+    if (!trans)
+      return failure();
+    SmallVector<unsigned> significance;
+    if (!getSplitLevelSignificance(trans.getOrder(), fragRank, concatDim,
+                                   levels, significance))
+      return failure();
+    SmallVector<unsigned> path;
+    SmallVector<SplitLeaf> leaves;
+    if (!collectSplitLeaves(trans->getResult(0), levels, path, leaves) ||
+        static_cast<int64_t>(leaves.size()) != numFrags)
+      return failure();
+    SmallVector<int64_t> fragShape(srcTy.getShape());
+    fragShape[concatDim] = fragExtent;
+    auto leafTy = dyn_cast<RankedTensorType>(leaves.front().value.getType());
+    if (!leafTy || leafTy.getShape() != ArrayRef<int64_t>(fragShape))
+      return failure();
+    for (const SplitLeaf &leaf : leaves) {
+      if (leaf.value.getType() != leafTy || !feedsOnlyDotOperand(leaf.value))
+        return failure();
+    }
+    auto dotOpTy = getDotOperandType(leaves.front().value);
+    if (!dotOpTy || dotOpTy.getShape() != leafTy.getShape())
+      return failure();
+    for (const SplitLeaf &leaf : leaves)
+      if (getDotOperandType(leaf.value) != dotOpTy)
+        return failure();
+    auto wideTy = RankedTensorType::get(
+        srcTy.getShape(), srcTy.getElementType(), dotOpTy.getEncoding());
+    SmallVector<std::pair<unsigned, unsigned>> regMap;
+    if (failed(getDotOperandSliceRegisterMap(wideTy, dotOpTy, concatDim,
+                                             numFrags, regMap)))
+      return failure();
+    LDBG("rewriting a split tree of "
+         << numFrags << " leaves into extracts on dim " << concatDim);
+    rewriter.setInsertionPoint(reshape);
+    Value wide = ConvertLayoutOp::create(rewriter, reshape.getLoc(), wideTy,
+                                         reshape.getSrc());
+    SmallVector<Value> extracts;
+    for (const SplitLeaf &leaf : leaves) {
+      int64_t index = getSplitLeafKIndex(leaf.path, significance);
+      extracts.push_back(ExtractDotOperandOp::create(
+          rewriter, leaf.value.getLoc(), dotOpTy, wide, concatDim, index));
+    }
+    for (auto [leaf, extract] : llvm::zip(leaves, extracts)) {
+      Value restored = ConvertLayoutOp::create(rewriter, leaf.value.getLoc(),
+                                               leafTy, extract);
+      rewriter.replaceAllUsesWith(leaf.value, restored);
+    }
+    return success();
+  }
+};
+
+struct FoldConcatOfExtracts : public OpRewritePattern<ConcatDotOperandOp> {
+  using OpRewritePattern<ConcatDotOperandOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(ConcatDotOperandOp op,
+                                PatternRewriter &rewriter) const override {
+    if (failed(ConcatDotOperandOp::canonicalize(op, rewriter)))
+      return failure();
+    LDBG("folding a complete cover of extracts back to its source");
+    return success();
+  }
+};
+
+// `concat(concat(a, b), concat(c, d))` is `concat(a, b, c, d)`.
+//
+// A kernel that builds its K tile in stages spells each stage as its own
+// join/permute/reshape, which the recognizer folds into nested concats.
+// Flattening lets the staged spelling reach the same wide operand as the
+// one-shot one. Every fragment must concat over the same axis, and every leaf
+// must share the element type and encoding, since that is what the flat op is
+// verified against; extents along the axis may differ. A partially staged
+// chain is left nested and lowers one level at a time.
+struct FlattenNestedConcats : public OpRewritePattern<ConcatDotOperandOp> {
+  using OpRewritePattern<ConcatDotOperandOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ConcatDotOperandOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getInterleaved())
+      return failure();
+    int64_t dim = op.getDimAttr().getValue().getSExtValue();
+    auto outTy = cast<RankedTensorType>(op.getType());
+
+    SmallVector<Value> leaves;
+    RankedTensorType leafTy;
+    for (Value fragment : op.getFragments()) {
+      auto inner = skipConverts(fragment).getDefiningOp<ConcatDotOperandOp>();
+      if (!inner || inner.getDimAttr().getValue().getSExtValue() != dim)
+        return failure();
+      // Nested interleaving is not flat interleaving: stacking pairs and then
+      // stacking the results gives a0 c0 b0 d0, while one four-way interleave
+      // gives a0 b0 c0 d0. Leave both levels alone.
+      if (inner.getInterleaved())
+        return failure();
+      // An inner concat that also escapes stays live, so flattening would
+      // recompute rather than replace it.
+      if (!onlyFeedsChain(inner))
+        return failure();
+      for (Value leaf : inner.getFragments()) {
+        auto leafFragTy = cast<RankedTensorType>(leaf.getType());
+        if (!leafTy)
+          leafTy = leafFragTy;
+        else if (leafFragTy.getElementType() != leafTy.getElementType() ||
+                 leafFragTy.getEncoding() != leafTy.getEncoding() ||
+                 leafFragTy.getRank() != leafTy.getRank())
+          return failure();
+        leaves.push_back(leaf);
+      }
+    }
+    if (!leafTy || leaves.size() < 2)
+      return failure();
+
+    // A non-power-of-two count has no join-tree inverse, so flattening into
+    // one would trade a nested value that always expands for a flat one that
+    // could not be expanded at all.
+    if (!llvm::isPowerOf2_64(leaves.size()))
+      return failure();
+
+    LDBG("flattening " << op.getFragments().size() << " staged concats into "
+                       << leaves.size() << " fragments on dim " << dim);
+
+    auto flatTy = RankedTensorType::get(
+        outTy.getShape(), outTy.getElementType(), leafTy.getEncoding());
+    Value flat = ConcatDotOperandOp::create(rewriter, op.getLoc(), flatTy,
+                                            leaves, op.getDimAttr());
+    if (flatTy != outTy)
+      flat = ConvertLayoutOp::create(rewriter, op.getLoc(), outTy, flat);
+    rewriter.replaceOp(op, flat);
+    return success();
+  }
+};
+
+//===--------------------------------------------------------------------===//
+// Materialization: ttg.concat_dot_operand -> join tree
+//===--------------------------------------------------------------------===//
 
 // The encoding a reshape from `srcTy` to `dstShape` infers, or null when the
 // dialect cannot infer one.
@@ -384,9 +609,41 @@ static Attribute inferReshapeEncoding(RankedTensorType srcTy,
   return dstEnc;
 }
 
-// Undo the rewrite when the operand did not end up with a layout the relabel
-// works on.
-struct ExpandUnlowerableConcat : public OpRewritePattern<ConcatDotOperandOp> {
+// The type a balanced join tree over `fragTy` ends up with, or null when the
+// dialect cannot infer an encoding for some level.
+//
+// This mirrors `JoinOp::build`, which reports inference failure with
+// `llvm_unreachable`. Asking the same question up front keeps a layout the
+// dialect cannot join from aborting the compiler, and decides the expansion
+// from types alone, so nothing is built until it is known to be buildable.
+static RankedTensorType inferJoinTreeType(RankedTensorType fragTy, int levels,
+                                          Location loc) {
+  RankedTensorType cur = fragTy;
+  for (int i = 0; i < levels; ++i) {
+    SmallVector<int64_t> shape(cur.getShape());
+    shape.push_back(2);
+    Attribute enc;
+    if (Attribute srcEnc = cur.getEncoding()) {
+      if (failed(cast<triton::DialectInferLayoutInterface>(&srcEnc.getDialect())
+                     ->inferDefaultJoinOpEncoding(srcEnc, enc, cur.getShape(),
+                                                  loc)))
+        return {};
+    }
+    cur = RankedTensorType::get(shape, cur.getElementType(), enc);
+  }
+  return cur;
+}
+
+// Rebuild the join tree for a concat whose operand did not end up in a form the
+// register relabel can serve.
+//
+// This is the expected path for the shared-memory forms, not a failure path:
+// the tree is rebuilt after every layout decision is final, so it carries the
+// layout chosen for one wide operand rather than for a rank-5 join chain.
+// Landing the fragments directly in a shared subslice instead measures slower
+// despite issuing less work, because the register form is what lets the
+// pipeliner give each fragment its own double-buffered `cp.async`.
+struct ExpandConcatToJoinTree : public OpRewritePattern<ConcatDotOperandOp> {
   using OpRewritePattern<ConcatDotOperandOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(ConcatDotOperandOp op,
@@ -395,921 +652,441 @@ struct ExpandUnlowerableConcat : public OpRewritePattern<ConcatDotOperandOp> {
     if (succeeded(getConcatDotOperandRegisterMap(op, unused)))
       return failure();
 
-    LDBG("expanding a concat back into a join tree: operand layout cannot be "
-         "relabeled in registers");
-
     Location loc = op.getLoc();
     auto fragTy = cast<RankedTensorType>(op.getFragments()[0].getType());
     auto dstTy = cast<RankedTensorType>(op.getType());
-    int64_t dim = op.getDim();
+    int64_t dim = op.getDimAttr().getValue().getSExtValue();
     int64_t rank = fragTy.getRank();
 
-    // Only a power-of-two count pairs up into a balanced tree; the matcher
-    // never builds anything else, so bail rather than drop fragments.
+    // The exact inverse is a join tree, whose operands must have equal shapes
+    // and whose count must be a power of two. Heterogeneous or non-power-of-two
+    // segments take the register relabel path instead; the pass reports any
+    // that failed both once the fixpoint settles.
     size_t numFrags = op.getFragments().size();
     if (numFrags < 2 || !llvm::isPowerOf2_64(numFrags))
       return failure();
+    for (Value fragment : op.getFragments())
+      if (cast<RankedTensorType>(fragment.getType()).getShape() !=
+          fragTy.getShape())
+        return failure();
+    int levels = llvm::Log2_64(numFrags);
 
-    // Rebuild the balanced join tree the matcher folded away.
-    SmallVector<Value> level(op.getFragments().begin(),
-                             op.getFragments().end());
-    SmallVector<Value> joins;
-    int levels = 0;
-    while (level.size() > 1) {
-      SmallVector<Value> next;
-      for (size_t i = 0; i < level.size(); i += 2) {
-        next.push_back(
-            triton::JoinOp::create(rewriter, loc, level[i], level[i + 1]));
-        joins.push_back(next.back());
+    // Decide the whole expansion from types first. Nothing is built until every
+    // encoding on the way to the flat result is known to be inferable, so a
+    // concat that cannot be expanded is simply left alone.
+    RankedTensorType rootTy = inferJoinTreeType(fragTy, levels, loc);
+    if (!rootTy)
+      return failure();
+
+    // The inverse of whichever order the recognizer matched.
+    bool interleaved = op.getInterleaved();
+    SmallVector<int32_t> order =
+        expectedJoinOrder(rank, dim, levels, interleaved);
+    bool identityOrder = true;
+    for (auto [i, src] : llvm::enumerate(order))
+      identityOrder &= src == static_cast<int32_t>(i);
+
+    RankedTensorType transTy = rootTy;
+    if (!identityOrder) {
+      Attribute transEnc;
+      if (Attribute rootEnc = rootTy.getEncoding()) {
+        if (failed(
+                cast<triton::DialectInferLayoutInterface>(&rootEnc.getDialect())
+                    ->inferTransOpEncoding(rootEnc, rootTy.getShape(), order,
+                                           transEnc, loc)))
+          return failure();
       }
-      level = std::move(next);
-      ++levels;
+      SmallVector<int64_t> transShape;
+      for (int32_t src : order)
+        transShape.push_back(rootTy.getShape()[src]);
+      transTy =
+          RankedTensorType::get(transShape, rootTy.getElementType(), transEnc);
     }
-
-    // Move the fragment index ahead of the in-fragment concat coord, then
-    // flatten, mirroring isConcatOrder.
-    SmallVector<int32_t> order;
-    for (int64_t d = 0; d < dim; ++d)
-      order.push_back(d);
-    for (int i = levels; i >= 1; --i)
-      order.push_back(rank + i - 1);
-    order.push_back(dim);
-    for (int64_t d = dim + 1; d < rank; ++d)
-      order.push_back(d);
-
-    Value trans = triton::TransOp::create(rewriter, loc, level.front(), order);
 
     // The chain carries whatever layout the joins infer, not the operand
-    // encoding the concat had, so reshape into the inferred one and let a
-    // convert restore it.
-    auto transTy = cast<RankedTensorType>(trans.getType());
+    // encoding the concat had, so the reshape lands in the inferred one and a
+    // convert restores the concat's type.
     Attribute reshapeEnc = inferReshapeEncoding(transTy, dstTy.getShape(), loc);
-    if (!reshapeEnc) {
-      // Nothing consumes the tree yet, so drop it and leave the concat in
-      // place.
-      rewriter.eraseOp(trans.getDefiningOp());
-      for (Value v : llvm::reverse(joins))
-        rewriter.eraseOp(v.getDefiningOp());
+    if (!reshapeEnc)
       return failure();
-    }
 
-    Value flat = triton::ReshapeOp::create(
-        rewriter, loc,
-        RankedTensorType::get(dstTy.getShape(), dstTy.getElementType(),
-                              reshapeEnc),
-        trans, /*allowReorder=*/false, /*efficientLayout=*/false);
-    rewriter.replaceOpWithNewOp<ConvertLayoutOp>(op, dstTy, flat);
+    LDBG("expanding a " << (interleaved ? "interleave" : "concat") << " of "
+                        << numFrags
+                        << " fragments back into a join tree: the operand "
+                           "layout is not a register relabel");
+
+    SmallVector<Value> level(op.getFragments().begin(),
+                             op.getFragments().end());
+    while (level.size() > 1) {
+      SmallVector<Value> next;
+      for (size_t i = 0; i < level.size(); i += 2)
+        next.push_back(
+            triton::JoinOp::create(rewriter, loc, level[i], level[i + 1]));
+      level = std::move(next);
+    }
+    Value trans = level.front();
+    if (!identityOrder)
+      trans = triton::TransOp::create(rewriter, loc, trans, order);
+
+    auto flatTy = RankedTensorType::get(dstTy.getShape(),
+                                        dstTy.getElementType(), reshapeEnc);
+    Value flat = triton::ReshapeOp::create(rewriter, loc, flatTy, trans,
+                                           /*allowReorder=*/false,
+                                           /*efficientLayout=*/false);
+    if (flatTy != dstTy)
+      flat = ConvertLayoutOp::create(rewriter, loc, dstTy, flat);
+    rewriter.replaceOp(op, flat);
     return success();
   }
 };
 
-// Rewrite `reshape -> trans -> split tree` into per-slice extracts of the wide
-// operand.
-//
-// This is the inverse of MatchJoinTreeConcat and the producer the segmented-dot
-// rewrites need: a user who slices one wide K tile into fragments and feeds a
-// dot chain writes exactly this chain, and the extracts state that all
-// fragments are slices of one already-live value. Without it the wide operand
-// is materialized only through the transpose chain, and the register-lifetime
-// proof in hasNonRegressingRegisterLifetime has nothing to match.
-//
-// The rewrite keeps element order intact, so it is sound regardless of whether
-// the chain is later merged; when the merge does not apply, the extracts lower
-// on their own as register selects.
-struct MatchSplitTreeExtracts : public OpRewritePattern<triton::ReshapeOp> {
-  using OpRewritePattern<triton::ReshapeOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(triton::ReshapeOp reshape,
-                                PatternRewriter &rewriter) const override {
-    // A reordering reshape says nothing about element order, so the fragment
-    // axes cannot be tied back to K coordinates.
-    if (reshape.getAllowReorder())
-      return failure();
-
-    auto srcTy = cast<RankedTensorType>(reshape.getSrc().getType());
-    auto splitTy = cast<RankedTensorType>(reshape.getType());
-    int64_t fragRank = srcTy.getRank();
-    int levels = splitTy.getRank() - fragRank;
-    if (fragRank < 1 || levels < 1)
-      return failure();
-
-    // The reshape must factor exactly one axis into `levels` extent-2 axes
-    // followed by the fragment extent, leaving every other axis alone.
-    if (srcTy.getElementType() != splitTy.getElementType())
-      return failure();
-    int64_t concatDim = 0;
-    while (concatDim < fragRank &&
-           srcTy.getShape()[concatDim] == splitTy.getShape()[concatDim])
-      ++concatDim;
-    if (concatDim >= fragRank)
-      return failure();
-
-    // Factoring dim `concatDim` inserts the fragment axes at
-    // [concatDim, concatDim + levels) and leaves the fragment extent behind
-    // them, so the extent lives at concatDim + levels.
-    int64_t numFrags = 1LL << levels;
-    int64_t fragExtent = splitTy.getShape()[concatDim + levels];
-    if (srcTy.getShape()[concatDim] != fragExtent * numFrags)
-      return failure();
-    for (int i = 0; i < levels; ++i)
-      if (splitTy.getShape()[concatDim + i] != 2)
-        return failure();
-    // Axes after the factored one shift by `levels` but keep their extents.
-    for (int64_t d = concatDim + 1; d < fragRank; ++d)
-      if (srcTy.getShape()[d] != splitTy.getShape()[d + levels])
-        return failure();
-
-    // The transpose moving the fragment axes to the tail, then the split tree.
-    // Layout-only converts may sit at either step.
-    Value transVal = reshape.getResult();
-    while (transVal.hasOneUse() &&
-           isa<ConvertLayoutOp>(*transVal.getUsers().begin()))
-      transVal = (*transVal.getUsers().begin())->getResult(0);
-    if (!transVal.hasOneUse())
-      return failure();
-    auto trans = dyn_cast<TransposeOpInterface>(*transVal.getUsers().begin());
-    if (!trans)
-      return failure();
-
-    SmallVector<unsigned> significance;
-    if (!getSplitLevelSignificance(trans.getOrder(), fragRank, concatDim,
-                                   levels, significance))
-      return failure();
-
-    SmallVector<unsigned> path;
-    SmallVector<SplitLeaf> leaves;
-    if (!collectSplitLeaves(trans->getResult(0), levels, path, leaves))
-      return failure();
-    if ((int64_t)leaves.size() != numFrags)
-      return failure();
-
-    // Every leaf must have the expected fragment shape and one encoding, and
-    // must reach a dot. The leaves carry whatever layout the split infers; the
-    // dot_op encoding is only assigned further down the convert chain, so match
-    // on reaching a dot rather than on the encoding already being dot_op.
-    SmallVector<int64_t> fragShape(srcTy.getShape());
-    fragShape[concatDim] = fragExtent;
-    auto leafTy = dyn_cast<RankedTensorType>(leaves.front().value.getType());
-    if (!leafTy || leafTy.getShape() != ArrayRef<int64_t>(fragShape))
-      return failure();
-    for (const SplitLeaf &leaf : leaves) {
-      if (leaf.value.getType() != leafTy)
-        return failure();
-      if (!onlyFeedsDot(leaf.value))
-        return failure();
-    }
-
-    // Extract in the dot_op encoding the dots actually consume, not the leaf's
-    // own layout: only the operand layout is guaranteed to slice into
-    // per-thread register subsets, which is what the extract lowering needs.
-    auto dotOpTy = getDotOperandType(leaves.front().value);
-    if (!dotOpTy || dotOpTy.getShape() != leafTy.getShape())
-      return failure();
-    for (const SplitLeaf &leaf : leaves)
-      if (getDotOperandType(leaf.value) != dotOpTy)
-        return failure();
-
-    auto wideTy = RankedTensorType::get(
-        srcTy.getShape(), srcTy.getElementType(), dotOpTy.getEncoding());
-
-    // Check the layout admits the register subset the extracts need before
-    // touching the IR: the proof only reads types, and bailing out after the
-    // ops exist would leave a failed match to clean up after itself. Keeping an
-    // unlowerable chain from reaching the backend is what avoids a hard error
-    // there.
-    SmallVector<std::pair<unsigned, unsigned>> regMap;
-    if (failed(getDotOperandSliceRegisterMap(wideTy, dotOpTy, concatDim,
-                                             numFrags, regMap)))
-      return failure();
-
-    rewriter.setInsertionPoint(reshape);
-    Value wide = ConvertLayoutOp::create(rewriter, reshape.getLoc(), wideTy,
-                                         reshape.getSrc());
-
-    SmallVector<Value> extracts;
-    for (const SplitLeaf &leaf : leaves) {
-      int64_t index = getSplitLeafKIndex(leaf.path, significance);
-      extracts.push_back(ExtractDotOperandOp::create(
-          rewriter, leaf.value.getLoc(), dotOpTy, wide, concatDim, index));
-    }
-
-    LDBG("rewriting a split tree of " << numFrags << " fragments on dim "
-                                      << concatDim);
-
-    // The leaves keep their own layout, so convert back and let
-    // RemoveLayoutConversions collapse the round trip into the dots.
-    for (auto [leaf, extract] : llvm::zip(leaves, extracts)) {
-      Value restored = ConvertLayoutOp::create(rewriter, leaf.value.getLoc(),
-                                               leafTy, extract);
-      rewriter.replaceAllUsesWith(leaf.value, restored);
-    }
-    return success();
-  }
-};
-
-// A concat over a complete, ordered set of extracts is an identity. The fold
-// itself lives on the op as a canonicalization (see
-// `ConcatDotOperandOp::canonicalize`), because the extracts a segmented chain
-// leaves behind only become recognizable as a cover of one root after layout
-// propagation has unified their sources -- which happens well after this pass.
-// Running it here as well gives a chain that already has a same-typed cover a
-// zero-cost way to recover its wide operand within one fixpoint.
-struct FoldConcatOfExtracts : public OpRewritePattern<ConcatDotOperandOp> {
-  using OpRewritePattern<ConcatDotOperandOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(ConcatDotOperandOp op,
-                                PatternRewriter &rewriter) const override {
-    return ConcatDotOperandOp::canonicalize(op, rewriter);
-  }
-};
+//===--------------------------------------------------------------------===//
+// Generic segmented-dot merging
+//===--------------------------------------------------------------------===//
 
 namespace ttng = mlir::triton::nvidia_gpu;
 
-enum class SharedSliceKind { IndexedCarrier, WideSubslice };
-enum class SharedOperandSide { A, B };
+// Segmented kernels do not necessarily spell a join tree. A common lowering
+// instead emits a chain of dots whose accumulator is the previous dot and whose
+// operands are adjacent K slices. The helpers below inspect the final TTGPU IR
+// rather than the source spelling.
 
-struct SharedSlice {
-  SharedSliceKind kind;
-  Value root;
-  int64_t index;
-  int64_t numSlices;
-  int64_t sliceK;
-  Attribute wideEncoding;
-};
-
-// A tile-written rank-3 carrier can only be reinterpreted as one wide NVMMA
-// operand when the physical swizzle picture is identical. A rank-2 wide
-// operand reached through memdesc_subslice needs no such proof: the original
-// descriptor is already the exact wide view.
-static Attribute getWideCarrierEncoding(MemDescType carrierTy) {
-  auto nvmma = dyn_cast<NVMMASharedEncodingAttr>(carrierTy.getEncoding());
-  if (!nvmma || nvmma.getTransposed())
-    return {};
-  int64_t innerBytes = carrierTy.getShape().back() *
-                       carrierTy.getElementType().getIntOrFloatBitWidth() / 8;
-  if (nvmma.getSwizzlingByteWidth() != 0 &&
-      innerBytes > nvmma.getSwizzlingByteWidth())
-    return {};
-  CTAEncodingAttr cta = nvmma.getCTALayout();
-  if (!cta || cta.getRank() <= 2)
-    return carrierTy.getEncoding();
-  if (llvm::any_of(cta.getCTAsPerCGA(), [](unsigned v) { return v != 1; }) ||
-      llvm::any_of(cta.getCTASplitNum(), [](unsigned v) { return v != 1; }))
-    return {};
-  MLIRContext *ctx = carrierTy.getContext();
-  return NVMMASharedEncodingAttr::get(
-      ctx, nvmma.getSwizzlingByteWidth(), nvmma.getTransposed(),
-      nvmma.getElementBitWidth(), nvmma.getFp4Padded(),
-      CTAEncodingAttr::getDefault(ctx, 2));
-}
-
-static std::optional<SharedSlice> getSharedSlice(Value operand,
-                                                 SharedOperandSide side) {
-  // The rank-3 carrier representation is currently only physically
-  // composable for B: [tile, K, N] can be reinterpreted as [tile*K, N].
-  // An A carrier [tile, M, K] would require interleaving the tile and K axes,
-  // which is not a plain descriptor reinterpretation.
-  if (side == SharedOperandSide::B)
-    if (auto index = operand.getDefiningOp<MemDescIndexOp>()) {
-      APInt constantIndex;
-      if (!matchPattern(index.getIndex(), m_ConstantInt(&constantIndex)))
-        return std::nullopt;
-      auto rootTy = cast<MemDescType>(index.getSrc().getType());
-      auto sliceTy = cast<MemDescType>(operand.getType());
-      if (rootTy.getRank() != 3 || sliceTy.getRank() != 2 ||
-          rootTy.getElementType() != sliceTy.getElementType() ||
-          rootTy.getMemorySpace() != sliceTy.getMemorySpace() ||
-          rootTy.getMutableMemory() != sliceTy.getMutableMemory() ||
-          rootTy.getShape()[1] != sliceTy.getShape()[0] ||
-          rootTy.getShape()[2] != sliceTy.getShape()[1])
-        return std::nullopt;
-      Attribute wideEncoding = getWideCarrierEncoding(rootTy);
-      if (!wideEncoding || sliceTy.getEncoding() != wideEncoding)
-        return std::nullopt;
-      return SharedSlice{SharedSliceKind::IndexedCarrier, index.getSrc(),
-                         constantIndex.getSExtValue(),    rootTy.getShape()[0],
-                         sliceTy.getShape()[0],           wideEncoding};
-    }
-
-  if (auto subslice = operand.getDefiningOp<MemDescSubsliceOp>()) {
-    auto rootTy = cast<MemDescType>(subslice.getSrc().getType());
-    auto sliceTy = cast<MemDescType>(operand.getType());
-    if (rootTy.getRank() != 2 || sliceTy.getRank() != 2 ||
-        rootTy.getElementType() != sliceTy.getElementType() ||
-        rootTy.getEncoding() != sliceTy.getEncoding() ||
-        rootTy.getMemorySpace() != sliceTy.getMemorySpace() ||
-        rootTy.getMutableMemory() != sliceTy.getMutableMemory())
-      return std::nullopt;
-    ArrayRef<int32_t> offsets = subslice.getOffsets();
-    if (offsets.size() != 2)
-      return std::nullopt;
-    int64_t index;
-    int64_t numSlices;
-    int64_t sliceK;
-    if (side == SharedOperandSide::A) {
-      if (rootTy.getShape()[0] != sliceTy.getShape()[0] || offsets[0] != 0 ||
-          rootTy.getShape()[1] % sliceTy.getShape()[1] != 0 ||
-          offsets[1] % sliceTy.getShape()[1] != 0)
-        return std::nullopt;
-      sliceK = sliceTy.getShape()[1];
-      index = offsets[1] / sliceK;
-      numSlices = rootTy.getShape()[1] / sliceK;
-    } else {
-      if (rootTy.getShape()[1] != sliceTy.getShape()[1] || offsets[1] != 0 ||
-          rootTy.getShape()[0] % sliceTy.getShape()[0] != 0 ||
-          offsets[0] % sliceTy.getShape()[0] != 0)
-        return std::nullopt;
-      sliceK = sliceTy.getShape()[0];
-      index = offsets[0] / sliceK;
-      numSlices = rootTy.getShape()[0] / sliceK;
-    }
-    return SharedSlice{SharedSliceKind::WideSubslice,
-                       subslice.getSrc(),
-                       index,
-                       numSlices,
-                       sliceK,
-                       rootTy.getEncoding()};
-  }
-  return std::nullopt;
-}
-
-struct SegmentedDotChain {
-  SmallVector<ttng::WarpGroupDotOp> dots;
-  SmallVector<Value> aFragments;
-  std::optional<SharedSlice> aSlices;
-  std::optional<SharedSlice> bSlices;
-};
-
-// The backend distinguishes logical dots from physical MMA instructions. A
-// wide K operand still lowers to the same fixed-granularity instruction count;
-// merging is profitable only when logical bookkeeping is removed without
-// increasing another hardware cost.
-struct DotOperandMergePlan {
-  int64_t logicalDotsBefore;
-  int64_t logicalDotsAfter = 1;
-  int64_t physicalMmaBefore;
-  int64_t physicalMmaAfter;
-  bool registerLifetimeNonIncreasing;
-  bool sharedViewCompatible;
-
-  bool isProfitable() const {
-    if (!registerLifetimeNonIncreasing || !sharedViewCompatible ||
-        physicalMmaAfter > physicalMmaBefore)
-      return false;
-    return physicalMmaAfter < physicalMmaBefore ||
-           logicalDotsAfter < logicalDotsBefore;
-  }
-};
-
-// Return the K granularity of the native instruction used by the v2/v3
-// NVIDIA paths. This deliberately models only the instruction families this
-// pass can lower: MMAv2 register dots and Hopper WGMMA (MMAv3). MMAv5/TMEM is
-// a different operation family and must not silently enter this model.
-static std::optional<int64_t> getNativeMmaK(Type elementTy,
-                                            InputPrecision inputPrecision,
-                                            NvidiaMmaEncodingAttr mma) {
-  // Turing's native half precision instruction is m16n8k8 (the integer
-  // variant is m8n8k16). Ampere MMAv2 uses k16 for f16/bf16 and k32 for
-  // int8/fp8. Hopper WGMMA is handled through the MMAv3 caller below.
-  if (mma.isTuring()) {
-    if (elementTy.isF16())
-      return 8;
-    if (elementTy.isInteger(8))
-      return 16;
-    return std::nullopt;
-  }
-  if (elementTy.isF16() || elementTy.isBF16())
-    return 16;
-  if (elementTy.isF32())
-    return inputPrecision == InputPrecision::TF32 ? std::optional<int64_t>(8)
-                                                  : std::nullopt;
-  if (elementTy.isInteger(8) ||
-      llvm::isa<Float8E5M2Type, Float8E4M3FNType>(elementTy))
-    return 32;
-  // MMAv2 has additional packed integer/fp4 forms, but this pass does not
-  // rewrite their accumulation boundaries yet. Keep them segmented until a
-  // target-specific numerical proof is added.
-  return std::nullopt;
-}
-
-static std::optional<int64_t> getNativeMmaK(triton::DotOp dot,
-                                            RankedTensorType fragmentTy) {
-  auto dotEnc = dyn_cast<DotOperandEncodingAttr>(fragmentTy.getEncoding());
-  if (!dotEnc)
-    return std::nullopt;
-  auto parent = dyn_cast<NvidiaMmaEncodingAttr>(dotEnc.getParent());
-  if (!parent || parent.getVersionMajor() != 2)
-    return std::nullopt;
-  if (fragmentTy.getElementType().isF64()) {
-    ModuleOp module = dot->getParentOfType<ModuleOp>();
-    if (!module)
-      return std::nullopt;
-    int capability = getNVIDIAComputeCapability(module);
-    if (capability == 90)
-      return 16;
-    if (capability >= 80 && capability < 90)
-      return 4;
-    return std::nullopt;
-  }
-  return getNativeMmaK(fragmentTy.getElementType(), dot.getInputPrecision(),
-                       parent);
-}
-
-static std::optional<int64_t> getNativeMmaK(ttng::WarpGroupDotOp dot,
-                                            RankedTensorType fragmentTy) {
-  auto dotEnc = dyn_cast<DotOperandEncodingAttr>(fragmentTy.getEncoding());
-  if (!dotEnc)
-    return std::nullopt;
-  auto parent = dyn_cast<NvidiaMmaEncodingAttr>(dotEnc.getParent());
-  if (!parent || parent.getVersionMajor() != 3)
-    return std::nullopt;
-  return getNativeMmaK(fragmentTy.getElementType(), dot.getInputPrecision(),
-                       parent);
-}
-
-static std::optional<int64_t> getNativeMmaK(ttng::WarpGroupDotOp dot) {
-  auto parent =
-      dyn_cast<NvidiaMmaEncodingAttr>(dot.getD().getType().getEncoding());
-  if (!parent || parent.getVersionMajor() != 3)
-    return std::nullopt;
-  Type elementTy = cast<TensorOrMemDesc>(dot.getA().getType()).getElementType();
-  return getNativeMmaK(elementTy, dot.getInputPrecision(), parent);
-}
-
-static bool mergedWarpGroupDotNeedsPartialAccumulator(ttng::WarpGroupDotOp dot,
-                                                      int64_t mergedK) {
-  Type elementTy = cast<TensorOrMemDesc>(dot.getA().getType()).getElementType();
-  bool isFp8 = llvm::isa<Float8E5M2Type, Float8E4M3FNType, Float8E5M2FNUZType,
-                         Float8E4M3FNUZType>(elementTy);
-  bool accF32 = dot.getD().getType().getElementType().isF32();
-  return isFp8 && accF32 && dot.getMaxNumImpreciseAcc() <= mergedK;
-}
-
-static std::optional<DotOperandMergePlan>
-makeMergePlan(ArrayRef<int64_t> fragmentKs, int64_t nativeK,
-              bool registerLifetimeNonIncreasing, bool sharedViewCompatible) {
-  if (fragmentKs.empty() || nativeK <= 0)
-    return std::nullopt;
-  int64_t physicalInstructions = 0;
-  int64_t totalK = 0;
-  for (int64_t fragmentK : fragmentKs) {
-    // Do not hide an implicit padding/partial-accumulation step in a merge.
-    // All currently supported v2/v3 instruction shapes expose an integral K
-    // tile at this point in the pipeline.
-    if (fragmentK <= 0 || fragmentK % nativeK != 0)
-      return std::nullopt;
-    physicalInstructions += fragmentK / nativeK;
-    totalK += fragmentK;
-  }
-  if (totalK % nativeK != 0)
-    return std::nullopt;
-  int64_t mergedInstructions = totalK / nativeK;
-  DotOperandMergePlan plan{static_cast<int64_t>(fragmentKs.size()),
-                           1,
-                           physicalInstructions,
-                           mergedInstructions,
-                           registerLifetimeNonIncreasing,
-                           sharedViewCompatible};
-  return plan;
-}
-
-static bool isMmaV2OrV3(DotOperandEncodingAttr encoding,
-                        unsigned expectedVersion) {
-  auto parent = dyn_cast<NvidiaMmaEncodingAttr>(encoding.getParent());
-  return parent && parent.getVersionMajor() == expectedVersion;
-}
-
-// DotOperandEncoding is still defined over the power-of-two linear-layout
-// domain. A non-power-of-two segmented chain is therefore valid input to this
-// pass, but it must remain segmented unless a future layout implementation can
-// represent the merged register tensor. Check this before asking
-// toLinearLayout() for a mapping so the conservative fallback cannot assert.
-static bool isRepresentableMmaShape(RankedTensorType type) {
-  return llvm::all_of(type.getShape(), [](int64_t extent) {
-    return extent > 0 && llvm::isPowerOf2_64(extent);
-  });
-}
-
-static bool isCompleteExtractCover(ArrayRef<Value> fragments, int64_t dim,
-                                   Value &src) {
-  if (fragments.empty())
-    return false;
-  int64_t offset = 0;
-  for (auto [i, fragment] : llvm::enumerate(fragments)) {
-    // Layout-only converts may sit between the extract and the dot; they do not
-    // move data between threads, so look through them.
-    auto extract = skipConverts(fragment).getDefiningOp<ExtractDotOperandOp>();
-    if (!extract || extract.getDim() != dim ||
-        extract.getIndex() != static_cast<int64_t>(i))
-      return false;
-    // The producer builds one layout convert per extract over the same wide
-    // value, so the extract sources are distinct SSA values that alias one
-    // root. Compare the roots, not the converts, or a cover that is complete
-    // by construction reads as several unrelated fragments.
-    Value extractSrc = skipConverts(extract.getSrc());
-    if (!src)
-      src = extractSrc;
-    else if (src != extractSrc)
-      return false;
-    // ExtractDotOperand currently encodes equal-sized slices. Keep the
-    // explicit offset accumulation here so this proof remains correct when
-    // unequal static slices are added later.
-    auto srcTy = dyn_cast<RankedTensorType>(extract.getSrc().getType());
-    auto sliceTy = dyn_cast<RankedTensorType>(fragment.getType());
-    if (!srcTy || !sliceTy || srcTy.getShape()[dim] <= offset ||
-        offset + sliceTy.getShape()[dim] > srcTy.getShape()[dim])
-      return false;
-    offset += sliceTy.getShape()[dim];
-  }
-  return src && offset == cast<RankedTensorType>(src.getType()).getShape()[dim];
-}
-
-// A complete extract cover is the only case in which gathering all register
-// operands is guaranteed not to extend a live range.
-static bool hasNonRegressingRegisterLifetime(ArrayRef<Value> fragments,
-                                             int64_t dim) {
-  Value src;
-  return isCompleteExtractCover(fragments, dim, src);
-}
-
-// Moving several shared-memory reads to the chain tail is only valid when no
-// intervening operation can mutate observable state. Pure address/view and
-// register operations are harmless; barriers, copies, stores and unknown
-// side effects make the original read timing semantically significant.
-static bool hasOnlyPureOpsBetween(Operation *from, Operation *to) {
-  for (Operation *op = from->getNextNode(); op && op != to;
-       op = op->getNextNode())
-    if (!isMemoryEffectFree(op))
-      return false;
-  return from->getBlock() == to->getBlock();
-}
-
-// Discardable attributes are allowed to carry scheduling and synchronization
-// contracts. Their semantics are not part of the dot op's generated builder
-// and cannot in general be combined when several dots become one. Run this
-// pass before those annotations are introduced; if an input already carries
-// any, keep the chain unchanged rather than silently dropping a contract.
 static bool hasNoRewriteSensitiveAttrs(Operation *op) {
   return op->getDiscardableAttrs().empty();
 }
 
-static LogicalResult matchSegmentedDotChain(ttng::WarpGroupDotOp tail,
-                                            SegmentedDotChain &chain) {
-  if (tail.needsPartialAccumulator() || tail.getUseC() ||
-      !hasNoRewriteSensitiveAttrs(tail))
-    return failure();
-  std::optional<SharedSlice> tailBSlice =
-      getSharedSlice(tail.getB(), SharedOperandSide::B);
-  if (!tailBSlice || tailBSlice->numSlices < 2 ||
-      tailBSlice->index != tailBSlice->numSlices - 1)
-    return failure();
-
-  bool aInShared = isa<MemDescType>(tail.getA().getType());
-  std::optional<SharedSlice> tailASlice;
-  if (aInShared) {
-    tailASlice = getSharedSlice(tail.getA(), SharedOperandSide::A);
-    if (!tailASlice || tailASlice->kind != SharedSliceKind::WideSubslice ||
-        tailASlice->index != tailBSlice->index ||
-        tailASlice->numSlices != tailBSlice->numSlices ||
-        tailASlice->sliceK != tailBSlice->sliceK)
-      return failure();
-  }
-
-  SmallVector<ttng::WarpGroupDotOp> reversed{tail};
-  ttng::WarpGroupDotOp current = tail;
-  for (int64_t expected = tailBSlice->numSlices - 2; expected >= 0;
-       --expected) {
-    auto previous = current.getC().getDefiningOp<ttng::WarpGroupDotOp>();
-    if (!previous || !previous.getD().hasOneUse() || previous.getUseC() ||
-        previous.needsPartialAccumulator() ||
-        !hasNoRewriteSensitiveAttrs(previous) ||
-        previous->getBlock() != current->getBlock() ||
-        !hasOnlyPureOpsBetween(previous, current) ||
-        previous.getIsAsync() != current.getIsAsync() ||
-        previous.getInputPrecision() != current.getInputPrecision() ||
-        previous.getMaxNumImpreciseAcc() != current.getMaxNumImpreciseAcc())
-      return failure();
-    std::optional<SharedSlice> bSlice =
-        getSharedSlice(previous.getB(), SharedOperandSide::B);
-    if (!bSlice || bSlice->kind != tailBSlice->kind ||
-        bSlice->root != tailBSlice->root || bSlice->index != expected ||
-        bSlice->numSlices != tailBSlice->numSlices ||
-        bSlice->sliceK != tailBSlice->sliceK)
-      return failure();
-    if (aInShared) {
-      std::optional<SharedSlice> aSlice =
-          getSharedSlice(previous.getA(), SharedOperandSide::A);
-      if (!aSlice || aSlice->kind != tailASlice->kind ||
-          aSlice->root != tailASlice->root || aSlice->index != expected ||
-          aSlice->numSlices != tailASlice->numSlices ||
-          aSlice->sliceK != tailASlice->sliceK)
-        return failure();
+static bool hasOnlyPureOpsBetween(Operation *from, Operation *to) {
+  if (from->getBlock() != to->getBlock())
+    return false;
+  for (Operation *op = from->getNextNode(); op && op != to;
+       op = op->getNextNode()) {
+    // Async WGMMA ordering operations are semantically significant even
+    // though they do not model ordinary memory effects. Do not move a merged
+    // dot across a wait/commit boundary.
+    if (isa<ttng::WarpGroupDotWaitOp, ttng::WarpGroupDotCommitOp>(op))
+      return false;
+#ifdef __TLE__
+    // A shared-operand fence is an ordering boundary too: it establishes
+    // visibility from generic-proxy writes to the async WGMMA proxy.
+    if (isa<mlir::triton::tle::WGMMASharedOperandFenceOp>(op))
+      return false;
+#endif
+    // Backend staging may materialize the next register fragment between two
+    // dots. The rewrite leaves those ops in place and only removes the
+    // accumulator dots, so they are not a reorder-sensitive boundary.
+    if (auto localLoad = dyn_cast<LocalLoadOp>(op)) {
+      // Token-bearing local loads are asynchronous and need their own
+      // dependency chain; never move a merged contraction across one.
+      if (localLoad.getToken())
+        return false;
+      continue;
     }
-    reversed.push_back(previous);
-    current = previous;
+    if (isa<LocalAllocOp>(op))
+      continue;
+    if (!isMemoryEffectFree(op))
+      return false;
   }
-
-  for (ttng::WarpGroupDotOp dot : llvm::reverse(reversed))
-    chain.dots.push_back(dot);
-  int64_t fragmentK = tailBSlice->sliceK;
-  if (aInShared) {
-    Type aTy = chain.dots.front().getA().getType();
-    for (ttng::WarpGroupDotOp dot : chain.dots)
-      if (dot.getA().getType() != aTy)
-        return failure();
-    chain.aSlices = *tailASlice;
-  } else {
-    auto fragmentTy =
-        dyn_cast<RankedTensorType>(chain.dots.front().getA().getType());
-    if (!fragmentTy || !isa<DotOperandEncodingAttr>(fragmentTy.getEncoding()) ||
-        fragmentTy.getShape().back() != fragmentK)
-      return failure();
-    auto dotEncoding = cast<DotOperandEncodingAttr>(fragmentTy.getEncoding());
-    auto mmaParent = dyn_cast<NvidiaMmaEncodingAttr>(dotEncoding.getParent());
-    if (!mmaParent || mmaParent.getVersionMajor() != 3)
-      return failure();
-    for (ttng::WarpGroupDotOp dot : chain.dots) {
-      if (dot.getA().getType() != fragmentTy)
-        return failure();
-      chain.aFragments.push_back(dot.getA());
-    }
-    if (!hasNonRegressingRegisterLifetime(chain.aFragments,
-                                          fragmentTy.getRank() - 1)) {
-      LDBG("keeping segmented WGMMA: merging would extend independent A "
-           "fragment lifetimes");
-      return failure();
-    }
-  }
-
-  auto nativeK = getNativeMmaK(chain.dots.front());
-  if (!nativeK)
-    return failure();
-  SmallVector<int64_t> fragmentKs(chain.dots.size(), fragmentK);
-  auto plan = makeMergePlan(fragmentKs, *nativeK,
-                            /*registerLifetimeNonIncreasing=*/true,
-                            /*sharedViewCompatible=*/true);
-  if (!plan || !plan->isProfitable())
-    return failure();
-  if (mergedWarpGroupDotNeedsPartialAccumulator(
-          chain.dots.front(), plan->physicalMmaAfter * *nativeK))
-    return failure();
-  LDBG("WGMMA merge plan: logical " << plan->logicalDotsBefore << " -> "
-                                    << plan->logicalDotsAfter << ", physical "
-                                    << plan->physicalMmaBefore << " -> "
-                                    << plan->physicalMmaAfter);
-
-  if (!aInShared) {
-    auto fragmentTy =
-        cast<RankedTensorType>(chain.aFragments.front().getType());
-    SmallVector<int64_t> wideShape(fragmentTy.getShape());
-    wideShape.back() *= tailBSlice->numSlices;
-    auto wideTy = RankedTensorType::get(wideShape, fragmentTy.getElementType(),
-                                        fragmentTy.getEncoding());
-    if (!isRepresentableMmaShape(wideTy))
-      return failure();
-    SmallVector<std::pair<unsigned, unsigned>> unused;
-    if (failed(getDotOperandSliceRegisterMap(wideTy, fragmentTy,
-                                             fragmentTy.getRank() - 1,
-                                             tailBSlice->numSlices, unused)))
-      return failure();
-  }
-  chain.bSlices = *tailBSlice;
-  return success();
+  return true;
 }
 
-struct MergeSegmentedWarpGroupDot
-    : public OpRewritePattern<ttng::WarpGroupDotOp> {
-  using OpRewritePattern<ttng::WarpGroupDotOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(ttng::WarpGroupDotOp tail,
-                                PatternRewriter &rewriter) const override {
-    SegmentedDotChain chain;
-    if (failed(matchSegmentedDotChain(tail, chain)))
-      return failure();
-
-    Location loc = tail.getLoc();
-    Value wideA;
-    if (chain.aSlices) {
-      wideA = chain.aSlices->root;
-    } else {
-      auto fragmentTy =
-          cast<RankedTensorType>(chain.aFragments.front().getType());
-      SmallVector<int64_t> wideShape(fragmentTy.getShape());
-      wideShape.back() *= chain.dots.size();
-      auto wideATy = RankedTensorType::get(
-          wideShape, fragmentTy.getElementType(), fragmentTy.getEncoding());
-      wideA = ConcatDotOperandOp::create(
-          rewriter, loc, wideATy, chain.aFragments,
-          rewriter.getI32IntegerAttr(fragmentTy.getRank() - 1));
-    }
-
-    assert(chain.bSlices && "matched chain must have shared slices");
-    Value wideB = chain.bSlices->root;
-    if (chain.bSlices->kind == SharedSliceKind::IndexedCarrier) {
-      auto carrierTy = cast<MemDescType>(chain.bSlices->root.getType());
-      auto wideBTy = MemDescType::get(
-          {carrierTy.getShape()[0] * carrierTy.getShape()[1],
-           carrierTy.getShape()[2]},
-          carrierTy.getElementType(), chain.bSlices->wideEncoding,
-          carrierTy.getMemorySpace(), carrierTy.getMutableMemory());
-      wideB = MemDescReinterpretOp::create(rewriter, loc, wideBTy,
-                                           chain.bSlices->root);
-    }
-
-    auto merged = ttng::WarpGroupDotOp::create(
-        rewriter, loc, tail.getD().getType(), wideA, wideB,
-        chain.dots.front().getC(), Value(), tail.getInputPrecision(),
-        tail.getMaxNumImpreciseAcc(), tail.getIsAsync());
-    rewriter.replaceOp(tail, merged.getD());
-    for (ttng::WarpGroupDotOp dot :
-         llvm::reverse(ArrayRef(chain.dots).drop_back()))
-      rewriter.eraseOp(dot);
-    LDBG("merged a non-regressing " << chain.dots.size()
-                                    << "-segment WGMMA chain");
-    return success();
-  }
-};
-
-struct SegmentedMmaChain {
-  SmallVector<triton::DotOp> dots;
-  SmallVector<Value> aFragments;
-  SmallVector<Value> bFragments;
-  // Every op strictly between the head and the tail of the chain: the dots that
-  // the merged one replaces, plus the accumulator converts that link them.
-  // Stored consumer-before-producer so erasing in order never hits a live use.
-  SmallVector<Operation *> deadInterior;
-};
-
-// A chain built from `tl.split` leaves reaches this pass before layout
-// conversions are cleaned up, so the accumulator often hops through a pair of
-// value-preserving converts between two dots. Walk them, but only while each
-// result has a single use: a partial sum consumed elsewhere stays observable
-// and must keep being computed.
-static triton::DotOp
-skipAccumulatorConverts(Value acc, SmallVectorImpl<Operation *> &converts) {
-  while (auto cvt = acc.getDefiningOp<ConvertLayoutOp>()) {
-    if (!cvt.getResult().hasOneUse())
-      return {};
-    converts.push_back(cvt);
-    acc = cvt.getSrc();
-  }
-  return acc.getDefiningOp<triton::DotOp>();
+static std::optional<int64_t> getNativeMmaK(Type elementTy,
+                                            InputPrecision precision,
+                                            NvidiaMmaEncodingAttr mma) {
+  if (mma.isTuring())
+    return elementTy.isF16()        ? std::optional<int64_t>(8)
+           : elementTy.isInteger(8) ? std::optional<int64_t>(16)
+                                    : std::nullopt;
+  if (elementTy.isF16() || elementTy.isBF16())
+    return 16;
+  if (elementTy.isF32() && precision == InputPrecision::TF32)
+    return 8;
+  if (elementTy.isInteger(8))
+    return 32;
+  if (llvm::isa<Float8E5M2Type, Float8E4M3FNType>(elementTy))
+    return 32;
+  return std::nullopt;
 }
 
-// Unlike the WGMMA path, this needs no partial-accumulator check for FP8 with
-// an f32 accumulator: `maxNumImpreciseAcc` only drives the chunked accumulation
-// in the WGMMA lowering, and the MMAv2 lowering never reads it. A wider K
-// therefore introduces no new accumulation boundary here, so precision does not
-// depend on how the K tile is split.
+static std::optional<int64_t> getNativeMmaK(triton::DotOp dot,
+                                            RankedTensorType aTy) {
+  auto enc = dyn_cast<DotOperandEncodingAttr>(aTy.getEncoding());
+  auto mma = enc ? dyn_cast<NvidiaMmaEncodingAttr>(enc.getParent())
+                 : NvidiaMmaEncodingAttr();
+  if (!mma || mma.getVersionMajor() != 2)
+    return std::nullopt;
+  if (aTy.getElementType().isF64()) {
+    ModuleOp module = dot->getParentOfType<ModuleOp>();
+    if (!module)
+      return std::nullopt;
+    int capability = getNVIDIAComputeCapability(module);
+    return capability == 90   ? std::optional<int64_t>(16)
+           : capability >= 80 ? std::optional<int64_t>(4)
+                              : std::nullopt;
+  }
+  return getNativeMmaK(aTy.getElementType(), dot.getInputPrecision(), mma);
+}
+
 static bool hasSupportedMmaV2Numerics(triton::DotOp dot) {
   Type a = dot.getA().getType().getElementType();
   Type b = dot.getB().getType().getElementType();
   Type d = dot.getD().getType().getElementType();
-  if (a.isF16() && b.isF16())
+  if (a != b)
+    return false;
+  if (a.isF16())
     return d.isF16() || d.isF32();
-  if (a.isBF16() && b.isBF16())
+  if (a.isBF16())
     return d.isF32();
-  if (a.isF32() && b.isF32())
+  if (a.isF32())
     return d.isF32() && dot.getInputPrecision() == InputPrecision::TF32;
-  if (a.isF64() && b.isF64())
+  if (a.isF64())
     return d.isF64();
-  if (a.isInteger(8) && b.isInteger(8))
+  if (a.isInteger(8))
     return d.isInteger(32);
-  bool aFp8 = llvm::isa<Float8E5M2Type, Float8E4M3FNType>(a);
-  bool bFp8 = llvm::isa<Float8E5M2Type, Float8E4M3FNType>(b);
-  return aFp8 && bFp8 && (d.isF16() || d.isF32());
+  bool fp8 = llvm::isa<Float8E5M2Type, Float8E4M3FNType>(a);
+  if (fp8)
+    return d.isF16() || d.isF32();
+  return false;
+}
+
+// Independently produced fragments are safe to coalesce when each one is
+// single-use along the dot chain, which keeps the rewrite from duplicating a
+// producer. Values with fan-out are left segmented: their lifetime and
+// pressure trade-off is not recoverable from local IR alone.
+static bool hasSingleUseDotFragments(ArrayRef<Value> fragments) {
+  for (Value fragment : fragments) {
+    Value v = fragment;
+    while (auto cvt = v.getDefiningOp<ConvertLayoutOp>()) {
+      if (!cvt.getResult().hasOneUse())
+        return false;
+      v = cvt.getSrc();
+    }
+    if (!fragment.hasOneUse())
+      return false;
+  }
+  return true;
+}
+
+// `isBeforeInBlock` asserts when the two operations do not share a block, so
+// every ordering question carries the block check with it. A producer in
+// another block, e.g. a convert licm hoisted out of the loop the dots live in,
+// is a normal shape rather than a malformed one.
+static bool isBefore(Operation *op, Operation *anchor) {
+  return anchor && op->getBlock() == anchor->getBlock() &&
+         op->isBeforeInBlock(anchor);
+}
+
+// A merged dot is emitted at the chain's replacement point, so fragments may
+// be materialized between the original dots only when every producer dominates
+// the old tail. This keeps a dot from moving ahead of the load or compute that
+// produces a later fragment.
+static bool fragmentsAvailableBefore(Operation *firstDot,
+                                     ArrayRef<Value> fragments,
+                                     Operation *lastUse = nullptr) {
+  for (Value fragment : fragments) {
+    Value value = fragment;
+    while (auto cvt = value.getDefiningOp<ConvertLayoutOp>()) {
+      if (!isBefore(cvt, firstDot) && !isBefore(cvt, lastUse))
+        return false;
+      value = cvt.getSrc();
+    }
+    if (auto def = value.getDefiningOp()) {
+      // A local_load materializes a fragment from shared memory. Its register
+      // pressure is governed by the shared tile rather than by extending a
+      // scalar producer's live range, so allow it.
+      if (auto localLoad = dyn_cast<LocalLoadOp>(def)) {
+        // Token-bearing local loads are asynchronous and need their own
+        // dependency chain; never move a merged contraction across one.
+        if (localLoad.getToken())
+          return false;
+        // A backend-staged fragment may be loaded between segmented dots. It
+        // is safe to delay the merged dot until the old tail (the caller's
+        // replacement point), but never past that point.
+        if (isBefore(def, firstDot) || isBefore(def, lastUse))
+          continue;
+      }
+      if (!isBefore(def, firstDot))
+        return false;
+    }
+  }
+  return true;
+}
+
+static bool sameFragmentLayoutExceptK(Type lhs, Type rhs, int64_t kDim) {
+  auto a = dyn_cast<RankedTensorType>(lhs);
+  auto b = dyn_cast<RankedTensorType>(rhs);
+  if (!a || !b || a.getRank() != b.getRank() ||
+      a.getElementType() != b.getElementType() ||
+      a.getEncoding() != b.getEncoding())
+    return false;
+  for (int64_t i = 0; i < a.getRank(); ++i)
+    if (i != kDim && a.getShape()[i] != b.getShape()[i])
+      return false;
+  return true;
+}
+
+struct SegmentedMmaChain {
+  SmallVector<triton::DotOp> dots;
+  SmallVector<Value> aFragments, bFragments;
+  SmallVector<Operation *> deadInterior;
+};
+
+static triton::DotOp
+skipAccumulatorConverts(Value acc, SmallVectorImpl<Operation *> &interior) {
+  while (auto cvt = acc.getDefiningOp<ConvertLayoutOp>()) {
+    if (!cvt.getResult().hasOneUse())
+      return {};
+    interior.push_back(cvt);
+    acc = cvt.getSrc();
+  }
+  return acc.getDefiningOp<triton::DotOp>();
 }
 
 static LogicalResult matchSegmentedMmaChain(triton::DotOp tail,
                                             SegmentedMmaChain &chain) {
   if (!hasSupportedMmaV2Numerics(tail) || !hasNoRewriteSensitiveAttrs(tail))
     return failure();
-
   SmallVector<triton::DotOp> reversed{tail};
-  // Interior ops in the order the walk meets them, which is already
-  // consumer-before-producer. A step that is later rejected leaves its
-  // converts here, so remember how far the accepted prefix reaches.
   SmallVector<Operation *> interior;
-  size_t acceptedInterior = 0;
+  size_t accepted = 0;
   triton::DotOp current = tail;
   while (auto previous = skipAccumulatorConverts(current.getC(), interior)) {
     if (!previous.getD().hasOneUse() || !hasNoRewriteSensitiveAttrs(previous) ||
         previous->getBlock() != current->getBlock() ||
         !hasOnlyPureOpsBetween(previous, current) ||
         previous.getInputPrecision() != current.getInputPrecision() ||
-        previous.getMaxNumImpreciseAcc() != current.getMaxNumImpreciseAcc() ||
-        previous.getA().getType() != tail.getA().getType() ||
-        previous.getB().getType() != tail.getB().getType())
+        previous.getMaxNumImpreciseAcc() != current.getMaxNumImpreciseAcc())
       break;
     reversed.push_back(previous);
     interior.push_back(previous);
-    acceptedInterior = interior.size();
+    accepted = interior.size();
     current = previous;
   }
   if (reversed.size() < 2)
     return failure();
-  for (triton::DotOp dot : llvm::reverse(reversed)) {
+  interior.resize(accepted);
+  for (auto dot : llvm::reverse(reversed)) {
     chain.dots.push_back(dot);
     chain.aFragments.push_back(dot.getA());
     chain.bFragments.push_back(dot.getB());
   }
-  // The merged dot takes over the head's accumulator operand, so the head is
-  // replaced like the rest. Converts pushed past it belong to a rejected step
-  // and are left alone.
-  interior.resize(acceptedInterior);
-  chain.deadInterior = std::move(interior);
-
-  auto aTy = cast<RankedTensorType>(chain.aFragments.front().getType());
-  auto bTy = cast<RankedTensorType>(chain.bFragments.front().getType());
-  auto aEncoding = dyn_cast<DotOperandEncodingAttr>(aTy.getEncoding());
-  auto bEncoding = dyn_cast<DotOperandEncodingAttr>(bTy.getEncoding());
-  if (!aEncoding || !bEncoding || aEncoding.getOpIdx() != 0 ||
-      bEncoding.getOpIdx() != 1 || !isMmaV2OrV3(aEncoding, 2) ||
-      !isMmaV2OrV3(bEncoding, 2))
+  auto aTy = dyn_cast<RankedTensorType>(chain.aFragments.front().getType());
+  auto bTy = dyn_cast<RankedTensorType>(chain.bFragments.front().getType());
+  auto aEnc = aTy ? dyn_cast<DotOperandEncodingAttr>(aTy.getEncoding())
+                  : DotOperandEncodingAttr();
+  auto bEnc = bTy ? dyn_cast<DotOperandEncodingAttr>(bTy.getEncoding())
+                  : DotOperandEncodingAttr();
+  auto aParent = aEnc ? dyn_cast<NvidiaMmaEncodingAttr>(aEnc.getParent())
+                      : NvidiaMmaEncodingAttr();
+  auto bParent = bEnc ? dyn_cast<NvidiaMmaEncodingAttr>(bEnc.getParent())
+                      : NvidiaMmaEncodingAttr();
+  if (!aTy || !bTy || !aEnc || !bEnc || !aParent || !bParent ||
+      aParent.getVersionMajor() != 2 || bParent.getVersionMajor() != 2 ||
+      aEnc.getOpIdx() != 0 || bEnc.getOpIdx() != 1)
     return failure();
-  int64_t aDim = aTy.getRank() - 1;
-  int64_t bDim = bTy.getRank() - 2;
-  if (!hasNonRegressingRegisterLifetime(chain.aFragments, aDim) ||
-      !hasNonRegressingRegisterLifetime(chain.bFragments, bDim)) {
-    LDBG("keeping segmented MMA: merging would extend operand lifetimes");
+  int64_t aDim = aTy.getRank() - 1, bDim = bTy.getRank() - 2;
+  if (aDim < 0 || bDim < 0)
     return failure();
-  }
-
+  // A complete register relabel is required; otherwise widening would change
+  // live ranges or lane ownership. This naturally rejects unsupported
+  // non-power-of-two register shapes while allowing shared paths below.
+  if (!hasSingleUseDotFragments(chain.aFragments) ||
+      !hasSingleUseDotFragments(chain.bFragments))
+    return failure();
+  if (!fragmentsAvailableBefore(chain.dots.front(), chain.aFragments,
+                                chain.dots.back()) ||
+      !fragmentsAvailableBefore(chain.dots.front(), chain.bFragments,
+                                chain.dots.back()))
+    return failure();
+  for (auto dot : chain.dots)
+    if (!sameFragmentLayoutExceptK(dot.getA().getType(), aTy, aDim) ||
+        !sameFragmentLayoutExceptK(dot.getB().getType(), bTy, bDim))
+      return failure();
   auto nativeK = getNativeMmaK(chain.dots.front(), aTy);
   if (!nativeK)
     return failure();
-  SmallVector<int64_t> fragmentKs;
-  fragmentKs.reserve(chain.aFragments.size());
-  for (Value a : chain.aFragments)
-    fragmentKs.push_back(cast<RankedTensorType>(a.getType()).getShape()[aDim]);
-  auto plan = makeMergePlan(fragmentKs, *nativeK,
-                            /*registerLifetimeNonIncreasing=*/true,
-                            /*sharedViewCompatible=*/true);
-  if (!plan || !plan->isProfitable())
-    return failure();
-  LDBG("MMA merge plan: logical " << plan->logicalDotsBefore << " -> "
-                                  << plan->logicalDotsAfter << ", physical "
-                                  << plan->physicalMmaBefore << " -> "
-                                  << plan->physicalMmaAfter);
-
-  SmallVector<int64_t> wideAShape(aTy.getShape());
-  SmallVector<int64_t> wideBShape(bTy.getShape());
-  wideAShape[aDim] *= chain.dots.size();
-  wideBShape[bDim] *= chain.dots.size();
+  for (auto dot : chain.dots) {
+    auto dotA = cast<RankedTensorType>(dot.getA().getType());
+    auto dotB = cast<RankedTensorType>(dot.getB().getType());
+    if (dotA.getShape()[aDim] % *nativeK != 0 ||
+        dotB.getShape()[bDim] % *nativeK != 0)
+      return failure();
+  }
+  SmallVector<int64_t> wideAShape(aTy.getShape()), wideBShape(bTy.getShape());
+  wideAShape[aDim] = 0;
+  wideBShape[bDim] = 0;
+  for (auto dot : chain.dots) {
+    wideAShape[aDim] +=
+        cast<RankedTensorType>(dot.getA().getType()).getShape()[aDim];
+    wideBShape[bDim] +=
+        cast<RankedTensorType>(dot.getB().getType()).getShape()[bDim];
+  }
   auto wideATy = RankedTensorType::get(wideAShape, aTy.getElementType(),
                                        aTy.getEncoding());
   auto wideBTy = RankedTensorType::get(wideBShape, bTy.getElementType(),
                                        bTy.getEncoding());
-  if (!isRepresentableMmaShape(wideATy) || !isRepresentableMmaShape(wideBTy))
+  SmallVector<RankedTensorType> aTypes, bTypes;
+  for (auto dot : chain.dots) {
+    aTypes.push_back(cast<RankedTensorType>(dot.getA().getType()));
+    bTypes.push_back(cast<RankedTensorType>(dot.getB().getType()));
+  }
+  SmallVector<std::pair<unsigned, unsigned>> map;
+  if (failed(getDotOperandConcatRegisterMap(wideATy, aTypes, aDim, map)) ||
+      failed(getDotOperandConcatRegisterMap(wideBTy, bTypes, bDim, map)))
     return failure();
-  SmallVector<std::pair<unsigned, unsigned>> unused;
-  if (failed(getDotOperandSliceRegisterMap(wideATy, aTy, aDim,
-                                           chain.dots.size(), unused)) ||
-      failed(getDotOperandSliceRegisterMap(wideBTy, bTy, bDim,
-                                           chain.dots.size(), unused)))
-    return failure();
+  chain.deadInterior = std::move(interior);
   return success();
 }
 
 struct MergeSegmentedMma : public OpRewritePattern<triton::DotOp> {
   using OpRewritePattern<triton::DotOp>::OpRewritePattern;
-
   LogicalResult matchAndRewrite(triton::DotOp tail,
                                 PatternRewriter &rewriter) const override {
     SegmentedMmaChain chain;
     if (failed(matchSegmentedMmaChain(tail, chain)))
       return failure();
-
-    Location loc = tail.getLoc();
     auto aTy = cast<RankedTensorType>(chain.aFragments.front().getType());
     auto bTy = cast<RankedTensorType>(chain.bFragments.front().getType());
-    int64_t aDim = aTy.getRank() - 1;
-    int64_t bDim = bTy.getRank() - 2;
-    SmallVector<int64_t> wideAShape(aTy.getShape());
-    SmallVector<int64_t> wideBShape(bTy.getShape());
-    wideAShape[aDim] *= chain.dots.size();
-    wideBShape[bDim] *= chain.dots.size();
-    auto wideATy = RankedTensorType::get(wideAShape, aTy.getElementType(),
-                                         aTy.getEncoding());
-    auto wideBTy = RankedTensorType::get(wideBShape, bTy.getElementType(),
-                                         bTy.getEncoding());
-    Value wideA =
-        ConcatDotOperandOp::create(rewriter, loc, wideATy, chain.aFragments,
-                                   rewriter.getI32IntegerAttr(aDim));
-    Value wideB =
-        ConcatDotOperandOp::create(rewriter, loc, wideBTy, chain.bFragments,
-                                   rewriter.getI32IntegerAttr(bDim));
+    int64_t aDim = aTy.getRank() - 1, bDim = bTy.getRank() - 2;
+    SmallVector<int64_t> aShape(aTy.getShape()), bShape(bTy.getShape());
+    aShape[aDim] = bShape[bDim] = 0;
+    for (auto dot : chain.dots) {
+      auto dotA = cast<RankedTensorType>(dot.getA().getType());
+      auto dotB = cast<RankedTensorType>(dot.getB().getType());
+      aShape[aDim] += dotA.getShape()[aDim];
+      bShape[bDim] += dotB.getShape()[bDim];
+    }
+    rewriter.setInsertionPoint(tail);
+    auto wideA =
+        RankedTensorType::get(aShape, aTy.getElementType(), aTy.getEncoding());
+    auto wideB =
+        RankedTensorType::get(bShape, bTy.getElementType(), bTy.getEncoding());
+    Value a = ConcatDotOperandOp::create(rewriter, tail.getLoc(), wideA,
+                                         chain.aFragments,
+                                         rewriter.getI32IntegerAttr(aDim));
+    Value b = ConcatDotOperandOp::create(rewriter, tail.getLoc(), wideB,
+                                         chain.bFragments,
+                                         rewriter.getI32IntegerAttr(bDim));
+    LDBG("merging " << chain.dots.size() << " segmented dots into one");
     Value merged = triton::DotOp::create(
-        rewriter, loc, tail.getD().getType(), wideA, wideB,
+        rewriter, tail.getLoc(), tail.getD().getType(), a, b,
         chain.dots.front().getC(), tail.getInputPrecision(),
         tail.getMaxNumImpreciseAcc());
     rewriter.replaceOp(tail, merged);
-    // Already ordered consumer-before-producer, so every use is gone by the
-    // time an op's turn comes.
-    for (Operation *op : chain.deadInterior)
-      rewriter.eraseOp(op);
-    LDBG("merged a non-regressing " << chain.dots.size()
-                                    << "-segment MMA chain");
+    // Erase from the end of the SSA chain towards its head. The matcher may
+    // record layout converts before their defining dot, so a forward walk would
+    // try to erase a still-used convert. Repeatedly picking a now-dead op keeps
+    // the order correct with several converts or other pure intermediates.
+    SmallVector<Operation *> dead(chain.deadInterior);
+    while (!dead.empty()) {
+      auto it = llvm::find_if(dead, [](Operation *op) {
+        return llvm::all_of(op->getResults(),
+                            [](Value result) { return result.use_empty(); });
+      });
+      if (it == dead.end())
+        break;
+      rewriter.eraseOp(*it);
+      dead.erase(it);
+    }
     return success();
   }
 };
@@ -1327,7 +1104,9 @@ class TritonGPUConcatDotOperandPass
 public:
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<MatchJoinTreeConcat>(&getContext());
+    // One fixpoint for both: folding an outer stage turns the stage below it
+    // into a concat operand, which then folds in turn.
+    patterns.add<MatchJoinTreeConcat, FlattenNestedConcats>(&getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }
@@ -1339,9 +1118,31 @@ class TritonGPUExpandConcatDotOperandPass
 public:
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<ExpandUnlowerableConcat>(&getContext());
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
+    patterns.add<ExpandConcatToJoinTree>(&getContext());
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
+      return;
+    }
+    // Last pass that can act on the op, so anything left has to lower as a
+    // register relabel. Reporting here, while the fragment shapes are still
+    // available, says why; ViewOpToLLVM would fail on the same condition with
+    // less to go on. Reaching this means a later pass retagged an operand the
+    // matcher had proven, e.g. by widening kWidth past a fragment's K extent.
+    getOperation().walk(
+        [&](ConcatDotOperandOp op) {
+          SmallVector<std::pair<unsigned, unsigned>> unused;
+          if (succeeded(getConcatDotOperandRegisterMap(op, unused)))
+            return;
+          InFlightDiagnostic diag =
+              op.emitError()
+              << "concat_dot_operand: the operand layout allows neither a "
+                 "per-thread register relabel nor a join-tree expansion";
+          diag.attachNote() << "expansion needs a power-of-two count of "
+                               "equally shaped fragments; this op concatenates "
+                            << op.getFragments().size() << " fragments on dim "
+                            << op.getDim();
+          signalPassFailure();
+        });
   }
 };
 
@@ -1350,12 +1151,21 @@ class TritonGPUMergeSegmentedDotPass
           TritonGPUMergeSegmentedDotPass> {
 public:
   void runOnOperation() override {
+    // Two stages: both matchers can serve a split tree whose leaves feed a dot
+    // chain, but they key on different ops, the reshape at the tree's head
+    // against the dot at its tail, so the greedy driver's order would decide.
+    // Run the split rewrite first; otherwise the leaves stop being dot operands
+    // and the tree survives with a concat stacked back on top of it.
+    RewritePatternSet splitPatterns(&getContext());
+    splitPatterns.add<MatchSplitTreeExtracts>(&getContext());
+    if (failed(
+            applyPatternsGreedily(getOperation(), std::move(splitPatterns)))) {
+      signalPassFailure();
+      return;
+    }
+
     RewritePatternSet patterns(&getContext());
-    // MatchSplitTreeExtracts turns a user-written fragment split into the
-    // extract cover the two merge patterns look for, so it must run in the same
-    // greedy fixpoint rather than a later pass.
-    patterns.add<MatchSplitTreeExtracts, MergeSegmentedWarpGroupDot,
-                 MergeSegmentedMma, FoldConcatOfExtracts>(&getContext());
+    patterns.add<MergeSegmentedMma, FoldConcatOfExtracts>(&getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }
@@ -1368,14 +1178,167 @@ namespace ttg = mlir::triton::gpu;
 
 // Defined here rather than in Transforms/Utility.cpp: backends that substitute
 // their own Utility.cpp would otherwise have to carry this too.
+LogicalResult getDotOperandConcatRegisterMap(
+    RankedTensorType dstTy, ArrayRef<RankedTensorType> fragmentTypes,
+    int64_t dim,
+    SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg,
+    bool interleaved) {
+  if (fragmentTypes.size() < 2 || dim < 0 || dim >= dstTy.getRank())
+    return failure();
+  // Interleaving is only defined when every fragment contributes the same
+  // number of elements; the verifier enforces it, this keeps the proof honest
+  // when the map is run on types alone before any op exists.
+  if (interleaved && llvm::any_of(fragmentTypes, [&](RankedTensorType ty) {
+        return ty.getShape()[dim] != fragmentTypes.front().getShape()[dim];
+      }))
+    return failure();
+  int64_t rank = dstTy.getRank();
+  Type elementType = fragmentTypes.front().getElementType();
+  Attribute encoding = fragmentTypes.front().getEncoding();
+  if (!encoding || !isa<ttg::DotOperandEncodingAttr>(encoding))
+    return failure();
+  SmallVector<int64_t> expectedShape(dstTy.getShape());
+  expectedShape[dim] = 0;
+  for (RankedTensorType fragmentTy : fragmentTypes) {
+    if (fragmentTy.getRank() != rank ||
+        fragmentTy.getElementType() != elementType ||
+        fragmentTy.getEncoding() != encoding)
+      return failure();
+    for (int64_t i = 0; i < rank; ++i) {
+      if (i == dim)
+        continue;
+      if (fragmentTy.getShape()[i] != dstTy.getShape()[i])
+        return failure();
+    }
+    expectedShape[dim] += fragmentTy.getShape()[dim];
+  }
+  if (expectedShape != SmallVector<int64_t>(dstTy.getShape()))
+    return failure();
+  auto dotEnc = cast<ttg::DotOperandEncodingAttr>(encoding);
+  if (dim != (dotEnc.getOpIdx() == 0 ? rank - 1 : rank - 2))
+    return failure();
+  unsigned kWidth = dotEnc.getKWidth();
+  if (kWidth != 0 && llvm::any_of(fragmentTypes, [&](RankedTensorType ty) {
+        return ty.getShape()[dim] < 8 * static_cast<int64_t>(kWidth);
+      }))
+    return failure();
+  auto representable = [](RankedTensorType ty) {
+    return llvm::all_of(ty.getShape(), [](int64_t extent) {
+      return extent > 0 && llvm::isPowerOf2_64(extent);
+    });
+  };
+  if (!representable(dstTy) ||
+      llvm::any_of(fragmentTypes, [&](auto ty) { return !representable(ty); }))
+    return failure();
+
+  MLIRContext *ctx = dstTy.getContext();
+  auto inDim = [&](StringRef name) { return StringAttr::get(ctx, name); };
+  LinearLayout dstLL = ttg::toLinearLayout(dstTy);
+  SmallVector<LinearLayout> fragmentLLs;
+  fragmentLLs.reserve(fragmentTypes.size());
+  for (RankedTensorType ty : fragmentTypes)
+    fragmentLLs.push_back(ttg::toLinearLayout(ty));
+  for (StringRef name : {"lane", "warp", "block"}) {
+    StringAttr attr = inDim(name);
+    for (const LinearLayout &ll : fragmentLLs) {
+      if (dstLL.hasInDim(attr) != ll.hasInDim(attr))
+        return failure();
+      if (dstLL.hasInDim(attr) &&
+          dstLL.getBases().lookup(attr) != ll.getBases().lookup(attr))
+        return failure();
+    }
+  }
+  StringAttr kReg = inDim("register");
+  auto offsetsOf = [&](const LinearLayout &ll) {
+    SmallVector<SmallVector<unsigned>> offsets;
+    for (int reg = 0; reg < ll.getInDimSize(kReg); ++reg) {
+      auto idxs = ll.apply({{kReg, reg},
+                            {inDim("lane"), 0},
+                            {inDim("warp"), 0},
+                            {inDim("block"), 0}});
+      if (static_cast<int64_t>(idxs.size()) != rank)
+        return SmallVector<SmallVector<unsigned>>();
+      offsets.push_back(
+          llvm::to_vector_of<unsigned>(llvm::make_second_range(idxs)));
+    }
+    return offsets;
+  };
+  auto coordKey = [&](ArrayRef<unsigned> coord, RankedTensorType ty) {
+    int64_t key = 0;
+    for (int64_t i = 0; i < rank; ++i)
+      key = key * ty.getShape()[i] + coord[i];
+    return key;
+  };
+  SmallVector<DenseMap<int64_t, unsigned>> fragmentMaps;
+  fragmentMaps.reserve(fragmentTypes.size());
+  for (size_t i = 0; i < fragmentTypes.size(); ++i) {
+    auto offsets = offsetsOf(fragmentLLs[i]);
+    if (offsets.empty() && fragmentLLs[i].getInDimSize(kReg) != 0)
+      return failure();
+    DenseMap<int64_t, unsigned> map;
+    for (auto [reg, coord] : llvm::enumerate(offsets))
+      if (!map.try_emplace(coordKey(coord, fragmentTypes[i]), reg).second)
+        return failure();
+    fragmentMaps.push_back(std::move(map));
+  }
+  auto dstOffsets = offsetsOf(dstLL);
+  if (dstOffsets.empty() && dstLL.getInDimSize(kReg) != 0)
+    return failure();
+  // Where along `dim` each fragment starts, for the concatenating form. The
+  // interleaved form needs no boundaries: every fragment is present at every
+  // stride, so the coordinate divides instead.
+  //
+  // The interleaved branch never resolves on any layout in the dialect today,
+  // since a `dot_op` thread owns its K elements contiguously. Do not drop it:
+  // running the concatenating arithmetic over an interleaved op finds a
+  // co-located register for every coordinate and reports a relabel that reads
+  // the wrong elements.
+  SmallVector<int64_t> boundaries;
+  boundaries.push_back(0);
+  for (RankedTensorType ty : fragmentTypes)
+    boundaries.push_back(boundaries.back() + ty.getShape()[dim]);
+  int64_t numFragments = fragmentTypes.size();
+  resultRegToFragmentReg.clear();
+  resultRegToFragmentReg.reserve(dstOffsets.size());
+  for (auto coord : dstOffsets) {
+    size_t fragment;
+    if (interleaved) {
+      fragment = coord[dim] % numFragments;
+      coord[dim] /= numFragments;
+    } else {
+      auto it = llvm::upper_bound(boundaries, static_cast<int64_t>(coord[dim]));
+      fragment = std::max<size_t>(1, it - boundaries.begin()) - 1;
+      if (fragment >= fragmentTypes.size())
+        return failure();
+      coord[dim] -= boundaries[fragment];
+    }
+    auto found =
+        fragmentMaps[fragment].find(coordKey(coord, fragmentTypes[fragment]));
+    if (found == fragmentMaps[fragment].end())
+      return failure();
+    resultRegToFragmentReg.emplace_back(fragment, found->second);
+  }
+  return success();
+}
+
 LogicalResult getDotOperandSliceRegisterMap(
     RankedTensorType dstTy, RankedTensorType fragTy, int64_t dim,
     int64_t numFrags,
     SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg) {
   int64_t rank = fragTy.getRank();
 
+  if (numFrags < 2 || dstTy.getRank() != rank || dim < 0 || dim >= rank)
+    return failure();
+  for (int64_t i = 0; i < rank; ++i) {
+    int64_t expected = fragTy.getShape()[i] * (i == dim ? numFrags : 1);
+    if (dstTy.getShape()[i] != expected)
+      return failure();
+  }
+
   // Layouts other than dot_op place lanes differently as `dim` grows, so the
-  // relabel would move the wrong registers.
+  // relabel would move the wrong registers. This is also what sends the
+  // shared-memory forms to the join-tree expansion: an operand staged through
+  // `ttg.local_alloc` never carries a dot_op encoding.
   auto dotEnc = dyn_cast<ttg::DotOperandEncodingAttr>(fragTy.getEncoding());
   if (!dotEnc)
     return failure();
@@ -1385,10 +1348,22 @@ LogicalResult getDotOperandSliceRegisterMap(
   if (dim != (dotEnc.getOpIdx() == 0 ? rank - 1 : rank - 2))
     return failure();
 
-  // Below 8 * kWidth the layout stops scaling with K, so the fragment is not a
-  // K-slice of the wider one. kWidth is 0 for layouts that do not use it.
+  // Below 8 * kWidth the dot_op layout replicates elements across lanes
+  // instead of scaling with K, so the fragment is not a K-slice of the wider
+  // one and the relabel would read a duplicate. kWidth is 0 when unused.
   unsigned kWidth = dotEnc.getKWidth();
   if (kWidth != 0 && fragTy.getShape()[dim] < 8 * (int64_t)kWidth)
+    return failure();
+
+  // Distributed layouts are defined over the power-of-two linear-layout domain,
+  // and toLinearLayout asserts rather than fails outside it, so check the
+  // shapes first.
+  auto isRepresentable = [](RankedTensorType ty) {
+    return llvm::all_of(ty.getShape(), [](int64_t extent) {
+      return extent > 0 && llvm::isPowerOf2_64(extent);
+    });
+  };
+  if (!isRepresentable(dstTy) || !isRepresentable(fragTy))
     return failure();
 
   // The mapping is derived on lane 0 and applied to every thread, which only
@@ -1428,9 +1403,9 @@ LogicalResult getDotOperandSliceRegisterMap(
   if (dstOffsets.size() != fragOffsets.size() * numFrags)
     return failure();
 
-  // Flatten a coordinate to index the fragment by. Every coordinate stays
-  // within the fragment extents: all dims but `dim` share them with the result,
-  // and `dim` is taken modulo below.
+  // Flatten a coordinate to index a fragment register. Every non-contraction
+  // coordinate is shared with the result; the contraction coordinate is
+  // translated to the fragment-local range by the caller below.
   auto coordKey = [&](ArrayRef<unsigned> coord) {
     int64_t key = 0;
     for (int64_t i = 0; i < rank; ++i)
@@ -1466,10 +1441,13 @@ LogicalResult getDotOperandSliceRegisterMap(
 LogicalResult getConcatDotOperandRegisterMap(
     ttg::ConcatDotOperandOp op,
     SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg) {
-  return getDotOperandSliceRegisterMap(
-      cast<RankedTensorType>(op.getType()),
-      cast<RankedTensorType>(op.getFragments()[0].getType()), op.getDim(),
-      op.getFragments().size(), resultRegToFragmentReg);
+  SmallVector<RankedTensorType> fragmentTypes;
+  fragmentTypes.reserve(op.getFragments().size());
+  for (Value fragment : op.getFragments())
+    fragmentTypes.push_back(cast<RankedTensorType>(fragment.getType()));
+  return getDotOperandConcatRegisterMap(
+      cast<RankedTensorType>(op.getType()), fragmentTypes, op.getDim(),
+      resultRegToFragmentReg, op.getInterleaved());
 }
 
 LogicalResult
@@ -1479,12 +1457,10 @@ getExtractDotOperandRegisterMap(ttg::ExtractDotOperandOp op,
   auto resultTy = cast<RankedTensorType>(op.getType());
   int64_t dim = op.getDim();
   int64_t numSlices = srcTy.getShape()[dim] / resultTy.getShape()[dim];
-
   SmallVector<std::pair<unsigned, unsigned>> srcRegToSliceReg;
   if (failed(getDotOperandSliceRegisterMap(srcTy, resultTy, dim, numSlices,
                                            srcRegToSliceReg)))
     return failure();
-
   size_t numSliceRegs = srcRegToSliceReg.size() / numSlices;
   resultRegToSrcReg.assign(numSliceRegs, ~0u);
   for (auto [srcReg, sliceAndReg] : llvm::enumerate(srcRegToSliceReg)) {

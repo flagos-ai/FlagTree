@@ -463,7 +463,7 @@ def TTG_Fp4ToFpOp : TTG_Op<"fp4_to_fp", [Pure]> {
 
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
 def TTG_ConcatDotOperandOp : TTG_Op<"concat_dot_operand",
-                                    [Pure, SameTypeOperands]> {
+                                    [Pure]> {
   let summary = "Concatenate dot operand fragments along the contraction axis";
 
   let hasVerifier = 1;
@@ -471,27 +471,39 @@ def TTG_ConcatDotOperandOp : TTG_Op<"concat_dot_operand",
 
   let description = [{
     Concatenate N fragments along the contraction (K) axis into a single wider
-    fragment, letting one mma cover the whole K tile.
+    fragment, letting one mma cover the whole K tile. Fragments are laid out in
+    operand order along `dim` and may differ in static extent there; all other
+    dimensions, the element type and the encoding must agree.
 
-    Concatenating a complete, ordered set of extracts off one value folds away
-    to that value. This is a canonicalization rather than a pattern private to
-    `tritongpu-concat-dot-operand`, because the extracts only become
-    recognizable as a cover of one root once layout propagation has unified
-    their sources, which happens after that pass has run.
+    `interleaved` picks the index map. Without it, result element
+    `i * fragExtent + k` is element `k` of fragment `i`; with it, result element
+    `k * numFragments + i` is, which is what sub-byte packing produces where one
+    word holds elements `2j` and `2j + 1`. Interleaving requires equally sized
+    fragments.
 
-    An internal op, introduced by `tritongpu-concat-dot-operand`; it is not
-    spelled by the user. The concatenation lowers to a per-thread register
-    relabel, which requires: a `dot_op` encoding, `dim` being the contraction
-    axis for its `opIdx`, at least `8 * kWidth` along `dim`, matching lane, warp
-    and block bases between fragment and result, and no broadcast along a dim
-    the relabel indexes by. Those depend on the encoding assigned by layout
-    propagation, so they are checked when lowering rather than in the verifier,
-    and `tritongpu-expand-concat-dot-operand` undoes the op when they do not
-    hold.
+    This is a compiler-internal op, introduced by `tritongpu-concat-dot-operand`
+    from the `tl.join` / `tl.permute` / `tl.reshape` chain a kernel writes to
+    glue its K tile back together. It canonicalizes away when its fragments are
+    a complete, ordered cover of one value by `ttg.extract_dot_operand`.
+
+    Whether it lowers as a per-thread register relabel follows from the encoding
+    layout propagation assigns, so it is not checked by the verifier;
+    `tritongpu-expand-concat-dot-operand` rebuilds the join tree for the
+    operands where it does not hold, which always includes the interleaved
+    form.
   }];
 
-  let arguments = (ins Variadic<TT_Tensor>:$fragments, I32Attr:$dim);
+  let arguments = (ins Variadic<TT_Tensor>:$fragments, I32Attr:$dim,
+                       UnitAttr:$interleaved);
   let results = (outs TT_Tensor:$result);
+
+  let builders = [
+    // Keep the concatenating form spellable without naming the mode.
+    OpBuilder<(ins "::mlir::Type":$result, "::mlir::ValueRange":$fragments,
+                   "::mlir::IntegerAttr":$dim), [{
+      build($_builder, $_state, result, fragments, dim, /*interleaved=*/nullptr);
+    }]>
+  ];
 
   let assemblyFormat = [{
     $fragments attr-dict `:` type($fragments) `->` type($result)
@@ -504,11 +516,12 @@ def TTG_ExtractDotOperandOp : TTG_Op<"extract_dot_operand", [Pure]> {
   let hasVerifier = 1;
 
   let description = [{
-    Compiler-internal inverse of `ttg.concat_dot_operand`. It selects one
-    equal-sized slice along the contraction axis without changing lane, warp,
-    or block ownership. The operation is only materialized after the shared
-    register-map proof has succeeded and is therefore safe to lower as a
-    per-thread register subset.
+    Compiler-internal inverse of the concatenating form of
+    `ttg.concat_dot_operand`. It reads `[index * extent, +extent)` along the
+    contraction axis, so it does not invert an `interleaved` one, and selects
+    that slice without changing lane, warp, or block ownership. It is
+    materialized only after the register map proof has succeeded, so it always
+    lowers as a per-thread register subset.
   }];
 
   let arguments = (ins TT_Tensor:$src, I32Attr:$dim, I32Attr:$index);

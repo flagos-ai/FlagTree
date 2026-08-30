@@ -571,3 +571,75 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
     tt.return
   }
 }
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @concat_fragment_encoding_mismatch(%a: tensor<16x16xf16, #dA>, %b: tensor<16x16xf16, #dB>) {
+    // expected-error @+1 {{all fragments must have matching rank, element type, and encoding}}
+    %c = ttg.concat_dot_operand %a, %b {dim = 1 : i32} : tensor<16x16xf16, #dA>, tensor<16x16xf16, #dB> -> tensor<16x32xf16, #dA>
+    tt.return
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @concat_non_contraction_dim_mismatch(%a: tensor<16x16xf16, #dA>, %b: tensor<8x16xf16, #dA>) {
+    // expected-error @+1 {{all fragments must match in non-contraction dimensions}}
+    %c = ttg.concat_dot_operand %a, %b {dim = 1 : i32} : tensor<16x16xf16, #dA>, tensor<8x16xf16, #dA> -> tensor<16x32xf16, #dA>
+    tt.return
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+// Heterogeneous extents along `dim` are legal; the result must carry their sum.
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @concat_result_extent_is_not_the_sum(%a: tensor<16x16xf16, #dA>, %b: tensor<16x32xf16, #dA>) {
+    // expected-error @+1 {{result shape mismatch at dim 1: expected 48, got 64}}
+    %c = ttg.concat_dot_operand %a, %b {dim = 1 : i32} : tensor<16x16xf16, #dA>, tensor<16x32xf16, #dA> -> tensor<16x64xf16, #dA>
+    tt.return
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+// Interleaving maps result element `k * numFragments + i` to element `k` of
+// fragment `i`, which has no meaning when the fragments differ in size.
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  // Two unequal power-of-two extents can never sum to a power of two, so the
+  // smallest heterogeneous case the layout verifier admits needs three
+  // fragments: 32 + 32 + 64.
+  tt.func @interleave_needs_equal_fragments(%a: tensor<16x32xf16, #dA>, %b: tensor<16x64xf16, #dA>) {
+    // expected-error @+1 {{interleaved concatenation requires equally sized fragments}}
+    %c = ttg.concat_dot_operand %a, %a, %b {dim = 1 : i32, interleaved} : tensor<16x32xf16, #dA>, tensor<16x32xf16, #dA>, tensor<16x64xf16, #dA> -> tensor<16x128xf16, #dA>
+    tt.return
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @extract_slice_does_not_divide_source(%w: tensor<16x16xf16, #dA>) {
+    // expected-error @+1 {{slice extent 32 must divide source extent 16 along dim 1}}
+    %s = ttg.extract_dot_operand %w {dim = 1 : i32, index = 0 : i32} : tensor<16x16xf16, #dA> -> tensor<16x32xf16, #dA>
+    tt.return
+  }
+}

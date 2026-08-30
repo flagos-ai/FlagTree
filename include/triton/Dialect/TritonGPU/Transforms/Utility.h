@@ -328,25 +328,34 @@ LogicalResult verifyBarrierType(Operation *op,
                                 mlir::triton::gpu::MemDescType barrierType);
 
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
-// Map each register of `wideTy` to the (slice, slice register) holding it, or
-// fail when the layouts do not let `wideTy` split into `numSlices` copies of
-// `sliceTy` along `dim` by a per-thread relabel. The proof reads types only, so
-// the matchers can run it before building any op.
+// Map each register of a `ttg.concat_dot_operand` result to the (fragment,
+// fragment register) holding it, or fail when the layouts do not let the
+// concatenation be a per-thread relabel. Shared by the lowering and by
+// `tritongpu-expand-concat-dot-operand`, which rebuilds the join tree when this
+// fails.
+LogicalResult getConcatDotOperandRegisterMap(
+    triton::gpu::ConcatDotOperandOp op,
+    SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg);
+
+// Map each register of a wide dot operand to the (slice, slice register)
+// holding it. This is the shared proof used by concat and extract lowering and
+// by segmented-dot rewrites before materializing either operation.
 LogicalResult getDotOperandSliceRegisterMap(
     RankedTensorType wideTy, RankedTensorType sliceTy, int64_t dim,
     int64_t numSlices,
     SmallVectorImpl<std::pair<unsigned, unsigned>> &wideRegToSliceReg);
 
-// Map each register of a `ttg.concat_dot_operand` result to the (fragment,
-// fragment register) holding it, or fail when the layouts do not let the
-// concatenation be a per-thread relabel. Shared by the lowering and by
-// `tritongpu-expand-concat-dot-operand`, which undoes the op when this fails.
-LogicalResult getConcatDotOperandRegisterMap(
-    triton::gpu::ConcatDotOperandOp op,
-    SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg);
+// Map each register of a wide dot operand to the (fragment, fragment register)
+// holding it. `interleaved` selects which reassembly the wide operand states:
+// with it, result element `k * numFragments + i` is element `k` of fragment
+// `i`; without it, result element `i * fragExtent + k` is. Interleaving is
+// defined only for equally sized fragments.
+LogicalResult getDotOperandConcatRegisterMap(
+    RankedTensorType wideTy, ArrayRef<RankedTensorType> fragmentTypes,
+    int64_t dim,
+    SmallVectorImpl<std::pair<unsigned, unsigned>> &wideRegToFragmentReg,
+    bool interleaved = false);
 
-// Map each register of a `ttg.extract_dot_operand` result to the source
-// register holding it, using the same proof as the concatenation above.
 LogicalResult
 getExtractDotOperandRegisterMap(triton::gpu::ExtractDotOperandOp op,
                                 SmallVectorImpl<unsigned> &resultRegToSrcReg);

@@ -21,7 +21,8 @@
 
 // RUN: triton-opt %s -split-input-file -tritongpu-concat-dot-operand | FileCheck %s --check-prefixes=COMMON,MATCH
 // RUN: triton-opt %s -split-input-file -tritongpu-concat-dot-operand -tritongpu-expand-concat-dot-operand | FileCheck %s --check-prefixes=COMMON,ROUNDTRIP
-// RUN: triton-opt %s -split-input-file -tritongpu-merge-segmented-dot -canonicalize | FileCheck %s --check-prefix=MERGE
+// RUN: triton-opt %s -split-input-file -tritongpu-merge-segmented-dot | FileCheck %s --check-prefix=MERGE
+// RUN: triton-opt %s -split-input-file -tritongpu-merge-segmented-dot -tritongpu-remove-layout-conversions -tritongpu-merge-segmented-dot | FileCheck %s --check-prefix=SPLIT
 
 #mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
 #dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
@@ -31,15 +32,16 @@
 #t = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [8, 1, 4], warpsPerCTA = [1, 1, 1], order = [1, 2, 0]}>
 #lin = #ttg.linear<{register = [[0, 4]], lane = [[0, 1], [0, 2], [1, 0], [2, 0], [4, 0]], warp = [], block = []}>
 
-// A two-leaf tree whose result reaches a dot: join -> trans -> reshape is an
-// ordered concat along K, so fold it into one op. The convert in between is the
-// state the pass sees, since it runs before the operand layouts are assigned.
-// MATCH-LABEL: @concat_two
+// The smallest instance of the shape a kernel writes: join -> trans -> reshape
+// is an ordered concat along K, so fold it into one op. The convert in between
+// is the state the pass sees, since it runs before the operand layouts are
+// assigned.
+// MATCH-LABEL: @concat_two_a_side
 // MATCH-NOT: tt.join
 // MATCH: ttg.concat_dot_operand %arg0, %arg1 {dim = 1 : i32}
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  tt.func @concat_two(%a: tensor<8x4xf16, #blocked>, %b: tensor<8x4xf16, #blocked>,
-                      %rhs: tensor<8x8xf16, #dB>, %acc: tensor<8x8xf32, #mma>)
+  tt.func @concat_two_a_side(%a: tensor<8x4xf16, #blocked>, %b: tensor<8x4xf16, #blocked>,
+                             %rhs: tensor<8x8xf16, #dB>, %acc: tensor<8x8xf32, #mma>)
       -> tensor<8x8xf32, #mma> {
     %j = tt.join %a, %b : tensor<8x4xf16, #blocked> -> tensor<8x4x2xf16, #j>
     %tr = tt.trans %j {order = array<i32: 0, 2, 1>} : tensor<8x4x2xf16, #j> -> tensor<8x2x4xf16, #t>
@@ -47,6 +49,168 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
     %c = ttg.convert_layout %r : tensor<8x8xf16, #lin> -> tensor<8x8xf16, #dA>
     %d = tt.dot %c, %rhs, %acc : tensor<8x8xf16, #dA> * tensor<8x8xf16, #dB> -> tensor<8x8xf32, #mma>
     tt.return %d : tensor<8x8xf32, #mma>
+  }
+}
+
+// A non-power-of-two total K cannot be represented by one dot-operand layout.
+// The greedy segmented rewrite still merges the largest representable prefix:
+// 16 + 16 becomes 32, while the final 16-wide segment remains separate.
+// MERGE-LABEL: @merge_three_equal_mmav2
+// MERGE: ttg.concat_dot_operand %arg0, %arg1 {dim = 1 : i32}
+// MERGE: ttg.concat_dot_operand %arg3, %arg4 {dim = 0 : i32}
+// MERGE-COUNT-2: tt.dot
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @merge_three_equal_mmav2(%a0: tensor<16x16xf16, #dA>, %a1: tensor<16x16xf16, #dA>, %a2: tensor<16x16xf16, #dA>,
+                                   %b0: tensor<16x8xf16, #dB>, %b1: tensor<16x8xf16, #dB>, %b2: tensor<16x8xf16, #dB>,
+                                   %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
+    %d0 = tt.dot %a0, %b0, %acc : tensor<16x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    %d1 = tt.dot %a1, %b1, %d0 : tensor<16x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    %d2 = tt.dot %a2, %b2, %d1 : tensor<16x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    tt.return %d2 : tensor<16x8xf32, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// No join tree is present here: this is the IR shape produced when a lowering
+// emits independent K fragments and accumulates them with a dot chain. The
+// generic segmented pass still folds both operands into one dot, including
+// heterogeneous static K segments (16 + 16 + 32 + 32 + 32).
+// MERGE-LABEL: @merge_direct_mmav2
+// MERGE: ttg.concat_dot_operand %arg0, %arg1, %arg2, %arg3, %arg4 {dim = 1 : i32}
+// MERGE: ttg.concat_dot_operand %arg5, %arg6, %arg7, %arg8, %arg9 {dim = 0 : i32}
+// MERGE: tt.dot
+// MERGE-NEXT: tt.return
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @merge_direct_mmav2(%a0: tensor<16x16xf16, #dA>, %a1: tensor<16x16xf16, #dA>, %a2: tensor<16x32xf16, #dA>, %a3: tensor<16x32xf16, #dA>, %a4: tensor<16x32xf16, #dA>,
+                              %b0: tensor<16x8xf16, #dB>, %b1: tensor<16x8xf16, #dB>, %b2: tensor<32x8xf16, #dB>, %b3: tensor<32x8xf16, #dB>, %b4: tensor<32x8xf16, #dB>,
+                              %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
+    %d0 = tt.dot %a0, %b0, %acc : tensor<16x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    %d1 = tt.dot %a1, %b1, %d0 : tensor<16x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    %d2 = tt.dot %a2, %b2, %d1 : tensor<16x32xf16, #dA> * tensor<32x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    %d3 = tt.dot %a3, %b3, %d2 : tensor<16x32xf16, #dA> * tensor<32x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    %d4 = tt.dot %a4, %b4, %d3 : tensor<16x32xf16, #dA> * tensor<32x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    tt.return %d4 : tensor<16x8xf32, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+#bb = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
+#bj = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [4, 8, 1], warpsPerCTA = [1, 1, 1], order = [2, 1, 0]}>
+#bt = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [1, 4, 8], warpsPerCTA = [1, 1, 1], order = [0, 2, 1]}>
+#blin = #ttg.linear<{register = [[4, 0]], lane = [[0, 1], [0, 2], [0, 4], [1, 0], [2, 0]], warp = [], block = []}>
+
+// The B side concatenates along dim 0, which is the contraction axis for
+// opIdx 1. The permutation and the growing dim both move, so this is the case
+// that pins `isConcatOrder` against a hardcoded axis.
+// MATCH-LABEL: @concat_two_b_side
+// MATCH-NOT: tt.join
+// MATCH: ttg.concat_dot_operand %arg0, %arg1 {dim = 0 : i32}
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @concat_two_b_side(%a: tensor<4x8xf16, #bb>, %b: tensor<4x8xf16, #bb>,
+                             %lhs: tensor<8x8xf16, #dA>, %acc: tensor<8x8xf32, #mma>)
+      -> tensor<8x8xf32, #mma> {
+    %j = tt.join %a, %b : tensor<4x8xf16, #bb> -> tensor<4x8x2xf16, #bj>
+    %tr = tt.trans %j {order = array<i32: 2, 0, 1>} : tensor<4x8x2xf16, #bj> -> tensor<2x4x8xf16, #bt>
+    %r = tt.reshape %tr : tensor<2x4x8xf16, #bt> -> tensor<8x8xf16, #blin>
+    %c = ttg.convert_layout %r : tensor<8x8xf16, #blin> -> tensor<8x8xf16, #dB>
+    %d = tt.dot %lhs, %c, %acc : tensor<8x8xf16, #dA> * tensor<8x8xf16, #dB> -> tensor<8x8xf32, #mma>
+    tt.return %d : tensor<8x8xf32, #mma>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [1, 1], order = [1, 0]}>
+#j = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [8, 4, 1], warpsPerCTA = [1, 1, 1], order = [2, 1, 0]}>
+#j4 = #ttg.blocked<{sizePerThread = [1, 1, 1, 1], threadsPerWarp = [8, 4, 1, 1], warpsPerCTA = [1, 1, 1, 1], order = [3, 2, 1, 0]}>
+#t4 = #ttg.blocked<{sizePerThread = [1, 1, 1, 1], threadsPerWarp = [8, 1, 1, 4], warpsPerCTA = [1, 1, 1, 1], order = [1, 2, 3, 0]}>
+#lin4 = #ttg.linear<{register = [[0, 8], [0, 4]], lane = [[0, 1], [0, 2], [1, 0], [2, 0], [4, 0]], warp = [], block = []}>
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// Four fragments. The segment count is whatever the tree depth says; nothing in
+// the rewrite is specialised to two.
+// MATCH-LABEL: @concat_four
+// MATCH-NOT: tt.join
+// MATCH: ttg.concat_dot_operand %arg0, %arg1, %arg2, %arg3 {dim = 1 : i32}
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @concat_four(%a0: tensor<8x4xf16, #blocked>, %a1: tensor<8x4xf16, #blocked>,
+                       %a2: tensor<8x4xf16, #blocked>, %a3: tensor<8x4xf16, #blocked>,
+                       %rhs: tensor<16x8xf16, #dB>, %acc: tensor<8x8xf32, #mma>)
+      -> tensor<8x8xf32, #mma> {
+    %j0 = tt.join %a0, %a1 : tensor<8x4xf16, #blocked> -> tensor<8x4x2xf16, #j>
+    %j1 = tt.join %a2, %a3 : tensor<8x4xf16, #blocked> -> tensor<8x4x2xf16, #j>
+    %q = tt.join %j0, %j1 : tensor<8x4x2xf16, #j> -> tensor<8x4x2x2xf16, #j4>
+    %tr = tt.trans %q {order = array<i32: 0, 3, 2, 1>} : tensor<8x4x2x2xf16, #j4> -> tensor<8x2x2x4xf16, #t4>
+    %r = tt.reshape %tr : tensor<8x2x2x4xf16, #t4> -> tensor<8x16xf16, #lin4>
+    %c = ttg.convert_layout %r : tensor<8x16xf16, #lin4> -> tensor<8x16xf16, #dA>
+    %d = tt.dot %c, %rhs, %acc : tensor<8x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<8x8xf32, #mma>
+    tt.return %d : tensor<8x8xf32, #mma>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [1, 1], order = [1, 0]}>
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// A kernel is free to build its K tile in stages -- stack pairs, then stack the
+// results -- which the recognizer folds into nested concats. Flattening them is
+// what makes the staged spelling reach the same single wide operand as the
+// one-shot one.
+// MATCH-LABEL: @flatten_staged_concats
+// MATCH: ttg.concat_dot_operand %arg0, %arg1, %arg2, %arg3 {dim = 1 : i32}
+// MATCH-SAME: -> tensor<8x16xf16
+// MATCH-NOT: ttg.concat_dot_operand
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @flatten_staged_concats(%a0: tensor<8x4xf16, #blocked>, %a1: tensor<8x4xf16, #blocked>,
+                                  %a2: tensor<8x4xf16, #blocked>, %a3: tensor<8x4xf16, #blocked>,
+                                  %rhs: tensor<16x8xf16, #dB>, %acc: tensor<8x8xf32, #mma>)
+      -> tensor<8x8xf32, #mma> {
+    %s0 = ttg.concat_dot_operand %a0, %a1 {dim = 1 : i32} : tensor<8x4xf16, #blocked>, tensor<8x4xf16, #blocked> -> tensor<8x8xf16, #blocked>
+    %s1 = ttg.concat_dot_operand %a2, %a3 {dim = 1 : i32} : tensor<8x4xf16, #blocked>, tensor<8x4xf16, #blocked> -> tensor<8x8xf16, #blocked>
+    %w = ttg.concat_dot_operand %s0, %s1 {dim = 1 : i32} : tensor<8x8xf16, #blocked>, tensor<8x8xf16, #blocked> -> tensor<8x16xf16, #blocked>
+    %c = ttg.convert_layout %w : tensor<8x16xf16, #blocked> -> tensor<8x16xf16, #dA>
+    %d = tt.dot %c, %rhs, %acc : tensor<8x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<8x8xf32, #mma>
+    tt.return %d : tensor<8x8xf32, #mma>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [1, 1], order = [1, 0]}>
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// A stage that also feeds something else stays live, so flattening it would
+// recompute rather than replace it. The chain is left nested and each level
+// lowers on its own.
+// MATCH-LABEL: @keep_escaping_stage
+// MATCH-COUNT-3: ttg.concat_dot_operand
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @keep_escaping_stage(%a0: tensor<8x4xf16, #blocked>, %a1: tensor<8x4xf16, #blocked>,
+                               %a2: tensor<8x4xf16, #blocked>, %a3: tensor<8x4xf16, #blocked>,
+                               %rhs: tensor<16x8xf16, #dB>, %acc: tensor<8x8xf32, #mma>)
+      -> (tensor<8x8xf32, #mma>, tensor<8x8xf16, #blocked>) {
+    %s0 = ttg.concat_dot_operand %a0, %a1 {dim = 1 : i32} : tensor<8x4xf16, #blocked>, tensor<8x4xf16, #blocked> -> tensor<8x8xf16, #blocked>
+    %s1 = ttg.concat_dot_operand %a2, %a3 {dim = 1 : i32} : tensor<8x4xf16, #blocked>, tensor<8x4xf16, #blocked> -> tensor<8x8xf16, #blocked>
+    %w = ttg.concat_dot_operand %s0, %s1 {dim = 1 : i32} : tensor<8x8xf16, #blocked>, tensor<8x8xf16, #blocked> -> tensor<8x16xf16, #blocked>
+    %c = ttg.convert_layout %w : tensor<8x16xf16, #blocked> -> tensor<8x16xf16, #dA>
+    %d = tt.dot %c, %rhs, %acc : tensor<8x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<8x8xf32, #mma>
+    tt.return %d, %s0 : tensor<8x8xf32, #mma>, tensor<8x8xf16, #blocked>
   }
 }
 
@@ -141,6 +305,35 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [1, 1], order = [1, 0]}>
 #j = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [8, 4, 1], warpsPerCTA = [1, 1, 1], order = [2, 1, 0]}>
+#t = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [8, 1, 4], warpsPerCTA = [1, 1, 1], order = [1, 2, 0]}>
+#lin = #ttg.linear<{register = [[0, 4]], lane = [[0, 1], [0, 2], [1, 0], [2, 0], [4, 0]], warp = [], block = []}>
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// Reaching only the accumulator says nothing about how a K tile is split, and an
+// accumulator never carries a dot_op encoding, so a concat built for it could
+// never be relabeled and would only have to be expanded again.
+// COMMON-LABEL: @only_reaches_accumulator
+// COMMON-NOT: ttg.concat_dot_operand
+// COMMON: tt.join
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @only_reaches_accumulator(%a: tensor<8x4xf32, #blocked>, %b: tensor<8x4xf32, #blocked>,
+                                    %lhs: tensor<8x8xf16, #dA>, %rhs: tensor<8x8xf16, #dB>)
+      -> tensor<8x8xf32, #mma> {
+    %j = tt.join %a, %b : tensor<8x4xf32, #blocked> -> tensor<8x4x2xf32, #j>
+    %tr = tt.trans %j {order = array<i32: 0, 2, 1>} : tensor<8x4x2xf32, #j> -> tensor<8x2x4xf32, #t>
+    %r = tt.reshape %tr : tensor<8x2x4xf32, #t> -> tensor<8x8xf32, #lin>
+    %c = ttg.convert_layout %r : tensor<8x8xf32, #lin> -> tensor<8x8xf32, #mma>
+    %d = tt.dot %lhs, %rhs, %c : tensor<8x8xf16, #dA> * tensor<8x8xf16, #dB> -> tensor<8x8xf32, #mma>
+    tt.return %d : tensor<8x8xf32, #mma>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [1, 1], order = [1, 0]}>
+#j = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [8, 4, 1], warpsPerCTA = [1, 1, 1], order = [2, 1, 0]}>
 #j4 = #ttg.blocked<{sizePerThread = [1, 1, 1, 1], threadsPerWarp = [8, 4, 1, 1], warpsPerCTA = [1, 1, 1, 1], order = [3, 2, 1, 0]}>
 #t4 = #ttg.blocked<{sizePerThread = [1, 1, 1, 1], threadsPerWarp = [8, 1, 1, 4], warpsPerCTA = [1, 1, 1, 1], order = [1, 2, 3, 0]}>
 #lin4 = #ttg.linear<{register = [[0, 8], [0, 4]], lane = [[0, 1], [0, 2], [1, 0], [2, 0], [4, 0]], warp = [], block = []}>
@@ -181,9 +374,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
 #dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
 #dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
 
-// Folding a three-level tree and expanding it again must restore the same chain:
-// the operands here keep a blocked layout, which the relabel cannot use, so the
+// Eight fragments: the shape a real dequantizing kernel writes, one per packed
+// word. Folding it and expanding it again must restore the same chain -- the
+// operands here keep a blocked layout, which the relabel cannot use, so the
 // expansion runs and has to be an exact inverse of the match.
+// MATCH-LABEL: @fold_then_expand
+// MATCH: ttg.concat_dot_operand %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7 {dim = 1 : i32}
 // ROUNDTRIP-LABEL: @fold_then_expand
 // ROUNDTRIP-COUNT-7: tt.join
 // ROUNDTRIP: tt.trans {{.*}} {order = array<i32: 0, 4, 3, 2, 1>}
@@ -213,31 +409,160 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.thr
 
 // -----
 
-// The pass folds a segmented K chain back into one dot when, and only when, the
-// operands are provably a complete cover of one wide value and merging cannot
-// extend a live range. Cases below pair each accepted shape with the negative
-// that must stay segmented.
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [1, 1], order = [1, 0]}>
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// A flattened concat is expanded as one balanced tree over all four fragments,
+// not as the two stages it was built from. That is the point of flattening: the
+// staged and one-shot spellings become the same op and take the same path.
+// ROUNDTRIP-LABEL: @expand_flattened_concat
+// ROUNDTRIP-COUNT-3: tt.join
+// ROUNDTRIP-NOT: tt.join
+// ROUNDTRIP: tt.trans {{.*}} {order = array<i32: 0, 3, 2, 1>}
+// ROUNDTRIP-NOT: ttg.concat_dot_operand
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @expand_flattened_concat(%a0: tensor<8x4xf16, #blocked>, %a1: tensor<8x4xf16, #blocked>,
+                                   %a2: tensor<8x4xf16, #blocked>, %a3: tensor<8x4xf16, #blocked>,
+                                   %rhs: tensor<16x8xf16, #dB>, %acc: tensor<8x8xf32, #mma>)
+      -> tensor<8x8xf32, #mma> {
+    %s0 = ttg.concat_dot_operand %a0, %a1 {dim = 1 : i32} : tensor<8x4xf16, #blocked>, tensor<8x4xf16, #blocked> -> tensor<8x8xf16, #blocked>
+    %s1 = ttg.concat_dot_operand %a2, %a3 {dim = 1 : i32} : tensor<8x4xf16, #blocked>, tensor<8x4xf16, #blocked> -> tensor<8x8xf16, #blocked>
+    %w = ttg.concat_dot_operand %s0, %s1 {dim = 1 : i32} : tensor<8x8xf16, #blocked>, tensor<8x8xf16, #blocked> -> tensor<8x16xf16, #blocked>
+    %c = ttg.convert_layout %w : tensor<8x16xf16, #blocked> -> tensor<8x16xf16, #dA>
+    %d = tt.dot %c, %rhs, %acc : tensor<8x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<8x8xf32, #mma>
+    tt.return %d : tensor<8x8xf32, #mma>
+  }
+}
+
+// -----
 
 #mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
-#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
-#b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
 
-module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // A complete cover folds straight back to the wide operands, so no concat
-  // survives and no extract is left behind.
-  // MERGE-LABEL: @merge_extract_cover
-  // MERGE-NOT: ttg.extract_dot_operand
-  // MERGE-COUNT-1: tt.dot
-  // MERGE-NOT: tt.dot
-  tt.func @merge_extract_cover(
-      %aw: tensor<16x32xf16, #a>, %bw: tensor<32x8xf16, #b>,
-      %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
-    %a0 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 0 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
-    %a1 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 1 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
-    %b0 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 0 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
-    %b1 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 1 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
-    %d0 = tt.dot %a0, %b0, %acc : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
-    %d1 = tt.dot %a1, %b1, %d0 : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
+// The relabel needs at least 8 * kWidth along the contraction axis: below that
+// the dot_op layout replicates elements across lanes instead of scaling with K,
+// so a fragment is not a K-slice of the wider operand. A kernel that packs 8
+// values per word and tiles BLOCK_K=64 lands exactly here, so this must fall
+// back cleanly rather than relabel the wrong registers.
+// ROUNDTRIP-LABEL: @expand_below_kwidth_floor
+// ROUNDTRIP: tt.join
+// ROUNDTRIP-NOT: ttg.concat_dot_operand
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @expand_below_kwidth_floor(%a0: tensor<16x8xf16, #dA>, %a1: tensor<16x8xf16, #dA>,
+                                     %rhs: tensor<16x8xf16, #dB>, %acc: tensor<16x8xf32, #mma>)
+      -> tensor<16x8xf32, #mma> {
+    %w = ttg.concat_dot_operand %a0, %a1 {dim = 1 : i32} : tensor<16x8xf16, #dA>, tensor<16x8xf16, #dA> -> tensor<16x16xf16, #dA>
+    %d = tt.dot %w, %rhs, %acc : tensor<16x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    tt.return %d : tensor<16x8xf32, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// A concat that already carries the operand layout is a pure register relabel
+// and must survive to the lowering: expanding it would put a join tree back in
+// front of the mma for nothing.
+// ROUNDTRIP-LABEL: @keep_relabelable_concat
+// ROUNDTRIP-NOT: tt.join
+// ROUNDTRIP: ttg.concat_dot_operand
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @keep_relabelable_concat(%a0: tensor<16x16xf16, #dA>, %a1: tensor<16x16xf16, #dA>,
+                                   %rhs: tensor<32x8xf16, #dB>, %acc: tensor<16x8xf32, #mma>)
+      -> tensor<16x8xf32, #mma> {
+    %w = ttg.concat_dot_operand %a0, %a1 {dim = 1 : i32} : tensor<16x16xf16, #dA>, tensor<16x16xf16, #dA> -> tensor<16x32xf16, #dA>
+    %d = tt.dot %w, %rhs, %acc : tensor<16x32xf16, #dA> * tensor<32x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    tt.return %d : tensor<16x8xf32, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// `concat(extract(w, 0), extract(w, 1))` is `w`. The extracts only become
+// recognizable as a complete cover once layout propagation has unified their
+// sources, which is after the recognizer has run, so this is a canonicalization
+// rather than a pattern private to one pass.
+// MERGE-LABEL: @fold_concat_of_extracts
+// MERGE-NOT: ttg.extract_dot_operand
+// MERGE-NOT: ttg.concat_dot_operand
+// MERGE: tt.dot %arg0, %arg1, %arg2
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @fold_concat_of_extracts(%w: tensor<16x32xf16, #dA>, %rhs: tensor<32x8xf16, #dB>,
+                                   %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
+    %e0 = ttg.extract_dot_operand %w {dim = 1 : i32, index = 0 : i32} : tensor<16x32xf16, #dA> -> tensor<16x16xf16, #dA>
+    %e1 = ttg.extract_dot_operand %w {dim = 1 : i32, index = 1 : i32} : tensor<16x32xf16, #dA> -> tensor<16x16xf16, #dA>
+    %c = ttg.concat_dot_operand %e0, %e1 {dim = 1 : i32} : tensor<16x16xf16, #dA>, tensor<16x16xf16, #dA> -> tensor<16x32xf16, #dA>
+    %d = tt.dot %c, %rhs, %acc : tensor<16x32xf16, #dA> * tensor<32x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    tt.return %d : tensor<16x8xf32, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// Extracts out of order are not a cover of the source in operand order, so the
+// fold must not fire: `concat(extract(w,1), extract(w,0))` is a K swap, not `w`.
+// MERGE-LABEL: @keep_concat_of_reordered_extracts
+// MERGE: ttg.extract_dot_operand
+// MERGE: ttg.concat_dot_operand
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @keep_concat_of_reordered_extracts(%w: tensor<16x32xf16, #dA>, %rhs: tensor<32x8xf16, #dB>,
+                                             %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
+    %e0 = ttg.extract_dot_operand %w {dim = 1 : i32, index = 1 : i32} : tensor<16x32xf16, #dA> -> tensor<16x16xf16, #dA>
+    %e1 = ttg.extract_dot_operand %w {dim = 1 : i32, index = 0 : i32} : tensor<16x32xf16, #dA> -> tensor<16x16xf16, #dA>
+    %c = ttg.concat_dot_operand %e0, %e1 {dim = 1 : i32} : tensor<16x16xf16, #dA>, tensor<16x16xf16, #dA> -> tensor<16x32xf16, #dA>
+    %d = tt.dot %c, %rhs, %acc : tensor<16x32xf16, #dA> * tensor<32x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    tt.return %d : tensor<16x8xf32, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [1, 1], order = [1, 0]}>
+#b3 = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [8, 1, 4], warpsPerCTA = [1, 1, 1], order = [2, 1, 0]}>
+#t3 = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [8, 4, 1], warpsPerCTA = [1, 1, 1], order = [1, 2, 0]}>
+
+// The inverse view: a kernel that reshape/transpose/splits one wide operand
+// into per-segment dots. Recognising the split tree turns the leaves into
+// extracts off one wide value; the chain matcher then concatenates them back
+// and the concat-of-extracts fold collapses the round trip, so the dot reads
+// the value it was split from and the tree is gone.
+//
+// The split rewrite has to run before the chain matcher, or the leaves stop
+// being dot operands and the tree survives with a concat stacked on top of it.
+// SPLIT-LABEL: @split_tree_round_trip
+// SPLIT-NOT: tt.split
+// SPLIT-NOT: ttg.extract_dot_operand
+// SPLIT-NOT: ttg.concat_dot_operand %{{.*}} {dim = 1 : i32}
+// SPLIT: %[[A:.*]] = ttg.convert_layout %arg0
+// SPLIT: tt.dot %[[A]]
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @split_tree_round_trip(%w: tensor<16x32xf16, #blocked>, %r0: tensor<16x8xf16, #dB>,
+                                 %r1: tensor<16x8xf16, #dB>, %acc: tensor<16x8xf32, #mma>)
+      -> tensor<16x8xf32, #mma> {
+    %r = tt.reshape %w : tensor<16x32xf16, #blocked> -> tensor<16x2x16xf16, #b3>
+    %tr = tt.trans %r {order = array<i32: 0, 2, 1>} : tensor<16x2x16xf16, #b3> -> tensor<16x16x2xf16, #t3>
+    %s0, %s1 = tt.split %tr : tensor<16x16x2xf16, #t3> -> tensor<16x16xf16, #blocked>
+    %c0 = ttg.convert_layout %s0 : tensor<16x16xf16, #blocked> -> tensor<16x16xf16, #dA>
+    %c1 = ttg.convert_layout %s1 : tensor<16x16xf16, #blocked> -> tensor<16x16xf16, #dA>
+    %d0 = tt.dot %c0, %r0, %acc : tensor<16x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    %d1 = tt.dot %c1, %r1, %d0 : tensor<16x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<16x8xf32, #mma>
     tt.return %d1 : tensor<16x8xf32, #mma>
   }
 }
@@ -245,156 +570,136 @@ module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-
 // -----
 
 #mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
-#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
-#b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+
+// An extract reads `[index * itsOwnExtent, +itsOwnExtent)`, so consecutive
+// indices only tile the source when the extents agree. These three read
+// `w[0:32] w[16:32] w[32:48]` -- one slice twice, one never -- yet they
+// reassemble to `w`'s type, so the fold has to reject them on the offsets
+// rather than on the type alone.
+// MERGE-LABEL: @keep_concat_of_overlapping_extracts
+// MERGE: ttg.extract_dot_operand
+// MERGE: ttg.concat_dot_operand
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @keep_concat_of_overlapping_extracts(%w: tensor<16x64xf16, #dA>, %rhs: tensor<64x8xf16, #dB>,
+                                               %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
+    %e0 = ttg.extract_dot_operand %w {dim = 1 : i32, index = 0 : i32} : tensor<16x64xf16, #dA> -> tensor<16x32xf16, #dA>
+    %e1 = ttg.extract_dot_operand %w {dim = 1 : i32, index = 1 : i32} : tensor<16x64xf16, #dA> -> tensor<16x16xf16, #dA>
+    %e2 = ttg.extract_dot_operand %w {dim = 1 : i32, index = 2 : i32} : tensor<16x64xf16, #dA> -> tensor<16x16xf16, #dA>
+    %c = ttg.concat_dot_operand %e0, %e1, %e2 {dim = 1 : i32} : tensor<16x32xf16, #dA>, tensor<16x16xf16, #dA>, tensor<16x16xf16, #dA> -> tensor<16x64xf16, #dA>
+    %d = tt.dot %c, %rhs, %acc : tensor<16x64xf16, #dA> * tensor<64x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    tt.return %d : tensor<16x8xf32, #mma>
+  }
+}
+
+// -----
+
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
+#bj = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [4, 8, 1], warpsPerCTA = [1, 1, 1], order = [2, 1, 0]}>
+#bt = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [4, 1, 8], warpsPerCTA = [1, 1, 1], order = [1, 2, 0]}>
+#blin = #ttg.linear<{register = [[1, 0]], lane = [[0, 1], [0, 2], [0, 4], [2, 0], [4, 0]], warp = [], block = []}>
 
-// What the pipeline really produces: the split-tree matcher wraps one wide
-// value in a separate convert per extract, and the pass runs before layout
-// cleanup so the accumulator hops through a convert pair between the dots.
-// Both must be looked through, or a cover that is complete by construction
-// reads as unrelated fragments and the chain looks broken at its first link.
-module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // MERGE-LABEL: @merge_through_converts
-  // MERGE-COUNT-1: tt.dot
-  // MERGE-NOT: tt.dot
-  tt.func @merge_through_converts(
-      %aw: tensor<16x32xf16, #blocked>, %bw: tensor<32x8xf16, #blocked>,
-      %acc: tensor<16x8xf16, #mma>) -> tensor<16x8xf16, #mma> {
-    %aw0 = ttg.convert_layout %aw : tensor<16x32xf16, #blocked> -> tensor<16x32xf16, #a>
-    %aw1 = ttg.convert_layout %aw : tensor<16x32xf16, #blocked> -> tensor<16x32xf16, #a>
-    %bw0 = ttg.convert_layout %bw : tensor<32x8xf16, #blocked> -> tensor<32x8xf16, #b>
-    %bw1 = ttg.convert_layout %bw : tensor<32x8xf16, #blocked> -> tensor<32x8xf16, #b>
-    %a0 = ttg.extract_dot_operand %aw0 {dim = 1 : i32, index = 0 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
-    %a1 = ttg.extract_dot_operand %aw1 {dim = 1 : i32, index = 1 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
-    %b0 = ttg.extract_dot_operand %bw0 {dim = 0 : i32, index = 0 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
-    %b1 = ttg.extract_dot_operand %bw1 {dim = 0 : i32, index = 1 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
-    %d0 = tt.dot %a0, %b0, %acc : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf16, #mma>
-    %r0 = ttg.convert_layout %d0 : tensor<16x8xf16, #mma> -> tensor<16x8xf16, #blocked>
-    %r1 = ttg.convert_layout %r0 : tensor<16x8xf16, #blocked> -> tensor<16x8xf16, #mma>
-    %d1 = tt.dot %a1, %b1, %r1 : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf16, #mma>
-    tt.return %d1 : tensor<16x8xf16, #mma>
+// Interleaved: the permutation moves the fragment axis *after* the in-fragment
+// K coordinate -- `permute(0, 2, 1)` on a (KP, N, 2) join -- so result element
+// `2j + i` is element `j` of fragment `i`. This is the shape plain sub-byte
+// packing produces; no separate nibble-select is needed. The flag is in the op
+// because the register map differs from the concatenating form, and the expand
+// pass emits the matching `permute(0, 2, 1)` rather than the usual one.
+// MATCH-LABEL: @interleave_b_side
+// MATCH-NOT: tt.join
+// MATCH: ttg.concat_dot_operand %arg0, %arg1 {dim = 0 : i32, interleaved}
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @interleave_b_side(%lo: tensor<4x8xf16, #blocked>, %hi: tensor<4x8xf16, #blocked>,
+                              %lhs: tensor<8x8xf16, #dA>, %acc: tensor<8x8xf32, #mma>) -> tensor<8x8xf32, #mma> {
+    %j = tt.join %lo, %hi : tensor<4x8xf16, #blocked> -> tensor<4x8x2xf16, #bj>
+    %tr = tt.trans %j {order = array<i32: 0, 2, 1>} : tensor<4x8x2xf16, #bj> -> tensor<4x2x8xf16, #bt>
+    %r = tt.reshape %tr : tensor<4x2x8xf16, #bt> -> tensor<8x8xf16, #blin>
+    %c = ttg.convert_layout %r : tensor<8x8xf16, #blin> -> tensor<8x8xf16, #dB>
+    %d = tt.dot %lhs, %c, %acc : tensor<8x8xf16, #dA> * tensor<8x8xf16, #dB> -> tensor<8x8xf32, #mma>
+    tt.return %d : tensor<8x8xf32, #mma>
   }
 }
 
 // -----
 
 #mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
-#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
-#b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
+#bj = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [4, 8, 1], warpsPerCTA = [1, 1, 1], order = [2, 1, 0]}>
+#bt = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [4, 1, 8], warpsPerCTA = [1, 1, 1], order = [1, 2, 0]}>
+#blin = #ttg.linear<{register = [[1, 0]], lane = [[0, 1], [0, 2], [0, 4], [2, 0], [4, 0]], warp = [], block = []}>
 
-// The converted partial sum escapes the chain, so it stays observable and must
-// keep being computed: looking through accumulator converts may not drop the
-// single-use requirement.
-module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // MERGE-LABEL: @keep_escaping_partial_sum
-  // MERGE-COUNT-2: tt.dot
-  tt.func @keep_escaping_partial_sum(
-      %aw: tensor<16x32xf16, #a>, %bw: tensor<32x8xf16, #b>,
-      %acc: tensor<16x8xf16, #mma>)
-      -> (tensor<16x8xf16, #mma>, tensor<16x8xf16, #blocked>) {
-    %a0 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 0 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
-    %a1 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 1 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
-    %b0 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 0 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
-    %b1 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 1 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
-    %d0 = tt.dot %a0, %b0, %acc : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf16, #mma>
-    %r0 = ttg.convert_layout %d0 : tensor<16x8xf16, #mma> -> tensor<16x8xf16, #blocked>
-    %r1 = ttg.convert_layout %r0 : tensor<16x8xf16, #blocked> -> tensor<16x8xf16, #mma>
-    %d1 = tt.dot %a1, %b1, %r1 : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf16, #mma>
-    tt.return %d1, %r0 : tensor<16x8xf16, #mma>, tensor<16x8xf16, #blocked>
+// Expand puts the interleaved permutation back. The result must look like the
+// input to the matcher: join -> trans(0,2,1) -> reshape.
+// ROUNDTRIP-LABEL: @expand_interleaved_concat
+// ROUNDTRIP: tt.join
+// ROUNDTRIP: tt.trans {{.*order = array<i32: 0, 2, 1>}}
+// ROUNDTRIP: tt.reshape
+// ROUNDTRIP-NOT: ttg.concat_dot_operand
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @expand_interleaved_concat(%lo: tensor<4x8xf16, #blocked>, %hi: tensor<4x8xf16, #blocked>,
+                                     %lhs: tensor<8x8xf16, #dA>, %acc: tensor<8x8xf32, #mma>) -> tensor<8x8xf32, #mma> {
+    %j = tt.join %lo, %hi : tensor<4x8xf16, #blocked> -> tensor<4x8x2xf16, #bj>
+    %tr = tt.trans %j {order = array<i32: 0, 2, 1>} : tensor<4x8x2xf16, #bj> -> tensor<4x2x8xf16, #bt>
+    %r = tt.reshape %tr : tensor<4x2x8xf16, #bt> -> tensor<8x8xf16, #blin>
+    %c = ttg.convert_layout %r : tensor<8x8xf16, #blin> -> tensor<8x8xf16, #dB>
+    %d = tt.dot %lhs, %c, %acc : tensor<8x8xf16, #dA> * tensor<8x8xf16, #dB> -> tensor<8x8xf32, #mma>
+    tt.return %d : tensor<8x8xf32, #mma>
   }
 }
 
 // -----
 
 #mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
-#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
-#b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
 
-// Independent operands are not a cover of one wide value, so gathering them
-// would extend live ranges rather than shorten them.
-module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // MERGE-LABEL: @keep_independent_fragments
-  // MERGE-NOT: ttg.concat_dot_operand
-  // MERGE-COUNT-2: tt.dot
-  tt.func @keep_independent_fragments(
-      %a0: tensor<16x16xf16, #a>, %a1: tensor<16x16xf16, #a>,
-      %b0: tensor<16x8xf16, #b>, %b1: tensor<16x8xf16, #b>,
-      %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
-    %d0 = tt.dot %a0, %b0, %acc : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
-    %d1 = tt.dot %a1, %b1, %d0 : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
-    tt.return %d1 : tensor<16x8xf32, #mma>
+// Interleaved fragments that already carry a dot_op encoding, which is what
+// reaches the interleaved arithmetic in the register map: everything the map
+// checks before that point passes here. It still has to expand, because a
+// dot_op thread owns its K elements contiguously and alternating fragments
+// every element puts the data it needs on other threads. Running the
+// concatenating arithmetic over this op instead would report a relabel that
+// silently reads the wrong elements.
+// ROUNDTRIP-LABEL: @interleave_dot_op_fragments
+// ROUNDTRIP-NOT: ttg.concat_dot_operand
+// ROUNDTRIP: tt.join
+// ROUNDTRIP: tt.reshape
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @interleave_dot_op_fragments(%a0: tensor<16x16xf16, #dA>, %a1: tensor<16x16xf16, #dA>,
+                                       %rhs: tensor<32x8xf16, #dB>, %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
+    %w = ttg.concat_dot_operand %a0, %a1 {dim = 1 : i32, interleaved} : tensor<16x16xf16, #dA>, tensor<16x16xf16, #dA> -> tensor<16x32xf16, #dA>
+    %d = tt.dot %w, %rhs, %acc : tensor<16x32xf16, #dA> * tensor<32x8xf16, #dB> -> tensor<16x8xf32, #mma>
+    tt.return %d : tensor<16x8xf32, #mma>
   }
 }
 
 // -----
 
 #mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
-#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
-#parent = #ttg.blocked<{sizePerThread = [1, 2], threadsPerWarp = [4, 8], warpsPerCTA = [1, 1], order = [1, 0]}>
-#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
-#b = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
-// Layout propagation leaves transient dot_op encodings whose parent is still a
-// blocked layout. No mma reads those, so the extracts must be built against the
-// encoding the dot actually consumes.
-#transient = #ttg.dot_op<{opIdx = 0, parent = #parent}>
-#f3 = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [4, 1, 8], warpsPerCTA = [1, 1, 1], order = [2, 1, 0]}>
-#t3 = #ttg.blocked<{sizePerThread = [1, 1, 1], threadsPerWarp = [4, 8, 1], warpsPerCTA = [1, 1, 1], order = [1, 2, 0]}>
+#dA = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
+#dB = #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 2}>
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [8, 4], warpsPerCTA = [1, 1], order = [1, 0]}>
 
-module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // Extracting against #transient would build a cover the concat cannot fold
-  // back, leaving fragments for ReduceDataDuplication to stage through shared
-  // memory.
-  // Extracting against the mma operand layout makes the rebuilt wide value fold
-  // all the way back, so the split tree, the extracts and the concat all die and
-  // one wide dot is left. Extracting against #transient instead would leave the
-  // fragments behind for ReduceDataDuplication to stage through shared memory.
-  // MERGE-LABEL: @split_tree_extracts_use_the_mma_operand_layout
-  // MERGE-NOT: tt.split
-  // MERGE-NOT: ttg.extract_dot_operand
-  // MERGE-NOT: ttg.concat_dot_operand
-  // MERGE: tt.dot
-  // MERGE-SAME: tensor<16x32xf16
-  // MERGE-NOT: tt.dot
-  tt.func @split_tree_extracts_use_the_mma_operand_layout(
-      %aw: tensor<16x32xf16, #blocked>, %bw: tensor<32x8xf16, #b>,
-      %acc: tensor<16x8xf32, #mma>) -> tensor<16x8xf32, #mma> {
-    %r = tt.reshape %aw : tensor<16x32xf16, #blocked> -> tensor<16x2x16xf16, #f3>
-    %t = tt.trans %r {order = array<i32: 0, 2, 1>} : tensor<16x2x16xf16, #f3> -> tensor<16x16x2xf16, #t3>
-    %f0, %f1 = tt.split %t : tensor<16x16x2xf16, #t3> -> tensor<16x16xf16, #blocked>
-    %b0 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 0 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
-    %b1 = ttg.extract_dot_operand %bw {dim = 0 : i32, index = 1 : i32} : tensor<32x8xf16, #b> -> tensor<16x8xf16, #b>
-    // Each leaf reaches its dot through a transient dot_op convert first.
-    %p0 = ttg.convert_layout %f0 : tensor<16x16xf16, #blocked> -> tensor<16x16xf16, #transient>
-    %o0 = ttg.convert_layout %p0 : tensor<16x16xf16, #transient> -> tensor<16x16xf16, #a>
-    %d0 = tt.dot %o0, %b0, %acc : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
-    %p1 = ttg.convert_layout %f1 : tensor<16x16xf16, #blocked> -> tensor<16x16xf16, #transient>
-    %o1 = ttg.convert_layout %p1 : tensor<16x16xf16, #transient> -> tensor<16x16xf16, #a>
-    %d1 = tt.dot %o1, %b1, %d0 : tensor<16x16xf16, #a> * tensor<16x8xf16, #b> -> tensor<16x8xf32, #mma>
-    tt.return %d1 : tensor<16x8xf32, #mma>
-  }
-}
-
-// -----
-
-#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [1, 1], instrShape = [16, 8]}>
-#a = #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>
-
-// The identity fold is a canonicalization on the op, not a pattern private to
-// the merge pass: a chain's extracts only become recognizable as a cover of one
-// root after layout propagation unifies their sources, which happens after that
-// pass has run.
-module attributes {"ttg.target" = "cuda:80", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
-  // MERGE-LABEL: @canonicalize_concat_of_complete_cover
-  // MERGE-NOT: ttg.concat_dot_operand
-  // MERGE-NOT: ttg.extract_dot_operand
-  // MERGE: tt.return %arg0
-  tt.func @canonicalize_concat_of_complete_cover(
-      %aw: tensor<16x32xf16, #a>) -> tensor<16x32xf16, #a> {
-    %a0 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 0 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
-    %a1 = ttg.extract_dot_operand %aw {dim = 1 : i32, index = 1 : i32} : tensor<16x32xf16, #a> -> tensor<16x16xf16, #a>
-    %w = ttg.concat_dot_operand %a0, %a1 {dim = 1 : i32} : tensor<16x16xf16, #a>, tensor<16x16xf16, #a> -> tensor<16x32xf16, #a>
-    tt.return %w : tensor<16x32xf16, #a>
+// Nested interleaving is not flat interleaving: stacking pairs and then
+// stacking the results yields a0 c0 b0 d0, while one four-way interleave yields
+// a0 b0 c0 d0. Both levels must survive.
+// MATCH-LABEL: @keep_nested_interleave
+// MATCH-COUNT-3: ttg.concat_dot_operand
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @keep_nested_interleave(%a0: tensor<8x4xf16, #blocked>, %a1: tensor<8x4xf16, #blocked>,
+                                  %a2: tensor<8x4xf16, #blocked>, %a3: tensor<8x4xf16, #blocked>,
+                                  %rhs: tensor<16x8xf16, #dB>, %acc: tensor<8x8xf32, #mma>) -> tensor<8x8xf32, #mma> {
+    %s0 = ttg.concat_dot_operand %a0, %a1 {dim = 1 : i32, interleaved} : tensor<8x4xf16, #blocked>, tensor<8x4xf16, #blocked> -> tensor<8x8xf16, #blocked>
+    %s1 = ttg.concat_dot_operand %a2, %a3 {dim = 1 : i32, interleaved} : tensor<8x4xf16, #blocked>, tensor<8x4xf16, #blocked> -> tensor<8x8xf16, #blocked>
+    %w = ttg.concat_dot_operand %s0, %s1 {dim = 1 : i32, interleaved} : tensor<8x8xf16, #blocked>, tensor<8x8xf16, #blocked> -> tensor<8x16xf16, #blocked>
+    %c = ttg.convert_layout %w : tensor<8x16xf16, #blocked> -> tensor<8x16xf16, #dA>
+    %d = tt.dot %c, %rhs, %acc : tensor<8x16xf16, #dA> * tensor<16x8xf16, #dB> -> tensor<8x8xf32, #mma>
+    tt.return %d : tensor<8x8xf32, #mma>
   }
 }

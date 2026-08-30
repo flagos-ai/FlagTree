@@ -230,13 +230,15 @@ def TritonGPUConcatDotOperand : Pass<"tritongpu-concat-dot-operand", "mlir::Modu
   let summary = "fold an ordered K concat into one op";
 
   let description = [{
-    Recognise an ordered concatenation along the contraction axis written as a
-    balanced `tt.join` tree followed by a transpose and a reshape, and replace it
-    with `ttg.concat_dot_operand`.
+    Recognize an ordered reassembly along the contraction axis, written as a
+    balanced `tt.join` tree followed by a transpose and a reshape, and replace
+    it with `ttg.concat_dot_operand`. Both orders the tree can spell are
+    matched: fragments laid end to end, and fragments interleaved as sub-byte
+    packing produces them. A reassembly built in stages is flattened into one
+    op so it reaches the same single wide operand.
 
-    Runs before layout assignment: a join chain both stages the operand through
-    shared memory and perturbs the kWidth `AccelerateMatmul` picks, so the
-    rewrite has to happen while the IR is still layout-free.
+    Must run before layout assignment, so that the operand encodings are chosen
+    for one wide operand rather than for the join chain.
   }];
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
@@ -244,16 +246,16 @@ def TritonGPUConcatDotOperand : Pass<"tritongpu-concat-dot-operand", "mlir::Modu
 }
 
 def TritonGPUExpandConcatDotOperand : Pass<"tritongpu-expand-concat-dot-operand", "mlir::ModuleOp"> {
-  let summary = "expand an unlowerable K concat";
+  let summary = "expand a K concat the register relabel cannot serve";
 
   let description = [{
-    Rebuild the `tt.join` tree for any `ttg.concat_dot_operand` whose operand did
-    not end up with a layout the register relabel works on.
+    Rebuild the `tt.join` tree for any `ttg.concat_dot_operand` whose operand
+    did not end up with a layout the register relabel works on, which is the
+    expected outcome for an operand staged through `ttg.local_alloc` and for
+    every interleaved concat.
 
-    Whether the relabel is possible only follows from the encoding layout
-    propagation assigns, so it cannot be decided when
-    `tritongpu-concat-dot-operand` introduces the op. Run this once the layouts
-    are final and before lowering.
+    Must run once the layouts are final and before lowering, since the relabel
+    only follows from the encoding layout propagation assigns.
   }];
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
@@ -261,22 +263,20 @@ def TritonGPUExpandConcatDotOperand : Pass<"tritongpu-expand-concat-dot-operand"
 }
 
 def TritonGPUMergeSegmentedDot : Pass<"tritongpu-merge-segmented-dot", "mlir::ModuleOp"> {
-  let summary = "merge proven non-regressing segmented MMA/WGMMA operands";
+  let summary = "merge compatible segmented MMA chains";
 
   let description = [{
-    Recognise straight-line `tt.dot` and native `ttng.warp_group_dot` chains
-    that consume statically ordered contraction-axis slices. The number of
-    slices need not be a power of two: non-power-of-two chains are accepted by
-    the matcher and retained when the current power-of-two linear-layout
-    implementation cannot represent the merged register tensor. The rewrite
-    is deliberately conservative: it requires a complete ordered cover,
-    identical precision and async attributes, no new partial-accumulator
-    boundary, physically compatible shared-memory views, and register-map
-    proofs for register operands. A shared slice must preserve its root's
-    encoding, memory space and mutability; scheduling or synchronization
-    annotations also stop the rewrite. Hopper RS and rank-2 SS forms share the
-    same proof pipeline. If the proof cannot establish a benefit or a
-    non-increase in register pressure, the original chain is retained.
+    Recognize straight-line `tt.dot` chains whose operands are adjacent static
+    K segments, including chains that have no user-written join tree, and merge
+    them into one wide dot. Also rewrites the inverse spelling, where one wide
+    operand is split into per-segment dots, into extracts off that operand.
+
+    Merging requires the concatenated operand to be representable as a
+    dot-operand layout, so a chain whose total K is not a power of two stays
+    segmented; `tt.dot` rejects such an operand outright.
+
+    Must run after `tritongpu-accelerate-matmul`, which decides the mma layout
+    the match depends on.
   }];
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
