@@ -126,9 +126,24 @@ def _has_user_promise_mode_attr(ttir):
     ("kernel", "signature", "routes_user_promise"),
     [
         (_no_trigger_kernel, {"out": "*i32"}, False),
-        (_alloc_barriers_trigger_kernel, {}, True),
-        (_alloc_barrier_trigger_kernel, {}, True),
-        (_wgmma_wait_trigger_kernel, {}, True),
+        pytest.param(
+            _alloc_barriers_trigger_kernel,
+            {},
+            True,
+            marks=pytest.mark.require_tle("gpu.alloc_barriers"),
+        ),
+        pytest.param(
+            _alloc_barrier_trigger_kernel,
+            {},
+            True,
+            marks=pytest.mark.require_tle("gpu.alloc_barrier"),
+        ),
+        pytest.param(
+            _wgmma_wait_trigger_kernel,
+            {},
+            True,
+            marks=pytest.mark.require_tle("gpu.wgmma_wait"),
+        ),
     ],
 )
 def test_tle_wgmma_pipeline_route_marker_exact_api_list(kernel, signature, routes_user_promise):
@@ -137,6 +152,7 @@ def test_tle_wgmma_pipeline_route_marker_exact_api_list(kernel, signature, route
     assert _has_user_promise_mode_attr(ttir) is routes_user_promise
 
 
+@pytest.mark.require_tle("gpu.warp_specialize")
 def test_tle_warp_specialize_keeps_call_lowering_without_user_promise_marker():
     ttir = _make_ttir(_warp_specialize_call_lower_kernel, {"out": "*i32"})
 
@@ -145,6 +161,12 @@ def test_tle_warp_specialize_keeps_call_lowering_without_user_promise_marker():
     assert not _has_user_promise_mode_attr(ttir)
 
 
+@pytest.mark.require_tle(
+    "gpu.alloc_barrier",
+    "gpu.barrier_arrive",
+    "gpu.barrier_wait",
+    "gpu.warp_specialize",
+)
 def test_tle_warp_specialize_inlines_with_user_promise_marker():
     ttir = _make_ttir(_warp_specialize_barrier_inline_kernel, {"out": "*i32"})
 

@@ -77,6 +77,7 @@ class TestAllocAlias:
             semantic,
         )
 
+    @pytest.mark.require_tle("gpu.alloc")
     def test_alloc_alias_creates_typed_memdesc_alias_view(self):
         """alloc(alias=...) returns a typed view without creating a new allocation."""
         buffer, semantic = self._make_buffer([4, 16, 32])
@@ -100,6 +101,7 @@ class TestAllocAlias:
             64,
         )
 
+    @pytest.mark.require_tle("gpu.alloc")
     def test_alloc_alias_skips_mthreads_auto_layout_marker(self, monkeypatch):
         """The mthreads auto-layout marker only accepts local allocations."""
         from triton.experimental.tle.language.gpu import core as gpu_core

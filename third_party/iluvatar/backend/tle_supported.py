@@ -1,0 +1,18 @@
+TLE_SUPPORTED_PRIMITIVES = [
+    "extract_tile",
+    "insert_tile",
+    "cumsum",
+    "pipe",
+    "pipe.reader",
+    "pipe.reader.wait",
+    "pipe.reader.release",
+    "pipe.writer",
+    "pipe.writer.acquire",
+    "pipe.writer.commit",
+    "pipe.writer.close",
+    "gpu.alloc",
+    "gpu.copy",
+    "gpu.local_ptr",
+    "gpu.memory_space",
+    "gpu.warp_specialize",
+]

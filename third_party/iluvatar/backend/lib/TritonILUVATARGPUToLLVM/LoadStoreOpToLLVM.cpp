@@ -1040,8 +1040,10 @@ struct AsyncCopyGlobalToLocalOpConversion
       Value loadVal =
           llLoad(rewriter, loc, srcElem, vecTy, pred, falseVal, multicastMask,
                  op.getCache(), false, op.getIsVolatile());
-      llStore(rewriter, loc, shmemAddr, loadVal, pred, CacheModifier::NONE,
-              targetInfo.requiresAliasInfoForAsyncOps());
+      // Without `other`, store under threadPred so masked-off elements write
+      // the zeros from llLoad instead of leaving stale shared memory.
+      llStore(rewriter, loc, shmemAddr, loadVal, hasOther ? pred : threadPred,
+              CacheModifier::NONE, targetInfo.requiresAliasInfoForAsyncOps());
 
       if (hasOther) {
         emitOtherStore(rewriter, loc, this->getTypeConverter(), vecTy, maskElem,

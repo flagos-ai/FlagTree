@@ -13,3 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+
+import os
+
+# Disable the ASAN MMU map path in the GCU runtime.  Must be set before the
+# backend is imported, since the native libraries read it at load time.
+os.environ.setdefault("GCU_ASAN_MMUMAP", "false")

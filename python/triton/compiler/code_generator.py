@@ -1276,6 +1276,10 @@ class CodeGenerator(ast.NodeVisitor):
             tle_pipeline = None
             tle_range = None
 
+        # flagtree tle: check supported
+        if IteratorClass in (tle_pipeline, tle_range) and IteratorClass is not None:
+            self._require_tle_primitive(IteratorClass)
+
         if IteratorClass in [language.range, tle_pipeline, tle_range]:  # flagtree reorder-loop-loads
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
@@ -1529,6 +1533,19 @@ class CodeGenerator(ast.NodeVisitor):
             self.local_defs = prev_defs
             self.caller_context = prev_caller_context
 
+    # flagtree tle: check supported
+    def _require_tle_primitive(self, primitive):
+        from triton.experimental.tle import primitive_name
+
+        try:
+            name = primitive_name(primitive)
+        except ValueError:
+            return
+        from triton._flagtree_backend import get_active_backend_name
+        from triton.experimental.tle import require_tle
+
+        require_tle(get_active_backend_name(), name)
+
     def call_Function(self, node, fn, args, kws):
         # 4. Get current line number and hints
         flagtree_hints = hint_trigger("get_node_hints", self, node)
@@ -1546,6 +1563,7 @@ class CodeGenerator(ast.NodeVisitor):
         if (hasattr(fn, '__self__') and _is_triton_value(fn.__self__)) or language.core.is_builtin(fn) or isinstance(
                 fn, ConstexprFunction):
             extra_kwargs = dict()
+            self._require_tle_primitive(fn)  # flagtree tle: check supported
 
             if isinstance(fn, ConstexprFunction):
                 sig = inspect.signature(fn.__call__)

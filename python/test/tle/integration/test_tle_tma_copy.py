@@ -154,6 +154,7 @@ def elementwise_add_explicit_barrier(A, B, C, XBLOCK=32, YBLOCK=64):
 class TestTLETmaCopy:
     """TLE TMA Copy Integration Tests"""
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_tma_copy_basic(self):
         """Test basic TMA copy functionality with element-wise addition"""
         torch.manual_seed(42)  # Ensure reproducibility
@@ -177,6 +178,13 @@ class TestTLETmaCopy:
         torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
 
     @pytest.mark.skipif(not _is_nvidia_backend(), reason="Explicit TMA completion barriers require NVIDIA backend")
+    @pytest.mark.require_tle(
+        "gpu.alloc",
+        "gpu.alloc_barrier",
+        "gpu.barrier_wait",
+        "gpu.copy",
+        "gpu.local_ptr",
+    )
     def test_tma_copy_explicit_barrier(self):
         """Test TMA load with user-provided completion barriers."""
         torch.manual_seed(43)
@@ -198,6 +206,7 @@ class TestTLETmaCopy:
         expected = a + b
         torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_tma_copy_different_block_sizes(self):
         """Test TMA copy with different block sizes"""
         torch.manual_seed(123)
@@ -222,6 +231,7 @@ class TestTLETmaCopy:
             expected = a + b
             torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_tma_copy_different_dtypes(self):
         """Test TMA copy with different data types"""
         torch.manual_seed(456)
@@ -248,6 +258,7 @@ class TestTLETmaCopy:
             torch.testing.assert_close(c, expected, atol=1e-3 if dtype == torch.float16 else 1e-5,
                                        rtol=1e-3 if dtype == torch.float16 else 1e-5)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_tma_copy_large_tensor(self):
         """Test TMA copy with larger tensors"""
         torch.manual_seed(789)
@@ -272,6 +283,7 @@ class TestTLETmaCopy:
         expected = a + b
         torch.testing.assert_close(c, expected, atol=1e-4, rtol=1e-4)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_tma_copy_non_divisible(self):
         """Test TMA copy with non-divisible tensor dimensions"""
         torch.manual_seed(101)

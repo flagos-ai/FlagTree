@@ -1,4 +1,5 @@
 import triton.experimental.tle.language as tle
+import pytest
 import torch
 import triton
 import triton.language as tl
@@ -66,6 +67,7 @@ def _runtime_verify(output, device_dptr, grid, rank, world_size):
 
 class TestD2DBarrier:
 
+    @pytest.mark.require_tle("shard_id", "remote", "distributed_barrier")
     def test_tle_d2d_barrier(self):
         grid = (N, )
 

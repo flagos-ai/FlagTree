@@ -1128,6 +1128,52 @@ public:
           memoryStateTransfer(memoryState, allOffsetStateResult[token]);
     }
 
+    // Step 3.3. Guard Discrete against a wrapping offset chain.
+    // The offsets above are mocked over a small program-id range, so a `remsi`
+    // by a large constant in the chain never wraps during the analysis. A
+    // gather offset such as `(xindex % C) // K` therefore looks like a
+    // well-behaved Discrete access, whose invariant is that every lane of a
+    // core lies within [base, base + numElems) of that core's first lane (see
+    // the multiBank / negative-offset guards in checkOffset).
+    // UnrollControl::findDiscretePtrChain relies on that invariant and rewrites
+    // the gather into a contiguous gm2lm plus `lmPtr[offset - offset0]`. At the
+    // real wrap the offset jumps backwards by C, the LM index goes far out of
+    // range and the kernel traps. Fall back to Unknown so the safe per-element
+    // gather path is used instead.
+    if (memoryState == OffsetState::Discrete &&
+        isa<triton::xpu::GM2LMOp>(memoryOp)) {
+      for (auto *op : opChain) {
+        auto remOp = dyn_cast<arith::RemSIOp>(op);
+        if (!remOp)
+          continue;
+        auto constOp = remOp.getRhs().getDefiningOp<arith::ConstantOp>();
+        if (!constOp)
+          continue;
+        int64_t remConst = 0;
+        if (auto denseAttr =
+                mlir::dyn_cast<DenseElementsAttr>(constOp.getValue())) {
+          if (!denseAttr.isSplat())
+            continue;
+          remConst = denseAttr.getSplatValue<APInt>().getSExtValue();
+        } else if (auto intAttr =
+                       mlir::dyn_cast<IntegerAttr>(constOp.getValue())) {
+          remConst = intAttr.getValue().getSExtValue();
+        } else {
+          continue;
+        }
+        if (remConst > static_cast<int64_t>(numElems)) {
+          fixedStride = -1;
+          rowLen = -1;
+          rowStride = -1;
+          LLVM_DEBUG(llvm::dbgs()
+                     << "[OffsetState]: Detected remsi pattern, override "
+                        "Discrete to Unknown (wrap period "
+                     << remConst << ")\n");
+          return OffsetState::Unknown;
+        }
+      }
+    }
+
     bool canBeLrie = findUserOp<triton::AddPtrOp>(memoryOp) &&
                      !findUserOp<arith::SelectOp>(memoryOp);
     if (atomicSim && !analysisFlag && canBeLrie) {

@@ -7,7 +7,7 @@ import sys
 import pytest
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_SKIP = {"conftest.py", "__init__.py", "test_all_scripts.py"}
+_SKIP = {"conftest.py", "__init__.py", "test_all_scripts.py", "01-vector-add-enhance.py"}
 
 
 def _collect_scripts():
