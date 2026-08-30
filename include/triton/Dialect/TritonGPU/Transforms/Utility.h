@@ -328,14 +328,36 @@ LogicalResult verifyBarrierType(Operation *op,
                                 mlir::triton::gpu::MemDescType barrierType);
 
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+// Why the register-relabel proof rejected a concat. Each is a property of the
+// encoding layout propagation assigned rather than of the op itself, so none
+// can be checked by the verifier. `tritongpu-expand-concat-dot-operand`
+// rebuilds the join tree for most of them and reports the one it cannot serve.
+// `getDotOperandRelabelFailureMessage` spells each one out.
+enum class DotOperandRelabelFailure {
+  // The verifier rejects this first, so a real op never carries it; running the
+  // proof on bare types before building one can.
+  MalformedConcat,
+  NotDotOperandEncoding,
+  NotContractionAxis,
+  FragmentNarrowerThanKWidth,
+  ShapeNotPowerOfTwo,
+  LaneWarpBlockMismatch,
+  // Always the outcome for the interleaved form, whose elements alternate
+  // between fragments every K step.
+  NoCoLocatedRegister,
+};
+
+StringRef getDotOperandRelabelFailureMessage(DotOperandRelabelFailure reason);
+
 // Map each register of a `ttg.concat_dot_operand` result to the (fragment,
 // fragment register) holding it, or fail when the layouts do not let the
 // concatenation be a per-thread relabel. Shared by the lowering and by
 // `tritongpu-expand-concat-dot-operand`, which rebuilds the join tree when this
-// fails.
+// fails. Pass `reason` to learn which condition broke.
 LogicalResult getConcatDotOperandRegisterMap(
     triton::gpu::ConcatDotOperandOp op,
-    SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg);
+    SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg,
+    DotOperandRelabelFailure *reason = nullptr);
 
 // Map each register of a wide dot operand to the (slice, slice register)
 // holding it. This is the shared proof used by concat and extract lowering and
@@ -349,12 +371,13 @@ LogicalResult getDotOperandSliceRegisterMap(
 // holding it. `interleaved` selects which reassembly the wide operand states:
 // with it, result element `k * numFragments + i` is element `k` of fragment
 // `i`; without it, result element `i * fragExtent + k` is. Interleaving is
-// defined only for equally sized fragments.
+// defined only for equally sized fragments. Pass `reason` to learn which
+// condition broke.
 LogicalResult getDotOperandConcatRegisterMap(
     RankedTensorType wideTy, ArrayRef<RankedTensorType> fragmentTypes,
     int64_t dim,
     SmallVectorImpl<std::pair<unsigned, unsigned>> &wideRegToFragmentReg,
-    bool interleaved = false);
+    bool interleaved = false, DotOperandRelabelFailure *reason = nullptr);
 
 LogicalResult
 getExtractDotOperandRegisterMap(triton::gpu::ExtractDotOperandOp op,

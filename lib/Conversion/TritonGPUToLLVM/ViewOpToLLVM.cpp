@@ -619,10 +619,13 @@ struct ConcatDotOperandOpConversion
   matchAndRewrite(ConcatDotOperandOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<std::pair<unsigned, unsigned>> resultRegToFragmentReg;
-    if (failed(getConcatDotOperandRegisterMap(op, resultRegToFragmentReg)))
+    auto reason = DotOperandRelabelFailure::MalformedConcat;
+    if (failed(getConcatDotOperandRegisterMap(op, resultRegToFragmentReg,
+                                              &reason)))
       return op.emitError("concat_dot_operand: operand layout does not allow a "
                           "per-thread register relabel; it should have been "
-                          "expanded by tritongpu-expand-concat-dot-operand");
+                          "expanded by tritongpu-expand-concat-dot-operand: ")
+             << getDotOperandRelabelFailureMessage(reason);
 
     Location loc = op->getLoc();
     SmallVector<SmallVector<Value>> fragVals;

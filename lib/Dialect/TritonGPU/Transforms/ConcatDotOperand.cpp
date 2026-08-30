@@ -649,7 +649,8 @@ struct ExpandConcatToJoinTree : public OpRewritePattern<ConcatDotOperandOp> {
   LogicalResult matchAndRewrite(ConcatDotOperandOp op,
                                 PatternRewriter &rewriter) const override {
     SmallVector<std::pair<unsigned, unsigned>> unused;
-    if (succeeded(getConcatDotOperandRegisterMap(op, unused)))
+    auto reason = DotOperandRelabelFailure::MalformedConcat;
+    if (succeeded(getConcatDotOperandRegisterMap(op, unused, &reason)))
       return failure();
 
     Location loc = op.getLoc();
@@ -711,9 +712,8 @@ struct ExpandConcatToJoinTree : public OpRewritePattern<ConcatDotOperandOp> {
       return failure();
 
     LDBG("expanding a " << (interleaved ? "interleave" : "concat") << " of "
-                        << numFrags
-                        << " fragments back into a join tree: the operand "
-                           "layout is not a register relabel");
+                        << numFrags << " fragments back into a join tree: "
+                        << getDotOperandRelabelFailureMessage(reason));
 
     SmallVector<Value> level(op.getFragments().begin(),
                              op.getFragments().end());
@@ -1131,13 +1131,16 @@ public:
     getOperation().walk(
         [&](ConcatDotOperandOp op) {
           SmallVector<std::pair<unsigned, unsigned>> unused;
-          if (succeeded(getConcatDotOperandRegisterMap(op, unused)))
+          auto reason = DotOperandRelabelFailure::MalformedConcat;
+          if (succeeded(getConcatDotOperandRegisterMap(op, unused, &reason)))
             return;
           InFlightDiagnostic diag =
               op.emitError()
               << "concat_dot_operand: the operand layout allows neither a "
                  "per-thread register relabel nor a join-tree expansion";
-          diag.attachNote() << "expansion needs a power-of-two count of "
+          diag.attachNote() << "no register relabel: "
+                            << getDotOperandRelabelFailureMessage(reason);
+          diag.attachNote() << "no expansion: it needs a power-of-two count of "
                                "equally shaped fragments; this op concatenates "
                             << op.getFragments().size() << " fragments on dim "
                             << op.getDim();
@@ -1177,51 +1180,78 @@ namespace mlir::triton {
 namespace ttg = mlir::triton::gpu;
 
 // Defined here rather than in Transforms/Utility.cpp: backends that substitute
-// their own Utility.cpp would otherwise have to carry this too.
+// their own Utility.cpp would otherwise have to carry these too.
+StringRef getDotOperandRelabelFailureMessage(DotOperandRelabelFailure reason) {
+  switch (reason) {
+  case DotOperandRelabelFailure::MalformedConcat:
+    return "fragment and result types do not describe a concatenation";
+  case DotOperandRelabelFailure::NotDotOperandEncoding:
+    return "the operand does not carry a dot_op encoding";
+  case DotOperandRelabelFailure::NotContractionAxis:
+    return "dim is not the contraction axis for this opIdx";
+  case DotOperandRelabelFailure::FragmentNarrowerThanKWidth:
+    return "a fragment is narrower than 8 * kWidth along the contraction "
+           "axis, where the dot_op layout replicates across lanes instead of "
+           "scaling with K";
+  case DotOperandRelabelFailure::ShapeNotPowerOfTwo:
+    return "a shape is not a power of two, outside the linear-layout domain";
+  case DotOperandRelabelFailure::LaneWarpBlockMismatch:
+    return "fragment and result differ in their lane, warp or block bases";
+  case DotOperandRelabelFailure::NoCoLocatedRegister:
+    return "a result coordinate has no co-located fragment register";
+  }
+  llvm_unreachable("unhandled DotOperandRelabelFailure");
+}
+
 LogicalResult getDotOperandConcatRegisterMap(
     RankedTensorType dstTy, ArrayRef<RankedTensorType> fragmentTypes,
     int64_t dim,
     SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg,
-    bool interleaved) {
-  if (fragmentTypes.size() < 2 || dim < 0 || dim >= dstTy.getRank())
+    bool interleaved, DotOperandRelabelFailure *reason) {
+  auto reject = [&](DotOperandRelabelFailure why) {
+    if (reason)
+      *reason = why;
     return failure();
+  };
+  if (fragmentTypes.size() < 2 || dim < 0 || dim >= dstTy.getRank())
+    return reject(DotOperandRelabelFailure::MalformedConcat);
   // Interleaving is only defined when every fragment contributes the same
   // number of elements; the verifier enforces it, this keeps the proof honest
   // when the map is run on types alone before any op exists.
   if (interleaved && llvm::any_of(fragmentTypes, [&](RankedTensorType ty) {
         return ty.getShape()[dim] != fragmentTypes.front().getShape()[dim];
       }))
-    return failure();
+    return reject(DotOperandRelabelFailure::MalformedConcat);
   int64_t rank = dstTy.getRank();
   Type elementType = fragmentTypes.front().getElementType();
   Attribute encoding = fragmentTypes.front().getEncoding();
   if (!encoding || !isa<ttg::DotOperandEncodingAttr>(encoding))
-    return failure();
+    return reject(DotOperandRelabelFailure::NotDotOperandEncoding);
   SmallVector<int64_t> expectedShape(dstTy.getShape());
   expectedShape[dim] = 0;
   for (RankedTensorType fragmentTy : fragmentTypes) {
     if (fragmentTy.getRank() != rank ||
         fragmentTy.getElementType() != elementType ||
         fragmentTy.getEncoding() != encoding)
-      return failure();
+      return reject(DotOperandRelabelFailure::MalformedConcat);
     for (int64_t i = 0; i < rank; ++i) {
       if (i == dim)
         continue;
       if (fragmentTy.getShape()[i] != dstTy.getShape()[i])
-        return failure();
+        return reject(DotOperandRelabelFailure::MalformedConcat);
     }
     expectedShape[dim] += fragmentTy.getShape()[dim];
   }
   if (expectedShape != SmallVector<int64_t>(dstTy.getShape()))
-    return failure();
+    return reject(DotOperandRelabelFailure::MalformedConcat);
   auto dotEnc = cast<ttg::DotOperandEncodingAttr>(encoding);
   if (dim != (dotEnc.getOpIdx() == 0 ? rank - 1 : rank - 2))
-    return failure();
+    return reject(DotOperandRelabelFailure::NotContractionAxis);
   unsigned kWidth = dotEnc.getKWidth();
   if (kWidth != 0 && llvm::any_of(fragmentTypes, [&](RankedTensorType ty) {
         return ty.getShape()[dim] < 8 * static_cast<int64_t>(kWidth);
       }))
-    return failure();
+    return reject(DotOperandRelabelFailure::FragmentNarrowerThanKWidth);
   auto representable = [](RankedTensorType ty) {
     return llvm::all_of(ty.getShape(), [](int64_t extent) {
       return extent > 0 && llvm::isPowerOf2_64(extent);
@@ -1229,7 +1259,7 @@ LogicalResult getDotOperandConcatRegisterMap(
   };
   if (!representable(dstTy) ||
       llvm::any_of(fragmentTypes, [&](auto ty) { return !representable(ty); }))
-    return failure();
+    return reject(DotOperandRelabelFailure::ShapeNotPowerOfTwo);
 
   MLIRContext *ctx = dstTy.getContext();
   auto inDim = [&](StringRef name) { return StringAttr::get(ctx, name); };
@@ -1242,10 +1272,10 @@ LogicalResult getDotOperandConcatRegisterMap(
     StringAttr attr = inDim(name);
     for (const LinearLayout &ll : fragmentLLs) {
       if (dstLL.hasInDim(attr) != ll.hasInDim(attr))
-        return failure();
+        return reject(DotOperandRelabelFailure::LaneWarpBlockMismatch);
       if (dstLL.hasInDim(attr) &&
           dstLL.getBases().lookup(attr) != ll.getBases().lookup(attr))
-        return failure();
+        return reject(DotOperandRelabelFailure::LaneWarpBlockMismatch);
     }
   }
   StringAttr kReg = inDim("register");
@@ -1274,25 +1304,19 @@ LogicalResult getDotOperandConcatRegisterMap(
   for (size_t i = 0; i < fragmentTypes.size(); ++i) {
     auto offsets = offsetsOf(fragmentLLs[i]);
     if (offsets.empty() && fragmentLLs[i].getInDimSize(kReg) != 0)
-      return failure();
+      return reject(DotOperandRelabelFailure::NoCoLocatedRegister);
     DenseMap<int64_t, unsigned> map;
     for (auto [reg, coord] : llvm::enumerate(offsets))
       if (!map.try_emplace(coordKey(coord, fragmentTypes[i]), reg).second)
-        return failure();
+        return reject(DotOperandRelabelFailure::NoCoLocatedRegister);
     fragmentMaps.push_back(std::move(map));
   }
   auto dstOffsets = offsetsOf(dstLL);
   if (dstOffsets.empty() && dstLL.getInDimSize(kReg) != 0)
-    return failure();
+    return reject(DotOperandRelabelFailure::NoCoLocatedRegister);
   // Where along `dim` each fragment starts, for the concatenating form. The
   // interleaved form needs no boundaries: every fragment is present at every
   // stride, so the coordinate divides instead.
-  //
-  // The interleaved branch never resolves on any layout in the dialect today,
-  // since a `dot_op` thread owns its K elements contiguously. Do not drop it:
-  // running the concatenating arithmetic over an interleaved op finds a
-  // co-located register for every coordinate and reports a relabel that reads
-  // the wrong elements.
   SmallVector<int64_t> boundaries;
   boundaries.push_back(0);
   for (RankedTensorType ty : fragmentTypes)
@@ -1302,6 +1326,11 @@ LogicalResult getDotOperandConcatRegisterMap(
   resultRegToFragmentReg.reserve(dstOffsets.size());
   for (auto coord : dstOffsets) {
     size_t fragment;
+    // This branch never resolves on any layout in the dialect today, since a
+    // `dot_op` thread owns its K elements contiguously. Do not drop it: the
+    // concatenating arithmetic below finds a co-located register for every
+    // coordinate of an interleaved op and reports a relabel that reads the
+    // wrong elements.
     if (interleaved) {
       fragment = coord[dim] % numFragments;
       coord[dim] /= numFragments;
@@ -1309,13 +1338,13 @@ LogicalResult getDotOperandConcatRegisterMap(
       auto it = llvm::upper_bound(boundaries, static_cast<int64_t>(coord[dim]));
       fragment = std::max<size_t>(1, it - boundaries.begin()) - 1;
       if (fragment >= fragmentTypes.size())
-        return failure();
+        return reject(DotOperandRelabelFailure::NoCoLocatedRegister);
       coord[dim] -= boundaries[fragment];
     }
     auto found =
         fragmentMaps[fragment].find(coordKey(coord, fragmentTypes[fragment]));
     if (found == fragmentMaps[fragment].end())
-      return failure();
+      return reject(DotOperandRelabelFailure::NoCoLocatedRegister);
     resultRegToFragmentReg.emplace_back(fragment, found->second);
   }
   return success();
@@ -1440,14 +1469,15 @@ LogicalResult getDotOperandSliceRegisterMap(
 
 LogicalResult getConcatDotOperandRegisterMap(
     ttg::ConcatDotOperandOp op,
-    SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg) {
+    SmallVectorImpl<std::pair<unsigned, unsigned>> &resultRegToFragmentReg,
+    DotOperandRelabelFailure *reason) {
   SmallVector<RankedTensorType> fragmentTypes;
   fragmentTypes.reserve(op.getFragments().size());
   for (Value fragment : op.getFragments())
     fragmentTypes.push_back(cast<RankedTensorType>(fragment.getType()));
   return getDotOperandConcatRegisterMap(
       cast<RankedTensorType>(op.getType()), fragmentTypes, op.getDim(),
-      resultRegToFragmentReg, op.getInterleaved());
+      resultRegToFragmentReg, op.getInterleaved(), reason);
 }
 
 LogicalResult
