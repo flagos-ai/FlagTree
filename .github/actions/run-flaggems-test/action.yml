@@ -1,0 +1,125 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Run FlagGems Test'
+description: 'Run FlagGems tests and output results. Can be used for both baseline generation and PR testing.'
+
+inputs:
+  flaggems-path:
+    description: 'Absolute path to FlagGems repository on the self-hosted runner'
+    required: true
+    default: '/root/flaggems_ci/FlagGems'
+  gpus:
+    description: 'Number of GPUs to use for testing'
+    required: true
+    default: '0'
+  output-base-dir:
+    description: 'Base directory for test outputs'
+    required: true
+    default: '/root/flaggems_ci/PR'
+  output-subdir:
+    description: 'Subdirectory name under output-base-dir. If empty, falls back to pr-number or run_id-timestamp'
+    required: false
+    default: ''
+  pr-number:
+    description: 'Pull Request number (used for output directory naming if output-subdir is empty)'
+    required: false
+    default: ''
+  run-script:
+    description: 'Path to the test runner script (relative to flaggems-path)'
+    required: true
+    default: 'tools/ci/ci_run_tests.py'
+  skip-file:
+    description: 'Path to the skip list YAML (relative to flaggems-path)'
+    required: true
+    default: 'tools/ci/skip_list.yaml'
+  first-parameter-only:
+    description: 'Pass --first-parameter-only to test runner'
+    required: true
+    default: 'true'
+
+outputs:
+  test-output-dir:
+    description: 'Directory where test results were written'
+    value: ${{ steps.run-tests.outputs.test-output-dir }}
+  test-date:
+    description: 'Date string (YYYY-MM-DD) when tests were run'
+    value: ${{ steps.vars.outputs.test-date }}
+  test-id:
+    description: 'Identifier used for the output subdirectory'
+    value: ${{ steps.vars.outputs.test-id }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Compute variables
+      id: vars
+      shell: bash
+      run: |
+        set -x
+        # Get current date for downstream baseline lookup
+        TEST_DATE=$(date +%Y-%m-%d)
+        echo "test-date=$TEST_DATE" >> $GITHUB_OUTPUT
+
+        # Determine output subdirectory identifier
+        if [ -n "${{ inputs.output-subdir }}" ]; then
+          TEST_ID="${{ inputs.output-subdir }}"
+        elif [ -n "${{ inputs.pr-number }}" ]; then
+          TEST_ID="${{ inputs.pr-number }}"
+        else
+          # Fallback: use run ID + timestamp for non-PR triggers
+          TEST_ID="${{ github.run_id }}-$(date +%H%M%S)"
+        fi
+        echo "test-id=$TEST_ID" >> $GITHUB_OUTPUT
+
+        # Construct full output path
+        TEST_OUTPUT_DIR="${{ inputs.output-base-dir }}/${TEST_ID}"
+        echo "test-output-dir=$TEST_OUTPUT_DIR" >> $GITHUB_OUTPUT
+
+    - name: Run FlagGems Tests
+      id: run-tests
+      shell: bash
+      working-directory: ${{ inputs.flaggems-path }}
+      run: |
+        set -x
+
+        cp /root/flaggems_ci/script/conftest.py tests/conftest.py
+        cp -raf /root/flaggems_ci/script/ci tools
+
+        TEST_OUTPUT_DIR="${{ steps.vars.outputs.test-output-dir }}"
+        rm -rf "$TEST_OUTPUT_DIR" || true
+        mkdir -p "$TEST_OUTPUT_DIR"
+
+        # Build test runner command
+        CMD="python ${{ inputs.run-script }} --gpus ${{ inputs.gpus }} --output-dir $TEST_OUTPUT_DIR"
+
+        if [ "${{ inputs.first-parameter-only }}" = "true" ]; then
+          CMD="$CMD --first-parameter-only"
+        fi
+
+        if [ -f "${{ inputs.skip-file }}" ]; then
+          CMD="$CMD --skip-file ${{ inputs.skip-file }}"
+        fi
+
+        echo "Running: $CMD"
+        $CMD
+
+        # Export output directory for downstream steps
+        echo "test-output-dir=$TEST_OUTPUT_DIR" >> $GITHUB_OUTPUT
