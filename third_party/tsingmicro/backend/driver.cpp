@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "tx_runtime.h"
+
 static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   // Extract device properties
   // Note: We're mapping Tx81 properties to fields expected by Triton
@@ -34,6 +36,9 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
                        mem_bus_width);
 }
 
+// Load kernel ELF once via txModuleLoad and return a persistent function
+// handle. Callers then launch with txLaunchKernel(handle, ...) instead of
+// re-passing the ELF blob through txLaunchKernelGGL on every launch.
 static PyObject *loadBinary(PyObject *self, PyObject *args) {
   const char *name;
   const char *data;
@@ -41,10 +46,52 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
   int shared;
   int device;
 
+  if (!PyArg_ParseTuple(args, "ss#ii", &name, &data, &data_size, &shared,
+                        &device)) {
+    return NULL;
+  }
+  if (data_size <= 0) {
+    PyErr_SetString(PyExc_ValueError, "empty kernel binary");
+    return NULL;
+  }
+
+  txModule_t mod = NULL;
+  txFunction_t fun = NULL;
   int32_t n_regs = 256;
   int32_t n_spills = 0;
-  // Return values to Python including module, function, n_regs, n_spills
-  return Py_BuildValue("(KKii)", "module {}", "void @add_kernel() {}", n_regs,
+  txError_t st;
+
+  Py_BEGIN_ALLOW_THREADS;
+  st = txSetDevice(device);
+  if (st == TX_SUCCESS) {
+    // txModuleLoad may read asynchronously; keep a stable copy for the call.
+    char *elf_copy = (char *)malloc((size_t)data_size);
+    if (!elf_copy) {
+      st = TX_MEM_MALLOC_FAIL;
+    } else {
+      memcpy(elf_copy, data, (size_t)data_size);
+      st = txModuleLoad(&mod, elf_copy, (uint32_t)data_size);
+      // Elf buffer only needs to live until ModuleLoad returns.
+      free(elf_copy);
+      if (st == TX_SUCCESS) {
+        st = txModuleGetFunction(&fun, mod, name);
+        if (st != TX_SUCCESS) {
+          txModuleUnload(mod);
+          mod = NULL;
+          fun = NULL;
+        }
+      }
+    }
+  }
+  Py_END_ALLOW_THREADS;
+
+  if (st != TX_SUCCESS) {
+    return PyErr_Format(PyExc_RuntimeError,
+                        "txModuleLoad/GetFunction('%s') failed: error=%d", name,
+                        (int)st);
+  }
+
+  return Py_BuildValue("(KKii)", (uint64_t)mod, (uint64_t)fun, n_regs,
                        n_spills);
 }
 

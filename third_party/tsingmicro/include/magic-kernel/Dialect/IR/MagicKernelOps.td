@@ -477,6 +477,29 @@ def CumsumOp : MKOp<"cumsum", [DestinationStyleOpInterface]> {
   }];
 }
 
+def RandGenOp : MKOp<"randgen", [DestinationStyleOpInterface]> {
+  let summary = "hardware xorshift128+ PRNG lowered to tx.randgen / __RandGen";
+
+  let arguments = (
+    ins
+    TensorOrMemref:$seed0,
+    TensorOrMemref:$seed1,
+    Arg<TensorOrMemref, "random output", [MemWrite]>:$out,
+    Arg<TensorOrMemref, "updated seed0", [MemWrite]>:$seed0_out,
+    Arg<TensorOrMemref, "updated seed1", [MemWrite]>:$seed1_out,
+    I32Attr:$byte_count,
+    I16Attr:$fmt
+  );
+
+  let results = (outs Variadic<TensorOrMemref>:$result);
+
+  let extraClassDeclaration = [{
+    MutableOperandRange getDpsInitsMutable() {
+      return MutableOperandRange(getOperation(), /*start=*/2, /*count=*/3);
+    }
+  }];
+}
+
 // =============================================================================
 // Unary/Binary/Ternary Element-wise Math Ops
 // =============================================================================

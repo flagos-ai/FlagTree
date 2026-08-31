@@ -305,6 +305,7 @@ void mlir::mk::registerBufferizableOpInterfaceExternalModels(
         MKOpInterfaceHelper<mk::GeluOp>::registerOpInterface(ctx);
         MKOpInterfaceHelper<mk::GatherOp>::registerOpInterface(ctx);
         MKOpInterfaceHelper<mk::CumsumOp>::registerOpInterface(ctx);
+        MKOpInterfaceHelper<mk::RandGenOp>::registerOpInterface(ctx);
         MKOpInterfaceHelper<mk::PrintOp>::registerOpInterface(ctx);
         mk::AtomicRMWOp::attachInterface<AtomicRMWOpInterface>(*ctx);
         mk::AtomicCASOp::attachInterface<AtomicCASOpInterface>(*ctx);

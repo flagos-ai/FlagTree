@@ -6,6 +6,9 @@ import os, subprocess, tempfile
 import importlib.util
 import sysconfig
 
+import time
+
+import triton
 from pathlib import Path
 
 from triton.runtime.cache import get_cache_manager
@@ -351,6 +354,62 @@ class CPUUtils(object):
                 )
 
 
+class CPUDeviceInterface:
+
+    class HooksTimeAccessor:
+
+        def __init__(self, di):
+            self.di = di
+            self.record_idx = 0
+
+        def elapsed_time(self, end_event) -> float:
+            total_time = 0
+            for i in range(self.record_idx, end_event.record_idx):
+                total_time += self.di.kernel_times[i]
+            return total_time * 1000
+
+        def record(self):
+            self.record_idx = len(self.di.kernel_times)
+
+    class TimerEvent:
+
+        def __init__(self):
+            self.timer = 0
+
+        def elapsed_time(self, end_event) -> float:
+            return (end_event.timer - self.timer) * 1000
+
+        def record(self):
+            self.timer = time.perf_counter()
+
+    def __init__(self):
+        self.kernel_times = []
+        self.last_start = 0
+        self.use_hooks = False
+        self.__name__ = "cpu"  # Required by autotuner
+        triton.compiler.CompiledKernel.launch_enter_hook = None
+        triton.compiler.CompiledKernel.launch_exit_hook = None
+
+    def enable_hook_timing(self):
+        self.use_hooks = True
+        triton.compiler.CompiledKernel.launch_enter_hook = lambda arg: self._enter_hook()
+        triton.compiler.CompiledKernel.launch_exit_hook = lambda arg: self._exit_hook()
+
+    def synchronize(self):
+        pass
+
+    def _enter_hook(self):
+        self.last_start = time.perf_counter()
+
+    def _exit_hook(self):
+        self.kernel_times.append(time.perf_counter() - self.last_start)
+
+    def Event(self, enable_timing=True):
+        if self.use_hooks:
+            return CPUDeviceInterface.HooksTimeAccessor(self)
+        return CPUDeviceInterface.TimerEvent()
+
+
 class CPUDriver(DriverBase):
 
     def __init__(self):
@@ -382,6 +441,26 @@ class CPUDriver(DriverBase):
 
     def get_current_target(self):
         return GPUTarget("cpu", 0, 0)
+
+    def get_active_torch_device(self):
+        import torch
+        return torch.device("cpu")
+
+    def get_benchmarker(self):
+        from triton.testing import do_bench
+        return do_bench
+
+    def get_device_interface(self):
+        return CPUDeviceInterface()
+
+    def get_empty_cache_for_benchmark(self):
+        import torch
+        # Typical LLC size for high-end server CPUs ~400 MB
+        cache_size = 512 * 1024 * 1024
+        return torch.empty(int(cache_size // 4), dtype=torch.int, device='cpu')
+
+    def clear_cache(self, cache):
+        cache.zero_()
 
     def assemble_tensormap_to_arg(self, tensormaps_info, args):
         return args

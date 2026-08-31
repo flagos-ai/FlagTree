@@ -2,7 +2,7 @@ import pytest
 import os
 import tempfile
 import triton
-from triton.backends.ztc.driver import CPUDriver
+from triton.backends.tsingmicro.cpu_driver import CPUDriver
 
 triton.runtime.driver.set_active(CPUDriver())
 

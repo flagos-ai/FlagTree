@@ -5,6 +5,7 @@
 # file above.
 #
 import hashlib
+import logging
 import tempfile
 import os
 import subprocess
@@ -288,10 +289,12 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
         if (!PyLong_Check(ret)) {{
             PyErr_SetString(PyExc_TypeError, "data_ptr method of Pointer object must return 64-bit int");
             ptr_info.valid = false;
+            Py_DECREF(ret);
             return ptr_info;
         }}
         ptr_info.dev_ptr = (void*) PyLong_AsLongLong(ret);
         if(!ptr_info.dev_ptr) {{
+            Py_DECREF(ret);
             return ptr_info;
         }}
         Py_DECREF(ret);  // Thanks ChatGPT!
@@ -567,6 +570,7 @@ struct Launch_args {{
     int launch_count = 0;
     std::vector<KernelArg> kargs;
     txStream_t stream = nullptr;
+    uint64_t function = 0;  // txFunction_t from txModuleGetFunction (0 → GGL fallback)
     int log_level = simple_logger::ERROR;
     LaunchRes result;
 }};
@@ -803,11 +807,22 @@ void dump_kernel_args(Launch_args &l_args) {{
 }}
 
 static bool set_device_id(int device_id) {{
+    // Skip redundant txSetDevice when device is unchanged (common hot path).
+    static thread_local int tls_device = -1;
+    if (tls_device == device_id) {{
+        return true;
+    }}
     if (txSetDevice(device_id) != TX_SUCCESS) {{
         PyErr_SetString(PyExc_RuntimeError, "Failed to set device");
         return false;
     }}
+    tls_device = device_id;
     return true;
+}}
+
+static bool force_ggl_launch() {{
+    const char* env = std::getenv("TXDA_LAUNCH_VIA_GGL");
+    return env != nullptr && (env[0] == '1' || env[0] == 'y' || env[0] == 'Y');
 }}
 
 static void _launch(Launch_args &l_args) {{
@@ -823,17 +838,9 @@ static void _launch(Launch_args &l_args) {{
         dump_kernel_args(l_args);
     }}
 
-    // TODO::mv
-    uint64_t kernel_len = 0;
-    void* kernel_ptr = nullptr;
-    int ret = read_bin_file(l_args.kernel_file, &kernel_ptr, &kernel_len);
-    if (ret != 0 || kernel_ptr == nullptr) {{
-        PyErr_SetString(PyExc_RuntimeError, "Failed to read kernel so");
-        return;
-    }}
-
-    // Allocate the device memory for all kernel arguments
+    // Flatten kernel args once for either launch path.
     std::vector<uint64_t> rtKargs;
+    rtKargs.reserve(l_args.kargs.size() * 2 + 6);
     for (KernelArg& karg : l_args.kargs) {{
         if (karg.data_type == POINT) {{
             rtKargs.push_back(1);
@@ -848,6 +855,11 @@ static void _launch(Launch_args &l_args) {{
     rtKargs.push_back(0);
     rtKargs.push_back(0);
     rtKargs.push_back(0);
+
+    dim3 gridDim({{(uint32_t)l_args.gridX, (uint32_t)l_args.gridY, (uint32_t)l_args.gridZ}});
+    dim3 blockDim({{1u, 1u, 1u}});
+    void* arg_ptr = rtKargs.empty() ? nullptr : (void*)(&rtKargs[0]);
+    uint32_t arg_bytes = (uint32_t)(rtKargs.size() * sizeof(uint64_t));
 
 #ifdef ENABLE_PROFILING
     static int run_count = 0;
@@ -870,10 +882,37 @@ static void _launch(Launch_args &l_args) {{
         _prof_token = resolve_tsm_prof_begin();
     }}
 #endif
-    if (txLaunchKernelGGL(l_args.kernel_fun_name, (uint64_t)kernel_ptr, kernel_len,
-        dim3({{(uint32_t)l_args.gridX, (uint32_t)l_args.gridY, (uint32_t)l_args.gridZ}}), dim3({{1u, 1u, 1u}}),
-        (void*)(&rtKargs[0]), rtKargs.size()*sizeof(uint64_t), 0, l_args.stream) != TX_SUCCESS){{
-        PyErr_SetString(PyExc_RuntimeError, "Failed to txLaunchKernelGGL");
+
+    // Fast path: launch by pre-loaded module function handle (txModuleLoad once
+    // in load_binary). Avoids re-passing the ELF blob via txLaunchKernelGGL.
+    // Fallback: TXDA_LAUNCH_VIA_GGL=1 or missing handle → legacy GGL path.
+    txError_t launch_st = TX_SUCCESS;
+    const bool use_handle = (l_args.function != 0) && !force_ggl_launch();
+    if (use_handle) {{
+        Py_BEGIN_ALLOW_THREADS;
+        launch_st = txLaunchKernel((txFunction_t)l_args.function, gridDim, blockDim,
+                                   arg_ptr, arg_bytes, 0, l_args.stream);
+        Py_END_ALLOW_THREADS;
+        if (launch_st != TX_SUCCESS) {{
+            PyErr_Format(PyExc_RuntimeError, "Failed to txLaunchKernel (err=%d)", (int)launch_st);
+            return;
+        }}
+    }} else {{
+        uint64_t kernel_len = 0;
+        void* kernel_ptr = nullptr;
+        int ret = read_bin_file(l_args.kernel_file, &kernel_ptr, &kernel_len);
+        if (ret != 0 || kernel_ptr == nullptr) {{
+            PyErr_SetString(PyExc_RuntimeError, "Failed to read kernel so");
+            return;
+        }}
+        Py_BEGIN_ALLOW_THREADS;
+        launch_st = txLaunchKernelGGL(l_args.kernel_fun_name, (uint64_t)kernel_ptr, kernel_len,
+            gridDim, blockDim, arg_ptr, arg_bytes, 0, l_args.stream);
+        Py_END_ALLOW_THREADS;
+        if (launch_st != TX_SUCCESS) {{
+            PyErr_SetString(PyExc_RuntimeError, "Failed to txLaunchKernelGGL");
+            return;
+        }}
     }}
     const char* env = std::getenv("TXDA_LAUNCH_KERNEL_SYNC");
     if (env != nullptr && std::string(env) == "1") {{
@@ -910,15 +949,11 @@ typedef struct _DevicePtrInfo {{
 
 // Function to get tensor size using untyped_storage if available
 static inline size_t getTensorSize(PyObject *obj) {{
-    // First try to get size via untyped_storage attribute (newer PyTorch versions)
-
-
     // Final fallback: calculate size from numel() * element_size()
     PyObject *numel_method = PyObject_GetAttrString(obj, "numel");
     PyObject *element_size_method = PyObject_GetAttrString(obj, "element_size");
 
     if (numel_method && element_size_method) {{
-        fflush(stdout);
         PyObject *empty_tuple1 = PyTuple_New(0);
         PyObject *empty_tuple2 = PyTuple_New(0);
         PyObject *numel_obj = PyObject_Call(numel_method, empty_tuple1, NULL);
@@ -946,7 +981,6 @@ static inline size_t getTensorSize(PyObject *obj) {{
         if (element_size_method) Py_DECREF(element_size_method);
     }}
 
-    fflush(stdout);
     return 0;  // Return 0 if unable to determine size
 }}
 
@@ -956,7 +990,6 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
     ptr_info.valid = true;
     ptr_info.size = 0;  // Initialize size
 
-    fflush(stdout);
     if (PyLong_Check(obj)) {{
         ptr_info.dev_ptr = (void*) PyLong_AsLongLong(obj);
         logger.log(simple_logger::DEBUG, "PyLong_AsLongLong %p\\n", ptr_info.dev_ptr);
@@ -966,14 +999,11 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
     if (obj == Py_None) {{
         // valid nullptr
         logger.log(simple_logger::DEBUG, "Py_None\\n");
-        fflush(stdout);
         return ptr_info;
     }}
 
     PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
     if(ptr){{
-        fflush(stdout);
-
         PyObject *empty_tuple = PyTuple_New(0);
         PyObject *ret = PyObject_Call(ptr, empty_tuple, NULL);
         Py_DECREF(empty_tuple);
@@ -982,20 +1012,14 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
             PyErr_SetString(PyExc_TypeError, "data_ptr method of Pointer object must return 64-bit int");
             logger.log(simple_logger::ERROR, "data_ptr method of Pointer object must return 64-bit int\\n");
             ptr_info.valid = false;
-            fflush(stdout);
+            Py_DECREF(ret);
             return ptr_info;
         }}
         ptr_info.dev_ptr = (void*) PyLong_AsLongLong(ret);
-        if(!ptr_info.dev_ptr) {{
-            fflush(stdout);
-            return ptr_info;
-        }}
-        Py_DECREF(ret);  // Thanks ChatGPT!
+        Py_DECREF(ret);
 
-        // Get tensor size using the new function
-        ptr_info.size = getTensorSize(obj);
-        fflush(stdout);
-
+        // Size is only needed for debug dumps; skip hot-path Python calls.
+        // ptr_info.size stays 0 for the launch path (rtKargs never uses it).
         return ptr_info;
     }}
     std::string error_msg = "Pointer argument must be either uint64 or have data_ptr method\\n";
@@ -1063,6 +1087,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
     logger.setLogLevel((simple_logger::LogLevel)l_args.log_level);
     l_args.stream = (txStream_t)_stream;
+    l_args.function = _function;
 
     //{' '.join([f"l_args.kargs.emplace_back(_arg{i}, PyObject_Size(_arg{i})*4);" if ty[0]=="*" else f"l_args.kargs.emplace_back(*(uint64_t*)&_arg{i}, sizeof(_arg{i}));" for i, ty in signature.items() if ty != "constexpr"])}
     // {' '.join([f"l_args.kargs.emplace_back(extractTensor(_arg{i}), getTensorStorageSize(_arg{i}));"
@@ -1209,13 +1234,16 @@ class TXDALauncher(object):
         _launch_counter += 1
         device_id = torch.txda.current_device()
         log_level = logger_to_custom_level_number(logger)
-        logger.info(f"{self.func_name} launch card:{device_id} count:{_launch_counter} begin")
+        # Avoid f-string work when log level is above INFO (default: ERROR).
+        if logger.isEnabledFor(logging.INFO):
+            logger.info("%s launch card:%s count:%s begin", self.func_name, device_id, _launch_counter)
         launchRes = self.launch(device_id, self.metadata.so_key, self.metadata.kernel_path, self.func_name,
                                 txda_tools.is_dump_args_profile(), txda_tools.get_dump_dir(), log_level,
                                 _launch_counter, gridX, gridY, gridZ, stream, function, *args, **kwargs)
-        logger.info(f"{self.func_name} launch card:{device_id} count:{_launch_counter} end")
+        if logger.isEnabledFor(logging.INFO):
+            logger.info("%s launch card:%s count:%s end", self.func_name, device_id, _launch_counter)
         if launchRes.res != 0:
-            logger.error(f"launch error code:{launchRes.res}")
+            logger.error("launch error code:%s", launchRes.res)
         global _last_launch_res
         _last_launch_res = launchRes
         return launchRes

@@ -12,6 +12,7 @@
 #include "magic-kernel/Conversion/TLEToMK/TLEToMK.h"
 #include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "tle/include/tle-dsa/Dialect/IR/DsaDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -34,9 +35,9 @@ class TLEToMKPass : public TLEToMKBase<TLEToMKPass> {
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<func::FuncDialect, mk::MagicKernelDialect,
-                    tts::TritonStructuredDialect, triton::TritonDialect,
-                    arith::ArithDialect, memref::MemRefDialect,
-                    tensor::TensorDialect>();
+                    mlir::dsa::DsaDialect, tts::TritonStructuredDialect,
+                    triton::TritonDialect, arith::ArithDialect,
+                    memref::MemRefDialect, tensor::TensorDialect>();
   }
 
   void runOnOperation() override {

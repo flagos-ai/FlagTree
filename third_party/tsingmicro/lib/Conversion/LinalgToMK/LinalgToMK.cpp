@@ -1426,25 +1426,76 @@ struct DivFloatOpRewrite : public OpRewritePattern<linalg::GenericOp> {
 
     auto inputTensorType =
         dyn_cast<RankedTensorType>(op.getInputs()[0].getType());
-    auto rank = inputTensorType.getRank();
     auto outputTensorType =
         dyn_cast<RankedTensorType>(op.getOutputs()[0].getType());
-    auto empty = rewriter.create<tensor::EmptyOp>(
-        loc, inputTensorType.getShape(), inputTensorType.getElementType());
 
-    Value recip = rewriter
-                      .create<linalg::ReciprocalOp>(
-                          loc, inputTensorType, ValueRange{op.getInputs()[1]},
-                          ValueRange{empty})
-                      ->getResult(0);
+    // Regular (tensor) path: out = lhs / rhs  ->  recip(rhs) * lhs.
+    if (inputTensorType && outputTensorType) {
+      auto rank = inputTensorType.getRank();
+      auto empty = rewriter.create<tensor::EmptyOp>(
+          loc, inputTensorType.getShape(), inputTensorType.getElementType());
 
-    SmallVector<AffineMap, 3> binaryIndexingMaps(
-        3, rewriter.getMultiDimIdentityMap(rank));
-    SmallVector<utils::IteratorType, 6> iteratorTypes(
-        rank, utils::IteratorType::parallel);
-    rewriter.replaceOpWithNewOp<linalg::GenericOp>(
-        op, outputTensorType, ValueRange{op.getInputs()[0], recip},
-        ValueRange{empty}, binaryIndexingMaps, iteratorTypes,
+      Value recip = rewriter
+                        .create<linalg::ReciprocalOp>(
+                            loc, inputTensorType, ValueRange{op.getInputs()[1]},
+                            ValueRange{empty})
+                        ->getResult(0);
+
+      SmallVector<AffineMap, 3> binaryIndexingMaps(
+          3, rewriter.getMultiDimIdentityMap(rank));
+      SmallVector<utils::IteratorType, 6> iteratorTypes(
+          rank, utils::IteratorType::parallel);
+      rewriter.replaceOpWithNewOp<linalg::GenericOp>(
+          op, outputTensorType, ValueRange{op.getInputs()[0], recip},
+          ValueRange{empty}, binaryIndexingMaps, iteratorTypes,
+          [&](OpBuilder &b, Location loc, ValueRange args) {
+            auto mulOp = b.create<arith::MulFOp>(loc, args[0], args[1]);
+            if (rndModeAttr)
+              mulOp->setAttr("rnd_mode", rndModeAttr);
+            b.create<linalg::YieldOp>(loc, mulOp.getResult());
+          });
+
+      return success();
+    }
+
+    // DSA memref path (mode 0/1): out = lhs / rhs
+    //   -> scratch = recip(rhs); out = mul(lhs, scratch).
+    // A scratch buffer keeps the result correct even when out aliases an
+    // input. It is allocated here (this pass runs before
+    // spmd-allocate-shared-memory) so it receives an allocation.offset attr.
+    auto lhsTy = dyn_cast<MemRefType>(op.getInputs()[0].getType());
+    auto rhsTy = dyn_cast<MemRefType>(op.getInputs()[1].getType());
+    auto outTy = dyn_cast<MemRefType>(op.getOutputs()[0].getType());
+    if (!lhsTy || !rhsTy || !outTy)
+      return failure();
+
+    if (lhsTy.getShape() != rhsTy.getShape() ||
+        lhsTy.getShape() != outTy.getShape())
+      return op->emitRemark("dsa binary op shape mismatch between lhs/rhs/out");
+    if (lhsTy.getElementType() != rhsTy.getElementType() ||
+        lhsTy.getElementType() != outTy.getElementType())
+      return op->emitRemark(
+          "dsa binary op element type mismatch between lhs/rhs/out");
+
+    auto scratch = rewriter.create<memref::AllocOp>(loc, outTy);
+    auto scratchMemref = scratch.getResult();
+
+    rewriter.create<linalg::ReciprocalOp>(loc, TypeRange{},
+                                          ValueRange{op.getInputs()[1]},
+                                          ValueRange{scratchMemref});
+
+    auto rank = static_cast<int64_t>(lhsTy.getShape().size());
+    auto identityMap = rewriter.getMultiDimIdentityMap(rank);
+    SmallVector<AffineMap> indexingMaps = {identityMap, identityMap,
+                                           identityMap};
+    SmallVector<mlir::utils::IteratorType> iteratorTypes(
+        rank, mlir::utils::IteratorType::parallel);
+
+    rewriter.create<linalg::GenericOp>(
+        loc,
+        /*resultTensorTypes=*/TypeRange{},
+        ValueRange{op.getInputs()[0], scratchMemref},
+        ValueRange{op.getOutputs()[0]}, indexingMaps, iteratorTypes,
         [&](OpBuilder &b, Location loc, ValueRange args) {
           auto mulOp = b.create<arith::MulFOp>(loc, args[0], args[1]);
           if (rndModeAttr)
@@ -1452,6 +1503,7 @@ struct DivFloatOpRewrite : public OpRewritePattern<linalg::GenericOp> {
           b.create<linalg::YieldOp>(loc, mulOp.getResult());
         });
 
+    rewriter.eraseOp(op);
     return success();
   }
 
@@ -1476,8 +1528,14 @@ struct DivIntOpRewrite : public OpRewritePattern<linalg::GenericOp> {
 
     // FIXME: Canonicalize non-precision mode divint in linalg-to-mk, others
     // default to scf.for
+    // DSA memref-operand generics have no results and non-tensor operands;
+    // only handle tensor-form integer division here.
+    if (op.getNumResults() != 1)
+      return failure();
     auto resultTensorType =
         dyn_cast<RankedTensorType>(op.getResult(0).getType());
+    if (!resultTensorType)
+      return failure();
     SmallVector<Value> inputs(op.getInputs().begin(), op.getInputs().end());
 
     SmallVector<Value> outputs = {rewriter.create<tensor::EmptyOp>(
@@ -1840,6 +1898,11 @@ struct PowFOpRewrite : public OpRewritePattern<linalg::GenericOp> {
     if (regionOps.size() != 1 || !isa<math::PowFOp>(regionOps.front()))
       return failure();
 
+    // Skip DSA memref-operand generics (no results / non-tensor operands).
+    if (op->getResultTypes().empty() ||
+        !isa<RankedTensorType>(op->getResultTypes()[0]))
+      return failure();
+
     auto base = op.getInputs()[0];
     auto exponent = op.getInputs()[1];
     auto loc = op->getLoc();
@@ -1905,6 +1968,8 @@ struct MinMaxOpRewrite : public OpRewritePattern<linalg::GenericOp> {
     auto rhs = op.getInputs()[1];
 
     auto inputType = dyn_cast<RankedTensorType>(lhs.getType());
+    if (!inputType)
+      return failure();
     auto rank = inputType.getRank();
 
     auto inputTypeEmpty = rewriter.create<tensor::EmptyOp>(
@@ -2381,6 +2446,11 @@ struct CastElementwiseOpIOToFloatPattern
     auto inputs = op.getInputs();
     // NOTE: Output not always exist
     auto outputs = op.getOutputs();
+
+    // Skip DSA memref-operand generics: this pattern is tensor-only and uses
+    // hard casts (would assert on memref operand types).
+    if (outputs.empty() || !isa<RankedTensorType>(outputs[0].getType()))
+      return failure();
 
     if (SIToFPOpBuildFnMap.contains(OpName) &&
         !preservesIntegerPrecision(
@@ -4007,6 +4077,12 @@ public:
     if (!isa<arith::RemFOp>(bodyOp))
       return failure();
 
+    // Skip DSA memref-operand generics: buildLinalgElementwise hard-casts
+    // operands to RankedTensorType.
+    if (op.getInputs().empty() ||
+        !isa<RankedTensorType>(op.getInputs()[0].getType()))
+      return failure();
+
     return rewriteRemFOp(op, rewriter);
   }
 };
@@ -4118,6 +4194,38 @@ struct UIToFPViaI32Rewrite : public OpRewritePattern<linalg::GenericOp> {
         });
 
     rewriter.replaceOp(op, sitofpGeneric->getResult(0));
+    return success();
+  }
+};
+
+// Fallback: convert linalg.generic{arith.bitcast} (same bitwidth) into
+// mk.bitcast so bufferization aliases the buffer instead of emitting an
+// scf.for. The primary path already lowers same-bitwidth tt.bitcast →
+// mk.bitcast in TritonArithToLinalg (BitcastConverter in
+// ConversionPatterns.h); this pattern only catches residual generics that
+// still enter LinalgToMK (e.g. hand-written core IR or arith.bitcast that
+// slipped through ElementwiseToLinalg).
+struct BitcastGenericToMKBitcast : public OpRewritePattern<linalg::GenericOp> {
+  using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::GenericOp op,
+                                PatternRewriter &rewriter) const override {
+    auto regionOps = triton::getRegionOps<linalg::GenericOp>(op);
+    if (regionOps.size() != 1 || !isa<arith::BitcastOp>(regionOps.front()))
+      return failure();
+    if (op.getNumDpsInputs() != 1 || op.getNumDpsInits() != 1)
+      return failure();
+
+    Value src = op.getInputs().front();
+    auto srcTy = dyn_cast<RankedTensorType>(src.getType());
+    auto dstTy = dyn_cast<RankedTensorType>(op.getResultTypes().front());
+    if (!srcTy || !dstTy)
+      return failure();
+    if (srcTy.getElementTypeBitWidth() != dstTy.getElementTypeBitWidth() ||
+        srcTy.getNumElements() != dstTy.getNumElements())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<mk::BitcastOp>(op, dstTy, src);
     return success();
   }
 };
@@ -4508,7 +4616,8 @@ void mlir::triton::populateLinalgToMKTypeConversionPatterns(
       patterns.getContext(), precisionMode /* precisionMode */);
   patterns.add<CannonicalizeRedudantTypeConversion>(patterns.getContext());
   patterns.add<I1ExtSIOpRewrite, I1ExtUIOpRewrite, I1ToF32Rewrite,
-               FP32ToI1Rewrite, UIToFPViaI32Rewrite>(patterns.getContext());
+               FP32ToI1Rewrite, UIToFPViaI32Rewrite, BitcastGenericToMKBitcast>(
+      patterns.getContext());
   // TODO: if need precision mode
   patterns.add<CastArgMinMaxOpIOToFloatPattern<mk::ArgMaxOp>,
                CastArgMinMaxOpIOToFloatPattern<mk::ArgMinOp>>(
