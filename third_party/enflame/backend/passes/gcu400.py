@@ -16,9 +16,10 @@ __all__ = [
     'add_gcu_warp_specialization',
     'add_triton_gcu_allocate_warp_groups',
     'add_triton_wgdot_to_gcu',
-    'add_tritongpu_remove_layout_conversions',
+    'add_triton_gcu_remove_layout_conversions',
     'add_triton_gcu_data_layout_optimize',
     'add_gcu_combine_ops',
+    'add_triton_gcu_optimize_dot_operands',
     'add_gcu_triton_fusion',
     'add_flatten_triton_func',
     'add_annotate_dot_acc_reuse',
@@ -135,9 +136,9 @@ def add_triton_wgdot_to_gcu(pipeline):
     pipeline.add_pass('triton-wgdot-to-gcu')
 
 
-def add_tritongpu_remove_layout_conversions(pipeline):
-    """Remove unnecessary layout conversions in TritonGPU."""
-    pipeline.add_pass('tritongpu-remove-layout-conversions')
+def add_triton_gcu_remove_layout_conversions(pipeline):
+    """Remove unnecessary layout conversions in TritonGPU (GCU)."""
+    pipeline.add_pass('triton-gcu-remove-layout-conversions')
 
 
 def add_triton_gcu_data_layout_optimize(pipeline):
@@ -148,6 +149,11 @@ def add_triton_gcu_data_layout_optimize(pipeline):
 def add_gcu_combine_ops(pipeline):
     """Combine adjacent GCU operations."""
     pipeline.add_pass('gcu-combine-ops')
+
+
+def add_triton_gcu_optimize_dot_operands(pipeline):
+    """Fuse transpose on dot's right-hand operand into dot encoding."""
+    pipeline.add_pass('triton-gcu-optimize-dot-operands')
 
 
 def add_gcu_triton_fusion(pipeline, arch: str):

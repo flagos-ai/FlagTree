@@ -58,6 +58,8 @@ struct TritonGCULayoutOptimizePass
 void TritonGCULayoutOptimizePass::reWriteGcuStoreLayout(
     triton::gcu::StoreOp store) {
   auto src = store.getValue().getDefiningOp();
+  if (!src)
+    return;
   if (auto convetLayout = dyn_cast<triton::gpu::ConvertLayoutOp>(src)) {
     auto users = src->getUsers();
     auto userNumber = std::distance(users.begin(), users.end());

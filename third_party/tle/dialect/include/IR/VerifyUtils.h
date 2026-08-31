@@ -21,7 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-//===- VerfiyUtils.h - Verfiy utils for TLE dialect -----------------------===//
+//===- VerifyUtils.h - Verify utils for TLE dialect -----------------------===//
 
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
@@ -33,6 +33,8 @@
 #include "llvm/ADT/SmallSet.h"
 #include <cctype>
 #include <limits>
+#include <optional>
+#include <string>
 
 namespace mlir::triton::tle {
 
@@ -43,5 +45,14 @@ llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result);
 namespace DistributedBarrier {
 llvm::LogicalResult verifyFlagCxSpace(mlir::Operation *op, mlir::Value src);
 }
+
+namespace Signal {
+/// Shared constraint checks for the signal op family.
+/// Returns nullopt when the (kind, operand) combination is valid, otherwise
+/// an error description (used both by MLIR verifiers and the Python binding).
+std::optional<std::string> verifySignalOp(SignalOpKind kind, mlir::Value value);
+std::optional<std::string> verifySignalWaitOp(SignalWaitKind kind,
+                                              mlir::Value target);
+} // namespace Signal
 
 } // namespace mlir::triton::tle

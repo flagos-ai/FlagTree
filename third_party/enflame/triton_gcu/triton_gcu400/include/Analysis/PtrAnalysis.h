@@ -48,6 +48,10 @@ struct PtrInfo {
   Value base;
   llvm::SmallVector<Value, 4> shape;
   llvm::SmallVector<Value, 4> strides;
+  // For loads: per-dim memory offsets (kept at zero; the mask start is folded
+  // into the base). For stores: per-dim within-tile mask start (e.g. half for
+  // a `>=`-style mask); ConfigGcuStore combines it with each warp's partition
+  // to compute the per-warp source slice offset and destination offset.
   llvm::SmallVector<Value, 4> offsets;
   llvm::DenseSet<int32_t> broadcastDims;
 };
@@ -87,7 +91,8 @@ struct PtrState {
   // set state for srcState
   void setState(OpBuilder &builder, Location loc, const PtrState &srcState);
 
-  PtrInfo getPtrInfo(OpBuilder &builder, Location loc, const MaskState &mstate);
+  PtrInfo getPtrInfo(OpBuilder &builder, Location loc, const MaskState &mstate,
+                     bool exposeMaskStartOffset);
 };
 
 class PtrAnalysis {

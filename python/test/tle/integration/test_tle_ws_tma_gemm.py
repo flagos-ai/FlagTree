@@ -242,6 +242,17 @@ def ws_tma_multi_slot_gemm(A, B, C, launch_num_warps, block_k, num_slots):
 class TestTLEWarpSpecializeTmaGemm:
 
     @pytest.mark.parametrize("launch_num_warps", [4])
+    @pytest.mark.require_tle(
+        "gpu.alloc",
+        "gpu.alloc_barriers",
+        "gpu.barrier_arrive",
+        "gpu.barrier_wait",
+        "gpu.buffered_tensor.slot",
+        "gpu.copy",
+        "gpu.warp_specialize",
+        "gpu.wgmma",
+        "gpu.wgmma_wait",
+    )
     def test_multi_slot_producer_consumer_wgmma(self, launch_num_warps):
         torch.manual_seed(2026 + launch_num_warps)
         block_m, block_n, block_k = 64, 16, 16

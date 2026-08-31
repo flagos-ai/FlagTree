@@ -1354,16 +1354,35 @@ LogicalResult MUSAWmmaEncodingAttr::verify(
     return emitError() << "warpsPerCTA rank must be <= 3";
   if (instrShape.size() != 3)
     return emitError() << "instrShape must have rank 3";
-  if (versionMajor == 0)
-    return emitError() << "MUSA WMMA versionMajor must be non-zero";
+  if (versionMajor == 2) {
+    if (instrShape[0] == 0 || (instrShape[0] % 16) != 0)
+      return emitError()
+             << "QY2 WMMA instrShape[M] must be a non-zero multiple of 16";
+    if (instrShape[1] == 0 || (instrShape[1] % 16) != 0)
+      return emitError()
+             << "QY2 WMMA instrShape[N] must be a non-zero multiple of 16";
+    if (instrShape[2] == 0 || (instrShape[2] % 16) != 0)
+      return emitError()
+             << "QY2 WMMA instrShape[K] must be a non-zero multiple of 16";
+    (void)cgaLayout;
+    return success();
+  }
+  if (versionMajor != 3)
+    return emitError() << "unsupported MUSA WMMA versionMajor: "
+                       << versionMajor;
+  if (versionMinor != 1)
+    return emitError() << "unsupported MUSA WMMA versionMinor: "
+                       << versionMinor;
+  StringRef prefix = "WMMA";
   if (instrShape[0] == 0 || (instrShape[0] % 8) != 0)
-    return emitError() << "WMMA instrShape[M] must be a non-zero multiple of 8";
+    return emitError() << prefix
+                       << " instrShape[M] must be a non-zero multiple of 8";
   if (instrShape[1] == 0 || (instrShape[1] % 8) != 0)
-    return emitError() << "WMMA instrShape[N] must be a non-zero multiple of 8";
+    return emitError() << prefix
+                       << " instrShape[N] must be a non-zero multiple of 8";
   if (instrShape[2] == 0 || ((instrShape[2] % 8) != 0 && instrShape[2] != 4))
     return emitError()
-           << "WMMA instrShape[K] must be 4 or a non-zero multiple of 8";
-  (void)versionMinor;
+           << prefix << " instrShape[K] must be 4 or a non-zero multiple of 8";
   (void)cgaLayout;
   return success();
 }
@@ -1440,13 +1459,15 @@ LogicalResult MUSASqmmaEncodingAttr::verify(
     return emitError() << "unsupported MUSA SQMMA versionMajor: "
                        << versionMajor;
   }
+  if (versionMinor != 1) {
+    return emitError() << "unsupported MUSA SQMMA versionMinor: "
+                       << versionMinor;
+  }
   if (warpsPerCTA.size() < 2)
     return emitError() << "SQMMA expects warpsPerCTA rank >= 2";
   if (warpsPerCTA[0] % 4 != 0)
     return emitError() << "SQMMA expects warpsPerCTA[0] to be a multiple of 4";
-  // Keep instrShape in logical (M, N, K). PH1 still executes with 4-warp
-  // squads, but the public encoding should not expose the historical M/4
-  // compression used by older lowering paths.
+
   if (instrShape[0] == 0 || (instrShape[0] % 8) != 0)
     return emitError()
            << "SQMMA instrShape[M] must be a non-zero multiple of 8";
@@ -1455,7 +1476,6 @@ LogicalResult MUSASqmmaEncodingAttr::verify(
       return emitError()
              << "SQMMA instrShape[N/K] must be non-zero multiples of 8";
   }
-  (void)versionMinor;
   (void)cgaLayout;
   return success();
 }
@@ -2550,9 +2570,17 @@ AMDWmmaEncodingAttr::getRepOrderForOperand(int opIdx) const {
 // MUSA WMMA / SQMMA encoding
 //===----------------------------------------------------------------------===//
 
-bool MUSAWmmaEncodingAttr::isPH1() const { return getVersionMajor() == 3; }
+bool MUSAWmmaEncodingAttr::isQY2() const {
+  return getVersionMajor() == 2 && getVersionMinor() == 2;
+}
 
-bool MUSASqmmaEncodingAttr::isPH1() const { return getVersionMajor() == 3; }
+bool MUSAWmmaEncodingAttr::isPH1() const {
+  return getVersionMajor() == 3 && getVersionMinor() == 1;
+}
+
+bool MUSASqmmaEncodingAttr::isPH1() const {
+  return getVersionMajor() == 3 && getVersionMinor() == 1;
+}
 
 SmallVector<unsigned> MUSAWmmaEncodingAttr::getRepOrder() const {
   return getMatrixOrder(getRank(), /*rowMajor*/ true);
@@ -2596,9 +2624,7 @@ MUSASqmmaEncodingAttr::getElemsPerThread(ArrayRef<int64_t> shape) const {
     elemsPerThread[0] = std::max<int64_t>(1, shapePerCTA[0]);
   }
 
-  // PH1 SQMMA C/D matrix layout: each thread owns a logical (M/16)x(N/8)
-  // fragment per repetition. The 4-warp squad decomposition stays in the warp
-  // basis, not in the public instrShape contract.
+  assert(isPH1() && "unsupported MUSA SQMMA encoding version");
   elemsPerThread[rank - 2] = (instrMNK[0] / 16) * repM;
   elemsPerThread[rank - 1] = (instrMNK[1] / 8) * repN;
   return elemsPerThread;
@@ -2923,11 +2949,17 @@ LogicalResult DotOperandEncodingAttr::verify(
   }
 
   if (auto parentAttr = mlir::dyn_cast<MUSASqmmaEncodingAttr>(parent)) {
+#ifdef __TLE__
+    return emitError()
+           << "MUSA PH1 SQMMA register dot operand encoding is unsupported; "
+              "SQMMA operands must come from shared memory";
+#else
     if (kWidth != 0)
       return emitError() << "ttg.dot_op kWidth parameter is not supported "
                             "for MUSA SQMMA parent";
     (void)parentAttr;
     return success();
+#endif // __TLE__
   }
 
   if (auto parentAttr = mlir::dyn_cast<AMDMfmaEncodingAttr>(parent)) {

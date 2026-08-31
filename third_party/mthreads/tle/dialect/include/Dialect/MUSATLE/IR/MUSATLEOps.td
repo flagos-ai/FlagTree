@@ -88,6 +88,24 @@ def MUSATLE_InsertTileOp
   let hasVerifier = 1;
 }
 
+def MUSATLE_SetLayoutOp : MUSATLE_Op<"set_layout", [
+    Pure,
+    SameOperandsAndResultShape,
+    SameOperandsAndResultElementType
+]> {
+  let summary = "Attach a requested distributed encoding to a tensor value";
+  let description = [{
+    Carries a user-requested TritonGPU distributed encoding through the
+    mthreads TLE frontend. The op is lowered during Triton-to-TritonGPU
+    conversion after encoding propagation has selected legal layouts for
+    dependent values.
+  }];
+  let arguments = (ins TT_Tensor:$src, AnyAttr:$target_encoding);
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+  let hasVerifier = 1;
+}
+
 def MUSATLE_ExclusiveCumsumOp
     : MUSATLE_Op<"exclusive_cumsum",
                  [Pure, SameOperandsAndResultEncoding]> {

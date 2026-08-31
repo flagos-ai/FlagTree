@@ -33,7 +33,7 @@
 #include <cctype>
 #include <limits>
 
-#include "tle/dialect/include/IR/VerfiyUtils.h"
+#include "tle/dialect/include/IR/VerifyUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
@@ -124,6 +124,18 @@ LogicalResult FlagCxBarrierOp::verify() {
                               "System(0), Device(1), Block(2), Thread(3)");
   }
 
+  return success();
+}
+
+LogicalResult FlagCxSignalOp::verify() {
+  if (auto err = Signal::verifySignalOp(getSignalOp(), getValue()))
+    return emitOpError() << *err;
+  return success();
+}
+
+LogicalResult FlagCxSignalWaitOp::verify() {
+  if (auto err = Signal::verifySignalWaitOp(getWaitKind(), getTarget()))
+    return emitOpError() << *err;
   return success();
 }
 } // namespace mlir::triton::tle

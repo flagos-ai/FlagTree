@@ -43,6 +43,7 @@ def simple_insert_kernel(x_ptr, y_ptr, stride_xb, stride_xm, stride_xn, stride_y
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.require_tle("insert_tile")
 def test_simple_insert_kernel_inserts_tiles_correctly():
     B = 2  # 2 layers (Z dimension)
     M, N = 32, 32  # 32x32 size per layer

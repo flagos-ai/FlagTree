@@ -785,6 +785,7 @@ def _remote_dot_prefetch_kernel(
 
 class TestTLEDistributed:
 
+    @pytest.mark.require_tle("distributed_barrier")
     def test_distributed_barrier_copy(self):
         block = 128
         numel = block
@@ -794,6 +795,7 @@ class TestTLEDistributed:
         _distributed_barrier_copy_kernel[(1, )](x, out, numel, BLOCK=block)
         torch.testing.assert_close(out, x, atol=1e-6, rtol=1e-6)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr", "remote")
     def test_remote_roundtrip(self):
         block = 128
         numel = block
@@ -803,6 +805,7 @@ class TestTLEDistributed:
         _remote_roundtrip_kernel[(1, )](x, out, numel, BLOCK=block)
         torch.testing.assert_close(out, x, atol=1e-6, rtol=1e-6)
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote")
     def test_remote_read_peer_smem_same_cluster(self):
         block = 64
         grid = 2
@@ -835,6 +838,7 @@ class TestTLEDistributed:
         expected = torch.cat(expected_chunks, dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_mixed_local_remote_same_buffer(self):
         block = 64
         grid = 2
@@ -874,6 +878,7 @@ class TestTLEDistributed:
         expected = torch.cat(expected_chunks, dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote")
     def test_remote_read_peer_smem_2d_runtime_shard_id_same_cluster(self):
         block_m = 64
         block_k = 16
@@ -918,6 +923,7 @@ class TestTLEDistributed:
         expected = torch.cat(expected_chunks, dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote")
     def test_remote_const_shard_load_lowering_same_cluster(self):
         block = 128
         grid = 2
@@ -957,6 +963,7 @@ class TestTLEDistributed:
         expected = torch.cat(expected_chunks, dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote")
     def test_remote_const_shard_load_high_block_encoding_no_regression(self):
         block = 256
         out = torch.empty((2 * block, ), device="cuda", dtype=torch.float16)
@@ -984,6 +991,7 @@ class TestTLEDistributed:
         assert "ttg.convert_layout %remote_ptr : tensor<256x!tt.ptr<f16, 7>, #blocked1> -> tensor<256x!tt.ptr<f16, 7>, #blocked>" not in ttgir
         assert "ld.shared::cluster.b16" in ptx
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote")
     def test_remote_const_shard_vectorized_load_lowering_same_cluster(self):
         block_m = 32
         block_k = 8
@@ -1020,6 +1028,7 @@ class TestTLEDistributed:
         expected = torch.cat([expected_chunk, expected_chunk], dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote")
     def test_remote_pointer_input_allowed(self):
         block = 32
         grid = 1
@@ -1050,6 +1059,7 @@ class TestTLEDistributed:
         expected = torch.cat([expected_chunk, expected_chunk], dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote")
     def test_remote_pointer_scalar_input_allowed(self):
         grid = 1
         cluster_size = 2
@@ -1076,6 +1086,7 @@ class TestTLEDistributed:
         expected = torch.zeros_like(out)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote")
     def test_remote_buffer_const_shard_vectorized_load_lowering_same_cluster(self):
         block_m = 32
         block_k = 8
@@ -1114,6 +1125,7 @@ class TestTLEDistributed:
         expected = torch.cat([expected_chunk, expected_chunk], dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote")
     def test_remote_buffer_const_shard_vectorized_load_rank3_lowering_same_cluster(self):
         block_m = 32
         block_k = 8
@@ -1155,6 +1167,7 @@ class TestTLEDistributed:
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
 
     @pytest.mark.parametrize("submesh", [BLOCK_CLUSTER_SUBMESH_ROW0, BLOCK_CLUSTER_SUBMESH_COL0])
+    @pytest.mark.require_tle("distributed_barrier")
     def test_distributed_barrier_submesh_lowering(self, submesh):
         block = 32
         out = torch.empty((4 * block, ), device="cuda", dtype=torch.int32)
@@ -1174,6 +1187,7 @@ class TestTLEDistributed:
         _submesh_barrier_lowering_kernel[(1, )](out, mesh=submesh, BLOCK=block, num_ctas=1, num_warps=4)
         torch.cuda.synchronize()
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_rank0_dsmem_atomic_add_lowering_cluster8(self):
         out = torch.empty((1, ), device="cuda", dtype=torch.int32)
         compiled = _remote_rank0_dsmem_atomic_add_kernel.warmup(
@@ -1188,6 +1202,7 @@ class TestTLEDistributed:
         assert "atom.shared::cluster.cta.relaxed.add.u32" in ptx
         assert "atom.shared.shared::cluster" not in ptx
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_rank0_dsmem_atomic_add_runtime_cluster8_stable(self):
         out = torch.empty((1, ), device="cuda", dtype=torch.int32)
         for _ in range(512):
@@ -1200,6 +1215,7 @@ class TestTLEDistributed:
             torch.cuda.synchronize()
             assert int(out.item()) == 8
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_rank0_dsmem_scalar_ptr_atomic_add_lowering_cluster8(self):
         out = torch.empty((1, ), device="cuda", dtype=torch.int32)
         compiled = _remote_rank0_dsmem_scalar_ptr_atomic_add_kernel.warmup(
@@ -1214,6 +1230,7 @@ class TestTLEDistributed:
         assert "atom.shared::cluster.cta.relaxed.add.u32" in ptx
         assert "atom.shared.shared::cluster" not in ptx
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_rank0_dsmem_scalar_ptr_atomic_add_runtime_cluster8_stable(self):
         out = torch.empty((1, ), device="cuda", dtype=torch.int32)
         for _ in range(512):
@@ -1226,6 +1243,7 @@ class TestTLEDistributed:
             torch.cuda.synchronize()
             assert int(out.item()) == 8
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_rank0_dsmem_buffer_vs_ptr_remote_atomic_add_lowering_cluster8(self):
         block = 128
         out = torch.empty((2, ), device="cuda", dtype=torch.int32)
@@ -1242,6 +1260,7 @@ class TestTLEDistributed:
         assert "atom.shared::cluster.cta.relaxed.add.u32" in ptx
 
     @pytest.mark.parametrize("num_warps", [16, 32])
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_rank0_dsmem_buffer_vs_ptr_remote_atomic_add_runtime_cluster8_stable(self, num_warps):
         block = num_warps * 32
         expected = 8 * block
@@ -1270,6 +1289,7 @@ class TestTLEDistributed:
             assert int(out[0].item()) == expected
             assert int(out[1].item()) == expected
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_scan_shared_scratch_compile_regression_cluster8(self):
         block = 64
         out = torch.empty((8 * block, ), device="cuda", dtype=torch.int32)
@@ -1284,6 +1304,7 @@ class TestTLEDistributed:
         assert compiled.metadata.cluster_dims == (8, 1, 1)
         assert "\"tt.scan\"" in compiled.asm["ttgir"]
 
+    @pytest.mark.require_tle("distributed_barrier")
     def test_distributed_barrier_multiblock_counter(self):
         grid = 2
         cluster_size = 2
@@ -1316,6 +1337,7 @@ class TestTLEDistributed:
         torch.testing.assert_close(counter, expected_counter, atol=0, rtol=0)
         torch.testing.assert_close(out, expected_out, atol=0, rtol=0)
 
+    @pytest.mark.require_tle("distributed_barrier")
     def test_distributed_barrier_grid_counter(self, with_allocator):
         grid = 8
         counter = torch.zeros((1, ), device="cuda", dtype=torch.int32)
@@ -1352,6 +1374,7 @@ class TestTLEDistributed:
         torch.testing.assert_close(counter, torch.tensor([grid], device="cuda", dtype=torch.int32), atol=0, rtol=0)
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
+    @pytest.mark.require_tle("distributed_barrier")
     def test_distributed_barrier_grid_counter_repeated_launch_stable(self, with_allocator):
         # Minimal repro for previous occasional hangs:
         # pure grid barrier kernel, repeated cooperative launches.
@@ -1388,6 +1411,7 @@ class TestTLEDistributed:
             assert int(counter.item()) == grid
         assert bool(torch.all(out == grid))
 
+    @pytest.mark.require_tle("distributed_barrier")
     def test_distributed_barrier_grid_counter_runtime_zero_init_scratch(self, with_allocator):
         grid = 3
         mesh = tle.device_mesh({"block": [("block_x", grid)]})
@@ -1425,6 +1449,7 @@ class TestTLEDistributed:
         finally:
             triton.set_allocator(default_alloc_fn)
 
+    @pytest.mark.require_tle("distributed_barrier")
     def test_distributed_barrier_row_group_independence(self):
         grid = 2
         counter_row0 = torch.zeros((1, ), device="cuda", dtype=torch.int32)
@@ -1467,6 +1492,7 @@ class TestTLEDistributed:
         torch.testing.assert_close(out_row1,
                                    torch.tensor([-1, -1, row1_count, row1_count], device="cuda", dtype=torch.int32))
 
+    @pytest.mark.require_tle("distributed_barrier")
     def test_distributed_barrier_col_group_independence(self):
         grid = 2
         counter_col0 = torch.zeros((1, ), device="cuda", dtype=torch.int32)
@@ -1509,6 +1535,7 @@ class TestTLEDistributed:
         torch.testing.assert_close(out_col1,
                                    torch.tensor([-1, col1_count, -1, col1_count], device="cuda", dtype=torch.int32))
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_cluster_gemm_reuse_a_tile(self):
         clusters = 2
         cluster_size = 2
@@ -1576,6 +1603,7 @@ class TestTLEDistributed:
         torch.testing.assert_close(c[0], expected, atol=1e-2, rtol=1e-2)
         torch.testing.assert_close(c[1], expected, atol=1e-2, rtol=1e-2)
 
+    @pytest.mark.require_tle("shard_id")
     def test_shard_id_cluster_axis(self):
         grid = 3
         cluster_size = 2
@@ -1615,6 +1643,11 @@ class TestTLEDistributed:
             (128, 32, 256, 128, 512, 8, 2, 2),
         ],
     )
+    @pytest.mark.require_tle("distributed_barrier")
+    @pytest.mark.require_tle("gpu.alloc")
+    @pytest.mark.require_tle("gpu.local_ptr")
+    @pytest.mark.require_tle("remote")
+    @pytest.mark.require_tle("shard_id")
     def test_remote_dot_multi_config(self, bk, dot_k, k, m, n, num_warps, num_stages, a_slots):
         bm = 64
         bn = 64
@@ -1692,6 +1725,7 @@ class TestTLEDistributed:
         ref = torch.matmul(a, b)
         torch.testing.assert_close(c, ref, atol=1e-1, rtol=1e-1)
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_dot_no_index_repacking_local_staging(self):
         bm = 64
         bn = 64
@@ -1747,6 +1781,7 @@ class TestTLEDistributed:
         # on the remote/local shared pointer path.
         assert re.search(r"ttg\\.convert_layout .*-> tensor<.*!tt\\.ptr", ttgir) is None
 
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_dot_mapa_base_pointer_mapped_once(self):
         bm = 64
         bn = 64
@@ -1801,6 +1836,7 @@ class TestTLEDistributed:
         assert ptx.count("mapa.shared::cluster") <= 16
 
     @pytest.mark.parametrize("num_stages", [2, 3])
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_dot_prefetch_bk64_single_slot_correctness(self, num_stages):
         bm = 64
         bn = 64
@@ -1889,6 +1925,7 @@ class TestTLEDistributed:
             (96, 190, 130, 64, 8, 3, 2),
         ],
     )
+    @pytest.mark.require_tle("distributed_barrier", "gpu.alloc", "gpu.local_ptr", "remote", "shard_id")
     def test_remote_dot_masked_multi_config(self, m, n, k, bk, num_warps, num_stages, a_slots):
         bm = 64
         bn = 64

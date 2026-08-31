@@ -81,3 +81,54 @@ def Tle_FlagCxBarrierOp : Tle_Op<"flagcx_barrier"> {
 
   let hasVerifier = 1;
 }
+
+
+def Tle_FlagCxSignalOp : Tle_Op<"flagcx signal", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Atomically update a remote FlagCX signal slot";
+  let description = [{
+    Obtains a pre-allocated FlagCX network context from `comm`, then either
+    increments the selected remote signal slot by one or adds `value` to it.
+    This operation only sends a signal; it does not transfer user data or wait
+    for the remote signal to reach a value.
+  }];
+
+  let arguments = (ins
+    Tle_LocalPointerResultType:$comm,
+    I32:$peer,
+    I32:$slot_id,
+    Optional<I64>:$value,
+    Tle_SignalOpKindAttr:$signal_op,
+    Tle_FlagCXTeamKindAttr:$team_kind,
+    Tle_FlagCXCoopKindAttr:$coop_kind,
+    I32Attr:$context_idx
+  );
+
+  let hasVerifier = true;
+}
+
+def Tle_FlagCxSignalWaitOp : Tle_Op<"flagcx signal_wait"> {
+  let summary = "Wait for a remote FlagCX signal slot to become the target value";
+  let description = [{
+    Obtains a pre-allocated FlagCX network context from `comm`, then spin-waits the selected
+    signal slot to reach the target value (actual value >= target),
+    or waits the signal to reach its shadow value.
+  }];
+
+  let arguments = (ins
+    Tle_LocalPointerResultType:$comm,
+    I32:$slot_id,
+    Tle_SignalWaitKindAttr:$wait_kind,
+    Optional<I64>:$target,
+    Tle_FlagCXCoopKindAttr:$coop_kind,
+    I32Attr:$context_idx
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    `(` $wait_kind `,` $coop_kind `)` $comm `,` $slot_id (`,` $target^)?  attr-dict `:`
+    functional-type(operands, results)
+  }];
+
+  let hasVerifier = true;
+}

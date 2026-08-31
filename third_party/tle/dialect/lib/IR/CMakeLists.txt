@@ -4,7 +4,7 @@
 set(TLE_IR_SRC
   Dialect.cpp
   Ops.cpp
-  VerfiyUtils.cpp
+  VerifyUtils.cpp
 )
 
 if(FLAGCX_ENABLED)

@@ -170,37 +170,15 @@ def _load_gcu_opt_module(arch):
     if arch in _gcu_opt_module_cache:
         return _gcu_opt_module_cache[arch]
 
-    _dir = os.path.dirname(__file__)
-    import ctypes, glob as _g, importlib.util as _iu, sysconfig as _sc
-    tag = arch  # gcu300, gcu400, gcu500
-    for _core in sorted(_g.glob(os.path.join(_dir, f'libtriton_{tag}_core.so*'))):
-        ctypes.CDLL(_core, mode=ctypes.RTLD_GLOBAL)
-        break
-    try:
-        mod = __import__(f'triton_gcu.triton._triton_{tag}', fromlist=[f'_triton_{tag}'])
+    import importlib.util
+    if importlib.util.find_spec("triton.backends.enflame") is None:
+        mod = __import__(f'triton_gcu.triton._triton_{arch}', fromlist=[f'_triton_{arch}'])
         _gcu_opt_module_cache[arch] = mod
         return mod
-    except ImportError:
-        _ext_suffix = _sc.get_config_var('EXT_SUFFIX') or ''
-        _exact = os.path.join(_dir, f'_triton_{tag}{_ext_suffix}')
-        if os.path.isfile(_exact):
-            spec = _iu.spec_from_file_location(f'_triton_{tag}', _exact, submodule_search_locations=[])
-            mod = _iu.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            _gcu_opt_module_cache[arch] = mod
-            return mod
-        for _so in sorted(_g.glob(os.path.join(_dir, f'_triton_{tag}*.so'))):
-            if '_core' in os.path.basename(_so):
-                continue
-            try:
-                spec = _iu.spec_from_file_location(f'_triton_{tag}', _so, submodule_search_locations=[])
-                mod = _iu.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                _gcu_opt_module_cache[arch] = mod
-                return mod
-            except ImportError:
-                continue
-        raise
+    else:
+        mod = __import__(f'triton.backends.enflame._triton_{arch}', fromlist=[f'_triton_{arch}'])
+        _gcu_opt_module_cache[arch] = mod
+        return mod
 
 
 def triton_gcu_opt(content, *args, arch):

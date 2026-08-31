@@ -17,6 +17,7 @@
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Utility.h"
 #include "Utils/TritonVersionCompat.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Attributes.h"
@@ -102,14 +103,15 @@ public:
     auto newRetType = RankedTensorType::get(
         oldRetType.getShape(), oldRetType.getElementType(), blockedEnc);
 
-    auto convertOperand = [&](Value operand, int opIdx) -> Value {
-      // If the operand is already a tensor with DotOperandEncodingAttr,
-      // no conversion needed — it was set up by AccelerateMatmul.
+    auto convertOperand = [&](Value operand, int opIdx,
+                              bool columnMajor) -> Value {
+      // If the operand is already a tensor with DotOperandEncodingAttr
+      // and columnMajor matches, no conversion needed.
       if (auto tensorTy = dyn_cast<RankedTensorType>(operand.getType())) {
         if (isa<DotOperandEncodingAttr>(tensorTy.getEncoding()))
           return operand;
         auto dotOpEnc = DotOperandEncodingAttr::get(ctx, opIdx, blockedEnc,
-                                                    tensorTy.getElementType());
+                                                    /*kWidth=*/0, columnMajor);
         auto newTy = RankedTensorType::get(tensorTy.getShape(),
                                            tensorTy.getElementType(), dotOpEnc);
         if (tensorTy == newTy)
@@ -119,14 +121,15 @@ public:
       // SharedMemory MemDesc — emit LocalLoadOp.
       auto memDescTy = cast<MemDescType>(operand.getType());
       auto dotOpEnc = DotOperandEncodingAttr::get(ctx, opIdx, blockedEnc,
-                                                  memDescTy.getElementType());
+                                                  /*kWidth=*/0, columnMajor);
       auto loadTy = RankedTensorType::get(memDescTy.getShape(),
                                           memDescTy.getElementType(), dotOpEnc);
       return rewriter.create<triton::gpu::LocalLoadOp>(loc, loadTy, operand);
     };
 
-    Value newA = convertOperand(wgDotOp.getA(), 0);
-    Value newB = convertOperand(wgDotOp.getB(), 1);
+    bool rhsColMajor = wgDotOp->hasAttr(kRhsColumnMajor);
+    Value newA = convertOperand(wgDotOp.getA(), 0, false);
+    Value newB = convertOperand(wgDotOp.getB(), 1, rhsColMajor);
 
     // Look through ConvertLayoutOp on the accumulator to avoid
     // redundant round-trips (e.g. #blocked -> #mma -> #blocked1).
@@ -149,6 +152,8 @@ public:
     auto newDot = rewriter.create<DotOp>(loc, newRetType, newA, newB, newAcc,
                                          wgDotOp.getInputPrecision(),
                                          wgDotOp.getMaxNumImpreciseAcc());
+    if (wgDotOp->hasAttr(kRhsColumnMajor))
+      newDot->setAttr(kRhsColumnMajor, wgDotOp->getAttr(kRhsColumnMajor));
     if (!wgDotOp->getParentOfType<triton::gpu::WarpSpecializeOp>()) {
       Block *block = wgDotOp->getBlock();
       Operation *insertPoint = nullptr;

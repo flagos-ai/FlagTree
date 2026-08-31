@@ -15,6 +15,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
+#include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -23,6 +24,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <deque>
+#include <memory>
 
 namespace mlir::triton::gpu {
 
@@ -66,8 +68,25 @@ public:
   // Structure to keep track of the layout associated to a value.
   struct LayoutInfo {
     LayoutInfo(Attribute encoding) { encodings.insert(encoding); }
+#ifdef __TLE__
+    LayoutInfo(Attribute encoding, bool hard) { add(encoding, hard); }
+#endif
     LayoutInfo() {}
+    void add(Attribute encoding) { encodings.insert(encoding); }
+#ifdef __TLE__
+    void add(Attribute encoding, bool hard) {
+      encodings.insert(encoding);
+      if (hard)
+        hardEncodings.insert(encoding);
+    }
+    bool isHard(Attribute encoding) const {
+      return hardEncodings.contains(encoding);
+    }
+#endif
     llvm::SmallSetVector<Attribute, 8> encodings;
+#ifdef __TLE__
+    llvm::SmallSetVector<Attribute, 8> hardEncodings;
+#endif
   };
   LayoutPropagation(FuncOp F) : funcOp(F) {}
   // Find the anchor ops and set their layout in the data structure.
@@ -120,7 +139,9 @@ private:
 
 class LayoutRematerialization {
 public:
-  LayoutRematerialization(FuncOp F) : funcOp(F) {}
+  LayoutRematerialization(FuncOp F,
+                          ModuleAxisInfoAnalysis *axisInfoAnalysis = nullptr)
+      : funcOp(F), axisInfoAnalysis(axisInfoAnalysis) {}
 
   // Map the original value to the remat'ed one.
   void addRematValue(Value old, Attribute encoding, Value newV);
@@ -171,6 +192,7 @@ private:
   FuncOp funcOp;
   DominanceInfo domInfo;
   PostDominanceInfo postDomInfo;
+  ModuleAxisInfoAnalysis *axisInfoAnalysis;
 };
 
 void LayoutRematerialization::addRematValue(Value old, Attribute encoding,
@@ -186,13 +208,60 @@ void LayoutRematerialization::cleanup() {
     op->erase();
 }
 
+static bool isMmaDotLayoutAnchor(Operation *op) {
+  auto dotOp = dyn_cast<mlir::triton::DotOpInterface>(op);
+  if (!dotOp)
+    return false;
+  auto resultType = dyn_cast<RankedTensorType>(dotOp.getD().getType());
+  return resultType && resultType.getEncoding() &&
+         isa<MmaEncodingTrait>(resultType.getEncoding());
+}
+
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
+bool isExpensiveLoadWithAxisInfo(LoadOp loadOp,
+                                 ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  if (loadOp.getIsVolatile())
+    return true;
+  if (!isExpensiveLoadOrStore(loadOp))
+    return false;
+
+  auto ptrType = dyn_cast<RankedTensorType>(loadOp.getPtr().getType());
+  if (!ptrType)
+    return true;
+  AxisInfo *axisInfo = axisInfoAnalysis.getAxisInfo(loadOp.getPtr());
+  if (!axisInfo ||
+      axisInfo->getConstancy().size() != static_cast<size_t>(ptrType.getRank()))
+    return true;
+
+  auto mod = loadOp->getParentOfType<ModuleOp>();
+  int numWarps = triton::gpu::lookupNumWarps(loadOp);
+  int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+  int64_t expensiveThreshold = numWarps * threadsPerWarp;
+
+  int64_t uniqueElements = 1;
+  for (auto [dim, constancy] :
+       llvm::zip(ptrType.getShape(), axisInfo->getConstancy())) {
+    int64_t uniqueAlongDim =
+        llvm::divideCeil(dim, std::max<int64_t>(constancy, 1));
+    if (uniqueAlongDim >= llvm::divideCeil(expensiveThreshold, uniqueElements))
+      return true;
+    uniqueElements *= uniqueAlongDim;
+  }
+  return false;
+}
+
 bool isLayoutAnchor(Operation *op) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(op))
+    return true;
+#endif // __TLE__
   if (isa<DescriptorOpInterface>(op))
     return true;
   if (isa<LoadOp, StoreOp>(op))
     return isExpensiveLoadOrStore(op);
+  if (isMmaDotLayoutAnchor(op))
+    return true;
   if (isa<DotOp, DotScaledOp, nvidia_gpu::WarpGroupDotOp, AtomicRMWOp,
           AtomicCASOp, triton::nvidia_gpu::TMEMLoadOp>(op))
     return true;
@@ -211,11 +280,21 @@ bool isLayoutAnchor(Operation *op) {
 }
 
 void LayoutPropagation::initAnchorLayout() {
+#ifdef __TLE__
+  auto addAnchor = [&](Value v, Attribute encoding = nullptr,
+                       bool hard = false) {
+    if (auto tensorType = dyn_cast<RankedTensorType>(v.getType())) {
+      Attribute anchorEncoding = encoding ? encoding : tensorType.getEncoding();
+      layouts[v].add(anchorEncoding, hard);
+    }
+  };
+#else
   auto addAnchor = [&](Value v) {
     if (auto tensorType = dyn_cast<RankedTensorType>(v.getType())) {
       layouts.insert({v, LayoutInfo(tensorType.getEncoding())});
     }
   };
+#endif // __TLE__
 
   // Consider function args as anchors.  This makes it easier to write tests --
   // you can pass a tensor with an encoding as an arg, instead of explicitly
@@ -227,7 +306,15 @@ void LayoutPropagation::initAnchorLayout() {
   funcOp.walk([&](Operation *op) {
     if (isLayoutAnchor(op)) {
       for (auto result : op->getResults()) {
+#ifdef __TLE__
+        bool hard = isTleExplicitConvertLayoutOp(op);
+        Attribute explicitEncoding =
+            hard ? getTleExplicitResultEncoding(op, result.getResultNumber())
+                 : nullptr;
+        addAnchor(result, explicitEncoding, hard);
+#else
         addAnchor(result);
+#endif // __TLE__
       }
     }
   });
@@ -249,8 +336,17 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
       } else {
         dstEncoding = inferDstEncoding(op, encoding);
       }
+#ifdef __TLE__
+      if (dstEncoding) {
+        auto &layoutInfo = layouts[value];
+        hasChanged |= layoutInfo.encodings.insert(dstEncoding);
+        if (info.isHard(encoding))
+          hasChanged |= layoutInfo.hardEncodings.insert(dstEncoding);
+      }
+#else
       if (dstEncoding)
         hasChanged |= layouts[value].encodings.insert(dstEncoding);
+#endif // __TLE__
     }
     if (hasChanged)
       changed.push_back(value);
@@ -352,6 +448,16 @@ void LayoutPropagation::resolveConflicts() {
     LayoutInfo &info = it.second;
     if (info.encodings.size() <= 1)
       continue;
+#ifdef __TLE__
+    if (!info.hardEncodings.empty()) {
+      Attribute encoding = *info.hardEncodings.begin();
+      info.encodings.clear();
+      info.encodings.insert(encoding);
+      info.hardEncodings.clear();
+      info.hardEncodings.insert(encoding);
+      continue;
+    }
+#endif // __TLE__
     // Hacky resolve, prefer block encoding.
     // TODO: add a proper heuristic.
     Attribute encoding = *info.encodings.begin();
@@ -378,6 +484,10 @@ void LayoutPropagation::dump() {
     llvm::errs() << " \n encoding:\n";
     for (auto encoding : it.second.encodings) {
       encoding.print(llvm::errs());
+#ifdef __TLE__
+      if (it.second.hardEncodings.contains(encoding))
+        llvm::errs() << " [hard]";
+#endif // __TLE__
       llvm::errs() << "\n";
     }
     llvm::errs() << "--\n";
@@ -728,6 +838,10 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
     auto tensorType = cast<RankedTensorType>(op->getResult(0).getType());
     auto newType = tensorType.cloneWithEncoding(encoding);
     auto cvt = ConvertLayoutOp::create(rewriter, op->getLoc(), newType, src);
+#ifdef __TLE__
+    if (Attribute explicitEncoding = getTleExplicitResultEncoding(op, 0))
+      setTleExplicitResultEncoding(cvt.getOperation(), 0, explicitEncoding);
+#endif // __TLE__
     map(op->getResult(0), cvt.getResult());
     return cvt.getOperation();
   }
@@ -760,8 +874,16 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
   return nullptr;
 }
 
-bool canBeRemat(Operation *op) {
-  if (isa<LoadOp, StoreOp>(op))
+bool canBeRemat(Operation *op, ModuleAxisInfoAnalysis *axisInfoAnalysis) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(op))
+    return false;
+#endif // __TLE__
+  if (auto loadOp = dyn_cast<LoadOp>(op))
+    return axisInfoAnalysis
+               ? !isExpensiveLoadWithAxisInfo(loadOp, *axisInfoAnalysis)
+               : !isExpensiveLoadOrStore(op);
+  if (isa<StoreOp>(op))
     return !isExpensiveLoadOrStore(op);
   if (isa<AtomicRMWOp, AtomicCASOp, DotOp>(op))
     return false;
@@ -1024,7 +1146,7 @@ LogicalResult LayoutRematerialization::getRematerializableSlice(
   // Check if all the operations in the slice can be rematerialized.
   for (Value v : slice) {
     if (Operation *op = v.getDefiningOp()) {
-      if (!canBeRemat(op))
+      if (!canBeRemat(op, axisInfoAnalysis))
         return failure();
     }
   }
@@ -1121,6 +1243,10 @@ static int64_t getByteCount(Value result, int64_t minElementCount = 0,
 
 void LayoutRematerialization::backwardRematerialization(
     ConvertLayoutOp convertOp) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
+#endif // __TLE__
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
   if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
@@ -1291,6 +1417,10 @@ void LayoutRematerialization::hoistConvertDotOperand() {
 
 void LayoutRematerialization::hoistConvertDotOperand(
     ConvertLayoutOp convertOp) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
+#endif // __TLE__
   auto targetType = convertOp.getType();
   // The pass is targeted to MMA dot operands
 
@@ -1331,6 +1461,10 @@ void LayoutRematerialization::hoistConvertDotOperand(
   // We hoist over any operation that can be done without data movement between
   // threads We do views and elementwise pure ops for now
   auto noDataMovement = [](Operation *op) {
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(op))
+      return false;
+#endif // __TLE__
     return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
            isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface>(
                op) ||
@@ -1401,6 +1535,10 @@ void LayoutRematerialization::hoistConvertDotOperand(
 // of the convert.
 void LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
     ConvertLayoutOp convertOp) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
+#endif // __TLE__
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
   if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
@@ -1482,6 +1620,10 @@ void LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
 
 void LayoutRematerialization::hoistConvertIntoConditionals(
     ConvertLayoutOp convertOp) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
+#endif // __TLE__
   // Take the backward slice of tensor dependencies rooted at the conversion,
   // stopping at conditionals. This subslice is used to initialize the analysis.
   SetVector<Value> slice;
@@ -1591,10 +1733,18 @@ void LayoutRematerialization::hoistConvertIntoConditionals(
   rewriteSlice(slice, layout, convertOp, mapping);
 }
 
+bool supportsAxisInfoAnalysis(ModuleOp module) {
+  auto target = module->getAttrOfType<StringAttr>("ttg.target");
+  return target && target.getValue().starts_with("musa:");
+}
+
 bool backwardRematerialization(ModuleOp module) {
   bool changed = false;
+  std::unique_ptr<ModuleAxisInfoAnalysis> axisInfoAnalysis;
+  if (supportsAxisInfoAnalysis(module))
+    axisInfoAnalysis = std::make_unique<ModuleAxisInfoAnalysis>(module);
   module.walk([&](FuncOp funcOp) {
-    LayoutRematerialization layoutRemat(funcOp);
+    LayoutRematerialization layoutRemat(funcOp, axisInfoAnalysis.get());
     changed |= layoutRemat.backwardRematerialization();
     layoutRemat.cleanup();
   });
@@ -1611,6 +1761,8 @@ bool retargetTleSqmmaStores(ModuleOp module) {
       continue;
     auto valueConvert = store.getValue().getDefiningOp<ConvertLayoutOp>();
     if (!valueConvert)
+      continue;
+    if (isTleExplicitConvertLayoutOp(valueConvert))
       continue;
     auto targetTy = dyn_cast<RankedTensorType>(valueConvert.getSrc().getType());
     if (!targetTy || !targetTy.getEncoding())
@@ -1719,8 +1871,6 @@ public:
         changed |= retargetTleSqmmaStores(m);
         cleanupConvertOps();
       }
-#else
-      // Preserve the original non-TLE fixed-point behavior.
 #endif // __TLE__
     } while (changed);
     // 3. For remaining converts, try to hoist them above cast generating larger

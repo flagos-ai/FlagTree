@@ -32,7 +32,7 @@
 #include <cctype>
 #include <limits>
 
-#include "tle/dialect/include/IR/VerfiyUtils.h"
+#include "tle/dialect/include/IR/VerifyUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include <iostream>
@@ -114,5 +114,38 @@ llvm::LogicalResult verifyFlagCxSpace(mlir::Operation *op, mlir::Value src) {
 }
 
 } // namespace DistributedBarrier
+
+namespace Signal {
+std::optional<std::string> verifySignalOp(SignalOpKind kind,
+                                          mlir::Value value) {
+  switch (kind) {
+  case SignalOpKind::INC:
+    if (value)
+      return "value shouldn't be provided when op is 'inc'";
+    break;
+  case SignalOpKind::ADD:
+    if (!value)
+      return "value must be provided when op is 'add'";
+    break;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> verifySignalWaitOp(SignalWaitKind kind,
+                                              mlir::Value target) {
+  switch (kind) {
+  case SignalWaitKind::SIGNAL:
+  case SignalWaitKind::COUNTER:
+    if (!target)
+      return "target must be provided when wait_kind is signal or counter";
+    break;
+  case SignalWaitKind::SHADOW:
+    if (target)
+      return "target shouldn't be provided when wait_kind is shadow";
+    break;
+  }
+  return std::nullopt;
+}
+} // namespace Signal
 
 } // namespace mlir::triton::tle

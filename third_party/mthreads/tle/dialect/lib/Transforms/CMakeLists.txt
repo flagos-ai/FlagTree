@@ -1,4 +1,5 @@
 add_triton_library(MUSATLETransforms
+  FinalizeExplicitLayouts.cpp
   InsertLocalPointerBarriers.cpp
   LowerBarrierAllocations.cpp
   LowerBarrierOperations.cpp

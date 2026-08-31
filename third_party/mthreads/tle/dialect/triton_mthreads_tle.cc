@@ -1,6 +1,8 @@
 #ifdef __TLE__
 
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "TritonMUSACommon/MMAContractUtils.h"
+#include "TritonMUSACommon/MMAEncodingUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 #include "ir.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -10,8 +12,12 @@
 #include "passes.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cstdint>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -20,6 +26,7 @@
 #include <vector>
 
 namespace py = pybind11;
+namespace musa = mlir::triton::musa;
 namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
 
@@ -91,6 +98,388 @@ ttg::CGAEncodingAttr makeCgaLayout(mlir::MLIRContext *context,
                                                ctaOrder);
 }
 
+ttg::CGAEncodingAttr
+buildMthreadsCgaLayout(mlir::MLIRContext *context,
+                       llvm::ArrayRef<std::vector<int32_t>> cgaBases,
+                       unsigned rank) {
+  for (auto [index, basis] : llvm::enumerate(cgaBases)) {
+    if (basis.size() != rank)
+      throw py::value_error("mthreads TLE CGA layout basis " +
+                            std::to_string(index) + " has rank " +
+                            std::to_string(basis.size()) + ", expected " +
+                            std::to_string(rank));
+    if (llvm::any_of(basis, [](int32_t value) { return value < 0; }))
+      throw py::value_error("mthreads TLE CGA layout basis " +
+                            std::to_string(index) +
+                            " contains a negative value");
+  }
+
+  auto block = mlir::StringAttr::get(context, "block");
+  mlir::triton::LinearLayout::BasesT bases;
+  bases[block] =
+      std::vector<std::vector<int32_t>>(cgaBases.begin(), cgaBases.end());
+  auto outDims = mlir::triton::standardOutDimNames(context, rank);
+  return ttg::CGAEncodingAttr::get(
+      context,
+      mlir::triton::LinearLayout(std::move(bases), std::move(outDims)));
+}
+
+bool isPositivePowerOfTwo(unsigned value) {
+  return value != 0 && (value & (value - 1)) == 0;
+}
+
+void validateBlockedEncodingArguments(llvm::ArrayRef<unsigned> sizePerThread,
+                                      llvm::ArrayRef<unsigned> threadsPerWarp,
+                                      llvm::ArrayRef<unsigned> warpsPerCTA,
+                                      llvm::ArrayRef<unsigned> order) {
+  unsigned rank = order.size();
+  if (rank == 0)
+    throw py::value_error(
+        "mthreads TLE blocked encoding rank must be positive");
+  if (sizePerThread.size() != rank || threadsPerWarp.size() != rank ||
+      warpsPerCTA.size() != rank)
+    throw py::value_error(
+        "mthreads TLE blocked encoding fields must have the same rank");
+
+  llvm::SmallVector<bool> seen(rank, false);
+  for (unsigned value : order) {
+    if (value >= rank || seen[value])
+      throw py::value_error(
+          "mthreads TLE blocked encoding order must be a permutation of "
+          "0..rank-1");
+    seen[value] = true;
+  }
+
+  struct PowerOfTwoField {
+    llvm::StringLiteral name;
+    llvm::ArrayRef<unsigned> values;
+  };
+  const PowerOfTwoField fields[] = {
+      {"size_per_thread", sizePerThread},
+      {"threads_per_warp", threadsPerWarp},
+      {"warps_per_cta", warpsPerCTA},
+  };
+  for (const auto &field : fields) {
+    if (llvm::any_of(field.values, [](unsigned value) {
+          return !isPositivePowerOfTwo(value);
+        }))
+      throw py::value_error("mthreads TLE blocked encoding " +
+                            field.name.str() +
+                            " entries must be positive powers of two");
+  }
+
+  uint64_t totalThreads = 1;
+  for (unsigned value : threadsPerWarp)
+    totalThreads *= value;
+  if (totalThreads != 32)
+    throw py::value_error("mthreads TLE PH1 blocked encoding requires "
+                          "product(threads_per_warp) == 32");
+}
+
+mlir::Attribute buildMthreadsBlockedLayout(
+    TritonOpBuilder &self, llvm::ArrayRef<unsigned> sizePerThread,
+    llvm::ArrayRef<unsigned> threadsPerWarp,
+    llvm::ArrayRef<unsigned> warpsPerCTA, llvm::ArrayRef<unsigned> order,
+    llvm::ArrayRef<std::vector<int32_t>> cgaBases) {
+  validateBlockedEncodingArguments(sizePerThread, threadsPerWarp, warpsPerCTA,
+                                   order);
+  auto *context = self.getContext();
+  auto cgaLayout = buildMthreadsCgaLayout(context, cgaBases, order.size());
+  auto encoding = ttg::BlockedEncodingAttr::getChecked(
+      [&]() { return mlir::emitError(self.getLastLoc()); }, context,
+      sizePerThread, threadsPerWarp, warpsPerCTA, order, cgaLayout);
+  if (!encoding)
+    throw py::value_error(
+        "mthreads TLE blocked encoding failed TTGPU verification");
+  return encoding;
+}
+
+mlir::Attribute buildMthreadsSlicedLayout(TritonOpBuilder &self, unsigned dim,
+                                          mlir::Attribute parent) {
+  auto distributed = mlir::dyn_cast<ttg::DistributedEncodingTrait>(parent);
+  if (!distributed)
+    throw py::value_error(
+        "mthreads TLE sliced encoding parent must be a distributed encoding");
+  unsigned parentRank = mlir::cast<ttg::LayoutEncodingTrait>(parent).getRank();
+  if (parentRank < 2)
+    throw py::value_error(
+        "mthreads TLE sliced encoding parent rank must be at least 2");
+  if (dim >= parentRank)
+    throw py::value_error(
+        "mthreads TLE sliced encoding dim must be less than parent rank");
+
+  auto encoding = ttg::SliceEncodingAttr::getChecked(
+      [&]() { return mlir::emitError(self.getLastLoc()); }, self.getContext(),
+      dim, distributed);
+  if (!encoding)
+    throw py::value_error(
+        "mthreads TLE sliced encoding failed TTGPU verification");
+  return encoding;
+}
+
+mlir::Attribute buildMthreadsDotOperandLayout(TritonOpBuilder &self,
+                                              unsigned operandIndex,
+                                              mlir::Attribute parent,
+                                              unsigned kWidth) {
+  if (operandIndex > 1)
+    throw py::value_error("mthreads TLE dot operand index must be 0 or 1");
+  if (!mlir::isa<ttg::MUSAWmmaEncodingAttr, ttg::MUSASqmmaEncodingAttr>(parent))
+    throw py::value_error(
+        "mthreads TLE dot operand parent must be a MUSA WMMA or SQMMA "
+        "encoding");
+  if (kWidth != 0)
+    throw py::value_error("mthreads TLE MUSA dot operand requires k_width=0");
+
+  auto encoding = ttg::DotOperandEncodingAttr::getChecked(
+      [&]() { return mlir::emitError(self.getLastLoc()); }, self.getContext(),
+      operandIndex, parent, kWidth);
+  if (!encoding)
+    throw py::value_error(
+        "mthreads TLE dot operand encoding failed TTGPU verification");
+  return encoding;
+}
+
+mlir::Type cloneMthreadsTensorTypeWithEncoding(TritonOpBuilder &self,
+                                               mlir::Type type,
+                                               mlir::Attribute encoding) {
+  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(type);
+  if (!tensorType)
+    throw py::type_error(
+        "mthreads TLE can only clone a ranked tensor type with an encoding");
+  auto distributed = mlir::dyn_cast<ttg::DistributedEncodingTrait>(encoding);
+  if (!distributed)
+    throw py::type_error(
+        "mthreads TLE tensor encoding must be a distributed encoding");
+  unsigned encodingRank =
+      mlir::cast<ttg::LayoutEncodingTrait>(encoding).getRank();
+  if (static_cast<unsigned>(tensorType.getRank()) != encodingRank)
+    throw py::value_error(
+        "mthreads TLE tensor rank must match distributed encoding rank");
+  return tensorType.cloneWithEncoding(encoding);
+}
+
+void validateMthreadsSetLayoutArguments(mlir::Value value,
+                                        mlir::Attribute targetEncoding) {
+  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+  if (!tensorType)
+    throw py::type_error(
+        "mthreads TLE set_layout source must be a ranked tensor");
+
+  if (!mlir::dyn_cast<ttg::DistributedEncodingTrait>(targetEncoding))
+    throw py::type_error(
+        "mthreads TLE set_layout target_encoding must be a distributed "
+        "encoding");
+
+  auto layoutEncoding =
+      mlir::dyn_cast<ttg::LayoutEncodingTrait>(targetEncoding);
+  if (!layoutEncoding)
+    throw py::type_error(
+        "mthreads TLE set_layout distributed target_encoding must expose a "
+        "layout rank");
+
+  unsigned targetRank = layoutEncoding.getRank();
+  if (targetRank != static_cast<unsigned>(tensorType.getRank()))
+    throw py::value_error("mthreads TLE set_layout target encoding rank " +
+                          std::to_string(targetRank) +
+                          " must match source tensor rank " +
+                          std::to_string(tensorType.getRank()));
+}
+
+void validateMusaMmaLayoutArguments(
+    llvm::StringRef layoutName, llvm::ArrayRef<unsigned> version,
+    llvm::ArrayRef<unsigned> warpsPerCTA,
+    llvm::ArrayRef<std::vector<int32_t>> cgaBases,
+    llvm::ArrayRef<unsigned> instrShape) {
+  if (version.size() != 2)
+    throw py::value_error("mthreads TLE " + layoutName.str() +
+                          " version must contain major and minor");
+  const auto &ph1Traits = musa::getMusaWmmaArchTraits(musa::MusaArch::PH1);
+  if (version[0] != ph1Traits.versionMajor ||
+      version[1] != ph1Traits.versionMinor)
+    throw py::value_error("mthreads TLE " + layoutName.str() +
+                          " currently supports only MUSA PH1 version [3, 1]");
+  if (warpsPerCTA.size() != 2 && warpsPerCTA.size() != 3)
+    throw py::value_error("mthreads TLE " + layoutName.str() +
+                          " warps_per_cta rank must be 2 or 3");
+  if (llvm::any_of(warpsPerCTA,
+                   [](unsigned value) { return !isPositivePowerOfTwo(value); }))
+    throw py::value_error("mthreads TLE " + layoutName.str() +
+                          " warps_per_cta entries must be positive powers of "
+                          "two");
+  if (warpsPerCTA.size() == 3 && warpsPerCTA[2] != 1)
+    throw py::value_error("mthreads TLE " + layoutName.str() +
+                          " rank-3 warps_per_cta must end in 1");
+  if (instrShape.size() != 3)
+    throw py::value_error("mthreads TLE " + layoutName.str() +
+                          " instr_shape must contain logical (M, N, K)");
+
+  // Validate the CGA bases before constructing a LinearLayout so malformed
+  // input is reported at the Python/native boundary.
+  for (auto [index, basis] : llvm::enumerate(cgaBases)) {
+    if (basis.size() != warpsPerCTA.size())
+      throw py::value_error("mthreads TLE " + layoutName.str() +
+                            " CGA layout basis " + std::to_string(index) +
+                            " has rank " + std::to_string(basis.size()) +
+                            ", expected " + std::to_string(warpsPerCTA.size()));
+    if (llvm::any_of(basis, [](int32_t value) { return value < 0; }))
+      throw py::value_error("mthreads TLE " + layoutName.str() +
+                            " CGA layout basis " + std::to_string(index) +
+                            " contains a negative value");
+  }
+}
+
+bool isSupportedWmmaInstructionShape(llvm::ArrayRef<unsigned> instrShape) {
+  return llvm::any_of(musa::kWmmaIntrinsics, [&](const auto &intrinsic) {
+    return intrinsic.m == instrShape[0] && intrinsic.n == instrShape[1] &&
+           intrinsic.k == instrShape[2];
+  });
+}
+
+bool isSupportedSqmmaInstructionShape(llvm::ArrayRef<unsigned> instrShape) {
+  const unsigned m = instrShape[0];
+  const unsigned n = instrShape[1];
+  const unsigned k = instrShape[2];
+  const auto &sqTraits = *musa::getMusaSqmmaArchTraits(musa::MusaArch::PH1);
+  return musa::isSupportedSqmma(musa::SQMMAEltType::f16,
+                                musa::SQMMAEltType::f16,
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
+         musa::isSupportedSqmma(musa::SQMMAEltType::bf16,
+                                musa::SQMMAEltType::bf16,
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
+         musa::isSupportedSqmma(musa::SQMMAEltType::tf32,
+                                musa::SQMMAEltType::tf32,
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
+         musa::isSupportedSqmma(musa::SQMMAEltType::s8, musa::SQMMAEltType::s8,
+                                musa::SQMMAEltType::s32, m, n, k, sqTraits) ||
+         musa::isSupportedSqmma(musa::SQMMAEltType::e4m3,
+                                musa::SQMMAEltType::e4m3,
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
+         musa::isSupportedSqmma(musa::SQMMAEltType::e5m2,
+                                musa::SQMMAEltType::e5m2,
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits);
+}
+
+mlir::Attribute
+buildMusaWmmaLayout(TritonOpBuilder &self, llvm::ArrayRef<unsigned> version,
+                    llvm::ArrayRef<unsigned> warpsPerCTA,
+                    llvm::ArrayRef<std::vector<int32_t>> cgaBases,
+                    llvm::ArrayRef<unsigned> instrShape) {
+  validateMusaMmaLayoutArguments("WMMA", version, warpsPerCTA, cgaBases,
+                                 instrShape);
+  if (!isSupportedWmmaInstructionShape(instrShape))
+    throw py::value_error(
+        "mthreads TLE WMMA instr_shape is not supported by any PH1 WMMA "
+        "intrinsic");
+
+  auto *context = self.getContext();
+  auto cgaLayout =
+      buildMthreadsCgaLayout(context, cgaBases, warpsPerCTA.size());
+  auto encoding = ttg::MUSAWmmaEncodingAttr::getChecked(
+      [&]() { return mlir::emitError(self.getLastLoc()); }, context, version[0],
+      version[1], warpsPerCTA, cgaLayout, instrShape);
+  if (!encoding)
+    throw py::value_error(
+        "mthreads TLE WMMA encoding failed TTGPU verification");
+  return encoding;
+}
+
+mlir::Attribute
+buildMusaSqmmaLayout(TritonOpBuilder &self, llvm::ArrayRef<unsigned> version,
+                     llvm::ArrayRef<unsigned> warpsPerCTA,
+                     llvm::ArrayRef<std::vector<int32_t>> cgaBases,
+                     llvm::ArrayRef<unsigned> instrShape) {
+  validateMusaMmaLayoutArguments("SQMMA", version, warpsPerCTA, cgaBases,
+                                 instrShape);
+  if (warpsPerCTA[0] % 4 != 0)
+    throw py::value_error(
+        "mthreads TLE SQMMA warps_per_cta[0] must be a multiple of 4");
+  if (!isSupportedSqmmaInstructionShape(instrShape))
+    throw py::value_error(
+        "mthreads TLE SQMMA instr_shape is not supported by any PH1 SQMMA "
+        "type contract");
+
+  auto *context = self.getContext();
+  auto cgaLayout =
+      buildMthreadsCgaLayout(context, cgaBases, warpsPerCTA.size());
+  auto encoding = ttg::MUSASqmmaEncodingAttr::getChecked(
+      [&]() { return mlir::emitError(self.getLastLoc()); }, context, version[0],
+      version[1], warpsPerCTA, cgaLayout, instrShape);
+  if (!encoding)
+    throw py::value_error(
+        "mthreads TLE SQMMA encoding failed TTGPU verification");
+  return encoding;
+}
+
+mlir::ModuleOp findParentModule(TritonOpBuilder &self) {
+  auto *block = self.getBuilder().getInsertionBlock();
+  if (!block)
+    throw py::value_error(
+        "mthreads TLE cannot set ttg layout attributes without an insertion "
+        "block");
+
+  mlir::Operation *op = block->getParentOp();
+  while (op && !mlir::isa<mlir::ModuleOp>(op))
+    op = op->getParentOp();
+  auto module = mlir::dyn_cast_or_null<mlir::ModuleOp>(op);
+  if (!module)
+    throw py::value_error(
+        "mthreads TLE cannot find parent module for ttg layout attributes");
+  return module;
+}
+
+std::string printAttribute(mlir::Attribute attr) {
+  std::string storage;
+  llvm::raw_string_ostream stream(storage);
+  attr.print(stream);
+  return stream.str();
+}
+
+void ensureTtgLayoutAttrs(TritonOpBuilder &self, int numWarps,
+                          int threadsPerWarp, int numCtas) {
+  if (numWarps <= 0 || (static_cast<unsigned>(numWarps) &
+                        (static_cast<unsigned>(numWarps) - 1)) != 0)
+    throw py::value_error(
+        "mthreads TLE num_warps must be a positive power of two");
+  if (threadsPerWarp != 32)
+    throw py::value_error(
+        "mthreads TLE PH1 requires warp_size (threads per warp) to be 32");
+  if (numCtas <= 0)
+    throw py::value_error("mthreads TLE num_ctas must be positive");
+
+  auto module = findParentModule(self);
+  struct LayoutAttrSpec {
+    llvm::StringLiteral name;
+    int value;
+  };
+  const LayoutAttrSpec specs[] = {
+      {"ttg.num-warps", numWarps},
+      {"ttg.threads-per-warp", threadsPerWarp},
+      {"ttg.num-ctas", numCtas},
+  };
+
+  // Validate all existing attributes before adding any missing ones. This
+  // keeps the module unchanged when one of the requested values conflicts.
+  for (const auto &spec : specs) {
+    auto attr = module->getAttr(spec.name);
+    if (!attr)
+      continue;
+    auto integer = mlir::dyn_cast<mlir::IntegerAttr>(attr);
+    if (!integer || !integer.getType().isInteger(32) ||
+        integer.getInt() != spec.value) {
+      throw py::value_error("mthreads TLE layout attribute '" +
+                            spec.name.str() + "' mismatch: module has " +
+                            printAttribute(attr) + ", requested " +
+                            std::to_string(spec.value) + " : i32");
+    }
+  }
+
+  auto i32 = mlir::IntegerType::get(self.getContext(), 32);
+  for (const auto &spec : specs) {
+    if (!module->hasAttr(spec.name))
+      module->setAttr(spec.name, mlir::IntegerAttr::get(i32, spec.value));
+  }
+}
+
 mlir::Attribute getSharedMemorySpace(mlir::MLIRContext *context,
                                      const std::string &storage) {
   if (storage == "smem" || storage == "share_memory" ||
@@ -122,6 +511,59 @@ void init_triton_musa_tle_ir(py::module m) {
 
   auto &builderCls = *builderClsPtr;
   builderCls
+      .def("ensure_ttg_layout_attrs",
+           [](TritonOpBuilder &self, int numWarps, int threadsPerWarp,
+              int numCtas) {
+             ensureTtgLayoutAttrs(self, numWarps, threadsPerWarp, numCtas);
+           })
+      .def("get_blocked_encoding",
+           [](TritonOpBuilder &self, std::vector<unsigned> sizePerThread,
+              std::vector<unsigned> threadsPerWarp,
+              std::vector<unsigned> warpsPerCTA, std::vector<unsigned> order,
+              std::vector<std::vector<int32_t>> cgaBases) -> mlir::Attribute {
+             return buildMthreadsBlockedLayout(self, sizePerThread,
+                                               threadsPerWarp, warpsPerCTA,
+                                               order, cgaBases);
+           })
+      .def("get_sliced_encoding",
+           [](TritonOpBuilder &self, unsigned dim,
+              mlir::Attribute parent) -> mlir::Attribute {
+             return buildMthreadsSlicedLayout(self, dim, parent);
+           })
+      .def("get_dot_operand_layout",
+           [](TritonOpBuilder &self, unsigned operandIndex,
+              mlir::Attribute parent, unsigned kWidth) -> mlir::Attribute {
+             return buildMthreadsDotOperandLayout(self, operandIndex, parent,
+                                                  kWidth);
+           })
+      .def("clone_tensor_type_with_encoding",
+           [](TritonOpBuilder &self, mlir::Type type,
+              mlir::Attribute encoding) -> mlir::Type {
+             return cloneMthreadsTensorTypeWithEncoding(self, type, encoding);
+           })
+      .def("get_musa_wmma_layout",
+           [](TritonOpBuilder &self, std::vector<unsigned> version,
+              std::vector<unsigned> warpsPerCTA,
+              std::vector<std::vector<int32_t>> cgaBases,
+              std::vector<unsigned> instrShape) -> mlir::Attribute {
+             return buildMusaWmmaLayout(self, version, warpsPerCTA, cgaBases,
+                                        instrShape);
+           })
+      .def("get_musa_sqmma_layout",
+           [](TritonOpBuilder &self, std::vector<unsigned> version,
+              std::vector<unsigned> warpsPerCTA,
+              std::vector<std::vector<int32_t>> cgaBases,
+              std::vector<unsigned> instrShape) -> mlir::Attribute {
+             return buildMusaSqmmaLayout(self, version, warpsPerCTA, cgaBases,
+                                         instrShape);
+           })
+      .def("create_tle_gpu_set_layout",
+           [](TritonOpBuilder &self, mlir::Value value,
+              mlir::Attribute targetEncoding) -> mlir::Value {
+             validateMthreadsSetLayoutArguments(value, targetEncoding);
+             return self.create<mlir::triton::musa_tle::SetLayoutOp>(
+                 value.getType(), value, targetEncoding);
+           })
       .def("make_swizzled_shared_encoding_attr",
            [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
               unsigned maxPhase, std::vector<unsigned> order,
@@ -526,6 +968,8 @@ void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m) {
                      mlir::createTritonMUSAGPUTLELowerTMETransactions);
   ADD_PASS_WRAPPER_0("add_tle_lower_barrier_operations",
                      mlir::createTritonMUSAGPUTLELowerBarrierOperations);
+  ADD_PASS_WRAPPER_0("add_tle_finalize_explicit_layouts",
+                     mlir::createTritonMUSAGPUTLEFinalizeExplicitLayouts);
   ADD_PASS_WRAPPER_0("add_tle_insert_local_pointer_barriers",
                      mlir::createTritonMUSAGPUTLEInsertLocalPointerBarriers);
   ADD_PASS_WRAPPER_0("add_tle_optimize_local_pointer_loads",

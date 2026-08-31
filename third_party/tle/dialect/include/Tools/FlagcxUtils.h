@@ -21,11 +21,14 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "IR/Dialect.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include <cstdint>
+
 #include <cstdint>
 
 namespace mlir::triton::tle {
@@ -47,5 +50,16 @@ LLVM::CallOp getUnifiedBarrierFuncCall(
     mlir::Location loc, ConversionPatternRewriter &rewriter, Value comm,
     int32_t teamKind, int32_t barrierIndex, int32_t contextId, int32_t coopKind,
     int32_t order, int32_t scope, llvm::StringRef barrierType);
+
+LLVM::CallOp getSignalFuncCall(mlir::Location loc,
+                               ConversionPatternRewriter &rewriter, Value comm,
+                               Value peer, Value slotId, Value value,
+                               uint32_t contextId, FlagCXTeamKind teamKind,
+                               FlagCXCoopKind coopKind, SignalOpKind signalOp);
+
+LLVM::CallOp getDevNetWaitFuncCallByKind(
+    mlir::Location loc, ConversionPatternRewriter &rewriter, Value comm,
+    Value slot_id, SignalWaitKind wait_kind, std::optional<Value> target,
+    FlagCXCoopKind coop_kind, uint32_t contextId);
 
 } // namespace mlir::triton::tle
