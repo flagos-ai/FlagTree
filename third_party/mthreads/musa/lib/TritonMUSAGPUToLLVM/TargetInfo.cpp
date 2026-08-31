@@ -1,4 +1,5 @@
 #include "TritonMUSAGPUToLLVM/TargetInfo.h"
+#include "TritonMUSACommon/MusaArchTraits.h"
 #include "TritonMUSAGPUToLLVM/Utility.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -230,3 +231,32 @@ int TargetInfo::getAddressSpace(Attribute addressSpace) const {
 }
 
 bool TargetInfo::supportVectorizedAtomics() const { return false; }
+
+llvm::StringRef TargetInfo::getTMELoadIntrinsicName(unsigned rank) const {
+  if (rank < 1 || rank > 5)
+    return {};
+  auto arch = musa::getMusaArchFromCapability(computeCapability);
+  if (!arch)
+    return {};
+  const auto *traits = musa::getMusaTMEArchTraits(*arch);
+  if (!traits)
+    return {};
+  return traits->loadIntrinsicNames[rank - 1];
+}
+
+void TargetInfo::appendTMELoadPolicyOperands(
+    RewriterBase &rewriter, Location loc, Value cachePolicy,
+    Value innerPersistence, Value outerPersistence,
+    SmallVectorImpl<Value> &operands) const {
+  auto arch = musa::getMusaArchFromCapability(computeCapability);
+  const auto *traits = arch ? musa::getMusaTMEArchTraits(*arch) : nullptr;
+  auto layout = traits ? traits->loadOperandLayout
+                       : musa::MusaTMELoadOperandLayout::Persistence;
+  switch (layout) {
+  case musa::MusaTMELoadOperandLayout::Persistence:
+    operands.push_back(innerPersistence);
+    operands.push_back(outerPersistence);
+    operands.push_back(cachePolicy);
+    break;
+  }
+}

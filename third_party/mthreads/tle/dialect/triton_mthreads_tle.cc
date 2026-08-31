@@ -293,7 +293,9 @@ void validateMusaMmaLayoutArguments(
   if (version.size() != 2)
     throw py::value_error("mthreads TLE " + layoutName.str() +
                           " version must contain major and minor");
-  if (version[0] != musa::kMusaPH1VersionMajor || version[1] != 1)
+  const auto &ph1Traits = musa::getMusaWmmaArchTraits(musa::MusaArch::PH1);
+  if (version[0] != ph1Traits.versionMajor ||
+      version[1] != ph1Traits.versionMinor)
     throw py::value_error("mthreads TLE " + layoutName.str() +
                           " currently supports only MUSA PH1 version [3, 1]");
   if (warpsPerCTA.size() != 2 && warpsPerCTA.size() != 3)
@@ -337,23 +339,24 @@ bool isSupportedSqmmaInstructionShape(llvm::ArrayRef<unsigned> instrShape) {
   const unsigned m = instrShape[0];
   const unsigned n = instrShape[1];
   const unsigned k = instrShape[2];
+  const auto &sqTraits = *musa::getMusaSqmmaArchTraits(musa::MusaArch::PH1);
   return musa::isSupportedSqmma(musa::SQMMAEltType::f16,
                                 musa::SQMMAEltType::f16,
-                                musa::SQMMAEltType::f32, m, n, k) ||
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
          musa::isSupportedSqmma(musa::SQMMAEltType::bf16,
                                 musa::SQMMAEltType::bf16,
-                                musa::SQMMAEltType::f32, m, n, k) ||
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
          musa::isSupportedSqmma(musa::SQMMAEltType::tf32,
                                 musa::SQMMAEltType::tf32,
-                                musa::SQMMAEltType::f32, m, n, k) ||
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
          musa::isSupportedSqmma(musa::SQMMAEltType::s8, musa::SQMMAEltType::s8,
-                                musa::SQMMAEltType::s32, m, n, k) ||
+                                musa::SQMMAEltType::s32, m, n, k, sqTraits) ||
          musa::isSupportedSqmma(musa::SQMMAEltType::e4m3,
                                 musa::SQMMAEltType::e4m3,
-                                musa::SQMMAEltType::f32, m, n, k) ||
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
          musa::isSupportedSqmma(musa::SQMMAEltType::e5m2,
                                 musa::SQMMAEltType::e5m2,
-                                musa::SQMMAEltType::f32, m, n, k);
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits);
 }
 
 mlir::Attribute

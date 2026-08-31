@@ -107,6 +107,13 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 
   // We have requirements for the data layouts
   addDynamicallyLegalOp<triton::DotOp>([](triton::DotOp dotOp) -> bool {
+#ifdef __TLE__
+    auto resultType = cast<RankedTensorType>(dotOp.getType());
+    if (isa_and_nonnull<triton::gpu::MUSASqmmaEncodingAttr>(
+            resultType.getEncoding()) &&
+        getTleExplicitResultEncoding(dotOp.getOperation(), 0))
+      return false;
+#endif // __TLE__
     Attribute aEncoding =
         cast<RankedTensorType>(dotOp.getA().getType()).getEncoding();
     Attribute bEncoding =

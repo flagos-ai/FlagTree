@@ -42,7 +42,7 @@ struct UseInfo {
   ttg::CGAEncodingAttr cgaLayout;
 };
 
-static bool isTMACompatibleEncoding(Attribute enc) {
+static bool isTMECompatibleEncoding(Attribute enc) {
   if (isa_and_nonnull<ttg::SwizzledSharedEncodingAttr>(enc))
     return true;
   if (auto nvmma = dyn_cast_or_null<ttg::NVMMASharedEncodingAttr>(enc))
@@ -54,12 +54,12 @@ static Attribute findDirectLoadEncodingFromUsers(Operation *op) {
   for (Operation *user : op->getUsers()) {
     if (auto alloc = dyn_cast<ttg::LocalAllocOp>(user)) {
       auto enc = alloc.getType().getEncoding();
-      if (isTMACompatibleEncoding(enc))
+      if (isTMECompatibleEncoding(enc))
         return enc;
     } else if (auto store = dyn_cast<ttg::LocalStoreOp>(user)) {
       auto dstTy = dyn_cast<ttg::MemDescType>(store.getDst().getType());
       auto enc = dstTy ? dstTy.getEncoding() : Attribute();
-      if (isTMACompatibleEncoding(enc))
+      if (isTMECompatibleEncoding(enc))
         return enc;
     }
   }
@@ -89,7 +89,7 @@ static Attribute findDescriptorLoadEncoding(tt::DescriptorLoadOp loadOp) {
   if (!landingTy)
     return {};
   Attribute enc = landingTy->getEncoding();
-  if (isTMACompatibleEncoding(enc))
+  if (isTMECompatibleEncoding(enc))
     return enc;
   return {};
 }
@@ -346,8 +346,8 @@ static void assignMemoryLayouts(tt::FuncOp func) {
       return;
     }
 
-    bool forcedToDefault =
-        isa<tt::CallOp, tt::ReturnOp, ttng::ReinterpretTensorDescOp>(op);
+    bool forcedToDefault = isa<tt::CallOp, tt::ReturnOp>(op) ||
+                           isa<triton::musa::ReinterpretTensorDescOp>(op);
     auto *einfo = internEncoding(encodings,
                                  EncodingInfo{{}, {}, {}, {}, forcedToDefault});
 

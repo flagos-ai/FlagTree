@@ -54,6 +54,7 @@ def _compile_transaction_module(stages=1, slot=0):
             "SLOT": "constexpr",
         },
         constexprs={"STAGES": stages, "SLOT": slot},
+        attrs={(0, ): [["musa.tme_tail_divisibility", 4]]},
     )
     module = src.make_ir(
         target,
