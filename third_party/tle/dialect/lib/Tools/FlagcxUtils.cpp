@@ -41,11 +41,12 @@ static const llvm::StringMap<StringRef> runtimeNames = {
     {"getBarrierArriveFunction", "flagcxDevBarrierArrive"},
     {"getBarrierWaitFunction", "flagcxDevBarrierWait"},
     {"getBarrierSyncFunction", "flagcxDevBarrierSync"}};
-    {"signalIncFunction", "flagcxDevSignalInc"},
+{"signalIncFunction", "flagcxDevSignalInc"},
     {"signalAddFunction", "flagcxDevSignalAdd"},
     {"waitSignalFunction", "flagcxDevWaitSignal"},
     {"waitShadowFunction", "flagcxDevWaitSignalMeetShadow"},
-    {"waitCounterFunction", "flagcxDevWaitCounter"}};
+    {"waitCounterFunction", "flagcxDevWaitCounter"}
+};
 
 static inline LLVM::LLVMFuncOp createFuncInstance(const char *funcName,
                                                   ModuleOp module,
