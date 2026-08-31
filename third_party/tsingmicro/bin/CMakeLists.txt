@@ -122,4 +122,3 @@ mlir_check_all_link_libraries(tsingmicro-opt)
 #   TritonAMDGPUTestAnalysis
 #   MLIRMathTestPasses
 #   )
-
