@@ -48,6 +48,18 @@ override_dh_shlibdeps:
 	dh_shlibdeps -- --ignore-missing-info
 
 override_dh_strip:
-	# Stripping the embedded LLVM-built .so files breaks Triton's runtime,
-	# which expects symbols for JIT codegen lookups.
+	# libtriton/libproton must keep their symbol tables (Triton's JIT does
+	# symbol lookups), so exclude them from dh_strip's --strip-unneeded and
+	# instead drop only the DWARF sections: --strip-debug keeps .symtab and
+	# .dynsym while removing .debug_* (verified: import triton, the compiler
+	# and the nvidia driver load fine afterwards). This takes libtriton from
+	# 724 MB to 187 MB; lintian still counts the kept .symtab as "unstripped",
+	# which the package's lintian-overrides file documents.
 	dh_strip --no-automatic-dbgsym -X libtriton -X libproton
+	find debian/$(PKG) \( -name 'libtriton.*.so' -o -name 'libproton.*.so' \) \
+		-exec strip --strip-debug {} +
+
+override_dh_dwz:
+	# dwz would place its multifile under usr/lib/debug/.dwz/ inside the
+	# runtime package (lintian: debug-suffix-not-dbg); with the debug info
+	# stripped above there is nothing useful for it to compress anyway.
