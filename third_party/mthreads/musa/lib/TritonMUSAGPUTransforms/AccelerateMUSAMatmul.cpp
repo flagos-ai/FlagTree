@@ -1159,12 +1159,21 @@ selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
           unsigned repM = m / tileM;
           unsigned repN = n / tileN;
           unsigned volume = instM * instN * instK;
+          // On a full tie prefer a pure M-split (warpsN == 1) as long as
+          // the instruction M stays >= 32: attention-style kernels reduce the
+          // dot result along axis=1, and an M-split keeps every output row
+          // inside one squad so the reduction never crosses warps. Finer M
+          // splits (instM 16) measure slower and are never preferred.
+          bool preferMSplit =
+              warpsN == 1 && instM >= 32 && found && best.warpsPerCTA[1] != 1;
           if (!found || instCount < bestInstCount ||
               (instCount == bestInstCount &&
                (volume > bestVolume ||
                 (volume == bestVolume &&
                  (repM < bestRepM ||
-                  (repM == bestRepM && repN < bestRepN)))))) {
+                  (repM == bestRepM &&
+                   (repN < bestRepN ||
+                    (repN == bestRepN && preferMSplit)))))))) {
             found = true;
             bestInstCount = instCount;
             bestVolume = volume;
