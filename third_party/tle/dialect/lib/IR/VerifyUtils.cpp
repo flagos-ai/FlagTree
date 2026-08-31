@@ -146,8 +146,7 @@ LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
     return emitError() << "expects net_idx to be i32";
   if (!elemBytes || elemBytes.getInt() <= 0)
     return emitError() << "expects elem_bytes to be > 0";
-  if (coopKind != FlagCXCoopKind::THREAD &&
-      coopKind != FlagCXCoopKind::WARP &&
+  if (coopKind != FlagCXCoopKind::THREAD && coopKind != FlagCXCoopKind::WARP &&
       coopKind != FlagCXCoopKind::BLOCK)
     return emitError() << "expects coop_kind to be THREAD, WARP, or BLOCK";
 

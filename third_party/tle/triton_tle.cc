@@ -669,14 +669,13 @@ void init_triton_tle_ir(py::module &&m) {
               throw std::invalid_argument(
                   "coop_kind must be THREAD(0), WARP(1), or BLOCK(2)");
             tle::FlagCXCoopKindAttr coopKindAttr =
-                coopKind
-                    ? builder.getAttr<tle::FlagCXCoopKindAttr>(
-                          static_cast<tle::FlagCXCoopKind>(*coopKind))
-                    : tle::FlagCXCoopKindAttr();
+                coopKind ? builder.getAttr<tle::FlagCXCoopKindAttr>(
+                               static_cast<tle::FlagCXCoopKind>(*coopKind))
+                         : tle::FlagCXCoopKindAttr();
             return self.create<tle::RemotePointersOp>(
-                resultTy, src.value_or(Value()), comm.value_or(Value()), shardId,
-                spaceAttr, offset.value_or(Value()), netIdx.value_or(Value()),
-                coopKindAttr);
+                resultTy, src.value_or(Value()), comm.value_or(Value()),
+                shardId, spaceAttr, offset.value_or(Value()),
+                netIdx.value_or(Value()), coopKindAttr);
           },
           py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
           py::arg("space"), py::arg("offset") = py::none(),

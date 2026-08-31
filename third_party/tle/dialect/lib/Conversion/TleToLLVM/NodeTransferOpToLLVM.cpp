@@ -201,8 +201,7 @@ struct NodePutOpConversion : public ConvertOpToLLVMPattern<tle::NodePutOp> {
             adaptor.getDstMem(), adaptor.getComm(), adaptor.getPeer(),
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
             adaptor.getNetIdx(), op.getElemBytesAttr().getInt(),
-            static_cast<int32_t>(op.getCoopKind()),
-            NodeTransferKind::Put,
+            static_cast<int32_t>(op.getCoopKind()), NodeTransferKind::Put,
             getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
@@ -222,8 +221,7 @@ struct NodeGetOpConversion : public ConvertOpToLLVMPattern<tle::NodeGetOp> {
             adaptor.getDstMem(), adaptor.getComm(), adaptor.getPeer(),
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
             adaptor.getNetIdx(), op.getElemBytesAttr().getInt(),
-            static_cast<int32_t>(op.getCoopKind()),
-            NodeTransferKind::Get,
+            static_cast<int32_t>(op.getCoopKind()), NodeTransferKind::Get,
             getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
