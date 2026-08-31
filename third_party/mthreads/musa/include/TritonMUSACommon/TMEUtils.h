@@ -611,6 +611,23 @@ resolveTMESwizzleConfigFromEncoding(ttg::MemDescType localType) {
       dyn_cast<ttg::SharedEncodingTrait>(localType.getEncoding());
   if (!localEncoding)
     return failure();
+  // The swizzle pattern is a property of the ALLOCATED buffer, not of a
+  // subslice view of it. Resolving from the view shape can yield a different
+  // (self-consistent but wrong) config -- e.g. a [64,128] column subslice of a
+  // [64,256] bf16 buffer with swizzled<vec=16, maxPhase=8> resolves to SG_32B
+  // while the buffer itself (and the SQMMA hardware) uses SG_16B, so tile
+  // stores through the view scramble the data for every full-view consumer.
+  // Normalize to the physical (alloc) shape before resolving.
+  {
+    auto shape = localType.getShape();
+    auto allocShape = localType.getAllocShape().take_back(shape.size());
+    if (allocShape != shape) {
+      auto physTy = ttg::MemDescType::get(
+          allocShape, localType.getElementType(), localType.getEncoding(),
+          localType.getMemorySpace(), localType.getMutableMemory());
+      return resolveTMESwizzleConfigFromEncoding(physTy);
+    }
+  }
   auto maybeElemBytes = inferElemBytesFromMemDescType(localType);
   if (!maybeElemBytes || *maybeElemBytes <= 0)
     return failure();

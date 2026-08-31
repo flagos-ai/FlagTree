@@ -222,7 +222,19 @@ static FailureOr<int64_t> getPH1SwizzledSharedLineBytes(MemDescType memDescTy) {
   if (failed(swizzle) || swizzle->swizzleGranularity ==
                              triton::musa::TMESwizzleGranularity::SG_NONE)
     return failure();
-  return triton::musa::getSwizzleLineBytes(swizzle->swizzleLine);
+  // Align to the full swizzle window, not just the line: the address bits the
+  // swizzle XOR reads span [log2(line), log2(line) + log2(stride/granularity)),
+  // so only window alignment makes the buffer-relative swizzle equal to the
+  // absolute swizzle the hardware applies. The LinearLayout-based software
+  // lowering (LoadStoreOpToLLVM.cpp) depends on this equivalence.
+  int64_t lineBytes = triton::musa::getSwizzleLineBytes(swizzle->swizzleLine);
+  int64_t strideBytes =
+      triton::musa::getSwizzleStrideBytes(swizzle->swizzleStride);
+  int64_t granBytes =
+      triton::musa::getSwizzleGranularityBytes(swizzle->swizzleGranularity);
+  if (granBytes <= 0 || strideBytes < granBytes)
+    return lineBytes;
+  return lineBytes * (strideBytes / granBytes);
 }
 
 static void normalizePH1SwizzledSharedLocalAllocAlignment(ModuleOp mod) {
