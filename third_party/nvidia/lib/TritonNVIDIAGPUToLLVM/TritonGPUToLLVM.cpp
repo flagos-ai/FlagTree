@@ -29,6 +29,7 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/SignalOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #endif
 #include "triton/Analysis/Allocation.h"
@@ -192,6 +193,8 @@ struct ConvertTritonGPUToLLVM
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateTMAStoreCommitGroupOpToLLVMPatterns(
           typeConverter, patterns, benefit);
+      mlir::triton::tle::populateSignalOpToLLVMPatterns(typeConverter, patterns,
+                                                        benefit);
       // FlagCX ops are lowered to LLVM.
 #ifdef FLAGCX_ENABLED
       mlir::triton::tle::populateFlagCxOpToLLVMPatterns(typeConverter, patterns,

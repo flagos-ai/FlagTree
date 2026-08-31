@@ -28,4 +28,43 @@ include "mlir/IR/EnumAttr.td"
 include "mlir/IR/AttrTypeBase.td"
 include "tle/dialect/include/IR/TleDialect.td"
 
+def Tle_SignalWaitKindAttr : I32EnumAttr<
+  "SignalWaitKind", "",
+  [
+    I32EnumAttrCase<"SIGNAL", 0, "signal">,
+    I32EnumAttrCase<"SHADOW", 1, "shadow">,
+    I32EnumAttrCase<"COUNTER", 2, "counter">,
+  ]> {
+  let cppNamespace = "::mlir::triton::tle";
+}
+
+def Tle_FlagCXCoopKindAttr : I32EnumAttr<
+  "FlagCXCoopKind", "",
+  [
+    I32EnumAttrCase<"THREAD", 0, "thread">,
+    I32EnumAttrCase<"WARP", 1, "warp">,
+    I32EnumAttrCase<"BLOCK", 2, "block">,
+  ]> {
+  let cppNamespace = "::mlir::triton::tle";
+}
+
+def Tle_SignalOpKindAttr : I32EnumAttr<
+  "SignalOpKind", "",
+  [
+    I32EnumAttrCase<"INC", 0, "inc">,
+    I32EnumAttrCase<"ADD", 1, "add">,
+  ]> {
+  let cppNamespace = "::mlir::triton::tle";
+}
+
+def Tle_FlagCXTeamKindAttr : I32EnumAttr<
+  "FlagCXTeamKind", "",
+  [
+    I32EnumAttrCase<"INTRA", 0, "intra">,
+    I32EnumAttrCase<"INTER", 1, "inter">,
+    I32EnumAttrCase<"WORLD", 2, "world">,
+  ]> {
+  let cppNamespace = "::mlir::triton::tle";
+}
+
 #endif
