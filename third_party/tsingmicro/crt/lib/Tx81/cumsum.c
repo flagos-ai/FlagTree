@@ -13,8 +13,8 @@
 void __Memcpy(uint64_t *src, uint64_t *dst, uint32_t elem_count, uint16_t fmt);
 void __Memset(char *dst, int value, int *dst_shape, int *dst_stride, int rank,
               uint16_t fmt);
-void __AddVV(uint64_t *src0, uint64_t *src1, uint64_t *dst,
-             uint32_t elem_count, RND_MODE round, uint16_t fmt);
+void __AddVV(uint64_t *src0, uint64_t *src1, uint64_t *dst, uint32_t elem_count,
+             RND_MODE round, uint16_t fmt);
 
 void __GatherScatter(uint64_t *src, uint64_t *dst, uint32_t bytes,
                      uint32_t src_strideN, uint32_t src_strideH,
@@ -62,9 +62,9 @@ static void copy_strided_rows(char *dst, char *src, uint32_t rows,
   assert(copy_bytes <= UINT32_MAX);
   assert(src_stride <= UINT32_MAX);
   assert(dst_stride <= UINT32_MAX);
-  __GatherScatter((uint64_t *)src, (uint64_t *)dst, (uint32_t)copy_bytes,
-                  1, 1, (uint32_t)src_stride, 1, 1, rows,
-                  1, 1, (uint32_t)dst_stride, 1, 1, rows);
+  __GatherScatter((uint64_t *)src, (uint64_t *)dst, (uint32_t)copy_bytes, 1, 1,
+                  (uint32_t)src_stride, 1, 1, rows, 1, 1, (uint32_t)dst_stride,
+                  1, 1, rows);
 }
 
 static int64_t min_i64(int64_t lhs, int64_t rhs) {
@@ -114,16 +114,15 @@ static void cumsum_row(char *src_row, char *exclusive_row, char *total,
 }
 
 static void build_shifted_tile(char *shifted, char *cur, uint32_t rows,
-                               uint32_t n, uint32_t step,
-                               uint32_t prev_step, uint32_t bytes,
-                               uint16_t fmt) {
+                               uint32_t n, uint32_t step, uint32_t prev_step,
+                               uint32_t bytes, uint16_t fmt) {
   uint32_t zero_count = step - prev_step;
   for (uint32_t row = 0; row < rows; ++row) {
     uint64_t row_base = (uint64_t)row * n;
     zero_elements(shifted + (row_base + prev_step) * bytes, zero_count, fmt);
   }
-  copy_strided_rows(shifted + (uint64_t)step * bytes, cur, rows, n - step,
-                    n, n, bytes);
+  copy_strided_rows(shifted + (uint64_t)step * bytes, cur, rows, n - step, n, n,
+                    bytes);
 }
 
 static void cumsum_rows_batched(char *src, char *exclusive, char *total,

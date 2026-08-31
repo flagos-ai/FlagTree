@@ -27,9 +27,7 @@ def _is_txda():
     return getattr(target, "backend", None) == "txda"
 
 
-pytestmark = pytest.mark.skipif(
-    not _is_txda(), reason="TLE DSA tests require TsingMicro (txda) backend"
-)
+pytestmark = pytest.mark.skipif(not _is_txda(), reason="TLE DSA tests require TsingMicro (txda) backend")
 
 
 @triton.jit
@@ -113,7 +111,7 @@ def elementwise_add(A, B, C, XBLOCK=32, YBLOCK=64):
     """
     assert A.shape == B.shape == C.shape, "Input and output tensor shapes must match"
     xnumel, ynumel = A.shape
-    grid = (triton.cdiv(xnumel, XBLOCK),)
+    grid = (triton.cdiv(xnumel, XBLOCK), )
 
     return elementwise_add_kernel[grid](A, B, C, xnumel, ynumel, *A.stride(), *B.stride(), *C.stride(), XBLOCK, YBLOCK)
 

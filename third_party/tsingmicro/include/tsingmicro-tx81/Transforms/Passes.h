@@ -12,8 +12,8 @@
 #ifndef TX81_TRANSFORMS_PASSES_H
 #define TX81_TRANSFORMS_PASSES_H
 
-#include "mlir/Pass/Pass.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/Pass.h"
 
 namespace mlir {
 namespace triton {

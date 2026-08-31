@@ -82,9 +82,7 @@ class buffered_tensor_type(base_type):
             self.shape = tuple(int(_unwrap_if_constexpr(x)) for x in shape)
         self.element_ty = _unwrap_if_constexpr(element_ty)
         self.storage = storage if storage is not None else local
-        self.memory_space = (
-            str(_unwrap_if_constexpr(memory_space)) if memory_space else self.storage.memory_space
-        )
+        self.memory_space = (str(_unwrap_if_constexpr(memory_space)) if memory_space else self.storage.memory_space)
 
     @property
     def scalar(self) -> dtype:

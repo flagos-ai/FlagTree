@@ -45,8 +45,7 @@ public:
     RewritePatternSet patterns(&getContext());
     populateTLEToMKConversionPatterns(patterns);
 
-    if (failed(
-            applyPatternsGreedily(moduleOp, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
       signalPassFailure();
     }
   }

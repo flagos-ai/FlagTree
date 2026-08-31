@@ -930,15 +930,17 @@ struct BitcastConverter : public OpConversionPattern<triton::BitcastOp> {
     // Emit mk.bitcast (buffer alias) instead of arith.bitcast, which would
     // otherwise lower through linalg.generic → scf.for load/bitcast/store.
     if (auto inRTT = dyn_cast<RankedTensorType>(inputType)) {
-        if (auto outRTT = dyn_cast<RankedTensorType>(resultType)) {
-            if (inRTT.getElementTypeBitWidth() == outRTT.getElementTypeBitWidth() &&
-                inRTT.getNumElements() == outRTT.getNumElements()) {
-                rewriter.replaceOpWithNewOp<mk::BitcastOp>(op, resultType, adaptor.getSrc());
-                return success();
-            }
+      if (auto outRTT = dyn_cast<RankedTensorType>(resultType)) {
+        if (inRTT.getElementTypeBitWidth() == outRTT.getElementTypeBitWidth() &&
+            inRTT.getNumElements() == outRTT.getNumElements()) {
+          rewriter.replaceOpWithNewOp<mk::BitcastOp>(op, resultType,
+                                                     adaptor.getSrc());
+          return success();
         }
+      }
     }
-    auto arithBitcast = rewriter.create<arith::BitcastOp>(op.getLoc(), op.getType(), adaptor.getSrc());
+    auto arithBitcast = rewriter.create<arith::BitcastOp>(
+        op.getLoc(), op.getType(), adaptor.getSrc());
 
     rewriter.replaceOp(op, arithBitcast.getResult());
     return success();
@@ -1489,8 +1491,9 @@ public:
   ArgMinMaxBaseConverter(MLIRContext *context) : OpConversionPattern(context) {}
   bool isArgMin;
 
-  LogicalResult matchAndRewrite(ReduceOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override final {
+  LogicalResult
+  matchAndRewrite(ReduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override final {
     if (op.getBody()->getNumArguments() != 4) {
       return failure();
     }
@@ -2042,8 +2045,8 @@ public:
   LogicalResult
   matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (op.getSrcs().size() != 2 ||
-        (op.getSymbol() != "__nv_fdiv_rz" && op.getSymbol() != "__nv_ddiv_rz")) {
+    if (op.getSrcs().size() != 2 || (op.getSymbol() != "__nv_fdiv_rz" &&
+                                     op.getSymbol() != "__nv_ddiv_rz")) {
       return failure();
     }
 
@@ -2173,10 +2176,10 @@ public:
 };
 
 static void populateExternElementwiseOpToMLIROps(RewritePatternSet &patterns) {
-  patterns
-      .add<ExternElementwiseFiniteOpConverter, ExternElementwiseFmodOpConverter,
-           ExternElementwiseDivRzOpConverter, ExternElementwiseBinaryOpConverter,
-           ExternElementwiseUnaryOpConverter>(patterns.getContext());
+  patterns.add<
+      ExternElementwiseFiniteOpConverter, ExternElementwiseFmodOpConverter,
+      ExternElementwiseDivRzOpConverter, ExternElementwiseBinaryOpConverter,
+      ExternElementwiseUnaryOpConverter>(patterns.getContext());
 }
 
 struct HistogramOpConversion : public OpConversionPattern<triton::HistogramOp> {

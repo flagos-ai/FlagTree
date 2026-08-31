@@ -7,9 +7,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "kernels"))
 from conftest import run_kernel_script, DmaResult
 
 
-
-def _create_test_script(n_elements, inject_n_elements_scale, inject_mask_mode,
-                        inject_n_iter_scale, block_size=1024, tensor_size=None):
+def _create_test_script(n_elements, inject_n_elements_scale, inject_mask_mode, inject_n_iter_scale, block_size=1024,
+                        tensor_size=None):
     """Generate a self-contained test script for dsa_vec_add_oob.
 
     OOB is triggered by:
@@ -80,6 +79,7 @@ if __name__ == "__main__":
 
 
 class TestDSAVecAddOOB:
+
     def test_normal_no_oob(self, dma_env, tmp_path):
         """Normal parameters: should not trigger OOB detection."""
         script = _create_test_script(1024, 1, 0, 1)

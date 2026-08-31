@@ -61,10 +61,8 @@ def dsa_randn(size, *, dtype=None, device=None, seed=0):
 
     g = torch.Generator()
     g.manual_seed(int(seed))
-    seed0 = torch.randint(-(1 << 63), (1 << 63) - 1, (16,),
-                         dtype=torch.int64, generator=g, device="cpu").to(device)
-    seed1 = torch.randint(-(1 << 63), (1 << 63) - 1, (16,),
-                         dtype=torch.int64, generator=g, device="cpu").to(device)
+    seed0 = torch.randint(-(1 << 63), (1 << 63) - 1, (16, ), dtype=torch.int64, generator=g, device="cpu").to(device)
+    seed1 = torch.randint(-(1 << 63), (1 << 63) - 1, (16, ), dtype=torch.int64, generator=g, device="cpu").to(device)
     # Avoid all-zero xorshift state.
     seed0[0] = seed0[0] | 1
     seed1[0] = seed1[0] | 1
@@ -74,7 +72,7 @@ def dsa_randn(size, *, dtype=None, device=None, seed=0):
 
 
 if __name__ == "__main__":
-    x = dsa_randn((4096,), dtype=torch.float32)
+    x = dsa_randn((4096, ), dtype=torch.float32)
     x_cpu = x.cpu()
     print("device", x.device)
     print("mean", float(x_cpu.mean()), "std", float(x_cpu.std()))

@@ -48,8 +48,7 @@ def memory_space(input, space, _semantic=None):
     space = tl._unwrap_if_constexpr(space)
     builder = _semantic.builder
     if builder is not None and hasattr(input, 'handle') and hasattr(input.handle, 'set_attr'):
-        input.handle.set_attr("tt.memory_space",
-                              builder.get_string_attr(str(space)))
+        input.handle.set_attr("tt.memory_space", builder.get_string_attr(str(space)))
     return input
 
 
@@ -83,7 +82,7 @@ def alloc(
     if builder is None:
         raise ValueError("alloc must be used inside @triton.jit")
     if layout is not None:
-        raise ValueError(f"alloc(): layout parameter is not yet support for DSA backend")
+        raise ValueError("alloc(): layout parameter is not yet support for DSA backend")
 
     # --- Validate inputs via semantic layer ---
     unwrapped_shape = DSASemantic.validate_alloc_shape(shape)
@@ -151,8 +150,7 @@ def copy(
     # ---- Case 2: tl.tensor (GM ptr) -> buffered_tensor (SPM) ----
     if not src_is_buf and dst_is_buf:
         if not isinstance(src, tl.tensor):
-            raise ValueError(
-                f"copy src must be tl.tensor (pointer) or buffered_tensor, got {type(src)}")
+            raise ValueError(f"copy src must be tl.tensor (pointer) or buffered_tensor, got {type(src)}")
         # Validate element type compatibility
         src_ptr_dtype = src.dtype
         if hasattr(src_ptr_dtype, 'element_ty'):
@@ -161,9 +159,8 @@ def copy(
             src_elem_dtype = src_ptr_dtype
         dst_elem_dtype = dst.type.element_ty
         if src_elem_dtype != dst_elem_dtype:
-            raise ValueError(
-                f"copy element type mismatch: src has {src_elem_dtype}, "
-                f"dst has {dst_elem_dtype}")
+            raise ValueError(f"copy element type mismatch: src has {src_elem_dtype}, "
+                             f"dst has {dst_elem_dtype}")
 
         # Create identity indices for the dst buffer and local pointers
         indices = _make_full_indices(dst, _semantic)
@@ -177,8 +174,7 @@ def copy(
     # ---- Case 3: buffered_tensor (SPM) -> tl.tensor (GM ptr) ----
     if src_is_buf and not dst_is_buf:
         if not isinstance(dst, tl.tensor):
-            raise ValueError(
-                f"copy dst must be tl.tensor (pointer) or buffered_tensor, got {type(dst)}")
+            raise ValueError(f"copy dst must be tl.tensor (pointer) or buffered_tensor, got {type(dst)}")
         dst_ptr_dtype = dst.dtype
         if hasattr(dst_ptr_dtype, 'element_ty'):
             dst_elem_dtype = dst_ptr_dtype.element_ty
@@ -186,9 +182,8 @@ def copy(
             dst_elem_dtype = dst_ptr_dtype
         src_elem_dtype = src.type.element_ty
         if src_elem_dtype != dst_elem_dtype:
-            raise ValueError(
-                f"copy element type mismatch: src has {src_elem_dtype}, "
-                f"dst has {dst_elem_dtype}")
+            raise ValueError(f"copy element type mismatch: src has {src_elem_dtype}, "
+                             f"dst has {dst_elem_dtype}")
 
         # Create identity indices for the src buffer and local pointers
         indices = _make_full_indices(src, _semantic)
@@ -200,10 +195,8 @@ def copy(
         return None
 
     # ---- Unsupported combination ----
-    raise ValueError(
-        "copy requires at least one operand to be a buffered_tensor. "
-        f"Got src={type(src).__name__}, dst={type(dst).__name__}"
-    )
+    raise ValueError("copy requires at least one operand to be a buffered_tensor. "
+                     f"Got src={type(src).__name__}, dst={type(dst).__name__}")
 
 
 def _expand_index_to_shape(index: tl.tensor, shape: Sequence[int], axis: int, _semantic) -> tl.tensor:
@@ -323,13 +316,12 @@ def local_ptr(
             raise ValueError("local_ptr does not yet support scalar indices on remote buffers")
         if not hasattr(builder, "create_dsa_remote_pointers"):
             raise RuntimeError("builder missing create_dsa_remote_pointers for remote buffers")
-        shard_val = (
-            remote_shard_id.handle
-            if isinstance(remote_shard_id, tl.tensor)
-            else _semantic.to_tensor(remote_shard_id).handle
-        )
+        shard_val = (remote_shard_id.handle
+                     if isinstance(remote_shard_id, tl.tensor) else _semantic.to_tensor(remote_shard_id).handle)
         remote_op = builder.create_dsa_remote_pointers(
-            result_ir, result_tensor.handle, shard_val,
+            result_ir,
+            result_tensor.handle,
+            shard_val,
             scope=remote_scope,
         )
         result_tensor = tl.tensor(remote_op.get_result(0), result_ty)
@@ -438,8 +430,7 @@ def add(lhs, rhs, out, _semantic=None):
     """``out = lhs + rhs`` elementwise on SPM buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("add", lhs, rhs, out)
-    _create_binary_builtin("add", "create_dsa_add", builder).create_dsa_add(
-        lhs.handle, rhs.handle, out.handle)
+    _create_binary_builtin("add", "create_dsa_add", builder).create_dsa_add(lhs.handle, rhs.handle, out.handle)
 
 
 @tl.builtin
@@ -447,8 +438,7 @@ def sub(lhs, rhs, out, _semantic=None):
     """``out = lhs - rhs`` elementwise on SPM buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("sub", lhs, rhs, out)
-    _create_binary_builtin("sub", "create_dsa_sub", builder).create_dsa_sub(
-        lhs.handle, rhs.handle, out.handle)
+    _create_binary_builtin("sub", "create_dsa_sub", builder).create_dsa_sub(lhs.handle, rhs.handle, out.handle)
 
 
 @tl.builtin
@@ -456,8 +446,7 @@ def mul(lhs, rhs, out, _semantic=None):
     """``out = lhs * rhs`` elementwise on SPM buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("mul", lhs, rhs, out)
-    _create_binary_builtin("mul", "create_dsa_mul", builder).create_dsa_mul(
-        lhs.handle, rhs.handle, out.handle)
+    _create_binary_builtin("mul", "create_dsa_mul", builder).create_dsa_mul(lhs.handle, rhs.handle, out.handle)
 
 
 @tl.builtin
@@ -465,8 +454,7 @@ def max(lhs, rhs, out, _semantic=None):
     """``out = max(lhs, rhs)`` elementwise on SPM buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("max", lhs, rhs, out)
-    _create_binary_builtin("max", "create_dsa_maximum", builder).create_dsa_maximum(
-        lhs.handle, rhs.handle, out.handle)
+    _create_binary_builtin("max", "create_dsa_maximum", builder).create_dsa_maximum(lhs.handle, rhs.handle, out.handle)
 
 
 @tl.builtin
@@ -474,8 +462,7 @@ def min(lhs, rhs, out, _semantic=None):
     """``out = min(lhs, rhs)`` elementwise on SPM buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("min", lhs, rhs, out)
-    _create_binary_builtin("min", "create_dsa_minimum", builder).create_dsa_minimum(
-        lhs.handle, rhs.handle, out.handle)
+    _create_binary_builtin("min", "create_dsa_minimum", builder).create_dsa_minimum(lhs.handle, rhs.handle, out.handle)
 
 
 @tl.builtin
@@ -483,8 +470,7 @@ def div(lhs, rhs, out, _semantic=None):
     """``out = lhs / rhs`` elementwise on SPM buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("div", lhs, rhs, out)
-    _create_binary_builtin("div", "create_dsa_div", builder).create_dsa_div(
-        lhs.handle, rhs.handle, out.handle)
+    _create_binary_builtin("div", "create_dsa_div", builder).create_dsa_div(lhs.handle, rhs.handle, out.handle)
 
 
 def _tle_pick_sum_dtype(in_dtype, dtype):
@@ -495,6 +481,7 @@ def _tle_pick_sum_dtype(in_dtype, dtype):
     if in_dtype.is_int_unsigned():
         return tl.uint32 if in_dtype.int_bitwidth < 32 else None
     return None
+
 
 @tl.builtin
 def cumsum(input, axis=0, reverse=False, dtype: tl.constexpr = None, _semantic=None):
@@ -594,8 +581,7 @@ def _split_offsets(offsets, fn):
         else:
             iv = _try_unwrap_int(v)
             if iv is None:
-                raise ValueError(
-                    f"{fn}: offsets must be int/constexpr or scalar tl.tensor")
+                raise ValueError(f"{fn}: offsets must be int/constexpr or scalar tl.tensor")
             static.append(iv)
     return static, dyn
 
@@ -659,13 +645,11 @@ def _resolve_tile_offsets(index, src_shape, tile_shape, _semantic, fn):
     elif isinstance(unwrapped, (tuple, list)):
         index_list = list(unwrapped)
     else:
-        raise ValueError(
-            f"{fn}: index must be int/constexpr, tuple/list of int/constexpr, "
-            f"or a scalar tl.tensor; got {type(index)}")
+        raise ValueError(f"{fn}: index must be int/constexpr, tuple/list of int/constexpr, "
+                         f"or a scalar tl.tensor; got {type(index)}")
 
     if len(index_list) != rank:
-        raise ValueError(
-            f"{fn}: index rank {len(index_list)} must match source rank {rank}")
+        raise ValueError(f"{fn}: index rank {len(index_list)} must match source rank {rank}")
 
     static = []
     dyn = []
@@ -681,17 +665,15 @@ def _resolve_tile_offsets(index, src_shape, tile_shape, _semantic, fn):
             if iv is None:
                 raise ValueError(f"{fn}: index must contain tensor/int/constexpr")
             if iv < 0 or iv >= grid[k]:
-                raise ValueError(
-                    f"{fn}: index[{k}]={iv} out of bounds for tile grid "
-                    f"(0~{grid[k] - 1})")
+                raise ValueError(f"{fn}: index[{k}]={iv} out of bounds for tile grid "
+                                 f"(0~{grid[k] - 1})")
             static.append(iv * t)
     return static, dyn
 
 
 def _check_static_slice_bounds(fn, src_shape, static_offsets, sizes, strides):
     """Validate the static (non-sentinel) offsets against src/sizes/strides."""
-    for i, (src, off, size, stride) in enumerate(
-            zip(src_shape, static_offsets, sizes, strides)):
+    for i, (src, off, size, stride) in enumerate(zip(src_shape, static_offsets, sizes, strides)):
         if size <= 0:
             raise ValueError(f"{fn}: size[{i}]={size} must be positive")
         if stride <= 0:
@@ -702,9 +684,8 @@ def _check_static_slice_bounds(fn, src_shape, static_offsets, sizes, strides):
             raise ValueError(f"{fn}: offset[{i}]={off} must be non-negative")
         end = off + (size - 1) * stride + 1
         if end > src:
-            raise ValueError(
-                f"{fn}: slice [{off}:{off}+{size}*{stride}] exceeds source dim "
-                f"{i} ({src})")
+            raise ValueError(f"{fn}: slice [{off}:{off}+{size}*{stride}] exceeds source dim "
+                             f"{i} ({src})")
 
 
 @tl._tensor_member_fn
@@ -738,22 +719,19 @@ def extract_slice(x: tl.tensor, offsets, sizes, strides, _semantic=None) -> tl.t
         raise ValueError("extract_slice: offsets/sizes/strides rank must match source rank")
 
     static_offsets, dyn_offsets = _split_offsets(offsets, "extract_slice")
-    _check_static_slice_bounds("extract_slice", src_shape, static_offsets,
-                               sizes, strides)
+    _check_static_slice_bounds("extract_slice", src_shape, static_offsets, sizes, strides)
 
     # tensor.extract_slice semantics: sizes is the result shape.
     result_ty = tl.block_type(x.type.element_ty, sizes)
     result_ir = result_ty.to_ir(builder)
 
-    handle = builder.create_dsa_extract_slice(
-        result_ir, x.handle, static_offsets, dyn_offsets, sizes, strides)
+    handle = builder.create_dsa_extract_slice(result_ir, x.handle, static_offsets, dyn_offsets, sizes, strides)
     return tl.tensor(handle, result_ty)
 
 
 @tl._tensor_member_fn
 @tl.builtin
-def insert_slice(x: tl.tensor, tile: tl.tensor, offsets, sizes=None,
-                 strides=None, _semantic=None) -> tl.tensor:
+def insert_slice(x: tl.tensor, tile: tl.tensor, offsets, sizes=None, strides=None, _semantic=None) -> tl.tensor:
     """Insert ``tile`` into ``x`` at ``offsets``.
 
     ``sizes`` defaults to ``tile.shape``; ``strides`` defaults to all ones.
@@ -784,20 +762,16 @@ def insert_slice(x: tl.tensor, tile: tl.tensor, offsets, sizes=None,
     if len(sizes) != len(src_shape) or len(strides) != len(src_shape):
         raise ValueError("insert_slice: sizes/strides rank must match source rank")
     if tuple(sizes) != tuple(tile_shape):
-        raise ValueError(
-            f"insert_slice: sizes {sizes} must match tile shape {tile_shape}")
+        raise ValueError(f"insert_slice: sizes {sizes} must match tile shape {tile_shape}")
     if x.type.element_ty != tile.type.element_ty:
-        raise ValueError(
-            f"insert_slice: element type mismatch source={x.type.element_ty}, "
-            f"tile={tile.type.element_ty}")
+        raise ValueError(f"insert_slice: element type mismatch source={x.type.element_ty}, "
+                         f"tile={tile.type.element_ty}")
 
     static_offsets, dyn_offsets = _split_offsets(offsets, "insert_slice")
-    _check_static_slice_bounds("insert_slice", src_shape, static_offsets,
-                               sizes, strides)
+    _check_static_slice_bounds("insert_slice", src_shape, static_offsets, sizes, strides)
 
-    handle = builder.create_dsa_insert_slice(
-        x.type.to_ir(builder), x.handle, tile.handle, static_offsets,
-        dyn_offsets, sizes, strides)
+    handle = builder.create_dsa_insert_slice(x.type.to_ir(builder), x.handle, tile.handle, static_offsets, dyn_offsets,
+                                             sizes, strides)
     return tl.tensor(handle, x.type)
 
 
@@ -820,25 +794,21 @@ def extract_tile(x: tl.tensor, index, tile_shape, _semantic=None) -> tl.tensor:
     src_shape = _static_dims(x.type.shape, "extract_tile")
     tile_shape = _static_dims(tile_shape, "extract_tile")
     if len(tile_shape) != len(src_shape):
-        raise ValueError(
-            f"extract_tile: tile_shape rank ({len(tile_shape)}) must match "
-            f"source rank ({len(src_shape)})")
+        raise ValueError(f"extract_tile: tile_shape rank ({len(tile_shape)}) must match "
+                         f"source rank ({len(src_shape)})")
     for i, (s, t) in enumerate(zip(src_shape, tile_shape)):
         if t <= 0:
             raise ValueError(f"extract_tile: tile dim {i} must be positive, got {t}")
         if s % t != 0:
-            raise ValueError(
-                f"extract_tile: source dim {i} ({s}) not divisible by tile dim ({t})")
+            raise ValueError(f"extract_tile: source dim {i} ({s}) not divisible by tile dim ({t})")
 
-    static_offsets, dyn_offsets = _resolve_tile_offsets(
-        index, src_shape, tile_shape, _semantic, "extract_tile")
+    static_offsets, dyn_offsets = _resolve_tile_offsets(index, src_shape, tile_shape, _semantic, "extract_tile")
 
     result_ty = tl.block_type(x.type.element_ty, tile_shape)
     result_ir = result_ty.to_ir(builder)
 
-    handle = builder.create_dsa_extract_slice(
-        result_ir, x.handle, static_offsets, dyn_offsets, tile_shape,
-        [1] * len(tile_shape))
+    handle = builder.create_dsa_extract_slice(result_ir, x.handle, static_offsets, dyn_offsets, tile_shape,
+                                              [1] * len(tile_shape))
     return tl.tensor(handle, result_ty)
 
 
@@ -862,26 +832,21 @@ def insert_tile(x: tl.tensor, tile: tl.tensor, index, _semantic=None) -> tl.tens
     src_shape = _static_dims(x.type.shape, "insert_tile")
     tile_shape = _static_dims(tile.type.shape, "insert_tile")
     if len(tile_shape) != len(src_shape):
-        raise ValueError(
-            f"insert_tile: source rank ({len(src_shape)}) must match tile rank "
-            f"({len(tile_shape)})")
+        raise ValueError(f"insert_tile: source rank ({len(src_shape)}) must match tile rank "
+                         f"({len(tile_shape)})")
     for i, (s, t) in enumerate(zip(src_shape, tile_shape)):
         if t <= 0:
             raise ValueError(f"insert_tile: tile dim {i} must be positive, got {t}")
         if s % t != 0:
-            raise ValueError(
-                f"insert_tile: source dim {i} ({s}) not divisible by tile dim ({t})")
+            raise ValueError(f"insert_tile: source dim {i} ({s}) not divisible by tile dim ({t})")
     if x.type.element_ty != tile.type.element_ty:
-        raise ValueError(
-            f"insert_tile: element type mismatch source={x.type.element_ty}, "
-            f"tile={tile.type.element_ty}")
+        raise ValueError(f"insert_tile: element type mismatch source={x.type.element_ty}, "
+                         f"tile={tile.type.element_ty}")
 
-    static_offsets, dyn_offsets = _resolve_tile_offsets(
-        index, src_shape, tile_shape, _semantic, "insert_tile")
+    static_offsets, dyn_offsets = _resolve_tile_offsets(index, src_shape, tile_shape, _semantic, "insert_tile")
 
-    handle = builder.create_dsa_insert_slice(
-        x.type.to_ir(builder), x.handle, tile.handle, static_offsets,
-        dyn_offsets, tile_shape, [1] * len(tile_shape))
+    handle = builder.create_dsa_insert_slice(x.type.to_ir(builder), x.handle, tile.handle, static_offsets, dyn_offsets,
+                                             tile_shape, [1] * len(tile_shape))
     return tl.tensor(handle, x.type)
 
 
@@ -892,8 +857,7 @@ _DSA_RANDGEN_ALIGN_BYTES = 128
 
 
 @tl.builtin
-def randgen(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None,
-            _generator=None):
+def randgen(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None, _generator=None):
     """
     Hardware tsingmicro TX81 peri for ``randgen``.
 
@@ -914,9 +878,8 @@ def randgen(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None,
     """
     n_out = int(tl._unwrap_if_constexpr(n_out))
     if n_out <= 0 or (n_out % _DSA_RANDGEN_NUM_STREAMS) != 0:
-        raise ValueError(
-            f"tle.dsa.randgen n_out must be a positive multiple of "
-            f"{_DSA_RANDGEN_NUM_STREAMS}, got {n_out}")
+        raise ValueError(f"tle.dsa.randgen n_out must be a positive multiple of "
+                         f"{_DSA_RANDGEN_NUM_STREAMS}, got {n_out}")
 
     builder = _builder if _builder is not None else _semantic.builder
     if not hasattr(builder, "create_dsa_randgen"):
@@ -934,11 +897,9 @@ def randgen(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None,
 
     seed0_ty = seed0.type
     seed1_ty = seed1.type
-    if (not seed0_ty.is_block() or not seed1_ty.is_block() or
-            tuple(int(tl._unwrap_if_constexpr(d)) for d in seed0_ty.shape) !=
-            (_DSA_RANDGEN_NUM_STREAMS, ) or
-            tuple(int(tl._unwrap_if_constexpr(d)) for d in seed1_ty.shape) !=
-            (_DSA_RANDGEN_NUM_STREAMS, )):
+    if (not seed0_ty.is_block() or not seed1_ty.is_block()
+            or tuple(int(tl._unwrap_if_constexpr(d)) for d in seed0_ty.shape) != (_DSA_RANDGEN_NUM_STREAMS, )
+            or tuple(int(tl._unwrap_if_constexpr(d)) for d in seed1_ty.shape) != (_DSA_RANDGEN_NUM_STREAMS, )):
         raise ValueError("tle.dsa.randgen seeds must be block tensors of shape [16]")
 
     out_ty = tl.block_type(tl.int64, [n_out])
@@ -993,19 +954,16 @@ def _i64_as_i32_view(raw_i64, n_i32: int, builder):
     """
     n_i64 = int(tl._unwrap_if_constexpr(raw_i64.shape[0]))
     if n_i32 != n_i64 * 2:
-        raise ValueError(
-            f"i64→i32 view expects n_i32 == 2 * n_i64, got {n_i32} vs 2*{n_i64}")
+        raise ValueError(f"i64→i32 view expects n_i32 == 2 * n_i64, got {n_i32} vs 2*{n_i64}")
     if not hasattr(builder, "create_dsa_bitcast"):
-        raise RuntimeError(
-            "builder missing create_dsa_bitcast; rebuild libtriton with TLE DSA")
+        raise RuntimeError("builder missing create_dsa_bitcast; rebuild libtriton with TLE DSA")
     dst_ty = tl.block_type(tl.int32, [n_i32])
     handle = builder.create_dsa_bitcast(dst_ty.to_ir(builder), raw_i64.handle)
     return tl.tensor(handle, dst_ty)
 
 
 @tl.builtin
-def rand(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None,
-         _generator=None):
+def rand(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None, _generator=None):
     """
     Uniform(0, 1) floats via hardware ``randgen`` + float scaling.
 
@@ -1016,21 +974,18 @@ def rand(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None,
     """
     n_out = int(tl._unwrap_if_constexpr(n_out))
     if n_out <= 0 or (n_out % 32) != 0:
-        raise ValueError(
-            f"tle.dsa.rand n_out must be a positive multiple of 32, got {n_out}")
+        raise ValueError(f"tle.dsa.rand n_out must be a positive multiple of 32, got {n_out}")
 
     builder = _builder if _builder is not None else _semantic.builder
     # Half as many i64 draws: lo/hi 32-bit halves become two Uniform samples.
-    raw64, seed0_out, seed1_out = randgen(
-        seed0, seed1, n_out // 2, _semantic=_semantic)
+    raw64, seed0_out, seed1_out = randgen(seed0, seed1, n_out // 2, _semantic=_semantic)
     bits32 = _i64_as_i32_view(raw64, n_out, builder)
     u = _uint32_bits_to_uniform(bits32, _semantic)
     return u, seed0_out, seed1_out
 
 
 @tl.builtin
-def randn(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None,
-          _generator=None):
+def randn(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None, _generator=None):
     """
     Normal(0, 1) floats via hardware ``randgen`` + Box-Muller.
 
@@ -1048,8 +1003,7 @@ def randn(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None,
     n_out = int(tl._unwrap_if_constexpr(n_out))
     half = n_out // 2
     if n_out <= 0 or (n_out % 32) != 0:
-        raise ValueError(
-            f"tle.dsa.randn n_out must be a positive multiple of 32, got {n_out}")
+        raise ValueError(f"tle.dsa.randn n_out must be a positive multiple of 32, got {n_out}")
 
     builder = _builder if _builder is not None else _semantic.builder
     # Reuse ``rand`` (Uniform) then Box-Muller with consecutive pairing.
@@ -1057,8 +1011,7 @@ def randn(seed0, seed1, n_out: tl.constexpr, _builder=None, _semantic=None,
     # systematic Normal bias on TX81 (mean≈0.15, std≈0.94); force f32 via
     # broadcast from ``u_half`` (``u*0+c``). Layout reshape/permute/cat alone
     # is fine — see ``test_tx81_reshape_permute_cat.py``.
-    uv, seed0_out, seed1_out = rand(
-        seed0, seed1, n_out, _builder=builder, _semantic=_semantic)
+    uv, seed0_out, seed1_out = rand(seed0, seed1, n_out, _builder=builder, _semantic=_semantic)
 
     pairs = _semantic.reshape(uv, [half, 2], False)
     u_half, v_half = _semantic.split(pairs)

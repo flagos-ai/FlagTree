@@ -6,12 +6,12 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/Visitors.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Visitors.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include <memory>
 
@@ -161,9 +161,9 @@ struct MaterializeStridedLinalgInputsPass
                 rewriter.create<memref::DimOp>(loc, operand, idx));
           }
         }
-        auto allocType = MemRefType::get(
-            type.getShape(), type.getElementType(), MemRefLayoutAttrInterface{},
-            type.getMemorySpace());
+        auto allocType =
+            MemRefType::get(type.getShape(), type.getElementType(),
+                            MemRefLayoutAttrInterface{}, type.getMemorySpace());
         return rewriter.create<memref::AllocOp>(loc, allocType, dynamicSizes);
       };
 
@@ -224,6 +224,7 @@ struct MaterializeStridedLinalgInputsPass
 };
 } // namespace
 
-std::unique_ptr<OperationPass<ModuleOp>> triton::createMaterializeStridedLinalgInputsPass() {
+std::unique_ptr<OperationPass<ModuleOp>>
+triton::createMaterializeStridedLinalgInputsPass() {
   return std::make_unique<MaterializeStridedLinalgInputsPass>();
 }

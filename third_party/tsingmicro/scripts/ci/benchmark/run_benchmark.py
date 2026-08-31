@@ -51,9 +51,9 @@ DEAD_CARD_PATTERNS = [
 ]
 
 # Shared state for dead-card tracking across worker threads.
-_dead_cards: set = set()          # card indices that have died
+_dead_cards: set = set()  # card indices that have died
 _dead_cards_lock = threading.Lock()
-_dead_card_records: list = []     # (card, op_name, log_file) for final summary
+_dead_card_records: list = []  # (card, op_name, log_file) for final summary
 
 # Global shutdown signal — set by SIGINT/SIGTERM handler,
 # checked by workers and queue loop to stop dispatching new tasks
@@ -86,7 +86,6 @@ logger.addHandler(_err)
 # Prevent propagation to root logger (avoids duplicate WARNING+ output)
 logger.propagate = False
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 CI_DIR = SCRIPT_DIR.parent  # benchmark/ -> ci/
 
@@ -103,12 +102,10 @@ def _find_workspace_root(start_dir):
         if (current / "tx8_deps").is_dir() and (current / "flaggems").is_dir():
             return current
         current = current.parent
-    raise RuntimeError(
-        "Could not auto-detect workspace root. "
-        "Expected both 'tx8_deps/' and 'flaggems/' directories at the "
-        "workspace level. Ensure the script is running from within a "
-        "triton workspace tree."
-    )
+    raise RuntimeError("Could not auto-detect workspace root. "
+                       "Expected both 'tx8_deps/' and 'flaggems/' directories at the "
+                       "workspace level. Ensure the script is running from within a "
+                       "triton workspace tree.")
 
 
 def _find_triton_dir(workspace, script_dir):
@@ -121,17 +118,15 @@ def _find_triton_dir(workspace, script_dir):
     current = script_dir.resolve()
     while current != workspace:
         if current.parent == workspace and current.name in (
-            "triton",
-            "triton-tsingmicro-backend",
+                "triton",
+                "triton-tsingmicro-backend",
         ):
             return current
         current = current.parent
-    raise RuntimeError(
-        f"Could not auto-detect triton project directory under "
-        f"workspace {workspace}. Expected 'triton/' or "
-        f"'triton-tsingmicro-backend/' as an immediate child of the "
-        f"workspace."
-    )
+    raise RuntimeError(f"Could not auto-detect triton project directory under "
+                       f"workspace {workspace}. Expected 'triton/' or "
+                       f"'triton-tsingmicro-backend/' as an immediate child of the "
+                       f"workspace.")
 
 
 WORKSPACE = _find_workspace_root(SCRIPT_DIR)
@@ -157,6 +152,7 @@ def apply_flaggems_path(path: str):
 # ===========================================================================
 # 1. Device / card utilities
 # ===========================================================================
+
 
 def expand_range(s: str) -> List[int]:
     """Parse comma-separated device list with ~ or - range support.
@@ -186,10 +182,7 @@ def expand_range(s: str) -> List[int]:
 def check_card_status(card: int) -> str:
     """Run tsm_smi -i <card>, return 'free', 'busy', or 'missing'."""
     try:
-        output = subprocess.run(
-            ["tsm_smi", "-i", str(card)],
-            capture_output=True, text=True, timeout=30
-        )
+        output = subprocess.run(["tsm_smi", "-i", str(card)], capture_output=True, text=True, timeout=30)
         if output.returncode != 0:
             if "Invalid device index" in output.stderr or "Invalid device index" in output.stdout:
                 return "missing"
@@ -290,6 +283,7 @@ def resolve_devices(args: argparse.Namespace) -> List[int]:
 # 2. CI config parsing
 # ===========================================================================
 
+
 def _read_ci_config() -> Dict[str, str]:
     """Parse ci_common.sh to extract config variables."""
     config: Dict[str, str] = {}
@@ -299,8 +293,12 @@ def _read_ci_config() -> Dict[str, str]:
 
     content = CI_COMMON.read_text()
     var_names = [
-        "precision_mode", "tx8_depends_name", "torch_txda_name",
-        "txops_name", "txda_skip_ops", "txda_fallback_cpu_ops",
+        "precision_mode",
+        "tx8_depends_name",
+        "torch_txda_name",
+        "txops_name",
+        "txda_skip_ops",
+        "txda_fallback_cpu_ops",
     ]
     for var in var_names:
         m = re.search(rf'^(?:export\s+)?{var}=(.+)$', content, re.MULTILINE)
@@ -314,6 +312,7 @@ def _read_ci_config() -> Dict[str, str]:
 # ===========================================================================
 # 3. Environment setup
 # ===========================================================================
+
 
 def setup_base_env():
     """Set base environment variables needed for Triton + Flaggems."""
@@ -398,10 +397,8 @@ def setup_profiler_env():
     existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
     os.environ["LD_LIBRARY_PATH"] = f"{profiler_lib}:{existing_ld}" if existing_ld else profiler_lib
 
-    os.environ["LD_PRELOAD"] = (
-        f"{profiler_lib}/libtsmprofiler-register.so:"
-        f"{profiler_lib}/libtsmprofiler-sdk.so"
-    )
+    os.environ["LD_PRELOAD"] = (f"{profiler_lib}/libtsmprofiler-register.so:"
+                                f"{profiler_lib}/libtsmprofiler-sdk.so")
     os.environ["ROCP_TOOL_LIBRARIES"] = f"{profiler_lib}/libtsm-api-log-tracing.so"
 
     logger.info("=== profiler env ===")
@@ -425,6 +422,7 @@ def _run_bash_script(script_body: str, description: str) -> int:
 # ===========================================================================
 # 4. Install / Build / Venv
 # ===========================================================================
+
 
 def run_install():
     """Source ci_common.sh and call download_deps + install_deps."""
@@ -472,6 +470,7 @@ def activate_venv():
 # ===========================================================================
 # 5. Operator resolution
 # ===========================================================================
+
 
 def resolve_operators(test_set: str, accuracy: bool = False) -> List[Tuple[str, List[str]]]:
     """Resolve test_set to a list of (op_name, node_ids) tuples.
@@ -527,12 +526,12 @@ def resolve_operators(test_set: str, accuracy: bool = False) -> List[Tuple[str, 
 # 6. Worker / Queue system
 # ===========================================================================
 
+
 class WorkerResult:
     """Result of a single operator run on a card."""
     __slots__ = ("op_name", "card", "rc", "start_time", "end_time", "log_file")
 
-    def __init__(self, op_name: str, card: int, rc: int,
-                 start_time: float, end_time: float, log_file: str):
+    def __init__(self, op_name: str, card: int, rc: int, start_time: float, end_time: float, log_file: str):
         self.op_name = op_name
         self.card = card
         self.rc = rc
@@ -565,9 +564,8 @@ def _rename_dead_card_log(log_file: Path, card: int, op_name: str) -> Path:
     return new_path
 
 
-def worker(card: int, task_queue: queue.Queue, results: List[WorkerResult],
-           stop_event: threading.Event, ops_dir: Path, pytest_base_args: List[str],
-           test_dir: str, devices: List[int], active: Dict[int, str] = None):
+def worker(card: int, task_queue: queue.Queue, results: List[WorkerResult], stop_event: threading.Event, ops_dir: Path,
+           pytest_base_args: List[str], test_dir: str, devices: List[int], active: Dict[int, str] = None):
     """Worker thread: pull ops from queue, run pytest, write per-op log.
 
     Each worker passes TXDA_VISIBLE_DEVICES via a per-subprocess env dict
@@ -616,7 +614,9 @@ def worker(card: int, task_queue: queue.Queue, results: List[WorkerResult],
             # Build command with absolute node ID paths (test_dir + node_id)
             node_paths = [os.path.join(str(test_dir), nid) for nid in node_ids]
             cmd = [
-                "python3", "-m", "pytest",
+                "python3",
+                "-m",
+                "pytest",
             ] + node_paths + pytest_base_args
 
             # Write log header
@@ -659,17 +659,13 @@ def worker(card: int, task_queue: queue.Queue, results: List[WorkerResult],
                             proc.kill()
                             proc.wait()
                             _kill_method = "SIGKILL (SIGINT timed out after 10s)"
-                        logger.warning(
-                            f"  [TIMEOUT] card {card} {op_name} "
-                            f"(log unchanged {_threshold}x{_interval}s), "
-                            f"killed with {_kill_method}"
-                        )
+                        logger.warning(f"  [TIMEOUT] card {card} {op_name} "
+                                       f"(log unchanged {_threshold}x{_interval}s), "
+                                       f"killed with {_kill_method}")
                         with open(log_file, "a") as _lf:
-                            _lf.write(
-                                f"\n[{datetime.now().strftime('%m%d %H:%M:%S')}] "
-                                f"[TIMEOUT] log unchanged for {_threshold}x{_interval}s, "
-                                f"killed process with {_kill_method}\n"
-                            )
+                            _lf.write(f"\n[{datetime.now().strftime('%m%d %H:%M:%S')}] "
+                                      f"[TIMEOUT] log unchanged for {_threshold}x{_interval}s, "
+                                      f"killed process with {_kill_method}\n")
                         break
                 else:
                     _counter = 0
@@ -722,32 +718,24 @@ def worker(card: int, task_queue: queue.Queue, results: List[WorkerResult],
                     _dead_cards.add(card)
                     _dead_card_records.append((card, op_name, str(renamed_log)))
 
-                logger.warning(
-                    f"  [DEAD] card {card} has died on {op_name} "
-                    f"(attempt {attempt}/2), log: {renamed_log.name}"
-                )
+                logger.warning(f"  [DEAD] card {card} has died on {op_name} "
+                               f"(attempt {attempt}/2), log: {renamed_log.name}")
 
                 if attempt < 2:
                     # Retry on another card
-                    logger.info(
-                        f"  [RETRY] re-enqueuing {op_name} "
-                        f"(attempt {attempt+1}/2, failed_cards: {failed_cards + [card]})"
-                    )
+                    logger.info(f"  [RETRY] re-enqueuing {op_name} "
+                                f"(attempt {attempt+1}/2, failed_cards: {failed_cards + [card]})")
                     task_queue.put((op_name, node_ids, attempt + 1, failed_cards + [card]))
                 else:
                     # Two cards died on this operator — likely operator-induced
-                    logger.error(
-                        f"  [FATAL] {op_name} killed 2 cards "
-                        f"({failed_cards + [card]}), giving up on this operator"
-                    )
+                    logger.error(f"  [FATAL] {op_name} killed 2 cards "
+                                 f"({failed_cards + [card]}), giving up on this operator")
 
                 # Check if all cards are dead → signal full stop
                 with _dead_cards_lock:
                     if len(_dead_cards) >= len(devices):
-                        logger.error(
-                            f"  [ALL-DEAD] all {len(devices)} cards have died, "
-                            f"stopping all workers"
-                        )
+                        logger.error(f"  [ALL-DEAD] all {len(devices)} cards have died, "
+                                     f"stopping all workers")
                         stop_event.set()
                         _global_shutdown.set()
 
@@ -756,20 +744,23 @@ def worker(card: int, task_queue: queue.Queue, results: List[WorkerResult],
 
             else:
                 # Normal path: record result (includes timeout/hang as regular failure)
-                results.append(WorkerResult(
-                    op_name=op_name, card=card, rc=rc,
-                    start_time=start_time, end_time=end_time,
-                    log_file=str(log_file),
-                ))
+                results.append(
+                    WorkerResult(
+                        op_name=op_name,
+                        card=card,
+                        rc=rc,
+                        start_time=start_time,
+                        end_time=end_time,
+                        log_file=str(log_file),
+                    ))
                 elapsed = end_time - start_time
                 status = "PASSED" if rc == 0 else "FAILED"
                 logger.info(f"  [{status}] card {card} {op_name} ({elapsed:.1f}s)")
                 task_queue.task_done()
 
 
-def monitor_progress(results: List[WorkerResult], stop_event: threading.Event,
-                     total_ops: int, active: Dict[int, str], devices: List[int],
-                     ops_dir: Path):
+def monitor_progress(results: List[WorkerResult], stop_event: threading.Event, total_ops: int, active: Dict[int, str],
+                     devices: List[int], ops_dir: Path):
     """Every 60 seconds, print progress summary with per-card detail."""
     while not stop_event.wait(60):
         done = len(results)
@@ -779,9 +770,7 @@ def monitor_progress(results: List[WorkerResult], stop_event: threading.Event,
         logger.info(f"  [progress {ts}] {done}/{total_ops}  pass={passed} fail={failed}")
 
         # Per-card detail — only show cards with activity
-        active_cards = sorted(set(
-            [r.card for r in results] + [c for c, op in active.items() if op]
-        ))
+        active_cards = sorted(set([r.card for r in results] + [c for c, op in active.items() if op]))
         for card in active_cards:
             card_results = [r for r in results if r.card == card]
             running = active.get(card)
@@ -823,11 +812,9 @@ def stop_file_watcher(stop_file_path: str, stop_event: threading.Event):
         time.sleep(2)
 
 
-def run_operator_queue(operators: List[Tuple[str, List[str]]], devices: List[int],
-                       ops_dir: Path, pytest_base_args: List[str],
-                       test_dir: Path,
-                       stop_file: Optional[str] = None
-                       ) -> Tuple[List[WorkerResult], int]:
+def run_operator_queue(operators: List[Tuple[str, List[str]]], devices: List[int], ops_dir: Path,
+                       pytest_base_args: List[str], test_dir: Path,
+                       stop_file: Optional[str] = None) -> Tuple[List[WorkerResult], int]:
     """Fill work queue and dispatch via worker threads (one per device).
 
     Args:
@@ -921,28 +908,23 @@ def run_operator_queue(operators: List[Tuple[str, List[str]]], devices: List[int
 # 7. CLI argument parsing
 # ===========================================================================
 
+
 def add_common_args(parser):
     """Add args shared by benchmark / accuracy / ci-baseline / ts-compare."""
     parser.add_argument("-t", "--test", default="all",
                         help="Test set: all / ci_ops / ts_opt_ops / race_ops / custom group")
-    parser.add_argument("--devices", default=None,
-                        help="Comma-separated device list (supports ranges: 8~15 or 8-15)")
-    parser.add_argument("--cards", default=None, type=int,
-                        help="N cards mode: scan 0..N-1 for free cards")
-    parser.add_argument("--skip", default=None,
-                        help="Cards to skip in --cards mode (comma-separated, supports ranges)")
+    parser.add_argument("--devices", default=None, help="Comma-separated device list (supports ranges: 8~15 or 8-15)")
+    parser.add_argument("--cards", default=None, type=int, help="N cards mode: scan 0..N-1 for free cards")
+    parser.add_argument("--skip", default=None, help="Cards to skip in --cards mode (comma-separated, supports ranges)")
     parser.add_argument("--test-mode", action="store_true",
                         help="Smoke-test: dispatch only first 2 operators then stop")
-    parser.add_argument("--flaggems_path", default=None,
-                        help="Flaggems root path. Defaults to $WORKSPACE/flaggems.")
+    parser.add_argument("--flaggems_path", default=None, help="Flaggems root path. Defaults to $WORKSPACE/flaggems.")
 
 
 def add_perf_args(parser):
     """Add benchmark-performance-specific args (warmup/iter/level/metrics)."""
-    parser.add_argument("--level", default="core",
-                        help="Benchmark level: core / comprehensive")
-    parser.add_argument("-w", "--warmup", type=int, default=10,
-                        help="Single shape warmup count (default: 10)")
+    parser.add_argument("--level", default="core", help="Benchmark level: core / comprehensive")
+    parser.add_argument("-w", "--warmup", type=int, default=10, help="Single shape warmup count (default: 10)")
     parser.add_argument("-r", "--rep", "--iter", dest="rep", type=int, default=20,
                         help="Single shape benchmark repetitions (default: 20)")
     parser.add_argument("--metrics", default="latency",
@@ -954,15 +936,13 @@ def add_exec_args(parser):
     parser.add_argument("--install", action="store_true", help="Reinstall dependencies")
     parser.add_argument("--build", action="store_true", help="Rebuild triton")
     parser.add_argument("--no-run", action="store_true", help="Skip execution (install/build only)")
-    parser.add_argument("--stop-file", default=None,
-                        help="Path to stop sentinel file")
+    parser.add_argument("--stop-file", default=None, help="Path to stop sentinel file")
 
 
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="CI benchmark / accuracy runner — operator-level parallel dispatch across cards",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog="""
 Subcommands:
   benchmark    Run performance benchmark (default when no subcommand given)
   accuracy     Run accuracy tests (--ref cpu)
@@ -1036,56 +1016,44 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Subcommand")
 
     # --- benchmark ---
-    bench_p = subparsers.add_parser("benchmark",
-        help="Run performance benchmark (default subcommand)")
+    bench_p = subparsers.add_parser("benchmark", help="Run performance benchmark (default subcommand)")
     add_common_args(bench_p)
     add_perf_args(bench_p)
     add_exec_args(bench_p)
-    bench_p.add_argument("-k", "--op", dest="op_filter", default="",
-                         help="pytest -k filter expression")
+    bench_p.add_argument("-k", "--op", dest="op_filter", default="", help="pytest -k filter expression")
     bench_p.set_defaults(accuracy=False, quick=False)
 
     # --- accuracy ---
-    acc_p = subparsers.add_parser("accuracy",
-        help="Run accuracy tests (--ref cpu, uses all_tasks)")
+    acc_p = subparsers.add_parser("accuracy", help="Run accuracy tests (--ref cpu, uses all_tasks)")
     add_common_args(acc_p)
     add_exec_args(acc_p)
-    acc_p.add_argument("--quick", action="store_true",
-                       help="Pass --mode quick to pytest (fewer test cases)")
+    acc_p.add_argument("--quick", action="store_true", help="Pass --mode quick to pytest (fewer test cases)")
     acc_p.set_defaults(accuracy=True, op_filter="")
 
     # --- ci-baseline ---
-    cib_p = subparsers.add_parser("ci-baseline",
-        help="Run benchmark, optionally compare to a baseline directory")
+    cib_p = subparsers.add_parser("ci-baseline", help="Run benchmark, optionally compare to a baseline directory")
     add_common_args(cib_p)
     add_perf_args(cib_p)
-    cib_p.add_argument("--baseline", default=None,
-                       help="Baseline log directory for comparison")
-    cib_p.add_argument("--threshold", type=int, default=20,
-                       help="Degradation threshold %% (default: 20)")
+    cib_p.add_argument("--baseline", default=None, help="Baseline log directory for comparison")
+    cib_p.add_argument("--threshold", type=int, default=20, help="Degradation threshold %% (default: 20)")
     cib_p.add_argument("--install", action="store_true", help="Reinstall dependencies")
     cib_p.add_argument("--build", action="store_true", help="Rebuild triton")
-    cib_p.set_defaults(test="ci_ops", accuracy=False, quick=False,
-                       op_filter="", no_run=False, stop_file=None)
+    cib_p.set_defaults(test="ci_ops", accuracy=False, quick=False, op_filter="", no_run=False, stop_file=None)
 
     # --- ts-compare ---
-    tsc_p = subparsers.add_parser("ts-compare",
-        help="TS optimization comparison: CUSTOM_OPS=0 vs CUSTOM_OPS=1")
+    tsc_p = subparsers.add_parser("ts-compare", help="TS optimization comparison: CUSTOM_OPS=0 vs CUSTOM_OPS=1")
     add_common_args(tsc_p)
     add_perf_args(tsc_p)
-    tsc_p.add_argument("--threshold", type=int, default=20,
-                       help="Degradation threshold %% (default: 20)")
+    tsc_p.add_argument("--threshold", type=int, default=20, help="Degradation threshold %% (default: 20)")
     tsc_p.add_argument("--install", action="store_true", help="Reinstall dependencies")
     tsc_p.add_argument("--build", action="store_true", help="Rebuild triton")
-    tsc_p.set_defaults(test="ts_opt_ops", accuracy=False, quick=False,
-                       op_filter="", no_run=False, stop_file=None)
+    tsc_p.set_defaults(test="ts_opt_ops", accuracy=False, quick=False, op_filter="", no_run=False, stop_file=None)
 
     # --- compare ---
     cmp_p = subparsers.add_parser("compare", help="Compare two existing log directories")
     cmp_p.add_argument("dir1", help="Baseline log directory")
     cmp_p.add_argument("dir2", help="Target log directory")
-    cmp_p.add_argument("--threshold", type=int, default=20,
-                       help="Degradation threshold %% (default: 20)")
+    cmp_p.add_argument("--threshold", type=int, default=20, help="Degradation threshold %% (default: 20)")
     cmp_p.add_argument("--install", action="store_true", help="Reinstall dependencies")
     cmp_p.add_argument("--build", action="store_true", help="Rebuild triton")
 
@@ -1095,6 +1063,7 @@ Examples:
 # ===========================================================================
 # 8. Cleanup
 # ===========================================================================
+
 
 def cleanup():
     """Remove temporary/cache directories older than 3 days."""
@@ -1168,11 +1137,11 @@ def validate_bench_args(args):
             errors.append(f"--rep/--iter must be >= 1, got {args.rep}")
         if args.level not in VALID_LEVELS:
             errors.append(f"--level: invalid value '{args.level}', "
-                           f"must be one of {sorted(VALID_LEVELS)}")
+                          f"must be one of {sorted(VALID_LEVELS)}")
         for m in args.metrics.split():
             if m not in VALID_METRICS:
                 errors.append(f"--metrics: invalid value '{m}', "
-                               f"must be one of {sorted(VALID_METRICS)}")
+                              f"must be one of {sorted(VALID_METRICS)}")
     if args.flaggems_path and not Path(args.flaggems_path).is_dir():
         errors.append(f"--flaggems_path: directory not found: {args.flaggems_path}")
     if errors:
@@ -1195,6 +1164,7 @@ def validate_compare_args(args):
 # ===========================================================================
 # 10. cmd_run — execute a single run (benchmark or accuracy)
 # ===========================================================================
+
 
 def cmd_run(args, log_dir_override: Path = None) -> Optional[Path]:
     """Execute a single run (benchmark or accuracy). Returns log_dir Path on success, None on failure.
@@ -1338,7 +1308,8 @@ def cmd_run(args, log_dir_override: Path = None) -> Optional[Path]:
             pytest_base_args.extend(["--mode", "quick"])
     else:
         pytest_base_args = [
-            "-v", "-s",
+            "-v",
+            "-s",
             f"--warmup={args.warmup}",
             f"--iter={args.rep}",
             f"--level={args.level}",
@@ -1426,8 +1397,8 @@ def cmd_run(args, log_dir_override: Path = None) -> Optional[Path]:
         # Generate CSV summary only for benchmark mode
         if not accuracy:
             _gen_csv = SCRIPT_DIR / "gen_bench_summary.py"
-            subprocess.run([sys.executable, str(_gen_csv), str(log_dir)],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([sys.executable, str(_gen_csv), str(log_dir)], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
 
         if failed:
             _cleanup_fh()
@@ -1440,7 +1411,10 @@ def cmd_run(args, log_dir_override: Path = None) -> Optional[Path]:
     logger.info(f"\n=== Running {len(operators)} {mode_label} operators on {len(devices)} card(s) ===\n")
     t0 = time.time()
     results, remaining = run_operator_queue(
-        operators, devices, ops_dir, pytest_base_args,
+        operators,
+        devices,
+        ops_dir,
+        pytest_base_args,
         test_dir=test_dir,
         stop_file=stop_file,
     )
@@ -1515,8 +1489,8 @@ def cmd_run(args, log_dir_override: Path = None) -> Optional[Path]:
     # Generate per-operator CSV only for benchmark mode
     if not accuracy:
         _gen_csv = SCRIPT_DIR / "gen_bench_summary.py"
-        subprocess.run([sys.executable, str(_gen_csv), str(log_dir)],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([sys.executable, str(_gen_csv), str(log_dir)], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
 
     if failed_count > 0:
         logger.warning(f"WARNING: {failed_count} operator(s) failed")
@@ -1527,6 +1501,7 @@ def cmd_run(args, log_dir_override: Path = None) -> Optional[Path]:
 # ===========================================================================
 # 10. Subcommand implementations
 # ===========================================================================
+
 
 def _run_on_off_compare(args, label: str):
     """Run CUSTOM_OPS=0 as baseline, CUSTOM_OPS=1 as target, then compare.
@@ -1575,8 +1550,14 @@ def _run_on_off_compare(args, label: str):
     logger.info(f"  Target   : {target_dir}")
     logger.info("=" * 70)
     compare_script = SCRIPT_DIR / "compare_benchmark_logs.py"
-    cmd = ["python3", str(compare_script), str(baseline_dir), str(target_dir),
-           "--threshold", str(args.threshold), "-o", str(parent_dir)]
+    cmd = [
+        "python3",
+        str(compare_script),
+        str(baseline_dir),
+        str(target_dir), "--threshold",
+        str(args.threshold), "-o",
+        str(parent_dir)
+    ]
     logger.info(f"[cmd] {' '.join(cmd)}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -1623,8 +1604,12 @@ def cmd_ci_baseline(args):
     logger.info(f"  Target   : {target_dir}")
     logger.info("=" * 70)
     compare_script = SCRIPT_DIR / "compare_benchmark_logs.py"
-    cmd = ["python3", str(compare_script), args.baseline, str(target_dir),
-           "--threshold", str(args.threshold), "--fail-on-threshold"]
+    cmd = [
+        "python3",
+        str(compare_script), args.baseline,
+        str(target_dir), "--threshold",
+        str(args.threshold), "--fail-on-threshold"
+    ]
     logger.info(f"[cmd] {' '.join(cmd)}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -1646,8 +1631,7 @@ def cmd_compare(args):
         activate_venv()
 
     compare_script = SCRIPT_DIR / "compare_benchmark_logs.py"
-    cmd = ["python3", str(compare_script), args.dir1, args.dir2,
-           "--threshold", str(args.threshold)]
+    cmd = ["python3", str(compare_script), args.dir1, args.dir2, "--threshold", str(args.threshold)]
     logger.info(f"[cmd] {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
 
@@ -1656,10 +1640,10 @@ def cmd_compare(args):
 # 11. Main entry point
 # ===========================================================================
 
+
 def main():
     # Known subcommand names
-    SUBCOMMANDS = {"benchmark", "accuracy", "ci-baseline", "ts-compare", "compare",
-                   "-h", "--help"}
+    SUBCOMMANDS = {"benchmark", "accuracy", "ci-baseline", "ts-compare", "compare", "-h", "--help"}
 
     # No args → show help
     if len(sys.argv) == 1:

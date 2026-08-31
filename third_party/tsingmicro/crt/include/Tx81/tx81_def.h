@@ -2,11 +2,11 @@
 #define CRT_TARGET_TX81_DEF_H
 
 #define CONFIG_NO_PLATFORM_HOOK_H
+#include "common_func.h"
 #include "instr_adapter.h"
 #include "instr_adapter_plat.h"
 #include "instr_def.h"
 #include "instr_operator.h"
-#include "common_func.h"
 
 typedef enum {
   UNKNOWN = 0,

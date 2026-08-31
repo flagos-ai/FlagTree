@@ -15,14 +15,12 @@ def _is_txda():
     return getattr(target, "backend", None) == "txda"
 
 
-pytestmark = pytest.mark.skipif(
-    not _is_txda(), reason="TLE DSA tests require TsingMicro (txda) backend"
-)
+pytestmark = pytest.mark.skipif(not _is_txda(), reason="TLE DSA tests require TsingMicro (txda) backend")
 
 
 @triton.jit
-def dsa_arith_kernel(x_ptr, y_ptr, out_ptr, M, N, P, Q,
-                     BM: tl.constexpr, BN: tl.constexpr, BP: tl.constexpr, BQ: tl.constexpr, OP: tl.constexpr):
+def dsa_arith_kernel(x_ptr, y_ptr, out_ptr, M, N, P, Q, BM: tl.constexpr, BN: tl.constexpr, BP: tl.constexpr,
+                     BQ: tl.constexpr, OP: tl.constexpr):
     """Four-dimensional three-operand buffer arithmetic (tiled)."""
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -31,10 +29,8 @@ def dsa_arith_kernel(x_ptr, y_ptr, out_ptr, M, N, P, Q,
     offs_n = pid_n * BN + tl.arange(0, BN)
     offs_p = pid_p * BP + tl.arange(0, BP)
     offs_q = tl.arange(0, BQ)
-    idx = (offs_m[:, None, None, None] * N * P * Q
-           + offs_n[None, :, None, None] * P * Q
-           + offs_p[None, None, :, None] * Q
-           + offs_q[None, None, None, :])
+    idx = (offs_m[:, None, None, None] * N * P * Q + offs_n[None, :, None, None] * P * Q +
+           offs_p[None, None, :, None] * Q + offs_q[None, None, None, :])
     mask = (offs_m[:, None, None, None] < M) & (offs_n[None, :, None, None] < N) & \
            (offs_p[None, None, :, None] < P) & (offs_q[None, None, None, :] < Q)
 
@@ -78,9 +74,8 @@ class TestTLEDsaArith:
     )
     @pytest.mark.parametrize(
         "shape,block",
-        [
-            ((17, 13, 9, 8), (16, 8, 8, 8)),  # tails on m/n/p; q fully covered (3-axis grid)
-        ],
+        [((17, 13, 9, 8), (16, 8, 8, 8)),  # tails on m/n/p; q fully covered (3-axis grid)
+         ],
     )
     def test_arith(self, op, ref, shape, block):
         torch.manual_seed(42)
@@ -91,8 +86,7 @@ class TestTLEDsaArith:
         out = torch.empty_like(a)
 
         grid = (triton.cdiv(m, bm), triton.cdiv(n, bn), triton.cdiv(p, bp))
-        dsa_arith_kernel[grid](a, b, out, m, n, p, q,
-                               BM=bm, BN=bn, BP=bp, BQ=bq, num_ctas=1, OP=op)
+        dsa_arith_kernel[grid](a, b, out, m, n, p, q, BM=bm, BN=bn, BP=bp, BQ=bq, num_ctas=1, OP=op)
 
         expected = ref(a, b)
         torch.testing.assert_close(out, expected, atol=1e-4, rtol=1e-4)

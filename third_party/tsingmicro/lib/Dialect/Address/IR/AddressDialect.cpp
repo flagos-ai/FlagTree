@@ -110,8 +110,8 @@ OpFoldResult ConstantOp::fold(FoldAdaptor adaptor) {
 
 void TypeOffsetOp::build(OpBuilder &odsBuilder, OperationState &odsState,
                          TypeAttr baseType, Type resultTy) {
-  build(odsBuilder, odsState,
-        resultTy ? resultTy : odsBuilder.getIndexType(), baseType);
+  build(odsBuilder, odsState, resultTy ? resultTy : odsBuilder.getIndexType(),
+        baseType);
 }
 
 OpFoldResult TypeOffsetOp::fold(FoldAdaptor adaptor) {
@@ -124,8 +124,8 @@ OpFoldResult TypeOffsetOp::fold(FoldAdaptor adaptor) {
 
 void CastOp::build(OpBuilder &odsBuilder, OperationState &odsState,
                    Attribute addressSpace, Value input) {
-  build(odsBuilder, odsState,
-        odsBuilder.getType<AddressType>(addressSpace), input);
+  build(odsBuilder, odsState, odsBuilder.getType<AddressType>(addressSpace),
+        input);
 }
 
 LogicalResult CastOp::canonicalize(CastOp op, PatternRewriter &rewriter) {

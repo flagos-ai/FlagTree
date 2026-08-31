@@ -49,7 +49,7 @@ static bool preservesIntegerPrecision(Type elementType, int precisionMode) {
   }
 }
 
-bool isConstantValue(Value &v, double targetValue, bool isApprox=false) {
+bool isConstantValue(Value &v, double targetValue, bool isApprox = false) {
   auto constOp = v.getDefiningOp<arith::ConstantOp>();
   if (!constOp) {
     return false;
@@ -178,10 +178,10 @@ private:
           loc, elementType, rewriter.getZeroAttr(elementType));
       Value empty = rewriter.create<tensor::EmptyOp>(loc, paddedType.getShape(),
                                                      elementType);
-      Value padded = rewriter
-                         .create<linalg::FillOp>(loc, ValueRange{zero},
-                                                 ValueRange{empty})
-                         .result();
+      Value padded =
+          rewriter
+              .create<linalg::FillOp>(loc, ValueRange{zero}, ValueRange{empty})
+              .result();
       src = rewriter.create<tensor::InsertSliceOp>(
           loc, paddedType, src, padded, ValueRange{}, ValueRange{},
           ValueRange{}, ArrayRef<int64_t>{0, 0}, ArrayRef<int64_t>{M, origN},
@@ -210,8 +210,8 @@ private:
         ->getResult(0);
   }
 
-  Value dechannelNorm(PatternRewriter &rewriter, Location loc,
-                      Value src, int64_t origN) const {
+  Value dechannelNorm(PatternRewriter &rewriter, Location loc, Value src,
+                      int64_t origN) const {
     auto type = cast<RankedTensorType>(src.getType());
     auto elementType = type.getElementType();
     int64_t N1 = type.getShape()[0];
@@ -226,9 +226,9 @@ private:
       auto permsTensor = rewriter.create<tensor::EmptyOp>(
           loc, ArrayRef<int64_t>{M, N1, N2}, elementType);
       result = rewriter
-                    .create<linalg::TransposeOp>(
-                        loc, src, permsTensor, ArrayRef<int64_t>{1, 0, 2})
-                    ->getResult(0);
+                   .create<linalg::TransposeOp>(loc, src, permsTensor,
+                                                ArrayRef<int64_t>{1, 0, 2})
+                   ->getResult(0);
       result = rewriter.create<tensor::CollapseShapeOp>(
           loc, result, ArrayRef<ReassociationIndices>{{0}, {1, 2}});
     }
@@ -237,9 +237,8 @@ private:
     int64_t resultN = resultType.getShape()[1];
     if (origN < resultN) {
       result = rewriter.create<tensor::ExtractSliceOp>(
-          loc, resultType.clone({M, origN}), result,
-          ValueRange{}, ValueRange{}, ValueRange{},
-          ArrayRef<int64_t>{0, 0}, ArrayRef<int64_t>{M, origN},
+          loc, resultType.clone({M, origN}), result, ValueRange{}, ValueRange{},
+          ValueRange{}, ArrayRef<int64_t>{0, 0}, ArrayRef<int64_t>{M, origN},
           ArrayRef<int64_t>{1, 1});
     }
     return result;
@@ -337,9 +336,8 @@ public:
       rewriter.eraseOp(op);
 
       rewriter.setInsertionPointAfter(newForOp);
-      Value res =
-          dechannelNorm(rewriter, forOp->getLoc(), newForOp->getResult(idx),
-                        origN);
+      Value res = dechannelNorm(rewriter, forOp->getLoc(),
+                                newForOp->getResult(idx), origN);
       forOp->getResult(idx).replaceAllUsesWith(res);
       rewriter.eraseOp(forOp);
     } else {
@@ -1491,8 +1489,7 @@ struct DivFloatOpRewrite : public OpRewritePattern<linalg::GenericOp> {
 
     if (lhsTy.getShape() != rhsTy.getShape() ||
         lhsTy.getShape() != outTy.getShape())
-      return op->emitRemark(
-          "dsa binary op shape mismatch between lhs/rhs/out");
+      return op->emitRemark("dsa binary op shape mismatch between lhs/rhs/out");
     if (lhsTy.getElementType() != rhsTy.getElementType() ||
         lhsTy.getElementType() != outTy.getElementType())
       return op->emitRemark(
@@ -1501,9 +1498,9 @@ struct DivFloatOpRewrite : public OpRewritePattern<linalg::GenericOp> {
     auto scratch = rewriter.create<memref::AllocOp>(loc, outTy);
     auto scratchMemref = scratch.getResult();
 
-    rewriter.create<linalg::ReciprocalOp>(
-        loc, TypeRange{}, ValueRange{op.getInputs()[1]},
-        ValueRange{scratchMemref});
+    rewriter.create<linalg::ReciprocalOp>(loc, TypeRange{},
+                                          ValueRange{op.getInputs()[1]},
+                                          ValueRange{scratchMemref});
 
     auto rank = static_cast<int64_t>(lhsTy.getShape().size());
     auto identityMap = rewriter.getMultiDimIdentityMap(rank);
@@ -1516,9 +1513,7 @@ struct DivFloatOpRewrite : public OpRewritePattern<linalg::GenericOp> {
         loc,
         /*resultTensorTypes=*/TypeRange{},
         ValueRange{op.getInputs()[0], scratchMemref},
-        ValueRange{op.getOutputs()[0]},
-        indexingMaps,
-        iteratorTypes,
+        ValueRange{op.getOutputs()[0]}, indexingMaps, iteratorTypes,
         [&](OpBuilder &b, Location loc, ValueRange args) {
           auto mulOp = b.create<arith::MulFOp>(loc, args[0], args[1]);
           if (rndModeAttr)
@@ -2238,17 +2233,16 @@ static Value buildCorrectivePosDiv(OpBuilder &rewriter, Location loc,
   // separated from user float divisions (which go through NRM_DIV).
   Value recipOut = rewriter.create<tensor::EmptyOp>(loc, f32Ty.getShape(),
                                                     f32Ty.getElementType());
-  Value recip =
-      rewriter.create<linalg::ReciprocalOp>(loc, f32Ty, ValueRange{bAbs},
-                                            ValueRange{recipOut})
-          ->getResult(0);
+  Value recip = rewriter
+                    .create<linalg::ReciprocalOp>(loc, f32Ty, ValueRange{bAbs},
+                                                  ValueRange{recipOut})
+                    ->getResult(0);
   Value qf =
       buildLinalgElementwise<arith::MulFOp>(rewriter, loc, {aAbs, recip});
   Value qTrunc = buildLinalgElementwise<math::TruncOp>(rewriter, loc, {qf});
   Value chk =
       buildLinalgElementwise<arith::MulFOp>(rewriter, loc, {qTrunc, bAbs});
-  Value r =
-      buildLinalgElementwise<arith::SubFOp>(rewriter, loc, {aAbs, chk});
+  Value r = buildLinalgElementwise<arith::SubFOp>(rewriter, loc, {aAbs, chk});
   Value needsCorr =
       buildLinalgCmpF(rewriter, loc, arith::CmpFPredicate::OGE, r, bAbs);
   // i1 -> f32 (1.0/0.0). Use createElemwiseNaryOp (no Elementwise-trait
@@ -2276,13 +2270,14 @@ static Value buildCorrectiveDivSigned(OpBuilder &rewriter, Location loc,
   // independent from the user-float-divf -> NRM_DIV path.
   Value recipOut = rewriter.create<tensor::EmptyOp>(loc, f32Ty.getShape(),
                                                     f32Ty.getElementType());
-  Value recip =
-      rewriter.create<linalg::ReciprocalOp>(loc, f32Ty, ValueRange{bF},
-                                            ValueRange{recipOut})
-          ->getResult(0);
+  Value recip = rewriter
+                    .create<linalg::ReciprocalOp>(loc, f32Ty, ValueRange{bF},
+                                                  ValueRange{recipOut})
+                    ->getResult(0);
   Value qf = buildLinalgElementwise<arith::MulFOp>(rewriter, loc, {aF, recip});
   Value qTrunc = buildLinalgElementwise<math::TruncOp>(rewriter, loc, {qf});
-  Value chk = buildLinalgElementwise<arith::MulFOp>(rewriter, loc, {qTrunc, bF});
+  Value chk =
+      buildLinalgElementwise<arith::MulFOp>(rewriter, loc, {qTrunc, bF});
   Value r = buildLinalgElementwise<arith::SubFOp>(rewriter, loc, {aF, chk});
   Value rAbs = buildLinalgElementwise<math::AbsFOp>(rewriter, loc, {r});
   Value bAbs = buildLinalgElementwise<math::AbsFOp>(rewriter, loc, {bF});
@@ -2496,8 +2491,7 @@ struct CastElementwiseOpIOToFloatPattern
       if (inputType.getNumElements() < 8)
         return failure();
 
-      if (preservesIntegerPrecision(inputType.getElementType(),
-                                    precisionMode))
+      if (preservesIntegerPrecision(inputType.getElementType(), precisionMode))
         return failure();
 
       auto outputType =
@@ -2616,9 +2610,12 @@ struct CastElementwiseOpIOToFloatPattern
           [&](Operation *srcOp, PatternRewriter &rewriter, ValueRange inputs,
               ValueRange outputs) -> ValueRange {
             Location loc = srcOp->getLoc();
-            Value q = buildCorrectiveDivSigned(rewriter, loc, inputs[0], inputs[1]);
-            Value qb = buildLinalgElementwise<arith::MulFOp>(rewriter, loc, {q, inputs[1]});
-            Value r = buildLinalgElementwise<arith::SubFOp>(rewriter, loc, {inputs[0], qb});
+            Value q =
+                buildCorrectiveDivSigned(rewriter, loc, inputs[0], inputs[1]);
+            Value qb = buildLinalgElementwise<arith::MulFOp>(rewriter, loc,
+                                                             {q, inputs[1]});
+            Value r = buildLinalgElementwise<arith::SubFOp>(rewriter, loc,
+                                                            {inputs[0], qb});
             return r.getDefiningOp()->getResults();
           });
     }
@@ -2641,9 +2638,12 @@ struct CastElementwiseOpIOToFloatPattern
           [&](Operation *srcOp, PatternRewriter &rewriter, ValueRange inputs,
               ValueRange outputs) -> ValueRange {
             Location loc = srcOp->getLoc();
-            Value q = buildCorrectivePosDiv(rewriter, loc, inputs[0], inputs[1]);
-            Value qb = buildLinalgElementwise<arith::MulFOp>(rewriter, loc, {q, inputs[1]});
-            Value r = buildLinalgElementwise<arith::SubFOp>(rewriter, loc, {inputs[0], qb});
+            Value q =
+                buildCorrectivePosDiv(rewriter, loc, inputs[0], inputs[1]);
+            Value qb = buildLinalgElementwise<arith::MulFOp>(rewriter, loc,
+                                                             {q, inputs[1]});
+            Value r = buildLinalgElementwise<arith::SubFOp>(rewriter, loc,
+                                                            {inputs[0], qb});
             return r.getDefiningOp()->getResults();
           });
     }
@@ -2651,8 +2651,7 @@ struct CastElementwiseOpIOToFloatPattern
     return failure();
   }
 
-  CastElementwiseOpIOToFloatPattern(MLIRContext *context,
-                                    int precisionMode)
+  CastElementwiseOpIOToFloatPattern(MLIRContext *context, int precisionMode)
       : OpRewritePattern<linalg::GenericOp>(context),
         precisionMode(precisionMode) {}
 
@@ -2780,9 +2779,10 @@ struct CastArgMinMaxOpIOToFloatPattern : public OpRewritePattern<MKOpT> {
     auto outIdx = op.getIndex();
     auto axis = op.getAxis();
     auto fpInputType = cast<RankedTensorType>(fpInput.getType());
-    auto scratchTy = RankedTensorType::get(fpInputType.getShape(), fpInputType.getElementType());
-    auto imm = rewriter.create<bufferization::AllocTensorOp>(
-            loc, scratchTy, ValueRange{});
+    auto scratchTy = RankedTensorType::get(fpInputType.getShape(),
+                                           fpInputType.getElementType());
+    auto imm = rewriter.create<bufferization::AllocTensorOp>(loc, scratchTy,
+                                                             ValueRange{});
     auto newOp =
         rewriter.create<MKOpT>(loc, TypeRange{fpValueTy, outIdx.getType()},
                                fpInput, imm, valueEmpty, outIdx, axis);
@@ -3056,9 +3056,9 @@ struct GeluFusionPattern : OpRewritePattern<linalg::GenericOp> {
     } else {
       // Match the mul op: (extf(x) * scale)
       auto extfInput = isErfScaleTensor(mulErfRhs) ? mulErfLhs : mulErfRhs;
-      auto extfInputGenericOp =
-        extfInput.getDefiningOp<linalg::GenericOp>();
-      if (!extfInputGenericOp || !checkGenericOp<arith::ExtFOp>(extfInputGenericOp)) {
+      auto extfInputGenericOp = extfInput.getDefiningOp<linalg::GenericOp>();
+      if (!extfInputGenericOp ||
+          !checkGenericOp<arith::ExtFOp>(extfInputGenericOp)) {
         return false;
       } else {
         Value nestedInput1 = extfInputGenericOp.getInputs()[0];
@@ -3125,7 +3125,8 @@ struct GeluFusionPattern : OpRewritePattern<linalg::GenericOp> {
         if (!isAddAndMulOp(lhsGenericOp, rhsGenericOp)) {
           return linalg::GenericOp();
         } else {
-          // match case : mul (mul(lhs * rhs) * add (lhs1 *rhs1)), extf already done at before.
+          // match case : mul (mul(lhs * rhs) * add (lhs1 *rhs1)), extf already
+          // done at before.
           return checkGenericOp<arith::MulFOp>(lhsGenericOp) ? lhsGenericOp
                                                              : rhsGenericOp;
         }
@@ -3197,10 +3198,11 @@ struct GeluFusionPattern : OpRewritePattern<linalg::GenericOp> {
     if (input1 != input) {
       // If the inputs of the mul ops are not the same, we cannot match the gelu
       // pattern.
-      auto extfInput = isTanhScaledTensor(nestedMulInput1) ? nestedMulInput2 : nestedMulInput1;
-      auto extfInputGenericOp =
-        extfInput.getDefiningOp<linalg::GenericOp>();
-      if (!extfInputGenericOp || !checkGenericOp<arith::ExtFOp>(extfInputGenericOp)) {
+      auto extfInput = isTanhScaledTensor(nestedMulInput1) ? nestedMulInput2
+                                                           : nestedMulInput1;
+      auto extfInputGenericOp = extfInput.getDefiningOp<linalg::GenericOp>();
+      if (!extfInputGenericOp ||
+          !checkGenericOp<arith::ExtFOp>(extfInputGenericOp)) {
         return false;
       } else {
         Value nestedInput1 = extfInputGenericOp.getInputs()[0];
@@ -3443,20 +3445,17 @@ struct ErfExpansionPattern : public OpRewritePattern<linalg::GenericOp> {
 
     if (needsCast) {
       auto f32ResultType = RankedTensorType::get(shape, f32Type);
-      input = buildLinalgElementwise<arith::ExtFOp>(rewriter, loc,
-                                                     f32ResultType,
-                                                     ValueRange{input});
+      input = buildLinalgElementwise<arith::ExtFOp>(
+          rewriter, loc, f32ResultType, ValueRange{input});
     }
 
     // Helper: create a constant tensor (scalar broadcast to shape).
     auto makeConst = [&](float v) -> Value {
       Value scalar = rewriter.create<arith::ConstantOp>(
           loc, f32Type, rewriter.getF32FloatAttr(v));
-      Value empty =
-          rewriter.create<tensor::EmptyOp>(loc, shape, f32Type);
+      Value empty = rewriter.create<tensor::EmptyOp>(loc, shape, f32Type);
       return rewriter
-          .create<linalg::FillOp>(loc, ValueRange{scalar},
-                                  ValueRange{empty})
+          .create<linalg::FillOp>(loc, ValueRange{scalar}, ValueRange{empty})
           .getResult(0);
     };
 
@@ -3470,8 +3469,8 @@ struct ErfExpansionPattern : public OpRewritePattern<linalg::GenericOp> {
     Value A5 = makeConst(1.061405429f);
 
     // sign = (x >= 0) ? 1.0 : -1.0
-    Value signI1 = buildLinalgCmpF(rewriter, loc, arith::CmpFPredicate::OGE,
-                                   input, zero);
+    Value signI1 =
+        buildLinalgCmpF(rewriter, loc, arith::CmpFPredicate::OGE, input, zero);
     Value negOne = makeConst(-1.0f);
     Value sign = buildLinalgSelect(rewriter, loc, signI1, one, negOne);
 
@@ -3508,8 +3507,8 @@ struct ErfExpansionPattern : public OpRewritePattern<linalg::GenericOp> {
     // y = 1.0 - h * exp_val
     Value hMulExp =
         buildLinalgElementwise<arith::MulFOp>(rewriter, loc, {h, expVal});
-    Value y = buildLinalgElementwise<arith::SubFOp>(rewriter, loc,
-                                                    {one, hMulExp});
+    Value y =
+        buildLinalgElementwise<arith::SubFOp>(rewriter, loc, {one, hMulExp});
 
     // erf(x) = sign * y
     Value result =
@@ -3517,9 +3516,8 @@ struct ErfExpansionPattern : public OpRewritePattern<linalg::GenericOp> {
 
     // Truncate back to the original type if it was upcast.
     if (needsCast)
-      result = buildLinalgElementwise<arith::TruncFOp>(rewriter, loc,
-                                                        resultType,
-                                                        ValueRange{result});
+      result = buildLinalgElementwise<arith::TruncFOp>(
+          rewriter, loc, resultType, ValueRange{result});
 
     rewriter.replaceOp(op, result);
     return success();
@@ -3544,8 +3542,7 @@ struct TanhOpRewrite : public OpRewritePattern<linalg::GenericOp> {
   bool matchFixedTanh(linalg::GenericOp op) const {
     // match addVV
     auto addOfTanh = op.getInputs()[0];
-    auto addOfTanhGenericOp =
-        addOfTanh.getDefiningOp<linalg::GenericOp>();
+    auto addOfTanhGenericOp = addOfTanh.getDefiningOp<linalg::GenericOp>();
     if (!addOfTanhGenericOp ||
         !checkGenericOp<arith::AddFOp>(addOfTanhGenericOp)) {
       return false;
@@ -3569,8 +3566,7 @@ struct TanhOpRewrite : public OpRewritePattern<linalg::GenericOp> {
     // match LessThenVS(x, 44.3)
     Value lessThenVSInput1 = lessThenVSGenericOp.getInput();
     auto lessThenVSInput2 = lessThenVSGenericOp.getValue();
-    if (!isTanhMaxScale(lessThenVSInput2) ||
-        (lessThenVSInput1 != input)) {
+    if (!isTanhMaxScale(lessThenVSInput2) || (lessThenVSInput1 != input)) {
       return false;
     }
     // match mulVS(LessThenVS, 44.3)
@@ -3583,8 +3579,10 @@ struct TanhOpRewrite : public OpRewritePattern<linalg::GenericOp> {
     // match LessThenVS(LessThenVS, 1.0)
     auto lessThenVS2Input1 = lessThenVS2GenericOp.getInput();
     auto lessThenVS2Input2 = lessThenVS2GenericOp.getValue();
-    auto lessThenVS1GenericOp = lessThenVS2Input1.getDefiningOp<mk::LessThenVS>();
-    if ((lessThenVS1GenericOp != lessThenVSGenericOp) || !isOneScale(lessThenVS2Input2)) {
+    auto lessThenVS1GenericOp =
+        lessThenVS2Input1.getDefiningOp<mk::LessThenVS>();
+    if ((lessThenVS1GenericOp != lessThenVSGenericOp) ||
+        !isOneScale(lessThenVS2Input2)) {
       return false;
     }
     return true;
@@ -3620,7 +3618,8 @@ public:
 
     auto isInputGreaterMaxVal =
         rewriter
-            .create<mk::LessThenVS>(loc, resultType, isInputLessMaxVal, oneVal, emptyTensor)
+            .create<mk::LessThenVS>(loc, resultType, isInputLessMaxVal, oneVal,
+                                    emptyTensor)
             ->getResult(0);
 
     auto inputMulMask = buildLinalgElementwise<arith::MulFOp>(
@@ -3628,7 +3627,8 @@ public:
 
     auto maxTensorWithMask =
         rewriter
-            .create<mk::MulVS>(loc, resultType, isInputGreaterMaxVal, maxVal, emptyTensor)
+            .create<mk::MulVS>(loc, resultType, isInputGreaterMaxVal, maxVal,
+                               emptyTensor)
             ->getResult(0);
 
     auto inputMulMaskAddMax = buildLinalgElementwise<arith::AddFOp>(
@@ -3808,9 +3808,10 @@ public:
               loc, iterArgs[1], outputOffsets, outputSizes, outputStrides);
 
           // workaround hardware bug
-          auto scratchTy = RankedTensorType::get(inputType.getShape(), inputType.getElementType());
+          auto scratchTy = RankedTensorType::get(inputType.getShape(),
+                                                 inputType.getElementType());
           auto imm = rewriter.create<bufferization::AllocTensorOp>(
-            loc, scratchTy, ValueRange{});
+              loc, scratchTy, ValueRange{});
           auto argOp = nestedBuilder.create<MKOpT>(
               loc, TypeRange{outValVec.getType(), outIdxVec.getType()},
               inputCollapsed, imm, outValVec, outIdxVec, 0);
@@ -3833,9 +3834,9 @@ public:
     auto safeValCopy = rewriter.create<linalg::CopyOp>(
         loc, TypeRange{valueType}, ValueRange{loopNest.results[0]},
         ValueRange{safeValDst});
-    rewriter.replaceAllUsesWith(op->getResults(),
-                                ValueRange{safeValCopy.getResult(0),
-                                           loopNest.results[1]});
+    rewriter.replaceAllUsesWith(
+        op->getResults(),
+        ValueRange{safeValCopy.getResult(0), loopNest.results[1]});
     rewriter.eraseOp(op);
     return success();
   }
@@ -4165,24 +4166,28 @@ struct I1ExtUIOpRewrite : public OpRewritePattern<linalg::GenericOp> {
 // still enter LinalgToMK (e.g. hand-written core IR or arith.bitcast that
 // slipped through ElementwiseToLinalg).
 struct BitcastGenericToMKBitcast : public OpRewritePattern<linalg::GenericOp> {
-    using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
+  using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
 
-    LogicalResult matchAndRewrite(linalg::GenericOp op, PatternRewriter &rewriter) const override {
-        auto regionOps = triton::getRegionOps<linalg::GenericOp>(op);
-        if (regionOps.size() != 1 || !isa<arith::BitcastOp>(regionOps.front())) return failure();
-        if (op.getNumDpsInputs() != 1 || op.getNumDpsInits() != 1) return failure();
+  LogicalResult matchAndRewrite(linalg::GenericOp op,
+                                PatternRewriter &rewriter) const override {
+    auto regionOps = triton::getRegionOps<linalg::GenericOp>(op);
+    if (regionOps.size() != 1 || !isa<arith::BitcastOp>(regionOps.front()))
+      return failure();
+    if (op.getNumDpsInputs() != 1 || op.getNumDpsInits() != 1)
+      return failure();
 
-        Value src = op.getInputs().front();
-        auto srcTy = dyn_cast<RankedTensorType>(src.getType());
-        auto dstTy = dyn_cast<RankedTensorType>(op.getResultTypes().front());
-        if (!srcTy || !dstTy) return failure();
-        if (srcTy.getElementTypeBitWidth() != dstTy.getElementTypeBitWidth() ||
-            srcTy.getNumElements() != dstTy.getNumElements())
-            return failure();
+    Value src = op.getInputs().front();
+    auto srcTy = dyn_cast<RankedTensorType>(src.getType());
+    auto dstTy = dyn_cast<RankedTensorType>(op.getResultTypes().front());
+    if (!srcTy || !dstTy)
+      return failure();
+    if (srcTy.getElementTypeBitWidth() != dstTy.getElementTypeBitWidth() ||
+        srcTy.getNumElements() != dstTy.getNumElements())
+      return failure();
 
-        rewriter.replaceOpWithNewOp<mk::BitcastOp>(op, dstTy, src);
-        return success();
-    }
+    rewriter.replaceOpWithNewOp<mk::BitcastOp>(op, dstTy, src);
+    return success();
+  }
 };
 
 struct I1ExtSIOpRewrite : public OpRewritePattern<linalg::GenericOp> {
@@ -4476,8 +4481,8 @@ struct DenseConstantToFillPattern
     auto splatValue = denseAttr.getSplatValue<Attribute>();
     Value scalar = rewriter.create<arith::ConstantOp>(
         loc, elemType, cast<TypedAttr>(splatValue));
-    Value empty = rewriter.create<tensor::EmptyOp>(
-        loc, resultType.getShape(), elemType);
+    Value empty =
+        rewriter.create<tensor::EmptyOp>(loc, resultType.getShape(), elemType);
     Value fill =
         rewriter.create<linalg::FillOp>(loc, scalar, empty).getResult(0);
     rewriter.replaceOp(op, fill);
@@ -4485,12 +4490,12 @@ struct DenseConstantToFillPattern
   }
 };
 
-struct DenseConstantToInsertPattern
-    : OpConversionPattern<arith::ConstantOp> {
+struct DenseConstantToInsertPattern : OpConversionPattern<arith::ConstantOp> {
   using OpConversionPattern::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(arith::ConstantOp op, OpAdaptor /*adaptor*/,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(arith::ConstantOp op, OpAdaptor /*adaptor*/,
+                  ConversionPatternRewriter &rewriter) const override {
     auto tensorType = dyn_cast<RankedTensorType>(op.getType());
     if (!tensorType)
       return failure();
@@ -4511,8 +4516,8 @@ struct DenseConstantToInsertPattern
 
     Location loc = op.getLoc();
 
-    Value result = rewriter.create<tensor::EmptyOp>(
-        loc, tensorType.getShape(), elemType);
+    Value result =
+        rewriter.create<tensor::EmptyOp>(loc, tensorType.getShape(), elemType);
 
     SmallVector<int64_t> shape(tensorType.getShape());
     int64_t rank = tensorType.getRank();
@@ -4531,15 +4536,13 @@ struct DenseConstantToInsertPattern
       Value scalar;
       if (isa<IndexType>(elemType)) {
         auto intAttr = cast<IntegerAttr>(attr);
-        scalar = rewriter.create<arith::ConstantIndexOp>(
-            loc, intAttr.getInt());
+        scalar = rewriter.create<arith::ConstantIndexOp>(loc, intAttr.getInt());
       } else {
-        scalar = rewriter.create<arith::ConstantOp>(
-            loc, elemType, cast<TypedAttr>(attr));
+        scalar = rewriter.create<arith::ConstantOp>(loc, elemType,
+                                                    cast<TypedAttr>(attr));
       }
 
-      result = rewriter.create<tensor::InsertOp>(
-          loc, scalar, result, indices);
+      result = rewriter.create<tensor::InsertOp>(loc, scalar, result, indices);
 
       ++linear;
     }
@@ -4572,9 +4575,9 @@ void mlir::triton::populateLinalgToMKTypeConversionPatterns(
   patterns.add<CastElementwiseOpIOToFloatPattern, CastReduceOpIOToFloatPattern>(
       patterns.getContext(), precisionMode /* precisionMode */);
   patterns.add<CannonicalizeRedudantTypeConversion>(patterns.getContext());
-  patterns
-      .add<I1ExtSIOpRewrite, I1ExtUIOpRewrite, I1ToF32Rewrite, FP32ToI1Rewrite,
-           BitcastGenericToMKBitcast>(patterns.getContext());
+  patterns.add<I1ExtSIOpRewrite, I1ExtUIOpRewrite, I1ToF32Rewrite,
+               FP32ToI1Rewrite, BitcastGenericToMKBitcast>(
+      patterns.getContext());
   // TODO: if need precision mode
   patterns.add<CastArgMinMaxOpIOToFloatPattern<mk::ArgMaxOp>,
                CastArgMinMaxOpIOToFloatPattern<mk::ArgMinOp>>(

@@ -130,5 +130,3 @@ if [ -f "$flaggems_wheel" ]; then
     rm -rf  $flaggems_wheel
 fi
 python3 -m pip wheel . --no-deps -v --verbos
-
-

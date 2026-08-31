@@ -11,7 +11,8 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     cache.store(
         file="tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64",
         condition=("tsingmicro" == flagtree_backend),
-        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64_v0.2.0.tar.gz",
+        url=
+        "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tsingmicro-llvm21-glibc2.30-glibcxx3.4.28-python3.11-x64_v0.2.0.tar.gz",
         pre_hook=lambda: check_env('LLVM_SYSPATH'),
         post_hook=set_llvm_env,
     )

@@ -55,4 +55,3 @@ LogicalResult mlir::dsa::BitcastOp::verify() {
            << srcBits << " vs " << dstBits;
   return success();
 }
-

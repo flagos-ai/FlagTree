@@ -181,10 +181,9 @@ extractRemoteInfoFromPtr(PatternRewriter &rewriter, Location loc, Value ptrLike,
                          SmallVector<Value, 4> &coords, Value &basePtrLike,
                          DenseI32ArrayAttr *meshPhysicalIdsOut = nullptr,
                          DenseI32ArrayAttr *meshShapeOut = nullptr) {
-  if (auto remotePtrOp =
-          ptrLike.getDefiningOp<mlir::dsa::RemotePointersOp>()) {
-    if (failed(getCoordsFromShardIdValue(rewriter, loc, remotePtrOp.getShardId(),
-                                         coords)))
+  if (auto remotePtrOp = ptrLike.getDefiningOp<mlir::dsa::RemotePointersOp>()) {
+    if (failed(getCoordsFromShardIdValue(rewriter, loc,
+                                         remotePtrOp.getShardId(), coords)))
       return failure();
     basePtrLike = remotePtrOp.getSrc();
     if (meshPhysicalIdsOut)
@@ -406,8 +405,7 @@ struct DsaLocalStoreToMemrefPattern : public OpRewritePattern<triton::StoreOp> {
 // cumsum
 // ===----------------------------------------------------------------------===//
 
-struct DsaCumsumToMkPattern
-    : public OpRewritePattern<mlir::dsa::CumsumOp> {
+struct DsaCumsumToMkPattern : public OpRewritePattern<mlir::dsa::CumsumOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::dsa::CumsumOp op,
@@ -446,8 +444,7 @@ struct DsaCumsumToMkPattern
     bool scalarTotal = !isa<RankedTensorType>(op.getTotal().getType());
     RankedTensorType totalBufferTy;
     if (scalarTotal) {
-      totalBufferTy =
-          RankedTensorType::get({1}, inputTy.getElementType());
+      totalBufferTy = RankedTensorType::get({1}, inputTy.getElementType());
     } else {
       totalBufferTy = cast<RankedTensorType>(op.getTotal().getType());
     }
@@ -461,9 +458,8 @@ struct DsaCumsumToMkPattern
 
     auto mkOp = rewriter.create<mk::CumsumOp>(
         loc, TypeRange{exclusiveTy, totalBufferTy, scratchTy}, op.getInput(),
-        exclusiveInit, totalInit, scratchInit,
-        rewriter.getI32IntegerAttr(axis), rewriter.getI64ArrayAttr(shape),
-        rewriter.getI64IntegerAttr(pad));
+        exclusiveInit, totalInit, scratchInit, rewriter.getI32IntegerAttr(axis),
+        rewriter.getI64ArrayAttr(shape), rewriter.getI64IntegerAttr(pad));
 
     Value total = mkOp->getResult(1);
     if (scalarTotal) {
@@ -480,8 +476,7 @@ struct DsaCumsumToMkPattern
 // randgen
 // ===----------------------------------------------------------------------===//
 
-struct DsaRandGenToMkPattern
-    : public OpRewritePattern<mlir::dsa::RandGenOp> {
+struct DsaRandGenToMkPattern : public OpRewritePattern<mlir::dsa::RandGenOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(mlir::dsa::RandGenOp op,
@@ -516,8 +511,8 @@ struct DsaRandGenToMkPattern
       return rewriter.notifyMatchFailure(
           op, "dsa.randgen out numel must equal byte_count / 8");
 
-    auto outInit = rewriter.create<tensor::EmptyOp>(
-        loc, outTy.getShape(), outTy.getElementType());
+    auto outInit = rewriter.create<tensor::EmptyOp>(loc, outTy.getShape(),
+                                                    outTy.getElementType());
     auto seed0Init = rewriter.create<tensor::EmptyOp>(
         loc, seed0OutTy.getShape(), seed0OutTy.getElementType());
     auto seed1Init = rewriter.create<tensor::EmptyOp>(
@@ -584,8 +579,7 @@ struct DsaRemotePointersToTritonPattern
 // Rebuild mixed static/dynamic per-dim offsets into OpFoldResult list.
 // Static positions fold to i64 attributes; dynamic ones are 0-d tensors or
 // scalar ints that are extracted (tensor.extract) and cast to index.
-static LogicalResult buildSliceOffsets(PatternRewriter &rewriter,
-                                       Location loc,
+static LogicalResult buildSliceOffsets(PatternRewriter &rewriter, Location loc,
                                        ArrayRef<int64_t> staticOffsets,
                                        ValueRange dynOffsets,
                                        SmallVectorImpl<OpFoldResult> &offsets) {
@@ -667,7 +661,8 @@ struct DsaInsertSliceToTensorSlicePattern
 };
 
 // Three-operand elementwise arithmetic on memrefs; benefit=4 fires before
-// DsaLocalLoadToMemrefPattern (benefit=3). MKToTx81 maps the arith op to tx.*VV.
+// DsaLocalLoadToMemrefPattern (benefit=3). MKToTx81 maps the arith op to
+// tx.*VV.
 template <typename DsaOpT, typename ArithOpT>
 struct DsaBinaryOpToLinalgPattern : public OpRewritePattern<DsaOpT> {
   explicit DsaBinaryOpToLinalgPattern(MLIRContext *ctx)
@@ -683,8 +678,7 @@ struct DsaBinaryOpToLinalgPattern : public OpRewritePattern<DsaOpT> {
 
     if (lhsTy.getShape() != rhsTy.getShape() ||
         lhsTy.getShape() != outTy.getShape())
-      return op->emitRemark(
-          "dsa binary op shape mismatch between lhs/rhs/out");
+      return op->emitRemark("dsa binary op shape mismatch between lhs/rhs/out");
     if (lhsTy.getElementType() != rhsTy.getElementType() ||
         lhsTy.getElementType() != outTy.getElementType())
       return op->emitRemark(
@@ -701,11 +695,8 @@ struct DsaBinaryOpToLinalgPattern : public OpRewritePattern<DsaOpT> {
 
     auto linalgOp = rewriter.create<linalg::GenericOp>(
         loc,
-        /*resultTensorTypes=*/TypeRange{},
-        ValueRange{op.getLhs(), op.getRhs()},
-        ValueRange{op.getOut()},
-        indexingMaps,
-        iteratorTypes);
+        /*resultTensorTypes=*/TypeRange{}, ValueRange{op.getLhs(), op.getRhs()},
+        ValueRange{op.getOut()}, indexingMaps, iteratorTypes);
 
     Block &block = linalgOp.getRegion().emplaceBlock();
     block.addArgument(elemTy, loc);
@@ -715,9 +706,8 @@ struct DsaBinaryOpToLinalgPattern : public OpRewritePattern<DsaOpT> {
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&block);
-      Value result =
-          rewriter.create<ArithOpT>(loc, block.getArgument(0),
-                                    block.getArgument(1));
+      Value result = rewriter.create<ArithOpT>(loc, block.getArgument(0),
+                                               block.getArgument(1));
       rewriter.create<linalg::YieldOp>(loc, result);
     }
 
@@ -755,8 +745,8 @@ struct DsaToTensorToBufferizationPattern
 
     // Element types must match (no implicit cast support yet).
     if (memrefTy.getElementType() != resultTy.getElementType())
-      return op->emitRemark(
-          "dsa.to_tensor element type mismatch between memref and result tensor");
+      return op->emitRemark("dsa.to_tensor element type mismatch between "
+                            "memref and result tensor");
 
     auto toTensor = rewriter.create<bufferization::ToTensorOp>(
         op.getLoc(), tensorTy, op.getSrc(),
@@ -797,7 +787,8 @@ struct DsaToBufferToBufferizationPattern
     Location loc = op.getLoc();
 
     // Materialise the tensor value as a memref, then copy into the SPM buffer.
-    auto srcMemrefTy = MemRefType::get(valTy.getShape(), valTy.getElementType());
+    auto srcMemrefTy =
+        MemRefType::get(valTy.getShape(), valTy.getElementType());
     auto srcMemref =
         rewriter.create<bufferization::ToBufferOp>(loc, srcMemrefTy, val);
     rewriter.create<memref::CopyOp>(loc, srcMemref, op.getDst());
@@ -820,10 +811,8 @@ void mlir::triton::populateTLEToMKConversionPatterns(
       .add<DsaBinaryOpToLinalgPattern<mlir::dsa::AddOp, arith::AddFOp>,
            DsaBinaryOpToLinalgPattern<mlir::dsa::SubOp, arith::SubFOp>,
            DsaBinaryOpToLinalgPattern<mlir::dsa::MulOp, arith::MulFOp>,
-           DsaBinaryOpToLinalgPattern<mlir::dsa::MaximumOp,
-                                      arith::MaximumFOp>,
-           DsaBinaryOpToLinalgPattern<mlir::dsa::MinimumOp,
-                                      arith::MinimumFOp>,
+           DsaBinaryOpToLinalgPattern<mlir::dsa::MaximumOp, arith::MaximumFOp>,
+           DsaBinaryOpToLinalgPattern<mlir::dsa::MinimumOp, arith::MinimumFOp>,
            DsaBinaryOpToLinalgPattern<mlir::dsa::DivOp, arith::DivFOp>>(
           patterns.getContext());
 

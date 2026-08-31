@@ -27,9 +27,7 @@ except ModuleNotFoundError:
     FLAGTREE_BACKEND = os.environ.get("FLAGTREE_BACKEND", "")
 
 if FLAGTREE_BACKEND == "tsingmicro":
-    raise ImportError(
-        "triton.experimental.tle.language.gpu is not supported on tsingmicro backend"
-    )
+    raise ImportError("triton.experimental.tle.language.gpu is not supported on tsingmicro backend")
 
 from .core import (
     pipeline,

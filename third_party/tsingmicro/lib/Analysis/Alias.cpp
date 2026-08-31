@@ -37,7 +37,8 @@ LogicalResult SharedMemoryAliasAnalysis::visitOperation(
     aliasInfo.insert(result);
     pessimistic = false;
   } else if (isa<arith::SelectOp>(op)) {
-    aliasInfo = AliasInfo::join(operands[1]->getValue(), operands[2]->getValue());
+    aliasInfo =
+        AliasInfo::join(operands[1]->getValue(), operands[2]->getValue());
     pessimistic = false;
   } else if (isa<memref::ReinterpretCastOp, memref::SubViewOp,
                  memref::ExtractStridedMetadataOp,

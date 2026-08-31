@@ -6,10 +6,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "tsingmicro-tx81/Conversion/Tx81MemrefToLLVM/Tx81MemrefToLLVM.h"
-#include "tsingmicro-tx81/Conversion/Tx81MemrefToLLVM/AllocLikeConversion.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton-shared/Utils/Utils.h"
+#include "tsingmicro-tx81/Conversion/Tx81MemrefToLLVM/AllocLikeConversion.h"
 #include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
 #include <cstdint>
 #include <vector>
@@ -405,8 +405,9 @@ struct MemRefCastOpLowering : public ConvertOpToLLVMPattern<memref::CastOp> {
   using ConvertOpToLLVMPattern<memref::CastOp>::ConvertOpToLLVMPattern;
 
 public:
-  LogicalResult matchAndRewrite(memref::CastOp memRefCastOp, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+  LogicalResult
+  matchAndRewrite(memref::CastOp memRefCastOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
     Type srcType = memRefCastOp.getOperand().getType();
     Type dstType = memRefCastOp.getType();
 
@@ -425,8 +426,7 @@ public:
              isa<UnrankedMemRefType>(dstType));
 
       // Unranked to unranked cast is disallowed
-      if (isa<UnrankedMemRefType>(srcType) &&
-          isa<UnrankedMemRefType>(dstType))
+      if (isa<UnrankedMemRefType>(srcType) && isa<UnrankedMemRefType>(dstType))
         return failure();
     }
 

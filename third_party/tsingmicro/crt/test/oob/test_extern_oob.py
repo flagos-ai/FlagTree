@@ -7,9 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "kernels"))
 from conftest import run_kernel_script, DmaResult
 
 
-
-def _create_test_script(n_elements, inject_pid_shift, inject_mask_mode,
-                        block_size=256, tensor_size=None):
+def _create_test_script(n_elements, inject_pid_shift, inject_mask_mode, block_size=256, tensor_size=None):
     """Generate a self-contained test script for extern_oob.
 
     Args:
@@ -76,6 +74,7 @@ if __name__ == "__main__":
 
 
 class TestExternOOB:
+
     def test_normal_no_oob(self, dma_env, tmp_path):
         """Normal parameters: should not trigger OOB detection."""
         script = _create_test_script(1024, 0, 0)

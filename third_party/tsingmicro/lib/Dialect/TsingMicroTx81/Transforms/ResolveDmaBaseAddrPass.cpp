@@ -5,8 +5,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "tsingmicro-tx81/Transforms/Passes.h"
-#include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -16,6 +14,8 @@
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/Pass.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "tsingmicro-tx81/Dialect/IR/Tx81Dialect.h"
+#include "tsingmicro-tx81/Transforms/Passes.h"
 #include "llvm/ADT/SmallVector.h"
 #include <cstdlib>
 
@@ -116,7 +116,7 @@ static Value traceToBaseMemRef(Value v, unsigned maxDepth = 16) {
 
 /// Generate a base i64 DDR address from a base memref value.
 static Value generateBaseAddr(Value baseMemRef, Operation *insertBefore,
-                               OpBuilder &builder) {
+                              OpBuilder &builder) {
   auto loc = insertBefore->getLoc();
   auto i64Ty = builder.getI64Type();
 
@@ -175,8 +175,8 @@ static Value generateBaseAddr(Value baseMemRef, Operation *insertBefore,
       return {};
   }
 
-  Value extracted = builder.create<memref::ExtractAlignedPointerAsIndexOp>(
-      loc, extractFrom);
+  Value extracted =
+      builder.create<memref::ExtractAlignedPointerAsIndexOp>(loc, extractFrom);
   Value baseI64 = builder.create<arith::IndexCastOp>(loc, i64Ty, extracted);
   return baseI64;
 }
@@ -284,17 +284,22 @@ static void insertEpLogForFunc(func::FuncOp funcOp, ModuleOp mod) {
   std::string fileGlobal = "rcs_ep_log_file_" + funcOp.getSymName().str();
   std::string funcGlobal = "rcs_ep_log_func_" + funcOp.getSymName().str();
 
-  Value filePtr = getOrCreateGlobalString(loc, builder, fileGlobal, fileStr, mod);
-  Value funcPtr = getOrCreateGlobalString(loc, builder, funcGlobal, funcStr, mod);
-  Value fmtPtr  = getOrCreateGlobalString(loc, builder, "rcs_ep_log_fmt_pid", fmtStr, mod);
+  Value filePtr =
+      getOrCreateGlobalString(loc, builder, fileGlobal, fileStr, mod);
+  Value funcPtr =
+      getOrCreateGlobalString(loc, builder, funcGlobal, funcStr, mod);
+  Value fmtPtr =
+      getOrCreateGlobalString(loc, builder, "rcs_ep_log_fmt_pid", fmtStr, mod);
 
   auto llvmPtr = LLVM::LLVMPointerType::get(ctx);
-  auto voidTy  = LLVM::LLVMVoidType::get(ctx);
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
   auto callType = LLVM::LLVMFunctionType::get(
       voidTy, {llvmPtr, llvmPtr, i32Ty, i32Ty, llvmPtr}, /*isVarArg=*/true);
 
-  Value line0  = builder.create<LLVM::ConstantOp>(loc, i32Ty, builder.getI32IntegerAttr(0));
-  Value level3 = builder.create<LLVM::ConstantOp>(loc, i32Ty, builder.getI32IntegerAttr(3));
+  Value line0 = builder.create<LLVM::ConstantOp>(loc, i32Ty,
+                                                 builder.getI32IntegerAttr(0));
+  Value level3 = builder.create<LLVM::ConstantOp>(loc, i32Ty,
+                                                  builder.getI32IntegerAttr(3));
 
   SmallVector<Value, 8> callArgs = {filePtr, funcPtr, line0, level3, fmtPtr};
   for (int i = 0; i < 3; ++i)
@@ -306,14 +311,14 @@ static void insertEpLogForFunc(func::FuncOp funcOp, ModuleOp mod) {
 }
 
 /// Rewrite a tx.rdma or tx.wdma op by appending the resolved base DDR address.
-template <typename TxDmaOp>
-LogicalResult resolveOp(TxDmaOp op) {
+template <typename TxDmaOp> LogicalResult resolveOp(TxDmaOp op) {
   // Determine which operand is the DDR address
   Value ddrAddr;
-  if constexpr (std::is_same_v<TxDmaOp, tx::RdmaOp> || std::is_same_v<TxDmaOp, tx::Rdma1dOp>) {
-    ddrAddr = op.getSource();       // rdma: source is DDR
+  if constexpr (std::is_same_v<TxDmaOp, tx::RdmaOp> ||
+                std::is_same_v<TxDmaOp, tx::Rdma1dOp>) {
+    ddrAddr = op.getSource(); // rdma: source is DDR
   } else {
-    ddrAddr = op.getTarget();       // wdma: target is DDR
+    ddrAddr = op.getTarget(); // wdma: target is DDR
   }
 
   // Trace back to base memref
@@ -329,7 +334,8 @@ LogicalResult resolveOp(TxDmaOp op) {
   }
 
   // Replace the placeholder base_ddr_addr (last operand) with the resolved one.
-  // Keep the same number of operands so the existing operandSegmentSizes is valid.
+  // Keep the same number of operands so the existing operandSegmentSizes is
+  // valid.
   SmallVector<Value, 20> newOperands;
   newOperands.append(op->operand_begin(), std::prev(op->operand_end()));
   newOperands.push_back(baseAddr);
@@ -342,7 +348,8 @@ LogicalResult resolveOp(TxDmaOp op) {
   }
 
   // 1D ops have no results; N-D ops have one result
-  if constexpr (std::is_same_v<TxDmaOp, tx::Rdma1dOp> || std::is_same_v<TxDmaOp, tx::Wdma1dOp>) {
+  if constexpr (std::is_same_v<TxDmaOp, tx::Rdma1dOp> ||
+                std::is_same_v<TxDmaOp, tx::Wdma1dOp>) {
     Operation *newOp = builder.create(state);
     op->erase();
   } else {
@@ -358,14 +365,15 @@ LogicalResult resolveOp(TxDmaOp op) {
 }
 
 class Tx81ResolveDmaBaseAddrPass
-    : public triton::impl::Tx81ResolveDmaBaseAddrBase<Tx81ResolveDmaBaseAddrPass> {
-  using Tx81ResolveDmaBaseAddrBase<Tx81ResolveDmaBaseAddrPass>::Tx81ResolveDmaBaseAddrBase;
+    : public triton::impl::Tx81ResolveDmaBaseAddrBase<
+          Tx81ResolveDmaBaseAddrPass> {
+  using Tx81ResolveDmaBaseAddrBase<
+      Tx81ResolveDmaBaseAddrPass>::Tx81ResolveDmaBaseAddrBase;
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<tx::Tx81Dialect, func::FuncDialect,
-                    memref::MemRefDialect, arith::ArithDialect,
-                    LLVM::LLVMDialect>();
+    registry.insert<tx::Tx81Dialect, func::FuncDialect, memref::MemRefDialect,
+                    arith::ArithDialect, LLVM::LLVMDialect>();
   }
 
   void runOnOperation() override {
@@ -373,9 +381,7 @@ public:
 
     const char *checkingEnv = std::getenv("TRITON_DMA_CHECKING");
     if (checkingEnv && StringRef(checkingEnv) == "1") {
-      mod.walk([&](func::FuncOp funcOp) {
-        insertEpLogForFunc(funcOp, mod);
-      });
+      mod.walk([&](func::FuncOp funcOp) { insertEpLogForFunc(funcOp, mod); });
     }
 
     mod.walk([&](Operation *op) {
@@ -398,6 +404,7 @@ public:
 
 } // namespace
 
-std::unique_ptr<OperationPass<ModuleOp>> triton::createTx81ResolveDmaBaseAddrPass() {
+std::unique_ptr<OperationPass<ModuleOp>>
+triton::createTx81ResolveDmaBaseAddrPass() {
   return std::make_unique<Tx81ResolveDmaBaseAddrPass>();
 }

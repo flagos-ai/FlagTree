@@ -267,7 +267,7 @@ const struct erff_data __erff_data = {
 };
 
 triton_hybrid_value get_ptr_value_by_idx_new(void *addr, size_t idx,
-                                      Data_Format dtype) {
+                                             Data_Format dtype) {
   triton_hybrid_value value = {0};
   switch (dtype) {
   case Fmt_FP16:
@@ -291,7 +291,8 @@ void get_erf_value(void *in_addr, void *out_addr, uint64_t count,
   float OneThird_f = 0.33333334f;
   float OneSqrtTwo_f = 0.7071067811865475f;
   for (size_t idx = 0; idx < count; idx++) {
-    triton_hybrid_value in_value = get_ptr_value_by_idx_new(in_addr, idx, dtype);
+    triton_hybrid_value in_value =
+        get_ptr_value_by_idx_new(in_addr, idx, dtype);
     float in = set_value2float32(dtype, (int8_t *)&in_value);
     tmp_32suf x;
     x.f = in * OneSqrtTwo_f;
@@ -375,9 +376,21 @@ void get_tanh_value(uint64_t *in, uint64_t *imm, uint64_t *out,
   RcsRelation *relation = RcsNewRelation();
   RcsRelationInstr relationParam = {I_CGRA, {0}, {0}};
   RcsActivation *activation = RcsNewActivation();
-  RcsActivationInstr activationParam = {I_CGRA, {0,}, {0,}};
+  RcsActivationInstr activationParam = {I_CGRA,
+                                        {
+                                            0,
+                                        },
+                                        {
+                                            0,
+                                        }};
   RcsArith *arith = RcsNewArith();
-  RcsArithInstr arithParam = {I_CGRA, {0,}, {0,}};
+  RcsArithInstr arithParam = {I_CGRA,
+                              {
+                                  0,
+                              },
+                              {
+                                  0,
+                              }};
   RcsConvert *convert = RcsNewConvert();
   CT_Param ct_params = {I_CGRA, {0}, {0}};
 
@@ -402,19 +415,23 @@ void get_tanh_value(uint64_t *in, uint64_t *imm, uint64_t *out,
     arith->MulVS(&arithParam, imm_b, a2, imm_b, elem_count, rnd_mode, Fmt_FP32);
     cycle_value += RcsExecute(&arithParam);
 
-    relation->LessThenVS(&relationParam, imm_b, a5, imm_a, elem_count, Fmt_FP32);
+    relation->LessThenVS(&relationParam, imm_b, a5, imm_a, elem_count,
+                         Fmt_FP32);
     cycle_value += RcsExecute(&relationParam);
 
-    arith->MulVV(&arithParam, imm_b, imm_a, imm_b, elem_count, rnd_mode, Fmt_FP32);
+    arith->MulVV(&arithParam, imm_b, imm_a, imm_b, elem_count, rnd_mode,
+                 Fmt_FP32);
     cycle_value += RcsExecute(&arithParam);
 
-    relation->LessThenVS(&relationParam, imm_a, a3, imm_a, elem_count, Fmt_FP32);
+    relation->LessThenVS(&relationParam, imm_a, a3, imm_a, elem_count,
+                         Fmt_FP32);
     cycle_value += RcsExecute(&relationParam);
 
     arith->MulVS(&arithParam, imm_a, a5, imm_a, elem_count, rnd_mode, Fmt_FP32);
     cycle_value += RcsExecute(&arithParam);
 
-    arith->AddVV(&arithParam, imm_b, imm_a, imm_b, elem_count, rnd_mode, Fmt_FP32);
+    arith->AddVV(&arithParam, imm_b, imm_a, imm_b, elem_count, rnd_mode,
+                 Fmt_FP32);
     cycle_value += RcsExecute(&arithParam);
 
     activation->Tanh(&activationParam, imm_b, imm_b, elem_count, Fmt_FP32);
@@ -458,19 +475,23 @@ void get_tanh_value(uint64_t *in, uint64_t *imm, uint64_t *out,
     arith->MulVS(&arithParam, imm_b, a2, imm_b, elem_count, rnd_mode, Fmt_FP32);
     cycle_value += RcsExecute(&arithParam);
 
-    relation->LessThenVS(&relationParam, imm_b, a5, imm_a, elem_count, Fmt_FP32);
+    relation->LessThenVS(&relationParam, imm_b, a5, imm_a, elem_count,
+                         Fmt_FP32);
     cycle_value += RcsExecute(&relationParam);
 
-    arith->MulVV(&arithParam, imm_b, imm_a, imm_b, elem_count, rnd_mode, Fmt_FP32);
+    arith->MulVV(&arithParam, imm_b, imm_a, imm_b, elem_count, rnd_mode,
+                 Fmt_FP32);
     cycle_value += RcsExecute(&arithParam);
 
-    relation->LessThenVS(&relationParam, imm_a, a3, imm_a, elem_count, Fmt_FP32);
+    relation->LessThenVS(&relationParam, imm_a, a3, imm_a, elem_count,
+                         Fmt_FP32);
     cycle_value += RcsExecute(&relationParam);
 
     arith->MulVS(&arithParam, imm_a, a5, imm_a, elem_count, rnd_mode, Fmt_FP32);
     cycle_value += RcsExecute(&arithParam);
 
-    arith->AddVV(&arithParam, imm_b, imm_a, imm_b, elem_count, rnd_mode, Fmt_FP32);
+    arith->AddVV(&arithParam, imm_b, imm_a, imm_b, elem_count, rnd_mode,
+                 Fmt_FP32);
     cycle_value += RcsExecute(&arithParam);
     activation->Tanh(&activationParam, imm_b, imm_b, elem_count, Fmt_FP32);
     cycle_value += RcsExecute(&activationParam);
@@ -514,7 +535,8 @@ void get_tanh_value(uint64_t *in, uint64_t *imm, uint64_t *out,
     relation->LessThenVS(&relationParam, out_addr, a5, imm_a, elem_count, fmt);
     cycle_value += RcsExecute(&relationParam);
 
-    arith->MulVV(&arithParam, out_addr, imm_a, out_addr, elem_count, rnd_mode, fmt);
+    arith->MulVV(&arithParam, out_addr, imm_a, out_addr, elem_count, rnd_mode,
+                 fmt);
     cycle_value += RcsExecute(&arithParam);
 
     relation->LessThenVS(&relationParam, imm_a, a3, imm_a, elem_count, fmt);
@@ -523,7 +545,8 @@ void get_tanh_value(uint64_t *in, uint64_t *imm, uint64_t *out,
     arith->MulVS(&arithParam, imm_a, a5, imm_a, elem_count, rnd_mode, fmt);
     cycle_value += RcsExecute(&arithParam);
 
-    arith->AddVV(&arithParam, out_addr, imm_a, out_addr, elem_count, rnd_mode, fmt);
+    arith->AddVV(&arithParam, out_addr, imm_a, out_addr, elem_count, rnd_mode,
+                 fmt);
     cycle_value += RcsExecute(&arithParam);
 
     activation->Tanh(&activationParam, out_addr, out_addr, elem_count, fmt);

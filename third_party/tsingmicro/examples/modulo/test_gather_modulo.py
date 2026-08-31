@@ -7,12 +7,15 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 @triton.jit
 def gather_with_modulo_kernel(
-    x_ptr,        # [M, K]
-    idx_ptr,      # [BLOCK_M] index tensor, values in [0, M), may repeat
-    y_ptr,        # [BLOCK_M, BLOCK_K] output
-    M, K,
-    stride_xm, stride_xk,
-    BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr,
+    x_ptr,  # [M, K]
+    idx_ptr,  # [BLOCK_M] index tensor, values in [0, M), may repeat
+    y_ptr,  # [BLOCK_M, BLOCK_K] output
+    M,
+    K,
+    stride_xm,
+    stride_xk,
+    BLOCK_M: tl.constexpr,
+    BLOCK_K: tl.constexpr,
 ):
     """
     Modulo on the unstructured (gather) dimension.
@@ -24,8 +27,8 @@ def gather_with_modulo_kernel(
 
     # unstructured dim (dim 0): load indices and modulo
     row_offs = tl.arange(0, BLOCK_M)
-    rows_raw = tl.load(idx_ptr + row_offs)      # tensor<BLOCK_M x i32>
-    rows = rows_raw % M                          # modulo on unstructured dim
+    rows_raw = tl.load(idx_ptr + row_offs)  # tensor<BLOCK_M x i32>
+    rows = rows_raw % M  # modulo on unstructured dim
 
     # structured dim (dim 1): contiguous range
     cols = tl.arange(0, BLOCK_K)
@@ -44,8 +47,7 @@ def test_gather_with_modulo(device):
     # data matrix [M, K]
     x = torch.arange(M * K, device="cpu", dtype=torch.float32).reshape(M, K)
     # index tensor [BLOCK_M]: raw indices that may exceed M
-    idx_raw = torch.tensor([0, 4, 18, 22, 5, 35, 12, 50],
-                           device="cpu", dtype=torch.int32)
+    idx_raw = torch.tensor([0, 4, 18, 22, 5, 35, 12, 50], device="cpu", dtype=torch.int32)
     y_out = torch.full((BLOCK_M, BLOCK_K), -1.0, device="cpu", dtype=torch.float32)
 
     x_gpu = x.to(device)
@@ -53,11 +55,16 @@ def test_gather_with_modulo(device):
     y_gpu = y_out.to(device)
 
     print("=== gather_with_modulo ===")
-    gather_with_modulo_kernel[(1,)](
-        x_gpu, idx_gpu, y_gpu,
-        M, K,
-        x.stride(0), x.stride(1),
-        BLOCK_M=BLOCK_M, BLOCK_K=BLOCK_K,
+    gather_with_modulo_kernel[(1, )](
+        x_gpu,
+        idx_gpu,
+        y_gpu,
+        M,
+        K,
+        x.stride(0),
+        x.stride(1),
+        BLOCK_M=BLOCK_M,
+        BLOCK_K=BLOCK_K,
     )
 
     y_actual = y_gpu.to("cpu")

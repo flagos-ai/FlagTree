@@ -24,10 +24,9 @@ using namespace mlir;
 using namespace mlir::bufferization;
 
 /// Generic conversion for any DestinationStyleOpInterface on tensors.
-static LogicalResult
-bufferizeDestinationStyleOpInterface(RewriterBase &rewriter,
-                                     DestinationStyleOpInterface op,
-                                     const BufferizationOptions &options, const BufferizationState &bufState) {
+static LogicalResult bufferizeDestinationStyleOpInterface(
+    RewriterBase &rewriter, DestinationStyleOpInterface op,
+    const BufferizationOptions &options, const BufferizationState &bufState) {
   // Take a guard before anything else.
   OpBuilder::InsertionGuard g(rewriter);
   rewriter.setInsertionPoint(op);
@@ -49,7 +48,8 @@ bufferizeDestinationStyleOpInterface(RewriterBase &rewriter,
       newInputBuffers.push_back(opOperand->get());
       continue;
     }
-    FailureOr<Value> buffer = getBuffer(rewriter, opOperand->get(), options, bufState);
+    FailureOr<Value> buffer =
+        getBuffer(rewriter, opOperand->get(), options, bufState);
     if (failed(buffer))
       return failure();
     newInputBuffers.push_back(*buffer);
@@ -103,7 +103,8 @@ struct MKOpInterface
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const BufferizationOptions &options, const BufferizationState &bufState) const {
+                          const BufferizationOptions &options,
+                          const BufferizationState &bufState) const {
     return bufferizeDestinationStyleOpInterface(
         rewriter, cast<DestinationStyleOpInterface>(op), options, bufState);
   }
@@ -114,7 +115,8 @@ struct AtomicRMWOpInterface
                                                      mk::AtomicRMWOp> {
   // TODO: Check for memory effect
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const BufferizationOptions &options, const BufferizationState &bufState) const {
+                          const BufferizationOptions &options,
+                          const BufferizationState &bufState) const {
 
     auto atomicRMWOp = cast<mk::AtomicRMWOp>(op);
     if (!isa<MemRefType>(atomicRMWOp.getPtr().getType())) {
@@ -144,7 +146,8 @@ struct AtomicCASOpInterface
                                                      mk::AtomicCASOp> {
   // TODO: Check for memory effect
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const BufferizationOptions &options, const BufferizationState &bufState) const {
+                          const BufferizationOptions &options,
+                          const BufferizationState &bufState) const {
 
     auto atomicCASOp = cast<mk::AtomicCASOp>(op);
     if (!isa<MemRefType>(atomicCASOp.getPtr().getType())) {
@@ -194,7 +197,8 @@ struct BitCastOpInterface
 
   // TODO: Check for memory effect
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const BufferizationOptions &options, const BufferizationState &bufState) const {
+                          const BufferizationOptions &options,
+                          const BufferizationState &bufState) const {
 
     auto bitcastOp = cast<mk::BitcastOp>(op);
 
@@ -226,7 +230,8 @@ struct BitCastOpInterface
 };
 
 struct SendOpInterface
-    : public BufferizableOpInterface::ExternalModel<SendOpInterface, mk::RemoteStoreOp> {
+    : public BufferizableOpInterface::ExternalModel<SendOpInterface,
+                                                    mk::RemoteStoreOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
                               const AnalysisState &state) const {
     auto sendOp = cast<mk::RemoteStoreOp>(op);
@@ -246,7 +251,8 @@ struct SendOpInterface
   }
 
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
-                          const BufferizationOptions &options, const BufferizationState &bufState) const {
+                          const BufferizationOptions &options,
+                          const BufferizationState &bufState) const {
     auto sendOp = cast<mk::RemoteStoreOp>(op);
 
     // Nothing to do. This op is already bufferized.
@@ -269,7 +275,8 @@ struct SendOpInterface
     }
 
     if (isa<TensorType>(sendOp.getSrc().getType())) {
-      FailureOr<Value> srcBuffer = getBuffer(rewriter, sendOp.getSrc(), options, bufState);
+      FailureOr<Value> srcBuffer =
+          getBuffer(rewriter, sendOp.getSrc(), options, bufState);
       if (failed(srcBuffer))
         return failure();
       newOperands[sendOp.getSrcMutable().getOperandNumber()] = *srcBuffer;

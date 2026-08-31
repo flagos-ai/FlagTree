@@ -12,4 +12,3 @@ set(LLVM_TARGET_DEFINITIONS DsaOps.td)
 mlir_tablegen(DsaOps.h.inc -gen-op-decls)
 mlir_tablegen(DsaOps.cpp.inc -gen-op-defs)
 add_public_tablegen_target(TleDsaOpsIncGen)
-

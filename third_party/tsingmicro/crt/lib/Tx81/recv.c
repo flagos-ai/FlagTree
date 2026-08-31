@@ -9,11 +9,11 @@
 
 // #include "instr_adapter_plat.h"
 
+#include "direct_dte_and_fsm.h"
+#include "rcs1_spm.h"
 #include "tx81_run.h"
 #include <stdint.h>
 #include <stdio.h>
-#include "direct_dte_and_fsm.h"
-#include "rcs1_spm.h"
 
 uint32_t __get_pid(uint32_t);
 
