@@ -283,17 +283,39 @@ static Value materializePrefixLength(OpBuilder &builder, Location loc,
   return builder.create<arith::MinSIOp>(loc, nonNegative, upper);
 }
 
-static bool isPlainLoad(tt::LoadOp load) {
-  return !load.getOther() && load.getBoundaryCheck().empty() &&
-         !load.getPaddingAttr() && load.getCache() == tt::CacheModifier::NONE &&
-         load.getEvict() == tt::EvictionPolicy::NORMAL &&
-         !load.getIsVolatile() && load.getFlagtreeHints().empty();
+static std::optional<std::string>
+getUnsupportedLoadOptionsReason(tt::LoadOp load) {
+  if (load.getOther() || !load.getBoundaryCheck().empty() ||
+      load.getPaddingAttr())
+    return "the FlagCX node transfer cannot represent tl.load other, "
+           "padding_option, or boundary_check values; omit these options, use "
+           "the same contiguous prefix mask (offsets < valid_n) on tl.load "
+           "and tl.store, and perform default-value filling separately";
+
+  if (load.getCache() != tt::CacheModifier::NONE ||
+      load.getEvict() != tt::EvictionPolicy::NORMAL || load.getIsVolatile())
+    return "the FlagCX node transfer has no GPU-local cache, eviction, or "
+           "volatile semantics; omit cache_modifier and eviction_policy and "
+           "use volatile=False";
+
+  if (!load.getFlagtreeHints().empty())
+    return "the FlagCX node transfer does not support load hints; omit the "
+           "hints and use a plain tl.load";
+  return std::nullopt;
 }
 
-static bool isPlainStore(tt::StoreOp store) {
-  return store.getBoundaryCheck().empty() &&
-         store.getCache() == tt::CacheModifier::NONE &&
-         store.getEvict() == tt::EvictionPolicy::NORMAL;
+static std::optional<std::string>
+getUnsupportedStoreOptionsReason(tt::StoreOp store) {
+  if (!store.getBoundaryCheck().empty())
+    return "the FlagCX node transfer cannot represent tl.store "
+           "boundary_check; omit it and use the same contiguous prefix mask "
+           "(offsets < valid_n) on tl.load and tl.store";
+
+  if (store.getCache() != tt::CacheModifier::NONE ||
+      store.getEvict() != tt::EvictionPolicy::NORMAL)
+    return "the FlagCX node transfer has no GPU-local cache or eviction "
+           "semantics; omit cache_modifier and eviction_policy";
+  return std::nullopt;
 }
 
 static bool hasOnlyEffectFreeOpsBetween(tt::LoadOp load, tt::StoreOp store) {
@@ -449,8 +471,8 @@ struct TritonTleFuseNodeRemoteTransfers
       if (!candidateMarker)
         continue;
 
-      if (!isPlainStore(store)) {
-        recordFailure(candidateMarker, "store options are not supported");
+      if (auto reason = getUnsupportedStoreOptionsReason(store)) {
+        recordFailure(candidateMarker, *reason);
         continue;
       }
 
@@ -458,37 +480,49 @@ struct TritonTleFuseNodeRemoteTransfers
       if (!load) {
         recordFailure(candidateMarker,
                       "the loaded value must be stored directly without "
-                      "intermediate computation");
+                      "intermediate computation; use a direct tl.load followed "
+                      "by its paired tl.store and perform computation in a "
+                      "separate path");
         continue;
       }
 
       if (!load->hasOneUse()) {
         recordFailure(candidateMarker,
-                      "the source load must have exactly one use");
+                      "the source load must be used only by its paired store; "
+                      "if another store needs the data, issue a separate "
+                      "tl.load/tl.store outside the node-transfer pair");
         continue;
       }
 
-      if (!isPlainLoad(load)) {
-        recordFailure(candidateMarker, "load options are not supported");
+      if (auto reason = getUnsupportedLoadOptionsReason(load)) {
+        recordFailure(candidateMarker, *reason);
         continue;
       }
       if (load.getMask() != store.getMask()) {
         recordFailure(candidateMarker,
-                      "load and store must use the same prefix mask");
+                      "the FlagCX transfer interface uses one contiguous "
+                      "element count, so load and store must use the same "
+                      "prefix mask; define mask = offsets < valid_n once and "
+                      "pass that mask to both tl.load and tl.store");
         continue;
       }
 
       if (load->getBlock() != store->getBlock() ||
           !load->isBeforeInBlock(store)) {
         recordFailure(candidateMarker,
-                      "the load and store must be ordered in the same block");
+                      "the load and store must be ordered in the same basic "
+                      "block; keep the paired tl.load and tl.store in the same "
+                      "control-flow path with the load before the store");
         continue;
       }
 
       if (!hasOnlyEffectFreeOpsBetween(load, store)) {
         recordFailure(candidateMarker,
-                      "the load and store must not have side-effecting "
-                      "operations between them");
+                      "the node transfer is emitted at the paired store, so "
+                      "memory accesses, atomics, barriers, and communication "
+                      "operations are forbidden between tl.load and tl.store; "
+                      "move such operations before the load or after the "
+                      "store");
         continue;
       }
 
@@ -500,7 +534,10 @@ struct TritonTleFuseNodeRemoteTransfers
         recordFailure(candidateMarker,
                       "source and destination pointers must use a scalar "
                       "offset plus a contiguous tt.make_range(0, N), and the "
-                      "local pointer must be an entry-function argument");
+                      "local pointer must be an entry-function argument; pass "
+                      "the registered buffer directly to the kernel, define "
+                      "offsets = tl.arange(0, N) once, and access both sides "
+                      "as base + integer_scalar_offset + offsets");
         continue;
       }
 
@@ -508,7 +545,11 @@ struct TritonTleFuseNodeRemoteTransfers
       bool isGet = srcExpr.remote && !dstExpr.remote;
       if (!isPut && !isGet) {
         recordFailure(candidateMarker,
-                      "exactly one side of the copy must be node-remote");
+                      "exactly one side of the copy must be node-remote; use "
+                      "tl.load(local) followed by tl.store(tle.remote(...), "
+                      "value) for PUT, or tl.load(tle.remote(...)) followed by "
+                      "tl.store(local, value) for GET; local-to-local and "
+                      "remote-to-remote copies are not supported here");
         continue;
       }
 
@@ -520,8 +561,11 @@ struct TritonTleFuseNodeRemoteTransfers
           (srcHasRange &&
            srcExpr.range.getOperation() != dstExpr.range.getOperation())) {
         recordFailure(candidateMarker,
-                      "source and destination must use the same "
-                      "tt.make_range(0, N)");
+                      "the FlagCX transfer interface uses one element count "
+                      "for both source and destination, so they must use the "
+                      "same tt.make_range(0, N); define offsets = tl.arange(0, "
+                      "N) once and reuse offsets in both pointer "
+                      "expressions");
         continue;
       }
 
@@ -529,8 +573,11 @@ struct TritonTleFuseNodeRemoteTransfers
                            isa<RankedTensorType>(load.getPtr().getType()) ||
                            isa<RankedTensorType>(store.getPtr().getType()))) {
         recordFailure(candidateMarker,
-                      "tensor source and destination pointers must use a "
-                      "contiguous tt.make_range(0, N)");
+                      "the load/store operates on tensor values, but no "
+                      "contiguous transfer range was found; use the same "
+                      "offsets = tl.arange(0, N) for both source and "
+                      "destination, or use scalar pointers for a "
+                      "single-element transfer");
         continue;
       }
 
@@ -538,14 +585,20 @@ struct TritonTleFuseNodeRemoteTransfers
       if (load.getMask()) {
         if (isScalarCopy) {
           recordFailure(candidateMarker,
-                        "scalar node remote copies do not support masks");
+                        "scalar node remote copies do not support masks; omit "
+                        "the mask for a single-element transfer, or use shared "
+                        "offsets = tl.arange(0, N) and mask = offsets < "
+                        "valid_n for a masked tensor transfer");
           continue;
         }
         prefixMask = matchPrefixMask(load.getMask(), srcExpr.range);
         if (!prefixMask) {
           recordFailure(candidateMarker,
-                        "mask must be a one-dimensional contiguous prefix "
-                        "equivalent to tt.make_range(0, N) < valid_n");
+                        "the FlagCX transfer interface only supports a "
+                        "contiguous element count; mask must be a "
+                        "one-dimensional contiguous prefix equivalent to "
+                        "tt.make_range(0, N) < valid_n (sparse masks such as "
+                        "(range % 2) == 0 are unsupported)");
           continue;
         }
       }
@@ -560,7 +613,10 @@ struct TritonTleFuseNodeRemoteTransfers
       if (!matchingTypes) {
         recordFailure(candidateMarker,
                       "source and destination access types and shapes must "
-                      "match the contiguous transfer range");
+                      "match the contiguous transfer range; use the same "
+                      "element dtype and the same N on both sides, and perform "
+                      "any dtype conversion or reshaping outside the direct "
+                      "tl.load/tl.store transfer pair");
         continue;
       }
 
@@ -571,7 +627,10 @@ struct TritonTleFuseNodeRemoteTransfers
           localExpr.localArg.getOwner() != &func.getBody().front()) {
         recordFailure(candidateMarker,
                       "the local buffer root must be an entry-function "
-                      "global pointer argument");
+                      "global pointer argument; pass the buffer registered by "
+                      "ctx = tle.create_dist_tensor(buffer) directly as a "
+                      "kernel argument instead of reconstructing its root "
+                      "pointer inside the kernel");
         continue;
       }
 
@@ -583,7 +642,10 @@ struct TritonTleFuseNodeRemoteTransfers
 
       if (!srcOffset || !dstOffset) {
         recordFailure(candidateMarker,
-                      "source and destination offsets must be integer values");
+                      "source and destination offsets must be integer values; "
+                      "use scalar integer src_offset/dst_offset and form each "
+                      "pointer as base + scalar_offset, optionally followed by "
+                      "the shared tl.arange(0, N)");
         continue;
       }
 
@@ -592,7 +654,10 @@ struct TritonTleFuseNodeRemoteTransfers
               ? materializePrefixLength(builder, loc, *prefixMask, extent)
               : Value(builder.create<arith::ConstantIntOp>(loc, extent, 64));
       if (!nelems) {
-        recordFailure(candidateMarker, "valid_n must be an integer up to i64");
+        recordFailure(candidateMarker,
+                      "valid_n must be an integer up to i64; pass a scalar "
+                      "integer valid_n and use the same mask = offsets < "
+                      "valid_n on tl.load and tl.store");
         continue;
       }
       auto marker = remoteExpr.remote;
@@ -635,7 +700,11 @@ struct TritonTleFuseNodeRemoteTransfers
               op.emitOpError()
                   << "could not fuse node remote pointer: expected a direct, "
                      "single-use scalar or contiguous load/store copy with no "
-                     "mask or a shared one-dimensional prefix mask";
+                     "mask or a shared one-dimensional prefix mask; use "
+                     "tl.load on one side and immediately tl.store that value "
+                     "to the other side, make exactly one side tle.remote(...), "
+                     "and for tensor copies reuse offsets = tl.arange(0, N) "
+                     "and an optional mask = offsets < valid_n on both sides";
             hasUnfusedMarker = true;
           }
         });

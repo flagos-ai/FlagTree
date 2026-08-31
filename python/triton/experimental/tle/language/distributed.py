@@ -1129,18 +1129,6 @@ def _normalize_node_peer(shard_id, scope, _semantic) -> tl.tensor:
     return _normalize_runtime_remote_shard_id_tensor(shard_id)
 
 
-def _normalize_coopkind(coopkind) -> int:
-    coopkind = tl._unwrap_if_constexpr(coopkind)
-    if isinstance(coopkind, GroupKind):
-        coopkind = coopkind.value
-    if not isinstance(coopkind, str):
-        raise TypeError("node space coopkind must be GroupKind.THREAD/WARP/BLOCK or the corresponding string")
-    mapping = {"thread": 0, "warp": 1, "block": 2}
-    normalized = coopkind.lower()
-    if normalized not in mapping:
-        raise ValueError("node space coopkind must be THREAD, WARP, or BLOCK")
-    return mapping[normalized]
-
 
 _NODE_INTER_CONTEXT_COUNT = 4
 
@@ -1183,7 +1171,12 @@ def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _
     dtype = tl._unwrap_if_constexpr(dtype)
     _normalize_node_elem_bytes(dtype)
     net_idx = _normalize_node_netidx(netidx, _semantic)
-    coop_kind = _normalize_coopkind(coopkind)
+    coop_kind = tl._unwrap_if_constexpr(coopkind)
+    coop_kind = coop_kind.value if isinstance(coop_kind, GroupKind) else str(coop_kind).lower()
+    coop_kind = attr.FlagCXCoopKind.from_str(coop_kind)
+    if coop_kind is None:
+        expected = "thread, warp, or block"
+        raise ValueError(f"coopkind must be {expected}, got {coop_kind!r}")
 
     src_mem = _parse_node_context(builder, ctx, "ctx", 0)
     comm = _parse_node_context(builder, ctx, "ctx", 1)

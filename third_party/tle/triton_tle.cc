@@ -654,7 +654,7 @@ void init_triton_tle_ir(py::module &&m) {
              Value shardId, const std::string &space,
              std::optional<Value> offset, std::optional<Value> comm,
              std::optional<Value> netIdx,
-             std::optional<int32_t> coopKind) -> OpState {
+             std::optional<tle::FlagCXCoopKind> coopKind) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
                 "cluster", "device", "node"};
@@ -665,12 +665,8 @@ void init_triton_tle_ir(py::module &&m) {
             }
 
             auto spaceAttr = builder.getStringAttr(space);
-            if (coopKind && (*coopKind < 0 || *coopKind > 2))
-              throw std::invalid_argument(
-                  "coop_kind must be THREAD(0), WARP(1), or BLOCK(2)");
             tle::FlagCXCoopKindAttr coopKindAttr =
-                coopKind ? builder.getAttr<tle::FlagCXCoopKindAttr>(
-                               static_cast<tle::FlagCXCoopKind>(*coopKind))
+                coopKind ? builder.getAttr<tle::FlagCXCoopKindAttr>(*coopKind)
                          : tle::FlagCXCoopKindAttr();
             return self.create<tle::RemotePointersOp>(
                 resultTy, src.value_or(Value()), comm.value_or(Value()),

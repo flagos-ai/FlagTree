@@ -142,13 +142,20 @@ def validate_node_buffer_bindings(
         ctx = contexts_by_handle.get(handle)
         if ctx is None:
             raise RuntimeError(f"kernel {kernel_name!r} did not receive the node context "
-                               f"with mem handle 0x{handle:x}")
+                               f"with mem handle 0x{handle:x}. Pass the same ctx returned by "
+                               "ctx = tle.create_dist_tensor(buffer) to this launch")
         registered = ctx.registered_buffer
         if registered is None:
-            raise RuntimeError(f"kernel {kernel_name!r} node context has no registered buffer")
+            raise RuntimeError(f"kernel {kernel_name!r} node context has no registered buffer. "
+                               "Create it with ctx = tle.create_dist_tensor(buffer) instead of "
+                               "constructing DistributedRtContext directly")
 
         value = runtime_args[ordinal]
         data_ptr = getattr(value, "data_ptr", None)
+        if not isinstance(value, int) and not callable(data_ptr):
+            raise TypeError(f"kernel {kernel_name!r} node local {role} buffer must be a tensor "
+                            "with data_ptr() or an integer device pointer. Pass the same buffer "
+                            "used in ctx = tle.create_dist_tensor(buffer)")
         actual = value if isinstance(value, int) else data_ptr()
         expected = registered.data_ptr()
         if actual == expected:
@@ -158,7 +165,9 @@ def validate_node_buffer_bindings(
                 if arg_names is not None and ordinal < len(arg_names) else f"runtime ordinal {ordinal}")
         raise ValueError(f"kernel {kernel_name!r} node local {role} buffer argument "
                          f"{name!r} does not match its context buffer: expected "
-                         f"0x{expected:x}, got 0x{actual:x}")
+                         f"0x{expected:x}, got 0x{actual:x}. Use ctx = "
+                         "tle.create_dist_tensor(buffer) and launch with that same buffer/ctx "
+                         "pair; a ctx created for a different buffer cannot be used")
 
 
 def validate_node_launch_bindings(kernel, bound_args, specialization):
