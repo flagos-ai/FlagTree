@@ -165,7 +165,9 @@ def test_launch_with_options(options) -> None:
             except ImportError:
                 use_flagcx = False
             if (use_flagcx):
-                from triton.backends.nvidia.distributed import flagcx_rt_conf
+                import importlib as _il
+                _mod = _il.import_module(f"triton.backends.{os.environ.get('FLAGTREE_BACKEND', 'nvidia')}.distributed")
+                flagcx_rt_conf = _mod.flagcx_rt_conf
                 options["extern_libs"].update({"libflagcx": str(flagcx_rt_conf.bitcode_path)})
 
         elif is_hip():

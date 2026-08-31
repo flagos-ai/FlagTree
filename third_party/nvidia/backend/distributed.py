@@ -3,8 +3,11 @@
 Provides FlagcxRuntimeConfig and FlagCXBackendAdapter for NVIDIA GPUs.
 """
 
-from pathlib import Path
-from triton.experimental._flagcx_config import FlagcxRuntimeConfig, FlagCXBackendAdapter, Distributed
+from triton.experimental._flagcx_config import (
+    Distributed,  # noqa: F401 # re-export
+    FlagCXBackendAdapter,
+    FlagcxRuntimeConfig,
+)
 
 
 class NvidiaFlagcxRuntimeConfig(FlagcxRuntimeConfig):
@@ -12,6 +15,7 @@ class NvidiaFlagcxRuntimeConfig(FlagcxRuntimeConfig):
 
     def _is_available_impl(self):
         from .flagcx_wrapper import FLAGCXLibrary  # noqa: F401
+
         return True
 
 
@@ -20,15 +24,16 @@ class NvidiaFlagCXBackendAdapter(FlagCXBackendAdapter):
 
     @property
     def device_type(self) -> str:
-        return 'cuda'
+        return "cuda"
 
     @property
     def distributed_backend_name(self) -> str:
-        return 'nccl'
+        return "nccl"
 
     @property
     def allocator_class(self):
         import torch.cuda.memory
+
         return torch.cuda.memory.CUDAPluggableAllocator
 
 

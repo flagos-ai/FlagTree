@@ -7,6 +7,8 @@ import triton.language as tl
 
 import triton.experimental.tle.language as tle
 
+DEVICE = tle.device_type
+
 
 @triton.jit
 def lsa_read_kernel(
@@ -36,17 +38,17 @@ def main():
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     local_rank = int(os.environ.get("LOCAL_RANK", rank))
-    torch.cuda.set_device(local_rank)
+    torch.get_device_module().set_device(local_rank)
 
     print(f"[Rank {rank}] Starting D2D test (world_size={world_size})")
 
     N = 64
 
-    with torch.cuda.use_mem_pool(mem_pool):
+    with torch.get_device_module().use_mem_pool(mem_pool):
         # torch.arange may return only 512-byte aligned memory, but FlagCX
         # symmetric window / flagcxGetIntraPointerC requires 4KB page aligned
         # buffers. Clone to force reallocation with proper alignment.
-        buf_tensor = (torch.arange(N, dtype=torch.float32, device="cuda") + rank * 1000).clone()
+        buf_tensor = (torch.arange(N, dtype=torch.float32, device=DEVICE) + rank * 1000).clone()
 
     print(f"[Rank {rank}] buf_tensor info: "
           f"data_ptr={buf_tensor.data_ptr():#x}, "
@@ -57,7 +59,7 @@ def main():
 
     device_dptr = tle.create_dist_tensor(buf_tensor)
 
-    output = torch.zeros(N, dtype=torch.float32, device="cuda")
+    output = torch.zeros(N, dtype=torch.float32, device=DEVICE)
 
     dist.barrier()
 
@@ -69,11 +71,11 @@ def main():
         MY_RANK=rank,
         N_RANKS=world_size,
     )
-    torch.cuda.synchronize()
+    torch.get_device_module().synchronize()
 
     import sys
     peer_rank = (rank + 1) % world_size
-    expected = torch.arange(N, dtype=torch.float32, device="cuda") + peer_rank * 1000
+    expected = torch.arange(N, dtype=torch.float32, device=DEVICE) + peer_rank * 1000
     if torch.allclose(output, expected):
         print(f"[Rank {rank}] PASSED: read peer rank {peer_rank}")
         print(f"[Rank {rank}] sample output[:4] = {output[:4].tolist()}")

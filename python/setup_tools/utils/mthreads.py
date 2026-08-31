@@ -18,8 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-
-from setup_tools.utils.default import handle_flagcx  # noqa: F401
+from .default import handle_flagcx  # noqa: F401
 
 
 def skip_package_dir(package):

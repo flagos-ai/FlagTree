@@ -5,7 +5,10 @@ import torch
 import torch.distributed as dist
 import triton
 import triton.experimental.tle.language as tle
+
 import triton.language as tl
+
+DEVICE = tle.device_type
 
 LOCAL_WORLD_SIZE = int(os.environ["LOCAL_WORLD_SIZE"])
 WORLD_SIZE = int(os.environ["WORLD_SIZE"])
@@ -25,10 +28,10 @@ def _tle_node_rank_kernel(out_ptr, device_dptr: tl.constexpr, mesh: tl.constexpr
 @pytest.mark.require_tle("shard_id")
 def test_tle_get_node_rank():
     grid = 2
-    with torch.cuda.use_mem_pool(tle.get_mem_pool()):
-        source = torch.empty((1, ), dtype=torch.float32, device="cuda")
+    with torch.get_device_module().use_mem_pool(tle.get_mem_pool()):
+        source = torch.empty((1, ), dtype=torch.float32, device=DEVICE)
     device_dptr = tle.create_dist_tensor(source)
-    node_rank_out = torch.empty((grid, ), dtype=torch.int32, device="cuda")
+    node_rank_out = torch.empty((grid, ), dtype=torch.int32, device=DEVICE)
 
     compiled = _tle_node_rank_kernel.warmup(
         out_ptr=node_rank_out,
@@ -48,7 +51,7 @@ def test_tle_get_node_rank():
         device_dptr=device_dptr,
         mesh=DEVICE_MESH,
     )
-    torch.cuda.synchronize()
+    torch.get_device_module().synchronize()
 
     rank = dist.get_rank()
     expected_node_rank = rank // LOCAL_WORLD_SIZE
