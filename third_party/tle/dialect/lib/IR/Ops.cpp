@@ -33,7 +33,7 @@
 #include <cctype>
 #include <limits>
 
-#include "tle/dialect/include/IR/VerfiyUtils.h"
+#include "tle/dialect/include/IR/VerifyUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
@@ -1086,4 +1086,15 @@ LogicalResult RemotePointersOp::verify() {
   return success();
 }
 
+LogicalResult SignalOp::verify() {
+  if (auto err = Signal::verifySignalOp(getSignalOp(), getValue()))
+    return emitOpError() << *err;
+  return success();
+}
+
+LogicalResult SignalWaitOp::verify() {
+  if (auto err = Signal::verifySignalWaitOp(getWaitKind(), getTarget()))
+    return emitOpError() << *err;
+  return success();
+}
 } // namespace mlir::triton::tle

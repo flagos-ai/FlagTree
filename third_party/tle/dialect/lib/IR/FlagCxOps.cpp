@@ -33,9 +33,15 @@
 #include <cctype>
 #include <limits>
 
-#include "tle/dialect/include/IR/VerfiyUtils.h"
+#include "tle/dialect/include/IR/VerifyUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+
+enum class TeamKind : int32_t {
+  Intra = 0,
+  Inter = 1,
+  World = 2,
+};
 
 enum class CoopKind : int32_t {
   Thread = 0,
@@ -132,6 +138,18 @@ LogicalResult DeviceIntraBarrierOp::verify() {
     }
   }
 
+  return success();
+}
+
+LogicalResult FlagCxSignalOp::verify() {
+  if (auto err = Signal::verifySignalOp(getSignalOp(), getValue()))
+    return emitOpError() << *err;
+  return success();
+}
+
+LogicalResult FlagCxSignalWaitOp::verify() {
+  if (auto err = Signal::verifySignalWaitOp(getWaitKind(), getTarget()))
+    return emitOpError() << *err;
   return success();
 }
 } // namespace mlir::triton::tle
