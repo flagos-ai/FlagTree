@@ -168,10 +168,6 @@ else()
 
 endif()
 
-install(TARGETS ${VENDOR_RUNTIME_LIB}
-  ARCHIVE DESTINATION ${INSTALL_TSINGMICRO_DIR}/lib
-)
-
 option(BUILD_TX81_HOST_TESTS "Build Tx81 host unit tests" OFF)
 if(BUILD_TX81_HOST_TESTS)
   enable_testing()

@@ -64,7 +64,3 @@ set_target_properties(${BIN_NAME} PROPERTIES
 )
 
 
-# Install targets
-install(TARGETS ${BIN_NAME}
-  RUNTIME DESTINATION ${INSTALL_TSINGMICRO_DIR}/bin
-)

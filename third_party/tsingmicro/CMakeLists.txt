@@ -48,9 +48,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 add_compile_options(-Wno-deprecated-declarations -Wno-deprecated)
 
 set(XUANTIE_DIR ${TX8_DEPS_ROOT}/rcs1fw-rtt/tool/rcsfw-xuantie-sdk/Xuantie-900-gcc-elf-newlib-x86_64-V2.8.0)
-set(INSTALL_TSINGMICRO_DIR ${TRITON_WHEEL_DIR}/backends/tsingmicro/)
-install(CODE "file(MAKE_DIRECTORY \"${INSTALL_TSINGMICRO_DIR}\")")
-
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/crt/include)

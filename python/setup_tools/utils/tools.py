@@ -48,7 +48,6 @@ class FlagtreeConfigs:
     plugin_backends: tuple = ("cambricon", "ascend", "aipu", "tsingmicro", "enflame", "hcu", "thrive")
     use_cuda_toolkit_backends: tuple = ('aipu', 'tileir')
     language_extra_backends: tuple = ('xpu', 'mthreads', "cambricon")
-    use_flir: tuple = ("tsingmicro",)
     ext_sourcedir: str = "triton/_C/"
     flagtree_root_dir: str = field(default_factory=_get_flagtree_root)
     flagtree_backend: str = field(default_factory=lambda: os.environ.get("FLAGTREE_BACKEND", ""))
@@ -72,7 +71,7 @@ class FlagtreeConfigs:
         self.default_backends = tuple(_backends)
         self.flagtree_submodule_dir = os.path.join(self.flagtree_root_dir, "third_party")
         self.activated_module = self._activate_device_module()
-        if self.flagtree_backend in self.use_flir:
+        if self.flagtree_backend == "tsingmicro":
             self.default_backends = self.default_backends + ("flir", )
 
     def _activate_device_module(self, suffix=".py"):

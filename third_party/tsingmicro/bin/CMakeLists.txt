@@ -123,6 +123,3 @@ mlir_check_all_link_libraries(tsingmicro-opt)
 #   MLIRMathTestPasses
 #   )
 
-install(TARGETS tsingmicro-opt
-  RUNTIME DESTINATION ${INSTALL_TSINGMICRO_DIR}/bin
-)

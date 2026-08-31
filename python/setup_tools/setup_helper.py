@@ -734,7 +734,7 @@ else:
 
 cache = FlagTreeCache()
 
-download_flagtree_third_party("flir", condition=(flagtree_backend in configs.use_flir), required=True)
+download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro"), required=True)
 '''
    FlagCX is a third-party library adopted by the tle distributed system,
    refer to https://github.com/flagos-ai/FlagCX
