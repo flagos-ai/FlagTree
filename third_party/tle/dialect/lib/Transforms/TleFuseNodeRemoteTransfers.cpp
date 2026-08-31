@@ -688,26 +688,25 @@ struct TritonTleFuseNodeRemoteTransfers
     eraseDeadAddressOps(module);
 
     bool hasUnfusedMarker = false;
-    module.walk(
-        [&](tle::RemotePointersOp op) {
-          if (op.getSpace() == "node" && op.getResult()) {
+    module.walk([&](tle::RemotePointersOp op) {
+      if (op.getSpace() == "node" && op.getResult()) {
 
-            auto failure = fusionFailures.find(op.getOperation());
-            if (failure != fusionFailures.end())
-              op.emitOpError()
-                  << "could not fuse node remote pointer: " << failure->second;
-            else
-              op.emitOpError()
-                  << "could not fuse node remote pointer: expected a direct, "
-                     "single-use scalar or contiguous load/store copy with no "
-                     "mask or a shared one-dimensional prefix mask; use "
-                     "tl.load on one side and immediately tl.store that value "
-                     "to the other side, make exactly one side tle.remote(...), "
-                     "and for tensor copies reuse offsets = tl.arange(0, N) "
-                     "and an optional mask = offsets < valid_n on both sides";
-            hasUnfusedMarker = true;
-          }
-        });
+        auto failure = fusionFailures.find(op.getOperation());
+        if (failure != fusionFailures.end())
+          op.emitOpError() << "could not fuse node remote pointer: "
+                           << failure->second;
+        else
+          op.emitOpError()
+              << "could not fuse node remote pointer: expected a direct, "
+                 "single-use scalar or contiguous load/store copy with no "
+                 "mask or a shared one-dimensional prefix mask; use "
+                 "tl.load on one side and immediately tl.store that value "
+                 "to the other side, make exactly one side tle.remote(...), "
+                 "and for tensor copies reuse offsets = tl.arange(0, N) "
+                 "and an optional mask = offsets < valid_n on both sides";
+        hasUnfusedMarker = true;
+      }
+    });
     if (hasUnfusedMarker) {
       signalPassFailure();
       return;

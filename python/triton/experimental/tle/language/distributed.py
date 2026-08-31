@@ -1129,7 +1129,6 @@ def _normalize_node_peer(shard_id, scope, _semantic) -> tl.tensor:
     return _normalize_runtime_remote_shard_id_tensor(shard_id)
 
 
-
 _NODE_INTER_CONTEXT_COUNT = 4
 
 
