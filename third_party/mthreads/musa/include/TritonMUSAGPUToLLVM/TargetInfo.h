@@ -64,6 +64,14 @@ public:
   int getAddressSpace(Attribute addressSpace) const override;
   bool supportVectorizedAtomics() const override;
   bool isMusa() const override { return true; }
+  int getComputeCapability() const { return computeCapability; }
+
+  llvm::StringRef getTMELoadIntrinsicName(unsigned rank) const;
+
+  void appendTMELoadPolicyOperands(RewriterBase &rewriter, Location loc,
+                                   Value cachePolicy, Value innerPersistence,
+                                   Value outerPersistence,
+                                   SmallVectorImpl<Value> &operands) const;
 
 private:
   int computeCapability;

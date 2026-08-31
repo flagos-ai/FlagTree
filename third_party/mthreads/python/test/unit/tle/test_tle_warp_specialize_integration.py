@@ -338,6 +338,7 @@ def _compile_ws_integration(stages, k_tiles):
             "BIAS": "constexpr",
         },
         constexprs={"K_TILES": k_tiles, "STAGES": stages, "BIAS": 1},
+        attrs={(0, ): [["musa.tme_tail_divisibility", 4]], (1, ): [["musa.tme_tail_divisibility", 4]]},
     )
     module = src.make_ir(
         target,
@@ -380,6 +381,7 @@ def _compile_ws_dot_integration(stages):
             "STAGES": "constexpr",
         },
         constexprs={"K_TILES": 16, "STAGES": stages},
+        attrs={(0, ): [["musa.tme_tail_divisibility", 4]], (1, ): [["musa.tme_tail_divisibility", 4]]},
     )
     module = src.make_ir(
         target,
