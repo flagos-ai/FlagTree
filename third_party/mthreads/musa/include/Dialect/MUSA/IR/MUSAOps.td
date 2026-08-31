@@ -60,6 +60,25 @@ def TME_DescType : AnyTypeOf<[I64, TT_TensorDescType],
 def TME_LocalMemType : AnyTypeOf<[LLVM_PointerShared, TTG_MemDescType],
     "shared memory pointer or memdesc for TME async copy">;
 
+def MUSA_ReinterpretTensorDescOp
+    : MUSA_Op<"reinterpret_tensor_descriptor", [Pure]> {
+  let summary = "Reinterpret a raw descriptor pointer as a tensor descriptor";
+
+  let description = [{
+    Preserve the typed TensorDesc SSA value after MUSA device-side descriptor
+    storage has been allocated and encoded. This operation carries no NVIDIA
+    TMA semantics; LLVM lowering only converts the raw descriptor pointer to
+    the pointer type used to represent TensorDescType.
+  }];
+
+  let arguments = (ins TT_Ptr:$rawDesc);
+  let results = (outs TT_TensorDescType:$result);
+
+  let assemblyFormat = [{
+    $rawDesc attr-dict `:` qualified(type($rawDesc)) `to` qualified(type($result))
+  }];
+}
+
 def MUSA_SquadDotOp : MUSA_Op<"squad_dot", [
     DeclareOpInterfaceMethods<DotOpInterface>,
     DeclareOpInterfaceMethods<InferTypeOpInterface>,
@@ -236,6 +255,38 @@ def MUSA_AsyncTMECopyLocalToGlobalOp
   let assemblyFormat = [{
     $desc `[` $coord `]` `,` $src `,` $pred attr-dict
     `:` qualified(type($desc)) `,` qualified(type($src))
+  }];
+  let hasVerifier = 1;
+}
+
+def MUSA_TMEEncodeDescriptorOp
+    : MUSA_Op<"tme_encode_descriptor",
+              [SameVariadicOperandSize]> {
+  let summary = "Encode a TME tensor descriptor on the device into a global buffer";
+
+  let description = [{
+    Takes the tensor base address, shape, and strides together with a
+    pre-allocated 64-byte global scratch buffer, and encodes the MUSA
+    `TensorDescriptor` (64 bytes, packed) into that buffer entirely on the
+    device. Only the thread with `tid.x == 0` performs all 16 word stores, the
+    global-memory fence, and descriptor-cache invalidation. All CTA threads
+    then unconditionally execute a barrier so they observe the complete
+    descriptor before any TME instruction reads it.
+  }];
+
+  let arguments = (ins
+    TT_Ptr:$desc_buf,
+    TT_Ptr:$base,
+    Variadic<I32>:$shape,
+    Variadic<I64>:$strides,
+    I32Attr:$elem_size,
+    I32Attr:$elem_type,
+    I32Attr:$padding
+  );
+
+  let assemblyFormat = [{
+    $desc_buf `,` $base `,` `[` $shape `]` `,` `[` $strides `]`
+    attr-dict `:` qualified(type($desc_buf)) `,` qualified(type($base))
   }];
   let hasVerifier = 1;
 }

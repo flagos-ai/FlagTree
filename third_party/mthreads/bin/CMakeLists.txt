@@ -37,6 +37,7 @@ add_dependencies(triton-llvm-opt intrinsics_gen)
 target_compile_options(triton-llvm-opt PRIVATE -fno-rtti -fno-exceptions)
 target_link_libraries(triton-llvm-opt PRIVATE
   TritonLLVMIR
+  TritonMUSALLVMIR
 
   LLVMAnalysis
   LLVMCore

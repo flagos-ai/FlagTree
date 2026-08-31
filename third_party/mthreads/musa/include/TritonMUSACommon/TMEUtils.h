@@ -25,6 +25,7 @@
 
 namespace mlir::triton::musa {
 
+namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 
@@ -36,6 +37,75 @@ inline constexpr llvm::StringLiteral kTMEExplicitCompletionAttr =
 inline constexpr llvm::StringLiteral kTLEExpectBytesAttr =
     "musa_tle.expect_bytes";
 #endif // __TLE__
+
+inline constexpr int32_t kTMEDescSizeBytes = 64;
+inline constexpr int32_t kTMEDescAlignBytes = 64;
+
+inline std::optional<int32_t> getMUSATMEDataType(Type elemType) {
+  if (tt::type::isFloat8(elemType))
+    return 1;
+  if (elemType.isInteger(8))
+    return elemType.isUnsignedInteger() ? 1 : 0;
+  if (elemType.isInteger(16))
+    return elemType.isUnsignedInteger() ? 3 : 2;
+  if (elemType.isF16())
+    return 4;
+  if (elemType.isBF16())
+    return 5;
+  if (elemType.isInteger(32))
+    return elemType.isUnsignedInteger() ? 7 : 6;
+  if (elemType.isF32())
+    return 8;
+  if (elemType.isInteger(64))
+    return elemType.isUnsignedInteger() ? 11 : 10;
+  if (elemType.isF64())
+    return 12;
+  return std::nullopt;
+}
+
+inline std::optional<uint64_t>
+getMUSATMEConstantFill(int32_t elemType, tt::PaddingOption padding) {
+  if (padding == tt::PaddingOption::PAD_ZERO)
+    return uint64_t{0};
+  switch (elemType) {
+  case 4:
+    return uint64_t{0x7e00};
+  case 5:
+    return uint64_t{0x7fc0};
+  case 8:
+    return uint64_t{0x7fc00000};
+  case 12:
+    return uint64_t{0x7ff8000000000000ULL};
+  default:
+    return std::nullopt;
+  }
+}
+
+template <typename BuilderT>
+LogicalResult createTMEEncodedDescriptor(BuilderT &builder, Value descBuf,
+                                         tt::MakeTensorDescOp op) {
+  Type elemType = op.getType().getBlockType().getElementType();
+  auto elemTypeEnum = getMUSATMEDataType(elemType);
+  if (!elemTypeEnum)
+    return op.emitOpError("unsupported element type for device-side TME "
+                          "descriptor");
+  unsigned elemBitWidth = elemType.getIntOrFloatBitWidth();
+  if ((elemBitWidth % 8) != 0)
+    return op.emitOpError("unsupported element size for device-side TME "
+                          "descriptor; expected 1, 2, 4, or 8 bytes");
+
+  unsigned elemSize = elemBitWidth / 8;
+  if (elemSize != 1 && elemSize != 2 && elemSize != 4 && elemSize != 8)
+    return op.emitOpError("unsupported element size for device-side TME "
+                          "descriptor; expected 1, 2, 4, or 8 bytes");
+
+  TMEEncodeDescriptorOp::create(
+      builder, op.getLoc(), descBuf, op.getBase(), op.getShape(),
+      op.getStrides(), builder.getI32IntegerAttr(elemSize),
+      builder.getI32IntegerAttr(*elemTypeEnum),
+      builder.getI32IntegerAttr(static_cast<int32_t>(op.getPadding())));
+  return success();
+}
 
 enum class TMECopyKind {
   GlobalToLocal,

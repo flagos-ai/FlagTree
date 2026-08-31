@@ -302,8 +302,16 @@ static bool convertLoopCarriedSqmmaAccumulator(scf::ForOp forOp,
   auto oldYield = cast<scf::YieldOp>(oldBody.getTerminator());
   SmallVector<Value> newYieldOperands;
   newYieldOperands.reserve(oldYield.getNumOperands());
-  for (Value operand : oldYield.getOperands())
-    newYieldOperands.push_back(mapping.lookupOrDefault(operand));
+  for (auto [idx, operand] : llvm::enumerate(oldYield.getOperands())) {
+    Value mappedOperand = mapping.lookupOrDefault(operand);
+    Type expectedType = newFor.getRegionIterArg(idx).getType();
+    if (mappedOperand.getType() != expectedType) {
+      mappedOperand = materializeTensorAccumulatorForUse(
+          operand, oldYield.getLoc(), mapping, tensorMaterializations,
+          rewriter);
+    }
+    newYieldOperands.push_back(mappedOperand);
+  }
   scf::YieldOp::create(rewriter, oldYield.getLoc(), newYieldOperands);
 
   rewriter.setInsertionPointAfter(newFor);

@@ -2,6 +2,7 @@
 #define TRITONMUSA_COMMON_MMA_CONTRACT_UTILS_H
 
 #include "Dialect/MUSA/IR/Dialect.h"
+#include "TritonMUSACommon/MusaArchTraits.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Support/LLVM.h"
@@ -67,6 +68,8 @@ inline constexpr WmmaIntrinsicSignature kWmmaIntrinsics[] = {
     {SQMMAEltType::bf16, 8, 16, 16, "llvm.musa.bfmma.m8n16k16.mma", 1},
     {SQMMAEltType::bf16, 16, 16, 16, "llvm.musa.bfmma.m16n16k16.mma", 1},
     {SQMMAEltType::bf16, 16, 16, 32, "llvm.musa.bfmma.m16n16k32.mma", 1},
+    {SQMMAEltType::f16, 32, 32, 16, "llvm.musa.ffmma.m32n32k16.mma", 1},
+    {SQMMAEltType::bf16, 32, 32, 16, "llvm.musa.bfmma.m32n32k16.mma", 1},
     {SQMMAEltType::tf32, 16, 8, 4, "llvm.musa.tfmma.m16n8k4.mma", 1},
     {SQMMAEltType::tf32, 16, 8, 8, "llvm.musa.tfmma.m16n8k8.mma", 1},
     {SQMMAEltType::tf32, 16, 16, 16, "llvm.musa.tfmma.m16n16k16.mma", 1},
@@ -92,12 +95,26 @@ lookupWmmaIntrinsicName(SQMMAEltType eltType, unsigned m, unsigned n,
   return std::nullopt;
 }
 
+inline bool isSupportedWmma(SQMMAEltType eltType, unsigned m, unsigned n,
+                            unsigned k, unsigned versionMajor = 3,
+                            unsigned versionMinor = 1) {
+  if (!lookupWmmaIntrinsicName(eltType, m, n, k))
+    return false;
+  if (versionMajor == 2)
+    return true;
+  return versionMinor == 1;
+}
+
 inline std::optional<WmmaIntrinsicSignature>
-lookupWmmaIntrinsic(Type elemTy, ArrayRef<unsigned> instrShape) {
+lookupWmmaIntrinsic(Type elemTy, ArrayRef<unsigned> instrShape,
+                    unsigned versionMajor = 3, unsigned versionMinor = 1) {
   if (instrShape.size() != 3)
     return std::nullopt;
   auto eltType = getWmmaEltType(elemTy);
   if (!eltType)
+    return std::nullopt;
+  if (!isSupportedWmma(*eltType, instrShape[0], instrShape[1], instrShape[2],
+                       versionMajor, versionMinor))
     return std::nullopt;
   for (const auto &def : kWmmaIntrinsics) {
     if (def.eltType == *eltType && def.m == instrShape[0] &&
@@ -249,12 +266,24 @@ inline std::string getSqmmaTypeTag(SQMMAEltType type) {
   }
 }
 
+inline unsigned getSqmmaEltTypeBitWidth(SQMMAEltType eltType) {
+  switch (eltType) {
+  case SQMMAEltType::f16:
+  case SQMMAEltType::bf16:
+    return 16;
+  case SQMMAEltType::tf32:
+    return 32;
+  case SQMMAEltType::s8:
+  case SQMMAEltType::e4m3:
+  case SQMMAEltType::e5m2:
+    return 8;
+  default:
+    return 0;
+  }
+}
+
 inline bool isSupportedSqmmaInstrMN(unsigned m, unsigned n) {
-  static constexpr std::pair<unsigned, unsigned> kAllowedMN[] = {
-      {32, 32}, {32, 64},  {32, 128}, {16, 64},  {64, 16},   {64, 32},
-      {64, 64}, {64, 128}, {128, 32}, {128, 64}, {128, 128},
-  };
-  for (const auto &[supportedM, supportedN] : kAllowedMN) {
+  for (const auto &[supportedM, supportedN] : detail::kSqmmaInstrMN) {
     if (supportedM == m && supportedN == n)
       return true;
   }
@@ -262,7 +291,8 @@ inline bool isSupportedSqmmaInstrMN(unsigned m, unsigned n) {
 }
 
 inline bool isSupportedSqmmaInstrMN(SQMMAEltType eltType, unsigned m,
-                                    unsigned n) {
+                                    unsigned n,
+                                    const MusaSqmmaArchTraits &traits) {
   switch (eltType) {
   case SQMMAEltType::f16:
   case SQMMAEltType::bf16:
@@ -271,11 +301,7 @@ inline bool isSupportedSqmmaInstrMN(SQMMAEltType eltType, unsigned m,
   case SQMMAEltType::e5m2:
     return isSupportedSqmmaInstrMN(m, n);
   case SQMMAEltType::tf32: {
-    static constexpr std::pair<unsigned, unsigned> kAllowedTf32MN[] = {
-        {16, 64}, {32, 32}, {32, 64},  {64, 16},
-        {64, 32}, {64, 64}, {128, 64}, {128, 128},
-    };
-    for (const auto &[supportedM, supportedN] : kAllowedTf32MN) {
+    for (const auto &[supportedM, supportedN] : traits.tf32InstrMN) {
       if (supportedM == m && supportedN == n)
         return true;
     }
@@ -286,46 +312,73 @@ inline bool isSupportedSqmmaInstrMN(SQMMAEltType eltType, unsigned m,
   }
 }
 
+inline bool isSqmmaInstrLdmSupported(SQMMALayout layoutA, SQMMALayout layoutB,
+                                     unsigned elemBytes, bool aIsShared,
+                                     bool bIsShared, unsigned m, unsigned n,
+                                     unsigned k) {
+  if (elemBytes == 0)
+    return false;
+
+  unsigned maxLeadElems = 256 / elemBytes;
+  auto isOperandLdmSupported = [&](bool isShared, SQMMALayout layout,
+                                   unsigned rowLead, unsigned colLead) -> bool {
+    if (!isShared)
+      return true;
+    unsigned lead = layout == SQMMALayout::row ? rowLead : colLead;
+    return lead <= maxLeadElems;
+  };
+
+  if (!isOperandLdmSupported(aIsShared, layoutA, k, m))
+    return false;
+  if (!isOperandLdmSupported(bIsShared, layoutB, n, k))
+    return false;
+  return true;
+}
+
 inline bool isSupportedSqmma(SQMMAEltType eltTypeA, SQMMAEltType eltTypeB,
                              SQMMAEltType eltTypeC, unsigned m, unsigned n,
-                             unsigned k) {
+                             unsigned k, const MusaSqmmaArchTraits &traits,
+                             SQMMALayout layoutA = SQMMALayout::row,
+                             SQMMALayout layoutB = SQMMALayout::row,
+                             unsigned elemBytes = 0, bool aIsShared = true,
+                             bool bIsShared = true) {
   if (m == 0 || n == 0 || k == 0 || (m % 8) || (n % 8) || (k % 8))
     return false;
   if (eltTypeA != eltTypeB)
     return false;
-  if (!isSupportedSqmmaInstrMN(eltTypeA, m, n))
+  if (!isSupportedSqmmaInstrMN(eltTypeA, m, n, traits))
     return false;
 
-  auto isValidPh1K = [&](SQMMAEltType type, unsigned mVal, unsigned nVal,
-                         unsigned kVal) {
-    switch (type) {
-    case SQMMAEltType::f16:
-    case SQMMAEltType::bf16:
-      return kVal == 16 || kVal == 32 || kVal == 64;
-    case SQMMAEltType::tf32:
-      return kVal == 8 || kVal == 16 || kVal == 32;
-    case SQMMAEltType::s8:
-    case SQMMAEltType::e4m3:
-    case SQMMAEltType::e5m2:
-      return kVal == 32 || kVal == 64 || kVal == 128;
-    default:
-      return false;
-    }
+  auto isValidSqmmaK = [&](SQMMAEltType type, unsigned kVal) {
+    auto kValues =
+        lookupSqmmaCandidateKs(traits, getSqmmaEltTypeBitWidth(type));
+    return llvm::is_contained(kValues, kVal);
   };
 
+  bool supported = false;
   switch (eltTypeA) {
   case SQMMAEltType::f16:
   case SQMMAEltType::bf16:
   case SQMMAEltType::tf32:
-    return eltTypeC == SQMMAEltType::f32 && isValidPh1K(eltTypeA, m, n, k);
+    supported = eltTypeC == SQMMAEltType::f32 && isValidSqmmaK(eltTypeA, k);
+    break;
   case SQMMAEltType::s8:
-    return eltTypeC == SQMMAEltType::s32 && isValidPh1K(eltTypeA, m, n, k);
+    supported = eltTypeC == SQMMAEltType::s32 && isValidSqmmaK(eltTypeA, k);
+    break;
   case SQMMAEltType::e4m3:
   case SQMMAEltType::e5m2:
-    return eltTypeC == SQMMAEltType::f32 && isValidPh1K(eltTypeA, m, n, k);
+    supported = eltTypeC == SQMMAEltType::f32 && isValidSqmmaK(eltTypeA, k);
+    break;
   default:
     return false;
   }
+  if (!supported)
+    return false;
+  if (elemBytes != 0 &&
+      !isSqmmaInstrLdmSupported(layoutA, layoutB, elemBytes, aIsShared,
+                                bIsShared, m, n, k))
+    return false;
+  return true;
 }
 
 inline std::string lookupSqmmaIntrinsic(SQMMAEltType type, unsigned m,

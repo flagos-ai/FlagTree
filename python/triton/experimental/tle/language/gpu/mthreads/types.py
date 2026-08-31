@@ -163,7 +163,12 @@ class MusaSqmmaEncoding(_MusaMmaEncoding):
 
 
 class MusaDotOperandEncoding(distributed_encoding):
-    """Explicit ``#ttg.dot_op`` encoding for a MUSA WMMA/SQMMA operand."""
+    """Explicit ``#ttg.dot_op`` encoding for a MUSA WMMA register operand.
+
+    PH1 SQMMA operands are consumed from shared memory and are staged by the
+    backend.  ``MusaSqmmaEncoding`` is therefore only valid for an SQMMA
+    accumulator/result, not as the parent of this register encoding.
+    """
 
     def __init__(self, operand_index, parent, k_width=0):
         super().__init__()
@@ -175,8 +180,11 @@ class MusaDotOperandEncoding(distributed_encoding):
             raise ValueError("MusaDotOperandEncoding operand_index must be a compile-time integer")
         if self.operand_index not in (0, 1):
             raise ValueError("MusaDotOperandEncoding operand_index must be 0 or 1")
-        if not isinstance(self.parent, _MusaMmaEncoding):
-            raise ValueError("MusaDotOperandEncoding parent must be a MusaWmmaEncoding or MusaSqmmaEncoding")
+        if isinstance(self.parent, MusaSqmmaEncoding):
+            raise ValueError("MusaDotOperandEncoding does not support MusaSqmmaEncoding: "
+                             "PH1 SQMMA operands are staged through shared memory by the backend")
+        if not isinstance(self.parent, MusaWmmaEncoding):
+            raise ValueError("MusaDotOperandEncoding parent must be a MusaWmmaEncoding")
         if isinstance(self.k_width, bool) or not isinstance(self.k_width, int):
             raise ValueError("MusaDotOperandEncoding k_width must be a compile-time integer")
         if self.k_width != 0:

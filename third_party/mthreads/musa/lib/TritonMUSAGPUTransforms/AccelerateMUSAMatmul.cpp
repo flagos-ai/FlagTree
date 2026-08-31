@@ -1,10 +1,12 @@
 #include "Dialect/MUSA/IR/Dialect.h"
+#include "TritonMUSACommon/ConvertLayoutUtils.h"
 #include "TritonMUSACommon/MMAContractUtils.h"
 #ifdef __TLE__
 #include "TritonMUSACommon/MMAEncodingUtils.h"
 #include "TritonMUSACommon/MMAOperandUtils.h"
 #endif // __TLE__
 #include "TritonMUSACommon/MemDescUtils.h"
+#include "TritonMUSACommon/MusaArchTraits.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -17,7 +19,6 @@
 #include "triton/Dialect/TritonGPU/Transforms/DecomposeScaledBlocked.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
@@ -76,21 +77,11 @@ toSqmmaOperandEltType(Type elemTy, bool allowTF32) {
   return toSqmmaEltType(elemTy);
 }
 
-static triton::musa::SQMMALayout inferSqmmaLayout(Value v) {
-  if (auto tensorTy = dyn_cast<RankedTensorType>(v.getType())) {
-    auto order = ttg::getOrderForMemory(tensorTy);
-    bool isRowMajor = !order.empty() && order.front() + 1 == tensorTy.getRank();
-    return isRowMajor ? triton::musa::SQMMALayout::row
-                      : triton::musa::SQMMALayout::col;
-  }
-  if (auto memDescTy = dyn_cast<ttg::MemDescType>(v.getType())) {
-    auto order = ttg::getOrder(memDescTy);
-    bool isRowMajor =
-        !order.empty() && order.front() + 1 == memDescTy.getRank();
-    return isRowMajor ? triton::musa::SQMMALayout::row
-                      : triton::musa::SQMMALayout::col;
-  }
-  return triton::musa::SQMMALayout::row;
+static std::optional<unsigned> getElementByteWidth(Type elemTy) {
+  int bitWidth = elemTy.getIntOrFloatBitWidth();
+  if (bitWidth <= 0)
+    return std::nullopt;
+  return std::max(1u, static_cast<unsigned>((bitWidth + 7) / 8));
 }
 
 static bool isSupportedWmmaOperandType(Type elemTy, bool allowTF32) {
@@ -100,18 +91,11 @@ static bool isSupportedWmmaOperandType(Type elemTy, bool allowTF32) {
   return elemTy.isF32() && allowTF32;
 }
 
-static SmallVector<SmallVector<unsigned, 3>>
-getWmmaCandidateInstrShapes(Type elemTy, bool allowTF32) {
-  if (elemTy.isF32() && allowTF32)
-    return {{16, 8, 4}, {16, 8, 8}, {16, 16, 16}};
-  if (elemTy.isF16() || elemTy.isBF16()) {
-    return {
-        {8, 16, 16}, {16, 8, 8}, {16, 8, 16}, {16, 16, 16}, {16, 16, 32},
-    };
-  }
-  return {
-      {8, 16, 16}, {16, 8, 16}, {16, 16, 16}, {16, 16, 32}, {16, 16, 64},
-  };
+static llvm::ArrayRef<std::array<unsigned, 3>>
+getWmmaCandidateInstrShapes(Type elemTy,
+                            const triton::musa::MusaWmmaArchTraits &traits) {
+  return triton::musa::lookupWmmaCandidateInstrShapes(
+      traits, elemTy.getIntOrFloatBitWidth());
 }
 
 struct SelectedConfig {
@@ -344,6 +328,7 @@ validateMusaDotProblem(const MusaDotProblem &problem, bool useSqmma) {
 
 static MusaMmaValidationResult
 validateWmmaConfig(const MusaDotProblem &problem, const SelectedConfig &config,
+                   const triton::musa::MusaWmmaArchTraits &wmmaTraits,
                    ttg::MUSAWmmaEncodingAttr encoding = {}) {
   if (encoding && !triton::musa::supportsMusaWmmaEncoding(encoding))
     return {MusaMmaValidationFailure::UnsupportedEncodingVersion};
@@ -358,7 +343,9 @@ validateWmmaConfig(const MusaDotProblem &problem, const SelectedConfig &config,
       config.instrShape[2] == 0 || m % config.instrShape[0] != 0 ||
       n % config.instrShape[1] != 0 || k % config.instrShape[2] != 0)
     return {MusaMmaValidationFailure::InvalidInstructionShape};
-  if (!triton::musa::lookupWmmaIntrinsic(problem.aElemType, config.instrShape))
+  if (!triton::musa::lookupWmmaIntrinsic(problem.aElemType, config.instrShape,
+                                         wmmaTraits.versionMajor,
+                                         wmmaTraits.versionMinor))
     return {MusaMmaValidationFailure::UnsupportedInstruction};
   return {};
 }
@@ -371,9 +358,10 @@ getExplicitWmmaConfig(ttg::MUSAWmmaEncodingAttr encoding) {
   return config;
 }
 
-static MusaMmaValidationResult
-validateExplicitWmmaContract(tt::DotOp dotOp, const MusaDotProblem &problem,
-                             ttg::MUSAWmmaEncodingAttr encoding) {
+static MusaMmaValidationResult validateExplicitWmmaContract(
+    tt::DotOp dotOp, const MusaDotProblem &problem,
+    ttg::MUSAWmmaEncodingAttr encoding,
+    const triton::musa::MusaWmmaArchTraits &wmmaTraits) {
   Attribute explicitEncoding =
       getTleExplicitResultEncoding(dotOp.getOperation(), 0);
   if (explicitEncoding && explicitEncoding != encoding)
@@ -399,7 +387,8 @@ validateExplicitWmmaContract(tt::DotOp dotOp, const MusaDotProblem &problem,
       validateMusaDotProblem(problem, false);
   if (!problemValidation.succeeded())
     return problemValidation;
-  return validateWmmaConfig(problem, getExplicitWmmaConfig(encoding), encoding);
+  return validateWmmaConfig(problem, getExplicitWmmaConfig(encoding),
+                            wmmaTraits, encoding);
 }
 
 static LogicalResult emitExplicitWmmaError(tt::DotOp dotOp,
@@ -411,6 +400,7 @@ static LogicalResult emitExplicitWmmaError(tt::DotOp dotOp,
 static LogicalResult validateExplicitWmmaDots(ModuleOp module,
                                               int computeCapability,
                                               bool disableWmma) {
+  auto arch = triton::musa::getMusaArchFromCapability(computeCapability);
   WalkResult result = module.walk([&](tt::DotOp dotOp) -> WalkResult {
     auto resultType = dyn_cast<RankedTensorType>(dotOp.getType());
     auto encoding = resultType ? dyn_cast_or_null<ttg::MUSAWmmaEncodingAttr>(
@@ -418,7 +408,7 @@ static LogicalResult validateExplicitWmmaDots(ModuleOp module,
                                : ttg::MUSAWmmaEncodingAttr{};
     if (!encoding)
       return WalkResult::advance();
-    if (computeCapability != 31) {
+    if (!arch || computeCapability != 31) {
       emitExplicitWmmaError(dotOp, MusaMmaValidationFailure::UnsupportedTarget);
       return WalkResult::interrupt();
     }
@@ -432,8 +422,8 @@ static LogicalResult validateExplicitWmmaDots(ModuleOp module,
       emitExplicitWmmaError(dotOp, MusaMmaValidationFailure::InvalidDotShape);
       return WalkResult::interrupt();
     }
-    MusaMmaValidationResult validation =
-        validateExplicitWmmaContract(dotOp, *problem, encoding);
+    MusaMmaValidationResult validation = validateExplicitWmmaContract(
+        dotOp, *problem, encoding, triton::musa::getMusaWmmaArchTraits(*arch));
     if (!validation.succeeded()) {
       emitExplicitWmmaError(dotOp, validation.failure);
       return WalkResult::interrupt();
@@ -444,8 +434,11 @@ static LogicalResult validateExplicitWmmaDots(ModuleOp module,
 }
 #endif // __TLE__
 
-static bool isKnownBrokenSqmmaConfig(Type elemTy, bool allowTF32,
-                                     ArrayRef<unsigned> instrShape) {
+static bool isKnownBrokenSqmmaConfig(
+    Type elemTy, bool allowTF32, ArrayRef<unsigned> instrShape,
+    const triton::musa::MusaSqmmaArchTraits &sqTraits,
+    triton::musa::SQMMALayout layoutA, triton::musa::SQMMALayout layoutB,
+    unsigned elemBytes, bool aIsShared, bool bIsShared) {
   auto eltTypeA = toSqmmaOperandEltType(elemTy, allowTF32);
   if (!eltTypeA || instrShape.size() != 3)
     return false;
@@ -453,9 +446,10 @@ static bool isKnownBrokenSqmmaConfig(Type elemTy, bool allowTF32,
   triton::musa::SQMMAEltType eltTypeC = elemTy.isInteger(8)
                                             ? triton::musa::SQMMAEltType::s32
                                             : triton::musa::SQMMAEltType::f32;
-  return !triton::musa::isSupportedSqmma(*eltTypeA, *eltTypeA, eltTypeC,
-                                         instrShape[0], instrShape[1],
-                                         instrShape[2]);
+  return !triton::musa::isSupportedSqmma(
+      *eltTypeA, *eltTypeA, eltTypeC, instrShape[0], instrShape[1],
+      instrShape[2], sqTraits, layoutA, layoutB, elemBytes, aIsShared,
+      bIsShared);
 }
 
 static SmallVector<unsigned, 2>
@@ -542,21 +536,21 @@ static SqmmaAccumulationContract selectSqmmaAccumulationContract(
 
 static std::optional<SelectedConfig>
 #ifdef __TLE__
-selectWmmaConfig(const MusaDotProblem &problem) {
+selectWmmaConfig(const MusaDotProblem &problem,
+                 const triton::musa::MusaWmmaArchTraits &traits) {
   unsigned m = problem.matrixShape.m;
   unsigned n = problem.matrixShape.n;
   unsigned k = problem.matrixShape.k;
   unsigned numWarps = problem.numWarps;
   Type elemTy = problem.aElemType;
-  bool allowTF32 = problem.allowTF32;
 #else
 selectWmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
-                 Type elemTy, bool allowTF32) {
+                 Type elemTy, const triton::musa::MusaWmmaArchTraits &traits) {
 #endif // __TLE__
   if (numWarps == 0 || (numWarps & (numWarps - 1)) != 0)
     return std::nullopt;
 
-  auto candidates = getWmmaCandidateInstrShapes(elemTy, allowTF32);
+  auto candidates = getWmmaCandidateInstrShapes(elemTy, traits);
 
   bool found = false;
   SmallVector<unsigned, 3> bestInstrShape = {0, 0, 0};
@@ -565,12 +559,13 @@ selectWmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
   for (const auto &shape : candidates) {
 #ifdef __TLE__
     SelectedConfig candidate;
-    candidate.instrShape = shape;
+    llvm::append_range(candidate.instrShape, shape);
     candidate.warpsPerCTA = selectWmmaWarpsPerCTAForPH1(m, n, numWarps, shape);
-    if (!validateWmmaConfig(problem, candidate).succeeded())
+    if (!validateWmmaConfig(problem, candidate, traits).succeeded())
       continue;
 #else
-    if (!triton::musa::lookupWmmaIntrinsic(elemTy, shape))
+    if (!triton::musa::lookupWmmaIntrinsic(elemTy, shape, traits.versionMajor,
+                                           traits.versionMinor))
       continue;
     if (m % shape[0] != 0 || n % shape[1] != 0 || k % shape[2] != 0)
       continue;
@@ -581,7 +576,7 @@ selectWmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
     unsigned instCount = (m / instM) * (n / instN) * (k / instK);
     if (!found || instCount < bestInstCount) {
       bestInstCount = instCount;
-      bestInstrShape = shape;
+      bestInstrShape.assign(shape.begin(), shape.end());
       found = true;
     }
   }
@@ -601,28 +596,6 @@ static bool isSupportedSqmmaOperandType(Type elemTy, bool allowTF32) {
       tt::type::isFloat8(elemTy))
     return true;
   return elemTy.isF32() && allowTF32;
-}
-
-static SmallVector<unsigned> getSqmmaCandidateM(Type elemTy, bool allowTF32) {
-  if (elemTy.isF32() && allowTF32)
-    return {128, 64, 32, 16};
-  return {128, 64, 32, 16};
-}
-
-static SmallVector<unsigned> getSqmmaCandidateN(Type elemTy, bool allowTF32) {
-  if (elemTy.isF32() && allowTF32)
-    return {128, 64, 32, 16};
-  return {128, 64, 32, 16};
-}
-
-static SmallVector<unsigned> getSqmmaCandidateK(Type elemTy, bool allowTF32) {
-  if (elemTy.isF16() || elemTy.isBF16())
-    return {128, 64, 32, 16};
-  if (elemTy.isF32() && allowTF32)
-    return {32, 16, 8};
-  if (tt::type::isFloat8(elemTy) || elemTy.isInteger(8))
-    return {128, 64, 32};
-  return {};
 }
 
 #ifndef __TLE__
@@ -655,6 +628,63 @@ static SqmmaTransLoadKind classifySqmmaTransLoad(Value v) {
                ? SqmmaTransLoadKind::Descriptor
                : SqmmaTransLoadKind::PlainLoad;
   }
+}
+
+struct SqmmaSharedOperandPlan {
+  Value source;
+  RankedTensorType type;
+  SmallVector<unsigned> order;
+  triton::musa::SQMMALayout layout;
+  bool forceFreshRestage;
+};
+
+static std::optional<SqmmaSharedOperandPlan>
+planSharedMemorySqmmaOperand(Value v, bool allowTranspose) {
+  Value arg = v;
+  bool forceFreshRestage = false;
+  while (true) {
+    if (auto cvtOp = arg.getDefiningOp<ttg::ConvertLayoutOp>()) {
+      auto srcTy = dyn_cast<RankedTensorType>(cvtOp.getSrc().getType());
+      auto dstTy = dyn_cast<RankedTensorType>(cvtOp.getType());
+      if (srcTy && dstTy && isa<ttg::MmaEncodingTrait>(srcTy.getEncoding()) &&
+          !isa<ttg::MmaEncodingTrait>(dstTy.getEncoding())) {
+        forceFreshRestage = true;
+        break;
+      }
+      arg = cvtOp.getSrc();
+      continue;
+    }
+    if (auto bitcastOp = arg.getDefiningOp<tt::BitcastOp>()) {
+      arg = bitcastOp.getSrc();
+      continue;
+    }
+    if (arg.getDefiningOp<tt::TransOp>())
+      break;
+    break;
+  }
+
+  auto argType = dyn_cast<RankedTensorType>(arg.getType());
+  if (!argType || !argType.getEncoding())
+    return {};
+  if (isa<ttg::MUSAWmmaEncodingAttr, ttg::MUSASqmmaEncodingAttr>(
+          argType.getEncoding()))
+    return {};
+  unsigned rank = argType.getRank();
+  if (rank != 2 && rank != 3)
+    return std::nullopt;
+
+  SmallVector<unsigned> newOrder = ttg::getOrderForMemory(argType);
+  if (!allowTranspose) {
+    newOrder.clear();
+    for (int dim = static_cast<int>(rank) - 1; dim >= 0; --dim)
+      newOrder.push_back(static_cast<unsigned>(dim));
+  }
+  bool isRowMajor =
+      !newOrder.empty() && (newOrder.front() + 1 == argType.getRank());
+  return SqmmaSharedOperandPlan{arg, argType, newOrder,
+                                isRowMajor ? triton::musa::SQMMALayout::row
+                                           : triton::musa::SQMMALayout::col,
+                                forceFreshRestage};
 }
 
 #ifdef __TLE__
@@ -704,6 +734,9 @@ validateSqmmaOperandMaterialization(Value operand) {
 
 static MusaMmaValidationResult
 validateSqmmaConfig(const MusaDotProblem &problem, const SelectedConfig &config,
+                    const triton::musa::MusaSqmmaArchTraits &sqTraits,
+                    triton::musa::SQMMALayout layoutA,
+                    triton::musa::SQMMALayout layoutB, unsigned elemBytes,
                     ttg::MUSASqmmaEncodingAttr encoding = {}) {
   if (encoding && !triton::musa::supportsMusaSqmmaEncoding(encoding))
     return {MusaMmaValidationFailure::UnsupportedEncodingVersion};
@@ -740,7 +773,9 @@ validateSqmmaConfig(const MusaDotProblem &problem, const SelectedConfig &config,
     return {MusaMmaValidationFailure::UnsupportedAccumulatorType};
   if (!eltTypeA || !eltTypeB ||
       !triton::musa::isSupportedSqmma(*eltTypeA, *eltTypeB, *eltTypeC, instM,
-                                      instN, instK))
+                                      instN, instK, sqTraits, layoutA, layoutB,
+                                      elemBytes, /*aIsShared=*/true,
+                                      /*bIsShared=*/true))
     return {MusaMmaValidationFailure::UnsupportedInstruction};
 
   if (!validateSqmmaOperandMaterialization(problem.a).succeeded() ||
@@ -757,12 +792,25 @@ getExplicitSqmmaConfig(ttg::MUSASqmmaEncodingAttr encoding) {
   return config;
 }
 
-static MusaMmaValidationResult
-validateExplicitSqmmaContract(tt::DotOp dotOp, const MusaDotProblem &problem,
-                              ttg::MUSASqmmaEncodingAttr encoding) {
+static MusaMmaValidationResult validateExplicitSqmmaContract(
+    tt::DotOp dotOp, const MusaDotProblem &problem,
+    ttg::MUSASqmmaEncodingAttr encoding,
+    const triton::musa::MusaSqmmaArchTraits &sqTraits) {
   Attribute explicitEncoding =
-      getTleExplicitResultEncoding(dotOp.getOperation(), 0);
-  if (explicitEncoding && explicitEncoding != encoding)
+      getTleExplicitSqmmaEncoding(dotOp.getOperation());
+  if (explicitEncoding != encoding)
+    return {MusaMmaValidationFailure::MismatchedExplicitResultEncoding};
+
+  bool hasExplicitResultBoundary =
+      llvm::any_of(dotOp->getUsers(), [&](Operation *user) {
+        auto convert = dyn_cast<ttg::ConvertLayoutOp>(user);
+        if (!convert ||
+            getTleExplicitResultEncoding(convert.getOperation(), 0) != encoding)
+          return false;
+        auto resultType = dyn_cast<RankedTensorType>(convert.getType());
+        return resultType && resultType.getEncoding() == encoding;
+      });
+  if (!hasExplicitResultBoundary)
     return {MusaMmaValidationFailure::MismatchedExplicitResultEncoding};
 
   auto aEncoding = dyn_cast_or_null<ttg::DotOperandEncodingAttr>(
@@ -775,18 +823,31 @@ validateExplicitSqmmaContract(tt::DotOp dotOp, const MusaDotProblem &problem,
     return {MusaMmaValidationFailure::InvalidDotOperandIndex};
   if (aEncoding.getKWidth() != 0 || bEncoding.getKWidth() != 0)
     return {MusaMmaValidationFailure::InvalidDotOperandKWidth};
-  if (aEncoding.getParent() != encoding || bEncoding.getParent() != encoding)
-    return {MusaMmaValidationFailure::MismatchedDotOperandParent};
-  if (problem.cType.getEncoding() != encoding ||
-      problem.dType.getEncoding() != encoding)
+  Attribute resultEncoding = problem.dType.getEncoding();
+  if (!isa_and_nonnull<ttg::BlockedEncodingAttr>(resultEncoding) ||
+      problem.cType.getEncoding() != resultEncoding)
     return {MusaMmaValidationFailure::MismatchedAccumulatorEncoding};
+  if (aEncoding.getParent() != resultEncoding ||
+      bEncoding.getParent() != resultEncoding)
+    return {MusaMmaValidationFailure::MismatchedDotOperandParent};
 
   MusaMmaValidationResult problemValidation =
       validateMusaDotProblem(problem, true);
   if (!problemValidation.succeeded())
     return problemValidation;
+
+  bool allowTransposeA = problem.transLoadKindA != SqmmaTransLoadKind::None;
+  bool allowTransposeB = problem.transLoadKindB != SqmmaTransLoadKind::None;
+  auto sharedPlanA = planSharedMemorySqmmaOperand(problem.a, allowTransposeA);
+  auto sharedPlanB = planSharedMemorySqmmaOperand(problem.b, allowTransposeB);
+  if (!sharedPlanA || !sharedPlanB)
+    return {MusaMmaValidationFailure::UnsupportedTransposeOperand};
+  auto elemBytes = getElementByteWidth(problem.aElemType);
+  if (!elemBytes)
+    return {MusaMmaValidationFailure::UnsupportedOperandType};
   return validateSqmmaConfig(problem, getExplicitSqmmaConfig(encoding),
-                             encoding);
+                             sqTraits, sharedPlanA->layout, sharedPlanB->layout,
+                             *elemBytes, encoding);
 }
 
 static LogicalResult emitExplicitSqmmaError(tt::DotOp dotOp,
@@ -798,14 +859,15 @@ static LogicalResult emitExplicitSqmmaError(tt::DotOp dotOp,
 static LogicalResult validateExplicitSqmmaDots(ModuleOp module,
                                                int computeCapability,
                                                bool disableSqmma) {
+  auto arch = triton::musa::getMusaArchFromCapability(computeCapability);
+  const auto *sqTraits =
+      arch ? triton::musa::getMusaSqmmaArchTraits(*arch) : nullptr;
   WalkResult result = module.walk([&](tt::DotOp dotOp) -> WalkResult {
-    auto resultType = dyn_cast<RankedTensorType>(dotOp.getType());
-    auto encoding = resultType ? dyn_cast_or_null<ttg::MUSASqmmaEncodingAttr>(
-                                     resultType.getEncoding())
-                               : ttg::MUSASqmmaEncodingAttr{};
+    auto encoding = dyn_cast_or_null<ttg::MUSASqmmaEncodingAttr>(
+        getTleExplicitSqmmaEncoding(dotOp.getOperation()));
     if (!encoding)
       return WalkResult::advance();
-    if (computeCapability != 31) {
+    if (!sqTraits || computeCapability != 31) {
       emitExplicitSqmmaError(dotOp,
                              MusaMmaValidationFailure::UnsupportedTarget);
       return WalkResult::interrupt();
@@ -821,7 +883,7 @@ static LogicalResult validateExplicitSqmmaDots(ModuleOp module,
       return WalkResult::interrupt();
     }
     MusaMmaValidationResult validation =
-        validateExplicitSqmmaContract(dotOp, *problem, encoding);
+        validateExplicitSqmmaContract(dotOp, *problem, encoding, *sqTraits);
     if (!validation.succeeded()) {
       emitExplicitSqmmaError(dotOp, validation.failure);
       return WalkResult::interrupt();
@@ -937,45 +999,16 @@ static SmallVector<int64_t> getSqmmaPaddedAllocShape(RankedTensorType argType,
   return allocShape;
 }
 
-static Value getSharedMemorySqmmaOperand(Value v, PatternRewriter &rewriter,
-                                         int opIdx,
-                                         ttg::MUSASqmmaEncodingAttr mmaEnc,
-                                         bool allowTranspose) {
+static Value getSharedMemorySqmmaOperand(const SqmmaSharedOperandPlan &plan,
+                                         PatternRewriter &rewriter, int opIdx,
+                                         ttg::MUSASqmmaEncodingAttr mmaEnc) {
   OpBuilder::InsertionGuard g(rewriter);
-  Value arg = v;
-  bool forceFreshRestage = false;
-  while (true) {
-    if (auto cvtOp = arg.getDefiningOp<ttg::ConvertLayoutOp>()) {
-      auto srcTy = dyn_cast<RankedTensorType>(cvtOp.getSrc().getType());
-      auto dstTy = dyn_cast<RankedTensorType>(cvtOp.getType());
-      if (srcTy && dstTy && isa<ttg::MmaEncodingTrait>(srcTy.getEncoding()) &&
-          !isa<ttg::MmaEncodingTrait>(dstTy.getEncoding())) {
-        forceFreshRestage = true;
-        break;
-      }
-      arg = cvtOp.getSrc();
-      continue;
-    }
-    if (auto bitcastOp = arg.getDefiningOp<tt::BitcastOp>()) {
-      arg = bitcastOp.getSrc();
-      continue;
-    }
-    if (arg.getDefiningOp<tt::TransOp>())
-      break;
-    break;
-  }
-
-  auto argType = dyn_cast<RankedTensorType>(arg.getType());
-  if (!argType || !argType.getEncoding())
+  Value arg = plan.source;
+  RankedTensorType argType = plan.type;
+  bool forceFreshRestage = plan.forceFreshRestage;
+  auto elemBytes = getElementByteWidth(argType.getElementType());
+  if (!elemBytes)
     return {};
-  if (isa<ttg::MUSAWmmaEncodingAttr, ttg::MUSASqmmaEncodingAttr>(
-          argType.getEncoding()))
-    return {};
-  unsigned rank = argType.getRank();
-  if (rank != 2 && rank != 3)
-    return {};
-  int elemBitWidth = argType.getElementType().getIntOrFloatBitWidth();
-  int elemBytes = std::max(1, (elemBitWidth + 7) / 8);
 
   Value descSeed = arg;
   while (auto bitcastOp = descSeed.getDefiningOp<tt::BitcastOp>())
@@ -987,14 +1020,8 @@ static Value getSharedMemorySqmmaOperand(Value v, PatternRewriter &rewriter,
   else
     descLoad = descSeed.getDefiningOp<tt::DescriptorLoadOp>();
 
-  SmallVector<unsigned> newOrder = ttg::getOrderForMemory(argType);
-  if (!allowTranspose) {
-    newOrder.clear();
-    for (int dim = static_cast<int>(rank) - 1; dim >= 0; --dim)
-      newOrder.push_back(static_cast<unsigned>(dim));
-  }
-  bool isRowMajor =
-      !newOrder.empty() && (newOrder.front() + 1 == argType.getRank());
+  SmallVector<unsigned> newOrder(plan.order.begin(), plan.order.end());
+  bool isRowMajor = plan.layout == triton::musa::SQMMALayout::row;
   auto hasConflictingSqmmaAttrs = [&](Operation *targetOp) {
     if (!targetOp || !triton::musa::hasSqmmaOpIdxAttr(targetOp))
       return false;
@@ -1008,7 +1035,7 @@ static Value getSharedMemorySqmmaOperand(Value v, PatternRewriter &rewriter,
            existingRowMajor != isRowMajor;
   };
   auto setSqmmaAttrs = [&](Operation *targetOp) {
-    triton::musa::setSqmmaAttrs(targetOp, opIdx, elemBytes, isRowMajor);
+    triton::musa::setSqmmaAttrs(targetOp, opIdx, *elemBytes, isRowMajor);
   };
   auto setSqmmaAttrsIfCompatible = [&](Operation *targetOp) {
     if (hasConflictingSqmmaAttrs(targetOp))
@@ -1084,16 +1111,22 @@ static Value getSharedMemorySqmmaOperand(Value v, PatternRewriter &rewriter,
 
 static std::optional<SelectedConfig>
 #ifdef __TLE__
-selectSqmmaConfig(const MusaDotProblem &problem) {
+selectSqmmaConfig(const MusaDotProblem &problem,
+                  const triton::musa::MusaSqmmaArchTraits &sqTraits,
+                  triton::musa::SQMMALayout layoutA,
+                  triton::musa::SQMMALayout layoutB, unsigned elemBytes) {
   unsigned m = problem.matrixShape.m;
   unsigned n = problem.matrixShape.n;
   unsigned k = problem.matrixShape.k;
   unsigned numWarps = problem.numWarps;
   Type elemTy = problem.aElemType;
-  bool allowTF32 = problem.allowTF32;
 #else
 selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
-                  Type elemTy, bool allowTF32) {
+                  Type elemTy, bool allowTF32,
+                  const triton::musa::MusaSqmmaArchTraits &sqTraits,
+                  triton::musa::SQMMALayout layoutA,
+                  triton::musa::SQMMALayout layoutB, unsigned elemBytes,
+                  bool aIsShared, bool bIsShared) {
 #endif // __TLE__
   if (numWarps < 4 || (numWarps % 4) != 0)
     return std::nullopt;
@@ -1103,9 +1136,10 @@ selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
     return std::nullopt;
 #endif // __TLE__
 
-  auto candidateM = getSqmmaCandidateM(elemTy, allowTF32);
-  auto candidateN = getSqmmaCandidateN(elemTy, allowTF32);
-  auto candidateK = getSqmmaCandidateK(elemTy, allowTF32);
+  auto candidateM = sqTraits.candidateM;
+  auto candidateN = sqTraits.candidateN;
+  auto candidateK = triton::musa::lookupSqmmaCandidateKs(
+      sqTraits, elemTy.getIntOrFloatBitWidth());
   if (candidateM.empty() || candidateN.empty() || candidateK.empty())
     return std::nullopt;
 
@@ -1125,16 +1159,19 @@ selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
 #ifndef __TLE__
       if (n < instN || (n % instN) != 0)
         continue;
-      if (!triton::musa::isSupportedSqmmaInstrMN(*sqmmaEltType, instM, instN))
+      if (!triton::musa::isSupportedSqmmaInstrMN(*sqmmaEltType, instM, instN,
+                                                 sqTraits))
         continue;
 #endif // __TLE__
       for (unsigned instK : candidateK) {
 #ifndef __TLE__
         if (k < instK || (k % instK) != 0)
           continue;
-        if ((instM % 4) != 0)
+        if ((instM % sqTraits.instMAlignment) != 0)
           continue;
-        if (isKnownBrokenSqmmaConfig(elemTy, allowTF32, {instM, instN, instK}))
+        if (isKnownBrokenSqmmaConfig(elemTy, allowTF32, {instM, instN, instK},
+                                     sqTraits, layoutA, layoutB, elemBytes,
+                                     aIsShared, bIsShared))
           continue;
 #endif // __TLE__
 
@@ -1148,7 +1185,9 @@ selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
           unsigned tileN = instN * warpsN;
 #ifdef __TLE__
           SelectedConfig candidate{{instM, instN, instK}, {warpsM, warpsN}};
-          if (!validateSqmmaConfig(problem, candidate).succeeded())
+          if (!validateSqmmaConfig(problem, candidate, sqTraits, layoutA,
+                                   layoutB, elemBytes)
+                   .succeeded())
             continue;
 #else
           if ((m % tileM) != 0 || (n % tileN) != 0)
@@ -1192,8 +1231,10 @@ public:
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    if (computeCapability != 31)
+    auto arch = triton::musa::getMusaArchFromCapability(computeCapability);
+    if (!arch || computeCapability != 31)
       return failure();
+    const auto &wmmaTraits = triton::musa::getMusaWmmaArchTraits(*arch);
 
     auto dotOp = dyn_cast<tt::DotOp>(op);
     if (!dotOp)
@@ -1207,7 +1248,8 @@ public:
 
     auto problem = getMusaDotProblem(dotOp);
     if (failed(problem) ||
-        !validateExplicitWmmaContract(dotOp, *problem, mmaEnc).succeeded())
+        !validateExplicitWmmaContract(dotOp, *problem, mmaEnc, wmmaTraits)
+             .succeeded())
       return failure();
 
     SelectedConfig config = getExplicitWmmaConfig(mmaEnc);
@@ -1286,22 +1328,25 @@ public:
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    if (computeCapability != 31)
+    auto arch = triton::musa::getMusaArchFromCapability(computeCapability);
+    auto sqTraits =
+        arch ? triton::musa::getMusaSqmmaArchTraits(*arch) : nullptr;
+    if (!sqTraits || computeCapability != 31)
       return failure();
 
     auto dotOp = dyn_cast<tt::DotOp>(op);
     if (!dotOp)
       return failure();
     auto oldRetType = dyn_cast<RankedTensorType>(dotOp.getType());
-    auto mmaEnc = oldRetType ? dyn_cast_or_null<ttg::MUSASqmmaEncodingAttr>(
-                                   oldRetType.getEncoding())
-                             : ttg::MUSASqmmaEncodingAttr{};
-    if (!mmaEnc)
+    auto mmaEnc = dyn_cast_or_null<ttg::MUSASqmmaEncodingAttr>(
+        getTleExplicitSqmmaEncoding(dotOp.getOperation()));
+    if (!oldRetType || !mmaEnc)
       return failure();
 
     auto problem = getMusaDotProblem(dotOp);
     if (failed(problem) ||
-        !validateExplicitSqmmaContract(dotOp, *problem, mmaEnc).succeeded())
+        !validateExplicitSqmmaContract(dotOp, *problem, mmaEnc, *sqTraits)
+             .succeeded())
       return failure();
 
     SelectedConfig config = getExplicitSqmmaConfig(mmaEnc);
@@ -1340,10 +1385,14 @@ public:
 
     bool allowTransposeA = problem->transLoadKindA != SqmmaTransLoadKind::None;
     bool allowTransposeB = problem->transLoadKindB != SqmmaTransLoadKind::None;
-    Value newA = getSharedMemorySqmmaOperand(dotOp.getA(), rewriter, 0, mmaEnc,
-                                             allowTransposeA);
-    Value newB = getSharedMemorySqmmaOperand(dotOp.getB(), rewriter, 1, mmaEnc,
-                                             allowTransposeB);
+    auto sharedPlanA =
+        planSharedMemorySqmmaOperand(dotOp.getA(), allowTransposeA);
+    auto sharedPlanB =
+        planSharedMemorySqmmaOperand(dotOp.getB(), allowTransposeB);
+    if (!sharedPlanA || !sharedPlanB)
+      return failure();
+    Value newA = getSharedMemorySqmmaOperand(*sharedPlanA, rewriter, 0, mmaEnc);
+    Value newB = getSharedMemorySqmmaOperand(*sharedPlanB, rewriter, 1, mmaEnc);
     if (!newA || !newB)
       return failure();
 
@@ -1358,7 +1407,7 @@ public:
         static_cast<int32_t>(config.instrShape[0]),
         static_cast<int32_t>(config.instrShape[1]),
         static_cast<int32_t>(config.instrShape[2]), *eltTypeC, *eltTypeA,
-        *eltTypeB, inferSqmmaLayout(newA), inferSqmmaLayout(newB), false,
+        *eltTypeB, sharedPlanA->layout, sharedPlanB->layout, false,
         accumulationContract.mode,
         static_cast<int32_t>(dotOp.getInputPrecision()),
         accumulationContract.mode ==
@@ -1368,21 +1417,17 @@ public:
     newDot->setAttr(kDisableGenericDotPipelineAttr, rewriter.getBoolAttr(true));
     newDot->setAttr("isAsync", rewriter.getBoolAttr(false));
 
-    Attribute explicitResultEncoding =
-        getTleExplicitResultEncoding(dotOp.getOperation(), 0);
     if (!useFp32Carrier) {
-      if (explicitResultEncoding)
-        setTleExplicitResultEncoding(newDot.getOperation(), 0,
-                                     explicitResultEncoding);
-      rewriter.replaceOp(dotOp, newDot.getResult());
+      rewriter.replaceOpWithNewOp<ttg::ConvertLayoutOp>(dotOp, oldRetType,
+                                                        newDot.getResult());
       return success();
     }
 
+    auto blockedCarrierTy = oldRetType.cloneWith(std::nullopt, carrierElemTy);
+    Value blockedCarrier = ttg::ConvertLayoutOp::create(
+        rewriter, dotOp.getLoc(), blockedCarrierTy, newDot.getResult());
     Value truncated = arith::TruncFOp::create(rewriter, dotOp.getLoc(),
-                                              oldRetType, newDot.getResult());
-    if (explicitResultEncoding)
-      setTleExplicitResultEncoding(truncated.getDefiningOp(), 0,
-                                   explicitResultEncoding);
+                                              oldRetType, blockedCarrier);
     rewriter.replaceOp(dotOp, truncated);
     return success();
   }
@@ -1400,12 +1445,18 @@ public:
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    if (computeCapability != 31)
+    auto arch = triton::musa::getMusaArchFromCapability(computeCapability);
+    if (!arch)
       return failure();
+    const auto &wmmaTraits = triton::musa::getMusaWmmaArchTraits(*arch);
 
     auto dotOp = dyn_cast<tt::DotOp>(op);
     if (!dotOp)
       return failure();
+#ifdef __TLE__
+    if (getTleExplicitSqmmaEncoding(dotOp.getOperation()))
+      return failure();
+#endif // __TLE__
     auto oldRetType = cast<RankedTensorType>(dotOp.getType());
 #ifdef __TLE__
     Attribute explicitResultEncoding =
@@ -1425,12 +1476,30 @@ public:
     auto aElemTy = problem->aElemType;
     auto bElemTy = problem->bElemType;
     bool allowTF32 = problem->allowTF32;
-    auto config = selectWmmaConfig(*problem);
+    auto config = selectWmmaConfig(*problem, wmmaTraits);
 #else
     auto aTy = cast<RankedTensorType>(dotOp.getA().getType());
     auto bTy = cast<RankedTensorType>(dotOp.getB().getType());
     auto aElemTy = aTy.getElementType();
     auto bElemTy = bTy.getElementType();
+
+    if (!wmmaTraits.supportsNativeFp8Wmma &&
+        (tt::type::isFloat8(aElemTy) || tt::type::isFloat8(bElemTy))) {
+      Type f16Ty = rewriter.getF16Type();
+      Value newA =
+          promoteDotOperand(rewriter, dotOp.getLoc(), dotOp.getA(), f16Ty);
+      Value newB =
+          promoteDotOperand(rewriter, dotOp.getLoc(), dotOp.getB(), f16Ty);
+      rewriter.modifyOpInPlace(dotOp, [&]() {
+        dotOp->setOperand(0, newA);
+        dotOp->setOperand(1, newB);
+      });
+      aTy = cast<RankedTensorType>(dotOp.getA().getType());
+      bTy = cast<RankedTensorType>(dotOp.getB().getType());
+      aElemTy = aTy.getElementType();
+      bElemTy = bTy.getElementType();
+    }
+
     bool allowTF32 = dotOp.getInputPrecision() == tt::InputPrecision::TF32;
     if (aElemTy != bElemTy)
       return failure();
@@ -1446,16 +1515,17 @@ public:
     unsigned k = matrixShape->k;
     unsigned numWarps = ttg::lookupNumWarps(dotOp);
 
-    auto config = selectWmmaConfig(m, n, k, numWarps, aElemTy, allowTF32);
+    auto config = selectWmmaConfig(m, n, k, numWarps, aElemTy, wmmaTraits);
 #endif // __TLE__
     if (!config)
       return failure();
 
     auto cgaLayout = ttg::getCGALayout(oldEncoding);
     auto mmaEnc = ttg::MUSAWmmaEncodingAttr::get(
-        oldRetType.getContext(), /*versionMajor=*/3, /*versionMinor=*/1,
-        config->warpsPerCTA, cgaLayout, config->instrShape);
-    bool useFp32Carrier = computeCapability == 31 &&
+        oldRetType.getContext(), wmmaTraits.versionMajor,
+        wmmaTraits.versionMinor, config->warpsPerCTA, cgaLayout,
+        config->instrShape);
+    bool useFp32Carrier = *arch != triton::musa::MusaArch::QY2 &&
                           oldRetType.getElementType().isF16() &&
                           aElemTy.isF16() && bElemTy.isF16();
     Type carrierElemTy =
@@ -1547,12 +1617,19 @@ public:
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
-    if (computeCapability != 31)
+    auto arch = triton::musa::getMusaArchFromCapability(computeCapability);
+    auto sqTraits =
+        arch ? triton::musa::getMusaSqmmaArchTraits(*arch) : nullptr;
+    if (!sqTraits)
       return failure();
 
     auto dotOp = dyn_cast<tt::DotOp>(op);
     if (!dotOp)
       return failure();
+#ifdef __TLE__
+    if (getTleExplicitSqmmaEncoding(dotOp.getOperation()))
+      return failure();
+#endif // __TLE__
     auto oldRetType = cast<RankedTensorType>(dotOp.getType());
 #ifdef __TLE__
     Attribute explicitResultEncoding =
@@ -1575,7 +1652,6 @@ public:
     unsigned m = problem->matrixShape.m;
     unsigned n = problem->matrixShape.n;
     unsigned k = problem->matrixShape.k;
-    auto config = selectSqmmaConfig(*problem);
 #else
     auto aTy = dyn_cast<RankedTensorType>(dotOp.getA().getType());
     auto bTy = dyn_cast<RankedTensorType>(dotOp.getB().getType());
@@ -1602,13 +1678,51 @@ public:
     unsigned n = matrixShape->n;
     unsigned k = matrixShape->k;
     unsigned numWarps = ttg::lookupNumWarps(dotOp);
-    auto config = selectSqmmaConfig(m, n, k, numWarps, aElemTy, allowTF32);
+#endif // __TLE__
+    auto elemBytes = getElementByteWidth(aElemTy);
+    if (!elemBytes)
+      return failure();
+
+    SqmmaTransLoadKind transLoadKindA = classifySqmmaTransLoad(dotOp.getA());
+    SqmmaTransLoadKind transLoadKindB = classifySqmmaTransLoad(dotOp.getB());
+    bool allowTransposeA = transLoadKindA != SqmmaTransLoadKind::None;
+    bool allowTransposeB = transLoadKindB != SqmmaTransLoadKind::None;
+
+    auto sharedPlanB =
+        planSharedMemorySqmmaOperand(dotOp.getB(), allowTransposeB);
+    if (!sharedPlanB)
+      return failure();
+
+    auto cgaLayout = ttg::getCGALayout(oldEncoding);
+    triton::musa::SQMMALayout layoutB = sharedPlanB->layout;
+    [[maybe_unused]] bool aIsShared = true;
+    [[maybe_unused]] bool bIsShared = true;
+
+    auto buildMmaEncoding = [&](const SelectedConfig &selected) {
+      return ttg::MUSASqmmaEncodingAttr::get(
+          oldRetType.getContext(), sqTraits->versionMajor,
+          sqTraits->versionMinor, selected.warpsPerCTA, cgaLayout,
+          selected.instrShape);
+    };
+
+    auto sharedPlanA =
+        planSharedMemorySqmmaOperand(dotOp.getA(), allowTransposeA);
+    if (!sharedPlanA)
+      return failure();
+    triton::musa::SQMMALayout layoutA = sharedPlanA->layout;
+#ifdef __TLE__
+    std::optional<SelectedConfig> config =
+        selectSqmmaConfig(*problem, *sqTraits, layoutA, layoutB, *elemBytes);
+#else
+    std::optional<SelectedConfig> config =
+        selectSqmmaConfig(m, n, k, numWarps, aElemTy, allowTF32, *sqTraits,
+                          layoutA, layoutB, *elemBytes, aIsShared, bIsShared);
 #endif // __TLE__
     if (!config)
       return failure();
+    ttg::MUSASqmmaEncodingAttr mmaEnc = buildMmaEncoding(*config);
 
-    bool useFp32Carrier = computeCapability == 31 &&
-                          oldRetType.getElementType().isF16() &&
+    bool useFp32Carrier = oldRetType.getElementType().isF16() &&
                           aElemTy.isF16() && bElemTy.isF16();
     Type carrierElemTy =
         useFp32Carrier ? rewriter.getF32Type() : oldRetType.getElementType();
@@ -1620,14 +1734,11 @@ public:
 #ifndef __TLE__
     if (!triton::musa::isSupportedSqmma(
             *eltTypeA, *eltTypeB, *eltTypeC, config->instrShape[0],
-            config->instrShape[1], config->instrShape[2]))
+            config->instrShape[1], config->instrShape[2], *sqTraits, layoutA,
+            layoutB, *elemBytes, aIsShared, bIsShared))
       return failure();
 #endif // __TLE__
 
-    auto cgaLayout = ttg::getCGALayout(oldEncoding);
-    auto mmaEnc = ttg::MUSASqmmaEncodingAttr::get(
-        oldRetType.getContext(), /*versionMajor=*/3, /*versionMinor=*/1,
-        config->warpsPerCTA, cgaLayout, config->instrShape);
     auto newRetType =
         RankedTensorType::get(oldRetType.getShape(), carrierElemTy, mmaEnc);
 
@@ -1647,19 +1758,8 @@ public:
                                             newRetType, acc);
     }
 
-#ifdef __TLE__
-    SqmmaTransLoadKind transLoadKindA = problem->transLoadKindA;
-    SqmmaTransLoadKind transLoadKindB = problem->transLoadKindB;
-#else
-    SqmmaTransLoadKind transLoadKindA = classifySqmmaTransLoad(dotOp.getA());
-    SqmmaTransLoadKind transLoadKindB = classifySqmmaTransLoad(dotOp.getB());
-#endif // __TLE__
-    bool allowTransposeA = transLoadKindA != SqmmaTransLoadKind::None;
-    bool allowTransposeB = transLoadKindB != SqmmaTransLoadKind::None;
-    Value newA = getSharedMemorySqmmaOperand(dotOp.getA(), rewriter, 0, mmaEnc,
-                                             allowTransposeA);
-    Value newB = getSharedMemorySqmmaOperand(dotOp.getB(), rewriter, 1, mmaEnc,
-                                             allowTransposeB);
+    Value newA = getSharedMemorySqmmaOperand(*sharedPlanA, rewriter, 0, mmaEnc);
+    Value newB = getSharedMemorySqmmaOperand(*sharedPlanB, rewriter, 1, mmaEnc);
     if (!newA || !newB)
       return failure();
 
@@ -1673,8 +1773,7 @@ public:
         static_cast<int32_t>(config->instrShape[0]),
         static_cast<int32_t>(config->instrShape[1]),
         static_cast<int32_t>(config->instrShape[2]), *eltTypeC, *eltTypeA,
-        *eltTypeB, inferSqmmaLayout(newA), inferSqmmaLayout(newB), false,
-        accumulationContract.mode,
+        *eltTypeB, layoutA, layoutB, false, accumulationContract.mode,
         static_cast<int32_t>(dotOp.getInputPrecision()),
         accumulationContract.mode ==
                 triton::musa::SQMMAAccumulationMode::partial
@@ -1751,10 +1850,12 @@ struct TritonMUSAGPUAccelerateMatmulPass
     }
 #endif // __TLE__
 
-    bool sqmmaCandidate = computeCapability >= 31 && !disableSqmma;
+    auto arch = triton::musa::getMusaArchFromCapability(computeCapability);
+    bool sqmmaCandidate =
+        arch && triton::musa::getMusaSqmmaArchTraits(*arch) && !disableSqmma;
     // Preserve the 3.6 fallback behavior: descriptor/TME modules may still
     // fall back to WMMA when SQMMA predicate matching rejects a dot.
-    bool wmmaCandidate = computeCapability == 31 && !disableWmma;
+    bool wmmaCandidate = arch.has_value() && !disableWmma;
 
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
@@ -1777,6 +1878,11 @@ struct TritonMUSAGPUAccelerateMatmulPass
 #ifdef __TLE__
     WalkResult residualExplicitMma =
         mod.walk([&](tt::DotOp dotOp) -> WalkResult {
+          if (getTleExplicitSqmmaEncoding(dotOp.getOperation())) {
+            dotOp.emitOpError(
+                "failed to rewrite validated explicit MUSA SQMMA dot");
+            return WalkResult::interrupt();
+          }
           auto resultType = dyn_cast<RankedTensorType>(dotOp.getType());
           if (!resultType || !isa_and_nonnull<ttg::MUSAWmmaEncodingAttr,
                                               ttg::MUSASqmmaEncodingAttr>(
