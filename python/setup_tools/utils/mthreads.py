@@ -19,6 +19,9 @@
 # SOFTWARE.
 
 
+from setup_tools.utils.default import handle_flagcx  # noqa: F401
+
+
 def skip_package_dir(package):
     return package == "triton" or package.startswith("triton.")
 

@@ -134,3 +134,5 @@ third_party/mthreads/backend/bin/
 third_party/xpu.bak/
 third_party/xpu/backend/xpu3/
 .comate/
+third_party/mthreads/backend/flagcx*
+third_party/mthreads/backend/lib/libflagcx*

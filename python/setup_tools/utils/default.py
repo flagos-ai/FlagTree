@@ -84,12 +84,21 @@ class FlagCXRegistrar:
             Path(self.flagtree_dir) / "third_party" / self.backend_name / "backend" / "lib" / self.bitcode_name
         }.get(lib_name)
 
+    _BACKEND_TO_FLAGCX_FLAG = {
+        "nvidia": "NVIDIA",
+        "mthreads": "MUSA",
+    }
+
     def get_compile_cmds(self):
         nproc = os.cpu_count()
-        return {
-            self.bitcode_name: ["make", "-C", "bindings/ir/nvidia"], self.shared_lib_name: ["make", "-j",
-                                                                                            str(nproc)]
-        }
+        cmds = {}
+        if self.backend_name == "nvidia":
+            cmds[self.bitcode_name] = ["make", "-C", "bindings/ir/nvidia"]
+        shared_cmd = ["make", "-j", str(nproc)]
+        if flagcx_flag := self._BACKEND_TO_FLAGCX_FLAG.get(self.backend_name):
+            shared_cmd.append(f"USE_{flagcx_flag}=1")
+        cmds[self.shared_lib_name] = shared_cmd
+        return cmds
 
     def _compile_and_cache(self):
         cmds = self.get_compile_cmds()
@@ -126,7 +135,7 @@ class FlagCXRegistrar:
         src = Path(self.flagcx_src_dir) / "plugin" / "interservice" / "flagcx_wrapper.py"
         shutil.copy(src, dst)
         printinfo(f"flagcx_wrapper.py copied from {src} to {dst}")
-        dst = Path(self.flagtree_dir) / "third_party" / "nvidia" / "backend" / "flagcx_wrapper.py"
+        dst = Path(self.flagtree_dir) / "third_party" / self.backend_name / "backend" / "flagcx_wrapper.py"
         shutil.copy(src, dst)
         printinfo(f"flagcx_wrapper.py copied from {src} to {dst}")
         dst = Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "include"
