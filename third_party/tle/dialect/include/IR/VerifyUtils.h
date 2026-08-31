@@ -49,7 +49,7 @@ llvm::LogicalResult verifyNodeTransfer(mlir::Operation *op, mlir::Value src,
                                        mlir::Value dstOffset,
                                        mlir::Value nelems, mlir::Value netIdx,
                                        mlir::IntegerAttr elemBytes,
-                                       mlir::IntegerAttr coopkind);
+                                       FlagCXCoopKind coopKind);
 
 namespace DistributedBarrier {
 llvm::LogicalResult verifyDeviceSpace(mlir::Operation *op, mlir::Value src);

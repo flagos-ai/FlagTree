@@ -602,13 +602,13 @@ struct TritonTleFuseNodeRemoteTransfers
             loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
             marker.getShardId(), srcOffset, dstOffset, nelems,
             marker.getNetIdx(), builder.getI64IntegerAttr(elemBytes),
-            marker.getCoopkindAttr());
+            marker.getCoopKindAttr());
       } else {
         builder.create<tle::NodeGetOp>(
             loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
             marker.getShardId(), srcOffset, dstOffset, nelems,
             marker.getNetIdx(), builder.getI64IntegerAttr(elemBytes),
-            marker.getCoopkindAttr());
+            marker.getCoopKindAttr());
       }
 
       unsigned localArgNumber = localExpr.localArg.getArgNumber();

@@ -403,16 +403,12 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
 ]> {
   let arguments = (ins
     Optional<Tle_LocalPointerResultType>:$src,
-    Optional<I64>:$dst_mem,
     Optional<I64>:$comm,
     TT_Int:$shard_id,
     StrAttr:$space,
     Optional<TT_IntLike>:$offset,
-    Optional<I64>:$dst_offset,
-    Optional<I64>:$nelems,
     Optional<I32>:$net_idx,
-    OptionalAttr<I64Attr>:$elem_bytes,
-    OptionalAttr<I32Attr>:$coopkind
+    OptionalAttr<Tle_FlagCXCoopKindAttr>:$coop_kind
   );
 
   let results = (outs Tle_LocalPointerResultType:$result);
@@ -449,7 +445,7 @@ class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     I64:$nelems,
     I32:$net_idx,
     I64Attr:$elem_bytes,
-    I32Attr:$coopkind
+    Tle_FlagCXCoopKindAttr:$coop_kind
   );
 
   let hasVerifier = 1;

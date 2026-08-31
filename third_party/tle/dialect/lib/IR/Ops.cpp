@@ -991,14 +991,14 @@ LogicalResult NodePutOp::verify() {
   return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
                             getPeer(), getSrcOffset(), getDstOffset(),
                             getNelems(), getNetIdx(), getElemBytesAttr(),
-                            getCoopkindAttr());
+                            getCoopKind());
 }
 
 LogicalResult NodeGetOp::verify() {
   return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
                             getPeer(), getSrcOffset(), getDstOffset(),
                             getNelems(), getNetIdx(), getElemBytesAttr(),
-                            getCoopkindAttr());
+                            getCoopKind());
 }
 
 LogicalResult RemotePointersOp::verify() {
@@ -1013,14 +1013,10 @@ LogicalResult RemotePointersOp::verify() {
   if (spaceAttr == "node")
     return RemotePointers::verifyNodeSpace(*this);
 
-  auto elemBytesAttr = (*this)->getAttrOfType<IntegerAttr>("elem_bytes");
-  auto coopKindAttr = getCoopkindAttr();
-  auto transferKindAttr = (*this)->getAttrOfType<StringAttr>("transfer_kind");
-
-  if (getDstMem() || getComm() || getDstOffset() || getNelems() ||
-      getNetIdx() || elemBytesAttr || coopKindAttr || transferKindAttr)
+  auto coopKindAttr = getCoopKindAttr();
+  if (getComm() || getNetIdx() || coopKindAttr)
     return emitOpError()
-           << "cluster/device space does not accept node transfer operands or "
+           << "cluster/device space does not accept node-only operands or "
               "attributes";
   if (!getResult())
     return emitOpError()

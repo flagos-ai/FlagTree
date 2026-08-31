@@ -79,22 +79,17 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
         failed(requireMarkerOperand(op.getComm(), "comm")) ||
         failed(requireMarkerOperand(op.getNetIdx(), "net_idx")))
       return failure();
-    if (op.getDstMem() || op.getOffset() || op.getDstOffset() ||
-        op.getNelems() || op.getElemBytesAttr() ||
-        op->getAttrOfType<StringAttr>("transfer_kind"))
+    if (op.getOffset())
       return op.emitOpError()
-             << "node remote pointer marker does not accept transfer operands "
-                "or attributes";
+             << "node remote pointer marker does not accept an offset operand";
     if (!op.getSrc().getType().isSignlessInteger(64) ||
         !op.getComm().getType().isSignlessInteger(64))
       return op.emitOpError()
              << "expects node marker src and comm to be i64 handles";
     if (!op.getNetIdx().getType().isSignlessInteger(32))
       return op.emitOpError() << "expects node marker net_idx to be i32";
-    auto coopKindAttr = op.getCoopkindAttr();
-    if (!coopKindAttr || coopKindAttr.getInt() < 0 || coopKindAttr.getInt() > 2)
-      return op.emitOpError()
-             << "expects coopkind to be THREAD(0), WARP(1), or BLOCK(2)";
+    if (!op.getCoopKindAttr())
+      return op.emitOpError() << "node marker requires coop_kind";
     auto ptrTy = dyn_cast<triton::PointerType>(result.getType());
     if (!ptrTy || ptrTy.getAddressSpace() != 1)
       return op.emitOpError()
@@ -128,7 +123,8 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
 LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
                                  Value comm, Value peer, Value srcOffset,
                                  Value dstOffset, Value nelems, Value netIdx,
-                                 IntegerAttr elemBytes, IntegerAttr coopkind) {
+                                 IntegerAttr elemBytes,
+                                 FlagCXCoopKind coopKind) {
   auto emitError = [&]() { return op->emitOpError(); };
 
   if (!src.getType().isSignlessInteger(64))
@@ -150,9 +146,10 @@ LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
     return emitError() << "expects net_idx to be i32";
   if (!elemBytes || elemBytes.getInt() <= 0)
     return emitError() << "expects elem_bytes to be > 0";
-  if (!coopkind || coopkind.getInt() < 0 || coopkind.getInt() > 2)
-    return emitError()
-           << "expects coopkind to be THREAD(0), WARP(1), or BLOCK(2)";
+  if (coopKind != FlagCXCoopKind::THREAD &&
+      coopKind != FlagCXCoopKind::WARP &&
+      coopKind != FlagCXCoopKind::BLOCK)
+    return emitError() << "expects coop_kind to be THREAD, WARP, or BLOCK";
 
   auto verifyNonNegativeConstant = [&](Value value,
                                        StringRef name) -> LogicalResult {
