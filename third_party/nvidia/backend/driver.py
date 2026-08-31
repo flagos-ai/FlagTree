@@ -177,6 +177,7 @@ def make_launcher(
     signature,
     tensordesc_meta,
     global_scratch_size,
+    global_scratch_reset_per_launch,
 ):
 
     def _extracted_type(ty):
@@ -349,6 +350,7 @@ def make_launcher(
     goto fail;
   }}""" for i, ty in signature.items() if ty != "constexpr")
     prepared_runtime_flags = ", ".join(prepared_runtime_flags) or "0"
+    reset_global_scratch_each_launch = "1" if global_scratch_reset_per_launch else "0"
     tle_cpp_define = "#define __TLE__ 1"
     src = f"""
 #include \"cuda.h\"
@@ -408,10 +410,11 @@ static cuLaunchKernelEx_t getLaunchKernelExHandle() {{
 }}
 
 #ifdef __TLE__
-static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int clusterDimX, int clusterDimY, int clusterDimZ, int launch_cooperative_grid, int launch_pdl, int shared_memory, CUstream stream, CUfunction function, CUdeviceptr global_scratch, CUdeviceptr profile_scratch{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int clusterDimX, int clusterDimY, int clusterDimZ, int launch_cooperative_grid, int launch_pdl, int reset_global_scratch, int shared_memory, CUstream stream, CUfunction function, CUdeviceptr global_scratch, CUdeviceptr profile_scratch{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
   void *params[] = {{ {', '.join(params)} }};
   if (gridX*gridY*gridZ > 0) {{
-    if (launch_cooperative_grid != 0 && global_scratch != 0 && {global_scratch_size} > 0) {{
+    if (launch_cooperative_grid != 0 && global_scratch != 0 && {global_scratch_size} > 0 &&
+        ({reset_global_scratch_each_launch} || reset_global_scratch != 0)) {{
       size_t global_scratch_bytes =
           (size_t)gridX * gridY * gridZ * num_ctas * {global_scratch_size};
       CUDA_CHECK(cuMemsetD8Async(global_scratch, 0, global_scratch_bytes, stream));
@@ -483,10 +486,11 @@ static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas
   }}
 }}
 #else
-static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int launch_cooperative_grid, int launch_pdl, int shared_memory, CUstream stream, CUfunction function, CUdeviceptr global_scratch, CUdeviceptr profile_scratch{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int launch_cooperative_grid, int launch_pdl, int reset_global_scratch, int shared_memory, CUstream stream, CUfunction function, CUdeviceptr global_scratch, CUdeviceptr profile_scratch{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
   void *params[] = {{ {', '.join(params)} }};
   if (gridX*gridY*gridZ > 0) {{
-    if (launch_cooperative_grid != 0 && global_scratch != 0 && {global_scratch_size} > 0) {{
+    if (launch_cooperative_grid != 0 && global_scratch != 0 && {global_scratch_size} > 0 &&
+        ({reset_global_scratch_each_launch} || reset_global_scratch != 0)) {{
       size_t global_scratch_bytes =
           (size_t)gridX * gridY * gridZ * num_ctas * {global_scratch_size};
       CUDA_CHECK(cuMemsetD8Async(global_scratch, 0, global_scratch_bytes, stream));
@@ -682,6 +686,7 @@ typedef struct {{
   int launch_cooperative_grid;
   int launch_pdl;
   int trusted_pointer_arguments;
+  CUdeviceptr initialized_global_scratch;
   Py_ssize_t dynamic_count;
   int dynamic_indices[PREPARED_ARGUMENT_ARRAY_SIZE];
   unsigned char is_dynamic[PREPARED_ARGUMENT_ARRAY_SIZE];
@@ -942,6 +947,9 @@ static PyObject* launch_prepared(PyObject* self, PyObject* args) {{
     }}
     global_scratch = pointer.dev_ptr;
   }}
+  int reset_global_scratch =
+      global_scratch != 0 &&
+      state->initialized_global_scratch != global_scratch;
   CUdeviceptr profile_scratch = 0;
   if (profile_scratch_obj != Py_None) {{
     DevicePtrInfo pointer = getPointer(profile_scratch_obj, -1);
@@ -975,17 +983,22 @@ static PyObject* launch_prepared(PyObject* self, PyObject* args) {{
   _launch(grid_x, grid_y, grid_z, state->num_warps, state->num_ctas,
           state->cluster_dim_x, state->cluster_dim_y, state->cluster_dim_z,
           state->launch_cooperative_grid, state->launch_pdl,
+          reset_global_scratch,
           state->shared_memory, (CUstream)stream, state->function,
           global_scratch, profile_scratch{prepared_call_suffix});
 #else
   _launch(grid_x, grid_y, grid_z, state->num_warps, state->num_ctas,
           state->launch_cooperative_grid, state->launch_pdl,
+          reset_global_scratch,
           state->shared_memory, (CUstream)stream, state->function,
           global_scratch, profile_scratch{prepared_call_suffix});
 #endif
   Py_END_ALLOW_THREADS;
   if (PyErr_Occurred()) {{
     return NULL;
+  }}
+  if (reset_global_scratch) {{
+    state->initialized_global_scratch = global_scratch;
   }}
 
   if (launch_exit_hook != Py_None) {{
@@ -1090,9 +1103,9 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   {newline.join(float_storage_decls)}
   Py_BEGIN_ALLOW_THREADS;
 #ifdef __TLE__
-  _launch(gridX, gridY, gridZ, num_warps, num_ctas, clusterDimX, clusterDimY, clusterDimZ, launch_cooperative_grid, launch_pdl, shared_memory, (CUstream)_stream, (CUfunction)_function, global_scratch, profile_scratch{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+  _launch(gridX, gridY, gridZ, num_warps, num_ctas, clusterDimX, clusterDimY, clusterDimZ, launch_cooperative_grid, launch_pdl, 1, shared_memory, (CUstream)_stream, (CUfunction)_function, global_scratch, profile_scratch{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
 #else
-  _launch(gridX, gridY, gridZ, num_warps, num_ctas, launch_cooperative_grid, launch_pdl, shared_memory, (CUstream)_stream, (CUfunction)_function, global_scratch, profile_scratch{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+  _launch(gridX, gridY, gridZ, num_warps, num_ctas, launch_cooperative_grid, launch_pdl, 1, shared_memory, (CUstream)_stream, (CUfunction)_function, global_scratch, profile_scratch{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
 #endif
   Py_END_ALLOW_THREADS;
   if (PyErr_Occurred()) {{
@@ -1391,6 +1404,7 @@ class CudaLauncher(object):
             signature,
             tensordesc_meta,
             metadata.global_scratch_size,
+            getattr(metadata, "global_scratch_reset_per_launch", True),
         )
         mod = compile_module_from_src(
             src=launcher_src,

@@ -1123,27 +1123,20 @@ LogicalResult DistributedBarrierOp::verify() {
                << "group_axes entry " << axis
                << " exceeds group_domain_shape rank " << domainShape.size();
       }
-      if (shapeAttr.asArrayRef()[index] != domainShape[axis]) {
+      int32_t groupDim = shapeAttr.asArrayRef()[index];
+      if (domainShape[axis] % groupDim != 0) {
         return emitOpError()
-               << "group_shape entry " << shapeAttr.asArrayRef()[index]
-               << " must equal group_domain_shape[" << axis
+               << "group_shape entry " << groupDim
+               << " must divide group_domain_shape[" << axis
                << "] (" << domainShape[axis] << ")";
       }
-      int32_t dim = domainShape[axis];
-      if (axisGroupSize > std::numeric_limits<int32_t>::max() / dim) {
+      if (axisGroupSize > std::numeric_limits<int32_t>::max() / groupDim) {
         return emitOpError()
                << "grid_axis_group size exceeds i32 range";
       }
-      axisGroupSize *= dim;
+      axisGroupSize *= groupDim;
     }
-    for (auto [axis, dim] : llvm::enumerate(domainShape)) {
-      if (seenAxes.contains(static_cast<int32_t>(axis)))
-        continue;
-      if (groupCount > std::numeric_limits<int32_t>::max() / dim) {
-        return emitOpError() << "grid_axis_group count exceeds i32 range";
-      }
-      groupCount *= dim;
-    }
+    groupCount = domainSize / axisGroupSize;
     if (groupCount > std::numeric_limits<int32_t>::max() / 4) {
       return emitOpError()
              << "grid_axis_group scratch allocation exceeds i32 byte range";

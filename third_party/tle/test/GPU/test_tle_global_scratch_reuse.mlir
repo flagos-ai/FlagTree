@@ -1,5 +1,10 @@
 // RUN: triton-opt %s --tritongpu-global-scratch-memory-allocation | FileCheck %s
 
+// CHECK: module attributes
+// CHECK-SAME: ttg.global_scratch_memory_alignment = 4 : i32
+// CHECK-SAME: ttg.global_scratch_memory_size = 68 : i32
+// CHECK-SAME: ttg.global_scratch_reset_per_launch = 0 : i32
+
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func private @collective_helper
   // CHECK-SAME: tle.grid_barrier_scratch_only

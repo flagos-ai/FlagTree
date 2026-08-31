@@ -54,6 +54,17 @@ class TestDeviceMesh:
         assert descriptor.mask == tuple()
         assert descriptor.domain_shape == (4, 8)
 
+        subgroup = mesh.axis_group("block_x", group_shape=(4, ))
+        subgroup_descriptor = _infer_grid_axis_group_barrier_group(subgroup)
+        assert subgroup_descriptor.shape == (4, )
+        assert subgroup_descriptor.axes == (1, )
+        assert subgroup_descriptor.domain_shape == (4, 8)
+
+        with pytest.raises(ValueError, match="must divide"):
+            mesh.axis_group("block_x", group_shape=(3, ))
+        with pytest.raises(ValueError, match="rank"):
+            mesh.axis_group("block_x", group_shape=(2, 2))
+
         with pytest.raises(ValueError, match="complete launch device_mesh"):
             mesh[0, :].axis_group("block_x")
 

@@ -114,6 +114,164 @@ def _rank5_tma_pipe_kernel(descriptor, dst, tiles: tl.constexpr):
     )
 
 
+@triton.jit(noinline=True)
+def _rank3_tma_pipe_producer(writer, descriptor, tiles: tl.constexpr):
+    for sequence in tl.range(0, tiles):
+        slot = writer.acquire(sequence)
+        tle.gpu.copy(
+            descriptor,
+            slot.value,
+            [2, 64, 64],
+            [0, 0, 0],
+            eviction_policy="evict_first",
+        )
+        writer.commit(sequence)
+
+
+@triton.jit
+def _rank3_tma_pipe_consumer(reader, dst, tiles: tl.constexpr):
+    offsets = tl.arange(0, 128)[:, None] * 64 + tl.arange(0, 64)[None, :]
+    for sequence in tl.range(0, tiles):
+        ready = reader.wait(sequence)
+        values = tl.load(tle.gpu.local_ptr(ready.slot.value)).reshape((128, 64))
+        tl.store(dst + sequence * 128 * 64 + offsets, values)
+        reader.release(sequence)
+
+
+@triton.jit
+def _rank3_tma_pipe_kernel(
+    descriptor, dst, stages: tl.constexpr, tiles: tl.constexpr
+):
+    values = tle.gpu.alloc(
+        [stages, 2, 64, 64],
+        dtype=tl.bfloat16,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=True,
+    )
+    pipe = tle.pipe(
+        capacity=stages,
+        scope="cta",
+        name="rank3_tma_pipe",
+        value=values,
+    )
+    tle.gpu.warp_specialize(
+        [
+            (_rank3_tma_pipe_consumer, (pipe.reader(), dst, tiles)),
+            (_rank3_tma_pipe_producer, (pipe.writer(), descriptor, tiles)),
+        ],
+        [1],
+        [48],
+    )
+
+
+_rank3_mma_layout = tl.constexpr(
+    tle.gpu.MmaEncoding([2, 0], [4, 1], [16, 8])
+)
+_rank3_mma_weight_layout = tl.constexpr(
+    tle.gpu.DotOperandEncoding(0, _rank3_mma_layout, 4)
+)
+_rank3_mma_activation_layout = tl.constexpr(
+    tle.gpu.DotOperandEncoding(1, _rank3_mma_layout, 4)
+)
+_rank3_mma_output_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(1, _rank3_mma_layout)
+)
+
+
+@triton.jit
+def _rank3_tma_mma_pipe_producer(
+    writer, descriptor, tiles: tl.constexpr, k_tiles: tl.constexpr
+):
+    for sequence in tl.range(0, tiles):
+        slot = writer.acquire(sequence)
+        tle.gpu.copy(
+            descriptor,
+            slot.value,
+            [2, 64, 128],
+            [(sequence % k_tiles) * 2, 0, 0],
+            eviction_policy="evict_first",
+        )
+        writer.commit(sequence)
+    writer.close(tiles)
+
+
+@triton.jit
+def _rank3_tma_mma_pipe_consumer(reader, dst, tiles: tl.constexpr):
+    activation = tle.encoding(
+        tl.full((128, 8), 1.0, tl.float32).to(tl.float8e4nv),
+        _rank3_mma_activation_layout,
+    )
+    local_n = tle.encoding(tl.arange(0, 64), _rank3_mma_output_layout)
+    local_column = tle.encoding(
+        tl.arange(0, 8)[None, :], _rank3_mma_layout
+    )
+    for sequence in tl.range(0, tiles):
+        ready = reader.wait(sequence)
+        result = tle.encoding(
+            tl.zeros((64, 8), tl.float32), _rank3_mma_layout
+        )
+        for group in tl.static_range(0, 2):
+            weight = tle.encoding(
+                tl.load(
+                    tle.gpu.local_ptr(
+                        ready.slot.value.subslice(
+                            [group, 0, 0], [1, 64, 128]
+                        )
+                    )
+                ).reshape((64, 128)),
+                _rank3_mma_weight_layout,
+            )
+            result += tl.dot(
+                weight,
+                activation,
+                acc=tle.encoding(
+                    tl.zeros((64, 8), tl.float32), _rank3_mma_layout
+                ),
+                out_dtype=tl.float32,
+            )
+        reduced = tle.encoding(
+            tl.sum(tl.where(local_column == 0, result, 0.0), axis=1),
+            _rank3_mma_output_layout,
+        )
+        tl.store(dst + sequence * 64 + local_n, reduced)
+        reader.release(sequence)
+
+
+@triton.jit
+def _rank3_tma_mma_pipe_kernel(
+    descriptor,
+    dst,
+    stages: tl.constexpr,
+    tiles: tl.constexpr,
+    k_tiles: tl.constexpr,
+):
+    values = tle.gpu.alloc(
+        [stages, 2, 64, 128],
+        dtype=tl.float8e4nv,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=True,
+    )
+    pipe = tle.pipe(
+        capacity=stages,
+        scope="cta",
+        name="rank3_tma_mma_pipe",
+        value=values,
+    )
+    tle.gpu.warp_specialize(
+        [
+            (_rank3_tma_mma_pipe_consumer, (pipe.reader(), dst, tiles)),
+            (
+                _rank3_tma_mma_pipe_producer,
+                (pipe.writer(), descriptor, tiles, k_tiles),
+            ),
+        ],
+        [1],
+        [48],
+    )
+
+
 @triton.jit
 def _three_stage_pipe_copy_kernel(src, dst, BLOCK: tl.constexpr, TILES: tl.constexpr):
     stages: tl.constexpr = 3
@@ -265,6 +423,70 @@ def test_noinline_rank5_tma_pipe_producer_executes():
     assert "noinline = true" in ttgir
     assert "ttng.async_tma_copy_global_to_local" in ttgir
     assert compiled.asm["ptx"].count("cp.async.bulk.tensor.5d") == 2 * tiles
+
+
+@pytest.mark.parametrize("stages", [4, 8])
+def test_rank3_tma_pipe_large_shared_ring_executes(stages):
+    from triton.tools.tensor_descriptor import TensorDescriptor
+
+    tiles = stages + 3
+    shape = (2, 64, 64)
+    src = torch.arange(
+        2 * 64 * 64, device="cuda", dtype=torch.float32
+    ).to(torch.bfloat16).reshape(shape)
+    dst = torch.empty((tiles, 128, 64), device="cuda", dtype=torch.bfloat16)
+    descriptor = TensorDescriptor.from_tensor(src, block_shape=list(shape))
+
+    compiled = _rank3_tma_pipe_kernel[(1, )](
+        descriptor,
+        dst,
+        stages=stages,
+        tiles=tiles,
+        num_warps=4,
+    )
+
+    torch.testing.assert_close(
+        dst, src.reshape(1, 128, 64).expand_as(dst), atol=0, rtol=0
+    )
+    assert "ttng.async_tma_copy_global_to_local" in compiled.asm["ttgir"]
+
+
+@pytest.mark.parametrize("stages", [4, 8])
+def test_rank3_tma_mma_pipe_large_shared_ring_executes(stages):
+    from triton.tools.tensor_descriptor import TensorDescriptor
+
+    k_tiles = 9
+    n_tiles = 5
+    tiles = n_tiles * k_tiles
+    tile_values = torch.arange(
+        1, k_tiles * 2, device="cuda", dtype=torch.float32
+    )
+    src = tile_values[:, None, None].expand(k_tiles * 2 - 1, 64, 128)
+    src = src.to(torch.float8_e4m3fn).contiguous()
+    dst = torch.empty((tiles, 64), device="cuda", dtype=torch.float32)
+    descriptor = TensorDescriptor.from_tensor(
+        src, block_shape=[2, 64, 128]
+    )
+
+    compiled = _rank3_tma_mma_pipe_kernel[(1, )](
+        descriptor,
+        dst,
+        stages=stages,
+        tiles=tiles,
+        k_tiles=k_tiles,
+        num_warps=4,
+    )
+
+    quantized_values = tile_values.to(torch.float8_e4m3fn).to(torch.float32)
+    paired_values = torch.cat(
+        (quantized_values, torch.zeros(1, device="cuda"))
+    ).reshape(k_tiles, 2).sum(dim=1)
+    expected = (
+        paired_values.repeat(n_tiles) * 128
+    )[:, None].expand_as(dst)
+    torch.testing.assert_close(dst, expected, atol=0, rtol=0)
+    assert "tt.dot" in compiled.asm["ttgir"]
+    assert "mma.sync" in compiled.asm["ptx"]
 
 
 def test_one_shot_pipe_hands_aliased_shared_storage_to_next_task():

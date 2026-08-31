@@ -150,8 +150,16 @@ class device_mesh:
             _launch_dim_names=self._launch_dim_names,
         )
 
-    def axis_group(self, axes: str | int | Sequence[str | int]) -> "_AxisGroup":
-        """Return the current shard's communication group along ``axes``."""
+    def axis_group(
+        self,
+        axes: str | int | Sequence[str | int],
+        group_shape: int | Sequence[int] | None = None,
+    ) -> "_AxisGroup":
+        """Return the current shard's communication group along ``axes``.
+
+        ``group_shape`` optionally partitions each selected launch axis into
+        contiguous, equally sized communication groups.
+        """
         if (
             self._shape != self._launch_shape
             or self._dim_names != self._launch_dim_names
@@ -186,7 +194,36 @@ class device_mesh:
 
         if len(set(normalized_axes)) != len(normalized_axes):
             raise ValueError(f"axis_group axes must be unique, got {raw_axes}")
-        return _AxisGroup(self, tuple(sorted(normalized_axes)))
+
+        if group_shape is None:
+            normalized_shape = tuple(self._launch_shape[axis] for axis in normalized_axes)
+        elif isinstance(group_shape, int):
+            if len(normalized_axes) != 1:
+                raise ValueError("scalar group_shape requires exactly one axis")
+            normalized_shape = (_as_positive_int(group_shape, "group_shape"), )
+        elif isinstance(group_shape, (tuple, list)):
+            normalized_shape = tuple(_as_positive_int(dim, "group_shape") for dim in group_shape)
+            if len(normalized_shape) != len(normalized_axes):
+                raise ValueError(
+                    f"group_shape rank ({len(normalized_shape)}) must match axis_group rank "
+                    f"({len(normalized_axes)})"
+                )
+        else:
+            raise TypeError(f"group_shape must be int/list/tuple/None, got {type(group_shape).__name__}")
+
+        axis_shape = sorted(zip(normalized_axes, normalized_shape))
+        for axis, extent in axis_shape:
+            domain_extent = self._launch_shape[axis]
+            if domain_extent % extent != 0:
+                raise ValueError(
+                    f"group_shape extent {extent} must divide launch axis "
+                    f"{self._launch_dim_names[axis]!r} extent {domain_extent}"
+                )
+        return _AxisGroup(
+            self,
+            tuple(axis for axis, _ in axis_shape),
+            tuple(extent for _, extent in axis_shape),
+        )
 
     def _normalize_key(self, key: Any) -> tuple[Any, ...]:
         if not isinstance(key, tuple):
@@ -287,6 +324,7 @@ class device_mesh:
 class _AxisGroup:
     mesh: device_mesh
     axes: tuple[int, ...]
+    shape: tuple[int, ...]
 
     @property
     def axis_names(self) -> tuple[str, ...]:
@@ -507,7 +545,7 @@ class _BarrierGroupDescriptor:
 def _infer_grid_axis_group_barrier_group(group: _AxisGroup) -> _BarrierGroupDescriptor:
     mesh = group.mesh
     axes = group.axes
-    shape = tuple(int(mesh.launch_shape[axis]) for axis in axes)
+    shape = group.shape
     return _BarrierGroupDescriptor(
         kind="grid_axis_group",
         rank=len(shape),

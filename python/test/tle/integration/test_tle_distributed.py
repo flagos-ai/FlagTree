@@ -11,6 +11,8 @@ Current lowering targets NVIDIA Hopper cluster instructions, so tests run only
 on CUDA devices with compute capability >= 9.0.
 """
 
+import ctypes
+
 import pytest
 import re
 import torch
@@ -23,12 +25,14 @@ BLOCK_CLUSTER_MESH_8 = tle.device_mesh({"block_cluster": [("cluster_x", 8)]})
 BLOCK_CLUSTER_MESH_2X2 = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
 BLOCK_GRID_MESH_8 = tle.device_mesh({"block": [("block_x", 8)]})
 BLOCK_GRID_MESH_2X2 = tle.device_mesh({"block": [("block_y", 2), ("block_x", 2)]})
+BLOCK_GRID_MESH_2X4 = tle.device_mesh({"block": [("block_y", 2), ("block_x", 4)]})
 BLOCK_CLUSTER_SUBMESH_ROW0 = BLOCK_CLUSTER_MESH_2X2[0, :]
 BLOCK_CLUSTER_SUBMESH_ROW1 = BLOCK_CLUSTER_MESH_2X2[1, :]
 BLOCK_CLUSTER_SUBMESH_COL0 = BLOCK_CLUSTER_MESH_2X2[:, 0]
 BLOCK_CLUSTER_SUBMESH_COL1 = BLOCK_CLUSTER_MESH_2X2[:, 1]
 BLOCK_GRID_AXIS_GROUP_X = BLOCK_GRID_MESH_2X2.axis_group("block_x")
 BLOCK_GRID_AXIS_GROUP_Y = BLOCK_GRID_MESH_2X2.axis_group("block_y")
+BLOCK_GRID_AXIS_SUBGROUP_X2 = BLOCK_GRID_MESH_2X4.axis_group("block_x", group_shape=(2, ))
 
 
 def _has_cluster_cuda() -> bool:
@@ -407,6 +411,24 @@ def _distributed_barrier_grid_axis_group_kernel(
     tl.atomic_add(counter_ptr + group_index, group_rank + 1)
     tle.distributed_barrier(axis_group)
     seen = tl.load(counter_ptr + group_index)
+    tl.store(out_ptr + pid, seen)
+
+
+@triton.jit
+def _distributed_barrier_grid_axis_subgroup_kernel(
+    counter_ptr,
+    out_ptr,
+    mesh: tl.constexpr,
+    axis_group: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    block_x = tle.shard_id(mesh, "block_x")
+    block_y = tle.shard_id(mesh, "block_y")
+    subgroup_index = block_y * 2 + block_x // 2
+    rank_in_subgroup = block_x % 2
+    tl.atomic_add(counter_ptr + subgroup_index, rank_in_subgroup + 1)
+    tle.distributed_barrier(axis_group)
+    seen = tl.load(counter_ptr + subgroup_index)
     tl.store(out_ptr + pid, seen)
 
 
@@ -1492,6 +1514,83 @@ class TestTLEDistributed:
         finally:
             triton.set_allocator(default_alloc_fn)
 
+    def test_distributed_barrier_prepared_graph_reuses_initialized_scratch(self, with_allocator):
+        grid = 3
+        mesh = tle.device_mesh({"block": [("block_x", grid)]})
+        counter = torch.zeros((1, ), device="cuda", dtype=torch.int32)
+        out = torch.empty((grid, ), device="cuda", dtype=torch.int32)
+
+        from triton._internal_testing import default_alloc_fn
+
+        def dirty_alloc(size: int, align: int, stream):
+            return torch.full((size, ), 0x7F, device="cuda", dtype=torch.int8)
+
+        triton.set_allocator(dirty_alloc)
+        try:
+            prepared = _distributed_barrier_grid_counter_kernel.prepare(
+                counter,
+                out,
+                mesh=mesh,
+                grid=(grid, ),
+                num_ctas=1,
+                num_warps=4,
+                dynamic_arg_indices=(0, 1),
+                trusted_pointer_arguments=True,
+            )
+            assert prepared.compiled_kernel.metadata.global_scratch_reset_per_launch is False
+
+            # Initialize intentionally dirty scratch on the same stream that
+            # will own the captured graph.
+            current_stream = torch.cuda.current_stream()
+            capture_stream = torch.cuda.Stream()
+            capture_stream.wait_stream(current_stream)
+            with torch.cuda.stream(capture_stream):
+                prepared.launch(counter, out)
+            current_stream.wait_stream(capture_stream)
+            assert int(counter.item()) == grid
+
+            counter.zero_()
+            capture_stream.wait_stream(current_stream)
+            graph = torch.cuda.CUDAGraph(keep_graph=True)
+            with torch.cuda.graph(graph, stream=capture_stream):
+                prepared.launch(counter, out)
+            current_stream.wait_stream(capture_stream)
+            graph.replay()
+            assert int(counter.item()) == grid
+
+            cudart = ctypes.CDLL("libcudart.so")
+            cudart.cudaGraphGetNodes.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_void_p),
+                ctypes.POINTER(ctypes.c_size_t),
+            ]
+            cudart.cudaGraphGetNodes.restype = ctypes.c_int
+            cudart.cudaGraphNodeGetType.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_int),
+            ]
+            cudart.cudaGraphNodeGetType.restype = ctypes.c_int
+            raw_graph = ctypes.c_void_p(graph.raw_cuda_graph())
+            node_count = ctypes.c_size_t()
+            assert cudart.cudaGraphGetNodes(raw_graph, None, ctypes.byref(node_count)) == 0
+            nodes = (ctypes.c_void_p * node_count.value)()
+            assert cudart.cudaGraphGetNodes(raw_graph, nodes, ctypes.byref(node_count)) == 0
+            node_types = []
+            for node in nodes:
+                node_type = ctypes.c_int()
+                assert cudart.cudaGraphNodeGetType(node, ctypes.byref(node_type)) == 0
+                node_types.append(node_type.value)
+            assert node_types == [0]
+
+            for _ in range(64):
+                counter.zero_()
+                graph.replay()
+                torch.cuda.synchronize()
+                assert int(counter.item()) == grid
+                assert bool(torch.all(out == grid))
+        finally:
+            triton.set_allocator(default_alloc_fn)
+
     @pytest.mark.parametrize(
         "axis_group,group_axis,fixed_axis",
         [
@@ -1540,6 +1639,38 @@ class TestTLEDistributed:
         torch.cuda.synchronize()
 
         torch.testing.assert_close(counter, torch.tensor([3, 3], device="cuda", dtype=torch.int32))
+        torch.testing.assert_close(out, torch.full_like(out, 3))
+
+    def test_distributed_barrier_grid_axis_subgroup(self, with_allocator):
+        grid = 8
+        counter = torch.zeros((4, ), device="cuda", dtype=torch.int32)
+        out = torch.empty((grid, ), device="cuda", dtype=torch.int32)
+
+        compiled = _distributed_barrier_grid_axis_subgroup_kernel.warmup(
+            counter,
+            out,
+            mesh=BLOCK_GRID_MESH_2X4,
+            axis_group=BLOCK_GRID_AXIS_SUBGROUP_X2,
+            grid=(grid, ),
+            num_ctas=1,
+            num_warps=4,
+        )
+        assert compiled.metadata.launch_cooperative_grid is True
+        assert compiled.metadata.global_scratch_size >= 16
+        assert 'group_shape = array<i32: 2>' in compiled.asm["ttgir"]
+        assert 'group_domain_shape = array<i32: 2, 4>' in compiled.asm["ttgir"]
+
+        _distributed_barrier_grid_axis_subgroup_kernel[(grid, )](
+            counter,
+            out,
+            mesh=BLOCK_GRID_MESH_2X4,
+            axis_group=BLOCK_GRID_AXIS_SUBGROUP_X2,
+            num_ctas=1,
+            num_warps=4,
+        )
+        torch.cuda.synchronize()
+
+        torch.testing.assert_close(counter, torch.full_like(counter, 3))
         torch.testing.assert_close(out, torch.full_like(out, 3))
 
     def test_distributed_barrier_row_group_independence(self):

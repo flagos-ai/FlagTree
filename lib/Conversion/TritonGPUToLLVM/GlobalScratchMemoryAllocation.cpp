@@ -37,14 +37,18 @@ static uint32_t getGridBarrierScratchBytes(Operation *op) {
   auto domainShape =
       op->getAttrOfType<DenseI32ArrayAttr>("group_domain_shape");
   auto axes = op->getAttrOfType<DenseI32ArrayAttr>("group_axes");
-  assert(domainShape && axes &&
+  auto groupShape = op->getAttrOfType<DenseI32ArrayAttr>("group_shape");
+  assert(domainShape && axes && groupShape &&
          "verified grid_axis_group metadata is required");
-  uint64_t groupCount = 1;
-  for (auto [axis, dim] : llvm::enumerate(domainShape.asArrayRef())) {
-    if (llvm::is_contained(axes.asArrayRef(), static_cast<int32_t>(axis)))
-      continue;
-    groupCount *= static_cast<uint32_t>(dim);
-  }
+  uint64_t domainSize = 1;
+  for (int32_t dim : domainShape.asArrayRef())
+    domainSize *= static_cast<uint32_t>(dim);
+  uint64_t groupSize = 1;
+  for (int32_t dim : groupShape.asArrayRef())
+    groupSize *= static_cast<uint32_t>(dim);
+  assert(groupSize > 0 && domainSize % groupSize == 0 &&
+         "verified grid_axis_group shape must divide its domain");
+  uint64_t groupCount = domainSize / groupSize;
   assert(groupCount <= std::numeric_limits<uint32_t>::max() / 4 &&
          "grid_axis_group scratch size must be verified");
   return static_cast<uint32_t>(groupCount * 4);
@@ -55,6 +59,8 @@ namespace {
 
 constexpr llvm::StringLiteral kGridBarrierScratchOnlyAttr =
     "tle.grid_barrier_scratch_only";
+constexpr llvm::StringLiteral kGlobalScratchResetPerLaunchAttr =
+    "ttg.global_scratch_reset_per_launch";
 
 struct GridBarrierScratchLayout {
   std::map<std::string, int32_t> offsets;
@@ -70,7 +76,9 @@ static std::string getGridBarrierScratchKey(Operation *op) {
   auto domainShape =
       op->getAttrOfType<DenseI32ArrayAttr>("group_domain_shape");
   auto axes = op->getAttrOfType<DenseI32ArrayAttr>("group_axes");
+  auto groupShape = op->getAttrOfType<DenseI32ArrayAttr>("group_shape");
   assert(kind.getValue() == "grid_axis_group" && domainShape && axes &&
+         groupShape &&
          "grid axis barrier scratch requires verified group metadata");
 
   std::string key;
@@ -79,6 +87,8 @@ static std::string getGridBarrierScratchKey(Operation *op) {
   llvm::interleaveComma(domainShape.asArrayRef(), os);
   os << ":axes=";
   llvm::interleaveComma(axes.asArrayRef(), os);
+  os << ":shape=";
+  llvm::interleaveComma(groupShape.asArrayRef(), os);
   os.flush();
   return key;
 }
@@ -224,6 +234,7 @@ class TritonGPUGlobalScratchAllocationPass
 public:
   void runOnOperation() override {
     ModuleOp mod = getOperation();
+    OpBuilder builder(mod.getContext());
 
     bool seenKernel = false;
 
@@ -250,6 +261,15 @@ public:
         assert(align);
         mod->setAttr("ttg.global_scratch_memory_size", size);
         mod->setAttr("ttg.global_scratch_memory_alignment", align);
+#ifdef __TLE__
+        // Grid barriers use a self-advancing sign-bit phase. Once their
+        // canonical counters have been initialized, persistent prepared-launch
+        // scratch can be reused without resetting it before every invocation.
+        const bool resetPerLaunch =
+            !func->hasAttr(kGridBarrierScratchOnlyAttr);
+        mod->setAttr(kGlobalScratchResetPerLaunchAttr,
+                     builder.getI32IntegerAttr(resetPerLaunch ? 1 : 0));
+#endif
       }
     });
     assert(seenKernel);

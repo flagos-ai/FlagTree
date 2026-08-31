@@ -1842,11 +1842,17 @@ static bool comesFromLoadOrSharedMemory(Value v, llvm::DenseSet<Value> &seen) {
   // If this is problematic we can totally drop them
   Operation *def = v.getDefiningOp();
   bool fromLoad = def && isa<LoadOp, DescriptorLoadOp, DescriptorGatherOp>(def);
+  bool fromSharedLoad = false;
+  if (auto localLoad = dyn_cast_or_null<ttg::LocalLoadOp>(def)) {
+    auto srcType = dyn_cast<ttg::MemDescType>(localLoad.getSrc().getType());
+    fromSharedLoad =
+        srcType && isa<ttg::SharedMemorySpaceAttr>(srcType.getMemorySpace());
+  }
   bool fromSharedMemory =
       def && def->hasAttrOfType<StringAttr>("tt.memory_space") &&
       def->getAttrOfType<StringAttr>("tt.memory_space").getValue() ==
           "shared_memory";
-  if (fromLoad || fromSharedMemory)
+  if (fromLoad || fromSharedLoad || fromSharedMemory)
     return true;
 
   if (auto arg = dyn_cast<BlockArgument>(v)) {

@@ -115,18 +115,23 @@ struct DistributedBarrierOpConversion
         kindAttr && kindAttr.getValue() == "grid_axis_group";
     SmallVector<int32_t> axisGroupDomainShape;
     SmallVector<int32_t> axisGroupAxes;
+    SmallVector<int32_t> axisGroupShape;
     if (isAxisGroup) {
       auto domainShapeAttr =
           op->getAttrOfType<DenseI32ArrayAttr>(kGroupDomainShapeAttr);
       auto axesAttr = op->getAttrOfType<DenseI32ArrayAttr>(kGroupAxesAttr);
-      if (!domainShapeAttr || !axesAttr || axesAttr.asArrayRef().empty()) {
+      auto shapeAttr = op->getAttrOfType<DenseI32ArrayAttr>(kGroupShapeAttr);
+      if (!domainShapeAttr || !axesAttr || !shapeAttr ||
+          axesAttr.asArrayRef().empty()) {
         return op.emitOpError(
-            "grid_axis_group lowering requires domain shape and group axes");
+            "grid_axis_group lowering requires domain shape, group axes, and group shape");
       }
       axisGroupDomainShape.assign(domainShapeAttr.asArrayRef().begin(),
                                   domainShapeAttr.asArrayRef().end());
       axisGroupAxes.assign(axesAttr.asArrayRef().begin(),
                            axesAttr.asArrayRef().end());
+      axisGroupShape.assign(shapeAttr.asArrayRef().begin(),
+                            shapeAttr.asArrayRef().end());
     }
 
     auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
@@ -165,8 +170,12 @@ struct DistributedBarrierOpConversion
     if (isAxisGroup) {
       int32_t domainSize = 1;
       SmallVector<uint8_t> isGroupAxis(axisGroupDomainShape.size(), 0);
-      for (int32_t axis : axisGroupAxes)
+      SmallVector<int32_t> groupDimByAxis(axisGroupDomainShape.size(), 1);
+      for (auto [axis, groupDim] :
+           llvm::zip_equal(axisGroupAxes, axisGroupShape)) {
         isGroupAxis[static_cast<size_t>(axis)] = 1;
+        groupDimByAxis[static_cast<size_t>(axis)] = groupDim;
+      }
       for (int32_t dim : axisGroupDomainShape)
         domainSize *= dim;
 
@@ -186,9 +195,19 @@ struct DistributedBarrierOpConversion
       for (size_t axis = 0; axis < axisGroupDomainShape.size(); ++axis) {
         int32_t dim = axisGroupDomainShape[axis];
         if (isGroupAxis[axis]) {
-          rankInGroup =
-              b.add(b.mul(rankInGroup, b.i32_val(dim)), coordinates[axis]);
-          axisGroupSize *= dim;
+          int32_t groupDim = groupDimByAxis[axis];
+          Value subgroupRank = b.urem(coordinates[axis], b.i32_val(groupDim));
+          rankInGroup = b.add(b.mul(rankInGroup, b.i32_val(groupDim)),
+                              subgroupRank);
+          int32_t groupCountOnAxis = dim / groupDim;
+          if (groupCountOnAxis > 1) {
+            Value subgroupIndex =
+                b.udiv(coordinates[axis], b.i32_val(groupDim));
+            counterIndex =
+                b.add(b.mul(counterIndex, b.i32_val(groupCountOnAxis)),
+                      subgroupIndex);
+          }
+          axisGroupSize *= groupDim;
         } else {
           counterIndex =
               b.add(b.mul(counterIndex, b.i32_val(dim)), coordinates[axis]);
@@ -243,12 +262,18 @@ struct DistributedBarrierOpConversion
       ld(dstOpr, ptrOpr);
       return ptxBuilder.launch(rewriter, loc, i32Ty);
     };
-
+    auto emitPollBackoff = [&]() {
+      ::mlir::triton::PTXBuilder ptxBuilder;
+      auto &sleep = *ptxBuilder.create("nanosleep.u32 20");
+      sleep();
+      ptxBuilder.launch(rewriter, loc, void_ty(ctx));
+    };
     Value oldArrive = emitAtomAddReleaseGpu(arrivedPtr, nb);
     rewriter.create<LLVM::BrOp>(loc, ValueRange{oldArrive}, waitBlock);
 
     rewriter.setInsertionPointToEnd(waitBlock);
     Value oldArriveArg = waitBlock->getArgument(0);
+    emitPollBackoff();
     Value currentArrive = emitLoadAcquireGpu(arrivedPtr);
     Value xorVal = b.xor_(oldArriveArg, currentArrive);
     Value flippedBit = b.and_(xorVal, b.i32_val(0x80000000u));
