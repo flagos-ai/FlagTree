@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "GCUTritonGPUConversion.h"
+#include "Utils/TritonVersionCompat.h"
 
 #include <algorithm>
 #include <numeric>
@@ -83,6 +84,38 @@ triton::gpu::BlockedEncodingAttr mlir::getBlockedEncodingWithOrder(
                                                threadsPerWarp, numCTAs);
 }
 
+// Compute dot-op-compatible warpsPerCTA using the same algorithm as
+// TritonDotPattern: shapePerWarp[M] = 8, shapePerWarp[N] = 128.
+// This ensures non-dot tensors (loads, stores, elementwise) use the same
+// warp distribution as dot operands, minimizing convert_layout ops.
+SmallVector<unsigned>
+mlir::computeDotWarpsPerCTA(const triton::gpu::BlockedEncodingAttr &encoding,
+                            ArrayRef<int64_t> shape, unsigned numWarps) {
+  unsigned rank = shape.size();
+  SmallVector<int64_t> shapePerCTA = getShapePerCTA(encoding, shape);
+  SmallVector<unsigned> shapePerWarp(rank, 1);
+  if (rank >= 2) {
+    shapePerWarp[rank - 1] = 128; // N dimension
+    shapePerWarp[rank - 2] = 8;   // M dimension
+  }
+  SmallVector<unsigned> warpsPerCTA(rank, 1);
+  SmallVector<unsigned> order(encoding.getOrder());
+  unsigned remainingNumWarps = numWarps;
+  for (unsigned d = 0; d < rank; ++d) {
+    unsigned i = order[d];
+    warpsPerCTA[i] = std::clamp<unsigned>(
+        static_cast<unsigned>(shapePerCTA[i]) / shapePerWarp[i], 1,
+        remainingNumWarps);
+    remainingNumWarps /= warpsPerCTA[i];
+  }
+  if (remainingNumWarps > 1 && rank >= 2) {
+    warpsPerCTA[rank - 1] *= 2;
+    remainingNumWarps /= 2;
+  }
+  warpsPerCTA[order[rank - 1]] *= remainingNumWarps;
+  return warpsPerCTA;
+}
+
 //===----------------------------------------------------------------------===//
 // GCUTritonGPUTypeConverter
 //===----------------------------------------------------------------------===//
@@ -90,10 +123,10 @@ triton::gpu::BlockedEncodingAttr mlir::getBlockedEncodingWithOrder(
 GCUTritonGPUTypeConverter::GCUTritonGPUTypeConverter(
     MLIRContext *context, int numWarps, int threadsPerWarp, int numCTAs,
     ArrayRef<unsigned> defaultOrder,
-    const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq)
+    const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq, bool hasDotOp)
     : context(context), numWarps(numWarps), threadsPerWarp(threadsPerWarp),
       numCTAs(numCTAs), defaultOrder(defaultOrder.begin(), defaultOrder.end()),
-      axisFreq(axisFreq) {
+      axisFreq(axisFreq), hasDotOp(hasDotOp) {
   addConversion([](Type type) { return type; });
 
   addConversion([this](RankedTensorType tensorType) -> RankedTensorType {
@@ -106,6 +139,14 @@ GCUTritonGPUTypeConverter::GCUTritonGPUTypeConverter(
     auto encoding = getBlockedEncodingWithOrder(
         this->context, shape, this->defaultOrder, this->axisFreq,
         this->numWarps, this->threadsPerWarp, this->numCTAs);
+    if (this->hasDotOp) {
+      SmallVector<unsigned> warpsPerCTA =
+          computeDotWarpsPerCTA(encoding, shape, this->numWarps);
+      encoding = BlockedEncodingAttr::get(
+          this->context, encoding.getSizePerThread(),
+          encoding.getThreadsPerWarp(), warpsPerCTA, encoding.getOrder(),
+          triton_gcu::compat::getCGALayout(encoding));
+    }
     return tensorType.cloneWithEncoding(encoding);
 #endif
   });

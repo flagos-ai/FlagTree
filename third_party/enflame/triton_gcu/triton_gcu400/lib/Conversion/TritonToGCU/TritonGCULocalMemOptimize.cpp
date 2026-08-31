@@ -1637,6 +1637,183 @@ private:
 };
 
 // ===----------------------------------------------------------------------===
+// Pattern: triton_gcu.load + tt.broadcast + ttg.local_alloc
+//          -> ttg.local_alloc() + copy_global_to_local (broadcast inferred
+//             at lowering from shape != dstMem shape)
+//
+// When the broadcast source is not a triton_gcu.load, fall back to
+// ttg.local_alloc() + ttg.local_store(broadcast, alloc).
+// ===----------------------------------------------------------------------===
+class FuseBroadcastLocalAllocPattern
+    : public OpRewritePattern<triton::gpu::LocalAllocOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::gpu::LocalAllocOp localAllocOp,
+                                PatternRewriter &rewriter) const override {
+    auto src = localAllocOp.getSrc();
+    if (!src)
+      return failure();
+    auto broadcastOp = src.getDefiningOp<triton::BroadcastOp>();
+    if (!broadcastOp)
+      return failure();
+
+    auto oldType =
+        cast<triton::gpu::MemDescType>(localAllocOp.getResult().getType());
+    auto mutableType = triton::gpu::MemDescType::get(
+        oldType.getShape(), oldType.getElementType(), oldType.getEncoding(),
+        oldType.getMemorySpace(), /*mutableMemory=*/true);
+
+    auto splitToLocalStore = [&]() {
+      rewriter.setInsertionPoint(localAllocOp);
+      auto alloc = rewriter.create<triton::gpu::LocalAllocOp>(
+          localAllocOp.getLoc(), mutableType, Value());
+      rewriter.create<triton::gpu::LocalStoreOp>(localAllocOp.getLoc(), src,
+                                                 alloc.getResult());
+      rewriter.replaceOp(localAllocOp, alloc.getResult());
+    };
+
+    auto gcuLoad = broadcastOp.getSrc().getDefiningOp<triton::gcu::LoadOp>();
+    if (!gcuLoad) {
+      splitToLocalStore();
+      return success();
+    }
+
+    auto orderHint = gcuLoad.getOrderHint();
+    if (llvm::any_of(orderHint,
+                     [](int32_t o) { return o == Dynamic_stride_symbol; })) {
+      splitToLocalStore();
+      return success();
+    }
+
+    // Fuse into copy_global_to_local. The source (load) shape differs from
+    // the dst memdesc shape; the broadcast is inferred at lowering time.
+    rewriter.setInsertionPoint(localAllocOp);
+    auto alloc = rewriter.create<triton::gpu::LocalAllocOp>(
+        localAllocOp.getLoc(), mutableType, Value());
+    auto copyOp = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+        gcuLoad.getLoc(), gcuLoad.getPtr(), gcuLoad.getShape(),
+        gcuLoad.getStrides(), gcuLoad.getOffsets(), alloc.getResult(),
+        gcuLoad.getDefaultValue(), gcuLoad.getOrderHint());
+    if (gcuLoad->hasAttr(kLoadAsync)) {
+      copyOp->setAttr(kLoadAsync, gcuLoad->getAttr(kLoadAsync));
+    }
+
+    rewriter.replaceOp(localAllocOp, alloc.getResult());
+    if (broadcastOp->use_empty())
+      rewriter.eraseOp(broadcastOp);
+    if (gcuLoad->use_empty())
+      rewriter.eraseOp(gcuLoad);
+    return success();
+  }
+};
+
+// ===----------------------------------------------------------------------===
+// Pattern: triton_gcu.load -> ttg.convert_layout(dot_operand) [xN]
+//          => copy_global_to_local + ttg.local_load(dot_operand) [xN]
+//
+// A global load whose result is converted to dot operands via convert_layout
+// would lower EACH convert_layout as a private->smem->private round-trip
+// (storeToSharedMem + loadFromSharedMemForDotOperand). Instead, load directly
+// into shared memory once (copy_global_to_local) and produce each dot operand
+// with a local_load (a cheap SubView at lowering time). Any remaining
+// non-dot-operand uses (elementwise) get a local_load back to the blocked
+// layout. This avoids re-storing the same tile to smem once per convert_layout.
+// ===----------------------------------------------------------------------===
+
+class FuseGcuLoadDotOperandPattern
+    : public OpRewritePattern<triton::gcu::LoadOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::gcu::LoadOp loadOp,
+                                PatternRewriter &rewriter) const override {
+    auto result = loadOp.getResult();
+    auto tensorTy = dyn_cast<RankedTensorType>(result.getType());
+    if (!tensorTy)
+      return failure();
+
+    if (triton::gcu::getNumWarps(loadOp.getOperation()) <= 1)
+      return failure();
+
+    // TODO(Support) Generate CopyGlobalToLocalOp in WarpSpecialize Pattern
+    if (loadOp->getParentOfType<triton::gpu::WarpSpecializeOp>())
+      return failure();
+
+    SmallVector<triton::gpu::ConvertLayoutOp> dotConverts;
+    SmallVector<OpOperand *> otherUses;
+    for (OpOperand &use : result.getUses()) {
+      if (auto convert =
+              dyn_cast<triton::gpu::ConvertLayoutOp>(use.getOwner())) {
+        auto convertTy = dyn_cast<RankedTensorType>(convert.getType());
+        if (convertTy &&
+            isa<triton::gpu::DotOperandEncodingAttr>(convertTy.getEncoding()))
+          dotConverts.push_back(convert);
+        else
+          otherUses.push_back(&use);
+      } else {
+        otherUses.push_back(&use);
+      }
+    }
+
+    if (dotConverts.empty())
+      return failure();
+
+    // When the load also feeds non-dot-operand (elementwise) users, routing
+    // those through shared memory is only valid if the blocked encoding splits
+    // just the highest (outermost) dim — then each warp's smem slice is a
+    // simple contiguous row block and the elementwise can read it with only an
+    // offset fixup. Otherwise leave the elementwise use on its original path.
+    if (!otherUses.empty()) {
+      if (auto blockedEnc = dyn_cast<triton::gpu::BlockedEncodingAttr>(
+              tensorTy.getEncoding())) {
+        auto warpsPerCTA = triton::gcu::getWarpsPerCTA(blockedEnc);
+        for (unsigned i = 1; i < warpsPerCTA.size(); ++i)
+          if (warpsPerCTA[i] != 1)
+            return failure();
+      }
+    }
+
+    auto loc = loadOp.getLoc();
+    auto memdescTy = buildMemDescType(rewriter.getContext(), tensorTy);
+    auto alloc = rewriter.create<triton::gpu::LocalAllocOp>(loc, memdescTy);
+    auto copy = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+        loc, loadOp.getPtr(), loadOp.getShape(), loadOp.getStrides(),
+        loadOp.getOffsets(), alloc.getResult(), loadOp.getDefaultValue(),
+        loadOp.getOrderHint());
+    copy->setAttr(kLoadAsync, rewriter.getBoolAttr(true));
+
+    for (auto convert : dotConverts) {
+      rewriter.setInsertionPoint(convert);
+      auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(
+          convert.getLoc(), convert.getType(), alloc.getResult());
+      rewriter.replaceOp(convert, newLoad.getResult());
+    }
+
+    // Insert ONE blocked local_load at the earliest point that dominates all
+    // elementwise uses.
+    if (!otherUses.empty()) {
+      Operation *earliest = nullptr;
+      for (auto *use : otherUses) {
+        Operation *owner = use->getOwner();
+        while (owner->getBlock() != loadOp->getBlock())
+          owner = owner->getParentOp();
+        if (!earliest || owner->isBeforeInBlock(earliest))
+          earliest = owner;
+      }
+      rewriter.setInsertionPoint(earliest);
+      auto blockedLoad = rewriter.create<triton::gpu::LocalLoadOp>(
+          loc, result.getType(), alloc.getResult());
+      for (auto *use : otherUses)
+        use->set(blockedLoad.getResult());
+    }
+
+    rewriter.eraseOp(loadOp);
+    return success();
+  }
+};
+
+// ===----------------------------------------------------------------------===
 // Pass definition
 // ===----------------------------------------------------------------------===
 
@@ -1655,15 +1832,17 @@ struct TritonGCULocalMemOptimizePass
     auto *ctx = &getContext();
 
     RewritePatternSet patterns(ctx);
-    patterns.add<FuseTransLoadLocalAllocPattern, FuseTransLocalLoadCopyPattern,
-                 FuseLocalLoadConvertLayoutPattern, FuseLoadLocalStorePattern,
-                 FuseLoadLocalAllocPattern, FuseGcuLoadSmemStorePattern,
-                 ReplaceSmemLoadWithLocalLoadPattern,
-                 FuseGcuLoadGcuStoreToSmemPattern,
-                 FuseGcuLoadGcuStoreDynShapeToSmemPattern,
-                 ReplaceGcuSmemLoadWithLocalLoadPattern,
-                 FuseTritonLoadLocalAllocToGatherPattern,
-                 FuseExtractTileSmemRelay, FuseInsertTileSmemRelay>(ctx);
+    patterns
+        .add<FuseLoadLocalAllocPattern, FuseBroadcastLocalAllocPattern,
+             FuseTransLoadLocalAllocPattern, FuseTransLocalLoadCopyPattern,
+             FuseLocalLoadConvertLayoutPattern, FuseGcuLoadDotOperandPattern,
+             FuseLoadLocalStorePattern, FuseGcuLoadSmemStorePattern,
+             ReplaceSmemLoadWithLocalLoadPattern,
+             ReplaceGcuSmemLoadWithLocalLoadPattern,
+             FuseGcuLoadGcuStoreToSmemPattern,
+             FuseGcuLoadGcuStoreDynShapeToSmemPattern,
+             FuseTritonLoadLocalAllocToGatherPattern, FuseExtractTileSmemRelay,
+             FuseInsertTileSmemRelay>(ctx);
     if (failed(applyPatternsGreedily(module, std::move(patterns))))
       signalPassFailure();
   }

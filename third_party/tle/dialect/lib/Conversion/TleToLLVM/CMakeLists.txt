@@ -6,6 +6,7 @@ set(TLE_TO_LLVM_SRC
     LocalPointersOpToLLVM.cpp
     PackOpToLLVM.cpp
     RemotePointerUtils.cpp
+    SignalOpToLLVM.cpp
     TMAStoreCommitGroupOpToLLVM.cpp
     ViewOpToLLVM.cpp
     WGMMAFenceOpToLLVM.cpp

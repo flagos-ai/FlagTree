@@ -41,6 +41,7 @@
 #include "pybind11/pytypes.h"
 #include "pybind11/stl.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/VerifyUtils.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -567,6 +568,47 @@ void init_triton_tle_ir(py::module &&m) {
           py::arg("space"), py::arg("group_kind"), py::arg("order"),
           py::arg("barrier_kind"))
       .def(
+          "create_signal",
+          [](TritonOpBuilder &self, Value comm, Value peer, Value slotId,
+             std::optional<Value> value, tle::SignalOpKind signalOp,
+             tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
+             int32_t contextIdx) -> void {
+            auto &builder = self.getBuilder();
+            if (auto err = tle::Signal::verifySignalOp(signalOp,
+                                                       value.value_or(Value())))
+              throw py::value_error(*err);
+            self.create<tle::SignalOp>(
+                comm, peer, slotId, value.value_or(Value()),
+                builder.getAttr<tle::SignalOpKindAttr>(signalOp),
+                builder.getAttr<tle::FlagCXTeamKindAttr>(teamKind),
+                builder.getAttr<tle::FlagCXCoopKindAttr>(coopKind),
+                builder.getI32IntegerAttr(contextIdx));
+          },
+          py::arg("comm"), py::arg("peer"), py::arg("slot_id"),
+          py::arg("value"), py::arg("signal_op"), py::arg("team_kind"),
+          py::arg("coop_kind"), py::arg("context_idx"),
+          "Create a standalone remote FlagCX signal operation")
+      .def(
+          "create_signal_wait",
+          [](TritonOpBuilder &self, Value comm_dev_ptr, Value slot_id,
+             tle::SignalWaitKind wait_kind, std::optional<Value> target,
+             tle::FlagCXCoopKind coop_kind, int32_t context_idx) -> void {
+            auto &builder = self.getBuilder();
+            if (auto err = tle::Signal::verifySignalWaitOp(
+                    wait_kind, target.value_or(Value())))
+              throw py::value_error(*err);
+            auto wait_kind_attr =
+                builder.getAttr<tle::SignalWaitKindAttr>(wait_kind);
+            auto coop_kind_attr =
+                builder.getAttr<tle::FlagCXCoopKindAttr>(coop_kind);
+            auto context_idx_attr = builder.getI32IntegerAttr(context_idx);
+            self.create<tle::SignalWaitOp>(
+                comm_dev_ptr, slot_id, wait_kind_attr, target.value_or(Value()),
+                coop_kind_attr, context_idx_attr);
+          },
+          py::arg("comm"), py::arg("slot_id"), py::arg("wait_kind"),
+          py::arg("target"), py::arg("coop_kind"), py::arg("context_idx"))
+      .def(
           "create_distributed_barrier",
           [](TritonOpBuilder &self, const std::string &groupKind,
              const std::vector<int32_t> &groupShape,
@@ -677,6 +719,74 @@ void init_triton_tle_ir(py::module &&m) {
                                           memorySpace, /*mutableMemory=*/true,
                                           allocShape);
            });
+}
+
+void init_triton_tle_attr(py::module &&m) {
+  py::enum_<tle::SignalOpKind>(m, "SignalOpKind")
+      .value("Inc", tle::SignalOpKind::INC)
+      .value("Add", tle::SignalOpKind::ADD)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeSignalOpKind(name); },
+          py::arg("name"));
+  py::enum_<tle::FlagCXTeamKind>(m, "FlagCXTeamKind")
+      .value("Intra", tle::FlagCXTeamKind::INTRA)
+      .value("Inter", tle::FlagCXTeamKind::INTER)
+      .value("World", tle::FlagCXTeamKind::WORLD)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeFlagCXTeamKind(name); },
+          py::arg("name"))
+      .def_static(
+          "from_int",
+          [](int value) -> std::optional<tle::FlagCXTeamKind> {
+            if (value < 0 || value > tle::getMaxEnumValForFlagCXTeamKind())
+              return std::nullopt;
+            else
+              return static_cast<tle::FlagCXTeamKind>(value);
+          },
+          py::arg("value"));
+  py::enum_<tle::FlagCXCoopKind>(m, "FlagCXCoopKind")
+      .value("Thread", tle::FlagCXCoopKind::THREAD)
+      .value("Warp", tle::FlagCXCoopKind::WARP)
+      .value("Block", tle::FlagCXCoopKind::BLOCK)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeFlagCXCoopKind(name); },
+          py::arg("name"));
+  py::enum_<tle::SignalWaitKind>(m, "SignalWaitKind")
+      .value("Signal", tle::SignalWaitKind::SIGNAL)
+      .value("Shadow", tle::SignalWaitKind::SHADOW)
+      .value("Counter", tle::SignalWaitKind::COUNTER)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeSignalWaitKind(name); },
+          py::arg("name"));
+}
+
+void init_triton_tle_utils(py::module &&m) {
+  m.def(
+      "verify_signal",
+      [](tle::SignalOpKind kind, std::optional<Value> value) {
+        if (auto err =
+                tle::Signal::verifySignalOp(kind, value.value_or(Value()))) {
+          throw py::value_error(*err);
+        }
+      },
+      py::arg("kind"), py::arg("value") = py::none(),
+      "Validate a signal op's (kind, value) combination; returns an error "
+      "message or None");
+  m.def(
+      "verify_signal_wait",
+      [](tle::SignalWaitKind kind, std::optional<Value> target) {
+        if (auto err = tle::Signal::verifySignalWaitOp(
+                kind, target.value_or(Value()))) {
+          throw py::value_error(*err);
+        }
+      },
+      py::arg("kind"), py::arg("target") = py::none(),
+      "Validate a signal_wait op's (kind, target) combination; returns an "
+      "error message or None");
 }
 
 void init_triton_tle_passes(py::module &&m) {
@@ -803,6 +913,8 @@ void init_triton_tle(py::module &&m) {
     context.loadAllAvailableDialects();
   });
 
+  init_triton_tle_attr(m.def_submodule("attr"));
+  init_triton_tle_utils(m.def_submodule("utils"));
   init_triton_tle_ir(m.def_submodule("ir"));
   init_triton_tle_passes(m.def_submodule("passes"));
   init_tle_raw_ir(m.def_submodule("raw_ir"));

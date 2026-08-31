@@ -431,7 +431,7 @@ private:
             : AxisInfoEx::kDefaultContinualInterval;
     // Prefer the computed stride over the sentinel kDefaultContinualInterval.
     // std::max would incorrectly mask a real negative stride (e.g. -1024)
-    // with the sentinel value -1.
+    // with the sentinel value.
     if (lhsStrideValue == AxisInfoEx::kDefaultContinualInterval)
       return rhsStrideValue;
     if (rhsStrideValue == AxisInfoEx::kDefaultContinualInterval)

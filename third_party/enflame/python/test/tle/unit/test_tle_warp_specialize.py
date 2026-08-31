@@ -124,7 +124,7 @@ def _add_load_producer_spsc(
     num_y_tiles = tl.cdiv(ynumel, YBLOCK)
 
     for i in range(num_y_tiles):
-        slot = writer.acquire(0)
+        slot = writer.acquire(i)
         yoff = i * YBLOCK
         offs_x = xoff + tl.arange(0, XBLOCK)
         offs_y = yoff + tl.arange(0, YBLOCK)
@@ -138,7 +138,7 @@ def _add_load_producer_spsc(
         b_ptrs = tle.gpu.local_ptr(slot.b_buf, (flat_idx, ))
         tl.store(a_ptrs, a_vals)
         tl.store(b_ptrs, b_vals)
-        writer.commit(0)
+        writer.commit(i)
 
 
 @triton.jit
@@ -158,14 +158,14 @@ def _add_compute_consumer_spsc(
     num_y_tiles = tl.cdiv(ynumel, YBLOCK)
 
     for i in range(num_y_tiles):
-        result = reader.wait(0)
+        result = reader.wait(i)
         flat_idx = tl.arange(0, XBLOCK)[:, None] * YBLOCK + tl.arange(0, YBLOCK)[None, :]
 
         a_ptrs = tle.gpu.local_ptr(result.slot.a_buf, (flat_idx, ))
         b_ptrs = tle.gpu.local_ptr(result.slot.b_buf, (flat_idx, ))
         a_vals = tl.load(a_ptrs)
         b_vals = tl.load(b_ptrs)
-        reader.release(0)
+        reader.release(i)
 
         c_vals = a_vals + b_vals
 

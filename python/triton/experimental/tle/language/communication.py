@@ -96,36 +96,33 @@ def compile_flagcx_allocator():
         lib_name = "flagcx_allocator"
         lib_path = os.path.join(out_dir, f"{lib_name}.so")
 
-        rank = 0
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            rank = torch.distributed.get_rank()
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 
-        if rank == 0:
-            if not os.path.isfile(lib_path):
-                print(
-                    f"[INFO] FlagCX allocator not found, compiling: {lib_path}",
-                    flush=True,
-                )
+        if local_rank == 0 and not os.path.isfile(lib_path):
+            print(
+                f"[INFO] FlagCX allocator not found, compiling: {lib_path}",
+                flush=True,
+            )
 
-                load_inline(
-                    name=lib_name,
-                    cpp_sources=flagcx_allocator_source,
-                    with_cuda=True,
-                    extra_ldflags=[
-                        f"-L{FLAGCX_LIB_PATH}",
-                        "-lflagcx",
-                        f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
-                    ],
-                    verbose=True,
-                    is_python_module=False,
-                    build_directory=out_dir,
-                    extra_include_paths=[FLAGCX_INCLUDE_PATH],
-                )
-            else:
-                print(
-                    f"[INFO] Using cached FlagCX allocator: {lib_path}",
-                    flush=True,
-                )
+            load_inline(
+                name=lib_name,
+                cpp_sources=flagcx_allocator_source,
+                with_cuda=True,
+                extra_ldflags=[
+                    f"-L{FLAGCX_LIB_PATH}",
+                    "-lflagcx",
+                    f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
+                ],
+                verbose=True,
+                is_python_module=False,
+                build_directory=out_dir,
+                extra_include_paths=[FLAGCX_INCLUDE_PATH],
+            )
+        else:
+            print(
+                f"[INFO] Using cached FlagCX allocator: {lib_path}",
+                flush=True,
+            )
 
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.barrier()
@@ -237,8 +234,8 @@ def create_dist_tensor(buf_tensor):
     reqs.intraLLA2ASlotCount = 0
     reqs.interForceEnable = False
     reqs.interContextCount = 4
-    reqs.interSignalCount = 0
-    reqs.interCounterCount = 0
+    reqs.interSignalCount = 8
+    reqs.interCounterCount = 8
 
     dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)
     print(f"[Rank {rank}] DevComm created")

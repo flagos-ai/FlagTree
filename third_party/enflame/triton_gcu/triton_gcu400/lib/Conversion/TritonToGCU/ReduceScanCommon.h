@@ -44,7 +44,8 @@ public:
   const std::optional<vector::CombiningKind> &getCombiningKind() const {
     return combiningKind;
   }
-  bool hasFastReduceLanesImpl() const { return combiningKind.has_value(); }
+  bool supportsFastLaneReduction() const { return combiningKind.has_value(); }
+  bool supportsStagedFastLaneReduction() const;
   SmallVector<Value> applyScalarCombine(OpBuilder &builder, Location loc,
                                         ValueRange operands) const;
   SmallVector<Value> applyVectorizedCombine(OpBuilder &builder, Location loc,
@@ -71,7 +72,8 @@ private:
 
 SmallVector<Value> reduceVectorLanes(OpBuilder &builder, Location loc,
                                      const CombineOpDesc &combineOpDesc,
-                                     ValueRange vecValues);
+                                     ValueRange vecValues,
+                                     Value mask = Value());
 
 } // namespace gcu
 } // namespace triton
