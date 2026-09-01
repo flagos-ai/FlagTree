@@ -40,13 +40,12 @@ static const llvm::StringMap<StringRef>
                     {"getNumPesFunction", "flagcxDevCommGetIntraSize"},
                     {"getBarrierArriveFunction", "flagcxDevBarrierArrive"},
                     {"getBarrierWaitFunction", "flagcxDevBarrierWait"},
-                    {"getBarrierSyncFunction", "flagcxDevBarrierSync"}},
-    {"signalIncFunction", "flagcxDevSignalInc"},
-    {"signalAddFunction", "flagcxDevSignalAdd"},
-    {"waitSignalFunction", "flagcxDevWaitSignal"},
-    {"waitShadowFunction", "flagcxDevWaitSignalMeetShadow"},
-    {"waitCounterFunction", "flagcxDevWaitCounter"};
-};
+                    {"getBarrierSyncFunction", "flagcxDevBarrierSync"},
+                    {"signalIncFunction", "flagcxDevSignalInc"},
+                    {"signalAddFunction", "flagcxDevSignalAdd"},
+                    {"waitSignalFunction", "flagcxDevWaitSignal"},
+                    {"waitShadowFunction", "flagcxDevWaitSignalMeetShadow"},
+                    {"waitCounterFunction", "flagcxDevWaitCounter"}};
 
 static inline LLVM::LLVMFuncOp createFuncInstance(const char *funcName,
                                                   ModuleOp module,
