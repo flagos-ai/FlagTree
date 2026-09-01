@@ -43,8 +43,10 @@ jobs:
     runs-on: nvidia3.6
     if: |
       github.repository == 'flagos-ai/flagtree' &&
-      (github.event_name != 'schedule' || github.event.schedule == '0 21 * * *') &&
-      (github.event.pull_request.draft == false || github.event_name == 'schedule')
+      (
+        (github.event_name != 'schedule' && github.event.pull_request.draft == false) ||
+        (github.event_name == 'schedule' && github.event.schedule == '0 21 * * *')
+      )
     steps:
       - name: Setup environment
         id: setup
