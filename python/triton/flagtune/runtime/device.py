@@ -1,5 +1,3 @@
-# Copyright 2018-2020 Philippe Tillet
-# Copyright 2020-2022 OpenAI
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -54,7 +52,8 @@ class DeviceDescriptor:
     """Describe one active accelerator without exposing a vendor API object.
 
     Args:
-        backend: Triton's canonical backend name, such as ``cuda`` or ``hip``.
+        backend: Triton's canonical backend name, such as ``cuda``, ``hip``,
+            or ``maca``.
         vendor: Stable hardware-vendor name used in artifact identities.
         torch_device_type: Device type accepted by the installed PyTorch build.
             ROCm intentionally uses ``cuda`` here for PyTorch compatibility.
@@ -96,14 +95,48 @@ def _amd_architecture(value: Any) -> str:
     return text
 
 
+def _maca_architecture(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text.startswith("sm"):
+        suffix = text[2:].replace("_", "")
+    else:
+        suffix = text.replace(".", "").replace("_", "")
+    if not suffix.isdigit():
+        raise DeviceProbeError(f"MACA target has invalid architecture {value!r}; expected smNN or NN")
+    return f"sm{suffix}"
+
+
+def _musa_architecture(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text.startswith("musa"):
+        suffix = text[4:]
+    else:
+        suffix = text.replace(".", "").replace("_", "")
+    if not suffix.isdigit():
+        raise DeviceProbeError(f"MUSA target has invalid architecture {value!r}; expected musaNN or NN")
+    return f"musa{suffix}"
+
+
 # ---------------------------------------------------------------------------
 # Supported backend descriptors
-# TODO add more backends here (ascend, mthreads, hygon, etc.)
+# TODO add more backends here (ascend, etc.)
 # ---------------------------------------------------------------------------
 _BACKENDS: Dict[str, _BackendDescriptor] = {
     "cuda": _BackendDescriptor("nvidia", "cuda", _nvidia_architecture),
     # PyTorch ROCm deliberately exposes its runtime through torch.cuda.
     "hip": _BackendDescriptor("amd", "cuda", _amd_architecture),
+    # MetaX MACA also exposes its runtime through torch.cuda.
+    "maca": _BackendDescriptor("metax", "cuda", _maca_architecture),
+    "musa": _BackendDescriptor("mthreads", "musa", _musa_architecture),
+}
+
+# Some vendor backends intentionally share a canonical Triton target with
+# another implementation. Resolve those drivers before the target fallback so
+# PPU and Hygon hardware retain their own stable vendor identities.
+_DRIVER_OVERRIDES: Dict[str, _BackendDescriptor] = {
+    "triton.backends.ppu.driver": _BackendDescriptor("thead", "cuda", _nvidia_architecture),
+    # Hygon HCU exposes Triton's canonical HIP target but is not an AMD device.
+    "triton.backends.hcu.driver": _BackendDescriptor("hygon", "cuda", _amd_architecture),
 }
 
 
@@ -139,7 +172,8 @@ def probe_flagtune_device(device_index: int | None = None) -> DeviceDescriptor:
         raise DeviceProbeError(f"cannot query the active Triton target: {exc}") from exc
 
     backend = str(getattr(target, "backend", "")).strip().lower()
-    descriptor = _BACKENDS.get(backend)
+    driver_module = type(active).__module__
+    descriptor = _DRIVER_OVERRIDES.get(driver_module, _BACKENDS.get(backend))
     if descriptor is None:
         supported = ", ".join(registered_device_backends())
         shown = backend or "<unknown>"

@@ -29,8 +29,7 @@ from triton.flagtune.contract.archive import (
 from triton.flagtune.contract.identity import ModelIdentity
 from triton.flagtune.contract.operator_schema import model_config_sha256
 from triton.flagtune.runtime import model_loader, model_sources
-from triton.flagtune.runtime.model_loader import FlagTuneModelManager, IncompatibleModelError
-from triton.flagtune.training import manifest_generator
+from triton.flagtune.runtime.model_loader import (FlagTuneModelManager, IncompatibleModelError, ModelBundleMissingError)
 
 IDENTITY_PATH = ("nvidia-h800", "vendor", "mm", "general", "bf16-bf16-f32")
 
@@ -686,7 +685,7 @@ def test_cache_precedes_local_manifest_without_download_latest(tmp_path, monkeyp
     assert requests == []
 
 
-def test_cache_hit_does_not_generate_default_manifest(tmp_path, monkeypatch):
+def test_cache_hit_does_not_require_manifest(tmp_path, monkeypatch):
     cache_root = tmp_path / "cache"
     cached = _install_platform_package(cache_root, "1.0.0", cache=True)
     manifest_path = cache_root / "manifest.json"
@@ -707,50 +706,23 @@ def test_cache_hit_does_not_generate_default_manifest(tmp_path, monkeypatch):
     assert not manifest_path.exists()
 
 
-def test_cache_miss_generates_default_manifest_and_downloads_package(tmp_path, monkeypatch):
+def test_cache_miss_uses_local_manifest_and_downloads_package(tmp_path, monkeypatch):
     remote = _install_platform_package(tmp_path / "remote", "1.0.0")
     payload = remote.read_bytes()
     remote_filename = "flagtune-xgb-nvidia-h20_v0.1.0.tar.gz"
     remote_url = f"https://example.invalid/models/{remote_filename}"
-    requests = []
-
-    class Response:
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return payload
-
-    def open_https(request, **_kwargs):
-        requests.append(request.full_url)
-        return Response()
+    manifest_path = tmp_path / "manifests" / "flagtune-local-manifest.json"
+    requests = _configure_platform_download(
+        monkeypatch,
+        manifest_path,
+        "1.0.0",
+        payload,
+        remote_filename=f"models/{remote_filename}",
+    )
 
     cache_root = tmp_path / "cache"
-    manifest_path = cache_root / "manifest.json"
-    monkeypatch.delenv("FLAGTUNE_MODEL_DIR", raising=False)
-    monkeypatch.delenv("FLAGTUNE_LOCAL_MANIFEST", raising=False)
     monkeypatch.delenv("FLAGTUNE_MODEL_DOWNLOAD_LATEST", raising=False)
-    monkeypatch.delenv("FLAGTUNE_DISABLE_REMOTE", raising=False)
     monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
-    monkeypatch.setenv("FLAGTUNE_MODEL_BASE_URL", "https://example.invalid/models")
-    monkeypatch.setattr(
-        manifest_generator,
-        "PACKAGE_CATALOG",
-        {
-            "nvidia-h20": {
-                "1.0.0": {
-                    "filename": remote_filename,
-                    "sha256": hashlib.sha256(payload).hexdigest(),
-                },
-            },
-        },
-    )
-    monkeypatch.setattr(model_loader, "_open_https", open_https)
-    monkeypatch.setattr(FlagTuneModelManager, "_validate_bundle_members", lambda *_args, **_kwargs: None)
 
     selected = FlagTuneModelManager().resolve(
         "flaggems/mm",
@@ -762,39 +734,24 @@ def test_cache_miss_generates_default_manifest_and_downloads_package(tmp_path, m
     expected = cache_root / "packages" / "nvidia-h20" / "1.0.0" / "nvidia-h20_v1.0.0.tar.gz"
     assert selected == expected
     assert expected.read_bytes() == payload
-    assert requests == [remote_url]
+    assert [request.full_url for request in requests] == [remote_url]
     assert json.loads(manifest_path.read_text())["packages"]["nvidia-h20"]["versions"]["1.0.0"]["url"] == remote_url
     assert not list(cache_root.rglob("*.tmp"))
 
 
-def test_download_latest_generates_default_manifest_and_reuses_matching_cache(tmp_path, monkeypatch):
+def test_download_latest_uses_local_manifest_and_reuses_matching_cache(tmp_path, monkeypatch):
     cache_root = tmp_path / "cache"
     cached = _install_platform_package(cache_root, "1.0.0", cache=True)
     payload = cached.read_bytes()
-    manifest_path = cache_root / "manifest.json"
-    monkeypatch.delenv("FLAGTUNE_MODEL_DIR", raising=False)
-    monkeypatch.delenv("FLAGTUNE_LOCAL_MANIFEST", raising=False)
-    monkeypatch.delenv("FLAGTUNE_DISABLE_REMOTE", raising=False)
+    requests = _configure_platform_download(
+        monkeypatch,
+        tmp_path / "manifests" / "flagtune-local-manifest.json",
+        "1.0.0",
+        payload,
+        remote_filename="flagtune-xgb-nvidia-h20_v0.1.0.tar.gz",
+    )
     monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
     monkeypatch.setenv("FLAGTUNE_MODEL_DOWNLOAD_LATEST", "1")
-    monkeypatch.setattr(
-        manifest_generator,
-        "PACKAGE_CATALOG",
-        {
-            "nvidia-h20": {
-                "1.0.0": {
-                    "url": "https://example.invalid/flagtune-xgb-nvidia-h20_v0.1.0.tar.gz",
-                    "sha256": hashlib.sha256(payload).hexdigest(),
-                },
-            },
-        },
-    )
-    monkeypatch.setattr(
-        model_loader,
-        "_open_https",
-        lambda *_args, **_kwargs: pytest.fail("matching cached package attempted a network request"),
-    )
-    monkeypatch.setattr(FlagTuneModelManager, "_validate_bundle_members", lambda *_args, **_kwargs: None)
 
     selected = FlagTuneModelManager().resolve(
         "flaggems/mm",
@@ -804,11 +761,11 @@ def test_download_latest_generates_default_manifest_and_reuses_matching_cache(tm
     )
 
     assert selected == cached
-    assert manifest_path.is_file()
+    assert requests == []
     assert not list(cache_root.rglob("*.tmp"))
 
 
-def test_remote_disabled_cache_miss_does_not_generate_default_manifest(tmp_path, monkeypatch):
+def test_remote_disabled_cache_miss_does_not_fetch_manifest(tmp_path, monkeypatch):
     cache_root = tmp_path / "cache"
     manifest_path = cache_root / "manifest.json"
     monkeypatch.delenv("FLAGTUNE_MODEL_DIR", raising=False)
@@ -1493,3 +1450,26 @@ def test_three_model_loads_reuse_one_parsed_platform_package(tmp_path, monkeypat
         f"flaggems/mm/{variant}/bf16-bf16-bf16/model.tar.gz" for variant in ("gemv", "general_tma", "splitk")
     ]
     assert parsed == [package_path]
+
+
+def test_missing_bundle_raises_its_own_error_but_stays_an_incompatible_model_error(tmp_path, monkeypatch):
+    """A package without this identity is a coverage statement, not a fault.
+
+    Integration layers fall back on ModelBundleMissingError alone, so it must be
+    distinguishable from a corrupt or incompatible package. It stays a subclass
+    so existing IncompatibleModelError handlers keep working.
+    """
+    _install_platform_package(tmp_path / "models", "1.0.0")
+    monkeypatch.setenv("FLAGTUNE_MODEL_DIR", str(tmp_path / "models"))
+    monkeypatch.delenv("FLAGTUNE_MODEL_VERSION", raising=False)
+
+    with pytest.raises(ModelBundleMissingError) as excinfo:
+        FlagTuneModelManager().load(
+            "flaggems/mm",
+            "variant_that_was_never_packaged",
+            platform_key="nvidia-h20",
+            dtype_key="bf16-bf16-bf16",
+        )
+
+    assert "has no model for" in str(excinfo.value)
+    assert isinstance(excinfo.value, IncompatibleModelError)

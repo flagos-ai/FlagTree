@@ -26,6 +26,7 @@ source ~/env.sh
 source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
 echo "[INFO] vLLM $(python3 -m pip show vllm |grep Version)"
+echo "[INFO] vllm-plugin-fl $(python3 -m pip show vllm-plugin-FL |grep Version)"
 echo "[INFO] Torch $(python3 -m pip show torch |grep Version)"
 echo "[INFO] FlagGems $(python3 -m pip show flag_gems |grep Version)"
 echo "[INFO] FlagTree $(python3 -m pip show flagtree |grep Version)"
@@ -44,18 +45,16 @@ bash "${SCRIPT_DIR}/clear_fuser_process.sh"
 
 start=$(date +%s)
 
-export VLLM_USE_MODELSCOPE=true
+export VLLM_PLUGINS=fl
 export USE_FLAGGEMS=1
-export USE_RESHAPE_AND_CACHE_FLASH=1
 
 numactl --cpunodebind=1 --membind=1 \
 nohup vllm serve ./Qwen3.6-27B/  \
     --tensor-parallel-size 2 \
     --port 8000  \
     --served-model-name qwen36 \
-    --mm-encoder-tp-mode data \
-    --mm-processor-cache-type shm \
-    --block-size 256  \
+    --max-model-len 65536 \
+    --trust-remote-code \
     --gpu-memory-utilization 0.8 \
     --dtype bfloat16 2>&1 >vllm.log &
 echo "$!" >pid.txt
