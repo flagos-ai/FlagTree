@@ -252,6 +252,7 @@ class TestBufferedTensor:
         def __init__(self):
             self.memdesc_type_args = None
             self.memdesc_index_args = None
+            self.memdesc_subslice_args = None
             self.swizzled_encoding_args = None
             self.pipe_create_args = None
             self.tma_copy_args = None
@@ -284,6 +285,10 @@ class TestBufferedTensor:
         def create_memdesc_index(self, result_ty, src, index):
             self.memdesc_index_args = (result_ty, src, index)
             return "slot_handle"
+
+        def create_memdesc_subslice(self, result_ty, src, offsets):
+            self.memdesc_subslice_args = (result_ty, src, list(offsets))
+            return "subslice_handle"
 
         def create_tma_copy(self, src, dst, offsets, barrier=None, expect_bytes=-1):
             self.tma_copy_args = (src, dst, list(offsets), barrier, expect_bytes)
@@ -398,6 +403,30 @@ class TestBufferedTensor:
 
         with pytest.raises(ValueError, match="int32"):
             buffer.slot(stage, _semantic=semantic)
+
+    @pytest.mark.require_tle("gpu.buffered_tensor.subslice")
+    def test_buffered_tensor_subslice_preserves_rank_layout_and_alloc_shape(self):
+        buffer, semantic = self._make_buffer([4, 16, 32])
+
+        subslice = buffer.subslice(4, 8, 1, _semantic=semantic)
+
+        assert isinstance(subslice, tle.gpu.buffered_tensor)
+        assert subslice.handle == "subslice_handle"
+        assert subslice.shape == [4, 8, 32]
+        assert subslice.type.layout is buffer.type.layout
+        assert subslice.type.alloc_shape == [4, 16, 32]
+        assert semantic.builder.memdesc_subslice_args == (
+            ("memdesc", (4, 8, 32), "fp16", "fake_layout", "smem", (4, 16, 32)),
+            "base",
+            [0, 4, 0],
+        )
+
+    @pytest.mark.parametrize("start,length,dim", [(-1, 1, 0), (0, 0, 0), (12, 8, 1), (0, 1, 3)])
+    def test_buffered_tensor_subslice_rejects_invalid_ranges(self, start, length, dim):
+        buffer, semantic = self._make_buffer([4, 16, 32])
+
+        with pytest.raises(ValueError, match="out of range"):
+            buffer.subslice(start, length, dim, _semantic=semantic)
 
 
 class TestTmaCopyBarrierFrontend:

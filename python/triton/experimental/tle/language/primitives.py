@@ -36,7 +36,7 @@ TLE_PRIMITIVES = frozenset({
     ## TLE-Struct GPU
     "gpu.alloc", "gpu.copy", "gpu.local_ptr", "gpu.memory_space", "gpu.set_layout", "gpu.warp_specialize",
     "gpu.alloc_barrier", "gpu.alloc_barriers", "gpu.barrier_wait", "gpu.barrier_arrive", "gpu.wgmma", "gpu.wgmma_wait",
-    "gpu.buffered_tensor.slot", "gpu.range",  # TODO: del
+    "gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice", "gpu.range",  # TODO: del
     "gpu.pipeline",  # TODO: del
 })
 

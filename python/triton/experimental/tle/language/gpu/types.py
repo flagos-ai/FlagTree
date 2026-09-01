@@ -517,6 +517,43 @@ class buffered_tensor(tl.base_value):
         return buffered_tensor(slot_handle, self.dtype, slot_shape, self.type.storage, slot_layout, _semantic,
                                alloc_shape=slot_ty.alloc_shape)
 
+    @tl.builtin
+    def subslice(self, start, length, dim=-1, _semantic: TLESemantic | None = None):
+        """Create a contiguous shared-memory subview along ``dim``.
+
+        Unlike :meth:`slot`, ``subslice`` preserves the source rank and shared
+        layout. ``start``, ``length``, and ``dim`` must be compile-time
+        integers.
+        """
+        if self.type.storage is not smem:
+            raise ValueError(f"buffered_tensor.subslice supports only smem storage, got {self.type.storage}")
+
+        start = tl._unwrap_if_constexpr(start)
+        length = tl._unwrap_if_constexpr(length)
+        dim = tl._unwrap_if_constexpr(dim)
+        for name, value in (("start", start), ("length", length), ("dim", dim)):
+            if not isinstance(value, int):
+                raise ValueError(f"buffered_tensor.subslice {name} must be a compile-time int")
+
+        rank = len(self.shape)
+        if dim < 0:
+            dim += rank
+        if dim < 0 or dim >= rank:
+            raise ValueError(f"buffered_tensor.subslice dim {dim} is out of range for rank {rank}")
+        if start < 0 or length <= 0 or start + length > self.shape[dim]:
+            raise ValueError(f"buffered_tensor.subslice [{start}:{start + length}] is out of range for dimension {dim} "
+                             f"with size {self.shape[dim]}")
+
+        offsets = [0] * rank
+        offsets[dim] = start
+        sub_shape = list(self.shape)
+        sub_shape[dim] = length
+        sub_ty = buffered_tensor_type(self.dtype, sub_shape, self.type.storage, self.type.layout, _semantic,
+                                      alloc_shape=self.type.alloc_shape)
+        sub_handle = _semantic.builder.create_memdesc_subslice(sub_ty.to_ir(_semantic.builder), self.handle, offsets)
+        return buffered_tensor(sub_handle, self.dtype, sub_shape, self.type.storage, self.type.layout, _semantic,
+                               alloc_shape=sub_ty.alloc_shape)
+
     def make_permute(self, handle, dims):
         permuted_layout = self.type.layout.make_permute(dims)
         return buffered_tensor(
