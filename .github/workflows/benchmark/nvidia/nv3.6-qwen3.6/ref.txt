@@ -1,88 +1,70 @@
 H100 * 2
-vllm==0.16.0rc2.dev221+ga5ccc85c8
-torch==2.10.0+cu128
-cuda==13.1
+harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.11.0_cu130-cuda13.0-ubuntu24.04:202609-3.6-vllm0.24.0
+KMD Version: 610.57.04
+vllm==0.24.0
+torch==2.11.0+cu130
+flashinfer-python==0.6.12
+cuda==13.0
 
-[BaseLine] USE_FLAGGEMS=0, triton==3.6.0
-# 服务冷启动时间: 2分23秒, 服务热启动时间: 2分4秒
+[BaseLine] vllm-plugin-fl==0.3.0rc0 (2026/08/21), USE_FLAGGEMS=0, triton==3.6.0
+# 服务冷启动时间: 2分11秒, 服务热启动时间: 2分1秒
 # 输入长度: 32K, 输出长度: 1K, 并发数: 64
-  Output token throughput (tok/s): 319.46
-  Total token throughput (tok/s): 10542.09
-  Median TTFT (ms): 15798.41
-  Median TPOT (ms): 34.20
-  Median ITL (ms): 22.15
+  Output token throughput (tok/s): 341.39
+  Total token throughput (tok/s): 11265.78
+  Median TTFT (ms): 15549.28
+  Median TPOT (ms): 31.27
+  Median ITL (ms): 19.37
 # 输入长度: 16K, 输出长度: 1K, 并发数: 64
-  Output token throughput (tok/s): 492.25
-  Total token throughput (tok/s): 8368.25
-  Median TTFT (ms): 7761.14
-  Median TPOT (ms): 24.72
-  Median ITL (ms): 20.41
+  Output token throughput (tok/s): 538.11
+  Total token throughput (tok/s): 9147.90
+  Median TTFT (ms): 7629.40
+  Median TPOT (ms): 22.10
+  Median ITL (ms): 16.63
 # 输入长度: 4K, 输出长度: 1K, 并发数: 64
-  Output token throughput (tok/s): 734.11
-  Total token throughput (tok/s): 3670.52
-  Median TTFT (ms): 2117.86
-  Median TPOT (ms): 19.74
-  Median ITL (ms): 19.32
+  Output token throughput (tok/s): 903.55
+  Total token throughput (tok/s): 4517.76
+  Median TTFT (ms): 2046.01
+  Median TPOT (ms): 15.67
+  Median ITL (ms): 14.55
 
-[2026/08/11] flag_gems==5.3.0rc2 (2026/05), triton==3.6.0
-# 服务冷启动时间: 9分13秒, 服务热启动时间: 2分2秒
+[2026/08/30] vllm-plugin-fl==0.3.0rc0 (2026/08/21), flag_gems==5.3.5 (2026/08/26), triton==3.6.0
+# 服务冷启动时间: 10分11秒, 服务热启动时间: 2分10秒
 # 输入长度: 32K, 输出长度: 1K, 并发数: 64
-  Output token throughput (tok/s): 264.37
-  Total token throughput (tok/s): 8724.08
-  Median TTFT (ms): 19197.68
-  Median TPOT (ms): 41.21
-  Median ITL (ms): 26.92
+  Output token throughput (tok/s): 209.07
+  Total token throughput (tok/s): 6899.38
+  Median TTFT (ms): 31741.95
+  Median TPOT (ms): 45.06
+  Median ITL (ms): 19.48
 # 输入长度: 16K, 输出长度: 1K, 并发数: 64
-  Output token throughput (tok/s): 402.67
-  Total token throughput (tok/s): 6845.39
-  Median TTFT (ms): 9507.34
-  Median TPOT (ms): 30.22
-  Median ITL (ms): 22.38
+  Output token throughput (tok/s): 416.27
+  Total token throughput (tok/s): 7076.56
+  Median TTFT (ms): 12494.05
+  Median TPOT (ms): 26.04
+  Median ITL (ms): 16.69
 # 输入长度: 4K, 输出长度: 1K, 并发数: 64
-  Output token throughput (tok/s): 610.43
-  Total token throughput (tok/s): 3052.17
-  Median TTFT (ms): 2613.72
-  Median TPOT (ms): 23.68
-  Median ITL (ms): 20.30
+  Output token throughput (tok/s): 855.40
+  Total token throughput (tok/s): 4276.99
+  Median TTFT (ms): 2692.61
+  Median TPOT (ms): 16.04
+  Median ITL (ms): 14.55
 
-[2026/08/11] flag_gems==5.3.0rc2 (2026/05), flagtree===0.6.0 (2026/06/26)
-# 服务冷启动时间: 8分20秒, 服务热启动时间: 2分2秒
-# 输入长度: 32K, 输出长度: 1K, 并发数: 16
-  Output token throughput (tok/s): 262.29
-  Total token throughput (tok/s): 8655.47
-  Median TTFT (ms): 20106.92
-  Median TPOT (ms): 40.85
-  Median ITL (ms): 24.00
-# 输入长度: 16K, 输出长度: 1K, 并发数: 16
-  Output token throughput (tok/s): 398.28
-  Total token throughput (tok/s): 6770.73
-  Median TTFT (ms): 9918.11
-  Median TPOT (ms): 30.24
-  Median ITL (ms): 22.97
-# 输入长度: 4K, 输出长度: 1K, 并发数: 16
-  Output token throughput (tok/s): 600.23
-  Total token throughput (tok/s): 3001.12
-  Median TTFT (ms): 2707.72
-  Median TPOT (ms): 24.01
-  Median ITL (ms): 25.02
-
-[2026/08/11] flag_gems==5.3.0rc2 (2026/05), flagtree===0.6.1 (2026/08/07)
-# 服务冷启动时间: 8分30秒, 服务热启动时间: 2分2秒
-# 输入长度: 32K, 输出长度: 1K, 并发数: 16
-  Output token throughput (tok/s): 261.04
-  Total token throughput (tok/s): 8614.48
-  Median TTFT (ms): 18658.96
-  Median TPOT (ms): 42.50
-  Median ITL (ms): 26.28
-# 输入长度: 16K, 输出长度: 1K, 并发数: 16
-  Output token throughput (tok/s): 418.64
-  Total token throughput (tok/s): 7116.86
-  Median TTFT (ms): 9186.20
-  Median TPOT (ms): 28.97
-  Median ITL (ms): 22.67
-# 输入长度: 4K, 输出长度: 1K, 并发数: 16
-  Output token throughput (tok/s): 624.05
-  Total token throughput (tok/s): 3120.26
-  Median TTFT (ms): 2507.47
-  Median TPOT (ms): 23.17
-  Median ITL (ms): 21.83
+[2026/08/31] vllm-plugin-fl==0.3.0rc0 (2026/08/21), flag_gems==5.3.5 (2026/08/26), flagtree===0.6.2a1 (2026/08/25)
+# 服务冷启动时间: 9分51秒, 服务热启动时间: 2分10秒
+# 输入长度: 32K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 214.97
+  Total token throughput (tok/s): 7093.96
+  Median TTFT (ms): 30712.56
+  Median TPOT (ms): 43.99
+  Median ITL (ms): 19.22
+# 输入长度: 16K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 430.48
+  Total token throughput (tok/s): 7318.14
+  Median TTFT (ms): 11906.92
+  Median TPOT (ms): 25.35
+  Median ITL (ms): 16.43
+# 输入长度: 4K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 878.86
+  Total token throughput (tok/s): 4394.30
+  Median TTFT (ms): 2541.18
+  Median TPOT (ms): 15.69
+  Median ITL (ms): 14.28
