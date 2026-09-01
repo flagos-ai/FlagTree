@@ -120,7 +120,7 @@ class GroupKind(str, Enum):
     GRID = "grid"
 
 
-_SIGNAL_SPACE_TO_TEAM_KIND = {
+_SPACE_TO_TEAM_KIND = {
     "intra": 0,
     "intra_node": 0,
     "device": 0,
@@ -195,10 +195,10 @@ def signal(
         raise ValueError(f"op must be 'inc' or 'add', got {signal_op!r}")
 
     signal_space = str(tl._unwrap_if_constexpr(space)).lower()
-    if signal_space not in _SIGNAL_SPACE_TO_TEAM_KIND:
+    if signal_space not in _SPACE_TO_TEAM_KIND:
         expected = "intra_node, inter_node, or world"
         raise ValueError(f"space must be {expected}, got {signal_space!r}")
-    signal_space = attr.FlagCXTeamKind.from_int(_SIGNAL_SPACE_TO_TEAM_KIND[signal_space])
+    signal_space = attr.FlagCXTeamKind.from_int(_SPACE_TO_TEAM_KIND[signal_space])
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
     group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
@@ -637,12 +637,42 @@ def _mesh_to_cluster_dims(mesh: device_mesh) -> tuple[int, int, int]:
     return _shape_to_cluster_dims(cluster_axes)
 
 
-def _mesh_has_cluster_axes(mesh: device_mesh) -> bool:
-    return any("cluster" in name for name in mesh.dim_names)
+def _mesh_has_axis(mesh: device_mesh, axis_token: str, *, use_launch_dims: bool = False) -> bool:
+    dim_names = mesh.launch_dim_names if use_launch_dims else mesh.dim_names
+    return any(axis_token in name for name in dim_names)
 
 
-def _mesh_has_block_axes(mesh: device_mesh) -> bool:
-    return any("block" in name for name in mesh.dim_names)
+def _is_cluster_submesh(mesh: device_mesh) -> bool:
+    launch_shape = tuple(int(size) for size in mesh.launch_shape)
+    cluster_axes = tuple(axis for axis, name in enumerate(mesh.launch_dim_names) if "cluster" in name)
+    if not cluster_axes:
+        return False
+
+    cluster_axis_set = set(cluster_axes)
+    outer_axes = tuple(axis for axis in range(len(launch_shape)) if axis not in cluster_axis_set)
+    cluster_size = _prod(launch_shape[axis] for axis in cluster_axes)
+    launch_size = _prod(launch_shape)
+    cluster_members_by_outer_coord: dict[tuple[int, ...], set[tuple[int, ...]]] = {}
+
+    # Inspect membership in the original launch domain so reshape()/flatten()
+    # cannot turn an outer-axis slice into a false cluster-axis slice.
+    for raw_physical_id in mesh.physical_ids:
+        physical_id = int(raw_physical_id)
+        if physical_id < 0 or physical_id >= launch_size:
+            raise ValueError(f"mesh physical id {physical_id} is out of range for launch shape {launch_shape}")
+
+        coords = [0] * len(launch_shape)
+        remainder = physical_id
+        for axis in range(len(launch_shape) - 1, -1, -1):
+            coords[axis] = remainder % launch_shape[axis]
+            remainder //= launch_shape[axis]
+
+        outer_coord = tuple(coords[axis] for axis in outer_axes)
+        cluster_coord = tuple(coords[axis] for axis in cluster_axes)
+        cluster_members_by_outer_coord.setdefault(outer_coord, set()).add(cluster_coord)
+
+    return any(len(cluster_members) < cluster_size
+               for cluster_members in cluster_members_by_outer_coord.values())
 
 
 def _mesh_uses_grid_barrier(mesh: device_mesh) -> bool:
@@ -650,10 +680,9 @@ def _mesh_uses_grid_barrier(mesh: device_mesh) -> bool:
     # - explicit cluster axes in the barrier mesh => cluster/submesh barrier
     # - block-only axes in the barrier mesh => grid barrier
     # - empty mesh dims (scalar) fallback to launch mesh naming
-    if mesh.dim_names:
-        return (not _mesh_has_cluster_axes(mesh)) and _mesh_has_block_axes(mesh)
-    return ((not any("cluster" in name for name in mesh.launch_dim_names))
-            and any("block" in name for name in mesh.launch_dim_names))
+    use_launch_dims = not mesh.dim_names
+    return (not _mesh_has_axis(mesh, "cluster", use_launch_dims=use_launch_dims)
+            and _mesh_has_axis(mesh, "block", use_launch_dims=use_launch_dims))
 
 
 @dataclass(frozen=True)
@@ -668,18 +697,13 @@ class _BarrierGroupDescriptor:
 def _infer_submesh_barrier_group(
     mesh: device_mesh,
     cluster_dims: Sequence[int],
-) -> _BarrierGroupDescriptor | None:
+) -> _BarrierGroupDescriptor:
     cluster_size = _prod(cluster_dims)
-    if mesh.size == cluster_size:
-        return None
-    if mesh.size > cluster_size:
-        raise ValueError(f"mesh size ({mesh.size}) exceeds inferred cluster size ({cluster_size})")
-
     launch_size = _prod(mesh.launch_shape)
-    if launch_size != cluster_size:
-        raise NotImplementedError(
-            "sub-mesh distributed_barrier currently requires launch mesh domain "
-            f"to match inferred cluster size; launch_size={launch_size}, cluster_size={cluster_size}")
+    if not mesh.physical_ids:
+        raise ValueError(
+            "cannot infer barrier group from an empty mesh"
+        )
 
     if not mesh.dim_names:
         raise NotImplementedError("scalar sub-mesh barrier is not implemented yet; provide at least one sliced axis")
@@ -813,6 +837,8 @@ def shard_id(
 
 def _parse_device_barrier_args(argType) -> str:
     argType = tl._unwrap_if_constexpr(argType)
+    if isinstance(argType, attr.FlagCXCoopKind):
+        return ("thread", "warp", "block")[int(argType)]
     argTypes = (BarrierKind, GroupKind, MemoryOrder)
     if isinstance(argType, argTypes):
         return argType.value
@@ -820,48 +846,130 @@ def _parse_device_barrier_args(argType) -> str:
         return str(argType).lower()
 
 
-def check_and_handle_device_intra_barrier(space: str = None, device_dptr=None,
-                                          barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-                                          group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
-                                          order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-                                          _semantic: TLESemantic | None = None):
-    if space and space in ("device", "node"):
-        builder = _semantic.builder
-        ptr = _parse_src_arg(builder, device_dptr, 1)
+def _normalize_barrier_space(space: str | attr.FlagCXTeamKind | None) -> str | None:
+    space = tl._unwrap_if_constexpr(space)
+    if space is None:
+        return None
+    if isinstance(space, str):
+        normalized = space.lower()
+        if normalized not in _SPACE_TO_TEAM_KIND:
+            expected = ", ".join(sorted(_SPACE_TO_TEAM_KIND))
+            raise ValueError(f"space must be one of {expected}, got {space!r}")
+        team_kind_value = _SPACE_TO_TEAM_KIND[normalized]
+    elif isinstance(space, attr.FlagCXTeamKind):
+        team_kind_value = int(space)
+    else:
+        raise TypeError(f"space must be str, attr.FlagCXTeamKind, or None, got {type(space).__name__}")
+    if attr.FlagCXTeamKind.from_int(team_kind_value) is None:
+        raise ValueError(f"space {space!r} is outside the FlagCX team-kind range")
+    return ("device", "inter", "world")[team_kind_value]
+
+
+def _validate_barrier_space_mesh(mesh: device_mesh | None, space: str, device_dptr=None) -> None:
+    if mesh is None:
+        raise ValueError(f"space={space!r} requires a mesh")
+    required_axis = "device" if space == "device" else "node"
+    if not _mesh_has_axis(mesh, required_axis, use_launch_dims=True):
+        raise ValueError(f"space={space!r} requires a mesh with a {required_axis} axis")
+    if device_dptr is None:
+        raise ValueError(f"space={space!r} requires device_dptr")
+
+
+def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.FlagCXTeamKind | None, device_dptr=None,
+                           barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                           group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK, index: int | None = 0,
+                           context_id: int = 0,
+                           order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None) -> bool:
+    space = _normalize_barrier_space(space)
+    if space is None:
+        return False
+    _validate_barrier_space_mesh(mesh, space, device_dptr=device_dptr)
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(context_id, int):
+        raise TypeError(f"context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"context_id must be in int32 range, got {context_id}")
+    builder = _semantic.builder
+    ptr = _parse_src_arg(builder, device_dptr, 1)
+    builder.create_distributed_barrier(
+        src=ptr,
+        barrier_index=index or 0,
+        space=space,
+        group_kind=_parse_device_barrier_args(group_kind),
+        order=_parse_device_barrier_args(order),
+        barrier_kind=_parse_device_barrier_args(barrier_kind),
+        context_id=context_id,
+    )
+    return True
+
+
+def _emit_cluster_submesh_barrier(subgroup: _BarrierGroupDescriptor, builder) -> None:
+    if not hasattr(builder, "create_distributed_barrier"):
+        raise NotImplementedError("sub-mesh distributed_barrier requires TLE builder support; "
+                                  f"inferred subgroup descriptor: rank={subgroup.rank}, "
+                                  f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}")
+    try:
         builder.create_distributed_barrier(
-            src=ptr,
-            barrier_index=index or 0,
-            space=_parse_device_barrier_args("device"),
-            group_kind=_parse_device_barrier_args(group_kind),
-            order=_parse_device_barrier_args(order),
-            barrier_kind=_parse_device_barrier_args(barrier_kind),
+            subgroup.kind,
+            list(subgroup.shape),
+            list(subgroup.axes),
+            list(subgroup.mask),
         )
-        return True
-    return False
+    except TypeError as exc:
+        raise NotImplementedError(
+            "sub-mesh distributed_barrier requires rebuilt TLE extension with "
+            "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask); "
+            f"inferred subgroup descriptor: rank={subgroup.rank}, "
+            f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}") from exc
+
+
+def _handle_cluster_submesh_barrier(mesh: device_mesh, _semantic) -> None:
+    cluster_dims = _mesh_to_cluster_dims(mesh)
+    subgroup = _infer_submesh_barrier_group(mesh, cluster_dims)
+    _apply_mesh_cluster_launch(mesh, _semantic)
+    _emit_cluster_submesh_barrier(subgroup, _semantic.builder)
 
 
 @tl.builtin
-def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space: str = None,
-                        group_kind: str | GroupKind = GroupKind.BLOCK,
+def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
+                        space: str | attr.FlagCXTeamKind | None = None,
+                        group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
                         barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                         order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-                        _semantic: TLESemantic | None = None, index: int | None = 0):
+                        _semantic: TLESemantic | None = None, index: int | None = 0,
+                        context_id: int = 0):
     """
     M3 entrypoint: distributed synchronization primitive.
+    Dispatch order:
+    - sliced cluster mesh: cluster submesh synchronization
+    - explicit space: intra/device, inter/node, world synchronization
+    - block-only mesh: cooperative grid synchronization
+    - otherwise: full cluster synchronization
 
-    - cluster mesh: cluster/submesh synchronization
-    - block mesh: cooperative grid synchronization
+
+    For an explicit-space FlagCX barrier, ``space`` accepts any alias in
+    ``_SPACE_TO_TEAM_KIND`` (``intra``/``intra_node``/``device``,
+    ``inter``/``inter_node``/``node``, ``world``) or an
+    ``attr.FlagCXTeamKind``, and is canonicalized to
+    ``device``/``inter``/``world``. ``group_kind`` accepts
+    ``thread``/``warp``/``block`` or an ``attr.FlagCXCoopKind``.
+    ``index`` selects the barrier channel and ``context_id`` selects the
+    pre-created FlagCX device context.
+    Both values must agree across all participants in the barrier.
     """
     mesh = tl._unwrap_if_constexpr(mesh)
     if mesh is not None and not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
-    subgroup = None
-    use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
 
-    if check_and_handle_device_intra_barrier(space=space, device_dptr=device_dptr, barrier_kind=barrier_kind,
-                                             group_kind=group_kind, index=index, order=order, _semantic=_semantic):
+    if mesh is not None and _is_cluster_submesh(mesh):
+        return _handle_cluster_submesh_barrier(mesh, _semantic)
+
+    if _handle_explicit_space_barrier(mesh, space, device_dptr=device_dptr, barrier_kind=barrier_kind,
+                              group_kind=group_kind, index=index, context_id=context_id,
+                              order=order, _semantic=_semantic):
         return None
 
+    use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
     if use_grid:
         if mesh is not None:
             _apply_mesh_grid_launch(mesh, _semantic)
@@ -877,28 +985,9 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space
                 "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask)") from exc
 
     if mesh is not None:
-        cluster_dims = _apply_mesh_cluster_launch(mesh, _semantic)
-        subgroup = _infer_submesh_barrier_group(mesh, cluster_dims)
+        _apply_mesh_cluster_launch(mesh, _semantic)
+
     builder = _semantic.builder
-    if subgroup is not None:
-        if not hasattr(builder, "create_distributed_barrier"):
-            raise NotImplementedError("sub-mesh distributed_barrier requires TLE builder support; "
-                                      f"inferred subgroup descriptor: rank={subgroup.rank}, "
-                                      f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}")
-        try:
-            builder.create_distributed_barrier(
-                subgroup.kind,
-                list(subgroup.shape),
-                list(subgroup.axes),
-                list(subgroup.mask),
-            )
-            return None
-        except TypeError as exc:
-            raise NotImplementedError(
-                "sub-mesh distributed_barrier requires rebuilt TLE extension with "
-                "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask); "
-                f"inferred subgroup descriptor: rank={subgroup.rank}, "
-                f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}") from exc
     if hasattr(builder, "create_distributed_barrier"):
         builder.create_distributed_barrier()
     else:

@@ -384,17 +384,17 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
                                       [MemoryEffects<[MemRead, MemWrite]>]> {
   let arguments = (ins
     Optional<AnyType>:$src,
-    OptionalAttr<StrAttr>:$space,           # intra inter world
-    OptionalAttr<StrAttr>:$barrier_type,    # arrive wait sync
-    OptionalAttr<StrAttr>:$order,           # relaxed acquire release acqrel
-    OptionalAttr<StrAttr>:$group_kind,      # space 存在时为 thread warp block，不存在时为 cluster submesh grid
-    OptionalAttr<I32Attr>:$barrier_index,   # flagcx only, 高层 barrier channel 编号
+    OptionalAttr<StrAttr>:$space,          
+    OptionalAttr<StrAttr>:$barrier_type,    
+    OptionalAttr<StrAttr>:$order,           
+    OptionalAttr<StrAttr>:$group_kind,     
+    OptionalAttr<I32Attr>:$barrier_index,   
     OptionalAttr<I32Attr>:$context_id,
-    OptionalAttr<StrAttr>:$memory_scope,    # 内存可见范围
-    OptionalAttr<I32Attr>:$group_rank,      # submesh 维度数
-    OptionalAttr<DenseI32ArrayAttr>:$group_shape,  # submesh shape
-    OptionalAttr<DenseI32ArrayAttr>:$group_axes,   # 轴维度号
-    OptionalAttr<DenseI32ArrayAttr>:$group_mask    # cta id
+    OptionalAttr<StrAttr>:$memory_scope,  
+    OptionalAttr<I32Attr>:$group_rank,      
+    OptionalAttr<DenseI32ArrayAttr>:$group_shape,  
+    OptionalAttr<DenseI32ArrayAttr>:$group_axes,  
+    OptionalAttr<DenseI32ArrayAttr>:$group_mask   
   );
   let hasVerifier = 1;
 }

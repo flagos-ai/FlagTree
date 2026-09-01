@@ -70,9 +70,9 @@ def Tle_FlagCxBarrierOp : Tle_Op<"flagcx_barrier"> {
 
   let arguments = (ins
     Tle_LocalPointerResultType:$comm,
-    StrAttr:$barrier_type,               # arrive wait sync
-    Tle_SignalTeamKindAttr:$team_kind,   # intra inter world
-    Tle_SignalCoopKindAttr:$coop_kind,   # thread  block   warp
+    StrAttr:$barrier_type,               
+    Tle_SignalTeamKindAttr:$team_kind,   
+    Tle_SignalCoopKindAttr:$coop_kind,   
     I32Attr:$index,
     I32Attr:$context_id,
     I32Attr:$order,
