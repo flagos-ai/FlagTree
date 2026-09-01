@@ -16,24 +16,9 @@
 
 using namespace mlir;
 
-namespace {
+namespace ttg = mlir::triton::gpu;
 
-StringRef getTMELoadIntrinsicName(unsigned rank) {
-  switch (rank) {
-  case 1:
-    return "llvm.musa.tme.ld.tile.1d";
-  case 2:
-    return "llvm.musa.tme.ld.tile.2d";
-  case 3:
-    return "llvm.musa.tme.ld.tile.3d";
-  case 4:
-    return "llvm.musa.tme.ld.tile.4d";
-  case 5:
-    return "llvm.musa.tme.ld.tile.5d";
-  default:
-    return {};
-  }
-}
+namespace {
 
 StringRef getTMEStoreIntrinsicName(unsigned rank) {
   switch (rank) {
@@ -54,6 +39,8 @@ StringRef getTMEStoreIntrinsicName(unsigned rank) {
 
 Value normalizeTMEDescriptorAddr(Value value, Type srcType, Location loc,
                                  ConversionPatternRewriter &rewriter) {
+  if (value.getType().isInteger(64))
+    return value;
   if (srcType.isInteger(64))
     return value;
   if (isa<triton::TensorDescType>(srcType)) {
@@ -566,8 +553,12 @@ struct WaitBarrierOpConversion
 
 struct AsyncTMECopyGlobalToLocalOpConversion
     : public ConvertOpToLLVMPattern<triton::musa::AsyncTMECopyGlobalToLocalOp> {
-  using ConvertOpToLLVMPattern<
-      triton::musa::AsyncTMECopyGlobalToLocalOp>::ConvertOpToLLVMPattern;
+  AsyncTMECopyGlobalToLocalOpConversion(
+      LLVMTypeConverter &converter, PatternBenefit benefit,
+      const triton::MUSA::TargetInfo &targetInfo)
+      : ConvertOpToLLVMPattern<triton::musa::AsyncTMECopyGlobalToLocalOp>(
+            converter, benefit),
+        targetInfo(targetInfo) {}
 
   LogicalResult
   matchAndRewrite(triton::musa::AsyncTMECopyGlobalToLocalOp op,
@@ -582,7 +573,7 @@ struct AsyncTMECopyGlobalToLocalOpConversion
           "in [1, 5] to match");
     }
     StringRef intrinsic =
-        getTMELoadIntrinsicName(static_cast<unsigned>(coordRank));
+        targetInfo.getTMELoadIntrinsicName(static_cast<unsigned>(coordRank));
     if (intrinsic.empty())
       return op.emitError(
           "MUSA async_tme_copy_global_to_local unsupported rank");
@@ -665,8 +656,10 @@ struct AsyncTMECopyGlobalToLocalOpConversion
       SmallVector<Value> operands = {
           adaptor.getBarId(), segment.dstAddr,  descAddr,
           segment.blockDim,   segment.blockPos, swizzleGranularity,
-          swizzleStride,      swizzleLine,      prefetchSize,
-          innerPersistence,   outerPersistence, cachePolicy};
+          swizzleStride,      swizzleLine,      prefetchSize};
+      targetInfo.appendTMELoadPolicyOperands(rewriter, loc, cachePolicy,
+                                             innerPersistence, outerPersistence,
+                                             operands);
       LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic, TypeRange{},
                                       operands);
     }
@@ -675,6 +668,9 @@ struct AsyncTMECopyGlobalToLocalOpConversion
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  const triton::MUSA::TargetInfo &targetInfo;
 };
 
 struct AsyncTMECopyLocalToGlobalOpConversion
@@ -797,19 +793,139 @@ struct TMEStoreReadWaitOpConversion
   }
 };
 
+struct TMEEncodeDescriptorOpConversion
+    : public ConvertOpToLLVMPattern<triton::musa::TMEEncodeDescriptorOp> {
+  using ConvertOpToLLVMPattern<
+      triton::musa::TMEEncodeDescriptorOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::musa::TMEEncodeDescriptorOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+
+    Value descBuf = adaptor.getDescBuf();
+    Value basePtr = adaptor.getBase();
+    auto shapeOps = adaptor.getShape();
+    auto strideOps = adaptor.getStrides();
+    unsigned elemSize = static_cast<unsigned>(op.getElemSize());
+    unsigned rank = shapeOps.size();
+    int32_t elemTypeEnum = static_cast<int32_t>(op.getElemType());
+    auto constantFill = triton::musa::getMUSATMEConstantFill(
+        elemTypeEnum, static_cast<triton::PaddingOption>(op.getPadding()));
+    if (!constantFill)
+      return op.emitOpError("padding nan is only supported for floating-point "
+                            "TME descriptor element types");
+
+    SmallVector<Value> strides(4, b.i64_val(0));
+    for (unsigned i = 0; i < rank - 1 && i < 4; i++) {
+      Value s = strideOps[rank - 2 - i];
+      strides[i] = b.mul(s, b.i64_val(elemSize));
+    }
+
+    Value baseAddr = b.ptrtoint(i64_ty, basePtr);
+
+    Value writerPred = buildTMEIssueOnlyPredicate(loc, rewriter);
+    Block *entryBlock = rewriter.getInsertionBlock();
+    Block *continuationBlock =
+        rewriter.splitBlock(entryBlock, rewriter.getInsertionPoint());
+    Block *writerBlock = rewriter.createBlock(continuationBlock);
+    rewriter.setInsertionPointToEnd(entryBlock);
+    LLVM::CondBrOp::create(rewriter, loc, writerPred, writerBlock,
+                           continuationBlock);
+    rewriter.setInsertionPointToStart(writerBlock);
+
+    auto storeWord = [&](unsigned byteOffset, Value val) {
+      Value addr = b.gep(descBuf.getType(), rewriter.getI8Type(), descBuf,
+                         b.i32_val(byteOffset));
+      LLVM::StoreOp::create(rewriter, loc, val, addr);
+    };
+
+    for (unsigned i = 0; i < 5; i++) {
+      Value dim = (i < rank) ? shapeOps[rank - 1 - i] : b.i32_val(1);
+      storeWord(i * 4, dim);
+    }
+
+    {
+      Value s0l = b.trunc(i32_ty, strides[0]);
+      Value s0h = b.trunc(i32_ty, b.lshr(strides[0], b.i64_val(32)));
+      Value s1l = b.trunc(i32_ty, strides[1]);
+      Value s1h = b.trunc(i32_ty, b.lshr(strides[1], b.i64_val(32)));
+      storeWord(20, b.shl(b.and_(s0l, b.i32_val(0xFFFF)), b.i32_val(16)));
+      storeWord(24, b.or_(b.or_(b.lshr(s0l, b.i32_val(16)),
+                                b.shl(s0h, b.i32_val(16))),
+                          b.shl(b.and_(s1l, b.i32_val(0xFF)), b.i32_val(24))));
+      storeWord(28,
+                b.or_(b.lshr(s1l, b.i32_val(8)), b.shl(s1h, b.i32_val(24))));
+    }
+
+    {
+      Value s2l = b.trunc(i32_ty, strides[2]);
+      Value s2h = b.trunc(i32_ty, b.lshr(strides[2], b.i64_val(32)));
+      Value s3l = b.trunc(i32_ty, strides[3]);
+      Value s3h = b.trunc(i32_ty, b.lshr(strides[3], b.i64_val(32)));
+      storeWord(32, s2l);
+      storeWord(36, b.or_(s2h, b.shl(s3l, b.i32_val(8))));
+      storeWord(
+          40, b.or_(b.or_(b.lshr(s3l, b.i32_val(24)), b.shl(s3h, b.i32_val(8))),
+                    b.i32_val(elemTypeEnum << 24)));
+    }
+
+    storeWord(44, b.i32_val(0));
+
+    storeWord(48, b.trunc(i32_ty, baseAddr));
+    storeWord(52, b.trunc(i32_ty, b.lshr(baseAddr, b.i64_val(32))));
+
+    uint32_t fillLow = static_cast<uint32_t>(*constantFill & 0xffffffffULL);
+    uint32_t fillHigh = static_cast<uint32_t>(*constantFill >> 32);
+    storeWord(56, b.i32_val(static_cast<int32_t>(fillLow)));
+    storeWord(60, b.i32_val(static_cast<int32_t>(fillHigh)));
+
+    LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.membar.gl",
+                                    TypeRange{}, {});
+    LLVM::createLLVMIntrinsicCallOp(
+        rewriter, loc, "llvm.musa.tme.desc.iv.context", TypeRange{}, {});
+
+    LLVM::BrOp::create(rewriter, loc, continuationBlock);
+    rewriter.setInsertionPointToStart(continuationBlock);
+
+    b.barrier(triton::gpu::AddrSpace::None);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct ReinterpretTensorDescOpConversion
+    : public ConvertOpToLLVMPattern<triton::musa::ReinterpretTensorDescOp> {
+  using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::musa::ReinterpretTensorDescOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type resultType = getTypeConverter()->convertType(op.getType());
+    rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(op, resultType,
+                                                       adaptor.getRawDesc());
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::MUSA::populateMUSAOpsToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
-    PatternBenefit benefit) {
+    PatternBenefit benefit, const TargetInfo &targetInfo) {
   patterns
       .add<SquadDotOpConversion, SquadDotWaitOpConversion, WmmaDotOpConversion,
            WmmaDotWaitOpConversion, BarRecordOpConversion,
            InitArrivalOpConversion, BarrierAddTransOpConversion,
            ArriveBarrierOpConversion, ArriveBarrierNoRetOpConversion,
-           WaitBarrierOpConversion, AsyncTMECopyGlobalToLocalOpConversion,
-           AsyncTMECopyLocalToGlobalOpConversion, TMEStoreCommitOpConversion,
-           TMEStoreReadWaitOpConversion>(typeConverter, benefit);
+           WaitBarrierOpConversion, AsyncTMECopyLocalToGlobalOpConversion,
+           TMEStoreCommitOpConversion, TMEStoreReadWaitOpConversion,
+           TMEEncodeDescriptorOpConversion, ReinterpretTensorDescOpConversion>(
+          typeConverter, benefit);
+  patterns.add<AsyncTMECopyGlobalToLocalOpConversion>(typeConverter, benefit,
+                                                      targetInfo);
 #ifdef __TLE__
   patterns.add<WarpArriveBarrierOpConversion>(typeConverter, benefit);
 #endif // __TLE__

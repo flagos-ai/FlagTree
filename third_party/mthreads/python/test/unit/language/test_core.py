@@ -6031,10 +6031,9 @@ def maxnreg_noinline2(X):
 
 @pytest.mark.interpreter
 def test_maxnreg(device):
-    if not is_cuda():
-        pytest.skip('maxnreg only works on CUDA')
+    if not (is_cuda() or is_musa()):
+        pytest.skip('maxnreg only works on CUDA and MUSA')
 
-    # triton kernel
     @triton.jit
     def kernel(X):
         maxnreg_noinline1(X)
@@ -6044,15 +6043,26 @@ def test_maxnreg(device):
     X = torch.empty(1, dtype=torch.int32, device=device)
     k = kernel[(1, )](X, maxnreg=42)
 
-    if not is_interpreter():
-        # Ensure that .maxnreg is set on the kernel function (marked with .entry)
-        # and not on either of the noinline functions (marked with .func).
+    if is_interpreter():
+        return
+
+    if is_musa():
+        llir = k.asm["llir"]
         try:
-            assert re.search(r'\.visible \.entry [^{;]*\.maxnreg 42', k.asm["ptx"])
-            assert not re.search(r'\.visible \.func [^{;]*\.maxnreg', k.asm["ptx"])
+            m = re.search(r'define mtgpu_kernel void @kernel\([^)]*\)[^#{]*#(\d+)', llir)
+            assert m, "kernel function not found in llir"
+            assert re.search(rf'attributes #{m.group(1)} = \{{[^}}]*"mtgpu-num-usreg"="42"', llir)
         except AssertionError:
-            print("Failing ptx:\n", k.asm["ptx"])
+            print("Failing llir:\n", llir)
             raise
+        return
+
+    try:
+        assert re.search(r'\.visible \.entry [^{;]*\.maxnreg 42', k.asm["ptx"])
+        assert not re.search(r'\.visible \.func [^{;]*\.maxnreg', k.asm["ptx"])
+    except AssertionError:
+        print("Failing ptx:\n", k.asm["ptx"])
+        raise
 
 
 @pytest.mark.interpreter

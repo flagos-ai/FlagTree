@@ -15,6 +15,7 @@ from typing import Callable, Generic, Iterable, Optional, TypeVar, overload, Dic
 from triton.backends import BaseBackend
 from types import ModuleType
 from .. import knobs
+from triton.backends.mthreads._musa_arch import musa_capability_from_arch
 from .driver import driver
 from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
@@ -379,15 +380,7 @@ def _make_pointer_alias_spec(params, bound_vals):
 def _musa_target_capability(target):
     if target.backend != "musa":
         return None
-    arch = target.arch
-    if isinstance(arch, int):
-        return arch
-    arch = str(arch).lower()
-    if arch.isdigit():
-        return int(arch)
-    if arch.startswith("ph1"):
-        return 31
-    return None
+    return musa_capability_from_arch(target.arch)
 
 
 class KernelInterface(Generic[T]):
@@ -759,6 +752,12 @@ class JITFunction(JITCallable, KernelInterface[T]):
         # specialization is list[tuple[str, Any]], where first element of tuple is
         # the type and the second parameter is the 'specialization' value.
         bound_args, specialization, options = binder(*args, **kwargs)
+        specialization = backend.refine_specialization(
+            bound_args,
+            self.params,
+            specialization,
+            jit_function=self,
+        )
 
         # add a cache field to the kernel specializations for kernel specific
         # pass pipelines

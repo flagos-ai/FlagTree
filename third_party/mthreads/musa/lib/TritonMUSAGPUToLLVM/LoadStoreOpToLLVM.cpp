@@ -1,5 +1,6 @@
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TritonMUSACommon/MMAOperandUtils.h"
+#include "TritonMUSACommon/MusaArchTraits.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUToLLVM/Utility.h"
@@ -32,6 +33,33 @@ namespace {
 
 inline constexpr llvm::StringLiteral kInplaceLoadAttr =
     "musa.inplace_load_candidate";
+
+static bool supportsNativeFloatingAtomic(const MUSA::TargetInfo &targetInfo,
+                                         Value ptr, Type valueElemTy) {
+  auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(ptr.getType());
+  if (!ptrTy || ptrTy.getAddressSpace() != 1)
+    return false;
+
+  auto arch =
+      musa::getMusaArchFromCapability(targetInfo.getComputeCapability());
+  if (!arch || *arch != musa::MusaArch::PH1)
+    return false;
+
+  return valueElemTy.isF16() || valueElemTy.isBF16() || valueElemTy.isF32() ||
+         valueElemTy.isF64();
+}
+
+static llvm::StringRef getMusaAtomicSyncScope(MemSyncScope scope) {
+  switch (scope) {
+  case MemSyncScope::CTA:
+    return "musa_block";
+  case MemSyncScope::GPU:
+    return "musa_device";
+  case MemSyncScope::SYSTEM:
+    return "musa_system";
+  }
+  llvm_unreachable("unsupported Triton memory synchronization scope");
+}
 
 struct PH1SwizzledMatrixViewInfo {
   SmallVector<int64_t, 2> matrixPhysicalShape;
@@ -1212,6 +1240,42 @@ struct AtomicRMWOpConversion
       return endBlock->getArgument(0);
     };
 
+    auto emitAtomic = [&](Value rmwPtr, Value rmwVal) -> Value {
+      if (*maybeKind == LLVM::AtomicBinOp::fadd &&
+          supportsNativeFloatingAtomic(targetInfo, rmwPtr, valueElemTy)) {
+        return LLVM::AtomicRMWOp::create(rewriter, loc, *maybeKind, rmwPtr,
+                                         rmwVal, atomicOrdering,
+                                         getMusaAtomicSyncScope(op.getScope()))
+            .getResult();
+      }
+
+      if (*maybeKind == LLVM::AtomicBinOp::fadd &&
+          (valueElemTy.isF16() || valueElemTy.isF32() || valueElemTy.isF64())) {
+        StringRef funcName;
+        Type fpType = valueElemTy;
+        if (valueElemTy.isF16()) {
+          funcName = "__mt_atomicAdd_f16";
+        } else if (valueElemTy.isF32()) {
+          funcName = "__mt_atomicAdd_f32";
+        } else {
+          funcName = "__mt_atomicAdd_f64";
+        }
+        auto ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
+        auto funcType = LLVM::LLVMFunctionType::get(fpType, {ptrTy, fpType});
+        LLVM::LLVMFuncOp funcOp =
+            appendOrGetExternFuncOp(rewriter, op, funcName, funcType);
+        Value addressCast =
+            LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrTy, rmwPtr);
+        return LLVM::CallOp::create(rewriter, loc, funcOp,
+                                    ValueRange{addressCast, rmwVal})
+            .getResult();
+      }
+
+      return LLVM::AtomicRMWOp::create(rewriter, loc, *maybeKind, rmwPtr,
+                                       rmwVal, atomicOrdering)
+          .getResult();
+    };
+
     if (!tensorTy) {
       Value rmwPtr = ptrElements.front();
       Value rmwVal = valElements.front();
@@ -1219,35 +1283,8 @@ struct AtomicRMWOpConversion
           maskElements.empty() ? b.true_val() : maskElements.front();
       rmwMask = maybeAnd(rewriter, loc, rmwMask, threadPred);
 
-      auto emitAtomic = [&]() -> Value {
-        if (*maybeKind == LLVM::AtomicBinOp::fadd &&
-            (valueElemTy.isF16() || valueElemTy.isF32() ||
-             valueElemTy.isF64())) {
-          StringRef funcName;
-          Type fpType = valueElemTy;
-          if (valueElemTy.isF16()) {
-            funcName = "__mt_atomicAdd_f16";
-          } else if (valueElemTy.isF32()) {
-            funcName = "__mt_atomicAdd_f32";
-          } else {
-            funcName = "__mt_atomicAdd_f64";
-          }
-          auto ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
-          auto funcType = LLVM::LLVMFunctionType::get(fpType, {ptrTy, fpType});
-          LLVM::LLVMFuncOp funcOp =
-              appendOrGetExternFuncOp(rewriter, op, funcName, funcType);
-          Value addressCast =
-              LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrTy, rmwPtr);
-          return LLVM::CallOp::create(rewriter, loc, funcOp,
-                                      ValueRange{addressCast, rmwVal})
-              .getResult();
-        }
-        return LLVM::AtomicRMWOp::create(rewriter, loc, *maybeKind, rmwPtr,
-                                         rmwVal, atomicOrdering)
-            .getResult();
-      };
-
-      Value retVal = emitPredicated(rmwMask, valueElemTy, emitAtomic);
+      Value retVal = emitPredicated(
+          rmwMask, valueElemTy, [&]() { return emitAtomic(rmwPtr, rmwVal); });
 
       if (op.getResult().use_empty()) {
         rewriter.eraseOp(op);
@@ -1282,35 +1319,8 @@ struct AtomicRMWOpConversion
       Value rmwMask = maskElements.empty() ? b.true_val() : maskElements[i];
       rmwMask = maybeAnd(rewriter, loc, rmwMask, threadPred);
 
-      auto emitAtomic = [&]() -> Value {
-        if (*maybeKind == LLVM::AtomicBinOp::fadd &&
-            (valueElemTy.isF16() || valueElemTy.isF32() ||
-             valueElemTy.isF64())) {
-          StringRef funcName;
-          Type fpType = valueElemTy;
-          if (valueElemTy.isF16()) {
-            funcName = "__mt_atomicAdd_f16";
-          } else if (valueElemTy.isF32()) {
-            funcName = "__mt_atomicAdd_f32";
-          } else {
-            funcName = "__mt_atomicAdd_f64";
-          }
-          auto ptrTy = LLVM::LLVMPointerType::get(rewriter.getContext());
-          auto funcType = LLVM::LLVMFunctionType::get(fpType, {ptrTy, fpType});
-          LLVM::LLVMFuncOp funcOp =
-              appendOrGetExternFuncOp(rewriter, op, funcName, funcType);
-          Value addressCast =
-              LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrTy, rmwPtr);
-          return LLVM::CallOp::create(rewriter, loc, funcOp,
-                                      ValueRange{addressCast, rmwVal})
-              .getResult();
-        }
-        return LLVM::AtomicRMWOp::create(rewriter, loc, *maybeKind, rmwPtr,
-                                         rmwVal, atomicOrdering)
-            .getResult();
-      };
-
-      Value atom = emitPredicated(rmwMask, valueElemTy, emitAtomic);
+      Value atom = emitPredicated(rmwMask, valueElemTy,
+                                  [&]() { return emitAtomic(rmwPtr, rmwVal); });
       resultVals[i] = atom;
     }
 

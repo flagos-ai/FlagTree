@@ -1,3 +1,5 @@
+#include "TritonMUSALLVMIR/Passes.h"
+#include "lib/Target/LLVMIR/LLVMPasses.h"
 #include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
@@ -30,6 +32,7 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
+#include <algorithm>
 #include <csignal>
 #include <cstdio>
 #include <memory>
@@ -39,13 +42,6 @@
 #include <stdexcept>
 
 namespace py = pybind11;
-
-namespace llvm {
-struct BreakStructPhiNodesPass : PassInfoMixin<BreakStructPhiNodesPass> {
-  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-  static StringRef name() { return "BreakStructPhiNodesPass"; }
-};
-} // namespace llvm
 
 using namespace llvm;
 
@@ -709,13 +705,37 @@ void init_triton_llvm(py::module &&m) {
         tuningOptions.LoopUnrolling = true;
         tuningOptions.LoopInterleaving = true;
         tuningOptions.LoopVectorization = true;
-        // TODO: currently we run SLP vectorizer with an empty target machine.
-        // This cause the vectorizer to create larger vector which could be bad.
-        // Disabling it would currently cause regressions as this pass also
-        // applies some scheduling that helps performance in some cases. We
-        // should work on using NVPTX target instead and address the performance
-        // regressions with some scheduling solution.
-        tuningOptions.SLPVectorization = true;
+        auto hasFlag = [&](StringRef flag) {
+          return std::find(flags.begin(), flags.end(), flag) != flags.end();
+        };
+        auto getFlagValue = [&](StringRef prefix) -> std::string {
+          for (const std::string &flag : flags)
+            if (StringRef(flag).starts_with(prefix))
+              return flag.substr(prefix.size());
+          return "";
+        };
+        const bool enableMTGPUSLPVectorization =
+            hasFlag("enable-mtgpu-slp-vectorization");
+        const bool disableSLPVectorization =
+            hasFlag("disable-slp-vectorization");
+        if (enableMTGPUSLPVectorization && disableSLPVectorization)
+          throw std::runtime_error(
+              "conflicting enable-mtgpu-slp-vectorization and "
+              "disable-slp-vectorization flags");
+        if (enableMTGPUSLPVectorization && !arch.empty())
+          throw std::runtime_error(
+              "MTGPU SLP target analysis cannot be combined with a "
+              "target-machine architecture");
+        const std::string mtgpuSLPTargetTriple =
+            getFlagValue("mtgpu-slp-triple=");
+        const std::string mtgpuSLPProcessor = getFlagValue("mtgpu-slp-cpu=");
+        const std::string moduleTargetTriple = mod->getTargetTriple().str();
+        if (enableMTGPUSLPVectorization && !moduleTargetTriple.empty() &&
+            moduleTargetTriple != mtgpuSLPTargetTriple)
+          throw std::runtime_error(
+              "MTGPU SLP target triple flag does not match module target "
+              "triple");
+        tuningOptions.SLPVectorization = !disableSLPVectorization;
 
         std::string pluginFile =
             mlir::triton::tools::getStrEnv("LLVM_PASS_PLUGIN_PATH");
@@ -749,9 +769,19 @@ void init_triton_llvm(py::module &&m) {
           }
           passPlugin->registerPassBuilderCallbacks(pb);
         }
+        if (enableMTGPUSLPVectorization) {
+          mlir::triton::musa::registerMTGPUPostSLPCallbacks(pb);
+        }
 
         pb.registerModuleAnalyses(mam);
         pb.registerCGSCCAnalyses(cgam);
+        if (enableMTGPUSLPVectorization) {
+          if (!mlir::triton::musa::registerMTGPUTargetIRAnalysis(
+                  fam, mtgpuSLPTargetTriple, mtgpuSLPProcessor))
+            throw std::runtime_error(
+                "MTGPU SLP requires mtgpu-mt-musa/mp_31 target info and an "
+                "unregistered TargetIRAnalysis");
+        }
         pb.registerFunctionAnalyses(fam);
         pb.registerLoopAnalyses(lam);
         pb.crossRegisterProxies(lam, fam, cgam, mam);

@@ -19,6 +19,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/MTVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
@@ -429,6 +430,12 @@ struct ConvertTritonMUSAGPUToLLVM
             applyPartialConversion(mod, funcTarget, std::move(funcPatterns))))
       return signalPassFailure();
 
+    if (Attribute maxnregAttr =
+            mod->getAttr(triton::gpu::AttrMaxRegistersName)) {
+      for (auto funcOp : mod.getOps<LLVM::LLVMFuncOp>())
+        funcOp->setAttr(MTVM::MTVMDialect::getMaxnregAttrName(), maxnregAttr);
+    }
+
     initSharedMemory(typeConverter, targetInfo);
     ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
 
@@ -445,7 +452,7 @@ struct ConvertTritonMUSAGPUToLLVM
     mlir::triton::MUSA::populateFp4ToFpToLLVMPatterns(typeConverter, patterns,
                                                       benefit);
     mlir::triton::MUSA::populateMUSAOpsToLLVMPatterns(typeConverter, patterns,
-                                                      benefit);
+                                                      benefit, targetInfo);
     mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
         typeConverter, patterns, axisInfoAnalysis, computeCapability,
         targetInfo, benefit);
