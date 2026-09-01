@@ -1,10 +1,10 @@
 H100 * 2
 harbor.baai.ac.cn/flagtree/flagtree-py312-torch2.11.0_cu130-cuda13.0-ubuntu24.04:202609-3.6-vllm0.24.0
 KMD Version: 610.57.04
+cuda==13.0
 vllm==0.24.0
 torch==2.11.0+cu130
 flashinfer-python==0.6.12
-cuda==13.0
 
 [BaseLine] vllm-plugin-fl==0.3.0rc0 (2026/08/21), USE_FLAGGEMS=0, triton==3.6.0
 # 服务冷启动时间: 2分11秒, 服务热启动时间: 2分1秒
