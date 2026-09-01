@@ -45,7 +45,6 @@ jobs:
         shell: bash
         run: |
           source ~/env.sh
-          source ~/env-3.6.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=' >> $GITHUB_ENV || true
           GPU_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
           echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
@@ -77,6 +76,7 @@ jobs:
         shell: bash
         run: |
           set -x
+          source ~/env-3.6.sh
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Compute Baseline Date
