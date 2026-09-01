@@ -128,6 +128,7 @@ jobs:
         shell: bash
         run: |
           set -x
+          export FLAGTREE_BACKEND=mthreads
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Compute Baseline Date
