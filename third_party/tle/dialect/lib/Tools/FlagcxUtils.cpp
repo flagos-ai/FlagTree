@@ -34,18 +34,18 @@
 namespace mlir::triton::tle {
 using namespace mlir;
 
-static const llvm::StringMap<StringRef>
-    runtimeNames = {{"getLocalPeFunction", "flagcxDevCommGetIntraRank"},
-                    {"getWorldRankFunction", "flagcxDevCommGetRank"},
-                    {"getNumPesFunction", "flagcxDevCommGetIntraSize"},
-                    {"getBarrierArriveFunction", "flagcxDevBarrierArrive"},
-                    {"getBarrierWaitFunction", "flagcxDevBarrierWait"},
-                    {"getBarrierSyncFunction", "flagcxDevBarrierSync"},
-                    {"signalIncFunction", "flagcxDevSignalInc"},
-                    {"signalAddFunction", "flagcxDevSignalAdd"},
-                    {"waitSignalFunction", "flagcxDevWaitSignal"},
-                    {"waitShadowFunction", "flagcxDevWaitSignalMeetShadow"},
-                    {"waitCounterFunction", "flagcxDevWaitCounter"}};
+static const llvm::StringMap<StringRef> runtimeNames = {
+    {"getLocalPeFunction", "flagcxDevCommGetIntraRank"},
+    {"getWorldRankFunction", "flagcxDevCommGetRank"},
+    {"getNumPesFunction", "flagcxDevCommGetIntraSize"},
+    {"getBarrierArriveFunction", "flagcxDevBarrierArrive"},
+    {"getBarrierWaitFunction", "flagcxDevBarrierWait"},
+    {"getBarrierSyncFunction", "flagcxDevBarrierSync"},
+    {"signalIncFunction", "flagcxDevSignalInc"},
+    {"signalAddFunction", "flagcxDevSignalAdd"},
+    {"waitSignalFunction", "flagcxDevWaitSignal"},
+    {"waitShadowFunction", "flagcxDevWaitSignalMeetShadow"},
+    {"waitCounterFunction", "flagcxDevWaitCounter"}};
 
 static inline LLVM::LLVMFuncOp createFuncInstance(const char *funcName,
                                                   ModuleOp module,
