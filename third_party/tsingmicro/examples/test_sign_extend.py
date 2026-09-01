@@ -4,7 +4,7 @@ import triton
 
 import triton.language as tl
 
-from triton.backends.ztc.driver import CPUDriver
+from triton.backends.tsingmicro.cpu_driver import CPUDriver
 
 
 @triton.jit

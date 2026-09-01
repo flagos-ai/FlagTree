@@ -25,8 +25,11 @@ void __RandGen(uint64_t *src0, uint64_t *src1, uint64_t *dst0, uint64_t *dst1,
                              }};
   ;
 
-  cmd->RandGen(&inst, *src0, *src1, *dst0, *dst1, *dst2, src_elem_num,
-               (Data_Format)fmt);
+  // Match other CRT peri wrappers: pointer args are SPM addresses, not
+  // pointers-to-addresses. Hardware/sim interpret src_elem_num as byte count
+  // (must be a multiple of 128); each 128B chunk yields 16 uint64 values.
+  cmd->RandGen(&inst, (uint64_t)src0, (uint64_t)src1, (uint64_t)dst0,
+               (uint64_t)dst1, (uint64_t)dst2, src_elem_num, (Data_Format)fmt);
 
   // Dispatch the command to accelerator
   RcsExecute(&inst);

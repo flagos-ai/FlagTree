@@ -94,6 +94,7 @@ const char reduceMaxFuncName[] = "__ReduceMax";
 const char reduceMinFuncName[] = "__ReduceMin";
 const char reduceMulFuncName[] = "__ReduceMul";
 const char cumsumPadFuncName[] = "__CumsumPad";
+const char randGenFuncName[] = "__RandGen";
 // Int8
 const char int8ToBf16FuncName[] = "__INT8_BF16";
 const char int8ToFp16FuncName[] = "__INT8_FP16";
@@ -1412,6 +1413,51 @@ struct CumsumOpConversion : public OpConversionPattern<tx::CumsumOp> {
     rewriter.create<LLVM::CallOp>(loc, TypeRange{}, cumsumPadFuncName,
                                   ValueRange{src, exclusive, total, scratch,
                                              rank, axis, shapeArray, pad, fmt});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct RandGenOpConversion : public OpConversionPattern<tx::RandGenOp> {
+  using OpConversionPattern<tx::RandGenOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tx::RandGenOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto module = op->getParentOfType<ModuleOp>();
+    auto *ctx = rewriter.getContext();
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    auto i8PtrTy = LLVM::LLVMPointerType::get(ctx);
+    auto i32Ty = rewriter.getI32Type();
+    auto i16Ty = rewriter.getI16Type();
+
+    // void __RandGen(uint64_t *src0, uint64_t *src1, uint64_t *dst0,
+    //                uint64_t *dst1, uint64_t *dst2, uint32_t byte_count,
+    //                uint16_t fmt);
+    SmallVector<Type, 7> argTypes = {i8PtrTy, i8PtrTy, i8PtrTy, i8PtrTy,
+                                     i8PtrTy, i32Ty,   i16Ty};
+    (void)triton::declareTx81Function(module, rewriter, loc, randGenFuncName,
+                                      voidTy, argTypes);
+
+    Value src0 =
+        rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, adaptor.getSrc0());
+    Value src1 =
+        rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, adaptor.getSrc1());
+    Value dst0 =
+        rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, adaptor.getDst0());
+    Value dst1 =
+        rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, adaptor.getDst1());
+    Value dst2 =
+        rewriter.create<LLVM::IntToPtrOp>(loc, i8PtrTy, adaptor.getDst2());
+    Value byteCount = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(op.getByteCount()));
+    Value fmt = rewriter.create<LLVM::ConstantOp>(
+        loc, i16Ty, rewriter.getI16IntegerAttr(op.getFmt()));
+
+    rewriter.create<LLVM::CallOp>(
+        loc, TypeRange{}, randGenFuncName,
+        ValueRange{src0, src1, dst0, dst1, dst2, byteCount, fmt});
     rewriter.eraseOp(op);
     return success();
   }
@@ -2881,6 +2927,7 @@ public:
                  AtomicBarrierOpConversion<tx::AtomicBarrierInOp, atomicBarrierInFuncName>,
                  AtomicBarrierOpConversion<tx::AtomicBarrierOutOp, atomicBarrierOutFuncName>,
                  CumsumOpConversion,
+                 RandGenOpConversion,
                  MaskMoveOpConversion,
                  BitToFPOpConversion,
                  ChannelNormOpConversion,   // NOTE: No op used

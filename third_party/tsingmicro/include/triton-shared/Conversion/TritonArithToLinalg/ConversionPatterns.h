@@ -359,7 +359,7 @@ public:
                                                   loc, rewriter);
       auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
       auto loadOp = rewriter.create<affine::AffineLoadOp>(
-          op.getLoc(), sMemRef, zeroMap, std::nullopt);
+          op.getLoc(), sMemRef, zeroMap, ValueRange{});
       rewriter.replaceOp(op, loadOp.getResult());
       return success();
     }
@@ -519,7 +519,7 @@ struct StoreConverter : public OpConversionPattern<triton::StoreOp> {
           PtrAnalysis::getScalarMemRef(op.getPtr(), ptr, loc, rewriter);
       auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
       rewriter.create<affine::AffineStoreOp>(loc, val, sMemRef, zeroMap,
-                                             std::nullopt);
+                                             ValueRange{});
       rewriter.eraseOp(op);
       return success();
     }
@@ -926,8 +926,21 @@ struct BitcastConverter : public OpConversionPattern<triton::BitcastOp> {
     if (isa<PointerType>(inputType) || isa<PointerType>(resultType)) {
       return success();
     }
+    // Same-bitwidth tensor bitcast is a pure type reinterpret on TX81.
+    // Emit mk.bitcast (buffer alias) instead of arith.bitcast, which would
+    // otherwise lower through linalg.generic → scf.for load/bitcast/store.
+    if (auto inRTT = dyn_cast<RankedTensorType>(inputType)) {
+      if (auto outRTT = dyn_cast<RankedTensorType>(resultType)) {
+        if (inRTT.getElementTypeBitWidth() == outRTT.getElementTypeBitWidth() &&
+            inRTT.getNumElements() == outRTT.getNumElements()) {
+          rewriter.replaceOpWithNewOp<mk::BitcastOp>(op, resultType,
+                                                     adaptor.getSrc());
+          return success();
+        }
+      }
+    }
     auto arithBitcast = rewriter.create<arith::BitcastOp>(
-        op.getLoc(), op.getType(), op.getOperand());
+        op.getLoc(), op.getType(), adaptor.getSrc());
 
     rewriter.replaceOp(op, arithBitcast.getResult());
     return success();

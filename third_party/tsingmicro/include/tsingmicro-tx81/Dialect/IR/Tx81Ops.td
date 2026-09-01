@@ -1068,16 +1068,24 @@ def Lut32Op : Tx81Op<"lut32", []> {
 }
 
 def RandGenOp : Tx81Op<"randgen", []> {
-  let summary = "Generate random numbers using two 64-bit seeds";
+  let summary = "Hardware xorshift128+ PRNG (CGRA peri op)";
+
+  let description = [{
+    Generate random uint64 values from 16 parallel xorshift128+ streams.
+
+    `src0`/`src1` hold 16×uint64 seeds; `dst0`/`dst1` receive updated seeds;
+    `dst2` receives the random uint64 stream. `byte_count` is the output size
+    in bytes and must be a multiple of 128 (16 lanes × 8 bytes per step).
+  }];
 
   let arguments = (ins
-    UI64:$src0,          // The first random seed
-    UI64:$src1,          // The second random seed
-    UI64:$dst0,          // Store the first random seed
-    UI64:$dst1,          // Store the second random seed
-    UI64:$dst2,          // Random value
-    I32Attr:$elem_num,   // Number of random values
-    I16Attr:$fmt         // The date format of random value
+    MemRefOrInt:$src0,          // First seed vector address (16×u64)
+    MemRefOrInt:$src1,          // Second seed vector address (16×u64)
+    Arg<MemRefOrInt, "updated first seed", [MemWrite]>:$dst0,
+    Arg<MemRefOrInt, "updated second seed", [MemWrite]>:$dst1,
+    Arg<MemRefOrInt, "random output", [MemWrite]>:$dst2,
+    I32Attr:$byte_count,        // Output byte count (multiple of 128)
+    I16Attr:$fmt                // Data format (typically UINT64/INT64)
   );
 }
 
