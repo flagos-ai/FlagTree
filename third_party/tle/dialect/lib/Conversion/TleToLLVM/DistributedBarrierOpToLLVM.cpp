@@ -474,19 +474,19 @@ struct DistributedBarrierOpConversion
     auto loc = op.getLoc();
     SmallVector<Value> srcElems;
     auto getTeamKind =
-        [](StringRef space) -> std::optional<tle::SignalTeamKind> {
-      return llvm::StringSwitch<std::optional<tle::SignalTeamKind>>(space)
-          .Case("device", tle::SignalTeamKind::INTRA)
-          .Case("inter", tle::SignalTeamKind::INTER)
-          .Case("world", tle::SignalTeamKind::WORLD)
+        [](StringRef space) -> std::optional<tle::FlagCXTeamKind> {
+      return llvm::StringSwitch<std::optional<tle::FlagCXTeamKind>>(space)
+          .Case("device", tle::FlagCXTeamKind::INTRA)
+          .Case("inter", tle::FlagCXTeamKind::INTER)
+          .Case("world", tle::FlagCXTeamKind::WORLD)
           .Default(std::nullopt);
     };
     auto getCoopKind =
-        [](StringRef kind) -> std::optional<tle::SignalCoopKind> {
-      return llvm::StringSwitch<std::optional<tle::SignalCoopKind>>(kind)
-          .Case("thread", tle::SignalCoopKind::THREAD)
-          .Case("warp", tle::SignalCoopKind::WARP)
-          .Case("block", tle::SignalCoopKind::BLOCK)
+        [](StringRef kind) -> std::optional<tle::FlagCXCoopKind> {
+      return llvm::StringSwitch<std::optional<tle::FlagCXCoopKind>>(kind)
+          .Case("thread", tle::FlagCXCoopKind::THREAD)
+          .Case("warp", tle::FlagCXCoopKind::WARP)
+          .Case("block", tle::FlagCXCoopKind::BLOCK)
           .Default(std::nullopt);
     };
     auto getOrderValue = [](StringRef order) -> int32_t {
@@ -524,9 +524,9 @@ struct DistributedBarrierOpConversion
 
     auto comm = getDistDevicePtr(op, srcElems);
     auto teamKindAttr =
-        tle::SignalTeamKindAttr::get(rewriter.getContext(), *teamKind);
+        tle::FlagCXTeamKindAttr::get(rewriter.getContext(), *teamKind);
     auto coopKindAttr =
-        tle::SignalCoopKindAttr::get(rewriter.getContext(), *coopKind);
+        tle::FlagCXCoopKindAttr::get(rewriter.getContext(), *coopKind);
     auto newOrderAttr = rewriter.getI32IntegerAttr(order);
     auto scopeAttr = rewriter.getI32IntegerAttr(memoryScope);
     auto barrierTypeAttr = op.getBarrierTypeAttr();
