@@ -27,7 +27,7 @@ on:
 
   # For trigger manually
   workflow_dispatch:
-  
+
   # For tmp test
   pull_request:
     branches: [ "main" ]
