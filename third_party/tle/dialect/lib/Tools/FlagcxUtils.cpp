@@ -34,13 +34,13 @@
 namespace mlir::triton::tle {
 using namespace mlir;
 
-static const llvm::StringMap<StringRef> runtimeNames = {
-    {"getLocalPeFunction", "flagcxDevCommGetIntraRank"},
-    {"getWorldRankFunction", "flagcxDevCommGetRank"},
-    {"getNumPesFunction", "flagcxDevCommGetIntraSize"},
-    {"getBarrierArriveFunction", "flagcxDevBarrierArrive"},
-    {"getBarrierWaitFunction", "flagcxDevBarrierWait"},
-    {"getBarrierSyncFunction", "flagcxDevBarrierSync"}},
+static const llvm::StringMap<StringRef>
+    runtimeNames = {{"getLocalPeFunction", "flagcxDevCommGetIntraRank"},
+                    {"getWorldRankFunction", "flagcxDevCommGetRank"},
+                    {"getNumPesFunction", "flagcxDevCommGetIntraSize"},
+                    {"getBarrierArriveFunction", "flagcxDevBarrierArrive"},
+                    {"getBarrierWaitFunction", "flagcxDevBarrierWait"},
+                    {"getBarrierSyncFunction", "flagcxDevBarrierSync"}},
     {"signalIncFunction", "flagcxDevSignalInc"},
     {"signalAddFunction", "flagcxDevSignalAdd"},
     {"waitSignalFunction", "flagcxDevWaitSignal"},
