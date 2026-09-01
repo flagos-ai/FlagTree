@@ -1,0 +1,149 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: FlagGems-Baseline-Daily
+
+on:
+  # Runs at UTC 18:00，Beijing 2:00
+  schedule:
+    - cron: '0 18 * * *'
+
+  # For trigger manually
+  workflow_dispatch:
+  
+  # For tmp test
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  nvidia3-6-flaggems-baseline-daily:
+    runs-on: nvidia3.6
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          source ~/env-3.6.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Clone FlagGems Repo
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        with:
+          repo-url: 'https://github.com/flagos-ai/FlagGems.git'
+          ref: 'v5.3.5'
+          clone-dir: '/root/flaggems_ci'
+
+      - name: Install FlagGems
+        shell: bash
+        run: |
+          cd /root/flaggems_ci/FlagGems
+          python3 -m pip uninstall -y flag_gems --break-system-packages || true
+          pip install -v -e . --no-build-isolation --no-deps
+
+      - name: Cleanup FlagTree Environment
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
+      - name: Build FlagTree
+        shell: bash
+        run: |
+          set -x
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+
+      - name: Compute Baseline Date
+        id: date
+        shell: bash
+        run: |
+          echo "date=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
+
+      - name: Run Baseline Tests
+        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        with:
+          flaggems-path: '/root/flaggems_ci/FlagGems'
+          gpus: ${CUDA_VISIBLE_DEVICES:-0}
+          output-base-dir: '/root/flaggems_ci/Baseline'
+          output-subdir: ${{ steps.date.outputs.date }}
+          run-script: 'tools/ci/ci_run_tests.py'
+          skip-file: 'tools/ci/skip_list.yaml'
+          first-parameter-only: 'true'
+
+  mthreads3-6-flaggems-baseline-daily:
+    runs-on: mthreads3.6
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          source ~/env-3.6.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Clone FlagGems Repo
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        with:
+          repo-url: 'https://github.com/flagos-ai/FlagGems.git'
+          ref: 'v5.3.5'
+          clone-dir: '/root/flaggems_ci'
+
+      - name: Install FlagGems
+        shell: bash
+        run: |
+          cd /root/flaggems_ci/FlagGems
+          python3 -m pip uninstall -y flag_gems --break-system-packages || true
+          pip install -v -e . --no-build-isolation --no-deps
+
+      - name: Cleanup FlagTree Environment
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
+      - name: Build FlagTree
+        shell: bash
+        run: |
+          set -x
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+
+      - name: Compute Baseline Date
+        id: date
+        shell: bash
+        run: |
+          echo "date=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
+
+      - name: Run Baseline Tests
+        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        with:
+          flaggems-path: '/root/flaggems_ci/FlagGems'
+          gpus: ${CUDA_VISIBLE_DEVICES:-0}
+          output-base-dir: '/root/flaggems_ci/Baseline'
+          output-subdir: ${{ steps.date.outputs.date }}
+          run-script: 'tools/ci/ci_run_tests.py'
+          skip-file: 'tools/ci/skip_list.yaml'
+          first-parameter-only: 'true'
