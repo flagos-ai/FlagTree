@@ -31,10 +31,16 @@ cd "$REPO_ROOT"
 
 mkdir -p dist
 
-echo ">>> Building wheel + .deb for backend=${BACKEND}"
+# Single source of truth for the package version: the Debian changelog's
+# upstream version. Passed into the wheel build so the wheel version matches
+# instead of falling back to setup.py's hardcoded default.
+WHEEL_VERSION="$(head -n1 packaging/debian/changelog | sed -E 's/^[^(]*\(([0-9][^)-]*)-[^)]*\).*$/\1/')"
+
+echo ">>> Building wheel + .deb for backend=${BACKEND} (version ${WHEEL_VERSION})"
 docker build \
     --network=host \
     -f packaging/debian/build-helpers/Dockerfile.deb \
+    --build-arg FLAGTREE_WHEEL_VERSION="${WHEEL_VERSION}" \
     --target deb-output \
     --output "type=local,dest=${REPO_ROOT}/dist" \
     .

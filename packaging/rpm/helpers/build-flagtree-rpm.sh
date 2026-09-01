@@ -26,11 +26,17 @@ rm -rf dist-rpm/output
 #   RPM_BASE_IMAGE=openeuler/openeuler:24.03-lts ./build-flagtree-rpm.sh
 RPM_BASE_IMAGE="${RPM_BASE_IMAGE:-fedora:43}"
 
-echo ">>> Building wheel + .rpm for backend=${BACKEND} on ${RPM_BASE_IMAGE}"
+# Single source of truth for the package version: the RPM spec. Passed into
+# the wheel build so the wheel version matches instead of falling back to
+# setup.py's hardcoded default.
+WHEEL_VERSION="$(awk '/^Version:/{print $2; exit}' packaging/rpm/specs/flagtree.spec)"
+
+echo ">>> Building wheel + .rpm for backend=${BACKEND} on ${RPM_BASE_IMAGE} (version ${WHEEL_VERSION})"
 docker build \
     --network=host \
     -f packaging/rpm/helpers/Dockerfile.rpm \
     --build-arg RPM_BASE_IMAGE="${RPM_BASE_IMAGE}" \
+    --build-arg FLAGTREE_WHEEL_VERSION="${WHEEL_VERSION}" \
     --target rpm-output \
     --output "type=local,dest=${REPO_ROOT}/dist-rpm" \
     .
