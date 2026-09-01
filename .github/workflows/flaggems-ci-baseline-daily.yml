@@ -100,7 +100,6 @@ jobs:
         shell: bash
         run: |
           source ~/env.sh
-          source ~/env-3.6.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
 
       - name: Smart Checkout
@@ -141,7 +140,7 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
         with:
           flaggems-path: '/root/flaggems_ci/FlagGems'
-          gpus: ${CUDA_VISIBLE_DEVICES:-0}
+          gpus: ${MUSA_VISIBLE_DEVICES:-0}
           output-base-dir: '/root/flaggems_ci/Baseline'
           output-subdir: ${{ steps.date.outputs.date }}
           run-script: 'tools/ci/ci_run_tests.py'
