@@ -671,8 +671,7 @@ def _is_cluster_submesh(mesh: device_mesh) -> bool:
         cluster_coord = tuple(coords[axis] for axis in cluster_axes)
         cluster_members_by_outer_coord.setdefault(outer_coord, set()).add(cluster_coord)
 
-    return any(len(cluster_members) < cluster_size
-               for cluster_members in cluster_members_by_outer_coord.values())
+    return any(len(cluster_members) < cluster_size for cluster_members in cluster_members_by_outer_coord.values())
 
 
 def _mesh_uses_grid_barrier(mesh: device_mesh) -> bool:
@@ -701,9 +700,7 @@ def _infer_submesh_barrier_group(
     cluster_size = _prod(cluster_dims)
     launch_size = _prod(mesh.launch_shape)
     if not mesh.physical_ids:
-        raise ValueError(
-            "cannot infer barrier group from an empty mesh"
-        )
+        raise ValueError("cannot infer barrier group from an empty mesh")
 
     if not mesh.dim_names:
         raise NotImplementedError("scalar sub-mesh barrier is not implemented yet; provide at least one sliced axis")
@@ -876,10 +873,10 @@ def _validate_barrier_space_mesh(mesh: device_mesh | None, space: str, device_dp
 
 
 def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.FlagCXTeamKind | None, device_dptr=None,
-                           barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-                           group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK, index: int | None = 0,
-                           context_id: int = 0,
-                           order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None) -> bool:
+                                   barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                                   group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
+                                   index: int | None = 0, context_id: int = 0,
+                                   order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None) -> bool:
     space = _normalize_barrier_space(space)
     if space is None:
         return False
@@ -936,8 +933,7 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
                         group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
                         barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                         order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-                        _semantic: TLESemantic | None = None, index: int | None = 0,
-                        context_id: int = 0):
+                        _semantic: TLESemantic | None = None, index: int | None = 0, context_id: int = 0):
     """
     M3 entrypoint: distributed synchronization primitive.
     Dispatch order:
@@ -965,8 +961,8 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
         return _handle_cluster_submesh_barrier(mesh, _semantic)
 
     if _handle_explicit_space_barrier(mesh, space, device_dptr=device_dptr, barrier_kind=barrier_kind,
-                              group_kind=group_kind, index=index, context_id=context_id,
-                              order=order, _semantic=_semantic):
+                                      group_kind=group_kind, index=index, context_id=context_id, order=order,
+                                      _semantic=_semantic):
         return None
 
     use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)

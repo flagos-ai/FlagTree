@@ -384,17 +384,17 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
                                       [MemoryEffects<[MemRead, MemWrite]>]> {
   let arguments = (ins
     Optional<AnyType>:$src,
-    OptionalAttr<StrAttr>:$space,          
-    OptionalAttr<StrAttr>:$barrier_type,    
-    OptionalAttr<StrAttr>:$order,           
-    OptionalAttr<StrAttr>:$group_kind,     
-    OptionalAttr<I32Attr>:$barrier_index,   
+    OptionalAttr<StrAttr>:$space,
+    OptionalAttr<StrAttr>:$barrier_type,
+    OptionalAttr<StrAttr>:$order,
+    OptionalAttr<StrAttr>:$group_kind,
+    OptionalAttr<I32Attr>:$barrier_index,
     OptionalAttr<I32Attr>:$context_id,
-    OptionalAttr<StrAttr>:$memory_scope,  
-    OptionalAttr<I32Attr>:$group_rank,      
-    OptionalAttr<DenseI32ArrayAttr>:$group_shape,  
-    OptionalAttr<DenseI32ArrayAttr>:$group_axes,  
-    OptionalAttr<DenseI32ArrayAttr>:$group_mask   
+    OptionalAttr<StrAttr>:$memory_scope,
+    OptionalAttr<I32Attr>:$group_rank,
+    OptionalAttr<DenseI32ArrayAttr>:$group_shape,
+    OptionalAttr<DenseI32ArrayAttr>:$group_axes,
+    OptionalAttr<DenseI32ArrayAttr>:$group_mask
   );
   let hasVerifier = 1;
 }
