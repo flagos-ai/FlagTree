@@ -31,10 +31,98 @@ def TritonIluvatarTleOptimizeLocalPointerAsyncStores
     commit/wait. Runs before the local-pointer store/load lowering so the
     load->store pattern is still visible; patterns that do not match keep their
     ordinary synchronous semantics.
+
+    A copy whose destination is a TCU shared tile and whose source is an
+    SME-eligible kernel argument is emitted as an SME global->shared transfer
+    instead, by recovering the row stride from the pointer arithmetic and
+    tagging the pointer with an `isSme` blocked encoding.
+  }];
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::iluvatar_tle::IluvatarTleDialect"];
+  let options = [
+    Option<"useSme", "use-sme", "unsigned", /*default=*/"0",
+           "Per-kernel-argument SME eligibility bitmask; bit N marks argument N "
+           "as an SME-capable tensor. Computed at launch time by get_corex_sme, "
+           "so it also carries the 64-byte row-alignment guarantee.">,
+    Option<"numStages", "num-stages", "int64_t", /*default=*/"0",
+           "Kernel-wide pipeline depth. A whole-buffer staging that only feeds "
+           "a dot inside a loop of this depth is left unfused for "
+           "promote-local-store-staging and the software pipeliner.">
+  ];
+}
+
+def TritonIluvatarTlePromoteLocalStoreStaging
+    : Pass<"triton-iluvatar-tle-promote-local-store-staging", "mlir::ModuleOp"> {
+  let summary =
+      "promote transient TLE local_store staging to pipelineable local_alloc";
+
+  let description = [{
+    This pass rewrites safe loop-local staging patterns of the form:
+
+      %v = tt.load ...
+      ttg.local_store %v, %smem
+      ... users of %smem ...
+
+    into:
+
+      %stage = ttg.local_alloc %v
+      ... users of %stage ...
+
+    for buffers that are overwritten every loop iteration and only read after
+    the store. The rewrite exposes the standard TritonGPU load -> local_alloc
+    pattern so the existing software pipeliner can expand it into double
+    buffered async copies when the loop has ``tt.num_stages > 1``.
+
+    Mirrors `triton-tle-promote-local-store-staging`. The iluvatar deviation is
+    that the pipeline depth may come from the kernel-wide option below when the
+    loop carries no `tt.num_stages` hint.
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::gpu::GPUDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::iluvatar_tle::IluvatarTleDialect"];
+
+  let options = [
+    Option<"numStages", "num-stages", "int64_t", /*default=*/"0",
+           "Kernel-wide pipeline depth, used when the loop carries no "
+           "tt.num_stages hint of its own.">
+  ];
+}
+
+def TritonIluvatarTleMarkSmeDotOperands
+    : Pass<"triton-iluvatar-tle-mark-sme-dot-operands", "mlir::ModuleOp"> {
+  let summary = "flag dot operands read back from an SME global->shared copy";
+  let description = [{
+    An int8 row-major SME copy writes the `rowxfb8` shared layout, which is only
+    GF(2)-linear up to a bit-7 offset correction that LocalLoadOpConversion
+    applies when `isIluvatarRowXfb8LocalLoad` holds. For a dot operand that test
+    additionally requires a non-zero `useSme`, which `AccelerateMatmul` only sets
+    for loads it recognizes itself and therefore never for a copy fused out of
+    `tle.gpu.copy`. Recover it by tracing the `ttg.local_load` source memdesc
+    back to the SME copy that wrote it and retyping the result in place. Runs
+    once layouts are final, so no later pass can drop the flag.
+
+    A tile staged by `triton-iluvatar-tle-promote-local-store-staging` reaches
+    the dot as `local_alloc(load) -> local_load`, which
+    `hasSmeCompatibleLoadChain` also rejects, leaving `useSme` at 0 so
+    `matmul-smeload` declines the load entirely. Recover the flag for that shape
+    too, applying the same eligibility rules the async-store fusion uses. That
+    run has to precede `matmul-smeload`.
   }];
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect",
                            "mlir::triton::iluvatar_tle::IluvatarTleDialect"];
+  let options = [
+    Option<"useSme", "use-sme", "unsigned", /*default=*/"0",
+           "Per-kernel-argument SME eligibility bitmask, as passed to the "
+           "async-store fusion. Only consulted for the staged local_alloc "
+           "shape, where no earlier pass established SME eligibility.">
+  ];
 }
 
 def TritonIluvatarTleInsertLocalPointerBarriers

@@ -92,6 +92,10 @@ jobs:
           source ~/env.sh
           export LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}
 
+          for pkg in pytest hypothesis absl-py scipy lit pytest-forked expecttest; do
+            pip3 list "$pkg" | grep "$pkg" || pip3 install "$pkg"
+          done
+
           if [[ "$(uname -m)" == "aarch64" ]]; then
             libgomp_path=$(find /usr/lib /usr/lib64 /lib /lib64 -type f -name 'libgomp.so*' 2>/dev/null | head -n 1)
             if [[ -n "$libgomp_path" ]]; then
@@ -138,7 +142,7 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/runtime/test_cache.py
           pytest third_party/iluvatar/python/test/unit/runtime/test_compilation_listener.py
           pytest third_party/iluvatar/python/test/unit/runtime/test_driver.py
-          pytest third_party/iluvatar/python/test/unit/runtime/test_launch.py
+          USE_FLAGCX=0 pytest third_party/iluvatar/python/test/unit/runtime/test_launch.py
           pytest third_party/iluvatar/python/test/unit/runtime/test_specialize.py
           pytest third_party/iluvatar/python/test/unit/runtime/test_subproc.py
           pytest third_party/iluvatar/python/test/unit/runtime/test_iluvatar_loop_unroll_warning.py
@@ -191,6 +195,8 @@ jobs:
           pytest python/test/tle/unit/test_tle_raw_cache_key.py --deselect python/test/tle/unit/test_tle_raw_cache_key.py::test_mlir_dialect_cache_key_changes_with_edsl_source
           pytest python/test/tle/unit/test_tle_gpu_slot.py
           pytest python/test/tle/integration/test_tle_gemm.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_gemm.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_alloc.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_copy.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_async_load.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_memory_space.py

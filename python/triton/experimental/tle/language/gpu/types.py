@@ -345,8 +345,8 @@ class swizzled_shared_layout(shared_layout):
 
     def make_permute(self, dims):
         permuted_order = tuple(self.order[d] for d in dims)
-        return swizzled_shared_layout(self.vectorSize, self.perPhase, self.maxPhase, permuted_order, self.numCTAs,
-                                      self.numCTAsPerCGA, self.numCTASplit, self.numCTAOrder)
+        return type(self)(self.vectorSize, self.perPhase, self.maxPhase, permuted_order, self.numCTAs,
+                          self.numCTAsPerCGA, self.numCTASplit, self.numCTAOrder)
 
     def to_ir(self, builder: ir.builder) -> None:
         return builder.make_swizzled_shared_encoding_attr(
@@ -481,7 +481,7 @@ def _drop_leading_dim_values(values):
 
 def _make_slot_layout(src_layout: shared_layout, slot_shape: List[int]) -> shared_layout:
     if isinstance(src_layout, swizzled_shared_layout):
-        return swizzled_shared_layout(
+        return type(src_layout)(
             src_layout.vectorSize,
             src_layout.perPhase,
             src_layout.maxPhase,
