@@ -655,11 +655,11 @@ void init_triton_tle_ir(py::module &&m) {
              std::optional<Value> &offset) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
-                "cluster", "device", "node"};
+                "cluster", "chiplet", "device", "node"};
             if (valid.find(space) == valid.end()) {
               throw std::invalid_argument(
                   "Invalid space: " + space +
-                  ". Expected one of: cluster, device, node.");
+                  ". Expected one of: cluster, chiplet, device, node.");
             }
             auto space_attr = builder.getStringAttr(space);
 
@@ -682,9 +682,11 @@ void init_triton_tle_ir(py::module &&m) {
              return self.create<tle::GetWorldRankOp>(resultTy, src);
            })
       .def("get_n_pes",
-           [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {
+           [](TritonOpBuilder &self, Type resultTy,
+              std::optional<Value> src) -> Value {
              auto &builder = self.getBuilder();
-             return self.create<tle::GetNumPesOp>(resultTy, src);
+             return self.create<tle::GetNumPesOp>(resultTy,
+                                                  src.value_or(Value()));
            })
       .def("get_memdesc_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,

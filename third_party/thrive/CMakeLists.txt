@@ -10,6 +10,10 @@ add_subdirectory(scripts)
 if(TRITON_BUILD_PYTHON_MODULE)
   add_triton_plugin(TritonThrive
       ${CMAKE_CURRENT_SOURCE_DIR}/plugin/triton_thrive.cc
+      LINK_LIBS
+      ThvTileIR
+      ChipletToThvTile
+      MLIRFuncInlinerExtension
   )
   target_link_libraries(TritonThrive PRIVATE Python3::Module pybind11::headers)
 endif()

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import dataclass, asdict
 from itertools import product
 from typing import Any, Iterable, Mapping, Sequence, List, Tuple, Union, Optional, Dict, TYPE_CHECKING
@@ -37,6 +38,11 @@ if TYPE_CHECKING:
 
 Axis = Tuple[str, int]
 AxesLike = Union[int, List[Axis]]
+
+try:
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+except ModuleNotFoundError:
+    FLAGTREE_BACKEND = os.environ.get("FLAGTREE_BACKEND", "nvidia")
 
 
 def _prod(values: Iterable[int]) -> int:
@@ -243,6 +249,7 @@ class MeshConfig:
     Fields:
         node:          Inter-node topology (e.g., multi-host layout)
         device:        Intra-node device topology (e.g., GPUs per node)
+        chiplet:       Inter-die topology within a device
         block_cluster: Cluster-level partitioning within a device
         block:         Finest-grained block-level partitioning
 
@@ -250,6 +257,7 @@ class MeshConfig:
     """
     node: Optional[AxesLike] = None
     device: Optional[AxesLike] = None
+    chiplet: Optional[AxesLike] = None
     block_cluster: Optional[AxesLike] = None
     block: Optional[AxesLike] = None
 
@@ -597,6 +605,9 @@ def make_sharded_tensor(
 ) -> ShardedTensor:
     if not isinstance(sharding, ShardingSpec):
         raise TypeError(f"sharding must be ShardingSpec, got {type(sharding).__name__}")
+    if FLAGTREE_BACKEND == "thrive":
+        from .chiplet.thrive.distributed import make_sharded_tensor_impl
+        return make_sharded_tensor_impl(handle, sharding, shape)
     normalized_shape = None
     if shape is not None:
         if not isinstance(shape, (tuple, list)):
@@ -781,7 +792,7 @@ def shard_id(
     if axis in ("device", "node") and device_dptr is None:
         raise ValueError(f"device_dptr is required for axis {axis!r}")
 
-    if axis == "device":
+    if axis in ("chiplet", "device"):
         return _get_local_rank(device_dptr, _semantic=_semantic, ret_dtype=tl.int32)
     if axis == "node":
         world_rank = _get_world_rank(device_dptr, _semantic=_semantic, ret_dtype=tl.int32)
@@ -825,13 +836,13 @@ def check_and_handle_device_intra_barrier(space: str = None, device_dptr=None,
                                           group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
                                           order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
                                           _semantic: TLESemantic | None = None):
-    if space and space in ("device", "node"):
+    if space and space in ("chiplet", "device", "node"):
         builder = _semantic.builder
         ptr = _parse_src_arg(builder, device_dptr, 1)
         builder.create_distributed_barrier(
             src=ptr,
             barrier_index=index or 0,
-            space=_parse_device_barrier_args("device"),
+            space=_parse_device_barrier_args("device" if space == "node" else space),
             group_kind=_parse_device_barrier_args(group_kind),
             order=_parse_device_barrier_args(order),
             barrier_kind=_parse_device_barrier_args(barrier_kind),
@@ -986,6 +997,7 @@ def _create_remote_pointers_tensor(
 
     remote_ptr_dtype = tl.pointer_type(*{
         "cluster": (dtype, 7),
+        "chiplet": (dtype, 1),
         "device": (dtype, 1),
     }.get(space))
     if space == 'cluster' and tensor and tensor.type.is_block():
@@ -1054,6 +1066,14 @@ def _check_node_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, ...
     ...
 
 
+def _check_chiplet_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, ...] | list[int],
+                                  scope: device_mesh | None) -> None:
+    if not isinstance(tensor, tl.tensor):
+        raise TypeError(f"tensor must be tl.tensor, got {type(tensor).__name__}")
+    if not tensor.dtype.is_ptr():
+        raise TypeError(f"{tensor.dtype}, chiplet remote pointer requires a pointer tensor")
+
+
 def _remote_pointer(
     tensor: tl.tensor,
     shard_id,
@@ -1070,6 +1090,7 @@ def _remote_pointer(
     space = tl._unwrap_if_constexpr(space)
     res = {
         "cluster": _check_cluster_remote_pointer,
+        "chiplet": _check_chiplet_remote_pointer,
         "device": _check_device_remote_pointer,
         "node": _check_node_remote_pointer,
     }[space](tensor, shard_id, scope)
@@ -1124,7 +1145,7 @@ def remote(
     scope = tl._unwrap_if_constexpr(scope)
     if scope is not None and not isinstance(scope, device_mesh):
         raise TypeError(f"scope must be device_mesh or None, got {type(scope).__name__}")
-    if scope is not None:
+    if scope is not None and space != "chiplet":
         _apply_mesh_cluster_launch(scope, _semantic)
 
     # Direct pointer path: support local_ptr scalar/tensor values and return
