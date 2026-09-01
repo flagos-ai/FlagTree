@@ -82,21 +82,15 @@ def main():
 
     local_world_size_text = os.environ.get("LOCAL_WORLD_SIZE")
     if local_world_size_text is None:
-        raise RuntimeError(
-            "LOCAL_WORLD_SIZE is required; launch this test with torchrun"
-        )
+        raise RuntimeError("LOCAL_WORLD_SIZE is required; launch this test with torchrun")
     local_world_size = int(local_world_size_text)
     if local_world_size <= 0 or world_size % local_world_size != 0:
-        raise ValueError(
-            f"invalid topology: world_size={world_size}, "
-            f"LOCAL_WORLD_SIZE={local_world_size}"
-        )
+        raise ValueError(f"invalid topology: world_size={world_size}, "
+                         f"LOCAL_WORLD_SIZE={local_world_size}")
 
     num_nodes = world_size // local_world_size
     if num_nodes < 2:
-        raise RuntimeError(
-            f"node remote test requires at least 2 nodes, got {num_nodes}"
-        )
+        raise RuntimeError(f"node remote test requires at least 2 nodes, got {num_nodes}")
 
     peer_world_rank = (rank + local_world_size) % world_size
     sender_world_rank = (rank - local_world_size) % world_size
@@ -105,17 +99,11 @@ def main():
         put_buffer = torch.empty(2 * n_elements, dtype=torch.float32, device="cuda")
         get_buffer = torch.empty(2 * n_elements, dtype=torch.float32, device="cuda")
 
-        put_buffer[:n_elements] = (
-            torch.arange(n_elements, dtype=torch.float32, device="cuda")
-            + rank * 1000
-        )
+        put_buffer[:n_elements] = (torch.arange(n_elements, dtype=torch.float32, device="cuda") + rank * 1000)
         put_buffer[n_elements:].fill_(-1)
 
-        get_buffer[:n_elements] = (
-            torch.arange(n_elements, dtype=torch.float32, device="cuda")
-            + rank * 10000
-            + get_bias
-        )
+        get_buffer[:n_elements] = (torch.arange(n_elements, dtype=torch.float32, device="cuda") + rank * 10000 +
+                                   get_bias)
         get_buffer[n_elements:].fill_(-1)
 
     torch.cuda.synchronize()
@@ -126,7 +114,7 @@ def main():
     dist.barrier()
 
     # PUT: local put_buffer[0:N] -> peer put_buffer[N:2N].
-    _node_put_kernel[(1,)](
+    _node_put_kernel[(1, )](
         put_buffer,
         0,
         n_elements,
@@ -160,7 +148,7 @@ def main():
 
     # GET: peer get_buffer[0:N] -> local get_buffer[N:2N].
     dist.barrier()
-    _node_get_kernel[(1,)](
+    _node_get_kernel[(1, )](
         get_buffer,
         0,
         n_elements,
@@ -174,11 +162,7 @@ def main():
     dist.barrier()
     torch.cuda.synchronize()
 
-    expected = (
-        torch.arange(n_elements, dtype=torch.float32, device="cuda")
-        + peer_world_rank * 10000
-        + get_bias
-    )
+    expected = (torch.arange(n_elements, dtype=torch.float32, device="cuda") + peer_world_rank * 10000 + get_bias)
     received = get_buffer[n_elements:]
     get_validation_result = torch.all(received == expected)
     if bool(get_validation_result.item()):

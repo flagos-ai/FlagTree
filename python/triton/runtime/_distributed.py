@@ -99,11 +99,9 @@ class DistributedRtContext:
 @functools.lru_cache(maxsize=256)
 def _parse_node_buffer_bindings(encoded_bindings):
     if not isinstance(encoded_bindings, str):
-        raise RuntimeError(
-            "the compiled kernel information is invalid or out of date. "
-            "Please clear the Triton/FlagTree kernel cache and recompile. "
-            "If the problem persists, report it as a compiler/runtime issue."
-        )
+        raise RuntimeError("the compiled kernel information is invalid or out of date. "
+                           "Please clear the Triton/FlagTree kernel cache and recompile. "
+                           "If the problem persists, report it as a compiler/runtime issue.")
 
     roles = {"s": "source", "d": "destination"}
     bindings = []
@@ -112,25 +110,19 @@ def _parse_node_buffer_bindings(encoded_bindings):
             role_code, ordinal_text, handle_text = encoded.split(":", 2)
             ordinal = int(ordinal_text)
             handle = int(handle_text)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(
-                "the compiled kernel information is invalid or out of date. "
-                "Please clear the Triton/FlagTree kernel cache and recompile. "
-                "If the problem persists, report it as a compiler/runtime issue."
-            ) from None
+        except (TypeError, ValueError):
+            raise RuntimeError("the compiled kernel information is invalid or out of date. "
+                               "Please clear the Triton/FlagTree kernel cache and recompile. "
+                               "If the problem persists, report it as a compiler/runtime issue.") from None
         role = roles.get(role_code)
         if role is None:
-            raise RuntimeError(
-                "the compiled kernel information is invalid or out of date. "
-                "Please clear the Triton/FlagTree kernel cache and recompile. "
-                "If the problem persists, report it as a compiler/runtime issue."
-            )
+            raise RuntimeError("the compiled kernel information is invalid or out of date. "
+                               "Please clear the Triton/FlagTree kernel cache and recompile. "
+                               "If the problem persists, report it as a compiler/runtime issue.")
         if ordinal < 0:
-            raise RuntimeError(
-                "the compiled kernel information is invalid or out of date. "
-                "Please clear the Triton/FlagTree kernel cache and recompile. "
-                "If the problem persists, report it as a compiler/runtime issue."
-            )
+            raise RuntimeError("the compiled kernel information is invalid or out of date. "
+                               "Please clear the Triton/FlagTree kernel cache and recompile. "
+                               "If the problem persists, report it as a compiler/runtime issue.")
         bindings.append((encoded, role, ordinal, handle))
     return tuple(bindings)
 
@@ -145,12 +137,10 @@ def _collect_runtime_items(bound_args, specialization):
 
 
 def _node_buffer_metadata_error(kernel_name):
-    return RuntimeError(
-        f"Could not launch kernel {kernel_name!r}: its compiled information is "
-        "invalid or out of date. Please clear the Triton/FlagTree kernel cache "
-        "and recompile. If the problem persists, report it as a compiler/runtime "
-        "issue."
-    )
+    return RuntimeError(f"Could not launch kernel {kernel_name!r}: its compiled information is "
+                        "invalid or out of date. Please clear the Triton/FlagTree kernel cache "
+                        "and recompile. If the problem persists, report it as a compiler/runtime "
+                        "issue.")
 
 
 def validate_node_buffer_bindings(
