@@ -1221,34 +1221,26 @@ def remote(
     dimensions are inferred from that mesh and this mode requires `num_ctas=1`
     (one program maps to one block).
 
-    For `space="node"`, `tensor` is the registered-memory
-    `DistributedRtContext`. A load from the local buffer followed directly by
-    a store to the returned pointer is a put; the reverse is a get. The local
-    buffer root must be an entry pointer argument bound to the same buffer used
-    by `create_dist_tensor`. A direct scalar load/store copy may omit a range;
-    its source and destination element offsets are optional scalar integers
-    that default to zero, and its transfer length is one. Tensor copies require
-    a shared one-dimensional contiguous `tl.arange(0, N)`. The load and store
-    may be unmasked or may reuse the same prefix mask `offsets < valid_n`; a
-    dynamic `valid_n` is clamped to `[0, N]` and becomes the transfer
-    `nelems`; zero means no transfer. Sparse and multidimensional masks are
-    rejected. For tensor copies, missing, non-zero-start, strided, or
-    mismatched ranges are also rejected. `dtype` must be explicit;
-    `coopkind` defaults to `GroupKind.BLOCK` and `netidx` defaults to zero. A
-    compile-time `netidx`
-    must be in `[0, 4)`, while a runtime `netidx` must be a scalar `tl.int32`
-    whose range is guaranteed by the caller.
-    `shard_id` may be a scalar i32 world rank. With `scope=device_mesh`, a
-    compile-time tuple/list coordinate is also accepted and resolved through
-    the mesh's physical ids to a world rank. Node scope is used only for peer
-    addressing and does not alter the CUDA cluster launch. Source and
-    destination element offsets and the transfer width are recovered from the
-    pointer expressions; lowering converts them to bytes before calling
-    FlagCX. Completion and visibility semantics are unchanged.
+    For `space="node"`, `tensor` must be the registered-memory
+    `DistributedRtContext` created by `create_dist_tensor`. A load from the
+    local buffer followed by a store through the returned pointer performs a
+    put; the reverse performs a get. The local buffer root must be the entry
+    pointer for that buffer.
 
-    For device mode, `offset` is the remote-memory offset. Lowering converts
-    it to a byte offset before passing it to `flagcxGetIntraPointerC`. It may
-    be a Python `int` or a scalar integer `tl.tensor`.
+    Scalar copies transfer one element and default source/destination offsets
+    to zero. Tensor copies require the same contiguous range
+    `tl.arange(0, N)`. Unmasked copies or a shared prefix mask
+    `offsets < valid_n` are supported; `valid_n` is clamped to `[0, N]`, and
+    zero skips the transfer. Sparse, multidimensional, strided, non-zero-start,
+    or mismatched ranges are rejected.
+
+    `dtype` is required. `coopkind` defaults to `GroupKind.BLOCK`, and
+    `netidx` defaults to zero. Compile-time `netidx` must be in `[0, 4)`;
+    runtime values must be scalar `tl.int32`. `shard_id` may be a world rank
+    or, with `scope=device_mesh`, a compile-time mesh coordinate.
+
+    For `space="device"`, `offset` is the remote-memory element offset and
+    may be a Python `int` or scalar integer `tl.tensor`.
     """
     space = tl._unwrap_if_constexpr(space)
     if not isinstance(space, str):
