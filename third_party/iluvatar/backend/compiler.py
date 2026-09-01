@@ -21,6 +21,7 @@ from pathlib import Path
 ASM_PRINTABLE_ARCH = "ivcore11"
 tle = iluvatar.tle
 
+
 def has_tle_pass(pass_name: Optional[str] = None) -> bool:
     tle_passes = getattr(tle, "passes", None)
     tle_raw_passes = getattr(tle, "raw_passes", None)
@@ -297,7 +298,7 @@ class CorexBackend(BaseBackend):
         passes.ttgpuir.add_optimize_thread_locality(pm)
         if has_tle_pass():
             if has_tle_pass("add_optimize_local_pointer_async_stores"):
-                tle.passes.add_optimize_local_pointer_async_stores(pm)
+                tle.passes.add_optimize_local_pointer_async_stores(pm, opt.use_sme, opt.num_stages)
             if has_tle_pass("add_early_assign_memory_space"):
                 tle.passes.add_early_assign_memory_space(pm)
             if has_tle_pass("add_optimize_exclusive_cumsum_layouts"):
@@ -314,6 +315,12 @@ class CorexBackend(BaseBackend):
         iluvatar.passes.ttgpuir.add_mma_reduce_thread_locality(pm)
         iluvatar.passes.ttgpuir.add_optimize_epilogue(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 71)
+        if has_tle_pass("add_promote_local_store_staging"):
+            tle.passes.add_promote_local_store_staging(pm, opt.num_stages)
+            # Before SmeLoad: promote leaves load->local_alloc->local_load,
+            # which AccelerateMatmul cannot mark useSme through. SmeLoad
+            # refuses G2S unless that flag is already on the local_load.
+            tle.passes.add_mark_sme_dot_operands(pm, opt.use_sme)
         iluvatar.passes.ttgpuir.add_matmul_smeload(pm, capability)
         passes.ttir.add_loop_aware_cse(pm)
         if capability // 10 in [7, 8, 9]:
@@ -356,6 +363,11 @@ class CorexBackend(BaseBackend):
         # expensive and route it through shared memory.
         iluvatar.passes.ttgpuir.add_chain_dot_krotate(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
+        if has_tle_pass("add_mark_sme_dot_operands"):
+            # After layouts are final: pipeline / optimize_dot_operands may
+            # have rewritten encodings and dropped the early useSme. Re-mark
+            # so LocalLoadOpConversion still applies the rowxfb8 S2R fix.
+            tle.passes.add_mark_sme_dot_operands(pm, opt.use_sme)
         passes.ttgpuir.add_reorder_instructions(pm)
         if capability == 71:
             iluvatar.passes.ttgpuir.add_fa_pipeline(pm, opt.num_stages)

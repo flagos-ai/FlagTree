@@ -5,12 +5,14 @@
 #include "IR/Dialect.h"
 #include "Transforms/Passes.h"
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -273,6 +275,17 @@ matchAsyncStoreCandidate(tt::StoreOp store) {
   return AsyncStoreCandidate{store, load, std::move(*match), store.getValue()};
 }
 
+static bool reachesDot(Value value) {
+  for (Operation *user : value.getUsers()) {
+    if (isa<tt::DotOpInterface>(user))
+      return true;
+    if (auto cvt = dyn_cast<ttg::ConvertLayoutOp>(user))
+      if (reachesDot(cvt.getResult()))
+        return true;
+  }
+  return false;
+}
+
 static bool mayOverlap(const StaticSubviewMatch &lhs,
                        const StaticSubviewMatch &rhs) {
   if (lhs.baseMemDesc != rhs.baseMemDesc)
@@ -317,7 +330,198 @@ static void eraseDeadStoreValueWrappers(Value originalStoreValue,
   load.erase();
 }
 
-static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group) {
+static Value matchRowStrideMul(Value offset, unsigned contigDim) {
+  Value current = stripIndexValueWrappers(offset);
+  while (auto bcast = current.getDefiningOp<tt::BroadcastOp>())
+    current = stripIndexValueWrappers(bcast.getSrc());
+  auto mul = current.getDefiningOp<arith::MulIOp>();
+  if (!mul)
+    return {};
+  auto match = [&](Value index, Value stride) -> Value {
+    auto expand =
+        stripIndexValueWrappers(index).getDefiningOp<tt::ExpandDimsOp>();
+    if (!expand || expand.getAxis() != contigDim)
+      return {};
+    auto splat = stripIndexValueWrappers(stride).getDefiningOp<tt::SplatOp>();
+    if (!splat || !splat.getSrc().getType().isInteger())
+      return {};
+    return splat.getSrc();
+  };
+  if (Value stride = match(mul.getLhs(), mul.getRhs()))
+    return stride;
+  return match(mul.getRhs(), mul.getLhs());
+}
+
+// A null result means the address expression was not recognized, in which case
+// the caller keeps the copy on the ordinary non-SME path.
+static Value findRowStride(Value ptr, unsigned contigDim) {
+  for (Value current = stripConvertLayouts(ptr); current;) {
+    if (auto addptr = current.getDefiningOp<tt::AddPtrOp>()) {
+      if (Value stride = matchRowStrideMul(addptr.getOffset(), contigDim))
+        return stride;
+      current = stripConvertLayouts(addptr.getPtr());
+      continue;
+    }
+    if (auto bcast = current.getDefiningOp<tt::BroadcastOp>()) {
+      current = stripConvertLayouts(bcast.getSrc());
+      continue;
+    }
+    return {};
+  }
+  return {};
+}
+
+// Mirrors AccelerateMatmul's getUseSmeFlagFromPtr: the bit position in the
+// launch-time mask is the kernel argument number of the base pointer, so the
+// dtype/contiguity/64-byte-alignment checks already ran against the real
+// tensor.
+static bool isSmeEligibleBase(Value ptr, unsigned useSme) {
+  for (Value current = ptr; current;) {
+    if (auto blockArg = dyn_cast<BlockArgument>(current)) {
+      if (isa<tt::PointerType>(blockArg.getType()))
+        return (1u << blockArg.getArgNumber()) & useSme;
+      auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+      if (!forOp)
+        return false;
+      auto init = forOp.getTiedLoopInit(blockArg);
+      if (!init)
+        return false;
+      current = init->get();
+      continue;
+    }
+    Operation *def = current.getDefiningOp();
+    if (!def || def->getNumOperands() == 0)
+      return false;
+    // splat/broadcast/addptr/convert_layout all carry the base in operand 0.
+    current = def->getOperand(0);
+  }
+  return false;
+}
+
+struct SmeCopyPlan {
+  ttg::BlockedEncodingAttr ptrEncoding;
+  Value rowStride;
+};
+
+static std::optional<SmeCopyPlan> planSmeCopy(AsyncStoreCandidate &candidate,
+                                              Value dst, unsigned useSme) {
+  auto dstTy = cast<ttg::MemDescType>(dst.getType());
+  if (dstTy.getRank() != 2)
+    return std::nullopt;
+  // useTcu is what tle.gpu.alloc(nv_mma_shared_layout=True) selects, and it is
+  // the shared encoding that describes SME's hardware write pattern, so the
+  // local_load read-back side needs no adjustment.
+  auto shared = dyn_cast<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding());
+  if (!shared || !shared.getUseTcu())
+    return std::nullopt;
+  // SME writes whole tiles; a subslice destination is not handled yet.
+  if (dst != candidate.match.baseMemDesc)
+    return std::nullopt;
+
+  Type elemTy = dstTy.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return std::nullopt;
+  unsigned bitwidth = elemTy.getIntOrFloatBitWidth();
+  if (bitwidth != 8 && bitwidth != 16 && bitwidth != 32)
+    return std::nullopt;
+
+  auto ptrTy = dyn_cast<RankedTensorType>(candidate.load.getPtr().getType());
+  if (!ptrTy)
+    return std::nullopt;
+  auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(ptrTy.getEncoding());
+  if (!blocked || blocked.getIsSme())
+    return std::nullopt;
+  if (shared.getOrder()[0] != blocked.getOrder()[0])
+    return std::nullopt;
+  if (!isSmeEligibleBase(candidate.load.getPtr(), useSme))
+    return std::nullopt;
+
+  unsigned contigDim = blocked.getOrder()[0];
+  Value rowStride = findRowStride(candidate.load.getPtr(), contigDim);
+  if (!rowStride)
+    return std::nullopt;
+
+  auto mod = candidate.load->getParentOfType<ModuleOp>();
+  auto smeEnc = ttg::BlockedEncodingAttr::get(
+      ptrTy.getContext(), /*isSme=*/true, /*smeMask=*/false,
+      ttg::lookupNumWarps(mod), elemTy, ptrTy.getShape(), blocked.getOrder(),
+      blocked.getSizePerThread(), blocked.getThreadsPerWarp(),
+      blocked.getWarpsPerCTA(), ttg::TritonGPUDialect::getNumCTAs(mod));
+
+  // One transfer covers 16 rows x 64 bytes, so a tile that is not an exact
+  // multiple of what smeWarpsPerCTA covers would be only partially copied.
+  auto smeWpt = smeEnc.getSmeWarpsPerCTA();
+  if (smeWpt.size() != 2)
+    return std::nullopt;
+  SmallVector<unsigned, 2> tile({16, 16});
+  tile[contigDim] = 512 / bitwidth;
+  for (unsigned dim = 0; dim < 2; ++dim) {
+    unsigned covered = smeWpt[dim] * tile[dim];
+    if (covered == 0 || ptrTy.getShape()[dim] % covered != 0)
+      return std::nullopt;
+  }
+
+  return SmeCopyPlan{smeEnc, rowStride};
+}
+
+static bool readsBackIntoDot(Value storePtr) {
+  Value root = stripConvertLayouts(storePtr);
+  SmallVector<Value> worklist{root};
+  llvm::DenseSet<Value> seen{root};
+  while (!worklist.empty()) {
+    for (Operation *user : worklist.pop_back_val().getUsers()) {
+      if (auto reader = dyn_cast<tt::LoadOp>(user)) {
+        if (reachesDot(reader.getResult()))
+          return true;
+        continue;
+      }
+      if (auto cvt = dyn_cast<ttg::ConvertLayoutOp>(user))
+        if (seen.insert(cvt.getResult()).second)
+          worklist.push_back(cvt.getResult());
+    }
+  }
+  return false;
+}
+
+static bool shouldDeferToPipeliner(AsyncStoreCandidate &candidate,
+                                   int64_t numStages, unsigned useSme) {
+  auto forOp = dyn_cast<scf::ForOp>(candidate.store->getParentOp());
+  if (!forOp)
+    return false;
+  auto stageAttr = forOp->getAttrOfType<IntegerAttr>("tt.num_stages");
+  if (stageAttr ? stageAttr.getInt() <= 1 : numStages <= 1)
+    return false;
+
+  // The buffer has to outlive the iteration and be written whole, which is what
+  // promote's dominance and shape checks require of the staging it rewrites.
+  Operation *baseDef = candidate.match.baseMemDesc.getDefiningOp();
+  if (!baseDef || forOp->isAncestor(baseDef))
+    return false;
+  auto memDescTy =
+      cast<ttg::MemDescType>(candidate.match.baseMemDesc.getType());
+  if (candidate.match.valueType.getShape() != memDescTy.getShape())
+    return false;
+  if (!llvm::all_of(candidate.match.offsets,
+                    [](int32_t offset) { return offset == 0; }))
+    return false;
+
+  auto shared =
+      dyn_cast<ttg::SwizzledSharedEncodingAttr>(memDescTy.getEncoding());
+  auto ptrTy = dyn_cast<RankedTensorType>(candidate.load.getPtr().getType());
+  auto blocked =
+      ptrTy ? dyn_cast<ttg::BlockedEncodingAttr>(ptrTy.getEncoding()) : nullptr;
+  if (!shared || !blocked || shared.getOrder()[0] != blocked.getOrder()[0])
+    return false;
+  if (shared.getOrder()[0] == 0 &&
+      !planSmeCopy(candidate, candidate.match.baseMemDesc, useSme))
+    return false;
+
+  tt::StoreOp store = candidate.store;
+  return readsBackIntoDot(store.getPtr());
+}
+
+static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group,
+                                   unsigned useSme) {
   if (group.empty())
     return;
 
@@ -328,13 +532,33 @@ static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group) {
     OpBuilder builder(store);
     Value dst =
         createSubviewForStore(builder, store.getLoc(), candidate->match);
-    // Uses the compatibility builder (inputStride = {}, contiguity = 1); the
-    // later coalesce_async_copy pass refines vectorization.
-    auto asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
-        builder, store.getLoc(), candidate->load.getPtr(), dst,
-        candidate->load.getMask(), candidate->load.getOther(),
-        candidate->load.getCache(), candidate->load.getEvict(),
-        candidate->load.getIsVolatile());
+
+    std::optional<SmeCopyPlan> sme = planSmeCopy(*candidate, dst, useSme);
+
+    ttg::AsyncCopyGlobalToLocalOp asyncCopy;
+    if (sme) {
+      Value ptr = candidate->load.getPtr();
+      auto ptrTy = cast<RankedTensorType>(ptr.getType());
+      auto smePtrTy = RankedTensorType::get(
+          ptrTy.getShape(), ptrTy.getElementType(), sme->ptrEncoding);
+      Value smePtr =
+          ttg::ConvertLayoutOp::create(builder, ptr.getLoc(), smePtrTy, ptr);
+      Value stride = sme->rowStride;
+      if (stride.getType().isInteger(64))
+        stride = arith::TruncIOp::create(builder, store.getLoc(),
+                                         builder.getI32Type(), stride);
+      asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
+          builder, store.getLoc(), smePtr, dst, candidate->load.getMask(),
+          candidate->load.getOther(), stride, candidate->load.getCache(),
+          candidate->load.getEvict(), candidate->load.getIsVolatile(),
+          /*contiguity=*/1);
+    } else {
+      asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
+          builder, store.getLoc(), candidate->load.getPtr(), dst,
+          candidate->load.getMask(), candidate->load.getOther(),
+          candidate->load.getCache(), candidate->load.getEvict(),
+          candidate->load.getIsVolatile());
+    }
     asyncCopy->setAttr(kAsyncStoreAttr, builder.getUnitAttr());
     tokens.push_back(asyncCopy.getToken());
   }
@@ -352,9 +576,13 @@ static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group) {
     eraseDeadStoreValueWrappers(candidate->originalStoreValue, candidate->load);
 }
 
-class OptimizeLocalPointerAsyncStoresPass
+struct OptimizeLocalPointerAsyncStoresPass
     : public impl::TritonIluvatarTleOptimizeLocalPointerAsyncStoresBase<
           OptimizeLocalPointerAsyncStoresPass> {
+  using impl::TritonIluvatarTleOptimizeLocalPointerAsyncStoresBase<
+      OptimizeLocalPointerAsyncStoresPass>::
+      TritonIluvatarTleOptimizeLocalPointerAsyncStoresBase;
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
@@ -362,8 +590,10 @@ class OptimizeLocalPointerAsyncStoresPass
     llvm::DenseMap<Operation *, AsyncStoreCandidate> candidates;
     module.walk([&](tt::StoreOp store) {
       orderedStores.push_back(store.getOperation());
-      if (auto candidate = matchAsyncStoreCandidate(store))
-        candidates.try_emplace(store.getOperation(), std::move(*candidate));
+      auto candidate = matchAsyncStoreCandidate(store);
+      if (!candidate || shouldDeferToPipeliner(*candidate, numStages, useSme))
+        return;
+      candidates.try_emplace(store.getOperation(), std::move(*candidate));
     });
 
     llvm::DenseSet<Operation *> processed;
@@ -395,7 +625,7 @@ class OptimizeLocalPointerAsyncStoresPass
 
       for (AsyncStoreCandidate *candidate : group)
         processed.insert(candidate->store.getOperation());
-      rewriteAsyncStoreGroup(group);
+      rewriteAsyncStoreGroup(group, useSme);
     }
   }
 };

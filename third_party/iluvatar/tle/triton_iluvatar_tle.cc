@@ -79,19 +79,24 @@ void init_triton_iluvatar_tle_ir(py::module m) {
 
   auto &builderCls = *builderClsPtr;
   builderCls
-      .def("make_swizzled_shared_encoding_attr",
-           [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
-              unsigned maxPhase, std::vector<unsigned> order,
-              std::vector<unsigned> CTAsPerCGA,
-              std::vector<unsigned> CTASplitNum,
-              std::vector<unsigned> CTAOrder) -> mlir::Attribute {
-             checkCtaRank(order, CTAsPerCGA, CTASplitNum, CTAOrder);
-             auto *context = self.getBuilder().getContext();
-             auto ctaLayout = ttg::CTAEncodingAttr::fromSplitParams(
-                 context, CTAsPerCGA, CTASplitNum, CTAOrder);
-             return ttg::SwizzledSharedEncodingAttr::get(
-                 context, vectorSize, perPhase, maxPhase, order, ctaLayout);
-           })
+      .def(
+          "make_swizzled_shared_encoding_attr",
+          [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
+             unsigned maxPhase, std::vector<unsigned> order,
+             std::vector<unsigned> CTAsPerCGA,
+             std::vector<unsigned> CTASplitNum, std::vector<unsigned> CTAOrder,
+             bool useTcu) -> mlir::Attribute {
+            checkCtaRank(order, CTAsPerCGA, CTASplitNum, CTAOrder);
+            auto *context = self.getBuilder().getContext();
+            auto ctaLayout = ttg::CTAEncodingAttr::fromSplitParams(
+                context, CTAsPerCGA, CTASplitNum, CTAOrder);
+            return ttg::SwizzledSharedEncodingAttr::get(
+                context, vectorSize, perPhase, maxPhase, order, ctaLayout,
+                useTcu);
+          },
+          py::arg("vectorSize"), py::arg("perPhase"), py::arg("maxPhase"),
+          py::arg("order"), py::arg("CTAsPerCGA"), py::arg("CTASplitNum"),
+          py::arg("CTAOrder"), py::arg("use_tcu") = false)
       .def("make_nv_mma_shared_encoding_attr",
            [](TritonOpBuilder &, std::vector<int64_t>, std::vector<unsigned>,
               mlir::Type &, std::vector<unsigned>, std::vector<unsigned>,
@@ -596,9 +601,16 @@ void init_triton_iluvatar_tle_passes(py::module m) {
   ADD_PASS_WRAPPER_0(
       "add_early_assign_memory_space",
       iluvatar_tle::createTritonIluvatarTleEarlyAssignMemorySpace);
-  ADD_PASS_WRAPPER_0(
+  ADD_PASS_OPTION_WRAPPER_2(
       "add_optimize_local_pointer_async_stores",
-      iluvatar_tle::createTritonIluvatarTleOptimizeLocalPointerAsyncStores);
+      iluvatar_tle::createTritonIluvatarTleOptimizeLocalPointerAsyncStores,
+      unsigned, int64_t);
+  ADD_PASS_OPTION_WRAPPER_1(
+      "add_mark_sme_dot_operands",
+      iluvatar_tle::createTritonIluvatarTleMarkSmeDotOperands, unsigned);
+  ADD_PASS_OPTION_WRAPPER_1(
+      "add_promote_local_store_staging",
+      iluvatar_tle::createTritonIluvatarTlePromoteLocalStoreStaging, int64_t);
   ADD_PASS_WRAPPER_0(
       "add_insert_local_pointer_barriers",
       iluvatar_tle::createTritonIluvatarTleInsertLocalPointerBarriers);

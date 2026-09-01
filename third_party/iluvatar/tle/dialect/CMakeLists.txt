@@ -91,10 +91,12 @@ add_triton_library(IluvatarTleTransforms
   lib/Transforms/TleInsertLocalPointerBarriers.cpp
   lib/Transforms/TleLowerAsyncLoad.cpp
   lib/Transforms/TleLowerExclusiveCumsum.cpp
+  lib/Transforms/TleMarkSmeDotOperands.cpp
   lib/Transforms/TleOptimizeExclusiveCumsumLayouts.cpp
   lib/Transforms/TleOptimizeLocalPointerAsyncStores.cpp
   lib/Transforms/TleOptimizeLocalPointerLoads.cpp
   lib/Transforms/TleOptimizeLocalPointerStores.cpp
+  lib/Transforms/TlePromoteLocalStoreStaging.cpp
   lib/Transforms/TleLowerPipeToBarriers.cpp
   lib/Transforms/RemoveRedundantCopy.cpp
   lib/Transforms/TleUtility.cpp
