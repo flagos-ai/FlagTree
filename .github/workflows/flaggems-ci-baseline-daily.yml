@@ -41,11 +41,15 @@ jobs:
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
+        id: setup
         shell: bash
         run: |
           source ~/env.sh
           source ~/env-3.6.sh
-          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=' >> $GITHUB_ENV || true
+          GPU_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+          echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
+          echo "GPU devices: $GPU_DEVICES"
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -85,7 +89,7 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
         with:
           flaggems-path: '/root/flaggems_ci/FlagGems'
-          gpus: ${CUDA_VISIBLE_DEVICES:-0}
+          gpus: ${{ steps.setup.outputs.gpus }}
           output-base-dir: '/root/flaggems_ci/Baseline'
           output-subdir: ${{ steps.date.outputs.date }}
           run-script: 'tools/ci/ci_run_tests.py'
@@ -97,10 +101,14 @@ jobs:
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
+        id: setup
         shell: bash
         run: |
           source ~/env.sh
-          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|MUSA_VISIBLE_DEVICES)=' >> $GITHUB_ENV || true
+          GPU_DEVICES="${MUSA_VISIBLE_DEVICES:-0}"
+          echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
+          echo "GPU devices: $GPU_DEVICES"
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -141,7 +149,7 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
         with:
           flaggems-path: '/root/flaggems_ci/FlagGems'
-          gpus: ${MUSA_VISIBLE_DEVICES:-0}
+          gpus: ${{ steps.setup.outputs.gpus }}
           output-base-dir: '/root/flaggems_ci/Baseline'
           output-subdir: ${{ steps.date.outputs.date }}
           run-script: 'tools/ci/ci_run_tests.py'
