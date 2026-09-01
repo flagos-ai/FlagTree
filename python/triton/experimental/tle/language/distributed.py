@@ -111,6 +111,13 @@ class MemoryOrder(str, Enum):
     ACQ_REL = "acqrel"
 
 
+class MemoryScope(str, Enum):
+    SYSTEM = "system"
+    DEVICE = "device"
+    BLOCK = "block"
+    THREAD = "thread"
+
+
 class GroupKind(str, Enum):
     THREAD = "thread"
     WARP = "warp"
