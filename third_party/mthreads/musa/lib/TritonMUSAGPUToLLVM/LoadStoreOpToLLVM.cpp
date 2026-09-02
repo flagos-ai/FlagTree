@@ -485,20 +485,18 @@ getPH1LinearLayoutAccess(MemDescType memDescTy, SharedMemoryObject &smemObj) {
       triton::musa::getSwizzleGranularityBytes(swizzle->swizzleGranularity);
   if (granBytes < elemBytes)
     PH1_LL_BAIL("granule smaller than element");
+  // The emitted `base + swz(coords)` matches the hardware's absolute
+  // `swz(base + coords)` only while base is swizzle-window aligned.
+  // Allocations are aligned that way; a multibuffered slot sits one tile in,
+  // so the tile has to span whole windows too.
   int64_t windowBytes =
       triton::musa::getSwizzleLineBytes(swizzle->swizzleLine) *
       (triton::musa::getSwizzleStrideBytes(swizzle->swizzleStride) / granBytes);
-  // A stage-ring alloc ([n, rows, cols]) is indexed by advancing the base by
-  // one tile; the indexed sub-buffer keeps swizzle-window alignment only when
-  // the tile size is a window multiple.
-  auto fullAllocShape = memDescTy.getAllocShape();
-  if (fullAllocShape.size() > 2) {
-    int64_t tileBytes = elemBytes;
-    for (int64_t d : fullAllocShape.take_back(2))
-      tileBytes *= d;
-    if (windowBytes <= 0 || (tileBytes % windowBytes) != 0)
-      PH1_LL_BAIL("ring tile not window-aligned");
-  }
+  int64_t viewBytes = elemBytes;
+  for (int64_t d : memDescTy.getShape())
+    viewBytes *= d;
+  if (windowBytes <= 0 || (viewBytes % windowBytes) != 0)
+    PH1_LL_BAIL("tile does not span whole swizzle windows");
 
   auto order = triton::gpu::getOrder(memDescTy);
   if (order.size() != 2)
