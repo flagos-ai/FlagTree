@@ -7,6 +7,7 @@ from triton.experimental.tle.language import (
     _mesh_to_cluster_dims,
     _normalize_remote_shard_id,
     _resolve_launch_axis,
+    _is_cluster_submesh,
 )
 import triton.language.core as tlcore
 
@@ -310,6 +311,6 @@ class TestDistributedBarrierScope:
         assert group.axes == (1, )
         assert group.mask == (0, 1)
 
-    def test_infer_submesh_barrier_group_full_mesh_returns_none(self):
+    def test_infer_submesh_barrier_group_full_mesh_returns_false(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
-        assert _infer_submesh_barrier_group(mesh, (2, 2, 1)) is None
+        assert _is_cluster_submesh(mesh, (2, 2, 1)) is False
