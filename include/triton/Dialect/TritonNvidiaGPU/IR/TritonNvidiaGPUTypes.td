@@ -1,5 +1,5 @@
 // Copyright (c) 2023 NVIDIA Corporation & Affiliates. All rights reserved.
- * Copyright 2025-     FlagOS Contributors
+// Copyright 2025-     FlagOS Contributors
 //
 // Permission is hereby granted, free of charge, to any person obtaining
 // a copy of this software and associated documentation files
