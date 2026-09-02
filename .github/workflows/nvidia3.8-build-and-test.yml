@@ -45,10 +45,8 @@ jobs:
       - name: Setup environment
         shell: bash
         run: |
-          echo "HOME=$HOME"
-          echo "SHELL=$SHELL"
-          #source ~/env.sh
-          #env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
