@@ -873,12 +873,12 @@ def _normalize_barrier_space(space: str | attr.FlagCXTeamKind | None) -> str | N
 
 def _validate_barrier_space_mesh(mesh: device_mesh | None, space: str, device_dptr=None) -> None:
     if mesh is None:
-        raise ValueError(f"space={space!r} requires a mesh")
+        raise ValueError(f"space={space!r}: mesh is required")
     required_axis = "device" if space == "device" else "node"
     if not _mesh_has_axis(mesh, required_axis, use_launch_dims=True):
-        raise ValueError(f"space={space!r} requires a mesh with a {required_axis} axis")
+        raise ValueError(f"space={space!r} requires mesh to define a '{required_axis}' topology axis")
     if device_dptr is None:
-        raise ValueError(f"space={space!r} requires device_dptr")
+        raise ValueError(f"space={space!r}: device_dptr is required")
 
 
 def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.FlagCXTeamKind | None, device_dptr=None,

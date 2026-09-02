@@ -172,6 +172,15 @@ class TestClusterDims:
         assert sub.shape == (2, )
         assert _mesh_to_cluster_dims(sub) == (2, 2, 1)
 
+    def test_mesh_to_cluster_dims_uses_topology_level_with_custom_axis_names(self):
+        mesh = tle.device_mesh(
+            tle.MeshConfig(
+                node=[("rack", 2)],
+                device=[("gpu", 4)],
+                block_cluster=[("cta", 2)],
+            ))
+        assert _mesh_to_cluster_dims(mesh) == (2, 1, 1)
+
     def test_resolve_launch_axis(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
         assert _resolve_launch_axis(mesh, "cluster_x") == 0
@@ -221,6 +230,12 @@ class _FakeSemantic:
         self.builder = _FakeBuilder() if builder is None else builder
 
 
+class _FakeDevicePtr:
+
+    def __init__(self, handle="comm"):
+        self.handle = handle
+
+
 class _LegacyBarrierSemantic:
 
     def __init__(self):
@@ -240,6 +255,35 @@ class TestShardId:
 class TestDistributedBarrierScope:
 
     @pytest.mark.require_tle("distributed_barrier")
+    @pytest.mark.parametrize(
+        ("space", "mesh", "required_level"),
+        (("inter", tle.device_mesh({"device": 2}), "node"),
+         ("node", tle.device_mesh({"device": 2}), "node"),
+         ("device", tle.device_mesh({"node": 2}), "device")),
+    )
+    def test_flagcx_barrier_requires_matching_mesh_axis(self, space, mesh, required_level):
+        with pytest.raises(ValueError, match=rf"requires mesh to define a '{required_level}' topology axis"):
+            tle.distributed_barrier(
+                mesh=mesh,
+                device_dptr=_FakeDevicePtr(),
+                space=space,
+                _semantic=_FakeSemantic(),
+            )
+
+    def test_flagcx_barrier_requires_mesh(self):
+        with pytest.raises(ValueError, match="mesh is required"):
+            tle.distributed_barrier(
+                device_dptr=_FakeDevicePtr(),
+                space="device",
+                _semantic=_FakeSemantic(),
+            )
+
+    def test_flagcx_barrier_requires_device_pointer(self):
+        mesh = tle.device_mesh({"node": 2})
+        with pytest.raises(ValueError, match="device_dptr is required"):
+            tle.distributed_barrier(mesh=mesh, space="node", _semantic=_FakeSemantic())
+
+
     def test_distributed_barrier_full_cluster_mesh(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 1)]})
         semantic = _FakeSemantic()
