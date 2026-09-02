@@ -202,6 +202,8 @@ struct PrefixMaskInfo {
   bool isUnsigned;
 };
 
+static std::optional<int64_t> getConstantI64(Value value);
+
 static Value stripTensorIntegerCasts(Value value) {
   while (isa<RankedTensorType>(value.getType())) {
     if (auto cast = value.getDefiningOp<arith::ExtSIOp>()) {
@@ -253,8 +255,9 @@ matchPrefixMask(Value mask, tt::MakeRangeOp expectedRange) {
   return PrefixMaskInfo{validN, isUnsigned};
 }
 
-static Value materializePrefixLength(OpBuilder &builder, Location loc,
-                                     PrefixMaskInfo mask, int64_t extent) {
+static Value materializeDynamicPrefixLength(OpBuilder &builder, Location loc,
+                                            PrefixMaskInfo mask,
+                                            int64_t extent) {
   Value limitI64;
   Type type = mask.validN.getType();
   Type i64Ty = builder.getI64Type();
@@ -275,12 +278,15 @@ static Value materializePrefixLength(OpBuilder &builder, Location loc,
   }
 
   Value upper = builder.create<arith::ConstantIntOp>(loc, extent, 64);
-  if (mask.isUnsigned)
-    return builder.create<arith::MinUIOp>(loc, limitI64, upper);
-
-  Value zero = builder.create<arith::ConstantIntOp>(loc, 0, 64);
-  Value nonNegative = builder.create<arith::MaxSIOp>(loc, limitI64, zero);
-  return builder.create<arith::MinSIOp>(loc, nonNegative, upper);
+  arith::CmpIPredicate predicate = mask.isUnsigned
+                                       ? arith::CmpIPredicate::ule
+                                       : arith::CmpIPredicate::sle;
+  Value withinExtent =
+      builder.create<arith::CmpIOp>(loc, predicate, limitI64, upper);
+  builder.create<tt::AssertOp>(
+      loc, withinExtent,
+      builder.getStringAttr("valid_n must not exceed tl.arange extent"));
+  return limitI64;
 }
 
 static std::optional<std::string>
@@ -498,14 +504,6 @@ struct TritonTleFuseNodeRemoteTransfers
         recordFailure(candidateMarker, *reason);
         continue;
       }
-      if (load.getMask() != store.getMask()) {
-        recordFailure(candidateMarker,
-                      "the FlagCX transfer interface uses one contiguous "
-                      "element count, so load and store must use the same "
-                      "prefix mask; define mask = offsets < valid_n once and "
-                      "pass that mask to both tl.load and tl.store");
-        continue;
-      }
 
       if (load->getBlock() != store->getBlock() ||
           !load->isBeforeInBlock(store)) {
@@ -557,6 +555,24 @@ struct TritonTleFuseNodeRemoteTransfers
       bool dstHasRange = static_cast<bool>(dstExpr.range);
       bool isScalarCopy = !srcHasRange && !dstHasRange;
 
+      if (isScalarCopy && (load.getMask() || store.getMask())) {
+        recordFailure(candidateMarker,
+                      "scalar node remote copies do not support masks; omit "
+                      "the mask for a single-element transfer, or use shared "
+                      "offsets = tl.arange(0, N) and mask = offsets < valid_n "
+                      "for a masked tensor transfer");
+        continue;
+      }
+
+      if (load.getMask() != store.getMask()) {
+        recordFailure(candidateMarker,
+                      "the FlagCX transfer interface uses one contiguous "
+                      "element count, so load and store must use the same "
+                      "prefix mask; define mask = offsets < valid_n once and "
+                      "pass that mask to both tl.load and tl.store");
+        continue;
+      }
+
       if (srcHasRange != dstHasRange ||
           (srcHasRange &&
            srcExpr.range.getOperation() != dstExpr.range.getOperation())) {
@@ -582,15 +598,7 @@ struct TritonTleFuseNodeRemoteTransfers
       }
 
       std::optional<PrefixMaskInfo> prefixMask;
-      if (load.getMask()) {
-        if (isScalarCopy) {
-          recordFailure(candidateMarker,
-                        "scalar node remote copies do not support masks; omit "
-                        "the mask for a single-element transfer, or use shared "
-                        "offsets = tl.arange(0, N) and mask = offsets < "
-                        "valid_n for a masked tensor transfer");
-          continue;
-        }
+      if (load.getMask() && !isScalarCopy) {
         prefixMask = matchPrefixMask(load.getMask(), srcExpr.range);
         if (!prefixMask) {
           recordFailure(candidateMarker,
@@ -649,10 +657,32 @@ struct TritonTleFuseNodeRemoteTransfers
         continue;
       }
 
-      Value nelems =
-          prefixMask
-              ? materializePrefixLength(builder, loc, *prefixMask, extent)
-              : Value(builder.create<arith::ConstantIntOp>(loc, extent, 64));
+      std::optional<int64_t> constantValidN;
+      if (prefixMask) {
+        constantValidN = getConstantI64(prefixMask->validN);
+        if (constantValidN && *constantValidN <= 0) {
+          recordFailure(candidateMarker,
+                        "nelems must be greater than zero; valid_n for a "
+                        "contiguous prefix transfer must be > 0");
+          continue;
+        }
+        if (constantValidN && *constantValidN > extent) {
+          recordFailure(candidateMarker,
+                        "valid_n must not exceed the tl.arange extent; use "
+                        "1 <= valid_n <= N for tl.arange(0, N)");
+          continue;
+        }
+      }
+
+      Value nelems;
+      if (!prefixMask)
+        nelems = builder.create<arith::ConstantIntOp>(loc, extent, 64);
+      else if (constantValidN)
+        nelems =
+            builder.create<arith::ConstantIntOp>(loc, *constantValidN, 64);
+      else
+        nelems =
+            materializeDynamicPrefixLength(builder, loc, *prefixMask, extent);
       if (!nelems) {
         recordFailure(candidateMarker,
                       "valid_n must be an integer up to i64; pass a scalar "
@@ -698,12 +728,13 @@ struct TritonTleFuseNodeRemoteTransfers
         else
           op.emitOpError()
               << "could not fuse node remote pointer: expected a direct, "
-                 "single-use scalar or contiguous load/store copy with no "
-                 "mask or a shared one-dimensional prefix mask; use "
+                 "single-use scalar or contiguous load/store copy; use "
                  "tl.load on one side and immediately tl.store that value "
                  "to the other side, make exactly one side tle.remote(...), "
-                 "and for tensor copies reuse offsets = tl.arange(0, N) "
-                 "and an optional mask = offsets < valid_n on both sides";
+                 "use unmasked scalar pointers to transfer exactly one "
+                 "element, and for tensor copies reuse "
+                 "offsets = tl.arange(0, N) with no mask or an optional "
+                 "shared mask = offsets < valid_n on both sides";
         hasUnfusedMarker = true;
       }
     });

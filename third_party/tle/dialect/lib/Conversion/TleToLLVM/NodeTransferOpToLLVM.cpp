@@ -31,6 +31,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 
 namespace {
 
@@ -161,31 +162,19 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
                    srcByteOffset, dstMem, dstByteOffset, byteCount, coopKind});
   };
 
-  if (constantNelems) {
-    if (*constantNelems > 0)
-      emitTransfer();
-    return success();
+  if (!constantNelems) {
+    Value zero = rewriter.create<LLVM::ConstantOp>(
+        loc, rewriter.getI64Type(), rewriter.getI64IntegerAttr(0));
+    Value hasElements = rewriter.create<LLVM::ICmpOp>(
+        loc, LLVM::ICmpPredicate::sgt, nelems, zero);
+    rewriter.create<triton::AssertOp>(
+        loc, hasElements,
+        rewriter.getStringAttr(
+            "node remote transfer requires nelems > 0; use an unmasked scalar "
+            "transfer, or with offsets = tl.arange(0, N), require 1 <= valid_n <= N"));
   }
 
-  Value zero = rewriter.create<LLVM::ConstantOp>(loc, rewriter.getI64Type(),
-                                                 rewriter.getI64IntegerAttr(0));
-  Value hasElements = rewriter.create<LLVM::ICmpOp>(
-      loc, LLVM::ICmpPredicate::sgt, nelems, zero);
-
-  Block *previousBlock = op->getBlock();
-  Block *transferBlock = rewriter.splitBlock(previousBlock, op->getIterator());
-  rewriter.setInsertionPointToStart(transferBlock);
   emitTransfer();
-
-  Block *continuationBlock =
-      rewriter.splitBlock(transferBlock, op->getIterator());
-  rewriter.setInsertionPointToEnd(transferBlock);
-  rewriter.create<LLVM::BrOp>(loc, continuationBlock);
-
-  rewriter.setInsertionPointToEnd(previousBlock);
-  rewriter.create<LLVM::CondBrOp>(loc, hasElements, transferBlock,
-                                  continuationBlock);
-  rewriter.setInsertionPointToStart(continuationBlock);
   return success();
 }
 

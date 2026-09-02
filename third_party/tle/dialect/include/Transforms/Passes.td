@@ -34,10 +34,13 @@ def TritonTleFuseNodeRemoteTransfers
   let description = [{
     At the TTIR-to-TTGIR boundary, matches direct one-dimensional contiguous
     copies between an entry-function global pointer argument and a
-    pointer-valued node ``tle.remote_pointers`` marker. Accesses must reuse the
-    same ``tt.make_range(0, N)`` and may be unmasked or use the same contiguous
-    prefix mask on both sides. Dynamic prefix lengths are clamped to ``[0, N]``;
-    a zero length becomes a no-op during lowering. The load/store/address chain
+    pointer-valued node ``tle.remote_pointers`` marker. Tensor accesses must
+    reuse the same ``tt.make_range(0, N)`` and may be unmasked or use the same
+    contiguous prefix mask on both sides. Prefix lengths must satisfy
+    ``1 <= valid_n <= N``; constant violations are rejected during compilation
+    and dynamic violations trigger a device assertion. Without a range, the copy
+    transfers one element; scalar masks are rejected. The
+    load/store/address chain
     is replaced with the existing result-less node transfer form, and local
     pointer argument ordinals are recorded as module metadata for host-side
     registered-buffer validation.

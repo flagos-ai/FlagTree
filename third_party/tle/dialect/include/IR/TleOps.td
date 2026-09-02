@@ -432,7 +432,8 @@ class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     Represents an explicit inter-node transfer after a node-space
     tle.remote_pointers marker and its load/store users have been fused.
     Offsets and nelems are expressed in elements; elem_bytes is applied during
-    lowering to form byte offsets and the byte count passed to FlagCX.
+    lowering to form byte offsets and the byte count passed to FlagCX. Nelems
+    must be greater than zero.
   }];
 
   let arguments = (ins

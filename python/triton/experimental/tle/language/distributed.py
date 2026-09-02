@@ -1230,9 +1230,12 @@ def remote(
     Scalar copies transfer one element and default source/destination offsets
     to zero. Tensor copies require the same contiguous range
     `tl.arange(0, N)`. Unmasked copies or a shared prefix mask
-    `offsets < valid_n` are supported; `valid_n` is clamped to `[0, N]`, and
-    zero skips the transfer. Sparse, multidimensional, strided, non-zero-start,
-    or mismatched ranges are rejected.
+    `offsets < valid_n` are supported when `1 <= valid_n <= N`. Constant
+    violations are rejected during compilation; dynamic violations trigger a
+    device assertion.
+    Without `tl.arange`, an unmasked scalar transfer moves one element;
+    `valid_n`/scalar masks are rejected. Sparse, multidimensional,
+    strided, non-zero-start, or mismatched ranges are rejected.
 
     `dtype` is required. `coopkind` defaults to `GroupKind.BLOCK`, and
     `netidx` defaults to zero. Compile-time `netidx` must be in `[0, 4)`;

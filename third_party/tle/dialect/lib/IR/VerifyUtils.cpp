@@ -158,10 +158,13 @@ LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
     return success();
   };
 
+  if (std::optional<int64_t> constant = getConstantIntValue(nelems);
+      constant && *constant <= 0)
+    return emitError() << "expects constant nelems to be > 0";
+
   if (failed(verifyNonNegativeConstant(peer, "peer")) ||
       failed(verifyNonNegativeConstant(srcOffset, "src_offset")) ||
       failed(verifyNonNegativeConstant(dstOffset, "dst_offset")) ||
-      failed(verifyNonNegativeConstant(nelems, "nelems")) ||
       failed(verifyNonNegativeConstant(netIdx, "net_idx")))
     return failure();
   return success();
