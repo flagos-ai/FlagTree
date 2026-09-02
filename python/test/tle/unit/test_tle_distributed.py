@@ -313,4 +313,4 @@ class TestDistributedBarrierScope:
 
     def test_infer_submesh_barrier_group_full_mesh_returns_false(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
-        assert _is_cluster_submesh(mesh, (2, 2, 1)) is False
+        assert _is_cluster_submesh(mesh) is False

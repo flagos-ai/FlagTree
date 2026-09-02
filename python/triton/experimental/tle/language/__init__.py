@@ -53,6 +53,7 @@ from .distributed import (
     distributed_barrier,
     distributed_dot,
     _infer_submesh_barrier_group,
+    _is_cluster_submesh,
     _mesh_to_cluster_dims,
     make_sharded_tensor,
     _normalize_remote_shard_id,
