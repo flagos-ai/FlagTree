@@ -102,8 +102,7 @@ class FlagCXRegistrar:
     def _copy_required_files(self):
         source = Path(self.flagcx_src_dir) / "plugin" / "interservice" / "flagcx_wrapper.py"
         destinations = [
-            Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" /
-            "flagcx_wrapper.py",
+            Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "flagcx_wrapper.py",
             Path(self.flagtree_dir) / "third_party" / "nvidia" / "backend" / "flagcx_wrapper.py",
         ]
         for destination in destinations:

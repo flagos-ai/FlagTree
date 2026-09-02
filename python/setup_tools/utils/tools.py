@@ -65,9 +65,8 @@ class FlagtreeConfigs:
     }))
 
     def __post_init__(self):
-        self.default_backends = tuple(
-            backend for backend in self.default_backends
-            if os.environ.get(f"USE_{backend.upper()}", "ON").upper() != "OFF")
+        self.default_backends = tuple(backend for backend in self.default_backends
+                                      if os.environ.get(f"USE_{backend.upper()}", "ON").upper() != "OFF")
         self.flagtree_submodule_dir = os.path.join(self.flagtree_root_dir, "third_party")
         self.activated_module = self._activate_device_module()
 
@@ -102,8 +101,8 @@ class Module:
 
 
 def is_skip_cuda_toolkits():
-    return flagtree_configs.flagtree_backend and (
-        flagtree_configs.flagtree_backend not in flagtree_configs.use_cuda_toolkit_backends)
+    return flagtree_configs.flagtree_backend and (flagtree_configs.flagtree_backend
+                                                  not in flagtree_configs.use_cuda_toolkit_backends)
 
 
 def remove_triton_in_modules(module):
