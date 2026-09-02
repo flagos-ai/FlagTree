@@ -19,7 +19,6 @@
 # SOFTWARE.
 
 import os
-import platform
 import shutil
 import sys
 import sysconfig
@@ -37,12 +36,6 @@ from .utils.tools import flagtree_configs as configs
 downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
-
-
-def get_console_colors() -> Tuple[str, str]:
-    if platform.system() == "Windows":
-        return "", ""
-    return "\033[1;33m", "\033[0m"
 
 
 def get_flagtree_version(git_commit_hash_fn):
@@ -537,7 +530,6 @@ def get_spec_packages():
     # These directories have no __init__.py; include them to avoid warnings.
     yield "triton._C"
     yield "triton._C.libtriton"
-    yield "triton.tools.triton_to_gluon_translater"
 
     tle_include_dir = Path("python/triton/experimental/tle/language/include")
     if tle_include_dir.is_dir():

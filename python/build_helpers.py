@@ -40,12 +40,16 @@ import zipfile
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
-from python.setup_tools import setup_helper as helper
 
-YELLOW, NC = helper.get_console_colors()
+# flagtree
+def get_console_colors() -> Tuple[str, str]:
+    if platform.system() == "Windows":
+        return "", ""
+    return "\033[1;33m", "\033[0m"
 
+YELLOW, NC = get_console_colors()  # flagtree
 
 def get_base_dir():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
