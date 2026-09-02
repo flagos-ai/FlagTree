@@ -37,6 +37,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -74,7 +75,7 @@ struct PipeState {
   RankedTensorType closeTagTensorType;
   SmallVector<std::string> readerNames;
   bool oneShot;
-  std::optional<int32_t> writerTaskId;
+  SmallVector<int32_t> writerTaskIds;
   std::optional<int32_t> writerThreadCount;
   std::optional<int32_t> writerFullCount;
   std::map<std::string, std::pair<int32_t, int32_t>> readerTasks;
@@ -390,17 +391,29 @@ static void setTokenCount(Value token, StringRef attrName, int32_t count) {
       IntegerAttr::get(IntegerType::get(createToken.getContext(), 32), count));
 }
 
+static bool multiTmaWritersEnabled() {
+  return tt::tools::getBoolEnv("TLE_MULTI_TMA_WRITERS");
+}
+
 static LogicalResult recordWriterTask(PipeState &state, Operation *op,
                                       int32_t taskId, int32_t threadCount) {
-  if (state.writerTaskId && *state.writerTaskId != taskId)
-    return op->emitOpError("uses writer async_task_id ")
-           << taskId << " but pipe already has writer async_task_id "
-           << *state.writerTaskId;
+  auto writerIt = llvm::find(state.writerTaskIds, taskId);
+  if (writerIt == state.writerTaskIds.end()) {
+    if (!state.writerTaskIds.empty() && !multiTmaWritersEnabled())
+      return op->emitOpError("uses writer async_task_id ")
+             << taskId << " but pipe already has writer async_task_id "
+             << state.writerTaskIds.front();
+    state.writerTaskIds.push_back(taskId);
+    // TMA completes the transaction bytes, while each independent producer
+    // contributes one arrival to the full barrier.
+    if (state.writerTaskIds.size() > 1)
+      setTokenCount(state.token, "full_count",
+                    static_cast<int32_t>(state.writerTaskIds.size()));
+  }
   if (state.writerThreadCount && *state.writerThreadCount != threadCount)
     return op->emitOpError("uses writer thread count ")
            << threadCount << " but pipe already has writer thread count "
            << *state.writerThreadCount;
-  state.writerTaskId = taskId;
   state.writerThreadCount = threadCount;
   return success();
 }
@@ -925,12 +938,15 @@ static bool canInterleaveBeforeTmaPipeCommit(Operation *op) {
 struct TmaPipeCommitInfo {
   bool sawPipeTmaCopy = false;
   llvm::DenseSet<Value> copiedRoots;
+  llvm::DenseSet<Value> localStoreRoots;
 };
 
 struct PipeCommitAnalysis {
   TmaPipeCommitInfo tmaInfo;
   SmallVector<Value> uniqueFieldRoots;
   SmallVector<Value> localStoreRoots;
+  SmallVector<unsigned> tmaFieldIndices;
+  bool hasPartialTmaCoverage = false;
   PipeCommitTransport transport = PipeCommitTransport::LocalStore;
   std::optional<int32_t> participantCount;
 };
@@ -1007,6 +1023,7 @@ getRootLevelTmaPipeCommitInfo(PipeWriterCommitOp commit,
         return commit.emitOpError("has a ttg.tma_copy and a local-store "
                                   "payload targeting the same memdesc root");
       interleavedLocalRoots.insert(*root);
+      info.localStoreRoots.insert(*root);
       return success();
     };
 
@@ -1097,16 +1114,29 @@ analyzePipeCommit(PipeWriterCommitOp commit, PipeDefinition &definition) {
   analysis.tmaInfo = std::move(*tmaInfo);
 
   llvm::DenseSet<Value> seenFieldRoots;
-  for (Value field : commit.getFields()) {
+  for (auto [fieldIndex, field] : llvm::enumerate(commit.getFields())) {
     Value root = getMemDescRoot(field);
-    if (seenFieldRoots.insert(root).second)
+    if (seenFieldRoots.insert(root).second) {
       analysis.uniqueFieldRoots.push_back(root);
+      if (analysis.tmaInfo.copiedRoots.contains(root))
+        analysis.tmaFieldIndices.push_back(static_cast<unsigned>(fieldIndex));
+    }
   }
+  analysis.hasPartialTmaCoverage =
+      analysis.tmaInfo.sawPipeTmaCopy &&
+      analysis.tmaFieldIndices.size() != analysis.uniqueFieldRoots.size();
 
   for (Value root : analysis.uniqueFieldRoots) {
     if (!analysis.tmaInfo.copiedRoots.contains(root))
       analysis.localStoreRoots.push_back(root);
   }
+
+  // Independent pure-TMA producers commit disjoint subsets of the pipe
+  // fields to one full barrier. Missing fields are supplied by another
+  // producer and must not be interpreted as local-store payloads.
+  if (multiTmaWritersEnabled() && analysis.tmaInfo.sawPipeTmaCopy &&
+      analysis.tmaInfo.localStoreRoots.empty())
+    analysis.localStoreRoots.clear();
 
   bool hasTmaPayload = analysis.tmaInfo.sawPipeTmaCopy;
   bool hasLocalPayload = !analysis.localStoreRoots.empty();
@@ -1163,7 +1193,21 @@ static LogicalResult
 analyzePipeCommits(ArrayRef<Operation *> ops,
                    std::map<std::string, PipeDefinition> &pipes,
                    std::map<Operation *, PipeCommitAnalysis> &commitAnalyses) {
+  struct MultiWriterPipeInfo {
+    llvm::DenseSet<int32_t> writerTaskIds;
+    llvm::DenseSet<int32_t> tmaCommitTaskIds;
+    llvm::DenseSet<unsigned> coveredFieldIndices;
+    std::map<unsigned, int32_t> fieldWriterTaskIds;
+    unsigned fieldCount = 0;
+    bool sawPartialTmaCoverage = false;
+    bool hasOverlappingTmaFields = false;
+    bool allCommitsUseTma = true;
+    bool hasWriterClose = false;
+    Operation *diagnosticOp = nullptr;
+  };
+
   std::map<std::string, std::optional<PipeCommitTransport>> transports;
+  std::map<std::string, MultiWriterPipeInfo> multiWriterPipes;
 
   for (Operation *op : ops) {
     std::string key = getPipeKey(op);
@@ -1171,12 +1215,25 @@ analyzePipeCommits(ArrayRef<Operation *> ops,
       if (pipes.count(key))
         return create.emitOpError("duplicates an existing pipe.create");
       pipes.emplace(key, PipeDefinition{create, isOneShotPipe(create)});
+      multiWriterPipes[key].fieldCount =
+          static_cast<unsigned>(create.getFields().size());
       continue;
     }
 
     auto it = pipes.find(key);
     if (it == pipes.end())
       return op->emitOpError("requires a preceding matching pipe.create");
+
+    MultiWriterPipeInfo &multiWriter = multiWriterPipes[key];
+    if (isa<PipeWriterAcquireOp, PipeWriterCommitOp, PipeWriterCloseOp>(op)) {
+      auto taskId =
+          getSingleTaskId(op, getEnclosingDefaultTaskId(op, /*writer=*/0));
+      if (failed(taskId))
+        return failure();
+      multiWriter.writerTaskIds.insert(*taskId);
+      multiWriter.diagnosticOp = op;
+      multiWriter.hasWriterClose |= isa<PipeWriterCloseOp>(op);
+    }
 
     if (auto commit = dyn_cast<PipeWriterCommitOp>(op)) {
       FailureOr<PipeCommitAnalysis> analysis =
@@ -1185,8 +1242,54 @@ analyzePipeCommits(ArrayRef<Operation *> ops,
         return failure();
       if (failed(recordDataTransport(transports[key], op, analysis->transport)))
         return failure();
+      multiWriter.allCommitsUseTma &=
+          analysis->transport == PipeCommitTransport::TmaCopy;
+      multiWriter.sawPartialTmaCoverage |= analysis->hasPartialTmaCoverage;
+      if (analysis->transport == PipeCommitTransport::TmaCopy) {
+        auto taskId =
+            getSingleTaskId(op, getEnclosingDefaultTaskId(op, /*writer=*/0));
+        if (failed(taskId))
+          return failure();
+        multiWriter.tmaCommitTaskIds.insert(*taskId);
+        for (unsigned fieldIndex : analysis->tmaFieldIndices) {
+          auto [fieldIt, inserted] =
+              multiWriter.fieldWriterTaskIds.emplace(fieldIndex, *taskId);
+          if (!inserted && fieldIt->second != *taskId)
+            multiWriter.hasOverlappingTmaFields = true;
+          multiWriter.coveredFieldIndices.insert(fieldIndex);
+        }
+      }
       commitAnalyses.emplace(op, std::move(*analysis));
     }
+  }
+
+  if (!multiTmaWritersEnabled())
+    return success();
+
+  for (auto &entry : multiWriterPipes) {
+    MultiWriterPipeInfo &info = entry.second;
+    if (info.writerTaskIds.size() < 2) {
+      if (info.sawPartialTmaCoverage)
+        return info.diagnosticOp->emitOpError(
+            "uses a partial pure-TMA commit but pipe requires at least two "
+            "writer tasks to provide the remaining fields");
+      continue;
+    }
+    if (info.hasWriterClose || !info.allCommitsUseTma)
+      return info.diagnosticOp->emitOpError(
+          "uses multiple writer tasks but only pure-TMA pipe commits are "
+          "supported");
+    if (info.tmaCommitTaskIds.size() != info.writerTaskIds.size())
+      return info.diagnosticOp->emitOpError(
+          "uses multiple writer tasks but every writer task must provide a "
+          "pure-TMA pipe commit");
+    if (info.coveredFieldIndices.size() != info.fieldCount)
+      return info.diagnosticOp->emitOpError(
+          "uses multiple pure-TMA writers whose combined commits do not "
+          "cover every pipe field");
+    if (info.hasOverlappingTmaFields)
+      return info.diagnosticOp->emitOpError(
+          "uses multiple pure-TMA writers that target the same pipe field");
   }
 
   return success();
@@ -1271,7 +1374,7 @@ static PipeState createPipeState(PipeCreateOp op) {
                   closeTagTensorType,
                   readerNames,
                   oneShot,
-                  /*writerTaskId=*/std::nullopt,
+                  /*writerTaskIds=*/{},
                   /*writerThreadCount=*/std::nullopt,
                   /*writerFullCount=*/std::nullopt,
                   /*readerTasks=*/{},

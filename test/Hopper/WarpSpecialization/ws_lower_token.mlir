@@ -62,4 +62,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     tt.return
   }
 
+  // CHECK-LABEL: @tma_full_count_override
+  // CHECK-NOT: nvws.
+  // CHECK-COUNT-2: ttng.init_barrier {{.*}}, 2
+  // CHECK-NOT: ttng.init_barrier
+  tt.func @tma_full_count_override(%idx: i32, %phase: i1) {
+    %token = nvws.create_token {full_count = 2 : i32, loadType = 2 : i32, numBuffers = 2 : i32} : tensor<2x!nvws.token>
+    nvws.consumer_wait %token, %idx, %phase {async_task_id = array<i32: 1>} : tensor<2x!nvws.token>, i32, i1
+    tt.return
+  }
+
 }
