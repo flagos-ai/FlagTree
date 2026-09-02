@@ -35,6 +35,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <tuple>
 
@@ -199,6 +200,7 @@ static Value materializeOffset(OpBuilder &builder, Location loc,
 
 struct PrefixMaskInfo {
   Value validN;
+  std::optional<int64_t> constantValidN;
   bool isUnsigned;
 };
 
@@ -238,21 +240,41 @@ matchPrefixMask(Value mask, tt::MakeRangeOp expectedRange) {
   if (stripTensorIntegerCasts(cmp.getLhs()) != expectedRange.getResult())
     return std::nullopt;
 
-  auto limitSplat = cmp.getRhs().getDefiningOp<tt::SplatOp>();
-  if (!limitSplat)
+  Value validN;
+  std::optional<int64_t> constantValidN;
+  if (auto limitSplat = cmp.getRhs().getDefiningOp<tt::SplatOp>()) {
+    validN = limitSplat.getSrc();
+    if (!validN.getType().isIntOrIndex())
+      return std::nullopt;
+    if (auto intTy = dyn_cast<IntegerType>(validN.getType());
+        intTy && (intTy.getWidth() == 1 || intTy.getWidth() > 64))
+      return std::nullopt;
+  } else if (auto constant =
+                 cmp.getRhs().getDefiningOp<arith::ConstantOp>()) {
+    auto dense = dyn_cast<DenseIntElementsAttr>(constant.getValue());
+    auto tensorTy = dyn_cast<RankedTensorType>(cmp.getRhs().getType());
+    auto elementTy =
+        tensorTy ? dyn_cast<IntegerType>(tensorTy.getElementType()) : nullptr;
+    if (!dense || !dense.isSplat() || !elementTy ||
+        elementTy.getWidth() == 1 || elementTy.getWidth() > 64)
+      return std::nullopt;
+
+    APInt value = dense.getSplatValue<APInt>();
+    if (isUnsigned && value.getActiveBits() > 63)
+      constantValidN = std::numeric_limits<int64_t>::max();
+    else
+      constantValidN =
+          isUnsigned ? static_cast<int64_t>(value.getZExtValue())
+                     : value.getSExtValue();
+  } else {
     return std::nullopt;
-  Value validN = limitSplat.getSrc();
-  if (!validN.getType().isIntOrIndex())
-    return std::nullopt;
-  if (auto intTy = dyn_cast<IntegerType>(validN.getType());
-      intTy && (intTy.getWidth() == 1 || intTy.getWidth() > 64))
-    return std::nullopt;
+  }
 
   auto maskTy = dyn_cast<RankedTensorType>(mask.getType());
   if (!maskTy || maskTy.getRank() != 1 ||
       maskTy.getDimSize(0) != expectedRange.getEndAttr().getInt())
     return std::nullopt;
-  return PrefixMaskInfo{validN, isUnsigned};
+  return PrefixMaskInfo{validN, constantValidN, isUnsigned};
 }
 
 static Value materializeDynamicPrefixLength(OpBuilder &builder, Location loc,
@@ -658,7 +680,9 @@ struct TritonTleFuseNodeRemoteTransfers
 
       std::optional<int64_t> constantValidN;
       if (prefixMask) {
-        constantValidN = getConstantI64(prefixMask->validN);
+        constantValidN = prefixMask->constantValidN;
+        if (!constantValidN)
+          constantValidN = getConstantI64(prefixMask->validN);
         if (constantValidN && *constantValidN <= 0) {
           recordFailure(candidateMarker,
                         "nelems must be greater than zero; valid_n for a "
