@@ -171,7 +171,8 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
         loc, hasElements,
         rewriter.getStringAttr(
             "node remote transfer requires nelems > 0; use an unmasked scalar "
-            "transfer, or with offsets = tl.arange(0, N), require 1 <= valid_n <= N"));
+            "transfer, or with offsets = tl.arange(0, N), require 1 <= valid_n "
+            "<= N"));
   }
 
   emitTransfer();

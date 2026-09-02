@@ -278,9 +278,8 @@ static Value materializeDynamicPrefixLength(OpBuilder &builder, Location loc,
   }
 
   Value upper = builder.create<arith::ConstantIntOp>(loc, extent, 64);
-  arith::CmpIPredicate predicate = mask.isUnsigned
-                                       ? arith::CmpIPredicate::ule
-                                       : arith::CmpIPredicate::sle;
+  arith::CmpIPredicate predicate =
+      mask.isUnsigned ? arith::CmpIPredicate::ule : arith::CmpIPredicate::sle;
   Value withinExtent =
       builder.create<arith::CmpIOp>(loc, predicate, limitI64, upper);
   builder.create<tt::AssertOp>(
@@ -678,8 +677,7 @@ struct TritonTleFuseNodeRemoteTransfers
       if (!prefixMask)
         nelems = builder.create<arith::ConstantIntOp>(loc, extent, 64);
       else if (constantValidN)
-        nelems =
-            builder.create<arith::ConstantIntOp>(loc, *constantValidN, 64);
+        nelems = builder.create<arith::ConstantIntOp>(loc, *constantValidN, 64);
       else
         nelems =
             materializeDynamicPrefixLength(builder, loc, *prefixMask, extent);
