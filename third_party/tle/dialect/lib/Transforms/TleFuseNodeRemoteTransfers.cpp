@@ -249,23 +249,21 @@ matchPrefixMask(Value mask, tt::MakeRangeOp expectedRange) {
     if (auto intTy = dyn_cast<IntegerType>(validN.getType());
         intTy && (intTy.getWidth() == 1 || intTy.getWidth() > 64))
       return std::nullopt;
-  } else if (auto constant =
-                 cmp.getRhs().getDefiningOp<arith::ConstantOp>()) {
+  } else if (auto constant = cmp.getRhs().getDefiningOp<arith::ConstantOp>()) {
     auto dense = dyn_cast<DenseIntElementsAttr>(constant.getValue());
     auto tensorTy = dyn_cast<RankedTensorType>(cmp.getRhs().getType());
     auto elementTy =
         tensorTy ? dyn_cast<IntegerType>(tensorTy.getElementType()) : nullptr;
-    if (!dense || !dense.isSplat() || !elementTy ||
-        elementTy.getWidth() == 1 || elementTy.getWidth() > 64)
+    if (!dense || !dense.isSplat() || !elementTy || elementTy.getWidth() == 1 ||
+        elementTy.getWidth() > 64)
       return std::nullopt;
 
     APInt value = dense.getSplatValue<APInt>();
     if (isUnsigned && value.getActiveBits() > 63)
       constantValidN = std::numeric_limits<int64_t>::max();
     else
-      constantValidN =
-          isUnsigned ? static_cast<int64_t>(value.getZExtValue())
-                     : value.getSExtValue();
+      constantValidN = isUnsigned ? static_cast<int64_t>(value.getZExtValue())
+                                  : value.getSExtValue();
   } else {
     return std::nullopt;
   }
