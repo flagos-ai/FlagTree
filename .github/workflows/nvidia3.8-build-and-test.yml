@@ -97,6 +97,7 @@ jobs:
         run: |
           set -x
           source ~/env.sh
+          ## python tutorials
           python3 python/tutorials/01-vector-add.py --only_unit_test
           python3 python/tutorials/02-fused-softmax.py --only_unit_test
           python3 python/tutorials/03-matrix-multiplication.py --only_unit_test
@@ -107,6 +108,7 @@ jobs:
           python3 python/tutorials/08-grouped-gemm.py --only_unit_test
           python3 python/tutorials/09-persistent-matmul.py --only_unit_test
           python3 python/tutorials/11-programmatic-dependent-launch.py --only_unit_test
+          ## python unit test
           python3 -m pytest -s python/test/unit/cuda
           python3 -m pytest -s python/test/unit/instrumentation
           python3 -m pytest -s python/test/unit/language
