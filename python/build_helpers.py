@@ -49,7 +49,9 @@ def get_console_colors() -> Tuple[str, str]:
         return "", ""
     return "\033[1;33m", "\033[0m"
 
+
 YELLOW, NC = get_console_colors()  # flagtree
+
 
 def get_base_dir():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
