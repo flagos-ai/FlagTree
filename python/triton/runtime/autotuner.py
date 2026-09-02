@@ -1,3 +1,25 @@
+# Copyright 2018-2020 Philippe Tillet
+# Copyright 2020-2022 OpenAI
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 from __future__ import annotations
 
 import builtins
@@ -13,6 +35,7 @@ from .jit import KernelInterface, JITFunction
 from .errors import OutOfResources, PTXASError, AutotunerError
 from .driver import driver
 from .cache import get_cache_manager, triton_key
+from .adjust_kernel_param import auto_adjust_block_sizes
 from triton._C.libtriton import get_cache_invalidating_env_vars
 
 
@@ -33,6 +56,8 @@ class Autotuner(KernelInterface):
             self.configs = [Config({}, num_warps=4, num_stages=3, num_ctas=1)]
         else:
             self.configs = configs
+        if self.configs and (len(self.configs) > 0):
+            self.shared_config_pre_hook = self.configs[0].pre_hook  # flagtree aabs
         self.keys = key
         self.cache: Dict[Tuple, Config] = {}
         self.arg_names = arg_names
@@ -98,6 +123,7 @@ class Autotuner(KernelInterface):
         self.num_warmups = warmup
         self.num_reps = rep
         self.use_cuda_graph = use_cuda_graph
+        self.seen_tuned_metas = {}  # flagtree aabs: deduplicate tuned meta
 
         # If we got explicitly called via the old interface, raise a warning
         # and proceed with the old behavior.
@@ -145,6 +171,22 @@ class Autotuner(KernelInterface):
                              " Make sure that you don't re-define auto-tuned symbols.")
         # augment meta-parameters with tunable ones
         current = dict(meta, **config.all_kwargs())
+        # flagtree aabs: auto_adjust_block_sizes
+        if knobs.autotuning.adjust_block_size:
+
+            def _unwrap_to_jitfunction(fn):
+                while not isinstance(fn, JITFunction):
+                    if not hasattr(fn, 'fn'):
+                        return None
+                    fn = fn.fn
+                return fn
+
+            jit_fn = _unwrap_to_jitfunction(self.fn)
+            if jit_fn is not None:
+                auto_adjust_block_sizes(self.nargs, jit_fn, self.configs, current, config)
+        meta_key = tuple(sorted(current.items()))
+        if meta_key in self.seen_tuned_metas:
+            return self.seen_tuned_metas[meta_key]  # flagtree aabs: deduplicate tuned meta
         full_nargs = {**self.nargs, **current}
 
         def kernel_call():
@@ -166,11 +208,14 @@ class Autotuner(KernelInterface):
             self.post_hook(full_nargs, exception=None)
 
         try:
-            return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
+            rett = self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
         except (OutOfResources, CompileTimeAssertionFailure, PTXASError) as e:
             if verbose:
                 print(f"Autotuning failed with {e}")
-            return [float("inf"), float("inf"), float("inf")]
+            rett = [float("inf"), float("inf"), float("inf")]
+
+        self.seen_tuned_metas[meta_key] = rett  # flagtree aabs: deduplicate tuned meta
+        return rett
 
     def check_disk_cache(self, tuning_key, configs, bench_fn):
         # We can't serialize prehooks, so just give up and run the benchmarks.
@@ -215,6 +260,7 @@ class Autotuner(KernelInterface):
         return False
 
     def run(self, *args, **kwargs):
+        self.seen_tuned_metas = {}  # flagtree aabs: deduplicate tuned meta
         self.nargs = dict(zip(self.arg_names, args))
         used_cached_result = True
         if len(self.configs) > 1:
@@ -282,9 +328,12 @@ class Autotuner(KernelInterface):
         return ret
 
     def prune_configs(self, kwargs: Dict) -> List[Config]:
-        pruned_configs = self.configs
+        # flagtree aabs: use deepcopy to prevent modification of the original configs
+        import copy
+        pruned_configs = copy.deepcopy(self.configs)
+        # pruned_configs = self.configs
         if self.early_config_prune:
-            pruned_configs = self.early_config_prune(self.configs, self.nargs, **kwargs)
+            pruned_configs = self.early_config_prune(pruned_configs, self.nargs, **kwargs)
             if not pruned_configs:
                 raise AutotunerError(
                     "No valid autotuner configs after pruning. `early_config_prune` should return at least one config.")

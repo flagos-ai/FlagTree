@@ -21,6 +21,8 @@ In doing so, you will learn about:
 # Custom GPU kernels for elementwise additions are educationally valuable but won't get you very far in practice.
 # Let us consider instead the case of a simple (numerically stabilized) softmax operation:
 
+import sys
+
 import torch
 
 import triton
@@ -188,6 +190,9 @@ x = torch.randn(1823, 781, device=DEVICE)
 y_triton = softmax(x)
 y_torch = torch.softmax(x, axis=1)
 assert torch.allclose(y_triton, y_torch), (y_triton, y_torch)
+
+if '--only_unit_test' in sys.argv:
+    sys.exit(0)
 
 # %%
 # As expected, the results are identical.

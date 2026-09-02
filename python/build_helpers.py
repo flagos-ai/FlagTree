@@ -1,3 +1,25 @@
+# Copyright 2018-2020 Philippe Tillet
+# Copyright 2020-2022 OpenAI
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import argparse
 import contextlib
 import hashlib
@@ -18,7 +40,17 @@ import zipfile
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
+
+
+# flagtree
+def get_console_colors() -> Tuple[str, str]:
+    if platform.system() == "Windows":
+        return "", ""
+    return "\033[1;33m", "\033[0m"
+
+
+YELLOW, NC = get_console_colors()  # flagtree
 
 
 def get_base_dir():
@@ -256,7 +288,7 @@ def _validate_sha256(archive_path, url, expected_sha256):
 
 def _download_and_extract(url, download_dir, label, archives_path, expected_sha256=None):
     archive_path = _get_archive_path(archives_path, url)
-    _download_file(url, archive_path, f"downloading {label}")
+    _download_file(url, archive_path, f"{YELLOW}downloading {label} {NC}")
     _validate_sha256(archive_path, url, expected_sha256)
     with contextlib.suppress(Exception):
         shutil.rmtree(download_dir)
@@ -463,15 +495,18 @@ def download_and_copy(name, src_func, dst_path, override_path, version, url_func
     dst_path = os.path.join(base_dir, "third_party", "nvidia", "backend", dst_path)  # final binary path
     src_path = os.path.join(tmp_path, src_path)
     download = not os.path.exists(src_path)
-    if os.path.exists(dst_path) and system == "Linux" and shutil.which(dst_path) is not None:
-        curr_version = subprocess.check_output([dst_path, "--version"]).decode("utf-8").strip()
-        curr_version = re.search(r"V([.|\d]+)", curr_version)
-        assert curr_version is not None, f"No version information for {dst_path}"
-        download = download or curr_version.group(1) != version
+    # flagtree: check the cached binary version in ~/.triton, skip download if it matches
+    if os.path.exists(src_path) and system == "Linux" and shutil.which(src_path) is not None:
+        try:
+            cache_version = subprocess.check_output([src_path, "--version"]).decode("utf-8").strip()
+            cache_version = re.search(r"V([.|\d]+)", cache_version).group(1)
+            download = download or cache_version != version
+        except Exception:
+            download = True
     if download:
         _download_and_extract(url, tmp_path, name, helper_args.archives_path)
     os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
-    print(f"copy {src_path} to {dst_path} ...")
+    print(f'copy {src_path} to {dst_path} ...', file=sys.stderr, flush=True)  # flagtree
     if os.path.isdir(src_path):
         # Use copy (not copy2) so destination mtimes are refreshed and Ninja sees dependent headers as updated.
         shutil.copytree(src_path, dst_path, copy_function=shutil.copy, dirs_exist_ok=True)

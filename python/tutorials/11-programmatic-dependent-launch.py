@@ -10,6 +10,8 @@ For PTX reference on programmatic dependent launch see https://docs.nvidia.com/c
     python 11-programmatic-dependent-launch.py
 """
 
+import sys
+
 import torch
 import triton
 import triton.language as tl
@@ -111,6 +113,8 @@ if __name__ == "__main__":
 
     if supports_pdl():
         validate(1024)
+        if '--only_unit_test' in sys.argv:
+            sys.exit(0)
         benchmark.run(print_data=True, show_plots=True, save_path=".")
     else:
         print("PDL is not supported on this device")
