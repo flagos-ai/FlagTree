@@ -1,3 +1,25 @@
+# Copyright 2018-2020 Philippe Tillet
+# Copyright 2020-2022 OpenAI
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import os
 import platform
 import re
@@ -37,6 +59,7 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+from python.setup_tools import setup_helper as helper
 from python.build_helpers import check_env_flag, get_base_dir, get_cmake_dir
 
 
@@ -203,7 +226,10 @@ class CMakeBuildPy(build_py):
 
     def run(self) -> None:
         self.run_command('build_ext')
-        return super().run()
+        helper.refresh_generated_backend_packages(self, backends)  # flagtree
+        result = super().run()
+        helper.write_backend_file_to_build_lib(self.build_lib)  # flagtree
+        return result
 
 
 class CMakeExtension(Extension):
@@ -265,6 +291,7 @@ class CMakeBuild(build_ext):
         return cmake_args
 
     def build_extension(self, ext):
+        helper.check_llvm_via_mlir("mlir")  # flagtree
         lit_dir = shutil.which('lit')
         ninja_dir = shutil.which('ninja')
         assert ninja_dir is not None, "ninja not found!"
@@ -294,6 +321,8 @@ class CMakeBuild(build_ext):
             f"-DTRITON_CACHE_PATH={get_triton_cache_path()}",
             f"-DTRITON_VERSION={TRITON_VERSION}",
         ]
+        cmake_args += helper.get_backend_cmake_args(build_ext=self)  # flagtree
+        cmake_args += helper.customize_gluon_cmake_args()  # flagtree
         if lit_dir is not None:
             cmake_args.append("-DLLVM_EXTERNAL_LIT=" + lit_dir)
         cmake_args.extend(thirdparty_cmake_args)
@@ -378,20 +407,26 @@ class CMakeBuild(build_ext):
         update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
         subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
+        helper.install_extension(build_ext=self)  # flagtree
 
 
-backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+# backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
+backends = helper.init_backends(BackendInstaller)  # flagtree
 
 
 def get_package_dirs():
     yield ("", "python")
+
+    # flagtree backend specialization
+    yield from helper.SpecPackageHelper.get_spec_packages()
 
     for backend in backends:
         # we use symlinks for external plugins
         if backend.is_external:
             continue
 
-        yield (f"triton.backends.{backend.name}", backend.backend_dir)
+        # yield (f"triton.backends.{backend.name}", backend.backend_dir)
+        yield from helper.get_backend_packages(backend)  # flagtree
 
         if backend.language_dir:
             # Install the contents of each backend's `language` directory into
@@ -411,10 +446,19 @@ def get_package_dirs():
 
 
 def get_packages():
-    yield from find_packages(where="python")
+    # flagtree backend specialization: add excluded packages
+    yield from helper.get_spec_packages()
 
     for backend in backends:
-        yield f"triton.backends.{backend.name}"
+        # yield f"triton.backends.{backend.name}"
+        if backend.is_external:
+            yield f"triton.backends.{backend.name}"
+        else:
+            backend_packages = [package for package, _source_dir in helper.get_backend_packages(backend)]
+            yield from backend_packages
+            for package in helper.get_generated_backend_packages(backend):
+                if package not in set(backend_packages):
+                    yield package
 
         if backend.language_dir:
             # Install the contents of each backend's `language` directory into
@@ -430,6 +474,7 @@ def get_packages():
 
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         yield "triton.profiler"
+        yield "triton.profiler.hooks"
 
 
 def add_link_to_backends(external_only):
@@ -476,12 +521,15 @@ class plugin_bdist_wheel(bdist_wheel):
     def run(self):
         add_links(external_only=True)
         super().run()
+        helper.post_install()  # flagtree
 
 
 class plugin_develop(develop):
 
     def run(self):
+        helper.uninstall_triton()  # flagtree
         add_links(external_only=False)
+        helper.write_flagtree_backend_file()  # flagtree
         super().run()
 
 
@@ -489,6 +537,7 @@ class plugin_editable_wheel(editable_wheel):
 
     def run(self):
         add_links(external_only=False)
+        helper.write_flagtree_backend_file()  # flagtree
         super().run()
 
 
@@ -502,6 +551,7 @@ class plugin_egg_info(egg_info):
 class plugin_install(install):
 
     def run(self):
+        helper.uninstall_triton()  # flagtree
         add_links(external_only=True)
         super().run()
 
@@ -580,25 +630,24 @@ PYTHON_CLASSIFIERS = [
 CLASSIFIERS = BASE_CLASSIFIERS + PYTHON_CLASSIFIERS
 
 setup(
-    name=os.environ.get("TRITON_WHEEL_NAME", "triton"),
-    version=TRITON_VERSION,
-    author="Philippe Tillet",
-    author_email="phil@openai.com",
-    description="A language and compiler for custom Deep Learning operations",
-    long_description="",
+    name=os.environ.get("FLAGTREE_WHEEL_NAME", "flagtree"),
+    version=helper.get_flagtree_version(get_git_commit_hash),
+    author="FlagOS",
+    author_email="contact@flagos.io",
+    description=
+    "A unified compiler supporting multiple AI chip backends for custom Deep Learning operations, which is forked from triton-lang/triton.",
+    long_description=helper.get_long_description(),
+    long_description_content_type="text/markdown",
     license="MIT",
     install_requires=[
         "importlib-metadata; python_version < '3.10'",
     ],
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
+    package_data=helper.get_package_data(backends),  # flagtree
     entry_points=get_entry_points(),
     include_package_data=True,
-    exclude_package_data={"": [
-        "__pycache__",
-        "__pycache__/*",
-        "*.py[cod]",
-    ]},
+    exclude_package_data=helper.get_excluded_package_data(),  # flagtree
     ext_modules=[CMakeExtension("triton", "triton/_C/")],
     cmdclass={
         "bdist_wheel": plugin_bdist_wheel,
@@ -614,7 +663,7 @@ setup(
     zip_safe=False,
     # for PyPI
     keywords=["Compiler", "Deep Learning"],
-    url="https://github.com/triton-lang/triton/",
+    url="https://github.com/flagos-ai/FlagTree/",  # flagtree
     python_requires=PYTHON_REQUIRES,
     classifiers=CLASSIFIERS,
 )

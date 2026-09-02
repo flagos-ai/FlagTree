@@ -32,6 +32,8 @@ In doing so, you will learn about:
 #
 # Let's first take a look at the baseline implementation.
 
+import sys
+
 import tabulate
 import torch
 
@@ -84,6 +86,9 @@ print(tabulate.tabulate([
     ["keep mask"] + x_keep.tolist(),
     ["output"] + output.tolist(),
 ]))
+
+if '--only_unit_test' in sys.argv:
+    sys.exit(0)
 
 # %%
 # Seeded dropout

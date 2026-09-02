@@ -5,6 +5,17 @@ set(GOOGLETEST_DIR "" CACHE STRING "Location of local GoogleTest repo to build a
 # Triton embeds GoogleTest only for unit-test execution; do not install it.
 set(INSTALL_GTEST OFF CACHE BOOL "Disable GoogleTest/GMock install rules" FORCE)
 
+if(NOT GOOGLETEST_DIR)
+  set(_default_googletest "$ENV{HOME}/.triton/googletest-1.17.0")
+  if(EXISTS "${_default_googletest}")
+    set(GOOGLETEST_DIR "${_default_googletest}" CACHE STRING
+      "Location of local GoogleTest repo to build against" FORCE)
+  else()
+    message("Downloading https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz")
+  endif()
+  unset(_default_googletest)
+endif()
+
 if(GOOGLETEST_DIR)
   set(FETCHCONTENT_SOURCE_DIR_GOOGLETEST ${GOOGLETEST_DIR} CACHE STRING "GoogleTest source directory override")
 endif()

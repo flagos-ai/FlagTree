@@ -6,6 +6,9 @@ if(POLICY CMP0116)
   cmake_policy(SET CMP0116 OLD)
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/FlagTreeOptions.cmake")
+flagtree_configure_options()
+
 project(triton CXX C)
 include(CTest)
 include(GNUInstallDirs)
@@ -19,13 +22,15 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 ################################################################################
 
 option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
-option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
-option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
+option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ${FLAGTREE_DEFAULT_OPTION})
+option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ${FLAGTREE_DEFAULT_OPTION})
 option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
 option(TRITON_OFFLINE_BUILD "Build without downloading dependencies" OFF)
 option(TRITON_EXT_ENABLED "Build with default visibility for Triton+LLVM symbol exposure to plugin extensions" OFF)
 set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
 set(TRITON_VERSION "" CACHE STRING "Triton version string (passed from setup.py)")
+
+flagtree_configure_codegen_backends()
 
 set(TRITON_CACHE_PATH "" CACHE PATH "Path to triton cache")
 set(TRITON_LLVM_SYSTEM_SUFFIX "" CACHE STRING "Path to LLVM system suffix")
@@ -206,7 +211,7 @@ if(TRITON_BUILD_UT)
 endif()
 
 # Compiler flags
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+flagtree_include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 if(NOT MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS  -fPIC -std=gnu++17")
 else()
@@ -263,8 +268,13 @@ endfunction()
 
 set_property(GLOBAL PROPERTY TRITON_PLUGINS "")
 function(add_triton_plugin name)
-  set_property(GLOBAL APPEND PROPERTY TRITON_PLUGINS ${name})
-  add_triton_object(${name} ${ARGN})
+  cmake_parse_arguments(ARG "" "SHARED_LIB" "LINK_LIBS" ${ARGN})
+  if(ARG_SHARED_LIB)
+    set_property(GLOBAL APPEND PROPERTY TRITON_PLUGINS ${ARG_SHARED_LIB})
+  else()
+    set_property(GLOBAL APPEND PROPERTY TRITON_PLUGINS ${name})
+    add_triton_object(${name} ${ARGN})
+  endif()
 endfunction()
 
 ################################################################################
@@ -282,7 +292,7 @@ if(NOT MSVC)
     # crash a Triton not compiled with visibility due to missing symbols.
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DTRITON_EXT_ENABLED=1")
   endif()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default ")
+  flagtree_configure_backend_cxx_flags()
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4244 /wd4624 /wd4715 /wd4530")
 endif()
@@ -292,11 +302,18 @@ include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
+  include_directories(${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/include)
+  include_directories(${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND}/include)
+endif()
 include_directories(${PROJECT_SOURCE_DIR}/third_party)
 include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
 
-add_subdirectory(include)
-add_subdirectory(lib)
+if(NOT FLAGTREE_BACKEND)
+  add_subdirectory(include)
+  add_subdirectory(lib)
+endif()
+flagtree_configure_core_source()
 
 # TODO: Figure out which target is sufficient to fix errors; triton is
 # apparently not enough. Currently set linking libstdc++fs for all targets
@@ -317,17 +334,21 @@ if(TRITON_BUILD_PYTHON_MODULE)
   # Python Interpreter is used to run lit tests
   find_package(Python3 REQUIRED COMPONENTS Development.Module Interpreter)
   find_package(pybind11 CONFIG REQUIRED HINTS "${Python3_SITELIB}")
+  flagtree_python_src_path_set()
+  flagtree_python_link_libraries()
+  flagtree_add_distributed_plugin()
 
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
   endforeach()
 
   if (TRITON_BUILD_PROTON)
+    add_definitions(-D__PROTON__)
     add_subdirectory(third_party/proton)
   endif()
   # We always build proton dialect
-  list(APPEND TRITON_PLUGIN_NAMES "proton")
-  add_subdirectory(third_party/proton/Dialect)
+  flagtree_configure_python_plugins()
+  flagtree_configure_tle_plugin(TRUE)
 
   if (DEFINED TRITON_PLUGIN_DIRS)
     foreach(PLUGIN_DIR ${TRITON_PLUGIN_DIRS})
@@ -344,6 +365,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
       message(STATUS "Building plugin '${PLUGIN_NAME}' from ${PLUGIN_DIR} with output ${PLUGIN_DIR_BUILD_OUTPUT}")
       add_subdirectory(${PLUGIN_DIR} ${PLUGIN_DIR_BUILD_OUTPUT})
     endforeach()
+  endif()
+
+  if(FLAGTREE_BACKEND)
+    include(FlagTreeBackendSpec)
+    flagtree_apply_backend_source_overrides("${FLAGTREE_BACKEND_DIR}")
   endif()
 
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
@@ -380,6 +406,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
     Python3::Module
     pybind11::headers
   )
+  flagtree_configure_backend_libraries()
+
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
      CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" OR # macOS arm64
      CMAKE_OSX_ARCHITECTURES MATCHES "arm64")  # also macOS arm64
@@ -412,7 +440,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   set(TRITON_BACKENDS_TUPLE "(${TRITON_BACKENDS_TUPLE})")
   add_compile_definitions(TRITON_BACKENDS_TUPLE=${TRITON_BACKENDS_TUPLE})
-  add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
+  flagtree_added_python_src(${PYTHON_SRC_PATH}/main.cc
                   ${PYTHON_SRC_PATH}/ir.cc
                   ${PYTHON_SRC_PATH}/gluon_ir.cc
                   ${CMAKE_CURRENT_SOURCE_DIR}/python/triton/experimental/gsan/src/gsan_testing.cc
@@ -423,7 +451,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
                   ${PYTHON_SRC_PATH}/specialize.cc)
 
   # Link triton with its dependencies
-  target_link_libraries(triton PRIVATE ${TRITON_LIBRARIES})
+  target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})
 
   # Do not propagate libraries that libtriton depends on. This ensures that
   # targets that link against libtriton do not accidentally link in their own
@@ -481,6 +509,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endif()
 endif()
 
+if(UNIX AND NOT APPLE AND NOT TRITON_EXT_ENABLED)
+  flagtree_configure_shared_linker_flags()
+endif()
+
 if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
   set(CMAKE_SHARED_LIBRARY_SUFFIX ".so")
 
@@ -497,13 +529,13 @@ if(NOT TRITON_BUILD_PYTHON_MODULE)
     add_subdirectory(third_party/${CODEGEN_BACKEND})
   endforeach()
   add_subdirectory(third_party/proton/Dialect)
+  flagtree_configure_tle_plugin(FALSE)
 endif()
 
 find_package(Threads REQUIRED)
 
 add_subdirectory(third_party/f2reduce)
-add_subdirectory(bin)
-add_subdirectory(test)
+flagtree_configure_tools_and_tests()
 
 if(TRITON_BUILD_UT)
   add_subdirectory(unittest)
