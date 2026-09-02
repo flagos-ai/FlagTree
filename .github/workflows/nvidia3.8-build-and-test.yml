@@ -109,9 +109,7 @@ jobs:
           python3 python/tutorials/11-programmatic-dependent-launch.py --only_unit_test
           python3 -m pytest -s python/test/unit/cuda
           python3 -m pytest -s python/test/unit/instrumentation
-          python3 -m pytest -s python/test/unit/language \
-              -k "not test_tensor_descriptor_reshape_matmul" \
-              --ignore=python/test/unit/language/test_line_info.py
+          python3 -m pytest -s python/test/unit/language
           python3 -m pytest -s python/test/unit/runtime
           if [ -d "python/test/operators" ]; then
             python3 -m pytest -s python/test/operators
