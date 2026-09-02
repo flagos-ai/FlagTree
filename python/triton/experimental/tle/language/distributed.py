@@ -650,6 +650,9 @@ def _mesh_has_axis(mesh: device_mesh, axis_token: str, *, use_launch_dims: bool 
 
 
 def _is_cluster_submesh(mesh: device_mesh) -> bool:
+    if _mesh_uses_grid_barrier(mesh):
+        return False
+
     launch_shape = tuple(int(size) for size in mesh.launch_shape)
     cluster_axes = tuple(axis for axis, name in enumerate(mesh.launch_dim_names) if "cluster" in name)
     if not cluster_axes:
@@ -705,7 +708,6 @@ def _infer_submesh_barrier_group(
     cluster_dims: Sequence[int],
 ) -> _BarrierGroupDescriptor:
     cluster_size = _prod(cluster_dims)
-    launch_size = _prod(mesh.launch_shape)
     if not mesh.physical_ids:
         raise ValueError("cannot infer barrier group from an empty mesh")
 
