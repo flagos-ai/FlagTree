@@ -23,9 +23,9 @@ inputs:
     required: false
     default: ''
   lock-timeout:
-    description: 'Timeout in seconds to wait for lock (default: 600)'
+    description: 'Timeout in seconds to wait for lock (default: 12000)'
     required: false
-    default: '600'
+    default: '12000'
 
 outputs:
   baseline_exists:
@@ -96,6 +96,9 @@ runs:
 
           # 创建 baseline 目录
           mkdir -p "$BASELINE_DIR"
+
+          rm -rf ${{ inputs.flaggems-ci-dir }}/FlagTree || true
+          rm -rf ${{ inputs.flaggems-ci-dir }}/FlagGems || true
 
           # 1. Clone FlagTree
           echo "📦 Cloning FlagTree (${{ inputs.flagtree-branch }})..."
