@@ -64,7 +64,6 @@ def elementwise_add_kernel(
     b_smem_ptrs = tle.gpu.local_ptr(b_smem, (row_ids, col_ids))
 
     # Use TLE pipeline for block-wise processing
-    #for yoff in range(0, ynumel, YBLOCK):
     for yoff in tle.gpu.pipeline(0, ynumel, YBLOCK, num_stages=2):
         # Calculate column offset for current block
         yoffs = tl.arange(0, YBLOCK) + yoff
@@ -203,6 +202,8 @@ class TestTLEPipelineEndToEnd:
     def test_tle_module_import(self):
         """Test TLE module import (no GPU required)"""
         # Verify all necessary functions and types can be imported
+        if tle.gpu is None:
+            pytest.skip("tle.gpu is not available on this backend")
         assert hasattr(tle, 'gpu')
         assert hasattr(tle.gpu, 'alloc')
         assert hasattr(tle.gpu, 'copy')

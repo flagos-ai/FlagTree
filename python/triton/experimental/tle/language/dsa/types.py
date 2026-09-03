@@ -27,16 +27,10 @@ class scope:
 # DSA storage scopes.
 local = scope("local", "local", "local")
 
-# Scratch Pad Memory – the on-chip SRAM exposed by TsingMicro TX8.
-# This is the primary storage scope for DSA kernels and serves the same
-# conceptual role as NVIDIA shared memory (smem).
+# On-chip scratchpad SRAM, the primary storage scope for DSA kernels
+# (same conceptual role as NVIDIA shared memory). Internal default for
+# ``alloc()``; user-facing selectors live in per-backend vendor namespaces.
 spm = scope("spm", "spm", "spm")
-
-# Vendor namespace for TsingMicro TX8 address-space selectors.
-# Exposed as ``tle.language.dsa.tsingmicro.SPM``.
-tsingmicro = type("tsingmicro", (), {
-    "SPM": scope("tsingmicro.spm", "spm", "spm"),
-})
 
 
 class buffered_tensor(base_value):

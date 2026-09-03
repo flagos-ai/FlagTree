@@ -2,8 +2,9 @@
 """TLE DSA slice family tests on tsingmicro (txda).
 
 Covers `tle.dsa.extract_slice`/`insert_slice` (element-level strided slicing)
-and the `tle.dsa.extract_tile`/`insert_tile` grid-coordinate wrappers that
-resolve to the same dsa.extract_slice / dsa.insert_slice IR ops.
+and the generic tle-lite `tle.extract_tile`/`tle.insert_tile` grid-coordinate
+forms, which lower through the shared tle dialect and resolve to the same
+dsa.extract_slice / dsa.insert_slice IR ops on this backend.
 """
 
 import pytest
@@ -43,7 +44,7 @@ SLICE = (16, 16, 16, 16)  # slice-test source shape
 @triton.jit
 def extract_scalar(x_ptr, out_ptr, shape: tl.constexpr, tile_shape: tl.constexpr, LIN: tl.constexpr):
     x = tl.load(x_ptr + _idx(shape))
-    tile = tle.dsa.extract_tile(x, index=LIN, tile_shape=tile_shape)
+    tile = tle.extract_tile(x, index=LIN, tile_shape=tile_shape)
     tl.store(out_ptr + _idx(tile_shape), tile)
 
 
@@ -53,7 +54,7 @@ def extract_dyn_multi(x_ptr, out_ptr, shape: tl.constexpr, tile_shape: tl.conste
     x = tl.load(x_ptr + _idx(shape))
     r = tl.full((), I0, tl.int32)
     c = tl.full((), I1, tl.int32)
-    tile = tle.dsa.extract_tile(x, index=[r, c, I2, I3], tile_shape=tile_shape)
+    tile = tle.extract_tile(x, index=[r, c, I2, I3], tile_shape=tile_shape)
     tl.store(out_ptr + _idx(tile_shape), tile)
 
 
@@ -62,9 +63,9 @@ def insert_multi(x_ptr, out_ptr, shape: tl.constexpr, tile_shape: tl.constexpr, 
                  SI2: tl.constexpr, SI3: tl.constexpr, DI0: tl.constexpr, DI1: tl.constexpr, DI2: tl.constexpr,
                  DI3: tl.constexpr):
     x = tl.load(x_ptr + _idx(shape))
-    tile = x.extract_tile(index=[SI0, SI1, SI2, SI3], tile_shape=tile_shape)
+    tile = tle.extract_tile(x, index=[SI0, SI1, SI2, SI3], tile_shape=tile_shape)
     tile = tile + 1.0
-    y = x.insert_tile(tile, index=[DI0, DI1, DI2, DI3])
+    y = tle.insert_tile(x, tile, index=[DI0, DI1, DI2, DI3])
     tl.store(out_ptr + _idx(shape), y)
 
 
@@ -72,10 +73,10 @@ def insert_multi(x_ptr, out_ptr, shape: tl.constexpr, tile_shape: tl.constexpr, 
 def insert_oop(x_ptr, out_ptr, shape: tl.constexpr, tile_shape: tl.constexpr, DI0: tl.constexpr, DI1: tl.constexpr,
                DI2: tl.constexpr, DI3: tl.constexpr):
     x = tl.load(x_ptr + _idx(shape))
-    tile = tle.dsa.extract_tile(x, index=[0, 0, 0, 0], tile_shape=tile_shape)
+    tile = tle.extract_tile(x, index=[0, 0, 0, 0], tile_shape=tile_shape)
     t2 = tile + 1.0
     s = tl.sum(tile)  # forces out-of-place mk.addvs: original tile still needed
-    y = tle.dsa.insert_tile(x, t2, index=[DI0, DI1, DI2, DI3])
+    y = tle.insert_tile(x, t2, index=[DI0, DI1, DI2, DI3])
     y = y + s
     tl.store(out_ptr + _idx(shape), y)
 
@@ -85,9 +86,9 @@ def insert_dyn_scalar(x_ptr, idx_src_ptr, idx_dst_ptr, out_ptr, shape: tl.conste
     x = tl.load(x_ptr + _idx(shape))
     idx_src = tl.load(idx_src_ptr)
     idx_dst = tl.load(idx_dst_ptr)
-    tile = tle.dsa.extract_tile(x, index=idx_src, tile_shape=tile_shape)
+    tile = tle.extract_tile(x, index=idx_src, tile_shape=tile_shape)
     tile = tile + 1.0
-    y = tle.dsa.insert_tile(x, tile, index=idx_dst)
+    y = tle.insert_tile(x, tile, index=idx_dst)
     tl.store(out_ptr + _idx(shape), y)
 
 

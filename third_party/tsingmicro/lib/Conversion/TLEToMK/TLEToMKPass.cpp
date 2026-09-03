@@ -12,6 +12,7 @@
 #include "magic-kernel/Conversion/TLEToMK/TLEToMK.h"
 #include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "tle/include/tle-dsa/Dialect/IR/DsaDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -47,7 +48,22 @@ public:
 
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
       signalPassFailure();
+      return;
     }
+
+    // Postcondition: these ops are owned by this pass; a survivor means an
+    // unlowerable op reached the pipeline (e.g. reverse cumsum).
+    WalkResult bad = moduleOp.walk([&](Operation *op) -> WalkResult {
+      if (isa<mlir::triton::tle::ExclusiveCumsumOp,
+              mlir::triton::tle::ExtractTileOp,
+              mlir::triton::tle::InsertTileOp, mlir::dsa::CumsumOp>(op)) {
+        op->emitError("not lowered by tle-to-mk");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (bad.wasInterrupted())
+      signalPassFailure();
   }
 };
 } // namespace

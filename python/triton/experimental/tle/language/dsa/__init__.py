@@ -1,11 +1,18 @@
 # flagtree tle
+"""Multi-vendor DSA (Device-Specific API) extensions.
+
+``dsa`` is the multi-vendor namespace for device-specific primitives: the
+shared API surface (``alloc``/``copy``/``pipeline``/slices/arithmetic) lives
+at this level, and each vendor's private primitives live in a per-backend
+sub-namespace (see ``dsa.tsingmicro``, mirroring upstream ``dsa.ascend``).
+"""
+
 from .core import (
     pipeline,
     alloc,
     copy,
     memory_space,
     local_ptr,
-    cumsum,
     to_tensor,
     to_buffer,
     add,
@@ -16,27 +23,17 @@ from .core import (
     div,
     extract_slice,
     insert_slice,
-    extract_tile,
-    insert_tile,
-    randgen,
-    rand,
-    randn,
 )
 from .types import (
     scope,
     local,
-    spm,
-    tsingmicro,
     buffered_tensor,
     buffered_tensor_type,
 )
+from . import tsingmicro
 from .semantic import DSASemantic, DSASemanticError
 
 __all__ = [
-    "cumsum",
-    "randgen",
-    "rand",
-    "randn",
     "pipeline",
     "alloc",
     "copy",
@@ -52,11 +49,8 @@ __all__ = [
     "div",
     "extract_slice",
     "insert_slice",
-    "extract_tile",
-    "insert_tile",
     "scope",
     "local",
-    "spm",
     "tsingmicro",
     "buffered_tensor",
     "buffered_tensor_type",

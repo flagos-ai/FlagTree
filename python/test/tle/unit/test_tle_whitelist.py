@@ -17,9 +17,13 @@ from triton.language import load as tl_load
         ("language.gpu.core.alloc", "gpu.alloc"),
         ("triton.experimental.tle.language.raw.core.call", "raw.call"),
         (tle.language.cumsum, "cumsum"),
-        (tle.language.gpu.alloc, "gpu.alloc"),
-        (tle.language.gpu.buffered_tensor.slot, "gpu.buffered_tensor.slot"),
-        (tle.language.gpu.pipeline, "gpu.pipeline"),
+        *(
+            [
+                (tle.language.gpu.alloc, "gpu.alloc"),
+                (tle.language.gpu.buffered_tensor.slot, "gpu.buffered_tensor.slot"),
+                (tle.language.gpu.pipeline, "gpu.pipeline"),
+            ] if tle.language.gpu is not None else []
+        ),
     ],
 )
 def test_primitive_name(primitive, expected):
@@ -58,6 +62,7 @@ def test_primitive_outside_total_is_not_checked(monkeypatch):
         tle.require_tle("missing", primitive)
 
 
+@pytest.mark.skipif(tle.language.gpu is None, reason="tle.gpu is not available on this backend")
 def test_backend_config_is_normalized(monkeypatch):
     config = SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=["tle.cumsum", "language.gpu.core.alloc"])
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: config)
@@ -82,6 +87,7 @@ def test_invalid_backend_config_is_rejected(monkeypatch, configured):
         tle.get_supported_primitives("invalid")
 
 
+@pytest.mark.skipif(tle.language.gpu is None, reason="tle.gpu is not available on this backend")
 def test_unsupported_error_names_backend_and_primitive(monkeypatch):
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=[]))
     with pytest.raises(tle.TLEUnsupportedPrimitiveError, match=r"backend 'test'.*'gpu\.alloc'"):
@@ -107,6 +113,7 @@ def test_active_backend_name_falls_back_for_default_backends(monkeypatch, backen
     assert _flagtree_backend.get_active_backend_name() == backend_name
 
 
+@pytest.mark.skipif(tle.language.gpu is None, reason="tle.gpu is not available on this backend")
 def test_codegen_guard_only_rejects_unsupported_tle_primitives(monkeypatch):
     monkeypatch.setattr(tle, "_backend_config_module", lambda _backend: SimpleNamespace(TLE_SUPPORTED_PRIMITIVES=[]))
     monkeypatch.setattr(_flagtree_backend, "get_active_backend_name", lambda: "test")

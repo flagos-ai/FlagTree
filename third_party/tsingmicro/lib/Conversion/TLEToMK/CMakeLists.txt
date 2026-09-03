@@ -8,6 +8,7 @@ add_triton_library(TLEToMagicKernel
   TleDsaDialectIncGen
   TleDsaTypesIncGen
   TleDsaOpsIncGen
+  TleTableGen
 
   LINK_LIBS PUBLIC
   MLIRIR
@@ -18,4 +19,5 @@ add_triton_library(TLEToMagicKernel
   TritonIR
   TritonStructuredIR
   TleDsaIR
+  TleIR
 )

@@ -7,6 +7,7 @@
 
 #include "magic-kernel/Conversion/TLEToMK/TLEToMK.h"
 #include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "tle/include/tle-dsa/Dialect/IR/DsaDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -18,6 +19,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
@@ -797,6 +799,207 @@ struct DsaToBufferToBufferizationPattern
   }
 };
 
+// ===----------------------------------------------------------------------===//
+// generic tle-lite ops (shared tle dialect) → dsa normalization.
+// tle.exclusive_cumsum / extract_tile / insert_tile re-encode into dsa ops
+// here and reuse the existing dsa lowering paths below.
+// ===----------------------------------------------------------------------===//
+
+// Resolve a linear tile index into per-dim slice offsets, following the
+// shared tle frontend semantics (row-major over the tile grid):
+//   offsets[i] = (lin / stride_i % grid_i) * tile_i
+//   grid_i = srcShape_i / tile_i, stride_i = prod_{j>i}(grid_j)
+// Static indices (scalar arith.constant) fold into `staticOffsets`; dynamic
+// indices emit arith div/rem/mul chains into `dynOffsets` (staticOffsets
+// entries become ShapedType::kDynamic sentinels). Dynamic `index` must lie
+// in [0, prod(grid)); out-of-range values are UB (shared frontend contract).
+static LogicalResult
+resolveTleTileOffsets(PatternRewriter &rewriter, Location loc,
+                      ArrayRef<int64_t> srcShape,
+                      ArrayRef<int64_t> tileShape, Value index,
+                      SmallVectorImpl<int64_t> &staticOffsets,
+                      SmallVectorImpl<Value> &dynOffsets) {
+  int64_t rank = static_cast<int64_t>(srcShape.size());
+  SmallVector<int64_t> grid(rank);
+  for (int64_t i = 0; i < rank; ++i) {
+    if (tileShape[i] <= 0 || srcShape[i] % tileShape[i] != 0)
+      return failure();
+    grid[i] = srcShape[i] / tileShape[i];
+    if (grid[i] == 0)
+      return failure();
+  }
+
+  // Static path: constant index folds to per-dim offsets.
+  APInt staticIndex;
+  if (matchPattern(index, m_ConstantInt(&staticIndex))) {
+    int64_t remain = staticIndex.getZExtValue();
+    staticOffsets.resize(rank);
+    for (int64_t i = rank - 1; i >= 0; --i) {
+      int64_t coord = remain % grid[i];
+      remain /= grid[i];
+      staticOffsets[i] = coord * tileShape[i];
+    }
+    return success();
+  }
+
+  // Dynamic path: index is a rank-0 int tensor or a scalar int/index value.
+  // Work in i64: narrower widths would silently truncate stride constants.
+  Value idx = index;
+  if (auto indexTy = dyn_cast<RankedTensorType>(index.getType())) {
+    if (!indexTy.getShape().empty() ||
+        !indexTy.getElementType().isIntOrIndex())
+      return failure();
+  } else if (!isa<IntegerType, IndexType>(index.getType())) {
+    return failure();
+  }
+  if (auto elemTy = dyn_cast<IntegerType>(getElementTypeOrSelf(index))) {
+    if (elemTy.getWidth() < 64) {
+      Type i64Ty = rewriter.getI64Type();
+      if (isa<RankedTensorType>(index.getType()))
+        i64Ty = RankedTensorType::get({}, i64Ty);
+      idx = rewriter.create<arith::ExtSIOp>(loc, i64Ty, index);
+    }
+  } else if (isa<IndexType>(getElementTypeOrSelf(index))) {
+    Type i64Ty = rewriter.getI64Type();
+    if (isa<RankedTensorType>(index.getType()))
+      i64Ty = RankedTensorType::get({}, i64Ty);
+    idx = rewriter.create<arith::IndexCastOp>(loc, i64Ty, index);
+  }
+  auto makeConst = [&](int64_t v) -> Value {
+    Type ty = idx.getType();
+    if (auto tensorTy = dyn_cast<RankedTensorType>(ty))
+      return rewriter.create<arith::ConstantOp>(
+          loc, ty, DenseElementsAttr::get(tensorTy, ArrayRef<int64_t>{v}));
+    return rewriter.create<arith::ConstantOp>(
+        loc, ty, IntegerAttr::get(ty, v));
+  };
+
+  SmallVector<int64_t> strides(rank, 1);
+  for (int64_t i = rank - 2; i >= 0; --i)
+    strides[i] = strides[i + 1] * grid[i + 1];
+
+  staticOffsets.assign(rank, ShapedType::kDynamic);
+  dynOffsets.assign(rank, Value());
+  for (int64_t i = 0; i < rank; ++i) {
+    Value div = rewriter.create<arith::DivSIOp>(loc, idx, makeConst(strides[i]));
+    Value mod = rewriter.create<arith::RemSIOp>(loc, div, makeConst(grid[i]));
+    dynOffsets[i] =
+        rewriter.create<arith::MulIOp>(loc, mod, makeConst(tileShape[i]));
+  }
+  return success();
+}
+
+struct TleExclusiveCumsumToDsaPattern
+    : public OpRewritePattern<mlir::triton::tle::ExclusiveCumsumOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::triton::tle::ExclusiveCumsumOp op,
+                                PatternRewriter &rewriter) const override {
+    auto inputTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
+    auto exclusiveTy = dyn_cast<RankedTensorType>(op.getExclusive().getType());
+    if (!inputTy || !exclusiveTy)
+      return rewriter.notifyMatchFailure(
+          op, "tle.exclusive_cumsum expects ranked tensor input/exclusive");
+    if (inputTy.getShape() != exclusiveTy.getShape() ||
+        inputTy.getElementType() != exclusiveTy.getElementType())
+      return rewriter.notifyMatchFailure(
+          op, "tle.exclusive_cumsum input/exclusive type mismatch");
+    // TX81 hardware scan supports floating-point input only.
+    if (!inputTy.getElementType().isF32() && !inputTy.getElementType().isF16() &&
+        !inputTy.getElementType().isBF16())
+      return rewriter.notifyMatchFailure(
+          op, "tle.exclusive_cumsum on tsingmicro supports only "
+              "floating-point input (integer scan not supported by hardware)");
+
+    SmallVector<int64_t> shape(inputTy.getShape().begin(),
+                               inputTy.getShape().end());
+    if (shape.empty())
+      return rewriter.notifyMatchFailure(
+          op, "tle.exclusive_cumsum expects a non-zero rank input");
+    // pad = 2 * last dim, matching the dsa scratch convention.
+    int64_t pad = shape.back() * 2;
+
+    auto cumsumOp = rewriter.create<mlir::dsa::CumsumOp>(
+        op.getLoc(), TypeRange{exclusiveTy, op.getTotal().getType()},
+        op.getSrc(), op.getAxisAttr(), op.getReverseAttr(),
+        rewriter.getDenseI64ArrayAttr(shape), rewriter.getI64IntegerAttr(pad));
+    rewriter.replaceOp(op, cumsumOp->getResults());
+    return success();
+  }
+};
+
+struct TleExtractTileToDsaPattern
+    : public OpRewritePattern<mlir::triton::tle::ExtractTileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::triton::tle::ExtractTileOp op,
+                                PatternRewriter &rewriter) const override {
+    auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
+    if (!srcTy)
+      return rewriter.notifyMatchFailure(
+          op, "tle.extract_tile expects ranked tensor source");
+    auto tileShapeAttr = dyn_cast<DenseI64ArrayAttr>(op->getAttr("tile_shape"));
+    if (!tileShapeAttr)
+      return rewriter.notifyMatchFailure(op,
+                                         "tle.extract_tile missing tile_shape");
+    SmallVector<int64_t> tileShape(tileShapeAttr.asArrayRef());
+    auto resultTy = dyn_cast<RankedTensorType>(op.getResult().getType());
+    if (!resultTy ||
+        static_cast<int64_t>(tileShape.size()) != srcTy.getRank() ||
+        resultTy.getShape() != ArrayRef<int64_t>(tileShape))
+      return rewriter.notifyMatchFailure(
+          op, "tle.extract_tile tile_shape/result type mismatch");
+
+    SmallVector<int64_t> staticOffsets;
+    SmallVector<Value> dynOffsets;
+    if (failed(resolveTleTileOffsets(rewriter, op.getLoc(), srcTy.getShape(),
+                                     tileShape, op.getIndex(), staticOffsets,
+                                     dynOffsets)))
+      return rewriter.notifyMatchFailure(
+          op, "tle.extract_tile index cannot be resolved to tile offsets");
+
+    rewriter.replaceOpWithNewOp<mlir::dsa::ExtractSliceOp>(
+        op, resultTy, op.getSrc(), dynOffsets,
+        rewriter.getDenseI64ArrayAttr(staticOffsets),
+        rewriter.getDenseI64ArrayAttr(resultTy.getShape()),
+        rewriter.getDenseI64ArrayAttr(
+            SmallVector<int64_t>(tileShape.size(), 1)));
+    return success();
+  }
+};
+
+struct TleInsertTileToDsaPattern
+    : public OpRewritePattern<mlir::triton::tle::InsertTileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::triton::tle::InsertTileOp op,
+                                PatternRewriter &rewriter) const override {
+    auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
+    auto tileTy = dyn_cast<RankedTensorType>(op.getTile().getType());
+    if (!srcTy || !tileTy)
+      return rewriter.notifyMatchFailure(
+          op, "tle.insert_tile expects ranked tensor source/tile");
+    SmallVector<int64_t> tileShape(tileTy.getShape().begin(),
+                                   tileTy.getShape().end());
+
+    SmallVector<int64_t> staticOffsets;
+    SmallVector<Value> dynOffsets;
+    if (failed(resolveTleTileOffsets(rewriter, op.getLoc(), srcTy.getShape(),
+                                     tileShape, op.getIndex(), staticOffsets,
+                                     dynOffsets)))
+      return rewriter.notifyMatchFailure(
+          op, "tle.insert_tile index cannot be resolved to tile offsets");
+
+    rewriter.replaceOpWithNewOp<mlir::dsa::InsertSliceOp>(
+        op, srcTy, op.getSrc(), op.getTile(), dynOffsets,
+        rewriter.getDenseI64ArrayAttr(staticOffsets),
+        rewriter.getDenseI64ArrayAttr(tileShape),
+        rewriter.getDenseI64ArrayAttr(
+            SmallVector<int64_t>(tileShape.size(), 1)));
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::populateTLEToMKConversionPatterns(
@@ -804,6 +1007,12 @@ void mlir::triton::populateTLEToMKConversionPatterns(
   patterns
       .add<DsaCumsumToMkPattern, DsaRandGenToMkPattern, DsaBitcastToMkPattern>(
           patterns.getContext());
+
+  // Generic tle-lite ops (shared tle dialect) are normalized into their dsa
+  // counterparts here, then lowered by the dsa patterns above. Unlowerable
+  // leftovers (e.g. reverse cumsum) are reported by the pass postcondition.
+  patterns.add<TleExclusiveCumsumToDsaPattern, TleExtractTileToDsaPattern,
+               TleInsertTileToDsaPattern>(patterns.getContext());
 
   // Benefit 4: dsa binary arithmetic (add/sub/mul/max/min) → linalg.generic.
   // Fires before DsaLocalLoadToMemrefPattern (benefit=3).
