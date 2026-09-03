@@ -649,18 +649,16 @@ def _mesh_has_axis(mesh: device_mesh, axis_token: str, *, use_launch_dims: bool 
     return any(axis_token in name for name in dim_names)
 
 
-def _is_cluster_submesh(mesh: device_mesh) -> bool:
-    if _mesh_uses_grid_barrier(mesh):
-        return False
-
+def _collect_cluster_members_by_outer_coord(
+    mesh: device_mesh,
+) -> tuple[tuple[int, ...], dict[tuple[int, ...], set[tuple[int, ...]]]]:
     launch_shape = tuple(int(size) for size in mesh.launch_shape)
     cluster_axes = tuple(axis for axis, name in enumerate(mesh.launch_dim_names) if "cluster" in name)
     if not cluster_axes:
-        return False
+        return cluster_axes, {}
 
     cluster_axis_set = set(cluster_axes)
     outer_axes = tuple(axis for axis in range(len(launch_shape)) if axis not in cluster_axis_set)
-    cluster_size = _prod(launch_shape[axis] for axis in cluster_axes)
     launch_size = _prod(launch_shape)
     cluster_members_by_outer_coord: dict[tuple[int, ...], set[tuple[int, ...]]] = {}
 
@@ -681,6 +679,18 @@ def _is_cluster_submesh(mesh: device_mesh) -> bool:
         cluster_coord = tuple(coords[axis] for axis in cluster_axes)
         cluster_members_by_outer_coord.setdefault(outer_coord, set()).add(cluster_coord)
 
+    return cluster_axes, cluster_members_by_outer_coord
+
+
+def _is_cluster_submesh(mesh: device_mesh) -> bool:
+    if _mesh_uses_grid_barrier(mesh):
+        return False
+
+    cluster_axes, cluster_members_by_outer_coord = _collect_cluster_members_by_outer_coord(mesh)
+    if not cluster_axes:
+        return False
+
+    cluster_size = _prod(mesh.launch_shape[axis] for axis in cluster_axes)
     return any(len(cluster_members) < cluster_size for cluster_members in cluster_members_by_outer_coord.values())
 
 
@@ -707,32 +717,70 @@ def _infer_submesh_barrier_group(
     mesh: device_mesh,
     cluster_dims: Sequence[int],
 ) -> _BarrierGroupDescriptor:
-    cluster_size = _prod(cluster_dims)
     if not mesh.physical_ids:
         raise ValueError("cannot infer barrier group from an empty mesh")
 
     if not mesh.dim_names:
         raise NotImplementedError("scalar sub-mesh barrier is not implemented yet; provide at least one sliced axis")
 
+    cluster_axes, cluster_members_by_outer_coord = _collect_cluster_members_by_outer_coord(mesh)
+
     launch_name_to_axis = {name: i for i, name in enumerate(mesh.launch_dim_names)}
     if any(name not in launch_name_to_axis for name in mesh.dim_names):
         raise NotImplementedError("sub-mesh barrier currently supports slicing-derived meshes with "
                                   "axis names inherited from launch mesh")
 
-    axes = tuple(int(launch_name_to_axis[name]) for name in mesh.dim_names)
+    cluster_axis_to_local = {axis: i for i, axis in enumerate(cluster_axes)}
+    axes = tuple(
+        int(cluster_axis_to_local[launch_name_to_axis[name]])
+        for name in mesh.dim_names
+        if launch_name_to_axis[name] in cluster_axis_to_local
+    )
     if len(set(axes)) != len(axes):
-        raise ValueError(f"invalid subgroup axes (duplicate launch axes): {axes}")
+        raise ValueError(f"invalid subgroup axes (duplicate cluster axes): {axes}")
 
-    shape = tuple(int(v) for v in mesh.shape)
+    shape = tuple(
+        int(size)
+        for name, size in zip(mesh.dim_names, mesh.shape)
+        if launch_name_to_axis[name] in cluster_axis_to_local
+    )
     if not shape or any(v <= 0 for v in shape):
-        raise ValueError(f"invalid subgroup shape inferred from mesh: {shape}")
+        raise NotImplementedError("scalar sub-mesh barrier is not implemented yet; provide at least one sliced cluster axis")
 
-    mask = tuple(int(v) for v in mesh.physical_ids)
+    member_sets = list(cluster_members_by_outer_coord.values())
+    reference_members = member_sets[0]
+    if any(members != reference_members for members in member_sets[1:]):
+        members_by_outer_coord = {
+            outer_coord: tuple(sorted(members))
+            for outer_coord, members in cluster_members_by_outer_coord.items()
+        }
+        raise ValueError(
+            "sub-mesh barrier cannot use one mask for different cluster member selections "
+            "at different outer mesh positions (the non-cluster dimensions): "
+            f"{members_by_outer_coord}")
+
+    cluster_shape = tuple(int(mesh.launch_shape[axis]) for axis in cluster_axes)
+
+    def _flatten_cluster_coord(coord: tuple[int, ...]) -> int:
+        member_id = 0
+        for value, extent in zip(coord, cluster_shape):
+            member_id = member_id * extent + int(value)
+        return member_id
+
+    # physical_ids are linear ids in the full launch mesh. The lowering
+    # compares group_mask with the CTA id inside one cluster, so convert the
+    # common cluster-coordinate set into cluster-local linear ids first.
+    mask = tuple(sorted(_flatten_cluster_coord(coord) for coord in reference_members))
     if not mask:
         raise ValueError("sub-mesh barrier group mask cannot be empty")
+
+    cluster_size = _prod(cluster_dims)
     if any(v < 0 or v >= cluster_size for v in mask):
         raise ValueError("sub-mesh barrier group mask contains out-of-range cluster member ids: "
                          f"mask={mask}, cluster_size={cluster_size}")
+    if _prod(shape) != len(mask):
+        raise ValueError("sub-mesh barrier group shape does not match the number of cluster members: "
+                         f"shape={shape}, mask={mask}")
 
     return _BarrierGroupDescriptor(
         kind="submesh",

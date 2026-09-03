@@ -356,3 +356,68 @@ class TestDistributedBarrierScope:
     def test_infer_submesh_barrier_group_full_mesh_returns_false(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
         assert _is_cluster_submesh(mesh) is False
+
+    def test_infer_hierarchical_submesh_uses_cluster_local_mask(self):
+        mesh = tle.device_mesh({
+            "node": [("rack", 2)],
+            "device": [("gpu", 4)],
+            "block_cluster": [("cluster_x", 2)],
+        })
+        group = _infer_submesh_barrier_group(mesh[1, 3, 1:2], (2, 1, 1))
+
+        assert group.shape == (1, )
+        assert group.axes == (0, )
+        assert group.mask == (1, )
+
+    def test_infer_hierarchical_submesh_reuses_common_mask_across_outer_coords(self):
+        mesh = tle.device_mesh({
+            "node": [("rack", 2)],
+            "device": [("gpu", 4)],
+            "block_cluster": [("cluster_x", 2)],
+        })
+        group = _infer_submesh_barrier_group(mesh[:, :, 1:2], (2, 1, 1))
+
+        assert group.shape == (1, )
+        assert group.axes == (0, )
+        assert group.mask == (1, )
+
+    def test_infer_hierarchical_submesh_with_device_and_block_axes(self):
+        mesh = tle.device_mesh({
+            "device": [
+                ("device_x", 2),
+                ("device_y", 2),
+            ],
+            "block_cluster": [
+                ("cluster_x", 2),
+                ("cluster_y", 2),
+            ],
+            "block": [
+                ("block_x", 4),
+                ("block_y", 4),
+            ],
+        })
+
+        cluster_x_submesh = mesh[:, :, 1, :, :, :]
+        cluster_y_submesh = mesh[:, :, :, 1, :, :]
+        cluster_x_group = _infer_submesh_barrier_group(cluster_x_submesh, (2, 2, 1))
+        cluster_y_group = _infer_submesh_barrier_group(cluster_y_submesh, (2, 2, 1))
+
+        assert cluster_x_group.shape == (2, )
+        assert cluster_x_group.axes == (1, )
+        assert cluster_x_group.mask == (2, 3)
+        assert cluster_y_group.shape == (2, )
+        assert cluster_y_group.axes == (0, )
+        assert cluster_y_group.mask == (1, 3)
+
+    def test_infer_submesh_rejects_different_masks_across_outer_coords(self):
+        mesh = tle.device_mesh(
+            None,
+            _shape=(2, ),
+            _dim_names=("cluster_x", ),
+            _physical_ids=(0, 3),
+            _launch_shape=(2, 2),
+            _launch_dim_names=("rack", "cluster_x"),
+        )
+
+        with pytest.raises(ValueError, match="one mask for different cluster member selections"):
+            _infer_submesh_barrier_group(mesh, (2, 1, 1))
