@@ -1,0 +1,306 @@
+name: 'Ensure FlagGems Baseline'
+description: 'Check if FlagGems baseline exists, generate if not with lock protection'
+
+inputs:
+  flaggems-tag:
+    description: 'FlagGems tag'
+    required: true
+    default: 'v5.3.5'
+  flagtree-branch:
+    description: 'FlagTree branch'
+    required: true
+    default: 'main'
+  flaggems-ci-dir:
+    description: 'FlagGems CI directory'
+    required: true
+    default: '/root/flaggems_ci'
+  gpus:
+    description: 'GPU devices to use'
+    required: true
+    default: '0'
+  date:
+    description: 'Date for baseline (YYYY-MM-DD format). Defaults to today'
+    required: false
+    default: ''
+  lock-timeout:
+    description: 'Timeout in seconds to wait for lock (default: 600)'
+    required: false
+    default: '600'
+
+outputs:
+  baseline_exists:
+    description: 'Whether baseline exists after check/generation'
+    value: ${{ steps.ensure-baseline.outputs.baseline_exists }}
+  baseline_date:
+    description: 'Date of the baseline'
+    value: ${{ steps.ensure-baseline.outputs.baseline_date }}
+  baseline_path:
+    description: 'Full path to the baseline summary file'
+    value: ${{ steps.ensure-baseline.outputs.baseline_path }}
+  action_taken:
+    description: 'What action was taken (exists/generated/waited)'
+    value: ${{ steps.ensure-baseline.outputs.action_taken }}
+  baseline_dir:
+    description: 'Directory where baseline was saved'
+    value: ${{ steps.ensure-baseline.outputs.baseline_dir }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Ensure baseline exists
+      id: ensure-baseline
+      shell: bash
+      run: |
+        # 设置日期
+        if [ -z "${{ inputs.date }}" ]; then
+          TODAY=$(date +%Y-%m-%d)
+        else
+          TODAY="${{ inputs.date }}"
+        fi
+        
+        BASELINE_DIR="${{ inputs.flaggems-ci-dir }}/Baseline/${TODAY}"
+        BASELINE_SUMMARY="${BASELINE_DIR}/summary.json"
+        LOCK_DIR="${{ inputs.flaggems-ci-dir }}/.baseline_generate_${TODAY}.lock"
+        LOCK_TIMEOUT="${{ inputs.lock-timeout }}"
+        
+        echo "📅 Baseline date: $TODAY"
+        echo "📁 Baseline directory: $BASELINE_DIR"
+        echo "📄 Baseline summary: $BASELINE_SUMMARY"
+        echo "🔒 Lock directory: $LOCK_DIR"
+        echo "⏱️  Lock timeout: ${LOCK_TIMEOUT}s"
+        
+        # 设置输出
+        echo "baseline_date=$TODAY" >> $GITHUB_OUTPUT
+        echo "baseline_dir=$BASELINE_DIR" >> $GITHUB_OUTPUT
+        echo "baseline_path=$BASELINE_SUMMARY" >> $GITHUB_OUTPUT
+        
+        # 函数：检查 baseline 是否存在
+        check_baseline() {
+          if [ -f "$BASELINE_SUMMARY" ] && [ -s "$BASELINE_SUMMARY" ]; then
+            echo "✅ FlagGems baseline exists"
+            echo "📋 Content preview (first 12 lines):"
+            head -n 12 "$BASELINE_SUMMARY"
+            echo "baseline_exists=true" >> $GITHUB_OUTPUT
+            return 0
+          else
+            echo "⚠️  FlagGems baseline does not exist or is empty"
+            echo "baseline_exists=false" >> $GITHUB_OUTPUT
+            return 1
+          fi
+        }
+        
+        # 函数：生成 baseline
+        generate_baseline() {
+          echo "🔨 Generating FlagGems baseline..."
+          echo "action_taken=generated" >> $GITHUB_OUTPUT
+          
+          # 创建 baseline 目录
+          mkdir -p "$BASELINE_DIR"
+          
+          # 1. Clone FlagTree
+          echo "📦 Cloning FlagTree (${{ inputs.flagtree-branch }})..."
+          git clone --depth 1 --branch ${{ inputs.flagtree-branch }} \
+            https://github.com/flagos-ai/FlagTree.git \
+            ${{ inputs.flaggems-ci-dir }}/FlagTree || {
+            echo "❌ Failed to clone FlagTree"
+            return 1
+          }
+          
+          # 2. Cleanup FlagTree Environment
+          echo "🧹 Cleaning FlagTree environment..."
+          # 这里可以调用 cleanup action，或者直接执行清理命令
+          # 如果有 cleanup action，可以在这里调用
+          
+          # 3. Build FlagTree
+          echo "🔨 Building FlagTree..."
+          source ~/env-3.6.sh
+          cd ${{ inputs.flaggems-ci-dir }}/FlagTree
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v || {
+            echo "❌ Failed to build FlagTree"
+            return 1
+          }
+          
+          # 4. Clone FlagGems
+          echo "📦 Cloning FlagGems (${{ inputs.flaggems-tag }})..."
+          git clone --depth 1 --branch ${{ inputs.flaggems-tag }} \
+            https://github.com/flagos-ai/FlagGems.git \
+            ${{ inputs.flaggems-ci-dir }}/FlagGems || {
+            echo "❌ Failed to clone FlagGems"
+            return 1
+          }
+          
+          # 5. Install FlagGems
+          echo "📦 Installing FlagGems..."
+          cd ${{ inputs.flaggems-ci-dir }}/FlagGems
+          python3 -m pip uninstall -y flag_gems --break-system-packages || true
+          pip install -v -e . --no-build-isolation --no-deps || {
+            echo "❌ Failed to install FlagGems"
+            return 1
+          }
+          
+          # 6. Run FlagGems Test for Baseline
+          echo "🏃 Running FlagGems tests for baseline..."
+          
+          # 检查 run-flaggems-test action 是否存在
+          if [ -d ".github/actions/run-flaggems-test" ]; then
+            # 如果 action 存在，直接调用
+            # 但这里无法在 shell 中直接调用 action，需要执行实际命令
+            echo "ℹ️  Running baseline tests..."
+            
+            # 执行测试脚本
+            cd ${{ inputs.flaggems-ci-dir }}/FlagGems
+            python3 tools/ci/ci_run_tests.py \
+              --output-dir "$BASELINE_DIR" \
+              --skip-file tools/ci/skip_list.yaml \
+              --first-parameter-only || {
+              echo "❌ Failed to run baseline tests"
+              return 1
+            }
+          else
+            echo "❌ run-flaggems-test action not found"
+            return 1
+          fi
+          
+          # 7. Verify baseline generated
+          if [ -f "$BASELINE_SUMMARY" ] && [ -s "$BASELINE_SUMMARY" ]; then
+            echo "✅ Baseline generated successfully!"
+            echo "baseline_exists=true" >> $GITHUB_OUTPUT
+            return 0
+          else
+            echo "❌ Baseline generation failed - summary.json not found or empty"
+            echo "baseline_exists=false" >> $GITHUB_OUTPUT
+            return 1
+          fi
+        }
+        
+        # 函数：释放锁
+        release_lock() {
+          if [ -d "$LOCK_DIR" ]; then
+            rmdir "$LOCK_DIR" 2>/dev/null || true
+            echo "🔓 Lock released: $LOCK_DIR"
+          fi
+        }
+        
+        # === 主逻辑 ===
+        
+        # 先快速检查（无锁），提高效率
+        if check_baseline; then
+          echo "action_taken=exists" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        # 尝试获取锁
+        echo "🔒 Attempting to acquire lock: $LOCK_DIR"
+        
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+          echo "✅ Lock acquired"
+          echo "action_taken=generated" >> $GITHUB_OUTPUT
+          
+          # 设置 trap 确保释放锁
+          trap release_lock EXIT
+          
+          # 双重检查锁定 - 其他进程可能在我们等待时创建了 baseline
+          if check_baseline; then
+            echo "action_taken=exists" >> $GITHUB_OUTPUT
+            release_lock
+            exit 0
+          fi
+          
+          # 生成 baseline
+          if generate_baseline; then
+            echo "✅ Baseline generation completed successfully"
+            # 验证生成结果
+            if [ -f "$BASELINE_SUMMARY" ] && [ -s "$BASELINE_SUMMARY" ]; then
+              echo "baseline_exists=true" >> $GITHUB_OUTPUT
+              echo "✅ Final verification passed"
+            else
+              echo "baseline_exists=false" >> $GITHUB_OUTPUT
+              echo "❌ Final verification failed"
+              release_lock
+              exit 1
+            fi
+          else
+            echo "❌ Baseline generation failed"
+            echo "baseline_exists=false" >> $GITHUB_OUTPUT
+            release_lock
+            exit 1
+          fi
+          
+          # 释放锁
+          release_lock
+          
+        else
+          # 锁被其他进程持有，等待
+          echo "⏳ Lock held by another process, waiting..."
+          echo "action_taken=waited" >> $GITHUB_OUTPUT
+          
+          WAIT_COUNT=0
+          LOCK_ACQUIRED=false
+          
+          while [ $WAIT_COUNT -lt $LOCK_TIMEOUT ]; do
+            sleep 5
+            WAIT_COUNT=$((WAIT_COUNT + 5))
+            
+            # 显示进度（每30秒）
+            if [ $((WAIT_COUNT % 30)) -eq 0 ]; then
+              echo "⏳ Waiting... ($WAIT_COUNT/$LOCK_TIMEOUT seconds)"
+            fi
+            
+            # 检查 baseline 是否已生成
+            if check_baseline; then
+              echo "✅ Baseline exists (generated by other process)"
+              echo "action_taken=waited" >> $GITHUB_OUTPUT
+              break
+            fi
+            
+            # 尝试获取锁（可能是锁持有者失败了）
+            if mkdir "$LOCK_DIR" 2>/dev/null; then
+              echo "✅ Lock acquired after waiting"
+              trap release_lock EXIT
+              LOCK_ACQUIRED=true
+              
+              # 双重检查
+              if check_baseline; then
+                echo "action_taken=exists" >> $GITHUB_OUTPUT
+                release_lock
+                break
+              fi
+              
+              # 生成 baseline（锁被我们获取）
+              if generate_baseline; then
+                echo "✅ Baseline generation completed"
+                echo "baseline_exists=true" >> $GITHUB_OUTPUT
+              else
+                echo "❌ Baseline generation failed"
+                echo "baseline_exists=false" >> $GITHUB_OUTPUT
+              fi
+              
+              release_lock
+              break
+            fi
+          done
+          
+          # 如果超时
+          if [ $WAIT_COUNT -ge $LOCK_TIMEOUT ]; then
+            echo "❌ Timeout waiting for lock ($LOCK_TIMEOUT seconds)"
+            echo "baseline_exists=false" >> $GITHUB_OUTPUT
+            
+            # 最后检查一次
+            if check_baseline; then
+              echo "✅ Baseline exists (generated just in time)"
+              echo "action_taken=waited" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Baseline still missing after timeout"
+              exit 1
+            fi
+          fi
+        fi
+        
+        # 最终验证
+        echo "📋 Final status:"
+        echo "  - Baseline exists: ${{ steps.ensure-baseline.outputs.baseline_exists }}"
+        echo "  - Action taken: ${{ steps.ensure-baseline.outputs.action_taken }}"
+        
+        if [ -f "$BASELINE_SUMMARY" ] && [ -s "$BASELINE_SUMMARY" ]; then
+          echo "📄 Summary file size: $(stat -c%s "$BASELINE_SUMMARY" 2>/dev/null || echo 'N/A') bytes"
+        fi
