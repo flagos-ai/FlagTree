@@ -67,7 +67,10 @@ jobs:
         id: check_flaggems_baseline
         uses: ./.github/actions/check-flaggems-baseline
         with:
+          flaggems-tag: ${{ env.FLAGGEMS_TAG }}
+          flagtree-branch: 'main'
           flaggems-ci-dir: ${{ env.FLAGGEMS_CI_DIR }}
+          gpus: ${{ steps.setup.outputs.gpus }}
 
       #- name: Generate FlagGems Baseline if NOT Exist
       #  if: ${{ steps.check_flaggems_baseline.outputs.baseline_exists != 'true' }}
