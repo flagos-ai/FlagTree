@@ -57,6 +57,12 @@ jobs:
           echo "GPU devices: $GPU_DEVICES"
           echo "FlagGems tag: $FLAGGEMS_TAG"
 
+      #临时增加一个smart checkout，否则测试阶段找不到check-flaggems-baseline action
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
       - name: Check FlagGems Baseline
         id: check_flaggems_baseline
         uses: ./.github/actions/check-flaggems-baseline
