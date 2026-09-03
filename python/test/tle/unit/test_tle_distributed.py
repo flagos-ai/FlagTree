@@ -173,11 +173,12 @@ class TestClusterDims:
         assert _mesh_to_cluster_dims(sub) == (2, 2, 1)
 
     def test_mesh_to_cluster_dims_uses_topology_level_with_custom_axis_names(self):
-        mesh = tle.device_mesh(tle.MeshConfig(
-            node=[("rack", 2)],
-            device=[("gpu", 4)],
-            block_cluster=[("cta", 2)],
-        ))
+        mesh = tle.device_mesh(
+            tle.MeshConfig(
+                node=[("rack", 2)],
+                device=[("gpu", 4)],
+                block_cluster=[("cluster_x", 2)],
+            ))
         assert _mesh_to_cluster_dims(mesh) == (2, 1, 1)
 
     def test_resolve_launch_axis(self):
