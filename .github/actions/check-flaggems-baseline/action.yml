@@ -144,25 +144,18 @@ runs:
           # 6. Run FlagGems Test for Baseline
           echo "🏃 Running FlagGems tests for baseline..."
 
-          # 检查 run-flaggems-test action 是否存在
-          if [ -d ".github/actions/run-flaggems-test" ]; then
-            # 如果 action 存在，直接调用
-            # 但这里无法在 shell 中直接调用 action，需要执行实际命令
-            echo "ℹ️  Running baseline tests..."
+          cp -raf ${{ inputs.flaggems-ci-dir }}/script/ci ${{ inputs.flaggems-ci-dir }}/FlagGems/tools
+          cp ${{ inputs.flaggems-ci-dir }}/script/conftest.py ${{ inputs.flaggems-ci-dir }}/FlagGems/tests/conftest.py
 
-            # 执行测试脚本
-            cd ${{ inputs.flaggems-ci-dir }}/FlagGems
-            python3 tools/ci/ci_run_tests.py \
-              --output-dir "$BASELINE_DIR" \
-              --skip-file tools/ci/skip_list.yaml \
-              --first-parameter-only || {
-              echo "❌ Failed to run baseline tests"
-              return 1
-            }
-          else
-            echo "❌ run-flaggems-test action not found"
+          # 执行测试脚本
+          cd ${{ inputs.flaggems-ci-dir }}/FlagGems
+          python3 tools/ci/ci_run_tests.py \
+            --output-dir "$BASELINE_DIR" \
+            --skip-file tools/ci/skip_list.yaml \
+            --first-parameter-only || {
+            echo "❌ Failed to run baseline tests"
             return 1
-          fi
+          }
 
           # 7. Verify baseline generated
           if [ -f "$BASELINE_SUMMARY" ] && [ -s "$BASELINE_SUMMARY" ]; then
