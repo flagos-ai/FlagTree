@@ -94,6 +94,7 @@ runs:
           echo "🔨 Generating FlagGems baseline..."
           echo "action_taken=generated" >> $GITHUB_OUTPUT
 
+          echo "$BASELINE_DIR"
           # 创建 baseline 目录
           mkdir -p "$BASELINE_DIR"
 
@@ -147,6 +148,7 @@ runs:
           cp -raf ${{ inputs.flaggems-ci-dir }}/script/ci ${{ inputs.flaggems-ci-dir }}/FlagGems/tools
           cp ${{ inputs.flaggems-ci-dir }}/script/conftest.py ${{ inputs.flaggems-ci-dir }}/FlagGems/tests/conftest.py
 
+          echo "$BASELINE_DIR"
           # 执行测试脚本
           cd ${{ inputs.flaggems-ci-dir }}/FlagGems
           python3 tools/ci/ci_run_tests.py \
