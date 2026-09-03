@@ -48,7 +48,7 @@ def handle_editable_install_mode(is_editable=True):
             os.symlink(src, dst)
 
 
-submodules = (Module(name="AscendNPU-IR", url="https://gitcode.com/Ascend/AscendNPU-IR.git", commit_id="5a3921f8",
+submodules = (Module(name="AscendNPU-IR", url="https://github.com/Ascend/AscendNPU-IR.git", commit_id="5a3921f8",
                      dst_path=os.path.join(flagtree_submodule_dir, "ascend/AscendNPU-IR")), )
 
 

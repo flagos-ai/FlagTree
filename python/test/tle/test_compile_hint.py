@@ -663,5 +663,6 @@ if __name__ == "__main__":
     test_may_discrete_ub_overflow()
     test_dot_pad_only_k()
     test_tile_mix_cube_num()
-    test_disable_bubble_up()
+    # skiped in triton-3.2x due to cann-8.5.0 bugs
+    # test_disable_bubble_up()
     test_bitwise_mask()
