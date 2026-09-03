@@ -650,8 +650,7 @@ def _mesh_has_axis(mesh: device_mesh, axis_token: str, *, use_launch_dims: bool 
 
 
 def _collect_cluster_members_by_outer_coord(
-    mesh: device_mesh,
-) -> tuple[tuple[int, ...], dict[tuple[int, ...], set[tuple[int, ...]]]]:
+    mesh: device_mesh, ) -> tuple[tuple[int, ...], dict[tuple[int, ...], set[tuple[int, ...]]]]:
     launch_shape = tuple(int(size) for size in mesh.launch_shape)
     cluster_axes = tuple(axis for axis, name in enumerate(mesh.launch_dim_names) if "cluster" in name)
     if not cluster_axes:
@@ -734,18 +733,17 @@ def _infer_submesh_barrier_group(
     axes = tuple(
         int(cluster_axis_to_local[launch_name_to_axis[name]])
         for name in mesh.dim_names
-        if launch_name_to_axis[name] in cluster_axis_to_local
-    )
+        if launch_name_to_axis[name] in cluster_axis_to_local)
     if len(set(axes)) != len(axes):
         raise ValueError(f"invalid subgroup axes (duplicate cluster axes): {axes}")
 
     shape = tuple(
         int(size)
         for name, size in zip(mesh.dim_names, mesh.shape)
-        if launch_name_to_axis[name] in cluster_axis_to_local
-    )
+        if launch_name_to_axis[name] in cluster_axis_to_local)
     if not shape or any(v <= 0 for v in shape):
-        raise NotImplementedError("scalar sub-mesh barrier is not implemented yet; provide at least one sliced cluster axis")
+        raise NotImplementedError(
+            "scalar sub-mesh barrier is not implemented yet; provide at least one sliced cluster axis")
 
     member_sets = list(cluster_members_by_outer_coord.values())
     reference_members = member_sets[0]
@@ -754,10 +752,9 @@ def _infer_submesh_barrier_group(
             outer_coord: tuple(sorted(members))
             for outer_coord, members in cluster_members_by_outer_coord.items()
         }
-        raise ValueError(
-            "sub-mesh barrier cannot use one mask for different cluster member selections "
-            "at different outer mesh positions (the non-cluster dimensions): "
-            f"{members_by_outer_coord}")
+        raise ValueError("sub-mesh barrier cannot use one mask for different cluster member selections "
+                         "at different outer mesh positions (the non-cluster dimensions): "
+                         f"{members_by_outer_coord}")
 
     cluster_shape = tuple(int(mesh.launch_shape[axis]) for axis in cluster_axes)
 
