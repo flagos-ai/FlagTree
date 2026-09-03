@@ -24,6 +24,7 @@ import os
 import platform
 import re
 import contextlib
+import functools  # FlagPrism
 import shlex
 import shutil
 import subprocess
@@ -38,7 +39,9 @@ from distutils.command.clean import clean
 from pathlib import Path
 from typing import Optional
 
-from setuptools import Extension, setup
+# FlagPrism: retain the original import while adding package discovery.
+# from setuptools import Extension, setup
+from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 from setuptools.command.develop import develop
@@ -378,6 +381,17 @@ def get_thirdparty_packages(packages: list):
     return thirdparty_cmake_args
 
 
+# FlagPrism: bind the existing dependency resolver without duplicating setup logic.
+FLAGPRISM_SETUP = helper.FlagPrismSetup(
+    get_base_dir(),
+    functools.partial(
+        helper.get_flagprism_dependency_cmake_args,
+        get_thirdparty_packages=get_thirdparty_packages,
+        get_json_package_info=get_json_package_info,
+    ),
+)  # FlagPrism
+
+
 def download_and_copy(name, src_func, dst_path, variable, version, url_func):
     if is_offline_build():
         return
@@ -441,6 +455,8 @@ class CMakeClean(clean):
 class CMakeBuildPy(build_py):
 
     def run(self) -> None:
+        # FlagPrism: prepare the external component tree before compiling.
+        FLAGPRISM_SETUP.prepare_build_tree(self.build_lib)
         self.run_command('build_ext')
         helper.write_flagtree_backend_file()  # flagtree
         helper.overlay_backend_runtime_so(self, backends)  # flagtree
@@ -448,6 +464,8 @@ class CMakeBuildPy(build_py):
         ret = super().run()
         helper.write_backend_file_to_build_lib(self.build_lib)  # flagtree
         helper.write_backend_site_pth(self.build_lib)  # flagtree
+        # FlagPrism: finalize external component packaging after build_py.
+        FLAGPRISM_SETUP.finalize_build_tree(self.build_lib)
         return ret
 
 
@@ -591,6 +609,8 @@ class CMakeBuild(build_ext):
 
         if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
             cmake_args += self.get_proton_cmake_args()
+        cmake_args += FLAGPRISM_SETUP.cmake_args(self.build_lib)  # FlagPrism
+        cmake_args += FLAGPRISM_SETUP.dependency_cmake_args(self)  # FlagPrism
 
         cmake_args += helper.customize_gluon_cmake_args()
 
@@ -703,6 +723,11 @@ backends = helper.init_backends(BackendInstaller)  # flagtree
 
 def get_package_dirs():
     yield ("", "python")
+    # FlagPrism: keep top-level packages anchored to the main Python tree when
+    # a backend overrides the default package root.
+    for package in find_packages(where="python", include=["flagtree", "flagtree.*"]):
+        yield (package, os.path.join("python", package.replace(".", os.sep)))
+    yield from FLAGPRISM_SETUP.package_dirs()  # FlagPrism
 
     # flagtree backend specialization
     yield from helper.SpecPackageHelper.get_spec_packages()
@@ -734,6 +759,9 @@ def get_package_dirs():
 
 def get_packages():
     # flagtree backend specialization: add excluded packages
+    # FlagPrism: package the canonical host gateway and registered components.
+    yield from find_packages(where="python", include=["flagtree", "flagtree.*"])
+    yield from FLAGPRISM_SETUP.packages()  # FlagPrism
     yield from helper.get_spec_packages()
 
     for backend in backends:
@@ -855,6 +883,8 @@ class plugin_sdist(sdist):
 
 def get_entry_points():
     entry_points = {}
+    if console_scripts := FLAGPRISM_SETUP.console_scripts():  # FlagPrism
+        entry_points["console_scripts"] = console_scripts
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         entry_points["console_scripts"] = [
             "proton-viewer = triton.profiler.viewer:main",

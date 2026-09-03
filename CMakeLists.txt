@@ -22,6 +22,9 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
 option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ${FLAGTREE_DEFAULT_OPTION})
 option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ${FLAGTREE_DEFAULT_OPTION})
+# FlagPrism: configure the external profiler/debugger in the options module.
+flagtree_configure_flagprism()
+
 option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
 set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
 
@@ -204,6 +207,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
   find_package(pybind11 CONFIG REQUIRED HINTS "${Python3_SITELIB}")
   flagtree_python_link_libraries()
 
+  # FlagPrism: register component targets before backend codegen captures TRITON_LIBS.
+  flagtree_add_flagprism_components()
+
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
   endforeach()
@@ -367,10 +373,16 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
 endif()
 
 if(NOT TRITON_BUILD_PYTHON_MODULE)
+  # FlagPrism: component registration is defined in cmake/FlagTreeOptions.cmake.
+  flagtree_add_flagprism_components()
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
   endforeach()
-  add_subdirectory(third_party/proton/Dialect)
+  # FlagPrism: keep Proton dialect out of builds where FlagPrism owns it.
+  # add_subdirectory(third_party/proton/Dialect)
+  if(NOT TRITON_BUILD_FLAGPRISM)
+    add_subdirectory(third_party/proton/Dialect)
+  endif()
   flagtree_configure_tle_plugin(FALSE)
 endif()
 
