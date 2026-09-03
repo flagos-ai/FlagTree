@@ -150,6 +150,7 @@ runs:
           # 执行测试脚本
           cd ${{ inputs.flaggems-ci-dir }}/FlagGems
           python3 tools/ci/ci_run_tests.py \
+            --gpus ${{ inputs.gpus }}
             --output-dir "$BASELINE_DIR" \
             --skip-file tools/ci/skip_list.yaml \
             --first-parameter-only || {
