@@ -546,6 +546,7 @@ def MaskedLoadOp : TT_AMDGPU_Op<"masked_load", []> {
     LLVM_Type:$falseVal,
     Optional<I16>:$multicastMask,
     DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
+    // isVolatile attribute added in Triton 3.8: triton/pull/11223
     DefaultValuedAttr<BoolAttr, "false">:$isVolatile,
     DefaultValuedAttr<BoolAttr, "false">:$forceNoAlias
   );
@@ -559,6 +560,7 @@ def MaskedLoadOp : TT_AMDGPU_Op<"masked_load", []> {
     (`forceNoAlias` $forceNoAlias^)?
     attr-dict `:` functional-type(operands, results)
   }];
+  // 'volatile' assembly format added in Triton 3.8: triton/pull/11223
 }
 
 //===----------------------------------------------------------------------===//

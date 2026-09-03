@@ -39,6 +39,7 @@ public:
     std::tie(volatileFlag, nonTmpFlag) =
         mlir::LLVM::AMD::getCacheModifierFlagsForLoadStore(
             cacheMod, mlir::LLVM::AMD::MemoryOp::Load);
+    // Triton 3.8: triton/pull/11223
     volatileFlag |= loadOp.getIsVolatile();
 
     auto createLoadWithAttrs = [&](Location loadLoc) -> Value {
@@ -49,6 +50,7 @@ public:
         vecBits = elemTy.getIntOrFloatBitWidth();
       }
       assert(vecBits != 0);
+      // Triton 3.8: triton/pull/11223
       bool supportsClusterLoad =
           targetInfo.supportsClusterLoadBitWidth(vecBits);
       // The cluster load intrinsic cannot represent LLVM volatile semantics,
@@ -68,6 +70,7 @@ public:
             {ptr, b.i32_val(cacheModBits), multicastMask});
         return b.bitcast(clusterLoadOp->getResult(0), elemTy);
       } else if (multicastMask && !supportsClusterLoad) {
+        // Triton 3.8: triton/pull/11223
         loadOp.emitRemark()
             << "Multicast with bit width " << vecBits << " is not supported on "
             << targetInfo.getArch() << " falling back to regular load";
