@@ -16,10 +16,12 @@ import triton
 import inspect
 import triton.language as tl
 import triton.experimental.tle.language as tle
+#import triton.experimental.tle.mega as tlem
 from triton._filecheck import run_parser
 from triton.backends.compiler import GPUTarget
+from triton._internal_testing import is_ampere_or_newer
 from triton.language.core import base_value
-
+from triton.runtime.jit import MockTensor
 from triton.experimental.tle.language.gpu.core import _deduplicate_warp_specialize_captures
 from triton.experimental.tle.language.gpu.semantic import TLESemanticError, TLESemantic
 import triton._C.libtriton as libtriton
@@ -42,6 +44,36 @@ def _dot_encoding_frontend_kernel(
     rhs = tle.gpu.set_layout(tl.zeros((32, 8), tl.bfloat16), rhs_layout)
     acc = tle.gpu.set_layout(tl.zeros((32, 8), tl.float32), mma_layout)
     result = tl.dot(lhs, rhs, acc=acc, out_dtype=tl.float32)  # noqa: F841
+
+
+@triton.jit
+def _masked_copy_frontend_kernel(src):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask)
+
+
+@triton.jit
+def _masked_copy_zero_fill_kernel(src, dst):
+    offsets = tl.arange(0, 16)
+    mask = offsets < 8
+    smem = tle.gpu.alloc(
+        [16],
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tle.gpu.copy(src + offsets, smem, [16], mask=mask)
+    values = tl.load(tle.gpu.local_ptr(smem, (offsets, )))
+    tl.store(dst + offsets, values)
 
 
 _HAS_TLE_EXPLICIT_LAYOUT = hasattr(libtriton.ir.builder, "ensure_ttg_layout_attrs")
@@ -117,6 +149,47 @@ class TestLayoutEncoding:
         assert "opIdx = 0" in ir
         assert "opIdx = 1" in ir
         assert "kWidth = 2" in ir
+
+
+class TestCopyFrontend:
+    """Test validation of standard pointer-tensor copies."""
+
+    def test_copy_does_not_expose_other(self):
+        assert "other" not in inspect.signature(tle.gpu.copy).parameters
+
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy")
+    def test_masked_copy_uses_implicit_zero_fill(self):
+        src = MockTensor(torch.float32)
+        target = GPUTarget("cuda", 90, 32)
+
+        module = run_parser(
+            _masked_copy_frontend_kernel,
+            args=(src, ),
+            kwargs={"num_warps": 4},
+            target=target,
+        )
+        ir = module.str_nodebug()
+        assert "arith.constant dense<0.000000e+00> : tensor<16xf32>" in ir
+        assert "tt.load" in ir
+
+    @pytest.mark.skipif(
+        not is_ampere_or_newer(),
+        reason="cp.async regression guard requires NVIDIA Ampere or newer",
+    )
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_masked_copy_implicitly_uses_other_zero_end_to_end(self):
+        # All source values are non-zero, so zeros in masked lanes must come
+        # from the global-to-shared copy's implicit other=0 contract.
+        src = torch.arange(1, 17, device="cuda", dtype=torch.float32)
+        dst = torch.full_like(src, -1)
+
+        compiled = _masked_copy_zero_fill_kernel.warmup(src, dst, grid=(1, ), num_warps=4)
+        assert "cp.async" in compiled.asm["ptx"]
+
+        _masked_copy_zero_fill_kernel[(1, )](src, dst, num_warps=4)
+        expected = torch.cat((src[:8], torch.zeros_like(src[8:])))
+        torch.testing.assert_close(dst, expected, atol=0, rtol=0)
 
 
 class TestPipeline:
