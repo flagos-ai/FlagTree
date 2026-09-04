@@ -364,7 +364,7 @@ jobs:
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
 
       - name: Run FlagGems Test
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && github.event_name != 'schedule' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && github.event_name == 'pull_request' }}
         uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
         id: run-flaggems-test
         with:
@@ -377,7 +377,7 @@ jobs:
           first-parameter-only: 'true'
 
       - name: Compare with Latest Baseline
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && github.event_name != 'schedule' && needs.generate-flaggems-baseline.outputs.baseline_exists == 'true' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && github.event_name == 'pull_request' && needs.generate-flaggems-baseline.outputs.baseline_exists == 'true' }}
         uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
         with:
           baseline-dir: ${{ env.FLAGGEMS_CI_DIR }}/Baseline/latest
