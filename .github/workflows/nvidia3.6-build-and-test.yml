@@ -90,6 +90,12 @@ jobs:
           echo "📄 Summary file: $BASELINE_SUMMARY"
           echo "🔒 Lock dir: $LOCK_DIR"
 
+      # 临时方案，解决merge前找不到acquire-flaggems-baseline-lock action问题
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
       # Step 3: Check baseline and acquire lock if not exist
       - name: Acquire FlagGems Baseline Lock
         id: acquire-lock
