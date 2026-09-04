@@ -43,7 +43,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Job 1: 确保 baseline 存在（分步实现）
+  # Job 1: ensre flaggems baseline exist
   ensure-flaggems-baseline:
     runs-on: nvidia3.6
     concurrency:
@@ -81,7 +81,6 @@ jobs:
           echo "baseline_dir=$BASELINE_DIR" >> $GITHUB_OUTPUT
           echo "lock_dir=$LOCK_DIR" >> $GITHUB_OUTPUT
 
-          # 保存到环境变量供后续 steps 使用
           echo "BASELINE_DIR=$BASELINE_DIR" >> $GITHUB_ENV
           echo "BASELINE_SUMMARY=$BASELINE_SUMMARY" >> $GITHUB_ENV
           echo "LOCK_DIR=$LOCK_DIR" >> $GITHUB_ENV
@@ -97,7 +96,7 @@ jobs:
         uses: ./.github/actions/acquire-flaggems-baseline-lock
         with:
           flaggems-ci-dir: ${{ env.FLAGGEMS_CI_DIR }}
-          lock-timeout: '1800'
+          lock-timeout: '3600'
 
       # Step 4: Clone FlagTree
       - name: Clone FlagTree Repo
@@ -203,9 +202,9 @@ jobs:
             echo "📄 Summary file size: ${SIZE} bytes"
           fi
 
-  # Job 2: 主测试（依赖 baseline job）
+  # Job 2: main job
   nv36x-unit-test:
-    needs: ensure-flaggems-baseline  # 等待 baseline job 完成
+    needs: ensure-flaggems-baseline
     runs-on: nvidia3.6
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
@@ -389,7 +388,7 @@ jobs:
   #         BASELINE_DIR="${FLAGGEMS_CI_DIR}/Baseline/${TODAY}"
   #         BASELINE_SUMMARY="${BASELINE_DIR}/summary.json"
   #         LOCK_DIR="${FLAGGEMS_CI_DIR}/.baseline_generate_${TODAY}.lock"
-  #         LOCK_TIMEOUT=1800  # 30 分钟
+  #         LOCK_TIMEOUT=3600  # 1小时
 
   #         # 初始化状态
   #         BASELINE_EXISTS="false"
