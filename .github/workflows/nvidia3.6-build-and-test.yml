@@ -29,6 +29,10 @@ on:
     branches: [ "main", "triton_v3.6.x" ]
     types: [opened, synchronize, reopened, ready_for_review]
 
+env:
+  FLAGGEMS_TAG: 'v5.3.5'
+  FLAGGEMS_CI_DIR: '/root/flaggems_ci'
+
 permissions:
   contents: read
   pull-requests: read
@@ -42,11 +46,40 @@ jobs:
     runs-on: nvidia3.6
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
-      - name: Setup environment
+      - name: Setup Environment
+        id: setup
         shell: bash
         run: |
           source ~/env.sh
-          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=' >> $GITHUB_ENV || true
+          GPU_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+          echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
+          echo "GPU devices: $GPU_DEVICES"
+          echo "FlagGems tag: $FLAGGEMS_TAG"
+
+      #临时增加一个smart checkout，否则测试阶段找不到check-flaggems-baseline action
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check FlagGems Baseline
+        id: check_flaggems_baseline
+        uses: ./.github/actions/check-flaggems-baseline
+        with:
+          flaggems-tag: ${{ env.FLAGGEMS_TAG }}
+          flagtree-branch: 'main'
+          flaggems-ci-dir: ${{ env.FLAGGEMS_CI_DIR }}
+          gpus: ${{ steps.setup.outputs.gpus }}
+
+      #- name: Generate FlagGems Baseline if NOT Exist
+      #  if: ${{ steps.check_flaggems_baseline.outputs.baseline_exists != 'true' }}
+      #  uses: ./.github/actions/generate-flaggems-baseline
+      #  with:
+      #    flaggems-tag: ${{ env.FLAGGEMS_TAG }}
+      #    flagtree-branch: 'main'
+      #    flaggems-ci-dir: ${{ env.FLAGGEMS_CI_DIR }}
+      #    gpus: ${{ steps.setup.outputs.gpus }}
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -58,6 +91,22 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: nvidia
+
+      - name: Clone FlagGems Repo
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        with:
+          repo-url: 'https://github.com/flagos-ai/FlagGems.git'
+          ref: ${{ env.FLAGGEMS_TAG }}
+          clone-dir: '/root/flaggems_ci'
+
+      - name: Install FlagGems
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        shell: bash
+        run: |
+          cd /root/flaggems_ci/FlagGems
+          python3 -m pip uninstall -y flag_gems --break-system-packages || true
+          pip install -v -e . --no-build-isolation --no-deps
 
       - name: Cleanup FlagTree Environment
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
@@ -158,3 +207,26 @@ jobs:
           python3 python/tutorials/tle/raw/cuda/02-fused-softmax.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
+
+      - name: Run FlagGems Test
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        id: run-flaggems-test
+        with:
+          flaggems-path: '/root/flaggems_ci/FlagGems'
+          gpus: ${{ steps.setup.outputs.gpus }}
+          output-base-dir: '/root/flaggems_ci/PR'
+          pr-number: '${{ github.event.pull_request.number }}'
+          run-script: 'tools/ci/ci_run_tests.py'
+          skip-file: 'tools/ci/skip_list.yaml'
+          first-parameter-only: 'true'
+
+      - name: Compare with Baseline
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
+        with:
+          baseline-dir: '/root/flaggems_ci/Baseline'
+          candidate-dir: ${{ steps.run-flaggems-test.outputs.test-output-dir }}
+          baseline-date: ${{ steps.run-flaggems-test.outputs.test-date }}
+          compare-script: 'tools/ci/compare_test_result.py'
+          working-directory: '/root/flaggems_ci/FlagGems'
