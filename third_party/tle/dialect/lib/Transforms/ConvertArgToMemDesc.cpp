@@ -37,7 +37,6 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Casting.h"
 
 namespace mlir::triton::tle {
@@ -51,10 +50,25 @@ namespace tle = mlir::triton::tle;
 
 namespace {
 
+enum class RawScope { Pipeline, NonPipeline };
+
+FailureOr<RawScope> parseRawScope(StringRef scope) {
+  if (scope == "pipeline")
+    return RawScope::Pipeline;
+  if (scope == "non-pipeline")
+    return RawScope::NonPipeline;
+  return failure();
+}
+
+bool matchesScope(tle::DSLRegionOp op, RawScope scope) {
+  auto hint = op->getAttrOfType<StringAttr>("hint");
+  bool isPipeline = hint && hint.getValue() == "pipeline";
+  return (scope == RawScope::Pipeline && isPipeline) ||
+         (scope == RawScope::NonPipeline && !isPipeline);
+}
+
 ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
   ttg::CTAEncodingAttr ctaLayout = ttg::getCTALayout(ty.getEncoding());
-  llvm::iota_range<uint32_t> rOrderRange =
-      llvm::iota_range<uint32_t>(0, ty.getRank(), false);
   llvm::SmallVector<uint32_t> order = ttg::getOrder(ty);
   return ttg::MemDescType::get(ty.getShape(), ty.getElementType(),
                                ttg::SwizzledSharedEncodingAttr::get(
@@ -64,29 +78,40 @@ ttg::MemDescType getPlainMemDesc(RankedTensorType ty) {
 }
 
 struct TleArgConversion : public OpRewritePattern<tle::DSLRegionOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  TleArgConversion(MLIRContext *context);
+  TleArgConversion(MLIRContext *context, RawScope scope);
   LogicalResult matchAndRewrite(tle::DSLRegionOp op,
                                 PatternRewriter &rewriter) const override;
+
+private:
+  RawScope scope;
 };
 
 struct TleConvertArgToMemDesc
     : public tle::impl::TleConvertArgToMemDescBase<TleConvertArgToMemDesc> {
+  using TleConvertArgToMemDescBase::TleConvertArgToMemDescBase;
   void runOnOperation() override;
 };
 
 } // namespace
 
-TleArgConversion::TleArgConversion(MLIRContext *context)
-    : OpRewritePattern(context) {}
+TleArgConversion::TleArgConversion(MLIRContext *context, RawScope scope)
+    : OpRewritePattern(context), scope(scope) {}
 
 LogicalResult
 TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
                                   PatternRewriter &rewriter) const {
+  if (!matchesScope(op, scope))
+    return failure();
+  bool hasConversion = false;
+  for (Type type : op->getOperandTypes())
+    hasConversion |= isa<RankedTensorType>(type);
+  for (Type type : op->getResultTypes())
+    hasConversion |= isa<RankedTensorType>(type);
+  if (!hasConversion)
+    return failure();
+
   SmallVector<Value> newOperands;
   IRMapping mapper;
-  bool hasConversion = false;
   bool needSync = false;
   for (const auto &operand : op->getOperands()) {
     if (RankedTensorType tensorTy =
@@ -101,7 +126,6 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
 
       newOperands.push_back(allocOp);
       mapper.map(operand, allocOp);
-      hasConversion = true;
       needSync = true;
     } else {
       if (isa<ttg::MemDescType>(operand.getType())) {
@@ -120,13 +144,9 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
     if (RankedTensorType tensorTy =
             dyn_cast<RankedTensorType>(result.getType())) {
       newRetTys.push_back(getPlainMemDesc(tensorTy));
-      hasConversion = true;
     } else {
       newRetTys.push_back(result.getType());
     }
-  }
-  if (!hasConversion) {
-    return failure();
   }
   tle::DSLRegionOp newOp = rewriter.create<tle::DSLRegionOp>(
       op.getLoc(), newRetTys, newOperands, op.getRegionDialectAttr(),
@@ -187,12 +207,18 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
 
 void mlir::triton::tle::populateConvertArgToMemDescPatterns(
     RewritePatternSet &patterns) {
-  patterns.add<TleArgConversion>(patterns.getContext());
+  patterns.add<TleArgConversion>(patterns.getContext(), RawScope::NonPipeline);
 }
 
 void TleConvertArgToMemDesc::runOnOperation() {
+  auto parsedScope = parseRawScope(scope.getValue());
+  if (failed(parsedScope)) {
+    getOperation().emitError("invalid tle-convert-arg-to-memdesc scope '")
+        << scope.getValue() << "'; expected pipeline or non-pipeline";
+    return signalPassFailure();
+  }
   RewritePatternSet patterns(&getContext());
-  tle::populateConvertArgToMemDescPatterns(patterns);
+  patterns.add<TleArgConversion>(patterns.getContext(), *parsedScope);
   if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
     signalPassFailure();
   }

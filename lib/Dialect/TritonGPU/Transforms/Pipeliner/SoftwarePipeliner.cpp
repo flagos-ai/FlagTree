@@ -26,6 +26,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #ifdef __TLE__
+#include "TLERawPipelineUtility.h"
 #include "TleWGMMAAnalysis.h"
 #endif
 #include "mlir/IR/TypeUtilities.h"
@@ -232,6 +233,10 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+#ifdef __TLE__
+    if (failed(validateTLERawPipelineOps(moduleOp)))
+      return signalPassFailure();
+#endif
     // Transform the loop by introducing async operations to prepare it for
     // pipeline expansion.
     lowerLoops(moduleOp);

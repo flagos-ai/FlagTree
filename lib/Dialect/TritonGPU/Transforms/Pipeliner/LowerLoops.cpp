@@ -43,6 +43,9 @@
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#ifdef __TLE__
+#include "TLERawPipelineUtility.h"
+#endif
 
 #define DEBUG_TYPE "triton-loop-pipeline"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -1112,6 +1115,12 @@ void lowerLoop(scf::ForOp forOp,
     return;
   }
   scf::ForOp newForOp = lowerMMAs(forOp, schedule);
+#ifdef __TLE__
+  auto rawLowered = lowerTLERawPipelineOps(newForOp, schedule);
+  if (failed(rawLowered))
+    return;
+  newForOp = *rawLowered;
+#endif
   newForOp = lowerLoads(newForOp, schedule, axisInfoAnalysis);
   newForOp = lowerTMADescriptors(newForOp, schedule);
   schedule.serialize(newForOp);
