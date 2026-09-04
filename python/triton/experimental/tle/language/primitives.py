@@ -56,9 +56,21 @@ TLE_PRIMITIVES = frozenset({
     "make_view",
 
     ## TLE-Struct GPU
-    "gpu.alloc", "gpu.copy", "gpu.local_ptr", "gpu.memory_space", "gpu.set_layout", "gpu.warp_specialize",
-    "gpu.alloc_barrier", "gpu.alloc_barriers", "gpu.barrier_wait", "gpu.barrier_arrive", "gpu.wgmma", "gpu.wgmma_wait",
-    "gpu.buffered_tensor.reshape", "gpu.buffered_tensor.slot", "gpu.range",  # TODO: del
+    "gpu.alloc",
+    "gpu.copy",
+    "gpu.local_ptr",
+    "gpu.memory_space",
+    "gpu.set_layout",
+    "gpu.warp_specialize",
+    "gpu.alloc_barrier",
+    "gpu.alloc_barriers",
+    "gpu.barrier_wait",
+    "gpu.barrier_arrive",
+    "gpu.wgmma",
+    "gpu.wgmma_wait",
+    "gpu.buffered_tensor.reshape",
+    "gpu.buffered_tensor.slot",
+    "gpu.range",  # TODO: del
     "gpu.pipeline",  # TODO: del
 
     ## TLE-Struct DSA (tsingmicro)
