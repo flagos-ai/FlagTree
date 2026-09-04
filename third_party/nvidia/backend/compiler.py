@@ -16,7 +16,7 @@ import signal
 import os
 import subprocess
 from pathlib import Path
-from .distributed import Distributed
+from .distributed import Distributed, flagcx_rt_conf
 
 
 def min_dot_size(target: GPUTarget):
@@ -154,7 +154,7 @@ class CUDAOptions:
             pass
 
         # flagtree tle distributed: Add distributed bitcode library(libflagcx_device.bc) if distributed features are enabled.
-        extern_libs.update(Distributed().get_extern_libs())
+        extern_libs.update(Distributed(flagcx_rt_conf).get_extern_libs())
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
                "num_warps must be a power of 2"

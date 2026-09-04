@@ -73,11 +73,15 @@ class FlagtreeConfigs:
         self.activated_module = self._activate_device_module()
 
     def _activate_device_module(self, suffix=".py"):
+        import sys
+
         backend = self.flagtree_backend or "default"
         module_path = Path(os.path.dirname(__file__)) / backend
         module_path = str(module_path) + suffix
-        spec = importlib.util.spec_from_file_location("module", module_path)
+
+        spec = importlib.util.spec_from_file_location(f"{__package__}.{backend}", module_path)
         module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
         try:
             spec.loader.exec_module(module)
         except (AttributeError, FileNotFoundError, ImportError, ModuleNotFoundError):

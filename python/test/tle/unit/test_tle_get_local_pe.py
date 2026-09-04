@@ -4,6 +4,8 @@ import torch
 import triton
 import triton.language as tl
 
+DEVICE = tle.device_type
+
 DEVICE_MESH = tle.device_mesh(tle.MeshConfig(device=2))
 
 
@@ -22,8 +24,8 @@ class TestLocalPeCount:
         block = 64
         grid = 2
         N = 64
-        with torch.cuda.use_mem_pool(tle.get_mem_pool()):
-            x = torch.randn((N, N), dtype=torch.float32, device="cuda")
+        with torch.get_device_module().use_mem_pool(tle.get_mem_pool()):
+            x = torch.randn((N, N), dtype=torch.float32, device=DEVICE)
         y = torch.empty_like(x)
         device_dptr = tle.create_dist_tensor(x)
 

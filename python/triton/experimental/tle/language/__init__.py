@@ -62,7 +62,7 @@ from .distributed import (
     sharding,
 )
 from . import communication
-from .communication import get_mem_pool, create_dist_tensor, cleanup_communicator
+from .communication import get_mem_pool, create_dist_tensor, cleanup_communicator, device_type
 
 _EXTENSION_APIS = frozenset({
     "make_tensor_view",

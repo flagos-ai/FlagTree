@@ -8,6 +8,7 @@ import triton.language as tl
 import triton.experimental.tle.language as tle
 
 LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", "2"))
+DEVICE = tle.device_type
 DEVICE_MESH = tle.device_mesh(tle.MeshConfig(device=LOCAL_WORLD_SIZE))
 
 
@@ -82,7 +83,7 @@ def _runtime_verify(result, device_dptr, peer, world_peer, nnodes, rank, local_r
         num_ctas=1,
         num_warps=4,
     )
-    torch.cuda.synchronize()
+    torch.get_device_module().synchronize()
 
     actual = result.item()
     expected = local_rank + 1
@@ -93,7 +94,7 @@ def _runtime_verify(result, device_dptr, peer, world_peer, nnodes, rank, local_r
     passed = torch.tensor(
         int(actual == expected),
         dtype=torch.int32,
-        device="cuda",
+        device=DEVICE,
     )
     dist.all_reduce(passed, op=dist.ReduceOp.MIN)
     assert passed.item() == 1, (f"[Rank {rank}, local_rank={local_rank}] signal failed: "
@@ -126,11 +127,11 @@ class TestSignal:
             f"local_world_size={LOCAL_WORLD_SIZE}",
             flush=True,
         )
-        with torch.cuda.use_mem_pool(mem_pool):
-            backing = torch.tensor([rank], dtype=torch.int32, device="cuda")
+        with torch.get_device_module().use_mem_pool(mem_pool):
+            backing = torch.tensor([rank], dtype=torch.int32, device=DEVICE)
 
         device_dptr = tle.create_dist_tensor(backing)
-        result = torch.zeros(1, dtype=torch.int32, device="cuda")
+        result = torch.zeros(1, dtype=torch.int32, device=DEVICE)
         try:
             _ir_verify(result, device_dptr, peer, world_peer)
             _runtime_verify(result, device_dptr, peer, world_peer, nnodes, rank, local_rank)

@@ -5,6 +5,8 @@ import triton
 import triton.language as tl
 import torch.distributed as dist
 
+DEVICE = tle.device_type
+
 DEVICE_MESH = tle.device_mesh(tle.MeshConfig(device=2))
 N = 8
 
@@ -48,11 +50,11 @@ def _runtime_verify(output, device_dptr, grid, rank, world_size):
     dist.barrier()
     _barrier_d2d_kernel[grid](device_dptr=device_dptr, out_ptr=output, mesh=DEVICE_MESH)
 
-    torch.cuda.synchronize()
+    torch.get_device_module().synchronize()
 
     import sys
     peer_rank = (rank + 1) % world_size
-    expected = torch.arange(N, dtype=torch.float32, device="cuda") + peer_rank * 1000
+    expected = torch.arange(N, dtype=torch.float32, device=DEVICE) + peer_rank * 1000
     if torch.allclose(output, expected):
         print(f"[Rank {rank}] [PASSED] read peer rank {peer_rank}")
         print(f"[Rank {rank}] sample output[:4] = {output[:4].tolist()}")
@@ -74,11 +76,11 @@ class TestD2DBarrier:
         mem_pool = tle.get_mem_pool()
         world_size = dist.get_world_size()
         rank = dist.get_rank()
-        with torch.cuda.use_mem_pool(mem_pool):
-            x = (torch.arange(N, dtype=torch.float32, device="cuda") + rank * 1000).clone()
+        with torch.get_device_module().use_mem_pool(mem_pool):
+            x = (torch.arange(N, dtype=torch.float32, device=DEVICE) + rank * 1000).clone()
 
         device_dptr = tle.create_dist_tensor(x)
-        output = torch.zeros(N, dtype=torch.float32, device="cuda")
+        output = torch.zeros(N, dtype=torch.float32, device=DEVICE)
 
         _ir_verify(output, device_dptr, grid)
 

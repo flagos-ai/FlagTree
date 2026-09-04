@@ -18,10 +18,25 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import importlib
+import os
+
+device_type = "cuda"
+_allocator = None
+_allocator_wrapper = None
+_mem_pool = None
+_flagcx_allocator_failed_to_compile = False
+_init_communicator_ = False
+
 try:
-    from triton.backends.nvidia.distributed import flagcx_rt_conf
+    flagtree_backend = os.environ.get('FLAGTREE_BACKEND', 'nvidia')
+    _mod = importlib.import_module(f'triton.backends.{flagtree_backend}.distributed')
+    flagcx_rt_conf = _mod.flagcx_rt_conf
+    backend_adapter = _mod.backend_adapter
+    device_type = backend_adapter.device_type
     enabled = flagcx_rt_conf.is_available
-except Exception:
+except Exception as e:
+    print(f'[INFO] Distributed is not enabled: {e}', flush=True)
     enabled = False
 
 if enabled:
@@ -31,11 +46,9 @@ if enabled:
         flagcxUniqueId,  # noqa: F401
         FLAGCX_WIN_COLL_SYMMETRIC,
     )
-    import os
     import tempfile
     import torch
     import torch.distributed as dist
-    from torch.cuda.memory import CUDAPluggableAllocator
     from torch.utils.cpp_extension import load_inline
     from pathlib import Path
 
@@ -44,12 +57,6 @@ if enabled:
 
     def _libflagcx_path():
         return Path(FLAGCX_LIB_PATH) / "libflagcx.so"
-
-    _allocator = None
-    _allocator_wrapper = None
-    _mem_pool = None
-    _flagcx_allocator_failed_to_compile = False
-    _init_communicator_ = False
 
     def _cleanup_flagcx_mem_pool():
         global _mem_pool
@@ -104,20 +111,21 @@ def compile_flagcx_allocator():
                 flush=True,
             )
 
-            load_inline(
-                name=lib_name,
-                cpp_sources=flagcx_allocator_source,
-                with_cuda=True,
-                extra_ldflags=[
-                    f"-L{FLAGCX_LIB_PATH}",
-                    "-lflagcx",
-                    f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
-                ],
-                verbose=True,
-                is_python_module=False,
-                build_directory=out_dir,
-                extra_include_paths=[FLAGCX_INCLUDE_PATH],
-            )
+            with backend_adapter.compile_allocator_guard():
+                load_inline(
+                    name=lib_name,
+                    cpp_sources=flagcx_allocator_source,
+                    with_cuda=False,
+                    extra_ldflags=[
+                        f"-L{FLAGCX_LIB_PATH}",
+                        "-lflagcx",
+                        f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
+                    ],
+                    verbose=True,
+                    is_python_module=False,
+                    build_directory=out_dir,
+                    extra_include_paths=[FLAGCX_INCLUDE_PATH],
+                )
         else:
             print(
                 f"[INFO] Using cached FlagCX allocator: {lib_path}",
@@ -130,7 +138,7 @@ def compile_flagcx_allocator():
         if not os.path.isfile(lib_path):
             raise FileNotFoundError(f"FlagCX allocator library not found after compilation: {lib_path}")
 
-        _allocator_wrapper = CUDAPluggableAllocator(
+        _allocator_wrapper = backend_adapter.allocator_class(
             lib_path,
             "flagcx_alloc_plug",
             "flagcx_free_plug",
@@ -150,10 +158,10 @@ def get_mem_pool():
     init_communicator()
     """Return a cached PyTorch MemPool backed by flagcxMemAlloc."""
     global _mem_pool, _flagcx_allocator_failed_to_compile
-    if _mem_pool is None and not _flagcx_allocator_failed_to_compile:
+    if enabled and _mem_pool is None and not _flagcx_allocator_failed_to_compile:
         compile_flagcx_allocator()
         if _allocator is not None:
-            _mem_pool = torch.cuda.MemPool(_allocator)
+            _mem_pool = torch.get_device_module().MemPool(_allocator)
     return _mem_pool
 
 
@@ -184,13 +192,13 @@ def cleanup_communicator():
 
 def init_communicator():
     global comm, rank, _init_communicator_
-    if enabled and _init_communicator_:
+    if not enabled or _init_communicator_:
         return
-    dist.init_process_group(backend="nccl")
+    dist.init_process_group(backend=backend_adapter.distributed_backend_name)
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     local_rank = int(os.environ.get("LOCAL_RANK", rank))
-    torch.cuda.set_device(local_rank)
+    torch.get_device_module().set_device(local_rank)
 
     print(f"[Rank {rank}] Starting (world_size={world_size})")
 
@@ -202,7 +210,7 @@ def init_communicator():
         id_bytes = b"\x00" * 256
 
     # Broadcast unique_id bytes via torch distributed
-    id_tensor = torch.frombuffer(bytearray(id_bytes), dtype=torch.uint8).cuda()
+    id_tensor = torch.frombuffer(bytearray(id_bytes), dtype=torch.uint8).to(torch.get_device_module().current_device())
     dist.broadcast(id_tensor, src=0)
     id_bytes = id_tensor.cpu().numpy().tobytes()
 
