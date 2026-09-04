@@ -123,7 +123,7 @@ static Value getOrCreatePtrLikeAddrI64(PatternRewriter &rewriter, Location loc,
     return rewriter.create<arith::IndexCastOp>(loc, i64Ty, baseIndex);
   }
 
-  // --- Original path: Triton pointer value ---
+  // --- Triton pointer value path ---
   OpBuilder::InsertionGuard g(rewriter);
   Block *block = rewriter.getInsertionBlock();
   if (auto def = ptrLike.getDefiningOp()) {
@@ -484,25 +484,17 @@ struct DsaRandGenToMkPattern : public OpRewritePattern<mlir::dsa::RandGenOp> {
   LogicalResult matchAndRewrite(mlir::dsa::RandGenOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    auto seed0Ty = dyn_cast<RankedTensorType>(op.getSeed0().getType());
-    auto seed1Ty = dyn_cast<RankedTensorType>(op.getSeed1().getType());
-    auto outTy = dyn_cast<RankedTensorType>(op.getOut().getType());
-    auto seed0OutTy = dyn_cast<RankedTensorType>(op.getSeed0Out().getType());
-    auto seed1OutTy = dyn_cast<RankedTensorType>(op.getSeed1Out().getType());
-    if (!seed0Ty || !seed1Ty || !outTy || !seed0OutTy || !seed1OutTy)
-      return rewriter.notifyMatchFailure(
-          op, "dsa.randgen expects ranked tensor operands/results");
+    auto seed0Ty = cast<RankedTensorType>(op.getSeed0().getType());
+    auto seed1Ty = cast<RankedTensorType>(op.getSeed1().getType());
+    auto outTy = cast<RankedTensorType>(op.getOut().getType());
+    auto seed0OutTy = cast<RankedTensorType>(op.getSeed0Out().getType());
+    auto seed1OutTy = cast<RankedTensorType>(op.getSeed1Out().getType());
     if (seed0Ty.getShape() != ArrayRef<int64_t>({16}) ||
         seed1Ty.getShape() != ArrayRef<int64_t>({16}) ||
         seed0OutTy.getShape() != ArrayRef<int64_t>({16}) ||
         seed1OutTy.getShape() != ArrayRef<int64_t>({16}))
       return rewriter.notifyMatchFailure(
           op, "dsa.randgen seeds must have shape [16]");
-    if (!seed0Ty.getElementType().isInteger(64) ||
-        !seed1Ty.getElementType().isInteger(64) ||
-        !outTy.getElementType().isInteger(64))
-      return rewriter.notifyMatchFailure(
-          op, "dsa.randgen currently supports only i64 element type");
 
     int32_t byteCount = op.getByteCount();
     if (byteCount <= 0 || (byteCount % 128) != 0)
@@ -821,8 +813,6 @@ resolveTleTileOffsets(PatternRewriter &rewriter, Location loc,
   int64_t rank = static_cast<int64_t>(srcShape.size());
   SmallVector<int64_t> grid(rank);
   for (int64_t i = 0; i < rank; ++i) {
-    if (tileShape[i] <= 0 || srcShape[i] % tileShape[i] != 0)
-      return failure();
     grid[i] = srcShape[i] / tileShape[i];
     if (grid[i] == 0)
       return failure();
@@ -893,15 +883,8 @@ struct TleExclusiveCumsumToDsaPattern
 
   LogicalResult matchAndRewrite(mlir::triton::tle::ExclusiveCumsumOp op,
                                 PatternRewriter &rewriter) const override {
-    auto inputTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
-    auto exclusiveTy = dyn_cast<RankedTensorType>(op.getExclusive().getType());
-    if (!inputTy || !exclusiveTy)
-      return rewriter.notifyMatchFailure(
-          op, "tle.exclusive_cumsum expects ranked tensor input/exclusive");
-    if (inputTy.getShape() != exclusiveTy.getShape() ||
-        inputTy.getElementType() != exclusiveTy.getElementType())
-      return rewriter.notifyMatchFailure(
-          op, "tle.exclusive_cumsum input/exclusive type mismatch");
+    auto inputTy = cast<RankedTensorType>(op.getSrc().getType());
+    auto exclusiveTy = cast<RankedTensorType>(op.getExclusive().getType());
     // TX81 hardware scan supports floating-point input only.
     if (!inputTy.getElementType().isF32() &&
         !inputTy.getElementType().isF16() && !inputTy.getElementType().isBF16())
@@ -911,9 +894,6 @@ struct TleExclusiveCumsumToDsaPattern
 
     SmallVector<int64_t> shape(inputTy.getShape().begin(),
                                inputTy.getShape().end());
-    if (shape.empty())
-      return rewriter.notifyMatchFailure(
-          op, "tle.exclusive_cumsum expects a non-zero rank input");
     // pad = 2 * last dim, matching the dsa scratch convention.
     int64_t pad = shape.back() * 2;
 
@@ -932,21 +912,10 @@ struct TleExtractTileToDsaPattern
 
   LogicalResult matchAndRewrite(mlir::triton::tle::ExtractTileOp op,
                                 PatternRewriter &rewriter) const override {
-    auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
-    if (!srcTy)
-      return rewriter.notifyMatchFailure(
-          op, "tle.extract_tile expects ranked tensor source");
-    auto tileShapeAttr = dyn_cast<DenseI64ArrayAttr>(op->getAttr("tile_shape"));
-    if (!tileShapeAttr)
-      return rewriter.notifyMatchFailure(op,
-                                         "tle.extract_tile missing tile_shape");
+    auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
+    auto tileShapeAttr = cast<DenseI64ArrayAttr>(op->getAttr("tile_shape"));
     SmallVector<int64_t> tileShape(tileShapeAttr.asArrayRef());
-    auto resultTy = dyn_cast<RankedTensorType>(op.getResult().getType());
-    if (!resultTy ||
-        static_cast<int64_t>(tileShape.size()) != srcTy.getRank() ||
-        resultTy.getShape() != ArrayRef<int64_t>(tileShape))
-      return rewriter.notifyMatchFailure(
-          op, "tle.extract_tile tile_shape/result type mismatch");
+    auto resultTy = cast<RankedTensorType>(op.getResult().getType());
 
     SmallVector<int64_t> staticOffsets;
     SmallVector<Value> dynOffsets;
@@ -972,11 +941,8 @@ struct TleInsertTileToDsaPattern
 
   LogicalResult matchAndRewrite(mlir::triton::tle::InsertTileOp op,
                                 PatternRewriter &rewriter) const override {
-    auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
-    auto tileTy = dyn_cast<RankedTensorType>(op.getTile().getType());
-    if (!srcTy || !tileTy)
-      return rewriter.notifyMatchFailure(
-          op, "tle.insert_tile expects ranked tensor source/tile");
+    auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
+    auto tileTy = cast<RankedTensorType>(op.getTile().getType());
     SmallVector<int64_t> tileShape(tileTy.getShape().begin(),
                                    tileTy.getShape().end());
 
@@ -1027,7 +993,7 @@ void mlir::triton::populateTLEToMKConversionPatterns(
   patterns.add<DsaToTensorToBufferizationPattern,
                DsaToBufferToBufferizationPattern>(patterns.getContext());
 
-  // Highest benefit (3): local load/store → memref ops.
+  // Local load/store → memref ops (benefit=3).
   // These MUST fire before any pattern that would produce !tt.ptr types.
   patterns.add<DsaLocalLoadToMemrefPattern, DsaLocalStoreToMemrefPattern>(
       patterns.getContext());

@@ -89,9 +89,6 @@ def alloc(
 
     elem_ir_ty = elem_dtype.to_ir(builder)
 
-    if not hasattr(builder, "create_dsa_alloc"):
-        raise RuntimeError("builder missing create_dsa_alloc for DSA alloc")
-
     alloc_value = builder.create_dsa_alloc(list(unwrapped_shape), elem_ir_ty)
     buf_ty = tle.buffered_tensor_type(unwrapped_shape, elem_dtype, resolved_scope)
     return tle.buffered_tensor(alloc_value, buf_ty)
@@ -140,8 +137,6 @@ def copy(
 
     # ---- Case 1: buffered_tensor -> buffered_tensor (local <-> local) ----
     if src_is_buf and dst_is_buf:
-        if not hasattr(builder, "create_dsa_copy"):
-            raise RuntimeError("builder missing create_dsa_copy for DSA copy")
         builder.create_dsa_copy(src.handle, dst.handle)
         return None
 
@@ -303,8 +298,6 @@ def local_ptr(
         result_ty = tl.block_type(ptr_dtype, list(view_shape))
         result_ir = result_ty.to_ir(builder)
     handles = [idx.handle for idx in idx_tensors]
-    if not hasattr(builder, "create_dsa_local_pointers"):
-        raise RuntimeError("builder missing create_dsa_local_pointers for DSA local_ptr")
     local_ptr_op = builder.create_dsa_local_pointers(result_ir, buffer.handle, *handles)
 
     result_tensor = tl.tensor(local_ptr_op.get_result(0), result_ty)
@@ -312,8 +305,6 @@ def local_ptr(
     if remote_buffer_marker:
         if all_scalar_indices:
             raise ValueError("local_ptr does not yet support scalar indices on remote buffers")
-        if not hasattr(builder, "create_dsa_remote_pointers"):
-            raise RuntimeError("builder missing create_dsa_remote_pointers for remote buffers")
         shard_val = (remote_shard_id.handle
                      if isinstance(remote_shard_id, tl.tensor) else _semantic.to_tensor(remote_shard_id).handle)
         remote_op = builder.create_dsa_remote_pointers(
@@ -351,8 +342,6 @@ def to_tensor(buffer: tle.buffered_tensor, writable: bool = True, _semantic=None
     shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in buffer.type.shape)
     result_ty = tl.block_type(buffer.type.element_ty, list(shape))
     result_ir = result_ty.to_ir(builder)
-    if not hasattr(builder, "create_dsa_to_tensor"):
-        raise RuntimeError("builder missing create_dsa_to_tensor for DSA to_tensor")
     handle = builder.create_dsa_to_tensor(result_ir, buffer.handle, bool(writable))
     return tl.tensor(handle, result_ty)
 
@@ -386,8 +375,6 @@ def to_buffer(src: tl.tensor, space=None, _semantic=None) -> tle.buffered_tensor
     if not shape:
         raise ValueError("to_buffer src must be a non-scalar tensor")
     buf = alloc(shape, src.dtype, scope=space, _semantic=_semantic)
-    if not hasattr(builder, "create_dsa_to_buffer"):
-        raise RuntimeError("builder missing create_dsa_to_buffer for DSA to_buffer")
     builder.create_dsa_to_buffer(src.handle, buf.handle)
     return buf
 
@@ -416,21 +403,12 @@ def _check_binary_operands(opname, input, other, result):
                          f"other={other_dtype}, result={result_dtype}")
 
 
-def _create_binary_builtin(opname, builder_method, builder):
-    """Shared builder for dsa binary arithmetic ops."""
-    if builder is None:
-        raise ValueError(f"{opname} must be used inside @triton.jit")
-    if not hasattr(builder, builder_method):
-        raise RuntimeError(f"builder missing {builder_method} for DSA {opname}")
-    return builder
-
-
 @tl.builtin
 def add(input, other, result, _semantic=None):
     """``result = input + other`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("add", input, other, result)
-    _create_binary_builtin("add", "create_dsa_add", builder).create_dsa_add(input.handle, other.handle, result.handle)
+    builder.create_dsa_add(input.handle, other.handle, result.handle)
 
 
 @tl.builtin
@@ -438,7 +416,7 @@ def sub(input, other, result, _semantic=None):
     """``result = input - other`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("sub", input, other, result)
-    _create_binary_builtin("sub", "create_dsa_sub", builder).create_dsa_sub(input.handle, other.handle, result.handle)
+    builder.create_dsa_sub(input.handle, other.handle, result.handle)
 
 
 @tl.builtin
@@ -446,7 +424,7 @@ def mul(input, other, result, _semantic=None):
     """``result = input * other`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("mul", input, other, result)
-    _create_binary_builtin("mul", "create_dsa_mul", builder).create_dsa_mul(input.handle, other.handle, result.handle)
+    builder.create_dsa_mul(input.handle, other.handle, result.handle)
 
 
 @tl.builtin
@@ -454,8 +432,7 @@ def max(input, other, result, _semantic=None):
     """``result = max(input, other)`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("max", input, other, result)
-    _create_binary_builtin("max", "create_dsa_maximum", builder).create_dsa_maximum(input.handle, other.handle,
-                                                                                    result.handle)
+    builder.create_dsa_maximum(input.handle, other.handle, result.handle)
 
 
 @tl.builtin
@@ -463,8 +440,7 @@ def min(input, other, result, _semantic=None):
     """``result = min(input, other)`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("min", input, other, result)
-    _create_binary_builtin("min", "create_dsa_minimum", builder).create_dsa_minimum(input.handle, other.handle,
-                                                                                    result.handle)
+    builder.create_dsa_minimum(input.handle, other.handle, result.handle)
 
 
 @tl.builtin
@@ -472,7 +448,7 @@ def div(input, other, result, _semantic=None):
     """``result = input / other`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("div", input, other, result)
-    _create_binary_builtin("div", "create_dsa_div", builder).create_dsa_div(input.handle, other.handle, result.handle)
+    builder.create_dsa_div(input.handle, other.handle, result.handle)
 
 
 # ---------------------------------------------------------------------------

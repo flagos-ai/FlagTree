@@ -25,15 +25,9 @@ from typing import TYPE_CHECKING
 
 import triton.language.core as tl
 
-try:
-    from .gpu import types as gpu_types
-    from .gpu.mthreads import common as mthreads_common
-    from .gpu.mthreads import pipe as mthreads_pipe
-except ImportError:
-    # tsingmicro: the gpu package is unavailable, so mthreads support is off.
-    from . import _types as gpu_types
-    mthreads_common = None
-    mthreads_pipe = None
+from .gpu import types as gpu_types
+from .gpu.mthreads import common as mthreads_common
+from .gpu.mthreads import pipe as mthreads_pipe
 
 if TYPE_CHECKING:
     from . import TLESemantic
@@ -125,8 +119,7 @@ def pipe(
     if not fields:
         raise ValueError("tle.pipe requires at least one payload field")
 
-    if mthreads_common is not None and mthreads_pipe is not None and \
-            mthreads_common.enabled() and mthreads_pipe.is_backend_builder(_semantic.builder):
+    if mthreads_common.enabled() and mthreads_pipe.is_backend_builder(_semantic.builder):
         mthreads_pipe.validate_pipe_options(scope, reader_names, one_shot, fields)
 
     for field_name, field in fields.items():

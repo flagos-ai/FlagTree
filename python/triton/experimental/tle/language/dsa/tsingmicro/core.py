@@ -49,8 +49,6 @@ def randgen(seed0, seed1, n_out: tl.constexpr, _semantic=None):
                          f"{_DSA_RANDGEN_NUM_STREAMS}, got {n_out}")
 
     builder = _semantic.builder
-    if not hasattr(builder, "create_dsa_randgen"):
-        raise RuntimeError("builder missing create_dsa_randgen for DSA randgen")
 
     if not isinstance(seed0, tl.tensor):
         seed0 = tl.to_tensor(seed0, _semantic=_semantic)
@@ -122,8 +120,6 @@ def _i64_as_i32_view(raw_i64, n_i32: int, builder):
     n_i64 = int(tl._unwrap_if_constexpr(raw_i64.shape[0]))
     if n_i32 != n_i64 * 2:
         raise ValueError(f"i64->i32 view expects n_i32 == 2 * n_i64, got {n_i32} vs 2*{n_i64}")
-    if not hasattr(builder, "create_dsa_bitcast"):
-        raise RuntimeError("builder missing create_dsa_bitcast; rebuild libtriton with TLE DSA")
     dst_ty = tl.block_type(tl.int32, [n_i32])
     handle = builder.create_dsa_bitcast(dst_ty.to_ir(builder), raw_i64.handle)
     return tl.tensor(handle, dst_ty)
@@ -168,9 +164,10 @@ def randn(seed0, seed1, n_out: tl.constexpr, _semantic=None):
     (concatenation of the two Box-Muller outputs).
     """
     n_out = int(tl._unwrap_if_constexpr(n_out))
-    half = n_out // 2
     if n_out <= 0 or (n_out % 32) != 0:
         raise ValueError(f"tle.dsa.tsingmicro.randn n_out must be a positive multiple of 32, got {n_out}")
+
+    half = n_out // 2
 
     # Box-Muller over consecutive Uniform pairs. Scalar f32 constants are
     # broadcast from u_half (``u*0+c``): direct ``semantic.to_tensor(float)``
