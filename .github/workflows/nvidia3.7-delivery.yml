@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: CD-Iluvatar3.6
+name: CD-NV3.8
 
 permissions:
   contents: write
@@ -38,13 +38,13 @@ on:
         default: 'x86_64'
       BRANCH:
         required: true
-        default: 'main'
+        default: 'triton_v3.8.x'
       TRITON:
         required: true
-        default: '3.6'
+        default: '3.8'
       BACKEND:
         required: true
-        default: 'iluvatar'
+        default: 'nvidia'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -64,15 +64,15 @@ on:
       BRANCH:
         type: string
         required: true
-        default: 'main'
+        default: 'triton_v3.8.x'
       TRITON:
         type: string
         required: true
-        default: '3.6'
+        default: '3.8'
       BACKEND:
         type: string
         required: true
-        default: 'iluvatar'
+        default: 'nvidia'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -83,7 +83,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: iluvatar3.6-cd
+    runs-on: nvidia3.8-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
@@ -115,10 +115,12 @@ jobs:
           set -x
           CHIP=""
           TRITON_VER=${{ inputs.TRITON }}
-          export FLAGTREE_BACKEND=${{ inputs.BACKEND }}
+          source ~/env-${TRITON_VER}.sh  # nvidia
+          unset FLAGTREE_BACKEND  # nvidia
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
-          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
+          BACKEND=${{ inputs.BACKEND }}  # nvidia
+          export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${BACKEND}${CHIP}${TRITON_VER}"  # nvidia
 
           unset https_proxy http_proxy all_proxy
           RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
