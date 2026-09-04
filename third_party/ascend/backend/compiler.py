@@ -106,6 +106,18 @@ def make_ttir(mod, metadata, opt):
     return mod
 
 
+def _normalize_mlir_text_for_bishengir(linalg: str) -> str:
+    # CANN's bishengir tools cannot parse the newer ` to tensor<...>` result-type
+    # clause emitted by triton-opt for bufferization.to_tensor; strip it while
+    # keeping `restrict writable` (required by One-Shot Analysis).
+    if "bufferization.to_tensor" not in linalg:
+        return linalg
+    return "\n".join(
+        re.sub(r" to tensor<[^>]*>", "", line) if "bufferization.to_tensor" in line else line
+        for line in linalg.split("\n")
+    )
+
+
 def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
     # use triton_adapter to lower Triton-MLIR to linalg
     # Get Triton-MLIR as string
@@ -200,7 +212,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             dump_manager = get_dump_manager(metadata["hash"])
             dump_manager.put(str(mod), "kernel.ttadapter.mlir", binary=False)
 
-        return str(mod)
+        return _normalize_mlir_text_for_bishengir(str(mod))
 
 
 def linalg_to_bc_by_triton_mlir_opt(linalg: str, metadata, opt):
@@ -784,7 +796,7 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
                 _compile_option_list += \
                     [f"--link-aicore-bitcode={bitcode}"]
 
-        _compile_option_list += [f"--link-aicore-bitcode={get_libdevice()}"]
+        pass
 
         disable_size_align_for_cast = metadata["disable_size_align_for_cast"]
         if disable_size_align_for_cast is not None:
@@ -960,7 +972,7 @@ class NPUOptions:
     #
     # If False, the compilation flow is:
     #   Linalg IR → LLIR → Binary (via bishengir-compile directly)
-    use_bytecode: bool = True
+    use_bytecode: bool = False
     # take effect on the reorder instruction pattern for SIMT. The pattern is disabled by default.
     enable_simt_reorder_instruction: bool = False
     # disable simt fma optimization to get high precision
