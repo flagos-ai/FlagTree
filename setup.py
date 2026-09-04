@@ -900,6 +900,12 @@ setup(
     ],
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
+    package_data={
+        # Pre-built custom-op bitcode, required at runtime by
+        # triton/experimental/tle/language/dsa/ascend/custom_ops/registry.py.
+        # Same convention as triton/backends/*/lib/libdevice.10.bc.
+        "triton.experimental.tle.language.dsa.ascend.custom_ops": ["custom_ops.bc"],
+    },
     entry_points=get_entry_points(),
     include_package_data=True,
     ext_modules=[CMakeExtension("triton", "triton/_C/")],

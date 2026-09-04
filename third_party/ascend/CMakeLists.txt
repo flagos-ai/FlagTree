@@ -54,6 +54,7 @@ add_triton_plugin(TritonAscend
   BiShengIRHIVMDialect
   ${_MLIRMeshDialect_LIB}
 )
+add_dependencies(TritonAscend AscendCustomOpsBitcode)
 
 target_include_directories(TritonAscend BEFORE PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/python/src)

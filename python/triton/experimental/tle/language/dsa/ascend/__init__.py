@@ -1,7 +1,8 @@
 # Copyright 2026- Xcoresigma Technology Co., Ltd
 
 from .core import (UB, L1, L0A, L0B, L0C, PIPE, sub_vec_id, sub_vec_num, sync_block_set, sync_block_wait,
-                   sync_block_all, compile_hint, multibuffer)
+                   sync_block_all, compile_hint, raw, multibuffer)
+from . import custom_ops
 
 __all__ = [
     "UB",
@@ -16,5 +17,6 @@ __all__ = [
     "sync_block_wait",
     "sync_block_all",
     "compile_hint",
+    "raw",
     "multibuffer",
 ]
