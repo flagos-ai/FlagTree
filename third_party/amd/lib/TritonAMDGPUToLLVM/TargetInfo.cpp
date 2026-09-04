@@ -163,8 +163,10 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
                                             rewriter.getZeroAttr(elemTy));
   bool addAliasGroup = localLoadOp && requiresAliasInfoForAsyncOps() &&
                        isSyncedViaAsyncWait(localLoadOp);
+  // Triton 3.8: triton/pull/11223
   return mlir::LLVM::AMD::llLoad(rewriter, loc, ptr, elemTy, pred, falseVal, {},
-                                 triton::CacheModifier::NONE, addAliasGroup);
+                                 triton::CacheModifier::NONE,
+                                 /*isVolatile=*/false, addAliasGroup);
 }
 
 Value TargetInfo::shuffleXor(RewriterBase &rewriter, Location loc, Value val,
