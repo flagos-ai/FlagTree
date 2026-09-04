@@ -59,6 +59,7 @@ from .distributed import (
     reshard,
     _resolve_launch_axis,
     shard_id,
+    n_pes,
     sharding,
 )
 from . import communication
@@ -115,6 +116,7 @@ __all__ = [
     "distributed_dot",
     "distributed",
     "gpu",
+    "chiplet",
     "raw",
     "mem_pool",
     "get_mem_pool",
@@ -125,7 +127,7 @@ __all__ = [
     "GroupKind",
 ]
 
-from . import distributed, gpu, raw
+from . import distributed, gpu, chiplet, raw
 
 # TLE-specific loop iterator: tl.range plus the `reorder` extension hint.
 from .gpu import range

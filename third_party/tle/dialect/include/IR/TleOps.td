@@ -411,7 +411,7 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure, AttrSizedOperandSegm
 def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
   let summary = "Get the number of intra-node PEs";
   let arguments = (ins
-    Tle_LocalPointerResultType:$src
+    Optional<Tle_LocalPointerResultType>:$src
   );
   let results = (outs I32:$result);
   let hasVerifier = 1;

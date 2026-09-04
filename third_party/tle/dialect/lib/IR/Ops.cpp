@@ -906,6 +906,9 @@ LogicalResult DistributedBarrierOp::verify() {
   if (spaceAttr && spaceAttr.getValue() == "device")
     return DistributedBarrier::verifyDeviceSpace(op, getSrc());
 
+  if (spaceAttr && spaceAttr.getValue() == "chiplet")
+    return success();
+
   auto kindAttr = op->getAttrOfType<StringAttr>("group_kind");
   auto rankAttr = op->getAttrOfType<IntegerAttr>("group_rank");
   auto shapeAttr = op->getAttrOfType<DenseI32ArrayAttr>("group_shape");
@@ -990,6 +993,10 @@ LogicalResult RemotePointersOp::verify() {
   if (spaceAttr == "device") {
     if (failed(RemotePointers::verifyDeviceSpace(getSrc(), getResult())))
       return failure();
+  } else if (spaceAttr == "chiplet") {
+    if (!getShardId().getType().isInteger(32))
+      return emitOpError() << "expects shard_id to be i32";
+    return success();
   } else {
     Type srcTy = getSrc().getType();
     Type resultTy = getResult().getType();

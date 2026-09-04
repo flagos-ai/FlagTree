@@ -61,6 +61,7 @@ jobs:
         run: |
           set -x
           export FLAGTREE_BACKEND=thrive
+          export LLVM_SYSPATH=/work/llvm-f6ded0be-ubuntu-x64
           MAX_JOBS=32 python3 setup.py bdist_wheel
           ssh -p 1024 root@localhost "rm -f /work/flagtree-*.whl"
           scp -P 1024 dist/flagtree-*.whl root@localhost:/work
@@ -76,8 +77,13 @@ jobs:
 
       - name: Unit Test
         if: steps.check_backend.outputs.should_skip != 'true'
+        timeout-minutes: 60
         shell: bash
         run: |
           set -x
-          ssh -p 1024 root@localhost "cd /usr/local/lib/python3.10/dist-packages/triton/backends/thrive/test && \
-                                      python3 -m pytest unit/language/test_standard.py --device thrive -v -s"
+          ssh -p 1024 root@localhost 'bash -s' <<'REMOTE'
+          set -e
+          export PYTHONUNBUFFERED=1
+          cd /usr/local/lib/python3.10/dist-packages/triton/backends/thrive/test
+          python3 -m pytest unit/language/test_standard.py chiplet/ --device thrive -v -s < /dev/null
+          REMOTE
