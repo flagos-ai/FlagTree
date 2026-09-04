@@ -1304,9 +1304,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32} {
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
   // CHECK-LABEL: convert_blocked1d_to_slice0
   tt.func @convert_blocked1d_to_slice0(%src:tensor<32xi32, #blocked0>) {
-    // CHECK: llvm.store {{.*}} : vector<1xi32>
-    // CHECK: nvvm.bar.warp.sync
-    // CHECK-COUNT-1: llvm.load {{.*}} -> vector<4xi32>
+    // CHECK-NOT: llvm.store
+    // CHECK-COUNT-4: nvvm.shfl.sync
+    // CHECK-NOT: llvm.load
     %cvt = ttg.convert_layout %src : tensor<32xi32, #blocked0> -> tensor<32xi32, #ttg.slice<{dim = 0, parent = #blocked1}>>
     tt.return
   }
@@ -1319,7 +1319,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
   // CHECK-LABEL: convert_blocked1d_to_slice1
   tt.func @convert_blocked1d_to_slice1(%src:tensor<32xi32, #blocked0>) {
-    // CHECK-COUNT-2: llvm.load {{.*}} -> vector<4xi32>
+    // CHECK-NOT: llvm.store
+    // CHECK-COUNT-8: nvvm.shfl.sync
+    // CHECK-NOT: llvm.load
     %cvt = ttg.convert_layout %src : tensor<32xi32, #blocked0> -> tensor<32xi32, #ttg.slice<{dim = 1, parent = #blocked1}>>
     tt.return
   }
@@ -1332,10 +1334,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
   // CHECK-LABEL: convert_blocked_to_blocked_ptr
   tt.func @convert_blocked_to_blocked_ptr(%src:tensor<32x!tt.ptr<f32>, #blocked0>) {
-    // CHECK: llvm.ptrtoint
-    // CHECK: llvm.store
-    // CHECK: nvvm.bar.warp.sync
-    // CHECK: llvm.inttoptr
+    // CHECK-NOT: llvm.store
+    // CHECK-COUNT-8: nvvm.shfl.sync
+    // CHECK-NOT: nvvm.bar.warp.sync
     // CHECK-COUNT-4: llvm.insertvalue
     %cvt = ttg.convert_layout %src : tensor<32x!tt.ptr<f32>, #blocked0> -> tensor<32x!tt.ptr<f32>, #blocked1>
     tt.return
@@ -2682,6 +2683,101 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 32 : i32, ttg.tar
     // CHECK-SAME: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
     %result = tt.dot %arg0, %arg1, %cst, inputPrecision = tf32 :
       tensor<32x1x32xf16, #dot_operand_a> * tensor<32x32x32xf16, #dot_operand_b> -> tensor<32x1x32xf32, #mma>
+    tt.return
+  }
+}
+
+// -----
+
+#same_warp_src16 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>
+#same_warp_dst16 = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
+#same_warp_src32 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>
+#same_warp_dst32 = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>
+
+// CHECK: module attributes {{.*}}ttg.shared = 0 : i32
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
+  // CHECK-LABEL: llvm.func @same_warp_ptr_broadcast_16
+  // CHECK-NOT: llvm.mlir.addressof @global_smem
+  // CHECK-COUNT-2: nvvm.shfl.sync idx
+  // CHECK-COUNT-8: llvm.insertvalue
+  tt.func @same_warp_ptr_broadcast_16(
+      %src: tensor<16x1x!tt.ptr<f32>, #same_warp_src16>) {
+    %cvt = ttg.convert_layout %src
+      : tensor<16x1x!tt.ptr<f32>, #same_warp_src16>
+     -> tensor<16x1x!tt.ptr<f32>, #same_warp_dst16>
+    tt.return
+  }
+
+  // CHECK-LABEL: llvm.func @same_warp_ptr_broadcast_32
+  // CHECK-NOT: llvm.mlir.addressof @global_smem
+  // CHECK-COUNT-2: nvvm.shfl.sync idx
+  // CHECK-COUNT-4: llvm.insertvalue
+  tt.func @same_warp_ptr_broadcast_32(
+      %src: tensor<32x1x!tt.ptr<f32>, #same_warp_src32>) {
+    %cvt = ttg.convert_layout %src
+      : tensor<32x1x!tt.ptr<f32>, #same_warp_src32>
+     -> tensor<32x1x!tt.ptr<f32>, #same_warp_dst32>
+    tt.return
+  }
+}
+
+// -----
+
+#same_warp_replicated = #ttg.linear<{
+  register = [],
+  lane = [[1], [2], [4], [8], [16]],
+  warp = [[1]],
+  block = []
+}>
+#same_warp_canonical = #ttg.linear<{
+  register = [],
+  lane = [[1], [2], [4], [8], [16]],
+  warp = [[0]],
+  block = []
+}>
+
+// CHECK: module attributes {{.*}}ttg.shared = 0 : i32
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32} {
+  // CHECK-LABEL: llvm.func @same_warp_representative
+  // CHECK-NOT: llvm.mlir.addressof @global_smem
+  // CHECK: llvm.xor
+  // CHECK-COUNT-2: nvvm.shfl.sync idx
+  tt.func @same_warp_representative(
+      %src: tensor<32x!tt.ptr<f32>, #same_warp_replicated>) {
+    %cvt = ttg.convert_layout %src
+      : tensor<32x!tt.ptr<f32>, #same_warp_replicated>
+     -> tensor<32x!tt.ptr<f32>, #same_warp_canonical>
+    tt.return
+  }
+}
+
+// -----
+
+#cross_warp_src = #ttg.linear<{
+  register = [],
+  lane = [[1], [2], [4], [8], [16]],
+  warp = [[32]],
+  block = []
+}>
+#cross_warp_dst = #ttg.linear<{
+  register = [],
+  lane = [[32], [2], [4], [8], [16]],
+  warp = [[1]],
+  block = []
+}>
+
+// CHECK: module attributes {{.*}}ttg.shared = {{[1-9][0-9]*}} : i32
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32} {
+  // CHECK-LABEL: llvm.func @cross_warp_required
+  // CHECK-NOT: nvvm.shfl.sync
+  // CHECK: llvm.mlir.addressof @global_smem
+  // CHECK-NOT: nvvm.shfl.sync
+  // CHECK: llvm.return
+  tt.func @cross_warp_required(
+      %src: tensor<64x!tt.ptr<f32>, #cross_warp_src>) {
+    %cvt = ttg.convert_layout %src
+      : tensor<64x!tt.ptr<f32>, #cross_warp_src>
+     -> tensor<64x!tt.ptr<f32>, #cross_warp_dst>
     tt.return
   }
 }

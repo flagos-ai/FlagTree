@@ -28,6 +28,9 @@
 #include "mlir/IR/Attributes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "triton/Analysis/Allocation.h"
+#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+#include "triton/Analysis/Utility.h"
+#endif // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
@@ -258,6 +261,224 @@ Value matrixVectorProd(TritonLLVMOpBuilder &b, const LinearLayout &A, Value x) {
 }
 
 } // namespace triton::gpu
+#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+namespace {
+
+constexpr unsigned kNvidiaWarpSize = 32;
+// Avoid replacing a compact shared-memory conversion with an unbounded number
+// of shuffle instructions. Pointer/i64 values count as two 32-bit words.
+constexpr unsigned kMaxSameWarpShuffleWords = 32;
+
+struct SameWarpShuffleDims {
+  StringAttr reg;
+  StringAttr lane;
+  StringAttr warp;
+  StringAttr block;
+  StringAttr srcReg;
+  StringAttr srcLane;
+  StringAttr srcWarp;
+  StringAttr srcBlock;
+  StringAttr sameWarp;
+  StringAttr sameBlock;
+};
+
+SameWarpShuffleDims getSameWarpShuffleDims(MLIRContext *ctx) {
+  return {
+      StringAttr::get(ctx, "register"),
+      StringAttr::get(ctx, "lane"),
+      StringAttr::get(ctx, "warp"),
+      StringAttr::get(ctx, "block"),
+      StringAttr::get(ctx, "__tle_src_register"),
+      StringAttr::get(ctx, "__tle_src_lane"),
+      StringAttr::get(ctx, "__tle_src_warp"),
+      StringAttr::get(ctx, "__tle_src_block"),
+      StringAttr::get(ctx, "__tle_same_warp"),
+      StringAttr::get(ctx, "__tle_same_block"),
+  };
+}
+
+bool hasRegisterHardwareDims(const triton::LinearLayout &layout,
+                             const SameWarpShuffleDims &dims) {
+  return layout.getNumInDims() == 4 &&
+         *layout.getInDimNames().begin() == dims.reg &&
+         layout.hasInDim(dims.reg) && layout.hasInDim(dims.lane) &&
+         layout.hasInDim(dims.warp) && layout.hasInDim(dims.block);
+}
+
+triton::LinearLayout renameSourceHardwareDims(triton::LinearLayout layout,
+                                              const SameWarpShuffleDims &dims) {
+  // Keeping source and destination hardware dimension names disjoint prevents
+  // invertAndCompose's identity-dimension heuristic from choosing a canonical
+  // representative before the explicit same-warp constraints are considered.
+  layout = layout.renameInDim(dims.reg, dims.srcReg);
+  layout = layout.renameInDim(dims.lane, dims.srcLane);
+  layout = layout.renameInDim(dims.warp, dims.srcWarp);
+  return layout.renameInDim(dims.block, dims.srcBlock);
+}
+
+triton::LinearLayout makeHardwareProjection(const triton::LinearLayout &layout,
+                                            StringAttr warp, StringAttr block,
+                                            const SameWarpShuffleDims &dims) {
+  triton::LinearLayout::BasesT bases;
+  for (const auto &[inDim, inBases] : layout.getBases()) {
+    auto &projectionBases = bases[inDim];
+    for (unsigned bit = 0; bit < inBases.size(); ++bit) {
+      projectionBases.push_back(
+          {inDim == warp ? 1 << bit : 0, inDim == block ? 1 << bit : 0});
+    }
+  }
+  return triton::LinearLayout(std::move(bases),
+                              {{dims.sameWarp, layout.getInDimSize(warp)},
+                               {dims.sameBlock, layout.getInDimSize(block)}},
+                              /*requireSurjective=*/true);
+}
+
+unsigned getLayoutRank(const triton::LinearLayout &layout) {
+  unsigned numFreeVariables = 0;
+  auto freeVariableMasks = layout.getFreeVariableMasks();
+  for (int32_t mask : llvm::make_second_range(freeVariableMasks))
+    numFreeVariables += llvm::popcount(static_cast<uint32_t>(mask));
+  return layout.getTotalInDimSizeLog2() - numFreeVariables;
+}
+
+bool imageContains(const triton::LinearLayout &source,
+                   const triton::LinearLayout &destination) {
+  if (llvm::to_vector(source.getOutDims()) !=
+      llvm::to_vector(destination.getOutDims()))
+    return false;
+
+  // getFreeVariableMasks and invertAndCompose currently represent their GF(2)
+  // matrices in one uint64_t per row. Fail closed before reaching an assert.
+  if (source.getTotalOutDimSizeLog2() > 64 ||
+      source.getTotalInDimSizeLog2() > 64 ||
+      destination.getTotalInDimSizeLog2() > 64 ||
+      source.getTotalInDimSizeLog2() + destination.getTotalInDimSizeLog2() > 64)
+    return false;
+
+  // The input names are deliberately disjoint. Adding destination's columns
+  // must not increase the rank iff every destination coordinate has a source
+  // representative satisfying the augmented constraints.
+  auto combined = source.concatIns(destination);
+  return getLayoutRank(combined) == getLayoutRank(source);
+}
+
+bool canRestoreRegisterBroadcast(const triton::LinearLayout &original,
+                                 const triton::LinearLayout &stripped,
+                                 StringAttr reg) {
+  uint32_t freeMask = original.getFreeVariableMasks().lookup(reg);
+  uint32_t zeroBasisMask = 0;
+  for (auto [bit, basis] : llvm::enumerate(original.getBases().lookup(reg))) {
+    if (llvm::all_of(basis, [](int32_t value) { return value == 0; }))
+      zeroBasisMask |= 1u << bit;
+  }
+  // broadcastAs reconstructs register positions from free-variable bits,
+  // whereas actionRemoveBroadcastedRegs only drops literal zero bases. Require
+  // those descriptions to agree instead of assuming an arbitrary register
+  // kernel has the same numbering.
+  if (freeMask != zeroBasisMask)
+    return false;
+  unsigned numUniqueRegs =
+      original.getInDimSize(reg) / (1u << llvm::popcount(freeMask));
+  return numUniqueRegs == stripped.getInDimSize(reg);
+}
+
+} // namespace
+
+std::optional<SameWarpShufflePlan>
+planSameWarpShuffleConversion(RankedTensorType srcTy, RankedTensorType dstTy) {
+  if (srcTy.getShape() != dstTy.getShape() ||
+      srcTy.getElementType() != dstTy.getElementType() ||
+      !cvtNeedsSharedMemory(srcTy, dstTy))
+    return std::nullopt;
+
+  unsigned bitWidth = triton::getBitwidth(srcTy);
+  if (bitWidth == 0 || bitWidth > 64)
+    return std::nullopt;
+
+  auto dims = getSameWarpShuffleDims(srcTy.getContext());
+  triton::LinearLayout originalSrc = triton::gpu::toLinearLayout(srcTy);
+  triton::LinearLayout originalDst = triton::gpu::toLinearLayout(dstTy);
+  if (!hasRegisterHardwareDims(originalSrc, dims) ||
+      !hasRegisterHardwareDims(originalDst, dims) ||
+      originalSrc.getInDimSize(dims.lane) != kNvidiaWarpSize ||
+      originalDst.getInDimSize(dims.lane) != kNvidiaWarpSize ||
+      originalSrc.getInDimSize(dims.warp) !=
+          originalDst.getInDimSize(dims.warp) ||
+      originalSrc.getInDimSize(dims.block) !=
+          originalDst.getInDimSize(dims.block) ||
+      triton::gpu::getTotalElemsPerThread(srcTy) !=
+          originalSrc.getInDimSize(dims.reg) ||
+      triton::gpu::getTotalElemsPerThread(dstTy) !=
+          originalDst.getInDimSize(dims.reg))
+    return std::nullopt;
+
+  auto removeBroadcastedSrcRegs =
+      triton::actionRemoveBroadcastedRegs(originalSrc);
+  auto removeBroadcastedDstRegs =
+      triton::actionRemoveBroadcastedRegs(originalDst);
+  triton::LinearLayout srcLayout = removeBroadcastedSrcRegs.apply(originalSrc);
+  triton::LinearLayout dstLayout = removeBroadcastedDstRegs.apply(originalDst);
+
+  // broadcastAs can restore zero-basis register broadcasts. If a future
+  // encoding contains a more involved register kernel, retain all destination
+  // registers instead of making an unsafe assumption here.
+  if (!canRestoreRegisterBroadcast(originalDst, dstLayout, dims.reg)) {
+    removeBroadcastedDstRegs = triton::ColumnAction::identity(
+        dims.reg, originalDst.getInDimSizeLog2(dims.reg));
+    dstLayout = originalDst;
+  }
+
+  unsigned shuffleWords =
+      dstLayout.getInDimSize(dims.reg) * llvm::divideCeil(bitWidth, 32u);
+  if (shuffleWords > kMaxSameWarpShuffleWords)
+    return std::nullopt;
+
+  unsigned augmentedOutBits = originalSrc.getTotalOutDimSizeLog2() +
+                              originalSrc.getInDimSizeLog2(dims.warp) +
+                              originalSrc.getInDimSizeLog2(dims.block);
+  if (augmentedOutBits > 64)
+    return std::nullopt;
+
+  triton::LinearLayout renamedSrc = renameSourceHardwareDims(srcLayout, dims);
+  triton::LinearLayout srcAug = renamedSrc.concatOuts(
+      makeHardwareProjection(renamedSrc, dims.srcWarp, dims.srcBlock, dims));
+  triton::LinearLayout dstAug = dstLayout.concatOuts(
+      makeHardwareProjection(dstLayout, dims.warp, dims.block, dims));
+
+  if (!imageContains(srcAug, dstAug))
+    return std::nullopt;
+
+  // Source and destination hardware inputs have different names, so this is a
+  // direct constrained solve rather than invertAndCompose's broadcasting
+  // heuristic. The image check above guarantees that lstsq cannot assert.
+  triton::LinearLayout dstToRenamedSrc = dstAug.invertAndCompose(srcAug);
+  if (dstToRenamedSrc.compose(srcAug) != dstAug)
+    return std::nullopt;
+
+  if (llvm::to_vector(dstToRenamedSrc.getOutDimNames()) !=
+      SmallVector<StringAttr>{dims.srcReg, dims.srcLane, dims.srcWarp,
+                              dims.srcBlock})
+    return std::nullopt;
+
+  // Restore the conventional output names expected by lowering. reshapeOuts
+  // preserves the bit order of the renamed source hardware dimensions.
+  triton::LinearLayout dstToSrc = dstToRenamedSrc.reshapeOuts(
+      {{dims.reg, srcLayout.getInDimSize(dims.reg)},
+       {dims.lane, srcLayout.getInDimSize(dims.lane)},
+       {dims.warp, srcLayout.getInDimSize(dims.warp)},
+       {dims.block, srcLayout.getInDimSize(dims.block)}});
+
+  // The first lowering supports a compile-time source register per
+  // destination register. Source lane may still depend on destination
+  // register/lane/warp/block and is computed with applyLinearLayout.
+  if (!dstToSrc.sublayoutIsZero({dims.lane, dims.warp, dims.block}, {dims.reg}))
+    return std::nullopt;
+
+  return SameWarpShufflePlan{
+      std::move(srcLayout), std::move(dstLayout), std::move(dstToSrc),
+      std::move(removeBroadcastedSrcRegs), std::move(removeBroadcastedDstRegs)};
+}
+#endif // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
 
 SmallVector<std::pair<StringAttr, Value>>
 applyLinearLayout(Location loc, RewriterBase &rewriter,
