@@ -17,13 +17,11 @@ from triton.language import load as tl_load
         ("language.gpu.core.alloc", "gpu.alloc"),
         ("triton.experimental.tle.language.raw.core.call", "raw.call"),
         (tle.language.cumsum, "cumsum"),
-        *(
-            [
-                (tle.language.gpu.alloc, "gpu.alloc"),
-                (tle.language.gpu.buffered_tensor.slot, "gpu.buffered_tensor.slot"),
-                (tle.language.gpu.pipeline, "gpu.pipeline"),
-            ] if tle.language.gpu is not None else []
-        ),
+        *([
+            (tle.language.gpu.alloc, "gpu.alloc"),
+            (tle.language.gpu.buffered_tensor.slot, "gpu.buffered_tensor.slot"),
+            (tle.language.gpu.pipeline, "gpu.pipeline"),
+        ] if tle.language.gpu is not None else []),
     ],
 )
 def test_primitive_name(primitive, expected):

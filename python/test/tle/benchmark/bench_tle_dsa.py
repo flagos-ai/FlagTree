@@ -31,6 +31,7 @@ def _is_txda():
 
 # ----------------------------- cumsum ---------------------------------------
 
+
 @triton.jit
 def _cumsum_kernel(x_ptr, ex_ptr, t_ptr, n, BLOCK: tl.constexpr):
     offs = tl.arange(0, BLOCK)
@@ -47,8 +48,7 @@ def bench_cumsum(sizes):
         x = torch.randn(n, device=DEVICE, dtype=torch.float32)
         ex = torch.empty(n, device=DEVICE, dtype=torch.float32)
         t = torch.empty(1, device=DEVICE, dtype=torch.float32)
-        ms = do_bench(lambda: _cumsum_kernel[(1,)](x, ex, t, n, BLOCK=block),
-                      warmup=25, rep=100)
+        ms = do_bench(lambda: _cumsum_kernel[(1, )](x, ex, t, n, BLOCK=block), warmup=25, rep=100)
         ref = torch.cumsum(x, dim=0)
         err = (ex[:n] - (ref - x)).abs().max().item()
         torch_ms = do_bench(lambda: torch.cumsum(x, dim=0), warmup=25, rep=100)
@@ -56,6 +56,7 @@ def bench_cumsum(sizes):
 
 
 # ----------------------------- copy -----------------------------------------
+
 
 @triton.jit
 def _copy_kernel(src_ptr, dst_ptr, shape: tl.constexpr, BLOCK: tl.constexpr):
@@ -70,14 +71,14 @@ def bench_copy(sizes):
         block = triton.next_power_of_2(n)
         x = torch.randn(n, device=DEVICE, dtype=torch.float32)
         y = torch.empty_like(x)
-        ms = do_bench(lambda: _copy_kernel[(1,)](x, y, n, BLOCK=block),
-                      warmup=25, rep=100)
+        ms = do_bench(lambda: _copy_kernel[(1, )](x, y, n, BLOCK=block), warmup=25, rep=100)
         torch_ms = do_bench(lambda: y.clone(), warmup=25, rep=100)
         ok = torch.equal(x, y)
         print(f"copy    n={n:>7}  dsa.copy={ms:8.4f} ms  torch.clone={torch_ms:8.4f} ms  ok={ok}")
 
 
 # ----------------------------- add ------------------------------------------
+
 
 @triton.jit
 def _add_kernel(a_ptr, b_ptr, c_ptr, shape: tl.constexpr, BLOCK: tl.constexpr):
@@ -98,14 +99,14 @@ def bench_add(sizes):
         a = torch.randn(n, device=DEVICE, dtype=torch.float32)
         b = torch.randn(n, device=DEVICE, dtype=torch.float32)
         c = torch.empty_like(a)
-        ms = do_bench(lambda: _add_kernel[(1,)](a, b, c, n, BLOCK=block),
-                      warmup=25, rep=100)
+        ms = do_bench(lambda: _add_kernel[(1, )](a, b, c, n, BLOCK=block), warmup=25, rep=100)
         torch_ms = do_bench(lambda: a + b, warmup=25, rep=100)
         torch.testing.assert_close(c, a + b, atol=1e-5, rtol=1e-5)
         print(f"add     n={n:>7}  dsa.add={ms:8.4f} ms  torch.add={torch_ms:8.4f} ms")
 
 
 # ----------------------------- randn ----------------------------------------
+
 
 @triton.jit
 def _randn_kernel(out_ptr, seed, n, BLOCK: tl.constexpr):
@@ -121,12 +122,12 @@ def bench_randn(sizes):
     for n in sizes:
         block = triton.next_power_of_2(n)
         out = torch.empty(n, device=DEVICE, dtype=torch.float32)
-        ms = do_bench(lambda: _randn_kernel[(1,)](out, 42, n, BLOCK=block),
-                      warmup=25, rep=100)
-        torch_ms = do_bench(lambda: torch.randn(n, device=DEVICE, dtype=torch.float32),
-                            warmup=25, rep=100)
+        ms = do_bench(lambda: _randn_kernel[(1, )](out, 42, n, BLOCK=block), warmup=25, rep=100)
+        torch_ms = do_bench(lambda: torch.randn(n, device=DEVICE, dtype=torch.float32), warmup=25, rep=100)
         m, s = out.float().mean().item(), out.float().std().item()
-        print(f"randn   n={n:>7}  dsa.tsingmicro.randn={ms:8.4f} ms  torch.randn={torch_ms:8.4f} ms  mean={m:+.3f} std={s:.3f}")
+        print(
+            f"randn   n={n:>7}  dsa.tsingmicro.randn={ms:8.4f} ms  torch.randn={torch_ms:8.4f} ms  mean={m:+.3f} std={s:.3f}"
+        )
 
 
 if __name__ == "__main__":

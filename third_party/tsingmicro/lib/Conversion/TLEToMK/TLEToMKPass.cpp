@@ -55,8 +55,8 @@ public:
     // unlowerable op reached the pipeline (e.g. reverse cumsum).
     WalkResult bad = moduleOp.walk([&](Operation *op) -> WalkResult {
       if (isa<mlir::triton::tle::ExclusiveCumsumOp,
-              mlir::triton::tle::ExtractTileOp,
-              mlir::triton::tle::InsertTileOp, mlir::dsa::CumsumOp>(op)) {
+              mlir::triton::tle::ExtractTileOp, mlir::triton::tle::InsertTileOp,
+              mlir::dsa::CumsumOp>(op)) {
         op->emitError("not lowered by tle-to-mk");
         return WalkResult::interrupt();
       }

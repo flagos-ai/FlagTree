@@ -10,8 +10,7 @@ import triton.language as tl
 LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", "0"))
 WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "0"))
 if LOCAL_WORLD_SIZE <= 0 or WORLD_SIZE % LOCAL_WORLD_SIZE != 0:
-    pytest.skip("multi-node distributed environment (LOCAL_WORLD_SIZE/WORLD_SIZE) is required",
-                allow_module_level=True)
+    pytest.skip("multi-node distributed environment (LOCAL_WORLD_SIZE/WORLD_SIZE) is required", allow_module_level=True)
 
 DEVICE_MESH = tle.device_mesh(tle.MeshConfig(node=WORLD_SIZE // LOCAL_WORLD_SIZE, device=LOCAL_WORLD_SIZE))
 

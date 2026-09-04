@@ -24,9 +24,7 @@ def _is_txda():
     return getattr(target, "backend", None) == "txda"
 
 
-pytestmark = pytest.mark.skipif(
-    not _is_txda(), reason="requires TsingMicro (txda) backend"
-)
+pytestmark = pytest.mark.skipif(not _is_txda(), reason="requires TsingMicro (txda) backend")
 
 
 @triton.jit
@@ -70,7 +68,7 @@ def test_cumsum_1d_masked():
 
     exclusive = torch.zeros(block, device="txda", dtype=torch.float32)
     total = torch.zeros(1, device="txda", dtype=torch.float32)
-    _cumsum_1d[(1,)](x, exclusive, total, n, BLOCK=block)
+    _cumsum_1d[(1, )](x, exclusive, total, n, BLOCK=block)
 
     expected = _exclusive_expected(x, torch.float32)
     torch.testing.assert_close(exclusive[:n], expected)
@@ -84,7 +82,7 @@ def test_cumsum_1d_full_block():
 
     exclusive = torch.zeros(n, device="txda", dtype=torch.float32)
     total = torch.zeros(1, device="txda", dtype=torch.float32)
-    _cumsum_1d[(1,)](x, exclusive, total, n, BLOCK=n)
+    _cumsum_1d[(1, )](x, exclusive, total, n, BLOCK=n)
 
     expected = _exclusive_expected(x, torch.float32)
     torch.testing.assert_close(exclusive, expected, atol=2e-6, rtol=1e-5)
@@ -98,7 +96,7 @@ def test_cumsum_2d_unsupported():
     x = torch.randn(m, n, device="txda", dtype=torch.float32)
     out = torch.zeros(m, n, device="txda", dtype=torch.float32)
     with pytest.raises(Exception):
-        _cumsum_2d[(1,)](x, out, M=m, N=n)
+        _cumsum_2d[(1, )](x, out, M=m, N=n)
 
 
 def test_cumsum_reverse_unsupported():
@@ -107,7 +105,7 @@ def test_cumsum_reverse_unsupported():
     exclusive = torch.zeros(64, device="txda", dtype=torch.float32)
     total = torch.zeros(1, device="txda", dtype=torch.float32)
     with pytest.raises(Exception):
-        _cumsum_1d_reverse[(1,)](x, exclusive, total, 64, BLOCK=64)
+        _cumsum_1d_reverse[(1, )](x, exclusive, total, 64, BLOCK=64)
 
 
 if __name__ == "__main__":

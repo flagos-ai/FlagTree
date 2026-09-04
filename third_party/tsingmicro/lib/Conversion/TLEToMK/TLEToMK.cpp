@@ -815,9 +815,8 @@ struct DsaToBufferToBufferizationPattern
 // in [0, prod(grid)); out-of-range values are UB (shared frontend contract).
 static LogicalResult
 resolveTleTileOffsets(PatternRewriter &rewriter, Location loc,
-                      ArrayRef<int64_t> srcShape,
-                      ArrayRef<int64_t> tileShape, Value index,
-                      SmallVectorImpl<int64_t> &staticOffsets,
+                      ArrayRef<int64_t> srcShape, ArrayRef<int64_t> tileShape,
+                      Value index, SmallVectorImpl<int64_t> &staticOffsets,
                       SmallVectorImpl<Value> &dynOffsets) {
   int64_t rank = static_cast<int64_t>(srcShape.size());
   SmallVector<int64_t> grid(rank);
@@ -846,8 +845,7 @@ resolveTleTileOffsets(PatternRewriter &rewriter, Location loc,
   // Work in i64: narrower widths would silently truncate stride constants.
   Value idx = index;
   if (auto indexTy = dyn_cast<RankedTensorType>(index.getType())) {
-    if (!indexTy.getShape().empty() ||
-        !indexTy.getElementType().isIntOrIndex())
+    if (!indexTy.getShape().empty() || !indexTy.getElementType().isIntOrIndex())
       return failure();
   } else if (!isa<IntegerType, IndexType>(index.getType())) {
     return failure();
@@ -870,8 +868,7 @@ resolveTleTileOffsets(PatternRewriter &rewriter, Location loc,
     if (auto tensorTy = dyn_cast<RankedTensorType>(ty))
       return rewriter.create<arith::ConstantOp>(
           loc, ty, DenseElementsAttr::get(tensorTy, ArrayRef<int64_t>{v}));
-    return rewriter.create<arith::ConstantOp>(
-        loc, ty, IntegerAttr::get(ty, v));
+    return rewriter.create<arith::ConstantOp>(loc, ty, IntegerAttr::get(ty, v));
   };
 
   SmallVector<int64_t> strides(rank, 1);
@@ -881,7 +878,8 @@ resolveTleTileOffsets(PatternRewriter &rewriter, Location loc,
   staticOffsets.assign(rank, ShapedType::kDynamic);
   dynOffsets.assign(rank, Value());
   for (int64_t i = 0; i < rank; ++i) {
-    Value div = rewriter.create<arith::DivSIOp>(loc, idx, makeConst(strides[i]));
+    Value div =
+        rewriter.create<arith::DivSIOp>(loc, idx, makeConst(strides[i]));
     Value mod = rewriter.create<arith::RemSIOp>(loc, div, makeConst(grid[i]));
     dynOffsets[i] =
         rewriter.create<arith::MulIOp>(loc, mod, makeConst(tileShape[i]));
@@ -905,8 +903,8 @@ struct TleExclusiveCumsumToDsaPattern
       return rewriter.notifyMatchFailure(
           op, "tle.exclusive_cumsum input/exclusive type mismatch");
     // TX81 hardware scan supports floating-point input only.
-    if (!inputTy.getElementType().isF32() && !inputTy.getElementType().isF16() &&
-        !inputTy.getElementType().isBF16())
+    if (!inputTy.getElementType().isF32() &&
+        !inputTy.getElementType().isF16() && !inputTy.getElementType().isBF16())
       return rewriter.notifyMatchFailure(
           op, "tle.exclusive_cumsum on tsingmicro supports only "
               "floating-point input (integer scan not supported by hardware)");

@@ -27,8 +27,7 @@ except ImportError:
     _deduplicate_warp_specialize_captures = None
 
 # Tests below exercise tle.gpu constructs that do not exist on every backend.
-_requires_tle_gpu = pytest.mark.skipif(tle.gpu is None,
-                                       reason="tle.gpu is not available on this backend")
+_requires_tle_gpu = pytest.mark.skipif(tle.gpu is None, reason="tle.gpu is not available on this backend")
 try:
     from triton.experimental.tle.language.gpu.semantic import TLESemanticError, TLESemantic
 except ImportError:
@@ -498,8 +497,7 @@ class TestPipeFrontend:
     def _make_buffer(self, shape, storage=None):
         semantic = TestBufferedTensor._FakeSemantic()
         layout = tle.gpu.swizzled_shared_layout.make_default(len(shape))
-        buffer = tle.gpu.buffered_tensor("base", tl.float16, shape,
-                                         tle.gpu.smem if storage is None else storage,
+        buffer = tle.gpu.buffered_tensor("base", tl.float16, shape, tle.gpu.smem if storage is None else storage,
                                          layout, semantic)
         return buffer, semantic
 

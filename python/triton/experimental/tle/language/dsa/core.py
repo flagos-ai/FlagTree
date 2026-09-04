@@ -46,8 +46,7 @@ def memory_space(input, space, _semantic=None):
     space = tl._unwrap_if_constexpr(space)
     builder = _semantic.builder
     if builder is not None and hasattr(input, 'handle') and hasattr(input.handle, 'set_attr'):
-        input.handle.set_attr("tt.memory_space",
-                              builder.get_string_attr(str(space)))
+        input.handle.set_attr("tt.memory_space", builder.get_string_attr(str(space)))
     return input
 
 
@@ -149,8 +148,7 @@ def copy(
     # ---- Case 2: tl.tensor (GM ptr) -> buffered_tensor (local) ----
     if not src_is_buf and dst_is_buf:
         if not isinstance(src, tl.tensor):
-            raise ValueError(
-                f"copy src must be tl.tensor (pointer) or buffered_tensor, got {type(src)}")
+            raise ValueError(f"copy src must be tl.tensor (pointer) or buffered_tensor, got {type(src)}")
         # Validate element type compatibility
         src_ptr_dtype = src.dtype
         if hasattr(src_ptr_dtype, 'element_ty'):
@@ -159,9 +157,8 @@ def copy(
             src_elem_dtype = src_ptr_dtype
         dst_elem_dtype = dst.type.element_ty
         if src_elem_dtype != dst_elem_dtype:
-            raise ValueError(
-                f"copy element type mismatch: src has {src_elem_dtype}, "
-                f"dst has {dst_elem_dtype}")
+            raise ValueError(f"copy element type mismatch: src has {src_elem_dtype}, "
+                             f"dst has {dst_elem_dtype}")
 
         # Create identity indices for the dst buffer and local pointers
         indices = _make_full_indices(dst, _semantic)
@@ -175,8 +172,7 @@ def copy(
     # ---- Case 3: buffered_tensor (local) -> tl.tensor (GM ptr) ----
     if src_is_buf and not dst_is_buf:
         if not isinstance(dst, tl.tensor):
-            raise ValueError(
-                f"copy dst must be tl.tensor (pointer) or buffered_tensor, got {type(dst)}")
+            raise ValueError(f"copy dst must be tl.tensor (pointer) or buffered_tensor, got {type(dst)}")
         dst_ptr_dtype = dst.dtype
         if hasattr(dst_ptr_dtype, 'element_ty'):
             dst_elem_dtype = dst_ptr_dtype.element_ty
@@ -184,9 +180,8 @@ def copy(
             dst_elem_dtype = dst_ptr_dtype
         src_elem_dtype = src.type.element_ty
         if src_elem_dtype != dst_elem_dtype:
-            raise ValueError(
-                f"copy element type mismatch: src has {src_elem_dtype}, "
-                f"dst has {dst_elem_dtype}")
+            raise ValueError(f"copy element type mismatch: src has {src_elem_dtype}, "
+                             f"dst has {dst_elem_dtype}")
 
         # Create identity indices for the src buffer and local pointers
         indices = _make_full_indices(src, _semantic)
@@ -198,10 +193,8 @@ def copy(
         return None
 
     # ---- Unsupported combination ----
-    raise ValueError(
-        "copy requires at least one operand to be a buffered_tensor. "
-        f"Got src={type(src).__name__}, dst={type(dst).__name__}"
-    )
+    raise ValueError("copy requires at least one operand to be a buffered_tensor. "
+                     f"Got src={type(src).__name__}, dst={type(dst).__name__}")
 
 
 def _expand_index_to_shape(index: tl.tensor, shape: Sequence[int], axis: int, _semantic) -> tl.tensor:
@@ -321,13 +314,12 @@ def local_ptr(
             raise ValueError("local_ptr does not yet supported scalar indices on remote buffers")
         if not hasattr(builder, "create_dsa_remote_pointers"):
             raise RuntimeError("builder missing create_dsa_remote_pointers for remote buffers")
-        shard_val = (
-            remote_shard_id.handle
-            if isinstance(remote_shard_id, tl.tensor)
-            else _semantic.to_tensor(remote_shard_id).handle
-        )
+        shard_val = (remote_shard_id.handle
+                     if isinstance(remote_shard_id, tl.tensor) else _semantic.to_tensor(remote_shard_id).handle)
         remote_op = builder.create_dsa_remote_pointers(
-            result_ir, result_tensor.handle, shard_val,
+            result_ir,
+            result_tensor.handle,
+            shard_val,
             scope=remote_scope,
         )
         result_tensor = tl.tensor(remote_op.get_result(0), result_ty)
@@ -438,8 +430,7 @@ def add(input, other, result, _semantic=None):
     """``result = input + other`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("add", input, other, result)
-    _create_binary_builtin("add", "create_dsa_add", builder).create_dsa_add(
-        input.handle, other.handle, result.handle)
+    _create_binary_builtin("add", "create_dsa_add", builder).create_dsa_add(input.handle, other.handle, result.handle)
 
 
 @tl.builtin
@@ -447,8 +438,7 @@ def sub(input, other, result, _semantic=None):
     """``result = input - other`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("sub", input, other, result)
-    _create_binary_builtin("sub", "create_dsa_sub", builder).create_dsa_sub(
-        input.handle, other.handle, result.handle)
+    _create_binary_builtin("sub", "create_dsa_sub", builder).create_dsa_sub(input.handle, other.handle, result.handle)
 
 
 @tl.builtin
@@ -456,8 +446,7 @@ def mul(input, other, result, _semantic=None):
     """``result = input * other`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("mul", input, other, result)
-    _create_binary_builtin("mul", "create_dsa_mul", builder).create_dsa_mul(
-        input.handle, other.handle, result.handle)
+    _create_binary_builtin("mul", "create_dsa_mul", builder).create_dsa_mul(input.handle, other.handle, result.handle)
 
 
 @tl.builtin
@@ -465,8 +454,8 @@ def max(input, other, result, _semantic=None):
     """``result = max(input, other)`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("max", input, other, result)
-    _create_binary_builtin("max", "create_dsa_maximum", builder).create_dsa_maximum(
-        input.handle, other.handle, result.handle)
+    _create_binary_builtin("max", "create_dsa_maximum", builder).create_dsa_maximum(input.handle, other.handle,
+                                                                                    result.handle)
 
 
 @tl.builtin
@@ -474,8 +463,8 @@ def min(input, other, result, _semantic=None):
     """``result = min(input, other)`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("min", input, other, result)
-    _create_binary_builtin("min", "create_dsa_minimum", builder).create_dsa_minimum(
-        input.handle, other.handle, result.handle)
+    _create_binary_builtin("min", "create_dsa_minimum", builder).create_dsa_minimum(input.handle, other.handle,
+                                                                                    result.handle)
 
 
 @tl.builtin
@@ -483,8 +472,7 @@ def div(input, other, result, _semantic=None):
     """``result = input / other`` elementwise on on-chip buffers (three-operand)."""
     builder = _semantic.builder
     _check_binary_operands("div", input, other, result)
-    _create_binary_builtin("div", "create_dsa_div", builder).create_dsa_div(
-        input.handle, other.handle, result.handle)
+    _create_binary_builtin("div", "create_dsa_div", builder).create_dsa_div(input.handle, other.handle, result.handle)
 
 
 # ---------------------------------------------------------------------------
@@ -533,16 +521,14 @@ def _split_offsets(offsets, fn):
         else:
             iv = _try_unwrap_int(v)
             if iv is None:
-                raise ValueError(
-                    f"{fn}: offsets must be int/constexpr or scalar tl.tensor")
+                raise ValueError(f"{fn}: offsets must be int/constexpr or scalar tl.tensor")
             static.append(iv)
     return static, dyn
 
 
 def _check_static_slice_bounds(fn, src_shape, static_offsets, sizes, strides):
     """Validate the static (non-sentinel) offsets against src/sizes/strides."""
-    for i, (src, off, size, stride) in enumerate(
-            zip(src_shape, static_offsets, sizes, strides)):
+    for i, (src, off, size, stride) in enumerate(zip(src_shape, static_offsets, sizes, strides)):
         if size <= 0:
             raise ValueError(f"{fn}: size[{i}]={size} must be positive")
         if stride <= 0:
@@ -553,9 +539,8 @@ def _check_static_slice_bounds(fn, src_shape, static_offsets, sizes, strides):
             raise ValueError(f"{fn}: offset[{i}]={off} must be non-negative")
         end = off + (size - 1) * stride + 1
         if end > src:
-            raise ValueError(
-                f"{fn}: slice [{off}:{off}+{size}*{stride}] exceeds source dim "
-                f"{i} ({src})")
+            raise ValueError(f"{fn}: slice [{off}:{off}+{size}*{stride}] exceeds source dim "
+                             f"{i} ({src})")
 
 
 @tl._tensor_member_fn
@@ -589,22 +574,19 @@ def extract_slice(x: tl.tensor, offsets, sizes, strides, _semantic=None) -> tl.t
         raise ValueError("extract_slice: offsets/sizes/strides rank must match source rank")
 
     static_offsets, dyn_offsets = _split_offsets(offsets, "extract_slice")
-    _check_static_slice_bounds("extract_slice", src_shape, static_offsets,
-                               sizes, strides)
+    _check_static_slice_bounds("extract_slice", src_shape, static_offsets, sizes, strides)
 
     # tensor.extract_slice semantics: sizes is the result shape.
     result_ty = tl.block_type(x.type.element_ty, sizes)
     result_ir = result_ty.to_ir(builder)
 
-    handle = builder.create_dsa_extract_slice(
-        result_ir, x.handle, static_offsets, dyn_offsets, sizes, strides)
+    handle = builder.create_dsa_extract_slice(result_ir, x.handle, static_offsets, dyn_offsets, sizes, strides)
     return tl.tensor(handle, result_ty)
 
 
 @tl._tensor_member_fn
 @tl.builtin
-def insert_slice(x: tl.tensor, tile: tl.tensor, offsets, sizes=None,
-                 strides=None, _semantic=None) -> tl.tensor:
+def insert_slice(x: tl.tensor, tile: tl.tensor, offsets, sizes=None, strides=None, _semantic=None) -> tl.tensor:
     """Insert ``tile`` into ``x`` at ``offsets``.
 
     ``sizes`` defaults to ``tile.shape``; ``strides`` defaults to all ones.
@@ -635,18 +617,14 @@ def insert_slice(x: tl.tensor, tile: tl.tensor, offsets, sizes=None,
     if len(sizes) != len(src_shape) or len(strides) != len(src_shape):
         raise ValueError("insert_slice: sizes/strides rank must match source rank")
     if tuple(sizes) != tuple(tile_shape):
-        raise ValueError(
-            f"insert_slice: sizes {sizes} must match tile shape {tile_shape}")
+        raise ValueError(f"insert_slice: sizes {sizes} must match tile shape {tile_shape}")
     if x.type.element_ty != tile.type.element_ty:
-        raise ValueError(
-            f"insert_slice: element type mismatch source={x.type.element_ty}, "
-            f"tile={tile.type.element_ty}")
+        raise ValueError(f"insert_slice: element type mismatch source={x.type.element_ty}, "
+                         f"tile={tile.type.element_ty}")
 
     static_offsets, dyn_offsets = _split_offsets(offsets, "insert_slice")
-    _check_static_slice_bounds("insert_slice", src_shape, static_offsets,
-                               sizes, strides)
+    _check_static_slice_bounds("insert_slice", src_shape, static_offsets, sizes, strides)
 
-    handle = builder.create_dsa_insert_slice(
-        x.type.to_ir(builder), x.handle, tile.handle, static_offsets,
-        dyn_offsets, sizes, strides)
+    handle = builder.create_dsa_insert_slice(x.type.to_ir(builder), x.handle, tile.handle, static_offsets, dyn_offsets,
+                                             sizes, strides)
     return tl.tensor(handle, x.type)

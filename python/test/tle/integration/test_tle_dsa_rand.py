@@ -26,9 +26,7 @@ def _is_txda():
     return getattr(target, "backend", None) == "txda"
 
 
-pytestmark = pytest.mark.skipif(
-    not _is_txda(), reason="requires TsingMicro (txda) backend"
-)
+pytestmark = pytest.mark.skipif(not _is_txda(), reason="requires TsingMicro (txda) backend")
 
 
 @triton.jit
@@ -63,16 +61,16 @@ def test_randgen_shape_and_determinism():
     out = torch.empty(n, device="txda", dtype=torch.int64)
     s0o = torch.zeros(16, device="txda", dtype=torch.int64)
     s1o = torch.zeros(16, device="txda", dtype=torch.int64)
-    _randgen_kernel[(1,)](42, out, s0o, s1o, N=n)
+    _randgen_kernel[(1, )](42, out, s0o, s1o, N=n)
 
     # determinism: same seed -> same stream
     out2 = torch.empty_like(out)
-    _randgen_kernel[(1,)](42, out2, s0o, s1o, N=n)
+    _randgen_kernel[(1, )](42, out2, s0o, s1o, N=n)
     torch.testing.assert_close(out, out2)
 
     # stream advances: different seed -> different values
     out3 = torch.empty_like(out)
-    _randgen_kernel[(1,)](43, out3, s0o, s1o, N=n)
+    _randgen_kernel[(1, )](43, out3, s0o, s1o, N=n)
     assert not torch.equal(out, out3)
 
 
@@ -81,13 +79,13 @@ def test_randgen_invalid_n_out():
     s0o = torch.zeros(16, device="txda", dtype=torch.int64)
     s1o = torch.zeros(16, device="txda", dtype=torch.int64)
     with pytest.raises(Exception):
-        _randgen_kernel[(1,)](42, out, s0o, s1o, N=8)  # not a multiple of 16
+        _randgen_kernel[(1, )](42, out, s0o, s1o, N=8)  # not a multiple of 16
 
 
 def test_rand_uniform_stats():
     n = 16384
     out = torch.empty(n, device="txda", dtype=torch.float32)
-    _rand_kernel[(1,)](7, out, N=n)
+    _rand_kernel[(1, )](7, out, N=n)
 
     assert out.min().item() >= 0.0 and out.max().item() < 1.0
     mean, std = out.mean().item(), out.std().item()
@@ -100,7 +98,7 @@ def test_rand_uniform_stats():
 def test_randn_normal_stats():
     n = 16384
     out = torch.empty(n, device="txda", dtype=torch.float32)
-    _randn_kernel[(1,)](11, out, N=n)
+    _randn_kernel[(1, )](11, out, N=n)
 
     mean, std = out.mean().item(), out.std().item()
     assert abs(mean) < 0.05, f"normal mean off: {mean}"
@@ -112,7 +110,7 @@ def test_randn_normal_stats():
 def test_rand_invalid_n_out():
     out = torch.empty(16, device="txda", dtype=torch.float32)
     with pytest.raises(Exception):
-        _rand_kernel[(1,)](7, out, N=16)  # not a multiple of 32
+        _rand_kernel[(1, )](7, out, N=16)  # not a multiple of 32
 
 
 if __name__ == "__main__":

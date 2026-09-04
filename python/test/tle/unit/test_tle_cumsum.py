@@ -167,8 +167,7 @@ def test_tle_cumsum_exclusive_and_total(dtype, n, block, reverse, num_warps):
         pytest.skip("bfloat16 is not supported on this GPU")
     if reverse and FLAGTREE_BACKEND == "tsingmicro":
         pytest.skip("reverse cumsum is not supported on tsingmicro yet")
-    if (FLAGTREE_BACKEND == "tsingmicro"
-            and dtype not in (torch.float16, torch.bfloat16, torch.float32)):
+    if (FLAGTREE_BACKEND == "tsingmicro" and dtype not in (torch.float16, torch.bfloat16, torch.float32)):
         pytest.skip("integer cumsum not supported by the tsingmicro hardware scan")
 
     x = _make_input(dtype, block)
