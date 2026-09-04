@@ -1,0 +1,286 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: 'Acquire FlagGems Baseline Lock'
+description: 'Check baseline existence and acquire lock with TTL(Time To Live)'
+
+inputs:
+  flaggems-ci-dir:
+    description: 'FlagGems CI directory'
+    required: true
+    default: '/root/flaggems_ci'
+  date:
+    description: 'Date for baseline (YYYY-MM-DD format). Defaults to today'
+    required: false
+    default: ''
+  lock-timeout:
+    description: 'Timeout in seconds to wait for lock'
+    required: false
+    default: '3600'
+  lock-ttl:
+    description: 'Lock TTL in seconds (lock expires after this time)'
+    required: false
+    default: '7200'
+
+outputs:
+  baseline_exists:
+    description: 'Whether baseline exists'
+    value: ${{ steps.check-and-lock.outputs.baseline_exists }}
+  baseline_date:
+    description: 'Date of the baseline'
+    value: ${{ steps.check-and-lock.outputs.baseline_date }}
+  baseline_path:
+    description: 'Path to baseline summary file'
+    value: ${{ steps.check-and-lock.outputs.baseline_path }}
+  lock_acquired:
+    description: 'Whether lock was acquired by this job'
+    value: ${{ steps.check-and-lock.outputs.lock_acquired }}
+  action_taken:
+    description: 'Action taken (exists/acquired/waited/timeout/stale_reclaimed)'
+    value: ${{ steps.check-and-lock.outputs.action_taken }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Check Baseline and Acquire Lock
+      id: check-and-lock
+      shell: bash
+      run: |
+        # Set date
+        if [ -z "${{ inputs.date }}" ]; then
+          TODAY=$(date +%Y-%m-%d)
+        else
+          TODAY="${{ inputs.date }}"
+        fi
+
+        BASELINE_DIR="${{ inputs.flaggems-ci-dir }}/Baseline/${TODAY}"
+        BASELINE_SUMMARY="${BASELINE_DIR}/summary.json"
+        LOCK_DIR="${{ inputs.flaggems-ci-dir }}/.baseline_generate_${TODAY}.lock"
+        LOCK_TIMEOUT="${{ inputs.lock-timeout }}"
+        LOCK_TTL="${{ inputs.lock-ttl }}"
+
+        BASELINE_EXISTS="false"
+        LOCK_ACQUIRED="false"
+        ACTION_TAKEN="unknown"
+
+        # Set outputs
+        echo "baseline_date=$TODAY" >> $GITHUB_OUTPUT
+        echo "baseline_path=$BASELINE_SUMMARY" >> $GITHUB_OUTPUT
+        echo "baseline_dir=$BASELINE_DIR" >> $GITHUB_OUTPUT
+        echo "lock_dir=$LOCK_DIR" >> $GITHUB_OUTPUT
+
+        echo "BASELINE_DIR=$BASELINE_DIR" >> $GITHUB_ENV
+        echo "BASELINE_SUMMARY=$BASELINE_SUMMARY" >> $GITHUB_ENV
+        echo "LOCK_DIR=$LOCK_DIR" >> $GITHUB_ENV
+        echo "BASELINE_DATE=$TODAY" >> $GITHUB_ENV
+
+        echo "📅 Baseline date: $TODAY"
+        echo "📁 Baseline dir: $BASELINE_DIR"
+        echo "📄 Summary file: $BASELINE_SUMMARY"
+        echo "🔒 Lock dir: $LOCK_DIR"
+        echo "⏱️  Lock wait timeout: ${LOCK_TIMEOUT}s"
+        echo "⏱️  Lock TTL: ${LOCK_TTL}s"
+
+        # ============================================================
+        # Helper Functions
+        # ============================================================
+
+        # Check if lock is valid (not expired)
+        is_lock_valid() {
+          if [[ ! -d "$LOCK_DIR" ]]; then
+            return 1
+          fi
+
+          if [[ -f "${LOCK_DIR}/expires_at" ]]; then
+            EXPIRES_AT=$(cat "${LOCK_DIR}/expires_at" 2>/dev/null || echo "0")
+            CURRENT_TIME=$(date +%s)
+            if [[ $CURRENT_TIME -gt $EXPIRES_AT ]]; then
+              # Lock expired
+              return 1
+            fi
+          fi
+          return 0
+        }
+
+        # Clean up expired lock
+        cleanup_expired_lock() {
+          if [[ -d "$LOCK_DIR" ]]; then
+            # Check if lock has expired
+            if [[ -f "${LOCK_DIR}/expires_at" ]]; then
+              EXPIRES_AT=$(cat "${LOCK_DIR}/expires_at" 2>/dev/null || echo "0")
+              CURRENT_TIME=$(date +%s)
+              if [[ $CURRENT_TIME -gt $EXPIRES_AT ]]; then
+                echo "⚠️  Lock expired, cleaning up..."
+                rm -rf "$LOCK_DIR" 2>/dev/null || true
+                return 0
+              fi
+            else
+              # No expires_at file, treat as invalid
+              echo "⚠️  Lock missing expires_at, cleaning up..."
+              rm -rf "$LOCK_DIR" 2>/dev/null || true
+              return 0
+            fi
+          fi
+          return 1
+        }
+
+        # Create lock with TTL
+        create_lock() {
+          if mkdir "$LOCK_DIR" 2>/dev/null; then
+            CURRENT_TIME=$(date +%s)
+            EXPIRES_AT=$((CURRENT_TIME + LOCK_TTL))
+            echo "${{ github.run_id }}-${{ github.run_attempt }}" > "${LOCK_DIR}/holder"
+            echo "$CURRENT_TIME" > "${LOCK_DIR}/created_at"
+            echo "$EXPIRES_AT" > "${LOCK_DIR}/expires_at"
+            echo "✅ Lock created with TTL: ${LOCK_TTL}s"
+            echo "🔒 Lock holder: ${{ github.run_id }}-${{ github.run_attempt }}"
+            return 0
+          fi
+          return 1
+        }
+
+        # ============================================================
+        # Main Logic
+        # ============================================================
+
+        # Step 1: Check if baseline exists (fast path)
+        echo "🔍 Checking if baseline exists..."
+
+        if [[ -f "$BASELINE_SUMMARY" ]] && [[ -s "$BASELINE_SUMMARY" ]]; then
+          echo "✅ FlagGems baseline exists"
+          echo "📋 Content preview (first 12 lines):"
+          head -n 12 "$BASELINE_SUMMARY"
+          BASELINE_EXISTS="true"
+          ACTION_TAKEN="exists"
+          echo "baseline_exists=true" >> $GITHUB_OUTPUT
+          echo "lock_acquired=false" >> $GITHUB_OUTPUT
+          echo "action_taken=exists" >> $GITHUB_OUTPUT
+          echo "BASELINE_EXISTS=true" >> $GITHUB_ENV
+          echo "LOCK_ACQUIRED=false" >> $GITHUB_ENV
+          exit 0
+        fi
+
+        echo "⚠️  FlagGems baseline does not exist or is empty"
+        echo "baseline_exists=false" >> $GITHUB_OUTPUT
+        echo "BASELINE_EXISTS=false" >> $GITHUB_ENV
+
+        # Step 2: Clean up expired lock if exists
+        if [[ -d "$LOCK_DIR" ]]; then
+          if cleanup_expired_lock; then
+            echo "🧹 Expired lock cleaned up"
+          fi
+        fi
+
+        # Step 3: Try to acquire lock
+        echo "🔒 Attempting to acquire lock: $LOCK_DIR"
+
+        if create_lock; then
+          LOCK_ACQUIRED="true"
+          ACTION_TAKEN="acquired"
+          echo "lock_acquired=true" >> $GITHUB_OUTPUT
+          echo "action_taken=acquired" >> $GITHUB_OUTPUT
+          echo "LOCK_ACQUIRED=true" >> $GITHUB_ENV
+          exit 0
+        fi
+
+        # Step 4: Lock is held by another process, wait with TTL check
+        echo "⏳ Lock held by another process, waiting..."
+
+        WAIT_COUNT=0
+        LOCK_ACQUIRED=false
+
+        while [[ $WAIT_COUNT -lt $LOCK_TIMEOUT ]]; do
+          sleep 5
+          WAIT_COUNT=$((WAIT_COUNT + 5))
+
+          if [[ $((WAIT_COUNT % 30)) -eq 0 ]]; then
+            echo "⏳ Waiting... ($WAIT_COUNT/$LOCK_TIMEOUT seconds)"
+          fi
+
+          # Check if baseline has been generated
+          if [[ -f "$BASELINE_SUMMARY" ]] && [[ -s "$BASELINE_SUMMARY" ]]; then
+            echo "✅ Baseline exists (generated by other process)"
+            BASELINE_EXISTS="true"
+            ACTION_TAKEN="waited"
+            echo "baseline_exists=true" >> $GITHUB_OUTPUT
+            echo "lock_acquired=false" >> $GITHUB_OUTPUT
+            echo "action_taken=waited" >> $GITHUB_OUTPUT
+            echo "BASELINE_EXISTS=true" >> $GITHUB_ENV
+            echo "LOCK_ACQUIRED=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # Check if lock has expired
+          if [[ -d "$LOCK_DIR" ]]; then
+            if ! is_lock_valid; then
+              echo "⚠️  Lock has expired, attempting to reclaim..."
+              rm -rf "$LOCK_DIR" 2>/dev/null || true
+
+              if create_lock; then
+                echo "✅ Reclaimed expired lock"
+                LOCK_ACQUIRED="true"
+                ACTION_TAKEN="acquired"
+                echo "lock_acquired=true" >> $GITHUB_OUTPUT
+                echo "action_taken=reclaimed" >> $GITHUB_OUTPUT
+                echo "LOCK_ACQUIRED=true" >> $GITHUB_ENV
+                exit 0
+              fi
+            fi
+          fi
+        done
+
+        # Step 5: Timeout handling
+        echo "❌ Timeout waiting for lock ($LOCK_TIMEOUT seconds)"
+        ACTION_TAKEN="timeout"
+        echo "action_taken=timeout" >> $GITHUB_OUTPUT
+
+        # Final check
+        if [[ -f "$BASELINE_SUMMARY" ]] && [[ -s "$BASELINE_SUMMARY" ]]; then
+          echo "✅ Baseline exists (generated just in time)"
+          BASELINE_EXISTS="true"
+          echo "baseline_exists=true" >> $GITHUB_OUTPUT
+          echo "lock_acquired=false" >> $GITHUB_OUTPUT
+          echo "BASELINE_EXISTS=true" >> $GITHUB_ENV
+          echo "LOCK_ACQUIRED=false" >> $GITHUB_ENV
+          exit 0
+        fi
+
+        # Try one last time to reclaim expired lock
+        if [[ -d "$LOCK_DIR" ]] && ! is_lock_valid; then
+          echo "⚠️  Lock expired, attempting to reclaim..."
+          rm -rf "$LOCK_DIR" 2>/dev/null || true
+          if create_lock; then
+            echo "✅ Reclaimed expired lock after timeout"
+            LOCK_ACQUIRED="true"
+            ACTION_TAKEN="reclaimed"
+            echo "lock_acquired=true" >> $GITHUB_OUTPUT
+            echo "action_taken=reclaimed" >> $GITHUB_OUTPUT
+            echo "LOCK_ACQUIRED=true" >> $GITHUB_ENV
+            echo "baseline_exists=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+        fi
+
+        echo "❌ Failed to acquire lock and baseline missing"
+        echo "baseline_exists=false" >> $GITHUB_OUTPUT
+        echo "lock_acquired=false" >> $GITHUB_OUTPUT
+        echo "BASELINE_EXISTS=false" >> $GITHUB_ENV
+        echo "LOCK_ACQUIRED=false" >> $GITHUB_ENV
+        exit 1
