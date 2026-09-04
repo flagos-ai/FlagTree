@@ -1,0 +1,232 @@
+name: 'Acquire FlagGems Baseline Lock'
+description: 'Check baseline existence and acquire lock with verification'
+
+inputs:
+  flaggems-ci-dir:
+    description: 'FlagGems CI directory'
+    required: true
+    default: '/root/flaggems_ci'
+  date:
+    description: 'Date for baseline (YYYY-MM-DD format). Defaults to today'
+    required: false
+    default: ''
+  lock-timeout:
+    description: 'Timeout in seconds to wait for lock'
+    required: false
+    default: '1800'
+
+outputs:
+  baseline_exists:
+    description: 'Whether baseline exists'
+    value: ${{ steps.check-and-lock.outputs.baseline_exists }}
+  baseline_date:
+    description: 'Date of the baseline'
+    value: ${{ steps.check-and-lock.outputs.baseline_date }}
+  baseline_path:
+    description: 'Path to baseline summary file'
+    value: ${{ steps.check-and-lock.outputs.baseline_path }}
+  baseline_dir:
+    description: 'Directory containing baseline'
+    value: ${{ steps.check-and-lock.outputs.baseline_dir }}
+  lock_dir:
+    description: 'Lock directory path'
+    value: ${{ steps.check-and-lock.outputs.lock_dir }}
+  lock_acquired:
+    description: 'Whether lock was acquired by this job (true/false)'
+    value: ${{ steps.check-and-lock.outputs.lock_acquired }}
+  action_taken:
+    description: 'Action taken (exists/acquired/waited/timeout)'
+    value: ${{ steps.check-and-lock.outputs.action_taken }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Check Baseline and Acquire Lock
+      id: check-and-lock
+      shell: bash
+      run: |
+        # 设置日期
+        if [ -z "${{ inputs.date }}" ]; then
+          TODAY=$(date +%Y-%m-%d)
+        else
+          TODAY="${{ inputs.date }}"
+        fi
+
+        BASELINE_DIR="${{ inputs.flaggems-ci-dir }}/Baseline/${TODAY}"
+        BASELINE_SUMMARY="${BASELINE_DIR}/summary.json"
+        LOCK_DIR="${{ inputs.flaggems-ci-dir }}/.baseline_generate_${TODAY}.lock"
+        LOCK_TIMEOUT="${{ inputs.lock-timeout }}"
+
+        # 初始化状态
+        BASELINE_EXISTS="false"
+        LOCK_ACQUIRED="false"
+        ACTION_TAKEN="unknown"
+
+        # 设置输出
+        echo "baseline_date=$TODAY" >> $GITHUB_OUTPUT
+        echo "baseline_path=$BASELINE_SUMMARY" >> $GITHUB_OUTPUT
+        echo "baseline_dir=$BASELINE_DIR" >> $GITHUB_OUTPUT
+        echo "lock_dir=$LOCK_DIR" >> $GITHUB_OUTPUT
+
+        # 保存到环境变量供后续 steps 使用
+        echo "BASELINE_DIR=$BASELINE_DIR" >> $GITHUB_ENV
+        echo "BASELINE_SUMMARY=$BASELINE_SUMMARY" >> $GITHUB_ENV
+        echo "LOCK_DIR=$LOCK_DIR" >> $GITHUB_ENV
+        echo "BASELINE_DATE=$TODAY" >> $GITHUB_ENV
+
+        echo "📅 Baseline date: $TODAY"
+        echo "📁 Baseline dir: $BASELINE_DIR"
+        echo "📄 Summary file: $BASELINE_SUMMARY"
+        echo "🔒 Lock dir: $LOCK_DIR"
+        echo "⏱️  Lock timeout: ${LOCK_TIMEOUT}s"
+
+        # Check if baseline exists (fast path, no lock)
+        echo "🔍 Checking if baseline exists..."
+
+        if [[ -f "$BASELINE_SUMMARY" ]] && [[ -s "$BASELINE_SUMMARY" ]]; then
+          echo "✅ FlagGems baseline exists"
+          echo "📋 Content preview (first 12 lines):"
+          head -n 12 "$BASELINE_SUMMARY"
+          BASELINE_EXISTS="true"
+          ACTION_TAKEN="exists"
+          echo "baseline_exists=true" >> $GITHUB_OUTPUT
+          echo "lock_acquired=false" >> $GITHUB_OUTPUT
+          echo "action_taken=exists" >> $GITHUB_OUTPUT
+          echo "BASELINE_EXISTS=true" >> $GITHUB_ENV
+          echo "LOCK_ACQUIRED=false" >> $GITHUB_ENV
+          exit 0
+        fi
+
+        echo "⚠️  FlagGems baseline does not exist or is empty"
+        echo "baseline_exists=false" >> $GITHUB_OUTPUT
+        echo "BASELINE_EXISTS=false" >> $GITHUB_ENV
+
+        # Acquire lock (only if baseline doesn't exist)
+        echo "🔒 Attempting to acquire lock: $LOCK_DIR"
+
+        # 尝试获取锁
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+          echo "✅ Lock acquired immediately"
+          LOCK_ACQUIRED="true"
+          ACTION_TAKEN="acquired"
+          echo "lock_acquired=true" >> $GITHUB_OUTPUT
+          echo "action_taken=acquired" >> $GITHUB_OUTPUT
+          echo "LOCK_ACQUIRED=true" >> $GITHUB_ENV
+
+          # 记录锁持有者
+          echo "${{ github.run_id }}-${{ github.run_attempt }}" > "${LOCK_DIR}/holder"
+          echo "🔒 Lock holder: ${{ github.run_id }}-${{ github.run_attempt }}"
+
+          # 设置 trap 确保脚本退出时释放锁（但 step 结束时 trap 会被清除）
+          # 所以需要在后续 step 中验证锁所有权
+          exit 0
+        fi
+
+        # 锁被其他进程持有，等待
+        echo "⏳ Lock held by another process, waiting..."
+
+        WAIT_COUNT=0
+        LOCK_ACQUIRED=false
+
+        while [[ $WAIT_COUNT -lt $LOCK_TIMEOUT ]]; do
+          sleep 5
+          WAIT_COUNT=$((WAIT_COUNT + 5))
+
+          if [[ $((WAIT_COUNT % 30)) -eq 0 ]]; then
+            echo "⏳ Waiting... ($WAIT_COUNT/$LOCK_TIMEOUT seconds)"
+          fi
+
+          # 检查 baseline 是否已生成
+          if [[ -f "$BASELINE_SUMMARY" ]] && [[ -s "$BASELINE_SUMMARY" ]]; then
+            echo "✅ Baseline exists (generated by other process)"
+            BASELINE_EXISTS="true"
+            ACTION_TAKEN="waited"
+            echo "baseline_exists=true" >> $GITHUB_OUTPUT
+            echo "lock_acquired=false" >> $GITHUB_OUTPUT
+            echo "action_taken=waited" >> $GITHUB_OUTPUT
+            echo "BASELINE_EXISTS=true" >> $GITHUB_ENV
+            echo "LOCK_ACQUIRED=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # 尝试获取锁
+          if mkdir "$LOCK_DIR" 2>/dev/null; then
+            echo "✅ Lock acquired after waiting"
+            LOCK_ACQUIRED="true"
+            ACTION_TAKEN="acquired"
+            echo "lock_acquired=true" >> $GITHUB_OUTPUT
+            echo "action_taken=acquired" >> $GITHUB_OUTPUT
+            echo "LOCK_ACQUIRED=true" >> $GITHUB_ENV
+
+            echo "${{ github.run_id }}-${{ github.run_attempt }}" > "${LOCK_DIR}/holder"
+            echo "🔒 Lock holder: ${{ github.run_id }}-${{ github.run_attempt }}"
+            break
+          fi
+        done
+
+        # 超时处理
+        if [[ $WAIT_COUNT -ge $LOCK_TIMEOUT ]] && [[ "$LOCK_ACQUIRED" != "true" ]]; then
+          echo "❌ Timeout waiting for lock ($LOCK_TIMEOUT seconds)"
+          ACTION_TAKEN="timeout"
+          echo "action_taken=timeout" >> $GITHUB_OUTPUT
+
+          # 最后检查一次
+          if [[ -f "$BASELINE_SUMMARY" ]] && [[ -s "$BASELINE_SUMMARY" ]]; then
+            echo "✅ Baseline exists (generated just in time)"
+            BASELINE_EXISTS="true"
+            echo "baseline_exists=true" >> $GITHUB_OUTPUT
+            echo "lock_acquired=false" >> $GITHUB_OUTPUT
+            echo "BASELINE_EXISTS=true" >> $GITHUB_ENV
+            echo "LOCK_ACQUIRED=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          echo "❌ Failed to acquire lock and baseline missing"
+          echo "baseline_exists=false" >> $GITHUB_OUTPUT
+          echo "lock_acquired=false" >> $GITHUB_OUTPUT
+          echo "BASELINE_EXISTS=false" >> $GITHUB_ENV
+          echo "LOCK_ACQUIRED=false" >> $GITHUB_ENV
+          exit 1
+        fi
+
+        # Verify lock is still held by this job (double-check)
+        echo "🔍 Verifying lock ownership..."
+
+        if [[ ! -d "$LOCK_DIR" ]]; then
+          echo "❌ Lock directory no longer exists"
+          echo "baseline_exists=false" >> $GITHUB_OUTPUT
+          echo "lock_acquired=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+        HOLDER=$(cat "${LOCK_DIR}/holder" 2>/dev/null || echo "unknown")
+        EXPECTED="${{ github.run_id }}-${{ github.run_attempt }}"
+
+        if [[ "$HOLDER" != "$EXPECTED" ]]; then
+          echo "❌ Lock held by another process: $HOLDER"
+          echo "   Expected: $EXPECTED"
+          echo "baseline_exists=false" >> $GITHUB_OUTPUT
+          echo "lock_acquired=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+        echo "✅ Lock ownership verified"
+        echo "lock_acquired=true" >> $GITHUB_OUTPUT
+        echo "LOCK_ACQUIRED=true" >> $GITHUB_ENV
+
+        # 双重检查 baseline（防止在等待期间其他进程生成了 baseline）
+        if [[ -f "$BASELINE_SUMMARY" ]] && [[ -s "$BASELINE_SUMMARY" ]]; then
+          echo "✅ Baseline exists (created by another process while we were waiting)"
+          BASELINE_EXISTS="true"
+          echo "baseline_exists=true" >> $GITHUB_OUTPUT
+          echo "BASELINE_EXISTS=true" >> $GITHUB_ENV
+          # 释放锁
+          rmdir "$LOCK_DIR" 2>/dev/null || true
+          echo "🔓 Lock released (baseline already exists)"
+          exit 0
+        fi
+
+        # 锁已获取，baseline 不存在，需要生成
+        echo "🔒 Lock acquired and held for baseline generation"
+        echo "baseline_exists=false" >> $GITHUB_OUTPUT
+        echo "BASELINE_EXISTS=false" >> $GITHUB_ENV
