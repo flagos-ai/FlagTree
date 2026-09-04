@@ -10,6 +10,10 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
+#ifdef __TLE_DSA__
+#include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
+#include "mlir/Dialect/Index/IR/IndexDialect.h"
+#endif
 #include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
@@ -367,11 +371,19 @@ void init_triton_ir(py::module &&m) {
                     mlir::triton::gluon::GluonDialect,
                     DLTIDialect,                  // flagtree tle raw
                     mlir::triton::tle::TleDialect // flagtree tle raw
+#ifdef __TLE_DSA__
+                    ,
+                    ::mlir::index::IndexDialect, func::FuncDialect
+#endif
                     >();
     mlir::LLVM::registerInlinerInterface(registry);
     registerBuiltinDialectTranslation(registry);
     registerLLVMDialectTranslation(registry);
     mlir::LLVM::registerInlinerInterface(registry);
+#ifdef __TLE_DSA__
+    // CommonIR lowering needs the func inliner interface registered.
+    func::registerInlinerExtension(registry);
+#endif
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });

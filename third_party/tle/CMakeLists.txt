@@ -6,10 +6,6 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/utils/include)
 if(FLAGTREE_BACKEND STREQUAL "ascend")
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/dsa/dialect/include)
   include_directories(${CMAKE_CURRENT_BINARY_DIR}/dsa/dialect/include)
-  set(TLE_DSA_PLUGIN_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/dsa/tle_ir.cc)
-  set(TLE_DSA_PLUGIN_DEPENDS TleDSATableGen)
-  set(TLE_DSA_IR_DEPENDS TleDSATableGen)
-  set(TLE_DSA_IR_LINK_LIBS TleDSAIR)
 endif()
 
 add_subdirectory(dialect/include)
@@ -31,10 +27,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
     ${TLE_DSA_PLUGIN_DEPENDS}
     LINK_LIBS
     MLIRTargetLLVMIRImport
+    ${TLE_DSA_PLUGIN_LINK_LIBS}
     TritonTLETransforms
     TritonIR)
   if(FLAGTREE_BACKEND STREQUAL "ascend")
     target_include_directories(TritonTLE BEFORE PRIVATE
+      ${TLE_DSA_INCLUDE_DIRS}
       ${FLAGTREE_BACKEND_DIR}/python/src)
   endif()
   target_link_libraries(TritonTLE PRIVATE Python3::Module pybind11::headers MLIRTargetLLVMIRImport)

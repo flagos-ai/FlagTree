@@ -173,7 +173,7 @@ if enable_vllm:
             if not enable_custom_op():
                 raise Exception("enable custom op failed")
         except ImportError:
-            raise ImportError("vllm-ascend does not exist in the current environment.")
+            pytest.skip("vllm-ascend does not exist in the current environment.")
 
         output, _, x = torch.ops._C_ascend.npu_add_rms_norm_bias(x, residual, weight, bias, eps)
         return output, x

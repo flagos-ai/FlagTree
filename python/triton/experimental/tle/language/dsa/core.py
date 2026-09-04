@@ -124,51 +124,33 @@ def copy(src, dst, shape, inter_no_alias=False, _semantic=None):
 
 @builtin
 def add(input, other, result, _semantic=None):
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.add(input, other, result, _semantic.builder)
 
 
 @builtin
 def sub(input, other, result, _semantic=None):
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.sub(input, other, result, _semantic.builder)
 
 
 @builtin
 def mul(input, other, result, _semantic=None):
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.mul(input, other, result, _semantic.builder)
 
 
 @builtin
 def div(input, other, result, _semantic=None):
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.div(input, other, result, _semantic.builder)
 
 
 @builtin
 def max(input, other, result, _semantic=None):
     # elementwise binary vector maximum op
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.max(input, other, result, _semantic.builder)
 
 
 @builtin
 def min(input, other, result, _semantic=None):
     # elementwise binary vector minimum op
-    input = from_buffer_to_tensor_pointer(input, _semantic=_semantic)
-    other = from_buffer_to_tensor_pointer(other, _semantic=_semantic)
-    result = from_buffer_to_tensor_pointer(result, _semantic=_semantic)
     tle_semantic.min(input, other, result, _semantic.builder)
 
 
@@ -202,6 +184,17 @@ def subview(src: buffer, offsets: List[tl.constexpr], sizes: List[tl.constexpr],
             _semantic=None) -> buffer:
     '''
     Creates a subview of the source buffer with the specified offsets, sizes, and strides.
+
+    :param src: The source buffer to create a subview from.
+    :type src: buffer
+    :param offsets: Offsets in each dimension. Items may be constexpr/int literals or dynamic tl.tensor values.
+    :type offsets: List
+    :param sizes: A list of non-negative integers representing the sizes in each dimension.
+    :type sizes: List[tl.constexpr]
+    :param strides: A list of non-negative integers representing the strides in each dimension.
+    :type strides: List[tl.constexpr]
+    :return: A new buffer representing the subview of the source buffer.
+    :rtype: buffer
     '''
     new_sizes = []
     for i, size in enumerate(sizes):
@@ -280,3 +273,124 @@ def extract_element(src, indice, _semantic=None, _generator=None):
     assert len(src.shape) > 0
     new_indice = [_semantic.to_tensor(i) if isinstance(i, constexpr) else i for i in indice]
     return tle_semantic.extract_element(src, new_indice, _semantic.builder)
+
+
+# ==============================================================================
+# CommonIR builtin functions — 3-task flash attention operations
+# ==============================================================================
+
+
+@builtin
+def tile_alloc(shape: List[tl.constexpr], dtype: tl.dtype, mem_addr_space: address_space, _semantic=None,
+               _generator=None) -> buffer:
+    """Allocate a buffer in a specific memory space (CommonIR path)."""
+    assert (mem_addr_space is not None)
+    return tle_semantic.tile_alloc(dtype, shape, mem_addr_space, _semantic.builder)
+
+
+@builtin
+def tile_copy(src, dst, shape, inter_no_alias=False, _semantic=None, _generator=None):
+    """Copy data using CommonIR tile.copy op."""
+    assert len(shape) != 0, "Can't deduce copy extents from args"
+    shape = _unwrap_if_constexpr(shape)
+    inter_no_alias = _unwrap_if_constexpr(inter_no_alias)
+    tle_semantic.tile_copy(src, dst, shape, inter_no_alias, _semantic.builder)
+
+
+@builtin
+def tile_subview(src: buffer, offsets: List, sizes: List[tl.constexpr], strides: List[tl.constexpr], _semantic=None,
+                 _generator=None) -> buffer:
+    """Extract a subview from a buffer using CommonIR tile.subview op."""
+    new_sizes = []
+    for i, size in enumerate(sizes):
+        if isinstance(size, int):
+            new_sizes.append(tl.constexpr(size))
+        elif isinstance(size, tl.constexpr):
+            new_sizes.append(size)
+        else:
+            raise TypeError(f"sizes[{i}] must be constexpr, got {type(size).__name__}")
+
+    new_strides = []
+    for i, stride in enumerate(strides):
+        if isinstance(stride, int):
+            new_strides.append(tl.constexpr(stride))
+        elif isinstance(stride, tl.constexpr):
+            new_strides.append(stride)
+        else:
+            raise TypeError(f"strides[{i}] must be constexpr, got {type(stride).__name__}")
+
+    new_offsets = []
+    for offset in offsets:
+        if isinstance(offset, tl.constexpr):
+            if offset < 0:
+                raise ValueError(f"Offset value must be non-negative, got {offset}")
+            new_offsets.append(_semantic.to_tensor(offset, _semantic.builder))
+        elif isinstance(offset, int):
+            if offset < 0:
+                raise ValueError(f"Offset value must be non-negative, got {offset}")
+            new_offsets.append(_semantic.to_tensor(tl.constexpr(offset), _semantic.builder))
+        else:
+            new_offsets.append(offset)
+
+    return tle_semantic.tile_subview(src, new_offsets, new_sizes, new_strides, _semantic.builder)
+
+
+@builtin
+def tile_to_tensor(memref: buffer, writable: bool = True, target_shape=None, _semantic=None,
+                   _generator=None) -> tl.tensor:
+    """Create a tl.tensor from a buffer (CommonIR path)."""
+    return tle_semantic.tile_to_tensor(memref, writable, _semantic.builder, target_shape=target_shape)
+
+
+@builtin
+def tile_set_flag(producer_pipe, consumer_pipe, event_id, _semantic=None, _generator=None):
+    """Set a cross-engine synchronization flag (CommonIR tile.set_flag)."""
+    tle_semantic.set_flag(producer_pipe, consumer_pipe, event_id, _semantic.builder)
+
+
+@builtin
+def tile_wait_flag(producer_pipe, consumer_pipe, event_id, _semantic=None, _generator=None):
+    """Wait for a cross-engine synchronization flag (CommonIR tile.wait_flag)."""
+    tle_semantic.wait_flag(producer_pipe, consumer_pipe, event_id, _semantic.builder)
+
+
+@builtin
+def tile_pipe_barrier(pipe, _semantic=None, _generator=None):
+    """Insert an intra-engine pipeline barrier (CommonIR tile.pipe_barrier)."""
+    tle_semantic.pipe_barrier(pipe, _semantic.builder)
+
+
+@builtin
+def tensor_to_tile(src: tl.tensor, space: address_space = None, _semantic=None, _generator=None) -> buffer:
+    """Convert a tt.ptr/tensor to a !tile.buf in the given memory space.
+
+    Uses tile.copy to load data from the tensor pointer into a newly
+    allocated tile.buf, then returns the buffer.
+    If space is not specified, defaults to GM (global memory).
+    """
+    return tle_semantic.tensor_to_tile(src, space, _semantic.builder)
+
+
+@builtin
+def tile_gm_offset(base, indices, strides, _semantic=None, _generator=None) -> tl.tensor:
+    """Compute a GM pointer with multi-dimensional offsets (CommonIR tile.gm_offset)."""
+    return tle_semantic.tile_gm_offset(base, indices, strides, _semantic.builder)
+
+
+@builtin
+def tile_cube_launch(a: buffer, b: buffer, acc: buffer, stage_a: buffer, stage_b: buffer, dst,
+                     transpose_a: bool = False, transpose_b: bool = False, init: bool = False, mma: str = "",
+                     _semantic=None, _generator=None):
+    """Launch a Cube matmul using CommonIR tile.cube_launch."""
+    transpose_a = _unwrap_if_constexpr(transpose_a)
+    transpose_b = _unwrap_if_constexpr(transpose_b)
+    init = _unwrap_if_constexpr(init)
+    mma = _unwrap_if_constexpr(mma)
+    tle_semantic.tile_cube_launch(a, b, acc, stage_a, stage_b, dst, transpose_a, transpose_b, init, mma,
+                                  _semantic.builder)
+
+
+@builtin
+def tile_cube_wait(_semantic=None, _generator=None):
+    """Wait for CommonIR Cube work using tile.cube_wait."""
+    tle_semantic.tile_cube_wait(_semantic.builder)

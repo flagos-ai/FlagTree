@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Ascend3.5-910B-CANN9.1.0
+name: Ascend3.5-910B-TLE
 
 on:
   push:
@@ -36,8 +36,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ascend35x-910b-cann910-unit-test:
-    runs-on: ascend3.5-910b-cann9.1.0
+  ascend35x-910b-tle-test:
+    runs-on: ascend3.5-910b-tle
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
@@ -85,8 +85,25 @@ jobs:
         run: |
           set -x
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          ## flagtree tle test
+          pushd python/test/tle
+          python3 test_vec_add.py
+          python3 test_vec_add_2d.py
+          python3 test_vec_add_mix.py
+          python3 test_vec_mathOps.py
+          python3 test_tle_with_hints.py
+          popd
           ## flagtree tle tutorial
           pushd python/tutorials/tle/dsa
-          PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 09-ascend-allgather-gemm.py
-          PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 10-tle-d2d-barrier.py
+          python3 01-sparse-flash-attn-tle.py
+          python3 02-causal-conv1d-prefill.py
+          python3 03-causal-conv1d-decode.py
+          python3 04-tle-cv-mix-pipeline.py
+          python3 05-lightning-indexer-v1.py
+          python3 06-swiglu.py
+          python3 07-kv-rmsnorm-rope-cache.py
+          python3 -m pytest -k "accuracy" 08-add-rms-norm-bias.py
+          popd
+          pushd test/CommonIR/
+          bash Ascend/success_case/run_all_tests.sh
           popd

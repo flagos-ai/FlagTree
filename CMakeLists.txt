@@ -42,6 +42,7 @@ elseif(FLAGTREE_BACKEND STREQUAL "ascend")
   add_definitions(-D__NVIDIA__)
   add_definitions(-D__AMD__)
   add_definitions(-D__TLE_STRUCT__)
+  # TLE DSA/CommonIR support is Ascend-only; C++ code uses this macro as a guard.
   add_definitions(-D__TLE_DSA__)
   set(CMAKE_C_COMPILER clang)
   set(CMAKE_CXX_COMPILER clang++)
@@ -453,6 +454,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
     pybind11::headers
 
   )
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    # CommonIR lowering relies on the func inliner extension, which is only
+    # linked for the Ascend DSA backend.
+    list(APPEND TRITON_LIBRARIES MLIRFuncInlinerExtension)
+  endif()
+
   if(FLAGTREE_BACKEND STREQUAL "iluvatar")
     set(TRITON_LIBRARIES
       ${triton_libs}

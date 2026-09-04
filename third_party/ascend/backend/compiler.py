@@ -1,4 +1,4 @@
-﻿# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -67,6 +67,12 @@ from triton.runtime import driver
 from triton.runtime.cache import get_dump_manager
 from triton.tools.get_ascend_devices import is_compile_on_910_95
 
+# commonir: Environment variable to override compile options with a fixed custom set.
+# When set to "1", metadata compile options are replaced with predefined values
+# that disable most automatic optimizations (useful for debugging/validation).
+_USE_CUSTOM_COMPILE_OPT = os.environ.get("USE_CUSTOM_COMPILE_OPT", None) or os.environ.get(
+    "_USE_CUSTOM_COMPILE_OPT", None)
+
 
 # TODO: materialize the concrete min shape
 def min_dot_size(target: GPUTarget):
@@ -84,7 +90,11 @@ def make_ttir(mod, metadata, opt):
     passes.common.add_canonicalizer(pm)
     passes.ttir.add_reorder_broadcast(pm)
     passes.common.add_cse(pm)
-    passes.common.add_licm(pm)
+    # commonir: NOTE: LICM is intentionally omitted — it hoists tile.to_tensor above
+    # tile.copy in loops, breaking the read-after-write ordering required by
+    # Ascend's buffer semantics. This causes "operand does not dominate this use"
+    # errors in bishengir downstream.
+    # passes.common.add_licm(pm)
     passes.common.add_symbol_dce(pm)
     passes.ttir.add_loop_unroll(pm)
     pm.run(mod)
@@ -128,6 +138,11 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             passes.common.add_cse(pm)
             passes.common.add_canonicalizer(pm)
 
+        # commonir: lower tile.* ops and inline unresolved !tile.buf signatures.
+        ascend.passes.ttir.add_commonir_to_hivm(pm)
+        passes.common.add_inliner(pm)
+        passes.common.add_canonicalizer(pm)
+
         ascend.passes.ttir.add_triton_to_structure(pm, enable_mask_fallback_conversion, optimize_dynamic_offset)
         ascend.passes.ttir.add_discrete_mask_access_conversion(pm, compile_on_910_95, force_simt_template,
                                                                enable_sync_block_lock)
@@ -138,8 +153,15 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         ascend.passes.ttir.add_triton_to_llvm(pm)
         ascend.passes.ttir.add_bubble_up_operation(pm)
         ascend.passes.ttir.add_triton_to_structure(pm, enable_mask_fallback_conversion, optimize_dynamic_offset)
+
         ascend.passes.ttir.add_triton_to_linalg(pm, False, named_ops, enable_nd2nz_on_vector, enable_select_analysis,
                                                 compile_on_910_95)
+
+        ascend.passes.ttir.add_commonir_to_hivm(pm)
+        passes.common.add_canonicalizer(pm)
+        passes.common.add_cse(pm)
+        passes.common.add_symbol_dce(pm)
+
         if metadata["enable_dynamic_cv_pipeline"]:
             ascend.passes.ttir.add_dynamic_cv_pipeline(pm, compile_on_910_95)
 
@@ -513,6 +535,16 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
                 _compile_option_list += \
                     [f"--link-aicore-bitcode={bitcode}"]
 
+        disable_auto_cv_work_space_manage = metadata.get("disable_auto_cv_work_space_manage")
+        if disable_auto_cv_work_space_manage is not None:
+            _compile_option_list += \
+                [f"--disable-auto-cv-work-space-manage={disable_auto_cv_work_space_manage}"]
+
+        enable_tuning_mode = metadata.get("enable_tuning_mode")
+        if enable_tuning_mode is not None:
+            _compile_option_list += \
+                [f"--enable-tuning-mode={enable_tuning_mode}"]
+
         enable_auto_blockify = metadata["enable_auto_blockify"]
         if _is_auto_map_parallel_blocks_enabled():
             if (enable_auto_blockify is None or enable_auto_blockify):
@@ -579,6 +611,37 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             __get_metadata_attr_by_callback(lib, "_infer_sync_block_lock_init_function", metadata, "lock_init_val")
 
         return Path(bin_path).read_bytes()
+
+
+def _compile_linalg_to_npu_bin(linalg: str, metadata, opt):
+    """Compile linalg IR to NPU binary with optional external IR replacement.
+
+    When the environment variable TLE_REPLACE_IR_FILE is set, replaces the
+    intermediate linalg IR with the content of the specified file before
+    compilation. This enables injecting externally generated IR into the
+    compilation pipeline for debugging and validation.
+
+    Delegates to the appropriate platform-specific compilation function
+    (910_95 or A2_A3) after the replacement.
+    """
+    # commonir: disable several passes of bisheng compiler
+    # as we want to lift cv pipeline to kernel level
+    if _USE_CUSTOM_COMPILE_OPT is not None:
+        metadata["num_stages"] = 1
+        metadata["multibuffer"] = False
+        metadata["enable_tuning_mode"] = True
+        metadata["enable_ubuf_saving"] = None
+        metadata["unit_flag"] = False
+        metadata["enable_auto_bind_sub_block"] = True
+        metadata["enable_hivm_auto_cv_balance"] = False
+        metadata["limit_auto_multi_buffer_only_for_local_buffer"] = False
+        metadata["disable_auto_inject_block_sync"] = True
+        metadata["disable_auto_cv_work_space_manage"] = True
+
+    if opt.compile_on_910_95:
+        return linalg_to_bin_enable_npu_compile_910_95(linalg, metadata, opt)
+    else:
+        return linalg_to_bin_enable_npu_compile_A2_A3(linalg, metadata, opt)
 
 
 def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
@@ -728,6 +791,16 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--disable-size-align-for-cast={disable_size_align_for_cast}"]
 
+        disable_auto_cv_work_space_manage = metadata.get("disable_auto_cv_work_space_manage")
+        if disable_auto_cv_work_space_manage is not None:
+            _compile_option_list += \
+                [f"--disable-auto-cv-work-space-manage={disable_auto_cv_work_space_manage}"]
+
+        enable_tuning_mode = metadata.get("enable_tuning_mode")
+        if enable_tuning_mode is not None:
+            _compile_option_list += \
+                [f"--enable-tuning-mode={enable_tuning_mode}"]
+
         if _is_auto_map_parallel_blocks_enabled():
             _compile_option_list += ["--enable-auto-blockify-loop"]
         npu_compiler_path, env = _get_npucompiler_path()
@@ -745,6 +818,9 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
         if opt.debug:
             print(f"[DEBUG] cmd_list: {' '.join(cmd_list)}")
 
+        import shutil
+        shutil.copy2(ttadapter_path, "/tmp/debug_kernel_input.mlir")
+
         try:
             ret = subprocess.run(cmd_list, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         except subprocess.CalledProcessError as e:
@@ -754,6 +830,12 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
 
         if opt.debug:
             _save_npuir_debug_output(ret.stdout, ret.stderr, tmpdir, metadata["hash"])
+
+        if "--mlir-print-ir-after-all" in _compile_option_list:
+            dump_path = os.environ.get("BISHENGIR_DUMP_PATH", os.path.join(tmpdir, "bishengir_pass_dump.log"))
+            with open(dump_path, "w") as f:
+                f.write(ret.stderr.decode("utf-8", errors="replace"))
+            print(f"[bishengir] Pass IR dump written to: {dump_path}")
 
         stdout_str = ret.stdout.decode('utf-8') if ret.stdout else ''
         match = re.search(r'UB\s+size\s*=\s*(\d+)\s*bits', stdout_str)
@@ -827,6 +909,7 @@ class NPUOptions:
     enable_preload: bool = None
     enable_auto_bind_sub_block: bool = None
     disable_tightly_coupled_buffer_reuse: bool = False
+    disable_auto_cv_work_space_manage: bool = None
     enable_select_analysis: bool = True
     enable_hivm_auto_cv_balance: bool = None
     sync_solver: bool = None
@@ -1033,12 +1116,7 @@ class AscendBackend(BaseBackend):
                 stages["mlirbc"] = lambda src, metadata: linalg_to_bc_by_triton_mlir_opt(src, metadata, options)
                 # Step 2: Convert Bytecode back to MLIR text using bishengir-opt
                 stages["bcmlir"] = lambda src, metadata: bc_to_linalg_by_bishengir_opt(src, metadata, options)
-            if options.compile_on_910_95:
-                stages["npubin"] = (
-                    lambda src, metadata: linalg_to_bin_enable_npu_compile_910_95(src, metadata, options))
-            else:
-                stages["npubin"] = (
-                    lambda src, metadata: linalg_to_bin_enable_npu_compile_A2_A3(src, metadata, options))
+            stages["npubin"] = (lambda src, metadata: _compile_linalg_to_npu_bin(src, metadata, options))
         else:
             raise NotImplementedError(f"Backend '{self.target.backend}' is not supported. "
                                       "Please ensure the target backend is set to 'npu'.")

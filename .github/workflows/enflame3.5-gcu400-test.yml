@@ -1,0 +1,99 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Enflame3.5-GCU400
+
+on:
+  push:
+    branches: [ "triton_v3.5.x" ]
+  pull_request:
+    branches: [ "triton_v3.5.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  enflame35x-gcu400-unit-test:
+    runs-on: enflame3.5-gcu400
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: enflame
+
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
+      - name: Detect Target Branch
+        shell: bash
+        run: |
+          set -x
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            TARGET_BRANCH="${{ github.base_ref }}"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+          fi
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$TARGET_BRANCH"
+
+      - name: Build FlagTree
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          python3 -m pip uninstall -y triton --break-system-packages
+          python3 -m pip uninstall -y triton_gcu --break-system-packages
+          export FLAGTREE_BACKEND=enflame
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation --break-system-packages
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: enflame
+
+      - name: Unit Test
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          python3 -m pytest -s third_party/enflame/python/test/unit

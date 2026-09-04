@@ -1,7 +1,27 @@
 from triton._C.libtriton import ir
 
-from typing import List
+from typing import List, Tuple
 import triton.language.core as tl
+from functools import wraps
+
+TRITON_BUILTIN = "__triton_builtin__"
+TLE_BUILTIN = "__tle_builtin__"
+
+
+def builtin(fn):
+    """Mark buffer member helpers as Triton/TLE builtins."""
+    assert callable(fn)
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if "_builder" not in kwargs or kwargs["_builder"] is None:
+            raise ValueError("Did you forget to add @triton.jit ? "
+                             "(`_builder` argument must be provided outside of JIT functions.)")
+        return fn(*args, **kwargs)
+
+    setattr(wrapper, TRITON_BUILTIN, True)
+    setattr(wrapper, TLE_BUILTIN, True)
+    return wrapper
 
 
 class address_space:
@@ -35,11 +55,14 @@ class buffer_type(tl.dtype):
         element_ty_ir = self.element_ty.to_ir(builder)
         addr_space_attr = self.space.to_ir(builder) if self.space else builder.dsa_get_null_attr()
 
-        # use the method with strides if strides is not empty
-        if self.strides:
-            return builder.dsa_get_buffer_type_with_strides(self.shape, element_ty_ir, self.strides, addr_space_attr)
+        # Use CommonIR BufType when tile_get_buffer_type is available (CommonIR path),
+        # otherwise fall back to memref (extension/buffer path).
+        if hasattr(builder, 'tile_get_buffer_type'):
+            return builder.tile_get_buffer_type(self.shape, element_ty_ir, addr_space_attr)
+        elif self.strides:
+            return builder.get_buffer_ty_with_strides(self.shape, element_ty_ir, self.strides, addr_space_attr)
         else:
-            return builder.dsa_get_buffer_type(self.shape, element_ty_ir, addr_space_attr)
+            return builder.get_buffer_type(self.shape, element_ty_ir, addr_space_attr)
 
     def __str__(self):
         return self.name
@@ -56,9 +79,17 @@ class buffer_type(tl.dtype):
     def __ne__(self, other) -> bool:
         return not self.__eq__(other)
 
+    def mangle(self) -> str:
+        elt = self.element_ty.mangle()
+        shape = "_".join(map(str, self.shape))
+        return f"B{elt}S{shape}S"
+
     @property
     def scalar(self):
         return self.element_ty
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[tl.base_value, int]:
+        return buffer(handles[cursor], self), cursor + 1
 
 
 # -----------------------
@@ -103,3 +134,13 @@ class buffer(tl.base_value):
         if self.space:
             res += ', ' + str(self.space)
         return res + '>'
+
+    @builtin
+    def subview(self, offsets: List, sizes: List[tl.constexpr], strides: List[tl.constexpr], _builder=None) -> 'buffer':
+        from .core import subview
+        return subview(self, offsets, sizes, strides, _builder=_builder)
+
+    @builtin
+    def to_tensor(self, writable=True, target_shape=None, _builder=None) -> tl.tensor:
+        from .core import to_tensor
+        return to_tensor(self, writable=writable, target_shape=target_shape, _builder=_builder)

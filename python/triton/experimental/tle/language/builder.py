@@ -24,10 +24,9 @@ def create_dsa_method_wrapper_with_tle_builder(main_builder, delegate_builder, m
 def attach_builder_methods_with_tle_builder(main_builder, delegate_builder, method_names):
     """Attach multiple methods from a delegate builder to the main builder."""
     for method_name in method_names:
-        wrapper = create_dsa_method_wrapper_with_tle_builder(main_builder, delegate_builder, method_name)
-
         if hasattr(main_builder, method_name):
-            raise AttributeError(f"Method '{method_name}' already exists in the main builder.")
+            continue  # skip methods already attached (e.g. by buffer_builder setup)
+        wrapper = create_dsa_method_wrapper_with_tle_builder(main_builder, delegate_builder, method_name)
         setattr(main_builder, method_name, wrapper)
 
 
@@ -53,5 +52,19 @@ def setup_unified_builder_with_tle_builder(main_builder, buffer_builder):
         "create_dsa_extract_slice",
         "create_dsa_insert_slice",
         "create_dsa_subview",
+        # CommonIR methods
+        'tile_get_buffer_type',
+        'tile_get_tensor_type',
+        'create_tile_alloc',
+        'create_tile_copy',
+        'create_tile_subview',
+        'create_tile_to_tensor',
+        'create_tile_store_tensor',
+        'create_tile_set_flag',
+        'create_tile_wait_flag',
+        'create_tile_pipe_barrier',
+        'create_tile_gm_offset',
+        'create_tile_cube_launch',
+        'create_tile_cube_wait',
     ]
     attach_builder_methods_with_tle_builder(main_builder, buffer_builder, buffer_methods)
