@@ -14,6 +14,7 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.copy",
     "gpu.local_ptr",
     "gpu.memory_space",
+    "gpu.set_layout",
     "gpu.warp_specialize",
     "gpu.alloc_barrier",
     "gpu.alloc_barriers",

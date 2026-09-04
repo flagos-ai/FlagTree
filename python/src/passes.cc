@@ -106,6 +106,8 @@ void init_triton_passes_ttgpuir(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_concat_dot_operand", createTritonGPUConcatDotOperand);
   ADD_PASS_WRAPPER_0("add_expand_concat_dot_operand",
                      createTritonGPUExpandConcatDotOperand);
+  ADD_PASS_WRAPPER_0("add_merge_segmented_dot",
+                     createTritonGPUMergeSegmentedDot);
 #endif // __FLAGTREE_CONCAT_DOT_OPERAND__
   ADD_PASS_WRAPPER_0("add_accelerate_matmul", createTritonGPUAccelerateMatmul);
   ADD_PASS_WRAPPER_0("add_reorder_instructions",
