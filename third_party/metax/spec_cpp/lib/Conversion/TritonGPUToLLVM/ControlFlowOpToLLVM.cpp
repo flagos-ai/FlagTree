@@ -15,7 +15,7 @@ struct ReturnOpConversion : public ConvertOpToLLVMPattern<triton::ReturnOp> {
     auto funcOp = op->getParentOfType<LLVM::LLVMFuncOp>();
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
-    if (funcOp->hasAttr("nvvm.kernel")) {
+    if (funcOp->hasAttr("nvvm.kernel") || funcOp->hasAttr("maca.kernel")) {
       // A GPU kernel
       if (op.getNumOperands() > 0) {
         return rewriter.notifyMatchFailure(
