@@ -103,6 +103,7 @@ jobs:
         with:
           flaggems-ci-dir: ${{ env.FLAGGEMS_CI_DIR }}
           lock-timeout: '3600'
+          lock-ttl: '7200'
 
       # Step 4: Clone FlagTree
       - name: Clone FlagTree Repo
@@ -111,7 +112,7 @@ jobs:
         with:
           repo-url: 'https://github.com/flagos-ai/FlagTree.git'
           ref: ${{ env.FLAGTREE_BRANCH }}
-          clone-dir: ${{ env.FLAGGEMS_CI_DIR }}/FlagTree
+          clone-dir: ${{ env.FLAGGEMS_CI_DIR }}
 
       # Step 5: Cleanup FlagTree Environment
       - name: Cleanup FlagTree Environment
@@ -135,7 +136,7 @@ jobs:
         with:
           repo-url: 'https://github.com/flagos-ai/FlagGems.git'
           ref: ${{ env.FLAGGEMS_TAG }}
-          clone-dir: ${{ env.FLAGGEMS_CI_DIR }}/FlagGems
+          clone-dir: ${{ env.FLAGGEMS_CI_DIR }}
 
       # Step 8: Install FlagGems
       - name: Install FlagGems
@@ -178,7 +179,7 @@ jobs:
 
       # Step 11: Release Lock (always run if we acquired it)
       - name: Release Lock
-        if: ${{ steps.acquire-lock.outputs.lock_acquired == 'true' }}
+        if: ${{ always() && steps.acquire-lock.outputs.lock_acquired == 'true' }}
         shell: bash
         run: |
           if [[ -d "$LOCK_DIR" ]]; then
@@ -186,7 +187,7 @@ jobs:
             EXPECTED="${{ github.run_id }}-${{ github.run_attempt }}"
 
             if [[ "$HOLDER" == "$EXPECTED" ]] || [[ "$HOLDER" == "unknown" ]]; then
-              rmdir "$LOCK_DIR" 2>/dev/null || true
+              rm -rf "$LOCK_DIR" 2>/dev/null || true
               echo "🔓 Lock released"
             else
               echo "⚠️  Lock held by another process, not releasing"
