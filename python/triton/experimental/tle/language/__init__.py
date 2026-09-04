@@ -62,7 +62,15 @@ from .distributed import (
     sharding,
 )
 from . import communication
-from .communication import get_mem_pool, create_dist_tensor, cleanup_communicator
+from .communication import get_mem_pool, cleanup_communicator
+
+
+def create_dist_tensor(buf_tensor):
+    """Create a distributed tensor context and bind it to ``buf_tensor``."""
+    ctx = communication.create_dist_tensor(buf_tensor)
+    ctx.register_buffer(buf_tensor)
+    return ctx
+
 
 _EXTENSION_APIS = frozenset({
     "make_tensor_view",
