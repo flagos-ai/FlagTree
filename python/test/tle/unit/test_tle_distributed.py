@@ -280,7 +280,7 @@ class TestDistributedBarrierScope:
     def test_flagcx_barrier_requires_device_pointer(self):
         mesh = tle.device_mesh({"node": 2})
         with pytest.raises(ValueError, match="device_dptr is required"):
-            tle.distributed_barrier(mesh=mesh, space="node", _semantic=_FakeSemantic())
+            tle.distributed_barrier(mesh=mesh, space="world", _semantic=_FakeSemantic())
 
     def test_distributed_barrier_full_cluster_mesh(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 1)]})
