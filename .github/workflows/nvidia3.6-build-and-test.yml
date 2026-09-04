@@ -233,7 +233,6 @@ jobs:
 
   # Job 2: main job - runs for schedule, push, and pull_request
   nv36x-unit-test:
-    needs: generate-flaggems-baseline
     runs-on: nvidia3.6
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
@@ -377,7 +376,7 @@ jobs:
           first-parameter-only: 'true'
 
       - name: Compare with Latest Baseline
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' && github.event_name == 'pull_request' && needs.generate-flaggems-baseline.outputs.baseline_exists == 'true' }}
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && github.event_name == 'pull_request' }}
         uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
         with:
           baseline-dir: ${{ env.FLAGGEMS_CI_DIR }}/Baseline/latest
