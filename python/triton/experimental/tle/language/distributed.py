@@ -133,7 +133,6 @@ _SPACE_TO_TEAM_KIND = {
     "device": 0,
     "inter": 1,
     "inter_node": 1,
-    "node": 1,
     "world": 2,
 }
 
