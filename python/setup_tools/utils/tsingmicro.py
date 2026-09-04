@@ -11,8 +11,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     cache.store(
         file="tsingmicro-llvm22",
         condition=("tsingmicro" == flagtree_backend),
-        url=
-        "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tsingmicro-llvm22-x64_v0.6.1.tar.gz",
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tsingmicro-llvm22-x64_v0.6.1.tar.gz",
         pre_hook=lambda: check_env('LLVM_SYSPATH'),
         post_hook=set_llvm_env,
     )
