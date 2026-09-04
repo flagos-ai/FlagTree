@@ -826,17 +826,21 @@ class TritonSemantic(Generic[TensorTy]):
                                  "Source scalar type is " + str(src_sca_ty) + " and destination type is " +
                                  str(dst_sca_ty))
 
-        custom_fp8_dtypes = set(getattr(self.builder.options, "custom_fp8_dtypes", ()))
-        if self.builder.codegen_fns.get("convert_custom_types") is not None:
-            # Backwards compatibility for backends that only route fp8e4b15
-            # through custom casts and have not populated options.
-            if src_sca_ty.is_fp8e4b15() or dst_sca_ty.is_fp8e4b15():
-                custom_fp8_dtypes.add("fp8e4b15")
-
-        if str(src_sca_ty) in custom_fp8_dtypes or str(dst_sca_ty) in custom_fp8_dtypes:
-            assert self.builder.codegen_fns.get(
-                "convert_custom_types") is not None, "target doesn't provide conversion for this type."
-            return self.builder.codegen_fns["convert_custom_types"](input, dst_ty, fp_downcast_rounding, _semantic=self)
+        if src_sca_ty.is_fp8() or dst_sca_ty.is_fp8():
+            options = self.builder.options
+            cast_whitelist = getattr(options, "supported_fp8_cast_dtypes", None)
+            if cast_whitelist is not None and src_sca_ty.is_floating() and dst_sca_ty.is_floating():
+                for ty in (src_sca_ty, dst_sca_ty):
+                    if ty.is_fp8() and ty.name not in cast_whitelist:
+                        raise ValueError(f"cast involving type {ty} is not supported in this architecture. "
+                                         f"The supported fp8 cast dtypes are {cast_whitelist}")
+            # Backends declare fp8 dtypes with software casts under "custom_cast_fp8_dtypes";
+            # the default preserves the legacy fp8e4b15-only routing.
+            custom_cast_dtypes = getattr(options, "custom_cast_fp8_dtypes", ("fp8e4b15", ))
+            if src_sca_ty.name in custom_cast_dtypes or dst_sca_ty.name in custom_cast_dtypes:
+                custom_cast = self.builder.codegen_fns.get("convert_custom_types")
+                assert custom_cast is not None, "target doesn't provide conversion for this type."
+                return custom_cast(input, dst_ty, fp_downcast_rounding, _semantic=self)
         # Casting with customized floating types involved: fp8 <=> bf16, fp16, fp32, fp64
         # and non-default rounding modes for downcasting
         if (src_sca_ty.is_fp8() and dst_sca_ty.is_floating()) or \
@@ -1519,7 +1523,11 @@ class TritonSemantic(Generic[TensorTy]):
             max_num_imprecise_acc: int, out_dtype: tl.dtype) -> TensorTy:
         assert lhs.type.is_block() and rhs.type.is_block()
 
-        self._assert_dot_dtypes_valid(lhs.dtype, rhs.dtype)
+        # resolve_dot backends own the dtype rules (queried once shapes are known);
+        # the fp8 pairing and dot-whitelist hard-rejects stay in front regardless
+        resolve_dot = self.builder.codegen_fns.get("resolve_dot")
+        if lhs.dtype.is_fp8() or rhs.dtype.is_fp8() or resolve_dot is None:
+            self._assert_dot_dtypes_valid(lhs.dtype, rhs.dtype)
 
         if lhs.dtype.is_fp8e4b15() or rhs.dtype.is_fp8e4b15():
             if "fp8e4b15" in self.builder.options.deprecated_fp8_dot_operand_dtypes:
@@ -1554,6 +1562,15 @@ class TritonSemantic(Generic[TensorTy]):
             -2].value, f"First input shape ({lhs.shape}) and second input shape {rhs.shape} are not compatible for matmul (second index of first shape ({lhs.shape[-1].value}) must be equal to first index of second shape ({rhs.shape[-2].value})"
         assert self.builder.codegen_fns.get(
             "min_dot_size") is not None, "target doesn't provide lower shape bounds for dot."
+        if resolve_dot is not None:
+            # queried after the legacy e4b15/fnuz upcasts above so rules see the effective dtypes
+            dot_cap = resolve_dot(lhs.dtype.name, rhs.dtype.name, out_dtype.name, lhs.shape[-2].value,
+                                  rhs.shape[-1].value, lhs.shape[-1].value)
+            if not dot_cap.supported:
+                raise ValueError(dot_cap.diag or f"tl.dot: {lhs.dtype} x {rhs.dtype} is not supported on this product")
+            if not dot_cap.native:
+                warnings.warn(dot_cap.diag or f"tl.dot: {lhs.dtype} x {rhs.dtype} is not native on this "
+                              "product: emulated path (native=false)")
         min_dot_size = self.builder.codegen_fns["min_dot_size"](lhs.type, rhs.type)
         assert lhs.shape[-2].value >= min_dot_size[0] and lhs.shape[-1].value >= min_dot_size[2] \
             and rhs.shape[-1].value >= min_dot_size[1], \
@@ -1653,6 +1670,16 @@ class TritonSemantic(Generic[TensorTy]):
         allowed_formats = {"e2m1", "e4m3", "e5m2", "bf16", "fp16"}
         assert lhs_format in allowed_formats, f"NYI: lhs_format {lhs_format}"
         assert rhs_format in allowed_formats, f"NYI: rhs_format {rhs_format}"
+        # non-native (decomposed) format combinations warn at compile time
+        resolve_dot_scaled = self.builder.codegen_fns.get("resolve_dot_scaled")
+        if resolve_dot_scaled is not None:
+            scaled_cap = resolve_dot_scaled(lhs_format, rhs_format)
+            if not scaled_cap.supported:
+                raise ValueError(scaled_cap.diag
+                                 or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not supported on this product")
+            if not scaled_cap.native:
+                warnings.warn(scaled_cap.diag or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not native "
+                              "on this product: decomposed to an emulated path (native=false)")
         rhs_scale_is_none = rhs_scale is None or (isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None)
         lhs_scale_is_none = lhs_scale is None or (isinstance(lhs_scale, tl.constexpr) and lhs_scale.value is None)
         lhs = self._bitcast_to_fp_type(lhs, lhs_format)

@@ -1,4 +1,4 @@
-from triton.backends.compiler import BaseBackend, GPUTarget, Language
+from triton.backends.compiler import BaseBackend, DotCap, DotSupport, GPUTarget, Language
 from triton._C.libtriton import ir, passes, mthreads
 from triton import knobs
 from triton.runtime.errors import OutOfResources
@@ -28,6 +28,77 @@ def min_dot_size(target: GPUTarget):
         return (1, 1, 1)
 
     return check_dot_compatibility
+
+
+# Whole-byte dtypes covered by the inherited async-copy/descriptor movement
+# paths; the fp8 portion follows the per-capability storage whitelist
+_MOVEMENT_DTYPES = ("int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "fp16", "bf16", "fp32",
+                    "fp64")
+
+# fp8e4b15/fp8e4b8/fp8e5b16 are storage-only dtypes: the dot whitelist keeps
+# them out of tl.dot, so resolve_dot only ever sees the two OCP formats
+_FP8_DOT_DTYPES = ("fp8e4nv", "fp8e5")
+_NATIVE_SAME_TYPE_DOT_DTYPES = ("fp16", "bf16", "fp32", "fp64")
+
+# PH1 8-bit operand instruction tiles (WMMA m/n/k; the SQMMA K values {32, 64,
+# 128} are divisibility-implied). A shape that divides no tile cannot use the
+# matrix units and falls back to the FMA software path.
+_FP8_INSTR_TILES = ((8, 16, 16), (16, 8, 16), (16, 16, 16), (16, 16, 32), (16, 16, 64))
+
+
+def _product_name(capability: int) -> str:
+    return "MThreads S5000 (cap31)" if capability == 31 else f"MThreads (cap{capability})"
+
+
+def _hits_fp8_instr_tile(M: int, N: int, K: int) -> bool:
+    return any(M % m == 0 and N % n == 0 and K % k == 0 for m, n, k in _FP8_INSTR_TILES)
+
+
+def _make_resolve_dot(capability: int):
+    """resolve_dot rule: INT8xINT8->INT32 is native; same-type FP8 dot with an
+    fp32 accumulator is native from cap31 when the shape hits an instruction
+    tile; mixed fp8 and instruction-shape misses keep the preserved FMA
+    fallback (EMULATED); every other combination is a compile-time error."""
+    product = _product_name(capability)
+
+    def resolve_dot(a_dtype, b_dtype, acc_dtype, M, N, K):
+        if a_dtype == "int8" and b_dtype == "int8":
+            return DotCap(DotSupport.NATIVE)
+        if a_dtype in _FP8_DOT_DTYPES and b_dtype in _FP8_DOT_DTYPES:
+            if capability >= 31 and a_dtype == b_dtype and acc_dtype == "fp32" and _hits_fp8_instr_tile(M, N, K):
+                return DotCap(DotSupport.NATIVE)
+            if capability < 31:
+                reason = "no native fp8 matrix instructions on this capability"
+            elif a_dtype != b_dtype:
+                reason = "mixed fp8 operand dtypes"
+            elif acc_dtype != "fp32":
+                reason = f"{acc_dtype} accumulator (accelerated fp8 dot requires fp32)"
+            else:
+                reason = f"shape {M}x{N}x{K} misses the 8-bit instruction tiles"
+            return DotCap(
+                DotSupport.EMULATED, diag=f"FP8 dot on {product} is not native ({reason}): "
+                "emulated via the FMA software path (native=false)")
+        if a_dtype == b_dtype and a_dtype in _NATIVE_SAME_TYPE_DOT_DTYPES:
+            return DotCap(DotSupport.NATIVE)
+        return DotCap(
+            DotSupport.UNSUPPORTED, diag=f"tl.dot: {a_dtype} x {b_dtype} is not supported on {product}; "
+            "native alternatives: int8 / fp16 / bf16 / fp32 / fp64 dot")
+
+    return resolve_dot
+
+
+def _make_resolve_dot_scaled(capability: int):
+    """resolve_dot_scaled rule: no MUSA capability has a native scaled-MMA
+    path; every format combination decomposes to a promoted fp16/bf16 dot
+    and is declared EMULATED with a compile-time warning."""
+    product = _product_name(capability)
+
+    def resolve_dot_scaled(lhs_format, rhs_format):
+        return DotCap(
+            DotSupport.EMULATED, diag=f"tl.dot_scaled ({lhs_format} x {rhs_format}) on {product} is not native: "
+            "decomposed to a promoted fp16/bf16 dot (native=false)")
+
+    return resolve_dot_scaled
 
 
 def _module_text(mod) -> str:
@@ -658,7 +729,10 @@ class MUSAOptions:
     launch_cooperative_grid: bool = False
     supported_fp8_dtypes: Tuple[str, ...] = ("fp8e5", )
     supported_fp8_storage_dtypes: Tuple[str, ...] = ("fp8e5", )
-    custom_fp8_dtypes: Tuple[str, ...] = ()
+    supported_fp8_cast_dtypes: Tuple[str, ...] = ()
+    custom_cast_fp8_dtypes: Tuple[str, ...] = ()
+    async_copy_dtypes: Tuple[str, ...] = ()
+    descriptor_dtypes: Tuple[str, ...] = ()
     deprecated_fp8_dot_operand_dtypes: Tuple[str, ...] = ()
     default_dot_input_precision: str = "ieee"
     allowed_dot_input_precisions: Tuple[str, ...] = ("ieee", "tf32", "tf32x3", "bf16x3", "bf16x6")
@@ -844,15 +918,23 @@ class MUSABackend(BaseBackend):
                 supported_fp8_dtypes.add("fp8e4nv")
             args["supported_fp8_dtypes"] = tuple(sorted(supported_fp8_dtypes))
         if "supported_fp8_storage_dtypes" not in opts:
-            supported_fp8_storage_dtypes = set(args.get("supported_fp8_dtypes", ()))
+            supported_fp8_storage_dtypes = set(opts.get("supported_fp8_dtypes") or args.get("supported_fp8_dtypes", ()))
             if capability >= 31:
                 supported_fp8_storage_dtypes.update({"fp8e4b15", "fp8e4b8", "fp8e5b16"})
             args["supported_fp8_storage_dtypes"] = tuple(sorted(supported_fp8_storage_dtypes))
-        if "custom_fp8_dtypes" not in opts:
-            custom_fp8_dtypes = set()
+        storage_dtypes = opts.get("supported_fp8_storage_dtypes") or args.get("supported_fp8_storage_dtypes", ())
+        if "supported_fp8_cast_dtypes" not in opts:
+            # every storable fp8 dtype has a hardware or software cast lowering
+            args["supported_fp8_cast_dtypes"] = tuple(storage_dtypes)
+        if "custom_cast_fp8_dtypes" not in opts:
+            custom_cast_fp8_dtypes = set()
             if capability >= 31:
-                custom_fp8_dtypes.update({"fp8e4b15", "fp8e4b8", "fp8e5b16"})
-            args["custom_fp8_dtypes"] = tuple(sorted(custom_fp8_dtypes))
+                custom_cast_fp8_dtypes.update({"fp8e4b15", "fp8e4b8", "fp8e5b16"})
+            args["custom_cast_fp8_dtypes"] = tuple(sorted(custom_cast_fp8_dtypes))
+        if "async_copy_dtypes" not in opts:
+            args["async_copy_dtypes"] = tuple(sorted(set(_MOVEMENT_DTYPES) | set(storage_dtypes)))
+        if "descriptor_dtypes" not in opts:
+            args["descriptor_dtypes"] = opts.get("async_copy_dtypes") or args.get("async_copy_dtypes", ())
         if "deprecated_fp8_dot_operand_dtypes" not in opts:
             args["deprecated_fp8_dot_operand_dtypes"] = ()
         if "llc_path" not in opts:
@@ -887,9 +969,12 @@ class MUSABackend(BaseBackend):
     def get_codegen_implementation(self, options):
         from triton.language.extra.musa import utils as musa_utils
 
+        capability = _capability_from_arch(options.arch)
         return {
             "convert_custom_types": musa_utils.convert_custom_float8,
             "min_dot_size": min_dot_size(self.target),
+            "resolve_dot": _make_resolve_dot(capability),
+            "resolve_dot_scaled": _make_resolve_dot_scaled(capability),
         }
 
     def get_module_map(self) -> Dict[str, object]:
@@ -1035,7 +1120,7 @@ class MUSABackend(BaseBackend):
         mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, capability)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, capability)
-        mthreads.passes.ttgpuir.add_to_llvmir(pm, capability)
+        mthreads.passes.ttgpuir.add_to_llvmir(pm, capability, options.enable_fp8_burst2)
         if has_static_ws:
             # The retained operation still owns the producer and consumer
             # regions here.  Lower their hardware barriers once, then emit the
