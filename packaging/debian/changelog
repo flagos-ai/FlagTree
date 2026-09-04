@@ -1,3 +1,11 @@
+flagtree (0.6.1-1) unstable; urgency=medium
+
+  * New upstream release 0.6.1.
+  * Derive the wheel version from the packaging files (FLAGTREE_WHEEL_VERSION)
+    instead of setup.py's hardcoded 0.6.0 fallback.
+
+ -- FlagOS Contributors <contact@flagos.io>  Wed, 02 Sep 2026 08:00:00 +0000
+
 flagtree (0.6.0-1) unstable; urgency=medium
 
   * Sync package version with the flagtree wheel (0.6.0).
