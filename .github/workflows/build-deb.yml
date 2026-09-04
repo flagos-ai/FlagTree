@@ -50,6 +50,26 @@ jobs:
     # `runs-on: h20`) once one is wired up.
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Original row; artifact name unchanged so downstream collectors
+          # (upload-nexus) keep working.
+          - target: ubuntu2404
+            base_image: ubuntu:24.04
+            python_version: ""
+            artifact: flagtree-nvidia-packages
+          # FlagOS DEB ABI-matrix row (FEP-0019): ubuntu22.04 + python3.12.
+          # A 22.04 build also installs on 24.04; the reverse does not hold
+          # (GLIBC_2.38 / GLIBCXX_3.4.32), see #798.
+          - target: ubuntu2204
+            base_image: ubuntu:22.04
+            python_version: "3.12"
+            artifact: flagtree-nvidia-ubuntu2204-packages
+    env:
+      DEB_BASE_IMAGE: ${{ matrix.base_image }}
+      PYTHON_VERSION: ${{ matrix.python_version }}
     steps:
       # The wheel build peaks near the runner's free-disk limit.
       # Ephemeral GitHub-hosted VMs only — never a self-hosted machine.
@@ -71,12 +91,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build .deb
+      - name: Build .deb (${{ matrix.target }})
         run: bash packaging/debian/build-helpers/build-flagtree.sh
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: flagtree-nvidia-packages
+          name: ${{ matrix.artifact }}
           path: dist/output/*.deb
           retention-days: 7
