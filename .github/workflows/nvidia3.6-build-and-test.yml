@@ -91,6 +91,12 @@ jobs:
           echo "📄 Summary file: $BASELINE_SUMMARY"
           echo "🔒 Lock dir: $LOCK_DIR"
 
+      # 临时添加，用于解决PR merge前找不到step 3 acquire-baseline-lock action问题
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
       # Step 3: Check baseline and acquire lock if not exist
       - name: Acquire FlagGems Baseline Lock
         id: acquire-lock
