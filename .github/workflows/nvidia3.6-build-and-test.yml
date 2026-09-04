@@ -23,6 +23,7 @@ name: Nvidia3.6-Build-And-Test
 on:
   schedule:
     - cron: '0 21 * * *'
+    - cron: '0 18 * * *'
   push:
     branches: [ "main", "triton_v3.6.x" ]
   pull_request:
@@ -40,13 +41,22 @@ concurrency:
 jobs:
   nv36x-unit-test:
     runs-on: nvidia3.6
-    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    if: |
+      github.repository == 'flagos-ai/flagtree' &&
+      (
+        (github.event_name != 'schedule' && github.event.pull_request.draft == false) ||
+        (github.event_name == 'schedule' && github.event.schedule == '0 21 * * *')
+      )
     steps:
       - name: Setup environment
+        id: setup
         shell: bash
         run: |
           source ~/env.sh
-          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=' >> $GITHUB_ENV || true
+          GPU_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+          echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
+          echo "GPU devices: $GPU_DEVICES"
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -58,6 +68,22 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: nvidia
+
+      - name: Clone FlagGems Repo
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        with:
+          repo-url: 'https://github.com/flagos-ai/FlagGems.git'
+          ref: 'v5.3.5'
+          clone-dir: '/root/flaggems_ci'
+
+      - name: Install FlagGems
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        shell: bash
+        run: |
+          cd /root/flaggems_ci/FlagGems
+          python3 -m pip uninstall -y flag_gems --break-system-packages || true
+          pip install -v -e . --no-build-isolation --no-deps
 
       - name: Cleanup FlagTree Environment
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
@@ -158,3 +184,86 @@ jobs:
           python3 python/tutorials/tle/raw/cuda/02-fused-softmax.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
+
+      - name: Run FlagGems Test
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        id: run-flaggems-test
+        with:
+          flaggems-path: '/root/flaggems_ci/FlagGems'
+          gpus: ${{ steps.setup.outputs.gpus }}
+          output-base-dir: '/root/flaggems_ci/PR'
+          pr-number: '${{ github.event.pull_request.number }}'
+          run-script: 'tools/ci/ci_run_tests.py'
+          skip-file: 'tools/ci/skip_list.yaml'
+          first-parameter-only: 'true'
+
+      - name: Compare with Baseline
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
+        with:
+          baseline-dir: '/root/flaggems_ci/Baseline'
+          candidate-dir: ${{ steps.run-flaggems-test.outputs.test-output-dir }}
+          baseline-date: ${{ steps.run-flaggems-test.outputs.test-date }}
+          compare-script: 'tools/ci/compare_test_result.py'
+          working-directory: '/root/flaggems_ci/FlagGems'
+
+  nv36x-flaggems-baseline:
+    runs-on: nvidia3.6
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event_name == 'schedule' && github.event.schedule == '0 18 * * *' }}
+    steps:
+      - name: Setup environment
+        id: setup
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=' >> $GITHUB_ENV || true
+          GPU_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+          echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
+          echo "GPU devices: $GPU_DEVICES"
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Clone FlagGems Repo
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        with:
+          repo-url: 'https://github.com/flagos-ai/FlagGems.git'
+          ref: 'v5.3.5'
+          clone-dir: '/root/flaggems_ci'
+
+      - name: Install FlagGems
+        shell: bash
+        run: |
+          cd /root/flaggems_ci/FlagGems
+          python3 -m pip uninstall -y flag_gems --break-system-packages || true
+          pip install -v -e . --no-build-isolation --no-deps
+
+      - name: Cleanup FlagTree Environment
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
+      - name: Build FlagTree
+        shell: bash
+        run: |
+          set -x
+          source ~/env-3.6.sh
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+
+      - name: Compute Baseline Date
+        id: date
+        shell: bash
+        run: |
+          echo "date=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
+
+      - name: Run Baseline Tests
+        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        with:
+          flaggems-path: '/root/flaggems_ci/FlagGems'
+          gpus: ${{ steps.setup.outputs.gpus }}
+          output-base-dir: '/root/flaggems_ci/Baseline'
+          output-subdir: ${{ steps.date.outputs.date }}
+          run-script: 'tools/ci/ci_run_tests.py'
+          skip-file: 'tools/ci/skip_list.yaml'
+          first-parameter-only: 'true'
