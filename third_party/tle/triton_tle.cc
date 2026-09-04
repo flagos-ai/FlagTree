@@ -720,9 +720,11 @@ void init_triton_tle_ir(py::module &&m) {
           py::arg("group_mask"))
       .def(
           "create_remote_pointers",
-          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> &src,
+          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> src,
              Value shardId, const std::string &space,
-             std::optional<Value> &offset) -> OpState {
+             std::optional<Value> offset, std::optional<Value> comm,
+             std::optional<Value> netIdx,
+             std::optional<tle::FlagCXCoopKind> coopKind) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
                 "cluster", "device", "node"};
@@ -731,14 +733,20 @@ void init_triton_tle_ir(py::module &&m) {
                   "Invalid space: " + space +
                   ". Expected one of: cluster, device, node.");
             }
-            auto space_attr = builder.getStringAttr(space);
 
+            auto spaceAttr = builder.getStringAttr(space);
+            tle::FlagCXCoopKindAttr coopKindAttr =
+                coopKind ? builder.getAttr<tle::FlagCXCoopKindAttr>(*coopKind)
+                         : tle::FlagCXCoopKindAttr();
             return self.create<tle::RemotePointersOp>(
-                resultTy, src.value_or(Value()), shardId, space_attr,
-                offset.value_or(Value()));
+                resultTy, src.value_or(Value()), comm.value_or(Value()),
+                shardId, spaceAttr, offset.value_or(Value()),
+                netIdx.value_or(Value()), coopKindAttr);
           },
           py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
-          py::arg("space"), py::arg("offset") = py::none())
+          py::arg("space"), py::arg("offset") = py::none(),
+          py::arg("comm") = py::none(), py::arg("net_idx") = py::none(),
+          py::arg("coop_kind") = py::none())
       .def("get_device_id",
            [](TritonOpBuilder &self, Type resultTy,
               std::optional<Value> src) -> Value {
@@ -860,6 +868,8 @@ void init_triton_tle_utils(py::module &&m) {
 }
 
 void init_triton_tle_passes(py::module &&m) {
+  ADD_PASS_WRAPPER_0("add_fuse_node_remote_transfers",
+                     tle::createTritonTleFuseNodeRemoteTransfers);
   ADD_PASS_WRAPPER_0("add_params_for_distribution",
                      tle::createTritonTleAddDistributedParams);
   ADD_PASS_WRAPPER_0("add_early_assign_memory_space",

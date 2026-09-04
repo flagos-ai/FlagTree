@@ -1,5 +1,6 @@
 # flagtree tle
 add_triton_library(TritonTLETransforms
+  TleFuseNodeRemoteTransfers.cpp
   TleEarlyAssignMemorySpace.cpp
   TleSelectEncodings.cpp
   TleInsertLocalPointerBarriers.cpp
