@@ -21,6 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -32,6 +33,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include <cctype>
 #include <limits>
+#include <optional>
 
 #include "tle/dialect/include/IR/VerifyUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -985,12 +987,48 @@ LogicalResult DistributedBarrierOp::verify() {
   return success();
 }
 
+LogicalResult NodePutOp::verify() {
+  return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
+                            getPeer(), getSrcOffset(), getDstOffset(),
+                            getNelems(), getNetIdx(), getElemBytesAttr(),
+                            getCoopKind());
+}
+
+LogicalResult NodeGetOp::verify() {
+  return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
+                            getPeer(), getSrcOffset(), getDstOffset(),
+                            getNelems(), getNetIdx(), getElemBytesAttr(),
+                            getCoopKind());
+}
+
 LogicalResult RemotePointersOp::verify() {
-  auto spaceAttr = getSpace();
+  StringRef spaceAttr = getSpace();
+  if (spaceAttr != "cluster" && spaceAttr != "device" && spaceAttr != "node")
+    return emitOpError()
+           << "expects space to be 'cluster', 'device', or 'node'";
+
+  if (!getShardId().getType().isInteger(32))
+    return emitOpError() << "expects shard_id to be i32";
+
+  if (spaceAttr == "node")
+    return RemotePointers::verifyNodeSpace(*this);
+
+  auto coopKindAttr = getCoopKindAttr();
+  if (getComm() || getNetIdx() || coopKindAttr)
+    return emitOpError()
+           << "cluster/device space does not accept node-only operands or "
+              "attributes";
+  if (!getResult())
+    return emitOpError()
+           << "cluster/device space must produce a remote pointer result";
+
   if (spaceAttr == "device") {
     if (failed(RemotePointers::verifyDeviceSpace(getSrc(), getResult())))
       return failure();
   } else {
+    if (!getSrc())
+      return emitOpError() << "cluster space requires a source pointer";
+
     Type srcTy = getSrc().getType();
     Type resultTy = getResult().getType();
     auto getPtrInfo = [&](Type ty, triton::PointerType &ptr, bool &isTensor,
@@ -1041,8 +1079,7 @@ LogicalResult RemotePointersOp::verify() {
                                 "match";
       if (srcEncoding && resultEncoding && srcEncoding != resultEncoding)
         return emitOpError()
-               << "expects src/result pointer tensor encodings to "
-                  "match";
+               << "expects src/result pointer tensor encodings to match";
     }
     if (srcPtrTy.getPointeeType() != resultPtrTy.getPointeeType())
       return emitOpError() << "expects src/result pointer pointee types to "
@@ -1058,9 +1095,6 @@ LogicalResult RemotePointersOp::verify() {
              << "expects result pointers to live in cluster shared memory "
                 "(addrspace=7)";
   }
-
-  if (!getShardId().getType().isInteger(32))
-    return emitOpError() << "expects shard_id to be i32";
 
   bool hasOffset = getOffset() != nullptr;
   if (spaceAttr == "device") {
@@ -1097,4 +1131,5 @@ LogicalResult SignalWaitOp::verify() {
     return emitOpError() << *err;
   return success();
 }
+
 } // namespace mlir::triton::tle
