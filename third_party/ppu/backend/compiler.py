@@ -19,7 +19,7 @@
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-from triton.backends.compiler import BaseBackend, GPUTarget, Language
+from triton.backends.compiler import BaseBackend, DotCap, DotSupport, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, ppu
 try:
     from triton._C.libtriton import tle
@@ -34,7 +34,6 @@ from types import ModuleType
 import hashlib
 import re
 import tempfile
-import signal
 import os
 import subprocess
 from pathlib import Path
@@ -81,6 +80,59 @@ def min_dot_size(target: GPUTarget):
             return (1, 1, 16)
 
     return check_dot_compatibility
+
+
+# Whole-byte dtypes covered by the inherited async-copy/descriptor movement paths
+_MOVEMENT_DTYPES = ("fp8e4nv", "fp8e5", "fp8e4b15", "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64",
+                    "uint64", "fp16", "bf16", "fp32", "fp64")
+
+# fp8e4b15 is upcast to f16 by the common semantic layer before resolve_dot
+# runs (upstream legacy behavior), so it never reaches these rules
+_FP8_DOT_DTYPES = ("fp8e4nv", "fp8e5")
+_NATIVE_SAME_TYPE_DOT_DTYPES = ("fp16", "bf16", "fp32", "fp64")
+
+
+def _product_name(capability: int) -> str:
+    return "PPU 810E (cap80)" if capability == 80 else f"PPU (cap{capability})"
+
+
+def _make_resolve_dot(capability: int):
+    """resolve_dot rule: INT8xINT8->INT32 is native; FP8 dot is native
+    from cap89, and a preserved FP16-promotion path (EMULATED) below;
+    every other combination is a compile-time error."""
+    product = _product_name(capability)
+
+    def resolve_dot(a_dtype, b_dtype, acc_dtype, M, N, K):
+        if a_dtype == "int8" and b_dtype == "int8":
+            return DotCap(DotSupport.NATIVE)
+        if a_dtype in _FP8_DOT_DTYPES and b_dtype in _FP8_DOT_DTYPES:
+            if capability >= 89:
+                return DotCap(DotSupport.NATIVE)
+            return DotCap(DotSupport.EMULATED, diag=f"FP8 dot on {product} is not native: "
+                          "emulated via FP16 promotion (native=false)")
+        if a_dtype == b_dtype and a_dtype in _NATIVE_SAME_TYPE_DOT_DTYPES:
+            return DotCap(DotSupport.NATIVE)
+        return DotCap(
+            DotSupport.UNSUPPORTED, diag=f"tl.dot: {a_dtype} x {b_dtype} is not supported on {product}; "
+            "native alternatives: int8 / fp16 / bf16 / fp32 / fp64 dot")
+
+    return resolve_dot
+
+
+def _make_resolve_dot_scaled(capability: int):
+    """resolve_dot_scaled rule: cap89 has a native scaled-MMA path for
+    mxfp4; everything else decomposes to a promoted fp16/bf16 dot and is
+    declared EMULATED with a compile-time warning."""
+    product = _product_name(capability)
+
+    def resolve_dot_scaled(lhs_format, rhs_format):
+        if capability >= 89 and "e2m1" in (lhs_format, rhs_format):
+            return DotCap(DotSupport.NATIVE)
+        return DotCap(
+            DotSupport.EMULATED, diag=f"tl.dot_scaled ({lhs_format} x {rhs_format}) on {product} is not native: "
+            "decomposed to a promoted fp16/bf16 dot (native=false)")
+
+    return resolve_dot_scaled
 
 
 def get_irformatter():
@@ -162,6 +214,10 @@ class HGGCOptions:
     launch_cooperative_grid: bool = False
     launch_pdl: bool = False
     supported_fp8_dtypes: Tuple[str] = ("fp8e5", "fp8e4b15")
+    supported_fp8_cast_dtypes: Tuple[str] = ()
+    custom_cast_fp8_dtypes: Tuple[str] = ("fp8e4b15", )
+    async_copy_dtypes: Tuple[str] = ()
+    descriptor_dtypes: Tuple[str] = ()
     deprecated_fp8_dot_operand_dtypes: Tuple[str] = ()
     default_dot_input_precision: str = "tf32"
     allowed_dot_input_precisions: Tuple[str] = ("tf32", "tf32x3", "ieee", 'bf16x3', 'bf16x6')
@@ -228,9 +284,23 @@ class PPUBackend(BaseBackend):
 
         if "supported_fp8_dtypes" not in args:
             supported_fp8_dtypes = set(HGGCOptions.supported_fp8_dtypes)
-            if capability >= 89:
+            if capability >= 80:
+                # E4M3FN: cast is native from cap89, software on cap80
                 supported_fp8_dtypes.add("fp8e4nv")
             args["supported_fp8_dtypes"] = tuple(sorted(supported_fp8_dtypes))
+
+        if "supported_fp8_cast_dtypes" not in args:
+            # every declared fp8 dtype has a hardware or software cast lowering
+            args["supported_fp8_cast_dtypes"] = args["supported_fp8_dtypes"]
+
+        if "custom_cast_fp8_dtypes" not in args:
+            # cap80 has no e4m3 cvt instructions; fp8e4nv casts go through software
+            args["custom_cast_fp8_dtypes"] = ("fp8e4b15", "fp8e4nv") if capability < 89 else ("fp8e4b15", )
+
+        if "async_copy_dtypes" not in args:
+            args["async_copy_dtypes"] = _MOVEMENT_DTYPES
+        if "descriptor_dtypes" not in args:
+            args["descriptor_dtypes"] = _MOVEMENT_DTYPES
 
         if "deprecated_fp8_dot_operand_dtypes" not in args:
             if capability >= 90:
@@ -253,7 +323,13 @@ class PPUBackend(BaseBackend):
     def get_codegen_implementation(self, options):
         import triton.language.extra.ppu as ppu
         capability = int(self._parse_arch(options.arch))
-        codegen_fns = {"convert_custom_types": ppu.convert_custom_float8, "min_dot_size": min_dot_size(self.target)}
+        sw_cast = "fp8e4nv" in options.custom_cast_fp8_dtypes
+        codegen_fns = {
+            "convert_custom_types": ppu.convert_custom_float8_sub89 if sw_cast else ppu.convert_custom_float8,
+            "min_dot_size": min_dot_size(self.target),
+            "resolve_dot": _make_resolve_dot(capability),
+            "resolve_dot_scaled": _make_resolve_dot_scaled(capability),
+        }
         return codegen_fns
 
     def get_module_map(self) -> Dict[str, ModuleType]:
@@ -535,6 +611,7 @@ please share the reproducer above with Triton project.
             fsrc.name = fsrcformatted
 
             fbin = fsrc.name + ".o"
+            log_file = fsrc.name + ".log"
 
             ppullc_cmd = [
                 ppullc,
