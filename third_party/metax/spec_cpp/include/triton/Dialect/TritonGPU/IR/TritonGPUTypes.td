@@ -3,6 +3,7 @@
 
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/BuiltinTypeInterfaces.td"
+include "triton/Dialect/Triton/IR/TritonTypes.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUDialect.td"
 
 class TTG_TypeDef<string name, string _mnemonic, list<Trait> traits = []>
@@ -82,5 +83,7 @@ def TTG_MemDescType : TTG_TypeDef<"MemDesc", "memdesc", [ShapedTypeInterface]> {
   let hasCustomAssemblyFormat = 1;
   let genVerifyDecl = 1;
 }
+
+def TTG_CopyOpType : AnyTypeOf<[TT_TensorDescType, TTG_MemDescType]>;
 
 #endif
