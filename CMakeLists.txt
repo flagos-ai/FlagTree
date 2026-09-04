@@ -488,6 +488,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
         LLVMPowerPCAsmParser
         LLVMPowerPCCodeGen
       )
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "riscv")
+      list(APPEND TRITON_LIBRARIES
+        LLVMRISCVCodeGen
+        LLVMRISCVAsmParser
+      )
   else()
     message(FATAL_ERROR "LLVM codegen/ASM parser libs: This HW architecture (${CMAKE_SYSTEM_PROCESSOR}) is not configured in cmake lib dependencies.")
   endif()
