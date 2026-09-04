@@ -297,6 +297,10 @@ class CUDABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         dump_enabled = pm.enable_debug()
         emuTF32 = (capability // 10 >= 8)
+        # Keep the source pointer DAG visible in TTIR, just like the device
+        # remote path. Fuse node transfers only at the TTIR -> TTGIR boundary,
+        # while pointer provenance and original argument ordinals are intact.
+        tle.passes.add_fuse_node_remote_transfers(pm)
         # flagtree tle distributed
         if DistributedRtContext().is_lite_mode:
             tle.passes.add_params_for_distribution(pm)
@@ -422,6 +426,7 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_expand_concat_dot_operand(pm)
 
         pm.run(mod, 'make_ttgir')
+        metadata["tle_node_buffer_bindings"] = mod.get_operation().get_str_attr("tle.node_buffer_bindings") or ""
         # begin flagtree tle
         # launch_cooperative_grid may be toggled during frontend semantic lowering
         # (e.g. device_mesh + distributed_barrier grid mode), so refresh it here.
