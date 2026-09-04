@@ -36,6 +36,7 @@ _DIALECT_KWARG_KEYS = (
     "target",
     "extern_func_name",
     "deferred",
+    "defines",
 )
 _DIALECT_PATH_KEYS = (
     "file",
