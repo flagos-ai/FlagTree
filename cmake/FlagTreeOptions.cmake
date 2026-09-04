@@ -95,6 +95,49 @@ macro(flagtree_configure_options)
 endmacro()
 
 
+# FlagPrism: configure the external profiler/debugger after base options exist.
+macro(flagtree_configure_flagprism)
+  set(_flagprism_default OFF)
+  if(FLAGTREE_BACKEND STREQUAL "ascend" OR FLAGTREE_BACKEND STREQUAL "iluvatar")
+    set(_flagprism_default ON)
+  endif()
+  option(TRITON_BUILD_FLAGPRISM
+         "Build the FlagPrism debugger and profiler"
+         ${_flagprism_default})
+
+  if(TRITON_BUILD_FLAGPRISM)
+    if(NOT (FLAGTREE_BACKEND STREQUAL "ascend" OR FLAGTREE_BACKEND STREQUAL "iluvatar"))
+      message(FATAL_ERROR
+        "TRITON_BUILD_FLAGPRISM is only supported when "
+        "FLAGTREE_BACKEND is ascend or iluvatar.")
+    endif()
+    if(TRITON_BUILD_PROTON)
+      message(FATAL_ERROR
+        "TRITON_BUILD_FLAGPRISM and TRITON_BUILD_PROTON cannot both be enabled. "
+        "Select exactly one profiler implementation.")
+    endif()
+
+    set(FLAGPRISM_CMAKE_FILE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/FlagPrism/cmake/FlagPrism.cmake")
+    if(EXISTS "${FLAGPRISM_CMAKE_FILE}")
+      include("${FLAGPRISM_CMAKE_FILE}")
+      add_compile_definitions(__FLAGPRISM__=1)
+    else()
+      message(FATAL_ERROR
+        "FlagPrism source is missing. Run the Python package build to download "
+        "third-party dependencies.")
+    endif()
+  endif()
+endmacro()
+
+# FlagPrism: register external profiler/debugger component targets.
+macro(flagtree_add_flagprism_components)
+  if(TRITON_BUILD_FLAGPRISM)
+    flagprism_add_components()
+  endif()
+endmacro()
+
+
 macro(flagtree_configure_codegen_backends)
   if(FLAGTREE_BACKEND STREQUAL "metax")
     list(APPEND TRITON_CODEGEN_BACKENDS "nvidia")
@@ -262,7 +305,11 @@ macro(flagtree_configure_python_plugins)
   # We always build proton dialect because core Triton conversion libraries link
   # ProtonIR. XPU-specific Proton GPU lowering wrappers are disabled inside the
   # Proton plugin instead of skipping the whole dialect.
-  if(FLAGTREE_BACKEND STREQUAL "hcu")
+  # FlagPrism: its external component supplies ProtonIR and dialect registration.
+  # if(FLAGTREE_BACKEND STREQUAL "hcu")
+  if(TRITON_BUILD_FLAGPRISM)
+    # FlagPrism supplies the ProtonIR target and dialect registration.
+  elseif(FLAGTREE_BACKEND STREQUAL "hcu")
     list(APPEND TRITON_PLUGIN_DIRS
       "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")
     include_directories(

@@ -5,6 +5,7 @@ import triton
 import re
 from pathlib import Path
 from triton import knobs
+from flagtree import _flagprism  # FlagPrism
 from triton.runtime.build import compile_module_from_src
 from triton.runtime import _allocation
 from triton.backends.compiler import GPUTarget
@@ -681,6 +682,11 @@ class CorexLauncher(object):
         arg_idx = lambda x: (src.fn.arg_names.index(x), ) if isinstance(x, str) else x
         constants = {arg_idx(idx): value for idx, value in constants.items()}
         signature = {idx: value for idx, value in src.signature.items()}
+        # FlagPrism: preserve user arguments and reserve the debugger argument.
+        self.user_arg_count = len(signature)
+        self.metadata = metadata
+        if bool(getattr(metadata, "debug_launch_hidden_arg", False)):
+            signature[len(signature)] = "*i8"
         tensordesc_meta = getattr(metadata, "tensordesc_meta", None)
         src = make_launcher(constants, signature, tensordesc_meta)
         mod = compile_module_from_src(
@@ -710,11 +716,37 @@ class CorexLauncher(object):
                 return alloc_fn(alloc_size, align, stream)
             return None
 
-        global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align, _allocation._allocator)
-        profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
-                                           _allocation._profile_allocator)
-        self.launch(gridX, gridY, gridZ, stream, function, self.launch_cooperative_grid, self.launch_pdl,
-                    global_scratch, profile_scratch, *args)
+        # FlagPrism: retain the original launch path for reference.
+        # global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align,
+        #                                   _allocation._allocator)
+        # profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
+        #                                    _allocation._profile_allocator)
+        # self.launch(gridX, gridY, gridZ, stream, function, self.launch_cooperative_grid,
+        #             self.launch_pdl, global_scratch, profile_scratch, *args)
+        # FlagPrism: append the debugger hidden argument through a launch wrapper.
+        def launch(hidden_args=()):
+            global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align,
+                                              _allocation._allocator)
+            profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
+                                               _allocation._profile_allocator)
+            self.launch(gridX, gridY, gridZ, stream, function, self.launch_cooperative_grid, self.launch_pdl,
+                        global_scratch, profile_scratch, *args, *hidden_args)
+
+        if not bool(getattr(self.metadata, "debug_enabled", False)):
+            return launch()
+
+        user_args = args[-self.user_arg_count:] if self.user_arg_count else ()
+        launch_metadata = args[1] if len(args) > 1 else None
+        # FlagPrism: wrap CoreX launch only when debugger instrumentation is enabled.
+        with _flagprism.debugger_launch_context(
+                "corex",
+                self.metadata,
+            (gridX, gridY, gridZ),
+                stream,
+                launch_metadata,
+                user_args,
+        ) as hidden_args:
+            return launch(hidden_args)
 
 
 class CorexDriver(GPUDriver):
