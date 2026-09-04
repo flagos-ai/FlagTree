@@ -202,8 +202,6 @@ class TestTLEPipelineEndToEnd:
     def test_tle_module_import(self):
         """Test TLE module import (no GPU required)"""
         # Verify all necessary functions and types can be imported
-        if tle.gpu is None:
-            pytest.skip("tle.gpu is not available on this backend")
         assert hasattr(tle, 'gpu')
         assert hasattr(tle.gpu, 'alloc')
         assert hasattr(tle.gpu, 'copy')

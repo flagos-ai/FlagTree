@@ -80,7 +80,7 @@ def alloc(
     if builder is None:
         raise ValueError("alloc must be used inside @triton.jit")
     if layout is not None:
-        raise ValueError(f"alloc(): layout parameter is not yet supported for DSA backend")
+        raise ValueError("alloc(): layout parameter is not yet supported for DSA backend")
 
     # --- Validate inputs via semantic layer ---
     unwrapped_shape = DSASemantic.validate_alloc_shape(shape)
@@ -311,7 +311,7 @@ def local_ptr(
 
     if remote_buffer_marker:
         if all_scalar_indices:
-            raise ValueError("local_ptr does not yet supported scalar indices on remote buffers")
+            raise ValueError("local_ptr does not yet support scalar indices on remote buffers")
         if not hasattr(builder, "create_dsa_remote_pointers"):
             raise RuntimeError("builder missing create_dsa_remote_pointers for remote buffers")
         shard_val = (remote_shard_id.handle

@@ -20,19 +20,8 @@ from triton._filecheck import run_parser
 from triton.backends.compiler import GPUTarget
 from triton.language.core import base_value
 
-try:
-    from triton.experimental.tle.language.gpu.core import _deduplicate_warp_specialize_captures
-except ImportError:
-    # tle.gpu is not available on every backend (e.g. tsingmicro)
-    _deduplicate_warp_specialize_captures = None
-
-# Tests below exercise tle.gpu constructs that do not exist on every backend.
-_requires_tle_gpu = pytest.mark.skipif(tle.gpu is None, reason="tle.gpu is not available on this backend")
-try:
-    from triton.experimental.tle.language.gpu.semantic import TLESemanticError, TLESemantic
-except ImportError:
-    # tle.gpu is not available on every backend (e.g. tsingmicro)
-    TLESemanticError = TLESemantic = None
+from triton.experimental.tle.language.gpu.core import _deduplicate_warp_specialize_captures
+from triton.experimental.tle.language.gpu.semantic import TLESemanticError, TLESemantic
 import triton._C.libtriton as libtriton
 
 
@@ -67,7 +56,6 @@ def _cuda_backend_available():
         return False
 
 
-@_requires_tle_gpu
 class TestLayoutEncoding:
     """Test layout encoding"""
 
@@ -131,7 +119,6 @@ class TestLayoutEncoding:
         assert "kWidth = 2" in ir
 
 
-@_requires_tle_gpu
 class TestPipeline:
     """Test pipeline iterator"""
 
@@ -167,8 +154,6 @@ class TestWarpSpecializeFrontend:
     """Test warp_specialize front-end capture handling."""
 
     def test_worker_captures_are_deduplicated_across_endpoints(self):
-        if _deduplicate_warp_specialize_captures is None:
-            pytest.skip("tle.gpu is not available on this backend")
         shared_k = object()
         shared_tail = object()
         unique_q = object()
@@ -245,7 +230,6 @@ class TestTLESemantic:
             semantic.validate_alloc_dtype(32)
 
 
-@_requires_tle_gpu
 class TestBufferedTensor:
     """Test buffered tensor type"""
 
@@ -417,7 +401,6 @@ class TestBufferedTensor:
             buffer.slot(stage, _semantic=semantic)
 
 
-@_requires_tle_gpu
 class TestTmaCopyBarrierFrontend:
     """Test TMA copy explicit completion barrier validation."""
 
@@ -490,7 +473,6 @@ class TestTmaCopyBarrierFrontend:
             tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
 
 
-@_requires_tle_gpu
 class TestPipeFrontend:
     """Test strict front-end validation for tle.pipe."""
 
@@ -694,7 +676,6 @@ class TestPipeFrontend:
             writer.close(0, _semantic=semantic)
 
 
-@_requires_tle_gpu
 class TestIntegration:
     """Integration tests"""
 

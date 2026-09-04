@@ -126,15 +126,10 @@ __all__ = [
     "GroupKind",
 ]
 
-from . import distributed, raw
+from . import distributed, gpu, raw
 
-try:
-    from . import gpu
-    # TLE-specific loop iterator: tl.range plus the `reorder` extension hint.
-    range = gpu.range
-except ImportError:
-    # tsingmicro: the gpu package is unavailable.
-    gpu = None
+# TLE-specific loop iterator: tl.range plus the `reorder` extension hint.
+from .gpu import range
 
 try:
     from . import dsa
@@ -144,5 +139,4 @@ except ImportError:
 if TYPE_CHECKING:
     from triton.experimental.tle.language.gpu.semantic import TLESemantic as TLESemantic
 
-if gpu is not None:
-    __all__.append("range")
+__all__.append("range")
