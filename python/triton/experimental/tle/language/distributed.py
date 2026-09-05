@@ -889,7 +889,7 @@ def _parse_device_barrier_args(argType) -> str:
     argType = tl._unwrap_if_constexpr(argType)
     if isinstance(argType, attr.FlagCXCoopKind):
         return ("thread", "warp", "block")[int(argType)]
-    argTypes = (BarrierKind, GroupKind, MemoryOrder)
+    argTypes = (BarrierKind, GroupKind, MemoryOrder, MemoryScope)
     if isinstance(argType, argTypes):
         return argType.value
     else:
@@ -929,7 +929,8 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
                                    barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                                    group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
                                    index: int | None = 0, context_id: int = 0,
-                                   order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL, _semantic=None) -> bool:
+                                   order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+                                   memory_scope: MemoryScope | str = MemoryScope.SYSTEM, _semantic=None) -> bool:
     space = _normalize_barrier_space(space)
     if space is None:
         return False
@@ -949,6 +950,7 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
         order=_parse_device_barrier_args(order),
         barrier_kind=_parse_device_barrier_args(barrier_kind),
         context_id=context_id,
+        memory_scope=_parse_device_barrier_args(memory_scope),
     )
     return True
 
@@ -986,7 +988,8 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
                         group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
                         barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                         order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-                        _semantic: TLESemantic | None = None, index: int | None = 0, context_id: int = 0):
+                        _semantic: TLESemantic | None = None, index: int | None = 0, context_id: int = 0,
+                        memory_scope: MemoryScope | str = MemoryScope.SYSTEM):
     """
     M3 entrypoint: distributed synchronization primitive.
     Dispatch order:
@@ -1002,6 +1005,9 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
     ``attr.FlagCXTeamKind``, and is canonicalized to
     ``device``/``inter``/``world``. ``group_kind`` accepts
     ``thread``/``warp``/``block`` or an ``attr.FlagCXCoopKind``.
+    ``memory_scope`` accepts ``system``/``device``/``block``/``thread`` or a
+    ``MemoryScope`` value and controls the FlagCX memory scope. It is used only
+    for explicit-space barriers.
     ``index`` selects the barrier channel and ``context_id`` selects the
     pre-created FlagCX device context.
     Both values must agree across all participants in the barrier.
@@ -1015,7 +1021,7 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
 
     if _handle_explicit_space_barrier(mesh, space, device_dptr=device_dptr, barrier_kind=barrier_kind,
                                       group_kind=group_kind, index=index, context_id=context_id, order=order,
-                                      _semantic=_semantic):
+                                      memory_scope=memory_scope, _semantic=_semantic):
         return None
 
     use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
