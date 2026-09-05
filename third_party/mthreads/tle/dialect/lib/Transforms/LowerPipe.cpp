@@ -367,7 +367,7 @@ verifyCompletionCoverage(const musa_tle::PipeState &state,
         continue;
       if (fieldTransport && *fieldTransport != source.kind)
         return diagnosticOp->emitOpError(
-            "MUSA TLE pipe does not support mixed TME and local-store "
+            "MUSA TLE pipe does not support mixed transport "
             "sources for one payload field");
       fieldTransport = source.kind;
       if (!isValidRegion(source.coveredRegion))
@@ -475,6 +475,8 @@ class LowerPipePass
         bool hasLocalStore = false;
         for (const auto &group : state.commitGroups) {
           hasTME |= group->tmeGroupArrivalCount != 0;
+          // localStoreArrivalCount covers both wait-then-arrive transports
+          // (local store and async copy); the analysis folds them together.
           hasLocalStore |= group->localStoreArrivalCount != 0;
         }
         if (!state.barrierPlan.writerParticipant)
@@ -513,6 +515,7 @@ class LowerPipePass
         int64_t totalBytes = 0;
         bool hasTME = false;
         bool hasLocalStore = false;
+        bool hasAsyncCopy = false;
         for (const musa_tle::PipeCompletionSource &source :
              group.completionSources) {
           if (!source.operation ||
@@ -559,6 +562,23 @@ class LowerPipePass
                   "MUSA TLE pipe lowering received an invalid local-store "
                   "completion source");
             hasLocalStore = true;
+          } else if (source.kind == musa_tle::PipeTransportKind::AsyncCopy) {
+            if (!isa<ttg::AsyncCopyGlobalToLocalOp>(source.operation) ||
+                source.transactionBytes != 0)
+              return group.commit.emitOpError(
+                  "MUSA TLE pipe lowering received an invalid async-copy "
+                  "completion source");
+            FailureOr<int64_t> fieldBytes =
+                getStaticFieldBytes(state, source.destinationField);
+            if (failed(fieldBytes) || !source.coveredRegion.byteOffset ||
+                !source.coveredRegion.byteSize ||
+                *source.coveredRegion.byteOffset +
+                        *source.coveredRegion.byteSize >
+                    *fieldBytes)
+              return group.commit.emitOpError(
+                  "MUSA TLE pipe lowering received an invalid async-copy "
+                  "completion source");
+            hasAsyncCopy = true;
           } else {
             return group.commit.emitOpError(
                 "MUSA TLE pipe lowering received an unknown completion "
@@ -578,20 +598,21 @@ class LowerPipePass
               "internal MUSA TLE pipe lowering lost writer barrier "
               "participant");
         int32_t writerWarps = state.barrierPlan.writerParticipant->warpCount;
-        bool validTMEGroup = hasTME && !hasLocalStore &&
-                             group.tmeGroupArrivalCount == 1 &&
-                             group.localStoreArrivalCount == 0 &&
-                             group.fullArrivalCount == 1 && totalBytes > 0;
-        bool validLocalStoreGroup =
-            !hasTME && hasLocalStore && state.fields.size() == 1 &&
-            group.tmeGroupArrivalCount == 0 &&
-            group.localStoreArrivalCount == writerWarps &&
-            group.fullArrivalCount == writerWarps && totalBytes == 0;
-        bool validMixedGroup =
-            hasTME && hasLocalStore && group.tmeGroupArrivalCount == 1 &&
-            group.localStoreArrivalCount == writerWarps &&
-            group.fullArrivalCount == 1 + writerWarps && totalBytes > 0;
-        if ((!validTMEGroup && !validLocalStoreGroup && !validMixedGroup) ||
+        // Local store and async copy are both wait-then-arrive transports
+        // that publish with one warp-collective arrival per writer warp;
+        // TME keeps its single completion-group arrival.  Any combination
+        // of the three is valid as long as the arrival accounting matches.
+        bool hasWaitThenArrive = hasLocalStore || hasAsyncCopy;
+        int32_t expectedTMEArrivals = hasTME ? 1 : 0;
+        int32_t expectedWaitThenArriveArrivals =
+            hasWaitThenArrive ? writerWarps : 0;
+        bool validCompletionAccounting =
+            group.tmeGroupArrivalCount == expectedTMEArrivals &&
+            group.localStoreArrivalCount == expectedWaitThenArriveArrivals &&
+            group.fullArrivalCount ==
+                expectedTMEArrivals + expectedWaitThenArriveArrivals &&
+            (hasTME ? totalBytes > 0 : totalBytes == 0);
+        if (!validCompletionAccounting ||
             totalBytes != group.totalTransactionBytes ||
             totalBytes != *state.barrierPlan.full.transactionBytes ||
             group.fullArrivalCount != state.barrierPlan.full.arrivalCount)
@@ -660,6 +681,10 @@ class LowerPipePass
                                       builder.getI32IntegerAttr(1));
   }
 
+  // True when any commit uses a wait-then-arrive transport (local store or
+  // async copy).  Both publish with one warp-collective arrival per writer
+  // warp and rely on the pipe hardware wait as the reader-side acquire edge,
+  // so they share the same membar local-store-group machinery.
   static bool usesLocalStoreTransport(const musa_tle::PipeState &state) {
     return !state.commitGroups.empty() &&
            llvm::any_of(state.commitGroups, [](const auto &group) {
@@ -667,7 +692,9 @@ class LowerPipePass
                     llvm::any_of(
                         group->completionSources, [](const auto &source) {
                           return source.kind ==
-                                 musa_tle::PipeTransportKind::LocalStore;
+                                     musa_tle::PipeTransportKind::LocalStore ||
+                                 source.kind ==
+                                     musa_tle::PipeTransportKind::AsyncCopy;
                         });
            });
   }
@@ -770,7 +797,8 @@ class LowerPipePass
           state->fields.size());
       if (usesLocalStoreTransport(*state)) {
         for (const musa_tle::PipeFieldState &field : state->fields) {
-          if (field.transportKind != musa_tle::PipeTransportKind::LocalStore)
+          if (field.transportKind != musa_tle::PipeTransportKind::LocalStore &&
+              field.transportKind != musa_tle::PipeTransportKind::AsyncCopy)
             continue;
           int64_t group = nextLocalStoreGroupId++;
           localStoreGroupByField[field.index] = group;
@@ -890,12 +918,13 @@ class LowerPipePass
             [](const musa_tle::PipeCompletionSource &source) {
               return source.kind == musa_tle::PipeTransportKind::TME;
             });
-        bool hasLocalStore = llvm::any_of(
+        bool hasWaitThenArrive = llvm::any_of(
             group->completionSources,
             [](const musa_tle::PipeCompletionSource &source) {
-              return source.kind == musa_tle::PipeTransportKind::LocalStore;
+              return source.kind == musa_tle::PipeTransportKind::LocalStore ||
+                     source.kind == musa_tle::PipeTransportKind::AsyncCopy;
             });
-        if (hasLocalStore) {
+        if (hasWaitThenArrive) {
           lowerLocalStoreArrival(builder, loc, op, pipeArtifacts.fullBase,
                                  *group);
         }

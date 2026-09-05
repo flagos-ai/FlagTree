@@ -37,6 +37,10 @@ enum class PipeTransportKind {
   Unknown,
   TME,
   LocalStore,
+  // Payload written by ttg.async_copy_global_to_local (llvm.musa.memcpy.g2s).
+  // The completion edge is the per-thread async wait issued after the copy;
+  // publication uses the same per-warp arrival as LocalStore.
+  AsyncCopy,
 };
 
 enum class PipeBarrierStorageOwner {

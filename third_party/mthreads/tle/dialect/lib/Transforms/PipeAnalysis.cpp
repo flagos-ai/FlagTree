@@ -821,7 +821,7 @@ verifyRegionCoverage(const PipeState &state, Operation *diagnosticOp,
         continue;
       if (fieldTransport && *fieldTransport != source.kind)
         return diagnosticOp->emitOpError(
-            "MUSA TLE pipe does not support mixed TME and local-store "
+            "MUSA TLE pipe does not support mixed transport "
             "sources for one payload field");
       fieldTransport = source.kind;
       if (!isValidRegion(source.coveredRegion))
@@ -1086,6 +1086,7 @@ static LogicalResult verifyAnalysisState(PipeAnalysisResult &result) {
       int64_t totalBytes = 0;
       bool hasTME = false;
       bool hasLocalStore = false;
+      bool hasAsyncCopy = false;
       for (const PipeCompletionSource &source : group.completionSources) {
         if (!source.operation ||
             source.destinationField >= state.fields.size() ||
@@ -1138,6 +1139,13 @@ static LogicalResult verifyAnalysisState(PipeAnalysisResult &result) {
                 "internal MUSA TLE pipe analysis produced an invalid "
                 "local-store completion source");
           hasLocalStore = true;
+        } else if (source.kind == PipeTransportKind::AsyncCopy) {
+          if (!isa<ttg::AsyncCopyGlobalToLocalOp>(source.operation) ||
+              source.transactionBytes != 0)
+            return group.commit.getOperation()->emitOpError(
+                "internal MUSA TLE pipe analysis produced an invalid "
+                "async-copy completion source");
+          hasAsyncCopy = true;
         } else {
           return group.commit.getOperation()->emitOpError(
               "internal MUSA TLE pipe analysis produced an unknown "
@@ -1155,10 +1163,12 @@ static LogicalResult verifyAnalysisState(PipeAnalysisResult &result) {
         return failure();
       int32_t writerWarps = state.barrierPlan.writerParticipant->warpCount;
       int32_t expectedTMEArrivals = hasTME ? 1 : 0;
-      int32_t expectedLocalArrivals = hasLocalStore ? writerWarps : 0;
+      int32_t expectedLocalArrivals =
+          (hasLocalStore || hasAsyncCopy) ? writerWarps : 0;
       if (totalBytes != group.totalTransactionBytes || totalBytes < 0 ||
-          (!hasTME && !hasLocalStore) ||
-          (!hasTME && hasLocalStore && state.fields.size() != 1) ||
+          (!hasTME && !hasLocalStore && !hasAsyncCopy) ||
+          (!hasTME && !hasAsyncCopy && hasLocalStore &&
+           state.fields.size() != 1) ||
           group.tmeGroupArrivalCount != expectedTMEArrivals ||
           group.localStoreArrivalCount != expectedLocalArrivals ||
           group.fullArrivalCount !=
@@ -2637,6 +2647,83 @@ private:
     return success();
   }
 
+  // Records a ttg.async_copy_global_to_local whose destination is a pipe
+  // payload field as a completion source.  The transport is
+  // wait-then-arrive: the analysis requires a per-thread async wait between
+  // the copy and the commit (checked in closeWriterGeneration), and lowering
+  // publishes with one warp-collective arrival per writer warp, exactly like
+  // the local-store transport.
+  LogicalResult
+  recordAsyncCopy(ttg::AsyncCopyGlobalToLocalOp copy,
+                  SmallVectorImpl<OpenWriterGeneration> &writers,
+                  SmallVectorImpl<OpenReaderGeneration> &readers) {
+    FailureOr<SmallVector<ResolvedPipeFieldAccess>> accesses =
+        resolvePipeFieldAccess(copy, copy.getResult());
+    if (failed(accesses))
+      return failure();
+    if (accesses->empty())
+      return success();
+
+    FailureOr<PipeStaticPartitionInfo> operationPlacement =
+        getEndpointPlacement(copy);
+    if (failed(operationPlacement))
+      return failure();
+
+    std::optional<unsigned> matchedGeneration;
+    std::optional<ResolvedPipeFieldAccess> matchedAccess;
+    bool hasWrongEndpointPlacement = false;
+    for (const ResolvedPipeFieldAccess &access : *accesses) {
+      for (auto [index, generation] : llvm::enumerate(writers)) {
+        if (generation.pipe != access.pipe ||
+            !sameIndex(generation.stage, access.stage))
+          continue;
+        if (generation.writerEndpoint >= access.pipe->endpoints.size())
+          return copy.emitOpError(
+              "internal MUSA TLE pipe analysis lost writer endpoint");
+        if (!samePlacement(access.pipe->endpoints[generation.writerEndpoint],
+                           *operationPlacement)) {
+          hasWrongEndpointPlacement = true;
+          continue;
+        }
+        if (matchedGeneration) {
+          copy.emitOpError(
+              "cannot uniquely associate async copy with a pipe field");
+          return failure();
+        }
+        matchedGeneration = index;
+        matchedAccess = access;
+      }
+    }
+
+    if (!matchedGeneration) {
+      if (hasOpenReaderForMemDesc(copy.getResult(), readers))
+        return success();
+      if (hasWrongEndpointPlacement)
+        return copy.emitOpError(
+            "MUSA TLE pipe writer payload operation must execute in the "
+            "writer partition");
+      if (llvm::any_of(*accesses, [](const ResolvedPipeFieldAccess &access) {
+            return access.pipe &&
+                   access.pipe->lifecycle.mode == PipeLifecycleMode::OneShot;
+          }))
+        return copy.emitOpError(
+            "MUSA TLE one-shot pipe payload is immutable after publication");
+      return copy.emitOpError(
+          "MUSA TLE pipe async-copy transport requires an open same-block "
+          "writer generation with the same stage");
+    }
+
+    if (!matchedAccess->coveredRegion.exact)
+      return copy.emitOpError(
+          "MUSA TLE pipe async-copy transport requires a statically provable "
+          "contiguous field region");
+    writers[*matchedGeneration].completionSources.push_back(
+        PendingCompletionSource{PipeTransportKind::AsyncCopy, copy,
+                                *matchedAccess, PipeBarrierStorageOwner::Pipe,
+                                Value()});
+    return success();
+  }
+
   bool isWriterOperationAfterClose(PipeState *state, Operation *operation) {
     if (!state || !operation)
       return false;
@@ -2938,10 +3025,16 @@ private:
                        [](const PendingCompletionSource &source) {
                          return source.kind == PipeTransportKind::LocalStore;
                        });
+    int64_t asyncCopySourceCount =
+        llvm::count_if(generation.completionSources,
+                       [](const PendingCompletionSource &source) {
+                         return source.kind == PipeTransportKind::AsyncCopy;
+                       });
     bool hasTME = tmeSourceCount != 0;
     bool hasLocalStore = localStoreSourceCount != 0;
+    bool hasAsyncCopy = asyncCopySourceCount != 0;
 
-    if (!hasTME && !hasLocalStore) {
+    if (!hasTME && !hasLocalStore && !hasAsyncCopy) {
       if (hasStructuredPipeAfter(commit.getOperation()))
         return commit.emitOpError(
             "MUSA TLE pipe lifecycle generation alternatives must have "
@@ -2950,11 +3043,11 @@ private:
           "MUSA TLE pipe commit requires a completion source for every "
           "payload field");
     }
-    if (!hasTME && hasLocalStore && state->fields.size() != 1)
+    if (!hasTME && !hasAsyncCopy && hasLocalStore && state->fields.size() != 1)
       return commit.emitOpError(
           "MUSA TLE pipe local-store-only transport currently requires one "
           "payload field");
-    if (!hasTME && hasLocalStore && localStoreSourceCount != 1)
+    if (!hasTME && !hasAsyncCopy && hasLocalStore && localStoreSourceCount != 1)
       return commit.emitOpError(
           "MUSA TLE pipe local-store transport requires one unmasked "
           "whole-field store");
@@ -3008,6 +3101,35 @@ private:
           return pending.operation->emitOpError(
               "MUSA TLE pipe local-store transport requires a positive "
               "static whole-field size");
+      } else if (pending.kind == PipeTransportKind::AsyncCopy) {
+        auto copy =
+            dyn_cast_or_null<ttg::AsyncCopyGlobalToLocalOp>(pending.operation);
+        if (!copy)
+          return commit.emitOpError(
+              "internal MUSA TLE pipe analysis lost an async-copy "
+              "completion operation");
+        // The transport is wait-then-arrive: the data only lands in shared
+        // memory when the issuing thread waits, so require an async wait in
+        // the same block between the copy and this commit.  The fusion pass
+        // and the TLE async-load lowering always emit this wait.
+        if (copy->getBlock() != commit->getBlock())
+          return copy.emitOpError(
+              "MUSA TLE pipe async-copy transport requires the copy and its "
+              "commit in the same block");
+        bool coveredByWait = false;
+        for (Operation *cursor = copy->getNextNode(); cursor;
+             cursor = cursor->getNextNode()) {
+          if (cursor == commit.getOperation())
+            break;
+          if (isa<ttg::AsyncWaitOp>(cursor)) {
+            coveredByWait = true;
+            break;
+          }
+        }
+        if (!coveredByWait)
+          return copy.emitOpError(
+              "MUSA TLE pipe async-copy transport requires an async wait "
+              "between the copy and the commit");
       } else {
         return commit.emitOpError(
             "internal MUSA TLE pipe analysis found an unknown completion "
@@ -3066,10 +3188,16 @@ private:
             return source.destinationField == fieldIndex &&
                    source.kind == PipeTransportKind::LocalStore;
           });
-      if (hasFieldTME && hasFieldLocal)
+      bool hasFieldAsync = llvm::any_of(
+          completionSources, [&](const PipeCompletionSource &source) {
+            return source.destinationField == fieldIndex &&
+                   source.kind == PipeTransportKind::AsyncCopy;
+          });
+      if ((hasFieldTME && hasFieldLocal) || (hasFieldTME && hasFieldAsync) ||
+          (hasFieldLocal && hasFieldAsync))
         return commit.emitOpError(
-            "MUSA TLE pipe does not support mixed TME and local-store sources "
-            "for one payload field");
+            "MUSA TLE pipe does not support mixed transport sources for one "
+            "payload field");
     }
 
     if (failed(verifyRegionCoverage(*state, commit, completionSources))) {
@@ -3169,7 +3297,7 @@ private:
     state->barrierPlan.full.transactionBytes = static_cast<int32_t>(totalBytes);
     int32_t tmeGroupArrivalCount = hasTME ? 1 : 0;
     int32_t localStoreArrivalCount = 0;
-    if (hasLocalStore) {
+    if (hasLocalStore || hasAsyncCopy) {
       if (generation.writerEndpoint >= state->endpoints.size())
         return commit.emitOpError(
             "internal MUSA TLE pipe analysis lost writer endpoint mapping");
@@ -3639,16 +3767,13 @@ private:
           return failure();
         continue;
       }
-      if (auto asyncCopy = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
-        Value root = getMemDescRoot(asyncCopy.getResult());
-        if (!fieldOwnersByRoot.lookup(root).empty())
-          return asyncCopy.emitOpError(
-              "MUSA TLE pipe does not support async-copy/memcpy.g2s as a "
-              "pipe transport");
-        continue;
-      }
       if (failed(recordReaderMutation(op, openReaders)))
         return failure();
+      if (auto asyncCopy = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
+        if (failed(recordAsyncCopy(asyncCopy, openWriters, openReaders)))
+          return failure();
+        continue;
+      }
       if (auto copy = dyn_cast<ttg::TMACopyOp>(op)) {
         if (failed(recordTMECopy(copy, openWriters, openReaders)))
           return failure();

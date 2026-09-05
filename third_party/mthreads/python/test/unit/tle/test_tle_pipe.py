@@ -935,6 +935,242 @@ def _async_copy_pipe_kernel(desc, out, STAGES: tl.constexpr, BLOCK: tl.constexpr
 
 
 @triton.jit
+def _non_ws_async_copy_pipe_roundtrip_kernel(
+    desc,
+    out,
+    STAGES: tl.constexpr,
+    BLOCK: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+):
+    smem = tle.gpu.alloc(
+        (STAGES, BLOCK),
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    pipe = tle.pipe(capacity=STAGES, scope="cta", name="non_ws_async_copy", data=smem)
+    writer = pipe.writer()
+    reader = pipe.reader()
+    offsets = tl.arange(0, BLOCK)
+    for iteration in tl.static_range(0, ITERATIONS):
+        slot = writer.acquire(iteration)
+        values = tl.load(desc + iteration * BLOCK + offsets)
+        tl.store(tle.gpu.local_ptr(slot.data), values)
+        writer.commit(iteration)
+
+        wait = reader.wait(iteration)
+        loaded = tl.load(tle.gpu.local_ptr(wait.slot.data, (offsets, )))
+        tl.store(out + iteration * BLOCK + offsets, loaded)
+        reader.release(iteration)
+
+
+@triton.jit
+def _async_copy_producer(writer, desc, BLOCK: tl.constexpr, ITERATIONS: tl.constexpr):
+    offsets = tl.arange(0, BLOCK)
+    for iteration in tl.static_range(0, ITERATIONS):
+        slot = writer.acquire(iteration)
+        values = tl.load(desc + iteration * BLOCK + offsets)
+        tl.store(tle.gpu.local_ptr(slot.data), values)
+        writer.commit(iteration)
+
+
+@triton.jit
+def _async_copy_consumer(reader, out, BLOCK: tl.constexpr, ITERATIONS: tl.constexpr):
+    offsets = tle.gpu.set_layout(tl.arange(0, BLOCK), _LOCAL_STORE_WRITER_LAYOUT)
+    for iteration in tl.static_range(0, ITERATIONS):
+        wait = reader.wait(iteration)
+        loaded = tl.load(tle.gpu.local_ptr(wait.slot.data, (offsets, )))
+        tl.store(out + iteration * BLOCK + offsets, loaded)
+        reader.release(iteration)
+
+
+@triton.jit
+def _ws_default_writer_async_copy_pipe_kernel(
+    desc,
+    out,
+    STAGES: tl.constexpr,
+    BLOCK: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+):
+    smem = tle.gpu.alloc(
+        (STAGES, BLOCK),
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    pipe = tle.pipe(capacity=STAGES, scope="cta", name="ws_async_copy", data=smem)
+    tle.gpu.warp_specialize(
+        [
+            (_async_copy_producer, (pipe.writer(), desc, BLOCK, ITERATIONS)),
+            (_async_copy_consumer, (pipe.reader(), out, BLOCK, ITERATIONS)),
+        ],
+        worker_num_warps=[4],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _one_shot_async_copy_pipe_kernel(desc, out, STAGES: tl.constexpr, BLOCK: tl.constexpr):
+    smem = tle.gpu.alloc(
+        (STAGES, BLOCK),
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    pipe = tle.pipe(
+        capacity=STAGES,
+        scope="cta",
+        one_shot=True,
+        name="one_shot_async_copy",
+        data=smem,
+    )
+    writer = pipe.writer()
+    reader = pipe.reader()
+    offsets = tl.arange(0, BLOCK)
+    for stage in tl.static_range(0, STAGES):
+        slot = writer.acquire(stage)
+        values = tl.load(desc + stage * BLOCK + offsets)
+        tl.store(tle.gpu.local_ptr(slot.data), values)
+        writer.commit(stage)
+    for stage in tl.static_range(0, STAGES):
+        wait = reader.wait(stage)
+        loaded = tl.load(tle.gpu.local_ptr(wait.slot.data, (offsets, )))
+        tl.store(out + stage * BLOCK + offsets, loaded)
+
+
+@triton.jit
+def _non_ws_async_copy_mixed_local_store_kernel(
+    desc,
+    async_out,
+    local_out,
+    STAGES: tl.constexpr,
+    BLOCK: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+):
+    async_smem = tle.gpu.alloc(
+        (STAGES, BLOCK),
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    local_smem = tle.gpu.alloc(
+        (STAGES, BLOCK),
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    pipe = tle.pipe(
+        capacity=STAGES,
+        scope="cta",
+        name="mixed_async_local",
+        async_data=async_smem,
+        local_data=local_smem,
+    )
+    writer = pipe.writer()
+    reader = pipe.reader()
+    offsets = tl.arange(0, BLOCK)
+    for iteration in tl.static_range(0, ITERATIONS):
+        slot = writer.acquire(iteration)
+        async_values = tl.load(desc + iteration * BLOCK + offsets)
+        tl.store(tle.gpu.local_ptr(slot.async_data), async_values)
+        local_values = (iteration * BLOCK + offsets).to(tl.float32) + 0.5
+        tl.store(tle.gpu.local_ptr(slot.local_data, (offsets, )), local_values)
+        writer.commit(iteration)
+
+        wait = reader.wait(iteration)
+        async_loaded = tl.load(tle.gpu.local_ptr(wait.slot.async_data, (offsets, )))
+        local_loaded = tl.load(tle.gpu.local_ptr(wait.slot.local_data, (offsets, )))
+        tl.store(async_out + iteration * BLOCK + offsets, async_loaded)
+        tl.store(local_out + iteration * BLOCK + offsets, local_loaded)
+        reader.release(iteration)
+
+
+@triton.jit
+def _non_ws_async_copy_mixed_tme_kernel(
+    desc,
+    src,
+    async_out,
+    tme_out,
+    STAGES: tl.constexpr,
+    BLOCK: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+):
+    async_smem = tle.gpu.alloc(
+        (STAGES, BLOCK),
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    tme_smem = tle.gpu.alloc(
+        (STAGES, BLOCK),
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    pipe = tle.pipe(
+        capacity=STAGES,
+        scope="cta",
+        name="mixed_async_tme",
+        async_data=async_smem,
+        tme_data=tme_smem,
+    )
+    writer = pipe.writer()
+    reader = pipe.reader()
+    offsets = tl.arange(0, BLOCK)
+    for iteration in tl.static_range(0, ITERATIONS):
+        slot = writer.acquire(iteration)
+        async_values = tl.load(src + iteration * BLOCK + offsets)
+        tl.store(tle.gpu.local_ptr(slot.async_data), async_values)
+        tle.gpu.copy(desc, slot.tme_data, (BLOCK, ), (iteration * BLOCK, ))
+        writer.commit(iteration)
+
+        wait = reader.wait(iteration)
+        async_loaded = tl.load(tle.gpu.local_ptr(wait.slot.async_data, (offsets, )))
+        tme_loaded = tl.load(tle.gpu.local_ptr(wait.slot.tme_data, (offsets, )))
+        tl.store(async_out + iteration * BLOCK + offsets, async_loaded)
+        tl.store(tme_out + iteration * BLOCK + offsets, tme_loaded)
+        reader.release(iteration)
+
+
+@triton.jit
+def _mixed_tme_async_copy_same_field_kernel(
+    desc,
+    src,
+    out,
+    STAGES: tl.constexpr,
+    BLOCK: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+):
+    smem = tle.gpu.alloc(
+        (STAGES, BLOCK),
+        dtype=tl.float32,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    pipe = tle.pipe(capacity=STAGES, scope="cta", name="mixed_same_field", data=smem)
+    writer = pipe.writer()
+    reader = pipe.reader()
+    offsets = tl.arange(0, BLOCK)
+    for iteration in tl.static_range(0, ITERATIONS):
+        slot = writer.acquire(iteration)
+        tle.gpu.copy(desc, slot.data, (BLOCK, ), (iteration * BLOCK, ))
+        values = tl.load(src + iteration * BLOCK + offsets)
+        tl.store(tle.gpu.local_ptr(slot.data), values)
+        writer.commit(iteration)
+        wait = reader.wait(iteration)
+        tl.store(out + iteration, tl.where(wait.is_closed, 1, 0))
+        reader.release(iteration)
+
+
+@triton.jit
 def _ws_idle_worker(marker, source_desc):
     tl.store(marker, 0)
 
@@ -2659,19 +2895,25 @@ def _one_shot_dynamic_stage_kernel(
     tl.store(out, tl.where(wait.is_closed, 1, 0))
 
 
-def _compile_invalid_pipeline(fn, kind=None, desc_type="tensordesc<fp16[128]>"):
+def _compile_invalid_pipeline(
+    fn,
+    kind=None,
+    desc_type="tensordesc<fp16[128]>",
+    signature=None,
+):
     target, backend = mthreads_backend()
     options = backend.parse_options({"num_warps": 16, "num_stages": 1})
     context = ir.context()
     ir.load_dialects(context)
     backend.load_dialects(context)
-    signature = {
-        "desc": desc_type,
-        "out": "*i32",
-        "STAGES": "constexpr",
-        "BLOCK": "constexpr",
-        "ITERATIONS": "constexpr",
-    }
+    if signature is None:
+        signature = {
+            "desc": desc_type,
+            "out": "*i32",
+            "STAGES": "constexpr",
+            "BLOCK": "constexpr",
+            "ITERATIONS": "constexpr",
+        }
     constexprs = {"STAGES": 2, "BLOCK": 128, "ITERATIONS": 2}
     if kind is not None:
         signature["KIND"] = "constexpr"
@@ -2723,6 +2965,40 @@ def _assert_local_store_pipe_artifacts(compiled, stages, iterations, writer_warp
     assert "ttmg.async_tme_copy_global_to_local" not in ttgir, ttgir
     assert "llvm.musa.async.add.trans" not in llir, llir
     assert "llvm.musa.tme.ld" not in llir, llir
+
+
+def _assert_async_copy_pipe_artifacts(
+    compiled,
+    iterations,
+    async_copies_per_iteration=1,
+    static_ws=False,
+    expect_warp_arrives=2,
+    expect_tme_transactions=False,
+):
+    """Async-copy transport lowers to per-thread g2s + wait and a warp arrive.
+
+    ``async_copies_per_iteration`` counts the fused async copies the
+    OptimizeLocalPointerAsyncStores pass emits per pipe generation.
+    ``expect_warp_arrives`` counts warp-collective arrivals per iteration
+    (writer full arrive + reader empty arrive).
+    """
+    ttgir = compiled.asm["ttgir"]
+    llir = compiled.asm["llir"]
+    _assert_pipe_lowering_clean(compiled)
+    assert ttgir.count("ttg.async_copy_global_to_local") == async_copies_per_iteration * iterations, ttgir
+    if expect_tme_transactions:
+        assert "ttmg.barrier_add_trans" in ttgir, ttgir
+        assert "llvm.musa.async.add.trans" in llir, llir
+    else:
+        assert "ttmg.barrier_add_trans" not in ttgir, ttgir
+        assert "llvm.musa.async.add.trans" not in llir, llir
+    assert ttgir.count("ttmg.warp_arrive_barrier") == expect_warp_arrives * iterations, ttgir
+    # "llvm.musa.memcpy.g2s" is a prefix of "llvm.musa.memcpy.g2s.wait", so
+    # count the copy calls through their call syntax.
+    assert llir.count("call void @llvm.musa.memcpy.g2s(") == async_copies_per_iteration * iterations, llir
+    assert llir.count("call void @llvm.musa.memcpy.g2s.wait()") >= iterations, llir
+    if static_ws:
+        assert "llvm.musa.barrier0" not in llir, llir
 
 
 def _assert_close_artifacts(
@@ -3453,7 +3729,7 @@ def test_musa_ws_named_reader_mixed_worker_partition_runtime(stages):
     [
         (0, "local-store transport requires one unmasked whole-field store"),
         (1, "MUSA TLE pipe completion sources for one field must not overlap"),
-        (2, "MUSA TLE pipe does not support mixed TME and local-store sources for one payload field"),
+        (2, "MUSA TLE pipe does not support mixed transport sources for one payload field"),
     ],
 )
 def test_mthreads_pipe_rejects_unsupported_producer_protocol(capfd, kind, diagnostic):
@@ -3468,10 +3744,28 @@ def test_musa_pipe_rejects_multi_field_local_store_only(capfd):
     assert "MUSA TLE pipe local-store-only transport currently requires one payload field" in capfd.readouterr().err
 
 
-def test_musa_pipe_rejects_async_copy_transport(capfd):
+def test_musa_async_copy_pipe_compiles():
+    module = _compile_invalid_pipeline(_async_copy_pipe_kernel, desc_type="*fp32")
+    ttgir = str(module)
+    # The fused load+store pair now lowers to an async-copy pipe transport.
+    assert "ttg.async_copy_global_to_local" in ttgir, ttgir
+    assert "musa_tle.pipe." not in ttgir, ttgir
+
+
+def test_musa_pipe_rejects_mixed_tme_async_copy_same_field(capfd):
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(_async_copy_pipe_kernel, desc_type="*fp32")
-    assert ("MUSA TLE pipe does not support async-copy/memcpy.g2s as a pipe transport" in capfd.readouterr().err)
+        _compile_invalid_pipeline(
+            _mixed_tme_async_copy_same_field_kernel,
+            signature={
+                "desc": "tensordesc<fp32[128]>",
+                "src": "*fp32",
+                "out": "*i32",
+                "STAGES": "constexpr",
+                "BLOCK": "constexpr",
+                "ITERATIONS": "constexpr",
+            },
+        )
+    assert "MUSA TLE pipe does not support mixed transport sources for one payload field" in capfd.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -4549,6 +4843,197 @@ def test_musa_ws_local_store_pipe_roundtrip_runtime(stages):
         )
         torch.musa.synchronize()
         assert torch.equal(out, expected)
+
+
+@pytest.mark.parametrize("stages", [1, 2, 3], ids=["stage1", "stage2", "stage3"])
+def test_musa_non_ws_async_copy_pipe_roundtrip_runtime(stages):
+    iterations = _phase_reuse_iterations(stages)
+    block = 128
+    source = torch.arange(iterations * block, dtype=torch.float32, device="musa")
+    out = torch.empty_like(source)
+
+    compiled = _non_ws_async_copy_pipe_roundtrip_kernel.warmup(
+        source,
+        out,
+        STAGES=stages,
+        BLOCK=block,
+        ITERATIONS=iterations,
+        grid=(1, ),
+        num_warps=16,
+        num_stages=1,
+    )
+    _assert_async_copy_pipe_artifacts(compiled, iterations)
+
+    for _ in range(4):
+        out.fill_(float("nan"))
+        _non_ws_async_copy_pipe_roundtrip_kernel[(1, )](
+            source,
+            out,
+            STAGES=stages,
+            BLOCK=block,
+            ITERATIONS=iterations,
+            num_warps=16,
+            num_stages=1,
+        )
+        torch.musa.synchronize()
+        assert torch.equal(out, source)
+
+
+@pytest.mark.parametrize("stages", [1, 2, 3], ids=["stage1", "stage2", "stage3"])
+def test_musa_ws_default_writer_async_copy_pipe_roundtrip_runtime(stages):
+    iterations = _phase_reuse_iterations(stages)
+    block = 128
+    source = torch.arange(iterations * block, dtype=torch.float32, device="musa")
+    out = torch.empty_like(source)
+
+    compiled = _ws_default_writer_async_copy_pipe_kernel.warmup(
+        source,
+        out,
+        STAGES=stages,
+        BLOCK=block,
+        ITERATIONS=iterations,
+        grid=(1, ),
+        num_warps=16,
+        num_stages=1,
+    )
+    assert compiled.metadata.num_warps == 20
+    assert '"ttg.total-num-warps" = 20 : i32' in compiled.asm["ttgir"]
+    _assert_async_copy_pipe_artifacts(compiled, iterations, static_ws=True)
+
+    for _ in range(4):
+        out.fill_(float("nan"))
+        _ws_default_writer_async_copy_pipe_kernel[(1, )](
+            source,
+            out,
+            STAGES=stages,
+            BLOCK=block,
+            ITERATIONS=iterations,
+            num_warps=16,
+            num_stages=1,
+        )
+        torch.musa.synchronize()
+        assert torch.equal(out, source)
+
+
+def test_musa_one_shot_async_copy_pipe_runtime():
+    stages = 3
+    block = 128
+    source = torch.arange(stages * block, dtype=torch.float32, device="musa")
+    out = torch.empty_like(source)
+
+    compiled = _one_shot_async_copy_pipe_kernel.warmup(
+        source,
+        out,
+        STAGES=stages,
+        BLOCK=block,
+        grid=(1, ),
+        num_warps=16,
+        num_stages=1,
+    )
+    # One-shot pipes publish once per stage; the writer arrival is the only
+    # warp arrive (no reader release).
+    _assert_async_copy_pipe_artifacts(
+        compiled,
+        stages,
+        expect_warp_arrives=1,
+    )
+
+    for _ in range(4):
+        out.fill_(float("nan"))
+        _one_shot_async_copy_pipe_kernel[(1, )](
+            source,
+            out,
+            STAGES=stages,
+            BLOCK=block,
+            num_warps=16,
+            num_stages=1,
+        )
+        torch.musa.synchronize()
+        assert torch.equal(out, source)
+
+
+def test_musa_non_ws_async_copy_mixed_local_store_pipe_runtime():
+    stages = 2
+    iterations = _phase_reuse_iterations(stages)
+    block = 128
+    source = torch.arange(iterations * block, dtype=torch.float32, device="musa")
+    async_out = torch.empty_like(source)
+    local_out = torch.empty_like(source)
+    expected_local = source + 0.5
+
+    compiled = _non_ws_async_copy_mixed_local_store_kernel.warmup(
+        source,
+        async_out,
+        local_out,
+        STAGES=stages,
+        BLOCK=block,
+        ITERATIONS=iterations,
+        grid=(1, ),
+        num_warps=16,
+        num_stages=1,
+    )
+    _assert_async_copy_pipe_artifacts(compiled, iterations)
+
+    for _ in range(4):
+        async_out.fill_(float("nan"))
+        local_out.fill_(float("nan"))
+        _non_ws_async_copy_mixed_local_store_kernel[(1, )](
+            source,
+            async_out,
+            local_out,
+            STAGES=stages,
+            BLOCK=block,
+            ITERATIONS=iterations,
+            num_warps=16,
+            num_stages=1,
+        )
+        torch.musa.synchronize()
+        assert torch.equal(async_out, source)
+        assert torch.equal(local_out, expected_local)
+
+
+def test_musa_non_ws_async_copy_mixed_tme_pipe_runtime():
+    stages = 2
+    iterations = _phase_reuse_iterations(stages)
+    block = 128
+    source = torch.arange(iterations * block, dtype=torch.float32, device="musa")
+    async_out = torch.empty_like(source)
+    tme_out = torch.empty_like(source)
+    source_desc = TensorDescriptor.from_tensor(source, [block])
+
+    compiled = _non_ws_async_copy_mixed_tme_kernel.warmup(
+        source_desc,
+        source,
+        async_out,
+        tme_out,
+        STAGES=stages,
+        BLOCK=block,
+        ITERATIONS=iterations,
+        grid=(1, ),
+        num_warps=16,
+        num_stages=1,
+    )
+    # Mixed async-copy + TME transport: one TME transaction barrier plus the
+    # writer warp arrivals for the async-copy field.
+    _assert_async_copy_pipe_artifacts(compiled, iterations, expect_tme_transactions=True)
+
+    for _ in range(4):
+        async_out.fill_(float("nan"))
+        tme_out.fill_(float("nan"))
+        _non_ws_async_copy_mixed_tme_kernel[(1, )](
+            source_desc,
+            source,
+            async_out,
+            tme_out,
+            STAGES=stages,
+            BLOCK=block,
+            ITERATIONS=iterations,
+            num_warps=16,
+            num_stages=1,
+        )
+        torch.musa.synchronize()
+        assert torch.equal(async_out, source)
+        assert torch.equal(tme_out, source)
 
 
 @pytest.mark.parametrize(
