@@ -20,10 +20,11 @@
 """Load the local or remote Manifest that indexes FlagTune packages.
 
 The Manifest is read from ``FLAGTUNE_LOCAL_MANIFEST`` when configured. Otherwise
-the cached Manifest is refreshed from ``FLAGTUNE_MANIFEST_URL`` when its TTL
-expires. A failed remote refresh is reported to the caller instead of silently
-using stale metadata. The remote URL must point to a tar.gz containing exactly
-``manifest.json``. Its schema is validated before cache publication.
+the cached Manifest is refreshed from ``FLAGTUNE_MANIFEST_URL`` (or the built-in
+FlagOS default URL) when its TTL expires. A failed remote refresh is reported to
+the caller instead of silently using stale metadata. The remote URL must point
+to a tar.gz containing exactly ``manifest.json``. Its schema is validated before
+cache publication.
 
 The optional ``latest`` field is descriptive only. When no exact version is
 requested, selection computes the highest strict SemVer key in ``versions``.
@@ -55,6 +56,8 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _MANIFEST_MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 _MANIFEST_MAX_MEMBER_BYTES = 4 * 1024 * 1024
 _DEFAULT_MANIFEST_TTL = 24 * 60 * 60
+_DEFAULT_MANIFEST_URL = ("https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
+                         "flagtune-xgb-manifest.tar.gz")
 
 
 @dataclass(frozen=True)
@@ -98,7 +101,7 @@ def _manifest_meta_path(path: Path) -> Path:
 
 
 def _manifest_url() -> str:
-    return os.environ.get("FLAGTUNE_MANIFEST_URL", "").strip()
+    return os.environ.get("FLAGTUNE_MANIFEST_URL", _DEFAULT_MANIFEST_URL).strip()
 
 
 def _environment_switch(name: str) -> bool:

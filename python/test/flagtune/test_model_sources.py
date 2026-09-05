@@ -31,6 +31,17 @@ def clean_manifest_environment(monkeypatch):
             "FLAGTUNE_DISABLE_REMOTE",
     ):
         monkeypatch.delenv(name, raising=False)
+    # Keep fixture-created cache manifests offline; the default URL is tested
+    # explicitly below and should not make unrelated tests perform network I/O.
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_URL", "")
+
+
+def test_default_manifest_url(monkeypatch):
+    """Use the hosted FlagOS Manifest when no URL override is provided."""
+    monkeypatch.delenv("FLAGTUNE_MANIFEST_URL", raising=False)
+
+    assert model_sources._manifest_url() == ("https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
+                                             "flagtune-xgb-manifest.tar.gz")
 
 
 def manifest_with(entry, *, platform_key=PLATFORM_KEY):
@@ -109,6 +120,7 @@ def test_missing_cached_manifest_requires_remote_url(tmp_path, monkeypatch):
     cache_root = tmp_path / "cache"
     manifest_path = cache_root / "manifest.json"
     monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_URL", "")
 
     with pytest.raises(model_sources.ManifestFetchError, match="FLAGTUNE_MANIFEST_URL is not configured"):
         model_sources.resolve_package_info(PLATFORM_KEY)

@@ -33,8 +33,9 @@ Environment variables:
     Manifest. The default cache path is ``$FLAGTUNE_MODEL_CACHE/manifest.json``.
   * ``FLAGTUNE_MODEL_BASE_URL``: optional HTTPS base URL used for model package
     URL mirroring.
-  * ``FLAGTUNE_MANIFEST_URL``: HTTPS URL of the Manifest tar.gz, required
-    when no usable local or cached Manifest exists.
+  * ``FLAGTUNE_MANIFEST_URL``: optional HTTPS URL of the Manifest tar.gz.
+    Defaults to the FlagOS-hosted FlagTune XGBoost Manifest when no usable
+    local or cached Manifest exists.
   * ``FLAGTUNE_MANIFEST_TTL``: optional cache lifetime in seconds (default 86400).
   * ``FLAGTUNE_MANIFEST_REFRESH``: when set to ``1``, refresh the Manifest cache.
   * ``FLAGTUNE_MODEL_CACHE``: writable package-cache root. Defaults to
