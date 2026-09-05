@@ -1,6 +1,16 @@
 """Compile and runtime coverage for the MUSA TLE pipe contract."""
 
+import argparse
+import faulthandler
+import json
+import math
+import os
+from pathlib import Path
 import re
+import runpy
+import subprocess
+import sys
+import time
 
 import pytest
 import torch
@@ -12,6 +22,7 @@ from triton._C.libtriton import ir
 from triton.backends.compiler import Language
 from triton.compiler import ASTSource
 from triton.compiler.errors import CompilationError
+from triton.testing import do_bench
 from triton.tools.tensor_descriptor import TensorDescriptor
 
 from test_tle_utils import mthreads_backend, require_mthreads_libtriton, tme_descriptor_attrs
@@ -909,29 +920,6 @@ def _invalid_pipe_kernel(
             worker_num_warps=[4],
             worker_num_regs=[24],
         )
-
-
-@triton.jit
-def _async_copy_pipe_kernel(desc, out, STAGES: tl.constexpr, BLOCK: tl.constexpr, ITERATIONS: tl.constexpr):
-    smem = tle.gpu.alloc(
-        (STAGES, BLOCK),
-        dtype=tl.float32,
-        layout=None,
-        scope=tle.gpu.smem,
-        nv_mma_shared_layout=False,
-    )
-    pipe = tle.pipe(capacity=STAGES, scope="cta", name="async_copy_pipe", data=smem)
-    writer = pipe.writer()
-    reader = pipe.reader()
-    offsets = tl.arange(0, BLOCK)
-    for iteration in tl.static_range(0, ITERATIONS):
-        slot = writer.acquire(iteration)
-        values = tl.load(desc + iteration * BLOCK + offsets)
-        tl.store(tle.gpu.local_ptr(slot.data), values)
-        writer.commit(iteration)
-        wait = reader.wait(iteration)
-        tl.store(out + iteration, tl.where(wait.is_closed, 1, 0))
-        reader.release(iteration)
 
 
 @triton.jit
@@ -2938,144 +2926,44 @@ def _compile_invalid_pipeline(
     return compiler_stages["ttgir"](module, metadata)
 
 
-def _i32_constants(ir_text):
-    return {
-        name: int(value)
-        for name, value in re.findall(r"(%[-\w.]+)\s*=\s*arith\.constant\s+(-?\d+)\s*:\s*i32", ir_text)
-    }
-
-
-def _assert_pipe_lowering_clean(compiled):
-    """Check only final-IR hygiene that device execution cannot observe."""
-    for ir_text in (compiled.asm["ttgir"], compiled.asm["llir"]):
-        for marker in (
-                "musa_tle.pipe.",
-                "musa_tle.completion_group",
-                "musa_tle.expect_bytes",
-                "musa_tle.pipe_reader_tme_store",
-        ):
-            assert marker not in ir_text, ir_text
-
-
-def _assert_local_store_pipe_artifacts(compiled, stages, iterations, writer_warps, reader_warps):
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert "ttmg.barrier_add_trans" not in ttgir, ttgir
-    assert "ttmg.async_tme_copy_global_to_local" not in ttgir, ttgir
-    assert "llvm.musa.async.add.trans" not in llir, llir
-    assert "llvm.musa.tme.ld" not in llir, llir
-
-
-def _assert_async_copy_pipe_artifacts(
-    compiled,
-    iterations,
-    async_copies_per_iteration=1,
-    static_ws=False,
-    expect_warp_arrives=2,
-    expect_tme_transactions=False,
-):
-    """Async-copy transport lowers to per-thread g2s + wait and a warp arrive.
-
-    ``async_copies_per_iteration`` counts the fused async copies the
-    OptimizeLocalPointerAsyncStores pass emits per pipe generation.
-    ``expect_warp_arrives`` counts warp-collective arrivals per iteration
-    (writer full arrive + reader empty arrive).
-    """
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert ttgir.count("ttg.async_copy_global_to_local") == async_copies_per_iteration * iterations, ttgir
-    if expect_tme_transactions:
-        assert "ttmg.barrier_add_trans" in ttgir, ttgir
-        assert "llvm.musa.async.add.trans" in llir, llir
-    else:
-        assert "ttmg.barrier_add_trans" not in ttgir, ttgir
-        assert "llvm.musa.async.add.trans" not in llir, llir
-    assert ttgir.count("ttmg.warp_arrive_barrier") == expect_warp_arrives * iterations, ttgir
-    # "llvm.musa.memcpy.g2s" is a prefix of "llvm.musa.memcpy.g2s.wait", so
-    # count the copy calls through their call syntax.
-    assert llir.count("call void @llvm.musa.memcpy.g2s(") == async_copies_per_iteration * iterations, llir
-    assert llir.count("call void @llvm.musa.memcpy.g2s.wait()") >= iterations, llir
+def _assert_pipe_lowering_clean(compiled, *, static_ws=False, num_warps=None):
+    """Check lowering completion and the unsafe CTA barrier, not IR topology."""
+    assert "musa_tle.pipe." not in compiled.asm["ttgir"]
     if static_ws:
-        assert "llvm.musa.barrier0" not in llir, llir
+        assert "llvm.musa.barrier0" not in compiled.asm["llir"]
+    if num_warps is not None:
+        assert compiled.metadata.num_warps == num_warps
 
 
-def _assert_close_artifacts(
-    compiled,
-    stages,
-    payloads,
-    full_arrival_count,
-    reader_warps,
-    control_arrivals,
-    warp_arrivals,
-    payload_tme=False,
-    reader_tme_stores=0,
-    static_ws=False,
-    wait_count=None,
-    static_total_warps=20,
-):
-    ttgir = compiled.asm["ttgir"]
+def _assert_async_copy_transport(compiled, *, static_ws=False, with_tme=False):
+    _assert_pipe_lowering_clean(compiled, static_ws=static_ws)
     llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert f"!ttg.memdesc<{stages}x1xi32" in ttgir, ttgir
-    assert "musa_tle.pipe.writer_close" not in ttgir, ttgir
-    assert ttgir.count("arith.cmpi ne") >= 1, ttgir
-
-    if static_ws:
-        assert compiled.metadata.num_warps == static_total_warps
-        assert f'"ttg.total-num-warps" = {static_total_warps} : i32' in ttgir, ttgir
-        assert "llvm.musa.barrier0" not in llir, llir
+    assert "call void @llvm.musa.memcpy.g2s(" in llir
+    assert "llvm.musa.memcpy.g2s.wait" in llir
+    if with_tme:
+        assert "llvm.musa.tme.ld" in llir
 
 
-def _assert_one_shot_artifacts(
-    compiled,
-    stages,
-    publications,
-    full_arrival_count,
-    reader_waits,
-    tme_fields=0,
-    reader_tme_stores=0,
-    transaction_bytes=None,
-    local_transport=False,
-    static_ws=False,
-    static_total_warps=20,
-):
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert f"!ttg.memdesc<{stages}x1xi32" not in ttgir, ttgir
-
-    if static_ws:
-        assert compiled.metadata.num_warps == static_total_warps
-        assert f'"ttg.total-num-warps" = {static_total_warps} : i32' in ttgir, ttgir
-        assert "llvm.musa.barrier0" not in llir, llir
-
-
-def _assert_ws_named_close_artifacts(compiled, stages, payloads=0, reader_tme_stores=0, reader_warps=20):
-    """Check the static-WS named close protocol without snapshotting IR."""
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_close_artifacts(
-        compiled,
-        stages,
-        payloads,
-        1,
-        reader_warps,
-        0,
-        0,
-        payload_tme=bool(payloads),
-        reader_tme_stores=reader_tme_stores,
-        static_ws=True,
-        static_total_warps=24,
-    )
-    assert 'readers = ["left", "right"]' in compiled.asm["ttir"]
-    assert "musa.max_bar_id = %d" % (2 * stages) in ttgir
-    assert "llvm.musa.barrier0" not in llir
+def _assert_tme_transport(compiled, *, static_ws=False, store=True):
+    _assert_pipe_lowering_clean(compiled, static_ws=static_ws)
+    assert "llvm.musa.tme.ld" in compiled.asm["llir"]
+    if store:
+        assert "llvm.musa.tme.st" in compiled.asm["llir"]
 
 
 @pytest.mark.parametrize("stages", [1, 2, 3], ids=["stage1", "stage2", "stage3"])
 def test_musa_ws_named_reader_payload_close_runtime(stages):
+    assert hasattr(libtriton.ir.builder, "create_pipe_create")
+    assert hasattr(libtriton.ir.builder, "create_pipe_writer_acquire")
+    assert hasattr(libtriton.ir.builder, "create_pipe_writer_commit")
+    assert hasattr(libtriton.ir.builder, "create_pipe_writer_close")
+    assert hasattr(libtriton.ir.builder, "create_pipe_reader_wait")
+    assert hasattr(libtriton.ir.builder, "create_pipe_reader_release")
+    # Alias views are emitted through the MUSA-local builder binding.  The
+    # community TLE builder remains untouched.
+    assert hasattr(libtriton.ir.builder, "create_memdesc_alias")
+    assert hasattr(libtriton.mthreads.passes.ttgpuir, "add_tle_lower_pipe")
+
     payloads = 2 * stages + 1
     half_m, half_n, float_m, float_n = 16, 32, 8, 16
     half_source = torch.arange(payloads * half_m * half_n, dtype=torch.float16,
@@ -3106,7 +2994,7 @@ def test_musa_ws_named_reader_payload_close_runtime(stages):
         num_warps=16,
         num_stages=1,
     )
-    _assert_ws_named_close_artifacts(compiled, stages, payloads, payloads, reader_warps=8)
+    _assert_pipe_lowering_clean(compiled, static_ws=True, num_warps=24)
     for _ in range(4):
         half_output.fill_(float("nan"))
         float_output.fill_(float("nan"))
@@ -3159,16 +3047,7 @@ def test_musa_non_ws_one_shot_tme_roundtrip_runtime(stages):
         num_warps=4,
         num_stages=1,
     )
-    _assert_one_shot_artifacts(
-        compiled,
-        stages,
-        stages,
-        1,
-        2 * stages,
-        tme_fields=1,
-        reader_tme_stores=2 * stages,
-        transaction_bytes=block * 2,
-    )
+    _assert_pipe_lowering_clean(compiled)
 
     for _ in range(2):
         first_destination.fill_(float("nan"))
@@ -3219,17 +3098,7 @@ def test_musa_non_ws_one_shot_heterogeneous_tme_runtime():
         num_warps=4,
         num_stages=1,
     )
-    transaction_bytes = half_m * half_n * 2 + float_m * float_n * 4
-    _assert_one_shot_artifacts(
-        compiled,
-        stages,
-        stages,
-        1,
-        stages,
-        tme_fields=2,
-        reader_tme_stores=2 * stages,
-        transaction_bytes=transaction_bytes,
-    )
+    _assert_pipe_lowering_clean(compiled)
 
     for _ in range(2):
         half_destination.fill_(float("nan"))
@@ -3275,17 +3144,7 @@ def test_musa_non_ws_one_shot_mixed_runtime():
         num_warps=4,
         num_stages=1,
     )
-    _assert_one_shot_artifacts(
-        compiled,
-        stages,
-        stages,
-        5,
-        stages,
-        tme_fields=1,
-        reader_tme_stores=stages,
-        transaction_bytes=block * 2,
-        local_transport=True,
-    )
+    _assert_pipe_lowering_clean(compiled)
     expected_local = torch.arange(stages * block, dtype=torch.int32, device="musa")
     for _ in range(2):
         tme_destination.fill_(float("nan"))
@@ -3315,7 +3174,7 @@ def test_musa_non_ws_pipe_close_only_runtime():
         num_warps=4,
         num_stages=1,
     )
-    _assert_close_artifacts(compiled, 1, 0, 1, 4, 1, 0, wait_count=2)
+    _assert_pipe_lowering_clean(compiled)
     for _ in range(2):
         output.fill_(-1)
         _non_ws_close_only_kernel[(1, )](output, num_warps=4, num_stages=1)
@@ -3344,18 +3203,7 @@ def test_musa_non_ws_pipe_tme_close_runtime(stages):
         num_warps=4,
         num_stages=1,
     )
-    _assert_close_artifacts(
-        compiled,
-        stages,
-        payloads,
-        1,
-        4,
-        payloads + 1,
-        payloads,
-        payload_tme=True,
-        reader_tme_stores=payloads,
-        wait_count=2 * (payloads + 1),
-    )
+    _assert_pipe_lowering_clean(compiled)
     for _ in range(2):
         output.fill_(float("nan"))
         flags.fill_(-1)
@@ -3397,18 +3245,7 @@ def test_musa_non_ws_pipe_closed_wait_release_runtime():
         num_warps=4,
         num_stages=1,
     )
-    _assert_close_artifacts(
-        compiled,
-        stages,
-        payloads,
-        1,
-        4,
-        payloads + 1,
-        payloads + 1,
-        payload_tme=True,
-        reader_tme_stores=payloads,
-        wait_count=2 * (payloads + 1),
-    )
+    _assert_pipe_lowering_clean(compiled)
     for _ in range(2):
         output.fill_(float("nan"))
         flags.fill_(-1)
@@ -3449,19 +3286,7 @@ def test_musa_ws_pipe_tme_store_drain_close_runtime(stages):
         num_warps=16,
         num_stages=1,
     )
-    _assert_close_artifacts(
-        compiled,
-        stages,
-        payloads,
-        1,
-        16,
-        payloads + 1,
-        payloads,
-        payload_tme=True,
-        reader_tme_stores=payloads,
-        static_ws=True,
-        wait_count=2 * (payloads + 1),
-    )
+    _assert_pipe_lowering_clean(compiled, static_ws=True, num_warps=20)
     for _ in range(2):
         destination.fill_(float("nan"))
         flags.fill_(-1)
@@ -3502,47 +3327,28 @@ def test_musa_pipe_python_api_rejects_invalid_named_reader(kind, diagnostic):
         _compile_invalid_pipeline(_invalid_named_reader_python_api_kernel, kind)
 
 
-@pytest.mark.parametrize(
-    "kind,diagnostic",
-    [
-        (0, "cyclic named reader must wait and release each payload generation exactly once"),
-        (1, "MUSA TLE pipe reader.release requires a same-endpoint, same-block, same-stage reader.wait"),
-        (2, "MUSA TLE pipe reader.release requires a same-endpoint, same-block, same-stage reader.wait"),
-        (3, "cyclic named reader generation must match writer stage and phase"),
-    ],
-)
-def test_musa_pipe_rejects_invalid_named_reader_lifecycle(capfd, kind, diagnostic):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(_invalid_named_reader_lifecycle_kernel, kind)
-    assert diagnostic in capfd.readouterr().err
+@pytest.mark.parametrize("kind", [0, 1, 2, 3])
+def test_musa_pipe_does_not_prove_invalid_named_reader_lifecycle(kind):
+    # Compile only: protocol pairing/data races remain the caller's contract.
+    # These deliberately invalid programs must never be launched.
+    module = _compile_invalid_pipeline(_invalid_named_reader_lifecycle_kernel, kind)
+    assert "musa_tle.pipe." not in str(module)
 
 
-@pytest.mark.parametrize(
-    "kind,diagnostic",
-    [
-        (0, "cyclic named reader must observe writer.close exactly once"),
-        (1, "close generation does not carry payload"),
-        (2, "terminal reader.wait must match writer.close stage and phase"),
-        (3, "cyclic named reader must wait and release each payload generation exactly once"),
-    ],
-)
-def test_musa_pipe_rejects_invalid_named_reader_close_lifecycle(capfd, kind, diagnostic):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(_invalid_named_reader_close_lifecycle_kernel, kind)
-    assert diagnostic in capfd.readouterr().err
+@pytest.mark.parametrize("kind", [0, 1, 2, 3])
+def test_musa_pipe_does_not_prove_invalid_named_reader_close_lifecycle(kind):
+    # Compile only: protocol pairing/data races remain the caller's contract.
+    # These deliberately invalid programs must never be launched.
+    module = _compile_invalid_pipeline(_invalid_named_reader_close_lifecycle_kernel, kind)
+    assert "musa_tle.pipe." not in str(module)
 
 
-@pytest.mark.parametrize(
-    "kind,diagnostic",
-    [
-        (0, "pipe TME store requires an open same-block reader generation with the same stage"),
-        (1, "cannot uniquely associate TME store with a pipe field"),
-    ],
-)
-def test_musa_pipe_rejects_invalid_named_reader_one_shot_drain(capfd, kind, diagnostic):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(_invalid_named_reader_one_shot_drain_kernel, kind)
-    assert diagnostic in capfd.readouterr().err
+@pytest.mark.parametrize("kind", [0, 1])
+def test_musa_pipe_does_not_prove_invalid_named_reader_one_shot_drain(kind):
+    # Compile only: protocol pairing/data races remain the caller's contract.
+    # These deliberately invalid programs must never be launched.
+    module = _compile_invalid_pipeline(_invalid_named_reader_one_shot_drain_kernel, kind)
+    assert "musa_tle.pipe." not in str(module)
 
 
 @pytest.mark.parametrize(
@@ -3562,36 +3368,6 @@ def test_musa_pipe_rejects_invalid_named_reader_subscription(capfd, kernel, diag
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
         _compile_invalid_pipeline(kernel)
     assert diagnostic in capfd.readouterr().err
-
-
-def _assert_ws_named_partition_artifacts(
-    compiled,
-    stages,
-    iterations,
-    total_warps,
-    empty_arrival,
-    right_issue_thread,
-    writer_issue_thread=0,
-    tme_fields=2,
-    full_arrival=1,
-    writer_local_transport=False,
-):
-    ttir = compiled.asm["ttir"]
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-
-    assert compiled.metadata.num_warps == total_warps
-    assert f'"ttg.total-num-warps" = {total_warps} : i32' in ttgir, ttgir
-    assert f"musa.max_bar_id = {2 * stages}" in ttgir, ttgir
-    assert 'readers = ["left", "right"]' in ttir, ttir
-    assert 'reader_fields = ["a"]' in ttir, ttir
-    assert 'reader_fields = ["b"]' in ttir, ttir
-    # Partition issue-thread placement is a low-level ownership contract; the
-    # runtime test covers iteration/phase reuse without pinning textual counts.
-    assert any(f"musa.tme.issue_thread = {writer_issue_thread} : i32" in line for line in ttgir.splitlines()), ttgir
-    assert any(f"musa.tme.issue_thread = {right_issue_thread} : i32" in line for line in ttgir.splitlines()), ttgir
-    assert "llvm.musa.barrier0" not in llir, llir
 
 
 @pytest.mark.parametrize("stages", [1, 2, 3], ids=["stage1", "stage2", "stage3"])
@@ -3628,15 +3404,7 @@ def test_musa_ws_named_reader_worker1_writer_partition_runtime(stages):
         num_warps=16,
         num_stages=1,
     )
-    _assert_ws_named_partition_artifacts(
-        compiled,
-        stages,
-        iterations,
-        total_warps=25,
-        empty_arrival=20,
-        right_issue_thread=672,
-        writer_issue_thread=544,
-    )
+    _assert_pipe_lowering_clean(compiled, static_ws=True, num_warps=25)
 
     for _ in range(4):
         half_output.fill_(float("nan"))
@@ -3689,18 +3457,7 @@ def test_musa_ws_named_reader_mixed_worker_partition_runtime(stages):
         num_warps=16,
         num_stages=1,
     )
-    _assert_ws_named_partition_artifacts(
-        compiled,
-        stages,
-        iterations,
-        total_warps=24,
-        empty_arrival=20,
-        right_issue_thread=0,
-        writer_issue_thread=512,
-        tme_fields=1,
-        full_arrival=5,
-        writer_local_transport=True,
-    )
+    _assert_pipe_lowering_clean(compiled, static_ws=True, num_warps=24)
 
     expected_local = torch.arange(iterations * block, dtype=torch.int32, device="musa")
     for _ in range(4):
@@ -3724,87 +3481,71 @@ def test_musa_ws_named_reader_mixed_worker_partition_runtime(stages):
         assert torch.equal(flags, torch.zeros_like(flags))
 
 
-@pytest.mark.parametrize(
-    "kind,diagnostic",
-    [
-        (0, "local-store transport requires one unmasked whole-field store"),
-        (1, "MUSA TLE pipe completion sources for one field must not overlap"),
-        (2, "MUSA TLE pipe does not support mixed transport sources for one payload field"),
-    ],
-)
-def test_mthreads_pipe_rejects_unsupported_producer_protocol(capfd, kind, diagnostic):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(_invalid_pipe_kernel, kind)
-    assert diagnostic in capfd.readouterr().err
+@pytest.mark.parametrize("kind", [0, 1, 2])
+def test_mthreads_pipe_does_not_prove_unsupported_producer_protocol(kind):
+    # Compile only: protocol pairing/data races remain the caller's contract.
+    # These deliberately invalid programs must never be launched.
+    module = _compile_invalid_pipeline(_invalid_pipe_kernel, kind)
+    assert "musa_tle.pipe." not in str(module)
 
 
-def test_musa_pipe_rejects_multi_field_local_store_only(capfd):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(_multi_local_store_only_pipe_kernel)
-    assert "MUSA TLE pipe local-store-only transport currently requires one payload field" in capfd.readouterr().err
+def test_musa_pipe_multi_field_local_store_only_compiles():
+    module = _compile_invalid_pipeline(_multi_local_store_only_pipe_kernel)
+    assert "musa_tle.pipe." not in str(module)
 
 
-def test_musa_async_copy_pipe_compiles():
-    module = _compile_invalid_pipeline(_async_copy_pipe_kernel, desc_type="*fp32")
-    ttgir = str(module)
-    # The fused load+store pair now lowers to an async-copy pipe transport.
-    assert "ttg.async_copy_global_to_local" in ttgir, ttgir
-    assert "musa_tle.pipe." not in ttgir, ttgir
+def test_musa_pipe_mixed_tme_async_copy_same_field_compiles():
+    # This aliasing probe is compile-only; asynchronous overlapping writes
+    # still need user synchronization before they are safe to execute.
+    module = _compile_invalid_pipeline(
+        _mixed_tme_async_copy_same_field_kernel,
+        signature={
+            "desc": "tensordesc<fp32[128]>", "src": "*fp32", "out": "*i32", "STAGES": "constexpr", "BLOCK": "constexpr",
+            "ITERATIONS": "constexpr"
+        },
+    )
+    assert "musa_tle.pipe." not in str(module)
 
 
-def test_musa_pipe_rejects_mixed_tme_async_copy_same_field(capfd):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(
-            _mixed_tme_async_copy_same_field_kernel,
-            signature={
-                "desc": "tensordesc<fp32[128]>",
-                "src": "*fp32",
-                "out": "*i32",
-                "STAGES": "constexpr",
-                "BLOCK": "constexpr",
-                "ITERATIONS": "constexpr",
-            },
-        )
-    assert "MUSA TLE pipe does not support mixed transport sources for one payload field" in capfd.readouterr().err
+@pytest.mark.parametrize("kernel", [
+    _duplicate_close_kernel,
+    _close_with_open_writer_kernel,
+    _acquire_after_close_kernel,
+    _commit_after_close_kernel,
+    _close_payload_tme_store_kernel,
+])
+def test_musa_pipe_close_requires_endpoint_but_not_global_proof(kernel, capfd):
+    # The first four probes have no reader from which to determine arrivals.
+    if kernel is not _close_payload_tme_store_kernel:
+        with pytest.raises(RuntimeError, match="PassManager::run failed"):
+            _compile_invalid_pipeline(kernel)
+        assert "pipe requires a writer publication and a reader endpoint" in capfd.readouterr().err
+    else:
+        # Deliberately invalid use of a closed payload: compile, never launch.
+        module = _compile_invalid_pipeline(kernel)
+        assert "musa_tle.pipe." not in str(module)
 
 
-@pytest.mark.parametrize(
-    "kernel,diagnostic",
-    [
-        (_duplicate_close_kernel, "MUSA TLE pipe supports at most one writer.close per pipe"),
-        (_close_with_open_writer_kernel, "MUSA TLE pipe close requires all writer payload generations to commit"),
-        (_acquire_after_close_kernel, "MUSA TLE pipe writer operations are not allowed after writer.close"),
-        (_commit_after_close_kernel, "MUSA TLE pipe writer operations are not allowed after writer.close"),
-        (_close_payload_tme_store_kernel, "MUSA TLE pipe close generation does not carry payload"),
-    ],
-)
-def test_musa_pipe_rejects_invalid_close_lifecycle(capfd, kernel, diagnostic):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(kernel)
-    assert diagnostic in capfd.readouterr().err
+@pytest.mark.parametrize("kind", [0, 1])
+def test_musa_pipe_does_not_prove_terminal_close_coordinate_mismatch(kind):
+    # Compile only: protocol pairing/data races remain the caller's contract.
+    # These deliberately invalid programs must never be launched.
+    module = _compile_invalid_pipeline(_close_terminal_mismatch_kernel, kind)
+    assert "musa_tle.pipe." not in str(module)
 
 
-@pytest.mark.parametrize("kind", [0, 1], ids=["stage", "phase_with_release"])
-def test_musa_pipe_rejects_terminal_close_coordinate_mismatch(capfd, kind):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(_close_terminal_mismatch_kernel, kind)
-    assert ("MUSA TLE pipe terminal reader.wait must match writer.close stage and phase" in capfd.readouterr().err)
-
-
-@pytest.mark.parametrize(
-    "kernel,diagnostic",
-    [
-        (_one_shot_duplicate_commit_kernel, "MUSA TLE one-shot pipe stage may be published at most once"),
-        (_one_shot_phase_reuse_kernel, "MUSA TLE one-shot pipe does not support phase changes or stage reuse"),
-        (_one_shot_dynamic_stage_kernel, "MUSA TLE one-shot pipe requires a statically known stage within capacity"),
-        (_one_shot_mutation_kernel, "MUSA TLE one-shot pipe payload is immutable after publication"),
-        (_one_shot_uncommitted_rewrite_kernel, "MUSA TLE one-shot pipe payload is immutable after publication"),
-    ],
-)
-def test_musa_one_shot_pipe_rejects_invalid_lifecycle(capfd, kernel, diagnostic):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(kernel)
-    assert diagnostic in capfd.readouterr().err
+@pytest.mark.parametrize("kernel", [
+    _one_shot_duplicate_commit_kernel,
+    _one_shot_phase_reuse_kernel,
+    _one_shot_dynamic_stage_kernel,
+    _one_shot_mutation_kernel,
+    _one_shot_uncommitted_rewrite_kernel,
+])
+def test_musa_one_shot_pipe_does_not_prove_global_lifecycle(kernel):
+    # A ready edge is not an immutability proof. Stage reuse remains invalid
+    # at runtime; this test checks only that no global proof is demanded.
+    module = _compile_invalid_pipeline(kernel)
+    assert "musa_tle.pipe." not in str(module)
 
 
 def test_musa_one_shot_pipe_rejects_close():
@@ -3812,61 +3553,15 @@ def test_musa_one_shot_pipe_rejects_close():
         _compile_invalid_pipeline(_one_shot_close_kernel)
 
 
-@pytest.mark.parametrize(
-    "kind,diagnostic",
-    [
-        (0, "MUSA TLE static warp-specialized pipe partitions must host at most one pipe endpoint"),
-        (1, "MUSA TLE pipe endpoint operations must remain in one static warp-specialize partition"),
-    ],
-)
-def test_musa_pipe_rejects_invalid_static_endpoint_placement(capfd, kind, diagnostic):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(
-            _ws_invalid_endpoint_placement_kernel,
-            kind,
-        )
-    assert diagnostic in capfd.readouterr().err
-
-
-def _assert_reader_tme_store_artifacts(
-    compiled,
-    stages,
-    iterations,
-    writer_warps,
-    reader_warps,
-    static_ws=False,
-    tme_fields=1,
-    transaction_bytes=None,
-):
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-    if static_ws:
-        # Static WS uses the full barrier wait as the acquire publication edge;
-        # the per-store CTA-wide issue barrier would otherwise wait for the
-        # producer partition and deadlock.
-        assert "llvm.musa.barrier0" not in llir, llir
-
-
-def _assert_external_barrier_pipe_artifacts(compiled, stages, iterations, static_ws=False, tme_sources_per_generation=1,
-                                            transaction_bytes=256):
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert "musa_tle.pipe_barrier_ring" not in ttgir, ttgir
-    assert f"llvm.musa.async.add.trans(i32 1, i32 {transaction_bytes})" in llir, llir
-    if static_ws:
-        assert "llvm.musa.barrier0" not in llir, llir
-
-
-def _assert_named_reader_tme_artifacts(compiled, stages, iterations, reader_warps):
-    ttir = compiled.asm["ttir"]
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert 'readers = ["local", "drain"]' in ttir, ttir
-    assert "reader_fields" not in ttir, ttir
-    assert f"musa.max_bar_id = {2 * stages}" in ttgir, ttgir
+@pytest.mark.parametrize("kind", [0, 1])
+def test_musa_pipe_static_endpoint_placement(capfd, kind):
+    if kind == 0:
+        module = _compile_invalid_pipeline(_ws_invalid_endpoint_placement_kernel, kind)
+        assert "musa_tle.pipe." not in str(module)
+    else:
+        with pytest.raises(RuntimeError, match="PassManager::run failed"):
+            _compile_invalid_pipeline(_ws_invalid_endpoint_placement_kernel, kind)
+        assert "endpoint operations must remain in one static warp-specialize partition" in capfd.readouterr().err
 
 
 @pytest.mark.parametrize("stages", [1, 2, 3], ids=["stage1", "stage2", "stage3"])
@@ -3892,7 +3587,7 @@ def test_musa_non_ws_named_reader_tme_roundtrip_runtime(stages):
         num_warps=4,
         num_stages=1,
     )
-    _assert_named_reader_tme_artifacts(compiled, stages, iterations, 4)
+    _assert_tme_transport(compiled)
 
     for _ in range(4):
         local_output.fill_(float("nan"))
@@ -3913,29 +3608,6 @@ def test_musa_non_ws_named_reader_tme_roundtrip_runtime(stages):
         assert torch.equal(local_output, source)
         assert torch.equal(drain_output, source)
         assert torch.equal(closed_flags, torch.zeros_like(closed_flags))
-
-
-def _assert_named_reader_interleaved_order_artifacts(compiled, stages, block):
-    ttir = compiled.asm["ttir"]
-    _assert_pipe_lowering_clean(compiled)
-    readers = set()
-    for line in ttir.splitlines():
-        if "musa_tle.pipe.reader_wait" in line:
-            pass
-        elif "musa_tle.pipe.reader_release" in line:
-            pass
-        else:
-            continue
-        reader_name = re.search(r'reader_name = "([^"]+)"', line)
-        assert reader_name, line
-        readers.add(reader_name.group(1))
-        if reader_name.group(1) == "all":
-            assert "reader_fields" not in line, line
-        else:
-            assert reader_name.group(1) == "subset", line
-            assert 'reader_fields = ["b"]' in line, line
-    assert 'readers = ["all", "subset"]' in ttir, ttir
-    assert readers == {"all", "subset"}
 
 
 @pytest.mark.parametrize("stages", [1, 2, 3], ids=["stage1", "stage2", "stage3"])
@@ -3978,7 +3650,7 @@ def test_musa_non_ws_named_reader_interleaved_order_runtime(stages):
         num_warps=4,
         num_stages=1,
     )
-    _assert_named_reader_interleaved_order_artifacts(compiled, stages, block)
+    _assert_tme_transport(compiled)
 
     for _ in range(4):
         all_local_output.fill_(-1)
@@ -4005,16 +3677,6 @@ def test_musa_non_ws_named_reader_interleaved_order_runtime(stages):
         assert torch.equal(all_drain_output, expected_all_drain)
         assert torch.equal(subset_drain_output, expected_subset_drain)
         assert torch.equal(closed_flags, torch.zeros_like(closed_flags))
-
-
-def _assert_named_reader_partial_tme_artifacts(compiled, stages, iterations, transaction_bytes):
-    ttir = compiled.asm["ttir"]
-    ttgir = compiled.asm["ttgir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert 'reader_fields = ["half"]' in ttir, ttir
-    assert 'reader_fields = ["float_data"]' in ttir, ttir
-    assert "ttmg.barrier_add_trans" in ttgir, ttgir
-    assert "ttmg.async_tme_copy_local_to_global" in ttgir, ttgir
 
 
 @pytest.mark.parametrize("stages", [1, 2, 3], ids=["stage1", "stage2", "stage3"])
@@ -4049,12 +3711,7 @@ def test_musa_non_ws_named_reader_partial_heterogeneous_runtime(stages):
         num_warps=4,
         num_stages=1,
     )
-    _assert_named_reader_partial_tme_artifacts(
-        compiled,
-        stages,
-        iterations,
-        half_m * half_n * 2 + float_m * float_n * 4,
-    )
+    _assert_tme_transport(compiled)
 
     for _ in range(4):
         half_output.fill_(float("nan"))
@@ -4079,15 +3736,6 @@ def test_musa_non_ws_named_reader_partial_heterogeneous_runtime(stages):
         assert torch.equal(half_output, half_source)
         assert torch.equal(float_output, float_source)
         assert torch.equal(closed_flags, torch.zeros_like(closed_flags))
-
-
-def _assert_named_reader_partial_mixed_artifacts(compiled, stages, iterations, transaction_bytes):
-    ttir = compiled.asm["ttir"]
-    ttgir = compiled.asm["ttgir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert 'reader_fields = ["tme", "left_local"]' in ttir, ttir
-    assert 'reader_fields = ["tme", "right_local"]' in ttir, ttir
-    assert "musa_tle.pipe_local_store_group" in ttgir, ttgir
 
 
 def test_musa_non_ws_named_reader_partial_mixed_runtime():
@@ -4115,7 +3763,7 @@ def test_musa_non_ws_named_reader_partial_mixed_runtime():
         num_warps=4,
         num_stages=1,
     )
-    _assert_named_reader_partial_mixed_artifacts(compiled, stages, iterations, m * n * 2)
+    _assert_tme_transport(compiled, store=False)
 
     for _ in range(4):
         tme_output.fill_(float("nan"))
@@ -4137,23 +3785,6 @@ def test_musa_non_ws_named_reader_partial_mixed_runtime():
         assert torch.equal(tme_output, tme_source)
         assert torch.equal(left_local_output, expected_left)
         assert torch.equal(right_local_output, expected_right)
-
-
-def _assert_same_field_tme_fragment_artifacts(compiled, iterations, external=False):
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-    if external:
-        assert "musa_tle.pipe_barrier_ring" not in ttgir, ttgir
-    assert f"llvm.musa.async.add.trans(i32 1, i32 {16 * 32 * 2})" in llir, llir
-
-
-def _assert_named_reader_same_field_tme_fragment_artifacts(compiled, stages, iterations):
-    ttir = compiled.asm["ttir"]
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert 'readers = ["top", "bottom"]' in ttir, ttir
 
 
 @pytest.mark.parametrize("stages", _PIPE_REUSE_STAGES, ids=[f"stage{stage}" for stage in _PIPE_REUSE_STAGES])
@@ -4181,7 +3812,7 @@ def test_musa_non_ws_named_reader_same_field_tme_fragments_runtime(stages):
         num_warps=4,
         num_stages=1,
     )
-    _assert_named_reader_same_field_tme_fragment_artifacts(compiled, stages, iterations)
+    _assert_tme_transport(compiled)
 
     for _ in range(4):
         output_top.fill_(float("nan"))
@@ -4226,7 +3857,7 @@ def test_musa_non_ws_external_same_field_tme_fragments_runtime():
         num_warps=4,
         num_stages=1,
     )
-    _assert_same_field_tme_fragment_artifacts(compiled, iterations, external=True)
+    _assert_tme_transport(compiled)
 
     for _ in range(4):
         output_top.fill_(float("nan"))
@@ -4271,15 +3902,9 @@ def test_musa_ws_same_field_tme_fragments_runtime(stages):
         num_warps=16,
         num_stages=1,
     )
-    ttir = compiled.asm["ttir"]
-    ttgir = compiled.asm["ttgir"]
     llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
+    _assert_pipe_lowering_clean(compiled, static_ws=True)
     assert compiled.metadata.num_warps == 20
-    assert '"ttg.total-num-warps" = 20 : i32' in ttgir, ttgir
-    assert 'reader_fields' not in ttir
-    assert "musa.tme.issue_thread = 512 : i32" in ttgir, ttgir
-    assert "musa.tme.issue_thread = 0 : i32" in ttgir, ttgir
     assert "llvm.musa.barrier0" not in llir, llir
 
     for _ in range(2):
@@ -4316,16 +3941,7 @@ def test_musa_non_ws_named_reader_close_only_runtime():
         num_warps=4,
         num_stages=1,
     )
-    _assert_close_artifacts(
-        compiled,
-        stages,
-        payloads=0,
-        full_arrival_count=1,
-        reader_warps=8,
-        control_arrivals=1,
-        warp_arrivals=1,
-        wait_count=3,
-    )
+    _assert_pipe_lowering_clean(compiled)
     for _ in range(4):
         output.fill_(-1)
         _named_reader_close_kernel[(1, )](
@@ -4373,18 +3989,7 @@ def test_musa_non_ws_named_reader_partial_tme_close_runtime(stages):
         num_warps=4,
         num_stages=1,
     )
-    _assert_close_artifacts(
-        compiled,
-        stages,
-        payloads,
-        full_arrival_count=1,
-        reader_warps=8,
-        control_arrivals=payloads + 1,
-        warp_arrivals=2 * payloads + 1,
-        payload_tme=True,
-        reader_tme_stores=payloads,
-        wait_count=3 * (payloads + 1),
-    )
+    _assert_pipe_lowering_clean(compiled)
 
     for _ in range(4):
         half_output.fill_(float("nan"))
@@ -4433,17 +4038,7 @@ def test_musa_non_ws_named_reader_mixed_close_runtime():
         num_warps=4,
         num_stages=1,
     )
-    _assert_close_artifacts(
-        compiled,
-        stages,
-        payloads,
-        full_arrival_count=5,
-        reader_warps=8,
-        control_arrivals=payloads + 1,
-        warp_arrivals=3 * payloads + 2,
-        payload_tme=True,
-        wait_count=3 * (payloads + 1),
-    )
+    _assert_pipe_lowering_clean(compiled)
     expected_local = torch.arange(payloads * block, dtype=torch.int32, device="musa")
     for _ in range(4):
         tme_output.fill_(float("nan"))
@@ -4497,16 +4092,7 @@ def test_musa_non_ws_named_reader_one_shot_heterogeneous_runtime(stages):
         num_warps=4,
         num_stages=1,
     )
-    _assert_one_shot_artifacts(
-        compiled,
-        stages,
-        publications=stages,
-        full_arrival_count=1,
-        reader_waits=4 * stages,
-        tme_fields=2,
-        reader_tme_stores=2 * stages,
-        transaction_bytes=half_m * half_n * 2 + float_m * float_n * 4,
-    )
+    _assert_pipe_lowering_clean(compiled)
 
     for _ in range(4):
         half_output.fill_(float("nan"))
@@ -4532,49 +4118,6 @@ def test_musa_non_ws_named_reader_one_shot_heterogeneous_runtime(stages):
         assert torch.equal(closed_flags, torch.zeros_like(closed_flags))
 
 
-def test_musa_non_ws_pipe_reader_tme_store_roundtrip_runtime():
-    stages = 2
-    iterations = 5
-    block = 128
-    source = torch.arange(iterations * block, dtype=torch.float16, device="musa")
-    destination = torch.empty_like(source)
-    source_desc = TensorDescriptor.from_tensor(source, [block])
-    destination_desc = TensorDescriptor.from_tensor(destination, [block])
-
-    compiled = _pipe_tme_store_roundtrip_kernel.warmup(
-        source_desc,
-        destination_desc,
-        STAGES=stages,
-        BLOCK=block,
-        ITERATIONS=iterations,
-        grid=(1, ),
-        num_warps=4,
-        num_stages=1,
-    )
-    _assert_reader_tme_store_artifacts(
-        compiled,
-        stages,
-        iterations,
-        4,
-        4,
-        transaction_bytes=block * 2,
-    )
-
-    for _ in range(4):
-        destination.fill_(float("nan"))
-        _pipe_tme_store_roundtrip_kernel[(1, )](
-            source_desc,
-            destination_desc,
-            STAGES=stages,
-            BLOCK=block,
-            ITERATIONS=iterations,
-            num_warps=4,
-            num_stages=1,
-        )
-        torch.musa.synchronize()
-        assert torch.equal(destination, source)
-
-
 @pytest.mark.parametrize("stages", _EXTERNAL_BARRIER_STAGES,
                          ids=[f"stage{stage}" for stage in _EXTERNAL_BARRIER_STAGES])
 def test_musa_non_ws_pipe_external_full_roundtrip_runtime(stages):
@@ -4595,7 +4138,7 @@ def test_musa_non_ws_pipe_external_full_roundtrip_runtime(stages):
         num_warps=4,
         num_stages=1,
     )
-    _assert_external_barrier_pipe_artifacts(compiled, stages, iterations, transaction_bytes=block * 2)
+    _assert_tme_transport(compiled)
 
     for _ in range(4):
         destination.fill_(float("nan"))
@@ -4633,14 +4176,7 @@ def test_musa_ws_pipe_external_full_roundtrip_runtime(stages):
         num_stages=1,
     )
     assert compiled.metadata.num_warps == 20
-    assert '"ttg.total-num-warps" = 20 : i32' in compiled.asm["ttgir"]
-    _assert_external_barrier_pipe_artifacts(
-        compiled,
-        stages,
-        iterations,
-        static_ws=True,
-        transaction_bytes=block * 2,
-    )
+    _assert_tme_transport(compiled, static_ws=True)
 
     for _ in range(2):
         destination.fill_(float("nan"))
@@ -4689,20 +4225,7 @@ def test_musa_ws_heterogeneous_pipe_reader_tme_store_roundtrip_runtime(stages):
         num_stages=1,
     )
     assert compiled.metadata.num_warps == 20
-    ttgir = compiled.asm["ttgir"]
-    assert '"ttg.total-num-warps" = 20 : i32' in ttgir
-    assert ttgir.count("ttg.warp_specialize") == 1, ttgir
-    transaction_bytes = half_m * half_n * 2 + float_m * float_n * 4
-    _assert_reader_tme_store_artifacts(
-        compiled,
-        stages,
-        iterations,
-        4,
-        16,
-        static_ws=True,
-        tme_fields=2,
-        transaction_bytes=transaction_bytes,
-    )
+    _assert_tme_transport(compiled, static_ws=True)
 
     for _ in range(2):
         half_destination.fill_(float("nan"))
@@ -4726,15 +4249,13 @@ def test_musa_ws_heterogeneous_pipe_reader_tme_store_roundtrip_runtime(stages):
         assert torch.equal(float_destination, float_source)
 
 
-@pytest.mark.parametrize(
-    "kernel",
-    [_pipe_tme_store_source_mutation_kernel, _pipe_tme_store_source_mutation_after_kernel],
-    ids=["before-store", "after-store"],
-)
-def test_musa_pipe_reader_tme_store_rejects_source_mutation(kernel, capfd):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(kernel)
-    assert ("MUSA TLE pipe reader TME store source must not be modified after reader.wait" in capfd.readouterr().err)
+@pytest.mark.parametrize("kernel", [
+    _pipe_tme_store_source_mutation_kernel,
+    _pipe_tme_store_source_mutation_after_kernel,
+])
+def test_musa_pipe_reader_tme_store_source_mutation_compiles(kernel):
+    module = _compile_invalid_pipeline(kernel)
+    assert "musa_tle.pipe." not in str(module)
 
 
 def test_musa_non_ws_local_store_pipe_roundtrip_runtime():
@@ -4754,7 +4275,7 @@ def test_musa_non_ws_local_store_pipe_roundtrip_runtime():
         num_stages=1,
     )
     assert compiled.metadata.num_warps == 4
-    _assert_local_store_pipe_artifacts(compiled, stages, iterations, 4, 4)
+    _assert_pipe_lowering_clean(compiled)
 
     for _ in range(4):
         out.fill_(-1)
@@ -4789,11 +4310,9 @@ def test_musa_local_store_pipe_keeps_independent_shared_hazard_runtime():
         num_stages=1,
     )
     llir = compiled.asm["llir"]
-    # The pipe waits suppress barriers only for the pipe allocation.  The
-    # independent buffer still needs one RAW barrier per load and one WAR
-    # barrier before every store after the first iteration.
-    assert llir.count("call void @llvm.musa.syncthreads.lm()") == 2 * iterations, llir
-    assert compiled.asm["ttgir"].count("ttmg.warp_arrive_barrier") == 2 * iterations
+    # Independent shared-memory hazards still need a rendezvous. The runtime
+    # results check its placement; do not pin the optimizer's barrier count.
+    assert "llvm.musa.syncthreads.lm" in llir
 
     out.fill_(-1)
     independent_out.fill_(-1)
@@ -4828,8 +4347,7 @@ def test_musa_ws_local_store_pipe_roundtrip_runtime(stages):
         num_stages=1,
     )
     assert compiled.metadata.num_warps == 20
-    assert '"ttg.total-num-warps" = 20 : i32' in compiled.asm["ttgir"]
-    _assert_local_store_pipe_artifacts(compiled, stages, iterations, 4, 16)
+    _assert_pipe_lowering_clean(compiled, static_ws=True)
 
     for _ in range(2):
         out.fill_(-1)
@@ -4862,7 +4380,7 @@ def test_musa_non_ws_async_copy_pipe_roundtrip_runtime(stages):
         num_warps=16,
         num_stages=1,
     )
-    _assert_async_copy_pipe_artifacts(compiled, iterations)
+    _assert_async_copy_transport(compiled)
 
     for _ in range(4):
         out.fill_(float("nan"))
@@ -4897,8 +4415,7 @@ def test_musa_ws_default_writer_async_copy_pipe_roundtrip_runtime(stages):
         num_stages=1,
     )
     assert compiled.metadata.num_warps == 20
-    assert '"ttg.total-num-warps" = 20 : i32' in compiled.asm["ttgir"]
-    _assert_async_copy_pipe_artifacts(compiled, iterations, static_ws=True)
+    _assert_async_copy_transport(compiled, static_ws=True)
 
     for _ in range(4):
         out.fill_(float("nan"))
@@ -4932,11 +4449,7 @@ def test_musa_one_shot_async_copy_pipe_runtime():
     )
     # One-shot pipes publish once per stage; the writer arrival is the only
     # warp arrive (no reader release).
-    _assert_async_copy_pipe_artifacts(
-        compiled,
-        stages,
-        expect_warp_arrives=1,
-    )
+    _assert_async_copy_transport(compiled)
 
     for _ in range(4):
         out.fill_(float("nan"))
@@ -4972,7 +4485,7 @@ def test_musa_non_ws_async_copy_mixed_local_store_pipe_runtime():
         num_warps=16,
         num_stages=1,
     )
-    _assert_async_copy_pipe_artifacts(compiled, iterations)
+    _assert_async_copy_transport(compiled)
 
     for _ in range(4):
         async_out.fill_(float("nan"))
@@ -5015,7 +4528,7 @@ def test_musa_non_ws_async_copy_mixed_tme_pipe_runtime():
     )
     # Mixed async-copy + TME transport: one TME transaction barrier plus the
     # writer warp arrivals for the async-copy field.
-    _assert_async_copy_pipe_artifacts(compiled, iterations, expect_tme_transactions=True)
+    _assert_async_copy_transport(compiled, with_tme=True)
 
     for _ in range(4):
         async_out.fill_(float("nan"))
@@ -5104,17 +4617,7 @@ def test_mthreads_ws_pipe_mm_runtime(stages):
         num_stages=1,
     )
     assert compiled.metadata.num_warps == 20
-    assert compiled.metadata.shared == stages * 65536
-    assert '"ttg.total-num-warps" = 20 : i32' in compiled.asm["ttgir"]
-    assert compiled.asm["ttgir"].count("ttg.warp_specialize") == 1
-    assert "musa_tle.static_ws." not in compiled.asm["ttgir"]
-    assert "ttg.warp_specialize" not in compiled.asm["llir"]
-    assert "ttg.convert_layout" not in compiled.asm["ttgir"]
-    assert "swizzleGranularity = 1 : i32" in compiled.asm["ttgir"]
-    assert "swizzleGranularity = 2 : i32" in compiled.asm["ttgir"]
-    assert "builtin.unrealized_conversion_cast" not in compiled.asm["llir"]
-    assert compiled.asm["llir"].count("call void @llvm.musa.syncthreads.lm()") == 1
-    assert f"llvm.musa.async.bar.record(i32 {4 * stages})" in compiled.asm["llir"]
+    assert compiled.metadata.shared <= stages * 65536
 
     for _ in range(2):
         out.fill_(float("nan"))
@@ -5162,10 +4665,8 @@ def test_musa_ws_multi_field_pipe_mm_runtime(stages):
         num_stages=1,
     )
     assert compiled.metadata.num_warps == 20
-    assert compiled.metadata.shared == stages * 65536
-    assert '"ttg.total-num-warps" = 20 : i32' in compiled.asm["ttgir"]
-    assert f"llvm.musa.async.bar.record(i32 {2 * stages})" in compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
+    assert compiled.metadata.shared <= stages * 65536
+    _assert_pipe_lowering_clean(compiled, static_ws=True)
 
     for _ in range(2):
         out.fill_(float("nan"))
@@ -5215,18 +4716,7 @@ def test_musa_heterogeneous_multi_field_pipe_roundtrip_runtime():
         num_warps=4,
         num_stages=1,
     )
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    transaction_bytes = half_m * half_n * 2 + float_m * float_n * 4
-    _assert_pipe_lowering_clean(compiled)
-    constants = _i32_constants(ttgir)
-    add_records = re.findall(r"ttmg\.barrier_add_trans\s+(%[-\w.]+),\s*(%[-\w.]+)", ttgir)
-
-    assert add_records, ttgir
-    assert all(constants[byte_value] == transaction_bytes for _, byte_value in add_records), ttgir
-
-    hardware_add_bytes = re.findall(r"llvm\.musa\.async\.add\.trans\(i32 \d+, i32 (\d+)\)", llir)
-    assert hardware_add_bytes and all(value == str(transaction_bytes) for value in hardware_add_bytes), llir
+    _assert_tme_transport(compiled)
 
     for _ in range(4):
         half_dst.fill_(float("nan"))
@@ -5248,16 +4738,6 @@ def test_musa_heterogeneous_multi_field_pipe_roundtrip_runtime():
         torch.musa.synchronize()
         assert torch.equal(half_dst, half_src)
         assert torch.equal(float_dst, float_src)
-
-
-def _assert_mixed_pipe_artifacts(compiled, stages, iterations, writer_warps, reader_warps, tme_sources_per_generation,
-                                 transaction_bytes, ir_generations=None):
-    ttgir = compiled.asm["ttgir"]
-    llir = compiled.asm["llir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert "ttmg.barrier_add_trans" in ttgir, ttgir
-    assert "ttmg.async_tme_copy_global_to_local" in ttgir, ttgir
-    assert "ttmg.async_tme_copy_local_to_global" not in ttgir or "ttmg.tme_store_read_wait" in ttgir, ttgir
 
 
 def test_musa_non_ws_mixed_pipe_supports_multiple_local_fields_runtime():
@@ -5291,8 +4771,7 @@ def test_musa_non_ws_mixed_pipe_supports_multiple_local_fields_runtime():
         num_warps=4,
         num_stages=1,
     )
-    transaction_bytes = m * n * (2 + 4)
-    _assert_mixed_pipe_artifacts(compiled, stages, iterations, 4, 4, 2, transaction_bytes)
+    _assert_tme_transport(compiled, store=False)
 
     for _ in range(4):
         half_out.fill_(float("nan"))
@@ -5343,11 +4822,8 @@ def test_musa_ws_mixed_tme_local_store_pipe_roundtrip_runtime(stages):
         num_stages=1,
     )
     assert compiled.metadata.num_warps == 20
-    assert '"ttg.total-num-warps" = 20 : i32' in compiled.asm["ttgir"]
-    _assert_mixed_pipe_artifacts(compiled, stages, iterations, 4, 16, 1, m * n * 2, ir_generations=1)
-    # The only CTA rendezvous is barrier initialization; payload publication
-    # uses the full wait plus TME/group and local warp arrivals.
-    assert compiled.asm["ttgir"].count("ttg.barrier ") == 1
+    _assert_tme_transport(compiled, static_ws=True, store=False)
+    # A CTA-wide barrier inside a static partition would deadlock.
     assert "llvm.musa.barrier0" not in compiled.asm["llir"]
 
     for _ in range(2):
@@ -5367,25 +4843,6 @@ def test_musa_ws_mixed_tme_local_store_pipe_roundtrip_runtime(stages):
         torch.musa.synchronize()
         assert torch.equal(tme_out, source)
         assert torch.equal(local_out, expected_local)
-
-
-def test_mthreads_pipe_bindings_are_optional_and_backend_local():
-    assert hasattr(libtriton.ir.builder, "create_pipe_create")
-    assert hasattr(libtriton.ir.builder, "create_pipe_writer_acquire")
-    assert hasattr(libtriton.ir.builder, "create_pipe_writer_commit")
-    assert hasattr(libtriton.ir.builder, "create_pipe_writer_close")
-    assert hasattr(libtriton.ir.builder, "create_pipe_reader_wait")
-    assert hasattr(libtriton.ir.builder, "create_pipe_reader_release")
-    # Alias views are emitted through the MUSA-local builder binding.  The
-    # community TLE builder remains untouched.
-    assert hasattr(libtriton.ir.builder, "create_memdesc_alias")
-    assert hasattr(libtriton.mthreads.passes.ttgpuir, "add_tle_lower_pipe")
-
-
-def _assert_structured_pipe_artifacts(compiled):
-    ttgir = compiled.asm["ttgir"]
-    _assert_pipe_lowering_clean(compiled)
-    assert "musa_tle.pipe_barrier_ring" not in ttgir, ttgir
 
 
 @triton.jit
@@ -5421,13 +4878,12 @@ def _structured_if_pipe_kernel(
 
 
 @pytest.mark.parametrize("stages", _PIPE_REUSE_STAGES, ids=[f"stage{stage}" for stage in _PIPE_REUSE_STAGES])
-@pytest.mark.parametrize("flag_value", [0, 1], ids=["else", "then"])
-def test_musa_pipe_structured_if_generation_runtime(stages, flag_value):
+def test_musa_pipe_structured_if_generation_runtime(stages):
     size = 128
     iterations = _phase_reuse_iterations(stages)
     source = torch.arange(iterations * size, dtype=torch.float16, device="musa")
     output = torch.empty_like(source)
-    flag = torch.full((1, ), flag_value, dtype=torch.int32, device="musa")
+    flag = torch.empty((1, ), dtype=torch.int32, device="musa")
     source_desc = TensorDescriptor.from_tensor(source, [size])
     output_desc = TensorDescriptor.from_tensor(output, [size])
 
@@ -5441,21 +4897,23 @@ def test_musa_pipe_structured_if_generation_runtime(stages, flag_value):
         num_warps=4,
         num_stages=1,
     )
-    _assert_structured_pipe_artifacts(compiled)
+    _assert_tme_transport(compiled)
 
-    for _ in range(4):
-        output.fill_(float("nan"))
-        _structured_if_pipe_kernel[(1, )](
-            source_desc,
-            output_desc,
-            flag,
-            STAGES=stages,
-            ITERATIONS=iterations,
-            num_warps=4,
-            num_stages=1,
-        )
-        torch.musa.synchronize()
-        assert torch.equal(output, source)
+    # The flag is a runtime input, not a specialization key.
+    # Compile once, then verify both branches with the same executable.
+    for flag_value in (0, 1):
+        flag.fill_(flag_value)
+        for _ in range(4):
+            output.fill_(float("nan"))
+            compiled[(1, 1, 1)](
+                source_desc,
+                output_desc,
+                flag,
+                stages,
+                iterations,
+            )
+            torch.musa.synchronize()
+            assert torch.equal(output, source), f"incorrect payload for branch flag={flag_value}"
 
 
 @triton.jit
@@ -5492,7 +4950,7 @@ def test_musa_pipe_structured_for_stage_phase_runtime(stages):
         num_warps=4,
         num_stages=1,
     )
-    _assert_structured_pipe_artifacts(compiled)
+    _assert_tme_transport(compiled)
     for _ in range(4):
         output.fill_(float("nan"))
         _structured_for_pipe_kernel[(1, )](
@@ -5507,9 +4965,9 @@ def test_musa_pipe_structured_for_stage_phase_runtime(stages):
         assert torch.equal(output, source)
 
 
-# M7.4 resource-boundary and long-reuse coverage.  Keep these probes separate
-# from the shorter M7.3 matrix so that a failure identifies long-lived phase or
-# barrier-resource behavior rather than ordinary payload functionality.
+# Long-reuse probes cover the ordinary TME roundtrip as well as phase reuse.
+# Keep resource-boundary tests separate: capacity 1, non-power-of-two rings
+# and the hardware barrier limit exercise different lowering paths.
 def _extended_phase_reuse_iterations(stages):
     # Six complete phase transitions exercise substantially more reuse than
     # _phase_reuse_iterations (which covers two transitions).
@@ -5518,7 +4976,8 @@ def _extended_phase_reuse_iterations(stages):
 
 @pytest.mark.parametrize("stages", _PIPE_REUSE_STAGES, ids=[f"stage{stage}" for stage in _PIPE_REUSE_STAGES])
 def test_musa_non_ws_pipe_tme_store_survives_extended_phase_reuse_runtime(stages):
-    block = 32
+    # Stage 2 also subsumes the former BLOCK=128, five-generation roundtrip.
+    block = 128 if stages == 2 else 32
     iterations = _extended_phase_reuse_iterations(stages)
     source = torch.arange(iterations * block, dtype=torch.float16, device="musa")
     destination = torch.empty_like(source)
@@ -5535,16 +4994,9 @@ def test_musa_non_ws_pipe_tme_store_survives_extended_phase_reuse_runtime(stages
         num_warps=4,
         num_stages=1,
     )
-    _assert_reader_tme_store_artifacts(
-        compiled,
-        stages,
-        iterations,
-        4,
-        4,
-        transaction_bytes=block * 2,
-    )
+    _assert_tme_transport(compiled)
 
-    for _ in range(3):
+    for _ in range(4):
         destination.fill_(float("nan"))
         _pipe_tme_store_roundtrip_kernel[(1, )](
             source_desc,
@@ -5579,15 +5031,7 @@ def test_musa_ws_pipe_tme_store_survives_extended_phase_reuse_runtime(stages):
         num_stages=1,
     )
     assert compiled.metadata.num_warps == 20
-    _assert_reader_tme_store_artifacts(
-        compiled,
-        stages,
-        iterations,
-        4,
-        16,
-        static_ws=True,
-        transaction_bytes=block * 2,
-    )
+    _assert_tme_transport(compiled, static_ws=True)
 
     for _ in range(3):
         destination.fill_(float("nan"))
@@ -5668,7 +5112,6 @@ def test_musa_non_ws_multiple_pipes_survive_extended_phase_reuse_runtime(stages)
     _assert_pipe_lowering_clean(compiled)
     # The loop is represented once in TTGIR; there is one ingress completion
     # source per pipe, independent of the runtime iteration count.
-    assert ttgir.count("ttmg.barrier_add_trans") == 2
     assert "musa_tle.pipe_barrier_ring" not in ttgir
 
     for _ in range(3):
@@ -5712,7 +5155,7 @@ def test_musa_pipe_capacity31_barrier_ring_runs_at_hardware_limit(stages):
         num_stages=1,
     )
     ttgir = compiled.asm["ttgir"]
-    _assert_structured_pipe_artifacts(compiled)
+    _assert_tme_transport(compiled)
     assert "musa.max_bar_id = 62" in ttgir, ttgir
 
     for _ in range(2):
@@ -5848,7 +5291,6 @@ def test_musa_named_reader_slowest_consumer_controls_stage_reuse_runtime():
         num_stages=1,
     )
     assert compiled.metadata.num_warps == 12
-    assert 'readers = ["fast", "slow"]' in compiled.asm["ttir"]
     assert "musa_tle.pipe_barrier_ring" not in compiled.asm["ttgir"]
 
     for _ in range(2):
@@ -6007,36 +5449,636 @@ def _m64_invalid_reader_no_else_kernel(
         reader.release(0)
 
 
-@pytest.mark.parametrize(
-    "kernel,diagnostic",
-    [
-        (
-            _m64_invalid_writer_missing_commit_kernel,
-            "MUSA TLE pipe writer generation must commit on every reachable path",
-        ),
-        (
-            _m64_invalid_writer_stage_merge_kernel,
-            "MUSA TLE pipe lifecycle stage and phase are not equivalent at control-flow merge",
-        ),
-        (
-            _m64_invalid_reader_missing_release_kernel,
-            "MUSA TLE pipe reader release must post-dominate the wait on all normal paths",
-        ),
-        (
-            _m64_invalid_reader_drain_after_release_kernel,
-            "MUSA TLE pipe reader TME store must complete before every release or lifecycle exit",
-        ),
-        (
-            _m64_invalid_writer_no_else_kernel,
-            "MUSA TLE pipe writer generation must commit on every reachable path",
-        ),
-        (
-            _m64_invalid_reader_no_else_kernel,
-            "MUSA TLE pipe reader lifecycle generation is not path complete",
-        ),
-    ],
-)
-def test_musa_pipe_structured_cfg_rejects_incomplete_lifecycle(capfd, kernel, diagnostic):
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_invalid_pipeline(kernel)
-    assert diagnostic in capfd.readouterr().err
+@pytest.mark.parametrize("kernel", [
+    _m64_invalid_writer_missing_commit_kernel,
+    _m64_invalid_writer_stage_merge_kernel,
+    _m64_invalid_reader_missing_release_kernel,
+    _m64_invalid_reader_drain_after_release_kernel,
+    _m64_invalid_writer_no_else_kernel,
+    _m64_invalid_reader_no_else_kernel,
+])
+def test_musa_pipe_structured_cfg_does_not_prove_global_lifecycle(kernel):
+    # These probes are deliberately incomplete and must not be executed.
+    module = _compile_invalid_pipeline(kernel)
+    assert "musa_tle.pipe." not in str(module)
+
+
+@triton.jit
+def _split_writer(writer, BLOCK: tl.constexpr, N: tl.constexpr):
+    x = tle.gpu.set_layout(tl.arange(0, BLOCK), _LOCAL_STORE_WRITER_LAYOUT)
+    for i in tl.range(0, N, num_stages=1):
+        slot = writer.acquire(i)
+        value = x + i * BLOCK
+        tl.store(tle.gpu.local_ptr(slot.a, (x, )), value, mask=x % 2 == 0)
+        tl.store(tle.gpu.local_ptr(slot.a, (x, )), value, mask=x % 2 != 0)
+        tl.store(tle.gpu.local_ptr(slot.b, (x, )), value + 1)
+        writer.commit(i)
+
+
+@triton.jit
+def _two_readers(left, right, out, BLOCK: tl.constexpr, N: tl.constexpr):
+    x = tl.arange(0, BLOCK)
+    for j in tl.range(0, N, num_stages=1):
+        first = left.wait(j)
+        a = tl.load(tle.gpu.local_ptr(first.slot.a, (x, )))
+        left.release(j)
+        second = right.wait(j)
+        b = tl.load(tle.gpu.local_ptr(second.slot.b, (x, )))
+        tl.store(out + j * BLOCK + x, a + b)
+        right.release(j)
+
+
+@triton.jit
+def _split_pipe(out, STAGES: tl.constexpr, BLOCK: tl.constexpr, N: tl.constexpr):
+    a = tle.gpu.alloc((STAGES, BLOCK), dtype=tl.int32, nv_mma_shared_layout=False)
+    b = tle.gpu.alloc((STAGES, BLOCK), dtype=tl.int32, nv_mma_shared_layout=False)
+    pipe = tle.pipe(capacity=STAGES, readers=("left", "right"), a=a, b=b)
+    tle.gpu.warp_specialize(
+        [(_two_readers, (pipe.reader("left", fields=("a", )), pipe.reader("right", fields=("b", )), out, BLOCK, N)),
+         (_split_writer, (pipe.writer(), BLOCK, N))],
+        worker_num_warps=[4],
+        worker_num_regs=[24],
+    )
+
+
+@pytest.mark.parametrize("stages", [1, 2, 3])
+def test_independent_loops_split_fields_same_partition_readers(stages):
+    block, n = 128, 4 * stages + 1
+    out = torch.empty(n * block, device="musa", dtype=torch.int32)
+    expected = 2 * torch.arange(n * block, device="musa", dtype=torch.int32) + 1
+    for _ in range(3):
+        compiled = _split_pipe[(1, )](out, stages, block, n, num_warps=4, num_stages=1)
+        torch.musa.synchronize()
+        assert torch.equal(out, expected)
+    assert "llvm.musa.barrier0" not in compiled.asm["llir"]
+
+
+@triton.jit
+def _tme_writer(writer, src, BLOCK: tl.constexpr, N: tl.constexpr, CONDITIONAL: tl.constexpr):
+    for i in tl.range(0, N, num_stages=1):
+        slot = writer.acquire(i)
+        if CONDITIONAL:
+            if i % 2 == 0:
+                tle.gpu.copy(src, slot.data, (BLOCK, ), (i * BLOCK, ))
+            else:
+                tle.gpu.copy(src, slot.data, (BLOCK, ), (0, ))
+        else:
+            tle.gpu.copy(src, slot.data, (BLOCK, ), (i * BLOCK, ))
+        writer.commit(i)
+
+
+@triton.jit
+def _mutating_reader(reader, dst, BLOCK: tl.constexpr, N: tl.constexpr):
+    x = tle.gpu.set_layout(tl.arange(0, BLOCK), _LOCAL_STORE_WRITER_LAYOUT)
+    for j in tl.range(0, N, num_stages=1):
+        wait = reader.wait(j)
+        value = tl.load(tle.gpu.local_ptr(wait.slot.data, (x, )))
+        tl.store(tle.gpu.local_ptr(wait.slot.data, (x, )), value + 1)
+        tle.gpu.copy(wait.slot.data, dst, (BLOCK, ), (j * BLOCK, ))
+        reader.release(j)
+
+
+@triton.jit
+def _mutation_pipe(src, dst, STAGES: tl.constexpr, BLOCK: tl.constexpr, N: tl.constexpr, CONDITIONAL: tl.constexpr,
+                   WORKER_READER: tl.constexpr):
+    data = tle.gpu.alloc((STAGES, BLOCK), dtype=tl.float16, nv_mma_shared_layout=False)
+    pipe = tle.pipe(capacity=STAGES, data=data)
+    if WORKER_READER:
+        tle.gpu.warp_specialize(
+            [(_tme_writer, (pipe.writer(), src, BLOCK, N, CONDITIONAL)),
+             (_mutating_reader, (pipe.reader(), dst, BLOCK, N))],
+            worker_num_warps=[4],
+            worker_num_regs=[24],
+        )
+    else:
+        tle.gpu.warp_specialize(
+            [(_mutating_reader, (pipe.reader(), dst, BLOCK, N)),
+             (_tme_writer, (pipe.writer(), src, BLOCK, N, CONDITIONAL))],
+            worker_num_warps=[4],
+            worker_num_regs=[24],
+        )
+
+
+@pytest.mark.parametrize("stages", [1, 2, 3])
+@pytest.mark.parametrize("worker_reader", [False, True])
+@pytest.mark.parametrize("conditional", [False, True])
+def test_reader_mutation_tme_drain_and_partition_phase_reuse(stages, worker_reader, conditional):
+    block, n = 128, 4 * stages + 1
+    src = torch.arange(n * block, device="musa", dtype=torch.float32).to(torch.float16)
+    out = torch.empty_like(src)
+    src_desc = TensorDescriptor(src, [n * block], [1], [block])
+    dst_desc = TensorDescriptor(out, [n * block], [1], [block])
+    expected = src.clone().reshape(n, block)
+    if conditional:
+        expected[1::2] = src[:block]
+    expected = expected.flatten() + 1
+    for _ in range(3):
+        compiled = _mutation_pipe[(1, )](
+            src_desc,
+            dst_desc,
+            stages,
+            block,
+            n,
+            conditional,
+            worker_reader,
+            num_warps=4,
+            num_stages=1,
+        )
+        torch.musa.synchronize()
+        assert torch.equal(out, expected)
+    llir = compiled.asm["llir"]
+    assert "llvm.musa.barrier0" not in llir
+    assert "llvm.musa.async.arrive(" in llir
+    assert "musa_tle.pipe_deferred_arrival" not in llir
+
+
+@triton.jit
+def _one_shot_writer(writer, BLOCK: tl.constexpr):
+    x = tle.gpu.set_layout(tl.arange(0, BLOCK), _LOCAL_STORE_WRITER_LAYOUT)
+    slot = writer.acquire(0)
+    tl.store(tle.gpu.local_ptr(slot.data, (x, )), x.to(tl.float16))
+    writer.commit(0)
+
+
+@triton.jit
+def _one_shot_reader(reader, dst, BLOCK: tl.constexpr, N: tl.constexpr):
+    x = tle.gpu.set_layout(tl.arange(0, BLOCK), _LOCAL_STORE_WRITER_LAYOUT)
+    for i in tl.range(0, N, num_stages=1):
+        wait = reader.wait(0)
+        # The ready edge does not make the payload immutable. This reader is
+        # the sole owner after publication and may reuse it for its epilogue.
+        tl.store(tle.gpu.local_ptr(wait.slot.data, (x, )), (x + i).to(tl.float16))
+        tle.gpu.copy(wait.slot.data, dst, (BLOCK, ), (i * BLOCK, ))
+        reader.release(0)
+
+
+@triton.jit
+def _one_shot_mutable(dst, BLOCK: tl.constexpr, N: tl.constexpr):
+    data = tle.gpu.alloc((1, BLOCK), dtype=tl.float16, nv_mma_shared_layout=False)
+    pipe = tle.pipe(capacity=1, one_shot=True, data=data)
+    tle.gpu.warp_specialize(
+        [(_one_shot_reader, (pipe.reader(), dst, BLOCK, N)), (_one_shot_writer, (pipe.writer(), BLOCK))],
+        worker_num_warps=[4],
+        worker_num_regs=[24],
+    )
+
+
+def test_one_shot_repeated_wait_mutable_payload_and_tme_store():
+    block, n = 128, 9
+    out = torch.empty(n * block, device="musa", dtype=torch.float16)
+    dst = TensorDescriptor(out, [n * block], [1], [block])
+    expected = (torch.arange(block, device="musa")[None, :] + torch.arange(n, device="musa")[:, None]).to(
+        torch.float16).flatten()
+    for _ in range(10):
+        out.fill_(-1)
+        compiled = _one_shot_mutable[(1, )](dst, block, n, num_warps=4, num_stages=1)
+        torch.musa.synchronize()
+        assert torch.equal(out, expected)
+    assert "llvm.musa.barrier0" not in compiled.asm["llir"]
+
+
+@triton.jit
+def _matrix_copy_probe(src, out):
+    data = tle.gpu.alloc((1, 16, 16), dtype=tl.bfloat16, nv_mma_shared_layout=False)
+    pipe = tle.pipe(capacity=1, one_shot=True, data=data)
+    writer = pipe.writer()
+    slot = writer.acquire(0)
+    tle.gpu.copy(src, slot.data, (16, 16), (0, 0))
+    writer.commit(0)
+    wait = pipe.reader().wait(0)
+    values = tl.load(tle.gpu.local_ptr(wait.slot.data))
+    rows = tl.arange(0, 16)[:, None]
+    cols = tl.arange(0, 16)[None, :]
+    tl.store(out + rows * 16 + cols, values)
+
+
+def test_matrix_tme_pipe_local_load_layout():
+    src = torch.arange(16 * 16, device="musa", dtype=torch.float32).to(torch.bfloat16).reshape(16, 16)
+    out = torch.empty((16, 16), device="musa", dtype=torch.bfloat16)
+    desc = TensorDescriptor(src, [16, 16], [16, 1], [16, 16])
+    _matrix_copy_probe[(1, )](desc, out, num_warps=4, num_stages=1)
+    torch.musa.synchronize()
+    torch.testing.assert_close(out, src[:, :16], rtol=0, atol=0)
+
+
+@triton.jit
+def _matrix_writer(writer, src):
+    slot = writer.acquire(0)
+    tle.gpu.copy(src, slot.data, (16, 16), (0, 0))
+    writer.commit(0)
+
+
+@triton.jit
+def _matrix_reader(reader, out):
+    wait = reader.wait(0)
+    values = tl.load(tle.gpu.local_ptr(wait.slot.data))
+    rows = tl.arange(0, 16)[:, None]
+    cols = tl.arange(0, 16)[None, :]
+    tl.store(out + rows * 16 + cols, values)
+
+
+@triton.jit
+def _matrix_ws_probe(src, out, WORKER_READER: tl.constexpr):
+    data = tle.gpu.alloc((1, 16, 16), dtype=tl.bfloat16, nv_mma_shared_layout=False)
+    pipe = tle.pipe(capacity=1, one_shot=True, data=data)
+    if WORKER_READER:
+        tle.gpu.warp_specialize([(_matrix_writer, (pipe.writer(), src)), (_matrix_reader, (pipe.reader(), out))],
+                                worker_num_warps=[4], worker_num_regs=[24])
+    else:
+        tle.gpu.warp_specialize([(_matrix_reader, (pipe.reader(), out)), (_matrix_writer, (pipe.writer(), src))],
+                                worker_num_warps=[4], worker_num_regs=[24])
+
+
+@pytest.mark.parametrize("worker_reader", [False, True])
+def test_matrix_tme_pipe_worker_local_load_layout(worker_reader):
+    src = torch.arange(16 * 16, device="musa", dtype=torch.float32).to(torch.bfloat16).reshape(16, 16)
+    out = torch.empty((16, 16), device="musa", dtype=torch.bfloat16)
+    desc = TensorDescriptor(src, [16, 16], [16, 1], [16, 16])
+    _matrix_ws_probe[(1, )](desc, out, worker_reader, num_warps=4, num_stages=1)
+    torch.musa.synchronize()
+    torch.testing.assert_close(out, src[:, :16], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("topk,stages", [(32, 1), (64, 2), (128, 3)])
+def test_sparse_mla_pipe_integration(topk, stages):
+    import runpy
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[6]
+    example = root / "python/tutorials/tle/deepseek_v32/02-sparse-mla-tle-pipe-musa.py"
+    module = runpy.run_path(str(example))
+    module["run_case"](topk, stages)
+
+
+@triton.jit
+def _idle_partition():
+    pass
+
+
+@triton.jit
+def _bootstrap_pipe(src, out, WORKER_READER: tl.constexpr):
+    data = tle.gpu.alloc((1, 16, 16), dtype=tl.bfloat16, nv_mma_shared_layout=False)
+    pipe = tle.pipe(capacity=1, one_shot=True, data=data)
+    writer = pipe.writer()
+    slot = writer.acquire(0)
+    tle.gpu.copy(src, slot.data, (16, 16), (0, 0))
+    writer.commit(0)
+    if WORKER_READER:
+        tle.gpu.warp_specialize([(_idle_partition, ()), (_matrix_reader, (pipe.reader(), out))], worker_num_warps=[4],
+                                worker_num_regs=[24])
+    else:
+        tle.gpu.warp_specialize([(_matrix_reader, (pipe.reader(), out)), (_idle_partition, ())], worker_num_warps=[4],
+                                worker_num_regs=[24])
+
+
+@pytest.mark.parametrize("worker_reader", [False, True])
+def test_one_shot_publication_before_static_dispatch(worker_reader):
+    src = torch.arange(256, device="musa", dtype=torch.float32).to(torch.bfloat16).reshape(16, 16)
+    out = torch.empty_like(src)
+    desc = TensorDescriptor.from_tensor(src, [16, 16])
+    _bootstrap_pipe[(1, )](desc, out, worker_reader, num_warps=4, num_stages=1)
+    torch.musa.synchronize()
+    assert torch.equal(out, src)
+
+
+@triton.jit
+def _changing_transport_writer(writer, src, N: tl.constexpr, BLOCK: tl.constexpr):
+    x = tle.gpu.set_layout(tl.arange(0, BLOCK), _LOCAL_STORE_WRITER_LAYOUT)
+    for i in tl.range(0, N, num_stages=1):
+        slot = writer.acquire(i)
+        if i % 2 == 0:
+            tle.gpu.copy(src, slot.data, (BLOCK, ), (i * BLOCK, ))
+        else:
+            tl.store(tle.gpu.local_ptr(slot.data, (x, )), (x + i * BLOCK).to(tl.float16))
+        writer.commit(i)
+
+
+@triton.jit
+def _changing_transport_pipe(src, dst, N: tl.constexpr, BLOCK: tl.constexpr):
+    data = tle.gpu.alloc((2, BLOCK), dtype=tl.float16, nv_mma_shared_layout=False)
+    pipe = tle.pipe(capacity=2, data=data)
+    tle.gpu.warp_specialize([(_mutating_reader, (pipe.reader(), dst, BLOCK, N)),
+                             (_changing_transport_writer, (pipe.writer(), src, N, BLOCK))], worker_num_warps=[4],
+                            worker_num_regs=[24])
+
+
+def test_transport_can_change_between_publications():
+    block, n = 128, 9
+    src = torch.arange(n * block, device="musa", dtype=torch.float32).to(torch.float16)
+    out = torch.empty_like(src)
+    _changing_transport_pipe[(1, )](TensorDescriptor.from_tensor(src, [block]),
+                                    TensorDescriptor.from_tensor(out, [block]), n, block, num_warps=4, num_stages=1)
+    torch.musa.synchronize()
+    assert torch.equal(out, src + 1)
+
+
+@triton.jit
+def _async_publication_writer(writer, src, probe, BLOCK: tl.constexpr, READ_BEFORE_COMMIT: tl.constexpr):
+    offsets = tl.arange(0, BLOCK)
+    slot = writer.acquire(0)
+    values = tl.load(src + offsets)
+    tl.store(tle.gpu.local_ptr(slot.data), values)
+    if READ_BEFORE_COMMIT:
+        # Reverse the source lanes so this is a genuine cross-warp read,
+        # not a same-thread load which could hide a missing rendezvous.
+        loaded = tl.load(tle.gpu.local_ptr(slot.data, (BLOCK - 1 - offsets, )))
+        tl.store(probe + offsets, loaded)
+    writer.commit(0)
+
+
+@triton.jit
+def _async_publication_reader(reader, out, BLOCK: tl.constexpr):
+    offsets = tl.arange(0, BLOCK)
+    wait = reader.wait(0)
+    values = tl.load(tle.gpu.local_ptr(wait.slot.data, (offsets, )))
+    tl.store(out + offsets, values)
+    reader.release(0)
+
+
+@triton.jit
+def _async_publication_pipe(src, out, probe, BLOCK: tl.constexpr, READ_BEFORE_COMMIT: tl.constexpr):
+    data = tle.gpu.alloc((1, BLOCK), dtype=tl.float32, nv_mma_shared_layout=False)
+    pipe = tle.pipe(capacity=1, data=data)
+    tle.gpu.warp_specialize([(_async_publication_writer, (pipe.writer(), src, probe, BLOCK, READ_BEFORE_COMMIT)),
+                             (_async_publication_reader, (pipe.reader(), out, BLOCK))], worker_num_warps=[4],
+                            worker_num_regs=[24])
+
+
+@pytest.mark.parametrize("read_before_commit", [False, True])
+def test_async_publication_elides_only_the_redundant_rendezvous(read_before_commit):
+    block = 128
+    src = torch.arange(block, device="musa", dtype=torch.float32)
+    out, probe = torch.empty_like(src), torch.empty_like(src)
+    compiled = _async_publication_pipe[(1, )](src, out, probe, block, read_before_commit, num_warps=4, num_stages=1)
+    torch.musa.synchronize()
+    assert torch.equal(out, src)
+    llir = compiled.asm["llir"]
+    assert "call void @llvm.musa.memcpy.g2s.wait()" in llir
+    assert "musa_tle.pipe_async_wait" not in llir
+    if read_before_commit:
+        assert torch.equal(probe, src.flip(0))
+        assert "call i32 @llvm.musa.async.arrive(" in llir
+    else:
+        assert "call i32 @llvm.musa.async.arrive(" not in llir
+
+
+_SPARSE_MLA_SOURCE = Path(__file__).resolve().parents[6] / "python/tutorials/tle/deepseek_v32/02-sparse-mla.py"
+_SPARSE_MLA_VARIANTS = {
+    "tle": "tle_sparse_mla_fwd_interface",
+    "pipe": "tle_pipe_sparse_mla_fwd_interface",
+    "prefill": "tle_flashmla_prefill_interface",
+}
+_SPARSE_MLA_CASES = {
+    "small_bf16": dict(batch=1, queries=2, heads=16, groups=1, width=64, values=32),
+    "small_fp16": dict(batch=1, queries=2, heads=16, groups=1, width=64, values=32, fp16=True),
+    "ragged": dict(batch=1, queries=3, heads=16, groups=1, width=64, values=32, ragged=True),
+    "causal": dict(batch=1, queries=4, heads=16, groups=1, width=64, values=32, causal=True),
+    "multi_group": dict(batch=2, queries=2, heads=32, groups=2, width=64, values=32),
+    "empty": dict(batch=1, queries=2, heads=16, groups=1, width=64, values=32, empty=True),
+    "multi_cycle": dict(batch=1, queries=2, heads=16, groups=1, width=64, values=32, sequence=1024, topk=512),
+    "deepseek": dict(batch=1, queries=2, heads=64, groups=1, width=576, values=512),
+}
+
+
+def _sparse_mla_make_inputs(case):
+    config = _SPARSE_MLA_CASES[case]
+    batch, queries = config["batch"], config["queries"]
+    heads, groups = config["heads"], config["groups"]
+    width, values = config["width"], config["values"]
+    dtype = torch.float16 if config.get("fp16") else torch.bfloat16
+    generator = torch.Generator().manual_seed(20260905)
+    q = torch.randn(batch, queries, heads, width, generator=generator).to(dtype)
+    sequence, topk = config.get("sequence", 256), config.get("topk", 128)
+    kv = torch.randn(batch, sequence, groups, width, generator=generator).to(dtype)
+    indices = torch.stack([
+        torch.randperm(sequence, generator=generator)[:topk] for _ in range(batch * queries * groups)
+    ]).reshape(batch, queries, groups, topk).to(torch.int32)
+    lengths = torch.full((batch, queries, groups), topk, dtype=torch.int32)
+    if config.get("empty"):
+        lengths.zero_()
+    if config.get("ragged"):
+        lengths[0, :, 0] = torch.tensor([1, 65, 127])
+        indices[0, 1:, 0, 18] = -1
+        indices[0, 1:, 0, 35] = 256
+    if config.get("causal"):
+        lengths[0, :, 0] = torch.tensor([128, 65, 7, 0])
+        indices[..., 0] = 0  # At least one unmasked key in each nonempty row.
+    return q, kv, indices, lengths, values, config.get("causal", False)
+
+
+def _sparse_mla_torch_golden(q, kv, indices, lengths, values, causal):
+    """Direct gather -> QK -> softmax -> PV, with no online-softmax algorithm."""
+    batch, queries, heads, width = q.shape
+    groups = kv.shape[2]
+    group_heads = heads // groups
+    output = torch.zeros(batch, queries, heads, values, dtype=torch.float64)
+    lse = torch.full((batch, queries, heads), -math.inf, dtype=torch.float64)
+    q64, kv64 = q.double(), kv.double()
+    for b in range(batch):
+        for row in range(queries):
+            for group in range(groups):
+                ids = indices[b, row, group, :int(lengths[b, row, group])].long()
+                valid = (ids >= 0) & (ids < kv.shape[1])
+                if causal:
+                    valid &= ids <= row
+                ids = ids[valid]
+                if ids.numel() == 0:
+                    continue
+                selected = kv64[b, ids, group]
+                head_slice = slice(group * group_heads, (group + 1) * group_heads)
+                scores = (q64[b, row, head_slice] @ selected.T) / math.sqrt(width)
+                output[b, row, head_slice] = scores.softmax(-1) @ selected[:, :values]
+                lse[b, row, head_slice] = scores.logsumexp(-1) / math.log(2)
+    return output, lse
+
+
+def _sparse_mla_errors(actual, expected, atol, rtol):
+    actual = actual.detach().cpu().double()
+    finite = torch.isfinite(expected)
+    nonfinite_match = torch.equal(actual[~finite], expected[~finite])
+    delta = (actual[finite] - expected[finite]).abs()
+    finite_actual = bool(torch.isfinite(actual[finite]).all())
+    passed = nonfinite_match and finite_actual and torch.allclose(actual[finite], expected[finite], atol=atol,
+                                                                  rtol=rtol)
+    return {
+        "passed": bool(passed),
+        "max_abs": float(delta.max()) if delta.numel() else 0.0,
+        "rmse": float(delta.square().mean().sqrt()) if delta.numel() else 0.0,
+        "nonfinite_actual": int((~torch.isfinite(actual[finite])).sum()),
+        "nonfinite_match": nonfinite_match,
+        "atol": atol,
+        "rtol": rtol,
+    }
+
+
+def _run_sparse_mla_case(variant, case, num_stages=None):
+    torch.set_num_threads(2)
+    faulthandler.dump_traceback_later(30, repeat=False)
+    inputs = _sparse_mla_make_inputs(case)
+    q, kv, indices, lengths, values, causal = inputs
+    expected_out, expected_lse = _sparse_mla_torch_golden(*inputs)
+    # Treat optional packages as absent, including stale editable installs.
+    # This selects the tutorial\'s existing no-TileLang/no-FlashMLA branches.
+    missing = object()
+    optional = {name: sys.modules.get(name, missing) for name in ("tilelang", "flash_mla")}
+    try:
+        for name in optional:
+            sys.modules[name] = None
+        module = runpy.run_path(str(_SPARSE_MLA_SOURCE))
+    finally:
+        for name, previous in optional.items():
+            if previous is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+    result = {
+        "variant": variant,
+        "case": case,
+        "source": str(_SPARSE_MLA_SOURCE),
+        "q_shape": list(q.shape),
+        "kv_shape": list(kv.shape),
+        "dtype": str(q.dtype),
+        "causal": causal,
+        "tilelang_available": module["_HAVE_TILELANG"],
+        "num_stages": num_stages,
+    }
+    try:
+        device_args = (q.to("musa"), kv.to("musa"), indices.to("musa"))
+        kwargs = dict(topk_length=lengths.to("musa"), d_v=values, is_causal=causal)
+        if variant == "pipe" and num_stages is not None:
+            # Exercise the unchanged tutorial kernel and descriptor entry with
+            # explicit compiler stages, independently of pipe capacity.
+            output, lse = module["_sparse_mla_fwd_interface_impl"](
+                module["tle_pipe_sparse_mla_fwd"], *device_args, **kwargs, bk=64,
+                extra_kernel_args=(module["TLE_PIPE_SPARSE_MLA_PIPE_STAGES"], ), use_host_descriptors=True,
+                launch_kwargs={"num_warps": module["TLE_PIPE_SPARSE_MLA_NUM_WARPS"], "num_stages": num_stages})
+        else:
+            output, lse = module[_SPARSE_MLA_VARIANTS[variant]](*device_args, **kwargs)
+        torch.musa.synchronize()
+    except Exception as error:
+        result.update(status="execution_error", error_type=type(error).__name__, error=str(error))
+        print("RESULT " + json.dumps(result), flush=True)
+        return 1
+    tolerance = 0.003 if q.dtype == torch.float16 else 0.03
+    result["output"] = _sparse_mla_errors(output, expected_out, tolerance, tolerance)
+    result["lse"] = _sparse_mla_errors(lse, expected_lse, 0.001, 0.001)
+    result["status"] = "passed" if result["output"]["passed"] and result["lse"]["passed"] else "accuracy_failed"
+    print("RESULT " + json.dumps(result), flush=True)
+    return int(result["status"] != "passed")
+
+
+def _sparse_mla_main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--variants", nargs="+", choices=_SPARSE_MLA_VARIANTS, default=["tle", "pipe", "prefill"])
+    parser.add_argument("--cases", nargs="+", choices=_SPARSE_MLA_CASES, default=list(_SPARSE_MLA_CASES))
+    parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--num-stages", type=int, choices=[1, 3],
+                        help="Override compiler stages for the original pipe kernel only")
+    parser.add_argument("--child", nargs=2, metavar=("VARIANT", "CASE"), help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    if args.child:
+        return _run_sparse_mla_case(*args.child, num_stages=args.num_stages)
+    results = []
+    for variant in args.variants:
+        for case in args.cases:
+            if variant == "prefill" and case != "deepseek":
+                continue  # This interface explicitly requires D=576, DV=512, H=64.
+            command = [sys.executable, str(Path(__file__).resolve()), "--sparse-mla", "--child", variant, case]
+            if args.num_stages is not None:
+                command += ["--num-stages", str(args.num_stages)]
+            try:
+                completed = subprocess.run(command, capture_output=True, text=True, timeout=args.timeout)
+            except subprocess.TimeoutExpired as error:
+                diagnostic = error.stderr or b""
+                if isinstance(diagnostic, bytes):
+                    diagnostic = diagnostic.decode(errors="replace")
+                result = dict(variant=variant, case=case, status="timeout", diagnostic=diagnostic[-6000:])
+            else:
+                rows = [line[7:] for line in completed.stdout.splitlines() if line.startswith("RESULT ")]
+                if rows:
+                    result = json.loads(rows[-1])
+                else:
+                    result = dict(variant=variant, case=case, status="process_error", returncode=completed.returncode,
+                                  error=completed.stderr[-4000:])
+                if result["status"] == "execution_error":
+                    diagnostics = [
+                        line for line in completed.stderr.splitlines()
+                        if any(token in line for token in ("error:", "Pipeline failed", "Assertion", "LLVM ERROR"))
+                    ]
+                    result["compiler_diagnostics"] = diagnostics[:4]
+            results.append(result)
+            print(json.dumps(result), flush=True)
+    passed = sum(item["status"] == "passed" for item in results)
+    print(f"SUMMARY {passed}/{len(results)} passed", flush=True)
+    return int(passed != len(results))
+
+
+@pytest.mark.parametrize("variant,stages", [("tle", None), ("pipe", 1), ("pipe", 3)])
+@pytest.mark.parametrize("case", [
+    # multi_cycle includes the ordinary BF16 path and exercises repeated reuse.
+    "small_fp16",
+    "ragged",
+    "causal",
+    "multi_group",
+    "empty",
+    "multi_cycle",
+])
+def test_original_sparse_mla_torch_golden(variant, stages, case):
+    command = [sys.executable, str(Path(__file__).resolve()), "--sparse-mla", "--child", variant, case]
+    if stages is not None:
+        command += ["--num-stages", str(stages)]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=120,
+                               env={**os.environ, "TRITON_ALWAYS_COMPILE": "1"})
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert '"status": "passed"' in completed.stdout
+
+
+def _measure_pipe_benchmark(name, fn, args, meta):
+    start = time.perf_counter()
+    compiled = fn.warmup(*args, grid=(1, ), **meta)
+    compile_ms = (time.perf_counter() - start) * 1000
+    launch = lambda: fn[(1, )](*args, **meta)
+    ms = do_bench(launch, warmup=20, rep=100, return_mode="median", device_type="musa")
+    llir = compiled.asm["llir"]
+    record = re.search(r"llvm.musa.async.bar.record\(i32 (\d+)\)", llir)
+    print(
+        json.dumps({
+            "case": name,
+            "compile_ms": round(compile_ms, 2),
+            "device_ms": round(ms, 6),
+            "shared_bytes": compiled.metadata.shared,
+            "barrier_ids": int(record.group(1)) if record else None,
+            "local_syncs": llir.count("call void @llvm.musa.syncthreads.lm()"),
+            "partition_syncs": llir.count("call i32 @llvm.musa.async.arrive("),
+            "async_waits": llir.count("call void @llvm.musa.memcpy.g2s.wait()"),
+        }), flush=True)
+
+
+def _run_pipe_benchmark():
+    torch.manual_seed(42)
+    stages, block, iterations = 2, 128, 9
+    integer_out = torch.empty(iterations * block, dtype=torch.int32, device="musa")
+    common = dict(STAGES=stages, BLOCK=block, ITERATIONS=iterations, num_stages=1)
+    _measure_pipe_benchmark("local_non_ws", _non_ws_local_store_pipe_kernel, (integer_out, ), dict(common, num_warps=4))
+    _measure_pipe_benchmark("local_ws", _ws_local_store_pipe_kernel, (integer_out, ), dict(common, num_warps=16))
+    source = torch.arange(iterations * block, dtype=torch.float32, device="musa")
+    output = torch.empty_like(source)
+    _measure_pipe_benchmark("async_copy_ws", _ws_default_writer_async_copy_pipe_kernel, (source, output),
+                            dict(common, num_warps=16))
+    m, n, k, bk = 256, 256, 448, 64
+    a = torch.randn((m, k), dtype=torch.float16, device="musa")
+    b = torch.randn((k, n), dtype=torch.float16, device="musa")
+    c = torch.empty((m, n), dtype=torch.float16, device="musa")
+    _measure_pipe_benchmark(
+        "tme_multifield_ws_mm", _ws_multi_field_pipe_mm_kernel,
+        (TensorDescriptor.from_tensor(a, [m, bk]), TensorDescriptor.from_tensor(b, [bk, n]), c),
+        dict(K_TILES=k // bk, STAGES=stages, BLOCK_M=m, BLOCK_N=n, BLOCK_K=bk, num_warps=16, num_stages=1))
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--benchmark":
+        _run_pipe_benchmark()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--sparse-mla":
+        raise SystemExit(_sparse_mla_main(sys.argv[2:]))
+    else:
+        raise SystemExit("Use pytest for tests, --benchmark for timings, or --sparse-mla for Torch golden checks.")

@@ -13,6 +13,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
@@ -38,6 +39,7 @@ static constexpr StringLiteral kBarRecordIntrinsic =
 struct PartitionSync {
   LLVM::CallIntrinsicOp op;
   int32_t numWarps;
+  Region *partition;
 };
 
 static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
@@ -53,42 +55,26 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
         "ttg.num-warps");
   int32_t defaultWarps = static_cast<int32_t>(defaultWarpsAttr.getInt());
 
-  Region &defaultRegion = ws.getDefaultRegion();
-  SmallVector<LLVM::CallIntrinsicOp> redundantSyncs;
   SmallVector<PartitionSync> syncs;
-
-  for (Region *workerRegion : ws.getPartitionRegions()) {
-    workerRegion->walk([&](LLVM::CallIntrinsicOp call) {
+  auto collect = [&](Region &region, int32_t warps) {
+    region.walk([&](LLVM::CallIntrinsicOp call) {
       if (call.getIntrin() == kLocalSyncIntrinsic)
-        redundantSyncs.push_back(call);
+        syncs.push_back({call, warps, &region});
     });
-  }
+  };
+  collect(ws.getDefaultRegion(), defaultWarps);
+  for (auto [region, warps] :
+       llvm::zip_equal(ws.getPartitionRegions(), ws.getPartitionNumWarps()))
+    collect(*region, warps);
 
-  bool seenSqmma = false;
-  defaultRegion.walk<WalkOrder::PreOrder>([&](Operation *op) {
-    auto call = dyn_cast<LLVM::CallIntrinsicOp>(op);
-    if (!call)
-      return WalkResult::advance();
-    if (call.getIntrin().starts_with("llvm.musa.sqmma.fmma.")) {
-      seenSqmma = true;
-      return WalkResult::advance();
-    }
-    if (call.getIntrin() != kLocalSyncIntrinsic)
-      return WalkResult::advance();
-    if (seenSqmma)
-      syncs.push_back({call, defaultWarps});
-    else
-      redundantSyncs.push_back(call);
-    return WalkResult::advance();
-  });
-
-  for (LLVM::CallIntrinsicOp redundant : redundantSyncs)
-    rewriter.eraseOp(redundant);
+  llvm::DenseSet<Region *> partitions;
+  for (auto &sync : syncs)
+    partitions.insert(sync.partition);
   if (syncs.empty())
     return success();
 
   auto reserved = ttmg::reserveBarrierIdRange(
-      syncs.front().op, static_cast<int32_t>(syncs.size()));
+      syncs.front().op, static_cast<int32_t>(partitions.size()));
   if (failed(reserved))
     return syncs.front().op.emitOpError(
         "MUSA TLE partition synchronization exhausted hardware barrier "
@@ -110,15 +96,17 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
   else
     rewriter.setInsertionPoint(ws);
   Value phase = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
-  llvm::DenseMap<Operation *, Value> barrierIds;
+  llvm::DenseMap<Region *, Value> barrierIds;
   SmallVector<std::pair<Value, Value>> initializationArgs;
   int32_t nextId = *reserved;
   for (PartitionSync &sync : syncs) {
+    if (barrierIds.count(sync.partition))
+      continue;
     Value id = arith::ConstantIntOp::create(rewriter, loc, nextId++, 32);
     Value count =
         arith::ConstantIntOp::create(rewriter, loc, sync.numWarps, 32);
     initializationArgs.push_back({id, count});
-    barrierIds[sync.op.getOperation()] = id;
+    barrierIds[sync.partition] = id;
   }
 
   Value tid =
@@ -143,14 +131,18 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
 
   for (PartitionSync &sync : syncs) {
     rewriter.setInsertionPoint(sync.op);
-    Value id = barrierIds.lookup(sync.op.getOperation());
+    Value id = barrierIds.lookup(sync.partition);
+    // A partition reuses this resource at every rendezvous. Use the phase
+    // returned by arrival, not a fixed phase that only works on the first use.
+    Value arrived =
+        LLVM::CallIntrinsicOp::create(
+            rewriter, sync.op.getLoc(), rewriter.getI32Type(),
+            rewriter.getStringAttr("llvm.musa.async.arrive"), ValueRange{id})
+            .getResult(0);
     LLVM::CallIntrinsicOp::create(
         rewriter, sync.op.getLoc(),
-        rewriter.getStringAttr("llvm.musa.async.arrive.none.phaseid"),
-        ValueRange{id});
-    LLVM::CallIntrinsicOp::create(
-        rewriter, sync.op.getLoc(),
-        rewriter.getStringAttr("llvm.musa.async.wait"), ValueRange{id, phase});
+        rewriter.getStringAttr("llvm.musa.async.wait"),
+        ValueRange{id, arrived});
     rewriter.eraseOp(sync.op);
   }
 
@@ -404,6 +396,19 @@ public:
           "MUSA TLE late lowering requires an LLVM function");
       return signalPassFailure();
     }
+
+    // Unknown CTA-wide synchronization cannot be narrowed safely. Diagnose it
+    // while the static partition and source location are still available.
+    WalkResult checked = marked.front()->walk([&](LLVM::CallIntrinsicOp call) {
+      if (call.getIntrin() != "llvm.musa.barrier0")
+        return WalkResult::advance();
+      call.emitOpError(
+          "CTA barrier inside MUSA TLE static warp_specialize partition "
+          "would wait for unrelated warps; use partition synchronization");
+      return WalkResult::interrupt();
+    });
+    if (checked.wasInterrupted())
+      return signalPassFailure();
 
     IRRewriter rewriter(&getContext());
     if (failed(lowerWarpGroupBarriers(func, marked.front(), rewriter)) ||

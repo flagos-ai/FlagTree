@@ -289,16 +289,16 @@ static bool syncPipeLocalStoreGroups(Operation *wait, BlockInfo *blockInfo,
     return false;
 
   auto syncSlice = [&](const AllocationSlice &completed) {
-    auto eraseIntersecting = [&](BlockInfo::SliceMapT &slices) {
+    auto eraseCompleted = [&](BlockInfo::SliceMapT &slices) {
       for (auto it = slices.begin(); it != slices.end();) {
-        if (it->first.intersects(completed))
+        if (it->first.isWithinAllocation(completed))
           it = slices.erase(it);
         else
           ++it;
       }
     };
-    eraseIntersecting(blockInfo->syncReadSlices);
-    eraseIntersecting(blockInfo->syncWriteSlices);
+    eraseCompleted(blockInfo->syncReadSlices);
+    eraseCompleted(blockInfo->syncWriteSlices);
   };
 
   bool matchedAllocation = false;
@@ -341,6 +341,12 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
   }
 
 #ifdef __TLE__
+  // LowerPipe marks only full async waits with no intervening memory effects
+  // before the writer's warp arrivals. The full/empty protocol supplies the
+  // cross-warp edge; this thread-local wait must not clear other hazards.
+  if (isa<triton::gpu::AsyncWaitOp>(op) &&
+      op->hasAttr("musa_tle.pipe_async_wait"))
+    return;
   if (syncPipeLocalStoreGroups(op, blockInfo, allocation)) {
     // The pipe hardware wait is the acquire edge for this local-store
     // generation.  Clear only the corresponding payload allocation so

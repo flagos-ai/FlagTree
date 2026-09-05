@@ -90,16 +90,14 @@ shouldInsertIssueBarrierBefore(triton::musa::AsyncTMECopyLocalToGlobalOp op) {
 
 static bool shouldInsertIssueBarrierBefore(triton::musa::SquadDotOp op) {
 #ifdef __TLE__
-  for (Operation *parent = op->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (parent->hasAttr("musa_tle.static_warp_specialize") &&
-        op->hasAttr("musa_tle.explicit_sqmma"))
-      return false;
-  }
+  bool partitionLocal = isInsideStaticWarpSpecialize(op);
+  if (partitionLocal && op->hasAttr("musa_tle.explicit_sqmma"))
+    return false;
 
   Operation *prev = op->getPrevNode();
   auto prevBarrier = dyn_cast_or_null<ttg::BarrierOp>(prev);
-  if (isIssueBarrier(prevBarrier))
+  if (isIssueBarrier(prevBarrier) ||
+      (partitionLocal && prevBarrier && prevBarrier.hasLocal()))
     return false;
 
   Value aMemDesc = peelSqmmaIssueOperand(op.getA());
@@ -132,6 +130,15 @@ static bool shouldInsertIssueBarrierBefore(triton::musa::SquadDotOp op) {
 static void insertIssueBarrierBefore(Operation *op, RewriterBase &rewriter) {
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(op);
+#ifdef __TLE__
+  if (isa<triton::musa::SquadDotOp>(op) && isInsideStaticWarpSpecialize(op)) {
+    // Publish shared operands within the issuing partition. Late static WS
+    // lowering turns local barriers into partition arrival/wait pairs; a CTA
+    // issue barrier here would also wait for unrelated producer/reader warps.
+    ttg::BarrierOp::create(rewriter, op->getLoc(), ttg::AddrSpace::Local);
+    return;
+  }
+#endif // __TLE__
   // MUSA lowers non-local TTG barriers to llvm.musa.barrier0.
   ttg::BarrierOp::create(rewriter, op->getLoc(), ttg::AddrSpace::All);
 }

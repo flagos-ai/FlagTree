@@ -53,41 +53,18 @@ enum class PipeEndpointRole {
   Reader,
 };
 
-enum class PipePhasePolicy {
-  CyclicAlternating,
-  OneShotFixed,
-};
-
-enum class PipeClosePolicy {
-  Unsupported,
-  TaggedBroadcast,
-};
-
 enum class PipeBarrierInitialState {
   Pending,
   Ready,
-};
-
-enum class PipeReaderIssuePublicationPolicy {
-  NonWarpSpecializedCTA,
-  PipeFullWait,
 };
 
 enum class PipeReaderDrainKind {
   TMEStore,
 };
 
-// A logical generation describes one publication/drain window even when a
-// structured region contains mutually-exclusive concrete operations for that
-// window.  Concrete operation groups remain the source of lowering facts;
-// this object is analysis-only and deliberately carries no IR attributes.
-struct PipeState;
-struct PipeLogicalGeneration;
+enum class PipeReaderSubscriptionKind { AllFields, ExplicitSubset };
 
-enum class PipeReaderSubscriptionKind {
-  AllFields,
-  ExplicitSubset,
-};
+struct PipeState;
 
 struct PipeCoveredRegion {
   unsigned fieldIndex = 0;
@@ -102,7 +79,6 @@ struct PipeCompletionSource {
   Operation *operation = nullptr;
   unsigned destinationField = 0;
   Value stage;
-  Value phase;
   PipeCoveredRegion coveredRegion;
   int32_t transactionBytes = 0;
   PipeBarrierStorageOwner barrierStorageOwner = PipeBarrierStorageOwner::Pipe;
@@ -113,8 +89,6 @@ struct PipeCompletionSource {
 
 struct PipeCommitGroup {
   Value stage;
-  Value phase;
-  PipeWriterAcquireOp acquire;
   SmallVector<PipeCompletionSource> completionSources;
   int32_t totalTransactionBytes = 0;
   int32_t tmeGroupArrivalCount = 0;
@@ -122,7 +96,6 @@ struct PipeCommitGroup {
   int32_t fullArrivalCount = 0;
   PipeWriterCommitOp commit;
   Value externalBarrierRoot;
-  PipeLogicalGeneration *logicalGeneration = nullptr;
 };
 
 struct PipeReaderDrainSource {
@@ -139,66 +112,8 @@ struct PipeReaderDrainGroup {
   Value phase;
   PipeReaderWaitOp wait;
   SmallVector<PipeReaderDrainSource> drainSources;
-  PipeReaderIssuePublicationPolicy issuePublicationPolicy =
-      PipeReaderIssuePublicationPolicy::NonWarpSpecializedCTA;
-  // Set by the reader wait/release mutation analysis before lowering. A
-  // missing value is only valid for an older, incomplete analysis result;
-  // lowering must reject it rather than treating it as "not modified".
-  std::optional<bool> sourceModifiedAfterWait;
-  // Cyclic drain groups end at reader.release(). One-shot release is a
-  // hardware no-op, but when present it delimits this endpoint's analysis
-  // window; a one-shot drain group may still omit it.
-  PipeReaderReleaseOp release;
-  PipeLogicalGeneration *logicalGeneration = nullptr;
-  // Region facts are retained after a concrete group is finalized so nested
-  // structured operations can be associated with the same wait window.
-  SmallVector<PipeCoveredRegion> modifiedRegions;
-};
-
-// A reader wait that observes the terminal close generation may legally omit
-// reader.release(). It does not create an empty-barrier arrival because a
-// closed cyclic pipe can never be acquired again by the writer.
-struct PipeReaderCloseWait {
-  PipeReaderWaitOp wait;
-  // A terminal close wait may explicitly release the closed stage. The
-  // release keeps its normal empty-barrier arrival while this record carries
-  // the terminal close-generation classification.
-  PipeReaderReleaseOp release;
-  unsigned readerEndpoint = 0;
-  Value stage;
-  Value phase;
-  PipeLogicalGeneration *logicalGeneration = nullptr;
-};
-
-// Analysis-only facts for one concrete structured-CFG alternative.  These
-// facts never become IR attributes; they make path completeness and operation
-// ownership explicit before LowerPipe materializes any barrier resource.
-struct PipeLifecyclePathSummary {
-  Operation *pathAnchor = nullptr;
-  SmallVector<Operation *> normalExits;
-  SmallVector<Operation *> commits;
-  SmallVector<Operation *> releases;
-  bool writerOpenAtExit = false;
-  bool readerOpenAtExit = false;
-  bool terminalClose = false;
-  bool loopBackedge = false;
-};
-
-struct PipeGenerationAlternative {
-  SmallVector<Operation *> operations;
-  SmallVector<PipeCompletionSource> completionSources;
-  SmallVector<PipeReaderDrainSource> drainSources;
-  PipeLifecyclePathSummary path;
-  bool loopCarried = false;
-};
-
-struct PipeLogicalGeneration {
-  unsigned id = 0;
-  PipeState *pipe = nullptr;
-  unsigned endpoint = 0;
-  Value stage;
-  Value phase;
-  SmallVector<PipeGenerationAlternative, 1> alternatives;
+  // Unknown aliasing conservatively requires partition-local publication.
+  bool sourceModifiedAfterWait = false;
 };
 
 struct PipeFieldState {
@@ -207,7 +122,6 @@ struct PipeFieldState {
   Value memdesc;
   Value memdescRoot;
   Type memdescType;
-  PipeTransportKind transportKind = PipeTransportKind::Unknown;
   SmallVector<unsigned> subscribedReaders;
 };
 
@@ -270,7 +184,6 @@ struct PipeCloseGeneration {
   int32_t localStoreArrivalCount = 0;
   int32_t fullArrivalCount = 0;
   int32_t transactionBytes = 0;
-  bool implicitEmptyAcquire = true;
 };
 
 // A logical barrier participant is the stable endpoint/partition contribution
@@ -290,18 +203,13 @@ struct PipeBarrierPlan {
   std::optional<PipeBarrierRingPlan> empty;
   bool hasCloseState = false;
   std::optional<PipeCloseTagPlan> closeTagPlan;
-  PipeBarrierStorageOwner fullBarrierStorageOwner =
-      PipeBarrierStorageOwner::Pipe;
   std::optional<PipeExternalBarrierBinding> externalFull;
-  PipePhasePolicy phasePolicy = PipePhasePolicy::CyclicAlternating;
   std::optional<PipeBarrierParticipant> writerParticipant;
   SmallVector<PipeBarrierParticipant> readerParticipants;
 };
 
 struct PipeLifecycleState {
   PipeLifecycleMode mode = PipeLifecycleMode::Cyclic;
-  PipeClosePolicy closePolicy = PipeClosePolicy::Unsupported;
-  PipePhasePolicy stagePhasePolicy = PipePhasePolicy::CyclicAlternating;
 };
 
 struct PipeState {
@@ -311,14 +219,10 @@ struct PipeState {
   SmallVector<PipeEndpointState> endpoints;
   SmallVector<std::unique_ptr<PipeCommitGroup>> commitGroups;
   SmallVector<std::unique_ptr<PipeReaderDrainGroup>> readerDrainGroups;
-  SmallVector<std::unique_ptr<PipeReaderCloseWait>> closeWaits;
   SmallVector<std::unique_ptr<PipeCloseGeneration>> closeGenerations;
-  SmallVector<std::unique_ptr<PipeLogicalGeneration>> logicalGenerations;
-  SmallVector<int32_t> oneShotPublishedStages;
   PipeExecutionMode executionMode = PipeExecutionMode::Unset;
   PipeLifecycleState lifecycle;
   PipeBarrierPlan barrierPlan;
-  SmallVector<PipePartitionMapping> partitionMapping;
   ttg::WarpSpecializeOp staticWarpSpecialize;
 
   SmallVector<PipeWriterAcquireOp> acquires;
@@ -338,30 +242,11 @@ public:
   PipeEndpointState *lookupEndpoint(Operation *op);
   const PipeEndpointState *lookupEndpoint(Operation *op) const;
 
-  PipeCommitGroup *lookupCommitGroup(PipeWriterCommitOp op);
   const PipeCommitGroup *lookupCommitGroup(PipeWriterCommitOp op) const;
 
-  PipeCommitGroup *lookupCompletionSourceGroup(Operation *op);
-  const PipeCommitGroup *lookupCompletionSourceGroup(Operation *op) const;
-
-  PipeReaderDrainGroup *lookupReaderDrainGroup(PipeReaderReleaseOp op);
-  const PipeReaderDrainGroup *
-  lookupReaderDrainGroup(PipeReaderReleaseOp op) const;
-
-  PipeReaderDrainGroup *lookupReaderDrainGroup(PipeReaderWaitOp op);
   const PipeReaderDrainGroup *lookupReaderDrainGroup(PipeReaderWaitOp op) const;
 
-  PipeReaderDrainGroup *lookupReaderDrainSourceGroup(Operation *op);
-  const PipeReaderDrainGroup *lookupReaderDrainSourceGroup(Operation *op) const;
-
-  PipeCloseGeneration *lookupCloseGeneration(PipeWriterCloseOp op);
   const PipeCloseGeneration *lookupCloseGeneration(PipeWriterCloseOp op) const;
-
-  PipeReaderCloseWait *lookupCloseWait(PipeReaderWaitOp op);
-  const PipeReaderCloseWait *lookupCloseWait(PipeReaderWaitOp op) const;
-
-  PipeLogicalGeneration *lookupLogicalGeneration(Operation *op);
-  const PipeLogicalGeneration *lookupLogicalGeneration(Operation *op) const;
 
   ArrayRef<std::unique_ptr<PipeState>> getPipes() const { return pipes; }
   ArrayRef<Operation *> getLifecycleOps() const { return lifecycleOps; }
@@ -374,16 +259,8 @@ private:
   llvm::DenseMap<Operation *, PipeState *> pipeByOperation;
   llvm::DenseMap<Operation *, unsigned> endpointIndexByOperation;
   llvm::DenseMap<Operation *, PipeCommitGroup *> commitGroupByOperation;
-  llvm::DenseMap<Operation *, PipeCommitGroup *>
-      completionSourceGroupByOperation;
-  llvm::DenseMap<Operation *, PipeReaderDrainGroup *>
-      readerDrainGroupByOperation;
   llvm::DenseMap<Operation *, PipeReaderDrainGroup *> readerDrainGroupByWait;
-  llvm::DenseMap<Operation *, PipeReaderDrainGroup *> readerDrainGroupBySource;
   llvm::DenseMap<Operation *, PipeCloseGeneration *> closeGenerationByOperation;
-  llvm::DenseMap<Operation *, PipeReaderCloseWait *> closeWaitByOperation;
-  llvm::DenseMap<Operation *, PipeLogicalGeneration *>
-      logicalGenerationByOperation;
 };
 
 FailureOr<std::unique_ptr<PipeAnalysisResult>>

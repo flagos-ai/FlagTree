@@ -226,6 +226,9 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
               op->getAttr(triton::musa::kTLECompletionGroupAttr))
         asyncCopy->setAttr(triton::musa::kTLECompletionGroupAttr,
                            completionGroup);
+      if (op->hasAttr(triton::musa::kTLEPipeDeferredArrivalAttr))
+        asyncCopy->setAttr(triton::musa::kTLEPipeDeferredArrivalAttr,
+                           rewriter.getUnitAttr());
       rewriter.eraseOp(op);
       return success();
     }

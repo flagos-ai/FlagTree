@@ -265,17 +265,23 @@ class LowerTMETransactionsPass
       auto addTrans = ttmg::BarrierAddTransOp::create(
           rewriter, loc, group.barrier, bytes, group.predicate);
 
-      rewriter.setInsertionPointAfter(last);
-      auto arrive = ttmg::ArriveBarrierNoRetOp::create(
-          rewriter, last.getLoc(), group.barrier, group.predicate);
+      ttmg::ArriveBarrierNoRetOp arrive;
+      if (!first->hasAttr(ttmg::kTLEPipeDeferredArrivalAttr)) {
+        rewriter.setInsertionPointAfter(last);
+        arrive = ttmg::ArriveBarrierNoRetOp::create(
+            rewriter, last.getLoc(), group.barrier, group.predicate);
+      }
 
       for (ttmg::AsyncTMECopyGlobalToLocalOp copy : group.members) {
         copy->setAttr(ttmg::kTMEIssueThreadAttr, issueThreadAttr);
         copy->setAttr(ttmg::kTMEExplicitCompletionAttr, explicitCompletionAttr);
         copy->removeAttr(ttmg::kTLEExpectBytesAttr);
         copy->removeAttr(ttmg::kTLECompletionGroupAttr);
+        copy->removeAttr(ttmg::kTLEPipeDeferredArrivalAttr);
       }
       for (Operation *op : {addTrans.getOperation(), arrive.getOperation()}) {
+        if (!op)
+          continue;
         op->setAttr(ttmg::kTMEIssueThreadAttr, issueThreadAttr);
         op->setAttr(ttmg::kTMEExplicitCompletionAttr, explicitCompletionAttr);
       }
