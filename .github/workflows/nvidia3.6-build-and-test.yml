@@ -24,10 +24,15 @@ on:
   schedule:
     - cron: '0 21 * * *'
   push:
-    branches: [ "main", "triton_v3.6.x" ]
+    branches: [ "main", "triton_v3.6.x", fix/my-bug-fix-main-single-v5-pull ]
   pull_request:
     branches: [ "main", "triton_v3.6.x" ]
     types: [opened, synchronize, reopened, ready_for_review]
+
+env:
+  FLAGGEMS_TAG: 'v5.3.5'
+  FLAGGEMS_CI_DIR: '/root/flaggems_ci'
+  FLAGTREE_BRANCH: 'main'
 
 permissions:
   contents: read
@@ -38,15 +43,209 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Job 1: generate FlagGems baseline (only on push)
+  generate-flaggems-baseline:
+    runs-on: nvidia3.6
+    if: ${{ github.event_name == 'push' }}
+    concurrency:
+      group: flaggems-baseline-generation
+      cancel-in-progress: false
+    outputs:
+      baseline_exists: ${{ steps.update-latest.outputs.baseline_exists }}
+      baseline_path: ${{ steps.update-latest.outputs.baseline_path }}
+      commit_id: ${{ steps.set-commit.outputs.commit_id }}
+    steps:
+      # Step 1: Setup Environment
+      - name: Setup Environment
+        id: setup
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=' >> $GITHUB_ENV || true
+          GPU_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+          echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
+          echo "GPU devices: $GPU_DEVICES"
+          echo "FlagGems tag: $FLAGGEMS_TAG"
+
+      # Step 2: Set commit ID and paths
+      - name: Set Commit ID and Paths
+        id: set-commit
+        shell: bash
+        run: |
+          COMMIT_ID="${GITHUB_SHA}"
+          BASELINE_DIR="${FLAGGEMS_CI_DIR}/Baseline/${COMMIT_ID}"
+          BASELINE_SUMMARY="${BASELINE_DIR}/summary.json"
+          LATEST_DIR="${FLAGGEMS_CI_DIR}/Baseline/latest"
+          LOCK_DIR="${FLAGGEMS_CI_DIR}/.baseline_generate_${COMMIT_ID}.lock"
+
+          echo "commit_id=$COMMIT_ID" >> $GITHUB_OUTPUT
+          echo "baseline_path=$BASELINE_SUMMARY" >> $GITHUB_OUTPUT
+          echo "baseline_dir=$BASELINE_DIR" >> $GITHUB_OUTPUT
+          echo "latest_dir=$LATEST_DIR" >> $GITHUB_OUTPUT
+          echo "lock_dir=$LOCK_DIR" >> $GITHUB_OUTPUT
+
+          echo "BASELINE_DIR=$BASELINE_DIR" >> $GITHUB_ENV
+          echo "BASELINE_SUMMARY=$BASELINE_SUMMARY" >> $GITHUB_ENV
+          echo "LATEST_DIR=$LATEST_DIR" >> $GITHUB_ENV
+          echo "LOCK_DIR=$LOCK_DIR" >> $GITHUB_ENV
+
+          echo "📝 Commit ID: $COMMIT_ID"
+          echo "📁 Baseline dir: $BASELINE_DIR"
+          echo "📄 Summary file: $BASELINE_SUMMARY"
+          echo "📁 Latest dir: $LATEST_DIR"
+          echo "🔒 Lock dir: $LOCK_DIR"
+
+      # Step 3: Smart Checkout - Checkout the current push code
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      # Step 4: Check baseline and acquire lock if not exist
+      - name: Acquire FlagGems Baseline Lock
+        id: acquire-lock
+        uses: ./.github/actions/acquire-flaggems-baseline-lock
+        with:
+          flaggems-ci-dir: ${{ env.FLAGGEMS_CI_DIR }}
+          lock-timeout: '3600'
+          lock-ttl: '7200'
+          baseline-id: ${{ steps.set-commit.outputs.commit_id }}
+
+      # Step 5: Cleanup FlagTree Environment
+      - name: Cleanup FlagTree Environment
+        if: ${{ steps.acquire-lock.outputs.lock_acquired == 'true' && steps.acquire-lock.outputs.baseline_exists == 'false' }}
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
+      # Step 6: Build FlagTree
+      - name: Build FlagTree
+        if: ${{ steps.acquire-lock.outputs.lock_acquired == 'true' && steps.acquire-lock.outputs.baseline_exists == 'false' }}
+        shell: bash
+        run: |
+          set -x
+          source ~/env-3.6.sh
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+
+      # Step 7: Clone FlagGems
+      - name: Clone FlagGems Repo
+        if: ${{ steps.acquire-lock.outputs.lock_acquired == 'true' && steps.acquire-lock.outputs.baseline_exists == 'false' }}
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        with:
+          repo-url: 'https://github.com/flagos-ai/FlagGems.git'
+          ref: ${{ env.FLAGGEMS_TAG }}
+          clone-dir: ${{ env.FLAGGEMS_CI_DIR }}
+
+      # Step 8: Install FlagGems
+      - name: Install FlagGems
+        if: ${{ steps.acquire-lock.outputs.lock_acquired == 'true' && steps.acquire-lock.outputs.baseline_exists == 'false' }}
+        shell: bash
+        run: |
+          cd ${FLAGGEMS_CI_DIR}/FlagGems
+          python3 -m pip uninstall -y flag_gems --break-system-packages || true
+          pip install -v -e . --no-build-isolation --no-deps
+
+      # Step 9: Run FlagGems Test for Baseline
+      - name: Run FlagGems Test for Baseline
+        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        if: ${{ steps.acquire-lock.outputs.lock_acquired == 'true' && steps.acquire-lock.outputs.baseline_exists == 'false' }}
+        id: run-flaggems-test
+        with:
+          flaggems-path: ${{ env.FLAGGEMS_CI_DIR }}/FlagGems
+          gpus: ${{ steps.setup.outputs.gpus }}
+          output-base-dir: '${{ env.FLAGGEMS_CI_DIR }}/Baseline'
+          output-subdir: '${{ steps.set-commit.outputs.commit_id }}'
+          run-script: 'tools/ci/ci_run_tests.py'
+          skip-file: 'tools/ci/skip_list.yaml'
+          first-parameter-only: 'true'
+
+      # Step 10: Update latest directory
+      - name: Update Latest Baseline
+        id: update-latest
+        if: ${{ steps.acquire-lock.outputs.lock_acquired == 'true' && steps.acquire-lock.outputs.baseline_exists == 'false' }}
+        shell: bash
+        run: |
+          COMMIT_ID="${{ steps.set-commit.outputs.commit_id }}"
+          BASELINE_DIR="${{ steps.set-commit.outputs.baseline_dir }}"
+          LATEST_DIR="${{ steps.set-commit.outputs.latest_dir }}"
+          BASELINE_SUMMARY="${{ steps.set-commit.outputs.baseline_path }}"
+
+          if [[ -f "$BASELINE_SUMMARY" ]] && [[ -s "$BASELINE_SUMMARY" ]]; then
+            echo "✅ Baseline generated successfully for commit: $COMMIT_ID"
+
+            # Create latest directory and copy baseline files
+            rm -rf "$LATEST_DIR" || true
+            mkdir -p "$LATEST_DIR"
+
+            # Copy all files from commit directory to latest
+            cp -r "$BASELINE_DIR"/* "$LATEST_DIR/" 2>/dev/null || true
+
+            # Also copy the commit ID for reference
+            echo "$COMMIT_ID" > "${LATEST_DIR}/commit_id.txt"
+
+            echo "✅ Latest baseline updated to commit: $COMMIT_ID"
+            echo "📁 Latest baseline location: $LATEST_DIR"
+            echo "📄 Latest summary: ${LATEST_DIR}/summary.json"
+
+            echo "baseline_exists=true" >> $GITHUB_OUTPUT
+            echo "baseline_path=${LATEST_DIR}/summary.json" >> $GITHUB_OUTPUT
+            echo "BASELINE_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "❌ Baseline generation failed - summary.json not found or empty"
+            echo "baseline_exists=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      # Step 11: Release Lock (always run if we acquired it)
+      - name: Release Lock
+        if: ${{ always() && steps.acquire-lock.outputs.lock_acquired == 'true' }}
+        shell: bash
+        run: |
+          if [[ -d "$LOCK_DIR" ]]; then
+            HOLDER=$(cat "${LOCK_DIR}/holder" 2>/dev/null || echo "unknown")
+            EXPECTED="${{ github.run_id }}-${{ github.run_attempt }}"
+
+            if [[ "$HOLDER" == "$EXPECTED" ]] || [[ "$HOLDER" == "unknown" ]]; then
+              rm -rf "$LOCK_DIR" 2>/dev/null || true
+              echo "🔓 Lock released"
+            else
+              echo "⚠️  Lock held by another process, not releasing"
+            fi
+          fi
+
+      # Step 12: Final Status (always run)
+      - name: Final Status
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          echo "📋 Final status:"
+          echo "  - Baseline exists: ${BASELINE_EXISTS:-unknown}"
+          echo "  - Commit ID: ${{ steps.set-commit.outputs.commit_id }}"
+          echo "  - Baseline path: ${{ steps.set-commit.outputs.baseline_path }}"
+          echo "  - Latest path: ${{ steps.set-commit.outputs.latest_dir }}/summary.json"
+
+          if [[ -f "$BASELINE_SUMMARY" ]] && [[ -s "$BASELINE_SUMMARY" ]]; then
+            SIZE=$(stat -c%s "$BASELINE_SUMMARY" 2>/dev/null || echo "N/A")
+            echo "📄 Summary file size: ${SIZE} bytes"
+          fi
+
+          if [[ -f "${LATEST_DIR}/summary.json" ]] && [[ -s "${LATEST_DIR}/summary.json" ]]; then
+            echo "✅ Latest baseline is available"
+          fi
+
+  # Job 2: main job - runs for schedule, push, and pull_request
   nv36x-unit-test:
     runs-on: nvidia3.6
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
-      - name: Setup environment
+      - name: Setup Environment
+        id: setup
         shell: bash
         run: |
           source ~/env.sh
-          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=' >> $GITHUB_ENV || true
+          GPU_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+          echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
+          echo "GPU devices: $GPU_DEVICES"
+          echo "FlagGems tag: $FLAGGEMS_TAG"
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -59,21 +258,25 @@ jobs:
         with:
           backend: nvidia
 
+      - name: Clone FlagGems Repo
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        with:
+          repo-url: 'https://github.com/flagos-ai/FlagGems.git'
+          ref: ${{ env.FLAGGEMS_TAG }}
+          clone-dir: ${{ env.FLAGGEMS_CI_DIR }}
+
+      - name: Install FlagGems
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+        shell: bash
+        run: |
+          cd ${{ env.FLAGGEMS_CI_DIR }}/FlagGems
+          python3 -m pip uninstall -y flag_gems --break-system-packages || true
+          pip install -v -e . --no-build-isolation --no-deps
+
       - name: Cleanup FlagTree Environment
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
-
-      - name: Detect Target Branch
-        shell: bash
-        run: |
-          set -x
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TARGET_BRANCH="${{ github.base_ref }}"
-          else
-            TARGET_BRANCH="${{ github.ref_name }}"
-          fi
-          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
-          echo "TARGET_BRANCH=$TARGET_BRANCH"
 
       - name: Build FlagTree
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
@@ -158,3 +361,27 @@ jobs:
           python3 python/tutorials/tle/raw/cuda/02-fused-softmax.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
+
+      - name: Run FlagGems Test
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && github.event_name == 'pull_request' }}
+        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        id: run-flaggems-test
+        with:
+          flaggems-path: ${{ env.FLAGGEMS_CI_DIR }}/FlagGems
+          gpus: ${{ steps.setup.outputs.gpus }}
+          output-base-dir: ${{ env.FLAGGEMS_CI_DIR }}/PR
+          pr-number: '${{ github.event.pull_request.number }}'
+          run-script: 'tools/ci/ci_run_tests.py'
+          skip-file: 'tools/ci/skip_list.yaml'
+          first-parameter-only: 'true'
+
+      - name: Compare with Latest Baseline
+        if: ${{ steps.check_backend.outputs.should_skip != 'true' && github.event_name == 'pull_request' }}
+        uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
+        with:
+          baseline-dir: ${{ env.FLAGGEMS_CI_DIR }}/Baseline/latest
+          candidate-dir: ${{ steps.run-flaggems-test.outputs.test-output-dir }}
+          baseline-date: ''
+          compare-script: 'tools/ci/compare_test_result.py'
+          working-directory: ${{ env.FLAGGEMS_CI_DIR }}/FlagGems
+          fail-on-missing-baseline: 'true'

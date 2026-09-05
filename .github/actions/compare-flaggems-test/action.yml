@@ -74,7 +74,7 @@ runs:
           BASELINE_DATE=$(date +%Y-%m-%d)
         fi
 
-        BASELINE_JSON="${{ inputs.baseline-dir }}/${BASELINE_DATE}/summary.json"
+        BASELINE_JSON="${{ inputs.baseline-dir }}/summary.json"
         CANDIDATE_JSON="${{ inputs.candidate-dir }}/summary.json"
 
         echo "Baseline: $BASELINE_JSON"
