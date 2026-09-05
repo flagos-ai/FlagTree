@@ -257,7 +257,7 @@ class TestDistributedBarrierScope:
     @pytest.mark.require_tle("distributed_barrier")
     @pytest.mark.parametrize(
         ("space", "mesh", "required_level"),
-        (("inter", tle.device_mesh({"device": 2}), "node"), ("node", tle.device_mesh({"device": 2}), "node"),
+        (("inter", tle.device_mesh({"device": 2}), "node"), ("world", tle.device_mesh({"device": 2}), "node"),
          ("device", tle.device_mesh({"node": 2}), "device")),
     )
     def test_flagcx_barrier_requires_matching_mesh_axis(self, space, mesh, required_level):
@@ -282,6 +282,7 @@ class TestDistributedBarrierScope:
         with pytest.raises(ValueError, match="device_dptr is required"):
             tle.distributed_barrier(mesh=mesh, space="world", _semantic=_FakeSemantic())
 
+
     def test_distributed_barrier_full_cluster_mesh(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 1)]})
         semantic = _FakeSemantic()
@@ -302,6 +303,7 @@ class TestDistributedBarrierScope:
         assert args[1] == [2]
         assert args[2] == [1]
         assert args[3] == [0, 1]
+
 
     def test_distributed_barrier_submesh_requires_group_aware_builder(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
@@ -353,9 +355,16 @@ class TestDistributedBarrierScope:
         assert group.axes == (1, )
         assert group.mask == (0, 1)
 
-    def test_infer_submesh_barrier_group_full_mesh_returns_false(self):
+    def test_infer_submesh_barrier_group_full_mesh_returns_none(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
-        assert _is_cluster_submesh(mesh) is False
+        assert _is_cluster_submesh(mesh) is None
+
+    def test_is_cluster_submesh_returns_analysis(self):
+        mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+        analysis = _is_cluster_submesh(mesh[0, :])
+        assert analysis is not None
+        assert analysis.cluster_axes == (0, 1)
+        assert analysis.cluster_members_by_outer_coord == {(): {(0, 0), (0, 1)}}
 
     def test_infer_hierarchical_submesh_uses_cluster_local_mask(self):
         mesh = tle.device_mesh({

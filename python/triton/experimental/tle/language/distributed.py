@@ -680,16 +680,30 @@ def _collect_cluster_members_by_outer_coord(
     return cluster_axes, cluster_members_by_outer_coord
 
 
-def _is_cluster_submesh(mesh: device_mesh) -> bool:
+@dataclass(frozen=True)
+class _ClusterMeshAnalysis:
+    cluster_axes: tuple[int, ...]
+    cluster_members_by_outer_coord: dict[tuple[int, ...], set[tuple[int, ...]]]
+
+
+def _is_cluster_submesh(mesh: device_mesh) -> _ClusterMeshAnalysis | None:
+    """Return the cluster-submesh analysis, or ``None`` if this is not one."""
     if _mesh_uses_grid_barrier(mesh):
-        return False
+        return None
 
     cluster_axes, cluster_members_by_outer_coord = _collect_cluster_members_by_outer_coord(mesh)
     if not cluster_axes:
-        return False
+        return None
 
     cluster_size = _prod(mesh.launch_shape[axis] for axis in cluster_axes)
-    return any(len(cluster_members) < cluster_size for cluster_members in cluster_members_by_outer_coord.values())
+    if not any(len(cluster_members) < cluster_size
+               for cluster_members in cluster_members_by_outer_coord.values()):
+        return None
+
+    return _ClusterMeshAnalysis(
+        cluster_axes=cluster_axes,
+        cluster_members_by_outer_coord=cluster_members_by_outer_coord,
+    )
 
 
 def _mesh_uses_grid_barrier(mesh: device_mesh) -> bool:
@@ -714,6 +728,7 @@ class _BarrierGroupDescriptor:
 def _infer_submesh_barrier_group(
     mesh: device_mesh,
     cluster_dims: Sequence[int],
+    analysis: _ClusterMeshAnalysis | None = None,
 ) -> _BarrierGroupDescriptor:
     if not mesh.physical_ids:
         raise ValueError("cannot infer barrier group from an empty mesh")
@@ -721,7 +736,11 @@ def _infer_submesh_barrier_group(
     if not mesh.dim_names:
         raise NotImplementedError("scalar sub-mesh barrier is not implemented yet; provide at least one sliced axis")
 
-    cluster_axes, cluster_members_by_outer_coord = _collect_cluster_members_by_outer_coord(mesh)
+    if analysis is None:
+        cluster_axes, cluster_members_by_outer_coord = _collect_cluster_members_by_outer_coord(mesh)
+    else:
+        cluster_axes = analysis.cluster_axes
+        cluster_members_by_outer_coord = analysis.cluster_members_by_outer_coord
 
     launch_name_to_axis = {name: i for i, name in enumerate(mesh.launch_dim_names)}
     if any(name not in launch_name_to_axis for name in mesh.dim_names):
@@ -975,9 +994,13 @@ def _emit_cluster_submesh_barrier(subgroup: _BarrierGroupDescriptor, builder) ->
             f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}") from exc
 
 
-def _handle_cluster_submesh_barrier(mesh: device_mesh, _semantic) -> None:
+def _handle_cluster_submesh_barrier(
+    mesh: device_mesh,
+    _semantic,
+    analysis: _ClusterMeshAnalysis | None = None,
+) -> None:
     cluster_dims = _mesh_to_cluster_dims(mesh)
-    subgroup = _infer_submesh_barrier_group(mesh, cluster_dims)
+    subgroup = _infer_submesh_barrier_group(mesh, cluster_dims, analysis)
     _apply_mesh_cluster_launch(mesh, _semantic)
     _emit_cluster_submesh_barrier(subgroup, _semantic.builder)
 
@@ -1016,8 +1039,10 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
     if mesh is not None and not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
 
-    if mesh is not None and _is_cluster_submesh(mesh):
-        return _handle_cluster_submesh_barrier(mesh, _semantic)
+    if mesh is not None:
+        cluster_analysis = _is_cluster_submesh(mesh)
+        if cluster_analysis is not None:
+            return _handle_cluster_submesh_barrier(mesh, _semantic, cluster_analysis)
 
     if _handle_explicit_space_barrier(mesh, space, device_dptr=device_dptr, barrier_kind=barrier_kind,
                                       group_kind=group_kind, index=index, context_id=context_id, order=order,
