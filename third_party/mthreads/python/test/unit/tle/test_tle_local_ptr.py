@@ -43,6 +43,43 @@ def _local_ptr_full_view_kernel(out_ptr):
 
 
 @triton.jit
+def _local_ptr_reduction_round_trip_kernel(x_ptr, out_ptr, ROWS: tl.constexpr, COLS: tl.constexpr,
+                                           FULL_INDICES: tl.constexpr):
+    rows = tl.arange(0, ROWS)
+    cols = tl.arange(0, COLS)
+    values = tl.load(x_ptr + rows[:, None] * COLS + cols[None, :])
+    reduced = tl.sum(values, axis=1)
+    smem = tle.gpu.alloc((ROWS, ), dtype=tl.float32, nv_mma_shared_layout=False)
+    if FULL_INDICES:
+        ptr = tle.gpu.local_ptr(smem, (rows, ))
+    else:
+        ptr = tle.gpu.local_ptr(smem)
+    tl.store(ptr, reduced)
+    loaded = tl.load(ptr)
+    tl.store(out_ptr + rows, loaded * 2.0 + rows.to(tl.float32))
+
+
+@triton.jit
+def _local_ptr_full_view_atomic_kernel(x_ptr, out_ptr, ROWS: tl.constexpr, COLS: tl.constexpr):
+    rows = tl.arange(0, ROWS)
+    cols = tl.arange(0, COLS)
+    values = tl.load(x_ptr + rows[:, None] * COLS + cols[None, :])
+    increments = tl.sum(values, axis=1)
+    init = rows * 3 - 97
+    smem = tle.gpu.alloc((ROWS, ), dtype=tl.int32, init_value=init, nv_mma_shared_layout=False)
+    ptr = tle.gpu.local_ptr(smem)
+    # The reduction supplies the atomic value and mask in a different layout
+    # from the full-view loads and their pointwise users.
+    active = increments > 0
+    before = tl.load(ptr)
+    old = tl.atomic_add(ptr, increments, mask=active, sem="relaxed", scope="cta")
+    after = tl.load(ptr)
+    tl.store(out_ptr + rows, before * 2 + rows)
+    tl.store(out_ptr + ROWS + rows, tl.where(active, old, -100000))
+    tl.store(out_ptr + 2 * ROWS + rows, after * 3 - rows)
+
+
+@triton.jit
 def _local_ptr_axpy_kernel(x_ptr, y_ptr, out_ptr, numel, alpha, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
@@ -631,12 +668,35 @@ def test_tle_local_ptr_scalar_runtime_store_load():
 
 
 @pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
-def test_tle_local_ptr_full_view_runtime_round_trip():
-    out = torch.empty((16, ), device="musa", dtype=torch.float32)
+def test_tle_local_ptr_full_view_atomic_runtime_round_trip():
+    rows, cols = 64, 32
+    x = ((torch.arange(rows * cols, dtype=torch.int32) % 37) - 18).reshape(rows, cols)
+    out = torch.empty((3, rows), device="musa", dtype=torch.int32)
 
-    _local_ptr_full_view_kernel[(1, )](out, num_warps=1)
+    _local_ptr_full_view_atomic_kernel[(1, )](x.to("musa"), out, ROWS=rows, COLS=cols, num_warps=4)
 
-    ref = torch.arange(0, 16, dtype=torch.float32) + 7.0
+    row_ids = torch.arange(rows, dtype=torch.int32)
+    initial = row_ids * 3 - 97
+    increments = x.sum(dim=1, dtype=torch.int32)
+    active = increments > 0
+    updated = initial + torch.where(active, increments, 0)
+    old = torch.where(active, initial, -100000)
+    expected = torch.stack((initial * 2 + row_ids, old, updated * 3 - row_ids))
+    torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+@pytest.mark.parametrize("full_indices", [False, True])
+def test_tle_local_ptr_full_view_runtime_round_trip(full_indices):
+    rows, cols = 64, 32
+    # Exactly representable, nonuniform values expose lane/row layout mistakes.
+    x = ((torch.arange(rows * cols, dtype=torch.float32) % 37) - 18).reshape(rows, cols)
+    out = torch.empty((rows, ), device="musa", dtype=torch.float32)
+
+    _local_ptr_reduction_round_trip_kernel[(1, )](x.to("musa"), out, ROWS=rows, COLS=cols, FULL_INDICES=full_indices,
+                                                  num_warps=4)
+
+    ref = x.sum(dim=1) * 2.0 + torch.arange(rows, dtype=torch.float32)
     torch.testing.assert_close(out.cpu(), ref, rtol=0, atol=0)
 
 
