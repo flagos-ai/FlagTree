@@ -5,6 +5,7 @@
 #include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUToLLVM/Utility.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include <cstdlib>
 #ifdef __TLE__
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #endif // __TLE__
@@ -137,6 +138,9 @@ struct PH1TMESwizzleValueConfig {
   Value granularityBytes;
   Value strideBytes;
   Value lineBytes;
+  int32_t granularityBytesInt = 0;
+  int32_t strideBytesInt = 0;
+  int32_t lineBytesInt = 0;
   bool hasSwizzle = false;
 };
 
@@ -153,12 +157,15 @@ resolvePH1TMESwizzleValueConfig(Location loc, MemDescType memDescTy,
                         triton::musa::TMESwizzleLine line) {
     config.hasSwizzle =
         granularity != triton::musa::TMESwizzleGranularity::SG_NONE;
-    config.granularityBytes = b.i32_val(static_cast<int32_t>(
-        triton::musa::getSwizzleGranularityBytes(granularity)));
-    config.strideBytes = b.i32_val(
-        static_cast<int32_t>(triton::musa::getSwizzleStrideBytes(stride)));
-    config.lineBytes = b.i32_val(
-        static_cast<int32_t>(triton::musa::getSwizzleLineBytes(line)));
+    config.granularityBytesInt = static_cast<int32_t>(
+        triton::musa::getSwizzleGranularityBytes(granularity));
+    config.strideBytesInt =
+        static_cast<int32_t>(triton::musa::getSwizzleStrideBytes(stride));
+    config.lineBytesInt =
+        static_cast<int32_t>(triton::musa::getSwizzleLineBytes(line));
+    config.granularityBytes = b.i32_val(config.granularityBytesInt);
+    config.strideBytes = b.i32_val(config.strideBytesInt);
+    config.lineBytes = b.i32_val(config.lineBytesInt);
   };
 
   auto swizzle =
@@ -180,6 +187,10 @@ applyPH1TMESwizzleToByteAddressValue(TritonLLVMOpBuilder &b, Value addrBytes,
   if (!config.hasSwizzle)
     return addrBytes;
 
+  // NOTE: a single-XOR reformulation (swz(a) = a ^ (((a>>log2L)&(S-1))<<log2G))
+  // is mathematically equivalent but measures slower end to end: the
+  // data-dependent XOR blocks LLVM's address-expression folding that the
+  // decompose/recompose form permits. Keep the long form.
   Value lineOffset = b.urem(addrBytes, config.lineBytes);
   Value lineId = b.udiv(addrBytes, config.lineBytes);
   Value swizzleGroup = b.udiv(config.strideBytes, config.granularityBytes);
@@ -201,7 +212,7 @@ struct PH1SwizzledSharedAccess {
   Type llvmElemTy;
   Value smemElemBase;
   Value smemOffsetBytes;
-  Value affineOffsetElems;
+  SmallVector<Value> affineOffsetVals; // per-dim logical offsets of the view
   Value elemBytesVal;
   unsigned elemBytes = 0;
   unsigned rank = 0;
@@ -274,7 +285,14 @@ getPH1SwizzledSharedAccess(Location loc, MemDescType memDescTy,
   access.llvmElemTy = llvmElemTy;
   access.smemElemBase = b.bitcast(smemObjBase, ptr_ty(ctx, 3));
   access.smemOffsetBytes = smemOffsetBytes;
-  access.affineOffsetElems = smemObj.getShmemOffset(loc, rewriter, memDescTy);
+  // For subslice views the logical per-dim offsets must be added to the
+  // coordinates BEFORE the PH1 linearization: the PH1 physical layout groups
+  // the leading dim into 256B column-groups (see linearizePH1TMELinearCoords),
+  // so a column offset of e.g. 128 elems is NOT at linear offset 128 -- it
+  // starts a new group at rows*groupWidth. XOR-composing the standard-layout
+  // shmem offset (as the generic path does) mis-addresses every access.
+  if (hasAffineOffset)
+    access.affineOffsetVals = smemObj.getOffsets();
   access.elemBytesVal = b.i32_val(static_cast<int32_t>(elemBytes));
   access.elemBytes = elemBytes;
   access.rank = rank;
@@ -295,6 +313,17 @@ static FailureOr<Value> getPH1SwizzledSharedElementPtr(
     return failure();
 
   auto b = TritonLLVMOpBuilder(loc, rewriter);
+  // Globalize the view-local coordinates by adding the subslice's logical
+  // offsets, so the (grouped, non-row-major) PH1 linearization and the
+  // absolute-address swizzle both see true buffer coordinates.
+  SmallVector<Value> gcoord(coord.begin(), coord.end());
+  if (access.hasAffineOffset) {
+    if (access.affineOffsetVals.size() != gcoord.size())
+      return failure();
+    for (unsigned i = 0; i < gcoord.size(); ++i)
+      gcoord[i] = b.add(gcoord[i], access.affineOffsetVals[i]);
+  }
+  coord = gcoord;
   FailureOr<Value> lmsOffsetInElem = failure();
   if (access.rank == 3) {
     SmallVector<Value, 2> matrixCoord{coord[access.rank - 2],
@@ -316,8 +345,6 @@ static FailureOr<Value> getPH1SwizzledSharedElementPtr(
     return failure();
 
   Value offsetInElem = *lmsOffsetInElem;
-  if (access.hasAffineOffset)
-    offsetInElem = b.xor_(offsetInElem, access.affineOffsetElems);
 
   Value lmsAddrInByte =
       b.add(b.mul(offsetInElem, access.elemBytesVal), access.smemOffsetBytes);
@@ -329,6 +356,310 @@ static FailureOr<Value> getPH1SwizzledSharedElementPtr(
   Value ptr = b.gep(access.smemElemBase.getType(), access.llvmElemTy,
                     access.smemElemBase, swizzledElemOffset);
   return ptr;
+}
+
+// Widest legal vector for software accesses to a PH1-swizzled buffer: the
+// swizzle XOR permutes whole granules, so addresses stay contiguous within
+// one granule; combine that with the register layout's contiguity along the
+// shared minor dimension. Scalar (1) when the enumeration cannot be proven
+// chunk-contiguous.
+static unsigned getPH1SoftwareAccessVec(RankedTensorType regTy,
+                                        const PH1SwizzledSharedAccess &access,
+                                        uint32_t regMask) {
+  if (regMask != 0)
+    return 1;
+  int32_t granBytes = access.swizzleConfig.granularityBytesInt;
+  if (granBytes <= 0 || access.elemBytes == 0)
+    return 1;
+  unsigned granElems = static_cast<unsigned>(granBytes) / access.elemBytes;
+  if (granElems <= 1)
+    return 1;
+  unsigned minor = access.order.front();
+  auto contig = triton::gpu::getContigPerThread(regTy);
+  if (minor >= contig.size())
+    return 1;
+  auto regOrder = triton::gpu::getOrder(regTy);
+  if (regOrder.empty() || regOrder.front() != minor)
+    return 1;
+  unsigned vec = std::min<unsigned>(contig[minor], granElems);
+  if (vec <= 1)
+    return 1;
+  return 1u << llvm::Log2_32(vec);
+}
+
+// ---- PH1 LinearLayout-based lowering ---------------------------------------
+// Fast path for software accesses to PH1-swizzled buffers: compose the
+// register layout with the TRUE physical shared layout (256B-group layout +
+// absolute swizzle, which is XOR-linear over power-of-two shapes), then emit
+// through the generic lowerLdStShared machinery. Every address becomes
+// threadBase ^ compile-time-constant -- one live base register per access
+// site. The runtime decompose/recompose chains of the fallback path keep
+// dozens of extra values live per site; the resulting register pressure
+// (private-memory spills), not the ALU count, is the dominant cost.
+// Preconditions (otherwise fall back to the chain-based path):
+//  * rank-2 view with power-of-two view/physical dims and element size
+//  * subslice offsets constant and aligned to the view extent (carry-free,
+//    so logical add == XOR and the swizzle distributes)
+//  * the allocation is aligned to the swizzle window (enforced where the
+//    swizzled encoding is attached), making buffer-relative swizzling equal
+//    to the absolute swizzling the SQMMA hardware applies.
+struct PH1LinearLayoutAccess {
+  int64_t affineElemOffset = 0; // swizzled view offset in elements (constant
+                                // case; dynOffsets empty)
+  SmallVector<Value, 2> dynOffsets; // runtime per-dim view offsets (dynamic
+                                    // case, e.g. ring-rotated buffer structs)
+  uint64_t maskSpanElems = 0;       // bits any legal view offset may toggle
+  unsigned granElems = 1;           // swizzle granularity, in elements
+  unsigned elemBytes = 1;
+  SmallVector<int64_t, 2> physShape;
+  SmallVector<unsigned, 2> order;
+  triton::musa::ResolvedTMESwizzleConfig swizzleCfg{};
+};
+
+// Bail out of the LinearLayout fast path; the reason string documents the
+// precondition that failed and the access falls back to the scalar chain.
+#define PH1_LL_BAIL(reason) return failure()
+
+static std::optional<int64_t> getConstantIntValue(Value v, unsigned depth = 0) {
+  if (!v || depth > 8)
+    return std::nullopt;
+  if (auto cst = v.getDefiningOp<LLVM::ConstantOp>()) {
+    if (auto attr = dyn_cast<IntegerAttr>(cst.getValue()))
+      return attr.getInt();
+    return std::nullopt;
+  }
+  IntegerAttr attr;
+  if (matchPattern(v, m_Constant(&attr)))
+    return attr.getInt();
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+  auto binop = [&](auto fold) -> std::optional<int64_t> {
+    auto lhs = getConstantIntValue(def->getOperand(0), depth + 1);
+    auto rhs = getConstantIntValue(def->getOperand(1), depth + 1);
+    if (!lhs || !rhs)
+      return std::nullopt;
+    return fold(*lhs, *rhs);
+  };
+  if (isa<LLVM::AddOp>(def))
+    return binop([](int64_t a, int64_t b) { return a + b; });
+  if (isa<LLVM::SubOp>(def))
+    return binop([](int64_t a, int64_t b) { return a - b; });
+  if (isa<LLVM::MulOp>(def))
+    return binop([](int64_t a, int64_t b) { return a * b; });
+  if (isa<LLVM::ShlOp>(def))
+    return binop([](int64_t a, int64_t b) { return a << b; });
+  if (isa<LLVM::OrOp>(def))
+    return binop([](int64_t a, int64_t b) { return a | b; });
+  if (isa<LLVM::XOrOp>(def))
+    return binop([](int64_t a, int64_t b) { return a ^ b; });
+  if (isa<LLVM::AndOp>(def))
+    return binop([](int64_t a, int64_t b) { return a & b; });
+  if (isa<LLVM::SExtOp, LLVM::ZExtOp, LLVM::TruncOp>(def))
+    return getConstantIntValue(def->getOperand(0), depth + 1);
+  return std::nullopt;
+}
+
+static FailureOr<PH1LinearLayoutAccess>
+getPH1LinearLayoutAccess(MemDescType memDescTy, SharedMemoryObject &smemObj) {
+  if (memDescTy.getRank() != 2)
+    PH1_LL_BAIL("rank != 2");
+  auto shape = memDescTy.getShape();
+  auto physShape = memDescTy.getAllocShape().take_back(2);
+  for (int64_t d : shape)
+    if (d <= 0 || !llvm::isPowerOf2_64(static_cast<uint64_t>(d)))
+      PH1_LL_BAIL("non-pow2 view dim");
+  for (int64_t d : physShape)
+    if (d <= 0 || !llvm::isPowerOf2_64(static_cast<uint64_t>(d)))
+      PH1_LL_BAIL("non-pow2 physical dim");
+  unsigned elemBytes =
+      std::max<unsigned>(1, memDescTy.getElementTypeBitWidth() / 8);
+  if (!llvm::isPowerOf2_64(elemBytes))
+    PH1_LL_BAIL("non-pow2 elem bytes");
+
+  auto swizzle = triton::musa::resolveTMESwizzleConfigFromEncoding(memDescTy);
+  if (failed(swizzle) || swizzle->swizzleGranularity ==
+                             triton::musa::TMESwizzleGranularity::SG_NONE)
+    PH1_LL_BAIL("unresolvable swizzle config");
+  int64_t granBytes =
+      triton::musa::getSwizzleGranularityBytes(swizzle->swizzleGranularity);
+  if (granBytes < elemBytes)
+    PH1_LL_BAIL("granule smaller than element");
+  // The emitted `base + swz(coords)` matches the hardware's absolute
+  // `swz(base + coords)` only while base is swizzle-window aligned.
+  // Allocations are aligned that way; a multibuffered slot sits one tile in,
+  // so the tile has to span whole windows too.
+  int64_t windowBytes =
+      triton::musa::getSwizzleLineBytes(swizzle->swizzleLine) *
+      (triton::musa::getSwizzleStrideBytes(swizzle->swizzleStride) / granBytes);
+  int64_t viewBytes = elemBytes;
+  for (int64_t d : memDescTy.getShape())
+    viewBytes *= d;
+  if (windowBytes <= 0 || (viewBytes % windowBytes) != 0)
+    PH1_LL_BAIL("tile does not span whole swizzle windows");
+
+  auto order = triton::gpu::getOrder(memDescTy);
+  if (order.size() != 2)
+    PH1_LL_BAIL("order rank mismatch");
+  SmallVector<int64_t, 4> physShapeVec(physShape.begin(), physShape.end());
+
+  auto swizzleConstElems = [&](ArrayRef<int64_t> coords) -> FailureOr<int64_t> {
+    auto linear = triton::musa::linearizePH1TMELinearCoords(
+        coords, physShapeVec, order, elemBytes);
+    if (failed(linear))
+      return failure();
+    int64_t swzBytes = triton::musa::applyPH1TMESwizzleToByteAddress(
+        *linear * elemBytes, swizzle->swizzleGranularity,
+        swizzle->swizzleStride, swizzle->swizzleLine);
+    if (swzBytes < 0 || (swzBytes % elemBytes) != 0)
+      return failure();
+    return swzBytes / elemBytes;
+  };
+
+  PH1LinearLayoutAccess access;
+  access.granElems = static_cast<unsigned>(granBytes / elemBytes);
+  access.elemBytes = elemBytes;
+  access.physShape.assign(physShape.begin(), physShape.end());
+  access.order.assign(order.begin(), order.end());
+  access.swizzleCfg = *swizzle;
+
+  if (SharedMemoryObject::isAffineSharedMemoryAccess(memDescTy)) {
+    auto offVals = smemObj.getOffsets();
+    if (offVals.size() != 2)
+      PH1_LL_BAIL("offset rank mismatch");
+    SmallVector<int64_t, 2> offs(2, 0);
+    bool allConst = true;
+    for (unsigned i = 0; i < 2; ++i) {
+      auto c = getConstantIntValue(offVals[i]);
+      if (!c) {
+        allConst = false;
+        break;
+      }
+      offs[i] = *c;
+      // carry-free requirement: view offset bits must be disjoint from the
+      // in-view coordinate bits so that add == xor after linearization
+      if (offs[i] & (shape[i] - 1))
+        PH1_LL_BAIL("carry-prone view offset");
+      if (offs[i] < 0 || offs[i] + shape[i] > physShape[i])
+        PH1_LL_BAIL("view exceeds physical shape");
+    }
+    if (allConst) {
+      auto swzElems = swizzleConstElems(offs);
+      if (failed(swzElems))
+        PH1_LL_BAIL("swizzled offset not element-aligned");
+      access.affineElemOffset = *swzElems;
+      access.maskSpanElems = static_cast<uint64_t>(*swzElems);
+      return access;
+    }
+    // Runtime view offsets (e.g. buffer structs rotated through loop
+    // iter_args). The subslice contract requires offsets to be multiples of
+    // the view extent -- the same alignment the generic affine-offset path
+    // assumes -- so XOR composition stays valid; emit ONE linearize+swizzle
+    // chain per access site (emitPH1AffineElemOffset) and conservatively
+    // span every offset an aligned view could take.
+    access.dynOffsets.assign(offVals.begin(), offVals.end());
+    uint64_t span = 0;
+    for (unsigned i = 0; i < 2; ++i) {
+      for (int64_t m = shape[i]; m + shape[i] <= physShape[i]; m <<= 1) {
+        SmallVector<int64_t, 2> coords(2, 0);
+        coords[i] = m;
+        auto bit = swizzleConstElems(coords);
+        if (failed(bit))
+          PH1_LL_BAIL("swizzled offset basis not element-aligned");
+        span |= static_cast<uint64_t>(*bit);
+      }
+    }
+    access.maskSpanElems = span;
+    return access;
+  }
+  return access;
+}
+
+// Emit the (element-unit) affine offset for a PH1 LL access: a constant for
+// static views, or one linearize+swizzle chain PER ACCESS SITE (not per
+// element) for runtime view offsets.
+static FailureOr<Value>
+emitPH1AffineElemOffset(Location loc, ConversionPatternRewriter &rewriter,
+                        MemDescType memDescTy,
+                        const PH1LinearLayoutAccess &access) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  if (access.dynOffsets.empty())
+    return Value(b.i32_val(static_cast<int32_t>(access.affineElemOffset)));
+  auto valueCfg = resolvePH1TMESwizzleValueConfig(loc, memDescTy, rewriter);
+  if (failed(valueCfg))
+    return failure();
+  SmallVector<int64_t, 4> physShapeVec(access.physShape.begin(),
+                                       access.physShape.end());
+  auto lin = triton::musa::linearizePH1TMELinearCoords(
+      b, access.dynOffsets, physShapeVec, access.order, access.elemBytes);
+  if (failed(lin))
+    return failure();
+  Value elemBytesVal = b.i32_val(static_cast<int32_t>(access.elemBytes));
+  Value bytes = b.mul(*lin, elemBytesVal);
+  Value swz = applyPH1TMESwizzleToByteAddressValue(b, bytes, *valueCfg);
+  return Value(b.udiv(swz, elemBytesVal));
+}
+
+// Build the PH1 shared LinearLayout from the PHYSICAL (alloc-shaped) type.
+// Resolving from a narrowed view type can yield a different-but-self-
+// consistent carrier config (the issue-doc SS15 bug class: a [64,128] view of
+// a [64,256] bf16 buffer resolves SG_32B while the buffer and the SQMMA
+// hardware use SG_16B), which mis-addresses every view access.
+static LinearLayout getPH1PhysicalSharedLinearLayout(MemDescType memDescTy) {
+  auto physShape = memDescTy.getAllocShape().take_back(memDescTy.getRank());
+  auto physTy = triton::gpu::MemDescType::get(
+      physShape, memDescTy.getElementType(), memDescTy.getEncoding(),
+      memDescTy.getMemorySpace(), memDescTy.getMutableMemory());
+  return triton::musa::getMUSASharedLinearLayoutOrGeneric(physTy);
+}
+
+// Zero-extend a register layout's output dims from the view shape to the
+// physical (alloc) shape so that composition against the alloc-shaped PH1
+// layout is exact -- do NOT rely on invertAndCompose trimming semantics here.
+static LinearLayout extendRegLayoutToPhysShape(const LinearLayout &ll,
+                                               MLIRContext *ctx,
+                                               ArrayRef<int64_t> physShape) {
+  auto names = triton::standardOutDimNames(ctx, physShape.size());
+  LinearLayout canon = ll.transposeOuts(names);
+  SmallVector<std::pair<StringAttr, int32_t>> outDims;
+  for (auto [name, dim] : llvm::zip(names, physShape))
+    outDims.emplace_back(name, static_cast<int32_t>(dim));
+  return LinearLayout(canon.getBases(), outDims, /*requireSurjective=*/false);
+}
+
+static LogicalResult lowerPH1SwizzledViaLinearLayout(
+    Location loc, SharedMemoryObject smemObj, MemDescType memDescTy,
+    RankedTensorType regTy,
+    ArrayRef<Value> storeVals, // empty for load
+    SmallVector<Value> &loadedVals, ConversionPatternRewriter &rewriter,
+    const mlir::triton::MUSA::TargetInfo &targetInfo, Type llvmElemTy,
+    Operation *localLoadOp) {
+  auto llAccess = getPH1LinearLayoutAccess(memDescTy, smemObj);
+  if (failed(llAccess))
+    return failure();
+  auto *ctx = rewriter.getContext();
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto kReg = str_attr("register");
+  auto kLane = str_attr("lane");
+  auto kWarp = str_attr("warp");
+  auto kBlock = str_attr("block");
+  auto kOffset = str_attr("offset");
+  auto sharedLL = getPH1PhysicalSharedLinearLayout(memDescTy);
+  auto regLL = extendRegLayoutToPhysShape(toLinearLayout(regTy), ctx,
+                                          llAccess->physShape);
+  auto cvt = regLL.invertAndCompose(sharedLL);
+  if (!cvt.isTrivialOver({kBlock}))
+    return failure();
+  cvt = cvt.sublayout({kReg, kLane, kWarp}, {kOffset});
+  auto affineOffset =
+      emitPH1AffineElemOffset(loc, rewriter, memDescTy, *llAccess);
+  if (failed(affineOffset))
+    return failure();
+  loadedVals = lowerLdStShared(
+      loc, ctx, cvt, storeVals, llvmElemTy, smemObj.getBase(),
+      /*paddingShifts=*/{}, *affineOffset, llAccess->maskSpanElems, rewriter,
+      targetInfo, static_cast<int>(llAccess->granElems), localLoadOp);
+  return success();
 }
 
 static LogicalResult lowerPH1SwizzledSharedStoreFromTensor(
@@ -345,6 +676,13 @@ static LogicalResult lowerPH1SwizzledSharedStoreFromTensor(
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto *ctx = rewriter.getContext();
   auto inVals = ::mlir::unpackLLElements(loc, llvmSrc, rewriter);
+  {
+    SmallVector<Value> unusedLoaded;
+    if (succeeded(lowerPH1SwizzledViaLinearLayout(
+            loc, smemObj, memDescTy, regTy, inVals, unusedLoaded, rewriter,
+            targetInfo, llvmElemTy, /*localLoadOp=*/nullptr)))
+      return success();
+  }
   auto srcIndices =
       emitIndices(loc, rewriter, targetInfo, regTy.getEncoding(), regTy, false);
   if (srcIndices.size() != inVals.size())
@@ -355,6 +693,24 @@ static LogicalResult lowerPH1SwizzledSharedStoreFromTensor(
   Value threadPred =
       emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
   Value pred = threadPred ? threadPred : b.true_val();
+  unsigned vec = getPH1SoftwareAccessVec(regTy, *access, regMask);
+  if (vec > 1 && (srcIndices.size() % vec) == 0) {
+    // one address + one vector access per granule-aligned chunk instead of
+    // per element -- per-element scalar accesses were the dominant cost of
+    // this path (the swizzled address chain defeats LLVM's re-vectorizer)
+    auto vecTy = VectorType::get(vec, llvmElemTy);
+    for (unsigned idx = 0; idx < srcIndices.size(); idx += vec) {
+      auto ptr = getPH1SwizzledSharedElementPtr(loc, rewriter, *access,
+                                                srcIndices[idx]);
+      if (failed(ptr))
+        return failure();
+      Value v = LLVM::UndefOp::create(rewriter, loc, vecTy);
+      for (unsigned k = 0; k < vec; ++k)
+        v = b.insert_element(vecTy, v, inVals[idx + k], b.i32_val(k));
+      targetInfo.storeDShared(rewriter, loc, *ptr, std::nullopt, v, pred);
+    }
+    return success();
+  }
   for (auto [idx, coord] : llvm::enumerate(srcIndices)) {
     if (!isCanonicalIndex(static_cast<unsigned>(idx), regMask))
       continue;
@@ -381,10 +737,46 @@ static FailureOr<Value> lowerPH1SwizzledSharedLoadToTensor(
     return failure();
 
   auto b = TritonLLVMOpBuilder(loc, rewriter);
+  {
+    SmallVector<Value> loaded;
+    if (succeeded(lowerPH1SwizzledViaLinearLayout(
+            loc, smemObj, memDescTy, regTy, /*storeVals=*/{}, loaded, rewriter,
+            targetInfo, llvmElemTy, localLoadOp)))
+      return ::mlir::packLLElements(loc, typeConverter, loaded, rewriter,
+                                    regTy);
+  }
   auto srcIndices =
       emitIndices(loc, rewriter, targetInfo, regTy.getEncoding(), regTy, false);
   SmallVector<Value> outVals;
   outVals.reserve(srcIndices.size());
+  unsigned vec = getPH1SoftwareAccessVec(regTy, *access, /*regMask=*/0);
+  unsigned elemBits = access->elemBytes * 8;
+  if (vec > 1 && (srcIndices.size() % vec) == 0 && elemBits >= 8) {
+    // one wide integer load per granule-aligned chunk, lanes peeled with
+    // shift+trunc -- a vector load whose lanes are all individually
+    // extracted gets scalarized back to per-element loads by InstCombine,
+    // which is exactly the shape this path exists to avoid
+    Type intNTy = rewriter.getIntegerType(elemBits * vec);
+    Type laneIntTy = rewriter.getIntegerType(elemBits);
+    for (unsigned idx = 0; idx < srcIndices.size(); idx += vec) {
+      auto ptr = getPH1SwizzledSharedElementPtr(loc, rewriter, *access,
+                                                srcIndices[idx]);
+      if (failed(ptr))
+        return failure();
+      Value raw = targetInfo.loadDShared(rewriter, loc, *ptr, std::nullopt,
+                                         intNTy, b.true_val(), localLoadOp);
+      for (unsigned k = 0; k < vec; ++k) {
+        Value lane = raw;
+        if (k > 0)
+          lane = b.lshr(intNTy, raw, b.int_val(elemBits * vec, k * elemBits));
+        lane = b.trunc(laneIntTy, lane);
+        if (llvmElemTy != laneIntTy)
+          lane = b.bitcast(lane, llvmElemTy);
+        outVals.push_back(lane);
+      }
+    }
+    return ::mlir::packLLElements(loc, typeConverter, outVals, rewriter, regTy);
+  }
   for (ArrayRef<Value> coord : srcIndices) {
     auto ptr = getPH1SwizzledSharedElementPtr(loc, rewriter, *access, coord);
     if (failed(ptr))
@@ -1665,6 +2057,125 @@ struct AsyncCopyGlobalToLocalOpConversion
       if (outVec > 1)
         minVec = std::min(outVec, inVec);
       unsigned numElems = getTotalElemsPerThread(srcTy);
+
+      // LinearLayout fast path: every destination address becomes
+      // laneWarpBase ^ compile-time-constant instead of a per-chunk runtime
+      // globalize/linearize/swizzle chain (register-pressure relief; see
+      // lowerPH1SwizzledViaLinearLayout).
+      if (auto llAccess = getPH1LinearLayoutAccess(dstTy, smemObj);
+          succeeded(llAccess)) {
+        auto kReg = str_attr("register");
+        auto kLane = str_attr("lane");
+        auto kWarp = str_attr("warp");
+        auto kBlock = str_attr("block");
+        auto kOffset = str_attr("offset");
+        auto sharedLL = getPH1PhysicalSharedLinearLayout(dstTy);
+        auto srcLayoutExt =
+            extendRegLayoutToPhysShape(srcLayout, ctx, llAccess->physShape);
+        auto cvtFull = srcLayoutExt.invertAndCompose(sharedLL);
+        if (cvtFull.isTrivialOver({kBlock})) {
+          auto cvt = cvtFull.sublayout({kReg, kLane, kWarp}, {kOffset});
+          unsigned elemBits = llvmElemTy.getIntOrFloatBitWidth();
+          unsigned llNumElems = cvt.getInDimSize(kReg);
+          auto regImage = [&](unsigned i) {
+            return cvt
+                .apply({{kReg, static_cast<int32_t>(i)},
+                        {kLane, 0},
+                        {kWarp, 0}})[0]
+                .second;
+          };
+          // verify each emitted word is contiguous and aligned in the
+          // swizzled layout before committing to this path
+          // a runtime/static affine offset must not perturb sub-word bits,
+          // or the per-word alignment verified below would be violated
+          unsigned wordElemsMax =
+              std::max<unsigned>(1, 16 / llAccess->elemBytes);
+          bool llOk = llNumElems > 0 && vals.size() == llNumElems &&
+                      (llAccess->maskSpanElems & (wordElemsMax - 1)) == 0;
+          for (unsigned elemIdx = 0; llOk && elemIdx < llNumElems;) {
+            unsigned vecElems = std::min(minVec, llNumElems - elemIdx);
+            unsigned vecBitWidth = elemBits * vecElems;
+            unsigned bitWidth = std::min<unsigned>(
+                std::max<unsigned>(128, elemBits), vecBitWidth);
+            unsigned numWordElems = bitWidth / elemBits;
+            unsigned byteWidth = bitWidth / 8;
+            for (unsigned w = 0; llOk && w * numWordElems < vecElems; ++w) {
+              unsigned e0 = elemIdx + w * numWordElems;
+              int32_t img0 = regImage(e0);
+              if ((static_cast<int64_t>(img0) * (elemBits / 8)) % byteWidth)
+                llOk = false;
+              for (unsigned k = 1; llOk && k < numWordElems; ++k)
+                if (regImage(e0 + k) != img0 + static_cast<int32_t>(k))
+                  llOk = false;
+            }
+            elemIdx += vecElems;
+          }
+          auto affineOffVal =
+              llOk ? emitPH1AffineElemOffset(loc, rewriter, dstTy, *llAccess)
+                   : FailureOr<Value>(failure());
+          if (llOk && succeeded(affineOffVal)) {
+            auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
+            Value baseOff =
+                applyLinearLayout(
+                    loc, rewriter, cvt,
+                    {{kReg, b.i32_val(0)}, {kLane, laneId}, {kWarp, warpId}})[0]
+                    .second;
+            baseOff = b.xor_(baseOff, *affineOffVal);
+            auto smemPtrTy = ptr_ty(ctx, 3);
+            Value smemElemBase = b.bitcast(smemObj.getBase(), smemPtrTy);
+            for (unsigned elemIdx = 0; elemIdx < llNumElems;) {
+              unsigned vecElems = std::min(minVec, llNumElems - elemIdx);
+              unsigned vecBitWidth = elemBits * vecElems;
+              unsigned bitWidth = std::min<unsigned>(
+                  std::max<unsigned>(128, elemBits), vecBitWidth);
+              unsigned numWords = vecBitWidth / bitWidth;
+              unsigned numWordElems = bitWidth / elemBits;
+              unsigned byteWidth = bitWidth / 8;
+              for (unsigned wordIdx = 0; wordIdx < numWords; ++wordIdx) {
+                unsigned wordElemIdx = wordIdx * numWordElems;
+                int32_t constOff = regImage(elemIdx + wordElemIdx);
+                Value dstOff = b.xor_(baseOff, b.i32_val(constOff));
+                Value dst = b.gep(smemPtrTy, llvmElemTy, smemElemBase, dstOff);
+                Value packedVal = vals[elemIdx + wordElemIdx];
+                Value srcPtr = b.extract_val(ptrTy, packedVal, 0);
+                Value maskElem = b.extract_val(i1_ty, packedVal, 1);
+                Value copyPred = b.true_val();
+                if (usePred) {
+                  Value notMask = b.xor_(maskElem, b.true_val());
+                  Value zeroPred = notMask;
+                  Value zeroElem = LLVM::ConstantOp::create(
+                      rewriter, loc, llvmElemTy,
+                      rewriter.getZeroAttr(llvmElemTy));
+                  for (unsigned elem = 0; elem < numWordElems; ++elem) {
+                    Value dstPtr =
+                        b.gep(smemPtrTy, llvmElemTy, dst, b.i32_val(elem));
+                    LLVM::MUSA::llStore(rewriter, loc, dstPtr, zeroElem,
+                                        zeroPred);
+                  }
+                  copyPred = b.and_(copyPred, maskElem);
+                }
+                Value cpSize = b.i32_val(static_cast<int32_t>(byteWidth));
+                Value prefetchSize = b.i32_val(0);
+                emitIfPredicated(rewriter, loc, copyPred, [&]() {
+                  auto funcType = LLVM::LLVMFunctionType::get(
+                      void_ty(ctx),
+                      {dst.getType(), srcPtr.getType(), cpSize.getType(),
+                       prefetchSize.getType()},
+                      /*isVarArg=*/false);
+                  auto funcOp = appendOrGetExternFuncOp(
+                      rewriter, op, memcpyIntrinsic, funcType);
+                  LLVM::CallOp::create(
+                      rewriter, loc, funcOp,
+                      ValueRange{dst, srcPtr, cpSize, prefetchSize});
+                });
+              }
+              elemIdx += vecElems;
+            }
+            rewriter.replaceOp(op, b.i32_val(0));
+            return success();
+          }
+        }
+      }
 
       for (unsigned elemIdx = 0; elemIdx < numElems;) {
         unsigned vecElems = std::min(minVec, numElems - elemIdx);
