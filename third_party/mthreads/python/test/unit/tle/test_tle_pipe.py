@@ -6075,6 +6075,77 @@ def _run_pipe_benchmark():
         dict(K_TILES=k // bk, STAGES=stages, BLOCK_M=m, BLOCK_N=n, BLOCK_K=bk, num_warps=16, num_stages=1))
 
 
+@triton.jit
+def _grouped_tme_reuse_reader(reader, done, output_desc, results, ROLE: tl.constexpr, ROWS: tl.constexpr,
+                              COLS: tl.constexpr):
+    rows = tl.arange(0, ROWS)[:, None]
+    cols = tl.arange(0, COLS)[None, :]
+    out_cols = tl.arange(0, ROWS)[None, :]
+    for iteration in tl.range(3, num_stages=1):
+        ready = reader.wait(iteration)
+        ptr = tle.gpu.local_ptr(ready.slot.q)
+        q = tl.load(ptr)
+        product = tl.dot(q, tl.trans(q), out_dtype=tl.float32)
+        tl.store(results + (ROLE * 3 + iteration) * ROWS * ROWS + rows * ROWS + out_cols, product)
+        if ROLE == 1:
+            reader.release(iteration)
+            done_slot = done.acquire(iteration)
+            tl.store(tle.gpu.local_ptr(done_slot.flag), iteration)
+            done.commit(iteration)
+        else:
+            done.wait(iteration)
+            done.release(iteration)
+            # Both SQMMA readers have finished; the producer is still blocked
+            # by this reader's outstanding slot until the output copy completes.
+            tl.store(ptr, q + 1.0, tl.broadcast_to(cols % 3 != 0, (ROWS, COLS)))
+            tle.gpu.copy(ready.slot.q, output_desc, (ROWS, COLS), (iteration * ROWS, 0))
+            reader.release(iteration)
+
+
+@triton.jit
+def _grouped_tme_reuse_producer(writer, source_desc, ROWS: tl.constexpr, COLS: tl.constexpr):
+    for iteration in tl.range(3, num_stages=1):
+        slot = writer.acquire(iteration)
+        tle.gpu.copy(source_desc, slot.q, (ROWS, COLS), (iteration * ROWS, 0))
+        writer.commit(iteration)
+
+
+@triton.jit
+def _grouped_tme_reuse_ws_kernel(source_desc, output_desc, results, ROWS: tl.constexpr, COLS: tl.constexpr):
+    q = tle.gpu.alloc((1, ROWS, COLS), dtype=tl.float16, nv_mma_shared_layout=False)
+    flags = tle.gpu.alloc((1, 1), dtype=tl.int32, nv_mma_shared_layout=False)
+    pipe = tle.pipe(capacity=1, readers=("left", "right"), q=q)
+    done = tle.pipe(capacity=1, flag=flags)
+    tle.gpu.warp_specialize(
+        [
+            (_grouped_tme_reuse_reader, (pipe.reader("left"), done.reader(), output_desc, results, 0, ROWS, COLS)),
+            (_grouped_tme_reuse_reader, (pipe.reader("right"), done.writer(), output_desc, results, 1, ROWS, COLS)),
+            (_grouped_tme_reuse_producer, (pipe.writer(), source_desc, ROWS, COLS)),
+        ],
+        worker_num_warps=[4, 4],
+        worker_num_regs=[96, 24],
+    )
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+def test_musa_grouped_tme_multi_reader_reuse_runtime():
+    rows, cols = 32, 256
+    source = ((torch.arange(3 * rows * cols, dtype=torch.float32) % 13 - 6) / 8).reshape(3 * rows, cols).half()
+    src = source.to("musa")
+    dst = torch.empty_like(src)
+    results = torch.empty((2, 3, rows, rows), dtype=torch.float32, device="musa")
+    compiled = _grouped_tme_reuse_ws_kernel[(1, )](TensorDescriptor.from_tensor(src, [rows, cols]),
+                                                   TensorDescriptor.from_tensor(dst, [rows, cols]), results, ROWS=rows,
+                                                   COLS=cols, num_warps=4, num_stages=1)
+    q = source.reshape(3, rows, cols).float()
+    expected = q @ q.transpose(1, 2)
+    torch.testing.assert_close(results.cpu(), expected.unsqueeze(0).expand(2, -1, -1, -1), rtol=0, atol=0)
+    output = torch.where(torch.arange(cols) % 3 != 0, source + 1, source)
+    torch.testing.assert_close(dst.cpu(), output, rtol=0, atol=0)
+    assert "llvm.musa.sqmma.fmma." in compiled.asm["llir"]
+    assert "llvm.musa.barrier0" not in compiled.asm["llir"]
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--benchmark":
         _run_pipe_benchmark()

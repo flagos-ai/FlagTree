@@ -451,3 +451,57 @@ def test_tle_copy_tma_smem_to_desc_runtime():
     cols = torch.arange(0, block_n, dtype=torch.float16)[None, :]
     ref = rows * 10 + cols
     torch.testing.assert_close(dst.cpu(), ref, rtol=0, atol=0)
+
+
+@triton.jit
+def _tme_grouped_reuse_kernel(source_desc, destination_desc, seen, ROWS: tl.constexpr, COLS: tl.constexpr,
+                              SWIZZLE: tl.constexpr):
+    layout: tl.constexpr = tle.gpu.swizzled_shared_layout(16 if SWIZZLE else 1, 1, 8 if SWIZZLE else 1, [2, 1, 0],
+                                                          [1, 1, 1], [1, 1, 1], [1, 1, 1], [2, 1, 0])
+    storage = tle.gpu.alloc((2, ROWS, COLS), dtype=source_desc.dtype, layout=layout)
+    offset: tl.constexpr = 128 if SWIZZLE else 16
+    rows = tl.arange(0, ROWS)[:, None]
+    cols = tl.arange(0, COLS)[None, :]
+    for iteration in tl.range(4, num_stages=1):
+        slot = storage.slot(iteration % 2)
+        tle.gpu.copy(source_desc, slot, (ROWS, COLS), ((iteration + 1) * ROWS, offset))
+        if not SWIZZLE:
+            ptr = tle.gpu.local_ptr(slot)
+            values = tl.load(ptr)
+            tl.store(seen + iteration * ROWS * COLS + rows * COLS + cols, values)
+            # Preserve some old elements while reusing the same allocation as output.
+            tl.store(ptr, values + 3.0, tl.broadcast_to(cols % 3 != 0, (ROWS, COLS)))
+        tle.gpu.copy(slot, destination_desc, (ROWS, COLS), ((iteration + 1) * ROWS, offset))
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("cols,swizzle", [(64, False), (128, False), (256, False), (256, True)])
+def test_tle_tme_grouped_reuse_runtime(dtype, cols, swizzle):
+    rows = 32
+    offset = 128 if swizzle else 16
+    width = cols + 2 * offset
+    source = ((torch.arange(6 * rows * width, dtype=torch.float32) % 29 - 14) / 4).reshape(6 * rows, width)
+    source = source.to(dtype)
+    src = source.to("musa")
+    dst = torch.full_like(src, -23)
+    seen = torch.empty((4, rows, cols), dtype=dtype, device="musa")
+    source_desc = TensorDescriptor.from_tensor(src, [rows, cols])
+    destination_desc = TensorDescriptor.from_tensor(dst, [rows, cols])
+    compiled = _tme_grouped_reuse_kernel[(1, )](source_desc, destination_desc, seen, ROWS=rows, COLS=cols,
+                                                SWIZZLE=swizzle, num_warps=4, num_stages=1)
+    expected = source[rows:5 * rows, offset:offset + cols].reshape(4, rows, cols)
+    if not swizzle:
+        torch.testing.assert_close(seen.cpu(), expected, rtol=0, atol=0)
+    output = torch.full_like(source, -23)
+    updated = expected if swizzle else torch.where(torch.arange(cols) % 3 != 0, expected + 3, expected)
+    output[rows:5 * rows, offset:offset + cols] = updated.reshape(4 * rows, cols)
+    torch.testing.assert_close(dst.cpu(), output, rtol=0, atol=0)
+    # Inspect only the actual transfer shape, not the surrounding lowering.
+    segment_rows = 1 if cols > 128 and not swizzle else rows
+    shape = f"<2 x i32> <i32 {min(cols, 128)}, i32 {segment_rows}>"
+    for intrinsic in ("llvm.musa.tme.ld.tile.2d", "llvm.musa.tme.st.2d"):
+        calls = [line for line in compiled.asm["llir"].splitlines() if f"call void @{intrinsic}(" in line]
+        assert calls and all(shape in line for line in calls)
+    if swizzle:
+        assert "maxPhase = 8" in compiled.asm["ttgir"]
