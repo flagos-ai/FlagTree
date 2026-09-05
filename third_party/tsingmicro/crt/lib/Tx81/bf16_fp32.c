@@ -1,0 +1,32 @@
+//===------------------------ bf16_fp32.c ---------------------------------===//
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
+//
+//===----------------------------------------------------------------------===//
+//
+// Runtime API of MLIR operation tx::BF16_FP32 see Tx81Ops.td for detail.
+//
+//===----------------------------------------------------------------------===//
+
+#include "tx81_run.h"
+
+void __BF16_FP32(uint64_t *src, uint64_t *dst, uint32_t elem_count) {
+  INTRNISIC_RUN_SWITCH;
+  // Create command buffer.
+  RcsConvert *cmd = g_intrinsic()->convert_pointer;
+  RcsConvertInstr inst = {I_CGRA,
+                          {
+                              0,
+                          },
+                          {
+                              0,
+                          }};
+
+  cmd->BF16_FP32(&inst, (uint64_t)src, (uint64_t)dst, elem_count);
+
+  // Dispatch the command to accelerator
+  RcsExecute(&inst);
+  // RcsWaitfinish();
+  SYNCHRONOUS_INTRINSIC_SWITCH;
+  // Destroy the command buffer.
+}

@@ -837,14 +837,19 @@ def uninstall_triton():
 
 offline_handler = utils.OfflineBuildManager()
 if offline_handler.is_offline:
-    print("[INFO] FlagTree Offline Build: Use offline build for triton origin toolkits")
-    offline_handler.handle_triton_origin_toolkits()
+    if utils.is_skip_cuda_toolkits():
+        print(f"[INFO] Skipping CUDA toolkits for {flagtree_backend} backend in offline build.")
+    else:
+        print("[INFO] FlagTree Offline Build: Use offline build for triton origin toolkits")
+        offline_handler.handle_triton_origin_toolkits()
     offline_build = True
 else:
     print('[INFO] FlagTree Offline Build: No offline build for triton origin toolkits')
     offline_build = False
 
 cache = FlagTreeCache()
+
+download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro"), required=True)
 '''
    FlagCX is a third-party library adopted by the tle distributed system,
    refer to https://github.com/flagos-ai/FlagCX

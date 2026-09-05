@@ -1046,11 +1046,21 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
     return None
 
 
+def _unwrap_remote_shard_id(shard_id: Any):
+    shard_id = tl._unwrap_if_constexpr(shard_id)
+    # Tuple literals in JIT functions are represented as tl.tuple even when
+    # every coordinate is compile-time constant. Convert them back to a Python
+    # tuple so the shared compile-time coordinate path can process them.
+    if isinstance(shard_id, tl.tuple):
+        shard_id = tuple(shard_id)
+    return shard_id
+
+
 def _normalize_remote_shard_id(
     shard_id: Any,
     scope: device_mesh | None,
 ) -> int:
-    shard_id = tl._unwrap_if_constexpr(shard_id)
+    shard_id = _unwrap_remote_shard_id(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
 
     if isinstance(shard_id, int):
@@ -1151,6 +1161,8 @@ def _create_remote_pointers_tensor(
         # automatic injection (e.g. inside this helper).
         if offset_tensor.dtype != tl.int64:
             offset_tensor = tl.cast(offset_tensor, tl.int64, _semantic=_semantic)
+        # create_dist_tensor exposes registered memory at index 0 and the
+        # communicator at index 1.
         ptr = _parse_src_arg(builder, tensor, 0)
         remote_op = builder.create_remote_pointers(remote_type, ptr, shard_id_tensor.handle, space,
                                                    offset_tensor.handle)
@@ -1187,11 +1199,6 @@ def _check_device_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, .
     ...
 
 
-def _check_node_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, ...] | list[int],
-                               scope: device_mesh | None) -> None:
-    ...
-
-
 def _remote_pointer(
     tensor: tl.tensor,
     shard_id,
@@ -1202,14 +1209,13 @@ def _remote_pointer(
     _semantic: TLESemantic | None = None,
 ) -> tl.tensor:
 
-    if not isinstance(tensor, tl.tensor) and space not in ("device", "node"):
+    if not isinstance(tensor, tl.tensor) and space != "device":
         raise TypeError(f"tensor must be tl.tensor, got {type(tensor).__name__}")
 
     space = tl._unwrap_if_constexpr(space)
     res = {
         "cluster": _check_cluster_remote_pointer,
         "device": _check_device_remote_pointer,
-        "node": _check_node_remote_pointer,
     }[space](tensor, shard_id, scope)
     if isinstance(res, tl.tensor):
         return res
@@ -1229,6 +1235,102 @@ def _remote_pointer(
     return _create_remote_pointers_tensor(tensor, shard_id_tensor, _semantic, dtype=dtype, space=space, offset=offset)
 
 
+def _normalize_node_elem_bytes(dtype) -> int:
+    dtype = tl._unwrap_if_constexpr(dtype)
+    if not isinstance(dtype, tl.dtype):
+        raise TypeError(f"node space dtype must be a scalar Triton dtype, got {type(dtype).__name__}")
+    elem_bytes = dtype.itemsize
+    if elem_bytes <= 0:
+        raise ValueError(f"node space dtype must be byte-addressable, got {dtype}")
+    return elem_bytes
+
+
+def _normalize_node_peer(shard_id, scope, _semantic) -> tl.tensor:
+    shard_id = _unwrap_remote_shard_id(shard_id)
+    scope = tl._unwrap_if_constexpr(scope)
+    if scope is not None and not isinstance(scope, device_mesh):
+        raise TypeError(f"node space scope must be device_mesh or None, got {type(scope).__name__}")
+
+    if isinstance(shard_id, (int, tuple, list)):
+        is_coordinate = isinstance(shard_id, (tuple, list))
+        peer = _normalize_compile_time_remote_shard_id(shard_id, scope)
+        if is_coordinate:
+            # Coordinates are relative to the selected mesh. Resolve through
+            # physical_ids so coordinates on a sliced submesh still produce
+            # the corresponding world rank rather than a submesh-local rank.
+            peer = scope.physical_ids[peer]
+            if peer > 0x7FFFFFFF:
+                raise ValueError(f"node space world rank {peer} exceeds int32 range")
+        shard_id = _semantic.to_tensor(peer)
+    elif not isinstance(shard_id, tl.tensor):
+        shard_id = _semantic.to_tensor(shard_id)
+    return _normalize_runtime_remote_shard_id_tensor(shard_id)
+
+
+_NODE_INTER_CONTEXT_COUNT = 4
+
+
+def _normalize_node_netidx(netidx, _semantic) -> tl.tensor:
+    netidx = tl._unwrap_if_constexpr(netidx)
+    if isinstance(netidx, bool):
+        raise TypeError("node space netidx must be an integer, not bool")
+    if isinstance(netidx, int):
+        if netidx < 0 or netidx >= _NODE_INTER_CONTEXT_COUNT:
+            raise ValueError(f"node space netidx must be in range [0, {_NODE_INTER_CONTEXT_COUNT}), got {netidx}")
+        netidx = _semantic.to_tensor(netidx)
+    elif not isinstance(netidx, tl.tensor):
+        netidx = _semantic.to_tensor(netidx)
+
+    if netidx.shape != ():
+        raise ValueError(f"node space netidx must be scalar, got shape {netidx.shape}")
+    if netidx.dtype != tl.int32:
+        raise TypeError(f"node space runtime netidx must be tl.int32; got {netidx.dtype}")
+    return netidx
+
+
+def _parse_node_context(builder, value, label: str, index: int):
+    from triton.runtime import DistributedRtContext
+    value = tl._unwrap_if_constexpr(value)
+    if not isinstance(value, DistributedRtContext):
+        raise TypeError(f"node space {label} must be DistributedRtContext, got {type(value).__name__}")
+    return _parse_src_arg(builder, value, index)
+
+
+def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _semantic) -> tl.tensor:
+    if dtype is None:
+        raise TypeError('tle.remote(..., space="node") requires dtype')
+
+    builder = _semantic.builder
+    if not hasattr(builder, "create_remote_pointers"):
+        raise RuntimeError("node remote pointer requires TLE remote_pointers support in the active Triton build")
+
+    peer = _normalize_node_peer(shard_id, scope, _semantic)
+    dtype = tl._unwrap_if_constexpr(dtype)
+    _normalize_node_elem_bytes(dtype)
+    net_idx = _normalize_node_netidx(netidx, _semantic)
+    coop_kind = tl._unwrap_if_constexpr(coopkind)
+    coop_kind = coop_kind.value if isinstance(coop_kind, GroupKind) else str(coop_kind).lower()
+    coop_kind = attr.FlagCXCoopKind.from_str(coop_kind)
+    if coop_kind is None:
+        expected = "thread, warp, or block"
+        raise ValueError(f"coopkind must be {expected}, got {coop_kind!r}")
+
+    src_mem = _parse_node_context(builder, ctx, "ctx", 0)
+    comm = _parse_node_context(builder, ctx, "ctx", 1)
+    remote_ptr_dtype = tl.pointer_type(dtype, 1)
+    remote_op = builder.create_remote_pointers(
+        remote_ptr_dtype.to_ir(builder),
+        src_mem,
+        peer.handle,
+        "node",
+        None,
+        comm,
+        net_idx.handle,
+        coop_kind,
+    )
+    return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
+
+
 @tl.builtin
 def remote(
     tensor=tl.tensor | None,
@@ -1237,6 +1339,8 @@ def remote(
     space: str = "cluster",
     dtype: tl.dtype = None,
     offset: int | tl.tensor | None = None,
+    coopkind: GroupKind | str | None = None,
+    netidx: int | tl.tensor = 0,
     _semantic: TLESemantic | None = None,
 ):
     """
@@ -1247,19 +1351,62 @@ def remote(
       should then use `tle.gpu.local_ptr(...)` to materialize remote pointers.
     - tl.tensor shared-memory pointer (scalar or tensor): returns remote
       pointer directly.
+    - DistributedRtContext with `space="node"`: returns a global pointer
+      marker consumed by a direct `tl.load`/`tl.store` copy pattern.
 
     `shard_id` is the target block id inside the current thread block cluster.
-    When `scope` is provided, launch cluster dimensions are inferred from that
-    mesh and this mode requires `num_ctas=1` (one program maps to one block).
+    For cluster/device pointer paths, when `scope` is provided, launch cluster
+    dimensions are inferred from that mesh and this mode requires `num_ctas=1`
+    (one program maps to one block).
 
-    `offset` is an optional scalar element offset relative to the target
-    shard's memory base address. It is only supported for `space="device"`
-    and is internally converted to a byte offset before being passed to
-    `flagcxGetIntraPointerC`. It may be a Python `int` (compile-time constant)
-    or a scalar `tl.tensor` (runtime value, shape == ()).
+    For `space="node"`, `tensor` must be the registered-memory
+    `DistributedRtContext` created by `create_dist_tensor`. A load from the
+    local buffer followed by a store through the returned pointer performs a
+    put; the reverse performs a get. The local buffer root must be the entry
+    pointer for that buffer.
+
+    Scalar copies transfer one element and default source/destination offsets
+    to zero. Tensor copies require the same contiguous range
+    `tl.arange(0, N)`. Unmasked copies or a shared prefix mask
+    `offsets < valid_n` are supported when `1 <= valid_n <= N`. Constant
+    violations are rejected during compilation; dynamic violations trigger a
+    device assertion.
+    Without `tl.arange`, an unmasked scalar transfer moves one element;
+    `valid_n`/scalar masks are rejected. Sparse, multidimensional,
+    strided, non-zero-start, or mismatched ranges are rejected.
+
+    `dtype` is required. `coopkind` defaults to `GroupKind.BLOCK`, and
+    `netidx` defaults to zero. Compile-time `netidx` must be in `[0, 4)`;
+    runtime values must be scalar `tl.int32`. `shard_id` may be a world rank
+    or, with `scope=device_mesh`, a compile-time mesh coordinate.
+
+    For `space="device"`, `offset` is the remote-memory element offset and
+    may be a Python `int` or scalar integer `tl.tensor`.
     """
-    shard_id = tl._unwrap_if_constexpr(shard_id)
+    space = tl._unwrap_if_constexpr(space)
+    if not isinstance(space, str):
+        raise TypeError(f"space must be str, got {type(space).__name__}")
+    if space not in ("cluster", "device", "node"):
+        raise ValueError(f"space must be 'cluster', 'device', or 'node', got {space!r}")
+    shard_id = _unwrap_remote_shard_id(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
+    if space == "node":
+        if offset is not None:
+            raise TypeError('tle.remote(..., space="node") does not accept offset; '
+                            'add element offsets to the returned pointer')
+        # Keep None as an internal sentinel so cluster/device can still reject
+        # an explicitly supplied node-only coopkind. Node behavior defaults to
+        # BLOCK as documented.
+        if coopkind is None:
+            coopkind = GroupKind.BLOCK
+        return _create_node_remote_pointer(tensor, shard_id, scope, dtype, coopkind, netidx, _semantic)
+    node_only_args = ["coopkind"] if coopkind is not None else []
+    unwrapped_netidx = tl._unwrap_if_constexpr(netidx)
+    if not isinstance(unwrapped_netidx, int) or unwrapped_netidx != 0:
+        node_only_args.append("netidx")
+    if node_only_args:
+        raise TypeError(f'{space} space does not accept node-only argument(s): '
+                        f'{", ".join(node_only_args)}')
     if scope is not None and not isinstance(scope, device_mesh):
         raise TypeError(f"scope must be device_mesh or None, got {type(scope).__name__}")
     if scope is not None:
@@ -1267,7 +1414,7 @@ def remote(
 
     # Direct pointer path: support local_ptr scalar/tensor values and return
     # remote pointer with preserved shape.
-    if isinstance(tensor, tl.tensor) or (space in ("device", "node")):
+    if isinstance(tensor, tl.tensor) or space == "device":
         return _remote_pointer(tensor, shard_id, scope=scope, space=space, _semantic=_semantic, dtype=dtype,
                                offset=offset)
 

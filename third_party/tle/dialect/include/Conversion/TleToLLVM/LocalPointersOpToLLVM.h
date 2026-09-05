@@ -31,7 +31,6 @@ namespace mlir::triton::tle {
 void populateLocalPointersOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
     RewritePatternSet &patterns, PatternBenefit benefit);
-
 void populateRemotePointersOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
     RewritePatternSet &patterns, PatternBenefit benefit);

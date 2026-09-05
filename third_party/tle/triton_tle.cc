@@ -46,6 +46,8 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
 #include "llvm/ADT/SmallVectorExtras.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/Casting.h"
@@ -56,6 +58,7 @@
 
 namespace py = pybind11;
 using namespace mlir;
+namespace tt = triton;
 namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
@@ -148,6 +151,23 @@ void init_triton_tle_ir(py::module &&m) {
                    /*transposed=*/order[0] == 0,
                    elemType.getIntOrFloatBitWidth(), fp4Padded, CTALayout));
              }
+           })
+      .def("make_shared_linear_encoding_attr",
+           [](TritonOpBuilder &self,
+              std::vector<std::vector<int32_t>> offsetBases,
+              std::vector<std::vector<int32_t>> blockBases, unsigned alignment,
+              unsigned rank) {
+             if (rank == 0)
+               throw py::value_error(
+                   "shared linear layout requires a positive rank");
+             auto context = self.getBuilder().getContext();
+             auto kOffset = StringAttr::get(context, "offset");
+             auto kBlock = StringAttr::get(context, "block");
+             tt::LinearLayout layout({{kOffset, std::move(offsetBases)},
+                                      {kBlock, std::move(blockBases)}},
+                                     tt::standardOutDimNames(context, rank));
+             return mlir::cast<Attribute>(ttg::SharedLinearEncodingAttr::get(
+                 context, std::move(layout), alignment));
            })
       .def("make_tensor_memory_encoding_attr",
            [](TritonOpBuilder &self, unsigned blockM, unsigned blockN,
@@ -315,6 +335,56 @@ void init_triton_tle_ir(py::module &&m) {
               std::vector<int> &order) -> Value {
              return self.create<ttg::MemDescTransOp>(src, order);
            })
+      .def("create_memdesc_reshape",
+           [](TritonOpBuilder &self, Value src,
+              std::vector<int64_t> &shape) -> Value {
+             return self.create<ttg::MemDescReshapeOp>(src, shape);
+           })
+      .def(
+          "get_tle_shared_layout_from_memdesc",
+          [](TritonOpBuilder &self, Value memdesc) -> py::dict {
+            auto type = dyn_cast<ttg::MemDescType>(memdesc.getType());
+            if (!type || !type.getEncoding())
+              throw py::value_error(
+                  "expected a memdesc with a shared-memory encoding");
+
+            py::dict result;
+            Attribute encoding = type.getEncoding();
+            if (auto nvmma = dyn_cast<ttg::NVMMASharedEncodingAttr>(encoding)) {
+              auto ctaLayout = nvmma.getCTALayout();
+              auto ctasPerCGA = ctaLayout.getCTAsPerCGA();
+              auto ctaSplitNum = ctaLayout.getCTASplitNum();
+              auto ctaOrder = ctaLayout.getCTAOrder();
+              result["kind"] = "nv_mma";
+              result["transposed"] = nvmma.getTransposed();
+              result["fp4_padded"] = nvmma.getFp4Padded();
+              result["swizzled"] = nvmma.getSwizzlingByteWidth() != 0;
+              result["ctas_per_cga"] =
+                  std::vector<unsigned>(ctasPerCGA.begin(), ctasPerCGA.end());
+              result["cta_split_num"] =
+                  std::vector<unsigned>(ctaSplitNum.begin(), ctaSplitNum.end());
+              result["cta_order"] =
+                  std::vector<unsigned>(ctaOrder.begin(), ctaOrder.end());
+              return result;
+            }
+
+            if (auto sharedLinear =
+                    dyn_cast<ttg::SharedLinearEncodingAttr>(encoding)) {
+              const auto &layout = sharedLinear.getLinearLayout();
+              auto context = encoding.getContext();
+              auto kOffset = StringAttr::get(context, "offset");
+              auto kBlock = StringAttr::get(context, "block");
+              result["kind"] = "shared_linear";
+              result["offset_bases"] = layout.getBases().lookup(kOffset);
+              result["block_bases"] = layout.getBases().lookup(kBlock);
+              result["alignment"] = sharedLinear.getAlignment();
+              result["rank"] = layout.getNumOutDims();
+              return result;
+            }
+
+            throw py::value_error(
+                "unsupported inferred shared-memory reshape encoding");
+          })
       .def("create_barrier_alloc",
            [](TritonOpBuilder &self, Type resultType, int32_t numBarriers,
               int32_t arriveCount, int32_t initPolarity,
@@ -657,9 +727,11 @@ void init_triton_tle_ir(py::module &&m) {
           py::arg("group_mask"))
       .def(
           "create_remote_pointers",
-          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> &src,
+          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> src,
              Value shardId, const std::string &space,
-             std::optional<Value> &offset) -> OpState {
+             std::optional<Value> offset, std::optional<Value> comm,
+             std::optional<Value> netIdx,
+             std::optional<tle::FlagCXCoopKind> coopKind) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
                 "cluster", "device", "node"};
@@ -668,14 +740,20 @@ void init_triton_tle_ir(py::module &&m) {
                   "Invalid space: " + space +
                   ". Expected one of: cluster, device, node.");
             }
-            auto space_attr = builder.getStringAttr(space);
 
+            auto spaceAttr = builder.getStringAttr(space);
+            tle::FlagCXCoopKindAttr coopKindAttr =
+                coopKind ? builder.getAttr<tle::FlagCXCoopKindAttr>(*coopKind)
+                         : tle::FlagCXCoopKindAttr();
             return self.create<tle::RemotePointersOp>(
-                resultTy, src.value_or(Value()), shardId, space_attr,
-                offset.value_or(Value()));
+                resultTy, src.value_or(Value()), comm.value_or(Value()),
+                shardId, spaceAttr, offset.value_or(Value()),
+                netIdx.value_or(Value()), coopKindAttr);
           },
           py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
-          py::arg("space"), py::arg("offset") = py::none())
+          py::arg("space"), py::arg("offset") = py::none(),
+          py::arg("comm") = py::none(), py::arg("net_idx") = py::none(),
+          py::arg("coop_kind") = py::none())
       .def("get_device_id",
            [](TritonOpBuilder &self, Type resultTy,
               std::optional<Value> src) -> Value {
@@ -797,6 +875,8 @@ void init_triton_tle_utils(py::module &&m) {
 }
 
 void init_triton_tle_passes(py::module &&m) {
+  ADD_PASS_WRAPPER_0("add_fuse_node_remote_transfers",
+                     tle::createTritonTleFuseNodeRemoteTransfers);
   ADD_PASS_WRAPPER_0("add_params_for_distribution",
                      tle::createTritonTleAddDistributedParams);
   ADD_PASS_WRAPPER_0("add_early_assign_memory_space",
@@ -908,6 +988,8 @@ void init_llvm(py::module &&m) {
         });
 }
 
+void init_triton_tle_dsa(py::module m);
+
 void init_triton_tle(py::module &&m) {
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
@@ -925,4 +1007,5 @@ void init_triton_tle(py::module &&m) {
   init_tle_raw_ir(m.def_submodule("raw_ir"));
   init_tle_raw_passes(m.def_submodule("raw_passes"));
   init_llvm(m.def_submodule("llvm"));
+  init_triton_tle_dsa(m.def_submodule("dsa"));
 }

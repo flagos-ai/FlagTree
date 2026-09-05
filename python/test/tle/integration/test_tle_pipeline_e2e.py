@@ -64,7 +64,6 @@ def elementwise_add_kernel(
     b_smem_ptrs = tle.gpu.local_ptr(b_smem, (row_ids, col_ids))
 
     # Use TLE pipeline for block-wise processing
-    #for yoff in range(0, ynumel, YBLOCK):
     for yoff in tle.gpu.pipeline(0, ynumel, YBLOCK, num_stages=2):
         # Calculate column offset for current block
         yoffs = tl.arange(0, YBLOCK) + yoff

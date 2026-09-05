@@ -399,17 +399,24 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
   let hasVerifier = 1;
 }
 
-def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure, AttrSizedOperandSegments]> {
+def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
+    Pure,
+    AttrSizedOperandSegments
+]> {
   let arguments = (ins
     Optional<Tle_LocalPointerResultType>:$src,
+    Optional<I64>:$comm,
     TT_Int:$shard_id,
     StrAttr:$space,
-    Optional<TT_IntLike>:$offset
+    Optional<TT_IntLike>:$offset,
+    Optional<I32>:$net_idx,
+    OptionalAttr<Tle_FlagCXCoopKindAttr>:$coop_kind
   );
 
   let results = (outs Tle_LocalPointerResultType:$result);
   let hasVerifier = 1;
 }
+
 def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
   let summary = "Get the number of intra-node PEs";
   let arguments = (ins
@@ -417,6 +424,42 @@ def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
   );
   let results = (outs I32:$result);
   let hasVerifier = 1;
+}
+
+class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
+    MemoryEffects<[MemRead, MemWrite]>
+]> {
+  let summary = "execute a fused inter-node memory transfer";
+  let description = [{
+    Represents an explicit inter-node transfer after a node-space
+    tle.remote_pointers marker and its load/store users have been fused.
+    Offsets and nelems are expressed in elements; elem_bytes is applied during
+    lowering to form byte offsets and the byte count passed to FlagCX. Nelems
+    must be greater than zero.
+  }];
+
+  let arguments = (ins
+    I64:$src,
+    I64:$dst_mem,
+    I64:$comm,
+    I32:$peer,
+    I64:$src_offset,
+    I64:$dst_offset,
+    I64:$nelems,
+    I32:$net_idx,
+    I64Attr:$elem_bytes,
+    Tle_FlagCXCoopKindAttr:$coop_kind
+  );
+
+  let hasVerifier = 1;
+}
+
+def Tle_NodePutOp : Tle_NodeTransferOp<"node_put"> {
+  let summary = "put data from local registered memory to a remote node";
+}
+
+def Tle_NodeGetOp : Tle_NodeTransferOp<"node_get"> {
+  let summary = "get data from a remote node into local registered memory";
 }
 
 def Tle_GetDeviceIdOp : Tle_Op<"get_device_id"> {
