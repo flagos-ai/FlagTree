@@ -282,7 +282,6 @@ class TestDistributedBarrierScope:
         with pytest.raises(ValueError, match="device_dptr is required"):
             tle.distributed_barrier(mesh=mesh, space="world", _semantic=_FakeSemantic())
 
-
     def test_distributed_barrier_full_cluster_mesh(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 1)]})
         semantic = _FakeSemantic()
@@ -303,7 +302,6 @@ class TestDistributedBarrierScope:
         assert args[1] == [2]
         assert args[2] == [1]
         assert args[3] == [0, 1]
-
 
     def test_distributed_barrier_submesh_requires_group_aware_builder(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})

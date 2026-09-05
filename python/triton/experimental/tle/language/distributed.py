@@ -696,8 +696,7 @@ def _is_cluster_submesh(mesh: device_mesh) -> _ClusterMeshAnalysis | None:
         return None
 
     cluster_size = _prod(mesh.launch_shape[axis] for axis in cluster_axes)
-    if not any(len(cluster_members) < cluster_size
-               for cluster_members in cluster_members_by_outer_coord.values()):
+    if not any(len(cluster_members) < cluster_size for cluster_members in cluster_members_by_outer_coord.values()):
         return None
 
     return _ClusterMeshAnalysis(
