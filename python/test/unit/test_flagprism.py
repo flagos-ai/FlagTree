@@ -165,7 +165,10 @@ def test_build_helper_uses_unified_switch(build_helper, monkeypatch, tmp_path, v
         ("cambricon", False),
         ("aipu", False),
         ("xpu", False),
-        ("mthreads", False),
+        # FlagPrism: retain the former unsupported expectation for reference.
+        # ("mthreads", False),
+        # FlagPrism: mthreads now enables the profiler/debugger by default.
+        ("mthreads", True),
     ),
 )
 def test_flagprism_is_enabled_by_default_for_supported_backends(flagprism_setup_factory, monkeypatch, backend, enabled):
@@ -205,7 +208,11 @@ def test_non_ascend_explicit_flagprism_is_rejected_before_side_effects(flagprism
     monkeypatch.setenv("TRITON_BUILD_FLAGPRISM", "ON")
     monkeypatch.setenv("TRITON_BUILD_PROTON", "ON")
 
-    with pytest.raises(RuntimeError, match="ascend or iluvatar"):
+    # FlagPrism: retain the former diagnostic assertion for reference.
+    # with pytest.raises(RuntimeError, match="ascend or iluvatar"):
+    #     create("enflame")
+    # FlagPrism: include mthreads in the supported-backend diagnostic.
+    with pytest.raises(RuntimeError, match="ascend, iluvatar, or mthreads"):
         create("enflame")
 
     assert not downloads
