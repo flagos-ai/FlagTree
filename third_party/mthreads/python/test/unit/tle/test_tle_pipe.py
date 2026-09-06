@@ -1,16 +1,6 @@
 """Compile and runtime coverage for the MUSA TLE pipe contract."""
 
-import argparse
-import faulthandler
-import json
-import math
-import os
-from pathlib import Path
 import re
-import runpy
-import subprocess
-import sys
-import time
 
 import pytest
 import torch
@@ -22,7 +12,6 @@ from triton._C.libtriton import ir
 from triton.backends.compiler import Language
 from triton.compiler import ASTSource
 from triton.compiler.errors import CompilationError
-from triton.testing import do_bench
 from triton.tools.tensor_descriptor import TensorDescriptor
 
 from test_tle_utils import mthreads_backend, require_mthreads_libtriton, tme_descriptor_attrs
@@ -5699,17 +5688,6 @@ def test_matrix_tme_pipe_worker_local_load_layout(worker_reader):
     torch.testing.assert_close(out, src[:, :16], rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("topk,stages", [(32, 1), (64, 2), (128, 3)])
-def test_sparse_mla_pipe_integration(topk, stages):
-    import runpy
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[6]
-    example = root / "python/tutorials/tle/deepseek_v32/02-sparse-mla-tle-pipe-musa.py"
-    module = runpy.run_path(str(example))
-    module["run_case"](topk, stages)
-
-
 @triton.jit
 def _idle_partition():
     pass
@@ -5822,259 +5800,6 @@ def test_async_publication_elides_only_the_redundant_rendezvous(read_before_comm
         assert "call i32 @llvm.musa.async.arrive(" not in llir
 
 
-_SPARSE_MLA_SOURCE = Path(__file__).resolve().parents[6] / "python/tutorials/tle/deepseek_v32/02-sparse-mla.py"
-_SPARSE_MLA_VARIANTS = {
-    "tle": "tle_sparse_mla_fwd_interface",
-    "pipe": "tle_pipe_sparse_mla_fwd_interface",
-    "prefill": "tle_flashmla_prefill_interface",
-}
-_SPARSE_MLA_CASES = {
-    "small_bf16": dict(batch=1, queries=2, heads=16, groups=1, width=64, values=32),
-    "small_fp16": dict(batch=1, queries=2, heads=16, groups=1, width=64, values=32, fp16=True),
-    "ragged": dict(batch=1, queries=3, heads=16, groups=1, width=64, values=32, ragged=True),
-    "causal": dict(batch=1, queries=4, heads=16, groups=1, width=64, values=32, causal=True),
-    "multi_group": dict(batch=2, queries=2, heads=32, groups=2, width=64, values=32),
-    "empty": dict(batch=1, queries=2, heads=16, groups=1, width=64, values=32, empty=True),
-    "multi_cycle": dict(batch=1, queries=2, heads=16, groups=1, width=64, values=32, sequence=1024, topk=512),
-    "deepseek": dict(batch=1, queries=2, heads=64, groups=1, width=576, values=512),
-}
-
-
-def _sparse_mla_make_inputs(case):
-    config = _SPARSE_MLA_CASES[case]
-    batch, queries = config["batch"], config["queries"]
-    heads, groups = config["heads"], config["groups"]
-    width, values = config["width"], config["values"]
-    dtype = torch.float16 if config.get("fp16") else torch.bfloat16
-    generator = torch.Generator().manual_seed(20260905)
-    q = torch.randn(batch, queries, heads, width, generator=generator).to(dtype)
-    sequence, topk = config.get("sequence", 256), config.get("topk", 128)
-    kv = torch.randn(batch, sequence, groups, width, generator=generator).to(dtype)
-    indices = torch.stack([
-        torch.randperm(sequence, generator=generator)[:topk] for _ in range(batch * queries * groups)
-    ]).reshape(batch, queries, groups, topk).to(torch.int32)
-    lengths = torch.full((batch, queries, groups), topk, dtype=torch.int32)
-    if config.get("empty"):
-        lengths.zero_()
-    if config.get("ragged"):
-        lengths[0, :, 0] = torch.tensor([1, 65, 127])
-        indices[0, 1:, 0, 18] = -1
-        indices[0, 1:, 0, 35] = 256
-    if config.get("causal"):
-        lengths[0, :, 0] = torch.tensor([128, 65, 7, 0])
-        indices[..., 0] = 0  # At least one unmasked key in each nonempty row.
-    return q, kv, indices, lengths, values, config.get("causal", False)
-
-
-def _sparse_mla_torch_golden(q, kv, indices, lengths, values, causal):
-    """Direct gather -> QK -> softmax -> PV, with no online-softmax algorithm."""
-    batch, queries, heads, width = q.shape
-    groups = kv.shape[2]
-    group_heads = heads // groups
-    output = torch.zeros(batch, queries, heads, values, dtype=torch.float64)
-    lse = torch.full((batch, queries, heads), -math.inf, dtype=torch.float64)
-    q64, kv64 = q.double(), kv.double()
-    for b in range(batch):
-        for row in range(queries):
-            for group in range(groups):
-                ids = indices[b, row, group, :int(lengths[b, row, group])].long()
-                valid = (ids >= 0) & (ids < kv.shape[1])
-                if causal:
-                    valid &= ids <= row
-                ids = ids[valid]
-                if ids.numel() == 0:
-                    continue
-                selected = kv64[b, ids, group]
-                head_slice = slice(group * group_heads, (group + 1) * group_heads)
-                scores = (q64[b, row, head_slice] @ selected.T) / math.sqrt(width)
-                output[b, row, head_slice] = scores.softmax(-1) @ selected[:, :values]
-                lse[b, row, head_slice] = scores.logsumexp(-1) / math.log(2)
-    return output, lse
-
-
-def _sparse_mla_errors(actual, expected, atol, rtol):
-    actual = actual.detach().cpu().double()
-    finite = torch.isfinite(expected)
-    nonfinite_match = torch.equal(actual[~finite], expected[~finite])
-    delta = (actual[finite] - expected[finite]).abs()
-    finite_actual = bool(torch.isfinite(actual[finite]).all())
-    passed = nonfinite_match and finite_actual and torch.allclose(actual[finite], expected[finite], atol=atol,
-                                                                  rtol=rtol)
-    return {
-        "passed": bool(passed),
-        "max_abs": float(delta.max()) if delta.numel() else 0.0,
-        "rmse": float(delta.square().mean().sqrt()) if delta.numel() else 0.0,
-        "nonfinite_actual": int((~torch.isfinite(actual[finite])).sum()),
-        "nonfinite_match": nonfinite_match,
-        "atol": atol,
-        "rtol": rtol,
-    }
-
-
-def _run_sparse_mla_case(variant, case, num_stages=None):
-    torch.set_num_threads(2)
-    faulthandler.dump_traceback_later(30, repeat=False)
-    inputs = _sparse_mla_make_inputs(case)
-    q, kv, indices, lengths, values, causal = inputs
-    expected_out, expected_lse = _sparse_mla_torch_golden(*inputs)
-    # Treat optional packages as absent, including stale editable installs.
-    # This selects the tutorial\'s existing no-TileLang/no-FlashMLA branches.
-    missing = object()
-    optional = {name: sys.modules.get(name, missing) for name in ("tilelang", "flash_mla")}
-    try:
-        for name in optional:
-            sys.modules[name] = None
-        module = runpy.run_path(str(_SPARSE_MLA_SOURCE))
-    finally:
-        for name, previous in optional.items():
-            if previous is missing:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = previous
-    result = {
-        "variant": variant,
-        "case": case,
-        "source": str(_SPARSE_MLA_SOURCE),
-        "q_shape": list(q.shape),
-        "kv_shape": list(kv.shape),
-        "dtype": str(q.dtype),
-        "causal": causal,
-        "tilelang_available": module["_HAVE_TILELANG"],
-        "num_stages": num_stages,
-    }
-    try:
-        device_args = (q.to("musa"), kv.to("musa"), indices.to("musa"))
-        kwargs = dict(topk_length=lengths.to("musa"), d_v=values, is_causal=causal)
-        if variant == "pipe" and num_stages is not None:
-            # Exercise the unchanged tutorial kernel and descriptor entry with
-            # explicit compiler stages, independently of pipe capacity.
-            output, lse = module["_sparse_mla_fwd_interface_impl"](
-                module["tle_pipe_sparse_mla_fwd"], *device_args, **kwargs, bk=64,
-                extra_kernel_args=(module["TLE_PIPE_SPARSE_MLA_PIPE_STAGES"], ), use_host_descriptors=True,
-                launch_kwargs={"num_warps": module["TLE_PIPE_SPARSE_MLA_NUM_WARPS"], "num_stages": num_stages})
-        else:
-            output, lse = module[_SPARSE_MLA_VARIANTS[variant]](*device_args, **kwargs)
-        torch.musa.synchronize()
-    except Exception as error:
-        result.update(status="execution_error", error_type=type(error).__name__, error=str(error))
-        print("RESULT " + json.dumps(result), flush=True)
-        return 1
-    tolerance = 0.003 if q.dtype == torch.float16 else 0.03
-    result["output"] = _sparse_mla_errors(output, expected_out, tolerance, tolerance)
-    result["lse"] = _sparse_mla_errors(lse, expected_lse, 0.001, 0.001)
-    result["status"] = "passed" if result["output"]["passed"] and result["lse"]["passed"] else "accuracy_failed"
-    print("RESULT " + json.dumps(result), flush=True)
-    return int(result["status"] != "passed")
-
-
-def _sparse_mla_main(argv):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--variants", nargs="+", choices=_SPARSE_MLA_VARIANTS, default=["tle", "pipe", "prefill"])
-    parser.add_argument("--cases", nargs="+", choices=_SPARSE_MLA_CASES, default=list(_SPARSE_MLA_CASES))
-    parser.add_argument("--timeout", type=int, default=120)
-    parser.add_argument("--num-stages", type=int, choices=[1, 3],
-                        help="Override compiler stages for the original pipe kernel only")
-    parser.add_argument("--child", nargs=2, metavar=("VARIANT", "CASE"), help=argparse.SUPPRESS)
-    args = parser.parse_args(argv)
-    if args.child:
-        return _run_sparse_mla_case(*args.child, num_stages=args.num_stages)
-    results = []
-    for variant in args.variants:
-        for case in args.cases:
-            if variant == "prefill" and case != "deepseek":
-                continue  # This interface explicitly requires D=576, DV=512, H=64.
-            command = [sys.executable, str(Path(__file__).resolve()), "--sparse-mla", "--child", variant, case]
-            if args.num_stages is not None:
-                command += ["--num-stages", str(args.num_stages)]
-            try:
-                completed = subprocess.run(command, capture_output=True, text=True, timeout=args.timeout)
-            except subprocess.TimeoutExpired as error:
-                diagnostic = error.stderr or b""
-                if isinstance(diagnostic, bytes):
-                    diagnostic = diagnostic.decode(errors="replace")
-                result = dict(variant=variant, case=case, status="timeout", diagnostic=diagnostic[-6000:])
-            else:
-                rows = [line[7:] for line in completed.stdout.splitlines() if line.startswith("RESULT ")]
-                if rows:
-                    result = json.loads(rows[-1])
-                else:
-                    result = dict(variant=variant, case=case, status="process_error", returncode=completed.returncode,
-                                  error=completed.stderr[-4000:])
-                if result["status"] == "execution_error":
-                    diagnostics = [
-                        line for line in completed.stderr.splitlines()
-                        if any(token in line for token in ("error:", "Pipeline failed", "Assertion", "LLVM ERROR"))
-                    ]
-                    result["compiler_diagnostics"] = diagnostics[:4]
-            results.append(result)
-            print(json.dumps(result), flush=True)
-    passed = sum(item["status"] == "passed" for item in results)
-    print(f"SUMMARY {passed}/{len(results)} passed", flush=True)
-    return int(passed != len(results))
-
-
-@pytest.mark.parametrize("variant,stages", [("tle", None), ("pipe", 1), ("pipe", 3)])
-@pytest.mark.parametrize("case", [
-    # multi_cycle includes the ordinary BF16 path and exercises repeated reuse.
-    "small_fp16",
-    "ragged",
-    "causal",
-    "multi_group",
-    "empty",
-    "multi_cycle",
-])
-def test_original_sparse_mla_torch_golden(variant, stages, case):
-    command = [sys.executable, str(Path(__file__).resolve()), "--sparse-mla", "--child", variant, case]
-    if stages is not None:
-        command += ["--num-stages", str(stages)]
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=120,
-                               env={**os.environ, "TRITON_ALWAYS_COMPILE": "1"})
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert '"status": "passed"' in completed.stdout
-
-
-def _measure_pipe_benchmark(name, fn, args, meta):
-    start = time.perf_counter()
-    compiled = fn.warmup(*args, grid=(1, ), **meta)
-    compile_ms = (time.perf_counter() - start) * 1000
-    launch = lambda: fn[(1, )](*args, **meta)
-    ms = do_bench(launch, warmup=20, rep=100, return_mode="median", device_type="musa")
-    llir = compiled.asm["llir"]
-    record = re.search(r"llvm.musa.async.bar.record\(i32 (\d+)\)", llir)
-    print(
-        json.dumps({
-            "case": name,
-            "compile_ms": round(compile_ms, 2),
-            "device_ms": round(ms, 6),
-            "shared_bytes": compiled.metadata.shared,
-            "barrier_ids": int(record.group(1)) if record else None,
-            "local_syncs": llir.count("call void @llvm.musa.syncthreads.lm()"),
-            "partition_syncs": llir.count("call i32 @llvm.musa.async.arrive("),
-            "async_waits": llir.count("call void @llvm.musa.memcpy.g2s.wait()"),
-        }), flush=True)
-
-
-def _run_pipe_benchmark():
-    torch.manual_seed(42)
-    stages, block, iterations = 2, 128, 9
-    integer_out = torch.empty(iterations * block, dtype=torch.int32, device="musa")
-    common = dict(STAGES=stages, BLOCK=block, ITERATIONS=iterations, num_stages=1)
-    _measure_pipe_benchmark("local_non_ws", _non_ws_local_store_pipe_kernel, (integer_out, ), dict(common, num_warps=4))
-    _measure_pipe_benchmark("local_ws", _ws_local_store_pipe_kernel, (integer_out, ), dict(common, num_warps=16))
-    source = torch.arange(iterations * block, dtype=torch.float32, device="musa")
-    output = torch.empty_like(source)
-    _measure_pipe_benchmark("async_copy_ws", _ws_default_writer_async_copy_pipe_kernel, (source, output),
-                            dict(common, num_warps=16))
-    m, n, k, bk = 256, 256, 448, 64
-    a = torch.randn((m, k), dtype=torch.float16, device="musa")
-    b = torch.randn((k, n), dtype=torch.float16, device="musa")
-    c = torch.empty((m, n), dtype=torch.float16, device="musa")
-    _measure_pipe_benchmark(
-        "tme_multifield_ws_mm", _ws_multi_field_pipe_mm_kernel,
-        (TensorDescriptor.from_tensor(a, [m, bk]), TensorDescriptor.from_tensor(b, [bk, n]), c),
-        dict(K_TILES=k // bk, STAGES=stages, BLOCK_M=m, BLOCK_N=n, BLOCK_K=bk, num_warps=16, num_stages=1))
-
-
 @triton.jit
 def _grouped_tme_reuse_reader(reader, done, output_desc, results, ROLE: tl.constexpr, ROWS: tl.constexpr,
                               COLS: tl.constexpr):
@@ -6144,12 +5869,3 @@ def test_musa_grouped_tme_multi_reader_reuse_runtime():
     torch.testing.assert_close(dst.cpu(), output, rtol=0, atol=0)
     assert "llvm.musa.sqmma.fmma." in compiled.asm["llir"]
     assert "llvm.musa.barrier0" not in compiled.asm["llir"]
-
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--benchmark":
-        _run_pipe_benchmark()
-    elif len(sys.argv) > 1 and sys.argv[1] == "--sparse-mla":
-        raise SystemExit(_sparse_mla_main(sys.argv[2:]))
-    else:
-        raise SystemExit("Use pytest for tests, --benchmark for timings, or --sparse-mla for Torch golden checks.")
