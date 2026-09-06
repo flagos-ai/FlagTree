@@ -364,11 +364,13 @@ bool NVIDIA::canSkipBarSync(Operation *before, Operation *after) {
       isa<triton::nvidia_gpu::WaitBarrierOp>(after))
     return false;
 
-  // An arrive followed by a wait only touches mbarrier objects, which the
-  // mbarrier hardware orders by itself; the rendezvous inserted before the
-  // arrive already covers its publication, so no extra barrier is needed.
+  // An arrive followed by a wait or another arrive only touches mbarrier
+  // objects, which the mbarrier hardware orders by itself; the rendezvous
+  // inserted before the first arrive already covers its publication, so no
+  // extra barrier is needed.
   if (isa<triton::nvidia_gpu::ArriveBarrierOp>(before) &&
-      isa<triton::nvidia_gpu::WaitBarrierOp>(after))
+      isa<triton::nvidia_gpu::WaitBarrierOp,
+          triton::nvidia_gpu::ArriveBarrierOp>(after))
     return true;
 
   // Even though WaitBarrierOp, AsyncTMACopyGlobalToLocalOp and
