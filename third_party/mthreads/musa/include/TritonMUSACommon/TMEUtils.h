@@ -895,13 +895,35 @@ struct TLETMECopySegment {
   int64_t groups = 1;
   int64_t sharedStride = 0;
   unsigned rowAxis = 0;
+  unsigned leadingAxis = 0;
 };
 
 inline FailureOr<SmallVector<TLETMECopySegment>>
 getTLETMECopySegments(ttg::MemDescType type, ArrayRef<int32_t> blockShape) {
   SmallVector<int64_t> shape(blockShape.begin(), blockShape.end());
-  if (!type || type.getShape() != ArrayRef<int64_t>(shape))
+  if (!type || shape.size() < type.getRank())
     return failure();
+  unsigned leadingUnitDims = shape.size() - type.getRank();
+  if (!llvm::all_of(ArrayRef<int64_t>(shape).take_front(leadingUnitDims),
+                    [](int64_t dim) { return dim == 1; }) ||
+      type.getShape() != ArrayRef<int64_t>(shape).drop_front(leadingUnitDims))
+    return failure();
+  if (leadingUnitDims) {
+    // Descriptor coordinates retain their rank when the landing allocation
+    // drops leading unit dimensions. Plan in shared axes, then restore the
+    // descriptor axes without changing the physical shared offsets.
+    auto segments =
+        getTLETMECopySegments(type, blockShape.drop_front(leadingUnitDims));
+    if (failed(segments))
+      return failure();
+    for (auto &segment : *segments) {
+      segment.shape.insert(segment.shape.begin(), leadingUnitDims, 1);
+      segment.offsets.insert(segment.offsets.begin(), leadingUnitDims, 0);
+      segment.rowAxis += leadingUnitDims;
+      segment.leadingAxis += leadingUnitDims;
+    }
+    return segments;
+  }
   TLETMECopySegment whole{shape, SmallVector<int64_t>(shape.size(), 0), 0};
   if (shape.size() != 2)
     return SmallVector<TLETMECopySegment>{whole};
@@ -919,6 +941,8 @@ getTLETMECopySegments(ttg::MemDescType type, ArrayRef<int32_t> blockShape) {
   }
   unsigned leadingAxis = order[0];
   unsigned rowAxis = order[1];
+  whole.rowAxis = rowAxis;
+  whole.leadingAxis = leadingAxis;
   // A leading-dimension slice needs its origin in the parent's grouping.
   // Do not silently reinterpret it as a packed, independent allocation.
   if (shape[leadingAxis] != physicalShape[leadingAxis] ||
@@ -940,7 +964,6 @@ getTLETMECopySegments(ttg::MemDescType type, ArrayRef<int32_t> blockShape) {
     segment.rows = shape[rowAxis];
     segment.groups = grouping->numGroups;
     segment.sharedStride = grouping->elemsPerGroupInLeadingDim;
-    segment.rowAxis = rowAxis;
     segments.push_back(std::move(segment));
     return segments;
   }

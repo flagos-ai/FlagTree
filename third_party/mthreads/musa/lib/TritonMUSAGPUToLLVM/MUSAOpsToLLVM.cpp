@@ -384,14 +384,15 @@ void emitTLETMECopySegments(ArrayRef<triton::musa::TLETMECopySegment> plan,
         b.gep(ptr_ty(rewriter.getContext(), 3), elemTy, sharedAddr, offset);
     Value position = blockPos;
     for (unsigned axis = 0; axis < segment.offsets.size(); ++axis) {
-      if (!segment.offsets[axis] && !iteration)
+      if (!segment.offsets[axis] && !(row && axis == segment.rowAxis) &&
+          !(group && axis == segment.leadingAxis))
         continue;
       Value index = b.i32_val(segment.offsets.size() - 1 - axis);
       Value coordinate = b.extract_element(blockPos, index);
       coordinate = b.add(coordinate, b.i32_val(segment.offsets[axis]));
       if (row && axis == segment.rowAxis)
         coordinate = b.add(coordinate, row);
-      else if (group)
+      else if (group && axis == segment.leadingAxis)
         coordinate =
             b.add(coordinate, b.mul(group, b.i32_val(segment.shape[axis])));
       position = b.insert_element(position, coordinate, index);
