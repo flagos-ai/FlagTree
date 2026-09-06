@@ -905,8 +905,14 @@ LogicalResult DistributedBarrierOp::verify() {
   auto *op = getOperation();
   auto spaceAttr = op->getAttrOfType<StringAttr>("space");
 
-  if (spaceAttr && spaceAttr.getValue() == "device")
-    return DistributedBarrier::verifyDeviceSpace(op, getSrc());
+  if (spaceAttr) {
+    StringRef space = spaceAttr.getValue();
+    if (space != "device" && space != "inter" && space != "world")
+      return emitOpError()
+             << "FlagCX space must be 'device', 'inter', or 'world', got '"
+             << space << "'";
+    return DistributedBarrier::verifyFlagCxSpace(op, getSrc());
+  }
 
   auto kindAttr = op->getAttrOfType<StringAttr>("group_kind");
   auto rankAttr = op->getAttrOfType<IntegerAttr>("group_rank");

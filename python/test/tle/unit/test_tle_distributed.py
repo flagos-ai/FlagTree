@@ -7,6 +7,7 @@ from triton.experimental.tle.language import (
     _mesh_to_cluster_dims,
     _normalize_remote_shard_id,
     _resolve_launch_axis,
+    _is_cluster_submesh,
 )
 import triton.language.core as tlcore
 
@@ -171,6 +172,15 @@ class TestClusterDims:
         assert sub.shape == (2, )
         assert _mesh_to_cluster_dims(sub) == (2, 2, 1)
 
+    def test_mesh_to_cluster_dims_uses_topology_level_with_custom_axis_names(self):
+        mesh = tle.device_mesh(
+            tle.MeshConfig(
+                node=[("rack", 2)],
+                device=[("gpu", 4)],
+                block_cluster=[("cluster_x", 2)],
+            ))
+        assert _mesh_to_cluster_dims(mesh) == (2, 1, 1)
+
     def test_resolve_launch_axis(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
         assert _resolve_launch_axis(mesh, "cluster_x") == 0
@@ -220,6 +230,12 @@ class _FakeSemantic:
         self.builder = _FakeBuilder() if builder is None else builder
 
 
+class _FakeDevicePtr:
+
+    def __init__(self, handle="comm"):
+        self.handle = handle
+
+
 class _LegacyBarrierSemantic:
 
     def __init__(self):
@@ -239,6 +255,33 @@ class TestShardId:
 class TestDistributedBarrierScope:
 
     @pytest.mark.require_tle("distributed_barrier")
+    @pytest.mark.parametrize(
+        ("space", "mesh", "required_level"),
+        (("inter", tle.device_mesh({"device": 2}), "node"), ("world", tle.device_mesh({"device": 2}), "node"),
+         ("device", tle.device_mesh({"node": 2}), "device")),
+    )
+    def test_flagcx_barrier_requires_matching_mesh_axis(self, space, mesh, required_level):
+        with pytest.raises(ValueError, match=rf"requires mesh to define a '{required_level}' topology axis"):
+            tle.distributed_barrier(
+                mesh=mesh,
+                device_dptr=_FakeDevicePtr(),
+                space=space,
+                _semantic=_FakeSemantic(),
+            )
+
+    def test_flagcx_barrier_requires_mesh(self):
+        with pytest.raises(ValueError, match="mesh is required"):
+            tle.distributed_barrier(
+                device_dptr=_FakeDevicePtr(),
+                space="device",
+                _semantic=_FakeSemantic(),
+            )
+
+    def test_flagcx_barrier_requires_device_pointer(self):
+        mesh = tle.device_mesh({"node": 2})
+        with pytest.raises(ValueError, match="device_dptr is required"):
+            tle.distributed_barrier(mesh=mesh, space="world", _semantic=_FakeSemantic())
+
     def test_distributed_barrier_full_cluster_mesh(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 1)]})
         semantic = _FakeSemantic()
@@ -312,4 +355,76 @@ class TestDistributedBarrierScope:
 
     def test_infer_submesh_barrier_group_full_mesh_returns_none(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
-        assert _infer_submesh_barrier_group(mesh, (2, 2, 1)) is None
+        assert _is_cluster_submesh(mesh) is None
+
+    def test_is_cluster_submesh_returns_analysis(self):
+        mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+        analysis = _is_cluster_submesh(mesh[0, :])
+        assert analysis is not None
+        assert analysis.cluster_axes == (0, 1)
+        assert analysis.cluster_members_by_outer_coord == {(): {(0, 0), (0, 1)}}
+
+    def test_infer_hierarchical_submesh_uses_cluster_local_mask(self):
+        mesh = tle.device_mesh({
+            "node": [("rack", 2)],
+            "device": [("gpu", 4)],
+            "block_cluster": [("cluster_x", 2)],
+        })
+        group = _infer_submesh_barrier_group(mesh[1, 3, 1:2], (2, 1, 1))
+
+        assert group.shape == (1, )
+        assert group.axes == (0, )
+        assert group.mask == (1, )
+
+    def test_infer_hierarchical_submesh_reuses_common_mask_across_outer_coords(self):
+        mesh = tle.device_mesh({
+            "node": [("rack", 2)],
+            "device": [("gpu", 4)],
+            "block_cluster": [("cluster_x", 2)],
+        })
+        group = _infer_submesh_barrier_group(mesh[:, :, 1:2], (2, 1, 1))
+
+        assert group.shape == (1, )
+        assert group.axes == (0, )
+        assert group.mask == (1, )
+
+    def test_infer_hierarchical_submesh_with_device_and_block_axes(self):
+        mesh = tle.device_mesh({
+            "device": [
+                ("device_x", 2),
+                ("device_y", 2),
+            ],
+            "block_cluster": [
+                ("cluster_x", 2),
+                ("cluster_y", 2),
+            ],
+            "block": [
+                ("block_x", 4),
+                ("block_y", 4),
+            ],
+        })
+
+        cluster_x_submesh = mesh[:, :, 1, :, :, :]
+        cluster_y_submesh = mesh[:, :, :, 1, :, :]
+        cluster_x_group = _infer_submesh_barrier_group(cluster_x_submesh, (2, 2, 1))
+        cluster_y_group = _infer_submesh_barrier_group(cluster_y_submesh, (2, 2, 1))
+
+        assert cluster_x_group.shape == (2, )
+        assert cluster_x_group.axes == (1, )
+        assert cluster_x_group.mask == (2, 3)
+        assert cluster_y_group.shape == (2, )
+        assert cluster_y_group.axes == (0, )
+        assert cluster_y_group.mask == (1, 3)
+
+    def test_infer_submesh_rejects_different_masks_across_outer_coords(self):
+        mesh = tle.device_mesh(
+            None,
+            _shape=(2, ),
+            _dim_names=("cluster_x", ),
+            _physical_ids=(0, 3),
+            _launch_shape=(2, 2),
+            _launch_dim_names=("rack", "cluster_x"),
+        )
+
+        with pytest.raises(ValueError, match="one mask for different cluster member selections"):
+            _infer_submesh_barrier_group(mesh, (2, 1, 1))
