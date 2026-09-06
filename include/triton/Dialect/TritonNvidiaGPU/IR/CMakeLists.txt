@@ -1,6 +1,6 @@
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
-set(LLVM_TARGET_DEFINITIONS TritonNvidiaGPUOps.td)
+flagtree_spec_td_set(LLVM_TARGET_DEFINITIONS TritonNvidiaGPUOps.td)
 mlir_tablegen(Dialect.h.inc -gen-dialect-decls -dialect=ttng)
 mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs -dialect=ttng)
 mlir_tablegen(Ops.h.inc -gen-op-decls)
