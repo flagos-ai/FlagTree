@@ -206,6 +206,19 @@ static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
     return srcView;
   }
 
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    // A block argument carries no static offset information. Warp-specialize
+    // partition arguments map positionally to the parent's captures, so the
+    // view can be recovered there; any other block argument must give up so
+    // the caller falls back to the whole allocated interval instead of
+    // wrongly assuming the view starts at the buffer base.
+    if (auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(
+            arg.getOwner()->getParentOp()))
+      return getStaticMemDescView(
+          partitions.getParentOp().getExplicitCaptures()[arg.getArgNumber()]);
+    return std::nullopt;
+  }
+
   SmallVector<int64_t> shape(memDescTy.getShape().begin(),
                              memDescTy.getShape().end());
   return StaticAccessView{value, SmallVector<int64_t>(shape.size(), 0),
