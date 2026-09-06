@@ -36,6 +36,12 @@ inline constexpr llvm::StringLiteral kTMEExplicitCompletionAttr =
     "musa.tme.explicit_completion";
 inline constexpr llvm::StringLiteral kTLEExpectBytesAttr =
     "musa_tle.expect_bytes";
+inline constexpr llvm::StringLiteral kTLECompletionGroupAttr =
+    "musa_tle.completion_group";
+inline constexpr llvm::StringLiteral kTLEPipeDeferredArrivalAttr =
+    "musa_tle.pipe_deferred_arrival";
+inline constexpr llvm::StringLiteral kTLEPipeReaderTMEStoreAttr =
+    "musa_tle.pipe_reader_tme_store";
 #endif // __TLE__
 
 inline constexpr int32_t kTMEDescSizeBytes = 64;
@@ -877,6 +883,105 @@ createAsyncTMECopyLocalToGlobal(BuilderT &builder, Location loc, Value desc,
       TMEPersistenceAttr::get(builder.getContext(), config.outerPersistence));
   return cast<AsyncTMECopyLocalToGlobalOp>(builder.create(state));
 }
+
+#ifdef __TLE__
+// A TME transfer is governed by its physical shared layout, not by the
+// eventual consumers of the data (which may reuse the allocation).
+struct TLETMECopySegment {
+  SmallVector<int64_t> shape;
+  SmallVector<int64_t> offsets;
+  int64_t sharedOffset = 0;
+  int64_t rows = 1;
+  int64_t groups = 1;
+  int64_t sharedStride = 0;
+  unsigned rowAxis = 0;
+  unsigned leadingAxis = 0;
+};
+
+inline FailureOr<SmallVector<TLETMECopySegment>>
+getTLETMECopySegments(ttg::MemDescType type, ArrayRef<int32_t> blockShape) {
+  SmallVector<int64_t> shape(blockShape.begin(), blockShape.end());
+  if (!type || shape.size() < type.getRank())
+    return failure();
+  unsigned leadingUnitDims = shape.size() - type.getRank();
+  if (!llvm::all_of(ArrayRef<int64_t>(shape).take_front(leadingUnitDims),
+                    [](int64_t dim) { return dim == 1; }) ||
+      type.getShape() != ArrayRef<int64_t>(shape).drop_front(leadingUnitDims))
+    return failure();
+  if (leadingUnitDims) {
+    // Descriptor coordinates retain their rank when the landing allocation
+    // drops leading unit dimensions. Plan in shared axes, then restore the
+    // descriptor axes without changing the physical shared offsets.
+    auto segments =
+        getTLETMECopySegments(type, blockShape.drop_front(leadingUnitDims));
+    if (failed(segments))
+      return failure();
+    for (auto &segment : *segments) {
+      segment.shape.insert(segment.shape.begin(), leadingUnitDims, 1);
+      segment.offsets.insert(segment.offsets.begin(), leadingUnitDims, 0);
+      segment.rowAxis += leadingUnitDims;
+      segment.leadingAxis += leadingUnitDims;
+    }
+    return segments;
+  }
+  TLETMECopySegment whole{shape, SmallVector<int64_t>(shape.size(), 0), 0};
+  if (shape.size() != 2)
+    return SmallVector<TLETMECopySegment>{whole};
+
+  auto elemBytes = inferElemBytesFromMemDescType(type);
+  auto order = ttg::getOrder(type);
+  auto carrier = resolveCanonicalPH1TMESharedCarrierConfig(type);
+  if (!elemBytes || *elemBytes <= 0 || order.size() != 2 || failed(carrier))
+    return failure();
+  SmallVector<int64_t> physicalShape(type.getShape().begin(),
+                                     type.getShape().end());
+  if (!type.getAllocShape().empty()) {
+    auto allocShape = type.getAllocShape().take_back(2);
+    physicalShape.assign(allocShape.begin(), allocShape.end());
+  }
+  unsigned leadingAxis = order[0];
+  unsigned rowAxis = order[1];
+  whole.rowAxis = rowAxis;
+  whole.leadingAxis = leadingAxis;
+  // A leading-dimension slice needs its origin in the parent's grouping.
+  // Do not silently reinterpret it as a packed, independent allocation.
+  if (shape[leadingAxis] != physicalShape[leadingAxis] ||
+      shape[rowAxis] > physicalShape[rowAxis])
+    return failure();
+  auto grouping = getPH1TMELeadingDimGrouping(physicalShape, order, *elemBytes);
+  if (failed(grouping))
+    return failure();
+
+  SmallVector<TLETMECopySegment> segments;
+  if (carrier->swizzleGranularity == TMESwizzleGranularity::SG_NONE &&
+      grouping->numGroups > 1) {
+    // Ordinary unswizzled TLE pointers retain packed row-major storage.
+    // A 2D group would change the shared row pitch, so split each row instead.
+    // Swizzled SQMMA carriers below already use the PH1 group-major layout.
+    TLETMECopySegment segment = whole;
+    segment.shape[rowAxis] = 1;
+    segment.shape[leadingAxis] = grouping->elemsPerGroupInLeadingDim;
+    segment.rows = shape[rowAxis];
+    segment.groups = grouping->numGroups;
+    segment.sharedStride = grouping->elemsPerGroupInLeadingDim;
+    segments.push_back(std::move(segment));
+    return segments;
+  }
+  for (int64_t start = 0; start < shape[leadingAxis];
+       start += grouping->elemsPerGroupInLeadingDim) {
+    TLETMECopySegment segment = whole;
+    segment.offsets[leadingAxis] = start;
+    segment.shape[leadingAxis] = grouping->elemsPerGroupInLeadingDim;
+    auto offset = linearizePH1TMELinearCoords(segment.offsets, physicalShape,
+                                              order, *elemBytes);
+    if (failed(offset))
+      return failure();
+    segment.sharedOffset = *offset;
+    segments.push_back(std::move(segment));
+  }
+  return segments;
+}
+#endif // __TLE__
 
 } // namespace mlir::triton::musa
 

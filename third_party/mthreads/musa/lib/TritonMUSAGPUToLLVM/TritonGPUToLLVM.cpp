@@ -7,6 +7,7 @@
 #ifdef __TLE__
 #include "Conversion/MUSATLEToLLVM/LocalPointersOpToLLVM.h"
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "TritonMUSACommon/TMEUtils.h"
 #endif
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -394,6 +395,31 @@ struct ConvertTritonMUSAGPUToLLVM
     ModuleOp mod = getOperation();
     TargetInfo targetInfo(computeCapability);
 
+#ifdef __TLE__
+    auto tmeWalk = mod.walk([&](Operation *op) -> WalkResult {
+      Value shared;
+      ArrayRef<int32_t> shape;
+      if (auto load = dyn_cast<triton::musa::AsyncTMECopyGlobalToLocalOp>(op)) {
+        shared = load.getResult();
+        shape = load.getBlockShape();
+      } else if (auto store =
+                     dyn_cast<triton::musa::AsyncTMECopyLocalToGlobalOp>(op)) {
+        shared = store.getSrc();
+        shape = store.getBlockShape();
+      } else {
+        return WalkResult::advance();
+      }
+      if (failed(triton::musa::getTLETMECopySegments(
+              dyn_cast<triton::gpu::MemDescType>(shared.getType()), shape))) {
+        op->emitError(
+            "unsupported TLE TME physical shared layout or block shape");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (tmeWalk.wasInterrupted())
+      return signalPassFailure();
+#else
     auto groupedTMELoadWalk = mod.walk(
         [&](triton::musa::AsyncTMECopyGlobalToLocalOp op) -> WalkResult {
           if (failed(
@@ -404,6 +430,8 @@ struct ConvertTritonMUSAGPUToLLVM
         });
     if (groupedTMELoadWalk.wasInterrupted())
       return signalPassFailure();
+
+#endif // __TLE__
 
     ModuleAllocation allocation(
         mod, mlir::triton::musa_gpu::getMusaAllocationAnalysisScratchSizeFn(

@@ -944,29 +944,18 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
                                  partitions->getParentOp())
                            : triton::gpu::WarpSpecializeOp();
       if (ws && ws->hasAttr("musa_tle.static_warp_specialize")) {
-        ModuleOp module = op->getParentOfType<ModuleOp>();
-        auto numWarps =
-            module->getAttrOfType<IntegerAttr>(triton::gpu::AttrNumWarpsName);
-        auto threadsPerWarp = module->getAttrOfType<IntegerAttr>(
-            triton::gpu::AttrNumThreadsPerWarp);
-        if (!numWarps || !threadsPerWarp || numWarps.getInt() <= 0 ||
-            threadsPerWarp.getInt() <= 0) {
+        std::optional<int> partitionStartThread =
+            getWarpGroupStartThreadId(op->getBlock());
+        if (!partitionStartThread || *partitionStartThread < 0) {
           return op.emitOpError(
-              "static WS partition store requires ttg.num-warps and "
-              "ttg.threads-per-warp");
+              "MUSA TLE static WS partition store requires a static worker "
+              "thread range");
         }
-        if (numWarps.getInt() >
-            std::numeric_limits<int32_t>::max() / threadsPerWarp.getInt())
-          return op.emitOpError(
-              "static WS partition leader exceeds int32 range");
-        int64_t firstPartitionThread =
-            numWarps.getInt() * threadsPerWarp.getInt();
         Value rawThreadId = ::mlir::gpu::ThreadIdOp::create(
             rewriter, loc, ::mlir::gpu::Dimension::x);
         rawThreadId =
             arith::IndexCastOp::create(rewriter, loc, i32_ty, rawThreadId);
-        threadPred = b.icmp_eq(
-            rawThreadId, b.i32_val(static_cast<int32_t>(firstPartitionThread)));
+        threadPred = b.icmp_eq(rawThreadId, b.i32_val(*partitionStartThread));
       }
     }
 #else

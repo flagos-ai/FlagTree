@@ -109,12 +109,27 @@ def TritonMUSAGPUTLELowerSqmma
 
 def TritonMUSAGPUTLELowerPipe
     : Pass<"tritonmusa-tle-lower-pipe", "mlir::ModuleOp"> {
-  let summary = "Lower single-field TME SPSC pipes to MUSA barriers";
+  let summary = "Lower MUSA cyclic, close, and one-shot payload pipes";
   let description = [{
-    Lower the initial mthreads tle.pipe contract: one CTA-scoped cyclic SPSC
-    field produced by one descriptor-to-shared TME transaction.  Materialize
-    independent full and empty hardware-barrier rings, bind TME completion to
-    the full barrier, and reject all unsupported pipe forms before rewriting.
+    Lower CTA-scoped cyclic and one-shot SPSC pipes, including static
+    warp-specialized SPSC endpoints placed in the default or any worker
+    partition, and cyclic named-reader SPMC pipes whose endpoints may be
+    placed in the default or distinct worker partitions, with whole-field or
+    field-subset reader subscriptions. Lower named-reader cyclic close
+    broadcast and one-shot publication in warp-specialized execution as well
+    as non-warp-specialized execution.
+    Payloads may be produced by whole-field descriptor-to-shared TME
+    transactions, multiple non-overlapping contiguous TME fragments of one
+    field, whole-field local stores, or a combination of these transports.
+    Analyze structured scf.if/scf.for lifecycle regions with uniform branch
+    predicates, loop-carried stage/phase equivalence, and path-complete
+    writer/reader drain windows before materializing resources. Preserve
+    mutually-exclusive generation alternatives without multiplying accounting.
+    Materialize pipe-owned full/empty hardware-barrier rings before lifecycle
+    rewriting, or reuse a user-provided stage-indexed PENDING full ring for
+    TME-bearing pipes. Preserve aggregate TME completion and local-store
+    publication, validate complete field-region coverage and external-barrier
+    ownership, and reject unsupported forms before rewriting.
   }];
   let dependentDialects = [
     "mlir::arith::ArithDialect",
@@ -127,11 +142,12 @@ def TritonMUSAGPUTLELowerPipe
 
 def TritonMUSAGPUTLEPrepareWarpSpecialize
     : Pass<"tritonmusa-tle-prepare-warp-specialize", "mlir::ModuleOp"> {
-  let summary = "Validate mthreads TLE static warp specialization";
+  let summary = "Validate MUSA TLE static warp specialization";
   let description = [{
-    Validate the restricted single-producer/single-consumer contract and
-    publish the total launch warp count while retaining ttg.warp_specialize for
-    shared-memory allocation and late LLVM lowering.
+    Validate the restricted default-plus-static-workers contract, assign
+    declaration-ordered worker warp ranges, and publish the total launch warp
+    count while retaining ttg.warp_specialize for shared-memory allocation and
+    late LLVM lowering.
   }];
   let dependentDialects = [
     "mlir::triton::TritonDialect",
@@ -141,12 +157,13 @@ def TritonMUSAGPUTLEPrepareWarpSpecialize
 
 def TritonMUSAGPUTLELowerWarpSpecialize
     : Pass<"tritonmusa-tle-lower-warp-specialize", "mlir::ModuleOp"> {
-  let summary = "Late-lower mthreads TLE static warp specialization";
+  let summary = "Late-lower MUSA TLE static warp specialization";
   let description = [{
     Lower warp-group barriers directly from the retained default and partition
-    regions, then replace the restricted warp-specialize operation with two
-    independent static CFG branches.  The lowering uses hardware barrier ids
-    and direct SSA captures, so it allocates no control shared memory.
+    regions, then replace the restricted warp-specialize operation with direct
+    static CFG dispatch for the default and all worker partitions.  The
+    lowering uses hardware barrier ids and direct SSA captures, so it allocates
+    no control shared memory.
   }];
   let dependentDialects = [
     "mlir::arith::ArithDialect",
@@ -183,11 +200,11 @@ def TritonMUSAGPUTLELowerTMETransactions
     : Pass<"tritonmusa-tle-lower-tme-transactions", "mlir::ModuleOp"> {
   let summary = "Materialize explicit MUSA TME completion transactions";
   let description = [{
-    Replace the temporary transaction-byte marker on each explicit TLE
-    completion copy with one barrier add-transaction before the copy and one
-    issuer arrival after it.  Mark all three issue operations with the same raw
-    CTA issuer thread and suppress the legacy CTA-wide synchronization inside
-    explicit-completion TME lowering.
+    Replace temporary TLE completion metadata with one aggregate barrier
+    add-transaction before every completion group and one issuer arrival after
+    it.  All TME copies in the group share the same barrier and raw CTA issuer
+    thread.  Standalone copies form single-member groups, preserving their
+    existing behavior.
   }];
   let dependentDialects = [
     "mlir::arith::ArithDialect",
@@ -215,7 +232,7 @@ def TritonMUSAGPUTLELowerBarrierOperations
 
 def TritonMUSAGPUTLEFinalizeExplicitLayouts
     : Pass<"tritonmusa-tle-finalize-explicit-layouts", "mlir::ModuleOp"> {
-  let summary = "Finalize mthreads TLE explicit layout constraints";
+  let summary = "Finalize MUSA TLE explicit layout constraints";
   let description = [{
     Verify that temporary explicit result and memory encodings agree with the
     final TTGPU tensor types, then remove the temporary attributes before LLVM
