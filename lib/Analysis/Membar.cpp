@@ -607,16 +607,35 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       // all-shared-memory dependency because one elected lane cannot publish
       // stores performed by other lanes without a preceding barrier.
       if (!arrive.getParticipantArrive()) {
+        // The dependency only orders the arrive against *prior* accesses, so
+        // check it with a transient probe instead of joining it into the
+        // running state; otherwise every later shared-memory op would
+        // spuriously conflict with this arrive until the next barrier.
         Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
-        curBlockInfo.syncWriteIntervals[allIntervals].insert(op);
-        curBlockInfo.syncReadIntervals[allIntervals].insert(op);
+        BlockInfo probeInfo;
+        probeInfo.syncWriteIntervals[allIntervals].insert(op);
+        probeInfo.syncReadIntervals[allIntervals].insert(op);
+        if (blockInfo->isIntersected(probeInfo, filter)) {
+          builder->setInsertionPoint(op);
+          insertBarrier(op, builder);
+          blockInfo->sync();
+        }
       }
     }
 #else
     if (isa<triton::nvidia_gpu::ArriveBarrierOp>(op)) {
+      // Probe against prior unsynced accesses to decide on a pre-arrive
+      // rendezvous, without leaking the all-shared-memory interval into the
+      // running state (see the TLE path above).
       Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
-      curBlockInfo.syncWriteIntervals[allIntervals].insert(op);
-      curBlockInfo.syncReadIntervals[allIntervals].insert(op);
+      BlockInfo probeInfo;
+      probeInfo.syncWriteIntervals[allIntervals].insert(op);
+      probeInfo.syncReadIntervals[allIntervals].insert(op);
+      if (blockInfo->isIntersected(probeInfo, filter)) {
+        builder->setInsertionPoint(op);
+        insertBarrier(op, builder);
+        blockInfo->sync();
+      }
     }
 #endif
     scratchBufferId = allocation->getBufferId(op);
