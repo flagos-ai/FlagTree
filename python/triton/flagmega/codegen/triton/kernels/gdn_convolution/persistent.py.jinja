@@ -1,0 +1,51 @@
+# flagmega-kernel: gdn_convolution/persistent
+@triton.jit
+def _flagmega_gdn_convolution_local_tile(
+    qkv, destination, conv_state, conv_weight,
+    local_channels, global_channels, active,
+    HISTORY: tl.constexpr, KERNEL: tl.constexpr,
+):
+    """Convolve the current owner's dense local channel tile."""
+    current = tl.load(qkv + local_channels, mask=active, other=0.0).to(tl.float32)
+    current_coefficient = tl.load(
+        conv_weight + global_channels * KERNEL + HISTORY,
+        mask=active,
+        other=0.0,
+    ).to(tl.float32)
+    accumulator = (current * current_coefficient).to(tl.bfloat16).to(tl.float32)
+    for history_index in tl.static_range(0, HISTORY):
+        state_offset = (
+            (global_channels // 8) * HISTORY * 8
+            + history_index * 8
+            + global_channels % 8
+        )
+        old = tl.load(conv_state + state_offset, mask=active, other=0.0).to(tl.float32)
+        coefficient = tl.load(
+            conv_weight + global_channels * KERNEL + history_index,
+            mask=active,
+            other=0.0,
+        ).to(tl.float32)
+        accumulator += (old * coefficient).to(tl.bfloat16).to(tl.float32)
+        if history_index + 1 < HISTORY:
+            shifted_offset = (
+                (global_channels // 8) * HISTORY * 8
+                + (history_index + 1) * 8
+                + global_channels % 8
+            )
+            shifted = tl.load(conv_state + shifted_offset, mask=active, other=0.0)
+            tl.store(conv_state + state_offset, shifted, mask=active)
+    final_state_offset = (
+        (global_channels // 8) * HISTORY * 8
+        + (HISTORY - 1) * 8
+        + global_channels % 8
+    )
+    tl.store(conv_state + final_state_offset, current.to(tl.bfloat16), mask=active)
+    tl.store(
+        destination + local_channels,
+        _flagmega_silu(accumulator.to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16),
+        mask=active,
+    )
+
+{% if render_calls is defined %}
+{% include "kernels/gdn_convolution/_function.py.jinja" %}
+{% endif %}

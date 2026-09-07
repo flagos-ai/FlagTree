@@ -1,0 +1,8 @@
+# flagmega-kernel: rms_norm/local platform=generic
+#
+# RMSNorm is emitted from the bufferized call ABI in call_graph.py.jinja.  The
+# selected implementation is a dense owner-local reduction: DistributedType
+# changes only pointer/active-coordinate expressions, never the algorithm.
+{% if render_calls is defined %}
+{% include "kernels/rms_norm/_function.py.jinja" %}
+{% endif %}

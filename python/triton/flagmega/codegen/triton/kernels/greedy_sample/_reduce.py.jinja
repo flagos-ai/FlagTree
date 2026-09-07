@@ -1,0 +1,12 @@
+@triton.jit
+def _flagmega_argmax_combine(left_value, left_index, right_value, right_index):
+    # Match torch.argmax: NaN precedes every numeric value; ties (including
+    # two NaNs and infinities) select the lowest logical index, not owner ID.
+    left_nan = left_value != left_value
+    right_nan = right_value != right_value
+    tied = (left_value == right_value) | (left_nan & right_nan)
+    take_left = (left_nan & ~right_nan) | (
+        ~right_nan & (left_value > right_value)
+    ) | (tied & (left_index < right_index))
+    return (tl.where(take_left, left_value, right_value),
+            tl.where(take_left, left_index, right_index))

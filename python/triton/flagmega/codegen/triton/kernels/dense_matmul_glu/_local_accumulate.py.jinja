@@ -1,0 +1,21 @@
+@triton.jit
+def {{ dense_matmul_glu_accumulate_helper }}(
+    source, gate_weight, up_weight,
+    source_offsets, gate_weight_offsets, up_weight_offsets,
+    k_mask, n_mask,
+):
+    """Accumulate one ABI-addressed local fused gate/up GEMV tile."""
+    source_value = tl.load(
+        source + source_offsets, mask=k_mask, other=0.0,
+    ).to(tl.float32)
+    matrix_mask = n_mask[:, None] & k_mask[None, :]
+    gate_value = tl.load(
+        gate_weight + gate_weight_offsets, mask=matrix_mask, other=0.0,
+    ).to(tl.float32)
+    up_value = tl.load(
+        up_weight + up_weight_offsets, mask=matrix_mask, other=0.0,
+    ).to(tl.float32)
+    return (
+        tl.sum(gate_value * source_value[None, :], axis=1),
+        tl.sum(up_value * source_value[None, :], axis=1),
+    )

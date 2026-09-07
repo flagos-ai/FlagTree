@@ -1,0 +1,37 @@
+# flagmega-kernel: paged_attention_combine/decode
+@triton.jit
+def _flagmega_paged_attention_combine(
+    partial_max,
+    partial_sum,
+    partial_accumulator,
+    destination,
+    context_shard,
+    head,
+    num_query_heads: tl.constexpr,
+    head_dim: tl.constexpr,
+    context_shards: tl.constexpr,
+):
+    """Portable stable merge of online-softmax states from all context shards."""
+    dimension = tl.arange(0, head_dim)
+    if (context_shard == 0) & (head < num_query_heads):
+        shard_offsets = tl.arange(0, context_shards) * num_query_heads + head
+        maxima = tl.load(partial_max + shard_offsets)
+        merged_max = tl.max(maxima, axis=0)
+        merged_sum = 0.0
+        merged_accumulator = tl.zeros((head_dim,), tl.float32)
+        for part in tl.static_range(context_shards):
+            partial_index = part * num_query_heads + head
+            factor = tl.exp(tl.load(partial_max + partial_index) - merged_max)
+            merged_sum += tl.load(partial_sum + partial_index) * factor
+            partial = tl.load(
+                partial_accumulator + partial_index * head_dim + dimension
+            )
+            merged_accumulator += partial * factor
+        tl.store(
+            destination + head * head_dim + dimension,
+            (merged_accumulator / merged_sum).to(tl.bfloat16),
+        )
+
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_combine/_function.py.jinja" %}
+{% endif %}

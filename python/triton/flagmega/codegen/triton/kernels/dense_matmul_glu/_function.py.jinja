@@ -1,0 +1,56 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul_glu" and call.variant == dense_matmul_glu_variant %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for dense_glu_local_n_start in tl.range(
+        0, {{ call.local_n_capacity }}, {{ call.tile_n }}
+    ):
+        dense_glu_local_n_offsets = (
+            dense_glu_local_n_start + tl.arange(0, {{ call.tile_n }})
+        )
+        dense_glu_global_n = {{ call.global_n }}
+        dense_glu_n_mask = (
+            (dense_glu_local_n_offsets < {{ call.local_n_capacity }})
+            & ({{ call.result_active }})
+        )
+        dense_glu_gate = tl.zeros(({{ call.tile_n }},), tl.float32)
+        dense_glu_up = tl.zeros(({{ call.tile_n }},), tl.float32)
+        for dense_glu_local_k_start in tl.range(
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+        ):
+            dense_glu_local_k_offsets = (
+                dense_glu_local_k_start + tl.arange(0, {{ call.block_k }})
+            )
+            dense_glu_global_k = {{ call.global_k }}
+            dense_glu_k_mask = (
+                (dense_glu_local_k_offsets < {{ call.local_k_capacity }})
+                & ({{ call.source_active }})
+            )
+            dense_glu_gate_partial, dense_glu_up_partial = (
+                {{ call.accumulate_helper }}(
+                    {{ call.source }},
+                    {{ call.gate_weight }}, {{ call.up_weight }},
+                    {{ call.source_offset }},
+                    {{ call.gate_weight_offset }}, {{ call.up_weight_offset }},
+                    dense_glu_k_mask, dense_glu_n_mask,
+                )
+            )
+            dense_glu_gate += dense_glu_gate_partial
+            dense_glu_up += dense_glu_up_partial
+        dense_glu_gate = dense_glu_gate.to({{ call.output_type }}).to(tl.float32)
+        dense_glu_up = dense_glu_up.to({{ call.output_type }}).to(tl.float32)
+        dense_glu_activated = (
+            dense_glu_gate * tl.sigmoid(dense_glu_gate)
+        ).to({{ call.output_type }}).to(tl.float32)
+        dense_glu_value = dense_glu_activated * dense_glu_up
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            dense_glu_value.to({{ call.output_type }}),
+            mask=dense_glu_n_mask,
+        )
+
+
+{% endif %}
+{% endfor %}

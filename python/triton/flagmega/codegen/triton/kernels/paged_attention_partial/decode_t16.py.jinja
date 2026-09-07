@@ -1,0 +1,8 @@
+{# The implementation identity and tile live in selected TIR.  Both portable
+   variants share one semantic source body so fixes cannot diverge by copying
+   the kernel. #}
+{% set paged_attention_partial_variant = "decode_t16" %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_partial/_function.py.jinja" %}
+{% endif %}

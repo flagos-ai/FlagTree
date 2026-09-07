@@ -1,0 +1,57 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "distributed_boxing" and call.variant == distributed_boxing_variant %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+{% for leaf in call.leaves %}
+    for boxing_start in tl.range(0, {{ leaf.capacity }}, {{ leaf.tile }}):
+        boxing_offsets = boxing_start + tl.arange(0, {{ leaf.tile }})
+        boxing_mask = (
+            (boxing_offsets < {{ leaf.capacity }}) & ({{ leaf.active }})
+        )
+{% if leaf.reduction %}
+        boxing_accumulator = tl.full(({{ leaf.tile }},), {{ leaf.neutral }}, {{ leaf.accumulator_type }})
+        for boxing_partial_start in tl.range(
+            0, {{ leaf.partial_owner_count }}, {{ leaf.partial_owner_tile }},
+            loop_unroll_factor=1,
+        ):
+            boxing_partial_member = boxing_partial_start + tl.arange(0, {{ leaf.partial_owner_tile }})
+            boxing_partial_owner = {{ leaf.partial_owner }}
+            boxing_source_offset = {{ leaf.source_offset }}
+            boxing_partial_values = tl.load(
+                {{ leaf.source }}
+                + boxing_partial_owner[:, None] * {{ leaf.owner_stride }}
+                + boxing_source_offset[None, :],
+                mask=(boxing_partial_member[:, None] < {{ leaf.partial_owner_count }})
+                     & boxing_mask[None, :],
+                other={{ leaf.neutral }},
+            ).to({{ leaf.accumulator_type }})
+            boxing_reduced = {{ leaf.reduction_expression }}
+            boxing_accumulator = {{ leaf.combine_expression }}
+        tl.store(
+            {{ leaf.result }} + ({{ leaf.result_offset }}),
+            boxing_accumulator.to({{ leaf.output_type }}),
+            mask=boxing_mask & ({{ leaf.writer_active }}),
+        )
+{% else %}
+{% if leaf.source_is_scalar | default(false) %}
+        boxing_value = {{ leaf.source }}
+{% else %}
+        boxing_value = tl.load(
+            {{ leaf.source }} + ({{ leaf.source_offset }}),
+            mask=boxing_mask,
+            other=0.0,
+        )
+{% endif %}
+        tl.store(
+            {{ leaf.result }} + ({{ leaf.result_offset }}),
+            boxing_value,
+            mask=boxing_mask & ({{ leaf.writer_active }}),
+        )
+{% endif %}
+{% endfor %}
+
+
+{% endif %}
+{% endfor %}

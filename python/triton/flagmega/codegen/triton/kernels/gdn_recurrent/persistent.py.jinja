@@ -1,0 +1,144 @@
+# flagmega-kernel: gdn_recurrent/persistent
+@triton.jit
+def _flagmega_dense_rows(
+    source, weight, rows, active,
+    K: tl.constexpr, TILE_K: tl.constexpr,
+):
+    """Dense projections for the value heads touched by one local tile."""
+    accumulator = tl.zeros(({{ recurrent_value_tile }},), tl.float32)
+    compensation = tl.zeros(({{ recurrent_value_tile }},), tl.float32)
+    for k_start in tl.range(0, K, TILE_K):
+        k_offsets = k_start + tl.arange(0, TILE_K)
+        source_value = tl.load(
+            source + k_offsets, mask=k_offsets < K, other=0.0,
+        ).to(tl.float32)
+        weight_value = tl.load(
+            weight + rows[:, None] * K + k_offsets[None, :],
+            mask=active[:, None] & (k_offsets[None, :] < K),
+            other=0.0,
+        ).to(tl.float32)
+        partial = tl.sum(weight_value * source_value[None, :], axis=1)
+        corrected = partial - compensation
+        updated = accumulator + corrected
+        compensation = (updated - accumulator) - corrected
+        accumulator = updated
+    return accumulator.to(tl.bfloat16).to(tl.float32)
+
+
+@triton.jit
+def _flagmega_gdn_recurrent_local_core_tile(
+    qkv, projection_input, b_weight, a_weight, recurrent_state,
+    a_log, dt_bias, core_scratch,
+    local_values, global_values, active,
+    VALUE_HEADS: tl.constexpr, KEY_HEADS: tl.constexpr,
+    KEY_DIM: tl.constexpr, VALUE_DIM: tl.constexpr,
+    PROJECTION_DIM: tl.constexpr, REPEATS: tl.constexpr,
+    TILE_K: tl.constexpr, PROJECTION_TILE: tl.constexpr,
+):
+    """Update exactly the state/value coordinates owned by this shard."""
+    KEY_TOTAL: tl.constexpr = KEY_HEADS * KEY_DIM
+    value_head = global_values // VALUE_DIM
+    value_coordinate = global_values % VALUE_DIM
+    key_head = value_head // REPEATS
+    beta_projection = _flagmega_dense_rows(
+        projection_input, b_weight, value_head, active,
+        PROJECTION_DIM, PROJECTION_TILE,
+    )
+    a_projection = _flagmega_dense_rows(
+        projection_input, a_weight, value_head, active,
+        PROJECTION_DIM, PROJECTION_TILE,
+    )
+    beta = tl.sigmoid(beta_projection).to(tl.bfloat16).to(tl.float32)
+    decay_input = a_projection + tl.load(
+        dt_bias + value_head, mask=active, other=0.0,
+    ).to(tl.float32)
+    softplus = tl.where(
+        decay_input > 20.0,
+        decay_input,
+        libdevice.log1p(libdevice.exp(decay_input)),
+    )
+    decay_log = -libdevice.exp(
+        tl.load(a_log + value_head, mask=active, other=0.0).to(tl.float32)
+    ) * softplus
+    decay = libdevice.exp(decay_log)
+
+    key_offsets = tl.arange(0, TILE_K)
+    key_mask = key_offsets < KEY_DIM
+    query_raw = tl.load(
+        qkv + key_head[:, None] * KEY_DIM + key_offsets[None, :],
+        mask=active[:, None] & key_mask[None, :],
+        other=0.0,
+    ).to(tl.float32)
+    key_raw = tl.load(
+        qkv + KEY_TOTAL + key_head[:, None] * KEY_DIM + key_offsets[None, :],
+        mask=active[:, None] & key_mask[None, :],
+        other=0.0,
+    ).to(tl.float32)
+    query_norm = tl.maximum(
+        tl.sqrt(tl.sum(query_raw * query_raw, axis=1)), 1.0e-12,
+    )
+    key_norm = tl.maximum(
+        tl.sqrt(tl.sum(key_raw * key_raw, axis=1)), 1.0e-12,
+    )
+    state_offsets = (
+        (
+            (value_head[:, None] * VALUE_DIM + value_coordinate[:, None])
+            * (KEY_DIM // 4)
+            + key_offsets[None, :] // 4
+        ) * 4
+        + key_offsets[None, :] % 4
+    )
+    state_mask = active[:, None] & key_mask[None, :]
+    old_state = tl.load(
+        recurrent_state + state_offsets, mask=state_mask, other=0.0,
+    ).to(tl.float32)
+    normalized_key = key_raw / key_norm[:, None]
+    recalled = tl.sum(
+        old_state * decay[:, None] * normalized_key, axis=1,
+    )
+    target = tl.load(
+        qkv + 2 * KEY_TOTAL + global_values,
+        mask=active,
+        other=0.0,
+    ).to(tl.float32)
+    delta = (target - recalled) * beta
+    new_state = (
+        old_state * decay[:, None]
+        + normalized_key * delta[:, None]
+    )
+    tl.store(recurrent_state + state_offsets, new_state, mask=state_mask)
+    normalized_query = query_raw / query_norm[:, None] * {{ query_scale_repr }}
+    core = tl.sum(new_state * normalized_query, axis=1)
+    tl.store(core_scratch + global_values, core, mask=active)
+
+
+@triton.jit
+def _flagmega_gdn_recurrent_local_norm_tile(
+    z, destination, norm_weight, core_scratch,
+    local_values, global_values, active,
+    VALUE_DIM: tl.constexpr, EPS: tl.constexpr,
+):
+    """Normalize complete heads after every owner has published core values."""
+    value_head = global_values // VALUE_DIM
+    value_coordinate = global_values % VALUE_DIM
+    head_offsets = tl.arange(0, {{ head_block }})
+    head_mask = head_offsets < VALUE_DIM
+    head_core = tl.load(
+        core_scratch + value_head[:, None] * VALUE_DIM + head_offsets[None, :],
+        mask=active[:, None] & head_mask[None, :],
+        other=0.0,
+    ).to(tl.float32)
+    inverse_rms = tl.rsqrt(
+        tl.sum(head_core * head_core, axis=1) / VALUE_DIM + EPS,
+    )
+    core = tl.load(core_scratch + global_values, mask=active, other=0.0)
+    norm = tl.load(
+        norm_weight + value_coordinate, mask=active, other=0.0,
+    ).to(tl.float32)
+    gate = tl.load(z + local_values, mask=active, other=0.0).to(tl.float32)
+    result = core * inverse_rms * norm * _flagmega_silu(gate)
+    tl.store(destination + local_values, result.to(tl.bfloat16), mask=active)
+
+{% if render_calls is defined %}
+{% include "kernels/gdn_recurrent/_function.py.jinja" %}
+{% endif %}

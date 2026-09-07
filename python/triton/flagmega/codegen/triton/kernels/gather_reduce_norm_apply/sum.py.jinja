@@ -1,0 +1,119 @@
+# flagmega-kernel: gather_reduce_norm_apply/sum platform=generic
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "gather_reduce_norm_apply" and call.variant == "sum" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    norm_partial_member_count = (
+        tl.num_programs(0) * {{ call.partial_owner_count }}
+        // {{ call.placement_owner_count }}
+    )
+    for norm_outer_index in tl.range(0, {{ call.local_outer_capacity }}):
+        norm_apply_inner_count = {{ call.normalization_size }} + 0.0
+{% if call.use_mean %}
+        norm_apply_mean_sum = 0.0
+        for norm_partial_start in tl.range(
+            0, norm_partial_member_count, {{ call.reduction_width }}
+        ):
+            norm_partial_lane = norm_partial_start + tl.arange(
+                0, {{ call.reduction_width }}
+            )
+            norm_partial_mask = (
+                (norm_partial_lane < norm_partial_member_count)
+                & ({{ call.outer_active }})
+            )
+            norm_partial_owner = {{ call.partial_owner }}
+            norm_apply_mean_sum += tl.sum(
+                tl.load(
+                    {{ call.partial_stats }}
+                    + norm_partial_owner * {{ call.owner_stride }}
+                    + ({{ call.partial_stats_sum_offset }}),
+                    mask=norm_partial_mask,
+                    other=0.0,
+                ).to(tl.float32),
+                axis=0,
+            )
+        norm_apply_mean = norm_apply_mean_sum / norm_apply_inner_count
+{% else %}
+        norm_apply_mean = 0.0
+{% endif %}
+        norm_apply_square_sum = 0.0
+        for norm_partial_start in tl.range(
+            0, norm_partial_member_count, {{ call.reduction_width }}
+        ):
+            norm_partial_lane = norm_partial_start + tl.arange(
+                0, {{ call.reduction_width }}
+            )
+            norm_partial_mask = (
+                (norm_partial_lane < norm_partial_member_count)
+                & ({{ call.outer_active }})
+            )
+            norm_partial_owner = {{ call.partial_owner }}
+            norm_apply_square_sum += tl.sum(
+                tl.load(
+                    {{ call.partial_stats }}
+                    + norm_partial_owner * {{ call.owner_stride }}
+                    + ({{ call.partial_stats_square_sum_offset }}),
+                    mask=norm_partial_mask,
+                    other=0.0,
+                ).to(tl.float32),
+                axis=0,
+            )
+        norm_apply_variance = norm_apply_square_sum / norm_apply_inner_count
+{% if call.use_mean %}
+        norm_apply_variance -= norm_apply_mean * norm_apply_mean
+{% endif %}
+        norm_apply_variance = tl.maximum(norm_apply_variance, 0.0)
+        norm_apply_inverse_std = tl.rsqrt(
+            norm_apply_variance + {{ call.epsilon }}
+        )
+        for norm_apply_inner_start in tl.range(
+            0, {{ call.local_inner_capacity }}, {{ call.tile }}
+        ):
+            norm_apply_inner_offsets = (
+                norm_apply_inner_start + tl.arange(0, {{ call.tile }})
+            )
+            norm_apply_mask = (
+                (norm_apply_inner_offsets < {{ call.local_inner_capacity }})
+                & ({{ call.outer_active }})
+                & ({{ call.active }})
+            )
+            norm_apply_value = tl.load(
+                {{ call.source }} + ({{ call.source_offset }}),
+                mask=norm_apply_mask,
+                other=0.0,
+            ).to(tl.float32)
+            norm_apply_scale = tl.load(
+                {{ call.scale }} + ({{ call.scale_offset }}),
+                mask=norm_apply_mask,
+                other=0.0,
+            ).to(tl.float32)
+{% if call.has_bias %}
+            norm_apply_bias = tl.load(
+                {{ call.bias }} + ({{ call.bias_offset }}),
+                mask=norm_apply_mask,
+                other=0.0,
+            ).to(tl.float32)
+{% else %}
+            norm_apply_bias = 0.0
+{% endif %}
+            norm_apply_normalized = (
+                (norm_apply_value - norm_apply_mean)
+                * norm_apply_inverse_std
+            )
+{% if call.round_before_scale %}
+            norm_apply_normalized = norm_apply_normalized.to({{ call.output_type }}).to(tl.float32)
+{% endif %}
+            norm_apply_output = norm_apply_normalized * norm_apply_scale + norm_apply_bias
+            tl.store(
+                {{ call.result }} + ({{ call.result_offset }}),
+                norm_apply_output.to({{ call.output_type }}),
+                mask=norm_apply_mask & ({{ call.writer_active }}),
+            )
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

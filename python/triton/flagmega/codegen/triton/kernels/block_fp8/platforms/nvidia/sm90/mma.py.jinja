@@ -1,0 +1,65 @@
+# flagmega-kernel: block_fp8/mma platform=nvidia architecture=sm90
+{% set block_fp8_variant = "mma" %}
+@triton.jit
+def _flagmega_block_linear_local_tile(
+    source, weight, weight_scale, destination,
+    weight_row_offsets, scale_row_offsets, destination_offsets, n_mask,
+    K: tl.constexpr, BLOCK_K: tl.constexpr,
+):
+    """Compute one dense local-N tile using physical row offsets from the ABI."""
+    accumulator = tl.zeros(({{ tn }},), tl.float32)
+    compensation = tl.zeros(({{ tn }},), tl.float32)
+    SCALE_K: tl.constexpr = (K + BLOCK_K - 1) // BLOCK_K
+    for k_start in tl.range(0, K, BLOCK_K):
+        k_offsets = k_start + tl.arange(0, BLOCK_K)
+        source_value = tl.load(
+            source + k_offsets, mask=k_offsets < K, other=0.0,
+        ).to(tl.float32)
+        maximum = tl.max(tl.abs(source_value), axis=0)
+        activation_scale = tl.where(maximum == 0.0, 1.0, maximum / 448.0)
+        quantized = tl.maximum(
+            tl.minimum(source_value / activation_scale, 448.0), -448.0,
+        ).to(tl.float8e4nv)
+        scale = tl.load(
+            weight_scale + scale_row_offsets + (k_start // BLOCK_K),
+            mask=n_mask,
+            other=0.0,
+        ).to(tl.float32)
+        if BLOCK_K >= 16:
+            activation_matrix = tl.broadcast_to(quantized[None, :], (16, BLOCK_K))
+            weight_matrix = tl.load(
+                weight + k_offsets[:, None] + weight_row_offsets[None, :],
+                mask=(k_offsets[:, None] < K) & n_mask[None, :],
+                other=0.0,
+            )
+            partial = (
+                tl.sum(
+                    tl.dot(activation_matrix, weight_matrix, out_dtype=tl.float32),
+                    axis=0,
+                )
+                * 0.0625
+                * activation_scale
+                * scale
+            )
+        else:
+            dequantized = quantized.to(tl.float32) * activation_scale
+            weight_value = tl.load(
+                weight + weight_row_offsets[:, None] + k_offsets[None, :],
+                mask=n_mask[:, None] & (k_offsets[None, :] < K),
+                other=0.0,
+            ).to(tl.float32)
+            partial = tl.sum(
+                weight_value * dequantized[None, :], axis=1,
+            ) * scale
+        corrected = partial - compensation
+        updated = accumulator + corrected
+        compensation = (updated - accumulator) - corrected
+        accumulator = updated
+    tl.store(
+        destination + destination_offsets,
+        accumulator.to(tl.bfloat16),
+        mask=n_mask,
+    )
+{% if render_calls is defined %}
+{% include "kernels/block_fp8/_function.py.jinja" %}
+{% endif %}

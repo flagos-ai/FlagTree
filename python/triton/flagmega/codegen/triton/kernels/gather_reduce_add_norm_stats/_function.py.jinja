@@ -1,0 +1,106 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "gather_reduce_add_norm_stats" and call.variant == "sum_rms" %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}__partials({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    gather_square_sum = tl.zeros(({{ call.tile }},), tl.float32)
+    if {{ call.participant_active }}:
+        for gather_start in tl.range(
+            {{ call.work_partition_index }} * {{ call.tile }},
+            {{ call.local_capacity }},
+            {{ call.work_partition_count }} * {{ call.tile }}
+        ):
+            gather_local_offsets = gather_start + tl.arange(0, {{ call.tile }})
+            gather_mask = (
+                (gather_local_offsets < {{ call.local_capacity }})
+                & ({{ call.active }})
+            )
+            gather_projection = tl.zeros(({{ call.tile }},), tl.float32)
+            for gather_partial_start in tl.range(
+                0, {{ call.partial_owner_count }},
+                {{ call.partial_reduction_width }}, loop_unroll_factor=1,
+            ):
+                gather_partial_lane = gather_partial_start + tl.arange(
+                    0, {{ call.partial_reduction_width }}
+                )
+                gather_partial_mask = (
+                    gather_partial_lane < {{ call.partial_owner_count }}
+                )
+                gather_partial_owner = {{ call.partial_owner }}
+                gather_projection += tl.sum(
+                    tl.load(
+                        {{ call.partial }}
+                        + gather_partial_owner[None, :]
+                        * {{ call.owner_stride }}
+                        + ({{ call.partial_offset }})[:, None],
+                        mask=(
+                            gather_mask[:, None]
+                            & gather_partial_mask[None, :]
+                        ),
+                        other=0.0,
+                    ).to(tl.float32),
+                    axis=1,
+                )
+            gather_projection_rounded = gather_projection.to(
+                {{ call.output_type }}
+            )
+            tl.store(
+                {{ call.collective }} + ({{ call.collective_offset }}),
+                gather_projection_rounded,
+                mask=gather_mask,
+            )
+            gather_value = (
+                tl.load(
+                    {{ call.residual }} + ({{ call.residual_offset }}),
+                    mask=gather_mask,
+                    other=0.0,
+                ) + gather_projection_rounded
+            ).to({{ call.output_type }})
+            tl.store(
+                {{ call.result }} + ({{ call.result_offset }}),
+                gather_value,
+                mask=gather_mask,
+            )
+            gather_value_fp32 = gather_value.to(tl.float32)
+            gather_square_sum += tl.where(
+                gather_mask, gather_value_fp32 * gather_value_fp32, 0.0,
+            )
+    tl.store(
+        {{ call.stats_partials }} + shard_index,
+        tl.sum(gather_square_sum, axis=0),
+    )
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__finalize({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    if {{ call.stats_store_active }}:
+        gather_stats = 0.0
+        for gather_stats_start in tl.range(
+            0, {{ call.stats_reduction_count }},
+            {{ call.stats_reduction_width }}
+        ):
+            gather_stats_lane = gather_stats_start + tl.arange(
+                0, {{ call.stats_reduction_width }}
+            )
+            gather_stats_mask = (
+                gather_stats_lane < {{ call.stats_reduction_count }}
+            )
+            gather_stats_owner = {{ call.stats_partial_owner }}
+            gather_stats += tl.sum(
+                tl.load(
+                    {{ call.stats_partials }} + gather_stats_owner,
+                    mask=gather_stats_mask,
+                    other=0.0,
+                ),
+                axis=0,
+            )
+        tl.store({{ call.stats }} + ({{ call.stats_offset }}), gather_stats)
+
+
+{{ entry.phase_schedule(call, ("partials", "finalize")) }}
+
+
+{% endif %}
+{% endfor %}

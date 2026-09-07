@@ -1,0 +1,38 @@
+# flagmega-kernel: rotary_embedding/decode
+{% if render_calls is defined %}
+{% include "kernels/rotary_embedding/_function.py.jinja" %}
+{% endif %}
+@triton.jit
+def _flagmega_rotary_embedding(
+    sequence_lengths,
+    cosine,
+    sine,
+    sequence_size: tl.constexpr,
+    head_dim: tl.constexpr,
+    theta: tl.constexpr,
+    attention_scaling: tl.constexpr,
+    elements_per_program: tl.constexpr,
+):
+    """Generate the decode positions' rotary cosine and sine tensors."""
+    program = tl.program_id(0)
+    linear = program * elements_per_program + tl.arange(0, elements_per_program)
+    count = sequence_size * head_dim
+    mask = linear < count
+    token = linear // head_dim
+    dimension = linear % head_dim
+    frequency_dimension = dimension % (head_dim // 2)
+    inverse_frequency = tl.exp(
+        (-2.0 * frequency_dimension.to(tl.float32) / head_dim) * tl.log(theta)
+    )
+    position = tl.load(sequence_lengths).to(tl.float32) + token.to(tl.float32)
+    angle = position * inverse_frequency
+    tl.store(
+        cosine + linear,
+        libdevice.fast_cosf(angle) * attention_scaling,
+        mask=mask,
+    )
+    tl.store(
+        sine + linear,
+        libdevice.fast_sinf(angle) * attention_scaling,
+        mask=mask,
+    )

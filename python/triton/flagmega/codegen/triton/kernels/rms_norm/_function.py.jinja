@@ -1,0 +1,59 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "rms_norm" and call.variant == "local" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for rms_outer_index in tl.range(0, {{ call.outer_capacity }}):
+        rms_square_sum = 0.0
+        for rms_reduction_start in tl.range(
+            0, {{ call.reduction_capacity }}, {{ call.tile }}
+        ):
+            rms_reduction_offsets = (
+                rms_reduction_start + tl.arange(0, {{ call.tile }})
+            )
+            rms_mask = (
+                (rms_reduction_offsets < {{ call.reduction_capacity }})
+                & ({{ call.active }})
+            )
+            rms_value = tl.load(
+                {{ call.value }} + ({{ call.value_offset }}),
+                mask=rms_mask,
+                other=0.0,
+            ).to(tl.float32)
+            rms_square_sum += tl.sum(
+                tl.where(rms_mask, rms_value * rms_value, 0.0), axis=0,
+            )
+        rms_inverse = tl.rsqrt(
+            rms_square_sum / {{ call.normalization_size }} + {{ call.epsilon }}
+        )
+        for rms_apply_start in tl.range(
+            0, {{ call.reduction_capacity }}, {{ call.tile }}
+        ):
+            rms_reduction_offsets = rms_apply_start + tl.arange(0, {{ call.tile }})
+            rms_mask = (
+                (rms_reduction_offsets < {{ call.reduction_capacity }})
+                & ({{ call.active }})
+            )
+            rms_value = tl.load(
+                {{ call.value }} + ({{ call.value_offset }}),
+                mask=rms_mask,
+                other=0.0,
+            ).to(tl.float32)
+            rms_scale = (
+                tl.load(
+                    {{ call.weight }} + ({{ call.weight_offset }}),
+                    mask=rms_mask,
+                    other=0.0,
+                ).to(tl.float32) + {{ call.weight_bias }}
+            ).to({{ call.output_type }})
+            rms_normalized = (rms_value * rms_inverse).to({{ call.output_type }})
+            tl.store(
+                {{ call.result }} + ({{ call.result_offset }}),
+                (rms_normalized * rms_scale).to({{ call.output_type }}),
+                mask=rms_mask & ({{ call.writer_active }}),
+            )
+
+
+{% endif %}
+{% endfor %}

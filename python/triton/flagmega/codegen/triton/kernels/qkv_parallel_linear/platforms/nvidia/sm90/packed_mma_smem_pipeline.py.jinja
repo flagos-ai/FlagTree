@@ -1,0 +1,210 @@
+# flagmega-kernel: qkv_parallel_linear/packed_mma_smem_pipeline platform=nvidia architecture=sm90
+{# BF16 M=1 fused QKV over one owner-local K-major RHS tile.
+
+   The target catalog proves the local [N,K] profile and matrix primitive.
+   A single rank-5 tensor descriptor covers the owner-major fused weight;
+   shard_index selects the owner without a model- or mesh-shaped table. #}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "qkv_parallel_linear" and call.variant == "packed_mma_smem_pipeline" %}
+{{ call.symbol }}__mma_layout = tl.constexpr(
+    tle.gpu.MmaEncoding([2, 0], [{{ call.consumer_warps }}, 1], [16, 8])
+)
+{{ call.symbol }}__mma_a_layout = tl.constexpr(
+    tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2)
+)
+{{ call.symbol }}__mma_b_layout = tl.constexpr(
+    tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma_layout, 2)
+)
+{{ call.symbol }}__mma_b_k_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(1, {{ call.symbol }}__mma_b_layout.value)
+)
+{{ call.symbol }}__mma_c_m_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(1, {{ call.symbol }}__mma_layout.value)
+)
+{{ call.symbol }}__mma_c_n_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(0, {{ call.symbol }}__mma_layout.value)
+)
+{{ call.symbol }}__input_copy_layout = tl.constexpr(
+    tle.gpu.BlockEncoding(
+        [1, 1],
+        [1, {{ call.worker_width }}],
+        [1, {{ call.consumer_warps }}],
+        [0, 1],
+    )
+)
+
+
+@triton.jit
+def {{ call.symbol }}__consumer_stage(weight_stage, lhs_stage, qkv_k_tile):
+    qkv_b_k = tle.gpu.set_layout(
+        tl.arange(0, {{ call.block_k }}),
+        {{ call.symbol }}__mma_b_k_layout,
+    )
+    qkv_lhs_row = tle.gpu.set_layout(
+        tl.zeros(({{ call.block_k }},), tl.int32),
+        {{ call.symbol }}__mma_b_k_layout,
+    )
+    qkv_packed_weight = tl.load(tle.gpu.local_ptr(weight_stage))
+    qkv_logical_weight = tl.reshape(
+        qkv_packed_weight,
+        (
+            {{ call.block_n // 8 }},
+            {{ call.block_k // 16 }},
+            8,
+            16,
+        ),
+    )
+    qkv_logical_weight = tl.reshape(
+        tl.permute(qkv_logical_weight, (0, 2, 1, 3)),
+        ({{ call.block_n }}, {{ call.block_k }}),
+    )
+    qkv_a = tle.gpu.set_layout(
+        qkv_logical_weight,
+        {{ call.symbol }}__mma_a_layout,
+    )
+    qkv_input = tle.gpu.set_layout(
+        tl.load(
+            tle.gpu.local_ptr(
+                lhs_stage,
+                (
+                    qkv_lhs_row,
+                    qkv_k_tile * {{ call.block_k }} + qkv_b_k,
+                ),
+            )
+        ),
+        {{ call.symbol }}__mma_b_k_layout,
+    )
+    qkv_b = tle.gpu.set_layout(
+        tl.broadcast_to(qkv_input[:, None], ({{ call.block_k }}, 8)),
+        {{ call.symbol }}__mma_b_layout,
+    )
+    qkv_stage_accumulator = tle.gpu.set_layout(
+        tl.zeros(({{ call.block_n }}, 8), tl.float32),
+        {{ call.symbol }}__mma_layout,
+    )
+    return tl.dot(
+        qkv_a,
+        qkv_b,
+        acc=qkv_stage_accumulator,
+        out_dtype=tl.float32,
+    )
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__producer(
+    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{% set writer = call.pipeline_channels[0].writer_parameter %}
+{% if call.descriptor_kind == "table" %}
+    # The uint8 table contains 128-byte CUDA tensor-map descriptors.
+    qkv_weight_descriptor_entry = {{ call.weight_descriptor }} + shard_index * 128
+{% else %}
+    qkv_weight_descriptor_entry = {{ call.weight_descriptor }}
+{% endif %}
+    tle.gpu.tensor_map_fenceproxy_acquire(qkv_weight_descriptor_entry)
+    for qkv_k_tile in tl.static_range(0, {{ call.num_k_tiles }}):
+        qkv_slot = {{ writer }}.acquire(qkv_k_tile)
+        qkv_weight_descriptor = tle.gpu.reinterpret_tensor_map(
+            qkv_weight_descriptor_entry,
+            qkv_slot.weight,
+        )
+        tle.gpu.copy(
+            qkv_weight_descriptor,
+            qkv_slot.weight,
+            [{{ call.descriptor_block_shape | join(", ") }}],
+            [
+{% for offset in call.descriptor_offsets %}
+                {{ offset }},
+{% endfor %}
+            ],
+            eviction_policy="evict_first",
+        )
+        {{ writer }}.commit(qkv_k_tile)
+    {{ writer }}.close({{ call.num_k_tiles }})
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer(
+    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{% set reader = call.pipeline_channels[0].reader_parameter %}
+{% set lhs_stage = call.pipeline_consumer_workspaces[0].parameter %}
+    qkv_input_copy_k = tle.gpu.set_layout(
+        tl.arange(0, {{ call.local_k_capacity }})[None, :],
+        {{ call.symbol }}__input_copy_layout,
+    )
+    qkv_local_k_offsets = qkv_input_copy_k
+    # ptxas 12.8/12.9/13.3 can emit undefined uniform registers for noinline
+    # cp.async + L2 cache hints with cyclic input views. Authorized workaround:
+    # omit only the advisory hint; keep the asynchronous transfer and ABI.
+    tle.gpu.copy(
+        {{ call.source }} + ({{ call.source_offset }}),
+        {{ lhs_stage }},
+        [1, {{ call.local_k_capacity }}],
+        is_async=True,
+    )
+    tle.gpu.async_commit_group()
+    qkv_accumulator = tle.gpu.set_layout(
+        tl.zeros(({{ call.block_n }}, 8), tl.float32),
+        {{ call.symbol }}__mma_layout,
+    )
+    for qkv_k_tile in tl.static_range(0, {{ call.num_k_tiles }}):
+        qkv_ready = {{ reader }}.wait(qkv_k_tile)
+        if qkv_k_tile == 0:
+            tle.gpu.async_wait_group(0)
+            tl.debug_barrier()
+        qkv_accumulator += {{ call.symbol }}__consumer_stage(
+            qkv_ready.slot.weight,
+            {{ lhs_stage }},
+            qkv_k_tile,
+        )
+        {{ reader }}.release(qkv_k_tile)
+
+    qkv_c_m = tle.gpu.set_layout(
+        tl.arange(0, {{ call.block_n }}),
+        {{ call.symbol }}__mma_c_m_layout,
+    )
+    qkv_c_n = tle.gpu.set_layout(
+        tl.arange(0, 8),
+        {{ call.symbol }}__mma_c_n_layout,
+    )
+    qkv_c_n_zero = tle.gpu.set_layout(
+        tl.zeros((1, 8), tl.int32),
+        {{ call.symbol }}__mma_layout,
+    )
+    qkv_logical_m = qkv_c_m
+{% for output in call.outputs %}
+    qkv_local_n_offsets = qkv_logical_m - {{ output.projection_start }}
+    qkv_output_pointer = tle.gpu.set_layout(
+        ({{ output.result }} + ({{ output.result_offset }}))[:, None]
+        + qkv_c_n_zero,
+        {{ call.symbol }}__mma_layout,
+    )
+    qkv_output_mask = tle.gpu.set_layout(
+        (
+            (qkv_logical_m >= {{ output.projection_start }})
+            & (
+                qkv_logical_m
+                < {{ output.projection_start + output.local_n_capacity }}
+            )
+            & ({{ output.active }})
+        )[:, None]
+        & (qkv_c_n[None, :] == qkv_c_n_zero),
+        {{ call.symbol }}__mma_layout,
+    )
+    tl.store(
+        qkv_output_pointer,
+        qkv_accumulator,
+        mask=qkv_output_mask,
+    )
+{% endfor %}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

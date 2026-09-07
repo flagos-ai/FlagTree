@@ -1,0 +1,13 @@
+# flagmega-kernel: distributed_boxing/gather_reduce_scatter platform=generic
+# The executable body is emitted from each call's local-buffer ABI.  Partial
+# groups, compact owner strides, tuple leaves, vector lanes, and target
+# sharding are call-site properties rather than kernel-template constants.
+{% set distributed_boxing_variant = "gather_reduce_scatter" %}
+{% if render_calls is defined %}
+@triton.jit
+def _flagmega_boxing_multiply(lhs, rhs):
+    return lhs * rhs
+
+
+{% include "kernels/distributed_boxing/_function.py.jinja" %}
+{% endif %}

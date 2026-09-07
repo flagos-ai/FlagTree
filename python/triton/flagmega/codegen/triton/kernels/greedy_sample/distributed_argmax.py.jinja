@@ -1,0 +1,42 @@
+# flagmega-kernel: greedy_sample/distributed_argmax
+{% include "kernels/greedy_sample/_reduce.py.jinja" %}
+@triton.jit
+def _flagmega_cast_logits_and_local_argmax(
+    source, logits, partial_max, partial_index, shard_index,
+    VOCAB_SIZE: tl.constexpr, VOCAB_TILE: tl.constexpr,
+):
+    offsets = tl.arange(0, VOCAB_TILE)
+    best_value = -float("inf")
+    best_index = VOCAB_SIZE
+    for start in tl.range(
+        shard_index * VOCAB_TILE,
+        VOCAB_SIZE,
+        {{ mesh_size }} * VOCAB_TILE,
+    ):
+        indices = start + offsets
+        valid = indices < VOCAB_SIZE
+        values = tl.load(source + indices, mask=valid, other=-float("inf")).to(tl.float32)
+        tl.store(logits + indices, values, mask=valid)
+        tile_max, tile_index = tl.reduce(
+            (values, tl.where(valid, indices, VOCAB_SIZE)), 0, _flagmega_argmax_combine)
+        best_value, best_index = _flagmega_argmax_combine(
+            best_value, best_index, tile_max, tile_index)
+    tl.store(partial_max + shard_index, best_value)
+    tl.store(partial_index + shard_index, best_index)
+
+
+@triton.jit
+def _flagmega_merge_greedy_argmax(
+    partial_max, partial_index, next_token, shard_index,
+    VOCAB_SIZE: tl.constexpr,
+):
+    if shard_index == 0:
+        shards = tl.arange(0, triton.next_power_of_2({{ mesh_size }}))
+        values = tl.load(partial_max + shards, shards < {{ mesh_size }}, other=-float("inf"))
+        indices = tl.load(partial_index + shards, shards < {{ mesh_size }}, other=VOCAB_SIZE)
+        maximum, index = tl.reduce((values, indices), 0, _flagmega_argmax_combine)
+        tl.store(next_token, index.to(tl.int32))
+
+{% if render_calls is defined %}
+{% include "kernels/greedy_sample/_function.py.jinja" %}
+{% endif %}

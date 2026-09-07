@@ -1,0 +1,12 @@
+# flagmega-kernel: elementwise/cast platform=generic
+{% set elementwise_variant = "cast" %}
+{% set physical_block = elementwise_block | default('block') %}
+{% include "kernels/elementwise/packed_axes.py.jinja" %}
+@triton.jit
+def _flagmega_elementwise_cast(source, destination, size: tl.constexpr, block: tl.constexpr, output_type: tl.constexpr):
+    schedule_offsets = tl.program_id(0) * {{ physical_block }} + tl.arange(0, {{ physical_block }})
+    offsets, mask = _flagmega_elementwise_packed_offsets(schedule_offsets, size)
+    tl.store(destination + offsets, tl.load(source + offsets, mask=mask).to(output_type), mask=mask)
+{% if render_calls is defined %}
+{% include "kernels/elementwise/_function.py.jinja" %}
+{% endif %}

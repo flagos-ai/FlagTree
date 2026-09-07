@@ -1,0 +1,18 @@
+# flagmega-kernel: embedding/decode
+@triton.jit
+def _flagmega_embedding(input_ids, embedding, destination, shard_index,
+                        VOCAB_SIZE: tl.constexpr, SIZE: tl.constexpr,
+                        PADDING_IDX: tl.constexpr):
+    token_id = tl.load(input_ids).to(tl.int32)
+    tl.device_assert((token_id >= 0) & (token_id < VOCAB_SIZE), "input id outside vocabulary")
+    for start in tl.range(shard_index * 16, SIZE, {{ mesh_size }} * 16):
+        offsets = start + tl.arange(0, 16)
+        mask = offsets < SIZE
+        value = tl.load(embedding + token_id * SIZE + offsets, mask=mask).to(tl.bfloat16)
+        if PADDING_IDX >= 0:
+            value = tl.where(token_id == PADDING_IDX, 0.0, value).to(tl.bfloat16)
+        tl.store(destination + offsets, value, mask=mask)
+
+{% if render_calls is defined %}
+{% include "kernels/embedding/_function.py.jinja" %}
+{% endif %}

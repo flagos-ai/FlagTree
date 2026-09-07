@@ -1,0 +1,318 @@
+# flagmega-kernel: paged_attention_partial/mma_tma_smem_pipeline platform=nvidia architecture=sm90
+{# SM90 decode attention with independent K/V TMA channels and BF16 MMA.
+
+   The body consumes only the selected owner-local query head.  Logical head
+   and context-owner coordinates come from the distributed call ABI; cache
+   geometry and pipeline resources come from selected TIR. #}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "paged_attention_partial" and call.variant == "mma_tma_smem_pipeline" %}
+{{ call.symbol }}__mma_layout = tl.constexpr(
+    tle.gpu.MmaEncoding(
+        [2, 0],
+        [1, {{ call.consumer_warps }}],
+        [16, 8],
+    )
+)
+{{ call.symbol }}__lhs_dot_layout = tl.constexpr(
+    tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2)
+)
+{{ call.symbol }}__rhs_dot_layout = tl.constexpr(
+    tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__mma_layout, 2)
+)
+{{ call.symbol }}__score_row_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(1, {{ call.symbol }}__mma_layout)
+)
+
+
+@triton.jit
+def {{ call.symbol }}__qk_stage(
+    key_stage,
+    query_value,
+    attention_mask,
+    running_max,
+    scale_log2,
+):
+    shared_zero = tl.full((), 0, tl.int32)
+    shared_rows = tl.broadcast_to(
+        tl.arange(0, {{ call.block_n }})[:, None],
+        ({{ call.block_n }}, {{ call.head_dim }}),
+    )
+    shared_dims = tl.broadcast_to(
+        tl.arange(0, {{ call.head_dim }})[None, :],
+        ({{ call.block_n }}, {{ call.head_dim }}),
+    )
+    key_pointer = tle.gpu.local_ptr(
+        key_stage,
+        (shared_zero, shared_zero, shared_rows, shared_zero, shared_dims),
+        shape=({{ call.block_n }}, {{ call.head_dim }}),
+    )
+    key_value = tle.gpu.set_layout(
+        tl.trans(tl.load(key_pointer)),
+        {{ call.symbol }}__rhs_dot_layout,
+    )
+    score = tl.dot(
+        tle.gpu.set_layout(query_value, {{ call.symbol }}__lhs_dot_layout),
+        key_value,
+        acc=tle.gpu.set_layout(
+            tl.zeros(
+                ({{ call.q_head_group_size }}, {{ call.block_n }}),
+                tl.float32,
+            ),
+            {{ call.symbol }}__mma_layout,
+        ),
+    )
+    score = tl.where(attention_mask, score * scale_log2, -float("inf"))
+    tile_max = tl.max(score, axis=1)
+    has_context = tile_max != -float("inf")
+    updated_max = tl.maximum(running_max, tile_max)
+    safe_updated_max = tl.where(has_context, updated_max, 0.0)
+    safe_running_max = tl.where(has_context, running_max, 0.0)
+    previous_scale = tl.exp2(safe_running_max - safe_updated_max)
+    probability = tl.exp2(
+        tl.where(
+            attention_mask,
+            score - safe_updated_max[:, None],
+            -float("inf"),
+        )
+    )
+    return probability, previous_scale, updated_max, has_context
+
+
+@triton.jit
+def {{ call.symbol }}__value_stage(
+    value_stage,
+    probability,
+    previous_scale,
+    accumulator,
+):
+    shared_zero = tl.full((), 0, tl.int32)
+    shared_rows = tl.broadcast_to(
+        tl.arange(0, {{ call.block_n }})[:, None],
+        ({{ call.block_n }}, {{ call.head_dim }}),
+    )
+    shared_dims = tl.broadcast_to(
+        tl.arange(0, {{ call.head_dim }})[None, :],
+        ({{ call.block_n }}, {{ call.head_dim }}),
+    )
+    value_pointer = tle.gpu.local_ptr(
+        value_stage,
+        (shared_zero, shared_zero, shared_rows, shared_zero, shared_dims),
+        shape=({{ call.block_n }}, {{ call.head_dim }}),
+    )
+    value = tle.gpu.set_layout(
+        tl.load(value_pointer),
+        {{ call.symbol }}__rhs_dot_layout,
+    )
+    scaled_accumulator = tle.gpu.set_layout(
+        accumulator * previous_scale[:, None],
+        {{ call.symbol }}__mma_layout,
+    )
+    return tl.dot(
+        tle.gpu.set_layout(
+            probability.to(tl.bfloat16),
+            {{ call.symbol }}__lhs_dot_layout,
+        ),
+        value,
+        scaled_accumulator,
+        input_precision="ieee",
+    )
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__producer(
+    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{% set key_writer = call.pipeline_channels[0].writer_parameter %}
+{% set value_writer = call.pipeline_channels[1].writer_parameter %}
+    tle.gpu.tensor_map_fenceproxy_acquire({{ call.key_descriptor }})
+    tle.gpu.tensor_map_fenceproxy_acquire({{ call.value_descriptor }})
+    attention_state_offsets = 0
+    context_length = tl.load({{ call.slot_mapping }}).to(tl.int32) + 1
+    split_span = (
+        tl.cdiv(
+            context_length,
+            {{ call.context_shards * call.block_n }},
+        ) * {{ call.block_n }}
+    )
+    token_begin = tl.minimum(
+        {{ call.context_shard }} * split_span,
+        context_length,
+    )
+    token_end = tl.minimum(token_begin + split_span, context_length)
+    kv_head = ({{ call.head }} // {{ call.q_head_group_size }}).to(tl.int32)
+    layer_id_value = (
+        tl.full((), 0, tl.int32) + ({{ call.layer_id }})
+    ).to(tl.int32)
+    sequence = tl.full((), 0, tl.int32)
+    for token_start in tl.range(
+        token_begin,
+        token_end,
+        {{ call.block_n }},
+    ):
+        logical_block = token_start // {{ call.block_size }}
+        block_offset = (token_start % {{ call.block_size }}).to(tl.int32)
+        physical_block = tl.load({{ call.block_table }} + logical_block).to(tl.int32)
+
+        key_slot = {{ key_writer }}.acquire(sequence)
+        attention_key_tensor_map = tle.gpu.reinterpret_tensor_map(
+            {{ call.key_descriptor }}, key_slot.key,
+        )
+        tle.gpu.copy(
+            attention_key_tensor_map,
+            key_slot.key,
+            [{{ call.descriptor_block_shape | join(", ") }}],
+            offsets=[
+                physical_block,
+                layer_id_value,
+                block_offset,
+                kv_head,
+                0,
+            ],
+            eviction_policy="evict_first",
+        )
+        {{ key_writer }}.commit(sequence)
+
+        value_slot = {{ value_writer }}.acquire(sequence)
+        attention_value_tensor_map = tle.gpu.reinterpret_tensor_map(
+            {{ call.value_descriptor }}, value_slot.value,
+        )
+        tle.gpu.copy(
+            attention_value_tensor_map,
+            value_slot.value,
+            [{{ call.descriptor_block_shape | join(", ") }}],
+            offsets=[
+                physical_block,
+                layer_id_value,
+                block_offset,
+                kv_head,
+                0,
+            ],
+            eviction_policy="evict_first",
+        )
+        {{ value_writer }}.commit(sequence)
+        sequence += 1
+    {{ key_writer }}.close(sequence)
+    {{ value_writer }}.close(sequence)
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer(
+    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{% set key_reader = call.pipeline_channels[0].reader_parameter %}
+{% set value_reader = call.pipeline_channels[1].reader_parameter %}
+    attention_state_offsets = 0
+    context_length = tl.load({{ call.slot_mapping }}).to(tl.int32) + 1
+    split_span = (
+        tl.cdiv(
+            context_length,
+            {{ call.context_shards * call.block_n }},
+        ) * {{ call.block_n }}
+    )
+    token_begin = tl.minimum(
+        {{ call.context_shard }} * split_span,
+        context_length,
+    )
+    token_end = tl.minimum(token_begin + split_span, context_length)
+    # Keep pointer-index SSA values local to their layout domain.  Reusing this
+    # range for the final MMA accumulator store would join the query-load and
+    # accumulator-store layout domains. Tile helpers inline within this op.
+    query_dimension = tl.arange(0, {{ call.head_dim }})
+    query_load_mask = tl.arange(0, {{ call.q_head_group_size }}) == 0
+    query_value = tle.gpu.set_layout(
+        tl.load(
+            {{ call.query }}
+            + tl.zeros(({{ call.q_head_group_size }}, 1), tl.int32)
+            + query_dimension[None, :],
+            mask=query_load_mask[:, None],
+            other=0.0,
+        ),
+        {{ call.symbol }}__lhs_dot_layout,
+    )
+    running_max = tle.gpu.set_layout(
+        tl.full(
+            ({{ call.q_head_group_size }},),
+            -float("inf"),
+            tl.float32,
+        ),
+        {{ call.symbol }}__score_row_layout,
+    )
+    running_sum = tle.gpu.set_layout(
+        tl.zeros(({{ call.q_head_group_size }},), tl.float32),
+        {{ call.symbol }}__score_row_layout,
+    )
+    accumulator = tle.gpu.set_layout(
+        tl.zeros(
+            ({{ call.q_head_group_size }}, {{ call.head_dim }}),
+            tl.float32,
+        ),
+        {{ call.symbol }}__mma_layout,
+    )
+    scale_log2 = {{ call.scale }} * 1.4426950408889634
+    sequence = tl.full((), 0, tl.int32)
+    for token_start in tl.range(
+        token_begin,
+        token_end,
+        {{ call.block_n }},
+    ):
+        token = token_start + tl.arange(0, {{ call.block_n }})
+        attention_row_mask = tl.arange(0, {{ call.q_head_group_size }}) == 0
+        attention_mask = attention_row_mask[:, None] & (token[None, :] < token_end)
+        key_ready = {{ key_reader }}.wait(sequence)
+        probability, previous_scale, updated_max, has_context = (
+            {{ call.symbol }}__qk_stage(
+                key_ready.slot.key,
+                query_value,
+                tle.gpu.set_layout(
+                    attention_mask,
+                    {{ call.symbol }}__mma_layout,
+                ),
+                running_max,
+                scale_log2,
+            )
+        )
+        {{ key_reader }}.release(sequence)
+        value_ready = {{ value_reader }}.wait(sequence)
+        accumulator = {{ call.symbol }}__value_stage(
+            value_ready.slot.value,
+            probability,
+            previous_scale,
+            accumulator,
+        )
+        {{ value_reader }}.release(sequence)
+        running_sum = running_sum * previous_scale + tl.sum(probability, axis=1)
+        running_max = tl.where(has_context, updated_max, running_max)
+        sequence += 1
+
+    statistics_row = tl.arange(0, {{ call.q_head_group_size }})
+    statistics_mask = statistics_row == 0
+    tl.store(
+        {{ call.partial_max }} + statistics_row,
+        running_max,
+        mask=statistics_mask,
+    )
+    tl.store(
+        {{ call.partial_sum }} + statistics_row,
+        running_sum,
+        mask=statistics_mask,
+    )
+    accumulator_row = tl.arange(0, {{ call.q_head_group_size }})
+    accumulator_dimension = tl.arange(0, {{ call.head_dim }})
+    accumulator_mask = accumulator_row == 0
+    tl.store(
+        {{ call.partial_accumulator }}
+        + accumulator_row[:, None] * {{ call.head_dim }}
+        + accumulator_dimension[None, :],
+        accumulator,
+        mask=accumulator_mask[:, None],
+    )
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

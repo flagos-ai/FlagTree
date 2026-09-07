@@ -1,0 +1,17 @@
+# flagmega-kernel-helper: elementwise/packed_axes
+@triton.jit
+def _flagmega_elementwise_packed_offsets(schedule_offsets, schedule_size: tl.constexpr):
+{% if elementwise_packed_axes | default(false) %}
+    remaining = schedule_offsets
+    offsets = schedule_offsets * 0
+    mask = schedule_offsets < schedule_size
+{% for axis in fastest_axis_order %}
+    index_{{ axis }} = remaining % {{ padded_shape[axis] }}
+    remaining = remaining // {{ padded_shape[axis] }}
+    offsets += index_{{ axis }} * {{ logical_strides[axis] }}
+    mask = mask & (index_{{ axis }} < {{ logical_shape[axis] }})
+{% endfor %}
+    return offsets, mask
+{% else %}
+    return schedule_offsets, schedule_offsets < schedule_size
+{% endif %}

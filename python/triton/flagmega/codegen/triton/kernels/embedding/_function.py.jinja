@@ -1,0 +1,32 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "embedding" and call.variant == "decode" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    token_id = tl.load({{ call.indices }}).to(tl.int32)
+    tl.device_assert(
+        (token_id >= 0) & (token_id < {{ call.vocab_size }}),
+        "input id outside vocabulary",
+    )
+    for local_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
+        local_offsets = local_start + tl.arange(0, {{ call.tile }})
+        local_mask = local_offsets < ({{ call.active }})
+        value = tl.load(
+            {{ call.weight }} + ({{ call.weight_offset }}),
+            mask=local_mask,
+            other=0.0,
+        ).to(tl.bfloat16)
+        if {{ call.padding_idx }} >= 0:
+            value = tl.where(
+                token_id == {{ call.padding_idx }}, 0.0, value,
+            ).to(tl.bfloat16)
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            value,
+            mask=local_mask,
+        )
+
+
+{% endif %}
+{% endfor %}

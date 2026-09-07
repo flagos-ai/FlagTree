@@ -1,0 +1,7 @@
+{# See decode_t16.py.jinja.  token_tile=32 is supplied by the implementation
+   contract and remains independently selectable/editable in the IR. #}
+{% set paged_attention_partial_variant = "decode_t32" %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_partial/_function.py.jinja" %}
+{% endif %}

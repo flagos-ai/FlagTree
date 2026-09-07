@@ -1,0 +1,52 @@
+# flagmega-kernel: block_fp8/simt platform=generic
+{% set block_fp8_variant = "simt" %}
+@triton.jit
+def _flagmega_block_linear_local_tile(
+    source, weight, weight_scale, destination,
+    weight_row_offsets, scale_row_offsets, destination_offsets, n_mask,
+    K: tl.constexpr, BLOCK_K: tl.constexpr,
+):
+    """Block-scaled GEMV using only scalar/vector Triton operations."""
+    accumulator = tl.zeros(({{ tn }},), tl.float32)
+    compensation = tl.zeros(({{ tn }},), tl.float32)
+    for k_start in tl.range(0, K, BLOCK_K):
+        k_offsets = k_start + tl.arange(0, BLOCK_K)
+        k_mask = k_offsets < K
+        source_value = tl.load(
+            source + k_offsets, mask=k_mask, other=0.0,
+        ).to(tl.float32)
+        maximum = tl.max(tl.abs(source_value), axis=0)
+        activation_scale = tl.where(maximum == 0.0, 1.0, maximum / 448.0)
+        quantized = tl.maximum(
+            tl.minimum(source_value / activation_scale, 448.0), -448.0,
+        ).to(tl.float8e4nv)
+        block_scale = tl.load(
+            weight_scale + scale_row_offsets + (k_start // BLOCK_K),
+            mask=n_mask,
+            other=0.0,
+        ).to(tl.float32)
+        weight_value = tl.load(
+            weight + weight_row_offsets[:, None] + k_offsets[None, :],
+            mask=n_mask[:, None] & k_mask[None, :],
+            other=0.0,
+        ).to(tl.float32)
+        partial = (
+            tl.sum(
+                weight_value * quantized.to(tl.float32)[None, :], axis=1,
+            )
+            * activation_scale
+            * block_scale
+        )
+        corrected = partial - compensation
+        updated = accumulator + corrected
+        compensation = (updated - accumulator) - corrected
+        accumulator = updated
+    tl.store(
+        destination + destination_offsets,
+        accumulator.to(tl.bfloat16),
+        mask=n_mask,
+    )
+
+{% if render_calls is defined %}
+{% include "kernels/block_fp8/_function.py.jinja" %}
+{% endif %}

@@ -1,0 +1,24 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "matmul_glu" and call.variant == matmul_glu_variant %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for local_n_start in tl.range(
+        0, {{ call.local_n_capacity }}, {{ call.tile_n }}
+    ):
+        local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
+        n_mask = local_n_offsets < ({{ call.active_n }})
+        weight_rows = {{ call.weight_row_offset }}
+        scale_rows = {{ call.scale_row_offset }}
+        destination_offsets = {{ call.destination_offset }}
+        _flagmega_block_glu_local_tile(
+            {{ call.value }}, {{ call.gate_weight }}, {{ call.up_weight }},
+            {{ call.gate_scale }}, {{ call.up_scale }}, {{ call.result }},
+            weight_rows, scale_rows, destination_offsets, n_mask,
+            {{ call.k }}, {{ call.block_k }},
+        )
+
+
+{% endif %}
+{% endfor %}

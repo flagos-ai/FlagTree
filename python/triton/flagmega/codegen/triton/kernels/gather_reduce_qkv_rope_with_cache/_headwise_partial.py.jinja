@@ -1,0 +1,115 @@
+{% macro load_partial(partial, prefix, mask, indent) %}
+{{ indent }}{{ prefix }}_partial_lanes = tl.arange(0, {{ partial.member_width }})[:, None]
+{{ indent }}{{ prefix }}_partial_member = tl.minimum(
+{{ indent }}    {{ prefix }}_partial_lanes, {{ partial.member_count - 1 }}
+{{ indent }})
+{{ indent }}{{ prefix }}_partial_values = tl.load(
+{{ indent }}    {{ partial.storage }}
+{{ indent }}    + ({{ partial.owner }}) * {{ partial.owner_stride }}
+{{ indent }}    + ({{ partial.offset }}),
+{{ indent }}    mask=({{ mask }})[None, :]
+{{ indent }}        & ({{ prefix }}_partial_lanes < {{ partial.member_count }}),
+{{ indent }}    other=0.0,
+{{ indent }}).to(tl.float32)
+{{ indent }}{{ prefix }}_value = tl.sum(
+{{ indent }}    {{ prefix }}_partial_values, axis=0
+{{ indent }}).to({{ partial.scalar_dtype }}).to(tl.float32)
+{% endmacro %}
+
+{% macro run(call) %}
+{% for head in (call.q, call.k) %}
+{% set prefix = "qkv_q" if loop.first else "qkv_k" %}
+    if {{ head.compute_active }}:
+        for {{ prefix }}_outer_index in tl.range(0, {{ head.outer_capacity }}):
+            {{ prefix }}_element_offsets = tl.arange(0, {{ head.tile }})
+            {{ prefix }}_mask = (
+                ({{ prefix }}_element_offsets < {{ head.reduction_capacity }})
+                & ({{ head.apply_active }})
+            )
+{{ load_partial(head.partial_input, prefix, prefix ~ "_mask", "            ") }}
+{% if head.use_mean %}
+            {{ prefix }}_mean = tl.sum(
+                tl.where({{ prefix }}_mask, {{ prefix }}_value, 0.0), axis=0
+            ) / {{ head.normalization_size }}
+{% else %}
+            {{ prefix }}_mean = 0.0
+{% endif %}
+            {{ prefix }}_variance = tl.sum(
+                tl.where(
+                    {{ prefix }}_mask,
+                    {{ prefix }}_value * {{ prefix }}_value,
+                    0.0,
+                ),
+                axis=0,
+            ) / {{ head.normalization_size }} - (
+                {{ prefix }}_mean * {{ prefix }}_mean
+            )
+            {{ prefix }}_inverse = tl.rsqrt(
+                tl.maximum({{ prefix }}_variance, 0.0) + {{ head.epsilon }}
+            )
+            {{ prefix }}_scale = tl.load(
+                {{ head.scale }} + ({{ head.scale_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to(tl.float32)
+            {{ prefix }}_bias = tl.load(
+                {{ head.bias }} + ({{ head.bias_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to(tl.float32)
+            {{ prefix }}_normalized = (
+                ({{ prefix }}_value - {{ prefix }}_mean)
+                * {{ prefix }}_inverse * {{ prefix }}_scale
+                + {{ prefix }}_bias
+            )
+            {{ prefix }}_partner = tl.reshape(
+                tl.flip(
+                    tl.reshape(
+                        {{ prefix }}_normalized,
+                        (2, {{ head.head_dim // 2 }}),
+                    ),
+                    0,
+                ),
+                ({{ head.head_dim }},),
+            )
+            {{ prefix }}_rotated = tl.where(
+                ({{ head.dimension }}) < {{ head.head_dim }} // 2,
+                -{{ prefix }}_partner,
+                {{ prefix }}_partner,
+            )
+            {{ prefix }}_cosine = tl.load(
+                {{ head.cosine }} + ({{ head.cosine_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to(tl.float32)
+            {{ prefix }}_sine = tl.load(
+                {{ head.sine }} + ({{ head.sine_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to(tl.float32)
+            {{ prefix }}_result = (
+                {{ prefix }}_normalized * {{ prefix }}_cosine
+                + {{ prefix }}_rotated * {{ prefix }}_sine
+            )
+{% if loop.first %}
+            tl.store(
+                {{ head.output }} + ({{ head.output_offset }}),
+                {{ prefix }}_result,
+                mask={{ prefix }}_mask & ({{ head.output_active }}),
+            )
+{% else %}
+            tl.store(
+                {{ call.kv_cache }} + ({{ head.cache_offset }}),
+                {{ prefix }}_result,
+                mask={{ prefix }}_mask,
+            )
+{% endif %}
+{% endfor %}
+    if {{ call.v.compute_active }}:
+        qkv_v_offsets = tl.arange(0, {{ call.v.tile }})
+        qkv_v_mask = (
+            (qkv_v_offsets < {{ call.v.capacity }}) & ({{ call.v.active }})
+        )
+{{ load_partial(call.v.partial_input, "qkv_v", "qkv_v_mask", "        ") }}
+        tl.store(
+            {{ call.kv_cache }} + ({{ call.v.cache_offset }}),
+            qkv_v_value,
+            mask=qkv_v_mask,
+        )
+{% endmacro %}

@@ -1,0 +1,72 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "norm_apply" and call.variant == "local" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for norm_apply_start in tl.range(
+        0, {{ call.local_capacity }}, {{ call.tile }}
+    ):
+        norm_apply_local_offsets = (
+            norm_apply_start + tl.arange(0, {{ call.tile }})
+        )
+        norm_apply_mask = (
+            (norm_apply_local_offsets < {{ call.local_capacity }})
+            & ({{ call.active }})
+        )
+        norm_apply_inner_count = {{ call.normalization_size }} + 0.0
+{% if call.use_mean %}
+        norm_apply_mean_sum = tl.load(
+            {{ call.stats }} + ({{ call.stats_sum_offset }}),
+            mask=norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        norm_apply_mean = norm_apply_mean_sum / norm_apply_inner_count
+{% else %}
+        norm_apply_mean = 0.0
+{% endif %}
+        norm_apply_square_sum = tl.load(
+            {{ call.stats }} + ({{ call.stats_square_sum_offset }}),
+            mask=norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        norm_apply_variance = norm_apply_square_sum / norm_apply_inner_count
+{% if call.use_mean %}
+        norm_apply_variance -= norm_apply_mean * norm_apply_mean
+{% endif %}
+        norm_apply_variance = tl.maximum(norm_apply_variance, 0.0)
+        norm_apply_inverse_std = tl.rsqrt(
+            norm_apply_variance + {{ call.epsilon }}
+        )
+        norm_apply_value = tl.load(
+            {{ call.source }} + ({{ call.source_offset }}),
+            mask=norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        norm_apply_scale = tl.load(
+            {{ call.scale }} + ({{ call.scale_offset }}),
+            mask=norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        norm_apply_bias = tl.load(
+            {{ call.bias }} + ({{ call.bias_offset }}),
+            mask=norm_apply_mask,
+            other=0.0,
+        ).to(tl.float32)
+        norm_apply_normalized = (
+            (norm_apply_value - norm_apply_mean)
+            * norm_apply_inverse_std
+        )
+{% if call.round_before_scale %}
+        norm_apply_normalized = norm_apply_normalized.to({{ call.output_type }}).to(tl.float32)
+{% endif %}
+        norm_apply_output = norm_apply_normalized * norm_apply_scale + norm_apply_bias
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            norm_apply_output.to({{ call.output_type }}),
+            mask=norm_apply_mask & ({{ call.writer_active }}),
+        )
+
+
+{% endif %}
+{% endfor %}

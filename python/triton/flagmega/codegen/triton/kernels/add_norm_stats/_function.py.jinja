@@ -1,0 +1,61 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "add_norm_stats" and call.variant == add_norm_stats_variant %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+{% if call.mode == "local_partial_rms" %}
+    add_stats_square_sum = tl.zeros(({{ call.tile }},), tl.float32)
+    for add_stats_start in tl.range(
+        0, {{ call.local_capacity }}, {{ call.tile }}
+    ):
+        add_stats_local_offsets = (
+            add_stats_start + tl.arange(0, {{ call.tile }})
+        )
+        add_stats_mask = (
+            (add_stats_local_offsets < {{ call.local_capacity }})
+            & ({{ call.active }})
+        )
+        add_stats_value = (
+            tl.load(
+                {{ call.source }} + ({{ call.source_offset }}),
+                mask=add_stats_mask,
+                other=0.0,
+            )
+            + tl.load(
+                {{ call.residual }} + ({{ call.residual_offset }}),
+                mask=add_stats_mask,
+                other=0.0,
+            )
+        ).to({{ call.output_type }})
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            add_stats_value,
+            mask=add_stats_mask,
+        )
+        add_stats_fp32 = add_stats_value.to(tl.float32)
+        add_stats_square_sum += tl.where(
+            add_stats_mask, add_stats_fp32 * add_stats_fp32, 0.0,
+        )
+    tl.store(
+        {{ call.stats }} + ({{ call.stats_offset }}),
+        tl.sum(add_stats_square_sum, axis=0),
+        mask={{ call.stats_writer_active }},
+    )
+{% elif call.partials is not none %}
+    _flagmega_add_norm_stats_rms(
+        {{ call.source }}, {{ call.residual }}, {{ call.result }},
+        {{ call.partials }}, {{ call.stats }}, shard_index,
+        {{ call.elements }}, {{ call.owner_count }}, {{ call.tile }},
+    )
+{% else %}
+    if {{ call.participant_active }}:
+        _flagmega_add_norm_stats_persistent_rms(
+            {{ call.source }}, {{ call.residual }}, {{ call.result }},
+            {{ call.stats }}, {{ call.elements }}, {{ call.tile }},
+        )
+{% endif %}
+
+
+{% endif %}
+{% endfor %}

@@ -1,0 +1,168 @@
+{# The entrypoint owns only call/event scheduling and shared pipeline resource
+   construction.  Selected TIR templates own every algorithm wrapper. #}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+
+{% macro stage_barrier(axis_group_key=none) -%}{{ entry.stage_barrier(axis_group_key) }}{%- endmacro %}
+
+{% macro pipeline_role_events(events) -%}
+{% if not events %}
+    pass
+{% else %}
+{% for event in events %}
+{% if event.kind == "barrier" %}
+{% if event.scope == "grid" %}{{ stage_barrier(event.barrier_axis_group_key | default(none)) }}
+{% else %}    tl.debug_barrier()
+{% endif %}
+{% elif event.kind == "handoff" %}
+    {{ event.endpoint }}.{{ event.action }}(0)
+{% elif event.kind == "drain" %}
+{% for endpoint in event.endpoints %}
+    {{ endpoint }}.pipe.wait_drained()
+{% endfor %}
+{% elif event.kind == "function_call" %}
+    # tir.call {{ event.call }} -> @{{ event.callee }}
+    {{ event.symbol }}({{ event.arguments }})
+{% else %}
+{% if event.barrier_before %}
+{% if event.barrier_scope | default("grid") == "grid" %}{{ stage_barrier(event.barrier_axis_group_key | default(none)) }}
+{% else %}    tl.debug_barrier()
+{% endif %}
+{% endif %}
+    # tir.call {{ event.call }} -> {{ event.family }}/{{ event.variant }} ({{ event.execution_kind }})
+    {{ event.symbol }}({{ event.arguments }})
+{% endif %}
+{% endfor %}
+{% endif %}
+{%- endmacro %}
+
+{% for definition in device_functions | default(()) %}
+@triton.jit(noinline=True)
+def {{ definition.symbol }}__consumer(
+    {{ (definition.schedule.consumer_endpoints + definition.signature_arguments) | join(",\n    ") }}
+):
+{{ pipeline_role_events(definition.schedule.consumer_events) }}
+
+
+{% if definition.schedule.producer_events %}
+@triton.jit(noinline=True)
+def {{ definition.symbol }}__producer(
+    {{ (definition.schedule.producer_endpoints + definition.signature_arguments) | join(",\n    ") }}
+):
+{{ pipeline_role_events(definition.schedule.producer_events) }}
+
+
+{% endif %}
+{% if definition.schedule.auxiliary_events %}
+@triton.jit(noinline=True)
+def {{ definition.symbol }}__auxiliary_consumer(
+    {{ (definition.schedule.auxiliary_endpoints + definition.signature_arguments) | join(",\n    ") }}
+):
+{{ pipeline_role_events(definition.schedule.auxiliary_events) }}
+
+
+{% endif %}
+{% endfor %}
+{% if pipeline_schedule | default(none) %}
+@triton.jit
+def {{ symbol }}__consumer(
+    {{ (pipeline_schedule.consumer_endpoints + signature_arguments) | join(",\n    ") }}
+):
+{{ pipeline_role_events(pipeline_schedule.consumer_events) }}
+
+
+@triton.jit
+def {{ symbol }}__producer(
+    {{ (pipeline_schedule.producer_endpoints + signature_arguments) | join(",\n    ") }}
+):
+{{ pipeline_role_events(pipeline_schedule.producer_events) }}
+
+
+{% if pipeline_schedule.auxiliary_events %}
+@triton.jit
+def {{ symbol }}__auxiliary_consumer(
+    {{ (pipeline_schedule.auxiliary_endpoints + signature_arguments) | join(",\n    ") }}
+):
+{{ pipeline_role_events(pipeline_schedule.auxiliary_events) }}
+
+
+{% endif %}
+@triton.jit
+def {{ symbol }}(
+    {{ signature }}
+):
+    _flagmega_shared_arena = tle.gpu.alloc(
+        [{{ pipeline_schedule.shared_arena_nbytes }}],
+        dtype=tl.uint8,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+        alignment_bytes={{ pipeline_schedule.shared_arena_alignment_bytes }},
+    )
+{% for stage in pipeline_schedule.stages %}
+{% for workspace in stage.workspaces %}
+    {{ workspace.variable }} = tle.gpu.alloc(
+        [{{ workspace.shape | join(", ") }}],
+        dtype={{ workspace.dtype }},
+        layout=None,
+        scope=tle.gpu.smem,
+        alias=_flagmega_shared_arena,
+        alias_offset_bytes={{ workspace.offset_bytes }},
+        nv_mma_shared_layout={{ "True" if workspace.matrix_compatible else "False" }},
+    )
+{% endfor %}
+{% for channel in stage.channels %}
+    {{ channel.pipe_name }} = tle.pipe(
+        capacity={{ channel.capacity }},
+        scope="cta",
+        name="{{ stage.id }}/{{ channel.name }}",
+{% for field in channel.fields %}
+        {{ field.name }}={{ field.workspace.variable }},
+{% endfor %}
+    )
+    {{ channel.reader_name }} = {{ channel.pipe_name }}.reader()
+    {{ channel.writer_name }} = {{ channel.pipe_name }}.writer()
+{% endfor %}
+{% endfor %}
+{% for handoff in pipeline_schedule.handoffs %}
+    {{ handoff.pipe_name }} = tle.pipe(
+        capacity=1,
+        scope="cta",
+        name="{{ handoff.id }}",
+        one_shot=True,
+    )
+    {{ handoff.reader_name }} = {{ handoff.pipe_name }}.reader()
+    {{ handoff.writer_name }} = {{ handoff.pipe_name }}.writer()
+{% endfor %}
+    tle.gpu.warp_specialize(
+        [
+            (
+                {{ symbol }}__consumer,
+                (
+                    {{ (pipeline_schedule.consumer_endpoints + signature_arguments) | join(",\n                    ") }},
+                ),
+            ),
+{% if pipeline_schedule.auxiliary_events %}
+            (
+                {{ symbol }}__auxiliary_consumer,
+                (
+                    {{ (pipeline_schedule.auxiliary_endpoints + signature_arguments) | join(",\n                    ") }},
+                ),
+            ),
+{% endif %}
+            (
+                {{ symbol }}__producer,
+                (
+                    {{ (pipeline_schedule.producer_endpoints + signature_arguments) | join(",\n                    ") }},
+                ),
+            ),
+        ],
+        [{% if pipeline_schedule.auxiliary_events %}{{ pipeline_schedule.auxiliary_consumer_warps }}, {% endif %}{{ pipeline_schedule.producer_warps }}],
+        [{% if pipeline_schedule.auxiliary_events %}{{ pipeline_schedule.auxiliary_consumer_registers }}, {% endif %}{{ pipeline_schedule.producer_registers }}],
+    )
+{% else %}
+@triton.jit
+def {{ symbol }}(
+    {{ signature }}
+):
+{{ pipeline_role_events(entry_events) }}
+{% endif %}

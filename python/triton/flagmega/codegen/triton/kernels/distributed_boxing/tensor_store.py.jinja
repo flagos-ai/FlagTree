@@ -1,0 +1,7 @@
+# flagmega-kernel: distributed_boxing/tensor_store platform=generic
+# Distributed-to-tensor transfer uses the structured Boxing call ABI emitted
+# by this selected implementation template.
+{% set distributed_boxing_variant = "tensor_store" %}
+{% if render_calls is defined %}
+{% include "kernels/distributed_boxing/_function.py.jinja" %}
+{% endif %}

@@ -1,0 +1,7 @@
+# flagmega-kernel: add_norm_stats/local_partial_rms platform=generic
+# Owner-local residual addition and RMS partial-statistics publication.  The
+# executable body is emitted from the typed local-buffer ABI by this family.
+{% set add_norm_stats_variant = "local_partial_rms" %}
+{% if render_calls is defined %}
+{% include "kernels/add_norm_stats/_function.py.jinja" %}
+{% endif %}

@@ -1,0 +1,437 @@
+# flagmega-kernel: dense_matmul_glu/packed_tensor_descriptor_smem_pipeline_gemv platform=generic
+{# Generic M=1 SwiGLU GEMV over two typed k_major_n8_k16 weights.
+
+   A typed channel either alternates gate/up transfers or carries both fields
+   in one logical sequence.  TMA copies physical
+   [KOuter,NOuter,KPack,Payload] rectangles into Shared; the consumer maps
+   logical [N,K] coordinates back to that physical storage. #}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+
+{% macro producer_body(call) %}
+{% set writer = call.pipeline_channels[0].writer_parameter %}
+{% if call.descriptor_kind == "table" %}
+    # The uint8 tables contain 128-byte CUDA tensor-map descriptors.
+    dense_glu_gate_descriptor_entry = {{ call.gate_weight_descriptor }} + shard_index * 128
+    dense_glu_up_descriptor_entry = {{ call.up_weight_descriptor }} + shard_index * 128
+{% else %}
+    dense_glu_gate_descriptor_entry = {{ call.gate_weight_descriptor }}
+    dense_glu_up_descriptor_entry = {{ call.up_weight_descriptor }}
+{% endif %}
+    tle.gpu.tensor_map_fenceproxy_acquire(
+        dense_glu_gate_descriptor_entry
+    )
+    tle.gpu.tensor_map_fenceproxy_acquire(
+        dense_glu_up_descriptor_entry
+    )
+    for dense_glu_local_n_start in tl.range(
+        0, {{ call.local_n_capacity }}, {{ call.tile_n }}
+    ):
+        for dense_glu_local_k_start in tl.range(
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+        ):
+            dense_glu_tile_sequence = (
+                (dense_glu_local_n_start // {{ call.tile_n }})
+                * ({{ call.local_k_capacity }} // {{ call.block_k }})
+                + dense_glu_local_k_start // {{ call.block_k }}
+            ).to(tl.int32)
+{% if call.paired_weight_fields %}
+            dense_glu_slot = {{ writer }}.acquire(dense_glu_tile_sequence)
+            dense_glu_gate_descriptor = tle.gpu.reinterpret_tensor_map(
+                dense_glu_gate_descriptor_entry,
+                dense_glu_slot.gate,
+            )
+            dense_glu_up_descriptor = tle.gpu.reinterpret_tensor_map(
+                dense_glu_up_descriptor_entry,
+                dense_glu_slot.up,
+            )
+            tle.gpu.copy(
+                dense_glu_gate_descriptor,
+                dense_glu_slot.gate,
+                [{{ call.descriptor_block_shape | join(", ") }}],
+                [
+                    {{ call.descriptor_offsets[0] }},
+                    {{ call.descriptor_offsets[1] }},
+                    {{ call.descriptor_offsets[2] }},
+                    {{ call.descriptor_offsets[3] }} + gate_weight_descriptor__origin_elements,
+                ],
+                eviction_policy="evict_first",
+            )
+            tle.gpu.copy(
+                dense_glu_up_descriptor,
+                dense_glu_slot.up,
+                [{{ call.descriptor_block_shape | join(", ") }}],
+                [
+                    {{ call.descriptor_offsets[0] }},
+                    {{ call.descriptor_offsets[1] }},
+                    {{ call.descriptor_offsets[2] }},
+                    {{ call.descriptor_offsets[3] }} + up_weight_descriptor__origin_elements,
+                ],
+                eviction_policy="evict_first",
+            )
+            {{ writer }}.commit(dense_glu_tile_sequence)
+{% else %}
+            dense_glu_gate_sequence = dense_glu_tile_sequence * 2
+            dense_glu_gate_slot = {{ writer }}.acquire(
+                dense_glu_gate_sequence
+            )
+            dense_glu_gate_descriptor = tle.gpu.reinterpret_tensor_map(
+                dense_glu_gate_descriptor_entry, dense_glu_gate_slot.weight,
+            )
+            tle.gpu.copy(
+                dense_glu_gate_descriptor,
+                dense_glu_gate_slot.weight,
+                [{{ call.descriptor_block_shape | join(", ") }}],
+                [
+                    {{ call.descriptor_offsets[0] }},
+                    {{ call.descriptor_offsets[1] }},
+                    {{ call.descriptor_offsets[2] }},
+                    {{ call.descriptor_offsets[3] }} + gate_weight_descriptor__origin_elements,
+                ],
+                eviction_policy="evict_first",
+            )
+            {{ writer }}.commit(dense_glu_gate_sequence)
+            dense_glu_up_sequence = dense_glu_gate_sequence + 1
+            dense_glu_up_slot = {{ writer }}.acquire(dense_glu_up_sequence)
+            dense_glu_up_descriptor = tle.gpu.reinterpret_tensor_map(
+                dense_glu_up_descriptor_entry, dense_glu_up_slot.weight,
+            )
+            tle.gpu.copy(
+                dense_glu_up_descriptor,
+                dense_glu_up_slot.weight,
+                [{{ call.descriptor_block_shape | join(", ") }}],
+                [
+                    {{ call.descriptor_offsets[0] }},
+                    {{ call.descriptor_offsets[1] }},
+                    {{ call.descriptor_offsets[2] }},
+                    {{ call.descriptor_offsets[3] }} + up_weight_descriptor__origin_elements,
+                ],
+                eviction_policy="evict_first",
+            )
+            {{ writer }}.commit(dense_glu_up_sequence)
+{% endif %}
+    {{ writer }}.close(
+        tl.cdiv({{ call.local_n_capacity }}, {{ call.tile_n }})
+        * ({{ call.local_k_capacity }} // {{ call.block_k }})
+{% if not call.paired_weight_fields %}
+        * 2
+{% endif %}
+    )
+{% endmacro %}
+
+{% macro consumer_body(call) %}
+{% set reader = call.pipeline_channels[0].reader_parameter %}
+{% if call.pipeline_consumer_workspaces %}
+{% set lhs_stage = call.pipeline_consumer_workspaces[0].parameter %}
+    dense_glu_input_copy_k = tle.gpu.set_layout(
+        tl.arange(0, {{ call.lhs_stage_extent }})[None, :],
+        {{ call.symbol }}__input_copy_layout,
+    )
+    dense_glu_local_k_offsets = dense_glu_input_copy_k
+    tle.gpu.copy(
+        {{ call.source }} + ({{ call.source_offset }}),
+        {{ lhs_stage }},
+        [1, {{ call.lhs_stage_extent }}],
+        is_async=True,
+        eviction_policy="evict_last",
+    )
+    tle.gpu.async_commit_group()
+{% else %}
+    dense_glu_source = {{ call.source }}
+    dense_glu_source_owner_active = {{ call.source_owner_active }}
+    dense_glu_source_active_extent = {{ call.source_active_extent }}
+{% endif %}
+    for dense_glu_local_n_start in tl.range(
+        0, {{ call.local_n_capacity }}, {{ call.tile_n }}
+    ):
+        dense_glu_local_n_offsets = dense_glu_local_n_start + tle.gpu.set_layout(
+            tl.arange(0, {{ call.tile_n }}),
+            {{ call.symbol }}__output_layout,
+        )
+        dense_glu_n_mask = (
+            (dense_glu_local_n_offsets < {{ call.local_n_capacity }})
+            & ({{ call.result_active }})
+        )
+        dense_glu_gate_partial = tle.gpu.set_layout(
+            tl.zeros(
+                ({{ call.tile_n }}, {{ call.reduction_group }}),
+                tl.float32,
+            ),
+            {{ call.symbol }}__weight_layout,
+        )
+        dense_glu_up_partial = tle.gpu.set_layout(
+            tl.zeros(
+                ({{ call.tile_n }}, {{ call.reduction_group }}),
+                tl.float32,
+            ),
+            {{ call.symbol }}__weight_layout,
+        )
+        for dense_glu_local_k_start in tl.range(
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+        ):
+            dense_glu_tile_sequence = (
+                (dense_glu_local_n_start // {{ call.tile_n }})
+                * ({{ call.local_k_capacity }} // {{ call.block_k }})
+                + dense_glu_local_k_start // {{ call.block_k }}
+            ).to(tl.int32)
+{% if call.paired_weight_fields %}
+            dense_glu_ready = {{ reader }}.wait(dense_glu_tile_sequence)
+{% else %}
+            dense_glu_gate_sequence = dense_glu_tile_sequence * 2
+            dense_glu_gate_ready = {{ reader }}.wait(
+                dense_glu_gate_sequence
+            )
+            dense_glu_up_sequence = dense_glu_gate_sequence + 1
+            dense_glu_up_ready = {{ reader }}.wait(dense_glu_up_sequence)
+{% endif %}
+{% if call.pipeline_consumer_workspaces %}
+            if (
+                dense_glu_local_n_start == 0
+                and dense_glu_local_k_start == 0
+            ):
+                tle.gpu.async_wait_group(0)
+                tl.debug_barrier()
+{% endif %}
+            dense_glu_gate_stage, dense_glu_up_stage = (
+                {{ call.symbol }}__consumer_stage(
+{% if call.paired_weight_fields %}
+                    dense_glu_ready.slot.gate,
+                    dense_glu_ready.slot.up,
+{% else %}
+                    dense_glu_gate_ready.slot.weight,
+                    dense_glu_up_ready.slot.weight,
+{% endif %}
+{% if call.pipeline_consumer_workspaces %}
+                    {{ call.pipeline_consumer_workspaces[0].parameter }},
+{% endif %}
+                    dense_glu_local_k_start,
+{% if not call.pipeline_consumer_workspaces %}
+                    dense_glu_source,
+                    dense_glu_source_owner_active,
+                    dense_glu_source_active_extent,
+{% endif %}
+                )
+            )
+            dense_glu_gate_partial += dense_glu_gate_stage
+            dense_glu_up_partial += dense_glu_up_stage
+{% if call.paired_weight_fields %}
+            {{ reader }}.release(dense_glu_tile_sequence)
+{% else %}
+            {{ reader }}.release(dense_glu_gate_sequence)
+            {{ reader }}.release(dense_glu_up_sequence)
+{% endif %}
+        dense_glu_gate_accumulator = tl.sum(
+            dense_glu_gate_partial, axis=1
+        )
+        dense_glu_up_accumulator = tl.sum(dense_glu_up_partial, axis=1)
+        dense_glu_gate_accumulator = dense_glu_gate_accumulator.to({{ call.output_type }}).to(tl.float32)
+        dense_glu_up_accumulator = dense_glu_up_accumulator.to({{ call.output_type }}).to(tl.float32)
+        dense_glu_activated = (
+            dense_glu_gate_accumulator
+            / (1.0 + tl.exp(-dense_glu_gate_accumulator))
+        ).to({{ call.output_type }}).to(tl.float32)
+        dense_glu_result = dense_glu_activated * dense_glu_up_accumulator
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            dense_glu_result.to({{ call.output_type }}),
+            mask=dense_glu_n_mask,
+        )
+{% endmacro %}
+
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul_glu" and call.variant == "packed_tensor_descriptor_smem_pipeline_gemv" %}
+{{ call.symbol }}__weight_layout = tl.constexpr(
+    tle.gpu.BlockEncoding(
+        [{{ call.consumer_size_per_thread | join(", ") }}],
+        [{{ call.consumer_threads_per_warp | join(", ") }}],
+        [{{ call.consumer_warps_per_cta | join(", ") }}],
+        [0, 1],
+    )
+)
+{{ call.symbol }}__lhs_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(0, {{ call.symbol }}__weight_layout.value)
+)
+{{ call.symbol }}__output_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(1, {{ call.symbol }}__weight_layout.value)
+)
+{% if call.pipeline_consumer_workspaces %}
+{{ call.symbol }}__input_copy_layout = tl.constexpr(
+    tle.gpu.BlockEncoding(
+        [1, {{ call.input_copy_size_per_thread }}],
+        [1, {{ call.worker_width }}],
+        [1, {{ call.consumer_warps }}],
+        [0, 1],
+    )
+)
+{% endif %}
+
+
+@triton.jit
+def {{ call.symbol }}__consumer_stage(
+    gate_weight_stage,
+    up_weight_stage,
+{% if call.pipeline_consumer_workspaces %}
+    {{ call.pipeline_consumer_workspaces[0].parameter }},
+{% endif %}
+    dense_glu_local_k_start,
+{% if not call.pipeline_consumer_workspaces %}
+    dense_glu_source,
+    dense_glu_source_owner_active,
+    dense_glu_source_active_extent,
+{% endif %}
+):
+    dense_glu_local_n_source = tl.arange(0, {{ call.tile_n }})
+    dense_glu_local_n = tle.gpu.set_layout(
+        tle.gpu.set_layout(
+            dense_glu_local_n_source,
+            {{ call.symbol }}__output_layout,
+        )[:, None],
+        {{ call.symbol }}__weight_layout,
+    )
+    dense_glu_local_k_vector = tle.gpu.set_layout(
+        tl.arange(0, {{ call.reduction_group }}),
+        {{ call.symbol }}__lhs_layout,
+    )
+    dense_glu_local_k = tle.gpu.set_layout(
+        dense_glu_local_k_vector[None, :],
+        {{ call.symbol }}__weight_layout,
+    )
+    dense_glu_gate_partial = tle.gpu.set_layout(
+        tl.zeros(
+            ({{ call.tile_n }}, {{ call.reduction_group }}),
+            tl.float32,
+        ),
+        {{ call.symbol }}__weight_layout,
+    )
+    dense_glu_up_partial = tle.gpu.set_layout(
+        tl.zeros(
+            ({{ call.tile_n }}, {{ call.reduction_group }}),
+            tl.float32,
+        ),
+        {{ call.symbol }}__weight_layout,
+    )
+{% if call.pipeline_consumer_workspaces %}
+    dense_glu_input_row_vector = tle.gpu.set_layout(
+        tl.zeros(({{ call.reduction_group }},), tl.int32),
+        {{ call.symbol }}__lhs_layout,
+    )
+{% endif %}
+    for dense_glu_k_group in tl.range(
+        0, {{ call.reduction_groups_per_stage }},
+        loop_unroll_factor={{ call.reduction_unroll }},
+    ):
+        dense_glu_stage_k = (
+            dense_glu_k_group * {{ call.reduction_group }}
+            + dense_glu_local_k
+        )
+        dense_glu_stage_payload = (
+            dense_glu_local_n % 8 * 16 + dense_glu_stage_k % 16
+        )
+        dense_glu_gate_pointer = tle.gpu.local_ptr(
+            gate_weight_stage,
+            (
+                dense_glu_stage_k // 16,
+                dense_glu_local_n // 8,
+                dense_glu_stage_payload // 64,
+                dense_glu_stage_payload % 64,
+            ),
+            [{{ call.tile_n }}, {{ call.reduction_group }}],
+        )
+        dense_glu_gate_pointer = tl.max_contiguous(
+            dense_glu_gate_pointer, [1, 8]
+        )
+        dense_glu_gate_pointer = tl.multiple_of(
+            dense_glu_gate_pointer, [1, 16]
+        )
+        dense_glu_up_pointer = tle.gpu.local_ptr(
+            up_weight_stage,
+            (
+                dense_glu_stage_k // 16,
+                dense_glu_local_n // 8,
+                dense_glu_stage_payload // 64,
+                dense_glu_stage_payload % 64,
+            ),
+            [{{ call.tile_n }}, {{ call.reduction_group }}],
+        )
+        dense_glu_up_pointer = tl.max_contiguous(
+            dense_glu_up_pointer, [1, 8]
+        )
+        dense_glu_up_pointer = tl.multiple_of(
+            dense_glu_up_pointer, [1, 16]
+        )
+        dense_glu_gate_value = tle.gpu.set_layout(
+            tl.load(dense_glu_gate_pointer),
+            {{ call.symbol }}__weight_layout,
+        ).to(tl.float32)
+        dense_glu_up_value = tle.gpu.set_layout(
+            tl.load(dense_glu_up_pointer),
+            {{ call.symbol }}__weight_layout,
+        ).to(tl.float32)
+{% if call.pipeline_consumer_workspaces %}
+        dense_glu_source_pointer = tle.gpu.local_ptr(
+            {{ call.pipeline_consumer_workspaces[0].parameter }},
+            (
+                dense_glu_input_row_vector,
+                dense_glu_local_k_start
+                + dense_glu_k_group * {{ call.reduction_group }}
+                + dense_glu_local_k_vector,
+            ),
+        )
+        dense_glu_source_value = tle.gpu.set_layout(
+            tl.load(dense_glu_source_pointer),
+            {{ call.symbol }}__lhs_layout,
+        ).to(tl.float32)
+{% else %}
+        dense_glu_local_k_offsets = (
+            dense_glu_local_k_start
+            + dense_glu_k_group * {{ call.reduction_group }}
+            + dense_glu_local_k_vector
+        )
+        dense_glu_k_mask = (
+            (
+                (
+                    dense_glu_local_k_offsets
+                    // {{ call.source_lane_count }}
+                ) < dense_glu_source_active_extent
+            )
+            & dense_glu_source_owner_active
+        )
+        dense_glu_source_value = tle.gpu.set_layout(
+            tl.load(
+                dense_glu_source + ({{ call.source_offset }}),
+                mask=dense_glu_k_mask,
+                other=0.0,
+            ),
+            {{ call.symbol }}__lhs_layout,
+        ).to(tl.float32)
+{% endif %}
+        dense_glu_source_matrix = tle.gpu.set_layout(
+            dense_glu_source_value[None, :],
+            {{ call.symbol }}__weight_layout,
+        )
+        dense_glu_gate_partial += (
+            dense_glu_gate_value * dense_glu_source_matrix
+        )
+        dense_glu_up_partial += dense_glu_up_value * dense_glu_source_matrix
+    return dense_glu_gate_partial, dense_glu_up_partial
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__producer(
+    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{{ producer_body(call) }}
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer(
+    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{{ consumer_body(call) }}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

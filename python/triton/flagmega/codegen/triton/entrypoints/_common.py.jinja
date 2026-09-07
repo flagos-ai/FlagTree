@@ -1,0 +1,68 @@
+{% macro mesh_coordinates() -%}
+{% if distributed_entry %}
+{% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
+{% set effective_mesh_levels = mesh_levels | default("b" * effective_mesh_rank) %}
+{% for axis in range(effective_mesh_rank) %}
+{% if effective_mesh_levels[axis] == "b" %}
+    shard_coord{{ axis }} = tle.shard_id(FLAGMEGA_GRID_MESH, '{{ mesh_axis_names[axis] }}').to(tl.int64)
+{% else %}
+    shard_coord{{ axis }} = tl.full((), 0, tl.int64)
+{% endif %}
+{% endfor %}
+{% if effective_mesh_rank == 2 %}
+    shard_y = shard_coord0
+    shard_x = shard_coord1
+{% endif %}
+{% set linear = namespace(expression="") %}
+{% for axis in range(effective_mesh_rank) %}
+{% if loop.first %}
+{% set linear.expression = "shard_coord" ~ axis %}
+{% else %}
+{% set linear.expression = "(" ~ linear.expression ~ " * " ~ mesh_hierarchy[axis] ~ " + shard_coord" ~ axis ~ ")" %}
+{% endif %}
+{% endfor %}
+    shard_index = {{ linear.expression }}
+{% else %}
+{% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
+{% for axis in range(effective_mesh_rank) %}
+    shard_coord{{ axis }} = tl.full((), 0, tl.int64)
+{% endfor %}
+{% if effective_mesh_rank == 2 %}
+    shard_y = shard_coord0
+    shard_x = shard_coord1
+{% endif %}
+    shard_index = 0
+{% endif %}
+{%- endmacro %}
+
+{% macro phase_schedule(call, phases) -%}
+{# All cross-phase values have explicit buffer/workspace ABI storage. Only
+   compute phases are device functions; synchronization stays in the caller's
+   entry-relative grid scratch scope. No register values cross the barrier. #}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+{% for phase in phases %}
+    {{ call.symbol }}__{{ phase }}({{ call.signature }})
+{% if not loop.last %}
+{{ stage_barrier() }}
+{% endif %}
+{% endfor %}
+{%- endmacro %}
+
+{% macro stage_barrier(axis_group_key=none) -%}
+{% if distributed_entry %}    tle.distributed_barrier({% if axis_group_key %}FLAGMEGA_GRID_AXIS_GROUP_{{ axis_group_key }}{% else %}FLAGMEGA_GRID_MESH{% endif %})
+{% else %}    tl.debug_barrier()
+{% endif %}{%- endmacro %}
+
+{% macro kernel_decorator(call) -%}
+{# Actual op execution functions own their index/value live ranges, regardless
+   of local-shard or collective placement. Address/math helpers remain inline
+   inside these boundaries. A schedule with an internal grid barrier still
+   uses entry-relative scratch: it must be phase-split before it can move into
+   a device function. This condition is an ABI constraint, not a cost policy. #}
+{% if (call.internal_grid_barriers | default(0)) == 0 %}
+@triton.jit(noinline=True)
+{% else %}
+@triton.jit
+{% endif %}
+{%- endmacro %}

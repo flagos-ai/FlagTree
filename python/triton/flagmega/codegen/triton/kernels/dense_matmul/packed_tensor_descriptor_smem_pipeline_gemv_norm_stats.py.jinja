@@ -1,0 +1,328 @@
+# flagmega-kernel: dense_matmul/packed_tensor_descriptor_smem_pipeline_gemv_norm_stats platform=generic
+{# Packed K-major TMA GEMV with a BF16 residual and explicit RMS statistics.
+
+   The last output axis is divided into equal full tiles over all placement
+   owners.  Every owner writes its disjoint value slice and one Sum-partial
+   square sum.  A downstream collective materializes the statistic; this
+   kernel therefore needs no internal grid barrier or serial full-row scan.
+   No graph name, model dimension, or target identity is part of the
+   algorithm. #}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul" and call.variant == "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats" %}
+{{ call.symbol }}__weight_layout = tl.constexpr(
+    tle.gpu.BlockEncoding(
+        [{{ call.consumer_size_per_thread | join(", ") }}],
+        [{{ call.consumer_threads_per_warp | join(", ") }}],
+        [{{ call.consumer_warps_per_cta | join(", ") }}],
+        [0, 1],
+    )
+)
+{{ call.symbol }}__lhs_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(0, {{ call.symbol }}__weight_layout.value)
+)
+{{ call.symbol }}__output_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(1, {{ call.symbol }}__weight_layout.value)
+)
+{{ call.symbol }}__stats_output_layout = tl.constexpr(
+    tle.gpu.SlicedEncoding(0, {{ call.symbol }}__weight_layout.value)
+)
+{% if call.pipeline_consumer_workspaces %}
+{{ call.symbol }}__input_copy_layout = tl.constexpr(
+    tle.gpu.BlockEncoding(
+        [1, {{ call.input_copy_size_per_thread }}],
+        [1, {{ call.worker_width }}],
+        [1, {{ call.consumer_warps }}],
+        [0, 1],
+    )
+)
+{% endif %}
+@triton.jit
+def {{ call.symbol }}__consumer_stage(
+    weight_stage,
+{% if call.pipeline_consumer_workspaces %}
+    {{ call.pipeline_consumer_workspaces[0].parameter }},
+{% endif %}
+    dense_local_k_start,
+    {{ call.signature }},
+):
+{{ entry.mesh_coordinates() }}
+    dense_local_n_source = tl.arange(0, {{ call.tile_n }})
+    dense_local_n = tle.gpu.set_layout(
+        tle.gpu.set_layout(
+            dense_local_n_source,
+            {{ call.symbol }}__output_layout,
+        )[:, None],
+        {{ call.symbol }}__weight_layout,
+    )
+    dense_local_k_vector = tle.gpu.set_layout(
+        tl.arange(0, {{ call.reduction_group }}),
+        {{ call.symbol }}__lhs_layout,
+    )
+    dense_local_k = tle.gpu.set_layout(
+        dense_local_k_vector[None, :],
+        {{ call.symbol }}__weight_layout,
+    )
+    dense_partial = tle.gpu.set_layout(
+        tl.zeros(
+            ({{ call.tile_n }}, {{ call.reduction_group }}), tl.float32,
+        ),
+        {{ call.symbol }}__weight_layout,
+    )
+    for dense_k_group in tl.range(
+        0, {{ call.reduction_groups_per_stage }},
+        loop_unroll_factor={{ call.reduction_unroll }},
+    ):
+        dense_stage_k = dense_k_group * {{ call.reduction_group }} + dense_local_k
+        dense_stage_payload = dense_local_n % 8 * 16 + dense_stage_k % 16
+        dense_weight_pointer = tle.gpu.local_ptr(
+            weight_stage,
+            (
+                dense_stage_k // 16,
+                dense_local_n // 8,
+                dense_stage_payload // 64,
+                dense_stage_payload % 64,
+            ),
+            [{{ call.tile_n }}, {{ call.reduction_group }}],
+        )
+        dense_weight_pointer = tl.max_contiguous(
+            dense_weight_pointer, [1, 8]
+        )
+        dense_weight_pointer = tl.multiple_of(
+            dense_weight_pointer, [1, 16]
+        )
+        dense_weight_value = tle.gpu.set_layout(
+            tl.load(dense_weight_pointer),
+            {{ call.symbol }}__weight_layout,
+        ).to(tl.float32)
+        dense_local_k_offsets = (
+            dense_local_k_start
+            + dense_k_group * {{ call.reduction_group }}
+            + dense_local_k_vector
+        )
+        dense_k_mask = (
+            (dense_local_k_offsets < {{ call.local_k_capacity }})
+            & ({{ call.source_active }})
+        )
+{% if call.pipeline_consumer_workspaces %}
+        dense_lhs_row = tle.gpu.set_layout(
+            tl.zeros(({{ call.reduction_group }},), tl.int32),
+            {{ call.symbol }}__lhs_layout,
+        )
+        dense_lhs_pointer = tle.gpu.local_ptr(
+            {{ call.pipeline_consumer_workspaces[0].parameter }},
+            (dense_lhs_row, dense_local_k_offsets),
+            [{{ call.reduction_group }}],
+        )
+        dense_source_value = tle.gpu.set_layout(
+            tl.load(dense_lhs_pointer),
+            {{ call.symbol }}__lhs_layout,
+        ).to(tl.float32)
+{% else %}
+        dense_source_value = tle.gpu.set_layout(
+            tl.load(
+                {{ call.source }} + ({{ call.source_offset }}),
+                mask=dense_k_mask,
+                other=0.0,
+            ),
+            {{ call.symbol }}__lhs_layout,
+        ).to(tl.float32)
+{% endif %}
+        dense_partial += dense_weight_value * tle.gpu.set_layout(
+            dense_source_value[None, :],
+            {{ call.symbol }}__weight_layout,
+        )
+    return dense_partial
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__producer(
+    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{% set writer = call.pipeline_channels[0].writer_parameter %}
+{% if call.descriptor_kind == "table" %}
+    # The uint8 table contains 128-byte CUDA tensor-map descriptors.
+    dense_weight_descriptor_entry = {{ call.weight_descriptor }} + shard_index * 128
+{% else %}
+    dense_weight_descriptor_entry = {{ call.weight_descriptor }}
+{% endif %}
+    tle.gpu.tensor_map_fenceproxy_acquire(dense_weight_descriptor_entry)
+    for dense_local_n_start in tl.range(
+        0,
+        {{ call.local_n_capacity }},
+        {{ call.tile_n }},
+    ):
+        for dense_local_k_start in tl.range(
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+        ):
+            dense_pipeline_sequence = (
+                (dense_local_n_start // {{ call.tile_n }})
+                * ({{ call.local_k_capacity }} // {{ call.block_k }})
+                + dense_local_k_start // {{ call.block_k }}
+            ).to(tl.int32)
+            dense_pipeline_slot = {{ writer }}.acquire(dense_pipeline_sequence)
+            dense_weight_descriptor = tle.gpu.reinterpret_tensor_map(
+                dense_weight_descriptor_entry,
+                dense_pipeline_slot.weight,
+            )
+            tle.gpu.copy(
+                dense_weight_descriptor,
+                dense_pipeline_slot.weight,
+                [{{ call.descriptor_block_shape | join(", ") }}],
+                [
+                    {{ call.descriptor_offsets[0] }},
+                    {{ call.descriptor_offsets[1] }},
+                    {{ call.descriptor_offsets[2] }},
+                    {{ call.descriptor_offsets[3] }},
+                ],
+                eviction_policy="evict_first",
+            )
+            {{ writer }}.commit(dense_pipeline_sequence)
+    {{ writer }}.close(
+        {{ call.tiles_per_owner }}
+        * ({{ call.local_k_capacity }} // {{ call.block_k }})
+    )
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer(
+    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{% set reader = call.pipeline_channels[0].reader_parameter %}
+{% if call.pipeline_consumer_workspaces %}
+    # Bounded tiles keep copy registers independent of the workspace capacity.
+    # Shared capacity is an allocation bound, not a request to initialize
+    # padding which the reduction never reads. The last logical tile remains
+    # masked, and its rounded extent is within the verified stage capacity.
+    for dense_copy_start in tl.{{ "static_range" if call.lhs_copy_kind == "async" else "range" }}(0, {{ call.local_k_capacity }}, {{ call.lhs_copy_tile }}):
+        dense_local_k_offsets = dense_copy_start + tle.gpu.set_layout(
+            tl.arange(0, {{ call.lhs_copy_tile }})[None, :],
+            {{ call.symbol }}__input_copy_layout,
+        )
+{% if call.lhs_copy_kind == "async" %}
+        tle.gpu.copy(
+            {{ call.source }} + ({{ call.source_offset }}),
+            {{ call.pipeline_consumer_workspaces[0].parameter }}.subslice(
+                [0, dense_copy_start], [1, {{ call.lhs_copy_tile }}],
+            ),
+            [1, {{ call.lhs_copy_tile }}],
+            is_async=True,
+        )
+{% else %}
+        dense_copy_row = tle.gpu.set_layout(
+            tl.zeros((1, {{ call.lhs_copy_tile }}), tl.int32),
+            {{ call.symbol }}__input_copy_layout,
+        )
+        dense_copy_value = tl.load(
+            {{ call.source }} + ({{ call.source_offset }}),
+            mask=(dense_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }}),
+            other=0.0,
+            eviction_policy="evict_last",
+        )
+        dense_copy_pointer = tle.gpu.local_ptr(
+            {{ call.pipeline_consumer_workspaces[0].parameter }},
+            (dense_copy_row, dense_local_k_offsets),
+            [1, {{ call.lhs_copy_tile }}],
+        )
+        tl.store(dense_copy_pointer, dense_copy_value)
+{% endif %}
+{% if call.lhs_copy_kind == "async" %}
+    tle.gpu.async_commit_group()
+{% else %}
+    tl.debug_barrier()
+{% endif %}
+{% endif %}
+    dense_stats_square_sum = tle.gpu.set_layout(
+        tl.zeros((1,), tl.float32),
+        {{ call.symbol }}__stats_output_layout,
+    )
+    for dense_local_n_start in tl.range(
+        0,
+        {{ call.local_n_capacity }},
+        {{ call.tile_n }},
+    ):
+        dense_local_n_offsets = dense_local_n_start + tle.gpu.set_layout(
+            tl.arange(0, {{ call.tile_n }}),
+            {{ call.symbol }}__output_layout,
+        )
+        dense_n_mask = (
+            (dense_local_n_offsets < {{ call.local_n_capacity }})
+            & ({{ call.result_active }})
+        )
+        dense_partial = tle.gpu.set_layout(
+            tl.zeros(
+                ({{ call.tile_n }}, {{ call.reduction_group }}), tl.float32,
+            ),
+            {{ call.symbol }}__weight_layout,
+        )
+        for dense_local_k_start in tl.range(
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+        ):
+            dense_pipeline_sequence = (
+                (dense_local_n_start // {{ call.tile_n }})
+                * ({{ call.local_k_capacity }} // {{ call.block_k }})
+                + dense_local_k_start // {{ call.block_k }}
+            ).to(tl.int32)
+            dense_pipeline_ready = {{ reader }}.wait(dense_pipeline_sequence)
+{% if call.pipeline_consumer_workspaces and call.lhs_copy_kind == "async" %}
+            if dense_local_n_start == 0 and dense_local_k_start == 0:
+                tle.gpu.async_wait_group(0)
+                tl.debug_barrier()
+{% endif %}
+            dense_partial += {{ call.symbol }}__consumer_stage(
+                dense_pipeline_ready.slot.weight,
+{% if call.pipeline_consumer_workspaces %}
+                {{ call.pipeline_consumer_workspaces[0].parameter }},
+{% endif %}
+                dense_local_k_start,
+                {{ call.signature }},
+            )
+            {{ reader }}.release(dense_pipeline_sequence)
+        dense_accumulator = tl.sum(dense_partial, axis=1)
+        dense_residual = tl.load(
+            {{ call.residual }} + ({{ call.residual_offset }}),
+            mask=dense_n_mask,
+            other=0.0,
+        )
+        # Preserve the BF16 matmul result before the separate residual Add.
+        dense_projection = dense_accumulator.to({{ call.output_type }}).to(tl.float32)
+        dense_value = (dense_projection + dense_residual).to(
+            {{ call.output_type }}
+        )
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            dense_value,
+            mask=dense_n_mask,
+        )
+        # TritonGPU reductions require the SliceEncoding parent to have rank
+        # at least two.  Lift the local N vector into the existing rank-2 MMA
+        # layout before reducing its N axis; the singleton K axis then carries
+        # exactly one owner-local partial to the scalar statistics slot.
+        dense_stats_value = tle.gpu.set_layout(
+            tl.where(
+                dense_n_mask, dense_value.to(tl.float32), 0.0,
+            )[:, None],
+            {{ call.symbol }}__weight_layout,
+        )
+        dense_stats_square_sum += tl.sum(
+            dense_stats_value * dense_stats_value,
+            axis=0,
+        )
+    dense_stats_offset = tle.gpu.set_layout(
+        tl.arange(0, 1),
+        {{ call.symbol }}__stats_output_layout,
+    )
+    tl.store(
+        {{ call.stats }} + ({{ call.stats_offset }}) + dense_stats_offset,
+        dense_stats_square_sum,
+        mask=dense_stats_offset == 0,
+    )
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

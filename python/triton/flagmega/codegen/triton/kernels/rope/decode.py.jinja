@@ -1,0 +1,58 @@
+# flagmega-kernel: rope/decode
+{% if render_calls is defined %}
+{% include "kernels/rope/_function.py.jinja" %}
+{% endif %}
+@triton.jit
+def _flagmega_rope(
+    source,
+    cosine,
+    sine,
+    destination,
+    element_count: tl.constexpr,
+    sequence_size: tl.constexpr,
+    num_heads: tl.constexpr,
+    head_dim: tl.constexpr,
+    sequence_stride: tl.constexpr,
+    head_stride: tl.constexpr,
+    dimension_stride: tl.constexpr,
+    elements_per_program: tl.constexpr,
+):
+    """Apply rotary position embedding to an arbitrary sequence/head layout."""
+    program = tl.program_id(0)
+    linear = program * elements_per_program + tl.arange(0, elements_per_program)
+    mask = linear < element_count
+    dimension = linear % head_dim
+    canonical_head = (linear // head_dim) % num_heads
+    sequence = linear // (num_heads * head_dim)
+    source_offset = (
+        sequence * sequence_stride
+        + canonical_head * head_stride
+        + dimension * dimension_stride
+    )
+    partner_dimension = tl.where(
+        dimension < head_dim // 2,
+        dimension + head_dim // 2,
+        dimension - head_dim // 2,
+    )
+    partner_offset = (
+        sequence * sequence_stride
+        + canonical_head * head_stride
+        + partner_dimension * dimension_stride
+    )
+    value = tl.load(source + source_offset, mask=mask, other=0.0).to(tl.float32)
+    partner = tl.load(
+        source + partner_offset, mask=mask, other=0.0
+    ).to(tl.float32)
+    rotated = tl.where(dimension < head_dim // 2, -partner, partner)
+    frequency_offset = sequence * head_dim + dimension
+    cos_value = tl.load(
+        cosine + frequency_offset, mask=mask, other=0.0
+    ).to(tl.float32)
+    sin_value = tl.load(
+        sine + frequency_offset, mask=mask, other=0.0
+    ).to(tl.float32)
+    tl.store(
+        destination + source_offset,
+        value * cos_value + rotated * sin_value,
+        mask=mask,
+    )

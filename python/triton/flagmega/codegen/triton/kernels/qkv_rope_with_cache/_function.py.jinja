@@ -1,0 +1,253 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "kernels/gather_reduce_qkv_rope_with_cache/_headwise_partial.py.jinja" as headwise with context %}
+{% set qkv_rope_family = qkv_rope_family | default("qkv_rope_with_cache") %}
+{% for call in render_calls %}
+{% if call.family == qkv_rope_family and call.variant == "decode" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    qkv_cache_position = tl.load({{ call.sequence_lengths }}).to(tl.int64)
+    qkv_cache_logical_block = qkv_cache_position // {{ call.block_size }}
+    qkv_cache_block_offset = qkv_cache_position % {{ call.block_size }}
+    qkv_cache_physical_block = tl.load(
+        {{ call.block_table }} + qkv_cache_logical_block
+    ).to(tl.int64)
+{% if call.headwise_partial %}
+{{ headwise.run(call) }}
+{% else %}
+{% for head in (call.q, call.k) %}
+{% set prefix = "qkv_q" if loop.first else "qkv_k" %}
+    for {{ prefix }}_outer_index in tl.range(0, {{ head.outer_capacity }}):
+{% if head.use_mean %}
+        {{ prefix }}_mean_sum = tl.full((), 0.0, tl.float32)
+{% endif %}
+        {{ prefix }}_square_sum = tl.full((), 0.0, tl.float32)
+        for {{ prefix }}_reduce_start in tl.range(
+            0, {{ head.reduction_capacity }}, {{ head.tile }}
+        ):
+            {{ prefix }}_reduce_offsets = (
+                {{ prefix }}_reduce_start + tl.arange(0, {{ head.tile }})
+            )
+            {{ prefix }}_reduce_mask = (
+                ({{ prefix }}_reduce_offsets < {{ head.reduction_capacity }})
+                & ({{ head.reduce_active }})
+                & ({{ head.compute_active }})
+            )
+{% if head.partial_reduce is defined %}
+            {{ prefix }}_reduce_accumulator = tl.zeros(
+                ({{ head.tile }},), tl.float32
+            )
+            for {{ prefix }}_partial_member in tl.range(
+                0, {{ head.partial_reduce.member_count }}, loop_unroll_factor=1
+            ):
+                {{ prefix }}_reduce_accumulator += tl.load(
+                    {{ head.partial_reduce.storage }}
+                    + ({{ head.partial_reduce.owner }})
+                        * {{ head.partial_reduce.owner_stride }}
+                    + ({{ head.partial_reduce.offset }}),
+                    mask={{ prefix }}_reduce_mask,
+                    other=0.0,
+                ).to(tl.float32)
+            {{ prefix }}_reduce_value = (
+                {{ prefix }}_reduce_accumulator
+                .to({{ head.partial_reduce.scalar_dtype }}).to(tl.float32)
+            )
+{% else %}
+            {{ prefix }}_reduce_value = tl.load(
+                {{ head.input }} + ({{ head.reduce_input_offset }}),
+                mask={{ prefix }}_reduce_mask,
+                other=0.0,
+            ).to(tl.float32)
+{% endif %}
+{% if head.use_mean %}
+            {{ prefix }}_mean_sum += tl.sum(
+                tl.where(
+                    {{ prefix }}_reduce_mask, {{ prefix }}_reduce_value, 0.0,
+                ), axis=0,
+            )
+{% endif %}
+            {{ prefix }}_square_sum += tl.sum(
+                tl.where(
+                    {{ prefix }}_reduce_mask,
+                    {{ prefix }}_reduce_value * {{ prefix }}_reduce_value,
+                    0.0,
+                ), axis=0,
+            )
+{% if head.use_mean %}
+        {{ prefix }}_mean = (
+            {{ prefix }}_mean_sum / {{ head.normalization_size }}
+        )
+        {{ prefix }}_variance = (
+            {{ prefix }}_square_sum / {{ head.normalization_size }}
+            - {{ prefix }}_mean * {{ prefix }}_mean
+        )
+{% else %}
+        {{ prefix }}_mean = 0.0
+        {{ prefix }}_variance = (
+            {{ prefix }}_square_sum / {{ head.normalization_size }}
+        )
+{% endif %}
+        {{ prefix }}_inverse = tl.rsqrt(
+            tl.maximum({{ prefix }}_variance, 0.0) + {{ head.epsilon }}
+        )
+        for {{ prefix }}_element_start in tl.range(
+            0, {{ head.reduction_capacity }}, {{ head.tile }}
+        ):
+            {{ prefix }}_element_offsets = (
+                {{ prefix }}_element_start + tl.arange(0, {{ head.tile }})
+            )
+            {{ prefix }}_mask = (
+                ({{ prefix }}_element_offsets < {{ head.reduction_capacity }})
+                & ({{ head.apply_active }})
+                & ({{ head.compute_active }})
+            )
+{% if head.partial_input is defined %}
+            {{ prefix }}_value_accumulator = tl.zeros(
+                ({{ head.tile }},), tl.float32
+            )
+            {{ prefix }}_partner_accumulator = tl.zeros(
+                ({{ head.tile }},), tl.float32
+            )
+            for {{ prefix }}_partial_member in tl.range(
+                0, {{ head.partial_input.member_count }}, loop_unroll_factor=1
+            ):
+                {{ prefix }}_value_accumulator += tl.load(
+                    {{ head.partial_input.storage }}
+                    + ({{ head.partial_input.owner }})
+                        * {{ head.partial_input.owner_stride }}
+                    + ({{ head.partial_input.offset }}),
+                    mask={{ prefix }}_mask,
+                    other=0.0,
+                ).to(tl.float32)
+                {{ prefix }}_partner_accumulator += tl.load(
+                    {{ head.partial_partner.storage }}
+                    + ({{ head.partial_partner.owner }})
+                        * {{ head.partial_partner.owner_stride }}
+                    + ({{ head.partial_partner.offset }}),
+                    mask={{ prefix }}_mask,
+                    other=0.0,
+                ).to(tl.float32)
+            {{ prefix }}_value = (
+                {{ prefix }}_value_accumulator
+                .to({{ head.partial_input.scalar_dtype }}).to(tl.float32)
+            )
+            {{ prefix }}_partner = (
+                {{ prefix }}_partner_accumulator
+                .to({{ head.partial_partner.scalar_dtype }}).to(tl.float32)
+            )
+{% else %}
+            {{ prefix }}_value = tl.load(
+                {{ head.input }} + ({{ head.input_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to(tl.float32)
+            {{ prefix }}_partner = tl.load(
+                {{ head.input }} + ({{ head.partner_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to(tl.float32)
+{% endif %}
+            {{ prefix }}_scale = tl.load(
+                {{ head.scale }} + ({{ head.scale_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to(tl.float32)
+            {{ prefix }}_bias = tl.load(
+                {{ head.bias }} + ({{ head.bias_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to(tl.float32)
+            {{ prefix }}_partner_scale = tl.load(
+                {{ head.scale }} + ({{ head.partner_scale_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to(tl.float32)
+            {{ prefix }}_partner_bias = tl.load(
+                {{ head.bias }} + ({{ head.partner_bias_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to(tl.float32)
+            {{ prefix }}_unit = ({{ prefix }}_value - {{ prefix }}_mean) * {{ prefix }}_inverse
+            {{ prefix }}_partner_unit = ({{ prefix }}_partner - {{ prefix }}_mean) * {{ prefix }}_inverse
+{% if head.round_before_scale %}
+            {{ prefix }}_unit = {{ prefix }}_unit.to({{ head.input_type }}).to(tl.float32)
+            {{ prefix }}_partner_unit = {{ prefix }}_partner_unit.to({{ head.input_type }}).to(tl.float32)
+{% endif %}
+            {{ prefix }}_normalized = {{ prefix }}_unit * {{ prefix }}_scale + {{ prefix }}_bias
+            {{ prefix }}_partner_normalized = {{ prefix }}_partner_unit * {{ prefix }}_partner_scale + {{ prefix }}_partner_bias
+            {{ prefix }}_normalized = {{ prefix }}_normalized.to({{ head.input_type }}).to(tl.float32)
+            {{ prefix }}_partner_normalized = {{ prefix }}_partner_normalized.to({{ head.input_type }}).to(tl.float32)
+            {{ prefix }}_rotated = tl.where(
+                ({{ head.dimension }}) < {{ head.head_dim }} // 2,
+                -{{ prefix }}_partner_normalized,
+                {{ prefix }}_partner_normalized,
+            )
+            {{ prefix }}_cosine = tl.load(
+                {{ head.cosine }} + ({{ head.cosine_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to({{ head.input_type }}).to(tl.float32)
+            {{ prefix }}_sine = tl.load(
+                {{ head.sine }} + ({{ head.sine_offset }}),
+                mask={{ prefix }}_mask, other=0.0,
+            ).to({{ head.input_type }}).to(tl.float32)
+            # Preserve two IR Multiply results; contraction across their casts
+            # would replace separately rounded products with a BF16 FMA.
+            {{ prefix }}_cosine_product = libdevice.mul_rn({{ prefix }}_normalized, {{ prefix }}_cosine).to({{ head.input_type }}).to(tl.float32)
+            {{ prefix }}_sine_product = libdevice.mul_rn({{ prefix }}_rotated, {{ prefix }}_sine).to({{ head.input_type }}).to(tl.float32)
+            {{ prefix }}_result = (
+                {{ prefix }}_cosine_product + {{ prefix }}_sine_product
+            )
+{% if loop.first %}
+            tl.store(
+                {{ head.output }} + ({{ head.output_offset }}),
+                {{ prefix }}_result,
+                mask=(
+                    {{ prefix }}_mask & ({{ head.output_active }})
+                    & ({{ head.writer_active }})
+                ),
+            )
+{% else %}
+            tl.store(
+                {{ call.kv_cache }} + ({{ head.cache_offset }}),
+                {{ prefix }}_result,
+                mask={{ prefix }}_mask & ({{ head.writer_active }}),
+            )
+{% endif %}
+{% endfor %}
+    for qkv_v_start in tl.range(0, {{ call.v.capacity }}, {{ call.v.tile }}):
+        qkv_v_offsets = qkv_v_start + tl.arange(0, {{ call.v.tile }})
+        qkv_v_mask = (
+            (qkv_v_offsets < {{ call.v.capacity }}) & ({{ call.v.active }})
+            & ({{ call.v.compute_active }})
+        )
+{% if call.v.partial_input is defined %}
+        qkv_v_accumulator = tl.zeros(({{ call.v.tile }},), tl.float32)
+        for qkv_v_partial_member in tl.range(
+            0, {{ call.v.partial_input.member_count }}, loop_unroll_factor=1
+        ):
+            qkv_v_accumulator += tl.load(
+                {{ call.v.partial_input.storage }}
+                + ({{ call.v.partial_input.owner }})
+                    * {{ call.v.partial_input.owner_stride }}
+                + ({{ call.v.partial_input.offset }}),
+                mask=qkv_v_mask,
+                other=0.0,
+            ).to(tl.float32)
+        qkv_v_value = (
+            qkv_v_accumulator
+            .to({{ call.v.partial_input.scalar_dtype }}).to(tl.float32)
+        )
+{% else %}
+        qkv_v_value = tl.load(
+            {{ call.v.input }} + ({{ call.v.input_offset }}),
+            mask=qkv_v_mask, other=0.0,
+        )
+{% endif %}
+        tl.store(
+            {{ call.kv_cache }} + ({{ call.v.cache_offset }}),
+            qkv_v_value,
+            mask=qkv_v_mask & ({{ call.v.writer_active }}),
+        )
+{% endif %}
+    if shard_index == 0:
+        tl.store({{ call.slot_mapping }}, qkv_cache_position)
+        if {{ call.advance_sequence }}:
+            tl.store({{ call.sequence_lengths }}, qkv_cache_position + 1)
+
+
+{% endif %}
+{% endfor %}

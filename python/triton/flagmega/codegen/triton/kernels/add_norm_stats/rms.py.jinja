@@ -1,0 +1,41 @@
+# flagmega-kernel: add_norm_stats/rms platform=generic
+{% set add_norm_stats_variant = "rms" %}
+@triton.jit
+def _flagmega_add_norm_stats_rms(
+    source, residual, destination, stats_partials, stats_output,
+    shard_index, ELEMENTS: tl.constexpr, OWNER_COUNT: tl.constexpr,
+    TILE: tl.constexpr,
+):
+    square_sum = tl.zeros((TILE,), tl.float32)
+    for start in tl.range(
+        shard_index * TILE, ELEMENTS, OWNER_COUNT * TILE,
+    ):
+        offsets = start + tl.arange(0, TILE)
+        mask = offsets < ELEMENTS
+        value = (
+            tl.load(source + offsets, mask=mask, other=0.0)
+            + tl.load(residual + offsets, mask=mask, other=0.0)
+        ).to(tl.bfloat16)
+        tl.store(destination + offsets, value, mask=mask)
+        value_fp32 = value.to(tl.float32)
+        square_sum += tl.where(mask, value_fp32 * value_fp32, 0.0)
+    tl.store(stats_partials + shard_index, tl.sum(square_sum, axis=0))
+{% if distributed_entry %}
+    tle.distributed_barrier(FLAGMEGA_GRID_MESH)
+{% else %}
+    tl.debug_barrier()
+{% endif %}
+    if shard_index == 0:
+        owner_offsets = tl.arange(0, {{ mesh_size }})
+        total = tl.sum(
+            tl.load(
+                stats_partials + owner_offsets,
+                mask=owner_offsets < OWNER_COUNT,
+                other=0.0,
+            ),
+            axis=0,
+        )
+        tl.store(stats_output, total)
+{% if render_calls is defined %}
+{% include "kernels/add_norm_stats/_function.py.jinja" %}
+{% endif %}

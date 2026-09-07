@@ -1,0 +1,71 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "paged_attention_combine" and call.variant == "decode" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for attention_output_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
+        attention_output_offsets = (
+            attention_output_start + tl.arange(0, {{ call.tile }})
+        )
+        attention_output_mask = (
+            (attention_output_offsets < {{ call.local_capacity }})
+            & ({{ call.active }}) & ({{ call.writer_active }})
+        )
+        attention_head = {{ call.head }}
+        attention_dimension = {{ call.dimension }}
+        attention_merged_max = tl.full(
+            ({{ call.tile }},), -float("inf"), tl.float32,
+        )
+        for attention_part in tl.static_range({{ call.context_shards }}):
+            attention_index = {{ call.partial_owner }}
+            attention_part_max = tl.load(
+                {{ call.partial_max }}
+                + attention_index * {{ call.partial_max_owner_stride }}
+                + ({{ call.partial_max_offset }}),
+                mask=attention_output_mask,
+                other=-float("inf"),
+            ).to(tl.float32)
+            attention_merged_max = tl.maximum(
+                attention_merged_max, attention_part_max,
+            )
+        attention_merged_sum = tl.zeros(({{ call.tile }},), tl.float32)
+        attention_merged_accumulator = tl.zeros(
+            ({{ call.tile }},), tl.float32,
+        )
+        for attention_part in tl.static_range({{ call.context_shards }}):
+            attention_index = {{ call.partial_owner }}
+            attention_factor = tl.exp(
+                tl.load(
+                    {{ call.partial_max }}
+                    + attention_index * {{ call.partial_max_owner_stride }}
+                    + ({{ call.partial_max_offset }}),
+                    mask=attention_output_mask,
+                    other=-float("inf"),
+                ).to(tl.float32) - attention_merged_max
+            )
+            attention_merged_sum += tl.load(
+                {{ call.partial_sum }}
+                + attention_index * {{ call.partial_sum_owner_stride }}
+                + ({{ call.partial_sum_offset }}),
+                mask=attention_output_mask,
+                other=0.0,
+            ).to(tl.float32) * attention_factor
+            attention_value = tl.load(
+                {{ call.partial_accumulator }}
+                + attention_index * {{ call.partial_accumulator_owner_stride }}
+                + ({{ call.partial_accumulator_offset }}),
+                mask=attention_output_mask,
+                other=0.0,
+            ).to(tl.float32)
+            attention_merged_accumulator += attention_value * attention_factor
+        attention_merged = attention_merged_accumulator / attention_merged_sum
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            attention_merged.to(tl.bfloat16),
+            mask=attention_output_mask,
+        )
+
+
+{% endif %}
+{% endfor %}

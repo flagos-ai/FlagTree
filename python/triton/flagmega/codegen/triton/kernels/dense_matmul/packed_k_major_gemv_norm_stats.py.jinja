@@ -1,0 +1,76 @@
+# flagmega-kernel: dense_matmul/packed_k_major_gemv_norm_stats platform=generic
+{# Portable packed GEMV over one local shard with residual and RMS statistics.
+
+   Like nncase's normal PackedMatMulNormStats TIR, the kernel sees only dense
+   local buffers.  A broadcast N axis produces a materialized statistic; an N
+   split produces one Sum-partial statistic per participating owner.  Boxing
+   and later consumers own any required inter-owner reduction. #}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% set dense_matmul_accumulate_helper = "_flagmega_dense_matmul_packed_k_major_gemv_norm_stats_accumulate" %}
+{% include "kernels/dense_matmul/_local_accumulate.py.jinja" %}
+
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul" and call.variant == "packed_k_major_gemv_norm_stats" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    dense_stats_square_sum = tl.zeros(({{ call.tile_n }},), tl.float32)
+    for dense_local_n_start in tl.range(
+        0, {{ call.local_n_capacity }}, {{ call.tile_n }}
+    ):
+        dense_local_n_offsets = (
+            dense_local_n_start + tl.arange(0, {{ call.tile_n }})
+        )
+        dense_global_n = {{ call.global_n }}
+        dense_n_mask = (
+            (dense_local_n_offsets < {{ call.local_n_capacity }})
+            & ({{ call.result_active }})
+        )
+        dense_accumulator = tl.zeros(({{ call.tile_n }},), tl.float32)
+        for dense_local_k_start in tl.range(
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+        ):
+            dense_local_k_offsets = (
+                dense_local_k_start + tl.arange(0, {{ call.block_k }})
+            )
+            dense_global_k = {{ call.global_k }}
+            dense_k_mask = (
+                (dense_local_k_offsets < {{ call.local_k_capacity }})
+                & ({{ call.source_active }})
+            )
+            dense_accumulator += {{ call.accumulate_helper }}(
+                {{ call.source }}, {{ call.weight }},
+                {{ call.source_offset }}, {{ call.weight_offset }},
+                dense_k_mask, dense_n_mask,
+            )
+        dense_residual = tl.load(
+            {{ call.residual }} + ({{ call.residual_offset }}),
+            mask=dense_n_mask,
+            other=0.0,
+        )
+        # The packed matmul publishes BF16 before the residual Add. Fusion
+        # preserves that rounding boundary, including cancellation at ties.
+        dense_projection = dense_accumulator.to({{ call.output_type }}).to(tl.float32)
+        dense_value = (dense_projection + dense_residual).to(
+            {{ call.output_type }}
+        )
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            dense_value,
+            mask=dense_n_mask & ({{ call.result_writer_active }}),
+        )
+        dense_value_fp32 = dense_value.to(tl.float32)
+        dense_stats_square_sum += tl.where(
+            dense_n_mask, dense_value_fp32 * dense_value_fp32, 0.0,
+        )
+    tl.store(
+        {{ call.stats }} + ({{ call.stats_offset }}),
+        tl.sum(dense_stats_square_sum, axis=0),
+        mask={{ call.stats_writer_active }},
+    )
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

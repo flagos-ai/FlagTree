@@ -1,0 +1,58 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "greedy_sample" and call.variant == "distributed_argmax" %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}__partials({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for batch_local in tl.range(0, {{ call.batch_capacity }}):
+        greedy_best = -float("inf")
+        greedy_index = {{ call.vocab_size }}
+        for vocab_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
+            vocab_offsets = vocab_start + tl.arange(0, {{ call.tile }})
+            vocab_mask = (
+                (vocab_offsets < {{ call.local_capacity }}) & ({{ call.active }})
+            )
+            vocab_value = tl.load(
+                {{ call.logits }} + ({{ call.logits_offset }}),
+                mask=vocab_mask, other=-float("inf"),
+            ).to(tl.float32)
+            vocab_index = tl.where(vocab_mask, {{ call.logical_index }}, {{ call.vocab_size }}).to(tl.int32)
+            vocab_tile_max, vocab_tile_index = tl.reduce(
+                (vocab_value, vocab_index), 0, _flagmega_argmax_combine)
+            greedy_best, greedy_index = _flagmega_argmax_combine(
+                greedy_best, greedy_index, vocab_tile_max, vocab_tile_index)
+        partial_offset = batch_local * {{ mesh_size }} + shard_index
+        tl.store({{ call.partial_max }} + partial_offset, greedy_best)
+        tl.store({{ call.partial_index }} + partial_offset, greedy_index)
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__finalize({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    if {{ call.result_writer }}:
+        greedy_owners = tl.arange(0, triton.next_power_of_2({{ mesh_size }}))
+        for result_batch in tl.range(0, {{ call.result_capacity }}):
+            greedy_best = -float("inf")
+            greedy_result = {{ call.vocab_size }}
+            for partial_batch in tl.range(0, {{ call.batch_capacity }}):
+                partial_offset = partial_batch * {{ mesh_size }} + greedy_owners
+                owner_mask = (greedy_owners < {{ mesh_size }}) & (
+                    ({{ call.partial_batch_logical }}) == ({{ call.result_logical_batch }})
+                )
+                greedy_values = tl.load({{ call.partial_max }} + partial_offset,
+                                        owner_mask, other=-float("inf"))
+                greedy_indices = tl.load({{ call.partial_index }} + partial_offset,
+                                         owner_mask, other={{ call.vocab_size }})
+                partial_maximum, partial_index = tl.reduce(
+                    (greedy_values, greedy_indices), 0, _flagmega_argmax_combine)
+                greedy_best, greedy_result = _flagmega_argmax_combine(
+                    greedy_best, greedy_result, partial_maximum, partial_index)
+            tl.store({{ call.result }} + ({{ call.result_offset }}),
+                     greedy_result.to(tl.int32), mask={{ call.result_active }})
+
+
+{{ entry.phase_schedule(call, ("partials", "finalize")) }}
+
+
+{% endif %}
+{% endfor %}

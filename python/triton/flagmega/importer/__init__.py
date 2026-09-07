@@ -1,0 +1,52 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""Model importers. Qwen3.5/3.8 support is registered explicitly."""
+
+from triton.flagmega.importer.checkpoint import (
+    Checkpoint,
+    DirectoryCheckpoint,
+    MemoryCheckpoint,
+    TensorByteRange,
+    TensorInfo,
+)
+from triton.flagmega.importer.source import (
+    ImportSourceLocation,
+    SOURCE_LOCATION_SCHEMA,
+    attach_import_source_locations,
+    source_location_of,
+)
+from triton.flagmega.importer.model import import_model, import_model_layer, importer_registry
+from triton.flagmega.importer.registry import ModelImporterRegistry, ModelImporterSpec
+from triton.flagmega.importer.qwen3 import (
+    Qwen3LayerConfig,
+    Qwen3LayerImporter,
+    Qwen3ModelImporter,
+    import_qwen3_layer,
+    import_qwen3_model,
+)
+from triton.flagmega.importer.qwen3_5 import Qwen35Layer0Importer, Qwen35LayerConfig, import_qwen3_8_layer0
+
+__all__ = [
+    "Checkpoint",
+    "DirectoryCheckpoint",
+    "MemoryCheckpoint",
+    "ModelImporterRegistry",
+    "ModelImporterSpec",
+    "ImportSourceLocation",
+    "SOURCE_LOCATION_SCHEMA",
+    "Qwen3LayerConfig",
+    "Qwen3LayerImporter",
+    "Qwen3ModelImporter",
+    "Qwen35Layer0Importer",
+    "Qwen35LayerConfig",
+    "TensorInfo",
+    "TensorByteRange",
+    "attach_import_source_locations",
+    "import_model",
+    "import_model_layer",
+    "importer_registry",
+    "source_location_of",
+    "import_qwen3_layer",
+    "import_qwen3_model",
+    "import_qwen3_8_layer0",
+]

@@ -1,0 +1,114 @@
+{# Generic local-shard M=1 DenseMatMul transfer pipeline.
+
+   The target catalog owns block sizes, pipe depth, worker resources, and the
+   typed Shared workspace.  This template consumes only the selected TIR ABI;
+   it contains no model or graph-role knowledge. #}
+{% macro producer_body(call) %}
+{% set writer = call.pipeline_channels[0].writer_parameter %}
+    tle.gpu.tensor_map_fenceproxy_acquire({{ call.weight_descriptor }})
+    for dense_local_n_start in tl.range(
+        0, {{ call.local_n_capacity }}, {{ call.tile_n }}
+    ):
+        for dense_local_k_start in tl.range(
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+        ):
+            dense_pipeline_sequence = (
+                (dense_local_n_start // {{ call.tile_n }})
+                * ({{ call.local_k_capacity }} // {{ call.block_k }})
+                + dense_local_k_start // {{ call.block_k }}
+            ).to(tl.int32)
+            dense_pipeline_slot = {{ writer }}.acquire(dense_pipeline_sequence)
+            dense_weight_descriptor = tle.gpu.reinterpret_tensor_map(
+                {{ call.weight_descriptor }}, dense_pipeline_slot.weight,
+            )
+            tle.gpu.copy(
+                dense_weight_descriptor,
+                dense_pipeline_slot.weight,
+                [{{ call.tile_n }}, {{ call.block_k }}],
+                [
+                    {{ call.descriptor_n_offset }},
+                    {{ call.descriptor_k_offset }},
+                ],
+                eviction_policy="evict_first",
+            )
+            {{ writer }}.commit(dense_pipeline_sequence)
+    {{ writer }}.close(
+        ({{ call.local_n_capacity }} // {{ call.tile_n }})
+        * ({{ call.local_k_capacity }} // {{ call.block_k }})
+    )
+{% endmacro %}
+
+{% macro consumer_body(call) %}
+{% set reader = call.pipeline_channels[0].reader_parameter %}
+    for dense_local_n_start in tl.range(
+        0, {{ call.local_n_capacity }}, {{ call.tile_n }}
+    ):
+        dense_local_n_offsets = dense_local_n_start + tl.arange(0, {{ call.tile_n }})
+        dense_global_n = {{ call.global_n }}
+        dense_n_mask = (
+            (dense_local_n_offsets < {{ call.local_n_capacity }})
+            & ({{ call.result_active }})
+        )
+        dense_accumulator = tl.zeros(({{ call.tile_n }},), tl.float32)
+        for dense_local_k_start in tl.range(
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+        ):
+            dense_local_k_offsets = dense_local_k_start + tl.arange(0, {{ call.block_k }})
+            dense_global_k = {{ call.global_k }}
+            dense_k_mask = (
+                (dense_local_k_offsets < {{ call.local_k_capacity }})
+                & ({{ call.source_active }})
+            )
+            dense_pipeline_sequence = (
+                (dense_local_n_start // {{ call.tile_n }})
+                * ({{ call.local_k_capacity }} // {{ call.block_k }})
+                + dense_local_k_start // {{ call.block_k }}
+            ).to(tl.int32)
+            dense_pipeline_ready = {{ reader }}.wait(dense_pipeline_sequence)
+            dense_stage_n = tl.arange(0, {{ call.tile_n }})[:, None]
+            dense_stage_k = tl.arange(0, {{ call.block_k }})[None, :]
+            dense_weight_pointer = tle.gpu.local_ptr(
+                dense_pipeline_ready.slot.weight,
+                (dense_stage_n, dense_stage_k),
+                [{{ call.tile_n }}, {{ call.block_k }}],
+            )
+            dense_weight_value = tl.load(dense_weight_pointer).to(tl.float32)
+            dense_source_value = tl.load(
+                {{ call.source }} + ({{ call.source_offset }}),
+                mask=dense_k_mask,
+                other=0.0,
+            ).to(tl.float32)
+            dense_accumulator += tl.sum(
+                dense_weight_value * dense_source_value[None, :], axis=1
+            )
+            {{ reader }}.release(dense_pipeline_sequence)
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            dense_accumulator.to({{ call.output_type }}),
+            mask=dense_n_mask,
+        )
+{% endmacro %}
+
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul" and call.variant == "tensor_descriptor_smem_pipeline_gemv" %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}__producer(
+    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{{ producer_body(call) }}
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer(
+    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{{ consumer_body(call) }}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

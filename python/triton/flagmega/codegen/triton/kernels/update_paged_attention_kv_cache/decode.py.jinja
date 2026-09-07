@@ -1,0 +1,48 @@
+# flagmega-kernel: update_paged_attention_kv_cache/decode
+{% if render_calls is defined %}
+{% include "kernels/update_paged_attention_kv_cache/_function.py.jinja" %}
+{% endif %}
+@triton.jit
+def _flagmega_update_paged_attention_kv_cache(
+    slots,
+    kv_cache,
+    sequence_lengths,
+    slot_mapping,
+    block_table,
+    layer_id,
+    advance_sequence,
+    cache_index: tl.constexpr,
+    num_layers: tl.constexpr,
+    num_kv_heads: tl.constexpr,
+    head_dim: tl.constexpr,
+    block_size: tl.constexpr,
+    slots_head_stride: tl.constexpr,
+    slots_dimension_stride: tl.constexpr,
+    elements_per_program: tl.constexpr,
+):
+    """Store one K or V decode slot using the explicit paged-cache ABI."""
+    program = tl.program_id(0)
+    linear = program * elements_per_program + tl.arange(0, elements_per_program)
+    element_count = num_kv_heads * head_dim
+    mask = linear < element_count
+    head = linear // head_dim
+    dimension = linear % head_dim
+    source_offset = head * slots_head_stride + dimension * slots_dimension_stride
+    position = tl.load(sequence_lengths).to(tl.int64)
+    active_layer = layer_id
+    logical_block = position // block_size
+    block_offset = position % block_size
+    physical_block = tl.load(block_table + logical_block).to(tl.int64)
+    cache_base = (
+        ((((physical_block * num_layers + active_layer) * 2 + cache_index) * block_size
+           + block_offset) * num_kv_heads) * head_dim
+    )
+    tl.store(
+        kv_cache + cache_base + linear,
+        tl.load(slots + source_offset, mask=mask, other=0.0),
+        mask=mask,
+    )
+    leader = program == 0
+    should_advance = advance_sequence
+    tl.store(slot_mapping, position, mask=leader)
+    tl.store(sequence_lengths, position + 1, mask=leader & should_advance)

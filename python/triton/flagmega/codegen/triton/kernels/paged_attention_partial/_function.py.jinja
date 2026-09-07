@@ -1,0 +1,24 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "paged_attention_partial" and call.variant == paged_attention_partial_variant %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for attention_state_start in tl.range(0, {{ call.local_capacity }}):
+        attention_state_offsets = attention_state_start
+        if {{ call.active }}:
+            _flagmega_paged_attention_partial(
+                {{ call.query }}, {{ call.kv_cache }},
+                {{ call.slot_mapping }}, {{ call.block_table }},
+                {{ call.layer_id }}, {{ call.partial_max }},
+                {{ call.partial_sum }}, {{ call.partial_accumulator }},
+                {{ call.context_shard }}, {{ call.head }},
+                {{ call.num_layers }}, {{ call.num_query_heads }},
+                {{ call.num_kv_heads }}, {{ call.head_dim }},
+                {{ call.block_size }}, {{ call.scale }},
+                {{ call.token_tile }}, {{ call.context_shards }},
+            )
+
+
+{% endif %}
+{% endfor %}

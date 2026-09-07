@@ -1,0 +1,14 @@
+@triton.jit
+def {{ dense_matmul_accumulate_helper }}(
+    source, weight, source_offsets, weight_offsets, k_mask, n_mask,
+):
+    """Accumulate one ABI-addressed local M=1 GEMV tile."""
+    source_value = tl.load(
+        source + source_offsets, mask=k_mask, other=0.0,
+    ).to(tl.float32)
+    weight_value = tl.load(
+        weight + weight_offsets,
+        mask=n_mask[:, None] & k_mask[None, :],
+        other=0.0,
+    ).to(tl.float32)
+    return tl.sum(weight_value * source_value[None, :], axis=1)

@@ -1,0 +1,8 @@
+# flagmega-kernel: dense_matmul/gemv platform=nvidia architecture=sm90
+{% set dense_matmul_variant = "gemv" %}
+{% set dense_matmul_uses_descriptor = false %}
+{% set dense_matmul_accumulate_helper = "_flagmega_dense_matmul_gemv_accumulate" %}
+{% include "kernels/dense_matmul/_local_accumulate.py.jinja" %}
+{% if render_calls is defined %}
+{% include "kernels/dense_matmul/_function.py.jinja" %}
+{% endif %}

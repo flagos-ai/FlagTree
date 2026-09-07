@@ -1,0 +1,7 @@
+# flagmega-kernel: norm_stats/local platform=generic
+@triton.jit
+def _flagmega_norm_stats_load(source, mask):
+    return tl.load(source, mask=mask, other=0.0).to(tl.float32)
+{% if render_calls is defined %}
+{% include "kernels/norm_stats/_function.py.jinja" %}
+{% endif %}

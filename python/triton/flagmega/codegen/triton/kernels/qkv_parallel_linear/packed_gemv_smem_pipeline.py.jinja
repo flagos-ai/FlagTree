@@ -1,0 +1,137 @@
+# flagmega-kernel: qkv_parallel_linear/packed_gemv_smem_pipeline platform=generic
+{# nncase qkv_parallel_linear/simt_fma_smem_pipeline: owner-local packed
+   [N,K] FMA reduction, TMA RHS staging and consumer Shared LHS.
+   The target owns geometry; this variant does not require a matrix ISA.
+   The ordinary stage helper stays inline across the op's noinline boundary. #}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "qkv_parallel_linear" and call.variant == "packed_gemv_smem_pipeline" %}
+{{ call.symbol }}__weight_layout = tl.constexpr(tle.gpu.BlockEncoding(
+    [{{ call.consumer_size_per_thread | join(", ") }}],
+    [{{ call.consumer_threads_per_warp | join(", ") }}],
+    [{{ call.consumer_warps_per_cta | join(", ") }}],
+    [0, 1],
+))
+{{ call.symbol }}__lhs_layout = tl.constexpr(tle.gpu.SlicedEncoding(0, {{ call.symbol }}__weight_layout.value))
+{{ call.symbol }}__output_layout = tl.constexpr(tle.gpu.SlicedEncoding(1, {{ call.symbol }}__weight_layout.value))
+{{ call.symbol }}__input_copy_layout = tl.constexpr(tle.gpu.BlockEncoding(
+    [1, 1], [1, {{ call.worker_width }}], [1, {{ call.consumer_warps }}], [0, 1],
+))
+
+
+@triton.jit
+def {{ call.symbol }}__consumer_stage(weight_stage, lhs_stage, qkv_k_tile):
+    qkv_local_n = tle.gpu.set_layout(
+        tl.arange(0, {{ call.block_n }}), {{ call.symbol }}__output_layout,
+    )[:, None]
+    qkv_k_vector = tle.gpu.set_layout(
+        tl.arange(0, {{ call.reduction_group }}), {{ call.symbol }}__lhs_layout,
+    )
+    qkv_local_k = qkv_k_vector[None, :]
+    qkv_partial = tle.gpu.set_layout(
+        tl.zeros(({{ call.block_n }}, {{ call.reduction_group }}), tl.float32),
+        {{ call.symbol }}__weight_layout,
+    )
+    for qkv_k_group in tl.static_range(0, {{ call.reduction_groups_per_stage }}):
+        qkv_stage_k = qkv_k_group * {{ call.reduction_group }} + qkv_local_k
+        qkv_payload = qkv_local_n % {{ call.n_lane }} * {{ call.k_lane }} + qkv_stage_k % {{ call.k_lane }}
+        qkv_weight_pointer = tle.gpu.local_ptr(
+            weight_stage,
+            (
+{% if call.descriptor_kind == "single" %}
+                tl.full(({{ call.block_n }}, {{ call.reduction_group }}), 0, tl.int32),
+{% endif %}
+                qkv_local_n // {{ call.n_lane }},
+                qkv_stage_k // {{ call.k_lane }},
+                qkv_payload // 64,
+                qkv_payload % 64,
+            ),
+            [{{ call.block_n }}, {{ call.reduction_group }}],
+        )
+        qkv_weight_pointer = tl.max_contiguous(qkv_weight_pointer, [1, 8])
+        qkv_weight_pointer = tl.multiple_of(qkv_weight_pointer, [1, 16])
+        qkv_weight = tle.gpu.set_layout(tl.load(qkv_weight_pointer), {{ call.symbol }}__weight_layout).to(tl.float32)
+        qkv_lhs_pointer = tle.gpu.local_ptr(
+            lhs_stage,
+            (
+                tl.full(({{ call.reduction_group }},), 0, tl.int32),
+                qkv_k_tile * {{ call.block_k }} + qkv_k_group * {{ call.reduction_group }} + qkv_k_vector,
+            ),
+        )
+        qkv_source = tle.gpu.set_layout(tl.load(qkv_lhs_pointer), {{ call.symbol }}__lhs_layout).to(tl.float32)
+        qkv_partial += qkv_weight * qkv_source[None, :]
+    return qkv_partial
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__producer(
+    {{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{% set writer = call.pipeline_channels[0].writer_parameter %}
+{% if call.descriptor_kind == "table" %}
+    # The uint8 table contains 128-byte CUDA tensor-map descriptors.
+    qkv_descriptor_entry = {{ call.weight_descriptor }} + shard_index * 128
+{% else %}
+    qkv_descriptor_entry = {{ call.weight_descriptor }}
+{% endif %}
+    tle.gpu.tensor_map_fenceproxy_acquire(qkv_descriptor_entry)
+    for qkv_k_tile in tl.static_range(0, {{ call.num_k_tiles }}):
+        qkv_slot = {{ writer }}.acquire(qkv_k_tile)
+        qkv_descriptor = tle.gpu.reinterpret_tensor_map(qkv_descriptor_entry, qkv_slot.weight)
+        tle.gpu.copy(
+            qkv_descriptor, qkv_slot.weight,
+            [{{ call.descriptor_block_shape | join(", ") }}],
+            [{{ call.descriptor_offsets | join(", ") }}],
+            eviction_policy="evict_first",
+        )
+        {{ writer }}.commit(qkv_k_tile)
+    {{ writer }}.close({{ call.num_k_tiles }})
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer(
+    {{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}
+):
+{{ entry.mesh_coordinates() }}
+{% set reader = call.pipeline_channels[0].reader_parameter %}
+{% set lhs_stage = call.pipeline_consumer_workspaces[0].parameter %}
+    qkv_local_k_offsets = tle.gpu.set_layout(
+        tl.arange(0, {{ call.local_k_capacity }})[None, :], {{ call.symbol }}__input_copy_layout,
+    )
+    # Authorized ptxas cache-hint workaround, shared with the MMA implementation:
+    # retain cp.async/noinline, but do not request the unsafe L2 eviction hint.
+    tle.gpu.copy(
+        {{ call.source }} + ({{ call.source_offset }}), {{ lhs_stage }},
+        [1, {{ call.local_k_capacity }}], is_async=True,
+    )
+    tle.gpu.async_commit_group()
+    qkv_partial = tle.gpu.set_layout(
+        tl.zeros(({{ call.block_n }}, {{ call.reduction_group }}), tl.float32),
+        {{ call.symbol }}__weight_layout,
+    )
+    for qkv_k_tile in tl.static_range(0, {{ call.num_k_tiles }}):
+        qkv_ready = {{ reader }}.wait(qkv_k_tile)
+        if qkv_k_tile == 0:
+            tle.gpu.async_wait_group(0)
+            tl.debug_barrier()
+        qkv_partial += {{ call.symbol }}__consumer_stage(qkv_ready.slot.weight, {{ lhs_stage }}, qkv_k_tile)
+        {{ reader }}.release(qkv_k_tile)
+    qkv_accumulator = tl.sum(qkv_partial, axis=1)
+    qkv_logical_n = tle.gpu.set_layout(tl.arange(0, {{ call.block_n }}), {{ call.symbol }}__output_layout)
+{% for output in call.outputs %}
+    qkv_local_n_offsets = qkv_logical_n - {{ output.projection_start }}
+    tl.store(
+        {{ output.result }} + ({{ output.result_offset }}),
+        qkv_accumulator.to({{ call.output_type }}),
+        mask=(qkv_logical_n >= {{ output.projection_start }})
+             & (qkv_logical_n < {{ output.projection_start + output.local_n_capacity }})
+             & ({{ output.active }}),
+    )
+{% endfor %}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

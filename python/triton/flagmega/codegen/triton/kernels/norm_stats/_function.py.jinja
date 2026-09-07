@@ -1,0 +1,53 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "norm_stats" and call.variant == "local" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for norm_outer_index in tl.range(0, {{ call.outer_capacity }}):
+{% if call.use_mean %}
+        norm_sum = tl.zeros(({{ call.tile }},), tl.float32)
+{% endif %}
+        norm_square_sum = tl.zeros(({{ call.tile }},), tl.float32)
+        for norm_reduction_start in tl.range(
+            0, {{ call.reduction_capacity }}, {{ call.tile }}
+        ):
+            norm_reduction_offsets = (
+                norm_reduction_start + tl.arange(0, {{ call.tile }})
+            )
+            norm_mask = (
+                (norm_reduction_offsets < {{ call.reduction_capacity }})
+                & ({{ call.source_active }})
+            )
+            norm_value = _flagmega_norm_stats_load(
+                {{ call.source }} + ({{ call.source_offset }}), norm_mask,
+            )
+{% if call.use_mean %}
+            norm_sum += tl.where(norm_mask, norm_value, 0.0)
+{% endif %}
+            norm_square_sum += tl.where(
+                norm_mask, norm_value * norm_value, 0.0,
+            )
+        norm_store_mask = ({{ call.outer_active }}) & ({{ call.writer_active }})
+{% if call.use_mean %}
+        tl.store(
+            {{ call.result }} + ({{ call.result_offsets[0] }}),
+            tl.sum(norm_sum, axis=0),
+            mask=norm_store_mask,
+        )
+        tl.store(
+            {{ call.result }} + ({{ call.result_offsets[1] }}),
+            tl.sum(norm_square_sum, axis=0),
+            mask=norm_store_mask,
+        )
+{% else %}
+        tl.store(
+            {{ call.result }} + ({{ call.result_offsets[0] }}),
+            tl.sum(norm_square_sum, axis=0),
+            mask=norm_store_mask,
+        )
+{% endif %}
+
+
+{% endif %}
+{% endfor %}

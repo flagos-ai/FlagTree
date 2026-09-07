@@ -1,0 +1,42 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "update_paged_attention_kv_cache" and call.variant == "decode" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    cache_position = tl.load({{ call.sequence_lengths }}).to(tl.int64)
+    cache_logical_block = cache_position // {{ call.block_size }}
+    cache_block_offset = cache_position % {{ call.block_size }}
+    cache_physical_block = tl.load(
+        {{ call.block_table }} + cache_logical_block
+    ).to(tl.int64)
+    for cache_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
+        cache_offsets = cache_start + tl.arange(0, {{ call.tile }})
+        cache_mask = (
+            (cache_offsets < {{ call.local_capacity }}) & ({{ call.active }})
+        )
+        cache_head = {{ call.logical_head }}
+        cache_dimension = {{ call.logical_dimension }}
+        cache_destination = (
+            (((((cache_physical_block * {{ call.num_layers }} + {{ call.layer_id }})
+                * 2 + {{ call.cache_index }}) * {{ call.block_size }}
+               + cache_block_offset) * {{ call.num_kv_heads }} + cache_head)
+             * {{ call.head_dim }} + cache_dimension)
+        )
+        tl.store(
+            {{ call.kv_cache }} + cache_destination,
+            tl.load(
+                {{ call.slots }} + ({{ call.slots_offset }}),
+                mask=cache_mask,
+                other=0.0,
+            ),
+            mask=cache_mask,
+        )
+    if shard_index == 0:
+        tl.store({{ call.slot_mapping }}, cache_position)
+        if {{ call.advance_sequence }}:
+            tl.store({{ call.sequence_lengths }}, cache_position + 1)
+
+
+{% endif %}
+{% endfor %}

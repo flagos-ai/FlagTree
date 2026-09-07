@@ -1,0 +1,7 @@
+# flagmega-kernel: gather_reduce_add_norm_stats/sum_rms platform=generic
+# Implements the target-neutral TIR GatherReduceAddNormStats boundary used by
+# nncase.  The executable body is emitted from its concrete partial-owner and
+# local-coordinate ABI by this selected family template.
+{% if render_calls is defined %}
+{% include "kernels/gather_reduce_add_norm_stats/_function.py.jinja" %}
+{% endif %}

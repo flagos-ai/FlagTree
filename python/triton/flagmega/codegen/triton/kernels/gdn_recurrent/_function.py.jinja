@@ -1,0 +1,44 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "gdn_recurrent" and call.variant == "persistent" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for recurrent_start in tl.range(
+        0, {{ call.local_capacity }}, {{ call.value_tile }}
+    ):
+        local_values = recurrent_start + tl.arange(0, {{ call.value_tile }})
+        recurrent_mask = (
+            (local_values < ({{ call.active_values }}))
+            & ({{ call.writer_active }})
+        )
+        global_values = {{ call.global_value }}
+        _flagmega_gdn_recurrent_local_core_tile(
+            {{ call.qkv }}, {{ call.projection_input }},
+            {{ call.b_weight }}, {{ call.a_weight }},
+            {{ call.state }}, {{ call.a_log }}, {{ call.dt_bias }},
+            {{ call.core_scratch }}, local_values, global_values,
+            recurrent_mask, {{ call.value_heads }}, {{ call.key_heads }},
+            {{ call.key_dim }}, {{ call.value_dim }}, {{ call.projection_dim }},
+            {{ call.repeats }}, {{ call.head_block }},
+            {{ call.projection_tile }},
+        )
+{{ entry.stage_barrier() }}
+    for recurrent_norm_start in tl.range(
+        0, {{ call.local_capacity }}, {{ call.value_tile }}
+    ):
+        local_values = recurrent_norm_start + tl.arange(0, {{ call.value_tile }})
+        recurrent_norm_mask = (
+            (local_values < ({{ call.active_values }}))
+            & ({{ call.writer_active }})
+        )
+        global_values = {{ call.global_value }}
+        _flagmega_gdn_recurrent_local_norm_tile(
+            {{ call.z }}, {{ call.result }}, {{ call.norm_weight }},
+            {{ call.core_scratch }}, local_values, global_values,
+            recurrent_norm_mask, {{ call.value_dim }}, {{ call.epsilon }},
+        )
+
+
+{% endif %}
+{% endfor %}

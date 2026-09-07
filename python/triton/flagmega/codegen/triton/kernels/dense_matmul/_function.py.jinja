@@ -1,0 +1,48 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "dense_matmul" and call.variant == dense_matmul_variant %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for dense_local_n_start in tl.range(
+        0, {{ call.local_n_capacity }}, {{ call.tile_n }}
+    ):
+        dense_local_n_offsets = dense_local_n_start + tl.arange(0, {{ call.tile_n }})
+        dense_global_n = {{ call.global_n }}
+        dense_n_mask = (
+            (dense_local_n_offsets < {{ call.local_n_capacity }})
+            & ({{ call.result_active }})
+        )
+        dense_accumulator = tl.zeros(({{ call.tile_n }},), tl.float32)
+        for dense_local_k_start in tl.range(
+            0, {{ call.local_k_capacity }}, {{ call.block_k }}
+        ):
+            dense_local_k_offsets = dense_local_k_start + tl.arange(0, {{ call.block_k }})
+            dense_global_k = {{ call.global_k }}
+            dense_k_mask = (
+                (dense_local_k_offsets < {{ call.local_k_capacity }})
+                & ({{ call.source_active }})
+            )
+{% if dense_matmul_uses_descriptor %}
+            dense_accumulator += {{ call.accumulate_helper }}(
+                {{ call.source }}, {{ call.weight_descriptor }},
+                {{ call.source_offset }},
+                {{ call.descriptor_n_offset }}, {{ call.descriptor_k_offset }},
+                dense_k_mask, {{ call.transpose_b }},
+            )
+{% else %}
+            dense_accumulator += {{ call.accumulate_helper }}(
+                {{ call.source }}, {{ call.weight }},
+                {{ call.source_offset }}, {{ call.weight_offset }},
+                dense_k_mask, dense_n_mask,
+            )
+{% endif %}
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            dense_accumulator.to({{ call.output_type }}),
+            mask=dense_n_mask,
+        )
+
+
+{% endif %}
+{% endfor %}

@@ -1,0 +1,35 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "rotary_embedding" and call.variant == "decode" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    rotary_position = tl.load({{ call.sequence_lengths }}).to(tl.float32)
+    for rotary_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
+        rotary_offsets = rotary_start + tl.arange(0, {{ call.tile }})
+        rotary_mask = (
+            (rotary_offsets < {{ call.local_capacity }}) & ({{ call.active }})
+        )
+        rotary_dimension = {{ call.logical_coordinates[-1] }}
+        rotary_frequency_dimension = (
+            rotary_dimension % ({{ call.head_dim }} // 2)
+        )
+        rotary_inverse_frequency = tl.exp(
+            (-2.0 * rotary_frequency_dimension.to(tl.float32)
+             / {{ call.head_dim }}) * tl.log({{ call.theta }})
+        )
+        rotary_angle = rotary_position * rotary_inverse_frequency
+        tl.store(
+            {{ call.cosine }} + ({{ call.cosine_offset }}),
+            libdevice.fast_cosf(rotary_angle) * {{ call.attention_scaling }},
+            mask=rotary_mask,
+        )
+        tl.store(
+            {{ call.sine }} + ({{ call.sine_offset }}),
+            libdevice.fast_sinf(rotary_angle) * {{ call.attention_scaling }},
+            mask=rotary_mask,
+        )
+
+
+{% endif %}
+{% endfor %}

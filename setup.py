@@ -904,6 +904,12 @@ def get_entry_points():
             "proton-viewer = triton.profiler.viewer:main",
             "proton = triton.profiler.proton:main",
         ]
+    if os.environ.get("FLAGTREE_FLAGMEGA", "1").lower() not in {
+        "0", "false", "off"
+    }:
+        entry_points.setdefault("console_scripts", []).append(
+            "flagmega = triton.flagmega.cli:main"
+        )
     entry_points["triton.backends"] = [f"{b.name} = triton.backends.{b.name}" for b in backends]
     return entry_points
 
@@ -963,7 +969,13 @@ setup(
     long_description_content_type="text/markdown",
     install_requires=[
         "importlib-metadata; python_version < '3.10'",
-    ],
+    ] + (
+        # FlagTree-owned FlagMega core dependency. Native Triton packaging can
+        # opt out explicitly without gaining a hidden greedy extractor.
+        ["jinja2>=3.1", "ortools==9.10.4067"]
+        if os.environ.get("FLAGTREE_FLAGMEGA", "1").lower() not in {"0", "false", "off"}
+        else []
+    ),
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
     package_data=helper.get_package_data(backends),  # flagtree

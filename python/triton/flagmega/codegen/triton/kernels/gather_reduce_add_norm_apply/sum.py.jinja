@@ -1,0 +1,172 @@
+# flagmega-kernel: gather_reduce_add_norm_apply/sum platform=generic
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "gather_reduce_add_norm_apply" and call.variant == "sum" %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}__partials({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    gather_mean_sum = tl.zeros(({{ call.tile }},), tl.float32)
+    gather_square_sum = tl.zeros(({{ call.tile }},), tl.float32)
+    if {{ call.participant_active }}:
+        for gather_start in tl.range(
+            {{ call.work_partition_index }} * {{ call.tile }},
+            {{ call.local_capacity }},
+            {{ call.work_partition_count }} * {{ call.tile }},
+        ):
+            gather_local_offsets = gather_start + tl.arange(0, {{ call.tile }})
+            gather_mask = (
+                (gather_local_offsets < {{ call.local_capacity }})
+                & ({{ call.active }})
+            )
+            gather_projection = tl.zeros(({{ call.tile }},), tl.float32)
+            for gather_partial_start in tl.range(
+                0, {{ call.partial_owner_count }},
+                {{ call.partial_reduction_width }}, loop_unroll_factor=1,
+            ):
+                gather_partial_lane = gather_partial_start + tl.arange(
+                    0, {{ call.partial_reduction_width }}
+                )
+                gather_partial_mask = (
+                    gather_partial_lane < {{ call.partial_owner_count }}
+                )
+                gather_partial_owner = {{ call.partial_owner }}
+                gather_projection += tl.sum(
+                    tl.load(
+                        {{ call.partial }}
+                        + gather_partial_owner[None, :] * {{ call.owner_stride }}
+                        + ({{ call.partial_offset }})[:, None],
+                        mask=(
+                            gather_mask[:, None]
+                            & gather_partial_mask[None, :]
+                        ),
+                        other=0.0,
+                    ).to(tl.float32),
+                    axis=1,
+                )
+            gather_projection = gather_projection.to({{ call.output_type }})
+            gather_value = (
+                gather_projection.to(tl.float32)
+                + tl.load(
+                    {{ call.addend }} + ({{ call.addend_offset }}),
+                    mask=gather_mask,
+                    other=0.0,
+                ).to(tl.float32)
+            ).to({{ call.output_type }})
+            tl.store(
+                {{ call.value_result }} + ({{ call.value_offset }}),
+                gather_value,
+                mask=gather_mask,
+            )
+            gather_value_fp32 = gather_value.to(tl.float32)
+{% if call.use_mean %}
+            gather_mean_sum += tl.where(gather_mask, gather_value_fp32, 0.0)
+{% endif %}
+            gather_square_sum += tl.where(
+                gather_mask, gather_value_fp32 * gather_value_fp32, 0.0,
+            )
+{% if call.use_mean %}
+        tl.store(
+            {{ call.stats_partials }} + {{ call.stats_writer_index }},
+            tl.sum(gather_mean_sum, axis=0),
+        )
+{% endif %}
+        tl.store(
+            {{ call.stats_partials }}
+            + {{ call.stats_square_base }} + {{ call.stats_writer_index }},
+            tl.sum(gather_square_sum, axis=0),
+        )
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__finalize({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+{% if call.use_mean %}
+    norm_mean_sum = 0.0
+{% endif %}
+    norm_square_sum = 0.0
+    for norm_owner_start in tl.range(
+        0, {{ call.stats_owner_count }}, {{ call.reduction_width }}
+    ):
+        norm_owner_offsets = norm_owner_start + tl.arange(
+            0, {{ call.reduction_width }}
+        )
+        norm_owner_mask = norm_owner_offsets < {{ call.stats_owner_count }}
+{% if call.use_mean %}
+        norm_mean_sum += tl.sum(
+            tl.load(
+                {{ call.stats_partials }} + norm_owner_offsets,
+                mask=norm_owner_mask,
+                other=0.0,
+            ),
+            axis=0,
+        )
+{% endif %}
+        norm_square_sum += tl.sum(
+            tl.load(
+                {{ call.stats_partials }}
+                + {{ call.stats_square_base }} + norm_owner_offsets,
+                mask=norm_owner_mask,
+                other=0.0,
+            ),
+            axis=0,
+        )
+    norm_count = {{ call.normalization_size }} + 0.0
+{% if call.use_mean %}
+    norm_mean = norm_mean_sum / norm_count
+    norm_variance = norm_square_sum / norm_count - norm_mean * norm_mean
+{% else %}
+    norm_mean = 0.0
+    norm_variance = norm_square_sum / norm_count
+{% endif %}
+    norm_inverse_std = tl.rsqrt(
+        tl.maximum(norm_variance, 0.0) + {{ call.epsilon }}
+    )
+    if {{ call.participant_active }}:
+        for gather_start in tl.range(
+            {{ call.work_partition_index }} * {{ call.tile }},
+            {{ call.local_capacity }},
+            {{ call.work_partition_count }} * {{ call.tile }},
+        ):
+            gather_local_offsets = gather_start + tl.arange(0, {{ call.tile }})
+            gather_mask = (
+                (gather_local_offsets < {{ call.local_capacity }})
+                & ({{ call.active }})
+            )
+            norm_value = tl.load(
+                {{ call.value_result }} + ({{ call.value_offset }}),
+                mask=gather_mask,
+                other=0.0,
+            ).to(tl.float32)
+            norm_scale = tl.load(
+                {{ call.scale }} + ({{ call.scale_offset }}),
+                mask=gather_mask,
+                other=0.0,
+            ).to(tl.float32)
+{% if call.has_bias %}
+            norm_bias = tl.load(
+                {{ call.bias }} + ({{ call.bias_offset }}),
+                mask=gather_mask,
+                other=0.0,
+            ).to(tl.float32)
+{% else %}
+            norm_bias = 0.0
+{% endif %}
+            norm_normalized = (norm_value - norm_mean) * norm_inverse_std
+{% if call.round_before_scale %}
+            norm_normalized = norm_normalized.to({{ call.output_type }}).to(tl.float32)
+{% endif %}
+            norm_output = norm_normalized * norm_scale + norm_bias
+            tl.store(
+                {{ call.norm_result }} + ({{ call.norm_offset }}),
+                norm_output.to({{ call.norm_output_type }}),
+                mask=gather_mask,
+            )
+
+
+{{ entry.phase_schedule(call, ("partials", "finalize")) }}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

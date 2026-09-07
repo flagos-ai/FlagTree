@@ -1,0 +1,6 @@
+# flagmega-kernel: qkv_rope_with_cache/decode platform=generic
+# The executable body is emitted here from the typed local-shard ABI.
+# Distribution changes coordinate maps, not this semantic kernel.
+{% if render_calls is defined %}
+{% include "kernels/qkv_rope_with_cache/_function.py.jinja" %}
+{% endif %}

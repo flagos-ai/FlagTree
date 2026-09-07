@@ -1,0 +1,6 @@
+# flagmega-kernel: gather_reduce_qkv_rope_with_cache/decode platform=generic
+# Sum-partial owner mapping is derived from the serialized DistributedType.
+{% if render_calls is defined %}
+{% set qkv_rope_family = "gather_reduce_qkv_rope_with_cache" %}
+{% include "kernels/qkv_rope_with_cache/_function.py.jinja" %}
+{% endif %}

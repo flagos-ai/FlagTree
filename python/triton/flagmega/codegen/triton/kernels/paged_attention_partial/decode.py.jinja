@@ -1,0 +1,87 @@
+# flagmega-kernel: paged_attention_partial/decode
+@triton.jit
+def _flagmega_paged_attention_partial(
+    query,
+    kv_cache,
+    slot_mapping,
+    block_table,
+    layer_id,
+    partial_max,
+    partial_sum,
+    partial_accumulator,
+    context_shard,
+    head,
+    num_layers: tl.constexpr,
+    num_query_heads: tl.constexpr,
+    num_kv_heads: tl.constexpr,
+    head_dim: tl.constexpr,
+    block_size: tl.constexpr,
+    scale: tl.constexpr,
+    token_tile: tl.constexpr,
+    context_shards: tl.constexpr,
+):
+    """Portable per-context-shard online-softmax state computation."""
+    dimension = tl.arange(0, head_dim)
+    token_lane = tl.arange(0, token_tile)
+    if head < num_query_heads:
+        # Cache update publishes the current decode position through
+        # slot_mapping. sequence_lengths advances only after the final layer,
+        # so it cannot describe the just-written token for every reusable
+        # decode-layer invocation.
+        context_length = tl.load(slot_mapping).to(tl.int32) + 1
+        token_begin = (context_length * context_shard) // context_shards
+        token_end = (context_length * (context_shard + 1)) // context_shards
+        # ``query`` and all partial-state pointers are already rebased to the
+        # selected owner-local head by the call ABI. ``head`` remains the
+        # logical head coordinate and is used only for cache-head selection.
+        query_value = tl.load(query + dimension).to(tl.float32)
+        kv_head = head // (num_query_heads // num_kv_heads)
+        active_layer = layer_id
+        running_max = -float("inf")
+        running_sum = 0.0
+        accumulator = tl.zeros((head_dim,), tl.float32)
+        for token_start in tl.range(token_begin, token_end, token_tile):
+            token = token_start + token_lane
+            valid = token < token_end
+            logical_block = token // block_size
+            block_offset = token % block_size
+            physical_block = tl.load(block_table + logical_block, mask=valid, other=0)
+            key_base = (
+                ((((physical_block * num_layers + active_layer) * 2) * block_size
+                   + block_offset) * num_kv_heads + kv_head) * head_dim
+            )
+            value_base = key_base + block_size * num_kv_heads * head_dim
+            key_value = tl.load(
+                kv_cache + key_base[:, None] + dimension[None, :],
+                mask=valid[:, None],
+                other=0.0,
+            ).to(tl.float32)
+            score = tl.sum(key_value * query_value[None, :], axis=1) * scale
+            score = tl.where(valid, score, -float("inf"))
+            tile_max = tl.max(score, axis=0)
+            updated_max = tl.maximum(running_max, tile_max)
+            previous_scale = tl.exp(running_max - updated_max)
+            probability = tl.where(valid, tl.exp(score - updated_max), 0.0)
+            value_value = tl.load(
+                kv_cache + value_base[:, None] + dimension[None, :],
+                mask=valid[:, None],
+                other=0.0,
+            ).to(tl.float32)
+            accumulator = (
+                accumulator * previous_scale
+                + tl.sum(probability[:, None] * value_value, axis=0)
+            )
+            running_sum = running_sum * previous_scale + tl.sum(probability, axis=0)
+            running_max = updated_max
+        # Each pointer is already rebased to this physical owner's compact
+        # partial-state component by the call ABI.  The component contains one
+        # local head, so both context_shard and the global head coordinate have
+        # already selected storage.  Reapplying ``head`` here writes into a
+        # later owner's component (and can leave this component undefined).
+        partial_index = 0
+        tl.store(partial_max + partial_index, running_max)
+        tl.store(partial_sum + partial_index, running_sum)
+        tl.store(
+            partial_accumulator + partial_index * head_dim + dimension,
+            accumulator,
+        )

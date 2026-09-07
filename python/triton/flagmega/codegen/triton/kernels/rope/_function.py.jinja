@@ -1,0 +1,53 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "rope" and call.variant == "decode" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for rope_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
+        rope_offsets = rope_start + tl.arange(0, {{ call.tile }})
+        rope_mask = (
+            (rope_offsets < {{ call.local_capacity }}) & ({{ call.active }})
+        )
+        rope_dimension = {{ call.dimension }}
+        partner_dimension = tl.where(
+            rope_dimension < {{ call.head_dim }} // 2,
+            rope_dimension + {{ call.head_dim }} // 2,
+            rope_dimension - {{ call.head_dim }} // 2,
+        )
+        rope_value = tl.load(
+            {{ call.source }} + ({{ call.source_offset }}),
+            mask=rope_mask,
+            other=0.0,
+        ).to(tl.float32)
+        rope_partner = tl.load(
+            {{ call.source }} + ({{ call.partner_offset }}),
+            mask=rope_mask,
+            other=0.0,
+        ).to(tl.float32)
+        rope_rotated = tl.where(
+            rope_dimension < {{ call.head_dim }} // 2,
+            -rope_partner,
+            rope_partner,
+        )
+        rope_cosine = tl.load(
+            {{ call.cosine }} + ({{ call.cosine_offset }}),
+            mask=rope_mask,
+            other=0.0,
+        ).to({{ call.input_type }}).to(tl.float32)
+        rope_sine = tl.load(
+            {{ call.sine }} + ({{ call.sine_offset }}),
+            mask=rope_mask,
+            other=0.0,
+        ).to({{ call.input_type }}).to(tl.float32)
+        rope_cosine_product = libdevice.mul_rn(rope_value, rope_cosine).to({{ call.input_type }}).to(tl.float32)
+        rope_sine_product = libdevice.mul_rn(rope_rotated, rope_sine).to({{ call.input_type }}).to(tl.float32)
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            rope_cosine_product + rope_sine_product,
+            mask=rope_mask,
+        )
+
+
+{% endif %}
+{% endfor %}
