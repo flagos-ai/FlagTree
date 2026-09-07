@@ -123,3 +123,100 @@ def convert_custom_float8_internal(arg, dst_ty, fp_downcast_rounding, has_minx2,
 @core.builtin
 def convert_custom_float8(arg, dst_ty, fp_downcast_rounding=None, _semantic=None):
     return convert_custom_float8_internal(arg, dst_ty, fp_downcast_rounding, has_minx2=True, _semantic=_semantic)
+
+
+# ----- FP8E4M3FN (fp8e4nv) software cast, capability < 89 ------
+# cap80 has no e4m3 cvt instructions; the numerical cast is implemented with
+# ordinary integer/float ops. Rounding is strict RTNE (ties-to-even, with the
+# mantissa carry propagating into the exponent) or RTZ, saturation is
+# satfinite (|x| > 448 -> 0x7E), NaN maps to 0x7F, and 0x7F/0xFF decode to NaN.
+
+
+def _rounding_is_rtz(fp_downcast_rounding):
+    # accepts the ir.ROUNDING_MODE enum (from semantic.cast) or the string spelling
+    if fp_downcast_rounding is None:
+        return False
+    if isinstance(fp_downcast_rounding, str):
+        return fp_downcast_rounding.lower() == "rtz"
+    from triton._C.libtriton import ir
+    return fp_downcast_rounding == ir.ROUNDING_MODE.RTZ
+
+
+@core.builtin
+def _upcast_e4nv_to_f16(arg, _semantic=None):
+    """Software OCP E4M3FN -> fp16; exact for every one of the 256 encodings."""
+    sem = _semantic
+    u = arg.to(core.uint8, bitcast=True, _semantic=sem).to(core.uint16, _semantic=sem)
+    s = sem.shl(sem.and_(u, 0x0080), 8)
+    em = sem.and_(u, 0x007F)
+    e = sem.lshr(em, 3)
+    m = sem.and_(em, 0x0007)
+    # normal (e >= 1): f16 bits = ((e - 7 + 15) << 10) | (m << 7)
+    normal = sem.or_(sem.shl(sem.add(e, 8, False), 10), sem.shl(m, 7))
+    # subnormal (e == 0): value = m * 2^-9, exact via f32 then truncation to f16
+    sub_f = sem.mul(m.to(core.float32, _semantic=sem), 2.0**-9, False)
+    sub_bits = sub_f.to(core.float16, _semantic=sem).to(core.uint16, bitcast=True, _semantic=sem)
+    body = sem.where(sem.equal(e, 0), sub_bits, normal)
+    body = sem.where(sem.equal(em, 0x007F), 0x7E00, body)  # NaN codes 0x7F/0xFF
+    return sem.or_(body, s).to(core.float16, bitcast=True, _semantic=sem)
+
+
+@core.builtin
+def _downcast_f32_to_e4nv(arg, rtz, _semantic=None):
+    """Software fp32 -> OCP E4M3FN with single rounding (RTNE or RTZ) and
+    satfinite saturation; bit-exact against the format's reference encoder."""
+    sem = _semantic
+    b = arg.to(core.int32, bitcast=True, _semantic=sem)
+    sign = sem.shl(sem.and_(sem.lshr(b, 31), 1), 7)
+    ab = sem.and_(b, 0x7FFFFFFF)
+    is_nan = sem.greater_than(ab, 0x7F800000)
+    e32 = sem.lshr(ab, 23)
+    m32 = sem.and_(ab, 0x7FFFFF)
+    # E: biased target exponent (bias 7); k: mantissa bits to drop (20 for the
+    # normal range, up to 6 more in the subnormal range; >26 always rounds to 0)
+    E = sem.sub(e32, 120, False)
+    pn = core.PropagateNan.NONE
+    k = sem.add(sem.minimum(sem.maximum(sem.sub(1, E, False), 0, pn), 6, pn), 20, False)
+    sig = sem.or_(m32, 0x800000)
+    keep = sem.lshr(sig, k)
+    if rtz:
+        pass
+    else:  # strict RTNE: round up on >half, or ==half when the kept lsb is odd
+        rem = sem.and_(sig, sem.sub(sem.shl(1, k), 1, False))
+        half = sem.shl(1, sem.sub(k, 1, False))
+        up = sem.or_(sem.greater_than(rem, half), sem.and_(sem.equal(rem, half), sem.equal(sem.and_(keep, 1), 1)))
+        keep = sem.add(keep, up.to(core.int32, _semantic=sem), False)
+    # (E<<3) + keep - 8 folds the mantissa carry into the exponent; the
+    # subnormal branch is plain `keep` (keep == 8 becomes the minimum normal)
+    expmant = sem.where(sem.greater_equal(E, 1), sem.sub(sem.add(sem.shl(E, 3), keep, False), 8, False), keep)
+    expmant = sem.minimum(expmant, 0x7E, pn)  # satfinite (|x| > 448, inf)
+    res = sem.or_(expmant, sign)
+    res = sem.where(is_nan, 0x7F, res)
+    return res.to(core.uint8, _semantic=sem).to(core.float8e4nv, bitcast=True, _semantic=sem)
+
+
+@core.builtin
+def convert_custom_float8_sub89(arg, dst_ty, fp_downcast_rounding=None, _semantic=None):
+    """convert_custom_types implementation for capability < 89: the fp8e4b15
+    path of convert_custom_float8 plus the software fp8e4nv cast."""
+    src_sca = arg.type.scalar
+    dst_sca = dst_ty.scalar
+    if src_sca.is_fp8e4b15() or dst_sca.is_fp8e4b15():
+        return convert_custom_float8_internal(arg, dst_ty, fp_downcast_rounding, has_minx2=True, _semantic=_semantic)
+    if src_sca.is_fp8e4nv():
+        up = _upcast_e4nv_to_f16(arg, _semantic=_semantic)
+        if dst_sca.is_fp16():
+            return up
+        if dst_sca.is_fp32() or dst_sca.is_bf16() or dst_sca.is_fp64():
+            return up.to(dst_sca, _semantic=_semantic)
+        if dst_sca.is_fp8e5():
+            rounding = "rtz" if _rounding_is_rtz(fp_downcast_rounding) else "rtne"
+            return up.to(dst_sca, fp_downcast_rounding=rounding, _semantic=_semantic)
+        raise ValueError(f"cast from fp8e4nv to {dst_sca} is not supported on this product")
+    if dst_sca.is_fp8e4nv():
+        if not src_sca.is_floating():
+            raise ValueError(f"cast from {src_sca} to fp8e4nv is not supported on this product")
+        # f16/bf16 widen exactly (single rounding); an fp64 source rounds twice
+        x = arg if src_sca.is_fp32() else arg.to(core.float32, _semantic=_semantic)
+        return _downcast_f32_to_e4nv(x, _rounding_is_rtz(fp_downcast_rounding), _semantic=_semantic)
+    raise ValueError(f"unsupported custom fp8 conversion from {src_sca} to {dst_sca}")
