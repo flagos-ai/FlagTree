@@ -16,7 +16,7 @@ from triton.flagmega.ir import (
     verify_module,
 )
 from triton.flagmega.ir.ops.nn._attention_layout import normalize_attention_layout
-from triton.flagmega.ir.ops.nn._norm import normalize_axis
+from triton.flagmega.passes._qkv_head import QKVHead, match_qkv_head, same_table
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
     paged_attention_state_config_from_type,
 )
@@ -36,10 +36,8 @@ class _Fusion:
     query_view: _LayoutView
     key_view: _LayoutView
     value_view: _LayoutView
-    q_norm: Node
-    k_norm: Node
-    q_rope: Node
-    k_rope: Node
+    q_head: QKVHead
+    k_head: QKVHead
     key_update: Node
     value_update: Node
 
@@ -120,32 +118,22 @@ def _try_match(
     ):
         return None
 
-    q_rope = query_view.source
-    k_rope = key_view.source
-    if q_rope.op != "nn.rope" or k_rope.op != "nn.rope":
+    q_head = match_qkv_head(query_view.source, node_map, users)
+    k_head = match_qkv_head(key_view.source, node_map, users)
+    if q_head is None or k_head is None:
         return None
     if (
-        q_rope.inputs[1:] != k_rope.inputs[1:]
-        or len(q_rope.inputs) != 3
-        or len(k_rope.inputs) != 3
-    ):
-        return None
-    q_norm = node_map[q_rope.inputs[0]]
-    k_norm = node_map[k_rope.inputs[0]]
-    if q_norm.op != "nn.norm_apply" or k_norm.op != "nn.norm_apply":
-        return None
-    if not _has_matching_norm_stats(q_norm, node_map) or not _has_matching_norm_stats(
-        k_norm, node_map
+        q_head.round_intermediates != k_head.round_intermediates
+        or not same_table(q_head.cosine, k_head.cosine)
+        or not same_table(q_head.sine, k_head.sine)
     ):
         return None
     if (
         not _layout_view_has_only_user(query_view, paged.id, users)
         or not _layout_view_has_only_user(key_view, key_update.id, users)
         or not _layout_view_has_only_user(value_view, value_update.id, users)
-        or not _has_only_user(q_rope.id, _source_user(query_view, paged.id), users)
-        or not _has_only_user(q_norm.id, q_rope.id, users)
-        or not _has_only_user(k_rope.id, _source_user(key_view, key_update.id), users)
-        or not _has_only_user(k_norm.id, k_rope.id, users)
+        or not _has_only_user(query_view.source.id, _source_user(query_view, paged.id), users)
+        or not _has_only_user(key_view.source.id, _source_user(key_view, key_update.id), users)
         or not _has_only_user(key_update.id, value_update.id, users)
     ):
         return None
@@ -154,10 +142,8 @@ def _try_match(
         query_view,
         key_view,
         value_view,
-        q_norm,
-        k_norm,
-        q_rope,
-        k_rope,
+        q_head,
+        k_head,
         key_update,
         value_update,
     )
@@ -175,8 +161,8 @@ def _apply_fusion(module: IRModule, fusion: _Fusion) -> IRModule:
     query_id = _fresh_id(f"{fused_id}.query", occupied)
 
     qkv_inputs = (
-        fusion.q_norm.inputs[0],
-        fusion.k_norm.inputs[0],
+        fusion.q_head.value.id,
+        fusion.k_head.value.id,
         fusion.value_view.source.id,
     )
     qkv = Node(
@@ -188,25 +174,26 @@ def _apply_fusion(module: IRModule, fusion: _Fusion) -> IRModule:
     )
     definition = get_definition("nn.qkv_rope_with_cache")
     attrs = definition.normalize_attrs({
-        "q_axis": fusion.q_norm.attrs["axis"],
-        "q_epsilon": fusion.q_norm.attrs["epsilon"],
-        "q_use_mean": fusion.q_norm.attrs["use_mean"],
-        "q_round_before_scale": bool(fusion.q_norm.attrs.get("round_before_scale", False)),
-        "k_axis": fusion.k_norm.attrs["axis"],
-        "k_epsilon": fusion.k_norm.attrs["epsilon"],
-        "k_use_mean": fusion.k_norm.attrs["use_mean"],
-        "k_round_before_scale": bool(fusion.k_norm.attrs.get("round_before_scale", False)),
+        "round_qk_intermediates": fusion.q_head.round_intermediates,
+        "q_axis": fusion.q_head.norm.attrs["axis"],
+        "q_epsilon": fusion.q_head.norm.attrs["epsilon"],
+        "q_use_mean": fusion.q_head.norm.attrs["use_mean"],
+        "q_round_before_scale": bool(fusion.q_head.norm.attrs.get("round_before_scale", False)),
+        "k_axis": fusion.k_head.norm.attrs["axis"],
+        "k_epsilon": fusion.k_head.norm.attrs["epsilon"],
+        "k_use_mean": fusion.k_head.norm.attrs["use_mean"],
+        "k_round_before_scale": bool(fusion.k_head.norm.attrs.get("round_before_scale", False)),
         "qkv_layout": fusion.query_view.input_layout,
         "attention_layout": fusion.paged_attention.attrs["layout"],
     })
     fused_inputs = (
         qkv_id,
-        fusion.q_norm.inputs[2],
-        fusion.k_norm.inputs[2],
-        fusion.q_norm.inputs[3],
-        fusion.k_norm.inputs[3],
-        fusion.q_rope.inputs[1],
-        fusion.q_rope.inputs[2],
+        fusion.q_head.norm.inputs[2],
+        fusion.k_head.norm.inputs[2],
+        fusion.q_head.norm.inputs[3],
+        fusion.k_head.norm.inputs[3],
+        fusion.q_head.cosine.id,
+        fusion.q_head.sine.id,
         fusion.key_update.inputs[1],
         fusion.paged_attention.inputs[2],
         fusion.value_update.inputs[3],
@@ -309,30 +296,6 @@ def _match_layout_view(
     return _LayoutView(root, current, input_layout, tuple(nodes))
 
 
-def _has_matching_norm_stats(norm: Node, node_map) -> bool:
-    if len(norm.inputs) != 4:
-        return False
-    stats = node_map[norm.inputs[1]]
-    value = node_map[norm.inputs[0]]
-    if (
-        stats.op != "nn.norm_stats"
-        or stats.inputs != (value.id,)
-        or bool(stats.attrs.get("use_mean")) != bool(norm.attrs.get("use_mean"))
-    ):
-        return False
-    try:
-        return normalize_axis(int(stats.attrs["axis"]), _rank(value)) == normalize_axis(
-            int(norm.attrs["axis"]), _rank(value)
-        )
-    except (KeyError, TypeError, ValueError):
-        return False
-
-
-def _rank(node: Node) -> int:
-    value_type = node.type.tensor if hasattr(node.type, "tensor") else node.type
-    return value_type.rank
-
-
 def _layout(value) -> tuple[str, str, str] | None:
     try:
         return normalize_attention_layout(value)
@@ -380,6 +343,9 @@ def _users(module: IRModule) -> dict[str, tuple[str, ...]]:
     for node in module.nodes:
         for input_id in node.inputs:
             result[input_id].append(node.id)
+    for function in module.functions:
+        for output in function.outputs:
+            result[output].append(f"function-output:{function.name}")
     return {key: tuple(value) for key, value in result.items()}
 
 

@@ -50,6 +50,7 @@ class GatherReduceNormApply(OpDefinition):
     epsilon = attribute_parameter()
     use_mean = attribute_parameter()
     round_before_scale = attribute_parameter(default=False)
+    output_dtype = attribute_parameter(default=None)
     has_bias = attribute_parameter(default=True)
     inplace_input_parameters = (value,)
     supports_broadcast_lifting = False
@@ -69,6 +70,8 @@ class GatherReduceNormApply(OpDefinition):
         if epsilon <= 0:
             raise IRSchemaError("GatherReduceNormApply epsilon must be positive.")
         return {
+            **({"output_dtype": NormApply.normalize_attrs(_norm_attrs(attrs))["output_dtype"]}
+               if attrs.get("output_dtype") is not None else {}),
             "materialized_stats_type": materialized,
             "axis": axis,
             "epsilon": epsilon,
@@ -177,6 +180,7 @@ def _norm_attrs(attrs: Mapping[str, object]) -> dict[str, object]:
         "epsilon": float(attrs["epsilon"]),
         "use_mean": bool(attrs["use_mean"]),
         "round_before_scale": attrs.get("round_before_scale", False),
+        "output_dtype": attrs.get("output_dtype"),
     }
 
 

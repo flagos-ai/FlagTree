@@ -62,3 +62,15 @@ def test_vectorized_cast_rejects_a_split_that_cuts_output_lane_groups():
 
     with pytest.raises(IRSchemaError, match="cannot scale axis 1 split policy"):
         _module(input_type, fm.vector_type("float32", (16,)))
+
+
+def test_repeated_axis_scales_by_complete_lane_product_not_intermediate_factors():
+    from triton.flagmega.ir.ops.ntt.vectorized_cast import VectorizedCast
+
+    source = fm.Node("value", "builtin.var", (), fm.DistributedType(
+        fm.tensor_type(fm.vector_type("bfloat16", (2, 8)), (2,)),
+        (fm.SBP.split_block_cyclic((0,), 1),), fm.Placement((2,), "x", "b")), attrs={"name": "value"})
+    prepared = VectorizedCast.prepare((source,), {"new_type": fm.vector_type("float32", (8, 2)),
+                                                 "vectorize_axes": (0, 0)})
+    assert prepared.result_type.tensor.shape == source.type.tensor.shape
+    assert prepared.result_type.axis_policies == source.type.axis_policies

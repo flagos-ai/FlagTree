@@ -785,6 +785,7 @@ class NttPackingPolicy:
         definition = get_definition("nn.packed_dense_matmul_glu")
         prepared = definition.prepare(inputs, {
             "activation": node.attrs["activation"],
+            "round_activation": node.attrs.get("round_activation", True),
             "packed_layout": packed_layout,
         })
         replacement = replace(

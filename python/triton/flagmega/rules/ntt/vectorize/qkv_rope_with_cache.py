@@ -13,7 +13,6 @@ from triton.flagmega.ir.ops.nn._norm import normalize_axis
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
     paged_attention_state_config_from_type,
 )
-from triton.flagmega.ir.ops.tensors.cast import Cast
 from triton.flagmega.ir.ops.tensors.pack import Pack
 from triton.flagmega.rules import RewriteResult
 from triton.flagmega.rules.ntt.vectorize.base import VectorizeCandidate
@@ -196,19 +195,9 @@ def _build_packed_inputs(
 
     for index, role in ((5, "cos"), (6, "sin")):
         value = module.node_map[node.inputs[index]]
-        tensor = tensor_of(value.type)
-        if tensor.dtype != DType.FLOAT32:
-            attrs = Cast.normalize_attrs({"dtype": DType.FLOAT32})
-            cast = Node(
-                f"{node.id}.vectorized.{role}.cast",
-                "tensors.cast",
-                (value.id,),
-                Cast.infer_type((value,), attrs),
-                attrs=attrs,
-                metadata=internal_metadata(node.id, f"{role}_cast"),
-            )
-            helpers.append(cast)
-            value = cast
+        # Cache lanes constrain logical coordinates, not the table's scalar
+        # dtype. Preserve its rounding/storage contract: the fused op promotes
+        # loaded elements to its arithmetic dtype without a materialized Cast.
         packed = _pack(
             value,
             (2, plan.lane),

@@ -27,6 +27,7 @@ from triton.flagmega.ir.ops.math.matmul import MatMul
 from triton.flagmega.ir.ops.nn._norm import norm_stats_value, unpack_default_vector
 from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
 from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import MatMulNormStatsCombine
+from triton.flagmega.ir.ops.ntt._matmul_promotion import promoted_projection_type
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import VectorType
 
@@ -49,6 +50,7 @@ class MatMulNormStats(OpDefinition):
     rhs_layout = attribute_parameter(default=None)
     axis = attribute_parameter()
     use_mean = attribute_parameter()
+    addend_cast_dtypes = attribute_parameter(default=())
     inplace_output_parameters = (addend, None)
 
     @classmethod
@@ -74,7 +76,13 @@ class MatMulNormStats(OpDefinition):
         axis = attrs["axis"]
         if isinstance(axis, bool) or not isinstance(axis, int):
             raise IRSchemaError("MatMulNormStats axis must be an integer.")
+        casts = attrs["addend_cast_dtypes"]
+        if not isinstance(casts, (tuple, list)) or any(
+            value not in ("bfloat16", "float32") for value in casts
+        ):
+            raise IRSchemaError("MatMulNormStats addend_cast_dtypes must be a BF16/FP32 conversion sequence.")
         return {
+            **({"addend_cast_dtypes": tuple(DType(value).value for value in casts)} if casts else {}),
             **matmul_attrs,
             "rhs_layout": rhs_layout,
             "axis": axis,
@@ -86,14 +94,15 @@ class MatMulNormStats(OpDefinition):
         lhs = cls.lhs.read(inputs)
         rhs = cls.rhs.read(inputs)
         addend = cls.addend.read(inputs)
+        casts = attrs.get("addend_cast_dtypes", ())
+        addend_dtype = tensor_of(addend.type).dtype
+        if isinstance(addend_dtype, VectorType):
+            addend_dtype = addend_dtype.elem_type
+        if casts and casts[-1] != addend_dtype:
+            raise IRSchemaError("MatMulNormStats addend conversion sequence must end in the addend element dtype.")
         rhs_layout = attrs.get("rhs_layout")
         if rhs_layout is None:
             matmul_type = MatMul.infer_type((lhs, rhs), attrs)
-            partial_attrs = {
-                "transpose_a": attrs["transpose_a"],
-                "transpose_b": attrs["transpose_b"],
-            }
-            partial_op = MatMul.op_name
         else:
             none = Node("<none>", "builtin.none", (), NoneType())
             partial_attrs = {
@@ -104,18 +113,20 @@ class MatMulNormStats(OpDefinition):
             matmul_type = PackedMatMul.infer_type(
                 (lhs, rhs, none, none), partial_attrs
             )
-            if matmul_type != addend.type:
+            if promoted_projection_type(matmul_type, addend.type) != addend.type:
                 raise IRSchemaError(
                     "Packed MatMulNormStats requires matching projection and "
                     "addend local shards; keep layout publication explicit."
                 )
-            partial_op = PackedMatMul.op_name
+        promoted_type = promoted_projection_type(matmul_type, addend.type)
+        if promoted_type is None:
+            raise IRSchemaError("MatMulNormStats requires matching projection/addend or a lossless BF16-to-FP32 promotion.")
         partial = Node(
             "<matmul_partial>",
-            partial_op,
-            (lhs.id, rhs.id),
-            matmul_type,
-            attrs=partial_attrs,
+            "builtin.var",
+            (),
+            promoted_type,
+            attrs={"name": "<matmul_partial>"},
         )
         return MatMulNormStatsCombine.infer_type(
             (partial, addend),
@@ -157,6 +168,8 @@ class MatMulNormStats(OpDefinition):
             projected = lhs @ logical_rhs.to(dtype=lhs.dtype)
         value_type = tensor_of(context.types[cls.addend.read(node.inputs)])
         addend = cls.addend.read(arguments)
+        for dtype in node.attrs.get("addend_cast_dtypes", ()):
+            addend = addend.to(dtype=context.torch_dtype(DType(dtype)))
         projected = projected.to(dtype=addend.dtype)
         if isinstance(value_type.dtype, VectorType):
             projected = projected.reshape(

@@ -100,6 +100,7 @@ class QKVRoPEWithCache(OpDefinition):
     k_epsilon = attribute_parameter()
     k_use_mean = attribute_parameter()
     k_round_before_scale = attribute_parameter(default=False)
+    round_qk_intermediates = attribute_parameter(default=True)
     qkv_layout = attribute_parameter()
     attention_layout = attribute_parameter()
 
@@ -119,7 +120,10 @@ class QKVRoPEWithCache(OpDefinition):
             raise IRSchemaError("QKVRoPEWithCache epsilon values must be positive.")
         if any(not isinstance(attrs[f"{prefix}_round_before_scale"], bool) for prefix in ("q", "k")):
             raise IRSchemaError("QKVRoPEWithCache rounding policies must be boolean.")
+        if not isinstance(attrs["round_qk_intermediates"], bool):
+            raise IRSchemaError("QKVRoPEWithCache intermediate rounding policy must be boolean.")
         return {
+            **({"round_qk_intermediates": False} if not attrs["round_qk_intermediates"] else {}),
             "q_axis": q_axis,
             "q_epsilon": q_epsilon,
             "q_use_mean": bool(attrs["q_use_mean"]),
@@ -334,6 +338,7 @@ class QKVRoPEWithCache(OpDefinition):
             epsilon=float(node.attrs["q_epsilon"]),
             use_mean=bool(node.attrs["q_use_mean"]),
             round_before_scale=bool(node.attrs.get("q_round_before_scale", False)),
+            round_intermediates=bool(node.attrs.get("round_qk_intermediates", True)),
             torch=context.torch,
         )
         k = _normalize_and_rope_value(
@@ -346,6 +351,7 @@ class QKVRoPEWithCache(OpDefinition):
             epsilon=float(node.attrs["k_epsilon"]),
             use_mean=bool(node.attrs["k_use_mean"]),
             round_before_scale=bool(node.attrs.get("k_round_before_scale", False)),
+            round_intermediates=bool(node.attrs.get("round_qk_intermediates", True)),
             torch=context.torch,
         )
         q = _physical_attention_value(
@@ -642,7 +648,11 @@ def _normalize_and_rope_value(
     use_mean: bool,
     torch,
     round_before_scale: bool = False,
+    round_intermediates: bool = True,
 ):
+    output_dtype = value.dtype
+    if not round_intermediates:
+        value = value.float()
     stats = norm_stats_value(value, axis=axis, use_mean=use_mean)
     normalized = norm_apply_value(
         value,
@@ -659,7 +669,7 @@ def _normalize_and_rope_value(
     result = normalized * cos.to(dtype=normalized.dtype) + rotated * sin.to(
         dtype=normalized.dtype
     )
-    return result
+    return result.to(output_dtype)
 
 
 def _permute_attention_value(

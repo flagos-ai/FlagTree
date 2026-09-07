@@ -319,6 +319,23 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
                 node,
                 inputs=tuple(compute_roots.get(value, value) for value in node.inputs),
             )
+            # A real reshard may sit between a removable schedule Pack and
+            # its scalar semantic consumer. Removing only Pack leaves the
+            # adapter's vector dtype/shape on a scalar edge. Commute its exact
+            # coordinate contract through each removed Pack; Unpack inference
+            # scales every split unit, retaining the collective/view itself.
+            source_id = node.inputs[0] if len(node.inputs) == 1 else None
+            while source_id in internal and node_map[source_id].op == "tensors.pack":
+                pack = node_map[source_id]
+                axes = pack.attrs.get("axes", (pack.attrs.get("axis", -1),))
+                target_type = get_definition("tensors.unpack").infer_type(
+                    (prepared,), {"axes": axes})
+                source_id = pack.inputs[0]
+                actual = prepared_input(compute_roots.get(source_id, source_id))
+                definition = get_definition(node.op)
+                attrs = definition.normalize_attrs({**node.attrs, "new_type": target_type})
+                prepared = replace(prepared, inputs=(actual.id,),
+                                   type=definition.infer_type((actual,), attrs), attrs=attrs)
             nodes.append(prepared)
             prepared_by_id[prepared.id] = prepared
             continue

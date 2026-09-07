@@ -85,19 +85,21 @@ PIPELINE_GROUPS = (
             "egraph_candidates",
             "extracted",
             "normalization_decomposed",
+            "decomposed",
         }),
-        "decomposed",
+        "call_invariants_hoisted",
         (
             PipelinePass("DecomposeComplexOps", "decompose-gdn"),
             PipelinePass(
                 "FormQKVRoPEWithCache",
                 "form-qkv-rope-with-cache",
             ),
+            PipelinePass("HoistCallInvariantExpressions", "hoist-call-invariants"),
         ),
     ),
     PipelineGroup(
         "AutoVectorizePass",
-        frozenset({"decomposed", "vectorization_candidates"}),
+        frozenset({"decomposed", "call_invariants_hoisted", "vectorization_candidates"}),
         "vectorized",
         (
             PipelinePass("AutoVectorize", "propose-vectorization"),

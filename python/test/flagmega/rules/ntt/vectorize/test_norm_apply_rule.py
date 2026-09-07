@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 import torch
+import pytest
 
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
@@ -10,14 +11,16 @@ from triton.flagmega.rules.ntt.vectorize import VectorizeNormApply
 
 
 class _ApplyModule(fm.Module):
-    def __init__(self, extent=16):
+    def __init__(self, extent=16, dtypes=("bfloat16", "bfloat16", "bfloat16"), output_dtype=None):
         super().__init__(dialect="nn", stage="decomposed", entry="main")
         self.extent = extent
+        self.dtypes = dtypes
+        self.output_dtype = output_dtype
 
     def forward(self):
-        value = self.input("value", fm.tensor_type("bfloat16", [2, self.extent]))
-        scale = self.input("scale", fm.tensor_type("bfloat16", [self.extent]))
-        bias = self.input("bias", fm.tensor_type("bfloat16", [self.extent]))
+        value = self.input("value", fm.tensor_type(self.dtypes[0], [2, self.extent]))
+        scale = self.input("scale", fm.tensor_type(self.dtypes[1], [self.extent]))
+        bias = self.input("bias", fm.tensor_type(self.dtypes[2], [self.extent]))
         stats = fm.F.nn.norm_stats(value, axis=-1, use_mean=True, name="stats")
         output = fm.F.nn.norm_apply(
             value,
@@ -27,6 +30,7 @@ class _ApplyModule(fm.Module):
             axis=-1,
             epsilon=1e-6,
             use_mean=True,
+            output_dtype=self.output_dtype,
             name="output",
         )
         self.function("main", (value, scale, bias), (output,))
@@ -71,3 +75,24 @@ def test_norm_apply_rule_rewrite_is_evaluator_equivalent():
 def test_norm_apply_rule_rejects_reduction_padding():
     module = _ApplyModule(10).build()
     assert VectorizeNormApply().candidates(module.node_map["output"], module) == ()
+
+
+@pytest.mark.parametrize("output_dtype", [None, "bfloat16", "float32"])
+@pytest.mark.parametrize("dtypes", [("float32", "bfloat16", "bfloat16"),
+                                   ("float32", "bfloat16", "float32"),
+                                   ("bfloat16", "float32", "float32")])
+def test_mixed_parameter_precision_vectorizes_without_changing_value_or_stats(dtypes, output_dtype, tmp_path):
+    module = _ApplyModule(dtypes=dtypes, output_dtype=output_dtype).build()
+    rule = VectorizeNormApply()
+    candidates = rule.candidates(module.node_map["output"], module)
+    assert len(candidates) == 1
+    rewritten = DataflowRewriter((RewriteRule(
+        "VectorizeMixedNorm", lambda node, _: node.id == "output" and "vectorized_from" not in node.metadata,
+        lambda node, current: rule.rewrite(node, current, candidates[0]),
+    ),), remove_unused=False).rewrite(module)
+    generator = torch.Generator().manual_seed(67)
+    inputs = {name: torch.randn(shape, generator=generator).to(getattr(torch, dtype))
+              for name, shape, dtype in zip(("value", "scale", "bias"), ((2, 16), (16,), (16,)), dtypes, strict=True)}
+    evaluator = TorchEvaluator(DictWeightResolver({}))
+    torch.testing.assert_close(evaluator.run(rewritten, inputs)[0], evaluator.run(module, inputs)[0], rtol=0, atol=0)
+    assert fm.load_module(fm.emit_module(rewritten, tmp_path / "mixed.py")) == rewritten

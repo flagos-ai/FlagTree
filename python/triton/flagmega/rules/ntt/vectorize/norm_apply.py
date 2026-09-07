@@ -38,8 +38,8 @@ class VectorizeNormApply:
             or isinstance(value.dtype, VectorType)
             or not isinstance(value.dtype, DType)
             or value.dtype not in {DType.BFLOAT16, DType.FLOAT32}
-            or scale.dtype != value.dtype
-            or bias.dtype != value.dtype
+            or scale.dtype not in {DType.BFLOAT16, DType.FLOAT32}
+            or bias.dtype not in {DType.BFLOAT16, DType.FLOAT32}
         ):
             return ()
         axis = normalize_axis(int(node.attrs["axis"]), value.rank)
@@ -48,6 +48,9 @@ class VectorizeNormApply:
         if parameter_axis < 0 or scale.rank <= parameter_axis or bias.rank <= parameter_axis:
             return ()
         lane = self.lane_bytes // value.dtype.itemsize
+        # Lanes describe the same logical suffix coordinates, not equal byte
+        # widths. NormApply already defines FP32 arithmetic with independent
+        # value/scale/bias dtypes, so pack each operand in its own element type.
         if lane <= 1:
             return ()
         value_pads = padding_for(value, (vector_axis,), (lane,))

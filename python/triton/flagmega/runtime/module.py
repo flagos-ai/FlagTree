@@ -800,7 +800,7 @@ class GeneratedTirPagedAttentionLayerModule(_GeneratedTirPagedAttentionBase):
 
     def run_into(self, output, input_ids, state: PagedAttentionState, *, stream=None):
         # prepare() proves content-dependent invariants such as cache capacity
-        # and the P0 identity page table.  A prepared launch may update cache
+        # and the physical page table.  A prepared launch may update cache
         # contents but not its structural ABI; re-running CUDA reductions to
         # prove the same invariant on every token would put validation kernels
         # on the decode critical path.

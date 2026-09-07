@@ -102,3 +102,21 @@ def test_fold_nop_vectorized_cast_returns_input_definition():
     result = _rule("FoldNopVectorizedCast").apply(module.node_map["root"], module)
     assert result is not None
     assert result.replacement.type == module.node_map["value"].type
+
+
+def test_pack_cast_supports_nested_lane_groups_on_one_axis(materialize_rewrite):
+    class Graph(fm.Module):
+        def __init__(self):
+            super().__init__(dialect="high_level", stage="imported", entry="main")
+
+        def forward(self):
+            value = self.input("value", fm.tensor_type("float32", (64,)), id="value")
+            cast = fm.F.tensors.cast(value, fm.DType.BFLOAT16, name="cast")
+            root = fm.F.tensors.pack(cast, (4, 8), axes=(0, 0), name="root")
+            self.function("main", (value,), (root,))
+
+    module = Graph().build()
+    result = _rule("VectorizeCastPropagation").apply(module.node_map["root"], module)
+    assert result is not None
+    assert result.replacement.type == module.node_map["root"].type
+    _assert_equivalent(module, materialize_rewrite(module, result), {"value": torch.randn(64)})

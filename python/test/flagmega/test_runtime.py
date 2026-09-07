@@ -108,10 +108,14 @@ def test_prepared_kernel_owns_and_scopes_compiler_global_scratch(monkeypatch):
     previous_allocator = lambda size, alignment, stream: "previous"
     token = _allocation._allocator.set(previous_allocator)
     try:
-        prepared.launch()
+        # This is an allocator/stream ownership unit test with a fake launcher,
+        # not a driver integration test. Supply its stream without CUDA lookup.
+        prepared.launch(stream=0)
         assert compiled.seen_buffer == "prepared-scratch"
         assert _allocation._allocator.get() is previous_allocator
         assert prepared.resource_report["global_scratch_bytes"] == 32
+        with pytest.raises(RuntimeContractError, match="first launch stream"):
+            prepared.launch(stream=1)
     finally:
         _allocation._allocator.reset(token)
 

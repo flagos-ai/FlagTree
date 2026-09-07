@@ -94,3 +94,14 @@ def test_norm_apply_rejects_stats_shape_and_parameter_policy_mismatch():
             (value, _node("stats", fm.tensor_type("float32", [1, 2, 1, 1])), scale, bias),
             {"axis": 1, "epsilon": 1e-6, "use_mean": False},
         )
+
+
+@pytest.mark.parametrize("dtype", ["int32", "float64", "float16"])
+def test_norm_apply_rejects_unsupported_output_precision(dtype):
+    with pytest.raises(IRSchemaError, match="output_dtype"):
+        NormApply.normalize_attrs({"axis": -1, "epsilon": 1e-6, "use_mean": False, "output_dtype": dtype})
+
+
+def test_default_output_precision_keeps_the_serialized_contract_unchanged():
+    attrs = NormApply.normalize_attrs({"axis": -1, "epsilon": 1e-6, "use_mean": False})
+    assert "output_dtype" not in attrs

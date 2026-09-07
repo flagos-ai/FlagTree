@@ -44,6 +44,7 @@ class PackedDenseMatMulGlu(OpDefinition):
     gate_weight = input_parameter(is_tensor() & has_rank(4))
     up_weight = input_parameter(is_tensor() & has_rank(4))
     activation = attribute_parameter(default="silu")
+    round_activation = attribute_parameter(default=True)
     packed_layout = attribute_parameter(default="k_major_n8_k16")
 
     @classmethod
@@ -51,6 +52,10 @@ class PackedDenseMatMulGlu(OpDefinition):
         attrs = super().normalize_attrs(attributes)
         if attrs["activation"] != "silu":
             raise IRSchemaError("PackedDenseMatMulGlu currently supports only SiLU.")
+        if not isinstance(attrs["round_activation"], bool):
+            raise IRSchemaError("PackedDenseMatMulGlu round_activation must be boolean.")
+        if attrs["round_activation"]:
+            attrs.pop("round_activation")
         _, _, mesh_interleaved = parse_k_major_layout(attrs["packed_layout"])
         if mesh_interleaved:
             raise IRSchemaError("PackedDenseMatMulGlu does not support mesh-interleaved weights.")
@@ -119,6 +124,8 @@ class PackedDenseMatMulGlu(OpDefinition):
         up_weight = unpack_k_major_weight(cls.up_weight.read(arguments), layout)
         gate = context.torch.nn.functional.linear(value, gate_weight)
         up = context.torch.nn.functional.linear(value, up_weight)
+        if not node.attrs.get("round_activation", True):
+            return (context.torch.nn.functional.silu(gate.float()) * up.float()).to(value.dtype)
         return context.torch.nn.functional.silu(gate) * up
 
     @classmethod

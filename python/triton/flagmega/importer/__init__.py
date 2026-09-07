@@ -15,7 +15,8 @@ from triton.flagmega.importer.source import (
     attach_import_source_locations,
     source_location_of,
 )
-from triton.flagmega.importer.model import import_model, import_model_layer, importer_registry
+from triton.flagmega.importer.model import apply_numerical_profile, import_model, import_model_layer, importer_registry
+from triton.flagmega.importer.numerics import VLLM_INDUCTOR_LEVEL3
 from triton.flagmega.importer.registry import ModelImporterRegistry, ModelImporterSpec
 from triton.flagmega.importer.qwen3 import (
     Qwen3LayerConfig,
@@ -42,6 +43,8 @@ __all__ = [
     "TensorInfo",
     "TensorByteRange",
     "attach_import_source_locations",
+    "apply_numerical_profile",
+    "VLLM_INDUCTOR_LEVEL3",
     "import_model",
     "import_model_layer",
     "importer_registry",

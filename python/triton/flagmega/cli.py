@@ -86,6 +86,7 @@ def _parser() -> argparse.ArgumentParser:
     import_command = subparsers.add_parser("import", help="Import a supported model layer into editable Python IR")
     import_command.add_argument("--model", required=True)
     import_command.add_argument("--revision")
+    import_command.add_argument("--numerical-profile", default="nncase", help="Explicit importer numerical contract")
     import_command.add_argument("--layer", type=int, choices=(0, ), default=0)
     import_command.add_argument("--full-model", action="store_true")
     import_command.add_argument("--mode", choices=("decode-1", ), default="decode-1")
@@ -104,6 +105,7 @@ def _parser() -> argparse.ArgumentParser:
     compile_source.add_argument("--input")
     compile_source.add_argument("--model")
     compile_command.add_argument("--revision")
+    compile_command.add_argument("--numerical-profile", help="Importer contract; with --input it must match the saved IR")
     compile_command.add_argument("--layer", type=int, choices=(0, ), default=0)
     compile_command.add_argument("--full-model", action="store_true")
     compile_command.add_argument("--mode", choices=("decode-1", ), default="decode-1")
@@ -295,9 +297,10 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         )
     if args.command == "import":
         module = (
-            import_model(args.model, revision=args.revision)
+            import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile)
             if args.full_model
-            else import_model_layer(args.model, layer=args.layer, revision=args.revision)
+            else import_model_layer(args.model, layer=args.layer, revision=args.revision,
+                                    numerical_profile=args.numerical_profile)
         )
         output = emit_module(module, args.output)
         return _ok(
@@ -326,14 +329,18 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     if args.command in {"compile", "resume", "replay"}:
         source = (
             (
-                import_model(args.model, revision=args.revision)
+                import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile or "nncase")
                 if args.full_model
-                else import_model_layer(args.model, layer=args.layer, revision=args.revision)
+                else import_model_layer(args.model, layer=args.layer, revision=args.revision,
+                                        numerical_profile=args.numerical_profile or "nncase")
             )
             if args.command == "compile" and args.model is not None
             else load_module(args.input)
         )
         compiler = Compiler(_options(args))
+        if (args.command == "compile" and args.input is not None and args.numerical_profile is not None
+                and args.numerical_profile != source.metadata.get("numerical_contract", "nncase")):
+            raise IRSchemaError("--numerical-profile does not match the saved IR; select the contract at import.")
         result = compiler.compile(source, stop_after=args.stop_after)
         checkpoint_path = (
             args.model

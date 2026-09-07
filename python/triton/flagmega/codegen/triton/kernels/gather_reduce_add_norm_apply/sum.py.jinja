@@ -159,7 +159,7 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
             norm_output = norm_normalized * norm_scale + norm_bias
             tl.store(
                 {{ call.norm_result }} + ({{ call.norm_offset }}),
-                norm_output.to({{ call.norm_output_type }}),
+                norm_output.to({{ call.output_type }}).to({{ call.norm_output_type }}),
                 mask=gather_mask,
             )
 

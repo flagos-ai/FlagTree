@@ -28,6 +28,7 @@ from triton.flagmega.ir.distributed_type import (
 from triton.flagmega.ir.ops.math.matmul import MatMul
 from triton.flagmega.ir.local_shard import local_shard_descriptor
 from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
+from triton.flagmega.ir.ops.ntt._matmul_promotion import promoted_projection_type
 from triton.flagmega.ir.ops.tensors._k_major import k_major_layout_name
 from triton.flagmega.codegen.triton.vectorization import (
     configured_vector_schedule,
@@ -566,7 +567,7 @@ class MatMulNormStatsCandidateProvider:
             not isinstance(output_type, TupleType)
             or len(output_type.fields) != 2
             or not isinstance(output_type.fields[0], TensorType)
-            or _scalar_dtype(output_type.fields[0]) != DType.BFLOAT16
+            or _scalar_dtype(output_type.fields[0]) not in {DType.BFLOAT16, DType.FLOAT32}
             or bool(node.attrs["use_mean"])
         ):
             return None
@@ -639,20 +640,17 @@ class MatMulNormStatsCandidateProvider:
         residual_add = node.metadata.get("residual_add")
         residual_input = node.metadata.get("residual_input")
         norm_consumer = node.metadata.get("norm_consumer")
-        if not all(
-            isinstance(value, str)
-            for value in (residual_add, residual_input, norm_consumer)
-        ):
-            return None
+        # This explicit two-result op computes projection/add/statistics, not
+        # NormApply. The later consumer's vector schedule is not its ABI and
+        # cannot veto an otherwise legal local epilogue (or be silently fused).
         fused_vectors = consumed_vector_contracts(
             context.module,
             {
                 "residual_add": (residual_add, "axes"),
                 "norm": (norm_consumer, "reduction_axis"),
             },
-        )
-        if fused_vectors is None:
-            return None
+        ) if all(isinstance(value, str) and value in context.module.node_map
+                 for value in (residual_add, norm_consumer)) else None
         input_type = logical_type(lhs.type)
         reduction_extent = (
             input_type.shape[-1].fixed_value
@@ -664,7 +662,7 @@ class MatMulNormStatsCandidateProvider:
         owner_count = _output_partition_owner_count(matmul_type)
         if (
             not isinstance(result_type, TupleType)
-            or result_type.fields[0] != matmul_type
+            or promoted_projection_type(matmul_type, result_type.fields[0]) != result_type.fields[0]
         ):
             return None
         stats_type = result_type.fields[1]
@@ -739,7 +737,7 @@ class MatMulNormStatsCandidateProvider:
                     "projection_adapters": tuple(
                         node.metadata.get("projection_adapters", ())
                     ),
-                    "consumed_vector_contracts": fused_vectors,
+                    "consumed_vector_contracts": fused_vectors or {},
                     "explicit_results": ("value", "norm_stats"),
                     "owner_count": owner_count,
                     "statistics_kind": str(

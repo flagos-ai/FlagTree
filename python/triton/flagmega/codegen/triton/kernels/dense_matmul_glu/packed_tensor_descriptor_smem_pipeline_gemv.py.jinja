@@ -228,7 +228,10 @@
         dense_glu_activated = (
             dense_glu_gate_accumulator
             / (1.0 + tl.exp(-dense_glu_gate_accumulator))
-        ).to({{ call.output_type }}).to(tl.float32)
+        )
+{% if call.round_activation | default(true) %}
+        dense_glu_activated = dense_glu_activated.to({{ call.output_type }}).to(tl.float32)
+{% endif %}
         dense_glu_result = dense_glu_activated * dense_glu_up_accumulator
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),

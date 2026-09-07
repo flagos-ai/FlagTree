@@ -22,12 +22,17 @@ class DenseMatMulGlu(OpDefinition):
     gate_weight = input_parameter(is_tensor() & has_rank(2))
     up_weight = input_parameter(is_tensor() & has_rank(2))
     activation = attribute_parameter(default="silu")
+    round_activation = attribute_parameter(default=True)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         attrs = super().normalize_attrs(attributes)
         if attrs["activation"] != "silu":
             raise IRSchemaError("DenseMatMulGlu currently supports only SiLU.")
+        if not isinstance(attrs["round_activation"], bool):
+            raise IRSchemaError("DenseMatMulGlu round_activation must be boolean.")
+        if attrs["round_activation"]:
+            attrs.pop("round_activation")  # Preserve the existing default IR encoding.
         return attrs
 
     @classmethod
@@ -62,6 +67,8 @@ class DenseMatMulGlu(OpDefinition):
         value = cls.value.read(arguments)
         gate = context.torch.nn.functional.linear(value, cls.gate_weight.read(arguments))
         up = context.torch.nn.functional.linear(value, cls.up_weight.read(arguments))
+        if not node.attrs.get("round_activation", True):
+            return (context.torch.nn.functional.silu(gate.float()) * up.float()).to(value.dtype)
         return context.torch.nn.functional.silu(gate) * up
 
     @classmethod

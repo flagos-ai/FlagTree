@@ -16,7 +16,8 @@ from math import prod
 from typing import Mapping
 
 from triton.flagmega.errors import CodegenError, IRVerificationError
-from triton.flagmega.ir import Node, TensorType, logical_type
+from triton.flagmega.ir import Node, TensorType, VectorType, logical_type
+from triton.flagmega.ir.ops.tensors.pack import normalize_axes
 
 
 SCALAR_VECTORIZATION = {"kind": "scalar", "axes": (), "lanes": (), "lane_count": 1}
@@ -26,6 +27,17 @@ def vectorization_contract(node: Node) -> dict[str, object]:
     """Return the normalized, semantic vector-layout contract for ``node``."""
 
     candidate = node.metadata.get("selected_vectorization")
+    # Explicit/propagated VectorizedCast is physical typed IR, not a scalar
+    # equality witness. It can be authored without an AutoVectorize choice.
+    # Its operation attributes and result type own the lane mapping.
+    if node.op == "ntt.vectorized_cast":
+        value_type = logical_type(node.type)
+        if not isinstance(value_type, TensorType) or not isinstance(value_type.dtype, VectorType):
+            raise IRVerificationError("VectorizedCast needs a vector result type.", node_id=node.id)
+        axes = normalize_axes(tuple(int(axis) for axis in node.attrs["vectorize_axes"]), value_type.rank)
+        lanes = tuple(value_type.dtype.lanes)
+        return {"kind": "axes", "axes": axes, "lanes": lanes, "lane_count": prod(lanes),
+                "source_candidate": str(candidate) if candidate is not None else "typed-ir"}
     if candidate is None:
         return dict(SCALAR_VECTORIZATION)
     axes = tuple(int(value) for value in node.metadata.get("selected_vector_axes", ()))

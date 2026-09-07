@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from math import prod
 
 from triton.flagmega.ir import DistributedType, ReduceOp, TupleType
@@ -40,7 +41,8 @@ class GatherReduceAddNormApplyCandidateProvider:
             or addend_type != value_type
             or not can_materialize_matmul_partial(source_type, value_type)
             or not isinstance(value_type, DistributedType)
-            or norm_output_type != value_type
+            or not isinstance(norm_output_type, DistributedType)
+            or replace(norm_output_type, tensor=replace(norm_output_type.tensor, dtype=value_type.tensor.dtype)) != value_type
         ):
             return None
         value = tensor_of(value_type)

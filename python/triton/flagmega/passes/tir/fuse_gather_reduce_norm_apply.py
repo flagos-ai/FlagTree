@@ -55,6 +55,7 @@ def fuse_gather_reduce_norm_apply(module: IRModule) -> IRModule:
             "epsilon": float(norm.attrs["epsilon"]),
             "use_mean": bool(norm.attrs["use_mean"]),
             "round_before_scale": bool(norm.attrs.get("round_before_scale", False)),
+            **({"output_dtype": norm.attrs["output_dtype"]} if "output_dtype" in norm.attrs else {}),
             "has_bias": not _is_zero_splat(
                 module.node_map[norm.inputs[3]], module
             ),

@@ -236,11 +236,8 @@ class EGraphSession:
     def _module_view(self) -> IRModule:
         module, graph = self._require_constructed()
         original_ids = set(module.node_map)
-        helpers: dict[str, Node] = {}
-        for _class_id, enode in graph.enodes():
-            if enode.node.id not in original_ids:
-                helpers.setdefault(enode.node.id, enode.node)
-        return replace(module, nodes=(*module.nodes, *helpers.values()))
+        helpers = tuple(node for node in graph.source_nodes if node.id not in original_ids)
+        return replace(module, nodes=(*module.nodes, *helpers))
 
     def _dump_iteration(self, iteration: RewriteIteration) -> None:
         _module, graph = self._require_constructed()

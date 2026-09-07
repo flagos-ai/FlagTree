@@ -20,6 +20,7 @@ from .distributed_boundary_layout import (
     propagate_post_auto_distributed_function_boundary_layouts,
 )
 from .lift_parameter_transforms import lift_parameter_constant_transforms
+from .hoist_call_invariants import hoist_call_invariant_expressions
 from .thread_norm_stats import thread_norm_stats_across_function_boundaries
 from .sink_norm_stats_boxing import sink_norm_stats_boxing_across_function_boundaries
 
@@ -36,6 +37,7 @@ __all__ = [
     "static_function_invocation_counts",
     "static_node_invocation_counts",
     "lift_parameter_constant_transforms",
+    "hoist_call_invariant_expressions",
     "thread_norm_stats_across_function_boundaries",
     "sink_norm_stats_boxing_across_function_boundaries",
 ]

@@ -1852,6 +1852,7 @@ def _norm_apply_context(
             name="NormApply block_size",
         ),
         "epsilon": repr(float(attrs.get("epsilon", 0.0))),
+        "input_type": _triton_dtype(str(source_abi["scalar_dtype"])),
         "output_type": _triton_dtype(str(result_abi["scalar_dtype"])),
     }
 
@@ -2060,6 +2061,7 @@ def _gather_reduce_norm_apply_call(raw) -> dict[str, object]:
             name="GatherReduceNormApply block_size",
         ),
         "epsilon": repr(float(attrs.get("epsilon", 0.0))),
+        "input_type": _triton_dtype(str(source_abi["scalar_dtype"])),
         "output_type": _triton_dtype(str(result_abi["scalar_dtype"])),
     }
     return call
@@ -2233,22 +2235,22 @@ def _elementwise_domain(
     kind = str(contract.get("kind", "scalar"))
     axes = tuple(int(value) for value in contract.get("axes", ()))
     lanes = tuple(int(value) for value in contract.get("lanes", ()))
+    abi_lanes = tuple(int(value) for value in abi.get("scalar_lane_shape", ()))
+    abi_lane_count = int(abi.get("scalar_lane_count", 1))
     if kind == "scalar":
         if axes or lanes:
             raise CodegenError("Scalar elementwise schedule cannot carry vector axes.")
     elif kind == "axes":
-        if len(axes) != len(lanes) or len(set(axes)) != len(axes):
+        if len(axes) != len(lanes) or (not abi_lanes and len(set(axes)) != len(axes)):
             raise CodegenError("Elementwise vector axes and lanes are inconsistent.")
         if any(axis < 0 or axis >= len(shape) for axis in axes):
             raise CodegenError("Elementwise vector axis is outside the local rank.")
-        if any(lane <= 1 for lane in lanes):
-            raise CodegenError("Elementwise vector lanes must be greater than one.")
+        if any(lane < (1 if abi_lanes else 2) for lane in lanes):
+            raise CodegenError("Elementwise vector lanes must be positive (nontrivial for scalar schedules).")
     else:
         raise CodegenError(
             f"Elementwise call cannot consume vector schedule kind {kind!r}."
         )
-    abi_lanes = tuple(int(value) for value in abi.get("scalar_lane_shape", ()))
-    abi_lane_count = int(abi.get("scalar_lane_count", 1))
     if abi_lanes:
         if kind != "axes" or lanes != abi_lanes:
             raise CodegenError(
@@ -2342,7 +2344,6 @@ def _vectorized_cast_operand_access(
         len(operand_shape) != len(result_shape)
         or len(axes) != len(operand_lanes)
         or len(axes) != len(result_lanes)
-        or len(set(axes)) != len(axes)
         or any(axis < 0 or axis >= len(result_shape) for axis in axes)
     ):
         raise CodegenError("Vectorized cast ABI has inconsistent axes, rank, or lanes.")
@@ -2399,16 +2400,20 @@ def _repack_vector_coordinates(
     output_components: tuple[str, ...],
 ) -> tuple[tuple[str, ...], list[str]]:
     coordinates = list(base_coordinates)
-    components: list[str] = []
-    for axis, input_lane, output_lane, output_component in zip(
-        axes, input_lanes, output_lanes, output_components, strict=True
-    ):
-        scalar_coordinate = (
-            f"(({base_coordinates[axis]}) * {output_lane} + "
-            f"({output_component}))"
-        )
-        coordinates[axis] = f"(({scalar_coordinate}) // {input_lane})"
-        components.append(f"(({scalar_coordinate}) % {input_lane})")
+    components: list[str] = [""] * len(axes)
+    # Pack permits multiple lane groups on the same logical axis. Recover
+    # that scalar coordinate in group order before splitting it into the
+    # input groups; independently overwriting coordinates loses outer lanes.
+    for axis in dict.fromkeys(axes):
+        groups = [index for index, value in enumerate(axes) if value == axis]
+        scalar_coordinate = base_coordinates[axis]
+        for index in groups:
+            scalar_coordinate = f"(({scalar_coordinate}) * {output_lanes[index]} + ({output_components[index]}))"
+        remainder = scalar_coordinate
+        for index in reversed(groups):
+            components[index] = f"(({remainder}) % {input_lanes[index]})"
+            remainder = f"(({remainder}) // {input_lanes[index]})"
+        coordinates[axis] = remainder
     return tuple(coordinates), components
 
 
@@ -2993,12 +2998,12 @@ def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
         != _static_shape(value_abi, "logical_shape")
         or tuple(residual_abi.get("scalar_lane_shape", ()))
         != tuple(value_abi.get("scalar_lane_shape", ()))
-        or str(residual_abi.get("scalar_dtype")) != "bfloat16"
-        or str(value_abi.get("scalar_dtype")) != "bfloat16"
+        or str(residual_abi.get("scalar_dtype")) not in {"bfloat16", "float32"}
+        or str(value_abi.get("scalar_dtype")) != str(residual_abi.get("scalar_dtype"))
     ):
         raise CodegenError(
             "Packed MatMulNormStats residual and value must have one identical "
-            "BF16 vector ABI."
+            "BF16 or F32 vector ABI."
         )
     value_shape = _static_shape(value_abi, "logical_shape")
     value_lane_count = int(value_abi.get("scalar_lane_count", 1))
@@ -3030,6 +3035,11 @@ def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
     stats_shape = _static_shape(stats_abi, "local_capacity_shape")
     result.update({
         "residual": _pointer(residual),
+        # K-major MatMulNormStats explicitly has a BF16 projection, even when
+        # its residual/result ABI is F32. Never derive projection rounding
+        # from the epilogue's output pointer type.
+        "projection_type": "tl.bfloat16",
+        "addend_cast_types": tuple(_triton_dtype(dtype) for dtype in attrs.get("addend_cast_dtypes", ())),
         "residual_offset": residual_domain["offset"],
         "stats": _pointer(stats),
         "stats_offset": emit_local_scalar_offset(
@@ -3185,6 +3195,7 @@ def _dense_matmul_glu_call(raw) -> dict[str, object]:
         tile_n = int(raw["parameters"]["tile_n"])
     result = {
         "source": _pointer(source),
+        "round_activation": bool(raw.get("semantic_attrs", {}).get("round_activation", True)),
         "gate_weight": gate_weight_pointer,
         "up_weight": up_weight_pointer,
         "result": _pointer(result),
@@ -3864,6 +3875,10 @@ def _encode_qkv_rope_with_cache(
         tile=raw["parameters"]["elements_per_program"],
     )
     v_context = _attention_scalar_domain(v["abi"], qkv_layout, "qkv_v_offsets")
+
+    for head in (q_context, k_context):
+        head["intermediate_type"] = (head["input_type"] if attrs.get("round_qk_intermediates", True)
+                                     else "tl.float32")
 
     if partial_sources is not None:
         q_context["partial_reduce"] = _partial_qkv_access(
@@ -4819,10 +4834,22 @@ def _cache_update_call(raw) -> dict[str, object]:
     layer_id = _buffer(raw, "inputs", "layer_id")
     advance = _buffer(raw, "inputs", "advance_sequence")
     slots_abi = slots["abi"]
-    domain = _local_domain(slots_abi, "cache_offsets")
+    domain = _scalar_local_domain(slots_abi, "cache_offsets")
     shape = _static_shape(slots_abi, "logical_shape")
     cache_shape = _static_shape(state[0]["abi"], "logical_shape")
     attrs = raw.get("semantic_attrs", {})
+    layout = tuple(attrs["layout"])
+    head_axis, dim_axis = layout.index("head"), layout.index("dim")
+    lane_count = int(slots_abi.get("scalar_lane_count", 1))
+    head_dim = shape[dim_axis] * lane_count
+    cache_head_dim = cache_shape[-1] * int(state[0]["abi"].get("scalar_lane_count", 1))
+    if shape[head_axis] != cache_shape[-2] or head_dim != cache_head_dim:
+        raise CodegenError("Cache update slots and paged storage have different scalar head geometry.")
+    # Both pointers address scalars, even when the IR element is a vector.
+    # Lanes belong to the semantic dim axis, which need not be the last axis.
+    dimension = domain["logical_coordinates"][dim_axis]
+    if lane_count != 1:
+        dimension = f"(({dimension}) * {lane_count} + ({domain['lane_coordinate']}))"
     return {
         "slots": _pointer(slots),
         "kv_cache": _pointer(state[0]),
@@ -4833,15 +4860,15 @@ def _cache_update_call(raw) -> dict[str, object]:
         "advance_sequence": _scalar_expression(advance),
         "cache_index": 0 if attrs.get("cache_kind") == "key" else 1,
         "num_layers": cache_shape[1],
-        "num_kv_heads": shape[-2],
-        "head_dim": shape[-1],
+        "num_kv_heads": cache_shape[-2],
+        "head_dim": head_dim,
         "block_size": cache_shape[3],
         "local_capacity": domain["capacity"],
         "active": domain["active"],
-        "logical_head": domain["logical_coordinates"][-2],
-        "logical_dimension": domain["logical_coordinates"][-1],
+        "logical_head": domain["logical_coordinates"][head_axis],
+        "logical_dimension": dimension,
         "slots_offset": emit_local_scalar_offset(
-            slots_abi, domain["local_coordinates"]
+            slots_abi, domain["local_coordinates"], lane_coordinate=domain["lane_coordinate"]
         ),
         "tile": int(raw["parameters"]["elements_per_program"]),
     }

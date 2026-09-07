@@ -91,8 +91,9 @@ def test_evaluator_returns_matmul_residual_and_stats_without_side_channel():
 
 
 class _PackedModule(fm.Module):
-    def __init__(self):
+    def __init__(self, *, wide=False):
         super().__init__(dialect="ntt", stage="distributed", entry="main")
+        self.wide = wide
 
     def forward(self):
         lhs = self.input("lhs", fm.tensor_type("bfloat16", (2, 64)), id="lhs")
@@ -105,7 +106,8 @@ class _PackedModule(fm.Module):
         )
         addend = self.input(
             "addend",
-            fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8,)), (2, 4)),
+            (fm.tensor_type(fm.VectorType(fm.DType.FLOAT32, (4,)), (2, 8)) if self.wide
+             else fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8,)), (2, 4))),
             id="addend",
         )
         result = fm.F.ntt.matmul_norm_stats(
@@ -144,6 +146,22 @@ def test_packed_evaluator_unpacks_vector_lane_for_norm_statistics():
         rtol=0,
         atol=0,
     )
+
+
+def test_wide_residual_keeps_bf16_projection_then_fp32_add_with_repacked_lanes(tmp_path):
+    module = _PackedModule(wide=True).build()
+    generator = torch.Generator().manual_seed(853)
+    lhs = torch.randn((2, 64), generator=generator).bfloat16()
+    rhs = torch.randn((64, 32), generator=generator).bfloat16()
+    packed = rhs.reshape(4, 2, 8, 4, 8).permute(0, 3, 4, 1, 2).contiguous()
+    addend = torch.randn((2, 8, 4), generator=generator)
+    value, stats = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"lhs": lhs, "rhs": packed, "addend": addend})
+    expected = (lhs @ rhs).float().reshape(2, 8, 4) + addend
+    torch.testing.assert_close(value, expected, rtol=0, atol=0)
+    torch.testing.assert_close(stats, expected.reshape(2, 32).square().sum(-1, keepdim=True).unsqueeze(0), rtol=0, atol=0)
+    assert not torch.equal(expected, (lhs.float() @ rhs.float()).reshape(2, 8, 4) + addend)
+    assert fm.load_module(fm.emit_module(module, tmp_path / "wide.py")) == module
 
 
 def test_packed_local_epilogue_rejects_implicit_split_to_broadcast_publication():

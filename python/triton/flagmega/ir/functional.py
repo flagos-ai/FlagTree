@@ -348,6 +348,7 @@ class _nn:
         epsilon: float,
         use_mean: bool,
         round_before_scale: bool = False,
+        output_dtype: DType | str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -362,6 +363,7 @@ class _nn:
             epsilon=epsilon,
             use_mean=use_mean,
             round_before_scale=round_before_scale,
+            output_dtype=output_dtype,
             name=name,
             metadata=metadata,
         )
@@ -414,14 +416,19 @@ class _nn:
         up_weight: Node,
         *,
         activation: str = "silu",
+        round_activation: bool = True,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
-        """Dense BF16 gate/up projections followed by SiLU GLU."""
+        """Dense gate/up projections followed by SiLU GLU.
+
+        ``round_activation=False`` keeps SiLU and its product in FP32 until
+        the result cast; both projection results still round to the input dtype.
+        """
 
         return DenseMatMulGlu.construct(
             value, gate_weight, up_weight,
-            activation=activation, name=name, metadata=metadata)
+            activation=activation, round_activation=round_activation, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(Embedding)
@@ -451,6 +458,7 @@ class _nn:
         up_weight: Node,
         *,
         activation: str = "silu",
+        round_activation: bool = True,
         packed_layout: str = "k_major_n8_k16",
         name: str | None = None,
         metadata: Metadata = None,
@@ -462,6 +470,7 @@ class _nn:
             gate_weight,
             up_weight,
             activation=activation,
+            round_activation=round_activation,
             packed_layout=packed_layout,
             name=name,
             metadata=metadata,
@@ -747,12 +756,17 @@ class _nn:
         k_epsilon: float,
         k_use_mean: bool,
         k_round_before_scale: bool = False,
+        round_qk_intermediates: bool = True,
         qkv_layout: tuple[str, str, str],
         attention_layout: tuple[str, str, str],
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
-        """Normalize Q/K, apply RoPE, and update both paged-cache slots."""
+        """Normalize Q/K, apply RoPE, and update both paged-cache slots.
+
+        With round_qk_intermediates=False, norm/RoPE use FP32 until the
+        final Q/K store; projection and cache element types are unchanged.
+        """
 
         return QKVRoPEWithCache.construct(
             qkv,
@@ -775,6 +789,7 @@ class _nn:
             attention_layout=attention_layout,
             q_round_before_scale=q_round_before_scale,
             k_round_before_scale=k_round_before_scale,
+            round_qk_intermediates=round_qk_intermediates,
             name=name,
             metadata=metadata,
         )
@@ -1152,6 +1167,7 @@ class _ntt:
         epsilon: float,
         use_mean: bool,
         round_before_scale: bool = False,
+        output_dtype: DType | str | None = None,
         has_bias: bool = True,
         name: str | None = None,
         metadata: Metadata = None,
@@ -1168,6 +1184,7 @@ class _ntt:
             use_mean=use_mean,
             has_bias=has_bias,
             round_before_scale=round_before_scale,
+            output_dtype=output_dtype,
             name=name,
             metadata=metadata,
         )
@@ -1185,6 +1202,7 @@ class _ntt:
         epsilon: float,
         use_mean: bool,
         round_before_scale: bool = False,
+        output_dtype: DType | str | None = None,
         has_bias: bool = True,
         name: str | None = None,
         metadata: Metadata = None,
@@ -1202,6 +1220,7 @@ class _ntt:
             use_mean=use_mean,
             has_bias=has_bias,
             round_before_scale=round_before_scale,
+            output_dtype=output_dtype,
             name=name,
             metadata=metadata,
         )
@@ -1230,6 +1249,7 @@ class _ntt:
         k_epsilon: float,
         k_use_mean: bool,
         k_round_before_scale: bool = False,
+        round_qk_intermediates: bool = True,
         qkv_layout: tuple[str, str, str],
         attention_layout: tuple[str, str, str],
         name: str | None = None,
@@ -1260,6 +1280,7 @@ class _ntt:
             attention_layout=attention_layout,
             q_round_before_scale=q_round_before_scale,
             k_round_before_scale=k_round_before_scale,
+            round_qk_intermediates=round_qk_intermediates,
             name=name,
             metadata=metadata,
         )
@@ -1448,6 +1469,7 @@ class _ntt:
         rhs_layout: str | None = None,
         axis: int,
         use_mean: bool,
+        addend_cast_dtypes: tuple[DType | str, ...] = (),
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1462,6 +1484,7 @@ class _ntt:
             rhs_layout=rhs_layout,
             axis=axis,
             use_mean=use_mean,
+            addend_cast_dtypes=addend_cast_dtypes,
             name=name,
             metadata=metadata,
         )

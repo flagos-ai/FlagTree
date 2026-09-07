@@ -9,18 +9,22 @@ from triton.flagmega.passes.functions import form_matmul_norm_stats_combine
 
 
 class _ProjectionResidualStats(fm.Module):
-    def __init__(self, *, axis=-1, conflicting_stats=False):
+    def __init__(self, *, axis=-1, conflicting_stats=False, wide=False):
         super().__init__(dialect="ntt", stage="stats_threaded", entry="main")
         self.axis = axis
         self.conflicting_stats = conflicting_stats
+        self.wide = wide
 
     def forward(self):
-        lhs = self.input("lhs", fm.tensor_type("float32", (2, 8)), id="lhs")
-        rhs = self.input("rhs", fm.tensor_type("float32", (4, 8)), id="rhs")
+        dtype = "bfloat16" if self.wide else "float32"
+        lhs = self.input("lhs", fm.tensor_type(dtype, (2, 8)), id="lhs")
+        rhs = self.input("rhs", fm.tensor_type(dtype, (4, 8)), id="rhs")
         residual = self.input(
             "residual", fm.tensor_type("float32", (2, 4)), id="residual")
         projection = fm.F.math.matmul(
             lhs, rhs, transpose_b=True, name="projection")
+        if self.wide:
+            projection = fm.F.tensors.cast(projection, dtype="float32", name="promotion")
         value = fm.F.math.add(residual, projection, name="value")
         stats = fm.F.nn.norm_stats(
             value, axis=self.axis, use_mean=False, name="stats")
@@ -67,3 +71,17 @@ def test_skips_non_last_axis_and_conflicting_stats_contracts():
 
     assert form_matmul_norm_stats_combine(non_last) == non_last
     assert form_matmul_norm_stats_combine(conflicting) == conflicting
+
+
+def test_forms_combine_over_explicit_promotion_without_removing_projection_rounding():
+    source = _ProjectionResidualStats(wide=True).build()
+    result = form_matmul_norm_stats_combine(source)
+    combine = [node for node in result.nodes if node.op == "ntt.matmul_norm_stats_combine"]
+    assert len(combine) == 1
+    assert combine[0].inputs == ("promotion", "residual")
+    assert result.node_map["promotion"] == source.node_map["promotion"]
+    values = {"lhs": torch.randn(2, 8).bfloat16(), "rhs": torch.randn(4, 8).bfloat16(),
+              "residual": torch.randn(2, 4)}
+    evaluator = TorchEvaluator(DictWeightResolver({}))
+    for actual, expected in zip(evaluator.run(result, values), evaluator.run(source, values), strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)

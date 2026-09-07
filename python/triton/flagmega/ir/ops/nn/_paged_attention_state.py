@@ -168,10 +168,16 @@ class PagedAttentionState:
             return
         if self.sequence_length < 0 or self.sequence_length > self.config.max_sequence_length:
             raise EvaluationError("Paged-attention sequence length is outside cache capacity.")
-        expected_blocks = _torch().arange(
-            self.config.num_blocks, dtype=torch.int32, device=self.block_table.device).reshape(1, -1)
-        if not torch.equal(self.block_table, expected_blocks):
-            raise EvaluationError("P0 paged-attention requires an identity block table for its single sequence.")
+        self._validate_page_table(self.sequence_length)
+
+    def _validate_page_table(self, length: int) -> None:
+        torch = _torch()
+        table = self.block_table.flatten()
+        if bool(((table < 0) | (table >= self.config.num_blocks)).any()):
+            raise EvaluationError("Paged-attention physical page is outside cache capacity.")
+        active = (length + self.config.block_size - 1) // self.config.block_size
+        if torch.unique(table[:active]).numel() != active:
+            raise EvaluationError("Paged-attention active logical pages must not alias physical storage.")
 
     def append(
         self,
@@ -189,6 +195,7 @@ class PagedAttentionState:
         position = self.sequence_length
         if position >= self.config.max_sequence_length:
             raise EvaluationError("Paged-attention cache capacity is exhausted.")
+        self._validate_page_table(position + 1)
         block, offset = divmod(position, self.config.block_size)
         physical_block = int(self.block_table[0, block].item())
         packed_shape = (self.config.num_kv_heads, self.config.head_dim // self.config.lanes, self.config.lanes)
@@ -220,6 +227,7 @@ class PagedAttentionState:
         position = self.sequence_length
         if position >= self.config.max_sequence_length:
             raise EvaluationError("Paged-attention cache capacity is exhausted.")
+        self._validate_page_table(position + 1)
         block, offset = divmod(position, self.config.block_size)
         physical_block = int(self.block_table[0, block].item())
         packed_shape = (
@@ -244,6 +252,7 @@ class PagedAttentionState:
             raise EvaluationError("Paged-attention gather length must be an integer.")
         if length < 0 or length > self.config.max_sequence_length:
             raise EvaluationError("Paged-attention gather length is outside cache capacity.")
+        self._validate_page_table(length)
         keys = []
         values = []
         for position in range(length):

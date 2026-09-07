@@ -64,3 +64,23 @@ def test_builtin_registry_rejects_contradictory_qwen_identity():
             },
             full_model=False,
         )
+
+
+def test_numerical_profiles_are_explicit_immutable_and_never_silently_fall_back():
+    transform = lambda module: ("profiled", module)
+    profiles = {"unit-runtime-v1": transform}
+    spec = ModelImporterSpec("unit", frozenset(), frozenset({"unit"}), _layer,
+                             numerical_profiles=profiles)
+    profiles.clear()
+    assert spec.numerical_transform("unit-runtime-v1")("ir") == ("profiled", "ir")
+    assert spec.numerical_transform("nncase")("ir") == "ir"
+    with pytest.raises(TypeError):
+        spec.numerical_profiles["new"] = transform
+    with pytest.raises(ImporterError, match="does not support numerical profile"):
+        spec.numerical_transform("unit-runtime-v2")
+
+
+@pytest.mark.parametrize("profiles", [{"nncase": lambda value: value}, {"bad": None}, {"": lambda value: value}])
+def test_importer_rejects_invalid_numerical_profile_registration(profiles):
+    with pytest.raises(ImporterError, match="Numerical profiles require"):
+        ModelImporterSpec("unit", frozenset(), frozenset({"unit"}), _layer, numerical_profiles=profiles)

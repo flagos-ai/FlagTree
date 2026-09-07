@@ -18,6 +18,7 @@
 
 {% macro run(call) %}
 {% for head in (call.q, call.k) %}
+{% set intermediate_type = head.intermediate_type | default(head.input_type) %}
 {% set prefix = "qkv_q" if loop.first else "qkv_k" %}
     if {{ head.compute_active }}:
         for {{ prefix }}_outer_index in tl.range(0, {{ head.outer_capacity }}):
@@ -55,11 +56,15 @@
                 {{ head.bias }} + ({{ head.bias_offset }}),
                 mask={{ prefix }}_mask, other=0.0,
             ).to(tl.float32)
-            {{ prefix }}_normalized = (
-                ({{ prefix }}_value - {{ prefix }}_mean)
-                * {{ prefix }}_inverse * {{ prefix }}_scale
-                + {{ prefix }}_bias
+            {{ prefix }}_unit = (
+                ({{ prefix }}_value - {{ prefix }}_mean) * {{ prefix }}_inverse
             )
+{% if head.round_before_scale %}
+            {{ prefix }}_unit = {{ prefix }}_unit.to({{ intermediate_type }}).to(tl.float32)
+{% endif %}
+            {{ prefix }}_normalized = (
+                {{ prefix }}_unit * {{ prefix }}_scale + {{ prefix }}_bias
+            ).to({{ intermediate_type }}).to(tl.float32)
             {{ prefix }}_partner = tl.reshape(
                 tl.flip(
                     tl.reshape(
@@ -78,15 +83,16 @@
             {{ prefix }}_cosine = tl.load(
                 {{ head.cosine }} + ({{ head.cosine_offset }}),
                 mask={{ prefix }}_mask, other=0.0,
-            ).to(tl.float32)
+            ).to({{ intermediate_type }}).to(tl.float32)
             {{ prefix }}_sine = tl.load(
                 {{ head.sine }} + ({{ head.sine_offset }}),
                 mask={{ prefix }}_mask, other=0.0,
-            ).to(tl.float32)
-            {{ prefix }}_result = (
-                {{ prefix }}_normalized * {{ prefix }}_cosine
-                + {{ prefix }}_rotated * {{ prefix }}_sine
-            )
+            ).to({{ intermediate_type }}).to(tl.float32)
+            # Match NormApply/RoPE boundaries just like the non-headwise path.
+            # A wider register temporary does not authorize deleting IR casts.
+            {{ prefix }}_cosine_product = libdevice.mul_rn({{ prefix }}_normalized, {{ prefix }}_cosine).to({{ intermediate_type }}).to(tl.float32)
+            {{ prefix }}_sine_product = libdevice.mul_rn({{ prefix }}_rotated, {{ prefix }}_sine).to({{ intermediate_type }}).to(tl.float32)
+            {{ prefix }}_result = {{ prefix }}_cosine_product + {{ prefix }}_sine_product
 {% if loop.first %}
             tl.store(
                 {{ head.output }} + ({{ head.output_offset }}),

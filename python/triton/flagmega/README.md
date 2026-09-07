@@ -20,6 +20,7 @@ inspect a checkpoint, edit it, override a selection and resume through the CLI.
 | `targets` | Target-machine capabilities, selection policies, implementation catalogs and launch/package contracts, separated from model import. |
 | `codegen/triton` | Kernel-family/variant/platform templates; function-level producer/consumer regions; reusable decode functions, kernel definitions and tensor-map tables. |
 | `runtime` | Prepared launches, argument binding, persistent state, descriptors, compiler scratch and explicit resource/spill validation. |
+| `serving` | Standalone artifact-only prompt prefill and decode, chat templates, prefix-cache reuse, sampling, interactive CLI and per-turn performance metrics. |
 
 Bufferization models memory spans, aliases, lifetimes and synchronization; it
 uses a CP-SAT allocator rather than a placeholder memory plan. Distribution
@@ -72,6 +73,84 @@ An executable artifact contains `ir/final.py`, the readable companion
 Custom implementation catalogs must match the saved target snapshot when
 resuming target verification. Regenerate generated source after API changes;
 retired names are not silently accepted by compatibility shims.
+
+### Source-runtime numerical contracts
+
+Import may explicitly select a versioned numerical profile. The default
+`nncase` preserves the existing import. Full-model Qwen3 BF16 also supports
+`vllm-493bd8323-inductor-level3`, describing that revision/configuration's
+normalization, residual, rotary-table and activation rounding boundaries:
+
+```sh
+python -m triton.flagmega import --model /path/to/checkpoint --full-model \
+  --numerical-profile vllm-493bd8323-inductor-level3 --output imported.py
+```
+
+The Python API is `import_model(..., numerical_profile=...)`;
+`apply_numerical_profile(module, profile)` supports trusted imported checkpoints.
+Unsupported profiles, changing an existing contract, and applying a profile to
+lowered IR are errors. `compile --input` respects the saved contract; an explicit
+conflicting `--numerical-profile` is rejected. The pinned profile currently
+requires the reusable `decode_layer` full-model importer, not the legacy
+hidden-output layer importer. This is not a numerical-equivalence claim for
+arbitrary vLLM revisions or settings.
+
+Profiles are frontend semantics, not codegen model switches. Ordinary
+TargetIndependent passes fuse BF16 projections with FP32 GLU intermediates and
+FP32 Q/K normalization/RoPE using explicit operation attributes. They preserve
+projection/table/final rounding boundaries and cache effects, including values
+returned by functions. CLI compilation and edit/resume need no tutorial imports
+or agent intervention to obtain these fusions. Generic correctness fixes and
+optimizations live here; workload/hardware selection strategies may remain local.
+
+`HoistCallInvariantExpressions` is a normal TargetIndependent pass with its own
+Before/After checkpoints. It lifts pure expressions of identical immutable SSA
+arguments across repeated calls, computes them once per caller, and refines the
+shared callee ABI. It does not move state reads or infer equal values from names
+or types. Mixed-dtype NormApply vectorization and cast-aware MatMulNormStats
+fusion preserve projection/residual rounding separately. Generic distributed
+inference exposes target-owned leaf layouts at logical-argument use sites,
+allowing shard-local casts without changing the originator's external ABI.
+
+`NormApply.output_dtype` expresses a final conversion separately from input
+arithmetic/rounding precision. Normalization still rounds in the input dtype
+before converting its output; the ordinary private-output cast rule and both
+gather/reduce normalization forms preserve this contract. Optional in-place
+aliases require compatible physical types, including in reusable callees.
+`MatMulNormStats.addend_cast_dtypes` similarly records an ordered residual
+conversion chain executed before addition. The packed-matmul lowering can fold
+private cast chains with identical endpoint shard types into this epilogue,
+removing intermediate buffers without removing numerical rounding or crossing
+communication boundaries. Both attributes are omitted for the original default
+contract and round-trip through executable Python IR.
+
+## Standalone text serving
+
+```sh
+python -m triton.flagmega.serving.chat_cli --artifact "$ARTIFACT" \
+  --checkpoint "$CHECKPOINT" --n-predict 128 --metrics-file .local/chat.jsonl
+```
+
+This path does not import vLLM or use a Transformers model forward. It loads
+tokenizer/config files from the checkpoint and executes a full-vocabulary,
+single-token paged-attention artifact for both prompt ingestion and generation.
+Prefill is explicitly a compiled-token causal scan, not batched prefill.
+The stored numerical-profile name does not introduce a source-runtime dependency.
+
+The interaction conventions follow the [llama.cpp CLI](https://github.com/ggml-org/llama.cpp/tree/master/tools/cli):
+system prompts, tokenizer chat templates, streaming replies, and per-response
+timings. Use `/reset`, `/stats`, `/help`, `/exit`, or multiline input ending in
+`\`. `--prompt` runs one turn; `--interactive` continues afterward. Raw prompt
+or token-file completion, greedy or seeded temperature/top-k/top-p sampling,
+EOS handling, and explicit context limits are supported. No implicit history
+truncation or context shifting is performed.
+
+Metrics separate loading/JIT/graph preparation, prompt evaluation, cached tokens,
+TTFT, decode mean/median/p95 latency, decode throughput, total generation time,
+and output throughput. JSONL also records memory usage and artifact/serving-source
+identities. Decode counts exclude the first output token produced by prefill.
+Interactive callbacks are timed; human input wait and setup are not. CUDA Graph
+is the default; `--no-cuda-graph` selects eager execution explicitly.
 
 ## Latest validated state
 

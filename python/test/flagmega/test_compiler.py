@@ -59,7 +59,7 @@ def test_compiler_completes_without_agent_and_records_defaults(tmp_path):
         "AutoDistributedPass",
         "TIRPass",
     ]
-    assert [len(report.pass_executions) for report in result.reports] == [2, 2, 8, 10, 18]
+    assert [len(report.pass_executions) for report in result.reports] == [3, 2, 8, 10, 18]
     assert {record.origin for record in result.module.selections} == {"default-policy", "ortools-cp-sat"}
     assert {point.kind for point in result.module.selection_points} == {"distribution", "packing", "tir"}
     assert (tmp_path / "final.py").is_file()
@@ -127,6 +127,7 @@ def test_pipeline_contains_only_implemented_pass_boundaries():
         "TargetIndependentPass": (
             "DecomposeComplexOps",
             "FormQKVRoPEWithCache",
+            "HoistCallInvariantExpressions",
         ),
         "AutoVectorizePass": ("AutoVectorize", "ApplyVectorization"),
             "AutoPackingPass": (

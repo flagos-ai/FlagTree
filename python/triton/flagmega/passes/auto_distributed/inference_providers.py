@@ -146,9 +146,19 @@ def _candidate_input_types(
         return (logical,)
     values: list[IRType] = [broadcast_ir_type(logical, context.placement)]
     for value in available:
-        candidate = broadcast_ir_type(value, context.placement) if _is_logical_tensor(value) else value
-        if candidate not in values:
-            values.append(candidate)
+        # A logical tensor originates outside the distributed domain. Mirror
+        # nncase TryAddOriginator: expose target-owned leaf layouts at this use
+        # edge, not just B. Otherwise a Cast directly on a function parameter
+        # can never be shard-local, even if its consumer and refined ABI are S.
+        # Already-distributed producers retain only their available contracts;
+        # arbitrary new distributions must still be explicit reshard edges.
+        if isinstance(value, TensorType):
+            candidates = context.leaf_candidate_types(value)
+        else:
+            candidates = (broadcast_ir_type(value, context.placement) if _is_logical_tensor(value) else value,)
+        for candidate in candidates:
+            if candidate not in values:
+                values.append(candidate)
     return tuple(values)
 
 

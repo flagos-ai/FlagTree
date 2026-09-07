@@ -1,5 +1,7 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
+
+from dataclasses import replace
 # Shared pytest fixtures for descriptor code generation tests.
 
 import pytest
@@ -151,6 +153,7 @@ def _packed_glu_descriptor_pipeline_module(
     ),
     *, reduction_extent: int = 2048, output_extent: int = 2048,
     compiler: Compiler | None = None,
+    round_activation: bool = True,
 ) -> fm.IRModule:
     class DenseGlu(fm.Module):
         def __init__(self):
@@ -183,6 +186,7 @@ def _packed_glu_descriptor_pipeline_module(
                 gate,
                 up,
                 activation="silu",
+                round_activation=round_activation,
                 name="glu",
             )
             self.function("main", (value,), (output,))
@@ -213,6 +217,8 @@ def _packed_norm_stats_pipeline_module(
     implementation: str, *, reduction_extent: int = 2048, output_extent: int = 2048,
     compiler: Compiler | None = None,
     output_policy: fm.SBPSplit | None = None,
+    wide: bool = False,
+    addend_cast_dtypes: tuple[str, ...] = (),
 ) -> fm.IRModule:
     class DenseResidualNorm(fm.Module):
         def __init__(self):
@@ -228,7 +234,7 @@ def _packed_norm_stats_pipeline_module(
             )
             residual = self.input(
                 "residual",
-                fm.tensor_type("bfloat16", (1, output_extent)),
+                fm.tensor_type("float32" if wide else "bfloat16", (1, output_extent)),
                 id="residual",
             )
             weight = self.weight(
@@ -258,6 +264,8 @@ def _packed_norm_stats_pipeline_module(
                 transpose_b=True,
                 name="projection",
             )
+            if wide:
+                projection = fm.F.tensors.cast(projection, dtype="float32", name="wide_projection")
             combined = fm.F.math.add(
                 projection, residual, name="combined"
             )
@@ -300,6 +308,12 @@ def _packed_norm_stats_pipeline_module(
         source = compiler.run_stage(distribution, "auto-distributed", plan=override_plan(
             distribution, tuple((r.point_id, r.candidate_id) for r in records))).module
     proposed = compiler.compile(source, stop_after="propose-tir").module
+    if addend_cast_dtypes:
+        # Build the explicit epilogue contract for kernel-unit coverage. Graph
+        # discovery/private-use legality is exercised in the rewrite tests.
+        proposed = fm.verify_module(replace(proposed, nodes=tuple(
+            replace(node, attrs={**node.attrs, "addend_cast_dtypes": addend_cast_dtypes})
+            if node.op == "ntt.matmul_norm_stats" else node for node in proposed.nodes)))
     point = next(
         value
         for value in proposed.selection_points

@@ -14,8 +14,9 @@ from triton.flagmega.runtime import load
     (3, (0, 1), False), (129, (0, 1), True),
     (25, (0,), True), (257, (1,), False),
 ])
+@pytest.mark.parametrize("output_dtype", ["float32", "bfloat16"])
 def test_collective_partition_preserves_values_stats_and_empty_owners(
-    tmp_path, values, partial_axes, use_mean,
+    tmp_path, values, partial_axes, use_mean, output_dtype,
 ):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
@@ -27,6 +28,7 @@ def test_collective_partition_preserves_values_stats_and_empty_owners(
         owners *= placement.hierarchy[axis]
     source_type = fm.tensor_type("float32", (values, owners))
     value_type = fm.tensor_type("float32", (1, values, 1))
+    normalized_type = fm.tensor_type(output_dtype, (1, values, 1))
     parameter_type = fm.tensor_type("float32", (values, 1))
     b = fm.SBP.broadcast()
     source_distributed = fm.DistributedType(
@@ -50,12 +52,12 @@ def test_collective_partition_preserves_values_stats_and_empty_owners(
                 fm.F.distributed.force_boxing(residual, value_distributed),
                 fm.F.distributed.force_boxing(scale, parameter_distributed),
                 fm.F.distributed.force_boxing(bias, parameter_distributed),
-                axis=1, epsilon=1e-5, use_mean=use_mean, name="collective",
+                axis=1, epsilon=1e-5, use_mean=use_mean, output_dtype=output_dtype, name="collective",
             )
             value, normalized = fm.F.tensors.get_items(output, 0, 1)
             self.function("main", (source, residual, scale, bias), (
                 fm.F.distributed.force_boxing(value, value_type),
-                fm.F.distributed.force_boxing(normalized, value_type),
+                fm.F.distributed.force_boxing(normalized, normalized_type),
             ))
 
     module = Compiler().compile(Graph(
@@ -72,6 +74,7 @@ def test_collective_partition_preserves_values_stats_and_empty_owners(
     mean = expected_value.mean() if use_mean else 0.0
     variance = expected_value.square().mean() - mean * mean
     expected_norm = (expected_value - mean) * torch.rsqrt(variance.clamp_min(0) + 1e-5) * scale + bias
+    expected_norm = expected_norm.to(getattr(torch, output_dtype))
     outputs = (torch.empty_like(expected_value), torch.empty_like(expected_norm))
     runtime.prepare(source, residual, scale, bias, *outputs)
     for _ in range(3):

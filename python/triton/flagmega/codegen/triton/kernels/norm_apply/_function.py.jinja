@@ -58,12 +58,12 @@ def {{ call.symbol }}({{ call.signature }}):
             * norm_apply_inverse_std
         )
 {% if call.round_before_scale %}
-        norm_apply_normalized = norm_apply_normalized.to({{ call.output_type }}).to(tl.float32)
+        norm_apply_normalized = norm_apply_normalized.to({{ call.input_type }}).to(tl.float32)
 {% endif %}
         norm_apply_output = norm_apply_normalized * norm_apply_scale + norm_apply_bias
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
-            norm_apply_output.to({{ call.output_type }}),
+            norm_apply_output.to({{ call.input_type }}).to({{ call.output_type }}),
             mask=norm_apply_mask & ({{ call.writer_active }}),
         )
 

@@ -12,6 +12,7 @@ from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast, SBPPartial
 from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorType
+from triton.flagmega.ir.types import DType, VectorType
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpCostFactors,
@@ -48,6 +49,7 @@ class NormApply(OpDefinition):
     epsilon = attribute_parameter()
     use_mean = attribute_parameter()
     round_before_scale = attribute_parameter(default=False)
+    output_dtype = attribute_parameter(default=None)
     inplace_input_parameters = (value,)
 
     @classmethod
@@ -61,7 +63,16 @@ class NormApply(OpDefinition):
             raise IRSchemaError("NormApply epsilon must be positive.")
         if not isinstance(attrs["round_before_scale"], bool):
             raise IRSchemaError("NormApply round_before_scale must be boolean.")
-        return {"axis": axis, "epsilon": epsilon, "use_mean": bool(attrs["use_mean"]),
+        output_dtype = attrs["output_dtype"]
+        if output_dtype is not None:
+            try:
+                output_dtype = DType(output_dtype)
+            except (ValueError, TypeError) as error:
+                raise IRSchemaError("NormApply output_dtype must be bfloat16 or float32.") from error
+            if output_dtype not in {DType.BFLOAT16, DType.FLOAT32}:
+                raise IRSchemaError("NormApply output_dtype must be bfloat16 or float32.")
+        return {**({"output_dtype": output_dtype.value} if output_dtype is not None else {}),
+                "axis": axis, "epsilon": epsilon, "use_mean": bool(attrs["use_mean"]),
                 "round_before_scale": attrs["round_before_scale"]}
 
     @classmethod
@@ -83,12 +94,18 @@ class NormApply(OpDefinition):
                 f"NormApply stats type {stats!r} does not match expected {expected_stats!r}.")
         _require_suffix_parameter(value, scale, axis, "scale")
         _require_suffix_parameter(value, bias, axis, "bias")
+        output = value
+        if attrs.get("output_dtype") is not None:
+            dtype = DType(attrs["output_dtype"])
+            if isinstance(value.dtype, VectorType):
+                dtype = VectorType(dtype, value.dtype.lanes)
+            output = replace(value, dtype=dtype)
         distributed = tuple(
             isinstance(item, DistributedType)
             for item in (value_type, stats_type, scale_type, bias_type)
         )
         if not any(distributed):
-            return value
+            return output
         if not all(distributed):
             raise IRSchemaError("Distributed NormApply requires all arguments to be distributed tensors.")
         assert isinstance(value_type, DistributedType)
@@ -125,7 +142,7 @@ class NormApply(OpDefinition):
                 raise IRSchemaError(f"NormApply scale policy {index} must match the input suffix.")
             if bias_type.axis_policies[index] != input_policy:
                 raise IRSchemaError(f"NormApply bias policy {index} must match the input suffix.")
-        return replace(value_type, partial=None)
+        return replace(value_type, tensor=output, partial=None)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -145,7 +162,12 @@ class NormApply(OpDefinition):
             use_mean=bool(node.attrs["use_mean"]),
             round_before_scale=bool(node.attrs.get("round_before_scale", False)),
         )
-        return repack_default_vector(output, input_type)
+        output_type = tensor_of(node.type)
+        dtype = output_type.dtype.elem_type if isinstance(output_type.dtype, VectorType) else output_type.dtype
+        # norm_apply_value has already rounded to the input scalar dtype.
+        # A final conversion must not remove that earlier semantic boundary.
+        output = output.to(dtype=context.torch_dtype(dtype))
+        return repack_default_vector(output, output_type)
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:

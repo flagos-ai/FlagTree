@@ -43,7 +43,10 @@ def {{ call.symbol }}({{ call.signature }}):
         dense_glu_up = dense_glu_up.to({{ call.output_type }}).to(tl.float32)
         dense_glu_activated = (
             dense_glu_gate * tl.sigmoid(dense_glu_gate)
-        ).to({{ call.output_type }}).to(tl.float32)
+        )
+{% if call.round_activation | default(true) %}
+        dense_glu_activated = dense_glu_activated.to({{ call.output_type }}).to(tl.float32)
+{% endif %}
         dense_glu_value = dense_glu_activated * dense_glu_up
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),

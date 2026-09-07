@@ -19,7 +19,7 @@ from triton.flagmega.passes import (
     expand_pipeline_passes,
 )
 from triton.flagmega.selection import SelectionPlan, apply_plan
-from triton.flagmega.stages import get_stage
+from triton.flagmega.stages import get_stage, stage_names
 from triton.flagmega.targets import get_target
 
 
@@ -92,8 +92,16 @@ class Compiler:
         )
         reports: list[StageReport] = []
         current = module
-        stopped = False
+        # A trusted checkpoint may already be at the requested boundary.
+        # Checking only after scheduling another pass consumes later stages
+        # (including decisions/freeze) before an agent can edit the proposal.
+        stop_stages = {stop_after}
+        if stop_after in stage_names():
+            stop_stages.add(get_stage(stop_after).output_stage)
+        stopped = current.stage in stop_stages
         for group in PIPELINE_GROUPS:
+            if stopped:
+                break
             if current.stage not in group.active_stages:
                 continue
             manager_name = f"{self._pass_manager_index:02d}_{group.name}"

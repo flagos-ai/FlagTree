@@ -10,6 +10,7 @@ from triton.flagmega.ir import IRModule, Node, PURE, verify_module
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.nn._norm import normalize_axis
 from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import MatMulNormStatsCombine
+from triton.flagmega.ir.ops.ntt._matmul_promotion import is_projection_promotion
 from triton.flagmega.passes.tir.projection_residual_norm import (
     find_projection_residual_norm_matches,
 )
@@ -66,7 +67,7 @@ def form_matmul_norm_stats_combine(module: IRModule) -> IRModule:
         producers = tuple(
             node_map[input_id]
             for input_id in add.inputs
-            if node_map[input_id].op in _PARTIAL_CAPABLE_PRODUCERS
+            if _projection_source(node_map[input_id], node_map).op in _PARTIAL_CAPABLE_PRODUCERS
         )
         if len(producers) != 1:
             continue
@@ -112,7 +113,7 @@ def form_matmul_norm_stats_combine(module: IRModule) -> IRModule:
             combine_metadata = {
                 **dict(plan.add.metadata),
                 "introduced_by": "FormMatMulNormStatsCombine",
-                "matmul_producer": plan.producer.id,
+                "matmul_producer": _projection_source(plan.producer, node_map).id,
                 "residual_add": plan.add.id,
                 "residual_input": plan.addend.id,
                 "norm_stats_consumers": tuple(value.id for value in plan.stats),
@@ -174,6 +175,12 @@ def _fresh_id(stem: str, occupied: set[str]) -> str:
     while f"{stem}.{index}" in occupied:
         index += 1
     return f"{stem}.{index}"
+
+
+def _projection_source(node: Node, nodes) -> Node:
+    # The combine still consumes the promoted value; formation itself never
+    # moves rounding or layout conversion across a projection/collective.
+    return nodes[node.inputs[0]] if is_projection_promotion(node, nodes) else node
 
 
 @dataclass(frozen=True)

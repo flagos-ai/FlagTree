@@ -49,9 +49,12 @@ def {{ call.symbol }}({{ call.signature }}):
             mask=dense_n_mask,
             other=0.0,
         )
+{% for dtype in call.addend_cast_types %}
+        dense_residual = dense_residual.to({{ dtype }})
+{% endfor %}
         # The packed matmul publishes BF16 before the residual Add. Fusion
         # preserves that rounding boundary, including cancellation at ties.
-        dense_projection = dense_accumulator.to({{ call.output_type }}).to(tl.float32)
+        dense_projection = dense_accumulator.to({{ call.projection_type }}).to(tl.float32)
         dense_value = (dense_projection + dense_residual).to(
             {{ call.output_type }}
         )

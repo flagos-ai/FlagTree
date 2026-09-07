@@ -65,6 +65,7 @@ class GatherReduceAddNormApply(OpDefinition):
     epsilon = attribute_parameter()
     use_mean = attribute_parameter()
     round_before_scale = attribute_parameter(default=False)
+    output_dtype = attribute_parameter(default=None)
     has_bias = attribute_parameter(default=True)
     inplace_output_parameters = (addend, None)
     result_memory_effects = (MemoryEffect.CHIP_WRITE, MemoryEffect.CHIP_WRITE)
@@ -80,6 +81,8 @@ class GatherReduceAddNormApply(OpDefinition):
         if epsilon <= 0:
             raise IRSchemaError("GatherReduceAddNormApply epsilon must be positive.")
         return {
+            **({"output_dtype": NormApply.normalize_attrs(_norm_attrs(attrs))["output_dtype"]}
+               if attrs.get("output_dtype") is not None else {}),
             "axis": axis,
             "epsilon": epsilon,
             "use_mean": bool(attrs["use_mean"]),
@@ -167,6 +170,8 @@ class GatherReduceAddNormApply(OpDefinition):
             use_mean=bool(node.attrs["use_mean"]),
             round_before_scale=bool(node.attrs.get("round_before_scale", False)),
         )
+        if node.attrs.get("output_dtype") is not None:
+            normalized = normalized.to(dtype=context.torch_dtype(node.attrs["output_dtype"]))
         return (
             repack_default_vector(value, value_type),
             repack_default_vector(normalized, value_type),
@@ -200,6 +205,7 @@ def _norm_attrs(attrs: Mapping[str, object]) -> dict[str, object]:
         "epsilon": float(attrs["epsilon"]),
         "use_mean": bool(attrs["use_mean"]),
         "round_before_scale": attrs.get("round_before_scale", False),
+        "output_dtype": attrs.get("output_dtype"),
     }
 
 

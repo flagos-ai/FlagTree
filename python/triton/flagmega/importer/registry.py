@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import MappingProxyType
 
 from triton.flagmega.errors import ImporterError
 from triton.flagmega.importer.checkpoint import Checkpoint
@@ -23,6 +24,7 @@ class ModelImporterSpec:
     model_types: frozenset[str]
     import_layer: LayerImporter
     import_model: ModelImporter | None = None
+    numerical_profiles: Mapping[str, Callable[[IRModule], IRModule]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "architectures", frozenset(str(value) for value in self.architectures))
@@ -31,6 +33,20 @@ class ModelImporterSpec:
             raise ImporterError("Importer spec requires a name and architecture or model_type key.")
         if not callable(self.import_layer) or self.import_model is not None and not callable(self.import_model):
             raise ImporterError(f"Importer spec {self.name!r} callbacks must be callable.")
+        profiles = dict(self.numerical_profiles)
+        if any(not isinstance(name, str) or not name or name == "nncase" or not callable(callback)
+               for name, callback in profiles.items()):
+            raise ImporterError("Numerical profiles require nonempty names and callable import transforms; nncase is reserved.")
+        object.__setattr__(self, "numerical_profiles", MappingProxyType(profiles))
+
+    def numerical_transform(self, profile: str) -> Callable[[IRModule], IRModule]:
+        if profile == "nncase":
+            return lambda module: module
+        if profile not in self.numerical_profiles:
+            raise ImporterError(
+                f"Importer {self.name!r} does not support numerical profile {profile!r}; "
+                f"available: {('nncase', *self.numerical_profiles)}.")
+        return self.numerical_profiles[profile]
 
     def matches(self, config: Mapping[str, object]) -> bool:
         architectures = {str(value) for value in config.get("architectures", ())}

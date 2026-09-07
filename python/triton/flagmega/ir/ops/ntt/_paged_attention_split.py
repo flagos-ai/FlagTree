@@ -31,7 +31,12 @@ def create_partial_state_type(
     split_hierarchy_axis: int,
     split_count: int,
 ) -> TupleType:
-    """Create nncase's FP32 max/sum/acc partial-state tuple."""
+    """Create nncase's FP32 max/sum/acc partial-state tuple.
+
+    Maxima use natural-log score units. Implementations using exp2 internally
+    must convert maxima before publishing this tuple; sums and accumulators
+    already represent exp(score - max) and need no additional conversion.
+    """
 
     _require_split_count(split_hierarchy_axis, split_count)
     head_axis, dim_axis = _layout_axes(layout)

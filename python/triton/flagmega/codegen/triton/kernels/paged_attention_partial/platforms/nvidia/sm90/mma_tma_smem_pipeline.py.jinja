@@ -293,7 +293,10 @@ def {{ call.symbol }}__consumer(
     statistics_mask = statistics_row == 0
     tl.store(
         {{ call.partial_max }} + statistics_row,
-        running_max,
+        # The shared partial-state ABI uses natural-log scores. Internally
+        # QK/online softmax uses log2 scores for exp2; convert at publication
+        # so the generic exp-based combine can merge unequal shard maxima.
+        running_max * 0.6931471805599453,
         mask=statistics_mask,
     )
     tl.store(

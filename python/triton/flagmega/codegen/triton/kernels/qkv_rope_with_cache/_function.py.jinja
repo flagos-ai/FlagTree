@@ -16,6 +16,7 @@ def {{ call.symbol }}({{ call.signature }}):
 {{ headwise.run(call) }}
 {% else %}
 {% for head in (call.q, call.k) %}
+{% set intermediate_type = head.intermediate_type | default(head.input_type) %}
 {% set prefix = "qkv_q" if loop.first else "qkv_k" %}
     for {{ prefix }}_outer_index in tl.range(0, {{ head.outer_capacity }}):
 {% if head.use_mean %}
@@ -164,13 +165,13 @@ def {{ call.symbol }}({{ call.signature }}):
             {{ prefix }}_unit = ({{ prefix }}_value - {{ prefix }}_mean) * {{ prefix }}_inverse
             {{ prefix }}_partner_unit = ({{ prefix }}_partner - {{ prefix }}_mean) * {{ prefix }}_inverse
 {% if head.round_before_scale %}
-            {{ prefix }}_unit = {{ prefix }}_unit.to({{ head.input_type }}).to(tl.float32)
-            {{ prefix }}_partner_unit = {{ prefix }}_partner_unit.to({{ head.input_type }}).to(tl.float32)
+            {{ prefix }}_unit = {{ prefix }}_unit.to({{ intermediate_type }}).to(tl.float32)
+            {{ prefix }}_partner_unit = {{ prefix }}_partner_unit.to({{ intermediate_type }}).to(tl.float32)
 {% endif %}
             {{ prefix }}_normalized = {{ prefix }}_unit * {{ prefix }}_scale + {{ prefix }}_bias
             {{ prefix }}_partner_normalized = {{ prefix }}_partner_unit * {{ prefix }}_partner_scale + {{ prefix }}_partner_bias
-            {{ prefix }}_normalized = {{ prefix }}_normalized.to({{ head.input_type }}).to(tl.float32)
-            {{ prefix }}_partner_normalized = {{ prefix }}_partner_normalized.to({{ head.input_type }}).to(tl.float32)
+            {{ prefix }}_normalized = {{ prefix }}_normalized.to({{ intermediate_type }}).to(tl.float32)
+            {{ prefix }}_partner_normalized = {{ prefix }}_partner_normalized.to({{ intermediate_type }}).to(tl.float32)
             {{ prefix }}_rotated = tl.where(
                 ({{ head.dimension }}) < {{ head.head_dim }} // 2,
                 -{{ prefix }}_partner_normalized,
@@ -179,15 +180,15 @@ def {{ call.symbol }}({{ call.signature }}):
             {{ prefix }}_cosine = tl.load(
                 {{ head.cosine }} + ({{ head.cosine_offset }}),
                 mask={{ prefix }}_mask, other=0.0,
-            ).to({{ head.input_type }}).to(tl.float32)
+            ).to({{ intermediate_type }}).to(tl.float32)
             {{ prefix }}_sine = tl.load(
                 {{ head.sine }} + ({{ head.sine_offset }}),
                 mask={{ prefix }}_mask, other=0.0,
-            ).to({{ head.input_type }}).to(tl.float32)
+            ).to({{ intermediate_type }}).to(tl.float32)
             # Preserve two IR Multiply results; contraction across their casts
             # would replace separately rounded products with a BF16 FMA.
-            {{ prefix }}_cosine_product = libdevice.mul_rn({{ prefix }}_normalized, {{ prefix }}_cosine).to({{ head.input_type }}).to(tl.float32)
-            {{ prefix }}_sine_product = libdevice.mul_rn({{ prefix }}_rotated, {{ prefix }}_sine).to({{ head.input_type }}).to(tl.float32)
+            {{ prefix }}_cosine_product = libdevice.mul_rn({{ prefix }}_normalized, {{ prefix }}_cosine).to({{ intermediate_type }}).to(tl.float32)
+            {{ prefix }}_sine_product = libdevice.mul_rn({{ prefix }}_rotated, {{ prefix }}_sine).to({{ intermediate_type }}).to(tl.float32)
             {{ prefix }}_result = (
                 {{ prefix }}_cosine_product + {{ prefix }}_sine_product
             )

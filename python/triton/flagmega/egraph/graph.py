@@ -54,6 +54,7 @@ class EGraph:
         self._types: list[IRType] = []
         self._nodes: list[list[ENode]] = []
         self._node_class: dict[str, int] = {}
+        self._source_nodes: dict[str, Node] = {}
         self._memo: dict[tuple[str, tuple[int, ...], str], int] = {}
         self._ordinal = 0
 
@@ -91,6 +92,10 @@ class EGraph:
                 node_id=node.id,
             )
         self._node_class[node.id] = class_id
+        # Hash-consing can discard this e-node while later helpers still name
+        # its source id. Retain the original expression for dataflow-rule
+        # snapshots, independently of canonical e-node storage.
+        self._source_nodes.setdefault(node.id, node)
         return self.find(class_id)
 
     def add_equivalent(self, source_node_id: str, alternative: Node) -> tuple[int, ENode, bool]:
@@ -225,6 +230,11 @@ class EGraph:
 
     def has_node_id(self, node_id: str) -> bool:
         return node_id in self._node_class
+
+    @property
+    def source_nodes(self) -> tuple[Node, ...]:
+        """Named expressions, including aliases removed by congruence."""
+        return tuple(self._source_nodes.values())
 
     def classes(self) -> tuple[EClassView, ...]:
         return tuple(

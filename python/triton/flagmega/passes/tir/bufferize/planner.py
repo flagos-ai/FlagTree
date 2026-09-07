@@ -843,6 +843,12 @@ class BufferPlanner:
                 # explicit parent origin instead of pretending that the
                 # smaller target shard begins at byte zero.
                 return source.distributed_storage_kind, storage_type
+        self._promote_alias_group_to_canonical(source_id, view_node_id)
+        return DistributedBufferStorageKind.CANONICAL_GLOBAL, None
+
+    def _promote_alias_group_to_canonical(self, source_id: str, use_node_id: str) -> None:
+        """Constrain every producer/view in a MemSpan group before codegen."""
+        source = self.descriptors[source_id]
         physical_id = source.physical_id
         aliases = [
             (buffer_id, descriptor)
@@ -851,17 +857,17 @@ class BufferPlanner:
         ]
         if not aliases:
             raise IRVerificationError(
-                f"ShardedView source {source_id!r} has no physical alias group.",
+                f"Canonical backing source {source_id!r} has no physical alias group.",
                 stage=self.module.stage,
-                node_id=view_node_id,
+                node_id=use_node_id,
             )
         for buffer_id, descriptor in aliases:
             if descriptor.distributed_type is None:
                 raise IRVerificationError(
-                    f"ShardedView cannot promote storage shared with non-distributed "
+                    f"Canonical backing cannot promote storage shared with non-distributed "
                     f"buffer {buffer_id!r}.",
                     stage=self.module.stage,
-                    node_id=view_node_id,
+                    node_id=use_node_id,
                 )
 
         old_physical = source.mem_span.buffer
@@ -895,7 +901,6 @@ class BufferPlanner:
             )
             self.descriptors[buffer_id] = promoted
             self.alias_analysis.replace_span(buffer_id, promoted_span)
-        return DistributedBufferStorageKind.CANONICAL_GLOBAL, None
 
     def _plan_kernel_workspaces(
         self,
@@ -1290,6 +1295,20 @@ class BufferPlanner:
         physical root so the producer writes directly into caller storage.
         """
 
+        if (
+            source.distributed_type is not None
+            and source.distributed_type.partial is None
+            and source.distributed_storage_kind
+            is not DistributedBufferStorageKind.CANONICAL_GLOBAL
+        ):
+            # Escaping a function constrains both ownership and coordinates.
+            # A local alias may have dense per-owner strides; retaining those
+            # after making the allocation caller-owned disagrees with formal
+            # parameter ABIs. Refine the complete group so earlier producers
+            # write canonical coordinates directly, without a runtime copy or
+            # abandoning their in-place alias. Partial components stay distinct.
+            self._promote_alias_group_to_canonical(source.id, source.source_node)
+            source = self.descriptors[source.id]
         old_physical = source.mem_span.buffer
         if old_physical.memory_space not in self.function_pool_spaces:
             raise IRVerificationError(
@@ -1371,6 +1390,13 @@ class BufferPlanner:
             values = self.bindings.get(input_id, ())
             if last_use.get(input_id) == index and len(values) == 1:
                 source = self.descriptors[values[0]]
+                result_type = (node.type.fields[result_index]
+                               if result_index is not None else node.type)
+                # Named aliases are opportunities, not a promise that every
+                # dtype/shape specialization can overwrite this input. A
+                # fused output conversion must allocate its own representation.
+                if not _descriptor_matches_type(source, result_type):
+                    continue
                 if (
                     requested_space is not None
                     and source.storage != requested_space.name

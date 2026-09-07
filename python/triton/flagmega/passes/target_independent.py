@@ -10,6 +10,8 @@ from triton.flagmega.passes.rewriter import DataflowPass
 from triton.flagmega.rules.neutral import (
     decompose_layer_norm_rule,
     decompose_rms_norm_rule,
+    fuse_wide_glu_rule,
+    fuse_norm_apply_cast_rule,
 )
 
 
@@ -20,6 +22,8 @@ def decompose_complex_ops(module: IRModule) -> IRModule:
         "DecomposeNormalization",
         (decompose_layer_norm_rule(), decompose_rms_norm_rule()),
     ).run(verify_module(module))
+    current = DataflowPass("FuseWideGlu", (fuse_wide_glu_rule(),)).run(current)
+    current = DataflowPass("FuseNormApplyCast", (fuse_norm_apply_cast_rule(),)).run(current)
     return decompose_gated_delta_net(current)
 
 

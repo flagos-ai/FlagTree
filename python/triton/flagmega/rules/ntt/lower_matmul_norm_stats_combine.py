@@ -5,7 +5,10 @@
 from __future__ import annotations
 
 from triton.flagmega.ir import DType, DistributedType, IRModule, Node, NoneType, TupleType
+from triton.flagmega.ir.distributed_inference import tensor_of
+from triton.flagmega.ir.types import VectorType
 from triton.flagmega.ir.ops.ntt.matmul_norm_stats import MatMulNormStats
+from triton.flagmega.ir.ops.ntt._matmul_promotion import promoted_projection_type, is_projection_promotion
 from triton.flagmega.pattern_match import F, wildcard
 from triton.flagmega.rules import RewriteRule
 
@@ -42,7 +45,7 @@ def lower_matmul_norm_stats_combine_rule() -> RewriteRule:
             # An adapter may publish Split storage as Broadcast. Folding it
             # into a local matmul epilogue would consume remote owners before
             # their publication boundary and compute the wrong statistics.
-            or producer.type != source.type.fields[0]
+            or promoted_projection_type(producer.type, source.type.fields[0]) != source.type.fields[0]
             or projection.type != source.type.fields[0]
             or addend.type != source.type.fields[0]
         ):
@@ -69,6 +72,7 @@ def lower_matmul_norm_stats_combine_rule() -> RewriteRule:
             or not isinstance(module.node_map[producer.inputs[3]].type, NoneType)
         ):
             return source
+        addend, addend_casts = _private_addend_casts(addend, source.id, module)
         inputs = (
             module.node_map[producer.inputs[0]],
             module.node_map[producer.inputs[1]],
@@ -85,6 +89,7 @@ def lower_matmul_norm_stats_combine_rule() -> RewriteRule:
                 **fusion_attrs,
                 "axis": int(source.attrs["axis"]),
                 "use_mean": bool(source.attrs["use_mean"]),
+                "addend_cast_dtypes": addend_casts,
             },
         )
         if prepared.result_type != source.type:
@@ -120,12 +125,13 @@ def lower_matmul_norm_stats_combine_rule() -> RewriteRule:
 
 
 def _projection_producer(node: Node, module: IRModule) -> tuple[Node, tuple[str, ...]]:
-    """Trace storage-only sharded views back to the compute producer."""
+    """Trace storage views and proven lossless promotions to the producer."""
 
     adapters: list[str] = []
     current = node
     seen: set[str] = set()
-    while current.op == "distributed.sharded_view" and len(current.inputs) == 1:
+    while ((current.op == "distributed.sharded_view" and len(current.inputs) == 1)
+           or is_projection_promotion(current, module.node_map)):
         if current.id in seen:
             return node, ()
         seen.add(current.id)
@@ -136,6 +142,33 @@ def _projection_producer(node: Node, module: IRModule) -> tuple[Node, tuple[str,
 
 def _users(module: IRModule, node_id: str) -> tuple[str, ...]:
     return tuple(node.id for node in module.nodes if node_id in node.inputs)
+
+
+def _private_addend_casts(addend: Node, consumer_id: str, module: IRModule):
+    """Move private local conversions into the epilogue, never erase rounding.
+
+    Identical endpoint types prove the same physical local shard. Cast nodes
+    themselves prove lane/split-unit conversion; no view or communication edge
+    is traversed, and shared/escaping intermediate values stay materialized.
+    """
+    current = addend
+    casts = []
+    outputs = {value for function in module.functions for value in function.outputs}
+    while current.op in {"tensors.cast", "ntt.vectorized_cast"}:
+        if (not current.effect.is_pure or current.id in outputs
+                or _users(module, current.id) != (consumer_id,)
+                or isinstance(current.type, DistributedType) and current.type.partial is not None):
+            break
+        dtype = tensor_of(current.type).dtype
+        dtype = dtype.elem_type if isinstance(dtype, VectorType) else dtype
+        if dtype not in (DType.BFLOAT16, DType.FLOAT32):
+            break
+        casts.append(dtype.value)
+        consumer_id = current.id
+        current = module.node_map[current.inputs[0]]
+    if not casts or current.type != addend.type:
+        return addend, ()
+    return current, tuple(reversed(casts))
 
 
 __all__ = ["lower_matmul_norm_stats_combine_rule"]

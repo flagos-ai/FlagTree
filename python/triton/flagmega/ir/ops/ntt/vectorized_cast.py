@@ -21,7 +21,7 @@ from triton.flagmega.ir.ops.core import (
     tensor_elements,
     tensor_nbytes,
 )
-from triton.flagmega.ir.ops.tensors.pack import normalize_axes, pack_physical
+from triton.flagmega.ir.ops.tensors.pack import axis_lane_products, normalize_axes, pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import VectorType, data_type, data_type_from_data
@@ -82,16 +82,15 @@ class VectorizedCast(OpDefinition):
         output_dtype = data_type_from_data(attrs["new_type"])
         assert isinstance(output_dtype, VectorType)
         axes = normalize_axes(tuple(int(value) for value in attrs["vectorize_axes"]), input_type.rank)
-        if len(set(axes)) != len(axes):
-            raise IRSchemaError("F.ntt.vectorized_cast vectorize_axes must be distinct.")
         if len(axes) != len(input_type.dtype.lanes) or len(axes) != len(output_dtype.lanes):
             raise IRSchemaError(
                 "F.ntt.vectorized_cast requires one input and output lane group per vectorized axis."
             )
         shape = list(input_type.shape)
-        for axis, input_lane, output_lane in zip(
-            axes, input_type.dtype.lanes, output_dtype.lanes
-        ):
+        input_products = axis_lane_products(input_type.dtype.lanes, axes)
+        output_products = axis_lane_products(output_dtype.lanes, axes)
+        for axis, input_lane in input_products.items():
+            output_lane = output_products[axis]
             scalar_extent = shape[axis] * input_lane
             packed_extent = try_div_exactly(scalar_extent, output_lane)
             if packed_extent is None:
@@ -104,9 +103,8 @@ class VectorizedCast(OpDefinition):
         if not isinstance(source_type, DistributedType):
             return output
         policies = list(source_type.axis_policies)
-        for axis, input_lane, output_lane in zip(
-            axes, input_type.dtype.lanes, output_dtype.lanes
-        ):
+        for axis, input_lane in input_products.items():
+            output_lane = output_products[axis]
             policy = policies[axis]
             if not isinstance(policy, SBPSplit):
                 continue

@@ -3,6 +3,7 @@
 
 from dataclasses import replace
 
+import pytest
 import torch
 
 from triton.flagmega import ir as fm
@@ -19,9 +20,11 @@ from triton.flagmega.rules.ntt.vectorize import VectorizeQKVRoPEWithCache
 
 
 class _FusedModule(fm.Module):
-    def __init__(self, *, head_dim: int = 16):
+    def __init__(self, *, head_dim: int = 16, trig_dtype: str = "float32", round_qk: bool = True):
         super().__init__(dialect="nn", stage="decomposed", entry="main")
         self.head_dim = head_dim
+        self.trig_dtype = trig_dtype
+        self.round_qk = round_qk
         self.config = PagedAttentionStateConfig(
             1, 1, 16, block_size=4, num_blocks=2, lanes=8
         )
@@ -42,8 +45,8 @@ class _FusedModule(fm.Module):
         k_bias = self.input(
             "k_bias", fm.tensor_type("bfloat16", (self.head_dim,))
         )
-        cos = self.input("cos", fm.tensor_type("float32", (1, 1, self.head_dim)))
-        sin = self.input("sin", fm.tensor_type("float32", (1, 1, self.head_dim)))
+        cos = self.input("cos", fm.tensor_type(self.trig_dtype, (1, 1, self.head_dim)))
+        sin = self.input("sin", fm.tensor_type(self.trig_dtype, (1, 1, self.head_dim)))
         state = self.input("state", self.config.ref_type)
         layer = self.input("layer", fm.tensor_type("int32", ()))
         advance = self.input("advance", fm.tensor_type("bool", ()))
@@ -67,6 +70,7 @@ class _FusedModule(fm.Module):
             k_use_mean=False,
             qkv_layout=("seq", "head", "dim"),
             attention_layout=("seq", "head", "dim"),
+            round_qk_intermediates=self.round_qk,
             name="fused",
         )
         query = fm.F.tensors.get_item(fused, 0, name="query")
@@ -91,8 +95,9 @@ class _FusedModule(fm.Module):
         )
 
 
-def test_rule_packs_qkv_norm_parameters_and_double_lane_rope_tables():
-    module = _FusedModule().build()
+@pytest.mark.parametrize("trig_dtype", ["float32", "bfloat16"])
+def test_rule_packs_qkv_norm_parameters_and_double_lane_rope_tables(trig_dtype):
+    module = _FusedModule(trig_dtype=trig_dtype).build()
     rule = VectorizeQKVRoPEWithCache()
 
     candidate = rule.candidates(module.node_map["fused"], module)[0]
@@ -106,12 +111,17 @@ def test_rule_packs_qkv_norm_parameters_and_double_lane_rope_tables():
     )
     assert packed_q.attrs == {"lanes": (8,), "axes": (2,)}
     assert packed_cos.attrs == {"lanes": (2, 8), "axes": (2, 2)}
+    assert packed_cos.inputs == (module.node_map["fused"].inputs[5],)
+    assert packed_cos.type.dtype.elem_type == fm.DType(trig_dtype)
+    assert not any(value.op == "tensors.cast" for value in result.prefix_nodes)
     assert replacement.type == module.node_map["fused"].type
     assert replacement.effect == module.node_map["fused"].effect
 
 
-def test_rule_rewrite_is_evaluator_equivalent_for_query_and_cache_updates():
-    module = _FusedModule().build()
+@pytest.mark.parametrize("trig_dtype", ["float32", "bfloat16"])
+@pytest.mark.parametrize("round_qk", [True, False])
+def test_rule_rewrite_is_evaluator_equivalent_for_query_and_cache_updates(trig_dtype, round_qk):
+    module = _FusedModule(trig_dtype=trig_dtype, round_qk=round_qk).build()
     rule = VectorizeQKVRoPEWithCache()
     candidate = rule.candidates(module.node_map["fused"], module)[0]
     rewritten = DataflowRewriter(
@@ -134,8 +144,8 @@ def test_rule_rewrite_is_evaluator_equivalent_for_query_and_cache_updates():
         "k_scale": torch.randn((16,), dtype=torch.bfloat16),
         "q_bias": torch.randn((16,), dtype=torch.bfloat16),
         "k_bias": torch.randn((16,), dtype=torch.bfloat16),
-        "cos": torch.ones((1, 1, 16), dtype=torch.float32),
-        "sin": torch.zeros((1, 1, 16), dtype=torch.float32),
+        "cos": torch.randn((1, 1, 8), dtype=getattr(torch, trig_dtype)).repeat(1, 1, 2),
+        "sin": torch.randn((1, 1, 8), dtype=getattr(torch, trig_dtype)).repeat(1, 1, 2),
         "layer": torch.tensor(0, dtype=torch.int32),
         "advance": torch.tensor(True),
     }
@@ -150,9 +160,9 @@ def test_rule_rewrite_is_evaluator_equivalent_for_query_and_cache_updates():
         rewritten, {**values, "state": rewritten_state}
     )
 
-    torch.testing.assert_close(rewritten_query, original_query)
+    torch.testing.assert_close(rewritten_query, original_query, rtol=0, atol=0)
     torch.testing.assert_close(
-        rewritten_result_state.kv_caches, original_result_state.kv_caches
+        rewritten_result_state.kv_caches, original_result_state.kv_caches, rtol=0, atol=0
     )
     assert rewritten_result_state.sequence_length == original_result_state.sequence_length
 

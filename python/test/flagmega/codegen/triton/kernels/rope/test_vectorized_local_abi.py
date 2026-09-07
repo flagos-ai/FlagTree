@@ -133,9 +133,23 @@ def test_explicit_vectorized_rope_compiles_through_tir_and_package_rendering(tmp
             self.function("main", (value, cos, sin), (output,))
 
     compiled = Compiler().compile(Graph().build()).module
-    call = compiled.node_map[compiled.function_map["main"].outputs[0]]
-    dispatch = fm.kernel_dispatch_for_call(compiled, call)
-    assert dispatch is not None
+    # A logical entry argument may now select a local shard. Trace the public
+    # result through its explicit materialization/view rather than assuming
+    # the semantic kernel itself owns the final external buffer.
+    pending = list(compiled.function_map["main"].outputs)
+    seen, dispatches = set(), []
+    while pending:
+        node_id = pending.pop()
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        node = compiled.node_map[node_id]
+        dispatch = fm.kernel_dispatch_for_call(compiled, node)
+        if dispatch is not None and dispatch.semantic_op == "ntt.vectorized_rope":
+            dispatches.append(dispatch)
+        pending.extend(node.inputs)
+    assert len(dispatches) == 1
+    dispatch = dispatches[0]
     assert dispatch.semantic_op == "ntt.vectorized_rope"
     assert dispatch.microkernel is not None
     assert dispatch.microkernel.family == "rope"

@@ -216,6 +216,8 @@ def _descriptor_layout_key(descriptor):
     return (
         distributed,
         descriptor.distributed_storage_kind.value,
+        (None if descriptor.distributed_backing_type is None else json.dumps(
+            descriptor.distributed_backing_type.to_data(), sort_keys=True, separators=(",", ":"))),
         tuple(descriptor.strides),
         descriptor.nbytes,
     )
@@ -227,9 +229,10 @@ def _signature_data(signature):
         "leaves": tuple({
             "distributed_type": distributed,
             "storage_kind": storage_kind,
+            "distributed_backing_type": backing,
             "strides": strides,
             "nbytes": nbytes,
-        } for distributed, storage_kind, strides, nbytes in leaves),
+        } for distributed, storage_kind, backing, strides, nbytes in leaves),
     } for parameter, leaves in signature)
 
 

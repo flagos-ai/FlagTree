@@ -20,6 +20,7 @@ from triton.flagmega.passes.norm_stats import (
 )
 from triton.flagmega.passes.functions import (
     form_matmul_norm_stats_combine,
+    hoist_call_invariant_expressions,
     post_function_boundary_pack_propagation,
     propagate_function_boundary_layouts,
     propagate_post_auto_distributed_function_boundary_layouts,
@@ -273,11 +274,18 @@ register_stage(Stage(
     lambda module, _target: form_qkv_rope_with_cache(module),
 ))
 register_stage(Stage(
-    "propose-vectorization",
+    "hoist-call-invariants",
     "decomposed",
+    "call_invariants_hoisted",
+    lambda module, _target: hoist_call_invariant_expressions(module),
+))
+register_stage(Stage(
+    "propose-vectorization",
+    "call_invariants_hoisted",
     "vectorization_candidates",
     _propose_vectorization,
     selection_point=True,
+    compatible_input_stages=frozenset({"decomposed"}),
 ))
 register_stage(Stage(
     "apply-vectorization",
