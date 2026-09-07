@@ -7,6 +7,17 @@ if(TRITON_BUILD_PYTHON_MODULE)
   include_directories(${LLD_INCLUDE_DIRS})
   message(STATUS "Found LLD distro-package @ ${LLD_DIR} and LLD include dirs @ ${LLD_INCLUDE_DIRS}")
   add_triton_plugin(TritonAMD ${CMAKE_CURRENT_SOURCE_DIR}/python/triton_amd.cc LINK_LIBS TritonAMDGPUToLLVM TritonAMDGPUTransforms TritonAMDGPUDialectToLLVM)
+  add_dependencies(TritonAMD
+    TritonAMDGPUTableGen
+    TritonAMDGPUAttrDefsIncGen
+    TritonAMDGPUConversionPassIncGen
+    TritonAMDGPUTransformsIncGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUCTAAttrIncGen
+    TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
+  )
   target_link_libraries(TritonAMD PRIVATE Python3::Module pybind11::headers lldCommon lldELF)
 endif()
 if(TRITON_BUILD_UT)

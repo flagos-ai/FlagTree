@@ -11,7 +11,11 @@ add_triton_library(FlagCxToLLVM
 
     DEPENDS
     TleTableGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUCTAAttrIncGen
     TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
     TleTools
 
     LINK_LIBS PUBLIC

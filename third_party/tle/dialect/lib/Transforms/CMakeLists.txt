@@ -33,6 +33,11 @@ add_triton_library(TritonTLETransforms
 
   DEPENDS
   TritonTLETransformsIncGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   TritonTLEAnalysis

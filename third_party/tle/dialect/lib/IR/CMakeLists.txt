@@ -18,6 +18,11 @@ add_triton_library(TleIR
 
   DEPENDS
   TleTableGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   TritonIR

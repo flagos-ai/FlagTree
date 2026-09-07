@@ -39,7 +39,15 @@ if(TRITON_BUILD_PYTHON_MODULE)
     )
 
   target_link_libraries(TritonTLE PRIVATE Python3::Module pybind11::headers MLIRTargetLLVMIRImport)
-  add_dependencies(TritonTLE TleTableGen TritonTLETransformsIncGen)
+  add_dependencies(TritonTLE
+    TleTableGen
+    TritonTLETransformsIncGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUCTAAttrIncGen
+    TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
+  )
 endif()
 
 add_subdirectory(test)

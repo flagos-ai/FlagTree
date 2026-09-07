@@ -3,6 +3,13 @@ add_triton_library(TritonTLERawUtils
   lib/AnalyzeReturnType.cpp
   lib/TleRawMaterialize.cpp
 
+  DEPENDS
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
+
   LINK_LIBS PUBLIC
   TleIR
   TritonIR

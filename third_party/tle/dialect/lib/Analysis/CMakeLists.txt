@@ -3,6 +3,13 @@ add_triton_library(TritonTLEAnalysis
   TleMemoryEffectAnalysis.cpp
   TlePipeEffectAnalysis.cpp
 
+  DEPENDS
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
+
   LINK_LIBS PUBLIC
   TritonAnalysis
   TritonGPUIR

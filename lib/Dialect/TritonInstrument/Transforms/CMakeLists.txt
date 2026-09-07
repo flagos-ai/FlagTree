@@ -3,6 +3,11 @@ add_triton_library(TritonInstrumentTransforms
 
   DEPENDS
   TritonInstrumentTransformsIncGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRTransforms

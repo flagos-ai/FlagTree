@@ -7,4 +7,9 @@ add_triton_library(TritonAMDGPUDialectToLLVM
 
     DEPENDS
     TritonAMDGPUIR
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUCTAAttrIncGen
+    TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
 )
