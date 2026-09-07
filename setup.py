@@ -99,6 +99,22 @@ def is_git_repo():
     return (Path(__file__).parent / ".git").is_dir()
 
 
+# flagtree: check if the path is a git submodule
+def is_git_submodule(path: str) -> bool:
+    """Return True if path is registered as a gitlink in the repository."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--stage", "--", path],
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+    return any(line.startswith("160000 ") for line in result.stdout.splitlines())
+
+
 @dataclass
 class Backend:
     name: str
@@ -120,7 +136,7 @@ class BackendInstaller:
             assert backend_name in os.listdir(
                 root_dir), f"{backend_name} is requested for install but not present in {root_dir}"
 
-            if is_git_repo():
+            if is_git_repo() and is_git_submodule(os.path.join(root_dir, backend_name)):
                 try:
                     subprocess.run(["git", "submodule", "update", "--init", f"{backend_name}"], check=True,
                                    stdout=subprocess.DEVNULL, cwd=root_dir)
