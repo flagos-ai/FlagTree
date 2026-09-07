@@ -26,6 +26,9 @@ add_triton_library(TleToLLVM
 
     DEPENDS
     TleTableGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    ${TLE_TRITON_GPU_ATTR_DEPENDS}
     TritonGPUTypeInterfacesIncGen
     TritonGPUOpInterfacesIncGen
     TleTools

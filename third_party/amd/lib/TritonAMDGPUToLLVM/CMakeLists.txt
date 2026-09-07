@@ -44,6 +44,13 @@ add_triton_library(TritonAMDGPUToLLVM
     DEPENDS
     TritonAMDGPUConversionPassIncGen
     LLVMIRIncGen
+    TritonAMDGPUTableGen
+    TritonAMDGPUAttrDefsIncGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUCTAAttrIncGen
+    TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
 
     LINK_LIBS PUBLIC
     TritonGPUToLLVM

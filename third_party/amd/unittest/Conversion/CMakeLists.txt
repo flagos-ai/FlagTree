@@ -12,3 +12,11 @@ add_triton_ut(
     TritonAMDGPUTransforms
     TritonAMDGPUDialectToLLVM
 )
+
+add_dependencies(TestOptimizeLDS
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
+)
