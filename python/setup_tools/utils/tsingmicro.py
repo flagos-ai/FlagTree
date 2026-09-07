@@ -8,6 +8,10 @@ def _get_backend_root() -> str:
 
 
 def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
+    def set_env(env_dict: dict):
+        for env_k, env_v in env_dict.items():
+            os.environ[env_k] = str(env_v)
+
     cache.store(
         file="tsingmicro-llvm22",
         condition=("tsingmicro" == flagtree_backend),
@@ -21,7 +25,10 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         condition=("tsingmicro" == flagtree_backend),
         url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/tx8_depends_v0.6.1.tar.gz",
         pre_hook=lambda: check_env('TX8_DEPS_ROOT'),
-        post_hook=lambda path: os.environ.update({'LLVM_SYSPATH': path}),
+        post_hook=lambda path: set_env({
+            'TX8_DEPS_ROOT': path,
+            'TX8_YOC_RT_THREAD_SMP': Path(path) / "tx8-yoc-rt-thread-smp",
+        }),
     )
 
 

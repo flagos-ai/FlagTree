@@ -58,7 +58,8 @@ submodule_registrar = SubmoduleRegistrar(submodules=(
         "name": "triton_shared", "url": "https://github.com/microsoft/triton-shared.git", "commit_id":
         "5842469a16b261e45a2c67fbfc308057622b03ee"
     },
-    {"name": "flir", "url": "https://github.com/FlagTree/flir.git"},
+    {"name": "flir", "url": "https://github.com/tsingmicro-public-e/flir.git", "commit_id": "5452aa58d5712cee22267c743f2e54c9c49d5fb9"},
+    #{"name": "flir", "url": "https://github.com/FlagTree/flir.git"},
     # FlagPrism: register the external component without vendoring its sources.
     {"name": "FlagPrism", "url": "https://github.com/flagos-ai/FlagPrism.git"},
     {"name": "flagcx", "url": "https://github.com/flagos-ai/FlagCX.git", "relative_path": "tle/third_party/flagcx"},
@@ -86,4 +87,4 @@ def activate(backend, suffix=".py"):
     return module
 
 
-__all__ = ["aipu", "default", "activate", "flagtree_submodules", "OfflineBuildManager", "tools", "submodule_registrar"]
+__all__ = ["default", "activate", "flagtree_submodules", "OfflineBuildManager", "tools", "submodule_registrar"]
