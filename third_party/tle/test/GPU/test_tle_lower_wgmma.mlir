@@ -27,13 +27,15 @@
 
 module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @lower_single_wgmma
+  // CHECK-SAME: %[[A_ARG:[^ :]+]]:
+  // CHECK-SAME: %[[B_ARG:[^ :]+]]:
   tt.func @lower_single_wgmma(
       %a: !ttg.memdesc<64x16xf16, #shared, #smem, mutable>,
       %b: !ttg.memdesc<16x16xf16, #shared, #smem, mutable>) {
     %zero = arith.constant dense<0.000000e+00> : tensor<64x16xf32, #blocked>
     // CHECK: %[[ZERO:.+]] = arith.constant
     // CHECK-NEXT: %[[ACC:.+]] = ttg.convert_layout %[[ZERO]]
-    // CHECK-NEXT: %[[DOT:.+]] = ttng.warp_group_dot %a, %b, %[[ACC]]
+    // CHECK-NEXT: %[[DOT:.+]] = ttng.warp_group_dot %[[A_ARG]], %[[B_ARG]], %[[ACC]]
     // CHECK-NEXT: %[[WAIT:.+]] = ttng.warp_group_dot_wait %[[DOT]] {pendings = 0 : i32}
     // CHECK-NEXT: ttg.convert_layout %[[WAIT]]
     %dot = tle.wgmma %a, %b, %zero {inputPrecision = 0 : i32, isAsync = true, maxNumImpreciseAcc = 0 : i32} : !ttg.memdesc<64x16xf16, #shared, #smem, mutable> * !ttg.memdesc<16x16xf16, #shared, #smem, mutable>, tensor<64x16xf32, #blocked> -> tensor<64x16xf32, #blocked>
@@ -50,6 +52,10 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
 
 module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @lower_chained_wgmma
+  // CHECK-SAME: %[[A0:[^ :]+]]:
+  // CHECK-SAME: %[[B0:[^ :]+]]:
+  // CHECK-SAME: %[[A1:[^ :]+]]:
+  // CHECK-SAME: %[[B1:[^ :]+]]:
   tt.func @lower_chained_wgmma(
       %a0: !ttg.memdesc<64x16xf16, #shared, #smem, mutable>,
       %b0: !ttg.memdesc<16x16xf16, #shared, #smem, mutable>,
@@ -58,8 +64,8 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
     %zero = arith.constant dense<0.000000e+00> : tensor<64x16xf32, #blocked>
     // CHECK: %[[ZERO:.+]] = arith.constant
     // CHECK-NEXT: %[[ACC:.+]] = ttg.convert_layout %[[ZERO]]
-    // CHECK-NEXT: %[[DOT0:.+]] = ttng.warp_group_dot %a0, %b0, %[[ACC]]
-    // CHECK-NEXT: %[[DOT1:.+]] = ttng.warp_group_dot %a1, %b1, %[[DOT0]]
+    // CHECK-NEXT: %[[DOT0:.+]] = ttng.warp_group_dot %[[A0]], %[[B0]], %[[ACC]]
+    // CHECK-NEXT: %[[DOT1:.+]] = ttng.warp_group_dot %[[A1]], %[[B1]], %[[DOT0]]
     // CHECK-NEXT: %[[WAIT:.+]] = ttng.warp_group_dot_wait %[[DOT1]] {pendings = 0 : i32}
     // CHECK-NEXT: ttg.convert_layout %[[WAIT]]
     %dot0 = tle.wgmma %a0, %b0, %zero {inputPrecision = 0 : i32, isAsync = true, maxNumImpreciseAcc = 0 : i32} : !ttg.memdesc<64x16xf16, #shared, #smem, mutable> * !ttg.memdesc<16x16xf16, #shared, #smem, mutable>, tensor<64x16xf32, #blocked> -> tensor<64x16xf32, #blocked>
@@ -77,14 +83,16 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
 
 module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @lower_register_a_wgmma
+  // CHECK-SAME: %[[A_ARG:[^ :]+]]:
+  // CHECK-SAME: %[[B_ARG:[^ :]+]]:
   tt.func @lower_register_a_wgmma(
       %a: tensor<64x16xf16, #blocked>,
       %b: !ttg.memdesc<16x16xf16, #shared, #smem, mutable>) {
     %zero = arith.constant dense<0.000000e+00> : tensor<64x16xf32, #blocked>
     // CHECK: %[[ZERO:.+]] = arith.constant
     // CHECK-NEXT: %[[ACC:.+]] = ttg.convert_layout %[[ZERO]]
-    // CHECK-NEXT: %[[A:.+]] = ttg.convert_layout %a
-    // CHECK-NEXT: %[[DOT:.+]] = ttng.warp_group_dot %[[A]], %b, %[[ACC]]
+    // CHECK-NEXT: %[[A:.+]] = ttg.convert_layout %[[A_ARG]]
+    // CHECK-NEXT: %[[DOT:.+]] = ttng.warp_group_dot %[[A]], %[[B_ARG]], %[[ACC]]
     // CHECK-NEXT: %[[WAIT:.+]] = ttng.warp_group_dot_wait %[[DOT]] {pendings = 0 : i32}
     // CHECK-NEXT: ttg.convert_layout %[[WAIT]]
     %dot = tle.wgmma %a, %b, %zero {inputPrecision = 0 : i32, isAsync = true, maxNumImpreciseAcc = 0 : i32} : tensor<64x16xf16, #blocked> * !ttg.memdesc<16x16xf16, #shared, #smem, mutable>, tensor<64x16xf32, #blocked> -> tensor<64x16xf32, #blocked>
@@ -101,6 +109,10 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
 
 module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @lower_loop_carried_wgmma
+  // CHECK-SAME: %[[A0:[^ :]+]]:
+  // CHECK-SAME: %[[B0:[^ :]+]]:
+  // CHECK-SAME: %[[A1:[^ :]+]]:
+  // CHECK-SAME: %[[B1:[^ :]+]]:
   tt.func @lower_loop_carried_wgmma(
       %a0: !ttg.memdesc<64x16xf16, #shared, #smem, mutable>,
       %b0: !ttg.memdesc<16x16xf16, #shared, #smem, mutable>,
@@ -111,9 +123,9 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
     %step = arith.constant 1 : index
     %zero = arith.constant dense<0.000000e+00> : tensor<64x16xf32, #blocked>
     // CHECK: %[[ACC:.+]] = ttg.convert_layout %{{.+}}
-    // CHECK-NEXT: %[[DOT0:.+]] = ttng.warp_group_dot %a0, %b0, %[[ACC]]
+    // CHECK-NEXT: %[[DOT0:.+]] = ttng.warp_group_dot %[[A0]], %[[B0]], %[[ACC]]
     // CHECK-NEXT: %[[LOOP:.+]] = scf.for {{.*}} iter_args({{.*}} = %[[DOT0]])
-    // CHECK: %[[DOT1:.+]] = ttng.warp_group_dot %a1, %b1, %{{.+}}
+    // CHECK: %[[DOT1:.+]] = ttng.warp_group_dot %[[A1]], %[[B1]], %{{.+}}
     // CHECK-NEXT: %[[WAIT1:.+]] = ttng.warp_group_dot_wait %[[DOT1]] {pendings = 1 : i32}
     // CHECK-NOT: ttg.convert_layout
     // CHECK: scf.yield %[[WAIT1]]
@@ -138,6 +150,10 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
 
 module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: tt.func @lower_wait1_ordinary_use
+  // CHECK-SAME: %[[A0:[^ :]+]]:
+  // CHECK-SAME: %[[B0:[^ :]+]]:
+  // CHECK-SAME: %[[A1:[^ :]+]]:
+  // CHECK-SAME: %[[B1:[^ :]+]]:
   tt.func @lower_wait1_ordinary_use(
       %a0: !ttg.memdesc<64x16xf16, #shared, #smem, mutable>,
       %b0: !ttg.memdesc<16x16xf16, #shared, #smem, mutable>,
@@ -145,9 +161,9 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
       %b1: !ttg.memdesc<16x16xf16, #shared, #smem, mutable>) {
     %zero = arith.constant dense<0.000000e+00> : tensor<64x16xf32, #blocked>
     // CHECK: %[[ACC0:.+]] = ttg.convert_layout %{{.+}}
-    // CHECK-NEXT: %[[DOT0:.+]] = ttng.warp_group_dot %a0, %b0, %[[ACC0]]
+    // CHECK-NEXT: %[[DOT0:.+]] = ttng.warp_group_dot %[[A0]], %[[B0]], %[[ACC0]]
     // CHECK-NEXT: %[[ACC1:.+]] = ttg.convert_layout %{{.+}}
-    // CHECK-NEXT: %{{.+}} = ttng.warp_group_dot %a1, %b1, %[[ACC1]]
+    // CHECK-NEXT: %{{.+}} = ttng.warp_group_dot %[[A1]], %[[B1]], %[[ACC1]]
     // CHECK-NEXT: %[[WAIT:.+]] = ttng.warp_group_dot_wait %[[DOT0]] {pendings = 1 : i32}
     // CHECK-NEXT: %[[RELEASED:.+]] = ttg.convert_layout %[[WAIT]]
     // CHECK-NEXT: "tt.reduce"(%[[RELEASED]])

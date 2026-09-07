@@ -64,7 +64,9 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
       if (attr.getName() == SymbolTable::getSymbolAttrName() ||
           attr.getName() == op.getFunctionTypeAttrName() ||
           attr.getName() == "std.varargs" ||
+#ifndef __TLE__
           attr.getName() == triton::gpu::AttrNumWarpsName ||
+#endif
           (filterArgAttrs && attr.getName() == op.getArgAttrsAttrName()))
         continue;
       result.push_back(attr);

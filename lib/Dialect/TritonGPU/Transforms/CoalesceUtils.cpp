@@ -30,6 +30,9 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/StrUtil.h"
 #include "llvm/Support/Debug.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Analysis/CoalescingSlice.h"
+#endif
 
 #define DEBUG_TYPE "tritongpu-coalesce"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -64,7 +67,11 @@ BlockedEncodingAttr buildCoalescedEncoding(
   llvm::SmallSetVector<Operation *, 32> memAccessesSameOrder;
   memAccessesSameOrder.insert(op);
   if (ptr.getDefiningOp()) {
+#ifdef __TLE__
+    for (Operation *use : triton::tle::getCoalescingSlice(op)) {
+#else
     for (Operation *use : mlir::getSlice(op)) {
+#endif
       Value val = getMemAccessPtr(use);
       if (!val || !matchesShape(val) || memAccessesSameOrder.contains(use))
         continue;

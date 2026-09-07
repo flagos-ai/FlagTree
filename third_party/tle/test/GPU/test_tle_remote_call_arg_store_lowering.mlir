@@ -47,8 +47,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     %smem = ttg.local_alloc : () -> !ttg.memdesc<2048xi32, #shared, #smem, mutable>
     %counter_local_ptr = "tle.local_pointers"(%smem, %c0_i32) : (!ttg.memdesc<2048xi32, #shared, #smem, mutable>, i32) -> !tt.ptr<i32, 3>
     %out_local_ptr = "tle.local_pointers"(%smem, %c1_i32) : (!ttg.memdesc<2048xi32, #shared, #smem, mutable>, i32) -> !tt.ptr<i32, 3>
-    %counter_remote_ptr = "tle.remote_pointers"(%counter_local_ptr, %c0_i32) : (!tt.ptr<i32, 3>, i32) -> !tt.ptr<i32, 7>
-    %out_remote_ptr = "tle.remote_pointers"(%out_local_ptr, %c0_i32) : (!tt.ptr<i32, 3>, i32) -> !tt.ptr<i32, 7>
+    %counter_remote_ptr = "tle.remote_pointers"(%counter_local_ptr, %c0_i32) {operandSegmentSizes = array<i32: 1, 1, 0>, space = "cluster"} : (!tt.ptr<i32, 3>, i32) -> !tt.ptr<i32, 7>
+    %out_remote_ptr = "tle.remote_pointers"(%out_local_ptr, %c0_i32) {operandSegmentSizes = array<i32: 1, 1, 0>, space = "cluster"} : (!tt.ptr<i32, 3>, i32) -> !tt.ptr<i32, 7>
     tt.call @callee(%counter_remote_ptr, %out_remote_ptr) : (!tt.ptr<i32, 7>, !tt.ptr<i32, 7>) -> ()
     tt.return
   }

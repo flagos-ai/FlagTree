@@ -45,6 +45,7 @@
 #endif // __FLAGTREE_RLC_ENHANCE__
 #include "triton/Analysis/Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Analysis/CompatibleProposalMerge.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -2536,6 +2537,10 @@ bool LayoutPropagation::solveSmallComponents() {
                                    bool rejectReachableReductionOrScan = true,
                                    bool restrictWeakStoreProposals = false) {
     bool localChanged = false;
+#ifdef __TLE__
+    proposals = triton::tle::mergeCompatibleProposals(
+        std::move(proposals), proposalsOverlapAndCompatible, mergeProposalInto);
+#else
     bool merged = true;
     while (merged) {
       merged = false;
@@ -2550,6 +2555,7 @@ bool LayoutPropagation::solveSmallComponents() {
         }
       }
     }
+#endif
     for (Proposal &proposal : proposals)
       localChanged |= commitIfProfitable(proposal, /*requireBenefit=*/true,
                                          rejectReachableReductionOrScan,
@@ -4245,7 +4251,14 @@ void LayoutRematerialization::backwardRematerialization(
     ConvertLayoutOp convertOp) {
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
+#ifdef __TLE__
+  // Address/mask DAGs use generic rematerialization, not matrix-data hoisting.
+  if (isa<DotOperandEncodingAttr>(targetType.getEncoding()) &&
+      !isa<triton::PointerType>(targetType.getElementType()) &&
+      !targetType.getElementType().isInteger(1))
+#else
   if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
+#endif
     return;
   Value oldV = convertOp.getSrc();
   LDBG("check backward remat with source " << oldV << " encoding "

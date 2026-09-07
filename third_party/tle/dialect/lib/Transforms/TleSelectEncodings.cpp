@@ -33,6 +33,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
@@ -553,6 +554,11 @@ static bool tryFoldPointerConvertLayout(triton::gpu::ConvertLayoutOp convert,
     Operation *owner = use.getOwner();
     if (!isa<triton::LoadOp, triton::StoreOp, triton::AtomicRMWOp,
              triton::AtomicCASOp>(owner))
+      return false;
+    // Moving the conversion across an access changes its execution layout.
+    // Do not replace an explicit memory contract with the pointer's layout.
+    if (Attribute required = getTleExplicitMemoryEncoding(owner);
+        required && required != srcEncoding)
       return false;
     uses.push_back(&use);
   }

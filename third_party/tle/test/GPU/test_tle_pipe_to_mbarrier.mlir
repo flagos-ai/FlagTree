@@ -47,13 +47,13 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
     %false = arith.constant false
-    tle.pipe.create %a {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_acquire %a[%c0, %false] {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_commit %a[%c0] {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    %closed = tle.pipe.reader_wait %a[%c1, %false] {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    %pipe_identity_0 = tle.pipe.create %a {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_0, %a[%c0, %false] {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_0, %a[%c0] {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    %closed = tle.pipe.reader_wait %pipe_identity_0, %a[%c1, %false] {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
     scf.if %closed {
     }
-    tle.pipe.reader_release %a[%c1] {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tle.pipe.reader_release %pipe_identity_0, %a[%c1] {capacity = 2 : i32, pipe_name = "a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
     tt.return
   }
 
@@ -66,13 +66,13 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func @pipe_same_task_to_mbarrier(%a: !ttg.memdesc<2x16xf16, #shared, #smem, mutable>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %a {capacity = 2 : i32, pipe_name = "same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_acquire %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_commit %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    %closed = tle.pipe.reader_wait %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    %pipe_identity_1 = tle.pipe.create %a {capacity = 2 : i32, pipe_name = "same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_1, %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_1, %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    %closed = tle.pipe.reader_wait %pipe_identity_1, %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
     scf.if %closed {
     }
-    tle.pipe.reader_release %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tle.pipe.reader_release %pipe_identity_1, %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
     tt.return
   }
 
@@ -84,10 +84,10 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func @pipe_cpasync_to_mbarrier(%a: !ttg.memdesc<2x16xf16, #shared, #smem, mutable>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %a {capacity = 2 : i32, pipe_name = "a_async", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_acquire %a[%c0, %false] {capacity = 2 : i32, pipe_name = "a_async", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_commit %a[%c0] {capacity = 2 : i32, pipe_name = "a_async", field_names = ["a"], scope = "cta", tle.pipe_commit_cp_async} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    %closed = tle.pipe.reader_wait %a[%c0, %false] {capacity = 2 : i32, pipe_name = "a_async", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    %pipe_identity_2 = tle.pipe.create %a {capacity = 2 : i32, pipe_name = "a_async", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_2, %a[%c0, %false] {capacity = 2 : i32, pipe_name = "a_async", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_2, %a[%c0] {capacity = 2 : i32, pipe_name = "a_async", field_names = ["a"], scope = "cta", tle.pipe_commit_cp_async} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    %closed = tle.pipe.reader_wait %pipe_identity_2, %a[%c0, %false] {capacity = 2 : i32, pipe_name = "a_async", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
     scf.if %closed {
     }
     tt.return
@@ -100,9 +100,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func @pipe_cpasync_same_task_to_mbarrier(%a: !ttg.memdesc<2x16xf16, #shared, #smem, mutable>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %a {capacity = 2 : i32, pipe_name = "a_async_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_commit %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "a_async_same_task", field_names = ["a"], scope = "cta", tle.pipe_commit_cp_async} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
-    %closed = tle.pipe.reader_wait %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "a_async_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    %pipe_identity_3 = tle.pipe.create %a {capacity = 2 : i32, pipe_name = "a_async_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_3, %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "a_async_same_task", field_names = ["a"], scope = "cta", tle.pipe_commit_cp_async} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    %closed = tle.pipe.reader_wait %pipe_identity_3, %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "a_async_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
     scf.if %closed {
     }
     tt.return
@@ -120,12 +120,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func @pipe_tma_to_mbarrier(%desc: !tt.tensordesc<tensor<32x64xf32, #nvmma>>, %a: !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %a {capacity = 2 : i32, pipe_name = "a_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_acquire %a[%c0, %false] {capacity = 2 : i32, pipe_name = "a_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
+    %pipe_identity_4 = tle.pipe.create %a {capacity = 2 : i32, pipe_name = "a_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_4, %a[%c0, %false] {capacity = 2 : i32, pipe_name = "a_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
     %slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_commit %a[%c0] {capacity = 2 : i32, pipe_name = "a_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
-    %closed = tle.pipe.reader_wait %a[%c0, %false] {capacity = 2 : i32, pipe_name = "a_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_4, %a[%c0] {capacity = 2 : i32, pipe_name = "a_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
+    %closed = tle.pipe.reader_wait %pipe_identity_4, %a[%c0, %false] {capacity = 2 : i32, pipe_name = "a_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
     scf.if %closed {
     }
     tt.return
@@ -142,12 +142,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func @pipe_tma_same_task_to_mbarrier(%desc: !tt.tensordesc<tensor<32x64xf32, #nvmma>>, %a: !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %a {capacity = 2 : i32, pipe_name = "a_tma_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_acquire %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "a_tma_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
+    %pipe_identity_5 = tle.pipe.create %a {capacity = 2 : i32, pipe_name = "a_tma_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_5, %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "a_tma_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
     %slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_commit %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "a_tma_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
-    %closed = tle.pipe.reader_wait %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "a_tma_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_5, %a[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "a_tma_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
+    %closed = tle.pipe.reader_wait %pipe_identity_5, %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "a_tma_same_task", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #nvmma, #smem, mutable>
     scf.if %closed {
     }
     tt.return
@@ -166,15 +166,15 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func @one_shot_tma_pipe_to_mbarrier(%desc: !tt.tensordesc<tensor<32x64xf32, #nvmma>>, %a: !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %a {capacity = 1 : i32, pipe_name = "one_shot_tma", field_names = ["a"], scope = "cta", one_shot = true} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_acquire %a[%c0, %false] {capacity = 1 : i32, pipe_name = "one_shot_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    %pipe_identity_6 = tle.pipe.create %a {capacity = 1 : i32, pipe_name = "one_shot_tma", field_names = ["a"], scope = "cta", one_shot = true} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_6, %a[%c0, %false] {capacity = 1 : i32, pipe_name = "one_shot_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
     %slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_commit %a[%c0] {capacity = 1 : i32, pipe_name = "one_shot_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
-    %closed = tle.pipe.reader_wait %a[%c0, %false] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_6, %a[%c0] {capacity = 1 : i32, pipe_name = "one_shot_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    %closed = tle.pipe.reader_wait %pipe_identity_6, %a[%c0, %false] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
     scf.if %closed {
     }
-    tle.pipe.reader_release %a[%c0] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.reader_release %pipe_identity_6, %a[%c0] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_tma", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
     tt.return
   }
 
@@ -191,13 +191,13 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func @one_shot_tma_pipe_same_partition_reader(%desc: !tt.tensordesc<tensor<32x64xf32, #nvmma>>, %a: !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %a {capacity = 1 : i32, pipe_name = "one_shot_tma_spmc", field_names = ["a"], readers = ["owner", "peer"], scope = "cta", one_shot = true} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_acquire %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 1 : i32, pipe_name = "one_shot_tma_spmc", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    %pipe_identity_7 = tle.pipe.create %a {capacity = 1 : i32, pipe_name = "one_shot_tma_spmc", field_names = ["a"], readers = ["owner", "peer"], scope = "cta", one_shot = true} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_7, %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 1 : i32, pipe_name = "one_shot_tma_spmc", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
     %slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc, %slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_commit %a[%c0] {async_task_id = array<i32: 0>, capacity = 1 : i32, pipe_name = "one_shot_tma_spmc", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
-    %owner_closed = tle.pipe.reader_wait %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 1 : i32, pipe_name = "one_shot_tma_spmc", field_names = ["a"], reader_name = "owner", scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
-    %peer_closed = tle.pipe.reader_wait %a[%c0, %false] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_tma_spmc", field_names = ["a"], reader_name = "peer", scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_7, %a[%c0] {async_task_id = array<i32: 0>, capacity = 1 : i32, pipe_name = "one_shot_tma_spmc", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    %owner_closed = tle.pipe.reader_wait %pipe_identity_7, %a[%c0, %false] {async_task_id = array<i32: 0>, capacity = 1 : i32, pipe_name = "one_shot_tma_spmc", field_names = ["a"], reader_name = "owner", scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    %peer_closed = tle.pipe.reader_wait %pipe_identity_7, %a[%c0, %false] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_tma_spmc", field_names = ["a"], reader_name = "peer", scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
     scf.if %owner_closed {
     }
     scf.if %peer_closed {
@@ -219,18 +219,18 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func @one_shot_multi_tma_fields_pipe_to_mbarrier(%desc_a: !tt.tensordesc<tensor<32x64xf32, #nvmma>>, %desc_b: !tt.tensordesc<tensor<32x64xf32, #nvmma>>, %a: !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, %b: !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, %setup: !ttg.memdesc<1x16xf16, #shared, #smem, mutable>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %a, %b {capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta", one_shot = true} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.create %setup {capacity = 1 : i32, pipe_name = "one_shot_multi_tma_setup", field_names = ["setup"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_acquire %a, %b[%c0, %false] {capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    %pipe_identity_8 = tle.pipe.create %a, %b {capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta", one_shot = true} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    %pipe_identity_9 = tle.pipe.create %setup {capacity = 1 : i32, pipe_name = "one_shot_multi_tma_setup", field_names = ["setup"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_acquire %pipe_identity_8, %a, %b[%c0, %false] {capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
     %slot_a = ttg.memdesc_index %a[%c0] : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     %slot_b = ttg.memdesc_index %b[%c0] : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc_a, %slot_a, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
     ttg.tma_copy %desc_b, %slot_b, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable>
-    tle.pipe.writer_commit %a, %b[%c0] {capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
-    %closed = tle.pipe.reader_wait %a, %b[%c0, %false] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_8, %a, %b[%c0] {capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    %closed = tle.pipe.reader_wait %pipe_identity_8, %a, %b[%c0, %false] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
     scf.if %closed {
     }
-    tle.pipe.reader_release %a, %b[%c0] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
+    tle.pipe.reader_release %pipe_identity_8, %a, %b[%c0] {async_task_id = array<i32: 1>, capacity = 1 : i32, pipe_name = "one_shot_multi_tma", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>, !ttg.memdesc<1x32x64xf32, #nvmma, #smem, mutable>
     tt.return
   }
 
@@ -245,16 +245,16 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func @coalesce_adjacent_pipe_init_barriers(%a: !ttg.memdesc<1x16xf16, #shared, #smem, mutable>, %b: !ttg.memdesc<1x16xf16, #shared, #smem, mutable>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %a {capacity = 1 : i32, pipe_name = "coalesce_a", field_names = ["a"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    %pipe_identity_10 = tle.pipe.create %a {capacity = 1 : i32, pipe_name = "coalesce_a", field_names = ["a"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
     %payload = ttg.local_alloc : () -> !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
     %tag_zero = arith.constant 0 : i32
     %tag_init = tt.splat %tag_zero : i32 -> tensor<2x1xi32, #blocked2>
     %tag_alloc = ttg.local_alloc %tag_init : (tensor<2x1xi32, #blocked2>) -> !ttg.memdesc<2x1xi32, #shared, #smem, mutable>
-    tle.pipe.create %b {capacity = 1 : i32, pipe_name = "coalesce_b", field_names = ["b"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_commit %a[%c0] {capacity = 1 : i32, pipe_name = "coalesce_a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_commit %b[%c0] {capacity = 1 : i32, pipe_name = "coalesce_b", field_names = ["b"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
-    %closed_a = tle.pipe.reader_wait %a[%c0, %false] {capacity = 1 : i32, pipe_name = "coalesce_a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
-    %closed_b = tle.pipe.reader_wait %b[%c0, %false] {capacity = 1 : i32, pipe_name = "coalesce_b", field_names = ["b"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    %pipe_identity_11 = tle.pipe.create %b {capacity = 1 : i32, pipe_name = "coalesce_b", field_names = ["b"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_10, %a[%c0] {capacity = 1 : i32, pipe_name = "coalesce_a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_11, %b[%c0] {capacity = 1 : i32, pipe_name = "coalesce_b", field_names = ["b"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    %closed_a = tle.pipe.reader_wait %pipe_identity_10, %a[%c0, %false] {capacity = 1 : i32, pipe_name = "coalesce_a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    %closed_b = tle.pipe.reader_wait %pipe_identity_11, %b[%c0, %false] {capacity = 1 : i32, pipe_name = "coalesce_b", field_names = ["b"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
     tt.return
   }
 
@@ -268,12 +268,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   tt.func @keep_pipe_init_barrier_before_first_use(%a: !ttg.memdesc<1x16xf16, #shared, #smem, mutable>, %b: !ttg.memdesc<1x16xf16, #shared, #smem, mutable>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    tle.pipe.create %a {capacity = 1 : i32, pipe_name = "ordered_a", field_names = ["a"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_commit %a[%c0] {capacity = 1 : i32, pipe_name = "ordered_a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
-    tle.pipe.create %b {capacity = 1 : i32, pipe_name = "ordered_b", field_names = ["b"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
-    tle.pipe.writer_commit %b[%c0] {capacity = 1 : i32, pipe_name = "ordered_b", field_names = ["b"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
-    %closed_a = tle.pipe.reader_wait %a[%c0, %false] {capacity = 1 : i32, pipe_name = "ordered_a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
-    %closed_b = tle.pipe.reader_wait %b[%c0, %false] {capacity = 1 : i32, pipe_name = "ordered_b", field_names = ["b"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    %pipe_identity_12 = tle.pipe.create %a {capacity = 1 : i32, pipe_name = "ordered_a", field_names = ["a"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_12, %a[%c0] {capacity = 1 : i32, pipe_name = "ordered_a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    %pipe_identity_13 = tle.pipe.create %b {capacity = 1 : i32, pipe_name = "ordered_b", field_names = ["b"], scope = "cta", one_shot = true} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_commit %pipe_identity_13, %b[%c0] {capacity = 1 : i32, pipe_name = "ordered_b", field_names = ["b"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    %closed_a = tle.pipe.reader_wait %pipe_identity_12, %a[%c0, %false] {capacity = 1 : i32, pipe_name = "ordered_a", field_names = ["a"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
+    %closed_b = tle.pipe.reader_wait %pipe_identity_13, %b[%c0, %false] {capacity = 1 : i32, pipe_name = "ordered_b", field_names = ["b"], scope = "cta"} : !ttg.memdesc<1x16xf16, #shared, #smem, mutable>
     tt.return
   }
 }

@@ -35,6 +35,13 @@ namespace mlir::triton::tle {
 inline constexpr llvm::StringLiteral
     kTleLocalPointerAsyncStoreAttr("tle.local_ptr_async_store");
 
+// Marks async copies requested explicitly through tle.gpu.copy(...,
+// is_async=True). These copies are a compiler/user schedule contract, so the
+// invalid-copy legalization pass must reject them instead of silently
+// replacing them with a synchronous load/store pair.
+inline constexpr llvm::StringLiteral
+    kTleRequiredAsyncCopyAttr("tle.required_async_copy");
+
 // Marks a TLE pipe commit whose payload readiness is produced by prior
 // cp.async copies. NVWS token lowering uses this to attach copy completion to
 // the pipe full barrier instead of forcing a producer-side cp.async wait.

@@ -176,7 +176,8 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 #ifdef __TLE__
   // flagtree tle raw
   addDynamicallyLegalOp<triton::gpu::LocalAllocOp, triton::gpu::LocalStoreOp,
-                        triton::gpu::LocalLoadOp>(
+                        triton::gpu::LocalLoadOp,
+                        triton::gpu::AsyncCopyGlobalToLocalOp>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
 #endif
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
@@ -213,6 +214,29 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 #ifdef __TLE__
   // flagtree tle raw
   addIllegalOp<triton::tle::SetLayoutOp>();
+  // An encoded pointer is not necessarily in the access's selected layout.
+  // Keep mismatched access tuples illegal so the memory conversion pattern
+  // can insert use-local conversions, even when all types are already encoded.
+  addDynamicallyLegalOp<triton::LoadOp, triton::StoreOp>([&](Operation *op) {
+    if (!isDynamicallyLegal(op, typeConverter))
+      return false;
+    if (Attribute encoding = getTleExplicitMemoryEncoding(op))
+      for (Type type : llvm::concat<Type>(op->getOperandTypes(),
+                                         op->getResultTypes()))
+        if (auto tensorType = dyn_cast<RankedTensorType>(type))
+          if (tensorType.getEncoding() != encoding)
+            return false;
+    return true;
+  });
+  // An explicit consumer layout can pre-encode a transpose result during
+  // propagation. Encoded types alone do not make this view operation legal:
+  // its result must still be inferred from the source and permutation.
+  addDynamicallyLegalOp<triton::TransOp>([](triton::TransOp op) {
+    Attribute sourceEncoding = op.getSrc().getType().getEncoding();
+    Attribute resultEncoding = op.getType().getEncoding();
+    return sourceEncoding && resultEncoding &&
+           inferDstEncoding(op, sourceEncoding) == resultEncoding;
+  });
   addDynamicallyLegalDialect<triton::tle::TleDialect>([&](Operation *op) {
     bool hasLegalRegions = true;
     for (auto &region : op->getRegions()) {

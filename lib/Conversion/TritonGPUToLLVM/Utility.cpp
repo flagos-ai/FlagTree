@@ -1129,6 +1129,7 @@ Value getGlobalScratchPtr(Location loc, RewriterBase &rewriter,
                           const TargetInfoBase &targetInfo,
                           FunctionOpInterface funcOp, Value allocOffset = {}) {
   // See NOTE: [Additional Function Arguments]
+#ifndef __TLE__
   if (!isKernel(funcOp)) {
     // Base for this function
     auto gmemBase = funcOp.getArgument(funcOp.getNumArguments() +
@@ -1141,6 +1142,7 @@ Value getGlobalScratchPtr(Location loc, RewriterBase &rewriter,
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     return b.gep(ptrTy, i8_ty, gmemBase, allocOffset);
   }
+#endif
 
   // Base for entire kernel
   auto gmemBase =

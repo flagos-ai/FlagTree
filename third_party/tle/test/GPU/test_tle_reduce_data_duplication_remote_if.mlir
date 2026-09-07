@@ -48,7 +48,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       %local_dot = ttg.convert_layout %local : tensor<64x16xf16, #blocked_local> -> tensor<64x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>>
       scf.yield %local_dot : tensor<64x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>>
     } else {
-      %remote_ptr = "tle.remote_pointers"(%remote_base, %rank) : (tensor<64x16x!tt.ptr<f16, 3>, #blocked_remote>, i32) -> tensor<64x16x!tt.ptr<f16, 7>, #blocked_remote>
+      %remote_ptr = "tle.remote_pointers"(%remote_base, %rank) {operandSegmentSizes = array<i32: 1, 1, 0>, space = "cluster"} : (tensor<64x16x!tt.ptr<f16, 3>, #blocked_remote>, i32) -> tensor<64x16x!tt.ptr<f16, 7>, #blocked_remote>
       %remote = tt.load %remote_ptr : tensor<64x16x!tt.ptr<f16, 7>, #blocked_remote>
       %remote_dot = ttg.convert_layout %remote : tensor<64x16xf16, #blocked_remote> -> tensor<64x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>>
       scf.yield %remote_dot : tensor<64x16xf16, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 2}>>
