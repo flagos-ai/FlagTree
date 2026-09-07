@@ -6,7 +6,7 @@ add_triton_library(TritonTLEAnalysis
   DEPENDS
   TritonGPUTableGen
   TritonGPUAttrDefsIncGen
-  TritonGPUCTAAttrIncGen
+  ${TLE_TRITON_GPU_ATTR_DEPENDS}
   TritonGPUTypeInterfacesIncGen
   TritonGPUOpInterfacesIncGen
 

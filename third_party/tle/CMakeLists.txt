@@ -6,6 +6,16 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}")
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/dialect/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/dialect/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/utils/include)
+
+if(TARGET TritonGPUCTAAttrIncGen)
+  list(APPEND TLE_TRITON_GPU_ATTR_DEPENDS TritonGPUCTAAttrIncGen)
+elseif(TARGET TritonGPUCGAAttrIncGen)  # mthreads
+  list(APPEND TLE_TRITON_GPU_ATTR_DEPENDS TritonGPUCGAAttrIncGen)
+endif()
+if(TARGET TritonGPUOpsEnumsIncGen)  # mthreads
+  list(APPEND TLE_TRITON_GPU_ATTR_DEPENDS TritonGPUOpsEnumsIncGen)
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/flagcx/include)
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/flagcx/include)
 endif()
@@ -44,7 +54,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     TritonTLETransformsIncGen
     TritonGPUTableGen
     TritonGPUAttrDefsIncGen
-    TritonGPUCTAAttrIncGen
+    ${TLE_TRITON_GPU_ATTR_DEPENDS}
     TritonGPUTypeInterfacesIncGen
     TritonGPUOpInterfacesIncGen
   )
