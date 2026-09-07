@@ -62,7 +62,7 @@ elif git apply "${PATCH_EXCLUDES[@]}" --check "${PATCH_FILE}" >/dev/null 2>&1; t
   echo "[spacemit] flagtree.patch applied."
 elif git apply "${PATCH_EXCLUDES[@]}" --3way "${PATCH_FILE}" 2>/tmp/spacemit_3way.log; then
   echo "[spacemit] flagtree.patch applied via 3-way merge (context had drifted)."
-  if grep -rn '^<<<<<<<\|^=======\|^>>>>>>>' --include='*.py' --include='*.txt' \
+  if grep -Ern '^(<<<<<<< .+|=======|>>>>>>> .+)$' --include='*.py' --include='*.txt' \
        --include='*.td' --include='*.cc' --include='*.cmake' \
        CMakeLists.txt setup.py python/ include/ third_party/proton/ third_party/tle/ 2>/dev/null; then
     echo "[spacemit] ERROR: 3-way merge left conflict markers." >&2
