@@ -999,9 +999,9 @@ static SmallVector<int64_t> getSqmmaPaddedAllocShape(RankedTensorType argType,
   return allocShape;
 }
 
-static Value getSharedMemorySqmmaOperand(const SqmmaSharedOperandPlan &plan,
-                                         PatternRewriter &rewriter, int opIdx,
-                                         ttg::MUSASqmmaEncodingAttr mmaEnc) {
+static Value stageSharedMemorySqmmaOperand(const SqmmaSharedOperandPlan &plan,
+                                           PatternRewriter &rewriter, int opIdx,
+                                           ttg::MUSASqmmaEncodingAttr mmaEnc) {
   OpBuilder::InsertionGuard g(rewriter);
   Value arg = plan.source;
   RankedTensorType argType = plan.type;
@@ -1107,6 +1107,36 @@ static Value getSharedMemorySqmmaOperand(const SqmmaSharedOperandPlan &plan,
       ttg::LocalAllocOp::create(rewriter, arg.getLoc(), memDescTy, arg);
   setSqmmaAttrs(localAlloc.getOperation());
   return localAlloc.getResult();
+}
+
+static Value getSharedMemorySqmmaOperand(const SqmmaSharedOperandPlan &plan,
+                                         PatternRewriter &rewriter, int opIdx,
+                                         ttg::MUSASqmmaEncodingAttr mmaEnc,
+                                         Type dotElemTy) {
+  Value memDesc = stageSharedMemorySqmmaOperand(plan, rewriter, opIdx, mmaEnc);
+  if (!memDesc)
+    return memDesc;
+  auto memDescTy = dyn_cast<ttg::MemDescType>(memDesc.getType());
+  if (!memDescTy || memDescTy.getElementType() == dotElemTy)
+    return memDesc;
+  // The staging plan walks through bitcasts, so operands fed from a same-width
+  // bit container (i8 loads bitcast to fp8) stage with the container type;
+  // retype the view to the element type the dot consumes.
+  if (memDescTy.getElementType().getIntOrFloatBitWidth() !=
+      dotElemTy.getIntOrFloatBitWidth())
+    return {};
+  auto retypedTy = ttg::MemDescType::get(
+      memDescTy.getShape(), dotElemTy, memDescTy.getEncoding(),
+      memDescTy.getMemorySpace(), memDescTy.getMutableMemory(),
+      memDescTy.getAllocShape());
+  OpBuilder::InsertionGuard g(rewriter);
+  rewriter.setInsertionPointAfterValue(memDesc);
+  Value retyped = ttg::MemDescReinterpretOp::create(rewriter, memDesc.getLoc(),
+                                                    retypedTy, memDesc);
+  if (auto elemBytes = getElementByteWidth(memDescTy.getElementType()))
+    triton::musa::setSqmmaAttrs(retyped.getDefiningOp(), opIdx, *elemBytes,
+                                plan.layout == triton::musa::SQMMALayout::row);
+  return retyped;
 }
 
 static std::optional<SelectedConfig>
@@ -1391,8 +1421,10 @@ public:
         planSharedMemorySqmmaOperand(dotOp.getB(), allowTransposeB);
     if (!sharedPlanA || !sharedPlanB)
       return failure();
-    Value newA = getSharedMemorySqmmaOperand(*sharedPlanA, rewriter, 0, mmaEnc);
-    Value newB = getSharedMemorySqmmaOperand(*sharedPlanB, rewriter, 1, mmaEnc);
+    Value newA =
+        getSharedMemorySqmmaOperand(*sharedPlanA, rewriter, 0, mmaEnc, aElemTy);
+    Value newB =
+        getSharedMemorySqmmaOperand(*sharedPlanB, rewriter, 1, mmaEnc, bElemTy);
     if (!newA || !newB)
       return failure();
 
@@ -1476,12 +1508,27 @@ public:
     auto aElemTy = problem->aElemType;
     auto bElemTy = problem->bElemType;
     bool allowTF32 = problem->allowTF32;
+    // Accelerated WMMA rejects fp16 accumulators/results (only the PH1
+    // f16 x f16 fp32-carrier path keeps an f16 result); bail out so these
+    // dots take the FMA promotion fallback.
+    if (oldRetType.getElementType().isF16() &&
+        !(*arch != triton::musa::MusaArch::QY2 && aElemTy.isF16() &&
+          bElemTy.isF16()))
+      return failure();
     auto config = selectWmmaConfig(*problem, wmmaTraits);
 #else
     auto aTy = cast<RankedTensorType>(dotOp.getA().getType());
     auto bTy = cast<RankedTensorType>(dotOp.getB().getType());
     auto aElemTy = aTy.getElementType();
     auto bElemTy = bTy.getElementType();
+
+    // Accelerated WMMA rejects fp16 accumulators/results (only the PH1
+    // f16 x f16 fp32-carrier path keeps an f16 result); bail out so these
+    // dots take the FMA promotion fallback.
+    if (oldRetType.getElementType().isF16() &&
+        !(*arch != triton::musa::MusaArch::QY2 && aElemTy.isF16() &&
+          bElemTy.isF16()))
+      return failure();
 
     if (!wmmaTraits.supportsNativeFp8Wmma &&
         (tt::type::isFloat8(aElemTy) || tt::type::isFloat8(bElemTy))) {
@@ -1758,8 +1805,10 @@ public:
                                             newRetType, acc);
     }
 
-    Value newA = getSharedMemorySqmmaOperand(*sharedPlanA, rewriter, 0, mmaEnc);
-    Value newB = getSharedMemorySqmmaOperand(*sharedPlanB, rewriter, 1, mmaEnc);
+    Value newA =
+        getSharedMemorySqmmaOperand(*sharedPlanA, rewriter, 0, mmaEnc, aElemTy);
+    Value newB =
+        getSharedMemorySqmmaOperand(*sharedPlanB, rewriter, 1, mmaEnc, bElemTy);
     if (!newA || !newB)
       return failure();
 

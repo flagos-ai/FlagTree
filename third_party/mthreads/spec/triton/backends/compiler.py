@@ -1,7 +1,7 @@
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Union
+from typing import Dict, Optional, Union
 from types import ModuleType
 
 
@@ -12,6 +12,31 @@ class GPUTarget(object):
     # Target architecture, e.g., 90 (for cuda compute capability), gfx940 (for hip)
     arch: Union[int, str]
     warp_size: int
+
+
+class DotSupport(Enum):
+    """How a backend supports a dot dtype/format combination."""
+    NATIVE = "native"
+    EMULATED = "emulated"
+    UNSUPPORTED = "unsupported"
+
+
+@dataclass(frozen=True)
+class DotCap:
+    """Answer to a backend `resolve_dot(a_dtype, b_dtype, acc_dtype, M, N, K)` /
+    `resolve_dot_scaled(lhs_format, rhs_format)` codegen-function query: the
+    semantic layer rejects UNSUPPORTED combinations with `diag` as the error
+    message and emits `diag` as a compile-time warning for EMULATED ones."""
+    support: DotSupport
+    diag: Optional[str] = None
+
+    @property
+    def supported(self) -> bool:
+        return self.support is not DotSupport.UNSUPPORTED
+
+    @property
+    def native(self) -> bool:
+        return self.support is DotSupport.NATIVE
 
 
 class Language(Enum):

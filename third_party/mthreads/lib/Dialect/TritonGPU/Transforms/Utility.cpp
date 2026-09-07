@@ -1739,6 +1739,21 @@ void replaceUsesAndPropagateType(
       auto shape = reshape.getType().getShape();
       newVal =
           ttg::MemDescReshapeOp::create(builder, reshape.getLoc(), val, shape);
+    } else if (auto reinterpret = dyn_cast<ttg::MemDescReinterpretOp>(user)) {
+      // Same-shape element-type reinterpretation (fp8 operands staged through
+      // a same-width bit container): retype the propagated value, keeping its
+      // layout, mutability and alloc shape.
+      auto oldSrcType = cast<ttg::MemDescType>(reinterpret.getSrc().getType());
+      ttg::MemDescType oldType = reinterpret.getType();
+      auto valType = cast<ttg::MemDescType>(val.getType());
+      if (oldSrcType.getShape() == oldType.getShape()) {
+        Type newDstType = ttg::MemDescType::get(
+            valType.getShape(), oldType.getElementType(), valType.getEncoding(),
+            valType.getMemorySpace(), valType.getMutableMemory(),
+            valType.getAllocShape());
+        newVal = ttg::MemDescReinterpretOp::create(
+            builder, reinterpret.getLoc(), newDstType, val);
+      }
     }
     assert(newVal && "unhandled memdesc view");
     newVal.getDefiningOp()->setAttrs(user->getAttrs());
