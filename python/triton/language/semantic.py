@@ -1604,7 +1604,11 @@ class TritonSemantic(Generic[TensorTy]):
             acc_handle = self.builder.create_splat(ret_ty.to_ir(self.builder), _0)
         else:
             acc_handle = acc.handle
-            assert acc.type.shape == ret_ty.shape and acc.type.element_ty == out_dtype
+            # the accumulator must match the actual result element type, which
+            # for integer dot is int32 regardless of out_dtype
+            if acc.type.shape != ret_ty.shape or acc.type.element_ty != ret_scalar_ty:
+                raise ValueError(f"tl.dot: accumulator type {acc.type} is incompatible with the dot "
+                                 f"result type {ret_ty}")
 
         # max_num_imprecise_acc only applies to fp8 -> fp32 dot on sm_90
         if max_num_imprecise_acc is None:
