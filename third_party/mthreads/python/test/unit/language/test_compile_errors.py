@@ -429,6 +429,52 @@ def test_min_dot_size(dtype):
             raise assertion_err from e.value
 
 
+@pytest.mark.parametrize("dtype", [tl.int16, tl.int32, tl.uint8])
+def test_int_dot_rejected(dtype):
+    # Integer dot is only supported for int8 x int8; other integer operand types
+    # are rejected at compile time, naming the product, the combination and the
+    # native alternatives
+    if not is_musa():
+        pytest.skip("resolve_dot rules under test are the MUSA ones")
+
+    @triton.jit
+    def dot_kernel(dtype: tl.constexpr):
+        a = tl.full((64, 64), 0, dtype)
+        b = tl.full((64, 64), 0, dtype)
+        tl.dot(a, b)
+
+    with pytest.raises(CompilationError) as e:
+        triton.compile(
+            triton.compiler.ASTSource(fn=dot_kernel, signature={"dtype": "constexpr"}, constexprs={"dtype": dtype}))
+    try:
+        cause = str(e.value.__cause__)
+        assert "is not supported on" in cause
+        assert dtype.name in cause
+        assert "native alternatives" in cause
+    except AssertionError as assertion_err:
+        raise assertion_err from e.value
+
+
+def test_dot_acc_type_mismatch():
+    # An explicit dot accumulator must match the result element type; int8 dot
+    # returns int32 regardless of out_dtype, so a float32 accumulator is
+    # rejected at compile time
+
+    @triton.jit
+    def dot_kernel():
+        a = tl.full((64, 64), 0, tl.int8)
+        b = tl.full((64, 64), 0, tl.int8)
+        acc = tl.full((64, 64), 0.0, tl.float32)
+        tl.dot(a, b, acc=acc)
+
+    with pytest.raises(CompilationError) as e:
+        triton.compile(triton.compiler.ASTSource(fn=dot_kernel, signature={}, constexprs={}))
+    try:
+        assert "incompatible with the dot result type" in str(e.value.__cause__)
+    except AssertionError as assertion_err:
+        raise assertion_err from e.value
+
+
 def test_max_num_imprecise_acc_limit():
 
     @triton.jit
