@@ -14,6 +14,7 @@ from triton.flagmega.pattern_match.or_pattern import OrPattern
 from triton.flagmega.pattern_match.pattern import Pattern
 from triton.flagmega.pattern_match.result import MatchResult
 from triton.flagmega.pattern_match.vargs_pattern import VArgsPattern
+from triton.flagmega.pattern_match.unary_chain_pattern import UnaryChainPattern
 
 
 @dataclass
@@ -82,8 +83,24 @@ def _match_enode(
     if pattern.user_count is not None and scope.user_counts.get(node.id, 0) != pattern.user_count:
         return []
     previous = scope.matches.get(pattern, _MISSING)
-    if previous is not _MISSING:
+    if previous is not _MISSING and not isinstance(pattern, UnaryChainPattern):
         return [scope] if _same_identity(previous, node) else []
+
+    if isinstance(pattern, UnaryChainPattern):
+        results = []
+        pending = [(enode, ())]
+        while pending:
+            current, path = pending.pop()
+            for branch in _match_enode(graph, current, pattern.terminal, scope.clone(), module):
+                if branch.capture(pattern, tuple(value.node for value in path)):
+                    results.append(branch)
+            if (len(current.children) != 1 or any(value.node.id == current.node.id for value in path)
+                    or not _match_enode(graph, current, pattern.step,
+                                       _Scope(user_counts=scope.user_counts), module)):
+                continue
+            pending.extend((child, (*path, current)) for child in
+                           graph.class_view(current.children[0]).nodes)
+        return results
 
     if isinstance(pattern, OrPattern):
         results: list[_Scope] = []

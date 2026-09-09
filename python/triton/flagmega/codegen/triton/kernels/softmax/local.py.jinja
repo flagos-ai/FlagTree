@@ -1,0 +1,41 @@
+# flagmega-kernel: softmax/local platform=generic
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "softmax" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_row in tl.range(0, {{ call.rows }}):
+{% if call.capacity <= call.tile %}
+        _fm_offsets = tl.arange(0, {{ call.tile }})
+        _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+        _fm_values = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_mask, other=-float("inf")).to(tl.float32)
+        _fm_numerator = tl.exp(_fm_values - tl.max(_fm_values, 0))
+        _fm_probabilities = _fm_numerator / tl.sum(_fm_numerator, 0)
+        tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_probabilities, mask=_fm_mask & ({{ call.writer_active }}))
+{% else %}
+        _fm_maximum = tl.full((), -float("inf"), tl.float32)
+        for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+            _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
+            _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+            _fm_values = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_mask, other=-float("inf")).to(tl.float32)
+            _fm_maximum = tl.maximum(_fm_maximum, tl.max(_fm_values, 0))
+        _fm_denominator = tl.full((), 0, tl.float32)
+        for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+            _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
+            _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+            _fm_values = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_mask, other=-float("inf")).to(tl.float32)
+            _fm_denominator += tl.sum(tl.exp(_fm_values - _fm_maximum), 0)
+        for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+            _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
+            _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+            _fm_values = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_mask, other=-float("inf")).to(tl.float32)
+            _fm_probabilities = tl.exp(_fm_values - _fm_maximum) / _fm_denominator
+            tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_probabilities, mask=_fm_mask & ({{ call.writer_active }}))
+{% endif %}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

@@ -23,12 +23,20 @@ def test_default_catalog_has_one_explicit_provider_for_every_reviewed_op():
         "math.block_scaled_matmul",
         "math.matmul",
         "math.mul",
+        "math.div",
+        "math.sigmoid",
+        "math.reduce_sum",
         "math.packed_block_scaled_matmul",
         "math.packed_dense_matmul",
         "math.silu",
         "math.vectorized_binary",
         "math.vectorized_unary",
         "nn.dense_matmul_glu",
+        "nn.delta_rule_coefficients",
+        "nn.delta_rule_log_prefix",
+        "nn.delta_rule_block_update",
+        "nn.delta_rule_gates",
+        "nn.l2_normalization",
         "nn.embedding",
         "nn.gdn_convolution",
         "nn.gdn_recurrent_core",
@@ -41,6 +49,9 @@ def test_default_catalog_has_one_explicit_provider_for_every_reviewed_op():
         "nn.qkv_rope_with_cache",
         "nn.rms_norm",
         "nn.rope",
+        "nn.softmax",
+        "nn.sparse_experts_gate_up",
+        "nn.sparse_experts_down",
         "nn.rotary_embedding",
         "nn.update_paged_attention_kv_cache",
         "ntt.matmul_norm_stats",
@@ -55,8 +66,16 @@ def test_default_catalog_has_one_explicit_provider_for_every_reviewed_op():
         "ntt.vectorized_cast",
         "ntt.vectorized_rope",
         "tensors.cast",
+        "tensors.concat",
+        "tensors.broadcast_to",
+        "tensors.top_k",
+        "tensors.pad",
+        "tensors.pack",
+        "tensors.unpack",
+        "tensors.slice",
+        "tensors.slice_to_shape",
     })
-    assert len(registry.providers) == 21
+    assert len(registry.providers) == 25
 
 
 def test_selection_orchestrator_contains_no_candidate_catalog_branches():

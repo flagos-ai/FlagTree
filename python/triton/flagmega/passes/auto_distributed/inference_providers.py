@@ -4,14 +4,11 @@
 
 from __future__ import annotations
 
-from itertools import product
 from math import prod
 
-from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir import (
     DistributedType,
     IRType,
-    Node,
     RefType,
     TensorType,
     TupleType,
@@ -28,6 +25,7 @@ from triton.flagmega.passes.auto_distributed.candidates import (
 from triton.flagmega.passes.auto_distributed.candidate_identity import (
     distributed_candidate_id,
 )
+from triton.flagmega.passes.auto_distributed.type_analysis import infer_candidate
 
 
 class TypeInferenceCandidateProvider(DistributedCandidateProviderBase):
@@ -62,6 +60,13 @@ class TypeInferenceCandidateProvider(DistributedCandidateProviderBase):
         if len(context.available_input_types) != len(logical_inputs):
             return ()
         definition = get_definition(node.op)
+        # A variadic ParameterInfo describes every remaining operand, not
+        # one tuple-valued edge. Preserve each actual edge in the candidate.
+        parameters = tuple(
+            parameter
+            for parameter in definition.input_parameters
+            for _ in (range(parameter.input_index, len(logical_inputs)) if parameter.variadic else (parameter.input_index,))
+        )
         choices = tuple(
             _candidate_input_types(
                 available,
@@ -72,7 +77,8 @@ class TypeInferenceCandidateProvider(DistributedCandidateProviderBase):
             for available, logical, parameter in zip(
                 context.available_input_types,
                 logical_inputs,
-                definition.input_parameters,
+                parameters,
+                strict=True,
             )
         )
         if any(not values for values in choices):
@@ -80,28 +86,15 @@ class TypeInferenceCandidateProvider(DistributedCandidateProviderBase):
 
         results: list[DistributedCandidate] = []
         seen: set[tuple[IRType, tuple[IRType, ...]]] = set()
-        for input_types in product(*choices):
-            typed_inputs = tuple(
-                Node(
-                    f"<{node.id}.input.{index}>",
-                    "builtin.var",
-                    (),
-                    value_type,
-                    attrs={"name": f"<{node.id}.input.{index}>"},
-                )
-                for index, value_type in enumerate(input_types)
-            )
-            try:
-                return_type = definition.infer_type(typed_inputs, node.attrs)
-            except (IRSchemaError, AssertionError, ValueError):
+        for input_types in definition.distributed_input_type_tuples(choices, node.attrs):
+            analysis = infer_candidate(context, definition, input_types)
+            if analysis is None:
                 continue
+            return_type, factors = analysis
             relation = (return_type, tuple(input_types))
             if relation in seen:
                 continue
             seen.add(relation)
-            factors = definition.cost_factors(
-                tuple(typed_inputs), node.attrs, return_type
-            )
             results.append(DistributedCandidate(
                 distributed_candidate_id(
                     node.id, "inferred", return_type, tuple(input_types)

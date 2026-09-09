@@ -59,7 +59,11 @@ def decompose_paged_attention_rule(
     split_hierarchy_axis: int,
     split_count: int,
 ) -> RewriteRule:
-    """Port nncase ``DecomposePagedAttention`` without machine assumptions."""
+    """Use nncase's split-state decomposition for causal query chunks.
+
+    Partial/combine preserves the sequence axis and computes a separate causal
+    prefix for each row; the original single-token restriction is unnecessary.
+    """
 
     if split_hierarchy_axis < 0:
         raise ValueError("split_hierarchy_axis must be non-negative.")
@@ -84,7 +88,7 @@ def decompose_paged_attention_rule(
         layout = tuple(source.attrs["layout"])
         seq_axis = layout.index("seq")
         shape = tensor_of(source.type).shape
-        if not shape[seq_axis].is_fixed or shape[seq_axis].fixed_value != 1:
+        if shape[seq_axis].is_fixed and shape[seq_axis].fixed_value == 0:
             return source
         metadata = decomposition_metadata(source, "DecomposePagedAttention")
         partial = make_node(

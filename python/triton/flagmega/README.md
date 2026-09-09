@@ -6,6 +6,18 @@ is an executable serialization format for editing and resuming compilation, not
 just a debug dump. The compiler can run unattended; a user or agent can also
 inspect a checkpoint, edit it, override a selection and resume through the CLI.
 
+`F.nn.rope(value, cos, sin, rotary_dim=64)` represents partial RoPE directly,
+without Slice/Concat nodes. `rotary_dim` is a positive even scalar-coordinate
+prefix length, bounded by the input head dimension; omitting it preserves full-head
+rotation and the existing serialized contract. Tables cover only that prefix.
+The tail is copied unchanged. `F.ntt.vectorized_rope` uses the same scalar units
+after packing. RoPE promotes inputs and tables independently to FP32, computes the products
+and sum in FP32, and rounds only the result back to the input dtype, as nncase
+does. `F.nn.rotary_embedding(..., output_dtype="bfloat16")` expresses a rounded
+table directly at its producer's store boundary. Thus a numerical profile can
+use BF16 input/output and BF16 tables without surrounding RoPE Cast nodes;
+normalization's separate rounding boundaries remain unchanged.
+
 ## Workspace implementation summary
 
 | Area | Implemented responsibilities |
@@ -23,7 +35,7 @@ inspect a checkpoint, edit it, override a selection and resume through the CLI.
 | `serving` | Standalone artifact-only prompt prefill and decode, chat templates, prefix-cache reuse, sampling, interactive CLI and per-turn performance metrics. |
 
 Bufferization models memory spans, aliases, lifetimes and synchronization; it
-uses a CP-SAT allocator rather than a placeholder memory plan. Distribution
+uses a CP-SAT allocator by default, or verified first-fit for fast iteration. Distribution
 uses a 2D mesh in the validated configuration. Ordinary kernels consume local
 shards; communication/boxing implementations own the necessary distributed
 coordination.
@@ -68,11 +80,107 @@ model. JSON CLI output is an inspection/report format, not a replacement for
 the editable Python IR. Only load trusted Python checkpoints: loading executes
 their Python builders.
 
+Readable `.il`/`.script` dumps use function-local short SSA names on the left
+and original node IDs in trailing `name=...` comments. Constants and weight
+references are typed inline operands; splats stay compressed and weights are
+never loaded for printing. Constant recipes use the same notation. Computations
+with shared users remain single SSA definitions, and each function prints its
+own body. These display names do not rename the IR or change executable Python
+checkpoints, semantic hashes, selection plans, or generated kernels.
+
+Each function groups proven weight/constant preprocessing into an internal
+`weights { ... }` section, using `%w0`, `%w1`, etc.; the compute body has its own
+`%0`, `%1` numbering. Frozen recipes also live in the consuming function's
+weights section. This is only a display grouping, not a scope, scheduling
+region, or claim that an operation has already been folded. No extra dump
+files are created. Classification follows immutable dependencies and the op's
+constant-evaluation/determinism contracts, not names such as `pack` or `weight`.
+DumpManager proves constant parameters across all call sites before splitting
+function views, and shares that read-only analysis across their renders. A
+standalone callee without caller context keeps unproven parameter expressions
+in its compute body. Dynamic inputs, effects and physical TIR calls remain in
+the execution body.
+
+After post-boundary vector-layout propagation, `PackResultProducers` moves
+embedding feature packing into the weight table (nncase Gather propagation)
+and makes rotary-table producers return vector elements directly. It rebuilds
+each producer once in dataflow order, preserving shared scalar consumers and
+the single position-state read. A subsequent egraph pass folds inverse layout
+boundaries. No Pack-to-Bitcast normalization is used to hide activation packing.
+
 An executable artifact contains `ir/final.py`, the readable companion
 `ir/final.script`, generated source, readonly data and a checked manifest.
 Custom implementation catalogs must match the saved target snapshot when
 resuming target verification. Regenerate generated source after API changes;
 retired names are not silently accepted by compatibility shims.
+
+Before freezing readonly-data recipes, `LiftConstantParameterExpressions`
+uses all call sites to prove constant function arguments, including through
+nested wrappers. Pure, deterministic, constant-evaluable expressions over
+fixed-size immutable tensors move to each caller; the reusable callee accepts
+their results through one refined ABI. Weights may differ between calls and
+no `packed_from` annotation is required. Shared users, exported parameters and
+runtime call order are preserved. Stop at `lift-constant-parameters` (IR stage
+`constant_parameters_lifted`) to edit these ordinary Python expressions before
+`FreezeConstantIslands`. Frozen or already lowered TIR must be resumed from an
+earlier checkpoint to perform this transformation.
+
+Readonly-data verification streams bounded chunks and checks both the whole
+image and every indexed entry. One worker hashes the image while the calling
+thread hashes entry slices over the same immutable chunk; each chunk completes
+before the next read. This overlaps CPU work without caching trust decisions,
+skipping hashes, or making a full-image copy. Worker failures are propagated.
+
+### Bufferization optimization levels
+
+Use `CompileOptions(bufferize_opt_level="fast")` or `--bufferize-opt-level fast`
+for deterministic first-fit allocation during iteration. Use `optimized` (the
+target default) for final memory planning: CP-SAT minimizes pool high-water,
+then optionally reduces proven reuse-only synchronization conflicts without
+increasing any pool. First-fit supplies an initial placement, hints and upper
+bound. All SAT objectives share the configured per-allocation time budget;
+there is no address-sum objective. Pool records retain solver status and bounds,
+so a feasible placement is not presented as a proven optimum.
+
+Both levels use the same alias/MemSpan analysis, inclusive lifetimes, alignment,
+capacity checks, call ABI verification and synchronization realization. Fast
+can require more memory or synchronization; it does not silently fall back to
+SAT when a pool does not fit. Exact physical allocation problems are cached
+within one bufferization run, including baseline/preferred planning and function
+specialization. Readonly data remains linearly allocated.
+
+Changing levels requires resuming the Python IR **before Bufferize**, normally
+the `PlanFunctionMemory/After` or `Bufferize/Before` directory. Already allocated
+checkpoints cannot simply be relabeled: offsets, call bindings, synchronization
+and generated source must all be regenerated. Omitting the flag when resuming
+an allocated checkpoint preserves its saved level.
+
+For example, compile an imported decode module for iteration, then resume its
+complete pre-Bufferize dump with SAT for the final build:
+
+```sh
+python -m triton.flagmega compile --input imported.py --output build/fast \
+  --bufferize-opt-level fast --work-dir build/fast-dumps --dump-flags compile,pass-ir
+python -m triton.flagmega resume --input /path/to/Bufferize/Before \
+  --output build/optimized --bufferize-opt-level optimized \
+  --work-dir build/optimized-dumps --dump-flags compile,pass-ir
+```
+
+The second input is the function-complete `Before` directory produced by the
+first command, not its allocated output. Add `--emit-executable` and
+`--checkpoint /path/to/checkpoint` to materialize runnable artifacts; these examples otherwise
+compile IR and do not load weights or measure device execution. The same level
+option is available on `compile`, `resume`, `replay` and `stage`.
+
+AutoDistribution shares exact type-inference, reshard and realized-cost queries
+within a search. Fixed choices are propagated through exact compatibility
+relations before CP-SAT variables are constructed; candidate IDs remain
+unchanged and distinct weights remain independent decisions. `DistributedSearchGraph.dot`
+retains all candidates; `Costs/Pick.dot` contains only the selected subgraph.
+The pass analysis manager can reuse an unchanged proposal during uninterrupted
+compilation. Pausing/resuming creates a fresh manager, and an intervening custom
+pass invalidates this analysis unless it explicitly declares preservation.
+Custom passes that mutate target/provider policy must not claim preservation.
 
 ### Source-runtime numerical contracts
 
@@ -102,6 +210,23 @@ projection/table/final rounding boundaries and cache effects, including values
 returned by functions. CLI compilation and edit/resume need no tutorial imports
 or agent intervention to obtain these fusions. Generic correctness fixes and
 optimizations live here; workload/hardware selection strategies may remain local.
+
+Local fusions are Pattern-based rules grouped in dataflow fixed points:
+`DecomposeComplexOps` includes normalization decomposition, wide GLU, final
+NormApply casts and QKV/RoPE/cache formation; `FuseDistributedOps` groups the
+gather/reduce normalization and QKV variants. Patterns bind shared operands and
+private users; callbacks check type/layout, rounding and effect-order legality.
+`is_unary_chain` captures arbitrary-length view chains in both dataflow and
+e-graph matching. Multi-output/effectful region edits are dataflow transactions,
+not e-graph equalities. Late rules use `rewrite_constants=False` to keep frozen
+assets and recipes opaque. Legacy fusion stage names resolve to their grouped
+stage for checkpoint resume.
+
+`QKVRoPEWithCache.rotary_dim` and its gather/reduce form use scalar coordinates,
+independent of vector lanes (omitting it keeps full-head rotation). Normalization
+covers the complete head; internal FP32 RoPE rotates only the prefix and retains
+the normalized tail. BF16 normalization boundaries, table storage dtype, both
+cache writes and sequence advancement remain part of the operation contract.
 
 `HoistCallInvariantExpressions` is a normal TargetIndependent pass with its own
 Before/After checkpoints. It lifts pure expressions of identical immutable SSA

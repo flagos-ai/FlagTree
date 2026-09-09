@@ -22,7 +22,6 @@ from triton.flagmega.ir.ops.core import (
 from triton.flagmega.ir.ops.nn._attention_layout import (
     from_seq_head_dim,
     normalize_attention_layout,
-    require_decode_token,
     to_seq_head_dim,
 )
 from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionState
@@ -154,30 +153,35 @@ def paged_attention_scalar_value(
         query_value, query_type, layout.index("dim")
     )
     query_value = to_seq_head_dim(query_value, layout)
-    query = require_decode_token(query_value, operation="PagedAttention")
+    if query_value.ndim != 3 or query_value.shape[0] == 0:
+        raise EvaluationError("PagedAttention requires a nonempty [seq, head, dim] query chunk.")
     if not isinstance(state, PagedAttentionState):
         raise EvaluationError("PagedAttention state must evaluate to PagedAttentionState.")
     state.validate()
     layer_id = _scalar_int(layer_id_value)
-    length = int(state.slot_mapping[0].item()) + 1
-    key_history, value_history = state.gather(layer_id=layer_id, length=length)
-    query_heads, head_dim = query.shape
+    base_position = int(state.slot_mapping[0].item())
+    if base_position < 0:
+        raise EvaluationError("PagedAttention query chunk base must be non-negative.")
+    tokens, query_heads, head_dim = query_value.shape
+    key_history, value_history = state.gather(layer_id=layer_id, length=base_position + tokens)
     kv_heads = state.config.num_kv_heads
     if query_heads % kv_heads or head_dim != state.config.head_dim:
         raise EvaluationError("PagedAttention query shape disagrees with cache config.")
     groups = query_heads // kv_heads
-    head_to_kv = context.torch.arange(query_heads, device=query.device) // groups
+    head_to_kv = context.torch.arange(query_heads, device=query_value.device) // groups
     expanded_key = key_history[:, head_to_kv, :].permute(1, 0, 2)
     expanded_value = value_history[:, head_to_kv, :].permute(1, 0, 2)
-    scores = context.torch.einsum(
-        "hd,hsd->hs", query.float(), expanded_key.float()
-    ) * scale
-    probabilities = context.torch.softmax(
-        scores, dim=-1, dtype=context.torch.float32
-    ).to(dtype=query.dtype)
-    result = context.torch.einsum(
-        "hs,hsd->hd", probabilities, expanded_value
-    ).unsqueeze(0)
+    results = []
+    for row, query in enumerate(query_value):
+        length = base_position + row + 1
+        scores = context.torch.einsum(
+            "hd,hsd->hs", query.float(), expanded_key[:, :length].float()
+        ) * scale
+        probabilities = context.torch.softmax(
+            scores, dim=-1, dtype=context.torch.float32
+        ).to(dtype=query.dtype)
+        results.append(context.torch.einsum("hs,hsd->hd", probabilities, expanded_value[:, :length]))
+    result = context.torch.stack(results)
     return from_seq_head_dim(result, layout).contiguous()
 
 

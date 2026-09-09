@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from triton.flagmega.errors import IRSchemaError
-from triton.flagmega.ir import DType, IRModule, Node, TensorType, get_definition
+from triton.flagmega.ir import IRModule, Node, TensorType, get_definition
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.tensors.pack import normalize_axes
 from triton.flagmega.rules import RewriteResult, RewriteRule
@@ -55,7 +55,7 @@ def _plan(node: Node, module: IRModule):
         return None
     lane = lanes[0]
     head_dim = rope.type.shape[-1]
-    if not head_dim.is_fixed or head_dim.fixed_value % (2 * lane):
+    if not head_dim.is_fixed or head_dim.fixed_value % lane:
         return None
     cos = module.node_map[rope.inputs[1]]
     sin = module.node_map[rope.inputs[2]]
@@ -77,20 +77,6 @@ def _matches(node: Node, module: IRModule) -> bool:
         return False
 
 
-def _cast_float32(value: Node, *, node_id: str, boundary: Node) -> tuple[Node, tuple[Node, ...]]:
-    value_type = tensor_of(value.type)
-    if value_type.dtype == DType.FLOAT32:
-        return value, ()
-    cast = _make(
-        node_id,
-        "tensors.cast",
-        (value,),
-        {"dtype": DType.FLOAT32},
-        propagation_helper_metadata(boundary, boundary.id, "rope-table-cast"),
-    )
-    return cast, (cast,)
-
-
 def _rewrite(node: Node, module: IRModule) -> RewriteResult:
     plan = _plan(node, module)
     assert plan is not None
@@ -110,16 +96,10 @@ def _rewrite(node: Node, module: IRModule) -> RewriteResult:
         table = module.node_map[input_id]
         table_type = tensor_of(table.type)
         table_axis = axes[0] - (rope.type.rank - table_type.rank)
-        converted, prefix = _cast_float32(
-            table,
-            node_id=f"{node.id}.propagated.{name}_cast",
-            boundary=node,
-        )
-        helpers.extend(prefix)
         packed = _make(
             f"{node.id}.propagated.{name}_pack",
             "tensors.pack",
-            (converted,),
+            (table,),
             {"lanes": (2, lane), "axes": (table_axis, table_axis)},
             propagation_helper_metadata(node, node.id, "propagated-pack"),
         )
@@ -129,7 +109,7 @@ def _rewrite(node: Node, module: IRModule) -> RewriteResult:
         node.id,
         "ntt.vectorized_rope",
         (input_pack, *packed_tables),
-        {},
+        rope.attrs,
         propagation_result_metadata(
             rope,
             node,

@@ -48,6 +48,9 @@ def test_post_boundary_pass_uses_construct_rules_extract_and_dumps_pick(tmp_path
         / "Costs"
         / "Pick.txt"
     ).is_file()
+    for boundary in ("Before", "After"):
+        assert (tmp_path / "03_PropagateExposedFunctionLayouts" / boundary / "main.py").is_file()
+        assert (tmp_path / "04_PackResultProducers" / boundary / "main.py").is_file()
     entries = json.loads(
         (tmp_path / "artifacts.json").read_text(encoding="utf-8")
     )["artifacts"]

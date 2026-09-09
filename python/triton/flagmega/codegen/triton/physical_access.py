@@ -93,6 +93,20 @@ def emit_storage_pointer(
             pointer = f"({pointer} + {' + '.join(terms)})"
     else:
         pointer = str(argument)
+        # External aliases also carry a byte offset. Most representation
+        # views have zero offset, but a reference subspan need not start at
+        # its parent's base pointer.
+        offset = int(abi.get("pool_byte_offset", 0))
+        if offset:
+            itemsize = int(abi["scalar_itemsize"])
+            if itemsize <= 0 or offset % itemsize:
+                raise CodegenError("External view byte offset is not scalar aligned.")
+            pointer = f"({pointer} + {offset // itemsize})"
+    if "view_byte_offset" in abi:
+        expression = abi.get("view_byte_offset_expression")
+        if not isinstance(expression, str):
+            raise CodegenError("Runtime-indexed view has no bound byte-offset expression.")
+        pointer = f"({pointer} + (({expression}) // {int(abi['scalar_itemsize'])}))"
     return pointer
 
 

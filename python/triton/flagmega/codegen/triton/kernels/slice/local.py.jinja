@@ -1,0 +1,5 @@
+# flagmega-kernel: slice/local platform=generic
+{% if render_calls is defined %}
+{% set transform_family = "slice" %}
+{% include "kernels/tensor_transform/_function.py.jinja" %}
+{% endif %}

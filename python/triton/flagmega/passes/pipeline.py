@@ -90,10 +90,6 @@ PIPELINE_GROUPS = (
         "call_invariants_hoisted",
         (
             PipelinePass("DecomposeComplexOps", "decompose-gdn"),
-            PipelinePass(
-                "FormQKVRoPEWithCache",
-                "form-qkv-rope-with-cache",
-            ),
             PipelinePass("HoistCallInvariantExpressions", "hoist-call-invariants"),
         ),
     ),
@@ -160,6 +156,7 @@ PIPELINE_GROUPS = (
             "distributed_boundary_layout_propagated",
             "norm_bindings_finalized",
             "finalized_norm_stats_boxing_sunk",
+            "matmul_norm_stats_lowered",
         }),
         "vector_contracts_lowered",
         (
@@ -225,6 +222,7 @@ PIPELINE_GROUPS = (
             "tir_candidates",
             "selected_tir_variants",
             "canonical_constants",
+            "constant_parameters_lifted",
             "frozen_constants",
             "gather_reduce_add_norm_apply_fused",
             "gather_reduce_norm_apply_fused",
@@ -244,19 +242,9 @@ PIPELINE_GROUPS = (
         (
             PipelinePass("FuseNormStatsApply", "fuse-norm-stats-apply"),
             PipelinePass("ConstantCSE", "constant-cse"),
+            PipelinePass("LiftConstantParameterExpressions", "lift-constant-parameters"),
             PipelinePass("FreezeConstantIslands", "freeze-constants"),
-            PipelinePass(
-                "FuseGatherReduceAddNormApply",
-                "fuse-gather-reduce-add-norm-apply",
-            ),
-            PipelinePass(
-                "FuseGatherReduceNormApply",
-                "fuse-gather-reduce-norm-apply",
-            ),
-            PipelinePass(
-                "FuseGatherReduceQKVRoPEWithCache",
-                "fuse-gather-reduce-qkv-rope-with-cache",
-            ),
+            PipelinePass("FuseDistributedOps", "fuse-distributed-ops"),
             PipelinePass("LowerTupleBoxing", "lower-tuple-boxing"),
             PipelinePass("ProposeTIRCandidates", "propose-tir"),
             PipelinePass("LowerSelectedTIR", "lower-tir"),

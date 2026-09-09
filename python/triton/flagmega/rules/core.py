@@ -24,6 +24,13 @@ class RewriteResult:
 
     replacement: Node
     prefix_nodes: tuple[Node, ...] = ()
+    # Dataflow-only, atomic region edits. A removed id may be explicitly
+    # relocated into prefix_nodes. Other users are updated with stable ids.
+    extra_replacements: tuple[Node, ...] = ()
+    removed_ids: tuple[str, ...] = ()
+    # Region helpers may publish at an earlier matched boundary, e.g. the
+    # cache write preceding the attention root. None means before the root.
+    insertion_before: str | None = None
 
 
 @dataclass(frozen=True)

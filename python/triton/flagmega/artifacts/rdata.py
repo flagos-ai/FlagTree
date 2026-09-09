@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -613,17 +614,22 @@ def _verify_image_hashes(
     Runtime loading already uses ``torch.from_file`` after verification.  The
     verifier must preserve that bounded-memory contract: ``Path.read_bytes``
     made peak host memory proportional to the complete model and also copied
-    every entry slice before hashing it.  One sequential pass updates the
-    image digest and the digest for every intersecting indexed range.
+    every entry slice before hashing it. One sequential read supplies two
+    independent digest chains: a worker updates the whole-image hash while
+    this thread updates indexed ranges over the same immutable bytes. Join
+    each chunk before the next read, bounding queued payloads and propagating
+    worker failures before verification can succeed.
     """
 
     image_hasher = hashlib.sha256()
     entry_hashers = [hashlib.sha256() for _ in ranges]
     position = 0
     first_active = 0
-    with image.open("rb") as stream:
+    with image.open("rb") as stream, ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="flagmega-rdata"
+    ) as worker:
         while chunk := stream.read(_HASH_CHUNK_BYTES):
-            image_hasher.update(chunk)
+            image_update = worker.submit(image_hasher.update, chunk)
             chunk_end = position + len(chunk)
             while (
                 first_active < len(ranges)
@@ -639,6 +645,7 @@ def _verify_image_hashes(
                 if overlap_start < overlap_end:
                     entry_hashers[index].update(view[overlap_start:overlap_end])
                 index += 1
+            image_update.result()
             position = chunk_end
 
     if image_hasher.hexdigest() != expected_image_hash:

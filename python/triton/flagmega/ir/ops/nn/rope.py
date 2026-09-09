@@ -7,12 +7,14 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.ir.dim_expr import DimConst
 from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of, tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast
 from triton.flagmega.ir.model import DistributedType, IRType, Node
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
+    attribute_parameter,
     input_parameter,
     op_definition,
     tensor_elements,
@@ -26,11 +28,39 @@ class RoPE(OpDefinition):
     input = input_parameter(is_tensor() & has_rank(3))
     cos = input_parameter(is_tensor() & has_rank(3))
     sin = input_parameter(is_tensor() & has_rank(3))
+    # Scalar coordinates, independent of a later typed-vector representation.
+    # None keeps the historical full-head RoPE contract.
+    rotary_dim = attribute_parameter(default=None)
+
+    @classmethod
+    def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
+        attrs = super().normalize_attrs(attributes)
+        cls.validate_rotary_dim(attrs.get("rotary_dim"))
+        return {key: value for key, value in attrs.items() if value is not None}
+
+    @staticmethod
+    def validate_rotary_dim(rotary_dim):
+        if rotary_dim is not None and (
+            isinstance(rotary_dim, bool) or not isinstance(rotary_dim, int)
+            or rotary_dim <= 0 or rotary_dim % 2
+        ):
+            raise IRSchemaError("RoPE rotary_dim must be a positive even integer or None.")
+
+    @classmethod
+    def rotary_extent(cls, head_dim, attrs):
+        rotary_dim = attrs.get("rotary_dim")
+        cls.validate_rotary_dim(rotary_dim)
+        if rotary_dim is None:
+            if head_dim.is_fixed and head_dim.fixed_value % 2:
+                raise IRSchemaError("RoPE head dimension must be even.")
+            return head_dim
+        if head_dim.minimum is None or head_dim.minimum < rotary_dim:
+            raise IRSchemaError("RoPE rotary_dim must not exceed the minimum input head dimension.")
+        return DimConst(rotary_dim)
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
-        if attrs:
-            raise IRSchemaError("RoPE does not accept attributes.")
+        attrs = cls.normalize_attrs(attrs)
         value_type = cls.input.type_of(inputs)
         cosine_type = cls.cos.type_of(inputs)
         sine_type = cls.sin.type_of(inputs)
@@ -39,13 +69,11 @@ class RoPE(OpDefinition):
         sine = tensor_of(sine_type)
         if cosine.shape != sine.shape:
             raise IRSchemaError("RoPE cos and sin must have identical shapes.")
-        if cosine.shape[-1] != value.shape[-1]:
-            raise IRSchemaError("RoPE cos/sin must match the input head dimension.")
+        if cosine.shape[-1] != cls.rotary_extent(value.shape[-1], attrs):
+            raise IRSchemaError("RoPE cos/sin must match the rotary dimension.")
         for source, target in zip(cosine.shape[:-1], value.shape[:-1]):
-            if source != target and source.fixed_value != 1:
+            if source != target and source.value != 1:
                 raise IRSchemaError("RoPE cos/sin are not broadcastable to the input.")
-        if value.shape[-1].is_fixed and value.shape[-1].fixed_value % 2:
-            raise IRSchemaError("RoPE head dimension must be even.")
         placement = placement_of(value_type, cosine_type, sine_type)
         if placement is None:
             return value_type
@@ -69,18 +97,32 @@ class RoPE(OpDefinition):
     @classmethod
     def evaluate(cls, node, arguments, context):
         value = cls.input.read(arguments)
-        cosine = cls.cos.read(arguments).to(dtype=value.dtype)
-        sine = cls.sin.read(arguments).to(dtype=value.dtype)
-        half = value.shape[-1] // 2
-        rotated = context.torch.cat((-value[..., half:], value[..., :half]), dim=-1)
-        return value * cosine + rotated * sine
+        return cls.apply_rotary(value, cls.cos.read(arguments), cls.sin.read(arguments),
+                                node.attrs.get("rotary_dim"), context.torch)
+
+    @staticmethod
+    def apply_rotary(value, cosine, sine, rotary_dim, torch):
+        extent = value.shape[-1] if rotary_dim is None else rotary_dim
+        # Like nncase, storage dtypes do not introduce intermediate rounding.
+        # In particular, an FP32 rotary table must not first pass through BF16.
+        prefix = value[..., :extent].float()
+        half = extent // 2
+        rotated = torch.cat((-prefix[..., half:], prefix[..., :half]), dim=-1)
+        result = (prefix * cosine.float() + rotated * sine.float()).to(value.dtype)
+        if extent == value.shape[-1]:
+            return result
+        return torch.cat((result, value[..., extent:]), dim=-1)
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        elements = tensor_elements(node.type)
-        size = tensor_nbytes(node.type)
+        output = tensor_of(node.type)
+        elements = tensor_elements(output)
+        size = tensor_nbytes(output)
+        head = output.shape[-1].value
+        rotary = cls.rotary_extent(output.shape[-1], node.attrs).value
+        rotated_elements = None if elements is None or head is None or not head else elements // head * rotary
         return OpCost(
-            flops=None if elements is None else elements * 3,
+            flops=None if rotated_elements is None else rotated_elements * 3,
             bytes_read=None if size is None else size * 3,
             bytes_written=size,
         )

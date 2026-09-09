@@ -1,11 +1,14 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Physical paged-attention cache ABI used by Qwen3 decode.
+"""Physical paged-attention cache ABI for single-request token chunks.
 
 The semantic axes and vector-lane representation follow nncase's
 ``PagedAttentionConfig``: ``[NumBlocks, NumLayers, KV, BlockSize,
 NumKVHeads, HeadDim / lanes]<lanes>``.  Scheduler tensors are explicit fields
 so Python IR checkpoints retain the complete resumable entry ABI.
+``slot_mapping[0]`` is the logical base position of the current query chunk,
+not a per-token physical-slot list. ``query_start_loc`` is ``[0, num_tokens]``.
+Only the final updating layer advances ``seq_lens`` by the chunk length.
 """
 
 from __future__ import annotations
@@ -187,24 +190,12 @@ class PagedAttentionState:
         layer_id: int,
         advance_sequence: bool = True,
     ) -> int:
-        self.validate()
-        self._validate_layer(layer_id)
-        expected = (self.config.num_kv_heads, self.config.head_dim)
-        if tuple(key.shape) != expected or tuple(value.shape) != expected:
-            raise EvaluationError(f"Paged-attention K/V slot must have shape {expected}.")
-        position = self.sequence_length
-        if position >= self.config.max_sequence_length:
-            raise EvaluationError("Paged-attention cache capacity is exhausted.")
-        self._validate_page_table(position + 1)
-        block, offset = divmod(position, self.config.block_size)
-        physical_block = int(self.block_table[0, block].item())
-        packed_shape = (self.config.num_kv_heads, self.config.head_dim // self.config.lanes, self.config.lanes)
-        self.kv_caches[physical_block, layer_id, 0, offset].copy_(key.reshape(packed_shape))
-        self.kv_caches[physical_block, layer_id, 1, offset].copy_(value.reshape(packed_shape))
-        self.slot_mapping[0] = position
-        if advance_sequence:
-            self.seq_lens[0] = position + 1
-        return position
+        key = self._slot_chunk(key)
+        value = self._slot_chunk(value)
+        if key.shape != value.shape:
+            raise EvaluationError("Paged-attention K/V chunks must have matching shapes.")
+        self.update(key, cache_kind="key", layer_id=layer_id)
+        return self.update(value, cache_kind="value", layer_id=layer_id, advance_sequence=advance_sequence)
 
     def update(
         self,
@@ -214,34 +205,47 @@ class PagedAttentionState:
         layer_id: int,
         advance_sequence: bool = False,
     ) -> int:
-        """Update one K or V decode slot while preserving reference identity."""
+        """Update a K or V chunk while preserving reference identity.
+
+        Accept legacy [head, dim] slots or nonempty [seq, head, dim] chunks.
+        Validate the entire destination before writing any token.
+        """
 
         self.validate()
         self._validate_layer(layer_id)
         if cache_kind not in {"key", "value"}:
             raise EvaluationError("Paged-attention cache kind must be key or value.")
-        expected = (self.config.num_kv_heads, self.config.head_dim)
-        if tuple(slots.shape) != expected:
-            raise EvaluationError(
-                f"Paged-attention {cache_kind} slot must have shape {expected}.")
+        slots = self._slot_chunk(slots)
+        tokens = slots.shape[0]
         position = self.sequence_length
-        if position >= self.config.max_sequence_length:
+        if position + tokens > self.config.max_sequence_length:
             raise EvaluationError("Paged-attention cache capacity is exhausted.")
-        self._validate_page_table(position + 1)
-        block, offset = divmod(position, self.config.block_size)
-        physical_block = int(self.block_table[0, block].item())
+        self._validate_page_table(position + tokens)
         packed_shape = (
             self.config.num_kv_heads,
             self.config.head_dim // self.config.lanes,
             self.config.lanes,
         )
         cache_index = 0 if cache_kind == "key" else 1
-        self.kv_caches[physical_block, layer_id, cache_index, offset].copy_(
-            slots.reshape(packed_shape))
+        for row in range(tokens):
+            block, offset = divmod(position + row, self.config.block_size)
+            physical_block = int(self.block_table[0, block].item())
+            self.kv_caches[physical_block, layer_id, cache_index, offset].copy_(slots[row].reshape(packed_shape))
         self.slot_mapping[0] = position
+        self.query_start_loc[0] = 0
+        self.query_start_loc[1] = tokens
         if advance_sequence:
-            self.seq_lens[0] = position + 1
+            self.seq_lens[0] = position + tokens
         return position
+
+    def _slot_chunk(self, slots):
+        expected = (self.config.num_kv_heads, self.config.head_dim)
+        if tuple(slots.shape) == expected:
+            return slots.unsqueeze(0)
+        if slots.ndim != 3 or slots.shape[0] <= 0 or tuple(slots.shape[1:]) != expected:
+            raise EvaluationError(
+                f"Paged-attention slots must have shape {expected} or nonempty [seq, {expected[0]}, {expected[1]}].")
+        return slots
 
     def gather(self, *, layer_id: int, length: int | None = None):
         self.validate()

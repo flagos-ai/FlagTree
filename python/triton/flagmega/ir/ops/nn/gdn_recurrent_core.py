@@ -43,6 +43,11 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
     key_head_dim = attribute_parameter()
     value_head_dim = attribute_parameter()
     epsilon = attribute_parameter()
+    qk_norm_mode = attribute_parameter(default="clamp")
+    qk_norm_epsilon = attribute_parameter(default=1e-12)
+    round_normalized_qk = attribute_parameter(default=False)
+    round_beta = attribute_parameter(default=True)
+    round_core = attribute_parameter(default=False)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -53,6 +58,11 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
             "key_head_dim": int(attrs["key_head_dim"]),
             "value_head_dim": int(attrs["value_head_dim"]),
             "epsilon": float(attrs["epsilon"]),
+            "qk_norm_mode": attrs["qk_norm_mode"],
+            "qk_norm_epsilon": float(attrs["qk_norm_epsilon"]),
+            "round_normalized_qk": attrs["round_normalized_qk"],
+            "round_beta": attrs["round_beta"],
+            "round_core": attrs["round_core"],
         }
         if any(values[name] <= 0 for name in (
             "num_key_heads", "num_value_heads", "key_head_dim", "value_head_dim"
@@ -62,6 +72,13 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
             raise IRSchemaError("GatedDeltaNetRecurrentCore value heads must divide by key heads.")
         if values["epsilon"] <= 0:
             raise IRSchemaError("GatedDeltaNetRecurrentCore epsilon must be positive.")
+        if values["qk_norm_mode"] not in ("clamp", "add"):
+            raise IRSchemaError("GatedDeltaNetRecurrentCore qk_norm_mode must be clamp or add.")
+        if not math.isfinite(values["qk_norm_epsilon"]) or values["qk_norm_epsilon"] <= 0:
+            raise IRSchemaError("GatedDeltaNetRecurrentCore qk_norm_epsilon must be finite and positive.")
+        for name in ("round_normalized_qk", "round_beta", "round_core"):
+            if not isinstance(values[name], bool):
+                raise IRSchemaError(f"GatedDeltaNetRecurrentCore {name} must be boolean.")
         return values
 
     @classmethod
@@ -182,9 +199,18 @@ def gated_delta_net_recurrent_core(
         value = current[2 * key_dim:].reshape(num_value_heads, value_head_dim)
         query = query.repeat_interleave(repeats, dim=0).float()
         key = key.repeat_interleave(repeats, dim=0).float()
-        query = query / torch.clamp(torch.linalg.vector_norm(query, dim=-1, keepdim=True), min=1e-12)
-        key = key / torch.clamp(torch.linalg.vector_norm(key, dim=-1, keepdim=True), min=1e-12)
+        norm_epsilon = float(attrs.get("qk_norm_epsilon", 1e-12))
+        if attrs.get("qk_norm_mode", "clamp") == "add":
+            query = query / torch.sqrt(query.square().sum(dim=-1, keepdim=True) + norm_epsilon)
+            key = key / torch.sqrt(key.square().sum(dim=-1, keepdim=True) + norm_epsilon)
+        else:
+            query = query / torch.clamp(torch.linalg.vector_norm(query, dim=-1, keepdim=True), min=norm_epsilon)
+            key = key / torch.clamp(torch.linalg.vector_norm(key, dim=-1, keepdim=True), min=norm_epsilon)
+        if attrs.get("round_normalized_qk", False):
+            query, key = query.to(qkv.dtype).float(), key.to(qkv.dtype).float()
         beta = torch.sigmoid(b_projection[token].float())
+        if attrs.get("round_beta", True):
+            beta = beta.to(b_projection.dtype).float()
         decay_log = -torch.exp(a_log.float()) * torch.nn.functional.softplus(
             a_projection[token].float() + dt_bias.float()
         )
@@ -194,6 +220,8 @@ def gated_delta_net_recurrent_core(
         recurrent_state = decayed_state + key.unsqueeze(-1) * delta.unsqueeze(1)
         scaled_query = query * (1.0 / math.sqrt(key_head_dim))
         core = (recurrent_state * scaled_query.unsqueeze(-1)).sum(dim=1)
+        if attrs.get("round_core", False):
+            core = core.to(z.dtype).float()
         inverse_rms = torch.rsqrt(core.pow(2).mean(dim=-1, keepdim=True) + epsilon)
         normalized = core * inverse_rms * norm_weight.float()
         gate = torch.nn.functional.silu(z[token].float().reshape(num_value_heads, value_head_dim))

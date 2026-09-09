@@ -168,8 +168,9 @@ def test_multi_source_lift_derives_model_independent_composite_rdata_group():
     plan = fm.make_buffer_plan(frozen)
     grouped = tuple(
         value for value in plan.buffers
-        if value.rdata_group == next(iter(names))
+        if value.rdata_group and value.rdata_group.startswith(f"{next(iter(names))}.repr_")
     )
+    assert len({value.rdata_group for value in grouped}) == 1
     assert {value.group_index for value in grouped} == {0, 1}
 
 

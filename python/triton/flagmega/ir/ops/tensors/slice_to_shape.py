@@ -8,7 +8,8 @@ from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.model import IRType, Node, TensorType, tensor_type
+from triton.flagmega.ir.model import IRType, Node, tensor_type
+from ._shape_transform import preserve_unchanged_axes
 from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_nbytes
 from triton.flagmega.ir.type_pattern import is_tensor
 
@@ -37,15 +38,15 @@ class SliceToShape(OpDefinition):
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
-        value_type = cls.value.type_of(inputs)
-        assert isinstance(value_type, TensorType)
+        source_type = cls.value.type_of(inputs)
+        value_type = tensor_of(source_type)
         shape = tuple(int(value) for value in attrs["shape"])
         if len(shape) != value_type.rank:
             raise IRSchemaError(f"F.tensors.slice_to_shape expected rank {value_type.rank}, got {len(shape)}.")
         for requested, extent in zip(shape, value_type.shape):
             if extent.value is not None and requested > extent.fixed_value:
                 raise IRSchemaError("F.tensors.slice_to_shape cannot grow a tensor dimension.")
-        return tensor_type(value_type.dtype, shape, layout=value_type.layout)
+        return preserve_unchanged_axes(source_type, tensor_type(value_type.dtype, shape, layout=value_type.layout))
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -67,7 +68,7 @@ class SliceToShape(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        size = tensor_nbytes(node.type) if isinstance(node.type, TensorType) else None
+        size = tensor_nbytes(node.type)
         return OpCost(bytes_read=size, bytes_written=size, notes=("vector-unpad",))
 
 

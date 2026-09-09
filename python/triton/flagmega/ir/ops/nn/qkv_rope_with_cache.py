@@ -100,7 +100,9 @@ class QKVRoPEWithCache(OpDefinition):
     k_epsilon = attribute_parameter()
     k_use_mean = attribute_parameter()
     k_round_before_scale = attribute_parameter(default=False)
+    # Controls the normalization boundary, not RoPE's internal FP32 arithmetic.
     round_qk_intermediates = attribute_parameter(default=True)
+    rotary_dim = attribute_parameter(default=None)
     qkv_layout = attribute_parameter()
     attention_layout = attribute_parameter()
 
@@ -123,6 +125,7 @@ class QKVRoPEWithCache(OpDefinition):
         if not isinstance(attrs["round_qk_intermediates"], bool):
             raise IRSchemaError("QKVRoPEWithCache intermediate rounding policy must be boolean.")
         return {
+            **RoPE.normalize_attrs({"rotary_dim": attrs["rotary_dim"]}),
             **({"round_qk_intermediates": False} if not attrs["round_qk_intermediates"] else {}),
             "q_axis": q_axis,
             "q_epsilon": q_epsilon,
@@ -204,8 +207,8 @@ class QKVRoPEWithCache(OpDefinition):
             use_mean=bool(attrs["k_use_mean"]),
             prefix="k",
         )
-        q_rope = _infer_rope(q_norm, cos, sin, "q")
-        k_rope = _infer_rope(k_norm, cos, sin, "k")
+        q_rope = _infer_rope(q_norm, cos, sin, "q", attrs.get("rotary_dim"))
+        k_rope = _infer_rope(k_norm, cos, sin, "k", attrs.get("rotary_dim"))
         q_output = _transform_attention_layout_type(
             q_rope.type,
             qkv_layout,
@@ -339,6 +342,7 @@ class QKVRoPEWithCache(OpDefinition):
             use_mean=bool(node.attrs["q_use_mean"]),
             round_before_scale=bool(node.attrs.get("q_round_before_scale", False)),
             round_intermediates=bool(node.attrs.get("round_qk_intermediates", True)),
+            rotary_dim=node.attrs.get("rotary_dim"),
             torch=context.torch,
         )
         k = _normalize_and_rope_value(
@@ -352,6 +356,7 @@ class QKVRoPEWithCache(OpDefinition):
             use_mean=bool(node.attrs["k_use_mean"]),
             round_before_scale=bool(node.attrs.get("k_round_before_scale", False)),
             round_intermediates=bool(node.attrs.get("round_qk_intermediates", True)),
+            rotary_dim=node.attrs.get("rotary_dim"),
             torch=context.torch,
         )
         q = _physical_attention_value(
@@ -425,13 +430,15 @@ def _infer_norm(
     )
 
 
-def _infer_rope(value: Node, cos: Node, sin: Node, prefix: str) -> Node:
-    result_type = RoPE.infer_type((value, cos, sin), {})
+def _infer_rope(value: Node, cos: Node, sin: Node, prefix: str, rotary_dim=None) -> Node:
+    attrs = RoPE.normalize_attrs({"rotary_dim": rotary_dim})
+    result_type = RoPE.infer_type((value, cos, sin), attrs)
     return Node(
         f"__qkv_{prefix}_rope",
         "nn.rope",
         (value.id, cos.id, sin.id),
         result_type,
+        attrs=attrs,
     )
 
 
@@ -649,6 +656,7 @@ def _normalize_and_rope_value(
     torch,
     round_before_scale: bool = False,
     round_intermediates: bool = True,
+    rotary_dim: int | None = None,
 ):
     output_dtype = value.dtype
     if not round_intermediates:
@@ -664,11 +672,7 @@ def _normalize_and_rope_value(
         use_mean=use_mean,
         round_before_scale=round_before_scale,
     )
-    half = normalized.shape[-1] // 2
-    rotated = torch.cat((-normalized[..., half:], normalized[..., :half]), dim=-1)
-    result = normalized * cos.to(dtype=normalized.dtype) + rotated * sin.to(
-        dtype=normalized.dtype
-    )
+    result = RoPE.apply_rotary(normalized, cos, sin, rotary_dim, torch)
     return result.to(output_dtype)
 
 

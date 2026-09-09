@@ -16,12 +16,15 @@ def _flagmega_rope(
     head_stride: tl.constexpr,
     dimension_stride: tl.constexpr,
     elements_per_program: tl.constexpr,
+    rotary_dim: tl.constexpr = None,
 ):
     """Apply rotary position embedding to an arbitrary sequence/head layout."""
+    extent: tl.constexpr = head_dim if rotary_dim is None else rotary_dim
     program = tl.program_id(0)
     linear = program * elements_per_program + tl.arange(0, elements_per_program)
     mask = linear < element_count
     dimension = linear % head_dim
+    rotary_mask = mask & (dimension < extent)
     canonical_head = (linear // head_dim) % num_heads
     sequence = linear // (num_heads * head_dim)
     source_offset = (
@@ -30,29 +33,32 @@ def _flagmega_rope(
         + dimension * dimension_stride
     )
     partner_dimension = tl.where(
-        dimension < head_dim // 2,
-        dimension + head_dim // 2,
-        dimension - head_dim // 2,
+        dimension < extent // 2,
+        dimension + extent // 2,
+        dimension - extent // 2,
     )
     partner_offset = (
         sequence * sequence_stride
         + canonical_head * head_stride
         + partner_dimension * dimension_stride
     )
-    value = tl.load(source + source_offset, mask=mask, other=0.0).to(tl.float32)
+    raw_value = tl.load(source + source_offset, mask=mask, other=0.0)
+    value = raw_value.to(tl.float32)
     partner = tl.load(
-        source + partner_offset, mask=mask, other=0.0
+        source + partner_offset, mask=rotary_mask, other=0.0
     ).to(tl.float32)
-    rotated = tl.where(dimension < head_dim // 2, -partner, partner)
-    frequency_offset = sequence * head_dim + dimension
+    rotated = tl.where(dimension < extent // 2, -partner, partner)
+    frequency_offset = sequence * extent + dimension
     cos_value = tl.load(
-        cosine + frequency_offset, mask=mask, other=0.0
+        cosine + frequency_offset, mask=rotary_mask, other=0.0
     ).to(tl.float32)
     sin_value = tl.load(
-        sine + frequency_offset, mask=mask, other=0.0
+        sine + frequency_offset, mask=rotary_mask, other=0.0
     ).to(tl.float32)
+    cosine_product = libdevice.mul_rn(value, cos_value)
+    sine_product = libdevice.mul_rn(rotated, sin_value)
     tl.store(
         destination + source_offset,
-        value * cos_value + rotated * sin_value,
+        tl.where(dimension < extent, (cosine_product + sine_product).to(raw_value.dtype), raw_value),
         mask=mask,
     )

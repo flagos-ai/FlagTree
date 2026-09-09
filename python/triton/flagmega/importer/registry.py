@@ -25,10 +25,17 @@ class ModelImporterSpec:
     import_layer: LayerImporter
     import_model: ModelImporter | None = None
     numerical_profiles: Mapping[str, Callable[[IRModule], IRModule]] = field(default_factory=dict)
+    # Nondefault modes opt in to keyword arguments execution_phase/num_tokens
+    # on the import callbacks. Existing decode-only callbacks keep their ABI.
+    execution_modes: frozenset[str] = frozenset({"decode-1"})
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "architectures", frozenset(str(value) for value in self.architectures))
         object.__setattr__(self, "model_types", frozenset(str(value) for value in self.model_types))
+        modes = frozenset(self.execution_modes)
+        if not modes or not modes <= {"decode-1", "prefill"}:
+            raise ImporterError("Importer execution_modes must name decode-1 and/or prefill.")
+        object.__setattr__(self, "execution_modes", modes)
         if not self.name or not self.architectures and not self.model_types:
             raise ImporterError("Importer spec requires a name and architecture or model_type key.")
         if not callable(self.import_layer) or self.import_model is not None and not callable(self.import_model):

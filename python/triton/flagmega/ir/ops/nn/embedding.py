@@ -103,10 +103,13 @@ def embedding(indices, weight, *, padding_idx: int | None = None):
     """Gather embedding rows and apply nncase/HuggingFace padding semantics."""
 
     flat_indices = indices.to(dtype=_torch().int64).reshape(-1)
-    result = weight.index_select(0, flat_indices).reshape((*indices.shape, weight.shape[1]))
+    # Vector element lanes are trailing physical dimensions of the table.
+    # Gathering rows preserves them, just as it preserves scalar features.
+    result = weight.index_select(0, flat_indices).reshape((*indices.shape, *weight.shape[1:]))
     if padding_idx is not None:
         normalized = padding_idx + weight.shape[0] if padding_idx < 0 else padding_idx
-        result = result.masked_fill((indices == normalized).unsqueeze(-1), 0)
+        mask = (indices == normalized).reshape((*indices.shape, *((1,) * (weight.ndim - 1))))
+        result = result.masked_fill(mask, 0)
     return result
 
 

@@ -1,221 +1,172 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Exact lifetime-aware allocation using OR-Tools CP-SAT.
-
-The model follows nncase's ``SATBufferScheduler``: every buffer is a rectangle
-whose X interval is its fixed lifetime and whose Y interval is its physical
-address range.  ``NoOverlap2D`` therefore prohibits two simultaneously-live
-buffers from occupying intersecting bytes.
-"""
+"""nncase-shaped high-water SAT allocation, optionally avoiding reuse hazards."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from math import isfinite
+from time import perf_counter
 
 from ortools.sat.python import cp_model
 
 from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir.bufferization import AllocationStrategy, MemorySpace
+from triton.flagmega.ir.bufferization import MemorySpace
+from .allocation import (
+    AllocationObjective,
+    AllocationResult,
+    BufferLifetime,
+    reuse_conflicts,
+    usable_capacity,
+    validate_problem,
+    verify_allocation,
+)
+from .first_fit_allocator import first_fit_placement
 
-
-@dataclass(frozen=True)
-class BufferLifetime:
-    id: str
-    nbytes: int
-    alignment: int
-    live_start: int
-    live_end: int
-    role: str = "workspace"
-
-    def __post_init__(self) -> None:
-        if not self.id:
-            raise IRVerificationError("A SAT allocation requires a non-empty id.")
-        if self.nbytes < 0:
-            raise IRVerificationError(f"Allocation {self.id!r} has negative size.")
-        if self.alignment <= 0 or self.alignment & (self.alignment - 1):
-            raise IRVerificationError(
-                f"Allocation {self.id!r} alignment must be a positive power of two."
-            )
-        if self.live_start < 0 or self.live_end < self.live_start:
-            raise IRVerificationError(f"Allocation {self.id!r} has an invalid lifetime.")
-
-
-@dataclass(frozen=True)
-class SATAllocationResult:
-    offsets: tuple[tuple[str, int], ...]
-    pool_bytes: int
-    status: str
-    reuse_conflicts: tuple[tuple[str, str], ...] = ()
-
-    @property
-    def offset_map(self) -> dict[str, int]:
-        return dict(self.offsets)
+# Compatibility import; both allocation algorithms return the same contract.
+SATAllocationResult = AllocationResult
 
 
 class SATBufferAllocator:
-    """Place finite lifetimes in one target memory space."""
-
     name = "ortools-cp-sat/no-overlap-2d"
 
     def __init__(self, *, maximum_time_seconds: float = 30.0) -> None:
-        if maximum_time_seconds <= 0:
-            raise ValueError("maximum_time_seconds must be positive.")
+        if not isfinite(maximum_time_seconds) or maximum_time_seconds <= 0:
+            raise ValueError("maximum_time_seconds must be finite and positive.")
         self.maximum_time_seconds = float(maximum_time_seconds)
 
-    def allocate(
-        self,
-        lifetimes: tuple[BufferLifetime, ...],
-        memory_space: MemorySpace,
-        *,
-        avoid_reuse: tuple[tuple[str, str], ...] = (),
-    ) -> SATAllocationResult:
-        if memory_space.strategy is not AllocationStrategy.SAT:
-            raise IRVerificationError(
-                f"Memory space {memory_space.name!r} does not use SAT allocation."
-            )
-        ids = [value.id for value in lifetimes]
-        if len(ids) != len(set(ids)):
-            raise IRVerificationError("SAT allocation ids must be unique.")
-        pairs = set()
-        for pair in avoid_reuse:
-            if len(pair) != 2 or pair[0] == pair[1] or any(value not in ids for value in pair):
-                raise IRVerificationError(
-                    "SAT reuse preferences must name two existing distinct allocations."
-                )
-            pairs.add(tuple(sorted(pair)))
-        pairs = tuple(sorted(pairs))
-        if not lifetimes:
-            return SATAllocationResult((), 0, "OPTIMAL")
-
+    def allocate(self, lifetimes: tuple[BufferLifetime, ...], memory_space: MemorySpace, *,
+                 avoid_reuse: tuple[tuple[str, str], ...] = ()) -> AllocationResult:
+        pairs = validate_problem(lifetimes, memory_space, avoid_reuse)
+        deadline = perf_counter() + self.maximum_time_seconds
         nonempty = tuple(value for value in lifetimes if value.nbytes)
         if not nonempty:
-            return SATAllocationResult(tuple((value.id, 0) for value in lifetimes), 0, "OPTIMAL")
+            return AllocationResult(tuple((value.id, 0) for value in lifetimes), 0, "OPTIMAL")
 
-        # A packed linear layout is always a legal upper bound.  It also keeps
-        # every CP-SAT integer domain finite without relying on target infinity.
-        upper_bound = 0
+        seed, seed_peak = first_fit_placement(nonempty, memory_space)
+        capacity = usable_capacity(memory_space)
+        upper_bound = min(seed_peak, capacity)
+        events = {}
         for value in nonempty:
-            alignment = max(memory_space.granularity, value.alignment)
-            upper_bound = _align_up(upper_bound, alignment) + value.nbytes
-        if upper_bound > memory_space.maximum_bytes:
-            # Overlapping lifetimes can still fit below the linear bound, so use
-            # the target limit as the domain and let CP-SAT decide feasibility.
-            upper_bound = memory_space.maximum_bytes
+            events[value.live_start] = events.get(value.live_start, 0) + value.nbytes
+            events[value.live_end + 1] = events.get(value.live_end + 1, 0) - value.nbytes
+        live_bytes = lower_bound = 0
+        for point in sorted(events):
+            live_bytes += events[point]
+            lower_bound = max(lower_bound, live_bytes)
+        if lower_bound > upper_bound:
+            raise IRVerificationError(f"SAT allocation for memory space {memory_space.name!r} failed: "
+                                      f"live-byte lower bound {lower_bound} exceeds capacity {capacity}.")
 
         model = cp_model.CpModel()
-        pool_end = model.new_int_var(0, upper_bound, "pool_end")
-        starts: dict[str, cp_model.IntVar] = {}
-        x_intervals = []
-        y_intervals = []
+        pool_end = model.new_int_var(lower_bound, upper_bound, "pool_end")
+        variables = {}
+        x_intervals, y_intervals = [], []
         for ordinal, value in enumerate(nonempty):
             alignment = max(memory_space.granularity, value.alignment)
             latest = upper_bound - value.nbytes
-            if latest < 0:
-                raise IRVerificationError(
-                    f"Allocation {value.id!r} ({value.nbytes} bytes) exceeds memory space "
-                    f"{memory_space.name!r} ({memory_space.maximum_bytes} bytes)."
-                )
             quotient = model.new_int_var(0, latest // alignment, f"q_{ordinal}")
             start = model.new_int_var(0, latest, f"offset_{ordinal}")
-            model.add(start == quotient * alignment)
             end = model.new_int_var(value.nbytes, upper_bound, f"end_{ordinal}")
+            model.add(start == quotient * alignment)
             model.add(end == start + value.nbytes)
-            model.add(pool_end >= end)
-            starts[value.id] = start
-
-            # Lifetimes are inclusive in IR metadata.  Converting to half-open
-            # intervals with +1 preserves the rule that a consumer and its
-            # input overlap at the consumer's execution point.
-            duration = value.live_end - value.live_start + 1
-            x_intervals.append(model.new_fixed_size_interval_var(
-                value.live_start, duration, f"time_{ordinal}"
-            ))
-            y_intervals.append(model.new_interval_var(
-                start, value.nbytes, end, f"address_{ordinal}"
-            ))
+            variables[value.id] = (quotient, start, end, alignment, value.nbytes)
+            x_intervals.append(
+                model.new_fixed_size_interval_var(value.live_start, value.live_end - value.live_start + 1,
+                                                  f"time_{ordinal}"))
+            y_intervals.append(model.new_interval_var(start, value.nbytes, end, f"address_{ordinal}"))
         model.add_no_overlap_2d(x_intervals, y_intervals)
+        model.add_max_equality(pool_end, [value[2] for value in variables.values()])
 
-        solver = self._solver()
+        def add_hint(offsets, peak):
+            model.clear_hints()
+            model.add_hint(pool_end, peak)
+            for name, (quotient, start, end, alignment, size) in variables.items():
+                model.add_hint(quotient, offsets[name] // alignment)
+                model.add_hint(start, offsets[name])
+                model.add_hint(end, offsets[name] + size)
+
+        if seed_peak <= capacity:
+            add_hint(seed, seed_peak)
         model.minimize(pool_end)
+        solver = self._solver(deadline)
         status = solver.solve(model)
         self._require_solution(status, solver, memory_space)
         high_water_status = solver.status_name(status)
-        selected_pool_end = solver.value(pool_end)
+        selected_peak = solver.value(pool_end)
+        offsets = {name: solver.value(value[1]) for name, value in variables.items()}
+        objectives = [AllocationObjective("high_water", high_water_status, selected_peak, solver.best_objective_bound)]
+        model.add(pool_end == selected_peak)
 
-        # A second objective makes layouts at the selected high-water mark
-        # reproducible and tends to place long-lived values low in the pool.
-        model.add(pool_end == selected_pool_end)
-        # Reusing particular allocations can force an otherwise unnecessary
-        # inter-owner barrier. Minimize those proven conflicts at the already
-        # selected high-water mark, never by abandoning reuse or growing the
-        # pool. This is a soft preference: unavoidable conflicts remain legal
-        # and are reported for the synchronization planner to handle.
-        sizes = {value.id: value.nbytes for value in nonempty}
-        reuse = {}
-        for ordinal, (left, right) in enumerate(pairs):
-            if left not in sizes or right not in sizes:
-                continue
-            overlaps = model.new_bool_var(f"reuse_{ordinal}")
-            left_before = model.new_bool_var(f"reuse_left_before_{ordinal}")
-            right_before = model.new_bool_var(f"reuse_right_before_{ordinal}")
-            model.add(starts[left] + sizes[left] <= starts[right]).only_enforce_if(left_before)
-            model.add(starts[right] + sizes[right] <= starts[left]).only_enforce_if(right_before)
-            model.add_bool_or((left_before, right_before)).only_enforce_if(overlaps.Not())
-            model.add(starts[left] + sizes[left] > starts[right]).only_enforce_if(overlaps)
-            model.add(starts[right] + sizes[right] > starts[left]).only_enforce_if(overlaps)
-            reuse[(left, right)] = overlaps
+        # Unlike sum(addresses), this objective corresponds to proven
+        # inter-owner hazards. All objectives share one allocation budget.
+        nonempty_pairs = tuple(pair for pair in pairs if all(name in variables for name in pair))
         reuse_status = "OPTIMAL"
-        if reuse:
-            conflict_count = sum(reuse.values())
-            model.minimize(conflict_count)
-            solver = self._solver()
-            status = solver.solve(model)
-            self._require_solution(status, solver, memory_space)
-            reuse_status = solver.status_name(status)
-            model.add(conflict_count == solver.value(conflict_count))
-        model.minimize(sum(starts.values()))
-        solver = self._solver()
-        status = solver.solve(model)
-        self._require_solution(status, solver, memory_space)
-        allocated_bytes = memory_space.allocation_bytes(selected_pool_end)
-        offsets = tuple(
-            (value.id, 0 if value.nbytes == 0 else solver.value(starts[value.id]))
-            for value in lifetimes
-        )
-        tie_break_status = solver.status_name(status)
-        combined_status = (
-            "OPTIMAL"
-            if high_water_status == reuse_status == tie_break_status == "OPTIMAL"
-            else f"high-water:{high_water_status};reuse:{reuse_status};tie-break:{tie_break_status}"
-        )
-        return SATAllocationResult(
-            offsets, allocated_bytes, combined_status,
-            tuple(pair for pair, overlaps in reuse.items() if solver.value(overlaps)),
-        )
+        if nonempty_pairs:
+            add_hint(offsets, selected_peak)
+            overlap_vars = []
+            for ordinal, (left, right) in enumerate(nonempty_pairs):
+                _, left_start, left_end, _, left_size = variables[left]
+                _, right_start, right_end, _, right_size = variables[right]
+                overlap = model.new_bool_var(f"reuse_{ordinal}")
+                left_before = model.new_bool_var(f"reuse_left_before_{ordinal}")
+                right_before = model.new_bool_var(f"reuse_right_before_{ordinal}")
+                model.add(left_end <= right_start).only_enforce_if(left_before)
+                model.add(right_end <= left_start).only_enforce_if(right_before)
+                model.add_bool_or((left_before, right_before)).only_enforce_if(overlap.Not())
+                model.add(left_end > right_start).only_enforce_if(overlap)
+                model.add(right_end > left_start).only_enforce_if(overlap)
+                before_left = offsets[left] + left_size <= offsets[right]
+                before_right = offsets[right] + right_size <= offsets[left]
+                model.add_hint(left_before, int(before_left))
+                model.add_hint(right_before, int(before_right))
+                model.add_hint(overlap, int(not before_left and not before_right))
+                overlap_vars.append(overlap)
+            model.minimize(sum(overlap_vars))
+            bound = None
+            if perf_counter() < deadline:
+                solver = self._solver(deadline)
+                status = solver.solve(model)
+                reuse_status = solver.status_name(status)
+                if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                    offsets = {name: solver.value(value[1]) for name, value in variables.items()}
+                    bound = solver.best_objective_bound
+                elif status != cp_model.UNKNOWN:
+                    self._require_solution(status, solver, memory_space)
+                # UNKNOWN retains the already proven feasible SAT placement,
+                # with incomplete optimization explicitly recorded below.
+            else:
+                reuse_status = "NOT_RUN_BUDGET"
+            conflicts = reuse_conflicts(nonempty, offsets, nonempty_pairs)
+            objectives.append(AllocationObjective("reuse_conflicts", reuse_status, len(conflicts), bound))
+        offsets.update((value.id, 0) for value in lifetimes if not value.nbytes)
+        combined = ("OPTIMAL" if high_water_status == reuse_status == "OPTIMAL" else
+                    f"high-water:{high_water_status};reuse:{reuse_status}")
+        return verify_allocation(
+            lifetimes, memory_space,
+            AllocationResult(
+                tuple((value.id, offsets[value.id]) for value in lifetimes),
+                memory_space.allocation_bytes(selected_peak),
+                combined,
+                reuse_conflicts(lifetimes, offsets, pairs),
+                tuple(objectives),
+            ))
 
-    def _solver(self) -> cp_model.CpSolver:
+    def _solver(self, deadline):
+        remaining = deadline - perf_counter()
+        if remaining <= 0:
+            raise IRVerificationError("SAT allocation budget exhausted before a feasible solution was available.")
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = self.maximum_time_seconds
+        solver.parameters.max_time_in_seconds = remaining
         solver.parameters.num_search_workers = 1
         solver.parameters.random_seed = 0
         return solver
 
     @staticmethod
-    def _require_solution(
-        status: int,
-        solver: cp_model.CpSolver,
-        memory_space: MemorySpace,
-    ) -> None:
+    def _require_solution(status, solver, memory_space):
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             raise IRVerificationError(
                 f"SAT allocation for memory space {memory_space.name!r} failed with "
-                f"status {solver.status_name(status)} and capacity "
-                f"{memory_space.maximum_bytes} bytes."
-            )
-
-
-def _align_up(value: int, alignment: int) -> int:
-    return (value + alignment - 1) // alignment * alignment
+                f"status {solver.status_name(status)} and capacity {memory_space.maximum_bytes} bytes.")
 
 
 __all__ = ["BufferLifetime", "SATAllocationResult", "SATBufferAllocator"]

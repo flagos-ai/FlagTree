@@ -11,7 +11,7 @@ from triton.flagmega.evaluator import PagedAttentionStateConfig, create_paged_at
 from triton.flagmega.runtime import load
 
 
-def cache_update_module(config, packed, layout, split_heads, advance):
+def cache_update_module(config, packed, layout, split_heads, advance, tokens=1):
     placement = fm.Placement((2, 2), "yx", "bb")
 
     class Update(fm.Module):
@@ -20,7 +20,7 @@ def cache_update_module(config, packed, layout, split_heads, advance):
                              metadata={"auto_distribution": {"placement": placement.to_data()}})
 
         def forward(self):
-            extents = {"seq": 1, "head": config.num_kv_heads,
+            extents = {"seq": tokens, "head": config.num_kv_heads,
                        "dim": config.head_dim // (config.lanes if packed else 1)}
             dtype = fm.vector_type("bfloat16", (config.lanes,)) if packed else fm.DType.BFLOAT16
             tensor = fm.tensor_type(dtype, tuple(extents[axis] for axis in layout))

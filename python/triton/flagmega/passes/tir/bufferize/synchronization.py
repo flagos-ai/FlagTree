@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from triton.flagmega.errors import IRVerificationError
 
 from triton.flagmega.ir.bufferization import BufferPlan, MemorySharingScope
 from triton.flagmega.ir.bufferization.synchronization import (
@@ -30,6 +31,7 @@ from triton.flagmega.ir.tir.execution_kind import (
 from triton.flagmega.ir.tir.kernel_dispatch import kernel_dispatch_for_call
 from triton.flagmega.passes.tir.bufferize.graph import function_nodes
 from triton.flagmega.passes.tir.bufferize.barrier_coverage import BarrierCoverage
+from triton.flagmega.passes.tir.bufferize.call_accesses import CallAccessResolver, physical_identity
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,7 @@ def _plan_memory_synchronization(
     """
 
     events = []
+    call_accesses = CallAccessResolver(module, plan, _node_accesses)
     for function in module.functions:
         abi = plan.function_map[function.name]
         bindings = dict(abi.values)
@@ -88,7 +91,7 @@ def _plan_memory_synchronization(
         for node in function_nodes(module, function):
             if node.op not in {"tir.kernel", "tir.call"}:
                 continue
-            current = _node_accesses(module, plan, function.name, node, bindings)
+            current = call_accesses.accesses(function.name, node, bindings)
             conflicts = [
                 (previous.access, access)
                 for previous in history
@@ -177,27 +180,26 @@ def _node_accesses(module, plan, function_name, node, bindings):
             return
         # All workspace allocations of one function are ranges in the same
         # pool even when SAT assigns them distinct allocation ids.
-        memory_space = plan.memory_space_map[
-            descriptor.mem_span.buffer.memory_space
-        ]
-        physical_id = (
-            f"{memory_space.name}:@{function_name}"
-            if memory_space.strategy.value == "sat"
-            and memory_space.allocation_scope.value == "function"
-            and memory_space.kind != "shared"
-            else str(descriptor.physical_id)
-        )
+        physical_id = physical_identity(plan, function_name, descriptor)
         access_partition = _resolve_access_partition(effect, node, module)
         # The ABI's MemSpan exposes one owner component. Cross-kernel hazards
         # in a shared pool must include all components, including SAT reuse
         # intersecting only a nonzero owner. Keep owner maps for scope proofs;
         # expanding the byte footprint does not itself require a grid barrier.
         access_span = descriptor.physical_access_span
+        # Runtime-indexed views retain symbolic MemSpans for alias analysis.
+        # Barrier byte ranges conservatively cover their bounded envelope;
+        # never pretend a dynamic view begins at the parent's zero offset.
+        access_start = access_span.absolute_start.minimum
+        access_end = access_span.absolute_end.maximum
+        if access_start is None or access_end is None:
+            raise IRVerificationError("Synchronization requires bounded memory access spans.")
+        access_bytes = access_end - access_start
         key = (
             descriptor.storage,
             physical_id,
-            access_span.offset,
-            access_span.nbytes,
+            access_start,
+            access_bytes,
             access_partition,
         )
         previous = result.get(key)
@@ -220,18 +222,19 @@ def _node_accesses(module, plan, function_name, node, bindings):
             effect.owner_access if previous is None or effect.owner_access == previous.effect.owner_access else MemoryOwnerAccess.PARTIAL_GROUP,
         )
         result[key] = _Access(
-            node.id, buffer_id, descriptor.storage, physical_id,
-            access_span.offset, access_span.nbytes, _mode_name(merged_mode),
+            node.id,
+            buffer_id,
+            descriptor.storage,
+            physical_id,
+            access_start,
+            access_bytes,
+            _mode_name(merged_mode),
             descriptor.distributed_type,
             descriptor.distributed_storage_kind,
             merged_effect,
             access_partition,
             reference_access or bool(previous and previous.is_reference),
-            (
-                effect.scope is MemoryAccessScope.CHIP
-                or publishes
-                or bool(previous and previous.requires_full_chip)
-            ),
+            (effect.scope is MemoryAccessScope.CHIP or publishes or bool(previous and previous.requires_full_chip)),
             plan.memory_space_map[descriptor.mem_span.buffer.memory_space].sharing_scope,
         )
 
@@ -270,6 +273,15 @@ def _node_accesses(module, plan, function_name, node, bindings):
     ):
         if output_effect.physical_mode is not MemoryAccessMode.NONE:
             add(buffer_id, output_effect, publishes=publishes_across_chip)
+    workspace_binding = plan.kernel_call_map.get(node.id)
+    if workspace_binding is not None:
+        # Invocation lifetime permits SAT reuse, but does not mean all owners
+        # have finished reading scratch when one owner returns from the call.
+        # Scratch is a mutable ABI buffer, not an SSA output. Include both its
+        # writes and final reads so reuse by another scratch or ordinary value
+        # observes the arena's real sharing scope (block-local remains local).
+        for _, buffer_id in workspace_binding.workspaces:
+            add(buffer_id, MemoryEffect.READ_WRITE)
     return tuple(result.values())
 
 

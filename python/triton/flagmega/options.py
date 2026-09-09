@@ -18,6 +18,12 @@ class CompileOptions:
     work_dir: Path | None = None
     policy: str | None = None
     dump_flags: DumpFlags = DumpFlags.NONE
+    # None preserves the target default, or the allocator in an existing plan.
+    bufferize_opt_level: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.bufferize_opt_level not in (None, "fast", "optimized"):
+            raise ValueError("bufferize_opt_level must be 'fast' or 'optimized'.")
 
     @property
     def effective_dump_flags(self) -> DumpFlags:

@@ -9,15 +9,17 @@ from typing import Mapping, Sequence
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import placement_of, tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast
-from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorType
+from triton.flagmega.ir.model import DistributedType, IRType, Node
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
+    attribute_parameter,
     input_parameter,
     op_definition,
     tensor_elements,
     tensor_nbytes,
 )
+from triton.flagmega.ir.ops.nn.rope import RoPE
 from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
@@ -42,11 +44,15 @@ class VectorizedRoPE(OpDefinition):
     input = input_parameter(is_tensor() & has_rank(3))
     cos = input_parameter(is_tensor() & has_rank(3))
     sin = input_parameter(is_tensor() & has_rank(3))
+    rotary_dim = attribute_parameter(default=None)
+
+    @classmethod
+    def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
+        return RoPE.normalize_attrs(super().normalize_attrs(attributes))
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
-        if attrs:
-            raise IRSchemaError("VectorizedRoPE does not accept attributes.")
+        attrs = cls.normalize_attrs(attrs)
         input_ir = cls.input.type_of(inputs)
         cos_ir = cls.cos.type_of(inputs)
         sin_ir = cls.sin.type_of(inputs)
@@ -69,18 +75,19 @@ class VectorizedRoPE(OpDefinition):
                 "VectorizedRoPE cos and sin require rotary pair and lane groups "
                 f"{expected_table_lanes}."
             )
-        if cos_type.dtype.elem_type != DType.FLOAT32 or sin_type.dtype.elem_type != DType.FLOAT32:
-            raise IRSchemaError("VectorizedRoPE cos and sin must have float32 elements.")
+        if any(dtype not in {DType.BFLOAT16, DType.FLOAT32}
+               for dtype in (cos_type.dtype.elem_type, sin_type.dtype.elem_type)):
+            raise IRSchemaError("VectorizedRoPE cos and sin require BF16/FP32 elements; computation uses FP32.")
         if cos_type.shape != sin_type.shape:
             raise IRSchemaError("VectorizedRoPE cos and sin must have identical shapes.")
         logical_input_extent = input_type.shape[-1] * input_vector.lanes[0]
         logical_table_extent = cos_type.shape[-1] * (2 * input_vector.lanes[0])
-        if logical_input_extent != logical_table_extent:
+        if RoPE.rotary_extent(logical_input_extent, attrs) != logical_table_extent:
             raise IRSchemaError(
-                "VectorizedRoPE rotary tables must match the unpacked input head dimension."
+                "VectorizedRoPE rotary tables must match the scalar rotary dimension."
             )
         for source, target in zip(cos_type.shape[:-1], input_type.shape[:-1]):
-            if source != target and source.fixed_value != 1:
+            if source != target and source.value != 1:
                 raise IRSchemaError(
                     "VectorizedRoPE rotary tables are not broadcastable to the input."
                 )
@@ -131,18 +138,15 @@ class VectorizedRoPE(OpDefinition):
             cos_type.rank,
             cos_type.dtype.lanes,
             (rotary_axis, rotary_axis),
-        ).to(dtype=scalar_value.dtype)
+        )
         scalar_sin = unpack_physical(
             sine,
             sin_type.rank,
             sin_type.dtype.lanes,
             (rotary_axis, rotary_axis),
-        ).to(dtype=scalar_value.dtype)
-        half = scalar_value.shape[-1] // 2
-        rotated = context.torch.cat(
-            (-scalar_value[..., half:], scalar_value[..., :half]), dim=-1
         )
-        result = scalar_value * scalar_cos + rotated * scalar_sin
+        result = RoPE.apply_rotary(scalar_value, scalar_cos, scalar_sin,
+                                  node.attrs.get("rotary_dim"), context.torch)
         return pack_physical(
             result,
             input_type.rank,
@@ -155,8 +159,12 @@ class VectorizedRoPE(OpDefinition):
         output = tensor_of(node.type)
         elements = tensor_elements(output)
         size = tensor_nbytes(output)
+        scalar_head = output.shape[-1] * output.dtype.lanes[0]
+        head = scalar_head.value
+        rotary = RoPE.rotary_extent(scalar_head, node.attrs).value
+        rotated_elements = None if elements is None or head is None or not head else elements // head * rotary
         return OpCost(
-            flops=None if elements is None else elements * 3,
+            flops=None if rotated_elements is None else rotated_elements * 3,
             bytes_read=None if size is None else size * 3,
             bytes_written=size,
             notes=("vectorized-rope",),

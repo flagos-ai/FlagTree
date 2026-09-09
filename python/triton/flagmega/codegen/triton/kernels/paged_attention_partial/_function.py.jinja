@@ -13,10 +13,13 @@ def {{ call.symbol }}({{ call.signature }}):
                 {{ call.layer_id }}, {{ call.partial_max }},
                 {{ call.partial_sum }}, {{ call.partial_accumulator }},
                 {{ call.context_shard }}, {{ call.head }},
+                {{ call.query_token }},
                 {{ call.num_layers }}, {{ call.num_query_heads }},
                 {{ call.num_kv_heads }}, {{ call.head_dim }},
                 {{ call.block_size }}, {{ call.scale }},
                 {{ call.token_tile }}, {{ call.context_shards }},
+                {{ call.query_dim_stride }}, {{ call.query_lanes }},
+                {{ call.accumulator_dim_stride }},
             )
 
 

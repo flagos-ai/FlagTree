@@ -3,7 +3,6 @@
 """Physical bufferization analyses and transformations."""
 
 from triton.flagmega.passes.tir.bufferize.sat_allocator import (
-    BufferLifetime,
     SATAllocationResult,
     SATBufferAllocator,
 )
@@ -19,9 +18,14 @@ from triton.flagmega.passes.tir.bufferize.alias_analysis import (
 )
 from triton.flagmega.passes.tir.bufferize.synchronization import plan_memory_synchronization
 from triton.flagmega.passes.tir.bufferize.policy import NttBufferizationPolicy
+from triton.flagmega.passes.tir.bufferize.first_fit_allocator import FirstFitBufferAllocator
+from triton.flagmega.passes.tir.bufferize.allocation import AllocationResult, BufferAllocator, BufferLifetime
 
 __all__ = [
     "BufferLifetime",
+    "BufferAllocator",
+    "AllocationResult",
+    "FirstFitBufferAllocator",
     "BufferPlanner",
     "BufferizationOptions",
     "AliasAnalysis",

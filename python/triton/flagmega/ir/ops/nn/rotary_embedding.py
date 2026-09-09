@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import Mapping, Sequence
+from math import prod
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -27,6 +28,7 @@ from triton.flagmega.ir.ops.core import (
 )
 from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionState
 from triton.flagmega.ir.type_pattern import has_rank, is_ref, is_tensor
+from triton.flagmega.ir.types import VectorType
 
 
 @op_definition(
@@ -51,6 +53,8 @@ class RotaryEmbedding(OpDefinition):
     head_dim = attribute_parameter()
     theta = attribute_parameter()
     attention_scaling = attribute_parameter(default=1.0)
+    output_lanes = attribute_parameter(default=())
+    output_dtype = attribute_parameter(default=DType.FLOAT32)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -64,18 +68,40 @@ class RotaryEmbedding(OpDefinition):
         scaling = float(attrs["attention_scaling"])
         if theta <= 0 or scaling <= 0:
             raise IRSchemaError("RotaryEmbedding theta and attention_scaling must be positive.")
+        lanes = tuple(attrs["output_lanes"])
+        if any(isinstance(lane, bool) or not isinstance(lane, int) or lane <= 0 for lane in lanes):
+            raise IRSchemaError("RotaryEmbedding output_lanes must contain positive integers.")
+        if head_dim % prod(lanes):
+            raise IRSchemaError("RotaryEmbedding head_dim must be divisible by output_lanes.")
+        try:
+            output_dtype = DType(attrs["output_dtype"])
+        except (ValueError, TypeError) as error:
+            raise IRSchemaError("RotaryEmbedding output_dtype must be BF16/FP32.") from error
+        if output_dtype not in {DType.BFLOAT16, DType.FLOAT32}:
+            raise IRSchemaError("RotaryEmbedding output_dtype must be BF16/FP32.")
         return {
             "head_dim": head_dim,
             "theta": theta,
             "attention_scaling": scaling,
+            "output_lanes": lanes,
+            "output_dtype": output_dtype.value,
         }
+
+    @classmethod
+    def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
+        # Existing FP32 scalar/vector tables keep their canonical attributes.
+        # A narrower table dtype is an explicit final-store rounding boundary.
+        return {key: value for key, value in attrs.items()
+                if (key != "output_lanes" or value) and (key != "output_dtype" or value != "float32")}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         reference = tensor_of(cls.reference.type_of(inputs))
+        lanes = tuple(attrs.get("output_lanes", ()))
+        dtype = DType(attrs.get("output_dtype", DType.FLOAT32))
         result = tensor_type(
-            DType.FLOAT32,
-            (reference.shape[0], 1, int(attrs["head_dim"])),
+            VectorType(dtype, lanes) if lanes else dtype,
+            (reference.shape[0], 1, int(attrs["head_dim"]) // prod(lanes)),
         )
         return TupleType((result, result))
 
@@ -110,7 +136,11 @@ class RotaryEmbedding(OpDefinition):
         angles = context.torch.outer(positions, inverse_frequency)
         frequency = context.torch.cat((angles, angles), dim=-1).unsqueeze(1)
         scale = float(node.attrs["attention_scaling"])
-        return frequency.cos() * scale, frequency.sin() * scale
+        lanes = tuple(node.attrs.get("output_lanes", ()))
+        shape = (sequence, 1, head_dim // prod(lanes), *lanes)
+        dtype = getattr(context.torch, node.attrs.get("output_dtype", "float32"))
+        return ((frequency.cos() * scale).to(dtype).reshape(shape),
+                (frequency.sin() * scale).to(dtype).reshape(shape))
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:

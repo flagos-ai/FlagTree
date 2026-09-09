@@ -69,10 +69,10 @@ from triton.flagmega.ir.tir.visitor import TIRRewriter, TIRVisitor, estimate_tir
 from triton.flagmega.ir.tir.verify import verify_prim_function
 
 
-def make_buffer_plan(module, *, alignment: int = 256, options=None) -> BufferPlan:
+def make_buffer_plan(module, *, alignment: int = 256, options=None, allocation_session=None) -> BufferPlan:
     from triton.flagmega.passes.tir.bufferize.planner import plan_buffers
 
-    return plan_buffers(module, alignment=alignment, options=options)
+    return plan_buffers(module, alignment=alignment, options=options, allocation_session=allocation_session)
 
 
 __all__ = [

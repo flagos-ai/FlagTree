@@ -49,6 +49,8 @@ def emit_function_call_arguments(
         actual = str(edge["actual_runtime_argument"])
         if edge["actual_runtime_value_kind"] == "immediate":
             expression = emit_scalar_immediate(edge["formal_abi"], actual)
+        elif edge["actual_runtime_value_kind"] == "scalar":
+            expression = actual
         else:
             expression = emit_storage_pointer(edge["actual_abi"], actual)
         expressions[str(argument["name"])] = expression

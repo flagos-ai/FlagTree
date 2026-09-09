@@ -94,6 +94,7 @@ class GatherReduceQKVRoPEWithCache(OpDefinition):
     k_use_mean = attribute_parameter()
     k_round_before_scale = attribute_parameter(default=False)
     round_qk_intermediates = attribute_parameter(default=True)
+    rotary_dim = attribute_parameter(default=None)
     qkv_layout = attribute_parameter()
     attention_layout = attribute_parameter()
 
@@ -187,6 +188,7 @@ class GatherReduceQKVRoPEWithCache(OpDefinition):
 
 def _base_qkv_attrs(attrs: Mapping[str, object]) -> dict[str, object]:
     return {
+        **({"rotary_dim": attrs["rotary_dim"]} if attrs.get("rotary_dim") is not None else {}),
         **({"round_qk_intermediates": False} if not attrs.get("round_qk_intermediates", True) else {}),
         "q_round_before_scale": attrs.get("q_round_before_scale", False),
         "k_round_before_scale": attrs.get("k_round_before_scale", False),

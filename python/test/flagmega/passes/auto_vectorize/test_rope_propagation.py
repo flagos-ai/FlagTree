@@ -55,8 +55,10 @@ def test_pack_rope_propagates_last_axis_and_double_packs_rotary_tables():
     assert packed_value.attrs == {"lanes": (8,), "axes": (2,)}
     assert packed_cos.attrs == {"lanes": (2, 8), "axes": (2, 2)}
     assert packed_sin.attrs == {"lanes": (2, 8), "axes": (2, 2)}
-    assert result.node_map[packed_cos.inputs[0]].op == "tensors.cast"
-    assert result.node_map[packed_sin.inputs[0]].op == "tensors.cast"
+    assert packed_cos.inputs == ("cos",)
+    assert packed_sin.inputs == ("sin",)
+    assert packed_cos.type.dtype.elem_type == fm.DType.BFLOAT16
+    assert not any(node.op == "tensors.cast" for node in result.nodes)
 
     torch.manual_seed(31)
     values = {

@@ -25,3 +25,23 @@ def test_resume_at_existing_boundary_is_identity_and_emits_checkpoint(tmp_path, 
     assert result.module == source
     assert result.reports == ()
     assert fm.load_module(result.checkpoint) == source
+
+
+def test_resume_before_vector_contract_lowering_does_not_skip_into_tir(monkeypatch):
+
+    class Graph(fm.Module):
+
+        def forward(self):
+            value = self.input("value", fm.tensor_type("bfloat16", (1, 16)))
+            self.function("main", (value, ), (fm.F.math.silu(value), ))
+
+    original = Graph(dialect="ntt", stage="matmul_norm_stats_lowered", entry="main").build()
+
+    def unexpected_tir(*args, **kwargs):
+        pytest.fail("Resume skipped LowerVectorizationContracts and entered TIR selection")
+
+    monkeypatch.setattr("triton.flagmega.codegen.triton.selection.TritonTirSelectionPolicy.propose", unexpected_tir)
+    result = Compiler().compile(original, stop_after="lower-vectorization-contracts")
+    assert result.module.stage == "vector_contracts_lowered"
+    assert len(result.reports) == 1
+    assert result.reports[0].stage == "AutoDistributedPass"

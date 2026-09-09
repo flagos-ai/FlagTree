@@ -11,11 +11,15 @@ def {{ call.symbol }}({{ call.signature }}):
             & ({{ call.writer_active }})
         )
         global_channels = {{ call.global_channel }}
-        _flagmega_gdn_convolution_local_tile(
-            {{ call.qkv }}, {{ call.result }}, {{ call.state }}, {{ call.weight }},
-            local_channels, global_channels, channel_mask,
-            {{ call.history }}, {{ call.kernel }},
-        )
+        for token_index in range({{ call.tokens }}):
+            _flagmega_gdn_convolution_local_tile(
+                {{ call.qkv }}, {{ call.result }}, {{ call.state }}, {{ call.weight }},
+                {{ call.source_offset }}, {{ call.result_offset }}, {{ call.weight_offset }},
+                global_channels, channel_mask,
+                {{ call.history }}, {{ call.weight_kernel_stride }},
+                {{ call.round_products }}, {{ call.round_before_activation }},
+                {{ call.current_first }},
+            )
 
 
 {% endif %}

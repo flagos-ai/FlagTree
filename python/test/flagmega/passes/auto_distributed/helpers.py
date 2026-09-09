@@ -99,7 +99,6 @@ def qwen3_packed_module(*, reusable: bool = True) -> fm.IRModule:
     compiler = Compiler()
     for stage in (
         "decompose-gdn",
-        "form-qkv-rope-with-cache",
         "propose-vectorization",
         "apply-vectorization",
         "propose-packing",

@@ -1,0 +1,6 @@
+# Isolated Python 3.10 reference environment; do not install into FlagTree.
+vllm @ https://wheels.vllm.ai/ae10e855abf4ff5e24e2088aef16029ee1cb7de8/vllm-0.23.1rc1.dev1294%2Bgae10e855a-cp38-abi3-manylinux_2_28_x86_64.whl#sha256=6f081e3d94762b67ddec571adf854c33efea4d9267e8af6497ee14546f9b873f
+torch==2.11.0
+transformers==5.16.1
+flashinfer-python==0.6.14
+nvidia-cuda-nvcc==13.3.73

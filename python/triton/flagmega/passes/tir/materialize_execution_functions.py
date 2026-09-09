@@ -111,12 +111,8 @@ def materialize_execution_functions(module: IRModule) -> IRModule:
             Sequential(tuple(calls)),
             attrs={
                 **dict(graph_function.attrs),
-                "written_parameters": tuple(
-                    value for value in parameters if value in written
-                ),
-                "transfer_source_parameters": tuple(
-                    value for value in parameters if value in sources
-                ),
+                "written_parameters": tuple(_affected_parameters(plan, parameters, written)),
+                "transfer_source_parameters": tuple(_affected_parameters(plan, parameters, sources)),
             },
         )
     return replace(
@@ -133,6 +129,20 @@ def materialize_execution_functions(module: IRModule) -> IRModule:
             result[function.name] for function in module.functions
         ),
     )
+
+
+def _affected_parameters(plan, parameters, accesses):
+    # A subspan write/transfer reads or modifies its parent's storage even
+    # though the two logical buffer ids differ. Index by allocation to keep
+    # this closure linear for ordinary non-aliasing function parameters.
+    spans_by_allocation = {}
+    for value in accesses:
+        span = plan.buffer_map[value].physical_access_span
+        spans_by_allocation.setdefault(span.buffer.id, []).append(span)
+    for value in parameters:
+        span = plan.buffer_map[value].physical_access_span
+        if any(span.may_alias(access) for access in spans_by_allocation.get(span.buffer.id, ())):
+            yield value
 
 
 def _kernel_call(

@@ -10,9 +10,7 @@ from typing import Callable
 from triton.flagmega.errors import StageError
 from triton.flagmega.ir import IRModule, ProvenanceRecord, verify_module
 from triton.flagmega.passes.target_independent import decompose_complex_ops
-from triton.flagmega.passes.form_qkv_rope_with_cache import (
-    form_qkv_rope_with_cache,
-)
+from triton.flagmega.passes.tir.fuse_distributed_ops import fuse_distributed_ops
 from triton.flagmega.passes.norm_stats import (
     finalize_norm_stats_bindings,
     fuse_norm_stats_apply,
@@ -21,6 +19,7 @@ from triton.flagmega.passes.norm_stats import (
 from triton.flagmega.passes.functions import (
     form_matmul_norm_stats_combine,
     hoist_call_invariant_expressions,
+    lift_constant_parameter_expressions,
     post_function_boundary_pack_propagation,
     propagate_function_boundary_layouts,
     propagate_post_auto_distributed_function_boundary_layouts,
@@ -38,9 +37,6 @@ from triton.flagmega.passes.auto_distributed.policy import (
 )
 from triton.flagmega.passes.tir import (
     canonicalize_packed_qkv_weights,
-    fuse_gather_reduce_add_norm_apply,
-    fuse_gather_reduce_norm_apply,
-    fuse_gather_reduce_qkv_rope_with_cache,
     lower_transfer_pipeline_regions,
     lower_tuple_boxing,
     materialize_execution_functions,
@@ -94,6 +90,12 @@ class Stage:
 
 
 _STAGES: dict[str, Stage] = {}
+_STAGE_ALIASES = {
+    "form-qkv-rope-with-cache": "decompose-gdn",
+    "fuse-gather-reduce-add-norm-apply": "fuse-distributed-ops",
+    "fuse-gather-reduce-norm-apply": "fuse-distributed-ops",
+    "fuse-gather-reduce-qkv-rope-with-cache": "fuse-distributed-ops",
+}
 
 
 def register_stage(stage: Stage) -> None:
@@ -104,7 +106,7 @@ def register_stage(stage: Stage) -> None:
 
 def get_stage(name: str) -> Stage:
     try:
-        return _STAGES[name]
+        return _STAGES[_STAGE_ALIASES.get(name, name)]
     except KeyError as error:
         raise StageError(f"Unknown FlagMega stage {name!r}; available: {sorted(_STAGES)}") from error
 
@@ -125,7 +127,7 @@ def next_stage(module_stage: str) -> Stage | None:
 
 
 def stage_names() -> tuple[str, ...]:
-    return tuple(sorted(_STAGES))
+    return tuple(sorted({*_STAGES, *_STAGE_ALIASES}))
 
 
 def _propose_distribution(module: IRModule, target: Target) -> IRModule:
@@ -230,12 +232,6 @@ def _freeze_constants(module: IRModule, _target: Target) -> IRModule:
     return FreezeConstantIslandsPass().run(module)
 
 
-def _fuse_gather_reduce_qkv_rope_with_cache(
-    module: IRModule, _target: Target
-) -> IRModule:
-    return fuse_gather_reduce_qkv_rope_with_cache(module)
-
-
 def _bufferize(module: IRModule, target: Target) -> IRModule:
     return target.bufferize(module)
 
@@ -263,15 +259,9 @@ def _lower_transfer_pipeline_regions(
 register_stage(Stage(
     "decompose-gdn",
     "imported",
-    "normalization_decomposed",
-    lambda module, _target: decompose_complex_ops(module),
-    compatible_input_stages=frozenset({"canonical", "egraph_candidates", "extracted"}),
-))
-register_stage(Stage(
-    "form-qkv-rope-with-cache",
-    "normalization_decomposed",
     "decomposed",
-    lambda module, _target: form_qkv_rope_with_cache(module),
+    lambda module, _target: decompose_complex_ops(module),
+    compatible_input_stages=frozenset({"canonical", "egraph_candidates", "extracted", "normalization_decomposed"}),
 ))
 register_stage(Stage(
     "hoist-call-invariants",
@@ -447,24 +437,20 @@ register_stage(Stage(
     "canonical_constants",
     _constant_cse,
 ))
-register_stage(Stage("freeze-constants", "canonical_constants", "frozen_constants", _freeze_constants))
 register_stage(Stage(
-    "fuse-gather-reduce-add-norm-apply",
+    "lift-constant-parameters",
+    "canonical_constants",
+    "constant_parameters_lifted",
+    lambda module, _target: lift_constant_parameter_expressions(module),
+))
+register_stage(Stage("freeze-constants", "constant_parameters_lifted", "frozen_constants", _freeze_constants,
+                     compatible_input_stages=frozenset({"canonical_constants"})))
+register_stage(Stage(
+    "fuse-distributed-ops",
     "frozen_constants",
-    "gather_reduce_add_norm_apply_fused",
-    lambda module, _target: fuse_gather_reduce_add_norm_apply(module),
-))
-register_stage(Stage(
-    "fuse-gather-reduce-norm-apply",
-    "gather_reduce_add_norm_apply_fused",
-    "gather_reduce_norm_apply_fused",
-    lambda module, _target: fuse_gather_reduce_norm_apply(module),
-))
-register_stage(Stage(
-    "fuse-gather-reduce-qkv-rope-with-cache",
-    "gather_reduce_norm_apply_fused",
     "gather_reduce_qkv_fused",
-    _fuse_gather_reduce_qkv_rope_with_cache,
+    lambda module, _target: fuse_distributed_ops(module),
+    compatible_input_stages=frozenset({"gather_reduce_add_norm_apply_fused", "gather_reduce_norm_apply_fused"}),
 ))
 register_stage(Stage("lower-tir", "selected_tir_variants", "selected_tir", _lower_to_tir, output_dialect="semantic_tir"))
 register_stage(Stage(

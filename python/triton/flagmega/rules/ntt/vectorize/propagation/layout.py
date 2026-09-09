@@ -260,7 +260,7 @@ def layout_propagation_rules() -> tuple[RewriteRule, ...]:
             lambda node, module: _shape_op_unpack(node, module, "tensors.pad", "pad_end"),
         ),
         RewriteRule(
-            "VectorizeSlicePropagation",
+            "VectorizeSliceToShapePropagation",
             lambda node, module: _pack_shape_op_matches(
                 node, module, "tensors.slice_to_shape", "shape"
             ),
@@ -269,7 +269,7 @@ def layout_propagation_rules() -> tuple[RewriteRule, ...]:
             ),
         ),
         RewriteRule(
-            "SliceDevectorizePropagation",
+            "SliceToShapeDevectorizePropagation",
             lambda node, module: _shape_op_unpack_matches(
                 node, module, "tensors.slice_to_shape", "shape"
             ),

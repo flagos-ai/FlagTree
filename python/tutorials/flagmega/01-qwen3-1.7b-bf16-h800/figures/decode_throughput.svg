@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="690" viewBox="0 0 1200 690" role="img">
+<title>Decode throughput (higher is better)</title>
+<desc>Qwen3-1.7B BF16, one H800, batch one. Bars are measured medians. CLI and vLLM runtime/prefill paths differ; decode latency is not an end-to-end speedup.</desc>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<g font-family="sans-serif" fill="#243343">
+<text x="85" y="37" font-size="24">Decode throughput (higher is better)</text>
+<text x="85" y="64" font-size="14">BF16 / H800 / batch 1 / 64 output tokens / host-visible timing</text>
+<text x="85" y="89" font-size="14">Median per-request decode tokens / decode time; excludes prefill and the first output token.</text>
+<text x="85" y="113" font-size="14">CLI: compiled token-scan prefill. vLLM: batched prefill. Data collected in separate runs. CLI terminal I/O excluded.</text>
+<path d="M 85 540.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="545.0" text-anchor="end" font-size="13">0.0</text>
+<path d="M 85 461.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="466.0" text-anchor="end" font-size="13">137.7</text>
+<path d="M 85 382.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="387.0" text-anchor="end" font-size="13">275.4</text>
+<path d="M 85 303.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="308.0" text-anchor="end" font-size="13">413.1</text>
+<path d="M 85 224.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="229.0" text-anchor="end" font-size="13">550.8</text>
+<path d="M 85 145.0 H 1170" stroke="#dfe5eb"/>
+<text x="73" y="150.0" text-anchor="end" font-size="13">688.4</text>
+<rect x="109.4" y="336.4" width="39.7" height="203.6" fill="#556579"/>
+<text x="129.3" y="328.4" text-anchor="middle" font-size="12">354.82</text>
+<rect x="155.1" y="300.9" width="39.7" height="239.1" fill="#c47725"/>
+<text x="174.9" y="292.9" text-anchor="middle" font-size="12">416.68</text>
+<rect x="200.8" y="281.8" width="39.7" height="258.2" fill="#247da0"/>
+<text x="220.6" y="273.8" text-anchor="middle" font-size="12">450.00</text>
+<rect x="246.4" y="288.4" width="39.7" height="251.6" fill="#198269"/>
+<text x="266.3" y="280.4" text-anchor="middle" font-size="12">438.46</text>
+<rect x="292.1" y="205.3" width="39.7" height="334.7" fill="#8252b3"/>
+<text x="312.0" y="197.3" text-anchor="middle" font-size="12">583.43</text>
+<text x="220.6" y="568" text-anchor="middle" font-size="14">Prompt 32</text>
+<rect x="380.7" y="337.0" width="39.7" height="203.0" fill="#556579"/>
+<text x="400.5" y="329.0" text-anchor="middle" font-size="12">353.77</text>
+<rect x="426.3" y="298.9" width="39.7" height="241.1" fill="#c47725"/>
+<text x="446.2" y="290.9" text-anchor="middle" font-size="12">420.24</text>
+<rect x="472.0" y="283.1" width="39.7" height="256.9" fill="#247da0"/>
+<text x="491.9" y="275.1" text-anchor="middle" font-size="12">447.76</text>
+<rect x="517.7" y="281.6" width="39.7" height="258.4" fill="#198269"/>
+<text x="537.6" y="273.6" text-anchor="middle" font-size="12">450.29</text>
+<rect x="563.4" y="205.5" width="39.7" height="334.5" fill="#8252b3"/>
+<text x="583.2" y="197.5" text-anchor="middle" font-size="12">582.92</text>
+<text x="491.9" y="568" text-anchor="middle" font-size="14">Prompt 128</text>
+<rect x="651.9" y="334.6" width="39.7" height="205.4" fill="#556579"/>
+<text x="671.8" y="326.6" text-anchor="middle" font-size="12">358.08</text>
+<rect x="697.6" y="307.2" width="39.7" height="232.8" fill="#c47725"/>
+<text x="717.4" y="299.2" text-anchor="middle" font-size="12">405.76</text>
+<rect x="743.3" y="286.2" width="39.7" height="253.8" fill="#247da0"/>
+<text x="763.1" y="278.2" text-anchor="middle" font-size="12">442.32</text>
+<rect x="788.9" y="288.7" width="39.7" height="251.3" fill="#198269"/>
+<text x="808.8" y="280.7" text-anchor="middle" font-size="12">437.92</text>
+<rect x="834.6" y="217.6" width="39.7" height="322.4" fill="#8252b3"/>
+<text x="854.5" y="209.6" text-anchor="middle" font-size="12">561.86</text>
+<text x="763.1" y="568" text-anchor="middle" font-size="14">Prompt 1024</text>
+<rect x="923.2" y="338.5" width="39.7" height="201.5" fill="#556579"/>
+<text x="943.0" y="330.5" text-anchor="middle" font-size="12">351.19</text>
+<rect x="968.8" y="320.3" width="39.7" height="219.7" fill="#c47725"/>
+<text x="988.7" y="312.3" text-anchor="middle" font-size="12">382.99</text>
+<rect x="1014.5" y="290.7" width="39.7" height="249.3" fill="#247da0"/>
+<text x="1034.4" y="282.7" text-anchor="middle" font-size="12">434.51</text>
+<rect x="1060.2" y="292.2" width="39.7" height="247.8" fill="#198269"/>
+<text x="1080.1" y="284.2" text-anchor="middle" font-size="12">431.90</text>
+<rect x="1105.9" y="225.1" width="39.7" height="314.9" fill="#8252b3"/>
+<text x="1125.7" y="217.1" text-anchor="middle" font-size="12">548.89</text>
+<text x="1034.4" y="568" text-anchor="middle" font-size="14">Prompt 2048</text>
+<text x="16" y="129" font-size="13">tokens/s</text>
+<rect x="85" y="588" width="14" height="14" fill="#556579"/>
+<text x="107" y="600" font-size="13">Native vLLM</text>
+<rect x="545" y="588" width="14" height="14" fill="#c47725"/>
+<text x="567" y="600" font-size="13">FlagMega initial (vLLM numerics)</text>
+<rect x="85" y="613" width="14" height="14" fill="#247da0"/>
+<text x="107" y="625" font-size="13">Agent: layout + kernel choices</text>
+<rect x="545" y="613" width="14" height="14" fill="#198269"/>
+<text x="567" y="625" font-size="13">Agent: + serving ABI</text>
+<rect x="85" y="638" width="14" height="14" fill="#8252b3"/>
+<text x="107" y="650" font-size="13">FlagMega chat CLI (no vLLM)</text>
+</g>
+</svg>

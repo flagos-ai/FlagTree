@@ -131,7 +131,7 @@ def {{ call.symbol }}__producer(
     tle.gpu.tensor_map_fenceproxy_acquire({{ call.key_descriptor }})
     tle.gpu.tensor_map_fenceproxy_acquire({{ call.value_descriptor }})
     attention_state_offsets = 0
-    context_length = tl.load({{ call.slot_mapping }}).to(tl.int32) + 1
+    context_length = tl.load({{ call.slot_mapping }}).to(tl.int32) + ({{ call.query_token }}) + 1
     split_span = (
         tl.cdiv(
             context_length,
@@ -207,7 +207,7 @@ def {{ call.symbol }}__consumer(
 {% set key_reader = call.pipeline_channels[0].reader_parameter %}
 {% set value_reader = call.pipeline_channels[1].reader_parameter %}
     attention_state_offsets = 0
-    context_length = tl.load({{ call.slot_mapping }}).to(tl.int32) + 1
+    context_length = tl.load({{ call.slot_mapping }}).to(tl.int32) + ({{ call.query_token }}) + 1
     split_span = (
         tl.cdiv(
             context_length,
@@ -228,7 +228,8 @@ def {{ call.symbol }}__consumer(
         tl.load(
             {{ call.query }}
             + tl.zeros(({{ call.q_head_group_size }}, 1), tl.int32)
-            + query_dimension[None, :],
+            + (query_dimension[None, :] // {{ call.query_lanes }}) * {{ call.query_dim_stride }}
+            + query_dimension[None, :] % {{ call.query_lanes }},
             mask=query_load_mask[:, None],
             other=0.0,
         ),
@@ -310,7 +311,7 @@ def {{ call.symbol }}__consumer(
     tl.store(
         {{ call.partial_accumulator }}
         + accumulator_row[:, None] * {{ call.head_dim }}
-        + accumulator_dimension[None, :],
+        + accumulator_dimension[None, :] * {{ call.accumulator_dim_stride }},
         accumulator,
         mask=accumulator_mask[:, None],
     )

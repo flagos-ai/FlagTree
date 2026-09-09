@@ -216,6 +216,9 @@ class EGraphSession:
 
     def _add_result(self, rule_name: str, source: Node, result: RewriteResult) -> None:
         module, graph = self._require_constructed()
+        if result.removed_ids or result.extra_replacements or result.insertion_before is not None:
+            raise IRVerificationError("Region edits require DataflowRewriter, not equality insertion.",
+                                      stage=module.stage, node_id=source.id)
         if result.replacement.type != source.type or not result.replacement.effect.is_pure:
             raise IRVerificationError(
                 f"E-graph rule {rule_name!r} must preserve type and purity.",

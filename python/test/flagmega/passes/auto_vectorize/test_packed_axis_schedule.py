@@ -38,29 +38,30 @@ def _compile_axis_zero():
 
 def test_noncontiguous_axis_selection_becomes_a_padded_physical_traversal(tmp_path):
     module = _compile_axis_zero()
-    dispatch = fm.kernel_dispatch_for_call(module, module.node_map["output"])
-    assert dispatch is not None
+    dispatch = next(value for node in module.nodes if (value := fm.kernel_dispatch_for_call(module, node)) is not None
+                    and value.semantic_op == "math.vectorized_binary")
     schedule = dispatch.parameters["vector_schedule"]
     assert schedule["contract"]["kind"] == "axes"
     assert schedule["contract"]["axes"] == (0,)
     assert schedule["lowering"] == "packed_axes"
 
     package = render_triton_package(module, tmp_path)
-    call = next(
-        value
-        for value in describe_tir_package(module)["render_calls"]
-        if value["semantic_op"] == "math.add"
-    )
+    call = next(value for value in describe_tir_package(module)["render_calls"]
+                if value["semantic_op"] == "math.vectorized_binary")
     source = (tmp_path / "generated_kernels.py").read_text("utf-8")
     assert package["kind"] == "tir_call_graph/v1"
-    assert call["logical_shape"] == (3, 17)
-    assert call["padded_shape"] == (8, 17)
+    # The selected typed-vector graph is executable, not only provenance on
+    # a reconstructed scalar Add. Padding/relayout/cropping are explicit.
+    assert call["logical_shape"] == (1, 17)
+    assert call["padded_shape"] == (1, 17)
     assert call["local_capacity"] == 136
-    assert call["logical_capacity"] == 51
+    assert call["logical_capacity"] == 136
     assert "tl.range(0, 136, 256)" in source
-    assert "((local_offsets) // 17)" in source
-    assert "((local_offsets) % 17)" in source
-    assert "< (3)" in source
+    assert "# flagmega-kernel: pack/local platform=generic" in source
+    assert "# flagmega-kernel: unpack/local platform=generic" in source
+    output = fm.kernel_dispatch_for_call(module, module.node_map["output"])
+    assert output.semantic_op == "tensors.slice_to_shape"
+    assert output.semantic_attrs["shape"] == (3, 17)
 
 
 def test_noncontiguous_axis_selection_executes_on_h800(tmp_path):

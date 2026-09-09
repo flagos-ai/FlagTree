@@ -10,41 +10,40 @@ def {{ call.symbol }}({{ call.signature }}):
             (rope_offsets < {{ call.local_capacity }}) & ({{ call.active }})
         )
         rope_dimension = {{ call.dimension }}
-        partner_dimension = tl.where(
-            rope_dimension < {{ call.head_dim }} // 2,
-            rope_dimension + {{ call.head_dim }} // 2,
-            rope_dimension - {{ call.head_dim }} // 2,
-        )
-        rope_value = tl.load(
+        rotary_mask = rope_mask & (rope_dimension < {{ call.rotary_dim }})
+        rope_source = tl.load(
             {{ call.source }} + ({{ call.source_offset }}),
             mask=rope_mask,
             other=0.0,
-        ).to(tl.float32)
+        )
+        rope_value = rope_source.to(tl.float32)
         rope_partner = tl.load(
             {{ call.source }} + ({{ call.partner_offset }}),
-            mask=rope_mask,
+            mask=rotary_mask,
             other=0.0,
         ).to(tl.float32)
         rope_rotated = tl.where(
-            rope_dimension < {{ call.head_dim }} // 2,
+            rope_dimension < {{ call.rotary_dim }} // 2,
             -rope_partner,
             rope_partner,
         )
         rope_cosine = tl.load(
             {{ call.cosine }} + ({{ call.cosine_offset }}),
-            mask=rope_mask,
+            mask=rotary_mask,
             other=0.0,
-        ).to({{ call.input_type }}).to(tl.float32)
+        ).to(tl.float32)
         rope_sine = tl.load(
             {{ call.sine }} + ({{ call.sine_offset }}),
-            mask=rope_mask,
+            mask=rotary_mask,
             other=0.0,
-        ).to({{ call.input_type }}).to(tl.float32)
-        rope_cosine_product = libdevice.mul_rn(rope_value, rope_cosine).to({{ call.input_type }}).to(tl.float32)
-        rope_sine_product = libdevice.mul_rn(rope_rotated, rope_sine).to({{ call.input_type }}).to(tl.float32)
+        ).to(tl.float32)
+        rope_cosine_product = libdevice.mul_rn(rope_value, rope_cosine)
+        rope_sine_product = libdevice.mul_rn(rope_rotated, rope_sine)
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
-            rope_cosine_product + rope_sine_product,
+            tl.where(rope_dimension < {{ call.rotary_dim }},
+                     (rope_cosine_product + rope_sine_product).to({{ call.input_type }}),
+                     rope_source),
             mask=rope_mask,
         )
 

@@ -35,6 +35,11 @@ class GatedDeltaNetConvolution(OpDefinition):
     # kernel factors into VectorType lanes without changing the operation.
     conv_weight = input_parameter(is_tensor())
     conv_kernel_size = attribute_parameter()
+    # A materialized low-precision product and a materialized convolution
+    # result introduce independent rounding boundaries around the FP32 sum.
+    round_products = attribute_parameter(default=True)
+    round_before_activation = attribute_parameter(default=True)
+    accumulation_order = attribute_parameter(default="current_first")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -42,7 +47,12 @@ class GatedDeltaNetConvolution(OpDefinition):
         kernel = int(attrs["conv_kernel_size"])
         if kernel < 2:
             raise IRSchemaError("GatedDeltaNetConvolution conv_kernel_size must be at least two.")
-        return {"conv_kernel_size": kernel}
+        for name in ("round_products", "round_before_activation"):
+            if not isinstance(attrs[name], bool):
+                raise IRSchemaError(f"GatedDeltaNetConvolution {name} must be boolean.")
+        if attrs["accumulation_order"] not in ("current_first", "chronological"):
+            raise IRSchemaError("GatedDeltaNetConvolution accumulation_order must be current_first or chronological.")
+        return {**attrs, "conv_kernel_size": kernel}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -91,6 +101,9 @@ class GatedDeltaNetConvolution(OpDefinition):
             state=cls.state.read(arguments),
             conv_weight=cls.conv_weight.read(arguments),
             conv_kernel_size=int(node.attrs["conv_kernel_size"]),
+            round_products=bool(node.attrs.get("round_products", True)),
+            round_before_activation=bool(node.attrs.get("round_before_activation", True)),
+            accumulation_order=str(node.attrs.get("accumulation_order", "current_first")),
             torch=context.torch,
         )
 
@@ -111,6 +124,9 @@ def gated_delta_net_convolution(
     state,
     conv_weight,
     conv_kernel_size: int,
+    round_products: bool = True,
+    round_before_activation: bool = True,
+    accumulation_order: str = "current_first",
     torch=None,
 ):
     torch = torch or _torch()
@@ -130,7 +146,17 @@ def gated_delta_net_convolution(
         current = qkv[token].reshape(conv_dim, 1)
         history = torch.cat((conv_state, current), dim=1)
         conv_state = history[:, 1:]
-        value = (history * weight).sum(dim=1)
+        order = range(conv_kernel_size)
+        if accumulation_order == "current_first":
+            order = (conv_kernel_size - 1, *range(conv_kernel_size - 1))
+        value = torch.zeros(conv_dim, device=qkv.device, dtype=torch.float32)
+        for index in order:
+            if round_products:
+                value = value + (history[:, index] * weight[:, index]).float()
+            else:
+                value = torch.addcmul(value, history[:, index].float(), weight[:, index].float())
+        if round_before_activation:
+            value = value.to(qkv.dtype).float()
         outputs.append(torch.nn.functional.silu(value).to(dtype=qkv.dtype))
     state.update_convolution_layer(conv_state, 0)
     return torch.stack(outputs), state

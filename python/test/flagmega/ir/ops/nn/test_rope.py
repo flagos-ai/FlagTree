@@ -32,7 +32,7 @@ def test_rope_broadcasts_position_pair_and_rotates_half_dimensions():
         module, {"value": value, "cos": cos, "sin": sin})[0]
 
     rotated = torch.cat((-value[..., 2:], value[..., :2]), dim=-1)
-    expected = value * cos.to(torch.bfloat16) + rotated * sin.to(torch.bfloat16)
+    expected = (value.float() * cos.float() + rotated.float() * sin.float()).to(value.dtype)
     torch.testing.assert_close(result, expected)
     assert result.dtype == torch.bfloat16
     assert pm.try_match_root(

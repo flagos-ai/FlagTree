@@ -3,43 +3,32 @@
 """Fuse explicit BF16 projections/FP32 SiLU/product/BF16 result boundaries."""
 
 from triton.flagmega.ir import DType, TensorType
+from triton.flagmega.pattern_match import F, is_alt, wildcard
 from triton.flagmega.rules import RewriteResult, RewriteRule
 from triton.flagmega.rules.neutral._utility import make_node
 
 
 def fuse_wide_glu_rule():
-    def match(root, module):
-        nodes = module.node_map
-        if root.op != "tensors.cast" or not isinstance(root.type, TensorType) or root.type.dtype != DType.BFLOAT16:
-            return None
-        product = nodes[root.inputs[0]]
-        if product.op != "math.mul" or product.type.dtype != DType.FLOAT32:
-            return None
-        activation, up_cast = (nodes[value] for value in product.inputs)
-        if up_cast.op == "math.silu":
-            activation, up_cast = up_cast, activation
-        if activation.op != "math.silu" or up_cast.op != "tensors.cast":
-            return None
-        gate_cast = nodes[activation.inputs[0]]
-        if (gate_cast.op != "tensors.cast" or gate_cast.type.dtype != DType.FLOAT32
-                or up_cast.type.dtype != DType.FLOAT32):
-            return None
-        gate, up = nodes[gate_cast.inputs[0]], nodes[up_cast.inputs[0]]
-        if (gate.op != "math.matmul" or up.op != "math.matmul" or gate.type != up.type
-                or gate.type.dtype != DType.BFLOAT16 or gate.type.rank != 2 or gate.inputs[0] != up.inputs[0]
-                or any(value.attrs.get("transpose_a", False) or not value.attrs.get("transpose_b", False)
-                       for value in (gate, up))):
-            return None
-        return tuple(nodes[value] for value in (gate.inputs[0], gate.inputs[1], up.inputs[1]))
+    value = wildcard("value")
+    gate = F.math.is_matmul(value, wildcard("gate_weight"), transpose_a=False, transpose_b=True, call_name="gate")
+    up = F.math.is_matmul(value, wildcard("up_weight"), transpose_a=False, transpose_b=True, call_name="up")
+    activation = F.math.is_silu(F.tensors.is_cast(gate, dtype="float32"))
+    up_cast = F.tensors.is_cast(up, dtype="float32")
+    product = is_alt(F.math.is_mul(activation, up_cast), F.math.is_mul(up_cast, activation))
+    pattern = F.tensors.is_cast(product, dtype="bfloat16", call_name="root")
 
-    def rewrite(root, module):
-        inputs = match(root, module)
+    def rewrite(result, module):
+        root, gate, up = (result[name] for name in ("root", "gate", "up"))
+        if (not isinstance(gate.type, TensorType) or gate.type != up.type
+                or gate.type.dtype != DType.BFLOAT16 or gate.type.rank != 2):
+            return root
+        inputs = tuple(result[name] for name in ("value", "gate_weight", "up_weight"))
         replacement = make_node("nn.dense_matmul_glu", root.id, inputs,
                                 {"activation": "silu", "round_activation": False},
                                 {**root.metadata, "formed_by": "FuseWideGlu"})
         return RewriteResult(replacement)
 
-    return RewriteRule("FuseWideGlu", matches=lambda node, module: match(node, module) is not None, rewrite=rewrite)
+    return RewriteRule("FuseWideGlu", pattern, rewrite)
 
 
 __all__ = ["fuse_wide_glu_rule"]

@@ -1,20 +1,22 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "update_paged_attention_kv_cache" and call.variant == "decode" %}
-{{ entry.kernel_decorator(call) }}
-def {{ call.symbol }}({{ call.signature }}):
+@triton.jit(noinline=True)
+def {{ call.symbol }}__write({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     cache_position = tl.load({{ call.sequence_lengths }}).to(tl.int64)
-    cache_logical_block = cache_position // {{ call.block_size }}
-    cache_block_offset = cache_position % {{ call.block_size }}
-    cache_physical_block = tl.load(
-        {{ call.block_table }} + cache_logical_block
-    ).to(tl.int64)
     for cache_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
         cache_offsets = cache_start + tl.arange(0, {{ call.tile }})
         cache_mask = (
             (cache_offsets < {{ call.local_capacity }}) & ({{ call.active }})
+            & ({{ call.writer_active }})
         )
+        cache_token_position = cache_position + ({{ call.logical_token }})
+        cache_logical_block = cache_token_position // {{ call.block_size }}
+        cache_block_offset = cache_token_position % {{ call.block_size }}
+        cache_physical_block = tl.load(
+            {{ call.block_table }} + cache_logical_block, mask=cache_mask, other=0,
+        ).to(tl.int64)
         cache_head = {{ call.logical_head }}
         cache_dimension = {{ call.logical_dimension }}
         cache_destination = (
@@ -34,8 +36,26 @@ def {{ call.symbol }}({{ call.signature }}):
         )
     if shard_index == 0:
         tl.store({{ call.slot_mapping }}, cache_position)
-        if {{ call.advance_sequence }}:
-            tl.store({{ call.sequence_lengths }}, cache_position + 1)
+        tl.store({{ call.query_start_loc }}, 0)
+        tl.store({{ call.query_start_loc }} + 1, {{ call.num_tokens }})
+
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__advance({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    if shard_index == 0:
+        cache_position = tl.load({{ call.sequence_lengths }}).to(tl.int64)
+        tl.store({{ call.sequence_lengths }}, cache_position + {{ call.num_tokens }})
+
+
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    {{ call.symbol }}__write({{ call.signature }})
+    if {{ call.advance_sequence }}:
+        # Every owner must finish reading the old base before it is advanced.
+        # Keep grid synchronization in the caller's entry-relative scope.
+{{ entry.stage_barrier() | indent(4, true) }}
+        {{ call.symbol }}__advance({{ call.signature }})
 
 
 {% endif %}

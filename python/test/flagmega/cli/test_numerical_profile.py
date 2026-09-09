@@ -21,7 +21,8 @@ def test_import_cli_dispatches_the_explicit_profile(monkeypatch, tmp_path):
                                     "--output", str(tmp_path / "imported.py")])
     with pytest.raises(RuntimeError, match="import boundary reached"):
         cli._run(args)
-    assert seen == [("checkpoint", {"revision": None, "numerical_profile": VLLM_INDUCTOR_LEVEL3})]
+    assert seen == [("checkpoint", {"revision": None, "numerical_profile": VLLM_INDUCTOR_LEVEL3,
+                                   "mode": "decode-1", "num_tokens": 1})]
 
 
 def test_compile_cannot_silently_override_a_saved_contract(monkeypatch, tmp_path):

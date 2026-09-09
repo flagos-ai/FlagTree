@@ -30,6 +30,7 @@ from triton.flagmega.codegen.triton.pipeline_source import (
 from triton.flagmega.codegen.triton.runtime_binding import (
     describe_function_runtime_binding,
 )
+from triton.flagmega.codegen.triton.physical_access import emit_triton_scalar_type
 from triton.flagmega.codegen.triton.templates import (
     KernelTemplateSpec,
     TritonTemplateRegistry,
@@ -176,6 +177,15 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
     )
     descriptor_names = [str(value["name"]) for value in descriptor_specs]
     signature = [*root_signature, *descriptor_names]
+    scalar_arguments = {
+        str(value["name"]): str(value["scalar_dtype"])
+        for value in root_binding["arguments"]
+        if value.get("runtime_value_kind") == "scalar"
+    }
+    typed_signature = ",\n    ".join(
+        f"{name}: {emit_triton_scalar_type(scalar_arguments[name])}" if name in scalar_arguments else name
+        for name in signature
+    )
     external_names = {
         str(value["name"]) for value in root_binding["arguments"]
     }
@@ -194,7 +204,8 @@ def describe_tir_package(module: IRModule) -> dict[str, object]:
             range(len(root_binding["arguments"]))
         ) + dynamic_descriptors,
         "signature_arguments": signature,
-        "signature": ",\n    ".join(signature),
+        "signature": typed_signature,
+        "scalar_arguments": list(scalar_arguments),
         "host_tensor_descriptor_specs": plain_package_value(
             descriptor_specs
         ),

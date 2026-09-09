@@ -15,7 +15,7 @@ from triton.flagmega.ir.ops.nn._paged_attention_state import (
 
 
 class QKVRoPERegion(fm.Module):
-    def __init__(self, *, extra_query_user: bool = False, wide: bool = False):
+    def __init__(self, *, extra_query_user: bool = False, wide: bool = False, rotary_dim=None):
         super().__init__(
             dialect="high_level",
             stage="normalization_decomposed",
@@ -23,12 +23,13 @@ class QKVRoPERegion(fm.Module):
         )
         self.extra_query_user = extra_query_user
         self.wide = wide
+        self.rotary_dim = rotary_dim
 
     def forward(self):
         q_type = fm.tensor_type("bfloat16", (1, 2, 64))
         kv_type = fm.tensor_type("bfloat16", (1, 1, 64))
         parameter_type = fm.tensor_type("bfloat16", (64,))
-        trig_type = fm.tensor_type("float32", (1, 1, 64))
+        trig_type = fm.tensor_type("float32", (1, 1, self.rotary_dim or 64))
         q = self.input("q", q_type)
         k = self.input("k", kv_type)
         v = self.input("v", kv_type)
@@ -81,8 +82,8 @@ class QKVRoPERegion(fm.Module):
             use_mean=False,
             name="k_norm",
         )
-        q_rope = fm.F.nn.rope(q_norm, cos, sin, name="q_rope")
-        k_rope = fm.F.nn.rope(k_norm, cos, sin, name="k_rope")
+        q_rope = fm.F.nn.rope(q_norm, cos, sin, rotary_dim=self.rotary_dim, name="q_rope")
+        k_rope = fm.F.nn.rope(k_norm, cos, sin, rotary_dim=self.rotary_dim, name="k_rope")
         if self.wide:
             q_rope = fm.F.tensors.cast(q_rope, dtype="bfloat16", name="q_rounded")
             k_rope = fm.F.tensors.cast(k_rope, dtype="bfloat16", name="k_rounded")
@@ -264,11 +265,13 @@ def test_qkv_pass_preserves_function_output_boundaries(boundary, wide):
 
 
 @pytest.mark.parametrize("round_before_scale", [False, True])
-def test_wide_qkv_preserves_query_and_all_cache_bytes(round_before_scale):
+@pytest.mark.parametrize("rotary_dim", [None, 16, 48])
+@pytest.mark.parametrize("wide", [False, True])
+def test_qkv_preserves_query_and_all_cache_bytes(round_before_scale, rotary_dim, wide):
     import torch
     from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator, create_paged_attention_state
 
-    source = QKVRoPERegion(wide=True).build()
+    source = QKVRoPERegion(wide=wide, rotary_dim=rotary_dim).build()
     source = replace(source, nodes=tuple(
         replace(node, attrs={**node.attrs, "round_before_scale": round_before_scale})
         if node.op == "nn.norm_apply" else node for node in source.nodes))
@@ -296,7 +299,7 @@ def test_wide_qkv_preserves_query_and_all_cache_bytes(round_before_scale):
 
 
 def test_qkv_table_equivalence_never_equates_distinct_variables():
-    from triton.flagmega.passes._qkv_head import same_table
+    from triton.flagmega.rules.neutral._qkv_head import same_table
 
     table = fm.Node("table", "builtin.var", (), fm.tensor_type("bfloat16", (1, 1, 64)), attrs={"name": "table"})
     assert same_table(table, table)

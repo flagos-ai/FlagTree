@@ -47,10 +47,18 @@ class BufferDescriptor:
         DistributedBufferStorageKind.COMPACT_LOCAL
     )
     distributed_backing_type: DistributedType | None = None
+    # Bind symbols in MemSpan.start to scalar buffer identities. The MemSpan
+    # remains the only address/alias truth; this supplies executable SSA uses.
+    offset_bindings: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shape", tuple(int(value) for value in self.shape))
         object.__setattr__(self, "strides", tuple(int(value) for value in self.strides))
+        object.__setattr__(self, "offset_bindings",
+                           tuple((str(symbol), str(value)) for symbol, value in self.offset_bindings))
+        if len(dict(self.offset_bindings)) != len(self.offset_bindings) or any(
+                not symbol.isidentifier() or not value for symbol, value in self.offset_bindings):
+            raise ValueError("Buffer offset bindings require unique symbols and scalar buffer identities.")
         object.__setattr__(
             self,
             "distributed_storage_kind",
@@ -234,6 +242,7 @@ class BufferDescriptor:
         source_node: str | None = None,
         field: str | None = None,
         role: str = "view",
+        offset_bindings: tuple[tuple[str, str], ...] = (),
     ) -> BufferDescriptor:
         """Create a typed logical view without creating physical storage."""
 
@@ -256,6 +265,7 @@ class BufferDescriptor:
             live_end=self.live_end,
             function=self.function,
             role=role,
+            offset_bindings=tuple(dict((*self.offset_bindings, *offset_bindings)).items()),
             distributed_type=(
                 self.distributed_type
                 if tuple(shape) == self.shape
@@ -293,6 +303,7 @@ class BufferDescriptor:
             "live_end": self.live_end,
             "function": self.function,
             "role": self.role,
+            **({"offset_bindings": dict(self.offset_bindings)} if self.offset_bindings else {}),
             "distributed_type": (
                 None if self.distributed_type is None else self.distributed_type.to_data()
             ),
@@ -314,6 +325,7 @@ class BufferDescriptor:
     ) -> BufferDescriptor:
         return cls(
             id=str(data["id"]),
+            offset_bindings=tuple(data.get("offset_bindings", {}).items()),
             dtype=data_type_from_data(data["dtype"]),
             shape=tuple(int(value) for value in data["shape"]),
             strides=tuple(int(value) for value in data["strides"]),

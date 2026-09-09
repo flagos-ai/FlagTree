@@ -15,6 +15,7 @@ from triton.flagmega.ir.bufferization.function_plan import FunctionBufferPlan
 from triton.flagmega.ir.bufferization.mem_span import MemSpan
 from triton.flagmega.ir.bufferization.memory import MemorySpace
 from triton.flagmega.ir.bufferization.physical_buffer import PhysicalBuffer
+from triton.flagmega.ir.bufferization.allocation_record import AllocationRecord
 
 
 BUFFER_PLAN_SCHEMA = "flagmega.buffer-plan/v6"
@@ -32,8 +33,10 @@ class BufferPlan:
     alignment: int
     entry_inputs: tuple[tuple[str, tuple[str, ...]], ...]
     entry_outputs: tuple[tuple[str, tuple[str, ...]], ...]
-    allocator: str = "ortools-cp-sat"
+    allocator: str = "ortools-cp-sat/no-overlap-2d"
     default_workspace: str = "workspace"
+    optimization_level: str = "optimized"
+    allocation_records: tuple[AllocationRecord, ...] = ()
 
     @cached_property
     def buffer_map(self) -> Mapping[str, BufferDescriptor]:
@@ -224,6 +227,8 @@ class BufferPlan:
                 {"node": node, "buffers": list(buffers)} for node, buffers in self.entry_outputs
             ],
             "default_workspace": self.default_workspace,
+            "optimization_level": self.optimization_level,
+            "allocation_records": [record.to_data() for record in self.allocation_records],
         }
 
     @classmethod
@@ -248,7 +253,7 @@ class BufferPlan:
             candidates = tuple(
                 value
                 for value in memory_spaces
-                if value.strategy.value == "sat"
+                if value.supports_lifetime_reuse
                 and value.allocation_scope.value == "function"
                 and value.kind != "shared"
             )
@@ -284,6 +289,8 @@ class BufferPlan:
             entry_outputs=bindings(data.get("entry_outputs", ())),
             allocator=str(data.get("allocator", "")),
             default_workspace=default_workspace,
+            optimization_level=str(data.get("optimization_level", "optimized")),
+            allocation_records=tuple(AllocationRecord.from_data(value) for value in data.get("allocation_records", ())),
         )
 
 

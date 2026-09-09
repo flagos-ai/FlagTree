@@ -1,0 +1,14 @@
+# flagmega-kernel: elementwise/div platform=generic
+{% set elementwise_variant = "div" %}
+{% set physical_block = elementwise_block | default('block') %}
+{% include "kernels/elementwise/packed_axes.py.jinja" %}
+@triton.jit
+def _flagmega_elementwise_div(lhs, rhs, destination, size: tl.constexpr, block: tl.constexpr):
+    schedule_offsets = tl.program_id(0) * {{ physical_block }} + tl.arange(0, {{ physical_block }})
+    offsets, mask = _flagmega_elementwise_packed_offsets(schedule_offsets, size)
+    left = tl.load(lhs + offsets, mask=mask).to(tl.float32)
+    right = tl.load(rhs + offsets, mask=mask, other=1.0).to(tl.float32)
+    tl.store(destination + offsets, tl.div_rn(left, right), mask=mask)
+{% if render_calls is defined %}
+{% include "kernels/elementwise/_function.py.jinja" %}
+{% endif %}

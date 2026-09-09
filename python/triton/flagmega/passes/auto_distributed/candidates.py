@@ -40,8 +40,9 @@ class DistributedCandidateContext:
     """One immutable source/layout/policy snapshot for provider enumeration.
 
     Return-type, input-tuple and target queries share this snapshot. A caller
-    changing IR or provider policy creates a new context (``replace`` also
-    resets its private memo); no results survive into another search/agent edit.
+    changing IR or provider policy creates a new context (``replace`` resets
+    candidate snapshots). Pure type queries may share a fully op/type/attribute
+    keyed memo within a search; a new search owns a fresh memo.
     """
 
     module: IRModule
@@ -57,6 +58,7 @@ class DistributedCandidateContext:
     operation_cost_model: DistributedOperationCostModel = field(
         default_factory=DistributedOperationCostModel
     )
+    type_inference_memo: dict = field(default_factory=dict, compare=False, repr=False)
     _candidate_snapshots: dict[int, tuple[object, tuple[DistributedCandidate, ...]]] = field(
         default_factory=dict, init=False, repr=False, compare=False,
     )

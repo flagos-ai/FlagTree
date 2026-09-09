@@ -1,0 +1,32 @@
+# flagmega-kernel: delta_rule_gates/local
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "delta_rule_gates" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+        _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
+        _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+        _fm_a = tl.load({{ call.a }} + ({{ call.a_offset }}), mask=_fm_mask, other=0.).to(tl.float32)
+        _fm_b = tl.load({{ call.b }} + ({{ call.b_offset }}), mask=_fm_mask, other=0.).to(tl.float32)
+        _fm_a_log = tl.load({{ call.a_log }} + ({{ call.a_log_offset }}), mask=_fm_mask, other=0.).to(tl.float32)
+        _fm_bias = tl.load({{ call.dt_bias }} + ({{ call.dt_bias_offset }}), mask=_fm_mask, other=0.).to(tl.float32)
+        _fm_x = _fm_a + _fm_bias
+        _fm_softplus = tl.where(_fm_x > 0., _fm_x + tl.log(1. + tl.exp(-_fm_x)), tl.log(1. + tl.exp(_fm_x)))
+        _fm_softplus = tl.where(_fm_x <= {{ call.threshold }}, _fm_softplus, _fm_x)
+        _fm_g = -tl.exp(_fm_a_log) * _fm_softplus
+{% if call.accurate_exp %}
+        _fm_alpha = libdevice.exp(_fm_g)
+{% else %}
+        _fm_alpha = tl.exp(_fm_g)
+{% endif %}
+        _fm_beta = tl.sigmoid(_fm_b)
+        tl.store({{ call.alpha }} + ({{ call.alpha_offset }}), _fm_alpha, mask=_fm_mask & ({{ call.alpha_writer }}))
+        tl.store({{ call.beta }} + ({{ call.beta_offset }}), _fm_beta, mask=_fm_mask & ({{ call.beta_writer }}))
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

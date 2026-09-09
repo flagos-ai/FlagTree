@@ -1,4 +1,4 @@
-"""Add standalone measurements to the decode latency and request throughput SVGs.
+"""Add standalone measurements to the decode latency and throughput SVGs.
 
 Runtime/prefill paths differ: decode latency alone implies no request speedup.
 Raw sequences are rechecked before the comparison charts can be emitted.
@@ -96,7 +96,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--vllm-results", type=Path)
-    parser.add_argument("--figure-dir", type=Path, help="Write the two SVGs here (default: results directory)")
+    parser.add_argument("--figure-dir", type=Path, help="Write the three SVGs here (default: results directory)")
     args = parser.parse_args()
     if (args.results / "failure.json").exists():
         raise ValueError("Cannot publish a failed experiment")

@@ -1,0 +1,63 @@
+# flagmega-kernel: top_k/local platform=generic
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "top_k" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_row in tl.range(0, {{ call.rows }}):
+        _fm_previous_value = tl.full((), 0, {{ call.scalar_type }})
+        _fm_previous_index = tl.full((), -1, tl.int64)
+        _fm_previous_nan = tl.full((), False, tl.int1)
+        for _fm_selection in tl.range(0, {{ call.k }}):
+            _fm_winner_value = tl.full((), {{ call.sentinel }}, {{ call.scalar_type }})
+            _fm_winner_index = tl.full((), 9223372036854775807, tl.int64)
+            _fm_winner_nan = tl.full((), False, tl.int1)
+            for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+                _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
+                _fm_active = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+                _fm_candidates = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_active, other=0).to({{ call.scalar_type }})
+                _fm_nans = _fm_candidates != _fm_candidates
+{% if call.largest %}
+                _fm_follows = tl.where(_fm_previous_nan, (~_fm_nans) | (_fm_offsets > _fm_previous_index),
+                                   (~_fm_nans) & ((_fm_candidates < _fm_previous_value) | ((_fm_candidates == _fm_previous_value) & (_fm_offsets > _fm_previous_index))))
+{% else %}
+                _fm_follows = tl.where(_fm_previous_nan, _fm_nans & (_fm_offsets > _fm_previous_index),
+                                   _fm_nans | (_fm_candidates > _fm_previous_value) | ((_fm_candidates == _fm_previous_value) & (_fm_offsets > _fm_previous_index)))
+{% endif %}
+                _fm_available = _fm_active & ((_fm_selection == 0) | _fm_follows)
+{% if call.largest %}
+                _fm_tile_nan = tl.sum((_fm_available & _fm_nans).to(tl.int32), 0) > 0
+                _fm_tile_value = tl.max(tl.where(_fm_available & ~_fm_nans, _fm_candidates, tl.full((), {{ call.sentinel }}, {{ call.scalar_type }})), 0)
+{% else %}
+                _fm_tile_nan = (tl.sum((_fm_available & _fm_nans).to(tl.int32), 0) > 0) & (tl.sum((_fm_available & ~_fm_nans).to(tl.int32), 0) == 0)
+                _fm_tile_value = tl.min(tl.where(_fm_available & ~_fm_nans, _fm_candidates, tl.full((), {{ call.sentinel }}, {{ call.scalar_type }})), 0)
+{% endif %}
+                _fm_matching = _fm_available & tl.where(_fm_tile_nan, _fm_nans, ~_fm_nans & (_fm_candidates == _fm_tile_value))
+                _fm_tile_index = tl.min(tl.where(_fm_matching, _fm_offsets.to(tl.int64), 9223372036854775807), 0)
+{% if call.largest %}
+                _fm_better_nan = _fm_tile_nan & ~_fm_winner_nan
+                _fm_better_value = _fm_tile_value > _fm_winner_value
+{% else %}
+                _fm_better_nan = ~_fm_tile_nan & _fm_winner_nan
+                _fm_better_value = _fm_tile_value < _fm_winner_value
+{% endif %}
+                _fm_earlier = _fm_tile_index < _fm_winner_index
+                _fm_better = (_fm_tile_index < 9223372036854775807) & ((_fm_winner_index == 9223372036854775807) | _fm_better_nan | ((_fm_tile_nan == _fm_winner_nan) &
+                         ((_fm_tile_nan & _fm_earlier) | (~_fm_tile_nan & (_fm_better_value | ((_fm_tile_value == _fm_winner_value) & _fm_earlier))))))
+                _fm_winner_value = tl.where(_fm_better, _fm_tile_value, _fm_winner_value)
+                _fm_winner_index = tl.where(_fm_better, _fm_tile_index, _fm_winner_index)
+                _fm_winner_nan = tl.where(_fm_better, _fm_tile_nan, _fm_winner_nan)
+            # Reload the chosen element, preserving signed zeros and NaN bits.
+            _fm_selected_value = tl.load({{ call.source }} + ({{ call.winner_offset }}), mask=({{ call.outer_active }}), other=0)
+            tl.store({{ call.values_pointer }} + ({{ call.values_offset }}), _fm_selected_value, mask=({{ call.outer_active }}) & ({{ call.values_active }}))
+            tl.store({{ call.indices_pointer }} + ({{ call.indices_offset }}), _fm_winner_index, mask=({{ call.outer_active }}) & ({{ call.indices_active }}))
+            _fm_previous_value = _fm_winner_value
+            _fm_previous_index = _fm_winner_index
+            _fm_previous_nan = _fm_winner_nan
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

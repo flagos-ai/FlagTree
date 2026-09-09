@@ -23,6 +23,7 @@ from typing import IO, Iterator
 from contextlib import contextmanager
 
 from triton.flagmega.diagnostics.paths import encode_file_component
+from triton.flagmega.ir.print_weights import WeightPrintAnalysis
 
 from triton.flagmega.ir import (
     FunctionDumpInfo,
@@ -218,6 +219,7 @@ class DumpManager:
         self._render_cache: OrderedDict[
             tuple[int, str, bool], _RenderedFunctionDump
         ] = OrderedDict()
+        self._weight_analysis: WeightPrintAnalysis | None = None
         if self.directory is not None and self.flags != DumpFlags.NONE:
             self.directory.mkdir(parents=True, exist_ok=True)
 
@@ -278,6 +280,8 @@ class DumpManager:
             function_name,
             include_unreferenced=include_unreferenced,
         )
+        if self._weight_analysis is None or self._weight_analysis.owner is not module:
+            self._weight_analysis = WeightPrintAnalysis.analyze(module)
         rendered = _RenderedFunctionDump(
             owner=module,
             source=module_source(
@@ -297,7 +301,7 @@ class DumpManager:
                     ),
                 ),
             ),
-            companion=text_source(view),
+            companion=text_source(view, weight_analysis=self._weight_analysis),
             suffix=companion_suffix(view),
             semantic_hash=view.semantic_hash,
         )

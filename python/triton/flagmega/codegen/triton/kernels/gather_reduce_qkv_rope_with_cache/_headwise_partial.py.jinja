@@ -65,6 +65,7 @@
             {{ prefix }}_normalized = (
                 {{ prefix }}_unit * {{ prefix }}_scale + {{ prefix }}_bias
             ).to({{ intermediate_type }}).to(tl.float32)
+{% if (head.rotary_dim | default(head.head_dim)) == head.head_dim %}
             {{ prefix }}_partner = tl.reshape(
                 tl.flip(
                     tl.reshape(
@@ -75,24 +76,36 @@
                 ),
                 ({{ head.head_dim }},),
             )
+{% else %}
+            {{ prefix }}_partner_index = tl.where(
+                ({{ head.dimension }}) >= {{ head.rotary_dim }}, {{ head.dimension }},
+                tl.where(({{ head.dimension }}) < {{ head.rotary_dim }} // 2,
+                         ({{ head.dimension }}) + {{ head.rotary_dim }} // 2,
+                         ({{ head.dimension }}) - {{ head.rotary_dim }} // 2),
+            )
+            {{ prefix }}_partner = tl.gather({{ prefix }}_normalized, {{ prefix }}_partner_index, axis=0)
+{% endif %}
             {{ prefix }}_rotated = tl.where(
-                ({{ head.dimension }}) < {{ head.head_dim }} // 2,
+                ({{ head.dimension }}) < {{ head.rotary_dim | default(head.head_dim) }} // 2,
                 -{{ prefix }}_partner,
                 {{ prefix }}_partner,
             )
             {{ prefix }}_cosine = tl.load(
                 {{ head.cosine }} + ({{ head.cosine_offset }}),
-                mask={{ prefix }}_mask, other=0.0,
-            ).to({{ intermediate_type }}).to(tl.float32)
+                mask={{ prefix }}_mask & (({{ head.dimension }}) < {{ head.rotary_dim | default(head.head_dim) }}), other=0.0,
+            ).to(tl.float32)
             {{ prefix }}_sine = tl.load(
                 {{ head.sine }} + ({{ head.sine_offset }}),
-                mask={{ prefix }}_mask, other=0.0,
-            ).to({{ intermediate_type }}).to(tl.float32)
-            # Match NormApply/RoPE boundaries just like the non-headwise path.
-            # A wider register temporary does not authorize deleting IR casts.
-            {{ prefix }}_cosine_product = libdevice.mul_rn({{ prefix }}_normalized, {{ prefix }}_cosine).to({{ intermediate_type }}).to(tl.float32)
-            {{ prefix }}_sine_product = libdevice.mul_rn({{ prefix }}_rotated, {{ prefix }}_sine).to({{ intermediate_type }}).to(tl.float32)
+                mask={{ prefix }}_mask & (({{ head.dimension }}) < {{ head.rotary_dim | default(head.head_dim) }}), other=0.0,
+            ).to(tl.float32)
+            # Preserve normalization rounding, then apply FP32 RoPE.
+            {{ prefix }}_cosine_product = libdevice.mul_rn({{ prefix }}_normalized, {{ prefix }}_cosine)
+            {{ prefix }}_sine_product = libdevice.mul_rn({{ prefix }}_rotated, {{ prefix }}_sine)
             {{ prefix }}_result = {{ prefix }}_cosine_product + {{ prefix }}_sine_product
+            {{ prefix }}_result = tl.where(
+                ({{ head.dimension }}) < {{ head.rotary_dim | default(head.head_dim) }},
+                {{ prefix }}_result, {{ prefix }}_normalized,
+            )
 {% if loop.first %}
             tl.store(
                 {{ head.output }} + ({{ head.output_offset }}),

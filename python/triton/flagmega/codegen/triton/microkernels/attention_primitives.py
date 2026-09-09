@@ -7,7 +7,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from numbers import Real
 
-from triton.flagmega.errors import CodegenError
+from triton.flagmega.errors import CodegenError, IRSchemaError
+from triton.flagmega.ir import get_definition
 
 from .core import TIRMicroKernelContext, TIRMicroKernelProposal
 
@@ -83,8 +84,10 @@ def _validate_semantic_contract(
         _positive_real(attrs, "attention_scaling", operation)
         return
     if operation in {"nn.rope", "ntt.vectorized_rope"}:
-        if attrs:
-            raise CodegenError("RoPE semantic TIR does not accept attributes.")
+        try:
+            get_definition(operation).normalize_attrs(attrs)
+        except IRSchemaError as error:
+            raise CodegenError(str(error)) from error
         return
     if operation == "nn.update_paged_attention_kv_cache":
         if attrs.get("cache_kind") not in {"key", "value"}:

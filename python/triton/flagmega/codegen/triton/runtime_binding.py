@@ -9,6 +9,8 @@ import keyword
 import re
 
 from triton.flagmega.codegen.triton.call_abi import describe_function_call_abi
+from triton.flagmega.codegen.triton.dimension_expression import emit_dimension
+from triton.flagmega.ir.dim_expr import Dimension
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import IRModule, verify_buffer_plan
 from triton.flagmega.codegen.triton.pool_abi import (
@@ -87,10 +89,16 @@ def describe_function_runtime_binding(
             )
             argument_by_physical[buffer.physical_id] = argument
             arguments.append({
-                "name": argument,
-                "role": role,
-                "value": value,
-                "buffer": buffer_id,
+                "name":
+                argument,
+                "role":
+                role,
+                "value":
+                value,
+                "buffer":
+                buffer_id,
+                **({"runtime_value_kind": "scalar",
+                    "scalar_dtype": buffer.dtype.value} if buffer.storage == "scalar" else {}),
             })
             value_bindings.append({
                 "role": role,
@@ -127,7 +135,6 @@ def describe_function_runtime_binding(
         used_storages.update(
             str(frame["memory_space"])
             for frame in event["memory_pools"]
-            if int(frame["scope_bytes"]) > 0
         )
 
     pools: list[dict[str, object]] = []
@@ -201,6 +208,9 @@ def describe_function_runtime_binding(
                     )
                 binding["runtime_argument"] = argument
                 binding["runtime_value_kind"] = value_kind
+                address_arguments = _bind_view_offset(module, plan, abi, pool_by_storage, argument_by_physical)
+                if address_arguments:
+                    binding["address_arguments"] = address_arguments
 
     for event in call_abi["events"]:
         if event["kind"] != "function_call":
@@ -225,6 +235,7 @@ def describe_function_runtime_binding(
                 )
             edge["actual_runtime_argument"] = argument
             edge["actual_runtime_value_kind"] = value_kind
+            _bind_view_offset(module, plan, actual_abi, pool_by_storage, argument_by_physical)
         for frame in event["memory_pools"]:
             frame["runtime_argument"] = pool_by_storage[
                 str(frame["memory_space"])
@@ -252,6 +263,31 @@ def _make_pool_abi_scope_local(plan, abi: dict[str, object]) -> None:
     abi.pop("pool_scope_index", None)
     abi["pool_scope_count"] = 1
     abi["pool_scope_local"] = True
+
+
+def _bind_view_offset(module, plan, abi, pools, arguments):
+    encoded = abi.get("view_byte_offset")
+    if encoded is None:
+        return ()
+    expressions = {}
+    dependencies = []
+    for symbol, buffer_id in abi.get("offset_bindings", {}).items():
+        buffer = plan.buffer_map[buffer_id]
+        if buffer.storage != "scalar":
+            raise CodegenError("A view offset must reference scalar SSA storage.")
+        argument, kind = _resolve_runtime_root(module, plan,
+                                               {"storage": buffer.storage, "physical_buffer": buffer.physical_id},
+                                               buffer_id, pools, arguments)
+        if argument is None:
+            raise CodegenError(f"View offset {symbol!r} has no runtime scalar binding.")
+        # Promote before multiplication: a valid byte span can exceed int32
+        # even when its runtime index and shape extents fit in int32.
+        expressions[symbol] = (f"tl.full((), {argument}, tl.int64)"
+                               if kind == "immediate" else f"({argument}).to(tl.int64)")
+        if kind != "immediate" and argument not in dependencies:
+            dependencies.append(argument)
+    abi["view_byte_offset_expression"] = emit_dimension(Dimension.from_data(encoded), symbols=expressions)
+    return tuple(dependencies)
 
 
 def _is_runtime_pool_storage(plan, storage: str) -> bool:

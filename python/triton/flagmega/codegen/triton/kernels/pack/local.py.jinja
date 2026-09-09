@@ -1,0 +1,5 @@
+# flagmega-kernel: pack/local platform=generic
+{% if render_calls is defined %}
+{% set transform_family = "pack" %}
+{% include "kernels/tensor_transform/_function.py.jinja" %}
+{% endif %}

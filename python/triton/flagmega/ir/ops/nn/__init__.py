@@ -2,11 +2,21 @@
 # SPDX-License-Identifier: MIT
 
 from triton.flagmega.ir.ops.nn.embedding import Embedding
+from triton.flagmega.ir.ops.nn.softmax import Softmax
+from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
+from triton.flagmega.ir.ops.nn.delta_rule_gates import DeltaRuleGates
+from triton.flagmega.ir.ops.nn.delta_rule_coefficients import DeltaRuleCoefficients
+from triton.flagmega.ir.ops.nn.delta_rule_log_prefix import DeltaRuleLogPrefix
+from triton.flagmega.ir.ops.nn.delta_rule_block_update import DeltaRuleBlockUpdate
 from triton.flagmega.ir.ops.nn.dense_matmul_glu import DenseMatMulGlu
 from triton.flagmega.ir.ops.nn.gated_delta_net import GatedDeltaNet
 from triton.flagmega.ir.ops.nn.gdn_convolution import GatedDeltaNetConvolution
 from triton.flagmega.ir.ops.nn.gdn_recurrent_core import GatedDeltaNetRecurrentCore
+from triton.flagmega.ir.ops.nn.gdn_state_slice import GatedDeltaNetStateSlice
 from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
+from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
+from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
+from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
 from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulGlu
@@ -28,12 +38,22 @@ from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
 )
 
 __all__ = [
+    "DeltaRuleGates",
+    "L2Normalization",
+    "DeltaRuleBlockUpdate",
+    "DeltaRuleLogPrefix",
+    "DeltaRuleCoefficients",
+    "Softmax",
     "Embedding",
     "DenseMatMulGlu",
     "GatedDeltaNet",
     "GatedDeltaNetConvolution",
     "GatedDeltaNetRecurrentCore",
+    "GatedDeltaNetStateSlice",
     "GreedySample",
+    "SparseExperts",
+    "SparseExpertsGateUp",
+    "SparseExpertsDown",
     "MatMulGlu",
     "PackedMatMulGlu",
     "PackedDenseMatMulGlu",
@@ -42,6 +62,13 @@ __all__ = [
     "RoPE",
     "RotaryEmbedding",
     "UpdatePagedAttentionKVCache",
-    "BindNormStats", "LayerNorm", "NormApply", "NormStats",
-    "QKVParallelLinear", "QKVRoPEWithCache", "RMSNorm", "Qwen3PagedAttention", "VectorizedRMSNorm",
+    "BindNormStats",
+    "LayerNorm",
+    "NormApply",
+    "NormStats",
+    "QKVParallelLinear",
+    "QKVRoPEWithCache",
+    "RMSNorm",
+    "Qwen3PagedAttention",
+    "VectorizedRMSNorm",
 ]

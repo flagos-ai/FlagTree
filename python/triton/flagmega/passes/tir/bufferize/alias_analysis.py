@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.bufferization import AliasKind, MemSpan, PhysicalBuffer
+from triton.flagmega.ir.dim_expr import DimensionLike, dim
 
 
 @dataclass(frozen=True)
@@ -54,8 +55,8 @@ class AliasAnalysis:
         logical_id: str,
         source: str,
         *,
-        byte_offset: int = 0,
-        nbytes: int | None = None,
+        byte_offset: DimensionLike = 0,
+        nbytes: DimensionLike | None = None,
         kind: AliasKind = AliasKind.INPLACE,
     ) -> BufferView:
         try:
@@ -64,17 +65,21 @@ class AliasAnalysis:
             raise IRVerificationError(
                 f"Alias {logical_id!r} references unknown source {source!r}."
             ) from error
-        size = source_view.nbytes - byte_offset if nbytes is None else int(nbytes)
-        if byte_offset < 0 or size < 0 or byte_offset + size > source_view.nbytes:
+        relative = dim(byte_offset)
+        size = source_view.mem_span.size - relative if nbytes is None else dim(nbytes)
+        remaining = (source_view.mem_span.size - relative - size).simplify()
+        if (relative.minimum is None or relative.minimum < 0 or size.minimum is None or size.minimum < 0
+                or remaining.minimum is None or remaining.minimum < 0):
             raise IRVerificationError(
                 f"Alias {logical_id!r} exceeds source {source!r} byte range."
             )
-        return self._insert(BufferView(
-            logical_id,
-            source_view.mem_span.subspan(byte_offset, size),
-            AliasKind(kind),
-            source,
-        ))
+        return self._insert(
+            BufferView(
+                logical_id,
+                source_view.mem_span.subspan(relative, size),
+                AliasKind(kind),
+                source,
+            ))
 
     def view(self, logical_id: str) -> BufferView:
         try:
@@ -111,7 +116,8 @@ class AliasAnalysis:
         )
 
     def _insert(self, view: BufferView) -> BufferView:
-        if not view.logical_id or not view.physical_id or view.nbytes < 0:
+        minimum_size = view.mem_span.size.minimum
+        if not view.logical_id or not view.physical_id or minimum_size is None or minimum_size < 0:
             raise IRVerificationError("Alias-analysis values require valid ids and byte bounds.")
         if view.logical_id in self._views:
             raise IRVerificationError(f"Duplicate alias-analysis value {view.logical_id!r}.")

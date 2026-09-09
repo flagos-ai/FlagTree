@@ -10,7 +10,7 @@ hazards; a change must dominate the original for every function and pool.
 
 from collections import defaultdict
 
-from triton.flagmega.ir.bufferization import AllocationStrategy, MemorySharingScope
+from triton.flagmega.ir.bufferization import MemorySharingScope
 
 
 def collect_reuse_preferences(module, plan):
@@ -34,7 +34,7 @@ def record_reuse_preferences(plan, function, conflicts, collected):
             left.id != right.id
             and left.function == right.function == function
             and left.memory_space == right.memory_space
-            and space.strategy is AllocationStrategy.SAT
+            and space.supports_lifetime_reuse
             and space.sharing_scope is MemorySharingScope.CHIP
         ):
             reuse.append((previous, current, left, right))

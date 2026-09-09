@@ -2,17 +2,24 @@
 @triton.jit
 def _flagmega_gdn_convolution_local_tile(
     qkv, destination, conv_state, conv_weight,
-    local_channels, global_channels, active,
-    HISTORY: tl.constexpr, KERNEL: tl.constexpr,
+    source_offsets, result_offsets, weight_offsets, global_channels, active,
+    HISTORY: tl.constexpr, WEIGHT_KERNEL_STRIDE: tl.constexpr,
+    ROUND_PRODUCTS: tl.constexpr, ROUND_BEFORE_ACTIVATION: tl.constexpr,
+    CURRENT_FIRST: tl.constexpr,
 ):
     """Convolve the current owner's dense local channel tile."""
-    current = tl.load(qkv + local_channels, mask=active, other=0.0).to(tl.float32)
+    current = tl.load(qkv + source_offsets, mask=active, other=0.0).to(tl.float32)
     current_coefficient = tl.load(
-        conv_weight + global_channels * KERNEL + HISTORY,
+        conv_weight + weight_offsets + HISTORY * WEIGHT_KERNEL_STRIDE,
         mask=active,
         other=0.0,
     ).to(tl.float32)
-    accumulator = (current * current_coefficient).to(tl.bfloat16).to(tl.float32)
+    accumulator = tl.full(current.shape, 0.0, tl.float32)
+    if CURRENT_FIRST:
+        if ROUND_PRODUCTS:
+            accumulator = (current * current_coefficient).to(tl.bfloat16).to(tl.float32)
+        else:
+            accumulator = current * current_coefficient
     for history_index in tl.static_range(0, HISTORY):
         state_offset = (
             (global_channels // 8) * HISTORY * 8
@@ -21,11 +28,14 @@ def _flagmega_gdn_convolution_local_tile(
         )
         old = tl.load(conv_state + state_offset, mask=active, other=0.0).to(tl.float32)
         coefficient = tl.load(
-            conv_weight + global_channels * KERNEL + history_index,
+            conv_weight + weight_offsets + history_index * WEIGHT_KERNEL_STRIDE,
             mask=active,
             other=0.0,
         ).to(tl.float32)
-        accumulator += (old * coefficient).to(tl.bfloat16).to(tl.float32)
+        if ROUND_PRODUCTS:
+            accumulator += (old * coefficient).to(tl.bfloat16).to(tl.float32)
+        else:
+            accumulator = tl.fma(old, coefficient, accumulator)
         if history_index + 1 < HISTORY:
             shifted_offset = (
                 (global_channels // 8) * HISTORY * 8
@@ -40,9 +50,16 @@ def _flagmega_gdn_convolution_local_tile(
         + global_channels % 8
     )
     tl.store(conv_state + final_state_offset, current.to(tl.bfloat16), mask=active)
+    if not CURRENT_FIRST:
+        if ROUND_PRODUCTS:
+            accumulator += (current * current_coefficient).to(tl.bfloat16).to(tl.float32)
+        else:
+            accumulator = tl.fma(current, current_coefficient, accumulator)
+    if ROUND_BEFORE_ACTIVATION:
+        accumulator = accumulator.to(tl.bfloat16).to(tl.float32)
     tl.store(
-        destination + local_channels,
-        _flagmega_silu(accumulator.to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16),
+        destination + result_offsets,
+        _flagmega_silu(accumulator).to(tl.bfloat16),
         mask=active,
     )
 

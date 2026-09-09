@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from triton.flagmega.ir.model import Effect, IRType, Node
+from triton.flagmega.ir.model import DType, Effect, IRType, Node
 from triton.flagmega.ir.ops.builtin.call import Call as BuiltinCall
 from triton.flagmega.ir.ops.builtin.get_item import GetItem
 from triton.flagmega.ir.ops.builtin.none import NoneValue
@@ -21,6 +21,13 @@ from triton.flagmega.ir.ops.distributed.materialize_local_shards import (
 )
 from triton.flagmega.ir.ops.distributed.sharded_view import ShardedView
 from triton.flagmega.ir.ops.math.add import Add
+from triton.flagmega.ir.ops.math.div import Div
+from triton.flagmega.ir.ops.math.sigmoid import Sigmoid
+from triton.flagmega.ir.ops.math.reduce_sum import ReduceSum
+from triton.flagmega.ir.ops.nn.softmax import Softmax
+from triton.flagmega.ir.ops.tensors.broadcast_to import BroadcastTo
+from triton.flagmega.ir.ops.tensors.slice import Slice
+from triton.flagmega.ir.ops.tensors.top_k import TopK
 from triton.flagmega.ir.ops.math.block_scaled_matmul import BlockScaledMatMul
 from triton.flagmega.ir.ops.math.matmul import MatMul
 from triton.flagmega.ir.ops.math.mul import Mul
@@ -32,10 +39,19 @@ from triton.flagmega.ir.ops.math.vectorized_matmul import VectorizedMatMul
 from triton.flagmega.ir.ops.math.vectorized_unary import VectorizedUnary
 from triton.flagmega.ir.ops.nn.embedding import Embedding
 from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
+from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
+from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
+from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
 from triton.flagmega.ir.ops.nn.dense_matmul_glu import DenseMatMulGlu
 from triton.flagmega.ir.ops.nn.gated_delta_net import GatedDeltaNet
 from triton.flagmega.ir.ops.nn.gdn_convolution import GatedDeltaNetConvolution
 from triton.flagmega.ir.ops.nn.gdn_recurrent_core import GatedDeltaNetRecurrentCore
+from triton.flagmega.ir.ops.nn.delta_rule_coefficients import DeltaRuleCoefficients
+from triton.flagmega.ir.ops.nn.delta_rule_log_prefix import DeltaRuleLogPrefix
+from triton.flagmega.ir.ops.nn.delta_rule_block_update import DeltaRuleBlockUpdate
+from triton.flagmega.ir.ops.nn.delta_rule_gates import DeltaRuleGates
+from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
+from triton.flagmega.ir.ops.nn.gdn_state_slice import GatedDeltaNetStateSlice
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
 from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulGlu
@@ -87,6 +103,7 @@ from triton.flagmega.ir.ops.tensors.unpack import Unpack
 from triton.flagmega.ir.ops.tir.barrier import Barrier
 from triton.flagmega.ir.ops.tir.buffer import Buffer
 from triton.flagmega.ir.ops.tir.buffer_view import BufferView
+from triton.flagmega.ir.ops.tir.ref_slice import RefSlice
 from triton.flagmega.ir.ops.tir.kernel import Kernel
 from triton.flagmega.ir.ops.tir.call import Call as TIRCall
 from triton.flagmega.ir.ops.tir.scalar_const import ScalarConst as TIRScalarConst
@@ -99,6 +116,10 @@ from triton.flagmega.pattern_match.vargs_pattern import VArgsPattern, is_vargs_r
 
 PatternInput = Pattern | Node | None
 Condition = Callable[[Node], bool] | None
+
+
+def _sparse_dtype_pattern(dtype):
+    return None if dtype is None else SparseExperts.normalize_attrs({"output_dtype": dtype})["output_dtype"]
 
 
 def _as_pattern(value: PatternInput, parameter) -> Pattern:
@@ -338,6 +359,27 @@ class _distributed:
 
 
 class _math:
+
+    @staticmethod
+    @_op_pattern_function(Div)
+    def is_div(lhs: PatternInput = None, rhs: PatternInput = None, *, target_name: str | None = None,
+               call_name: str | None = None, condition: Condition = None) -> CallPattern:
+        return _call_pattern(Div, (lhs, rhs), target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(Sigmoid)
+    def is_sigmoid(value: PatternInput = None, *, target_name: str | None = None, call_name: str | None = None,
+                   condition: Condition = None) -> CallPattern:
+        return _call_pattern(Sigmoid, (value, ), target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(ReduceSum)
+    def is_reduce_sum(value: PatternInput = None, *, axes: tuple[int, ...] | None = None, keep_dims: bool | None = None,
+                      target_name: str | None = None, call_name: str | None = None,
+                      condition: Condition = None) -> CallPattern:
+        return _call_pattern(ReduceSum, (value, ), attributes={"axes": axes, "keep_dims": keep_dims},
+                             target_name=target_name, call_name=call_name, condition=condition)
+
     @staticmethod
     @_op_pattern_function(Add)
     def is_add(
@@ -579,6 +621,175 @@ class _math:
 
 
 class _nn:
+
+    @staticmethod
+    @_op_pattern_function(L2Normalization)
+    def is_l2_normalization(value: PatternInput = None, *, axes: tuple[int, ...] | None = None,
+                            epsilon: float | None = None, epsilon_mode: str | None = None,
+                            division_mode: str | None = None, target_name: str | None = None,
+                            call_name: str | None = None, condition: Condition = None) -> CallPattern:
+        return _call_pattern(L2Normalization, (value,), attributes={"axes": axes, "epsilon": epsilon,
+                             "epsilon_mode": epsilon_mode, "division_mode": division_mode},
+                             target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(DeltaRuleGates)
+    def is_delta_rule_gates(a: PatternInput = None, b: PatternInput = None, a_log: PatternInput = None,
+                            dt_bias: PatternInput = None, *, softplus_threshold: float | None = None,
+                            alpha_exp_mode: str | None = None, target_name: str | None = None,
+                            call_name: str | None = None, condition: Condition = None) -> CallPattern:
+        return _call_pattern(DeltaRuleGates, (a, b, a_log, dt_bias),
+                             attributes={"softplus_threshold": softplus_threshold, "alpha_exp_mode": alpha_exp_mode},
+                             target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(DeltaRuleBlockUpdate)
+    def is_delta_rule_block_update(query: PatternInput = None, key: PatternInput = None, value: PatternInput = None,
+                                    coefficients: PatternInput = None, log_prefix: PatternInput = None,
+                                    state: PatternInput = None, *, scale: float | None = None,
+                                    state_field: str | None = None, state_layout: tuple[str, ...] | None = None,
+                                    state_vector_axes: tuple[str, ...] | None = None, target_name: str | None = None,
+                                    call_name: str | None = None, condition: Condition = None) -> CallPattern:
+        return _call_pattern(DeltaRuleBlockUpdate, (query, key, value, coefficients, log_prefix, state),
+                             attributes={"scale": scale, "state_field": state_field, "state_layout": state_layout,
+                                         "state_vector_axes": state_vector_axes}, target_name=target_name,
+                             call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(DeltaRuleLogPrefix)
+    def is_delta_rule_log_prefix(alpha: PatternInput = None, *, block_size: int | None = None,
+                                 scan_group_size: int | None = None, epsilon: float | None = None,
+                                 log2_mode: str | None = None, target_name: str | None = None,
+                                 call_name: str | None = None, condition: Condition = None) -> CallPattern:
+        return _call_pattern(DeltaRuleLogPrefix, (alpha,), attributes={"block_size": block_size,
+                             "scan_group_size": scan_group_size, "epsilon": epsilon, "log2_mode": log2_mode},
+                             target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(DeltaRuleCoefficients)
+    def is_delta_rule_coefficients(key: PatternInput = None, beta: PatternInput = None, *, block_size: int | None = None,
+                                   target_name: str | None = None, call_name: str | None = None,
+                                   condition: Condition = None) -> CallPattern:
+        return _call_pattern(DeltaRuleCoefficients, (key, beta), attributes={"block_size": block_size},
+                             target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(GatedDeltaNetStateSlice)
+    def is_gated_delta_net_state_slice(state: PatternInput = None, layer_id: PatternInput = None, *,
+                                       target_name: str | None = None, call_name: str | None = None,
+                                       condition: Condition = None) -> CallPattern:
+        return _call_pattern(GatedDeltaNetStateSlice, (state, layer_id), target_name=target_name, call_name=call_name,
+                             condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(Softmax)
+    def is_softmax(value: PatternInput = None, *, axis: int | None = None, target_name: str | None = None,
+                   call_name: str | None = None, condition: Condition = None) -> CallPattern:
+        return _call_pattern(Softmax, (value, ), attributes={"axis": axis}, target_name=target_name,
+                             call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(SparseExperts)
+    def is_sparse_experts(
+        q: PatternInput = None,
+        router_expert_ids: PatternInput = None,
+        router_expert_weights: PatternInput = None,
+        gate_input_scale: PatternInput = None,
+        gate_weight: PatternInput = None,
+        gate_proj_scale: PatternInput = None,
+        down_input_scale: PatternInput = None,
+        down_weight: PatternInput = None,
+        down_proj_scale: PatternInput = None,
+        up_input_scale: PatternInput = None,
+        up_weight: PatternInput = None,
+        up_proj_scale: PatternInput = None,
+        *,
+        output_dtype=None,
+        intermediate_dtype=None,
+        round_projections: bool | None = None,
+        round_activation: bool | None = None,
+        round_down_projection: bool | None = None,
+        round_weighted_output: bool | None = None,
+        target_name: str | None = None,
+        call_name: str | None = None,
+        condition: Condition = None,
+    ) -> CallPattern:
+        return _call_pattern(
+            SparseExperts,
+            (q, router_expert_ids, router_expert_weights, gate_input_scale, gate_weight, gate_proj_scale,
+             down_input_scale, down_weight, down_proj_scale, up_input_scale, up_weight, up_proj_scale),
+            attributes={
+                "output_dtype": _sparse_dtype_pattern(output_dtype), "intermediate_dtype":
+                _sparse_dtype_pattern(intermediate_dtype), "round_projections": round_projections, "round_activation":
+                round_activation, "round_down_projection": round_down_projection, "round_weighted_output":
+                round_weighted_output
+            },
+            target_name=target_name,
+            call_name=call_name,
+            condition=condition,
+        )
+
+    @staticmethod
+    @_op_pattern_function(SparseExpertsGateUp)
+    def is_sparse_experts_gate_up(
+        q: PatternInput = None,
+        router_expert_ids: PatternInput = None,
+        gate_input_scale: PatternInput = None,
+        gate_weight: PatternInput = None,
+        gate_proj_scale: PatternInput = None,
+        up_input_scale: PatternInput = None,
+        up_weight: PatternInput = None,
+        up_proj_scale: PatternInput = None,
+        *,
+        output_dtype=None,
+        round_projections: bool | None = None,
+        round_activation: bool | None = None,
+        target_name: str | None = None,
+        call_name: str | None = None,
+        condition: Condition = None,
+    ) -> CallPattern:
+        return _call_pattern(
+            SparseExpertsGateUp,
+            (q, router_expert_ids, gate_input_scale, gate_weight, gate_proj_scale, up_input_scale, up_weight,
+             up_proj_scale),
+            attributes={
+                "output_dtype": _sparse_dtype_pattern(output_dtype), "round_projections": round_projections,
+                "round_activation": round_activation
+            },
+            target_name=target_name,
+            call_name=call_name,
+            condition=condition,
+        )
+
+    @staticmethod
+    @_op_pattern_function(SparseExpertsDown)
+    def is_sparse_experts_down(
+        activations: PatternInput = None,
+        router_expert_ids: PatternInput = None,
+        router_expert_weights: PatternInput = None,
+        down_input_scale: PatternInput = None,
+        down_weight: PatternInput = None,
+        down_proj_scale: PatternInput = None,
+        *,
+        output_dtype=None,
+        round_projection: bool | None = None,
+        round_weighted_output: bool | None = None,
+        target_name: str | None = None,
+        call_name: str | None = None,
+        condition: Condition = None,
+    ) -> CallPattern:
+        return _call_pattern(
+            SparseExpertsDown,
+            (activations, router_expert_ids, router_expert_weights, down_input_scale, down_weight, down_proj_scale),
+            attributes={
+                "output_dtype": _sparse_dtype_pattern(output_dtype), "round_projection": round_projection,
+                "round_weighted_output": round_weighted_output
+            },
+            target_name=target_name,
+            call_name=call_name,
+            condition=condition,
+        )
+
     @staticmethod
     @_op_pattern_function(QKVParallelLinear)
     def is_qkv_parallel_linear(
@@ -1013,6 +1224,7 @@ class _nn:
         head_dim: int | None = None,
         theta: float | None = None,
         attention_scaling: float | None = None,
+        output_dtype: DType | str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -1024,6 +1236,7 @@ class _nn:
                 "head_dim": head_dim,
                 "theta": theta,
                 "attention_scaling": attention_scaling,
+                "output_dtype": None if output_dtype is None else DType(output_dtype).value,
             },
             target_name=target_name,
             call_name=call_name,
@@ -1037,6 +1250,7 @@ class _nn:
         cos: PatternInput = None,
         sin: PatternInput = None,
         *,
+        rotary_dim: int | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -1044,6 +1258,7 @@ class _nn:
         return _call_pattern(
             RoPE,
             (input, cos, sin),
+            attributes={"rotary_dim": rotary_dim},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -1072,6 +1287,7 @@ class _nn:
         k_use_mean: bool | None = None,
         k_round_before_scale: bool | None = None,
         round_qk_intermediates: bool | None = None,
+        rotary_dim: int | None = None,
         qkv_layout: tuple[str, str, str] | None = None,
         attention_layout: tuple[str, str, str] | None = None,
         target_name: str | None = None,
@@ -1102,6 +1318,7 @@ class _nn:
                 "k_use_mean": k_use_mean,
                 "k_round_before_scale": k_round_before_scale,
                 "round_qk_intermediates": round_qk_intermediates,
+                "rotary_dim": rotary_dim,
                 "qkv_layout": qkv_layout,
                 "attention_layout": attention_layout,
             },
@@ -1225,6 +1442,9 @@ class _nn:
         conv_weight: PatternInput = None,
         *,
         conv_kernel_size: int | None = None,
+        round_products: bool | None = None,
+        round_before_activation: bool | None = None,
+        accumulation_order: str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -1232,7 +1452,12 @@ class _nn:
         return _call_pattern(
             GatedDeltaNetConvolution,
             (qkv, state, conv_weight),
-            attributes={"conv_kernel_size": conv_kernel_size},
+            attributes={
+                "conv_kernel_size": conv_kernel_size,
+                "round_products": round_products,
+                "round_before_activation": round_before_activation,
+                "accumulation_order": accumulation_order,
+            },
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -1256,6 +1481,11 @@ class _nn:
         key_head_dim: int | None = None,
         value_head_dim: int | None = None,
         epsilon: float | None = None,
+        qk_norm_mode: str | None = None,
+        qk_norm_epsilon: float | None = None,
+        round_normalized_qk: bool | None = None,
+        round_beta: bool | None = None,
+        round_core: bool | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -1272,6 +1502,11 @@ class _nn:
                 "key_head_dim": key_head_dim,
                 "value_head_dim": value_head_dim,
                 "epsilon": epsilon,
+                "qk_norm_mode": qk_norm_mode,
+                "qk_norm_epsilon": qk_norm_epsilon,
+                "round_normalized_qk": round_normalized_qk,
+                "round_beta": round_beta,
+                "round_core": round_core,
             },
             target_name=target_name,
             call_name=call_name,
@@ -1375,6 +1610,7 @@ class _ntt:
         k_use_mean: bool | None = None,
         k_round_before_scale: bool | None = None,
         round_qk_intermediates: bool | None = None,
+        rotary_dim: int | None = None,
         qkv_layout: tuple[str, str, str] | None = None,
         attention_layout: tuple[str, str, str] | None = None,
         target_name: str | None = None,
@@ -1407,6 +1643,7 @@ class _ntt:
                 "k_use_mean": k_use_mean,
                 "k_round_before_scale": k_round_before_scale,
                 "round_qk_intermediates": round_qk_intermediates,
+                "rotary_dim": rotary_dim,
                 "qkv_layout": qkv_layout,
                 "attention_layout": attention_layout,
             },
@@ -1422,6 +1659,7 @@ class _ntt:
         cos: PatternInput = None,
         sin: PatternInput = None,
         *,
+        rotary_dim: int | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -1429,6 +1667,7 @@ class _ntt:
         return _call_pattern(
             VectorizedRoPE,
             (input, cos, sin),
+            attributes={"rotary_dim": rotary_dim},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -1681,6 +1920,36 @@ class _ntt:
 
 
 class _tensors:
+
+    @staticmethod
+    @_op_pattern_function(Slice)
+    def is_slice(value: PatternInput = None, *, starts: tuple[int | None, ...] | None = None,
+                 ends: tuple[int | None, ...] | None = None, axes: tuple[int, ...] | None = None,
+                 steps: tuple[int, ...] | None = None, target_name: str | None = None, call_name: str | None = None,
+                 condition: Condition = None) -> CallPattern:
+        return _call_pattern(Slice, (value, ),
+                             attributes={"starts": starts, "ends": ends, "axes": axes, "steps":
+                                         steps}, target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(BroadcastTo)
+    def is_broadcast_to(value: PatternInput = None, *, shape: tuple[int, ...] | None = None,
+                        target_name: str | None = None, call_name: str | None = None,
+                        condition: Condition = None) -> CallPattern:
+        return _call_pattern(BroadcastTo, (value, ), attributes={"shape": shape}, target_name=target_name,
+                             call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(TopK)
+    def is_top_k(value: PatternInput = None, *, k: int | None = None, axis: int | None = None,
+                 largest: bool | None = None, sorted: bool | None = None, index_dtype: DType | str | None = None,
+                 target_name: str | None = None, call_name: str | None = None,
+                 condition: Condition = None) -> CallPattern:
+        return _call_pattern(
+            TopK, (value, ),
+            attributes={"k": k, "axis": axis, "largest": largest, "sorted": sorted, "index_dtype":
+                        index_dtype}, target_name=target_name, call_name=call_name, condition=condition)
+
     @staticmethod
     @_op_pattern_function(Bitcast)
     def is_bitcast(
@@ -1978,6 +2247,14 @@ class _tir:
             call_name=call_name,
             condition=_with_node_constraints(condition, result_type=new_type),
         )
+
+    @staticmethod
+    @_op_pattern_function(RefSlice)
+    def is_ref_slice(value: PatternInput = None, index: PatternInput = None, length: int | None = None, *,
+                     target_name: str | None = None, call_name: str | None = None,
+                     condition: Condition = None) -> CallPattern:
+        return _call_pattern(RefSlice, (value, index), attributes={"length": length}, target_name=target_name,
+                             call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(Kernel)

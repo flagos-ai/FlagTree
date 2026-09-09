@@ -4,6 +4,21 @@
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+    # Read-only projections and gates depend on the head, not the value
+    # coordinate. Their cache is reset on every invocation (including tokens).
+{% if call.uniform_projection_rows | default(false) %}
+    # A unit-step, tile-aligned shard map proves that every active value in
+    # this tile has the same head. The active prefix starts at recurrent_start.
+    cached_heads = tl.full((), -1, tl.int64)
+    beta = tl.zeros((), tl.float32)
+    decay = tl.zeros((), tl.float32)
+{% else %}
+    # Unproved maps retain the complete lane-wise key. An inactive lane must
+    # never validate a later active lane's value.
+    cached_heads = tl.full(({{ call.value_tile }},), -1, tl.int64)
+    beta = tl.zeros(({{ call.value_tile }},), tl.float32)
+    decay = tl.zeros(({{ call.value_tile }},), tl.float32)
+{% endif %}
     for recurrent_start in tl.range(
         0, {{ call.local_capacity }}, {{ call.value_tile }}
     ):
@@ -13,15 +28,37 @@ def {{ call.symbol }}({{ call.signature }}):
             & ({{ call.writer_active }})
         )
         global_values = {{ call.global_value }}
+{% if call.uniform_projection_rows | default(false) %}
+        value_heads = (({{ call.global_projection_value }}) // {{ call.value_dim }}).to(tl.int64)
+        projection_active = (recurrent_start < ({{ call.active_values }})) & ({{ call.writer_active }})
+        if projection_active & (value_heads != cached_heads):
+{% else %}
+        value_heads = (global_values // {{ call.value_dim }}).to(tl.int64)
+        if tl.sum((recurrent_mask & (value_heads != cached_heads)).to(tl.int32), 0) > 0:
+{% endif %}
+            beta_projection = _flagmega_dense_rows(
+                {{ call.projection_input }}, {{ call.b_weight }}, value_heads, {% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %},
+                {{ call.projection_dim }}, {{ call.projection_tile }},
+                False,
+            )
+            a_projection = _flagmega_dense_rows(
+                {{ call.projection_input }}, {{ call.a_weight }}, value_heads, {% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %},
+                {{ call.projection_dim }}, {{ call.projection_tile }},
+                False,
+            )
+            beta, decay = _flagmega_gdn_head_gates(
+                beta_projection, a_projection, value_heads, {% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %},
+                {{ call.a_log }}, {{ call.dt_bias }}, {{ call.round_beta }},
+            )
+            cached_heads = tl.where({% if call.uniform_projection_rows | default(false) %}projection_active{% else %}recurrent_mask{% endif %}, value_heads, -1)
         _flagmega_gdn_recurrent_local_core_tile(
-            {{ call.qkv }}, {{ call.projection_input }},
-            {{ call.b_weight }}, {{ call.a_weight }},
-            {{ call.state }}, {{ call.a_log }}, {{ call.dt_bias }},
+            {{ call.qkv }}, beta, decay, {{ call.state }},
             {{ call.core_scratch }}, local_values, global_values,
             recurrent_mask, {{ call.value_heads }}, {{ call.key_heads }},
-            {{ call.key_dim }}, {{ call.value_dim }}, {{ call.projection_dim }},
+            {{ call.key_dim }}, {{ call.value_dim }},
             {{ call.repeats }}, {{ call.head_block }},
-            {{ call.projection_tile }},
+            {{ call.qk_norm_add }}, {{ call.qk_norm_epsilon }},
+            {{ call.round_normalized_qk }}, {{ call.round_core }},
         )
 {{ entry.stage_barrier() }}
     for recurrent_norm_start in tl.range(
@@ -35,7 +72,7 @@ def {{ call.symbol }}({{ call.signature }}):
         global_values = {{ call.global_value }}
         _flagmega_gdn_recurrent_local_norm_tile(
             {{ call.z }}, {{ call.result }}, {{ call.norm_weight }},
-            {{ call.core_scratch }}, local_values, global_values,
+            {{ call.core_scratch }}, {{ call.z_offset }}, {{ call.result_offset }}, global_values,
             recurrent_norm_mask, {{ call.value_dim }}, {{ call.epsilon }},
         )
 

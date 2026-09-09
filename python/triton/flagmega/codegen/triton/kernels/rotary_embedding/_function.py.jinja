@@ -10,7 +10,7 @@ def {{ call.symbol }}({{ call.signature }}):
         rotary_mask = (
             (rotary_offsets < {{ call.local_capacity }}) & ({{ call.active }})
         )
-        rotary_dimension = {{ call.logical_coordinates[-1] }}
+        rotary_dimension = {{ call.dimension_coordinate }}
         rotary_frequency_dimension = (
             rotary_dimension % ({{ call.head_dim }} // 2)
         )
@@ -18,7 +18,8 @@ def {{ call.symbol }}({{ call.signature }}):
             (-2.0 * rotary_frequency_dimension.to(tl.float32)
              / {{ call.head_dim }}) * tl.log({{ call.theta }})
         )
-        rotary_angle = rotary_position * rotary_inverse_frequency
+        rotary_token_position = rotary_position + ({{ call.token_coordinate }}).to(tl.float32)
+        rotary_angle = rotary_token_position * rotary_inverse_frequency
         tl.store(
             {{ call.cosine }} + ({{ call.cosine_offset }}),
             libdevice.fast_cosf(rotary_angle) * {{ call.attention_scaling }},

@@ -19,6 +19,20 @@ from triton.flagmega.codegen.triton.physical_access import (
     emit_triton_scalar_type,
 )
 from triton.flagmega.codegen.triton.dimension_expression import emit_dimension
+from triton.flagmega.codegen.triton.grouped_coordinates import tiles_stay_within_groups
+from triton.flagmega.codegen.triton.tensor_transform_renderers import tensor_transform_call, vector_relayout_call
+from triton.flagmega.codegen.triton.concat_renderer import concat_call
+from triton.flagmega.codegen.triton.broadcast_renderer import broadcast_to_call
+from triton.flagmega.codegen.triton.softmax_renderer import softmax_call
+from triton.flagmega.codegen.triton.delta_rule_renderer import delta_rule_coefficients_call
+from triton.flagmega.codegen.triton.delta_rule_decay_renderer import delta_rule_log_prefix_call
+from triton.flagmega.codegen.triton.delta_rule_block_renderer import delta_rule_block_update_call
+from triton.flagmega.codegen.triton.delta_rule_gates_renderer import delta_rule_gates_call
+from triton.flagmega.codegen.triton.l2_normalization_renderer import l2_normalization_call
+from triton.flagmega.codegen.triton.reduce_sum_renderer import reduce_sum_call
+from triton.flagmega.codegen.triton.top_k_renderer import top_k_call
+from triton.flagmega.codegen.triton.sparse_experts.gate_up import sparse_experts_gate_up_call
+from triton.flagmega.codegen.triton.sparse_experts.down import sparse_experts_down_call
 from triton.flagmega.codegen.triton.descriptor_abi import device_descriptor_request
 from triton.flagmega.codegen.triton.tensor_descriptor_planner import (
     packed_distributed_tensor_map_table_request,
@@ -29,6 +43,7 @@ from triton.flagmega.ir import (
     DistributedType,
     TupleType,
     VectorType,
+    is_fully_replicated,
     local_shard_descriptor,
     type_from_data,
 )
@@ -381,6 +396,9 @@ def _call_runtime_arguments(raw) -> list[str]:
                     raise CodegenError("TIR call buffer has no runtime argument.")
                 if argument not in arguments:
                     arguments.append(argument)
+                for dependency in binding.get("address_arguments", ()):
+                    if dependency not in arguments:
+                        arguments.append(dependency)
     return arguments
 
 
@@ -535,7 +553,11 @@ def _embedding_call(raw) -> dict[str, object]:
             "TIR decode embedding requires one local token row; batching is "
             "lowered by a separate schedule."
         )
-    local_feature = "local_offsets"
+    lanes = int(result_abi.get("scalar_lane_count", 1))
+    if (tuple(weight["abi"].get("scalar_lane_shape", ())) != tuple(result_abi.get("scalar_lane_shape", ()))):
+        raise CodegenError("Embedding weight and output must have identical vector element lanes.")
+    local_feature = "local_offsets" if lanes == 1 else f"(local_offsets // {lanes})"
+    lane_coordinate = None if lanes == 1 else f"(local_offsets % {lanes})"
     global_feature = emit_logical_coordinate(
         result_abi, 1, ("0", local_feature)
     )
@@ -550,13 +572,13 @@ def _embedding_call(raw) -> dict[str, object]:
         "indices": _pointer(indices),
         "weight": _pointer(weight),
         "result": _pointer(result),
-        "local_capacity": local_shape[-1],
-        "active": emit_active_extent(result_abi, 1),
+        "local_capacity": local_shape[-1] * lanes,
+        "active": f"({emit_active_extent(result_abi, 1)}) * {lanes}",
         "weight_offset": emit_global_scalar_offset(
-            weight_abi, ("token_id", global_feature)
+            weight_abi, ("token_id", global_feature), lane_coordinate=lane_coordinate,
         ),
         "result_offset": emit_local_scalar_offset(
-            result_abi, ("0", local_feature)
+            result_abi, ("0", local_feature), lane_coordinate=lane_coordinate,
         ),
         "tile": int(raw["parameters"]["elements_per_program"]),
         "vocab_size": _static_shape(weight_abi, "logical_shape")[0],
@@ -964,11 +986,39 @@ def _partial_boxing_leaf(
         raise CodegenError(
             "Partial Boxing requires one compact source component per owner."
         )
-    if str(result_abi.get("coordinate_space")) != "canonical_global":
-        raise CodegenError(
-            "Partial Boxing currently materializes canonical-global storage; "
-            "a later local view may expose any compatible target sharding."
+    # A plain tensor also exposes the complete logical address space, even
+    # though its distributed-storage enum is compact_local. Physical sharing
+    # distinguishes one chip-wide tensor from a private full-shaped replica.
+    canonical_result = str(result_abi.get("storage_kind")) == "canonical_global" or (
+        result_abi.get("distributed_type") is None
+        and result_abi.get("coordinate_space") == "canonical_global"
+        and result_abi.get("memory_sharing_scope") == "chip"
+    )
+    if not canonical_result:
+        # A private destination needs the reduced value on every owner, not
+        # just the unique writer used for shared canonical storage. Matching
+        # logical maps permit the same source-group reduction directly into
+        # its local (or parent-backed local) destination coordinates.
+        source_distribution = source_abi.get("distributed_type") or {}
+        result_distribution = result_abi.get("distributed_type") or {}
+        matching_placement = (
+            not result_distribution
+            or source_distribution.get("placement") == result_distribution.get("placement")
         )
+        matching_map = all(
+            tuple(source_abi[key]) == tuple(result_abi[key])
+            for key in (
+                "local_capacity_shape", "logical_coordinate_expressions", "active_shape_expressions",
+            )
+        )
+        if (
+            str(result_abi.get("coordinate_space")) not in {"local", "parent_shard_local", "canonical_global"}
+            or not matching_placement or not matching_map
+        ):
+            raise CodegenError(
+                "Partial Boxing into a different compact owner map requires "
+                "an explicit routed transfer lowering."
+            )
     owner_stride = int(source_abi.get("component_stride_scalar_elements", 0))
     if owner_stride <= 0:
         raise CodegenError("Partial Boxing source has no owner component stride.")
@@ -1031,13 +1081,16 @@ def _partial_boxing_leaf(
             local_coordinates,
             lane_coordinate=lane_coordinate,
         ),
-        "result_offset": emit_global_scalar_offset(
-            result_abi,
-            logical_coordinates,
-            lane_coordinate=lane_coordinate,
+        "result_offset": (
+            emit_global_scalar_offset(
+                result_abi, logical_coordinates, lane_coordinate=lane_coordinate,
+            )
+            if canonical_result else emit_local_scalar_offset(
+                result_abi, local_coordinates, lane_coordinate=lane_coordinate,
+            )
         ),
         "active": active,
-        "writer_active": _distributed_unique_writer_active(source_abi),
+        "writer_active": _distributed_unique_writer_active(source_abi) if canonical_result else "True",
         "partial_owner_count": owner_count,
         "partial_owner_tile": owner_tile,
         "placement_owner_count": placement_owner_count,
@@ -1086,6 +1139,19 @@ def _gdn_convolution_call(raw) -> dict[str, object]:
         "state": _pointer(state),
         "weight": _pointer(weight),
         "result": _pointer(result),
+        # Logical channel ownership and physical storage are independent:
+        # inputs/weights may be owner-local while the result is a canonical
+        # shared tensor (or vice versa). Resolve each operand's own ABI.
+        "source_offset": emit_local_scalar_offset(qkv["abi"], ("token_index", local_channel)),
+        "result_offset": emit_local_scalar_offset(result_abi, ("token_index", local_channel)),
+        "weight_offset": emit_local_scalar_offset(
+            weight["abi"], (local_channel, *("0" for _ in weight["abi"]["logical_shape"][1:]))
+        ),
+        "weight_kernel_stride": int(weight["abi"]["scalar_storage_strides"][-1]),
+        "round_products": bool(attrs.get("round_products", True)),
+        "round_before_activation": bool(attrs.get("round_before_activation", True)),
+        "current_first": attrs.get("accumulation_order", "current_first") == "current_first",
+        "tokens": local_shape[0],
         "local_capacity": local_shape[-1],
         "active_channels": emit_active_extent(result_abi, 1),
         "global_channel": global_channel,
@@ -1116,6 +1182,11 @@ def _gdn_recurrent_call(raw) -> dict[str, object]:
     local_value = "local_values"
     global_value = emit_logical_coordinate(result_abi, 1, ("0", local_value))
     attrs = raw.get("semantic_attrs", {})
+    distributed_data = result_abi.get("distributed_type")
+    uniform_projection_rows = distributed_data is not None and tiles_stay_within_groups(
+        type_from_data(distributed_data), 1, int(raw["parameters"]["tile_state"][1]),
+        int(attrs["value_head_dim"]),
+    )
     return {
         "state": _pointer(state),
         "qkv": _pointer(qkv),
@@ -1128,9 +1199,12 @@ def _gdn_recurrent_call(raw) -> dict[str, object]:
         "norm_weight": _pointer(norm_weight),
         "result": _pointer(result),
         "core_scratch": _pointer(scratch),
+        "z_offset": emit_local_scalar_offset(z["abi"], ("0", local_value)),
+        "result_offset": emit_local_scalar_offset(result_abi, ("0", local_value)),
         "local_capacity": local_shape[-1],
         "active_values": emit_active_extent(result_abi, 1),
         "global_value": global_value,
+        "global_projection_value": emit_logical_coordinate(result_abi, 1, ("0", "recurrent_start")),
         "value_heads": int(attrs["num_value_heads"]),
         "key_heads": int(attrs["num_key_heads"]),
         "key_dim": int(attrs["key_head_dim"]),
@@ -1143,7 +1217,13 @@ def _gdn_recurrent_call(raw) -> dict[str, object]:
         "value_tile": int(raw["parameters"]["tile_state"][1]),
         "head_block": int(raw["parameters"]["tile_state"][0]),
         "projection_tile": int(raw["parameters"]["projection_tile"]),
+        "uniform_projection_rows": uniform_projection_rows,
         "query_scale": repr(1.0 / (int(attrs["key_head_dim"]) ** 0.5)),
+        "qk_norm_add": attrs.get("qk_norm_mode", "clamp") == "add",
+        "qk_norm_epsilon": repr(float(attrs.get("qk_norm_epsilon", 1e-12))),
+        "round_normalized_qk": bool(attrs.get("round_normalized_qk", False)),
+        "round_beta": bool(attrs.get("round_beta", True)),
+        "round_core": bool(attrs.get("round_core", False)),
         "writer_active": _distributed_unique_writer_active(result_abi),
     }
 
@@ -1394,7 +1474,31 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
         (scalar_capacity + work_partition_count - 1) // work_partition_count,
         name="GatherReduceAddNormStats tile",
     )
+    private_result = str(result_abi.get("storage_kind")) != "canonical_global"
+    private_context = {}
+    if private_result:
+        result_domain = _scalar_local_domain(result_abi, "gather_result_offsets")
+        result_lane = result_domain["lane_coordinate"]
+        private_context = {
+            "result_capacity": result_domain["capacity"],
+            "result_active": result_domain["active"],
+            "result_tile": _bounded_vector_tile(
+                raw["parameters"]["tile"], result_domain["capacity"],
+                name="GatherReduceAddNormStats private result tile",
+            ),
+            "finalize_collective_offset": emit_global_scalar_offset(
+                collective["abi"], result_domain["logical_coordinates"], lane_coordinate=result_lane,
+            ),
+            "finalize_residual_offset": _access_in_result_domain(
+                residual_abi, result_abi, result_domain, lane_coordinate=result_lane,
+            ),
+            "finalize_result_offset": emit_local_scalar_offset(
+                result_abi, result_domain["local_coordinates"], lane_coordinate=result_lane,
+            ),
+        }
     return {
+        "private_result": private_result,
+        **private_context,
         "partial": emit_storage_pointer(
             partial_abi, str(partial["runtime_argument"])
         ),
@@ -1422,11 +1526,7 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
             stats_reduction_count,
             name="GatherReduceAddNormStats statistics reduction_width",
         ),
-        "stats_store_active": (
-            "True"
-            if str(stats_abi.get("storage_kind")) == "compact_per_owner"
-            else _distributed_unique_writer_active(stats_abi)
-        ),
+        "stats_store_active": _canonical_writer_active(stats_abi),
         "participant_active": _distributed_unique_writer_active(
             partial_abi, allow_redundant_axes=partial_axes
         ),
@@ -1445,11 +1545,8 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
             domain,
             lane_coordinate=lane_coordinate,
         ),
-        "result_offset": _access_in_result_domain(
-            result_abi,
-            partial_abi,
-            domain,
-            lane_coordinate=lane_coordinate,
+        "result_offset": None if private_result else _access_in_result_domain(
+            result_abi, partial_abi, domain, lane_coordinate=lane_coordinate,
         ),
         "collective_offset": emit_global_scalar_offset(
             collective["abi"],
@@ -2179,7 +2276,7 @@ def _norm_apply_parameter_offset(
 
 def _elementwise_call(raw) -> dict[str, object]:
     variant = str(raw.get("variant", raw.get("parameters", {}).get("variant", "")))
-    binary = variant in {"add", "mul"}
+    binary = variant in {"add", "mul", "div"}
     lhs = _buffer(raw, "inputs", "lhs" if binary else "value")
     rhs = _buffer(raw, "inputs", "rhs") if binary else None
     result = _buffer(raw, "outputs", "result")
@@ -3855,6 +3952,7 @@ def _encode_qkv_rope_with_cache(
         epsilon=attrs.get("q_epsilon"),
         use_mean=attrs.get("q_use_mean"),
         round_before_scale=bool(attrs.get("q_round_before_scale", False)),
+        rotary_dim=attrs.get("rotary_dim"),
         prefix="qkv_q",
         tile=raw["parameters"]["elements_per_program"],
     )
@@ -3871,6 +3969,7 @@ def _encode_qkv_rope_with_cache(
         epsilon=attrs.get("k_epsilon"),
         use_mean=attrs.get("k_use_mean"),
         round_before_scale=bool(attrs.get("k_round_before_scale", False)),
+        rotary_dim=attrs.get("rotary_dim"),
         prefix="qkv_k",
         tile=raw["parameters"]["elements_per_program"],
     )
@@ -3938,7 +4037,6 @@ def _encode_qkv_rope_with_cache(
         )
 
     layer_expression = _scalar_expression(layer_id)
-    cache_position = "qkv_cache_position"
     cache_block = "qkv_cache_physical_block"
     cache_offset = "qkv_cache_block_offset"
     k_context["cache_offset"] = _paged_cache_scalar_offset(
@@ -4356,6 +4454,7 @@ def _qkv_norm_rope_context(
     prefix,
     tile,
     round_before_scale=False,
+    rotary_dim=None,
 ) -> dict[str, object]:
     source_abi = source["abi"]
     _require_owner_local_reduction(source_abi, axis, prefix)
@@ -4384,10 +4483,14 @@ def _qkv_norm_rope_context(
     dimension = apply_domain["global_by_kind"]["dim"]
     local_dimension = apply_domain["local_by_kind"]["dim"]
     head_dim = apply_domain["global_extents"]["dim"]
+    rotary_dim = head_dim if rotary_dim is None else rotary_dim
+    if isinstance(rotary_dim, bool) or not isinstance(rotary_dim, int) or not 0 < rotary_dim <= head_dim or rotary_dim % 2:
+        raise CodegenError("QKVRoPEWithCache rotary_dim must be a positive even scalar extent within the head.")
     partner = (
-        f"tl.where(({local_dimension}) < {head_dim} // 2, "
-        f"({local_dimension}) + {head_dim} // 2, "
-        f"({local_dimension}) - {head_dim} // 2)"
+        f"tl.where(({local_dimension}) >= {rotary_dim}, ({local_dimension}), "
+        f"tl.where(({local_dimension}) < {rotary_dim} // 2, "
+        f"({local_dimension}) + {rotary_dim} // 2, "
+        f"({local_dimension}) - {rotary_dim} // 2))"
     )
     partner_coordinates = dict(apply_domain["local_by_kind"])
     partner_coordinates["dim"] = partner
@@ -4456,6 +4559,7 @@ def _qkv_norm_rope_context(
         "sine_offset": sin_offset,
         "dimension": dimension,
         "head_dim": head_dim,
+        "rotary_dim": rotary_dim,
         "epsilon": repr(epsilon_value),
         "round_before_scale": round_before_scale,
         "input_type": _triton_dtype(str(source_abi["scalar_dtype"])),
@@ -4690,8 +4794,11 @@ def _rotary_embedding_call(raw) -> dict[str, object]:
     cosine = _buffer(raw, "outputs", "result_0")
     sine = _buffer(raw, "outputs", "result_1")
     cosine_abi = cosine["abi"]
-    domain = _local_domain(cosine_abi, "rotary_offsets")
-    shape = _static_shape(cosine_abi, "logical_shape")
+    domain = _scalar_local_domain(cosine_abi, "rotary_offsets")
+    lanes = int(cosine_abi.get("scalar_lane_count", 1))
+    dimension = domain["logical_coordinates"][-1]
+    if lanes != 1:
+        dimension = f"(({dimension}) * {lanes} + ({domain['lane_coordinate']}))"
     attrs = raw.get("semantic_attrs", {})
     return {
         "sequence_lengths": _pointer(state[2]),
@@ -4701,13 +4808,14 @@ def _rotary_embedding_call(raw) -> dict[str, object]:
         "active": domain["active"],
         "local_coordinates": domain["local_coordinates"],
         "logical_coordinates": domain["logical_coordinates"],
+        "dimension_coordinate": dimension,
         "cosine_offset": emit_local_scalar_offset(
-            cosine_abi, domain["local_coordinates"]
+            cosine_abi, domain["local_coordinates"], lane_coordinate=domain["lane_coordinate"],
         ),
         "sine_offset": _access_in_result_domain(
-            sine["abi"], cosine_abi, domain
+            sine["abi"], cosine_abi, domain, lane_coordinate=domain["lane_coordinate"],
         ),
-        "sequence_size": shape[-2] if len(shape) > 1 else 1,
+        "token_coordinate": domain["logical_coordinates"][0],
         "head_dim": int(attrs["head_dim"]),
         "theta": repr(float(attrs["theta"])),
         "attention_scaling": repr(float(attrs["attention_scaling"])),
@@ -4745,10 +4853,13 @@ def _rope_call(raw) -> dict[str, object]:
         )
     )
     head_dim = shape[-1] * result_lane_count
+    rotary_dim = raw.get("semantic_attrs", {}).get("rotary_dim")
+    if rotary_dim is None:
+        rotary_dim = head_dim
     partner_dimension = (
-        f"tl.where(({dimension}) < {head_dim} // 2, "
-        f"({dimension}) + {head_dim} // 2, "
-        f"({dimension}) - {head_dim} // 2)"
+        f"tl.where(({dimension}) < {rotary_dim} // 2, "
+        f"({dimension}) + {rotary_dim} // 2, "
+        f"({dimension}) - {rotary_dim} // 2)"
     )
 
     def source_offset(scalar_dimension: str) -> str:
@@ -4812,6 +4923,7 @@ def _rope_call(raw) -> dict[str, object]:
         "active": domain["active"],
         "dimension": dimension,
         "head_dim": head_dim,
+        "rotary_dim": rotary_dim,
         "source_offset": source_offset(dimension),
         "input_type": _triton_dtype(str(source["abi"]["scalar_dtype"])),
         "partner_offset": source_offset(partner_dimension),
@@ -4853,6 +4965,7 @@ def _cache_update_call(raw) -> dict[str, object]:
     return {
         "slots": _pointer(slots),
         "kv_cache": _pointer(state[0]),
+        "query_start_loc": _pointer(state[1]),
         "sequence_lengths": _pointer(state[2]),
         "slot_mapping": _pointer(state[3]),
         "block_table": _pointer(state[4]),
@@ -4865,6 +4978,9 @@ def _cache_update_call(raw) -> dict[str, object]:
         "block_size": cache_shape[3],
         "local_capacity": domain["capacity"],
         "active": domain["active"],
+        "writer_active": _distributed_unique_writer_active(slots_abi),
+        "num_tokens": shape[layout.index("seq")],
+        "logical_token": domain["logical_coordinates"][layout.index("seq")],
         "logical_head": domain["logical_coordinates"][head_axis],
         "logical_dimension": dimension,
         "slots_offset": emit_local_scalar_offset(
@@ -4925,6 +5041,10 @@ def _paged_attention_partial_call(raw) -> dict[str, object]:
         # This is required both for compact head shards and for partial-state
         # components containing more than one local head.
         "query": head_pointer(query),
+        "query_token": max_domain["logical_coordinates"][layout.index("seq")],
+        "query_dim_stride": int(query_abi["scalar_storage_strides"][dim_axis]),
+        "query_lanes": int(query_abi.get("scalar_lane_count", 1)),
+        "accumulator_dim_stride": int(partial_accumulator["abi"]["scalar_storage_strides"][dim_axis]),
         "kv_cache": _pointer(state[0]),
         "slot_mapping": _pointer(state[3]),
         "block_table": _pointer(state[4]),
@@ -6044,6 +6164,19 @@ def _access_in_result_domain(
             lane_coordinate=lane_coordinate,
         )
     if not _same_local_mapping(operand_abi, result_abi):
+        distributed = operand_abi.get("distributed_type")
+        if (
+            isinstance(distributed, Mapping)
+            and distributed.get("kind") == "distributed"
+            and tuple(operand_abi["logical_shape"]) == tuple(result_abi["logical_shape"])
+            and is_fully_replicated(type_from_data(distributed))
+        ):
+            # Every owner already contains the complete logical tensor. A
+            # consumer's narrower shard therefore indexes this private copy
+            # by logical coordinates; it does not require a communication op.
+            return emit_local_scalar_offset(
+                operand_abi, domain["logical_coordinates"], lane_coordinate=lane_coordinate,
+            )
         raise CodegenError(
             "Elementwise local operands use different owner mappings; insert "
             "an explicit Boxing before code generation."
@@ -6055,6 +6188,22 @@ def _access_in_result_domain(
     )
 
 _FAMILY_ENCODERS = {
+    "delta_rule_coefficients": delta_rule_coefficients_call,
+    "delta_rule_log_prefix": delta_rule_log_prefix_call,
+    "delta_rule_block_update": delta_rule_block_update_call,
+    "delta_rule_gates": delta_rule_gates_call,
+    "l2_normalization": l2_normalization_call,
+    "pack": vector_relayout_call,
+    "concat": concat_call,
+    "broadcast_to": broadcast_to_call,
+    "softmax": softmax_call,
+    "reduce_sum": reduce_sum_call,
+    "top_k": top_k_call,
+    "sparse_experts_gate_up": sparse_experts_gate_up_call,
+    "sparse_experts_down": sparse_experts_down_call,
+    "unpack": vector_relayout_call,
+    "pad": tensor_transform_call,
+    "slice": tensor_transform_call,
     "embedding": _embedding_call,
     "rms_norm": _rms_norm_call,
     "block_fp8": _block_fp8_call,

@@ -17,6 +17,8 @@ class AllocationPolicy(str, Enum):
 
 
 class AllocationStrategy(str, Enum):
+    REUSE = "reuse"
+    # Legacy checkpoints used an algorithm name for lifetime-managed arenas.
     SAT = "sat"
     LINEAR = "linear"
     EXTERNAL = "external"
@@ -81,6 +83,10 @@ class MemorySpace:
             raise IRSchemaError(
                 "External allocation ownership requires the external strategy."
             )
+
+    @property
+    def supports_lifetime_reuse(self) -> bool:
+        return self.strategy in (AllocationStrategy.REUSE, AllocationStrategy.SAT)
 
     @property
     def shared_scope(self) -> str:

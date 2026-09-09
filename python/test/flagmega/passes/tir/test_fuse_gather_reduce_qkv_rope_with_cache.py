@@ -14,7 +14,7 @@ def _distributed(value_type, policies, placement, partial=None):
     return fm.DistributedType(value_type, policies, placement, partial)
 
 
-def _graph(*, extra_q_user=False, reduce_op=fm.ReduceOp.SUM):
+def _graph(*, extra_q_user=False, reduce_op=fm.ReduceOp.SUM, rotary_dim=None):
     placement = fm.Placement((2, 4), "yx", "bb")
     broadcast = fm.SBP.broadcast()
     output_split = fm.SBP.split_block_cyclic((1,), 1)
@@ -45,7 +45,8 @@ def _graph(*, extra_q_user=False, reduce_op=fm.ReduceOp.SUM):
         fm.tensor_type(vector, (2,)), (broadcast,), placement
     )
     trig = _distributed(
-        fm.tensor_type(fm.VectorType(fm.DType.FLOAT32, (2, 2)), (1, 1, 1)),
+        (fm.tensor_type("float32", (1, 1, rotary_dim)) if rotary_dim is not None else
+         fm.tensor_type(fm.VectorType(fm.DType.FLOAT32, (2, 2)), (1, 1, 1))),
         (broadcast, broadcast, broadcast),
         placement,
     )
@@ -117,6 +118,7 @@ def _graph(*, extra_q_user=False, reduce_op=fm.ReduceOp.SUM):
                 k_axis=-1,
                 k_epsilon=1e-6,
                 k_use_mean=False,
+                rotary_dim=rotary_dim,
                 qkv_layout=("seq", "head", "dim"),
                 attention_layout=("seq", "head", "dim"),
                 name="qkv_rope",

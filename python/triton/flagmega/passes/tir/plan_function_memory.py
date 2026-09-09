@@ -36,7 +36,7 @@ def plan_function_memory(
     module: IRModule,
     options: BufferizationOptions,
 ) -> IRModule:
-    """Place owner-private kernel edges in a block-scoped SAT pool.
+    """Place owner-private kernel edges in a block-scoped lifetime pool.
 
     The proof is intentionally expressed in graph/effect terms, not kernel or
     model names. A candidate must be a distributed, non-partial value whose
@@ -59,14 +59,14 @@ def plan_function_memory(
             stage=module.stage,
         ) from error
     if (
-        block_space.strategy.value != "sat"
+        not block_space.supports_lifetime_reuse
         or block_space.allocation_scope.value != "function"
         or block_space.sharing_scope.value != "block"
         or block_space.kind == "shared"
     ):
         raise IRVerificationError(
             f"Block-local memory space {block_local!r} must be a non-shared "
-            "function-scoped block-sharing SAT pool.",
+            "function-scoped block-sharing lifetime pool.",
             stage=module.stage,
         )
 

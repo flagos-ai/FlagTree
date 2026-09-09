@@ -21,6 +21,7 @@ from triton.flagmega.passes import (
 from triton.flagmega.selection import SelectionPlan, apply_plan
 from triton.flagmega.stages import get_stage, stage_names
 from triton.flagmega.targets import get_target
+from triton.flagmega.passes.auto_distributed.proposal_analysis import PROPOSAL_ANALYSIS
 
 
 @dataclass(frozen=True)
@@ -36,11 +37,26 @@ class Compiler:
         if self.options.effective_dump_flags and self.options.work_dir is None:
             raise StageError("Dump flags require CompileOptions.work_dir (CLI: --work-dir).")
         self.target = get_target(self.options.target)
+        if self.options.bufferize_opt_level is not None:
+            configure = getattr(self.target, "with_bufferize_opt_level", None)
+            if configure is None:
+                raise StageError(f"Target {self.target.name!r} does not support bufferize optimization levels.")
+            self.target = configure(self.options.bufferize_opt_level)
         self.diagnostics = DiagnosticSession(
             self.options.work_dir,
             dump_flags=self.options.effective_dump_flags,
         )
         self._pass_manager_index = 0
+
+    def _verify_bufferize_level(self, module: IRModule) -> None:
+        level = self.options.bufferize_opt_level
+        plan = module.metadata.get("buffer_plan")
+        if level is not None and plan is not None and plan.get("optimization_level", "optimized") != level:
+            raise StageError(
+                "Changing bufferize optimization level requires resuming before Bufferize; "
+                "buffer offsets, call bindings and synchronization must be regenerated.",
+                stage=module.stage,
+            )
 
     def run_stage(
         self,
@@ -51,6 +67,7 @@ class Compiler:
         output: str | Path | None = None,
     ) -> CompileResult:
         verify_module(module)
+        self._verify_bufferize_level(module)
         if plan is not None:
             module = apply_plan(module, plan)
             verify_module(module)
@@ -85,6 +102,16 @@ class Compiler:
 
     def compile(self, module: IRModule, *, stop_after: str | None = None) -> CompileResult:
         verify_module(module)
+        self._verify_bufferize_level(module)
+        if stop_after is not None:
+            # An agent's misspelled boundary must not run the remaining
+            # pipeline and freeze decisions it intended to edit.
+            groups = {group.name: group.output_stage for group in PIPELINE_GROUPS}
+            stop_after = groups.get(stop_after, stop_after)
+            names = stage_names()
+            valid = {module.stage, *names, *(get_stage(name).output_stage for name in names)}
+            if stop_after not in valid:
+                raise StageError(f"Unknown compiler stop boundary {stop_after!r}.", stage=module.stage)
         self.diagnostics.dumper.create_sub_dumper("Import").dump_module(
             module,
             "IRImport",
@@ -119,9 +146,13 @@ class Compiler:
                 pass_manager.add(FunctionalPass(
                     member.name,
                     lambda value, selected_stage=stage: selected_stage.run(value, self.target),
+                    # Only the proposal annotation pass preserves this graph.
+                    # An intervening agent pass invalidates it by default;
+                    # another compile/resume owns a fresh AnalysisManager.
+                    preserves=frozenset({PROPOSAL_ANALYSIS}) if stage.name == "propose-distribution" else frozenset(),
                 ))
                 simulated_stage = stage.output_stage
-                if stop_after is not None and stop_after in {stage.name, stage.output_stage}:
+                if stage.output_stage in stop_stages:
                     stopped = True
                     break
                 if stage.selection_point and self.options.require_review:

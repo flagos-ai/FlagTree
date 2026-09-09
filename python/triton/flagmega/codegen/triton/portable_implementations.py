@@ -16,6 +16,55 @@ from collections.abc import Mapping
 from triton.flagmega.codegen.triton.implementation import TritonImplementation
 
 
+def portable_sparse_experts_implementations() -> tuple[TritonImplementation, ...]:
+    """SIMT selected-expert projections without moving route rounding across K."""
+    return tuple(
+        TritonImplementation(
+            f"tir.{family}.simt", family, "simt",
+            {"block_n": 8, "block_k": 128},
+            {"indexing": "local", "rounding": "explicit"},
+            facts={"portable_triton": True},
+        ) for family in ("sparse_experts_gate_up", "sparse_experts_down"))
+
+
+def portable_tensor_transform_implementations() -> tuple[TritonImplementation, ...]:
+    return tuple(
+        TritonImplementation(
+            f"tir.{family}.local",
+            family,
+            "local",
+            {"elements_per_program": 128},
+            {"indexing": "local"},
+            facts={"portable_triton": True},
+        ) for family in ("pad", "slice", "pack", "unpack", "concat", "broadcast_to"))
+
+
+def portable_axis_reduction_implementations() -> tuple[TritonImplementation, ...]:
+    """Tiled axis reductions, without a fixed maximum reduction extent."""
+    return tuple(
+        TritonImplementation(
+            f"tir.{family}.local",
+            family,
+            "local",
+            {"elements_per_program": 256},
+            {"indexing": "local"},
+            facts={"portable_triton": True},
+        ) for family in ("softmax", "reduce_sum", "top_k", "l2_normalization"))
+
+
+def portable_router_elementwise_implementations() -> tuple[TritonImplementation, ...]:
+    """Owner-local division/sigmoid, including typed-vector sigmoid schedules."""
+    return tuple(
+        TritonImplementation(
+            f"tir.elementwise.{variant}.{kind}",
+            "elementwise",
+            variant,
+            {"elements_per_program": 128} if kind == "scalar" else {"vector_groups": 32},
+            {"semantic_op": f"math.{variant}", "vectorization_kind": kind},
+            facts={"portable_triton": True},
+        ) for variant, kind in (("div", "scalar"), ("sigmoid", "scalar"), ("sigmoid", "axes")))
+
+
 def portable_attention_implementations() -> tuple[TritonImplementation, ...]:
     """Return decode implementations for the decomposed attention primitives."""
 
@@ -43,7 +92,8 @@ def portable_attention_implementations() -> tuple[TritonImplementation, ...]:
             "decode",
             {"elements_per_program": 128},
             {"mode": "decode"},
-            facts=portable,
+            requires=("cooperative_grid", "grid_sync"),
+            facts={**portable, "internal_grid_barriers": 1},
         ),
         TritonImplementation(
             "tir.paged_attention_partial.decode_t16",
@@ -218,6 +268,10 @@ def portable_normalization_preferences() -> Mapping[str, tuple[str, ...]]:
 
 
 __all__ = [
+    "portable_sparse_experts_implementations",
+    "portable_axis_reduction_implementations",
+    "portable_tensor_transform_implementations",
+    "portable_router_elementwise_implementations",
     "portable_attention_implementations",
     "portable_attention_preferences",
     "portable_local_reduction_implementations",

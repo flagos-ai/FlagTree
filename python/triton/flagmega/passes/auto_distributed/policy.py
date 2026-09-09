@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from triton.flagmega.ir import IRModule, Node, Placement, get_definition
+from triton.flagmega.ir import DistributedType, IRModule, Node, Placement, TensorType, VectorType, get_definition
+from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.passes.auto_distributed.candidates import DistributedCandidateProviderRegistry
 from triton.flagmega.passes.auto_distributed.inference_providers import (
     TypeInferenceCandidateProvider,
@@ -30,6 +31,10 @@ from triton.flagmega.passes.auto_distributed.norm_providers import (
     NormStatsCandidateProvider,
 )
 from triton.flagmega.passes.auto_distributed.packed_matmul_provider import PackedMatMulCandidateProvider
+from triton.flagmega.passes.auto_distributed.sparse_experts_providers import (
+    SparseExpertsGateUpCandidateProvider,
+    SparseExpertsDownCandidateProvider,
+)
 from triton.flagmega.passes.auto_distributed.paged_attention_providers import (
     PagedAttentionCombineCandidateProvider,
     PagedAttentionPartialCandidateProvider,
@@ -102,6 +107,8 @@ class NttDistributionPolicy:
         registry.add(MatMulCandidateProvider())
         registry.add(PackedMatMulCandidateProvider())
         registry.add(MatMulGluCandidateProvider())
+        registry.add(SparseExpertsGateUpCandidateProvider())
+        registry.add(SparseExpertsDownCandidateProvider())
         registry.add(PackedQKVParallelLinearCandidateProvider())
         registry.add(PackedQKVParallelLinearCombineCandidateProvider())
         registry.add(BinaryCandidateProvider())
@@ -116,25 +123,40 @@ class NttDistributionPolicy:
         registry.add(PagedAttentionPartialCandidateProvider())
         registry.add(PagedAttentionCombineCandidateProvider())
         registry.add(QKVRoPEWithCacheCandidateProvider())
-        registry.add(TypeInferenceCandidateProvider(frozenset({
-            "math.vectorized_unary",
-            "nn.rms_norm",
-            "nn.rope",
-            "nn.update_paged_attention_kv_cache",
-            "ntt.vectorized_cast",
-            "ntt.vectorized_rope",
-            "tensors.bitcast",
-            "tensors.pack",
-            "tensors.reshape",
-            "tensors.unpack",
-        })))
+        registry.add(
+            TypeInferenceCandidateProvider(
+                frozenset({
+                    "math.div",
+                    "math.sigmoid",
+                    "math.reduce_sum",
+                    "math.vectorized_unary",
+                    "nn.softmax",
+                    "nn.delta_rule_coefficients",
+                    "nn.delta_rule_log_prefix",
+                    "nn.delta_rule_block_update",
+                    "nn.delta_rule_gates",
+                    "nn.l2_normalization",
+                    "nn.gdn_state_slice",
+                    "nn.rms_norm",
+                    "nn.rope",
+                    "nn.update_paged_attention_kv_cache",
+                    "ntt.vectorized_cast",
+                    "ntt.vectorized_rope",
+                    "tensors.bitcast",
+                    "tensors.broadcast_to",
+                    "tensors.concat",
+                    "tensors.slice",
+                    "tensors.top_k",
+                    "tensors.pack",
+                    "tensors.reshape",
+                    "tensors.unpack",
+                })))
         registry.add(BroadcastCandidateProvider(frozenset({
             "math.silu",
             "math.vectorized_matmul",
             "nn.rotary_embedding",
             "nn.vectorized_rms_norm",
             "tensors.cast",
-            "tensors.concat",
             "tensors.pad",
             "tensors.permute",
             "tensors.slice_to_shape",
@@ -167,9 +189,12 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
     pending = [
         node.id
         for node in module.nodes
-        if node.op in native_vector_ops
-        and vectorization_root(node) in native_vector_roots
+        if vectorization_root(node) in native_vector_roots
+        or node.id in native_vector_roots and node.metadata.get("vectorized_from") is not None
     ]
+    # Retained result/layout boundaries (e.g. Concat of a native result and
+    # a packed Slice) also own physical operands. Starting only at native
+    # compute would keep the boundary but delete/rename its other inputs.
     visited_dependencies = set(pending)
     while pending:
         current = node_map[pending.pop()]
@@ -305,6 +330,49 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
         )
         nodes.append(boundary)
         prepared_by_id[value] = boundary
+        return boundary
+
+    semantic_boundaries: dict[tuple[str, tuple[int, ...]], Node] = {}
+
+    def semantic_input(value: str) -> Node:
+        actual = prepared_input(value)
+        if not isinstance(actual.type,
+                          (TensorType, DistributedType)) or not isinstance(tensor_of(actual.type).dtype, VectorType):
+            return actual
+        producer = actual
+        visited: set[str] = set()
+        # A real Boxing/ShardedView keeps the packed representation of its
+        # native producer. It must survive, but a reconstructed scalar
+        # semantic consumer needs an Unpack *after* this physical edge.
+        # Following SSA (not vectorization_inputs provenance) also handles
+        # hash-consed and shared bridges without changing their other uses.
+        while producer.op in distribution_adapters and len(producer.inputs) == 1:
+            if producer.id in visited:
+                raise ValueError(f"Cycle while restoring semantic input {value!r}.")
+            visited.add(producer.id)
+            producer = prepared_by_id.get(producer.inputs[0], node_map.get(producer.inputs[0]))
+            if producer is None:
+                raise ValueError(f"Missing native producer for semantic input {value!r}.")
+        if producer.op not in native_vector_ops or vectorization_root(producer) not in native_vector_roots:
+            return actual
+        axes = tuple(
+            int(axis)
+            for axis in producer.metadata.get("selected_vector_axes", producer.metadata.get("vector_axes", ())))
+        if not axes:
+            raise ValueError(f"Native vector producer {producer.id!r} has no semantic unpack axes.")
+        key = (actual.id, axes)
+        if key in semantic_boundaries:
+            return semantic_boundaries[key]
+        definition = get_definition("tensors.unpack")
+        call = definition.prepare((actual, ), {"axes": axes})
+        boundary_id = f"{actual.id}.semantic"
+        while boundary_id in node_ids or boundary_id in prepared_by_id:
+            boundary_id += ".view"
+        boundary = Node(boundary_id, "tensors.unpack", (actual.id, ), call.result_type, call.effect, call.attrs,
+                        {"introduced_by": "LowerVectorizationContracts", "vector_boundary": "native_to_semantic"})
+        nodes.append(boundary)
+        prepared_by_id[boundary.id] = boundary
+        semantic_boundaries[key] = boundary
         return boundary
 
     for node in module.nodes:
@@ -494,13 +562,13 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
         )
         semantic_attrs = dict(node.metadata.get("vectorization_attrs", {}))
         definition = get_definition(semantic_op)
-        input_nodes = tuple(prepared_input(value) for value in semantic_inputs)
+        input_nodes = tuple(semantic_input(value) for value in semantic_inputs)
         normalized_attrs = definition.normalize_attrs(semantic_attrs)
         prepared = replace(
             node,
             id=compute_roots.get(node.id, node.id),
             op=semantic_op,
-            inputs=semantic_inputs,
+            inputs=tuple(value.id for value in input_nodes),
             type=definition.infer_type(input_nodes, normalized_attrs),
             effect=definition.infer_effect(input_nodes, normalized_attrs),
             attrs=definition.ir_attrs(normalized_attrs),
@@ -646,7 +714,7 @@ def _peel_vector_operand(
         return str(semantic_id)
     if node.metadata.get("vectorization_role") == "compute":
         return str(node.metadata["vectorization_root"])
-    if node.op not in {"tensors.pack", "tensors.pad", "tensors.unpack", "tensors.slice_to_shape"}:
+    if node.op not in {"tensors.pack", "tensors.pad", "tensors.unpack", "tensors.slice_to_shape", "tensors.bitcast"}:
         raise ValueError(
             f"Cannot recover semantic operand through compiler-owned {node.op!r} node {node.id!r}."
         )
@@ -654,6 +722,16 @@ def _peel_vector_operand(
         raise ValueError(
             f"Compiler-owned vector boundary {node.id!r} must have one input, got {len(node.inputs)}."
         )
+    if node.op == "tensors.bitcast":
+        source_dtype = tensor_of(module.node_map[node.inputs[0]].type).dtype
+        result_dtype = tensor_of(node.type).dtype
+        source_element = source_dtype.elem_type if isinstance(source_dtype, VectorType) else source_dtype
+        result_element = result_dtype.elem_type if isinstance(result_dtype, VectorType) else result_dtype
+        # Canonical Pack/Unpack views are shape/lane regroupings. A numerical
+        # reinterpretation cannot be peeled merely because it carries compiler
+        # provenance; it changes the semantic operand's element values.
+        if source_element != result_element or not node.effect.is_pure:
+            raise ValueError(f"Vector boundary {node.id!r} must preserve element type and have no effects.")
     return _peel_vector_operand(
         node.inputs[0],
         module,

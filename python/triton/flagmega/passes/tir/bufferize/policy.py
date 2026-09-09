@@ -20,6 +20,7 @@ from triton.flagmega.passes.tir import (
 )
 from triton.flagmega.passes.tir.bufferize import plan_memory_synchronization
 from triton.flagmega.passes.tir.bufferize.planner import BufferizationOptions
+from triton.flagmega.passes.tir.bufferize.allocation_session import AllocationSession
 from triton.flagmega.passes.tir.plan_function_memory import plan_function_memory
 
 
@@ -27,20 +28,25 @@ class NttBufferizationPolicy:
     def __init__(self, options: BufferizationOptions) -> None:
         self.options = options
 
+    def with_optimization_level(self, level: str) -> NttBufferizationPolicy:
+        return type(self)(replace(self.options, optimization_level=level))
+
     def plan_function_memory(self, module: IRModule) -> IRModule:
         return plan_function_memory(module, self.options)
 
     def bufferize(self, module: IRModule) -> IRModule:
+        session = AllocationSession(self.options)
         plan = make_buffer_plan(
             module,
             options=self.options,
+            allocation_session=session,
         )
         specialized = specialize_prim_functions_for_buffer_layouts(module, plan)
         if specialized is not module:
             module = specialized
             # PrimFunction names own shared-workspace identities and kernel
             # call records, so a specialized call graph requires a fresh plan.
-            plan = make_buffer_plan(module, options=self.options)
+            plan = make_buffer_plan(module, options=self.options, allocation_session=session)
         module = bind_prim_function_buffers(module, plan=plan)
         nodes: list[Node] = []
         for node in module.nodes:

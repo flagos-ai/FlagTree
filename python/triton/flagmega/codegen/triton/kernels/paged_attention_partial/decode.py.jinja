@@ -11,6 +11,7 @@ def _flagmega_paged_attention_partial(
     partial_accumulator,
     context_shard,
     head,
+    query_token,
     num_layers: tl.constexpr,
     num_query_heads: tl.constexpr,
     num_kv_heads: tl.constexpr,
@@ -19,22 +20,26 @@ def _flagmega_paged_attention_partial(
     scale: tl.constexpr,
     token_tile: tl.constexpr,
     context_shards: tl.constexpr,
+    query_dim_stride: tl.constexpr,
+    query_lanes: tl.constexpr,
+    accumulator_dim_stride: tl.constexpr,
 ):
     """Portable per-context-shard online-softmax state computation."""
     dimension = tl.arange(0, head_dim)
     token_lane = tl.arange(0, token_tile)
     if head < num_query_heads:
-        # Cache update publishes the current decode position through
+        # Cache update publishes the current query chunk base through
         # slot_mapping. sequence_lengths advances only after the final layer,
         # so it cannot describe the just-written token for every reusable
         # decode-layer invocation.
-        context_length = tl.load(slot_mapping).to(tl.int32) + 1
+        context_length = tl.load(slot_mapping).to(tl.int32) + query_token + 1
         token_begin = (context_length * context_shard) // context_shards
         token_end = (context_length * (context_shard + 1)) // context_shards
         # ``query`` and all partial-state pointers are already rebased to the
         # selected owner-local head by the call ABI. ``head`` remains the
         # logical head coordinate and is used only for cache-head selection.
-        query_value = tl.load(query + dimension).to(tl.float32)
+        query_offset = (dimension // query_lanes) * query_dim_stride + dimension % query_lanes
+        query_value = tl.load(query + query_offset).to(tl.float32)
         kv_head = head // (num_query_heads // num_kv_heads)
         active_layer = layer_id
         running_max = -float("inf")
@@ -82,6 +87,6 @@ def _flagmega_paged_attention_partial(
         tl.store(partial_max + partial_index, running_max)
         tl.store(partial_sum + partial_index, running_sum)
         tl.store(
-            partial_accumulator + partial_index * head_dim + dimension,
+            partial_accumulator + dimension * accumulator_dim_stride,
             accumulator,
         )

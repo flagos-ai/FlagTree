@@ -19,12 +19,14 @@ class DataflowPass:
     max_iterations: int = 32
     remove_unused: bool = True
     preserves: frozenset[str] = frozenset()
+    rewrite_constants: bool = True
 
     def run(self, module: IRModule) -> IRModule:
         return DataflowRewriter(
             self.rules,
             max_iterations=self.max_iterations,
             remove_unused=self.remove_unused,
+            rewrite_constants=self.rewrite_constants,
         ).rewrite(module)
 
 

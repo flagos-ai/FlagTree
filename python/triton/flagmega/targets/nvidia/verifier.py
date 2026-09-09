@@ -180,6 +180,7 @@ def verify_sm90_module(
             "builtin.tuple",
             "tir.buffer",
             "tir.buffer_view",
+            "tir.ref_slice",
             "tir.call",
             "tir.scalar_const",
         }

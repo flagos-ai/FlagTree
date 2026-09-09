@@ -26,6 +26,10 @@ from .gather_reduce_norm_apply import (
 )
 from .attention_primitives import AttentionPrimitiveSemanticTIRCandidateProvider
 from .normalization import NormApplyCandidateProvider, NormStatsCandidateProvider
+from .tensor_transform import TensorTransformCandidateProvider
+from .reduction import ReductionCandidateProvider
+from .delta_rule import DeltaRuleCandidateProvider
+from .sparse_experts import SparseExpertsCandidateProvider
 from .simple import (
     BlockFp8CandidateProvider,
     ElementwiseCandidateProvider,
@@ -40,33 +44,41 @@ from .simple import (
 def default_triton_candidate_registry() -> TritonCandidateProviderRegistry:
     registry = TritonCandidateProviderRegistry()
     for provider in (
-        ElementwiseCandidateProvider(),
-        BlockFp8CandidateProvider(),
-        MatmulGluCandidateProvider(),
-        DenseMatmulGluCandidateProvider(),
-        EmbeddingCandidateProvider(),
-        GreedySampleCandidateProvider(),
-        RmsNormCandidateProvider(),
-        NormStatsCandidateProvider(),
-        NormApplyCandidateProvider(),
-        PackedQKVSemanticTIRCandidateProvider(),
-        PagedAttentionSplitSemanticTIRCandidateProvider(),
-        AttentionPrimitiveSemanticTIRCandidateProvider(),
-        QKVRoPEWithCacheSemanticTIRCandidateProvider(),
-        GatherReduceQKVRoPEWithCacheSemanticTIRCandidateProvider(),
-        GatherReduceNormApplySemanticTIRCandidateProvider(),
-        GatherReduceAddNormApplyCandidateProvider(),
-        DenseMatmulCandidateProvider(),
-        MatMulNormStatsCandidateProvider(),
-        MatMulNormStatsCombineCandidateProvider(),
-        GdnCandidateProvider(),
-        DistributedBoxingCandidateProvider(),
+            ElementwiseCandidateProvider(),
+            TensorTransformCandidateProvider(),
+            ReductionCandidateProvider(),
+            DeltaRuleCandidateProvider(),
+            SparseExpertsCandidateProvider(),
+            BlockFp8CandidateProvider(),
+            MatmulGluCandidateProvider(),
+            DenseMatmulGluCandidateProvider(),
+            EmbeddingCandidateProvider(),
+            GreedySampleCandidateProvider(),
+            RmsNormCandidateProvider(),
+            NormStatsCandidateProvider(),
+            NormApplyCandidateProvider(),
+            PackedQKVSemanticTIRCandidateProvider(),
+            PagedAttentionSplitSemanticTIRCandidateProvider(),
+            AttentionPrimitiveSemanticTIRCandidateProvider(),
+            QKVRoPEWithCacheSemanticTIRCandidateProvider(),
+            GatherReduceQKVRoPEWithCacheSemanticTIRCandidateProvider(),
+            GatherReduceNormApplySemanticTIRCandidateProvider(),
+            GatherReduceAddNormApplyCandidateProvider(),
+            DenseMatmulCandidateProvider(),
+            MatMulNormStatsCandidateProvider(),
+            MatMulNormStatsCombineCandidateProvider(),
+            GdnCandidateProvider(),
+            DistributedBoxingCandidateProvider(),
     ):
         registry.add(provider)
     return registry
 
 
 __all__ = [
+    "DeltaRuleCandidateProvider",
+    "SparseExpertsCandidateProvider",
+    "ReductionCandidateProvider",
+    "TensorTransformCandidateProvider",
     "BlockFp8CandidateProvider",
     "AttentionPrimitiveSemanticTIRCandidateProvider",
     "DenseMatmulCandidateProvider",

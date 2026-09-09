@@ -57,11 +57,13 @@ def {{ call.symbol }}__partials({{ call.signature }}):
                     other=0.0,
                 ) + gather_projection_rounded
             ).to({{ call.output_type }})
+{% if not call.private_result | default(false) %}
             tl.store(
                 {{ call.result }} + ({{ call.result_offset }}),
                 gather_value,
                 mask=gather_mask,
             )
+{% endif %}
             gather_value_fp32 = gather_value.to(tl.float32)
             gather_square_sum += tl.where(
                 gather_mask, gather_value_fp32 * gather_value_fp32, 0.0,
@@ -75,6 +77,28 @@ def {{ call.symbol }}__partials({{ call.signature }}):
 @triton.jit(noinline=True)
 def {{ call.symbol }}__finalize({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+{% if call.private_result | default(false) %}
+    # The partial phase partitions work across owners and publishes the
+    # reduced projection. After the existing phase barrier, each private
+    # destination materializes its complete local result. Delay all in-place
+    # residual updates until here to avoid adding the projection twice.
+    for gather_result_start in tl.range(0, {{ call.result_capacity }}, {{ call.result_tile }}):
+        gather_result_offsets = gather_result_start + tl.arange(0, {{ call.result_tile }})
+        gather_result_mask = (gather_result_offsets < {{ call.result_capacity }}) & ({{ call.result_active }})
+        gather_result_projection = tl.load(
+            {{ call.collective }} + ({{ call.finalize_collective_offset }}),
+            mask=gather_result_mask, other=0.0,
+        )
+        gather_result_residual = tl.load(
+            {{ call.residual }} + ({{ call.finalize_residual_offset }}),
+            mask=gather_result_mask, other=0.0,
+        )
+        tl.store(
+            {{ call.result }} + ({{ call.finalize_result_offset }}),
+            (gather_result_projection + gather_result_residual).to({{ call.output_type }}),
+            mask=gather_result_mask,
+        )
+{% endif %}
     if {{ call.stats_store_active }}:
         gather_stats = 0.0
         for gather_stats_start in tl.range(

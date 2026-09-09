@@ -4,22 +4,29 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir.dim_expr import DimConst, DimExpr, DimVar, Dimension, UnknownDim
 
 
-def emit_dimension(value: Dimension) -> str:
+def emit_dimension(value: Dimension, *, symbols: Mapping[str, str] | None = None) -> str:
     """Render the complete supported DimExpr algebra without evaluating it."""
 
     if isinstance(value, DimConst):
         return str(value.fixed)
     if isinstance(value, DimVar):
+        if symbols is not None:
+            try:
+                return symbols[value.symbol]
+            except KeyError as error:
+                raise CodegenError(f"Unbound runtime dimension symbol {value.symbol!r}.") from error
         return value.symbol
     if isinstance(value, UnknownDim):
         raise CodegenError("An unknown dimension cannot be emitted into Triton source.")
     if not isinstance(value, DimExpr):  # pragma: no cover - Dimension is closed.
         raise CodegenError(f"Unsupported dimension node {type(value).__name__}.")
-    operands = tuple(emit_dimension(operand) for operand in value.operands)
+    operands = tuple(emit_dimension(operand, symbols=symbols) for operand in value.operands)
     if value.op == "add":
         return "(" + " + ".join(operands) + ")"
     if value.op == "mul":

@@ -24,6 +24,8 @@ class ElementwiseCandidateProvider:
     op_names = frozenset({
         "math.add",
         "math.mul",
+        "math.div",
+        "math.sigmoid",
         "math.silu",
         "math.vectorized_binary",
         "math.vectorized_unary",

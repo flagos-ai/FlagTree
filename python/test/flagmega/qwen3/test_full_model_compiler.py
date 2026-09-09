@@ -384,10 +384,7 @@ def test_vectorization_optimizes_the_reusable_decode_body_once():
     module = import_qwen3_model(full_checkpoint(num_hidden_layers=3))
 
     compiler = Compiler()
-    normalized = compiler.run_stage(module, "decompose-gdn").module
-    decomposed = compiler.run_stage(
-        normalized, "form-qkv-rope-with-cache"
-    ).module
+    decomposed = compiler.run_stage(module, "decompose-gdn").module
     candidates = compiler.run_stage(decomposed, "propose-vectorization").module
     vectorized = compiler.run_stage(candidates, "apply-vectorization").module
 
@@ -404,7 +401,6 @@ def test_qkv_offline_transpose_and_pack_are_lifted_to_each_call_actual():
     current = import_qwen3_model(full_checkpoint(num_hidden_layers=2))
     for stage in (
         "decompose-gdn",
-        "form-qkv-rope-with-cache",
         "propose-vectorization",
         "apply-vectorization",
         "propose-packing",

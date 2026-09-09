@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
+from itertools import product
 from math import prod
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
@@ -556,6 +557,21 @@ class OpDefinition:
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         raise IRSchemaError(f"{cls.op_name} does not implement type inference.")
+
+    @classmethod
+    def distributed_input_type_tuples(
+        cls, choices: Sequence[Sequence[IRType]], attrs: Mapping[str, object]
+    ) -> Iterator[tuple[IRType, ...]]:
+        """Enumerate input relations from the provider's available contracts.
+
+        Coupled operations may join equivalent ownership keys instead of
+        constructing a Cartesian product. Overrides must preserve every
+        inferable relation within ``choices``, introduce no new contracts,
+        and leave final legality to ``infer_type``. This is not selection or
+        a target-specific distribution policy.
+        """
+        del attrs
+        return product(*choices)
 
     @classmethod
     def infer_effect(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> Effect:

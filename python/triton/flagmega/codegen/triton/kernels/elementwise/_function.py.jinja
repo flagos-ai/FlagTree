@@ -14,7 +14,7 @@ def {{ call.symbol }}({{ call.signature }}):
             mask=local_mask,
             other=0.0,
         )
-{% if call.variant in ("add", "mul") %}
+{% if call.variant in ("add", "mul", "div") %}
         rhs_value = tl.load(
             {{ call.rhs }} + ({{ call.rhs_offset }}),
             mask=local_mask,
@@ -27,6 +27,10 @@ def {{ call.symbol }}({{ call.signature }}):
             lhs_value + rhs_value,
 {% elif call.variant == "mul" %}
             lhs_value * rhs_value,
+{% elif call.variant == "div" %}
+            tl.div_rn(lhs_value.to(tl.float32), rhs_value.to(tl.float32)),
+{% elif call.variant == "sigmoid" %}
+            tl.sigmoid(lhs_value.to(tl.float32)),
 {% elif call.variant == "silu" %}
             lhs_value.to(tl.float32) * tl.sigmoid(lhs_value.to(tl.float32)),
 {% elif call.variant == "cast" %}

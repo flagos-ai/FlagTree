@@ -57,16 +57,16 @@ def test_vectorized_rope_evaluator_preserves_packed_physical_layout():
         module, {"value": value, "cos": cos, "sin": sin}
     )[0]
 
-    scalar_value = value.reshape(1, 2, 16)
-    scalar_cos = cos.reshape(1, 1, 16).to(torch.bfloat16)
-    scalar_sin = sin.reshape(1, 1, 16).to(torch.bfloat16)
+    scalar_value = value.reshape(1, 2, 16).float()
+    scalar_cos = cos.reshape(1, 1, 16).float()
+    scalar_sin = sin.reshape(1, 1, 16).float()
     half = scalar_value.shape[-1] // 2
     rotated = torch.cat(
         (-scalar_value[..., half:], scalar_value[..., :half]), dim=-1
     )
     expected = (
         scalar_value * scalar_cos + rotated * scalar_sin
-    ).reshape(1, 2, 2, 8)
+    ).to(value.dtype).reshape(1, 2, 2, 8)
     torch.testing.assert_close(actual, expected)
 
 

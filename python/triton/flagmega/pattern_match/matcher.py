@@ -5,18 +5,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
 import weakref
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.model import IRModule, Node
 from triton.flagmega.pattern_match.call_pattern import CallPattern
-from triton.flagmega.pattern_match.op_pattern import OpPattern
 from triton.flagmega.pattern_match.or_pattern import OrPattern
 from triton.flagmega.pattern_match.options import MatchOptions
 from triton.flagmega.pattern_match.pattern import Pattern
 from triton.flagmega.pattern_match.result import MatchResult
 from triton.flagmega.pattern_match.vargs_pattern import VArgsPattern
+from triton.flagmega.pattern_match.unary_chain_pattern import UnaryChainPattern
 
 
 @dataclass
@@ -97,8 +96,23 @@ def _match(
     if pattern.user_count is not None and _cached_user_counts(module).get(node.id, 0) != pattern.user_count:
         return False
     previous = scope.matches.get(pattern, _MISSING)
-    if previous is not _MISSING:
+    if previous is not _MISSING and not isinstance(pattern, UnaryChainPattern):
         return _same_value(previous, node)
+
+    if isinstance(pattern, UnaryChainPattern):
+        current, path = node, []
+        while True:
+            branch = scope.clone()
+            if _match(current, pattern.terminal, module, branch, options):
+                if not branch.capture(pattern, tuple(path)):
+                    return False
+                scope.matches = branch.matches
+                return True
+            if (len(current.inputs) != 1 or current.id in {value.id for value in path}
+                    or not _match(current, pattern.step, module, _MatchScope(), options)):
+                return False
+            path.append(current)
+            current = module.node_map[current.inputs[0]]
 
     if isinstance(pattern, OrPattern):
         for alternative in (pattern.lhs, pattern.rhs):

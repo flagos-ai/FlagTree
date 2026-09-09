@@ -164,7 +164,9 @@ def test_partial_microkernel_indexes_only_within_rebased_head():
     source = TritonTemplateRegistry().render_kernel(implementation, {}).source
 
     compile(source, "paged_attention_partial.py", "exec")
-    assert "query + dimension" in source
+    assert "query + query_offset" in source
+    assert "(dimension // query_lanes) * query_dim_stride" in source
+    assert "partial_accumulator + dimension * accumulator_dim_stride" in source
     assert "query + head * head_dim" not in source
     assert "partial_index = 0" in source
 

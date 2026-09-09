@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from math import prod
+from math import isfinite
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRVerificationError
@@ -25,7 +26,6 @@ from triton.flagmega.ir.bufferization import (
     MemoryAllocationScope,
     MemorySharingScope,
     MemSpan,
-    PhysicalAllocation,
     PhysicalBuffer,
 )
 from triton.flagmega.ir.model import (
@@ -53,7 +53,10 @@ from triton.flagmega.passes.tir.bufferize.call_input_ownership import non_consum
 from triton.flagmega.passes.tir.bufferize.alignment import (
     transfer_source_alignment_requirements,
 )
-from triton.flagmega.passes.tir.bufferize.sat_allocator import BufferLifetime, SATBufferAllocator
+from triton.flagmega.passes.tir.bufferize.allocation import BufferLifetime
+from triton.flagmega.passes.tir.bufferize.allocation_session import AllocationSession
+from triton.flagmega.ir.bufferization.allocation_record import AllocationRecord
+from triton.flagmega.passes.tir.bufferize.readonly_groups import ReadonlyGroupResolver
 from triton.flagmega.passes.tir.shared_workspace import (
     shared_workspace_buffer_id,
 )
@@ -66,6 +69,13 @@ class BufferizationOptions:
     readonly_data: str = "rdata"
     solver_time_seconds: float = 30.0
     block_local: str | None = None
+    optimization_level: str = "optimized"
+
+    def __post_init__(self):
+        if self.optimization_level not in {"fast", "optimized"}:
+            raise ValueError("Bufferization optimization_level must be 'fast' or 'optimized'.")
+        if not isfinite(self.solver_time_seconds) or self.solver_time_seconds <= 0:
+            raise ValueError("Bufferization solver_time_seconds must be finite and positive.")
 
     @classmethod
     def generic(cls, *, alignment: int = 256) -> BufferizationOptions:
@@ -77,7 +87,7 @@ class BufferizationOptions:
         return cls((
             MemorySpace(
                 "workspace", "device", alignment, maximum,
-                AllocationStrategy.SAT, AllocationPolicy.GRANULARITY_ALIGNED,
+                AllocationStrategy.REUSE, AllocationPolicy.GRANULARITY_ALIGNED,
                 MemoryAllocationScope.FUNCTION, MemorySharingScope.BLOCK,
             ),
             MemorySpace(
@@ -100,7 +110,8 @@ class BufferizationOptions:
 class BufferPlanner:
     """Build a MemSpan-based buffer plan without mutating semantic TIR nodes."""
 
-    def __init__(self, module: IRModule, options: BufferizationOptions, *, reuse_preferences=None) -> None:
+    def __init__(self, module: IRModule, options: BufferizationOptions, *, reuse_preferences=None,
+                 allocation_session=None) -> None:
         self.module = module
         self.options = options
         self.reuse_preferences = reuse_preferences or {}
@@ -110,22 +121,26 @@ class BufferPlanner:
             self.rdata_space = spaces[options.readonly_data]
         except KeyError as error:
             raise IRVerificationError(f"Missing required buffer memory space {error.args[0]!r}.") from error
-        if self.workspace_space.strategy is not AllocationStrategy.SAT:
-            raise IRVerificationError("Workspace memory must use SAT allocation.")
+        if not self.workspace_space.supports_lifetime_reuse:
+            raise IRVerificationError("Workspace memory must support lifetime reuse.")
         if self.rdata_space.strategy is not AllocationStrategy.LINEAR:
             raise IRVerificationError("Readonly data memory must use linear allocation.")
         self.function_pool_spaces = {
             value.name: value
             for value in options.memory_spaces
-            if value.strategy is AllocationStrategy.SAT
+            if value.supports_lifetime_reuse
             and value.allocation_scope is MemoryAllocationScope.FUNCTION
             and value.kind != "shared"
         }
         if self.workspace_space.name not in self.function_pool_spaces:
             raise IRVerificationError(
-                "Default workspace must be a non-shared function-scoped SAT pool."
+                "Default workspace must be a non-shared function-scoped lifetime pool."
             )
-        self.allocator = SATBufferAllocator(maximum_time_seconds=options.solver_time_seconds)
+        self.allocator = allocation_session or AllocationSession(options)
+        if (self.allocator.optimization_level != options.optimization_level
+                or self.allocator.solver_time_seconds != options.solver_time_seconds):
+            raise IRVerificationError("Allocation session does not match bufferization options.")
+        self.allocation_records = []
         self.shared_space = spaces.get("shared")
         self.alias_analysis = AliasAnalysis()
         self.non_consumable_parameters = non_consumable_parameters(module)
@@ -176,6 +191,8 @@ class BufferPlanner:
             entry_outputs=tuple((node_id, self.bindings[node_id]) for node_id in entry.outputs),
             allocator=self.allocator.name,
             default_workspace=self.workspace_space.name,
+            optimization_level=self.options.optimization_level,
+            allocation_records=tuple(self.allocation_records),
         )
 
     def _plan_prim_function_shared_workspaces(self) -> None:
@@ -194,8 +211,8 @@ class BufferPlanner:
             raise IRVerificationError(
                 "Selected microkernel shared workspaces have no 'shared' memory space."
             )
-        if self.shared_space.strategy is not AllocationStrategy.SAT:
-            raise IRVerificationError("Shared memory must use SAT allocation.")
+        if not self.shared_space.supports_lifetime_reuse:
+            raise IRVerificationError("Shared memory must support lifetime allocation.")
 
         for function, buffers in functions:
             lifetimes = tuple(
@@ -213,6 +230,7 @@ class BufferPlanner:
                 for value in buffers
             )
             allocated = self.allocator.allocate(lifetimes, self.shared_space)
+            self._record_allocation(function.name, self.shared_space.name, allocated)
             offsets = allocated.offset_map
             for value, lifetime in zip(buffers, lifetimes):
                 physical = PhysicalBuffer(
@@ -266,6 +284,7 @@ class BufferPlanner:
         grouped: dict[str, list[tuple[object, Mapping[str, object]]]] = {}
         group_order: list[str] = []
         ungrouped = []
+        group_resolver = ReadonlyGroupResolver(self.module)
         for node in nodes:
             hint = node.metadata.get("rdata_group")
             if hint is None:
@@ -277,7 +296,7 @@ class BufferPlanner:
                     stage=self.module.stage,
                     node_id=node.id,
                 )
-            name = str(hint["name"])
+            name = group_resolver.name_for(node, str(hint["name"]))
             if name not in grouped:
                 grouped[name] = []
                 group_order.append(name)
@@ -487,6 +506,9 @@ class BufferPlanner:
                     )
                 self.bindings[node.id] = ids
                 continue
+            if node.op == "tir.ref_slice":
+                self._plan_ref_slice(function, node)
+                continue
             if node.op in {"distributed.sharded_view", "tir.buffer_view"}:
                 if len(node.inputs) != 1 or len(self.bindings[node.inputs[0]]) != 1:
                     raise IRVerificationError(
@@ -688,6 +710,8 @@ class BufferPlanner:
             )
             for name, space in self.function_pool_spaces.items()
         }
+        for name, result in allocation_results.items():
+            self._record_allocation(function.name, name, result)
         offsets = {
             allocation_id: offset
             for result in allocation_results.values()
@@ -1083,7 +1107,7 @@ class BufferPlanner:
         }
         memory_pools = []
         for pool in callee_plan.memory_pools:
-            if not pool.scope_bytes:
+            if not pool.requires_binding:
                 continue
             if pool.memory_space not in self.function_pool_spaces:
                 raise IRVerificationError(
@@ -1533,12 +1557,50 @@ class BufferPlanner:
         if not isinstance(logical_type(field_type), RefType):
             return None
         candidates = [
-            self.bindings[input_id] for input_id in inputs
-            if isinstance(logical_type(self.module.node_map[input_id].type), RefType)
+            input_id for input_id in inputs if isinstance(logical_type(self.module.node_map[input_id].type), RefType)
         ]
         if len(candidates) != 1:
             raise IRVerificationError("A Ref result requires exactly one Ref operand.")
-        return candidates[0]
+        source = candidates[0]
+        if logical_type(self.module.node_map[source].type) != logical_type(field_type):
+            raise IRVerificationError(
+                "A Ref identity result must preserve its input type; use an explicit reference view.")
+        return self.bindings[source]
+
+    def _plan_ref_slice(self, function, node):
+        from math import gcd
+        from triton.flagmega.ir.dim_expr import DimVar, dim
+
+        source_id, index_id = node.inputs
+        source_type = self.module.node_map[source_id].type
+        index = self.module.node_map[index_id]
+        length = int(node.attrs["length"])
+        extent = source_type.fields[0][1].shape[0].fixed_value
+        offset_bindings = ()
+        if index.op in {"builtin.scalar_const", "tir.scalar_const"}:
+            coordinate = dim(int(index.attrs["value"]))
+        else:
+            bound = self.bindings[index_id]
+            if len(bound) != 1 or self.descriptors[bound[0]].storage != "scalar":
+                raise IRVerificationError("RefSlice index requires a scalar buffer binding.", node_id=node.id)
+            symbol = "ref_index_" + bound[0].encode("utf-8").hex()
+            coordinate = DimVar(symbol, 0, extent - length)
+            offset_bindings = ((symbol, bound[0]), )
+        views = []
+        leaves = _leaf_types(node.id, node.type)
+        for source_buffer_id, (buffer_id, value_type, field) in zip(self.bindings[source_id], leaves, strict=True):
+            source = self.descriptors[source_buffer_id]
+            shape = _maximum_shape(value_type, self.module.stage, node.id)
+            row_bytes = source.strides[0] * source.dtype.itemsize
+            view = source.subview(buffer_id, dtype=source.dtype, shape=shape, strides=source.strides,
+                                  byte_offset=coordinate * row_bytes, byte_size=length * row_bytes,
+                                  alignment=gcd(source.alignment, row_bytes), source_node=node.id, field=field,
+                                  role="reference_view", offset_bindings=offset_bindings)
+            self.descriptors[buffer_id] = view
+            self.alias_analysis.add_alias(buffer_id, source_buffer_id, byte_offset=coordinate * row_bytes,
+                                          nbytes=length * row_bytes, kind=AliasKind.VIEW)
+            views.append(buffer_id)
+        self.bindings[node.id] = tuple(views)
 
     def _output_leaf_ids(self, function, get_items):
         result = set()
@@ -1735,6 +1797,13 @@ class BufferPlanner:
         self._physical_serial += 1
         return value
 
+    def _record_allocation(self, function, space, result):
+        self.allocation_records.append(AllocationRecord(
+            function, space, self.allocator.name, result.status,
+            tuple((objective.name, objective.status, objective.value, objective.best_bound)
+                  for objective in result.objectives),
+        ))
+
     @staticmethod
     def _rdata_key(node):
         return node.id if node.op == "builtin.const_asset" else str(
@@ -1747,15 +1816,19 @@ def plan_buffers(
     *,
     alignment: int = 256,
     options: BufferizationOptions | None = None,
+    allocation_session: AllocationSession | None = None,
 ) -> BufferPlan:
     from .reuse_preferences import collect_reuse_preferences, dominates_memory_schedule
 
     resolved_options = options or BufferizationOptions.generic(alignment=alignment)
-    baseline = BufferPlanner(module, resolved_options).run()
+    session = allocation_session or AllocationSession(resolved_options)
+    baseline = BufferPlanner(module, resolved_options, allocation_session=session).run()
+    if resolved_options.optimization_level == "fast":
+        return baseline
     preferences = collect_reuse_preferences(module, baseline)
     if not preferences:
         return baseline
-    candidate = BufferPlanner(module, resolved_options, reuse_preferences=preferences).run()
+    candidate = BufferPlanner(module, resolved_options, reuse_preferences=preferences, allocation_session=session).run()
     # Both alternatives are ordinary verified SAT placements. Select only a
     # Pareto improvement in synchronization and pool size; solver failures
     # remain errors, and all surviving hazards are materialized normally.

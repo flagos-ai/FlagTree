@@ -16,6 +16,7 @@ COLORS = {"native_vllm": "#556579", "baseline": "#c47725", "scheduled": "#247da0
           "chat_cli": "#8252b3"}
 CHARTS = (
     ("decode_latency.svg", "decode_median_ms", "Decode step latency (lower is better)", "ms/token"),
+    ("decode_throughput.svg", "decode_tokens_per_second", "Decode throughput (higher is better)", "tokens/s"),
     ("request_throughput.svg", "request_tokens_per_second", "Request throughput incl. prefill (higher is better)", "tokens/s"),
 )
 
@@ -66,6 +67,8 @@ def aggregate(paths):
             row["variants"][label] = {
                 "decode_median_ms": statistics.median(decode),
                 "decode_p95_ms": decode[min(len(decode)-1, int(.95 * len(decode)))],
+                "decode_tokens_per_second": statistics.median(
+                    len(run["decode_step_ms"]) * 1000 / sum(run["decode_step_ms"]) for run in runs),
                 "ttft_median_ms": statistics.median(run["ttft_ms"] for run in runs),
                 "request_tokens_per_second": statistics.median(run["output_tokens_per_second"] for run in runs),
                 "request_e2e_median_ms": statistics.median(run["e2e_ms"] for run in runs),
@@ -105,6 +108,8 @@ def chart(rows, metric, title, unit):
              f'<text x="{left}" y="64" font-size="14">BF16 / H800 / batch 1 / {output_tokens} output tokens / host-visible timing</text>']
     boundary = ("Decode intervals exclude the first output token; not end-to-end request latency."
                 if metric == "decode_median_ms" else
+                "Median per-request decode tokens / decode time; excludes prefill and the first output token."
+                if metric == "decode_tokens_per_second" else
                 "Output tokens / complete request time, including prefill; not inverse decode latency.")
     parts.append(f'<text x="{left}" y="89" font-size="14">{escape(boundary)}</text>')
     if has_cli:

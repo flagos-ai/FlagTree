@@ -11,6 +11,8 @@ from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.bufferization.mem_span import MemSpan
 from triton.flagmega.ir.bufferization.memory import MemorySharingScope
 from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
+from triton.flagmega.ir.dim_expr import DimExpr, DimVar
+from triton.flagmega.ir.types import DType
 from triton.flagmega.ir.bufferization.plan import (
     BUFFER_PLAN_SCHEMA,
     LEGACY_BUFFER_PLAN_SCHEMA,
@@ -58,6 +60,36 @@ def _parse_buffer_plan(data: Mapping) -> BufferPlan:
     return plan
 
 
+def _verify_offset_bindings(descriptor, buffers, functions, scope_values):
+    symbols = set()
+    pending = [descriptor.mem_span.start]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, DimVar):
+            symbols.add(value.symbol)
+        elif isinstance(value, DimExpr):
+            pending.extend(value.operands)
+    bindings = dict(descriptor.offset_bindings)
+    if symbols != set(bindings):
+        raise IRVerificationError(f"Buffer {descriptor.id!r} offset bindings must exactly bind its MemSpan symbols.")
+    if not bindings:
+        return
+    function = functions.get(descriptor.function)
+    if function is None:
+        raise IRVerificationError(f"Buffer {descriptor.id!r} offset binding has no owning function.")
+    if descriptor.function not in scope_values:
+        scope_values[descriptor.function] = {value for _, values in function.values for value in values}
+    local_values = scope_values[descriptor.function]
+    for symbol, value in bindings.items():
+        scalar = buffers.get(value)
+        if (scalar is None or scalar.storage != "scalar" or scalar.shape
+                or scalar.dtype not in {DType.INT32, DType.INT64}):
+            raise IRVerificationError(
+                f"Buffer {descriptor.id!r} offset binding {symbol!r} requires an integer scalar buffer.")
+        if value not in local_values or scalar.function not in {None, descriptor.function}:
+            raise IRVerificationError(f"Buffer {descriptor.id!r} offset binding {symbol!r} is outside its function.")
+
+
 def verify_buffer_plan(module: IRModule) -> BufferPlan:
     identity = id(module)
     cached = _VERIFIED_BUFFER_PLANS.get(identity)
@@ -87,13 +119,13 @@ def verify_buffer_plan(module: IRModule) -> BufferPlan:
         )
     workspace_space = plan.workspace_memory_space
     if (
-        workspace_space.strategy.value != "sat"
+        not workspace_space.supports_lifetime_reuse
         or workspace_space.allocation_scope.value != "function"
         or workspace_space.kind == "shared"
     ):
         raise IRVerificationError(
             f"Default workspace {workspace_space.name!r} must be a non-shared "
-            "function-scoped SAT memory space."
+            "function-scoped lifetime-managed memory space."
         )
     if len(buffers) != len(plan.buffers):
         raise IRVerificationError("Buffer plan logical ids must be unique.", stage=module.stage)
@@ -111,8 +143,13 @@ def verify_buffer_plan(module: IRModule) -> BufferPlan:
     ]
     if len(kernel_call_ids) != len(set(kernel_call_ids)):
         raise IRVerificationError("Kernel-call workspace ABI ids must be unique.", stage=module.stage)
-    if plan.allocator != "ortools-cp-sat/no-overlap-2d":
+    expected_allocator = {"optimized": "ortools-cp-sat/no-overlap-2d", "fast": "first-fit/lifetime"}
+    if plan.optimization_level not in expected_allocator:
+        raise IRVerificationError(f"Unsupported buffer optimization level {plan.optimization_level!r}.")
+    if plan.allocator != expected_allocator[plan.optimization_level]:
         raise IRVerificationError(f"Unsupported buffer allocator {plan.allocator!r}.")
+    if any(record.allocator != plan.allocator for record in plan.allocation_records):
+        raise IRVerificationError("Buffer allocation records do not match the selected allocator.")
 
     for allocation in plan.physical_buffers:
         try:
@@ -134,7 +171,7 @@ def verify_buffer_plan(module: IRModule) -> BufferPlan:
         if allocation.start.maximum + allocation.size.maximum > space.maximum_bytes:
             raise IRVerificationError(f"Allocation {allocation.id!r} exceeds {space.name!r} capacity.")
         if (
-            space.strategy.value == "sat"
+            space.supports_lifetime_reuse
             and space.allocation_scope.value == "function"
             and space.kind != "shared"
         ) and (
@@ -159,8 +196,10 @@ def verify_buffer_plan(module: IRModule) -> BufferPlan:
                 f"Shared allocation {allocation.id!r} has no valid PrimFunction lifetime."
             )
 
+    scope_values = {}
     for descriptor in plan.buffers:
         span = descriptor.mem_span
+        _verify_offset_bindings(descriptor, buffers, functions, scope_values)
         if span.start.minimum is None or span.start.minimum < 0:
             raise IRVerificationError(f"Buffer {descriptor.id!r} has invalid physical bounds.")
         if span.size.minimum is None or span.size.minimum < 0:
@@ -268,7 +307,7 @@ def verify_buffer_plan(module: IRModule) -> BufferPlan:
 def _verify_nonoverlap(plan: BufferPlan) -> None:
     values = [
         value for value in plan.physical_buffers
-        if plan.memory_space_map[value.memory_space].strategy.value == "sat"
+        if plan.memory_space_map[value.memory_space].supports_lifetime_reuse
     ]
     for index, lhs in enumerate(values):
         for rhs in values[index + 1:]:
@@ -313,6 +352,21 @@ def _verify_function_abis(module: IRModule, plan: BufferPlan) -> None:
         _verify_typed_bindings(module, abi.parameters, buffers, f"@{function.name} parameter")
         _verify_typed_bindings(module, abi.outputs, buffers, f"@{function.name} result")
         _verify_typed_bindings(module, abi.values, buffers, f"@{function.name} value")
+        parameter_spans = {
+            buffers[value].physical_id: buffers[value].mem_span
+            for _, values in abi.parameters
+            for value in values
+        }
+        for node_id, values in abi.outputs:
+            for value, is_reference in zip(values, _reference_leaf_flags(module.node_map[node_id].type), strict=True):
+                if not is_reference:
+                    continue
+                span = buffers[value].mem_span
+                parent = parameter_spans.get(span.buffer.id)
+                if parent is not None and not span.must_alias(parent):
+                    raise IRVerificationError(
+                        f"@{function.name} reference subspan result {value!r} cannot be represented by the identity-only "
+                        "result alias ABI. Consume the view within its function or pass it as an argument.")
         _verify_explicit_memory_placements(module, plan, abi.values)
         _verify_inplace_memory_domains(module, plan, abi.values)
         if len(dict(abi.values)) != len(abi.values):
@@ -410,7 +464,7 @@ def _verify_function_abis(module: IRModule, plan: BufferPlan) -> None:
             expected_pools = {
                 pool.memory_space: pool
                 for pool in callee.memory_pools
-                if pool.scope_bytes
+                if pool.requires_binding
             }
             if set(call.memory_pool_map) != set(expected_pools):
                 raise IRVerificationError(
@@ -502,7 +556,7 @@ def _verify_explicit_memory_placements(module, plan, values) -> None:
         space = spaces.get(name)
         if (
             space is None
-            or space.strategy.value != "sat"
+            or not space.supports_lifetime_reuse
             or space.allocation_scope.value != "function"
             or space.kind == "shared"
         ):
@@ -547,7 +601,7 @@ def _verify_inplace_memory_domains(module, plan, values) -> None:
             space = spaces.get(descriptor.storage)
             if (
                 space is not None
-                and space.strategy.value == "sat"
+                and space.supports_lifetime_reuse
                 and space.allocation_scope.value == "function"
                 and space.kind != "shared"
                 and (space.kind != default.kind or space.sharing_scope is not default.sharing_scope)
@@ -598,6 +652,12 @@ def _verify_typed_bindings(module, values, buffers, label) -> None:
                     f"{label} {node_id!r} buffer {buffer_id!r} does not match "
                     "its logical IR type."
                 )
+
+
+def _reference_leaf_flags(value_type):
+    if isinstance(value_type, TupleType):
+        return tuple(flag for field in value_type.fields for flag in _reference_leaf_flags(field))
+    return (isinstance(value_type, RefType),) * len(_buffer_leaf_types(value_type))
 
 
 def _buffer_leaf_types(value_type):

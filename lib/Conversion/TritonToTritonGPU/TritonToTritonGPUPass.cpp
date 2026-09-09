@@ -256,6 +256,11 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
         continue;
       }
 
+      // Scalar results have no encoding (in particular rank-one reductions).
+      if (llvm::none_of(op->getResultTypes(), [](Type type) {
+            return isa<RankedTensorType>(type);
+          }))
+        continue;
       Attribute dstEncoding = inferDstEncoding(op, info.encoding);
       if (!dstEncoding)
         continue;

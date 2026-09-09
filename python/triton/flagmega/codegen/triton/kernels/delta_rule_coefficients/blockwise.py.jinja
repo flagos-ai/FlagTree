@@ -1,0 +1,64 @@
+# flagmega-kernel: delta_rule_coefficients/blockwise
+@triton.jit
+def _flagmega_delta_rule_coefficients_tile(key, beta):
+    row = tl.arange(0, 64)
+    col = tl.arange(0, 64)
+    matrix = tl.dot(key, tl.trans(key)) * beta[:, None]
+    matrix = tl.where(row[:, None] > col[None, :], matrix, 0.0).to(tl.float16).to(tl.float32)
+    matrix = tl.where(row[:, None] == col[None, :], 1.0, matrix)
+    same_group = row[:, None] // 8 == col[None, :] // 8
+    for pivot in tl.static_range(7):
+        factor = -tl.sum(tl.where(same_group & (col[None, :] % 8 == pivot), matrix, 0.0), 1)
+        source_row = tl.broadcast_to((row // 8 * 8 + pivot)[:, None], (64, 64))
+        source = tl.gather(matrix, source_row, 0)
+        update = same_group & (row[:, None] % 8 > pivot)
+        matrix = tl.where(update & (col[None, :] % 8 < pivot), tl.fma(factor[:, None], source, matrix), matrix)
+        matrix = tl.where(update & (col[None, :] % 8 == pivot), factor[:, None], matrix)
+    matrix = matrix.to(tl.float16)
+    for level in tl.static_range(3):
+        width = 16 << level
+        half = width // 2
+        same_block = row[:, None] // width == col[None, :] // width
+        top = row[:, None] % width < half
+        left = col[None, :] % width < half
+        a = tl.where(same_block & top & left, matrix, 0.0).to(tl.float16)
+        d = tl.where(same_block & ~top & ~left, matrix, 0.0).to(tl.float16)
+        c = tl.where(same_block & ~top & left, matrix, 0.0).to(tl.float16)
+        product = (-tl.dot(d, c)).to(tl.float16)
+        if width == 64:
+            p0 = tl.where(col[None, :] < 16, product, 0.0).to(tl.float16)
+            p1 = tl.where(col[None, :] >= 16, product, 0.0).to(tl.float16)
+            lower = (tl.dot(p0, a).to(tl.float16) + tl.dot(p1, a).to(tl.float16)).to(tl.float16)
+        else:
+            lower = tl.dot(product, a).to(tl.float16)
+        matrix = tl.where(same_block & ~top & left, lower, matrix)
+    return (matrix.to(tl.float32) * beta[None, :]).to(tl.bfloat16)
+
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "delta_rule_coefficients" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_row = tl.arange(0, 64)
+    _fm_col = tl.arange(0, 64)
+    _fm_feature = tl.arange(0, {{ call.key_tile }})
+    for _fm_work in range({{ call.blocks }} * {{ call.heads }}):
+        _fm_block = _fm_work // {{ call.heads }}
+        _fm_head = _fm_work % {{ call.heads }}
+        _fm_tokens = _fm_block * {{ call.block_size }} + _fm_row
+        _fm_active = (_fm_row < {{ call.block_size }}) & (_fm_tokens < {{ call.tokens }})
+        _fm_key = tl.load({{ call.key }} + ({{ call.key_offset }}),
+                          _fm_active[:, None] & (_fm_feature[None, :] < {{ call.key_dim }}), other=0.0)
+        _fm_beta = tl.load({{ call.beta }} + ({{ call.beta_offset }}), _fm_active, other=0.0)
+        _fm_coefficients = _flagmega_delta_rule_coefficients_tile(_fm_key, _fm_beta)
+        _fm_values = tl.where(_fm_active[:, None] & _fm_active[None, :], _fm_coefficients, 0.0)
+        tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_values,
+                  (_fm_row[:, None] < {{ call.block_size }}) & (_fm_col[None, :] < {{ call.block_size }})
+                  & ({{ call.writer_active }}))
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

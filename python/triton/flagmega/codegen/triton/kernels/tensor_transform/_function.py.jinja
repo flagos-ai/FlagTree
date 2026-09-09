@@ -1,0 +1,19 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == transform_family %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+        offsets = start + tl.arange(0, {{ call.tile }})
+        mask = (offsets < {{ call.capacity }}) & ({{ call.active }})
+        value = tl.load(
+            {{ call.source }} + ({{ call.source_offset }}),
+            mask=mask & ({{ call.input_active }}),
+            other={{ call.pad_value }},
+        )
+        tl.store({{ call.result }} + ({{ call.result_offset }}), value, mask=mask)
+
+
+{% endif %}
+{% endfor %}

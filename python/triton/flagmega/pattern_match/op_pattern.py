@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Callable, Mapping
 
-from triton.flagmega.ir.model import Node
+from triton.flagmega.ir.model import Node, canonical_attributes
 from triton.flagmega.pattern_match.pattern import Pattern
 
 
@@ -24,7 +24,10 @@ class OpPattern(Pattern):
             raise ValueError("OpPattern requires a non-empty op name.")
         self.op_name = op_name
         self.condition = condition or (lambda node: True)
-        self.attributes = dict(attributes or {})
+        # Node recursively freezes lists/mappings. Compare constraints in the
+        # same representation (e.g. VectorType lanes), and snapshot caller-
+        # owned nested containers so later edits cannot mutate a pattern.
+        self.attributes = canonical_attributes(attributes or {})
 
     def match_leaf(self, node: Node) -> bool:
         return (

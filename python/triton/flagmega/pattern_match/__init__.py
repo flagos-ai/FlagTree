@@ -13,6 +13,7 @@ from triton.flagmega.pattern_match.pattern import ExprPattern, Pattern, wildcard
 from triton.flagmega.pattern_match.result import MatchResult
 from triton.flagmega.pattern_match.vargs_pattern import VArgsPattern, is_vargs, is_vargs_repeat
 from triton.flagmega.pattern_match.var_pattern import VarPattern, is_var
+from triton.flagmega.pattern_match.unary_chain_pattern import UnaryChainPattern, is_unary_chain
 
 __all__ = [
     "CallPattern",
@@ -26,12 +27,14 @@ __all__ = [
     "Pattern",
     "VArgsPattern",
     "VarPattern",
+    "UnaryChainPattern",
     "find_matches",
     "is_alt",
     "is_call",
     "is_const",
     "is_op",
     "is_var",
+    "is_unary_chain",
     "is_vargs",
     "is_vargs_repeat",
     "try_match",

@@ -13,6 +13,7 @@ from triton.flagmega.rules.neutral.fold_pack_bitcast import fold_pack_bitcast_ru
 from triton.flagmega.rules.neutral.fold_pack_reshape import fold_pack_reshape_rule
 from triton.flagmega.rules.neutral.fold_pack_transpose import fold_pack_transpose_rule
 from triton.flagmega.rules.neutral.unpack_to_bitcast import unpack_to_bitcast_rule
+from triton.flagmega.rules.neutral.fold_pointwise_padded_slice import fold_pointwise_padded_slice_rule
 
 
 def auto_packing_neutral_rules() -> tuple[RewriteRule, ...]:
@@ -37,6 +38,7 @@ def post_boundary_auto_packing_neutral_rules() -> tuple[RewriteRule, ...]:
 
     return (
         unpack_to_bitcast_rule(),
+        fold_pointwise_padded_slice_rule(),
         *auto_packing_neutral_rules(),
     )
 

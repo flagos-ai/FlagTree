@@ -13,17 +13,17 @@ from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 
 
-def _module(round_before_scale):
-    config = PagedAttentionStateConfig(1, 1, 64, block_size=4, num_blocks=2, lanes=8)
+def _module(round_before_scale, rotary_dim=None, head_dim=64):
+    config = PagedAttentionStateConfig(1, 1, head_dim, block_size=4, num_blocks=2, lanes=8)
 
     class Graph(fm.Module):
         def forward(self):
-            q = self.input("q", fm.tensor_type("bfloat16", (1, 2, 64)))
-            k = self.input("k", fm.tensor_type("bfloat16", (1, 1, 64)))
+            q = self.input("q", fm.tensor_type("bfloat16", (1, 2, head_dim)))
+            k = self.input("k", fm.tensor_type("bfloat16", (1, 1, head_dim)))
             v = self.input("v", k.type)
-            scale = self.input("scale", fm.tensor_type("bfloat16", (64,)))
+            scale = self.input("scale", fm.tensor_type("bfloat16", (head_dim,)))
             bias = self.input("bias", scale.type)
-            cos = self.input("cos", fm.tensor_type("float32", (1, 1, 64)))
+            cos = self.input("cos", fm.tensor_type("float32", (1, 1, rotary_dim or head_dim)))
             sin = self.input("sin", cos.type)
             state = self.input("state", config.ref_type)
             layer = fm.F.builtin.scalar_const(fm.tensor_type("int32", ()), 0, name="layer")
@@ -35,6 +35,7 @@ def _module(round_before_scale):
                 k_axis=-1, k_epsilon=1e-6, k_use_mean=False,
                 q_round_before_scale=round_before_scale,
                 k_round_before_scale=round_before_scale,
+                rotary_dim=rotary_dim,
                 qkv_layout=("seq", "head", "dim"), attention_layout=("seq", "head", "dim"),
                 name="qkv",
             )
@@ -46,12 +47,14 @@ def _module(round_before_scale):
 
 
 @pytest.mark.parametrize("round_before_scale", [False, True])
+@pytest.mark.parametrize("head_dim,rotary_dim", [(64, None), (64, 16), (64, 48), (256, 64)])
 @pytest.mark.parametrize("cosine,sine", [(1.0, 0.0), (0.75, 0.625)])
-def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, round_before_scale, cosine, sine):
+def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, round_before_scale, cosine, sine, rotary_dim, head_dim):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
-    source, config = _module(round_before_scale)
+    source, config = _module(round_before_scale, rotary_dim, head_dim)
+    extent = rotary_dim or head_dim
     compiled = Compiler().compile(source).module
     artifact = write_artifact(compiled, tmp_path / "qkv", target="nvidia-sm90", emit_executable=True)
     prototype = load(artifact)
@@ -60,14 +63,14 @@ def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, round_before
     generator = torch.Generator().manual_seed(712)
     values = {
         name: torch.randn(shape, generator=generator).to(device="cuda", dtype=torch.bfloat16)
-        for name, shape in (("q", (1, 2, 64)), ("k", (1, 1, 64)), ("v", (1, 1, 64)), ("scale", (64,)))
+        for name, shape in (("q", (1, 2, head_dim)), ("k", (1, 1, head_dim)), ("v", (1, 1, head_dim)), ("scale", (head_dim,)))
     }
     values["bias"] = torch.zeros_like(values["scale"])
-    values["cos"] = torch.full((1, 1, 64), cosine, device="cuda")
-    values["sin"] = torch.full((1, 1, 64), sine, device="cuda")
+    values["cos"] = torch.full((1, 1, extent), cosine, device="cuda")
+    values["sin"] = torch.full((1, 1, extent), sine, device="cuda")
     state = create_paged_attention_state(config, device="cuda:0")
     state.kv_caches.zero_()
-    output = torch.empty((1, 2, 64), dtype=torch.bfloat16, device="cuda")
+    output = torch.empty((1, 2, head_dim), dtype=torch.bfloat16, device="cuda")
     function = runtime.buffer_plan.function_map[compiled.entry]
     bound = {}
     for name, buffers in function.parameters:
@@ -91,10 +94,12 @@ def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, round_before
         unit = value.float() * torch.rsqrt(value.float().square().mean(-1, keepdim=True) + 1e-6)
         if round_before_scale:
             unit = unit.bfloat16().float()
-        normalized = (unit * values["scale"].float()).bfloat16()
-        rotated = torch.cat((-normalized[..., 32:], normalized[..., :32]), dim=-1)
-        return normalized * values["cos"].bfloat16() + rotated * values["sin"].bfloat16()
+        normalized = (unit * values["scale"].float()).bfloat16().float()
+        prefix = normalized[..., :extent]
+        rotated = torch.cat((-prefix[..., extent // 2:], prefix[..., :extent // 2]), dim=-1)
+        result = prefix * values["cos"].float() + rotated * values["sin"].float()
+        return torch.cat((result, normalized[..., extent:]), dim=-1).bfloat16()
 
     torch.testing.assert_close(output, expected(values["q"]), rtol=0, atol=0)
-    key = state.kv_caches[0, 0, 0, 0].reshape(1, 1, 64)
+    key = state.kv_caches[0, 0, 0, 0].reshape(1, 1, head_dim)
     torch.testing.assert_close(key, expected(values["k"]), rtol=0, atol=0)

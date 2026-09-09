@@ -149,9 +149,11 @@ def test_qwen3_attention_tuple_and_program_output_keep_distributed_types(tmp_pat
     ].type
     assert isinstance(qkv_type, fm.TupleType)
     assert all(isinstance(field, fm.DistributedType) for field in qkv_type.fields)
-    rotary_type = result.node_map["self_attention_rotary_embedding"].type
+    rotary, = (node for node in result.nodes if node.op == "nn.rotary_embedding")
+    rotary_type = rotary.type
     assert isinstance(rotary_type, fm.TupleType)
     assert all(isinstance(field, fm.DistributedType) for field in rotary_type.fields)
+    assert all(isinstance(field.tensor.dtype, fm.VectorType) for field in rotary_type.fields)
     fused = result.node_map["updated_state.qkv_rope_with_cache"]
     assert isinstance(fused.type, fm.TupleType)
     assert isinstance(fused.type.fields[0], fm.DistributedType)

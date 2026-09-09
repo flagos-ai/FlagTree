@@ -1,0 +1,24 @@
+# flagmega-kernel: broadcast_to/local platform=generic
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "broadcast_to" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+        _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
+        _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+{% if call.scalar_value is not none %}
+        _fm_value = {{ call.scalar_value }}
+{% else %}
+        _fm_source_ptrs = tl.broadcast_to({{ call.source }} + ({{ call.source_offset }}), ({{ call.tile }},))
+        _fm_value = tl.load(_fm_source_ptrs, mask=_fm_mask, other=0)
+{% endif %}
+        _fm_result_ptrs = tl.broadcast_to({{ call.result }} + ({{ call.result_offset }}), ({{ call.tile }},))
+        tl.store(_fm_result_ptrs, _fm_value, mask=_fm_mask & ({{ call.writer_active }}))
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

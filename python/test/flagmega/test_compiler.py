@@ -59,7 +59,7 @@ def test_compiler_completes_without_agent_and_records_defaults(tmp_path):
         "AutoDistributedPass",
         "TIRPass",
     ]
-    assert [len(report.pass_executions) for report in result.reports] == [3, 2, 8, 10, 18]
+    assert [len(report.pass_executions) for report in result.reports] == [2, 2, 8, 10, 17]
     assert {record.origin for record in result.module.selections} == {"default-policy", "ortools-cp-sat"}
     assert {point.kind for point in result.module.selection_points} == {"distribution", "packing", "tir"}
     assert (tmp_path / "final.py").is_file()
@@ -73,15 +73,18 @@ def test_compiler_completes_without_agent_and_records_defaults(tmp_path):
     assert (after / "main.py").is_file()
     assert (tmp_path / "00_TargetIndependentPass" / "Before" / "main.py").is_file()
     assert (tmp_path / "00_TargetIndependentPass" / "After" / "main.py").is_file()
-    freeze = tmp_path / "04_TIRPass" / "02_FreezeConstantIslands"
-    tuple_boxing = tmp_path / "04_TIRPass" / "06_LowerTupleBoxing"
-    lower = tmp_path / "04_TIRPass" / "08_LowerSelectedTIR"
+    lift = tmp_path / "04_TIRPass" / "02_LiftConstantParameterExpressions"
+    freeze = tmp_path / "04_TIRPass" / "03_FreezeConstantIslands"
+    tuple_boxing = tmp_path / "04_TIRPass" / "05_LowerTupleBoxing"
+    lower = tmp_path / "04_TIRPass" / "07_LowerSelectedTIR"
     canonicalize_qkv = (
-        tmp_path / "04_TIRPass" / "09_CanonicalizePackedQKVWeights"
+        tmp_path / "04_TIRPass" / "08_CanonicalizePackedQKVWeights"
     )
     select_microkernels = (
-        tmp_path / "04_TIRPass" / "11_SelectTIRMicroKernels"
+        tmp_path / "04_TIRPass" / "10_SelectTIRMicroKernels"
     )
+    assert (lift / "Before" / "main.py").is_file()
+    assert (lift / "After" / "main.py").is_file()
     assert (freeze / "After" / "main.il").is_file()
     assert (tuple_boxing / "Before" / "main.py").is_file()
     assert (tuple_boxing / "After" / "main.py").is_file()
@@ -91,14 +94,14 @@ def test_compiler_completes_without_agent_and_records_defaults(tmp_path):
     dump_entries = json.loads(
         (tmp_path / "dumps.json").read_text(encoding="utf-8")
     )
-    # Each small pass has Before/After pass-IR dumps; each large group also
-    # has Before/After pass-IR plus Before/After compile snapshots. The one
-    # PostFunctionBoundary EGraph pass additionally exposes its automatically
-    # inserted Construct/Rules/Extract manager boundaries (8 module dumps).
-    assert len(dump_entries) == (
+    # Count the outer pipeline separately from the nested fixed-point manager;
+    # producer packing may require more than one Construct/Rules/Extract cycle.
+    outer_entries = [entry for entry in dump_entries
+                     if "03_PostFunctionBoundaryPackPropagation" not in entry["relative_path"]]
+    assert len(outer_entries) == (
         2 * sum(len(report.pass_executions) for report in result.reports)
         + 4 * len(result.reports)
-        + 8
+        - 2
     )
     first_pass = result.reports[0].pass_executions[0]
     assert first_pass.name == "DecomposeComplexOps"
@@ -126,7 +129,6 @@ def test_pipeline_contains_only_implemented_pass_boundaries():
     assert groups == {
         "TargetIndependentPass": (
             "DecomposeComplexOps",
-            "FormQKVRoPEWithCache",
             "HoistCallInvariantExpressions",
         ),
         "AutoVectorizePass": ("AutoVectorize", "ApplyVectorization"),
@@ -157,10 +159,9 @@ def test_pipeline_contains_only_implemented_pass_boundaries():
         "TIRPass": (
             "FuseNormStatsApply",
             "ConstantCSE",
+            "LiftConstantParameterExpressions",
             "FreezeConstantIslands",
-            "FuseGatherReduceAddNormApply",
-            "FuseGatherReduceNormApply",
-            "FuseGatherReduceQKVRoPEWithCache",
+            "FuseDistributedOps",
             "LowerTupleBoxing",
             "ProposeTIRCandidates",
             "LowerSelectedTIR",
@@ -286,7 +287,6 @@ def test_agent_override_is_hash_bound_and_replaces_default():
     current = make_fp8_module()
     for stage_name in (
         "decompose-gdn",
-        "form-qkv-rope-with-cache",
         "propose-vectorization",
         "apply-vectorization",
             "propose-packing",
@@ -365,7 +365,6 @@ def test_cli_can_write_selection_override(tmp_path, capsys):
     current = make_fp8_module()
     for stage_name in (
         "decompose-gdn",
-        "form-qkv-rope-with-cache",
         "propose-vectorization",
         "apply-vectorization",
             "propose-packing",

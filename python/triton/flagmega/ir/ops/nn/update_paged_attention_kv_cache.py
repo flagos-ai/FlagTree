@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Write one semantic K or V slot into a paged-attention cache."""
+"""Write a semantic K or V token chunk into a paged-attention cache."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ from triton.flagmega.ir.ops.core import (
 )
 from triton.flagmega.ir.ops.nn._attention_layout import (
     normalize_attention_layout,
-    require_decode_token,
     to_seq_head_dim,
 )
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
@@ -108,8 +107,6 @@ class UpdatePagedAttentionKVCache(OpDefinition):
                 (tuple(node.attrs["layout"]).index("dim"),),
             )
         slots = to_seq_head_dim(slots, tuple(node.attrs["layout"]))
-        slots = require_decode_token(
-            slots, operation="UpdatePagedAttentionKVCache")
         state = cls.state.read(arguments)
         if not isinstance(state, PagedAttentionState):
             raise EvaluationError(

@@ -48,7 +48,7 @@ Use fresh work/results directories for each run. Omit `--compile` to reuse
 existing artifacts. The final artifact is under
 `.local/reproduce/serving/artifact/` and contains IR, rdata, a manifest, and
 generated source. The results directory contains raw requests, a summary,
-`decode_latency.svg`, and `request_throughput.svg`.
+`decode_latency.svg`, `decode_throughput.svg`, and `request_throughput.svg`.
 The accompanying [generated_kernels.py](generated_kernels.py) is the source
 reference for the validated configuration below; it does not include weights
 and cannot replace a complete artifact.
@@ -137,12 +137,12 @@ If native vLLM results were also reproduced, add
 `--native-reference "$TUTORIAL/.local/results/reproduction/validation/native_vllm.json"`
 to the benchmark for exact independent token verification, and
 `--vllm-results "$TUTORIAL/.local/results/reproduction"` to the renderer for the
-combined decode latency and request throughput charts. These options read
+combined decode latency, decode throughput, and request throughput charts. These options read
 result files, not vLLM code. The renderer rechecks prompts, full token sequences,
 environment and artifact identity before showing a cross-runtime comparison.
 
-The renderer uses the existing `decode_latency.svg` and `request_throughput.svg`
-filenames. To update both tutorial figures with all four vLLM variants plus
+The renderer writes `decode_latency.svg`, `decode_throughput.svg`, and
+`request_throughput.svg`. To update all three tutorial figures with all four vLLM variants plus
 chat CLI, run:
 
 ```sh
@@ -200,9 +200,13 @@ performance measurements.
 | 1024 | 2.797 | 2.475 | 2.299 | 1.22× | 1.08× |
 | 2048 | 2.843 | 2.606 | 2.315 | 1.23× | 1.13× |
 
-Both charts retain the four vLLM variants and add standalone chat CLI as a
+All three charts retain the four vLLM variants and add standalone chat CLI as a
 fifth series. The scheduled variant is an intermediate comparison; the serving
-ABI is not faster than that variant in every scenario. Request throughput is
+ABI is not faster than that variant in every scenario. Decode throughput is
+the median of per-request decode token counts divided by summed decode step
+times, excluding prefill and the first output token (63 decode intervals for
+64 output tokens). It is not the inverse of the pooled median decode latency.
+Request throughput is
 the median of per-request output tokens divided by complete request time,
 including prefill; it is not the inverse of decode latency. CLI uses compiled
 token-scan prefill, while vLLM uses batched prefill. CLI data were collected
@@ -210,6 +214,8 @@ separately from the earlier vLLM runs, not in a new rotated cross-runtime
 benchmark. The standalone measurement details are below.
 
 ![Measured vLLM and standalone chat CLI decode latency](figures/decode_latency.svg)
+
+![Measured vLLM and standalone chat CLI decode throughput excluding prefill](figures/decode_throughput.svg)
 
 ![vLLM and standalone chat CLI request throughput including prefill](figures/request_throughput.svg)
 
@@ -249,6 +255,6 @@ decode throughput does not. The observed tail at prompt length 128 is
 retained rather than filtered out. Decode excludes the first output token,
 which comes from prefill. Token-scan prefill is much slower than vLLM's batched
 prefill, so lower standalone decode latency is **not an end-to-end request
-speedup**. Both charts above include these standalone results alongside the
+speedup**. All three charts above include these standalone results alongside the
 previously reported vLLM measurements. Interactive chat adds template formatting
 and terminal output costs.

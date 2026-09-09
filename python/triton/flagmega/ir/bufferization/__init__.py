@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 from triton.flagmega.ir.bufferization.alias import AliasInfo, AliasKind
+from triton.flagmega.ir.bufferization.allocation_record import AllocationRecord
 from triton.flagmega.ir.bufferization.descriptor import BufferDescriptor
 from triton.flagmega.ir.bufferization.function_plan import (
     CallBufferBinding,
@@ -35,6 +36,7 @@ from triton.flagmega.ir.bufferization.synchronization import (
 
 __all__ = [
     "AllocationPolicy",
+    "AllocationRecord",
     "AllocationStrategy",
     "AliasInfo",
     "AliasKind",

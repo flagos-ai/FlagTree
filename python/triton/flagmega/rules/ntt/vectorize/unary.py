@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from triton.flagmega.ir import DType, IRModule, Node, TensorType
+from triton.flagmega.ir.ops.math.vectorized_unary import VectorizedUnary
 from triton.flagmega.rules import RewriteResult
 from triton.flagmega.rules.ntt.vectorize.base import VectorizeCandidate
 from triton.flagmega.rules.ntt.vectorize.utility import finish_vector_result, generate_axis_candidates, padding_for, prepare_packed_input, internal_metadata
@@ -12,7 +13,7 @@ from triton.flagmega.rules.ntt.vectorize.utility import finish_vector_result, ge
 
 class VectorizeUnary:
     name = "VectorizeUnary"
-    op_names = frozenset({"math.silu"})
+    op_names = frozenset(definition.op_name for definition in VectorizedUnary.scalar_definitions.values())
 
     def __init__(
         self,
@@ -25,7 +26,7 @@ class VectorizeUnary:
 
     def candidates(self, node: Node, module: IRModule) -> tuple[VectorizeCandidate, ...]:
         if (
-            node.op != "math.silu" or not node.effect.is_pure or not isinstance(node.type, TensorType)
+            node.op not in self.op_names or not node.effect.is_pure or not isinstance(node.type, TensorType)
             or node.type.dtype not in {DType.BFLOAT16, DType.FLOAT32}
         ):
             return ()
@@ -53,7 +54,7 @@ class VectorizeUnary:
             "math.vectorized_unary",
             (packed.id,),
             packed.type,
-            attrs={"unary_op": "silu"},
+            attrs={"unary_op": node.op.removeprefix("math.")},
             metadata=internal_metadata(node.id, "compute"),
         )
         return finish_vector_result(

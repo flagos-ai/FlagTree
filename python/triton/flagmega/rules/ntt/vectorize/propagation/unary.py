@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
-from triton.flagmega.ir import IRModule, Node, TensorType, VectorType
+from triton.flagmega.ir import IRModule, Node, VectorType
+from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.tensors.pack import Pack
+from triton.flagmega.ir.ops.math.vectorized_unary import VectorizedUnary
 from triton.flagmega.rules import RewriteResult, RewriteRule
 from triton.flagmega.rules.ntt.vectorize.utility import (
     propagation_helper_metadata,
@@ -14,7 +16,13 @@ from triton.flagmega.rules.ntt.vectorize.utility import (
 
 
 def _pack_unary_matches(node: Node, module: IRModule) -> bool:
-    return node.op == "tensors.pack" and module.node_map[node.inputs[0]].op == "math.silu"
+    return (node.op == "tensors.pack" and node.effect.is_pure
+            and module.node_map[node.inputs[0]].op in _scalar_ops()
+            and module.node_map[node.inputs[0]].effect.is_pure)
+
+
+def _scalar_ops():
+    return {definition.op_name for definition in VectorizedUnary.scalar_definitions.values()}
 
 
 def _pack_unary(node: Node, module: IRModule) -> RewriteResult:
@@ -41,7 +49,7 @@ def _pack_unary(node: Node, module: IRModule) -> RewriteResult:
         "math.vectorized_unary",
         (pack.id,),
         node.type,
-        attrs={"unary_op": "silu"},
+        attrs={"unary_op": scalar.op.removeprefix("math.")},
         metadata=propagation_result_metadata(
             scalar,
             node,
@@ -55,32 +63,33 @@ def _pack_unary(node: Node, module: IRModule) -> RewriteResult:
 
 
 def _unary_unpack_matches(node: Node, module: IRModule) -> bool:
-    if node.op != "math.silu":
+    if node.op not in _scalar_ops() or not node.effect.is_pure:
         return False
     source = module.node_map[node.inputs[0]]
-    return source.op == "tensors.unpack"
+    return source.op == "tensors.unpack" and source.effect.is_pure
 
 
 def _unary_unpack(node: Node, module: IRModule) -> RewriteResult:
     unpack = module.node_map[node.inputs[0]]
     vector = module.node_map[unpack.inputs[0]]
-    assert isinstance(vector.type, TensorType) and isinstance(vector.type.dtype, VectorType)
+    dtype = tensor_of(vector.type).dtype
+    assert isinstance(dtype, VectorType)
     axes = (
         tuple(int(value) for value in unpack.attrs["axes"])
         if "axes" in unpack.attrs
-        else (int(unpack.attrs["axis"]),) * len(vector.type.dtype.lanes)
+        else (int(unpack.attrs["axis"]),) * len(dtype.lanes)
     )
     compute = Node(
         f"{node.id}.propagated.compute",
         "math.vectorized_unary",
         (vector.id,),
         vector.type,
-        attrs={"unary_op": "silu"},
+        attrs={"unary_op": node.op.removeprefix("math.")},
         metadata=propagation_result_metadata(
             node,
             unpack,
             axes=axes,
-            lanes=vector.type.dtype.lanes,
+            lanes=dtype.lanes,
             rule="UnaryDevectorizePropagation",
             internal_role="propagated-compute",
         ),
@@ -95,7 +104,7 @@ def _unary_unpack(node: Node, module: IRModule) -> RewriteResult:
             node,
             unpack,
             axes=axes,
-            lanes=vector.type.dtype.lanes,
+            lanes=dtype.lanes,
             rule="UnaryDevectorizePropagation",
         ),
     )

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from triton.flagmega.runtime.scalar import validate_scalar_argument
 from pathlib import Path
 from dataclasses import dataclass
 from math import prod
@@ -287,11 +288,11 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         self._launch_external(tuple(external_arguments), stream=stream)
 
     def diagnostic_workspace(self, *, clone: bool = False) -> dict[str, object]:
-        """Return views over the default SAT pool (compatibility API).
+        """Return views over the default lifetime pool (compatibility API).
 
         Keys in the entry function are logical buffer ids.  Reusable/nested
         function buffers use ``call/path::buffer`` keys so two invocations do
-        not masquerade as one SSA value.  Because SAT allocations and call
+        not masquerade as one SSA value.  Because reusable allocations and call
         frames are reused, these are current raw bytes, not historical
         snapshots of every value at its definition point.
         """
@@ -303,7 +304,7 @@ class GeneratedTirCallGraphModule(RuntimeModule):
     def diagnostic_memory_pools(
         self, *, clone: bool = False
     ) -> dict[str, dict[str, object]]:
-        """Return typed current-value views for every runtime SAT pool.
+        """Return typed current-value views for every runtime lifetime pool.
 
         A block- or device-scoped runtime allocation has a leading physical
         scope dimension. Nested function frames remain resolved relative to
@@ -317,7 +318,7 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             space = self.buffer_plan.memory_space_map.get(storage)
             if (
                 space is None
-                or space.strategy.value != "sat"
+                or not space.supports_lifetime_reuse
                 or space.allocation_scope.value != "function"
                 or space.kind == "shared"
             ):
@@ -452,6 +453,9 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         for descriptor, value in zip(
             self.external_arguments, external_arguments, strict=True
         ):
+            if descriptor.get("runtime_value_kind") == "scalar":
+                validate_scalar_argument(str(descriptor["buffer"]), value, str(descriptor["scalar_dtype"]))
+                continue
             if not isinstance(value, torch.Tensor):
                 raise RuntimeContractError(
                     f"TIR external buffer {descriptor['buffer']!r} must be a torch.Tensor."
@@ -920,6 +924,23 @@ def create_tir_runtime(artifact, manifest, ir_module, kernel):
         for value in function.parameters
         if isinstance(ir_module.node_map[value].type, RefType)
     )
+    if reference_types:
+        tensor_parameters = tuple(
+            logical_type(ir_module.node_map[value].type)
+            for value in function.parameters
+            if not isinstance(ir_module.node_map[value].type, RefType)
+        )
+        # State field names alone do not establish the convenience ABI. These
+        # wrappers accept one int32 token, not arbitrary tensors or prefill
+        # batches. Such entries expose the same kernel through the raw ABI.
+        if (
+            len(tensor_parameters) != 1
+            or not isinstance(tensor_parameters[0], TensorType)
+            or tensor_parameters[0].dtype != DType.INT32
+            or not all(axis.is_fixed for axis in tensor_parameters[0].shape)
+            or tuple(axis.fixed_value for axis in tensor_parameters[0].shape) != (1,)
+        ):
+            return GeneratedTirCallGraphModule(artifact, manifest, ir_module, kernel)
     reference_fields = (
         frozenset(name for name, _ in reference_types[0].fields)
         if len(reference_types) == 1

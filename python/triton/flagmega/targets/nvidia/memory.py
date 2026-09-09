@@ -17,13 +17,13 @@ def sm90_bufferization_options(capability: Sm90Capability) -> BufferizationOptio
     maximum = (1 << 62) - 1
     return BufferizationOptions((
         MemorySpace(
-            "workspace", "device", 256, maximum, AllocationStrategy.SAT,
+            "workspace", "device", 256, maximum, AllocationStrategy.REUSE,
             AllocationPolicy.GRANULARITY_ALIGNED,
             MemoryAllocationScope.FUNCTION, MemorySharingScope.CHIP,
         ),
         MemorySpace(
             "block_local_data", "device", 256, 64 * 1024 * 1024,
-            AllocationStrategy.SAT,
+            AllocationStrategy.REUSE,
             AllocationPolicy.GRANULARITY_ALIGNED,
             MemoryAllocationScope.FUNCTION, MemorySharingScope.BLOCK,
         ),
@@ -34,7 +34,7 @@ def sm90_bufferization_options(capability: Sm90Capability) -> BufferizationOptio
         ),
         MemorySpace(
             "shared", "shared", 16, capability.max_shared_memory_bytes,
-            AllocationStrategy.SAT, AllocationPolicy.GRANULARITY_ALIGNED,
+            AllocationStrategy.REUSE, AllocationPolicy.GRANULARITY_ALIGNED,
             MemoryAllocationScope.FUNCTION, MemorySharingScope.BLOCK,
         ),
         MemorySpace(

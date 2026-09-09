@@ -31,6 +31,7 @@ from triton.flagmega.codegen.triton.distributed_abi import kernel_execution_kind
 from triton.flagmega.codegen.triton.kernel_dispatch import selected_kernel_node
 from triton.flagmega.codegen.triton.package_plan import plain_package_value
 from triton.flagmega.codegen.triton.pool_abi import memory_scope_counts
+from triton.flagmega.codegen.triton.readonly_scalars import annotate_readonly_scalars
 from triton.flagmega.passes.functions.graph import function_nodes
 
 
@@ -206,13 +207,13 @@ def describe_kernel_call_abis(
     function_name = module.entry if function_name is None else str(function_name)
     execution = module.execution_function_map.get(function_name)
     if execution is not None:
-        return tuple(
+        return annotate_readonly_scalars(tuple(
             _execution_kernel_call_abi(
                 module, plan, call, pool_scope_counts
             )
             for call in execution_calls_of(execution)
             if call.callee in module.kernel_callable_map
-        )
+        ), module, plan)
     try:
         graph_function = module.function_map[function_name]
         function_plan = plan.function_map[function_name]
@@ -332,7 +333,7 @@ def describe_kernel_call_abis(
                 ),
             }
         )
-    return tuple(calls)
+    return annotate_readonly_scalars(tuple(calls), module, plan)
 
 
 def _execution_kernel_call_abi(
@@ -539,6 +540,9 @@ def describe_local_buffer_abi(
     # Effective alignment belongs to the view, not merely its pool. In
     # particular an aligned allocation may have a byte-offset alias.
     start = buffer.mem_span.start
+    if not start.is_fixed:
+        abi["view_byte_offset"] = start.to_data()
+        abi["offset_bindings"] = dict(buffer.offset_bindings)
     abi["alignment_bytes"] = (
         gcd(buffer.mem_span.buffer.alignment, start.fixed_value) if start.is_fixed else 1
     )
@@ -568,7 +572,7 @@ def _describe_local_buffer_abi_base(buffer) -> dict[str, object]:
             "buffer": buffer.id,
             "physical_buffer": buffer.physical_id,
             "storage": buffer.storage,
-            "pool_byte_offset": buffer.offset,
+            "pool_byte_offset": buffer.offset if buffer.mem_span.start.is_fixed else buffer.mem_span.buffer.offset,
             "storage_kind": DistributedBufferStorageKind.COMPACT_LOCAL.value,
             "dtype": buffer.dtype.value,
             "scalar_dtype": scalar_dtype.value,
@@ -576,12 +580,8 @@ def _describe_local_buffer_abi_base(buffer) -> dict[str, object]:
             "logical_shape": tuple(buffer.shape),
             "local_capacity_shape": tuple(buffer.shape),
             "active_shape_expressions": tuple(str(value) for value in buffer.shape),
-            "logical_coordinate_expressions": tuple(
-                f"local_coord_{axis}" for axis in range(len(buffer.shape))
-            ),
-            "storage_coordinate_expressions": tuple(
-                f"local_coord_{axis}" for axis in range(len(buffer.shape))
-            ),
+            "logical_coordinate_expressions": tuple(f"local_coord_{axis}" for axis in range(len(buffer.shape))),
+            "storage_coordinate_expressions": tuple(f"local_coord_{axis}" for axis in range(len(buffer.shape))),
             "storage_strides": tuple(buffer.strides),
             "scalar_storage_strides": scalar_strides,
             "scalar_lane_shape": lane_shape,
@@ -622,57 +622,59 @@ def _describe_local_buffer_abi_base(buffer) -> dict[str, object]:
         else 0
     )
     return {
-        "schema": LOCAL_BUFFER_ABI_SCHEMA,
-        "buffer": buffer.id,
-        "physical_buffer": buffer.physical_id,
-        "storage": buffer.storage,
-        "pool_byte_offset": buffer.offset,
-        "storage_kind": buffer.distributed_storage_kind.value,
-        "dtype": buffer.dtype.value,
-        "scalar_dtype": scalar_dtype.value,
-        "scalar_itemsize": scalar_dtype.itemsize,
-        "logical_shape": tuple(buffer.shape),
-        "local_capacity_shape": local_shape,
-        "active_shape_expressions": tuple(
-            emit_dimension(value) for value in shard.active_shape
-        ),
-        "logical_coordinate_expressions": tuple(
+        "schema":
+        LOCAL_BUFFER_ABI_SCHEMA,
+        "buffer":
+        buffer.id,
+        "physical_buffer":
+        buffer.physical_id,
+        "storage":
+        buffer.storage,
+        "pool_byte_offset":
+        buffer.offset if buffer.mem_span.start.is_fixed else buffer.mem_span.buffer.offset,
+        "storage_kind":
+        buffer.distributed_storage_kind.value,
+        "dtype":
+        buffer.dtype.value,
+        "scalar_dtype":
+        scalar_dtype.value,
+        "scalar_itemsize":
+        scalar_dtype.itemsize,
+        "logical_shape":
+        tuple(buffer.shape),
+        "local_capacity_shape":
+        local_shape,
+        "active_shape_expressions":
+        tuple(emit_dimension(value) for value in shard.active_shape),
+        "logical_coordinate_expressions":
+        tuple(
+            emit_dimension(axis.map_local_to_global(f"local_coord_{index}")) for index, axis in enumerate(shard.axes)),
+        "storage_coordinate_expressions":
+        tuple(
             emit_dimension(
-                axis.map_local_to_global(f"local_coord_{index}")
-            )
-            for index, axis in enumerate(shard.axes)
-        ),
-        "storage_coordinate_expressions": tuple(
-            emit_dimension(
-                semantic_axis.map_local_to_global(f"local_coord_{index}")
-                - storage_axis.map_local_to_global(0)
-            )
-            for index, (semantic_axis, storage_axis) in enumerate(
-                zip(shard.axes, storage_shard.axes, strict=True)
-            )
-        ),
-        "storage_strides": tuple(buffer.strides),
-        "scalar_storage_strides": scalar_strides,
-        "scalar_lane_shape": lane_shape,
-        "scalar_lane_count": lane_count,
-        "component_stride_elements": component_stride,
-        "component_stride_scalar_elements": component_stride * lane_count,
-        "owner_count": owner_count,
-        "coordinate_space": (
-            "canonical_global"
-            if buffer.distributed_storage_kind.exposes_logical_coordinates
-            else "parent_shard_local"
-            if backing_type is not None
-            else "local"
-        ),
+                semantic_axis.map_local_to_global(f"local_coord_{index}") - storage_axis.map_local_to_global(0))
+            for index, (semantic_axis, storage_axis) in enumerate(zip(shard.axes, storage_shard.axes, strict=True))),
+        "storage_strides":
+        tuple(buffer.strides),
+        "scalar_storage_strides":
+        scalar_strides,
+        "scalar_lane_shape":
+        lane_shape,
+        "scalar_lane_count":
+        lane_count,
+        "component_stride_elements":
+        component_stride,
+        "component_stride_scalar_elements":
+        component_stride * lane_count,
+        "owner_count":
+        owner_count,
+        "coordinate_space": ("canonical_global" if buffer.distributed_storage_kind.exposes_logical_coordinates else
+                             "parent_shard_local" if backing_type is not None else "local"),
         # Complete staged SBP mapping. Renderers derive active extents and
         # local-to-global coordinates from this instead of a layout whitelist.
-        "distributed_type": plain_package_value(distributed.to_data()),
-        "distributed_backing_type": (
-            None
-            if backing_type is None
-            else plain_package_value(backing_type.to_data())
-        ),
+        "distributed_type":
+        plain_package_value(distributed.to_data()),
+        "distributed_backing_type": (None if backing_type is None else plain_package_value(backing_type.to_data())),
     }
 
 
@@ -686,6 +688,7 @@ def _with_memory_space_abi(abi, buffer, plan, pool_scope_count):
             f"Buffer {buffer.id!r} uses an unknown memory space."
         ) from error
     abi["memory_space"] = space.name
+    abi["memory_sharing_scope"] = space.sharing_scope.value
     if (
         space.allocation_scope.value == "function"
         and space.kind != "shared"

@@ -7,7 +7,9 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
-from triton.flagmega.ir.model import IRType, Node, TensorType, tensor_type
+from triton.flagmega.ir.model import DistributedType, IRType, Node, SBP, tensor_type
+from triton.flagmega.ir.distributed_inference import placement_of, tensor_of
+from triton.flagmega.ir.axis import normalize_axis
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
@@ -42,9 +44,7 @@ class Concat(OpDefinition):
         assert isinstance(values, tuple)
         if not values:
             raise IRSchemaError("F.tensors.concat requires at least one tensor.")
-        tensors = tuple(value for value in values if isinstance(value, TensorType))
-        if len(tensors) != len(values):
-            raise IRSchemaError("F.tensors.concat accepts tensor inputs only.")
+        tensors = tuple(tensor_of(value) for value in values)
         reference = tensors[0]
         axis = int(attrs["axis"])
         axis = axis + reference.rank if axis < 0 else axis
@@ -62,21 +62,33 @@ class Concat(OpDefinition):
             extent += value.shape[axis].fixed_value
         shape = list(reference.shape)
         shape[axis] = extent
-        return tensor_type(reference.dtype, shape, layout=reference.layout)
+        output = tensor_type(reference.dtype, shape, layout=reference.layout)
+        placement = placement_of(*values)
+        if placement is None:
+            return output
+        if not all(isinstance(value, DistributedType) for value in values):
+            raise IRSchemaError("Distributed Concat requires explicit placement on every input.")
+        first = values[0]
+        if first.axis_policies[axis] != SBP.broadcast() or any(
+            value.axis_policies != first.axis_policies or value.partial != first.partial for value in values
+        ):
+            raise IRSchemaError("Concat requires a broadcast concatenation axis and matching owners; insert Boxing.")
+        return DistributedType(output, first.axis_policies, placement, first.partial)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
-        return context.torch.cat(tuple(arguments), dim=int(node.attrs["axis"])).contiguous()
+        axis = normalize_axis(node.attrs["axis"], tensor_of(node.type).rank)
+        return context.torch.cat(tuple(arguments), dim=axis).contiguous()
 
     @classmethod
     def materialize_numpy(cls, node, arguments, context):
         return context.as_contiguous(
-            context.numpy.concatenate(tuple(arguments), axis=int(node.attrs["axis"]))
+            context.numpy.concatenate(tuple(arguments), axis=normalize_axis(node.attrs["axis"], tensor_of(node.type).rank))
         )
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        size = tensor_nbytes(node.type) if isinstance(node.type, TensorType) else None
+        size = tensor_nbytes(tensor_of(node.type))
         return OpCost(bytes_read=size, bytes_written=size, notes=("concat",))
 
 

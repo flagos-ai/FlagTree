@@ -85,7 +85,7 @@ def test_transpose_devectorize_maps_lane_axis_through_permutation(materialize_re
     "op,attrs,rule_name",
     [
         ("pad", {"pad_end": (0, 8)}, "VectorizePadPropagation"),
-        ("slice", {"shape": (2, 8)}, "VectorizeSlicePropagation"),
+        ("slice", {"shape": (2, 8)}, "VectorizeSliceToShapePropagation"),
     ],
 )
 def test_vectorize_shape_transform_scales_physical_attribute(
@@ -132,7 +132,7 @@ def test_vectorize_shape_transform_scales_physical_attribute(
     "op,rule_name",
     [
         ("pad", "PadDevectorizePropagation"),
-        ("slice", "SliceDevectorizePropagation"),
+        ("slice", "SliceToShapeDevectorizePropagation"),
     ],
 )
 def test_shape_transform_devectorize_scales_physical_attribute(
@@ -184,7 +184,7 @@ def test_shape_transform_devectorize_scales_physical_attribute(
     "op,rule_name",
     [
         ("pad", "VectorizePadPropagation"),
-        ("slice", "VectorizeSlicePropagation"),
+        ("slice", "VectorizeSliceToShapePropagation"),
     ],
 )
 def test_vectorize_shape_transform_rejects_unaligned_source(op, rule_name):
@@ -215,7 +215,7 @@ def test_vectorize_shape_transform_rejects_unaligned_source(op, rule_name):
     "op,rule_name",
     [
         ("pad", "PadDevectorizePropagation"),
-        ("slice", "SliceDevectorizePropagation"),
+        ("slice", "SliceToShapeDevectorizePropagation"),
     ],
 )
 def test_shape_transform_devectorize_rejects_unaligned_attribute(op, rule_name):

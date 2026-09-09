@@ -772,6 +772,8 @@ def _sequence_expr(
 def _literal_expr(value: Any) -> str:
     if isinstance(value, IRType):
         return _type_expr(value)
+    if isinstance(value, (DType, VectorType, PointerType, MaskVectorType)):
+        return _data_type_expr(value)
     if isinstance(value, Effect):
         return _effect_expr(value)
     if isinstance(value, Mapping):

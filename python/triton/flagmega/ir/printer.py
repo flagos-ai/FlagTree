@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import Enum
 from math import prod
 from typing import Any, Mapping
@@ -35,6 +36,8 @@ from triton.flagmega.ir.model import (
     TupleType,
 )
 from triton.flagmega.ir.ops.core import get_definition
+from triton.flagmega.ir.print_symbols import GraphPrintSymbols, function_node_scopes
+from triton.flagmega.ir.print_weights import WeightPrintAnalysis
 from triton.flagmega.ir.types import DType, MaskVectorType, PointerType, VectorType
 
 
@@ -48,24 +51,27 @@ _DTYPE_DISPLAY_NAMES = {
 }
 
 
-def text_source(module: IRModule) -> str:
+def text_source(module: IRModule, *, weight_analysis: WeightPrintAnalysis | None = None) -> str:
     """Return the compact derived view appropriate for the module dialect."""
 
-    return script_source(module) if module.dialect in {"semantic_tir", "bufferized_tir"} else il_source(module)
+    render = script_source if module.dialect in {"semantic_tir", "bufferized_tir"} else il_source
+    return render(module, weight_analysis=weight_analysis)
 
 
 def companion_suffix(module: IRModule) -> str:
     return ".script" if module.dialect in {"semantic_tir", "bufferized_tir"} else ".il"
 
 
-def il_source(module: IRModule) -> str:
+def il_source(module: IRModule, *, weight_analysis: WeightPrintAnalysis | None = None) -> str:
     lines = [
         f"// FlagMega {module.dialect} stage={module.stage} semantic_hash={module.semantic_hash}",
     ]
-    _append_constant_recipes(lines, module, tir=False)
+    weight_analysis = weight_analysis or WeightPrintAnalysis.analyze(module)
     _append_prim_functions(lines, module)
     _append_execution_functions(lines, module)
+    scopes = function_node_scopes(module)
     for function in module.functions:
+        symbols = GraphPrintSymbols(scopes[function.name], _il_node, weight_analysis.values)
         parameters = ", ".join(
             f"%{node_id}: {_type_text(module.node_map[node_id].type)}"
             for node_id in function.parameters
@@ -77,11 +83,11 @@ def il_source(module: IRModule) -> str:
         outputs = ", ".join(_type_text(module.node_map[node_id].type) for node_id in function.outputs)
         lines.append(f"%{function.name} = fn({parameters}): // ({parameter_types}) -> ({outputs})")
         lines.append("{")
-        for node in module.nodes:
-            if node.op == "builtin.var":
-                continue
-            lines.append(f"  %{node.id} = {_il_node(node)}: // {_type_text(node.type)}{_effect_text(node)}")
-        returned = ", ".join(f"%{node_id}" for node_id in function.outputs)
+        _append_weights_section(lines, symbols, weight_analysis.recipes[function.name], tir=False)
+        for node in symbols.body:
+            lines.append(f"  {symbols.lhs(node)} = {_il_node(node, symbols.reference)}: // "
+                         f"{_type_text(node.type)}{_effect_text(node)} name={node.id!r}")
+        returned = ", ".join(symbols.reference(node_id) for node_id in function.outputs)
         lines.append(f"  return ({returned})")
         lines.append("}")
     if module.selection_points:
@@ -97,26 +103,27 @@ def il_source(module: IRModule) -> str:
     return "\n".join(lines)
 
 
-def script_source(module: IRModule) -> str:
+def script_source(module: IRModule, *, weight_analysis: WeightPrintAnalysis | None = None) -> str:
     lines = [
         f"// FlagMega {module.dialect} stage={module.stage} semantic_hash={module.semantic_hash}",
     ]
-    _append_constant_recipes(lines, module, tir=True)
+    weight_analysis = weight_analysis or WeightPrintAnalysis.analyze(module)
     _append_prim_functions(lines, module)
     _append_execution_functions(lines, module)
+    scopes = function_node_scopes(module)
     for function in module.functions:
+        symbols = GraphPrintSymbols(scopes[function.name], _script_node, weight_analysis.values)
         parameters = ", ".join(
             f"%{node_id}: {_script_type_text(module.node_map[node_id].type)}"
             for node_id in function.parameters
         )
         lines.append(f'T.PrimFunc("{function.name}", {parameters}).Body(')
-        for node in module.nodes:
-            if node.op == "builtin.var":
-                continue
+        _append_weights_section(lines, symbols, weight_analysis.recipes[function.name], tir=True)
+        for node in symbols.body:
             lines.append(
-                f"  %{node.id} = {_script_node(node)} // "
-                f"{_script_type_text(node.type)}{_effect_text(node)}")
-        returned = ", ".join(f"%{node_id}" for node_id in function.outputs)
+                f"  {symbols.lhs(node)} = {_script_node(node, symbols.reference)} // "
+                f"{_script_type_text(node.type)}{_effect_text(node)} name={node.id!r}")
+        returned = ", ".join(symbols.reference(node_id) for node_id in function.outputs)
         lines.append(f"  T.Return({returned})")
         lines.append(")")
     _append_buffer_plan(lines, module)
@@ -144,6 +151,14 @@ def _append_buffer_plan(lines: list[str], module: IRModule) -> None:
     if data.get("schema") not in {BUFFER_PLAN_SCHEMA, LEGACY_BUFFER_PLAN_SCHEMA}:
         return
     plan = BufferPlan.from_data(data)
+    lines.extend(("", f"// buffer allocation: {plan.optimization_level} ({plan.allocator})"))
+    for record in plan.allocation_records:
+        objectives = ", ".join(
+            f"{name}={value} [{status}, bound={bound}]"
+            for name, status, value, bound in record.objectives
+        )
+        lines.append(f"// @{record.function}/{record.memory_space}: {record.status}"
+                     + (f"; {objectives}" if objectives else ""))
     lines.extend(("", "// physical buffers"))
     for physical in plan.physical_buffers:
         lifetime = (
@@ -189,11 +204,11 @@ def _append_buffer_plan(lines: list[str], module: IRModule) -> None:
             )
         )
         lines.append(
-            f"%{buffer.id} = T.Buffer({logical_type}, "
+            f"T.Buffer({logical_type}, "
             f"MemSpan: T.MemSpan({buffer.mem_span.buffer.id!r}, "
             f"Start: {buffer.mem_span.start}, Size: {buffer.mem_span.size}), "
             f"Strides: [{strides}], Storage: {buffer.storage}, Alignment: {buffer.alignment}"
-            f"{distributed_storage}{distributed_backing}{owner}{alias}, Role: {buffer.role})"
+            f"{distributed_storage}{distributed_backing}{owner}{alias}, Role: {buffer.role}) // %{buffer.id}"
         )
     kernel_calls = tuple(
         value
@@ -224,8 +239,6 @@ def _append_prim_functions(lines: list[str], module: IRModule) -> None:
         lines.append("}")
     if not module.prim_functions:
         return
-    from triton.flagmega.ir.tir import PrimParameterRole
-
     for function in module.prim_functions:
         parameters = ", ".join(
             f"%{value.name}: {_script_type_text(value.type)} "
@@ -303,14 +316,14 @@ def _print_tir_stmt(lines: list[str], statement, indent: int) -> None:
             )
             alias_text = f"InplaceAliases: [{aliases}], "
         lines.append(
-            f"{prefix}{outputs} = T.Kernel(SemanticOp: {statement.semantic_op!r}, "
+            f"{prefix}T.Kernel(SemanticOp: {statement.semantic_op!r}, "
             f"SemanticCandidate: {statement.semantic_candidate!r}, "
             f"MicroKernel: {microkernel!r}, "
             f"Parameters: {_value_text(statement.resolved_parameters, script=True)}, Inputs: [{arguments}], "
             f"Workspaces: [{workspaces}], SharedWorkspaces: [{shared_workspaces}], "
             f"{alias_text}"
             f"Reads: {list(statement.reads)!r}, "
-            f"Writes: {list(statement.writes)!r})"
+            f"Writes: {list(statement.writes)!r}) -> ({outputs})"
         )
         return
     if isinstance(statement, ProducerConsumerRegion):
@@ -437,14 +450,35 @@ def _tir_region_text(value) -> str:
     return f"{value.buffer.name}[{ranges}]"
 
 
-def _il_node(node: Node) -> str:
-    inputs = ", ".join(f"%{value}" for value in node.inputs)
+def _leaf_text(node: Node, *, script: bool = False) -> str | None:
+    if node.op not in {"builtin.weight", "builtin.const_asset", "builtin.scalar_const",
+                       "builtin.splat_const", "tir.scalar_const"}:
+        return None
+    prefix = "T." if script else ""
+    type_text = _script_type_text(node.type) if script else _type_text(node.type)
     if node.op == "builtin.weight":
-        return (
-            f"WeightRef(Name: {node.attrs['name']!r}, Source: {node.attrs['source']!r}, "
-            f"Key: {node.attrs['key']!r})")
+        fields = [type_text, repr(node.attrs["name"]), f"Source: {node.attrs['source']!r}"]
+        if node.attrs["key"] != node.attrs["name"]:
+            fields.append(f"Key: {node.attrs['key']!r}")
+        if node.attrs.get("source_hash") is not None:
+            fields.append(f"SourceHash: {node.attrs['source_hash']!r}")
+        return f"{prefix}WeightRef({', '.join(fields)})"
     if node.op == "builtin.const_asset":
-        return f"ConstAssetRef(Recipe: {node.attrs['recipe']!r}, Output: {node.attrs['output']!r})"
+        return (f"{prefix}ConstAssetRef({type_text}, Recipe: {node.attrs['recipe']!r}, "
+                f"Output: {node.attrs['output']!r})")
+    if node.op in {"builtin.scalar_const", "builtin.splat_const", "tir.scalar_const"}:
+        value = repr(node.attrs["value"])
+        if node.op == "builtin.splat_const":
+            value = f"splat({value})"
+        return f"{'T.Const' if script else 'const'}({type_text} : {value})"
+    return None
+
+
+def _il_node(node: Node, reference: Callable[[str], str] | None = None) -> str:
+    leaf = _leaf_text(node)
+    if leaf is not None:
+        return leaf
+    inputs = ", ".join(reference(value) if reference else f"%{value}" for value in node.inputs)
     if node.op == "builtin.get_item":
         return f"GetItem({inputs}, {node.attrs['index']})"
     op_name = get_definition(node.op).display_name
@@ -453,17 +487,14 @@ def _il_node(node: Node) -> str:
     return f"{op_name}({arguments})"
 
 
-def _script_node(node: Node) -> str:
-    inputs = ", ".join(f"%{value}" for value in node.inputs)
-    if node.op == "builtin.weight":
-        return (
-            f"T.WeightRef(Name: {node.attrs['name']!r}, Source: {node.attrs['source']!r}, "
-            f"Key: {node.attrs['key']!r})")
-    if node.op == "builtin.const_asset":
-        return f"T.ConstAssetRef(Recipe: {node.attrs['recipe']!r}, Output: {node.attrs['output']!r})"
+def _script_node(node: Node, reference: Callable[[str], str] | None = None) -> str:
+    leaf = _leaf_text(node, script=True)
+    if leaf is not None:
+        return leaf
+    inputs = ", ".join(reference(value) if reference else f"%{value}" for value in node.inputs)
     if node.op == "tir.buffer":
         return (
-            f"T.Buffer({_script_type_text(node.type)}, storage={node.attrs.get('storage')!r}, "
+            f"T.Buffer({_script_type_text(node.type)}, Name: {node.id!r}, storage={node.attrs.get('storage')!r}, "
             f"alignment={node.attrs.get('alignment')}, key={node.attrs.get('key')!r})")
     if node.op == "tir.kernel":
         attributes = (
@@ -475,30 +506,43 @@ def _script_node(node: Node) -> str:
         return f"T.Kernel({arguments})"
     if node.op == "builtin.call":
         return f"Call(@{node.attrs['callee']}, {inputs})"
-    if node.op == "builtin.scalar_const":
-        return f"ScalarConst({node.attrs['value']!r})"
     if node.op == "tir.call":
         return f"T.Call(@{node.attrs['callee']}, {inputs})"
-    if node.op == "tir.scalar_const":
-        return f"T.ScalarConst({node.attrs['value']!r})"
     if node.op == "builtin.get_item":
         return f"T.GetItem({inputs}, {node.attrs['index']})"
     if node.op == "tir.barrier":
         return f"T.Barrier({_attributes(node.attrs, script=True)})"
-    return f"{get_definition(node.op).display_name}({_attributes(node.attrs, script=True)}, {inputs})"
+    arguments = ", ".join(value for value in (_attributes(node.attrs, script=True), inputs) if value)
+    return f"{get_definition(node.op).display_name}({arguments})"
 
 
-def _append_constant_recipes(lines: list[str], module: IRModule, *, tir: bool) -> None:
-    for recipe in module.constant_recipes:
+def _append_weights_section(lines: list[str], symbols: GraphPrintSymbols, recipes, *, tir: bool) -> None:
+    if not symbols.weights and not recipes:
+        return
+    lines.extend(("  weights {", "    // display grouping only; not an execution schedule"))
+    _append_constant_recipes(lines, recipes, tir=tir, indent="    ")
+    render = _script_node if tir else _il_node
+    type_text = _script_type_text if tir else _type_text
+    separator = " // " if tir else ": // "
+    for node in symbols.weights:
+        lines.append(f"    {symbols.lhs(node)} = {render(node, symbols.reference)}{separator}"
+                     f"{type_text(node.type)}{_effect_text(node)} name={node.id!r}")
+    lines.extend(("  }", "  // compute"))
+
+
+def _append_constant_recipes(lines: list[str], recipes, *, tir: bool, indent: str = "") -> None:
+    for recipe in recipes:
+        render = _script_node if tir else _il_node
+        symbols = GraphPrintSymbols(recipe.nodes, render)
         prefix = "T.ConstantRecipe" if tir else "constant_recipe"
-        lines.append(f"{prefix} {recipe.id} // fingerprint={recipe.fingerprint}")
-        lines.append("{")
-        for node in recipe.nodes:
-            rendered = _script_node(node) if tir else _il_node(node)
+        lines.append(f"{indent}{prefix} {recipe.id} // fingerprint={recipe.fingerprint}")
+        lines.append(f"{indent}{{")
+        for node in symbols.nodes:
+            rendered = render(node, symbols.reference)
             type_text = _script_type_text(node.type) if tir else _type_text(node.type)
-            lines.append(f"  %{node.id} = {rendered}: // {type_text}")
-        lines.append("  yield (" + ", ".join(f"%{value}" for value in recipe.outputs) + ")")
-        lines.append("}")
+            lines.append(f"{indent}  {symbols.lhs(node)} = {rendered}: // {type_text}{_effect_text(node)} name={node.id!r}")
+        lines.append(f"{indent}  yield (" + ", ".join(symbols.reference(value) for value in recipe.outputs) + ")")
+        lines.append(f"{indent}}}")
 
 
 def _type_text(value: IRType) -> str:

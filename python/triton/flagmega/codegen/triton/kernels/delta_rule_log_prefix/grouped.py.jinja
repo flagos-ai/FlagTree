@@ -1,0 +1,33 @@
+# flagmega-kernel: delta_rule_log_prefix/grouped
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "delta_rule_log_prefix" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_row = tl.arange(0, {{ call.block_size }})
+    for _fm_work in range({{ call.blocks }} * {{ call.heads }}):
+        _fm_block = _fm_work // {{ call.heads }}
+        _fm_head = _fm_work % {{ call.heads }}
+        _fm_token = _fm_block * {{ call.block_size }} + _fm_row
+        _fm_alpha = tl.load({{ call.alpha }} + ({{ call.alpha_offset }}), _fm_token < {{ call.tokens }}, other=1.0)
+{% if call.fast_log2 %}
+        _fm_prefix = libdevice.fast_log2f(_fm_alpha + {{ call.epsilon }})
+{% else %}
+        _fm_prefix = tl.log2(_fm_alpha + {{ call.epsilon }})
+{% endif %}
+        _fm_prefix = tl.where(_fm_token < {{ call.tokens }}, _fm_prefix, 0.0)
+        for _fm_level in tl.static_range({{ call.scan_levels }}):
+            _fm_distance = 1 << _fm_level
+            _fm_left = tl.gather(_fm_prefix, tl.maximum(_fm_row - _fm_distance, 0), 0)
+            _fm_prefix = _fm_prefix + tl.where(_fm_row % {{ call.scan_group_size }} >= _fm_distance, _fm_left, 0.0)
+        for _fm_group in tl.static_range(1, {{ call.block_size // call.scan_group_size }}):
+            _fm_carry = tl.sum(tl.where(_fm_row == _fm_group * {{ call.scan_group_size }} - 1, _fm_prefix, 0.0), 0)
+            _fm_prefix = tl.where(_fm_row // {{ call.scan_group_size }} == _fm_group, _fm_prefix + _fm_carry, _fm_prefix)
+        tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_prefix, {{ call.writer_active }})
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

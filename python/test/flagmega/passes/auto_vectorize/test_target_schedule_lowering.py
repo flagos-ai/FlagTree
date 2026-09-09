@@ -35,9 +35,9 @@ def test_agent_vectorization_choice_lowers_to_distinct_target_candidate_and_sour
     vectorized = Compiler().compile(_module()).module
     scalar = _compile_scalar_selection()
 
-    vector_dispatch = fm.kernel_dispatch_for_call(
-        vectorized, vectorized.node_map["output"]
-    )
+    vector_dispatch = next(value for node in vectorized.nodes
+                           if (value := fm.kernel_dispatch_for_call(vectorized, node)) is not None
+                           and value.semantic_op == "math.vectorized_binary")
     scalar_dispatch = fm.kernel_dispatch_for_call(
         scalar, scalar.node_map["output"]
     )
@@ -48,8 +48,9 @@ def test_agent_vectorization_choice_lowers_to_distinct_target_candidate_and_sour
         "elements_per_program": 128,
     }
     assert scalar_dispatch.parameters["vector_schedule"]["physical"] == {
-        "elements_per_program": 1,
+        "elements_per_program": 256,
     }
+    assert scalar_dispatch.parameters["vector_schedule"]["contract"]["kind"] == "scalar"
 
     vector_dir = tmp_path / "vector"
     scalar_dir = tmp_path / "scalar"
@@ -61,5 +62,5 @@ def test_agent_vectorization_choice_lowers_to_distinct_target_candidate_and_sour
     assert vector_package["kind"] == "tir_call_graph/v1"
     assert scalar_package["kind"] == "tir_call_graph/v1"
     assert "tl.arange(0, 128)" in vector_source
-    assert "tl.arange(0, 1)" in scalar_source
+    assert "tl.arange(0, 256)" in scalar_source
     assert vector_source != scalar_source

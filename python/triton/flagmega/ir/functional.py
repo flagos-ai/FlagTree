@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from triton.flagmega.ir.model import DType, Effect, IRType, Node, PURE
+from triton.flagmega.ir.types import DataType
 from triton.flagmega.ir.ops.builtin.call import Call as BuiltinCall
 from triton.flagmega.ir.ops.builtin.get_item import GetItem
 from triton.flagmega.ir.ops.builtin.none import NoneValue
@@ -28,6 +29,13 @@ from triton.flagmega.ir.ops.distributed.materialize_local_shards import (
 )
 from triton.flagmega.ir.ops.distributed.sharded_view import ShardedView
 from triton.flagmega.ir.ops.math.add import Add
+from triton.flagmega.ir.ops.math.div import Div
+from triton.flagmega.ir.ops.math.sigmoid import Sigmoid
+from triton.flagmega.ir.ops.math.reduce_sum import ReduceSum
+from triton.flagmega.ir.ops.nn.softmax import Softmax
+from triton.flagmega.ir.ops.tensors.broadcast_to import BroadcastTo
+from triton.flagmega.ir.ops.tensors.slice import Slice
+from triton.flagmega.ir.ops.tensors.top_k import TopK
 from triton.flagmega.ir.ops.math.block_scaled_matmul import BlockScaledMatMul
 from triton.flagmega.ir.ops.math.matmul import MatMul
 from triton.flagmega.ir.ops.math.mul import Mul
@@ -42,7 +50,16 @@ from triton.flagmega.ir.ops.nn.dense_matmul_glu import DenseMatMulGlu
 from triton.flagmega.ir.ops.nn.gated_delta_net import GatedDeltaNet
 from triton.flagmega.ir.ops.nn.gdn_convolution import GatedDeltaNetConvolution
 from triton.flagmega.ir.ops.nn.gdn_recurrent_core import GatedDeltaNetRecurrentCore
+from triton.flagmega.ir.ops.nn.delta_rule_coefficients import DeltaRuleCoefficients
+from triton.flagmega.ir.ops.nn.delta_rule_log_prefix import DeltaRuleLogPrefix
+from triton.flagmega.ir.ops.nn.delta_rule_block_update import DeltaRuleBlockUpdate
+from triton.flagmega.ir.ops.nn.delta_rule_gates import DeltaRuleGates
+from triton.flagmega.ir.ops.nn.l2_normalization import L2Normalization
+from triton.flagmega.ir.ops.nn.gdn_state_slice import GatedDeltaNetStateSlice
 from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
+from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
+from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
+from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
 from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulGlu
@@ -94,6 +111,7 @@ from triton.flagmega.ir.ops.tensors.unpack import Unpack
 from triton.flagmega.ir.ops.tir.barrier import Barrier
 from triton.flagmega.ir.ops.tir.buffer import Buffer
 from triton.flagmega.ir.ops.tir.buffer_view import BufferView
+from triton.flagmega.ir.ops.tir.ref_slice import RefSlice
 from triton.flagmega.ir.ops.tir.kernel import Kernel
 from triton.flagmega.ir.ops.tir.call import Call
 from triton.flagmega.ir.ops.tir.scalar_const import ScalarConst
@@ -113,6 +131,24 @@ def _op_function(definition):
 
 
 class _math:
+
+    @staticmethod
+    @_op_function(Div)
+    def div(lhs: Node, rhs: Node, *, name: str | None = None, metadata: Metadata = None) -> Node:
+        """Divide identically typed operands; use broadcast_to when needed."""
+        return Div.construct(lhs, rhs, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(Sigmoid)
+    def sigmoid(value: Node, *, name: str | None = None, metadata: Metadata = None) -> Node:
+        return Sigmoid.construct(value, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(ReduceSum)
+    def reduce_sum(value: Node, *, axes: tuple[int, ...] = (-1, ), keep_dims: bool = True, name: str | None = None,
+                   metadata: Metadata = None) -> Node:
+        return ReduceSum.construct(value, axes=axes, keep_dims=keep_dims, name=name, metadata=metadata)
+
     @staticmethod
     @_op_function(Add)
     def add(lhs: Node, rhs: Node, *, name: str | None = None, metadata: Metadata = None) -> Node:
@@ -305,6 +341,186 @@ class _math:
 
 
 class _nn:
+
+    @staticmethod
+    @_op_function(L2Normalization)
+    def l2_normalization(value: Node, *, axes: tuple[int, ...] = (-1,), epsilon: float = 1e-10,
+                         epsilon_mode: str = "clamp", division_mode: str = "divide",
+                         name: str | None = None, metadata: Metadata = None) -> Node:
+        return L2Normalization.construct(value, axes=axes, epsilon=epsilon, epsilon_mode=epsilon_mode,
+                                         division_mode=division_mode, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(DeltaRuleGates)
+    def delta_rule_gates(a: Node, b: Node, a_log: Node, dt_bias: Node, *, softplus_threshold: float = 20.,
+                         alpha_exp_mode: str = "accurate", name: str | None = None, metadata: Metadata = None) -> Node:
+        """Build explicit FP32 (alpha, beta) for a delta-rule recurrence."""
+        return DeltaRuleGates.construct(a, b, a_log, dt_bias, softplus_threshold=softplus_threshold,
+                                       alpha_exp_mode=alpha_exp_mode, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(DeltaRuleBlockUpdate)
+    def delta_rule_block_update(query: Node, key: Node, value: Node, coefficients: Node, log_prefix: Node,
+                                 state: Node, *, scale: float | None = None, state_field: str = "matrix",
+                                 state_layout: tuple[str, ...] = ("head", "value", "key"),
+                                 state_vector_axes: tuple[str, ...] = (), name: str | None = None,
+                                 metadata: Metadata = None) -> Node:
+        return DeltaRuleBlockUpdate.construct(query, key, value, coefficients, log_prefix, state, scale=scale,
+                                               state_field=state_field, state_layout=state_layout,
+                                               state_vector_axes=state_vector_axes, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(DeltaRuleLogPrefix)
+    def delta_rule_log_prefix(alpha: Node, *, block_size: int = 64, scan_group_size: int = 32,
+                              epsilon: float = 1e-10, log2_mode: str = "fast", name: str | None = None,
+                              metadata: Metadata = None) -> Node:
+        """Build a block-local grouped FP32 log-decay prefix."""
+        return DeltaRuleLogPrefix.construct(alpha, block_size=block_size, scan_group_size=scan_group_size,
+                                            epsilon=epsilon, log2_mode=log2_mode, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(DeltaRuleCoefficients)
+    def delta_rule_coefficients(key: Node, beta: Node, *, block_size: int = 64, name: str | None = None,
+                                metadata: Metadata = None) -> Node:
+        """Build rounded lower-triangular chunk coefficients from grouped keys."""
+        return DeltaRuleCoefficients.construct(key, beta, block_size=block_size, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(GatedDeltaNetStateSlice)
+    def gated_delta_net_state_slice(state: Node, layer_id: Node, *, name: str | None = None,
+                                    metadata: Metadata = None) -> Node:
+        """Select an aliased state layer using a runtime decoder argument."""
+        return GatedDeltaNetStateSlice.construct(state, layer_id, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(Softmax)
+    def softmax(value: Node, *, axis: int = -1, name: str | None = None, metadata: Metadata = None) -> Node:
+        return Softmax.construct(value, axis=axis, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(SparseExperts)
+    def sparse_experts(
+        q: Node,
+        router_expert_ids: Node,
+        router_expert_weights: Node,
+        gate_input_scale: Node,
+        gate_weight: Node,
+        gate_proj_scale: Node,
+        down_input_scale: Node,
+        down_weight: Node,
+        down_proj_scale: Node,
+        up_input_scale: Node,
+        up_weight: Node,
+        up_proj_scale: Node,
+        *,
+        output_dtype: DataType | str | None = None,
+        intermediate_dtype: DataType | str | None = None,
+        round_projections: bool = False,
+        round_activation: bool = False,
+        round_down_projection: bool = False,
+        round_weighted_output: bool = False,
+        name: str | None = None,
+        metadata: Metadata = None,
+    ) -> Node:
+        """Selected SwiGLU experts with explicit intermediate rounding.
+
+        BF16 weights use unit FP32 per-expert input/projection scales. Shape
+        and expert counts are inferred from operands; vector lanes pack the
+        activation/result last axis. Defaults follow nncase's wide arithmetic.
+        """
+        return SparseExperts.construct(
+            q,
+            router_expert_ids,
+            router_expert_weights,
+            gate_input_scale,
+            gate_weight,
+            gate_proj_scale,
+            down_input_scale,
+            down_weight,
+            down_proj_scale,
+            up_input_scale,
+            up_weight,
+            up_proj_scale,
+            output_dtype=output_dtype,
+            intermediate_dtype=intermediate_dtype,
+            round_projections=round_projections,
+            round_activation=round_activation,
+            round_down_projection=round_down_projection,
+            round_weighted_output=round_weighted_output,
+            name=name,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    @_op_function(SparseExpertsGateUp)
+    def sparse_experts_gate_up(
+        q: Node,
+        router_expert_ids: Node,
+        gate_input_scale: Node,
+        gate_weight: Node,
+        gate_proj_scale: Node,
+        up_input_scale: Node,
+        up_weight: Node,
+        up_proj_scale: Node,
+        *,
+        output_dtype: DataType | str | None = None,
+        round_projections: bool = False,
+        round_activation: bool = False,
+        name: str | None = None,
+        metadata: Metadata = None,
+    ) -> Node:
+        """Produce [tokens, routes, intermediate] selected-expert activations."""
+        return SparseExpertsGateUp.construct(
+            q,
+            router_expert_ids,
+            gate_input_scale,
+            gate_weight,
+            gate_proj_scale,
+            up_input_scale,
+            up_weight,
+            up_proj_scale,
+            output_dtype=output_dtype,
+            round_projections=round_projections,
+            round_activation=round_activation,
+            name=name,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    @_op_function(SparseExpertsDown)
+    def sparse_experts_down(
+        activations: Node,
+        router_expert_ids: Node,
+        router_expert_weights: Node,
+        down_input_scale: Node,
+        down_weight: Node,
+        down_proj_scale: Node,
+        *,
+        output_dtype: DataType | str | None = None,
+        round_projection: bool = False,
+        round_weighted_output: bool = False,
+        name: str | None = None,
+        metadata: Metadata = None,
+    ) -> Node:
+        """Project each route, weight it, and accumulate routes in FP32 order.
+
+        Per-route projection/weighted rounding disallows split-K, since those
+        rounding boundaries cannot commute with the partial-sum collective.
+        """
+        return SparseExpertsDown.construct(
+            activations,
+            router_expert_ids,
+            router_expert_weights,
+            down_input_scale,
+            down_weight,
+            down_proj_scale,
+            output_dtype=output_dtype,
+            round_projection=round_projection,
+            round_weighted_output=round_weighted_output,
+            name=name,
+            metadata=metadata,
+        )
+
     @staticmethod
     @_op_function(NormStats)
     def norm_stats(
@@ -705,6 +921,8 @@ class _nn:
         head_dim: int,
         theta: float,
         attention_scaling: float = 1.0,
+        output_lanes: tuple[int, ...] = (),
+        output_dtype: DType | str = DType.FLOAT32,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -716,6 +934,8 @@ class _nn:
             head_dim=head_dim,
             theta=theta,
             attention_scaling=attention_scaling,
+            output_lanes=output_lanes,
+            output_dtype=output_dtype,
             name=name,
             metadata=metadata,
         )
@@ -727,12 +947,13 @@ class _nn:
         cos: Node,
         sin: Node,
         *,
+        rotary_dim: int | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
-        """Apply rotary position embedding to a rank-three tensor."""
+        """Rotate a scalar-coordinate prefix (default: full head); copy its tail."""
 
-        return RoPE.construct(input, cos, sin, name=name, metadata=metadata)
+        return RoPE.construct(input, cos, sin, rotary_dim=rotary_dim, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(QKVRoPEWithCache)
@@ -757,6 +978,7 @@ class _nn:
         k_use_mean: bool,
         k_round_before_scale: bool = False,
         round_qk_intermediates: bool = True,
+        rotary_dim: int | None = None,
         qkv_layout: tuple[str, str, str],
         attention_layout: tuple[str, str, str],
         name: str | None = None,
@@ -790,6 +1012,7 @@ class _nn:
             q_round_before_scale=q_round_before_scale,
             k_round_before_scale=k_round_before_scale,
             round_qk_intermediates=round_qk_intermediates,
+            rotary_dim=rotary_dim,
             name=name,
             metadata=metadata,
         )
@@ -942,6 +1165,9 @@ class _nn:
         conv_weight: Node,
         *,
         conv_kernel_size: int,
+        round_products: bool = True,
+        round_before_activation: bool = True,
+        accumulation_order: str = "current_first",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -952,6 +1178,9 @@ class _nn:
             state,
             conv_weight,
             conv_kernel_size=conv_kernel_size,
+            round_products=round_products,
+            round_before_activation=round_before_activation,
+            accumulation_order=accumulation_order,
             name=name,
             metadata=metadata,
         )
@@ -974,6 +1203,11 @@ class _nn:
         key_head_dim: int,
         value_head_dim: int,
         epsilon: float,
+        qk_norm_mode: str = "clamp",
+        qk_norm_epsilon: float = 1e-12,
+        round_normalized_qk: bool = False,
+        round_beta: bool = True,
+        round_core: bool = False,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -994,12 +1228,41 @@ class _nn:
             key_head_dim=key_head_dim,
             value_head_dim=value_head_dim,
             epsilon=epsilon,
+            qk_norm_mode=qk_norm_mode,
+            qk_norm_epsilon=qk_norm_epsilon,
+            round_normalized_qk=round_normalized_qk,
+            round_beta=round_beta,
+            round_core=round_core,
             name=name,
             metadata=metadata,
         )
 
 
 class _tensors:
+
+    @staticmethod
+    @_op_function(Slice)
+    def slice(value: Node, *, starts: tuple[int | None, ...], ends: tuple[int | None,
+                                                                          ...], axes: tuple[int, ...] | None = None,
+              steps: tuple[int, ...] | None = None, name: str | None = None, metadata: Metadata = None) -> Node:
+        """Slice static axes, including negative indices/steps, without slicing vector lanes."""
+        return Slice.construct(value, starts=starts, ends=ends, axes=axes, steps=steps, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(BroadcastTo)
+    def broadcast_to(value: Node, *, shape: tuple[int, ...], output_lanes: tuple[int, ...] | None = None, name: str | None = None,
+                     metadata: Metadata = None) -> Node:
+        """Broadcast logical axes and, optionally, vector element lanes independently."""
+        return BroadcastTo.construct(value, shape=shape, output_lanes=output_lanes, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(TopK)
+    def top_k(value: Node, *, k: int, axis: int = -1, largest: bool = True, sorted: bool = True,
+              index_dtype: DType | str = "int64", name: str | None = None, metadata: Metadata = None) -> Node:
+        """Return (values, indices), resolving ties in favor of lower indices."""
+        return TopK.construct(value, k=k, axis=axis, largest=largest, sorted=sorted, index_dtype=index_dtype, name=name,
+                              metadata=metadata)
+
     @staticmethod
     @_op_function(Bitcast)
     def bitcast(
@@ -1250,6 +1513,7 @@ class _ntt:
         k_use_mean: bool,
         k_round_before_scale: bool = False,
         round_qk_intermediates: bool = True,
+        rotary_dim: int | None = None,
         qkv_layout: tuple[str, str, str],
         attention_layout: tuple[str, str, str],
         name: str | None = None,
@@ -1281,6 +1545,7 @@ class _ntt:
             q_round_before_scale=q_round_before_scale,
             k_round_before_scale=k_round_before_scale,
             round_qk_intermediates=round_qk_intermediates,
+            rotary_dim=rotary_dim,
             name=name,
             metadata=metadata,
         )
@@ -1292,13 +1557,14 @@ class _ntt:
         cos: Node,
         sin: Node,
         *,
+        rotary_dim: int | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
         """Apply RoPE to a final-axis typed-vector representation."""
 
         return VectorizedRoPE.construct(
-            input, cos, sin, name=name, metadata=metadata
+            input, cos, sin, rotary_dim=rotary_dim, name=name, metadata=metadata
         )
 
     @staticmethod
@@ -1630,6 +1896,13 @@ class _tir:
             name=name,
             metadata=metadata,
         )
+
+    @staticmethod
+    @_op_function(RefSlice)
+    def ref_slice(value: Node, index: Node, *, length: int = 1, name: str | None = None,
+                  metadata: Metadata = None) -> Node:
+        """Construct a non-owning leading-axis slice of every reference field."""
+        return RefSlice.construct(value, index, length=length, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(Kernel)

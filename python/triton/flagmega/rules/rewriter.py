@@ -8,7 +8,7 @@ from dataclasses import replace
 from typing import Iterable
 
 from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir import IRModule, Node, verify_module
+from triton.flagmega.ir import IRModule, verify_module
 from triton.flagmega.rules.core import (
     RewriteEffectPolicy,
     RewriteRedirect,
@@ -31,22 +31,28 @@ class DataflowRewriter:
         *,
         max_iterations: int = 32,
         remove_unused: bool = True,
+        rewrite_constants: bool = True,
     ) -> None:
         self.rules = tuple(rules)
         if max_iterations <= 0:
             raise ValueError("DataflowRewriter max_iterations must be positive.")
         self.max_iterations = max_iterations
         self.remove_unused = remove_unused
+        self.rewrite_constants = rewrite_constants
 
     def rewrite(self, module: IRModule) -> IRModule:
         from triton.flagmega.passes.constants import require_constants_open
 
-        require_constants_open(module, "DataflowRewriter")
+        if self.rewrite_constants:
+            require_constants_open(module, "DataflowRewriter")
         current = verify_module(module)
         for _ in range(self.max_iterations):
             result = self._rewrite_sweep(current)
             if result is None:
                 return _remove_unused(current) if self.remove_unused else current
+            if not self.rewrite_constants:
+                from triton.flagmega.rules.region import verify_opaque_constants
+                verify_opaque_constants(current, result)
             current = verify_module(result)
         raise IRVerificationError(
             f"Dataflow rewrite did not converge after {self.max_iterations} iterations.",
@@ -76,6 +82,8 @@ class DataflowRewriter:
 
     def _rewrite_node(self, module: IRModule, index: int) -> IRModule | None:
         node = module.nodes[index]
+        if not self.rewrite_constants and node.op == "builtin.const_asset":
+            return None
         for rule in self.rules:
             rewritten = rule.apply(node, module)
             if rewritten is None:
@@ -113,7 +121,7 @@ class DataflowRewriter:
                     stage=module.stage,
                     node_id=node.id,
                 )
-            if not result.prefix_nodes and result.replacement == node:
+            if not result.prefix_nodes and not result.removed_ids and not result.extra_replacements and result.replacement == node:
                 continue
             if rule.effect_policy is RewriteEffectPolicy.PRESERVE:
                 if result.replacement.effect != node.effect:
@@ -132,6 +140,9 @@ class DataflowRewriter:
                         stage=module.stage,
                         node_id=node.id,
                     )
+            if result.removed_ids or result.extra_replacements or result.insertion_before is not None:
+                from triton.flagmega.rules.region import apply_region
+                return apply_region(module, node, result, rule)
             occupied = {value.id for value in module.nodes}
             prefix_ids = [value.id for value in result.prefix_nodes]
             collisions = occupied.intersection(prefix_ids)

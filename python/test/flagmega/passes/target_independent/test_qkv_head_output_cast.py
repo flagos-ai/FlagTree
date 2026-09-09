@@ -5,7 +5,8 @@
 import pytest
 
 from triton.flagmega import ir as fm
-from triton.flagmega.passes._qkv_head import match_qkv_head
+from triton.flagmega.rules.neutral._qkv_head import qkv_head_pattern, qkv_head_from_match
+from triton.flagmega.pattern_match import try_match_root
 
 
 @pytest.mark.parametrize("source,target", [("bfloat16", "float32"), ("float32", "bfloat16")])
@@ -24,4 +25,5 @@ def test_head_match_preserves_normalization_output_rounding(source, target):
             self.function("main", (x, scale, bias, cos, sin), (rope,))
 
     module = Graph(dialect="high_level", stage="decomposed", entry="main").build()
-    assert match_qkv_head(module.node_map["rope"], module.node_map, {"norm": ("rope",)}) is None
+    match = try_match_root(module.node_map["rope"], qkv_head_pattern("q"), module)
+    assert match is None or qkv_head_from_match(match, "q") is None

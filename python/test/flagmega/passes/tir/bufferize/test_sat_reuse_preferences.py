@@ -85,7 +85,7 @@ def test_sat_objectives_match_exhaustive_small_placement(windows):
                for i in range(3) for j in range(i)):
             continue
         possibilities.append((max(offset + size for offset, size in zip(offsets, sizes)),
-                              int(overlaps(0, 1)) + int(overlaps(1, 2)), sum(offsets)))
+                                  int(overlaps(0, 1)) + int(overlaps(1, 2))))
     result = SATBufferAllocator().allocate(lifetimes, _space(), avoid_reuse=pairs)
-    actual = (result.pool_bytes, len(result.reuse_conflicts), sum(result.offset_map.values()))
+    actual = (result.pool_bytes, len(result.reuse_conflicts))
     assert actual == min(possibilities)

@@ -8,7 +8,8 @@ from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.model import IRType, Node, TensorType, tensor_type
+from triton.flagmega.ir.model import DistributedType, IRType, Node, tensor_type
+from ._shape_transform import preserve_unchanged_axes
 from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_nbytes
 from triton.flagmega.ir.type_pattern import is_tensor
 
@@ -36,16 +37,19 @@ class Pad(OpDefinition):
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
-        value_type = cls.value.type_of(inputs)
-        assert isinstance(value_type, TensorType)
+        source_type = cls.value.type_of(inputs)
+        value_type = tensor_of(source_type)
+        if isinstance(source_type, DistributedType) and source_type.partial is not None and attrs["pad_value"] != 0:
+            raise IRSchemaError("Nonzero Pad on a partial value requires explicit reduction first.")
         pads = tuple(int(value) for value in attrs["pad_end"])
         if len(pads) != value_type.rank:
             raise IRSchemaError(f"F.tensors.pad expected {value_type.rank} pad values, got {len(pads)}.")
-        return tensor_type(
+        output = tensor_type(
             value_type.dtype,
             tuple(dimension + pad for dimension, pad in zip(value_type.shape, pads)),
             layout=value_type.layout,
         )
+        return preserve_unchanged_axes(source_type, output)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -73,7 +77,7 @@ class Pad(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        size = tensor_nbytes(node.type) if isinstance(node.type, TensorType) else None
+        size = tensor_nbytes(node.type)
         return OpCost(bytes_read=size, bytes_written=size, notes=("vector-pad",))
 
 

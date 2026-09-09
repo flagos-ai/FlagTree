@@ -62,9 +62,9 @@ def emit_pool_scope_base(pool: Mapping[str, object], argument: str) -> str:
     scope_count = int(pool.get("scope_count", 1))
     if scope_count <= 1:
         return argument
-    scope_nbytes = int(pool.get("scope_nbytes", 0))
+    scope_nbytes = int(pool.get("scope_nbytes", -1))
     scope_index = pool.get("scope_index")
-    if scope_nbytes <= 0 or not isinstance(scope_index, str) or not scope_index:
+    if scope_nbytes < 0 or not isinstance(scope_index, str) or not scope_index:
         raise CodegenError("Replicated runtime pool has an incomplete scope ABI.")
     if pool.get("scope") != MemorySharingScope.BLOCK.value:
         raise CodegenError(
@@ -74,6 +74,9 @@ def emit_pool_scope_base(pool: Mapping[str, object], argument: str) -> str:
         raise CodegenError(
             f"Unsupported block-pool scope-index ABI {scope_index!r}."
         )
+    if scope_nbytes == 0:
+        # Empty per-block frames have the same base and cannot be dereferenced.
+        return argument
     # The inline address helper preserves the stride/base alignment proof at
     # the actual op call boundary. Index/value live ranges are bounded by op
     # execution functions, not an artificial pointer-returning device call.

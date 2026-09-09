@@ -17,6 +17,11 @@ class FunctionMemoryPool:
     alignment: int
     allocations: tuple[str, ...] = ()
 
+    @property
+    def requires_binding(self) -> bool:
+        """Empty allocations still need a base pointer in a function call."""
+        return bool(self.scope_bytes or self.allocations)
+
     def __post_init__(self) -> None:
         if not self.memory_space:
             raise IRSchemaError("A function memory pool requires a memory-space identity.")

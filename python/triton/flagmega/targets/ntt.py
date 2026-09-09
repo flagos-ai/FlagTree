@@ -10,6 +10,7 @@ spaces, workspace annotation, and legality verification.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from copy import copy
 
 from triton.flagmega.ir import IRModule, Placement, SelectionPoint
 from triton.flagmega.passes.auto_distributed import DistributedCandidateProviderRegistry
@@ -82,6 +83,12 @@ class NttTarget(ABC):
         if triton_implementation_model is None:
             raise ValueError("NttTarget requires a concrete Triton implementation model.")
         self.triton_implementation_model = triton_implementation_model
+
+    def with_bufferize_opt_level(self, level: str) -> NttTarget:
+        """Configure one compiler without mutating the registered target."""
+        target = copy(self)
+        target.bufferization_policy = self.bufferization_policy.with_optimization_level(level)
+        return target
 
     def propose_vectorization(self, module: IRModule) -> IRModule:
         return AutoVectorizePass.propose(module, self)

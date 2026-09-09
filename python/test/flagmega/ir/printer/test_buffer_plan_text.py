@@ -35,3 +35,8 @@ def test_bufferized_script_prints_physical_buffers_memspans_and_aliases():
     assert "DistributedStorage: canonical_global" in source
     assert "PhysicalId" not in source
     assert "ByteOffset" not in source
+    views = source.split("// logical buffer views\n", 1)[1]
+    buffer_lines = [line for line in views.splitlines() if line.startswith("T.Buffer(")]
+    assert buffer_lines
+    assert all(") // %" in line for line in buffer_lines)
+    assert " = T.Buffer(" not in views

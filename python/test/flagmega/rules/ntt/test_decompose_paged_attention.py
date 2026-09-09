@@ -70,8 +70,8 @@ def test_rule_builds_explicit_partial_state_tuple_and_combine_with_stable_root()
     assert output.metadata["decomposition_rule"] == "DecomposePagedAttention"
 
 
-def test_rule_matches_nncase_decode_only_guard():
-    original = _Graph(sequence=2).build()
+def test_rule_does_not_form_an_empty_query_reduction():
+    original = _Graph(sequence=0).build()
 
     assert _rewrite(original) == original
 

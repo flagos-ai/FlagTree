@@ -7,13 +7,14 @@ from __future__ import annotations
 from dataclasses import replace
 
 from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir import IRModule, Placement, verify_module
+from triton.flagmega.ir import IRModule, verify_module
 from triton.flagmega.passes.auto_distributed.candidates import DistributedCandidateProviderRegistry
 from triton.flagmega.passes.auto_distributed.materializer import (
     DistributedMaterializer,
     distribution_selection_state,
 )
 from triton.flagmega.passes.auto_distributed.search import build_search_graph, solve_search_graph
+from triton.flagmega.passes.auto_distributed.proposal_analysis import proposal_graph, remember_proposal
 
 
 class AutoDistributedPass:
@@ -25,6 +26,12 @@ class AutoDistributedPass:
         """Solve defaults but keep the logical graph editable and unmaterialized."""
 
         graph = cls._build_graph(module, target)
+        proposed = cls._propose_from_graph(module, target, graph)
+        remember_proposal(proposed, graph, target)
+        return proposed
+
+    @staticmethod
+    def _propose_from_graph(module, target, graph):
         result = solve_search_graph(graph, dump_subdirectory="Proposal")
         points, records = distribution_selection_state(
             result,
@@ -60,7 +67,13 @@ class AutoDistributedPass:
     def apply(cls, module: IRModule, target) -> IRModule:
         """Constrain CP-SAT from editable selections and materialize one graph."""
 
-        graph = cls._build_graph(module, target)
+        graph = proposal_graph(module, target)
+        if graph is None:
+            graph = cls._build_graph(module, target)
+        return cls._apply_from_graph(module, target, graph)
+
+    @staticmethod
+    def _apply_from_graph(module, target, graph):
         proposal_points = {
             point.id: point
             for point in module.selection_points
@@ -109,7 +122,11 @@ class AutoDistributedPass:
 
         if any(point.kind == "distribution" for point in module.selection_points):
             return cls.apply(module, target)
-        return cls.apply(cls.propose(module, target), target)
+        graph = cls._build_graph(module, target)
+        proposed = cls._propose_from_graph(module, target, graph)
+        rebound = replace(graph, module=proposed)
+        rebound._realized_costs.update(graph._realized_costs)
+        return cls._apply_from_graph(proposed, target, rebound)
 
     @staticmethod
     def _build_graph(module: IRModule, target):

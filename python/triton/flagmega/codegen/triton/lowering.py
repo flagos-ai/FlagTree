@@ -29,6 +29,8 @@ _VECTORIZABLE_SEMANTIC_OPS = frozenset({
     "math.add",
     "math.matmul",
     "math.mul",
+    "math.div",
+    "math.sigmoid",
     "math.packed_dense_matmul",
     "math.silu",
     "math.vectorized_binary",
@@ -64,6 +66,13 @@ class TritonTirLoweringPolicy:
 
         for node in module.nodes:
             inputs = tuple(resolve(input_id) for input_id in node.inputs)
+            if node.op in {"nn.gdn_state_slice", "tir.ref_slice"}:
+                # A reference view is address computation, never a compute
+                # kernel or a fresh state allocation. Bufferize owns its spans.
+                nodes.append(
+                    replace(node, op="tir.ref_slice", inputs=inputs, attrs={"length": int(node.attrs.get("length", 1))},
+                            metadata={**node.metadata, "lowered_from": node.op}))
+                continue
             if node.op in {"distributed.sharded_view", "distributed.boxing"}:
                 if len(inputs) != 1:
                     raise IRVerificationError(

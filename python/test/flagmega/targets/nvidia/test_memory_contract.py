@@ -19,12 +19,12 @@ def test_sm90_memory_spaces_derive_shared_capacity_from_machine():
     assert tuple(spaces) == (
         "workspace", "block_local_data", "rdata", "shared", "external"
     )
-    assert spaces["workspace"].strategy is AllocationStrategy.SAT
-    assert spaces["block_local_data"].strategy is AllocationStrategy.SAT
+    assert spaces["workspace"].strategy is AllocationStrategy.REUSE
+    assert spaces["block_local_data"].strategy is AllocationStrategy.REUSE
     assert spaces["block_local_data"].sharing_scope is MemorySharingScope.BLOCK
     assert options.block_local == "block_local_data"
     assert spaces["rdata"].strategy is AllocationStrategy.LINEAR
-    assert spaces["shared"].strategy is AllocationStrategy.SAT
+    assert spaces["shared"].strategy is AllocationStrategy.REUSE
     assert (
         spaces["shared"].allocation_policy
         is AllocationPolicy.GRANULARITY_ALIGNED

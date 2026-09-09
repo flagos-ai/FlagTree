@@ -9,7 +9,7 @@ import pytest
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 
 
-def render_kernel(round_before_scale, wide=False):
+def render_kernel(round_before_scale, wide=False, rotary_dim=64):
     def partial(storage, offsets):
         return {"member_width": 2, "member_count": 2, "storage": storage,
                 "owner": f"qkv_{storage}_partial_member", "owner_stride": 64,
@@ -20,7 +20,7 @@ def render_kernel(round_before_scale, wide=False):
         return {"compute_active": "True", "outer_capacity": 1, "tile": 64,
                 "reduction_capacity": 64, "apply_active": "True", "use_mean": False,
                 "normalization_size": 64, "epsilon": 1e-6, "scale": "scale", "scale_offset": offsets,
-                "bias": "bias", "bias_offset": offsets, "head_dim": 64, "dimension": offsets,
+                "bias": "bias", "bias_offset": offsets, "head_dim": 64, "dimension": offsets, "rotary_dim": rotary_dim,
                 "cosine": "cosine", "cosine_offset": offsets, "sine": "sine", "sine_offset": offsets,
                 "output": "output", "output_offset": offsets, "output_active": "True",
                 "cache_offset": offsets, "partial_input": partial(kind, offsets),
@@ -40,19 +40,20 @@ def render_kernel(round_before_scale, wide=False):
 @pytest.mark.parametrize("round_before_scale", [False, True])
 @pytest.mark.parametrize("wide", [False, True])
 @pytest.mark.parametrize("trig_dtype", ["float32", "bfloat16"])
-def test_headwise_partial_matches_unfused_bf16_boundaries(tmp_path, round_before_scale, wide, trig_dtype):
+@pytest.mark.parametrize("rotary_dim", [16, 48, 64])
+def test_headwise_partial_matches_unfused_bf16_boundaries(tmp_path, round_before_scale, wide, trig_dtype, rotary_dim):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
     path = tmp_path / "partial_qkv.py"
-    path.write_text(render_kernel(round_before_scale, wide))
+    path.write_text(render_kernel(round_before_scale, wide, rotary_dim))
     spec = importlib.util.spec_from_file_location("partial_qkv", path)
     generated = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(generated)
     generator = torch.Generator(device="cuda").manual_seed(712)
     q, k, v = [torch.randn((2, 64), generator=generator, device="cuda", dtype=torch.bfloat16) for _ in range(3)]
     scale, bias = [torch.randn(64, generator=generator, device="cuda", dtype=torch.bfloat16) for _ in range(2)]
-    cosine, sine = [torch.randn(64, generator=generator, device="cuda").to(getattr(torch, trig_dtype)) for _ in range(2)]
+    cosine, sine = [torch.randn(rotary_dim, generator=generator, device="cuda").to(getattr(torch, trig_dtype)) for _ in range(2)]
     output = torch.empty_like(scale)
     cache = torch.empty(128, dtype=torch.bfloat16, device="cuda")
     generated.kernel[(1,)](q, k, v, scale, bias, cosine, sine, output, cache)
@@ -64,10 +65,12 @@ def test_headwise_partial_matches_unfused_bf16_boundaries(tmp_path, round_before
             unit = unit.bfloat16().float()
         normalized = unit * scale.float() + bias.float()
         if not wide:
-            normalized = normalized.bfloat16()
-        rotated = torch.cat((-normalized[32:], normalized[:32]))
-        tables = (cosine, sine) if wide else (cosine.bfloat16(), sine.bfloat16())
-        return (normalized * tables[0] + rotated * tables[1]).bfloat16()
+            normalized = normalized.bfloat16().float()
+        prefix = normalized[:rotary_dim]
+        rotated = torch.cat((-prefix[rotary_dim // 2:], prefix[:rotary_dim // 2]))
+        tables = (cosine.float(), sine.float())
+        result = prefix * tables[0] + rotated * tables[1]
+        return torch.cat((result, normalized[rotary_dim:])).bfloat16()
 
     torch.testing.assert_close(output, expected(q), rtol=0, atol=0)
     torch.testing.assert_close(cache[:64], expected(k), rtol=0, atol=0)

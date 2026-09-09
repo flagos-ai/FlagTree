@@ -32,7 +32,7 @@ from triton.flagmega.errors import (
     RuntimeContractError,
     UnsupportedSelectionError,
 )
-from triton.flagmega.ir import IRModule, companion_suffix, emit_module, load_module, verify_module
+from triton.flagmega.ir import IRModule, companion_suffix, emit_module, load_module
 from triton.flagmega.importer import DirectoryCheckpoint, import_model, import_model_layer
 from triton.flagmega.options import CompileOptions
 from triton.flagmega.selection import emit_plan, load_plan, override_plan
@@ -87,9 +87,10 @@ def _parser() -> argparse.ArgumentParser:
     import_command.add_argument("--model", required=True)
     import_command.add_argument("--revision")
     import_command.add_argument("--numerical-profile", default="nncase", help="Explicit importer numerical contract")
-    import_command.add_argument("--layer", type=int, choices=(0, ), default=0)
+    import_command.add_argument("--layer", type=int, default=0)
     import_command.add_argument("--full-model", action="store_true")
-    import_command.add_argument("--mode", choices=("decode-1", ), default="decode-1")
+    import_command.add_argument("--mode", choices=("decode-1", "prefill"), default="decode-1")
+    import_command.add_argument("--num-tokens", type=int, default=1, help="Static prompt token count for prefill import")
     import_command.add_argument("--output", required=True)
     _json_option(import_command)
 
@@ -106,9 +107,10 @@ def _parser() -> argparse.ArgumentParser:
     compile_source.add_argument("--model")
     compile_command.add_argument("--revision")
     compile_command.add_argument("--numerical-profile", help="Importer contract; with --input it must match the saved IR")
-    compile_command.add_argument("--layer", type=int, choices=(0, ), default=0)
+    compile_command.add_argument("--layer", type=int, default=0)
     compile_command.add_argument("--full-model", action="store_true")
-    compile_command.add_argument("--mode", choices=("decode-1", ), default="decode-1")
+    compile_command.add_argument("--mode", choices=("decode-1", "prefill"), help="Execution phase selected at model import")
+    compile_command.add_argument("--num-tokens", type=int, help="Static prompt token count selected at model import")
     compile_command.add_argument(
         "--checkpoint",
         help="Checkpoint root used to materialize weights when compiling an edited --input IR",
@@ -156,6 +158,12 @@ def _compiler_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--target", choices=target_names(), default="nvidia-sm90")
     parser.add_argument("--work-dir")
     parser.add_argument(
+        "--bufferize-opt-level",
+        choices=("fast", "optimized"),
+        help="Buffer allocation: fast (first-fit) or optimized (SAT). If omitted, use the target default "
+        "for a new allocation or preserve the saved level on resume. Resume before Bufferize to change it.",
+    )
+    parser.add_argument(
         "--dump-flags",
         type=parse_dump_flags,
         default=DumpFlags.NONE,
@@ -178,6 +186,7 @@ def _options(args: argparse.Namespace) -> CompileOptions:
         require_review=bool(args.require_review),
         work_dir=None if args.work_dir is None else Path(args.work_dir),
         dump_flags=DumpFlags(args.dump_flags),
+        bufferize_opt_level=args.bufferize_opt_level,
     )
 
 
@@ -297,10 +306,11 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         )
     if args.command == "import":
         module = (
-            import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile)
+            import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile,
+                         mode=args.mode, num_tokens=args.num_tokens)
             if args.full_model
             else import_model_layer(args.model, layer=args.layer, revision=args.revision,
-                                    numerical_profile=args.numerical_profile)
+                                    numerical_profile=args.numerical_profile, mode=args.mode, num_tokens=args.num_tokens)
         )
         output = emit_module(module, args.output)
         return _ok(
@@ -329,15 +339,22 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     if args.command in {"compile", "resume", "replay"}:
         source = (
             (
-                import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile or "nncase")
+                import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile or "nncase",
+                             mode=args.mode or "decode-1", num_tokens=1 if args.num_tokens is None else args.num_tokens)
                 if args.full_model
                 else import_model_layer(args.model, layer=args.layer, revision=args.revision,
-                                        numerical_profile=args.numerical_profile or "nncase")
+                                        numerical_profile=args.numerical_profile or "nncase", mode=args.mode or "decode-1",
+                                        num_tokens=1 if args.num_tokens is None else args.num_tokens)
             )
             if args.command == "compile" and args.model is not None
             else load_module(args.input)
         )
         compiler = Compiler(_options(args))
+        if args.command == "compile" and args.input is not None:
+            if args.mode is not None and args.mode != source.metadata.get("mode", "decode-1"):
+                raise IRSchemaError("--mode does not match the saved IR; select execution phase at import.")
+            if args.num_tokens is not None and args.num_tokens != source.metadata.get("tokens_per_call", 1):
+                raise IRSchemaError("--num-tokens does not match the saved IR; select token extent at import.")
         if (args.command == "compile" and args.input is not None and args.numerical_profile is not None
                 and args.numerical_profile != source.metadata.get("numerical_contract", "nncase")):
             raise IRSchemaError("--numerical-profile does not match the saved IR; select the contract at import.")

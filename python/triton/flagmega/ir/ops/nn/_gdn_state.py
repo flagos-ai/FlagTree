@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -244,6 +244,16 @@ class GatedDeltaNetState:
         self.validate()
         if isinstance(layer_id, bool) or layer_id < 0 or layer_id >= self.config.num_layers:
             raise EvaluationError(f"GDN layer id {layer_id!r} is outside [0, {self.config.num_layers}).")
+
+    def __flagmega_ref_slice__(self, index: int, length: int = 1):
+        self._validate_layer(index)
+        if length <= 0 or index + length > self.config.num_layers:
+            raise EvaluationError("GDN reference slice is outside the layer extent.")
+        if any(layout[0] != GatedDeltaNetStateDimKind.NUM_LAYERS
+               for layout in (self.config.convolution_layout, self.config.recurrent_layout)):
+            raise EvaluationError("GDN reference slicing requires a leading layer axis.")
+        return GatedDeltaNetState(self.convolution[index:index + length], self.recurrent[index:index + length],
+                                  replace(self.config, num_layers=length))
 
 
 def gdn_state_config(config) -> GatedDeltaNetStateConfig:

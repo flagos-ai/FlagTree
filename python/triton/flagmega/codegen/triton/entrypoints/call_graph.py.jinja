@@ -86,7 +86,11 @@ def {{ symbol }}__auxiliary_consumer(
 
 
 {% endif %}
+{% if scalar_arguments | default(()) %}
+@triton.jit(do_not_specialize={{ scalar_arguments }})
+{% else %}
 @triton.jit
+{% endif %}
 def {{ symbol }}(
     {{ signature }}
 ):
@@ -160,7 +164,11 @@ def {{ symbol }}(
         [{% if pipeline_schedule.auxiliary_events %}{{ pipeline_schedule.auxiliary_consumer_registers }}, {% endif %}{{ pipeline_schedule.producer_registers }}],
     )
 {% else %}
+{% if scalar_arguments | default(()) %}
+@triton.jit(do_not_specialize={{ scalar_arguments }})
+{% else %}
 @triton.jit
+{% endif %}
 def {{ symbol }}(
     {{ signature }}
 ):

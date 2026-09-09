@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import cached_property
 from itertools import product
 from typing import Mapping
 
@@ -76,11 +77,11 @@ class ReshardSite:
     usage: str
     invocation_count: int
 
-    @property
+    @cached_property
     def key(self) -> tuple[str, str, int]:
         return (self.producer_id, self.consumer_id, self.input_index)
 
-    @property
+    @cached_property
     def id(self) -> str:
         consumer_index = "output" if self.consumer_index is None else str(self.consumer_index)
         return (
@@ -100,8 +101,11 @@ class SearchGraph:
     constant_ids: frozenset[str] = frozenset()
     reshard_cost_model: DistributedReshardCostModel = DistributedReshardCostModel()
     operation_cost_model: DistributedOperationCostModel = DistributedOperationCostModel()
+    # A graph is one immutable policy/IR snapshot. Replacing the graph resets
+    # analysis caches; no type/cost decisions leak into another agent trial.
+    _realized_costs: dict = field(default_factory=dict, init=False, compare=False, repr=False)
 
-    @property
+    @cached_property
     def bucket_map(self) -> dict[str, CandidateBucket]:
         return {bucket.node_id: bucket for bucket in self.buckets}
 
@@ -124,6 +128,14 @@ def build_search_graph(
     operation_cost_model: DistributedOperationCostModel | None = None,
 ) -> SearchGraph:
     buckets: list[CandidateBucket] = []
+    reshard_memo = {}
+    type_inference_memo = {}
+
+    def reshard_plans(source, target, policy, source_kind, usage):
+        key = (source, target, source_kind, usage)
+        if key not in reshard_memo:
+            reshard_memo[key] = _reshard_plans(source, target, policy, source_kind, usage)
+        return reshard_memo[key]
     function_invocations = static_function_invocation_counts(module)
     node_invocations = static_node_invocation_counts(module)
     available: dict[str, tuple[DistributedCandidate, ...]] = {}
@@ -232,6 +244,7 @@ def build_search_graph(
                     registry.split_candidate_provider,
                     reshard_cost_model or DistributedReshardCostModel(),
                     operation_cost_model or DistributedOperationCostModel(),
+                    type_inference_memo=type_inference_memo,
                 )
                 candidates = _provider_candidates(provider, context, node.type)
                 if not candidates and not provider.is_exhaustive:
@@ -276,7 +289,7 @@ def build_search_graph(
                         not in candidate.objective_evidence
                     ):
                         continue
-                    plans = _reshard_plans(
+                    plans = reshard_plans(
                         producer.return_type,
                         target_type,
                         realization_policy,
@@ -305,7 +318,7 @@ def build_search_graph(
                     if function.name == module.entry
                     else DistributedReshardUsageKind.FUNCTION_BOUNDARY
                 )
-                plans = _reshard_plans(
+                plans = reshard_plans(
                     producer.return_type,
                     target_type,
                     realization_policy,
@@ -477,49 +490,27 @@ def solve_search_graph(
     cp_model = _load_cp_model()
     model = cp_model.CpModel()
     bucket_map = graph.bucket_map
-    variables = {
-        (bucket.node_id, index): model.NewBoolVar(f"{bucket.node_id}__{index}")
-        for bucket in graph.buckets
-        for index, _ in enumerate(bucket.candidates)
-    }
-    for bucket in graph.buckets:
-        model.AddExactlyOne([variables[(bucket.node_id, index)] for index in range(len(bucket.candidates))])
-    fixed_selections = dict(fixed_selections or {})
-    unknown_nodes = sorted(set(fixed_selections) - set(bucket_map))
-    if unknown_nodes:
-        raise IRVerificationError(
-            "AutoDistributed fixed selections reference unknown nodes: "
-            + ", ".join(unknown_nodes),
-            stage=graph.module.stage,
-        )
-    for node_id, candidate_id in fixed_selections.items():
-        bucket = bucket_map[node_id]
-        candidate_index = next(
-            (
-                index
-                for index, candidate in enumerate(bucket.candidates)
-                if candidate.id == candidate_id
-            ),
-            None,
-        )
-        if candidate_index is None:
-            raise IRVerificationError(
-                f"AutoDistributed candidate {candidate_id!r} is not legal for "
-                f"node {node_id!r}.",
-                stage=graph.module.stage,
-                node_id=node_id,
-            )
-        model.Add(variables[(node_id, candidate_index)] == 1)
     site_map = {
         (site.producer_id, site.producer_index, site.consumer_id, site.consumer_index, site.input_index): site
         for site in graph.reshard_sites
     }
+    from .search_domains import propagate_domains
+    domains = propagate_domains(graph, dict(fixed_selections or {}), site_map)
+    variables = {
+        (bucket.node_id, index): model.NewBoolVar(f"{bucket.node_id}__{index}")
+        for bucket in graph.buckets
+        for index in domains[bucket.node_id]
+    }
+    for bucket in graph.buckets:
+        model.AddExactlyOne([variables[(bucket.node_id, index)] for index in domains[bucket.node_id]])
 
     objective_terms = []
     objective_weights = []
     simplicity_weights = []
     for bucket in graph.buckets:
         for index, candidate in enumerate(bucket.candidates):
+            if index not in domains[bucket.node_id]:
+                continue
             objective_terms.append(variables[(bucket.node_id, index)])
             # Candidate construction rejects invalid ranges.  Do not clamp:
             # silently turning a broken negative/overflow estimate into a
@@ -533,12 +524,16 @@ def solve_search_graph(
     for consumer in graph.module.nodes:
         consumer_bucket = bucket_map[consumer.id]
         for consumer_index, candidate in enumerate(consumer_bucket.candidates):
+            if consumer_index not in domains[consumer.id]:
+                continue
             consumer_var = variables[(consumer.id, consumer_index)]
             for input_index, producer_id in enumerate(consumer.inputs):
                 required = candidate.input_types[input_index]
                 producer_bucket = bucket_map[producer_id]
                 compatible = []
                 for producer_index, producer in enumerate(producer_bucket.candidates):
+                    if producer_index not in domains[producer_id]:
+                        continue
                     if producer.return_type == required or (
                         producer_id,
                         producer_index,
@@ -557,19 +552,29 @@ def solve_search_graph(
 
     plan_variables = {}
     for site in graph.reshard_sites:
+        if site.producer_index not in domains[site.producer_id] or (
+            site.consumer_index is not None and site.consumer_index not in domains[site.consumer_id]
+        ):
+            continue
         producer_var = variables[(site.producer_id, site.producer_index)]
         if site.consumer_index is None:
             active = producer_var
         else:
             consumer_var = variables[(site.consumer_id, site.consumer_index)]
-            active = model.NewBoolVar(f"reshard_active__{site.id}")
-            model.Add(active <= producer_var)
-            model.Add(active <= consumer_var)
-            model.Add(active >= producer_var + consumer_var - 1)
+            if len(domains[site.producer_id]) == 1:
+                active = consumer_var
+            elif len(domains[site.consumer_id]) == 1:
+                active = producer_var
+            else:
+                active = model.NewBoolVar(f"reshard_active__{site.id}")
+                model.Add(active <= producer_var)
+                model.Add(active <= consumer_var)
+                model.Add(active >= producer_var + consumer_var - 1)
         choices = []
         source_type = bucket_map[site.producer_id].candidates[site.producer_index].return_type
         for plan_index, plan in enumerate(site.plans):
-            variable = model.NewBoolVar(f"reshard_plan__{site.id}_{plan_index}")
+            variable = (active if len(site.plans) == 1
+                        else model.NewBoolVar(f"reshard_plan__{site.id}_{plan_index}"))
             plan_variables[(site.id, plan_index)] = variable
             choices.append(variable)
             objective_terms.append(variable)
@@ -578,7 +583,8 @@ def solve_search_graph(
                 * site.invocation_count
             )
             simplicity_weights.append(0)
-        model.Add(sum(choices) == active)
+        if len(site.plans) > 1:
+            model.Add(sum(choices) == active)
 
     for function in graph.module.functions:
         consumer_id = function_boundary_id(function.name)
@@ -587,6 +593,8 @@ def solve_search_graph(
                 graph.module, function.name, output_id, graph.placement)
             bucket = bucket_map[output_id]
             for producer_index, candidate in enumerate(bucket.candidates):
+                if producer_index not in domains[output_id]:
+                    continue
                 if candidate.return_type == target:
                     continue
                 if (output_id, producer_index, consumer_id, None, output_index) not in site_map:
@@ -640,14 +648,14 @@ def solve_search_graph(
         bucket.node_id: next(
             candidate
             for index, candidate in enumerate(bucket.candidates)
-            if solver.BooleanValue(variables[(bucket.node_id, index)])
+            if index in domains[bucket.node_id] and solver.BooleanValue(variables[(bucket.node_id, index)])
         )
         for bucket in graph.buckets
     }
     selected_indexes = {
         bucket.node_id: next(
             index for index, _ in enumerate(bucket.candidates)
-            if solver.BooleanValue(variables[(bucket.node_id, index)])
+            if index in domains[bucket.node_id] and solver.BooleanValue(variables[(bucket.node_id, index)])
         )
         for bucket in graph.buckets
     }
@@ -744,6 +752,8 @@ def graph_dot(
         lines.append(f'    label="{_dot(bucket.node_id)}";')
         for index, candidate in enumerate(bucket.candidates):
             picked = selected is not None and selected.get(bucket.node_id) == candidate
+            if selected is not None and not picked:
+                continue
             color = "green" if picked else "black"
             target = "" if candidate.target_op is None else f"\\ntarget={candidate.target_op}"
             label = (
@@ -757,8 +767,12 @@ def graph_dot(
     bucket_map = graph.bucket_map
     for node in graph.module.nodes:
         for input_index, producer_id in enumerate(node.inputs):
-            for producer_index, _ in enumerate(bucket_map[producer_id].candidates):
+            for producer_index, producer in enumerate(bucket_map[producer_id].candidates):
+                if selected is not None and selected.get(producer_id) != producer:
+                    continue
                 for consumer_index, candidate in enumerate(bucket_map[node.id].candidates):
+                    if selected is not None and selected.get(node.id) != candidate:
+                        continue
                     if (
                         bucket_map[producer_id].candidates[producer_index].return_type
                         == candidate.input_types[input_index]
@@ -768,6 +782,12 @@ def graph_dot(
                             f'"{_dot(node.id)}_{consumer_index}" [label="arg{input_index}"];')
     output_nodes: set[str] = set()
     for site in graph.reshard_sites:
+        if selected is not None and (
+            selected.get(site.producer_id) != bucket_map[site.producer_id].candidates[site.producer_index]
+            or (site.consumer_index is not None
+                and selected.get(site.consumer_id) != bucket_map[site.consumer_id].candidates[site.consumer_index])
+        ):
+            continue
         if site.consumer_index is None and site.consumer_id not in output_nodes:
             output_nodes.add(site.consumer_id)
             lines.append(f'  "{_dot(site.consumer_id)}" [shape=box, label="{_dot(site.consumer_id)}"];')
@@ -782,6 +802,8 @@ def graph_dot(
                     or selected.get(site.consumer_id) == bucket_map[site.consumer_id].candidates[site.consumer_index]
                 )
             )
+            if selected is not None and not picked:
+                continue
             color = "green" if picked else "gray"
             plan_node = f"reshard_{site.id}_{plan_index}"
             source_type = bucket_map[site.producer_id].candidates[site.producer_index].return_type
@@ -853,12 +875,9 @@ def _dump_search(result: SearchResult) -> None:
                 f"evidence={picked.objective_evidence} "
                 f"invocations={result.graph.invocation_counts.get(bucket.node_id, 1)}\n")
         stream.write("Reshards:\n")
+        invocations_by_site = {site.key: site.invocation_count for site in result.graph.reshard_sites}
         for (producer_id, consumer_id, input_index), plan in sorted(result.selected_reshards.items()):
-            invocation_count = next(
-                site.invocation_count
-                for site in result.graph.reshard_sites
-                if site.key == (producer_id, consumer_id, input_index)
-            )
+            invocation_count = invocations_by_site[(producer_id, consumer_id, input_index)]
             stream.write(
                 f"  {producer_id} -> {consumer_id}[{input_index}]: "
                 f"{_plan_text(plan)} invocations={invocation_count}\n")
@@ -909,6 +928,9 @@ def _realized_reshard_plan_cost(
         else source_kind_for_node(graph.module.node_map[site.producer_id])
     )
     usage = DistributedReshardUsageKind(site.usage)
+    key = (source_type, plan, source_kind, usage)
+    if key in graph._realized_costs:
+        return graph._realized_costs[key]
     for index, step in enumerate(plan.step_types):
         realization = graph.realization_policy.classify(
             DistributedReshardRealizationContext(
@@ -936,6 +958,7 @@ def _realized_reshard_plan_cost(
             2_000_000_000,
         )
         previous = step
+    graph._realized_costs[key] = total
     return total
 
 
