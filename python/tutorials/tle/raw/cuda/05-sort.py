@@ -183,6 +183,7 @@ def _sweep_cub_local_rank_precomputed(
     NUM_BINS: tl.constexpr,
     k_bits: tl.constexpr,
     descending: tl.constexpr,
+    first_pass,
     final_pass,
 ):
     tl.static_assert(TILE_N == 2048)
@@ -225,6 +226,7 @@ def _sweep_cub_local_rank_precomputed(
             N,
             OUT_N,
             valid_count,
+            first_pass,
             final_pass,
         ],
         output_indices=[],
@@ -242,6 +244,14 @@ def radix_sort(arr, k_bits=8, descending=False):
 
     rows = arr.numel() // n
     tile_size = 2048
+
+    # n % 2048 != 0, need padding
+    padding = n % tile_size != 0
+    if padding:
+        original_shape = arr.shape
+        original_n = n
+        n = triton.cdiv(n, tile_size) * tile_size
+
     num_bins = 2**k_bits
     n_passes = triton.cdiv(num_bits, k_bits)
     tiles = triton.cdiv(n, tile_size)
@@ -249,15 +259,30 @@ def radix_sort(arr, k_bits=8, descending=False):
     sweep_grid = (rows * tiles, )
 
     with torch.cuda.device(arr.device):
-        arr_in = torch.clone(arr)
-        arr_out = torch.empty_like(arr)
-        temporary_indices = torch.empty_like(arr, dtype=torch.int32)
-        final_indices = torch.empty_like(arr, dtype=torch.int64)
+        if not padding:
+            arr_in = torch.clone(arr)
+        else:
+            arr_in = torch.empty((rows, n), device=arr.device, dtype=arr.dtype)
+            arr_in[:, :original_n] = arr.reshape(rows, original_n)
+            padding_value = float("-inf") if descending else float("inf")
+            arr_in[:, original_n:] = padding_value
+
+        arr_out = torch.empty_like(arr_in)
+        temporary_indices_a = torch.empty_like(arr_in, dtype=torch.int32)
+        temporary_indices_b = (torch.empty_like(arr_in, dtype=torch.int32) if n_passes > 2 else temporary_indices_a)
+        final_indices = torch.empty_like(arr_in, dtype=torch.int64)
         tile_counts = torch.empty((rows, tiles, num_bins), device=arr.device, dtype=torch.int32)
         tile_offsets = torch.empty_like(tile_counts)
 
         for pass_id in range(n_passes):
             bit_offset = pass_id * k_bits
+            if pass_id == 0:
+                compact_indices_in = temporary_indices_a
+                compact_indices_out = temporary_indices_a
+            elif pass_id < n_passes - 1:
+                compact_indices_out = (temporary_indices_b
+                                       if compact_indices_in is temporary_indices_a else temporary_indices_a)
+
             _radix_tile_histogram_kernel_raw[tile_grid](
                 arr_in,
                 tile_counts,
@@ -278,9 +303,9 @@ def radix_sort(arr, k_bits=8, descending=False):
             )
             _sweep_cub_local_rank_precomputed[sweep_grid](
                 arr_in,
-                temporary_indices,
+                compact_indices_in,
                 arr_out,
-                temporary_indices,
+                compact_indices_out,
                 final_indices,
                 tile_offsets,
                 bit_offset,
@@ -290,12 +315,20 @@ def radix_sort(arr, k_bits=8, descending=False):
                 num_bins,
                 k_bits,
                 int(descending),
+                int(pass_id == 0),
                 int(pass_id == n_passes - 1),
                 num_warps=num_warps,
             )
+
+            compact_indices_in = compact_indices_out
             arr_in, arr_out = arr_out, arr_in
 
-    return arr_in, final_indices
+    if not padding:
+        return arr_in, final_indices
+    else:
+        values = arr_in[:, :original_n].reshape(original_shape)
+        indices = final_indices[:, :original_n].reshape(original_shape)
+        return values, indices
 
 
 def sort(inp, dim=-1, descending=False):
@@ -320,7 +353,7 @@ def sort_stable(inp, *, stable, dim=-1, descending=False):
     else:
         inp = inp.contiguous()
 
-    out, out_index = radix_sort(inp, descending=descending)
+    out, out_index = radix_sort(inp, k_bits=8, descending=descending)
 
     if dim != inp.ndim - 1:
         out = torch.movedim(out, -1, dim)
@@ -331,25 +364,38 @@ def sort_stable(inp, *, stable, dim=-1, descending=False):
 if __name__ == "__main__":
     torch.manual_seed(0)
 
+    SHAPES = [
+        (1024, 1),
+        (1024, 2),
+        (1024, 4095),
+        (1024, 4096),
+        (1024, 4097),
+        (1024, 65536),
+        (16, 131072),
+        (8, 262144),
+    ]
+
     # test
-    for dtype in (torch.float16, torch.bfloat16):
-        for descending in (False, True):
-            x = torch.randn((1024, 65536), device=DEVICE, dtype=dtype)
+    for shape in SHAPES:
+        for dtype in (torch.float16, torch.bfloat16):
+            for descending in (False, True):
+                x = torch.randn(shape, device=DEVICE, dtype=dtype)
 
-            ref_values, ref_indices = torch.sort(
-                x,
-                dim=-1,
-                descending=descending,
-                stable=True,
-            )
-            values, indices = sort(
-                x,
-                dim=-1,
-                descending=descending,
-            )
+                ref_values, ref_indices = torch.sort(
+                    x,
+                    dim=-1,
+                    descending=descending,
+                    stable=True,
+                )
+                values, indices = sort(
+                    x,
+                    dim=-1,
+                    descending=descending,
+                )
 
-            torch.testing.assert_close(values, ref_values, rtol=0, atol=0)
-            torch.testing.assert_close(indices, ref_indices, rtol=0, atol=0)
+                torch.testing.assert_close(values, ref_values, rtol=0, atol=0)
+                torch.testing.assert_close(indices, ref_indices, rtol=0, atol=0)
+    print("[√] accurency passed!")
 
     # perf
     x = torch.randn((1024, 65536), device=DEVICE, dtype=torch.float16)

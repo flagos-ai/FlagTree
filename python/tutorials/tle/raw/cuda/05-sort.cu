@@ -12,7 +12,8 @@ __device__ void radix_rank_8x2048_precomputed(
     __attribute__((address_space(1))) int32_t *output_indices32,
     __attribute__((address_space(1))) int64_t *output_indices64,
     __attribute__((address_space(1))) const int32_t *tile_offsets, int row,
-    int tile, int n, int tiles, int valid_count, int final_pass) {
+    int tile, int n, int tiles, int valid_count, int first_pass,
+    int final_pass) {
   constexpr int block_threads = 256;
   constexpr int items_per_thread = 8;
   constexpr int radix_bits = 8;
@@ -79,7 +80,7 @@ __device__ void radix_rank_8x2048_precomputed(
       const int64_t output_offset = static_cast<int64_t>(row) * n + output_col;
       output[output_offset] = input[input_offset];
       const int original_col =
-          final_pass != 0 ? input_indices[input_offset] : input_col;
+          first_pass != 0 ? input_col : input_indices[input_offset];
       if (final_pass != 0) {
         output_indices64[output_offset] = static_cast<int64_t>(original_col);
       } else {
@@ -140,11 +141,12 @@ __device__ void RadixRank8x2048Precomputed(
     __attribute__((address_space(1))) int32_t *output_indices32,
     __attribute__((address_space(1))) int64_t *output_indices64,
     __attribute__((address_space(1))) const int32_t *tile_offsets, int row,
-    int tile, int n, int tiles, int valid_count, int final_pass) {
+    int tile, int n, int tiles, int valid_count, int first_pass,
+    int final_pass) {
   (void)digits_allocated;
   (void)digits_size;
   radix_rank_8x2048_precomputed(digits_aligned, digits_offset, digits_stride,
                                 input, input_indices, output, output_indices32,
                                 output_indices64, tile_offsets, row, tile, n,
-                                tiles, valid_count, final_pass);
+                                tiles, valid_count, first_pass, final_pass);
 }
