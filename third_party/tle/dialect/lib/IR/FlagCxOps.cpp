@@ -37,24 +37,6 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
-namespace {
-
-enum class MemoryOrder : int32_t {
-  Relaxed = 0,
-  Acquire = 1,
-  Release = 2,
-  AcqRel = 3,
-};
-
-enum class MemoryScope : int32_t {
-  System = 0,
-  Device = 1,
-  Block = 2,
-  Thread = 3,
-};
-
-} // namespace
-
 namespace mlir::triton::tle {
 
 LogicalResult GetLocalRankOp::verify() {
@@ -103,21 +85,21 @@ LogicalResult FlagCxBarrierOp::verify() {
     return op->emitOpError() << "context_id must be non-negative";
 
   switch (static_cast<MemoryOrder>(orderAttr.getInt())) {
-  case MemoryOrder::Relaxed:
-  case MemoryOrder::Acquire:
-  case MemoryOrder::Release:
-  case MemoryOrder::AcqRel:
+  case MemoryOrder::RELAXED:
+  case MemoryOrder::ACQUIRE:
+  case MemoryOrder::RELEASE:
+  case MemoryOrder::ACQ_REL:
     break;
   default:
     return emitInvalidIntAttr("order", orderAttr.getInt(),
                               "Relaxed(0), Acquire(1), Release(2), AcqRel(3)");
   }
 
-  switch (static_cast<MemoryScope>(scopeAttr.getInt())) {
-  case MemoryScope::System:
-  case MemoryScope::Device:
-  case MemoryScope::Block:
-  case MemoryScope::Thread:
+  switch (static_cast<SyncScope>(scopeAttr.getInt())) {
+  case SyncScope::SYSTEM:
+  case SyncScope::DEVICE:
+  case SyncScope::BLOCK:
+  case SyncScope::THREAD:
     break;
   default:
     return emitInvalidIntAttr("scope", scopeAttr.getInt(),

@@ -174,6 +174,7 @@ def signal(
     space: str | attr.FlagCXTeamKind = "intra_node",
     group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
     context_idx: int = 0,
+    scope: MemoryScope | str = MemoryScope.DEVICE,
     _semantic=None,
 ):
     """Atomically update a synchronization slot owned by a remote FlagCX peer.
@@ -219,6 +220,11 @@ def signal(
     if context_idx < 0 or context_idx > 0x7FFFFFFF:
         raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
 
+    scope = tl._unwrap_if_constexpr(scope)
+    scope = scope if isinstance(scope, attr.SyncScope) else attr.SyncScope.from_str(scope)
+    if scope is None:
+        raise ValueError(f"scope must be system, device, block, or thread, got {scope!r}")
+
     peer_tensor = _normalize_signal_scalar(peer, "peer", tl.int32, _semantic)
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.uint32, _semantic)
     value_value = value.value if isinstance(value, tl.constexpr) else value
@@ -237,8 +243,73 @@ def signal(
         signal_space,
         group_kind,
         context_idx,
+        scope,
     )
     return None
+
+
+@tl.builtin
+def signal_wait(
+    device_dptr,
+    slot_id,
+    wait_kind: str | attr.SignalWaitKind,
+    target: int | None = None,
+    group_kind: str | GroupKind = GroupKind.BLOCK,
+    context_idx: int = 0,
+    order: MemoryOrder | str = MemoryOrder.ACQUIRE,
+    _semantic=None,
+):
+    """Wait until a local FlagCX synchronization slot reaches its target.
+
+    ``target`` is required for ``wait_kind="signal"`` and
+    ``wait_kind="counter"``.  ``wait_kind="shadow"`` instead reads the target
+    from FlagCX's locally maintained shadow buffer, so ``target`` must be
+    omitted. ``slot_id`` is interpreted in the signal slot namespace.
+    """
+    builder = _semantic.builder
+
+    wait_kind = tl._unwrap_if_constexpr(wait_kind)
+    wait_kind_val = (wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else attr.SignalWaitKind.from_str(
+        str(wait_kind).lower()))
+    if wait_kind_val is None:
+        expected = "signal, counter, or shadow"
+        raise ValueError(f"wait kind must be {expected}, got {wait_kind!r}")
+
+    group_kind = tl._unwrap_if_constexpr(group_kind)
+    group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
+    group_kind = attr.FlagCXCoopKind.from_str(group_kind)
+    if group_kind is None:
+        expected = "thread, warp, or block"
+        raise ValueError(f"group kind must be {expected}, got {group_kind!r}")
+
+    context_idx = tl._unwrap_if_constexpr(context_idx)
+    if not isinstance(context_idx, int):
+        raise TypeError(f"context_idx must be a compile-time int, got {type(context_idx).__name__}")
+    if context_idx < 0 or context_idx > 0x7FFFFFFF:
+        raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
+
+    order = tl._unwrap_if_constexpr(order)
+    order = order if isinstance(order, attr.MemoryOrder) else attr.MemoryOrder.from_str(order)
+    if order is None:
+        raise ValueError(f"order must be relaxed, acquire, release, or acq_rel, got {order!r}")
+
+    comm = _parse_src_arg(builder, device_dptr, 1)
+    slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
+    target_value = target.value if isinstance(target, tl.constexpr) else target
+    target_tensor = (_normalize_signal_scalar(target_value, "target", tl.int64, _semantic)
+                     if target_value is not None else None)
+
+    utils.verify_signal_wait(wait_kind_val, None if target_tensor is None else target_tensor.handle)
+
+    builder.create_signal_wait(
+        comm,
+        slot_tensor.handle,
+        wait_kind_val,
+        None if target_tensor is None else target_tensor.handle,
+        group_kind,
+        context_idx,
+        order,
+    )
 
 
 @dataclass
@@ -1486,63 +1557,6 @@ def remote(
         return remote_buffer
 
     raise TypeError(f"tensor must be tle.buffered_tensor, got {type(tensor).__name__}")
-
-
-@tl.builtin
-def signal_wait(
-    device_dptr,
-    slot_id,
-    wait_kind: str | attr.SignalWaitKind,
-    target: int | None = None,
-    group_kind: str | GroupKind = GroupKind.BLOCK,
-    context_idx: int = 0,
-    _semantic=None,
-):
-    """Wait until a local FlagCX synchronization slot reaches its target.
-
-    ``target`` is required for ``wait_kind="signal"`` and
-    ``wait_kind="counter"``.  ``wait_kind="shadow"`` instead reads the target
-    from FlagCX's locally maintained shadow buffer, so ``target`` must be
-    omitted. ``slot_id`` is interpreted in the signal slot namespace.
-    """
-    builder = _semantic.builder
-
-    wait_kind = tl._unwrap_if_constexpr(wait_kind)
-    wait_kind_val = (wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else attr.SignalWaitKind.from_str(
-        str(wait_kind).lower()))
-    if wait_kind_val is None:
-        expected = "signal, counter, or shadow"
-        raise ValueError(f"wait kind must be {expected}, got {wait_kind!r}")
-
-    group_kind = tl._unwrap_if_constexpr(group_kind)
-    group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
-    group_kind = attr.FlagCXCoopKind.from_str(group_kind)
-    if group_kind is None:
-        expected = "thread, warp, or block"
-        raise ValueError(f"group kind must be {expected}, got {group_kind!r}")
-
-    context_idx = tl._unwrap_if_constexpr(context_idx)
-    if not isinstance(context_idx, int):
-        raise TypeError(f"context_idx must be a compile-time int, got {type(context_idx).__name__}")
-    if context_idx < 0 or context_idx > 0x7FFFFFFF:
-        raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
-
-    comm = _parse_src_arg(builder, device_dptr, 1)
-    slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
-    target_value = target.value if isinstance(target, tl.constexpr) else target
-    target_tensor = (_normalize_signal_scalar(target_value, "target", tl.int64, _semantic)
-                     if target_value is not None else None)
-
-    utils.verify_signal_wait(wait_kind_val, None if target_tensor is None else target_tensor.handle)
-
-    builder.create_signal_wait(
-        comm,
-        slot_tensor.handle,
-        wait_kind_val,
-        None if target_tensor is None else target_tensor.handle,
-        group_kind,
-        context_idx,
-    )
 
 
 def distributed_dot(a: ShardedTensor, b: ShardedTensor, c: ShardedTensor | None = None):

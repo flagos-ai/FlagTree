@@ -100,8 +100,16 @@ def Tle_FlagCxSignalOp : Tle_Op<"flagcx signal", [MemoryEffects<[MemRead, MemWri
     Tle_SignalOpKindAttr:$signal_op,
     Tle_FlagCXTeamKindAttr:$team_kind,
     Tle_FlagCXCoopKindAttr:$coop_kind,
-    I32Attr:$context_idx
+    I32Attr:$context_idx,
+    Tle_SyncScopeAttr:$scope
   );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    `(` $signal_op `,` $team_kind `,` $coop_kind `,` $scope `)` $comm `,` $peer `,` $slot_id (`,` $value^)?  attr-dict `:`
+    functional-type(operands, results)
+  }];
 
   let hasVerifier = true;
 }
@@ -120,13 +128,14 @@ def Tle_FlagCxSignalWaitOp : Tle_Op<"flagcx signal_wait"> {
     Tle_SignalWaitKindAttr:$wait_kind,
     Optional<I64>:$target,
     Tle_FlagCXCoopKindAttr:$coop_kind,
-    I32Attr:$context_idx
+    I32Attr:$context_idx,
+    Tle_MemoryOrderAttr:$order
   );
 
   let results = (outs);
 
   let assemblyFormat = [{
-    `(` $wait_kind `,` $coop_kind `)` $comm `,` $slot_id (`,` $target^)?  attr-dict `:`
+    `(` $wait_kind `,` $coop_kind `,` $order `)` $comm `,` $slot_id (`,` $target^)?  attr-dict `:`
     functional-type(operands, results)
   }];
 
