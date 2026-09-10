@@ -32,6 +32,10 @@ namespace ttg = triton::gpu;
 
 static constexpr StringLiteral kExhaustedDiagnostic =
     "mthreads TLE barrier allocation exhausted hardware barrier ids";
+static constexpr StringLiteral kPipeExhaustedDiagnostic =
+    "MUSA TLE pipe barrier allocation exceeds hardware barrier id limit";
+static constexpr StringLiteral kPipeBarrierRingAttr =
+    "musa_tle.pipe_barrier_ring";
 
 class LowerBarrierAllocationsPass
     : public impl::TritonMUSAGPUTLELowerBarrierAllocationsBase<
@@ -104,20 +108,34 @@ class LowerBarrierAllocationsPass
         break;
     }
 
+    BarrierAllocOp pipeAlloc;
+    for (BarrierAllocOp alloc : allocs) {
+      if (alloc->hasAttr(kPipeBarrierRingAttr)) {
+        pipeAlloc = alloc;
+        break;
+      }
+    }
+
     if (totalBarriers <= 0 ||
         totalBarriers > std::numeric_limits<int32_t>::max()) {
-      allocs.front().emitOpError()
-          << kExhaustedDiagnostic << ": cannot reserve " << totalBarriers
-          << " additional ids in [1, " << triton::musa::kMaxBarrierId << "]";
+      if (pipeAlloc)
+        pipeAlloc.emitOpError(kPipeExhaustedDiagnostic);
+      else
+        allocs.front().emitOpError()
+            << kExhaustedDiagnostic << ": cannot reserve " << totalBarriers
+            << " additional ids in [1, " << triton::musa::kMaxBarrierId << "]";
       return failure();
     }
 
     auto reserved = triton::musa::reserveBarrierIdRange(
         allocs.front(), static_cast<int32_t>(totalBarriers));
     if (failed(reserved)) {
-      allocs.front().emitOpError()
-          << kExhaustedDiagnostic << ": cannot reserve " << totalBarriers
-          << " additional ids in [1, " << triton::musa::kMaxBarrierId << "]";
+      if (pipeAlloc)
+        pipeAlloc.emitOpError(kPipeExhaustedDiagnostic);
+      else
+        allocs.front().emitOpError()
+            << kExhaustedDiagnostic << ": cannot reserve " << totalBarriers
+            << " additional ids in [1, " << triton::musa::kMaxBarrierId << "]";
       return failure();
     }
 
@@ -144,6 +162,7 @@ class LowerBarrierAllocationsPass
       }
 
       rewriter.replaceAllUsesWith(alloc.getBaseId(), base);
+      alloc->removeAttr(kPipeBarrierRingAttr);
       rewriter.eraseOp(alloc);
       nextBase += alloc.getNumBarriers();
     }

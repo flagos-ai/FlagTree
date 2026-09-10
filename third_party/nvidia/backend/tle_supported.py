@@ -21,6 +21,7 @@ TLE_SUPPORTED_PRIMITIVES = [
     "pipe.writer.close",
     "gpu.alloc",
     "gpu.buffered_tensor.reshape",
+    "gpu.buffered_tensor.slot",
     "gpu.copy",
     "gpu.local_ptr",
     "gpu.memory_space",

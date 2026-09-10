@@ -24,6 +24,11 @@ add_triton_library(TritonGPUToLLVM
 
     DEPENDS
     TritonGPUConversionPassIncGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUCTAAttrIncGen
+    TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
 
     LINK_LIBS PUBLIC
     MLIRIR

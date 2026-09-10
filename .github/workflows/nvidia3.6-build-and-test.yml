@@ -34,7 +34,13 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Group by PR number for pull_request events to cancel outdated runs from the same PR.
+  # Group by commit SHA for push events to allow parallel runs from different merges.
+  # Fall back to run_id for other events (e.g., schedule) to ensure each run is independent.
+  group: ${{ github.workflow }}-${{
+    github.event_name == 'pull_request' && github.event.pull_request.number ||
+    github.event_name == 'push' && github.event.head_commit.id ||
+    github.run_id }}
   cancel-in-progress: true
 
 jobs:

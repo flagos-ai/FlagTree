@@ -11,7 +11,11 @@ from triton._C.libtriton import ir, passes
 from triton.backends.compiler import Language
 from triton.compiler import ASTSource
 
-from test_tle_utils import mthreads_backend, require_mthreads_libtriton
+from test_tle_utils import (
+    mthreads_backend,
+    require_mthreads_libtriton,
+    tme_descriptor_attrs,
+)
 
 require_mthreads_libtriton()
 
@@ -36,6 +40,48 @@ def _completion_transaction_kernel(
         (0, dynamic_k),
         barrier=full[SLOT],
     )
+
+
+@triton.jit
+def _pipe_external_completion_kernel(
+    src_desc,
+    dst_desc,
+    STAGES: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+):
+    smem = tle.gpu.alloc((STAGES, 256, 64), dtype=tl.float16, nv_mma_shared_layout=False)
+    full = tle.gpu.alloc_barriers(
+        STAGES,
+        arrive_count=1,
+        init=tle.gpu.PENDING,
+        expect_bytes=32768,
+    )
+    pipe = tle.pipe(capacity=STAGES, name="external_completion", data=smem)
+    writer = pipe.writer()
+    reader = pipe.reader()
+    for iteration in tl.static_range(0, ITERATIONS):
+        slot = writer.acquire(iteration)
+        tle.gpu.copy(
+            src_desc,
+            slot.data,
+            (256, 64),
+            (0, 0),
+            barrier=full[iteration % STAGES],
+        )
+        writer.commit(iteration)
+        wait = reader.wait(iteration)
+        tle.gpu.copy(wait.slot.data, dst_desc, (256, 64), (0, 0))
+        reader.release(iteration)
+
+
+@triton.jit
+def _pipe_external_bad_capacity_kernel(src_desc, STAGES: tl.constexpr):
+    smem = tle.gpu.alloc((STAGES, 256, 64), dtype=tl.float16, nv_mma_shared_layout=False)
+    full = tle.gpu.alloc_barriers(1, arrive_count=1, init=tle.gpu.PENDING, expect_bytes=32768)
+    pipe = tle.pipe(capacity=STAGES, name="external_bad_capacity", data=smem)
+    slot = pipe.writer().acquire(0)
+    tle.gpu.copy(src_desc, slot.data, (256, 64), (0, 0), barrier=full[0])
+    pipe.writer().commit(0)
 
 
 def _compile_transaction_module(stages=1, slot=0):
@@ -69,6 +115,61 @@ def _compile_transaction_module(stages=1, slot=0):
     module = compiler_stages["ttir"](module, metadata)
     module = compiler_stages["ttgir"](module, metadata)
     return backend, context, module
+
+
+def _compile_external_pipe_kernel(stages=2, iterations=3):
+    target, backend = mthreads_backend()
+    options = backend.parse_options({"num_stages": 1})
+    signature = {
+        "src_desc": "tensordesc<fp16[256,64]>",
+        "dst_desc": "tensordesc<fp16[256,64]>",
+        "STAGES": "constexpr",
+        "ITERATIONS": "constexpr",
+    }
+    source = ASTSource(
+        fn=_pipe_external_completion_kernel,
+        signature=signature,
+        constexprs={"STAGES": stages, "ITERATIONS": iterations},
+        attrs=tme_descriptor_attrs(signature),
+    )
+    return triton.compile(source, target=target)
+
+
+def _compile_external_bad_capacity_kernel(stages=2):
+    target, backend = mthreads_backend()
+    signature = {"src_desc": "tensordesc<fp16[256,64]>", "STAGES": "constexpr"}
+    source = ASTSource(
+        fn=_pipe_external_bad_capacity_kernel,
+        signature=signature,
+        constexprs={"STAGES": stages},
+        attrs=tme_descriptor_attrs(signature),
+    )
+    return triton.compile(source, target=target)
+
+
+def test_mthreads_tle_pipe_reuses_external_full_completion_barrier():
+    compiled = _compile_external_pipe_kernel()
+    ttgir = compiled.asm["ttgir"]
+    llir = compiled.asm["llir"]
+
+    # The user allocation is lowered once; LowerPipe must not materialize a
+    # second pipe-owned full ring.  The cyclic empty ring remains internal.
+    assert ttgir.count("ttmg.barrier_add_trans") == 3, ttgir
+    assert ttgir.count("ttmg.arrive_barrier_noret") == 3, ttgir
+    assert ttgir.count("ttmg.async_tme_copy_global_to_local") == 3, ttgir
+    assert ttgir.count("ttmg.warp_arrive_barrier") == 3, ttgir
+    assert "musa_tle.pipe_barrier_ring" not in ttgir, ttgir
+    assert "musa_tle.expect_bytes" not in ttgir, ttgir
+    assert "musa_tle.completion_group" not in ttgir, ttgir
+    assert "musa_tle.pipe." not in ttgir, ttgir
+    assert "llvm.musa.async.add.trans(i32 1, i32 32768)" in llir, llir
+
+
+def test_mthreads_tle_pipe_rejects_external_capacity_mismatch(capfd):
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        _compile_external_bad_capacity_kernel()
+    assert ("MUSA TLE pipe external completion barrier capacity must match pipe "
+            "capacity" in capfd.readouterr().err)
 
 
 def _lower_to_llvm_dialect(module, context):

@@ -43,6 +43,14 @@ public:
   // Returns true if it can't prove the AllocationSlices are disjoint.
   bool intersects(const AllocationSlice &other) const;
 
+#ifdef __TLE__
+  // A whole-allocation publication covers only that exact physical interval,
+  // never an unknown larger interval or a merely intersecting allocation.
+  bool isWithinAllocation(const AllocationSlice &whole) const {
+    return allocationInterval == whole.allocationInterval;
+  }
+#endif // __TLE__
+
   void print(raw_ostream &os) const;
 
 private:

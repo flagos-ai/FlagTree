@@ -307,6 +307,25 @@ macro(flagtree_python_link_libraries)
 endmacro()
 
 
+macro(flagtree_configure_flir_dependency)
+  if(FLAGTREE_BACKEND STREQUAL "tsingmicro")
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
+      message(FATAL_ERROR "The ${FLAGTREE_BACKEND} backend requires third_party/flir")
+    endif()
+
+    # TsingMicro only consumes FLIR's C++ targets; do not build its Python/CPU plugin.
+    set(TRITON_SHARED_BUILD_CPU_BACKEND OFF)
+    list(REMOVE_ITEM TRITON_CODEGEN_BACKENDS "flir")
+    if(NOT TARGET TritonSharedUtils)
+      add_subdirectory(
+        "${PROJECT_SOURCE_DIR}/third_party/flir"
+        "${PROJECT_BINARY_DIR}/third_party/flir"
+      )
+    endif()
+  endif()
+endmacro()
+
+
 macro(flagtree_configure_tle_plugin append_tle_plugin)
   if(FLAGTREE_TLE)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tle/CMakeLists.txt")

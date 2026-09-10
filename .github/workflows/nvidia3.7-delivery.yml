@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: CD-NV3.8
+name: CD-NV3.7
 
 permissions:
   contents: write
@@ -38,10 +38,10 @@ on:
         default: 'x86_64'
       BRANCH:
         required: true
-        default: 'triton_v3.8.x'
+        default: 'triton_v3.7.x'
       TRITON:
         required: true
-        default: '3.8'
+        default: '3.7'
       BACKEND:
         required: true
         default: 'nvidia'
@@ -64,11 +64,11 @@ on:
       BRANCH:
         type: string
         required: true
-        default: 'triton_v3.8.x'
+        default: 'triton_v3.7.x'
       TRITON:
         type: string
         required: true
-        default: '3.8'
+        default: '3.7'
       BACKEND:
         type: string
         required: true
@@ -83,7 +83,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: nvidia3.8-cd
+    runs-on: nvidia3.7-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch

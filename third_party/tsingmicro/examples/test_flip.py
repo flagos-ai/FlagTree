@@ -1,4 +1,5 @@
 import pytest
+import sys
 import torch
 import triton
 import triton.language as tl
@@ -44,3 +45,4 @@ if __name__ == "__main__":
                 print("Test passed!")
             except Exception as e:
                 print(f"Test failed: {str(e)}")
+                sys.exit(1)

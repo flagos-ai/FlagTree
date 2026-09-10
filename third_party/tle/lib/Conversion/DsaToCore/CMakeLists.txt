@@ -1,6 +1,11 @@
 add_triton_library(TleDsaToCore
   DsaToCore.cpp
 
+  DEPENDS
+    TleDsaDialectIncGen
+    TleDsaTypesIncGen
+    TleDsaOpsIncGen
+
   LINK_LIBS PUBLIC
     MLIRIR
     MLIRPass

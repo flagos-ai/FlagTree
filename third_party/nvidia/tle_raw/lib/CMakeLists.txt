@@ -5,6 +5,11 @@ add_triton_library(NvidiaTLERawTransforms
   DEPENDS
   NvidiaTLERawTransformsIncGen
   TleTableGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   TleIR

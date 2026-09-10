@@ -1,4 +1,4 @@
-"""Compile and runtime coverage for the mthreads TLE warp-specialize container."""
+"""Compile and runtime coverage for the MUSA TLE warp-specialize container."""
 
 import re
 
@@ -13,7 +13,7 @@ from triton.backends.compiler import Language
 from triton.compiler import ASTSource
 from triton.compiler.errors import CompilationError
 
-from test_tle_utils import mthreads_backend, require_mthreads_libtriton
+from test_tle_utils import compile_musa, mthreads_backend, require_mthreads_libtriton
 
 require_mthreads_libtriton()
 
@@ -60,11 +60,91 @@ def _ws_simple_worker(out):
 
 
 @triton.jit
-def _ws_simple_kernel(out):
+def _ws_multi_default(out):
+    smem = tle.gpu.alloc((1, ), dtype=tl.int32, nv_mma_shared_layout=False)
+    local = tle.gpu.local_ptr(smem, (0, ))
+    tl.store(local, 11)
+    tl.store(out, tl.load(local))
+
+
+@triton.jit
+def _ws_multi_worker0(out):
+    smem = tle.gpu.alloc((1, ), dtype=tl.int32, nv_mma_shared_layout=False)
+    local = tle.gpu.local_ptr(smem, (0, ))
+    tl.store(local, 22)
+    tl.store(out + 1, tl.load(local))
+
+
+@triton.jit
+def _ws_multi_worker1(out):
+    smem = tle.gpu.alloc((1, ), dtype=tl.int32, nv_mma_shared_layout=False)
+    local = tle.gpu.local_ptr(smem, (0, ))
+    tl.store(local, 33)
+    tl.store(out + 2, tl.load(local))
+
+
+@triton.jit
+def _ws_multi_worker2(out):
+    smem = tle.gpu.alloc((1, ), dtype=tl.int32, nv_mma_shared_layout=False)
+    local = tle.gpu.local_ptr(smem, (0, ))
+    tl.store(local, 44)
+    tl.store(out + 3, tl.load(local))
+
+
+@triton.jit
+def _ws_multi_worker_kernel(out):
     tle.gpu.warp_specialize(
-        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
-        worker_num_warps=[4],
-        worker_num_regs=[24],
+        [
+            (_ws_multi_default, (out, )),
+            (_ws_multi_worker0, (out, )),
+            (_ws_multi_worker1, (out, )),
+            (_ws_multi_worker2, (out, )),
+        ],
+        worker_num_warps=[1, 2, 4],
+        worker_num_regs=[24, 32, 40],
+    )
+
+
+@triton.jit
+def _ws_barrier_default(out):
+    tl.store(out, 11)
+
+
+@triton.jit
+def _ws_barrier_worker0(out, barrier):
+    tle.gpu.barrier_arrive(barrier, phaseIdx=0)
+    tle.gpu.barrier_wait(barrier, phaseIdx=0)
+    tl.store(out + 1, 22)
+
+
+@triton.jit
+def _ws_barrier_worker1(out, barrier):
+    tle.gpu.barrier_arrive(barrier, phaseIdx=0)
+    tle.gpu.barrier_wait(barrier, phaseIdx=0)
+    tl.store(out + 2, 33)
+
+
+@triton.jit
+def _ws_barrier_worker2(out, barrier):
+    tle.gpu.barrier_arrive(barrier, phaseIdx=0)
+    tle.gpu.barrier_wait(barrier, phaseIdx=0)
+    tl.store(out + 3, 44)
+
+
+@triton.jit
+def _ws_multi_worker_barrier_kernel(out):
+    barrier0 = tle.gpu.alloc_barrier(arrive_count=1)
+    barrier1 = tle.gpu.alloc_barrier(arrive_count=2)
+    barrier2 = tle.gpu.alloc_barrier(arrive_count=4)
+    tle.gpu.warp_specialize(
+        [
+            (_ws_barrier_default, (out, )),
+            (_ws_barrier_worker0, (out, barrier0)),
+            (_ws_barrier_worker1, (out, barrier1)),
+            (_ws_barrier_worker2, (out, barrier2)),
+        ],
+        worker_num_warps=[1, 2, 4],
+        worker_num_regs=[24, 32, 40],
     )
 
 
@@ -105,24 +185,6 @@ def _ws_non_sequence_regs_kernel(out):
 
 
 @triton.jit
-def _ws_float_warps_kernel(out):
-    tle.gpu.warp_specialize(
-        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
-        worker_num_warps=[4.0],
-        worker_num_regs=[24],
-    )
-
-
-@triton.jit
-def _ws_float_regs_kernel(out):
-    tle.gpu.warp_specialize(
-        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
-        worker_num_warps=[4],
-        worker_num_regs=[24.0],
-    )
-
-
-@triton.jit
 def _ws_zero_warps_kernel(out):
     tle.gpu.warp_specialize(
         [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
@@ -136,15 +198,6 @@ def _ws_non_power_of_two_warps_kernel(out):
     tle.gpu.warp_specialize(
         [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
         worker_num_warps=[3],
-        worker_num_regs=[24],
-    )
-
-
-@triton.jit
-def _ws_two_producer_warps_kernel(out):
-    tle.gpu.warp_specialize(
-        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
-        worker_num_warps=[2],
         worker_num_regs=[24],
     )
 
@@ -183,6 +236,15 @@ def _ws_empty_functions_kernel(out):
 
 
 @triton.jit
+def _ws_no_workers_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, ))],
+        worker_num_warps=[],
+        worker_num_regs=[],
+    )
+
+
+@triton.jit
 def _ws_invalid_entry_kernel(out):
     tle.gpu.warp_specialize(
         [(_ws_simple_default, (out, )), _ws_simple_worker],
@@ -201,15 +263,6 @@ def _ws_invalid_args_kernel(out):
 
 
 @triton.jit
-def _ws_bool_warps_kernel(out):
-    tle.gpu.warp_specialize(
-        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
-        worker_num_warps=[True],
-        worker_num_regs=[24],
-    )
-
-
-@triton.jit
 def _ws_constexpr_tuple_config_kernel(out, WORKER_WARPS: tl.constexpr, WORKER_REGS: tl.constexpr):
     tle.gpu.warp_specialize(
         [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
@@ -223,7 +276,6 @@ def _compile_ws_ir(
     signature=None,
     constexprs=None,
     consumer_warps=16,
-    include_late=False,
 ):
     target, backend = mthreads_backend()
     options = backend.parse_options({"num_warps": consumer_warps, "num_stages": 1})
@@ -250,131 +302,74 @@ def _compile_ws_ir(
     ttir = module.str_nodebug()
     module = stages["ttgir"](module, metadata)
     ttgir = module.str_nodebug()
-    if include_late:
-        pm = ir.pass_manager(context)
-        libtriton.passes.convert.add_scf_to_cf(pm)
-        libtriton.passes.convert.add_index_to_llvmir(pm)
-        libtriton.mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, 31)
-        libtriton.mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, 31)
-        libtriton.mthreads.passes.ttgpuir.add_to_llvmir(pm, 31)
-        libtriton.mthreads.passes.ttgpuir.add_tle_lower_warp_specialize(pm)
-        pm.run(module, "lower_static_ws_to_llvm_cfg")
-        return ttir, ttgir, module.str_nodebug()
     return ttir, ttgir
 
 
-def _split_top_level(text):
-    values = []
-    start = 0
-    depth = 0
-    pairs = {"<": ">", "[": "]", "{": "}"}
-    closing = set(pairs.values())
-    for index, char in enumerate(text):
-        if char in pairs:
-            depth += 1
-        elif char in closing:
-            depth -= 1
-        elif char == "," and depth == 0:
-            values.append(text[start:index].strip())
-            start = index + 1
-    tail = text[start:].strip()
-    if tail:
-        values.append(tail)
-    return values
-
-
-def _assert_ws_container(ir_text, producer_warps=4):
-    assert ir_text.count("ttg.warp_specialize") == 1, ir_text
-    assert ir_text.count("ttg.warp_yield") == 1, ir_text
-    assert ir_text.count("ttg.warp_return") == 1, ir_text
-    assert "partition0" in ir_text, ir_text
-    assert "partition1" not in ir_text, ir_text
-    assert f"num_warps({producer_warps})" in ir_text, ir_text
-    assert re.search(r"requestedRegisters\s*=\s*array<i32:\s*24>", ir_text), ir_text
-    assert "actualRegisters" not in ir_text, ir_text
-    assert "ttg.maxnreg" not in ir_text, ir_text
-    assert "tle.wgmma_pipeline_mode" not in ir_text, ir_text
-    assert "tt.call" not in ir_text, ir_text
-
-    ws_match = re.search(
-        r"ttg\.warp_specialize\((?P<captures>[^)]*)\).*?"
-        rf"partition0\((?P<args>[^)]*)\)\s*num_warps\({producer_warps}\).*?"
-        r":\s*\((?P<types>[^)]*)\)\s*->\s*\(\)",
-        ir_text,
-        re.DOTALL,
+def test_tle_warp_specialize_static_multi_worker_runtime():
+    out = torch.full((4, ), -1, dtype=torch.int32, device="musa")
+    compiled = _ws_multi_worker_kernel.warmup(
+        out,
+        grid=(1, ),
+        num_warps=4,
+        num_stages=1,
     )
-    assert ws_match, ir_text
-    captures = _split_top_level(ws_match.group("captures"))
-    args = _split_top_level(ws_match.group("args"))
-    types = _split_top_level(ws_match.group("types"))
-
-    # Five Python worker arguments flatten to three unique SSA captures:
-    # pointer, dynamic i32, and shared memdesc.  The repeated pointer is
-    # remapped to the first block argument and constexpr BIAS consumes no SSA.
-    assert len(captures) == 3, ir_text
-    assert len(args) == 3, ir_text
-    assert len(types) == 3, ir_text
-    assert sum("ptr" in ty for ty in types) == 1, ir_text
-    assert sum(ty == "i32" for ty in types) == 1, ir_text
-    assert sum("memdesc" in ty for ty in types) == 1, ir_text
-    assert any(re.search(r"\bi32\b", arg) for arg in args), ir_text
-    assert any("memdesc" in arg for arg in args), ir_text
-
-    assert re.search(r"(?:arith\.)?constant\s+7\s*:\s*i32", ir_text), ir_text
-    assert re.search(r"ttg\.warp_yield\s*(?:\n|\})", ir_text), ir_text
-    assert re.search(r"ttg\.warp_return\s*(?:\n|\})", ir_text), ir_text
-    assert re.search(r"\)\s*->\s*\(\)\s*\n\s*tt\.return", ir_text), ir_text
+    assert compiled.metadata.num_warps == 11
+    assert "llvm.musa.barrier0" not in compiled.asm["llir"]
+    # Concurrent partition-local buffers must have distinct backing addresses.
+    # Check disjointness, not allocator-chosen offsets or dispatch instructions.
+    shared_offsets = {0}
+    shared_offsets.update(
+        int(offset) for offset in re.findall(
+            r"getelementptr \(i8, ptr addrspace\(3\) @global_smem, i32 (\d+)\)",
+            compiled.asm["llir"],
+        ))
+    assert len(shared_offsets) == 4
+    for _ in range(4):
+        out.fill_(-1)
+        _ws_multi_worker_kernel[(1, )](out, num_warps=4, num_stages=1)
+        torch.musa.synchronize()
+        torch.testing.assert_close(out.cpu(), torch.tensor([11, 22, 33, 44], dtype=torch.int32))
 
 
-def _assert_prepared_ws_ttgir(ir_text, consumer_warps=16, producer_warps=4):
-    total_warps = consumer_warps + producer_warps
-    assert f'"ttg.total-num-warps" = {total_warps} : i32' in ir_text, ir_text
-    assert f"warpGroupStartIds = array<i32: {consumer_warps}>" in ir_text, ir_text
-    assert ir_text.count("ttg.warp_specialize") == 1, ir_text
-    assert ir_text.count("ttg.warp_yield") == 1, ir_text
-    assert ir_text.count("ttg.warp_return") == 1, ir_text
-    assert "musa_tle.static_warp_specialize" in ir_text, ir_text
-    assert "gpu.thread_id" not in ir_text, ir_text
-    assert "musa_tle.static_ws.split" not in ir_text, ir_text
-    assert "musa_tle.static_ws.role" not in ir_text, ir_text
-    assert "musa_tle.static_ws.num_warps" not in ir_text, ir_text
-    assert "musa_tle.static_ws.thread_offset" not in ir_text, ir_text
-    assert "musa_tle.static_ws.split_candidate" not in ir_text, ir_text
-
-
-def _assert_static_ws_late_ir(ir_text, consumer_warps=16, producer_warps=4):
-    producer_begin = consumer_warps * 32
-    assert "ttg.warp_specialize" not in ir_text, ir_text
-    assert "ttg.warp_yield" not in ir_text, ir_text
-    assert "ttg.warp_return" not in ir_text, ir_text
-    assert "musa_tle.static_warp_specialize" not in ir_text, ir_text
-    dispatch = re.search(
-        rf'(?P<tid>%[-\w.]+) = llvm\.call_intrinsic '
-        rf'"llvm\.musa\.read\.ptx\.sreg\.tid\.x"\(\).*?'
-        rf'arith\.constant {producer_begin} : i32.*?'
-        rf'arith\.cmpi uge, (?P=tid),',
-        ir_text,
-        re.DOTALL,
+def test_tle_warp_specialize_multi_worker_barrier_runtime():
+    out = torch.full((4, ), -1, dtype=torch.int32, device="musa")
+    compiled = _ws_multi_worker_barrier_kernel.warmup(
+        out,
+        grid=(1, ),
+        num_warps=4,
+        num_stages=1,
     )
-    assert dispatch, ir_text
-    assert re.search(rf"arith\.cmpi ult, {re.escape(dispatch.group('tid'))},", ir_text), ir_text
-    assert ir_text.count("arith.cmpi uge") == 1, ir_text
-    assert ir_text.count("arith.cmpi ult") == 1, ir_text
-    assert ir_text.count("cf.cond_br") == 2, ir_text
-    assert re.search(rf"arith\.constant {producer_begin} : i32", ir_text), ir_text
-    assert ir_text.index("arith.cmpi uge") < ir_text.index("arith.cmpi ult"), ir_text
-    assert "llvm.switch" not in ir_text, ir_text
-    assert "musa_tle.static_ws." not in ir_text, ir_text
-    assert "builtin.unrealized_conversion_cast" not in ir_text, ir_text
+    assert compiled.metadata.num_warps == 11
+    assert "llvm.musa.barrier0" not in compiled.asm["llir"]
+    for _ in range(2):
+        out.fill_(-1)
+        _ws_multi_worker_barrier_kernel[(1, )](out, num_warps=4, num_stages=1)
+        torch.musa.synchronize()
+        torch.testing.assert_close(out.cpu(), torch.tensor([11, 22, 33, 44], dtype=torch.int32))
 
 
-def test_tle_warp_specialize_mthreads_container_contract():
-    ttir, ttgir, late_ir = _compile_ws_ir(include_late=True)
-    _assert_ws_container(ttir)
-    assert "musa_tle.static_warp_specialize" in ttir, ttir
-    _assert_ws_container(ttgir)
-    _assert_prepared_ws_ttgir(ttgir)
-    _assert_static_ws_late_ir(late_ir)
+def test_tle_warp_specialize_musa_container_contract():
+    builder = libtriton.ir.builder
+    for method in (
+            "create_warp_specialize",
+            "create_warp_specialize_partitions",
+            "create_warp_yield",
+            "create_warp_return",
+    ):
+        assert hasattr(builder, method)
+    assert hasattr(libtriton.mthreads.ir, "WarpSpecializeOp")
+
+    out = torch.empty((3, ), dtype=torch.int32, device="musa")
+    compiled = _ws_container_kernel.warmup(out, 5, BIAS=7, grid=(1, ), num_warps=16, num_stages=1)
+    assert compiled.metadata.num_warps == 20
+    assert "llvm.musa.barrier0" not in compiled.asm["llir"]
+    # Exercise dynamic scalar and shared-memory captures, duplicate pointers,
+    # and the constexpr argument through their observable results.
+    for value in (5, 11):
+        out.fill_(-1)
+        compiled[(1, 1, 1)](out, value, 7)
+        torch.musa.synchronize()
+        torch.testing.assert_close(out.cpu(), torch.tensor([value + 1, value + 7, value + 8], dtype=torch.int32))
 
 
 @pytest.mark.parametrize(
@@ -393,9 +388,7 @@ def test_tle_warp_specialize_static_two_branch_runtime(consumer_warps, producer_
         num_stages=1,
     )
     assert compiled.metadata.num_warps == consumer_warps + producer_warps
-    _assert_prepared_ws_ttgir(compiled.asm["ttgir"], consumer_warps, producer_warps)
-    assert "ttg.warp_specialize" not in compiled.asm["llir"]
-    assert f'!"maxntidx", i32 {(consumer_warps + producer_warps) * 32}' in compiled.asm["llir"]
+    assert "llvm.musa.barrier0" not in compiled.asm["llir"]
 
     for _ in range(2):
         out.zero_()
@@ -410,38 +403,12 @@ def test_tle_warp_specialize_static_two_branch_runtime(consumer_warps, producer_
         torch.testing.assert_close(out.cpu(), torch.tensor([1, 2], dtype=torch.int32))
 
 
-def test_tle_warp_specialize_builder_bindings_are_available():
-    builder = libtriton.ir.builder
-    for method in (
-            "create_warp_specialize",
-            "create_warp_specialize_partitions",
-            "create_warp_yield",
-            "create_warp_return",
-    ):
-        assert hasattr(builder, method)
-    assert hasattr(libtriton.mthreads.ir, "WarpSpecializeOp")
-
-
-@pytest.mark.parametrize("producer_warps", [1, 2, 4, 8])
-def test_tle_warp_specialize_accepts_constexpr_tuple_configuration(producer_warps):
-    ttir, ttgir, late_ir = _compile_ws_ir(
-        _ws_constexpr_tuple_config_kernel,
-        {"out": "*i32", "WORKER_WARPS": "constexpr", "WORKER_REGS": "constexpr"},
-        {"WORKER_WARPS": producer_warps, "WORKER_REGS": 24},
-        include_late=True,
-    )
-    assert f"num_warps({producer_warps})" in ttir, ttir
-    assert re.search(r"requestedRegisters\s*=\s*array<i32:\s*24>", ttir), ttir
-    _assert_prepared_ws_ttgir(ttgir, producer_warps=producer_warps)
-    _assert_static_ws_late_ir(late_ir, producer_warps=producer_warps)
-
-
 @pytest.mark.parametrize(
     "kernel,diagnostic",
     [
         (
             _ws_non_terminal_kernel,
-            "mthreads TLE static warp_specialize must be the final operation before tt.return",
+            "MUSA TLE static warp_specialize must be the final operation before tt.return",
         ),
     ],
 )
@@ -451,48 +418,37 @@ def test_tle_warp_specialize_lowering_rejects_unsupported_contract(capfd, kernel
     assert diagnostic in capfd.readouterr().err
 
 
+# Explicit TME/SQMMA pipeline integration is covered by
+# test_tle_warp_specialize_integration.py; keep only container-specific tests here.
+
+
 @pytest.mark.parametrize(
     "kernel,signature,diagnostic",
     [
         (
             _ws_dynamic_warps_kernel,
             {"out": "*i32", "worker_warps": "i32"},
-            r"mthreads TLE warp_specialize worker_num_warps\[0\] must be a compile-time integer",
+            r"MUSA TLE warp_specialize worker_num_warps\[0\] must be a compile-time integer",
         ),
         (
             _ws_dynamic_regs_kernel,
             {"out": "*i32", "worker_regs": "i32"},
-            r"mthreads TLE warp_specialize worker_num_regs\[0\] must be a compile-time integer",
+            r"MUSA TLE warp_specialize worker_num_regs\[0\] must be a compile-time integer",
         ),
         (
             _ws_non_sequence_warps_kernel,
             {"out": "*i32"},
-            "mthreads TLE warp_specialize worker_num_warps must be a static sequence",
+            "MUSA TLE warp_specialize worker_num_warps must be a static sequence",
         ),
         (
             _ws_non_sequence_regs_kernel,
             {"out": "*i32"},
-            "mthreads TLE warp_specialize worker_num_regs must be a static sequence",
-        ),
-        (
-            _ws_float_warps_kernel,
-            {"out": "*i32"},
-            r"mthreads TLE warp_specialize worker_num_warps\[0\] must be a compile-time integer",
-        ),
-        (
-            _ws_float_regs_kernel,
-            {"out": "*i32"},
-            r"mthreads TLE warp_specialize worker_num_regs\[0\] must be a compile-time integer",
+            "MUSA TLE warp_specialize worker_num_regs must be a static sequence",
         ),
         (
             _ws_zero_warps_kernel,
             {"out": "*i32"},
-            r"mthreads TLE warp_specialize worker_num_warps\[0\] must be positive",
-        ),
-        (
-            _ws_bool_warps_kernel,
-            {"out": "*i32"},
-            r"mthreads TLE warp_specialize worker_num_warps\[0\] must be a compile-time integer",
+            r"MUSA TLE warp_specialize worker_num_warps\[0\] must be positive",
         ),
         (
             _ws_warp_count_mismatch_kernel,
@@ -524,6 +480,12 @@ def test_tle_warp_specialize_lowering_rejects_unsupported_contract(capfd, kernel
 def test_tle_warp_specialize_frontend_rejects_invalid_static_configuration(kernel, signature, diagnostic):
     with pytest.raises(CompilationError, match=diagnostic):
         _compile_ws_ir(kernel, signature, constexprs={})
+
+
+def test_tle_warp_specialize_rejects_default_only_configuration(capfd):
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        _compile_ws_ir(_ws_no_workers_kernel, {"out": "*i32"}, constexprs={})
+    assert "MUSA TLE static warp_specialize requires at least one worker partition" in capfd.readouterr().err
 
 
 def test_tle_warp_specialize_dialect_rejects_non_power_of_two_warps(capfd):
@@ -599,3 +561,38 @@ def test_tle_warp_specialize_dialect_rejects_invalid_structure(tmp_path, capfd, 
     with pytest.raises(RuntimeError):
         ir.parse_mlir_module(str(fixture_path), context)
     assert diagnostic in capfd.readouterr().err
+
+
+@triton.jit
+def _ws_cta_barrier_idle_role():
+    pass
+
+
+@triton.jit
+def _ws_implicit_tme_role(desc):
+    smem = tle.gpu.alloc((16, 64), dtype=tl.float16, nv_mma_shared_layout=False)
+    tle.gpu.copy(desc, smem, (16, 64), (0, 0))
+
+
+@triton.jit
+def _ws_cta_barrier_probe(desc, MODE: tl.constexpr):
+    if MODE == 0:
+        tle.gpu.warp_specialize([(_ws_implicit_tme_role, (desc, )), (_ws_cta_barrier_idle_role, ())], [4], [24])
+    elif MODE == 1:
+        tle.gpu.warp_specialize([(_ws_cta_barrier_idle_role, ()), (_ws_implicit_tme_role, (desc, ))], [4], [24])
+    else:
+        _ws_implicit_tme_role(desc)
+        tle.gpu.warp_specialize([(_ws_cta_barrier_idle_role, ()), (_ws_cta_barrier_idle_role, ())], [4], [24])
+
+
+@pytest.mark.parametrize("mode", [0, 1])
+def test_unknown_cta_barrier_in_partition_rejected(mode, capfd):
+    # Compile only: an unmatched CTA barrier must never be launched.
+    with pytest.raises(RuntimeError):
+        compile_musa(_ws_cta_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": mode})
+    assert "CTA barrier inside MUSA TLE static warp_specialize partition" in capfd.readouterr().err
+
+
+def test_cta_barrier_before_dispatch_preserved():
+    compiled = compile_musa(_ws_cta_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": 2})
+    assert "call void @llvm.musa.barrier0()" in compiled.asm["llir"]

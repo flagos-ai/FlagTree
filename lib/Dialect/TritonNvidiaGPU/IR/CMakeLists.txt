@@ -7,6 +7,11 @@ add_triton_library(TritonNvidiaGPUIR
   TritonNvidiaGPUTableGen
   TritonNvidiaGPUAttrDefsIncGen
   TritonNvidiaGPUOpInterfacesIncGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   TritonIR

@@ -283,18 +283,82 @@ x_shard = tle.sharding(
 x = tle.make_sharded_tensor(x_ptr, sharding=x_shard, shape=[4, 4])
 ```
 
-##### 3.2.4.3 同步
-
+##### 3.2.4.3 `同步`
 复杂分布式算子中（如 Ring-AllReduce、行列独立流水线）通常只需对子网格同步，而不是整个 Cluster。全局同步会引入额外等待。
 
+`tle.distributed_barrier` 是集合式同步原语，返回 `None`。默认 `barrier_kind="sync"` 会让所选同步组中的所有参与者先在此处会合，再继续执行后续操作。
+
+同一个 barrier 实例中的所有参与者必须以相同顺序调用匹配的 barrier。若分支或循环次数不同，导致部分参与者跳过某次调用，其余参与者会一直等待，kernel 可能死锁。若只需要 producer 向 consumer 的单向通知，而不需要所有参与者会合，请使用 `tle.signal` 和 `tle.signal_wait`。
+
 ```python
-def distributed_barrier(mesh):
-    """
-    若传入 sub_mesh，仅同步该子网格内设备。
-    子网格外设备应视为 No-Op（或由编译器保证控制流不进入）。
-    """
-    pass
+def distributed_barrier(
+    mesh=None,
+    device_dptr=None,
+    space=None,
+    group_kind="block",
+    barrier_kind="sync",
+    order="acqrel",
+    index=0,
+    context_id=0,
+    memory_scope="system",
+):
+    ...
 ```
+
+`mesh` 和 `space` 按以下优先级选择同步模式：
+
+- 由 cluster mesh 静态切片得到的子 mesh 会选择 cluster sub-mesh barrier。例如 `full_mesh[0, :]` 只同步选中的 cluster 成员。当前实现支持由 launch mesh 切出的非标量 mesh；该 sub-mesh 的每个成员都必须调用 barrier，子 mesh 外的 CTA 不应调用同一个 sub-mesh barrier。
+- 设置 `space` 会选择 FlagCX 通信组 barrier，并且必须同时提供 `mesh` 和 `device_dptr`。`"device"`（也可写作 `"intra"`、`"intra_node"`）选择节点内通信组，要求 mesh 有 `device` 拓扑轴。`"inter"`（也可写作 `"inter_node"`）选择跨节点通信组，`"world"` 选择 world 通信组；后二者要求 mesh 有 `node` 拓扑轴。
+- 只包含 `block` 轴的 mesh 会选择 cooperative-grid barrier。它同步完整的 grid，而不是任意子集；该模式会启用 cooperative-grid launch。
+- 其他情况会选择完整 cluster barrier，包括传入完整 cluster mesh 或省略 `mesh`。传入 mesh 时，启动所需的 cluster 维度会由 mesh 推导。
+
+由 cluster mesh 切出的子 mesh 优先于 `space`；除此以外，显式 `space` 优先于 cooperative-grid 和完整 cluster 模式。
+
+示例：在同一 barrier 调用中同时传入 cluster sub-mesh 和分布式上下文：
+
+```python
+# Host 侧。
+full_mesh = tle.device_mesh({
+    "block_cluster": [("cluster_x", 2), ("cluster_y", 2)],
+})
+row_mesh = full_mesh[0, :]
+device_dptr = tle.create_dist_tensor(buffer)
+
+# 在 JIT kernel 中。`device_dptr` 也可用于该 kernel 的其他 FlagCX 操作。
+tle.distributed_barrier(row_mesh, device_dptr=device_dptr, space = "device")
+```
+
+由于 `row_mesh` 是由 cluster mesh 切出的子 mesh，该调用会命中 submesh 分派规则，生成 cluster sub-mesh barrier。`device_dptr` 虽可传入，但不会被这条 barrier 路径使用；即使额外传入 `space=...`，该调用也不会变成 FlagCX 通信组 barrier。
+
+FlagCX 通信组路径的参数含义如下：
+
+- `device_dptr`：`tle.create_dist_tensor(...)` 返回的分布式运行时上下文。
+- `group_kind`：集合式调用的执行粒度，可为 `"thread"`、`"warp"` 或 `"block"`（默认）。
+- `barrier_kind`：可为 `"arrive"`、`"wait"` 或 `"sync"`（默认）。`"arrive"` 只报告已到达，不等待；`"wait"` 等待匹配的到达；`"sync"` 同时完成到达和等待。
+- `order`：内存序，可为 `"relaxed"`、`"acquire"`、`"release"` 或 `"acqrel"`（默认）。`memory_scope`：内存作用域，可为 `"system"`（默认）、`"device"`、`"block"` 或 `"thread"`。这两个参数仅用于 FlagCX 路径。
+- `index`：非负的 barrier 通道编号。`context_id`：预创建的 FlagCX context 编号（尤其用于 `"inter"` 和 `"world"` 的网络 context），必须是非负的编译期 int32。所有参与者的这两个值必须一致。
+
+示例：用 node/device mesh 同步 FlagCX world 通信组：
+
+```python
+# Host 侧：ctx = tle.create_dist_tensor(buffer)
+mesh = tle.device_mesh({"node": 2, "device": 8})
+
+# 在 JIT kernel 中，`ctx` 和 `mesh` 作为编译期参数传入。
+tle.distributed_barrier(
+    mesh,
+    device_dptr=ctx,
+    space="world",
+    group_kind="block",
+    barrier_kind="sync",
+    index=0,
+    context_id=0,
+    order="acqrel",
+    memory_scope="system",
+)
+```
+
+cluster/sub-mesh 和 cooperative-grid 模式当前使用 NVIDIA lowering。FlagCX 模式还要求 TLE 的构建和运行时启用 FlagCX。
 
 ##### 3.2.4.4 远程访问
 

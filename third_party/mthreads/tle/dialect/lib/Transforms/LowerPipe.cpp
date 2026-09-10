@@ -1,26 +1,26 @@
 #ifdef __TLE__
 
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "MUSATLE/Transforms/PipeAnalysis.h"
+#include "TritonMUSACommon/BarrierUtils.h"
+#include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 #include "tle/dialect/include/IR/Dialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 
-#include <cstdint>
+#include <algorithm>
 #include <limits>
-#include <map>
 #include <optional>
-#include <string>
+#include <utility>
 
 namespace mlir {
 
@@ -32,122 +32,29 @@ namespace {
 namespace tt = triton;
 namespace ttg = triton::gpu;
 namespace tle = triton::tle;
+namespace ttmg = triton::musa;
 namespace musa_tle = triton::musa_tle;
 
-static int64_t getCapacity(Operation *op) {
-  return op->getAttrOfType<IntegerAttr>("capacity").getInt();
-}
-
-static OperandRange getFields(Operation *op) {
-  if (auto pipe = dyn_cast<tle::PipeCreateOp>(op))
-    return pipe.getFields();
-  if (auto pipe = dyn_cast<tle::PipeWriterAcquireOp>(op))
-    return pipe.getFields();
-  if (auto pipe = dyn_cast<tle::PipeWriterCommitOp>(op))
-    return pipe.getFields();
-  if (auto pipe = dyn_cast<tle::PipeWriterCloseOp>(op))
-    return pipe.getFields();
-  if (auto pipe = dyn_cast<tle::PipeReaderWaitOp>(op))
-    return pipe.getFields();
-  return cast<tle::PipeReaderReleaseOp>(op).getFields();
-}
-
+constexpr StringLiteral kPipeLocalStoreWaitGroupsAttr =
+    "musa_tle.pipe_local_store_wait_groups";
+constexpr StringLiteral kPipeLocalStoreGroupAttr =
+    "musa_tle.pipe_local_store_group";
+constexpr StringLiteral kPipeBarrierRingAttr = "musa_tle.pipe_barrier_ring";
 static bool isPipeOp(Operation *op) {
-  return isa<tle::PipeCreateOp, tle::PipeWriterAcquireOp,
-             tle::PipeWriterCommitOp, tle::PipeWriterCloseOp,
-             tle::PipeReaderWaitOp, tle::PipeReaderReleaseOp>(op);
-}
-
-static Value canonicalizePipeField(Value field) {
-  while (auto blockArg = dyn_cast<BlockArgument>(field)) {
-    Block *block = blockArg.getOwner();
-    auto partitions =
-        dyn_cast_or_null<ttg::WarpSpecializePartitionsOp>(block->getParentOp());
-    if (!partitions)
-      break;
-    auto ws = dyn_cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
-    if (!ws ||
-        blockArg.getArgNumber() >= partitions.getExplicitCaptures().size())
-      break;
-    field = partitions.getExplicitCaptures()[blockArg.getArgNumber()];
-  }
-  return field;
-}
-
-static Value getMemDescRoot(Value value) {
-  Value current = canonicalizePipeField(value);
-  while (true) {
-    if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
-      current = canonicalizePipeField(index.getSrc());
-      continue;
-    }
-    if (auto subslice = current.getDefiningOp<ttg::MemDescSubsliceOp>()) {
-      current = canonicalizePipeField(subslice.getSrc());
-      continue;
-    }
-    return current;
-  }
-}
-
-static std::string getPipeKey(Operation *op) {
-  std::string key;
-  llvm::raw_string_ostream os(key);
-  os << getCapacity(op) << "|";
-  op->getAttr("scope").print(os);
-  os << "|";
-  if (Attribute name = op->getAttr("pipe_name"))
-    name.print(os);
-  os << "|";
-  op->getAttr("field_names").print(os);
-  os << "|";
-  for (Value field : getFields(op))
-    os << getMemDescRoot(field).getAsOpaquePointer() << ",";
-  return key;
-}
-
-static bool sameIndex(Value lhs, Value rhs) {
-  if (lhs == rhs)
-    return true;
-  APInt lhsValue;
-  APInt rhsValue;
-  return matchPattern(lhs, m_ConstantInt(&lhsValue)) &&
-         matchPattern(rhs, m_ConstantInt(&rhsValue)) && lhsValue == rhsValue;
-}
-
-enum class PipeRole { None, DefaultConsumer, Producer, OtherPartition };
-
-static PipeRole getPipeRole(Operation *op) {
-  for (Region *region = op->getParentRegion(); region;) {
-    Operation *parent = region->getParentOp();
-    if (!parent)
-      break;
-    if (auto ws = dyn_cast<ttg::WarpSpecializeOp>(parent)) {
-      if (region == &ws.getDefaultRegion())
-        return PipeRole::DefaultConsumer;
-    }
-    if (auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(parent)) {
-      for (auto [index, partition] : llvm::enumerate(partitions.getRegions())) {
-        if (region == partition)
-          return index == 0 ? PipeRole::Producer : PipeRole::OtherPartition;
-      }
-    }
-    region = parent->getParentRegion();
-  }
-  return PipeRole::None;
+  return isa<musa_tle::PipeCreateOp, musa_tle::PipeWriterAcquireOp,
+             musa_tle::PipeWriterCommitOp, musa_tle::PipeWriterCloseOp,
+             musa_tle::PipeReaderWaitOp, musa_tle::PipeReaderReleaseOp>(op);
 }
 
 static std::optional<std::pair<ttg::WarpSpecializeOp, Region *>>
 getEnclosingPartition(Operation *op) {
-  for (Region *region = op->getParentRegion(); region;) {
-    Operation *parent = region->getParentOp();
-    if (!parent)
-      break;
-    if (auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(parent))
-      return std::make_pair(
-          cast<ttg::WarpSpecializeOp>(partitions->getParentOp()), region);
-    region = parent->getParentRegion();
-  }
-  return std::nullopt;
+  FailureOr<std::optional<musa_tle::PipeStaticPartitionInfo>> resolved =
+      musa_tle::resolvePipeStaticPartition(op);
+  if (failed(resolved) || !*resolved || !(*resolved)->owner ||
+      (*resolved)->kind != musa_tle::PipePartitionKind::WarpSpecializeWorker ||
+      !(*resolved)->region)
+    return std::nullopt;
+  return std::make_pair((*resolved)->owner, (*resolved)->region);
 }
 
 static bool isDefinedInside(Value value, Region *region) {
@@ -178,269 +85,235 @@ static Value captureForUse(Operation *use, Value value) {
   return region->getArgument(captureIndex);
 }
 
-static LogicalResult verifyCommonContract(Operation *op) {
-  if (getCapacity(op) <= 0)
-    return op->emitOpError("requires positive capacity");
-  auto scope = op->getAttrOfType<StringAttr>("scope");
-  if (!scope || scope.getValue() != "cta")
-    return op->emitOpError(
-        "initial mthreads tle.pipe supports only scope='cta'");
-  if (getFields(op).size() != 1)
-    return op->emitOpError(
-        "initial mthreads tle.pipe requires exactly one payload field");
-  auto fieldNames = op->getAttrOfType<ArrayAttr>("field_names");
-  if (!fieldNames || fieldNames.size() != 1)
-    return op->emitOpError(
-        "initial mthreads tle.pipe requires exactly one field name");
-  if (op->getAttr("reader_name"))
-    return op->emitOpError(
-        "initial mthreads tle.pipe supports only the default SPSC reader");
-  return success();
-}
-
-static FailureOr<int32_t> getConsumerWarps(Operation *op) {
-  int warps = ttg::lookupNumWarps(op);
-  if (warps <= 0 || warps > std::numeric_limits<int32_t>::max()) {
-    op->emitOpError("requires a positive consumer warp count");
-    return failure();
-  }
-  return static_cast<int32_t>(warps);
-}
-
-static FailureOr<int32_t> getTransactionBytes(ttg::TMACopyOp copy) {
-  auto descTy = dyn_cast<tt::TensorDescType>(copy.getSrc().getType());
-  auto memDescTy = dyn_cast<ttg::MemDescType>(copy.getDst().getType());
-  if (!descTy || !memDescTy) {
-    copy.emitOpError("initial mthreads tle.pipe requires a tensor-descriptor "
-                     "to shared-memory TME copy");
-    return failure();
-  }
-  auto blockTy = descTy.getSignlessBlockType();
-  if (blockTy.getShape() != memDescTy.getShape() ||
-      blockTy.getElementType() != memDescTy.getElementType()) {
-    copy.emitOpError("pipe TME descriptor block must match the destination "
-                     "slot shape and element type");
-    return failure();
-  }
-
-  int64_t elements = 1;
-  for (int64_t dim : blockTy.getShape()) {
-    if (dim <= 0 || elements > std::numeric_limits<int64_t>::max() / dim) {
-      copy.emitOpError("cannot infer a positive static TME transaction size");
-      return failure();
-    }
-    elements *= dim;
-  }
-  unsigned bitWidth = blockTy.getElementType().getIntOrFloatBitWidth();
-  if (bitWidth == 0 ||
-      elements > std::numeric_limits<int64_t>::max() / bitWidth ||
-      (elements * bitWidth) % 8 != 0) {
-    copy.emitOpError("TME transaction size must be a whole number of bytes");
-    return failure();
-  }
-  int64_t bytes = elements * bitWidth / 8;
-  if (bytes <= 0 || bytes > std::numeric_limits<int32_t>::max()) {
-    copy.emitOpError("TME transaction bytes exceed the positive i32 range");
-    return failure();
-  }
-  return static_cast<int32_t>(bytes);
-}
-
-static bool isExactSlot(Value destination, Value fieldRoot, Value stage) {
-  auto index = destination.getDefiningOp<ttg::MemDescIndexOp>();
-  return index && getMemDescRoot(index.getSrc()) == fieldRoot &&
-         sameIndex(index.getIndex(), stage);
-}
-
-struct PipeState {
-  tle::PipeCreateOp create;
-  Value fieldRoot;
-  int32_t capacity = 0;
-  int32_t transactionBytes = -1;
-  int32_t consumerWarps = -1;
-  std::optional<bool> warpSpecialized;
+struct PipeLoweringArtifacts {
   Value fullBase;
   Value emptyBase;
-  SmallVector<tle::PipeWriterAcquireOp> acquires;
-  SmallVector<tle::PipeWriterCommitOp> commits;
-  SmallVector<tle::PipeReaderWaitOp> waits;
-  SmallVector<tle::PipeReaderReleaseOp> releases;
+  Value closeTags;
+  ttg::MemDescType closeTagSlotType;
+  RankedTensorType closeTagTensorType;
+  RankedTensorType closeTagStoreTensorType;
+  RankedTensorType closeTagInitTensorType;
+  RankedTensorType closeTagInitArrayTensorType;
+  int32_t closeTagInitWarpCount = 0;
+  SmallVector<std::optional<int64_t>> localStoreGroupByField;
+  musa_tle::PipeBarrierParticipant writerParticipant;
+  SmallVector<musa_tle::PipeBarrierParticipant> readerParticipants;
 };
 
-static LogicalResult recordExecutionMode(PipeState &state, Operation *op,
-                                         PipeRole actualRole,
-                                         PipeRole warpSpecializedRole,
-                                         StringRef endpoint) {
-  if (actualRole != PipeRole::None && actualRole != warpSpecializedRole)
-    return op->emitOpError()
-           << "requires " << endpoint
-           << " operations either outside warp_specialize or in the "
-           << (warpSpecializedRole == PipeRole::Producer ? "worker partition 0"
-                                                         : "default partition");
+static bool sameParticipant(const musa_tle::PipeBarrierParticipant &lhs,
+                            const musa_tle::PipeBarrierParticipant &rhs) {
+  return lhs.endpointIndex == rhs.endpointIndex &&
+         lhs.partitionIndex == rhs.partitionIndex &&
+         lhs.partition == rhs.partition && lhs.warpBegin == rhs.warpBegin &&
+         lhs.warpCount == rhs.warpCount;
+}
 
-  bool usesWarpSpecialize = actualRole == warpSpecializedRole;
-  if (state.warpSpecialized && *state.warpSpecialized != usesWarpSpecialize)
-    return op->emitOpError(
-        "cannot mix warp-specialized and non-warp-specialized endpoints on "
-        "one pipe");
-  state.warpSpecialized = usesWarpSpecialize;
+static FailureOr<musa_tle::PipeBarrierParticipant> getReaderBarrierParticipant(
+    const musa_tle::PipeState &state, const PipeLoweringArtifacts &artifacts,
+    const musa_tle::PipeEndpointState *endpoint, Operation *operation) {
+  if (!endpoint || endpoint->role != musa_tle::PipeEndpointRole::Reader)
+    return operation->emitOpError(
+        "internal MUSA TLE pipe lowering lost reader endpoint");
+  if (endpoint->index >= state.endpoints.size())
+    return operation->emitOpError(
+        "internal MUSA TLE pipe lowering received an invalid reader endpoint");
+  for (const musa_tle::PipeBarrierParticipant &participant :
+       artifacts.readerParticipants) {
+    if (participant.endpointIndex == endpoint->index) {
+      musa_tle::PipeBarrierParticipant expected{
+          endpoint->index, endpoint->partitionIndex, endpoint->partition,
+          endpoint->warpBegin, endpoint->warpCount};
+      if (!sameParticipant(participant, expected))
+        return operation->emitOpError(
+            "internal MUSA TLE pipe lowering received an unstable reader "
+            "barrier participant");
+      return participant;
+    }
+  }
+  return operation->emitOpError(
+      "internal MUSA TLE pipe lowering lost reader barrier participant");
+}
+
+static SmallVector<int64_t>
+getAllLocalStoreGroups(const PipeLoweringArtifacts &artifacts) {
+  SmallVector<int64_t> groups;
+  for (std::optional<int64_t> group : artifacts.localStoreGroupByField) {
+    if (group)
+      groups.push_back(*group);
+  }
+  llvm::sort(groups);
+  groups.erase(std::unique(groups.begin(), groups.end()), groups.end());
+  return groups;
+}
+
+static FailureOr<SmallVector<int64_t>>
+getReaderLocalStoreGroups(const PipeLoweringArtifacts &artifacts,
+                          const musa_tle::PipeEndpointState *endpoint,
+                          Operation *operation) {
+  if (!endpoint || endpoint->role != musa_tle::PipeEndpointRole::Reader)
+    return operation->emitOpError(
+        "internal MUSA TLE pipe lowering lost reader endpoint");
+  SmallVector<int64_t> groups;
+  for (unsigned fieldIndex : endpoint->subscribedFields) {
+    if (fieldIndex >= artifacts.localStoreGroupByField.size())
+      return operation->emitOpError(
+          "internal MUSA TLE pipe lowering received an invalid reader field "
+          "subscription");
+    if (std::optional<int64_t> group =
+            artifacts.localStoreGroupByField[fieldIndex])
+      groups.push_back(*group);
+  }
+  llvm::sort(groups);
+  groups.erase(std::unique(groups.begin(), groups.end()), groups.end());
+  return groups;
+}
+
+static void setLocalStoreWaitGroups(Operation *wait, OpBuilder &builder,
+                                    ArrayRef<int64_t> groups) {
+  if (!groups.empty())
+    wait->setAttr(kPipeLocalStoreWaitGroupsAttr,
+                  builder.getDenseI64ArrayAttr(groups));
+}
+
+static Attribute getCloseTagEncoding(MLIRContext *context, int64_t rank) {
+  SmallVector<unsigned> order;
+  for (int64_t dim = rank - 1; dim >= 0; --dim)
+    order.push_back(static_cast<unsigned>(dim));
+  auto ctaLayout = ttg::CGAEncodingAttr::get1CTALayout(context, rank);
+  return ttg::SwizzledSharedEncodingAttr::get(context, 1, 1, 1, order,
+                                              ctaLayout);
+}
+
+static RankedTensorType getCloseTagTensorType(Operation *op, OpBuilder &builder,
+                                              ArrayRef<int64_t> shape,
+                                              int numWarps = -1) {
+  ModuleOp module = op->getParentOfType<ModuleOp>();
+  if (numWarps < 0)
+    numWarps = ttg::lookupNumWarps(op);
+  int threadsPerWarp = ttg::TritonGPUDialect::getThreadsPerWarp(module);
+  int numCTAs = ttg::TritonGPUDialect::getNumCTAs(module);
+  Attribute encoding = ttg::getDefaultBlockedEncoding(
+      op->getContext(), shape, numWarps, threadsPerWarp, numCTAs);
+  return RankedTensorType::get(shape, builder.getI32Type(), encoding);
+}
+
+static Value createCloseTagTensor(Operation *op, OpBuilder &builder,
+                                  Location loc, RankedTensorType type,
+                                  bool value, int numWarps = -1) {
+  // Constants cannot directly carry a shared-memory encoding. Materialize
+  // the value in a regular distributed layout and convert it to the close-tag
+  // layout after broadcasting. This also avoids the power-of-two restriction
+  // on tt.splat for capacities such as three.
+  auto blockedType =
+      getCloseTagTensorType(op, builder, type.getShape(), numWarps);
+  Value scalarTensor;
+  if (type.getRank() > 1) {
+    auto sliceEncoding = ttg::SliceEncodingAttr::get(
+        op->getContext(), /*dim=*/0,
+        cast<ttg::DistributedEncodingTrait>(blockedType.getEncoding()));
+    auto scalarRangeType =
+        RankedTensorType::get({1}, type.getElementType(), sliceEncoding);
+    scalarTensor = tt::MakeRangeOp::create(builder, loc, scalarRangeType, 0, 1);
+    scalarTensor =
+        tt::ExpandDimsOp::create(builder, loc, blockedType, scalarTensor, 0);
+  } else {
+    auto scalarRangeType = getCloseTagTensorType(op, builder, {1}, numWarps);
+    scalarTensor = tt::MakeRangeOp::create(builder, loc, scalarRangeType, 0, 1);
+  }
+  auto scalarType = cast<RankedTensorType>(scalarTensor.getType());
+  if (value) {
+    Value one = arith::ConstantIntOp::create(builder, loc, 1, 32);
+    Value oneTensor = tt::SplatOp::create(builder, loc, scalarType, one);
+    scalarTensor = arith::AddIOp::create(builder, loc, scalarTensor, oneTensor);
+  }
+  Value valueTensor = scalarTensor;
+  if (cast<RankedTensorType>(valueTensor.getType()) != type) {
+    if (blockedType != scalarType)
+      valueTensor =
+          tt::BroadcastOp::create(builder, loc, blockedType, scalarTensor);
+    valueTensor = ttg::ConvertLayoutOp::create(builder, loc, type, valueTensor);
+  }
+  return valueTensor;
+}
+
+static Value createCloseTagSlot(OpBuilder &builder, Location loc,
+                                const PipeLoweringArtifacts &artifacts,
+                                Value stage) {
+  Value index = stage;
+  return ttg::MemDescIndexOp::create(builder, loc, artifacts.closeTagSlotType,
+                                     artifacts.closeTags, index);
+}
+
+static Value loadCloseTag(OpBuilder &builder, Location loc,
+                          const PipeLoweringArtifacts &artifacts,
+                          Operation *use, Value stage,
+                          RankedTensorType loadTensorType = {}) {
+  Value closeTags = captureForUse(use, artifacts.closeTags);
+  PipeLoweringArtifacts captured = artifacts;
+  captured.closeTags = closeTags;
+  Value slot = createCloseTagSlot(builder, loc, captured, stage);
+  if (!loadTensorType)
+    loadTensorType = artifacts.closeTagTensorType;
+  Value tagTensor =
+      ttg::LocalLoadOp::create(builder, loc, loadTensorType, slot);
+  Value tagI32 =
+      tt::UnsplatOp::create(builder, loc, builder.getI32Type(), tagTensor);
+  Value zero = arith::ConstantIntOp::create(builder, loc, 0, 32);
+  return arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne, tagI32,
+                               zero);
+}
+
+static void storeCloseTag(OpBuilder &builder, Location loc,
+                          const PipeLoweringArtifacts &artifacts,
+                          Operation *use, Value stage, bool value,
+                          RankedTensorType storeTensorType = {},
+                          int numWarps = -1) {
+  Value closeTags = captureForUse(use, artifacts.closeTags);
+  PipeLoweringArtifacts captured = artifacts;
+  captured.closeTags = closeTags;
+  Value slot = createCloseTagSlot(builder, loc, captured, stage);
+  if (!storeTensorType)
+    storeTensorType = artifacts.closeTagStoreTensorType;
+  Value tag =
+      createCloseTagTensor(use, builder, loc, storeTensorType, value, numWarps);
+  ttg::LocalStoreOp::create(builder, loc, tag, slot);
+}
+
+static void initializeCloseTags(OpBuilder &builder, Location loc,
+                                const PipeLoweringArtifacts &artifacts,
+                                Operation *use, int32_t capacity,
+                                bool useInitTensorType = false) {
+  if (useInitTensorType && artifacts.closeTagInitArrayTensorType) {
+    Value zero = arith::ConstantIntOp::create(builder, loc, 0, 32);
+    Value tag = tt::SplatOp::create(
+        builder, loc, artifacts.closeTagInitArrayTensorType, zero);
+    ttg::LocalStoreOp::create(builder, loc, tag, artifacts.closeTags);
+    return;
+  }
+  RankedTensorType storeTensorType = useInitTensorType
+                                         ? artifacts.closeTagInitTensorType
+                                         : artifacts.closeTagStoreTensorType;
+  if (!storeTensorType)
+    return;
+  int numWarps = useInitTensorType ? artifacts.closeTagInitWarpCount
+                                   : artifacts.writerParticipant.warpCount;
+  for (int32_t index = 0; index < capacity; ++index) {
+    Value stage = arith::ConstantIntOp::create(builder, loc, index, 32);
+    storeCloseTag(builder, loc, artifacts, use, stage, /*value=*/false,
+                  storeTensorType, numWarps);
+  }
+}
+
+static LogicalResult getWriterIssueThread(Operation *op, int32_t &issueThread) {
+  FailureOr<int32_t> startThread = musa_tle::getPipePartitionStartThread(op);
+  if (failed(startThread))
+    return failure();
+  issueThread = *startThread;
   return success();
 }
 
 class LowerPipePass
     : public impl::TritonMUSAGPUTLELowerPipeBase<LowerPipePass> {
-  LogicalResult analyze(ModuleOp module,
-                        std::map<std::string, PipeState> &pipes,
-                        DenseMap<Operation *, ttg::TMACopyOp> &commitCopies) {
-    SmallVector<Operation *> pipeOps;
-    module.walk([&](Operation *op) {
-      if (isPipeOp(op))
-        pipeOps.push_back(op);
-    });
-
-    for (Operation *op : pipeOps) {
-      if (failed(verifyCommonContract(op)))
-        return failure();
-      std::string key = getPipeKey(op);
-
-      if (auto create = dyn_cast<tle::PipeCreateOp>(op)) {
-        if (create->getAttrOfType<ArrayAttr>("readers"))
-          return create.emitOpError(
-              "initial mthreads tle.pipe does not support named readers");
-        if (auto oneShot = create->getAttrOfType<BoolAttr>("one_shot");
-            oneShot && oneShot.getValue())
-          return create.emitOpError(
-              "initial mthreads tle.pipe does not support one_shot=True");
-        if (!create->getParentOfType<tt::FuncOp>() ||
-            create->getParentOfType<ttg::WarpSpecializeOp>())
-          return create.emitOpError(
-              "requires pipe.create outside warp_specialize");
-        if (pipes.find(key) != pipes.end())
-          return create.emitOpError("duplicates an existing pipe identity");
-        pipes.emplace(key,
-                      PipeState{create, getMemDescRoot(create.getFields()[0]),
-                                static_cast<int32_t>(getCapacity(op))});
-        continue;
-      }
-
-      auto it = pipes.find(key);
-      if (it == pipes.end())
-        return op->emitOpError("requires a preceding matching pipe.create");
-      PipeState &state = it->second;
-
-      if (auto close = dyn_cast<tle::PipeWriterCloseOp>(op))
-        return close.emitOpError(
-            "initial mthreads tle.pipe does not support writer.close");
-      if (auto acquire = dyn_cast<tle::PipeWriterAcquireOp>(op)) {
-        if (failed(recordExecutionMode(state, op, getPipeRole(op),
-                                       PipeRole::Producer, "writer")))
-          return failure();
-        state.acquires.push_back(acquire);
-        continue;
-      }
-      if (auto commit = dyn_cast<tle::PipeWriterCommitOp>(op)) {
-        if (failed(recordExecutionMode(state, op, getPipeRole(op),
-                                       PipeRole::Producer, "writer")))
-          return failure();
-
-        tle::PipeWriterAcquireOp matchingAcquire;
-        SmallVector<ttg::TMACopyOp> matchingCopies;
-        for (Operation *previous = commit->getPrevNode(); previous;
-             previous = previous->getPrevNode()) {
-          if (auto acquire = dyn_cast<tle::PipeWriterAcquireOp>(previous)) {
-            if (getPipeKey(previous) == key &&
-                sameIndex(acquire.getStage(), commit.getStage())) {
-              matchingAcquire = acquire;
-              break;
-            }
-            continue;
-          }
-          if (auto copy = dyn_cast<ttg::TMACopyOp>(previous)) {
-            if (isExactSlot(copy.getDst(), state.fieldRoot, commit.getStage()))
-              matchingCopies.push_back(copy);
-          }
-        }
-        if (!matchingAcquire)
-          return commit.emitOpError(
-              "requires a same-block, same-stage matching writer.acquire");
-        if (matchingCopies.size() != 1)
-          return commit.emitOpError(
-                     "initial mthreads tle.pipe requires exactly one TME copy "
-                     "between acquire and commit; found ")
-                 << matchingCopies.size();
-
-        ttg::TMACopyOp copy = matchingCopies.front();
-        if (copy.getCompletionBarrier())
-          return copy.emitOpError(
-              "pipe-managed TME copy must not provide an explicit barrier");
-        FailureOr<int32_t> bytes = getTransactionBytes(copy);
-        if (failed(bytes))
-          return failure();
-        if (state.transactionBytes >= 0 && state.transactionBytes != *bytes)
-          return commit.emitOpError(
-              "all commits on one pipe must use identical transaction bytes");
-        state.transactionBytes = *bytes;
-        state.commits.push_back(commit);
-        commitCopies[commit.getOperation()] = copy;
-        continue;
-      }
-      if (auto wait = dyn_cast<tle::PipeReaderWaitOp>(op)) {
-        if (failed(recordExecutionMode(state, op, getPipeRole(op),
-                                       PipeRole::DefaultConsumer, "reader")))
-          return failure();
-        FailureOr<int32_t> warps = getConsumerWarps(op);
-        if (failed(warps))
-          return failure();
-        if (state.consumerWarps >= 0 && state.consumerWarps != *warps)
-          return wait.emitOpError(
-              "all reader operations must use one consumer warp count");
-        state.consumerWarps = *warps;
-        state.waits.push_back(wait);
-        continue;
-      }
-
-      auto release = cast<tle::PipeReaderReleaseOp>(op);
-      if (failed(recordExecutionMode(state, op, getPipeRole(op),
-                                     PipeRole::DefaultConsumer, "reader")))
-        return failure();
-      bool matchingWait = false;
-      for (Operation *previous = release->getPrevNode(); previous;
-           previous = previous->getPrevNode()) {
-        if (auto wait = dyn_cast<tle::PipeReaderWaitOp>(previous)) {
-          if (getPipeKey(previous) == key &&
-              sameIndex(wait.getStage(), release.getStage())) {
-            matchingWait = true;
-            break;
-          }
-        }
-      }
-      if (!matchingWait)
-        return release.emitOpError(
-            "requires a same-block, same-stage matching reader.wait");
-      FailureOr<int32_t> warps = getConsumerWarps(op);
-      if (failed(warps))
-        return failure();
-      if (state.consumerWarps >= 0 && state.consumerWarps != *warps)
-        return release.emitOpError(
-            "all reader operations must use one consumer warp count");
-      state.consumerWarps = *warps;
-      state.releases.push_back(release);
-    }
-
-    for (auto &[key, state] : pipes) {
-      if (state.acquires.empty() || state.commits.empty())
-        return state.create.emitOpError(
-            "requires at least one writer acquire/commit pair");
-      if (state.waits.empty() || state.releases.empty())
-        return state.create.emitOpError(
-            "requires at least one reader wait/release pair");
-      if (state.transactionBytes <= 0 || state.consumerWarps <= 0)
-        return state.create.emitOpError(
-            "could not infer transaction bytes or consumer warp count");
-    }
-    return success();
-  }
-
   static Value toI32Phase(OpBuilder &builder, Location loc, Value phase,
                           bool invert) {
     Value value = phase;
@@ -457,82 +330,527 @@ class LowerPipePass
     return musa_tle::BarrierIndexOp::create(builder, loc, capturedBase, stage);
   }
 
-  LogicalResult rewrite(ModuleOp module,
-                        std::map<std::string, PipeState> &pipes,
-                        DenseMap<Operation *, ttg::TMACopyOp> &commitCopies) {
-    SmallVector<Operation *> pipeOps;
-    module.walk([&](Operation *op) {
-      if (isPipeOp(op))
-        pipeOps.push_back(op);
-    });
+  static void lowerLocalStoreArrival(OpBuilder &builder, Location loc,
+                                     Operation *use, Value fullBase,
+                                     const musa_tle::PipeCommitGroup &group) {
+    Value barrier = createIndex(builder, loc, use, fullBase, group.stage);
+    Value phase = arith::ConstantIntOp::create(builder, loc, 0, 32);
+    musa_tle::BarrierArriveOp::create(builder, loc, barrier, phase,
+                                      builder.getI32IntegerAttr(1));
+  }
 
-    for (Operation *op : pipeOps) {
-      PipeState &state = pipes.at(getPipeKey(op));
+  static LogicalResult materializePipeArtifacts(
+      const musa_tle::PipeAnalysisResult &analysis,
+      llvm::DenseMap<const musa_tle::PipeState *, PipeLoweringArtifacts>
+          &artifacts,
+      int64_t &nextLocalStoreGroupId) {
+    for (const std::unique_ptr<musa_tle::PipeState> &ownedState :
+         analysis.getPipes()) {
+      const musa_tle::PipeState *state = ownedState.get();
+      musa_tle::PipeCreateOp create = state->create;
+      OpBuilder builder(create);
+      Location loc = create.getLoc();
+      const musa_tle::PipeBarrierPlan &plan = state->barrierPlan;
+      bool oneShot =
+          state->lifecycle.mode == musa_tle::PipeLifecycleMode::OneShot;
+      if ((!plan.full.transactionBytes && !plan.closeTagPlan) ||
+          (oneShot ? plan.empty.has_value() : !plan.empty.has_value()) ||
+          (!oneShot && plan.empty->storageOwner !=
+                           musa_tle::PipeBarrierStorageOwner::Pipe) ||
+          !plan.writerParticipant ||
+          (plan.full.storageOwner ==
+               musa_tle::PipeBarrierStorageOwner::External &&
+           (!plan.externalFull || !plan.full.externalStorage)) ||
+          (plan.full.storageOwner == musa_tle::PipeBarrierStorageOwner::Pipe &&
+           (plan.externalFull || plan.full.externalStorage)))
+        return create.emitOpError(
+            "internal MUSA TLE pipe lowering requires a valid full "
+            "barrier plan");
+
+      auto capacity = builder.getI32IntegerAttr(plan.full.capacity);
+      auto fullArrivals = builder.getI32IntegerAttr(plan.full.arrivalCount);
+      auto pending = builder.getI32IntegerAttr(0);
+      auto ready = builder.getI32IntegerAttr(1);
+      IntegerAttr bytes;
+      if (*plan.full.transactionBytes > 0)
+        bytes = builder.getI32IntegerAttr(*plan.full.transactionBytes);
+      Value fullBase;
+      if (plan.full.storageOwner ==
+          musa_tle::PipeBarrierStorageOwner::External) {
+        fullBase = plan.full.externalStorage;
+      } else {
+        fullBase = musa_tle::BarrierAllocOp::create(
+            builder, loc, capacity, fullArrivals, pending, bytes);
+        fullBase.getDefiningOp()->setAttr(kPipeBarrierRingAttr,
+                                          builder.getUnitAttr());
+      }
+      Value emptyBase;
+      if (plan.empty) {
+        emptyBase = musa_tle::BarrierAllocOp::create(
+            builder, loc, builder.getI32IntegerAttr(plan.empty->capacity),
+            builder.getI32IntegerAttr(plan.empty->arrivalCount), ready,
+            IntegerAttr());
+        emptyBase.getDefiningOp()->setAttr(kPipeBarrierRingAttr,
+                                           builder.getUnitAttr());
+      }
+
+      Value closeTags;
+      ttg::MemDescType closeTagSlotType;
+      RankedTensorType closeTagTensorType;
+      RankedTensorType closeTagStoreTensorType;
+      RankedTensorType closeTagInitTensorType;
+      RankedTensorType closeTagInitArrayTensorType;
+      int32_t closeTagInitWarpCount = 0;
+      if (plan.closeTagPlan) {
+        MLIRContext *context = create->getContext();
+        auto sharedMemorySpace = ttg::SharedMemorySpaceAttr::get(context);
+        Attribute arrayEncoding = getCloseTagEncoding(context, 2);
+        Attribute slotEncoding = getCloseTagEncoding(context, 1);
+        auto arrayType = ttg::MemDescType::get(
+            {plan.closeTagPlan->capacity, 1}, builder.getI32Type(),
+            arrayEncoding, sharedMemorySpace, /*mutableMemory=*/true);
+        closeTags = ttg::LocalAllocOp::create(builder, loc, arrayType);
+        closeTagSlotType = ttg::MemDescType::get(
+            {1}, builder.getI32Type(), slotEncoding, sharedMemorySpace,
+            /*mutableMemory=*/true);
+        ModuleOp module = create->getParentOfType<ModuleOp>();
+        int moduleWarps =
+            module->getAttrOfType<IntegerAttr>(ttg::AttrNumWarpsName).getInt();
+        closeTagTensorType =
+            getCloseTagTensorType(create, builder, {1}, moduleWarps);
+        closeTagStoreTensorType = getCloseTagTensorType(
+            create, builder, {1}, plan.writerParticipant->warpCount);
+        closeTagInitTensorType =
+            getCloseTagTensorType(create, builder, {1}, moduleWarps);
+        // Triton distributed tensors require a power-of-two element count for
+        // a single vector store.  Use that compact initialization when it is
+        // representable; non-power-of-two rings fall back to the existing
+        // per-slot stores below.
+        int32_t tagCapacity = plan.closeTagPlan->capacity;
+        if (tagCapacity > 0 && (tagCapacity & (tagCapacity - 1)) == 0)
+          closeTagInitArrayTensorType = getCloseTagTensorType(
+              create, builder, {tagCapacity, 1}, moduleWarps);
+        closeTagInitWarpCount = moduleWarps;
+      }
+
+      SmallVector<std::optional<int64_t>> localStoreGroupByField(
+          state->fields.size());
+      if (!state->commitGroups.empty()) {
+        for (const musa_tle::PipeFieldState &field : state->fields) {
+          // Membar's allocation-level shortcut is sound only for a unique,
+          // fully published field. Partial/unknown regions retain normal
+          // hazard tracking and partition-local synchronization.
+          unsigned owners = 0;
+          for (const auto &candidate : analysis.getPipes())
+            for (const auto &other : candidate->fields)
+              owners += other.memdescRoot == field.memdescRoot;
+          auto type = cast<ttg::MemDescType>(field.memdescType);
+          int64_t bytes = type.getElementType().getIntOrFloatBitWidth() / 8;
+          for (int64_t dim : type.getShape())
+            bytes *= dim;
+          bytes /= state->capacity;
+          bool complete =
+              owners == 1 && field.memdesc == field.memdescRoot &&
+              llvm::all_of(state->commitGroups, [&](const auto &commit) {
+                return llvm::any_of(
+                    commit->completionSources, [&](const auto &source) {
+                      const auto &region = source.coveredRegion;
+                      return source.destinationField == field.index &&
+                             region.exact && region.byteOffset == 0 &&
+                             region.byteSize == bytes;
+                    });
+              });
+          if (!complete)
+            continue;
+          int64_t group = nextLocalStoreGroupId++;
+          localStoreGroupByField[field.index] = group;
+          IntegerAttr groupAttr = builder.getI64IntegerAttr(group);
+          Operation *root = field.memdescRoot.getDefiningOp();
+          if (!root)
+            return create.emitOpError(
+                "local-store pipe field must have a materialized shared "
+                "allocation root");
+          root->setAttr(kPipeLocalStoreGroupAttr, groupAttr);
+        }
+      }
+
+      PipeLoweringArtifacts pipeArtifacts;
+      pipeArtifacts.fullBase = fullBase;
+      pipeArtifacts.emptyBase = emptyBase;
+      pipeArtifacts.closeTags = closeTags;
+      pipeArtifacts.closeTagSlotType = closeTagSlotType;
+      pipeArtifacts.closeTagTensorType = closeTagTensorType;
+      pipeArtifacts.closeTagStoreTensorType = closeTagStoreTensorType;
+      pipeArtifacts.closeTagInitTensorType = closeTagInitTensorType;
+      pipeArtifacts.closeTagInitArrayTensorType = closeTagInitArrayTensorType;
+      pipeArtifacts.closeTagInitWarpCount = closeTagInitWarpCount;
+      pipeArtifacts.localStoreGroupByField = std::move(localStoreGroupByField);
+      pipeArtifacts.writerParticipant = *plan.writerParticipant;
+      pipeArtifacts.readerParticipants = plan.readerParticipants;
+
+      // A static warp-specialized close tag is shared by partitions.  Publish
+      // its initial false values before dispatch so every reader partition
+      // observes the same initialized ring without adding a CTA barrier.
+      if (plan.closeTagPlan &&
+          state->executionMode ==
+              musa_tle::PipeExecutionMode::StaticWarpSpecialized) {
+        if (Operation *alloc = closeTags.getDefiningOp())
+          builder.setInsertionPointAfter(alloc);
+        initializeCloseTags(builder, loc, pipeArtifacts, create,
+                            state->capacity, /*useInitTensorType=*/true);
+      }
+      artifacts[state] = std::move(pipeArtifacts);
+    }
+    return success();
+  }
+
+  LogicalResult rewrite(ModuleOp module,
+                        const musa_tle::PipeAnalysisResult &analysis) {
+    llvm::DenseMap<const musa_tle::PipeState *, PipeLoweringArtifacts>
+        artifacts;
+    llvm::DenseSet<const musa_tle::PipeState *> initializedCloseTags;
+    llvm::DenseSet<Operation *> loweredCopies;
+    int64_t nextCompletionGroupId = 0;
+    int64_t nextLocalStoreGroupId = 0;
+
+    if (failed(materializePipeArtifacts(analysis, artifacts,
+                                        nextLocalStoreGroupId)))
+      return failure();
+
+    for (const std::unique_ptr<musa_tle::PipeState> &ownedState :
+         analysis.getPipes()) {
+      const musa_tle::PipeState *state = ownedState.get();
+      if (state->executionMode ==
+              musa_tle::PipeExecutionMode::StaticWarpSpecialized &&
+          state->barrierPlan.closeTagPlan)
+        initializedCloseTags.insert(state);
+    }
+
+    for (Operation *op : analysis.getLifecycleOps()) {
+      const musa_tle::PipeState *state = analysis.lookupPipe(op);
+      if (!state)
+        return op->emitOpError(
+            "internal MUSA TLE pipe lowering lost analyzed pipe state");
+
       OpBuilder builder(op);
       Location loc = op->getLoc();
 
-      if (auto create = dyn_cast<tle::PipeCreateOp>(op)) {
-        auto capacity = builder.getI32IntegerAttr(state.capacity);
-        auto one = builder.getI32IntegerAttr(1);
-        auto pending = builder.getI32IntegerAttr(0);
-        auto ready = builder.getI32IntegerAttr(1);
-        auto bytes = builder.getI32IntegerAttr(state.transactionBytes);
-        state.fullBase = musa_tle::BarrierAllocOp::create(
-            builder, loc, capacity, one, pending, bytes);
-        state.emptyBase = musa_tle::BarrierAllocOp::create(
-            builder, loc, capacity,
-            builder.getI32IntegerAttr(state.consumerWarps), ready,
-            IntegerAttr());
-        create.erase();
+      if (isa<musa_tle::PipeCreateOp>(op)) {
+        if (artifacts.find(state) == artifacts.end())
+          return op->emitOpError(
+              "internal MUSA TLE pipe lowering lost barrier artifacts");
+        op->erase();
         continue;
       }
 
-      if (auto acquire = dyn_cast<tle::PipeWriterAcquireOp>(op)) {
-        Value barrier =
-            createIndex(builder, loc, op, state.emptyBase, acquire.getStage());
+      auto artifactsIt = artifacts.find(state);
+      if (artifactsIt == artifacts.end())
+        return op->emitOpError(
+            "internal MUSA TLE pipe lowering lost barrier artifacts");
+      const PipeLoweringArtifacts &pipeArtifacts = artifactsIt->second;
+
+      if (auto acquire = dyn_cast<musa_tle::PipeWriterAcquireOp>(op)) {
+        if (state->lifecycle.mode == musa_tle::PipeLifecycleMode::OneShot) {
+          acquire.erase();
+          continue;
+        }
+        if (pipeArtifacts.closeTags &&
+            initializedCloseTags.insert(state).second) {
+          initializeCloseTags(builder, loc, pipeArtifacts, acquire,
+                              state->capacity);
+        }
+        Value barrier = createIndex(builder, loc, op, pipeArtifacts.emptyBase,
+                                    acquire.getStage());
         Value phase = toI32Phase(builder, loc, acquire.getPhase(), true);
-        musa_tle::BarrierWaitOp::create(builder, loc, barrier, phase);
+        auto wait =
+            musa_tle::BarrierWaitOp::create(builder, loc, barrier, phase);
+        setLocalStoreWaitGroups(wait, builder,
+                                getAllLocalStoreGroups(pipeArtifacts));
         acquire.erase();
         continue;
       }
 
-      if (auto commit = dyn_cast<tle::PipeWriterCommitOp>(op)) {
-        ttg::TMACopyOp copy = commitCopies.lookup(op);
-        if (!copy)
-          return commit.emitOpError("lost the analyzed pipe TME copy");
-        OpBuilder copyBuilder(copy);
-        Value barrier = createIndex(copyBuilder, copy.getLoc(), copy,
-                                    state.fullBase, commit.getStage());
-        auto replacement =
-            ttg::TMACopyOp::create(copyBuilder, copy.getLoc(), copy.getSrc(),
-                                   copy.getDst(), copy.getIndices(), barrier);
-        replacement->setDiscardableAttrs(copy->getDiscardableAttrDictionary());
-        replacement->setAttr("expect_bytes", copyBuilder.getI32IntegerAttr(
-                                                 state.transactionBytes));
-        copy.erase();
+      if (auto commit = dyn_cast<musa_tle::PipeWriterCommitOp>(op)) {
+        const musa_tle::PipeCommitGroup *group =
+            analysis.lookupCommitGroup(commit);
+        if (!group)
+          return commit.emitOpError("lost the analyzed pipe completion group");
+
+        bool hasAsync =
+            llvm::any_of(group->completionSources, [](auto &source) {
+              return source.kind == musa_tle::PipeTransportKind::AsyncCopy;
+            });
+        if (hasAsync) {
+          // Keep an existing full wait on straight-line paths. A conservative
+          // wait(0) is required when only a pending-group or conditional wait
+          // is available; any issuing thread must finish before publication.
+          bool complete = true;
+          for (auto &source : group->completionSources) {
+            if (source.kind != musa_tle::PipeTransportKind::AsyncCopy)
+              continue;
+            bool waited = false;
+            if (source.operation->getBlock() == commit->getBlock())
+              for (Operation *next = source.operation->getNextNode();
+                   next && next != commit.getOperation();
+                   next = next->getNextNode())
+                if (auto wait = dyn_cast<ttg::AsyncWaitOp>(next)) {
+                  if (wait.getNum() != 0)
+                    continue;
+                  if (wait.getAsyncToken().empty()) {
+                    waited = true;
+                    break;
+                  }
+                  auto copy =
+                      cast<ttg::AsyncCopyGlobalToLocalOp>(source.operation);
+                  SmallVector<Value> tokens(wait.getAsyncToken());
+                  llvm::DenseSet<Value> visited;
+                  while (!tokens.empty()) {
+                    Value token = tokens.pop_back_val();
+                    if (!visited.insert(token).second)
+                      continue;
+                    if (token == copy.getToken())
+                      waited = true;
+                    if (auto commit =
+                            token.getDefiningOp<ttg::AsyncCommitGroupOp>())
+                      llvm::append_range(tokens, commit.getInputTokens());
+                  }
+                }
+            complete &= waited;
+          }
+          if (!complete)
+            ttg::AsyncWaitOp::create(builder, loc, ValueRange{}, 0);
+          // A full async wait immediately followed by publication needs no
+          // producer rendezvous: every writer warp completes its copies
+          // before arriving at full. Keep waits followed by payload accesses
+          // conservative, and do not clear unrelated Membar dependencies.
+          for (Operation *prev = commit->getPrevNode(); prev;
+               prev = prev->getPrevNode()) {
+            if (auto wait = dyn_cast<ttg::AsyncWaitOp>(prev)) {
+              if (wait.getNum() == 0)
+                wait->setAttr("musa_tle.pipe_async_wait",
+                              builder.getUnitAttr());
+              break;
+            }
+            if (!isMemoryEffectFree(prev))
+              break;
+          }
+        }
+
+        SmallVector<const musa_tle::PipeCompletionSource *> tmeSources;
+        for (const auto &source : group->completionSources)
+          if (source.kind == musa_tle::PipeTransportKind::TME &&
+              !loweredCopies.contains(source.operation))
+            tmeSources.push_back(&source);
+        int64_t tmeBytes = 0;
+        for (auto *source : tmeSources)
+          tmeBytes += source->transactionBytes;
+        Value commonBarrier;
+        int64_t groupId = nextCompletionGroupId++;
+        int64_t memberIndex = 0;
+        if (!tmeSources.empty() && llvm::all_of(tmeSources, [&](auto *source) {
+              return source->operation->getBlock() ==
+                     tmeSources.front()->operation->getBlock();
+            })) {
+          llvm::sort(tmeSources, [](auto *left, auto *right) {
+            return left->operation->isBeforeInBlock(right->operation);
+          });
+          auto *first = tmeSources.front();
+          OpBuilder firstBuilder(first->operation);
+          commonBarrier = createIndex(firstBuilder, first->operation->getLoc(),
+                                      first->operation, pipeArtifacts.fullBase,
+                                      first->stage);
+        }
+        for (const auto &source : group->completionSources) {
+          if (source.kind != musa_tle::PipeTransportKind::TME ||
+              !loweredCopies.insert(source.operation).second)
+            continue;
+          auto copy = cast<ttg::TMACopyOp>(source.operation);
+          OpBuilder copyBuilder(copy);
+          Value barrier =
+              commonBarrier ? commonBarrier
+                            : createIndex(copyBuilder, copy.getLoc(), copy,
+                                          pipeArtifacts.fullBase, source.stage);
+          auto replacement =
+              ttg::TMACopyOp::create(copyBuilder, copy.getLoc(), copy.getSrc(),
+                                     copy.getDst(), copy.getIndices(), barrier);
+          replacement->setDiscardableAttrs(
+              copy->getDiscardableAttrDictionary());
+          replacement->setAttr("expect_bytes", copyBuilder.getI32IntegerAttr(
+                                                   source.transactionBytes));
+          // Each executed copy adds its transaction bytes. The pipe commit,
+          // not the last syntactic copy, supplies the control arrival.
+          replacement->setAttr(ttmg::kTLEPipeDeferredArrivalAttr,
+                               copyBuilder.getUnitAttr());
+          if (commonBarrier)
+            replacement->setAttr(
+                ttmg::kTLECompletionGroupAttr,
+                copyBuilder.getDenseI64ArrayAttr(
+                    {groupId, memberIndex++,
+                     static_cast<int64_t>(tmeSources.size()), tmeBytes}));
+          copy.erase();
+        }
+        if (group->tmeGroupArrivalCount) {
+          Value barrier = createIndex(builder, loc, op, pipeArtifacts.fullBase,
+                                      group->stage);
+          Value predicate = arith::ConstantIntOp::create(builder, loc, 1, 1);
+          auto arrival = ttmg::ArriveBarrierNoRetOp::create(builder, loc,
+                                                            barrier, predicate);
+          int32_t issueThread = 0;
+          if (failed(getWriterIssueThread(op, issueThread)))
+            return failure();
+          arrival->setAttr(ttmg::kTMEIssueThreadAttr,
+                           builder.getI32IntegerAttr(issueThread));
+          arrival->setAttr(ttmg::kTMEExplicitCompletionAttr,
+                           builder.getUnitAttr());
+        }
+        if (group->localStoreArrivalCount)
+          lowerLocalStoreArrival(builder, loc, op, pipeArtifacts.fullBase,
+                                 *group);
         commit.erase();
         continue;
       }
 
-      if (auto wait = dyn_cast<tle::PipeReaderWaitOp>(op)) {
-        Value barrier =
-            createIndex(builder, loc, op, state.fullBase, wait.getStage());
-        Value phase = toI32Phase(builder, loc, wait.getPhase(), false);
-        musa_tle::BarrierWaitOp::create(builder, loc, barrier, phase);
+      if (auto wait = dyn_cast<musa_tle::PipeReaderWaitOp>(op)) {
+        FailureOr<musa_tle::PipeBarrierParticipant> readerParticipant =
+            getReaderBarrierParticipant(*state, pipeArtifacts,
+                                        analysis.lookupEndpoint(wait), wait);
+        if (failed(readerParticipant))
+          return failure();
+        Value barrier = createIndex(builder, loc, op, pipeArtifacts.fullBase,
+                                    wait.getStage());
+        Value phase =
+            state->lifecycle.mode == musa_tle::PipeLifecycleMode::OneShot
+                ? arith::ConstantIntOp::create(builder, loc, 0, 32)
+                : toI32Phase(builder, loc, wait.getPhase(), false);
+        auto loweredWait =
+            musa_tle::BarrierWaitOp::create(builder, loc, barrier, phase);
+        FailureOr<SmallVector<int64_t>> waitGroups = getReaderLocalStoreGroups(
+            pipeArtifacts, analysis.lookupEndpoint(wait), wait);
+        if (failed(waitGroups))
+          return failure();
+        setLocalStoreWaitGroups(loweredWait, builder, *waitGroups);
+        if (const musa_tle::PipeReaderDrainGroup *drain =
+                analysis.lookupReaderDrainGroup(wait)) {
+          for (const musa_tle::PipeReaderDrainSource &source :
+               drain->drainSources) {
+            auto copy = dyn_cast_or_null<ttg::TMACopyOp>(source.operation);
+            if (!copy)
+              return wait.emitOpError(
+                  "internal MUSA TLE pipe lowering lost reader TME store");
+            FailureOr<int32_t> issueThread =
+                musa_tle::getPipePartitionStartThread(source.operation);
+            if (failed(issueThread))
+              return failure();
+            copy->setAttr(ttmg::kTMEIssueThreadAttr,
+                          builder.getI32IntegerAttr(*issueThread));
+            if (state->lifecycle.mode == musa_tle::PipeLifecycleMode::OneShot ||
+                drain->sourceModifiedAfterWait) {
+              // TME is issued by one warp. Its read-wait alone does not hold
+              // back the other warps from overwriting the source. Rendezvous
+              // after the synchronous copy before allowing in-place reuse.
+              OpBuilder afterCopy(copy);
+              afterCopy.setInsertionPointAfter(copy);
+              ttg::BarrierOp::create(afterCopy, copy.getLoc(),
+                                     ttg::AddrSpace::Local);
+            }
+            if (state->executionMode ==
+                musa_tle::PipeExecutionMode::StaticWarpSpecialized) {
+              if (drain->sourceModifiedAfterWait) {
+                OpBuilder copyBuilder(copy);
+                ttg::BarrierOp::create(copyBuilder, copy.getLoc(),
+                                       ttg::AddrSpace::Local);
+              }
+              // Either the full wait or the local publication immediately
+              // before the copy now provides the issue edge.
+              copy->setAttr(ttmg::kTLEPipeReaderTMEStoreAttr,
+                            builder.getUnitAttr());
+            }
+          }
+        }
         if (!wait.getIsClosed().use_empty()) {
-          Value notClosed = arith::ConstantIntOp::create(builder, loc, 0, 1);
-          wait.getIsClosed().replaceAllUsesWith(notClosed);
+          Value isClosed;
+          if (state->barrierPlan.closeTagPlan) {
+            builder.setInsertionPointAfter(loweredWait);
+            RankedTensorType loadTensorType = getCloseTagTensorType(
+                wait, builder, {1}, readerParticipant->warpCount);
+            isClosed = loadCloseTag(builder, loc, pipeArtifacts, op,
+                                    wait.getStage(), loadTensorType);
+          } else {
+            isClosed = arith::ConstantIntOp::create(builder, loc, 0, 1);
+          }
+          wait.getIsClosed().replaceAllUsesWith(isClosed);
         }
         wait.erase();
         continue;
       }
 
-      if (isa<tle::PipeWriterCloseOp>(op))
-        return op->emitOpError("writer.close must have failed analysis");
+      if (auto close = dyn_cast<musa_tle::PipeWriterCloseOp>(op)) {
+        if (state->lifecycle.mode == musa_tle::PipeLifecycleMode::OneShot)
+          return close.emitOpError(
+              "MUSA TLE one-shot pipe does not support writer.close");
+        const musa_tle::PipeCloseGeneration *generation =
+            analysis.lookupCloseGeneration(close);
+        if (!generation || !pipeArtifacts.closeTags)
+          return close.emitOpError(
+              "internal MUSA TLE pipe lowering lost close generation");
 
-      auto release = cast<tle::PipeReaderReleaseOp>(op);
-      Value barrier =
-          createIndex(builder, loc, op, state.emptyBase, release.getStage());
+        if (initializedCloseTags.insert(state).second)
+          initializeCloseTags(builder, loc, pipeArtifacts, close,
+                              state->capacity);
+
+        Value emptyBarrier = createIndex(
+            builder, loc, op, pipeArtifacts.emptyBase, generation->stage);
+        Value emptyPhase = toI32Phase(builder, loc, generation->phase, true);
+        auto emptyWait = musa_tle::BarrierWaitOp::create(
+            builder, loc, emptyBarrier, emptyPhase);
+        setLocalStoreWaitGroups(emptyWait, builder,
+                                getAllLocalStoreGroups(pipeArtifacts));
+
+        builder.setInsertionPointAfter(emptyWait);
+        storeCloseTag(builder, loc, pipeArtifacts, op, generation->stage,
+                      /*value=*/true, pipeArtifacts.closeTagStoreTensorType,
+                      pipeArtifacts.writerParticipant.warpCount);
+
+        Operation *tagStore = op->getPrevNode();
+        builder.setInsertionPointAfter(tagStore);
+        Value fullBarrier = createIndex(
+            builder, loc, op, pipeArtifacts.fullBase, generation->stage);
+        Value predicate = arith::ConstantIntOp::create(builder, loc, 1, 1);
+        Operation *controlOp = nullptr;
+        if (generation->controlArrivalCount == 1) {
+          auto control = ttmg::ArriveBarrierNoRetOp::create(
+              builder, loc, fullBarrier, predicate);
+          controlOp = control.getOperation();
+          int32_t issueThread = 0;
+          if (failed(getWriterIssueThread(op, issueThread)))
+            return failure();
+          control->setAttr(ttmg::kTMEIssueThreadAttr,
+                           builder.getI32IntegerAttr(issueThread));
+          control->setAttr(ttmg::kTMEExplicitCompletionAttr,
+                           builder.getUnitAttr());
+        }
+        if (generation->localStoreArrivalCount > 0) {
+          builder.setInsertionPointAfter(controlOp ? controlOp
+                                                   : predicate.getDefiningOp());
+          Value phase = toI32Phase(builder, loc, generation->phase, false);
+          musa_tle::BarrierArriveOp::create(builder, loc, fullBarrier, phase,
+                                            builder.getI32IntegerAttr(1));
+        }
+        close.erase();
+        continue;
+      }
+
+      auto release = cast<musa_tle::PipeReaderReleaseOp>(op);
+      if (state->lifecycle.mode == musa_tle::PipeLifecycleMode::OneShot) {
+        release.erase();
+        continue;
+      }
+      if (failed(getReaderBarrierParticipant(*state, pipeArtifacts,
+                                             analysis.lookupEndpoint(release),
+                                             release)))
+        return failure();
+      Value barrier = createIndex(builder, loc, op, pipeArtifacts.emptyBase,
+                                  release.getStage());
       Value phase = arith::ConstantIntOp::create(builder, loc, 0, 32);
       musa_tle::BarrierArriveOp::create(builder, loc, barrier, phase,
                                         builder.getI32IntegerAttr(1));
@@ -542,16 +860,15 @@ class LowerPipePass
     bool hasPipeOps = false;
     module.walk([&](Operation *op) { hasPipeOps |= isPipeOp(op); });
     if (hasPipeOps)
-      return module.emitError("mthreads TLE pipe lowering left lifecycle ops");
+      return module.emitError("MUSA TLE pipe lowering left lifecycle ops");
     return success();
   }
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    std::map<std::string, PipeState> pipes;
-    DenseMap<Operation *, ttg::TMACopyOp> commitCopies;
-    if (failed(analyze(module, pipes, commitCopies)) ||
-        failed(rewrite(module, pipes, commitCopies)))
+    FailureOr<std::unique_ptr<musa_tle::PipeAnalysisResult>> analysis =
+        musa_tle::analyzeMUSAPipes(module);
+    if (failed(analysis) || failed(rewrite(module, **analysis)))
       signalPassFailure();
   }
 };

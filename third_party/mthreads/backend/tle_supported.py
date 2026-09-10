@@ -10,6 +10,7 @@ TLE_SUPPORTED_PRIMITIVES = [
     "pipe.writer",
     "pipe.writer.acquire",
     "pipe.writer.commit",
+    "pipe.writer.close",
     "gpu.alloc",
     "gpu.copy",
     "gpu.local_ptr",
