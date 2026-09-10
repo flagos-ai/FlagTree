@@ -32,6 +32,9 @@ def require_package_plan(module, kind: str) -> Mapping[str, object]:
 def plain_package_value(value):
     """Convert frozen checkpoint values into JSON-safe descriptor data."""
 
+    from triton.flagmega.ir.fusion import Fusion
+    if isinstance(value, Fusion):
+        return {"$fusion": plain_package_value(value.to_data())}
     if isinstance(value, Mapping):
         return {
             str(key): plain_package_value(item) for key, item in value.items()

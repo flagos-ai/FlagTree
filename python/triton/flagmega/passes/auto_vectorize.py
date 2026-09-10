@@ -11,6 +11,7 @@ from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir import Candidate, IRModule, SelectionPoint, SelectionRecord
 from triton.flagmega.passes.manager import PassManager
 from triton.flagmega.passes.rewriter import DataflowPass, EGraphRulesPass
+from triton.flagmega.passes.vector_layout import coordinate_layouts, region_candidates
 from triton.flagmega.rules import RewriteRule
 from triton.flagmega.rules.ntt.vectorize import VectorizeCandidate, VectorizeRuleRegistry
 
@@ -24,12 +25,12 @@ class AutoVectorizePass:
         existing = {point.id for point in module.selection_points}
         points: list[SelectionPoint] = []
         selections: list[SelectionRecord] = []
+        alternatives_by_node, defaults = coordinate_layouts(module, registry, {
+            node.id: tuple(candidate for rule in registry.rules for candidate in rule.candidates(node, module))
+            for node in module.nodes
+        }, _default_candidate)
         for node in module.nodes:
-            alternatives = tuple(
-                candidate
-                for rule in registry.rules
-                for candidate in rule.candidates(node, module)
-            )
+            alternatives = alternatives_by_node[node.id]
             if not alternatives:
                 continue
             point_id = f"vectorization.{node.id}"
@@ -40,7 +41,7 @@ class AutoVectorizePass:
                 {"strategy": "scalar"},
                 {"egraph_original": True},
             ), *(_to_ir_candidate(value) for value in alternatives))
-            default = _default_candidate(alternatives)
+            default = defaults[node.id]
             points.append(SelectionPoint(point_id, "vectorization", candidates, default, owner=node.id))
             selections.append(SelectionRecord(
                 point_id,
@@ -83,8 +84,11 @@ class AutoVectorizePass:
                     node_id=point.owner,
                 )
             node = module.node_map[point.owner]
+            candidates = (region_candidates(rule, node, module, ir_candidate.parameters["region_lane_bytes"],
+                                            ir_candidate.parameters.get("region_lanes"))
+                          if "region_lane_bytes" in ir_candidate.parameters else rule.candidates(node, module))
             candidate = next(
-                (value for value in rule.candidates(node, module) if value.id == record.candidate_id),
+                (value for value in candidates if value.id == record.candidate_id),
                 None,
             )
             if candidate is None:

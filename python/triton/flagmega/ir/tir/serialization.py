@@ -86,6 +86,9 @@ def tir_from_data(data: Mapping[str, object]) -> TIRNode:
 
 
 def _encode(value: object) -> object:
+    from triton.flagmega.ir.fusion import Fusion
+    if isinstance(value, Fusion):
+        return {"$fusion": value.to_data()}
     if isinstance(value, TIRNode):
         return tir_to_data(value)
     if isinstance(value, IRType):
@@ -124,6 +127,9 @@ def _decode(value: object) -> object:
         return tuple(_decode(item) for item in value)
     if not isinstance(value, Mapping):
         return value
+    if "$fusion" in value:
+        from triton.flagmega.ir.fusion import Fusion
+        return Fusion.from_data(value["$fusion"])
     if "$ir_type" in value:
         return type_from_data(value["$ir_type"])
     if "$data_type" in value:

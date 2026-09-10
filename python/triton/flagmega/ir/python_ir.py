@@ -58,6 +58,10 @@ from triton.flagmega.ir.tir import TIRNode
 from triton.flagmega.ir.printer import companion_suffix, text_source
 from triton.flagmega.ir.types import DType, MaskVectorType, PointerType, VectorType
 from triton.flagmega.ir.verify import verify_module
+from triton.flagmega.ir.fusion import Fusion, iter_fusions
+
+_FUSION_NAMES: ContextVar[Mapping[int, str]] = ContextVar("flagmega_python_fusions", default={})
+_FUSION_SIGNATURE: ContextVar[tuple] = ContextVar("flagmega_python_fusion_signature", default=())
 
 
 _TYPE_ALIASES: ContextVar[Mapping[IRType, str]] = ContextVar(
@@ -121,13 +125,26 @@ def module_source(
     """
 
     aliases = _collect_type_aliases(module)
+    fusions = {}
+    def collect_fusion(body):
+        if id(body) not in fusions:
+            for nested in iter_fusions(body.nodes):
+                collect_fusion(nested)
+            fusions[id(body)] = body
+    for body in iter_fusions(module):
+        collect_fusion(body)
+    fusion_names = {key: f"fusion_{index}" for index, key in enumerate(fusions)}
+    fusion_token = _FUSION_NAMES.set(fusion_names)
+    fusion_signature = _FUSION_SIGNATURE.set(tuple(fusion_names.items()))
     alias_token = _TYPE_ALIASES.set(aliases)
     signature_token = _TYPE_ALIAS_SIGNATURE.set(
         tuple((id(value), name) for value, name in aliases.items())
     )
     try:
-        return _module_source(module, dump_info=dump_info, _verify=_verify)
+        return _module_source(module, dump_info=dump_info, _verify=_verify, fusions=tuple(fusions.values()))
     finally:
+        _FUSION_NAMES.reset(fusion_token)
+        _FUSION_SIGNATURE.reset(fusion_signature)
         _TYPE_ALIAS_SIGNATURE.reset(signature_token)
         _TYPE_ALIASES.reset(alias_token)
 
@@ -137,6 +154,7 @@ def _module_source(
     *,
     dump_info: FunctionDumpInfo | None = None,
     _verify: bool = True,
+    fusions: tuple[Fusion, ...] = (),
 ) -> str:
     """Emit a real Python graph definition, never a data-dictionary decoder."""
 
@@ -165,6 +183,8 @@ def _module_source(
         lines.extend(("", "", "# Shared immutable type definitions."))
         for value, name in aliases.items():
             lines.extend((f"{name} = {_type_expr(value, expand_alias=True)}", ""))
+    for body in fusions:
+        lines.extend(("", "", *_fusion_source(body)))
     if module.constant_recipes:
         lines.extend(("", "", "class ConstantRecipes(fm.ConstantModule):", "    def forward(self) -> None:"))
         for recipe in module.constant_recipes:
@@ -277,15 +297,38 @@ def _node_expr(node: Node, names: Mapping[str, str]) -> str:
 
 
 def _functional_node_expr(node: Node, names: Mapping[str, str]) -> str:
-    call = get_definition(node.op).python_call(node)
+    from dataclasses import replace
+    from triton.flagmega.ir.op_fusion import has_ops, split_ops
+    fused = has_ops(node.attrs)
+    call = get_definition(node.op).python_call(replace(node, attrs=split_ops(node.attrs)) if fused else node)
+    keywords = dict(call.keywords)
+    if fused:
+        keywords.update({key: node.attrs[key] for key in ("pre_ops", "post_ops") if key in node.attrs})
     return _call_expr(
-        call.function,
-        positional=tuple(_python_value_expr(value, names) for value in call.positional),
+        "F.with_ops" if fused else call.function,
+        positional=((call.function,) if fused else ()) + tuple(_python_value_expr(value, names) for value in call.positional),
         keywords=[
             (name, _python_value_expr(value, names))
-            for name, value in call.keywords.items()
+            for name, value in keywords.items()
         ],
     )
+
+
+def _fusion_source(body: Fusion) -> list[str]:
+    keywords = [("name", repr(body.name)), ("parameter", repr(body.parameter.id))]
+    if body.parameter.attrs["name"] != body.parameter.id:
+        keywords.append(("parameter_name", repr(body.parameter.attrs["name"])))
+    if body.parameter.metadata:
+        keywords.append(("parameter_metadata", _literal_expr(body.parameter.metadata)))
+    decorator = _call_expr("fm.fusion", positional=(_type_expr(body.input_type),),
+                           keywords=keywords)
+    lines = ("@" + decorator).splitlines()
+    names = _node_variable_names_for(body.nodes)
+    lines.append(f"def {_FUSION_NAMES.get()[id(body)]}({names[body.parameter.id]}):")
+    for node in body.nodes[1:]:
+        lines.extend(_indent(f"{names[node.id]} = {_functional_node_expr(node, names)}", 4).splitlines())
+    lines.append(f"    return {names[body.output]}")
+    return lines
 
 
 def _python_value_expr(value: object, names: Mapping[str, str]) -> str:
@@ -770,6 +813,8 @@ def _sequence_expr(
 
 
 def _literal_expr(value: Any) -> str:
+    if isinstance(value, Fusion):
+        return _FUSION_NAMES.get()[id(value)]
     if isinstance(value, IRType):
         return _type_expr(value)
     if isinstance(value, (DType, VectorType, PointerType, MaskVectorType)):
@@ -816,7 +861,7 @@ def _cached_python_expr(
     identity guard prevent both lifetime extension and stale ``id`` reuse.
     """
 
-    key = (kind, id(owner), _TYPE_ALIAS_SIGNATURE.get())
+    key = (kind, id(owner), _TYPE_ALIAS_SIGNATURE.get(), _FUSION_SIGNATURE.get())
     cached = _PYTHON_EXPR_FRAGMENTS.get(key)
     if cached is not None and cached[0]() is owner:
         return cached[1]

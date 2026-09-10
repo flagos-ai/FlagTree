@@ -55,7 +55,7 @@ class DenseMatmulCandidateProvider:
         output_type = logical_type(node.type)
         if (
             not isinstance(output_type, TensorType)
-            or _scalar_dtype(output_type) != DType.BFLOAT16
+            or _scalar_dtype(output_type) not in {DType.BFLOAT16, DType.FLOAT32}
         ):
             return None
         vector_contract = vectorization_contract(node)
@@ -590,6 +590,7 @@ class MatMulNormStatsCandidateProvider:
             matmul_attrs = {
                 "transpose_a": bool(node.attrs["transpose_a"]),
                 "transpose_b": bool(node.attrs["transpose_b"]),
+                **({"output_data_type": node.attrs["output_data_type"]} if "output_data_type" in node.attrs else {}),
             }
             matmul_type = MatMul.infer_type((lhs, rhs), matmul_attrs)
             synthetic_op = MatMul.op_name
@@ -599,7 +600,7 @@ class MatMulNormStatsCandidateProvider:
             none = Node("<none>", "builtin.none", (), NoneType())
             matmul_attrs = {
                 "fused_reduce": False,
-                "output_data_type": DType.BFLOAT16,
+                "output_data_type": node.attrs.get("output_data_type", DType.BFLOAT16),
                 "rhs_layout": "k_major",
             }
             matmul_type = PackedMatMul.infer_type(

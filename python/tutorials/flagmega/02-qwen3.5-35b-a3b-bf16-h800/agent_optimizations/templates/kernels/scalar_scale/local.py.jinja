@@ -1,0 +1,21 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "scalar_scale" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+{% if call.scalar_value is not none %}
+    _fm_scale = {{ call.scalar_value }}
+{% else %}
+    _fm_scale = tl.load({{ call.scale }} + ({{ call.scale_offset }}))
+{% endif %}
+    for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+        _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
+        _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+        _fm_value = tl.load({{ call.value }} + ({{ call.value_offset }}), mask=_fm_mask, other=0.0)
+        tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_value * _fm_scale,
+                 mask=_fm_mask & ({{ call.writer_active }}))
+
+
+{% endif %}
+{% endfor %}

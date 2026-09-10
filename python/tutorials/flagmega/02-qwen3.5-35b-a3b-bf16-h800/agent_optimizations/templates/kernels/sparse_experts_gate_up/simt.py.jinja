@@ -1,0 +1,45 @@
+# flagmega-kernel: sparse_experts_gate_up/simt platform=generic
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "sparse_experts_gate_up" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_token in tl.range(0, {{ call.tokens }}):
+        for _fm_route in tl.range(0, {{ call.routes }}, num_stages=3):
+            _fm_expert = tl.load({{ call.pointers.router_expert_ids }} + ({{ call.expert_offset }}), mask={{ call.token_active }}, other=0).to(tl.int64)
+            _fm_gate_input_scale = {{ call.scale_loads.gate_input_scale }}
+            _fm_gate_scale = {{ call.scale_loads.gate_proj_scale }}
+            _fm_up_input_scale = {{ call.scale_loads.up_input_scale }}
+            _fm_up_scale = {{ call.scale_loads.up_proj_scale }}
+            for _fm_n_start in tl.range(0, {{ call.scalar_n }}, {{ call.block_n }}):
+                _fm_n = _fm_n_start + tl.arange(0, {{ call.block_n }})
+                _fm_n_mask = (_fm_n < {{ call.scalar_n }}) & ({{ call.n_active }}) & ({{ call.token_active }})
+                _fm_gate_partial = tl.full(({{ call.block_n }}, {{ call.block_k }}), 0, tl.float32)
+                _fm_up_partial = tl.full(({{ call.block_n }}, {{ call.block_k }}), 0, tl.float32)
+                for _fm_k_start in tl.range(0, {{ call.scalar_k }}, {{ call.block_k }}):
+                    _fm_k = _fm_k_start + tl.arange(0, {{ call.block_k }})
+                    _fm_k_mask = (_fm_k < {{ call.scalar_k }}) & ({{ call.k_active }}) & ({{ call.token_active }})
+                    _fm_input = tl.load({{ call.pointers.q }} + ({{ call.q_offset }}), mask=_fm_k_mask, other=0).to(tl.float32)
+                    _fm_gate = tl.load({{ call.pointers.gate_weight }} + ({{ call.gate_offset }}), mask=_fm_n_mask[:, None] & _fm_k_mask[None, :], other=0).to(tl.float32)
+                    _fm_up = tl.load({{ call.pointers.up_weight }} + ({{ call.up_offset }}), mask=_fm_n_mask[:, None] & _fm_k_mask[None, :], other=0).to(tl.float32)
+                    _fm_gate_partial += {% if call.unit_scales.gate_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_gate_input_scale){% endif %}[None, :] * _fm_gate
+                    _fm_up_partial += {% if call.unit_scales.up_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_up_input_scale){% endif %}[None, :] * _fm_up
+                _fm_gate_result = tl.sum(_fm_gate_partial, 1) * _fm_gate_input_scale * _fm_gate_scale
+                _fm_up_result = tl.sum(_fm_up_partial, 1) * _fm_up_input_scale * _fm_up_scale
+{% if call.attrs.round_projections %}
+                _fm_gate_result = _fm_gate_result.to({{ call.output_dtype }}).to(tl.float32)
+                _fm_up_result = _fm_up_result.to({{ call.output_dtype }}).to(tl.float32)
+{% endif %}
+                _fm_activation = _fm_gate_result * tl.sigmoid(_fm_gate_result)
+{% if call.attrs.round_activation %}
+                _fm_activation = _fm_activation.to({{ call.output_dtype }}).to(tl.float32)
+{% endif %}
+                _fm_activated = _fm_activation * _fm_up_result
+                tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_activated, mask=_fm_n_mask & ({{ call.writer_active }}))
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

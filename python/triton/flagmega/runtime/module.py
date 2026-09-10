@@ -133,6 +133,7 @@ class GeneratedElementwiseModule(RuntimeModule):
         shape = tuple(int(dimension.value) for dimension in self._output_type.shape)
         dtype = {
             "bfloat16": torch.bfloat16,
+            "float16": torch.float16,
             "float32": torch.float32,
         }[self._output_type.dtype.value]
         return torch.empty(shape, dtype=dtype, device=self._device)
@@ -143,7 +144,7 @@ class GeneratedElementwiseModule(RuntimeModule):
         if not isinstance(value_type, TensorType) or not isinstance(value, torch.Tensor):
             raise RuntimeContractError(f"{name} must be a torch.Tensor matching a TensorType ABI.")
         shape = tuple(int(dimension.value) for dimension in value_type.shape)
-        dtype = {"bfloat16": torch.bfloat16, "float32": torch.float32}[value_type.dtype.value]
+        dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[value_type.dtype.value]
         if tuple(value.shape) != shape or value.dtype != dtype:
             raise RuntimeContractError(
                 f"{name} must have shape {shape} and dtype {dtype}, got {tuple(value.shape)} and {value.dtype}.")
@@ -1185,6 +1186,7 @@ def _torch_dtype(torch, dtype):
     try:
         return {
             DType.BFLOAT16: torch.bfloat16,
+            DType.FLOAT16: torch.float16,
             DType.FLOAT32: torch.float32,
             DType.INT32: torch.int32,
             DType.INT64: torch.int64,
@@ -1213,6 +1215,7 @@ def _typed_byte_view(storage, offset: int, nbytes: int, dtype: object, shape: tu
     scalar_type = data_type.elem_type if isinstance(data_type, VectorType) else data_type
     dtype_value = {
         "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
         "float32": torch.float32,
         "float8_e4m3fn": torch.float8_e4m3fn,
     }.get(scalar_type.value)

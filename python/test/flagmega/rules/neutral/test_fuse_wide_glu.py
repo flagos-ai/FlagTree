@@ -45,7 +45,11 @@ def test_normal_pipeline_fuses_wide_glu_without_changing_rounding(reverse, tmp_p
     assert fm.load_module(fm.emit_module(result, tmp_path / "glu.py")) == result
 
 
-@pytest.mark.parametrize("option", ["rounded", "different_input"])
-def test_wide_glu_does_not_erase_a_rounding_boundary_or_change_matmul_input(option):
-    result = decompose_complex_ops(WideGlu(**{option: True}).build())
+def test_wide_glu_does_not_change_matmul_input():
+    result = decompose_complex_ops(WideGlu(different_input=True).build())
     assert result.node_map["output"].op == "tensors.cast"
+
+
+def test_target_independent_round_trip_elision_exposes_wide_glu():
+    result = decompose_complex_ops(WideGlu(rounded=True).build())
+    assert result.node_map["output"].op == "nn.dense_matmul_glu"

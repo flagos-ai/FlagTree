@@ -17,6 +17,7 @@ class DType(str, Enum):
     INT32 = "int32"
     INT64 = "int64"
     BFLOAT16 = "bfloat16"
+    FLOAT16 = "float16"
     FLOAT32 = "float32"
     FLOAT8_E4M3FN = "float8_e4m3fn"
 
@@ -27,6 +28,7 @@ class DType(str, Enum):
             DType.INT32: 4,
             DType.INT64: 8,
             DType.BFLOAT16: 2,
+            DType.FLOAT16: 2,
             DType.FLOAT32: 4,
             DType.FLOAT8_E4M3FN: 1,
         }[self]

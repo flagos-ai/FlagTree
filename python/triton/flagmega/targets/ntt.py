@@ -29,6 +29,10 @@ class NttTarget(ABC):
     codegen_platform: str
     codegen_architecture: str
 
+    def pre_post_ops_rules(self) -> tuple:
+        """Backend overrides register only implemented kernel boundaries."""
+        return ()
+
     def __init__(
         self,
         capability,

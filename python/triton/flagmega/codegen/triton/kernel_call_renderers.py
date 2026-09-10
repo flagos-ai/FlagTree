@@ -94,6 +94,17 @@ def prepare_kernel_calls(
                 f"{family}/{call['variant']}."
             )
         call.update(encoder(raw))
+        from triton.flagmega.codegen.triton.fusion import decode_fusion_attrs, require_fusion
+        from triton.flagmega.ir.op_fusion import has_ops
+        if has_ops(raw.get("semantic_attrs", {})):
+            from triton.flagmega.codegen.triton.tensor_transform_renderers import _tensor_type
+            from triton.flagmega.ir import Node, get_definition
+            attrs = decode_fusion_attrs(raw["semantic_attrs"])
+            inputs = tuple(Node(f"arg{i}", "builtin.var", (), _tensor_type(_buffer(raw, "inputs", parameter.name)["abi"]))
+                           for i, parameter in enumerate(get_definition(raw["semantic_op"]).input_parameters))
+            output_type = _tensor_type(_buffer(raw, "outputs", "result")["abi"])
+            require_fusion(Node("call", raw["semantic_op"], tuple(value.id for value in inputs), output_type,
+                                attrs=attrs), inputs, family=family)
         _bind_host_tensor_descriptor_parameters(call)
         _bind_transfer_pipeline_parameters(call, raw)
         calls.append(call)
@@ -2298,7 +2309,12 @@ def _elementwise_call(raw) -> dict[str, object]:
         f"({value})" for value in (domain["active"], lhs_active, rhs_active)
         if value != "True"
     ) or "True"
+    from triton.flagmega.codegen.triton.fusion import elementwise_program
+    from triton.flagmega.ir.op_fusion import has_ops
+    fusion_lines, fusion_value = elementwise_program(raw) if has_ops(raw.get("semantic_attrs", {})) else ((), "")
     return {
+        "fusion_lines": fusion_lines,
+        "fusion_value": fusion_value,
         "lhs": _pointer(lhs),
         "rhs": None if rhs is None else _pointer(rhs),
         "result": _pointer(result),
@@ -2411,12 +2427,14 @@ def _elementwise_operand_access(
         )
     variant = str(raw.get("variant", raw.get("parameters", {}).get("variant", "")))
     attrs = raw.get("semantic_attrs", {})
-    if variant != "cast" or not isinstance(attrs, Mapping):
+    from triton.flagmega.codegen.triton.fusion import decode_fusion_attrs, vector_axes
+    from triton.flagmega.ir.op_fusion import has_ops
+    if (variant != "cast" and not has_ops(attrs)) or not isinstance(attrs, Mapping):
         raise CodegenError(
             "Elementwise operands with different VectorType lanes require an "
             "explicit vectorized cast contract."
         )
-    axes = tuple(int(value) for value in attrs.get("vectorize_axes", ()))
+    axes = vector_axes(decode_fusion_attrs(attrs), len(_static_shape(result_abi, "local_capacity_shape")))
     return _vectorized_cast_operand_access(
         operand_abi,
         result_abi,
@@ -2439,8 +2457,7 @@ def _vectorized_cast_operand_access(
     result_lanes = tuple(int(value) for value in result_abi.get("scalar_lane_shape", ()))
     if (
         len(operand_shape) != len(result_shape)
-        or len(axes) != len(operand_lanes)
-        or len(axes) != len(result_lanes)
+        or not axes
         or any(axis < 0 or axis >= len(result_shape) for axis in axes)
     ):
         raise CodegenError("Vectorized cast ABI has inconsistent axes, rank, or lanes.")
@@ -2497,17 +2514,20 @@ def _repack_vector_coordinates(
     output_components: tuple[str, ...],
 ) -> tuple[tuple[str, ...], list[str]]:
     coordinates = list(base_coordinates)
-    components: list[str] = [""] * len(axes)
+    from triton.flagmega.ir.ops.ntt.vectorized_cast import cast_vector_axes
+    input_axes, output_axes = cast_vector_axes(input_lanes, output_lanes, axes, len(base_coordinates))
+    components: list[str] = [""] * len(input_lanes)
     # Pack permits multiple lane groups on the same logical axis. Recover
     # that scalar coordinate in group order before splitting it into the
     # input groups; independently overwriting coordinates loses outer lanes.
-    for axis in dict.fromkeys(axes):
-        groups = [index for index, value in enumerate(axes) if value == axis]
+    for axis in dict.fromkeys(input_axes):
+        output_groups = [index for index, value in enumerate(output_axes) if value == axis]
+        input_groups = [index for index, value in enumerate(input_axes) if value == axis]
         scalar_coordinate = base_coordinates[axis]
-        for index in groups:
+        for index in output_groups:
             scalar_coordinate = f"(({scalar_coordinate}) * {output_lanes[index]} + ({output_components[index]}))"
         remainder = scalar_coordinate
-        for index in reversed(groups):
+        for index in reversed(input_groups):
             components[index] = f"(({remainder}) % {input_lanes[index]})"
             remainder = f"(({remainder}) // {input_lanes[index]})"
         coordinates[axis] = remainder
@@ -3132,10 +3152,9 @@ def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
     stats_shape = _static_shape(stats_abi, "local_capacity_shape")
     result.update({
         "residual": _pointer(residual),
-        # K-major MatMulNormStats explicitly has a BF16 projection, even when
-        # its residual/result ABI is F32. Never derive projection rounding
-        # from the epilogue's output pointer type.
-        "projection_type": "tl.bfloat16",
+        # Projection precision belongs to the matmul, not the epilogue ABI.
+        # Missing attributes retain the BF16 contract of old checkpoints.
+        "projection_type": _triton_dtype(str(attrs.get("output_data_type", "bfloat16"))),
         "addend_cast_types": tuple(_triton_dtype(dtype) for dtype in attrs.get("addend_cast_dtypes", ())),
         "residual_offset": residual_domain["offset"],
         "stats": _pointer(stats),

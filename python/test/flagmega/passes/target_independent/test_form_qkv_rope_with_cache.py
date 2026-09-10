@@ -267,7 +267,8 @@ def test_qkv_pass_preserves_function_output_boundaries(boundary, wide):
 @pytest.mark.parametrize("round_before_scale", [False, True])
 @pytest.mark.parametrize("rotary_dim", [None, 16, 48])
 @pytest.mark.parametrize("wide", [False, True])
-def test_qkv_preserves_query_and_all_cache_bytes(round_before_scale, rotary_dim, wide):
+@pytest.mark.parametrize("relaxed", [False, True])
+def test_qkv_preserves_query_and_all_cache_bytes(round_before_scale, rotary_dim, wide, relaxed):
     import torch
     from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator, create_paged_attention_state
 
@@ -275,6 +276,10 @@ def test_qkv_preserves_query_and_all_cache_bytes(round_before_scale, rotary_dim,
     source = replace(source, nodes=tuple(
         replace(node, attrs={**node.attrs, "round_before_scale": round_before_scale})
         if node.op == "nn.norm_apply" else node for node in source.nodes))
+    if relaxed:
+        from triton.flagmega.rules import DataflowRewriter
+        from triton.flagmega.rules.neutral.fold_cast import fold_cast_rule
+        source = DataflowRewriter((fold_cast_rule(),)).rewrite(source)
     result = form_qkv_rope_with_cache(source)
     fused = next(node for node in result.nodes if node.op == "nn.qkv_rope_with_cache")
     evaluator = TorchEvaluator(DictWeightResolver({}))

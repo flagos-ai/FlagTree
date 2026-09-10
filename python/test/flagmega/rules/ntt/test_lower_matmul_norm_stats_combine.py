@@ -277,3 +277,32 @@ def test_addend_cast_chain_fuses_only_when_private_and_preserves_every_rounding(
     evaluator = TorchEvaluator(DictWeightResolver({}))
     torch.testing.assert_close(evaluator.run(fused, inputs), evaluator.run(original, inputs), rtol=0, atol=0)
     assert fm.load_module(fm.emit_module(fused, tmp_path / "epilogue.py")).semantic_hash == fused.semantic_hash
+
+
+def test_forms_and_lowers_f32_projection_through_contiguous_lane_view():
+    class Graph(fm.Module):
+        def forward(self):
+            lhs = self.input("lhs", fm.tensor_type("bfloat16", (1, 64)))
+            rhs = self.input("rhs", fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (4, 4)))
+            residual = self.input("residual", fm.tensor_type(fm.vector_type("float32", (4,)), (1, 8)))
+            none = fm.F.builtin.none()
+            projection = fm.F.ntt.packed_matmul(lhs, rhs, none, none, output_data_type="float32", name="projection")
+            view = fm.F.tensors.bitcast(projection, fm.vector_type("float32", (4,)), name="view")
+            value = fm.F.math.vectorized_binary(view, residual, binary_op="add", name="value")
+            stats = fm.F.nn.norm_stats(value, axis=-1, use_mean=False)
+            self.function("main", (lhs, rhs, residual), (value, stats))
+
+    original = Graph(dialect="ntt", stage="norm_bindings_finalized", entry="main").build()
+    formed = form_matmul_norm_stats_combine(original)
+    assert any(node.op == "ntt.matmul_norm_stats_combine" for node in formed.nodes)
+    result = lower_matmul_norm_stats_combine(formed)
+    fused = next(node for node in result.nodes if node.op == "ntt.matmul_norm_stats")
+    assert fused.attrs["output_data_type"] == "float32"
+    assert "view" not in result.node_map
+    assert "projection" not in result.node_map
+    generator = torch.Generator().manual_seed(9)
+    feeds = {"lhs": torch.randn(1, 64, generator=generator).bfloat16(),
+             "rhs": torch.randn(4, 4, 8, 2, 8, generator=generator).bfloat16(),
+             "residual": torch.randn(1, 8, 4, generator=generator)}
+    evaluator = TorchEvaluator(DictWeightResolver({}))
+    torch.testing.assert_close(evaluator.run(result, feeds), evaluator.run(original, feeds), rtol=0, atol=0)

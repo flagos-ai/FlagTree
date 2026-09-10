@@ -478,6 +478,7 @@ class _math:
         *,
         transpose_a: bool | None = None,
         transpose_b: bool | None = None,
+        output_data_type: DType | str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -485,7 +486,8 @@ class _math:
         return _call_pattern(
             MatMul,
             (lhs, rhs),
-            attributes={"transpose_a": transpose_a, "transpose_b": transpose_b},
+            attributes={"transpose_a": transpose_a, "transpose_b": transpose_b,
+                        "output_data_type": output_data_type},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -499,6 +501,7 @@ class _math:
         *,
         packed_layout: str | None = None,
         logical_n: int | None = None,
+        output_data_type: DType | str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -506,7 +509,8 @@ class _math:
         return _call_pattern(
             PackedDenseMatMul,
             (lhs, weight),
-            attributes={"packed_layout": packed_layout, "logical_n": logical_n},
+            attributes={"packed_layout": packed_layout, "logical_n": logical_n,
+                        "output_data_type": output_data_type},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -553,6 +557,7 @@ class _math:
         output_lanes: tuple[int, ...] | None = None,
         transpose_a: bool | None = None,
         transpose_b: bool | None = None,
+        output_data_type: DType | str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -563,6 +568,7 @@ class _math:
             attributes={
                 "lhs_axes": lhs_axes, "rhs_axes": rhs_axes, "output_axes": output_axes,
                 "output_lanes": output_lanes, "transpose_a": transpose_a, "transpose_b": transpose_b,
+                "output_data_type": output_data_type,
             },
             target_name=target_name, call_name=call_name, condition=condition)
 
@@ -1850,6 +1856,7 @@ class _ntt:
         axis: int | None = None,
         use_mean: bool | None = None,
         addend_cast_dtypes: tuple[DType | str, ...] | None = None,
+        output_data_type: DType | str | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
@@ -1864,6 +1871,7 @@ class _ntt:
                 "axis": axis,
                 "use_mean": use_mean,
                 "addend_cast_dtypes": addend_cast_dtypes,
+                "output_data_type": output_data_type,
             },
             target_name=target_name,
             call_name=call_name,

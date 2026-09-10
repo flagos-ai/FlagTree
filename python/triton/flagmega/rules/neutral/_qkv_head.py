@@ -25,8 +25,11 @@ def qkv_head_pattern(prefix):
         value = wildcard(f"{prefix}_value")
         cosine, sine = wildcard(f"{prefix}_cosine"), wildcard(f"{prefix}_sine")
         norm_input = F.tensors.is_cast(value, dtype="float32") if wide else value
-        cos_input = F.tensors.is_cast(cosine, dtype="float32") if wide else cosine
-        sin_input = F.tensors.is_cast(sine, dtype="float32") if wide else sine
+        # RoPE already promotes its tables internally. The explicit widening
+        # may disappear after Cast folding, without changing the wide head's
+        # normalization/rotation contract. Match both ordinary IR forms.
+        cos_input = is_alt(F.tensors.is_cast(cosine, dtype="float32"), cosine) if wide else cosine
+        sin_input = is_alt(F.tensors.is_cast(sine, dtype="float32"), sine) if wide else sine
         stats = F.nn.is_norm_stats(norm_input, call_name=f"{prefix}_stats")
         norm = F.nn.is_norm_apply(norm_input, stats, call_name=f"{prefix}_norm").with_user_count(1)
         rope = F.nn.is_rope(norm, cos_input, sin_input, call_name=f"{prefix}_rope").with_user_count(1)
@@ -50,8 +53,12 @@ def qkv_head_from_match(result, prefix):
     expected_dtype = DType.FLOAT32 if wide else value_type.dtype
     if getattr(norm.type, "tensor", norm.type).dtype != expected_dtype:
         return None
-    if wide and any(getattr(node.type, "tensor", node.type).dtype != DType.BFLOAT16 for node in (value, cosine, sine)):
-        return None
+    if wide:
+        if value_type.dtype != DType.BFLOAT16:
+            return None
+        if any(getattr(node.type, "tensor", node.type).dtype not in {DType.BFLOAT16, DType.FLOAT32}
+               for node in (cosine, sine)):
+            return None
     return QKVHead(norm, rope, value, cosine, sine, not wide)
 
 

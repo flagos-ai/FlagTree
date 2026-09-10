@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from triton.flagmega.ir import DType, IRModule, Node, TensorType, VectorType
 from triton.flagmega.ir.ops.math.vectorized_matmul import VectorizedMatMul
+from triton.flagmega.ir.vector_layout import split_vector_lanes
 from triton.flagmega.rules import RewriteResult
 from triton.flagmega.rules.ntt.vectorize.base import VectorizeCandidate
 from triton.flagmega.rules.ntt.vectorize.utility import finish_vector_result, padding_for, prepare_packed_input, internal_metadata
@@ -14,6 +15,7 @@ from triton.flagmega.rules.ntt.vectorize.utility import finish_vector_result, pa
 class VectorizeMatMul:
     name = "VectorizeMatMul"
     op_names = frozenset({"math.matmul"})
+    output_layout_anchor = True
 
     def __init__(
         self,
@@ -33,7 +35,7 @@ class VectorizeMatMul:
             not isinstance(lhs, TensorType) or not isinstance(rhs, TensorType)
             or lhs.rank != 2 or rhs.rank != 2 or node.type.rank != 2
             or isinstance(lhs.dtype, VectorType) or lhs.dtype != rhs.dtype or not isinstance(lhs.dtype, DType)
-            or lhs.dtype not in {DType.BFLOAT16, DType.FLOAT32}
+            or lhs.dtype not in {DType.FLOAT16, DType.BFLOAT16, DType.FLOAT32}
         ):
             return ()
         lane = self.lane_bytes // lhs.dtype.itemsize
@@ -62,6 +64,8 @@ class VectorizeMatMul:
             lhs_lanes = (lane,) * len(lhs_axes)
             rhs_lanes = (lane,) * len(rhs_axes)
             out_lanes = (lane,) * len(out_axes)
+            out_lanes, out_axes = split_vector_lanes(out_lanes, out_axes, element_bytes=node.type.dtype.itemsize,
+                                                       vector_bytes=self.lane_bytes)
             lhs_pads = padding_for(lhs, lhs_axes, lhs_lanes) if lhs_axes else (0, 0)
             rhs_pads = padding_for(rhs, rhs_axes, rhs_lanes) if rhs_axes else (0, 0)
             output_pads = padding_for(node.type, out_axes, out_lanes)
@@ -116,6 +120,7 @@ class VectorizeMatMul:
             "output_lanes": output_lanes,
             "transpose_a": bool(node.attrs.get("transpose_a", False)),
             "transpose_b": bool(node.attrs.get("transpose_b", False)),
+            **({"output_data_type": node.attrs["output_data_type"]} if "output_data_type" in node.attrs else {}),
         }
         compute_type = VectorizedMatMul.infer_type((lhs, rhs), attrs)
         compute = Node(

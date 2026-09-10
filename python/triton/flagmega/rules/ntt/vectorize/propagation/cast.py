@@ -7,6 +7,7 @@ from __future__ import annotations
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir import DType, IRModule, Node, TensorType, VectorType, get_definition
 from triton.flagmega.ir.ops.tensors.pack import normalize_axes
+from triton.flagmega.ir.vector_layout import split_vector_lanes
 from triton.flagmega.rules import RewriteResult, RewriteRule
 from triton.flagmega.rules.ntt.vectorize.utility import (
     propagation_helper_metadata,
@@ -37,21 +38,6 @@ def _pack_contract(node: Node, rank: int) -> tuple[tuple[int, ...], tuple[int, .
     return normalize_axes(raw_axes, rank), lanes
 
 
-def _scaled_lanes(
-    lanes: tuple[int, ...], numerator_bytes: int, denominator_bytes: int
-) -> tuple[int, ...] | None:
-    result: list[int] = []
-    for lane in lanes:
-        numerator = lane * numerator_bytes
-        if numerator % denominator_bytes:
-            return None
-        scaled = numerator // denominator_bytes
-        if scaled <= 0:
-            return None
-        result.append(scaled)
-    return tuple(result)
-
-
 def _pack_cast_plan(node: Node, module: IRModule):
     if node.op != "tensors.pack":
         return None
@@ -67,18 +53,15 @@ def _pack_cast_plan(node: Node, module: IRModule):
     ):
         return None
     axes, output_lanes = _pack_contract(node, cast.type.rank)
-    input_lanes = _scaled_lanes(
-        output_lanes, cast.type.dtype.itemsize, source.type.dtype.itemsize
-    )
-    if input_lanes is None:
-        return None
     try:
+        input_lanes, input_axes = split_vector_lanes(output_lanes, axes,
+            element_bytes=source.type.dtype.itemsize, vector_bytes=output_lanes[-1] * cast.type.dtype.itemsize)
         packed_input = get_definition("tensors.pack").prepare(
-            (source,), {"axes": axes, "lanes": input_lanes}
+            (source,), {"axes": input_axes, "lanes": input_lanes}
         )
     except (IRSchemaError, TypeError, ValueError):
         return None
-    return cast, source, axes, input_lanes, output_lanes, packed_input
+    return cast, source, input_axes, axes, input_lanes, output_lanes, packed_input
 
 
 def _pack_cast_matches(node: Node, module: IRModule) -> bool:
@@ -88,12 +71,12 @@ def _pack_cast_matches(node: Node, module: IRModule) -> bool:
 def _pack_cast(node: Node, module: IRModule) -> RewriteResult:
     plan = _pack_cast_plan(node, module)
     assert plan is not None
-    cast, source, axes, input_lanes, output_lanes, _ = plan
+    cast, source, input_axes, axes, input_lanes, output_lanes, _ = plan
     packed = _make(
         f"{node.id}.propagated.pack",
         "tensors.pack",
         (source,),
-        {"axes": axes, "lanes": input_lanes},
+        {"axes": input_axes, "lanes": input_lanes},
         propagation_helper_metadata(node, node.id, "propagated-pack"),
     )
     replacement = _make(
@@ -140,21 +123,17 @@ def _cast_unpack_plan(node: Node, module: IRModule):
     axes = normalize_axes(raw_axes, vector.type.rank)
     if len(axes) != len(vector.type.dtype.lanes):
         return None
-    output_lanes = _scaled_lanes(
-        vector.type.dtype.lanes,
-        vector.type.dtype.elem_type.itemsize,
-        node.type.dtype.itemsize,
-    )
-    if output_lanes is None:
-        return None
     try:
+        output_lanes, output_axes = split_vector_lanes(vector.type.dtype.lanes, axes,
+            element_bytes=node.type.dtype.itemsize,
+            vector_bytes=vector.type.dtype.lanes[-1] * vector.type.dtype.elem_type.itemsize)
         prepared = get_definition("ntt.vectorized_cast").prepare(
             (vector,),
             {"new_type": VectorType(node.type.dtype, output_lanes), "vectorize_axes": axes},
         )
     except (IRSchemaError, TypeError, ValueError):
         return None
-    return unpack, vector, axes, output_lanes, prepared
+    return unpack, vector, axes, output_axes, output_lanes, prepared
 
 
 def _cast_unpack_matches(node: Node, module: IRModule) -> bool:
@@ -164,7 +143,7 @@ def _cast_unpack_matches(node: Node, module: IRModule) -> bool:
 def _cast_unpack(node: Node, module: IRModule) -> RewriteResult:
     plan = _cast_unpack_plan(node, module)
     assert plan is not None
-    unpack, vector, axes, output_lanes, _ = plan
+    unpack, vector, axes, output_axes, output_lanes, _ = plan
     compute = _make(
         f"{node.id}.propagated.cast",
         "ntt.vectorized_cast",
@@ -173,7 +152,7 @@ def _cast_unpack(node: Node, module: IRModule) -> RewriteResult:
         propagation_result_metadata(
             node,
             unpack,
-            axes=axes,
+            axes=output_axes,
             lanes=output_lanes,
             rule="CastDevectorizePropagation",
             internal_role="propagated-cast",
@@ -183,11 +162,11 @@ def _cast_unpack(node: Node, module: IRModule) -> RewriteResult:
         node.id,
         "tensors.unpack",
         (compute,),
-        {"axes": axes},
+        {"axes": output_axes},
         propagation_result_metadata(
             node,
             unpack,
-            axes=axes,
+            axes=output_axes,
             lanes=output_lanes,
             rule="CastDevectorizePropagation",
         ),

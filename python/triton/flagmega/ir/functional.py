@@ -192,6 +192,7 @@ class _math:
         *,
         transpose_a: bool = False,
         transpose_b: bool = False,
+        output_data_type: DType | str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -202,6 +203,7 @@ class _math:
             rhs,
             transpose_a=transpose_a,
             transpose_b=transpose_b,
+            output_data_type=output_data_type,
             name=name,
             metadata=metadata,
         )
@@ -214,6 +216,7 @@ class _math:
         *,
         packed_layout: str = "k_major_n8_k16",
         logical_n: int | None = None,
+        output_data_type: DType | str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -224,6 +227,7 @@ class _math:
             weight,
             packed_layout=packed_layout,
             logical_n=logical_n,
+            output_data_type=output_data_type,
             name=name,
             metadata=metadata,
         )
@@ -267,6 +271,7 @@ class _math:
         output_lanes: tuple[int, ...] | list[int],
         transpose_a: bool = False,
         transpose_b: bool = False,
+        output_data_type: DType | str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -281,6 +286,7 @@ class _math:
             output_lanes=output_lanes,
             transpose_a=transpose_a,
             transpose_b=transpose_b,
+            output_data_type=output_data_type,
             name=name,
             metadata=metadata,
         )
@@ -1736,6 +1742,7 @@ class _ntt:
         axis: int,
         use_mean: bool,
         addend_cast_dtypes: tuple[DType | str, ...] = (),
+        output_data_type: DType | str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1751,6 +1758,7 @@ class _ntt:
             axis=axis,
             use_mean=use_mean,
             addend_cast_dtypes=addend_cast_dtypes,
+            output_data_type=output_data_type,
             name=name,
             metadata=metadata,
         )
@@ -2094,6 +2102,18 @@ class _distributed:
 
 class F:
     """Static functional namespaces used by editable Python IR."""
+
+    @staticmethod
+    def with_ops(function, *arguments: Node, pre_ops=None, post_ops=(), **attributes) -> Node:
+        """Call a normal F.* constructor with typed PreOps/PostOps functions.
+
+        PreOps keys are the base op's ParameterInfo (or their serialized names).
+        PostOps is aligned with result fields; None leaves a field unchanged.
+        """
+        definition = getattr(function, "__flagmega_op_definition__", None)
+        if definition is None:
+            raise TypeError("F.with_ops requires an ordinary F.* op constructor.")
+        return definition.construct(*arguments, pre_ops=pre_ops or {}, post_ops=post_ops, **attributes)
 
     builtin = _builtin
     distributed = _distributed

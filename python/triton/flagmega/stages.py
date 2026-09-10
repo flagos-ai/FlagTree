@@ -449,7 +449,7 @@ register_stage(Stage(
     "fuse-distributed-ops",
     "frozen_constants",
     "gather_reduce_qkv_fused",
-    lambda module, _target: fuse_distributed_ops(module),
+    lambda module, target: fuse_distributed_ops(module, fusion_rules=target.pre_post_ops_rules()),
     compatible_input_stages=frozenset({"gather_reduce_add_norm_apply_fused", "gather_reduce_norm_apply_fused"}),
 ))
 register_stage(Stage("lower-tir", "selected_tir_variants", "selected_tir", _lower_to_tir, output_dialect="semantic_tir"))

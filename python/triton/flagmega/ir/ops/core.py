@@ -482,7 +482,8 @@ class OpDefinition:
                 )
                 for value in inputs
             )
-            cls.verify_parameter_types(logical_inputs)
+            from triton.flagmega.ir.op_fusion import semantic_inputs
+            cls.verify_parameter_types(semantic_inputs(cls, logical_inputs, attrs))
             logical_result = cls.infer_type(logical_inputs, attrs)
             return broadcast_ir_type(logical_result, placement)
         if direct_error is not None:
@@ -524,7 +525,9 @@ class OpDefinition:
                 raise IRSchemaError(f"F.{cls.namespace}.{cls.functional_name} is missing input {parameter.name!r}.")
             if not isinstance(candidate, Node):
                 raise IRSchemaError(f"Input {parameter.name!r} must be an IR node.")
-            parameter.require_type(candidate.type)
+            pre = attributes.get("pre_ops", {})
+            body = pre.get(parameter, pre.get(parameter.name)) if isinstance(pre, Mapping) else None
+            parameter.require_type(candidate.type if body is None else body.infer_type(candidate.type))
             inputs.append(candidate)
         if variadic_seen and any(parameter.variadic for parameter in cls.input_parameters[:-1]):
             raise RuntimeError(f"Variadic input for {cls.op_name!r} must be the last input parameter.")
@@ -595,7 +598,8 @@ class OpDefinition:
             if distributed_semantic:
                 actual_error: Exception | None = None
                 try:
-                    cls.verify_parameter_types(inputs)
+                    from triton.flagmega.ir.op_fusion import semantic_inputs
+                    cls.verify_parameter_types(semantic_inputs(cls, inputs, attrs))
                     distributed_type = cls.infer_call_type(inputs, attrs)
                     distributed_effect = cls.infer_effect(inputs, attrs)
                 except (IRSchemaError, KeyError, TypeError, ValueError, AssertionError) as error:
@@ -626,11 +630,13 @@ class OpDefinition:
                     )
                     for value in inputs
                 )
-                cls.verify_parameter_types(logical_inputs)
+                from triton.flagmega.ir.op_fusion import semantic_inputs
+                cls.verify_parameter_types(semantic_inputs(cls, logical_inputs, attrs))
                 inferred_type = cls.infer_type(logical_inputs, attrs)
                 inferred_effect = cls.infer_effect(logical_inputs, attrs)
             elif not distributed_inferred:
-                cls.verify_parameter_types(inputs)
+                from triton.flagmega.ir.op_fusion import semantic_inputs
+                cls.verify_parameter_types(semantic_inputs(cls, inputs, attrs))
                 inferred_type = cls.infer_type(inputs, attrs)
                 inferred_effect = cls.infer_effect(inputs, attrs)
         except (IRSchemaError, KeyError, TypeError, ValueError) as error:
@@ -773,6 +779,8 @@ def op_definition(
             if isinstance(value, ParameterInfo)
         )
         reserved_names = {
+            "pre_ops",
+            "post_ops",
             "parameters",
             "input_parameters",
             "attribute_parameters",
@@ -862,6 +870,8 @@ def op_definition(
         definition.inplace_output_parameters = inplace_output_parameters
         definition.result_memory_effects = result_memory_effects
         definition.byte_preserving_input_parameters = byte_preserving_input_parameters
+        from triton.flagmega.ir.op_fusion import install_op_fusion
+        install_op_fusion(definition)
         _DEFINITIONS[op_name] = definition
         if namespace is not None and functional_name is not None:
             key = (namespace, functional_name)

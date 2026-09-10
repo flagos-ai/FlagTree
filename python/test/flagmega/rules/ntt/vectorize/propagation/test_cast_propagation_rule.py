@@ -1,6 +1,7 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+import pytest
 import torch
 
 from triton.flagmega import ir as fm
@@ -20,7 +21,7 @@ def _assert_equivalent(original, rewritten, inputs):
     )
 
 
-def test_vectorize_cast_scales_input_lanes_by_element_width(materialize_rewrite):
+def test_vectorize_cast_preserves_outer_extent_and_merges_input_packets(materialize_rewrite):
     class Graph(fm.Module):
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
@@ -28,27 +29,28 @@ def test_vectorize_cast_scales_input_lanes_by_element_width(materialize_rewrite)
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", (32,)), id="value")
             cast = fm.F.tensors.cast(value, fm.DType.FLOAT32, name="cast")
-            root = fm.F.tensors.pack(cast, (8,), axes=(0,), name="root")
+            root = fm.F.tensors.pack(cast, (2, 4), axes=(0, 0), name="root")
             self.function("main", (value,), (root,))
 
     module = Graph().build()
     result = _rule("VectorizeCastPropagation").apply(module.node_map["root"], module)
     assert result is not None
-    assert result.prefix_nodes[0].attrs["lanes"] == (16,)
+    assert result.prefix_nodes[0].attrs["lanes"] == (8,)
     assert result.replacement.op == "ntt.vectorized_cast"
-    assert result.replacement.type == fm.tensor_type(fm.vector_type("float32", (8,)), (4,))
+    assert result.replacement.type == fm.tensor_type(fm.vector_type("float32", (2, 4)), (4,))
     rewritten = materialize_rewrite(module, result)
     _assert_equivalent(module, rewritten, {"value": torch.randn(32, dtype=torch.bfloat16)})
 
 
-def test_cast_devectorize_scales_output_lanes_by_element_width(materialize_rewrite):
+@pytest.mark.parametrize("lane", [8, 16])
+def test_cast_devectorize_splits_packets_without_changing_outer_extent(materialize_rewrite, lane):
     class Graph(fm.Module):
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
             value = self.input(
-                "value", fm.tensor_type(fm.vector_type("bfloat16", (16,)), (2,)), id="value"
+                "value", fm.tensor_type(fm.vector_type("bfloat16", (lane,)), (2,)), id="value"
             )
             unpacked = fm.F.tensors.unpack(value, axes=(0,), name="unpacked")
             root = fm.F.tensors.cast(unpacked, fm.DType.FLOAT32, name="root")
@@ -59,13 +61,13 @@ def test_cast_devectorize_scales_output_lanes_by_element_width(materialize_rewri
     assert result is not None
     vectorized = result.prefix_nodes[0]
     assert vectorized.op == "ntt.vectorized_cast"
-    assert vectorized.type == fm.tensor_type(fm.vector_type("float32", (8,)), (4,))
+    assert vectorized.type == fm.tensor_type(fm.vector_type("float32", (2, lane // 2)), (2,))
     assert result.replacement.op == "tensors.unpack"
     rewritten = materialize_rewrite(module, result)
     _assert_equivalent(
         module,
         rewritten,
-        {"value": torch.randn(2, 16, dtype=torch.bfloat16)},
+        {"value": torch.randn(2, lane, dtype=torch.bfloat16)},
     )
 
 

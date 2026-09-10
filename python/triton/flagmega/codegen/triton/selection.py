@@ -59,6 +59,8 @@ class TritonTirSelectionPolicy:
         mesh_hierarchy = target.distributed_placements(module)[0].hierarchy
         points: list[SelectionPoint] = []
         for node in module.nodes:
+            from triton.flagmega.codegen.triton.fusion import require_fusion
+            require_fusion(node, tuple(module.node_map[value] for value in node.inputs))
             point_id = f"tir.{node.id}"
             if point_id in existing:
                 continue
@@ -68,6 +70,9 @@ class TritonTirSelectionPolicy:
             proposal = provider.propose(node, context)
             if proposal is None:
                 continue
+            for candidate in proposal.candidates:
+                require_fusion(node, tuple(module.node_map[value] for value in node.inputs),
+                               family=candidate.parameters.get("family"))
             candidates = self.workspace_annotator(
                 node,
                 proposal.candidates,

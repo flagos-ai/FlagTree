@@ -41,8 +41,12 @@ extension reloading, and repeated resume without duplicate transformations.
 
 **Numerical semantics.** Separate storage dtype, computation dtype, reduction
 ordering, intermediate rounding, and result dtype. Removing a materialized Cast
-is not permission to remove its rounding: a fusion can execute the conversion
-inside a kernel. Represent an ordered conversion chain explicitly when needed.
+is not by itself permission to remove its rounding: under an exact numerical
+contract, a fusion must execute the required conversion inside the kernel.
+Under an explicitly relaxed contract, simplify redundant conversion chains at
+the earliest semantic stage instead of preserving them in an epilogue. Do not
+silently apply that relaxation to other acceptance policies. Represent an
+ordered conversion chain explicitly when its rounding remains required.
 Do not move it across a collective, shared use, or effectful boundary without
 a proof. Compare against the actual configured source execution path, not only
 an algebraic formula or a differently compiled evaluator.

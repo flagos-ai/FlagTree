@@ -17,12 +17,14 @@ def softmax_call(raw):
     source = _buffer(raw, "inputs", "value")
     result = _buffer(raw, "outputs", "result")
     input_type = _tensor_type(source["abi"])
-    attrs = raw["semantic_attrs"]
+    from triton.flagmega.codegen.triton.fusion import decode_fusion_attrs, softmax_program
+    attrs = decode_fusion_attrs(raw["semantic_attrs"])
     if Softmax.infer_type((Node("source", "builtin.var", (), input_type), ), attrs) != _tensor_type(result["abi"]):
         raise CodegenError("Softmax result ABI disagrees with its materialized axis contract.")
     axis = normalize_axis(attrs["axis"], len(source["abi"]["local_capacity_shape"]))
     domain = local_reduction_domain(source["abi"], (axis, ), int(raw["parameters"]["elements_per_program"]))
     return {
+        **softmax_program(raw),
         **domain,
         "source": _pointer(source),
         "source_offset": emit_local_scalar_offset(source["abi"], domain["coordinates"]),

@@ -67,7 +67,7 @@ def lower_matmul_norm_stats_combine_rule() -> RewriteRule:
         if (
             len(producer.inputs) != 4
             or bool(producer.attrs["fused_reduce"])
-            or DType(producer.attrs["output_data_type"]) is not DType.BFLOAT16
+            or DType(producer.attrs["output_data_type"]) not in {DType.BFLOAT16, DType.FLOAT32}
             or not isinstance(module.node_map[producer.inputs[2]].type, NoneType)
             or not isinstance(module.node_map[producer.inputs[3]].type, NoneType)
         ):
@@ -82,6 +82,7 @@ def lower_matmul_norm_stats_combine_rule() -> RewriteRule:
             "transpose_a": False,
             "transpose_b": False,
             "rhs_layout": str(producer.attrs["rhs_layout"]),
+            "output_data_type": producer.attrs["output_data_type"],
         }
         prepared = MatMulNormStats.prepare(
             inputs,

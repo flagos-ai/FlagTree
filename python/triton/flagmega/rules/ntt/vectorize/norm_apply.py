@@ -20,6 +20,9 @@ from triton.flagmega.rules.ntt.vectorize.utility import (
 class VectorizeNormApply:
     name = "VectorizeNormApply"
     op_names = frozenset({"nn.norm_apply"})
+    # Value/output coordinates agree; scale/bias follow this choice during
+    # rewriting, while scalar statistics do not belong to the layout region.
+    layout_input_indices = (0,)
 
     def __init__(self, *, lane_bytes: int = 16) -> None:
         self.lane_bytes = lane_bytes
@@ -84,7 +87,7 @@ class VectorizeNormApply:
     def rewrite(self, node: Node, module: IRModule, candidate: VectorizeCandidate) -> RewriteResult:
         value_axes = candidate.axes
         lanes = candidate.lanes
-        parameter_axes = (int(candidate.parameters["parameter_axis"]),)
+        parameter_axes = (int(candidate.parameters["parameter_axis"]),) * len(lanes)
         prefix: list[Node] = []
         value_helpers, value = prepare_packed_input(
             module.node_map[node.inputs[0]],

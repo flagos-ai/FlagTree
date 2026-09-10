@@ -47,6 +47,7 @@ class NumpyMaterializationContext:
             DType.INT32: self.numpy.int32,
             DType.INT64: self.numpy.int64,
             DType.BFLOAT16: self.numpy.uint16,
+            DType.FLOAT16: self.numpy.float16,
             DType.FLOAT32: self.numpy.float32,
             DType.FLOAT8_E4M3FN: self.numpy.uint8,
         }

@@ -55,6 +55,58 @@ base, including guards/comments.
 
 ## CLI and editable IR
 
+### PreOps and PostOps
+
+`Fusion` is a closed, typed unary IR function, built with ordinary `F.*`
+expressions. `F.with_ops` attaches these functions to an existing operation:
+PreOps bind to its `ParameterInfo` inputs and PostOps bind to its result fields.
+The base op keeps its own schema and implementation; no per-op dtype switches
+or source strings are needed.
+
+```python
+from triton.flagmega import ir as fm
+from triton.flagmega.ir.ops.nn.softmax import Softmax
+
+@fm.fusion(fm.tensor_type("bfloat16", (4, 32)))
+def widen(value):
+    return fm.F.tensors.cast(value, "float32")
+
+class Graph(fm.Module):
+    def forward(self):
+        value = self.input("value", widen.input_type)
+        result = fm.F.with_ops(fm.F.nn.softmax, value,
+                              pre_ops={Softmax.value: widen}, axis=-1)
+        self.function("main", (value,), (result,))
+```
+
+Python checkpoints emit `@fm.fusion` definitions and `F.with_ops` calls; their
+bodies can be edited and resumed normally. `.il`/`.script` show inline typed
+fusion expressions. Visitors enter these semantic bodies, and
+`body.rewrite(rules)` runs ordinary dataflow rules within their own SSA scope.
+Existing rules do not implicitly treat a fused call as a naked op; a rule that
+understands these boundaries declares `supports_fusion=True`. Fusion bodies
+participate in inference-cache keys, e-graph identity and cost accounting.
+
+The PyNTT target registers shared Pattern rules in the existing
+`FuseDistributedOps` DataflowPass. Automatic fusion currently covers unary
+casts/activations around **elementwise and scalar-axis softmax** kernels.
+Elementwise supports explicit vectorized-cast lane repacking. Manually authored
+bodies may also contain supported binary expressions and local constants.
+Shared producers are not duplicated. Backend capability checks reject
+unsupported bodies/families, partial reductions and effectful boundaries;
+they never silently drop a Fusion. Other kernel families require explicit
+boundary-emitter support before they can use this facility.
+
+TargetIndependent's `FoldCast` independently eliminates identity casts and
+floating `A → B → A` round trips. This is a **relaxed numerical optimization**:
+the intermediate rounding is intentionally discarded, including narrowing
+round trips. Integer/boolean conversions and non-round-trip chains are not
+covered. PreOps/PostOps do not perform this simplification. Selecting an
+importer numerical profile alone therefore does not promise full-sequence
+token equality after relaxed optimization; validate the intended workload.
+
+### Commands
+
 Use a FlagTree environment built with NVIDIA/TLE support. The package installs
 the `flagmega` CLI by default; `python -m triton.flagmega` is equivalent.
 `FLAGTREE_FLAGMEGA=0` disables the optional console entry point and its extra
@@ -232,8 +284,8 @@ cache writes and sequence advancement remain part of the operation contract.
 Before/After checkpoints. It lifts pure expressions of identical immutable SSA
 arguments across repeated calls, computes them once per caller, and refines the
 shared callee ABI. It does not move state reads or infer equal values from names
-or types. Mixed-dtype NormApply vectorization and cast-aware MatMulNormStats
-fusion preserve projection/residual rounding separately. Generic distributed
+or types. Mixed-dtype NormApply vectorization and MatMulNormStats fusion
+respect the declared projection output dtype and residual conversion chain. Generic distributed
 inference exposes target-owned leaf layouts at logical-argument use sites,
 allowing shard-local casts without changing the originator's external ABI.
 
@@ -248,6 +300,22 @@ private cast chains with identical endpoint shard types into this epilogue,
 removing intermediate buffers without removing numerical rounding or crossing
 communication boundaries. Both attributes are omitted for the original default
 contract and round-trip through executable Python IR.
+
+`F.math.matmul(..., output_data_type="float32")` selects a true FP32 projection
+from narrow inputs; vectorization, packing, normalization fusion and codegen
+carry that attribute. The evaluator and kernel do not materialize a BF16 result
+before widening it. Missing output dtype preserves the original implicit dtype.
+Under the current relaxed target-independent policy, a private BF16 MatMul
+followed by a widening Cast can become an FP32-output MatMul; this deliberately
+removes the BF16 result rounding and is not an exact-arithmetic equality.
+
+Wider vector elements preserve logical coordinates by splitting packets. With
+a 16-byte packet, eight narrow elements become `f32<2,4>` at the same outer shape,
+not `f32<4>` at twice the outer extent. Repeated vector axes map both components
+to the same logical axis. AutoVectorize offers coherent region defaults through
+shape-preserving dataflow and declared reusable-call ABIs, so residual Add/Norm
+can directly consume this producer layout; explicit agent selections remain
+authoritative and round-trip in Python proposals.
 
 ## Standalone text serving
 

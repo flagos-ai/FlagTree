@@ -35,6 +35,8 @@ from triton.flagmega.ir.ops.tensors._k_major import (
     unpack_k_major_weight,
 )
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
+from triton.flagmega.ir.types import DType
+from triton.flagmega.ir.ops.math.matmul import matmul_value, normalize_output_data_type
 
 
 @op_definition(
@@ -50,6 +52,7 @@ class PackedDenseMatMul(OpDefinition):
     weight = input_parameter(is_tensor())
     packed_layout = attribute_parameter(default="k_major_n8_k16")
     logical_n = attribute_parameter(default=None)
+    output_data_type = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -65,7 +68,7 @@ class PackedDenseMatMul(OpDefinition):
             )
         if mesh_interleaved and logical_n is None:
             raise IRSchemaError("Mesh-interleaved PackedDenseMatMul requires logical_n.")
-        return attrs
+        return normalize_output_data_type(attrs)
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -93,7 +96,7 @@ class PackedDenseMatMul(OpDefinition):
         if lhs.shape[1].fixed_value != logical_k or lhs.dtype != weight.dtype:
             raise IRSchemaError(
                 "PackedDenseMatMul lhs dtype/K does not match the packed weight.")
-        output = tensor_type(lhs.dtype, (lhs.shape[0], logical_n), layout=lhs.layout)
+        output = tensor_type(DType(attrs.get("output_data_type") or lhs.dtype), (lhs.shape[0], logical_n), layout=lhs.layout)
         placement = placement_of(lhs_type, weight_type)
         if placement is None:
             return output
@@ -184,7 +187,7 @@ class PackedDenseMatMul(OpDefinition):
             str(node.attrs["packed_layout"]),
             node.attrs.get("logical_n"),
         )
-        return context.torch.nn.functional.linear(lhs, weight)
+        return matmul_value(lhs, weight.transpose(-2, -1), node.attrs.get("output_data_type"), context)
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:

@@ -103,7 +103,8 @@ python "$TUTORIAL/accuracy.py" --checkpoint "$CHECKPOINT" \
 Optional GPU timing includes the complete decoder, logits, greedy sampling,
 state advancement and device token feedback. Prefix work, state restoration,
 token tracing, host reads, loading, compilation and warmup are excluded.
-These graph measurements are not serving latency or a native-vLLM comparison.
+These graph measurements alone are not serving latency or a native-vLLM comparison;
+the native run below supplies the corresponding comparison.
 
 Measure native vLLM at the prepared-decode boundary in its isolated environment,
 after the FlagMega process has exited:
@@ -127,37 +128,70 @@ serving integration or end-to-end request benchmark.
 
 ## Workload-Specific Agent Optimizations
 
-The local target in `local_optimizations/target.py` configures the existing
-SIMT expert implementations through the normal compiler catalog. Gate/up
-uses `(N, K) = (4, 1024)` and down projection uses `(16, 512)`, instead of the
-baseline `(8, 128)` for both. These choices reduce inactive feature rows and
-inner-loop iterations for the selected local shards. Expert IDs remain dynamic;
-the rounding contract, route accumulation order and state ABI are unchanged.
-The choice is workload-local and is not a new compiler-wide default.
+The accepted policy and implementations live in `agent_optimizations/`. They
+extend the normal IR, pass, candidate-provider and Jinja-template interfaces;
+generated kernel source is never patched after compilation.
+
+- **Projection ownership:** select N-sharded, full-K output projections and
+  compatible downstream layouts. This retains the TMA projection/residual/stats
+  fusion instead of a split-K SIMT path with many output loops and a subsequent
+  cross-owner reduction. The normal distribution solver still checks the whole
+  plan for compatibility.
+- **Expert kernels:** use gate/up `(N, K) = (4, 2048)` and down `(16, 512)`,
+  compared with the default `(8, 128)`. Local kernel overrides pipeline dynamic
+  expert-route prefetch with three stages. Expert IDs remain runtime inputs.
+- **GDN:** use value/projection tiles of `32/2048` and a paired compensated A/B
+  projection that shares input loads, while retaining the recurrent state ABI.
+- **Local fusions and selections:** register staged routing, broadcast scalar
+  scaling, gated residual/norm statistics and sigmoid-product IR with matching
+  kernels. Choose elementwise tiles from local scalar capacity, up to 2048, and
+  the `decode_t32` paged-attention implementation. These remove intermediate
+  passes over data and reduce loop overhead for this workload.
+
+These are workload-local decisions, not new compiler-wide defaults. Both
+baseline and agent builds retain the same core compiler optimizations.
 
 Rebuild this candidate from the original checkpoint with:
 
 ```sh
-python "$TUTORIAL/optimize.py" --checkpoint "$CHECKPOINT" \
+python "$TUTORIAL/optimize_agent.py" --checkpoint "$CHECKPOINT" \
   --trial "$TUTORIAL/.local/agent" \
-  --gate-n 4 --gate-k 1024 --down-n 16 --down-k 512 \
   --bufferize-opt-level optimized --rdata-cache-dir "$TUTORIAL/.local/rdata-cache"
+python -m triton.flagmega artifact verify "$TUTORIAL/.local/agent/artifact"
 python "$TUTORIAL/accuracy.py" --checkpoint "$CHECKPOINT" \
   --artifact "$TUTORIAL/.local/agent/artifact" \
   --reference "$TUTORIAL/.local/reference/report.json" \
-  --trial "$TUTORIAL/.local/agent-check" --label agent_long_k \
+  --trial "$TUTORIAL/.local/agent-check" --label agent_optimized \
   --benchmark-repeats 5
 ```
 
-The candidate has passed complete-model independent greedy checks for all four
-decode scenarios, including a rebuild from the original checkpoint and repeated
-measurements in reversed variant order.
+For compile-only iteration, add `--compile-only --bufferize-opt-level fast`.
+`--input` accepts imported Python IR or a complete `distribution_candidates`
+checkpoint. Each build emits readable Before/After dumps, editable Python IR,
+`distribution.plan.py`, final IR and a source-fingerprinted build report.
+
+The built-in `distribution_plan.py` contains the accepted choices, grouped by
+candidate family. It checks the logical graph fingerprint and the freshly
+proposed candidate catalog, then constructs a new plan bound to that proposal's
+exact hash. It does not overwrite hashes on stale plans or bypass compiler
+validation. Fresh solver defaults can vary without changing the accepted
+choices. If the logical graph changes, re-optimize instead of editing the
+fingerprint to force acceptance. To supply your own plan, use
+`--input <proposal.py> --distribution-plan <edited.plan.py>`; both must describe
+the same proposal. `agent_optimizations/distribution.py` demonstrates selecting
+output-owned projections and re-solving the coupled choices on a typed graph.
+
+The published package has passed complete-model independent greedy checks for
+all four decode scenarios, including loading its rebuilt artifact with only the
+public tutorial package on `PYTHONPATH` and repeated measurements of that artifact.
 
 `generated_kernels.py` is the accepted source snapshot, regenerated through the
 normal compiler renderer. Its SHA256 is
-`b140ec0ff9216dbd5b3e08e1e53342a9a3402189f19e315844409fd481bd41ab`.
+`8d0a73fb9ca91d3b5f03205f4fa2c23d2873aa482c6b1424caff60acca459b9c`.
 It is not a standalone model artifact: execution also requires final IR, the
-manifest and approximately 64.6 GiB of readonly data produced by `optimize.py`.
+manifest and approximately 64.6 GiB of readonly data produced by `optimize_agent.py`.
+The hash identifies the measured snapshot; fresh builds can carry different
+proposal-provenance metadata in their source headers.
 The two decoder function bodies and their tensor-map tables are reused across
 layers. No workload-specific changes to native Triton/TLE are required.
 
@@ -186,28 +220,31 @@ raw GPU events. It writes `summary.json`, `decode_latency.svg`, and
 ## Final Performance
 
 Measured on one H800 with the complete 40-layer model, batch size 1 and 32
-independently generated tokens per context. Variants ran sequentially in the
-order agent/default/native, then native/default/agent. Each process used two
-warmup rounds and five measured rounds: **320 GPU event samples per variant
-per scenario**. Every independent sequence, including warmup and timed rounds,
-exactly matched the pinned native greedy sequence.
+independently generated tokens per context. Variants ran sequentially, with two
+runs of each fixed artifact/environment. Each process used two warmup rounds
+and five measured rounds: **320 GPU event samples per variant per scenario**.
+Every independent sequence, including warmup and timed rounds, exactly matched
+the pinned native greedy sequence.
 
 | Existing context | Native vLLM ms/token | FlagMega default ms/token | Agent ms/token | Agent tokens/s |
 | --- | ---: | ---: | ---: | ---: |
-| 1 | 4.282 | 8.850 | 6.351 | 157.41 |
-| 32 | 4.283 | 8.853 | 6.362 | 157.15 |
-| 255 | 4.293 | 8.928 | 6.438 | 155.34 |
-| 256 | 4.293 | 8.931 | 6.442 | 155.24 |
+| 1 | 4.281 | 7.923 | 4.160 | 240.37 |
+| 32 | 4.282 | 7.925 | 4.167 | 240.00 |
+| 255 | 4.291 | 7.995 | 4.202 | 238.00 |
+| 256 | 4.292 | 7.998 | 4.206 | 237.73 |
 
 Latency is the pooled per-token median; throughput is `1000 / mean_ms`, not the
-inverse median. Agent p95 latency is 6.378–6.462 ms. The agent lowers latency by
-27.9–28.2% versus the same current-core FlagMega default, with approximately
-1.39× decode throughput. **Native vLLM remains faster**: FlagMega agent latency
-is approximately 1.48–1.50× native latency at this boundary.
+inverse median. Agent p95 latency is 4.170–4.217 ms. The agent lowers latency by
+47.4–47.5% versus the same current-core FlagMega default, with approximately
+1.90× decode throughput. Agent median latency is 2.0–2.8% below the native vLLM
+runs in this comparison. This small native margin is not a universal speedup:
+earlier valid native measurements reached approximately 4.01 ms/token, so run
+conditions can reverse that ranking. Re-measure all variants on your hardware.
 
 Both FlagMega variants use SAT memory planning and include the same compiler
-optimizations. The agent changes only the workload-local expert tiles described
-above. Its compiled kernel uses 168 registers/thread, 162924 bytes of shared
+optimizations. The agent changes the workload-local distribution choices,
+fusions, kernel implementations and tiles described above. Its compiled kernel
+uses 148 registers/thread, 223868 bytes of shared
 memory and 12 physical warps, with no spills; the cooperative grid is an 8×16
 mesh of blocks on one GPU, not a multi-GPU mesh.
 

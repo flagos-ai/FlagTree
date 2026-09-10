@@ -12,7 +12,7 @@ from triton.flagmega.ir.distributed_type import SBPSplit
 from triton.flagmega.ir.model import DistributedType, IRType, Node, SBP, SBPPartial, TensorType, tensor_type
 from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_nbytes
 from triton.flagmega.ir.type_pattern import is_tensor
-from triton.flagmega.ir.types import VectorType
+from triton.flagmega.ir.types import DType, VectorType
 
 
 @op_definition("math.matmul", namespace="math", functional_name="matmul", display_name="Math.MatMul")
@@ -22,13 +22,14 @@ class MatMul(OpDefinition):
     rhs = input_parameter(is_tensor())
     transpose_a = attribute_parameter(default=False)
     transpose_b = attribute_parameter(default=False)
+    output_data_type = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         attrs = super().normalize_attrs(attributes)
         if any(not isinstance(attrs[name], bool) for name in ("transpose_a", "transpose_b")):
             raise IRSchemaError("F.math.matmul transpose flags must be bool.")
-        return attrs
+        return normalize_output_data_type(attrs)
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -44,7 +45,8 @@ class MatMul(OpDefinition):
         rk, rn = rhs.shape[rhs_k_axis], rhs.shape[rhs_n_axis]
         if lk != rk:
             raise IRSchemaError(f"F.math.matmul reduction dimensions differ: {lk} versus {rk}.")
-        logical_output = tensor_type(lhs.dtype, (lm, rn), layout=lhs.layout)
+        output_dtype = DType(attrs.get("output_data_type") or lhs.dtype)
+        logical_output = tensor_type(output_dtype, (lm, rn), layout=lhs.layout)
         placement = placement_of(lhs_type, rhs_type)
         if placement is None:
             return logical_output
@@ -101,13 +103,30 @@ class MatMul(OpDefinition):
             lhs = lhs.transpose(-2, -1)
         if node.attrs["transpose_b"]:
             rhs = rhs.transpose(-2, -1)
-        return lhs @ rhs
+        return matmul_value(lhs, rhs, node.attrs.get("output_data_type"), context)
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         assert isinstance(node.type, TensorType)
         size = tensor_nbytes(node.type)
         return OpCost(flops=None, bytes_read=None, bytes_written=size, notes=("matmul",))
+
+
+def normalize_output_data_type(attrs):
+    """Keep old implicit-output checkpoints canonical; explicit output is typed."""
+    if attrs.get("output_data_type") is None:
+        attrs.pop("output_data_type", None)
+    else:
+        attrs["output_data_type"] = DType(attrs["output_data_type"]).value
+    return attrs
+
+
+def matmul_value(lhs, rhs, output_data_type, context):
+    """F32 output consumes the accumulator, never a previously rounded BF16 result."""
+    dtype = context.torch_dtype(DType(output_data_type)) if output_data_type is not None else lhs.dtype
+    if dtype == context.torch.float32 and lhs.is_floating_point():
+        return lhs.float() @ rhs.float()
+    return (lhs @ rhs).to(dtype=dtype)
 
 
 __all__ = ["MatMul"]

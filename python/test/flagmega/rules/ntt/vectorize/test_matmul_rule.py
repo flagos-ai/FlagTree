@@ -11,10 +11,10 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.rules.ntt.vectorize import VectorizeMatMul
 
 
-def _matmul_module(make_op_module, lhs_shape=(8, 8), rhs_shape=(8, 8), **attrs):
+def _matmul_module(make_op_module, lhs_shape=(8, 8), rhs_shape=(8, 8), *, dtype="bfloat16", **attrs):
     return make_op_module(
         "math.matmul",
-        (fm.tensor_type("bfloat16", lhs_shape), fm.tensor_type("bfloat16", rhs_shape)),
+        (fm.tensor_type(dtype, lhs_shape), fm.tensor_type(dtype, rhs_shape)),
         attrs=attrs,
     )
 
@@ -55,15 +55,21 @@ def test_matmul_rule_maps_axes_through_transpose(make_op_module, attrs, expected
 
 
 @pytest.mark.parametrize("kind", ["n", "mn", "mkn"])
+@pytest.mark.parametrize("output_data_type", [None, "float32"])
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 def test_each_matmul_candidate_rewrites_and_evaluates_equivalently(
-    make_op_module, rewrite_candidate, kind,
+    make_op_module, rewrite_candidate, kind, output_data_type, dtype,
 ):
-    module = _matmul_module(make_op_module)
+    module = _matmul_module(make_op_module, dtype=dtype, output_data_type=output_data_type)
     _, result, rewritten = rewrite_candidate(module, VectorizeMatMul(), f"vectorization.matmul.{kind}")
     assert any(node.op == "math.vectorized_matmul" for node in (*result.prefix_nodes, result.replacement))
+    compute = next(node for node in rewritten.nodes if node.op == "math.vectorized_matmul")
+    assert compute.attrs.get("output_data_type") == output_data_type
 
-    lhs = torch.randn(8, 8, dtype=torch.bfloat16)
-    rhs = torch.randn(8, 8, dtype=torch.bfloat16)
+    if output_data_type == "float32":
+        assert compute.type.dtype.lanes == ((2, 4) if kind == "n" else (8, 2, 4))
+    lhs = torch.randn(8, 8, dtype=getattr(torch, dtype))
+    rhs = torch.randn(8, 8, dtype=getattr(torch, dtype))
     evaluator = TorchEvaluator(DictWeightResolver({}))
     torch.testing.assert_close(
         evaluator.run(rewritten, {"arg0": lhs, "arg1": rhs})[0],

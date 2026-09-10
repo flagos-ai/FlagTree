@@ -19,6 +19,8 @@ from triton.flagmega.rules.ntt.vectorize.utility import (
 class VectorizeNormStats:
     name = "VectorizeNormStats"
     op_names = frozenset({"nn.norm_stats"})
+    layout_input_indices = (0,)
+    layout_output = False
 
     def __init__(self, *, lane_bytes: int = 16) -> None:
         self.lane_bytes = lane_bytes

@@ -1,0 +1,28 @@
+@triton.jit
+def _flagmega_dense_rows_pair(source, beta_weight, a_weight, rows, active,
+                             K: tl.constexpr, TILE_K: tl.constexpr):
+    # Input, typed rows and masks are shared; all arithmetic is independent.
+    REDUCE_AXIS: tl.constexpr = len(rows.shape)
+    beta_accumulator = tl.full(rows.shape, 0, tl.float32)
+    beta_compensation = tl.full(rows.shape, 0, tl.float32)
+    a_accumulator = tl.full(rows.shape, 0, tl.float32)
+    a_compensation = tl.full(rows.shape, 0, tl.float32)
+    for k_start in tl.range(0, K, TILE_K):
+        k_offsets = k_start + tl.arange(0, TILE_K)
+        source_value = tl.load(source + k_offsets, mask=k_offsets < K, other=0.0).to(tl.float32)
+        weight_offsets = tl.expand_dims(rows, REDUCE_AXIS) * K + k_offsets
+        mask = tl.expand_dims(active, REDUCE_AXIS) & (k_offsets < K)
+        beta_values = tl.load(beta_weight + weight_offsets, mask=mask, other=0.0).to(tl.float32)
+        a_values = tl.load(a_weight + weight_offsets, mask=mask, other=0.0).to(tl.float32)
+        beta_partial = tl.sum(beta_values * source_value, axis=REDUCE_AXIS)
+        a_partial = tl.sum(a_values * source_value, axis=REDUCE_AXIS)
+        beta_corrected = beta_partial - beta_compensation
+        beta_updated = beta_accumulator + beta_corrected
+        beta_compensation = (beta_updated - beta_accumulator) - beta_corrected
+        beta_accumulator = beta_updated
+        a_corrected = a_partial - a_compensation
+        a_updated = a_accumulator + a_corrected
+        a_compensation = (a_updated - a_accumulator) - a_corrected
+        a_accumulator = a_updated
+    return (tl.where(active, beta_accumulator.to(tl.bfloat16).to(tl.float32), 0.0),
+            tl.where(active, a_accumulator.to(tl.bfloat16).to(tl.float32), 0.0))

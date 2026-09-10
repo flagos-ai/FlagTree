@@ -110,6 +110,11 @@ contracts, or final measurement, read
 invalidation, physical ABI pitfalls, isolated correctness checks, and evidence
 needed to attribute an improvement.
 
+For redundant Pack/Unpack, Cast, mixed-precision outputs, or broken fusion
+chains, also read [Representation optimization](references/representation-optimization.md).
+It covers producer-owned layouts, packet geometry, conversion semantics, and
+the difference between removing an IR node and removing runtime work.
+
 Use an immutable trial per hypothesis: inspect the costly boundary, make a
 scoped change, resume from the earliest affected stage, verify, and measure.
 Include local TIR/kernel overrides in the trial's reproducible inputs. Keep

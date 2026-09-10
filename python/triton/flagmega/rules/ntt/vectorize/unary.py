@@ -14,6 +14,7 @@ from triton.flagmega.rules.ntt.vectorize.utility import finish_vector_result, ge
 class VectorizeUnary:
     name = "VectorizeUnary"
     op_names = frozenset(definition.op_name for definition in VectorizedUnary.scalar_definitions.values())
+    layout_input_indices = (0,)
 
     def __init__(
         self,

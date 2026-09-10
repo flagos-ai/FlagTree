@@ -531,6 +531,9 @@ def _checkpoint_storage_key(module: IRModule, output: str) -> str | None:
     visited: set[str] = set()
     while current.id not in visited:
         visited.add(current.id)
+        from triton.flagmega.ir.op_fusion import has_ops
+        if has_ops(current.attrs):
+            return None
         if current.op == "builtin.weight":
             return str(current.attrs["key"])
         parameters = get_definition(current.op).byte_preserving_input_parameters

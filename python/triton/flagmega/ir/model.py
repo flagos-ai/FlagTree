@@ -776,7 +776,14 @@ def _freeze(value: Any) -> Any:
         return value.value
     if isinstance(value, IRType):
         return value
+    from triton.flagmega.ir.fusion import Fusion
+    if isinstance(value, Fusion):
+        return value
     if isinstance(value, Mapping):
+        if set(value) == {"$fusion"}:
+            return Fusion.from_data(value["$fusion"])
+        if set(value) == {"$ir_type"}:
+            return type_from_data(value["$ir_type"])
         return _freeze_mapping(value)
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
@@ -784,6 +791,9 @@ def _freeze(value: Any) -> Any:
 
 
 def _to_data(value: Any) -> Any:
+    from triton.flagmega.ir.fusion import Fusion
+    if isinstance(value, Fusion):
+        return {"$fusion": value.to_data()}
     if isinstance(value, IRType):
         return {"$ir_type": value.to_data()}
     if isinstance(value, Mapping):

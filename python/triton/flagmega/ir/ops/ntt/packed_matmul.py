@@ -30,6 +30,8 @@ from triton.flagmega.ir.ops.core import (
 )
 from triton.flagmega.ir.type_pattern import is_none, is_tensor
 from triton.flagmega.ir.types import VectorType
+from triton.flagmega.ir.ops.math.matmul import matmul_value
+from triton.flagmega.ir.vector_layout import split_vector_lanes
 
 
 _OPTIONAL_TENSOR = is_tensor() | is_none()
@@ -46,8 +48,8 @@ class PackedMatMul(OpDefinition):
 
     The K-major physical form is ``[KGroup, NGroup]`` with vector lanes
     ``(NVector, KPack, KVector)``.  Its scalar interpretation is the ordinary
-    logical matrix ``[K, N]`` and the result retains ``NVector`` as its one
-    vector lane.  Packing geometry therefore remains part of the type rather
+    logical matrix ``[K, N]`` and the result retains ``NVector`` logical values,
+    split into wider-output packets when necessary. Geometry remains part of the type rather
     than becoming target or model metadata.
     """
 
@@ -97,8 +99,11 @@ class PackedMatMul(OpDefinition):
         n_vector, k_pack, k_vector = rhs.dtype.lanes
         if lhs.shape[-1] != rhs.shape[0] * (k_pack * k_vector):
             raise IRSchemaError("PackedMatMul lhs K does not match its packed RHS K.")
+        output_dtype = DType(attrs["output_data_type"])
+        output_lanes, _ = split_vector_lanes((n_vector,), (1,), element_bytes=output_dtype.itemsize,
+                                             vector_bytes=k_vector * rhs.dtype.elem_type.itemsize)
         output = tensor_type(
-            VectorType(DType(attrs["output_data_type"]), (n_vector,)),
+            VectorType(output_dtype, output_lanes),
             (lhs.shape[0], rhs.shape[1]),
             layout=lhs.layout,
         )
@@ -176,14 +181,15 @@ class PackedMatMul(OpDefinition):
             k_groups.fixed_value * k_pack * k_vector,
             n_groups.fixed_value * n_vector,
         )
-        value = lhs @ logical_rhs.to(dtype=lhs.dtype)
+        value = matmul_value(lhs, logical_rhs.to(dtype=lhs.dtype), node.attrs["output_data_type"], context)
         scale = cls.scale.read(arguments)
         if scale is not None:
             value = value * scale
         value = value.to(
             dtype=context.torch_dtype(DType(node.attrs["output_data_type"]))
         )
-        value = value.reshape(value.shape[0], value.shape[1] // n_vector, n_vector)
+        output_lanes = tensor_of(node.type).dtype.lanes
+        value = value.reshape(value.shape[0], value.shape[1] // n_vector, *output_lanes)
         addend = cls.addend.read(arguments)
         return value if addend is None else value + addend
 
@@ -224,7 +230,6 @@ class PackedMatMul(OpDefinition):
             or not isinstance(rhs.dtype, VectorType)
             or len(rhs.dtype.lanes) != 3
             or not isinstance(output.dtype, VectorType)
-            or len(output.dtype.lanes) != 1
             or any(
                 not dimension.is_fixed
                 for tensor in (lhs, rhs, output)
@@ -233,7 +238,7 @@ class PackedMatMul(OpDefinition):
         ):
             return None
         n_vector, k_pack, k_vector = rhs.dtype.lanes
-        output_vector = output.dtype.lanes[0]
+        output_vector = prod(output.dtype.lanes)
         if n_vector != output_vector:
             return None
         m = lhs.shape[0].fixed_value

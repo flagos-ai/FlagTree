@@ -87,11 +87,23 @@ class IRVisitor:
             self._visit_value(input_id, module, node_map)
         if self.visit_types:
             self._visit_type(node.type)
+        from triton.flagmega.ir.fusion import iter_fusions
+        for body in iter_fusions((node.attrs.get("pre_ops", {}), node.attrs.get("post_ops", ()))):
+            self._visit_fusion(body)
         if self.visit_attributes:
             self._visit_embedded(node.attrs)
             self._visit_embedded(node.metadata)
         result = dispatch_op_visit(node, self)
         self.node_memo[identity] = result
+        return result
+
+    def _visit_fusion(self, body):
+        if id(body) in self.node_memo:
+            return self.node_memo[id(body)]
+        module = body.as_module()
+        self._visit_value(body.output, module, module.node_map)
+        result = self.visit_fusion(body)
+        self.node_memo[id(body)] = result
         return result
 
     def _visit_type(self, value: IRType):
@@ -130,6 +142,9 @@ class IRVisitor:
             return self.tir_memo[identity]
         for child in iter_tir_children(node):
             self._visit_tir(child)
+        from triton.flagmega.ir.fusion import iter_fusions
+        for body in iter_fusions(getattr(node, "semantic_attrs", {})):
+            self._visit_fusion(body)
         if self.visit_types:
             for field in fields(node):
                 self._visit_embedded_types(getattr(node, field.name))
@@ -160,6 +175,9 @@ class IRVisitor:
 
     # Leaf hooks. Op-specific hooks are resolved through OpDefinition.visit.
     def visit_module(self, module: IRModule):
+        return None
+
+    def visit_fusion(self, body):
         return None
 
     def visit_function(self, function: Function, module: IRModule):

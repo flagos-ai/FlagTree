@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from inspect import unwrap
 
 from triton.flagmega.errors import EvaluationError
 from triton.flagmega.ir import IRModule, Node
@@ -81,13 +82,26 @@ def executable_nodes(module: IRModule) -> tuple[tuple[Node, str], ...]:
         for recipe in module.constant_recipes
         for node in recipe.nodes
     )
+    from triton.flagmega.ir.fusion import iter_fusions
+
+    def visit_bodies(node: Node, owner: str) -> None:
+        for body in iter_fusions(node.attrs):
+            body_owner = f"{owner} / {node.id} fusion {body.name}"
+            for value in body.nodes:
+                owned.append((value, body_owner))
+                visit_bodies(value, body_owner)
+
+    for node, owner in tuple(owned):
+        visit_bodies(node, owner)
     return tuple(owned)
 
 
 def _has_evaluate_handler(definition: type[OpDefinition]) -> bool:
     handler = getattr(definition.evaluate, "__func__", definition.evaluate)
     base = getattr(OpDefinition.evaluate, "__func__", OpDefinition.evaluate)
-    return handler is not base
+    # Common op-boundary decorators preserve __wrapped__. A wrapper around
+    # the unsupported base method does not implement the underlying operator.
+    return unwrap(handler) is not unwrap(base)
 
 
 def _live_function_nodes(module: IRModule) -> set[str]:

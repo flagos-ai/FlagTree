@@ -10,42 +10,42 @@
 <path d="M 85 490.0 H 1085" stroke="#e2e8ef"/>
 <text x="73" y="495.0" text-anchor="end" font-size="13">0.0</text>
 <path d="M 85 419.0 H 1085" stroke="#e2e8ef"/>
-<text x="73" y="424.0" text-anchor="end" font-size="13">2.1</text>
+<text x="73" y="424.0" text-anchor="end" font-size="13">1.9</text>
 <path d="M 85 348.0 H 1085" stroke="#e2e8ef"/>
-<text x="73" y="353.0" text-anchor="end" font-size="13">4.3</text>
+<text x="73" y="353.0" text-anchor="end" font-size="13">3.8</text>
 <path d="M 85 277.0 H 1085" stroke="#e2e8ef"/>
-<text x="73" y="282.0" text-anchor="end" font-size="13">6.4</text>
+<text x="73" y="282.0" text-anchor="end" font-size="13">5.8</text>
 <path d="M 85 206.0 H 1085" stroke="#e2e8ef"/>
-<text x="73" y="211.0" text-anchor="end" font-size="13">8.6</text>
+<text x="73" y="211.0" text-anchor="end" font-size="13">7.7</text>
 <path d="M 85 135.0 H 1085" stroke="#e2e8ef"/>
-<text x="73" y="140.0" text-anchor="end" font-size="13">10.7</text>
-<rect x="115.0" y="348.2" width="55.0" height="141.8" fill="#536579"/>
-<text x="142.5" y="340.2" text-anchor="middle" font-size="13">4.282</text>
+<text x="73" y="140.0" text-anchor="end" font-size="13">9.6</text>
+<rect x="115.0" y="331.7" width="55.0" height="158.3" fill="#536579"/>
+<text x="142.5" y="323.7" text-anchor="middle" font-size="13">4.281</text>
 <rect x="178.2" y="196.9" width="55.0" height="293.1" fill="#c47725"/>
-<text x="205.8" y="188.9" text-anchor="middle" font-size="13">8.850</text>
-<rect x="241.5" y="279.6" width="55.0" height="210.4" fill="#16836c"/>
-<text x="269.0" y="271.6" text-anchor="middle" font-size="13">6.351</text>
+<text x="205.8" y="188.9" text-anchor="middle" font-size="13">7.923</text>
+<rect x="241.5" y="336.1" width="55.0" height="153.9" fill="#16836c"/>
+<text x="269.0" y="328.1" text-anchor="middle" font-size="13">4.160</text>
 <text x="210.0" y="519" text-anchor="middle" font-size="14">Context 1</text>
-<rect x="365.0" y="348.1" width="55.0" height="141.9" fill="#536579"/>
-<text x="392.5" y="340.1" text-anchor="middle" font-size="13">4.283</text>
-<rect x="428.2" y="196.8" width="55.0" height="293.2" fill="#c47725"/>
-<text x="455.8" y="188.8" text-anchor="middle" font-size="13">8.853</text>
-<rect x="491.5" y="279.3" width="55.0" height="210.7" fill="#16836c"/>
-<text x="519.0" y="271.3" text-anchor="middle" font-size="13">6.362</text>
+<rect x="365.0" y="331.6" width="55.0" height="158.4" fill="#536579"/>
+<text x="392.5" y="323.6" text-anchor="middle" font-size="13">4.282</text>
+<rect x="428.2" y="196.9" width="55.0" height="293.1" fill="#c47725"/>
+<text x="455.8" y="188.9" text-anchor="middle" font-size="13">7.925</text>
+<rect x="491.5" y="335.9" width="55.0" height="154.1" fill="#16836c"/>
+<text x="519.0" y="327.9" text-anchor="middle" font-size="13">4.167</text>
 <text x="460.0" y="519" text-anchor="middle" font-size="14">Context 32</text>
-<rect x="615.0" y="347.8" width="55.0" height="142.2" fill="#536579"/>
-<text x="642.5" y="339.8" text-anchor="middle" font-size="13">4.293</text>
+<rect x="615.0" y="331.3" width="55.0" height="158.7" fill="#536579"/>
+<text x="642.5" y="323.3" text-anchor="middle" font-size="13">4.291</text>
 <rect x="678.2" y="194.3" width="55.0" height="295.7" fill="#c47725"/>
-<text x="705.8" y="186.3" text-anchor="middle" font-size="13">8.928</text>
-<rect x="741.5" y="276.8" width="55.0" height="213.2" fill="#16836c"/>
-<text x="769.0" y="268.8" text-anchor="middle" font-size="13">6.438</text>
+<text x="705.8" y="186.3" text-anchor="middle" font-size="13">7.995</text>
+<rect x="741.5" y="334.6" width="55.0" height="155.4" fill="#16836c"/>
+<text x="769.0" y="326.6" text-anchor="middle" font-size="13">4.202</text>
 <text x="710.0" y="519" text-anchor="middle" font-size="14">Context 255</text>
-<rect x="865.0" y="347.8" width="55.0" height="142.2" fill="#536579"/>
-<text x="892.5" y="339.8" text-anchor="middle" font-size="13">4.293</text>
+<rect x="865.0" y="331.2" width="55.0" height="158.8" fill="#536579"/>
+<text x="892.5" y="323.2" text-anchor="middle" font-size="13">4.292</text>
 <rect x="928.2" y="194.2" width="55.0" height="295.8" fill="#c47725"/>
-<text x="955.8" y="186.2" text-anchor="middle" font-size="13">8.931</text>
-<rect x="991.5" y="276.6" width="55.0" height="213.4" fill="#16836c"/>
-<text x="1019.0" y="268.6" text-anchor="middle" font-size="13">6.442</text>
+<text x="955.8" y="186.2" text-anchor="middle" font-size="13">7.998</text>
+<rect x="991.5" y="334.4" width="55.0" height="155.6" fill="#16836c"/>
+<text x="1019.0" y="326.4" text-anchor="middle" font-size="13">4.206</text>
 <text x="960.0" y="519" text-anchor="middle" font-size="14">Context 256</text>
 <text x="15" y="123" font-size="13">ms/token</text>
 <rect x="85" y="555" width="15" height="15" fill="#536579"/>
@@ -53,7 +53,7 @@
 <rect x="395" y="555" width="15" height="15" fill="#c47725"/>
 <text x="418" y="568" font-size="14">FlagMega default</text>
 <rect x="705" y="555" width="15" height="15" fill="#16836c"/>
-<text x="728" y="568" font-size="14">FlagMega + agent tiles</text>
+<text x="728" y="568" font-size="14">FlagMega + agent</text>
 <text x="85" y="610" font-size="13">Median per-token latency. Complete independent greedy sequences match in every measured round.</text>
 </g>
 </svg>

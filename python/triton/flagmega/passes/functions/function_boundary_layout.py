@@ -356,7 +356,10 @@ def _propagate_one_iteration(
             nodes.extend(helpers)
             rewritten_call = replace(
                 node,
-                inputs=tuple(arguments),
+                # Output-only ABI rewrites may remove a previous call's
+                # compatibility view even when this callee's inputs did not
+                # change. Resolve every argument, not just layout.inputs.
+                inputs=tuple(_resolve(value, removed_substitutions) for value in arguments),
                 type=_result_type_after_layout(module, layout),
                 metadata={
                     **dict(node.metadata),
@@ -679,6 +682,10 @@ def _discover_caller_output_demand(
                 "tensors.bitcast",
             }
             and len(user.inputs) == 1
+            # Compatibility views were inserted to preserve old users, not
+            # to request a new ABI. Treating them as fresh demand makes two
+            # callers' inverse views repeatedly undo the selected layout.
+            and user.metadata.get("boundary_layout") != "logical_view"
             and not is_transient_vectorization_boundary(
                 module, user, retained_roots=retained_roots)
         )

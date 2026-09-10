@@ -13,6 +13,7 @@ from triton.flagmega.rules.ntt.vectorize.utility import finish_vector_result, pa
 class VectorizeRMSNorm:
     name = "VectorizeRMSNorm"
     op_names = frozenset({"nn.rms_norm"})
+    layout_input_indices = (0,)
 
     def __init__(self, *, lane_bytes: int = 16) -> None:
         self.lane_bytes = lane_bytes

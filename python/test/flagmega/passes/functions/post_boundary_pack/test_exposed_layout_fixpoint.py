@@ -8,7 +8,8 @@ import pytest
 
 
 @pytest.mark.parametrize("generated", [False, True])
-def test_newly_exposed_callee_pack_reaches_caller_producer(generated):
+@pytest.mark.parametrize("lanes,producer_lanes", [((4,), (4,)), ((2, 4), (8,))])
+def test_newly_exposed_callee_pack_reaches_caller_producer(generated, lanes, producer_lanes):
 
     class Graph(fm.Module):
 
@@ -16,7 +17,7 @@ def test_newly_exposed_callee_pack_reaches_caller_producer(generated):
             scalar = fm.tensor_type("float32", (1, 32))
             param = self.input("param", scalar, id="param")
             result = fm.F.tensors.pack(
-                fm.F.math.sigmoid(param), (4, ), axes=(1, ),
+                fm.F.math.sigmoid(param), lanes, axes=(1,) * len(lanes),
                 metadata={"vectorization_internal": True, "vectorization_root": "consumer"} if generated else {})
             self.function("layer", (param, ), (result, ), attrs={"reusable": True})
             ids = self.input("ids", fm.tensor_type("int32", (1, )), id="ids")
@@ -28,8 +29,8 @@ def test_newly_exposed_callee_pack_reaches_caller_producer(generated):
     original = Graph(dialect="ntt", stage="packed", entry="main").build()
     result = post_function_boundary_pack_propagation(original, NvidiaSm90Target())
     parameter, = result.function_map["layer"].parameters
-    assert result.node_map[parameter].type.dtype == fm.vector_type("float32", (4, ))
+    assert result.node_map[parameter].type.dtype == fm.vector_type("float32", lanes)
     embedding, = (n for n in result.nodes if n.op == "nn.embedding")
-    assert embedding.type.dtype == fm.vector_type("bfloat16", (8, ))
+    assert embedding.type.dtype == fm.vector_type("bfloat16", producer_lanes)
     assert all(result.node_map[n.inputs[0]].op == "builtin.weight" for n in result.nodes if n.op == "tensors.pack")
     assert post_function_boundary_pack_propagation(result, NvidiaSm90Target()).semantic_hash == result.semantic_hash

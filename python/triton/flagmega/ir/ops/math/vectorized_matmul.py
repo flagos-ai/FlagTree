@@ -13,7 +13,8 @@ from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_paramete
 from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from triton.flagmega.ir.type_pattern import is_tensor
-from triton.flagmega.ir.types import VectorType
+from triton.flagmega.ir.types import DType, VectorType
+from triton.flagmega.ir.ops.math.matmul import matmul_value, normalize_output_data_type
 
 
 @op_definition(
@@ -32,6 +33,7 @@ class VectorizedMatMul(OpDefinition):
     output_lanes = attribute_parameter()
     transpose_a = attribute_parameter(default=False)
     transpose_b = attribute_parameter(default=False)
+    output_data_type = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -43,7 +45,7 @@ class VectorizedMatMul(OpDefinition):
             attrs[name] = tuple(value)
         if len(attrs["output_axes"]) != len(attrs["output_lanes"]):
             raise IRSchemaError("VectorizedMatMul output axes and lanes must have equal length.")
-        return attrs
+        return normalize_output_data_type(attrs)
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -56,7 +58,7 @@ class VectorizedMatMul(OpDefinition):
         rk, rn = (rhs_logical.shape[1], rhs_logical.shape[0]) if attrs["transpose_b"] else rhs_logical.shape
         if lk != rk or lhs_logical.dtype != rhs_logical.dtype:
             raise IRSchemaError("VectorizedMatMul logical input types are incompatible.")
-        scalar_result = tensor_type(lhs_logical.dtype, (lm, rn), layout=lhs.layout)
+        scalar_result = tensor_type(DType(attrs.get("output_data_type") or lhs_logical.dtype), (lm, rn), layout=lhs.layout)
         axes = tuple(int(value) for value in attrs["output_axes"])
         lanes = tuple(int(value) for value in attrs["output_lanes"])
         if not lanes:
@@ -80,7 +82,7 @@ class VectorizedMatMul(OpDefinition):
             lhs = lhs.transpose(-2, -1)
         if node.attrs["transpose_b"]:
             rhs = rhs.transpose(-2, -1)
-        result = lhs @ rhs
+        result = matmul_value(lhs, rhs, node.attrs.get("output_data_type"), context)
         lanes = tuple(node.attrs["output_lanes"])
         return result if not lanes else pack_physical(result, 2, lanes, tuple(node.attrs["output_axes"]))
 

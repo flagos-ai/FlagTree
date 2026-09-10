@@ -63,6 +63,7 @@ class RewriteRule:
         *,
         pattern: Pattern | None = None,
         effect_policy: RewriteEffectPolicy | str = RewriteEffectPolicy.PRESERVE,
+        supports_fusion: bool = False,
     ) -> None:
         if not name:
             raise ValueError("RewriteRule requires a non-empty name.")
@@ -79,15 +80,21 @@ class RewriteRule:
         self.matches = matches
         self.rewrite = rewrite
         self.effect_policy = RewriteEffectPolicy(effect_policy)
+        self.supports_fusion = supports_fusion
 
     def apply(self, node: Node, module: IRModule) -> RuleOutput | None:
+        from triton.flagmega.ir.op_fusion import has_ops
+        if not self.supports_fusion and has_ops(node.attrs):
+            return None
         if self.pattern is not None:
             result = try_match_root(node, self.pattern, module)
             return None if result is None else self.apply_match(result, module)
         assert self.matches is not None
+        if not self.supports_fusion and any(has_ops(module.node_map[value].attrs) for value in node.inputs):
+            return None
         return self.rewrite(node, module) if self.matches(node, module) else None  # type: ignore[arg-type]
 
-    def apply_match(self, result: MatchResult, module: IRModule) -> RuleOutput:
+    def apply_match(self, result: MatchResult, module: IRModule) -> RuleOutput | None:
         """Invoke a pattern rule with a match supplied by another provider.
 
         The ordinary data-flow provider obtains matches from ``Node.inputs``;
@@ -98,6 +105,12 @@ class RewriteRule:
 
         if self.pattern is None:
             raise TypeError("Predicate rewrite rules do not accept MatchResult values.")
+        from triton.flagmega.ir.op_fusion import has_ops
+        # Existing rules describe naked operators. A fused call has additional
+        # semantic expressions, even though its base op name is unchanged.
+        if not self.supports_fusion and any(isinstance(value, Node) and has_ops(value.attrs)
+                                            for value in result.values()):
+            return None
         return self.rewrite(result, module)  # type: ignore[arg-type]
 
 

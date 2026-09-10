@@ -165,6 +165,9 @@ def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, 
             parameter_names,
             node.type,
             result_names,
+            fused_input_types=(tuple(module.node_map[value].type for value in node.inputs)
+                               if node.attrs["semantic_attrs"].get("pre_ops") or node.attrs["semantic_attrs"].get("post_ops")
+                               else None),
         ),
         "semantic_attrs": node.attrs["semantic_attrs"],
         "reads": reads,
@@ -357,14 +360,21 @@ def _inplace_alias_candidates(
     parameter_names: tuple[str, ...],
     result_type,
     result_names: tuple[str, ...],
+    fused_input_types: tuple | None = None,
 ) -> tuple[InplaceAliasCandidate, ...]:
     """Freeze definition-level ParameterInfo aliases into the named TIR ABI."""
 
     candidates: list[InplaceAliasCandidate] = []
 
     def add(output_name: str, parameter: ParameterInfo) -> None:
-        for actual, name in zip(parameter_infos, parameter_names):
+        for index, (actual, name) in enumerate(zip(parameter_infos, parameter_names)):
             if actual is parameter:
+                if fused_input_types is not None:
+                    output_type = dict(_result_fields(result_type))[output_name]
+                    if fused_input_types[index] != output_type:
+                        # Base-op aliases prove equal-coordinate read-before-
+                        # write, not byte overlap after a boundary repacking.
+                        continue
                 candidates.append(
                     InplaceAliasCandidate(output=output_name, input=name)
                 )

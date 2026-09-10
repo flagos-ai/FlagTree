@@ -20,6 +20,7 @@ _SAFETENSORS_DTYPES = {
     "I32": DType.INT32,
     "I64": DType.INT64,
     "BF16": DType.BFLOAT16,
+    "F16": DType.FLOAT16,
     "F32": DType.FLOAT32,
     "F8_E4M3": DType.FLOAT8_E4M3FN,
     "F8_E4M3FN": DType.FLOAT8_E4M3FN,

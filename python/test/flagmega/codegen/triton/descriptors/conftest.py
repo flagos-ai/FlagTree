@@ -219,6 +219,7 @@ def _packed_norm_stats_pipeline_module(
     output_policy: fm.SBPSplit | None = None,
     wide: bool = False,
     addend_cast_dtypes: tuple[str, ...] = (),
+    projection_output_data_type: str = "bfloat16",
 ) -> fm.IRModule:
     class DenseResidualNorm(fm.Module):
         def __init__(self):
@@ -308,11 +309,13 @@ def _packed_norm_stats_pipeline_module(
         source = compiler.run_stage(distribution, "auto-distributed", plan=override_plan(
             distribution, tuple((r.point_id, r.candidate_id) for r in records))).module
     proposed = compiler.compile(source, stop_after="propose-tir").module
-    if addend_cast_dtypes:
+    if addend_cast_dtypes or wide:
         # Build the explicit epilogue contract for kernel-unit coverage. Graph
         # discovery/private-use legality is exercised in the rewrite tests.
         proposed = fm.verify_module(replace(proposed, nodes=tuple(
-            replace(node, attrs={**node.attrs, "addend_cast_dtypes": addend_cast_dtypes})
+            replace(node, attrs=fm.get_definition(node.op).normalize_attrs({
+                **node.attrs, "addend_cast_dtypes": addend_cast_dtypes,
+                "output_data_type": projection_output_data_type}))
             if node.op == "ntt.matmul_norm_stats" else node for node in proposed.nodes)))
     point = next(
         value

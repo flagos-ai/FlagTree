@@ -10,7 +10,7 @@ from pathlib import Path
 import statistics
 
 
-LABELS = {"native": "Native vLLM", "baseline": "FlagMega default", "agent": "FlagMega + agent tiles"}
+LABELS = {"native": "Native vLLM", "baseline": "FlagMega default", "agent": "FlagMega + agent"}
 COLORS = {"native": "#536579", "baseline": "#c47725", "agent": "#16836c"}
 
 

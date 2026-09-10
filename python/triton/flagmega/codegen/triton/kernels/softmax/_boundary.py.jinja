@@ -1,0 +1,10 @@
+{% macro load(call) -%}
+_fm_loaded = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_mask, other=0.0)
+{% for line in call.fusion_pre_lines %}{{ line }}
+{% endfor %}_fm_values = tl.where(_fm_mask, ({{ call.fusion_pre_value }}).to(tl.float32), -float("inf"))
+{%- endmacro %}
+
+{% macro store(call) -%}
+{% for line in call.fusion_post_lines %}{{ line }}
+{% endfor %}tl.store({{ call.result }} + ({{ call.result_offset }}), {{ call.fusion_post_value }}, mask=_fm_mask & ({{ call.writer_active }}))
+{%- endmacro %}

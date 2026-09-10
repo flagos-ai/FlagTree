@@ -27,6 +27,10 @@ from triton.flagmega.rules.ntt.decompose_paged_attention import (
 
 
 class PyNttTarget(NttTarget):
+    def pre_post_ops_rules(self):
+        from triton.flagmega.codegen.triton.fusion import fusion_rules
+        return fusion_rules()
+
     """NTT graph stages plus Triton codegen, parameterized by a machine.
 
     This is the counterpart of nncase's ``PyNTTTarget``.  Semantic rule-set

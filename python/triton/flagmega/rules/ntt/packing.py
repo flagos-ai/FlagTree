@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
+from math import prod
 
 from triton.flagmega.ir import (
     Candidate,
@@ -688,7 +689,8 @@ class NttPackingPolicy:
         definition = get_definition("math.packed_dense_matmul")
         prepared = definition.prepare(
             (module.node_map[node.inputs[0]], physical),
-            {"packed_layout": packed_layout, "logical_n": None},
+            {"packed_layout": packed_layout, "logical_n": None,
+             **({"output_data_type": node.attrs["output_data_type"]} if "output_data_type" in node.attrs else {})},
         )
         replacement = replace(
             node,
@@ -867,7 +869,8 @@ class NttPackingPolicy:
             node.op != "math.vectorized_matmul"
             or bool(node.attrs.get("transpose_a", False))
             or tuple(node.attrs.get("lhs_axes", ()))
-            or tuple(node.attrs.get("output_axes", ())) != (1,)
+            or not node.attrs.get("output_axes")
+            or any(axis != 1 for axis in node.attrs["output_axes"])
         ):
             return False
         n_axis = 0 if bool(node.attrs.get("transpose_b", False)) else 1
@@ -877,8 +880,7 @@ class NttPackingPolicy:
         return (
             parameters is not None
             and _is_offline_parameter_transform(node.inputs[1], module)
-            and tuple(node.attrs.get("output_lanes", ()))
-            == (int(parameters["n_vector"]),)
+            and prod(node.attrs.get("output_lanes", ())) == int(parameters["n_vector"])
         )
 
     def _qkv_k_major_parameters(

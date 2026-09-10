@@ -291,7 +291,7 @@ def {{ call.symbol }}__consumer(
 {% for dtype in call.addend_cast_types %}
         dense_residual = dense_residual.to({{ dtype }})
 {% endfor %}
-        # Preserve the BF16 matmul result before the separate residual Add.
+        # Convert only to the matmul's declared output precision before Add.
         dense_projection = dense_accumulator.to({{ call.projection_type }}).to(tl.float32)
         dense_value = (dense_projection + dense_residual).to(
             {{ call.output_type }}

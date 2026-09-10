@@ -46,6 +46,7 @@ _DTYPE_DISPLAY_NAMES = {
     DType.INT32: "i32",
     DType.INT64: "i64",
     DType.BFLOAT16: "bf16",
+    DType.FLOAT16: "f16",
     DType.FLOAT32: "f32",
     DType.FLOAT8_E4M3FN: "F8_E4M3",
 }
@@ -685,6 +686,15 @@ def _title(value: str) -> str:
 
 
 def _value_text(value: Any, *, script: bool = False) -> str:
+    from triton.flagmega.ir.fusion import Fusion
+    if isinstance(value, Fusion):
+        names = {value.parameter.id: "value"}
+        for node in value.nodes[1:]:
+            arguments = [names[key] for key in node.inputs]
+            if node.attrs:
+                arguments.append(_attributes(node.attrs, script=script))
+            names[node.id] = f"{get_definition(node.op).display_name}({', '.join(arguments)})"
+        return f"fusion(value: {_value_text(value.input_type, script=script)}) => {names[value.output]}"
     if isinstance(value, DistributedType):
         return _distributed_definition_text(value, script=script)
     if isinstance(value, IRType):

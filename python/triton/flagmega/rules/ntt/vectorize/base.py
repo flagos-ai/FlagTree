@@ -22,6 +22,13 @@ class VectorizeCandidate:
 
 
 class VectorizeRule(Protocol):
+    """Rules may declare ``layout_input_indices`` for shape-equal lane regions.
+
+    Those inputs and (unless ``layout_output=False``) the result share logical
+    coordinates. Such rules accept another ``lane_bytes`` for region candidates.
+    ``output_layout_anchor`` identifies producers with coupled operand packing.
+    These declarations affect defaults, never override an explicit selection.
+    """
     name: str
     op_names: frozenset[str]
 

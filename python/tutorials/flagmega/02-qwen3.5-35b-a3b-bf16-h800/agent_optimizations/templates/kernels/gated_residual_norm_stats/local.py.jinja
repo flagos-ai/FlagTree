@@ -1,0 +1,46 @@
+# flagmega-kernel: gated_residual_norm_stats/local platform=generic
+{% if not use_tle | default(false) %}
+import triton.experimental.tle.language as tle
+{% endif %}
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "gated_residual_norm_stats" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    _fm_stats_layout: tl.constexpr = tle.gpu.BlockEncoding([1], [32], [{{ call.compute_warps }}], [0])
+    for _fm_token in tl.range(0, {{ call.tokens }}):
+        _fm_logit = tl.load({{ call.pointers.gate_logit }} + ({{ call.gate_offset }}), mask={{ call.token_active }}, other=0).to(tl.float32)
+        _fm_gate = tl.sigmoid(_fm_logit).to(tl.bfloat16).to(tl.float32)
+        _fm_square_sum = tl.full(({{ call.tile }},), 0, tl.float32)
+{% if call.use_mean %}
+        _fm_sum = tl.full(({{ call.tile }},), 0, tl.float32)
+{% endif %}
+        for _fm_start in tl.range(0, {{ call.scalar_n }}, {{ call.tile }}):
+            _fm_n = _fm_start + tl.arange(0, {{ call.tile }})
+            _fm_mask = (_fm_n < {{ call.scalar_n }}) & ({{ call.n_active }}) & ({{ call.token_active }})
+            _fm_routed = tl.load({{ call.pointers.routed }} + ({{ call.offsets.routed }}), mask=_fm_mask, other=0).to(tl.float32)
+            _fm_shared = tl.load({{ call.pointers.shared }} + ({{ call.offsets.shared }}), mask=_fm_mask, other=0).to(tl.float32)
+            _fm_residual = tl.load({{ call.pointers.residual }} + ({{ call.offsets.residual }}), mask=_fm_mask, other=0).to(tl.float32)
+            _fm_scaled = (_fm_shared * _fm_gate).to(tl.bfloat16).to(tl.float32)
+            _fm_merged = _fm_routed + _fm_scaled
+            _fm_value = _fm_residual + _fm_merged
+            tl.store({{ call.value }} + ({{ call.value_offset }}), _fm_value, mask=_fm_mask & ({{ call.value_writer }}))
+            _fm_value = tle.gpu.set_layout(_fm_value, _fm_stats_layout)
+            _fm_mask = tle.gpu.set_layout(_fm_mask, _fm_stats_layout)
+            _fm_square_sum += tl.where(_fm_mask, _fm_value * _fm_value, 0.0)
+{% if call.use_mean %}
+            _fm_sum += tl.where(_fm_mask, _fm_value, 0.0)
+{% endif %}
+{% if call.use_mean %}
+        tl.store({{ call.stats }} + ({{ call.stats_offsets[0] }}), tl.sum(_fm_sum, 0), mask=({{ call.token_active }}) & ({{ call.stats_writer }}))
+        tl.store({{ call.stats }} + ({{ call.stats_offsets[1] }}), tl.sum(_fm_square_sum, 0), mask=({{ call.token_active }}) & ({{ call.stats_writer }}))
+{% else %}
+        tl.store({{ call.stats }} + ({{ call.stats_offsets[0] }}), tl.sum(_fm_square_sum, 0), mask=({{ call.token_active }}) & ({{ call.stats_writer }}))
+{% endif %}
+
+
+{% endif %}
+{% endfor %}
+{% endif %}

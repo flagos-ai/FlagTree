@@ -13,6 +13,7 @@ from triton.flagmega.rules.ntt.vectorize.utility import finish_vector_result, ge
 class VectorizeBinary:
     name = "VectorizeBinary"
     op_names = frozenset({"math.add", "math.mul"})
+    layout_input_indices = (0, 1)
 
     def __init__(
         self,

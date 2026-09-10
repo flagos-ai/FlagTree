@@ -21,9 +21,14 @@ def {{ call.symbol }}({{ call.signature }}):
             other=0.0,
         )
 {% endif %}
+{% for line in call.fusion_lines %}
+        {{ line }}
+{% endfor %}
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
-{% if call.variant == "add" %}
+{% if call.fusion_lines %}
+            {{ call.fusion_value }},
+{% elif call.variant == "add" %}
             lhs_value + rhs_value,
 {% elif call.variant == "mul" %}
             lhs_value * rhs_value,

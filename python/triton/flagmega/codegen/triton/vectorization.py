@@ -26,6 +26,21 @@ SCALAR_VECTORIZATION = {"kind": "scalar", "axes": (), "lanes": (), "lane_count":
 def vectorization_contract(node: Node) -> dict[str, object]:
     """Return the normalized, semantic vector-layout contract for ``node``."""
 
+    from triton.flagmega.ir.op_fusion import has_ops
+    if has_ops(node.attrs):
+        from triton.flagmega.codegen.triton.fusion import vector_axes
+        value_type = logical_type(node.type)
+        axes = vector_axes(node.attrs, value_type.rank if isinstance(value_type, TensorType) else None)
+        if axes and isinstance(value_type, TensorType) and isinstance(value_type.dtype, VectorType):
+            # A cast may be inside either PreOps or PostOps. Its logical axes
+            # remain the indexing proof; the enclosing result owns the final
+            # lanes, even when no AutoVectorize metadata was authored.
+            axes = normalize_axes(axes, value_type.rank)
+            lanes = tuple(value_type.dtype.lanes)
+            if len(set(axes)) == 1:
+                axes = (axes[0],) * len(lanes)
+            return {"kind": "axes", "axes": axes, "lanes": lanes, "lane_count": prod(lanes),
+                    "source_candidate": "fused-typed-ir"}
     candidate = node.metadata.get("selected_vectorization")
     # Explicit/propagated VectorizedCast is physical typed IR, not a scalar
     # equality witness. It can be authored without an AutoVectorize choice.
@@ -36,6 +51,8 @@ def vectorization_contract(node: Node) -> dict[str, object]:
             raise IRVerificationError("VectorizedCast needs a vector result type.", node_id=node.id)
         axes = normalize_axes(tuple(int(axis) for axis in node.attrs["vectorize_axes"]), value_type.rank)
         lanes = tuple(value_type.dtype.lanes)
+        if len(set(axes)) == 1:
+            axes = (axes[0],) * len(lanes)
         return {"kind": "axes", "axes": axes, "lanes": lanes, "lane_count": prod(lanes),
                 "source_candidate": str(candidate) if candidate is not None else "typed-ir"}
     if candidate is None:
@@ -62,7 +79,7 @@ def vectorization_contract(node: Node) -> dict[str, object]:
         )
     if node.op in {"math.matmul", "math.packed_dense_matmul", "ntt.packed_matmul"}:
         kind = "output_axis"
-        if normalized_axes != (value_type.rank - 1,):
+        if any(axis != value_type.rank - 1 for axis in normalized_axes):
             raise IRVerificationError(
                 f"Triton dense MatMul currently lowers only its output axis, got "
                 f"{normalized_axes} on {node.id!r}.",
@@ -74,7 +91,7 @@ def vectorization_contract(node: Node) -> dict[str, object]:
         "ntt.gather_reduce_norm_apply",
     }:
         kind = "reduction_axis"
-        if normalized_axes != (value_type.rank - 1,):
+        if any(axis != value_type.rank - 1 for axis in normalized_axes):
             raise IRVerificationError(
                 f"Triton RMSNorm currently lowers only its last reduction axis, got "
                 f"{normalized_axes} on {node.id!r}.",

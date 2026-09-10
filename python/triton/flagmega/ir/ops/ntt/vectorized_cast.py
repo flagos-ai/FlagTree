@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import Mapping, Sequence
+from math import prod
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -81,14 +82,11 @@ class VectorizedCast(OpDefinition):
             raise IRSchemaError("F.ntt.vectorized_cast requires a VectorType input tensor.")
         output_dtype = data_type_from_data(attrs["new_type"])
         assert isinstance(output_dtype, VectorType)
-        axes = normalize_axes(tuple(int(value) for value in attrs["vectorize_axes"]), input_type.rank)
-        if len(axes) != len(input_type.dtype.lanes) or len(axes) != len(output_dtype.lanes):
-            raise IRSchemaError(
-                "F.ntt.vectorized_cast requires one input and output lane group per vectorized axis."
-            )
+        input_axes, output_axes = cast_vector_axes(input_type.dtype.lanes, output_dtype.lanes,
+                                                 attrs["vectorize_axes"], input_type.rank)
         shape = list(input_type.shape)
-        input_products = axis_lane_products(input_type.dtype.lanes, axes)
-        output_products = axis_lane_products(output_dtype.lanes, axes)
+        input_products = axis_lane_products(input_type.dtype.lanes, input_axes)
+        output_products = axis_lane_products(output_dtype.lanes, output_axes)
         for axis, input_lane in input_products.items():
             output_lane = output_products[axis]
             scalar_extent = shape[axis] * input_lane
@@ -129,12 +127,11 @@ class VectorizedCast(OpDefinition):
         assert isinstance(input_type.dtype, VectorType)
         output_type = tensor_of(node.type)
         assert isinstance(output_type.dtype, VectorType)
-        axes = normalize_axes(
-            tuple(int(axis) for axis in node.attrs["vectorize_axes"]), input_type.rank
-        )
-        scalar = unpack_physical(value, input_type.rank, input_type.dtype.lanes, axes)
+        input_axes, output_axes = cast_vector_axes(input_type.dtype.lanes, output_type.dtype.lanes,
+                                                 node.attrs["vectorize_axes"], input_type.rank)
+        scalar = unpack_physical(value, input_type.rank, input_type.dtype.lanes, input_axes)
         converted = scalar.to(dtype=context.torch_dtype(output_type.dtype.elem_type))
-        return pack_physical(converted, output_type.rank, output_type.dtype.lanes, axes)
+        return pack_physical(converted, output_type.rank, output_type.dtype.lanes, output_axes)
 
     @classmethod
     def python_attrs(cls, node: Node):
@@ -154,6 +151,26 @@ class VectorizedCast(OpDefinition):
             model="flagmega.ntt-vectorized-cast/v1",
             notes=("vectorized-cast",),
         )
+
+
+def cast_vector_axes(input_lanes, output_lanes, axes, rank):
+    axes = normalize_axes(tuple(int(axis) for axis in axes), rank)
+    if axes and len(set(axes)) == 1:
+        return (axes[0],) * len(input_lanes), (axes[0],) * len(output_lanes)
+    if len(input_lanes) != len(output_lanes):
+        short, long = sorted((tuple(input_lanes), tuple(output_lanes)), key=len)
+        prefix = len(short) - 1
+        if short[:-1] == long[:prefix] and short[-1] == prod(long[prefix:]):
+            if len(axes) == len(short):
+                short_axes, long_axes = axes, (*axes[:prefix], *((axes[-1],) * (len(long) - prefix)))
+            elif len(axes) == len(long) and len(set(axes[prefix:])) == 1:
+                short_axes, long_axes = (*axes[:prefix], axes[-1]), axes
+            else:
+                raise IRSchemaError("VectorizedCast packet splitting must preserve logical axes.")
+            return (short_axes, long_axes) if len(input_lanes) < len(output_lanes) else (long_axes, short_axes)
+    if len(axes) != len(input_lanes) or len(axes) != len(output_lanes):
+        raise IRSchemaError("VectorizedCast needs one input/output lane per axis, or one shared logical axis.")
+    return axes, axes
 
 
 __all__ = ["VectorizedCast"]

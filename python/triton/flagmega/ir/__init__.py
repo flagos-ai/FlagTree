@@ -3,6 +3,7 @@
 """Public FlagMega IR construction and serialization API."""
 
 from triton.flagmega.ir.builder import ConstantModule, IRBuilder, Module
+from triton.flagmega.ir.fusion import Fusion, fusion
 from triton.flagmega.ir.constant_recipe import ConstantPhase, ConstantRecipe, constant_recipe_fingerprint
 from triton.flagmega.ir.dim_expr import (
     DimConst,
@@ -230,6 +231,8 @@ from triton.flagmega.ir.type_pattern import (
 )
 
 __all__ = [
+    "Fusion",
+    "fusion",
     "KernelDefinition", "KernelInvoke",
     "AnyType",
     "AllocationPolicy",

@@ -1,6 +1,7 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+import pytest
 import torch
 
 from triton.flagmega import ir as fm
@@ -8,7 +9,7 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 
-def _module():
+def _module(output_data_type=None):
     class Projection(fm.Module):
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
@@ -22,7 +23,7 @@ def _module():
                 key="rhs",
                 id="rhs",
             )
-            output = fm.F.math.matmul(lhs, rhs, name="output")
+            output = fm.F.math.matmul(lhs, rhs, output_data_type=output_data_type, name="output")
             self.function("main", (lhs,), (output,))
 
     return Projection().build()
@@ -42,13 +43,15 @@ def test_auto_packing_matches_vectorized_owner_and_keeps_stable_root_selection_i
     ).facts["preserves_vectorized_result"]
 
 
-def test_k_major_rule_rewrites_exact_nncase_recipe_and_preserves_vector_result():
-    original = _module()
+@pytest.mark.parametrize("output_data_type", [None, "float32"])
+def test_k_major_rule_rewrites_exact_nncase_recipe_and_preserves_vector_result(output_data_type):
+    original = _module(output_data_type)
     vectorized = Compiler().compile(original, stop_after="apply-vectorization").module
     packed = Compiler().compile(original, stop_after="apply-packing").module
     compute = packed.node_map["output.vectorized.compute"]
 
     assert compute.op == "ntt.packed_matmul"
+    assert compute.attrs["output_data_type"] == (output_data_type or "bfloat16")
     assert compute.type == vectorized.node_map[compute.id].type
     assert isinstance(fm.logical_type(compute.type), fm.TensorType)
     packed_rhs = packed.node_map[compute.inputs[1]]

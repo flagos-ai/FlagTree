@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import Mapping, Sequence
+from math import prod
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -23,7 +24,7 @@ from triton.flagmega.ir.ops.core import (
     op_definition,
     tensor_nbytes,
 )
-from triton.flagmega.ir.ops.math.matmul import MatMul
+from triton.flagmega.ir.ops.math.matmul import MatMul, matmul_value, normalize_output_data_type
 from triton.flagmega.ir.ops.nn._norm import norm_stats_value, unpack_default_vector
 from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
 from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import MatMulNormStatsCombine
@@ -51,6 +52,7 @@ class MatMulNormStats(OpDefinition):
     axis = attribute_parameter()
     use_mean = attribute_parameter()
     addend_cast_dtypes = attribute_parameter(default=())
+    output_data_type = attribute_parameter(default=None)
     inplace_output_parameters = (addend, None)
 
     @classmethod
@@ -81,13 +83,14 @@ class MatMulNormStats(OpDefinition):
             value not in ("bfloat16", "float32") for value in casts
         ):
             raise IRSchemaError("MatMulNormStats addend_cast_dtypes must be a BF16/FP32 conversion sequence.")
-        return {
+        return normalize_output_data_type({
             **({"addend_cast_dtypes": tuple(DType(value).value for value in casts)} if casts else {}),
             **matmul_attrs,
             "rhs_layout": rhs_layout,
             "axis": axis,
             "use_mean": bool(attrs["use_mean"]),
-        }
+            "output_data_type": attrs.get("output_data_type"),
+        })
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -107,7 +110,7 @@ class MatMulNormStats(OpDefinition):
             none = Node("<none>", "builtin.none", (), NoneType())
             partial_attrs = {
                 "fused_reduce": False,
-                "output_data_type": DType.BFLOAT16,
+                "output_data_type": attrs.get("output_data_type", DType.BFLOAT16),
                 "rhs_layout": rhs_layout,
             }
             matmul_type = PackedMatMul.infer_type(
@@ -142,7 +145,7 @@ class MatMulNormStats(OpDefinition):
                 lhs = lhs.transpose(-2, -1)
             if node.attrs["transpose_b"]:
                 rhs = rhs.transpose(-2, -1)
-            projected = lhs @ rhs
+            projected = matmul_value(lhs, rhs, node.attrs.get("output_data_type"), context)
         else:
             rhs_type = tensor_of(context.types[cls.rhs.read(node.inputs)])
             if not isinstance(rhs_type.dtype, VectorType):
@@ -165,7 +168,8 @@ class MatMulNormStats(OpDefinition):
                 k_groups.fixed_value * k_pack * k_vector,
                 n_groups.fixed_value * n_vector,
             )
-            projected = lhs @ logical_rhs.to(dtype=lhs.dtype)
+            projected = matmul_value(lhs, logical_rhs.to(dtype=lhs.dtype),
+                                     node.attrs.get("output_data_type", DType.BFLOAT16), context)
         value_type = tensor_of(context.types[cls.addend.read(node.inputs)])
         addend = cls.addend.read(arguments)
         for dtype in node.attrs.get("addend_cast_dtypes", ()):
@@ -174,7 +178,7 @@ class MatMulNormStats(OpDefinition):
         if isinstance(value_type.dtype, VectorType):
             projected = projected.reshape(
                 *projected.shape[:-1],
-                projected.shape[-1] // value_type.dtype.lanes[0],
+                projected.shape[-1] // prod(value_type.dtype.lanes),
                 *value_type.dtype.lanes,
             )
         value = (projected + addend).to(dtype=addend.dtype)

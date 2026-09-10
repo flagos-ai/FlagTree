@@ -40,7 +40,7 @@ class NttVectorizationPolicy:
         """Readable rule-set identity, deliberately independent of a machine."""
 
         return (
-            "ntt-auto-vectorize/v2"
+            "ntt-auto-vectorize/v3"
             f"(lane_bytes={self.lane_bytes},max_axes={self.max_axes})"
         )
 

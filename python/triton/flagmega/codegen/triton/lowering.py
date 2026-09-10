@@ -65,6 +65,8 @@ class TritonTirLoweringPolicy:
             return node_id
 
         for node in module.nodes:
+            from triton.flagmega.codegen.triton.fusion import require_fusion
+            require_fusion(node, tuple(module.node_map[value] for value in node.inputs))
             inputs = tuple(resolve(input_id) for input_id in node.inputs)
             if node.op in {"nn.gdn_state_slice", "tir.ref_slice"}:
                 # A reference view is address computation, never a compute
