@@ -10,7 +10,11 @@ def ConvertTritonXPUToLLVM: Pass<"convert-triton-xpu-to-llvm", "mlir::ModuleOp">
     }];
     let constructor = "mlir::triton::createConvertTritonXPUToLLVMPass()";
 
-    let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+    // DLTI is needed by `triton_xpu.raw`: importing a textual-LLVM-IR payload
+    // goes through translateLLVMIRToModule, which asserts the dialect is
+    // available in the context (it carries the module's data layout).
+    let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect",
+                             "mlir::DLTIDialect"];
 
    let options = [
         Option<"xpu_arch", "xpu_arch",

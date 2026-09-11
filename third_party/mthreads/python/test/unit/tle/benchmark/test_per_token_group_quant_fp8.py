@@ -130,7 +130,11 @@ def _torch_quant(x, group_size):
     amax = torch.amax(torch.abs(x_grouped), dim=-1)
     min_amax = torch.full_like(amax, MIN_AMAX)
     scale = torch.maximum(amax, min_amax) / FP8_MAX
-    q = torch.clamp(x_grouped / scale[..., None], -FP8_MAX, FP8_MAX)
+    q = torch.clamp(
+        x_grouped * torch.reciprocal(scale[..., None]),
+        -FP8_MAX,
+        FP8_MAX,
+    )
     q = q.to(QUANT_STORAGE_DTYPE).reshape(m, n)
     return q, scale
 

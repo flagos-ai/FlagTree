@@ -48,34 +48,87 @@ def Tle_GetLocalRankOp : Tle_Op<"get local rank"> {
 }
 
 
-def Tle_DeviceIntraBarrierOp : Tle_Op<"device intra barrier"> {
-  let summary = "Device-local synchronization barrier";
+def Tle_FlagCxBarrierOp : Tle_Op<"flagcx_barrier"> {
+  let summary = "FlagCX communicator barrier";
   let description = [{
-    Performs a device-local synchronization barrier by lowering to one of the
-    following runtime calls:
+    Performs a communicator barrier by lowering to one of the transport-
+    transparent FlagCX unified device IR calls:
 
-      * flagcxIntraBarrierArriveS(comm, coopKind, index, multimem, order)
-      * flagcxIntraBarrierWaitS(comm, coopKind, index, multimem, order)
-      * flagcxIntraBarrierSyncS(comm, coopKind, index, multimem, order)
+      * flagcxDevBarrierArrive(comm, teamKind, index, contextId, coopKind,
+                              order, scope)
+      * flagcxDevBarrierWait(comm, teamKind, index, contextId, coopKind,
+                            order, scope)
+      * flagcxDevBarrierSync(comm, teamKind, index, contextId, coopKind,
+                            order, scope)
 
     The specific runtime routine is selected according to the barrier operation
-    (arrive, wait, or sync).
-
-    The barrier is identified by `index`, scoped by `coopKind`, and obeys the
-    specified memory ordering semantics (`order`). `multimem` indicates whether
-    the barrier operates on multimem storage.
-
-    Returns the runtime status code.
+    (arrive, wait, or sync). `team_kind` selects the intra-node, inter-node rail,
+    or world communicator team. `index` identifies the barrier channel and
+    `context_id` selects the pre-created network context used by inter/world
+    barriers.
   }];
 
   let arguments = (ins
     Tle_LocalPointerResultType:$comm,
-    OptionalAttr<StrAttr>:$barrier_type,
-    OptionalAttr<I32Attr>:$coop_kind,
-    OptionalAttr<I32Attr>:$index,
-    OptionalAttr<I1Attr>:$multimem,
-    OptionalAttr<I32Attr>:$order
+    StrAttr:$barrier_type,
+    Tle_FlagCXTeamKindAttr:$team_kind,
+    Tle_FlagCXCoopKindAttr:$coop_kind,
+    I32Attr:$index,
+    I32Attr:$context_id,
+    I32Attr:$order,
+    I32Attr:$scope
   );
 
   let hasVerifier = 1;
+}
+
+
+def Tle_FlagCxSignalOp : Tle_Op<"flagcx signal", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Atomically update a remote FlagCX signal slot";
+  let description = [{
+    Obtains a pre-allocated FlagCX network context from `comm`, then either
+    increments the selected remote signal slot by one or adds `value` to it.
+    This operation only sends a signal; it does not transfer user data or wait
+    for the remote signal to reach a value.
+  }];
+
+  let arguments = (ins
+    Tle_LocalPointerResultType:$comm,
+    I32:$peer,
+    I32:$slot_id,
+    Optional<I64>:$value,
+    Tle_SignalOpKindAttr:$signal_op,
+    Tle_FlagCXTeamKindAttr:$team_kind,
+    Tle_FlagCXCoopKindAttr:$coop_kind,
+    I32Attr:$context_idx
+  );
+
+  let hasVerifier = true;
+}
+
+def Tle_FlagCxSignalWaitOp : Tle_Op<"flagcx signal_wait"> {
+  let summary = "Wait for a remote FlagCX signal slot to become the target value";
+  let description = [{
+    Obtains a pre-allocated FlagCX network context from `comm`, then spin-waits the selected
+    signal slot to reach the target value (actual value >= target),
+    or waits the signal to reach its shadow value.
+  }];
+
+  let arguments = (ins
+    Tle_LocalPointerResultType:$comm,
+    I32:$slot_id,
+    Tle_SignalWaitKindAttr:$wait_kind,
+    Optional<I64>:$target,
+    Tle_FlagCXCoopKindAttr:$coop_kind,
+    I32Attr:$context_idx
+  );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    `(` $wait_kind `,` $coop_kind `)` $comm `,` $slot_id (`,` $target^)?  attr-dict `:`
+    functional-type(operands, results)
+  }];
+
+  let hasVerifier = true;
 }

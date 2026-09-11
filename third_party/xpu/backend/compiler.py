@@ -11,7 +11,7 @@ import sys
 
 from dataclasses import dataclass
 import functools
-from typing import Any, Tuple, Optional
+from typing import Tuple, Optional
 import hashlib
 from pathlib import Path
 
@@ -107,6 +107,41 @@ class XPUOptions:
     buffer_size_limit: int = int(os.environ.get("TRITONXPU_BUFFER_SIZE", 512))
     groups_per_cluster: int = int(os.environ.get("TRITONXPU_GROUPS_PER_CLUSTER", 1))
     unroll_num: int = int(os.environ.get("TRITONXPU_UNROLL_NUM", 2))
+    vrf_budget: int = int(os.environ.get("TRITONXPU_VRF_BUDGET", 24))
+    # On by default: measured no worse than the unroll-num knob anywhere and
+    # clearly better on three geometries. layernorm bufSz=512 927.6->833.5us,
+    # bufSz=2048 460.0->434.8us, softmax bufSz=512 2588.9->2385.4us.
+    # Set TRITONXPU_BUDGET_TILING=0 to fall back to unroll_num.
+    budget_tiling: bool = bool(int(os.environ.get("TRITONXPU_BUDGET_TILING", 1)))
+    # The two pinned unroll constants in UnrollControl (bool-store-vectorize=4,
+    # core-deal-multi-rows=1) short-circuit the tile decision before unroll_num
+    # is read, so until this knob existed neither could be shown to be wrong:
+    # boolfused emits the same binary at unroll_num 1/4/16. <0 keeps them (the
+    # 0 (the default since step 3.5) ignores the two pins and lets the pressure
+    # model decide, <0 restores them as an escape hatch, >0 overrides the
+    # constant so its time curve can be swept. The model picks iterNum=1 at all
+    # four pinned sites, where the pins pick 4/4/4/2
+    # (xpu-tile-redesign/reference/findings.md 1.30), and on device the pinned
+    # factor is ~19% slower at both sites with identical results (1.47).
+    pin_unroll_num: int = int(os.environ.get("TRITONXPU_PIN_UNROLL_NUM", 0))
+    # Off by default. A tree with no vector value of its own bypasses the whole
+    # criteria chain and takes the legacy factor, which is derived from
+    # unroll_num (a *width* knob, moving opposite to iterNum). Turning this on
+    # hands those sites to the chain. Three sites in the probe suite reach that
+    # entry and all three move 64 -> 1; the measured optimum on bool is the
+    # interior point iterNum=16, so this is a measurement knob for step 2.6,
+    # not a fix (xpu-tile-redesign/reference/findings.md 1.51).
+    open_decision_entry: bool = bool(int(os.environ.get("TRITONXPU_OPEN_DECISION_ENTRY", 0)))
+    # On by default since step 3.2n. Off, Vectorize's set comes from the
+    # all-or-nothing closure walk; on, it comes from the Vector-Flow partition's
+    # terminal state, and a segment that the criteria chain accepts is cut out of
+    # the tree with its boundary materialised as unpack. The two things bought:
+    # the four probes that change are all faster on device with max_abs=0
+    # (truncint -21.8%, truncstore -29.8%, locont -29.2%, twoseg -3.1%,
+    # findings 1.68), and the 68-operator FlagGems sweep is result-identical to
+    # the closure path (5639 passed / 3 pre-existing failed on both, findings
+    # 1.72). Set TRITONXPU_PER_OP_DECISION=0 to fall back to the closure walk.
+    per_op_decision: bool = bool(int(os.environ.get("TRITONXPU_PER_OP_DECISION", 1)))
     is_use_mask_zero: bool = int(os.environ.get("TRITONXPU_IS_USE_MASK_ZERO", 0))
     extern_libs: dict = None
     is_sdnn: bool = False
@@ -143,6 +178,7 @@ class XPUOptions:
 
     # use_int4_w4a8
     use_int4_w4a8: bool = False
+    load_tile_size: int = 131072
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / f"xpu{self.arch}"
@@ -220,8 +256,13 @@ class XPUBackend(BaseBackend):
         return mod
 
     @staticmethod
+    def is_tle_kernel(mod):
+        return xpu.is_tle_kernel(mod)
+
+    @staticmethod
     def make_ttxir(mod, metadata, opt):
         metadata["xpu_arch"] = opt.arch
+        metadata["is_tle"] = XPUBackend.is_tle_kernel(mod)
         metadata["is_sdnn"] = opt.is_sdnn or xpu.is_sdnn_kernel(mod)
         # tensor_args drives the launch-time scaled-buffer quantization (findmax +
         # cast_te) in device/xpu3/launch.cpp, which replaces the input pointer with
@@ -234,7 +275,7 @@ class XPUBackend(BaseBackend):
         # makes launch.cpp append a spurious scale param, shifting gridX/Y/Z and
         # handing the kernel a wild quantized buffer base -> illegal memory access.
         # Gate on the same condition that selects the quantizing mode.
-        _needs_scale_args = metadata["use_int4_w4a8"] == True or int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0)) == 1
+        _needs_scale_args = metadata["use_int4_w4a8"] or int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0)) == 1
         metadata["tensor_args"] = xpu.get_tensor_args(mod, []) if (metadata["is_sdnn"] is True
                                                                    and _needs_scale_args) else []
         metadata["shared"] = (-1)  # TODO: invalid value, just to keep CompiledKernel _init_handles() success
@@ -243,6 +284,7 @@ class XPUBackend(BaseBackend):
         elem_bytes = int(os.environ.get("TRITONXPU_ELEMBYTES", 0))
         groups_per_cluster = metadata["groups_per_cluster"]
         unroll_num = metadata["unroll_num"]
+        vrf_budget = metadata.get("vrf_budget", 24)
         XPUBackend.buffer_len = xpu.get_buffer_len(mod, max_buffer_size, elem_bytes)
         # print(f"XPUBackend.buffer_len = {XPUBackend.buffer_len}")
         core_num = metadata["core_num"]
@@ -250,17 +292,15 @@ class XPUBackend(BaseBackend):
         is_use_mask_zero = metadata["is_use_mask_zero"]
         if is_use_mask_zero:
             warnings.warn(
-                f'XRE Version Must Be More than 5.0.21.37 (After 2025.07.22). And echo 1 > /proc/kunlun/dev4/dma_excp_mask',
+                'XRE Version Must Be More than 5.0.21.37 (After 2025.07.22). And echo 1 > /proc/kunlun/dev4/dma_excp_mask',
                 UserWarning)
         TTXPU_F_INTERLEAVE = 0 if metadata["grid"] != (12, 1, 1) else int(os.environ.get("TRITONXPU_INTERLEAVE", 1))
         TTXPU_F_OHTER_VALUE_SIM = int(os.environ.get("TRITONXPU_OTHER_SIM", 0))
-        TTXPU_F_STORE_MASK_SIM = int(os.environ.get("TRITONXPU_STORE_MASK_SIM", 0))
         TTXPU_F_DTYPE_CONVERT = 0 if metadata["isCloseDtypeConvert"] else int(
             os.environ.get("TRITONXPU_DTYPE_CONVERT", 1))
         TTXPU_O_ATOMIC_SIM = 0 if metadata["isCLOSE_TTXPU_O_ATOMIC_SIM"] else int(
             os.environ.get("TRITONXPU_ATOMIC_SIM", 1))
         TTXPU_O_CLOSE_OPT = int(os.environ.get("TRITONXPU_CLOSE_OPTIMIZE", 0))
-        TTSDNN_F_SINGLE_CORE_MODE = int(os.environ.get("TRITON_SDNN_SINGLE_CODE_MODE", 0))
         TTSDNN_F_MATMUL_FAST_MODE = int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0))
         TTSDNN_F_DMA_MODE = int(os.environ.get("XMLIR_DMA_FAST_MODE", 0))
         TTSDNN_F_KILL_EW_FILL_MODE = int(os.environ.get("XMLIR_KILL_EW_FILL_MODE", 0))
@@ -271,38 +311,102 @@ class XPUBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.ttir.add_loop_aware_cse(pm)
-        if metadata["is_sdnn"]:
+        if metadata["is_tle"]:
+            # TLE path: independent IR pipeline, skip all normcopy optimization passes.
+            # TritonToTritonXPU adds ClusterLayout encoding needed for type conversion.
+            # TLE-specific ops (tle_copy_g2l/l2g, tle_local_ptr) + triton.load/store
+            # will be lowered directly in TritonXPUToLLVM.
+            xpu.passes.ttxpuir.add_convert_triton_to_tritonxpu_pass(pm, opt.arch, XPUBackend.buffer_len, core_num,
+                                                                    isTLE=True)
+            if not metadata["isCloseCoreTiling"]:
+                # Core-tile a 2D row-reduce (axis=1) across the core grid. Runs
+                # before tle_legalize (reduce is still tt.reduce). RowTiled when
+                # M % core_num == 0 (whole rows per core, local reduce); LargeN
+                # when 2 <= M | core_num (row split across cores, cross-core
+                # reduce). Safe no-op otherwise.
+                xpu.passes.ttxpuir.add_tritonxpu_tle_core_tiling_pass(pm, 0, XPUBackend.buffer_len,
+                                                                      core_num)  # dumpFlag=0
+            xpu.passes.ttxpuir.add_tritonxpu_tle_legalize_pass(pm)  # dumpFlag=0
+            if not metadata["isCloseVectorization"]:
+                compareFusion = int(os.environ.get("TRITONXPU_COMPARE_FUSION", 0))
+                # Pre-vectorization normalization, split out of vectorize's own
+                # prologue (step 1.5). Must stay immediately before it.
+                xpu.passes.ttxpuir.add_tritonxpu_normalize_pass(
+                    pm, 0, compareFusion) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                xpu.passes.ttxpuir.add_tritonxpu_vectorize_pass(
+                    pm, 0, compareFusion, opt.per_op_decision) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+            if not metadata["isCloseClusterLoopGrid"]:
+                # LoopGrid: wraps kernel body in a cluster loop and appends gridX/Y/Z
+                # arguments that xpuLaunchKernel passes at the end of kernel_params.
+                xpu.passes.ttxpuir.add_tritonxpu_cf_to_scf_pass(pm)
+                xpu.passes.ttxpuir.add_tritonxpu_loop_grid_pass(pm)
+            passes.common.add_canonicalizer(pm)
+            passes.common.add_cse(pm)
+            passes.common.add_symbol_dce(pm)
+        elif metadata["is_sdnn"]:
             xpu.passes.ttsdnnir.add_tritonsdnn_strip_all_ops_pass(pm, opt.arch)
             if opt.arch < 4:
-                if metadata["use_int4_w4a8"] == True:
+                if metadata["use_int4_w4a8"]:
                     xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, 2)
                 else:
                     xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, TTSDNN_F_MATMUL_FAST_MODE)
-            xpu.passes.ttsdnnir.add_convert_triton_to_tritonsdnn_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_convert_triton_to_tritonsdnn_pass(pm, opt.arch, opt.load_tile_size)
             passes.ttir.add_loop_aware_cse(pm)
             xpu.passes.ttsdnnir.add_linalg_to_tritonsdnn_pass(pm, opt.arch)
             passes.ttir.add_loop_aware_cse(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_legalize_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_merge_extern_ew_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_combine_before_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_resolve_layout_conflict_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_hoist_ds_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_transpose_mma_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_transpose_ew_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_combine_before_pass(pm, opt.arch)
+            # Wrap orphan linalg.generic into sdnn.core_specialize AFTER the
+            # combine-before fusion, so elementwise generics are first fused into a
+            # minimal number of ops (avoids fragmenting into many tiny
+            # core_specialize regions). Must run before bufferize (which lowers the
+            # wrapped linalg to loops).
+            # FlagTree: the prebuilt v0.3.6.7.1 SDNN objects do not export this
+            # binding yet (it ships with the internal d116bdf4 rebuild).
+            if hasattr(xpu.passes.ttsdnnir, "add_tritonsdnn_wrap_fallback_pass"):
+                xpu.passes.ttsdnnir.add_tritonsdnn_wrap_fallback_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_eliminate_mma_acc_zero_pass(pm, opt.arch)
+            if opt.arch == 4:
+                xpu.passes.ttsdnnir.add_tritonsdnn_fuse_mma_vector_bias_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_optimize_rc_layout_pass(pm, opt.arch)
+            if opt.arch == 4:
+                xpu.passes.ttsdnnir.add_tritonsdnn_ewlite_scheduling_pass(pm, opt.arch)
+                if TTSDNN_F_DMA_MODE:
+                    xpu.passes.ttsdnnir.add_tritonsdnn_remove_ds_op_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_dsa_copy_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_bufferize_pass(pm, opt.arch)
-            xpu.passes.ttsdnnir.add_tritonsdnn_combine_pass(pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_mx_scale_layout_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_fuse_relu_activation_pass(pm, opt.arch)
             if opt.exp_range != ":0":
                 res = parse_floating_range_string(opt.exp_range)
                 xpu.passes.ttsdnnir.add_tritonsdnn_ew_act_table_pass(pm, res)
             else:
                 xpu.passes.ttsdnnir.add_tritonsdnn_ew_act_table_pass(pm, None)
             xpu.passes.ttsdnnir.add_tritonsdnn_loop_grid_pass(pm)
-            if opt.arch == 4 and TTSDNN_F_DMA_MODE:
-                xpu.passes.ttsdnnir.add_tritonsdnn_remove_ds_op_pass(pm, opt.arch)
-            if not TTSDNN_F_SINGLE_CORE_MODE:
-                xpu.passes.ttsdnnir.add_tritonsdnn_pipeline_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_hoist_loop_invariant_dma_pass(pm, opt.arch)
+            # FlagTree: defer_event_coloring (arch5-only wiring) needs the
+            # v0.3.6.8.x SDNN objects; the 7.1 binding has no such kwarg.
+            if opt.arch == 5:
+                xpu.passes.ttsdnnir.add_tritonsdnn_pipeline_pass(pm, opt.arch, defer_event_coloring=True)
+            else:
+                xpu.passes.ttsdnnir.add_tritonsdnn_pipeline_pass(pm, opt.arch)
             if opt.arch == 4 and TTSDNN_F_KILL_EW_FILL_MODE:
                 xpu.passes.ttsdnnir.add_tritonsdnn_kloop_acc_elimination_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_multi_buffer_pass(pm, opt.arch, opt.num_stages)
+            if opt.arch == 5 and not TTSDNN_F_SINGLE_CODE_MODE:
+                xpu.passes.ttsdnnir.add_tritonsdnn_event_coloring_pass(pm, 0)
+            xpu.passes.ttsdnnir.add_tritonsdnn_lower_rc_subview_pass(pm, opt.arch)
             passes.common.add_symbol_dce(pm)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
         else:
+            xpu.passes.ttxpuir.add_tritonxpu_legalize_extern_ew_pass(pm)
             xpu.passes.ttxpuir.add_convert_triton_to_tritonxpu_pass(pm, opt.arch, XPUBackend.buffer_len, core_num)
             xpu.passes.ttxpuir.add_tritonxpu_print_pass(pm)
             xpu.passes.ttxpuir.add_tritonxpu_gm2lm_pass(pm, opt.arch, TTXPU_O_ATOMIC_SIM, opt.isClusterOneCoreActOnly,
@@ -313,6 +417,14 @@ class XPUBackend(BaseBackend):
             passes.common.add_canonicalizer(pm)
             if TTXPU_F_DTYPE_CONVERT:
                 xpu.passes.ttxpuir.add_tritonxpu_dtype_convert_pass(pm, opt.arch)
+            xpu.passes.ttxpuir.add_tritonxpu_vectorizability_analysis_pass(pm, True, True)
+            # M2/M3's decision half, taken here because the terminal states are
+            # E-independent at this position. Tiers 1 and 2 need a fixed per-core
+            # geometry, so they stay in unroll_control below and are recorded as
+            # deferred. Writes only triton_xpu.tile_decision -- read back and
+            # erased by add_tritonxpu_tile_analysis_pass -- and only under
+            # TRITONXPU_TILE_DECIDE=1.
+            xpu.passes.ttxpuir.add_tritonxpu_tile_decide_pass(pm, True)
             if not metadata["isCloseCoreTiling"]:
                 xpu.passes.ttxpuir.add_tritonxpu_core_tiling_pass(
                     pm, 0, XPUBackend.buffer_len, core_num, groups_per_cluster,
@@ -320,8 +432,10 @@ class XPUBackend(BaseBackend):
             # xpu.passes.ttxpuir.add_tritonxpu_lm_to_sm_pass(pm)
             passes.common.add_cse(pm)
             if not metadata["isCloseOffsetAnalysis"]:
+                xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(pm, False) if not TTXPU_O_CLOSE_OPT else None
                 xpu.passes.ttxpuir.add_tritonxpu_offset_state_pass(
                     pm, 0, XPUBackend.buffer_len, is_use_mask_zero) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(pm, True) if not TTXPU_O_CLOSE_OPT else None
             passes.common.add_canonicalizer(pm)
             xpu.passes.ttxpuir.add_tritonxpu_legalize_pass(pm, XPUBackend.buffer_len, core_num, groups_per_cluster,
                                                            is_use_mask_zero)
@@ -337,17 +451,22 @@ class XPUBackend(BaseBackend):
             passes.common.add_canonicalizer(pm)
             if not metadata["isCloseVectorization"]:
                 compareFusion = int(os.environ.get("TRITONXPU_COMPARE_FUSION", 0))
-                xpu.passes.ttxpuir.add_tritonxpu_vectorize_pass(
+                xpu.passes.ttxpuir.add_tritonxpu_normalize_pass(
                     pm, 0, compareFusion) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                xpu.passes.ttxpuir.add_tritonxpu_vectorizability_analysis_pass(pm, True, False)
+                xpu.passes.ttxpuir.add_tritonxpu_vectorize_pass(
+                    pm, 0, compareFusion, opt.per_op_decision) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
             passes.common.add_canonicalizer(pm)
             xpu.passes.ttxpuir.add_tritonxpu_alloca_pass(pm, XPUBackend.buffer_len, core_num)
             if not metadata["isCloseMemoryAsync"]:
-                xpu.passes.ttxpuir.add_tritonxpu_memory_async_pass(pm,
-                                                                   0) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
+                xpu.passes.ttxpuir.add_tritonxpu_async_load_schedule_pass(
+                    pm, 0) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
             if not metadata["isCloseUnrollControl"]:
-                xpu.passes.ttxpuir.add_tritonxpu_unroll_control_pass(pm, XPUBackend.buffer_len, core_num,
-                                                                     is_use_mask_zero,
-                                                                     unroll_num) if not TTXPU_O_CLOSE_OPT else None
+                xpu.passes.ttxpuir.add_tritonxpu_tile_analysis_pass(pm, vrf_budget)
+                xpu.passes.ttxpuir.add_tritonxpu_unroll_control_pass(
+                    pm, XPUBackend.buffer_len, core_num, is_use_mask_zero, unroll_num, vrf_budget,
+                    metadata["budget_tiling"], metadata["pin_unroll_num"],
+                    metadata["open_decision_entry"]) if not TTXPU_O_CLOSE_OPT else None
             xpu.passes.ttxpuir.add_tritonxpu_store_control_pass(pm) if not TTXPU_O_CLOSE_OPT else None
             if not TTXPU_F_OHTER_VALUE_SIM:
                 xpu.passes.ttxpuir.add_tritonxpu_other_sim_pass(pm, XPUBackend.buffer_len, core_num)
@@ -356,6 +475,8 @@ class XPUBackend(BaseBackend):
             if not metadata["isCloseClusterLoopGrid"]:
                 xpu.passes.ttxpuir.add_tritonxpu_cf_to_scf_pass(pm)
                 xpu.passes.ttxpuir.add_tritonxpu_loop_grid_pass(pm)
+                if int(os.environ.get("TRITONXPU_LOOP_INVARIANT_STAGING", 0)):
+                    xpu.passes.ttxpuir.add_tritonxpu_loop_invariant_staging_pass(pm)
             passes.common.add_cse(pm)
             passes.common.add_licm(pm)
             passes.common.add_symbol_dce(pm)
@@ -448,7 +569,7 @@ class XPUBackend(BaseBackend):
         # the default TO_F32 bf16 dot a non-empty tensor_args makes launch.cpp
         # append a spurious scale param and hand the kernel a wild quantized
         # buffer base -> illegal memory access.
-        _needs_scale_args = metadata["use_int4_w4a8"] == True or int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0)) == 1
+        _needs_scale_args = metadata["use_int4_w4a8"] or int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0)) == 1
         metadata["tensor_args"] = xpu.get_tensor_args(mod, metadata["tensor_args"]) if (metadata["is_sdnn"] is True
                                                                                         and _needs_scale_args) else []
 
@@ -460,9 +581,24 @@ class XPUBackend(BaseBackend):
         # passes.convert.add_index_to_llvmir(pm) // TODO[dyq]: necessary?
 
         if metadata["is_sdnn"]:
+            # Deferred tle.raw payloads are compiled here, where the arch is known.
+            # Unconditional: the XPU python overlay always ships
+            # triton/experimental/tle/raw/deferred.py, and the hook is a no-op
+            # (adds no pass) when no payload was registered during tracing --
+            # which is also the case for every cache hit, since tracing is
+            # skipped then. Do NOT gate this on `is_tle`: that flag means the TLE
+            # copy/tiling IR pipeline (tle_copy_g2l & friends), which a plain
+            # `tle.raw` kernel does not use.
+            from triton.experimental.tle.raw.deferred import materialize_deferred_raw
+            materialize_deferred_raw(pm, xpu.passes.ttsdnnir.add_tritonsdnn_materialize_deferred_raw_pass,
+                                     arch=opt.arch, dialect="xpu")
             xpu.passes.ttsdnnir.add_convert_tritonsdnn_to_llvm_pass(pm, opt.arch)
         else:
             xpu.passes.ttxpuir.add_allocate_xpu_shared_memory(pm)
+            # Same hook on the cluster path, where the op is `triton_xpu.raw`.
+            from triton.experimental.tle.raw.deferred import materialize_deferred_raw
+            materialize_deferred_raw(pm, xpu.passes.ttxpuir.add_tritonxpu_materialize_deferred_raw_pass, arch=opt.arch,
+                                     dialect="xpu")
             xpu.passes.ttxpuir.add_convert_tritonxpu_to_llvm_pass(pm, opt.arch, XPUBackend.buffer_len,
                                                                   metadata["is_use_mask_zero"])
         passes.common.add_canonicalizer(pm)
@@ -506,6 +642,23 @@ class XPUBackend(BaseBackend):
         # Without the XPU TargetMachine, @llvm.sqrt.f64 / fp64 div are legalized
         # into external libm libcalls (`sqrt`), which then fail to link in
         # xpu{arch}-elfconv-triton (ld.lld: error: undefined symbol: sqrt).
+        # libdevice-xpu{arch}s.bc is built with "target-features"="+bigcore,...",
+        # so every helper linked in above (e.g. _ZN3xpu14findCacheIndexEPiii, which
+        # every sdnn.get_cache_buffer lowers to) arrives tagged as a Bigcore
+        # function while the kernel itself carries SDNN instructions. The XPU
+        # backend rejects that mix with "SDNN and Bigcore kernel cannot be in same
+        # module." -- and since the LLVM 22 upgrade the check also runs from
+        # optimize_module's TargetMachine callbacks, i.e. before amend_func below
+        # gets to stamp +cdnn{arch} on the whole module. Stamp the linked-in
+        # definitions here so the module is uniformly SDNN going into O3; the
+        # helpers are plain scalar code and get inlined away regardless.
+        if metadata["is_sdnn"]:
+            for func in llvm_mod.get_functions():
+                if func.is_declaration():
+                    continue
+                func.remove_fn_attr("target-features")
+                func.add_fn_target_feature(f"+cdnn{opt.arch}")
+
         # The XPU LLVM target triple must be attached before optimize_module is
         # invoked. optimize_module calls createTargetMachine which uses
         # lookupTarget(module->getTargetTriple()); without a triple set this
@@ -570,7 +723,7 @@ class XPUBackend(BaseBackend):
     def hash(self) -> str:
         """Returns a unique identifier for this backend"""
         # TODO:
-        return f"1"
+        return "1"
 
     def parse_options(self, options: dict) -> object:
         args = {"arch": self.target.arch}
@@ -613,4 +766,6 @@ class XPUBackend(BaseBackend):
         xpu.load_dialects(context)
 
     def get_module_map(self) -> "dict":
-        return {}
+        from triton.language.extra.xpu import libdevice
+
+        return {"triton.language.extra.libdevice": libdevice}

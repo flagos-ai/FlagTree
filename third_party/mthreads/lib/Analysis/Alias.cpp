@@ -47,6 +47,30 @@ LogicalResult SharedMemoryAliasAnalysis::visitOperation(
 #ifdef __TLE__
   if (results.empty())
     return success();
+
+  StringRef opName = op->getName().getStringRef();
+  if (opName == "ttmg.squad_dot_wait" || opName == "mtgpu.sqmma_wait") {
+    // These waits forward each dependency unchanged; they do not allocate
+    // storage. Handle every result, including memdescs after an accumulator.
+    if (operands.size() != results.size())
+      return op->emitOpError("SQMMA wait alias propagation requires matching "
+                             "operand and result counts");
+    for (unsigned idx = 0; idx < results.size(); ++idx) {
+      if (op->getOperand(idx).getType() != op->getResult(idx).getType())
+        return op->emitOpError("SQMMA wait alias propagation requires matching "
+                               "operand and result types");
+    }
+    for (auto [idx, result] : llvm::enumerate(results)) {
+      auto memdescTy =
+          dyn_cast<triton::gpu::MemDescType>(op->getResult(idx).getType());
+      if (memdescTy && isa_and_nonnull<triton::gpu::SharedMemorySpaceAttr>(
+                           memdescTy.getMemorySpace()))
+        propagateIfChanged(result, result->join(operands[idx]->getValue()));
+      else
+        setToEntryState(result);
+    }
+    return success();
+  }
 #endif // __TLE__
 
   AliasInfo aliasInfo;

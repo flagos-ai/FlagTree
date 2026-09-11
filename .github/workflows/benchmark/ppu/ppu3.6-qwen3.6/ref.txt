@@ -1,7 +1,9 @@
 810E * 2
+harbor.baai.ac.cn/flagtree/flagtree-ppu-py312-torch2.10.0-sdk2.1.0-cu130-ubuntu24.04:202607-3.6-vllm0.24.0
+Driver Version: 1.3.2-d7f5a2
+hggc==13.0
 vllm==0.24.0+empty
 torch==2.10.0
-hggc==13.0
 
 [2026/08/24] vllm-plugin-fl==0.3.0rc0+gf4319bd2a (2026/08/24), flag_gems==5.3.4 (2026/08/10), flagtree===0.6.1+ppu3.6 (2026/08/18)
 # 服务冷启动时间: 7分30秒, 服务热启动时间: 4分20秒

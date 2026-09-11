@@ -1,5 +1,3 @@
-# Copyright 2018-2020 Philippe Tillet
-# Copyright 2020-2022 OpenAI
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -96,6 +94,10 @@ class ResolvedBenchmarker:
 _REPLAY_IMPLEMENTATIONS = {
     "triton.backends.nvidia.driver": "triton_cuda_graph_replay_v1",
     "triton.backends.amd.driver": "triton_hip_graph_replay_v1",
+    "triton.backends.metax.driver": "triton_metax_graph_replay_v1",
+    "triton.backends.ppu.driver": "triton_ppu_graph_replay_v1",
+    "triton.backends.mthreads.driver": "triton_musa_graph_replay_v1",
+    "triton.backends.hcu.driver": "triton_hcu_graph_replay_v1",
 }
 
 
@@ -144,15 +146,31 @@ def resolve_benchmarker(
         implementation = _replay_implementation(active)
         if implementation is not None:
             per_replay_ms = float(measurement_ms) / n_retries
-            from triton.testing import do_bench_cudagraph
 
-            def replay_benchmark(kernel_call, quantiles):
-                return do_bench_cudagraph(
-                    kernel_call,
-                    rep=per_replay_ms,
-                    quantiles=quantiles,
-                    n_retries=n_retries,
-                )
+            if type(active).__module__ == "triton.backends.mthreads.driver":
+                from triton.flagtune.runtime.graph_benchmark import (
+                    do_bench_musa_graph, )
+
+                def replay_benchmark(kernel_call, quantiles):
+                    return do_bench_musa_graph(
+                        kernel_call,
+                        rep=per_replay_ms,
+                        quantiles=quantiles,
+                        n_retries=n_retries,
+                        warmup_ms=warmup_ms,
+                        device_interface=active.get_device_interface(),
+                    )
+
+            else:
+                from triton.testing import do_bench_cudagraph
+
+                def replay_benchmark(kernel_call, quantiles):
+                    return do_bench_cudagraph(
+                        kernel_call,
+                        rep=per_replay_ms,
+                        quantiles=quantiles,
+                        n_retries=n_retries,
+                    )
 
             return ResolvedBenchmarker(
                 protocol=BenchmarkProtocol(

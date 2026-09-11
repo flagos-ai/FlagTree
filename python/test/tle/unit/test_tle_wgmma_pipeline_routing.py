@@ -101,6 +101,30 @@ def _warp_specialize_barrier_inline_kernel(out):
     )
 
 
+@triton.jit
+def _ws_named_barrier_default(bar):
+    tle.gpu.barrier_arrive(bar)
+
+
+@triton.jit
+def _ws_named_barrier_worker(bar, out):
+    tle.gpu.barrier_wait(bar)
+    tl.store(out, 1)
+
+
+@triton.jit
+def _warp_specialize_named_barrier_kernel(out):
+    bar = tle.gpu.alloc_barrier(arrive_count=256)
+    tle.gpu.warp_specialize(
+        [
+            (_ws_named_barrier_default, (bar, )),
+            (_ws_named_barrier_worker, (bar, out)),
+        ],
+        [4],
+        [168],
+    )
+
+
 def _make_ttir(kernel, signature=None):
     backend = make_backend(_HOPPER_TARGET)
     options = backend.parse_options({"num_warps": 4})
@@ -173,3 +197,23 @@ def test_tle_warp_specialize_inlines_with_user_promise_marker():
     assert "ttg.warp_specialize" in ttir
     assert _has_user_promise_mode_attr(ttir)
     assert "tt.call" not in ttir
+
+
+@pytest.mark.require_tle(
+    "gpu.alloc_barrier",
+    "gpu.barrier_arrive",
+    "gpu.barrier_wait",
+    "gpu.warp_specialize",
+)
+def test_named_barrier_capture_has_no_mbarrier_storage_after_full_pipeline():
+    import torch
+
+    out = torch.empty(1, device="cuda", dtype=torch.int32)
+    compiled = _warp_specialize_named_barrier_kernel.warmup(out, grid=(1, ), num_warps=4)
+    ttgir = compiled.asm["ttgir"]
+
+    assert "ttng.arrive_barrier_named" in ttgir
+    assert "ttng.wait_barrier_named" in ttgir
+    assert "tle.barrier" not in ttgir
+    assert "ttg.local_alloc" not in ttgir
+    assert "ttng.init_barrier" not in ttgir

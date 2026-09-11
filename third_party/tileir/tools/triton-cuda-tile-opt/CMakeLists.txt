@@ -2,6 +2,15 @@ get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 
 add_llvm_executable(triton-cuda-tile-opt triton-cuda-tile-opt.cpp PARTIAL_SOURCES_INTENDED)
+add_dependencies(triton-cuda-tile-opt
+  TritonToTileIRConversionPassIncGen
+  TritonTileIRTransformsIncGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
+)
 
 # TODO: what's this?
 llvm_update_compile_flags(triton-cuda-tile-opt)

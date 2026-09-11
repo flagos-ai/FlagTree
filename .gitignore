@@ -134,3 +134,11 @@ third_party/mthreads/backend/bin/
 third_party/xpu.bak/
 third_party/xpu/backend/xpu3/
 .comate/
+
+# tsingmicro backend build artifacts and runtime logs
+python/lib/
+third_party/tsingmicro/backend/bin/
+third_party/tsingmicro/backend/lib/
+third_party/flir
+tsingmicro_launch.log
+python/tsingmicro_launch.log

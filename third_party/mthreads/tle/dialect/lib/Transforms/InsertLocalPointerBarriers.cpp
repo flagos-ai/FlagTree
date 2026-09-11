@@ -11,6 +11,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -30,12 +31,75 @@ namespace {
 constexpr StringLiteral kBarrierGroupAttr = "musa_tle.barrier_group";
 
 namespace ttg = mlir::triton::gpu;
+namespace tle = mlir::triton::tle;
 
 static Value stripConvertLayouts(Value value) {
   Value current = value;
   while (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>())
     current = cvt.getSrc();
   return current;
+}
+
+static Value getMemDescRoot(Value value) {
+  Value current = value;
+  while (true) {
+    if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
+      current = index.getSrc();
+      continue;
+    }
+    if (auto subslice = current.getDefiningOp<ttg::MemDescSubsliceOp>()) {
+      current = subslice.getSrc();
+      continue;
+    }
+    if (auto alias = current.getDefiningOp<tle::MemDescAliasOp>()) {
+      current = alias.getSrc();
+      continue;
+    }
+    if (auto transpose = current.getDefiningOp<ttg::MemDescTransOp>()) {
+      current = transpose.getSrc();
+      continue;
+    }
+    if (auto reshape = current.getDefiningOp<ttg::MemDescReshapeOp>()) {
+      current = reshape.getSrc();
+      continue;
+    }
+    if (auto reinterpret = current.getDefiningOp<ttg::MemDescReinterpretOp>()) {
+      current = reinterpret.getSrc();
+      continue;
+    }
+    if (auto wgmmaView = current.getDefiningOp<tle::MemDescWGMMAViewOp>()) {
+      current = wgmmaView.getSrc();
+      continue;
+    }
+    return current;
+  }
+}
+
+static std::optional<int64_t> getBarrierGroup(Value memdesc) {
+  Value root = getMemDescRoot(memdesc);
+  auto alloc = root.getDefiningOp<ttg::LocalAllocOp>();
+  if (!alloc)
+    return std::nullopt;
+  auto group = alloc->getAttrOfType<IntegerAttr>(kBarrierGroupAttr);
+  if (!group)
+    return std::nullopt;
+  return group.getInt();
+}
+
+static SmallVector<Value>
+getSubscribedPipeFields(triton::musa_tle::PipeReaderWaitOp wait) {
+  auto readerFields = wait->getAttrOfType<ArrayAttr>("reader_fields");
+  if (!readerFields)
+    return SmallVector<Value>(wait.getFields().begin(), wait.getFields().end());
+
+  ArrayAttr fieldNames = wait->getAttrOfType<ArrayAttr>("field_names");
+  SmallVector<Value> subscribed;
+  for (auto [index, field] : llvm::enumerate(wait.getFields())) {
+    if (index < fieldNames.size() &&
+        llvm::is_contained(readerFields, fieldNames[index]))
+      subscribed.push_back(field);
+  }
+  return subscribed;
 }
 
 static Value stripIndexValueWrappers(Value value) {
@@ -204,6 +268,7 @@ class InsertLocalPointerBarriersPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
     pointerGroups.clear();
+    memdescGroups.clear();
     allowDotOperandBarrierElision = isCudaTargetAtLeast(module, 90);
     collectTrackedPointers(module);
 
@@ -222,6 +287,8 @@ class InsertLocalPointerBarriersPass
         return;
       Value ptr = op.getResult();
       int64_t group = groupAttr.getInt();
+      Value memdescRoot = getMemDescRoot(op.getSrc());
+      memdescGroups.try_emplace(memdescRoot, group);
       if (pointerGroups.try_emplace(ptr, group).second)
         worklist.push_back(ptr);
     });
@@ -311,6 +378,15 @@ class InsertLocalPointerBarriersPass
         // redundant back-to-back barriers for consecutive loads from different
         // tracked groups.
         dirtyGroups.clear();
+      } else if (auto wait =
+                     dyn_cast<triton::musa_tle::PipeReaderWaitOp>(&op)) {
+        // A pipe full-barrier wait is the acquire edge for its payload fields.
+        // Clear only those dependency groups so unrelated shared-memory
+        // hazards still receive their normal CTA barrier.
+        for (Value field : getSubscribedPipeFields(wait)) {
+          if (std::optional<int64_t> group = lookupMemDescGroup(field))
+            dirtyGroups.erase(*group);
+        }
       } else if (isa<mlir::gpu::BarrierOp, ttg::BarrierOp>(&op)) {
         dirtyGroups.clear();
       }
@@ -418,7 +494,16 @@ class InsertLocalPointerBarriersPass
     return it->second;
   }
 
+  std::optional<int64_t> lookupMemDescGroup(Value memdesc) const {
+    Value root = getMemDescRoot(memdesc);
+    auto it = memdescGroups.find(root);
+    if (it != memdescGroups.end())
+      return it->second;
+    return getBarrierGroup(root);
+  }
+
   llvm::DenseMap<Value, int64_t> pointerGroups;
+  llvm::DenseMap<Value, int64_t> memdescGroups;
   bool allowDotOperandBarrierElision = false;
 };
 

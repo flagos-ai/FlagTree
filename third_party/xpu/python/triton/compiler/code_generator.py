@@ -446,6 +446,10 @@ class CodeGenerator(ast.NodeVisitor):
                     getattr(val, "__triton_aggregate__", False),  #
                     getattr(val, "__module__", "").startswith("triton.language"),  #
                     getattr(val, "__module__", "").startswith("triton.experimental.gluon.language"),  #
+                    # `tle.raw` payload handles (from @tle.raw.dialect) are plain
+                    # globals referenced from the kernel body; their device source
+                    # is folded into the cache key by DependenciesFinder instead.
+                    getattr(val, "__module__", "").startswith("triton.experimental.tle"),  #
                     isinstance(val, language.dtype),  #
                     is_namedtuple(val),
                     self._is_constexpr_global(name),  #

@@ -55,12 +55,22 @@ def fresh_knobs_including_libraries():
 
 
 @pytest.fixture
-def with_allocator():
+def with_allocator(device):
     import triton
+    import torch
     from triton.runtime._allocation import NullAllocator
-    from triton._internal_testing import default_alloc_fn
 
-    triton.set_allocator(default_alloc_fn)
+    allocator_device = device
+    if allocator_device not in ("cuda", "musa"):
+        from triton.runtime import driver
+
+        target = driver.active.get_current_target()
+        allocator_device = "musa" if target.backend == "musa" else "cuda"
+
+    def alloc_fn(size: int, align: int, stream):
+        return torch.empty(size, dtype=torch.int8, device=allocator_device)
+
+    triton.set_allocator(alloc_fn)
     try:
         yield
     finally:

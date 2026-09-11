@@ -1,4 +1,6 @@
 add_subdirectory(Dialect)
 add_subdirectory(MTGPUToLLVM)
+add_subdirectory(TritonMUSACommon)
+add_subdirectory(TritonMUSALLVMIR)
 add_subdirectory(TritonMUSAGPUToLLVM)
 add_subdirectory(TritonMUSAGPUTransforms)

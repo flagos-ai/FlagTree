@@ -34,7 +34,13 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Group by PR number for pull_request events to cancel outdated runs from the same PR.
+  # Group by commit SHA for push events to allow parallel runs from different merges.
+  # Fall back to run_id for other events (e.g., schedule) to ensure each run is independent.
+  group: ${{ github.workflow }}-${{
+    github.event_name == 'pull_request' && github.event.pull_request.number ||
+    github.event_name == 'push' && github.event.head_commit.id ||
+    github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -131,7 +137,9 @@ jobs:
               --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
               --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
               --ignore=python/test/tle/unit/test_tle_d2d_barrier.py \
-              --ignore=python/test/tle/unit/test_tle_get_node_rank.py
+              --ignore=python/test/tle/unit/test_tle_get_node_rank.py \
+              --ignore=python/test/tle/unit/test_tle_signal.py \
+              --ignore=python/test/tle/unit/test_tle_signal_wait.py
           ## flagtree hints python tutorials
           python3 python/tutorials/hints/01/01-vector-add.py --only_unit_test
           # python3 python/tutorials/hints/02/02-fused-softmax.py --only_unit_test

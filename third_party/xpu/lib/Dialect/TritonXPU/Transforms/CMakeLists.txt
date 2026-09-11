@@ -1,13 +1,23 @@
 add_triton_library(TritonXPUTransforms
   Alloca.cpp
+  AsyncLoadSchedule.cpp
   CoreTiling.cpp
   CreateGM2LM.cpp
   DtypeConvert.cpp
   Legalize.cpp
+  TLELegalize.cpp
+  TLECoreTiling.cpp
   LoopGrid.cpp
+  LoopInvariantStaging.cpp
   LowerPrint.cpp
   Mask.cpp
+  MaterializeDeferredRaw.cpp
   OffsetAnalysis.cpp
+  ScalarAnalysis.cpp
+  TileAnalysisPass.cpp
+  TileDecidePass.cpp
+  VectorizabilityAnalysisPass.cpp
+  Normalize.cpp
   Vectorize.cpp
   MemoryAsync.cpp
   UnrollControl.cpp
@@ -18,6 +28,7 @@ add_triton_library(TritonXPUTransforms
   MemoryInplace.cpp
   FuncConvert.cpp
   CFToSCF.cpp
+  LegalizeExternEW.cpp
 
   DEPENDS
   TritonXPUTransformsIncGen

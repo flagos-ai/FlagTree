@@ -6,6 +6,11 @@ add_triton_library(TritonAMDAnalysis
   DEPENDS
   TritonTableGen
   TritonAMDGPUTableGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRAnalysis

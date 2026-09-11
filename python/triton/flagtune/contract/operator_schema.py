@@ -1,5 +1,3 @@
-# Copyright 2018-2020 Philippe Tillet
-# Copyright 2020-2022 OpenAI
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -651,7 +649,7 @@ def variant_to_model_config(
         raise FlagTuneConfigError(f"invalid GPU metadata: {exc}") from exc
     if declared_platform_key != identity.platform_key or gpu["platform_key"] != identity.platform_key:
         raise FlagTuneConfigError("model identity platform_key does not match GPU metadata")
-    if backend not in ("cuda", "hip"):
+    if backend not in ("cuda", "hip", "maca", "musa"):
         raise FlagTuneConfigError(f"unsupported GPU backend: {backend!r}")
     from triton.flagtune.contract.archive import validate_model_version
 
@@ -761,7 +759,7 @@ def model_identity_from_config(config: Mapping[str, Any]) -> ModelIdentity:
         actual_platform_key = make_platform_key(str(gpu["vendor"]), str(gpu["device_name"]))
     except (KeyError, TypeError, ValueError) as exc:
         raise FlagTuneConfigError(f"invalid model config.gpu: {exc}") from exc
-    if backend not in ("cuda", "hip"):
+    if backend not in ("cuda", "hip", "maca", "musa"):
         raise FlagTuneConfigError(f"model config.gpu.backend is unsupported: {backend!r}")
     if actual_platform_key != identity.platform_key or gpu.get("platform_key") != identity.platform_key:
         raise FlagTuneConfigError("model config GPU metadata does not match platform_key")

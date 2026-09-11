@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+import math
+
 import triton.language.core as tl
 from typing import Optional, List, Tuple, TYPE_CHECKING
 from abc import abstractmethod
@@ -260,6 +262,45 @@ class shared_layout(layout):
         raise NotImplementedError(f"{self.__class__.__name__}.to_ir() must be overridden in subclasses")
 
 
+class _shared_linear_layout(shared_layout):
+    """Internal wrapper for an inferred SharedLinearEncoding."""
+
+    def __init__(self, offset_bases, block_bases, alignment, rank):
+        super().__init__()
+        self.offset_bases = [list(basis) for basis in offset_bases]
+        self.block_bases = [list(basis) for basis in block_bases]
+        self.alignment = int(alignment)
+        self.rank = int(rank)
+
+        if self.rank <= 0:
+            raise ValueError("shared linear layout requires a positive rank")
+        if any(len(basis) != self.rank for basis in (*self.offset_bases, *self.block_bases)):
+            raise ValueError("shared linear layout bases must have a consistent rank")
+        if self.alignment <= 0 or self.alignment & (self.alignment - 1):
+            raise ValueError("shared linear layout alignment must be a positive power of two")
+
+    def make_permute(self, dims):
+        return _shared_linear_layout(
+            [[basis[dim] for dim in dims] for basis in self.offset_bases],
+            [[basis[dim] for dim in dims] for basis in self.block_bases],
+            self.alignment,
+            self.rank,
+        )
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.make_shared_linear_encoding_attr(
+            self.offset_bases,
+            self.block_bases,
+            self.alignment,
+            self.rank,
+        )
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.offset_bases == other.offset_bases
+                and self.block_bases == other.block_bases and self.alignment == other.alignment
+                and self.rank == other.rank)
+
+
 class swizzled_shared_layout(shared_layout):
 
     def __init__(self, vectorSize, perPhase, maxPhase, order, numCTAs, numCTAsPerCGA, numCTASplit, numCTAOrder):
@@ -456,6 +497,33 @@ def _make_slot_layout(src_layout: shared_layout, slot_shape: List[int]) -> share
     raise ValueError(f"buffered_tensor.slot does not support layout {type(src_layout).__name__}")
 
 
+def _layout_from_reshaped_memdesc(handle, shape, element_ty, builder) -> shared_layout:
+    """Mirror the encoding already inferred by MemDescReshapeOp."""
+    inferred = builder.get_tle_shared_layout_from_memdesc(handle)
+    kind = inferred["kind"]
+    if kind == "shared_linear":
+        return _shared_linear_layout(
+            inferred["offset_bases"],
+            inferred["block_bases"],
+            inferred["alignment"],
+            inferred["rank"],
+        )
+    if kind == "nv_mma":
+        rank = len(shape)
+        transposed = inferred["transposed"]
+        return nv_mma_shared_layout(
+            list(shape),
+            list(range(rank)) if transposed else list(reversed(range(rank))),
+            element_ty,
+            list(inferred["ctas_per_cga"]),
+            list(inferred["cta_split_num"]),
+            list(inferred["cta_order"]),
+            inferred["fp4_padded"],
+            inferred["swizzled"],
+        )
+    raise ValueError(f"unsupported inferred shared-memory reshape encoding: {kind}")
+
+
 class buffered_tensor(tl.base_value):
     """
     A symbolic type representing a tensor allocated in a manually managed buffer
@@ -516,6 +584,29 @@ class buffered_tensor(tl.base_value):
                                                              stage_tensor.handle)
         return buffered_tensor(slot_handle, self.dtype, slot_shape, self.type.storage, slot_layout, _semantic,
                                alloc_shape=slot_ty.alloc_shape)
+
+    @tl.builtin
+    def reshape(self, shape, _semantic=None):
+        """Return an aliasing shared-memory view with a different static shape."""
+        shape = [int(tl._unwrap_if_constexpr(dim)) for dim in tl._unwrap_if_constexpr(shape)]
+        if not shape or any(dim <= 0 for dim in shape):
+            raise ValueError(f"buffered_tensor.reshape dimensions must be positive, got {shape}")
+        if math.prod(shape) != math.prod(self.shape):
+            raise ValueError(f"buffered_tensor.reshape total elements mismatch: {self.shape} -> {shape}")
+        handle = _semantic.builder.create_memdesc_reshape(self.handle, shape)
+        reshaped_layout = _layout_from_reshaped_memdesc(handle, shape, self.dtype, _semantic.builder)
+        alloc_shape = self.type.alloc_shape
+        prefix_len = len(alloc_shape) - len(self.shape)
+        reshaped_alloc_shape = alloc_shape[:prefix_len] + shape
+        return buffered_tensor(
+            handle,
+            self.dtype,
+            shape,
+            self.type.storage,
+            reshaped_layout,
+            _semantic,
+            alloc_shape=reshaped_alloc_shape,
+        )
 
     def make_permute(self, handle, dims):
         permuted_layout = self.type.layout.make_permute(dims)

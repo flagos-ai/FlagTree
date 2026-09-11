@@ -51,7 +51,7 @@ export VLLM_CONFIGURE_LOGGING=1
 
 nohup vllm serve ./Qwen3.6-27B/  \
     --tensor-parallel-size 4 \
-    --port 8000  \
+    --port "${VLLM_QWEN3_PORT}" \
     --served-model-name qwen36 \
     --gpu-memory-utilization 0.7 \
     --trust-remote-code \
@@ -87,8 +87,8 @@ for ((i=1; i<=max_retry; i++)); do
     minutes=$((duration / 60))
     seconds=$((duration % 60))
     echo "[INFO] Service startup elapsed time: ${minutes}m${seconds}s"
-    if (( i > max_retry )); then
-        echo "[FATAL] Detection failed! maximum retry count reached: ${max_retry}"
-        exit 1
-    fi
 done
+if (( i > max_retry )); then
+    echo "[FATAL] Detection failed! maximum retry count reached: ${max_retry}"
+    exit 1
+fi

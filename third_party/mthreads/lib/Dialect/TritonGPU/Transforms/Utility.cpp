@@ -31,6 +31,8 @@ static constexpr const char *kTleExplicitEncodingAttrPrefix =
     "tle.explicit_encoding.";
 static constexpr const char *kTleExplicitMemoryEncodingAttrName =
     "tle.explicit_memory_encoding";
+static constexpr const char *kTleExplicitSqmmaEncodingAttrName =
+    "tle.explicit_sqmma_encoding";
 
 const char *getTleExplicitEncodingAttrPrefix() {
   return kTleExplicitEncodingAttrPrefix;
@@ -43,6 +45,10 @@ std::string getTleExplicitEncodingAttrName(unsigned resultNumber) {
 
 const char *getTleExplicitMemoryEncodingAttrName() {
   return kTleExplicitMemoryEncodingAttrName;
+}
+
+const char *getTleExplicitSqmmaEncodingAttrName() {
+  return kTleExplicitSqmmaEncodingAttrName;
 }
 
 Attribute getTleExplicitResultEncoding(Operation *op, unsigned resultNumber) {
@@ -65,6 +71,18 @@ Attribute getTleExplicitMemoryEncoding(Operation *op) {
 
 void setTleExplicitMemoryEncoding(Operation *op, Attribute encoding) {
   op->setAttr(kTleExplicitMemoryEncodingAttrName, encoding);
+}
+
+Attribute getTleExplicitSqmmaEncoding(Operation *op) {
+  return op->getAttr(kTleExplicitSqmmaEncodingAttrName);
+}
+
+void setTleExplicitSqmmaEncoding(Operation *op, Attribute encoding) {
+  op->setAttr(kTleExplicitSqmmaEncodingAttrName, encoding);
+}
+
+void removeTleExplicitSqmmaEncoding(Operation *op) {
+  op->removeAttr(kTleExplicitSqmmaEncodingAttrName);
 }
 
 Attribute getTleExplicitValueEncoding(Value value) {

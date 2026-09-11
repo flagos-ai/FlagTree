@@ -133,6 +133,7 @@ def _compile_phase_reuse(stages):
         fn=_completion_barrier_phase_reuse_pipeline,
         signature={"desc": "tensordesc<fp16[128]>", "out": "*fp16", "STAGES": "constexpr"},
         constexprs={"STAGES": stages},
+        attrs={(0, ): [["musa.tme_tail_divisibility", 4]]},
     )
     return triton.compile(
         source,
@@ -233,6 +234,7 @@ def test_mthreads_tle_completion_copy_single_slot_compiles_to_mubin(stages, slot
             "SLOT": "constexpr",
         },
         constexprs={"STAGES": stages, "SLOT": slot},
+        attrs={(0, ): [["musa.tme_tail_divisibility", 4]]},
     )
     compiled = triton.compile(source, target=musa_target(), options={"num_warps": 4, "num_stages": 1})
     ttgir = compiled.asm["ttgir"]

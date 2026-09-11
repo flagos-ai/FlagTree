@@ -43,4 +43,5 @@ class TestLocalPeCount:
         tle.cleanup_communicator()
 
 
-TestLocalPeCount().test_tle_local_pe_kernel()
+if __name__ == "__main__":
+    TestLocalPeCount().test_tle_local_pe_kernel()

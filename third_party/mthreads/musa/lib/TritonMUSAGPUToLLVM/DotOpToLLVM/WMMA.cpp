@@ -2,6 +2,7 @@
 #include "DotOpToLLVM.h"
 #include "TritonMUSACommon/MMAContractUtils.h"
 #include "TritonMUSACommon/MMAEncodingUtils.h"
+#include "TritonMUSACommon/MusaArchTraits.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -144,32 +145,6 @@ static SmallVector<Value> unpackI32ToElems(TritonLLVMOpBuilder &b, Location loc,
   llvm::report_fatal_error("WMMA: unsupported element width for unpacking");
 }
 
-static LinearLayout buildPH1WMMATileLayout(MLIRContext *ctx, unsigned rank,
-                                           unsigned instM, unsigned instN) {
-  auto outDimNames = standardOutDimNames(ctx, rank);
-  bool hasBatch = rank == 3;
-  StringAttr dimM = outDimNames[hasBatch ? 1 : 0];
-  StringAttr dimN = outDimNames[hasBatch ? 2 : 1];
-
-  LinearLayout tileLayout(
-      {{str_attr("register"), {}},
-       {str_attr("lane"), {{0, 1}, {0, 2}, {0, 4}, {1, 0}, {2, 0}}},
-       {str_attr("warp"), {}},
-       {str_attr("block"), {}}},
-      {dimM, dimN});
-
-  tileLayout *= LinearLayout::identity1D(instN / 8, str_attr("register"), dimN);
-  tileLayout *= LinearLayout::identity1D(instM / 4, str_attr("register"), dimM);
-
-  if (hasBatch) {
-    tileLayout *=
-        LinearLayout::identity1D(1, str_attr("register"), outDimNames[0]);
-    tileLayout *= LinearLayout::identity1D(1, str_attr("lane"), outDimNames[0]);
-  }
-
-  return tileLayout;
-}
-
 } // namespace
 
 namespace mlir::triton::MUSA {
@@ -307,7 +282,7 @@ static FailureOr<WmmaTilePlan>
 buildGenericWmmaTilePlan(MLIRContext *ctx, const LinearLayout &cLinearLayout,
                          ArrayRef<int64_t> shape, unsigned instM,
                          unsigned instN, unsigned cElemsPerThread,
-                         unsigned fcSize) {
+                         unsigned fcSize, MUSAWmmaEncodingAttr mmaEnc) {
   unsigned rank = shape.size();
   if (rank == 3) {
     auto outDimNames = standardOutDimNames(ctx, rank);
@@ -341,7 +316,7 @@ buildGenericWmmaTilePlan(MLIRContext *ctx, const LinearLayout &cLinearLayout,
     return plan;
   }
 
-  auto tileLayout = buildPH1WMMATileLayout(ctx, rank, instM, instN);
+  auto tileLayout = mmaEnc.getInstrTileLayout();
   auto quot = divideLeft(cLinearLayout, tileLayout);
   if (!quot)
     return failure();
@@ -534,7 +509,8 @@ LogicalResult convertWMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
   if (instrShape.size() != 3)
     return op.emitError("MUSA WMMA expects 3D instrShape");
 
-  auto signature = triton::musa::lookupWmmaIntrinsic(aElemTy, instrShape);
+  auto signature = triton::musa::lookupWmmaIntrinsic(
+      aElemTy, instrShape, mmaEnc.getVersionMajor(), mmaEnc.getVersionMinor());
   if (!signature)
     return op.emitError("MUSA WMMA: unsupported instrShape or element type");
 
@@ -545,9 +521,17 @@ LogicalResult convertWMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
   auto layoutB = getWmmaLayoutB(op);
 
   const unsigned warpSize = gpu::lookupThreadsPerWarp(rewriter);
-  auto contiguousRank2FastPath = buildContiguousRank2WmmaFastPathState(
-      loc, adaptorA, adaptorB, aTy, dTy, *aContract, *bContract, layoutA,
-      layoutB, instM, instN, instK, warpSize, rewriter);
+  auto wmmaArch = triton::musa::getMusaArchFromWmmaVersion(
+      mmaEnc.getVersionMajor(), mmaEnc.getVersionMinor());
+  bool allowContiguousFastPath =
+      wmmaArch && triton::musa::getMusaWmmaArchTraits(*wmmaArch)
+                      .supportsContiguousRank2FastPath;
+  auto contiguousRank2FastPath =
+      allowContiguousFastPath
+          ? buildContiguousRank2WmmaFastPathState(
+                loc, adaptorA, adaptorB, aTy, dTy, *aContract, *bContract,
+                layoutA, layoutB, instM, instN, instK, warpSize, rewriter)
+          : std::nullopt;
 
   auto cLinearLayout = mmaEnc.toLinearLayout(dTy.getShape());
 
@@ -586,7 +570,7 @@ LogicalResult convertWMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
   } else {
     auto genericTilePlan =
         buildGenericWmmaTilePlan(ctx, cLinearLayout, dTy.getShape(), instM,
-                                 instN, cElemsPerThread, fc.size());
+                                 instN, cElemsPerThread, fc.size(), mmaEnc);
     if (failed(genericTilePlan))
       return op.emitError("MUSA WMMA: failed to derive repetition layout");
     tilePlan = *genericTilePlan;

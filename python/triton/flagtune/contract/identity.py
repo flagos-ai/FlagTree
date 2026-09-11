@@ -1,5 +1,3 @@
-# Copyright 2018-2020 Philippe Tillet
-# Copyright 2020-2022 OpenAI
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -134,7 +132,18 @@ def make_dtype_key(dtypes: Iterable[Any]) -> str:
 
 def normalize_device_name(value: str) -> str:
     tokens = re.findall(r"[a-z0-9]+", str(value).lower())
-    while tokens and tokens[0] in ("nvidia", "amd", "intel"):
+    while tokens and tokens[0] in (
+            "nvidia",
+            "amd",
+            "intel",
+            "metax",
+            "ppu",
+            "mtt",
+            "mthreads",
+            "musa",
+            "hygon",
+            "dcu",
+    ):
         tokens.pop(0)
     if not tokens:
         raise ModelIdentityError(f"GPU device name has no usable tokens: {value!r}")
@@ -149,6 +158,7 @@ def _normalize_vendor(value: str) -> str:
         "advanced-micro-devices": "amd",
         "nvidia-corporation": "nvidia",
         "intel-corporation": "intel",
+        "t-head": "thead",
     }
     slug = "-".join(tokens)
     return aliases.get(slug, slug)

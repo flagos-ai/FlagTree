@@ -29,6 +29,7 @@
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "llvm/ADT/DenseSet.h"
 
 namespace mlir::triton::tle {
 
@@ -62,6 +63,35 @@ static Value createBarrierSlot(OpBuilder &builder, Location loc, Value array,
   return builder.create<ttg::MemDescIndexOp>(loc, slotTy, array, idx);
 }
 
+// Trace a barrier slot passed into an isolated warp-specialization partition
+// back to its source allocation.  The partition capture is deliberately still
+// present when this pass runs; canonicalization removes unused captures only
+// after named barrier ops have been lowered.
+static BarrierAllocOp findBarrierAlloc(Value value) {
+  while (value) {
+    if (auto view = value.getDefiningOp<ttg::MemDescIndexOp>()) {
+      value = view.getSrc();
+      continue;
+    }
+    auto blockArg = dyn_cast<BlockArgument>(value);
+    if (!blockArg)
+      return value.getDefiningOp<BarrierAllocOp>();
+    auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(
+        blockArg.getOwner()->getParentOp());
+    if (!partitions)
+      return {};
+    auto warpSpecialize =
+        dyn_cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
+    if (!warpSpecialize)
+      return {};
+    OperandRange captures = warpSpecialize.getExplicitCaptures();
+    if (blockArg.getArgNumber() >= captures.size())
+      return {};
+    value = captures[blockArg.getArgNumber()];
+  }
+  return {};
+}
+
 #if !defined(__HCU__)
 static std::pair<Value, Value>
 createNamedBarrierOperands(OpBuilder &builder, Location loc, Operation *op) {
@@ -89,6 +119,27 @@ struct TritonTleLowerBarriers
       else if (auto alloc = dyn_cast<BarrierAllocOp>(op))
         allocs.push_back(alloc);
     });
+
+    // Named barriers are hardware resources identified only by an integer id;
+    // their memdesc operands are frontend SSA handles, not shared-memory
+    // storage.  Remember which source allocations are named-only before
+    // erasing the wait/arrive ops.  Otherwise a capture through
+    // ttg.warp_specialize keeps the handle artificially live and the generic
+    // allocation lowering emits an mbarrier.init into unrelated shared memory.
+    llvm::DenseSet<Operation *> namedAllocs;
+    llvm::DenseSet<Operation *> mbarrierAllocs;
+    auto recordBackend = [&](Operation *op, Value barrier) {
+      auto alloc = findBarrierAlloc(barrier);
+      if (!alloc)
+        return;
+      StringRef backend = op->getAttrOfType<StringAttr>("backend").getValue();
+      (backend == "named" ? namedAllocs : mbarrierAllocs)
+          .insert(alloc.getOperation());
+    };
+    for (BarrierWaitOp op : waits)
+      recordBackend(op.getOperation(), op.getBarrier());
+    for (BarrierArriveOp op : arrives)
+      recordBackend(op.getOperation(), op.getBarrier());
 
     for (BarrierWaitOp op : waits) {
       OpBuilder builder(op);
@@ -157,12 +208,16 @@ struct TritonTleLowerBarriers
       }
 
       Value alloc = builder.create<ttg::LocalAllocOp>(loc, arrayTy);
+      bool namedOnly = namedAllocs.contains(op.getOperation()) &&
+                       !mbarrierAllocs.contains(op.getOperation());
       int64_t numBarriers = getI32Attr(op.getOperation(), "num_barriers");
       int64_t arriveCount = getI32Attr(op.getOperation(), "arrive_count");
-      for (int64_t i = 0; i < numBarriers; ++i) {
-        Value slot = createBarrierSlot(builder, loc, alloc, i);
-        builder.create<ttng::InitBarrierOp>(loc, slot,
-                                            static_cast<uint32_t>(arriveCount));
+      if (!namedOnly) {
+        for (int64_t i = 0; i < numBarriers; ++i) {
+          Value slot = createBarrierSlot(builder, loc, alloc, i);
+          builder.create<ttng::InitBarrierOp>(
+              loc, slot, static_cast<uint32_t>(arriveCount));
+        }
       }
       op.getResult().replaceAllUsesWith(alloc);
       op.erase();

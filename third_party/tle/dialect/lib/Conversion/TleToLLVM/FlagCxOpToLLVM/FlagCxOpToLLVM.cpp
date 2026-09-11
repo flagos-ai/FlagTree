@@ -21,7 +21,8 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/DeviceIntraBarrierOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxBarrierOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxSignalOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetLocalRankOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetWorldRankOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
@@ -39,8 +40,10 @@ void populateFlagCxOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                                        benefit);
   mlir::triton::tle::populateGetWorldRankOpToLLVMPatterns(typeConverter,
                                                           patterns, benefit);
-  mlir::triton::tle::populateDeviceIntraBarrierOpToLLVMPatterns(
-      typeConverter, patterns, benefit);
+  mlir::triton::tle::populateFlagCxBarrierOpToLLVMPatterns(typeConverter,
+                                                           patterns, benefit);
+  mlir::triton::tle::populateFlagCxSignalOpToLLVMPatterns(typeConverter,
+                                                          patterns, benefit);
 #endif
 }
 

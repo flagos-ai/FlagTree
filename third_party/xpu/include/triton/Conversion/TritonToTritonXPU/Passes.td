@@ -27,7 +27,11 @@ def ConvertTritonToTritonXPU: Pass<"convert-triton-to-triton-xpu", "mlir::Module
               "bytes for local memory buffer">,
        Option<"core_num", "core_num",
               "uint32_t", /*default*/"64",
-              "xpu spec core_num">
+              "xpu spec core_num">,
+       Option<"isTLE", "is-tle",
+              "bool", /*default*/"false",
+              "enable TLE-only conversion behavior (keeps LM ptr tensors "
+              "unencoded); must stay false for the normal pipeline">
    ];
 }
 

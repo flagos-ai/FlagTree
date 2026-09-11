@@ -37,6 +37,11 @@ add_triton_library(TritonNVIDIAGPUToLLVM
     DEPENDS
     TritonNVIDIAGPUConversionPassIncGen
     NVGPUAttrDefsIncGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUCTAAttrIncGen
+    TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
 
     LINK_LIBS PUBLIC
     TritonAnalysis

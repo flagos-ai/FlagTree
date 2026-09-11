@@ -8,6 +8,7 @@ endif()
 
 add_triton_library(MUSATLEToLLVM
   LocalPointersOpToLLVM.cpp
+  MemDescViewOpToLLVM.cpp
   ${_MUSATLE_TILE_TO_LLVM_SOURCES}
 
   DEPENDS

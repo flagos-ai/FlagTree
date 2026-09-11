@@ -1273,6 +1273,8 @@ It is characterized by:
 - `instrShape` describing the (M, N, K) shape of a single MMA instruction.
 - `CGALayout` describing CTA clustering.
 
+QY2 (capability=22, versionMajor=2) operates in wave128 mode with
+canonical instruction shape M32×N32×K16.
 PH1 (capability=31) operates in wave32 mode only.
   }];
 
@@ -1286,7 +1288,9 @@ PH1 (capability=31) operates in wave32 mode only.
   );
 
   let extraClassDeclaration = extraDistributedDeclaration # [{
+    bool isQY2() const;
     bool isPH1() const;
+    LinearLayout getInstrTileLayout() const;
     SmallVector<unsigned> getRepOrderForOperand(int opIdx) const;
     SwizzledSharedEncodingAttr composeSharedLayoutForOperand(
         CGAEncodingAttr cgaLayout, int operandIdx, ArrayRef<int64_t> operandShape,

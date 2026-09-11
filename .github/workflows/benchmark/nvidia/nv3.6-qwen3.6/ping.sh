@@ -22,6 +22,7 @@
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+source ~/env.sh
 source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
-curl http://127.0.0.1:8000/v1/models
+curl "http://127.0.0.1:${VLLM_QWEN3_PORT}/v1/models"

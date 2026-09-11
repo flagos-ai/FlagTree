@@ -1,5 +1,3 @@
-# Copyright 2018-2020 Philippe Tillet
-# Copyright 2020-2022 OpenAI
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -32,10 +30,13 @@ Environment variables:
   * ``FLAGTUNE_MODEL_DIR``: optional local model root with highest precedence.
     It contains flat ``<platform_key>_v<version>.tar.gz`` packages.
   * ``FLAGTUNE_LOCAL_MANIFEST``: optional path override for the local schema-1
-    Manifest. The default is ``$FLAGTUNE_MODEL_CACHE/manifest.json`` and is
-    generated from the bundled catalog when remote resolution first needs it.
-  * ``FLAGTUNE_MODEL_BASE_URL``: optional base URL used only while generating a
-    missing default Manifest.
+    Manifest. The default cache path is ``$FLAGTUNE_MODEL_CACHE/manifest.json``.
+  * ``FLAGTUNE_MODEL_BASE_URL``: optional HTTPS base URL used for model package
+    URL mirroring.
+  * ``FLAGTUNE_MANIFEST_URL``: HTTPS URL of the Manifest tar.gz, required
+    when no usable local or cached Manifest exists.
+  * ``FLAGTUNE_MANIFEST_TTL``: optional cache lifetime in seconds (default 86400).
+  * ``FLAGTUNE_MANIFEST_REFRESH``: when set to ``1``, refresh the Manifest cache.
   * ``FLAGTUNE_MODEL_CACHE``: writable package-cache root. Defaults to
     ``~/.flagtree/flagtune_models``.
   * ``FLAGTUNE_MODEL_VERSION``: optional strict-SemVer exact version pin. An
@@ -43,8 +44,8 @@ Environment variables:
   * ``FLAGTUNE_MODEL_DOWNLOAD_LATEST``: when set to ``1``, consult the Manifest
     before the package cache and select its highest SemVer for the platform.
     Exact version pins still take precedence.
-  * ``FLAGTUNE_DISABLE_REMOTE``: when set to ``1``, prevent package downloads;
-    the user root, local Manifest, and package cache remain available.
+  * ``FLAGTUNE_DISABLE_REMOTE``: when set to ``1``, prevent Manifest and model
+    package downloads; the user root, cached Manifest, and package cache remain available.
 
 Remote artifacts and redirects must use HTTPS, and artifacts must carry a
 lowercase SHA-256 digest. The digest and complete bundle contract are validated
@@ -114,6 +115,23 @@ def _user_model_root() -> Optional[Path]:
 
 class IncompatibleModelError(RuntimeError):
     """Indicate that a resolved archive cannot serve the requested contract."""
+
+
+class ModelBundleMissingError(IncompatibleModelError):
+    """Report that a resolved platform package carries no bundle for one identity.
+
+    A platform package legitimately covers only the operators, variants, and
+    dtype combinations it was built for, so this is a statement about coverage
+    rather than about the package being wrong. It is raised only when the outer
+    package parsed and validated but has no entry for the requested identity;
+    every other loading failure keeps its own error.
+
+    Integration layers may treat this as "unadapted here" and fall back to their
+    own tuning. Build pipelines should not: they know the identity set they
+    intended to publish and should keep enforcing it at packaging time. It
+    subclasses :class:`IncompatibleModelError` so existing handlers are
+    unaffected.
+    """
 
 
 @dataclass(frozen=True)
@@ -338,7 +356,7 @@ class FlagTuneModelManager:
 
         entry = package.models.get(identity.artifact_key)
         if entry is None:
-            raise IncompatibleModelError(
+            raise ModelBundleMissingError(
                 f"FlagTune platform package {package_path} has no model for {identity.artifact_key!r}")
         member = entry["path"]
         try:
@@ -399,7 +417,6 @@ class FlagTuneModelManager:
         package = resolve_package_info(
             identity.platform_key,
             version=requested,
-            generate_default=not remote_disabled,
         )
         if package is not None:
             return self._download_package(
@@ -497,7 +514,7 @@ class FlagTuneModelManager:
         package: PlatformPackage,
         source: str,
     ) -> None:
-        """Validate every H20 child and the complete published identity set."""
+        """Validate every child and the required H20 baseline models."""
         if package.platform_key == "nvidia-h20":
             required = {
                 ModelIdentity(
@@ -510,11 +527,8 @@ class FlagTuneModelManager:
             }
             actual = set(package.models)
             missing = sorted(required - actual)
-            unexpected = sorted(actual - required)
             if missing:
                 raise IncompatibleModelError(f"FlagTune package has missing required H20 models: {missing}")
-            if unexpected:
-                raise IncompatibleModelError(f"FlagTune package has unexpected H20 models: {unexpected}")
         for artifact in sorted(package.models):
             identity_parts = artifact.split("/")
             identity = ModelIdentity(
@@ -576,9 +590,13 @@ class FlagTuneModelManager:
                 logger.info("FlagTune platform package already cached: %s", destination)
                 return destination
             if remote_disabled:
+                hint = ""
+                if _download_latest_requested():
+                    hint = (" FLAGTUNE_MODEL_DOWNLOAD_LATEST=1 restricted the cache lookup to this "
+                            "version; unset it to accept an older cached package.")
                 raise FileNotFoundError(
                     f"FlagTune package {platform_key!r} version {package.version!r} is not cached and "
-                    "FLAGTUNE_DISABLE_REMOTE=1 prevents downloading it")
+                    f"FLAGTUNE_DISABLE_REMOTE=1 prevents downloading it.{hint}")
 
             from urllib.request import Request
 

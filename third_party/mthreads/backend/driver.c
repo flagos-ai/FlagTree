@@ -186,22 +186,37 @@ static PyObject *setPrintfFifoSize(PyObject *self, PyObject *args) {
   return Py_None;
 }
 
-static bool getTensorDescriptorDataType(int elementSize,
-                                        MUtensorDescriptorDataType *type) {
-  switch (elementSize) {
-  case 1:
-    *type = MU_TENSOR_DESCRIPTOR_DATA_TYPE_UINT8;
-    return true;
-  case 2:
-    *type = MU_TENSOR_DESCRIPTOR_DATA_TYPE_UINT16;
-    return true;
-  case 4:
-    *type = MU_TENSOR_DESCRIPTOR_DATA_TYPE_UINT32;
-    return true;
+static bool getTensorDescriptorDataType(int element_type,
+                                        MUtensorDescriptorDataType *type,
+                                        int *expected_size) {
+  switch (element_type) {
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_INT8:
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_UINT8:
+    *expected_size = 1;
+    break;
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_INT16:
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_UINT16:
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_FLOAT16:
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_BFLOAT16:
+    *expected_size = 2;
+    break;
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_INT32:
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_UINT32:
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_FLOAT32:
+    *expected_size = 4;
+    break;
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_INT64:
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_UINT64:
+  case MU_TENSOR_DESCRIPTOR_DATA_TYPE_FLOAT64:
+    *expected_size = 8;
+    break;
   default:
-    PyErr_SetString(PyExc_ValueError, "element_size must be 1, 2, or 4 bytes");
+    PyErr_SetString(PyExc_ValueError,
+                    "unsupported tensor descriptor element type");
     return false;
   }
+  *type = (MUtensorDescriptorDataType)element_type;
+  return true;
 }
 
 static bool validateTMEDescriptorBlockBytes(unsigned rank,
@@ -223,10 +238,17 @@ static bool encodeTMEDescriptor(unsigned rank,
                                 unsigned long long global_address,
                                 const uint64_t *dims,
                                 const uint32_t *block_dims, int element_size,
+                                int element_type, uint64_t oob_constant_fill,
                                 MUtensorDescriptor *desc) {
   MUtensorDescriptorDataType type;
-  if (!getTensorDescriptorDataType(element_size, &type))
+  int expected_size = 0;
+  if (!getTensorDescriptorDataType(element_type, &type, &expected_size))
     return false;
+  if (element_size != expected_size) {
+    PyErr_SetString(PyExc_ValueError,
+                    "element_size does not match element_type");
+    return false;
+  }
   if (!validateTMEDescriptorBlockBytes(rank, block_dims, element_size))
     return false;
 
@@ -238,7 +260,7 @@ static bool encodeTMEDescriptor(unsigned rank,
   return gpuAssert(muTensorDescriptorEncode(
                        desc, type, /*tensorRank=*/rank, (void *)global_address,
                        dims, global_strides,
-                       MU_TENSOR_DESCRIPTOR_INTERLEAVE_NONE, /*swizzle=*/0),
+                       MU_TENSOR_DESCRIPTOR_INTERLEAVE_NONE, oob_constant_fill),
                    __FILE__, __LINE__);
 }
 
@@ -292,8 +314,10 @@ static PyObject *fillTMEDescriptor(PyObject *self, PyObject *args) {
   PyObject *shape = NULL;
   PyObject *block_shape = NULL;
   int element_size = 0;
-  if (!PyArg_ParseTuple(args, "KOOi", &global_address, &shape, &block_shape,
-                        &element_size))
+  int element_type = 0;
+  unsigned long long oob_constant_fill = 0;
+  if (!PyArg_ParseTuple(args, "KOOiiK", &global_address, &shape, &block_shape,
+                        &element_size, &element_type, &oob_constant_fill))
     return NULL;
 
   PyObject *shape_fast = PySequence_Fast(shape, "shape must be a sequence");
@@ -358,7 +382,8 @@ static PyObject *fillTMEDescriptor(PyObject *self, PyObject *args) {
     return NULL;
 
   if (!encodeTMEDescriptor((unsigned)rank, global_address, dims, block_dims,
-                           element_size, &desc->desc)) {
+                           element_size, element_type, oob_constant_fill,
+                           &desc->desc)) {
     Py_DECREF(desc);
     return NULL;
   }

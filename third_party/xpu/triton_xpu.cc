@@ -1,4 +1,5 @@
 #include <cmath>
+#include <map>
 #include <optional>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -49,12 +50,15 @@ std::string translateLLVMIRToASM(llvm::Module &module,
                                  bool enable_fp_fusion, bool isObject);
 
 void init_triton_xpu_passes_conversion(py::module &&m) {
-  m.def("add_convert_triton_to_tritonxpu_pass",
-        [](mlir::PassManager &self, uint32_t xpu_arch, uint32_t buffer_size,
-           uint32_t core_num) {
-          self.addPass(mlir::triton::createConvertTritonToTritonXPUPass(
-              xpu_arch, buffer_size, core_num));
-        });
+  m.def(
+      "add_convert_triton_to_tritonxpu_pass",
+      [](mlir::PassManager &self, uint32_t xpu_arch, uint32_t buffer_size,
+         uint32_t core_num, bool isTLE) {
+        self.addPass(mlir::triton::createConvertTritonToTritonXPUPass(
+            xpu_arch, buffer_size, core_num, isTLE));
+      },
+      py::arg("self"), py::arg("xpu_arch"), py::arg("buffer_size"),
+      py::arg("core_num"), py::arg("isTLE") = false);
 
   m.def("add_convert_tritonxpu_to_llvm_pass",
         [](mlir::PassManager &self, uint32_t xpu_arch, uint32_t buffer_size,
@@ -91,6 +95,17 @@ void init_triton_xpu_passes_transform(py::module &&m) {
               {buffer_size, core_num, groups_per_cluster, isUseMaskZero}));
         });
 
+  m.def("add_tritonxpu_tle_legalize_pass", [](mlir::PassManager &self) {
+    self.addPass(mlir::triton::xpu::createTritonXPUTLELegalize());
+  });
+
+  m.def("add_tritonxpu_tle_core_tiling_pass",
+        [](mlir::PassManager &self, bool dump_flag, uint32_t buffer_size,
+           uint32_t core_num) {
+          self.addPass(mlir::triton::xpu::createTritonXPUTLECoreTiling(
+              {dump_flag, buffer_size, core_num}));
+        });
+
   m.def("add_tritonxpu_mask_pass",
         [](mlir::PassManager &self, bool oneCoreActOnly, bool isUseMaskZero) {
           self.addPass(mlir::triton::xpu::createTritonXPUMask(
@@ -112,15 +127,23 @@ void init_triton_xpu_passes_transform(py::module &&m) {
     self.addPass(mlir::triton::xpu::createTritonXPULoopGrid());
   });
 
+  m.def(
+      "add_tritonxpu_loop_invariant_staging_pass", [](mlir::PassManager &self) {
+        self.addPass(mlir::triton::xpu::createTritonXPULoopInvariantStaging());
+      });
+
   m.def("add_tritonxpu_print_pass", [](mlir::PassManager &self) {
     self.addPass(mlir::triton::xpu::createTritonXPUPrint());
   });
 
   m.def("add_tritonxpu_unroll_control_pass",
         [](mlir::PassManager &self, uint32_t buffer_size, uint32_t core_num,
-           bool isUseMaskZero, uint32_t unroll_num) {
+           bool isUseMaskZero, uint32_t unroll_num, uint32_t vrf_budget,
+           bool budget_tiling, int32_t pin_unroll_num,
+           bool open_decision_entry) {
           self.addPass(mlir::triton::xpu::createTritonXPUUnrollControl(
-              {buffer_size, core_num, isUseMaskZero, unroll_num}));
+              {buffer_size, core_num, isUseMaskZero, unroll_num, vrf_budget,
+               budget_tiling, pin_unroll_num, open_decision_entry}));
         });
 
   m.def("add_tritonxpu_other_sim_pass",
@@ -130,6 +153,12 @@ void init_triton_xpu_passes_transform(py::module &&m) {
         });
 
   // Optimization Pass
+  m.def("add_tritonxpu_scalar_analysis_pass",
+        [](mlir::PassManager &self, bool aggressive) {
+          self.addPass(
+              mlir::triton::xpu::createTritonXPUScalarAnalysis({aggressive}));
+        });
+
   m.def("add_tritonxpu_offset_state_pass",
         [](mlir::PassManager &self, bool dump_flag, uint32_t buffer_size,
            bool isUseMaskZero) {
@@ -146,16 +175,49 @@ void init_triton_xpu_passes_transform(py::module &&m) {
                triton_auto_core_tiling}));
         });
 
-  m.def("add_tritonxpu_vectorize_pass",
+  m.def("add_tritonxpu_normalize_pass",
         [](mlir::PassManager &self, bool dump_flag, bool compare_fusion) {
-          self.addPass(mlir::triton::xpu::createTritonXPUVectorize(
+          self.addPass(mlir::triton::xpu::createTritonXPUNormalize(
               {dump_flag, compare_fusion}));
         });
+
+  m.def("add_tritonxpu_vectorize_pass",
+        [](mlir::PassManager &self, bool dump_flag, bool compare_fusion,
+           bool per_op_decision) {
+          self.addPass(mlir::triton::xpu::createTritonXPUVectorize(
+              {dump_flag, compare_fusion, per_op_decision}));
+        });
+
+  m.def("add_tritonxpu_tile_analysis_pass", [](mlir::PassManager &self,
+                                               uint32_t vrf_budget) {
+    self.addPass(mlir::triton::xpu::createTritonXPUTileAnalysis({vrf_budget}));
+  });
+
+  m.def("add_tritonxpu_vectorizability_analysis_pass",
+        [](mlir::PassManager &self, bool reduce_vec, bool pre_tiling) {
+          self.addPass(
+              mlir::triton::xpu::createTritonXPUVectorizabilityAnalysis(
+                  {reduce_vec, pre_tiling}));
+        });
+
+  // The decision half of M2/M3, taken ahead of CoreTiling. Writes only the
+  // `triton_xpu.tile_decision` carrier, and only under TRITONXPU_TILE_DECIDE=1,
+  // so the same byte-equivalence argument holds for it.
+  m.def("add_tritonxpu_tile_decide_pass", [](mlir::PassManager &self,
+                                             bool reduce_vec) {
+    self.addPass(mlir::triton::xpu::createTritonXPUTileDecide({reduce_vec}));
+  });
 
   m.def("add_tritonxpu_memory_async_pass", [](mlir::PassManager &self,
                                               bool dump_flag) {
     self.addPass(mlir::triton::xpu::createTritonXPUMemoryAsync({dump_flag}));
   });
+
+  m.def("add_tritonxpu_async_load_schedule_pass",
+        [](mlir::PassManager &self, bool dump_flag) {
+          self.addPass(
+              mlir::triton::xpu::createTritonXPUAsyncLoadSchedule({dump_flag}));
+        });
 
   m.def("add_tritonxpu_interleave_pass", [](mlir::PassManager &self) {
     self.addPass(mlir::triton::xpu::createTritonXPUInterleave());
@@ -185,6 +247,24 @@ void init_triton_xpu_passes_transform(py::module &&m) {
   m.def("add_tritonxpu_cf_to_scf_pass", [](mlir::PassManager &self) {
     self.addPass(mlir::triton::xpu::createTritonXPUCFToSCF());
   });
+
+  m.def("add_tritonxpu_legalize_extern_ew_pass", [](mlir::PassManager &self) {
+    self.addPass(mlir::triton::xpu::createTritonXPULegalizeExternEW());
+  });
+
+  // `sources` maps a deferred tle.raw source id to the LLVM IR the backend
+  // compiled for the architecture it is building for.
+  m.def(
+      "add_tritonxpu_materialize_deferred_raw_pass",
+      [](mlir::PassManager &self,
+         const std::map<std::string, std::string> &sources) {
+        llvm::StringMap<std::string> compiled;
+        for (auto &[sourceId, llvmIr] : sources)
+          compiled.insert_or_assign(sourceId, llvmIr);
+        self.addPass(
+            mlir::triton::xpu::createTritonXPUMaterializeDeferredRawWithSources(
+                compiled));
+      });
 }
 
 void init_triton_sdnn_passes_conversion(py::module &&m);
@@ -390,6 +470,19 @@ void init_triton_xpu(py::module &&m) {
 
   // check if it is a sdnn kernel
   defineIsSDNNKernel(m); // is_sdnn_kernel
+
+  m.def("is_tle_kernel", [](mlir::ModuleOp &mod) {
+    bool hasTLEOp = false;
+    mod.walk([&](mlir::Operation *op) {
+      auto name = op->getName().getStringRef();
+      if (name == "ttg.local_alloc" || name == "triton_xpu.tle_copy_g2l" ||
+          name == "triton_xpu.tle_copy_l2g" ||
+          name == "triton_xpu.tle_local_ptr") {
+        hasTLEOp = true;
+      }
+    });
+    return hasTLEOp;
+  });
 
   m.def("get_tensor_args", [](mlir::ModuleOp &mod,
                               std::vector<int64_t> &tensorArgs) {

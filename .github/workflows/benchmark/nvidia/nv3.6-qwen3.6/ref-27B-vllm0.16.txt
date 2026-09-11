@@ -1,0 +1,89 @@
+H100 * 2
+harbor.baai.ac.cn/flagrelease-public/flagrelease-nvidia-release-model_qwen3.6-35b-a3b-nomtp-tree_0.4.0-gems_4.2.1rc0-vllm_0.16.0-cx_none-python_3.12.3-torch_cuda-2.10.0-pcp_cuda13.1-gpu_nvidia003-arc_amd64-driver_570.133.20:202604152143
+vllm==0.16.0rc2.dev221+ga5ccc85c8
+torch==2.10.0+cu128
+cuda==13.1
+
+[BaseLine] USE_FLAGGEMS=0, triton==3.6.0
+# 服务冷启动时间: 2分23秒, 服务热启动时间: 2分4秒
+# 输入长度: 32K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 319.46
+  Total token throughput (tok/s): 10542.09
+  Median TTFT (ms): 15798.41
+  Median TPOT (ms): 34.20
+  Median ITL (ms): 22.15
+# 输入长度: 16K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 492.25
+  Total token throughput (tok/s): 8368.25
+  Median TTFT (ms): 7761.14
+  Median TPOT (ms): 24.72
+  Median ITL (ms): 20.41
+# 输入长度: 4K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 734.11
+  Total token throughput (tok/s): 3670.52
+  Median TTFT (ms): 2117.86
+  Median TPOT (ms): 19.74
+  Median ITL (ms): 19.32
+
+[2026/08/11] flag_gems==5.3.0rc2 (2026/05), triton==3.6.0
+# 服务冷启动时间: 9分13秒, 服务热启动时间: 2分2秒
+# 输入长度: 32K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 264.37
+  Total token throughput (tok/s): 8724.08
+  Median TTFT (ms): 19197.68
+  Median TPOT (ms): 41.21
+  Median ITL (ms): 26.92
+# 输入长度: 16K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 402.67
+  Total token throughput (tok/s): 6845.39
+  Median TTFT (ms): 9507.34
+  Median TPOT (ms): 30.22
+  Median ITL (ms): 22.38
+# 输入长度: 4K, 输出长度: 1K, 并发数: 64
+  Output token throughput (tok/s): 610.43
+  Total token throughput (tok/s): 3052.17
+  Median TTFT (ms): 2613.72
+  Median TPOT (ms): 23.68
+  Median ITL (ms): 20.30
+
+[2026/08/11] flag_gems==5.3.0rc2 (2026/05), flagtree===0.6.0 (2026/06/26)
+# 服务冷启动时间: 8分20秒, 服务热启动时间: 2分2秒
+# 输入长度: 32K, 输出长度: 1K, 并发数: 16
+  Output token throughput (tok/s): 262.29
+  Total token throughput (tok/s): 8655.47
+  Median TTFT (ms): 20106.92
+  Median TPOT (ms): 40.85
+  Median ITL (ms): 24.00
+# 输入长度: 16K, 输出长度: 1K, 并发数: 16
+  Output token throughput (tok/s): 398.28
+  Total token throughput (tok/s): 6770.73
+  Median TTFT (ms): 9918.11
+  Median TPOT (ms): 30.24
+  Median ITL (ms): 22.97
+# 输入长度: 4K, 输出长度: 1K, 并发数: 16
+  Output token throughput (tok/s): 600.23
+  Total token throughput (tok/s): 3001.12
+  Median TTFT (ms): 2707.72
+  Median TPOT (ms): 24.01
+  Median ITL (ms): 25.02
+
+[2026/08/11] flag_gems==5.3.0rc2 (2026/05), flagtree===0.6.1 (2026/08/07)
+# 服务冷启动时间: 8分30秒, 服务热启动时间: 2分2秒
+# 输入长度: 32K, 输出长度: 1K, 并发数: 16
+  Output token throughput (tok/s): 261.04
+  Total token throughput (tok/s): 8614.48
+  Median TTFT (ms): 18658.96
+  Median TPOT (ms): 42.50
+  Median ITL (ms): 26.28
+# 输入长度: 16K, 输出长度: 1K, 并发数: 16
+  Output token throughput (tok/s): 418.64
+  Total token throughput (tok/s): 7116.86
+  Median TTFT (ms): 9186.20
+  Median TPOT (ms): 28.97
+  Median ITL (ms): 22.67
+# 输入长度: 4K, 输出长度: 1K, 并发数: 16
+  Output token throughput (tok/s): 624.05
+  Total token throughput (tok/s): 3120.26
+  Median TTFT (ms): 2507.47
+  Median TPOT (ms): 23.17
+  Median ITL (ms): 21.83

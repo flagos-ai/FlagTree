@@ -30,6 +30,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "tle/dialect/include/IR/Dialect.h.inc"
+#include "tle/dialect/include/IR/OpsEnums.h.inc"
 
 #define GET_ATTRDEF_CLASSES
 #include "tle/dialect/include/IR/TleAttrDefs.h.inc"

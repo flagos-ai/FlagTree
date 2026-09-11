@@ -1,0 +1,37 @@
+#===------------------------------------------------------------------------===#
+#
+# Copyright (c) Triton Project Contributors.
+#
+#===------------------------------------------------------------------------===#
+
+add_triton_library(TritonToCoreDialects
+  TritonToCoreDialectsPass.cpp
+
+  DEPENDS
+  TritonToCoreDialectsConversionPassIncGen
+
+  LINK_LIBS PUBLIC
+  TritonTilingExtIR
+  MLIRArithDialect
+  MLIRDialectUtils
+  MLIRIR
+  MLIRMathDialect
+  MLIRPass
+  MLIRTensorDialect
+  MLIRTransforms
+  MLIRSupport
+  MLIRMathExtDialect
+  TritonIR
+  TritonTransforms
+  ZTCAnalysis
+
+  TritonArithToLinalg
+  StructuredToMemref
+  UnstructuredToMemref
+  TritonToStructured
+  TritonToUnstructured
+  TLEToMagicKernel
+  ConvertTritonPtr
+  TsmcReconcilePtrCasts
+  TritonPtrToMemref
+)

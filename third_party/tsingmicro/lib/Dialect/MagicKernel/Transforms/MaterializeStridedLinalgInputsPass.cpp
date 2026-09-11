@@ -1,0 +1,230 @@
+
+#include "magic-kernel/Dialect/IR/MagicKernelDialect.h"
+#include "magic-kernel/Transforms/Passes.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Visitors.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Pass/Pass.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Debug.h"
+#include <memory>
+
+#define DEBUG_TYPE "materialize-strided-linalg-inputs"
+
+using namespace mlir;
+
+namespace mlir {
+namespace triton {
+#define GEN_PASS_DEF_MATERIALIZESTRIDEDLINALGINPUTS
+#include "magic-kernel/Transforms/Passes.h.inc"
+} // namespace triton
+} // namespace mlir
+
+namespace {
+
+static bool hasNonContiguousStrides(MemRefType type) {
+  SmallVector<int64_t> strides;
+  int64_t offset = 0;
+  if (failed(type.getStridesAndOffset(strides, offset)))
+    return true;
+
+  int64_t expected = 1;
+  ArrayRef<int64_t> shape = type.getShape();
+
+  for (int64_t i = type.getRank() - 1; i >= 0; --i) {
+    if (ShapedType::isDynamic(shape[i]) || ShapedType::isDynamic(strides[i]))
+      return true;
+
+    if (shape[i] == 1)
+      continue;
+
+    if (strides[i] != expected)
+      return true;
+
+    expected *= shape[i];
+  }
+
+  return false;
+}
+
+static bool isComputeGeneric(linalg::GenericOp op) {
+  Block &body = op.getRegion().front();
+
+  Operation *computeOp = nullptr;
+  for (Operation &inner : body.without_terminator()) {
+    if (computeOp)
+      return false; // more than one non-yield op
+
+    computeOp = &inner;
+  }
+
+  if (!computeOp)
+    return false;
+
+  return computeOp->getDialect()->getNamespace() ==
+         arith::ArithDialect::getDialectNamespace();
+}
+
+struct MaterializeStridedLinalgInputsPass
+    : public triton::impl::MaterializeStridedLinalgInputsBase<
+          MaterializeStridedLinalgInputsPass> {
+  using MaterializeStridedLinalgInputsBase<
+      MaterializeStridedLinalgInputsPass>::MaterializeStridedLinalgInputsBase;
+
+  void process(func::FuncOp &func) {
+    IRRewriter rewriter(func.getContext());
+
+    SmallVector<linalg::GenericOp> generics;
+    func.walk([&](linalg::GenericOp op) { generics.push_back(op); });
+
+    for (linalg::GenericOp generic : generics) {
+      if (!isComputeGeneric(generic))
+        continue;
+
+      rewriter.setInsertionPoint(generic);
+      Location loc = generic.getLoc();
+
+      for (OpOperand *inputOperand : generic.getDpsInputOperands()) {
+        Value input = inputOperand->get();
+        auto subview = input.getDefiningOp<memref::SubViewOp>();
+        if (!subview)
+          continue;
+
+        auto subviewType = dyn_cast<MemRefType>(subview.getType());
+        if (!subviewType || !hasNonContiguousStrides(subviewType))
+          continue;
+
+        SmallVector<Value> dynamicSizes;
+        for (auto [idx, dim] : llvm::enumerate(subviewType.getShape())) {
+          if (ShapedType::isDynamic(dim)) {
+            dynamicSizes.push_back(
+                rewriter.create<memref::DimOp>(loc, subview, idx));
+          }
+        }
+
+        auto allocType = MemRefType::get(
+            subviewType.getShape(), subviewType.getElementType(),
+            MemRefLayoutAttrInterface{}, subviewType.getMemorySpace());
+
+        Value alloc =
+            rewriter.create<memref::AllocOp>(loc, allocType, dynamicSizes);
+
+        rewriter.create<memref::CopyOp>(loc, subview, alloc);
+
+        generic->setOperand(inputOperand->getOperandNumber(), alloc);
+      }
+    }
+
+    SmallVector<Operation *> vsOps;
+    func.walk([&](Operation *op) {
+      if (isa<mk::AddVS, mk::SubVS, mk::MulVS>(op))
+        vsOps.push_back(op);
+    });
+
+    for (Operation *op : vsOps) {
+      auto vsOp = dyn_cast<DestinationStyleOpInterface>(op);
+      if (!vsOp)
+        continue;
+
+      bool allInitsEqualInput = true;
+      Value input = vsOp.getDpsInputOperands().front()->get();
+      for (OpOperand &init : vsOp.getDpsInitsMutable()) {
+        if (init.get() != input) {
+          allInitsEqualInput = false;
+          break;
+        }
+      }
+
+      auto isStridedSubview = [](Value v, MemRefType *outType = nullptr) {
+        auto subview = v.getDefiningOp<memref::SubViewOp>();
+        if (!subview)
+          return false;
+        auto subviewType = dyn_cast<MemRefType>(subview.getType());
+        if (!subviewType || !hasNonContiguousStrides(subviewType))
+          return false;
+        if (outType)
+          *outType = subviewType;
+        return true;
+      };
+      auto createContiguousAlloc = [&](MemRefType type, Value operand,
+                                       Location loc) {
+        SmallVector<Value> dynamicSizes;
+        for (auto [idx, dim] : llvm::enumerate(type.getShape())) {
+          if (ShapedType::isDynamic(dim)) {
+            dynamicSizes.push_back(
+                rewriter.create<memref::DimOp>(loc, operand, idx));
+          }
+        }
+        auto allocType =
+            MemRefType::get(type.getShape(), type.getElementType(),
+                            MemRefLayoutAttrInterface{}, type.getMemorySpace());
+        return rewriter.create<memref::AllocOp>(loc, allocType, dynamicSizes);
+      };
+
+      if (allInitsEqualInput) {
+        MemRefType subviewType;
+        if (!isStridedSubview(input, &subviewType))
+          continue;
+
+        rewriter.setInsertionPoint(op);
+        Location loc = op->getLoc();
+
+        Value alloc = createContiguousAlloc(subviewType, input, loc);
+        rewriter.create<memref::CopyOp>(loc, input, alloc);
+
+        rewriter.modifyOpInPlace(op, [&]() {
+          op->setOperand(0, alloc);
+          for (OpOperand &init : vsOp.getDpsInitsMutable()) {
+            if (init.get() == input)
+              init.set(alloc);
+          }
+        });
+
+        rewriter.setInsertionPointAfter(op);
+        rewriter.create<memref::CopyOp>(loc, alloc, input);
+        continue;
+      }
+
+      rewriter.setInsertionPoint(op);
+      Location loc = op->getLoc();
+
+      MemRefType inputSubviewType;
+      if (isStridedSubview(input, &inputSubviewType)) {
+        Value alloc = createContiguousAlloc(inputSubviewType, input, loc);
+        rewriter.create<memref::CopyOp>(loc, input, alloc);
+        rewriter.modifyOpInPlace(op, [&]() { op->setOperand(0, alloc); });
+      }
+
+      for (OpOperand &init : vsOp.getDpsInitsMutable()) {
+        MemRefType initSubviewType;
+        if (!isStridedSubview(init.get(), &initSubviewType))
+          continue;
+
+        rewriter.setInsertionPoint(op);
+        Value alloc = createContiguousAlloc(initSubviewType, init.get(), loc);
+        rewriter.create<memref::CopyOp>(loc, init.get(), alloc);
+        rewriter.modifyOpInPlace(op, [&]() { init.set(alloc); });
+
+        rewriter.setInsertionPointAfter(op);
+        rewriter.create<memref::CopyOp>(loc, alloc, init.get());
+      }
+    }
+  }
+
+  void runOnOperation() override {
+    ModuleOp mod = getOperation();
+    mod->walk<WalkOrder::PreOrder>([&](func::FuncOp func) { process(func); });
+  }
+};
+} // namespace
+
+std::unique_ptr<OperationPass<ModuleOp>>
+triton::createMaterializeStridedLinalgInputsPass() {
+  return std::make_unique<MaterializeStridedLinalgInputsPass>();
+}

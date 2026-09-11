@@ -774,8 +774,8 @@ AMDWmmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   return combineCtaCgaWithShape(wmmaLayout, getCGALayout(), shape);
 }
 
-static LinearLayout musaPH1WMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
-                                                     ArrayRef<int64_t> shape) {
+static LinearLayout musaPHWMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
+                                                    ArrayRef<int64_t> shape) {
   auto mma = cast<MUSAWmmaEncodingAttr>(dot.getParent());
   unsigned rank = shape.size();
   bool hasBatch = rank == 3;
@@ -861,16 +861,14 @@ static LinearLayout musaPH1WMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
   return combineCtaCgaWithShape(ctaLayout, mma.getCGALayout(), shape);
 }
 
-static LinearLayout
-musaPH1SQMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
-                                  ArrayRef<int64_t> shape) {
-  auto mma = cast<MUSASqmmaEncodingAttr>(dot.getParent());
+static LinearLayout musaQY2WMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
+                                                     ArrayRef<int64_t> shape) {
+  auto mma = cast<MUSAWmmaEncodingAttr>(dot.getParent());
+  bool isA = dot.getOpIdx() == 0;
   unsigned rank = shape.size();
-  bool hasBatch = rank == 3;
-  assert(rank == 2 || rank == 3);
-
   MLIRContext *ctx = mma.getContext();
   auto outDimNames = standardOutDimNames(ctx, rank);
+  bool hasBatch = rank == 3;
 
   int mIndex = hasBatch ? 1 : 0;
   int nIndex = hasBatch ? 2 : 1;
@@ -881,66 +879,116 @@ musaPH1SQMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
   unsigned instN = mma.getInstrShape()[1];
   unsigned instK = mma.getInstrShape()[2];
   auto warpsPerCTA = mma.getWarpsPerCTA();
-  unsigned totalWarps = std::max(1u, product(warpsPerCTA));
+  unsigned tileM = warpsPerCTA[0];
+  unsigned tileN = warpsPerCTA[1];
 
   StringAttr dimM = outDimNames[mIndex];
+  StringAttr dimA_K = outDimNames[kIndexA];
+  StringAttr dimB_K = outDimNames[kIndexB];
   StringAttr dimN = outDimNames[nIndex];
-  StringAttr dimK = outDimNames[hasBatch ? 2 : 1];
 
-  if (dot.getOpIdx() == 0) {
-    // A operand: MxK
-    dimK = outDimNames[kIndexA];
+  if (isA) {
     LinearLayout ctaLayout(
         {{S("register"), {}},
-         {S("lane"), {{0, 1}, {0, 2}, {1, 0}, {2, 0}, {4, 0}}},
+         {S("lane"), {{1, 0}, {2, 0}, {0, 1}, {0, 2}, {0, 4}}},
          {S("warp"), {}},
          {S("block"), {}}},
-        {dimM, dimK});
-
-    ctaLayout *= LinearLayout::identity1D(instK / 4, S("register"), dimK);
-    ctaLayout *= LinearLayout::identity1D(instM / 8, S("register"), dimM);
+        {dimM, dimA_K});
+    ctaLayout *= LinearLayout::identity1D(2, S("lane"), dimM);
+    ctaLayout *= LinearLayout::identity1D(2, S("lane"), dimM);
+    ctaLayout *= LinearLayout::identity1D(2, S("register"), dimA_K);
+    ctaLayout *= LinearLayout::identity1D(2, S("register"), dimM);
     ctaLayout *= LinearLayout::identity1D(
-        std::max<int64_t>(1, shape[kIndexA] / instK), S("register"), dimK);
-    ctaLayout *= LinearLayout::identity1D(totalWarps, S("warp"), dimM);
+        std::max<int64_t>(1, shape[kIndexA] / static_cast<int64_t>(instK)),
+        S("register"), dimA_K);
+    ctaLayout *= LinearLayout::zeros1D(tileN, S("warp"), dimM);
+    ctaLayout *= LinearLayout::identity1D(tileM, S("warp"), dimM);
     ctaLayout *= LinearLayout::identity1D(
-        std::max<int64_t>(1, shape[mIndex] / instM / totalWarps), S("register"),
-        dimM);
-
+        std::max<int64_t>(1, shape[mIndex] / static_cast<int64_t>(instM) /
+                                 static_cast<int64_t>(tileM)),
+        S("register"), dimM);
     if (hasBatch) {
       ctaLayout *= LinearLayout::identity1D(1, S("register"), outDimNames[0]);
       ctaLayout *= LinearLayout::identity1D(1, S("lane"), outDimNames[0]);
     }
-
     return combineCtaCgaWithShape(ctaLayout, mma.getCGALayout(), shape);
   }
 
-  // B operand: KxN
-  dimK = outDimNames[kIndexB];
   LinearLayout ctaLayout({{S("register"), {}},
-                          {S("lane"), {{1, 0}, {2, 0}, {0, 1}, {0, 2}, {0, 4}}},
+                          {S("lane"), {{1, 0}, {2, 0}, {4, 0}, {0, 1}, {0, 2}}},
                           {S("warp"), {}},
                           {S("block"), {}}},
-                         {dimK, dimN});
-
-  ctaLayout *= LinearLayout::identity1D(instK / 4, S("register"), dimK);
-  ctaLayout *= LinearLayout::identity1D(instN / 8, S("register"), dimN);
-  ctaLayout *= LinearLayout::identity1D(totalWarps, S("warp"), dimN);
+                         {dimB_K, dimN});
+  ctaLayout *= LinearLayout::identity1D(4, S("lane"), dimN);
+  ctaLayout *= LinearLayout::identity1D(2, S("register"), dimB_K);
+  ctaLayout *= LinearLayout::identity1D(2, S("register"), dimN);
   ctaLayout *= LinearLayout::identity1D(
-      std::max<int64_t>(1, shape[nIndex] / instN / totalWarps), S("register"),
-      dimN);
+      std::max<int64_t>(1, shape[kIndexB] / static_cast<int64_t>(instK)),
+      S("register"), dimB_K);
+  ctaLayout *= LinearLayout::identity1D(tileN, S("warp"), dimN);
+  ctaLayout *= LinearLayout::zeros1D(tileM, S("warp"), dimN);
   ctaLayout *= LinearLayout::identity1D(
-      std::max<int64_t>(1, shape[kIndexB] / instK), S("register"), dimK);
-
+      std::max<int64_t>(1, shape[nIndex] / static_cast<int64_t>(instN) /
+                               static_cast<int64_t>(tileN)),
+      S("register"), dimN);
   if (hasBatch) {
     ctaLayout *= LinearLayout::identity1D(1, S("register"), outDimNames[0]);
     ctaLayout *= LinearLayout::identity1D(1, S("lane"), outDimNames[0]);
   }
-
   return combineCtaCgaWithShape(ctaLayout, mma.getCGALayout(), shape);
 }
 
-static LinearLayout musaPH1WMMAToCLinearLayout(ArrayRef<int64_t> shape,
-                                               MUSAWmmaEncodingAttr mma) {
+static LinearLayout musaWMMAToOperandLinearLayout(DotOperandEncodingAttr dot,
+                                                  ArrayRef<int64_t> shape) {
+  auto mma = cast<MUSAWmmaEncodingAttr>(dot.getParent());
+  if (mma.isQY2())
+    return musaQY2WMMAToOperandLinearLayout(dot, shape);
+  assert(mma.isPH1() && "unsupported MUSA WMMA encoding version");
+  return musaPHWMMAToOperandLinearLayout(dot, shape);
+}
+
+LinearLayout MUSAWmmaEncodingAttr::getInstrTileLayout() const {
+  unsigned rank = getRank();
+  bool hasBatch = rank == 3;
+  MLIRContext *ctx = getContext();
+  auto outDimNames = standardOutDimNames(ctx, rank);
+  StringAttr dimM = outDimNames[hasBatch ? 1 : 0];
+  StringAttr dimN = outDimNames[hasBatch ? 2 : 1];
+  unsigned instM = getInstrShape()[0];
+  unsigned instN = getInstrShape()[1];
+
+  std::vector<std::vector<int32_t>> laneBases;
+  if (isQY2()) {
+    laneBases = {{1, 0}, {2, 0}, {0, 1}, {0, 2}, {0, 4}};
+  } else {
+    assert(isPH1() && "unsupported MUSA WMMA encoding version");
+    laneBases = {{0, 1}, {0, 2}, {0, 4}, {1, 0}, {2, 0}};
+  }
+  LinearLayout tileLayout({{S("register"), {}},
+                           {S("lane"), laneBases},
+                           {S("warp"), {}},
+                           {S("block"), {}}},
+                          {dimM, dimN});
+
+  if (isQY2()) {
+    tileLayout *= LinearLayout::identity1D(2, S("lane"), dimN);
+    tileLayout *= LinearLayout::identity1D(2, S("lane"), dimM);
+    tileLayout *= LinearLayout::identity1D(2, S("register"), dimN);
+    tileLayout *= LinearLayout::identity1D(4, S("register"), dimM);
+  } else {
+    tileLayout *= LinearLayout::identity1D(instN / 8, S("register"), dimN);
+    tileLayout *= LinearLayout::identity1D(instM / 4, S("register"), dimM);
+  }
+
+  if (hasBatch) {
+    tileLayout *= LinearLayout::identity1D(1, S("register"), outDimNames[0]);
+    tileLayout *= LinearLayout::identity1D(1, S("lane"), outDimNames[0]);
+  }
+  return tileLayout;
+}
+
+static LinearLayout musaWMMAToCLinearLayout(ArrayRef<int64_t> shape,
+                                            MUSAWmmaEncodingAttr mma) {
   unsigned rank = shape.size();
   bool hasBatch = rank == 3;
   MLIRContext *ctx = mma.getContext();
@@ -956,35 +1004,21 @@ static LinearLayout musaPH1WMMAToCLinearLayout(ArrayRef<int64_t> shape,
   unsigned tileM = warpsPerCTA[0];
   unsigned tileN = warpsPerCTA[1];
 
-  LinearLayout ctaLayout({{S("register"), {}},
-                          {S("lane"), {{0, 1}, {0, 2}, {0, 4}, {1, 0}, {2, 0}}},
-                          {S("warp"), {}},
-                          {S("block"), {}}},
-                         {dimM, dimN});
-
-  ctaLayout *= LinearLayout::identity1D(instN / 8, S("register"), dimN);
-  ctaLayout *= LinearLayout::identity1D(instM / 4, S("register"), dimM);
+  LinearLayout ctaLayout = mma.getInstrTileLayout();
   ctaLayout *= LinearLayout::identity1D(tileN, S("warp"), dimN);
   ctaLayout *= LinearLayout::identity1D(
-      std::max<int64_t>(1, blockN / static_cast<int64_t>(instN) /
-                               static_cast<int64_t>(tileN)),
+      std::max<int64_t>(1, blockN / static_cast<int64_t>(instN) / tileN),
       S("register"), dimN);
   ctaLayout *= LinearLayout::identity1D(tileM, S("warp"), dimM);
   ctaLayout *= LinearLayout::identity1D(
-      std::max<int64_t>(1, blockM / static_cast<int64_t>(instM) /
-                               static_cast<int64_t>(tileM)),
+      std::max<int64_t>(1, blockM / static_cast<int64_t>(instM) / tileM),
       S("register"), dimM);
-
-  if (hasBatch) {
-    ctaLayout *= LinearLayout::identity1D(1, S("register"), outDimNames[0]);
-    ctaLayout *= LinearLayout::identity1D(1, S("lane"), outDimNames[0]);
-  }
 
   return combineCtaCgaWithShape(ctaLayout, mma.getCGALayout(), shape);
 }
 
-static LinearLayout musaPH1SQMMAToCLinearLayout(ArrayRef<int64_t> shape,
-                                                MUSASqmmaEncodingAttr mma) {
+static LinearLayout musaSQMMAToCLinearLayout(ArrayRef<int64_t> shape,
+                                             MUSASqmmaEncodingAttr mma) {
   unsigned rank = shape.size();
   bool hasBatch = rank == 3;
   assert(rank == 2 || rank == 3);
@@ -1001,10 +1035,11 @@ static LinearLayout musaPH1SQMMAToCLinearLayout(ArrayRef<int64_t> shape,
   unsigned staticDim0Size = 0;
   unsigned staticDim1Size = 0;
 
-  LinearLayout ctaLayout(
-      {{S("register"), {}},
-       {S("lane"), {{1, 0}, {2, 0}, {4, 0}, {0, 1}, {0, 2}}}},
-      {dimN, dimM});
+  std::vector<std::vector<int32_t>> laneBases = {
+      {1, 0}, {2, 0}, {4, 0}, {0, 1}, {0, 2}};
+
+  LinearLayout ctaLayout({{S("register"), {}}, {S("lane"), laneBases}},
+                         {dimN, dimM});
 
   staticDim0Size = ctaLayout.getOutDimSize(dimM);
   staticDim1Size = ctaLayout.getOutDimSize(dimN);
@@ -1036,14 +1071,14 @@ static LinearLayout musaPH1SQMMAToCLinearLayout(ArrayRef<int64_t> shape,
 
 LinearLayout
 MUSAWmmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
-  assert(isPH1() && "unsupported MUSA WMMA encoding version");
-  return musaPH1WMMAToCLinearLayout(shape, *this);
+  assert((isQY2() || isPH1()) && "unsupported MUSA WMMA encoding version");
+  return musaWMMAToCLinearLayout(shape, *this);
 }
 
 LinearLayout
 MUSASqmmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   assert(isPH1() && "unsupported MUSA SQMMA encoding version");
-  return musaPH1SQMMAToCLinearLayout(shape, *this);
+  return musaSQMMAToCLinearLayout(shape, *this);
 }
 
 LinearLayout wmmaDotOperandToLinearLayout(DotOperandEncodingAttr dotWmmaLayout,
@@ -1275,9 +1310,11 @@ DotOperandEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   } else if (auto wmmaLayout = mlir::dyn_cast<AMDWmmaEncodingAttr>(parent)) {
     return wmmaDotOperandToLinearLayout(*this, shape);
   } else if (auto musaWmma = mlir::dyn_cast<MUSAWmmaEncodingAttr>(parent)) {
-    return musaPH1WMMAToOperandLinearLayout(*this, shape);
-  } else if (auto musaSqmma = mlir::dyn_cast<MUSASqmmaEncodingAttr>(parent)) {
-    return musaPH1SQMMAToOperandLinearLayout(*this, shape);
+    return musaWMMAToOperandLinearLayout(*this, shape);
+  } else if (mlir::isa<MUSASqmmaEncodingAttr>(parent)) {
+    llvm_unreachable(
+        "SQMMA dot operands must come from shared memory; the verifier "
+        "rejects register operands");
   } else {
     auto mma = mlir::cast<NvidiaMmaEncodingAttr>(parent);
     return nvidiaDotToLinearLayout(shape, *this);

@@ -16,6 +16,10 @@ void populateMUSATLETileOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                          const TargetInfoBase &targetInfo,
                                          RewritePatternSet &patterns,
                                          PatternBenefit benefit);
+
+void populateMUSATLEMemDescViewToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                              RewritePatternSet &patterns,
+                                              PatternBenefit benefit);
 #endif // __TLE__
 
 } // namespace mlir::triton::musa_tle

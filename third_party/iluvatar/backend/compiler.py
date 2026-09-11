@@ -15,6 +15,10 @@ import os
 import subprocess
 from pathlib import Path
 
+# Align with JIRA SWCOMP-2985 / ixcc a6c311d91fc: a public release corex only
+# prints assembly text for ivcore11.
+ASM_PRINTABLE_ARCH = "ivcore11"
+
 
 def has_tle_pass(pass_name: Optional[str] = None) -> bool:
     tle_passes = getattr(iluvatar.passes, "tle", None)
@@ -456,6 +460,8 @@ class CorexBackend(BaseBackend):
     def make_asm(self, src, metadata, opt, capability):
         triple = iluvatar.TARGET_TRIPLE
         proc = sm_arch_from_capability(capability)
+        if proc != ASM_PRINTABLE_ARCH:
+            return f"; assembly output is not available for '{proc}'\n"
         asm = llvm.translate_to_asm(src, triple, proc, '', [], opt.enable_fp_fusion, False)
         return asm
 

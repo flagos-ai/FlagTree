@@ -22,9 +22,10 @@
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+source ~/env.sh
 source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
-curl http://localhost:8000/v1/chat/completions \
+curl "http://localhost:${VLLM_QWEN3_PORT}/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen36",

@@ -6,6 +6,7 @@ add_triton_library(TritonXPUToLLVM
   GPUOpToLLVMXPU.cpp
   LoadStoreOpToLLVM.cpp
   MakeRangeOpToLLVM.cpp
+  RawOpToLLVM.cpp
   ReduceOpToLLVM.cpp
   ScanOpToLLVM.cpp
   SPMDOpToLLVM.cpp

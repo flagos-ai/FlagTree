@@ -468,13 +468,6 @@ LogicalResult lowerDeviceSpace(Location loc, Value mem_ptr,
   return success();
 }
 
-LogicalResult lowerNodeSpace(Location loc, ValueRange srcElems,
-                             ValueRange shardElems,
-                             ConversionPatternRewriter &rewriter,
-                             SmallVectorImpl<Value> &resultPtrs) {
-  return failure(); // Not implemented yet
-}
-
 Value getDistDevicePtr(tle::RemotePointersOp op, SmallVector<Value> &srcElems) {
   if (!srcElems.empty())
     return srcElems[0];
@@ -500,9 +493,12 @@ struct RemotePointersOpConversion
       return rewriter.notifyMatchFailure(op, msg);
     };
 
-    SmallVector<Value> srcElems;
     auto space = adaptor.getSpace();
+    if (space == "node")
+      return reportFailure(
+          "unfused node remote pointer reached LLVM conversion");
 
+    SmallVector<Value> srcElems;
     if (auto src = adaptor.getSrc())
       srcElems = unpackLLElements(loc, adaptor.getSrc(), rewriter);
 
@@ -527,6 +523,7 @@ struct RemotePointersOpConversion
 
     SmallVector<Value> mappedPtrs;
     auto mem = getDistDevicePtr(op, srcElems);
+    auto resultType = op.getResult().getType();
 
     if (space == "cluster") {
       if (failed(lowerClusterSpace(loc, srcElems, shardElems, rewriter,
@@ -536,7 +533,7 @@ struct RemotePointersOpConversion
     } else if (space == "device") {
       int elemBytes = 1;
       if (offsetVal) {
-        Type resultPointeeTy = getRemotePointeeType(op.getType());
+        Type resultPointeeTy = getRemotePointeeType(resultType);
         if (!resultPointeeTy)
           return reportFailure("result must be tt.ptr or tensor<tt.ptr>");
         auto elemBits = getScalarBitWidth(resultPointeeTy);
@@ -549,15 +546,11 @@ struct RemotePointersOpConversion
                                   rewriter, mappedPtrs))) {
         return rewriter.notifyMatchFailure(op, "device lowering failed");
       }
-    } else if (space == "node") {
-      if (failed(lowerNodeSpace(loc, mem, shardElems, rewriter, mappedPtrs))) {
-        return rewriter.notifyMatchFailure(op, "node lowering failed");
-      }
     } else {
       return reportFailure("unsupported remote space: " + space.str());
     }
     Value packed =
-        packLLElements(loc, typeConverter, mappedPtrs, rewriter, op.getType());
+        packLLElements(loc, typeConverter, mappedPtrs, rewriter, resultType);
     rewriter.replaceOp(op, packed);
     return success();
   }

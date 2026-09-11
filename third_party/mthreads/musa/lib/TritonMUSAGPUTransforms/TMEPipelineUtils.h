@@ -7,7 +7,7 @@
 
 namespace mlir::triton::musa::pipeline {
 
-scf::ForOp lowerTMADescriptors(scf::ForOp forOp,
+scf::ForOp lowerTMEDescriptors(scf::ForOp forOp,
                                mlir::triton::CoarseSchedule &schedule);
 FailureOr<bool> pipelineTMEStores(scf::ForOp forOp);
 

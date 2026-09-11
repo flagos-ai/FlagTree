@@ -9,7 +9,6 @@ add_triton_library(TritonMUSAGPUTransforms
   Pipeline.cpp
   OptimizeAccumulatorInit.cpp
   OptimizeDescriptorEncoding.cpp
-  OptimizeSqmmaAccumulatorLayout.cpp
   SqmmaPipelineUtils.cpp
   TMEPipelineUtils.cpp
   TMELowering.cpp
@@ -23,6 +22,8 @@ add_triton_library(TritonMUSAGPUTransforms
   LINK_LIBS PUBLIC
   MTGPUIR
   MUSAIR
+  TritonAnalysis
+  TritonMUSACommon
   TritonIR
   TritonGPUIR
   TritonGPUTransforms

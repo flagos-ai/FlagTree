@@ -918,6 +918,34 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     }
     c = triton::gpu::ConvertLayoutOp::create(rewriter, c.getLoc(), retType, c);
 
+#ifdef __TLE__
+    Attribute explicitEncoding =
+        getTleExplicitResultEncoding(op.getOperation(), 0);
+    auto explicitSqmma =
+        dyn_cast_or_null<triton::gpu::MUSASqmmaEncodingAttr>(explicitEncoding);
+    auto resultSqmma = dyn_cast_or_null<triton::gpu::MUSASqmmaEncodingAttr>(
+        origType.getEncoding());
+    if (resultSqmma && explicitSqmma != resultSqmma)
+      return op.emitOpError(
+          "has an SQMMA result encoding without a matching explicit MUSA "
+          "TLE layout contract");
+
+    if (explicitSqmma) {
+      auto newDot = triton::DotOp::create(rewriter, op.getLoc(), retType, a, b,
+                                          c, adaptor.getInputPrecision(),
+                                          adaptor.getMaxNumImpreciseAcc());
+      addNamedAttrs(newDot, adaptor.getAttributes());
+      newDot->removeAttr(getTleExplicitEncodingAttrName(0));
+      setTleExplicitSqmmaEncoding(newDot.getOperation(), explicitSqmma);
+
+      auto boundary = triton::gpu::ConvertLayoutOp::create(
+          rewriter, op.getLoc(), origType, newDot.getResult());
+      setTleExplicitResultEncoding(boundary.getOperation(), 0, explicitSqmma);
+      rewriter.replaceOp(op, boundary.getResult());
+      return success();
+    }
+#endif // __TLE__
+
     addNamedAttrs(rewriter.replaceOpWithNewOp<triton::DotOp>(
                       op, retType, a, b, c, adaptor.getInputPrecision(),
                       adaptor.getMaxNumImpreciseAcc()),

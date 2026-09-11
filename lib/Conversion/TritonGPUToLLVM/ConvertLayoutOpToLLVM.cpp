@@ -57,6 +57,43 @@ struct ConvertLayoutOpConversion
       : ConvertOpToLLVMPattern(typeConverter, benefit), targetInfo(targetInfo) {
   }
 
+#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+  LogicalResult
+  matchAndRewrite(ConvertLayoutOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    MLIRContext *ctx = op.getContext();
+
+    auto srcTy = op.getSrc().getType();
+    auto dstTy = op.getType();
+
+    LinearLayout conversion = minimalCvtLayout(srcTy, dstTy);
+
+    StringAttr kBlock = str_attr("block");
+    StringAttr kRegister = str_attr("register");
+
+    assert(to_vector(conversion.getInDimNames()) ==
+           to_vector(conversion.getOutDimNames()));
+    // Backport from Triton main: triton/pull/11646.
+    // Test locality after choosing broadcast copies, before the shared-memory
+    // fallback: warp/block coordinates may select lanes within the same warp.
+    if (conversion.getNumInDims() == 0) {
+      rewriter.replaceOp(op, adaptor.getSrc());
+      return success();
+    }
+    auto dims = conversion.getInDimNames();
+    if (conversion.getNumInDims() == 1 && llvm::is_contained(dims, kRegister))
+      return transferWithinThread(op, conversion, adaptor, rewriter);
+    if (cvtNeedsWarpShuffle(srcTy, dstTy))
+      return transferWithinWarp(op, adaptor, rewriter);
+    // FlagTree adaptation for triton/pull/11646.
+    // Keep the existing cross-CTA diagnostic and shared-memory fallback.
+    if (llvm::is_contained(dims, kBlock))
+      return rewriter.notifyMatchFailure(
+          op, "NYI: Transfer between different CTAs");
+    transferWithinBlockSwizzling(op, adaptor.getSrc(), rewriter);
+    return success();
+  }
+#else  // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
   LogicalResult
   matchAndRewrite(ConvertLayoutOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -108,6 +145,7 @@ struct ConvertLayoutOpConversion
       return success();
     }
   }
+#endif // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
 
   LogicalResult
   transferWithinThread(ConvertLayoutOp op, const LinearLayout &conversion,
@@ -284,6 +322,282 @@ struct ConvertLayoutOpConversion
 
   // Use warp shuffles to implement a layout conversion where data only needs to
   // be moved within warps.
+#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+  LogicalResult transferWithinWarp(ConvertLayoutOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter) const {
+    auto loc = op.getLoc();
+    auto *ctx = op.getContext();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto srcTy = op.getSrc().getType();
+    auto dstTy = op.getType();
+    StringAttr kReg = str_attr("register");
+    StringAttr kLane = str_attr("lane");
+    auto elemTy = getTypeConverter()->convertType(srcTy.getElementType());
+    int bitwidth = getIntOrFloatOrPtrBitWidth(elemTy);
+
+    // Triton main: triton/pull/11646.
+    auto factors = getWarpLayoutConvertDecomposition(srcTy, dstTy, bitwidth);
+    // Backport from Triton main: triton/pull/11646.
+    auto &[pReg, shuffleMap, mixedTranspositions, nPack] = factors;
+    int m = mixedTranspositions.size();
+    bool isXorShuffle = squareSublayoutIsIdentity(shuffleMap, kLane);
+
+    // Triton main: triton/pull/11646.
+    // For permutation cases, the layout conversion can be expressed as P of
+    // hardware index bits for the `kLane` and `kReg` dimensions. The `factors`
+    // of P describe a decomposition
+    //
+    //                 P = P_mixed \circ P_lane \circ P_reg,
+    //
+    // where P_reg and P_lane are permutations involving only register or only
+    // lane index bits and P_mixed is a product of disjoint transpositions of
+    // register index bits with lane index bits. Our goal is to implement P
+    // using predicated selects and warp-shuffles. We have two tools for this:
+    //  - An out-of-place `Ship` method which implements one mixed transposition
+    //    at a time using 1.5 * R selects/permutes and .5 * R shuffles each.
+    //  - An in-place `Swap` method which can simultaneously implement P_lane
+    //    and multiple mixed transpositions at a time using 2 * m * R selects/
+    //    permutes and either (1 - (1/2)^m) * R shuffles if `isXorShuffle` and
+    //    R shuffles otherwise.
+    // Here, R denotes the number of 32-bit registers in use after packing (or
+    // splitting, if applied to 64-bit types or pointers), and in the `Swap`
+    // method, `m` denotes the number of mixed transpositions passed in.
+    auto inVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+
+    // FlagTree adaptation for triton/pull/11646.
+    // Keep FlagTree unpacking and register-broadcast removal helpers.
+    // To avoid unnecessary data movement, we remove any broadcasting in the
+    // register dimension from the `inVals`.
+    auto srcLayout = toLinearLayout(srcTy);
+    auto removeBroadcastSrc = actionRemoveBroadcastedRegs(srcLayout);
+    inVals = removeBroadcastSrc.apply(inVals);
+
+    // Triton main: triton/pull/11646.
+    // If the target layout has a larger register dimension than the source
+    // layout, then we broadcast along the register dimension to match size. The
+    // removal of broadcasting above and introduction here is expected by the
+    // `factors`.
+    int regDim = pReg.getInDimSize(kReg);
+    SmallVector<Value> newInVals(regDim);
+    for (int r = 0; r < regDim; ++r)
+      newInVals[pReg.apply(
+                        {{ kReg,
+                           r }})[0]
+                    .second] = inVals[r % inVals.size()];
+    inVals = std::move(newInVals);
+
+    // Pack registers if possible.
+    int elemsPerVec = 1 << nPack;
+    int bitsPerVecElem = 32 / elemsPerVec;
+    if (elemsPerVec > 1) {
+      SmallVector<Value> packedVals;
+      packedVals.reserve(regDim / elemsPerVec);
+      if (bitwidth == 8 && bitsPerVecElem == 16) {
+        // TODO: Can remove `if` part of `if-else` once ptxas bugfix lands.
+        for (int i = 0; i < regDim; i += elemsPerVec) {
+          Value x0 = b.zext(i32_ty, b.bitcast(inVals[i], int_ty(bitwidth)));
+          Value x1 = b.zext(i32_ty, b.bitcast(inVals[i + 1], int_ty(bitwidth)));
+          x1 = b.shl(x1, b.i32_val(16));
+          packedVals.emplace_back(b.or_(x0, x1));
+        }
+      } else {
+        if (bitwidth < bitsPerVecElem) {
+          for (Value &v : inVals) {
+            if (elemTy != int_ty(bitwidth))
+              v = b.bitcast(v, int_ty(bitwidth));
+            v = b.zext(int_ty(bitsPerVecElem), v);
+          }
+        }
+        for (int i = 0; i < regDim; i += elemsPerVec) {
+          auto slice = ArrayRef<Value>(inVals).slice(i, elemsPerVec);
+          Value v = packLLVector(loc, slice, rewriter);
+          v = b.bitcast(v, i32_ty);
+          packedVals.emplace_back(v);
+        }
+      }
+      inVals = std::move(packedVals);
+    }
+
+    auto isShippable = [](const TranspositionInfo &t) {
+      // The `Ship` method cannot mix elements from different registers in the
+      // same lane, so we are restricted to cycles like (l0 r1), (l0 r2), and
+      // (l0 r0 r1) which do not use both high and low register bits.
+      return t.topPreSel == t.topPostSel ||
+             (t.topPreSel == 0x5140 && t.topPostSel == 0x6240) ||
+             (t.topPreSel == 0x6420 && t.topPostSel == 0x5410) ||
+             (t.topPreSel == 0x3210 && t.topPostSel == 0x3120);
+    };
+
+    // Triton main: triton/pull/11646.
+    SmallVector<Value> outVals;
+    if (m == 1 && isXorShuffle && isShippable(mixedTranspositions[0])) {
+      outVals = transferWithinWarpShipImpl(loc, rewriter, inVals, nPack,
+                                           mixedTranspositions[0]);
+    } else {
+      outVals =
+          transferWithinWarpSwapImpl(loc, rewriter, inVals, nPack, shuffleMap,
+                                     isXorShuffle, mixedTranspositions);
+    }
+
+    // Unpack registers if needed.
+    if (elemsPerVec > 1) {
+      SmallVector<Value> unpackedVals;
+      unpackedVals.reserve(regDim);
+      auto packedTy =
+          bitwidth < bitsPerVecElem ? int_ty(bitsPerVecElem) : elemTy;
+      auto vecTy = vec_ty(packedTy, elemsPerVec);
+      auto unpackVal = [&](Value v) {
+        v = b.bitcast(v, vecTy);
+        return unpackLLVector(loc, v, rewriter);
+      };
+      for (auto v : outVals) {
+        auto unpacked = unpackVal(v);
+        unpackedVals.append(unpacked.begin(), unpacked.end());
+      }
+      if (bitwidth < bitsPerVecElem) {
+        for (Value &v : unpackedVals) {
+          v = b.trunc(int_ty(bitwidth), v);
+          if (elemTy != int_ty(bitwidth))
+            v = b.bitcast(v, elemTy);
+        }
+      }
+      outVals = std::move(unpackedVals);
+    }
+
+    // If `dstLayout` has a smaller `kReg` dimension than `srcLayout` after
+    // broadcasting is removed, then drop the extra registers from `outVals`.
+    auto dstLayout = toLinearLayout(dstTy);
+    auto removeBroadcastDst = actionRemoveBroadcastedRegs(dstLayout);
+    auto strippedDstLayout = removeBroadcastDst.apply(dstLayout);
+    outVals.resize(strippedDstLayout.getInDimSize(kReg));
+
+    // Introduce broadcasting in registers if expected by `dstLayout`.
+    if (!removeBroadcastDst.isIdentity())
+      outVals = broadcastAs(outVals, dstLayout);
+
+    Value result = packLLElements(loc, getTypeConverter(), outVals, rewriter,
+                                  op.getType());
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+
+  // Triton main: triton/pull/11646.
+  SmallVector<Value> transferWithinWarpSwapImpl(
+      Location loc, ConversionPatternRewriter &rewriter, ArrayRef<Value> inVals,
+      int nPack, const LinearLayout &shuffleMap, bool isXorShuffle,
+      ArrayRef<TranspositionInfo> mixedTranspositions) const {
+    auto *ctx = rewriter.getContext();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    StringAttr kReg = str_attr("register");
+    StringAttr kLane = str_attr("lane");
+    StringAttr kWarp = str_attr("warp");
+    StringAttr kBlock = str_attr("block");
+
+    SmallVector<Value> vals(inVals.begin(), inVals.end());
+    int numRegs = inVals.size();
+    // A single mixed transposition (r_i l_j) which swaps the i-th register
+    // index bit and the j-th lane index bit of an element applies a tiled 2x2
+    // block transpose with block size (1 << i) by (1 << j) to the data. This
+    // can be realized as:
+    //
+    //             [ A B ] selp [ A D ] shfl [ A D ] selp [ A C ]
+    //             [ C D ] ---> [ C B ] ---> [ B C ] ---> [ B D ].
+    //
+    // In linear-algebraic terms, this is the factorization over GF(2):
+    //
+    //   1. r_i ^= l_j (selp)                     selp    shfl    selp
+    //   2. l_j ^= r_i (shfl)        [ 0 1 ]     [ 1 1 ] [ 1 0 ] [ 1 1 ]
+    //   3. r_i ^= l_j (selp),       [ 1 0 ]  =  [ 0 1 ] [ 1 1 ] [ 0 1 ],
+    //
+    // where we pass in bits as column vectors [r_i, l_j].
+    //
+    // When the transpositions are all disjoint, we can group the three stages
+    // of each transposition together. The two combined `selp` stages each use
+    // `numRegs` selects per transposition, while the `shfl` stage only requires
+    // code emission when at least one of the `r_i` bits is on, resulting in
+    // `(1 - (1/2)^m) * numRegs` shuffles in total. If `P_lane` is nontrivial,
+    // then we can conjugate its effects through the first two stages and fuse
+    // it with the second stage, resulting in `numRegs` shuffles instead.
+    // Triton main: triton/pull/11646.
+    Value laneId, warpId;
+    std::tie(laneId, warpId) = getLaneAndWarpId(rewriter, loc);
+    // Implement r_i ^= l_j using `numRegs` independent selects or permutes.
+    // Triton main: triton/pull/11646.
+    auto applySwap = [&](TranspositionInfo t, bool preShuf) {
+      int rIdx = t.regBit - nPack;
+      int lIdx = preShuf ? t.srcLane : t.dstLane;
+      uint16_t topSel = preShuf ? t.topPreSel : t.topPostSel;
+      uint16_t botSel = preShuf ? t.botPreSel : t.botPostSel;
+
+      SmallVector<Value> newVals(numRegs);
+      // Triton main: triton/pull/11646.
+      Value lBitOff = b.true_val();
+      if (lIdx >= 0)
+        lBitOff = b.icmp_eq(b.and_(laneId, b.i32_val(1 << lIdx)), b.i32_val(0));
+
+      int tileSize = 1 << (rIdx + 1);
+      int numTiles = numRegs / tileSize;
+      for (int tileIdx = 0; tileIdx < numTiles; ++tileIdx) {
+        int baseIdx = tileIdx * tileSize;
+        for (int i = 0; i < tileSize / 2; ++i) {
+          int r0 = baseIdx + i;
+          int r1 = r0 + (1 << rIdx);
+          Value v0 = vals[r0];
+          Value v1 = vals[r1];
+          if (topSel == 0x3210 && botSel == 0x7654) {
+            newVals[r0] = b.select(lBitOff, v0, v1);
+            newVals[r1] = b.select(lBitOff, v1, v0);
+          } else {
+            Value sel00 = b.i32_val(topSel);
+            Value sel01 = b.i32_val(preShuf ? botSel : (topSel ^ 0x4444));
+            Value sel10 = b.i32_val(botSel);
+            Value sel11 = b.i32_val(preShuf ? topSel : (botSel ^ 0x4444));
+            Value sel1 = b.select(lBitOff, sel00, sel01);
+            Value sel2 = b.select(lBitOff, sel10, sel11);
+            newVals[r0] = targetInfo.permute(rewriter, loc, v0, v1, sel1);
+            newVals[r1] = targetInfo.permute(rewriter, loc, v0, v1, sel2);
+          }
+        }
+      }
+      return newVals;
+    };
+
+    // Stage 1 (selp/prmt)
+    for (const auto &t : mixedTranspositions)
+      vals = applySwap(t, /*preShuf=*/true);
+    // Triton main: triton/pull/11646.
+    // Stage 2 (shfl)
+    Value laneIdPerm;
+    if (!isXorShuffle) {
+      SmallVector<std::pair<StringAttr, Value>> indices{{ kLane, laneId }};
+      if (!shuffleMap.sublayoutIsZero(kWarp, kLane))
+        indices.push_back({kWarp, warpId});
+      if (!shuffleMap.sublayoutIsZero(kBlock, kLane))
+        indices.push_back({kBlock, targetInfo.getClusterCTAId(rewriter, loc)});
+      auto dims = to_vector(llvm::make_first_range(indices));
+      laneIdPerm = applyLinearLayout(loc, rewriter,
+                                     shuffleMap.sublayout(dims, kLane), indices)
+                       .front()
+                       .second;
+    }
+    // Triton main: triton/pull/11646.
+    auto registerToLane = shuffleMap.sublayout(kReg, kLane);
+    for (int r = 0; r < numRegs; ++r) {
+      int mask = registerToLane.apply({{ kReg, r << nPack }})[0].second;
+      if (isXorShuffle) {
+        if (mask != 0)
+          vals[r] = targetInfo.shuffleXor(rewriter, loc, vals[r], mask);
+      } else {
+        Value srcIdx = b.xor_(laneIdPerm, b.i32_val(mask));
+        vals[r] = targetInfo.shuffleIdx(rewriter, loc, vals[r], srcIdx);
+      }
+    }
+    // Stage 3 (selp/prmt)
+    for (const auto &t : mixedTranspositions)
+      vals = applySwap(t, /*preShuf=*/false);
+    return vals;
+  }
+#else  // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
   LogicalResult transferWithinWarp(ConvertLayoutOp op, OpAdaptor adaptor,
                                    ConversionPatternRewriter &rewriter) const {
     auto loc = op.getLoc();
@@ -550,6 +864,7 @@ struct ConvertLayoutOpConversion
       vals = applySwap(t, /*preShuf=*/false);
     return vals;
   }
+#endif // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
 
   SmallVector<Value>
   transferWithinWarpShipImpl(Location loc, ConversionPatternRewriter &rewriter,
@@ -559,8 +874,14 @@ struct ConvertLayoutOpConversion
     // `transferWithinWarpSwapImpl`, but uses auxiliary registers to hold the
     // values to be shuffled, resulting in fewer emitted instructions.
     int numRegs = inVals.size();
+#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+    // Triton main: triton/pull/11646.
+    int rIdx = t.regBit - nPack;
+    int lIdx = t.dstLane;
+#else  // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
     int rIdx = t.transposition.first - nPack;
     int lIdx = t.transposition.second;
+#endif // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
     int tileSize = 1 << (rIdx + 1);
     int numTiles = numRegs / tileSize;
 

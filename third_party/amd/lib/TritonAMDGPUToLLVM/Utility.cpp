@@ -393,12 +393,14 @@ Value emitCtaMulticastMask(RewriterBase &rewriter, Location loc, Value groupId,
   return ctaMask;
 }
 
+// Triton 3.8: triton/pull/11223
 Value llLoad(RewriterBase &rewriter, Location loc, Value ptr, Type elemTy,
              Value pred, Value falseVal, Value multicastMask,
-             triton::CacheModifier cm, bool forceNoAliasAsyncLoads) {
-  return triton::amdgpu::MaskedLoadOp::create(rewriter, loc, elemTy, ptr, pred,
-                                              falseVal, multicastMask, cm,
-                                              forceNoAliasAsyncLoads)
+             triton::CacheModifier cm, bool isVolatile,
+             bool forceNoAliasAsyncLoads) {
+  return triton::amdgpu::MaskedLoadOp::create(
+             rewriter, loc, elemTy, ptr, pred, falseVal, multicastMask, cm,
+             isVolatile, forceNoAliasAsyncLoads)
       .getResult();
 }
 
