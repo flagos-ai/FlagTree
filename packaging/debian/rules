@@ -41,6 +41,18 @@ override_dh_auto_install:
 	# otherwise dh_python3 warns. Easiest: drop RECORD; pip doesn't need it.
 	rm -f $(PYDIR)/flagtree-*.dist-info/RECORD
 
+# The wheel is CPython-minor specific (cpXY tag); depend on exactly that
+# interpreter package (python3.12 exists on 22.04 via deadsnakes and on 24.04
+# natively) instead of the unversioned python3:any.
+override_dh_gencontrol:
+	@wheel="$$(ls -1 $(WHEEL_DIR)/flagtree-*.whl | head -1)"; \
+	tag="$$(basename "$$wheel" | sed -E 's/.*-(cp3[0-9]+)-cp3[0-9]+.*/\1/')"; \
+	case "$$tag" in cp3[0-9]*) ;; *) echo "ERROR: cannot read CPython tag from $$wheel"; exit 1;; esac; \
+	pyver="3.$${tag#cp3}"; \
+	echo "python:Depends=python$$pyver" >> debian/$(PKG).substvars; \
+	echo "Wheel targets CPython $$pyver -> Depends: python$$pyver"
+	dh_gencontrol
+
 override_dh_shlibdeps:
 	# triton/_C/*.so link against libcuda.so etc. Those libs are not present
 	# at packaging time and cannot be expressed via shlibs anyway, so skip
