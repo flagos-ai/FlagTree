@@ -577,18 +577,20 @@ public:
   ConvertTritonToTritonXPU() = default;
   // constructor with some parameters set explicitly.
   ConvertTritonToTritonXPU(uint32_t xpu_arch, uint32_t buffer_size,
-                           uint32_t core_num) {
+                           uint32_t core_num, bool isTLE) {
     this->xpu_arch = xpu_arch;
     this->buffer_size = buffer_size;
     this->core_num = core_num;
+    this->isTLE = isTLE;
   }
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
     // type converter. the reason that we cant use TT2TTGPass directly
-    TritonXPUTypeConverter typeConverter(context, buffer_size, core_num);
-    TritonXPUConversionTarget target(*context, typeConverter);
+    bool tle = this->isTLE;
+    TritonXPUTypeConverter typeConverter(context, buffer_size, core_num, tle);
+    TritonXPUConversionTarget target(*context, typeConverter, tle);
     // rewrite patterns
     RewritePatternSet patterns(context);
     // add rules
@@ -599,6 +601,17 @@ public:
     //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
+
+    if (tle) {
+      // GM normcopy ops are marked dynamically illegal while their pointer
+      // operand is unencoded (see TritonXPUConversionTarget). Rebuild them with
+      // the converted (ClusterLayout-encoded) operand so no encoded->unencoded
+      // ConvertLayout bridge is materialized in front of them.
+      patterns
+          .insert<GenericOpPattern<triton::xpu::TLENormCopyGlobalToLocalOp>,
+                  GenericOpPattern<triton::xpu::TLENormCopyLocalToGlobalOp>>(
+              typeConverter, context);
+    }
 
     auto inti = llvm::APSInt(32, false);
     auto i32_ty = IntegerType::get(mod->getContext(), 32);
@@ -643,9 +656,10 @@ public:
 std::unique_ptr<OperationPass<ModuleOp>>
 mlir::triton::createConvertTritonToTritonXPUPass(uint32_t xpu_arch,
                                                  uint32_t buffer_size,
-                                                 uint32_t core_num) {
+                                                 uint32_t core_num,
+                                                 bool isTLE) {
   return std::make_unique<::ConvertTritonToTritonXPU>(xpu_arch, buffer_size,
-                                                      core_num);
+                                                      core_num, isTLE);
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>

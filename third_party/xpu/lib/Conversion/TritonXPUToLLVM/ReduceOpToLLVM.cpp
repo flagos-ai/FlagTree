@@ -1,6 +1,8 @@
 #include "PatternTritonXPUOpToLLVM.h"
+#include "triton/Analysis/VectorizabilityAnalysis.h"
 #include "triton/Conversion/TritonXPUToLLVM/LegacyLLVMHelpers.h" // LLVM22 dragon-style macros for XPU only
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/TypeSwitch.h"
 #include <cfloat>
 namespace {
@@ -83,8 +85,14 @@ struct XPUReduceOpConversion
           j == op.getNumOperands() - 1) { // skip loopIndex
         return false;
       }
-      return op.getElementTypes()[i].getIntOrFloatBitWidth() >
-             op.getElementTypes()[j].getIntOrFloatBitWidth();
+      // On the vectorized path the element type is vector<NxT>, which has no
+      // bitwidth; the smem slot is sized from the scalar type either way (see
+      // getElementType above). Only multi-operand reduces reach this
+      // comparator, which is why the single-output vector reduces never hit it.
+      return getElementTypeOrSelf(op.getElementTypes()[i])
+                 .getIntOrFloatBitWidth() >
+             getElementTypeOrSelf(op.getElementTypes()[j])
+                 .getIntOrFloatBitWidth();
     });
 
     // Assign base index to each operand in their order in indices
@@ -370,8 +378,8 @@ private:
               isBreak = true;
             })
             .Case<arith::SelectOp>([&](auto selectOp) {
-              // arith::SelectOp is used as the index combiner in argmax/argmin
-              // reduce patterns such as tl.max(..., return_indices=True).
+              // arith::SelectOp appears as the index combiner in argmax/argmin
+              // reduce patterns (e.g. tl.max with return_indices=True).
               blockArgDefOps.emplace_back(selectOp);
               isBreak = true;
             })
@@ -446,8 +454,10 @@ private:
               [&](auto maximumFOp) { val = minInit(elemTy); })
           .Case<arith::MinimumFOp>(
               [&](auto minimumFOp) { val = maxInit(elemTy); })
-          .Case<arith::SelectOp>(
-              [&](auto selectOp) { val = naiveInit(elemTy, 0); })
+          .Case<arith::SelectOp>([&](auto selectOp) {
+            // Index combiner in argmax/argmin patterns; init to 0.
+            val = naiveInit(elemTy, 0);
+          })
           .Case<arith::CmpFOp>([&](auto cmpFOp) {
             if (cmpFOp.getPredicate() == arith::CmpFPredicate::OGT ||
                 cmpFOp.getPredicate() == arith::CmpFPredicate::OGE ||
@@ -602,6 +612,243 @@ private:
         });
   }
 
+  // ---- region-interpreting combine (3.1b prototype) ------------------------
+  //
+  // `calculate` applies exactly *one* op per output -- the defining op of that
+  // output's return value (`helper.getReturnDefOps()`). That equals the combine
+  // region only when the combine is separable: one op per output, no data flow
+  // between outputs. A welford combine is not separable (the mean update reads
+  // the count), so no whitelist extension can make the getReturnDefOps path
+  // correct for it; it would silently apply the return's defining op alone.
+  //
+  // The region also cannot just be cloned the way `accumulate` does it: on the
+  // vector path arith-to-llvm re-types the cloned arith ops back to f32 (see
+  // the note in reduceWithinThreads). So walk the region and emit LLVM ops
+  // directly, which needs no change between scalar and vector<NxT> operands.
+  //
+  // The one-day-on / off-again history and the current default live with the
+  // predicate in VectorizabilityAnalysis.h, because the analysis, Vectorize's
+  // retyping and this lowering all have to read the same answer.
+  //
+  // What was blamed on this file for a while (the within-core fold below losing
+  // the lane-0 contribution of most cores on a vectorized welford,
+  // nondeterministically) was not a defect here: `collapseVectorsJointly` is
+  // exact, and the loss came from a write-after-read hazard on an LM buffer
+  // that MemoryInplace had folded across three loads. Fixed on the load side;
+  // see the fence in XPULoadOpConversion and findings 1.74. Multi-operand
+  // combines are simply the first shape that keeps three loaded vectors live at
+  // once, which is what made that reuse observable.
+  static bool regionCombineEnabled() {
+    return mlir::triton::xpu::reduceCombineRegionEnabled();
+  }
+
+  // Must stay in sync with the TypeSwitch in emitCombineOp.
+  static bool isSupportedCombineOp(Operation *op) {
+    // arith::NegFOp is absent on purpose: Triton's unary minus lowers to
+    // `subf(0.0, x)`, so a combine region never contains one
+    // (findings.md 1.24).
+    return isa<arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp,
+               arith::MaxNumFOp, arith::MinNumFOp, arith::OrIOp, arith::XOrIOp,
+               arith::AndIOp, arith::CmpFOp, arith::SelectOp,
+               arith::ConstantOp>(op);
+  }
+
+  // All rejection happens here, before anything is emitted, so a region we
+  // cannot handle leaves no half-built IR behind.
+  // A constant the region reads is usable at any stage only if one scalar value
+  // describes it: the same region is replayed on vector<NxT> accumulators
+  // (within-core) and on scalars (across cores), so the constant has to be
+  // narrowable and widenable at will.
+  static bool isUniformConstant(Value v) {
+    auto cstOp = v.getDefiningOp<arith::ConstantOp>();
+    if (!cstOp)
+      return false;
+    if (!isa<VectorType>(cstOp.getType()))
+      return true;
+    auto dense = dyn_cast<DenseElementsAttr>(cstOp.getValue());
+    return dense && dense.isSplat();
+  }
+
+  bool canInterpretCombine(Region &combine) const {
+    if (!llvm::hasSingleElement(combine))
+      return false;
+    Block &block = combine.front();
+    if (!isa<triton::xpu::ReduceReturnOp>(block.getTerminator()))
+      return false;
+    llvm::SmallPtrSet<Value, 8> defined;
+    for (Value arg : block.getArguments())
+      defined.insert(arg);
+    for (Operation &op : block.without_terminator()) {
+      if (!isSupportedCombineOp(&op) || op.getNumResults() != 1)
+        return false;
+      for (Value operand : op.getOperands())
+        // Anything but a uniform constant is captured from outside and has no
+        // lowered counterpart here. Constants get rematerialized instead: the
+        // canonicalizer hoists them out of the region, so rejecting them would
+        // reject welford's combine outright.
+        if (!defined.contains(operand) && !isUniformConstant(operand))
+          return false;
+      defined.insert(op.getResult(0));
+    }
+    for (Value v : block.getTerminator()->getOperands())
+      if (!defined.contains(v))
+        return false;
+    return true;
+  }
+
+  // Widen a scalar to `width` lanes *keeping its own element type*: a cmpf mask
+  // must become vector<Nxi1>, not vector<NxF>. Deriving the whole vector type
+  // from a neighbouring operand gets that wrong.
+  Value splatToWidth(ConversionPatternRewriter &rewriter, Location loc, Value v,
+                     int64_t width) const {
+    if (isa<VectorType>(v.getType()))
+      return v;
+    auto vecTy = VectorType::get({width}, v.getType());
+    Value splat = undef(vecTy);
+    for (int64_t i = 0; i < width; ++i)
+      splat = insert_element(vecTy, splat, v, i32_val(i));
+    return splat;
+  }
+
+  // Always emit the constant scalar first and widen afterwards: the region may
+  // carry it as vector<NxT> (Vectorize rematerializes it that way) while the
+  // stage being lowered is scalar, or the other way round.
+  Value materializeConstant(ConversionPatternRewriter &rewriter, Location loc,
+                            arith::ConstantOp cstOp, int64_t width) const {
+    Attribute attr = cstOp.getValue();
+    if (auto dense = dyn_cast<DenseElementsAttr>(attr))
+      attr = dense.getSplatValue<Attribute>(); // isUniformConstant checked this
+    Value cst = rewriter.create<LLVM::ConstantOp>(
+        loc, getElementTypeOrSelf(cstOp.getType()), attr);
+    return width > 0 ? splatToWidth(rewriter, loc, cst, width) : cst;
+  }
+
+  // `width` is the lane count of the stage: > 0 while combining vector
+  // accumulators, 0 once the values are scalars (across-core, loop cache).
+  Value emitCombineOp(ConversionPatternRewriter &rewriter, Location loc,
+                      Operation *op, SmallVector<Value> &args,
+                      int64_t width) const {
+    if (width > 0)
+      for (Value &a : args)
+        a = splatToWidth(rewriter, loc, a, width);
+
+    return TypeSwitch<Operation *, Value>(op)
+        .Case<arith::AddFOp>(
+            [&](auto) -> Value { return fadd(args[0], args[1]); })
+        .Case<arith::SubFOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::FSubOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::MulFOp>(
+            [&](auto) -> Value { return fmul(args[0], args[1]); })
+        .Case<arith::DivFOp>([&](auto) -> Value {
+          return rewriter.create<LLVM::FDivOp>(loc, args[0], args[1]);
+        })
+        .Case<arith::MaxNumFOp>(
+            [&](auto) -> Value { return fmax(args[0], args[1]); })
+        .Case<arith::MinNumFOp>(
+            [&](auto) -> Value { return fmin(args[0], args[1]); })
+        .Case<arith::OrIOp>(
+            [&](auto) -> Value { return or_(args[0], args[1]); })
+        .Case<arith::XOrIOp>(
+            [&](auto) -> Value { return xor_(args[0], args[1]); })
+        .Case<arith::AndIOp>(
+            [&](auto) -> Value { return and_(args[0], args[1]); })
+        .Case<arith::CmpFOp>([&](arith::CmpFOp cmpfOp) -> Value {
+          Type resTy = rewriter.getI1Type();
+          if (auto ty = dyn_cast<VectorType>(args[0].getType()))
+            resTy = VectorType::get(ty.getShape(), resTy);
+          return rewriter.create<LLVM::FCmpOp>(
+              loc, resTy, ArithCmpFPredicateToLLVM(cmpfOp.getPredicate()),
+              args[0], args[1]);
+        })
+        .Case<arith::SelectOp>(
+            [&](auto) -> Value { return select(args[0], args[1], args[2]); })
+        .Case<arith::ConstantOp>([&](arith::ConstantOp cstOp) -> Value {
+          return materializeConstant(rewriter, loc, cstOp, width);
+        })
+        .Default([](auto) -> Value { return Value(); });
+  }
+
+  // One combine step: acc = combine(acc, cur), emitted from the region itself.
+  // `canInterpretCombine` must have accepted the region first.
+  void interpretCombine(ConversionPatternRewriter &rewriter, Location loc,
+                        Region &combine, SmallVector<Value> &acc,
+                        ValueRange cur) const {
+    Block &block = combine.front();
+    assert(block.getNumArguments() == acc.size() + cur.size() &&
+           "combine arity does not match the accumulator");
+
+    llvm::DenseMap<Value, Value> map;
+    for (unsigned i = 0; i < acc.size(); ++i) {
+      map[block.getArgument(i)] = acc[i];
+      map[block.getArgument(acc.size() + i)] = cur[i];
+    }
+
+    // The accumulators decide the stage: vector within a core, scalar across
+    // cores. Everything else in the region is brought to that shape.
+    int64_t width = 0;
+    for (Value v : acc)
+      if (auto vecTy = dyn_cast<VectorType>(v.getType()))
+        width = vecTy.getNumElements();
+
+    for (Operation &op : block.without_terminator()) {
+      SmallVector<Value> args;
+      for (Value operand : op.getOperands()) {
+        Value mapped = map.lookup(operand);
+        if (!mapped) // hoisted out of the region; rematerialize it here
+          mapped = materializeConstant(
+              rewriter, loc, operand.getDefiningOp<arith::ConstantOp>(), width);
+        args.push_back(mapped);
+      }
+      Value res = emitCombineOp(rewriter, loc, &op, args, width);
+      assert(res && "isSupportedCombineOp is out of sync with emitCombineOp");
+      map[op.getResult(0)] = res;
+    }
+
+    SmallVector<Value> results;
+    for (Value v : block.getTerminator()->getOperands())
+      results.push_back(map.lookup(v));
+    acc = results;
+  }
+
+  // Horizontal collapse to lane 0, done *jointly* across outputs: one combine
+  // step consumes lane i of every accumulator. accmulateWithinVector collapses
+  // each output on its own, which again only holds for a separable combine.
+  void collapseVectorsJointly(ConversionPatternRewriter &rewriter, Location loc,
+                              Region &combine,
+                              SmallVector<Value> &accVecs) const {
+    auto laneOf = [&](Value v, int64_t lane) {
+      return extract_element(getElementTypeOrSelf(v.getType()), v,
+                             i32_val(lane));
+    };
+    int64_t vecSize = cast<VectorType>(accVecs[0].getType()).getNumElements();
+    for (Value v : accVecs) {
+      assert(cast<VectorType>(v.getType()).getNumElements() == vecSize &&
+             "accumulators of one reduce disagree on vector width");
+      (void)v;
+    }
+
+    // A log2(vecSize) pairwise tree was tried here and reverted (2026-08-03):
+    // it does cut the LLVM IR (16 shufflevectors replacing ~30 extract/insert
+    // pairs on softmax), but xpu3 has no cross-lane permute, so llc synthesizes
+    // each `shufflevector <16 x float>` from per-lane moves (~40 machine ops:
+    // vmmov 242->660, vor.f.mz 0->462, vextract.f 0->224 on softmax). Measured
+    // with TRITONXPU_REDUCE_REGION=1: softmax 1774->2890 (vspill 0->5),
+    // layernorm 677->1643, welford 2715->5100 (vspill 14->18). The serial
+    // replay below reaches a lane with one `vextracti.f` each, which is the
+    // cheapest lane access this target has.
+    SmallVector<Value> acc;
+    for (Value v : accVecs)
+      acc.push_back(laneOf(v, 0));
+    for (int64_t lane = 1; lane < vecSize; ++lane) {
+      SmallVector<Value> cur;
+      for (Value v : accVecs)
+        cur.push_back(laneOf(v, lane));
+      interpretCombine(rewriter, loc, combine, acc, cur);
+    }
+    accVecs = acc;
+  }
+
   void accmulateWithinVector(ConversionPatternRewriter &rewriter,
                              const Location &loc, Operation *op,
                              Value &accVec) const {
@@ -669,7 +916,16 @@ private:
     auto layout =
         cast<triton::xpu::ClusterLayoutAttr>(operandType.getEncoding());
     unsigned rowsPerCore = layout.getSizePerCore()[0];
-    bool coreDealMultiRows = (shape.size() == 2 && rowsPerCore > 1);
+    // The emitted per-core offsets are col-major only when the layout order
+    // puts the row dim first (order[0] == 0). In that case, when a core holds
+    // multiple rows, transpose col-major -> row-major to match the row-major
+    // register slots that the memory ops fill. When order == [1, 0] (order[0]
+    // == 1) the offsets are ALREADY row-major, so skip the transpose to avoid a
+    // double-flip.
+    auto order = layout.getOrder();
+    bool colMajorEmitted = (order.size() == 2 && order[0] == 0);
+    bool coreDealMultiRows =
+        (shape.size() == 2 && rowsPerCore > 1 && colMajorEmitted);
     if (coreDealMultiRows) {
       // Col major to row major
       unsigned col = shape[1];
@@ -700,6 +956,10 @@ private:
     SmallVector<Operation *> returnDefOpsForAccum;
     if (vectorized)
       returnDefOpsForAccum = helper.getReturnDefOps();
+    // Decided once per reduce so the three combine sites below cannot end up on
+    // different paths within one op.
+    bool useRegion =
+        vectorized && regionCombineEnabled() && canInterpretCombine(*combineOp);
 
     // reduce within threads
     for (int i = 0; i < offsets.size(); ++i) {
@@ -710,6 +970,9 @@ private:
         if (isFirst) {
           accs[key] =
               SmallVector<Value>(srcValues[i].begin(), srcValues[i].end());
+        } else if (useRegion) {
+          interpretCombine(rewriter, op.getLoc(), *combineOp, accs[key],
+                           srcValues[i]);
         } else {
           accmulateNaive(rewriter, op.getLoc(), returnDefOpsForAccum, accs[key],
                          srcValues[i], /*isFirst=*/false);
@@ -722,7 +985,10 @@ private:
     }
 
     // Accumulate within Vector
-    if (helper.isVectorized()) {
+    if (useRegion) {
+      for (auto &it : accs)
+        collapseVectorsJointly(rewriter, op.getLoc(), *combineOp, it.second);
+    } else if (helper.isVectorized()) {
       SmallVector<Operation *> returnDefOps = helper.getReturnDefOps();
       for (auto &it : accs) {
         SmallVector<Value> &accVecs = it.second;
@@ -864,8 +1130,17 @@ private:
     }
 
     SmallVector<Operation *> returnDefOps = helper.getReturnDefOps();
+    // The values read back from smem are scalars (getElementType strips the
+    // vector), so the interpreter runs on scalar operands here.
+    bool useRegion = helper.isVectorized() && regionCombineEnabled() &&
+                     canInterpretCombine(op.getCombineOp());
     for (auto [i, v] : llvm::enumerate(readValues)) {
-      if (helper.isVectorized()) {
+      if (useRegion) {
+        if (i == 0)
+          acc = SmallVector<Value>(v.begin(), v.end());
+        else
+          interpretCombine(rewriter, loc, op.getCombineOp(), acc, v);
+      } else if (helper.isVectorized()) {
         accmulateNaive(rewriter, loc, returnDefOps, acc, v, i == 0);
       } else {
         accumulate(rewriter, op.getCombineOp(), acc, v, i == 0);
@@ -924,7 +1199,10 @@ private:
       }
 
       SmallVector<Operation *> returnDefOps = helper.getReturnDefOps();
-      if (helper.isVectorized()) {
+      if (useRegion) {
+        interpretCombine(rewriter, loc, op.getCombineOp(), curResSmemValues,
+                         loopResCacheSmemValues);
+      } else if (helper.isVectorized()) {
         accmulateNaive(rewriter, loc, returnDefOps, loopResCacheSmemValues,
                        loopResCacheSmemValues, false);
       } else {

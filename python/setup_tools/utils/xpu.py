@@ -28,6 +28,8 @@ from setuptools import find_packages
 
 XPU_PYTHON_ROOT = "third_party/xpu/python"
 FLAGTREE_PYTHON_ROOT = "python"
+# The XPU overlay ships its own `triton.experimental.tle`; see
+# _merge_xpu_packages for why the main-tree one is not merged in.
 TLE_PACKAGE = "triton.experimental.tle"
 
 
@@ -70,10 +72,12 @@ def _merge_xpu_packages(existing_packages):
     for package in find_packages(where=XPU_PYTHON_ROOT, include=["triton", "triton.*"]):
         add(package)
 
-    # TLE is a FlagTree-only feature kept in the main tree; the XPU overlay
-    # does not carry it, so source it from the main tree.
-    for package in find_packages(where=FLAGTREE_PYTHON_ROOT, include=[TLE_PACKAGE, f"{TLE_PACKAGE}.*"]):
-        add(package)
+    # TLE: the XPU overlay carries its own `triton.experimental.tle` (typed raw
+    # ops on the XPU dialects + an xpu-clang payload pipeline), which the loop
+    # above already picked up. The main tree's TLE is a same-origin fork with an
+    # incompatible mechanism (multi-backend regions), so it must NOT be added on
+    # top -- two sources for one package makes build_py copy whichever runs last.
+    # Non-XPU builds go through default.py and keep the main-tree version.
 
     for package in existing_packages:
         if (not package.startswith("triton.") or _is_backend_package(package) or _is_language_extra_package(package)
@@ -92,9 +96,7 @@ def _merge_xpu_package_dir(existing_package_dir):
         rel_package_path = package.replace(".", "/")
         package_dir[package] = f"{XPU_PYTHON_ROOT}/{rel_package_path}"
 
-    for package in find_packages(where=FLAGTREE_PYTHON_ROOT, include=[TLE_PACKAGE, f"{TLE_PACKAGE}.*"]):
-        rel_package_path = package.replace(".", "/")
-        package_dir[package] = f"{FLAGTREE_PYTHON_ROOT}/{rel_package_path}"
+    # No main-tree TLE entry here either: see _merge_xpu_packages.
 
     return package_dir
 
@@ -154,6 +156,37 @@ def _patch_llvm_exports():
             print(f"[XPU] patched LLVMExports: {f}")
 
 
+def _prune_stale_sdnn_objects(dst_root, package_root):
+    """Remove prebuilt SDNN artifacts left over from an older package.
+
+    Objects removed by a newer internal sync (e.g. Combine.cpp.o in
+    v0.3.6.8.0) would otherwise trip xpu_check_object_file_list's FATAL_ERROR
+    "NOT included in CMakeLists.txt" when upgrading an existing tree.
+    """
+    managed_dirs = (
+        "lib/Dialect/TritonSDNN",
+        "lib/Dialect/LLVMSDNN",
+        "lib/Conversion/TritonSDNNToLLVM",
+        "lib/Conversion/LinalgToTritonSDNN",
+        "lib/Analysis/SDNN",
+        "lib/Target/LLVMXPU",
+        "device/xpu3",
+    )
+    for rel_dir in managed_dirs:
+        dst_dir = os.path.join(dst_root, rel_dir)
+        if not os.path.isdir(dst_dir):
+            continue
+        for dirpath, _, filenames in os.walk(dst_dir):
+            for fn in filenames:
+                if not fn.endswith((".o", ".a", ".bc")):
+                    continue
+                dst_file = os.path.join(dirpath, fn)
+                rel = os.path.relpath(dst_file, dst_root)
+                if not os.path.exists(os.path.join(str(package_root), rel)):
+                    print(f"[XPU] pruning stale SDNN object from older package: {rel}")
+                    os.remove(dst_file)
+
+
 def install_sdnn_objects(cached_path, flagtree_dir):
     """Copy prebuilt SDNN objects from cache to third_party/xpu/."""
     dst_root = os.path.join(flagtree_dir, "third_party", "xpu")
@@ -164,6 +197,7 @@ def install_sdnn_objects(cached_path, flagtree_dir):
             shutil.copytree(src, dst, dirs_exist_ok=True)
         else:
             shutil.copy(src, dst)
+    _prune_stale_sdnn_objects(dst_root, cached_path)
 
     # The prebuilt tarball lays libTritonXPUAnalysisSDNN.a under lib/Analysis/SDNN,
     # but lib/Analysis/NewAnalysis/CMakeLists.txt imports it from NewAnalysis/SDNN.
@@ -180,6 +214,10 @@ def install_sdnn_objects(cached_path, flagtree_dir):
         shutil.copy(sdnn_src, os.path.join(sdnn_dst_dir, sdnn_lib_name))
     else:
         print(f"[XPU] warning: {sdnn_lib_name} not found under {dst_root}")
+
+    required = os.path.join(dst_root, "lib", "Dialect", "TritonSDNN", "Transforms", "DSACopy.cpp.o")
+    if not os.path.isfile(required):
+        raise RuntimeError(f"[XPU] incomplete SDNN artifact: missing {required}")
     print(f"[XPU] SDNN prebuilt objects installed to {dst_root}")
 
 
@@ -197,12 +235,16 @@ def link_elfconv_triton(flagtree_dir):
 
 # pybind11 ABI versions provided by each PYBIND11_INTERNALS_VERSION. The prebuilt
 # SDNN objects hard-encode a pybind11 ABI (embedded __pybind11_internals_v<N>
-# symbol); libtriton must be built against a pybind11 whose internals version
-# matches.
+# symbol); libtriton must be built against the exact pybind11 the objects were
+# built with. The internals version alone is NOT sufficient: pybind11 3.0.1 and
+# 3.0.4 both report v11, but 3.0.4 changed the `internals` constructor
+# (PR #5870: istate(get_interpreter_state_unchecked()) + tstate.set(nullptr)),
+# which crashes the prebuilt SDNN bindings at runtime with a SIGSEGV in the
+# pybind11 dispatcher. Pin the exact patch release here.
 _PYBIND11_INTERNALS_TO_PIP = {
     4: "pybind11>=2.6,<2.12",
     5: "pybind11>=2.12,<3.0",
-    11: "pybind11>=3.0,<3.1",
+    11: "pybind11==3.0.1",
 }
 
 
@@ -250,17 +292,32 @@ def ensure_pybind11_matches_sdnn(scan_dir):
     if required is None:
         return
     installed, version = _installed_pybind11_internals()
-    if installed == required:
+
+    # The internals version must match, AND the patch release must be the exact
+    # one the prebuilt objects were compiled against. For v11 (pybind11 3.0.x)
+    # the objects are built with 3.0.1; 3.0.4 passes the internals check but
+    # crashes at runtime (PR #5870 constructor change), so pin the exact version.
+    required_pip = _PYBIND11_INTERNALS_TO_PIP.get(required)
+    if required_pip is not None and required_pip.startswith("pybind11=="):
+        required_version = required_pip[len("pybind11=="):]
+        if installed == required and version == required_version:
+            print(f"[XPU] pybind11 ABI OK: env pybind11 {version} (internals v{installed}) "
+                  f"matches prebuilt SDNN objects (internals v{required})")
+            return
+    elif installed == required:
         print(f"[XPU] pybind11 ABI OK: env pybind11 {version} (internals v{installed}) "
               f"matches prebuilt SDNN objects (internals v{required})")
         return
 
     pip_spec = _PYBIND11_INTERNALS_TO_PIP.get(required)
-    detail = (f"[XPU] pybind11 ABI mismatch: prebuilt SDNN objects require "
-              f"PYBIND11_INTERNALS_VERSION={required}, but the environment's pybind11 "
-              f"{version} provides {installed}. Building against a mismatched pybind11 makes "
-              f"`import triton._C.libtriton` fail with "
-              f"'Cannot overload existing non-function object ... with a function of the same name'.")
+    detail = (
+        f"[XPU] pybind11 ABI mismatch: prebuilt SDNN objects require "
+        f"PYBIND11_INTERNALS_VERSION={required}" +
+        (f" with pybind11=={required_version}" if required_pip and required_pip.startswith("pybind11==") else "") +
+        f", but the environment's pybind11 {version} provides {installed}." +
+        " Building against a mismatched pybind11 makes `import " +
+        "triton._C.libtriton` fail or segfault in the pybind11 dispatcher " +
+        "('Cannot overload existing non-function object ... with a function " + "of the same name').")
     hint = (f" Install a matching pybind11 first, e.g. `pip install '{pip_spec}'`, then rebuild."
             if pip_spec else " No known pybind11 release maps to that internals version.")
     raise RuntimeError(detail + hint)
@@ -391,9 +448,17 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     cache.store(files=("liblaunch_shared.so", "libLLVM-15.so", "libclang-cpp.so.15", "libxpujitc.so"), condition=is_xpu,
                 copy_src_path=f"{cache.dir_path}/{flagtree_backend}/xpu-device-libs",
                 copy_dst_path=f"third_party/{flagtree_backend}/device")
-    cache.store(file="xpu-sdnn-objects", condition=is_xpu,
-                url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.6.1.tar.gz",
-                version="v0.3.6.6.1", post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
+    cache.store(
+        file="xpu-sdnn-objects", condition=is_xpu,
+        # v0.3.6.8.1: same object set as v0.3.6.8.0 (internal d116bdf4 +
+        # PR !52/!124, rebuilt against llvm_trust 20260615, root dir entry
+        # in tarball) with all DWARF debug sections stripped from the .o/.a
+        # members (objcopy --strip-debug; symbol tables kept, matching the
+        # v0.3.6.7.x packaging convention). v0.3.6.8.0 shipped unstripped
+        # (~575MB vs 4.7MB) and is superseded. Upload verified (sha256
+        # aaf14c3d..., HTTP 200 on 2026-09-06).
+        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.8.1.tar.gz",
+        version="v0.3.6.8.1", post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
     cache.store(
         files=("clang", "xpu-xxd", "xpu3-elfconv", "xpu3-elfconv-triton", "xpu-kernel.t", "ld.lld", "llvm-readelf",
                "llvm-objdump", "llvm-objcopy"), condition=is_xpu,

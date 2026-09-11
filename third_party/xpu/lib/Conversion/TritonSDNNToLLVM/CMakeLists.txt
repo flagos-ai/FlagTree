@@ -11,4 +11,5 @@ add_xpu_sdnn_object(TritonSDNNToLLVM
   TritonSDNNIR
   TritonSDNNTransforms
   MLIRAffineToStandard
+  MLIRTargetLLVMIRImport
 )

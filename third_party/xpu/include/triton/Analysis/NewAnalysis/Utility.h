@@ -67,7 +67,8 @@ enum class OffsetState {
   DiscreteSame = 0,
   Continuous = 1,
   Discrete = 2,
-  LocallyContinuous = 3
+  LocallyContinuous = 3,
+  LocallyScalar = 4
 };
 
 enum class ElemState {

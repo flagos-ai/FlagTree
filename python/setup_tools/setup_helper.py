@@ -55,8 +55,8 @@ def get_flagtree_version(git_commit_hash_fn):
             return flagtree_ver
         return flagtree_ver + git_commit_hash_fn().replace("+", ".")
     if flagtree_backend:
-        return "0.6.0+" + flagtree_backend + git_commit_hash_fn().replace("+", ".")
-    return "0.6.0" + git_commit_hash_fn()
+        return "0.7.0+" + flagtree_backend + git_commit_hash_fn().replace("+", ".")
+    return "0.7.0" + git_commit_hash_fn()
 
 
 def get_long_description():
@@ -857,7 +857,7 @@ download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro
 
 download_flagtree_third_party("flagcx", condition=(not flagtree_backend), hook="handle_flagcx", required=True)
 
-download_flagtree_third_party("tileir", condition=(flagtree_backend == "tileir"), required=True)
+download_flagtree_third_party("cuda-tile", condition=(flagtree_backend == "tileir"), required=True)
 
 handle_flagtree_backend()
 

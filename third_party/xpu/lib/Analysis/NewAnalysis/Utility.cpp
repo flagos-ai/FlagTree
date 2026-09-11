@@ -88,6 +88,9 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os, const OffsetState &state) {
   case OffsetState::LocallyContinuous:
     os << "Locally Continuous";
     break;
+  case OffsetState::LocallyScalar:
+    os << "Locally Scalar";
+    break;
   default:
     os << "Invalid State";
     break;

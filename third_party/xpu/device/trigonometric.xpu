@@ -825,6 +825,71 @@ extern __device__ inline float cosf(float input) {
   return result;
 }
 
+__device__ inline float j0f(float x) {
+  // Bessel J0, single precision. Abramowitz & Stegun 9.4.1 / 9.4.3.
+  float ax = x < 0.0f ? -x : x;
+  if (ax <= 3.0f) {
+    float t = x * x / 9.0f;
+    return 1.0f + t * (-2.2499997f + t * (1.2656208f + t * (-0.3163866f
+         + t * (0.0444479f + t * (-0.0039444f + t * 0.0002100f)))));
+  }
+  float z = 3.0f / ax;
+  float f0 = 0.79788456f + z * (-0.00000077f + z * (-0.00552740f + z * (-0.00009512f
+           + z * (0.00137237f + z * (-0.00072805f + z * 0.00014476f)))));
+  float th = ax - 0.78539816f + z * (-0.04166397f + z * (-0.00003954f
+           + z * (0.00262573f + z * (-0.00054125f + z * (-0.00029333f + z * 0.00013558f)))));
+  return f0 * cosf(th) / sqrt(ax);
+}
+
+__device__ inline float j1f(float x) {
+  // Bessel J1 (odd). A&S 9.4.4 / 9.4.6.
+  float ax = x < 0.0f ? -x : x;
+  if (ax <= 3.0f) {
+    float t = x * x / 9.0f;
+    return x * (0.5f + t * (-0.56249985f + t * (0.21093573f + t * (-0.03954289f
+             + t * (0.00443319f + t * (-0.00031761f + t * 0.00001109f))))));
+  }
+  float z = 3.0f / ax;
+  float f1 = 0.79788456f + z * (0.00000156f + z * (0.01659667f + z * (0.00017105f
+           + z * (-0.00249511f + z * (0.00113653f + z * -0.00020033f)))));
+  float th = ax - 2.35619449f + z * (0.12499612f + z * (0.00005650f + z * (-0.00637879f
+           + z * (0.00074348f + z * (0.00079824f + z * -0.00029166f)))));
+  float r = f1 * cosf(th) / sqrt(ax);
+  return x < 0.0f ? -r : r;
+}
+
+__device__ inline float y0f(float x) {
+  // Bessel Y0 (x>0). A&S 9.4.2 / 9.4.3.
+  if (x <= 3.0f) {
+    float t = x * x / 9.0f;
+    return 0.636619772f * log(x * 0.5f) * j0f(x)
+         + 0.36746691f + t * (0.60559366f + t * (-0.74350384f + t * (0.25300117f
+         + t * (-0.04261214f + t * (0.00427916f + t * -0.00024846f)))));
+  }
+  float z = 3.0f / x;
+  float f0 = 0.79788456f + z * (-0.00000077f + z * (-0.00552740f + z * (-0.00009512f
+           + z * (0.00137237f + z * (-0.00072805f + z * 0.00014476f)))));
+  float th = x - 0.78539816f + z * (-0.04166397f + z * (-0.00003954f + z * (0.00262573f
+           + z * (-0.00054125f + z * (-0.00029333f + z * 0.00013558f)))));
+  return f0 * sinf(th) / sqrt(x);
+}
+
+__device__ inline float y1f(float x) {
+  // Bessel Y1 (x>0). A&S 9.4.5 / 9.4.6.
+  if (x <= 3.0f) {
+    float t = x * x / 9.0f;
+    return 0.636619772f * log(x * 0.5f) * j1f(x)
+         + (1.0f / x) * (-0.6366198f + t * (0.2212091f + t * (2.1682709f + t * (-1.3164827f
+         + t * (0.3123951f + t * (-0.0400976f + t * 0.0027873f))))));
+  }
+  float z = 3.0f / x;
+  float f1 = 0.79788456f + z * (0.00000156f + z * (0.01659667f + z * (0.00017105f
+           + z * (-0.00249511f + z * (0.00113653f + z * -0.00020033f)))));
+  float th = x - 2.35619449f + z * (0.12499612f + z * (0.00005650f + z * (-0.00637879f
+           + z * (0.00074348f + z * (0.00079824f + z * -0.00029166f)))));
+  return f1 * sinf(th) / sqrt(x);
+}
+
 static __device__ inline void translation_tan(float *input) {
   float tmp = *input;
   int factor = int(tmp / (PI / 2));

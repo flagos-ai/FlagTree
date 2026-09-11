@@ -556,6 +556,53 @@ def make_launcher(constants, signature, ids, metadata):
     # must NOT be passed via the python launcher either.
     signature = {i: ty for i, ty in signature.items() if ty != "constexpr"}
 
+    # TensorDescType is lowered to a single ptr<1> in the LLVM kernel (no
+    # multi-arg expansion). Map "tensordesc<...>" to a pointer type in the
+    # C launcher so it is passed as void*.
+    signature = {i: (f"*{ty}" if ty.startswith("tensordesc") else ty) for i, ty in signature.items()}
+
+    # A tensor descriptor argument reaches the kernel as (4*rank + 2) flat
+    # parameters.  tensor_descriptor_base_type contributes the handle group --
+    # base pointer, shape and strides as i64, then the padding flag -- and
+    # tensor_descriptor_type appends the Python-visible `.shape` (i32) and
+    # `.strides` (i64) tuples on top of it, so shape and strides appear twice.
+    # For rank 2 that is:
+    #   (ptr<1>, i64 x4, i1, i32 x2, i64 x2)  — 10 parameters
+    # The C launcher must declare all of them: passing fewer shifts every later
+    # parameter, including the three grid arguments the LoopGrid pass appends at
+    # the end, which then read as zero and the loop_grid body never runs.
+    def _tensordesc_rank(ty):
+        """Parse rank from tensordesc type string, e.g. '*tensordesc<f32[128]>' → 1, '*tensordesc<f32[128,64]>' → 2."""
+        try:
+            inner = ty.split("[")[1].split("]")[0]
+            return len(inner.split(","))
+        except (IndexError, ValueError):
+            return 1  # default to 1D if parsing fails
+
+    expanded_signature = {}
+    exp_idx = 0
+    for i, ty in signature.items():
+        if ty.startswith("*tensordesc"):
+            rank = _tensordesc_rank(ty)
+            expanded_signature[exp_idx] = ty  # base pointer (void*)
+            exp_idx += 1
+            for _ in range(2 * rank):
+                expanded_signature[exp_idx] = "i64"  # handle shape, then strides
+                exp_idx += 1
+            expanded_signature[exp_idx] = "i1"  # padding == "nan"
+            exp_idx += 1
+            for _ in range(rank):
+                expanded_signature[exp_idx] = "i32"  # .shape
+                exp_idx += 1
+            for _ in range(rank):
+                expanded_signature[exp_idx] = "i64"  # .strides
+                exp_idx += 1
+        else:
+            expanded_signature[exp_idx] = ty
+            exp_idx += 1
+    signature = expanded_signature
+    constants = {}  # constexprs already removed from signature; nothing to skip
+
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors, such as tensor descriptors for CUDA.
     arg_decls = ", ".join(f"{ty_to_cpp(ty)} arg{i}" + (f", int64_t arg{i}_numel" if ty[0] == "*" else "")
@@ -921,7 +968,24 @@ class XPULauncher(object):
         fixed = args[:9]
         kernel_args = args[9:]
         filtered = [arg for arg, ty in zip(kernel_args, self._signature.values()) if ty != "constexpr"]
-        self.launch(*fixed, *filtered)
+        # A TensorDescriptor expands to (4*rank + 2) flat arguments, matching
+        # tensor_descriptor_type._flatten_ir: the handle group (base pointer,
+        # shape and strides as i64, padding flag) followed by the Python-visible
+        # `.shape` (i32) and `.strides` (i64) tuples.  Shape and strides are
+        # therefore passed twice, with the same values.
+        from triton.tools.tensor_descriptor import TensorDescriptor
+        expanded = []
+        for arg in filtered:
+            if isinstance(arg, TensorDescriptor):
+                expanded.append(arg.base)  # tensor with data_ptr/numel
+                expanded.extend(arg.shape)  # handle shape, i64
+                expanded.extend(arg.strides)  # handle strides, i64
+                expanded.append(arg.padding == "nan")
+                expanded.extend(arg.shape)  # .shape, i32
+                expanded.extend(arg.strides)  # .strides, i64
+            else:
+                expanded.append(arg)
+        self.launch(*fixed, *expanded)
 
 
 @functools.lru_cache(maxsize=1)
