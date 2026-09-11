@@ -33,8 +33,9 @@ Environment variables:
     Manifest. The default cache path is ``$FLAGTUNE_MODEL_CACHE/manifest.json``.
   * ``FLAGTUNE_MODEL_BASE_URL``: optional HTTPS base URL used for model package
     URL mirroring.
-  * ``FLAGTUNE_MANIFEST_URL``: HTTPS URL of the Manifest tar.gz, required
-    when no usable local or cached Manifest exists.
+  * ``FLAGTUNE_MANIFEST_URL``: optional HTTPS URL of the Manifest tar.gz.
+    Defaults to the FlagOS-hosted FlagTune XGBoost Manifest when no usable
+    local or cached Manifest exists.
   * ``FLAGTUNE_MANIFEST_TTL``: optional cache lifetime in seconds (default 86400).
   * ``FLAGTUNE_MANIFEST_REFRESH``: when set to ``1``, refresh the Manifest cache.
   * ``FLAGTUNE_MODEL_CACHE``: writable package-cache root. Defaults to
@@ -80,6 +81,13 @@ from triton.flagtune.contract.archive import (
     validate_model_version,
 )
 from triton.flagtune.contract.identity import ModelIdentity
+from triton.flagtune.runtime.errors import (
+    FlagTuneError,
+    ModelSourceError,
+    ModelUnavailableError,
+    ModelValidationError,
+    flagtune_errors,
+)
 from triton.flagtune.contract.operator_schema import (
     VariantInfo,
     load_model_config_bytes,
@@ -113,11 +121,11 @@ def _user_model_root() -> Optional[Path]:
     return Path(env) if env else None
 
 
-class IncompatibleModelError(RuntimeError):
+class IncompatibleModelError(ModelValidationError):
     """Indicate that a resolved archive cannot serve the requested contract."""
 
 
-class ModelBundleMissingError(IncompatibleModelError):
+class ModelBundleMissingError(ModelUnavailableError, IncompatibleModelError):
     """Report that a resolved platform package carries no bundle for one identity.
 
     A platform package legitimately covers only the operators, variants, and
@@ -308,6 +316,7 @@ class FlagTuneModelManager:
                 candidates.append((parsed.selection_key, package))
         return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
+    @flagtune_errors(ModelValidationError)
     def load(
         self,
         op_id: str,
@@ -378,6 +387,7 @@ class FlagTuneModelManager:
             self._implicit_loaded[identity] = loaded
         return loaded
 
+    @flagtune_errors(ModelSourceError)
     def resolve(
         self,
         op_id: str,
@@ -408,7 +418,7 @@ class FlagTuneModelManager:
                 return cached
             if remote_disabled:
                 suffix = f" at version {requested!r}" if requested is not None else ""
-                raise FileNotFoundError(
+                raise ModelUnavailableError(
                     f"FlagTune package for platform {identity.platform_key!r}{suffix} is not cached and "
                     "FLAGTUNE_DISABLE_REMOTE=1 prevents downloading it")
 
@@ -426,8 +436,8 @@ class FlagTuneModelManager:
             )
 
         suffix = f" at version {requested!r}" if requested is not None else ""
-        raise FileNotFoundError(f"FlagTune Manifest has no package for platform {identity.platform_key!r}{suffix}; "
-                                f"checked flat user packages and package cache {cache_root} first")
+        raise ModelUnavailableError(f"FlagTune Manifest has no package for platform {identity.platform_key!r}{suffix}; "
+                                    f"checked flat user packages and package cache {cache_root} first")
 
     def _validate_flagtune_version(self, config: Dict[str, Any], source: str) -> None:
         min_ver = config.get("flagtune_version_min")
@@ -594,7 +604,7 @@ class FlagTuneModelManager:
                 if _download_latest_requested():
                     hint = (" FLAGTUNE_MODEL_DOWNLOAD_LATEST=1 restricted the cache lookup to this "
                             "version; unset it to accept an older cached package.")
-                raise FileNotFoundError(
+                raise ModelUnavailableError(
                     f"FlagTune package {platform_key!r} version {package.version!r} is not cached and "
                     f"FLAGTUNE_DISABLE_REMOTE=1 prevents downloading it.{hint}")
 
@@ -627,7 +637,7 @@ class FlagTuneModelManager:
             self._packages[(platform_key, package.version, digest)] = parsed_package
             logger.info("FlagTune platform package cached to %s", destination)
             return destination
-        except (FileNotFoundError, ImportError, IncompatibleModelError, ValueError):
+        except (FlagTuneError, FileNotFoundError, ImportError, ValueError):
             raise
         except Exception as exc:
             raise RuntimeError(

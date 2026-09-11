@@ -20,10 +20,12 @@
 """Load the local or remote Manifest that indexes FlagTune packages.
 
 The Manifest is read from ``FLAGTUNE_LOCAL_MANIFEST`` when configured. Otherwise
-the cached Manifest is refreshed from ``FLAGTUNE_MANIFEST_URL`` when its TTL
-expires. A failed remote refresh is reported to the caller instead of silently
-using stale metadata. The remote URL must point to a tar.gz containing exactly
-``manifest.json``. Its schema is validated before cache publication.
+the cached Manifest is refreshed from ``FLAGTUNE_MANIFEST_URL`` (or the built-in
+FlagOS default URL) when its TTL expires. A failed remote refresh is reported to
+the caller instead of silently using stale metadata. The remote URL must point
+to a tar.gz containing ``manifest.json``. Common macOS archive metadata is
+ignored, while other unexpected members are rejected. Its schema is validated
+before cache publication.
 
 The optional ``latest`` field is descriptive only. When no exact version is
 requested, selection computes the highest strict SemVer key in ``versions``.
@@ -48,6 +50,7 @@ from urllib.request import Request
 
 from triton.flagtune.contract.archive import parse_model_version, validate_model_version
 from triton.flagtune.contract.identity import validate_platform_key
+from triton.flagtune.runtime.errors import ModelSourceError
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,8 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _MANIFEST_MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 _MANIFEST_MAX_MEMBER_BYTES = 4 * 1024 * 1024
 _DEFAULT_MANIFEST_TTL = 24 * 60 * 60
+_DEFAULT_MANIFEST_URL = ("https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
+                         "flagtune-xgb-manifest-v1.0.0.tar.gz")
 
 
 @dataclass(frozen=True)
@@ -64,7 +69,7 @@ class RemotePackage:
     sha256: str
 
 
-class ManifestContractError(RuntimeError):
+class ManifestContractError(ModelSourceError):
     """Reject a Manifest that violates schema 1."""
 
 
@@ -98,7 +103,7 @@ def _manifest_meta_path(path: Path) -> Path:
 
 
 def _manifest_url() -> str:
-    return os.environ.get("FLAGTUNE_MANIFEST_URL", "").strip()
+    return os.environ.get("FLAGTUNE_MANIFEST_URL", _DEFAULT_MANIFEST_URL).strip()
 
 
 def _environment_switch(name: str) -> bool:
@@ -197,6 +202,14 @@ def _bundle_members(payload: bytes, source: str) -> bytes:
     try:
         with tarfile.open(fileobj=BytesIO(payload), mode="r:gz") as archive:
             for member in archive.getmembers():
+                # macOS may add AppleDouble metadata alongside the real file
+                # when an archive is created or uploaded from Finder. It does
+                # not participate in the Manifest contract.
+                if (
+                    member.name in {"._manifest.json", "__MACOSX"}
+                    or member.name.startswith("__MACOSX/")
+                ):
+                    continue
                 if member.name != "manifest.json":
                     raise ManifestContractError(f"remote Manifest archive contains unexpected member {member.name!r}")
                 if (member.name in files or not member.isfile() or member.isdir() or member.issym() or member.islnk()):

@@ -89,8 +89,9 @@ def _configs_to_dicts(configs: List[Any], param_fields: List[str]) -> List[Dict[
     """Convert Triton configs into the dictionary form accepted by proposers.
 
     Only requested kernel parameter fields and Triton launch metadata are
-    copied.  Values are coerced to integers, incomplete configs are retained,
-    empty results are omitted, and config hooks are intentionally not carried
+    copied. Kernel parameters retain their declared scalar types, launch values
+    are coerced to integers, incomplete configs are retained, empty results are
+    omitted, and config hooks are intentionally not carried
     into model features or predictions.
     """
     result = []
@@ -99,7 +100,7 @@ def _configs_to_dicts(configs: List[Any], param_fields: List[str]) -> List[Dict[
         if hasattr(cfg, "kwargs"):
             for f in param_fields:
                 if f in cfg.kwargs:
-                    d[f] = int(cfg.kwargs[f])
+                    d[f] = cfg.kwargs[f]
         if hasattr(cfg, "num_warps"):
             d["num_warps"] = int(cfg.num_warps)
         if hasattr(cfg, "num_stages"):
@@ -279,19 +280,25 @@ class Flagtuner(Autotuner):
         pruning is applied again to predicted configs; an empty result at any
         stage restores the original pruned list.
         """
-        pruned = super().prune_configs(kwargs)
         if not self._flagtune_op_id or not self._flagtune_variant:
-            return pruned
+            return super().prune_configs(kwargs)
         from triton.flagtune import is_enabled as _is_enabled
 
         if not _is_enabled():
-            return pruned
+            return super().prune_configs(kwargs)
         identity = self._runtime_identity(kwargs)
         model = self._ensure_flagtune(identity)
         proposer, variant_info = model
 
         param_fields = variant_info.param_names
-        initial = _configs_to_dicts(pruned, param_fields)
+        # The caller's active configs come from the runtime Expanded + Default
+        # resolver. Do not regenerate the contract parameter Cartesian product.
+        legal_configs = list(self.configs)
+        if self.early_config_prune:
+            legal_configs = self.early_config_prune(legal_configs, self.nargs, **kwargs)
+        if not legal_configs:
+            raise RuntimeError(f"FlagTune early_config_prune returned no configs for {identity.artifact_key}")
+        initial = _configs_to_dicts(legal_configs, param_fields)
         meta = {
             "op_id": identity.op_id,
             "variant": identity.variant,
@@ -299,7 +306,7 @@ class Flagtuner(Autotuner):
             "dtype_key": identity.dtype_key,
         }
 
-        config_dicts = proposer(None, self.nargs, initial, meta)
+        config_dicts = proposer(None, {**(self.nargs or {}), **kwargs}, initial, meta)
 
         if not config_dicts:
             raise RuntimeError(f"FlagTune proposer returned no configs for {identity.artifact_key}")
@@ -311,11 +318,6 @@ class Flagtuner(Autotuner):
         if not result:
             raise RuntimeError(f"FlagTune proposer produced no usable configs for {identity.artifact_key}")
 
-        if self.early_config_prune:
-            result = self.early_config_prune(result, self.nargs, **kwargs)
-
-        if not result:
-            raise RuntimeError(f"FlagTune configs were all pruned for {identity.artifact_key}")
         return result
 
 

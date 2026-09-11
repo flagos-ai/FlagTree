@@ -31,6 +31,17 @@ def clean_manifest_environment(monkeypatch):
             "FLAGTUNE_DISABLE_REMOTE",
     ):
         monkeypatch.delenv(name, raising=False)
+    # Keep fixture-created cache manifests offline; the default URL is tested
+    # explicitly below and should not make unrelated tests perform network I/O.
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_URL", "")
+
+
+def test_default_manifest_url(monkeypatch):
+    """Use the hosted FlagOS Manifest when no URL override is provided."""
+    monkeypatch.delenv("FLAGTUNE_MANIFEST_URL", raising=False)
+
+    assert model_sources._manifest_url() == ("https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/"
+                                             "flagtune-xgb-manifest-v1.0.0.tar.gz")
 
 
 def manifest_with(entry, *, platform_key=PLATFORM_KEY):
@@ -109,6 +120,7 @@ def test_missing_cached_manifest_requires_remote_url(tmp_path, monkeypatch):
     cache_root = tmp_path / "cache"
     manifest_path = cache_root / "manifest.json"
     monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_URL", "")
 
     with pytest.raises(model_sources.ManifestFetchError, match="FLAGTUNE_MANIFEST_URL is not configured"):
         model_sources.resolve_package_info(PLATFORM_KEY)
@@ -144,6 +156,45 @@ def test_remote_manifest_bundle_contains_only_schema_validated_manifest():
     extracted = model_sources._bundle_members(payload.getvalue(), "https://example.invalid/manifest.tar.gz")
 
     assert model_sources._read_manifest_bytes(extracted, "remote test") == manifest
+
+
+def test_remote_manifest_bundle_ignores_macos_metadata():
+    manifest = manifest_with({"versions": {"1.0.0": ENTRY_1}})
+    manifest_bytes = json.dumps(manifest).encode("utf-8")
+    payload = BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz") as archive:
+        metadata = tarfile.TarInfo("._manifest.json")
+        metadata.size = 0
+        archive.addfile(metadata, BytesIO())
+        macos_dir = tarfile.TarInfo("__MACOSX/")
+        macos_dir.type = tarfile.DIRTYPE
+        archive.addfile(macos_dir)
+        metadata_copy = tarfile.TarInfo("__MACOSX/._manifest.json")
+        metadata_copy.size = 0
+        archive.addfile(metadata_copy, BytesIO())
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(manifest_bytes)
+        archive.addfile(info, BytesIO(manifest_bytes))
+
+    extracted = model_sources._bundle_members(payload.getvalue(), "https://example.invalid/manifest.tar.gz")
+
+    assert model_sources._read_manifest_bytes(extracted, "remote test") == manifest
+
+
+def test_remote_manifest_bundle_still_rejects_unexpected_business_member():
+    manifest = manifest_with({"versions": {"1.0.0": ENTRY_1}})
+    manifest_bytes = json.dumps(manifest).encode("utf-8")
+    payload = BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz") as archive:
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(manifest_bytes)
+        archive.addfile(info, BytesIO(manifest_bytes))
+        extra = tarfile.TarInfo("README.txt")
+        extra.size = 0
+        archive.addfile(extra, BytesIO())
+
+    with pytest.raises(model_sources.ManifestContractError, match="README.txt"):
+        model_sources._bundle_members(payload.getvalue(), "https://example.invalid/manifest.tar.gz")
 
 
 @pytest.mark.parametrize(

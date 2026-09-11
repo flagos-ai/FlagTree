@@ -87,6 +87,7 @@ class ParameterSpace:
 
     fields: List[ParameterField]
     constraints: List[Callable[[Dict[str, Any]], bool]] = dataclass_field(default_factory=list)
+    explicit_configs: Optional[List[Dict[str, Any]]] = None
 
     def field_values(self) -> Dict[str, List[Any]]:
         """Return an ordered name-to-values mapping for all fields.
@@ -102,6 +103,9 @@ class ParameterSpace:
         Constraints are evaluated only after a full combination is assembled;
         exceptions raised by constraint callables propagate to the caller.
         """
+        if self.explicit_configs is not None:
+            yield from (dict(config) for config in self.explicit_configs)
+            return
         names = [field.name for field in self.fields]
         for values in product(*(field.legal_values for field in self.fields)):
             config = dict(zip(names, values))
@@ -115,6 +119,9 @@ class ParameterSpace:
         ``False`` because they normally indicate an invalid constraint
         implementation rather than an invalid candidate.
         """
+        if self.explicit_configs is not None:
+            key = self.config_key(config)
+            return any(self.config_key(item) == key for item in self.explicit_configs)
         for field in self.fields:
             if field.name not in config or config[field.name] not in field.legal_values:
                 return False
@@ -127,7 +134,10 @@ class ParameterSpace:
         :meth:`validate` first when a key must represent a complete candidate.
         Values must be hashable if the key will be inserted into a set or dict.
         """
-        return tuple(sorted((field.name, config[field.name]) for field in self.fields if field.name in config))
+        names = self.all_field_names
+        if self.explicit_configs is not None and not names:
+            names = sorted(config)
+        return tuple(sorted((name, config[name]) for name in names if name in config))
 
     def active_field_names(self) -> Tuple[str, ...]:
         """Return all field names as an immutable declaration-ordered tuple."""
