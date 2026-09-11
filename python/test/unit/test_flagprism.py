@@ -2,6 +2,7 @@
 import ast
 from contextlib import nullcontext
 import importlib.util
+import os  # FlagPrism: resolve an optional external component checkout.
 from pathlib import Path
 import sys
 import sysconfig
@@ -17,7 +18,13 @@ from flagtree import _flagprism  # noqa: E402
 
 
 def _load_build_helper():
-    path = (Path(__file__).resolve().parents[3] / "third_party" / "FlagPrism" / "python" / "flagprism_build.py")
+    # FlagPrism: retain the bundled source lookup for reference.
+    # path = (Path(__file__).resolve().parents[3] / "third_party" / "FlagPrism" / "python" / "flagprism_build.py")
+    # FlagPrism: test the same source override accepted by the package build.
+    source_override = os.getenv("FLAGPRISM_SOURCE_DIR", "").strip()
+    source_root = (Path(source_override).resolve() if source_override else Path(__file__).resolve().parents[3] /
+                   "third_party" / "FlagPrism")
+    path = source_root / "python" / "flagprism_build.py"
     if not path.is_file():
         pytest.skip("FlagPrism sources are not available")
     spec = importlib.util.spec_from_file_location("_test_flagprism_build", path)
@@ -54,7 +61,10 @@ def flagprism_setup_factory(monkeypatch, tmp_path):
         setup_helper.runpy,
         "run_path",
         lambda *args, **kwargs: {
-            "create_build_config": lambda project_root: build_config,
+            # FlagPrism: retain the former one-argument fixture for reference.
+            # "create_build_config": lambda project_root: build_config,
+            # FlagPrism: mirror the optional external source-root argument.
+            "create_build_config": lambda project_root, source_root=None: build_config,
         },
     )
 
@@ -165,7 +175,10 @@ def test_build_helper_uses_unified_switch(build_helper, monkeypatch, tmp_path, v
         ("cambricon", False),
         ("aipu", False),
         ("xpu", False),
-        ("mthreads", False),
+        # FlagPrism: retain the former unsupported expectation for reference.
+        # ("mthreads", False),
+        # FlagPrism: mthreads now enables the profiler/debugger by default.
+        ("mthreads", True),
     ),
 )
 def test_flagprism_is_enabled_by_default_for_supported_backends(flagprism_setup_factory, monkeypatch, backend, enabled):
@@ -205,7 +218,11 @@ def test_non_ascend_explicit_flagprism_is_rejected_before_side_effects(flagprism
     monkeypatch.setenv("TRITON_BUILD_FLAGPRISM", "ON")
     monkeypatch.setenv("TRITON_BUILD_PROTON", "ON")
 
-    with pytest.raises(RuntimeError, match="ascend or iluvatar"):
+    # FlagPrism: retain the former diagnostic assertion for reference.
+    # with pytest.raises(RuntimeError, match="ascend or iluvatar"):
+    #     create("enflame")
+    # FlagPrism: include mthreads in the supported-backend diagnostic.
+    with pytest.raises(RuntimeError, match="ascend, iluvatar, or mthreads"):
         create("enflame")
 
     assert not downloads
@@ -407,10 +424,14 @@ def test_build_tree_cleanup_prevents_split_wheel_artifacts(build_helper, tmp_pat
     assert not list(native_root.glob("libproton*"))
 
     expected_native = flagtree_root / "profiler" / ("_native" + (sysconfig.get_config_var("EXT_SUFFIX") or ".so"))
+    # FlagPrism: validate the debugger runtime module together with Profiler.
+    expected_debugger_native = flagtree_root / "debugger" / ("_native" +
+                                                             (sysconfig.get_config_var("EXT_SUFFIX") or ".so"))
     if enabled:
         for path in (
                 flagtree_root / "debugger" / "__init__.py",
                 flagtree_root / "profiler" / "__init__.py",
+                expected_debugger_native,
                 expected_native,
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -428,6 +449,7 @@ def test_build_tree_cleanup_prevents_split_wheel_artifacts(build_helper, tmp_pat
     assert not (cache_root / "_components.cpython-311.pyc").exists()
     if enabled:
         assert expected_native.is_file()
+        assert expected_debugger_native.is_file()
         assert not list(native_root.glob("libproton*"))
         assert (flagtree_root / "debugger").is_dir()
         assert (flagtree_root / "profiler").is_dir()
@@ -435,3 +457,48 @@ def test_build_tree_cleanup_prevents_split_wheel_artifacts(build_helper, tmp_pat
         assert not list(native_root.glob("libproton*"))
         assert not (flagtree_root / "debugger").exists()
         assert not (flagtree_root / "profiler").exists()
+
+
+# FlagPrism: verify editable builds preserve native modules outside pip's
+# temporary build_lib without changing regular wheel behavior.
+@pytest.mark.parametrize(("command", "should_copy"), (
+    ("bdist_wheel", False),
+    ("editable_wheel", True),
+    ("develop", True),
+))
+def test_build_tree_places_native_modules_for_editable_install(build_helper, monkeypatch, tmp_path, command,
+                                                               should_copy):
+    build_lib = tmp_path / "build-lib"
+    source_root = tmp_path / "FlagPrism"
+    config = build_helper.FlagPrismBuildConfig(
+        enabled=True,
+        relative_root=Path("third_party/FlagPrism"),
+        root=source_root,
+    )
+    extension_name = "_native" + (sysconfig.get_config_var("EXT_SUFFIX") or ".so")
+    modules = (
+        (
+            build_lib / "flagtree" / "debugger" / extension_name,
+            source_root / "Debugger" / "python" / "flagtree_debugger" / extension_name,
+        ),
+        (
+            build_lib / "flagtree" / "profiler" / extension_name,
+            source_root / "Profiler" / "python" / "flagtree_profiler" / extension_name,
+        ),
+    )
+    payloads = []
+    for index, (source, _) in enumerate(modules):
+        payload = f"native-{index}".encode()
+        payloads.append(payload)
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(payload)
+
+    monkeypatch.setattr(build_helper.sys, "argv", ["setup.py", command])
+    config.finalize_build_tree(str(build_lib))
+    for source, _ in modules:
+        source.unlink()
+
+    for (_, destination), payload in zip(modules, payloads):
+        assert destination.is_file() is should_copy
+        if should_copy:
+            assert destination.read_bytes() == payload

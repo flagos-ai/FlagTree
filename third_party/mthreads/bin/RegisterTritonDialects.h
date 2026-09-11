@@ -14,12 +14,19 @@
 #include "MTGPUToLLVM/Passes.h"
 #include "TritonMUSAGPUToLLVM/Passes.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
+// FlagPrism: select the external component's dialect registration, matching
+// the shared FlagTree tool registration path.
+#ifdef __FLAGPRISM__
+// FlagPrism: use the external component's replacement Proton registration.
+#include "Integration/Registration.h" // FlagPrism: use the exported include root.
+#else
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/Passes.h"
 #include "proton/Dialect/include/Conversion/ProtonToProtonGPU/Passes.h"
 #include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "proton/Dialect/include/Dialect/ProtonGPU/IR/Dialect.h"
 #include "proton/Dialect/include/Dialect/ProtonGPU/Transforms/Passes.h"
+#endif
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
 #include "triton/Dialect/NVGPU/IR/Dialect.h"
 #include "triton/Dialect/NVWS/IR/Dialect.h"
@@ -90,6 +97,13 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerTritonMUSAGPUToLLVMPasses();
   mlir::triton::registerMTGPUToLLVMPasses();
   mlir::registerTritonMUSAGPUPasses();
+
+  // FlagPrism: use the same external pass and dialect registration entry
+  // points as the shared FlagTree tools.
+#ifdef __FLAGPRISM__
+  mlir::triton::proton::registerFlagTreeProtonTestPasses();
+  mlir::triton::proton::registerFlagTreeProtonPassesAndDialects(registry);
+#endif
 
   // Plugin passes
   if (std::string filename =
