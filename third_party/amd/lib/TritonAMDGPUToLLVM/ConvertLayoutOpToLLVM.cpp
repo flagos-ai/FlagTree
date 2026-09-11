@@ -32,6 +32,77 @@ public:
     if (!cvtNeedsWarpShuffle(srcTy, dstTy))
       return failure();
 
+#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+    MLIRContext *ctx = op.getContext();
+    StringAttr kReg = str_attr("register");
+    StringAttr kLane = str_attr("lane");
+
+    // Backport from Triton main: triton/pull/11646.
+    // permlane_swap handles permutations; broadcast-owner shuffles use the
+    // common lowering, which also accounts for warp/block-dependent lanes.
+    auto conversion = minimalCvtLayout(srcTy, dstTy);
+    if (llvm::to_vector(conversion.getOutDimNames()) !=
+        SmallVector<StringAttr, 2>{kReg, kLane})
+      return failure();
+
+    auto elemTy = getTypeConverter()->convertType(srcTy.getElementType());
+    int bitwidth = elemTy.isIntOrFloat() ? elemTy.getIntOrFloatBitWidth() : 64;
+    // Triton main: triton/pull/11646.
+    // FlagTree adaptation for triton/pull/11646.
+    // Use the existing tensor-type analysis interface.
+    auto factors = getWarpLayoutConvertDecomposition(srcTy, dstTy, bitwidth);
+    auto &[pReg, shuffleMap, mixedTranspositions, nPack] = factors;
+
+    if (mixedTranspositions.size() != 1)
+      return failure();
+    // Triton main: triton/pull/11646.
+    auto t = mixedTranspositions[0];
+    int rBit = t.regBit;
+    int lBit = t.dstLane;
+
+    // Following `transferWithinWarp` and `getWarpLayoutConvertDecomposition`,
+    // an intra-warp layout conversion can be described as a permutation of
+    // hardware index bits. The `permlane_swap` instructions can be used to
+    // effect transpositions (r_i l4) and (r_i l5) more cheaply than in the
+    // general pathway, where `l4` and `l5` are lane index bits and `r_i` is
+    // a register index bit, or 'basis vector' in the language of LinearLayouts.
+    //
+    // Certain layout conversions which benefit from using `permlane_swap` are
+    // produced during chained matrix multiplication kernels, namely the MFMA to
+    // DotOp conversion and the epilogue StoreOp vectorization optimization.
+    // This was the initial motivation for the pattern, but the implementation
+    // itself is entirely general.
+    //
+    // At the moment, we handle lane-register bit transpositions as above and
+    // 3-cycles involving both `l4` and `l5` bits such as (r_i l4 l5). In both
+    // cases, we require that `i >= nPack`, where `nPack` indicates the number
+    // of intra-register index bits (i.e., the degree of register packing), and
+    // that there are no intra-register element permutations prescribed by the
+    // general decomposition algorithm.
+    if (!(rBit >= nPack && t.topPreSel == 0x3210 && t.topPostSel == 0x3210 &&
+          (lBit == 4 || lBit == 5))) {
+      return failure();
+    }
+
+    // Triton main: triton/pull/11646.
+    // The permlane guard admits only ordinary register/lane permutations.
+    bool isSingleTransposition =
+        mlir::triton::squareSublayoutIsIdentity(shuffleMap, kLane);
+
+    // Triton main: triton/pull/11646.
+    const auto &laneBases = shuffleMap.getBases().lookup(kLane);
+    auto next = [&](size_t b) { return llvm::Log2_32(laneBases[b][0]); };
+    for (size_t b = 0; b < laneBases.size(); ++b) {
+      if (b == 4 || b == 5)
+        continue;
+      if (next(b) != b)
+        return failure();
+    }
+    bool isThreeCycle = (next(4) == 5 && next(5) == 4);
+
+    if (!(isSingleTransposition || isThreeCycle))
+      return failure();
+#else  // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
     MLIRContext *ctx = op.getContext();
     StringAttr kReg = str_attr("register");
     StringAttr kLane = str_attr("lane");
@@ -85,6 +156,7 @@ public:
 
     if (!(isSingleTransposition || isThreeCycle))
       return failure();
+#endif // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
 
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -110,6 +182,19 @@ public:
     auto srcLL = triton::gpu::toLinearLayout(srcTy);
     auto rmSrc = actionRemoveBroadcastedRegs(srcLL);
     inVals = rmSrc.apply(inVals);
+#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+    // Triton main: triton/pull/11646.
+    // The input values may require broadcasting so that the conversion can be
+    // described as a permutation. This does not cost anything for simple cases.
+    int regDim = pReg.getInDimSize(kReg);
+    SmallVector<Value> newInVals(regDim);
+    for (int r = 0; r < regDim; ++r)
+      newInVals[pReg.apply(
+                        {{ kReg,
+                           r }})[0]
+                    .second] = inVals[r % inVals.size()];
+    inVals = std::move(newInVals);
+#else  // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
     // The input values may require broadcasting so that the conversion can be
     // described as a permutation. This does not cost anything for simple cases.
     int regDim = inVals.size();
@@ -128,6 +213,7 @@ public:
     for (const auto &[i, v] : llvm::enumerate(inVals))
       newInVals[pReg.apply({{kReg, i}})[0].second] = v;
     inVals = std::move(newInVals);
+#endif // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
 
     // Handle register packing.
     int elemsPerVec = 1 << nPack;

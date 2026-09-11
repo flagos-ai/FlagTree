@@ -78,10 +78,29 @@ struct XPUExtractSliceOpConversion
       auto sizePerCore = clusterEncoding.getSizePerCore();
       assert(elems == product(sizePerCore) && "elems != product(sizePerCore)");
       if (sizePerCore[0] > 1) {
-        assert(sizePerCore[1] == 1 && "Only sizePerCore[1]==1 Could be Extract "
-                                      "Sliced When sizePerCore[0] > 1");
+        // llTensors is the *per-core* register array, so the row stride is the
+        // source's own sizePerCore[1] -- NOT srcShape[1]. The two coincide only
+        // when the source is not split along columns; when it is, srcShape[1]
+        // overruns the array and the kernel faults on device with
+        // `error code=700 illegal memory access`.
+        // Slice out the leading sizePerCore[1] columns of every row.
+        // sizePerCore[1] == 1 no longer holds after the tiling rework: unroll
+        // control can carry a multi-column accumulator, e.g.
+        // tensor<128x16xi32, sizePerCore=[2,16]> -> tensor<128x2xi32,
+        // sizePerCore=[2,2]>.
+        auto srcClusterEncoding =
+            cast<triton::xpu::ClusterLayoutAttr>(srcRankedTy.getEncoding());
+        auto srcSizePerCore = srcClusterEncoding.getSizePerCore();
+        int64_t srcColsPerCore = srcSizePerCore[1];
+        int64_t colsPerCore = sizePerCore[1];
+        assert(colsPerCore <= srcColsPerCore &&
+               "ExtractSlice widens the per-core column count");
         for (unsigned i = 0; i < elems; ++i) {
-          retVals[i] = llTensors[i * srcShape[1]];
+          unsigned srcIdx =
+              (i / colsPerCore) * srcColsPerCore + (i % colsPerCore);
+          assert(srcIdx < llTensors.size() &&
+                 "Get Invalid Index For triton::xpu::ExtractSliceOp");
+          retVals[i] = llTensors[srcIdx];
         }
       }
     }

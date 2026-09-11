@@ -1,6 +1,9 @@
 #include "triton/Analysis/NewAnalysis/OpFoldResultUtils.h"
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -11,6 +14,33 @@ std::optional<int64_t> getIntAttr(const OpFoldResult ofr) {
     return dyn_cast<IntegerAttr>(cast<Attribute>(ofr)).getInt();
 
   return std::nullopt;
+}
+
+std::optional<int64_t> getStaticUpperBound(const OpFoldResult ofr) {
+  if (auto intAttr = getIntAttr(ofr))
+    return intAttr;
+
+  auto val = dyn_cast<Value>(ofr);
+  if (!val)
+    return std::nullopt;
+
+  // When the tile size evenly divides the iteration range there is no
+  // affine.min: the size is the loop step, a plain constant.
+  if (auto constOp = val.getDefiningOp<arith::ConstantIndexOp>())
+    return constOp.value();
+
+  auto min = val.getDefiningOp<affine::AffineMinOp>();
+  if (!min)
+    return std::nullopt;
+
+  // The tile size is the AffineConstantExpr among the map's results.
+  // Canonicalization may reorder them, so scan all and take the smallest
+  // constant.
+  std::optional<int64_t> bound;
+  for (AffineExpr e : min.getAffineMap().getResults())
+    if (auto c = dyn_cast<AffineConstantExpr>(e))
+      bound = bound ? std::min(*bound, c.getValue()) : c.getValue();
+  return bound;
 }
 
 bool hasConstZero(const OpFoldResult ofr) {

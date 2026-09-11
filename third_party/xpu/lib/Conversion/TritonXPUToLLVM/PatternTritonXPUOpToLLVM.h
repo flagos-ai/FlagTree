@@ -134,6 +134,13 @@ void populateSPMDOpToLLVMPattern(LLVMTypeConverter &typeConverter,
                                  RewritePatternSet &patterns,
                                  PatternBenefit benefit);
 
+//===----------------------------------------------------------------------===//
+// triton::xpu::RawOp -> always_inline LLVM::CallOp (tle.raw)
+//===----------------------------------------------------------------------===//
+void populateRawOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                 RewritePatternSet &patterns,
+                                 PatternBenefit benefit);
+
 } // namespace xpu
 } // namespace triton
 } // namespace mlir
