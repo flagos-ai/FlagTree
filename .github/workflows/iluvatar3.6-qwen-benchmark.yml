@@ -36,7 +36,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  hcu36x-qwen:
+  iluvatar36x-qwen:
     runs-on: iluvatar3.6-qwen
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
