@@ -340,6 +340,11 @@ class device_mesh:
             names.append(dim_name)
         return shape, names
 
+    def __deepcopy__(self, memo):
+        # device_mesh is an immutable topology descriptor; sharing the instance
+        # keeps JIT global-change checks (which capture deepcopy'd values) stable.
+        return self
+
     @property
     def shape(self) -> tuple[int, ...]:
         return self._shape
@@ -812,7 +817,9 @@ def _apply_mesh_cluster_launch(mesh: device_mesh, _semantic: TLESemantic | None)
         return cluster_dims
 
     num_ctas = int(getattr(options, "num_ctas", 1))
-    if num_ctas != 1:
+    # Backends may report num_ctas=0 as "unset / default single CTA"; only
+    # actively-multi-CTA launches conflict with mesh-inferred cluster dims.
+    if num_ctas > 1:
         raise ValueError("mesh-driven cluster launch requires num_ctas=1; cluster size is inferred from mesh")
 
     existing = tuple(getattr(options, "cluster_dims", (1, 1, 1)))
@@ -828,7 +835,7 @@ def _apply_mesh_grid_launch(mesh: device_mesh, _semantic: TLESemantic | None) ->
         return
 
     num_ctas = int(getattr(options, "num_ctas", 1))
-    if num_ctas != 1:
+    if num_ctas > 1:
         raise ValueError("mesh-driven grid distributed_barrier requires num_ctas=1")
 
     cluster_dims = tuple(getattr(options, "cluster_dims", (1, 1, 1)))
@@ -973,7 +980,27 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
     return True
 
 
+def _use_dsa_barrier(builder) -> bool:
+    # The tsingmicro backend consumes dsa::DistributedBarrierOp in its TLEToMK
+    # pass; the tle-dialect barrier only lowers on NVIDIA backends.
+    try:
+        from triton._flagtree_backend import get_active_backend_name
+        if get_active_backend_name() != "tsingmicro":
+            return False
+    except Exception:
+        return False
+    return hasattr(builder, "create_dsa_distributed_barrier")
+
+
 def _emit_cluster_submesh_barrier(subgroup: _BarrierGroupDescriptor, builder) -> None:
+    if _use_dsa_barrier(builder):
+        builder.create_dsa_distributed_barrier(
+            subgroup.kind,
+            list(subgroup.shape),
+            list(subgroup.axes),
+            list(subgroup.mask),
+        )
+        return
     if not hasattr(builder, "create_distributed_barrier"):
         raise NotImplementedError("sub-mesh distributed_barrier requires TLE builder support; "
                                   f"inferred subgroup descriptor: rank={subgroup.rank}, "
@@ -1067,6 +1094,9 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
         _apply_mesh_cluster_launch(mesh, _semantic)
 
     builder = _semantic.builder
+    if _use_dsa_barrier(builder):
+        builder.create_dsa_distributed_barrier("", [], [], [])
+        return None
     if hasattr(builder, "create_distributed_barrier"):
         builder.create_distributed_barrier()
     else:
