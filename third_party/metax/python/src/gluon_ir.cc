@@ -600,6 +600,41 @@ PLUGIN_EXPORT void init_gluon_ir(py::module &&m) {
            [](GluonOpBuilder &self, Type resultTy, Value memDesc) -> Value {
              return self.create<ttg::LocalLoadOp>(resultTy, memDesc);
            })
+      .def("create_bsm_perm",
+           [](GluonOpBuilder &self, Type resultTy, Value src) -> Value {
+             return self.create<ttg::BsmPermOp>(resultTy, src);
+           })
+      .def("create_extract_slice",
+           [](GluonOpBuilder &self, Type resultTy, Value source,
+              std::vector<int64_t> &offsets) -> Value {
+           return self
+               .create<gluon::ExtractSliceOp>(resultTy, source, offsets)
+               .getResult();
+         })
+      .def("create_insert_slice",
+           [](GluonOpBuilder &self, Type resultTy, Value base, Value update,
+              std::vector<int64_t> &offsets) -> Value {
+             return self
+                 .create<gluon::InsertSliceOp>(resultTy, base, update, offsets)
+                 .getResult();
+           })
+      .def("create_gvm_arrive",
+           [](GluonOpBuilder &self, int num) {
+             self.create<ttg::GVMArriveOp>(num);
+           })
+      .def("create_maca_barrier",
+           [](GluonOpBuilder &self) { self.create<ttg::BarrierOp>(); })
+      .def("create_maca_barrier_shared",
+           [](GluonOpBuilder &self) { self.create<ttg::BarrierSharedOp>(); })
+      .def("create_maca_sched_bound",
+           [](GluonOpBuilder &self) { self.create<ttg::SchedBoundOp>(); })
+      .def("create_maca_iglp",
+           [](GluonOpBuilder &self, int config0, int config1, int config2,
+              int config3, int config4, int config5, int config6,
+              int config7) {
+             self.create<ttg::IGLPOp>(config0, config1, config2, config3,
+                                      config4, config5, config6, config7);
+           })
       .def("get_shared_bank_conflicts",
            [](GluonOpBuilder &self, Attribute regLayoutAttr,
               Attribute sharedLayoutAttr, std::vector<int64_t> &shape,
