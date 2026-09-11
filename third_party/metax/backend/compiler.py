@@ -17,6 +17,7 @@ try:
 except ImportError:
     enable_mctle = False
 from triton import knobs
+from . import gluon_layout
 
 from dataclasses import dataclass, field
 import functools

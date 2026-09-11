@@ -1,3 +1,4 @@
+#include "Gluon/GluonPythonBindings.h"
 #include "TritonMETAXGPUToLLVM/Passes.h"
 #include "TritonMETAXGPUTransforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/MACADialect.h"
@@ -63,6 +64,7 @@ PLUGIN_EXPORT void init_triton_metax_passes_ttgpuir(py::module &&m) {
                      mlir::createTritonMETAXGPUAddPtrOptPass, int, bool, bool);
   ADD_PASS_WRAPPER_1("add_tritonmetaxgpu_optimize_smem_usage",
                      mlir::createTritonMETAXGPUOptimizeSmemUsage, bool);
+  mlir::triton::gpu::metax::gluon::registerPassBindings(m);
 }
 
 PLUGIN_EXPORT void init_triton_metax(py::module &&m) {
@@ -76,6 +78,8 @@ PLUGIN_EXPORT void init_triton_metax(py::module &&m) {
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
+
+  mlir::triton::gpu::metax::gluon::registerCandidateBundleBinding(m);
 
   m.def(
       "mlir_opt",

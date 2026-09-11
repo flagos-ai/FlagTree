@@ -3,6 +3,7 @@
  * Reserved.
  */
 #include "TargetInfo.h"
+#include "Gluon/GluonC500PhysicalRegisterSlice.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "triton/Tools/LayoutUtils.h"
@@ -19,6 +20,14 @@ using ::mlir::LLVM::getSharedMemoryObjectFromStruct;
 using triton::gpu::SwizzledSharedEncodingAttr;
 
 namespace {
+static bool hasFinalizedGluonRegisterSlices(Operation *op) {
+  auto module = op->getParentOfType<ModuleOp>();
+  auto finalized =
+      module ? module->getAttrOfType<IntegerAttr>("ttg.gluon.gvm-finalized")
+             : IntegerAttr();
+  return finalized && finalized.getInt() == 1;
+}
+
 struct ExtractTensorOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::ExtractTensorOp> {
   using ConvertOpToLLVMPattern<
@@ -44,8 +53,19 @@ struct ExtractTensorOpConversion
     ArrayRef<Type> types =
         cast<LLVM::LLVMStructType>(adaptor.getSource().getType()).getBody();
 
-    auto subIdx =
-        mlir::LLVM::emitSubOffsetForLayout(srcLayout, srcTy, ctaIdx, elemIdx);
+    SmallVector<unsigned> subIdx;
+    if (hasFinalizedGluonRegisterSlices(op)) {
+      auto indices =
+          triton::gpu::metax::gluon::decodeRegisterSliceIndices(srcTy, ctaIdx,
+                                                                elemIdx);
+      if (failed(indices))
+        return rewriter.notifyMatchFailure(
+            op, "cannot decode finalized Gluon extract_tensor registers");
+      subIdx = *indices;
+    } else {
+      subIdx =
+          mlir::LLVM::emitSubOffsetForLayout(srcLayout, srcTy, ctaIdx, elemIdx);
+    }
     for (unsigned i : subIdx) {
       subelems.push_back(b.extract_val(types[i], adaptor.getSource(), i));
     }
@@ -81,8 +101,19 @@ struct InsertTensorOpConversion
     auto ctaIdx = op.getCtaIdx();
     auto elemIdx = op.getElemIdx();
     auto subelems = unpackLLElements(loc, adaptor.getInsert(), rewriter);
-    auto subIdx = mlir::LLVM::emitSubOffsetForLayout(insertedLayout, insertedTy,
-                                                     ctaIdx, elemIdx);
+    SmallVector<unsigned> subIdx;
+    if (hasFinalizedGluonRegisterSlices(op)) {
+      auto indices =
+          triton::gpu::metax::gluon::decodeRegisterSliceIndices(
+              insertedTy, ctaIdx, elemIdx);
+      if (failed(indices))
+        return rewriter.notifyMatchFailure(
+            op, "cannot decode finalized Gluon insert_tensor registers");
+      subIdx = *indices;
+    } else {
+      subIdx = mlir::LLVM::emitSubOffsetForLayout(
+          insertedLayout, insertedTy, ctaIdx, elemIdx);
+    }
     unsigned idx = 0;
     auto resultStruct = adaptor.getInserted();
     auto resultStructTy = dyn_cast<LLVM::LLVMStructType>(
