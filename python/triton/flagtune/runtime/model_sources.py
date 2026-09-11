@@ -23,8 +23,9 @@ The Manifest is read from ``FLAGTUNE_LOCAL_MANIFEST`` when configured. Otherwise
 the cached Manifest is refreshed from ``FLAGTUNE_MANIFEST_URL`` (or the built-in
 FlagOS default URL) when its TTL expires. A failed remote refresh is reported to
 the caller instead of silently using stale metadata. The remote URL must point
-to a tar.gz containing exactly ``manifest.json``. Its schema is validated before
-cache publication.
+to a tar.gz containing ``manifest.json``. Common macOS archive metadata is
+ignored, while other unexpected members are rejected. Its schema is validated
+before cache publication.
 
 The optional ``latest`` field is descriptive only. When no exact version is
 requested, selection computes the highest strict SemVer key in ``versions``.
@@ -201,6 +202,14 @@ def _bundle_members(payload: bytes, source: str) -> bytes:
     try:
         with tarfile.open(fileobj=BytesIO(payload), mode="r:gz") as archive:
             for member in archive.getmembers():
+                # macOS may add AppleDouble metadata alongside the real file
+                # when an archive is created or uploaded from Finder. It does
+                # not participate in the Manifest contract.
+                if (
+                    member.name in {"._manifest.json", "__MACOSX"}
+                    or member.name.startswith("__MACOSX/")
+                ):
+                    continue
                 if member.name != "manifest.json":
                     raise ManifestContractError(f"remote Manifest archive contains unexpected member {member.name!r}")
                 if (member.name in files or not member.isfile() or member.isdir() or member.issym() or member.islnk()):

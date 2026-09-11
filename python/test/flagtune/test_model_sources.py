@@ -158,6 +158,45 @@ def test_remote_manifest_bundle_contains_only_schema_validated_manifest():
     assert model_sources._read_manifest_bytes(extracted, "remote test") == manifest
 
 
+def test_remote_manifest_bundle_ignores_macos_metadata():
+    manifest = manifest_with({"versions": {"1.0.0": ENTRY_1}})
+    manifest_bytes = json.dumps(manifest).encode("utf-8")
+    payload = BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz") as archive:
+        metadata = tarfile.TarInfo("._manifest.json")
+        metadata.size = 0
+        archive.addfile(metadata, BytesIO())
+        macos_dir = tarfile.TarInfo("__MACOSX/")
+        macos_dir.type = tarfile.DIRTYPE
+        archive.addfile(macos_dir)
+        metadata_copy = tarfile.TarInfo("__MACOSX/._manifest.json")
+        metadata_copy.size = 0
+        archive.addfile(metadata_copy, BytesIO())
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(manifest_bytes)
+        archive.addfile(info, BytesIO(manifest_bytes))
+
+    extracted = model_sources._bundle_members(payload.getvalue(), "https://example.invalid/manifest.tar.gz")
+
+    assert model_sources._read_manifest_bytes(extracted, "remote test") == manifest
+
+
+def test_remote_manifest_bundle_still_rejects_unexpected_business_member():
+    manifest = manifest_with({"versions": {"1.0.0": ENTRY_1}})
+    manifest_bytes = json.dumps(manifest).encode("utf-8")
+    payload = BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz") as archive:
+        info = tarfile.TarInfo("manifest.json")
+        info.size = len(manifest_bytes)
+        archive.addfile(info, BytesIO(manifest_bytes))
+        extra = tarfile.TarInfo("README.txt")
+        extra.size = 0
+        archive.addfile(extra, BytesIO())
+
+    with pytest.raises(model_sources.ManifestContractError, match="README.txt"):
+        model_sources._bundle_members(payload.getvalue(), "https://example.invalid/manifest.tar.gz")
+
+
 @pytest.mark.parametrize(
     ("source", "case"),
     [
