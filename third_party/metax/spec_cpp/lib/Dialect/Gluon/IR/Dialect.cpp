@@ -2,6 +2,7 @@
 
 #include "mlir/Support/LLVM.h"
 #include "triton/Dialect/Triton/IR/Interfaces.h"
+#include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
@@ -56,6 +57,10 @@ struct GluonInferLayoutInterface : public triton::DialectInferLayoutInterface {
   inferDotOpEncoding(Attribute operandEncoding, unsigned opIdx,
                      Attribute resultEncoding,
                      std::optional<Location> location) const override {
+    if (isa<gluon::AutoEncodingAttr, gluon::CoalescedEncodingAttr>(
+            resultEncoding) &&
+        isa<triton::gpu::DotOperandEncodingAttr>(operandEncoding))
+      return success();
     return inferAutoEncoding(operandEncoding, resultEncoding);
   }
 
@@ -142,6 +147,43 @@ LogicalResult SetAutoLayoutOp::verify() {
   if (isa<gluon::AutoEncodingAttr>(dstEncoding))
     return emitOpError("result type must not be auto layout");
   return success();
+}
+
+static Attribute getEncoding(Type type) {
+  if (auto tensorTy = dyn_cast<RankedTensorType>(type))
+    return tensorTy.getEncoding();
+  if (auto memDescTy = dyn_cast<triton::gpu::MemDescType>(type))
+    return memDescTy.getEncoding();
+  return {};
+}
+
+static LogicalResult verifyConcreteLayoutResult(Operation *op, Type srcTy,
+                                                Type resultTy) {
+  bool srcIsTensor = isa<RankedTensorType>(srcTy);
+  bool srcIsMemDesc = isa<triton::gpu::MemDescType>(srcTy);
+  bool resultIsTensor = isa<RankedTensorType>(resultTy);
+  bool resultIsMemDesc = isa<triton::gpu::MemDescType>(resultTy);
+  if ((!srcIsTensor && !srcIsMemDesc) || (!resultIsTensor && !resultIsMemDesc))
+    return op->emitOpError("expects ranked tensor or memdesc types");
+  if (srcIsTensor != resultIsTensor || srcIsMemDesc != resultIsMemDesc)
+    return op->emitOpError("source and result must have the same type kind");
+
+  auto dstEncoding = getEncoding(resultTy);
+  if (!dstEncoding)
+    return op->emitOpError("result type must have an encoding");
+  if (isa<gluon::AutoEncodingAttr>(dstEncoding))
+    return op->emitOpError("result type must not be auto layout");
+  return success();
+}
+
+LogicalResult RequireLayoutOp::verify() {
+  return verifyConcreteLayoutResult(getOperation(), getSrc().getType(),
+                                    getType());
+}
+
+LogicalResult ReleaseLayoutOp::verify() {
+  return verifyConcreteLayoutResult(getOperation(), getSrc().getType(),
+                                    getType());
 }
 
 } // namespace mlir::triton::gluon

@@ -1,2 +1,3 @@
+add_subdirectory(Gluon)
 add_subdirectory(TritonMETAXGPUToLLVM)
 add_subdirectory(TritonMETAXGPUTransforms)
