@@ -1,0 +1,31 @@
+harbor.baai.ac.cn/plugin/iluvatar-corex4.5.0-flagtree0.6.0-triton3.6.0-cxnone-vllm_fl0.24.0:20260909
+Driver Version: 4.5.0
+vllm==0.24.0+empty
+torch==2.10.0+corex.4.5.0
+
+[2026/09/11] vllm-plugin-fl==0.3.0rc0+g13eb9be69 (2026/09/07), flag_gems==5.3.5 (2026/08/26), flagtree===0.6.2a3+iluvatar3.6 (2026/09/04)
+# 服务冷启动时间: 10分01秒, 服务热启动时间: 2分30秒
+# 输入长度: 1024, 输出长度: 1024, 并发数: 4
+  Output token throughput (tok/s): 94.12
+  Total token throughput (tok/s): 188.23
+  Median TTFT (ms): 1560.36
+  Median TPOT (ms): 41.02
+  Median ITL (ms): 40.88
+# 输入长度: 512, 输出长度: 512, 并发数: 4
+  Output token throughput (tok/s): 94.94
+  Total token throughput (tok/s): 189.87
+  Median TTFT (ms): 1025.51
+  Median TPOT (ms): 40.20
+  Median ITL (ms): 40.09
+# 输入长度: 256, 输出长度: 256, 并发数: 4
+  Output token throughput (tok/s): 92.48
+  Total token throughput (tok/s): 184.95
+  Median TTFT (ms): 719.85
+  Median TPOT (ms): 40.56
+  Median ITL (ms): 39.93
+# 输入长度: 128, 输出长度: 128, 并发数: 4
+  Output token throughput (tok/s): 88.51
+  Total token throughput (tok/s): 177.01
+  Median TTFT (ms): 601.06
+  Median TPOT (ms): 40.74
+  Median ITL (ms): 39.90
