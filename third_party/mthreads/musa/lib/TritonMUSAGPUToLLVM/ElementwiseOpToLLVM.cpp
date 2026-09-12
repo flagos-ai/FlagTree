@@ -6,10 +6,8 @@
 #include "triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton/Tools/Sys/GetEnv.hpp"
 
 #include <algorithm>
-#include <cctype>
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -128,8 +126,10 @@ struct FpToFpOpConversion
 
   explicit FpToFpOpConversion(LLVMTypeConverter &typeConverter,
                               ModuleAxisInfoAnalysis &axisAnalysisPass,
+                              bool enableFp8Burst2,
                               PatternBenefit benefit = patternBenefitDefault)
-      : Base(typeConverter, axisAnalysisPass, benefit) {}
+      : Base(typeConverter, axisAnalysisPass, benefit),
+        enableFp8Burst2(enableFp8Burst2) {}
 
   struct Fp8ConversionDesc {
     StringRef funcName;
@@ -146,16 +146,6 @@ struct FpToFpOpConversion
     if (funcName == "__mt_tt_f16_to_e5m2")
       return "llvm.musa.f162e5m2.rn";
     return {};
-  }
-
-  static bool isFp8Burst2Enabled() {
-    std::string envValue =
-        mlir::triton::tools::getStrEnv("TRITON_MUSA_ENABLE_FP8_BURST2");
-    if (envValue.empty())
-      return false;
-    std::transform(envValue.begin(), envValue.end(), envValue.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    return envValue == "1" || envValue == "true" || envValue == "on";
   }
 
   std::pair<StringRef, size_t>
@@ -413,7 +403,7 @@ struct FpToFpOpConversion
         }
       }
       auto [funcName, numElements] = getFp8ConversionFunc(
-          srcElemTy, dstElemTy, roundingMode, isFp8Burst2Enabled());
+          srcElemTy, dstElemTy, roundingMode, enableFp8Burst2);
       Type logicalSrcTy = typeConverter->convertType(srcElemTy);
       SmallVector<Value> inVals;
       for (unsigned i = 0; i < std::min(numElements, operands.size()); ++i) {
@@ -481,6 +471,9 @@ struct FpToFpOpConversion
 
     return {};
   }
+
+private:
+  bool enableFp8Burst2 = false;
 };
 
 template <typename OpType>
@@ -861,7 +854,8 @@ struct ExpOpConversionApprox
 void mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     ModuleAxisInfoAnalysis &axisInfoAnalysis, int /*computeCapability*/,
-    const TargetInfo &targetInfo, PatternBenefit benefit) {
+    bool enableFp8Burst2, const TargetInfo &targetInfo,
+    PatternBenefit benefit) {
   PatternBenefit priorityBenefit(benefit.getBenefit() + 1);
   patterns.add<FDivOpConversion>(typeConverter, axisInfoAnalysis,
                                  priorityBenefit);
@@ -883,7 +877,8 @@ void mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
   patterns.add<TruncFOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<FPToSIOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis, benefit);
-  patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis, benefit);
+  patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis,
+                                   enableFp8Burst2, benefit);
   patterns.add<PreciseSqrtOpConversion>(typeConverter, axisInfoAnalysis,
                                         priorityBenefit);
   patterns.add<PreciseDivOpConversion>(typeConverter, axisInfoAnalysis,

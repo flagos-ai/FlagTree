@@ -108,8 +108,10 @@ static Value createInlineAsmUpcast(Location loc, RewriterBase &rewriter,
 namespace {
 class Fp4ToFpOpPattern : public ConvertOpToLLVMPattern<Fp4ToFpOp> {
 public:
-  Fp4ToFpOpPattern(LLVMTypeConverter &typeConverter, PatternBenefit benefit)
-      : ConvertOpToLLVMPattern<Fp4ToFpOp>(typeConverter, benefit) {}
+  Fp4ToFpOpPattern(LLVMTypeConverter &typeConverter, int computeCapability,
+                   PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<Fp4ToFpOp>(typeConverter, benefit),
+        computeCapability(computeCapability) {}
 
   LogicalResult
   matchAndRewrite(Fp4ToFpOp op, OpAdaptor adaptor,
@@ -120,6 +122,10 @@ public:
     auto elemType = op.getType().getElementType();
     assert(elemType == f16_ty || elemType == bf16_ty);
     bool toFp16 = elemType == f16_ty;
+    // FP4ToFP16Tix needs the e4m3 cvt instruction (capability >= 89); below
+    // that, upcast through the bf16 table and rebase the exponent to f16 with
+    // integer ops (every E2M1 value is exact in both formats).
+    bool viaBf16 = toFp16 && computeCapability < 89;
 
     auto xVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
 
@@ -139,13 +145,27 @@ public:
       packedVec = b.insert_element(packedVec, v3, b.i32_val(3));
       SmallVector<Type> rets(4, i32_ty);
       Type retType = struct_ty(rets);
-      Value ret =
-          createInlineAsmUpcast(loc, rewriter, toFp16, retType, packedVec);
+      Value ret = createInlineAsmUpcast(loc, rewriter, toFp16 && !viaBf16,
+                                        retType, packedVec);
       for (int i = 0; i < 4; i++) {
         Value extractI32 = b.extract_val(ret, i);
-        Value elements = b.bitcast(extractI32, vec_ty(elemType, 2));
-        results.push_back(b.extract_element(elements, b.i32_val(0)));
-        results.push_back(b.extract_element(elements, b.i32_val(1)));
+        if (viaBf16) {
+          Value halves = b.bitcast(extractI32, vec_ty(i16_ty, 2));
+          for (int j = 0; j < 2; j++) {
+            Value v = b.extract_element(halves, b.i32_val(j));
+            Value sign = b.and_(v, b.i16_val(0x8000));
+            Value em = b.and_(v, b.i16_val(0x7fff));
+            // bf16 -> f16 for exact normals: ((e-127+15) << 10) | (m << 3)
+            Value shifted = b.shl(b.sub(em, b.i16_val(112 << 7)), b.i16_val(3));
+            Value isZero = b.icmp_eq(em, b.i16_val(0));
+            Value body = b.select(isZero, b.i16_val(0), shifted);
+            results.push_back(b.bitcast(b.or_(body, sign), f16_ty));
+          }
+        } else {
+          Value elements = b.bitcast(extractI32, vec_ty(elemType, 2));
+          results.push_back(b.extract_element(elements, b.i32_val(0)));
+          results.push_back(b.extract_element(elements, b.i32_val(1)));
+        }
       }
     }
 
@@ -154,11 +174,14 @@ public:
     rewriter.replaceOp(op, result);
     return success();
   }
+
+private:
+  int computeCapability;
 };
 } // anonymous namespace
 
 void mlir::triton::ppu::populateFp4ToFpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
-    PatternBenefit benefit) {
-  patterns.add<Fp4ToFpOpPattern>(typeConverter, benefit);
+    int computeCapability, PatternBenefit benefit) {
+  patterns.add<Fp4ToFpOpPattern>(typeConverter, computeCapability, benefit);
 }

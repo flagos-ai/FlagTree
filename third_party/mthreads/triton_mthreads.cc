@@ -237,9 +237,14 @@ void init_triton_musa_passes_ttgpuir(py::module m) {
   m.def("add_mtgpu_to_llvm", [](mlir::PassManager &pm, int32_t capability) {
     pm.addPass(mlir::triton::createConvertMTGPUToLLVMPass(capability));
   });
-  m.def("add_to_llvmir", [](mlir::PassManager &pm, int32_t capability) {
-    pm.addPass(mlir::triton::createConvertTritonMUSAGPUToLLVMPass(capability));
-  });
+  m.def(
+      "add_to_llvmir",
+      [](mlir::PassManager &pm, int32_t capability, bool enableFp8Burst2) {
+        pm.addPass(mlir::triton::createConvertTritonMUSAGPUToLLVMPass(
+            capability, enableFp8Burst2));
+      },
+      py::arg("pm"), py::arg("capability"),
+      py::arg("enable_fp8_burst2") = false);
   m.def("add_allocate_shared_memory", [](mlir::PassManager &pm,
                                          int32_t capability) {
     pm.addPass(mlir::triton::createAllocateMUSASharedMemoryPass(capability));
