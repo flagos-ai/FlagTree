@@ -26,6 +26,47 @@ def _gather_dtype_suffix(value, op_name):
 
 
 @al.register_custom_op
+class duplicate_bitwise_mask:
+    """
+    /*
+     * Function:
+     *   Copy scalar (variable or immediate) to fill vector in bitwise mask mode, corresponding to the Duplicate in Ascend C API.
+     *
+     * Inputs:
+     *   scalar_value: source
+     *   mask: controls the elements involved in computation per iteration
+     *   repeat_times: repeat times
+     *   dst_block_stride: data block address stride in one iteration
+     *   dst_repeat_stride: address stride of dst between adjacent iterations
+     *
+     * Outputs:
+     *   out: required UB destination tensor storing output
+     *
+     */
+    """
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_V
+    mode = al.MODE.SIMD
+
+    def __init__(self, scalar_value, mask, repeat_times, dst_block_stride, dst_repeat_stride, out=None):
+        assert out
+        assert _element_dtype(out) == _element_dtype(scalar_value), (
+            f"duplicate_bitwise_mask requires dst dtype ({_element_dtype(out)}) "
+            f"to match scalar_value dtype ({_element_dtype(scalar_value)})")
+        if _element_dtype(out) == tl.float16:
+            self.symbol = "custom_duplicate_bitwise_mask_half"
+        elif _element_dtype(out) == tl.bfloat16:
+            self.symbol = "custom_duplicate_bitwise_mask_bf16"
+        elif _element_dtype(out) == tl.float32:
+            self.symbol = "custom_duplicate_bitwise_mask_float"
+        else:
+            assert False, (f"duplicate_bitwise_mask does not support dtype {_element_dtype(out)} yet")
+        self.bitcode = CUSTOM_OPS_BITCODE
+        self.extra_buffers = [(tl.float16, 0)]
+
+
+@al.register_custom_op
 class gather_gm_to_l1:
     """
     /*
@@ -110,6 +151,198 @@ class gather_gm_to_ub:
                                                    f"got {_element_dtype(index)}")
         self.symbol = ("custom_gather_gm_to_ub_" + _gather_dtype_suffix(src, "gather_gm_to_ub"))
         self.bitcode = CUSTOM_OPS_BITCODE
+
+
+@al.register_custom_op
+class gather_mask_builtin_pattern:
+    """
+    /*
+     * Function:
+     *   Select elements from src operand with built-in fixed patterns, corresponding to the GatherMask in Ascend C API.
+     *
+     * Inputs:
+     *   src0: 1D input tensor in UB storing source.
+     *   src1_pattern: built-in fixed patterns.
+     *   reduce_mode: selects mask parameter mode.
+     *   mask: controls elements involved in computation per iteration.
+     *   src0_block_stride: the address stride between different DataBlocks of src0 within the same iteration. (struct GatherMaskParams)
+     *   repeat_times: number of iterations. (struct GatherMaskParams)
+     *   src0_repeat_stride: address stride of src0 between adjacent iterations. (struct GatherMaskParams)
+     *   src1_repeat_stride: address stride of src1 between adjacent iterations. (struct GatherMaskParams)
+     *
+     * Outputs:
+     *   out: required two-element output sequence [dst, rsvd_cnt]
+     *     - out[0] / dst: UB float tensor for gather result
+     *     - out[1] / rsvd_cnt: number of valid elements in dst
+     */
+    """
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_V
+    mode = al.MODE.SIMD
+
+    def __init__(self, src0, src1_pattern, reduce_mode, mask, src0_block_stride, repeat_times, src0_repeat_stride,
+                 src1_repeat_stride, out=None):
+        assert out
+        assert len(out) == 2, ("gather_mask_builtin_pattern requires out to be [dst, rsvd_cnt]")
+        assert _element_dtype(out[0]) == _element_dtype(src0), (
+            f"gather_mask_builtin_pattern requires dst dtype ({_element_dtype(out[0])}) "
+            f"to match src0 dtype ({_element_dtype(src0)})")
+        assert _element_dtype(out[1]) == tl.int64, (
+            f"gather_mask_builtin_pattern only supports int64 rsvd_cnt, got {_element_dtype(out[1])}")
+        if _element_dtype(src0) == tl.float16:
+            self.symbol = "custom_gather_mask_builtin_pattern_half"
+        elif _element_dtype(src0) == tl.bfloat16:
+            self.symbol = "custom_gather_mask_builtin_pattern_bf16"
+        elif _element_dtype(src0) == tl.uint16:
+            self.symbol = "custom_gather_mask_builtin_pattern_ushort"
+        elif _element_dtype(src0) == tl.int16:
+            self.symbol = "custom_gather_mask_builtin_pattern_short"
+        elif _element_dtype(src0) == tl.float32:
+            self.symbol = "custom_gather_mask_builtin_pattern_float"
+        elif _element_dtype(src0) == tl.uint32:
+            self.symbol = "custom_gather_mask_builtin_pattern_uint"
+        elif _element_dtype(src0) == tl.int32:
+            self.symbol = "custom_gather_mask_builtin_pattern_int"
+        else:
+            assert False, (f"gather_mask_builtin_pattern src0 does not support dtype {_element_dtype(src0)}")
+        self.bitcode = CUSTOM_OPS_BITCODE
+        self.extra_buffers = [(tl.float16, 0)]
+
+
+@al.register_custom_op
+class gather_mask_custom_pattern:
+    """
+    /*
+     * Function:
+     *   Select elements from src operand with user-defined pattern, corresponding to the GatherMask in Ascend C API.
+     *
+     * Inputs:
+     *   src0: 1D input tensor in UB storing source.
+     *   src1_pattern: user-defined pattern.
+     *   reduce_mode: selects mask parameter mode.
+     *   mask: controls elements involved in computation per iteration.
+     *   src0_block_stride: the address stride between different DataBlocks of src0 within the same iteration. (struct GatherMaskParams)
+     *   repeat_times: number of iterations. (struct GatherMaskParams)
+     *   src0_repeat_stride: address stride of src0 between adjacent iterations. (struct GatherMaskParams)
+     *   src1_repeat_stride: address stride of src1 between adjacent iterations. (struct GatherMaskParams)
+     *
+     * Outputs:
+     *   out: required two-element output sequence [dst, rsvd_cnt]
+     *     - out[0] / dst: UB float tensor for gather result
+     *     - out[1] / rsvd_cnt: number of valid elements in dst
+     */
+    """
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_V
+    mode = al.MODE.SIMD
+
+    def __init__(self, src0, src1_pattern, reduce_mode, mask, src0_block_stride, repeat_times, src0_repeat_stride,
+                 src1_repeat_stride, out=None):
+        assert out
+        assert len(out) == 2, ("gather_mask_custom_pattern requires out to be [dst, rsvd_cnt]")
+        assert _element_dtype(out[0]) == _element_dtype(src0), (
+            f"gather_mask_custom_pattern requires dst dtype ({_element_dtype(out[0])}) "
+            f"to match src0 dtype ({_element_dtype(src0)})")
+        assert _element_dtype(out[1]) == tl.int64, (
+            f"gather_mask_custom_pattern only supports int64 rsvd_cnt, got {_element_dtype(out[1])}")
+        assert isinstance(src1_pattern, tl.tensor), "gather_mask_custom_pattern requires src1_pattern to be a tensor"
+        if _element_dtype(src1_pattern) == tl.uint16:
+            if _element_dtype(src0) == tl.float16:
+                self.symbol = "custom_gather_mask_custom_pattern_half"
+            elif _element_dtype(src0) == tl.bfloat16:
+                self.symbol = "custom_gather_mask_custom_pattern_bf16"
+            elif _element_dtype(src0) == tl.uint16:
+                self.symbol = "custom_gather_mask_custom_pattern_ushort"
+            elif _element_dtype(src0) == tl.int16:
+                self.symbol = "custom_gather_mask_custom_pattern_short"
+            else:
+                assert False, "when src1_pattern is uint16_t tensor, src0 only supports dtype half / bfloat16 / uint16 / int16"
+        elif _element_dtype(src1_pattern) == tl.uint32:
+            if _element_dtype(src0) == tl.float32:
+                self.symbol = "custom_gather_mask_custom_pattern_float"
+            elif _element_dtype(src0) == tl.uint32:
+                self.symbol = "custom_gather_mask_custom_pattern_uint"
+            elif _element_dtype(src0) == tl.int32:
+                self.symbol = "custom_gather_mask_custom_pattern_int"
+            else:
+                assert False, "when src1_pattern is uint32_t tensor, src0 only supports dtype float32 / uint32/ int32"
+        else:
+            assert False, (
+                f"gather_mask_custom_pattern src1_pattern does not support dtype {_element_dtype(src1_pattern)}")
+        self.bitcode = CUSTOM_OPS_BITCODE
+        self.extra_buffers = [(tl.float16, 0)]
+
+
+@al.register_custom_op
+class pair_reduce_sum_continuous_mask:
+    """
+    /*
+     * Function:
+     *   Sum pairwise for odd and even elements in continuous mask mode, corresponding to the PairReduceSum in Ascend C API.
+     *
+     * Inputs:
+     *   src: 1D input tensor in UB storing source
+     *   repeat_times: repeat times
+     *   mask: number of leading consecutive elements for computation
+     *   dst_rep_stride: address stride of dst between adjacent iterations
+     *   src_blk_stride: data block address stride in one iteration
+     *   src_rep_stride: Address stride of src between adjacent iterations
+     *
+     * Outputs:
+     *   out: required UB destination tensor storing output
+     */
+    """
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_V
+    mode = al.MODE.SIMD
+
+    def __init__(self, src, repeat_times, mask, dst_rep_stride, src_blk_stride, src_rep_stride, out=None):
+        assert out
+        assert _element_dtype(out) == _element_dtype(src), (
+            f"pair_reduce_sum_continuous_mask requires dst dtype ({_element_dtype(out)}) "
+            f"to match src dtype ({_element_dtype(src)})")
+        if _element_dtype(src) == tl.float16:
+            self.symbol = "custom_pair_reduce_sum_continuous_mask_half"
+        elif _element_dtype(src) == tl.float32:
+            self.symbol = "custom_pair_reduce_sum_continuous_mask_float"
+        else:
+            assert False, (f"pair_reduce_sum_continuous_mask does not support dtype {_element_dtype(src)} yet")
+        self.bitcode = CUSTOM_OPS_BITCODE
+        self.extra_buffers = [(tl.float16, 0)]
+
+
+@al.register_custom_op
+class sort32:
+    """
+    /*
+     * Function:
+     *   Sort 32 elements in descending order in each repeat, corresponding to the Sort32 in Ascend C API.
+     *
+     * Inputs:
+     *   src0: 1D float input tensor in UB storing value
+     *   src1: 1D uint32 input tensor in UB storing index
+     *   repeat_times: repeat times
+     *
+     * Outputs:
+     *   out: required UB float destination tensor storing sorted pair [value, index]
+     */
+    """
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_V
+    mode = al.MODE.SIMD
+
+    def __init__(self, src0, src1, repeat_times, out=None):
+        assert _element_dtype(src0) == tl.float32, (f"sort32 only supports fp32 value, got {_element_dtype(src0)}")
+        assert _element_dtype(src1) == tl.int32, (f"sort32 only supports int32 index, got {_element_dtype(src1)}")
+        assert out
+        assert _element_dtype(out) == tl.float32, (f"sort32 only supports fp32 out, got {_element_dtype(out)}")
+        self.symbol = "custom_sort32"
+        self.bitcode = CUSTOM_OPS_BITCODE
+        self.extra_buffers = [(tl.float16, 0)]
 
 
 @al.register_custom_op
@@ -204,6 +437,44 @@ class merge_exhaust_sort4:
         assert _element_dtype(out[1]) == tl.int32, (f"merge_exhaust_sort4 only supports int32 out[1], "
                                                     f"got {_element_dtype(out[1])}")
         self.symbol = "custom_merge_exhaust_sort4_float"
+        self.bitcode = CUSTOM_OPS_BITCODE
+        self.extra_buffers = [(tl.float16, 0)]
+
+
+@al.register_custom_op
+class mrgsort:
+    """
+    /*
+     * Function:
+     *   Arrange and merge up to four arranged potential queues into one queue, corresponding to the MrgSort in Ascend C API.
+     *
+     * Inputs:
+     *   src_proposals: UB tensor holding multiple sorted compact proposal
+     *     queues.
+     *   off0, off1, off2, off3: starting offset of each of the four input
+     *     queues, in proposals.
+     *   len0, len1, len2, len3: number of proposals available in each of
+     *     the four input queues. (struct MrgSort4Info)
+     *   if_exhausted_suspension: judge whether to stop after a queue is exhausted. (struct MrgSort4Info)
+     *   valid_bit: judge whether a queue is valid or not. (struct MrgSort4Info)
+     *   repeat_times: repeat times. (struct MrgSort4Info)
+     *
+     * Outputs:
+     *   out: UB float destination tensor for the merged proposals
+     */
+    """
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_V
+    mode = al.MODE.SIMD
+
+    def __init__(self, src_proposals, off0, off1, off2, off3, len0, len1, len2, len3, if_exhausted_suspension,
+                 valid_bit, repeat_times, out=None):
+        assert _element_dtype(src_proposals) == tl.float32, (
+            f"mrgsort only supports fp32 src, got {_element_dtype(src_proposals)}")
+        assert out
+        assert _element_dtype(out) == tl.float32, (f"mrgsort only supports fp32 out, got {_element_dtype(out)}")
+        self.symbol = "custom_mrgsort"
         self.bitcode = CUSTOM_OPS_BITCODE
         self.extra_buffers = [(tl.float16, 0)]
 

@@ -39,6 +39,25 @@ SMALLK_SORT_WAYS = 4
 
 
 @triton.jit
+def duplicate_bitwise_mask_kernel(src, dst):
+    ONE_REPEAT_SORT_NUM: tl.constexpr = 32
+    DEFAULT_BLOCK_SIZE: tl.constexpr = 256
+    BUFFER_SIZE: tl.constexpr = DEFAULT_BLOCK_SIZE // 4
+    NUM_GROUPS: tl.constexpr = 8
+    src_offs = tl.arange(0, NUM_GROUPS)
+    dst_offs = tl.arange(0, BUFFER_SIZE)
+    src_ub = tle.dsa.alloc([BUFFER_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+    tle.dsa.copy(src + src_offs, tle.dsa.subview(src_ub, offsets=[0], sizes=[NUM_GROUPS], strides=[1]), [NUM_GROUPS])
+    src_tensor = tle.dsa.to_tensor(src_ub, writable=True)
+    neg_inf = tl.full([1], float("-inf"), dtype=tl.float32)
+    mask = tl.zeros([2], dtype=tl.int64)
+    mask = tl.where(tl.arange(0, 2) == 0, (-1) << NUM_GROUPS, mask)
+    src_tensor = tle.dsa.ascend.raw("duplicate_bitwise_mask", neg_inf, mask, 1, 1, 8, out=src_tensor)
+    #out_tensor = tle.dsa.to_tensor(tle.dsa.subview(src_ub, offsets=[0], sizes=[ONE_REPEAT_SORT_NUM], strides=[1]))
+    tl.store(dst + dst_offs, src_tensor, mask=dst_offs < ONE_REPEAT_SORT_NUM)
+
+
+@triton.jit
 def gather_gm_to_l1_dot_kernel(
     src,
     src_index,
@@ -145,6 +164,85 @@ def gather_gm_to_ub_store_kernel(
 
 
 @triton.jit
+def gather_mask_builtin_pattern_kernel(src, dst, rsvd_cnt):
+    ONE_REPEAT_SORT_NUM: tl.constexpr = 32
+    src_offs = tl.arange(0, ONE_REPEAT_SORT_NUM * 2)
+    dst_offs = tl.arange(0, ONE_REPEAT_SORT_NUM)
+    src_ub = tle.dsa.alloc([ONE_REPEAT_SORT_NUM * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+    tle.dsa.copy(src + src_offs, src_ub, [ONE_REPEAT_SORT_NUM * 2])
+    # src1_pattern for indices
+    src1_pattern = 2  # 10101010...101010
+    reduce_mode = False
+    mask = 0
+    src0_block_stride = 1
+    repeat_times = 1
+    src0_repeat_stride = 0
+    src1_repeat_stride = 0
+    out0 = tl.zeros([ONE_REPEAT_SORT_NUM], dtype=tl.float32)
+    out1 = tl.zeros([1], dtype=tl.int64)
+    out0, out1 = tle.dsa.ascend.raw("gather_mask_builtin_pattern", tle.dsa.to_tensor(src_ub), src1_pattern, reduce_mode,
+                                    mask, src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride,
+                                    out=[out0, out1])
+    tl.store(dst + dst_offs, out0)
+    tl.store(rsvd_cnt + tl.arange(0, 1), out1)
+
+
+@triton.jit
+def gather_mask_custom_pattern_kernel(src, dst, rsvd_cnt):
+    NUM_EXPERTS: tl.constexpr = 256
+    NUM_GROUPS: tl.constexpr = 8
+    src_offs = tl.arange(0, NUM_EXPERTS * 2)
+    dst_offs = tl.arange(0, NUM_GROUPS * 2)
+    src_ub = tle.dsa.alloc([NUM_EXPERTS * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+    tle.dsa.copy(src + src_offs, src_ub, [NUM_EXPERTS * 2])
+    src1 = tl.zeros([2], dtype=tl.uint32)
+    # src1_pattern for top2
+    src1 = tl.where(tl.arange(0, 2) == 0, 5, src1)  # [0b0101, 0]
+    reduce_mode = True
+    mask = 64
+    src0_block_stride = 1
+    repeat_times = 8
+    src0_repeat_stride = 8
+    src1_repeat_stride = 0
+    out0 = tl.zeros([NUM_GROUPS * 2], dtype=tl.float32)
+    out1 = tl.zeros([1], dtype=tl.int64)
+    out0, out1 = tle.dsa.ascend.raw("gather_mask_custom_pattern", tle.dsa.to_tensor(src_ub), src1, reduce_mode, mask,
+                                    src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride,
+                                    out=[out0, out1])
+    tl.store(dst + dst_offs, out0)
+    tl.store(rsvd_cnt + tl.arange(0, 1), out1)
+
+
+@triton.jit
+def pair_reduce_sum_continuous_mask_kernel(src, dst):
+    NUM_GROUPS: tl.constexpr = 8
+    src_offs = tl.arange(0, NUM_GROUPS * 2)
+    dst_offs = tl.arange(0, NUM_GROUPS)
+    src_ub = tle.dsa.alloc([NUM_GROUPS * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+    tle.dsa.copy(src + src_offs, src_ub, [NUM_GROUPS * 2])
+    out = tl.zeros([NUM_GROUPS], dtype=tl.float32)
+    out = tle.dsa.ascend.raw("pair_reduce_sum_continuous_mask", tle.dsa.to_tensor(src_ub), 1, NUM_GROUPS * 2, 1, 1, 1,
+                             out=out)
+    tl.store(dst + dst_offs, out)
+
+
+@triton.jit
+def sort32_kernel(src0, src1, repeat_times: tl.constexpr, dst, BLOCK_SIZE: tl.constexpr):
+    PROPOSALS_BYTES: tl.constexpr = 2
+    DST_SIZE: tl.constexpr = BLOCK_SIZE * PROPOSALS_BYTES
+
+    src_offs = tl.arange(0, BLOCK_SIZE)
+    dst_offs = tl.arange(0, DST_SIZE)
+    src0_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+    src1_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.int32, mem_addr_space=tle.dsa.ascend.UB)
+    tle.dsa.copy(src0 + src_offs, src0_ub, [BLOCK_SIZE])
+    tle.dsa.copy(src1 + src_offs, src1_ub, [BLOCK_SIZE])
+    pair = tl.zeros([DST_SIZE], dtype=tl.float32)
+    pair = tle.dsa.ascend.raw("sort32", tle.dsa.to_tensor(src0_ub), tle.dsa.to_tensor(src1_ub), repeat_times, out=pair)
+    tl.store(dst + dst_offs, pair)
+
+
+@triton.jit
 def sort_pack_kernel(X, OutGM, N: tl.constexpr, K: tl.constexpr, INDEX_OFFSET: tl.constexpr, SORT_IMPL: tl.constexpr,
                      TMP_SIZE: tl.constexpr):
     """Single-segment sort_1d_pack: load N f32 values from GM into UB, sort,
@@ -179,6 +277,24 @@ def merge_exhaust_kernel(SrcGM, OutGM, ConsGM, WAY_CAP: tl.constexpr, WAYS: tl.c
 
     tl.store(OutGM + tl.arange(0, OUT_P2), out_t)
     tl.store(ConsGM + tl.arange(0, 4), cons)
+
+
+@triton.jit
+def mrgsort_kernel(src, dst, TOP_K: tl.constexpr):
+    GROUP_SIZE: tl.constexpr = 32
+    PROPOSALS_BYTES: tl.constexpr = 2
+    BLOCK_SIZE: tl.constexpr = GROUP_SIZE * 4 * PROPOSALS_BYTES
+    IF_EXHAUSTED_SUSPENSION: tl.constexpr = 1
+    VALID_BIT: tl.constexpr = 15
+    REPEAT_TIMES: tl.constexpr = 1
+
+    offs = tl.arange(0, BLOCK_SIZE)
+    src_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+    tle.dsa.copy(src + offs, src_ub, [BLOCK_SIZE])
+    pair = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
+    pair = tle.dsa.ascend.raw("mrgsort", tle.dsa.to_tensor(src_ub), 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3,
+                              TOP_K, TOP_K, TOP_K, TOP_K, IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
+    tl.store(dst + offs, pair, mask=offs < TOP_K * 2)
 
 
 @triton.jit
@@ -429,6 +545,143 @@ def test_unpack_sort():
     print("[PASS] unpack_sort correctness")
 
 
+def test_sort32():
+    torch.manual_seed(0)
+    n_experts = 256
+    n_groups = 256 // 32
+    val = torch.rand([n_experts], dtype=torch.float32, device=DEVICE)
+    idx = torch.arange(0, n_experts, dtype=torch.int32, device=DEVICE)
+    out = torch.zeros([n_experts * 2], dtype=torch.float32, device=DEVICE)
+
+    sort32_kernel[(1, )](val, idx, n_groups, out, BLOCK_SIZE=n_experts)
+    torch_npu.npu.synchronize()
+
+    out_v, out_i = _decode_props(out.cpu().numpy()[:n_experts * 2])
+    val_2d = val.cpu().numpy().reshape(n_groups, 32)
+    idx_2d = idx.cpu().numpy().reshape(n_groups, 32)
+    local_idx_2d = np.argsort(val_2d, axis=1, kind="stable")
+    local_idx_inverse_2d = local_idx_2d[:, ::-1]
+    global_val = np.take_along_axis(val_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
+    global_idx = np.take_along_axis(idx_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
+
+    np.testing.assert_array_equal(global_val, out_v, err_msg="sort32 values mismatch")
+    np.testing.assert_array_equal(global_idx, out_i, err_msg="sort32 indices mismatch")
+    print("[PASS] sort32 correctness")
+
+
+def test_mrgsort():
+    torch.manual_seed(0)
+    n_experts = 128
+    n_groups = 4
+    top_k = 8
+
+    val = torch.rand([n_experts], dtype=torch.float32, device="cpu")
+    idx = torch.arange(0, n_experts, dtype=torch.int32, device="cpu")
+    val_2d = val.numpy().reshape(n_groups, 32)
+    idx_2d = idx.numpy().reshape(n_groups, 32)
+    local_idx_2d = np.argsort(val_2d, axis=1, kind="stable")
+    local_idx_inverse_2d = local_idx_2d[:, ::-1]
+    global_val = np.take_along_axis(val_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
+    global_idx = np.take_along_axis(idx_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
+    pair = torch.from_numpy(_encode_props(global_val, global_idx)).to(DEVICE)
+    out = torch.zeros([top_k * 2], dtype=torch.float32, device=DEVICE)
+
+    mrgsort_kernel[(1, )](pair, out, TOP_K=top_k)
+    torch_npu.npu.synchronize()
+
+    out_v, out_i = _decode_props(out.cpu().numpy()[:top_k * 2])
+    local_idx = np.argsort(val.numpy(), axis=0, kind="stable")
+    local_idx_inverse = local_idx[::-1]
+    ref_val = np.take_along_axis(val.numpy(), local_idx_inverse[:top_k], axis=0)
+    ref_idx = np.take_along_axis(idx.numpy(), local_idx_inverse[:top_k], axis=0)
+
+    np.testing.assert_array_equal(ref_val, out_v, err_msg="mrgsort values mismatch")
+    np.testing.assert_array_equal(ref_idx, out_i, err_msg="mrgsort indices mismatch")
+    print("[PASS] mrgsort correctness")
+
+
+def test_gather_mask():
+    ONE_REPEAT_SORT_NUM = 32
+    torch.manual_seed(0)
+    n_experts = 256
+    n_groups = 256 // 32
+    val = torch.rand([n_experts], dtype=torch.float32, device="cpu")
+    idx = torch.arange(0, n_experts, dtype=torch.int32, device="cpu")
+    # sorted by group
+    val_2d = val.numpy().reshape(n_groups, 32)
+    idx_2d = idx.numpy().reshape(n_groups, 32)
+    local_idx_2d = np.argsort(val_2d, axis=1, kind="stable")
+    local_idx_inverse_2d = local_idx_2d[:, ::-1]
+    global_val = np.take_along_axis(val_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
+    global_idx = np.take_along_axis(idx_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
+    pair = torch.from_numpy(_encode_props(global_val, global_idx)).to(DEVICE)
+    out = torch.zeros([n_groups * 2], dtype=torch.float32, device=DEVICE)
+    rsvd_cnt = torch.zeros([1], dtype=torch.int64, device=DEVICE)
+
+    # top2 value per group
+    gather_mask_custom_pattern_kernel[(1, )](pair, out, rsvd_cnt)
+    torch_npu.npu.synchronize()
+
+    assert rsvd_cnt.cpu()[0] == n_groups * 2, "gather_mask_custom_pattern rsvd_cnt mismatch"
+    ref = global_val.reshape(n_groups, 32)[:, :2].reshape(n_groups * 2)
+    np.testing.assert_array_equal(ref, out.cpu().numpy(), err_msg="gather_mask_custom_pattern dst mismatch")
+
+    # top2 sum
+    top2_sum = np.sum(ref.reshape(n_groups, 2), axis=1)
+    top2_sum_pad = np.pad(top2_sum, pad_width=(0, ONE_REPEAT_SORT_NUM - n_groups), mode='constant',
+                          constant_values=-np.inf)
+    # sort32
+    group_idx_pad = torch.arange(0, ONE_REPEAT_SORT_NUM, dtype=torch.int32, device="cpu")
+    local_group_idx = np.argsort(top2_sum_pad, axis=0, kind="stable")
+    local_group_idx_inverse = local_group_idx[::-1]
+    global_group_val = np.take_along_axis(top2_sum_pad, local_group_idx_inverse, axis=0)
+    global_group_idx = np.take_along_axis(group_idx_pad.numpy(), local_group_idx_inverse, axis=0)
+    pair2 = torch.from_numpy(_encode_props(global_group_val, global_group_idx)).to(DEVICE)
+
+    out2 = torch.zeros([ONE_REPEAT_SORT_NUM], dtype=torch.float32, device=DEVICE)
+    rsvd_cnt2 = torch.zeros([1], dtype=torch.int64, device=DEVICE)
+
+    # gather group indices
+    gather_mask_builtin_pattern_kernel[(1, )](pair2, out2, rsvd_cnt2)
+    torch_npu.npu.synchronize()
+
+    assert rsvd_cnt2.cpu()[0] == ONE_REPEAT_SORT_NUM, "gather_mask_builtin_pattern rsvd_cnt mismatch"
+    np.testing.assert_array_equal(global_group_idx,
+                                  out2.cpu().numpy().view(np.int32), err_msg="gather_mask_builtin_pattern dst mismatch")
+    print("[PASS] gather_mask correctness")
+
+
+def test_pair_reduce_sum():
+    torch.manual_seed(0)
+    n_groups = 8
+    top2 = torch.rand([n_groups * 2], dtype=torch.float32, device=DEVICE)
+    out = torch.zeros([n_groups], dtype=torch.float32, device=DEVICE)
+
+    # top2 sum
+    pair_reduce_sum_continuous_mask_kernel[(1, )](top2, out)
+    torch_npu.npu.synchronize()
+
+    ref = np.sum(top2.cpu().numpy().reshape(n_groups, 2), axis=1)
+    np.testing.assert_array_equal(ref, out.cpu().numpy(), err_msg="pair_reduce_sum_continuous_mask dst mismatch")
+    print("[PASS] pair_reduce_sum correctness")
+
+
+def test_duplicate():
+    ONE_REPEAT_SORT_NUM = 32
+    torch.manual_seed(0)
+    n_groups = 8
+    top2_sum = torch.rand([n_groups], dtype=torch.float32, device=DEVICE)
+    out = torch.zeros([ONE_REPEAT_SORT_NUM], dtype=torch.float32, device=DEVICE)
+
+    duplicate_bitwise_mask_kernel[(1, )](top2_sum, out)
+    torch_npu.npu.synchronize()
+
+    top2_sum_pad = np.pad(top2_sum.cpu().numpy(), pad_width=(0, ONE_REPEAT_SORT_NUM - n_groups), mode='constant',
+                          constant_values=-np.inf)
+    np.testing.assert_array_equal(top2_sum_pad, out.cpu().numpy(), err_msg="duplicate_bitwise_mask dst mismatch")
+    print("[PASS] duplicate correctness")
+
+
 def main():
     for torch_dtype, tol in ((torch.float16, 1e-3), (torch.bfloat16, 1e-2)):
         test_gather_gm_to_l1(torch_dtype, tol)
@@ -436,6 +689,11 @@ def main():
     test_sort_1d_pack()
     test_merge_exhaust_sort4()
     test_unpack_sort()
+    test_sort32()
+    test_mrgsort()
+    test_gather_mask()
+    test_pair_reduce_sum()
+    test_duplicate()
     print("\nAll custom op correctness tests passed.")
 
 

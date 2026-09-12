@@ -33,10 +33,15 @@ fi
 # Each custom op is implemented in its own .cpp and compiled into its own
 # bitcode: "<src>::<arch>" — arch is the ccec aicore target for that op.
 CUSTOM_OPS=(
+  "mem_ops/duplicate.cpp:dav-c220-cube"
   "mem_ops/gather_gm_to_l1.cpp:dav-c220-cube"
   "mem_ops/gather_gm_to_ub.cpp:dav-c220-vec"
+  "mem_ops/gather_mask.cpp:dav-c220-vec"
+  "reduction_ops/pair_reduce.cpp:dav-c220-vec"
+  "sort_ops/sort32.cpp:dav-c220-vec"
   "sort_ops/sort_1d_pack.cpp:dav-c220-vec"
   "sort_ops/merge_pack_sort.cpp:dav-c220-vec"
+  "sort_ops/mrgsort.cpp:dav-c220-vec"
   "sort_ops/unpack_sort.cpp:dav-c220-vec"
 )
 
