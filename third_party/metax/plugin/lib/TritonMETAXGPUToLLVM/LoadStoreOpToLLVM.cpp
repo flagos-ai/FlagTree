@@ -1115,17 +1115,24 @@ struct AtomicRMWOpConversion
       // elemsPerThread.
       Value rmwMask = llMask ? b.and_(mask, maskElements[i]) : mask;
 
-      Value undefVal = b.undef(retType);
       // Build blocks to bypass the atomic instruction for ~rmwMask.
       auto *curBlock = rewriter.getInsertionBlock();
-      auto *endBlock = curBlock->splitBlock(rewriter.getInsertionPoint());
+      auto *endBlock =
+          rewriter.splitBlock(curBlock, rewriter.getInsertionPoint());
       auto *atomicBlock = rewriter.createBlock(
           curBlock->getParent(), std::next(Region::iterator(curBlock)));
-      endBlock->addArgument({retType}, {loc});
+      bool needsResult = tensorTy || !opResult.use_empty();
+      if (needsResult)
+        endBlock->addArgument({retType}, {loc});
 
       rewriter.setInsertionPointToEnd(curBlock);
-      rewriter.create<LLVM::CondBrOp>(loc, rmwMask, atomicBlock, endBlock,
-                                      undefVal);
+      if (needsResult) {
+        Value undefVal = b.undef(retType);
+        rewriter.create<LLVM::CondBrOp>(loc, rmwMask, atomicBlock, endBlock,
+                                        undefVal);
+      } else {
+        rewriter.create<LLVM::CondBrOp>(loc, rmwMask, atomicBlock, endBlock);
+      }
 
       rewriter.setInsertionPointToEnd(atomicBlock);
       auto maybeKind = matchAtomicOp(atomicRmwAttr);
@@ -1187,9 +1194,16 @@ struct AtomicRMWOpConversion
         Type atomPtrTy = ptr_ty(rewriter.getContext(), 3);
         b.store(atom, b.bitcast(atomPtr, atomPtrTy));
       }
-      rewriter.create<LLVM::BrOp>(loc, atom, endBlock);
+      if (needsResult)
+        rewriter.create<LLVM::BrOp>(loc, atom, endBlock);
+      else
+        rewriter.create<LLVM::BrOp>(loc, ValueRange(), endBlock);
 
       rewriter.setInsertionPointToStart(endBlock);
+      if (!needsResult) {
+        rewriter.eraseOp(op);
+        return success();
+      }
       Value retVal = endBlock->getArgument(0);
       if (tensorTy) {
         for (int ii = 0; ii < vec; ++ii) {
