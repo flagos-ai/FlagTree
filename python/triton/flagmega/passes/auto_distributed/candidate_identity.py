@@ -13,6 +13,7 @@ from triton.flagmega.ir import (
     IRType,
     RefType,
     SBPBroadCast,
+    SBPExclusive,
     SBPPartial,
     SBPSplit,
     TensorType,
@@ -53,7 +54,8 @@ def layout_signature(value: IRType) -> str:
             if value.partial is None
             else f"_partial_{_sbp_signature(value.partial)}"
         )
-        return f"d_{policies}{partial}"
+        exclusive = "" if value.exclusive is None else f"_exclusive_{_sbp_signature(value.exclusive)}"
+        return f"d_{policies}{partial}{exclusive}"
     if isinstance(value, TensorType):
         return "tensor"
     if isinstance(value, TupleType):
@@ -66,6 +68,9 @@ def layout_signature(value: IRType) -> str:
 def _sbp_signature(value) -> str:
     if isinstance(value, SBPBroadCast):
         return "b"
+    if isinstance(value, SBPExclusive):
+        owner = "0" if value.owner_coordinates is None else "_".join(str(item) for item in value.owner_coordinates)
+        return "e_h" + "_".join(str(item) for item in value.axes) + "_o" + owner
     if isinstance(value, SBPPartial):
         axes = "_".join(str(axis) for axis in value.axes)
         return f"p_{value.reduce_op.value}_h{axes}"

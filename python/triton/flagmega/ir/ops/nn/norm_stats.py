@@ -77,7 +77,10 @@ class NormStats(OpDefinition):
         if preserved.intersection(reduced):
             raise IRSchemaError("NormStats cannot preserve and reduce the same placement axis.")
         partial = None if not reduced else SBP.partial(tuple(sorted(reduced)))
-        return DistributedType(stats, tuple(policies), value_type.placement, partial)
+        return DistributedType(
+            stats, tuple(policies), value_type.placement, partial,
+            value_type.exclusive,
+        )
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -115,11 +118,9 @@ class NormStats(OpDefinition):
             for dimension in tensor.shape
         ):
             return None
-        input_elements = prod(
-            dimension.fixed_value for dimension in input_tensor.shape
-        )
+        input_elements = tensor_elements(input_tensor)
         return OpCostFactors(
-            cpu_cycles=input_elements * (3 if attrs["use_mean"] else 2),
+            elementwise_operations=input_elements * (3 if attrs["use_mean"] else 2),
             block_local_memory_load_bytes=_fixed_tensor_nbytes(input_tensor),
             block_local_memory_store_bytes=_fixed_tensor_nbytes(output_tensor),
         )

@@ -6,7 +6,7 @@ import torch
 
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
-from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine
 from triton.flagmega.passes.rewriter import DataflowPass
 from triton.flagmega.passes.auto_distributed.policy import lower_vectorization_contracts
 from triton.flagmega.rules.ntt.vectorize.propagation import propagation_rules, sparse_experts_propagation_rules
@@ -20,9 +20,9 @@ def make_module(lanes, axes, *, shared=False, already_vector=False, generated=Fa
         def forward(self):
             types = operand_types()
             inputs = tuple(
-                self.input(parameter.name, types[parameter.name]) for parameter in SparseExpertsDown.input_parameters)
-            down = fm.F.nn.sparse_experts_down(*inputs, round_weighted_output=True,
-                                               output_dtype=fm.vector_type("bfloat16", 2) if already_vector else None,
+                self.input(parameter.name, types[parameter.name]) for parameter in SparseExpertsCombine.input_parameters)
+            down = fm.F.nn.sparse_experts_combine(*inputs, round_weighted_output=True,
+                                               output_dtype=fm.vector_type("bfloat16", 2) if already_vector else "bfloat16",
                                                name="down")
             pack = fm.F.tensors.pack(
                 down, lanes=lanes, axes=axes, name="pack",
@@ -38,7 +38,7 @@ def test_down_output_pack_absorption_preserves_rounding_and_other_users(lanes, a
     module = make_module(lanes, axes, shared=shared)
     rewritten = DataflowPass("VectorizeSparseExperts", sparse_experts_propagation_rules()).run(module)
     result = rewritten.node_map["pack"]
-    assert result.op == "nn.sparse_experts_down"
+    assert result.op == "nn.sparse_experts_combine"
     assert result.type == module.node_map["pack"].type
     assert result.attrs["round_weighted_output"] is True
     assert result.inputs == module.node_map["down"].inputs
@@ -70,5 +70,5 @@ def test_lower_vectorization_contracts_keeps_sparse_expert_physical_output(gener
     packed = DataflowPass("VectorizeSparseExperts", sparse_experts_propagation_rules()).run(module)
     lowered = lower_vectorization_contracts(packed)
     fm.verify_module(lowered)
-    assert lowered.node_map["pack"].op == "nn.sparse_experts_down"
+    assert lowered.node_map["pack"].op == "nn.sparse_experts_combine"
     assert lowered.node_map["pack"].type == packed.node_map["pack"].type

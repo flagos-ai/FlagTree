@@ -220,6 +220,7 @@ def _descriptor_layout_key(descriptor):
             descriptor.distributed_backing_type.to_data(), sort_keys=True, separators=(",", ":"))),
         tuple(descriptor.strides),
         descriptor.nbytes,
+        descriptor.component_stride_bytes,
     )
 
 
@@ -232,7 +233,8 @@ def _signature_data(signature):
             "distributed_backing_type": backing,
             "strides": strides,
             "nbytes": nbytes,
-        } for distributed, storage_kind, backing, strides, nbytes in leaves),
+            "owner_stride_bytes": owner_stride,
+        } for distributed, storage_kind, backing, strides, nbytes, owner_stride in leaves),
     } for parameter, leaves in signature)
 
 

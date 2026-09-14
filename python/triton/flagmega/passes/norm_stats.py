@@ -13,7 +13,7 @@ from triton.flagmega.rules.neutral import (
     fold_bind_norm_stats_rule,
     fuse_norm_stats_apply_rule,
 )
-from triton.flagmega.rules.ntt import lower_matmul_norm_stats_combine_rule
+from triton.flagmega.rules.ntt import lower_add_norm_stats_rule
 
 
 def finalize_norm_stats_bindings(module: IRModule) -> IRModule:
@@ -49,17 +49,17 @@ def fuse_norm_stats_apply(module: IRModule) -> IRModule:
         "FuseNormStatsApply", (fuse_norm_stats_apply_rule(),)).run(module)
 
 
-def lower_matmul_norm_stats_combine(module: IRModule) -> IRModule:
+def lower_add_norm_stats(module: IRModule) -> IRModule:
     """Fuse a private logical MatMul into its explicit value/stats combine."""
 
     return DataflowPass(
-        "LowerMatMulNormStatsCombine",
-        (lower_matmul_norm_stats_combine_rule(),),
+        "LowerAddNormStats",
+        (lower_add_norm_stats_rule(),),
     ).run(module)
 
 
 __all__ = [
     "finalize_norm_stats_bindings",
     "fuse_norm_stats_apply",
-    "lower_matmul_norm_stats_combine",
+    "lower_add_norm_stats",
 ]

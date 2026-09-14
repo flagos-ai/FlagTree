@@ -72,8 +72,10 @@ def test_shared_expert_gate_preserves_eager_sigmoid_store_inside_moe_custom_op()
     for name in ("decode_linear", "decode_attention"):
         gate = module.node_map[name + "_shared_gate"]
         assert gate.op == "math.sigmoid" and gate.type.dtype == fm.DType.BFLOAT16
-        scaled = module.node_map[name + "_shared_scaled"]
-        assert scaled.op == "math.mul" and scaled.type.dtype == fm.DType.BFLOAT16
+        scaled = module.node_map[name + "_shared_experts"]
+        assert scaled.op == "nn.sparse_experts" and scaled.type.dtype == fm.DType.BFLOAT16
+        assert scaled.attrs["round_projections"] and scaled.attrs["round_down_projection"]
+        assert not scaled.attrs["round_activation"]
     # This separate gate is in the surrounding compiled graph, where the
     # sigmoid and multiply are fused without a BF16 intermediate store.
     assert module.node_map["decode_attention_attention_gate"].type.dtype == fm.DType.FLOAT32

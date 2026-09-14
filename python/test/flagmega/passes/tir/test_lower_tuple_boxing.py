@@ -18,7 +18,7 @@ def _graph(op="distributed.boxing", *, literal=False, identity=False):
                                  placement, fm.SBP.partial((0, 1), fm.ReduceOp.SUM))
     source_type = fm.TupleType((local, fm.TupleType((tensor, partial))))
     target_type = source_type if identity else fm.TupleType((tensor, fm.TupleType((local, partial))))
-    builder = fm.IRBuilder(dialect="distributed", stage="gather_reduce_qkv_fused")
+    builder = fm.IRBuilder(dialect="distributed", stage="distributed_ops_fused")
     if literal:
         a, b, c = (builder.var(name, typ, id=name) for name, typ in (("a", local), ("b", tensor), ("c", partial)))
         nested = builder.call("builtin.tuple", (b, c), source_type.fields[1], id="nested")
@@ -64,7 +64,7 @@ def test_whole_identity_tuple_does_not_allocate_or_transfer():
 
 def test_lowering_is_idempotent_and_editable(tmp_path):
     first = _lower(_graph())
-    second = _lower(replace(first, stage="gather_reduce_qkv_fused"))
+    second = _lower(replace(first, stage="distributed_ops_fused"))
     assert second.nodes == first.nodes
     assert fm.load_module(fm.emit_module(first, tmp_path / "lowered.py")) == first
 

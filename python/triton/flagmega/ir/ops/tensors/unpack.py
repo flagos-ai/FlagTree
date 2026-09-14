@@ -98,6 +98,7 @@ class Unpack(OpDefinition):
             tuple(policies),
             source_type.placement,
             source_type.partial,
+            source_type.exclusive,
         )
 
     @classmethod

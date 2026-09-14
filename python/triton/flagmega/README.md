@@ -18,6 +18,18 @@ table directly at its producer's store boundary. Thus a numerical profile can
 use BF16 input/output and BF16 tables without surrounding RoPE Cast nodes;
 normalization's separate rounding boundaries remain unchanged.
 
+`F.nn.sparse_experts` decomposes before AutoDistribution into Dispatch
+(`[T,H] -> [T,R,H]`), GateUp, per-route FP32 Down, and Combine. `R` is a
+selected route slot, not the expert-bank axis. These stages independently model
+token/route/feature ownership and cost; weight-bank expert axes remain broadcast.
+After distribution, private Dispatch/GateUp and Down/WeightedSum pairs fuse
+locally. Route and split-K owner sums remain explicit Boxing operations before
+the final cast; per-route rounding cannot cross an unfinished K reduction.
+This is static route parallelism, not dynamic expert-owner all-to-all dispatch.
+Qwen3.5 shared experts use an independent, always-active group with their own
+sigmoid coefficient, outside routed TopK normalization. Different intermediate
+widths retain separate groups and costs without padding their weight banks.
+
 ## Workspace implementation summary
 
 | Area | Implemented responsibilities |
@@ -96,6 +108,26 @@ Shared producers are not duplicated. Backend capability checks reject
 unsupported bodies/families, partial reductions and effectful boundaries;
 they never silently drop a Fusion. Other kernel families require explicit
 boundary-emitter support before they can use this facility.
+
+`FuseDistributedOps` also forms `NTT.PagedAttentionGatedCombine` from a private
+attention combine followed by `attention * sigmoid(gate)`. Unlike a unary
+`Fusion`, this op has four explicit operands: max/sum/acc partial states and
+the gate. It preserves both BF16 producer rounding boundaries and the final
+product type. Output and gate must have identical types and owners; the
+combine's released partial axis may become an output split. Shared/exported
+attention intermediates are not removed or recomputed. Formation and layout
+validation precede TIR implementation selection, and normal bufferization
+plans gate-side views, cross-owner state reads, lifetimes and barriers. The
+portable Triton implementation shares the ordinary combine algorithm and
+performs gating before its output store.
+
+Private numeric casts can commute through read-only ShardedView and
+scalar-element-preserving Bitcast lane views before boundary fusion. This
+exposes a conversion to its consuming kernel without materializing a wide
+temporary. Inference must preserve the result type and owner mapping; shared
+or exported casts, partial values, numeric bit reinterpretation and
+non-trailing Bitcast lane regrouping are not moved. This rule is value-exact
+and does not remove an intermediate rounding step.
 
 TargetIndependent's `FoldCast` independently eliminates identity casts and
 floating `A → B → A` round trips. This is a **relaxed numerical optimization**:
@@ -234,6 +266,119 @@ compilation. Pausing/resuming creates a fresh manager, and an intervening custom
 pass invalidates this analysis unless it explicitly declares preservation.
 Custom passes that mutate target/provider policy must not claim preservation.
 
+For verified typed operations, `OpDefinition.zero_copy_input_index` proves a
+read-only physical alias without repeating type inference. Dense Reshape,
+Bitcast and legal ShardedView contracts use it; byte preservation alone is not
+enough for strided or opaque layouts. Alias reshapes have zero execution cost.
+Internal read-only views of one immutable producer share a grid-publication
+cost, including tuple fields and alias chains. CP-SAT charges the logical OR
+of their selected uses, weighted by function invocations. Boxing transfers,
+independent producers and ownership-exclusive transitions remain separate.
+`Costs/Pick.txt` separates edge costs from shared publication groups; DOT edges
+show standalone estimates, which must not be summed as the solver objective.
+Packed QKV and its partial combine expose operation-owned cost factors using
+the target's arithmetic, bandwidth and synchronization rates. Matmul residual
+norm combines count the partial fan-in over their requested output region,
+including scalar vector lanes in the reduction work. Unknown shapes
+remain explicitly heuristic. These estimates do not include allocation-induced
+WAR barriers or post-distribution fusion savings and are not measured latency.
+
+Distribution providers use operation-owned forward and inverse type relations.
+`distributed_output_type_candidates` lifts available input contracts;
+`infer_distributed_input_types` projects a requested output into input tuples,
+and forward inference must reproduce that exact output. Same-type scalar/vector
+binary and unary ops share this contract instead of enumerating a fixed tensor
+axis. Broadcasting remains explicit, partial nonlinear work is rejected, and
+dtype/lane changes cannot be invented to satisfy an output demand. Pointwise
+input domains are joined by exact type, not expanded as a Cartesian product.
+Before CP-SAT, a monotone worklist propagates new producer layouts and consumer
+demands through declared provider relations and structural tuples. Real reshard
+edges, costs, capability checks and function ABIs remain explicit. Policy v10
+requires fresh proposals; old catalogs are not silently reinterpreted.
+
+`LowerVectorizationContracts` preserves byte-view chains connecting native
+computations, including a scalar Bitcast over a vector Reshape. Such a physical
+chain is no longer reconstructed as a scalar schedule plus a new Unpack.
+SplitStages retain their coordinate-mapping order, while `SBPPartial.axes` is a
+canonical owner set. Collective enumeration and MatMul K-axis validation must
+not confuse these two contracts.
+
+`FreezePreDistributionConstants` now outlines all proven constant islands before
+the distribution proposal, after packing/function-boundary propagation. This is
+the default pipeline, not a model-specific option: source kinds, purity,
+determinism and constant-evaluation contracts determine the boundary. The search
+sees opaque `const_asset` leaves and still selects every runtime layout and
+reshard edge; offline Slice/Concat/Pack interiors do not generate candidates.
+No weight payload is loaded. `pre-distribution-freeze` produces the editable,
+resumable `distribution_constants_frozen` checkpoint.
+
+After distribution is materialized, `post-distribution-thaw` explicitly restores
+ordinary constant expressions (`distribution_constants_open`), retaining the
+chosen runtime graph and boundary types. Recipe-local names are renamed only
+when necessary to avoid collisions; physical layout changes use explicit
+Boxing edges rather than rewriting the types of internal expressions. Constant
+physical vector computations remain intact during vector-contract lowering.
+The existing ConstantCSE, LiftConstantParameterExpressions and final
+FreezeConstantIslands then absorb new constant adapters and caller expressions
+into closed readonly-data recipes. Default Dataflow/EGraph rewriters still
+reject frozen IR; no frozen-phase checks or offline passes are bypassed.
+Existing open distribution proposals retain their saved selection surface when
+resumed. New plans must be selected from their own compact proposal.
+
+`AutoDistributedPass` finishes with `fuse-attention-gate`, after distributed
+boundary propagation and vector-contract lowering. Its `attention_gate_fused`
+checkpoint already contains legal private attention-combine/sigmoid/multiply
+epilogues, before constant freezing or tutorial-local fusion passes. This stage
+uses the selected distributed types, not microkernel decisions. Shared or
+exported attention results remain unfused. The later `FuseDistributedOps` pass
+also recognizes the pattern so older frozen checkpoints can still resume;
+recognition is idempotent.
+
+### Tensor views and alignment contracts
+
+Qwen3.5's default importer now exposes `nn.qkv_parallel_linear` plus a separate
+gate projection. The checkpoint's per-head query/gate interleaving is decoded
+with ordinary constant Reshape/Slice operations outside the reusable decoder.
+Q/K/V therefore use the existing packed-QKV distribution, fused-RHS and kernel
+selection path without activation slices. Existing explicitly requested flat
+QKVG imports remain a distinct representation, not an alias for QKVParallel.
+
+Contiguous same-owner Slice/SliceToShape values can become
+`F.tir.buffer_subspan(value, offsets=..., shape=...)`. Contiguity is proved in
+both logical and local-shard coordinates, including vector elements. The view
+retains a typed MemSpan, source lifetime, byte offset and owner stride; it is
+not a byte-preserving reinterpretation of the entire parent allocation.
+Non-contiguous slices, changed ownership, mandatory snapshot writes, explicit
+copy-placement constraints and unsupported escaping result ABIs retain a real
+materialization.
+
+Storage decisions precede implementation selection:
+
+```text
+CanonicalizePackedQKVWeights
+PlanTIRAlignments       -> aligned_tir
+LowerTensorSubspans     -> tensor_subspans_lowered
+ProposeTIRMicroKernels
+SelectTIRMicroKernels
+FinalizeTIRPackage / PlanFunctionMemory / Bufferize
+```
+
+`T.prim_parameter(..., alignment_bytes=...)` records the semantic storage ABI.
+Planning covers the alignment requirements of currently legal implementation
+interfaces, independent of candidate preferences or selection records. This
+conservative common ABI preserves those implementation options. Explicitly
+declared contracts remain authoritative. A different storage tradeoff requires
+replanning before the subspan boundary, not changing a later microkernel pick.
+Microkernel proposal/application only admit implementations satisfying the
+contract; they neither strengthen it nor change copy/view decisions.
+
+Alignment requirements propagate through aliases and reusable function inputs
+and results. Allocation realizes them for every owner, padding compact owner
+strides when necessary. Subspans preserve the parent's stride. Python IR,
+buffer-plan verification, specialization and generated call ABIs retain these
+facts. Legacy parameters without an alignment field keep their existing
+transfer ABI when resumed; new compilation commits the contract before views.
+
 ### Source-runtime numerical contracts
 
 Import may explicitly select a versioned numerical profile. The default
@@ -255,6 +400,15 @@ requires the reusable `decode_layer` full-model importer, not the legacy
 hidden-output layer importer. This is not a numerical-equivalence claim for
 arbitrary vLLM revisions or settings.
 
+Qwen3.5 MoE's default import keeps the hidden/residual, gate and MoE dataflow
+in BF16. Router/logits MatMul producers directly declare FP32 outputs; import
+does not manufacture activation Casts to reproduce a source runtime's rounding.
+Normalization's immutable `1 + w` preparation still uses FP32 constant
+expressions, which the normal constant-lifting/freezing pipeline evaluates
+offline. The optional `vllm-ae10e855a-inductor-level3` profile explicitly restores
+its wider residual ABI and projection rounding for compatibility experiments;
+it is not the default required by tutorial 02.
+
 Profiles are frontend semantics, not codegen model switches. Ordinary
 TargetIndependent passes fuse BF16 projections with FP32 GLU intermediates and
 FP32 Q/K normalization/RoPE using explicit operation attributes. They preserve
@@ -266,7 +420,7 @@ optimizations live here; workload/hardware selection strategies may remain local
 Local fusions are Pattern-based rules grouped in dataflow fixed points:
 `DecomposeComplexOps` includes normalization decomposition, wide GLU, final
 NormApply casts and QKV/RoPE/cache formation; `FuseDistributedOps` groups the
-gather/reduce normalization and QKV variants. Patterns bind shared operands and
+gather/reduce normalization variants. Patterns bind shared operands and
 private users; callbacks check type/layout, rounding and effect-order legality.
 `is_unary_chain` captures arbitrary-length view chains in both dataflow and
 e-graph matching. Multi-output/effectful region edits are dataflow transactions,
@@ -274,11 +428,43 @@ not e-graph equalities. Late rules use `rewrite_constants=False` to keep frozen
 assets and recipes opaque. Legacy fusion stage names resolve to their grouped
 stage for checkpoint resume.
 
-`QKVRoPEWithCache.rotary_dim` and its gather/reduce form use scalar coordinates,
-independent of vector lanes (omitting it keeps full-head rotation). Normalization
-covers the complete head; internal FP32 RoPE rotates only the prefix and retains
-the normalized tail. BF16 normalization boundaries, table storage dtype, both
-cache writes and sequence advancement remain part of the operation contract.
+`QKVRoPEWithCache` requires materialized Q/K tensors and two mandatory FP32
+statistics operands. `NormStats` and any collective are separate IR nodes,
+visible before AutoDistribution; no ten-input or gather/reduce-RoPE form remains.
+`rotary_dim` uses scalar coordinates independent of vector lanes (omitting it
+keeps full-head rotation). RoPE and QKVRoPEWithCache permit head-dimension
+sharding only when every rotary pair belongs to one owner. The type relation
+checks staged contiguous/block-cyclic ownership; incompatible inputs need an
+explicit reshard before the op. Candidate generation lifts target splits of
+rotary groups or paired halves and prices stats, collective and apply work
+separately. The device implementation neither selects ownership nor reads
+another owner's Q/K elements. Full-head normalization, the untouched normalized
+tail, cache writes and sequence advancement remain part of the contract.
+
+`NTT.AddNormStats` (`F.ntt.add_norm_stats`) adds two values and returns the
+rounded sum plus additive normalization statistics. Its first input may be
+materialized or Sum-partial; it does not perform a matrix multiplication or
+require a MatMul producer. `NTT.MatMulNormStats` is the distinct operation that
+also performs the projection. The former `MatMulNormStatsCombine` name is not
+an alias; regenerate old checkpoints from an earlier stage when resuming.
+
+`FormAddNormStats` handles equal-shaped additions before AutoDistribution,
+including residuals whose producer is not a MatMul. Layout search jointly
+prices private, layout-compatible packed MatMul/AddNormStats regions using
+the same typed rule as `LowerAddNormStats`. The fused operation owns local
+projection/add/statistics work; statistics collectives and value publication
+remain explicit and separately priced. Cost dumps distinguish standalone
+candidate prices from the joint price actually charged, including static
+function invocation counts. Shared/escaping projections, layout-changing
+edges, and edited or non-analytic candidate costs receive no fusion discount.
+For a multi-result producer, a value publication and a statistics reduction
+share the same input-completion barrier. Search charges that barrier once per
+invocation, including callee returns, while retaining each reduction's data
+transfer and arithmetic costs. Independent producers never share completion.
+PyNTT applies its canonical-storage view proof to callee-owned return values
+as well as internal uses, rather than requiring an artificial copy at every
+function return. This does not grant canonical provenance to an unknown
+function parameter or turn a Partial reduction into a view.
 
 `HoistCallInvariantExpressions` is a normal TargetIndependent pass with its own
 Before/After checkpoints. It lifts pure expressions of identical immutable SSA

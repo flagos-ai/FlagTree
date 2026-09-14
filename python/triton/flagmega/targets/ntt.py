@@ -163,6 +163,12 @@ class NttTarget(ABC):
     def propose_microkernels(self, module: IRModule) -> IRModule:
         return self.microkernel_selection_policy.propose(module, self)
 
+    def plan_storage_alignments(self, module: IRModule) -> IRModule:
+        from triton.flagmega.passes.tir.plan_storage_alignments import plan_storage_alignments
+
+        return plan_storage_alignments(module, self.microkernel_selection_policy.registry, self.triton_implementation_model,
+                                       capability=self.capability)
+
     def select_microkernels(self, module: IRModule) -> IRModule:
         return self.microkernel_selection_policy.apply(module, self)
 

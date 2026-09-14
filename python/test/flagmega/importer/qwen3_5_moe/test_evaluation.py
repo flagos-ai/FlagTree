@@ -37,7 +37,8 @@ def test_mixed_decoder_multistep_updates_every_independent_layer():
 
 def test_attention_query_and_gate_are_split_within_each_head():
     source = checkpoint(with_values=True)
-    importer = Qwen35MoeImporter(source, layer=1, block_size=2, num_blocks=2)
+    importer = Qwen35MoeImporter(source, layer=1, block_size=2, num_blocks=2,
+                                 fused_qkvg_projection=True)
     module = importer.import_module()
     _, trace = TorchEvaluator(CheckpointWeightResolver(source)).run_with_trace(
         module, {
@@ -45,9 +46,21 @@ def test_attention_query_and_gate_are_split_within_each_head():
             "gated_delta_net_state": create_gdn_state(importer.gdn_config),
             "paged_attention_state": create_paged_attention_state(importer.paged_config),
         })
-    packed = trace["decode_attention_q_gate"].reshape(1, 2, 16)
-    torch.testing.assert_close(trace["decode_attention_query_slice"], packed[:, :, :8], rtol=0, atol=0)
-    torch.testing.assert_close(trace["decode_attention_gate_slice"], packed[:, :, 8:], rtol=0, atol=0)
+    # The importer regroups the checkpoint's per-head [query, gate] rows into
+    # contiguous blocks before the fused q/k/v/gate projection, so the query
+    # trace must equal the per-head de-interleaving of the old q_proj
+    # projection applied to the same input.
+    hidden = trace["decode_attention_input_norm"].float()
+    q_weight = source._values["model.language_model.layers.1.self_attn.q_proj.weight"].float()
+    heads, dim = 2, 8
+    projected_old = (hidden @ q_weight.t()).bfloat16()
+    query_expected = projected_old.reshape(heads, 2, dim)[:, 0].reshape(1, heads * dim)
+    gate_expected = projected_old.reshape(heads, 2, dim)[:, 1].reshape(1, heads * dim)
+    packed = trace["decode_attention_qkvg"].float()
+    torch.testing.assert_close(trace["decode_attention_query_slice"].float(), packed[:, :heads * dim].float(), rtol=0, atol=0)
+    torch.testing.assert_close(trace["decode_attention_query_slice"].float(), query_expected.float(), rtol=0, atol=0)
+    torch.testing.assert_close(trace["decode_attention_gate_slice"].float(), packed[:, -heads * dim:].float(), rtol=0, atol=0)
+    torch.testing.assert_close(trace["decode_attention_gate_slice"].float(), gate_expected.float(), rtol=0, atol=0)
 
 
 def test_qwen35_norm_does_not_round_before_one_plus_weight_scaling():

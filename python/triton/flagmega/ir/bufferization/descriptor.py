@@ -50,6 +50,7 @@ class BufferDescriptor:
     # Bind symbols in MemSpan.start to scalar buffer identities. The MemSpan
     # remains the only address/alias truth; this supplies executable SSA uses.
     offset_bindings: tuple[tuple[str, str], ...] = ()
+    owner_stride_bytes: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shape", tuple(int(value) for value in self.shape))
@@ -64,6 +65,13 @@ class BufferDescriptor:
             "distributed_storage_kind",
             DistributedBufferStorageKind(self.distributed_storage_kind),
         )
+        if self.owner_stride_bytes is not None and (
+            type(self.owner_stride_bytes) is not int
+            or self.owner_stride_bytes < self.mem_span.nbytes
+            or self.owner_stride_bytes % self.dtype.itemsize
+            or self.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_OWNER
+        ):
+            raise ValueError("An explicit owner stride requires aligned compact-per-owner storage.")
         if len(self.shape) != len(self.strides):
             raise ValueError("BufferDescriptor shape/stride ranks must match.")
         if self.distributed_type is None:
@@ -103,6 +111,12 @@ class BufferDescriptor:
             raise ValueError(
                 "Replicated-local storage requires a non-partial block placement."
             )
+        if self.distributed_storage_kind is DistributedBufferStorageKind.EXCLUSIVE_LOCAL:
+            if self.distributed_type.exclusive is None or any(
+                not self.distributed_type.placement.is_physical_block_axis(axis)
+                for axis in self.distributed_type.exclusive.axes
+            ):
+                raise ValueError("Exclusive-local storage requires physical block E axes.")
         if self.distributed_backing_type is not None:
             backing = self.distributed_backing_type
             if self.distributed_storage_kind not in {
@@ -136,7 +150,8 @@ class BufferDescriptor:
         if (
             self.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
             and self.mem_span.buffer.nbytes
-            < self.mem_span.byte_offset + component_bytes * placement_owner_count(self.distributed_type)
+            < self.mem_span.byte_offset + self.component_stride_bytes * (placement_owner_count(self.distributed_type) - 1)
+            + component_bytes
         ):
             raise ValueError(
                 f"Compact-per-owner buffer {self.id!r} backing does not contain every owner component."
@@ -194,6 +209,12 @@ class BufferDescriptor:
         return self.mem_span.nbytes
 
     @property
+    def component_stride_bytes(self) -> int:
+        if self.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_OWNER:
+            return 0
+        return self.nbytes if self.owner_stride_bytes is None else self.owner_stride_bytes
+
+    @property
     def physical_access_span(self) -> MemSpan:
         """Byte footprint of all owners in this physical allocation.
 
@@ -204,13 +225,13 @@ class BufferDescriptor:
         not multiply its component by the placement size.
         """
 
-        if self.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_OWNER:
+        if self.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_OWNER or not self.nbytes:
             return self.mem_span
         assert self.distributed_type is not None
         return MemSpan(
             self.mem_span.buffer,
             self.mem_span.start,
-            self.mem_span.size * placement_owner_count(self.distributed_type),
+            self.component_stride_bytes * (placement_owner_count(self.distributed_type) - 1) + self.mem_span.size,
         )
 
     @property
@@ -303,6 +324,7 @@ class BufferDescriptor:
             "live_end": self.live_end,
             "function": self.function,
             "role": self.role,
+            **({} if self.owner_stride_bytes is None else {"owner_stride_bytes": self.owner_stride_bytes}),
             **({"offset_bindings": dict(self.offset_bindings)} if self.offset_bindings else {}),
             "distributed_type": (
                 None if self.distributed_type is None else self.distributed_type.to_data()
@@ -343,6 +365,7 @@ class BufferDescriptor:
             live_end=None if data.get("live_end") is None else int(data["live_end"]),
             function=None if data.get("function") is None else str(data["function"]),
             role=str(data.get("role", "value")),
+            owner_stride_bytes=data.get("owner_stride_bytes"),
             distributed_type=(
                 None
                 if data.get("distributed_type") is None

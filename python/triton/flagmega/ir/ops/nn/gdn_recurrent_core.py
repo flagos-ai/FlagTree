@@ -8,6 +8,7 @@ from typing import Mapping, Sequence
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of, tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast, SBPSplit
+from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.model import DistributedType, Effect, IRType, Node, SBP, TupleType, effect, tensor_type
 from triton.flagmega.ir.ops.core import (
     OpCost,
@@ -29,7 +30,7 @@ from triton.flagmega.ir.type_pattern import has_rank, is_ref, is_tensor
 class GatedDeltaNetRecurrentCore(OpDefinition):
     """Update recurrent state and produce the local gated value activation."""
 
-    state = input_parameter(is_ref(), memory_effect="read_write")
+    state = input_parameter(is_ref(), memory_effect=MemoryEffect.for_fields(recurrent=MemoryEffect.READ_WRITE))
     qkv = input_parameter(is_tensor() & has_rank(2))
     z = input_parameter(is_tensor() & has_rank(2))
     projection_input = input_parameter(is_tensor() & has_rank(2))
@@ -115,9 +116,10 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
                     f"GatedDeltaNetRecurrentCore {parameter.name} must be replicated."
                 )
         head_axes = _materialized_or_partial_axes(z_type, 1)
-        expected_z = _split_on(tensor_of(z_type), 1, placement, head_axes)
-        if z_type.partial is None and z_type != expected_z:
-            raise IRSchemaError("GatedDeltaNetRecurrentCore Z must be value-head split.")
+        if z_type.partial is None:
+            # State rows and the gated result share Z's existing owner map;
+            # neither recurrence nor full-head normalization needs a new map.
+            return TupleType((DistributedType(output, z_type.axis_policies, placement), state_type))
         return TupleType((_split_on(output, 1, placement, head_axes), state_type))
 
     @classmethod

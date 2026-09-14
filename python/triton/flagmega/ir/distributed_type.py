@@ -110,7 +110,7 @@ class SplitStage:
 
 
 class SBP:
-    """Split/Broadcast/Partial policy for one logical tensor axis."""
+    """Split/Broadcast/Exclusive/Partial distribution policies."""
 
     @staticmethod
     def broadcast() -> SBPBroadCast:
@@ -119,6 +119,12 @@ class SBP:
     @staticmethod
     def partial(axes: Sequence[int], reduce_op: ReduceOp | str = ReduceOp.SUM) -> SBPPartial:
         return SBPPartial(tuple(axes), ReduceOp(reduce_op))
+
+    @staticmethod
+    def exclusive(
+        axes: Sequence[int], owner_coordinates: Sequence[int] | None = None,
+    ) -> SBPExclusive:
+        return SBPExclusive(tuple(axes), None if owner_coordinates is None else tuple(owner_coordinates))
 
     @staticmethod
     def split(*stages: SplitStage) -> SBPSplit:
@@ -149,6 +155,42 @@ class SBPBroadCast(SBP):
 
 
 @dataclass(frozen=True)
+class SBPExclusive(SBP):
+    """One owner per selected mesh-axis group, with all other axes broadcast.
+
+    ``owner_coordinates`` is optional and defaults to zero on the selected
+    axes.  E is a value-ownership policy, not a tensor-dimension split, so it
+    is carried by ``DistributedType.exclusive`` rather than ``axis_policies``.
+    """
+
+    axes: tuple[int, ...]
+    owner_coordinates: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        axes = tuple(int(value) for value in self.axes)
+        if not axes or any(value < 0 for value in axes) or len(set(axes)) != len(axes):
+            raise IRSchemaError("Exclusive axes must be a non-empty unique set of non-negative axes.")
+        coordinates = self.owner_coordinates
+        if coordinates is not None:
+            coordinates = tuple(int(value) for value in coordinates)
+            if len(coordinates) != len(axes) or any(value < 0 for value in coordinates):
+                raise IRSchemaError("Exclusive owner coordinates must match axes and be non-negative.")
+        object.__setattr__(self, "axes", axes)
+        object.__setattr__(self, "owner_coordinates", coordinates)
+
+    def to_data(self) -> dict[str, object]:
+        return {
+            "kind": "exclusive",
+            "axes": list(self.axes),
+            "owner_coordinates": None if self.owner_coordinates is None else list(self.owner_coordinates),
+        }
+
+    def __str__(self) -> str:
+        owner = "0" if self.owner_coordinates is None else ",".join(str(value) for value in self.owner_coordinates)
+        return f"E([{','.join(str(value) for value in self.axes)}]@[{owner}])"
+
+
+@dataclass(frozen=True)
 class SBPPartial(SBP):
     axes: tuple[int, ...]
     reduce_op: ReduceOp = ReduceOp.SUM
@@ -157,7 +199,10 @@ class SBPPartial(SBP):
         axes = tuple(int(value) for value in self.axes)
         if not axes or any(value < 0 for value in axes) or len(set(axes)) != len(axes):
             raise IRSchemaError("Partial axes must be a non-empty unique set of non-negative axes.")
-        object.__setattr__(self, "axes", axes)
+        # A reduction names an owner set, unlike the ordered SplitStages that
+        # map tensor coordinates. Canonicalize it at the type boundary so all
+        # collective consumers agree on the same dense owner enumeration.
+        object.__setattr__(self, "axes", tuple(sorted(axes)))
         object.__setattr__(self, "reduce_op", ReduceOp(self.reduce_op))
 
     def to_data(self) -> dict[str, object]:
@@ -272,6 +317,12 @@ def sbp_from_data(data: Mapping[str, object]) -> SBP:
         return SBP.broadcast()
     if kind == "partial":
         return SBP.partial(tuple(int(value) for value in data.get("axes", ())), str(data.get("reduce_op", "sum")))
+    if kind == "exclusive":
+        raw = data.get("owner_coordinates")
+        return SBP.exclusive(
+            tuple(int(value) for value in data.get("axes", ())),
+            None if raw is None else tuple(int(value) for value in raw),
+        )
     if kind == "split":
         return SBP.split(*(split_stage_from_data(value) for value in data.get("stages", ())))  # type: ignore[arg-type]
     raise IRSchemaError(f"Unknown SBP kind {kind!r}.")
@@ -358,6 +409,10 @@ def sharded_view_error(source_type: IRType, target_type: DistributedType) -> str
         return "ShardedView target cannot contain a partial value."
     if not _has_only_split_or_broadcast(target_type):
         return "ShardedView target policies must contain only Split or Broadcast."
+    if isinstance(source_type, DistributedType) and source_type.exclusive != target_type.exclusive:
+        # E is a whole-value ownership transition. It remains a legal typed
+        # view, while the realization policy supplies publication/barrier cost.
+        return None
     return None
 
 
@@ -384,6 +439,8 @@ def is_local_shard_subview(
     ):
         return False
     structural = True
+    if source_type.exclusive != target_type.exclusive:
+        return False
     for source_policy, target_policy in zip(
         source_type.axis_policies,
         target_type.axis_policies,
@@ -506,9 +563,39 @@ def _is_contiguous_split_refinement(
 def is_fully_replicated(value: DistributedType) -> bool:
     """Return whether every placement owner holds the complete tensor."""
 
-    return value.partial is None and all(
+    return value.partial is None and value.exclusive is None and all(
         isinstance(policy, SBPBroadCast) for policy in value.axis_policies
     )
+
+
+def is_exclusive(value: DistributedType) -> bool:
+    return value.exclusive is not None
+
+
+def exclusive_owner_count(value: DistributedType) -> int:
+    if value.exclusive is None:
+        return placement_owner_count(value)
+    return prod(value.placement.hierarchy[axis] for axis in value.exclusive.axes)
+
+
+def exclusive_transition_axes(
+    source: DistributedType,
+    target: DistributedType,
+) -> tuple[int, ...] | None:
+    """Return the mesh group required for a B/E ownership transition."""
+
+    if (
+        source.placement != target.placement
+        or source.partial is not None
+        or target.partial is not None
+        or source.axis_policies != target.axis_policies
+        or source.exclusive == target.exclusive
+        or (source.exclusive is None and target.exclusive is None)
+    ):
+        return None
+    axes = set(() if source.exclusive is None else source.exclusive.axes)
+    axes.update(() if target.exclusive is None else target.exclusive.axes)
+    return tuple(sorted(axes))
 
 
 def _has_partial(value: DistributedType) -> bool:
@@ -691,6 +778,7 @@ __all__ = [
     "ReduceOp",
     "SBP",
     "SBPBroadCast",
+    "SBPExclusive",
     "SBPPartial",
     "SBPSplit",
     "SplitDistribution",
@@ -699,6 +787,9 @@ __all__ = [
     "is_distributable",
     "is_fully_sharded_across_placement",
     "is_fully_replicated",
+    "is_exclusive",
+    "exclusive_owner_count",
+    "exclusive_transition_axes",
     "is_local_shard_subview",
     "leaf_candidate_policies",
     "local_shape",

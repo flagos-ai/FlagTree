@@ -17,6 +17,8 @@ from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
 from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
+from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine, SparseExpertsWeightedSum
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
 from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulGlu
@@ -54,6 +56,9 @@ __all__ = [
     "SparseExperts",
     "SparseExpertsGateUp",
     "SparseExpertsDown",
+    "SparseExpertsDispatch",
+    "SparseExpertsCombine",
+    "SparseExpertsWeightedSum",
     "MatMulGlu",
     "PackedMatMulGlu",
     "PackedDenseMatMulGlu",

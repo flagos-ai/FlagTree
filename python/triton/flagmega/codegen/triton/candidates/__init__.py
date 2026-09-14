@@ -9,7 +9,7 @@ from .core import (
     TritonCandidateProviderRegistry,
 )
 from .dense_matmul import DenseMatmulCandidateProvider, MatMulNormStatsCandidateProvider
-from .matmul_norm_stats_combine import MatMulNormStatsCombineCandidateProvider
+from .add_norm_stats import AddNormStatsCandidateProvider
 from .gather_reduce_add_norm_apply import (
     GatherReduceAddNormApplyCandidateProvider,
 )
@@ -18,9 +18,6 @@ from .distributed_boxing import DistributedBoxingCandidateProvider
 from .packed_qkv import PackedQKVSemanticTIRCandidateProvider
 from .paged_attention_split import PagedAttentionSplitSemanticTIRCandidateProvider
 from .qkv_rope_with_cache import QKVRoPEWithCacheSemanticTIRCandidateProvider
-from .gather_reduce_qkv_rope_with_cache import (
-    GatherReduceQKVRoPEWithCacheSemanticTIRCandidateProvider,
-)
 from .gather_reduce_norm_apply import (
     GatherReduceNormApplySemanticTIRCandidateProvider,
 )
@@ -61,12 +58,11 @@ def default_triton_candidate_registry() -> TritonCandidateProviderRegistry:
             PagedAttentionSplitSemanticTIRCandidateProvider(),
             AttentionPrimitiveSemanticTIRCandidateProvider(),
             QKVRoPEWithCacheSemanticTIRCandidateProvider(),
-            GatherReduceQKVRoPEWithCacheSemanticTIRCandidateProvider(),
             GatherReduceNormApplySemanticTIRCandidateProvider(),
             GatherReduceAddNormApplyCandidateProvider(),
             DenseMatmulCandidateProvider(),
             MatMulNormStatsCandidateProvider(),
-            MatMulNormStatsCombineCandidateProvider(),
+            AddNormStatsCandidateProvider(),
             GdnCandidateProvider(),
             DistributedBoxingCandidateProvider(),
     ):
@@ -83,7 +79,7 @@ __all__ = [
     "AttentionPrimitiveSemanticTIRCandidateProvider",
     "DenseMatmulCandidateProvider",
     "MatMulNormStatsCandidateProvider",
-    "MatMulNormStatsCombineCandidateProvider",
+    "AddNormStatsCandidateProvider",
     "GatherReduceAddNormApplyCandidateProvider",
     "DenseMatmulGluCandidateProvider",
     "ElementwiseCandidateProvider",
@@ -97,7 +93,6 @@ __all__ = [
     "PackedQKVSemanticTIRCandidateProvider",
     "PagedAttentionSplitSemanticTIRCandidateProvider",
     "QKVRoPEWithCacheSemanticTIRCandidateProvider",
-    "GatherReduceQKVRoPEWithCacheSemanticTIRCandidateProvider",
     "GatherReduceNormApplySemanticTIRCandidateProvider",
     "RmsNormCandidateProvider",
     "TritonCandidateContext",

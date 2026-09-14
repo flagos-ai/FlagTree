@@ -86,7 +86,8 @@ def can_fuse(node, module):
 
 def fusion_rules():
     from triton.flagmega.rules.neutral.pre_post_ops import pre_post_ops_rules
-    return pre_post_ops_rules(FUSION_FAMILIES, can_fuse)
+    from triton.flagmega.rules.neutral.commute_cast_view import commute_cast_view_rules
+    return (*commute_cast_view_rules(), *pre_post_ops_rules(FUSION_FAMILIES, can_fuse))
 
 
 def scalar_type(value_type):

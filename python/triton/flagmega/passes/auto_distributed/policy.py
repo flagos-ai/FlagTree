@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from triton.flagmega.ir import DistributedType, IRModule, Node, Placement, TensorType, VectorType, get_definition
+from triton.flagmega.ir import DType, DistributedType, IRModule, Node, Placement, TensorType, VectorType, get_definition
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.passes.auto_distributed.candidates import DistributedCandidateProviderRegistry
 from triton.flagmega.passes.auto_distributed.inference_providers import (
@@ -26,7 +26,7 @@ from triton.flagmega.passes.auto_distributed.providers import (
 )
 from triton.flagmega.passes.auto_distributed.norm_providers import (
     BindNormStatsCandidateProvider,
-    MatMulNormStatsCombineCandidateProvider,
+    AddNormStatsCandidateProvider,
     NormApplyCandidateProvider,
     NormStatsCandidateProvider,
 )
@@ -34,6 +34,8 @@ from triton.flagmega.passes.auto_distributed.packed_matmul_provider import Packe
 from triton.flagmega.passes.auto_distributed.sparse_experts_providers import (
     SparseExpertsGateUpCandidateProvider,
     SparseExpertsDownCandidateProvider,
+    SparseExpertsDispatchCandidateProvider,
+    SparseExpertsCombineCandidateProvider,
 )
 from triton.flagmega.passes.auto_distributed.paged_attention_providers import (
     PagedAttentionCombineCandidateProvider,
@@ -42,6 +44,7 @@ from triton.flagmega.passes.auto_distributed.paged_attention_providers import (
 from triton.flagmega.passes.auto_distributed.qkv_rope_with_cache_provider import (
     QKVRoPEWithCacheCandidateProvider,
 )
+from triton.flagmega.passes.auto_distributed.rope_provider import RoPECandidateProvider
 from triton.flagmega.passes.auto_distributed.realization import (
     DistributedReshardRealizationPolicy,
     NttDistributedReshardRealizationPolicy,
@@ -54,6 +57,7 @@ from triton.flagmega.passes.vector_contracts import (
     retained_vectorization_roots,
     vectorization_root,
 )
+from triton.flagmega.passes.constants import ConstnessAnalysis
 
 
 _DISTRIBUTION_ADAPTER_OPS = frozenset({
@@ -90,7 +94,7 @@ class NttDistributionPolicy:
             for value in self._placements
         )
         return (
-            "ntt-auto-distributed/v8("
+            "ntt-auto-distributed/v10("
             f"placements={placements},"
             f"split={self._split_candidate_provider.identity})"
         )
@@ -109,6 +113,8 @@ class NttDistributionPolicy:
         registry.add(MatMulGluCandidateProvider())
         registry.add(SparseExpertsGateUpCandidateProvider())
         registry.add(SparseExpertsDownCandidateProvider())
+        registry.add(SparseExpertsDispatchCandidateProvider())
+        registry.add(SparseExpertsCombineCandidateProvider())
         registry.add(PackedQKVParallelLinearCandidateProvider())
         registry.add(PackedQKVParallelLinearCombineCandidateProvider())
         registry.add(BinaryCandidateProvider())
@@ -119,15 +125,17 @@ class NttDistributionPolicy:
         registry.add(NormStatsCandidateProvider())
         registry.add(NormApplyCandidateProvider())
         registry.add(BindNormStatsCandidateProvider())
-        registry.add(MatMulNormStatsCombineCandidateProvider())
+        registry.add(AddNormStatsCandidateProvider())
         registry.add(PagedAttentionPartialCandidateProvider())
         registry.add(PagedAttentionCombineCandidateProvider())
         registry.add(QKVRoPEWithCacheCandidateProvider())
+        registry.add(RoPECandidateProvider())
         registry.add(
             TypeInferenceCandidateProvider(
                 frozenset({
                     "math.div",
                     "math.sigmoid",
+                    "math.silu",
                     "math.reduce_sum",
                     "math.vectorized_unary",
                     "nn.softmax",
@@ -138,10 +146,8 @@ class NttDistributionPolicy:
                     "nn.l2_normalization",
                     "nn.gdn_state_slice",
                     "nn.rms_norm",
-                    "nn.rope",
                     "nn.update_paged_attention_kv_cache",
                     "ntt.vectorized_cast",
-                    "ntt.vectorized_rope",
                     "tensors.bitcast",
                     "tensors.broadcast_to",
                     "tensors.concat",
@@ -152,7 +158,6 @@ class NttDistributionPolicy:
                     "tensors.unpack",
                 })))
         registry.add(BroadcastCandidateProvider(frozenset({
-            "math.silu",
             "math.vectorized_matmul",
             "nn.rotary_embedding",
             "nn.vectorized_rms_norm",
@@ -178,8 +183,29 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
     native_vector_ops = NATIVE_VECTOR_COMPUTE_OPS
     native_vector_roots = retained_vectorization_roots(module)
     node_map = module.node_map
-    native_dependencies: set[str] = set()
+    # Constant recipes execute their selected physical Pack/Unpack expression
+    # offline. Their internal nodes are storage computations, not removable
+    # runtime schedule scaffolding, even when the originating vector root has
+    # been retired or a later function ABI exposes an unannotated view of it.
+    native_dependencies = set(ConstnessAnalysis.analyze(module).constants)
     distribution_adapters = _DISTRIBUTION_ADAPTER_OPS
+    # A selected byte view between native computations is authoritative IR,
+    # not a disposable schedule witness. In particular, a scalar Bitcast can
+    # hide a vector Reshape from the ordinary internal-dependency walk below.
+    view_ops = {"tensors.bitcast", "tensors.reshape", *distribution_adapters}
+    for consumer in module.nodes:
+        if consumer.op not in native_vector_ops:
+            continue
+        for input_id in consumer.inputs:
+            current = node_map[input_id]
+            chain = set()
+            while current.op in view_ops and len(current.inputs) == 1:
+                if current.id in chain:
+                    raise ValueError(f"Cycle in native layout dependency {input_id!r}.")
+                chain.add(current.id)
+                current = node_map[current.inputs[0]]
+            if current.op in native_vector_ops:
+                native_dependencies.update(chain)
     dependency_bridges = frozenset({
         "builtin.get_item",
         "builtin.identity",
@@ -353,11 +379,18 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             producer = prepared_by_id.get(producer.inputs[0], node_map.get(producer.inputs[0]))
             if producer is None:
                 raise ValueError(f"Missing native producer for semantic input {value!r}.")
-        if producer.op not in native_vector_ops or vectorization_root(producer) not in native_vector_roots:
+        if (producer.op == "tensors.pack" and producer.id in native_dependencies
+                and isinstance(tensor_of(node_map[producer.inputs[0]].type).dtype, DType)):
+            # A retained physical Pack (including an offline constant) has
+            # authoritative axes of its own. Scalar schedule consumers need
+            # its logical value just as they do for a native vector compute.
+            axes = tuple(producer.attrs.get("axes", (producer.attrs.get("axis", -1),)
+                                            * len(tensor_of(producer.type).dtype.lanes)))
+        elif producer.op in native_vector_ops and vectorization_root(producer) in native_vector_roots:
+            axes = tuple(int(axis) for axis in producer.metadata.get(
+                "selected_vector_axes", producer.metadata.get("vector_axes", ())))
+        else:
             return actual
-        axes = tuple(
-            int(axis)
-            for axis in producer.metadata.get("selected_vector_axes", producer.metadata.get("vector_axes", ())))
         if not axes:
             raise ValueError(f"Native vector producer {producer.id!r} has no semantic unpack axes.")
         key = (actual.id, axes)
@@ -486,7 +519,7 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             candidate = (
                 metadata.get("vectorization_candidate")
                 if parent.op in {
-                    "ntt.matmul_norm_stats_combine",
+                    "ntt.add_norm_stats",
                     "ntt.matmul_norm_stats",
                 }
                 and int(node.attrs.get("index", -1)) == 0

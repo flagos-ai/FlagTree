@@ -60,6 +60,7 @@ def test_packed_descriptor_pipeline_survives_bufferization_and_package_render(
             "source_alignment_bytes": 16,
         }],
         "consumer_shared_workspace_indices": [],
+        "producer_read_argument_indices": [],
         "auxiliary_consumer": None,
     }
 

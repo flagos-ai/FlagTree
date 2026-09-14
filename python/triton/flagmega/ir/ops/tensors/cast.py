@@ -35,7 +35,8 @@ class Cast(OpDefinition):
         if not isinstance(value, DistributedType):
             return output
         return DistributedType(
-            output, value.axis_policies, value.placement, partial=value.partial
+            output, value.axis_policies, value.placement,
+            partial=value.partial, exclusive=value.exclusive,
         )
 
     @classmethod

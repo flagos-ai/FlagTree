@@ -4,17 +4,25 @@
 
 from __future__ import annotations
 
-from typing import Mapping, Sequence
 from dataclasses import replace
+from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.model import DistributedType, IRType, Node
-from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_elements, tensor_nbytes
+from triton.flagmega.ir.ops.core import (
+    OpCost,
+    attribute_parameter,
+    input_parameter,
+    op_definition,
+    tensor_elements,
+    tensor_nbytes,
+)
+from triton.flagmega.ir.ops.math.sigmoid import Sigmoid
+from triton.flagmega.ir.ops.math.silu import Silu
+from triton.flagmega.ir.ops.pointwise import SameTypePointwiseOp
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import VectorType
-from triton.flagmega.ir.ops.math.silu import Silu
-from triton.flagmega.ir.ops.math.sigmoid import Sigmoid
 
 
 @op_definition(
@@ -23,7 +31,7 @@ from triton.flagmega.ir.ops.math.sigmoid import Sigmoid
     functional_name="vectorized_unary",
     display_name="Math.VectorizedUnary",
 )
-class VectorizedUnary(OpDefinition):
+class VectorizedUnary(SameTypePointwiseOp):
     const_evaluable = True
     scalar_definitions = {"silu": Silu, "sigmoid": Sigmoid}
     value = input_parameter(is_tensor())

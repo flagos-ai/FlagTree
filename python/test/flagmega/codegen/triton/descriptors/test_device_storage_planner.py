@@ -29,8 +29,12 @@ def test_hardware_box_matches_typed_shared_encoding(shape, capacity, matrix, swi
 
 
 def test_owner_table_storage_does_not_change_its_coordinate_contract():
-    request = {"kind": "table", "entries": ("owner_zero", "owner_one")}
-    assert device_descriptor_request(request, ()) is request
+    request = {"kind": "table", "parameter": "map", "dtype": "bfloat16",
+               "block_shape": (8, 64), "entries": ("owner_zero", "owner_one")}
+    encoded = device_descriptor_request(request, ({"shape": (2, 8, 64), "matrix_compatible": True},))
+    assert encoded == {**request, "swizzle_mode": 3}
+    assert encoded["entries"] is request["entries"]
+    assert "swizzle_mode" not in request
 
 
 @pytest.mark.parametrize("workspaces", [

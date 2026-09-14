@@ -236,6 +236,18 @@ def verify_buffer_plan(module: IRModule) -> BufferPlan:
                     f"Replicated-local buffer {descriptor.id!r} requires a "
                     "non-shared function-scoped block pool."
                 )
+        if descriptor.distributed_storage_kind is DistributedBufferStorageKind.EXCLUSIVE_LOCAL:
+            space = spaces.get(allocation.memory_space)
+            if (
+                space is None
+                or space.sharing_scope is not MemorySharingScope.BLOCK
+                or space.allocation_scope.value != "function"
+                or space.kind == "shared"
+            ):
+                raise IRVerificationError(
+                    f"Exclusive-local buffer {descriptor.id!r} requires a "
+                    "non-shared function-scoped block pool."
+                )
         if (
             descriptor.storage in spaces
             and spaces[descriptor.storage].allocation_scope.value != "external"
@@ -264,6 +276,10 @@ def verify_buffer_plan(module: IRModule) -> BufferPlan:
                 raise IRVerificationError(
                     f"Alias {descriptor.id!r} has an invalid MemSpan relative to {source.id!r}."
                 )
+            if (descriptor.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+                    and source.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+                    and descriptor.component_stride_bytes != source.component_stride_bytes):
+                raise IRVerificationError(f"Alias {descriptor.id!r} changes its source owner stride.")
         group = (descriptor.rdata_group, descriptor.group_index, descriptor.group_count)
         if any(value is not None for value in group) and not (
             descriptor.storage == "rdata"
@@ -352,6 +368,23 @@ def _verify_function_abis(module: IRModule, plan: BufferPlan) -> None:
         _verify_typed_bindings(module, abi.parameters, buffers, f"@{function.name} parameter")
         _verify_typed_bindings(module, abi.outputs, buffers, f"@{function.name} result")
         _verify_typed_bindings(module, abi.values, buffers, f"@{function.name} value")
+        values = dict(abi.values)
+        for node_id, buffer_ids in abi.values:
+            node = module.node_map[node_id]
+            if node.op != "tir.buffer_subspan":
+                continue
+            from triton.flagmega.ir.ops.tir.buffer_subspan import dense_subspan_offset
+
+            [view_id] = buffer_ids
+            [parent_id] = values[node.inputs[0]]
+            view, parent = buffers[view_id], buffers[parent_id]
+            offset = dense_subspan_offset(parent.component_shape, view.component_shape, node.attrs["offsets"],
+                                           parent.dtype.itemsize)
+            if (view.alias_of != parent_id or view.physical_id != parent.physical_id
+                    or view.distributed_storage_kind != parent.distributed_storage_kind
+                    or not view.mem_span.start.equivalent(parent.mem_span.start + offset)
+                    or view.component_stride_bytes != parent.component_stride_bytes):
+                raise IRVerificationError(f"Tensor subspan {node_id!r} does not match its source storage interval.")
         parameter_spans = {
             buffers[value].physical_id: buffers[value].mem_span
             for _, values in abi.parameters
@@ -359,13 +392,12 @@ def _verify_function_abis(module: IRModule, plan: BufferPlan) -> None:
         }
         for node_id, values in abi.outputs:
             for value, is_reference in zip(values, _reference_leaf_flags(module.node_map[node_id].type), strict=True):
-                if not is_reference:
-                    continue
                 span = buffers[value].mem_span
                 parent = parameter_spans.get(span.buffer.id)
                 if parent is not None and not span.must_alias(parent):
                     raise IRVerificationError(
-                        f"@{function.name} reference subspan result {value!r} cannot be represented by the identity-only "
+                        f"@{function.name} {'reference' if is_reference else 'tensor'} subspan result {value!r} "
+                        "cannot be represented by the identity-only "
                         "result alias ABI. Consume the view within its function or pass it as an argument.")
         _verify_explicit_memory_placements(module, plan, abi.values)
         _verify_inplace_memory_domains(module, plan, abi.values)
@@ -809,6 +841,7 @@ def _verify_formal_buffers(formals, actual_ids, descriptors, call_id, label) -> 
             or actual.distributed_storage_kind != formal.distributed_storage_kind
             or actual.distributed_backing_type
             != formal.distributed_backing_type
+            or actual.component_stride_bytes != formal.component_stride_bytes
             or actual.strides != tuple(value.fixed_value for value in formal.strides)
         ):
             raise IRVerificationError(

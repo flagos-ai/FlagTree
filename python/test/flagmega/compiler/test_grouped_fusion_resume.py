@@ -19,8 +19,8 @@ def test_old_fusion_checkpoints_resume_into_one_group(old_stage):
             self.function("main", (x, ), (x, ))
 
     module = Graph(dialect="ntt", stage=old_stage, entry="main").build()
-    result = Compiler().compile(module, stop_after="fuse-gather-reduce-qkv-rope-with-cache")
-    assert result.module.stage == "gather_reduce_qkv_fused"
+    result = Compiler().compile(module, stop_after="fuse-distributed-ops")
+    assert result.module.stage == "distributed_ops_fused"
     assert [p.name for p in result.reports[0].pass_executions] == ["FuseDistributedOps"]
     assert get_stage("fuse-gather-reduce-norm-apply").name == "fuse-distributed-ops"
 

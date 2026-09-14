@@ -1,6 +1,8 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+from functools import lru_cache
+
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo, import_qwen3_model
 from triton.flagmega.ir import DType
@@ -55,6 +57,7 @@ def _checkpoint(num_layers: int) -> MemoryCheckpoint:
     return MemoryCheckpoint(config, infos)
 
 
+@lru_cache(maxsize=2)
 def _tir_candidates(num_layers: int = 2):
     return Compiler().compile(
         import_qwen3_model(_checkpoint(num_layers)),
@@ -94,7 +97,7 @@ def test_packed_dense_projection_is_a_direct_residual_norm_producer():
     assert match.norm_consumer == "norm"
 
 
-def test_decomposed_attention_keeps_semantic_tir_roles_independent():
+def test_decomposed_attention_keeps_projection_epilogue_and_statistics_explicit():
     module = _tir_candidates()
     points = {point.id: point for point in module.selection_points}
 
@@ -109,86 +112,48 @@ def test_decomposed_attention_keeps_semantic_tir_roles_independent():
     assert not paged_attention.candidates[0].parameters
     assert not paged_attention.candidates[0].facts
 
-    # The imported attention graph remains decomposed through semantic TIR:
-    # output projection and residual/statistics combination are independently
-    # selectable, instead of being hidden in an SM90-shaped attention rule.
-    attention_output_id = "tir.decode_layer_attention_output.vectorized.compute"
-    attention_combine_id = (
-        "tir.decode_layer_after_attention.vectorized.compute.norm_stats_combine"
-    )
-    assert attention_output_id in points
-    assert module.selection_map[attention_combine_id].candidate_id == (
-        "tir.gather_reduce_add_norm_apply.sum"
-    )
-    attention_combine = next(
-        candidate for candidate in points[attention_combine_id].candidates
-        if candidate.id == module.selection_map[attention_combine_id].candidate_id
-    )
-    attention_owner = module.node_map[points[attention_combine_id].owner]
-    assert attention_owner.metadata["residual_add"] == (
-        "decode_layer_after_attention.vectorized.compute"
-    )
-    assert attention_owner.metadata["norm_consumer"] == (
-        "decode_layer_post_attention_norm.vectorized.compute"
-    )
-    assert attention_combine.parameters["partial_axes"] == (1,)
-    assert attention_combine.parameters["partial_owner_count"] == 16
-    assert attention_combine.parameters["owner_count"] == 128
-    assert attention_combine.facts["private_norm_stats_workspace"] is True
-
-    down_point_id = "tir.decode_layer_output.vectorized.compute.norm_stats_combine"
-    assert module.selection_map[down_point_id].candidate_id == (
-        "tir.gather_reduce_add_norm_stats.sum_rms"
-    )
-    assert module.selection_map[
-        "tir.decode_layer_mlp_down.vectorized.compute"
-    ].candidate_id == (
-        "tir.dense_matmul.split_k_packed_k_major_gemv"
-    )
-    assert module.selection_map["tir.lm_head.vectorized.compute"].candidate_id == (
-        "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv"
-    )
+    # MatMul + residual + local statistics may fuse after distribution, but
+    # neither attention nor the statistics collective is hidden in that op.
+    projections = [point for point in points.values()
+                   if point.id.startswith("tir.") and module.node_map[point.owner].op == "ntt.matmul_norm_stats"]
+    expected = {"decode_layer_attention_output.vectorized.compute": "decode_layer_post_attention_norm.vectorized.compute",
+                "decode_layer_mlp_down.vectorized.compute": "decode_layer_input_norm.vectorized.compute"}
+    assert {module.node_map[point.owner].metadata["matmul_producer"] for point in projections} == set(expected)
+    for point in projections:
+        owner = module.node_map[point.owner]
+        selected = next(candidate for candidate in point.candidates
+                        if candidate.id == module.selection_map[point.id].candidate_id)
+        assert owner.metadata["norm_consumer"] == expected[owner.metadata["matmul_producer"]]
+        assert selected.parameters["family"] == "dense_matmul"
+        assert selected.parameters["epilogue"] == "residual_norm_stats"
+        assert selected.parameters["explicit_results"] == ("value", "norm_stats")
+        assert selected.parameters["statistics_kind"] == "owner_partial"
+        assert selected.facts["explicit_norm_stats_result"] is True
+        assert selected.facts["internal_grid_barriers"] == 0
+        value, stats = owner.type.fields
+        assert value.partial is None
+        assert stats.partial.reduce_op is fm.ReduceOp.SUM
+        output_axes = {axis for policy in value.axis_policies if isinstance(policy, fm.SBPSplit)
+                       for axis in policy.hierarchy_axes}
+        assert set(stats.partial.axes) == output_axes
+    assert any(node.op == "ntt.gather_reduce_norm_apply" for node in module.nodes)
     assert "tir.next_token" in points
-
-    down = points[down_point_id]
-    down_selected = next(
-        candidate for candidate in down.candidates
-        if candidate.id == module.selection_map[down.id].candidate_id
-    )
-    assert down_selected.parameters["family"] == (
-        "gather_reduce_add_norm_stats"
-    )
-    assert down_selected.parameters["variant"] == "sum_rms"
-    assert down_selected.parameters["partial_axes"] == (0, 1)
-    assert down_selected.parameters["partial_owner_count"] == 128
-    assert down_selected.parameters["owner_count"] == 128
-    assert down_selected.parameters["residual_add"] == (
-        "decode_layer_output.vectorized.compute"
-    )
-    assert down_selected.parameters["norm_consumer"] == (
-        "decode_layer_input_norm.vectorized.compute"
-    )
-    assert down_selected.facts["explicit_norm_stats_result"] is True
-    assert down_selected.facts["collective_semantics"] == (
-        "gather-reduce-add-norm-stats"
-    )
 
 
 def test_final_lm_head_has_no_residual_norm_fusion_candidate():
     module = _tir_candidates(num_layers=1)
-    point = next(
-        point for point in module.selection_points
-        if point.id == "tir.lm_head.vectorized.compute"
-    )
+    point, = (point for point in module.selection_points
+              if point.id.startswith("tir.logits.")
+              and any(candidate.parameters.get("family") == "dense_matmul" for candidate in point.candidates))
 
     assert all(
         candidate.parameters.get("epilogue") != "residual_norm_stats"
         for candidate in point.candidates
     )
-    assert module.selection_map["tir.lm_head.vectorized.compute"].candidate_id == (
-        "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv"
-    )
-    lm_head_type = module.node_map["lm_head.vectorized.compute"].type
+    selected = next(candidate for candidate in point.candidates
+                    if candidate.id == module.selection_map[point.id].candidate_id)
+    assert selected.parameters["family"] == "dense_matmul"
+    lm_head_type = module.node_map[point.owner].type
     assert isinstance(lm_head_type, fm.DistributedType)
     assert isinstance(lm_head_type.axis_policies[-1], fm.SBPSplit)
     assert lm_head_type.partial is None

@@ -30,7 +30,7 @@ def _silu_module() -> fm.IRModule:
     return builder.build(entry="main")
 
 
-def test_reviewed_broadcast_provider_is_explicit_and_has_nonzero_work():
+def test_reviewed_unary_provider_uses_op_inference_and_has_nonzero_work():
     target = NvidiaSm90Target()
     graph = build_search_graph(
         _silu_module(),
@@ -42,9 +42,9 @@ def test_reviewed_broadcast_provider_is_explicit_and_has_nonzero_work():
     candidate = bucket.candidates[0]
 
     assert bucket.executable
-    assert candidate.reason == "explicit-broadcast-inference"
+    assert candidate.reason == "operation-type-inference-sbp"
     assert candidate.operation_cost > 0
-    assert candidate.objective_model == "flagmega.explicit-broadcast-work/v1"
+    assert candidate.objective_model == graph.operation_cost_model.identity
     assert isinstance(candidate.return_type, fm.DistributedType)
 
 

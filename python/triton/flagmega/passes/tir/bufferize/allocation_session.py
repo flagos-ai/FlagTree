@@ -21,14 +21,15 @@ class AllocationSession:
         self.hits = 0
         self.misses = 0
 
-    def allocate(self, lifetimes, memory_space, *, avoid_reuse=()):
+    def allocate(self, lifetimes, memory_space, *, avoid_reuse=(), bytes_budget: int = 0):
         pairs = validate_problem(lifetimes, memory_space, avoid_reuse)
         indexes = {value.id: index for index, value in enumerate(lifetimes)}
         canonical = tuple(replace(value, id=str(index)) for index, value in enumerate(lifetimes))
         canonical_pairs = tuple(sorted(tuple(sorted((str(indexes[a]), str(indexes[b])))) for a, b in pairs))
-        key = (memory_space, canonical, canonical_pairs)
+        key = (memory_space, canonical, canonical_pairs, bytes_budget)
         if key not in self._results:
-            self._results[key] = self.allocator.allocate(canonical, memory_space, avoid_reuse=canonical_pairs)
+            self._results[key] = self.allocator.allocate(
+                canonical, memory_space, avoid_reuse=canonical_pairs, bytes_budget=bytes_budget)
             self.misses += 1
         else:
             self.hits += 1

@@ -14,6 +14,7 @@ def test_split_attention_ops_have_target_neutral_semantic_tir_candidates():
     assert provider.op_names == frozenset({
         "ntt.paged_attention_partial",
         "ntt.paged_attention_combine",
+        "ntt.paged_attention_gated_combine",
     })
     assert provider.propose(
         fm.Node(

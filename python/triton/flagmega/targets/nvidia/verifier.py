@@ -72,6 +72,8 @@ def verify_sm90_module(
     tir_stages = {
         "selected_tir",
         "canonicalized_tir",
+        "aligned_tir",
+        "tensor_subspans_lowered",
         "microkernel_candidates",
         "selected_microkernels",
         "packaged_tir",
@@ -180,6 +182,7 @@ def verify_sm90_module(
             "builtin.tuple",
             "tir.buffer",
             "tir.buffer_view",
+            "tir.buffer_subspan",
             "tir.ref_slice",
             "tir.call",
             "tir.scalar_const",

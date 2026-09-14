@@ -116,7 +116,7 @@ def _legal_region(result, module):
     # The fused query is published at the original value-write position.
     # Its inputs must already exist there, even if Q was originally computed later.
     operands = (q_head.value, q_head.cosine, q_head.sine)
-    input_ids = [node.id for node in operands] + list(q_head.norm.inputs[2:])
+    input_ids = [node.id for node in operands] + list(q_head.norm.inputs[1:])
     if any(positions[value] >= positions[value_update.id] for value in input_ids):
         return None
     return _Fusion(paged, query, key, value, q_head, k_head, key_update, value_update)
@@ -181,6 +181,8 @@ def _replacement(module: IRModule, fusion: _Fusion) -> RewriteResult:
         fusion.key_update.inputs[1],
         fusion.paged_attention.inputs[2],
         fusion.value_update.inputs[3],
+        fusion.q_head.norm.inputs[1],
+        fusion.k_head.norm.inputs[1],
     )
     input_nodes = tuple(qkv if value == qkv_id else node_map[value] for value in fused_inputs)
     fused_type = definition.infer_type(input_nodes, attrs)

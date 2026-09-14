@@ -89,6 +89,17 @@ class DistributedReshardPlanner:
 def reshard_step_cost(source_type: IRType, target_type: IRType) -> int:
     if source_type == target_type:
         return 0
+    if isinstance(source_type, DistributedType) and isinstance(target_type, DistributedType):
+        if source_type.exclusive is not None and source_type.exclusive == target_type.exclusive:
+            return 0
+        if source_type.exclusive is not None or target_type.exclusive is not None:
+            tensor = source_type.tensor
+            if not tensor.shape or any(not dimension.is_fixed for dimension in tensor.shape):
+                return 100_000_000
+            bytes_ = prod(dimension.fixed_value for dimension in tensor.shape) * tensor.dtype.itemsize
+            # E/B publication or selection touches one logical value and is
+            # deliberately charged separately from ordinary layout boxing.
+            return min(max(bytes_ * 100, 1), 2_000_000_000)
     if not isinstance(source_type, DistributedType) and isinstance(target_type, DistributedType):
         return 1
     tensor = source_type.tensor if isinstance(source_type, DistributedType) else source_type

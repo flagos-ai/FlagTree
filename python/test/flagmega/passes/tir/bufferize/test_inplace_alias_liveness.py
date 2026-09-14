@@ -3,8 +3,8 @@
 
 from triton.flagmega import ir as fm
 from triton.flagmega.ir.bufferization import AliasKind
-from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import (
-    MatMulNormStatsCombine,
+from triton.flagmega.ir.ops.ntt.add_norm_stats import (
+    AddNormStats,
 )
 
 
@@ -64,11 +64,11 @@ def _module_with_live_forwarded_tuple_field():
     projection = builder.var("projection", tensor, id="projection")
     increment = builder.var("increment", tensor, id="increment")
     source = builder.call("math.add", (lhs, rhs), tensor, id="source")
-    prepared = MatMulNormStatsCombine.prepare(
+    prepared = AddNormStats.prepare(
         (projection, source), {"axis": 1, "use_mean": False}
     )
     combined = builder.call(
-        MatMulNormStatsCombine.op_name,
+        AddNormStats.op_name,
         prepared.inputs,
         prepared.result_type,
         id="combined",

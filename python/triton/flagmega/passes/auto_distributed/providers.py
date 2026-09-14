@@ -43,10 +43,12 @@ from triton.flagmega.passes.auto_distributed.candidates import (
     DistributedCandidate,
     DistributedCandidateContext,
     DistributedCandidateProviderBase,
+    DistributedCandidateTuple,
 )
 from triton.flagmega.passes.auto_distributed.candidate_identity import (
     distributed_candidate_id,
 )
+from triton.flagmega.passes.auto_distributed.inference_providers import TypeInferenceCandidateProvider
 
 
 def _replicated(context: DistributedCandidateContext, cost: int) -> DistributedCandidate:
@@ -940,7 +942,24 @@ class PackedQKVParallelLinearCandidateProvider(DistributedCandidateProviderBase)
                         "packed-qkv-output-K-sbp-partial",
                         **_PACKED_QKV_OBJECTIVE,
                     ))
-        return tuple(candidates)
+        return tuple(_target_qkv_cost(context, candidate) for candidate in candidates)
+
+
+def _target_qkv_cost(context, candidate):
+    from triton.flagmega.ir import get_definition
+
+    definition = get_definition(context.source_call.op)
+    inputs = tuple(Node(f"<qkv-cost-{index}>", "builtin.var", (), value, attrs={"name": f"arg{index}"})
+                   for index, value in enumerate(candidate.input_types))
+    factors = definition.cost_factors(inputs, context.source_call.attrs, candidate.return_type)
+    if factors is None:
+        # Unbounded shapes retain their explicitly heuristic estimate; no
+        # unavailable physical throughput is advertised as an analytic cost.
+        return replace(candidate, objective_kind="heuristic", objective_evidence=(
+            *candidate.objective_evidence, "unbounded-shape-no-target-cost-factors"))
+    return replace(candidate, operation_cost=context.operation_cost_model.get_latency(factors, candidate.return_type),
+                   objective_kind="analytic", objective_model=context.operation_cost_model.identity,
+                   objective_evidence=("op-definition-cost-factors", "hierarchical-target-latency", "coupled-qkv-work"))
 
 
 class PackedQKVParallelLinearCombineCandidateProvider(
@@ -952,54 +971,64 @@ class PackedQKVParallelLinearCombineCandidateProvider(
     allows_partial_inputs = True
     is_exhaustive = True
 
+    def get_return_candidate_types(self, context, default_return_types):
+        values = dict.fromkeys(c.return_type for c in self.get_candidates(context))
+        for output_type in default_return_types:
+            if self._candidates_for_return(context, output_type):
+                values[output_type] = None
+        return tuple(values)
+
+    def _candidates_for_return(self, context, output_type):
+        key = (id(self), output_type)
+        cached = context._candidate_snapshots.get(key)
+        if cached is not None and cached[0] is self:
+            return cached[1]
+        if len(context.available_input_types) != 1:
+            return ()
+        candidates = tuple(candidate for source in dict.fromkeys(context.available_input_types[0])
+                           if (candidate := self._candidate(context, source, output_type)) is not None)
+        context._candidate_snapshots[key] = (self, candidates)
+        return candidates
+
+    def try_get_input_type_tuples(self, context, return_type):
+        return tuple(DistributedCandidateTuple(c.input_types, c.reason)
+                     for c in self._candidates_for_return(context, return_type))
+
+    def create_candidate(self, context, return_type, inputs):
+        return next(c for c in self._candidates_for_return(context, return_type)
+                    if c.input_types == inputs.input_types and c.reason == inputs.reason)
+
     def _enumerate_candidates(
         self,
         context: DistributedCandidateContext,
     ) -> tuple[DistributedCandidate, ...]:
-        node = context.source_call
         if len(context.available_input_types) != 1:
             return ()
+        return tuple(candidate for source in dict.fromkeys(context.available_input_types[0])
+                     if (candidate := self._candidate(context, source, _packed_qkv_materialized_type(source)))
+                     is not None)
+
+    def _candidate(self, context, input_type, output_type):
+        node = context.source_call
         expected = node.attrs.get("output_type")
-        if not isinstance(expected, TupleType) or len(expected.fields) != 3:
-            return ()
-        results: list[DistributedCandidate] = []
-        seen: set[tuple[IRType, IRType]] = set()
-        for input_type in context.available_input_types[0]:
-            output_type = _packed_qkv_materialized_type(input_type)
-            if (
-                output_type is None
-                or not _same_tuple_tensors(output_type, expected)
-                or not can_materialize_packed_qkv(input_type, output_type)
-                or (input_type, output_type) in seen
-            ):
-                continue
-            seen.add((input_type, output_type))
-            communication = _packed_qkv_combine_cost(
-                input_type,
-                output_type,
-                context.reshard_cost_model.grid_synchronization_cost,
-            )
-            results.append(DistributedCandidate(
-                distributed_candidate_id(
-                    node.id,
-                    "packed_qkv_combine",
-                    output_type,
-                    (input_type,),
-                ),
-                output_type,
-                (input_type,),
-                min(communication, 2_000_000_000),
-                "packed-qkv-combine-sbp",
-                target_op="ntt.packed_qkv_parallel_linear_combine",
-                objective_kind="analytic",
-                objective_model="flagmega.packed-qkv-combine-distribution/v2",
-                objective_evidence=(
-                    "coupled-three-field-sum-partial-materialization",
-                    "local-output-by-partial-fan-in",
-                ),
-                target_attrs={"output_type": output_type},
-            ))
-        return tuple(results)
+        if (
+            output_type is None
+            or not _same_tuple_tensors(output_type, expected)
+            or not can_materialize_packed_qkv(input_type, output_type)
+        ):
+            return None
+        communication = _packed_qkv_combine_cost(
+            input_type, output_type, context.reshard_cost_model.grid_synchronization_cost,
+        )
+        candidate = DistributedCandidate(
+            distributed_candidate_id(node.id, "packed-qkv-combine-sbp", output_type, (input_type,)),
+            output_type, (input_type,), min(communication, 2_000_000_000),
+            "packed-qkv-combine-sbp", target_op=node.op,
+            objective_kind="analytic", objective_model="flagmega.packed-qkv-combine-distribution/v2",
+            objective_evidence=("coupled-three-field-sum-partial-materialization", "local-output-by-partial-fan-in"),
+            target_attrs={"output_type": output_type},
+        )
+        return _target_qkv_cost(context, candidate)
 
     def create_candidate_attrs(
         self,
@@ -1189,38 +1218,14 @@ def _axis_divides(tensor: TensorType, axis: int, divisor: int) -> bool:
     return not dimension.is_fixed or dimension.fixed_value % divisor == 0
 
 
-class BinaryCandidateProvider(DistributedCandidateProviderBase):
+class BinaryCandidateProvider(TypeInferenceCandidateProvider):
     op_names = frozenset({
         "math.add",
         "math.mul",
         "math.vectorized_binary",
     })
-    allows_partial_inputs = False
-    is_exhaustive = True
-
-    def _enumerate_candidates(self, context: DistributedCandidateContext) -> tuple[DistributedCandidate, ...]:
-        node = context.source_call
-        module = context.module
-        output = tensor_of(node.type)
-        work = max(_tensor_bytes(output) // max(output.dtype.itemsize, 1), 1)
-        values = [_replicated(context, work)]
-        for hierarchy_axes in _mesh_axis_combinations(context.placement):
-            if not _can_split(
-                hierarchy_axes,
-                context.placement,
-                (output, output.rank - 1),
-            ):
-                continue
-            split = split_type(
-                output, output.rank - 1, context.placement, hierarchy_axes)
-            values.append(DistributedCandidate(
-                _candidate_id(node.id, "exact_split", hierarchy_axes, context.placement),
-                split,
-                (split, split),
-                max(work // _shard_count(context.placement, hierarchy_axes), 1),
-                "binary-exact-output-sbp",
-            ))
-        return tuple(values)
+    def __init__(self):
+        super().__init__(self.op_names)
 
 
 class GdnConvolutionCandidateProvider(DistributedCandidateProviderBase):

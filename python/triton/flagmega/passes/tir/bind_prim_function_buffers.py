@@ -212,12 +212,13 @@ def _formal_buffer(
     for dimension in component_dimensions:
         size = (size * dimension).simplify()
     physical_size = (
-        (size * placement_owner_count(distributed)).simplify()
+        ((layout.component_stride_bytes if layout is not None else size)
+         * (placement_owner_count(distributed) - 1) + size).simplify()
         if distributed is not None
         and storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
         else size
     )
-    alignment = alignment or _power_of_two_alignment(logical.dtype.itemsize)
+    alignment = max(alignment or _power_of_two_alignment(logical.dtype.itemsize), parameter.alignment_bytes or 1)
     physical = PhysicalBuffer(
         f"abi:{function_name}:{name}",
         parameter.memory_space or parameter.role.value,
@@ -239,6 +240,7 @@ def _formal_buffer(
         distributed,
         storage_kind,
         backing_type,
+        None if layout is None else layout.owner_stride_bytes,
     )
 
 
@@ -289,6 +291,7 @@ def _actual_parameter_layouts(module, function, plan):
                     descriptor_map[buffer_id].distributed_backing_type,
                     descriptor_map[buffer_id].strides,
                     descriptor_map[buffer_id].nbytes,
+                    descriptor_map[buffer_id].component_stride_bytes,
                 )
                 for buffer_id in signature
             )

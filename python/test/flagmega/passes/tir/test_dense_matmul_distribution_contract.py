@@ -96,6 +96,16 @@ def test_dense_matmul_contract_accepts_block_cyclic_local_k_shards():
     }
 
 
+def test_ordered_k_stages_are_distinct_from_the_partial_owner_set():
+    reduction = fm.SBP.split(fm.SplitStage.block_cyclic((1,), 128), fm.SplitStage.block_cyclic((0,), 16))
+    module, result = _distributed_matmul(lhs_policies=(_BROADCAST, reduction),
+                                         rhs_policies=(reduction, _BROADCAST))
+    contract = dense_matmul_distribution_contract(result, module)
+    assert contract["partial_axes"] == (0, 1)
+    assert contract["owner_count"] == 128
+    assert reduction.hierarchy_axes == (1, 0)
+
+
 def test_dense_matmul_contract_accepts_disjoint_local_m_and_k_shards():
     m_split = fm.SBP.split_contiguous((0,))
     k_split = fm.SBP.split_block_cyclic((1,), 16)

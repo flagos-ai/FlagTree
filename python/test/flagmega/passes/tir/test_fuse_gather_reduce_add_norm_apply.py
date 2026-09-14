@@ -35,7 +35,7 @@ def _graph(*, export_stats=False, second_stats_projection=False):
             residual = self.input("residual", value_type, id="residual")
             scale = self.input("scale", parameter_type, id="scale")
             bias = self.input("bias", parameter_type, id="bias")
-            combine = fm.F.ntt.matmul_norm_stats_combine(
+            combine = fm.F.ntt.add_norm_stats(
                 partial,
                 residual,
                 axis=-1,
@@ -124,7 +124,7 @@ def _sharded_value_graph(
                 if reversible_addend_view
                 else residual
             )
-            combine = fm.F.ntt.matmul_norm_stats_combine(
+            combine = fm.F.ntt.add_norm_stats(
                 partial,
                 combine_addend,
                 axis=-1,
@@ -182,7 +182,7 @@ def test_fuses_exact_value_and_stats_projections_into_two_result_op():
 def test_keeps_graph_when_statistics_are_exported():
     module = fuse_gather_reduce_add_norm_apply(_graph(export_stats=True))
 
-    assert module.node_map["combine"].op == "ntt.matmul_norm_stats_combine"
+    assert module.node_map["combine"].op == "ntt.add_norm_stats"
     assert module.node_map["normalized"].op == "nn.norm_apply"
 
 
@@ -191,7 +191,7 @@ def test_keeps_graph_when_combine_has_another_statistics_projection():
         _graph(second_stats_projection=True)
     )
 
-    assert module.node_map["combine"].op == "ntt.matmul_norm_stats_combine"
+    assert module.node_map["combine"].op == "ntt.add_norm_stats"
     assert module.node_map["extra_stats"].attrs == {"index": 1}
 
 
@@ -217,7 +217,7 @@ def test_keeps_sharded_value_view_when_it_has_an_additional_user():
         _sharded_value_graph(export_adapted_value=True)
     )
 
-    assert module.node_map["combine"].op == "ntt.matmul_norm_stats_combine"
+    assert module.node_map["combine"].op == "ntt.add_norm_stats"
     assert module.node_map["adapted_value"].op == "distributed.sharded_view"
 
 

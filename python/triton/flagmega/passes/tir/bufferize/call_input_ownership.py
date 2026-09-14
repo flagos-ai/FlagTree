@@ -25,7 +25,7 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
         readonly = set()
         last_use = {}
         for index, node in enumerate(nodes):
-            if node.op in {"tir.buffer_view", "distributed.sharded_view"}:
+            if node.op in {"tir.buffer_view", "tir.buffer_subspan", "distributed.sharded_view"}:
                 origin = origins[node.inputs[0]]
             elif node.op == "builtin.tuple":
                 origin = tuple(origins[value] for value in node.inputs)

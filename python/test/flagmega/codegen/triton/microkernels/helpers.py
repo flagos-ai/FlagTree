@@ -137,6 +137,11 @@ class StubTarget:
     def propose_microkernels(self, module):
         return self.microkernel_selection_policy.propose(module, self)
 
+    def plan_storage_alignments(self, module):
+        from triton.flagmega.passes.tir.plan_storage_alignments import plan_storage_alignments
+        return plan_storage_alignments(module, self.microkernel_selection_policy.registry, self.triton_implementation_model,
+                                       capability=self.capability)
+
     def select_microkernels(self, module):
         return self.microkernel_selection_policy.apply(module, self)
 

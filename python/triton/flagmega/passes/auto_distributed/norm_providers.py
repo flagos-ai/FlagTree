@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from itertools import combinations
 from math import prod
 
 from triton.flagmega.errors import IRSchemaError
@@ -14,13 +15,15 @@ from triton.flagmega.ir import (
     Node,
     TupleType,
     local_tensor_type,
+    SBP,
+    is_exclusive,
 )
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
 from triton.flagmega.ir.ops.nn.norm_stats import NormStats
-from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import (
-    MatMulNormStatsCombine,
-    can_materialize_matmul_partial,
+from triton.flagmega.ir.ops.ntt.add_norm_stats import (
+    AddNormStats,
+    can_materialize_sum_partial,
 )
 from triton.flagmega.passes.auto_distributed.candidates import (
     DistributedCandidate,
@@ -105,8 +108,14 @@ class NormApplyCandidateProvider(DistributedCandidateProviderBase):
             stats_type = replace(partial_stats, partial=None)
             suffix_policies = tuple(policies[axis:])
             try:
-                scale_type = DistributedType(scale, suffix_policies, context.placement)
-                bias_type = DistributedType(bias, suffix_policies, context.placement)
+                scale_type = DistributedType(
+                    scale, suffix_policies, context.placement,
+                    exclusive=input_type.exclusive,
+                )
+                bias_type = DistributedType(
+                    bias, suffix_policies, context.placement,
+                    exclusive=input_type.exclusive,
+                )
                 inputs = (
                     _typed_node("<norm_apply_input>", input_type),
                     _typed_node("<norm_apply_stats>", stats_type),
@@ -183,10 +192,10 @@ class BindNormStatsCandidateProvider(DistributedCandidateProviderBase):
         return tuple(results)
 
 
-class MatMulNormStatsCombineCandidateProvider(DistributedCandidateProviderBase):
+class AddNormStatsCandidateProvider(DistributedCandidateProviderBase):
     """Search partial materialization and both normalization outputs together."""
 
-    op_names = frozenset({"ntt.matmul_norm_stats_combine"})
+    op_names = frozenset({"ntt.add_norm_stats"})
     allows_partial_inputs = True
     is_exhaustive = True
 
@@ -235,7 +244,7 @@ class MatMulNormStatsCombineCandidateProvider(DistributedCandidateProviderBase):
                 continue
             for input_type in context.available_input_types[0]:
                 relation = (input_type, addend_type)
-                if relation in seen or not can_materialize_matmul_partial(
+                if relation in seen or not can_materialize_sum_partial(
                     input_type, addend_type
                 ):
                     continue
@@ -245,7 +254,7 @@ class MatMulNormStatsCombineCandidateProvider(DistributedCandidateProviderBase):
                     _typed_node("<combine_input>", input_type),
                     _typed_node("<combine_addend>", addend_type),
                 )
-                factors = MatMulNormStatsCombine.cost_factors(
+                factors = AddNormStats.cost_factors(
                     typed_inputs, node.attrs, output_type
                 )
                 if factors is None:
@@ -267,7 +276,7 @@ class MatMulNormStatsCombineCandidateProvider(DistributedCandidateProviderBase):
                         2_000_000_000,
                     )
                     objective_model = (
-                        "flagmega.matmul-norm-stats-combine-distribution/v1"
+                        "flagmega.add-norm-stats-distribution/v1"
                     )
                 else:
                     operation_cost = context.operation_cost_model.get_latency(
@@ -277,14 +286,14 @@ class MatMulNormStatsCombineCandidateProvider(DistributedCandidateProviderBase):
                 results.append(DistributedCandidate(
                     distributed_candidate_id(
                         node.id,
-                        "matmul_norm_stats_combine",
+                        "add_norm_stats",
                         output_type,
                         relation,
                     ),
                     output_type,
                     relation,
                     operation_cost,
-                    "matmul-partial-materialize-add-norm-stats-sbp",
+                    "sum-partial-materialize-add-norm-stats-sbp",
                     objective_kind="analytic",
                     objective_model=objective_model,
                     objective_evidence=(
@@ -330,6 +339,29 @@ def _candidate_distributed_inputs(
     for value in context.leaf_candidate_types(tensor):
         if value not in values:
             values.append(value)
+    # E is a value-ownership candidate for replicated normalization inputs.
+    # Keep it restricted to physical block axes; non-block mesh ownership
+    # would require a backend-specific device-group launch contract.
+    block_axes = tuple(
+        axis for axis in range(context.placement.rank)
+        if context.placement.is_physical_block_axis(axis)
+    )
+    if block_axes:
+        for count in range(1, len(block_axes) + 1):
+            for exclusive_axes in combinations(block_axes, count):
+                for value in tuple(values):
+                    if (
+                        isinstance(value, DistributedType)
+                        and value.partial is None
+                        and value.exclusive is None
+                        and all(policy == SBP.broadcast() for policy in value.axis_policies)
+                    ):
+                        exclusive = replace(
+                            value,
+                            exclusive=SBP.exclusive(exclusive_axes),
+                        )
+                        if exclusive not in values:
+                            values.append(exclusive)
     return tuple(values)
 
 
@@ -361,7 +393,7 @@ def _type_local_elements(value: IRType) -> int:
 
 __all__ = [
     "BindNormStatsCandidateProvider",
-    "MatMulNormStatsCombineCandidateProvider",
+    "AddNormStatsCandidateProvider",
     "NormApplyCandidateProvider",
     "NormStatsCandidateProvider",
 ]

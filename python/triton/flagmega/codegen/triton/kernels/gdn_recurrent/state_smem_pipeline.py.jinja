@@ -1,0 +1,112 @@
+# flagmega-kernel: gdn_recurrent/state_smem_pipeline
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if gdn_helper_variant | default("state_smem_pipeline") == "state_smem_pipeline" %}
+{% include "kernels/gdn_recurrent/_helpers.py.jinja" %}
+{% endif %}
+
+@triton.jit
+def _flagmega_gdn_projection_pair(source, beta_weight, a_weight, rows, active,
+                                 K: tl.constexpr, TILE_K: tl.constexpr):
+    REDUCE_AXIS: tl.constexpr = len(rows.shape)
+    beta_accumulator = tl.full(rows.shape, 0, tl.float32)
+    beta_compensation = tl.full(rows.shape, 0, tl.float32)
+    a_accumulator = tl.full(rows.shape, 0, tl.float32)
+    a_compensation = tl.full(rows.shape, 0, tl.float32)
+    for k_start in tl.range(0, K, TILE_K):
+        k_offsets = k_start + tl.arange(0, TILE_K)
+        source_value = tl.load(source + k_offsets, mask=k_offsets < K, other=0.0).to(tl.float32)
+        weight_offsets = tl.expand_dims(rows, REDUCE_AXIS) * K + k_offsets
+        mask = tl.expand_dims(active, REDUCE_AXIS) & (k_offsets < K)
+        beta_values = tl.load(beta_weight + weight_offsets, mask=mask, other=0.0).to(tl.float32)
+        a_values = tl.load(a_weight + weight_offsets, mask=mask, other=0.0).to(tl.float32)
+        beta_partial = tl.sum(beta_values * source_value, axis=REDUCE_AXIS)
+        a_partial = tl.sum(a_values * source_value, axis=REDUCE_AXIS)
+        beta_corrected = beta_partial - beta_compensation
+        beta_updated = beta_accumulator + beta_corrected
+        beta_compensation = (beta_updated - beta_accumulator) - beta_corrected
+        beta_accumulator = beta_updated
+        a_corrected = a_partial - a_compensation
+        a_updated = a_accumulator + a_corrected
+        a_compensation = (a_updated - a_accumulator) - a_corrected
+        a_accumulator = a_updated
+    return (tl.where(active, beta_accumulator.to(tl.bfloat16).to(tl.float32), 0.0),
+            tl.where(active, a_accumulator.to(tl.bfloat16).to(tl.float32), 0.0))
+
+{% for call in render_calls | default(()) %}
+{% if call.family == "gdn_recurrent" and call.variant == "state_smem_pipeline" %}
+{{ call.symbol }}__producer_layout = tl.constexpr(tle.gpu.BlockEncoding(
+    [1, 1], [1, 32], [{{ call.producer_warps }}, 1], [1, 0],
+))
+{{ call.symbol }}__row_layout = tl.constexpr(tle.gpu.SlicedEncoding(1, {{ call.symbol }}__producer_layout.value))
+{{ call.symbol }}__key_layout = tl.constexpr(tle.gpu.SlicedEncoding(0, {{ call.symbol }}__producer_layout.value))
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__producer({{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}):
+{{ entry.mesh_coordinates() }}
+{% set writer = call.pipeline_channels[0].writer_parameter %}
+    _fm_step = tl.full((), 0, tl.int32)
+    for recurrent_start in tl.range(0, {{ call.local_capacity }}, {{ call.value_tile }}):
+        local_values = recurrent_start + tle.gpu.set_layout(tl.arange(0, {{ call.value_tile }}), {{ call.symbol }}__row_layout)
+        global_values = {{ call.global_value }}
+        recurrent_mask = (local_values < ({{ call.active_values }})) & ({{ call.writer_active }})
+        key_offsets = tle.gpu.set_layout(tl.arange(0, {{ call.head_block }}), {{ call.symbol }}__key_layout)
+        _fm_state_slot = {{ writer }}.acquire(_fm_step)
+        tle.gpu.copy({{ call.state }} + global_values[:, None] * {{ call.key_dim }} + key_offsets[None, :],
+                     _fm_state_slot.state, [{{ call.value_tile }}, {{ call.head_block }}], is_async=True,
+                     mask=recurrent_mask[:, None] & (key_offsets[None, :] < {{ call.key_dim }}))
+        {{ writer }}.commit(_fm_step)
+        _fm_step += 1
+    {{ writer }}.close(_fm_step)
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}):
+{{ entry.mesh_coordinates() }}
+{% set reader = call.pipeline_channels[0].reader_parameter %}
+{% set uniform = call.uniform_projection_rows | default(false) %}
+    cached_heads = tl.full({{ "()" if uniform else "(" ~ call.value_tile ~ ",)" }}, -1, tl.int64)
+    beta = tl.zeros({{ "()" if uniform else "(" ~ call.value_tile ~ ",)" }}, tl.float32)
+    decay = tl.zeros({{ "()" if uniform else "(" ~ call.value_tile ~ ",)" }}, tl.float32)
+    _fm_step = tl.full((), 0, tl.int32)
+    for recurrent_start in tl.range(0, {{ call.local_capacity }}, {{ call.value_tile }}):
+        local_values = recurrent_start + tl.arange(0, {{ call.value_tile }})
+        global_values = {{ call.global_value }}
+        recurrent_mask = (local_values < ({{ call.active_values }})) & ({{ call.writer_active }})
+{% if uniform %}
+        value_heads = (({{ call.global_projection_value }}) // {{ call.value_dim }}).to(tl.int64)
+        projection_active = (recurrent_start < ({{ call.active_values }})) & ({{ call.writer_active }})
+        if projection_active & (value_heads != cached_heads):
+{% else %}
+        value_heads = (global_values // {{ call.value_dim }}).to(tl.int64)
+        projection_active = recurrent_mask
+        if tl.sum((recurrent_mask & (value_heads != cached_heads)).to(tl.int32), 0) > 0:
+{% endif %}
+            beta_projection, a_projection = _flagmega_gdn_projection_pair(
+                {{ call.projection_input }}, {{ call.b_weight }}, {{ call.a_weight }}, value_heads,
+                projection_active, {{ call.projection_dim }}, {{ call.projection_tile }})
+            beta, decay = _flagmega_gdn_head_gates(
+                beta_projection, a_projection, value_heads, projection_active,
+                {{ call.a_log }}, {{ call.dt_bias }}, {{ call.round_beta }})
+            cached_heads = tl.where(projection_active, value_heads, -1)
+        _fm_ready = {{ reader }}.wait(_fm_step)
+        _fm_old_state = tl.load(tle.gpu.local_ptr(_fm_ready.slot.state,
+            (tl.arange(0, {{ call.value_tile }})[:, None], tl.arange(0, {{ call.head_block }})[None, :]),
+            [{{ call.value_tile }}, {{ call.head_block }}]))
+        _flagmega_gdn_recurrent_local_core_tile(
+            {{ call.qkv }}, beta, decay, {{ call.state }}, {{ call.core_scratch }},
+            local_values, global_values, recurrent_mask, {{ call.value_heads }}, {{ call.key_heads }},
+            {{ call.key_dim }}, {{ call.value_dim }}, {{ call.repeats }}, {{ call.head_block }},
+            {{ call.qk_norm_add }}, {{ call.qk_norm_epsilon }}, {{ call.round_normalized_qk }},
+            {{ call.round_core }}, _fm_old_state)
+        {{ reader }}.release(_fm_step)
+        _fm_step += 1
+{{ entry.stage_barrier() }}
+    for recurrent_norm_start in tl.range(0, {{ call.local_capacity }}, {{ call.value_tile }}):
+        local_values = recurrent_norm_start + tl.arange(0, {{ call.value_tile }})
+        global_values = {{ call.global_value }}
+        recurrent_norm_mask = (local_values < ({{ call.active_values }})) & ({{ call.writer_active }})
+        _flagmega_gdn_recurrent_local_norm_tile(
+            {{ call.z }}, {{ call.result }}, {{ call.norm_weight }}, {{ call.core_scratch }},
+            {{ call.z_offset }}, {{ call.result_offset }}, global_values,
+            recurrent_norm_mask, {{ call.value_dim }}, {{ call.epsilon }})
+{% endif %}
+{% endfor %}

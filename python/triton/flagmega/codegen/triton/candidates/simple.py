@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
-from triton.flagmega.ir import Candidate, Node
+from triton.flagmega.ir import Candidate, Node, DistributedType, TensorType, VectorType, DType
+from triton.flagmega.ir.distributed_type import is_fully_sharded_across_placement
+from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.codegen.triton.vectorization import (
     configured_vector_schedule,
     vectorization_contract,
@@ -186,10 +188,45 @@ class GdnCandidateProvider:
         candidates = tuple(
             context.configure_implementation(implementation)
             for implementation in context.implementations(family)
+            if _gdn_applicable(node, context, implementation)
         )
         if not candidates:
             return None
         return _proposal(candidates, context.choose_default(family, candidates))
+
+
+def _gdn_applicable(node, context, implementation):
+    if (node.op == "nn.gdn_recurrent_core"
+            and int(node.attrs["key_head_dim"]) > implementation.parameters["tile_state"][0]):
+        return False
+    if not implementation.contract.get("owner_row_state_snapshot"):
+        return True
+    output = node.type.fields[0]
+    if (not isinstance(output, DistributedType) or output.partial is not None or output.exclusive is not None
+            or not is_fully_sharded_across_placement(output)
+            or not isinstance(output.tensor.dtype, DType)
+            or output.tensor.dtype.value != implementation.contract["required_activation_dtype"]
+            or not output.tensor.shape[0].is_fixed or output.tensor.shape[0].fixed_value != 1):
+        return False
+    if context.module.node_map[node.inputs[2]].type != output:
+        return False
+    for index in (1, 2, 3, 4, 5):
+        tensor = tensor_of(context.module.node_map[node.inputs[index]].type)
+        if (not isinstance(tensor.dtype, DType)
+                or tensor.dtype.value != implementation.contract["required_activation_dtype"]):
+            return False
+    key_dim = int(node.attrs["key_head_dim"])
+    if key_dim <= 0 or key_dim % 4:
+        return False
+    state = context.module.node_map[node.inputs[0]].type
+    partition = implementation.transfer_pipeline.channels[0].inplace_partition
+    _, leaf = partition.source_leaf(state)
+    shape = leaf.shape
+    return (isinstance(leaf, TensorType) and leaf.dtype == VectorType(DType.FLOAT32, (4,))
+            and len(shape) == 4 and all(value.is_fixed for value in shape)
+            and tuple(value.fixed_value for value in shape) == (
+                1, int(node.attrs["num_value_heads"]), int(node.attrs["value_head_dim"]),
+                key_dim // 4))
 
 
 __all__ = [

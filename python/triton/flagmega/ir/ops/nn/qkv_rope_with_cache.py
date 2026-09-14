@@ -1,13 +1,14 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Fused Q/K normalization, RoPE, layout conversion, and KV-cache update."""
+"""Q/K normalization apply, RoPE, layout conversion, and KV-cache update."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
-from triton.flagmega.ir.distributed_inference import tensor_of
+from triton.flagmega.ir.distributed_inference import tensor_of, all_broadcast
 from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.model import (
     DistributedType,
@@ -21,6 +22,7 @@ from triton.flagmega.ir.model import (
 )
 from triton.flagmega.ir.ops.core import (
     OpCost,
+    OpCostFactors,
     OpDefinition,
     ParameterKind,
     attribute_parameter,
@@ -36,7 +38,6 @@ from triton.flagmega.ir.ops.nn._attention_layout import (
 )
 from triton.flagmega.ir.ops.nn._norm import (
     norm_apply_value,
-    norm_stats_value,
     normalize_axis,
 )
 from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionState
@@ -44,7 +45,7 @@ from triton.flagmega.ir.ops.nn._paged_attention_state import (
     paged_attention_state_config_from_type,
 )
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
-from triton.flagmega.ir.ops.nn.norm_stats import NormStats
+from triton.flagmega.ir.ops.nn.norm_stats import _local_cost_tensor
 from triton.flagmega.ir.ops.nn.qwen3_paged_attention import _scalar_bool, _scalar_int
 from triton.flagmega.ir.ops.nn.rope import RoPE
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
@@ -69,11 +70,9 @@ from triton.flagmega.ir.types import VectorType
     display_name="NN.QKVRoPEWithCache",
 )
 class QKVRoPEWithCache(OpDefinition):
-    """Semantic fusion formed before target vectorization and distribution."""
+    """Apply materialized Q/K statistics without hiding any normalization reduction."""
 
-    qkv = input_parameter(
-        is_tuple(), memory_effect=MemoryEffect.READ.across_partial_owners()
-    )
+    qkv = input_parameter(is_tuple())
     q_scale = input_parameter(is_tensor())
     k_scale = input_parameter(is_tensor())
     q_bias = input_parameter(is_tensor())
@@ -92,6 +91,8 @@ class QKVRoPEWithCache(OpDefinition):
         is_tensor() & has_rank(0) & has_dtype(DType.BOOL),
         parameter_kind=ParameterKind.ATTRIBUTE,
     )
+    q_stats = input_parameter(is_tensor())
+    k_stats = input_parameter(is_tensor())
     q_axis = attribute_parameter()
     q_epsilon = attribute_parameter()
     q_use_mean = attribute_parameter()
@@ -189,8 +190,9 @@ class QKVRoPEWithCache(OpDefinition):
         layer_id = cls.layer_id.read(inputs)
         advance = cls.advance_sequence.read(inputs)
 
-        q_norm = _infer_norm(
+        q_norm = _infer_norm_apply(
             q,
+            cls.q_stats.read(inputs),
             q_scale,
             q_bias,
             axis=int(attrs["q_axis"]),
@@ -198,8 +200,9 @@ class QKVRoPEWithCache(OpDefinition):
             use_mean=bool(attrs["q_use_mean"]),
             prefix="q",
         )
-        k_norm = _infer_norm(
+        k_norm = _infer_norm_apply(
             k,
+            cls.k_stats.read(inputs),
             k_scale,
             k_bias,
             axis=int(attrs["k_axis"]),
@@ -333,6 +336,7 @@ class QKVRoPEWithCache(OpDefinition):
         )
         q = _normalize_and_rope_value(
             q_value,
+            cls.q_stats.read(arguments),
             q_scale,
             q_bias,
             cos,
@@ -347,6 +351,7 @@ class QKVRoPEWithCache(OpDefinition):
         )
         k = _normalize_and_rope_value(
             k_value,
+            cls.k_stats.read(arguments),
             k_scale,
             k_bias,
             cos,
@@ -402,12 +407,38 @@ class QKVRoPEWithCache(OpDefinition):
             flops=None if elements is None else elements * 9,
             bytes_read=None if size is None else size * 4,
             bytes_written=size,
-            notes=("fused-qk-normalization-rope-cache-update",),
+            notes=("qk-normalization-apply-rope-cache-update",),
+        )
+
+    @classmethod
+    def cost_factors(cls, inputs, attrs, return_type):
+        qkv = cls.qkv.type_of(inputs)
+        tensors = tuple(_local_cost_tensor(field) for field in qkv.fields)
+        sizes = tuple(tensor_nbytes(tensor) for tensor in tensors)
+        counts = tuple(tensor_elements(tensor) for tensor in tensors)
+        stats = tuple(_local_cost_tensor(parameter.type_of(inputs)) for parameter in (cls.q_stats, cls.k_stats))
+        stats_sizes = tuple(tensor_nbytes(tensor) for tensor in stats)
+        if any(value is None for value in (*sizes, *counts, *stats_sizes)):
+            return None
+        operations = 0
+        parameter_bytes = 0
+        for role, count, stat in zip(("q", "k"), counts, stats):
+            components = 2 if attrs[f"{role}_use_mean"] else 1
+            outer = tensor_elements(stat) // components
+            operations += count * 11 + outer * (7 if components == 2 else 3)
+            for name in (f"{role}_scale", f"{role}_bias", "cos", "sin"):
+                dtype = tensor_of(getattr(cls, name).type_of(inputs)).dtype
+                parameter_bytes += count * (dtype.itemsize // getattr(dtype, "lane_count", 1)) * (2 if name.endswith(("scale", "bias")) else 1)
+        return OpCostFactors(
+            elementwise_operations=operations,
+            block_local_memory_load_bytes=sum(sizes) + sum(sizes[:2]) + sum(stats_sizes) + parameter_bytes + 8,
+            chip_global_memory_store_bytes=sum(sizes) + 12,
         )
 
 
-def _infer_norm(
+def _infer_norm_apply(
     value: Node,
+    stats: Node,
     scale: Node,
     bias: Node,
     *,
@@ -416,10 +447,17 @@ def _infer_norm(
     use_mean: bool,
     prefix: str,
 ) -> Node:
-    stats_attrs = {"axis": axis, "use_mean": use_mean}
-    stats_type = NormStats.infer_type((value,), stats_attrs)
-    stats = Node(f"__qkv_{prefix}_stats", "nn.norm_stats", (value.id,), stats_type, attrs=stats_attrs)
     norm_attrs = {"axis": axis, "epsilon": epsilon, "use_mean": use_mean}
+    if isinstance(value.type, DistributedType):
+        suffix = value.type.axis_policies[normalize_axis(axis, value.type.tensor.rank):]
+        # Replicated parameters contain both the local and rotary partner slice.
+        # Validate the local apply using its read-only suffix view.
+        parameters = []
+        for parameter in (scale, bias):
+            if isinstance(parameter.type, DistributedType) and all_broadcast(parameter.type):
+                parameter = replace(parameter, type=replace(parameter.type, axis_policies=suffix))
+            parameters.append(parameter)
+        scale, bias = parameters
     norm_type = NormApply.infer_type((value, stats, scale, bias), norm_attrs)
     return Node(
         f"__qkv_{prefix}_norm",
@@ -645,6 +683,7 @@ def _transform_attention_layout_type(
 
 def _normalize_and_rope_value(
     value,
+    stats,
     scale,
     bias,
     cos,
@@ -661,7 +700,6 @@ def _normalize_and_rope_value(
     output_dtype = value.dtype
     if not round_intermediates:
         value = value.float()
-    stats = norm_stats_value(value, axis=axis, use_mean=use_mean)
     normalized = norm_apply_value(
         value,
         stats,

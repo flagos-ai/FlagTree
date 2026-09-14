@@ -7,7 +7,7 @@ from math import prod
 from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
-from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
+from triton.flagmega.evaluator import CheckpointWeightResolver, DictWeightResolver, TorchEvaluator
 from triton.flagmega.runtime import load
 from python.test.flagmega.sparse_experts.helpers import operand_types
 
@@ -19,7 +19,8 @@ def stage_module(definition, *, dtype="bfloat16", packed=False, distribution=Non
     if packed:
         tensor = types[activation]
         types[activation] = fm.tensor_type(fm.vector_type(dtype, (2, 2)), (*tensor.shape[:-1], tensor.shape[-1] // 4))
-        attrs["output_dtype"] = fm.vector_type(dtype, (2, 2))
+        if definition.op_name != "nn.sparse_experts_down":
+            attrs["output_dtype"] = fm.vector_type(dtype, (2, 2))
     metadata = {}
     if distribution is not None:
         placement = fm.Placement((2, 2), "yx", "bb")
@@ -36,6 +37,7 @@ def stage_module(definition, *, dtype="bfloat16", packed=False, distribution=Non
         output_policy = broadcast if distribution == "split_k" else scalar_feature
         policies = {
             "q": (token, broadcast),
+            "dispatched": (token, broadcast, broadcast),
             "activations": (token, broadcast, intermediate_policy),
             "router_expert_ids": (token, broadcast),
             "router_expert_weights": (token, broadcast),
@@ -88,7 +90,8 @@ def execute_and_reference(module, tmp_path, torch, *, checkpoint=None):
             value = (torch.randint(-16, 17,
                                    (*shape, *lanes), generator=generator).float() / 16).to(getattr(torch, dtype.value))
         values[node_id] = value
-    expected = TorchEvaluator(DictWeightResolver({})).run(module, values)[0]
+    resolver = CheckpointWeightResolver(checkpoint) if checkpoint is not None else DictWeightResolver({})
+    expected = TorchEvaluator(resolver).run(module, values)[0]
     arguments = tuple(values[node_id].cuda() for node_id in module.function_map[module.entry].parameters)
     runtime.prepare(*arguments)
     output = runtime.run(*arguments)

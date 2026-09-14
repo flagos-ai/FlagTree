@@ -38,7 +38,7 @@ _VECTORIZABLE_SEMANTIC_OPS = frozenset({
     "nn.rms_norm",
     "nn.norm_apply",
     "ntt.matmul_norm_stats",
-    "ntt.matmul_norm_stats_combine",
+    "ntt.add_norm_stats",
     "ntt.packed_matmul",
     "ntt.vectorized_cast",
     "tensors.cast",
@@ -431,17 +431,11 @@ def _is_zero_copy_pack(node: Node, module: IRModule) -> bool:
 
 
 def _is_zero_copy_reshape(node: Node, module: IRModule) -> bool:
-    if len(node.inputs) != 1:
-        return False
-    source = tensor_of(module.node_map[node.inputs[0]].type)
-    target = tensor_of(node.type)
-    if source.dtype != target.dtype:
-        return False
-    source_shape = tuple(dimension.value for dimension in source.shape)
-    target_shape = tuple(dimension.value for dimension in target.shape)
-    if any(value is None for value in (*source_shape, *target_shape)):
-        return False
-    return prod(source_shape) == prod(target_shape)
+    from triton.flagmega.ir.ops.tensors.reshape import Reshape
+
+    return Reshape.zero_copy_input_index(
+        tuple(module.node_map[value] for value in node.inputs), node.attrs, node.type,
+    ) == 0
 
 
 __all__ = ["TritonTirLoweringPolicy"]

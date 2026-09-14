@@ -9,7 +9,15 @@ from typing import Mapping, Sequence
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.model import IRType, Node, TensorType
-from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_elements, tensor_nbytes
+from triton.flagmega.ir.ops.core import (
+    OpCost,
+    attribute_parameter,
+    input_parameter,
+    op_definition,
+    tensor_elements,
+    tensor_nbytes,
+)
+from triton.flagmega.ir.ops.pointwise import SameTypePointwiseOp
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import VectorType
 
@@ -20,7 +28,7 @@ from triton.flagmega.ir.types import VectorType
     functional_name="vectorized_binary",
     display_name="Math.VectorizedBinary",
 )
-class VectorizedBinary(OpDefinition):
+class VectorizedBinary(SameTypePointwiseOp):
     const_evaluable = True
     lhs = input_parameter(is_tensor())
     rhs = input_parameter(is_tensor())

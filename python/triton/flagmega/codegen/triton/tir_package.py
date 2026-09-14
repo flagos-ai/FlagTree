@@ -435,6 +435,7 @@ def _kernel_source_event(
         "family": str(call["family"]),
         "variant": str(call["variant"]),
         "execution_kind": str(call["execution_kind"]),
+        "participation_active": str(call.get("participation_active", "True")),
         "barrier_before": (
             call["execution_kind"] == "collective" or bool(dependencies)
         ),
@@ -899,6 +900,7 @@ def _shared_template_context(
             default=128,
         ),
         "recurrent_value_tile": int(recurrent.get("value_tile", 4)),
+        "gdn_helper_variant": recurrent.get("variant", "persistent"),
         "head_block": int(recurrent.get("head_block", 128)),
         "projection_tile": int(recurrent.get("projection_tile", 128)),
         "query_scale_repr": str(recurrent.get("query_scale", "1.0")),

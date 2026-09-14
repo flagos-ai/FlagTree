@@ -103,3 +103,22 @@ def test_microkernel_pipeline_requires_complete_workspace_ownership():
             shared_workspaces=descriptors,
             transfer_pipeline=fm.T.transfer_pipeline_contract((_channel(),)),
         )
+
+
+def test_producer_metadata_reads_do_not_inherit_transfer_alignment():
+    contract = fm.T.transfer_pipeline_contract(
+        (_channel(sources=(1,), alignment=128),), producer_read_argument_indices=(0, 2)
+    )
+    assert contract.source_argument_indices == (1,)
+    assert contract.read_argument_indices == (1, 0, 2)
+    assert contract.channels[0].source_alignment_bytes == 128
+    assert fm.tir_from_data(contract.to_data()) == contract
+    legacy = contract.to_data()
+    legacy.pop("producer_read_argument_indices")
+    assert fm.tir_from_data(legacy).read_argument_indices == (1,)
+
+
+@pytest.mark.parametrize("indices", ((-1,), (True,), (1, 1), (0.5,)))
+def test_producer_metadata_reads_validate_operand_indices(indices):
+    with pytest.raises(IRSchemaError, match="Producer read operand indexes"):
+        fm.T.transfer_pipeline_contract((_channel(),), producer_read_argument_indices=indices)

@@ -16,6 +16,7 @@ from triton.flagmega.ir.distributed_type import (
     Placement,
     SBP,
     SBPBroadCast,
+    SBPExclusive,
     SBPPartial,
     SBPSplit,
     SplitDistribution,
@@ -621,7 +622,10 @@ def _distributed_definition_text(value: DistributedType, *, script: bool = False
     tensor = _tensor_type_text(value.tensor)
     policies = ",".join(_sbp_text(policy) for policy in value.axis_policies)
     partial = "" if value.partial is None else _sbp_text(value.partial)
-    body = f"{tensor}, ({policies}), {value.placement}, Partial: {partial}"
+    if value.exclusive is None:
+        body = f"{tensor}, ({policies}), {value.placement}, Partial: {partial}"
+    else:
+        body = f"{tensor}, ({policies}), {value.placement}, Partial: {partial}, Exclusive: {_sbp_text(value.exclusive)}"
     return f"Dist({body})" if script else body
 
 
@@ -631,7 +635,9 @@ def _distributed_result_type_text(value: DistributedType, *, wrapper: str) -> st
     local_shape = ",".join(_local_dimension_text(value, axis) for axis in range(value.tensor.rank))
     partial = "" if value.partial is None else _sbp_text(value.partial)
     closing = "}" if wrapper == "{" else ")"
-    return f"{wrapper}{tensor}, ({policies}), [{local_shape}], {partial}{closing}"
+    if value.exclusive is None:
+        return f"{wrapper}{tensor}, ({policies}), [{local_shape}], {partial}{closing}"
+    return f"{wrapper}{tensor}, ({policies}), [{local_shape}], {partial}, {_sbp_text(value.exclusive)}{closing}"
 
 
 def _local_dimension_text(value: DistributedType, tensor_axis: int) -> str:
@@ -653,6 +659,9 @@ def _local_dimension_text(value: DistributedType, tensor_axis: int) -> str:
 def _sbp_text(value: SBP) -> str:
     if isinstance(value, SBPBroadCast):
         return "B"
+    if isinstance(value, SBPExclusive):
+        owner = "0" if value.owner_coordinates is None else ",".join(str(item) for item in value.owner_coordinates)
+        return f"E([{','.join(str(item) for item in value.axes)}]@[{owner}])"
     if isinstance(value, SBPPartial):
         axes = ",".join(str(axis) for axis in value.axes)
         return f"P([{axes}], {value.reduce_op.value.title()})"

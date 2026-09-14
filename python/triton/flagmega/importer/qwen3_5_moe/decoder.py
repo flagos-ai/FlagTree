@@ -5,8 +5,8 @@
 from triton.flagmega.ir import F, tensor_type
 
 
-def linear(value, weight, *, name=None):
-    return F.math.matmul(value, weight, transpose_b=True, name=name)
+def linear(value, weight, *, name=None, output_dtype=None):
+    return F.math.matmul(value, weight, transpose_b=True, output_data_type=output_dtype, name=name)
 
 
 def rms_norm(value, weight, epsilon, *, name):
@@ -45,18 +45,48 @@ def partial_rope(value, cosine, sine, config, *, name):
     return F.nn.rope(value, cosine, sine, rotary_dim=config.rotary_dim, name=name)
 
 
-def build_full_attention(value, state, layer_id, advance, cosine, sine, weights, config, *, prefix):
+def build_full_attention(value, state, layer_id, advance, cosine, sine, weights, config, *, prefix,
+                         fused_projection=False):
     w = lambda name: weights[f"self_attn.{name}"]
     c = config
     tokens = value.type.shape[0].fixed_value
-    projected = linear(value, w("q_proj.weight"), name=f"{prefix}_q_gate")
-    per_head = F.tensors.reshape(projected, (tokens, c.num_attention_heads, 2 * c.head_dim))
-    # Each head stores [query, gate]; splitting the flat projection in half
-    # would exchange heads and gates while retaining apparently valid shapes.
-    query = F.tensors.slice(per_head, starts=(0, ), ends=(c.head_dim, ), axes=(-1, ), name=f"{prefix}_query_slice")
-    gate = F.tensors.slice(per_head, starts=(c.head_dim, ), ends=(None, ), axes=(-1, ), name=f"{prefix}_gate_slice")
-    key = F.tensors.reshape(linear(value, w("k_proj.weight")), (tokens, c.num_key_value_heads, c.head_dim))
-    val = F.tensors.reshape(linear(value, w("v_proj.weight")), (tokens, c.num_key_value_heads, c.head_dim))
+    heads = c.num_attention_heads
+    dim = c.head_dim
+    if fused_projection:
+        # ``qkvg.weight`` arrives already regrouped by main's constant island:
+        # the checkpoint's per-head [query, gate] rows are contiguous blocks
+        # and k/v are appended, so ONE projection serves q/k/v/gate; the
+        # downstream slices become plain contiguous ranges and the two
+        # separate k/v GEMV phases disappear.  Row permutation and
+        # concatenation are exact weight-layout transforms: every output row
+        # is still the same dot product, so numerics are unchanged.
+        projected = linear(value, w("qkvg.weight"), name=f"{prefix}_qkvg")
+        query = F.tensors.slice(projected, starts=(0, ), ends=(heads * dim, ), axes=(-1, ),
+                                name=f"{prefix}_query_slice")
+        gate = F.tensors.slice(projected, starts=(heads * dim + 2 * c.num_key_value_heads * dim, ),
+                               ends=(None, ), axes=(-1, ), name=f"{prefix}_gate_slice")
+        key = F.tensors.slice(projected, starts=(heads * dim, ),
+                              ends=(heads * dim + c.num_key_value_heads * dim, ), axes=(-1, ),
+                              name=f"{prefix}_key_slice")
+        val = F.tensors.slice(projected, starts=(heads * dim + c.num_key_value_heads * dim, ),
+                              ends=(heads * dim + 2 * c.num_key_value_heads * dim, ), axes=(-1, ),
+                              name=f"{prefix}_value_slice")
+        query = F.tensors.reshape(query, (tokens, heads, dim))
+        gate = F.tensors.reshape(gate, (tokens, heads, dim))
+        key = F.tensors.reshape(key, (tokens, c.num_key_value_heads, dim))
+        val = F.tensors.reshape(val, (tokens, c.num_key_value_heads, dim))
+    else:
+        weights_kn = tuple(F.tensors.permute(w(f"{part}_proj.weight"), (1, 0)) for part in ("q", "k", "v"))
+        none = F.builtin.none()
+        projected = F.nn.qkv_parallel_linear(
+            value, *weights_kn, *(none,) * 9, num_heads=heads, num_kv_heads=c.num_key_value_heads,
+            output_data_type="bfloat16", name=f"{prefix}_qkv")
+        query, key, val = F.tensors.get_items(projected, 0, 1, 2, name_prefix=f"{prefix}_qkv")
+        query = F.tensors.reshape(query, (tokens, heads, dim))
+        key = F.tensors.reshape(key, (tokens, c.num_key_value_heads, dim))
+        val = F.tensors.reshape(val, (tokens, c.num_key_value_heads, dim))
+        gate = F.tensors.reshape(linear(value, w("gate_proj.weight"), name=f"{prefix}_gate"),
+                                 (tokens, heads, dim))
     query = rms_norm(query, w("q_norm.weight"), c.epsilon, name=f"{prefix}_q_norm")
     key = rms_norm(key, w("k_norm.weight"), c.epsilon, name=f"{prefix}_k_norm")
     query = partial_rope(query, cosine, sine, c, name=f"{prefix}_q_rope")
@@ -78,8 +108,8 @@ def build_full_attention(value, state, layer_id, advance, cosine, sine, weights,
 def build_moe(value, weights, config, *, prefix):
     c = config
     tokens = value.type.shape[0].fixed_value
-    router_logits = linear(value, weights["mlp.gate.weight"], name=f"{prefix}_router_logits")
-    probabilities = F.nn.softmax(F.tensors.cast(router_logits, "float32"), axis=-1, name=f"{prefix}_router_softmax")
+    router_logits = linear(value, weights["mlp.gate.weight"], output_dtype="float32", name=f"{prefix}_router_logits")
+    probabilities = F.nn.softmax(router_logits, axis=-1, name=f"{prefix}_router_softmax")
     top = F.tensors.top_k(probabilities, k=c.num_experts_per_tok, name=f"{prefix}_router_top_k")
     scores, ids = F.tensors.get_items(top, 0, 1, name_prefix=f"{prefix}_router")
     total = F.math.reduce_sum(scores, axes=(-1, ), keep_dims=True)
@@ -89,10 +119,19 @@ def build_moe(value, weights, config, *, prefix):
     routed = F.nn.sparse_experts(value, ids, scores, ones, weights["mlp.experts.gate_proj"], ones, ones,
                                  weights["mlp.experts.down_proj"], ones, ones, weights["mlp.experts.up_proj"], ones,
                                  name=f"{prefix}_routed_experts")
-    shared = F.nn.dense_matmul_glu(value, weights["mlp.shared_expert.gate_proj.weight"],
-                                   weights["mlp.shared_expert.up_proj.weight"], activation="silu")
-    shared = linear(shared, weights["mlp.shared_expert.down_proj.weight"])
     shared_gate = F.math.sigmoid(linear(value, weights["mlp.shared_expert_gate.weight"]), name=f"{prefix}_shared_gate")
-    scaled = F.math.mul(shared, F.tensors.broadcast_to(shared_gate, shape=(tokens, c.hidden_size)),
-                        name=f"{prefix}_shared_scaled")
-    return F.math.add(routed, scaled, name=f"{prefix}_moe_output")
+    shared_ids = F.builtin.splat_const(tensor_type("int32", (tokens, 1)), 0)
+    shared_scales = F.builtin.splat_const(tensor_type("float32", (1, 1)), 1.0)
+    shared_weights = {
+        stage: F.tensors.reshape(weights[f"mlp.shared_expert.{stage}_proj.weight"],
+                                 shape=(1, *(d.fixed_value for d in weights[f"mlp.shared_expert.{stage}_proj.weight"].type.shape)))
+        for stage in ("gate", "up", "down")
+    }
+    # Always active and independently gated, never part of TopK normalization.
+    # Keep the dense branch's declared rounding boundaries when changing IR.
+    shared = F.nn.sparse_experts(value, shared_ids, shared_gate, shared_scales, shared_weights["gate"], shared_scales,
+                                shared_scales, shared_weights["down"], shared_scales,
+                                shared_scales, shared_weights["up"], shared_scales,
+                                round_projections=True, round_activation=True, round_down_projection=True,
+                                round_weighted_output=True, name=f"{prefix}_shared_experts")
+    return F.math.add(routed, shared, name=f"{prefix}_moe_output")

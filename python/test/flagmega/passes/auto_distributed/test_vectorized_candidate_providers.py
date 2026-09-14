@@ -64,7 +64,7 @@ def test_vectorized_binary_enumerates_exact_local_shard_candidates():
     split = {
         candidate.return_type.axis_policies[-1].hierarchy_axes: candidate
         for candidate in candidates
-        if candidate.reason == "binary-exact-output-sbp"
+        if isinstance(candidate.return_type.axis_policies[-1], fm.SBPSplit)
     }
 
     assert set(split) == {(0,), (1,), (0, 1)}
@@ -75,7 +75,9 @@ def test_vectorized_binary_enumerates_exact_local_shard_candidates():
         )
         for candidate in split.values()
     )
-    assert split[(0, 1)].operation_cost == 2
+    # The unit target counts complete scalar payload traffic: two reads and
+    # one write over eight vector8 BF16 elements, not two outer vector slots.
+    assert split[(0, 1)].operation_cost == 8 * 8 * 2 * 3
 
 
 def test_vectorized_unary_preserves_the_selected_input_distribution():

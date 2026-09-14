@@ -205,3 +205,26 @@ def test_multi_function_frozen_dump_remains_mergeable(tmp_path):
             "main_weight", "helper_weight",
         }
     assert fm.load_module(tmp_path / "Frozen") == frozen
+
+
+def test_freeze_handles_independent_weight_and_non_weight_islands():
+
+    builder = fm.IRBuilder(dialect="high_level", stage="canonical_constants")
+    value_type = fm.tensor_type("float32", (2, 8))
+    runtime = builder.var("runtime", value_type, id="runtime")
+    weight = builder.weight("weight", value_type, source="memory", key="weight", id="weight")
+    weight_scaled = builder.call("math.silu", (weight,), value_type, id="weight_scaled")
+    splat = builder.call("builtin.splat_const", (), value_type, attrs={"value": 0.0}, id="splat")
+    scaled = builder.call("math.mul", (splat, splat), value_type, id="scaled")
+    mixed = builder.call("math.add", (runtime, weight_scaled), value_type, id="mixed")
+    output = builder.call("math.add", (mixed, scaled), value_type, id="output")
+    builder.function("main", (runtime,), (output,))
+    module = builder.build(entry="main")
+
+    frozen = freeze_constant_islands(module)
+
+    assert frozen.metadata["constant_phase"] == "frozen"
+    assert {node.id for node in frozen.nodes if node.op == "builtin.const_asset"} == {"weight_scaled", "scaled"}
+    assert len(frozen.constant_recipes) == 2
+    assert frozen.node_map["scaled"].inputs == ()
+    assert frozen.node_map["output"].inputs == ("mixed", "scaled")

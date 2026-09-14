@@ -3,10 +3,12 @@
 """Materialized distributed reshard operation."""
 
 from typing import Mapping, Sequence
+from math import prod
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorType, TupleType
-from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition
+from triton.flagmega.ir.ops.core import OpCost, OpCostFactors, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_elements, tensor_nbytes
+from triton.flagmega.ir.distributed_type import local_tensor_type
 from triton.flagmega.ir.type_pattern import is_ir_type
 
 
@@ -56,6 +58,25 @@ class Boxing(OpDefinition):
     def cost(cls, node: Node) -> OpCost:
         source = node.metadata.get("source_type")
         return OpCost(communication_bytes=None, notes=("reshard", str(source or "dynamic")))
+
+    @classmethod
+    def cost_factors(cls, inputs, attrs, return_type):
+        source = cls.value.type_of(inputs)
+        if not (isinstance(source, DistributedType) and isinstance(return_type, DistributedType)
+                and source.partial is not None and return_type.partial is None
+                and source.placement == return_type.placement):
+            return None
+        local = local_tensor_type(return_type)
+        size, count = tensor_nbytes(local), tensor_elements(local)
+        if size is None or count is None:
+            return None
+        fan_in = prod(source.placement.hierarchy[axis] for axis in source.partial.axes)
+        return OpCostFactors(
+            elementwise_operations=count * (fan_in - 1),
+            chip_global_memory_load_bytes=size * fan_in,
+            chip_global_memory_store_bytes=size,
+            grid_synchronizations=1,
+        )
 
 
 def _same_logical_type(lhs: IRType, rhs: IRType) -> bool:

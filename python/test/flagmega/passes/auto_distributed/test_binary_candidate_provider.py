@@ -31,7 +31,7 @@ def test_binary_provider_enumerates_each_legal_2d_mesh_axis_combination():
     split = {
         candidate.return_type.axis_policies[-1].hierarchy_axes: candidate
         for candidate in candidates
-        if candidate.reason == "binary-exact-output-sbp"
+        if isinstance(candidate.return_type.axis_policies[-1], fm.SBPSplit)
     }
 
     assert set(split) == {(0,), (1,), (0, 1)}
@@ -44,7 +44,9 @@ def test_binary_provider_enumerates_each_legal_2d_mesh_axis_combination():
         shard_count = 1
         for axis in axes:
             shard_count *= (8, 16)[axis]
-        assert candidate.operation_cost == max(128 // shard_count, 1)
+        assert candidate.operation_cost > 0
+        assert candidate.reason == "operation-type-inference-sbp"
+        assert fm.local_tensor_type(candidate.return_type).shape[-1].fixed_value == 128 // shard_count
 
 
 def test_binary_provider_rejects_only_the_nondividing_mesh_combinations():
@@ -52,7 +54,7 @@ def test_binary_provider_rejects_only_the_nondividing_mesh_combinations():
     axes = {
         candidate.return_type.axis_policies[-1].hierarchy_axes
         for candidate in candidates
-        if candidate.reason == "binary-exact-output-sbp"
+        if isinstance(candidate.return_type.axis_policies[-1], fm.SBPSplit)
     }
 
     assert axes == {(0,), (1,)}

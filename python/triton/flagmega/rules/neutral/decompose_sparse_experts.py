@@ -20,13 +20,13 @@ def decompose_sparse_experts_rule() -> RewriteRule:
     def rewrite(result, module):
         source = result["call"]
         operands = tuple(result[parameter.name] for parameter in SparseExperts.input_parameters)
-        gate, down = SparseExperts.stage_calls(
+        dispatch, gate, down, combine = SparseExperts.stage_calls(
             operands,
             source.attrs,
             name=source.id,
             metadata=decomposition_metadata(source, "DecomposeSparseExperts"),
         )
-        return RewriteResult(down, (gate, ))
+        return RewriteResult(combine, (dispatch, gate, down))
 
     return RewriteRule("DecomposeSparseExperts", pattern, rewrite)
 

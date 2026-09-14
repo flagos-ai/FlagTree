@@ -22,7 +22,7 @@ def test_importer_uses_metadata_only_and_reuses_each_decoder_kind():
                    if node.op == "builtin.call") == {"decode_linear": 2, "decode_attention": 2}
     assert sum(node.op == "nn.gdn_recurrent_core" for node in module.nodes) == 1
     assert sum(node.op == "nn.paged_attention" for node in module.nodes) == 1
-    assert sum(node.op == "nn.sparse_experts" for node in module.nodes) == 2
+    assert sum(node.op == "nn.sparse_experts" for node in module.nodes) == 4
     assert not any("fp8" in node.op or "block_scaled" in node.op for node in module.nodes)
     assert len(module.function_map[module.entry].outputs) == 4
     for name in ("decode_linear", "decode_attention"):

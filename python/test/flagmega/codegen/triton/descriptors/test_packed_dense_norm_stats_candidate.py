@@ -123,7 +123,7 @@ def _module(
     )
     return fm.IRModule(
         dialect="distributed",
-        stage="matmul_norm_stats_lowered",
+        stage="add_norm_stats_lowered",
         nodes=(lhs, rhs, addend, residual_add, norm_consumer, result),
         functions=(),
         entry="main",

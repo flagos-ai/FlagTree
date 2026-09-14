@@ -130,9 +130,14 @@ def test_rdata_packing_streams_byte_preserving_recipe_from_checkpoint_storage(
             return source.load_tensor(key, device=device)
 
     index = pack_rdata(module, StorageCheckpoint(), tmp_path / "assets")
+    [recipe] = [
+        recipe for recipe in module.constant_recipes
+        if any(node.op == "builtin.weight" and node.attrs["key"] == source_key for node in recipe.nodes)
+    ]
+    [output] = recipe.outputs
     entry = next(
         value for value in index["entries"]
-        if value["key"] == "w_embed_tokens_weight.reshard2"
+        if value["key"] == output
     )
     with (tmp_path / "assets" / "rdata.bin").open("rb") as stream:
         stream.seek(entry["offset"])

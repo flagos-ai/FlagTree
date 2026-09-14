@@ -63,6 +63,25 @@ def test_candidate_change_creates_a_distinct_prim_function():
     assert calls[0].attrs["callee"] != calls[1].attrs["callee"]
 
 
+def test_single_program_implementation_materializes_its_access_domain():
+    from dataclasses import replace
+
+    module = _two_add_kernels()
+    module = replace(module, nodes=tuple(
+        replace(node, attrs={
+            **node.attrs,
+            "facts": {**node.attrs["facts"], "participant_scope": "single_program"},
+        }) if node.op == "tir.kernel" else node
+        for node in module.nodes
+    ))
+    result = materialize_kernel_prim_functions(module)
+    dispatch = fm.kernel_dispatch_for_call(result, result.node_map["first"])
+    for name in (*dispatch.reads, *dispatch.writes):
+        assert dispatch.memory_effect_map[name].access_domain == (
+            fm.MemoryAccessDomain.fixed_block(0)
+        )
+
+
 def test_boxing_sites_do_not_share_a_prim_function_before_buffer_layout_binding():
     placement = fm.Placement((2, 4), "yx", "bb")
     tensor = fm.tensor_type("bfloat16", (1, 16))

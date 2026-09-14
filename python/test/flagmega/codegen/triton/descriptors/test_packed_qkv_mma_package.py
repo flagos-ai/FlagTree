@@ -52,7 +52,7 @@ def test_packed_qkv_mma_source_indexes_each_projection_output_row(
     assert "qkv_local_n_offsets" in source
     assert "tl.dot(" in source
     assert "MmaEncoding(" in source
-    assert "qkv_logical_m = qkv_c_m\n" in source
+    assert "qkv_logical_m = qkv_n_tile * 256 + qkv_c_m\n" in source
     assert "qkv_c_m ^" not in source
     assert "qwen" not in source.lower()
 

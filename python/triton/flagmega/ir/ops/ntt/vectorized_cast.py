@@ -118,6 +118,7 @@ class VectorizedCast(OpDefinition):
             tuple(policies),
             source_type.placement,
             partial=source_type.partial,
+            exclusive=source_type.exclusive,
         )
 
     @classmethod

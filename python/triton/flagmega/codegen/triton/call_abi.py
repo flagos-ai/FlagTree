@@ -455,6 +455,7 @@ def _transfer_pipeline_abi(dispatch, shared_buffers) -> dict[str, object]:
     if pipeline is not None:
         result["transfer_pipeline"] = {
             "capacity": pipeline.capacity,
+            "producer_read_argument_indices": list(pipeline.producer_read_argument_indices),
             "channels": [
                 {
                     "name": channel.name,
@@ -465,6 +466,8 @@ def _transfer_pipeline_abi(dispatch, shared_buffers) -> dict[str, object]:
                         channel.shared_workspace_indices
                     ),
                     "source_alignment_bytes": channel.source_alignment_bytes,
+                    **({"inplace_partition": channel.inplace_partition.to_data()}
+                       if channel.inplace_partition is not None else {}),
                 }
                 for channel in pipeline.channels
             ],
@@ -546,6 +549,8 @@ def describe_local_buffer_abi(
     abi["alignment_bytes"] = (
         gcd(buffer.mem_span.buffer.alignment, start.fixed_value) if start.is_fixed else 1
     )
+    if buffer.component_stride_bytes:
+        abi["alignment_bytes"] = gcd(abi["alignment_bytes"], buffer.component_stride_bytes)
     return _with_memory_space_abi(abi, buffer, plan, pool_scope_count)
 
 
@@ -616,7 +621,7 @@ def _describe_local_buffer_abi_base(buffer) -> dict[str, object]:
     shard = local_shard_descriptor(distributed, coordinate_names)
     storage_shard = local_shard_descriptor(storage_type, coordinate_names)
     component_stride = (
-        prod(storage_local_shape, start=1)
+        buffer.component_stride_bytes // buffer.dtype.itemsize
         if buffer.distributed_storage_kind
         is DistributedBufferStorageKind.COMPACT_PER_OWNER
         else 0
@@ -759,6 +764,7 @@ def _bind_parameter(
         "role": formal.role.value,
         "actual_value": actual_node_id,
         "buffers": buffers,
+        **({"type": plain_package_value(formal.type.to_data())} if not buffers else {}),
     }
 
 

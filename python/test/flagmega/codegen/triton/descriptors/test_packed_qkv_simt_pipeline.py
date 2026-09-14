@@ -25,6 +25,37 @@ def test_simt_qkv_keeps_typed_pipe_and_inline_helpers(packed_qkv_simt_pipeline_m
     assert "tl.dot(" not in source
 
 
+def test_masked_tile_keeps_real_rhs_shape_in_the_tensor_map(packed_qkv_simt_pipeline_module, monkeypatch):
+    from triton.flagmega.codegen.triton.kernel_call_renderers import _qkv_parallel_linear_call, _FAMILY_ENCODERS
+    from triton.flagmega.errors import CodegenError
+    captured = []
+
+    def capture(raw):
+        captured.append(dict(raw))
+        return _qkv_parallel_linear_call(raw)
+
+    monkeypatch.setitem(_FAMILY_ENCODERS, "qkv_parallel_linear", capture)
+    describe_tir_package(packed_qkv_simt_pipeline_module)
+    raw, = captured
+    raw = {**raw, "parameters": {**raw["parameters"], "block_n": 64, "block_k": 256, "masked_n_tail": True},
+           "shared_workspaces": ({**raw["shared_workspaces"][0], "shape": (2, 1, 8, 16, 2, 64)},
+                                  raw["shared_workspaces"][1])}
+    call = _qkv_parallel_linear_call(raw)
+    request = call["host_tensor_descriptor_requests"][0]
+    assert call["block_n"] == 64
+    assert sum(output["local_n_capacity"] for output in call["outputs"]) == 32
+    assert request["shape"][1] == 4  # Real RHS N/8, not the tile's eight groups.
+    assert call["descriptor_block_shape"] == (1, 8, 16, 2, 64)
+    with pytest.raises(CodegenError, match="full owner-local"):
+        _qkv_parallel_linear_call({**raw, "parameters": {**raw["parameters"], "masked_n_tail": False}})
+    with pytest.raises(CodegenError, match="full owner-local"):
+        _qkv_parallel_linear_call({**raw, "parameters": {**raw["parameters"], "block_n": 16}})
+    with pytest.raises(CodegenError, match="full owner-local"):
+        _qkv_parallel_linear_call({**raw, "parameters": {**raw["parameters"], "block_k": 0}})
+    with pytest.raises(CodegenError, match="boolean"):
+        _qkv_parallel_linear_call({**raw, "parameters": {**raw["parameters"], "masked_n_tail": 1}})
+
+
 def test_simt_qkv_matches_three_independent_matmuls(tmp_path, packed_qkv_simt_pipeline_module):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):

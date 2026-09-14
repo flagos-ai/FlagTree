@@ -25,6 +25,7 @@ from triton.flagmega.ir.ops.core import (
     display_name="ConstAssetRef",
 )
 class ConstAsset(OpDefinition):
+    constant_source = True
     result_type = attribute_parameter(positional=True)
     recipe = attribute_parameter()
     output = attribute_parameter()

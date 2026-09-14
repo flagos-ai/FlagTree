@@ -61,6 +61,7 @@ from triton.flagmega.ir.tir.sequential import Sequential
 from triton.flagmega.ir.tir.shared_workspace_descriptor import TIRSharedWorkspaceDescriptor
 from triton.flagmega.ir.tir.synchronization_range import SynchronizationRange
 from triton.flagmega.ir.tir.transfer_pipeline_channel import TIRTransferPipelineChannel
+from triton.flagmega.ir.tir.inplace_transfer_partition import TIRInplaceTransferPartition
 from triton.flagmega.ir.tir.transfer_pipeline_contract import TIRTransferPipelineContract
 from triton.flagmega.ir.tir.value_ref import ValueRef
 from triton.flagmega.ir.tir.workspace_requirement import WorkspaceLifetime, WorkspaceRequirement
@@ -76,6 +77,7 @@ def make_buffer_plan(module, *, alignment: int = 256, options=None, allocation_s
 
 
 __all__ = [
+    "TIRInplaceTransferPartition",
     "KernelDefinition", "KernelInvoke",
     "AliasInfo", "AliasKind", "Barrier", "BarrierScope", "Binary", "Block", "Buffer", "BufferDescriptor", "BufferTuple",
     "BufferLoad", "BufferPlan", "BufferRegion", "BufferStore", "CallMemoryPoolBinding", "Evaluate", "ExecutionFunction", "For", "FunctionMemoryPool",

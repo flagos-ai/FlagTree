@@ -27,6 +27,7 @@ class Buffer(TIRNode):
     distributed_type: DistributedType | None = None
     distributed_storage_kind: DistributedBufferStorageKind = DistributedBufferStorageKind.COMPACT_LOCAL
     distributed_backing_type: DistributedType | None = None
+    owner_stride_bytes: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "elem_type", data_type(self.elem_type))
@@ -39,6 +40,13 @@ class Buffer(TIRNode):
         )
         if not self.name:
             raise IRSchemaError("TIR Buffer requires a non-empty name.")
+        if self.owner_stride_bytes is not None and (
+            type(self.owner_stride_bytes) is not int
+            or self.owner_stride_bytes < (self.mem_span.size.maximum or 0)
+            or self.owner_stride_bytes % self.elem_type.itemsize
+            or self.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_OWNER
+        ):
+            raise IRSchemaError("TIR Buffer owner stride requires aligned compact-per-owner storage.")
         if len(self.dimensions) != len(self.strides):
             raise IRSchemaError("TIR Buffer dimensions and element strides must have equal rank.")
         if any(value.minimum is not None and value.minimum < 0 for value in self.dimensions):
@@ -74,6 +82,12 @@ class Buffer(TIRNode):
             raise IRSchemaError(
                 "Replicated-local buffers require a non-partial block placement."
             )
+        if self.distributed_storage_kind is DistributedBufferStorageKind.EXCLUSIVE_LOCAL:
+            if self.distributed_type is None or self.distributed_type.exclusive is None or any(
+                not self.distributed_type.placement.is_physical_block_axis(axis)
+                for axis in self.distributed_type.exclusive.axes
+            ):
+                raise IRSchemaError("Exclusive-local buffers require physical block E axes.")
         if self.distributed_backing_type is not None:
             backing = self.distributed_backing_type
             if self.distributed_storage_kind not in {
@@ -98,7 +112,8 @@ class Buffer(TIRNode):
             and self.mem_span.buffer.size.minimum is not None
             and self.mem_span.size.maximum is not None
             and self.mem_span.buffer.size.minimum
-            < self.mem_span.size.maximum * placement_owner_count(self.distributed_type)
+            < (self.owner_stride_bytes if self.owner_stride_bytes is not None else self.mem_span.size.maximum)
+            * (placement_owner_count(self.distributed_type) - 1) + self.mem_span.size.maximum
         ):
             raise IRSchemaError(
                 "Compact-per-owner Buffer backing must contain one component per placement owner."
@@ -129,6 +144,15 @@ class Buffer(TIRNode):
                     f"TIR Buffer {self.name!r} needs {required} bytes but its MemSpan has "
                     f"{self.mem_span.size.fixed_value}."
                 )
+
+    @property
+    def component_stride_bytes(self) -> int:
+        if self.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_OWNER:
+            return 0
+        stride = self.owner_stride_bytes if self.owner_stride_bytes is not None else self.mem_span.size.maximum
+        if stride is None:
+            raise IRSchemaError("A compact-per-owner Buffer needs a bounded component stride.")
+        return stride
 
     @property
     def rank(self) -> int:

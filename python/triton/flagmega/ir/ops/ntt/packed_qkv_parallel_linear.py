@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import fields, replace
+from math import prod
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -26,6 +28,7 @@ from triton.flagmega.ir.model import (
 )
 from triton.flagmega.ir.ops.core import (
     OpCost,
+    OpCostFactors,
     OpDefinition,
     attribute_parameter,
     input_parameter,
@@ -244,6 +247,42 @@ class PackedQKVParallelLinear(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         return OpCost(notes=("three-packed-k-major-linear-projections",))
+
+    @classmethod
+    def cost_factors(cls, inputs, attrs, return_type):
+        from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul, _local_cost_tensor, _fixed_tensor_nbytes
+
+        if len(inputs) != 13 or not isinstance(return_type, TupleType):
+            return None
+        none = Node("<qkv-cost-none>", "builtin.none", (), NoneType())
+        parts = []
+        for index, output in enumerate(return_type.fields):
+            part = PackedMatMul.cost_factors(
+                (inputs[0], inputs[index + 1], none, inputs[index + 4]),
+                {"fused_reduce": False, "output_data_type": attrs["output_data_type"], "rhs_layout": attrs["rhs_layout"]},
+                output,
+            )
+            if part is None:
+                return None
+            parts.append(part)
+        result = OpCostFactors(**{field.name: sum(getattr(part, field.name) for part in parts)
+                                  for field in fields(OpCostFactors)})
+        # The fused operation shares its LHS. Weight traffic and arithmetic
+        # remain distinct for all three projections, including padded lanes.
+        loads = result.block_local_memory_load_bytes - 2 * _fixed_tensor_nbytes(_local_cost_tensor(inputs[0].type))
+        scale_work = 0
+        for index in range(3):
+            scale = inputs[index + 10].type
+            if isinstance(scale, NoneType):
+                continue
+            scale_tensor = _local_cost_tensor(scale)
+            if any(not d.is_fixed for d in scale_tensor.shape):
+                return None
+            loads += _fixed_tensor_nbytes(scale_tensor)
+            weight = _local_cost_tensor(inputs[index + 1].type)
+            scale_work += prod(d.fixed_value for d in weight.shape) * weight.dtype.lane_count
+        return replace(result, block_local_memory_load_bytes=loads,
+                       elementwise_operations=result.elementwise_operations + scale_work)
 
 
 def _unpack_k_major(value, value_type: TensorType):

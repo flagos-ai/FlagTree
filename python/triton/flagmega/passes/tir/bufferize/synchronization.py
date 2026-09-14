@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.ir.memory_effect import expand_memory_effect
 
 from triton.flagmega.ir.bufferization import BufferPlan, MemorySharingScope
 from triton.flagmega.ir.bufferization.synchronization import (
@@ -14,7 +15,11 @@ from triton.flagmega.ir.bufferization.synchronization import (
     SynchronizationEvent,
 )
 from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
-from triton.flagmega.ir.distributed_type import ContiguousSplit, SBPSplit
+from triton.flagmega.ir.distributed_type import (
+    ContiguousSplit,
+    SBPSplit,
+    exclusive_transition_axes,
+)
 from triton.flagmega.ir.memory_effect import (
     MemoryAccessDomain,
     MemoryAccessMode,
@@ -50,6 +55,7 @@ class _Access:
     is_reference: bool
     requires_full_chip: bool
     sharing_scope: MemorySharingScope
+    owner_stride_bytes: int = 0
 
 
 @dataclass
@@ -65,6 +71,33 @@ def plan_memory_synchronization(
     """Plan the weakest sufficient barriers for all concrete byte hazards."""
 
     return _plan_memory_synchronization(module, plan)
+
+
+def transfer_source_dependencies(module, plan, function_name, calls):
+    """Reuse the physical hazard analysis for reads moved to producer tasks.
+
+    Keep every preceding writer, including disjoint portions of one source
+    and pooled-storage reuse. A newer local write cannot discharge an older
+    cross-owner publication requirement.
+    """
+    resolver = CallAccessResolver(module, plan, _node_accesses)
+    bindings = dict(plan.function_map[function_name].values)
+    history = []
+    result = {}
+    for call in calls:
+        accesses = resolver.accesses(function_name, module.node_map[call.call_id], bindings)
+        source_spans = tuple(plan.buffer_map[value].physical_access_span for value in call.transfer_sources)
+        reads = tuple(access for access in accesses
+                      if access.effect.physical_mode & MemoryAccessMode.READ
+                      and any(span.may_alias(plan.buffer_map[access.buffer].physical_access_span)
+                              for span in source_spans))
+        result[call.call_id] = tuple(dict.fromkeys(
+            (previous.node, _hazard_requirement(previous, current))
+            for previous in history for current in reads
+            if _conflicts(previous, current)
+        ))
+        history.extend(access for access in accesses if access.effect.physical_mode & MemoryAccessMode.WRITE)
+    return result
 
 
 def _plan_memory_synchronization(
@@ -201,6 +234,7 @@ def _node_accesses(module, plan, function_name, node, bindings):
             access_start,
             access_bytes,
             access_partition,
+            descriptor.component_stride_bytes,
         )
         previous = result.get(key)
         mode = effect.physical_mode
@@ -236,6 +270,7 @@ def _node_accesses(module, plan, function_name, node, bindings):
             reference_access or bool(previous and previous.is_reference),
             (effect.scope is MemoryAccessScope.CHIP or publishes or bool(previous and previous.requires_full_chip)),
             plan.memory_space_map[descriptor.mem_span.buffer.memory_space].sharing_scope,
+            descriptor.component_stride_bytes,
         )
 
     argument_names = (
@@ -251,11 +286,13 @@ def _node_accesses(module, plan, function_name, node, bindings):
             argument_name,
             MemoryEffect.NONE if has_typed_effects else MemoryEffect.READ,
         )
-        for buffer_id in bindings.get(input_id, ()):
-            if effect.physical_mode is not MemoryAccessMode.NONE:
+        buffers = bindings.get(input_id, ())
+        leaf_effects = expand_memory_effect(module.node_map[input_id].type, effect)
+        for buffer_id, leaf_effect in zip(buffers, leaf_effects if buffers else (), strict=True):
+            if leaf_effect.physical_mode is not MemoryAccessMode.NONE:
                 add(
                     buffer_id,
-                    effect,
+                    leaf_effect,
                     reference_access=is_reference,
                     publishes=publishes_across_chip,
                 )
@@ -301,11 +338,11 @@ def _expanded_output_effects(
     if primitive is None or len(primitive.output_parameters) != len(effects):
         return (_merge_effects(effects),) * output_buffer_count
     expanded = tuple(
-        effect
+        leaf
         for parameter, effect in zip(
             primitive.output_parameters, effects, strict=True
         )
-        for _ in parameter.buffers
+        for leaf in expand_memory_effect(parameter.type, effect)
     )
     return (
         expanded
@@ -396,6 +433,17 @@ def _hazard_requirement(
         # Match nncase's ordering: a physically replicated block-local arena
         # cannot create a cross-block byte hazard, even when the producing op
         # also has collective semantics for another operand or result.
+        return "block", (), placement
+    exclusive_axes = None
+    if producer is not None and consumer is not None:
+        exclusive_axes = exclusive_transition_axes(producer, consumer)
+    if exclusive_axes is not None:
+        # A B/E publication or selection only needs to rendezvous owners on
+        # the E axes. This must precede the generic full-chip fallback:
+        # canonical/global storage is chip-visible, but E defines the only
+        # owner group that writes or consumes the value.
+        if exclusive_axes:
+            return "grid", exclusive_axes, placement
         return "block", (), placement
     if previous.requires_full_chip or current.requires_full_chip:
         return "grid", (), placement
@@ -499,6 +547,12 @@ def _infer_raw_axis_group(
         or producer.partial != consumer.partial
     ):
         return None
+    if producer.exclusive is not None and producer.exclusive == consumer.exclusive:
+        # E->E values remain on one owner and do not cross an owner boundary.
+        return ()
+    exclusive_axes = exclusive_transition_axes(producer, consumer)
+    if exclusive_axes is not None:
+        return exclusive_axes
     # SBP describes ownership of logical coordinates, not ownership of an
     # arbitrary reused arena address. A shifted allocation can make writer
     # owner 0 alias reader owner 1 despite identical SBP. Likewise a compact
@@ -516,7 +570,7 @@ def _infer_raw_axis_group(
         return None
     if (
         producer_storage is DistributedBufferStorageKind.COMPACT_PER_OWNER
-        and previous.nbytes != current.nbytes
+        and (previous.nbytes != current.nbytes or previous.owner_stride_bytes != current.owner_stride_bytes)
     ):
         return None
     producer_split = _split_assignments(producer)

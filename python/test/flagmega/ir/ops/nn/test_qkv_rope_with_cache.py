@@ -94,6 +94,10 @@ def _infer(
         _typed("state", state_type),
         _typed("layer_id", fm.tensor_type("int32", ())),
         _typed("advance", fm.tensor_type("bool", ())),
+        _typed("q_stats", fm.get_definition("nn.norm_stats").infer_type(
+            (_typed("q", qkv_type.fields[0]),), {"axis": 2, "use_mean": False})),
+        _typed("k_stats", fm.get_definition("nn.norm_stats").infer_type(
+            (_typed("k", qkv_type.fields[1]),), {"axis": 2, "use_mean": False})),
     )
     return fm.get_definition("nn.qkv_rope_with_cache").infer_type(
         inputs,

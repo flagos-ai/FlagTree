@@ -33,7 +33,7 @@ from triton.flagmega.ir.ops.nn._sparse_experts import (
                display_name="NN.SparseExpertsGateUp")
 class SparseExpertsGateUp(OpDefinition):
     supports_broadcast_lifting = False
-    q = input_parameter(floating_tensor(2, packed=True))
+    dispatched = input_parameter(floating_tensor(3, packed=True))
     router_expert_ids = input_parameter(ROUTER_IDS)
     gate_input_scale = input_parameter(EXPERT_SCALE)
     gate_weight = input_parameter(floating_tensor(3))
@@ -57,13 +57,14 @@ class SparseExpertsGateUp(OpDefinition):
     def infer_type(cls, inputs, attrs):
         types = {parameter.name: parameter.type_of(inputs) for parameter in cls.input_parameters}
         tensors = {name: tensor_of(value) for name, value in types.items()}
-        q, ids, gate, up = (tensors[name] for name in ("q", "router_expert_ids", "gate_weight", "up_weight"))
+        q, ids, gate, up = (tensors[name] for name in ("dispatched", "router_expert_ids", "gate_weight", "up_weight"))
         if gate != up or gate.dtype != element_type(q.dtype):
             raise IRSchemaError("SparseExpertsGateUp gate/up weights and activation element dtypes must match.")
         experts, intermediate, hidden = gate.shape
-        if q.shape[1] * lanes(q.dtype) != hidden:
+        if q.shape[2] * lanes(q.dtype) != hidden:
             raise IRSchemaError("SparseExpertsGateUp activation hidden extent does not match weights.")
         check_routes(ids, q.shape[0], experts)
+        require_shape(ids, q.shape[:2], "router_expert_ids")
         scale_names = ("gate_input_scale", "gate_proj_scale", "up_input_scale", "up_proj_scale")
         for name in scale_names:
             require_shape(tensors[name], (experts, 1), name)
@@ -72,25 +73,25 @@ class SparseExpertsGateUp(OpDefinition):
         if placement is None:
             return output
         broadcast = SBP.broadcast()
-        token = types["q"].axis_policies[0]
+        token, route, _ = types["dispatched"].axis_policies
         scalar_intermediate = types["gate_weight"].axis_policies[1]
         intermediate_policy = scale_policy(scalar_intermediate, 1, lanes(output.dtype))
         require_policies(
             types, {
-                "q": (token, broadcast),
-                "router_expert_ids": (token, broadcast),
+                "dispatched": (token, route, broadcast),
+                "router_expert_ids": (token, route),
                 "gate_weight": (broadcast, scalar_intermediate, broadcast),
                 "up_weight": (broadcast, scalar_intermediate, broadcast),
                 **{name: (broadcast, broadcast)
                    for name in scale_names},
             })
-        role_axes(token, intermediate_policy)
-        return DistributedType(output, (token, broadcast, intermediate_policy), placement)
+        role_axes(token, route, intermediate_policy)
+        return DistributedType(output, (token, route, intermediate_policy), placement)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
         values = {parameter.name: parameter.read(arguments) for parameter in cls.input_parameters}
-        return evaluate_gate_up(values, context.types[cls.q.read(node.inputs)], node.type, node.attrs, context)
+        return evaluate_gate_up(values, context.types[cls.dispatched.read(node.inputs)], node.type, node.attrs, context)
 
     @classmethod
     def cost(cls, node):
@@ -108,7 +109,7 @@ class SparseExpertsGateUp(OpDefinition):
 
 
 def evaluate_gate_up(values, q_type, output_type, attrs, context):
-    q = unpack_value(values["q"], q_type)
+    q = unpack_value(values["dispatched"], q_type)
     ids = values["router_expert_ids"]
     gate_weight, up_weight = values["gate_weight"], values["up_weight"]
     validate_expert_ids(ids, gate_weight.shape[0])
@@ -117,9 +118,9 @@ def evaluate_gate_up(values, q_type, output_type, attrs, context):
     for token in range(q.shape[0]):
         for route in range(ids.shape[1]):
             expert = int(ids[token, route])
-            gate = scaled_projection(q[token], gate_weight[expert], values["gate_input_scale"][expert],
+            gate = scaled_projection(q[token, route], gate_weight[expert], values["gate_input_scale"][expert],
                                      values["gate_proj_scale"][expert])
-            up = scaled_projection(q[token], up_weight[expert], values["up_input_scale"][expert],
+            up = scaled_projection(q[token, route], up_weight[expert], values["up_input_scale"][expert],
                                    values["up_proj_scale"][expert])
             if attrs["round_projections"]:
                 gate, up = gate.to(dtype).float(), up.to(dtype).float()

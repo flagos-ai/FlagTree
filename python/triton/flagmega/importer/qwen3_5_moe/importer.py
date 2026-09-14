@@ -19,7 +19,7 @@ class Qwen35MoeImporter:
     """Import text inference only; vision and speculative MTP are separate models."""
 
     def __init__(self, checkpoint, *, layer=None, revision=None, block_size=256, num_blocks=16,
-                 execution_phase="decode", num_tokens=1):
+                 execution_phase="decode", num_tokens=1, fused_qkvg_projection=False):
         self.checkpoint = DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, (str, Path)) else checkpoint
         self.config = Qwen35MoeConfig.parse(self.checkpoint.config)
         if execution_phase not in ("decode", "prefill"):
@@ -28,6 +28,7 @@ class Qwen35MoeImporter:
             raise ImporterError("Token count must be a positive integer; decode requires exactly one token.")
         self.execution_phase = execution_phase
         self.num_tokens = num_tokens
+        self.fused_qkvg_projection = bool(fused_qkvg_projection)
         c = self.config
         if layer is not None and (isinstance(layer, bool) or not isinstance(layer, int)
                                   or not 0 <= layer < c.num_hidden_layers):
@@ -80,6 +81,20 @@ class Qwen35MoeImporter:
                     advance = parameter("advance_sequence", tensor_type("bool", ()))
                     cosine, sine = (parameter(key, rotary_type) for key in ("rotary_cos", "rotary_sin"))
                 types = c.weight_types(kind)
+                if kind == "full_attention" and importer.fused_qkvg_projection:
+                    # One fused q/k/v/gate parameter replaces q/k/v; main's
+                    # constant island performs the row regrouping offline.
+                    del types["self_attn.q_proj.weight"]
+                    del types["self_attn.k_proj.weight"]
+                    del types["self_attn.v_proj.weight"]
+                    types["self_attn.qkvg.weight"] = tensor_type(
+                        "bfloat16", (c.num_attention_heads * 2 * c.head_dim
+                                     + 2 * c.num_key_value_heads * c.head_dim, c.hidden_size))
+                elif kind == "full_attention":
+                    # Checkpoint Q rows contain interleaved query/gate heads.
+                    # The reusable ABI takes their independent logical weights.
+                    types["self_attn.q_proj.weight"] = tensor_type("bfloat16", (c.query_size, c.hidden_size))
+                    types["self_attn.gate_proj.weight"] = types["self_attn.q_proj.weight"]
                 # Offline split of the stacked bank belongs to main's constant
                 # island, outside the shared decoder's runtime dataflow.
                 del types["mlp.experts.gate_up_proj"]
@@ -93,7 +108,9 @@ class Qwen35MoeImporter:
                     updated = state  # The one-layer view writes into this owner.
                 else:
                     attention, updated = build_full_attention(normalized, state, layer_id, advance, cosine, sine,
-                                                              weights, c, prefix=name)
+                                                              weights, c, prefix=name,
+                                                              fused_projection=getattr(
+                                                                  importer, "fused_qkvg_projection", False))
                 residual = F.math.add(hidden, attention, name=f"{name}_attention_residual")
                 normalized = rms_norm(residual, weights["post_attention_layernorm.weight"], c.epsilon,
                                       name=f"{name}_post_norm")
@@ -137,6 +154,39 @@ class Qwen35MoeImporter:
                                                                               ends=(begin + c.intermediate_size, ),
                                                                               axes=(1, ),
                                                                               name=f"layer_{layer}_expert_{part}")
+                    if kind == "full_attention" and importer.fused_qkvg_projection:
+                        # Regroup the checkpoint's per-head [query, gate] rows
+                        # and append k/v inside main's constant island; the
+                        # decoder sees one already-fused projection weight.
+                        q_weight = weights.pop("self_attn.q_proj.weight")
+                        k_weight = weights.pop("self_attn.k_proj.weight")
+                        v_weight = weights.pop("self_attn.v_proj.weight")
+                        heads, dim = c.num_attention_heads, c.head_dim
+                        query_rows = F.tensors.concat(
+                            *(F.tensors.slice(q_weight, starts=(head * 2 * dim, ),
+                                              ends=(head * 2 * dim + dim, ), axes=(-2, ),
+                                              name=f"layer_{layer}_q_rows_{head}")
+                              for head in range(heads)), axis=-2,
+                            name=f"layer_{layer}_q_regrouped")
+                        gate_rows = F.tensors.concat(
+                            *(F.tensors.slice(q_weight, starts=(head * 2 * dim + dim, ),
+                                              ends=((head + 1) * 2 * dim, ), axes=(-2, ),
+                                              name=f"layer_{layer}_gate_rows_{head}")
+                              for head in range(heads)), axis=-2,
+                            name=f"layer_{layer}_gate_regrouped")
+                        weights["self_attn.qkvg.weight"] = F.tensors.concat(
+                            query_rows, k_weight, v_weight, gate_rows, axis=-2,
+                            name=f"layer_{layer}_qkvg_weight")
+                    elif kind == "full_attention":
+                        grouped = F.tensors.reshape(
+                            weights["self_attn.q_proj.weight"],
+                            (c.num_attention_heads, 2, c.head_dim, c.hidden_size),
+                            name=f"layer_{layer}_query_gate_rows")
+                        for part, index in (("q", 0), ("gate", 1)):
+                            rows = F.tensors.slice(grouped, starts=(index,), ends=(index + 1,), axes=(1,),
+                                                   name=f"layer_{layer}_{part}_rows")
+                            weights[f"self_attn.{part}_proj.weight"] = F.tensors.reshape(
+                                rows, (c.query_size, c.hidden_size), name=f"layer_{layer}_{part}_weight")
                     layer_id = F.builtin.scalar_const(tensor_type("int32", ()), local_layer,
                                                       name=f"layer_{layer}_state_id")
                     state = gdn if kind == "linear_attention" else paged
@@ -164,7 +214,7 @@ class Qwen35MoeImporter:
                 hidden = rms_norm(hidden, norm_weight, c.epsilon, name="final_norm")
                 lm_head = embedding if c.tie_word_embeddings else self.weight_at(
                     "lm_head.weight", tensor_type("bfloat16", (c.vocab_size, c.hidden_size)))
-                logits = F.tensors.cast(linear(hidden, lm_head, name="lm_head"), "float32", name="logits")
+                logits = linear(hidden, lm_head, output_dtype="float32", name="logits")
                 token = F.nn.greedy_sample(logits, name="next_token")
                 self.function("main", (ids, entry_gdn, entry_paged), (logits, token, gdn, paged))
 

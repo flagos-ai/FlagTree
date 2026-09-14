@@ -1,0 +1,47 @@
+{% macro helpers(call) %}
+{{ call.symbol }}__weight_layout = tl.constexpr(tle.gpu.BlockEncoding(
+    [1, 1], [1, 32], [{{ call.consumer_warps }}, 1], [1, 0],
+))
+{{ call.symbol }}__n_layout = tl.constexpr(tle.gpu.SlicedEncoding(1, {{ call.symbol }}__weight_layout.value))
+{{ call.symbol }}__k_layout = tl.constexpr(tle.gpu.SlicedEncoding(0, {{ call.symbol }}__weight_layout.value))
+
+@triton.jit
+def {{ call.symbol }}__load_weight(stage):
+    n = tle.gpu.set_layout(tl.arange(0, {{ call.block_n }}), {{ call.symbol }}__n_layout)[:, None]
+    k = tle.gpu.set_layout(tl.arange(0, {{ call.block_k }}), {{ call.symbol }}__k_layout)[None, :]
+    pointers = tle.gpu.local_ptr(stage, (tl.full(({{ call.block_n }}, {{ call.block_k }}), 0, tl.int32), n, k), [{{ call.block_n }}, {{ call.block_k }}])
+    return tle.gpu.set_layout(tl.load(pointers), {{ call.symbol }}__weight_layout).to(tl.float32)
+{% endmacro %}
+
+{% macro producer(call, entry, route_outer) %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}__producer({{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}):
+{{ entry.mesh_coordinates() }}
+{% for descriptor in call.weight_descriptors %}
+    _fm_{{ descriptor.field }}_map = {{ descriptor.parameter }}{{ " + shard_index * 128" if descriptor.table else "" }}
+    tle.gpu.tensor_map_fenceproxy_acquire(_fm_{{ descriptor.field }}_map)
+{% endfor %}
+{% set writer = call.pipeline_channels[0].writer_parameter %}
+    _fm_step = tl.full((), 0, tl.int32)
+    for _fm_token in tl.range(0, {{ call.tokens }}):
+{% if route_outer %}
+        for _fm_route in tl.range(0, {{ call.routes }}):
+            for _fm_n_start in tl.range(0, {{ call.active_n }}, {{ call.block_n }}):
+{% else %}
+        for _fm_n_start in tl.range(0, {{ call.active_n }}, {{ call.block_n }}):
+            for _fm_route in tl.range(0, {{ call.routes }}):
+{% endif %}
+                if {{ call.slot_active }}:
+                    _fm_expert = tl.load({{ call.pointers.router_expert_ids }} + ({{ call.expert_offset }})).to(tl.int32)
+                    for _fm_k_start in tl.range(0, {{ call.active_k }}, {{ call.block_k }}):
+                        _fm_slot = {{ writer }}.acquire(_fm_step)
+{% for descriptor in call.weight_descriptors %}
+                        _fm_{{ descriptor.field }}_descriptor = tle.gpu.reinterpret_tensor_map(_fm_{{ descriptor.field }}_map, _fm_slot.{{ descriptor.field }})
+                        tle.gpu.copy(_fm_{{ descriptor.field }}_descriptor, _fm_slot.{{ descriptor.field }},
+                                     [1, {{ call.block_n }}, {{ call.block_k }}],
+                                     [_fm_expert, _fm_n_start.to(tl.int32), _fm_k_start.to(tl.int32)], eviction_policy="evict_first")
+{% endfor %}
+                        {{ writer }}.commit(_fm_step)
+                        _fm_step += 1
+    {{ writer }}.close(_fm_step)
+{% endmacro %}

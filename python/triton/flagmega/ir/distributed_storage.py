@@ -12,6 +12,7 @@ class DistributedBufferStorageKind(str, Enum):
     COMPACT_PER_OWNER = "compact_per_owner"
     CANONICAL_GLOBAL = "canonical_global"
     REPLICATED_LOCAL = "replicated_local"
+    EXCLUSIVE_LOCAL = "exclusive_local"
 
     @property
     def exposes_logical_coordinates(self) -> bool:

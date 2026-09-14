@@ -13,10 +13,12 @@ def test_write_to_reference_view_is_a_write_to_the_function_parameter(reusable):
     plan = fm.verify_buffer_plan(module)
     function = module.execution_function_map["main"]
     state_id = "entry_state" if reusable else "state"
-    state = set(dict(plan.function_map["main"].parameters)[state_id])
-    # The convolution dispatch declares the aggregate state read_write; the
-    # alias closure must reach both parent fields, not just the view's SSA ids.
-    assert state <= set(function.attrs["written_parameters"])
+    convolution, recurrent = dict(plan.function_map["main"].parameters)[state_id]
+    # Follow the selected field through RefSlice to its parent allocation.
+    # The untouched recurrent field must not become a write dependency.
+    assert convolution in function.attrs["written_parameters"]
+    assert recurrent not in function.attrs["written_parameters"]
     if reusable:
         for call in fm.execution_calls_of(function):
-            assert state <= set(call.writes)
+            assert convolution in call.writes
+            assert recurrent not in call.writes

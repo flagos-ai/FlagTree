@@ -4,6 +4,7 @@
 import pytest
 
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.ntt.sparse_experts import SparseExpertsDownCombine
 from python.test.flagmega.codegen.triton.kernels.sparse_experts.helpers import stage_module, execute_and_reference
 
 
@@ -14,8 +15,8 @@ def test_down_device_respects_route_order_and_rounding(tmp_path, dtype, round_pr
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
-    module = stage_module(SparseExpertsDown, dtype=dtype, round_projection=round_projection,
-                          round_weighted_output=round_weighted_output)
+    module = stage_module(SparseExpertsDownCombine, dtype=dtype, round_projection=round_projection,
+                          round_weighted_output=round_weighted_output, output_dtype=dtype, cast_output=True)
     output, expected, _ = execute_and_reference(module, tmp_path, torch)
     torch.testing.assert_close(output, expected, rtol=0, atol=0)
 
@@ -25,8 +26,7 @@ def test_down_device_preserves_vector_and_output_sharding(tmp_path, packed, dist
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
-    module = stage_module(SparseExpertsDown, packed=packed, distribution=distribution, hidden=80, round_projection=True,
-                          round_weighted_output=True)
+    module = stage_module(SparseExpertsDown, packed=packed, distribution=distribution, hidden=80, round_projection=True)
     output, expected, _ = execute_and_reference(module, tmp_path, torch)
     torch.testing.assert_close(output, expected, rtol=0, atol=0)
 

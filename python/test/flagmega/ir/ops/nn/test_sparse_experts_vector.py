@@ -24,8 +24,9 @@ def test_packed_sparse_experts_inputs_and_outputs_match_scalar_evaluation(defini
             inputs = tuple(
                 self.input(parameter.name, types[parameter.name]) for parameter in definition.input_parameters)
             packed = fm.F.tensors.pack(inputs[0], lanes=lanes, axis=-1)
-            output = definition.construct(packed, *inputs[1:], output_dtype=output_dtype, name="experts")
-            result = fm.F.tensors.unpack(output, axis=-1, name="unpacked")
+            attrs = {"output_dtype": output_dtype} if definition is SparseExpertsGateUp else {}
+            output = definition.construct(packed, *inputs[1:], **attrs, name="experts")
+            result = fm.F.tensors.unpack(output, axis=-1, name="unpacked") if attrs else output
             self.function("main", inputs, (result, ))
 
     packed = Packed(dialect="nn", stage="imported", entry="main").build()
@@ -33,6 +34,9 @@ def test_packed_sparse_experts_inputs_and_outputs_match_scalar_evaluation(defini
     values = values_for(scalar)
     evaluator = TorchEvaluator(DictWeightResolver({}))
     torch.testing.assert_close(evaluator.run(packed, values)[0], evaluator.run(scalar, values)[0], rtol=0, atol=0)
+    if definition is SparseExpertsDown:
+        assert packed.node_map["experts"].type.dtype is fm.DType.FLOAT32
+        return
     pattern = getattr(pm.F.nn, f"is_{definition.functional_name}")(output_dtype=output_dtype)
     assert pm.try_match_root(packed.node_map["experts"], pattern, packed) is not None
     wrong = getattr(pm.F.nn, f"is_{definition.functional_name}")(output_dtype="bfloat16")

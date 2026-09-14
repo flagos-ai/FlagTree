@@ -56,5 +56,9 @@ class ShardedView(OpDefinition):
     def cost(cls, node: Node) -> OpCost:
         return OpCost(notes=("read-only-sharded-alias",))
 
+    @classmethod
+    def zero_copy_input_index(cls, inputs, attrs, return_type):
+        return 0 if len(inputs) == 1 and sharded_view_error(inputs[0].type, return_type) is None else None
+
 
 __all__ = ["ShardedView"]

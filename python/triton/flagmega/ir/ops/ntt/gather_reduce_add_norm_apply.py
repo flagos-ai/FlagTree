@@ -30,8 +30,8 @@ from triton.flagmega.ir.ops.nn._norm import (
     unpack_default_vector,
 )
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
-from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import (
-    can_materialize_matmul_partial,
+from triton.flagmega.ir.ops.ntt.add_norm_stats import (
+    can_materialize_sum_partial,
 )
 from triton.flagmega.ir.type_pattern import is_tensor
 
@@ -103,7 +103,7 @@ class GatherReduceAddNormApply(OpDefinition):
             raise IRSchemaError(
                 "GatherReduceAddNormApply requires a non-empty Sum-partial input."
             )
-        if not can_materialize_matmul_partial(source_type, value_type):
+        if not can_materialize_sum_partial(source_type, value_type):
             raise IRSchemaError(
                 f"GatherReduceAddNormApply cannot materialize {source_type!r} "
                 f"into {value_type!r}."

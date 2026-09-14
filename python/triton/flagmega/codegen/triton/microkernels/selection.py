@@ -29,6 +29,11 @@ class TritonMicroKernelSelectionPolicy:
         self.registry = registry
 
     def propose(self, module: IRModule, target) -> IRModule:
+        from triton.flagmega.passes.tir.plan_storage_alignments import satisfies_alignment_contract
+        from triton.flagmega.passes.tir.bufferize.alignment import validate_storage_alignments
+
+        # Selection consumes the storage ABI; it never plans or strengthens it.
+        validate_storage_alignments(module)
         existing = {point.id for point in module.selection_points}
         points: list[SelectionPoint] = []
         for function in module.kernel_callable_map.values():
@@ -49,11 +54,25 @@ class TritonMicroKernelSelectionPolicy:
             ))
             if proposal is None:
                 continue
+            candidates = []
+            for candidate in proposal.candidates:
+                implementation = target.triton_implementation_model.implementation(candidate.id)
+                if implementation is None:
+                    raise IRVerificationError(f"Unknown microkernel candidate {candidate.id!r}.", stage=module.stage)
+                if satisfies_alignment_contract(function, implementation):
+                    candidates.append(candidate)
+            if not candidates:
+                raise IRVerificationError(f"No microkernel satisfies @{function.name}'s storage alignment contract.",
+                                          stage=module.stage)
+            default = proposal.default_candidate
+            if default not in {candidate.id for candidate in candidates}:
+                family = target.triton_implementation_model.implementation(candidates[0].id).family
+                default = target.triton_implementation_model.choose_default(family, tuple(c.id for c in candidates))
             points.append(SelectionPoint(
                 point_id,
                 "tir_microkernel",
-                proposal.candidates,
-                proposal.default_candidate,
+                tuple(candidates),
+                default,
                 owner=None,
             ))
         return target.add_default_selections(
@@ -64,6 +83,9 @@ class TritonMicroKernelSelectionPolicy:
         )
 
     def apply(self, module: IRModule, target) -> IRModule:
+        from triton.flagmega.passes.tir.bufferize.alignment import validate_storage_alignments
+
+        validate_storage_alignments(module)
         point_map = {point.id: point for point in module.selection_points}
         selection_map = module.selection_map
         functions = []

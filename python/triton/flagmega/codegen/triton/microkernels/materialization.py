@@ -9,6 +9,7 @@ from triton.flagmega.ir.bufferization import MemSpan, PhysicalBuffer
 from triton.flagmega.ir.dim_expr import dim
 from triton.flagmega.ir.tir import Buffer, KernelDispatch, PrimFunction
 from triton.flagmega.ir.tir.microkernel_selection import TIRMicroKernelSelection
+from triton.flagmega.ir.tir.transfer_pipeline_validation import verify_transfer_sources
 
 
 def validate_transfer_pipeline(
@@ -18,26 +19,7 @@ def validate_transfer_pipeline(
     *,
     stage: str,
 ) -> None:
-    pipeline = selection.transfer_pipeline
-    if pipeline is None:
-        return
-    for channel in pipeline.channels:
-        for argument_index in channel.source_argument_indices:
-            if argument_index >= len(dispatch.arguments):
-                raise IRVerificationError(
-                    f"TIR microkernel {selection.family}/{selection.variant} for "
-                    f"@{function.name} transfer channel {channel.name!r} declares "
-                    f"invalid source operand {argument_index}.",
-                    stage=stage,
-                )
-            argument = dispatch.arguments[argument_index]
-            if argument not in dispatch.reads or argument in dispatch.writes:
-                raise IRVerificationError(
-                    f"TIR microkernel {selection.family}/{selection.variant} for "
-                    f"@{function.name} transfer channel {channel.name!r} declares "
-                    f"non-read-only source operand {argument_index} ({argument!r}).",
-                    stage=stage,
-                )
+    verify_transfer_sources(function, dispatch, selection, stage=stage)
 
 
 def materialize_shared_workspace_buffers(

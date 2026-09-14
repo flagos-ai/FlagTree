@@ -35,7 +35,11 @@ class SATBufferAllocator:
         self.maximum_time_seconds = float(maximum_time_seconds)
 
     def allocate(self, lifetimes: tuple[BufferLifetime, ...], memory_space: MemorySpace, *,
-                 avoid_reuse: tuple[tuple[str, str], ...] = ()) -> AllocationResult:
+                 avoid_reuse: tuple[tuple[str, str], ...] = (),
+                 bytes_budget: int = 0) -> AllocationResult:
+        if isinstance(bytes_budget, bool) or not isinstance(bytes_budget, int) or bytes_budget < 0:
+            raise IRVerificationError(
+                f"The reuse-avoidance byte budget must be a non-negative integer, got {bytes_budget!r}.")
         pairs = validate_problem(lifetimes, memory_space, avoid_reuse)
         deadline = perf_counter() + self.maximum_time_seconds
         nonempty = tuple(value for value in lifetimes if value.nbytes)
@@ -44,7 +48,7 @@ class SATBufferAllocator:
 
         seed, seed_peak = first_fit_placement(nonempty, memory_space)
         capacity = usable_capacity(memory_space)
-        upper_bound = min(seed_peak, capacity)
+        upper_bound = min(seed_peak + bytes_budget, capacity)
         events = {}
         for value in nonempty:
             events[value.live_start] = events.get(value.live_start, 0) + value.nbytes
@@ -95,7 +99,15 @@ class SATBufferAllocator:
         selected_peak = solver.value(pool_end)
         offsets = {name: solver.value(value[1]) for name, value in variables.items()}
         objectives = [AllocationObjective("high_water", high_water_status, selected_peak, solver.best_objective_bound)]
-        model.add(pool_end == selected_peak)
+        if bytes_budget:
+            # Trade bounded extra bytes for fewer inter-owner hazards: keep the
+            # peak within the budget above its minimum, minimize reuse
+            # conflicts first, then reclaim the smallest peak that achieves
+            # that conflict count.  With a zero budget the pinned-peak
+            # behavior below is bit-identical to the original contract.
+            model.add(pool_end <= selected_peak + bytes_budget)
+        else:
+            model.add(pool_end == selected_peak)
 
         # Unlike sum(addresses), this objective corresponds to proven
         # inter-owner hazards. All objectives share one allocation budget.
@@ -130,6 +142,17 @@ class SATBufferAllocator:
                 if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                     offsets = {name: solver.value(value[1]) for name, value in variables.items()}
                     bound = solver.best_objective_bound
+                    if bytes_budget:
+                        conflict_count = solver.value(sum(overlap_vars))
+                        model.add(sum(overlap_vars) == conflict_count)
+                        model.minimize(pool_end)
+                        solver = self._solver(deadline)
+                        peak_status = solver.solve(model)
+                        if peak_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                            offsets = {name: solver.value(value[1]) for name, value in variables.items()}
+                            selected_peak = solver.value(pool_end)
+                        elif peak_status != cp_model.UNKNOWN:
+                            self._require_solution(peak_status, solver, memory_space)
                 elif status != cp_model.UNKNOWN:
                     self._require_solution(status, solver, memory_space)
                 # UNKNOWN retains the already proven feasible SAT placement,

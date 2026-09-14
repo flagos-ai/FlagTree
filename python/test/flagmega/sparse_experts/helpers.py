@@ -11,7 +11,9 @@ from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
 def operand_types(*, dtype="bfloat16", tokens=2, hidden=16, intermediate=12, experts=4, routes=2):
     shapes = {
         "q": (dtype, (tokens, hidden)),
+        "dispatched": (dtype, (tokens, routes, hidden)),
         "activations": (dtype, (tokens, routes, intermediate)),
+        "projections": ("float32", (tokens, routes, hidden)),
         "router_expert_ids": ("int32", (tokens, routes)),
         "router_expert_weights": ("float32", (tokens, routes)),
         "gate_weight": (dtype, (experts, intermediate, hidden)),

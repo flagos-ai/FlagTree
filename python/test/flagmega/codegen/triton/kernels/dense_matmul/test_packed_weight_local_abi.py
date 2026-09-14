@@ -1,6 +1,8 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+import pytest
+
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
     _dense_matmul_call,
     _dense_matmul_glu_call,
@@ -113,6 +115,26 @@ def test_compact_owner_packed_weight_uses_owner_base_and_local_coordinates():
     assert "dense_local_k_offsets" in call["weight_offset"]
     assert "dense_global_n" not in call["weight_offset"]
     assert "dense_global_k" not in call["weight_offset"]
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_dense_rows_preserve_owner_coordinates_and_active_tail(canonical):
+    raw = _raw_call(_typed_weight_abi(compact_per_owner=False))
+    for binding in (raw["inputs"][0], raw["outputs"][0]):
+        abi = binding["buffers"][0]["abi"]
+        abi["logical_shape"] = (3, abi["logical_shape"][1])
+        abi["local_capacity_shape"] = (2, abi["local_capacity_shape"][1])
+        abi["active_shape_expressions"] = ("tl.minimum(2, tl.maximum(0, 3 - shard_coord_0 * 2))",
+                                             abi["active_shape_expressions"][1])
+        abi["logical_coordinate_expressions"] = ("local_coord_0 + shard_coord_0 * 2",
+                                                  abi["logical_coordinate_expressions"][1])
+        abi["coordinate_space"] = "canonical_global" if canonical else "local"
+    call = _dense_matmul_call(raw)
+    assert call["local_m_capacity"] == 2
+    for name in ("source_offset", "result_offset", "source_active", "result_active"):
+        assert "dense_local_m" in call[name]
+    assert ("shard_y" in call["source_offset"]) == canonical
+    assert "shard_y" in call["source_active"]
 
 
 def test_canonical_packed_weight_uses_storage_base_and_global_coordinates():

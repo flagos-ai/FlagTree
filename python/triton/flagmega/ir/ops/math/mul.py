@@ -6,19 +6,19 @@ from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.model import IRType, Node
-from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.ops.core import (
     OpCost,
-    OpDefinition,
     input_parameter,
     op_definition,
     tensor_elements,
     tensor_nbytes,
 )
+from triton.flagmega.ir.ops.pointwise import SameTypePointwiseOp
+from triton.flagmega.ir.type_pattern import is_tensor
 
 
 @op_definition("math.mul", namespace="math", functional_name="mul", display_name="Math.Mul")
-class Mul(OpDefinition):
+class Mul(SameTypePointwiseOp):
     const_evaluable = True
     lhs = input_parameter(is_tensor())
     rhs = input_parameter(is_tensor())

@@ -1,6 +1,6 @@
 # flagmega-kernel: qkv_parallel_linear/packed_gemv_smem_pipeline platform=generic
 {# nncase qkv_parallel_linear/simt_fma_smem_pipeline: owner-local packed
-   [N,K] FMA reduction, TMA RHS staging and consumer Shared LHS.
+   [N,K] FMA reduction, TMA RHS staging and cached or direct consumer LHS.
    The target owns geometry; this variant does not require a matrix ISA.
    The ordinary stage helper stays inline across the op's noinline boundary. #}
 {% import "entrypoints/_common.py.jinja" as entry with context %}
@@ -21,7 +21,10 @@
 
 
 @triton.jit
-def {{ call.symbol }}__consumer_stage(weight_stage, lhs_stage, qkv_k_tile):
+def {{ call.symbol }}__consumer_stage(weight_stage, qkv_input, qkv_k_tile):
+{% if call.direct_lhs %}
+{{ entry.mesh_coordinates() }}
+{% endif %}
     qkv_local_n = tle.gpu.set_layout(
         tl.arange(0, {{ call.block_n }}), {{ call.symbol }}__output_layout,
     )[:, None]
@@ -52,14 +55,22 @@ def {{ call.symbol }}__consumer_stage(weight_stage, lhs_stage, qkv_k_tile):
         qkv_weight_pointer = tl.max_contiguous(qkv_weight_pointer, [1, 8])
         qkv_weight_pointer = tl.multiple_of(qkv_weight_pointer, [1, 16])
         qkv_weight = tle.gpu.set_layout(tl.load(qkv_weight_pointer), {{ call.symbol }}__weight_layout).to(tl.float32)
+{% if call.direct_lhs %}
+        qkv_local_k_offsets = qkv_k_tile * {{ call.block_k }} + qkv_k_group * {{ call.reduction_group }} + qkv_k_vector
+        qkv_source = tle.gpu.set_layout(tl.load(
+            qkv_input + ({{ call.source_offset }}),
+            mask=(qkv_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }}), other=0,
+        ), {{ call.symbol }}__lhs_layout).to(tl.float32)
+{% else %}
         qkv_lhs_pointer = tle.gpu.local_ptr(
-            lhs_stage,
+            qkv_input,
             (
                 tl.full(({{ call.reduction_group }},), 0, tl.int32),
                 qkv_k_tile * {{ call.block_k }} + qkv_k_group * {{ call.reduction_group }} + qkv_k_vector,
             ),
         )
         qkv_source = tle.gpu.set_layout(tl.load(qkv_lhs_pointer), {{ call.symbol }}__lhs_layout).to(tl.float32)
+{% endif %}
         qkv_partial += qkv_weight * qkv_source[None, :]
     return qkv_partial
 
@@ -77,17 +88,19 @@ def {{ call.symbol }}__producer(
     qkv_descriptor_entry = {{ call.weight_descriptor }}
 {% endif %}
     tle.gpu.tensor_map_fenceproxy_acquire(qkv_descriptor_entry)
-    for qkv_k_tile in tl.static_range(0, {{ call.num_k_tiles }}):
-        qkv_slot = {{ writer }}.acquire(qkv_k_tile)
-        qkv_descriptor = tle.gpu.reinterpret_tensor_map(qkv_descriptor_entry, qkv_slot.weight)
-        tle.gpu.copy(
-            qkv_descriptor, qkv_slot.weight,
-            [{{ call.descriptor_block_shape | join(", ") }}],
-            [{{ call.descriptor_offsets | join(", ") }}],
-            eviction_policy="evict_first",
-        )
-        {{ writer }}.commit(qkv_k_tile)
-    {{ writer }}.close({{ call.num_k_tiles }})
+    for qkv_n_tile in tl.range(0, {{ call.num_n_tiles }}):
+        for qkv_k_tile in tl.{{ "range" if call.direct_lhs else "static_range" }}(0, {{ call.num_k_tiles }}):
+            qkv_step = qkv_n_tile * {{ call.num_k_tiles }} + qkv_k_tile
+            qkv_slot = {{ writer }}.acquire(qkv_step)
+            qkv_descriptor = tle.gpu.reinterpret_tensor_map(qkv_descriptor_entry, qkv_slot.weight)
+            tle.gpu.copy(
+                qkv_descriptor, qkv_slot.weight,
+                [{{ call.descriptor_block_shape | join(", ") }}],
+                [{{ call.descriptor_offsets | join(", ") }}],
+                eviction_policy="evict_first",
+            )
+            {{ writer }}.commit(qkv_step)
+    {{ writer }}.close({{ call.num_n_tiles * call.num_k_tiles }})
 
 
 @triton.jit(noinline=True)
@@ -96,6 +109,9 @@ def {{ call.symbol }}__consumer(
 ):
 {{ entry.mesh_coordinates() }}
 {% set reader = call.pipeline_channels[0].reader_parameter %}
+{% if call.direct_lhs %}
+{% set lhs_stage = call.source %}
+{% else %}
 {% set lhs_stage = call.pipeline_consumer_workspaces[0].parameter %}
     qkv_local_k_offsets = tle.gpu.set_layout(
         tl.arange(0, {{ call.local_k_capacity }})[None, :], {{ call.symbol }}__input_copy_layout,
@@ -107,28 +123,33 @@ def {{ call.symbol }}__consumer(
         [1, {{ call.local_k_capacity }}], is_async=True,
     )
     tle.gpu.async_commit_group()
-    qkv_partial = tle.gpu.set_layout(
-        tl.zeros(({{ call.block_n }}, {{ call.reduction_group }}), tl.float32),
-        {{ call.symbol }}__weight_layout,
-    )
-    for qkv_k_tile in tl.static_range(0, {{ call.num_k_tiles }}):
-        qkv_ready = {{ reader }}.wait(qkv_k_tile)
-        if qkv_k_tile == 0:
-            tle.gpu.async_wait_group(0)
-            tl.debug_barrier()
-        qkv_partial += {{ call.symbol }}__consumer_stage(qkv_ready.slot.weight, {{ lhs_stage }}, qkv_k_tile)
-        {{ reader }}.release(qkv_k_tile)
-    qkv_accumulator = tl.sum(qkv_partial, axis=1)
-    qkv_logical_n = tle.gpu.set_layout(tl.arange(0, {{ call.block_n }}), {{ call.symbol }}__output_layout)
+{% endif %}
+    for qkv_n_tile in tl.range(0, {{ call.num_n_tiles }}):
+        qkv_partial = tle.gpu.set_layout(
+            tl.zeros(({{ call.block_n }}, {{ call.reduction_group }}), tl.float32),
+            {{ call.symbol }}__weight_layout,
+        )
+        for qkv_k_tile in tl.{{ "range" if call.direct_lhs else "static_range" }}(0, {{ call.num_k_tiles }}):
+            qkv_step = qkv_n_tile * {{ call.num_k_tiles }} + qkv_k_tile
+            qkv_ready = {{ reader }}.wait(qkv_step)
+{% if not call.direct_lhs %}
+            if qkv_n_tile == 0 and qkv_k_tile == 0:
+                tle.gpu.async_wait_group(0)
+                tl.debug_barrier()
+{% endif %}
+            qkv_partial += {{ call.symbol }}__consumer_stage(qkv_ready.slot.weight, {{ lhs_stage }}, qkv_k_tile)
+            {{ reader }}.release(qkv_step)
+        qkv_accumulator = tl.sum(qkv_partial, axis=1)
+        qkv_logical_n = qkv_n_tile * {{ call.block_n }} + tle.gpu.set_layout(tl.arange(0, {{ call.block_n }}), {{ call.symbol }}__output_layout)
 {% for output in call.outputs %}
-    qkv_local_n_offsets = qkv_logical_n - {{ output.projection_start }}
-    tl.store(
-        {{ output.result }} + ({{ output.result_offset }}),
-        qkv_accumulator.to({{ call.output_type }}),
-        mask=(qkv_logical_n >= {{ output.projection_start }})
-             & (qkv_logical_n < {{ output.projection_start + output.local_n_capacity }})
-             & ({{ output.active }}),
-    )
+        qkv_local_n_offsets = qkv_logical_n - {{ output.projection_start }}
+        tl.store(
+            {{ output.result }} + ({{ output.result_offset }}),
+            qkv_accumulator.to({{ call.output_type }}),
+            mask=(qkv_logical_n >= {{ output.projection_start }})
+                 & (qkv_logical_n < {{ output.projection_start + output.local_n_capacity }})
+                 & ({{ output.active }}),
+        )
 {% endfor %}
 
 

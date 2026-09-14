@@ -38,6 +38,7 @@ from triton.flagmega.ir.tir.sequential import Sequential
 from triton.flagmega.ir.tir.shared_workspace_descriptor import TIRSharedWorkspaceDescriptor
 from triton.flagmega.ir.tir.synchronization_range import SynchronizationRange
 from triton.flagmega.ir.tir.transfer_pipeline_channel import TIRTransferPipelineChannel
+from triton.flagmega.ir.tir.inplace_transfer_partition import TIRInplaceTransferPartition
 from triton.flagmega.ir.tir.transfer_pipeline_contract import TIRTransferPipelineContract
 from triton.flagmega.ir.tir.value_ref import ValueRef
 from triton.flagmega.ir.tir.workspace_requirement import WorkspaceLifetime, WorkspaceRequirement
@@ -68,6 +69,7 @@ class T:
     shared_workspace_descriptor = TIRSharedWorkspaceDescriptor
     synchronization_range = SynchronizationRange
     transfer_pipeline_channel = TIRTransferPipelineChannel
+    inplace_transfer_partition = TIRInplaceTransferPartition
     auxiliary_consumer_contract = TIRAuxiliaryConsumerContract
     transfer_pipeline_contract = TIRTransferPipelineContract
     workspace_requirement = WorkspaceRequirement

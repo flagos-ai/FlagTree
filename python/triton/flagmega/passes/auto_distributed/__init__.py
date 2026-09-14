@@ -18,7 +18,7 @@ from triton.flagmega.passes.auto_distributed.inference_providers import (
 )
 from triton.flagmega.passes.auto_distributed.norm_providers import (
     BindNormStatsCandidateProvider,
-    MatMulNormStatsCombineCandidateProvider,
+    AddNormStatsCandidateProvider,
     NormApplyCandidateProvider,
     NormStatsCandidateProvider,
 )
@@ -74,7 +74,7 @@ __all__ = [
     "PackedMatMulCandidateProvider",
     "AutoDistributedPass",
     "BindNormStatsCandidateProvider",
-    "MatMulNormStatsCombineCandidateProvider",
+    "AddNormStatsCandidateProvider",
     "CandidateBucket",
     "CanonicalStorageReshardRealizationPolicy",
     "ReshardSite",

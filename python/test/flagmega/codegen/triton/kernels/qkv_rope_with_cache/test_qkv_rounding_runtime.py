@@ -31,6 +31,8 @@ def _module(round_before_scale, rotary_dim=None, head_dim=64):
             result = fm.F.nn.qkv_rope_with_cache(
                 fm.F.builtin.tuple(q, k, v), scale, scale, bias, bias,
                 cos, sin, state, layer, advance,
+                fm.F.nn.norm_stats(q, axis=-1, use_mean=False),
+                fm.F.nn.norm_stats(k, axis=-1, use_mean=False),
                 q_axis=-1, q_epsilon=1e-6, q_use_mean=False,
                 k_axis=-1, k_epsilon=1e-6, k_use_mean=False,
                 q_round_before_scale=round_before_scale,

@@ -70,3 +70,17 @@ def test_simt_qkv_rejects_mismatched_weight_owners(packed_qkv_simt_pipeline_modu
 
 def test_simt_qkv_does_not_accept_split_k_partial_profile(packed_qkv_mma_pipeline_module):
     assert IMPLEMENTATION not in _ids(_context(packed_qkv_mma_pipeline_module))
+
+
+@pytest.mark.parametrize("limit,accepted", [(32, True), (64, True), (31, False), (0, False), (True, False)])
+def test_simt_output_capacity_bound_is_enforced(packed_qkv_simt_pipeline_module, limit, accepted):
+    context = _context(packed_qkv_simt_pipeline_module)
+    model = context.implementation_model
+    original = model.implementation(IMPLEMENTATION)
+    contract = dict(original.contract)
+    contract.pop("required_local_output_extent")
+    contract["max_local_output_extent"] = limit
+    bounded = replace(original, contract=contract)
+    model = replace(model, implementations=tuple(bounded if i.id == IMPLEMENTATION else i for i in model.implementations))
+    context = replace(context, implementation_model=model)
+    assert (IMPLEMENTATION in _ids(context)) is accepted

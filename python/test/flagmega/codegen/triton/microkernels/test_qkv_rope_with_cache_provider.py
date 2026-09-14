@@ -34,6 +34,8 @@ def _context(*, attrs=None, arguments=None, outputs=("result_0", "result_1")):
         "state",
         "layer_id",
         "advance_sequence",
+        "q_stats",
+        "k_stats",
     )
     attrs = attrs or {
         "q_axis": 2,
@@ -124,7 +126,7 @@ def test_provider_selects_injected_generic_decode_implementation():
         (
             None,
             ("qkv",),
-            "requires 10 arguments",
+            "requires 12 arguments",
         ),
     ),
 )

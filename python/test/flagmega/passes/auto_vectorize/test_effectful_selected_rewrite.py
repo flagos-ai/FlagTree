@@ -40,6 +40,8 @@ class _CacheUpdatingQKVRoPE(fm.Module):
             state,
             layer,
             advance,
+            fm.F.nn.norm_stats(q, axis=-1, use_mean=False),
+            fm.F.nn.norm_stats(k, axis=-1, use_mean=False),
             q_axis=-1,
             q_epsilon=1e-6,
             q_use_mean=False,

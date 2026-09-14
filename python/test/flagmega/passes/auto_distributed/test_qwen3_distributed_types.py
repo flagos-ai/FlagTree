@@ -23,7 +23,7 @@ def _run_post_packing(module, target):
         "post-function-boundary-pack-propagation",
         "thread-norm-stats",
         "decompose-paged-attention",
-        "form-matmul-norm-stats-combine",
+        "form-add-norm-stats",
     ):
         module = get_stage(stage_name).run(module, target)
     return module
@@ -49,13 +49,21 @@ def test_qwen3_h800_uses_nncase_two_dimensional_block_mesh():
     gate_up = result.node_map["mlp_gate_up"].type
     assert isinstance(gate_up, fm.DistributedType)
     assert gate_up.axis_policies[-1].hierarchy_axes == (0, 1)
-    down = result.node_map["mlp_down.vectorized.compute"].type
+    down_node = result.node_map["mlp_down.vectorized.compute"]
+    down = down_node.type
     assert isinstance(down, fm.DistributedType)
-    assert all(
-        isinstance(policy, fm.SBPBroadCast)
-        for policy in down.axis_policies
-    )
-    assert down.partial == fm.SBP.partial((0, 1))
+    # Joint epilogue/publication costs can favor output-N owners over an
+    # all-K split. Check the distribution contract, not one optimizer pick.
+    split_axes = {
+        axis for policy in down.axis_policies if isinstance(policy, fm.SBPSplit)
+        for axis in policy.hierarchy_axes
+    }
+    partial_axes = set(down.partial.axes) if down.partial is not None else set()
+    assert split_axes.isdisjoint(partial_axes)
+    assert split_axes | partial_axes == {0, 1}
+    assert fm.get_definition(down_node.op).infer_type(
+        tuple(result.node_map[value] for value in down_node.inputs), down_node.attrs
+    ) == down
 
 
 def test_post_attention_norm_replication_avoids_internal_widening_view():
@@ -205,17 +213,12 @@ def test_qwen3_decomposed_attention_preserves_qkv_output_sharding():
         fm.SBP.split_block_cyclic((0, 1), 1),
         fm.SBP.split_block_cyclic((0, 1), 1),
     )
-    for node_id in (
-        "updated_state.qkv_rope_with_cache.vectorized.q",
-        "updated_state.qkv_rope_with_cache.vectorized.k",
-        "updated_state.qkv_rope_with_cache.vectorized.v",
-    ):
-        value_type = result.node_map[node_id].type
-        assert isinstance(value_type, fm.DistributedType)
-        assert all(
-            isinstance(policy, fm.SBPBroadCast)
-            for policy in value_type.axis_policies
-        ), node_id
+    fused = result.node_map["updated_state.qkv_rope_with_cache"]
+    assert len(fused.inputs) == 12
+    for stats_id in fused.inputs[10:12]:
+        stats_type = result.node_map[stats_id].type
+        assert isinstance(stats_type, fm.DistributedType)
+        assert stats_type.partial is None
     qkv_input = result.node_map[
         "updated_state.qkv_rope_with_cache.vectorized.qkv"
     ].type

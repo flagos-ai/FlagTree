@@ -17,11 +17,11 @@ def distributed_types(*, down=False, token=B, intermediate=B, output=B, vector=T
     types = operand_types(tokens=4, hidden=64, intermediate=32)
     dtype = fm.vector_type("bfloat16", (2, 2)) if vector else fm.DType.BFLOAT16
     if vector:
-        types["q"] = fm.tensor_type(dtype, (4, 16))
+        types["dispatched"] = fm.tensor_type(dtype, (4, 2, 16))
         types["activations"] = fm.tensor_type(dtype, (4, 2, 8))
     scalar_intermediate = fm.scale_split_units(intermediate, 4, 1) if vector and intermediate != B else intermediate
     policies = {
-        "q": (token, B),
+        "dispatched": (token, B, B),
         "activations": (token, B, intermediate),
         "router_expert_ids": (token, B),
         "router_expert_weights": (token, B),
@@ -57,12 +57,11 @@ def test_down_matches_intermediate_splits_and_materializes_sum_partial(vector):
     output = fm.SBP.split_block_cyclic((1, ), 8)
     types = distributed_types(down=True, intermediate=intermediate, output=output, vector=vector)
     result = infer(SparseExpertsDown, types)
-    expected_output = fm.SBP.split_block_cyclic((1, ), 2) if vector else output
-    assert result.axis_policies == (B, expected_output)
+    assert result.axis_policies == (B, B, output)
     assert result.partial == fm.SBP.partial((0, ))
 
 
-@pytest.mark.parametrize("rounding", ["round_projection", "round_weighted_output"])
+@pytest.mark.parametrize("rounding", ["round_projection"])
 def test_down_rejects_split_k_that_crosses_per_route_rounding(rounding):
     types = distributed_types(down=True, intermediate=fm.SBP.split_contiguous((0, )))
     with pytest.raises(IRSchemaError, match="rounding.*split-K"):
@@ -72,18 +71,18 @@ def test_down_rejects_split_k_that_crosses_per_route_rounding(rounding):
 def test_down_per_route_rounding_accepts_token_and_output_sharding():
     token, output = fm.SBP.split_contiguous((0, )), fm.SBP.split_contiguous((1, ))
     types = distributed_types(down=True, token=token, output=output)
-    result = infer(SparseExpertsDown, types, round_weighted_output=True)
-    assert result.axis_policies == (token, output)
+    result = infer(SparseExpertsDown, types, round_projection=True)
+    assert result.axis_policies == (token, B, output)
     assert result.partial is None
 
 
 @pytest.mark.parametrize("definition,parameter,policies", [
-    (SparseExpertsGateUp, "q", (B, fm.SBP.split_contiguous((0, )))),
+    (SparseExpertsGateUp, "dispatched", (B, B, fm.SBP.split_contiguous((0, )))),
     (SparseExpertsGateUp, "router_expert_ids", (B, fm.SBP.split_contiguous((0, )))),
     (SparseExpertsGateUp, "gate_weight", (fm.SBP.split_contiguous((0, )), B, B)),
     (SparseExpertsGateUp, "up_weight", (B, fm.SBP.split_contiguous((0, )), B)),
     (SparseExpertsGateUp, "gate_input_scale", (fm.SBP.split_contiguous((0, )), B)),
-    (SparseExpertsDown, "router_expert_weights", (fm.SBP.split_contiguous((0, )), B)),
+    (SparseExpertsDown, "router_expert_ids", (fm.SBP.split_contiguous((0, )), B)),
     (SparseExpertsDown, "down_weight", (B, B, fm.SBP.split_contiguous((0, )))),
     (SparseExpertsDown, "down_proj_scale", (fm.SBP.split_contiguous((0, )), B)),
 ])

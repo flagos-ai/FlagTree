@@ -19,8 +19,6 @@ def device_descriptor_request(request, workspaces):
     `kind` still describes coordinate semantics: single maps use global
     coordinates; owner tables rebase them. `storage` describes only the ABI.
     """
-    if request["kind"] != "single":
-        return request
     block_shape = tuple(int(value) for value in request["block_shape"])
     item_size = _DTYPE_ITEM_SIZES[str(request["dtype"])]
     encodings = set()
@@ -46,6 +44,8 @@ def device_descriptor_request(request, workspaces):
     box_shape = tuple(min(value, 256) for value in block_shape)
     if width:
         box_shape = (*box_shape[:-1], width // item_size)
+    if request["kind"] == "table":
+        return {**request, "block_shape": box_shape, "swizzle_mode": {0: 0, 32: 1, 64: 2, 128: 3}[width]}
     return {
         **request, "storage": "device", "box_shape": box_shape,
         "swizzle_mode": {0: 0, 32: 1, 64: 2, 128: 3}[width],

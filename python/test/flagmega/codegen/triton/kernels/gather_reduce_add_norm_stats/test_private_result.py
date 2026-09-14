@@ -34,7 +34,7 @@ def test_hybrid_partial_combine_reads_private_broadcast_residual_and_publishes_c
             local = fm.F.distributed.force_boxing(source, distributed)
             partial = fm.F.math.reduce_sum(local, axes=(2, ), keep_dims=False)
             addend = fm.F.distributed.force_boxing(residual, broadcast, name="private_residual")
-            combined = fm.F.ntt.matmul_norm_stats_combine(partial, addend, axis=-1, use_mean=False, name="combine")
+            combined = fm.F.ntt.add_norm_stats(partial, addend, axis=-1, use_mean=False, name="combine")
             value = fm.F.tensors.get_item(combined, 0)
             stats = fm.F.tensors.get_item(combined, 1)
             if private_result:

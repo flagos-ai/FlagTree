@@ -35,7 +35,7 @@ def test_resume_before_vector_contract_lowering_does_not_skip_into_tir(monkeypat
             value = self.input("value", fm.tensor_type("bfloat16", (1, 16)))
             self.function("main", (value, ), (fm.F.math.silu(value), ))
 
-    original = Graph(dialect="ntt", stage="matmul_norm_stats_lowered", entry="main").build()
+    original = Graph(dialect="ntt", stage="add_norm_stats_lowered", entry="main").build()
 
     def unexpected_tir(*args, **kwargs):
         pytest.fail("Resume skipped LowerVectorizationContracts and entered TIR selection")

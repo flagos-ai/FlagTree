@@ -10,7 +10,7 @@ from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.dim_expr import try_div_exactly
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import SBPSplit, scale_split_units
-from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorType, tensor_type
+from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorLayout, TensorType, tensor_type
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
@@ -96,7 +96,7 @@ class Bitcast(OpDefinition):
                         "unit for the requested element type."
                     )
                 policies[last] = scaled
-        return DistributedType(result, tuple(policies), source_type.placement)
+        return DistributedType(result, tuple(policies), source_type.placement, exclusive=source_type.exclusive)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -149,6 +149,14 @@ class Bitcast(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         return OpCost(flops=0, bytes_read=0, bytes_written=0, notes=("bitcast-view",))
+
+    @classmethod
+    def zero_copy_input_index(cls, inputs, attrs, return_type):
+        if len(inputs) != 1 or any(
+            tensor_of(value).layout != TensorLayout() for value in (inputs[0].type, return_type)
+        ):
+            return None
+        return 0
 
 
 __all__ = ["Bitcast"]

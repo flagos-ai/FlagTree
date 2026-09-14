@@ -7,6 +7,7 @@ from typing import Mapping, Sequence
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.distributed_inference import placement_of, tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast, SBPSplit
+from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.model import DistributedType, Effect, IRType, Node, SBP, TupleType, effect
 from triton.flagmega.ir.ops.core import (
     OpCost,
@@ -29,7 +30,7 @@ class GatedDeltaNetConvolution(OpDefinition):
     """Apply depthwise state convolution to an already projected QKV."""
 
     qkv = input_parameter(is_tensor() & has_rank(2))
-    state = input_parameter(is_ref(), memory_effect="read_write")
+    state = input_parameter(is_ref(), memory_effect=MemoryEffect.for_fields(convolution=MemoryEffect.READ_WRITE))
     # Checkpoints store depthwise Conv1D weights as [channels, 1, kernel].
     # Keep the operand tensor-generic here because packing may move channel or
     # kernel factors into VectorType lanes without changing the operation.

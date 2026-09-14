@@ -9,10 +9,11 @@ from typing import Mapping, Sequence
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.dim_expr import DimConst
 from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of, tensor_of
-from triton.flagmega.ir.distributed_type import SBPBroadCast
+from triton.flagmega.ir.ops.nn._rotary_distribution import has_remote_rotary_pairs
 from triton.flagmega.ir.model import DistributedType, IRType, Node
 from triton.flagmega.ir.ops.core import (
     OpCost,
+    OpCostFactors,
     OpDefinition,
     attribute_parameter,
     input_parameter,
@@ -21,6 +22,7 @@ from triton.flagmega.ir.ops.core import (
     tensor_nbytes,
 )
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
+from triton.flagmega.ir.ops.nn.norm_stats import _local_cost_tensor
 
 
 @op_definition("nn.rope", namespace="nn", functional_name="rope", display_name="NN.RoPE")
@@ -87,11 +89,10 @@ class RoPE(OpDefinition):
         assert isinstance(sine_type, DistributedType)
         if any(item.partial is not None for item in (value_type, cosine_type, sine_type)):
             raise IRSchemaError("RoPE requires materialized distributed operands.")
-        if not isinstance(value_type.axis_policies[-1], SBPBroadCast):
-            raise IRSchemaError(
-                "RoPE rotated dimension cannot be split without an explicit exchange.")
         if not all_broadcast(cosine_type) or not all_broadcast(sine_type):
-            raise IRSchemaError("RoPE rotary tables must be broadcast for head-sharded input.")
+            raise IRSchemaError("RoPE rotary tables must be broadcast.")
+        if has_remote_rotary_pairs(value_type, attrs.get("rotary_dim")):
+            raise IRSchemaError("RoPE requires owner-local rotary pairs; reshard before RoPE.")
         return value_type
 
     @classmethod
@@ -126,6 +127,19 @@ class RoPE(OpDefinition):
             bytes_read=None if size is None else size * 3,
             bytes_written=size,
         )
+
+    @classmethod
+    def cost_factors(cls, inputs, attrs, return_type):
+        output = _local_cost_tensor(return_type)
+        count = tensor_elements(output)
+        size = tensor_nbytes(output)
+        if count is None or size is None:
+            return None
+        table_bytes = sum(count * tensor_of(value.type).dtype.itemsize
+                          // getattr(tensor_of(value.type).dtype, "lane_count", 1) for value in inputs[1:])
+        return OpCostFactors(elementwise_operations=count * 3,
+                             block_local_memory_load_bytes=size * 2 + table_bytes,
+                             block_local_memory_store_bytes=size)
 
 
 __all__ = ["RoPE"]

@@ -15,7 +15,7 @@ def _flagmega_add_norm_stats_rms(
         value = (
             tl.load(source + offsets, mask=mask, other=0.0)
             + tl.load(residual + offsets, mask=mask, other=0.0)
-        ).to(tl.bfloat16)
+        ).to(destination.dtype.element_ty)
         tl.store(destination + offsets, value, mask=mask)
         value_fp32 = value.to(tl.float32)
         square_sum += tl.where(mask, value_fp32 * value_fp32, 0.0)

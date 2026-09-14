@@ -129,6 +129,7 @@ class MemoryEffect:
     access_domain: MemoryAccessDomain = MemoryAccessDomain()
     access_partition: MemoryAccessPartition = MemoryAccessPartition()
     owner_access: MemoryOwnerAccess = MemoryOwnerAccess.LOCAL
+    field_effects: tuple[tuple[str, MemoryEffect], ...] = ()
 
     NONE: ClassVar[MemoryEffect]
     READ: ClassVar[MemoryEffect]
@@ -153,6 +154,32 @@ class MemoryEffect:
         object.__setattr__(self, "access_domain", _domain(self.access_domain))
         object.__setattr__(self, "access_partition", _partition(self.access_partition))
         object.__setattr__(self, "owner_access", MemoryOwnerAccess(self.owner_access))
+        fields = tuple(self.field_effects)
+        if any(not isinstance(name, str) or not name or not isinstance(value, MemoryEffect) for name, value in fields):
+            raise IRSchemaError("Reference field effects require non-empty names and typed effects.")
+        if len({name for name, _ in fields}) != len(fields):
+            raise IRSchemaError("Reference field effects require unique names.")
+        if fields:
+            aggregate = MemoryAccessMode.NONE
+            for _, value in fields:
+                aggregate |= value.mode
+            if self.mode != aggregate:
+                raise IRSchemaError("Reference field effects disagree with their aggregate mode.")
+            if (self.scope is not MemoryAccessScope.INFERRED or self.kind is not MemoryEffectKind.DIRECT
+                    or self.access_domain != MemoryAccessDomain() or self.access_partition != MemoryAccessPartition()
+                    or self.owner_access is not MemoryOwnerAccess.LOCAL):
+                raise IRSchemaError("Reference field refinements must be declared on the field effects.")
+        object.__setattr__(self, "field_effects", tuple(sorted(fields)))
+
+    @classmethod
+    def for_fields(cls, **effects: MemoryEffect) -> MemoryEffect:
+        """Specify Ref fields independently; omitted fields have no access."""
+        mode = MemoryAccessMode.NONE
+        for value in effects.values():
+            if not isinstance(value, cls):
+                raise IRSchemaError("Reference field effects must be typed MemoryEffects.")
+            mode |= value.mode
+        return cls(mode, field_effects=tuple(effects.items()))
 
     @property
     def value(self) -> str:
@@ -169,11 +196,18 @@ class MemoryEffect:
         ``MemoryEffectUtility.GetPhysicalBufferAccessMode``.
         """
 
+        if self.field_effects:
+            mode = MemoryAccessMode.NONE
+            for _, effect in self.field_effects:
+                mode |= effect.physical_mode
+            return mode
         if self.kind is MemoryEffectKind.REDUCTION_ACCUMULATOR:
             return self.mode & MemoryAccessMode.WRITE
         return self.mode
 
     def in_fixed_block(self, block_index: int) -> MemoryEffect:
+        if self.field_effects:
+            return self.for_fields(**{name: value.in_fixed_block(block_index) for name, value in self.field_effects})
         return MemoryEffect(
             self.mode, self.scope, self.kind,
             MemoryAccessDomain.fixed_block(block_index),
@@ -181,19 +215,24 @@ class MemoryEffect:
         )
 
     def partitioned_by_argument(self, argument_index: int) -> MemoryEffect:
+        if self.field_effects:
+            return self.for_fields(**{name: value.partitioned_by_argument(argument_index)
+                                     for name, value in self.field_effects})
         return MemoryEffect(
             self.mode, self.scope, self.kind, self.access_domain,
             MemoryAccessPartition.by_argument(argument_index), self.owner_access,
         )
 
     def across_partial_owners(self) -> MemoryEffect:
+        if self.field_effects:
+            return self.for_fields(**{name: value.across_partial_owners() for name, value in self.field_effects})
         return MemoryEffect(
             self.mode, self.scope, self.kind, self.access_domain,
             self.access_partition, MemoryOwnerAccess.PARTIAL_GROUP,
         )
 
     def to_data(self) -> dict[str, object]:
-        return {
+        result = {
             "mode": self.mode.name.lower(),
             "scope": self.scope.value,
             "kind": self.kind.value,
@@ -201,6 +240,9 @@ class MemoryEffect:
             "access_partition": self.access_partition.to_data(),
             "owner_access": self.owner_access.value,
         }
+        if self.field_effects:
+            result["field_effects"] = {name: value.to_data() for name, value in self.field_effects}
+        return result
 
     @classmethod
     def from_data(cls, data: Mapping[str, object]) -> MemoryEffect:
@@ -208,6 +250,9 @@ class MemoryEffect:
         raw_partition = data.get("access_partition", {})
         if not isinstance(raw_domain, Mapping) or not isinstance(raw_partition, Mapping):
             raise IRSchemaError("MemoryEffect domain and partition must be mappings.")
+        fields = data.get("field_effects", {})
+        if not isinstance(fields, Mapping) or any(not isinstance(value, Mapping) for value in fields.values()):
+            raise IRSchemaError("MemoryEffect field effects must be mappings.")
         return cls(
             str(data.get("mode", "none")),
             MemoryAccessScope(str(data.get("scope", "inferred"))),
@@ -215,7 +260,30 @@ class MemoryEffect:
             MemoryAccessDomain.from_data(raw_domain),
             MemoryAccessPartition.from_data(raw_partition),
             MemoryOwnerAccess(str(data.get("owner_access", "local"))),
+            tuple((name, cls.from_data(value)) for name, value in fields.items()),
         )
+
+
+def expand_memory_effect(value_type, effect: MemoryEffect) -> tuple[MemoryEffect, ...]:
+    """Resolve typed effects in the same leaf order as the buffer ABI."""
+    from triton.flagmega.ir.model import DistributedType, NoneType, RefType, TensorType, TupleType
+
+    if isinstance(value_type, RefType):
+        fields = dict(effect.field_effects)
+        missing = fields.keys() - {name for name, _ in value_type.fields}
+        if missing:
+            raise IRSchemaError(f"Memory effect names unknown Ref fields: {sorted(missing)}.")
+        return tuple(leaf for name, field in value_type.fields
+                     for leaf in expand_memory_effect(field, fields.get(name, MemoryEffect.NONE) if fields else effect))
+    if effect.field_effects:
+        raise IRSchemaError("Field memory effects require a Ref type.")
+    if isinstance(value_type, TupleType):
+        return tuple(leaf for field in value_type.fields for leaf in expand_memory_effect(field, effect))
+    if isinstance(value_type, NoneType):
+        return ()
+    if isinstance(value_type, (TensorType, DistributedType)):
+        return (effect,)
+    raise IRSchemaError(f"Cannot expand a memory effect for {type(value_type).__name__}.")
 
 
 def memory_effect(value: MemoryEffect | MemoryAccessMode | str) -> MemoryEffect:
@@ -264,4 +332,5 @@ __all__ = [
     "MemoryEffectKind",
     "MemoryOwnerAccess",
     "memory_effect",
+    "expand_memory_effect",
 ]

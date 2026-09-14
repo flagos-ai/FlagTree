@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Analysis and the one-way freeze boundary for compile-time constants."""
+"""Constness analysis and explicit outlining/inlining of constant recipes."""
 
 from __future__ import annotations
 
@@ -54,7 +54,9 @@ class ConstnessAnalysis:
 
     @staticmethod
     def analyze(module: IRModule) -> ConstnessResult:
-        require_constants_open(module, "ConstnessAnalysis")
+        # Valid on frozen modules too: ``builtin.const_asset`` leaves are
+        # constant sources, and recipe interiors are opaque by construction.
+        constant_phase(module)
         constants: set[str] = set()
         for node in module.nodes:
             definition = get_definition(node.op)
@@ -276,12 +278,13 @@ def _is_materializable_constant_type(value_type) -> bool:
 
 
 def thaw_constant_islands(module: IRModule) -> IRModule:
-    """Restore frozen recipes for an ABI pass, without restoring decisions.
+    """Inline closed recipes without restoring their retired decisions.
 
     Selection points removed by :func:`freeze_constant_islands` remain
-    removed.  This operation is intentionally paired with an immediate
-    refreeze after a post-selection pass has added a new offline constant
-    materialization.
+    removed. Distribution only selects layouts outside the recipes; inlining
+    afterwards lets ordinary offline passes absorb its constant adapters.
+    Asset ids and physical types are preserved, including edited checkpoints
+    whose recipe-local names overlap the main graph or another recipe.
     """
 
     module = verify_module(module)
@@ -307,10 +310,16 @@ def thaw_constant_islands(module: IRModule) -> IRModule:
         if node.op == "builtin.const_asset"
     }
     recipe_map = {recipe.id: recipe for recipe in module.constant_recipes}
-    first_asset: dict[str, str] = {}
-    for node in module.nodes:
-        if node.op == "builtin.const_asset":
-            first_asset.setdefault(str(node.attrs["recipe"]), node.id)
+    occupied = set(module.node_map)
+
+    def claim(recipe_id: str, node_id: str) -> str:
+        identity = node_id
+        ordinal = 0
+        while identity in occupied:
+            identity = f"{recipe_id}.{node_id}" + (f".{ordinal}" if ordinal else "")
+            ordinal += 1
+        occupied.add(identity)
+        return identity
 
     emitted: set[str] = set()
     nodes: list[Node] = []
@@ -319,23 +328,38 @@ def thaw_constant_islands(module: IRModule) -> IRModule:
             nodes.append(node)
             continue
         recipe_id = str(node.attrs["recipe"])
-        if recipe_id in emitted or first_asset.get(recipe_id) != node.id:
+        if recipe_id in emitted:
             continue
         recipe = recipe_map[recipe_id]
+        outputs = {output: assets[(recipe_id, output)] for output in recipe.outputs}
+        identities = {
+            original.id: (
+                outputs[original.id].id
+                if original.id in outputs and outputs[original.id].type == original.type
+                else claim(recipe_id, original.id)
+            )
+            for original in recipe.nodes
+        }
         for recipe_node in recipe.nodes:
-            if recipe_node.id not in recipe.outputs:
-                nodes.append(recipe_node)
-                continue
-            asset = assets[(recipe_id, recipe_node.id)]
-            metadata = {
-                key: value
-                for key, value in asset.metadata.items()
-                if key != "frozen_constant"
-            }
+            asset = outputs.get(recipe_node.id)
+            metadata = dict(recipe_node.metadata)
+            if asset is not None and asset.type == recipe_node.type:
+                metadata.update({key: value for key, value in asset.metadata.items() if key != "frozen_constant"})
             nodes.append(replace(
                 recipe_node,
-                metadata={**dict(recipe_node.metadata), **metadata},
+                id=identities[recipe_node.id],
+                inputs=tuple(identities[value] for value in recipe_node.inputs),
+                metadata=metadata,
             ))
+        for output, asset in outputs.items():
+            if asset.type != recipe.node_map[output].type:
+                # A distribution annotation cannot be copied onto an internal
+                # op: its operands still have the original recipe-local types.
+                nodes.append(Node(
+                    asset.id, "distributed.boxing", (identities[output],), asset.type,
+                    attrs={"new_type": asset.type},
+                    metadata={key: value for key, value in asset.metadata.items() if key != "frozen_constant"},
+                ))
         emitted.add(recipe_id)
     if emitted != set(recipe_map):
         raise IRVerificationError(

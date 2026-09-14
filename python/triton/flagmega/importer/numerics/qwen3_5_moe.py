@@ -16,6 +16,7 @@ from triton.flagmega.importer.numerics import VLLM_AE10_INDUCTOR_LEVEL3
 from triton.flagmega.importer.numerics.gdn_prefill import emit_gdn_prefill
 from triton.flagmega.ir import DType, TupleType, tensor_type, verify_module
 from triton.flagmega.ir.ops.nn.gdn_recurrent_core import GatedDeltaNetRecurrentCore
+from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
 from triton.flagmega.rules.neutral._utility import make_node
 
 
@@ -40,16 +41,19 @@ def apply_qwen35_moe_vllm_profile(module):
     # storage dtype carries the source's table rounding across the call ABI.
     rotary_parameters = {name for node in module.nodes if node.op == "nn.rope"
                          for name in node.inputs[1:] if original[name].op == "builtin.var"}
-    shared_gate_ids = set()
+    shared_gate_ids, shared_expert_ids = set(), set()
     for name in decoder_names:
         for suffix, op in (("_input_norm", "nn.norm_apply"), ("_attention_residual", "math.add"),
                            ("_moe_output", "math.add"), ("_output", "math.add")):
             if name + suffix not in original or original[name + suffix].op != op:
                 raise ImporterError(f"Unexpected Qwen3.5 decoder topology at {name + suffix!r}.")
         scaled = original[original[name + "_moe_output"].inputs[1]]
-        broadcast = original[scaled.inputs[1]] if scaled.op == "math.mul" else None
-        gate = original[
-            broadcast.inputs[0]] if broadcast is not None and broadcast.op == "tensors.broadcast_to" else None
+        if scaled.op == SparseExperts.op_name:
+            shared_expert_ids.add(scaled.id)
+            gate = original[SparseExperts.router_expert_weights.read(scaled.inputs)]
+        else:
+            broadcast = original[scaled.inputs[1]] if scaled.op == "math.mul" else None
+            gate = original[broadcast.inputs[0]] if broadcast is not None and broadcast.op == "tensors.broadcast_to" else None
         if gate is None or gate.op != "math.sigmoid":
             raise ImporterError(f"Unexpected Qwen3.5 shared-expert gate topology in {name!r}.")
         shared_gate_ids.add(gate.id)
@@ -100,6 +104,12 @@ def apply_qwen35_moe_vllm_profile(module):
         elif source.op == "nn.rotary_embedding":
             result = emit(source.op, source.id, inputs,
                           {**source.attrs, "output_dtype": "bfloat16"}, source.metadata)
+        elif source.op == "math.matmul" and source.attrs.get("output_data_type") == "float32":
+            # Only the explicit compatibility profile restores the source's
+            # BF16 projection store before FP32 router/logits consumers.
+            projected = emit(source.op, source.id + ".projection_bf16", inputs,
+                             {**source.attrs, "output_data_type": "bfloat16"}, source.metadata)
+            result = wide(projected, source.id)
         elif source.op == "nn.dense_matmul_glu":
             gate = emit("math.matmul", source.id + ".gate", inputs[:2], {"transpose_b": True})
             up = emit("math.matmul", source.id + ".up", (inputs[0], inputs[2]), {"transpose_b": True})
@@ -107,9 +117,10 @@ def apply_qwen35_moe_vllm_profile(module):
             product = emit("math.mul", source.id + ".product", (activated, wide(up, source.id + ".up_wide")))
             result = cast(product, DType.BFLOAT16, source.id)
         elif source.op == "nn.sparse_experts":
+            shared = source.id in shared_expert_ids
             result = emit(
                 source.op, source.id, inputs, {
-                    **source.attrs, "round_projections": True, "round_activation": True, "round_down_projection": False,
+                    **source.attrs, "round_projections": True, "round_activation": not shared, "round_down_projection": shared,
                     "round_weighted_output": True, "intermediate_dtype": "bfloat16", "output_dtype": "bfloat16"
                 }, source.metadata)
         elif source.id in {name + "_attention_residual" for name in decoder_names}:

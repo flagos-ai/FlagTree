@@ -8,6 +8,7 @@ import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine
 from triton.flagmega.passes.auto_distributed import DistributedCandidateContext, DistributedCandidateProviderRegistry
 from triton.flagmega.passes.auto_distributed.policy import NttDistributionPolicy
 from triton.flagmega.targets.pyntt_split import PyNttDistributedSplitCandidateProvider
@@ -17,9 +18,9 @@ from python.test.flagmega.sparse_experts.helpers import build_module, operand_ty
 def context_for(definition, *, rounded=False, vector=False, mesh=(2, 2)):
     types = operand_types(tokens=4, hidden=64, intermediate=32)
     if vector:
-        types["q"] = fm.tensor_type(fm.vector_type("bfloat16", (2, 2)), (4, 16))
+        types["dispatched"] = fm.tensor_type(fm.vector_type("bfloat16", (2, 2)), (4, 2, 16))
         types["activations"] = fm.tensor_type(fm.vector_type("bfloat16", (2, 2)), (4, 2, 8))
-    attrs = {"round_weighted_output": rounded} if definition is SparseExpertsDown else {"round_projections": rounded}
+    attrs = {"round_projection": rounded} if definition is SparseExpertsDown else {"round_projections": rounded}
     module = build_module(definition, types=types, attrs=attrs)
     node = module.node_map["experts"]
     return DistributedCandidateContext(module, node, fm.Placement(mesh, "xyz"[:len(mesh)], "b" * len(mesh)),
@@ -53,7 +54,7 @@ def test_every_sparse_expert_candidate_agrees_with_type_inference(definition, ro
             if parameter.name.endswith("_weight"):
                 assert value.axis_policies[0] == fm.SBP.broadcast()
             if parameter.name.startswith("router_"):
-                assert value.axis_policies[1] == fm.SBP.broadcast()
+                assert value.axis_policies[:2] == candidate.return_type.axis_policies[:2]
             if parameter.name.endswith("_scale"):
                 assert all(policy == fm.SBP.broadcast() for policy in value.axis_policies)
 
@@ -88,5 +89,17 @@ def test_down_rounding_keeps_output_parallelism_on_the_whole_two_dimensional_mes
     candidates = candidates_for(context)
     assert all(candidate.return_type.partial is None for candidate in candidates)
     assert any(
-        isinstance(candidate.return_type.axis_policies[1], fm.SBPSplit)
-        and candidate.return_type.axis_policies[1].hierarchy_axes == (0, 1) for candidate in candidates)
+        isinstance(candidate.return_type.axis_policies[2], fm.SBPSplit)
+        and candidate.return_type.axis_policies[2].hierarchy_axes == (0, 1) for candidate in candidates)
+
+
+def test_combine_retains_nondefault_policy_of_partial_projection():
+    module = build_module(SparseExpertsCombine, types=operand_types(tokens=4, hidden=64), attrs={"output_dtype": "bfloat16"})
+    node = module.node_map["experts"]
+    mesh = fm.Placement((2, 2), "yx", "bb")
+    available = [(module.node_map[key].type,) for key in node.inputs]
+    available[0] = (fm.DistributedType(available[0][0],
+                                     (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0,), 3)),
+                                     mesh, fm.SBP.partial((1,))),)
+    context = DistributedCandidateContext(module, node, mesh, tuple(available), PyNttDistributedSplitCandidateProvider(128))
+    assert any(candidate.input_types[0] == available[0][0] for candidate in candidates_for(context))

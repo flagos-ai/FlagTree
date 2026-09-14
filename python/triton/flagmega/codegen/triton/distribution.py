@@ -81,6 +81,11 @@ def dense_matmul_distribution_contract(
     axes = tuple(partial.axes)
     _require_reduction_split(lhs, lhs_k_axis, axes, node.id, "lhs")
     _require_reduction_split(rhs, rhs_k_axis, axes, node.id, "rhs")
+    if lhs.axis_policies[lhs_k_axis].hierarchy_axes != rhs.axis_policies[rhs_k_axis].hierarchy_axes:
+        raise CodegenError(
+            f"Dense MatMul {node.id!r} reduction axis must be mapped in the same "
+            "placement order on both operands."
+        )
     output_m_axes = _split_axes(output.axis_policies[0])
     lhs_m_axes = _split_axes(lhs.axis_policies[lhs_m_axis])
     if output_m_axes != lhs_m_axes:
@@ -137,7 +142,7 @@ def _require_reduction_split(
     policy = value.axis_policies[reduction_axis]
     if (
         not isinstance(policy, SBPSplit)
-        or tuple(policy.hierarchy_axes) != partial_axes
+        or set(policy.hierarchy_axes) != set(partial_axes)
     ):
         raise CodegenError(
             f"Dense MatMul {node_id!r} {role} reduction axis must be split over "

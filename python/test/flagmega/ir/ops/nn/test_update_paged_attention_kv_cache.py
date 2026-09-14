@@ -97,19 +97,21 @@ def test_cache_update_accepts_head_sharded_slots_and_keeps_reference_identity():
     assert result == state_type
 
 
-def test_cache_update_rejects_a_split_head_dimension():
-    placement = fm.Placement((8,), "b", "b")
+@pytest.mark.parametrize("partial", [False, True])
+def test_cache_update_accepts_materialized_split_head_dimension(partial):
+    placement = fm.Placement((8, 2), "yx", "bb")
     slots_type = fm.DistributedType(
         fm.tensor_type("bfloat16", (1, 8, 128)),
         (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 16)),
         placement,
+        partial=fm.SBP.partial((1,)) if partial else None,
     )
     state_type = PagedAttentionStateConfig(
         1, 8, 128, block_size=4, num_blocks=2
     ).ref_type
 
-    with pytest.raises(IRSchemaError, match="head-dimension axis"):
-        fm.get_definition("nn.update_paged_attention_kv_cache").infer_type(
+    def infer():
+        return fm.get_definition("nn.update_paged_attention_kv_cache").infer_type(
             (
                 _typed("slots", slots_type),
                 _typed("state", state_type),
@@ -118,6 +120,12 @@ def test_cache_update_rejects_a_split_head_dimension():
             ),
             {"cache_kind": "key", "layout": ("seq", "head", "dim")},
         )
+
+    if partial:
+        with pytest.raises(IRSchemaError, match="materialized slots"):
+            infer()
+    else:
+        assert infer() == state_type
 
 
 def _typed(name: str, value_type: fm.IRType) -> fm.Node:
