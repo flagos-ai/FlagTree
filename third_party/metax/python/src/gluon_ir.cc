@@ -133,6 +133,7 @@ struct GluonLayouts {
   py::handle SliceLayout;
   py::handle DistributedLinearLayout;
   py::handle DotOperandLayout;
+  py::handle MACAMmaLayout;
   py::handle NVMMADistributedLayout;
   py::handle TensorMemoryScalesLayout;
   py::handle TensorMemoryLayout;
@@ -157,6 +158,7 @@ struct GluonLayouts {
     DistributedLinearLayout =
         py::object(layouts.attr("DistributedLinearLayout")).release();
     DotOperandLayout = py::object(layouts.attr("DotOperandLayout")).release();
+    MACAMmaLayout = py::object(layouts.attr("MACAMmaLayout")).release();
     NVMMADistributedLayout =
         py::object(layouts.attr("NVMMADistributedLayout")).release();
     TensorMemoryScalesLayout =
@@ -229,6 +231,14 @@ py::object layoutToGluon(Attribute layout) {
         std::vector<unsigned>{mma.getVersionMajor(), mma.getVersionMinor()},
         toStdVector(mma.getWarpsPerCTA()), toStdVector(mma.getInstrShape()),
         cgaBases);
+  } else if (auto macaMma = dyn_cast<ttg::MACAMmaEncodingAttr>(layout)) {
+    auto cgaBases = getCgaLayoutBases(macaMma.getCTALayout());
+    return layouts.MACAMmaLayout(
+        macaMma.getVersionMajor(), macaMma.getVersionMinor(),
+        toStdVector(macaMma.getWarpsPerCTA()),
+        toStdVector(macaMma.getElementsMNK()), macaMma.getColMajor(),
+        macaMma.getIsATrans(), macaMma.getIsBTrans(),
+        toStdVector(macaMma.getElementsStride()), cgaBases);
   } else if (auto nvmma = dyn_cast<ttg::NVMMASharedEncodingAttr>(layout)) {
     auto ctaLayout = nvmma.getCTALayout();
     auto cgaBases = getCgaLayoutBases(ctaLayout);
@@ -402,6 +412,20 @@ PLUGIN_EXPORT void init_gluon_ir(py::module &&m) {
                  ctx, version[0], version[1], warpsPerCta, ctaLayout,
                  instrShape);
            })
+      .def("get_maca_mma_layout",
+           [](GluonOpBuilder &self, unsigned versionMajor,
+              unsigned versionMinor, std::vector<unsigned> &warpsPerCta,
+              std::vector<unsigned> &elementsMNK, unsigned colMajor,
+              bool isATrans, bool isBTrans,
+              std::vector<unsigned> &elementsStride,
+              std::vector<std::vector<int32_t>> &cgaBases) -> Attribute {
+             auto ctx = self.getContext();
+             unsigned rank = warpsPerCta.size();
+             auto ctaLayout = buildCtaLayoutAttr(ctx, cgaBases, rank);
+             return self.getChecked<ttg::MACAMmaEncodingAttr>(
+                 ctx, versionMajor, versionMinor, warpsPerCta, elementsMNK,
+                 colMajor, ctaLayout, isATrans, isBTrans, elementsStride);
+           })
       .def("get_amd_mfma_layout",
            [](GluonOpBuilder &self, unsigned version,
               std::vector<unsigned> &warpsPerCta,
@@ -560,6 +584,15 @@ PLUGIN_EXPORT void init_gluon_ir(py::module &&m) {
       .def("create_async_copy_global_to_local",
            [](GluonOpBuilder &self, Value smem, Value pointer, Value mask,
               Value other, tt::CacheModifier cacheModifier,
+              tt::EvictionPolicy evictionPolicy, bool isVolatile,
+              bool intrinsic) {
+             self.create<ttg::AsyncCopyGlobalToLocalOp>(
+                 pointer, smem, mask, other, cacheModifier, evictionPolicy,
+                 isVolatile, intrinsic);
+           })
+      .def("create_async_copy_global_to_local",
+           [](GluonOpBuilder &self, Value smem, Value pointer, Value mask,
+              Value other, tt::CacheModifier cacheModifier,
               tt::EvictionPolicy evictionPolicy, bool isVolatile) {
              self.create<ttg::AsyncCopyGlobalToLocalOp>(
                  pointer, smem, mask, other, cacheModifier, evictionPolicy,
@@ -599,6 +632,13 @@ PLUGIN_EXPORT void init_gluon_ir(py::module &&m) {
       .def("create_local_load",
            [](GluonOpBuilder &self, Type resultTy, Value memDesc) -> Value {
              return self.create<ttg::LocalLoadOp>(resultTy, memDesc);
+           })
+      .def("create_local_load",
+           [](GluonOpBuilder &self, Type resultTy, Value memDesc,
+              bool intrinsic, bool isConstantOffs, int mmaMode) -> Value {
+             return self.create<ttg::LocalLoadOp>(
+                 resultTy, memDesc, Value(), intrinsic,
+                 isConstantOffs, mmaMode);
            })
       .def("create_bsm_perm",
            [](GluonOpBuilder &self, Type resultTy, Value src) -> Value {

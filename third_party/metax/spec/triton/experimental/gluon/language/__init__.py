@@ -72,6 +72,7 @@ from ._core import (
     convert_layout,
     device_assert,
     device_print,
+    dot,
     dot_fma,
     expand_dims,
     full,
