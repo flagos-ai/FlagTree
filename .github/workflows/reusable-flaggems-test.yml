@@ -137,5 +137,27 @@ jobs:
       - name: Cleanup FlagGems Repo
         if: always()
         shell: bash
+        env:
+          REPO_DIR: ${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}
         run: |
-          rm -rf "${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}" || true
+          set -u
+
+          if [[ -z "${REPO_DIR}" || "${REPO_DIR}" == "/" || "${REPO_DIR}" == "/root" || "${REPO_DIR}" == "/data" ]]; then
+            echo "REPO_DIR is empty or unsafe (${REPO_DIR}), skip cleanup"
+            exit 0
+          fi
+
+          for i in 1 2 3; do
+            if rm -rf "${REPO_DIR}"; then
+              echo "Cleanup succeeded on attempt $i"
+              exit 0
+            fi
+            if [[ $i -lt 3 ]]; then
+              echo "Cleanup attempt $i failed, retrying in 30s..."
+              sleep 30
+            fi
+          done
+
+          echo "::warning::Failed to remove ${REPO_DIR} after 3 attempts, dumping contents"
+          ls -la "${REPO_DIR}" 2>/dev/null | head -50 || true
+          exit 0
