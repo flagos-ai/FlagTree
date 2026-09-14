@@ -80,8 +80,6 @@ class FlagtreeConfigs:
         self.default_backends = tuple(_backends)
         self.flagtree_submodule_dir = os.path.join(self.flagtree_root_dir, "third_party")
         self.activated_module = self._activate_device_module()
-        if self.flagtree_backend == "tsingmicro":
-            self.default_backends = self.default_backends + ("flir", )
 
     def _activate_device_module(self, suffix=".py"):
         backend = self.flagtree_backend or "default"
@@ -279,7 +277,14 @@ class DownloadManager:
             except Exception:
                 current_retry_count -= 1
                 residue = NetConfig.max_retry - current_retry_count
-                print(f"\n [Note]: [{residue}] retry to downloading and extracting {self.current_url}")
+                if current_retry_count == 0:
+                    break
+                # Transient network errors (connection reset, BOS hiccups) are
+                # common for the multi-GB toolchain artifacts; retrying them
+                # back-to-back just burns all attempts within seconds.
+                delay = min(120, 10 * 2**(residue - 1))
+                print(f"\n [Note]: [{residue}] retry to download {self.current_url} in {delay}s...")
+                time.sleep(delay)
         if current_retry_count == 0:
             self.set_status(status='fail', content=None)
             raise RuntimeError("The download failed, probably due to network problems!")

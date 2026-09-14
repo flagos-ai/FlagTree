@@ -16,6 +16,14 @@ class OpBuilder;
 // result of an operation too.
 std::optional<int64_t> getIntAttr(const OpFoldResult ofr);
 
+// Return the static upper bound carried by ofr: either its integer
+// attribute, the value of a plain arith.constant index, or the constant
+// result of an affine.min map (the tile size when the tile divides the
+// iteration range). nullopt when no static bound can be recovered.
+// Mirrors triton-shared Analysis/OpFoldResultUtils.cpp (internal d116bdf4);
+// vendored here because FlagTree does not build third_party/triton_shared.
+std::optional<int64_t> getStaticUpperBound(const OpFoldResult ofr);
+
 // Return if ofr contains a constant zero, either represented by an integer
 // attribute or a constant value.
 bool hasConstZero(const OpFoldResult ofr);

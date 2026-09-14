@@ -47,6 +47,7 @@ macro(flagtree_configure_options)
     add_definitions(-D__AMD__)
     add_definitions(-D__FLAGTREE_REORDER_LOOP_LOADS__)
     add_definitions(-D__FLAGTREE_RLC_ENHANCE__)
+    add_definitions(-D__FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__)
     add_definitions(-D__FLAGTREE_CONCAT_DOT_OPERAND__)
     list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_CONCAT_DOT_OPERAND__)
   elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
@@ -285,6 +286,25 @@ macro(flagtree_python_link_libraries)
   link_directories(${Python3_LIBRARY_DIRS})
   link_libraries(${Python3_LIBRARIES})
   add_link_options(${Python3_LINK_OPTIONS})
+endmacro()
+
+
+macro(flagtree_configure_flir_dependency)
+  if(FLAGTREE_BACKEND STREQUAL "tsingmicro")
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
+      message(FATAL_ERROR "The ${FLAGTREE_BACKEND} backend requires third_party/flir")
+    endif()
+
+    # TsingMicro only consumes FLIR's C++ targets; do not build its Python/CPU plugin.
+    set(TRITON_SHARED_BUILD_CPU_BACKEND OFF)
+    list(REMOVE_ITEM TRITON_CODEGEN_BACKENDS "flir")
+    if(NOT TARGET TritonSharedUtils)
+      add_subdirectory(
+        "${PROJECT_SOURCE_DIR}/third_party/flir"
+        "${PROJECT_BINARY_DIR}/third_party/flir"
+      )
+    endif()
+  endif()
 endmacro()
 
 
