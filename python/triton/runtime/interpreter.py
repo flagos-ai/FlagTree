@@ -221,67 +221,123 @@ def _get_np_dtype(tt_dtype):
     return np_types[tt_dtype]
 
 
+def _float_special_kind(dtype):
+    """Special-value convention of a float format:
+    "ieee": inf at e=max/m=0, nan at e=max/m!=0 (fp16/bf16/fp32/fp64/fp8e5)
+    "fn":   no inf; nan is all-ones exponent + all-ones mantissa (fp8e4nv)
+    "fnuz": no inf; nan is the sign bit only (fp8e4b8 / fp8e5b16)
+    "none": neither inf nor nan (fp8e4b15)
+    """
+    return {
+        tl.float8e4nv: "fn",
+        tl.float8e4b8: "fnuz",
+        tl.float8e5b16: "fnuz",
+        tl.float8e4b15: "none",
+    }.get(dtype, "ieee")
+
+
+def _decode_float_to_fp64(bits, dtype):
+    """Decode raw bit patterns of `dtype` into exact float64 values."""
+    if dtype == tl.float64:
+        return bits.view(np.float64).copy()
+    if dtype == tl.float32:
+        return bits.view(np.float32).astype(np.float64)
+    if dtype == tl.float16:
+        return bits.view(np.float16).astype(np.float64)
+    if dtype == tl.bfloat16:
+        return (bits.astype(np.uint32) << 16).view(np.float32).astype(np.float64)
+    mw = dtype.fp_mantissa_width
+    ew = dtype.primitive_bitwidth - mw - 1
+    bias = dtype.exponent_bias
+    kind = _float_special_kind(dtype)
+    b = bits.astype(np.int64)
+    sign = np.where((b >> (mw + ew)) & 1, -1.0, 1.0)
+    e = (b >> mw) & ((1 << ew) - 1)
+    m = b & ((1 << mw) - 1)
+    normal = np.ldexp(1.0 + m / (1 << mw), (e - bias).astype(np.int32))
+    subnormal = np.ldexp(m / (1 << mw), np.int32(1 - bias))
+    val = sign * np.where(e == 0, subnormal, normal)
+    e_max = (1 << ew) - 1
+    if kind == "ieee":
+        val = np.where((e == e_max) & (m == 0), sign * np.inf, val)
+        val = np.where((e == e_max) & (m != 0), np.nan, val)
+    elif kind == "fn":
+        val = np.where((e == e_max) & (m == (1 << mw) - 1), np.nan, val)
+    elif kind == "fnuz":
+        val = np.where(b == (1 << (mw + ew)), np.nan, val)
+    return val
+
+
+def _encode_fp64_to_float(val, dtype, rounding_mode):
+    """Encode float64 values into raw bit patterns of `dtype` with strict
+    RTNE/RTZ rounding; formats without inf saturate to max finite."""
+    mw = dtype.fp_mantissa_width
+    ew = dtype.primitive_bitwidth - mw - 1
+    bias = dtype.exponent_bias
+    kind = _float_special_kind(dtype)
+    e_max = (1 << ew) - 1
+    val = np.ascontiguousarray(val, dtype=np.float64)
+    b64 = val.view(np.uint64).astype(np.int64)
+    sign = (b64 >> 63) & 1
+    e_in = (b64 >> 52) & 0x7FF
+    m_in = b64 & ((1 << 52) - 1)
+    is_nan = np.isnan(val)
+    is_inf = np.isinf(val)
+    # significand with implicit bit; float64 subnormals have no implicit bit
+    denorm_in = e_in == 0
+    sig = np.where(denorm_in, m_in, m_in | (1 << 52))
+    unbiased = np.where(denorm_in, -1022, e_in - 1023)
+    # E <= 0 lands in the target's subnormal range and needs extra right-shifts
+    E = unbiased + bias
+    k = np.clip((52 - mw) + np.maximum(0, 1 - E), 0, 62)
+    keep = sig >> k
+    rem = sig & ((np.int64(1) << k) - 1)
+    if rounding_mode is None or rounding_mode == _ir.ROUNDING_MODE.RTNE:
+        half = np.where(k > 0, np.int64(1) << np.maximum(k - 1, 0), np.int64(0))
+        round_up = ((rem > half) | ((rem == half) & ((keep & 1) == 1))) & (k > 0)
+        keep = keep + round_up
+    elif rounding_mode == _ir.ROUNDING_MODE.RTZ:
+        pass
+    else:
+        raise ValueError(f"unsupported rounding mode {rounding_mode}")
+    # (E << mw) + keep - 2^mw lets a mantissa carry overflow into the exponent;
+    # in the subnormal case keep == 2^mw naturally becomes the minimum normal
+    expmant = np.where(E >= 1, (E << mw) + keep - (1 << mw), keep)
+    if kind == "ieee":
+        inf_code = e_max << mw
+        max_finite = inf_code - 1
+        if rounding_mode == _ir.ROUNDING_MODE.RTZ:
+            expmant = np.minimum(expmant, max_finite)  # RTZ never rounds to inf
+        else:
+            expmant = np.where(expmant >= inf_code, inf_code, expmant)
+        result = (sign << (mw + ew)) | expmant
+        result = np.where(is_inf, (sign << (mw + ew)) | inf_code, result)
+        result = np.where(is_nan, (sign << (mw + ew)) | inf_code | (1 << (mw - 1)), result)
+    elif kind == "fn":
+        max_finite = (e_max << mw) | ((1 << mw) - 2)
+        expmant = np.minimum(expmant, max_finite)  # satfinite (also maps inf)
+        result = (sign << (mw + ew)) | expmant
+        result = np.where(is_nan, (e_max << mw) | ((1 << mw) - 1), result)
+    elif kind == "fnuz":
+        max_finite = (e_max << mw) | ((1 << mw) - 1)
+        expmant = np.minimum(expmant, max_finite)
+        # fnuz has no -0 (the sign-only pattern is the NaN code): anything
+        # that rounds to zero encodes as +0
+        result = np.where(expmant == 0, np.int64(0), (sign << (mw + ew)) | expmant)
+        result = np.where(is_nan, np.int64(1) << (mw + ew), result)
+    else:  # "none" (fp8e4b15): no inf/nan representation, saturate
+        max_finite = (e_max << mw) | ((1 << mw) - 1)
+        expmant = np.minimum(expmant, max_finite)
+        result = (sign << (mw + ew)) | expmant
+    out_uint_dtype = getattr(np, f"uint{dtype.primitive_bitwidth}")
+    return result.astype(out_uint_dtype)
+
+
 def _convert_float(input, input_dtype, output_dtype, rounding_mode):
     input_uint_dtype = getattr(np, f"uint{input_dtype.primitive_bitwidth}")
-    output_unint_dtype = getattr(np, f"uint{output_dtype.primitive_bitwidth}")
-    input_bin = np.frombuffer(input.tobytes(), dtype=input_uint_dtype)
-    sign = (input_bin >> (input_dtype.primitive_bitwidth - 1)) & 0x01
-    input_exponent_width = input_dtype.primitive_bitwidth - input_dtype.fp_mantissa_width - 1
-    output_exponent_width = output_dtype.primitive_bitwidth - output_dtype.fp_mantissa_width - 1
-    significand = input_bin & ((1 << input_dtype.fp_mantissa_width) - 1)
-    bias_input = input_dtype.exponent_bias
-    bias_output = output_dtype.exponent_bias
-    exponent = ((input_bin >> input_dtype.fp_mantissa_width) & ((1 << input_exponent_width) - 1)).astype(np.int32)
-    subnormal_index = exponent == 0
-    if np.any(subnormal_index):
-        # Credit to Phil: phil@openai.com
-        # subnormal repr: ((-1.0)**sign) * (2.0**(1 - exp_bias)) * (2^(m0) + 2^(m1) + ... + 2^(mn))
-        # where m0, m1, ..., mn are the 1-bit of the mantissa
-        # convert it to normal repr: ((-1.0)**sign) * (2.0**(1 + m0 - exp_bias)) * (1 + 2^(m1 - m0) + ... + 2^(mn - m0))
-        bit_pos = np.zeros_like(input_bin, dtype=np.int32)
-        # Find the most significant bit of the mantissa in the significand
-        for i in range(input_dtype.fp_mantissa_width):
-            bit_index = ((significand >> i) & 0x01)
-            # pos should be >= 1
-            bit_pos[bit_index == 1] = input_dtype.fp_mantissa_width - i
-        zero_significand_index = significand == 0
-        exponent[subnormal_index] = 1 - bit_pos[subnormal_index]
-        # 0 significand and subnormal should be treated as 0
-        exponent[zero_significand_index & subnormal_index] = bias_input - bias_output
-        significand[subnormal_index] = (significand[subnormal_index] << bit_pos[subnormal_index]) & (
-            (1 << input_dtype.fp_mantissa_width) - 1)
-    # Prevent overflow and underflow
-    exponent_output = np.maximum(0, np.minimum((exponent - bias_input + bias_output), (1 << output_exponent_width) - 1))
-    exponent_output = exponent_output.astype(output_unint_dtype)
-    sign_output = sign.astype(output_unint_dtype)
-    if input_dtype.primitive_bitwidth > output_dtype.primitive_bitwidth:  # Downcast
-        significand_output = (significand >> (input_dtype.fp_mantissa_width - output_dtype.fp_mantissa_width)) & (
-            (1 << output_dtype.fp_mantissa_width) - 1)
-        if rounding_mode == _ir.ROUNDING_MODE.RTNE:  # Round to nearst even
-            # find the cut-off bit
-            cut_off = significand & (1 << (input_dtype.fp_mantissa_width - output_dtype.fp_mantissa_width - 1))
-            significand_output = significand_output + (cut_off > 0)
-        significand_output = significand_output.astype(output_unint_dtype)
-    else:  # Upcast
-        significand_output = (significand.astype(output_unint_dtype) <<
-                              (output_dtype.fp_mantissa_width - input_dtype.fp_mantissa_width)) & (
-                                  (1 << output_dtype.fp_mantissa_width) - 1)
-    subnormal_index = exponent_output == 0
-    if np.any(subnormal_index):  # underflow
-        # normal repr: ((-1.0)**sign) * (2.0**(exp - exp_bias_input)) * (1 + 2^(m0) + 2^(m1) + ... + 2^(mn))
-        # where m0, m1, ..., mn are the 1-bit of the mantissa
-        # shift = (1 - exp_bias_output) - (exp - exp_bias_input)
-        # convert it to subnormal repr: ((-1.0)**sign) * (2.0**(1 - exp_bias_output)) * (2^(-shift) + 2^(m0 - shift) + 2^(m1 - shift) + ... + 2^(mn - shift))
-        exponent = ((input_bin >> input_dtype.fp_mantissa_width) & ((1 << input_exponent_width) - 1)).astype(np.int32)
-        non_zero_exponent_index = exponent != 0
-        # If the original exponent is not zero, we still need to shift the significand and consider the 1.0 part in mantissa
-        subnormal_index = subnormal_index & non_zero_exponent_index
-        shift = np.zeros_like(input_bin, dtype=np.int32)
-        shift[subnormal_index] = (1 - bias_output) - (exponent[subnormal_index] - bias_input)
-        significand_output[subnormal_index] = (significand_output[subnormal_index] >> shift[subnormal_index]) | (
-            1 << (output_dtype.fp_mantissa_width - shift[subnormal_index]))
-    output = (sign_output << (output_dtype.primitive_bitwidth - 1)) | (
-        exponent_output << output_dtype.fp_mantissa_width) | significand_output
+    input_bits = np.frombuffer(input.tobytes(), dtype=input_uint_dtype)
+    val = _decode_float_to_fp64(input_bits, input_dtype)
+    output = _encode_fp64_to_float(val, output_dtype, rounding_mode)
     return output.reshape(input.shape)
 
 
@@ -459,7 +515,7 @@ class InterpreterBuilder:
         return TensorHandle(np.array([self.grid_dim[axis]], dtype=np.int32), tl.int32)
 
     # memory ops
-    def create_load(self, ptr, _0, _1, is_volatile):
+    def create_load(self, ptr, _0, _1, is_volatile, flagtree_hints=None):
         mask = TensorHandle(np.ones_like(ptr.data, dtype=bool), tl.int1)
         other = None
         return self.create_masked_load(ptr, mask, other, _0, _1, is_volatile)
@@ -468,7 +524,7 @@ class InterpreterBuilder:
         mask = TensorHandle(np.ones_like(ptr.data, dtype=bool), tl.int1)
         return self.create_masked_store(ptr, val, mask, None, None)
 
-    def create_masked_load(self, ptrs, mask, other, cache_modifier, eviction_policy, is_volatile):
+    def create_masked_load(self, ptrs, mask, other, cache_modifier, eviction_policy, is_volatile, flagtree_hints=None):
         dtype_tt = ptrs.get_element_ty()
         dtype_np = _get_np_dtype(dtype_tt)
         if other is None:
