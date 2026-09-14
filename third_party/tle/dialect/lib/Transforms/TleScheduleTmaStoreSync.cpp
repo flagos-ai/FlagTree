@@ -21,19 +21,24 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
+#include "triton/Analysis/Alias.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
+#include <deque>
 
 namespace mlir::triton::tle {
 
@@ -47,9 +52,9 @@ namespace ttnvws = mlir::triton::nvws;
 
 namespace {
 
-struct PendingTMAStoreGroup {
-  SmallVector<Value, 2> sourceRoots;
-};
+// Keep the lattice finite, and restrict generated waits to small immediates.
+static constexpr unsigned kMaxPendingGroups = 8;
+static constexpr unsigned kMaxAge = kMaxPendingGroups - 1;
 
 static Value canonicalizeWarpSpecializeCapture(Value value) {
   while (auto blockArg = dyn_cast<BlockArgument>(value)) {
@@ -106,32 +111,6 @@ static Value getMemDescRoot(Value value) {
   return current;
 }
 
-static void appendUniqueRoot(SmallVectorImpl<Value> &roots, Value root) {
-  if (!llvm::is_contained(roots, root))
-    roots.push_back(root);
-}
-
-static std::optional<unsigned>
-findLatestAliasingGroup(ArrayRef<PendingTMAStoreGroup> pendingGroups,
-                        Value value) {
-  Value root = getMemDescRoot(value);
-  std::optional<unsigned> latest;
-  for (auto indexed : llvm::enumerate(pendingGroups)) {
-    if (llvm::is_contained(indexed.value().sourceRoots, root))
-      latest = indexed.index();
-  }
-  return latest;
-}
-
-static std::optional<unsigned> mergeLatest(std::optional<unsigned> lhs,
-                                           std::optional<unsigned> rhs) {
-  if (!lhs)
-    return rhs;
-  if (!rhs)
-    return lhs;
-  return std::max(*lhs, *rhs);
-}
-
 static bool isTLEExplicitTMAStore(ttng::AsyncTMACopyLocalToGlobalOp op) {
   return op->hasAttr(kTleTMAStoreExplicitCommitAttr);
 }
@@ -142,209 +121,347 @@ static bool isNonTLEStoreGroupBoundary(Operation *op) {
   return isa<ttng::AsyncTMAReduceOp, ttng::AsyncTMAScatterOp>(op);
 }
 
-static bool isPassThroughForTLEStoreRun(Operation *op) {
-  return isa<ttng::FenceAsyncSharedOp>(op);
-}
+// An age is a lower bound on the number of newer committed groups. At a
+// merge, take the minimum age on paths where the source may still be read.
+// Unlike a queue indexed from its front, this remains sound for unequal path
+// lengths, zero-trip loops, and different group orders on different branches.
+struct PendingState {
+  DenseMap<Value, unsigned> ages;
+  unsigned groups = 0;
 
-static bool isWriteOrFree(MemoryEffects::Effect *effect) {
-  return isa<MemoryEffects::Write, MemoryEffects::Free>(effect);
-}
-
-static std::optional<unsigned>
-findMemoryReuseHazard(Operation *op,
-                      ArrayRef<PendingTMAStoreGroup> pendingGroups) {
-  auto effectInterface = dyn_cast<MemoryEffectOpInterface>(op);
-  if (!effectInterface)
-    return std::nullopt;
-
-  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
-  effectInterface.getEffects(effects);
-
-  std::optional<unsigned> latestHazard;
-  for (const auto &effect : effects) {
-    if (!isWriteOrFree(effect.getEffect()))
-      continue;
-    Value value = effect.getValue();
-    if (!value || !isa<ttg::MemDescType>(value.getType()))
-      continue;
-    latestHazard = mergeLatest(latestHazard,
-                               findLatestAliasingGroup(pendingGroups, value));
+  bool join(const PendingState &other) {
+    bool changed = false;
+    for (auto [root, age] : other.ages) {
+      auto [it, inserted] = ages.try_emplace(root, age);
+      if (inserted || age < it->second) {
+        it->second = age;
+        changed = true;
+      }
+    }
+    if (other.groups > groups) {
+      groups = other.groups;
+      changed = true;
+    }
+    return changed;
   }
-  return latestHazard;
-}
 
-static std::optional<unsigned>
-findPipeReaderReleaseHazard(Operation *op,
-                            ArrayRef<PendingTMAStoreGroup> pendingGroups) {
-  auto release = dyn_cast<PipeReaderReleaseOp>(op);
-  if (!release)
-    return std::nullopt;
-
-  std::optional<unsigned> latestHazard;
-  for (Value field : release.getFields()) {
-    latestHazard = mergeLatest(latestHazard,
-                               findLatestAliasingGroup(pendingGroups, field));
+  void wait(unsigned pendings) {
+    for (auto it = ages.begin(); it != ages.end();) {
+      auto current = it++;
+      if (current->second >= pendings)
+        ages.erase(current);
+    }
+    groups = std::min(groups, pendings);
   }
-  return latestHazard;
+
+  void commit(ArrayRef<Value> roots) {
+    for (auto &entry : ages)
+      entry.second = std::min(entry.second + 1, kMaxAge);
+    for (Value root : roots)
+      ages[root] = 0;
+    groups = std::min(groups + 1, kMaxPendingGroups);
+  }
+};
+
+class StoreAliasAnalysis : public SharedMemoryAliasAnalysis {
+public:
+  using SharedMemoryAliasAnalysis::SharedMemoryAliasAnalysis;
+
+  void setToEntryState(dataflow::Lattice<AliasInfo> *lattice) override {
+    Value value = lattice->getAnchor();
+    // Standalone pass tests also use shared-memory function arguments.
+    AliasInfo info;
+    if (isa<ttg::MemDescType>(value.getType()))
+      info.insert(getMemDescRoot(value));
+    propagateIfChanged(lattice, lattice->join(info));
+  }
+};
+
+struct StoreGroup {
+  SmallVector<Value, 2> sources;
+  SmallVector<Value, 2> roots;
+};
+
+// Other region operations may change the issuing warp/thread (notably warp
+// specialization), or execute concurrently. Give them independent, drained
+// scheduling domains rather than treating them as sequential branches.
+static bool isSequentialRegion(Operation *op) {
+  return isa<scf::ForOp, scf::IfOp, scf::WhileOp, scf::ExecuteRegionOp,
+             scf::IndexSwitchOp>(op);
 }
 
-static void insertWaitBefore(OpBuilder &builder, Operation *op,
-                             unsigned pendings) {
-  builder.setInsertionPoint(op);
-  ttng::TMAStoreWaitOp::create(builder, op->getLoc(), pendings);
+static bool isControlFlow(Operation *op) {
+  return isa<BranchOpInterface>(op) || isSequentialRegion(op) ||
+         (isa<RegionBranchTerminatorOpInterface>(op) &&
+          isSequentialRegion(op->getParentOp()));
 }
 
-static bool
-waitThroughGroupBefore(OpBuilder &builder, Operation *op,
-                       SmallVectorImpl<PendingTMAStoreGroup> &pendingGroups,
-                       unsigned groupIndex) {
-  assert(groupIndex < pendingGroups.size());
-  unsigned pendings = pendingGroups.size() - groupIndex - 1;
-  insertWaitBefore(builder, op, pendings);
-  pendingGroups.erase(pendingGroups.begin(),
-                      pendingGroups.begin() + groupIndex + 1);
-  return true;
-}
+class StoreScheduler {
+public:
+  explicit StoreScheduler(ModuleOp module) : module(module) {}
 
-static bool
-waitAllBefore(OpBuilder &builder, Operation *op,
-              SmallVectorImpl<PendingTMAStoreGroup> &pendingGroups) {
-  if (pendingGroups.empty())
-    return false;
-  insertWaitBefore(builder, op, 0);
-  pendingGroups.clear();
-  return true;
-}
+  LogicalResult run() {
+    SmallVector<Block *> blocks;
+    module.walk([&](Block *block) { blocks.push_back(block); });
+    for (Block *block : blocks)
+      normalizeGroups(*block);
+    if (groups.empty())
+      return success();
 
-static bool
-commitCurrentGroupBefore(OpBuilder &builder, Operation *op,
-                         SmallVectorImpl<Value> &currentRoots,
-                         SmallVectorImpl<PendingTMAStoreGroup> &pendingGroups) {
-  if (currentRoots.empty())
-    return false;
+    solver = createDataFlowSolver();
+    solver->load<StoreAliasAnalysis>();
+    if (failed(solver->initializeAndRun(module)))
+      return failure();
+    for (auto &entry : groups)
+      for (Value source : entry.second.sources)
+        llvm::append_range(entry.second.roots, getRoots(source));
 
-  builder.setInsertionPoint(op);
-  TMAStoreCommitGroupOp::create(builder, op->getLoc());
-  PendingTMAStoreGroup group;
-  for (Value root : currentRoots)
-    group.sourceRoots.push_back(root);
-  pendingGroups.push_back(std::move(group));
-  currentRoots.clear();
-  return true;
-}
+    buildControlFlow();
+    while (!worklist.empty()) {
+      Operation *op = worklist.front();
+      worklist.pop_front();
+      queued.erase(op);
+      PendingState output = inputs.lookup(op);
+      transfer(op, output);
+      for (Operation *successor : successors[op]) {
+        auto [it, inserted] = inputs.try_emplace(successor);
+        bool changed = it->second.join(output);
+        if (inserted || changed)
+          enqueue(successor);
+      }
+    }
 
-static bool
-commitCurrentGroupAtEnd(OpBuilder &builder, Block &block,
-                        SmallVectorImpl<Value> &currentRoots,
-                        SmallVectorImpl<PendingTMAStoreGroup> &pendingGroups) {
-  if (currentRoots.empty())
-    return false;
+    // No IR is changed during iteration. Joins only add possibilities or lower
+    // ages, so the finite lattice converges without a fixed iteration budget.
+    // Transfer can strengthen a wait and drop output facts; retaining earlier
+    // facts at successor joins is a conservative over-approximation.
+    for (Operation *op : operations) {
+      auto it = inputs.find(op);
+      if (it == inputs.end())
+        continue;
+      PendingState state = it->second;
+      if (auto wait = transfer(op, state)) {
+        OpBuilder builder(op);
+        ttng::TMAStoreWaitOp::create(builder, op->getLoc(), *wait);
+      }
+    }
+    return success();
+  }
 
-  Location loc =
-      block.empty() ? builder.getUnknownLoc() : block.back().getLoc();
-  builder.setInsertionPointToEnd(&block);
-  TMAStoreCommitGroupOp::create(builder, loc);
-  PendingTMAStoreGroup group;
-  for (Value root : currentRoots)
-    group.sourceRoots.push_back(root);
-  pendingGroups.push_back(std::move(group));
-  currentRoots.clear();
-  return true;
-}
-
-static bool waitAllAtEnd(OpBuilder &builder, Block &block,
-                         SmallVectorImpl<PendingTMAStoreGroup> &pendingGroups) {
-  if (pendingGroups.empty())
-    return false;
-
-  Location loc =
-      block.empty() ? builder.getUnknownLoc() : block.back().getLoc();
-  builder.setInsertionPointToEnd(&block);
-  ttng::TMAStoreWaitOp::create(builder, loc, 0);
-  pendingGroups.clear();
-  return true;
-}
-
-static bool scheduleBlock(Block &block) {
-  OpBuilder builder(block.getParentOp());
-  SmallVector<Value, 2> currentRoots;
-  SmallVector<PendingTMAStoreGroup, 4> pendingGroups;
-  bool changed = false;
-
-  for (auto it = block.begin(), end = block.end(); it != end;) {
-    Operation *op = &*it++;
-
-    if (auto tmaStore = dyn_cast<ttng::AsyncTMACopyLocalToGlobalOp>(op)) {
-      if (isTLEExplicitTMAStore(tmaStore)) {
-        appendUniqueRoot(currentRoots, getMemDescRoot(tmaStore.getSrc()));
+private:
+  void normalizeGroups(Block &block) {
+    SmallVector<ttng::AsyncTMACopyLocalToGlobalOp> stores;
+    DenseSet<Operation *> loweringWaits;
+    auto commit = [&](Operation *before) {
+      if (stores.empty())
+        return;
+      OpBuilder builder(block.getParentOp());
+      if (before)
+        builder.setInsertionPoint(before);
+      else
+        builder.setInsertionPointToEnd(&block);
+      auto groupOp =
+          TMAStoreCommitGroupOp::create(builder, stores.front().getLoc());
+      StoreGroup &group = groups[groupOp];
+      for (auto store : stores)
+        group.sources.push_back(store.getSrc());
+      groupStarts.insert(stores.front());
+      stores.clear();
+    };
+    for (auto it = block.begin(); it != block.end();) {
+      Operation *op = &*it++;
+      if (loweringWaits.erase(op)) {
+        op->erase();
         continue;
       }
-
-      changed |=
-          commitCurrentGroupBefore(builder, op, currentRoots, pendingGroups);
-      changed |= waitAllBefore(builder, op, pendingGroups);
-      continue;
-    }
-
-    if (auto commit = dyn_cast<TMAStoreCommitGroupOp>(op)) {
-      if (!currentRoots.empty()) {
-        commit.erase();
-        changed = true;
+      if (auto store = dyn_cast<ttng::AsyncTMACopyLocalToGlobalOp>(op)) {
+        if (isTLEExplicitTMAStore(store)) {
+          stores.push_back(store);
+          continue;
+        }
       }
-      continue;
-    }
-
-    if (auto wait = dyn_cast<ttng::TMAStoreWaitOp>(op)) {
-      if (!currentRoots.empty() || !pendingGroups.empty()) {
-        wait.erase();
-        changed = true;
+      if (!stores.empty() && isa<TMAStoreCommitGroupOp>(op)) {
+        // Only replace the immediate wait emitted with this TLE commit.
+        // In particular, never erase a wait merely because an outer region
+        // has pending stores: that loses nested-region completion guarantees.
+        if (auto wait =
+                dyn_cast_or_null<ttng::TMAStoreWaitOp>(op->getNextNode()))
+          if (wait.getPendings() == 0)
+            loweringWaits.insert(wait);
+        op->erase();
+        continue;
       }
-      continue;
+      if (isa<ttng::FenceAsyncSharedOp>(op))
+        continue;
+      commit(op);
     }
+    commit(nullptr);
+  }
 
-    if (!currentRoots.empty() && isPassThroughForTLEStoreRun(op))
-      continue;
+  SmallVector<Value, 2> getRoots(Value value) const {
+    SmallVector<Value, 2> roots;
+    if (auto *lattice =
+            solver->lookupState<dataflow::Lattice<AliasInfo>>(value))
+      llvm::append_range(roots, lattice->getValue().getAllocs());
+    if (roots.empty()) {
+      auto pointer =
+          dyn_cast<tt::PointerType>(getElementTypeOrSelf(value.getType()));
+      if (isa<ttg::MemDescType>(value.getType()) ||
+          (pointer && pointer.getAddressSpace() == 3))
+        roots.push_back(
+            Value()); // Unknown shared alias: may refer to any source.
+    }
+    return roots;
+  }
 
+  std::optional<unsigned> transfer(Operation *op, PendingState &state) const {
+    std::optional<unsigned> required;
+    auto wait = [&](unsigned n) {
+      if (!state.groups)
+        return;
+      required = required ? std::min(*required, n) : n;
+      state.wait(n);
+    };
+    if (auto existing = dyn_cast<ttng::TMAStoreWaitOp>(op)) {
+      state.wait(existing.getPendings());
+      return required;
+    }
+    if (auto group = groups.find(op); group != groups.end()) {
+      state.commit(group->second.roots);
+      return required;
+    }
+    if (auto store = dyn_cast<ttng::AsyncTMACopyLocalToGlobalOp>(op)) {
+      if (isTLEExplicitTMAStore(store)) {
+        if (groupStarts.contains(op) && state.groups == kMaxPendingGroups)
+          wait(kMaxPendingGroups - 1);
+        return required;
+      }
+    }
     if (isNonTLEStoreGroupBoundary(op)) {
-      changed |=
-          commitCurrentGroupBefore(builder, op, currentRoots, pendingGroups);
-      changed |= waitAllBefore(builder, op, pendingGroups);
-      continue;
+      wait(0);
+      SmallVector<Value> roots;
+      for (Value operand : op->getOperands())
+        if (isa<ttg::MemDescType>(operand.getType()))
+          llvm::append_range(roots, getRoots(operand));
+      // These operations lower with an implicit commit of their own.
+      state.commit(roots);
+      return required;
     }
-
-    if (op->hasTrait<OpTrait::IsTerminator>()) {
-      changed |=
-          commitCurrentGroupBefore(builder, op, currentRoots, pendingGroups);
-      changed |= waitAllBefore(builder, op, pendingGroups);
-      continue;
+    if (isa<TMAStoreCommitGroupOp>(op)) {
+      wait(0);
+      state.commit({});
+      return required;
     }
-
-    changed |=
-        commitCurrentGroupBefore(builder, op, currentRoots, pendingGroups);
-
-    // At this point pipe reader releases may already be lowered to a plain
-    // mbarrier arrive. Once field operands are gone, the cross-warp signal is
-    // the conservative lifetime boundary for a pending TMA store source.
-    if (isa<ttnvws::ConsumerReleaseOp, ttng::ArriveBarrierOp>(op)) {
-      changed |= waitAllBefore(builder, op, pendingGroups);
-      continue;
+    if (isControlFlow(op))
+      return required;
+    if (op->hasTrait<OpTrait::IsTerminator>() || op->getNumRegions() ||
+        isa<ttnvws::ConsumerReleaseOp, ttng::ArriveBarrierOp>(op)) {
+      wait(0);
+      return required;
     }
+    if (isa<ttng::FenceAsyncSharedOp>(op))
+      return required;
+    // WGMMA commit/wait only order the WGMMA queue. They neither overwrite a
+    // TMA source nor release it to another warp. Keep their general effects
+    // intact for other passes, but do not treat them as unknown shared writes.
+    if (isa<ttng::WarpGroupDotCommitOp, ttng::WarpGroupDotWaitOp>(op))
+      return required;
 
-    std::optional<unsigned> hazard =
-        findPipeReaderReleaseHazard(op, pendingGroups);
-    hazard = mergeLatest(hazard, findMemoryReuseHazard(op, pendingGroups));
-    if (hazard)
-      changed |= waitThroughGroupBefore(builder, op, pendingGroups, *hazard);
+    auto reuse = [&](Value value) {
+      auto roots = getRoots(value);
+      if (roots.empty())
+        return;
+      if (llvm::is_contained(roots, Value())) {
+        wait(0);
+        return;
+      }
+      if (auto unknown = state.ages.find(Value()); unknown != state.ages.end())
+        wait(unknown->second);
+      for (Value root : roots)
+        if (auto it = state.ages.find(root); it != state.ages.end())
+          wait(it->second);
+    };
+    if (auto release = dyn_cast<PipeReaderReleaseOp>(op)) {
+      for (Value field : release.getFields())
+        reuse(field);
+    } else if (auto effects = dyn_cast<MemoryEffectOpInterface>(op)) {
+      SmallVector<MemoryEffects::EffectInstance> instances;
+      effects.getEffects(instances);
+      for (const auto &effect : instances) {
+        if (!isa<MemoryEffects::Write, MemoryEffects::Free>(effect.getEffect()))
+          continue;
+        if (Value value = effect.getValue())
+          reuse(value);
+        else
+          wait(0);
+      }
+    } else if (!isMemoryEffectFree(op)) {
+      wait(0);
+    }
+    return required;
   }
 
-  if (block.empty() || !block.back().hasTrait<OpTrait::IsTerminator>()) {
-    changed |=
-        commitCurrentGroupAtEnd(builder, block, currentRoots, pendingGroups);
-    changed |= waitAllAtEnd(builder, block, pendingGroups);
+  void enqueue(Operation *op) {
+    if (queued.insert(op).second)
+      worklist.push_back(op);
   }
 
-  return changed;
-}
+  void buildControlFlow() {
+    module.walk<WalkOrder::PreOrder>([&](Operation *op) {
+      if (!op->getBlock())
+        return;
+      operations.push_back(op);
+      auto add = [&](Operation *next) {
+        if (next)
+          successors[op].push_back(next);
+      };
+      auto addRegion = [&](RegionSuccessor successor, Operation *parent) {
+        if (successor.isParent())
+          add(parent->getNextNode());
+        else if (!successor.getSuccessor()->empty())
+          add(&successor.getSuccessor()->front().front());
+      };
+      if (isa<BranchOpInterface>(op)) {
+        for (Block *successor : op->getSuccessors())
+          add(&successor->front());
+      } else if (isSequentialRegion(op)) {
+        SmallVector<RegionSuccessor> regions;
+        cast<RegionBranchOpInterface>(op).getSuccessorRegions(
+            RegionBranchPoint::parent(), regions);
+        for (auto successor : regions)
+          addRegion(successor, op);
+      } else if (auto term = dyn_cast<RegionBranchTerminatorOpInterface>(op);
+                 term && isSequentialRegion(op->getParentOp())) {
+        SmallVector<RegionSuccessor> regions;
+        SmallVector<Attribute> operands(op->getNumOperands());
+        term.getSuccessorRegions(operands, regions);
+        for (auto successor : regions)
+          addRegion(successor, op->getParentOp());
+      } else if (!op->hasTrait<OpTrait::IsTerminator>()) {
+        add(op->getNextNode());
+      }
+      if (!isSequentialRegion(op)) {
+        for (Region &region : op->getRegions()) {
+          if (!region.empty() && !region.front().empty()) {
+            Operation *entry = &region.front().front();
+            inputs.try_emplace(entry);
+            enqueue(entry);
+          }
+        }
+      }
+    });
+  }
+
+  ModuleOp module;
+  std::unique_ptr<DataFlowSolver> solver;
+  DenseMap<Operation *, StoreGroup> groups;
+  DenseSet<Operation *> groupStarts;
+  SmallVector<Operation *> operations;
+  DenseMap<Operation *, SmallVector<Operation *, 2>> successors;
+  DenseMap<Operation *, PendingState> inputs;
+  std::deque<Operation *> worklist;
+  DenseSet<Operation *> queued;
+};
 
 class TritonTleScheduleTmaStoreSyncPass
     : public impl::TritonTleScheduleTmaStoreSyncBase<
@@ -354,16 +471,8 @@ public:
       TritonTleScheduleTmaStoreSyncPass>::TritonTleScheduleTmaStoreSyncBase;
 
   void runOnOperation() override {
-    SmallVector<Block *, 16> blocks;
-    getOperation()->walk([&](Operation *op) {
-      for (Region &region : op->getRegions()) {
-        for (Block &block : region)
-          blocks.push_back(&block);
-      }
-    });
-
-    for (Block *block : blocks)
-      scheduleBlock(*block);
+    if (failed(StoreScheduler(getOperation()).run()))
+      signalPassFailure();
   }
 };
 
