@@ -181,6 +181,8 @@ def get_backend_cmake_args(*args, **kargs):
         cmake_args = []
     if editable:
         cmake_args += ["-DEDITABLE_MODE=ON"]
+    if flagtree_backend:
+        cmake_args += ["-DFLAGTREE_BACKEND={}".format(flagtree_backend)]
     return cmake_args
 
 
@@ -228,10 +230,7 @@ def get_hook_instance(hook_name):
 
 
 def enable_flagtree_third_party(name):
-    if name in ["triton_shared", "flagcx"]:
-        return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
-    else:
-        return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
+    return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
 
 def download_flagtree_third_party(name, condition, required=False, hook=None):
@@ -752,7 +751,7 @@ def handle_flagtree_backend():
     global ext_sourcedir
     if flagtree_backend:
         print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
-        configs.extend_backends.append(flagtree_backend)
+        configs.set_extend_backends(flagtree_backend)
         if "editable_wheel" in sys.argv and flagtree_backend not in configs.plugin_backends:
             ext_sourcedir = os.path.abspath(f"./third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
 
@@ -855,7 +854,8 @@ download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro
    refer to https://github.com/flagos-ai/FlagCX
 '''
 
-download_flagtree_third_party("flagcx", condition=(not flagtree_backend), hook="handle_flagcx", required=True)
+download_flagtree_third_party("flagcx", condition=(flagtree_backend == "nvidia" or not flagtree_backend),
+                              hook="handle_flagcx", required=True)
 
 download_flagtree_third_party("cuda-tile", condition=(flagtree_backend == "tileir"), required=True)
 
