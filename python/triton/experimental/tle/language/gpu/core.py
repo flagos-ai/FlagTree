@@ -1200,6 +1200,7 @@ def copy(
     other=None,
     is_async: bool = False,
     eviction_policy: str = "",
+    mask=None,
     _semantic: TLESemantic | None = None,
 ) -> None:
     """
@@ -1266,6 +1267,11 @@ def copy(
             existing synchronous behavior is unchanged.
         eviction_policy: L2 eviction policy for global-memory reads. Supported
             values are ``""``, ``"evict_first"``, and ``"evict_last"``.
+        mask: Optional boolean tensor broadcastable to the global pointer
+            tensor, supported only with ``is_async=True``. Inactive elements
+            do not access global memory and fill the shared destination with
+            zero. This does not change the full payload shape or completion
+            protocol, including for a completely inactive tile.
         _semantic: Internal semantic analyzer for validation and compilation (user-provided)
 
     Raises:
@@ -1358,8 +1364,8 @@ def copy(
                     _semantic.builder.create_async_copy_global_to_local(
                         dst.handle,
                         src.handle,
-                        ir.value(),
-                        ir.value(),
+                        ir.value() if mask is None else mask.handle,
+                        ir.value() if mask is None else _semantic.full(src.type.shape, 0, dst.dtype).handle,
                         _semantic._str_to_load_cache_modifier(cache_modifier),
                         _semantic._str_to_eviction_policy(eviction_policy),
                         volatile,
@@ -1545,6 +1551,13 @@ def copy(
             raise ValueError(
                 "copy(is_async=True) requires shape to exactly match both operands: "
                 f"shape={async_shape}, source={src_shape}, destination={dst_shape}")
+        if mask is not None:
+            mask = _semantic.to_tensor(mask)
+            if mask.dtype != tl.int1:
+                raise ValueError("copy mask must have boolean elements")
+            mask = _semantic.broadcast_impl_shape(mask, list(src_shape))
+    elif mask is not None:
+        raise ValueError("copy mask requires is_async=True with a tensor of global pointers")
 
     if not isinstance(shape, (tuple, list)):
         # Try to handle Triton tuple-like objects
