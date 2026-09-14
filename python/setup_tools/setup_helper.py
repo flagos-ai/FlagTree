@@ -66,7 +66,7 @@ def get_long_description():
 
 def init_backends(backend_installer):
     if flagtree_backend:
-        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
+        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu", "amd"):
             backends = [
                 *backend_installer.copy(configs.default_backends + tuple(configs.extend_backends)),
                 *backend_installer.copy_externals(),
@@ -181,7 +181,7 @@ def get_backend_cmake_args(*args, **kargs):
         cmake_args = []
     if editable:
         cmake_args += ["-DEDITABLE_MODE=ON"]
-    if flagtree_backend:
+    if flagtree_backend not in configs.default_backends:
         cmake_args += ["-DFLAGTREE_BACKEND={}".format(flagtree_backend)]
     return cmake_args
 
