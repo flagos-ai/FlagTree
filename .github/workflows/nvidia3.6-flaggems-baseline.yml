@@ -37,7 +37,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  flaggems-baseline:
+  nv36x-flaggems-baseline:
     if: ${{ github.event_name == 'push' }}
     uses: ./.github/workflows/reusable-flaggems-baseline.yml
     with:

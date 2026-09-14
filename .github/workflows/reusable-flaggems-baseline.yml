@@ -54,7 +54,7 @@ env:
 
 jobs:
   # generate FlagGems baseline (only on push)
-  flaggems-baseline:
+  reusable-flaggems-baseline:
     runs-on: ${{ inputs.runner }}
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event_name == 'push' }}
     concurrency:

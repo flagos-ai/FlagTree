@@ -54,7 +54,7 @@ env:
 
 jobs:
   # Job: run FlagGems test on PR
-  flaggems-test:
+  reusable-flaggems-test:
     runs-on: ${{ inputs.runner }}
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
     steps:
