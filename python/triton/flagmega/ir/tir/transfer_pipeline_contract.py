@@ -23,6 +23,8 @@ class TIRTransferPipelineContract(TIRNode):
     consumer_shared_workspace_indices: tuple[int, ...] = ()
     auxiliary_consumer: TIRAuxiliaryConsumerContract | None = None
     capacity: int | None = None
+    # Address/control reads do not inherit payload transport alignment.
+    producer_read_argument_indices: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         channels = tuple(self.channels)
@@ -104,6 +106,11 @@ class TIRTransferPipelineContract(TIRNode):
             )
         object.__setattr__(self, "channels", channels)
         object.__setattr__(self, "consumer_shared_workspace_indices", consumer)
+        reads = tuple(self.producer_read_argument_indices)
+        if (any(type(index) is not int or index < 0 for index in reads)
+                or len(set(reads)) != len(reads)):
+            raise IRSchemaError("Producer read operand indexes must be non-negative and unique.")
+        object.__setattr__(self, "producer_read_argument_indices", reads)
 
     @property
     def source_argument_indices(self) -> tuple[int, ...]:
@@ -111,6 +118,10 @@ class TIRTransferPipelineContract(TIRNode):
             index for channel in self.channels
             for index in channel.source_argument_indices
         ))
+
+    @property
+    def read_argument_indices(self) -> tuple[int, ...]:
+        return tuple(dict.fromkeys((*self.source_argument_indices, *self.producer_read_argument_indices)))
 
     @property
     def shared_workspace_indices(self) -> tuple[int, ...]:

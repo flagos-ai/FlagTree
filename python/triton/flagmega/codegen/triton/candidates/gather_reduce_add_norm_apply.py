@@ -9,8 +9,8 @@ from math import prod
 
 from triton.flagmega.ir import DistributedType, ReduceOp, TupleType
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import (
-    can_materialize_matmul_partial,
+from triton.flagmega.ir.ops.ntt.add_norm_stats import (
+    can_materialize_sum_partial,
 )
 
 from .core import TritonCandidateContext, TritonCandidateProposal
@@ -39,7 +39,7 @@ class GatherReduceAddNormApplyCandidateProvider:
             or source_type.partial.reduce_op is not ReduceOp.SUM
             or not source_type.partial.axes
             or addend_type != value_type
-            or not can_materialize_matmul_partial(source_type, value_type)
+            or not can_materialize_sum_partial(source_type, value_type)
             or not isinstance(value_type, DistributedType)
             or not isinstance(norm_output_type, DistributedType)
             or replace(norm_output_type, tensor=replace(norm_output_type.tensor, dtype=value_type.tensor.dtype)) != value_type

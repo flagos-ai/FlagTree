@@ -3,7 +3,7 @@
 """nncase VectorizeSparseExpertsPropagation: absorb hidden-axis output Pack."""
 
 from triton.flagmega.ir import TensorType, VectorType
-from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine
 from triton.flagmega.ir.ops.tensors.pack import normalize_axes
 from triton.flagmega.pattern_match import F
 from triton.flagmega.rules import RewriteResult, RewriteRule
@@ -12,7 +12,7 @@ from triton.flagmega.rules.ntt.vectorize.utility import propagation_result_metad
 
 
 def sparse_experts_propagation_rules() -> tuple[RewriteRule, ...]:
-    pattern = F.tensors.is_pack(F.nn.is_sparse_experts_down(call_name="down"), call_name="pack")
+    pattern = F.tensors.is_pack(F.nn.is_sparse_experts_combine(call_name="down"), call_name="pack")
 
     def rewrite(result, module):
         pack, down = result["pack"], result["down"]
@@ -25,7 +25,7 @@ def sparse_experts_propagation_rules() -> tuple[RewriteRule, ...]:
         if not axes or any(axis != 1 for axis in axes):
             return None
         replacement = make_node(
-            SparseExpertsDown.op_name,
+            SparseExpertsCombine.op_name,
             pack.id,
             tuple(module.node_map[name] for name in down.inputs),
             {**dict(down.attrs), "output_dtype": pack.type.dtype},

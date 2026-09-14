@@ -98,6 +98,8 @@ def distributed_inputs(types):
             raise IRSchemaError("Distributed SparseExperts requires every operand on one placement.")
         if any(value.partial is not None for value in types.values()):
             raise IRSchemaError("SparseExperts requires materialized inputs, not partials.")
+        if any(value.exclusive is not None for value in types.values()):
+            raise IRSchemaError("SparseExperts requires published inputs, not exclusive owners.")
     return placement
 
 
@@ -113,7 +115,7 @@ def scale_policy(policy, numerator, denominator):
 def role_axes(*policies):
     groups = tuple(tuple(policy.hierarchy_axes) if isinstance(policy, SBPSplit) else () for policy in policies)
     if len(set(axis for group in groups for axis in group)) != sum(map(len, groups)):
-        raise IRSchemaError("SparseExperts token, intermediate and output splits must use disjoint mesh axes.")
+        raise IRSchemaError("SparseExperts token, route, reduction and output splits must use disjoint mesh axes.")
     return groups
 
 

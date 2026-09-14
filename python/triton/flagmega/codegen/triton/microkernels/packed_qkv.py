@@ -129,6 +129,12 @@ def _applicable(context: TIRMicroKernelContext, contract) -> bool:
         required = contract.get(key)
         if required is not None and required != value:
             return False
+    max_output = contract.get("max_local_output_extent")
+    if max_output is not None and (
+        type(max_output) is not int or max_output <= 0
+        or observed["required_local_output_extent"] > max_output
+    ):
+        return False
     required_output_dtype = contract.get("required_output_dtype")
     if required_output_dtype is not None and any(
         _scalar_dtype(value.dtype).value != required_output_dtype
@@ -168,6 +174,29 @@ def _applicable(context: TIRMicroKernelContext, contract) -> bool:
     if contract.get("requires_partial_axes_match_input_reduction_ownership", False):
         if not isinstance(source_type, DistributedType):
             return False
+        reduction_policy = source_type.axis_policies[-1]
+        if not isinstance(reduction_policy, SBPSplit):
+            return False
+        reduction_axes = frozenset(reduction_policy.hierarchy_axes)
+        if any(
+            not isinstance(value, DistributedType)
+            or value.partial is None
+            or value.partial.reduce_op is not ReduceOp.SUM
+            or frozenset(value.partial.axes) != reduction_axes
+            for value in output_types
+        ):
+            return False
+    if contract.get("requires_matching_packed_extents", False):
+        if (
+            weight_type.rank != 3 or len(weight_lanes) != 3
+            or any(not value.is_fixed for value in weight_type.shape)
+            or source_shape[-1] <= 0
+            or weight_type.shape[1].fixed_value * weight_lanes[1] * weight_lanes[2]
+            != observed["required_local_reduction_extent"]
+            or weight_type.shape[2].fixed_value * weight_lanes[0]
+            != observed["required_local_output_extent"]
+        ):
+            return False
     if contract.get("requires_uniform_full_input_reduction_tiles", False):
         if not isinstance(source_type, DistributedType):
             return False
@@ -185,18 +214,6 @@ def _applicable(context: TIRMicroKernelContext, contract) -> bool:
             != source_shape[-1]
             * _lane_count(source.dtype)
             * reduction_owner_count
-        ):
-            return False
-        reduction_policy = source_type.axis_policies[-1]
-        if not isinstance(reduction_policy, SBPSplit):
-            return False
-        reduction_axes = frozenset(reduction_policy.hierarchy_axes)
-        if any(
-            not isinstance(value, DistributedType)
-            or value.partial is None
-            or value.partial.reduce_op is not ReduceOp.SUM
-            or frozenset(value.partial.axes) != reduction_axes
-            for value in output_types
         ):
             return False
     if contract.get("requires_none_optional_inputs", False) and any(

@@ -1,0 +1,49 @@
+# flagmega-kernel: sparse_experts_gate_up/simt_tma_pipeline
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "kernels/sparse_experts_gate_up/_pipeline.py.jinja" as pipe with context %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "sparse_experts_gate_up" and call.variant == "simt_tma_pipeline" %}
+{{ pipe.helpers(call) }}
+{{ pipe.producer(call, entry, True) }}
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}):
+{{ entry.mesh_coordinates() }}
+{% set reader = call.pipeline_channels[0].reader_parameter %}
+    _fm_step = tl.full((), 0, tl.int32)
+    for _fm_token in tl.range(0, {{ call.tokens }}):
+        for _fm_route in tl.range(0, {{ call.routes }}):
+            if {{ call.slot_active }}:
+                _fm_expert = tl.load({{ call.pointers.router_expert_ids }} + ({{ call.expert_offset }})).to(tl.int64)
+                _fm_gate_input_scale = {{ call.scale_loads.gate_input_scale }}
+                _fm_gate_scale = {{ call.scale_loads.gate_proj_scale }}
+                _fm_up_input_scale = {{ call.scale_loads.up_input_scale }}
+                _fm_up_scale = {{ call.scale_loads.up_proj_scale }}
+                for _fm_n_start in tl.range(0, {{ call.active_n }}, {{ call.block_n }}):
+                    _fm_n = _fm_n_start + tle.gpu.set_layout(tl.arange(0, {{ call.block_n }}), {{ call.symbol }}__n_layout)
+                    _fm_gate_partial = tle.gpu.set_layout(tl.zeros(({{ call.block_n }}, {{ call.block_k }}), tl.float32), {{ call.symbol }}__weight_layout)
+                    _fm_up_partial = tle.gpu.set_layout(tl.zeros(({{ call.block_n }}, {{ call.block_k }}), tl.float32), {{ call.symbol }}__weight_layout)
+                    for _fm_k_start in tl.range(0, {{ call.active_k }}, {{ call.block_k }}):
+                        _fm_k = _fm_k_start + tle.gpu.set_layout(tl.arange(0, {{ call.block_k }}), {{ call.symbol }}__k_layout)
+                        _fm_input = tl.load({{ call.input_pointer }} + ({{ call.q_offset }}), mask=_fm_k < ({{ call.active_k }}), other=0).to(tl.float32)
+                        _fm_ready = {{ reader }}.wait(_fm_step)
+                        _fm_gate = {{ call.symbol }}__load_weight(_fm_ready.slot.gate)
+                        _fm_up = {{ call.symbol }}__load_weight(_fm_ready.slot.up)
+                        _fm_gate_partial += {% if call.unit_scales.gate_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_gate_input_scale){% endif %}[None, :] * _fm_gate
+                        _fm_up_partial += {% if call.unit_scales.up_input_scale %}_fm_input{% else %}tl.div_rn(_fm_input, _fm_up_input_scale){% endif %}[None, :] * _fm_up
+                        {{ reader }}.release(_fm_step)
+                        _fm_step += 1
+                    _fm_gate_result = tl.sum(_fm_gate_partial, 1) * _fm_gate_input_scale * _fm_gate_scale
+                    _fm_up_result = tl.sum(_fm_up_partial, 1) * _fm_up_input_scale * _fm_up_scale
+{% if call.attrs.round_projections %}
+                    _fm_gate_result = _fm_gate_result.to({{ call.output_dtype }}).to(tl.float32)
+                    _fm_up_result = _fm_up_result.to({{ call.output_dtype }}).to(tl.float32)
+{% endif %}
+                    _fm_activation = _fm_gate_result * tl.sigmoid(_fm_gate_result)
+{% if call.attrs.round_activation %}
+                    _fm_activation = _fm_activation.to({{ call.output_dtype }}).to(tl.float32)
+{% endif %}
+                    tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_activation * _fm_up_result,
+                             mask=(_fm_n < ({{ call.active_n }})) & ({{ call.writer_active }}))
+{% endif %}
+{% endfor %}

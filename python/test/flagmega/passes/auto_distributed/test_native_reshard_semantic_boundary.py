@@ -59,7 +59,7 @@ def test_native_vector_reshard_can_feed_scalar_reshape_without_losing_shared_vec
                 })
             self.function("main", (source, ), (logical, bridge))
 
-    original = Graph(dialect="ntt", stage="matmul_norm_stats_lowered", entry="main").build()
+    original = Graph(dialect="ntt", stage="add_norm_stats_lowered", entry="main").build()
     fm.verify_module(original)
     lowered = lower_vectorization_contracts(original)
     fm.verify_module(lowered)

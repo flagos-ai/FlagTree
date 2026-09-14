@@ -9,9 +9,9 @@ from .graph import (
     static_function_invocation_counts,
     static_node_invocation_counts,
 )
-from .form_matmul_norm_stats_combine import (
-    FormMatMulNormStatsCombinePass,
-    form_matmul_norm_stats_combine,
+from .form_add_norm_stats import (
+    FormAddNormStatsPass,
+    form_add_norm_stats,
 )
 from .function_boundary_layout import propagate_function_boundary_layouts
 from .post_boundary_pack import post_function_boundary_pack_propagation
@@ -27,8 +27,8 @@ from .sink_norm_stats_boxing import sink_norm_stats_boxing_across_function_bound
 
 __all__ = [
     "callee_first_functions",
-    "FormMatMulNormStatsCombinePass",
-    "form_matmul_norm_stats_combine",
+    "FormAddNormStatsPass",
+    "form_add_norm_stats",
     "function_nodes",
     "propagate_function_boundary_layouts",
     "post_function_boundary_pack_propagation",

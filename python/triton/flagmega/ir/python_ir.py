@@ -27,6 +27,7 @@ from triton.flagmega.ir.distributed_type import (
     Placement,
     SBP,
     SBPBroadCast,
+    SBPExclusive,
     SBPPartial,
     SBPSplit,
     SplitStage,
@@ -420,7 +421,11 @@ def _type_expr(value: IRType, *, expand_alias: bool = False) -> str:
         ])
         return _call_expr("fm.RefType", positional=(repr(value.name), fields))
     if isinstance(value, DistributedType):
-        keywords = () if value.partial is None else (("partial", _sbp_expr(value.partial)),)
+        keywords = []
+        if value.partial is not None:
+            keywords.append(("partial", _sbp_expr(value.partial)))
+        if value.exclusive is not None:
+            keywords.append(("exclusive", _sbp_expr(value.exclusive)))
         return _call_expr(
             "fm.DistributedType",
             positional=(
@@ -428,7 +433,7 @@ def _type_expr(value: IRType, *, expand_alias: bool = False) -> str:
                 _tuple_expr([_sbp_expr(item) for item in value.axis_policies]),
                 _placement_expr(value.placement),
             ),
-            keywords=keywords,
+            keywords=tuple(keywords),
         )
     raise TypeError(f"Cannot emit Python constructor for IR type {type(value).__name__}.")
 
@@ -517,6 +522,12 @@ def _placement_expr(value: Placement) -> str:
 def _sbp_expr(value: SBP) -> str:
     if isinstance(value, SBPBroadCast):
         return "fm.SBP.broadcast()"
+    if isinstance(value, SBPExclusive):
+        owner = "None" if value.owner_coordinates is None else _tuple_expr([repr(item) for item in value.owner_coordinates])
+        return _call_expr(
+            "fm.SBP.exclusive",
+            positional=(_tuple_expr([repr(item) for item in value.axes]), owner),
+        )
     if isinstance(value, SBPPartial):
         return _call_expr(
             "fm.SBP.partial",
@@ -658,6 +669,12 @@ def _tir_node_expr(value: TIRNode) -> str:
 
 
 def _memory_effect_expr(value: MemoryEffect) -> str:
+    if value.field_effects:
+        return _call_expr("fm.MemoryEffect", keywords=(
+            ("mode", f"fm.MemoryAccessMode.{value.mode.name}"),
+            ("field_effects", _tuple_expr([_tuple_expr((repr(name), _memory_effect_expr(effect)))
+                                          for name, effect in value.field_effects])),
+        ))
     return _call_expr(
         "fm.MemoryEffect",
         keywords=(

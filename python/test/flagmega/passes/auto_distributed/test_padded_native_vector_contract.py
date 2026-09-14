@@ -42,7 +42,7 @@ def test_padded_projection_preserves_physical_packed_function_parameter(columns)
             result = fm.F.tensors.slice_to_shape(unpacked, (2, columns), name="projection", metadata=metadata)
             self.function("main", (lhs, rhs), (result, ))
 
-    before = Graph(dialect="ntt", stage="matmul_norm_stats_lowered", entry="main").build()
+    before = Graph(dialect="ntt", stage="add_norm_stats_lowered", entry="main").build()
     fm.verify_module(before)
     after = lower_vectorization_contracts(before)
     fm.verify_module(after)

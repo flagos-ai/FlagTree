@@ -3,6 +3,7 @@
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
     _paged_attention_combine_call,
+    _paged_attention_gated_combine_call,
 )
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 
@@ -114,6 +115,28 @@ def test_vector_result_domain_visits_every_scalar_lane():
     assert "% 4" in call["result_offset"]
     assert "% 4" in call["partial_accumulator_offset"]
     assert "attention_output_offsets" in call["partial_accumulator_offset"]
+
+
+def test_plain_and_gated_templates_do_not_duplicate_each_others_functions():
+    raw = _raw()
+    gate = dict(raw["outputs"][0]["buffers"][0]["abi"])
+    gate["scalar_storage_strides"] = (700, 400, 32)
+    gated_raw = {**raw, "inputs": (*raw["inputs"], _parameter("gate", gate))}
+    calls = [
+        {**_paged_attention_combine_call(raw), "family": "paged_attention_combine", "variant": "decode",
+         "symbol": "plain_combine", "signature": "maximum, total, accumulator, output", "noinline": True},
+        {**_paged_attention_gated_combine_call(gated_raw), "family": "paged_attention_gated_combine", "variant": "decode",
+         "symbol": "gated_combine", "signature": "maximum, total, accumulator, gate, output", "noinline": True},
+    ]
+    assert "400" in calls[1]["gate_offset"]
+    assert "32" in calls[1]["gate_offset"]
+    registry = TritonTemplateRegistry()
+    source = "\n".join(registry.environment.get_template(f"kernels/{family}/decode.py.jinja").render(
+        render_calls=calls, distributed_entry=False, mesh_hierarchy=(2, 1), mesh_x=1, mesh_y=2)
+        for family in ("paged_attention_combine", "paged_attention_gated_combine"))
+    assert source.count("def plain_combine(") == 1
+    assert source.count("def gated_combine(") == 1
+    compile(source, "mixed_attention_combine.py", "exec")
 
 
 def test_rendered_vector_result_loop_covers_scalar_head_dimension():

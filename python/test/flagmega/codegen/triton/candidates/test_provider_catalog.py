@@ -52,17 +52,21 @@ def test_default_catalog_has_one_explicit_provider_for_every_reviewed_op():
         "nn.softmax",
         "nn.sparse_experts_gate_up",
         "nn.sparse_experts_down",
+        "nn.sparse_experts_dispatch",
+        "nn.sparse_experts_weighted_sum",
         "nn.rotary_embedding",
         "nn.update_paged_attention_kv_cache",
         "ntt.matmul_norm_stats",
-        "ntt.matmul_norm_stats_combine",
+        "ntt.dispatched_experts_gate_up",
+        "ntt.sparse_experts_down_combine",
+        "ntt.add_norm_stats",
         "ntt.gather_reduce_add_norm_apply",
-        "ntt.gather_reduce_qkv_rope_with_cache",
         "ntt.gather_reduce_norm_apply",
         "ntt.packed_matmul",
         "ntt.packed_qkv_parallel_linear",
         "ntt.paged_attention_partial",
         "ntt.paged_attention_combine",
+        "ntt.paged_attention_gated_combine",
         "ntt.vectorized_cast",
         "ntt.vectorized_rope",
         "tensors.cast",
@@ -75,7 +79,7 @@ def test_default_catalog_has_one_explicit_provider_for_every_reviewed_op():
         "tensors.slice",
         "tensors.slice_to_shape",
     })
-    assert len(registry.providers) == 25
+    assert len(registry.providers) == 24
 
 
 def test_selection_orchestrator_contains_no_candidate_catalog_branches():

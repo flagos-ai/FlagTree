@@ -70,10 +70,11 @@ class Concat(OpDefinition):
             raise IRSchemaError("Distributed Concat requires explicit placement on every input.")
         first = values[0]
         if first.axis_policies[axis] != SBP.broadcast() or any(
-            value.axis_policies != first.axis_policies or value.partial != first.partial for value in values
+            value.axis_policies != first.axis_policies or value.partial != first.partial
+            or value.exclusive != first.exclusive for value in values
         ):
             raise IRSchemaError("Concat requires a broadcast concatenation axis and matching owners; insert Boxing.")
-        return DistributedType(output, first.axis_policies, placement, first.partial)
+        return DistributedType(output, first.axis_policies, placement, first.partial, first.exclusive)
 
     @classmethod
     def evaluate(cls, node, arguments, context):

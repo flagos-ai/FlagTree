@@ -23,6 +23,7 @@ from triton.flagmega.codegen.triton.portable_implementations import (
 from triton.flagmega.ir import tensor_type
 from triton.flagmega.codegen.triton.delta_rule_implementations import delta_rule_implementations
 from triton.flagmega.targets.nvidia.shared_layout import align_shared_workspaces
+from triton.flagmega.targets.nvidia.gdn import gdn_state_pipeline_implementations, gdn_large_key_implementations
 from triton.flagmega.ir.tir import (
     TIRAuxiliaryConsumerContract,
     TIRSharedWorkspaceDescriptor,
@@ -61,6 +62,8 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
 
     cooperative = ("cooperative_grid",)
     implementations = (
+        *gdn_state_pipeline_implementations(),
+        *gdn_large_key_implementations(),
         *delta_rule_implementations(),
         *portable_tensor_transform_implementations(),
         *portable_sparse_experts_implementations(),
@@ -272,7 +275,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
                 "output_layout": "broadcast",
             },
             requires=("cooperative_grid", "grid_sync"),
-            facts={"internal_grid_barriers": 1},
+            facts={"internal_grid_barriers": 1, "result_memory_scope": "chip"},
         ),
         _implementation(
             "tir.add_norm_stats.persistent_rms",
@@ -296,6 +299,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "gemv",
             {"block_k": 128, "tile_n": 1},
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "logical",
                 "epilogue": "none",
                 "vectorization_kind": "scalar",
@@ -309,6 +313,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "gemv",
             {"block_k": 128, "tile_n": 16},
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "logical",
                 "epilogue": "none",
                 "vectorization_kind": "output_axis",
@@ -322,6 +327,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "tensor_descriptor_gemv",
             {"block_k": 128, "tile_n": 16},
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "logical",
                 "epilogue": "none",
                 "vectorization_kind": "output_axis",
@@ -428,6 +434,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
                 "tile_n": 16,
             },
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "logical",
                 "epilogue": "none",
                 "vectorization_kind": "output_axis",
@@ -449,6 +456,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
                 "tile_n": 16,
             },
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "packed",
                 "epilogue": "none",
                 "packed_layout": "k_major_n8_k16",
@@ -471,6 +479,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
                 "tile_n": 16,
             },
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "packed",
                 "epilogue": "none",
                 "packed_layout": "k_major_n8_k16",
@@ -583,6 +592,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "packed_k_major_gemv",
             {"block_k": 16, "tile_n": 8},
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "packed",
                 "epilogue": "none",
                 "vectorization_kind": "output_axis",
@@ -597,6 +607,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "packed_k_major_gemv",
             {"block_k": 128, "tile_n": 16},
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "packed",
                 "epilogue": "none",
                 "vectorization_kind": "output_axis",
@@ -612,6 +623,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "packed_k_major_gemv",
             {"block_k": 128, "tile_n": 32},
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "packed",
                 "epilogue": "none",
                 "vectorization_kind": "output_axis",
@@ -627,6 +639,7 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "packed_k_major_gemv",
             {"block_k": 256, "tile_n": 64},
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "packed",
                 "epilogue": "none",
                 "vectorization_kind": "output_axis",
@@ -1718,6 +1731,11 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             facts={"portable_triton": True},
         ),
     )
+    from .sparse_experts import sparse_experts_pipeline_implementations
+    implementations += sparse_experts_pipeline_implementations()
+    from .packed_qkv import packed_qkv_n_tiled_implementations
+    implementations += packed_qkv_n_tiled_implementations(next(
+        value for value in implementations if value.id == "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"))
     # A separate, explicit transport choice. The synchronous candidate keeps
     # its masked-row contract and remains the preference until measured.
     staged = next(value for value in implementations if value.id == (
@@ -1750,7 +1768,8 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "tir.norm_apply.local",
         ),
         "gdn_convolution": ("tir.gdn_convolution.persistent",),
-        "gdn_recurrent": ("tir.gdn_recurrent.persistent",),
+        "gdn_recurrent": ("tir.gdn_recurrent.persistent", "tir.gdn_recurrent.persistent_k256",
+                          "tir.gdn_recurrent.persistent_k512"),
         "distributed_boxing": (
             "tir.distributed_boxing.tensor_load",
             "tir.distributed_boxing.tensor_store",

@@ -43,7 +43,7 @@ class PagedAttentionPartialCandidateProvider(TypeInferenceCandidateProvider):
 class PagedAttentionCombineCandidateProvider(DistributedCandidateProviderBase):
     """Enumerate legal materialization/reduce-scatter output contracts."""
 
-    op_names = frozenset({"ntt.paged_attention_combine"})
+    op_names = frozenset({"ntt.paged_attention_combine", "ntt.paged_attention_gated_combine"})
     allows_partial_inputs = True
     is_exhaustive = True
 
@@ -52,14 +52,15 @@ class PagedAttentionCombineCandidateProvider(DistributedCandidateProviderBase):
         context: DistributedCandidateContext,
     ) -> tuple[DistributedCandidate, ...]:
         node = context.source_call
-        if len(context.available_input_types) != 3:
+        gated = node.op == "ntt.paged_attention_gated_combine"
+        if len(context.available_input_types) != (4 if gated else 3):
             return ()
         expected = node.attrs.get("output_type")
         if not isinstance(expected, IRType):
             return ()
         expected_tensor = tensor_of(expected)
         definition = get_definition(node.op)
-        outputs = context.leaf_candidate_types(expected_tensor)
+        outputs = () if gated else context.leaf_candidate_types(expected_tensor)
         candidates: list[DistributedCandidate] = []
         seen: set[tuple[IRType, tuple[IRType, ...]]] = set()
         for input_types in product(*context.available_input_types):
@@ -73,7 +74,9 @@ class PagedAttentionCombineCandidateProvider(DistributedCandidateProviderBase):
                 )
                 for index, value_type in enumerate(input_types)
             )
-            for output_type in outputs:
+            # A materialized gate already fixes the output ownership. Do not
+            # discard valid producer layouts absent from the leaf generator.
+            for output_type in ((input_types[3],) if gated else outputs):
                 normalized = definition.normalize_attrs({
                     **dict(node.attrs),
                     "output_type": output_type,

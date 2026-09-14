@@ -22,16 +22,17 @@ def test_sparse_expert_decomposition_preserves_every_rounding_contract(roundings
     pass_ = DataflowPass("DecomposeSparseExperts", (decompose_sparse_experts_rule(), ))
     rewritten = pass_.run(module)
     assert not any(node.op == "nn.sparse_experts" for node in rewritten.nodes)
-    gate, down = rewritten.node_map["experts.gate_up"], rewritten.node_map["experts"]
+    gate, down = rewritten.node_map["experts.gate_up"], rewritten.node_map["experts.down"]
+    combine = rewritten.node_map["experts"]
     assert gate.op == "nn.sparse_experts_gate_up"
     assert down.op == "nn.sparse_experts_down"
     assert down.inputs[0] == gate.id
     assert gate.attrs["round_projections"] == roundings[0]
     assert gate.attrs["round_activation"] == roundings[1]
     assert down.attrs["round_projection"] == roundings[2]
-    assert down.attrs["round_weighted_output"] == roundings[3]
+    assert combine.attrs["round_weighted_output"] == roundings[3]
     assert gate.metadata["test_tag"] == down.metadata["test_tag"] == "kept"
-    assert rewritten.node_map["output"].inputs == (down.id, down.id)
+    assert rewritten.node_map["output"].inputs == (combine.id, combine.id)
     assert pass_.run(rewritten) == rewritten
     evaluator = TorchEvaluator(DictWeightResolver({}))
     inputs = values_for(module)
@@ -41,7 +42,7 @@ def test_sparse_expert_decomposition_preserves_every_rounding_contract(roundings
 
 def test_sparse_experts_is_decomposed_by_the_real_target_independent_pipeline():
     module = decompose_complex_ops(build_module())
-    assert module.node_map["experts"].op == "nn.sparse_experts_down"
+    assert module.node_map["experts"].op == "nn.sparse_experts_combine"
     assert module.node_map["experts.gate_up"].op == "nn.sparse_experts_gate_up"
 
 

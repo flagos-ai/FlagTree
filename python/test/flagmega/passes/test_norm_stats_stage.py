@@ -23,8 +23,12 @@ class _Module(fm.Module):
 
 def test_post_distribution_norm_fusion_is_a_named_dumpable_stage():
     stage = next_stage("distributed")
+    assert stage is not None and stage.name == "post-distribution-thaw"
+    thawed = stage.run(_Module().build(), NvidiaSm90Target())
+    assert thawed.stage == "distribution_constants_open"
+    stage = next_stage(thawed.stage)
     assert stage is not None and stage.name == "fold-materialized-packed-qkv-combine"
-    folded = get_stage(stage.name).run(_Module().build(), NvidiaSm90Target())
+    folded = stage.run(thawed, NvidiaSm90Target())
     assert folded.stage == "qkv_combine_folded"
     lowered = get_stage(next_stage(folded.stage).name).run(
         folded, NvidiaSm90Target())
@@ -43,12 +47,15 @@ def test_post_distribution_norm_fusion_is_a_named_dumpable_stage():
     assert finalized_sunk.stage == "finalized_norm_stats_boxing_sunk"
     contracted = get_stage(next_stage(finalized_sunk.stage).name).run(
         finalized_sunk, NvidiaSm90Target())
-    assert contracted.stage == "matmul_norm_stats_lowered"
+    assert contracted.stage == "add_norm_stats_lowered"
     contracted = get_stage(next_stage(contracted.stage).name).run(
         contracted, NvidiaSm90Target())
     assert contracted.stage == "vector_contracts_lowered"
-    result = get_stage(next_stage(contracted.stage).name).run(
+    gated = get_stage(next_stage(contracted.stage).name).run(
         contracted, NvidiaSm90Target())
+    assert gated.stage == "attention_gate_fused"
+    result = get_stage(next_stage(gated.stage).name).run(
+        gated, NvidiaSm90Target())
     assert result.stage == "fused_norm"
     assert result.node_map["output"].op == "nn.rms_norm"
     assert next_stage(result.stage).name == "constant-cse"

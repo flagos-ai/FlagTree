@@ -174,3 +174,27 @@ def test_split_candidate_providers_are_target_neutral():
     ).lower()
     for spelling in ("nvidia", "sm90", "cuda", "mma", "tma", "warp"):
         assert spelling not in source
+
+
+def test_gated_combine_candidates_bind_gate_and_output_owners_together():
+    from python.test.flagmega.passes.tir.test_attention_gate_fusion import graph
+    from triton.flagmega.passes.tir.fuse_attention_gate import fuse_attention_gate
+    logical = fuse_attention_gate(graph())
+    distributed = fuse_attention_gate(graph(distributed=True))
+    root = logical.node_map["result"]
+    typed = distributed.node_map["result"]
+    types = tuple(distributed.node_map[key].type for key in typed.inputs)
+    # An upstream producer can offer a valid layout outside the default leaf
+    # generator's contiguous policies; the gate/output equality still applies.
+    output = fm.DistributedType(typed.type.tensor,
+        (*typed.type.axis_policies[:2], fm.SBP.split_block_cyclic((0,), 1)), typed.type.placement)
+    types = (*types[:3], output)
+    inferred = fm.get_definition(root.op).prepare(
+        tuple(_var(f"input{index}", value) for index, value in enumerate(types)), {**root.attrs, "output_type": output})
+    assert inferred.result_type == output
+    candidates = PagedAttentionCombineCandidateProvider().get_candidates(
+        DistributedCandidateContext(logical, root, typed.type.placement, tuple((value,) for value in types)))
+    assert candidates
+    assert any(candidate.return_type == output for candidate in candidates)
+    assert all(candidate.input_types[3] == candidate.return_type for candidate in candidates)
+    assert all(candidate.target_attrs["output_type"] == candidate.return_type for candidate in candidates)

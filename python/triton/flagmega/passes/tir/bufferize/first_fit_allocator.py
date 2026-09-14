@@ -39,7 +39,8 @@ class FirstFitBufferAllocator:
     name = "first-fit/lifetime"
 
     def allocate(self, lifetimes: tuple[BufferLifetime, ...], memory_space: MemorySpace, *,
-                 avoid_reuse: tuple[tuple[str, str], ...] = ()) -> AllocationResult:
+                 avoid_reuse: tuple[tuple[str, str], ...] = (),
+                 bytes_budget: int = 0) -> AllocationResult:
         pairs = validate_problem(lifetimes, memory_space, avoid_reuse)
         offsets, peak = first_fit_placement(lifetimes, memory_space)
         try:

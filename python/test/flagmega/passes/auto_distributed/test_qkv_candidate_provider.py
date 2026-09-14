@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 import inspect
+from dataclasses import replace
 
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.auto_distributed import DistributedCandidateContext
@@ -9,6 +10,16 @@ from triton.flagmega.passes.auto_distributed.providers import (
     PackedQKVParallelLinearCandidateProvider,
 )
 from triton.flagmega.targets.pyntt_split import PyNttDistributedSplitCandidateProvider
+
+
+def _compute_cost_model():
+    from triton.flagmega.passes.auto_distributed.operation_cost import DistributedOperationCostModel
+
+    return DistributedOperationCostModel(
+        block_local_read_bytes_per_cycle=1 << 40, block_local_write_bytes_per_cycle=1 << 40,
+        chip_global_read_bytes_per_cycle=1 << 40, chip_global_write_bytes_per_cycle=1 << 40,
+        identity="test.compute-bound/v1",
+    )
 
 
 class PackedQKVModule(fm.Module):
@@ -94,6 +105,7 @@ def test_packed_qkv_provider_couples_heterogeneous_block_cyclic_outputs():
         placement,
         tuple((module.node_map[input_id].type,) for input_id in node.inputs),
         PyNttDistributedSplitCandidateProvider(block_bytes=128),
+        operation_cost_model=_compute_cost_model(),
     )
 
     candidate = next(
@@ -121,8 +133,9 @@ def test_packed_qkv_provider_couples_heterogeneous_block_cyclic_outputs():
         fm.SBP.split_block_cyclic((0, 1), 1),
         fm.SBP.split_block_cyclic((0, 1), 1),
     )
-    local_mac_work = (2048 + 1024 + 1024) * 2048 // placement.size
-    assert candidate.operation_cost == local_mac_work + 6_112
+    # Each of the three local projections uses the shared SIMT GEMV cost
+    # contract, with a minimum 32-wide scalar output domain.
+    assert candidate.operation_cost == 3 * 32 * 2048
 
 
 def test_packed_qkv_work_counts_vector_lanes_as_scalar_outputs():
@@ -135,6 +148,7 @@ def test_packed_qkv_work_counts_vector_lanes_as_scalar_outputs():
         placement,
         tuple((module.node_map[input_id].type,) for input_id in node.inputs),
         PyNttDistributedSplitCandidateProvider(block_bytes=128),
+        operation_cost_model=_compute_cost_model(),
     )
 
     replicated = next(
@@ -143,13 +157,12 @@ def test_packed_qkv_work_counts_vector_lanes_as_scalar_outputs():
         if candidate.reason == "broadcast-replicated"
     )
 
-    # Q/K/V contain 2048 + 1024 + 1024 scalar outputs, each reduced over
-    # K=2048.  The lower-order shape term is 0 + 1024 + 1024.
+    # Q/K/V contain 2048 + 1024 + 1024 scalar outputs, reduced over K=2048.
     scalar_mac_work = (2048 + 1024 + 1024) * 2048
-    assert replicated.operation_cost == scalar_mac_work + 2_048
+    assert replicated.operation_cost == scalar_mac_work
 
 
-def test_packed_qkv_objective_prefers_balanced_hybrid_after_partial_combine():
+def test_packed_qkv_cost_factors_account_for_hybrid_compute_geometry():
     module = PackedQKVModule().build()
     node = module.node_map["qkv"]
     placement = fm.Placement((8, 16), "yx", "bb")
@@ -159,6 +172,7 @@ def test_packed_qkv_objective_prefers_balanced_hybrid_after_partial_combine():
         placement,
         tuple((module.node_map[input_id].type,) for input_id in node.inputs),
         PyNttDistributedSplitCandidateProvider(block_bytes=128),
+        operation_cost_model=_compute_cost_model(),
     )
     candidates = PackedQKVParallelLinearCandidateProvider().get_candidates(context)
 
@@ -182,17 +196,13 @@ def test_packed_qkv_objective_prefers_balanced_hybrid_after_partial_combine():
         )
     )
 
-    # Both plans issue the same number of local scalar MACs.  The direct plan
-    # leaves three 2048-deep reductions with only 16/8/8 scalar outputs per
-    # owner, while the hybrid plan exposes 256-deep reductions and 128/64/64
-    # outputs.  Its regular shape-balance advantage must survive the measured
-    # 4608-byte partial materialization boundary used by the combine provider.
-    assert direct.operation_cost == 65_536 + 6_112
-    assert hybrid.operation_cost == 65_536 + 512
-    assert hybrid.operation_cost + 4_608 < direct.operation_cost
-    assert hybrid.objective_kind == "heuristic"
-    assert hybrid.objective_model == "flagmega.packed-qkv-local-shape-balance/v1"
-    assert "local-k-n-imbalance" in hybrid.objective_evidence
+    # Padding is physical work; abs(K-N) is not a latency factor. Memory and
+    # collective factors are tested separately with the same target model.
+    assert direct.operation_cost == 3 * 32 * 2048
+    assert hybrid.operation_cost == 65_536
+    assert hybrid.objective_kind == "analytic"
+    assert hybrid.objective_model == "test.compute-bound/v1"
+    assert "op-definition-cost-factors" in hybrid.objective_evidence
 
 
 def test_packed_qkv_provider_has_no_machine_geometry_or_target_dependency():
@@ -202,3 +212,26 @@ def test_packed_qkv_provider_has_no_machine_geometry_or_target_dependency():
         "context_mesh_size", "head_mesh_size", "qwen",
     ):
         assert spelling not in source.lower()
+
+
+def test_packed_qkv_cost_uses_target_throughput_instead_of_raw_macs():
+    from triton.flagmega.passes.auto_distributed.operation_cost import DistributedOperationCostModel
+
+    module = PackedQKVModule().build()
+    node = module.node_map["qkv"]
+    placement = fm.Placement((8, 16), "yx", "bb")
+    model = DistributedOperationCostModel(
+        block_local_read_bytes_per_cycle=1 << 40, block_local_write_bytes_per_cycle=1 << 40,
+        chip_global_read_bytes_per_cycle=1 << 40, chip_global_write_bytes_per_cycle=1 << 40,
+        identity="test.compute-bound/v1",
+    )
+    context = DistributedCandidateContext(
+        module, node, placement, tuple((module.node_map[i].type,) for i in node.inputs),
+        PyNttDistributedSplitCandidateProvider(block_bytes=128), operation_cost_model=model,
+    )
+    provider = PackedQKVParallelLinearCandidateProvider()
+    slow = {c.id: c for c in provider.get_candidates(context)}
+    fast = provider.get_candidates(replace(context, operation_cost_model=replace(model, simt_fma_per_cycle=8)))
+    assert all(c.objective_kind == "analytic" for c in fast)
+    assert all(c.objective_model == model.identity for c in fast)
+    assert all(slow[c.id].operation_cost == c.operation_cost * 8 for c in fast)

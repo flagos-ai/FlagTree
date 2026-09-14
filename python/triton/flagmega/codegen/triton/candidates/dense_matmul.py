@@ -119,6 +119,7 @@ class DenseMatmulCandidateProvider:
                 )
                 if output_extent is not None
                 and reduction_extent is not None
+                and _supports_local_rows(implementation, context.module.node_map[node.inputs[0]].type)
                 and (
                     implementation.parameters.get("descriptor_kind") != "table"
                     or isinstance(context.module.node_map[node.inputs[1]].type, DistributedType)
@@ -252,6 +253,8 @@ class DenseMatmulCandidateProvider:
         local_output_extent = _local_scalar_last_axis_extent(node.type)
 
         def applicable(implementation) -> bool:
+            if not _supports_local_rows(implementation, context.module.node_map[node.inputs[0]].type):
+                return False
             required_transpose_b = implementation.contract.get("transpose_b")
             if (
                 required_transpose_b is not None
@@ -403,6 +406,14 @@ class DenseMatmulCandidateProvider:
         return TritonCandidateProposal(
             variants, context.choose_default("dense_matmul", variants)
         )
+
+
+def _supports_local_rows(implementation, value_type):
+    shape = local_shape(value_type) if isinstance(value_type, DistributedType) else logical_type(value_type).shape
+    if not shape or any(not dimension.is_fixed for dimension in shape[:-1]):
+        return False
+    return (prod(d.fixed_value for d in shape[:-1]) == 1
+            or implementation.contract.get("supports_local_row_loop", False))
 
 
 def _supports_contiguous_descriptor_tiles(

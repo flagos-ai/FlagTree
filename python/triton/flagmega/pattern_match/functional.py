@@ -42,6 +42,9 @@ from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
 from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
+from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine, SparseExpertsWeightedSum
+from triton.flagmega.ir.ops.ntt.sparse_experts import DispatchedExpertsGateUp, SparseExpertsDownCombine
 from triton.flagmega.ir.ops.nn.dense_matmul_glu import DenseMatMulGlu
 from triton.flagmega.ir.ops.nn.gated_delta_net import GatedDeltaNet
 from triton.flagmega.ir.ops.nn.gdn_convolution import GatedDeltaNetConvolution
@@ -73,15 +76,12 @@ from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
 )
 from triton.flagmega.ir.ops.ntt.vectorized_cast import VectorizedCast
 from triton.flagmega.ir.ops.ntt.vectorized_rope import VectorizedRoPE
-from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import MatMulNormStatsCombine
+from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
 from triton.flagmega.ir.ops.ntt.gather_reduce_add_norm_apply import (
     GatherReduceAddNormApply,
 )
 from triton.flagmega.ir.ops.ntt.gather_reduce_norm_apply import (
     GatherReduceNormApply,
-)
-from triton.flagmega.ir.ops.ntt.gather_reduce_qkv_rope_with_cache import (
-    GatherReduceQKVRoPEWithCache,
 )
 from triton.flagmega.ir.ops.ntt.matmul_norm_stats import MatMulNormStats
 from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
@@ -90,6 +90,7 @@ from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear_combine import (
     PackedQKVParallelLinearCombine,
 )
 from triton.flagmega.ir.ops.ntt.paged_attention_combine import PagedAttentionCombine
+from triton.flagmega.ir.ops.ntt.paged_attention_gated_combine import PagedAttentionGatedCombine
 from triton.flagmega.ir.ops.ntt.paged_attention_partial import PagedAttentionPartial
 from triton.flagmega.ir.ops.tensors.bitcast import Bitcast
 from triton.flagmega.ir.ops.tensors.cast import Cast
@@ -103,6 +104,7 @@ from triton.flagmega.ir.ops.tensors.unpack import Unpack
 from triton.flagmega.ir.ops.tir.barrier import Barrier
 from triton.flagmega.ir.ops.tir.buffer import Buffer
 from triton.flagmega.ir.ops.tir.buffer_view import BufferView
+from triton.flagmega.ir.ops.tir.buffer_subspan import BufferSubspan
 from triton.flagmega.ir.ops.tir.ref_slice import RefSlice
 from triton.flagmega.ir.ops.tir.kernel import Kernel
 from triton.flagmega.ir.ops.tir.call import Call as TIRCall
@@ -738,7 +740,7 @@ class _nn:
     @staticmethod
     @_op_pattern_function(SparseExpertsGateUp)
     def is_sparse_experts_gate_up(
-        q: PatternInput = None,
+        dispatched: PatternInput = None,
         router_expert_ids: PatternInput = None,
         gate_input_scale: PatternInput = None,
         gate_weight: PatternInput = None,
@@ -756,7 +758,7 @@ class _nn:
     ) -> CallPattern:
         return _call_pattern(
             SparseExpertsGateUp,
-            (q, router_expert_ids, gate_input_scale, gate_weight, gate_proj_scale, up_input_scale, up_weight,
+            (dispatched, router_expert_ids, gate_input_scale, gate_weight, gate_proj_scale, up_input_scale, up_weight,
              up_proj_scale),
             attributes={
                 "output_dtype": _sparse_dtype_pattern(output_dtype), "round_projections": round_projections,
@@ -772,29 +774,45 @@ class _nn:
     def is_sparse_experts_down(
         activations: PatternInput = None,
         router_expert_ids: PatternInput = None,
-        router_expert_weights: PatternInput = None,
         down_input_scale: PatternInput = None,
         down_weight: PatternInput = None,
         down_proj_scale: PatternInput = None,
         *,
-        output_dtype=None,
         round_projection: bool | None = None,
-        round_weighted_output: bool | None = None,
         target_name: str | None = None,
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
         return _call_pattern(
             SparseExpertsDown,
-            (activations, router_expert_ids, router_expert_weights, down_input_scale, down_weight, down_proj_scale),
-            attributes={
-                "output_dtype": _sparse_dtype_pattern(output_dtype), "round_projection": round_projection,
-                "round_weighted_output": round_weighted_output
-            },
+            (activations, router_expert_ids, down_input_scale, down_weight, down_proj_scale),
+            attributes={"round_projection": round_projection},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
         )
+
+    @staticmethod
+    @_op_pattern_function(SparseExpertsDispatch)
+    def is_sparse_experts_dispatch(value=None, router_expert_ids=None, *, target_name=None, call_name=None, condition=None):
+        return _call_pattern(SparseExpertsDispatch, (value, router_expert_ids), target_name=target_name,
+                             call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(SparseExpertsCombine)
+    def is_sparse_experts_combine(projections=None, router_expert_weights=None, *, output_dtype=None,
+                                  round_weighted_output=None, target_name=None, call_name=None, condition=None):
+        return _call_pattern(SparseExpertsCombine, (projections, router_expert_weights),
+                             attributes={"output_dtype": _sparse_dtype_pattern(output_dtype), "round_weighted_output": round_weighted_output},
+                             target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(SparseExpertsWeightedSum)
+    def is_sparse_experts_weighted_sum(projections=None, router_expert_weights=None, *, output_dtype=None,
+                                       round_weighted_output=None, target_name=None, call_name=None, condition=None):
+        return _call_pattern(SparseExpertsWeightedSum, (projections, router_expert_weights),
+                             attributes={"output_dtype": _sparse_dtype_pattern(output_dtype), "round_weighted_output": round_weighted_output},
+                             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(QKVParallelLinear)
@@ -1283,6 +1301,8 @@ class _nn:
         state: PatternInput = None,
         layer_id: PatternInput = None,
         advance_sequence: PatternInput = None,
+        q_stats: PatternInput = None,
+        k_stats: PatternInput = None,
         *,
         q_axis: int | None = None,
         q_epsilon: float | None = None,
@@ -1313,6 +1333,8 @@ class _nn:
                 state,
                 layer_id,
                 advance_sequence,
+                q_stats,
+                k_stats,
             ),
             attributes={
                 "q_axis": q_axis,
@@ -1522,6 +1544,31 @@ class _nn:
 
 class _ntt:
     @staticmethod
+    @_op_pattern_function(DispatchedExpertsGateUp)
+    def is_dispatched_experts_gate_up(q=None, router_expert_ids=None, gate_input_scale=None, gate_weight=None,
+                                     gate_proj_scale=None, up_input_scale=None, up_weight=None, up_proj_scale=None,
+                                     *, output_dtype=None, round_projections=None, round_activation=None,
+                                     target_name=None, call_name=None, condition=None):
+        return _call_pattern(DispatchedExpertsGateUp,
+                             (q, router_expert_ids, gate_input_scale, gate_weight, gate_proj_scale,
+                              up_input_scale, up_weight, up_proj_scale),
+                             attributes={"output_dtype": _sparse_dtype_pattern(output_dtype),
+                                         "round_projections": round_projections, "round_activation": round_activation},
+                             target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
+    @_op_pattern_function(SparseExpertsDownCombine)
+    def is_sparse_experts_down_combine(activations=None, router_expert_ids=None, down_input_scale=None, down_weight=None,
+                                      down_proj_scale=None, router_expert_weights=None, *, round_projection=None,
+                                      output_dtype=None, round_weighted_output=None, cast_output=None,
+                                      target_name=None, call_name=None, condition=None):
+        return _call_pattern(SparseExpertsDownCombine,
+                             (activations, router_expert_ids, down_input_scale, down_weight, down_proj_scale, router_expert_weights),
+                             attributes={"output_dtype": _sparse_dtype_pattern(output_dtype), "round_projection": round_projection,
+                                         "round_weighted_output": round_weighted_output, "cast_output": cast_output},
+                             target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
     @_op_pattern_function(GatherReduceAddNormApply)
     def is_gather_reduce_add_norm_apply(
         input: PatternInput = None,
@@ -1585,73 +1632,6 @@ class _ntt:
                 "round_before_scale": round_before_scale,
                 "output_dtype": output_dtype,
                 "has_bias": has_bias,
-            },
-            target_name=target_name,
-            call_name=call_name,
-            condition=condition,
-        )
-
-    @staticmethod
-    @_op_pattern_function(GatherReduceQKVRoPEWithCache)
-    def is_gather_reduce_qkv_rope_with_cache(
-        qkv: PatternInput = None,
-        q_scale: PatternInput = None,
-        k_scale: PatternInput = None,
-        q_bias: PatternInput = None,
-        k_bias: PatternInput = None,
-        cos: PatternInput = None,
-        sin: PatternInput = None,
-        state: PatternInput = None,
-        layer_id: PatternInput = None,
-        advance_sequence: PatternInput = None,
-        *,
-        materialized_qkv_type: IRType | None = None,
-        logical_qkv_type: IRType | None = None,
-        q_axis: int | None = None,
-        q_epsilon: float | None = None,
-        q_use_mean: bool | None = None,
-        q_round_before_scale: bool | None = None,
-        k_axis: int | None = None,
-        k_epsilon: float | None = None,
-        k_use_mean: bool | None = None,
-        k_round_before_scale: bool | None = None,
-        round_qk_intermediates: bool | None = None,
-        rotary_dim: int | None = None,
-        qkv_layout: tuple[str, str, str] | None = None,
-        attention_layout: tuple[str, str, str] | None = None,
-        target_name: str | None = None,
-        call_name: str | None = None,
-        condition: Condition = None,
-    ) -> CallPattern:
-        return _call_pattern(
-            GatherReduceQKVRoPEWithCache,
-            (
-                qkv,
-                q_scale,
-                k_scale,
-                q_bias,
-                k_bias,
-                cos,
-                sin,
-                state,
-                layer_id,
-                advance_sequence,
-            ),
-            attributes={
-                "materialized_qkv_type": materialized_qkv_type,
-                "logical_qkv_type": logical_qkv_type,
-                "q_axis": q_axis,
-                "q_epsilon": q_epsilon,
-                "q_use_mean": q_use_mean,
-                "q_round_before_scale": q_round_before_scale,
-                "k_axis": k_axis,
-                "k_epsilon": k_epsilon,
-                "k_use_mean": k_use_mean,
-                "k_round_before_scale": k_round_before_scale,
-                "round_qk_intermediates": round_qk_intermediates,
-                "rotary_dim": rotary_dim,
-                "qkv_layout": qkv_layout,
-                "attention_layout": attention_layout,
             },
             target_name=target_name,
             call_name=call_name,
@@ -1772,6 +1752,23 @@ class _ntt:
         )
 
     @staticmethod
+    @_op_pattern_function(PagedAttentionGatedCombine)
+    def is_paged_attention_gated_combine(
+        max_state: PatternInput = None, sum_state: PatternInput = None,
+        acc_state: PatternInput = None, gate: PatternInput = None, *,
+        layout: tuple[str, str, str] | None = None, hidden_size: int | None = None,
+        output_data_type=None, output_type: IRType | None = None,
+        split_hierarchy_axis: int | None = None, split_count: int | None = None,
+        target_name: str | None = None, call_name: str | None = None, condition: Condition = None,
+    ) -> CallPattern:
+        return _call_pattern(
+            PagedAttentionGatedCombine, (max_state, sum_state, acc_state, gate),
+            attributes={"layout": layout, "hidden_size": hidden_size, "output_data_type": output_data_type,
+                        "output_type": output_type, "split_hierarchy_axis": split_hierarchy_axis,
+                        "split_count": split_count},
+            target_name=target_name, call_name=call_name, condition=condition)
+
+    @staticmethod
     @_op_pattern_function(PackedQKVParallelLinearCombine)
     def is_packed_qkv_parallel_linear_combine(
         qkv: PatternInput = None,
@@ -1879,8 +1876,8 @@ class _ntt:
         )
 
     @staticmethod
-    @_op_pattern_function(MatMulNormStatsCombine)
-    def is_matmul_norm_stats_combine(
+    @_op_pattern_function(AddNormStats)
+    def is_add_norm_stats(
         input: PatternInput = None,
         addend: PatternInput = None,
         *,
@@ -1891,7 +1888,7 @@ class _ntt:
         condition: Condition = None,
     ) -> CallPattern:
         return _call_pattern(
-            MatMulNormStatsCombine,
+            AddNormStats,
             (input, addend),
             attributes={"axis": axis, "use_mean": use_mean},
             target_name=target_name,
@@ -2255,6 +2252,13 @@ class _tir:
             call_name=call_name,
             condition=_with_node_constraints(condition, result_type=new_type),
         )
+
+    @staticmethod
+    @_op_pattern_function(BufferSubspan)
+    def is_buffer_subspan(value: PatternInput = None, offsets=None, shape=None, *, target_name: str | None = None,
+                          call_name: str | None = None, condition: Condition = None) -> CallPattern:
+        return _call_pattern(BufferSubspan, (value,), attributes={"offsets": offsets, "shape": shape},
+                             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(RefSlice)

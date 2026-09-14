@@ -60,6 +60,9 @@ from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
 from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
+from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine, SparseExpertsWeightedSum
+from triton.flagmega.ir.ops.ntt.sparse_experts import DispatchedExpertsGateUp, SparseExpertsDownCombine
 from triton.flagmega.ir.ops.nn.matmul_glu import MatMulGlu
 from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulGlu
@@ -81,16 +84,13 @@ from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
 )
 from triton.flagmega.ir.ops.ntt.vectorized_cast import VectorizedCast
 from triton.flagmega.ir.ops.ntt.vectorized_rope import VectorizedRoPE
-from triton.flagmega.ir.ops.ntt.gather_reduce_qkv_rope_with_cache import (
-    GatherReduceQKVRoPEWithCache,
-)
 from triton.flagmega.ir.ops.ntt.gather_reduce_norm_apply import (
     GatherReduceNormApply,
 )
 from triton.flagmega.ir.ops.ntt.gather_reduce_add_norm_apply import (
     GatherReduceAddNormApply,
 )
-from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import MatMulNormStatsCombine
+from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
 from triton.flagmega.ir.ops.ntt.matmul_norm_stats import MatMulNormStats
 from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
 from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear import PackedQKVParallelLinear
@@ -98,6 +98,7 @@ from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear_combine import (
     PackedQKVParallelLinearCombine,
 )
 from triton.flagmega.ir.ops.ntt.paged_attention_combine import PagedAttentionCombine
+from triton.flagmega.ir.ops.ntt.paged_attention_gated_combine import PagedAttentionGatedCombine
 from triton.flagmega.ir.ops.ntt.paged_attention_partial import PagedAttentionPartial
 from triton.flagmega.ir.ops.tensors.bitcast import Bitcast
 from triton.flagmega.ir.ops.tensors.cast import Cast
@@ -111,6 +112,7 @@ from triton.flagmega.ir.ops.tensors.unpack import Unpack
 from triton.flagmega.ir.ops.tir.barrier import Barrier
 from triton.flagmega.ir.ops.tir.buffer import Buffer
 from triton.flagmega.ir.ops.tir.buffer_view import BufferView
+from triton.flagmega.ir.ops.tir.buffer_subspan import BufferSubspan
 from triton.flagmega.ir.ops.tir.ref_slice import RefSlice
 from triton.flagmega.ir.ops.tir.kernel import Kernel
 from triton.flagmega.ir.ops.tir.call import Call
@@ -460,7 +462,7 @@ class _nn:
     @staticmethod
     @_op_function(SparseExpertsGateUp)
     def sparse_experts_gate_up(
-        q: Node,
+        dispatched: Node,
         router_expert_ids: Node,
         gate_input_scale: Node,
         gate_weight: Node,
@@ -477,7 +479,7 @@ class _nn:
     ) -> Node:
         """Produce [tokens, routes, intermediate] selected-expert activations."""
         return SparseExpertsGateUp.construct(
-            q,
+            dispatched,
             router_expert_ids,
             gate_input_scale,
             gate_weight,
@@ -497,35 +499,44 @@ class _nn:
     def sparse_experts_down(
         activations: Node,
         router_expert_ids: Node,
-        router_expert_weights: Node,
         down_input_scale: Node,
         down_weight: Node,
         down_proj_scale: Node,
         *,
-        output_dtype: DataType | str | None = None,
         round_projection: bool = False,
-        round_weighted_output: bool = False,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
-        """Project each route, weight it, and accumulate routes in FP32 order.
-
-        Per-route projection/weighted rounding disallows split-K, since those
-        rounding boundaries cannot commute with the partial-sum collective.
-        """
+        """Retain FP32 [tokens, routes, hidden] projections before combination."""
         return SparseExpertsDown.construct(
             activations,
             router_expert_ids,
-            router_expert_weights,
             down_input_scale,
             down_weight,
             down_proj_scale,
-            output_dtype=output_dtype,
             round_projection=round_projection,
-            round_weighted_output=round_weighted_output,
             name=name,
             metadata=metadata,
         )
+
+    @staticmethod
+    @_op_function(SparseExpertsDispatch)
+    def sparse_experts_dispatch(value: Node, router_expert_ids: Node, *, name=None, metadata: Metadata = None) -> Node:
+        return SparseExpertsDispatch.construct(value, router_expert_ids, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(SparseExpertsCombine)
+    def sparse_experts_combine(projections: Node, router_expert_weights: Node, *, output_dtype=None,
+                               round_weighted_output=False, name=None, metadata: Metadata = None) -> Node:
+        return SparseExpertsCombine.construct(projections, router_expert_weights, output_dtype=output_dtype,
+                                              round_weighted_output=round_weighted_output, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(SparseExpertsWeightedSum)
+    def sparse_experts_weighted_sum(projections: Node, router_expert_weights: Node, *, output_dtype=None,
+                                    round_weighted_output=False, name=None, metadata: Metadata = None) -> Node:
+        return SparseExpertsWeightedSum.construct(projections, router_expert_weights, output_dtype=output_dtype,
+                                                  round_weighted_output=round_weighted_output, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(NormStats)
@@ -974,6 +985,8 @@ class _nn:
         state: Node,
         layer_id: Node,
         advance_sequence: Node,
+        q_stats: Node,
+        k_stats: Node,
         *,
         q_axis: int,
         q_epsilon: float,
@@ -990,7 +1003,7 @@ class _nn:
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
-        """Normalize Q/K, apply RoPE, and update both paged-cache slots.
+        """Apply Q/K statistics, RoPE, and update both paged-cache slots.
 
         With round_qk_intermediates=False, norm/RoPE use FP32 until the
         final Q/K store; projection and cache element types are unchanged.
@@ -1007,6 +1020,8 @@ class _nn:
             state,
             layer_id,
             advance_sequence,
+            q_stats,
+            k_stats,
             q_axis=q_axis,
             q_epsilon=q_epsilon,
             q_use_mean=q_use_mean,
@@ -1425,6 +1440,28 @@ class _tensors:
 
 class _ntt:
     @staticmethod
+    @_op_function(DispatchedExpertsGateUp)
+    def dispatched_experts_gate_up(q: Node, router_expert_ids: Node, gate_input_scale: Node, gate_weight: Node,
+                                  gate_proj_scale: Node, up_input_scale: Node, up_weight: Node, up_proj_scale: Node,
+                                  *, output_dtype=None, round_projections=False, round_activation=False,
+                                  name=None, metadata: Metadata = None) -> Node:
+        return DispatchedExpertsGateUp.construct(q, router_expert_ids, gate_input_scale, gate_weight, gate_proj_scale,
+                                                up_input_scale, up_weight, up_proj_scale, output_dtype=output_dtype,
+                                                round_projections=round_projections, round_activation=round_activation,
+                                                name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(SparseExpertsDownCombine)
+    def sparse_experts_down_combine(activations: Node, router_expert_ids: Node, down_input_scale: Node, down_weight: Node,
+                                   down_proj_scale: Node, router_expert_weights: Node, *, round_projection=False,
+                                   output_dtype=None, round_weighted_output=False, cast_output=False,
+                                   name=None, metadata: Metadata = None) -> Node:
+        return SparseExpertsDownCombine.construct(activations, router_expert_ids, down_input_scale, down_weight,
+                                                 down_proj_scale, router_expert_weights, round_projection=round_projection,
+                                                 output_dtype=output_dtype, round_weighted_output=round_weighted_output,
+                                                 cast_output=cast_output, name=name, metadata=metadata)
+
+    @staticmethod
     @_op_function(GatherReduceAddNormApply)
     def gather_reduce_add_norm_apply(
         input: Node,
@@ -1490,68 +1527,6 @@ class _ntt:
             has_bias=has_bias,
             round_before_scale=round_before_scale,
             output_dtype=output_dtype,
-            name=name,
-            metadata=metadata,
-        )
-
-    @staticmethod
-    @_op_function(GatherReduceQKVRoPEWithCache)
-    def gather_reduce_qkv_rope_with_cache(
-        qkv: Node,
-        q_scale: Node,
-        k_scale: Node,
-        q_bias: Node,
-        k_bias: Node,
-        cos: Node,
-        sin: Node,
-        state: Node,
-        layer_id: Node,
-        advance_sequence: Node,
-        *,
-        materialized_qkv_type: IRType,
-        logical_qkv_type: IRType,
-        q_axis: int,
-        q_epsilon: float,
-        q_use_mean: bool,
-        q_round_before_scale: bool = False,
-        k_axis: int,
-        k_epsilon: float,
-        k_use_mean: bool,
-        k_round_before_scale: bool = False,
-        round_qk_intermediates: bool = True,
-        rotary_dim: int | None = None,
-        qkv_layout: tuple[str, str, str],
-        attention_layout: tuple[str, str, str],
-        name: str | None = None,
-        metadata: Metadata = None,
-    ) -> Node:
-        """Reduce partial Q/K/V inside normalization, RoPE, and cache IO."""
-
-        return GatherReduceQKVRoPEWithCache.construct(
-            qkv,
-            q_scale,
-            k_scale,
-            q_bias,
-            k_bias,
-            cos,
-            sin,
-            state,
-            layer_id,
-            advance_sequence,
-            materialized_qkv_type=materialized_qkv_type,
-            logical_qkv_type=logical_qkv_type,
-            q_axis=q_axis,
-            q_epsilon=q_epsilon,
-            q_use_mean=q_use_mean,
-            k_axis=k_axis,
-            k_epsilon=k_epsilon,
-            k_use_mean=k_use_mean,
-            qkv_layout=qkv_layout,
-            attention_layout=attention_layout,
-            q_round_before_scale=q_round_before_scale,
-            k_round_before_scale=k_round_before_scale,
-            round_qk_intermediates=round_qk_intermediates,
-            rotary_dim=rotary_dim,
             name=name,
             metadata=metadata,
         )
@@ -1664,6 +1639,20 @@ class _ntt:
         )
 
     @staticmethod
+    @_op_function(PagedAttentionGatedCombine)
+    def paged_attention_gated_combine(
+        max_state: Node, sum_state: Node, acc_state: Node, gate: Node, *,
+        layout: tuple[str, str, str], hidden_size: int, output_data_type,
+        output_type: IRType, split_hierarchy_axis: int, split_count: int,
+        name: str | None = None, metadata: Metadata = None,
+    ) -> Node:
+        """Merge attention states and multiply by a rounded sigmoid gate."""
+        return PagedAttentionGatedCombine.construct(
+            max_state, sum_state, acc_state, gate, layout=layout, hidden_size=hidden_size,
+            output_data_type=output_data_type, output_type=output_type,
+            split_hierarchy_axis=split_hierarchy_axis, split_count=split_count, name=name, metadata=metadata)
+
+    @staticmethod
     @_op_function(PackedQKVParallelLinearCombine)
     def packed_qkv_parallel_linear_combine(
         qkv: Node,
@@ -1764,8 +1753,8 @@ class _ntt:
         )
 
     @staticmethod
-    @_op_function(MatMulNormStatsCombine)
-    def matmul_norm_stats_combine(
+    @_op_function(AddNormStats)
+    def add_norm_stats(
         input: Node,
         addend: Node,
         *,
@@ -1776,7 +1765,7 @@ class _ntt:
     ) -> Node:
         """Materialize a matmul partial, add a residual, and return value/stats."""
 
-        return MatMulNormStatsCombine.construct(
+        return AddNormStats.construct(
             input,
             addend,
             axis=axis,
@@ -1904,6 +1893,13 @@ class _tir:
             name=name,
             metadata=metadata,
         )
+
+    @staticmethod
+    @_op_function(BufferSubspan)
+    def buffer_subspan(value: Node, *, offsets: Sequence[int], shape: Sequence[int], name: str | None = None,
+                       metadata: Metadata = None) -> Node:
+        """Borrow a contiguous, same-owner tensor interval without copying."""
+        return BufferSubspan.construct(value, offsets=offsets, shape=shape, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(RefSlice)

@@ -57,6 +57,12 @@ def tir_to_data(node: TIRNode) -> dict[str, object]:
         and getattr(node, "distributed_backing_type", None) is None
     ):
         result.pop("distributed_backing_type", None)
+    if node.kind == "buffer" and getattr(node, "owner_stride_bytes", None) is None:
+        result.pop("owner_stride_bytes", None)
+    if node.kind == "prim_parameter" and getattr(node, "alignment_bytes", None) is None:
+        result.pop("alignment_bytes", None)
+    if node.kind == "transfer_pipeline_channel" and getattr(node, "inplace_partition", None) is None:
+        result.pop("inplace_partition", None)
     return result
 
 

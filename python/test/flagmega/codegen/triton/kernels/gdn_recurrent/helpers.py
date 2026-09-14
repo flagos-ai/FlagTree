@@ -11,10 +11,10 @@ from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 
 
 def execute_recurrent(tmp_path, torch, config, attrs, types, values, *, local_z=True, local_result=True, placement=None,
-                      split_axes=(0, 1)):
+                      split_axes=(0, 1), compiler=None, split_policy=None):
     placement = fm.Placement((2, 4), "yx", "bb") if placement is None else placement
     broadcast = fm.SBP.broadcast()
-    split = fm.SBP.split_contiguous(split_axes) if split_axes else broadcast
+    split = split_policy or (fm.SBP.split_contiguous(split_axes) if split_axes else broadcast)
     per_token = {"qkv", "z", "projection_input"}
     tensors = {
         name: fm.tensor_type(value.dtype, (1, *value.shape[1:])) if name in per_token else value
@@ -50,7 +50,7 @@ def execute_recurrent(tmp_path, torch, config, attrs, types, values, *, local_z=
     namespace = {}
     exec(fm.module_source(module), namespace)
     assert namespace["MODULE"].semantic_hash == module.semantic_hash
-    compiled = Compiler().compile(namespace["MODULE"]).module
+    compiled = (compiler or Compiler()).compile(namespace["MODULE"]).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     state = create_gdn_state(config, device="cuda:0")

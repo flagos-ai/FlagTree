@@ -56,6 +56,8 @@ from triton.flagmega.passes.auto_distributed.realization import (
     DistributedReshardUsageKind,
 )
 from triton.flagmega.passes.constants import ConstnessAnalysis
+from triton.flagmega.passes.auto_distributed.publication_cost import shared_publication
+from triton.flagmega.passes.auto_distributed.fusion_cost import CandidateFusion, candidate_fusions
 
 
 @dataclass(frozen=True)
@@ -104,10 +106,15 @@ class SearchGraph:
     # A graph is one immutable policy/IR snapshot. Replacing the graph resets
     # analysis caches; no type/cost decisions leak into another agent trial.
     _realized_costs: dict = field(default_factory=dict, init=False, compare=False, repr=False)
+    _publication_origins: dict = field(default_factory=dict, init=False, compare=False, repr=False)
 
     @cached_property
     def bucket_map(self) -> dict[str, CandidateBucket]:
         return {bucket.node_id: bucket for bucket in self.buckets}
+
+    @cached_property
+    def fusions(self) -> tuple[CandidateFusion, ...]:
+        return candidate_fusions(self)
 
 
 @dataclass(frozen=True)
@@ -117,6 +124,7 @@ class SearchResult:
     selected_reshards: Mapping[tuple[str, str, int], DistributedReshardPlan]
     objective: int
     status: str
+    fusions: tuple[CandidateFusion, ...] = ()
 
 
 def build_search_graph(
@@ -262,17 +270,22 @@ def build_search_graph(
                 f"AutoDistributed produced no candidates for {node.id!r}.", stage=module.stage, node_id=node.id)
         available[node.id] = candidates
         buckets.append(CandidateBucket(node.id, candidates, executable))
-    # Candidate providers describe the exact input types they can consume.
-    # Propagate a demanded TupleType through an explicit structural tuple so
-    # each field can acquire its own Boxing/ShardedView edge.  This is the
-    # compact equivalent of nncase's provider-input adaptation buckets and is
-    # essential for heterogeneous tuples such as Q/K/V, whose head axes use
-    # independent mesh dimensions.  The closure is demand driven: it does not
-    # enumerate arbitrary tuple layouts that no operation requested.
-    buckets = list(_complete_structural_tuple_demands(module, tuple(buckets)))
+    # Close operation-owned forward and reverse type relations before forming
+    # reshard sites. Structural tuple demands remain field-wise, avoiding an
+    # arbitrary Cartesian product of layouts unrelated to a consumer.
+    from .propagation import complete_candidate_relations
+    buckets = list(complete_candidate_relations(
+        module, tuple(buckets), placement, registry, reshard_cost_model or DistributedReshardCostModel(),
+        operation_cost_model or DistributedOperationCostModel(), type_inference_memo))
     bucket_map = {bucket.node_id: bucket for bucket in buckets}
     sites: list[ReshardSite] = []
     for consumer in module.nodes:
+        if consumer.op == "builtin.get_item":
+            # Tuple projection is structural: adapting the whole tuple here
+            # also converts unread fields. Forward closure provides each
+            # actual producer tuple; any needed conversion belongs on the
+            # projected field's consumer edge, including Partial reduction.
+            continue
         consumer_bucket = bucket_map[consumer.id]
         for consumer_index, candidate in enumerate(consumer_bucket.candidates):
             for input_index, producer_id in enumerate(consumer.inputs):
@@ -348,75 +361,6 @@ def build_search_graph(
         reshard_cost_model or DistributedReshardCostModel(),
         operation_cost_model or DistributedOperationCostModel(),
     )
-
-
-def _complete_structural_tuple_demands(
-    module: IRModule,
-    buckets: tuple[CandidateBucket, ...],
-) -> tuple[CandidateBucket, ...]:
-    """Thread provider tuple demands to their explicit field producers.
-
-    A tuple itself has no data movement.  Its candidate records one exact
-    combination of field types; any physical adaptation remains an ordinary
-    per-field reshard site and therefore stays visible to CP-SAT, dumps, and
-    the materializer.  Requiring a real downstream demand avoids the former
-    alternative of inventing every Cartesian product of leaf distributions.
-    """
-
-    by_id = {bucket.node_id: bucket for bucket in buckets}
-    changed = True
-    while changed:
-        changed = False
-        demands: dict[str, list[TupleType]] = {}
-        for consumer in module.nodes:
-            consumer_bucket = by_id[consumer.id]
-            for candidate in consumer_bucket.candidates:
-                for producer_id, target_type in zip(
-                    consumer.inputs, candidate.input_types, strict=True
-                ):
-                    producer = module.node_map[producer_id]
-                    if producer.op != "builtin.tuple" or not isinstance(
-                        target_type, TupleType
-                    ):
-                        continue
-                    if len(producer.inputs) != len(target_type.fields):
-                        continue
-                    values = demands.setdefault(producer_id, [])
-                    if target_type not in values:
-                        values.append(target_type)
-
-        for producer_id, target_types in demands.items():
-            bucket = by_id[producer_id]
-            values = list(bucket.candidates)
-            for target_type in target_types:
-                input_types = tuple(target_type.fields)
-                if any(
-                    candidate.return_type == target_type
-                    and candidate.input_types == input_types
-                    for candidate in values
-                ):
-                    continue
-                values.append(DistributedCandidate(
-                    f"distribution.{producer_id}.tuple.demand_{len(values)}",
-                    target_type,
-                    input_types,
-                    0,
-                    "tuple-structural-provider-demand",
-                    objective_kind="analytic",
-                    objective_model="flagmega.structural-zero/v1",
-                    objective_evidence=(
-                        "provider-demanded-tuple-layout",
-                        "field-wise-reshard-preserves-producer-contract",
-                    ),
-                ))
-                changed = True
-            if len(values) != len(bucket.candidates):
-                by_id[producer_id] = CandidateBucket(
-                    bucket.node_id,
-                    tuple(values),
-                    bucket.executable,
-                )
-    return tuple(by_id[bucket.node_id] for bucket in buckets)
 
 
 def _infer_function_parameter_kinds(
@@ -507,11 +451,35 @@ def solve_search_graph(
     objective_terms = []
     objective_weights = []
     simplicity_weights = []
+    fusion_variables = {}
+    member_fusions = {}
+    for ordinal, fusion in enumerate(graph.fusions):
+        if any(member not in variables for member in fusion.members):
+            continue
+        active = model.NewBoolVar(f"fusion_{ordinal}")
+        model.AddMinEquality(active, [variables[member] for member in fusion.members])
+        fusion_variables[ordinal] = active
+        for member in fusion.members:
+            member_fusions.setdefault(member, []).append(active)
+        objective_terms.append(active)
+        objective_weights.append(fusion.operation_cost * fusion.invocation_count)
+        simplicity_weights.append(0)
     for bucket in graph.buckets:
         for index, candidate in enumerate(bucket.candidates):
             if index not in domains[bucket.node_id]:
                 continue
-            objective_terms.append(variables[(bucket.node_id, index)])
+            member = (bucket.node_id, index)
+            selected_var = variables[member]
+            standalone = selected_var
+            if member in member_fusions:
+                standalone = model.NewBoolVar(f"standalone__{bucket.node_id}_{index}")
+                # Every selected node is charged exactly once, either alone
+                # or as part of the region the lowering rule will realize.
+                model.Add(standalone + sum(member_fusions[member]) == selected_var)
+                objective_terms.append(selected_var)
+                objective_weights.append(0)
+                simplicity_weights.append(_candidate_distribution_complexity(candidate))
+            objective_terms.append(standalone)
             # Candidate construction rejects invalid ranges.  Do not clamp:
             # silently turning a broken negative/overflow estimate into a
             # legal objective would change compiler decisions.
@@ -519,7 +487,7 @@ def solve_search_graph(
                 candidate.operation_cost
                 * graph.invocation_counts.get(bucket.node_id, 1)
             )
-            simplicity_weights.append(_candidate_distribution_complexity(candidate))
+            simplicity_weights.append(0 if member in member_fusions else _candidate_distribution_complexity(candidate))
 
     for consumer in graph.module.nodes:
         consumer_bucket = bucket_map[consumer.id]
@@ -551,6 +519,7 @@ def solve_search_graph(
                 )
 
     plan_variables = {}
+    publications = {}
     for site in graph.reshard_sites:
         if site.producer_index not in domains[site.producer_id] or (
             site.consumer_index is not None and site.consumer_index not in domains[site.consumer_id]
@@ -577,14 +546,25 @@ def solve_search_graph(
                         else model.NewBoolVar(f"reshard_plan__{site.id}_{plan_index}"))
             plan_variables[(site.id, plan_index)] = variable
             choices.append(variable)
+            shared = shared_publication(graph, site, plan)
+            shared_cost = 0 if shared is None else shared[1]
+            if shared is not None:
+                publications.setdefault(shared[0], []).append(variable)
             objective_terms.append(variable)
             objective_weights.append(
-                _realized_reshard_plan_cost(graph, site, source_type, plan)
+                (_realized_reshard_plan_cost(graph, site, source_type, plan) - shared_cost)
                 * site.invocation_count
             )
             simplicity_weights.append(0)
         if len(site.plans) > 1:
             model.Add(sum(choices) == active)
+
+    for ordinal, ((_, invocations, cost), uses) in enumerate(publications.items()):
+        published = model.NewBoolVar(f"publication_{ordinal}")
+        model.AddMaxEquality(published, uses)
+        objective_terms.append(published)
+        objective_weights.append(cost * invocations)
+        simplicity_weights.append(0)
 
     for function in graph.module.functions:
         consumer_id = function_boundary_id(function.name)
@@ -677,27 +657,27 @@ def solve_search_graph(
         candidate.operation_cost * graph.invocation_counts.get(node_id, 1)
         for node_id, candidate in selected.items()
     )
-    primary_objective += sum(
-        _realized_reshard_plan_cost(
-            graph,
-            selected_reshard_sites[
-                (producer_id, consumer_id, input_index)
-            ],
-            selected[producer_id].return_type,
-            plan,
-        )
-        * selected_reshard_sites[
-            (producer_id, consumer_id, input_index)
-        ].invocation_count
-        for (producer_id, consumer_id, input_index), plan
-        in selected_reshards.items()
-    )
+    selected_fusions = tuple(graph.fusions[index] for index, variable in fusion_variables.items()
+                             if solver.BooleanValue(variable))
+    primary_objective += sum((fusion.operation_cost - fusion.standalone_cost) * fusion.invocation_count
+                             for fusion in selected_fusions)
+    selected_publications = set()
+    for key, plan in selected_reshards.items():
+        site = selected_reshard_sites[key]
+        cost = _realized_reshard_plan_cost(graph, site, selected[site.producer_id].return_type, plan)
+        shared = shared_publication(graph, site, plan)
+        if shared is not None:
+            if shared[0] in selected_publications:
+                cost -= shared[1]
+            selected_publications.add(shared[0])
+        primary_objective += cost * site.invocation_count
     result = SearchResult(
         graph,
         selected,
         selected_reshards,
         primary_objective,
         status,
+        selected_fusions,
     )
     if dump_subdirectory is None:
         _dump_search(result)
@@ -809,9 +789,12 @@ def graph_dot(
             source_type = bucket_map[site.producer_id].candidates[site.producer_index].return_type
             label = (
                 f"reshard {site.usage}\\n{_plan_text(plan)}\\n"
-                f"cost={_realized_reshard_plan_cost(graph, site, source_type, plan)}"
+                f"standalone_cost={_realized_reshard_plan_cost(graph, site, source_type, plan)}"
                 f" x{site.invocation_count}"
             )
+            shared = shared_publication(graph, site, plan)
+            if shared is not None:
+                label += f"\\nshared_publication={shared[0][0]} cost={shared[1]}"
             lines.append(f'  "{_dot(plan_node)}" [shape=diamond, label="{_dot(label)}", color={color}];')
             lines.append(
                 f'  "{_dot(site.producer_id)}_{site.producer_index}" -> "{_dot(plan_node)}";')
@@ -874,13 +857,34 @@ def _dump_search(result: SearchResult) -> None:
                 f"{picked.objective_model} reason={picked.reason} "
                 f"evidence={picked.objective_evidence} "
                 f"invocations={result.graph.invocation_counts.get(bucket.node_id, 1)}\n")
+        stream.write("Realized fusions (replace member operation costs):\n")
+        for fusion in result.fusions:
+            members = ",".join(node_id for node_id, _ in fusion.members)
+            stream.write(f"  {members} -> {fusion.operation}: cost={fusion.operation_cost} "
+                         f"standalone_cost={fusion.standalone_cost} invocations={fusion.invocation_count}\n")
         stream.write("Reshards:\n")
-        invocations_by_site = {site.key: site.invocation_count for site in result.graph.reshard_sites}
+        selected_sites = {
+            site.key: site for site in result.graph.reshard_sites
+            if result.selected[site.producer_id] == result.graph.bucket_map[site.producer_id].candidates[site.producer_index]
+            and (site.consumer_index is None or result.selected[site.consumer_id]
+                 == result.graph.bucket_map[site.consumer_id].candidates[site.consumer_index])
+        }
+        publications = {}
         for (producer_id, consumer_id, input_index), plan in sorted(result.selected_reshards.items()):
-            invocation_count = invocations_by_site[(producer_id, consumer_id, input_index)]
+            site = selected_sites[(producer_id, consumer_id, input_index)]
+            cost = _realized_reshard_plan_cost(result.graph, site, result.selected[producer_id].return_type, plan)
+            shared = shared_publication(result.graph, site, plan)
+            publication = ""
+            if shared is not None:
+                cost -= shared[1]
+                publications[shared[0]] = publications.get(shared[0], 0) + 1
+                publication = f" publication={shared[0][0]}"
             stream.write(
                 f"  {producer_id} -> {consumer_id}[{input_index}]: "
-                f"{_plan_text(plan)} invocations={invocation_count}\n")
+                f"{_plan_text(plan)} edge_cost={cost} invocations={site.invocation_count}{publication}\n")
+        stream.write("Shared publications (charged once per invocation):\n")
+        for (origin, invocations, cost), edges in sorted(publications.items()):
+            stream.write(f"  {origin}: cost={cost} invocations={invocations} edges={edges}\n")
 
 
 def _reshard_plans(
@@ -966,9 +970,10 @@ def _provider_candidates(
     provider: DistributedCandidateProvider,
     context: DistributedCandidateContext,
     default_type: IRType,
+    demanded_types=(),
 ) -> tuple[DistributedCandidate, ...]:
     values: list[DistributedCandidate] = []
-    for return_type in provider.get_return_candidate_types(context, (default_type,)):
+    for return_type in provider.get_return_candidate_types(context, (default_type, *demanded_types)):
         for input_tuple in provider.try_get_input_type_tuples(context, return_type) or ():
             if not provider.allows_partial_inputs and any(
                 _contains_partial(value) for value in input_tuple.input_types

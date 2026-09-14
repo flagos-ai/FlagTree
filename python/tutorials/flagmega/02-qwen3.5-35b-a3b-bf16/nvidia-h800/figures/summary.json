@@ -1,0 +1,184 @@
+{
+  "schema": "flagmega.decode-comparison/v2",
+  "reference_sha256": "f9f5dd015dd96fe864f45988d1dabfccaaaac2d774ba7b003982a1c44414c30e",
+  "validated_tokens": 3,
+  "labels": {
+    "native": "vLLM",
+    "baseline": "FlagMega Initial",
+    "agent": "FlagMega Agent"
+  },
+  "serving_latency": false,
+  "device": [
+    "NVIDIA H800",
+    "6"
+  ],
+  "sources": [
+    {
+      "variant": "native",
+      "file": "report.json",
+      "sha256": "079a446fd70dcf56b530e1f9993a9f9421f48ab9cbd0129d8251bd8a6f15a736"
+    },
+    {
+      "variant": "baseline",
+      "file": "report.json",
+      "sha256": "528274c976f47f21ffa3908120fb81118926506722228d730a8e8655af372382"
+    },
+    {
+      "variant": "baseline",
+      "file": "gpu-timing.json",
+      "sha256": "68f4b6efb9cb31cb6cb483637eab18b6220dc5e733f95d7d18f54db20c2bab14"
+    },
+    {
+      "variant": "agent",
+      "file": "report.json",
+      "sha256": "77aab394b90e50ac3f493bfe5b7d47e53cac7f47c9b1b2e6b4f666b1f869026c"
+    },
+    {
+      "variant": "agent",
+      "file": "gpu-timing.json",
+      "sha256": "a1945035bec5c44a4f2e97230cea4118bfc691b8532e519bfaa9ff4cf411c225"
+    }
+  ],
+  "identities": {
+    "native": {
+      "source_sha256": {
+        "benchmark_vllm.py": "b4a6073bf48e23fdf670d1011650c38af5cda25ab20bc6ed84d8b8b960bb3fd9",
+        "native_prepared_graph.py": "db4a51de12672f35bf5b95fd6013f3caac3318576542bbccec2d49cc2c650552",
+        "prepare_reference.py": "4329f19ff220a3dbf7ffe12d9d1d5de82582b9f4b6c5335ad23c8d7491d645e0"
+      },
+      "semantic_hash": null,
+      "benchmark_sha256": null,
+      "runner_sha256": null,
+      "torch": "2.11.0+cu130",
+      "vllm": "0.23.1rc1.dev1294+gae10e855a",
+      "engine_config_sha256": "42ced739d964058f72a76df7a8cdc072be979952fe4250cfc5e330a39e656e5a",
+      "toolchain": null
+    },
+    "baseline": {
+      "source_sha256": "2a74c770d9c2239c22bab185af1627d83e3681ae4ac13dfa2eefd16dfd81be78",
+      "semantic_hash": "58443ae8112c22538ca6a160ac2aad5f864cc5e13b9d43509b3407164355bf69",
+      "benchmark_sha256": "9af644e1067a8a68657f6a46da14b735f45021602f017306369460dba8b2aa95",
+      "runner_sha256": "e258bc4bf4d575bbce07f7154883c777c667a87529cb0d1942cfde03151e06fa",
+      "torch": "2.10.0+cu128",
+      "vllm": null,
+      "engine_config_sha256": null,
+      "toolchain": {
+        "triton": "3.6.0",
+        "ptxas_version": "ptxas: NVIDIA (R) Ptx optimizing assembler\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Jun_09_02:43:40_PM_PDT_2026\nCuda compilation tools, release 13.3, V13.3.73\nBuild cuda_13.3.r13.3/compiler.38244171_0\n",
+        "ptxas_sha256": "afd8d1e1fa6e310f7faee44f6621e4c1315fb7fd6da7d4d87414358e12a651dc"
+      }
+    },
+    "agent": {
+      "source_sha256": "80be8b7d7d8a0e6ca3a85e82f86b22ab74cafaeb95c9eed70b343926a147d043",
+      "semantic_hash": "33e6a82954d33ca2d924725a7bb4e2cef16d6ca0aeb2f252dc8c5c1db4170445",
+      "benchmark_sha256": "9af644e1067a8a68657f6a46da14b735f45021602f017306369460dba8b2aa95",
+      "runner_sha256": "e258bc4bf4d575bbce07f7154883c777c667a87529cb0d1942cfde03151e06fa",
+      "torch": "2.10.0+cu128",
+      "vllm": null,
+      "engine_config_sha256": null,
+      "toolchain": {
+        "triton": "3.6.0",
+        "ptxas_version": "ptxas: NVIDIA (R) Ptx optimizing assembler\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Jun_09_02:43:40_PM_PDT_2026\nCuda compilation tools, release 13.3, V13.3.73\nBuild cuda_13.3.r13.3/compiler.38244171_0\n",
+        "ptxas_sha256": "afd8d1e1fa6e310f7faee44f6621e4c1315fb7fd6da7d4d87414358e12a651dc"
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "prefix_length": 1,
+      "decode_tokens": 32,
+      "variants": {
+        "native": {
+          "median_ms": 4.279808044433594,
+          "p95_ms": 4.29040002822876,
+          "tokens_per_second": 233.64017532761378,
+          "samples": 160
+        },
+        "baseline": {
+          "median_ms": 5.219343900680542,
+          "p95_ms": 5.228096008300781,
+          "tokens_per_second": 191.5821626387836,
+          "samples": 160
+        },
+        "agent": {
+          "median_ms": 3.4025280475616455,
+          "p95_ms": 3.4125759601593018,
+          "tokens_per_second": 293.8881376537848,
+          "samples": 160
+        }
+      }
+    },
+    {
+      "prefix_length": 32,
+      "decode_tokens": 32,
+      "variants": {
+        "native": {
+          "median_ms": 4.280191898345947,
+          "p95_ms": 4.2927680015563965,
+          "tokens_per_second": 233.59164583774887,
+          "samples": 160
+        },
+        "baseline": {
+          "median_ms": 5.220223903656006,
+          "p95_ms": 5.230720043182373,
+          "tokens_per_second": 191.55272361579853,
+          "samples": 160
+        },
+        "agent": {
+          "median_ms": 3.403999924659729,
+          "p95_ms": 3.4143359661102295,
+          "tokens_per_second": 293.7776604902209,
+          "samples": 160
+        }
+      }
+    },
+    {
+      "prefix_length": 255,
+      "decode_tokens": 32,
+      "variants": {
+        "native": {
+          "median_ms": 4.290256023406982,
+          "p95_ms": 4.304255962371826,
+          "tokens_per_second": 233.02712055954973,
+          "samples": 160
+        },
+        "baseline": {
+          "median_ms": 5.295328140258789,
+          "p95_ms": 5.30406379699707,
+          "tokens_per_second": 188.85467443648193,
+          "samples": 160
+        },
+        "agent": {
+          "median_ms": 3.4417600631713867,
+          "p95_ms": 3.4499518871307373,
+          "tokens_per_second": 290.5547617136429,
+          "samples": 160
+        }
+      }
+    },
+    {
+      "prefix_length": 256,
+      "decode_tokens": 32,
+      "variants": {
+        "native": {
+          "median_ms": 4.289776086807251,
+          "p95_ms": 4.301087856292725,
+          "tokens_per_second": 233.08617245872904,
+          "samples": 160
+        },
+        "baseline": {
+          "median_ms": 5.294543981552124,
+          "p95_ms": 5.302303791046143,
+          "tokens_per_second": 188.87080315343422,
+          "samples": 160
+        },
+        "agent": {
+          "median_ms": 3.4426400661468506,
+          "p95_ms": 3.452255964279175,
+          "tokens_per_second": 290.4463875850689,
+          "samples": 160
+        }
+      }
+    }
+  ]
+}

@@ -19,14 +19,14 @@ def test_gate_up_rounding_contract_against_independent_reference(dtype, round_pr
     module = build_module(SparseExpertsGateUp, types=operand_types(dtype=dtype), attrs=attrs)
     values = values_for(module)
     actual = TorchEvaluator(DictWeightResolver({})).run(module, values)[0]
-    q, ids = values["q"], values["router_expert_ids"].long()
+    q, ids = values["dispatched"], values["router_expert_ids"].long()
     expected = []
     for token in range(2):
         projections = []
         for stage in ("gate", "up"):
             scale = values[f"{stage}_input_scale"][ids[token]]
             weight = values[f"{stage}_weight"][ids[token]].float()
-            projected = torch.bmm(weight, (q[token].float()[None, :] / scale).unsqueeze(-1)).squeeze(-1)
+            projected = torch.bmm(weight, (q[token].float() / scale).unsqueeze(-1)).squeeze(-1)
             projected = projected * scale * values[f"{stage}_proj_scale"][ids[token]]
             projections.append(projected.to(q.dtype).float() if round_projections else projected)
         gate, up = projections
@@ -43,7 +43,7 @@ def test_gate_up_rounding_contract_against_independent_reference(dtype, round_pr
     ("router_expert_ids", "int32", (3, 2)),
     ("router_expert_ids", "int32", (2, 0)),
     ("router_expert_ids", "int32", (2, 5)),
-    ("q", "bfloat16", (2, 15)),
+    ("dispatched", "bfloat16", (2, 2, 15)),
     ("up_weight", "bfloat16", (4, 10, 16)),
     ("gate_weight", "float32", (4, 12, 16)),
     ("gate_input_scale", "bfloat16", (4, 1)),

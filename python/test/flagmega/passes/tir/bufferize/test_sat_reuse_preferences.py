@@ -89,3 +89,32 @@ def test_sat_objectives_match_exhaustive_small_placement(windows):
     result = SATBufferAllocator().allocate(lifetimes, _space(), avoid_reuse=pairs)
     actual = (result.pool_bytes, len(result.reuse_conflicts))
     assert actual == min(possibilities)
+
+
+def test_bytes_budget_trades_bounded_peak_for_zero_conflicts():
+    lifetimes = (BufferLifetime("a", 128, 64, 0, 1),
+                 BufferLifetime("b", 128, 64, 2, 3),
+                 BufferLifetime("c", 128, 64, 0, 3))
+    sizes = {value.id: value.nbytes for value in lifetimes}
+    allocator = SATBufferAllocator()
+    baseline = allocator.allocate(lifetimes, _space(), avoid_reuse=(("a", "b"),))
+    assert baseline.pool_bytes == 256
+    assert len(baseline.reuse_conflicts) == 1
+
+    within = allocator.allocate(lifetimes, _space(), avoid_reuse=(("a", "b"),), bytes_budget=128)
+    assert within.pool_bytes == 256 + 128
+    assert within.reuse_conflicts == ()
+
+    below = allocator.allocate(lifetimes, _space(), avoid_reuse=(("a", "b"),), bytes_budget=64)
+    assert below.pool_bytes == 256
+    assert len(below.reuse_conflicts) == 1
+
+    offsets = within.offset_map
+    assert not _overlap(within, "a", "b", sizes)
+    assert sorted(offsets.values()) == [0, 128, 256]
+
+
+def test_bytes_budget_rejects_non_integer():
+    with pytest.raises(IRVerificationError, match="budget"):
+        SATBufferAllocator().allocate(
+            (BufferLifetime("a", 64, 64, 0, 0),), _space(), bytes_budget=True)

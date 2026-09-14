@@ -299,7 +299,7 @@ def _packed_norm_stats_pipeline_module(
         projection_candidate = next(candidate for candidate in projection.candidates
             if candidate.return_type.partial is None
             and candidate.return_type.axis_policies == (fm.SBP.broadcast(), output_policy))
-        combine = next(bucket for bucket in graph.buckets if distribution.node_map[bucket.node_id].op == "ntt.matmul_norm_stats_combine")
+        combine = next(bucket for bucket in graph.buckets if distribution.node_map[bucket.node_id].op == "ntt.add_norm_stats")
         combine_candidate = next(candidate for candidate in combine.candidates
             if candidate.input_types == (projection_candidate.return_type, projection_candidate.return_type))
         result = solve_search_graph(graph, fixed_selections={
@@ -335,6 +335,7 @@ def _packed_qkv_mma_pipeline_module(
         "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"
     ),
     *, output_partition: bool = False, target=None,
+    projection_widths=(2048, 1024, 1024), num_kv_heads=8, input_extent=2048,
 ) -> fm.IRModule:
     class PackedQKV(fm.Module):
         def __init__(self):
@@ -345,26 +346,26 @@ def _packed_qkv_mma_pipeline_module(
         def forward(self):
             value = self.input(
                 "value",
-                fm.tensor_type("bfloat16", (1, 2048)),
+                fm.tensor_type("bfloat16", (1, input_extent)),
                 id="value",
             )
             q_weight = self.weight(
                 "q_weight",
-                fm.tensor_type("bfloat16", (2048, 2048)),
+                fm.tensor_type("bfloat16", (input_extent, projection_widths[0])),
                 source="memory",
                 key="q_weight",
                 id="q_weight",
             )
             k_weight = self.weight(
                 "k_weight",
-                fm.tensor_type("bfloat16", (2048, 1024)),
+                fm.tensor_type("bfloat16", (input_extent, projection_widths[1])),
                 source="memory",
                 key="k_weight",
                 id="k_weight",
             )
             v_weight = self.weight(
                 "v_weight",
-                fm.tensor_type("bfloat16", (2048, 1024)),
+                fm.tensor_type("bfloat16", (input_extent, projection_widths[2])),
                 source="memory",
                 key="v_weight",
                 id="v_weight",
@@ -385,7 +386,7 @@ def _packed_qkv_mma_pipeline_module(
                 none,
                 none,
                 num_heads=16,
-                num_kv_heads=8,
+                num_kv_heads=num_kv_heads,
                 output_data_type="bfloat16",
                 name="qkv",
             )

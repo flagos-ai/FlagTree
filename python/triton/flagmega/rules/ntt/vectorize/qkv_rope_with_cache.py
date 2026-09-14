@@ -103,7 +103,7 @@ class VectorizeQKVRoPEWithCache:
 
 
 def _try_plan(node: Node, module: IRModule) -> _PackingPlan | None:
-    if node.op != "nn.qkv_rope_with_cache" or len(node.inputs) != 10:
+    if node.op != "nn.qkv_rope_with_cache" or len(node.inputs) != 12:
         return None
     qkv = module.node_map[node.inputs[0]]
     if qkv.op != "builtin.tuple" or len(qkv.inputs) != 3:
@@ -211,7 +211,7 @@ def _build_packed_inputs(
     inputs = (
         tuple_node,
         *(packed_by_index[index] for index in range(1, 7)),
-        *(module.node_map[node.inputs[index]] for index in range(7, 10)),
+        *(module.node_map[node.inputs[index]] for index in range(7, 12)),
     )
     return tuple(helpers), inputs
 

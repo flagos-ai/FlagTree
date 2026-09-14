@@ -153,3 +153,24 @@ def test_unmappable_reshape_still_accepts_a_fully_broadcast_value():
         (fm.SBP.broadcast(), fm.SBP.broadcast()),
         placement,
     )
+
+
+@pytest.mark.parametrize("heads", [2, 7, 17])
+def test_ragged_head_blocks_expand_without_changing_owners(heads):
+    mesh = fm.Placement((8, 16), "yx", "bb")
+    source = fm.DistributedType(
+        fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, heads * 32)),
+        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0,), 32)), mesh,
+    )
+    result = _reshape(source, (1, heads, 32))
+    assert result.axis_policies == (
+        fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0,), 1), fm.SBP.broadcast(),
+    )
+    for y in range(8):
+        before = fm.local_shard_descriptor(source, (y, 0))
+        after = fm.local_shard_descriptor(result, (y, 0))
+        actual = [before.axes[1].map_local_to_global(i).fixed_value
+                  for i in range(before.active_shape[1].fixed_value)]
+        expected = [after.axes[1].map_local_to_global(h).fixed_value * 32 + d
+                    for h in range(after.active_shape[1].fixed_value) for d in range(32)]
+        assert actual == expected

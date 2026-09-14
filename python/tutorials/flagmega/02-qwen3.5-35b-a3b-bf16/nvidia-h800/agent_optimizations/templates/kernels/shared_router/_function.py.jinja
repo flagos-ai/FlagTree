@@ -1,0 +1,41 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "shared_router" and call.variant == shared_router_variant %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_row in tl.range(0, {{ call.rows }}):
+        _fm_offsets = tl.arange(0, {{ call.tile }})
+        _sr_mask = (_fm_offsets < {{ call.experts }}) & ({{ call.outer_active }})
+{% if shared_router_variant == "gather_reduce" %}
+        _sr_logits = tl.full(({{ call.tile }},), 0, tl.float32)
+        _sr_gate = tl.full((), 0, tl.float32)
+        for _sr_partial_member in tl.range(0, {{ call.fan_in }}):
+            _sr_logits += tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_sr_mask, other=0.0)
+            _sr_gate += tl.load({{ call.source }} + ({{ call.gate_offset }}), mask=({{ call.outer_active }}), other=0.0)
+        _sr_logits = tl.where(_sr_mask, _sr_logits, -float("inf"))
+{% else %}
+        _sr_logits = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_sr_mask, other=-float("inf"))
+        _sr_gate = tl.load({{ call.source }} + ({{ call.gate_offset }}), mask=({{ call.outer_active }}), other=0.0)
+{% endif %}
+        _sr_exp = tl.exp(_sr_logits - tl.max(_sr_logits, 0))
+        _sr_prob = _sr_exp / tl.sum(_sr_exp, 0)
+        # Nonnegative FP32 probability plus inverse ID gives stable descending keys.
+        _sr_ordered = tl.where(_sr_prob != _sr_prob, 0xffffffff,
+                               _sr_prob.to(tl.uint32, bitcast=True) ^ 0x80000000).to(tl.uint32)
+        _sr_keys = (_sr_ordered.to(tl.uint64) << 32) | (0xffffffff - _fm_offsets.to(tl.uint32)).to(tl.uint64)
+        _sr_keys = tl.where(_sr_mask, _sr_keys, 0)
+        _sr_selected = tl.topk(_sr_keys, {{ call.selected_tile }})
+        _sr_selected_offsets = tl.arange(0, {{ call.selected_tile }})
+        _sr_indices = (0xffffffff - (_sr_selected & 0xffffffff).to(tl.uint32)).to(tl.int64)
+        _sr_bits = (_sr_selected >> 32).to(tl.uint32) & 0x7fffffff
+        _sr_values = tl.where(_sr_selected_offsets < {{ call.k }}, _sr_bits.to(tl.float32, bitcast=True), 0.0)
+        _sr_weights = tl.div_rn(_sr_values, tl.sum(_sr_values, 0))
+        _sr_write = (_sr_selected_offsets < {{ call.k }}) & ({{ call.outer_active }})
+        tl.store({{ call.weights }} + ({{ call.weights_offset }}), _sr_weights, mask=_sr_write & ({{ call.weights_active }}))
+        tl.store({{ call.ids }} + ({{ call.ids_offset }}), _sr_indices, mask=_sr_write & ({{ call.ids_active }}))
+        tl.store({{ call.weights }} + ({{ call.gate_weight_offset }}), tl.sigmoid(_sr_gate), mask=({{ call.outer_active }}) & ({{ call.weights_active }}))
+        tl.store({{ call.ids }} + ({{ call.gate_id_offset }}), {{ call.experts }}, mask=({{ call.outer_active }}) & ({{ call.ids_active }}))
+
+{% endif %}
+{% endfor %}

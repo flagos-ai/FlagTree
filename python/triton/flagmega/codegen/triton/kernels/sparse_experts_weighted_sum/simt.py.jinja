@@ -1,0 +1,26 @@
+# flagmega-kernel: sparse_experts_weighted_sum/simt platform=generic
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "sparse_experts_weighted_sum" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for _fm_start in tl.range(0, {{ call.capacity }}, {{ call.tile }}):
+        _fm_offsets = _fm_start + tl.arange(0, {{ call.tile }})
+        _fm_mask = (_fm_offsets < {{ call.capacity }}) & ({{ call.active }})
+        _fm_output = tl.full(({{ call.tile }},), 0, tl.float32)
+        for _fm_route in tl.range(0, {{ call.routes }}):
+            _fm_slot_mask = _fm_mask & ({{ call.route_active }})
+            _fm_value = tl.load({{ call.pointers.projections }} + ({{ call.source_offset }}), mask=_fm_slot_mask, other=0).to(tl.float32)
+            _fm_coefficient = tl.load({{ call.pointers.router_expert_weights }} + ({{ call.coefficient_offset }}), mask=_fm_slot_mask, other=0).to(tl.float32)
+            _fm_weighted = _fm_value * _fm_coefficient
+{% if call.round_weighted %}
+            _fm_weighted = _fm_weighted.to({{ call.weighted_dtype }}).to(tl.float32)
+{% endif %}
+            _fm_output += _fm_weighted
+        tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_output, mask=_fm_mask & ({{ call.writer_active }}))
+
+{% endif %}
+{% endfor %}
+{% endif %}

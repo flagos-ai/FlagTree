@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="650" viewBox="0 0 1120 650" role="img">
+<title>Decode throughput (higher is better)</title>
+<desc>Full 40-layer BF16 decoder, H800, batch 1. Prepared GPU events include model, logits, greedy sampling, metadata and token feedback. Not serving latency.</desc>
+<rect width="100%" height="100%" fill="white"/>
+<g font-family="sans-serif" fill="#243343">
+<text x="85" y="36" font-size="24">Decode throughput (higher is better)</text>
+<text x="85" y="63" font-size="14">Qwen3.5-35B-A3B BF16 / H800 / batch 1 / 32 decode tokens</text>
+<text x="85" y="86" font-size="14">Prepared GPU events: full decoder + greedy sampler + metadata/token feedback</text>
+<text x="85" y="108" font-size="14">Native: 3 graphs. FlagMega: 1 graph. No prefix work or CPU scheduling.</text>
+<path d="M 85 490.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="495.0" text-anchor="end" font-size="13">0.0</text>
+<path d="M 85 419.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="424.0" text-anchor="end" font-size="13">70.5</text>
+<path d="M 85 348.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="353.0" text-anchor="end" font-size="13">141.1</text>
+<path d="M 85 277.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="282.0" text-anchor="end" font-size="13">211.6</text>
+<path d="M 85 206.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="211.0" text-anchor="end" font-size="13">282.1</text>
+<path d="M 85 135.0 H 1085" stroke="#e2e8ef"/>
+<text x="73" y="140.0" text-anchor="end" font-size="13">352.7</text>
+<rect x="115.0" y="254.8" width="55.0" height="235.2" fill="#556579"/>
+<text x="142.5" y="246.8" text-anchor="middle" font-size="13">233.640</text>
+<rect x="178.2" y="297.1" width="55.0" height="192.9" fill="#c47725"/>
+<text x="205.8" y="289.1" text-anchor="middle" font-size="13">191.582</text>
+<rect x="241.5" y="194.2" width="55.0" height="295.8" fill="#198269"/>
+<text x="269.0" y="186.2" text-anchor="middle" font-size="13">293.888</text>
+<text x="210.0" y="519" text-anchor="middle" font-size="14">Context 1</text>
+<rect x="365.0" y="254.9" width="55.0" height="235.1" fill="#556579"/>
+<text x="392.5" y="246.9" text-anchor="middle" font-size="13">233.592</text>
+<rect x="428.2" y="297.2" width="55.0" height="192.8" fill="#c47725"/>
+<text x="455.8" y="289.2" text-anchor="middle" font-size="13">191.553</text>
+<rect x="491.5" y="194.3" width="55.0" height="295.7" fill="#198269"/>
+<text x="519.0" y="186.3" text-anchor="middle" font-size="13">293.778</text>
+<text x="460.0" y="519" text-anchor="middle" font-size="14">Context 32</text>
+<rect x="615.0" y="255.4" width="55.0" height="234.6" fill="#556579"/>
+<text x="642.5" y="247.4" text-anchor="middle" font-size="13">233.027</text>
+<rect x="678.2" y="299.9" width="55.0" height="190.1" fill="#c47725"/>
+<text x="705.8" y="291.9" text-anchor="middle" font-size="13">188.855</text>
+<rect x="741.5" y="197.5" width="55.0" height="292.5" fill="#198269"/>
+<text x="769.0" y="189.5" text-anchor="middle" font-size="13">290.555</text>
+<text x="710.0" y="519" text-anchor="middle" font-size="14">Context 255</text>
+<rect x="865.0" y="255.4" width="55.0" height="234.6" fill="#556579"/>
+<text x="892.5" y="247.4" text-anchor="middle" font-size="13">233.086</text>
+<rect x="928.2" y="299.9" width="55.0" height="190.1" fill="#c47725"/>
+<text x="955.8" y="291.9" text-anchor="middle" font-size="13">188.871</text>
+<rect x="991.5" y="197.6" width="55.0" height="292.4" fill="#198269"/>
+<text x="1019.0" y="189.6" text-anchor="middle" font-size="13">290.446</text>
+<text x="960.0" y="519" text-anchor="middle" font-size="14">Context 256</text>
+<text x="15" y="123" font-size="13">tokens/s</text>
+<rect x="85" y="555" width="15" height="15" fill="#556579"/>
+<text x="108" y="568" font-size="14">vLLM</text>
+<rect x="395" y="555" width="15" height="15" fill="#c47725"/>
+<text x="418" y="568" font-size="14">FlagMega Initial</text>
+<rect x="705" y="555" width="15" height="15" fill="#198269"/>
+<text x="728" y="568" font-size="14">FlagMega Agent</text>
+<text x="85" y="602" font-size="13">1000 / mean per-token latency.</text>
+<text x="85" y="626" font-size="13">First 3 tokens match the reference; timed rounds reproduce each candidate&#x27;s eager trajectory.</text>
+</g>
+</svg>

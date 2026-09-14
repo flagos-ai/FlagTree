@@ -15,6 +15,7 @@ class PagedAttentionSplitSemanticTIRCandidateProvider:
     op_names = frozenset({
         "ntt.paged_attention_partial",
         "ntt.paged_attention_combine",
+        "ntt.paged_attention_gated_combine",
     })
 
     def propose(

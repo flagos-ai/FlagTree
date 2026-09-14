@@ -23,10 +23,6 @@ from .canonicalize_packed_qkv_weights import (
     CanonicalizePackedQKVWeightsPass,
     canonicalize_packed_qkv_weights,
 )
-from .fuse_gather_reduce_qkv_rope_with_cache import (
-    FuseGatherReduceQKVRoPEWithCachePass,
-    fuse_gather_reduce_qkv_rope_with_cache,
-)
 from .fuse_gather_reduce_norm_apply import (
     FuseGatherReduceNormApplyPass,
     fuse_gather_reduce_norm_apply,
@@ -59,14 +55,12 @@ __all__ = [
     "MaterializeKernelPrimFunctionsPass",
     "BindPrimFunctionBuffersPass",
     "CanonicalizePackedQKVWeightsPass",
-    "FuseGatherReduceQKVRoPEWithCachePass",
     "FuseGatherReduceAddNormApplyPass",
     "FuseGatherReduceNormApplyPass",
     "canonicalize_packed_qkv_weights",
     "find_norm_consumer_matches",
     "find_projection_logits_argmax_matches",
     "find_projection_residual_norm_matches",
-    "fuse_gather_reduce_qkv_rope_with_cache",
     "fuse_gather_reduce_add_norm_apply",
     "fuse_gather_reduce_norm_apply",
     "materialize_kernel_prim_functions",

@@ -24,9 +24,9 @@ class QKVRoPEWithCacheMicroKernelProvider:
         dispatch = context.dispatch
         if dispatch.semantic_op not in self.op_names:
             return None
-        if len(dispatch.arguments) != 10 or len(dispatch.outputs) != 2:
+        if len(dispatch.arguments) != 12 or len(dispatch.outputs) != 2:
             raise CodegenError(
-                "QKVRoPEWithCache semantic TIR requires 10 arguments and 2 "
+                "QKVRoPEWithCache semantic TIR requires 12 arguments and 2 "
                 f"outputs, got {len(dispatch.arguments)} and "
                 f"{len(dispatch.outputs)}."
             )

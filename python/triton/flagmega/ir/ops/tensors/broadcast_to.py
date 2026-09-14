@@ -59,7 +59,7 @@ class BroadcastTo(OpDefinition):
                for old, new, policy in zip(value.shape, output.shape[offset:], source.axis_policies)):
             raise IRSchemaError("Expanding a split BroadcastTo axis requires explicit Boxing.")
         return DistributedType(output, (SBP.broadcast(), ) * offset + source.axis_policies, source.placement,
-                               source.partial)
+                               source.partial, source.exclusive)
 
     @classmethod
     def evaluate(cls, node, arguments, context):

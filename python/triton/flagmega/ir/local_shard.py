@@ -11,7 +11,9 @@ the relationship between owners.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from itertools import product
+from math import prod
 from typing import Sequence
 
 from triton.flagmega.errors import IRSchemaError
@@ -26,11 +28,12 @@ from triton.flagmega.ir.dim_expr import (
 from triton.flagmega.ir.distributed_type import (
     BlockCyclicSplit,
     ContiguousSplit,
+    Placement,
     SBPBroadCast,
     SBPSplit,
     SplitStage,
 )
-from triton.flagmega.ir.model import DistributedType
+from triton.flagmega.ir.model import DistributedType, tensor_type
 
 
 @dataclass(frozen=True)
@@ -296,6 +299,39 @@ def local_shard_descriptor(
     return LocalShardDescriptor(distributed_type, bound_coordinates, tuple(axes))
 
 
+def aggregate_active_elements(distributed_type: DistributedType) -> int | None:
+    """Count active tensor elements across executing owners, including replicas.
+
+    Split policies use disjoint mesh axes, so their active-domain sums factor.
+    This avoids enumerating the full mesh for every search candidate and keeps
+    staged tails on the same descriptor contract used by code generation.
+    Vector lanes remain part of the element dtype, not this element count.
+    """
+    if any(not extent.is_fixed for extent in distributed_type.tensor.shape):
+        return None
+    placement = distributed_type.placement
+    remaining = set(range(placement.rank))
+    count = 1
+    for extent, policy in zip(distributed_type.tensor.shape, distributed_type.axis_policies):
+        if isinstance(policy, SBPSplit):
+            count *= _split_active_element_sum(extent, policy, placement)
+            remaining.difference_update(policy.hierarchy_axes)
+        else:
+            count *= extent.fixed_value
+    if distributed_type.exclusive is not None:
+        remaining.difference_update(distributed_type.exclusive.axes)
+    return count * prod(placement.hierarchy[axis] for axis in remaining)
+
+
+@lru_cache(maxsize=4096)
+def _split_active_element_sum(extent: Dimension, policy: SBPSplit, placement: Placement) -> int:
+    axis_type = DistributedType(tensor_type("int32", (extent,)), (policy,), placement)
+    ranges = tuple(range(size) if axis in policy.hierarchy_axes else (0,)
+                   for axis, size in enumerate(placement.hierarchy))
+    return sum(local_shard_descriptor(axis_type, owner).active_shape[0].fixed_value
+               for owner in product(*ranges))
+
+
 def unravel_placement_index(
     linear_index: int,
     hierarchy: Sequence[int],
@@ -401,6 +437,7 @@ __all__ = [
     "LocalShardAxisDescriptor",
     "LocalShardDescriptor",
     "LocalShardStageDescriptor",
+    "aggregate_active_elements",
     "local_shard_descriptor",
     "unravel_placement_index",
 ]

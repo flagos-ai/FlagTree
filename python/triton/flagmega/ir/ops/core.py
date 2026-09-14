@@ -317,6 +317,10 @@ class OpCostFactors:
     block_synchronizations: int = 0
     grid_synchronizations: int = 0
     communication_cycles: int = 0
+    # Already summed across owners, additive to the per-owner traffic above.
+    # Masked/ragged accesses must not charge every owner its maximum capacity.
+    chip_aggregate_memory_load_bytes: int = 0
+    chip_aggregate_memory_store_bytes: int = 0
 
     def __post_init__(self) -> None:
         values = tuple(vars(self).values())
@@ -577,6 +581,24 @@ class OpDefinition:
         return product(*choices)
 
     @classmethod
+    def distributed_output_type_candidates(
+        cls, choices: Sequence[Sequence[IRType]], output_type: IRType, attrs: Mapping[str, object]
+    ) -> tuple[IRType, ...]:
+        """Lift known input contracts to possible outputs; inference verifies them."""
+        return ()
+
+    @classmethod
+    def infer_distributed_input_types(
+        cls, output_type: IRType, logical_input_types: Sequence[IRType], attrs: Mapping[str, object]
+    ) -> tuple[tuple[IRType, ...], ...] | None:
+        """Invert a requested output contract. None means no inverse is declared.
+
+        An empty tuple rejects this output. Returned input tuples may require
+        explicit reshard edges; forward inference must reproduce output_type.
+        """
+        return None
+
+    @classmethod
     def infer_effect(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> Effect:
         return PURE
 
@@ -699,6 +721,20 @@ class OpDefinition:
         return OpCost(notes=("not-modeled",))
 
     @classmethod
+    def zero_copy_input_index(
+        cls, inputs: Sequence[Node], attrs: Mapping[str, object], return_type: IRType,
+    ) -> int | None:
+        """Prove a read-only byte alias for a verified typed operation.
+
+        Unlike byte preservation alone, this contract excludes permutations,
+        materialization and arithmetic. Consumers may reuse the input's
+        publication provenance; owner changes still require explicit reshards.
+        Inputs, attributes and result must already satisfy type inference.
+        This physical-layout query does not repeat semantic type validation.
+        """
+        return None
+
+    @classmethod
     def cost_factors(
         cls,
         inputs: Sequence[Node],
@@ -713,7 +749,8 @@ class OpDefinition:
         second evaluator merely to participate in AutoDistribution.
         """
 
-        del inputs
+        if cls.zero_copy_input_index(inputs, attrs, return_type) is not None:
+            return OpCostFactors()
         local_return = _local_cost_type(return_type)
         synthetic = Node(
             "<candidate-cost>",

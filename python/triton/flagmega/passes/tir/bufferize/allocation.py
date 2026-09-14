@@ -61,7 +61,8 @@ class BufferAllocator(Protocol):
     name: str
 
     def allocate(self, lifetimes: tuple[BufferLifetime, ...], memory_space: MemorySpace, *,
-                 avoid_reuse: tuple[tuple[str, str], ...] = ()) -> AllocationResult:
+                 avoid_reuse: tuple[tuple[str, str], ...] = (),
+                 bytes_budget: int = 0) -> AllocationResult:
         ...
 
 

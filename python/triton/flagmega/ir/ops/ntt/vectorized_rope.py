@@ -20,6 +20,7 @@ from triton.flagmega.ir.ops.core import (
     tensor_nbytes,
 )
 from triton.flagmega.ir.ops.nn.rope import RoPE
+from triton.flagmega.ir.ops.nn._rotary_distribution import has_remote_rotary_pairs
 from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
@@ -109,13 +110,14 @@ class VectorizedRoPE(OpDefinition):
         if (
             input_ir.axis_policies[0] != cos_ir.axis_policies[0]
             or not isinstance(cos_ir.axis_policies[1], SBPBroadCast)
-            or input_ir.axis_policies[2] != cos_ir.axis_policies[2]
+            or not isinstance(cos_ir.axis_policies[2], SBPBroadCast)
             or cos_ir.axis_policies != sin_ir.axis_policies
-            or not isinstance(input_ir.axis_policies[-1], SBPBroadCast)
         ):
             raise IRSchemaError(
                 "VectorizedRoPE distributed operands have incompatible axis policies."
             )
+        if has_remote_rotary_pairs(input_ir, attrs.get("rotary_dim")):
+            raise IRSchemaError("VectorizedRoPE requires owner-local rotary pairs; reshard before RoPE.")
         return input_ir
 
     @classmethod
@@ -153,6 +155,10 @@ class VectorizedRoPE(OpDefinition):
             input_type.dtype.lanes,
             (rotary_axis,),
         )
+
+    @classmethod
+    def cost_factors(cls, inputs, attrs, return_type):
+        return RoPE.cost_factors(inputs, attrs, return_type)
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:

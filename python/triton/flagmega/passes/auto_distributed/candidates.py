@@ -59,7 +59,7 @@ class DistributedCandidateContext:
         default_factory=DistributedOperationCostModel
     )
     type_inference_memo: dict = field(default_factory=dict, compare=False, repr=False)
-    _candidate_snapshots: dict[int, tuple[object, tuple[DistributedCandidate, ...]]] = field(
+    _candidate_snapshots: dict[int | tuple[int, IRType], tuple[object, tuple[DistributedCandidate, ...]]] = field(
         default_factory=dict, init=False, repr=False, compare=False,
     )
 

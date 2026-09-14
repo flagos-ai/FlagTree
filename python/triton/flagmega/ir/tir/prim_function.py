@@ -37,6 +37,9 @@ class PrimParameter(TIRNode):
     role: PrimParameterRole = PrimParameterRole.INPUT
     buffers: tuple[Buffer, ...] = ()
     memory_space: str | None = None
+    # None denotes a legacy/unplanned ABI; an integer is a storage contract,
+    # not a request that implementation selection may silently strengthen.
+    alignment_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -49,6 +52,15 @@ class PrimParameter(TIRNode):
             raise IRSchemaError("Only workspace parameters may override memory_space.")
         if len({value.name for value in self.buffers}) != len(self.buffers):
             raise IRSchemaError(f"PrimParameter {self.name!r} has duplicate buffer names.")
+        alignment = self.alignment_bytes
+        if alignment is not None and (
+            type(alignment) is not int or alignment <= 0 or alignment & (alignment - 1)
+        ):
+            raise IRSchemaError("PrimParameter alignment_bytes must be a positive power of two or None.")
+        if alignment is not None and any(buffer.mem_span.buffer.alignment < alignment for buffer in self.buffers):
+            raise IRSchemaError(f"PrimParameter {self.name!r} buffers violate its alignment contract.")
+        if alignment is not None and any(buffer.component_stride_bytes % alignment for buffer in self.buffers):
+            raise IRSchemaError(f"PrimParameter {self.name!r} owner strides violate its alignment contract.")
 
     @property
     def buffer_value(self):

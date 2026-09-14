@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.tir.base import TIRNode, tir_node
+from triton.flagmega.ir.tir.inplace_transfer_partition import TIRInplaceTransferPartition
 
 
 @tir_node("transfer_pipeline_channel")
@@ -17,6 +18,7 @@ class TIRTransferPipelineChannel(TIRNode):
     source_argument_indices: tuple[int, ...]
     shared_workspace_indices: tuple[int, ...]
     source_alignment_bytes: int = 1
+    inplace_partition: TIRInplaceTransferPartition | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -41,6 +43,12 @@ class TIRTransferPipelineChannel(TIRNode):
             raise IRSchemaError(
                 "Transfer source alignment must be a positive power of two."
             )
+        if self.inplace_partition is not None and (
+            not isinstance(self.inplace_partition, TIRInplaceTransferPartition)
+            or len(self.source_argument_indices) != 1
+            or len(self.shared_workspace_indices) != 1
+        ):
+            raise IRSchemaError("Inplace transfer requires a typed partition, one source and one workspace.")
 
 
 def _indices(values) -> tuple[int, ...]:

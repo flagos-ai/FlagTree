@@ -74,7 +74,7 @@ def split_policy(value: IRType, tensor_axis: int) -> SBPSplit | None:
 
 
 def all_broadcast(value: IRType) -> bool:
-    return isinstance(value, DistributedType) and value.partial is None and all(
+    return isinstance(value, DistributedType) and value.partial is None and value.exclusive is None and all(
         isinstance(policy, SBPBroadCast) for policy in value.axis_policies)
 
 

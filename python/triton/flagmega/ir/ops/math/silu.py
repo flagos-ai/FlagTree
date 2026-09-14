@@ -6,19 +6,19 @@ from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.model import IRType, Node
-from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.ops.core import (
     OpCost,
-    OpDefinition,
     input_parameter,
     op_definition,
     tensor_elements,
     tensor_nbytes,
 )
+from triton.flagmega.ir.ops.pointwise import SameTypePointwiseOp
+from triton.flagmega.ir.type_pattern import is_tensor
 
 
 @op_definition("math.silu", namespace="math", functional_name="silu", display_name="Math.Silu")
-class Silu(OpDefinition):
+class Silu(SameTypePointwiseOp):
     const_evaluable = True
     value = input_parameter(is_tensor())
 

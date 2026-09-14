@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from math import prod
+from math import gcd
 from math import isfinite
 from typing import Mapping, Sequence
 
@@ -70,12 +71,20 @@ class BufferizationOptions:
     solver_time_seconds: float = 30.0
     block_local: str | None = None
     optimization_level: str = "optimized"
+    barrier_bytes_budget: int = 0
+    barrier_fixpoint_rounds: int = 1
 
     def __post_init__(self):
         if self.optimization_level not in {"fast", "optimized"}:
             raise ValueError("Bufferization optimization_level must be 'fast' or 'optimized'.")
         if not isfinite(self.solver_time_seconds) or self.solver_time_seconds <= 0:
             raise ValueError("Bufferization solver_time_seconds must be finite and positive.")
+        if isinstance(self.barrier_bytes_budget, bool) or not isinstance(self.barrier_bytes_budget, int) \
+                or self.barrier_bytes_budget < 0:
+            raise ValueError("Bufferization barrier_bytes_budget must be a non-negative integer.")
+        if isinstance(self.barrier_fixpoint_rounds, bool) or not isinstance(self.barrier_fixpoint_rounds, int) \
+                or self.barrier_fixpoint_rounds < 1:
+            raise ValueError("Bufferization barrier_fixpoint_rounds must be a positive integer.")
 
     @classmethod
     def generic(cls, *, alignment: int = 256) -> BufferizationOptions:
@@ -509,6 +518,9 @@ class BufferPlanner:
             if node.op == "tir.ref_slice":
                 self._plan_ref_slice(function, node)
                 continue
+            if node.op == "tir.buffer_subspan":
+                self._plan_tensor_subspan(function, node, index, last_use[node.id])
+                continue
             if node.op in {"distributed.sharded_view", "tir.buffer_view"}:
                 if len(node.inputs) != 1 or len(self.bindings[node.inputs[0]]) != 1:
                     raise IRVerificationError(
@@ -707,9 +719,11 @@ class BufferPlanner:
             name: self.allocator.allocate(
                 tuple(lifetimes_by_space[name]), space,
                 avoid_reuse=self.reuse_preferences.get((function.name, name), ()),
+                bytes_budget=self.options.barrier_bytes_budget,
             )
             for name, space in self.function_pool_spaces.items()
         }
+
         for name, result in allocation_results.items():
             self._record_allocation(function.name, name, result)
         offsets = {
@@ -895,10 +909,32 @@ class BufferPlanner:
                 )
 
         old_physical = source.mem_span.buffer
+        aliases_by_id = dict(aliases)
+        canonical_offsets = {}
+
+        def canonical_offset(buffer_id):
+            if buffer_id in canonical_offsets:
+                return canonical_offsets[buffer_id]
+            descriptor = aliases_by_id[buffer_id]
+            parent_id = descriptor.alias_of
+            if parent_id in aliases_by_id:
+                offset = canonical_offset(parent_id)
+                node = self.module.node_map.get(descriptor.source_node)
+                if node is not None and node.op == "tir.buffer_subspan":
+                    from triton.flagmega.ir.ops.tir.buffer_subspan import dense_subspan_offset
+                    offset += dense_subspan_offset(aliases_by_id[parent_id].shape, descriptor.shape,
+                                                    node.attrs["offsets"], descriptor.dtype.itemsize)
+                elif descriptor.mem_span.start != aliases_by_id[parent_id].mem_span.start:
+                    raise IRVerificationError("Canonical promotion requires a typed subspan offset.", node_id=use_node_id)
+            else:
+                offset = descriptor.byte_offset
+            canonical_offsets[buffer_id] = offset
+            return offset
+
         required_size = max(
-            descriptor.byte_offset
+            canonical_offset(buffer_id)
             + prod(descriptor.shape, start=1) * descriptor.dtype.itemsize
-            for _, descriptor in aliases
+            for buffer_id, descriptor in aliases
         )
         promoted_physical = replace(
             old_physical,
@@ -911,7 +947,7 @@ class BufferPlanner:
             )
             promoted_span = MemSpan(
                 promoted_physical,
-                descriptor.mem_span.start,
+                canonical_offsets[buffer_id],
                 logical_nbytes,
             )
             promoted = replace(
@@ -922,6 +958,7 @@ class BufferPlanner:
                     DistributedBufferStorageKind.CANONICAL_GLOBAL
                 ),
                 distributed_backing_type=None,
+                owner_stride_bytes=None,
             )
             self.descriptors[buffer_id] = promoted
             self.alias_analysis.replace_span(buffer_id, promoted_span)
@@ -1161,6 +1198,7 @@ class BufferPlanner:
             is not actual.distributed_storage_kind
             or formal.distributed_backing_type
             != actual.distributed_backing_type
+            or formal.component_stride_bytes != actual.component_stride_bytes
         ):
             raise IRVerificationError(
                 f"Call {call_id!r} actual buffer {actual_id!r} does not match "
@@ -1175,6 +1213,7 @@ class BufferPlanner:
         *, prefix, field=None, alias=None, alignment=None, role=None,
         reinterpret=False, alias_kind=None,
         distributed_storage_kind=None, distributed_backing_type=None,
+        owner_stride_bytes=None,
         memory_space: MemorySpace | None = None,
     ) -> tuple[str, ...]:
         alignment = max(int(alignment or 1), self._required_alignment(source_node))
@@ -1191,6 +1230,7 @@ class BufferPlanner:
                         reinterpret=reinterpret, alias_kind=alias_kind,
                         distributed_storage_kind=distributed_storage_kind,
                         distributed_backing_type=distributed_backing_type,
+                        owner_stride_bytes=owner_stride_bytes,
                         memory_space=memory_space,
                     ))
                 return tuple(result)
@@ -1277,6 +1317,7 @@ class BufferPlanner:
                     alignment=alignment,
                     distributed_storage_kind=target_kind,
                     distributed_backing_type=target_backing_type,
+                    owner_stride_bytes=source.owner_stride_bytes,
                     alias_kind=alias_kind,
                 ))
                 continue
@@ -1299,6 +1340,7 @@ class BufferPlanner:
                 alignment=alignment,
                 distributed_storage_kind=distributed_storage_kind,
                 distributed_backing_type=distributed_backing_type,
+                owner_stride_bytes=owner_stride_bytes,
             ))
         return tuple(result)
 
@@ -1420,6 +1462,14 @@ class BufferPlanner:
                 # dtype/shape specialization can overwrite this input. A
                 # fused output conversion must allocate its own representation.
                 if not _descriptor_matches_type(source, result_type):
+                    continue
+                if (node.id in output_leaf_ids or (result_index is not None
+                                                   and f"{node.id}.{result_index}" in output_leaf_ids)) and any(
+                    other.physical_id == source.physical_id and not other.mem_span.must_alias(source.mem_span)
+                    for other in self.descriptors.values()
+                ):
+                    # A borrowed interval cannot become an owning result by
+                    # promoting its larger parent allocation to a small ABI.
                     continue
                 if (
                     requested_space is not None
@@ -1602,6 +1652,38 @@ class BufferPlanner:
             views.append(buffer_id)
         self.bindings[node.id] = tuple(views)
 
+    def _plan_tensor_subspan(self, function, node, index, live_end):
+        from math import gcd
+        from triton.flagmega.ir.ops.tir.buffer_subspan import dense_subspan_offset
+
+        [source_id] = self.bindings[node.inputs[0]]
+        source = self.descriptors[source_id]
+        shape = _maximum_shape(node.type, self.module.stage, node.id)
+        backing = source.distributed_backing_type
+        if backing is not None:
+            backing = replace(backing, tensor=_tensor_type(node.type))
+        component = _component_shape(node.type, shape, source.distributed_storage_kind,
+                                     distributed_backing_type=backing)
+        if source.strides != _dense_strides(source.component_shape):
+            raise IRVerificationError("Tensor subspan requires contiguous source storage.", node_id=node.id)
+        offset = dense_subspan_offset(source.component_shape, component, node.attrs["offsets"], source.dtype.itemsize)
+        size = prod(component) * source.dtype.itemsize
+        alignment = gcd(source.alignment, offset)
+        if alignment < self._required_alignment(node.id):
+            raise IRVerificationError("Tensor subspan does not satisfy consumer alignment.", node_id=node.id)
+        view = source.subview(node.id, dtype=source.dtype, shape=shape, strides=_dense_strides(component),
+                              byte_offset=offset, byte_size=size, alignment=alignment, source_node=node.id,
+                              role="tensor_subspan")
+        view = replace(view, distributed_type=node.type if isinstance(node.type, DistributedType) else None,
+                       distributed_storage_kind=source.distributed_storage_kind, distributed_backing_type=backing,
+                       owner_stride_bytes=(source.component_stride_bytes if source.distributed_storage_kind
+                                           is DistributedBufferStorageKind.COMPACT_PER_OWNER else None),
+                       live_start=index if self._is_function_pool_storage(source.storage) else None,
+                       live_end=live_end if self._is_function_pool_storage(source.storage) else None)
+        self.descriptors[node.id] = view
+        self.alias_analysis.add_alias(node.id, source_id, byte_offset=offset, nbytes=size, kind=AliasKind.VIEW)
+        self.bindings[node.id] = (node.id,)
+
     def _output_leaf_ids(self, function, get_items):
         result = set()
 
@@ -1643,6 +1725,7 @@ class BufferPlanner:
         live_end=None, function=None, role="value",
         alignment=None, distributed_storage_kind=None,
         distributed_backing_type=None, alias_kind=None,
+        owner_stride_bytes=None,
     ):
         if buffer_id in self.descriptors:
             raise IRVerificationError(f"Duplicate logical buffer id {buffer_id!r}.")
@@ -1684,10 +1767,23 @@ class BufferPlanner:
             storage_kind=storage_kind,
             distributed_backing_type=distributed_backing_type,
         )
+        if storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER:
+            required_alignment = int(alignment or 1)
+            if alias_of is None and owner_stride_bytes is None:
+                stride = _align_up(nbytes, required_alignment)
+                if stride != nbytes:
+                    owner_stride_bytes = stride
+            stride = nbytes if owner_stride_bytes is None else owner_stride_bytes
+            if stride % required_alignment:
+                raise IRVerificationError(f"Buffer {buffer_id!r} owner stride violates its alignment contract.")
+            physical_nbytes = max(physical_nbytes, stride * (placement_owner_count(distributed) - 1) + nbytes)
         physical_id = str(physical_id)
         if alias_of is not None:
             source = self.descriptors[str(alias_of)]
             physical = source.mem_span.buffer
+            descriptor_alignment = gcd(source.alignment, byte_offset - source.byte_offset)
+            if descriptor_alignment < int(alignment or 1):
+                raise IRVerificationError(f"Alias {buffer_id!r} does not satisfy its required alignment.")
             resolved_alias_kind = (
                 AliasKind(alias_kind)
                 if alias_kind is not None
@@ -1697,6 +1793,10 @@ class BufferPlanner:
             )
             alias = AliasInfo(source.id, resolved_alias_kind)
         else:
+            descriptor_alignment = max(
+                storage_space.granularity if storage_space is not None else self.workspace_space.granularity,
+                int(alignment or 1),
+            )
             physical = self.physical_buffers.get(physical_id)
             if physical is None:
                 memory_space = (
@@ -1728,14 +1828,9 @@ class BufferPlanner:
             shape=shape,
             strides=_dense_strides(component_shape),
             storage=storage,
-            alignment=max(
-                (
-                    storage_space.granularity
-                    if storage_space is not None
-                    else self.workspace_space.granularity
-                ),
-                int(alignment or 1),
-            ),
+            alignment=(gcd(descriptor_alignment, nbytes if owner_stride_bytes is None else owner_stride_bytes)
+                       if storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER and nbytes
+                       else descriptor_alignment),
             mem_span=MemSpan(physical, byte_offset, nbytes),
             source_node=source_node,
             field=field,
@@ -1751,6 +1846,7 @@ class BufferPlanner:
             distributed_type=distributed,
             distributed_storage_kind=storage_kind,
             distributed_backing_type=distributed_backing_type,
+            owner_stride_bytes=owner_stride_bytes,
         )
         if alias_of is None:
             self.alias_analysis.define_span(buffer_id, descriptor.mem_span)
@@ -1828,11 +1924,28 @@ def plan_buffers(
     preferences = collect_reuse_preferences(module, baseline)
     if not preferences:
         return baseline
-    candidate = BufferPlanner(module, resolved_options, reuse_preferences=preferences, allocation_session=session).run()
-    # Both alternatives are ordinary verified SAT placements. Select only a
-    # Pareto improvement in synchronization and pool size; solver failures
-    # remain errors, and all surviving hazards are materialized normally.
-    return candidate if dominates_memory_schedule(module, candidate, baseline) else baseline
+    # Separating one reuse pair can expose another; within the byte budget the
+    # fixed point collects every round's newly exposed pairs. Each round must
+    # stay a strict improvement over the previous best, or it is discarded.
+    best = baseline
+    seen = frozenset()
+    for _ in range(max(1, resolved_options.barrier_fixpoint_rounds)):
+        if preferences == seen or not preferences:
+            break
+        seen = frozenset(preferences)
+        candidate = BufferPlanner(
+            module, resolved_options, reuse_preferences=preferences, allocation_session=session,
+        ).run()
+        # Both alternatives are ordinary verified SAT placements. Select only
+        # a Pareto improvement in synchronization and pool size; solver
+        # failures remain errors, and all surviving hazards are materialized
+        # normally.
+        if not dominates_memory_schedule(module, candidate, best,
+                                         bytes_budget=resolved_options.barrier_bytes_budget):
+            break
+        best = candidate
+        preferences = collect_reuse_preferences(module, best) | preferences
+    return best
 
 
 def _function_argument_leaf_requirements(nodes, node_map, function_names):
@@ -1915,7 +2028,7 @@ def _function_argument_leaf_requirements(nodes, node_map, function_names):
                 )
             continue
 
-        if node.op in {"distributed.sharded_view", "tir.buffer_view"}:
+        if node.op in {"distributed.sharded_view", "tir.buffer_view", "tir.buffer_subspan"}:
             if len(node.inputs) != 1:
                 raise IRVerificationError(
                     f"Buffer view {node.id!r} must have one input.",
@@ -1981,6 +2094,7 @@ def _metadata_only_structural_values(module, nodes, function):
         "builtin.tuple",
         "distributed.sharded_view",
         "tir.buffer_view",
+        "tir.buffer_subspan",
     }
     def closure(roots):
         result = set(roots)
@@ -2100,6 +2214,11 @@ def _distributed_storage_kind(
 ):
     if not isinstance(value_type, DistributedType):
         return DistributedBufferStorageKind.COMPACT_LOCAL
+    if value_type.exclusive is not None:
+        if any(not value_type.placement.is_physical_block_axis(axis) for axis in value_type.exclusive.axes):
+            raise IRVerificationError("Exclusive SBP requires physical block placement axes.")
+        if function_pool and function_pool_sharing_scope is MemorySharingScope.BLOCK:
+            return DistributedBufferStorageKind.EXCLUSIVE_LOCAL
     if value_type.partial is not None:
         # Partial values contain distinct owner components, even when their
         # logical tensor is broadcast. A function boundary changes ownership

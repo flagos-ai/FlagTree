@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from typing import Mapping, Sequence
+from dataclasses import replace
 from math import prod
 
 from triton.flagmega.errors import IRSchemaError
@@ -27,7 +28,7 @@ from triton.flagmega.ir.ops.core import (
 from triton.flagmega.ir.ops.math.matmul import MatMul, matmul_value, normalize_output_data_type
 from triton.flagmega.ir.ops.nn._norm import norm_stats_value, unpack_default_vector
 from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
-from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import MatMulNormStatsCombine
+from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
 from triton.flagmega.ir.ops.ntt._matmul_promotion import promoted_projection_type
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import VectorType
@@ -131,7 +132,7 @@ class MatMulNormStats(OpDefinition):
             promoted_type,
             attrs={"name": "<matmul_partial>"},
         )
-        return MatMulNormStatsCombine.infer_type(
+        return AddNormStats.infer_type(
             (partial, addend),
             {"axis": attrs["axis"], "use_mean": attrs["use_mean"]},
         )
@@ -206,6 +207,46 @@ class MatMulNormStats(OpDefinition):
             synchronizations=None,
             model="flagmega.matmul-norm-stats/v1",
             notes=("matmul-materialize-residual-add-norm-stats",),
+        )
+
+    @classmethod
+    def cost_factors(cls, inputs, attrs, return_type):
+        """Price the local epilogue without an intermediate projection load/store.
+
+        Output-N owners publish additive statistics. Their later collective
+        remains a separate Boxing edge, not an implicit matmul synchronization.
+        """
+        if attrs.get("rhs_layout") != "k_major" or not isinstance(return_type, TupleType):
+            return None
+        lhs, rhs, addend = inputs
+        none = Node("<none>", "builtin.none", (), NoneType())
+        matmul_inputs = (lhs, rhs, none, none)
+        matmul_attrs = {
+            "fused_reduce": False,
+            "rhs_layout": "k_major",
+            "output_data_type": attrs.get("output_data_type", DType.BFLOAT16),
+        }
+        projection_type = PackedMatMul.infer_type(matmul_inputs, matmul_attrs)
+        if getattr(projection_type, "partial", None) is not None:
+            return None
+        matmul = PackedMatMul.cost_factors(matmul_inputs, matmul_attrs, projection_type)
+        projection = Node("<projection>", "builtin.var", (), addend.type)
+        epilogue = AddNormStats.cost_factors((projection, addend), attrs, return_type)
+        if matmul is None or epilogue is None:
+            return None
+        from triton.flagmega.ir.distributed_type import local_tensor_type
+        from triton.flagmega.ir import DistributedType
+
+        local_addend = local_tensor_type(addend.type) if isinstance(addend.type, DistributedType) else addend.type
+        addend_bytes = tensor_nbytes(local_addend)
+        if addend_bytes is None:
+            return None
+        return replace(
+            matmul,
+            cpu_cycles=matmul.cpu_cycles + epilogue.cpu_cycles,
+            elementwise_operations=matmul.elementwise_operations + epilogue.elementwise_operations,
+            block_local_memory_load_bytes=matmul.block_local_memory_load_bytes + addend_bytes,
+            block_local_memory_store_bytes=epilogue.block_local_memory_store_bytes,
         )
 
 

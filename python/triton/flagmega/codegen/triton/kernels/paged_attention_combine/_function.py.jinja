@@ -1,6 +1,6 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
-{% if call.family == "paged_attention_combine" and call.variant == "decode" %}
+{% if call.family == attention_combine_family|default("paged_attention_combine") and call.variant == "decode" %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
@@ -60,9 +60,20 @@ def {{ call.symbol }}({{ call.signature }}):
             ).to(tl.float32)
             attention_merged_accumulator += attention_value * attention_factor
         attention_merged = attention_merged_accumulator / attention_merged_sum
+{% if call.family == "paged_attention_gated_combine" %}
+        attention_gate = tl.load(
+            {{ call.gate }} + ({{ call.gate_offset }}), mask=attention_output_mask, other=0.0,
+        )
+        attention_sigmoid = tl.sigmoid(attention_gate.to(tl.float32)).to({{ call.output_dtype }})
+        attention_merged = (attention_merged.to({{ call.output_dtype }}) * attention_sigmoid).to({{ call.output_dtype }})
+{% endif %}
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
+{% if call.family == "paged_attention_gated_combine" %}
+            attention_merged,
+{% else %}
             attention_merged.to(tl.bfloat16),
+{% endif %}
             mask=attention_output_mask,
         )
 

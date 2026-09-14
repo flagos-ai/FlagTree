@@ -8,7 +8,6 @@ from typing import Mapping, Sequence
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.distributed_type import SBPBroadCast
 from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.model import DistributedType, DType, Effect, IRType, Node, effect
 from triton.flagmega.ir.ops.core import (
@@ -77,10 +76,6 @@ class UpdatePagedAttentionKVCache(OpDefinition):
             if slots_type.partial is not None:
                 raise IRSchemaError(
                     "UpdatePagedAttentionKVCache requires materialized slots.")
-            dim_axis = tuple(attrs["layout"]).index("dim")
-            if not isinstance(slots_type.axis_policies[dim_axis], SBPBroadCast):
-                raise IRSchemaError(
-                    "UpdatePagedAttentionKVCache head-dimension axis cannot be split.")
         return cls.state.type_of(inputs)
 
     @classmethod

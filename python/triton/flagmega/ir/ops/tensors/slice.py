@@ -74,7 +74,7 @@ class Slice(OpDefinition):
             identity = indices == range(value.shape[axis].fixed_value)
             if not identity and source.axis_policies[axis] != SBP.broadcast():
                 raise IRSchemaError("Slice on a split axis requires explicit resharding.")
-        return DistributedType(output, source.axis_policies, source.placement, source.partial)
+        return DistributedType(output, source.axis_policies, source.placement, source.partial, source.exclusive)
 
     @classmethod
     def evaluate(cls, node, arguments, context):

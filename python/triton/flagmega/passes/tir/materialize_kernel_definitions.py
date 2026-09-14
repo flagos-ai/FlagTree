@@ -18,7 +18,12 @@ from triton.flagmega.ir.model import (
     TupleType,
     logical_type,
 )
-from triton.flagmega.ir.memory_effect import MemoryAccessMode, MemoryEffect
+from triton.flagmega.ir.memory_effect import (
+    MemoryAccessDomainKind,
+    MemoryAccessMode,
+    MemoryAccessScope,
+    MemoryEffect,
+)
 from triton.flagmega.ir.ops.core import ParameterInfo, get_definition
 from triton.flagmega.ir.tir import (
     KernelDispatch,
@@ -94,7 +99,10 @@ def materialize_kernel_definitions(module: IRModule) -> IRModule:
 def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, str]:
     definition = get_definition(str(node.attrs["semantic_op"]))
     parameter_infos = tuple(_parameter_info(definition.input_parameters, index) for index in range(len(node.inputs)))
-    parameter_effects = tuple(_physical_memory_effect(value) for value in parameter_infos)
+    parameter_effects = tuple(
+        _implementation_memory_effect(_physical_memory_effect(value), node, module)
+        for value in parameter_infos
+    )
     parameter_names = _unique_parameter_names(parameter_infos)
     roles = tuple(
         _parameter_role(effect, module.node_map[input_id].type)
@@ -133,6 +141,10 @@ def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, 
             "An input-owned Ref result must not declare a second physical access.",
             stage=module.stage, node_id=node.id,
         )
+    result_effects = tuple(
+        _implementation_memory_effect(effect, node, module, is_result=True)
+        for effect in result_effects
+    )
     reads += tuple(
         name for name, effect in zip(result_names, result_effects)
         if effect.physical_mode & MemoryAccessMode.READ
@@ -326,6 +338,35 @@ def _physical_memory_effect(parameter: ParameterInfo) -> MemoryEffect:
     """Return the op-local effect declared by its ParameterInfo schema."""
 
     return parameter.memory_effect
+
+
+def _implementation_memory_effect(
+    effect: MemoryEffect, node: Node, module: IRModule, *, is_result: bool = False,
+) -> MemoryEffect:
+    """Expose implementation participation before storage and hazard planning."""
+
+    facts = node.attrs.get("facts", node.attrs.get("semantic_facts", {}))
+    if is_result and effect.physical_mode != MemoryAccessMode.NONE:
+        result_scope = MemoryAccessScope(facts.get("result_memory_scope", "inferred"))
+        if result_scope is not MemoryAccessScope.INFERRED:
+            effect = replace(effect, scope=result_scope)
+    scope = facts.get("participant_scope", "all_programs")
+    if scope not in {"all_programs", "single_program"}:
+        raise IRVerificationError(
+            f"Unknown implementation participant_scope {scope!r}.",
+            stage=module.stage, node_id=node.id,
+        )
+    if scope == "all_programs" or effect.physical_mode == MemoryAccessMode.NONE:
+        return effect
+    if (
+        effect.access_domain.kind is MemoryAccessDomainKind.FIXED_BLOCK
+        and effect.access_domain.block_index != 0
+    ):
+        raise IRVerificationError(
+            "Single-program implementation conflicts with the op access domain.",
+            stage=module.stage, node_id=node.id,
+        )
+    return effect.in_fixed_block(0)
 
 
 def _result_memory_effect(value_type) -> MemoryEffect:

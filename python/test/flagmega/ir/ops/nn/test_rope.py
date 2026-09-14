@@ -61,7 +61,7 @@ def test_rope_preserves_head_sharding_with_replicated_rotary_tables():
     assert result == value_type
 
 
-def test_rope_rejects_sharding_that_cuts_the_rotated_pair_axis():
+def test_rope_rejects_sharding_that_requires_cross_owner_pairs():
     placement = fm.Placement((8,), "b", "b")
     value_type = fm.DistributedType(
         fm.tensor_type("bfloat16", (1, 16, 128)),
@@ -74,11 +74,27 @@ def test_rope_rejects_sharding_that_cuts_the_rotated_pair_axis():
         placement,
     )
 
-    with pytest.raises(IRSchemaError, match="rotated dimension"):
+    with pytest.raises(IRSchemaError, match="owner-local rotary pairs"):
         fm.get_definition("nn.rope").infer_type(
             (_typed("value", value_type), _typed("cos", rotary_type), _typed("sin", rotary_type)),
             {},
         )
+
+
+@pytest.mark.parametrize("rotary_dim,block", [(None, 8), (64, 4)])
+def test_rope_preserves_pair_local_head_dimension_splits(rotary_dim, block):
+    placement = fm.Placement((8,), "x", "b")
+    broad = fm.SBP.broadcast()
+    value_type = fm.DistributedType(
+        fm.tensor_type("bfloat16", (1, 3, 128)),
+        (broad, broad, fm.SBP.split_block_cyclic((0,), block)), placement,
+    )
+    table = fm.DistributedType(fm.tensor_type("float32", (1, 1, rotary_dim or 128)),
+                               (broad,) * 3, placement)
+    assert fm.get_definition("nn.rope").infer_type(
+        (_typed("value", value_type), _typed("cos", table), _typed("sin", table)),
+        {"rotary_dim": rotary_dim},
+    ) == value_type
 
 
 def _typed(name: str, value_type: fm.IRType) -> fm.Node:

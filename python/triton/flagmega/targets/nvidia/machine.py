@@ -67,10 +67,11 @@ class NvidiaSm90Machine:
         return sm90_bufferization_options(self.capability)
 
     def distributed_reshard_cost_model(self):
-        # Selection weight in the same integer work units as the current NTT
-        # analytic candidates. It is injected and agent-editable rather than
-        # embedded in a graph rule or interpreted as a precise cycle model.
-        return DistributedReshardCostModel(grid_synchronization_cost=2200)
+        operation_cost = self.distributed_operation_cost_model()
+        return DistributedReshardCostModel(
+            grid_synchronization_cost=operation_cost.grid_synchronization_cycles,
+            operation_cost_model=operation_cost,
+        )
 
     def distributed_operation_cost_model(self):
         # H800 target-machine values mirror nncase's canonical catalog.  The

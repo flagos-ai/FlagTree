@@ -5,21 +5,23 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from math import prod
 
 from triton.flagmega.errors import IRSchemaError
-from triton.flagmega.ir.distributed_type import ReduceOp, SBPPartial
+from triton.flagmega.ir.distributed_type import ReduceOp, SBPPartial, local_tensor_type
 from triton.flagmega.ir.model import DistributedType, IRType, Node, TupleType
 from triton.flagmega.ir.ops.core import (
     CostKind,
     OpCost,
+    OpCostFactors,
     OpDefinition,
     attribute_parameter,
     input_parameter,
     op_definition,
     tensor_nbytes,
 )
-from triton.flagmega.ir.ops.ntt.matmul_norm_stats_combine import (
-    can_materialize_matmul_partial,
+from triton.flagmega.ir.ops.ntt.add_norm_stats import (
+    can_materialize_sum_partial,
 )
 from triton.flagmega.ir.type_pattern import is_ir_type
 
@@ -79,6 +81,26 @@ class PackedQKVParallelLinearCombine(OpDefinition):
             notes=("coupled-sum-partial-materialization",),
         )
 
+    @classmethod
+    def cost_factors(cls, inputs, attrs, return_type):
+        source = cls.qkv.type_of(inputs)
+        if source == return_type:
+            return OpCostFactors()
+        if not can_materialize_packed_qkv(source, return_type):
+            return None
+        loads = stores = additions = 0
+        for before, after in zip(source.fields, return_type.fields):
+            local = local_tensor_type(after)
+            size = tensor_nbytes(local)
+            if size is None:
+                return None
+            fan_in = prod(before.placement.hierarchy[axis] for axis in before.partial.axes)
+            loads += size * fan_in
+            stores += size
+            additions += prod(d.fixed_value for d in local.shape) * getattr(local.dtype, "lane_count", 1) * (fan_in - 1)
+        return OpCostFactors(block_local_memory_load_bytes=loads, block_local_memory_store_bytes=stores,
+                             elementwise_operations=additions, grid_synchronizations=1)
+
 
 def can_materialize_packed_qkv(input_type: IRType, output_type: IRType) -> bool:
     """Match nncase's three-field identity or coupled Sum-partial contract."""
@@ -104,7 +126,7 @@ def can_materialize_packed_qkv(input_type: IRType, output_type: IRType) -> bool:
     ):
         return False
     return all(
-        can_materialize_matmul_partial(source, target)
+        can_materialize_sum_partial(source, target)
         for source, target in zip(input_fields, output_fields)
     )
 

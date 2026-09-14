@@ -135,14 +135,13 @@ def packed_distributed_tensor_map_table_request(
             origin * physical_strides[axis]
             for axis, origin in enumerate(owner_origins)
         )
-        local_descriptor_shape = tuple(
-            (
-                active
-                if active > 0
-                else tile_shape[axis]
-            )
-            for axis, active in enumerate(owner_extents)
-        ) + physical_shape[len(logical_shape):]
+        local_descriptor_shape = tuple(owner_extents) + physical_shape[len(logical_shape):]
+        if 0 in owner_extents:
+            # Tensor maps cannot encode zero extents. An empty owner's unused
+            # entry names one in-bounds logical element, retaining packed lanes;
+            # its actual zero active domain remains in the kernel's shard ABI.
+            base_scalar_elements = 0
+            local_descriptor_shape = (1,) * len(logical_shape) + physical_shape[len(logical_shape):]
         entries.append({
             "offset_bytes": offset_bytes + base_scalar_elements * item_size,
             "shape": local_descriptor_shape,

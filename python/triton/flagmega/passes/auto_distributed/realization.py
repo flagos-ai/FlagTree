@@ -71,6 +71,8 @@ class NttDistributedReshardRealizationPolicy:
 
         if not can_box(context.source_type, context.target_type):
             return DistributedReshardRealization.UNSUPPORTED
+        if _is_exclusive_transition(context.source_type, context.target_type):
+            return DistributedReshardRealization.SHARDED_VIEW
         if self.can_alias_constant(context):
             return DistributedReshardRealization.SHARDED_VIEW
         return DistributedReshardRealization.BOXING
@@ -108,6 +110,8 @@ class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationP
 
         if not can_box(context.source_type, context.target_type):
             return DistributedReshardRealization.UNSUPPORTED
+        if _is_exclusive_transition(context.source_type, context.target_type):
+            return DistributedReshardRealization.SHARDED_VIEW
         if (
             not isinstance(context.target_type, DistributedType)
             or sharded_view_error(context.source_type, context.target_type) is not None
@@ -118,6 +122,10 @@ class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationP
         if (
             context.usage_kind not in {
                 DistributedReshardUsageKind.INTERNAL,
+                # Callee-owned canonical storage has the same layout proof
+                # at a return as at an internal use. Its completion is still
+                # priced/scheduled before the caller can read remote shards.
+                DistributedReshardUsageKind.FUNCTION_BOUNDARY,
                 DistributedReshardUsageKind.PROGRAM_OUTPUT,
             }
             or not isinstance(context.source_type, DistributedType)
@@ -150,6 +158,21 @@ def _placement_axis_owners(value: DistributedType) -> tuple[int, ...] | None:
                 return None
             owners[placement_axis] = tensor_axis
     return tuple(owners)
+
+
+def _is_exclusive_transition(source_type: IRType, target_type: IRType) -> bool:
+    if isinstance(target_type, DistributedType) and target_type.exclusive is not None:
+        if isinstance(source_type, TensorType):
+            return True
+    return (
+        isinstance(source_type, DistributedType)
+        and isinstance(target_type, DistributedType)
+        and source_type.placement == target_type.placement
+        and source_type.partial is None
+        and target_type.partial is None
+        and source_type.exclusive != target_type.exclusive
+        and (source_type.exclusive is not None or target_type.exclusive is not None)
+    )
 
 
 def _preserves_non_block_owners(

@@ -33,6 +33,7 @@ from triton.flagmega.codegen.triton.reduce_sum_renderer import reduce_sum_call
 from triton.flagmega.codegen.triton.top_k_renderer import top_k_call
 from triton.flagmega.codegen.triton.sparse_experts.gate_up import sparse_experts_gate_up_call
 from triton.flagmega.codegen.triton.sparse_experts.down import sparse_experts_down_call
+from triton.flagmega.codegen.triton.sparse_experts.routes import sparse_experts_routes_call
 from triton.flagmega.codegen.triton.descriptor_abi import device_descriptor_request
 from triton.flagmega.codegen.triton.tensor_descriptor_planner import (
     packed_distributed_tensor_map_table_request,
@@ -44,6 +45,7 @@ from triton.flagmega.ir import (
     TupleType,
     VectorType,
     is_fully_replicated,
+    is_local_shard_subview,
     local_shard_descriptor,
     type_from_data,
 )
@@ -94,6 +96,7 @@ def prepare_kernel_calls(
                 f"{family}/{call['variant']}."
             )
         call.update(encoder(raw))
+        call["participation_active"] = _exclusive_participation_active(raw)
         from triton.flagmega.codegen.triton.fusion import decode_fusion_attrs, require_fusion
         from triton.flagmega.ir.op_fusion import has_ops
         if has_ops(raw.get("semantic_attrs", {})):
@@ -902,6 +905,10 @@ def _boxing_leaf(source, result, transition: str, raw) -> dict[str, object]:
         mode = "canonical_copy"
         iteration_abi = result_abi
         logical_abi = result_abi
+    elif _boxing_is_local_narrowing(source_abi, result_abi):
+        mode = "local_gather"
+        iteration_abi = result_abi
+        logical_abi = result_abi
     else:
         source_mapping = tuple(source_abi["logical_coordinate_expressions"])
         result_mapping = tuple(result_abi["logical_coordinate_expressions"])
@@ -938,7 +945,9 @@ def _boxing_leaf(source, result, transition: str, raw) -> dict[str, object]:
         emit_logical_coordinate(logical_abi, axis, local_coordinates)
         for axis in range(len(local_shape))
     )
-    if mode in {"scatter", "local_copy"}:
+    if mode == "local_gather":
+        source_offset = _owner_local_operand_offset(source_abi, logical_coordinates, lane_coordinate)
+    elif mode in {"scatter", "local_copy"}:
         source_offset = emit_local_scalar_offset(
             source_abi, local_coordinates, lane_coordinate=lane_coordinate
         )
@@ -946,7 +955,7 @@ def _boxing_leaf(source, result, transition: str, raw) -> dict[str, object]:
         source_offset = emit_global_scalar_offset(
             source_abi, logical_coordinates, lane_coordinate=lane_coordinate
         )
-    if mode in {"gather", "local_copy"}:
+    if mode in {"gather", "local_copy", "local_gather"}:
         result_offset = emit_local_scalar_offset(
             result_abi, local_coordinates, lane_coordinate=lane_coordinate
         )
@@ -973,6 +982,19 @@ def _boxing_leaf(source, result, transition: str, raw) -> dict[str, object]:
             raw["parameters"]["tile"], scalar_capacity, name="Boxing tile"
         ),
     }
+
+
+def _boxing_is_local_narrowing(source_abi, result_abi):
+    """Prove containment before inverting a compact source's owner map."""
+    types = []
+    for abi in (source_abi, result_abi):
+        if abi.get("coordinate_space") not in {"local", "parent_shard_local"}:
+            return False
+        data = abi.get("distributed_type")
+        if not isinstance(data, Mapping) or data.get("kind") != "distributed":
+            return False
+        types.append(type_from_data(data))
+    return is_local_shard_subview(*types)
 
 
 def _partial_boxing_leaf(
@@ -1005,6 +1027,7 @@ def _partial_boxing_leaf(
         and result_abi.get("coordinate_space") == "canonical_global"
         and result_abi.get("memory_sharing_scope") == "chip"
     )
+    routed = False
     if not canonical_result:
         # A private destination needs the reduced value on every owner, not
         # just the unique writer used for shared canonical storage. Matching
@@ -1024,16 +1047,17 @@ def _partial_boxing_leaf(
         )
         if (
             str(result_abi.get("coordinate_space")) not in {"local", "parent_shard_local", "canonical_global"}
-            or not matching_placement or not matching_map
+            or not matching_placement
         ):
             raise CodegenError(
-                "Partial Boxing into a different compact owner map requires "
-                "an explicit routed transfer lowering."
+                "Partial Boxing requires a destination on the source placement."
             )
+        routed = not matching_map
     owner_stride = int(source_abi.get("component_stride_scalar_elements", 0))
     if owner_stride <= 0:
         raise CodegenError("Partial Boxing source has no owner component stride.")
-    local_shape = _static_shape(source_abi, "local_capacity_shape")
+    iteration_abi = result_abi if routed else source_abi
+    local_shape = _static_shape(iteration_abi, "local_capacity_shape")
     scalar_capacity = prod(local_shape, start=1) * lane_count
     physical_flat = (
         "boxing_offsets"
@@ -1047,11 +1071,11 @@ def _partial_boxing_leaf(
     )
     local_coordinates = _unflattened_coordinates(local_shape, physical_flat)
     logical_coordinates = tuple(
-        emit_logical_coordinate(source_abi, axis, local_coordinates)
+        emit_logical_coordinate(iteration_abi, axis, local_coordinates)
         for axis in range(len(local_shape))
     )
     active = " & ".join(
-        f"(({coordinate}) < ({emit_active_extent(source_abi, axis)}))"
+        f"(({coordinate}) < ({emit_active_extent(iteration_abi, axis)}))"
         for axis, coordinate in enumerate(local_coordinates)
     ) or "True"
     distributed = source_abi.get("distributed_type")
@@ -1063,6 +1087,27 @@ def _partial_boxing_leaf(
     if not isinstance(placement, Mapping):
         raise CodegenError("Partial Boxing source has no placement ABI.")
     hierarchy = tuple(int(value) for value in placement.get("hierarchy", ()))
+    if routed:
+        # The destination owns the iteration domain. Each logical element
+        # selects its source shard; only partial axes form the reduction group.
+        source_coordinates, source_owner = _compact_source_coordinates(
+            source_abi, logical_coordinates
+        )
+        source_offset = emit_local_scalar_offset(
+            source_abi, source_coordinates, lane_coordinate=lane_coordinate,
+        )
+        source_offset = f"(({source_owner}) * {owner_stride} + ({source_offset}))"
+        partial_owner = _group_owner_expression_for_axes(
+            source_abi, axes, "boxing_partial_member",
+            preserved_coordinates=tuple("0" for _ in hierarchy),
+        )
+    else:
+        source_offset = emit_local_scalar_offset(
+            source_abi, local_coordinates, lane_coordinate=lane_coordinate,
+        )
+        partial_owner = _partial_group_owner_expression_for_axes(
+            source_abi, axes, "boxing_partial_member"
+        )
     owner_count = prod((hierarchy[axis] for axis in axes), start=1)
     placement_owner_count = prod(hierarchy, start=1)
     value_tile = _bounded_vector_tile(
@@ -1087,11 +1132,7 @@ def _partial_boxing_leaf(
         ),
         "result": _pointer(result),
         "capacity": scalar_capacity,
-        "source_offset": emit_local_scalar_offset(
-            source_abi,
-            local_coordinates,
-            lane_coordinate=lane_coordinate,
-        ),
+        "source_offset": source_offset,
         "result_offset": (
             emit_global_scalar_offset(
                 result_abi, logical_coordinates, lane_coordinate=lane_coordinate,
@@ -1105,9 +1146,7 @@ def _partial_boxing_leaf(
         "partial_owner_count": owner_count,
         "partial_owner_tile": owner_tile,
         "placement_owner_count": placement_owner_count,
-        "partial_owner": _partial_group_owner_expression_for_axes(
-            source_abi, axes, "boxing_partial_member"
-        ),
+        "partial_owner": partial_owner,
         "owner_stride": owner_stride,
         "tile": value_tile,
         "output_type": _triton_dtype(str(result_abi["scalar_dtype"])),
@@ -1198,7 +1237,7 @@ def _gdn_recurrent_call(raw) -> dict[str, object]:
         type_from_data(distributed_data), 1, int(raw["parameters"]["tile_state"][1]),
         int(attrs["value_head_dim"]),
     )
-    return {
+    result_context = {
         "state": _pointer(state),
         "qkv": _pointer(qkv),
         "z": _pointer(z),
@@ -1237,6 +1276,17 @@ def _gdn_recurrent_call(raw) -> dict[str, object]:
         "round_core": bool(attrs.get("round_core", False)),
         "writer_active": _distributed_unique_writer_active(result_abi),
     }
+    if raw.get("variant") == "state_smem_pipeline":
+        from triton.flagmega.ir.tir import tir_from_data
+        partition = raw["transfer_pipeline"]["channels"][0].get("inplace_partition")
+        partition = None if partition is None else tir_from_data(partition)
+        if (partition is None or partition.source_field_path != ("recurrent",)
+                or partition.source_row_rank != 3 or partition.output_index != 0
+                or partition.output_axis != 1 or partition.tile_rows != result_context["value_tile"]):
+            raise CodegenError("GDN state pipeline requires the verified recurrent row partition.")
+        result_context.update({name: raw["parameters"][name]
+                               for name in ("num_stages", "producer_warps", "producer_registers", "consumer_warps")})
+    return result_context
 
 
 def _add_norm_stats_call(raw) -> dict[str, object]:
@@ -2305,8 +2355,10 @@ def _elementwise_call(raw) -> dict[str, object]:
         rhs_offset, rhs_active = _elementwise_operand_access(
             rhs["abi"], result_abi, domain, raw
         )
+    # Canonical storage is shared across broadcast owners. In-place outputs
+    # require a single reader/writer, not redundant read-modify-write kernels.
     active = " & ".join(
-        f"({value})" for value in (domain["active"], lhs_active, rhs_active)
+        f"({value})" for value in (domain["active"], lhs_active, rhs_active, _canonical_writer_active(result_abi))
         if value != "True"
     ) or "True"
     from triton.flagmega.codegen.triton.fusion import elementwise_program
@@ -2659,11 +2711,16 @@ def _dense_matmul_call(raw) -> dict[str, object]:
     source_abi = source["abi"]
     weight_abi = weight["abi"]
     result_abi = result["abi"]
+    source_rows = _static_shape(source_abi, "local_capacity_shape")[:-1]
+    if source_rows != _static_shape(result_abi, "local_capacity_shape")[:-1]:
+        raise CodegenError("DenseMatMul lhs/result owner-local row domains must match.")
+    local_m = prod(source_rows, start=1)
+    row_coordinate = "dense_local_m" if local_m != 1 else None
     source_domain = _scalar_last_axis_domain(
-        source_abi, "dense_local_k_offsets", owner="DenseMatMul lhs"
+        source_abi, "dense_local_k_offsets", owner="DenseMatMul lhs", row_coordinate=row_coordinate
     )
     result_domain = _scalar_last_axis_domain(
-        result_abi, "dense_local_n_offsets", owner="DenseMatMul result"
+        result_abi, "dense_local_n_offsets", owner="DenseMatMul result", row_coordinate=row_coordinate
     )
     global_k = _scalar_logical_axis_extent(source_abi, -1)
     global_n = _scalar_logical_axis_extent(result_abi, -1)
@@ -2862,6 +2919,7 @@ def _dense_matmul_call(raw) -> dict[str, object]:
         "result": _pointer(result),
         "local_k_capacity": source_domain["capacity"],
         "local_n_capacity": result_domain["capacity"],
+        "local_m_capacity": local_m,
         "source_active": source_domain["active"],
         "source_owner_active": source_domain["owner_active"],
         "source_active_extent": source_domain["physical_active_extent"],
@@ -2888,11 +2946,13 @@ def _dense_matmul_call(raw) -> dict[str, object]:
             result_abi,
             "dense_local_n_start",
             owner="DenseMatMul descriptor result",
+            row_coordinate=row_coordinate,
         )["global_scalar"]
         descriptor_k_offset = _scalar_last_axis_domain(
             source_abi,
             "dense_local_k_start",
             owner="DenseMatMul descriptor lhs",
+            row_coordinate=row_coordinate,
         )["global_scalar"]
         result.update({
             "weight_descriptor": "weight_descriptor",
@@ -3729,15 +3789,18 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
     parameters = raw.get("parameters", {})
     pipeline = raw.get("transfer_pipeline")
     workspaces = raw.get("shared_workspaces")
+    direct_lhs = parameters.get("direct_lhs", False) if isinstance(parameters, Mapping) else False
+    if type(direct_lhs) is not bool:
+        raise CodegenError("PackedQKV direct_lhs must be boolean.")
     if (
         not isinstance(parameters, Mapping)
         or not isinstance(pipeline, Mapping)
         or not isinstance(workspaces, (tuple, list))
-        or len(workspaces) != 2
+        or len(workspaces) != (1 if direct_lhs else 2)
     ):
         raise CodegenError(
-            "PackedQKV MMA requires typed transfer-pipeline and two Shared "
-            "workspace descriptors."
+            "PackedQKV requires a typed transfer-pipeline, a weight stage and "
+            "an LHS stage unless direct_lhs is declared."
         )
     block_n = int(parameters["block_n"])
     block_k = int(parameters["block_k"])
@@ -3745,9 +3808,17 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
     consumer_warps = int(parameters["consumer_warps"])
     worker_width = int(parameters["worker_width"])
     local_n = sum(domain["capacity"] for domain in output_domains)
+    masked_n_tail = parameters.get("masked_n_tail", False)
+    n_tiling = parameters.get("n_tiling", False)
+    if type(masked_n_tail) is not bool or type(n_tiling) is not bool:
+        raise CodegenError("PackedQKV masked_n_tail and n_tiling must be boolean.")
+    n_tile_matches = block_n == local_n or (masked_n_tail and 0 < local_n < block_n) or (n_tiling and local_n > 0)
     if (
-        block_n != local_n
-        or source_domain["capacity"] % block_k
+        not n_tile_matches
+        or block_n <= 0 or block_n & (block_n - 1)
+        or block_k <= 0
+        or (not direct_lhs and source_domain["capacity"] % block_k)
+        or block_k & (block_k - 1)
         or block_n % 8
         or block_k % 16
         or num_stages <= 0
@@ -3755,8 +3826,8 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
         or worker_width != 32
     ):
         raise CodegenError(
-            "PackedQKV MMA requires a full owner-local N tile, complete K16 "
-            "tiles, eight consumer warps, and 32 threads per warp."
+            "PackedQKV pipeline requires a full owner-local N tile, declared masked tail or N tiling, complete K16 "
+            "tiles (or declared direct LHS tails), eight consumer warps, and 32 threads per warp."
         )
     if lane_shape != (8, 2, 8):
         raise CodegenError(
@@ -3765,8 +3836,10 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
     expected_weight_shape = (
         int(outputs[0]["abi"].get("owner_count", 0)),
         source_domain["capacity"] // 16,
-        block_n // 8,
+        local_n // 8,
     )
+    # The tensor map describes real storage; only its shared-memory box may
+    # extend past N. Inflating these strides to block_n would read other rows.
     expected_weight_strides = (
         expected_weight_shape[1] * expected_weight_shape[2] * 128,
         expected_weight_shape[2] * 128,
@@ -3809,9 +3882,8 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
         raise CodegenError(
             f"PackedQKV MMA has unsupported descriptor kind {descriptor_kind!r}."
         )
-    expected_shared_shapes = (
-        (num_stages, *rendered_block_shape),
-        (1, source_domain["capacity"]),
+    expected_shared_shapes = ((num_stages, *rendered_block_shape),) + (
+        () if direct_lhs else ((1, source_domain["capacity"]),)
     )
     if tuple(tuple(value["shape"]) for value in workspaces) != expected_shared_shapes:
         raise CodegenError(
@@ -3834,7 +3906,7 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
             block_shape=descriptor_block_shape,
         )
         descriptor_offsets = (
-            "tl.full((), 0, tl.int32)",
+            f"tl.full((), qkv_n_tile * {block_n // 8}, tl.int32)",
             f"tl.full((), qkv_k_tile * {block_k // 16}, tl.int32)",
             "tl.full((), 0, tl.int32)",
             "tl.full((), 0, tl.int32)",
@@ -3854,7 +3926,7 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
         }
         descriptor_offsets = (
             "tl.full((), shard_index, tl.int32)",
-            "tl.full((), 0, tl.int32)",
+            f"tl.full((), qkv_n_tile * {block_n // 8}, tl.int32)",
             f"tl.full((), qkv_k_tile * {block_k // 16}, tl.int32)",
             "tl.full((), 0, tl.int32)",
             "tl.full((), 0, tl.int32)",
@@ -3871,7 +3943,9 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
         "block_n": block_n,
         "block_k": block_k,
         "num_stages": num_stages,
-        "num_k_tiles": source_domain["capacity"] // block_k,
+        "direct_lhs": direct_lhs,
+        "num_k_tiles": (source_domain["capacity"] + block_k - 1) // block_k,
+        "num_n_tiles": (local_n + block_n - 1) // block_n,
         "consumer_warps": consumer_warps,
         "worker_width": worker_width,
         "producer_warps": int(parameters["producer_warps"]),
@@ -3903,9 +3977,8 @@ def _qkv_rope_with_cache_call(raw) -> dict[str, object]:
 
     The algorithm is expressed entirely in the local-buffer ABI.  Distribution
     affects active bounds and coordinate expressions; it does not select a
-    model-, mesh-, or accelerator-specific kernel body.  Normalized suffix axes
-    must be owner-local because this non-collective variant computes their
-    statistics without a cross-owner reduction.
+    model-, mesh-, or accelerator-specific kernel body. Rotary pairs must be
+    owner-local; Q/K statistics are separate, materialized operands.
     """
 
     q = _buffer(raw, "inputs", "qkv", 0)
@@ -3914,33 +3987,13 @@ def _qkv_rope_with_cache_call(raw) -> dict[str, object]:
     return _encode_qkv_rope_with_cache(raw, q, k, v)
 
 
-def _gather_reduce_qkv_rope_with_cache_call(raw) -> dict[str, object]:
-    """Encode QKV RoPE directly over compact Sum-partial projection outputs."""
-
-    partials = tuple(_buffer(raw, "inputs", "qkv", index) for index in range(3))
-    attrs = raw.get("semantic_attrs", {})
-    logical_type = _qkv_type_attribute(attrs, "logical_qkv_type")
-    logical = tuple(
-        {
-            **dict(source),
-            "abi": _logical_view_abi(source["abi"], field),
-        }
-        for source, field in zip(partials, logical_type.fields, strict=True)
-    )
-    return _encode_qkv_rope_with_cache(
-        raw, *logical, partial_sources=partials
-    )
-
-
 def _encode_qkv_rope_with_cache(
     raw,
     q,
     k,
     v,
-    *,
-    partial_sources=None,
 ) -> dict[str, object]:
-    """Build the common semantic context for materialized or partial QKV."""
+    """Build the apply-only context for materialized QKV and statistics."""
 
     q_scale = _buffer(raw, "inputs", "q_scale")
     k_scale = _buffer(raw, "inputs", "k_scale")
@@ -3960,6 +4013,7 @@ def _encode_qkv_rope_with_cache(
     k_axis = _normalized_axis(attrs, "k_axis", len(qkv_layout))
     q_context = _qkv_norm_rope_context(
         q,
+        _buffer(raw, "inputs", "q_stats"),
         q_scale,
         q_bias,
         cosine,
@@ -3977,6 +4031,7 @@ def _encode_qkv_rope_with_cache(
     )
     k_context = _qkv_norm_rope_context(
         k,
+        _buffer(raw, "inputs", "k_stats"),
         k_scale,
         k_bias,
         cosine,
@@ -3998,36 +4053,6 @@ def _encode_qkv_rope_with_cache(
         head["intermediate_type"] = (head["input_type"] if attrs.get("round_qk_intermediates", True)
                                      else "tl.float32")
 
-    if partial_sources is not None:
-        q_context["partial_reduce"] = _partial_qkv_access(
-            partial_sources[0], q_context["reduce_domain"], qkv_layout,
-            "qkv_q_partial_member",
-        )
-        q_context["partial_input"] = _partial_qkv_access(
-            partial_sources[0], q_context["apply_domain"], qkv_layout,
-            "qkv_q_partial_member",
-        )
-        q_context["partial_partner"] = _partial_qkv_access(
-            partial_sources[0], q_context["partner_domain"], qkv_layout,
-            "qkv_q_partial_member",
-        )
-        k_context["partial_reduce"] = _partial_qkv_access(
-            partial_sources[1], k_context["reduce_domain"], qkv_layout,
-            "qkv_k_partial_member",
-        )
-        k_context["partial_input"] = _partial_qkv_access(
-            partial_sources[1], k_context["apply_domain"], qkv_layout,
-            "qkv_k_partial_member",
-        )
-        k_context["partial_partner"] = _partial_qkv_access(
-            partial_sources[1], k_context["partner_domain"], qkv_layout,
-            "qkv_k_partial_member",
-        )
-        v_context["partial_input"] = _partial_qkv_access(
-            partial_sources[2], v_context, qkv_layout,
-            "qkv_v_partial_member",
-        )
-
     cache_abi = state[0]["abi"]
     cache_shape = _static_shape(cache_abi, "logical_shape")
     if len(cache_shape) != 6:
@@ -4042,7 +4067,7 @@ def _encode_qkv_rope_with_cache(
     if (
         q_context["head_dim"] != cache_head_dim
         or k_context["head_dim"] != cache_head_dim
-        or v_context["scalar_shape"][qkv_layout.index("dim")] != cache_head_dim
+        or v_context["global_extents"]["dim"] != cache_head_dim
     ):
         raise CodegenError(
             "QKVRoPEWithCache Q/K/V scalar head dimensions disagree with the cache."
@@ -4093,15 +4118,6 @@ def _encode_qkv_rope_with_cache(
     k_context["compute_active"] = k_context["writer_active"]
     v_context["compute_active"] = v_context["writer_active"]
 
-    headwise_partial = (
-        partial_sources is not None
-        and q_context["tile"] == q_context["reduction_capacity"]
-        and k_context["tile"] == k_context["reduction_capacity"]
-        and v_context["tile"] == v_context["capacity"]
-        and q_context["head_dim"] % 2 == 0
-        and k_context["head_dim"] % 2 == 0
-    )
-
     return {
         "q": q_context,
         "k": k_context,
@@ -4113,230 +4129,7 @@ def _encode_qkv_rope_with_cache(
         "layer_id": layer_expression,
         "advance_sequence": _scalar_expression(advance),
         "block_size": cache_shape[3],
-        "headwise_partial": headwise_partial,
     }
-
-
-def _qkv_type_attribute(attrs, name: str) -> TupleType:
-    value = attrs.get(name) if isinstance(attrs, Mapping) else None
-    if isinstance(value, Mapping):
-        value = type_from_data(value)
-    if not isinstance(value, TupleType) or len(value.fields) != 3:
-        raise CodegenError(
-            f"GatherReduceQKVRoPEWithCache requires a three-field {name}."
-        )
-    return value
-
-
-def _logical_view_abi(
-    source_abi: Mapping[str, object], logical_type
-) -> dict[str, object]:
-    """Describe a zero-copy logical domain without changing its backing buffer."""
-
-    if not isinstance(logical_type, DistributedType):
-        raise CodegenError(
-            "GatherReduceQKVRoPEWithCache logical views must be distributed."
-        )
-    tensor = logical_type.tensor
-    shape = tuple(_fixed_dimension(value, "logical QKV view") for value in tensor.shape)
-    lane_count = (
-        prod(tensor.dtype.lanes, start=1)
-        if isinstance(tensor.dtype, VectorType)
-        else 1
-    )
-    if (
-        str(source_abi.get("dtype")) != tensor.dtype.value
-        or int(source_abi.get("scalar_lane_count", 1)) != lane_count
-    ):
-        raise CodegenError(
-            "GatherReduceQKVRoPEWithCache logical view changes its backing dtype."
-        )
-    coordinates = tuple(
-        f"shard_coord_{axis}" for axis in range(logical_type.placement.rank)
-    )
-    shard = local_shard_descriptor(logical_type, coordinates)
-    local_shape = tuple(
-        _fixed_dimension(value, "logical QKV local capacity")
-        for value in shard.local_capacity_shape
-    )
-    strides = _dense_strides(shape)
-    return {
-        **dict(source_abi),
-        "logical_shape": shape,
-        "local_capacity_shape": local_shape,
-        "active_shape_expressions": tuple(
-            emit_dimension(value) for value in shard.active_shape
-        ),
-        "logical_coordinate_expressions": tuple(
-            emit_dimension(axis.map_local_to_global(f"local_coord_{index}"))
-            for index, axis in enumerate(shard.axes)
-        ),
-        "storage_strides": strides,
-        "scalar_storage_strides": tuple(value * lane_count for value in strides),
-        "coordinate_space": "local",
-        "distributed_type": logical_type.to_data(),
-    }
-
-
-def _fixed_dimension(value, owner: str) -> int:
-    try:
-        return value.fixed_value
-    except ValueError as error:
-        raise CodegenError(f"Triton renderer requires a fixed {owner}.") from error
-
-
-def _dense_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
-    running = 1
-    result = [1] * len(shape)
-    for axis in range(len(shape) - 1, -1, -1):
-        result[axis] = running
-        running *= shape[axis]
-    return tuple(result)
-
-
-def _partial_qkv_access(
-    source,
-    logical_domain: Mapping[str, object],
-    layout: tuple[str, str, str],
-    member: str,
-) -> dict[str, object]:
-    """Map a logical Q/K/V scalar to its packed partial owner and offset."""
-
-    abi = source["abi"]
-    if str(abi.get("storage_kind")) != "compact_per_owner":
-        raise CodegenError(
-            "GatherReduceQKVRoPEWithCache requires compact-per-owner partial input."
-        )
-    distributed = abi.get("distributed_type")
-    if not isinstance(distributed, Mapping):
-        raise CodegenError(
-            "GatherReduceQKVRoPEWithCache partial input has no DistributedType ABI."
-        )
-    partial = distributed.get("partial")
-    if (
-        not isinstance(partial, Mapping)
-        or str(partial.get("reduce_op")) != "sum"
-    ):
-        raise CodegenError(
-            "GatherReduceQKVRoPEWithCache requires Sum partial input."
-        )
-    placement = distributed.get("placement")
-    if not isinstance(placement, Mapping):
-        raise CodegenError(
-            "GatherReduceQKVRoPEWithCache partial input has no placement ABI."
-        )
-    hierarchy = tuple(int(value) for value in placement.get("hierarchy", ()))
-    partial_axes = tuple(int(value) for value in partial.get("axes", ()))
-    if (
-        not hierarchy
-        or not partial_axes
-        or tuple(sorted(set(partial_axes))) != partial_axes
-        or any(axis < 0 or axis >= len(hierarchy) for axis in partial_axes)
-    ):
-        raise CodegenError(
-            "GatherReduceQKVRoPEWithCache has invalid partial placement axes."
-        )
-
-    source_shape = _static_shape(abi, "logical_shape")
-    lane_count = int(abi.get("scalar_lane_count", 1))
-    logical_extents = tuple(
-        int(logical_domain["global_extents"][kind]) for kind in layout
-    )
-    logical_coordinates = tuple(
-        str(logical_domain["global_by_kind"][kind]) for kind in layout
-    )
-    scalar_linear = _flatten_expression(logical_coordinates, logical_extents)
-    source_physical_linear = (
-        scalar_linear if lane_count == 1 else f"(({scalar_linear}) // {lane_count})"
-    )
-    source_global = _unflatten_expression(source_physical_linear, source_shape)
-    lane = None if lane_count == 1 else f"(({scalar_linear}) % {lane_count})"
-
-    mesh_coordinates = list(_mesh_coordinates(len(hierarchy)))
-    remaining_member = f"({member})"
-    for position, axis in enumerate(reversed(partial_axes)):
-        extent = hierarchy[axis]
-        final = position == len(partial_axes) - 1
-        mesh_coordinates[axis] = (
-            remaining_member if final else f"(({remaining_member}) % {extent})"
-        )
-        if not final:
-            remaining_member = f"(({remaining_member}) // {extent})"
-
-    policies = distributed.get("axis_policies")
-    if not isinstance(policies, (tuple, list)) or len(policies) != len(source_shape):
-        raise CodegenError(
-            "GatherReduceQKVRoPEWithCache partial axis policies are incomplete."
-        )
-    local_coordinates = []
-    for coordinate, extent, policy in zip(
-        source_global, source_shape, policies, strict=True
-    ):
-        local_coordinates.append(
-            _invert_split_policy(
-                coordinate,
-                str(extent),
-                policy,
-                hierarchy,
-                mesh_coordinates,
-                partial_axes,
-            )
-        )
-    owner = _linear_owner_expression(mesh_coordinates, hierarchy)
-    owner_stride = int(abi.get("component_stride_scalar_elements", 0))
-    if owner_stride <= 0:
-        raise CodegenError(
-            "GatherReduceQKVRoPEWithCache partial input has no owner stride."
-        )
-    return {
-        "storage": emit_storage_pointer(abi, str(source["runtime_argument"])),
-        "owner": owner,
-        "owner_stride": owner_stride,
-        "offset": emit_local_scalar_offset(
-            abi,
-            local_coordinates,
-            lane_coordinate=lane,
-            shard_coordinates=mesh_coordinates,
-        ),
-        "member_count": prod(hierarchy[axis] for axis in partial_axes),
-        "member_width": _next_power_of_two(
-            prod(hierarchy[axis] for axis in partial_axes)
-        ),
-        "scalar_dtype": emit_triton_scalar_type(str(abi.get("scalar_dtype"))),
-    }
-
-
-def _next_power_of_two(value: int) -> int:
-    if value <= 0:
-        raise CodegenError("Triton partial-owner width must be positive.")
-    return 1 << (value - 1).bit_length()
-
-
-def _flatten_expression(
-    coordinates: tuple[str, ...], extents: tuple[int, ...]
-) -> str:
-    if len(coordinates) != len(extents) or not coordinates:
-        raise CodegenError("Cannot flatten an empty or rank-mismatched QKV domain.")
-    expression = f"({coordinates[0]})"
-    for coordinate, extent in zip(coordinates[1:], extents[1:], strict=True):
-        expression = f"(({expression}) * {extent} + ({coordinate}))"
-    return expression
-
-
-def _unflatten_expression(
-    linear: str, shape: tuple[int, ...]
-) -> tuple[str, ...]:
-    if not shape:
-        raise CodegenError("Cannot unflatten a scalar into an empty QKV shape.")
-    strides = _dense_strides(shape)
-    return tuple(
-        (
-            f"(({linear}) // {stride})"
-            if axis == 0
-            else f"((({linear}) // {stride}) % {extent})"
-        )
-        for axis, (extent, stride) in enumerate(zip(shape, strides, strict=True))
-    )
 
 
 def _invert_split_policy(
@@ -4344,34 +4137,37 @@ def _invert_split_policy(
     parent_extent: str,
     policy,
     hierarchy: tuple[int, ...],
-    mesh_coordinates: list[str],
-    partial_axes: tuple[int, ...],
 ) -> str:
+    return _invert_split_axis(coordinate, parent_extent, policy, hierarchy)[0]
+
+
+def _invert_split_axis(coordinate, parent_extent, policy, hierarchy):
+    """Invert staged splits into a local coordinate and mesh coordinates."""
     if not isinstance(policy, Mapping):
-        raise CodegenError("Serialized QKV axis policy must be a mapping.")
+        raise CodegenError("Serialized axis policy must be a mapping.")
     if str(policy.get("kind")) != "split":
-        return coordinate
+        return coordinate, ()
     stages = policy.get("stages")
     if not isinstance(stages, (tuple, list)) or not stages:
-        raise CodegenError("Serialized QKV split policy requires stages.")
+        raise CodegenError("Serialized split policy requires stages.")
     local = coordinate
     extent = parent_extent
+    owners = []
     for stage in stages:
         if not isinstance(stage, Mapping):
-            raise CodegenError("Serialized QKV split stage must be a mapping.")
+            raise CodegenError("Serialized split stage must be a mapping.")
         axes = tuple(int(value) for value in stage.get("hierarchy_axes", ()))
         if (
             not axes
             or any(axis < 0 or axis >= len(hierarchy) for axis in axes)
-            or set(axes) & set(partial_axes)
         ):
             raise CodegenError(
-                "QKV split axes must be valid and disjoint from partial axes."
+                "Operand split axes must belong to the placement."
             )
         count = prod(hierarchy[axis] for axis in axes)
         distribution = stage.get("distribution")
         if not isinstance(distribution, Mapping):
-            raise CodegenError("Serialized QKV split stage has no distribution.")
+            raise CodegenError("Serialized split stage has no distribution.")
         kind = str(distribution.get("kind"))
         if kind == "contiguous":
             granularity = distribution.get("granularity")
@@ -4389,7 +4185,7 @@ def _invert_split_policy(
         elif kind == "block_cyclic":
             block = int(distribution.get("block_size", 0))
             if block <= 0:
-                raise CodegenError("QKV block-cyclic split requires a block size.")
+                raise CodegenError("Block-cyclic split requires a block size.")
             cycle = count * block
             owner = f"((({local}) // {block}) % {count})"
             local = f"((({local}) // {cycle}) * {block} + ({local}) % {block})"
@@ -4399,24 +4195,28 @@ def _invert_split_policy(
                 f"({owner}) * {block}, 0), {block}))"
             )
         else:
-            raise CodegenError(f"Unsupported QKV split distribution {kind!r}.")
-        remaining = owner
-        for position, axis in enumerate(reversed(axes)):
-            axis_extent = hierarchy[axis]
-            final = position == len(axes) - 1
-            value = remaining if final else f"(({remaining}) % {axis_extent})"
-            current = mesh_coordinates[axis]
-            if axis in partial_axes or (
-                current not in _mesh_coordinates(len(hierarchy))
-                and current != value
-            ):
-                raise CodegenError(
-                    "A placement axis is assigned by multiple QKV policies."
-                )
-            mesh_coordinates[axis] = value
-            if not final:
-                remaining = f"(({remaining}) // {axis_extent})"
-    return local
+            raise CodegenError(f"Unsupported split distribution {kind!r}.")
+        stage_coordinates = _unflattened_coordinates(
+            tuple(hierarchy[axis] for axis in axes), owner
+        )
+        owners.extend(zip(axes, stage_coordinates, strict=True))
+    return local, tuple(owners)
+
+
+def _compact_source_coordinates(abi, logical_coordinates):
+    distributed = abi["distributed_type"]
+    hierarchy = tuple(int(value) for value in distributed["placement"]["hierarchy"])
+    owner_coordinates = ["0"] * len(hierarchy)
+    coordinates = []
+    for coordinate, extent, policy in zip(
+        logical_coordinates, _static_shape(abi, "logical_shape"),
+        distributed["axis_policies"], strict=True,
+    ):
+        local, owners = _invert_split_axis(coordinate, str(extent), policy, hierarchy)
+        coordinates.append(local)
+        for axis, owner in owners:
+            owner_coordinates[axis] = owner
+    return tuple(coordinates), _linear_owner_expression(owner_coordinates, hierarchy)
 
 
 def _serialized_fixed_dimension(value) -> str:
@@ -4426,10 +4226,10 @@ def _serialized_fixed_dimension(value) -> str:
         fixed = value
     else:
         raise CodegenError(
-            "Triton QKV contiguous granularity must be statically fixed."
+            "Triton contiguous granularity must be statically fixed."
         )
     if fixed <= 0:
-        raise CodegenError("Triton QKV split granularity must be positive.")
+        raise CodegenError("Triton split granularity must be positive.")
     return str(fixed)
 
 
@@ -4459,6 +4259,7 @@ def _normalized_axis(attrs, name: str, rank: int) -> int:
 
 def _qkv_norm_rope_context(
     source,
+    stats,
     scale,
     bias,
     cosine,
@@ -4476,48 +4277,44 @@ def _qkv_norm_rope_context(
     rotary_dim=None,
 ) -> dict[str, object]:
     source_abi = source["abi"]
-    _require_owner_local_reduction(source_abi, axis, prefix)
     scalar_shape = _attention_scalar_shape(source_abi, input_layout)
     outer_shape = scalar_shape[:axis]
     reduction_shape = scalar_shape[axis:]
     outer_coordinates = _unflattened_coordinates(
         outer_shape, f"{prefix}_outer_index"
     )
-    reduction_coordinates = _unflattened_coordinates(
-        reduction_shape, f"{prefix}_reduce_offsets"
-    )
     apply_coordinates = _unflattened_coordinates(
         reduction_shape, f"{prefix}_element_offsets"
-    )
-    reduce_domain = _attention_scalar_coordinates(
-        source_abi,
-        input_layout,
-        (*outer_coordinates, *reduction_coordinates),
     )
     apply_domain = _attention_scalar_coordinates(
         source_abi,
         input_layout,
         (*outer_coordinates, *apply_coordinates),
     )
+    stats_offsets = _norm_apply_stats_offsets(
+        stats["abi"], source_abi, axis,
+        apply_domain["physical_local_coordinates"],
+        tuple(apply_domain["global_by_kind"][kind] for kind in input_layout),
+        use_mean,
+    )
     dimension = apply_domain["global_by_kind"]["dim"]
-    local_dimension = apply_domain["local_by_kind"]["dim"]
     head_dim = apply_domain["global_extents"]["dim"]
     rotary_dim = head_dim if rotary_dim is None else rotary_dim
     if isinstance(rotary_dim, bool) or not isinstance(rotary_dim, int) or not 0 < rotary_dim <= head_dim or rotary_dim % 2:
         raise CodegenError("QKVRoPEWithCache rotary_dim must be a positive even scalar extent within the head.")
     partner = (
-        f"tl.where(({local_dimension}) >= {rotary_dim}, ({local_dimension}), "
-        f"tl.where(({local_dimension}) < {rotary_dim} // 2, "
-        f"({local_dimension}) + {rotary_dim} // 2, "
-        f"({local_dimension}) - {rotary_dim} // 2))"
+        f"tl.where(({dimension}) >= {rotary_dim}, ({dimension}), "
+        f"tl.where(({dimension}) < {rotary_dim} // 2, "
+        f"({dimension}) + {rotary_dim} // 2, "
+        f"({dimension}) - {rotary_dim} // 2))"
     )
-    partner_coordinates = dict(apply_domain["local_by_kind"])
+    partner_coordinates = dict(apply_domain["global_by_kind"])
     partner_coordinates["dim"] = partner
-    partner_domain = _attention_scalar_coordinates_from_kinds(
-        source_abi,
-        input_layout,
-        partner_coordinates,
+    partner_offset = _owner_local_attention_offset(
+        source_abi, input_layout, partner_coordinates,
     )
+    partner_domain = {**apply_domain, "global_by_kind": partner_coordinates,
+                      "offset": partner_offset}
     scale_offset = _aligned_parameter_offset(
         scale["abi"], apply_domain, input_layout, start_axis=axis,
         owner=f"{prefix} scale",
@@ -4555,19 +4352,24 @@ def _qkv_norm_rope_context(
         )
     context = {
         "input": _pointer(source),
+        "stats": _pointer(stats),
+        "stats_sum_offset": stats_offsets[0] if use_mean else None,
+        "stats_square_sum_offset": stats_offsets[-1],
+        "stats_active": " & ".join(
+            f"(({coordinate}) < ({emit_active_extent(source_abi, index)}))"
+            for index, coordinate in enumerate(outer_coordinates)
+        ) or "True",
         "scale": _pointer(scale),
         "bias": _pointer(bias),
         "cosine": _pointer(cosine),
         "sine": _pointer(sine),
         "outer_capacity": prod(outer_shape, start=1),
-        "reduction_capacity": capacity,
+        "apply_capacity": capacity,
         "normalization_size": prod(
             apply_domain["global_extents"][input_layout[index]]
             for index in range(axis, len(input_layout))
         ),
-        "reduce_active": reduce_domain["active"],
         "apply_active": apply_domain["active"],
-        "reduce_input_offset": reduce_domain["offset"],
         "input_offset": apply_domain["offset"],
         "partner_offset": partner_domain["offset"],
         "scale_offset": scale_offset,
@@ -4584,12 +4386,11 @@ def _qkv_norm_rope_context(
         "input_type": _triton_dtype(str(source_abi["scalar_dtype"])),
         "use_mean": use_mean,
         "apply_domain": apply_domain,
-        "reduce_domain": reduce_domain,
         "partner_domain": partner_domain,
         "tile": _bounded_vector_tile(
             tile,
             capacity,
-            name=f"QKVRoPEWithCache {prefix} reduction tile",
+            name=f"QKVRoPEWithCache {prefix} apply tile",
         ),
     }
     if result is not None:
@@ -4676,19 +4477,31 @@ def _attention_scalar_coordinates_from_kinds(abi, layout, local_by_kind):
     }
 
 
-def _require_owner_local_reduction(abi, axis, owner):
-    local_shape = _static_shape(abi, "local_capacity_shape")
-    logical_shape = _static_shape(abi, "logical_shape")
-    mappings = tuple(str(value) for value in abi["logical_coordinate_expressions"])
-    for reduction_axis in range(axis, len(local_shape)):
-        if (
-            local_shape[reduction_axis] != logical_shape[reduction_axis]
-            or mappings[reduction_axis] != f"local_coord_{reduction_axis}"
-        ):
-            raise CodegenError(
-                f"QKVRoPEWithCache {owner} normalized suffix is sharded; "
-                "select a gather-reduce variant or insert Boxing."
-            )
+def _owner_local_attention_offset(abi, layout, global_by_kind):
+    lanes = int(abi.get("scalar_lane_count", 1))
+    coordinates = [str(global_by_kind[kind]) for kind in layout]
+    dim_axis = layout.index("dim")
+    lane = None
+    if lanes != 1:
+        lane = f"(({coordinates[dim_axis]}) % {lanes})"
+        coordinates[dim_axis] = f"(({coordinates[dim_axis]}) // {lanes})"
+    return _owner_local_operand_offset(abi, coordinates, lane)
+
+
+def _owner_local_operand_offset(abi, coordinates, lane=None):
+    """Address a proven owner-local global coordinate in either storage ABI."""
+    if str(abi.get("coordinate_space")) == "canonical_global":
+        return emit_global_scalar_offset(abi, coordinates, lane_coordinate=lane)
+    distributed = abi.get("distributed_type")
+    if isinstance(distributed, Mapping):
+        hierarchy = tuple(distributed["placement"]["hierarchy"])
+        coordinates = tuple(_invert_split_policy(
+            str(coordinate), str(extent), policy, hierarchy,
+        ) for coordinate, extent, policy in zip(
+            coordinates, _static_shape(abi, "logical_shape"),
+            distributed["axis_policies"], strict=True,
+        ))
+    return emit_local_scalar_offset(abi, coordinates, lane_coordinate=lane)
 
 
 def _aligned_parameter_offset(
@@ -4730,15 +4543,9 @@ def _aligned_parameter_offset(
             raise CodegenError(
                 f"QKVRoPEWithCache {owner} vector lanes do not map to dimension."
             )
-        dimension = source_domain["local_by_kind"]["dim"]
+        dimension = source_domain["global_by_kind"]["dim"]
         lane_coordinate = f"(({dimension}) % {lanes})"
-    if str(abi.get("coordinate_space")) == "canonical_global":
-        return emit_global_scalar_offset(
-            abi, global_coordinates, lane_coordinate=lane_coordinate
-        )
-    return emit_local_scalar_offset(
-        abi, local_coordinates, lane_coordinate=lane_coordinate
-    )
+    return _owner_local_operand_offset(abi, global_coordinates, lane_coordinate)
 
 
 def _attention_result_access(abi, layout, source_domain):
@@ -4884,24 +4691,14 @@ def _rope_call(raw) -> dict[str, object]:
     def source_offset(scalar_dimension: str) -> str:
         abi = source["abi"]
         source_lane_count = int(abi.get("scalar_lane_count", 1))
-        coordinates = list(
-            logical_coordinates
-            if str(abi["coordinate_space"]) == "canonical_global"
-            else local_coordinates
-        )
+        coordinates = list(logical_coordinates)
         source_lane = None
         if source_lane_count == 1:
             coordinates[-1] = scalar_dimension
         else:
             coordinates[-1] = f"(({scalar_dimension}) // {source_lane_count})"
             source_lane = f"(({scalar_dimension}) % {source_lane_count})"
-        if str(abi["coordinate_space"]) == "canonical_global":
-            return emit_global_scalar_offset(
-                abi, coordinates, lane_coordinate=source_lane
-            )
-        return emit_local_scalar_offset(
-            abi, coordinates, lane_coordinate=source_lane
-        )
+        return _owner_local_operand_offset(abi, coordinates, source_lane)
 
     def table_offset(binding: Mapping[str, object]) -> str:
         abi = binding["abi"]
@@ -5085,7 +4882,10 @@ def _paged_attention_partial_call(raw) -> dict[str, object]:
         "head": max_domain["logical_coordinates"][head_axis],
     }
     variant = str(raw.get("variant", ""))
-    if variant in {"decode_t16", "decode_t32"}:
+    # Local-shard ABI covers every fixed-token-tile decode variant; the tile
+    # value itself comes from the selected implementation parameters and only
+    # has to be a valid Triton tile extent.
+    if variant.startswith("decode_t") and variant[len("decode_t"):].isdecimal():
         return result
     if variant != "mma_tma_smem_pipeline":
         raise CodegenError(
@@ -5302,6 +5102,17 @@ def _paged_attention_combine_call(raw) -> dict[str, object]:
     }
 
 
+def _paged_attention_gated_combine_call(raw) -> dict[str, object]:
+    result = _paged_attention_combine_call(raw)
+    gate = _buffer(raw, "inputs", "gate")
+    output = _buffer(raw, "outputs", "result")
+    layout = tuple(raw["semantic_attrs"]["layout"])
+    domain = _attention_scalar_domain(output["abi"], layout, "attention_output_offsets")
+    gate_offset, _ = _attention_result_access(gate["abi"], layout, domain)
+    return {**result, "gate": _pointer(gate), "gate_offset": gate_offset,
+            "output_dtype": _triton_dtype(str(output["abi"]["scalar_dtype"]))}
+
+
 def _attention_partial_state_coordinates(
     abi: Mapping[str, object],
     layout: tuple[str, ...],
@@ -5432,11 +5243,12 @@ def _scalar_last_axis_domain(
     scalar_coordinate: str,
     *,
     owner: str,
+    row_coordinate: str | None = None,
 ) -> dict[str, object]:
     """Describe one scalarized row of a possibly-vector physical tensor."""
 
     shape = _static_shape(abi, "local_capacity_shape")
-    if not shape or prod(shape[:-1], start=1) != 1:
+    if not shape or (row_coordinate is None and prod(shape[:-1], start=1) != 1):
         raise CodegenError(f"{owner} requires exactly one owner-local row.")
     lane_count = int(abi.get("scalar_lane_count", 1))
     if lane_count <= 0:
@@ -5451,7 +5263,9 @@ def _scalar_last_axis_domain(
         if lane_count == 1
         else f"(({scalar_coordinate}) % {lane_count})"
     )
-    coordinates = (*("0" for _ in shape[:-1]), physical)
+    row_coordinates = (tuple("0" for _ in shape[:-1]) if row_coordinate is None else
+                       _unflattened_coordinates(shape[:-1], row_coordinate))
+    coordinates = (*row_coordinates, physical)
     zero_coordinates = tuple("0" for _ in shape)
     distributed = abi.get("distributed_type")
     if isinstance(distributed, Mapping):
@@ -5469,8 +5283,8 @@ def _scalar_last_axis_domain(
         emit_active_extent(abi, axis) for axis in range(len(shape))
     )
     active_terms = [
-        f"(0 < ({active_extents[axis]}))"
-        for axis in range(len(shape) - 1)
+        f"({coordinate} < ({active_extents[axis]}))"
+        for axis, coordinate in enumerate(row_coordinates)
     ]
     active_terms.append(
         f"(({physical}) < ({active_extents[-1]}))"
@@ -5685,6 +5499,59 @@ def _mesh_coordinate(axis: int, rank: int) -> str:
     return coordinates[axis]
 
 
+def _exclusive_participation_active(raw: Mapping[str, object]) -> str:
+    """Return the owner predicate for a call touching an E value.
+
+    E/B boxing and ordinary E kernels both execute only on the selected owner;
+    the surrounding schedule/barrier makes the resulting canonical value
+    visible to the next owner group. Calls without E retain the old all-owner
+    behavior.
+    """
+
+    exclusive = None
+    for section in ("inputs", "outputs", "workspaces"):
+        for parameter in raw.get(section, ()):
+            for binding in parameter.get("buffers", ()):
+                distributed = binding.get("abi", {}).get("distributed_type")
+                if not isinstance(distributed, Mapping):
+                    continue
+                candidate = distributed.get("exclusive")
+                if isinstance(candidate, Mapping):
+                    if exclusive is None:
+                        exclusive = candidate
+                    elif exclusive != candidate:
+                        raise CodegenError("One kernel call cannot mix different E owner predicates.")
+    if exclusive is None:
+        return "True"
+    placement = None
+    # The serialized E contract is nested in the DistributedType placement.
+    for section in ("inputs", "outputs", "workspaces"):
+        for parameter in raw.get(section, ()):
+            for binding in parameter.get("buffers", ()):
+                distributed = binding.get("abi", {}).get("distributed_type")
+                if isinstance(distributed, Mapping) and distributed.get("exclusive") == exclusive:
+                    placement = distributed.get("placement")
+                    break
+            if placement is not None:
+                break
+        if placement is not None:
+            break
+    if not isinstance(placement, Mapping):
+        raise CodegenError("E call has no placement ABI.")
+    hierarchy = tuple(int(value) for value in placement.get("hierarchy", ()))
+    axes = tuple(int(value) for value in exclusive.get("axes", ()))
+    owners = exclusive.get("owner_coordinates")
+    if owners is None:
+        owners = (0,) * len(axes)
+    owners = tuple(int(value) for value in owners)
+    if not axes or len(axes) != len(owners) or any(axis < 0 or axis >= len(hierarchy) for axis in axes):
+        raise CodegenError("E call has invalid owner axes.")
+    return " & ".join(
+        f"({_mesh_coordinate(axis, len(hierarchy))} == {owner})"
+        for axis, owner in zip(axes, owners, strict=True)
+    )
+
+
 def _partial_group_owner_expression(
     abi: Mapping[str, object], member: str
 ) -> str:
@@ -5747,6 +5614,8 @@ def _group_owner_expression_for_axes(
     abi: Mapping[str, object],
     axes: tuple[int, ...],
     member: str,
+    *,
+    preserved_coordinates: tuple[str, ...] | None = None,
 ) -> str:
     """Map a dense group member to a placement owner, preserving other axes."""
 
@@ -5767,12 +5636,15 @@ def _group_owner_expression_for_axes(
         )
     if axes == tuple(range(len(hierarchy))):
         return f"({member})"
-    if len(hierarchy) == 2:
+    if len(hierarchy) == 2 and preserved_coordinates is None:
         if axes == (0,):
             return f"(({member}) * {hierarchy[1]} + shard_x)"
         if axes == (1,):
             return f"(shard_y * {hierarchy[1]} + ({member}))"
-    coordinates = list(_mesh_coordinates(len(hierarchy)))
+    coordinates = list(
+        _mesh_coordinates(len(hierarchy))
+        if preserved_coordinates is None else preserved_coordinates
+    )
     remaining = f"({member})"
     for position, axis in enumerate(reversed(axes)):
         extent = hierarchy[axis]
@@ -6220,6 +6092,8 @@ _FAMILY_ENCODERS = {
     "top_k": top_k_call,
     "sparse_experts_gate_up": sparse_experts_gate_up_call,
     "sparse_experts_down": sparse_experts_down_call,
+    "sparse_experts_dispatch": sparse_experts_routes_call,
+    "sparse_experts_weighted_sum": sparse_experts_routes_call,
     "unpack": vector_relayout_call,
     "pad": tensor_transform_call,
     "slice": tensor_transform_call,
@@ -6241,12 +6115,12 @@ _FAMILY_ENCODERS = {
     "dense_matmul_glu": _dense_matmul_glu_call,
     "qkv_parallel_linear": _qkv_parallel_linear_call,
     "qkv_rope_with_cache": _qkv_rope_with_cache_call,
-    "gather_reduce_qkv_rope_with_cache": _gather_reduce_qkv_rope_with_cache_call,
     "rotary_embedding": _rotary_embedding_call,
     "rope": _rope_call,
     "update_paged_attention_kv_cache": _cache_update_call,
     "paged_attention_partial": _paged_attention_partial_call,
     "paged_attention_combine": _paged_attention_combine_call,
+    "paged_attention_gated_combine": _paged_attention_gated_combine_call,
     "greedy_sample": _greedy_sample_call,
 }
 

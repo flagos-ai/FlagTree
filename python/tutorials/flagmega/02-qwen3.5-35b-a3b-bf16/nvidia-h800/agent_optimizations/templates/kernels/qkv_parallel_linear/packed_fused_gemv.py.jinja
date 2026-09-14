@@ -1,0 +1,72 @@
+# flagmega-kernel: qkv_parallel_linear/packed_fused_gemv platform=generic
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "qkv_parallel_linear" and call.variant == "packed_fused_gemv" %}
+{% if call.coalesced %}
+{{ call.symbol }}__weights = tl.constexpr(tle.gpu.BlockEncoding([1, 1], [2, 16], [4, 2], [1, 0]))
+{{ call.symbol }}__lhs = tl.constexpr(tle.gpu.SlicedEncoding(0, {{ call.symbol }}__weights.value))
+{{ call.symbol }}__out = tl.constexpr(tle.gpu.SlicedEncoding(1, {{ call.symbol }}__weights.value))
+{% endif %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    # One packed-N traversal shares each LHS tile across projection boundaries.
+    for qkv_packed_n_start in tl.range(0, {{ call.packed_n_capacity }}, {{ call.tile_n }}):
+        qkv_packed_n = qkv_packed_n_start + tl.arange(0, {{ call.tile_n }})
+{% if call.coalesced %}
+        qkv_packed_n = tle.gpu.set_layout(qkv_packed_n, {{ call.symbol }}__out)
+{% endif %}
+        qkv_n_mask = tl.full(({{ call.tile_n }},), False, tl.int1)
+{% if call.coalesced %}
+        qkv_n_mask = tle.gpu.set_layout(qkv_n_mask, {{ call.symbol }}__out)
+{% endif %}
+{% for output in call.outputs %}
+        qkv_local_n_offsets = qkv_packed_n - {{ output.projection_start }}
+        qkv_n_mask |= ((qkv_local_n_offsets >= 0)
+                       & (qkv_local_n_offsets < {{ output.local_n_capacity }})
+                       & ({{ output.active }}))
+{% endfor %}
+{% if call.coalesced %}
+        qkv_partial = tle.gpu.set_layout(tl.zeros(({{ call.tile_n }}, {{ call.block_k }}), tl.float32), {{ call.symbol }}__weights)
+{% else %}
+        qkv_accumulator = tl.zeros(({{ call.tile_n }},), tl.float32)
+{% endif %}
+        for qkv_local_k_start in tl.range(0, {{ call.local_k_capacity }}, {{ call.block_k }}):
+            qkv_local_k_offsets = qkv_local_k_start + tl.arange(0, {{ call.block_k }})
+{% if call.coalesced %}
+            qkv_local_k_offsets = tle.gpu.set_layout(qkv_local_k_offsets, {{ call.symbol }}__lhs)
+{% endif %}
+            qkv_k_mask = ((qkv_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }}))
+            qkv_source = tl.load({{ call.source }} + ({{ call.source_offset }}),
+                                 mask=qkv_k_mask, other=0.0).to(tl.float32)
+            qkv_weight_offsets = (
+                shard_index * {{ call.weight_owner_stride }}
+                + (qkv_local_k_offsets[None, :] // {{ call.k_lane }}) * {{ call.weight_k_group_stride }}
+                + (qkv_packed_n[:, None] // {{ call.n_lane }}) * {{ call.weight_n_group_stride }}
+                + (qkv_packed_n[:, None] % {{ call.n_lane }}) * {{ call.k_lane }}
+                + qkv_local_k_offsets[None, :] % {{ call.k_lane }}
+            )
+            qkv_weight = tl.load({{ call.weight }} + qkv_weight_offsets,
+                                 mask=qkv_n_mask[:, None] & qkv_k_mask[None, :], other=0.0).to(tl.float32)
+{% if call.coalesced %}
+            qkv_weight = tle.gpu.set_layout(qkv_weight, {{ call.symbol }}__weights)
+            qkv_partial += qkv_weight * qkv_source[None, :]
+{% else %}
+            qkv_accumulator += tl.sum(qkv_weight * qkv_source[None, :], axis=1)
+{% endif %}
+{% if call.coalesced %}
+        qkv_accumulator = tl.sum(qkv_partial, axis=1)
+{% endif %}
+{% for output in call.outputs %}
+        qkv_local_n_offsets = qkv_packed_n - {{ output.projection_start }}
+        qkv_output_mask = ((qkv_local_n_offsets >= 0)
+                           & (qkv_local_n_offsets < {{ output.local_n_capacity }})
+                           & ({{ output.active }}))
+        tl.store({{ output.result }} + ({{ output.result_offset }}),
+                  qkv_accumulator.to({{ call.output_type }}), mask=qkv_output_mask)
+{% endfor %}
+
+{% endif %}
+{% endfor %}
+{% endif %}

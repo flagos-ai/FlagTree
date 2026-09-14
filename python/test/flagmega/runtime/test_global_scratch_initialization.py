@@ -81,3 +81,33 @@ def test_grid_barrier_scratch_starts_from_a_zero_counter(monkeypatch):
     assert scratch.storage.zeroed is True
     assert scratch.nbytes == 32
     assert synchronized == [_Argument.device]
+
+
+def test_prepared_scratch_allocation_skips_launcher_clear(monkeypatch):
+    """The launcher clears returned tensors before cooperative launches.
+
+    The prepared scratch is zero-initialized once and its barrier counters
+    stay phase-safe across launches, so the allocated view must not expose
+    ``zero_``/``fill_``; otherwise every launch pays a redundant clear.
+    """
+
+    monkeypatch.setattr(
+        torch, "zeros", lambda size, **_kwargs: _Storage(size, zeroed=True)
+    )
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device: None)
+    scratch = prepared_runtime._prepare_global_scratch(
+        _Compiled(), (_Argument(),), (4, 1, 1)
+    )
+    view = scratch(scratch.nbytes, 16, None)
+    assert not hasattr(view, "zero_")
+    assert not hasattr(view, "fill_")
+    assert view.data_ptr() == scratch.buffer.data_ptr()
+
+    import pytest
+
+    from triton.flagmega.errors import RuntimeContractError
+
+    with pytest.raises(RuntimeContractError):
+        scratch(scratch.nbytes + 1, 16, None)
+    with pytest.raises(RuntimeContractError):
+        scratch(scratch.nbytes, 32, None)

@@ -62,12 +62,10 @@ def test_declared_result_effect_arity_is_verified_before_materialization(monkeyp
         materialize_kernel_prim_functions(builder.build(entry="main"))
 
 
-def test_qkv_effect_schema_names_partial_owner_and_partition_relations():
+def test_qkv_effect_schema_keeps_apply_owner_local_and_cache_partitioned():
     definition = fm.get_definition("nn.qkv_rope_with_cache")
 
-    assert definition.qkv.memory_effect == (
-        fm.MemoryEffect.READ.across_partial_owners()
-    )
+    assert definition.qkv.memory_effect == fm.MemoryEffect.READ
     assert definition.state.memory_effect == (
         fm.MemoryEffect.CHIP_READ_WRITE.partitioned_by_argument(8)
     )

@@ -124,6 +124,24 @@ def test_owner_local_distributed_edge_is_placed_in_block_pool():
     }
 
 
+def test_fixed_owner_producer_cannot_populate_all_private_replicas():
+    module = _chain()
+    name = module.node_map["producer"].attrs["callee"]
+    definitions = tuple(
+        replace(definition, dispatch=replace(
+            definition.dispatch,
+            memory_effects=tuple(
+                (key, effect.in_fixed_block(0))
+                for key, effect in definition.dispatch.memory_effects
+            ),
+        )) if definition.name == name else definition
+        for definition in module.kernel_definitions
+    )
+    module = replace(module, kernel_definitions=definitions)
+    placed = plan_function_memory(module, _options())
+    assert MEMORY_SPACE_METADATA not in placed.node_map["producer"].metadata
+
+
 def test_collective_producer_with_owner_local_output_uses_block_pool():
     module = _chain(collective_producer=True)
     producer = fm.kernel_dispatch_for_call(module, module.node_map["producer"])

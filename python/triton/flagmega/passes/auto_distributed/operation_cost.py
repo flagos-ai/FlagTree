@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil, prod
 
-from triton.flagmega.ir import DistributedType, IRType, OpCostFactors, TupleType
+from triton.flagmega.ir import DistributedType, IRType, OpCostFactors, TupleType, exclusive_owner_count
 
 
 @dataclass(frozen=True)
@@ -73,13 +73,12 @@ class DistributedOperationCostModel:
                 else 0
             )
         )
-        chip_memory_bytes = local_load + local_store + chip_load + chip_store
+        chip_read_bytes = (local_load + chip_load) * active_blocks + factors.chip_aggregate_memory_load_bytes
+        chip_write_bytes = (local_store + chip_store) * active_blocks + factors.chip_aggregate_memory_store_bytes
         chip_memory_cycles = (
-            ((local_load + chip_load) * active_blocks)
-            / self.chip_global_read_bytes_per_cycle
-            + ((local_store + chip_store) * active_blocks)
-            / self.chip_global_write_bytes_per_cycle
-            + (self.chip_global_latency_cycles if chip_memory_bytes > 0 else 0)
+            chip_read_bytes / self.chip_global_read_bytes_per_cycle
+            + chip_write_bytes / self.chip_global_write_bytes_per_cycle
+            + (self.chip_global_latency_cycles if chip_read_bytes + chip_write_bytes > 0 else 0)
         )
         compute_cycles = (
             factors.cpu_cycles
@@ -107,7 +106,10 @@ class DistributedOperationCostModel:
 
 def _active_block_count(value: IRType) -> int:
     if isinstance(value, DistributedType):
-        return max(prod(value.placement.hierarchy), 1)
+        owners = prod(value.placement.hierarchy)
+        if value.exclusive is not None:
+            owners //= exclusive_owner_count(value)
+        return max(owners, 1)
     if isinstance(value, TupleType):
         return max((_active_block_count(field) for field in value.fields), default=1)
     return 1

@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.model import IRModule
+from triton.flagmega.ir import verify_buffer_plan
 from triton.flagmega.ir.tir import (
     Block,
     Barrier,
@@ -134,6 +135,8 @@ def _lower_execution_function(
     module: IRModule,
     pipeline_functions: frozenset[str],
 ) -> ExecutionFunction:
+    from triton.flagmega.passes.tir.bufferize.synchronization import transfer_source_dependencies
+
     if _contains_region(function.body):
         raise IRVerificationError(
             f"ExecutionFunction @{function.name} already contains a "
@@ -162,12 +165,15 @@ def _lower_execution_function(
     drains, consumer_after, producer_before = _shared_synchronization(
         owners, function.name
     )
+    plan = verify_buffer_plan(module) if "buffer_plan" in module.metadata else None
     _add_execution_source_handoffs(
         execution_order,
         stages,
         consumer_after,
         producer_before,
         function.name,
+        {} if plan is None else {value.id: value.physical_access_span for value in plan.buffers},
+        None if plan is None else transfer_source_dependencies(module, plan, function.name, calls),
     )
     consumer = _rewrite_consumer(
         function.body, stages, drains, consumer_after
@@ -260,47 +266,71 @@ def _add_execution_source_handoffs(
     consumer_after,
     producer_before,
     function_name,
+    source_spans,
+    source_requirements=None,
 ):
     handoff_index = sum(len(values) for values in consumer_after.values())
+    call_indices = {value.call_id: index for index, value in enumerate(execution_order)
+                    if isinstance(value, (PrimFunctionCall, KernelInvoke))}
     for index, statement in enumerate(execution_order):
         stage = stages.get(id(statement))
         call = statement if isinstance(statement, (PrimFunctionCall, KernelInvoke)) else None
         if stage is None or not call.transfer_sources:
             continue
         sources = set(call.transfer_sources)
-        for predecessor_index in range(index - 1, -1, -1):
+        requirements = (
+            tuple((predecessor.call_id, ("block", (), None))
+                  for predecessor in execution_order[:index]
+                  if isinstance(predecessor, (PrimFunctionCall, KernelInvoke))
+                  and _writes_transfer_source(sources, _statement_writes(predecessor), source_spans))
+            if source_requirements is None else source_requirements[call.call_id]
+        )
+        release_index = None
+        for predecessor_id, requirement in requirements:
+            predecessor_index = call_indices[predecessor_id]
             predecessor = execution_order[predecessor_index]
-            if not sources.intersection(_statement_writes(predecessor)):
-                continue
-            predecessor_stage = stages.get(id(predecessor))
-            if predecessor_stage is None:
-                between = execution_order[predecessor_index + 1:index]
-                barrier = next((
-                    value for value in reversed(between)
-                    if isinstance(value, Barrier)
-                    and value.before == call.call_id
-                    and value.scope.value in {"block", "chip"}
-                ), None)
-                if barrier is None:
+            if id(predecessor) in stages and requirement[0] == "block":
+                ready = predecessor_index
+            else:
+                ready = _first_publication(execution_order, predecessor_index + 1, index, requirement)
+                if ready is None:
+                    scope = "Block" if requirement[0] == "block" else "Chip"
                     raise IRVerificationError(
-                        f"Transfer-pipeline stage {stage.stage_id!r} in "
-                        f"@{function_name} reads a source after an ordinary "
-                        "write without an effective Block barrier."
+                        f"Transfer-pipeline stage {stage.stage_id!r} in @{function_name} "
+                        f"reads a source after {predecessor_id!r} without an effective "
+                        f"{scope} barrier (source publication barrier required)."
                     )
-                handoff = PipelineHandoff(
-                    f"{function_name}_source_handoff_{handoff_index}"
-                )
-                handoff_index += 1
-                _append_unique(consumer_after[id(barrier)], handoff)
-                _append_unique(producer_before[id(call)], handoff)
-                break
-            handoff = PipelineHandoff(
-                f"{function_name}_source_handoff_{handoff_index}"
-            )
+            release_index = ready if release_index is None else max(release_index, ready)
+        if release_index is not None:
+            handoff = PipelineHandoff(f"{function_name}_source_handoff_{handoff_index}")
             handoff_index += 1
-            _append_unique(consumer_after[id(predecessor)], handoff)
+            _append_unique(consumer_after[id(execution_order[release_index])], handoff)
             _append_unique(producer_before[id(call)], handoff)
-            break
+
+
+def _first_publication(order, start, end, requirement):
+    from triton.flagmega.passes.tir.bufferize.barrier_coverage import BarrierCoverage
+
+    coverage = BarrierCoverage()
+    for index in range(start, end):
+        barrier = order[index]
+        if not isinstance(barrier, Barrier):
+            continue
+        scope = "grid" if barrier.scope.value == "chip" else "block"
+        coverage.apply((scope, barrier.axis_group_axes, requirement[2]), None)
+        if coverage.covers(requirement):
+            return index
+    return None
+
+
+def _writes_transfer_source(sources, writes, spans):
+    if sources.intersection(writes):
+        return True
+    # Views/subspans retain their own logical IDs. The physical span, not
+    # name equality, determines whether the producer observes a prior write.
+    return any(spans[source].may_alias(spans[written])
+               for source in sources if source in spans
+               for written in writes if written in spans)
 
 
 def _lower_function(function: PrimFunction) -> PrimFunction:
@@ -493,7 +523,7 @@ def _add_source_handoffs(
         pipeline = _transfer_pipeline(dispatch)
         sources = {
             dispatch.arguments[source_index]
-            for source_index in pipeline.source_argument_indices
+            for source_index in pipeline.read_argument_indices
         }
         for predecessor in reversed(execution_order[:index]):
             if not sources.intersection(_statement_writes(predecessor)):

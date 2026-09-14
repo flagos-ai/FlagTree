@@ -81,15 +81,15 @@ def test_promotes_distributed_parameter_and_restores_only_raw_uses():
 
     direct = rewritten.node_map["direct"]
     restore = rewritten.node_map[direct.inputs[0]]
-    assert restore.op in {
-        "distributed.boxing", "distributed.sharded_view"}
+    assert restore.op == "distributed.boxing"
     assert restore.inputs == (parameter.id,)
     assert restore.type == broadcast
     assert restore.metadata["boundary_layout"] == "raw_parameter_restore"
 
     call = rewritten.node_map["call"]
     caller_adapter = rewritten.node_map[call.inputs[0]]
-    assert caller_adapter.op == "distributed.boxing"
+    assert caller_adapter.op == "distributed.sharded_view"
+    assert rewritten.node_map[caller_adapter.inputs[0]].type == broadcast
     assert caller_adapter.type == split_columns
 
     value = torch.randn(4, 16)

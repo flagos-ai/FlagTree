@@ -167,7 +167,31 @@ class _PreparedGlobalScratch:
             raise RuntimeContractError(
                 f"Compiled launch requested scratch alignment {alignment}; "
                 f"prepared allocation guarantees {self.alignment}.")
-        return self.buffer
+        return _ScratchBufferView(self.buffer, self.nbytes)
+
+
+class _ScratchBufferView:
+    """Pointer-only view over the prepared scratch allocation.
+
+    The native launcher clears any returned buffer that exposes ``zero_`` or
+    ``fill_`` before every cooperative-grid launch.  That clear is redundant
+    for this allocation: ``_prepare_global_scratch`` zero-initializes it once,
+    and the TLE grid barrier adds exactly ``0x80000000`` per barrier counter
+    per launch, so the counter sign bit flips exactly once, at the final
+    arrival, and the steady-state counter value stays in ``{0, 0x80000000}``.
+    Returning a view without those methods skips the redundant per-launch
+    clear while keeping the storage alive through the kept buffer reference.
+    """
+
+    def __init__(self, buffer, nbytes: int) -> None:
+        self._buffer = buffer
+        self._nbytes = int(nbytes)
+
+    def data_ptr(self) -> int:
+        return self._buffer.data_ptr()
+
+    def nbytes(self) -> int:
+        return self._nbytes
 
 
 def _prepare_global_scratch(compiled, arguments: Sequence[object], grid: Sequence[int]):

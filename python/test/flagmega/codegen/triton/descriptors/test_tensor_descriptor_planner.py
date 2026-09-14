@@ -3,6 +3,7 @@
 """Unit coverage for distributed tensor-map table geometry."""
 
 import pytest
+from math import prod
 
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.tensor_descriptor_planner import (
@@ -168,3 +169,28 @@ def test_owner_prefix_table_rejects_overlapping_owner_payloads():
             descriptor_strides=(32, 8, 1),
             block_shape=(1, 8, 8),
         )
+
+
+@pytest.mark.parametrize("packed", (False, True))
+def test_empty_owner_descriptor_stays_inside_backing_storage(packed):
+    shape = (10,) if packed else (5, 40, 72)
+    suffix = (2, 64) if packed else ()
+    policies = ((fm.SBP.split_block_cyclic((0,), 4),) if packed else
+                (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 16), fm.SBP.broadcast()))
+    tensor = fm.tensor_type(fm.vector_type("bfloat16", suffix) if packed else "bfloat16", shape)
+    distributed = fm.DistributedType(tensor, policies, fm.Placement((8,), "x", "b"))
+    physical_shape = (*shape, *suffix)
+    strides = tuple(prod(physical_shape[axis + 1:]) for axis in range(len(physical_shape)))
+    abi = {"coordinate_space": "canonical_global", "distributed_type": distributed.to_data(),
+           "logical_shape": shape, "local_capacity_shape": tuple(d.fixed_value for d in fm.local_tensor_type(distributed).shape),
+           "scalar_dtype": "bfloat16"}
+    request = packed_distributed_tensor_map_table_request(
+        abi, parameter="weight", source="source", offset_bytes=4096,
+        descriptor_shape=physical_shape, descriptor_strides=strides,
+        block_shape=(4, 2, 64) if packed else (1, 64, 64))
+    limit = 4096 + prod(physical_shape) * 2
+    for entry in request["entries"]:
+        span = 1 + sum((extent - 1) * stride for extent, stride in zip(entry["shape"], entry["strides"]))
+        assert entry["offset_bytes"] + span * 2 <= limit
+    assert request["entries"][-1]["offset_bytes"] == 4096
+    assert request["entries"][-1]["shape"] == (*((1,) * len(shape)), *suffix)

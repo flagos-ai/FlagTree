@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Sparse SwiGLU experts, decomposable into nncase's GateUp/Down stages."""
+"""Sparse SwiGLU experts with explicit dispatch, projections and combine."""
 
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.model import Node
@@ -14,6 +14,8 @@ from triton.flagmega.ir.ops.nn._sparse_experts import (
 )
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp, evaluate_gate_up
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown, evaluate_down
+from triton.flagmega.ir.ops.nn.sparse_experts_dispatch import SparseExpertsDispatch
+from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine
 
 
 @op_definition("nn.sparse_experts", namespace="nn", functional_name="sparse_experts", display_name="NN.SparseExperts")
@@ -53,6 +55,11 @@ class SparseExperts(OpDefinition):
     def stage_calls(cls, inputs, attrs, *, name="sparse_experts", metadata=None):
         """One source of truth for stage binding in inference and rewriting."""
         operands = {parameter.name: parameter.read(inputs) for parameter in cls.input_parameters}
+        dispatch_inputs = (operands["q"], operands["router_expert_ids"])
+        dispatch = SparseExpertsDispatch.prepare(dispatch_inputs, {})
+        dispatch_node = Node(f"{name}.dispatch", SparseExpertsDispatch.op_name, tuple(n.id for n in dispatch_inputs),
+                             dispatch.result_type, dispatch.effect, dispatch.attrs, metadata or {})
+        operands["dispatched"] = dispatch_node
         gate_inputs = tuple(operands[parameter.name] for parameter in SparseExpertsGateUp.input_parameters)
         gate = SparseExpertsGateUp.prepare(
             gate_inputs, {
@@ -66,43 +73,49 @@ class SparseExperts(OpDefinition):
         down_inputs = tuple(operands[parameter.name] for parameter in SparseExpertsDown.input_parameters)
         down = SparseExpertsDown.prepare(
             down_inputs, {
-                "output_dtype":
-                tensor_of(cls.q.type_of(inputs)).dtype if attrs["output_dtype"] is None else attrs["output_dtype"],
                 "round_projection":
                 attrs["round_down_projection"],
-                "round_weighted_output":
-                attrs["round_weighted_output"],
             })
-        down_node = Node(name, SparseExpertsDown.op_name, tuple(value.id for value in down.inputs), down.result_type,
+        down_node = Node(f"{name}.down", SparseExpertsDown.op_name, tuple(value.id for value in down.inputs), down.result_type,
                          down.effect, down.attrs, metadata or {})
-        return gate_node, down_node
+        combine_inputs = (down_node, operands["router_expert_weights"])
+        combine = SparseExpertsCombine.prepare(combine_inputs, {
+            "output_dtype": tensor_of(cls.q.type_of(inputs)).dtype if attrs["output_dtype"] is None else attrs["output_dtype"],
+            "round_weighted_output": attrs["round_weighted_output"],
+        })
+        combine_node = Node(name, SparseExpertsCombine.op_name, tuple(n.id for n in combine_inputs),
+                            combine.result_type, combine.effect, combine.attrs, metadata or {})
+        return dispatch_node, gate_node, down_node, combine_node
 
     @classmethod
     def infer_type(cls, inputs, attrs):
-        return cls.stage_calls(inputs, attrs)[1].type
+        return cls.stage_calls(inputs, attrs)[-1].type
 
     @classmethod
     def evaluate(cls, node, arguments, context):
         values = {parameter.name: parameter.read(arguments) for parameter in cls.input_parameters}
         operands = tuple(Node(name, "builtin.var", (), context.types[name]) for name in node.inputs)
-        gate, down = cls.stage_calls(operands, node.attrs, name=node.id)
-        values["activations"] = evaluate_gate_up(values, context.types[cls.q.read(node.inputs)], gate.type, gate.attrs,
+        dispatch, gate, down, combine = cls.stage_calls(operands, node.attrs, name=node.id)
+        values["dispatched"] = values["q"].unsqueeze(1).expand(-1, values["router_expert_ids"].shape[1], *values["q"].shape[1:])
+        values["activations"] = evaluate_gate_up(values, dispatch.type, gate.type, gate.attrs,
                                                  context)
-        return evaluate_down(values, gate.type, down.type, down.attrs, context)
+        projected = evaluate_down(values, gate.type, down.type, down.attrs, context)
+        from triton.flagmega.ir.ops.nn.sparse_experts_combine import evaluate_combine
+        return evaluate_combine(projected, values["router_expert_weights"], down.type, combine.type, combine.attrs, context)
 
     @classmethod
     def cost(cls, node):
         return OpCost(bytes_written=tensor_nbytes(tensor_of(node.type)),
-                      notes=("sparse-experts", "decompose-gate-up-down"))
+                      notes=("sparse-experts", "dispatch-gate-up-down-combine"))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
-        gate, down = cls.stage_calls(inputs, attrs)
-        nodes = {value.id: value for value in (*inputs, gate)}
+        calls = cls.stage_calls(inputs, attrs)
+        nodes = {value.id: value for value in (*inputs, *calls)}
         factors = tuple(
             definition.cost_factors(tuple(nodes[name]
                                           for name in call.inputs), call.attrs, call.type)
-            for definition, call in ((SparseExpertsGateUp, gate), (SparseExpertsDown, down)))
+            for definition, call in zip((SparseExpertsDispatch, SparseExpertsGateUp, SparseExpertsDown, SparseExpertsCombine), calls))
         if any(value is None for value in factors):
             return None
         return OpCostFactors(

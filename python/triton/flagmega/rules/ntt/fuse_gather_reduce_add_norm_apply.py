@@ -19,7 +19,7 @@ from triton.flagmega.rules.ntt.fuse_gather_reduce_norm_apply import (
 
 def fuse_gather_reduce_add_norm_apply_rule() -> RewriteRule:
     """Fuse one private materialization and its consumer; shared uses stay intact."""
-    combine = F.ntt.is_matmul_norm_stats_combine(call_name="combine")
+    combine = F.ntt.is_add_norm_stats(call_name="combine")
     value = F.tensors.is_get_item(combine, 0, call_name="value_projection")
     stats = F.tensors.is_get_item(combine, 1, call_name="stats_projection").with_user_count(1)
     value_input = is_alt(value, F.distributed.is_sharded_view(value, call_name="value_view").with_user_count(1))

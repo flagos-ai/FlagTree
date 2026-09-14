@@ -39,6 +39,7 @@ def configuration(layer_types=("linear_attention", "full_attention", "linear_att
 
 def checkpoint(config=None, *, with_values=False):
     config = configuration() if config is None else config
+    shared = config["text_config"]["shared_expert_intermediate_size"]
     shapes = {
         "model.language_model.embed_tokens.weight": (32, 16),
         "model.language_model.norm.weight": (16, ),
@@ -51,9 +52,9 @@ def checkpoint(config=None, *, with_values=False):
             "mlp.gate.weight": (4, 16),
             "mlp.experts.gate_up_proj": (4, 16, 16),
             "mlp.experts.down_proj": (4, 16, 8),
-            "mlp.shared_expert.gate_proj.weight": (8, 16),
-            "mlp.shared_expert.up_proj.weight": (8, 16),
-            "mlp.shared_expert.down_proj.weight": (16, 8),
+            "mlp.shared_expert.gate_proj.weight": (shared, 16),
+            "mlp.shared_expert.up_proj.weight": (shared, 16),
+            "mlp.shared_expert.down_proj.weight": (16, shared),
             "mlp.shared_expert_gate.weight": (1, 16),
         }
         if kind == "linear_attention":
@@ -73,6 +74,7 @@ def checkpoint(config=None, *, with_values=False):
                 "self_attn.q_proj.weight": (32, 16),
                 "self_attn.k_proj.weight": (8, 16),
                 "self_attn.v_proj.weight": (8, 16),
+                "self_attn.qkvg.weight": (48, 16),
                 "self_attn.q_norm.weight": (8, ),
                 "self_attn.k_norm.weight": (8, ),
                 "self_attn.o_proj.weight": (16, 16),

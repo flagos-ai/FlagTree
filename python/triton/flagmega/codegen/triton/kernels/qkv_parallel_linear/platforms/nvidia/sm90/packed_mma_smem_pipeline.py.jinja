@@ -1,9 +1,9 @@
 # flagmega-kernel: qkv_parallel_linear/packed_mma_smem_pipeline platform=nvidia architecture=sm90
-{# BF16 M=1 fused QKV over one owner-local K-major RHS tile.
+{# BF16 M=1 fused QKV over owner-local K-major RHS tiles.
 
    The target catalog proves the local [N,K] profile and matrix primitive.
-   A single rank-5 tensor descriptor covers the owner-major fused weight;
-   shard_index selects the owner without a model- or mesh-shaped table. #}
+   A rank-5 descriptor or owner table covers the owner-major fused weight;
+   the input uses the declared shared-cache or masked direct-load profile. #}
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 
 {% if render_calls is defined %}
@@ -38,7 +38,10 @@
 
 
 @triton.jit
-def {{ call.symbol }}__consumer_stage(weight_stage, lhs_stage, qkv_k_tile):
+def {{ call.symbol }}__consumer_stage(weight_stage, qkv_input_pointer, qkv_k_tile):
+{% if call.direct_lhs %}
+{{ entry.mesh_coordinates() }}
+{% endif %}
     qkv_b_k = tle.gpu.set_layout(
         tl.arange(0, {{ call.block_k }}),
         {{ call.symbol }}__mma_b_k_layout,
@@ -65,10 +68,17 @@ def {{ call.symbol }}__consumer_stage(weight_stage, lhs_stage, qkv_k_tile):
         qkv_logical_weight,
         {{ call.symbol }}__mma_a_layout,
     )
+{% if call.direct_lhs %}
+    qkv_local_k_offsets = qkv_k_tile * {{ call.block_k }} + qkv_b_k
+    qkv_input = tle.gpu.set_layout(tl.load(
+        qkv_input_pointer + ({{ call.source_offset }}),
+        mask=(qkv_local_k_offsets < {{ call.local_k_capacity }}) & ({{ call.source_active }}), other=0,
+    ), {{ call.symbol }}__mma_b_k_layout)
+{% else %}
     qkv_input = tle.gpu.set_layout(
         tl.load(
             tle.gpu.local_ptr(
-                lhs_stage,
+                qkv_input_pointer,
                 (
                     qkv_lhs_row,
                     qkv_k_tile * {{ call.block_k }} + qkv_b_k,
@@ -77,6 +87,7 @@ def {{ call.symbol }}__consumer_stage(weight_stage, lhs_stage, qkv_k_tile):
         ),
         {{ call.symbol }}__mma_b_k_layout,
     )
+{% endif %}
     qkv_b = tle.gpu.set_layout(
         tl.broadcast_to(qkv_input[:, None], ({{ call.block_k }}, 8)),
         {{ call.symbol }}__mma_b_layout,
@@ -106,25 +117,27 @@ def {{ call.symbol }}__producer(
     qkv_weight_descriptor_entry = {{ call.weight_descriptor }}
 {% endif %}
     tle.gpu.tensor_map_fenceproxy_acquire(qkv_weight_descriptor_entry)
-    for qkv_k_tile in tl.static_range(0, {{ call.num_k_tiles }}):
-        qkv_slot = {{ writer }}.acquire(qkv_k_tile)
-        qkv_weight_descriptor = tle.gpu.reinterpret_tensor_map(
-            qkv_weight_descriptor_entry,
-            qkv_slot.weight,
-        )
-        tle.gpu.copy(
-            qkv_weight_descriptor,
-            qkv_slot.weight,
-            [{{ call.descriptor_block_shape | join(", ") }}],
-            [
+    for qkv_n_tile in tl.range(0, {{ call.num_n_tiles }}):
+        for qkv_k_tile in tl.{{ "range" if call.direct_lhs else "static_range" }}(0, {{ call.num_k_tiles }}):
+            qkv_step = qkv_n_tile * {{ call.num_k_tiles }} + qkv_k_tile
+            qkv_slot = {{ writer }}.acquire(qkv_step)
+            qkv_weight_descriptor = tle.gpu.reinterpret_tensor_map(
+                qkv_weight_descriptor_entry,
+                qkv_slot.weight,
+            )
+            tle.gpu.copy(
+                qkv_weight_descriptor,
+                qkv_slot.weight,
+                [{{ call.descriptor_block_shape | join(", ") }}],
+                [
 {% for offset in call.descriptor_offsets %}
-                {{ offset }},
+                    {{ offset }},
 {% endfor %}
-            ],
-            eviction_policy="evict_first",
-        )
-        {{ writer }}.commit(qkv_k_tile)
-    {{ writer }}.close({{ call.num_k_tiles }})
+                ],
+                eviction_policy="evict_first",
+            )
+            {{ writer }}.commit(qkv_step)
+    {{ writer }}.close({{ call.num_n_tiles * call.num_k_tiles }})
 
 
 @triton.jit(noinline=True)
@@ -133,6 +146,9 @@ def {{ call.symbol }}__consumer(
 ):
 {{ entry.mesh_coordinates() }}
 {% set reader = call.pipeline_channels[0].reader_parameter %}
+{% if call.direct_lhs %}
+{% set lhs_stage = call.source %}
+{% else %}
 {% set lhs_stage = call.pipeline_consumer_workspaces[0].parameter %}
     qkv_input_copy_k = tle.gpu.set_layout(
         tl.arange(0, {{ call.local_k_capacity }})[None, :],
@@ -149,22 +165,7 @@ def {{ call.symbol }}__consumer(
         is_async=True,
     )
     tle.gpu.async_commit_group()
-    qkv_accumulator = tle.gpu.set_layout(
-        tl.zeros(({{ call.block_n }}, 8), tl.float32),
-        {{ call.symbol }}__mma_layout,
-    )
-    for qkv_k_tile in tl.static_range(0, {{ call.num_k_tiles }}):
-        qkv_ready = {{ reader }}.wait(qkv_k_tile)
-        if qkv_k_tile == 0:
-            tle.gpu.async_wait_group(0)
-            tl.debug_barrier()
-        qkv_accumulator += {{ call.symbol }}__consumer_stage(
-            qkv_ready.slot.weight,
-            {{ lhs_stage }},
-            qkv_k_tile,
-        )
-        {{ reader }}.release(qkv_k_tile)
-
+{% endif %}
     qkv_c_m = tle.gpu.set_layout(
         tl.arange(0, {{ call.block_n }}),
         {{ call.symbol }}__mma_c_m_layout,
@@ -177,31 +178,50 @@ def {{ call.symbol }}__consumer(
         tl.zeros((1, 8), tl.int32),
         {{ call.symbol }}__mma_layout,
     )
-    qkv_logical_m = qkv_c_m
-{% for output in call.outputs %}
-    qkv_local_n_offsets = qkv_logical_m - {{ output.projection_start }}
-    qkv_output_pointer = tle.gpu.set_layout(
-        ({{ output.result }} + ({{ output.result_offset }}))[:, None]
-        + qkv_c_n_zero,
-        {{ call.symbol }}__mma_layout,
-    )
-    qkv_output_mask = tle.gpu.set_layout(
-        (
-            (qkv_logical_m >= {{ output.projection_start }})
-            & (
-                qkv_logical_m
-                < {{ output.projection_start + output.local_n_capacity }}
+    for qkv_n_tile in tl.range(0, {{ call.num_n_tiles }}):
+        qkv_accumulator = tle.gpu.set_layout(
+            tl.zeros(({{ call.block_n }}, 8), tl.float32),
+            {{ call.symbol }}__mma_layout,
+        )
+        for qkv_k_tile in tl.{{ "range" if call.direct_lhs else "static_range" }}(0, {{ call.num_k_tiles }}):
+            qkv_step = qkv_n_tile * {{ call.num_k_tiles }} + qkv_k_tile
+            qkv_ready = {{ reader }}.wait(qkv_step)
+{% if not call.direct_lhs %}
+            if qkv_n_tile == 0 and qkv_k_tile == 0:
+                tle.gpu.async_wait_group(0)
+                tl.debug_barrier()
+{% endif %}
+            qkv_accumulator += {{ call.symbol }}__consumer_stage(
+                qkv_ready.slot.weight,
+                {{ lhs_stage }},
+                qkv_k_tile,
             )
-            & ({{ output.active }})
-        )[:, None]
-        & (qkv_c_n[None, :] == qkv_c_n_zero),
-        {{ call.symbol }}__mma_layout,
-    )
-    tl.store(
-        qkv_output_pointer,
-        qkv_accumulator,
-        mask=qkv_output_mask,
-    )
+            {{ reader }}.release(qkv_step)
+        qkv_logical_m = qkv_n_tile * {{ call.block_n }} + qkv_c_m
+{% for output in call.outputs %}
+        qkv_local_n_offsets = qkv_logical_m - {{ output.projection_start }}
+        qkv_output_pointer = tle.gpu.set_layout(
+            ({{ output.result }} + ({{ output.result_offset }}))[:, None]
+            + qkv_c_n_zero,
+            {{ call.symbol }}__mma_layout,
+        )
+        qkv_output_mask = tle.gpu.set_layout(
+            (
+                (qkv_logical_m >= {{ output.projection_start }})
+                & (
+                    qkv_logical_m
+                    < {{ output.projection_start + output.local_n_capacity }}
+                )
+                & ({{ output.active }})
+            )[:, None]
+            & (qkv_c_n[None, :] == qkv_c_n_zero),
+            {{ call.symbol }}__mma_layout,
+        )
+        tl.store(
+            qkv_output_pointer,
+            qkv_accumulator,
+            mask=qkv_output_mask,
+        )
 {% endfor %}
 
 

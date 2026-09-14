@@ -25,6 +25,8 @@ from triton.flagmega.ir.dim_expr import Dimension, DimConst, DimVar, dim, simpli
 from triton.flagmega.ir.distributed_type import (
     Placement,
     SBP,
+    SBPBroadCast,
+    SBPExclusive,
     SBPPartial,
     is_distributable,
     placement_from_data,
@@ -206,6 +208,7 @@ class DistributedType(IRType):
     axis_policies: tuple[SBP, ...]
     placement: Placement
     partial: SBPPartial | None = None
+    exclusive: SBPExclusive | None = None
 
     def __post_init__(self) -> None:
         policies = tuple(self.axis_policies)
@@ -222,6 +225,23 @@ class DistributedType(IRType):
                 raise IRSchemaError("DistributedType partial must be SBPPartial or None.")
             if any(axis >= self.placement.rank for axis in self.partial.axes):
                 raise IRSchemaError("DistributedType partial references an out-of-range placement axis.")
+        if self.exclusive is not None:
+            if not isinstance(self.exclusive, SBPExclusive):
+                raise IRSchemaError("DistributedType exclusive must be SBPExclusive or None.")
+            if any(axis >= self.placement.rank for axis in self.exclusive.axes):
+                raise IRSchemaError("DistributedType exclusive references an out-of-range placement axis.")
+            coordinates = self.exclusive.owner_coordinates
+            if coordinates is not None and any(
+                coordinate >= self.placement.hierarchy[axis]
+                for axis, coordinate in zip(self.exclusive.axes, coordinates, strict=True)
+            ):
+                raise IRSchemaError("DistributedType exclusive owner coordinate is outside its mesh axis.")
+            if self.partial is not None:
+                raise IRSchemaError("DistributedType cannot be both exclusive and partial.")
+            if any(not isinstance(policy, SBPBroadCast) for policy in policies):
+                raise IRSchemaError(
+                    "Exclusive DistributedType policies must be broadcast on every tensor axis."
+                )
         object.__setattr__(self, "axis_policies", policies)
 
     @property
@@ -241,6 +261,7 @@ class DistributedType(IRType):
             "axis_policies": [policy.to_data() for policy in self.axis_policies],
             "placement": self.placement.to_data(),
             "partial": None if self.partial is None else self.partial.to_data(),
+            "exclusive": None if self.exclusive is None else self.exclusive.to_data(),
         }
 
 
@@ -325,6 +346,7 @@ def type_from_data(data: Mapping[str, Any]) -> IRType:
             tuple(sbp_from_data(value) for value in data.get("axis_policies", ())),
             placement_from_data(data["placement"]),
             None if data.get("partial") is None else _require_partial(sbp_from_data(data["partial"])),
+            None if data.get("exclusive") is None else _require_exclusive(sbp_from_data(data["exclusive"])),
         )
     raise IRSchemaError(f"Unknown IR type kind {kind!r}.")
 
@@ -899,4 +921,10 @@ def _semantic_payload(module: IRModule) -> str:
 def _require_partial(value: SBP) -> SBPPartial:
     if not isinstance(value, SBPPartial):
         raise IRSchemaError("DistributedType partial must decode to SBPPartial.")
+    return value
+
+
+def _require_exclusive(value: SBP) -> SBPExclusive:
+    if not isinstance(value, SBPExclusive):
+        raise IRSchemaError("DistributedType exclusive must decode to SBPExclusive.")
     return value

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from math import prod
 from numbers import Real
 
 from triton.flagmega.errors import CodegenError
@@ -25,11 +26,13 @@ from .core import TIRMicroKernelContext, TIRMicroKernelProposal
 _FAMILY_BY_OP = {
     "ntt.paged_attention_partial": "paged_attention_partial",
     "ntt.paged_attention_combine": "paged_attention_combine",
+    "ntt.paged_attention_gated_combine": "paged_attention_gated_combine",
 }
 
 _ARITY_BY_OP = {
     "ntt.paged_attention_partial": (3, 3),
     "ntt.paged_attention_combine": (3, 1),
+    "ntt.paged_attention_gated_combine": (4, 1),
 }
 
 
@@ -68,9 +71,23 @@ class PagedAttentionSplitMicroKernelProvider:
                 f"decode implementation for semantic op {operation!r}."
             )
         candidates = tuple(context.candidate(value) for value in implementations)
+        default = context.choose_default(family, candidates)
+        if operation == "ntt.paged_attention_gated_combine":
+            output = context.function.parameter_map[dispatch.outputs[0]].type
+            shape = _fixed_local_shape(output)
+            preferred = next(candidate for candidate in candidates if candidate.id == default)
+            if shape is not None and preferred.facts.get("portable_triton"):
+                capacity = prod(shape) * _lane_count(logical_type(output).dtype)
+                # Ownership is already fixed. Avoid masked lanes when a smaller
+                # catalog tile still covers the complete owner-local result.
+                covering = tuple(candidate for candidate in candidates if candidate.facts.get("portable_triton")
+                                 and capacity <= candidate.parameters["elements_per_program"]
+                                 <= preferred.parameters["elements_per_program"])
+                if covering:
+                    default = min(covering, key=lambda candidate: candidate.parameters["elements_per_program"]).id
         return TIRMicroKernelProposal(
             candidates,
-            context.choose_default(family, candidates),
+            default,
         )
 
 

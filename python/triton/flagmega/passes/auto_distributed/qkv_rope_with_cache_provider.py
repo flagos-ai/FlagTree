@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from itertools import product
+from dataclasses import replace
 from math import prod
 
 from triton.flagmega.errors import IRSchemaError
@@ -21,6 +22,8 @@ from triton.flagmega.ir import (
     SBP,
 )
 from triton.flagmega.ir.distributed_inference import broadcast_type
+from triton.flagmega.ir.ops.nn.norm_stats import NormStats
+from triton.flagmega.passes.auto_distributed.rotary_layouts import coupled_rotary_layouts
 from triton.flagmega.passes.auto_distributed.candidates import (
     DistributedCandidate,
     DistributedCandidateContext,
@@ -32,7 +35,7 @@ from triton.flagmega.passes.auto_distributed.candidate_identity import (
 
 
 class QKVRoPEWithCacheCandidateProvider(DistributedCandidateProviderBase):
-    """Port nncase's operation-inference candidate relation exactly."""
+    """Couple apply layouts with materialized external normalization statistics."""
 
     op_names = frozenset({"nn.qkv_rope_with_cache"})
     allows_partial_inputs = False
@@ -43,7 +46,7 @@ class QKVRoPEWithCacheCandidateProvider(DistributedCandidateProviderBase):
         context: DistributedCandidateContext,
     ) -> tuple[DistributedCandidate, ...]:
         node = context.source_call
-        if node.op not in self.op_names or len(context.available_input_types) != 10:
+        if node.op not in self.op_names or len(context.available_input_types) != 12:
             return ()
         definition = get_definition(node.op)
         try:
@@ -54,9 +57,9 @@ class QKVRoPEWithCacheCandidateProvider(DistributedCandidateProviderBase):
         seen: set[tuple[IRType, tuple[IRType, ...]]] = set()
         choices = []
         for index, (values, input_id, parameter) in enumerate(zip(
-            context.available_input_types,
-            node.inputs,
-            definition.input_parameters,
+            context.available_input_types[:10],
+            node.inputs[:10],
+            definition.input_parameters[:10],
         )):
             logical = context.module.node_map[input_id].type
             if index == 0:
@@ -76,6 +79,11 @@ class QKVRoPEWithCacheCandidateProvider(DistributedCandidateProviderBase):
         for input_types in product(*choices):
             if not isinstance(input_types[0], TupleType) or len(input_types[0].fields) != 3:
                 continue
+            stats = tuple(NormStats.infer_type(
+                (Node(f"<qkv.{role}>", "builtin.var", (), field),),
+                {"axis": node.attrs[f"{role}_axis"], "use_mean": node.attrs[f"{role}_use_mean"]},
+            ) for role, field in zip(("q", "k"), input_types[0].fields[:2]))
+            input_types = (*input_types, *(replace(value, partial=None) for value in stats))
             typed_inputs = tuple(
                 Node(
                     f"<{node.id}.input.{index}>",
@@ -96,6 +104,7 @@ class QKVRoPEWithCacheCandidateProvider(DistributedCandidateProviderBase):
             if relation in seen:
                 continue
             seen.add(relation)
+            factors = definition.cost_factors(typed_inputs, node.attrs, return_type)
             results.append(
                 DistributedCandidate(
                     distributed_candidate_id(
@@ -106,18 +115,18 @@ class QKVRoPEWithCacheCandidateProvider(DistributedCandidateProviderBase):
                     ),
                     return_type,
                     tuple(input_types),
-                    min(
+                    (context.operation_cost_model.get_latency(factors, return_type) if factors is not None else min(
                         sum(_local_bytes(value) for value in input_types),
                         2_000_000_000,
-                    ),
+                    )),
                     "qkv-rope-cache-output-sbp",
                     target_op=node.op,
-                    objective_kind="analytic",
-                    objective_model=(
-                        "flagmega.qkv-rope-with-cache-distribution/v1"
-                    ),
+                    objective_kind="analytic" if factors is not None else "heuristic",
+                    objective_model=(context.operation_cost_model.identity if factors is not None
+                                     else "flagmega.qkv-rope-local-bytes/v1"),
                     objective_evidence=(
-                        "norm-stats-and-apply-type-relations",
+                        "materialized-stats-apply-type-relation",
+                        "op-definition-cost-factors",
                         "rope-type-relation",
                         "cache-update-type-relation",
                     ),
@@ -164,7 +173,7 @@ def _qkv_candidate_input_types(
     *,
     head_axis: int,
 ) -> tuple[IRType, ...]:
-    """Enumerate the head-local layouts consumed by fused Q/K/V work.
+    """Enumerate owner-local head and rotary-dimension layouts for Q/K/V.
 
     A reshape may be materialized from canonical storage and therefore expose
     only a broadcast inferred type.  nncase still offers downstream
@@ -215,6 +224,14 @@ def _qkv_candidate_input_types(
             result.append(candidate)
     for fields in product(*options):
         candidate = TupleType(tuple(fields), logical.is_variadic)
+        if candidate not in result:
+            result.append(candidate)
+    tensors = tuple(field.tensor if isinstance(field, DistributedType) else field for field in logical.fields)
+    for fields in coupled_rotary_layouts(
+        context, tensors, head_axis, tuple(context.source_call.attrs["qkv_layout"]).index("dim"),
+        context.source_call.attrs.get("rotary_dim"),
+    ):
+        candidate = TupleType(fields, logical.is_variadic)
         if candidate not in result:
             result.append(candidate)
     return tuple(result)

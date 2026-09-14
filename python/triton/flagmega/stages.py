@@ -10,14 +10,15 @@ from typing import Callable
 from triton.flagmega.errors import StageError
 from triton.flagmega.ir import IRModule, ProvenanceRecord, verify_module
 from triton.flagmega.passes.target_independent import decompose_complex_ops
+from triton.flagmega.passes.tir.fuse_attention_gate import fuse_attention_gate
 from triton.flagmega.passes.tir.fuse_distributed_ops import fuse_distributed_ops
 from triton.flagmega.passes.norm_stats import (
     finalize_norm_stats_bindings,
     fuse_norm_stats_apply,
-    lower_matmul_norm_stats_combine,
+    lower_add_norm_stats,
 )
 from triton.flagmega.passes.functions import (
-    form_matmul_norm_stats_combine,
+    form_add_norm_stats,
     hoist_call_invariant_expressions,
     lift_constant_parameter_expressions,
     post_function_boundary_pack_propagation,
@@ -27,7 +28,11 @@ from triton.flagmega.passes.functions import (
     sink_norm_stats_boxing_across_function_boundaries,
     thread_norm_stats_across_function_boundaries,
 )
-from triton.flagmega.passes.constants import ConstantCSEPass, FreezeConstantIslandsPass
+from triton.flagmega.passes.constants import (
+    ConstantCSEPass, ConstantPhase, FreezeConstantIslandsPass, constant_phase,
+    freeze_constant_islands, thaw_constant_islands,
+)
+from triton.flagmega.passes.tir.lower_tensor_subspans import lower_tensor_subspans
 from triton.flagmega.passes.packed_qkv_combine import (
     fold_materialized_packed_qkv_parallel_linear_combine,
     lower_packed_qkv_parallel_linear_combine,
@@ -94,7 +99,6 @@ _STAGE_ALIASES = {
     "form-qkv-rope-with-cache": "decompose-gdn",
     "fuse-gather-reduce-add-norm-apply": "fuse-distributed-ops",
     "fuse-gather-reduce-norm-apply": "fuse-distributed-ops",
-    "fuse-gather-reduce-qkv-rope-with-cache": "fuse-distributed-ops",
 }
 
 
@@ -132,15 +136,15 @@ def stage_names() -> tuple[str, ...]:
 
 def _propose_distribution(module: IRModule, target: Target) -> IRModule:
     # Direct stage invocation may resume an older ``stats_combined`` Python
-    # checkpoint.  The grouped pipeline runs the named removal pass first;
-    # keep the stage itself total for edit-and-resume callers as well.
-    return target.propose_distribution(remove_unused_functions(module))
+    # checkpoint. The grouped pipeline exposes removal and constant outlining
+    # separately; direct stage calls need the same search preparation.
+    return target.propose_distribution(_pre_distribution_freeze(module, target))
 
 
 def _auto_distribute(module: IRModule, target: Target) -> IRModule:
     if module.stage == "distribution_candidates":
         return target.apply_distribution(module)
-    return target.auto_distribute(remove_unused_functions(module))
+    return target.auto_distribute(_pre_distribution_freeze(module, target))
 
 
 def _lower_vectorization_contracts(
@@ -192,7 +196,9 @@ def _canonicalize_packed_qkv_weights(
 
 
 def _propose_microkernels(module: IRModule, target: Target) -> IRModule:
-    return target.propose_microkernels(module)
+    # Direct canonical-TIR resumes perform the same pre-selection planning as
+    # the named pipeline stages. Neither operation consults selection records.
+    return target.propose_microkernels(lower_tensor_subspans(target.plan_storage_alignments(module)))
 
 
 def _select_microkernels(module: IRModule, target: Target) -> IRModule:
@@ -230,6 +236,19 @@ def _constant_cse(module: IRModule, _target: Target) -> IRModule:
 
 def _freeze_constants(module: IRModule, _target: Target) -> IRModule:
     return FreezeConstantIslandsPass().run(module)
+
+
+def _pre_distribution_freeze(module: IRModule, _target: Target) -> IRModule:
+    if constant_phase(module) == ConstantPhase.FROZEN:
+        return verify_module(module)
+    return freeze_constant_islands(remove_unused_functions(module))
+
+
+def _post_distribution_thaw(module: IRModule, _target: Target) -> IRModule:
+    # Older distributed checkpoints already contain ordinary constant IR.
+    if constant_phase(module) == ConstantPhase.OPEN:
+        return module
+    return thaw_constant_islands(module)
 
 
 def _bufferize(module: IRModule, target: Target) -> IRModule:
@@ -318,10 +337,10 @@ register_stage(Stage(
     _decompose_paged_attention,
 ))
 register_stage(Stage(
-    "form-matmul-norm-stats-combine",
+    "form-add-norm-stats",
     "attention_decomposed",
     "stats_combined",
-    lambda module, _target: form_matmul_norm_stats_combine(module),
+    lambda module, _target: form_add_norm_stats(module),
     compatible_input_stages=frozenset({"stats_threaded"}),
 ))
 register_stage(Stage(
@@ -331,12 +350,19 @@ register_stage(Stage(
     lambda module, _target: remove_unused_functions(module),
 ))
 register_stage(Stage(
-    "propose-distribution",
+    "pre-distribution-freeze",
     "unused_functions_removed",
+    "distribution_constants_frozen",
+    _pre_distribution_freeze,
+    compatible_input_stages=frozenset({"stats_combined"}),
+))
+register_stage(Stage(
+    "propose-distribution",
+    "distribution_constants_frozen",
     "distribution_candidates",
     _propose_distribution,
     selection_point=True,
-    compatible_input_stages=frozenset({"stats_combined"}),
+    compatible_input_stages=frozenset({"stats_combined", "unused_functions_removed"}),
 ))
 register_stage(Stage(
     "auto-distributed",
@@ -346,15 +372,22 @@ register_stage(Stage(
     compatible_input_stages=frozenset({
         "stats_combined",
         "unused_functions_removed",
+        "distribution_constants_frozen",
     }),
 ))
 register_stage(Stage(
-    "fold-materialized-packed-qkv-combine",
+    "post-distribution-thaw",
     "distributed",
+    "distribution_constants_open",
+    _post_distribution_thaw,
+))
+register_stage(Stage(
+    "fold-materialized-packed-qkv-combine",
+    "distribution_constants_open",
     "qkv_combine_folded",
-    lambda module, _target:
-        fold_materialized_packed_qkv_parallel_linear_combine(module),
-    compatible_input_stages=frozenset({"distribution_candidates"}),
+    lambda module, target:
+        fold_materialized_packed_qkv_parallel_linear_combine(_post_distribution_thaw(module, target)),
+    compatible_input_stages=frozenset({"distribution_candidates", "distributed"}),
 ))
 register_stage(Stage(
     "lower-packed-qkv-combine",
@@ -391,26 +424,33 @@ register_stage(Stage(
     lambda module, _target: sink_norm_stats_boxing_across_function_boundaries(module),
 ))
 register_stage(Stage(
-    "lower-matmul-norm-stats-combine",
+    "lower-add-norm-stats",
     "finalized_norm_stats_boxing_sunk",
-    "matmul_norm_stats_lowered",
-    lambda module, _target: lower_matmul_norm_stats_combine(module),
+    "add_norm_stats_lowered",
+    lambda module, _target: lower_add_norm_stats(module),
     compatible_input_stages=frozenset({"norm_bindings_finalized"}),
 ))
 register_stage(Stage(
     "lower-vectorization-contracts",
-    "matmul_norm_stats_lowered",
+    "add_norm_stats_lowered",
     "vector_contracts_lowered",
     _lower_vectorization_contracts,
     compatible_input_stages=frozenset({"norm_bindings_finalized"}),
 ))
 register_stage(Stage(
-    "fuse-norm-stats-apply",
+    "fuse-attention-gate",
     "vector_contracts_lowered",
+    "attention_gate_fused",
+    lambda module, _target: fuse_attention_gate(module),
+))
+register_stage(Stage(
+    "fuse-norm-stats-apply",
+    "attention_gate_fused",
     "fused_norm",
     lambda module, _target: fuse_norm_stats_apply(module),
     compatible_input_stages=frozenset({
-        "matmul_norm_stats_lowered",
+        "vector_contracts_lowered",
+        "add_norm_stats_lowered",
         # Resume checkpoints emitted before vector-contract lowering became
         # an explicit pass.
         "norm_bindings_finalized",
@@ -418,7 +458,7 @@ register_stage(Stage(
 ))
 register_stage(Stage(
     "lower-tuple-boxing",
-    "gather_reduce_qkv_fused",
+    "distributed_ops_fused",
     "tuple_boxing_lowered",
     lambda module, _target: lower_tuple_boxing(module),
     compatible_input_stages=frozenset({"frozen_constants"}),
@@ -429,7 +469,7 @@ register_stage(Stage(
     "selected_tir_variants",
     _propose_tir,
     selection_point=True,
-    compatible_input_stages=frozenset({"frozen_constants", "gather_reduce_qkv_fused"}),
+    compatible_input_stages=frozenset({"frozen_constants", "distributed_ops_fused"}),
 ))
 register_stage(Stage(
     "constant-cse",
@@ -448,7 +488,7 @@ register_stage(Stage("freeze-constants", "constant_parameters_lifted", "frozen_c
 register_stage(Stage(
     "fuse-distributed-ops",
     "frozen_constants",
-    "gather_reduce_qkv_fused",
+    "distributed_ops_fused",
     lambda module, target: fuse_distributed_ops(module, fusion_rules=target.pre_post_ops_rules()),
     compatible_input_stages=frozenset({"gather_reduce_add_norm_apply_fused", "gather_reduce_norm_apply_fused"}),
 ))
@@ -461,10 +501,25 @@ register_stage(Stage(
     output_dialect="semantic_tir",
 ))
 register_stage(Stage(
-    "propose-microkernels",
+    "plan-tir-alignments",
     "canonicalized_tir",
+    "aligned_tir",
+    lambda module, target: target.plan_storage_alignments(module),
+    output_dialect="semantic_tir",
+))
+register_stage(Stage(
+    "lower-tensor-subspans",
+    "aligned_tir",
+    "tensor_subspans_lowered",
+    lambda module, _target: lower_tensor_subspans(module),
+    output_dialect="semantic_tir",
+))
+register_stage(Stage(
+    "propose-microkernels",
+    "tensor_subspans_lowered",
     "microkernel_candidates",
     _propose_microkernels,
+    compatible_input_stages=frozenset({"canonicalized_tir", "aligned_tir"}),
     output_dialect="semantic_tir",
     selection_point=True,
 ))

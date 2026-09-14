@@ -158,11 +158,12 @@ def test_pass_forms_one_effectful_semantic_region_and_preserves_boundaries(tmp_p
     assert len(fused) == 1
     fused = fused[0]
     assert fused.effect == fm.effect("read_write", "paged_attention_kv_cache")
-    assert fused.inputs[-3:] == (
+    assert fused.inputs[7:10] == (
         source.node_map["key_state"].inputs[1],
         source.node_map["attention"].inputs[2],
         source.node_map["updated"].inputs[3],
     )
+    assert all(result.node_map[value].op == "nn.norm_stats" for value in fused.inputs[10:])
     assert fused.attrs == {
         "q_axis": -1,
         "q_epsilon": 1e-6,

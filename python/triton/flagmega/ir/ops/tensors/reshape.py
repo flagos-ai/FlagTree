@@ -17,7 +17,7 @@ from triton.flagmega.ir.distributed_type import (
     is_distributable,
     scale_split_units,
 )
-from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorType, tensor_type
+from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorLayout, TensorType, tensor_type
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_nbytes
 from triton.flagmega.ir.type_pattern import is_tensor
@@ -48,19 +48,7 @@ class Reshape(OpDefinition):
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         source_type = cls.value.type_of(inputs)
         value = tensor_of(source_type)
-        if any(not dimension.is_fixed for dimension in value.shape):
-            raise IRSchemaError("F.tensors.reshape currently requires a static input shape.")
-        input_elements = prod(dimension.fixed_value for dimension in value.shape)
-        shape = list(int(dimension) for dimension in attrs["shape"])
-        known = prod(dimension for dimension in shape if dimension != -1)
-        if -1 in shape:
-            if input_elements % known:
-                raise IRSchemaError("F.tensors.reshape inferred dimension is not integral.")
-            shape[shape.index(-1)] = input_elements // known
-        elif known != input_elements:
-            raise IRSchemaError(
-                f"F.tensors.reshape changes logical element count from {input_elements} to {known}.")
-        reshaped = tensor_type(value.dtype, shape, layout=value.layout)
+        reshaped = _reshape_tensor_type(value, attrs["shape"])
         if not isinstance(source_type, DistributedType):
             return reshaped
         policies = _reshape_axis_policies(source_type, reshaped)
@@ -69,7 +57,27 @@ class Reshape(OpDefinition):
             policies,
             source_type.placement,
             source_type.partial,
+            source_type.exclusive,
         )
+
+    @classmethod
+    def infer_distributed_input_types(cls, output_type, logical_input_types, attrs):
+        if not isinstance(output_type, DistributedType) or len(logical_input_types) != 1:
+            return ()
+        source = tensor_of(logical_input_types[0])
+        try:
+            if _reshape_tensor_type(source, attrs["shape"]) != output_type.tensor:
+                return ()
+            required = DistributedType(
+                source, _reshape_axis_policies(output_type, source), output_type.placement,
+                output_type.partial, output_type.exclusive,
+            )
+            if _reshape_axis_policies(required, output_type.tensor) != output_type.axis_policies:
+                return ()
+        except IRSchemaError:
+            # Only exact, bidirectionally proven owner maps are inverse relations.
+            return ()
+        return ((required,),)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -101,6 +109,40 @@ class Reshape(OpDefinition):
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(tensor_of(node.type))
         return OpCost(bytes_read=size, bytes_written=size, notes=("reshape",))
+
+    @classmethod
+    def zero_copy_input_index(cls, inputs, attrs, return_type):
+        if len(inputs) != 1:
+            return None
+        source = tensor_of(inputs[0].type)
+        target = tensor_of(return_type)
+        if (
+            source.dtype != target.dtype
+            or source.layout != TensorLayout()
+            or target.layout != TensorLayout()
+            or any(not dimension.is_fixed for tensor in (source, target) for dimension in tensor.shape)
+        ):
+            return None
+        if prod(d.fixed_value for d in source.shape) != prod(d.fixed_value for d in target.shape):
+            return None
+        # Verified reshape inference already proves the distributed owners.
+        return 0
+
+
+def _reshape_tensor_type(value: TensorType, requested_shape) -> TensorType:
+    if any(not dimension.is_fixed for dimension in value.shape):
+        raise IRSchemaError("F.tensors.reshape currently requires a static input shape.")
+    input_elements = prod(dimension.fixed_value for dimension in value.shape)
+    shape = list(int(dimension) for dimension in requested_shape)
+    known = prod(dimension for dimension in shape if dimension != -1)
+    if -1 in shape:
+        if input_elements % known:
+            raise IRSchemaError("F.tensors.reshape inferred dimension is not integral.")
+        shape[shape.index(-1)] = input_elements // known
+    elif known != input_elements:
+        raise IRSchemaError(
+            f"F.tensors.reshape changes logical element count from {input_elements} to {known}.")
+    return tensor_type(value.dtype, shape, layout=value.layout)
 
 
 def _reshape_axis_policies(
@@ -138,11 +180,6 @@ def _reshape_axis_policies(
             0,
         )
         split_axis = output_axes[split_position]
-        if (
-            output_shape[split_axis] != input_shape[input_axis]
-            and output_shape[split_axis] % _split_divisor(input_policy, source) != 0
-        ):
-            raise _distributed_reshape_error(source, output)
         reshaped_policy = input_policy
         if output_shape[split_axis] != input_shape[input_axis]:
             trailing_extent = prod(
@@ -363,14 +400,6 @@ def _flatten_block_cyclic_splits(
         return SBP.split(*stages)
     except IRSchemaError:
         return None
-
-
-def _split_divisor(split: SBPSplit, source: DistributedType) -> int:
-    return prod(
-        source.placement.hierarchy[axis]
-        for stage in split.stages
-        for axis in stage.hierarchy_axes
-    )
 
 
 def _distributed_reshape_error(source: DistributedType, output: TensorType) -> IRSchemaError:

@@ -5,13 +5,14 @@
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.model import DistributedType
-from triton.flagmega.ir.ops.core import OpCost, OpDefinition, input_parameter, op_definition, tensor_nbytes
+from triton.flagmega.ir.ops.core import OpCost, input_parameter, op_definition, tensor_nbytes
+from triton.flagmega.ir.ops.pointwise import SameTypePointwiseOp
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType
 
 
 @op_definition("math.div", namespace="math", functional_name="div", display_name="Math.Div")
-class Div(OpDefinition):
+class Div(SameTypePointwiseOp):
     const_evaluable = True
     lhs = input_parameter(is_tensor())
     rhs = input_parameter(is_tensor())

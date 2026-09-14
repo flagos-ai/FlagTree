@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.ir.memory_effect import expand_memory_effect
 from triton.flagmega.ir.dim_expr import dim
 from triton.flagmega.ir.tir.block import Block
 from triton.flagmega.ir.tir.buffer import Buffer
@@ -16,6 +17,7 @@ from triton.flagmega.ir.tir.let import Let
 from triton.flagmega.ir.tir.kernel_dispatch import KernelDispatch
 from triton.flagmega.ir.tir.prim_function import PrimFunction, PrimParameterRole
 from triton.flagmega.ir.tir.value_ref import ValueRef
+from triton.flagmega.ir.tir.transfer_pipeline_validation import verify_transfer_sources
 from triton.flagmega.ir.tir.visitor import iter_tir_children
 from triton.flagmega.ir.model import DistributedType, RefType, TensorType, TupleType, logical_type
 
@@ -169,6 +171,9 @@ def _verify_node(
         )
         return
     if isinstance(node, KernelDispatch):
+        for name, effect in node.memory_effects:
+            if name in function.parameter_map:
+                expand_memory_effect(function.parameter_map[name].type, effect)
         runtime_names = tuple(
             value.name for value in function.parameters
             if value.role in {
@@ -352,22 +357,7 @@ def _verify_microkernel_resources(
                     f"PrimFunction @{function.name} shared workspace {descriptor.name!r} "
                     "violates its allocation/view alignment."
                 )
-    pipeline = selection.transfer_pipeline
-    if pipeline is None:
-        return
-    for channel in pipeline.channels:
-        for argument_index in channel.source_argument_indices:
-            if argument_index >= len(dispatch.arguments):
-                raise IRVerificationError(
-                    f"PrimFunction @{function.name} transfer channel {channel.name!r} "
-                    f"has invalid source operand {argument_index}."
-                )
-            argument = dispatch.arguments[argument_index]
-            if argument not in dispatch.reads or argument in dispatch.writes:
-                raise IRVerificationError(
-                    f"PrimFunction @{function.name} transfer channel {channel.name!r} "
-                    f"has non-read-only source operand {argument_index} ({argument!r})."
-                )
+    verify_transfer_sources(function, dispatch, selection)
 
 
 def _logical_leaves(value_type):

@@ -11,6 +11,7 @@ from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir import (
     DistributedType,
     IRModule,
+    MemoryAccessDomainKind,
     MemoryAccessMode,
     MemoryAccessScope,
     MemoryEffectKind,
@@ -115,6 +116,7 @@ def _can_place_block_local(module, node, users_by_value, function_outputs) -> bo
             "builtin.tuple",
             "distributed.sharded_view",
             "tir.buffer_view",
+            "tir.buffer_subspan",
         }
         or not _all_owner_local_distributed_leaves(value_type)
         or node.id in function_outputs
@@ -295,6 +297,12 @@ def _terminal_consumers_through_local_views(
                 ):
                     return ()
                 continue
+            if user.op == "tir.buffer_subspan":
+                # Its type verifier proves contiguity in each unchanged owner.
+                if input_index != 0 or user.id in function_outputs:
+                    return ()
+                pending.append((user, user.type))
+                continue
             if user.op != "tir.buffer_view":
                 if not _consumer_reads_physical_input(
                     module, user, input_index
@@ -364,6 +372,7 @@ def _branch_has_physical_use(
             "builtin.get_item",
             "builtin.tuple",
             "tir.buffer_view",
+            "tir.buffer_subspan",
             "distributed.sharded_view",
         }:
             if _branch_has_physical_use(
@@ -427,7 +436,11 @@ def _effects_are_owner_local(dispatch, names, *, require_write: bool) -> bool:
             or effect.kind is not MemoryEffectKind.DIRECT
             or (
                 require_write
-                and not effect.physical_mode & MemoryAccessMode.WRITE
+                and (
+                    not effect.physical_mode & MemoryAccessMode.WRITE
+                    # A fixed writer cannot populate every owner's private copy.
+                    or effect.access_domain.kind is not MemoryAccessDomainKind.ALL_BLOCKS
+                )
             )
         ):
             return False

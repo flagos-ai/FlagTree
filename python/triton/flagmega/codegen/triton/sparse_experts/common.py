@@ -9,7 +9,7 @@ from triton.flagmega.codegen.triton.physical_access import (
 )
 from triton.flagmega.codegen.triton.tensor_transform_renderers import _tensor_type
 from triton.flagmega.errors import CodegenError
-from triton.flagmega.ir import Node
+from triton.flagmega.ir import DistributedType, Node, local_shard_descriptor
 
 
 def last_axis_offset(abi, prefix, scalar):
@@ -17,6 +17,15 @@ def last_axis_offset(abi, prefix, scalar):
     coordinate = scalar if lane_count == 1 else f"(({scalar}) // {lane_count})"
     lane = None if lane_count == 1 else f"(({scalar}) % {lane_count})"
     return emit_local_scalar_offset(abi, (*prefix, coordinate), lane_coordinate=lane)
+
+
+def _axis_capacity_is_active(value_type, axis, capacity):
+    if isinstance(value_type, DistributedType):
+        coordinates = tuple(f"owner_{index}" for index in range(value_type.placement.rank))
+        extent = local_shard_descriptor(value_type, coordinates).active_shape[axis]
+    else:
+        extent = value_type.shape[axis]
+    return extent.is_fixed and extent.fixed_value == capacity
 
 
 def stage_context(raw, definition, weight_parameter):
@@ -40,19 +49,26 @@ def stage_context(raw, definition, weight_parameter):
     block_n, block_k = (int(raw["parameters"][name]) for name in ("block_n", "block_k"))
     if any(value <= 0 or value & (value - 1) for value in (block_n, block_k)):
         raise CodegenError("Sparse expert tiles must be positive powers of two.")
+    routes_abi = operands["router_expert_ids"]["abi"]
+    routes = int(routes_abi["local_capacity_shape"][1])
+    # The loop already bounds capacity. Repeating that bound in its loads
+    # retains redundant predicates through software-pipeline prologues.
+    full_routes = _axis_capacity_is_active(_tensor_type(routes_abi), 1, routes)
     context = {
         "pointers": {name: _pointer(binding)
                      for name, binding in operands.items()},
         "result": _pointer(result),
         "attrs": attrs,
         "output_dtype": emit_triton_scalar_type(output["scalar_dtype"]),
+        "activation_dtype": emit_triton_scalar_type(activation["scalar_dtype"]),
         "block_n": block_n,
         "block_k": block_k,
         "tokens": int(output["local_capacity_shape"][0]),
-        "routes": int(operands["router_expert_ids"]["abi"]["local_capacity_shape"][1]),
+        "routes": routes,
         "scalar_n": scalar_n,
         "scalar_k": scalar_k,
         "token_active": f"(_fm_token < ({emit_active_extent(output, 0)}))",
+        "route_active": "True" if full_routes else f"(_fm_route < ({emit_active_extent(routes_abi, 1)}))",
         "n_active":
         f"(_fm_n < (({emit_active_extent(output, len(output['local_capacity_shape']) - 1)}) * {output['scalar_lane_count']}))",
         "k_active":
@@ -65,10 +81,12 @@ def stage_context(raw, definition, weight_parameter):
             if name.endswith("_scale")
         },
     }
+    context["slot_active"] = (context["token_active"] if full_routes else
+                              f"({context['token_active']}) & ({context['route_active']})")
     context["scale_loads"] = {
         name: (f"tl.full((), {binding['float32_splat']!r}, tl.float32)" if "float32_splat" in binding else
                f"tl.load({_pointer(binding)} + ({context['scale_offsets'][name]}), "
-               f"mask={context['token_active']}, other=1)")
+               f"mask={context['slot_active']}, other=1)")
         for name, binding in operands.items()
         if name.endswith("_scale")
     }

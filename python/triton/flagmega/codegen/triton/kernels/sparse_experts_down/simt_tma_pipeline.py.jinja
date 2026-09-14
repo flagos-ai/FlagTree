@@ -1,0 +1,54 @@
+# flagmega-kernel: sparse_experts_down/simt_tma_pipeline
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "kernels/sparse_experts_gate_up/_pipeline.py.jinja" as pipe with context %}
+{% for call in render_calls | default(()) %}
+{% if call.family == "sparse_experts_down" and call.variant == "simt_tma_pipeline" %}
+{{ pipe.helpers(call) }}
+{{ pipe.producer(call, entry, False) }}
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}):
+{{ entry.mesh_coordinates() }}
+{% set reader = call.pipeline_channels[0].reader_parameter %}
+    _fm_step = tl.full((), 0, tl.int32)
+    for _fm_token in tl.range(0, {{ call.tokens }}):
+        for _fm_n_start in tl.range(0, {{ call.active_n }}, {{ call.block_n }}):
+            _fm_n = _fm_n_start + tle.gpu.set_layout(tl.arange(0, {{ call.block_n }}), {{ call.symbol }}__n_layout)
+            _fm_output = tle.gpu.set_layout(tl.zeros(({{ call.block_n }},), tl.float32), {{ call.symbol }}__n_layout)
+            for _fm_route in tl.range(0, {{ call.routes }}):
+                if {{ call.slot_active }}:
+                    _fm_expert = tl.load({{ call.pointers.router_expert_ids }} + ({{ call.expert_offset }})).to(tl.int64)
+                    _fm_input_scale = {{ call.scale_loads.down_input_scale }}
+                    _fm_scale = {{ call.scale_loads.down_proj_scale }}
+{% if call.combine_routes %}
+                    _fm_probability = tl.load({{ call.pointers.router_expert_weights }} + ({{ call.probability_offset }})).to(tl.float32)
+{% endif %}
+                    _fm_partial = tle.gpu.set_layout(tl.zeros(({{ call.block_n }}, {{ call.block_k }}), tl.float32), {{ call.symbol }}__weight_layout)
+                    for _fm_k_start in tl.range(0, {{ call.active_k }}, {{ call.block_k }}):
+                        _fm_k = _fm_k_start + tle.gpu.set_layout(tl.arange(0, {{ call.block_k }}), {{ call.symbol }}__k_layout)
+                        _fm_activation = tl.load({{ call.pointers.activations }} + ({{ call.activation_offset }}), mask=_fm_k < ({{ call.active_k }}), other=0).to(tl.float32)
+                        _fm_ready = {{ reader }}.wait(_fm_step)
+                        _fm_weight = {{ call.symbol }}__load_weight(_fm_ready.slot.down)
+                        _fm_partial += {% if call.unit_scales.down_input_scale %}_fm_activation{% else %}tl.div_rn(_fm_activation, _fm_input_scale){% endif %}[None, :] * _fm_weight
+                        {{ reader }}.release(_fm_step)
+                        _fm_step += 1
+                    _fm_projection = tl.sum(_fm_partial, 1) * _fm_input_scale * _fm_scale
+{% if call.attrs.round_projection %}
+                    _fm_projection = _fm_projection.to({{ call.activation_dtype }}).to(tl.float32)
+{% endif %}
+{% if call.combine_routes %}
+                    _fm_weighted = _fm_projection * _fm_probability
+{% if call.attrs.round_weighted_output %}
+                    _fm_weighted = _fm_weighted.to({{ call.weighted_dtype }}).to(tl.float32)
+{% endif %}
+                    _fm_output += _fm_weighted
+{% else %}
+                    tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_projection,
+                             mask=(_fm_n < ({{ call.active_n }})) & ({{ call.writer_active }}))
+{% endif %}
+{% if call.combine_routes %}
+            tl.store({{ call.result }} + ({{ call.result_offset }}), _fm_output,
+                     mask=(_fm_n < ({{ call.active_n }})) & ({{ call.token_active }}) & ({{ call.writer_active }}))
+{% endif %}
+{% endif %}
+{% endfor %}

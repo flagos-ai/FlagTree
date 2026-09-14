@@ -3,7 +3,10 @@
 
 from dataclasses import replace
 
+import pytest
+
 from triton.flagmega import ir as fm
+from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
     PagedAttentionStateConfig,
 )
@@ -21,18 +24,22 @@ from triton.flagmega.targets import NvidiaSm90Target
 PLACEMENT = fm.Placement((8, 16), "yx", "bb")
 
 
-def test_provider_accepts_independent_q_and_kv_head_shards_on_a_2d_mesh():
+@pytest.mark.parametrize("q_axes,kv_axes", [((0,), (1,)), ((0, 1), (0, 1)), ((1, 0), (1, 0))])
+def test_provider_accepts_independent_q_and_kv_head_shards_on_a_2d_mesh(q_axes, kv_axes):
     module, fused, inputs = _fused_module()
     q, k, v = inputs[0].type.fields
-    q_dist = _head_split(q, (0,))
-    k_dist = _head_split(k, (1,))
-    v_dist = _head_split(v, (1,))
+    q_dist = _head_split(q, q_axes)
+    k_dist = _head_split(k, kv_axes)
+    v_dist = _head_split(v, kv_axes)
     qkv_dist = fm.TupleType((q_dist, k_dist, v_dist))
     broadcast_inputs = tuple(
         _broadcast(value.type)
         for value in inputs[1:7]
     )
     scalar_controls = tuple(value.type for value in inputs[8:10])
+    stats = tuple(fm.get_definition("nn.norm_stats").infer_type(
+        (_var(f"{role}_input", field),), {"axis": -1, "use_mean": False}
+    ) for role, field in zip(("q", "k"), qkv_dist.fields[:2]))
 
     candidates = QKVRoPEWithCacheCandidateProvider().get_candidates(
         DistributedCandidateContext(
@@ -44,6 +51,7 @@ def test_provider_accepts_independent_q_and_kv_head_shards_on_a_2d_mesh():
                 *((value,) for value in broadcast_inputs),
                 ((inputs[7].type),),
                 *((value,) for value in scalar_controls),
+                *((value,) for value in stats),
             ),
         )
     )
@@ -59,7 +67,8 @@ def test_provider_accepts_independent_q_and_kv_head_shards_on_a_2d_mesh():
     assert isinstance(query, fm.DistributedType)
     assert query.axis_policies[1] == q_dist.axis_policies[1]
     assert candidate.return_type.fields[1] == inputs[7].type
-    assert candidate.input_types[8:] == scalar_controls
+    assert candidate.input_types[8:10] == scalar_controls
+    assert candidate.input_types[10:] == stats
 
 
 def test_provider_terminates_distributed_scalar_attribute_candidates():
@@ -82,19 +91,46 @@ def test_provider_terminates_distributed_scalar_attribute_candidates():
     assert all(candidate.input_types[9] == inputs[9].type for candidate in candidates)
 
 
-def test_provider_rejects_a_rotary_dimension_split():
+def test_qkv_apply_cost_uses_target_factors_without_hidden_reduction():
     module, fused, inputs = _fused_module()
-    q, k, v = inputs[0].type.fields
-    q_dim_split = fm.DistributedType(
-        q,
+    target = NvidiaSm90Target()
+    context = DistributedCandidateContext(
+        module, fused, PLACEMENT, tuple((value.type,) for value in inputs),
+        operation_cost_model=target.distributed_operation_cost_model(),
+    )
+    candidate = QKVRoPEWithCacheCandidateProvider().get_candidates(context)[0]
+    assert candidate.objective_model == context.operation_cost_model.identity
+    typed = tuple(replace(value, type=kind) for value, kind in zip(inputs, candidate.input_types))
+    factors = fm.get_definition(fused.op).cost_factors(typed, fused.attrs, candidate.return_type)
+    assert factors.grid_synchronizations == 0
+    assert factors.cpu_cycles == 0
+    assert factors.elementwise_operations > 0
+    assert candidate.operation_cost == context.operation_cost_model.get_latency(factors, candidate.return_type)
+
+
+def test_provider_offers_owner_local_head_and_dimension_shards_from_broadcast():
+    module, fused, inputs = _fused_module()
+    context = DistributedCandidateContext(module, fused, PLACEMENT, tuple((value.type,) for value in inputs))
+    candidates = QKVRoPEWithCacheCandidateProvider().get_candidates(context)
+    assert any(all(isinstance(policy, fm.SBPSplit) for policy in candidate.input_types[0].fields[0].axis_policies[1:])
+               for candidate in candidates)
+    assert len(candidates) < 1000
+
+
+@pytest.mark.parametrize("field_index", [0, 1])
+def test_provider_requires_materialized_external_stats_for_dimension_split(field_index):
+    module, fused, inputs = _fused_module()
+    fields = [_broadcast(field) for field in inputs[0].type.fields]
+    fields[field_index] = fm.DistributedType(
+        inputs[0].type.fields[field_index],
         (
             fm.SBP.broadcast(),
             fm.SBP.broadcast(),
-            fm.SBP.split_block_cyclic((0,), 16),
+            fm.SBP.split_block_cyclic((0,), 8),
         ),
         PLACEMENT,
     )
-    qkv_dist = fm.TupleType((q_dim_split, _broadcast(k), _broadcast(v)))
+    qkv_dist = fm.TupleType(tuple(fields))
     available = []
     for index, value in enumerate(inputs):
         if index == 0:
@@ -104,6 +140,16 @@ def test_provider_rejects_a_rotary_dimension_split():
         else:
             available.append((_broadcast(value.type),))
 
+    typed_inputs = tuple(replace(value, type=choices[0]) for value, choices in zip(inputs, available))
+    stats_index = 10 + field_index
+    partial_stats = fm.get_definition("nn.norm_stats").infer_type(
+        (_var("value", fields[field_index]),), {"axis": -1, "use_mean": False},
+    )
+    typed_inputs = (*typed_inputs[:stats_index], replace(typed_inputs[stats_index], type=partial_stats),
+                    *typed_inputs[stats_index + 1:])
+    with pytest.raises(IRSchemaError, match="NormApply requires non-partial"):
+        fm.get_definition(fused.op).infer_type(typed_inputs, fused.attrs)
+
     candidates = QKVRoPEWithCacheCandidateProvider().get_candidates(
         DistributedCandidateContext(
             module, fused, PLACEMENT, tuple(available)
@@ -111,7 +157,8 @@ def test_provider_rejects_a_rotary_dimension_split():
     )
 
     assert candidates
-    assert all(candidate.input_types[0] != qkv_dist for candidate in candidates)
+    candidate = next(value for value in candidates if value.input_types[0] == qkv_dist)
+    assert candidate.input_types[stats_index] == replace(partial_stats, partial=None)
 
 
 def test_provider_uses_the_registered_split_policy_for_head_local_qkv_layouts():
@@ -221,6 +268,8 @@ def _fused_module():
         state_type,
         fm.tensor_type("int32", ()),
         fm.tensor_type("bool", ()),
+        fm.tensor_type("float32", (1, 1, 16, 1)),
+        fm.tensor_type("float32", (1, 1, 8, 1)),
     )
     inputs = tuple(_var(f"arg{index}", value) for index, value in enumerate(input_types))
     attrs = {

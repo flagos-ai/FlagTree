@@ -8,14 +8,14 @@ from triton.flagmega import ir as fm
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
+from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine
 from python.test.flagmega.sparse_experts.helpers import build_module, operands, operand_types, values_for
 
 
 @pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
-@pytest.mark.parametrize("round_projection,round_weighted_output", [(False, False), (True, False), (False, True),
-                                                                    (True, True)])
-def test_down_rounds_at_declared_boundaries_and_reduces_in_route_order(dtype, round_projection, round_weighted_output):
-    attrs = dict(round_projection=round_projection, round_weighted_output=round_weighted_output)
+@pytest.mark.parametrize("round_projection", [False, True])
+def test_down_preserves_each_route_and_projection_rounding(dtype, round_projection):
+    attrs = dict(round_projection=round_projection)
     module = build_module(SparseExpertsDown, types=operand_types(dtype=dtype), attrs=attrs)
     values = values_for(module)
     actual = TorchEvaluator(DictWeightResolver({})).run(module, values)[0]
@@ -27,19 +27,13 @@ def test_down_rounds_at_declared_boundaries_and_reduces_in_route_order(dtype, ro
     projection = projection * scale * values["down_proj_scale"][ids]
     if round_projection:
         projection = projection.to(activation.dtype).float()
-    weighted = projection * values["router_expert_weights"].unsqueeze(-1)
-    if round_weighted_output:
-        weighted = weighted.to(activation.dtype).float()
-    expected = (weighted[:, 0] + weighted[:, 1]).to(activation.dtype)
-    torch.testing.assert_close(actual, expected, rtol=1e-5 if dtype == "float32" else 0,
-                               atol=1e-5 if dtype == "float32" else 0)
+    assert actual.dtype is torch.float32
+    torch.testing.assert_close(actual, projection, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("parameter,dtype,shape", [
     ("activations", "bfloat16", (2, 3, 12)),
     ("activations", "bfloat16", (2, 2, 11)),
-    ("router_expert_weights", "float32", (2, 1)),
-    ("router_expert_weights", "int32", (2, 2)),
     ("down_weight", "float32", (4, 16, 12)),
     ("down_input_scale", "float32", (4, 2)),
 ])
@@ -50,8 +44,8 @@ def test_down_rejects_invalid_named_operand(parameter, dtype, shape):
         SparseExpertsDown.prepare(operands(SparseExpertsDown, types), {})
 
 
-def test_down_weighted_rounding_is_not_algebraically_elided():
-    modules = [build_module(SparseExpertsDown, attrs={"round_weighted_output": rounding}) for rounding in (False, True)]
+def test_combine_weighted_rounding_is_not_algebraically_elided():
+    modules = [build_module(SparseExpertsCombine, attrs={"output_dtype": "bfloat16", "round_weighted_output": rounding}) for rounding in (False, True)]
     values = values_for(modules[0])
     evaluator = TorchEvaluator(DictWeightResolver({}))
     wide, rounded = [evaluator.run(module, values)[0] for module in modules]

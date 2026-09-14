@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.ir.memory_effect import MemoryAccessMode, expand_memory_effect
 from triton.flagmega.ir import (
     ExecutionFunction,
     KernelDefinition,
@@ -224,11 +225,16 @@ def _kernel_call(
             parameter_actuals.append(actual)
         actuals_by_parameter[parameter.name] = tuple(parameter_actuals)
 
-    def resolve_effect(names) -> tuple[str, ...]:
+    def resolve_effect(names, mode) -> tuple[str, ...]:
         return tuple(dict.fromkeys(
             actual
             for name in names
-            for actual in actuals_by_parameter.get(name, ())
+            for actual, effect in zip(
+                actuals_by_parameter.get(name, ()),
+                expand_memory_effect(primitive.parameter_map[name].type, dispatch.memory_effect_map[name]),
+                strict=True,
+            )
+            if effect.physical_mode & mode
         ))
 
     transfer_sources: list[str] = []
@@ -240,7 +246,14 @@ def _kernel_call(
         for channel in pipeline.channels:
             for argument_index in channel.source_argument_indices:
                 parameter_name = dispatch.arguments[argument_index]
-                transfer_sources.extend(actuals_by_parameter[parameter_name])
+                actuals = actuals_by_parameter[parameter_name]
+                if channel.inplace_partition is not None:
+                    leaf_index, _ = channel.inplace_partition.source_leaf(primitive.parameter_map[parameter_name].type)
+                    actuals = (actuals[leaf_index],)
+                transfer_sources.extend(actuals)
+        for argument_index in pipeline.producer_read_argument_indices:
+            parameter_name = dispatch.arguments[argument_index]
+            transfer_sources.extend(actuals_by_parameter[parameter_name])
 
     shared = tuple(
         _caller_shared_buffer(function_name, node.id, value)
@@ -254,8 +267,8 @@ def _kernel_call(
         workspaces=tuple(workspaces),
         shared_workspace_buffers=shared,
         transfer_sources=tuple(dict.fromkeys(transfer_sources)),
-        reads=resolve_effect(dispatch.reads),
-        writes=resolve_effect(dispatch.writes),
+        reads=resolve_effect(dispatch.reads, MemoryAccessMode.READ),
+        writes=resolve_effect(dispatch.writes, MemoryAccessMode.WRITE),
         effect_kind=node.effect.kind.value,
         effect_resource=node.effect.resource,
         dependencies=dependencies,

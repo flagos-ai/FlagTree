@@ -139,11 +139,11 @@ def test_pipeline_contains_only_implemented_pass_boundaries():
             "PostFunctionBoundaryPackPropagation",
             "ThreadNormStatsAcrossFunctionBoundaries",
             "DecomposePagedAttention",
-            "FormMatMulNormStatsCombine",
+            "FormAddNormStats",
             "RemoveUnusedFunctions",
         ),
         "AutoDistributedPass": (
-            "FormMatMulNormStatsCombine",
+            "FormAddNormStats",
             "RemoveUnusedFunctions",
             "ProposeAutoDistributed",
             "AutoDistributed",
@@ -153,7 +153,7 @@ def test_pipeline_contains_only_implemented_pass_boundaries():
             "PropagatePostAutoDistributedFunctionBoundaryLayouts",
             "FinalizeNormStatsBindings",
             "SinkFinalizedNormStatsBoxingAcrossFunctionBoundaries",
-            "LowerMatMulNormStatsCombine",
+            "LowerAddNormStats",
             "LowerVectorizationContracts",
         ),
         "TIRPass": (
@@ -294,7 +294,7 @@ def test_agent_override_is_hash_bound_and_replaces_default():
             "propagate-function-boundary-layouts",
             "post-function-boundary-pack-propagation",
             "thread-norm-stats",
-        "form-matmul-norm-stats-combine",
+        "form-add-norm-stats",
         "auto-distributed",
     ):
         current = compiler.run_stage(current, stage_name).module
@@ -372,7 +372,7 @@ def test_cli_can_write_selection_override(tmp_path, capsys):
             "propagate-function-boundary-layouts",
             "post-function-boundary-pack-propagation",
             "thread-norm-stats",
-        "form-matmul-norm-stats-combine",
+        "form-add-norm-stats",
         "auto-distributed",
     ):
         current = compiler.run_stage(current, stage_name).module

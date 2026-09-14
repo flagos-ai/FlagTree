@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 
 from triton.flagmega import ir as fm
+from dataclasses import replace
+from triton.flagmega.targets import NvidiaSm90Target
 from triton.flagmega.passes.auto_distributed import (
     DistributedReshardCostModel,
     DistributedReshardRealization,
@@ -79,3 +81,19 @@ def test_logical_constant_view_does_not_charge_runtime_synchronization():
     assert model.realization_cost(
         context, DistributedReshardRealization.SHARDED_VIEW
     ) == 0
+
+
+def test_materialized_stats_cost_depends_on_collective_fan_in():
+    placement = fm.Placement((2, 8), "yx", "bb")
+    tensor = fm.tensor_type("float32", (1, 1, 16, 1))
+    output = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 4, placement)
+    target = NvidiaSm90Target()
+    costs = []
+    for axis in (0, 1):
+        source = replace(output, partial=fm.SBP.partial((axis,), fm.ReduceOp.SUM))
+        context = DistributedReshardRealizationContext(
+            source, output, DistributedReshardSourceKind.INTERNAL, DistributedReshardUsageKind.INTERNAL,
+        )
+        costs.append(target.distributed_reshard_cost_model().realization_cost(context, DistributedReshardRealization.BOXING))
+    assert costs[1] > costs[0]
+    assert costs[0] >= target.distributed_operation_cost_model().grid_synchronization_cycles

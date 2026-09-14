@@ -29,7 +29,7 @@ def _abi(
     local_shape = tuple(shape if local_shape is None else local_shape)
     strides = []
     current = 1
-    for extent in reversed(local_shape):
+    for extent in reversed(shape if coordinate_space == "canonical_global" else local_shape):
         strides.append(current)
         current *= extent
     strides = tuple(reversed(strides))
@@ -82,13 +82,14 @@ def _parameter(name, *bindings):
 
 def _raw(*, q_abi=None, q_result_abi=None, k_abi=None, v_abi=None):
     q_abi = q_abi or _abi((1, 2, 8))
-    q_result_abi = q_result_abi or _abi((1, 2, 1), lanes=8)
-    k_abi = k_abi or _abi((1, 1, 8))
-    v_abi = v_abi or _abi((1, 1, 8))
-    scale_abi = _abi((8,))
-    frequency_abi = _abi((1, 1, 8), dtype="float32", itemsize=4)
+    head_dim = q_abi["logical_shape"][-1] * q_abi["scalar_lane_count"]
+    q_result_abi = q_result_abi or _abi((1, 2, head_dim // 8), lanes=8)
+    k_abi = k_abi or _abi((1, 1, head_dim))
+    v_abi = v_abi or _abi((1, 1, head_dim))
+    scale_abi = _abi((head_dim,))
+    frequency_abi = _abi((1, 1, head_dim), dtype="float32", itemsize=4)
     cache_abi = _abi(
-        (16, 2, 2, 256, k_abi["logical_shape"][1], 1),
+        (16, 2, 2, 256, k_abi["logical_shape"][1], head_dim // 8),
         lanes=8,
         storage_kind="compact_local",
         coordinate_space="local",
@@ -152,6 +153,9 @@ def _raw(*, q_abi=None, q_result_abi=None, k_abi=None, v_abi=None):
                 "advance_sequence",
                 _binding("advance", bool_abi, value_kind="immediate", argument="True"),
             ),
+            *(_parameter(f"{role}_stats", _binding(f"{role}_stats", _abi(
+                (1, *abi["logical_shape"][:2], 1), dtype="float32", itemsize=4,
+            ))) for role, abi in (("q", q_abi), ("k", k_abi))),
         ),
         "outputs": (
             _parameter("result_0", _binding("query_result", q_result_abi)),
@@ -255,21 +259,30 @@ def test_k_and_v_use_distinct_redundant_writers_when_capacity_allows():
     assert call["v"]["writer_active"] == "(shard_x == 1)"
 
 
-def test_normalized_dimension_sharding_requires_a_collective_variant():
+def test_pair_local_dimension_sharding_uses_global_coordinates_and_external_stats():
     q_abi = _abi(
-        (1, 2, 8),
-        local_shape=(1, 2, 4),
+        (1, 2, 256),
+        local_shape=(1, 2, 16),
         coordinates=(
             "local_coord_0",
             "local_coord_1",
-            "local_coord_2 + shard_coord_1 * 4",
+            "local_coord_2 // 8 * 128 + shard_coord_1 * 8 + local_coord_2 % 8",
         ),
         axis_policies=(
             {"kind": "broadcast"},
             {"kind": "broadcast"},
-            {"kind": "split", "stages": ({"hierarchy_axes": (1,)},)},
+            {"kind": "split", "stages": ({"hierarchy_axes": (1,),
+                "distribution": {"kind": "block_cyclic", "block_size": 8}},)},
         ),
     )
 
-    with pytest.raises(CodegenError, match="normalized suffix is sharded"):
-        _prepare(q_abi=q_abi)
+    result_abi = _abi((1, 2, 32), lanes=8, local_shape=(1, 2, 2),
+        coordinates=("local_coord_0", "local_coord_1", "local_coord_2 * 16 + shard_coord_1"),
+        axis_policies=({"kind": "broadcast"}, {"kind": "broadcast"},
+            {"kind": "split", "stages": ({"hierarchy_axes": (1,),
+                "distribution": {"kind": "block_cyclic", "block_size": 1}},)}))
+    call = _prepare(q_abi=q_abi, q_result_abi=result_abi)
+    assert call["q"]["stats"] == "q_stats"
+    assert "shard_x" in call["q"]["partner_domain"]["global_by_kind"]["dim"]
+    assert call["q"]["normalization_size"] == 256
+    assert "reduce_input_offset" not in call["q"]
