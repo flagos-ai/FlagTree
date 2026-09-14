@@ -283,11 +283,20 @@ class GluonSemantic(TritonSemantic[TensorTy]):
             handle.set_attr("ttg.gluon.default-shared-layout", self.builder.get_unit_attr())
         return ttgl.shared_memory_descriptor(handle, element_ty, shape, layout, shape)
 
-    def shared_load(self, mem_desc, layout):
+    def shared_load(self, mem_desc, layout, dtype=None, intrinsic=None, is_constant_offs=None, mma_mode=None):
+        if layout is None:
+            layout = AutoLayout()
         _check(isinstance(layout, ttgl.DistributedLayout),
                lambda: f"expected 'layout' to be a DistributedLayout but got {layout}")
-        ret_ty = ttgl.distributed_type(mem_desc.dtype, mem_desc.shape, layout)
-        handle = self.builder.create_local_load(ret_ty.to_ir(self.builder), mem_desc.handle)
+        if dtype is None:
+            dtype = mem_desc.dtype
+        _check(isinstance(dtype, ttgl.dtype), lambda: f"expected 'dtype' to be a dtype but got {dtype}")
+        ret_ty = ttgl.distributed_type(dtype, mem_desc.shape, layout)
+        if intrinsic is None and is_constant_offs is None and mma_mode is None:
+            handle = self.builder.create_local_load(ret_ty.to_ir(self.builder), mem_desc.handle)
+        else:
+            handle = self.builder.create_local_load(ret_ty.to_ir(self.builder), mem_desc.handle, bool(intrinsic),
+                                                    bool(is_constant_offs), -1 if mma_mode is None else mma_mode)
         return ttgl.tensor(handle, ret_ty)
 
     def shared_store(self, mem_desc, value):
