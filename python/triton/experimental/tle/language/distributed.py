@@ -174,7 +174,7 @@ def signal(
     space: str | attr.FlagCXTeamKind = "intra_node",
     group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
     context_idx: int = 0,
-    scope: MemoryScope | str = MemoryScope.DEVICE,
+    scope: MemoryScope | str = MemoryScope.SYSTEM,
     _semantic=None,
 ):
     """Atomically update a synchronization slot owned by a remote FlagCX peer.
@@ -223,7 +223,7 @@ def signal(
     scope = tl._unwrap_if_constexpr(scope)
     scope = scope if isinstance(scope, attr.SyncScope) else attr.SyncScope.from_str(scope)
     if scope is None:
-        raise ValueError(f"scope must be system, device, block, or thread, got {scope!r}")
+        raise ValueError(f"scope must be 'system' or 'device', got {scope!r}")
 
     peer_tensor = _normalize_signal_scalar(peer, "peer", tl.int32, _semantic)
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.uint32, _semantic)
@@ -231,7 +231,7 @@ def signal(
     value_tensor = (_normalize_signal_scalar(value_value, "value", tl.uint64, _semantic)
                     if value_value is not None else None)
 
-    utils.verify_signal(signal_op, None if value_tensor is None else value_tensor.handle)
+    utils.verify_signal(signal_op, None if value_tensor is None else value_tensor.handle, scope)
 
     comm = _parse_src_arg(builder, device_dptr, 1)
     builder.create_signal(
@@ -291,7 +291,7 @@ def signal_wait(
     order = tl._unwrap_if_constexpr(order)
     order = order if isinstance(order, attr.MemoryOrder) else attr.MemoryOrder.from_str(order)
     if order is None:
-        raise ValueError(f"order must be relaxed, acquire, release, or acq_rel, got {order!r}")
+        raise ValueError(f"order must be 'relaxed' or 'acquire', got {order!r}")
 
     comm = _parse_src_arg(builder, device_dptr, 1)
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
@@ -299,7 +299,7 @@ def signal_wait(
     target_tensor = (_normalize_signal_scalar(target_value, "target", tl.int64, _semantic)
                      if target_value is not None else None)
 
-    utils.verify_signal_wait(wait_kind_val, None if target_tensor is None else target_tensor.handle)
+    utils.verify_signal_wait(wait_kind_val, None if target_tensor is None else target_tensor.handle, order)
 
     builder.create_signal_wait(
         comm,

@@ -650,8 +650,8 @@ void init_triton_tle_ir(py::module &&m) {
              tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
              int32_t contextIdx, tle::SyncScope scope) -> void {
             auto &builder = self.getBuilder();
-            if (auto err = tle::Signal::verifySignalOp(signalOp,
-                                                       value.value_or(Value())))
+            if (auto err = tle::Signal::verifySignalOp(
+                    signalOp, value.value_or(Value()), scope))
               throw py::value_error(*err);
             self.create<tle::SignalOp>(
                 comm, peer, slotId, value.value_or(Value()),
@@ -673,7 +673,7 @@ void init_triton_tle_ir(py::module &&m) {
              tle::MemoryOrder order) -> void {
             auto &builder = self.getBuilder();
             if (auto err = tle::Signal::verifySignalWaitOp(
-                    wait_kind, target.value_or(Value())))
+                    wait_kind, target.value_or(Value()), order))
               throw py::value_error(*err);
             auto wait_kind_attr =
                 builder.getAttr<tle::SignalWaitKindAttr>(wait_kind);
@@ -874,26 +874,30 @@ void init_triton_tle_attr(py::module &&m) {
 void init_triton_tle_utils(py::module &&m) {
   m.def(
       "verify_signal",
-      [](tle::SignalOpKind kind, std::optional<Value> value) {
-        if (auto err =
-                tle::Signal::verifySignalOp(kind, value.value_or(Value()))) {
+      [](tle::SignalOpKind kind, std::optional<Value> value,
+         tle::SyncScope scope) {
+        if (auto err = tle::Signal::verifySignalOp(
+                kind, value.value_or(Value()), scope)) {
           throw py::value_error(*err);
         }
       },
       py::arg("kind"), py::arg("value") = py::none(),
-      "Validate a signal op's (kind, value) combination; returns an error "
-      "message or None");
+      py::arg("scope") = tle::SyncScope::SYSTEM,
+      "Validate a signal op's (kind, value, scope) combination; returns an "
+      "error message or None");
   m.def(
       "verify_signal_wait",
-      [](tle::SignalWaitKind kind, std::optional<Value> target) {
+      [](tle::SignalWaitKind kind, std::optional<Value> target,
+         tle::MemoryOrder order) {
         if (auto err = tle::Signal::verifySignalWaitOp(
-                kind, target.value_or(Value()))) {
+                kind, target.value_or(Value()), order)) {
           throw py::value_error(*err);
         }
       },
       py::arg("kind"), py::arg("target") = py::none(),
-      "Validate a signal_wait op's (kind, target) combination; returns an "
-      "error message or None");
+      py::arg("order") = tle::MemoryOrder::ACQUIRE,
+      "Validate a signal_wait op's (kind, target, order) combination; "
+      "returns an error message or None");
 }
 
 void init_triton_tle_passes(py::module &&m) {

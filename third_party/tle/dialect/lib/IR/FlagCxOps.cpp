@@ -110,13 +110,14 @@ LogicalResult FlagCxBarrierOp::verify() {
 }
 
 LogicalResult FlagCxSignalOp::verify() {
-  if (auto err = Signal::verifySignalOp(getSignalOp(), getValue()))
+  if (auto err = Signal::verifySignalOp(getSignalOp(), getValue(), getScope()))
     return emitOpError() << *err;
   return success();
 }
 
 LogicalResult FlagCxSignalWaitOp::verify() {
-  if (auto err = Signal::verifySignalWaitOp(getWaitKind(), getTarget()))
+  if (auto err =
+          Signal::verifySignalWaitOp(getWaitKind(), getTarget(), getOrder()))
     return emitOpError() << *err;
   return success();
 }

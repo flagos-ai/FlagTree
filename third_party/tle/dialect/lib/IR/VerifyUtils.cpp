@@ -233,8 +233,8 @@ llvm::LogicalResult verifyFlagCxSpace(mlir::Operation *op, mlir::Value src) {
 } // namespace DistributedBarrier
 
 namespace Signal {
-std::optional<std::string> verifySignalOp(SignalOpKind kind,
-                                          mlir::Value value) {
+std::optional<std::string> verifySignalOp(SignalOpKind kind, mlir::Value value,
+                                          SyncScope scope) {
   switch (kind) {
   case SignalOpKind::INC:
     if (value)
@@ -245,11 +245,14 @@ std::optional<std::string> verifySignalOp(SignalOpKind kind,
       return "value must be provided when op is 'add'";
     break;
   }
+  if (scope != SyncScope::SYSTEM && scope != SyncScope::DEVICE)
+    return "signal scope must be 'system' or 'device', got '" +
+           stringifySyncScope(scope).str() + "'";
   return std::nullopt;
 }
 
-std::optional<std::string> verifySignalWaitOp(SignalWaitKind kind,
-                                              mlir::Value target) {
+std::optional<std::string>
+verifySignalWaitOp(SignalWaitKind kind, mlir::Value target, MemoryOrder order) {
   switch (kind) {
   case SignalWaitKind::SIGNAL:
   case SignalWaitKind::COUNTER:
@@ -261,8 +264,13 @@ std::optional<std::string> verifySignalWaitOp(SignalWaitKind kind,
       return "target shouldn't be provided when wait_kind is shadow";
     break;
   }
+  if (order != MemoryOrder::RELAXED && order != MemoryOrder::ACQUIRE)
+    return "signal_wait order must be 'relaxed' or 'acquire' for atomic loads, "
+           "got '" +
+           stringifyMemoryOrder(order).str() + "'";
   return std::nullopt;
 }
+
 } // namespace Signal
 
 } // namespace mlir::triton::tle
