@@ -21,7 +21,7 @@
 # SOFTWARE.
 #!/bin/bash
 
-TARGET_DIR="$(readlink -f "${HOME}/flagrelease/qwen3.6")"
+TARGET_DIR="$(pwd)"
 
 ps afx | grep "VLLM::EngineCore" | grep -v grep | awk '{print $1}' | while read -r pid; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
