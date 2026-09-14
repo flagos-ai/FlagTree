@@ -1011,10 +1011,31 @@ class XPUDriver(GPUDriver):
 
     @staticmethod
     def _get_current_xpu_device():
-        return int(os.environ.get("TRITON_XPU_DEVICE", os.environ.get("XPU_VISIBLE_DEVICE", "0")))
+        # torch (torch_xmlir) owns the device/stream state: every kernel launch
+        # and every CUDA-graph capture happens on torch's *current* device, and
+        # torch.cuda.set_device(n) does NOT touch TRITON_XPU_DEVICE.  Reading
+        # the env var here made triton submit to the wrong device/stream
+        # whenever the torch device != the env default (multi-GPU rank != 0:
+        # capture failed with xpuLaunchKernel err -900, or silently recorded an
+        # empty graph).  Device masking itself is done via CUDA_VISIBLE_DEVICES,
+        # so torch's index space IS the runtime's.  Query torch as the source
+        # of truth; keep the env var as a fallback for compile-only/smoke paths
+        # with no usable torch device (the original reason for this override).
+        try:
+            import torch
+            return int(torch.cuda.current_device())
+        except Exception:
+            return int(os.environ.get("TRITON_XPU_DEVICE", os.environ.get("XPU_VISIBLE_DEVICE", "0")))
 
     @staticmethod
     def _set_current_xpu_device(device):
+        # Mirror into torch so the runtime device state and the env marker
+        # cannot disagree; the env var stays for consumers reading it directly.
+        try:
+            import torch
+            torch.cuda.set_device(device)
+        except Exception:
+            pass
         os.environ["TRITON_XPU_DEVICE"] = str(device)
 
     @staticmethod
@@ -1038,7 +1059,14 @@ class XPUDriver(GPUDriver):
 
     def get_active_torch_device(self):
         import torch
-        return torch.device("xpu", self.get_current_device())
+        # Must agree with get_device_interface(): on this stack torch is
+        # torch_xmlir, which presents the XPU under the torch.cuda interface
+        # (native torch here is built without USE_XPU, so a torch.device("xpu")
+        # object would be rejected by every torch API).  Mirror native xtriton
+        # 3.0, which also has no "xpu" torch device: only the compilation
+        # GPUTarget is named "xpu".  If this stack ever moves to a torch build
+        # with native XPU support, flip this together with get_device_interface.
+        return torch.device("cuda", self.get_current_device())
 
     def get_device_interface(self):
         import torch
