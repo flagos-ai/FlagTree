@@ -1,0 +1,57 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Nvidia3.6-FlagGems-Test
+
+on:
+  push:
+    branches: ["main", "fix/my-bug-fix-main-flaggems-reusable"]
+  pull_request:
+    branches: ["main"]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  # Group by PR number for pull_request events to cancel outdated runs from the same PR.
+  # Group by commit SHA for push events to allow parallel runs from different merges.
+  # Fall back to run_id for other events (e.g., schedule) to ensure each run is independent.
+  group: ${{ github.workflow }}-${{
+    github.event_name == 'pull_request' && github.event.pull_request.number ||
+    github.event_name == 'push' && github.event.head_commit.id ||
+    github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  flaggems-ci:
+    uses: ./.github/workflows/reusable-flaggems-test-template.yml
+    with:
+      runner: nvidia3.6
+      backend: nvidia
+      gpu-env-var: CUDA_VISIBLE_DEVICES
+      flaggems-tag: 'v5.3.5'
+      flagtree-build-command: |
+        set -x
+        source ~/env-3.6.sh
+        MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
