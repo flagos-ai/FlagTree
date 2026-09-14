@@ -11,15 +11,21 @@ custom_ops/
 ├── build_custom_ops.sh             # 手动重新编译统一 bitcode
 ├── custom_ops.bc                   # 所有注册算子共用的 bitcode，编译后生成
 ├── mem_ops/
+│   ├── duplicate.cpp               # 将一个变量或立即数复制多次并填充到向量中，暂只支持 tensor 高维切分计算中 mask 逐比特模式
 │   ├── gather_gm_to_l1.cpp         # GM → L1/CBUF 按索引行 gather
-│   └── gather_gm_to_ub.cpp         # GM → UB 按索引行 gather
+│   ├── gather_gm_to_ub.cpp         # GM → UB 按索引行 gather
+│   └── gather_mask.cpp             # 以内置固定模式对应的二进制或用户自定义输入的 Tensor 数值对应的二进制为 gather mask, 从源操作数中选取元素写入目的操作数中
+├── reduction_ops/
+│   └── pair_reduce_sum.cpp         # 相邻两个（奇偶）元素求和, 暂只支持 mask 连续模式
 └── sort_ops/
+    ├── sort32.cpp                  # 排序函数，一次迭代可以完成32个数的排序
     ├── sort_1d_pack.cpp            # sort_1d_pack ABI 与路径分发
     ├── sort_common.h                # 共享 vmrgsort4 / proposal inline 工具
     ├── sort_base.h               # 通用排序路径
     ├── sort_s4096_k129_512.h     # 4096 segment、128 < K <= 512 的 4×1024 small-K 排序路径
     ├── sort_s4096_k1_128_k2048.h # 4096 segment、K <= 128 或 K == 2048 的分层排序路径
     ├── merge_pack_sort.cpp         # proposal 归并与解包
+    ├── mrgsort.cpp                 # proposal 归并
     └── unpack_sort.cpp             # proposal 拆包为 value/index
 ```
 
@@ -54,13 +60,42 @@ output0, output1 = tle.dsa.ascend.raw(
 
 | 算子 | Core / Pipe | 功能 | `out=` 含义 | C++ 实现 |
 | --- | --- | --- | --- | --- |
+| `duplicate_bitwise_mask` | VECTOR / V | 将一个变量或立即数复制多次并填充到向量中 | 需要填充数据的向量，对应 Ascend C `const LocalTensor<T>& dst` | `mem_ops/ duplicate.cpp` |
 | `gather_gm_to_l1` | CUBE / MTE2 | 按索引将 GM 连续张量中的 half/bf16 数据行收集到 L1/CBUF，并完成 ND2NZ 搬运 | L1/CBUF half/bf16 目标张量，对应 C++ `dst` | `mem_ops/gather_gm_to_l1.cpp` |
 | `gather_gm_to_ub` | VECTOR / MTE2 | 按索引将 GM 连续张量中的 half/bf16 数据行收集到 UB | UB half/bf16 目标张量，对应 C++ `dst` | `mem_ops/gather_gm_to_ub.cpp` |
+| `gather_mask_builtin_pattern` | VECTOR / V | 以内置固定模式对应的二进制对应的二进制为 gather mask, 从源操作数中选取元素写入目的操作数中 | 目的操作数，`out[0]` 对应 Ascend C `const LocalTensor<T>& dst`, `out[1]` 对应 Ascend C `uint64_t& rsvdCnt` | `mem_ops/gather_mask.cpp` |
+| `gather_mask_custom_pattern` | VECTOR / V | 以用户自定义输入的 Tensor 数值对应的二进制为 gather mask, 从源操作数中选取元素写入目的操作数中 | 目的操作数，`out[0]`对应 Ascend C `const LocalTensor<T>& dst`, `out[1]`对应 Ascend C `uint64_t& rsvdCnt` | `mem_ops/gather_mask.cpp` |
+| `pair_reduce_sum_continuous_mask` | VECTOR / V | 以 mask 连续模式进行相邻两个（奇偶）元素的求和 | 规约操作结果，对应 Ascend C `const LocalTensor<T>& dst` | `reduction_ops/pair_reduce_sum.cpp` |
+| `sort32` | VECTOR / V | 排序函数，一次迭代可以完成32个数的排序, 输出 proposal | 排序结果，对应 Ascend C `const LocalTensor<T>& dst` | `sort_ops/sort32.cpp` |
 | `sort_1d_pack` | VECTOR / V | 对一维 float 数据排序，输出前 `TOPK` 个紧凑 proposal | UB float proposal 输出，对应 C++ `dst_proposals` | `sort_ops/sort_1d_pack.cpp:10-18` |
 | `merge_exhaust_sort4` | VECTOR / V | 对最多四路有序 proposal 执行一次 exhaustion merge | `[dst_proposals, consumed_out]` | `sort_ops/merge_pack_sort.cpp:56-63` |
+| `mrgsort` | VECTOR / V | 对最多四路有序 proposal 执行归并排序 | 排序结果，对应 Ascend C `const LocalTensor<T>& dst` | `sort_ops/mrgsort.cpp` |
 | `unpack_sort` | VECTOR / V | 将 `[value, encoded_index]` proposal 拆分成 value 和 index | `[dst_value, dst_index]` | `sort_ops/unpack_sort.cpp:20-24` |
 
 ## 算子使用方法
+
+### `duplicate_bitwise_mask`
+
+```python
+dst = tle.dsa.ascend.raw(
+    "duplicate_bitwise_mask",
+    scalar_value,
+    mask,
+    repeat_times,
+    dst_block_stride,
+    dst_repeat_stride,
+    out=dst,
+)
+```
+
+- `scalar_value`：UB 一维 half/bf16/fp32，tensor 的第一个数据为被复制的源操作数，类型与dst中元素的数据类型保持一致
+- `mask`：UB 一维 uint64, tensor 的前两个数据用作 mask，按位控制哪些元素参与计算
+- `repeat_times`：表示迭代的次数，每次迭代处理8个 datablock (每个 block 32 Bytes, 共256 Bytes)
+- `dst_block_stride`：单次迭代内，目的操作数不同 datablock 间地址步长
+- `dst_repeat_stride`：单次迭代内，目的操作数相同 datablock 地址步长
+- `dst`：UB 一维 half/bf16/fp32 输出
+
+完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_duplicate`）。
 
 ### `gather_gm_to_l1`
 
@@ -109,6 +144,110 @@ tile_v = tle.dsa.ascend.raw(
 > **TODO**：去掉条件同 `gather_gm_to_l1`——等 `InsertLoadStoreForMixCV` 重构 bug 修复，或后端加上 `-enable-legacy-insert-load-store-for-mix-cv` 后，该 kwarg 可去掉。
 
 完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_gather_gm_to_ub`）。
+
+### `gather_mask_builtin_pattern`
+
+```python
+[dst, rsvd_cnt] = tle.dsa.ascend.raw(
+    "gather_mask_builtin_pattern",
+    src0,
+    src1_pattern,
+    reduce_mode,
+    mask,
+    src0_block_stride,
+    repeat_times,
+    src0_repeat_stride,
+    src1_repeat_stride,
+    out=[dst, rsvd_cnt],
+)
+```
+
+- `src0`：UB 一维 half/bf16/uint16/int16/uint32/int32/fp32，源操作数
+- `src1_pattern`：立即数，取值范围为[1,7]。1: 每个 repeat 取偶数索引元素；2. 每个 repeat 取奇数索引元素，其他各个值对应的 gather 模式参见 https://www.hiascend.com/document/detail/zh/canncommercial/latest/API/ascendcopapi/atlasascendc_api_07_0071.html
+- `reduce_mode`：false, Normal 模式，每次 repeat 操作256 Byts 数据；ture, Counter模式，每次repeat操作 mask 个元素
+- `mask`：用于控制每次迭代内参与计算的元素，Normal 模式下建议设为0
+- `src0_block_stride`：单次迭代内，src0 不同 datablock 间地址步长
+- `repeat_times`：迭代的次数
+- `src0_repeat_stride`：src0 迭代间的地址步长
+- `src1_repeat_stride`：src1 迭代间的地址步长
+- `dst`：UB 一维 half/bf16/uint16/int16/uint32/int32/fp32，目的操作数
+- `rsvd_cnt`：dst 中有效元素个数
+
+完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_gather_mask`）。
+
+### `gather_mask_custom_pattern`
+
+```python
+[dst, rsvd_cnt] = tle.dsa.ascend.raw(
+    "gather_mask_custom_pattern",
+    src0,
+    src1_pattern,
+    reduce_mode,
+    mask,
+    src0_block_stride,
+    repeat_times,
+    src0_repeat_stride,
+    src1_repeat_stride,
+    out=[dst, rsvd_cnt],
+)
+```
+
+- `src0`：UB 一维 half/bf16/uint16/int16/uint32/int32/fp32，源操作数
+- `src1_pattern`：UB 一维 uint16/uint32，存储用于 gather 的索引，元素类型的数据长度与 src0 的元素类型的数据长度一致，迭代间间隔由 src1RepeatStride 决定， 迭代内 src1Pattern 连续消耗
+- `reduce_mode`：false, Normal 模式，每次 repeat 操作256 Byts 数据；ture, Counter模式，每次repeat操作 mask 个元素
+- `mask`：用于控制每次迭代内参与计算的元素，Normal 模式下建议设为0
+- `src0_block_stride`：单次迭代内，src0 不同 datablock 间地址步长
+- `repeat_times`：迭代的次数
+- `src0_repeat_stride`：src0 迭代间的地址步长
+- `src1_repeat_stride`：src1 迭代间的地址步长
+- `dst`：UB 一维 half/bf16/uint16/int16/uint32/int32/fp32，目的操作数
+- `rsvd_cnt`：dst 中有效元素个数
+
+完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_gather_mask`）。
+
+### `pair_reduce_sum_continuous_mask`
+
+```python
+dst = tle.dsa.ascend.raw(
+    "pair_reduce_sum_continuous_mask",
+    src,
+    repeat_times,
+    mask,
+    dst_rep_stride,
+    src_blk_stride,
+    src_rep_stride,
+    out=dst,
+)
+```
+
+- `src`：UB 一维 half/fp32，源操作数
+- `repeat_times`：迭代次数，取值范围为[0,255]
+- `mask`：表示前面连续的多少个元素参与计算
+- `dst_rep_stride`：目的操作数相邻迭代间的地址步长
+- `src_blk_stride`：单次迭代内 datablock 的地址步长
+- `src_rep_stride`：源操作数相邻迭代间的地址步长，即源操作数每次迭代跳过的 datablock 数目
+- `dst`：UB 一维 half/fp32，目的操作数
+
+完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_pair_reduce_sum`）。
+
+### `sort32`
+
+```python
+dst = tle.dsa.ascend.raw(
+    "sort32",
+    src0,
+    src1,
+    repeat_times,
+    out=dst,
+)
+```
+
+- `src0`：UB 一维 fp32，源操作数，存 score
+- `src1`：UB 一维 uint32，源操作数，存 index
+- `repeat_times`：重复迭代次数，取值范围为[0,255]
+- `dst`：UB 一维 fp32，目的操作数，存 proposal 形式的输出
+
+完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_sort32`）。
 
 ### `sort_1d_pack`
 
@@ -181,6 +320,37 @@ out_buf, consumed = tle.dsa.ascend.raw(
 该算子只执行一次归并。多轮加载、cursor 推进和完整归并由调用方负责。
 
 示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_merge_exhaust_sort4`）。
+
+### `mrgsort`
+
+```python
+dst = tle.dsa.ascend.raw(
+    "mrgsort",
+    src_proposals,
+    off0,
+    off1,
+    off2,
+    off3,
+    len0,
+    len1,
+    len2,
+    len3,
+    if_exhausted_suspension,
+    valid_bit,
+    repeat_times,
+    out=dst,
+)
+```
+
+- `src_proposals`：UB 一维 fp32，proposal 形式的源操作数，src_proposals[off0..off3]即各路输入，通常是sort32的输出。
+- `off0..off3`：各路输入在 src_proposals 上的偏移
+- `len0..len3`：各路输入的前面多少个元素参与归并排序
+- `if_exhausted_suspension`：是否在任意一路输入的数据耗尽后提前退出排序
+- `valid_bit`：有效队列个数，只能是3、5、7。3：前两路输入有效，7：前三路输入有效，15：四路输入全部有效
+- `repeat_times`；迭代次数，每一次源操作数和目的操作数跳过四个队列总长度。参数生效条件参见https://www.hiascend.com/document/detail/zh/canncommercial/latest/API/ascendcopapi/atlasascendc_api_07_0232.html
+- `dst`：UB 一维 fp32，目的操作数，存 proposal 形式的输出
+
+完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_mrgsort`）。
 
 ### `unpack_sort`
 
