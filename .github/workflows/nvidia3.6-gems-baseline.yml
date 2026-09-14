@@ -18,11 +18,11 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Nvidia3.6-FlagGems-Baseline
+name: Nvidia3.6-Gems-Baseline
 
 on:
   push:
-    branches: ["main", "fix/my-bug-fix-main-flaggems-reusable-v3-4-workflows"]
+    branches: ["main", "triton_v3.6.x"]
 
 permissions:
   contents: read
@@ -37,9 +37,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  nv36x-flaggems-baseline:
+  nv36x:
     if: ${{ github.event_name == 'push' }}
-    uses: ./.github/workflows/reusable-flaggems-baseline.yml
+    uses: ./.github/workflows/template-gems-baseline.yml
     with:
       runner: nvidia3.6
       backend: nvidia

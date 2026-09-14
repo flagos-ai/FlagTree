@@ -18,11 +18,11 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Nvidia3.6-FlagGems-Test
+name: Nvidia3.6-Gems-Test
 
 on:
   pull_request:
-    branches: ["main"]
+    branches: ["main", "triton_v3.6.x"]
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
@@ -38,9 +38,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  nv36x-flaggems-test:
+  nv36x:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
-    uses: ./.github/workflows/reusable-flaggems-test.yml
+    uses: ./.github/workflows/template-gems-test.yml
     with:
       runner: nvidia3.6
       backend: nvidia
