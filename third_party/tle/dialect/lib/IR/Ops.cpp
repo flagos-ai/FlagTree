@@ -911,7 +911,7 @@ LogicalResult DistributedBarrierOp::verify() {
       return emitOpError()
              << "FlagCX space must be 'device', 'inter', or 'world', got '"
              << space << "'";
-    return DistributedBarrier::verifyFlagCxSpace(op, getSrc());
+    return DistributedBarrier::verifyFlagCxSpace(*this, getSrc());
   }
 
   auto kindAttr = op->getAttrOfType<StringAttr>("group_kind");

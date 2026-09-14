@@ -606,28 +606,29 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_distributed_barrier",
            [](TritonOpBuilder &self) -> void {
              self.create<tle::DistributedBarrierOp>(
-                 Value(), StringAttr(), StringAttr(), StringAttr(),
-                 StringAttr(), IntegerAttr(), IntegerAttr(), StringAttr(),
-                 IntegerAttr(), DenseI32ArrayAttr(), DenseI32ArrayAttr(),
-                 DenseI32ArrayAttr());
+                 Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(),
+                 StringAttr(), IntegerAttr(), IntegerAttr(),
+                 tle::SyncScopeAttr(), IntegerAttr(), DenseI32ArrayAttr(),
+                 DenseI32ArrayAttr(), DenseI32ArrayAttr());
            })
       .def(
           "create_distributed_barrier",
           [](TritonOpBuilder &self, std::optional<Value> src,
              size_t barrier_index = 0, const std::string &space = "device",
              const std::string &group_kind = "block",
-             const std::string &order = "acqrel",
+             tle::MemoryOrder order = tle::MemoryOrder::ACQ_REL,
              const std::string &barrier_kind = "sync", size_t context_id = 0,
-             const std::string &memory_scope = "system") -> void {
+             tle::SyncScope memory_scope = tle::SyncScope::SYSTEM) -> void {
             auto &builder = self.getBuilder();
             auto getOptStrAttr = [&](const std::string &s) -> StringAttr {
               return s.empty() ? StringAttr() : builder.getStringAttr(s);
             };
             auto spaceAttr = getOptStrAttr(space);
             auto kindAttr = getOptStrAttr(group_kind);
-            auto orderAttr = getOptStrAttr(order);
+            auto orderAttr = builder.getAttr<tle::MemoryOrderAttr>(order);
             auto barrierTypeAttr = getOptStrAttr(barrier_kind);
-            auto memoryScopeAttr = getOptStrAttr(memory_scope);
+            auto memoryScopeAttr =
+                builder.getAttr<tle::SyncScopeAttr>(memory_scope);
             auto barrierIndexAttr =
                 builder.getI32IntegerAttr(static_cast<int32_t>(barrier_index));
             auto contextIdAttr =
@@ -723,9 +724,9 @@ void init_triton_tle_ir(py::module &&m) {
             }
 
             self.create<tle::DistributedBarrierOp>(
-                Value(), StringAttr(), StringAttr(), StringAttr(), kindAttr,
-                IntegerAttr(), IntegerAttr(), StringAttr(), rankAttr, shapeAttr,
-                axesAttr, maskAttr);
+                Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(),
+                kindAttr, IntegerAttr(), IntegerAttr(), tle::SyncScopeAttr(),
+                rankAttr, shapeAttr, axesAttr, maskAttr);
           },
           py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
           py::arg("group_mask"))

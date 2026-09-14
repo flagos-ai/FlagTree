@@ -52,7 +52,8 @@ llvm::LogicalResult verifyNodeTransfer(mlir::Operation *op, mlir::Value src,
                                        FlagCXCoopKind coopKind);
 
 namespace DistributedBarrier {
-llvm::LogicalResult verifyFlagCxSpace(mlir::Operation *op, mlir::Value src);
+llvm::LogicalResult verifyFlagCxSpace(tle::DistributedBarrierOp op,
+                                      mlir::Value src);
 }
 
 namespace Signal {

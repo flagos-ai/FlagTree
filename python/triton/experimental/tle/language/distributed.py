@@ -974,17 +974,6 @@ def shard_id(
     return coord
 
 
-def _parse_device_barrier_args(argType) -> str:
-    argType = tl._unwrap_if_constexpr(argType)
-    if isinstance(argType, attr.FlagCXCoopKind):
-        return ("thread", "warp", "block")[int(argType)]
-    argTypes = (BarrierKind, GroupKind, MemoryOrder, MemoryScope)
-    if isinstance(argType, argTypes):
-        return argType.value
-    else:
-        return str(argType).lower()
-
-
 def _normalize_barrier_space(space: str | attr.FlagCXTeamKind | None) -> str | None:
     space = tl._unwrap_if_constexpr(space)
     if space is None:
@@ -1018,8 +1007,9 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
                                    barrier_kind: BarrierKind | str = BarrierKind.SYNC,
                                    group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
                                    index: int | None = 0, context_id: int = 0,
-                                   order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-                                   memory_scope: MemoryScope | str = MemoryScope.SYSTEM, _semantic=None) -> bool:
+                                   order: attr.MemoryOrder | MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+                                   memory_scope: attr.SyncScope | MemoryScope | str = MemoryScope.SYSTEM,
+                                   _semantic=None) -> bool:
     space = _normalize_barrier_space(space)
     if space is None:
         return False
@@ -1031,15 +1021,50 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
         raise ValueError(f"context_id must be in int32 range, got {context_id}")
     builder = _semantic.builder
     ptr = _parse_src_arg(builder, device_dptr, 1)
+
+    group_kind = tl._unwrap_if_constexpr(group_kind)
+    if isinstance(group_kind, attr.FlagCXCoopKind):
+        group_kind = ("thread", "warp", "block")[int(group_kind)]
+    elif isinstance(group_kind, GroupKind):
+        group_kind = group_kind.value
+    else:
+        group_kind = str(group_kind).lower()
+
+    order = tl._unwrap_if_constexpr(order)
+    if isinstance(order, attr.MemoryOrder):
+        pass
+    elif isinstance(order, MemoryOrder):
+        order = attr.MemoryOrder.from_str(order.value)
+    else:
+        order = attr.MemoryOrder.from_str(str(order).lower())
+    if order is None:
+        raise ValueError(f"order must be 'relaxed', 'acquire', 'release', or 'acqrel', got {order!r}")
+
+    barrier_kind = tl._unwrap_if_constexpr(barrier_kind)
+    if isinstance(barrier_kind, BarrierKind):
+        barrier_kind = barrier_kind.value
+    else:
+        barrier_kind = str(barrier_kind).lower()
+
+    memory_scope = tl._unwrap_if_constexpr(memory_scope)
+    if isinstance(memory_scope, attr.SyncScope):
+        pass
+    elif isinstance(memory_scope, MemoryScope):
+        memory_scope = attr.SyncScope.from_str(memory_scope.value)
+    else:
+        memory_scope = attr.SyncScope.from_str(str(memory_scope).lower())
+    if memory_scope is None:
+        raise ValueError(f"memory_scope must be 'system', 'device', 'block', or 'thread', got {memory_scope!r}")
+
     builder.create_distributed_barrier(
         src=ptr,
         barrier_index=index or 0,
         space=space,
-        group_kind=_parse_device_barrier_args(group_kind),
-        order=_parse_device_barrier_args(order),
-        barrier_kind=_parse_device_barrier_args(barrier_kind),
+        group_kind=group_kind,
+        order=order,
+        barrier_kind=barrier_kind,
         context_id=context_id,
-        memory_scope=_parse_device_barrier_args(memory_scope),
+        memory_scope=memory_scope,
     )
     return True
 
@@ -1080,9 +1105,9 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
                         space: str | attr.FlagCXTeamKind | None = None,
                         group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
                         barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-                        order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+                        order: attr.MemoryOrder | MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
                         _semantic: TLESemantic | None = None, index: int | None = 0, context_id: int = 0,
-                        memory_scope: MemoryScope | str = MemoryScope.SYSTEM):
+                        memory_scope: attr.SyncScope | MemoryScope | str = MemoryScope.SYSTEM):
     """
     M3 entrypoint: distributed synchronization primitive.
     Dispatch order:

@@ -54,14 +54,6 @@ LogicalResult FlagCxBarrierOp::verify() {
   auto barrierTypeAttr = getBarrierTypeAttr();
   auto indexAttr = getIndexAttr();
   auto contextIdAttr = getContextIdAttr();
-  auto orderAttr = getOrderAttr();
-  auto scopeAttr = getScopeAttr();
-
-  auto emitInvalidIntAttr = [&](StringRef attrName, int64_t value,
-                                StringRef expected) -> LogicalResult {
-    return op->emitOpError() << "invalid " << attrName << " (" << value
-                             << "), expected one of: " << expected;
-  };
 
   auto emitInvalidStrAttr = [&](StringRef attrName, StringRef value,
                                 StringRef expected) -> LogicalResult {
@@ -83,28 +75,6 @@ LogicalResult FlagCxBarrierOp::verify() {
     return op->emitOpError() << "index must be non-negative";
   if (contextIdAttr.getInt() < 0)
     return op->emitOpError() << "context_id must be non-negative";
-
-  switch (static_cast<MemoryOrder>(orderAttr.getInt())) {
-  case MemoryOrder::RELAXED:
-  case MemoryOrder::ACQUIRE:
-  case MemoryOrder::RELEASE:
-  case MemoryOrder::ACQ_REL:
-    break;
-  default:
-    return emitInvalidIntAttr("order", orderAttr.getInt(),
-                              "Relaxed(0), Acquire(1), Release(2), AcqRel(3)");
-  }
-
-  switch (static_cast<SyncScope>(scopeAttr.getInt())) {
-  case SyncScope::SYSTEM:
-  case SyncScope::DEVICE:
-  case SyncScope::BLOCK:
-  case SyncScope::THREAD:
-    break;
-  default:
-    return emitInvalidIntAttr("scope", scopeAttr.getInt(),
-                              "System(0), Device(1), Block(2), Thread(3)");
-  }
 
   return success();
 }

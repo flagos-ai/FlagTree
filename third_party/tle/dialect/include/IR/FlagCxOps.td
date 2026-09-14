@@ -75,8 +75,8 @@ def Tle_FlagCxBarrierOp : Tle_Op<"flagcx_barrier"> {
     Tle_FlagCXCoopKindAttr:$coop_kind,
     I32Attr:$index,
     I32Attr:$context_id,
-    I32Attr:$order,
-    I32Attr:$scope
+    Tle_MemoryOrderAttr:$order,
+    Tle_SyncScopeAttr:$scope
   );
 
   let hasVerifier = 1;
