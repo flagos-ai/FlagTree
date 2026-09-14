@@ -25,6 +25,7 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/InliningUtils.h"
 #include "tle/dialect/include/IR/Dialect.cpp.inc"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "tle/dialect/include/IR/TleAttrDefs.cpp.inc"
@@ -39,6 +40,7 @@
 #endif
 
 namespace mlir::triton::tle {
+
 namespace {
 struct TleInlinerInterface final : public DialectInlinerInterface {
   using DialectInlinerInterface::DialectInlinerInterface;
@@ -69,5 +71,39 @@ void TleDialect::initialize() {
 #endif
 
   addInterfaces<TleInlinerInterface>();
+}
+
+LogicalResult TleDialect::verifyOperationAttribute(Operation *op,
+                                                   NamedAttribute attr) {
+  StringRef name = attr.getName().getValue();
+  if (name == kExactSMEMShapeAttr) {
+    auto alloc = dyn_cast<gpu::LocalAllocOp>(op);
+    if (!alloc)
+      return op->emitOpError(kExactSMEMShapeAttr)
+             << " is valid only on ttg.local_alloc";
+    return verifyExactSMEMRoot(op, getExactSMEMRoot(alloc.getResult()));
+  }
+  if (name == kExactSMEMStageAttr) {
+    auto view = dyn_cast<gpu::MemDescReinterpretOp>(op);
+    if (!view)
+      return op->emitOpError(kExactSMEMStageAttr)
+             << " is valid only on ttg.memdesc_reinterpret";
+    return verifyExactSMEMStage(op, getExactSMEMStage(view.getResult()));
+  }
+  if (name == kExactSMEMTileAttr) {
+    auto view = dyn_cast<gpu::MemDescIndexOp>(op);
+    if (!view)
+      return op->emitOpError(kExactSMEMTileAttr)
+             << " is valid only on ttg.memdesc_index";
+    return verifyExactSMEMTile(op, getExactSMEMTile(view.getResult()));
+  }
+  if (name == kExactSMEMTileSpanAttr) {
+    auto view = dyn_cast<gpu::MemDescIndexOp>(op);
+    if (!view || !op->hasAttr(kExactSMEMTileAttr))
+      return op->emitOpError(kExactSMEMTileSpanAttr)
+             << " requires " << kExactSMEMTileAttr << " on ttg.memdesc_index";
+    return verifyExactSMEMTile(op, getExactSMEMTile(view.getResult()));
+  }
+  return success();
 }
 } // namespace mlir::triton::tle

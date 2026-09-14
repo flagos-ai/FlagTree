@@ -24,8 +24,13 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LLVM.h"
+#include "tle/dialect/include/Analysis/AxisInfoExt.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/SMEMPlan.h"
+#include "tle/dialect/include/Transforms/EncodingRematerialization.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Analysis/AxisInfo.h"
@@ -235,6 +240,73 @@ static Value convertTensorEncoding(IRRewriter &rewriter, Location loc,
   return ttg::ConvertLayoutOp::create(rewriter, loc, newTy, value).getResult();
 }
 
+class LogicalCopyRematerializationPolicy final
+    : public ttg::EncodingRematerializationPolicy {
+public:
+  bool isCustomEncodingPolymorphicOp(Operation *op) const override {
+    return isa<ExtractTileOp>(op);
+  }
+
+  FailureOr<Value> rematerializeCustomValue(
+      ttg::EncodingRematerializer &rematerializer, Value value,
+      RankedTensorType targetType, Attribute targetEncoding,
+      llvm::SmallPtrSetImpl<Value> &active, unsigned depth) const override {
+    auto extract = value.getDefiningOp<ExtractTileOp>();
+    if (!extract)
+      return failure();
+
+    FailureOr<Value> source = rematerializer.rematerialize(
+        extract.getSrc(), targetEncoding, active, depth + 1);
+    if (failed(source))
+      return failure();
+
+    auto rematerialized = ExtractTileOp::create(
+        rematerializer.getRewriter(), extract.getLoc(), *source,
+        extract.getIndex(), targetType.getShape());
+    rematerialized->setAttrs(extract->getAttrs());
+    if (rematerialized.getType() != targetType)
+      return failure();
+    return rematerialized.getResult();
+  }
+};
+
+static bool rematerializeLogicalAsyncCopy(
+    ttg::AsyncCopyGlobalToLocalOp copyOp, tt::ModuleAxisInfoAnalysis &axisInfo,
+    ttg::EncodingRematerializationCache &cache, DominanceInfo &dominance) {
+  std::optional<ttg::BlockedEncodingAttr> encoding =
+      getCoalescedFallbackLoadEncoding(copyOp, axisInfo);
+  if (!encoding)
+    return false;
+
+  IRRewriter rewriter(copyOp.getContext());
+  LogicalCopyRematerializationPolicy policy;
+  auto rematerialize = [&](Value value) -> FailureOr<Value> {
+    if (!value)
+      return Value();
+    return ttg::rematerializeWithEncoding(rewriter, copyOp, value, *encoding,
+                                          cache, dominance, policy);
+  };
+
+  FailureOr<Value> src = rematerialize(copyOp.getSrc());
+  FailureOr<Value> mask = rematerialize(copyOp.getMask());
+  FailureOr<Value> other = rematerialize(copyOp.getOther());
+  if (failed(src) || failed(mask) || failed(other))
+    return false;
+
+  unsigned contiguousAxis = encoding->getOrder().front();
+  unsigned copyContiguity = encoding->getSizePerThread()[contiguousAxis];
+
+  rewriter.modifyOpInPlace(copyOp, [&]() {
+    copyOp.getSrcMutable().assign(*src);
+    if (copyOp.getMask())
+      copyOp.getMaskMutable().assign(*mask);
+    if (copyOp.getOther())
+      copyOp.getOtherMutable().assign(*other);
+    copyOp.setContiguity(copyContiguity);
+  });
+  return true;
+}
+
 static LogicalResult
 collectErasableTokenUsers(Value token,
                           SmallPtrSetImpl<Operation *> &visitedTokenOps,
@@ -337,10 +409,31 @@ struct DowngradeInvalidAsyncCopyPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    tt::ModuleAxisInfoAnalysis axisInfo(module);
+    SmallVector<ttg::AsyncCopyGlobalToLocalOp> plannedCopies;
+    module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
+      if (copyOp->hasAttr(kCopyPlanAttr))
+        plannedCopies.push_back(copyOp);
+    });
+    if (!plannedCopies.empty()) {
+      tle::ModuleAxisInfoAnalysis initialAxisInfo(module);
+      DominanceInfo dominance(module);
+      llvm::DenseMap<Block *, ttg::EncodingRematerializationCache> caches;
+      for (auto copyOp : plannedCopies)
+        rematerializeLogicalAsyncCopy(copyOp, initialAxisInfo,
+                                      caches[copyOp->getBlock()], dominance);
+    }
+    downgradeCopies<tt::ModuleAxisInfoAnalysis>(module, false);
+    if (!plannedCopies.empty())
+      downgradeCopies<tle::ModuleAxisInfoAnalysis>(module, true);
+  }
 
+  template <typename AxisAnalysis>
+  void downgradeCopies(ModuleOp module, bool planned) {
+    AxisAnalysis axisInfo(module);
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> invalidCopies;
     module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
+      if (copyOp->hasAttr(kCopyPlanAttr) != planned)
+        return;
       dropUnsafeLoopFreePartitionCachePolicy(copyOp);
       if (hasLegalCpAsyncWidth(copyOp, axisInfo))
         return;

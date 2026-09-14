@@ -32,11 +32,13 @@
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "tle/dialect/include/Analysis/TlePipeEffectAnalysis.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -140,6 +142,14 @@ static bool containsPipeLifecycleOp(tt::FuncOp func) {
   return found;
 }
 
+template <typename ExactView>
+static bool sameExactSMEMStage(const ExactView &view, Value stage) {
+  if (std::optional<int64_t> exactStage = view.getStaticStage())
+    if (std::optional<int64_t> otherStage = getExactSMEMConstant(stage))
+      return *exactStage == *otherStage;
+  return sameIndexValue(view.getStage(), stage);
+}
+
 static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee) {
   if (callee.isExternal())
     return call.emitOpError(
@@ -240,6 +250,20 @@ static Value canonicalizePipeField(Value field) {
 static Value getMemDescRoot(Value value) {
   Value current = canonicalizePipeField(value);
   while (true) {
+    if (auto result = dyn_cast<OpResult>(current)) {
+      if (auto wait = dyn_cast<triton::nvidia_gpu::WarpGroupDotWaitOp>(
+              result.getOwner())) {
+        unsigned resultNo = result.getResultNumber();
+        if (resultNo < wait.getNumOperands()) {
+          current = canonicalizePipeField(wait.getOperand(resultNo));
+          continue;
+        }
+      }
+    }
+    if (auto view = current.getDefiningOp<MemDescWGMMAViewOp>()) {
+      current = canonicalizePipeField(view.getSrc());
+      continue;
+    }
     if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
       current = canonicalizePipeField(index.getSrc());
       continue;
@@ -250,6 +274,11 @@ static Value getMemDescRoot(Value value) {
     }
     if (auto alias = current.getDefiningOp<MemDescAliasOp>()) {
       current = canonicalizePipeField(alias.getSrc());
+      continue;
+    }
+    if (auto reinterpret = current.getDefiningOp<ttg::MemDescReinterpretOp>();
+        reinterpret && reinterpret->hasAttr(kExactSMEMStageAttr)) {
+      current = canonicalizePipeField(reinterpret.getSrc());
       continue;
     }
     break;
@@ -312,6 +341,10 @@ static std::string getPipeKey(Operation *op) {
   os << "|";
   op->getAttr("field_names").print(os);
   os << "|";
+  if (Attribute tiled = op->getAttr("tiled_smem_fields")) {
+    tiled.print(os);
+    os << "|";
+  }
   for (Value field : getPipeFields(op))
     os << canonicalizePipeField(field).getAsOpaquePointer() << ",";
   return key;
@@ -547,6 +580,17 @@ getCommitFieldRootForStore(Value memdesc, PipeWriterCommitOp commit) {
   Value current = canonicalizePipeField(memdesc);
   bool sawStageIndex = false;
   while (true) {
+    if (ExactSMEMTile tile = getExactSMEMTile(current)) {
+      if (!sameExactSMEMStage(tile, commit.getStage()))
+        return std::nullopt;
+      sawStageIndex = true;
+      current = canonicalizePipeField(tile.getSrc());
+      continue;
+    }
+    // A padded tiled stage is a read-only WGMMA carrier. Treating it as a
+    // producer target could write into an unallocated tail.
+    if (getExactSMEMStage(current))
+      return std::nullopt;
     if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
       if (!sameIndexValue(index.getIndex(), commit.getStage()))
         return std::nullopt;
@@ -1245,14 +1289,29 @@ static PipeState createPipeState(PipeCreateOp op) {
         ttg::MemDescType::get({1}, builder.getI32Type(), closeTagSlotEncoding,
                               sharedMemorySpace, /*mutableMemory=*/true);
 
-    RankedTensorType closeTagArrayTensorType =
-        getCloseTagTensorType(op, builder, {capacity, 1});
-    Value initialCloseTags =
-        createCloseTagTensor(builder, loc, closeTagArrayTensorType,
-                             /*value=*/false);
-    closeTags = ttg::LocalAllocOp::create(builder, loc, closeTagArrayType,
-                                          initialCloseTags);
     closeTagTensorType = getCloseTagTensorType(op, builder, {1});
+    if (llvm::isPowerOf2_64(capacity)) {
+      RankedTensorType closeTagArrayTensorType =
+          getCloseTagTensorType(op, builder, {capacity, 1});
+      Value initialCloseTags =
+          createCloseTagTensor(builder, loc, closeTagArrayTensorType,
+                               /*value=*/false);
+      closeTags = ttg::LocalAllocOp::create(builder, loc, closeTagArrayType,
+                                            initialCloseTags);
+    } else {
+      // Keep the exact stage count in shared memory without constructing a
+      // non-power-of-two register tensor to initialize the close tags.
+      closeTags =
+          ttg::LocalAllocOp::create(builder, loc, closeTagArrayType, Value());
+      Value initialTag = createCloseTagTensor(builder, loc, closeTagTensorType,
+                                              /*value=*/false);
+      for (int64_t stage = 0; stage < capacity; ++stage) {
+        Value index = arith::ConstantIntOp::create(builder, loc, stage, 32);
+        Value slot = ttg::MemDescIndexOp::create(builder, loc, closeTagSlotType,
+                                                 closeTags, index);
+        ttg::LocalStoreOp::create(builder, loc, initialTag, slot);
+      }
+    }
   }
   Value token = ttnvws::CreateTokenOp::create(
       builder, loc, static_cast<uint32_t>(capacity),
