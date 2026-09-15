@@ -298,17 +298,141 @@ def distributed_barrier(mesh):
 
 ##### 3.2.4.4 远程访问
 
-`tle.remote` 获取其他设备上 Tensor 分片句柄，对应点对点通信或直接内存访问（RDMA/NVLink Load）。
+`tle.remote` 获取其他设备上数据分片的访问句柄，对应点对点通信或直接内存访问（RDMA/NVLink Load）。当前实现按 `space` 区分三种目标域：
 
 ```python
-def remote(tensor, shard_id, scope):
+def remote(
+    tensor,                    # cluster: shared-memory 指针或 buffered_tensor；
+                               # device/node: create_dist_tensor 返回的 DistributedRtContext
+    shard_id,                  # 支持编译期 int 常量：cluster 表示目标 Block id，
+                               # device 表示节点内 peer rank，node 表示 world rank；
+                               # 也支持运行时 int32 标量；编译期 mesh 坐标 tuple 需配合 scope
+    scope=None,                # device_mesh；node 路径下仅用于把坐标解析为 world rank
+    space="cluster",           # "cluster" | "device" | "node"
+    dtype=None,                # device/node 路径必填
+    offset=None,               # 仅 space="device" 支持
+    coopkind=None,             # 仅 node：thread/warp/block；缺省时为 GroupKind.BLOCK
+    netidx=0,                  # 仅 node：FlagCX 网络 context 索引 [0, 4)
+):
     """
-    获取指向特定设备分片的 Remote Tensor 句柄。
+    cluster 指针输入返回 cluster remote pointer，buffered_tensor 输入返回
+    remote-marked buffer；device/node 路径返回 global remote pointer。
+    指针结果可参与 tl.load / tl.store；cluster buffer 需先用 tle.gpu.local_ptr 物化指针。
+    """
+```
 
-    :param tensor: 逻辑分布式 Tensor（已被 tle.sharding 标记）
-    :param shard_id: tuple，目标设备在 Device Mesh 中的坐标
-    :return: RemoteTensor，可执行 load/store 等操作
-    """
+###### Cluster 路径（Cluster 内通信，DSMEM）
+
+cluster 路径面向同一线程块 cluster（CTA cluster）内跨 Block 的共享内存访问（Hopper 及以上架构的 DSMEM），`space` 缺省时即此路径。输入支持两种：
+
+- shared-memory 指针（标量或 tensor）：直接返回 cluster 地址空间的远端指针，可参与 `tl.load` / `tl.store`，输入为 block tensor 时保留 shape；
+- tle buffered_tensor：返回 remote-marked buffer，再用 `tle.gpu.local_ptr(...)` 物化远端指针视图。
+
+`shard_id` 是 cluster 内目标 Block 的 id；传 `scope` 时由 mesh 线性化坐标，并会按 mesh 推断 launch cluster 维度（要求 `num_ctas=1`，一个 program 映射一个 Block）。对已是 cluster-shared 空间的指针，`shard_id=0` 时直接返回本地访问。cluster / device 路径不支持 node 专用参数 `coopkind` / `netidx`。
+
+示例（读邻居 Block 的 SMEM tile）：
+
+```python
+# 此处 smem 是 buffered_tensor，例如由 tle.gpu.alloc 返回
+remote_smem = tle.remote(smem, shard_id=(node_rank, next_device), scope=mesh)
+remote_ptr = tle.gpu.local_ptr(remote_smem, (rows, cols))
+vals = tl.load(remote_ptr)
+```
+
+###### Device 路径（节点内跨 GPU 通信，NVLink P2P）
+
+device 路径面向同一节点内 GPU 之间、经 FlagCX 注册窗口（对称内存）的直接内存访问（NVLink P2P）。与 node 路径类似，`tensor` 传 `create_dist_tensor` 返回的 `DistributedRtContext`，但返回的是普通全局地址空间的远端指针，`offset` 参数**必填**——指定远端窗口内的元素偏移（Python int 或标量整数 tensor，内部归一为 i64）。
+
+与 node 路径的关键区别：device 路径的远端指针就是普通全局指针，后续 `tl.load` / `tl.store` 支持任意的 tiled / 多维访存，**没有"仅连续传输"的限制**；偏移基准由 `offset` 一次固定，之后的指针运算按普通全局指针处理。
+
+示例（把本地输入分片 scatter 到节点内对端 GPU）：
+
+```python
+remote_base = tle.remote(scatter_ctx, space="device",
+                         dtype=input_ptr.dtype.element_ty,
+                         shard_id=target_rank,
+                         offset=SCATTER_NODE_SLICE_OFFSET_ELEMS + source_slot_offset_elems)
+scatter_ptrs = (remote_base +
+                (scatter_row + row_offs[:, None]) * N + input_col + col_offs[None, :])
+tl.store(scatter_ptrs, values, mask=scatter_row_mask & col_mask)
+```
+
+###### Node 路径（node 间通信，FlagCX/RDMA）
+
+node 路径面向跨节点点对点传输，数据面基于 FlagCX 注册内存（对称窗口）。
+
+当前版本**仅支持连续数据传输**，使用前请注意：
+
+- Host 侧必须先用 `tle.create_dist_tensor(comm_buf)` 把通信 buffer 注册到 FlagCX 对称内存窗口，返回的 `DistributedRtContext` 作为 kernel 参数传入；device 间 scatter 与 node 间 P2P 可共用同一注册窗口。本地侧使用的 buffer 必须是该 context 所注册的同一个 buffer，并作为全局指针参数直接传给 kernel。
+- `dtype` 必填；**不支持 `offset` 参数**——偏移要加在返回的指针上。
+- 传输形状受限：标量拷贝一次传一个元素；tensor 拷贝两侧必须复用同一个连续区间 `tl.arange(0, N)`，mask 只支持无 mask 或复用同一个共享前缀 mask `offsets < valid_n`（`1 <= valid_n <= N`）。
+- 单次传输的数据量受编译器 tensor 大小限制：一次传输的元素个数 N 必须是 2 的幂且不超过 `1048576`（2^20），超出会在编译期直接报错。要传输更多数据，需要把数据拆成多块，用循环多次调用 load/store，每次传输一块：
+
+```python
+for start in range(0, nelems, CHUNK_N):           # 每次循环传输一块
+    chunk_n = tl.minimum(nelems - start, CHUNK_N) # 最后一块可能不满 CHUNK_N
+    offsets = tl.arange(0, CHUNK_N)               # CHUNK_N 为 2 的幂且 <= 1048576
+    mask = offsets < chunk_n                      # 必须写成 arange 结果 < 标量
+    vals = tl.load(comm_buf + src_offset + start + offsets, mask=mask)
+    tl.store(remote_dst + dst_offset + start + offsets, vals, mask=mask)
+```
+
+  循环时需要注意：mask 必须写成 `offsets < 标量` 的形式——`offsets` 就是 `tl.arange` 的结果本身，不要写成 `start + offsets < nelems` 这类表达式，否则编译失败；标量可以是运行期计算的值（如上面用 `tl.minimum` 处理最后不满的一块）。
+- load 的结果必须直接且仅供配对的 store 使用；二者必须位于同一 basic block，load 在前、store 在后，期间不能插入访存、原子操作、barrier 或其他通信操作；并且恰好一侧使用 node remote pointer。
+- 不支持稀疏访问、多维 tiled load/store、strided 访问、非零起点区间、两侧范围不一致——编译期直接拒绝，动态违规则触发 device assert。
+- `coopkind` 支持 `thread` / `warp` / `block`，默认 `block`（整个 CTA 收敛地发出一次传输）；`netidx` 为网络 context 索引，编译期整数必须在 `[0, 4)`，运行时值必须是标量 `tl.int32`。
+- 由于 device 侧没有 `rank()` / `num_ranks()`，拓扑由 host 以 constexpr 传入 kernel；`shard_id` 推荐直接传 host 预计算的 world rank int，也可以传 mesh 坐标 tuple + `scope`（经 `physical_ids` 解析为 world rank）。node 路径下 `scope` 不影响 launch 配置。
+
+使用方式：先用 `tle.remote` 拿到指向对端节点的远端指针，再用一对 load/store 完成传输，传输方向由 load/store 的位置决定：
+
+- **PUT（本地 → 远程）**：先从本地 buffer load，再 store 到远端指针，数据即从本节点写入远程节点。
+- **GET（远程 → 本地）**：写法与 PUT 完全对称，方向相反——从远端指针 load，再 store 进本地 buffer，数据即从远程节点读回本地。
+
+PUT 示例（本地 load + 远端 store）：
+
+```python
+remote_dst = tle.remote(ctx, space="node", dtype=DTYPE,
+                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK)
+offsets = tl.arange(0, BLOCK_SIZE)
+mask = offsets < nelems
+vals = tl.load(comm_buf + src_offset + offsets, mask=mask)     # 本地 load
+tl.store(remote_dst + dst_offset + offsets, vals, mask=mask)   # 远端 store = PUT：数据写到远程节点
+```
+
+GET 示例（远端 load + 本地 store），用法与 PUT 相同，只是 load/store 方向反过来：
+
+```python
+remote_src = tle.remote(ctx, space="node", dtype=DTYPE,
+                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK)
+offsets = tl.arange(0, BLOCK_SIZE)
+mask = offsets < nelems
+vals = tl.load(remote_src + src_offset + offsets, mask=mask)   # 远端 load = GET：从远程节点读数据
+tl.store(comm_buf + dst_offset + offsets, vals, mask=mask)     # 本地 store
+```
+
+常见错误写法：
+
+```python
+# 错：多维 / tiled 访问
+vals = tl.load(remote_dst + rows[:, None] * N + cols[None, :])  # 编译期拒绝
+# 原因：node 路径把 load/store 对整体 lowering 为一次 RDMA put/get，
+# 接口只支持连续数据（1D 线性区间），无法表达 2D tile 的离散地址。
+# 需要传输二维数据时，先在本地 buffer 中按连续布局排好，再整体传输。
+
+# 错：把偏移传给 remote
+remote_dst = tle.remote(ctx, space="node", dtype=DTYPE, shard_id=r, offset=1024)  # 报错
+# 原因：node 路径下 tle.remote 只负责解析目标 peer，返回的是指向对端
+# 窗口基址的指针；源/目的偏移由后续 load/store 时的 src_offset / dst_offset 表达。
+
+# 对：偏移加到返回的指针上
+tl.store(remote_dst + dst_offset + offsets, vals, mask=mask)
+
+# 错：两侧区间不一致，或 mask 不是共享前缀
+vals = tl.load(local + tl.arange(0, N), mask=mask)             # arange(0, N)
+tl.store(remote + tl.arange(0, M), vals, mask=mask2)           # 另一个 range → 拒绝
+# 原因：传输长度和两侧偏移是从 load/store 的指针表达式共同推导的，
+# arange 区间表达的就是本次传输的数据量（mask 表达有效长度）；
+# 两侧 range / mask 不一致时，传多少、从哪传到哪无法确定，编译期拒绝。
 ```
 
 ##### 3.2.4.5 重分片
@@ -355,6 +479,61 @@ def distributed_dot(a, b, c=None):
 ```
 
 开放问题：还需要哪些分布式原语？
+
+##### 3.2.4.7 `tle.signal`
+
+`tle.signal` 原子更新远端 peer 的同步 slot。该原语仅发送信号，不传输数据，也不在接收端等待完成。
+
+```python
+def signal(device_dptr, peer, slot_id, value=None, op="inc",
+          space="intra_node", group_kind="block", context_idx=0,
+          scope="system"):
+    """
+    原子更新远端 peer 的同步 slot。
+
+    :param device_dptr: 分布式通信器句柄
+    :param peer: 目标 peer rank（int32 标量）
+    :param slot_id: 信号 slot 索引（uint32 标量）
+    :param value: 可选 uint64 标量；op="add" 时必填，其他情况必须省略
+    :param op: "inc" 加一，"add" 加上 value
+    :param space: "intra_node"、"inter_node" 或 "world"
+    :param group_kind: "thread"、"warp" 或 "block"（默认）
+    :param context_idx: 编译期 int，选择预分配的网络上下文
+    :param scope: 操作的可见性作用域（"system" 或 "device"，默认 "system"）
+    """
+    pass
+```
+
+`op="inc"` 将目标信号 slot 加一。`op="add"` 将 `value` 加到目标信号 slot；后者必须提供 `value`，前者必须省略。`space` 选择通信范围（`intra_node`、`inter_node` 或 `world`），`peer` 是该范围内的 rank。`context_idx` 选择预分配的网络上下文。
+
+`scope` 控制信号操作对节点上线程的可见性：`"system"` 表示对所有设备上的所有线程可见，`"device"` 表示仅对当前设备上的线程可见。`"device"` 仅在单节点场景下有意义，大多数情况下 `"system"` 是正确选择。
+
+`group_kind="block"`（默认）时，CTA 内所有线程必须收敛执行该操作；整个 group 集合发出一次远端更新。
+
+##### 3.2.4.8 `tle.signal_wait`
+
+`tle.signal_wait` 等待本地同步 slot 达到目标值。
+
+```python
+def signal_wait(device_dptr, slot_id, wait_kind, target=None,
+               group_kind="block", context_idx=0, order="acquire"):
+    """
+    等待本地同步 slot 达到目标值。
+
+    :param device_dptr: 分布式通信器句柄
+    :param slot_id: 信号 slot 索引（int32 标量）
+    :param wait_kind: "signal"、"counter" 或 "shadow"
+    :param target: "signal"/"counter" 时必填，"shadow" 时必须省略
+    :param group_kind: "thread"、"warp" 或 "block"（默认）
+    :param context_idx: 编译期 int，选择预分配的网络上下文
+    :param order: 内存序约束（"relaxed" 或 "acquire"，默认 "acquire"）
+    """
+    pass
+```
+
+`order` 约束等待操作的内存序。由于 `tle.signal_wait` 是读取操作，仅允许 `"relaxed"` 和 `"acquire"`，大多数情况下默认值 `"acquire"` 是正确选择。
+
+`wait_kind` 选择等待模式：`"signal"` 等待 slot 值达到 `target`；`"counter"` 等待 slot 中的计数器达到 `target`；`"shadow"` 从运行时本地维护的 shadow buffer 读取目标值，因此必须省略 `target`。`slot_id` 与 `tle.signal` 共享同一信号 slot 命名空间。`group_kind` 和 `context_idx` 的语义与 `tle.signal` 一致。
 
 #### 3.2.5 API 说明与实战示例
 
@@ -598,6 +777,34 @@ next_device = (device_rank + 1) % mesh.shape[1]
 remote_x = tle.remote(x, shard_id=(node_rank, next_device), scope=mesh)
 tle.distributed_barrier(mesh)
 neighbor_vals = tl.load(remote_x)
+```
+
+##### 3.2.5.7 `tle.signal` + `tle.signal_wait`
+
+- `tle.signal`：原子更新远端 peer 的同步 slot，不传输数据。
+- `tle.signal_wait`：阻塞等待本地 slot 达到目标值。
+- 典型用途：在流水线生产者/消费者内核中进行轻量级跨设备同步，无需使用完整的集合 barrier 开销。
+- `wait_kind="signal"` 等待 slot 中的信号达到目标值。`wait_kind="shadow"` 从运行时本地维护的 shadow buffer 读取目标值，无需显式指定 `target`。
+
+示例：跨设备一次性同步
+
+```python
+@triton.jit
+def signal_kernel(device_dptr, peer: tl.constexpr):
+    # ... 执行计算 ...
+    tle.signal(
+        device_dptr, peer, slot_id=0,
+        op="inc", space="inter_node",
+    )
+
+
+@triton.jit
+def wait_kernel(device_dptr):
+    tle.signal_wait(
+        device_dptr, slot_id=0,
+        wait_kind="signal", target=1,
+    )
+    # ... 安全继续 ...
 ```
 
 ### 3.3 TLE-Struct
