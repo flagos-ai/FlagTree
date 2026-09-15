@@ -258,7 +258,7 @@ def test_gather_gm_to_l1(torch_dtype, tol):
         TILE_SIZE=TILE_SIZE,
         D=D,
         DTYPE=_TL_DTYPE[torch_dtype],
-        disable_auto_cv_work_space_manage=True,
+        enable_legacy_insert_load_store_for_mix_cv=True,
     )
     torch_npu.npu.synchronize()
 
@@ -282,7 +282,7 @@ def test_gather_gm_to_ub(torch_dtype):
         TILE_SIZE=TILE_SIZE,
         D=D,
         DTYPE=_TL_DTYPE[torch_dtype],
-        disable_auto_cv_work_space_manage=True,
+        enable_legacy_insert_load_store_for_mix_cv=True,
     )
     torch_npu.npu.synchronize()
 

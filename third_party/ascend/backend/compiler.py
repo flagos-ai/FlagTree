@@ -540,6 +540,11 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--disable-auto-cv-work-space-manage={disable_auto_cv_work_space_manage}"]
 
+        enable_legacy_insert_load_store_for_mix_cv = metadata.get("enable_legacy_insert_load_store_for_mix_cv")
+        if enable_legacy_insert_load_store_for_mix_cv is not None:
+            _compile_option_list += \
+                [f"--enable-legacy-insert-load-store-for-mix-cv={enable_legacy_insert_load_store_for_mix_cv}"]
+
         enable_tuning_mode = metadata.get("enable_tuning_mode")
         if enable_tuning_mode is not None:
             _compile_option_list += \
@@ -795,7 +800,10 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
         if disable_auto_cv_work_space_manage is not None:
             _compile_option_list += \
                 [f"--disable-auto-cv-work-space-manage={disable_auto_cv_work_space_manage}"]
-
+        enable_legacy_insert_load_store_for_mix_cv = metadata.get("enable_legacy_insert_load_store_for_mix_cv")
+        if enable_legacy_insert_load_store_for_mix_cv is not None:
+            _compile_option_list += \
+                [f"--enable-legacy-insert-load-store-for-mix-cv={enable_legacy_insert_load_store_for_mix_cv}"]
         enable_tuning_mode = metadata.get("enable_tuning_mode")
         if enable_tuning_mode is not None:
             _compile_option_list += \
@@ -910,6 +918,7 @@ class NPUOptions:
     enable_auto_bind_sub_block: bool = None
     disable_tightly_coupled_buffer_reuse: bool = False
     disable_auto_cv_work_space_manage: bool = None
+    enable_legacy_insert_load_store_for_mix_cv: bool = None
     enable_select_analysis: bool = True
     enable_hivm_auto_cv_balance: bool = None
     sync_solver: bool = None

@@ -83,9 +83,9 @@ tile_k = tle.dsa.ascend.raw(
 
 相邻索引（`index[i + 1] == index[i] + 1`）会合并为一次两行搬运。
 
-> **重要**：调用本算子的 kernel 必须传编译选项 `disable_auto_cv_work_space_manage=True`。CANN 9.1.0（bishengir 1.2.0 正式版）重构了 `InsertLoadStoreForMixCV`，重构版对 custom op 的 memscope / coreType 推断仍有 bug：PIPE_MTE2 custom op 的 out 会被规划到 GM workspace（并误插 cbuf→cbuf load），与本算子 `__cbuf__` 的 C++ ABI 冲突。
+> **重要**：调用本算子的 kernel 必须传编译选项 `enable_legacy_insert_load_store_for_mix_cv=True`（kernel launch kwarg，后端转发为 bishengir-compile 的 `--enable-legacy-insert-load-store-for-mix-cv`，把 `InsertLoadStoreForMixCV` 整个 pass 回退到重构前的老版本）。CANN 9.1.0（bishengir 1.2.0 正式版）重构了 `InsertLoadStoreForMixCV`，重构版对 custom op 的 memscope / coreType 推断仍有 bug：PIPE_MTE2 custom op 的 out 会被规划到 GM workspace（并误插 cbuf→cbuf load），与本算子 `__cbuf__` 的 C++ ABI 冲突；回退到老版本 pass 即可绕开。
 >
-> **TODO**：`disable_auto_cv_work_space_manage=True` 只是临时规避（per-kernel 关闭 mix-CV workspace 管理，会连带关闭 multi-buffer / CV 流水线）。等 bishengir 修复重构版 `InsertLoadStoreForMixCV` 对 custom op 的推断 bug，或后端编译选项加上 `-enable-legacy-insert-load-store-for-mix-cv`（整个 pass 回退到重构前的老版本）后，去掉该 kwarg。
+> **TODO**：用 `enable_legacy_insert_load_store_for_mix_cv=True`，目前用该option规避。等 bishengir 修复重构版 `InsertLoadStoreForMixCV` 对 custom op 的推断 bug 后，可去掉该 kwarg。
 
 完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_gather_gm_to_l1`）。
 
@@ -104,9 +104,9 @@ tile_v = tle.dsa.ascend.raw(
 
 参数含义与 `gather_gm_to_l1` 相同，区别是结果写入二维 UB half/bf16 张量。输出第一维 stride 不得小于 `D`。
 
-> **重要**：与 `gather_gm_to_l1` 相同，调用本算子的 kernel 必须传 `disable_auto_cv_work_space_manage=True`（PIPE_MTE2 + `__ubuf__` ABI，原因同上）。
+> **重要**：与 `gather_gm_to_l1` 相同，调用本算子的 kernel 必须传 `enable_legacy_insert_load_store_for_mix_cv=True`（PIPE_MTE2 + `__ubuf__` ABI，原因同上）。
 >
-> **TODO**：去掉条件同 `gather_gm_to_l1`——等 `InsertLoadStoreForMixCV` 重构 bug 修复，或后端加上 `-enable-legacy-insert-load-store-for-mix-cv` 后，该 kwarg 可去掉。
+> **TODO**：去掉条件同 `gather_gm_to_l1`——等 `InsertLoadStoreForMixCV` 重构版对 custom op 的推断 bug 修复后，该 kwarg 可去掉。
 
 完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_gather_gm_to_ub`）。
 
