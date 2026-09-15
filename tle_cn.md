@@ -486,7 +486,8 @@ def distributed_dot(a, b, c=None):
 
 ```python
 def signal(device_dptr, peer, slot_id, value=None, op="inc",
-          space="intra_node", group_kind="block", context_idx=0):
+          space="intra_node", group_kind="block", context_idx=0,
+          scope="system"):
     """
     原子更新远端 peer 的同步 slot。
 
@@ -498,11 +499,14 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc",
     :param space: "intra_node"、"inter_node" 或 "world"
     :param group_kind: "thread"、"warp" 或 "block"（默认）
     :param context_idx: 编译期 int，选择预分配的网络上下文
+    :param scope: 操作的可见性作用域（"system" 或 "device"，默认 "system"）
     """
     pass
 ```
 
 `op="inc"` 将目标信号 slot 加一。`op="add"` 将 `value` 加到目标信号 slot；后者必须提供 `value`，前者必须省略。`space` 选择通信范围（`intra_node`、`inter_node` 或 `world`），`peer` 是该范围内的 rank。`context_idx` 选择预分配的网络上下文。
+
+`scope` 控制信号操作对节点上线程的可见性：`"system"` 表示对所有设备上的所有线程可见，`"device"` 表示仅对当前设备上的线程可见。`"device"` 仅在单节点场景下有意义，大多数情况下 `"system"` 是正确选择。
 
 `group_kind="block"`（默认）时，CTA 内所有线程必须收敛执行该操作；整个 group 集合发出一次远端更新。
 
@@ -512,7 +516,7 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc",
 
 ```python
 def signal_wait(device_dptr, slot_id, wait_kind, target=None,
-               group_kind="block", context_idx=0):
+               group_kind="block", context_idx=0, order="acquire"):
     """
     等待本地同步 slot 达到目标值。
 
@@ -522,9 +526,12 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None,
     :param target: "signal"/"counter" 时必填，"shadow" 时必须省略
     :param group_kind: "thread"、"warp" 或 "block"（默认）
     :param context_idx: 编译期 int，选择预分配的网络上下文
+    :param order: 内存序约束（"relaxed" 或 "acquire"，默认 "acquire"）
     """
     pass
 ```
+
+`order` 约束等待操作的内存序。由于 `tle.signal_wait` 是读取操作，仅允许 `"relaxed"` 和 `"acquire"`，大多数情况下默认值 `"acquire"` 是正确选择。
 
 `wait_kind` 选择等待模式：`"signal"` 等待 slot 值达到 `target`；`"counter"` 等待 slot 中的计数器达到 `target`；`"shadow"` 从运行时本地维护的 shadow buffer 读取目标值，因此必须省略 `target`。`slot_id` 与 `tle.signal` 共享同一信号 slot 命名空间。`group_kind` 和 `context_idx` 的语义与 `tle.signal` 一致。
 
@@ -776,7 +783,7 @@ neighbor_vals = tl.load(remote_x)
 
 - `tle.signal`：原子更新远端 peer 的同步 slot，不传输数据。
 - `tle.signal_wait`：阻塞等待本地 slot 达到目标值。
-- 典型场景：在流水线 producer/consumer kernel 中做轻量级跨设备同步，避免完整 collective barrier 的开销。
+- 典型用途：在流水线生产者/消费者内核中进行轻量级跨设备同步，无需使用完整的集合 barrier 开销。
 - `wait_kind="signal"` 等待 slot 中的信号达到目标值。`wait_kind="shadow"` 从运行时本地维护的 shadow buffer 读取目标值，无需显式指定 `target`。
 
 示例：跨设备一次性同步

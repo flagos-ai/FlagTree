@@ -500,7 +500,8 @@ Open question: what additional distributed primitives are needed?
 
 ```python
 def signal(device_dptr, peer, slot_id, value=None, op="inc",
-          space="intra_node", group_kind="block", context_idx=0):
+          space="intra_node", group_kind="block", context_idx=0,
+          scope="system"):
     """
     Atomically update a remote peer's synchronization slot.
 
@@ -512,11 +513,14 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc",
     :param space: "intra_node", "inter_node", or "world"
     :param group_kind: "thread", "warp", or "block" (default)
     :param context_idx: compile-time int selecting a pre-allocated network context
+    :param scope: visibility scope of the operation ("system" or "device", default "system")
     """
     pass
 ```
 
 `op="inc"` increments the selected signal slot by one. `op="add"` adds `value` to the selected signal slot; `value` is required in that case and must be omitted otherwise. `space` selects the communication scope (`intra_node`, `inter_node`, or `world`), and `peer` is a rank within that scope. `context_idx` selects a pre-allocated network context.
+
+`scope` controls the visibility of the signal operation to the threads on the node: `"system"` means visible to all threads on all devices, and `"device"` means only visible to the threads on the current device. `"device"` may only be meaningful when working on a single node, and most of the time `"system"` is the correct choice.
 
 For `group_kind="block"` (the default), every thread in the CTA must execute this operation convergently; the group collectively emits one remote update.
 
@@ -526,7 +530,7 @@ For `group_kind="block"` (the default), every thread in the CTA must execute thi
 
 ```python
 def signal_wait(device_dptr, slot_id, wait_kind, target=None,
-               group_kind="block", context_idx=0):
+               group_kind="block", context_idx=0, order="acquire"):
     """
     Wait until a local synchronization slot reaches its target.
 
@@ -536,11 +540,14 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None,
     :param target: required for "signal"/"counter", must be omitted for "shadow"
     :param group_kind: "thread", "warp", or "block" (default)
     :param context_idx: compile-time int selecting a pre-allocated network context
+    :param order: memory ordering constraint ("relaxed" or "acquire", default "acquire")
     """
     pass
 ```
 
 `wait_kind` selects the waiting mode: `"signal"` waits until the slot value reaches `target`; `"counter"` waits until a counter at the slot reaches `target`; `"shadow"` reads the target from the runtime's locally maintained shadow buffer, so `target` must be omitted. `slot_id` is interpreted in the same signal slot namespace as `tle.signal`. `group_kind` and `context_idx` have the same semantics as in `tle.signal`.
+
+`order` constrains the memory order of the wait operation. As `tle.signal_wait` is a read operation, only `"relaxed"` and `"acquire"` are allowed, and most of the time the default value `"acquire"` is the correct choice.
 
 #### 3.2.5 API Reference and Practical Examples
 
