@@ -75,15 +75,23 @@ def _assert_no_tle_residue(compiled):
     assert not leak, f"residual tle.* ops in LLIR:\n" + "\n".join(leak[:5])
 
 
-def _assert_int8_uses_ppu_aiu_v1_b8(compiled):
+def _assert_uses_ppu_aiu_v1_width(compiled, width):
     ttgir = compiled.asm["ttgir"]
     llir = compiled.asm["llir"]
     aiu_instructions = [line for line in llir.splitlines() if "ppu.cp.async.aiu" in line]
     assert "versionMajor = 1" in ttgir
     assert aiu_instructions, "expected an async AIU copy instruction"
-    assert all(".2d.b8" in line for line in aiu_instructions)
-    assert all(".b8" in line for line in aiu_instructions)
-    assert all(".b16" not in line for line in aiu_instructions)
+    assert all(f".2d.{width}" in line for line in aiu_instructions)
+    for other in {"b8", "b16", "b32"} - {width}:
+        assert all(f".{other}" not in line for line in aiu_instructions)
+
+
+def _assert_int8_uses_ppu_aiu_v1_b8(compiled):
+    _assert_uses_ppu_aiu_v1_width(compiled, "b8")
+
+
+def _assert_int32_uses_ppu_aiu_v1_b32(compiled):
+    _assert_uses_ppu_aiu_v1_width(compiled, "b32")
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +199,85 @@ def test_int8_aiu_load_device_correctness():
     _typed_aiu_load[(1, )](expected, actual, 32, 32, 32, 32, num_warps=4, num_stages=1)
     torch.cuda.synchronize()
     torch.testing.assert_close(actual.cpu(), expected.cpu(), rtol=0, atol=0)
+
+
+@triton.jit
+def _typed_aiu_load_ordered(a_ptr, c_ptr, M: tl.constexpr, K: tl.constexpr, BLOCK_M: tl.constexpr,
+                            BLOCK_K: tl.constexpr, STRIDE_M: tl.constexpr, STRIDE_K: tl.constexpr,
+                            ORDER_0: tl.constexpr, ORDER_1: tl.constexpr):
+    pid = tl.program_id(0)
+    a_bp = tl.make_block_ptr(a_ptr, shape=(M, K), strides=(STRIDE_M, STRIDE_K), offsets=(pid * BLOCK_M, 0),
+                             block_shape=(BLOCK_M, BLOCK_K), order=(ORDER_0, ORDER_1))
+    a = tle.load(a_bp, is_async=True)
+    offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_k = tl.arange(0, BLOCK_K)
+    tl.store(c_ptr + K * offs_m[:, None] + offs_k[None, :], a, mask=(offs_m[:, None] < M) & (offs_k[None, :] < K))
+
+
+@triton.jit
+def _int32_aiu_nibble_probe(packed_ptr, output_ptr, M: tl.constexpr, K: tl.constexpr):
+    # W4A16-style decode: the int32 tile is a container for eight INT4 nibbles
+    packed_bp = tl.make_block_ptr(packed_ptr, shape=(M, K), strides=(K, 1), offsets=(0, 0), block_shape=(M, K),
+                                  order=(1, 0))
+    packed = tle.load(packed_bp, is_async=True)
+    unpacked = ((packed >> 4) & 0xF).to(tl.bfloat16)
+    offs_m = tl.arange(0, M)
+    offs_k = tl.arange(0, K)
+    tl.store(output_ptr + offs_m[:, None] * K + offs_k[None, :], unpacked)
+
+
+@_skip_no_sdk
+def test_int32_aiu_load_uses_v1_b32_instruction():
+    # flagos-ai/FlagTree#1050: 4-byte elements used to lower to a .b16 copy
+    compiled = _compile_through_llir(_typed_aiu_load, {"a_ptr": "*i32", "c_ptr": "*i32"},
+                                     {"M": 256, "K": 256, "BLOCK_M": 64, "BLOCK_K": 64})
+    _assert_stages_exist(compiled)
+    assert "aiu_load" in compiled.asm["ttir"]
+    _assert_no_tle_residue(compiled)
+    _assert_int32_uses_ppu_aiu_v1_b32(compiled)
+
+
+@_skip_no_sdk
+def test_int64_aiu_load_not_promoted():
+    # 8-byte elements have no AIU copy form and must not be promoted
+    compiled = _compile(_typed_aiu_load, {"a_ptr": "*i64", "c_ptr": "*i64"},
+                        {"M": 256, "K": 256, "BLOCK_M": 64, "BLOCK_K": 64})
+    _assert_stages_exist(compiled)
+    assert "aiu_load" not in compiled.asm["ttir"]
+    assert "ppu.cp.async.aiu" not in compiled.asm["llir"]
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+@pytest.mark.parametrize("order", [(1, 0), (0, 1)])
+def test_int32_aiu_load_device_correctness(order):
+    m, k = 32, 32
+    torch.manual_seed(0)
+    expected = torch.randint(-(1 << 31), 1 << 31, (m, k), device="cuda", dtype=torch.int32)
+    if order == (1, 0):
+        a, strides = expected, (k, 1)
+    else:
+        # physically [K, M] so that dim 0 of the logical [M, K] view is contiguous
+        a, strides = expected.t().contiguous().t(), (1, m)
+    actual = torch.empty_like(expected)
+    _typed_aiu_load_ordered[(1, )](a, actual, m, k, m, k, strides[0], strides[1], order[0], order[1], num_warps=4,
+                                   num_stages=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(actual.cpu(), expected.cpu(), rtol=0, atol=0)
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+def test_int32_aiu_load_shift_and_mask_device_correctness():
+    # reproducer from flagos-ai/FlagTree#1050
+    m, k = 16, 16
+    torch.manual_seed(0)
+    packed = torch.randint(-(1 << 31), 1 << 31, (m, k), device="cuda", dtype=torch.int32)
+    output = torch.empty((m, k), device="cuda", dtype=torch.bfloat16)
+    _int32_aiu_nibble_probe[(1, )](packed, output, m, k, num_warps=4, num_stages=2)
+    torch.cuda.synchronize()
+    reference = ((packed.cpu().to(torch.int64) >> 4) & 0xF).to(torch.bfloat16)
+    torch.testing.assert_close(output.cpu(), reference, rtol=0, atol=0)
 
 
 # ---------------------------------------------------------------------------

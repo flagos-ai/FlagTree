@@ -82,9 +82,9 @@ def min_dot_size(target: GPUTarget):
     return check_dot_compatibility
 
 
-# Whole-byte dtypes covered by the inherited async-copy/descriptor movement paths
-_MOVEMENT_DTYPES = ("fp8e4nv", "fp8e5", "fp8e4b15", "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64",
-                    "uint64", "fp16", "bf16", "fp32", "fp64")
+# Whole-byte dtypes the AIU bulk copy moves (1/2/4-byte elements, .b8/.b16/.b32)
+_MOVEMENT_DTYPES = ("fp8e4nv", "fp8e5", "fp8e4b15", "int8", "uint8", "int16", "uint16", "int32", "uint32", "fp16",
+                    "bf16", "fp32")
 
 # fp8e4b15 is upcast to f16 by the common semantic layer before resolve_dot
 # runs (upstream legacy behavior), so it never reaches these rules
