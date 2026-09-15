@@ -39,6 +39,15 @@ namespace mlir {
 namespace triton {
 namespace xpu {
 
+/// Marks an `llvm.func` materialized from a `triton_xpu.raw` payload. Such
+/// functions are device helpers, not kernel entry points.
+constexpr llvm::StringLiteral kRawPayloadAttrName = "triton_xpu.raw_payload";
+
+/// Set on a `triton_xpu.raw` whose payload has not been compiled yet, in which
+/// case `llvm_ir` is empty. `tritonxpu-materialize-deferred-raw` looks the id
+/// up in the map the backend hands over and fills `llvm_ir` in.
+constexpr llvm::StringLiteral kRawSourceIdAttrName = "triton_xpu.raw_source_id";
+
 unsigned getTotalElemsPerThread(Type eltTy);
 
 unsigned getTotalElemsPerThread(Attribute layout, ArrayRef<int64_t> shape,

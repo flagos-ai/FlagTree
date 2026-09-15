@@ -1,0 +1,40 @@
+// tle.raw payload for the xpu3 cluster path: out = x + y.
+//
+// The xpu3 cluster programming model is not CUDA-like: a core cannot dereference
+// global memory, so every tile is staged through local memory with GM2LM/LM2GM
+// (the SIMT `out[i] = x[i] + y[i]` idiom belongs to the jupiter/xcn payloads).
+// The core-strided loop makes the payload independent of the launch geometry.
+//
+// Requirements imposed by the toolchain (see XPUJITFunction):
+//   - extern "C": the symbol has to match the Python name `triton_xpu.raw`
+//     calls, so it must not be C++-mangled.
+//   - __device__: without it --xpu-device-only emits an empty module and clang
+//     still exits 0.
+//   - _global_ptr_ (address_space(1)) on the pointer parameters: kernel pointer
+//     arguments arrive as `ptr addrspace(1)` and the call is type-checked
+//     exactly.
+#include "xpu/kernel/xtdk.h"
+
+#define TILE 64
+
+extern "C" __device__ void vec_add(_global_ptr_ const float *x,
+                                   _global_ptr_ const float *y,
+                                   _global_ptr_ float *out, int n) {
+  __local__ float lx[TILE];
+  __local__ float ly[TILE];
+  __local__ float lo[TILE];
+
+  int cid = core_id();
+  int ncores = core_num();
+  for (int start = cid * TILE; start < n; start += ncores * TILE) {
+    int len = n - start < TILE ? n - start : TILE;
+    GM2LM(x + start, lx, len * sizeof(float));
+    GM2LM(y + start, ly, len * sizeof(float));
+    for (int i = 0; i < len; ++i) {
+      lo[i] = lx[i] + ly[i];
+    }
+    LM2GM(lo, out + start, len * sizeof(float));
+  }
+  // The writes have to be visible to whatever the pipeline does after the call.
+  mfence();
+}

@@ -19,11 +19,9 @@
 # SOFTWARE.
 
 macro(flagtree_configure_options)
-  set(FLAGTREE_BACKEND "$ENV{FLAGTREE_BACKEND}")
   set(FLAGTREE_DEFAULT_OPTION ON)
   if(FLAGTREE_BACKEND)
     set(FLAGTREE_DEFAULT_OPTION OFF)
-    add_definitions(-DFLAGTREE_BACKEND=\"${FLAGTREE_BACKEND}\")
   endif()
 
   set(FLAGCX_ENABLED OFF)
@@ -47,6 +45,7 @@ macro(flagtree_configure_options)
     add_definitions(-D__AMD__)
     add_definitions(-D__FLAGTREE_REORDER_LOOP_LOADS__)
     add_definitions(-D__FLAGTREE_RLC_ENHANCE__)
+    add_definitions(-D__FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__)
     add_definitions(-D__FLAGTREE_CONCAT_DOT_OPERAND__)
     list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_CONCAT_DOT_OPERAND__)
   elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
@@ -98,7 +97,8 @@ endmacro()
 # FlagPrism: configure the external profiler/debugger after base options exist.
 macro(flagtree_configure_flagprism)
   set(_flagprism_default OFF)
-  if(FLAGTREE_BACKEND STREQUAL "ascend" OR FLAGTREE_BACKEND STREQUAL "iluvatar")
+  # FlagPrism: enable the external tools for the supported mthreads backend.
+  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
     set(_flagprism_default ON)
   endif()
   option(TRITON_BUILD_FLAGPRISM
@@ -106,10 +106,11 @@ macro(flagtree_configure_flagprism)
          ${_flagprism_default})
 
   if(TRITON_BUILD_FLAGPRISM)
-    if(NOT (FLAGTREE_BACKEND STREQUAL "ascend" OR FLAGTREE_BACKEND STREQUAL "iluvatar"))
+    # FlagPrism: accept mthreads as a supported integration backend.
+    if(NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
       message(FATAL_ERROR
         "TRITON_BUILD_FLAGPRISM is only supported when "
-        "FLAGTREE_BACKEND is ascend or iluvatar.")
+        "FLAGTREE_BACKEND is ascend, iluvatar, or mthreads.")
     endif()
     if(TRITON_BUILD_PROTON)
       message(FATAL_ERROR
@@ -117,8 +118,15 @@ macro(flagtree_configure_flagprism)
         "Select exactly one profiler implementation.")
     endif()
 
-    set(FLAGPRISM_CMAKE_FILE
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/FlagPrism/cmake/FlagPrism.cmake")
+    # FlagPrism: permit a separate local checkout during backend development.
+    if(NOT FLAGPRISM_SOURCE_DIR)
+      set(FLAGPRISM_SOURCE_DIR
+          "${CMAKE_CURRENT_SOURCE_DIR}/third_party/FlagPrism")
+    endif()
+    # FlagPrism: resolve relative overrides against the FlagTree source root.
+    get_filename_component(FLAGPRISM_SOURCE_DIR "${FLAGPRISM_SOURCE_DIR}" ABSOLUTE
+                           BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(FLAGPRISM_CMAKE_FILE "${FLAGPRISM_SOURCE_DIR}/cmake/FlagPrism.cmake")
     if(EXISTS "${FLAGPRISM_CMAKE_FILE}")
       include("${FLAGPRISM_CMAKE_FILE}")
       add_compile_definitions(__FLAGPRISM__=1)

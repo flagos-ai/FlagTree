@@ -1,5 +1,9 @@
 #include "ir.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <mutex>
 #include <optional>
 #include <pybind11/cast.h>
 #include <pybind11/functional.h>
@@ -114,6 +118,11 @@ struct TritonSourceMgrDiagnosticHandler : public SourceMgrDiagnosticHandler {
       auto severity = diag.getSeverity();
       switch (severity) {
       case DiagnosticSeverity::Error:
+        // Keep the text so the caller can put the *real* reason into the
+        // exception it raises. Printing to stderr alone is not enough: the
+        // Python side only sees the exception, so every pass failure used to
+        // be reported as a bare "PassManager::run failed".
+        collectError(diag);
         break;
       case DiagnosticSeverity::Warning:
         if (minSeverity == DiagnosticSeverity::Error)
@@ -135,7 +144,42 @@ struct TritonSourceMgrDiagnosticHandler : public SourceMgrDiagnosticHandler {
     });
   }
 
+  // Errors emitted so far, most recent last. Cleared by takeErrors().
+  std::string takeErrors() {
+    std::lock_guard<std::mutex> lock(errorsMutex);
+    std::string result = std::move(errors);
+    errors.clear();
+    return result;
+  }
+
   llvm::SourceMgr sourceMgr;
+
+private:
+  void collectError(Diagnostic &diag) {
+    // MLIR only guarantees that diagnostics from parallel pass execution are
+    // replayed serially (ParallelDiagnosticHandler); handlers themselves may
+    // still be reached from several threads, and this one is installed while
+    // multithreading is on. Guard the accumulator rather than rely on that.
+    std::lock_guard<std::mutex> lock(errorsMutex);
+    if (!errors.empty())
+      errors += "\n";
+    // Keep the location: stderr shows it, but the Python exception is often
+    // the only thing a caller looks at.
+    {
+      std::string loc;
+      llvm::raw_string_ostream os(loc);
+      diag.getLocation().print(os);
+      errors += loc + ": ";
+    }
+    errors += diag.str();
+    // The pass manager reports *which* pass failed in an attached note, which
+    // is the single most useful piece of information for triage.
+    for (Diagnostic &note : diag.getNotes())
+      errors += "\n  note: " + note.str();
+  }
+
+  std::string errors;
+  std::mutex errorsMutex;
 };
 
 TritonSourceMgrDiagnosticHandler
@@ -506,7 +550,12 @@ void init_triton_ir(py::module &&m) {
                                  Location loc) { self.addArgument(ty, loc); })
       .def("get_num_arguments", &Block::getNumArguments)
       .def("get_argument", &Block::getArgument)
-      .def("dump", &Block::dump)
+      .def("dump",
+           [](Block &self) {
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
+             self.dump();
+#endif
+           })
       .def("move_before",
            [](Block &self, Block &dst) { self.moveBefore(&dst); })
       .def("insert_before", &Block::insertBefore)
@@ -591,20 +640,29 @@ void init_triton_ir(py::module &&m) {
             return self.getBody(idx);
           },
           ret::reference)
-      .def("dump", [](OpState &self) { self->dump(); })
+      .def("dump",
+           [](OpState &self) {
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
+             self->dump();
+#endif
+           })
       .def("__str__",
            [](OpState &self) -> std::string {
              std::string str;
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
              llvm::raw_string_ostream os(str);
              auto printingFlags = getOpPrintingFlags();
              self->print(os, printingFlags);
+#endif
              return str;
            })
       .def("str_nodebug",
            [](OpState &self) -> std::string {
              std::string str;
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
              llvm::raw_string_ostream os(str);
              self->print(os);
+#endif
              return str;
            })
       .def("append_operand",
@@ -674,13 +732,20 @@ void init_triton_ir(py::module &&m) {
   // module
   py::class_<ModuleOp, OpState>(m, "module", py::module_local(),
                                 py::dynamic_attr())
-      .def("dump", &ModuleOp::dump)
+      .def("dump",
+           [](ModuleOp &self) {
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
+             self.dump();
+#endif
+           })
       .def("str",
            [](ModuleOp &self) -> std::string {
              std::string str;
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
              llvm::raw_string_ostream os(str);
              auto printingFlags = getOpPrintingFlags();
              self.print(os, printingFlags);
+#endif
              return str;
            })
       .def("push_back",
@@ -1964,6 +2029,7 @@ void init_triton_ir(py::module &&m) {
       .def("enable_debug",
            [](PassManager &self) -> bool {
              auto *context = self.getContext();
+#if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
              bool haveDump = ::triton::tools::getBoolEnv("MLIR_ENABLE_DUMP");
              std::string funcToDump;
              if (!haveDump) {
@@ -1973,6 +2039,10 @@ void init_triton_ir(py::module &&m) {
                if (!funcToDump.empty() && !isEnvValueBool)
                  haveDump = true;
              }
+#else
+             bool haveDump = false;
+             std::string funcToDump;
+#endif
              if (haveDump) {
                context->disableMultithreading();
                auto printingFlags = getOpPrintingFlags();
@@ -2018,6 +2088,24 @@ void init_triton_ir(py::module &&m) {
 
             auto reproducerPath =
                 triton::tools::getStrEnv("TRITON_REPRODUCER_PATH");
+            // Crash reproducer generation makes MLIR run the pipeline inside a
+            // CrashRecoveryContext, which turns a signal raised inside a pass
+            // into a plain `failure()` with no diagnostic. That is good for
+            // users and terrible for debugging, so allow turning it off to get
+            // the real signal (and a usable gdb backtrace / core file).
+            // FlagTree XPU: internal reads this via tools::getBoolEnv, but this
+            // vendored ir.cc compiles against the *main-tree* GetEnv.hpp (the
+            // XPU shadow header only takes effect in xpu-lib targets), whose
+            // whitelist does not carry this var -- reading it through
+            // getBoolEnv would trip assertIsRecognized. Read it directly with
+            // the same semantics (unset/false -> keep crash recovery on).
+            bool crashRecovery = [] {
+              const char *s = std::getenv("TRITON_DISABLE_CRASH_RECOVERY");
+              std::string str(s ? s : "");
+              std::transform(str.begin(), str.end(), str.begin(),
+                             [](unsigned char c) { return std::tolower(c); });
+              return !(str == "on" || str == "true" || str == "1");
+            }();
             if (!reproducerPath.empty()) {
               if (reproducerPath != "-") {
                 std::string repro_suffix =
@@ -2033,9 +2121,11 @@ void init_triton_ir(py::module &&m) {
               // But if the pass manager crashes, attempt to generate a local
               // reproducer instead.
               context->disableMultithreading();
-              self.enableCrashReproducerGeneration(reproducerPath,
-                                                   /*genLocalReproducer=*/true);
-            } else {
+              if (crashRecovery)
+                self.enableCrashReproducerGeneration(
+                    reproducerPath,
+                    /*genLocalReproducer=*/true);
+            } else if (crashRecovery) {
               self.enableCrashReproducerGeneration(makeConsoleReproducer());
             }
 
@@ -2061,8 +2151,16 @@ void init_triton_ir(py::module &&m) {
 
             TritonSourceMgrDiagnosticHandler diagHandler =
                 setupTritonDiagnosticHandler(context);
-            if (failed(self.run(mod.getOperation())))
-              throw std::runtime_error("PassManager::run failed");
+            if (failed(self.run(mod.getOperation()))) {
+              std::string detail = diagHandler.takeErrors();
+              if (detail.empty())
+                detail =
+                    "no diagnostic was emitted, so a pass most likely crashed "
+                    "and MLIR's crash recovery caught the signal; rerun with "
+                    "TRITON_DISABLE_CRASH_RECOVERY=1 under gdb to get the "
+                    "crashing frame";
+              throw std::runtime_error("PassManager::run failed: " + detail);
+            }
           },
           py::call_guard<py::gil_scoped_release>());
 }
