@@ -46,10 +46,24 @@
 # var explicitly in the wheel-build RUN.
 
 ARG DEB_BASE_IMAGE=ubuntu:24.04
+# PYTHON_VERSION: empty = the base image's default python3 (24.04: 3.12).
+# Set e.g. 3.12 on ubuntu:22.04 to build the FlagOS DEB ABI-matrix row
+# (ubuntu22.04 + python3.12, FEP-0019) from the deadsnakes PPA; both stages
+# then use that interpreter, so the wheel, the .deb and the smoke test agree.
+ARG PYTHON_VERSION=
+ARG MAX_JOBS=4
+# DEB_VERSION_SUFFIX: "auto" appends +<id><version> (e.g. +ubuntu22.04) to the
+# package version so rows built for different releases can coexist in one apt
+# suite (Docker CE does the same with ~ubuntu.22.04~jammy). "+" sorts above the
+# plain changelog version, so an unsuffixed package already installed from an
+# earlier build upgrades cleanly. Empty keeps the changelog version.
+ARG DEB_VERSION_SUFFIX=auto
 
 # ---------- Stage 1: build the wheel ----------
 FROM ${DEB_BASE_IMAGE} AS wheel-builder
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG PYTHON_VERSION
+ARG MAX_JOBS
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV VIRTUAL_ENV=/opt/flagtree-build-venv
@@ -60,8 +74,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-dev python3-venv \
         build-essential cmake ninja-build git \
         zlib1g zlib1g-dev libxml2 libxml2-dev nlohmann-json3-dev \
-        wget curl ca-certificates \
+        wget curl ca-certificates software-properties-common gnupg \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Optional non-default interpreter (deadsnakes PPA), made the default python3.
+RUN if [ -n "${PYTHON_VERSION}" ] && ! python3 --version 2>&1 | grep -q " ${PYTHON_VERSION}\."; then \
+        add-apt-repository -y ppa:deadsnakes/ppa && apt-get update && \
+        apt-get install -y --no-install-recommends \
+            python${PYTHON_VERSION} python${PYTHON_VERSION}-dev python${PYTHON_VERSION}-venv && \
+        update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi && python3 --version
 
 # Ubuntu 24.04 marks /usr Python as externally managed (PEP 668). Keep all
 # wheel-builder pip installs inside a venv instead of mutating system Python.
@@ -98,7 +121,7 @@ COPY CMakeLists.txt pyproject.toml setup.py MANIFEST.in LICENSE README.md /src/
 RUN unset FLAGTREE_BACKEND && \
     JSON_SYSPATH=/usr \
     FLAGTREE_DEFAULT_BACKENDS=nvidia,amd \
-    MAX_JOBS=4 python -m pip wheel . --no-build-isolation --no-deps -w /wheels -v && \
+    MAX_JOBS=${MAX_JOBS} python -m pip wheel . --no-build-isolation --no-deps -w /wheels -v && \
     ls -lh /wheels/ && \
     test -n "$(ls /wheels/flagtree-*.whl 2>/dev/null)" && \
     rm -rf /src/build /root/.triton
@@ -106,6 +129,8 @@ RUN unset FLAGTREE_BACKEND && \
 # ---------- Stage 2: assemble the .deb ----------
 FROM ${DEB_BASE_IMAGE} AS deb-assembler
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG PYTHON_VERSION
+ARG DEB_VERSION_SUFFIX
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_ROOT_USER_ACTION=ignore
@@ -113,8 +138,25 @@ ENV PIP_ROOT_USER_ACTION=ignore
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         debhelper dh-python python3-all python3-pip python3-setuptools \
-        python3-wheel devscripts fakeroot lintian \
+        python3-wheel devscripts fakeroot lintian software-properties-common gnupg \
+        curl ca-certificates \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Same interpreter as the wheel-builder stage, so the .deb is assembled,
+# installed and smoke-tested with the CPython the wheel was built for.
+# The distro's python3-pip / dh-python are written for the distro python; on
+# a newer interpreter they need a pip that lives in /usr/local (ahead of
+# /usr/lib/python3/dist-packages on sys.path) plus setuptools, whose
+# _distutils_hack keeps `import distutils` working on Python >= 3.12.
+RUN if [ -n "${PYTHON_VERSION}" ] && ! python3 --version 2>&1 | grep -q " ${PYTHON_VERSION}\."; then \
+        add-apt-repository -y ppa:deadsnakes/ppa && apt-get update && \
+        apt-get install -y --no-install-recommends \
+            python${PYTHON_VERSION} python${PYTHON_VERSION}-venv && \
+        update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 && \
+        curl -sS https://bootstrap.pypa.io/get-pip.py | python3 && \
+        python3 -m pip install --no-cache-dir setuptools wheel && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi && python3 --version && python3 -m pip --version
 
 WORKDIR /build
 COPY packaging/debian /build/debian
@@ -122,6 +164,18 @@ COPY --from=wheel-builder /wheels /build/dist
 
 # debian/source/format = "3.0 (native)" -> no orig.tar.gz needed.
 ENV WHEEL_DIR=/build/dist
+
+# Per-release version suffix (see DEB_VERSION_SUFFIX above).
+RUN if [ "${DEB_VERSION_SUFFIX}" = "auto" ]; then \
+        . /etc/os-release && suffix="+${ID}${VERSION_ID}"; \
+    else suffix="${DEB_VERSION_SUFFIX}"; fi && \
+    if [ -n "${suffix}" ]; then \
+        base="$(dpkg-parsechangelog -l debian/changelog -SVersion)" && \
+        DEBFULLNAME="FlagOS Contributors" DEBEMAIL="contact@flagos.io" \
+        dch -b -v "${base}${suffix}" -D unstable --force-distribution \
+            "Rebuild for $(. /etc/os-release && echo "${PRETTY_NAME}")." && \
+        echo "Package version: $(dpkg-parsechangelog -l debian/changelog -SVersion)"; \
+    fi
 
 RUN dpkg-buildpackage -us -uc -b && \
     ls -lh /python3-flagtree-*.deb
