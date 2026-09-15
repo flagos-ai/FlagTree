@@ -13,6 +13,10 @@ custom_ops/
 ├── mem_ops/
 │   ├── gather_gm_to_l1.cpp         # GM → L1/CBUF 按索引行 gather
 │   └── gather_gm_to_ub.cpp         # GM → UB 按索引行 gather
+├── cast_ops/
+│   └── cast_int4_to_fp16.cpp       # packed signed INT4 → FP16
+├── mask_ops/
+│   ├── compare_scalar.cpp         # FP16/FP32 EQ/GT/GE → uint16 位掩码
 └── sort_ops/
     ├── sort_1d_pack.cpp            # sort_1d_pack ABI 与路径分发
     ├── sort_common.h                # 共享 vmrgsort4 / proposal inline 工具
@@ -225,3 +229,72 @@ FLAGTREE_BACKEND=ascend MAX_JOBS=32 \
 cd /root/xcs_flagtree/python/triton/experimental/tle/language/dsa/ascend/custom_ops
 ./build_custom_ops.sh
 ```
+
+
+## compare_scalar
+
+`compare_scalar(src, scalar, comparison=None, out=mask)` 生成 packed uint16 掩码。
+comparison 为编译期整数 0=EQ、1=GT、2=GE；省略时保留原 EQ 调用接口。
+scalar 以 FP32 传入，比较前转换为源类型。src 为一维连续 UB FP16/FP32[N]，
+mask 为 uint16[N/16]，FP32 还支持直接输出 uint32[N/32] 以匹配 #1159，
+低位对应较早的元素。所有缓冲区 32 字节对齐且互不重叠。
+FP32 N 为 256..4096 的 2 的幂；FP16 为 256..32768 的 2 的幂。
+
+实现参考 CANN 9.1 `dav_c220/kernel_operator_vec_cmp_impl.h` 中的
+`CompareScalarCompute` 和 `VcmpvsIntrinsicsImpl`，使用 `vcmpvs_eq/gt/ge`，
+按 252 个 repeat 分段保持掩码对齐。不调用 AscendC 高层 API。
+
+```python
+mask = tle.dsa.ascend.raw("compare_scalar", values, scalar, 2,
+                           out=tl.full((N // 16,), 0, tl.uint16))
+```
+
+测试：`python3 python/tutorials/tle/custom/test_compare_scalar.py`。
+
+GatherMask、Sort32 和 MrgSort 复用 [PR #1159](https://github.com/flagos-ai/FlagTree/pull/1159)，
+本 PR 不重复实现或注册。原 `gather_mask` 调用需迁移为 `gather_mask_custom_pattern`：
+FP16 掩码为 uint16，FP32 调用 CompareScalar 时直接分配 uint32[N/32] 输出；
+不对 packed 掩码做数值归约或数值转换。数量输出改为 int64。
+原 `sort32` 需提供 repeat_times，索引接口使用 int32 位模式。
+原 `merge_sort4` 改为 `mrgsort`，显式传入 proposal 偏移、各路长度、valid_bit 和 repeat_times。
+这些是调用接口迁移，不是新增算法。#1159 合并前，组合算子验证需同时包含两个 PR。
+
+## cast_int4_to_fp16
+
+将 UB 中的 packed signed INT4 解包为 FP16，参考 CANN 9.1 `dav_c220/kernel_operator_vec_vconv_impl.h` 的 CastImpl，
+直接调用 `vconv_s42f16`，并设置 count mask、步长及恢复 mask 状态。
+输入 `src` 是一维 `uint8[N]`，N 为 32 至 8192 的 2 的幂；输出 `out`
+必须是一维 `float16[2*N]`。输入、输出连续、32 字节对齐且互不重叠。
+每个字节先输出低 4 位，再输出高 4 位，均按二进制补码解释为 [-8, 7]。
+例如 `0x78` 输出 `[-8, 7]`，`0xF0` 输出 `[0, -1]`。
+
+```python
+packed = tl.load(X + tl.arange(0, N))  # uint8[N]
+values = tl.full((2 * N,), 0, tl.float16)
+values = tle.dsa.ascend.raw("cast_int4_to_fp16", packed, out=values)
+```
+
+该接口不处理 uint4b8 的零点、不乘 scale、不进行 GM 访问或 MoE 调度。
+若源格式是 uint4b8，需要调用方先转换成这里约定的 signed INT4 编码。
+普通类型转换、广播与乘法可以继续由 Triton 表达。
+
+普通及 mix 两套入口均构建到现有 `custom_ops.bc`。测试入口为
+`python python/tutorials/tle/custom/test_cast_ops.py`，也已接入
+`test_custom_ops.py`。测试包含全部字节编码、不同块大小、图重放以及参数校验。
+
+## Cube region boundaries
+
+`raw("cube_begin", tl.program_id(0))` and `raw("cube_end", tl.program_id(0))`
+use the CUBE-local `pipe_barrier(PIPE_ALL)` intrinsic, with no output.
+The int32 token is ignored. Both have identical barrier semantics; their names
+mark entry and exit in caller code. They do not implement cross-core handshakes,
+allocate buffers, or initialize/finalize a GEMM. Use TLE `sync_block_set/wait`
+for Vector/Cube producer-consumer synchronization and `tl.dot` for computation.
+
+
+## Toolchain requirement
+
+These primitives use the native Ascend custom-op compilation path and the
+prebuilt `custom_ops.bc`. The selected toolchain must support that path,
+including `hivm.hir.custom` lowering and its calling convention. This package
+does not provide CANN 9.0 ABI adapters or IR rewriting.

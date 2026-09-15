@@ -35,6 +35,9 @@ set(ASCEND_CUSTOM_OPS
   "sort_ops/sort_1d_pack.cpp::dav-c220-vec"
   "sort_ops/merge_pack_sort.cpp::dav-c220-vec"
   "sort_ops/unpack_sort.cpp::dav-c220-vec"
+  "mask_ops/compare_scalar.cpp::dav-c220-vec"
+  "cast_ops/cast_int4_to_fp16.cpp::dav-c220-vec"
+  "sync_ops/cube_boundary.cpp::dav-c220-cube"
 )
 
 set(SORT_OPS_DIR "${ASCEND_CUSTOM_OPS_DIR}/sort_ops")
@@ -45,6 +48,7 @@ foreach(entry IN LISTS ASCEND_CUSTOM_OPS)
   list(GET entry_parts 1 arch)
 
   set(op_deps "")
+  set(op_include_flags -I "${TEMPLATE_INCLUDE}")
   if(src MATCHES "^sort_ops/")
     list(APPEND op_deps "${SORT_OPS_DIR}/sort_common.h")
   endif()
@@ -62,7 +66,7 @@ foreach(entry IN LISTS ASCEND_CUSTOM_OPS)
     OUTPUT "${bc}"
     COMMAND "${CCEC_EXECUTABLE}" ${CCEC_COMMON_FLAGS}
       --cce-aicore-arch=${arch}
-      -I "${TEMPLATE_INCLUDE}"
+      ${op_include_flags}
       "${ASCEND_CUSTOM_OPS_DIR}/${src}"
       -emit-llvm -c -o "${bc}"
     DEPENDS "${ASCEND_CUSTOM_OPS_DIR}/${src}" ${op_deps}
@@ -74,7 +78,7 @@ foreach(entry IN LISTS ASCEND_CUSTOM_OPS)
     COMMAND "${CCEC_EXECUTABLE}" ${CCEC_COMMON_FLAGS}
       --cce-aicore-arch=${arch}
       -cce-enable-mix -mllvm -enable-mix=true
-      -I "${TEMPLATE_INCLUDE}"
+      ${op_include_flags}
       "${ASCEND_CUSTOM_OPS_DIR}/${src}"
       -emit-llvm -c -o "${mix_bc}"
     DEPENDS "${ASCEND_CUSTOM_OPS_DIR}/${src}" ${op_deps}

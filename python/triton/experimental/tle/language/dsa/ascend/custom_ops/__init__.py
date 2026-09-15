@@ -13,6 +13,10 @@ from .registry import (
     sort_1d_pack,
     merge_exhaust_sort4,
     unpack_sort,
+    compare_scalar,
+    cast_int4_to_fp16,
+    cube_begin,
+    cube_end,
 )
 
 __all__ = [
@@ -24,4 +28,8 @@ __all__ = [
     "sort_1d_pack",
     "merge_exhaust_sort4",
     "unpack_sort",
+    "compare_scalar",
+    "cast_int4_to_fp16",
+    "cube_begin",
+    "cube_end",
 ]
