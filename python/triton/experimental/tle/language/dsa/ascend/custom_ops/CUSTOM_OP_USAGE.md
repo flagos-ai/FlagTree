@@ -346,7 +346,7 @@ dst = tle.dsa.ascend.raw(
 - `off0..off3`：各路输入在 src_proposals 上的偏移
 - `len0..len3`：各路输入的前面多少个元素参与归并排序
 - `if_exhausted_suspension`：是否在任意一路输入的数据耗尽后提前退出排序
-- `valid_bit`：有效队列个数，只能是3、5、7。3：前两路输入有效，7：前三路输入有效，15：四路输入全部有效
+- `valid_bit`：有效队列个数，只能是3、7、15。3：前两路输入有效，7：前三路输入有效，15：四路输入全部有效
 - `repeat_times`；迭代次数，每一次源操作数和目的操作数跳过四个队列总长度。参数生效条件参见https://www.hiascend.com/document/detail/zh/canncommercial/latest/API/ascendcopapi/atlasascendc_api_07_0232.html
 - `dst`：UB 一维 fp32，目的操作数，存 proposal 形式的输出
 

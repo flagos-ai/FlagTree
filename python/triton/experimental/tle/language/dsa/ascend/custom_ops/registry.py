@@ -337,7 +337,7 @@ class sort32:
 
     def __init__(self, src0, src1, repeat_times, out=None):
         assert _element_dtype(src0) == tl.float32, (f"sort32 only supports fp32 value, got {_element_dtype(src0)}")
-        assert _element_dtype(src1) == tl.int32, (f"sort32 only supports int32 index, got {_element_dtype(src1)}")
+        assert _element_dtype(src1) == tl.uint32, (f"sort32 only supports uint32 index, got {_element_dtype(src1)}")
         assert out
         assert _element_dtype(out) == tl.float32, (f"sort32 only supports fp32 out, got {_element_dtype(out)}")
         self.symbol = "custom_sort32"

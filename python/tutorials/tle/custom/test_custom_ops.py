@@ -234,7 +234,7 @@ def sort32_kernel(src0, src1, repeat_times: tl.constexpr, dst, BLOCK_SIZE: tl.co
     src_offs = tl.arange(0, BLOCK_SIZE)
     dst_offs = tl.arange(0, DST_SIZE)
     src0_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    src1_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.int32, mem_addr_space=tle.dsa.ascend.UB)
+    src1_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.uint32, mem_addr_space=tle.dsa.ascend.UB)
     tle.dsa.copy(src0 + src_offs, src0_ub, [BLOCK_SIZE])
     tle.dsa.copy(src1 + src_offs, src1_ub, [BLOCK_SIZE])
     pair = tl.zeros([DST_SIZE], dtype=tl.float32)
@@ -550,7 +550,7 @@ def test_sort32():
     n_experts = 256
     n_groups = 256 // 32
     val = torch.rand([n_experts], dtype=torch.float32, device=DEVICE)
-    idx = torch.arange(0, n_experts, dtype=torch.int32, device=DEVICE)
+    idx = torch.arange(0, n_experts, dtype=torch.int32, device=DEVICE).view(torch.uint32)
     out = torch.zeros([n_experts * 2], dtype=torch.float32, device=DEVICE)
 
     sort32_kernel[(1, )](val, idx, n_groups, out, BLOCK_SIZE=n_experts)
@@ -559,10 +559,9 @@ def test_sort32():
     out_v, out_i = _decode_props(out.cpu().numpy()[:n_experts * 2])
     val_2d = val.cpu().numpy().reshape(n_groups, 32)
     idx_2d = idx.cpu().numpy().reshape(n_groups, 32)
-    local_idx_2d = np.argsort(val_2d, axis=1, kind="stable")
-    local_idx_inverse_2d = local_idx_2d[:, ::-1]
-    global_val = np.take_along_axis(val_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
-    global_idx = np.take_along_axis(idx_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
+    local_idx_2d = np.argsort(-val_2d, axis=1, kind="stable")
+    global_val = np.take_along_axis(val_2d, local_idx_2d, axis=1).reshape(n_experts)
+    global_idx = np.take_along_axis(idx_2d, local_idx_2d, axis=1).reshape(n_experts)
 
     np.testing.assert_array_equal(global_val, out_v, err_msg="sort32 values mismatch")
     np.testing.assert_array_equal(global_idx, out_i, err_msg="sort32 indices mismatch")
@@ -579,10 +578,9 @@ def test_mrgsort():
     idx = torch.arange(0, n_experts, dtype=torch.int32, device="cpu")
     val_2d = val.numpy().reshape(n_groups, 32)
     idx_2d = idx.numpy().reshape(n_groups, 32)
-    local_idx_2d = np.argsort(val_2d, axis=1, kind="stable")
-    local_idx_inverse_2d = local_idx_2d[:, ::-1]
-    global_val = np.take_along_axis(val_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
-    global_idx = np.take_along_axis(idx_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
+    local_idx_2d = np.argsort(-val_2d, axis=1, kind="stable")
+    global_val = np.take_along_axis(val_2d, local_idx_2d, axis=1).reshape(n_experts)
+    global_idx = np.take_along_axis(idx_2d, local_idx_2d, axis=1).reshape(n_experts)
     pair = torch.from_numpy(_encode_props(global_val, global_idx)).to(DEVICE)
     out = torch.zeros([top_k * 2], dtype=torch.float32, device=DEVICE)
 
@@ -590,10 +588,9 @@ def test_mrgsort():
     torch_npu.npu.synchronize()
 
     out_v, out_i = _decode_props(out.cpu().numpy()[:top_k * 2])
-    local_idx = np.argsort(val.numpy(), axis=0, kind="stable")
-    local_idx_inverse = local_idx[::-1]
-    ref_val = np.take_along_axis(val.numpy(), local_idx_inverse[:top_k], axis=0)
-    ref_idx = np.take_along_axis(idx.numpy(), local_idx_inverse[:top_k], axis=0)
+    local_idx = np.argsort(-val.numpy(), axis=0, kind="stable")
+    ref_val = np.take_along_axis(val.numpy(), local_idx[:top_k], axis=0)
+    ref_idx = np.take_along_axis(idx.numpy(), local_idx[:top_k], axis=0)
 
     np.testing.assert_array_equal(ref_val, out_v, err_msg="mrgsort values mismatch")
     np.testing.assert_array_equal(ref_idx, out_i, err_msg="mrgsort indices mismatch")
@@ -610,10 +607,9 @@ def test_gather_mask():
     # sorted by group
     val_2d = val.numpy().reshape(n_groups, 32)
     idx_2d = idx.numpy().reshape(n_groups, 32)
-    local_idx_2d = np.argsort(val_2d, axis=1, kind="stable")
-    local_idx_inverse_2d = local_idx_2d[:, ::-1]
-    global_val = np.take_along_axis(val_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
-    global_idx = np.take_along_axis(idx_2d, local_idx_inverse_2d, axis=1).reshape(n_experts)
+    local_idx_2d = np.argsort(-val_2d, axis=1, kind="stable")
+    global_val = np.take_along_axis(val_2d, local_idx_2d, axis=1).reshape(n_experts)
+    global_idx = np.take_along_axis(idx_2d, local_idx_2d, axis=1).reshape(n_experts)
     pair = torch.from_numpy(_encode_props(global_val, global_idx)).to(DEVICE)
     out = torch.zeros([n_groups * 2], dtype=torch.float32, device=DEVICE)
     rsvd_cnt = torch.zeros([1], dtype=torch.int64, device=DEVICE)
@@ -632,10 +628,9 @@ def test_gather_mask():
                           constant_values=-np.inf)
     # sort32
     group_idx_pad = torch.arange(0, ONE_REPEAT_SORT_NUM, dtype=torch.int32, device="cpu")
-    local_group_idx = np.argsort(top2_sum_pad, axis=0, kind="stable")
-    local_group_idx_inverse = local_group_idx[::-1]
-    global_group_val = np.take_along_axis(top2_sum_pad, local_group_idx_inverse, axis=0)
-    global_group_idx = np.take_along_axis(group_idx_pad.numpy(), local_group_idx_inverse, axis=0)
+    local_group_idx = np.argsort(-top2_sum_pad, axis=0, kind="stable")
+    global_group_val = np.take_along_axis(top2_sum_pad, local_group_idx, axis=0)
+    global_group_idx = np.take_along_axis(group_idx_pad.numpy(), local_group_idx, axis=0)
     pair2 = torch.from_numpy(_encode_props(global_group_val, global_group_idx)).to(DEVICE)
 
     out2 = torch.zeros([ONE_REPEAT_SORT_NUM], dtype=torch.float32, device=DEVICE)
