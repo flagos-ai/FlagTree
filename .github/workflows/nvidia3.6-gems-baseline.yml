@@ -39,7 +39,7 @@ concurrency:
 jobs:
   nv36x:
     if: ${{ github.event_name == 'push' }}
-    uses: ./.github/workflows/template-gems-baseline.yml
+    uses: flagos-ai/FlagTree/.github/workflows/template-gems-baseline.yml@main
     with:
       runner: nvidia3.6
       backend: nvidia
