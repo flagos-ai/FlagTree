@@ -19,12 +19,10 @@
 # SOFTWARE.
 
 import os
-import runpy  # FlagPrism: load the external build policy.
 import platform
 import shutil
 import sys
 import sysconfig
-import functools
 from pathlib import Path
 import hashlib
 from distutils.sysconfig import get_python_lib
@@ -33,9 +31,11 @@ import importlib.util
 import importlib.metadata
 from typing import List, Tuple
 from setuptools import find_packages
+from .utils import tools
 from .utils.tools import flagtree_configs as configs
+from .utils.tools import download_flagtree_third_party, get_hook_instance
 
-downloader = utils.tools.DownloadManager()
+downloader = tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
 
@@ -222,159 +222,6 @@ def dir_rollback(deep, base_path):
     return Path(base_path)
 
 
-def get_hook_instance(hook_name):
-    if not configs.activated_module or not hook_name:
-        return None
-    hook_instance = getattr(configs.activated_module, hook_name, None)
-    return hook_instance if callable(hook_instance) else None
-
-
-def enable_flagtree_third_party(name):
-    return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
-
-
-def download_flagtree_third_party(name, condition, required=False, hook=None):
-    if condition:
-        if enable_flagtree_third_party(name):
-            submodule = utils.flagtree_submodules[name]
-            downloader.download(module=submodule, required=required)
-            hook_call = get_hook_instance(hook)
-            if hook_call:
-                hook_call(configs=configs, backend=submodule, cache=cache)
-
-        else:
-            print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
-
-
-# FlagPrism: resolve its dependency through FlagTree's existing package helpers.
-def get_flagprism_dependency_cmake_args(_build_ext, get_thirdparty_packages, get_json_package_info):
-    # FlagPrism: reuse the preloaded nlohmann/json tree in offline builds.
-    if not os.getenv("JSON_SYSPATH", "").strip():
-        user_home = os.getenv("TRITON_HOME") or os.getenv("HOME") or os.getenv("USERPROFILE") or os.getenv("HOMEPATH")
-        cache_root = Path(user_home or Path.home()) / ".triton"
-        json_path = cache_root / "json"
-        if (json_path / "include" / "nlohmann" / "json.hpp").is_file():
-            os.environ["JSON_SYSPATH"] = str(json_path)
-    return get_thirdparty_packages([get_json_package_info()])
-
-
-class FlagPrismSetup:
-    """FlagPrism: manage optional component build and package integration."""
-
-    def __init__(self, project_root, dependency_cmake_args):
-        # FlagPrism: use one source-root base regardless of the caller's cwd.
-        self.project_root = Path(project_root).resolve()
-        backend = configs.flagtree_backend or ""
-        # FlagPrism: register all supported integration backends together.
-        supported_backends = {"ascend", "iluvatar", "mthreads"}
-        default = "ON" if backend in supported_backends else "OFF"
-        self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
-        self.build_config = None
-        self._dependency_cmake_args = dependency_cmake_args
-
-        if self.enabled and backend not in supported_backends:
-            # FlagPrism: report the newly supported mthreads backend.
-            raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
-                               "FLAGTREE_BACKEND=ascend, iluvatar, or mthreads.")
-        if not self.enabled:
-            return
-        if self._check_env_flag("TRITON_BUILD_PROTON"):
-            raise RuntimeError("TRITON_BUILD_FLAGPRISM and TRITON_BUILD_PROTON cannot both be enabled. "
-                               "Set one of them to OFF.")
-
-        # FlagPrism replaces Proton for the supported backend builds.
-        os.environ["TRITON_BUILD_PROTON"] = "OFF"
-        # FlagPrism: resolve external checkouts relative to the project root.
-        source_override = os.environ.get("FLAGPRISM_SOURCE_DIR", "").strip()
-        source_root = Path(source_override) if source_override else Path("third_party") / "FlagPrism"
-        if not source_root.is_absolute():
-            source_root = self.project_root / source_root
-        source_root = source_root.resolve()
-        # FlagPrism: never download a different checkout for an invalid override.
-        if source_override and not source_root.is_dir():
-            raise RuntimeError(f"FLAGPRISM_SOURCE_DIR must point to an existing directory: {source_root}")
-        # Keep FlagPrism as an external checkout. A local directory or symlink
-        # is authoritative; only bootstrap the registered dependency when it
-        # is absent.
-        if not source_root.exists():
-            download_flagtree_third_party("FlagPrism", condition=True, required=True)
-
-        helper_path = source_root / "python" / "flagprism_build.py"
-        if not helper_path.is_file():
-            # FlagPrism: identify incomplete overrides instead of suggesting a download.
-            if source_override:
-                raise RuntimeError(f"FLAGPRISM_SOURCE_DIR does not contain python/flagprism_build.py: {source_root}")
-            raise RuntimeError("FlagPrism sources are missing. Run the Python package build "
-                               "to download third-party dependencies.")
-        policy = runpy.run_path(str(helper_path), run_name="_flagprism_build")
-        # FlagPrism: keep CMake and setuptools on the same external source tree.
-        self.build_config = policy["create_build_config"](self.project_root, source_root)
-
-        legacy_link = self.project_root / "python" / "triton" / "profiler"
-        if legacy_link.is_symlink():
-            legacy_link.unlink()
-
-    @staticmethod
-    def _check_env_flag(name: str, default: str = "") -> bool:
-        return os.getenv(name, default).upper() in ("ON", "1", "YES", "TRUE", "Y")
-
-    @staticmethod
-    def _remove_path(path: Path) -> None:
-        if path.is_symlink() or path.is_file():
-            path.unlink(missing_ok=True)
-        elif path.is_dir():
-            shutil.rmtree(path)
-
-    def _remove_legacy_gateway(self, build_lib: str) -> None:
-        triton_root = Path(build_lib) / "triton"
-        self._remove_path(triton_root / "_flagprism.py")
-        for artifact in (triton_root / "__pycache__").glob("_flagprism.*.pyc"):
-            self._remove_path(artifact)
-
-    def cmake_args(self, build_lib: str) -> list[str]:
-        if self.build_config is None:
-            return ["-DTRITON_BUILD_FLAGPRISM=OFF"]
-        return self.build_config.cmake_args(build_lib)
-
-    def dependency_cmake_args(self, build_ext) -> list[str]:
-        if not self.enabled:
-            return []
-        return self._dependency_cmake_args(build_ext)
-
-    def prepare_build_tree(self, build_lib: str) -> None:
-        # The gateway now belongs to flagtree; reused build trees must not
-        # repackage the former triton._flagprism module.
-        self._remove_legacy_gateway(build_lib)
-        if self.build_config is not None:
-            self.build_config.prepare_build_tree(build_lib)
-            return
-        build_root = Path(build_lib) / "flagtree"
-        self._remove_path(build_root / "debugger")
-        self._remove_path(build_root / "profiler")
-
-    def finalize_build_tree(self, build_lib: str) -> None:
-        if self.build_config is not None:
-            self.build_config.finalize_build_tree(build_lib)
-        else:
-            self.prepare_build_tree(build_lib)
-        self._remove_legacy_gateway(build_lib)
-
-    def packages(self) -> tuple[str, ...]:
-        if self.build_config is None:
-            return ()
-        return self.build_config.packages()
-
-    def package_dirs(self) -> tuple[tuple[str, str], ...]:
-        if self.build_config is None:
-            return ()
-        return self.build_config.package_dirs()
-
-    def console_scripts(self) -> list[str]:
-        if self.build_config is None:
-            return []
-        return self.build_config.console_scripts()
-
-
 def post_install():
     backend_spec_post_install_fn = get_hook_instance("post_install")
     if backend_spec_post_install_fn:
@@ -402,154 +249,7 @@ def write_backend_file_to_build_lib(build_lib):
             print(f"[flagtree] could not write build_lib FLAGTREE_BACKEND: {exc}")
 
 
-class FlagTreeCache:
-
-    def __init__(self):
-        self.flagtree_dir = str(Path(__file__).resolve().parents[2])
-        self.dir_name = ".flagtree"
-        self.sub_dirs = {}
-        self.cache_files = {}
-        self.dir_path = self._get_cache_dir_path()
-        self._create_cache_dir()
-        if flagtree_backend:
-            self._create_subdir(subdir_name=flagtree_backend)
-
-    @functools.lru_cache(maxsize=None)
-    def _get_cache_dir_path(self) -> Path:
-        _cache_dir = os.environ.get("FLAGTREE_CACHE_DIR")
-        if _cache_dir is None:
-            _cache_dir = Path.home() / self.dir_name
-        else:
-            _cache_dir = Path(_cache_dir)
-        return _cache_dir
-
-    def _create_cache_dir(self) -> Path:
-        if not os.path.exists(self.dir_path):
-            os.makedirs(self.dir_path, exist_ok=True)
-
-    def _create_subdir(self, subdir_name, path=None):
-        if path is None:
-            subdir_path = Path(self.dir_path) / subdir_name
-        else:
-            subdir_path = Path(path) / subdir_name
-
-        if not os.path.exists(subdir_path):
-            os.makedirs(subdir_path, exist_ok=True)
-        self.sub_dirs[subdir_name] = subdir_path
-
-    def _md5(self, file_path):
-        md5_hash = hashlib.md5()
-        with open(file_path, "rb") as file:
-            while chunk := file.read(4096):
-                md5_hash.update(chunk)
-        return md5_hash.hexdigest()
-
-    def check_file(self, file_name=None, url=None, path=None, md5_digest=None):
-        origin_file_path = None
-        if url is not None:
-            origin_file_name = url.split("/")[-1].split('.')[0]
-            origin_file_path = self.cache_files.get(origin_file_name, "")
-        if path is not None:
-            _path = path
-        else:
-            _path = self.cache_files.get(file_name, "")
-        empty = (not os.path.exists(_path)) or (origin_file_path and not os.path.exists(origin_file_path))
-        if empty:
-            return False
-        if md5_digest is None:
-            return True
-        else:
-            cur_md5 = self._md5(_path)
-            return cur_md5[:8] == md5_digest
-
-    def clear(self):
-        shutil.rmtree(self.dir_path)
-
-    def reverse_copy(self, src_path, cache_file_path, md5_digest):
-        if src_path is None or not os.path.exists(src_path):
-            return False
-        if os.path.exists(cache_file_path):
-            return False
-        copy_needed = True
-        if md5_digest is None or self._md5(src_path) == md5_digest:
-            copy_needed = False
-        if copy_needed:
-            print(f"copying {src_path} to {cache_file_path}")
-            if os.path.isdir(src_path):
-                shutil.copytree(src_path, cache_file_path, dirs_exist_ok=True)
-            else:
-                shutil.copy(src_path, cache_file_path)
-            return True
-        return False
-
-    def store(self, file=None, condition=None, url=None, copy_src_path=None, copy_dst_path=None, files=None,
-              md5_digest=None, pre_hook=None, post_hook=None, version=None):
-
-        if not condition or (pre_hook and pre_hook()):
-            return
-        is_url = False if url is None else True
-        path = self.sub_dirs[flagtree_backend] if flagtree_backend else self.dir_path
-
-        if files is not None:
-            for single_files in files:
-                self.cache_files[single_files] = Path(path) / single_files
-        else:
-            self.cache_files[file] = Path(path) / file
-            if url is not None:
-                origin_file_name = url.split("/")[-1].split('.')[0]
-                self.cache_files[origin_file_name] = Path(path) / file
-            if copy_dst_path is not None:
-                dst_path_root = Path(self.flagtree_dir) / copy_dst_path
-                dst_path = Path(dst_path_root) / file
-                if self.reverse_copy(dst_path, self.cache_files[file], md5_digest):
-                    return
-
-        if is_url:
-            cache_path = self.cache_files[file]
-            need_download = not self.check_file(file_name=file, url=url, md5_digest=md5_digest)
-            # Version check: re-download if cached version doesn't match expected
-            if not need_download and version is not None:
-                version_file = Path(cache_path) / "version.txt"
-                if version_file.exists():
-                    cached_ver = version_file.read_text().strip()
-                    if cached_ver != version:
-                        print(
-                            f"[cache] version mismatch for '{file}': cached='{cached_ver}', expected='{version}', re-downloading..."
-                        )
-                        shutil.rmtree(cache_path)
-                        need_download = True
-                # If no version.txt (legacy cache), keep using it
-            if need_download:
-                downloader.download(url=url, path=path, file_name=file)
-                if version is not None:
-                    cache_path = self.cache_files[file]
-                    version_file = Path(cache_path) / "version.txt"
-                    if os.path.isdir(cache_path):
-                        version_file.write_text(version)
-
-        if copy_dst_path is not None:
-            file_lists = [file] if files is None else list(files)
-            for single_file in file_lists:
-                dst_path_root = Path(self.flagtree_dir) / copy_dst_path
-                os.makedirs(dst_path_root, exist_ok=True)
-                dst_path = Path(dst_path_root) / single_file
-                if not self.check_file(path=dst_path, md5_digest=md5_digest):
-                    if copy_src_path:
-                        src_path = Path(copy_src_path) / single_file
-                    else:
-                        src_path = self.cache_files[single_file]
-                    print(f"copying {src_path} to {dst_path}")
-                    if os.path.isdir(src_path):
-                        shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
-                    else:
-                        shutil.copy(src_path, dst_path)
-        post_hook(self.cache_files[file]) if post_hook else False
-
-    def get(self, file_name) -> Path:
-        return self.cache_files[file_name]
-
-
-cache = FlagTreeCache()
+cache = tools.FlagTreeCache()
 
 # -----flagtree-tle-raw-----flagtree-mlir---
 
@@ -860,8 +560,6 @@ if offline_handler.is_offline:
 else:
     print('[INFO] FlagTree Offline Build: No offline build for triton origin toolkits')
     offline_build = False
-
-cache = FlagTreeCache()
 
 download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro"), required=True)
 '''

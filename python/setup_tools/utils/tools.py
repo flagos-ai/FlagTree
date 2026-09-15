@@ -29,6 +29,8 @@ from dataclasses import dataclass
 import json
 import subprocess
 import time
+import functools
+import hashlib
 
 from python.build_helpers import get_base_dir
 import platform
@@ -36,10 +38,35 @@ from typing import Mapping
 from types import MappingProxyType
 import importlib.util
 from dataclasses import field
+from . import flagtree_submodules
 
 
 def _get_flagtree_root() -> str:
     return str(Path(__file__).resolve().parents[3])
+
+
+def get_hook_instance(hook_name):
+    if not configs.activated_module or not hook_name:
+        return None
+    hook_instance = getattr(configs.activated_module, hook_name, None)
+    return hook_instance if callable(hook_instance) else None
+
+
+def enable_flagtree_third_party(name):
+    return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
+
+
+def download_flagtree_third_party(name, condition, required=False, hook=None):
+    if condition:
+        if enable_flagtree_third_party(name):
+            submodule = flagtree_submodules[name]
+            downloader.download(module=submodule, required=required)
+            hook_call = get_hook_instance(hook)
+            if hook_call:
+                hook_call(configs=configs, backend=submodule, cache=cache)
+
+        else:
+            print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
 
 
 @dataclass
@@ -90,6 +117,158 @@ class FlagtreeConfigs:
 
 
 flagtree_configs = FlagtreeConfigs()
+configs = flagtree_configs
+flagtree_backend = flagtree_configs.flagtree_backend
+
+
+class FlagTreeCache:
+
+    def __init__(self):
+        self.flagtree_dir = str(Path(__file__).resolve().parents[2])
+        self.dir_name = ".flagtree"
+        self.sub_dirs = {}
+        self.cache_files = {}
+        self.dir_path = self._get_cache_dir_path()
+        self._create_cache_dir()
+        if flagtree_backend:
+            self._create_subdir(subdir_name=flagtree_backend)
+
+    @functools.lru_cache(maxsize=None)
+    def _get_cache_dir_path(self) -> Path:
+        _cache_dir = os.environ.get("FLAGTREE_CACHE_DIR")
+        if _cache_dir is None:
+            _cache_dir = Path.home() / self.dir_name
+        else:
+            _cache_dir = Path(_cache_dir)
+        return _cache_dir
+
+    def _create_cache_dir(self) -> Path:
+        if not os.path.exists(self.dir_path):
+            os.makedirs(self.dir_path, exist_ok=True)
+
+    def _create_subdir(self, subdir_name, path=None):
+        if path is None:
+            subdir_path = Path(self.dir_path) / subdir_name
+        else:
+            subdir_path = Path(path) / subdir_name
+
+        if not os.path.exists(subdir_path):
+            os.makedirs(subdir_path, exist_ok=True)
+        self.sub_dirs[subdir_name] = subdir_path
+
+    def _md5(self, file_path):
+        md5_hash = hashlib.md5()
+        with open(file_path, "rb") as file:
+            while chunk := file.read(4096):
+                md5_hash.update(chunk)
+        return md5_hash.hexdigest()
+
+    def check_file(self, file_name=None, url=None, path=None, md5_digest=None):
+        origin_file_path = None
+        if url is not None:
+            origin_file_name = url.split("/")[-1].split('.')[0]
+            origin_file_path = self.cache_files.get(origin_file_name, "")
+        if path is not None:
+            _path = path
+        else:
+            _path = self.cache_files.get(file_name, "")
+        empty = (not os.path.exists(_path)) or (origin_file_path and not os.path.exists(origin_file_path))
+        if empty:
+            return False
+        if md5_digest is None:
+            return True
+        else:
+            cur_md5 = self._md5(_path)
+            return cur_md5[:8] == md5_digest
+
+    def clear(self):
+        shutil.rmtree(self.dir_path)
+
+    def reverse_copy(self, src_path, cache_file_path, md5_digest):
+        if src_path is None or not os.path.exists(src_path):
+            return False
+        if os.path.exists(cache_file_path):
+            return False
+        copy_needed = True
+        if md5_digest is None or self._md5(src_path) == md5_digest:
+            copy_needed = False
+        if copy_needed:
+            print(f"copying {src_path} to {cache_file_path}")
+            if os.path.isdir(src_path):
+                shutil.copytree(src_path, cache_file_path, dirs_exist_ok=True)
+            else:
+                shutil.copy(src_path, cache_file_path)
+            return True
+        return False
+
+    def store(self, file=None, condition=None, url=None, copy_src_path=None, copy_dst_path=None, files=None,
+              md5_digest=None, pre_hook=None, post_hook=None, version=None):
+
+        if not condition or (pre_hook and pre_hook()):
+            return
+        is_url = False if url is None else True
+        path = self.sub_dirs[flagtree_backend] if flagtree_backend else self.dir_path
+
+        if files is not None:
+            for single_files in files:
+                self.cache_files[single_files] = Path(path) / single_files
+        else:
+            self.cache_files[file] = Path(path) / file
+            if url is not None:
+                origin_file_name = url.split("/")[-1].split('.')[0]
+                self.cache_files[origin_file_name] = Path(path) / file
+            if copy_dst_path is not None:
+                dst_path_root = Path(self.flagtree_dir) / copy_dst_path
+                dst_path = Path(dst_path_root) / file
+                if self.reverse_copy(dst_path, self.cache_files[file], md5_digest):
+                    return
+
+        if is_url:
+            cache_path = self.cache_files[file]
+            need_download = not self.check_file(file_name=file, url=url, md5_digest=md5_digest)
+            # Version check: re-download if cached version doesn't match expected
+            if not need_download and version is not None:
+                version_file = Path(cache_path) / "version.txt"
+                if version_file.exists():
+                    cached_ver = version_file.read_text().strip()
+                    if cached_ver != version:
+                        print(
+                            f"[cache] version mismatch for '{file}': cached='{cached_ver}', expected='{version}', re-downloading..."
+                        )
+                        shutil.rmtree(cache_path)
+                        need_download = True
+                # If no version.txt (legacy cache), keep using it
+            if need_download:
+                downloader.download(url=url, path=path, file_name=file)
+                if version is not None:
+                    cache_path = self.cache_files[file]
+                    version_file = Path(cache_path) / "version.txt"
+                    if os.path.isdir(cache_path):
+                        version_file.write_text(version)
+
+        if copy_dst_path is not None:
+            file_lists = [file] if files is None else list(files)
+            for single_file in file_lists:
+                dst_path_root = Path(self.flagtree_dir) / copy_dst_path
+                os.makedirs(dst_path_root, exist_ok=True)
+                dst_path = Path(dst_path_root) / single_file
+                if not self.check_file(path=dst_path, md5_digest=md5_digest):
+                    if copy_src_path:
+                        src_path = Path(copy_src_path) / single_file
+                    else:
+                        src_path = self.cache_files[single_file]
+                    print(f"copying {src_path} to {dst_path}")
+                    if os.path.isdir(src_path):
+                        shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+                    else:
+                        shutil.copy(src_path, dst_path)
+        post_hook(self.cache_files[file]) if post_hook else False
+
+    def get(self, file_name) -> Path:
+        return self.cache_files[file_name]
+
+
+cache = FlagTreeCache()
 
 
 @dataclass
@@ -289,6 +468,9 @@ class DownloadManager:
         if is_decompress:
             decompress(self.current_url, content=content, dst_path=self.current_dst_path,
                        file_name=self.current_file_name)
+
+
+downloader = DownloadManager()
 
 
 class OfflineBuildManager:

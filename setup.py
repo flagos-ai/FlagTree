@@ -68,6 +68,7 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(__file__))
 from python.setup_tools import setup_helper as helper
+from python.setup_tools import flagprism_setup
 # flagtree: stubgen import
 from python.setup_tools.stubgen import auto_generate_stubs_from_install_extension
 
@@ -382,10 +383,10 @@ def get_thirdparty_packages(packages: list):
 
 
 # FlagPrism: bind the existing dependency resolver without duplicating setup logic.
-FLAGPRISM_SETUP = helper.FlagPrismSetup(
+FLAGPRISM_SETUP = flagprism_setup.FlagPrismSetup(
     get_base_dir(),
     functools.partial(
-        helper.get_flagprism_dependency_cmake_args,
+        flagprism_setup.get_flagprism_dependency_cmake_args,
         get_thirdparty_packages=get_thirdparty_packages,
         get_json_package_info=get_json_package_info,
     ),
