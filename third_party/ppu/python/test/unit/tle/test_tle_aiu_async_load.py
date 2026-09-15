@@ -3,7 +3,7 @@
 Covers:
   - Basic promotion (block pointer -> AIULoadOp)
   - Non-block-pointer fallback (no promotion)
-  - Multiple data types (fp16, bf16)
+  - Multiple data types (fp16, bf16; int8/int32 lower to .b8/.b32, int64 is not promoted)
   - Various block shapes
   - Memory layout orders
   - AIU load feeding tl.dot (GEMM)
@@ -243,7 +243,9 @@ def test_int64_aiu_load_not_promoted():
     compiled = _compile(_typed_aiu_load, {"a_ptr": "*i64", "c_ptr": "*i64"},
                         {"M": 256, "K": 256, "BLOCK_M": 64, "BLOCK_K": 64})
     _assert_stages_exist(compiled)
-    assert "aiu_load" not in compiled.asm["ttir"]
+    # match the op, not the kernel name `_typed_aiu_load`
+    assert "tt.aiu_load" not in compiled.asm["ttir"]
+    assert "tt.load" in compiled.asm["ttir"]
     assert "ppu.cp.async.aiu" not in compiled.asm["llir"]
 
 
