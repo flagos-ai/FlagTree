@@ -262,17 +262,20 @@ class FlagPrismSetup:
     """FlagPrism: manage optional component build and package integration."""
 
     def __init__(self, project_root, dependency_cmake_args):
-        self.project_root = Path(project_root)
+        # FlagPrism: use one source-root base regardless of the caller's cwd.
+        self.project_root = Path(project_root).resolve()
         backend = configs.flagtree_backend or ""
-        supported_backends = {"ascend", "iluvatar"}
+        # FlagPrism: register all supported integration backends together.
+        supported_backends = {"ascend", "iluvatar", "mthreads"}
         default = "ON" if backend in supported_backends else "OFF"
         self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
         self.build_config = None
         self._dependency_cmake_args = dependency_cmake_args
 
         if self.enabled and backend not in supported_backends:
+            # FlagPrism: report the newly supported mthreads backend.
             raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
-                               "FLAGTREE_BACKEND=ascend or iluvatar.")
+                               "FLAGTREE_BACKEND=ascend, iluvatar, or mthreads.")
         if not self.enabled:
             return
         if self._check_env_flag("TRITON_BUILD_PROTON"):
@@ -281,7 +284,15 @@ class FlagPrismSetup:
 
         # FlagPrism replaces Proton for the supported backend builds.
         os.environ["TRITON_BUILD_PROTON"] = "OFF"
-        source_root = self.project_root / "third_party" / "FlagPrism"
+        # FlagPrism: resolve external checkouts relative to the project root.
+        source_override = os.environ.get("FLAGPRISM_SOURCE_DIR", "").strip()
+        source_root = Path(source_override) if source_override else Path("third_party") / "FlagPrism"
+        if not source_root.is_absolute():
+            source_root = self.project_root / source_root
+        source_root = source_root.resolve()
+        # FlagPrism: never download a different checkout for an invalid override.
+        if source_override and not source_root.is_dir():
+            raise RuntimeError(f"FLAGPRISM_SOURCE_DIR must point to an existing directory: {source_root}")
         # Keep FlagPrism as an external checkout. A local directory or symlink
         # is authoritative; only bootstrap the registered dependency when it
         # is absent.
@@ -290,10 +301,14 @@ class FlagPrismSetup:
 
         helper_path = source_root / "python" / "flagprism_build.py"
         if not helper_path.is_file():
+            # FlagPrism: identify incomplete overrides instead of suggesting a download.
+            if source_override:
+                raise RuntimeError(f"FLAGPRISM_SOURCE_DIR does not contain python/flagprism_build.py: {source_root}")
             raise RuntimeError("FlagPrism sources are missing. Run the Python package build "
                                "to download third-party dependencies.")
         policy = runpy.run_path(str(helper_path), run_name="_flagprism_build")
-        self.build_config = policy["create_build_config"](self.project_root)
+        # FlagPrism: keep CMake and setuptools on the same external source tree.
+        self.build_config = policy["create_build_config"](self.project_root, source_root)
 
         legacy_link = self.project_root / "python" / "triton" / "profiler"
         if legacy_link.is_symlink():
