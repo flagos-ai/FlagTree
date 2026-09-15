@@ -25,6 +25,7 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/InliningUtils.h"
 #include "tle/dialect/include/IR/Dialect.cpp.inc"
+#include "llvm/ADT/StringSwitch.h"
 
 #define GET_ATTRDEF_CLASSES
 #include "tle/dialect/include/IR/TleAttrDefs.cpp.inc"
@@ -70,4 +71,15 @@ void TleDialect::initialize() {
 
   addInterfaces<TleInlinerInterface>();
 }
+
+std::optional<MemoryOrder> parseMemoryOrder(llvm::StringRef str) {
+  return llvm::StringSwitch<std::optional<MemoryOrder>>(str)
+      .Case("relaxed", MemoryOrder::RELAXED)
+      .Case("acquire", MemoryOrder::ACQUIRE)
+      .Case("release", MemoryOrder::RELEASE)
+      .Case("acq_rel", MemoryOrder::ACQ_REL)
+      .Case("acqrel", MemoryOrder::ACQ_REL)
+      .Default(std::nullopt);
+}
+
 } // namespace mlir::triton::tle

@@ -606,28 +606,29 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_distributed_barrier",
            [](TritonOpBuilder &self) -> void {
              self.create<tle::DistributedBarrierOp>(
-                 Value(), StringAttr(), StringAttr(), StringAttr(),
-                 StringAttr(), IntegerAttr(), IntegerAttr(), StringAttr(),
-                 IntegerAttr(), DenseI32ArrayAttr(), DenseI32ArrayAttr(),
-                 DenseI32ArrayAttr());
+                 Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(),
+                 StringAttr(), IntegerAttr(), IntegerAttr(),
+                 tle::SyncScopeAttr(), IntegerAttr(), DenseI32ArrayAttr(),
+                 DenseI32ArrayAttr(), DenseI32ArrayAttr());
            })
       .def(
           "create_distributed_barrier",
           [](TritonOpBuilder &self, std::optional<Value> src,
              size_t barrier_index = 0, const std::string &space = "device",
              const std::string &group_kind = "block",
-             const std::string &order = "acqrel",
+             tle::MemoryOrder order = tle::MemoryOrder::ACQ_REL,
              const std::string &barrier_kind = "sync", size_t context_id = 0,
-             const std::string &memory_scope = "system") -> void {
+             tle::SyncScope memory_scope = tle::SyncScope::SYSTEM) -> void {
             auto &builder = self.getBuilder();
             auto getOptStrAttr = [&](const std::string &s) -> StringAttr {
               return s.empty() ? StringAttr() : builder.getStringAttr(s);
             };
             auto spaceAttr = getOptStrAttr(space);
             auto kindAttr = getOptStrAttr(group_kind);
-            auto orderAttr = getOptStrAttr(order);
+            auto orderAttr = builder.getAttr<tle::MemoryOrderAttr>(order);
             auto barrierTypeAttr = getOptStrAttr(barrier_kind);
-            auto memoryScopeAttr = getOptStrAttr(memory_scope);
+            auto memoryScopeAttr =
+                builder.getAttr<tle::SyncScopeAttr>(memory_scope);
             auto barrierIndexAttr =
                 builder.getI32IntegerAttr(static_cast<int32_t>(barrier_index));
             auto contextIdAttr =
@@ -648,42 +649,46 @@ void init_triton_tle_ir(py::module &&m) {
           [](TritonOpBuilder &self, Value comm, Value peer, Value slotId,
              std::optional<Value> value, tle::SignalOpKind signalOp,
              tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
-             int32_t contextIdx) -> void {
+             int32_t contextIdx, tle::SyncScope scope) -> void {
             auto &builder = self.getBuilder();
-            if (auto err = tle::Signal::verifySignalOp(signalOp,
-                                                       value.value_or(Value())))
+            if (auto err = tle::Signal::verifySignalOp(
+                    signalOp, value.value_or(Value()), scope))
               throw py::value_error(*err);
             self.create<tle::SignalOp>(
                 comm, peer, slotId, value.value_or(Value()),
                 builder.getAttr<tle::SignalOpKindAttr>(signalOp),
                 builder.getAttr<tle::FlagCXTeamKindAttr>(teamKind),
                 builder.getAttr<tle::FlagCXCoopKindAttr>(coopKind),
-                builder.getI32IntegerAttr(contextIdx));
+                builder.getI32IntegerAttr(contextIdx),
+                builder.getAttr<tle::SyncScopeAttr>(scope));
           },
           py::arg("comm"), py::arg("peer"), py::arg("slot_id"),
           py::arg("value"), py::arg("signal_op"), py::arg("team_kind"),
-          py::arg("coop_kind"), py::arg("context_idx"),
-          "Create a standalone remote FlagCX signal operation")
+          py::arg("coop_kind"), py::arg("context_idx"), py::arg("scope"),
+          "Create a standalone remote signal operation")
       .def(
           "create_signal_wait",
           [](TritonOpBuilder &self, Value comm_dev_ptr, Value slot_id,
              tle::SignalWaitKind wait_kind, std::optional<Value> target,
-             tle::FlagCXCoopKind coop_kind, int32_t context_idx) -> void {
+             tle::FlagCXCoopKind coop_kind, int32_t context_idx,
+             tle::MemoryOrder order) -> void {
             auto &builder = self.getBuilder();
             if (auto err = tle::Signal::verifySignalWaitOp(
-                    wait_kind, target.value_or(Value())))
+                    wait_kind, target.value_or(Value()), order))
               throw py::value_error(*err);
             auto wait_kind_attr =
                 builder.getAttr<tle::SignalWaitKindAttr>(wait_kind);
             auto coop_kind_attr =
                 builder.getAttr<tle::FlagCXCoopKindAttr>(coop_kind);
             auto context_idx_attr = builder.getI32IntegerAttr(context_idx);
+            auto order_attr = builder.getAttr<tle::MemoryOrderAttr>(order);
             self.create<tle::SignalWaitOp>(
                 comm_dev_ptr, slot_id, wait_kind_attr, target.value_or(Value()),
-                coop_kind_attr, context_idx_attr);
+                coop_kind_attr, context_idx_attr, order_attr);
           },
           py::arg("comm"), py::arg("slot_id"), py::arg("wait_kind"),
-          py::arg("target"), py::arg("coop_kind"), py::arg("context_idx"))
+          py::arg("target"), py::arg("coop_kind"), py::arg("context_idx"),
+          py::arg("order"), "Create a standalone remote signal_wait operation")
       .def(
           "create_distributed_barrier",
           [](TritonOpBuilder &self, const std::string &groupKind,
@@ -719,9 +724,9 @@ void init_triton_tle_ir(py::module &&m) {
             }
 
             self.create<tle::DistributedBarrierOp>(
-                Value(), StringAttr(), StringAttr(), StringAttr(), kindAttr,
-                IntegerAttr(), IntegerAttr(), StringAttr(), rankAttr, shapeAttr,
-                axesAttr, maskAttr);
+                Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(),
+                kindAttr, IntegerAttr(), IntegerAttr(), tle::SyncScopeAttr(),
+                rankAttr, shapeAttr, axesAttr, maskAttr);
           },
           py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
           py::arg("group_mask"))
@@ -847,31 +852,53 @@ void init_triton_tle_attr(py::module &&m) {
           "from_str",
           [](std::string name) { return tle::symbolizeSignalWaitKind(name); },
           py::arg("name"));
+  py::enum_<tle::SyncScope>(m, "SyncScope")
+      .value("System", tle::SyncScope::SYSTEM)
+      .value("Device", tle::SyncScope::DEVICE)
+      .value("Block", tle::SyncScope::BLOCK)
+      .value("Thread", tle::SyncScope::THREAD)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeSyncScope(name); },
+          py::arg("name"));
+  py::enum_<tle::MemoryOrder>(m, "MemoryOrder")
+      .value("Relaxed", tle::MemoryOrder::RELAXED)
+      .value("Acquire", tle::MemoryOrder::ACQUIRE)
+      .value("Release", tle::MemoryOrder::RELEASE)
+      .value("AcqRel", tle::MemoryOrder::ACQ_REL)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::parseMemoryOrder(name); },
+          py::arg("name"));
 }
 
 void init_triton_tle_utils(py::module &&m) {
   m.def(
       "verify_signal",
-      [](tle::SignalOpKind kind, std::optional<Value> value) {
-        if (auto err =
-                tle::Signal::verifySignalOp(kind, value.value_or(Value()))) {
+      [](tle::SignalOpKind kind, std::optional<Value> value,
+         tle::SyncScope scope) {
+        if (auto err = tle::Signal::verifySignalOp(
+                kind, value.value_or(Value()), scope)) {
           throw py::value_error(*err);
         }
       },
       py::arg("kind"), py::arg("value") = py::none(),
-      "Validate a signal op's (kind, value) combination; returns an error "
-      "message or None");
+      py::arg("scope") = tle::SyncScope::SYSTEM,
+      "Validate a signal op's (kind, value, scope) combination; returns an "
+      "error message or None");
   m.def(
       "verify_signal_wait",
-      [](tle::SignalWaitKind kind, std::optional<Value> target) {
+      [](tle::SignalWaitKind kind, std::optional<Value> target,
+         tle::MemoryOrder order) {
         if (auto err = tle::Signal::verifySignalWaitOp(
-                kind, target.value_or(Value()))) {
+                kind, target.value_or(Value()), order)) {
           throw py::value_error(*err);
         }
       },
       py::arg("kind"), py::arg("target") = py::none(),
-      "Validate a signal_wait op's (kind, target) combination; returns an "
-      "error message or None");
+      py::arg("order") = tle::MemoryOrder::ACQUIRE,
+      "Validate a signal_wait op's (kind, target, order) combination; "
+      "returns an error message or None");
 }
 
 void init_triton_tle_passes(py::module &&m) {

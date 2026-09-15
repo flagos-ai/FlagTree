@@ -43,4 +43,10 @@
 #include "tle/dialect/include/IR/FlagCxOps.h.inc"
 #endif
 
+namespace mlir::triton::tle {
+// Helper function that accepts both "acq_rel" and the legacy "acqrel"
+// spelling.
+std::optional<MemoryOrder> parseMemoryOrder(::llvm::StringRef str);
+} // namespace mlir::triton::tle
+
 #endif
