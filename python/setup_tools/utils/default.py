@@ -115,6 +115,7 @@ class FlagCXRegistrar:
                 printinfo(f"{lib_name} copied from {src_path} to cache at {runtime_path}")
             else:
                 printinfo(f"Compiling {lib_name} in {self.flagcx_src_dir}...")
+                cmd = ["COMPILE_KERNEL=1"] + cmd
                 subprocess.run(cmd, cwd=self.flagcx_src_dir, check=True)
                 if not src_path.exists():
                     raise FileNotFoundError(f"Expected {lib_name} not found: {src_path}")
