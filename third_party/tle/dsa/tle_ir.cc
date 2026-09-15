@@ -498,9 +498,8 @@ void init_tle_dsa_ir(py::module &&m) {
                                                       srcBuf.getElementType());
              auto op = self.create<mlir::triton::tile::ToTensorOp>(resTy, src);
              if (writable)
-               op->setAttr(
-                   "writable",
-                   UnitAttr::get(self.getBuilder().getContext()));
+               op->setAttr("writable",
+                           UnitAttr::get(self.getBuilder().getContext()));
              return op.getResult();
            })
       // tile.store_tensor
