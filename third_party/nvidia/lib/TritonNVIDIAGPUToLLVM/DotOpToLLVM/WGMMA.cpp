@@ -216,7 +216,75 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   auto baseB = getOffsetedBase(loadedB, cast<MemDescType>(bTensorTy),
                                typeConverter, rewriter, loc);
   auto dShapePerCTA = getShapePerCTA(dTensorTy);
-  auto instrMNK = mmaEncoding.getInstrShape();
+  auto instructionMmaEncoding = mmaEncoding;
+#ifdef __TLE__
+  // An async accumulator chain may cross WGMMA operand types. Hopper's C
+  // register ownership depends on M/N and the warp/CTA distribution, not K.
+  // TLE keeps the preceding dot's encoding on the async C value, while a
+  // register-A operand carries the instruction shape required by the current
+  // dtype. Use that shape only when both encodings describe the same physical
+  // C register layout.
+  if (auto aDotEncoding =
+          dyn_cast<DotOperandEncodingAttr>(aTensorTy.getEncoding())) {
+    if (auto aMmaEncoding =
+            dyn_cast<NvidiaMmaEncodingAttr>(aDotEncoding.getParent())) {
+      if (aMmaEncoding != mmaEncoding) {
+        auto accInstrShape = mmaEncoding.getInstrShape();
+        auto currentInstrShape = aMmaEncoding.getInstrShape();
+        bool compatibleCLayout =
+            mmaEncoding.isHopper() && aMmaEncoding.isHopper() &&
+            accInstrShape[0] == currentInstrShape[0] &&
+            accInstrShape[1] == currentInstrShape[1] &&
+            mmaEncoding.getWarpsPerCTA() == aMmaEncoding.getWarpsPerCTA() &&
+            mmaEncoding.getCTALayout() == aMmaEncoding.getCTALayout();
+        if (compatibleCLayout) {
+          instructionMmaEncoding = aMmaEncoding;
+        } else if (op->hasAttr(kTleWgmmaAccumulatorChainCAttr)) {
+          op->emitError("cannot reuse an async WGMMA accumulator across "
+                        "incompatible physical C layouts");
+          return failure();
+        }
+      }
+    }
+  }
+#endif
+  auto instructionShape = instructionMmaEncoding.getInstrShape();
+  SmallVector<unsigned> instrMNK;
+  instrMNK.reserve(instructionShape.size());
+  for (int64_t dim : instructionShape)
+    instrMNK.push_back(static_cast<unsigned>(dim));
+#ifdef __TLE__
+  // Shared-A has no dot-operand parent encoding from which to recover the
+  // current instruction K. Infer only K from the current shared operand dtype;
+  // M/N and physical C ownership remain those of the result encoding. This is
+  // a no-op for ordinary same-dtype dots and changes only a stale cross-dtype
+  // K (for example FP8/K32 C followed by BF16/K16 shared/shared operands).
+  if (aInShared) {
+    auto instructionKForType = [&](Type type) -> std::optional<unsigned> {
+      if (type.isF16() || type.isBF16())
+        return 16;
+      if (type.isF32() && allowTF32)
+        return 8;
+      if (type.isInteger(8) || llvm::isa<Float8E5M2Type>(type) ||
+          llvm::isa<Float8E4M3FNType>(type))
+        return 32;
+      return std::nullopt;
+    };
+    auto aInstructionK = instructionKForType(aTensorTy.getElementType());
+    auto bInstructionK = instructionKForType(bTensorTy.getElementType());
+    bool canSelectInstructionK = mmaEncoding.isHopper() && aInstructionK &&
+                                 bInstructionK &&
+                                 *aInstructionK == *bInstructionK;
+    if (canSelectInstructionK) {
+      instrMNK[2] = *aInstructionK;
+    } else if (op->hasAttr(kTleWgmmaAccumulatorChainCAttr)) {
+      op->emitError(
+          "cannot select a Hopper shared/shared WGMMA instruction shape "
+          "for this accumulator chain");
+      return failure();
+    }
+  }
+#endif
   auto accSize = 2 * (instrMNK[1] / 4);
   unsigned M = 4 * instrMNK[0];
   unsigned N = instrMNK[1];
