@@ -694,10 +694,8 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
 
     unsigned bufferFullCount =
         loadType == ttnvws::TokenLoadType::TMALoadOp ? 1 : THREADS_PER_TASK;
-    if (loadType != ttnvws::TokenLoadType::TMALoadOp) {
-      if (auto fullCount = getTokenCountOverride(createTokenOp, "full_count"))
-        bufferFullCount = *fullCount;
-    }
+    if (auto fullCount = getTokenCountOverride(createTokenOp, "full_count"))
+      bufferFullCount = *fullCount;
 #ifdef __TLE__
     if (auto offset = getTokenCountOverride(createTokenOp,
                                             kTleInferFullCountOffsetAttr)) {

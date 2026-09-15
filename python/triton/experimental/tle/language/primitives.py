@@ -70,6 +70,7 @@ TLE_PRIMITIVES = frozenset({
     "gpu.wgmma_wait",
     "gpu.buffered_tensor.reshape",
     "gpu.buffered_tensor.slot",
+    "gpu.buffered_tensor.subslice",
     "gpu.range",  # TODO: del
     "gpu.pipeline",  # TODO: del
 
