@@ -58,11 +58,7 @@ submodule_registrar = SubmoduleRegistrar(submodules=(
         "name": "triton_shared", "url": "https://github.com/microsoft/triton-shared.git", "commit_id":
         "5842469a16b261e45a2c67fbfc308057622b03ee"
     },
-    # {"name": "flir", "url": "https://github.com/flagos-ai/flir.git"},
-    {
-        "name": "flir", "url": "https://github.com/flagos-ai/flir.git", "commit_id":
-        "dc67bf7dc1ef21bf7bd3818c840f1ef87c347cdc"
-    },
+    {"name": "flir", "url": "https://github.com/flagos-ai/flir.git"},
     {"name": "FlagPrism", "url": "https://github.com/flagos-ai/FlagPrism.git"},
     {"name": "flagcx", "url": "https://github.com/flagos-ai/FlagCX.git", "relative_path": "tle/third_party/flagcx"},
     {
