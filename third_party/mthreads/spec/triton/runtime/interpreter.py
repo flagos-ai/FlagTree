@@ -200,6 +200,70 @@ def _get_np_dtype(tt_dtype):
     return np_types[tt_dtype]
 
 
+def _convert_float_legacy(input, input_dtype, output_dtype, rounding_mode):
+    input_uint_dtype = getattr(np, f"uint{input_dtype.primitive_bitwidth}")
+    output_unint_dtype = getattr(np, f"uint{output_dtype.primitive_bitwidth}")
+    input_bin = np.frombuffer(input.tobytes(), dtype=input_uint_dtype)
+    sign = (input_bin >> (input_dtype.primitive_bitwidth - 1)) & 0x01
+    input_exponent_width = input_dtype.primitive_bitwidth - input_dtype.fp_mantissa_width - 1
+    output_exponent_width = output_dtype.primitive_bitwidth - output_dtype.fp_mantissa_width - 1
+    significand = input_bin & ((1 << input_dtype.fp_mantissa_width) - 1)
+    bias_input = input_dtype.exponent_bias
+    bias_output = output_dtype.exponent_bias
+    exponent = ((input_bin >> input_dtype.fp_mantissa_width) & ((1 << input_exponent_width) - 1)).astype(np.int32)
+    subnormal_index = exponent == 0
+    if np.any(subnormal_index):
+        # Credit to Phil: phil@openai.com
+        # subnormal repr: ((-1.0)**sign) * (2.0**(1 - exp_bias)) * (2^(m0) + 2^(m1) + ... + 2^(mn))
+        # where m0, m1, ..., mn are the 1-bit of the mantissa
+        # convert it to normal repr: ((-1.0)**sign) * (2.0**(1 + m0 - exp_bias)) * (1 + 2^(m1 - m0) + ... + 2^(mn - m0))
+        bit_pos = np.zeros_like(input_bin, dtype=np.int32)
+        # Find the most significant bit of the mantissa in the significand
+        for i in range(input_dtype.fp_mantissa_width):
+            bit_index = ((significand >> i) & 0x01)
+            # pos should be >= 1
+            bit_pos[bit_index == 1] = input_dtype.fp_mantissa_width - i
+        zero_significand_index = significand == 0
+        exponent[subnormal_index] = 1 - bit_pos[subnormal_index]
+        # 0 significand and subnormal should be treated as 0
+        exponent[zero_significand_index & subnormal_index] = bias_input - bias_output
+        significand[subnormal_index] = (significand[subnormal_index] << bit_pos[subnormal_index]) & (
+            (1 << input_dtype.fp_mantissa_width) - 1)
+    # Prevent overflow and underflow
+    exponent_output = np.maximum(0, np.minimum((exponent - bias_input + bias_output), (1 << output_exponent_width) - 1))
+    exponent_output = exponent_output.astype(output_unint_dtype)
+    sign_output = sign.astype(output_unint_dtype)
+    if input_dtype.primitive_bitwidth > output_dtype.primitive_bitwidth:  # Downcast
+        significand_output = (significand >> (input_dtype.fp_mantissa_width - output_dtype.fp_mantissa_width)) & (
+            (1 << output_dtype.fp_mantissa_width) - 1)
+        if rounding_mode == _ir.ROUNDING_MODE.RTNE:  # Round to nearst even
+            # find the cut-off bit
+            cut_off = significand & (1 << (input_dtype.fp_mantissa_width - output_dtype.fp_mantissa_width - 1))
+            significand_output = significand_output + (cut_off > 0)
+        significand_output = significand_output.astype(output_unint_dtype)
+    else:  # Upcast
+        significand_output = (significand.astype(output_unint_dtype) <<
+                              (output_dtype.fp_mantissa_width - input_dtype.fp_mantissa_width)) & (
+                                  (1 << output_dtype.fp_mantissa_width) - 1)
+    subnormal_index = exponent_output == 0
+    if np.any(subnormal_index):  # underflow
+        # normal repr: ((-1.0)**sign) * (2.0**(exp - exp_bias_input)) * (1 + 2^(m0) + 2^(m1) + ... + 2^(mn))
+        # where m0, m1, ..., mn are the 1-bit of the mantissa
+        # shift = (1 - exp_bias_output) - (exp - exp_bias_input)
+        # convert it to subnormal repr: ((-1.0)**sign) * (2.0**(1 - exp_bias_output)) * (2^(-shift) + 2^(m0 - shift) + 2^(m1 - shift) + ... + 2^(mn - shift))
+        exponent = ((input_bin >> input_dtype.fp_mantissa_width) & ((1 << input_exponent_width) - 1)).astype(np.int32)
+        non_zero_exponent_index = exponent != 0
+        # If the original exponent is not zero, we still need to shift the significand and consider the 1.0 part in mantissa
+        subnormal_index = subnormal_index & non_zero_exponent_index
+        shift = np.zeros_like(input_bin, dtype=np.int32)
+        shift[subnormal_index] = (1 - bias_output) - (exponent[subnormal_index] - bias_input)
+        significand_output[subnormal_index] = (significand_output[subnormal_index] >> shift[subnormal_index]) | (
+            1 << (output_dtype.fp_mantissa_width - shift[subnormal_index]))
+    output = (sign_output << (output_dtype.primitive_bitwidth - 1)) | (
+        exponent_output << output_dtype.fp_mantissa_width) | significand_output
+    return output.reshape(input.shape)
+
+
 def _float_special_kind(dtype):
     """Special-value convention of a float format:
     "ieee": inf at e=max/m=0, nan at e=max/m!=0 (fp16/bf16/fp32/fp64/fp8e5)
@@ -313,6 +377,10 @@ def _encode_fp64_to_float(val, dtype, rounding_mode):
 
 
 def _convert_float(input, input_dtype, output_dtype, rounding_mode):
+    # FLAGTREE_LOW_PRECISION_FLOAT=0 keeps the upstream routine, which rounds half up
+    # under RTNE and has no per-format fp8 inf/nan handling
+    if not triton.knobs.language.low_precision_float:
+        return _convert_float_legacy(input, input_dtype, output_dtype, rounding_mode)
     input_uint_dtype = getattr(np, f"uint{input_dtype.primitive_bitwidth}")
     input_bits = np.frombuffer(input.tobytes(), dtype=input_uint_dtype)
     val = _decode_float_to_fp64(input_bits, input_dtype)

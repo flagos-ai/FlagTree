@@ -970,12 +970,15 @@ class MUSABackend(BaseBackend):
         from triton.language.extra.musa import utils as musa_utils
 
         capability = _capability_from_arch(options.arch)
-        return {
+        codegen_fns = {
             "convert_custom_types": musa_utils.convert_custom_float8,
             "min_dot_size": min_dot_size(self.target),
-            "resolve_dot": _make_resolve_dot(capability),
-            "resolve_dot_scaled": _make_resolve_dot_scaled(capability),
         }
+        # without the resolve_dot contract the semantic layer keeps the dot whitelist rules
+        if knobs.language.low_precision_float:
+            codegen_fns["resolve_dot"] = _make_resolve_dot(capability)
+            codegen_fns["resolve_dot_scaled"] = _make_resolve_dot_scaled(capability)
+        return codegen_fns
 
     def get_module_map(self) -> Dict[str, object]:
         try:

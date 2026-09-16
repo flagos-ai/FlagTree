@@ -282,9 +282,13 @@ class PPUBackend(BaseBackend):
                               f"Current target is sm_{capability}. This configuration will fail. "
                               f"Please set num_ctas=1 or target an SM90+ GPU."))
 
+        # cap80-88 have no e4m3 cvt instructions, so fp8e4nv is only usable there through
+        # the software cast; with FLAGTREE_LOW_PRECISION_FLOAT=0 it stays cap89+ as upstream
+        sw_e4nv_cast = knobs.language.low_precision_float and 80 <= capability < 89
+
         if "supported_fp8_dtypes" not in args:
             supported_fp8_dtypes = set(HGGCOptions.supported_fp8_dtypes)
-            if capability >= 80:
+            if capability >= 89 or sw_e4nv_cast:
                 # E4M3FN: cast is native from cap89, software on cap80
                 supported_fp8_dtypes.add("fp8e4nv")
             args["supported_fp8_dtypes"] = tuple(sorted(supported_fp8_dtypes))
@@ -294,8 +298,8 @@ class PPUBackend(BaseBackend):
             args["supported_fp8_cast_dtypes"] = args["supported_fp8_dtypes"]
 
         if "custom_cast_fp8_dtypes" not in args:
-            # cap80 has no e4m3 cvt instructions; fp8e4nv casts go through software
-            args["custom_cast_fp8_dtypes"] = ("fp8e4b15", "fp8e4nv") if capability < 89 else ("fp8e4b15", )
+            # fp8e4nv joins fp8e4b15 on the software cast path below cap89
+            args["custom_cast_fp8_dtypes"] = ("fp8e4b15", "fp8e4nv") if sw_e4nv_cast else ("fp8e4b15", )
 
         if "async_copy_dtypes" not in args:
             args["async_copy_dtypes"] = _MOVEMENT_DTYPES
@@ -327,9 +331,11 @@ class PPUBackend(BaseBackend):
         codegen_fns = {
             "convert_custom_types": ppu.convert_custom_float8_sub89 if sw_cast else ppu.convert_custom_float8,
             "min_dot_size": min_dot_size(self.target),
-            "resolve_dot": _make_resolve_dot(capability),
-            "resolve_dot_scaled": _make_resolve_dot_scaled(capability),
         }
+        # without the resolve_dot contract the semantic layer keeps the upstream dot dtype rules
+        if knobs.language.low_precision_float:
+            codegen_fns["resolve_dot"] = _make_resolve_dot(capability)
+            codegen_fns["resolve_dot_scaled"] = _make_resolve_dot_scaled(capability)
         return codegen_fns
 
     def get_module_map(self) -> Dict[str, ModuleType]:

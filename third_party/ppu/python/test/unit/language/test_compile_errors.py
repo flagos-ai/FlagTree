@@ -1,6 +1,7 @@
 import contextlib
 import pytest
 import os
+import warnings
 
 import torch
 import triton
@@ -399,6 +400,34 @@ def test_fp8_support(fresh_triton_cache, dtype):
             assert ("not supported in this architecture" in str(e.value.__cause__))
         except AssertionError as assertion_err:
             raise assertion_err from e.value
+
+
+@pytest.mark.skipif(not is_ppu(), reason="PPU-only fallback semantics")
+def test_fp8e4nv_low_precision_float_fallback(fresh_triton_cache, fresh_knobs):
+    # FLAGTREE_LOW_PRECISION_FLOAT=0 restores the upstream PPU rules for fp8e4nv:
+    # rejected below cap89 (no software cast) and no non-native warning on cap89+
+    cc = torch.cuda.get_device_capability(0)
+
+    @triton.jit
+    def dtype_kernel(dtype: tl.constexpr):
+        a = tl.full((64, 64), 0.0, dtype)
+        tl.dot(a, a)
+
+    src = triton.compiler.ASTSource(fn=dtype_kernel, signature={"dtype": "constexpr"},
+                                    constexprs={"dtype": tl.float8e4nv})
+    with fresh_knobs.language.scope():
+        fresh_knobs.language.low_precision_float = False
+        if cc >= (8, 9):
+            # native fp8 dot and no resolve_dot contract: nothing to warn about
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                triton.compile(src)
+            assert not [w for w in caught if "non-native" in str(w.message)]
+        else:
+            # fp8e4nv is only declared from cap89 when the software cast is off
+            with pytest.raises(CompilationError) as e:
+                triton.compile(src)
+            assert "not supported in this architecture" in str(e.value.__cause__)
 
 
 @pytest.mark.parametrize("dtype", [tl.float8e5, tl.int8, tl.float16])
