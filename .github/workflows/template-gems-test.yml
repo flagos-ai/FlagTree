@@ -84,7 +84,8 @@ jobs:
           GPU_DEVICES="${!GPU_ENV_VAR:-0}"
           echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
 
-          FLAGGEMS_REPO_DIR="${FLAGGEMS_CI_DIR}/FlagGems/test_${GITHUB_RUN_ID}"
+          DATE=$(date +'%Y%m%d_%H%M%S')
+          FLAGGEMS_REPO_DIR="${FLAGGEMS_CI_DIR}/FlagGems/test_${DATE}_${{ github.event.pull_request.number }}"
           BEST_DIR="${FLAGGEMS_CI_DIR}/Baseline/best_FlagGems_${{ inputs.flaggems-tag }}"
           echo "FLAGGEMS_REPO_DIR=$FLAGGEMS_REPO_DIR" >> $GITHUB_OUTPUT
           echo "best_dir=$BEST_DIR" >> $GITHUB_OUTPUT

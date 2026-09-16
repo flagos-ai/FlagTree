@@ -46,14 +46,14 @@ jobs:
       backend: iluvatar
       gpu-env-var: CUDA_VISIBLE_DEVICES
       flaggems-tag: 'v5.3.5'
-      flagtree-build-command: |
+      flagtree-build-command: |-
           set -x
           export FLAGTREE_BACKEND=iluvatar
           export TRITON_OFFLINE_BUILD=1
           export TRITON_BUILD_PROTON=OFF
           export TRITON_ILU_BUILD_GLUON=OFF
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
-      env-setup-command: |
+      env-setup-command: |-
         echo "LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}"
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}

@@ -91,10 +91,10 @@ jobs:
           echo "GPU devices: $GPU_DEVICES"
           echo "FlagGems tag: ${{ inputs.flaggems-tag }}"
 
-          FLAGGEMS_REPO_DIR="${FLAGGEMS_CI_DIR}/FlagGems/baseline_${GITHUB_RUN_ID}"
+          DATE=$(date +'%Y%m%d_%H%M%S')
+          FLAGGEMS_REPO_DIR="${FLAGGEMS_CI_DIR}/FlagGems/baseline_${DATE}_${GITHUB_RUN_ID}"
           echo "FLAGGEMS_REPO_DIR=$FLAGGEMS_REPO_DIR" >> $GITHUB_OUTPUT
 
-          DATE=$(date +'%Y%m%d_%H%M%S')
           COMMIT_ID="${GITHUB_SHA}"
           BASELINE_DIR="${FLAGGEMS_CI_DIR}/Baseline/${DATE}_${COMMIT_ID}"
           BASELINE_SUMMARY="${BASELINE_DIR}/summary.json"
