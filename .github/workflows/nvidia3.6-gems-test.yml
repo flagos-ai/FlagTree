@@ -46,7 +46,7 @@ jobs:
       backend: nvidia
       gpu-env-var: CUDA_VISIBLE_DEVICES
       flaggems-tag: 'v5.3.5'
-      flagtree-build-command: |
+      flagtree-build-command: |-
         set -x
         source ~/env-3.6.sh
         MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
