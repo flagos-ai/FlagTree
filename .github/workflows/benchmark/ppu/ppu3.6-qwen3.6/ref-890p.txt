@@ -31,3 +31,57 @@ torch==2.10.0
   Median TTFT (ms): 274.46
   Median TPOT (ms): 35.07
   Median ITL (ms): 34.55
+
+[2026/09/16] vllm-plugin-fl==v0.3.0-rc2.post1 (2026/09/11), flag_gems==5.3.4 (2026/08/10), flagtree===0.6.1+ppu3.6 (2026/08/18)
+# 服务冷启动时间: 8分20秒, 服务热启动时间: 1分30秒
+# 输入长度: 1K, 输出长度: 1K, 并发数: 4
+  Output token throughput (tok/s): 173.92
+  Total token throughput (tok/s): 347.85
+  Median TTFT (ms): 690.45
+  Median TPOT (ms): 22.35
+  Median ITL (ms): 22.35
+# 输入长度: 512, 输出长度: 512, 并发数: 4
+  Output token throughput (tok/s): 173.21
+  Total token throughput (tok/s): 346.41
+  Median TTFT (ms): 371.97
+  Median TPOT (ms): 22.38
+  Median ITL (ms): 22.20
+# 输入长度: 256, 输出长度: 256, 并发数: 4
+  Output token throughput (tok/s): 158.68
+  Total token throughput (tok/s): 317.37
+  Median TTFT (ms): 653.87
+  Median TPOT (ms): 22.98
+  Median ITL (ms): 22.12
+# 输入长度: 128, 输出长度: 128, 并发数: 4
+  Output token throughput (tok/s): 166.34
+  Total token throughput (tok/s): 332.68
+  Median TTFT (ms): 179.84
+  Median TPOT (ms): 22.68
+  Median ITL (ms): 22.07
+
+[2026/09/16] vllm-plugin-fl==v0.3.0-rc2.post1 (2026/09/11), flag_gems==5.3.4 (2026/08/10), flagtree===0.6.2a2+ppu3.6 (2026/09/10)
+# 服务冷启动时间: 7分40秒, 服务热启动时间: 1分30秒
+# 输入长度: 1K, 输出长度: 1K, 并发数: 4
+  Output token throughput (tok/s): 175.22
+  Total token throughput (tok/s): 350.44
+  Median TTFT (ms): 692.59
+  Median TPOT (ms): 22.17
+  Median ITL (ms): 22.17
+# 输入长度: 512, 输出长度: 512, 并发数: 4
+  Output token throughput (tok/s): 174.07
+  Total token throughput (tok/s): 348.12
+  Median TTFT (ms): 399.69
+  Median TPOT (ms): 22.22
+  Median ITL (ms): 22.04
+# 输入长度: 256, 输出长度: 256, 并发数: 4
+  Output token throughput (tok/s): 169.61
+  Total token throughput (tok/s): 339.22
+  Median TTFT (ms): 298.62
+  Median TPOT (ms): 22.47
+  Median ITL (ms): 21.97
+# 输入长度: 128, 输出长度: 128, 并发数: 4
+  Output token throughput (tok/s): 165.03
+  Total token throughput (tok/s): 330.06
+  Median TTFT (ms): 209.12
+  Median TPOT (ms): 22.62
+  Median ITL (ms): 21.92
