@@ -14,6 +14,7 @@ Grid: (n_rows,), each block handles one row via thread 0.
 Architecture: GCU400
 Lowering: gcu-compiler-opt (use_gcu_opt=True, default)
 """
+"""
 from typing_extensions import Literal as L
 
 from mlir import ir
@@ -130,3 +131,4 @@ if __name__ == "__main__":
         print(f"FAILED: max_diff={max_diff:.6e}")
         print(f"  edsl[:4] = {y_edsl[0, :4].tolist()}")
         print(f"  ref[:4]  = {y_ref[0, :4].tolist()}")
+"""
