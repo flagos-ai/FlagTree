@@ -121,12 +121,13 @@ def _make_resolve_dot(capability: int):
 
 def _make_resolve_dot_scaled(capability: int):
     """resolve_dot_scaled rule: cap89 has a native scaled-MMA path for
-    mxfp4; everything else decomposes to a promoted fp16/bf16 dot and is
-    declared NON_NATIVE with a compile-time warning."""
+    mxfp4 x mxfp4 (ScaledBlockedToMMAv2 only matches e2m1 on both sides);
+    everything else decomposes to a promoted fp16/bf16 dot and is declared
+    NON_NATIVE with a compile-time warning."""
     product = _product_name(capability)
 
     def resolve_dot_scaled(lhs_format, rhs_format):
-        if capability >= 89 and "e2m1" in (lhs_format, rhs_format):
+        if capability >= 89 and lhs_format == rhs_format == "e2m1":
             return DotCap(DotSupport.NATIVE)
         return DotCap(
             DotSupport.NON_NATIVE, diag=f"tl.dot_scaled ({lhs_format} x {rhs_format}) on {product} is not native: "
