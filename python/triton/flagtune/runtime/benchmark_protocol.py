@@ -27,6 +27,7 @@ driver module name so backend driver implementations remain unchanged.
 from __future__ import annotations
 
 import inspect
+import os
 import warnings
 from dataclasses import dataclass
 from enum import Enum
@@ -40,6 +41,22 @@ class BenchmarkMode(str, Enum):
 
     EVENT = "event"
     REPLAY = "replay"
+
+
+def resolve_requested_mode(
+    mode: BenchmarkMode | str | None = None,
+    *,
+    default: BenchmarkMode = BenchmarkMode.EVENT,
+) -> BenchmarkMode:
+    """Resolve an explicit mode or ``FLAGTUNE_BENCHMARK_MODE``.
+
+    ``default`` lets protocol owners preserve their historical behavior while
+    still honoring the explicit environment override.
+    """
+    requested = mode if mode is not None else os.environ.get("FLAGTUNE_BENCHMARK_MODE")
+    if requested is None or requested == "":
+        return BenchmarkMode(default)
+    return BenchmarkMode(requested)
 
 
 @dataclass(frozen=True)
@@ -209,9 +226,10 @@ def resolve_benchmarker(
                 ),
                 benchmark=replay_benchmark,
             )
+        reason = "active Triton backend does not provide a registered replay benchmarker"
         if not allow_fallback:
-            raise RuntimeError("active Triton backend does not provide a replay benchmarker")
-        fallback_reason = ("active Triton backend does not provide a replay benchmarker")
+            raise RuntimeError(reason)
+        fallback_reason = reason
         warnings.warn(
             f"{fallback_reason}; falling back to event timing",
             RuntimeWarning,

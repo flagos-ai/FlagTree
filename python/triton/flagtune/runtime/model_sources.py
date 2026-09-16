@@ -205,10 +205,7 @@ def _bundle_members(payload: bytes, source: str) -> bytes:
                 # macOS may add AppleDouble metadata alongside the real file
                 # when an archive is created or uploaded from Finder. It does
                 # not participate in the Manifest contract.
-                if (
-                    member.name in {"._manifest.json", "__MACOSX"}
-                    or member.name.startswith("__MACOSX/")
-                ):
+                if (member.name in {"._manifest.json", "__MACOSX"} or member.name.startswith("__MACOSX/")):
                     continue
                 if member.name != "manifest.json":
                     raise ManifestContractError(f"remote Manifest archive contains unexpected member {member.name!r}")

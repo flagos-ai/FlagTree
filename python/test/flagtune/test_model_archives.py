@@ -1063,6 +1063,21 @@ def test_exact_version_pin_precedes_download_latest_without_manifest_lookup(tmp_
     assert selected == cached
 
 
+@pytest.mark.parametrize("version", [None, "3.0.0"])
+def test_platform_manifest_miss_preserves_legacy_exception_protocol(tmp_path, monkeypatch, version):
+    monkeypatch.delenv("FLAGTUNE_MODEL_DIR", raising=False)
+    monkeypatch.delenv("FLAGTUNE_MODEL_VERSION", raising=False)
+    monkeypatch.delenv("FLAGTUNE_DISABLE_REMOTE", raising=False)
+    monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(model_sources, "resolve_package_info", lambda *_args, **_kwargs: None)
+    with pytest.raises(ModelUnavailableError) as caught:
+        FlagTuneModelManager().resolve("flaggems/platform-package-probe", "availability", platform_key="nvidia-h800",
+                                       dtype_key="f32", model_version=version)
+    assert isinstance(caught.value, FileNotFoundError) is (version is None)
+    if version is None:
+        assert str(caught.value).startswith("FlagTune Manifest has no package for platform 'nvidia-h800';")
+
+
 def test_manifest_missing_requested_version_fails(tmp_path, monkeypatch):
     local = _install_platform_package(tmp_path / "local", "1.0.0")
     _configure_platform_manifest(

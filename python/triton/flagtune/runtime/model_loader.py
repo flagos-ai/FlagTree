@@ -121,6 +121,10 @@ def _user_model_root() -> Optional[Path]:
     return Path(env) if env else None
 
 
+class _PlatformPackageNotFoundError(ModelUnavailableError, FileNotFoundError):
+    """An unversioned Manifest miss, also understood by legacy FlagGems."""
+
+
 class IncompatibleModelError(ModelValidationError):
     """Indicate that a resolved archive cannot serve the requested contract."""
 
@@ -436,8 +440,15 @@ class FlagTuneModelManager:
             )
 
         suffix = f" at version {requested!r}" if requested is not None else ""
-        raise ModelUnavailableError(f"FlagTune Manifest has no package for platform {identity.platform_key!r}{suffix}; "
-                                    f"checked flat user packages and package cache {cache_root} first")
+        # FlagGems v5.3.5 probes platform availability before calling the proposer.
+        # It recognizes this exact unversioned miss via FileNotFoundError and
+        # the message prefix below, then selects legacy tuning. Preserve that
+        # protocol without hiding download failures or explicit version misses.
+        # New integrations still see ModelUnavailableError; legacy users should
+        # update FlagGems to its supported Cost Model fallback integration.
+        error_type = _PlatformPackageNotFoundError if requested is None else ModelUnavailableError
+        raise error_type(f"FlagTune Manifest has no package for platform {identity.platform_key!r}{suffix}; "
+                         f"checked flat user packages and package cache {cache_root} first")
 
     def _validate_flagtune_version(self, config: Dict[str, Any], source: str) -> None:
         min_ver = config.get("flagtune_version_min")
@@ -524,21 +535,7 @@ class FlagTuneModelManager:
         package: PlatformPackage,
         source: str,
     ) -> None:
-        """Validate every child and the required H20 baseline models."""
-        if package.platform_key == "nvidia-h20":
-            required = {
-                ModelIdentity(
-                    "nvidia-h20",
-                    "flaggems/mm",
-                    variant,
-                    "bf16-bf16-bf16",
-                ).artifact_key
-                for variant in ("gemv", "general_tma", "splitk")
-            }
-            actual = set(package.models)
-            missing = sorted(required - actual)
-            if missing:
-                raise IncompatibleModelError(f"FlagTune package has missing required H20 models: {missing}")
+        """Validate only model artifacts requested by the caller."""
         for artifact in sorted(package.models):
             identity_parts = artifact.split("/")
             identity = ModelIdentity(

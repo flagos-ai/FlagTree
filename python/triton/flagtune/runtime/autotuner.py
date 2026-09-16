@@ -46,7 +46,11 @@ import warnings
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from triton.runtime.autotuner import Autotuner
-from triton.flagtune.runtime.benchmark_protocol import BenchmarkMode, resolve_benchmarker
+from triton.flagtune.runtime.benchmark_protocol import (
+    BenchmarkMode,
+    resolve_benchmarker,
+    resolve_requested_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,9 +187,9 @@ class Flagtuner(Autotuner):
                 DeprecationWarning,
                 stacklevel=2,
             )
-            selected_mode = (BenchmarkMode.REPLAY if use_cuda_graph else BenchmarkMode.EVENT)
+            selected_mode = resolve_requested_mode("replay" if use_cuda_graph else "event")
         else:
-            selected_mode = BenchmarkMode(benchmark_mode if benchmark_mode is not None else "replay")
+            selected_mode = resolve_requested_mode(benchmark_mode, default=BenchmarkMode.REPLAY)
         resolved_benchmark = resolve_benchmarker(
             selected_mode,
             warmup_ms=warmup,
