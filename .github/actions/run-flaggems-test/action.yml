@@ -101,13 +101,15 @@ runs:
       id: run-tests
       shell: bash
       working-directory: ${{ inputs.flaggems-path }}
+      env:
+        PRE_COMMAND: ${{ inputs.pre-command }}
       run: |
         set -x
 
         # Run user-provided pre-command if any (e.g. source env, set LD_LIBRARY_PATH)
-        if [ -n "${{ inputs.pre-command }}" ]; then
+        if [ -n "$PRE_COMMAND" ]; then
           echo "Running pre-command..."
-          eval "${{ inputs.pre-command }}"
+          eval "$PRE_COMMAND"
         fi
 
         # Set PYTHONPATH to the FlagGems source directory so script can run without installing FlagGems
