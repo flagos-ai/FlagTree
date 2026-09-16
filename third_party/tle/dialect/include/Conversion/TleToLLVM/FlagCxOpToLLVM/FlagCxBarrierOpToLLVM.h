@@ -21,18 +21,18 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef TLE_CONVERSION_TLE_TO_LLVM_DEVICE_INTRA_BARRIER_OP_TO_LLVM_H
-#define TLE_CONVERSION_TLE_TO_LLVM_DEVICE_INTRA_BARRIER_OP_TO_LLVM_H
+#ifndef TLE_CONVERSION_TLE_TO_LLVM_FLAGCX_BARRIER_OP_TO_LLVM_H
+#define TLE_CONVERSION_TLE_TO_LLVM_FLAGCX_BARRIER_OP_TO_LLVM_H
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/IR/PatternMatch.h"
 
 namespace mlir::triton::tle {
 
-void populateDeviceIntraBarrierOpToLLVMPatterns(
-    LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
-    PatternBenefit benefit);
+void populateFlagCxBarrierOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                           RewritePatternSet &patterns,
+                                           PatternBenefit benefit);
 
 } // namespace mlir::triton::tle
 
-#endif // TLE_CONVERSION_TLE_TO_LLVM_DEVICE_INTRA_BARRIER_OP_TO_LLVM_H
+#endif // TLE_CONVERSION_TLE_TO_LLVM_FLAGCX_BARRIER_OP_TO_LLVM_H

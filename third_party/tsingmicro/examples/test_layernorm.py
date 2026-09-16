@@ -142,7 +142,7 @@ def test_layer_norm(M, N, dtype, eps, device):
     # TODO We can't compare against Torch layer_norm since it doesn't support float16 on CPU
     #y_ref = torch.nn.functional.layer_norm(x, w_shape, weight, bias, eps).to(dtype)
 
-    print(y_tri)
+    #print(y_tri)
     #print(y_ref)
 
     # compare
@@ -167,8 +167,8 @@ def bench_layernorm(size, provider):
     y_tri = layer_norm(x, w_shape, weight, bias, eps, device)
     y_ref = torch.nn.functional.layer_norm(x, w_shape, weight, bias, eps).to(dtype)
 
-    print(y_tri)
-    print(y_ref)
+    #print(y_tri)
+    #print(y_ref)
 
     # compare
     assert torch.allclose(y_tri, y_ref, atol=1e-2, rtol=0)

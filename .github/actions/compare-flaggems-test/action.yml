@@ -67,14 +67,7 @@ runs:
       run: |
         set -x
 
-        # Determine baseline date
-        if [ -n "${{ inputs.baseline-date }}" ]; then
-          BASELINE_DATE="${{ inputs.baseline-date }}"
-        else
-          BASELINE_DATE=$(date +%Y-%m-%d)
-        fi
-
-        BASELINE_JSON="${{ inputs.baseline-dir }}/${BASELINE_DATE}/summary.json"
+        BASELINE_JSON="${{ inputs.baseline-dir }}/summary.json"
         CANDIDATE_JSON="${{ inputs.candidate-dir }}/summary.json"
 
         echo "Baseline: $BASELINE_JSON"

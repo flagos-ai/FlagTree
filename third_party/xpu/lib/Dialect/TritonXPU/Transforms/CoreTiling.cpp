@@ -4,6 +4,7 @@
 
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #define DEBUG_TYPE "tritonxpu-core-tiling"
 
@@ -283,14 +284,42 @@ struct TritonXPUCoreTilingPass
     }
   }
 
+  // 将 module 中的 op 按所属逻辑轴划分到两条 def-use 链：
+  //   - innerChain：归属内轴（axis 0）的 op
+  //   - outerChain：归属外轴（axis 1）的 op
+  //
+  // 划分以若干"锚点 op"（轴向明确）为起点，通过 getOpDefChainBwd
+  // 反向追溯它们的 producer 链：
+  //
+  //   Walk 1（锚点分类）：
+  //     * tt.expand_dims          -> 直接由 getAxis() 决定
+  //                                  （axis 0 -> inner，axis 1 -> outer），
+  //                                  expand_dims 自身不计入链，只收其
+  //                                  producer。
+  //     * triton_xpu.broadcast    -> 通过比较 src / result shape 推断：
+  //                                  dim 0 被 broadcast
+  //                                  即视为内轴链，否则外轴链。
+  //     * triton_xpu.lm2gm[_mask] -> 若被存值由 tt.reduce 产生，
+  //                                  则按 reduce 的 axis 决定 inner / outer。
+  //
+  //   Walk 2（store 的回退分类）：
+  //     对 Walk 1 未能分类的 lm2gm[_mask]，向上查找 tt.make_range producer，
+  //     并继承其所在的链。用于处理不由 reduce 喂入的 store。
+  //
+  // 得到的 innerChain / outerChain 会被后续 pass（如 recoverMakeRange）
+  // 用来为内 / 外轴分别分配不同的 encoding。
   void getChain(ModuleOp &mod, SetVector<Operation *> &innerChain,
                 SetVector<Operation *> &outerChain) {
+    // Walk 1: classify ops via unambiguous anchors.
     mod.walk([&](mlir::Operation *op) {
-      if (auto expandDimOp = dyn_cast<triton::ExpandDimsOp>(op)) {
-        auto src = expandDimOp.getSrc();
-        auto result = expandDimOp.getResult();
-        if (auto srcTy = mlir::dyn_cast<RankedTensorType>(src.getType())) {
-          if (auto resTy = mlir::dyn_cast<RankedTensorType>(result.getType())) {
+      llvm::TypeSwitch<Operation *>(op)
+          .Case<triton::ExpandDimsOp>([&](triton::ExpandDimsOp expandDimOp) {
+            auto srcTy =
+                dyn_cast<RankedTensorType>(expandDimOp.getSrc().getType());
+            auto resTy =
+                dyn_cast<RankedTensorType>(expandDimOp.getResult().getType());
+            if (!srcTy || !resTy)
+              return;
             if (expandDimOp.getAxis() == 0) {
               getOpDefChainBwd(innerChain, expandDimOp, expandDimOp);
               innerChain.remove(expandDimOp);
@@ -300,76 +329,67 @@ struct TritonXPUCoreTilingPass
             } else {
               llvm_unreachable("expand dim axis must be 0 or 1");
             }
-            dumpOpChain(dumpFlag, op, innerChain, outerChain);
-          }
-        }
-      } else if (auto broadcastOp = dyn_cast<triton::xpu::BroadcastOp>(op)) {
-        auto src = broadcastOp.getSrc();
-        auto result = broadcastOp.getResult();
-        if (auto srcTy = mlir::dyn_cast<RankedTensorType>(src.getType())) {
-          if (auto resTy = mlir::dyn_cast<RankedTensorType>(result.getType())) {
-            auto srcShape = srcTy.getShape();
-            auto resShape = resTy.getShape();
-            assert(srcShape.size() <= 2);
-            assert(resShape.size() <= 2);
-            assert(srcShape.size() == resShape.size());
-            if (srcShape[0] != resShape[0]) { // unequal dim 0 shape means
-                                              // in the inner axis op chain
-              getOpDefChainBwd(innerChain, broadcastOp, broadcastOp);
-              innerChain.remove(broadcastOp);
-            } else {
-              getOpDefChainBwd(outerChain, broadcastOp, broadcastOp);
-              outerChain.remove(broadcastOp);
-            }
-          }
-        }
-        dumpOpChain(dumpFlag, op, innerChain, outerChain);
-      } else if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMOp>(op)) {
-        if (auto reduceOp =
-                findDefOpBwd<triton::ReduceOp>(lm2gmOp.getValue())) {
-          if (reduceOp.getAxis() == 0) {
-            getOpDefChainBwd(innerChain, lm2gmOp, lm2gmOp);
-          } else if (reduceOp.getAxis() == 1) {
-            getOpDefChainBwd(outerChain, lm2gmOp, lm2gmOp);
-          } else {
-            llvm_unreachable("reduce axis must be 0 or 1");
-          }
-        }
-      } else if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMMaskOp>(op)) {
-        if (auto reduceOp =
-                findDefOpBwd<triton::ReduceOp>(lm2gmOp.getValue())) {
-          if (reduceOp.getAxis() == 0) {
-            getOpDefChainBwd(innerChain, lm2gmOp, lm2gmOp);
-          } else if (reduceOp.getAxis() == 1) {
-            getOpDefChainBwd(outerChain, lm2gmOp, lm2gmOp);
-          } else {
-            llvm_unreachable("reduce axis must be 0 or 1");
-          }
-        }
-      }
+            dumpOpChain(dumpFlag, expandDimOp, innerChain, outerChain);
+          })
+          .Case<triton::xpu::BroadcastOp>(
+              [&](triton::xpu::BroadcastOp broadcastOp) {
+                auto srcTy =
+                    dyn_cast<RankedTensorType>(broadcastOp.getSrc().getType());
+                auto resTy = dyn_cast<RankedTensorType>(
+                    broadcastOp.getResult().getType());
+                if (srcTy && resTy) {
+                  auto srcShape = srcTy.getShape();
+                  auto resShape = resTy.getShape();
+                  assert(srcShape.size() <= 2);
+                  assert(resShape.size() <= 2);
+                  assert(srcShape.size() == resShape.size());
+                  if (srcShape[0] != resShape[0]) {
+                    // Unequal dim 0 shape means in the inner axis op chain.
+                    getOpDefChainBwd(innerChain, broadcastOp, broadcastOp);
+                    innerChain.remove(broadcastOp);
+                  } else {
+                    getOpDefChainBwd(outerChain, broadcastOp, broadcastOp);
+                    outerChain.remove(broadcastOp);
+                  }
+                }
+                dumpOpChain(dumpFlag, broadcastOp, innerChain, outerChain);
+              })
+          .Case<triton::xpu::LM2GMOp, triton::xpu::LM2GMMaskOp>(
+              [&](auto lm2gmOp) {
+                auto reduceOp =
+                    findDefOpBwd<triton::ReduceOp>(lm2gmOp.getValue());
+                if (!reduceOp)
+                  return;
+                if (reduceOp.getAxis() == 0) {
+                  getOpDefChainBwd(innerChain, lm2gmOp, lm2gmOp);
+                } else if (reduceOp.getAxis() == 1) {
+                  getOpDefChainBwd(outerChain, lm2gmOp, lm2gmOp);
+                } else {
+                  llvm_unreachable("reduce axis must be 0 or 1");
+                }
+              });
     });
+    // Walk 2: fallback for lm2gm[_mask] not classified by Walk 1; inherit
+    // chain membership from a backward MakeRangeOp producer.
     mod.walk([&](mlir::Operation *op) {
-      if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMOp>(op)) {
-        if (auto _rangeOp =
-                findDefOpBwd<triton::MakeRangeOp>(lm2gmOp.getValue())) {
-          if (innerChain.contains(_rangeOp)) {
-            getOpDefChainBwd(innerChain, lm2gmOp, lm2gmOp);
-          } else if (outerChain.contains(_rangeOp)) {
-            getOpDefChainBwd(outerChain, lm2gmOp, lm2gmOp);
-          }
-          dumpOpChain(dumpFlag, op, innerChain, outerChain);
-        }
-      } else if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMMaskOp>(op)) {
-        if (auto _rangeOp =
-                findDefOpBwd<triton::MakeRangeOp>(lm2gmOp.getValue())) {
-          if (innerChain.contains(_rangeOp)) {
-            getOpDefChainBwd(innerChain, lm2gmOp, lm2gmOp);
-          } else if (outerChain.contains(_rangeOp)) {
-            getOpDefChainBwd(outerChain, lm2gmOp, lm2gmOp);
-          }
-          dumpOpChain(dumpFlag, op, innerChain, outerChain);
-        }
-      }
+      llvm::TypeSwitch<Operation *>(op)
+          .Case<triton::xpu::LM2GMOp, triton::xpu::LM2GMMaskOp>(
+              [&](auto lm2gmOp) {
+                // Skip if already classified by Walk 1 (e.g., via ReduceOp).
+                if (innerChain.contains(lm2gmOp) ||
+                    outerChain.contains(lm2gmOp))
+                  return;
+                auto rangeOp =
+                    findDefOpBwd<triton::MakeRangeOp>(lm2gmOp.getValue());
+                if (!rangeOp)
+                  return;
+                if (innerChain.contains(rangeOp)) {
+                  getOpDefChainBwd(innerChain, lm2gmOp, lm2gmOp);
+                } else if (outerChain.contains(rangeOp)) {
+                  getOpDefChainBwd(outerChain, lm2gmOp, lm2gmOp);
+                }
+                dumpOpChain(dumpFlag, lm2gmOp, innerChain, outerChain);
+              });
     });
   }
 
@@ -377,30 +397,27 @@ struct TritonXPUCoreTilingPass
   // In this case, we need to create a new mrOp for innerChain.
   // The two mrOp will be modified with different [inner/outer] encodings.
   void recoverMakeRange(ModuleOp &mod) {
-    mod.walk([&](mlir::Operation *op) {
-      if (auto rangeOp = dyn_cast<triton::MakeRangeOp>(op)) {
-        OpBuilder builder(rangeOp);
-        auto loc = builder.getUnknownLoc();
-        // Get the Value (the result of the MakeRangeOp)
-        mlir::Value rangeValue = rangeOp.getResult();
-        // Use a list to hold the operands to modify. Iterating over users
-        // while modifying is generally unsafe/tricky.
-        llvm::SmallVector<mlir::OpOperand *> usesToChange;
-        // Collect all uses (mlir::OpOperand*) except the first one (i=0)
-        int i = 0;
-        for (mlir::OpOperand &use : rangeValue.getUses()) {
-          if (i++ > 0) {
-            usesToChange.push_back(&use);
-          }
+    mod.walk([&](triton::MakeRangeOp rangeOp) {
+      OpBuilder builder(rangeOp);
+      auto loc = rangeOp.getLoc();
+      // Get the Value (the result of the MakeRangeOp)
+      mlir::Value rangeValue = rangeOp.getResult();
+      // Use a list to hold the operands to modify. Iterating over users
+      // while modifying is generally unsafe/tricky.
+      llvm::SmallVector<mlir::OpOperand *> usesToChange;
+      // Collect all uses (mlir::OpOperand*) except the first one (i=0)
+      for (auto &&[i, use] : llvm::enumerate(rangeValue.getUses())) {
+        if (i > 0) {
+          usesToChange.push_back(&use);
         }
-        // Now, iterate over the collected OpOperands and perform the fix
-        for (mlir::OpOperand *operandToChange : usesToChange) {
-          // 1. Clone the operation
-          auto newRangeOp = builder.create<triton::MakeRangeOp>(
-              loc, rangeOp.getType(), rangeOp.getStart(), rangeOp.getEnd());
-          // 2. Set the operand to use the new operation's result
-          operandToChange->set(newRangeOp.getResult());
-        }
+      }
+      // Now, iterate over the collected OpOperands and perform the fix
+      for (mlir::OpOperand *operandToChange : usesToChange) {
+        // 1. Clone the operation
+        auto newRangeOp = builder.create<triton::MakeRangeOp>(
+            loc, rangeOp.getType(), rangeOp.getStart(), rangeOp.getEnd());
+        // 2. Set the operand to use the new operation's result
+        operandToChange->set(newRangeOp.getResult());
       }
     });
   }
@@ -413,7 +430,7 @@ struct TritonXPUCoreTilingPass
     size_t groupsize = 64;
     bool isFirst = true;
 
-    auto getGroupInfo = [&](RankedTensorType &tensorType) {
+    auto getGroupInfo = [&](RankedTensorType tensorType) {
       if (auto globalEncoding = dyn_cast<triton::xpu::ClusterLayoutAttr>(
               tensorType.getEncoding())) {
         auto shape = tensorType.getShape();
@@ -448,27 +465,31 @@ struct TritonXPUCoreTilingPass
              "groups_per_cluster only could be 1, 2, 4, 8, 16, 32, 64");
       groupsize = ceil<size_t>(this->coreNum, ngroup);
     } else {
-      mod.walk([&](mlir::Operation *op) {
-        if (auto reduceOp = dyn_cast<triton::ReduceOp>(op)) {
-          if (auto tensorType =
-                  dyn_cast<RankedTensorType>(reduceOp.getOperandTypes()[0])) {
-            if (tensorType.getShape().size() == 2) {
-              getGroupInfo(tensorType);
-            } else if (isAxisNone(reduceOp)) {
-              auto defOp = reduceOp.getSrcs()[0].getDefiningOp();
-              if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(defOp)) {
-                if (auto reshapeResTy = dyn_cast<RankedTensorType>(
-                        reshapeOp.getResult().getType())) {
-                  if (reshapeResTy.getShape().size() == 1) {
-                    auto reshapeSrcTy = cast<RankedTensorType>(
-                        reshapeOp.getOperand().getType());
-                    getGroupInfo(reshapeSrcTy);
-                  }
-                }
-              }
-            }
-          }
+      mod.walk([&](triton::ReduceOp reduceOp) {
+        auto tensorType =
+            dyn_cast<RankedTensorType>(reduceOp.getOperandTypes()[0]);
+        if (!tensorType)
+          return;
+
+        if (tensorType.getShape().size() == 2) {
+          getGroupInfo(tensorType);
+          return;
         }
+
+        if (!isAxisNone(reduceOp))
+          return;
+
+        auto reshapeOp =
+            reduceOp.getSrcs()[0].getDefiningOp<triton::ReshapeOp>();
+        if (!reshapeOp)
+          return;
+
+        auto reshapeResTy =
+            dyn_cast<RankedTensorType>(reshapeOp.getResult().getType());
+        if (!reshapeResTy || reshapeResTy.getShape().size() != 1)
+          return;
+
+        getGroupInfo(cast<RankedTensorType>(reshapeOp.getOperand().getType()));
       });
     }
     LLVM_DEBUG(llvm::dbgs() << "[Reduction SoftGroup]: "
@@ -509,16 +530,21 @@ struct TritonXPUCoreTilingPass
             // must be globalEncoding
             if (auto parentEncoding = dyn_cast<triton::xpu::ClusterLayoutAttr>(
                     sliceEncoding.getParent())) {
+              // Build a padded 2D type with the parent ClusterLayoutAttr so
+              // that getOptimizedGEncoding can process it (it requires
+              // ClusterLayoutAttr encoding, not SliceEncodingAttr).
+              auto paddedShape = sliceEncoding.paddedShape(shape);
+              auto paddedTy =
+                  RankedTensorType::get(paddedShape, elemTy, parentEncoding);
               auto newParentEncoding =
-                  getOptimizedGEncoding(context, resTy, innerChain, outerChain,
-                                        op, ngroup, groupsize);
-              // Mirror 3.0 behavior: getOptimizedGEncoding(resTy) returns null
-              // when resTy carries SliceEncoding (it only matches
-              // ClusterLayoutAttr). 3.0 builds a SliceEncodingAttr with a null
-              // Attribute parent and lets Step 2.2/2.4 overwrite the encoding
-              // later. 3.6 changed the parent to DistributedEncodingTrait, so a
-              // null cast would abort. Skip the rewrite here when the parent
-              // is unavailable; the follow-up walks fix it correctly.
+                  getOptimizedGEncoding(context, paddedTy, innerChain,
+                                        outerChain, op, ngroup, groupsize);
+              // Pass paddedTy (not resTy): getOptimizedGEncoding only matches
+              // ClusterLayoutAttr, so handing it resTy (which carries
+              // SliceEncoding) returns null. The null guard stays as a
+              // safety net because 3.6 requires the parent to be a
+              // DistributedEncodingTrait, and casting null would abort;
+              // Step 2.2/2.4 overwrite the encoding later anyway.
               if (newParentEncoding) {
                 newEncoding = triton::gpu::SliceEncodingAttr::get(
                     context, sliceEncoding.getDim(),

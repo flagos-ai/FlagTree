@@ -103,7 +103,12 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
     if not isinstance(n_retries, int) or isinstance(n_retries, bool) or n_retries <= 0:
         raise ValueError("n_retries must be a positive integer")
 
-    with torch.cuda.stream(torch.cuda.Stream()):
+    # flagtree flagtune: Preserve work queued by the caller before switching streams for warmup.
+    # with torch.cuda.stream(torch.cuda.Stream()):
+    caller_stream = torch.cuda.current_stream()
+    benchmark_stream = torch.cuda.Stream()
+    benchmark_stream.wait_stream(caller_stream)
+    with torch.cuda.stream(benchmark_stream):
         # warmup
         fn()
         if grad_to_none is not None:

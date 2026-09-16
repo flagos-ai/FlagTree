@@ -368,6 +368,62 @@ TEST_F(LinearLayoutTest, FlattenOutsEdgeCases) {
             LinearLayout(BasesArray{}, {}));
 }
 
+#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+// FlagTree regression coverage for triton/pull/11646.
+TEST_F(LinearLayoutTest, InvertAndComposeLocalBroadcastWarp) {
+  auto reg = S("register"), lane = S("lane"), warp = S("warp");
+  auto block = S("block"), row = S("dim0");
+  // The 16x1 pointer regression after removing broadcast registers.
+  for (int laneBits : {5, 6}) {
+    std::vector<std::vector<int32_t>> srcLanes{{1}, {2}, {4}, {8}};
+    std::vector<std::vector<int32_t>> dstLanes{{0}, {0}, {0}, {1}, {2}};
+    srcLanes.resize(laneBits, {0});
+    dstLanes.resize(laneBits, {0});
+    LinearLayout src(
+        {{reg, {}}, {lane, srcLanes}, {warp, {{0}, {0}}}, {block, {}}}, {row});
+    LinearLayout dst(
+        {{reg, {}}, {lane, dstLanes}, {warp, {{4}, {8}}}, {block, {}}}, {row});
+    auto ordinary = dst.invertAndCompose(src);
+    auto local = invertAndComposeLocal(src, dst, {warp, block});
+    EXPECT_EQ(getOutputBasisMask(ordinary, {warp, block}, lane), 12u);
+    EXPECT_EQ(getInputBasisMask(src, warp, {row}), 0u);
+    EXPECT_EQ(local.compose(src), dst);
+    for (int w = 0; w < 4; ++w) {
+      for (int l = 0; l < (1 << laneBits); ++l) {
+        auto source = local.apply({{reg, 0}, {lane, l}, {warp, w}, {block, 0}});
+        EXPECT_EQ(source[2].second, w);
+        EXPECT_EQ(source[1].second & 15, (l >> 3 & 3) + 4 * w);
+      }
+    }
+  }
+}
+
+// FlagTree regression coverage for triton/pull/11646.
+TEST_F(LinearLayoutTest, InvertAndComposeLocalPreservesNonBroadcastBits) {
+  auto lane = S("lane"), warp = S("warp"), block = S("block");
+  auto row = S("dim0");
+  LinearLayout src({{lane, {{1}}}, {warp, {{0}, {2}}}, {block, {{0}}}}, {row});
+  LinearLayout dst({{lane, {{0}}}, {warp, {{0}, {2}}}, {block, {{1}}}}, {row});
+  auto local = invertAndComposeLocal(src, dst, {warp, block});
+  EXPECT_EQ(getInputBasisMask(src, warp, {row}), 2u);
+  EXPECT_EQ(local.compose(src), dst);
+  for (int w = 0; w < 4; ++w) {
+    for (int b = 0; b < 2; ++b) {
+      auto source = local.apply({{lane, 0}, {warp, w}, {block, b}});
+      EXPECT_EQ(source[0].second, b);
+      EXPECT_EQ(source[1].second, w);
+      EXPECT_EQ(source[2].second, b);
+    }
+  }
+  // A nonzero source warp basis cannot be redirected to the destination warp.
+  LinearLayout remoteDst({{lane, {{2}}}, {warp, {{0}, {1}}}, {block, {{0}}}},
+                         {row});
+  auto remote = invertAndComposeLocal(src, remoteDst, {warp, block});
+  EXPECT_EQ(remote.compose(src), remoteDst);
+  EXPECT_FALSE(remote.sublayoutIsZero(lane, warp));
+}
+#endif // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+
 TEST_F(LinearLayoutTest, InvertAndCompose_Simple) {
   LinearLayout l1({{S("in1"), {{2}, {1}, {4}}}}, {S("out")});
   LinearLayout l2({{S("in2"), {{4}, {1}, {2}}}}, {S("out")});

@@ -52,6 +52,31 @@ def test_cudagraph_helper_keeps_ten_retries_as_compatible_default():
     assert list(inspect.signature(do_bench_cudagraph).parameters)[-1] == "n_retries"
 
 
+@pytest.mark.parametrize("use_default_stream", [False, True])
+def test_cudagraph_helper_waits_for_caller_stream(use_default_stream):
+    """Preserve caller-stream work that precedes the benchmark warmup."""
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("requires a CUDA-compatible device")
+    if not hasattr(torch.cuda, "_sleep"):
+        pytest.skip("requires torch.cuda._sleep to widen the ordering window")
+
+    # Initialize lazy graph state before testing stream ordering.
+    scratch = torch.zeros(1024, device="cuda")
+    do_bench_cudagraph(lambda: scratch.zero_(), rep=1, n_retries=1)
+
+    buf = torch.ones(1024, device="cuda")
+    torch.cuda.synchronize()
+    caller_stream = (torch.cuda.default_stream() if use_default_stream else torch.cuda.Stream())
+    with torch.cuda.stream(caller_stream):
+        torch.cuda._sleep(100_000_000)
+        prior_read = buf.clone()
+        do_bench_cudagraph(lambda: buf.fill_(2), rep=1, n_retries=1)
+
+    torch.cuda.synchronize()
+    assert prior_read.unique().tolist() == [1.0]
+
+
 def test_musa_graph_helper_uses_supplied_device_interface():
     observed = {"captures": 0, "replays": 0, "synchronizes": 0}
 

@@ -289,19 +289,83 @@ x_shard = tle.sharding(
 x = tle.make_sharded_tensor(x_ptr, sharding=x_shard, shape=[4, 4])
 ```
 
-##### 3.2.4.3 Synchronization
+##### 3.2.4.3 `Synchronization`
 
 In complex distributed kernels (e.g., ring all-reduce or row/column-independent pipelines), only “same-row” or “same-column” blocks often need synchronization rather than the whole cluster. Global synchronization introduces unnecessary waiting.
 
+`tle.distributed_barrier` is a collective synchronization primitive and returns `None`. With the default `barrier_kind="sync"`, all participants in the selected synchronization group rendezvous at this point before continuing.
+
+All participants in one barrier instance must execute matching barrier calls in the same order. If a branch or loop makes some participants skip a call, the remaining participants can wait forever and the kernel can deadlock. If the communication only needs a one-way producer-to-consumer notification rather than a collective rendezvous, use `tle.signal` and `tle.signal_wait` instead.
+
 ```python
-def distributed_barrier(mesh):
-    """
-    If sub_mesh is passed, synchronize only devices in this sub-mesh.
-    Devices outside this sub-mesh should treat it as No-Op
-    (or compiler guarantees control flow does not enter).
-    """
-    pass
+def distributed_barrier(
+    mesh=None,
+    device_dptr=None,
+    space=None,
+    group_kind="block",
+    barrier_kind="sync",
+    order="acqrel",
+    index=0,
+    context_id=0,
+    memory_scope="system",
+):
+    ...
 ```
+
+`mesh` and `space` select the synchronization mode in the following order:
+
+- A static slice of a cluster mesh selects a cluster sub-mesh barrier. For example, `full_mesh[0, :]` synchronizes only the selected cluster members. The current implementation supports non-scalar meshes derived by slicing a launch mesh; every member of that sub-mesh must call the barrier, and CTAs outside it must not call the same sub-mesh barrier.
+- Setting `space` selects a FlagCX communicator barrier. It requires both `mesh` and `device_dptr`. `"device"` (also `"intra"` and `"intra_node"`) selects the intra-node team and requires a `device` topology axis. `"inter"` (also `"inter_node"`) selects the inter-node team, while `"world"` selects the world team; both require a `node` topology axis.
+- A mesh with only `block` axes selects a cooperative-grid barrier. It synchronizes the entire launched grid, not an arbitrary subset, and enables a cooperative-grid launch.
+- In all other cases, a full cluster mesh (or omitting `mesh`) selects a full-cluster barrier. When a mesh is passed, its cluster dimensions are inferred for the launch.
+
+A sliced cluster mesh has priority over `space`. In all other cases, an explicit `space` has priority over the grid and full-cluster modes.
+
+Example: pass a cluster sub-mesh and a distributed context to the same barrier call:
+
+```python
+# On the host.
+full_mesh = tle.device_mesh({
+    "block_cluster": [("cluster_x", 2), ("cluster_y", 2)],
+})
+row_mesh = full_mesh[0, :]
+device_dptr = tle.create_dist_tensor(buffer)
+
+# In a JIT kernel. `device_dptr` may also be used by FlagCX operations elsewhere.
+tle.distributed_barrier(row_mesh, device_dptr=device_dptr, space = "device")
+```
+
+Because `row_mesh` is a sliced cluster mesh, this call follows the 'submesh' dispatch rule and emits a cluster sub-mesh barrier. `device_dptr` is accepted but is not consumed by this barrier path; adding `space=...` does not turn this call into a FlagCX communicator barrier.
+
+For the FlagCX communicator path:
+
+- `device_dptr` is the distributed runtime context returned by `tle.create_dist_tensor(...)`.
+- `group_kind` is the collective execution scope: `"thread"`, `"warp"`, or `"block"` (default).
+- `barrier_kind` is `"arrive"`, `"wait"`, or `"sync"` (default). `"arrive"` only reports arrival; `"wait"` waits for the matching arrivals; `"sync"` performs both.
+- `order` controls the memory order: `"relaxed"`, `"acquire"`, `"release"`, or `"acqrel"` (default). `memory_scope` controls its scope: `"system"` (default), `"device"`, `"block"`, or `"thread"`. These two parameters apply only to the FlagCX path.
+- `index` selects a non-negative barrier channel. `context_id` selects a pre-created FlagCX context (notably the network context for `"inter"` and `"world"`) and must be a non-negative compile-time int32. Both values must match across all participants.
+
+Example: synchronize the FlagCX world team represented by a node/device mesh:
+
+```python
+# On the host: ctx = tle.create_dist_tensor(buffer)
+mesh = tle.device_mesh({"node": 2, "device": 8})
+
+# In a JIT kernel, `ctx` and `mesh` are passed as compile-time arguments.
+tle.distributed_barrier(
+    mesh,
+    device_dptr=ctx,
+    space="world",
+    group_kind="block",
+    barrier_kind="sync",
+    index=0,
+    context_id=0,
+    order="acqrel",
+    memory_scope="system",
+)
+```
+
+Cluster/sub-mesh and cooperative-grid modes currently use the NVIDIA lowering. The FlagCX mode additionally requires a TLE build and runtime with FlagCX enabled.
 
 ##### 3.2.4.4 Remote Access
 

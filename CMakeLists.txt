@@ -209,6 +209,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   # FlagPrism: register component targets before backend codegen captures TRITON_LIBS.
   flagtree_add_flagprism_components()
+  flagtree_configure_flir_dependency()
 
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
@@ -375,6 +376,7 @@ endif()
 if(NOT TRITON_BUILD_PYTHON_MODULE)
   # FlagPrism: component registration is defined in cmake/FlagTreeOptions.cmake.
   flagtree_add_flagprism_components()
+  flagtree_configure_flir_dependency()
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
   endforeach()
