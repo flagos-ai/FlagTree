@@ -178,23 +178,39 @@ jobs:
 
       - name: Trigger packaging workflows for the release tag
         # Tags pushed with GITHUB_TOKEN never fire `push` events (GitHub blocks
-        # recursive workflow runs), so build-deb/build-rpm would otherwise stay
-        # idle for every release tag (#1062). workflow_dispatch is the documented
-        # exception, so dispatch them explicitly. Backend-variant tags
-        # (<version>+<backend>) are not packaged and are skipped here as well.
+        # recursive workflow runs), so build-deb/build-rpm/upload-nexus would
+        # otherwise stay idle for every release tag (#1062). workflow_dispatch
+        # is the documented exception, so dispatch them explicitly. Dispatch
+        # bypasses the upload workflow's stable-tag guard, so only tags that
+        # pass the same allowlist are dispatched here: backend-variant
+        # (<version>+<backend>) and pre-release (rc/dev) tags are skipped.
         if: ${{ !contains(env.FLAGTREE_WHEEL_VERSION, '+') }}
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${FLAGTREE_WHEEL_VERSION}"
-          for wf in build-deb.yml build-rpm.yml; do
+          # Same stable-tag allowlist as the guard in the shared upload
+          # workflow (flagos-ai/build-infra .github/workflows/upload-nexus.yml).
+          if [[ ! "$TAG" =~ ^v?[0-9]+(\.[0-9]+){0,3}(\.post[0-9]+)?$ ]]; then
+            echo "Non-stable tag '${TAG}' - skipping packaging dispatch."
+            exit 0
+          fi
+          for wf in build-deb.yml build-rpm.yml upload-nexus.yml; do
             echo "Dispatching ${wf} on ${TAG}"
-            curl -fsS -X POST \
+            if curl -fsS -X POST \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               "https://api.github.com/repos/${{ github.repository }}/actions/workflows/${wf}/dispatches" \
-              -d "{\"ref\":\"${TAG}\"}"
+              -d "{\"ref\":\"${TAG}\"}"; then
+              echo "  -> dispatched"
+            elif [ "${wf}" = "upload-nexus.yml" ]; then
+              # The upload caller lands separately (#1063); do not fail the
+              # delivery until it exists on the tagged commit.
+              echo "  -> not dispatchable yet - skipping"
+            else
+              exit 1
+            fi
           done
 
       - name: FlagTree upload whl
