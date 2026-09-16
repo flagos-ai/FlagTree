@@ -38,9 +38,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  nv36x:
+  iluvatar36x:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
-    uses: flagos-ai/FlagTree/.github/workflows/template-gems-test.yml@main
+    uses: ./.github/workflows/template-gems-test.yml
     with:
       runner: iluvatar3.6
       backend: iluvatar
@@ -53,5 +53,7 @@ jobs:
           export TRITON_BUILD_PROTON=OFF
           export TRITON_ILU_BUILD_GLUON=OFF
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+      env-setup-command: |
+        echo "LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}"
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
