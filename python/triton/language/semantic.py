@@ -1716,7 +1716,11 @@ class TritonSemantic(Generic[TensorTy]):
             acc_handle = self.builder.create_splat(ret_ty.to_ir(self.builder), _0)
         else:
             acc_handle = acc.handle
-            assert acc.type.shape == ret_ty.shape and acc.type.element_ty == out_dtype
+            # same accumulator check as tl.dot: a bare assert would surface as an
+            # empty AssertionError instead of naming the mismatching types
+            if acc.type.shape != ret_ty.shape or acc.type.element_ty != out_dtype:
+                raise ValueError(f"tl.dot_scaled: accumulator type {acc.type} is incompatible with the "
+                                 f"dot_scaled result type {ret_ty}")
         rhs_scale_handle = None if rhs_scale_is_none else rhs_scale.handle
         lhs_scale_handle = None if lhs_scale_is_none else lhs_scale.handle
         self.verify_scaled_shape(M, N, K, None if lhs_scale_is_none else lhs_scale,
