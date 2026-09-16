@@ -95,11 +95,23 @@ class GASearcher:
         spaces.
     """
 
-    def __init__(self, param_space: ParameterSpace, ga_params: GAParams, seed: int = 42) -> None:
+    def __init__(
+        self,
+        param_space: ParameterSpace,
+        ga_params: GAParams,
+        seed: int = 42,
+        legal_configs: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> None:
         """Initialize an isolated deterministic genetic search state."""
         self.param_space = param_space
         self.ga_params = ga_params
         self._rng = random.Random(seed)
+        self._legal_configs = None
+        self._legal_keys = None
+        if legal_configs is not None:
+            normalized = [self._flatten_config(config) for config in legal_configs]
+            self._legal_configs = [config for config in normalized if self.param_space.validate(config)]
+            self._legal_keys = {self.param_space.config_key(config) for config in self._legal_configs}
 
     def generate(self, entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Generate a bounded batch of unique candidate history entries.
@@ -149,6 +161,13 @@ class GASearcher:
                 known_keys.add(self._entry_key(entry))
             known_entries.extend(offspring)
             generated_history.extend(offspring)
+        if self._legal_configs is not None and len(generated_history) < generated_limit:
+            unseen = [config for config in self._legal_configs if self.param_space.config_key(config) not in known_keys]
+            self._rng.shuffle(unseen)
+            for config in unseen[:generated_limit - len(generated_history)]:
+                entry = self._clone_entry(base_entry, config, self.ga_params.generations, "legal")
+                known_keys.add(self._entry_key(entry))
+                generated_history.append(entry)
         return generated_history[-generated_limit:]
 
     def crossover(self, parent_a: Dict[str, Any], parent_b: Dict[str, Any]) -> Dict[str, Any]:
@@ -179,10 +198,14 @@ class GASearcher:
     def _flatten_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
         meta = config.get("META", {}) if isinstance(config.get("META"), dict) else {}
         result: Dict[str, Any] = {}
-        for field in self.param_space.all_field_names:
+        legal_values = self.param_space.field_values()
+        for field, choices in legal_values.items():
             value = config.get(field, meta.get(field))
+            if value in choices:
+                result[field] = value
+                continue
             parsed = _parse_int(value)
-            if parsed is not None:
+            if parsed in choices:
                 result[field] = parsed
         return result
 
@@ -229,6 +252,8 @@ class GASearcher:
         return entry
 
     def _random_config(self) -> Dict[str, Any]:
+        if self._legal_configs:
+            return dict(self._rng.choice(self._legal_configs))
         return {field: self._rng.choice(choices) for field, choices in self.param_space.field_values().items()}
 
     def _parent_pool(self, known_entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -276,6 +301,8 @@ class GASearcher:
             if not self.param_space.validate(child):
                 continue
             key = self.param_space.config_key(child)
+            if self._legal_keys is not None and key not in self._legal_keys:
+                continue
             if key in known_keys or key in batch_keys:
                 continue
             batch_keys.add(key)

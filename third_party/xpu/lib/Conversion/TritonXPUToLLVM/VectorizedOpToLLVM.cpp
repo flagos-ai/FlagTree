@@ -743,9 +743,15 @@ struct VExtFOpConversion : public ConvertOpToLLVMPattern<triton::xpu::VExtFOp>,
     auto ctx = rewriter.getContext();
     auto llVals = unpackLLElements(loc, llVal, rewriter);
     unsigned numElems = getTotalElemsPerThread(val.getType());
+    // One 512-bit VREG holds 32 f16 lanes but only 16 f32 lanes, so a f16
+    // register usually expands into two f32 registers (low + high half). When
+    // the vectorization factor is 16 the source register only carries valid
+    // data in its low half and the result is a single register, so emit exactly
+    // as many halves as the result type asks for.
+    unsigned numResElems = getTotalElemsPerThread(res.getType());
 
     SmallVector<Value, 8> fp32x16Vecs;
-    for (int i = 0; i < numElems; ++i) {
+    for (int i = 0; i < numElems && fp32x16Vecs.size() < numResElems; ++i) {
       auto asml = rewriter.create<LLVM::InlineAsmOp>(
           loc, resElemTy, ValueRange{llVals[i]}, // operands
           "vfp162float_l.rn $0, $1",             // asm_string
@@ -756,6 +762,8 @@ struct VExtFOpConversion : public ConvertOpToLLVMPattern<triton::xpu::VExtFOp>,
           LLVM::AsmDialectAttr::get(ctx, LLVM::AsmDialect::AD_ATT),
           ArrayAttr::get(ctx, {}));
       fp32x16Vecs.emplace_back(asml.getRes());
+      if (fp32x16Vecs.size() == numResElems)
+        break;
       auto asmh = rewriter.create<LLVM::InlineAsmOp>(
           loc, resElemTy, ValueRange{llVals[i]}, // operands
           "vfp162float_h.rn $0, $1",             // asm_string
@@ -779,6 +787,11 @@ struct VExtFOpConversion : public ConvertOpToLLVMPattern<triton::xpu::VExtFOp>,
     auto ctx = rewriter.getContext();
     auto llVals = unpackLLElements(loc, llVal, rewriter);
     unsigned numElems = getTotalElemsPerThread(val.getType());
+    // Same low/high-half expansion caveat as convertFp16ToFp32: a bf16 register
+    // normally becomes two f32 registers, but at vectorization factor 16 only
+    // the low half carries valid data and the result is a single register.
+    // Emitting an unconditional 2x here overruns llvmResultStructTy.
+    unsigned numResElems = getTotalElemsPerThread(res.getType());
 
     VectorType vecFp16Ty = VectorType::get(32, f16_ty);
     Value padVec = rewriter.create<LLVM::UndefOp>(loc, vecFp16Ty);
@@ -787,12 +800,14 @@ struct VExtFOpConversion : public ConvertOpToLLVMPattern<triton::xpu::VExtFOp>,
     }
 
     SmallVector<Value, 8> fp32x16Vecs;
-    for (int i = 0; i < numElems; ++i) {
+    for (int i = 0; i < numElems && fp32x16Vecs.size() < numResElems; ++i) {
       Value val = bitcast(llVals[i], vecFp16Ty);
       Value vl = rewriter.create<mlir::LLVM::XPU::VMERGE_L_HFOp>(loc, vecFp16Ty,
                                                                  padVec, val);
       vl = bitcast(vl, resElemTy);
       fp32x16Vecs.emplace_back(vl);
+      if (fp32x16Vecs.size() == numResElems)
+        break;
       Value vh = rewriter.create<mlir::LLVM::XPU::VMERGE_H_HFOp>(loc, vecFp16Ty,
                                                                  padVec, val);
       vh = bitcast(vh, resElemTy);

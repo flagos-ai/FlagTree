@@ -841,6 +841,144 @@ module attributes {"ttg.num-warps" = 1 : i32} {
 
 // -----
 
+// Triton main: triton/pull/11646.
+#broadcast_src = #ttg.linear<{register=[[0, 1], [0, 2]], lane=[[1, 0], [2, 0], [4, 0], [8, 0], [16, 0]], warp=[[32, 0], [64, 0], [0, 0]], block=[]}>
+#broadcast_dst = #ttg.linear<{register=[[0, 1], [0, 2], [8, 0]], lane=[[0, 0], [0, 0], [1, 0], [2, 0], [4, 0]], warp=[[32, 0], [64, 0], [16, 0]], block=[]}>
+#broadcast_expanded = #ttg.linear<{register=[[0, 1], [0, 2], [4, 0], [8, 0]], lane=[[0, 0], [0, 0], [0, 0], [1, 0], [2, 0]], warp=[[32, 0], [64, 0], [16, 0]], block=[]}>
+#register_src = #ttg.linear<{register=[[32, 0]], lane=[[1, 0], [2, 0], [4, 0], [8, 0], [16, 0]], warp=[[0, 0], [64, 0], [0, 0]], block=[]}>
+#register_dst = #ttg.linear<{register=[], lane=[[1, 0], [2, 0], [4, 0], [8, 0], [16, 0]], warp=[[32, 0], [64, 0], [0, 0]], block=[]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32} {
+  // Triton main: triton/pull/11646.
+  // The source repeats its rows in warp ^ 4. Packed columns share a source lane.
+  // CHECK-LABEL: @convert_layout_broadcast_warp
+  tt.func @convert_layout_broadcast_warp(%arg0: tensor<128x4xf16, #broadcast_src>) {
+    // CHECK-NOT: nvvm.bar
+    // CHECK-COUNT-4: nvvm.shfl.sync
+    // CHECK-NOT: nvvm.shfl.sync
+    // CHECK-NOT: nvvm.bar
+    // CHECK: llvm.return
+    %0 = ttg.convert_layout %arg0 : tensor<128x4xf16, #broadcast_src> -> tensor<128x4xf16, #broadcast_dst>
+    tt.return
+  }
+
+  // Triton main: triton/pull/11646.
+  // Two register bits select source lanes, exceeding the shuffle heuristic.
+  // CHECK-LABEL: @convert_layout_broadcast_warp_expanded
+  tt.func @convert_layout_broadcast_warp_expanded(%arg0: tensor<128x4xf16, #broadcast_src>) {
+    // CHECK-NOT: nvvm.shfl.sync
+    // CHECK: nvvm.barrier
+    // CHECK: llvm.return
+    %0 = ttg.convert_layout %arg0 : tensor<128x4xf16, #broadcast_src> -> tensor<128x4xf16, #broadcast_expanded>
+    tt.return
+  }
+
+  // Triton main: triton/pull/11646.
+  // Reversing the conversion requires values from another warp.
+  // CHECK-LABEL: @convert_layout_broadcast_warp_reverse
+  tt.func @convert_layout_broadcast_warp_reverse(%arg0: tensor<128x4xf16, #broadcast_dst>) {
+    // CHECK-NOT: nvvm.shfl.sync
+    // CHECK: nvvm.barrier
+    // CHECK: llvm.return
+    %0 = ttg.convert_layout %arg0 : tensor<128x4xf16, #broadcast_dst> -> tensor<128x4xf16, #broadcast_src>
+    tt.return
+  }
+
+  // Triton main: triton/pull/11646.
+  // The source register is warp & 1, so keep the shared-memory fallback.
+  // CHECK-LABEL: @convert_layout_warp_dependent_register
+  tt.func @convert_layout_warp_dependent_register(%arg0: tensor<128x1xf32, #register_src>) {
+    // CHECK-NOT: nvvm.shfl.sync
+    // CHECK: nvvm.barrier
+    // CHECK: llvm.return
+    %0 = ttg.convert_layout %arg0 : tensor<128x1xf32, #register_src> -> tensor<128x1xf32, #register_dst>
+    tt.return
+  }
+}
+
+// -----
+
+// Triton main: triton/pull/11646.
+#src = #ttg.linear<{register=[[1]], lane=[[2], [4], [8], [16], [32]], warp=[[0]], block=[]}>
+#dst = #ttg.linear<{register=[], lane=[[1], [2], [4], [8], [16]], warp=[[32]], block=[]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32} {
+  // CHECK-LABEL: @convert_layout_warp_broadcast_register_select
+  tt.func @convert_layout_warp_broadcast_register_select(%arg0: tensor<64xi32, #src>) {
+    // CHECK: %[[PRE_TRUE:.*]] = llvm.mlir.constant(true)
+    // CHECK: llvm.select %[[PRE_TRUE]]
+    // CHECK-NOT: nvvm.bar
+    // CHECK-COUNT-2: nvvm.shfl.sync
+    // CHECK: llvm.select
+    // CHECK-NOT: nvvm.bar
+    // CHECK: llvm.return
+    %0 = ttg.convert_layout %arg0 : tensor<64xi32, #src> -> tensor<64xi32, #dst>
+    tt.return
+  }
+}
+
+// -----
+
+// Triton main: triton/pull/11646.
+#src = #ttg.linear<{register=[[1], [2]], lane=[[4], [8], [16], [32], [64]], warp=[[0]], block=[]}>
+#dst = #ttg.linear<{register=[[4], [1], [2]], lane=[[0], [8], [16], [32], [0]], warp=[[64]], block=[]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32} {
+  // CHECK-LABEL: @convert_layout_warp_broadcast_packed_permutation
+  tt.func @convert_layout_warp_broadcast_packed_permutation(%arg0: tensor<128xi8, #src>) {
+    // Packed output still needs byte permutations with a constant predicate.
+    // CHECK-NOT: nvvm.bar
+    // CHECK-COUNT-2: nvvm.shfl.sync
+    // CHECK: %[[POST_TRUE:.*]] = llvm.mlir.constant(true)
+    // CHECK: llvm.select %[[POST_TRUE]]
+    // CHECK: llvm.select %[[POST_TRUE]]
+    // CHECK-COUNT-2: llvm.call_intrinsic "llvm.nvvm.prmt"
+    // CHECK-NOT: nvvm.bar
+    // CHECK: llvm.return
+    %0 = ttg.convert_layout %arg0 : tensor<128xi8, #src> -> tensor<128xi8, #dst>
+    tt.return
+  }
+}
+
+// -----
+
+// Triton main: triton/pull/11646.
+#src = #ttg.linear<{register=[], lane=[[1], [2], [4], [8], [16]], warp=[[32], [0]], block=[[0]]}>
+#dst = #ttg.linear<{register=[], lane=[[0], [1], [2], [4], [8]], warp=[[32], [0]], block=[[16]]}>
+module attributes {"ttg.num-ctas" = 2 : i32, "ttg.num-warps" = 4 : i32} {
+  // CHECK-LABEL: @convert_layout_cta_broadcast
+  tt.func @convert_layout_cta_broadcast(%arg0: tensor<64xi32, #src>) {
+    // CHECK: nvg.cluster_id
+    // CHECK-NOT: nvvm.bar
+    // CHECK: nvvm.shfl.sync idx
+    // CHECK-NOT: nvvm.shfl.sync
+    // CHECK-NOT: nvvm.bar
+    // CHECK: llvm.return
+    %0 = ttg.convert_layout %arg0 : tensor<64xi32, #src> -> tensor<64xi32, #dst>
+    tt.return
+  }
+}
+
+// -----
+
+// FlagTree regression coverage for triton/pull/11646.
+// The 16x1 pointer case comes from FlagTree #1047.
+#src = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>
+#dst = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
+  // CHECK-LABEL: @convert_layout_broadcast_warp_pointer
+  tt.func @convert_layout_broadcast_warp_pointer(%arg0: tensor<16x1x!tt.ptr<f32>, #src>) {
+    // CHECK-NOT: nvvm.bar
+    // CHECK-NOT: llvm.store
+    // CHECK-COUNT-2: nvvm.shfl.sync idx
+    // CHECK-NOT: nvvm.shfl.sync
+    // CHECK-NOT: nvvm.bar
+    // CHECK-NOT: llvm.load
+    // CHECK: llvm.return
+    %0 = ttg.convert_layout %arg0 : tensor<16x1x!tt.ptr<f32>, #src> -> tensor<16x1x!tt.ptr<f32>, #dst>
+    tt.return
+  }
+}
+
+// -----
+
 #blocked0 = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 4], warpsPerCTA = [2, 2], order = [1, 0]}>
 #blocked1 = #ttg.blocked<{sizePerThread = [4, 1], threadsPerWarp = [4, 8], warpsPerCTA = [2, 2], order = [0, 1]}>
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
@@ -1304,9 +1442,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32} {
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
   // CHECK-LABEL: convert_blocked1d_to_slice0
   tt.func @convert_blocked1d_to_slice0(%src:tensor<32xi32, #blocked0>) {
-    // CHECK-NOT: llvm.store
-    // CHECK-COUNT-4: nvvm.shfl.sync
-    // CHECK-NOT: llvm.load
+    // CHECK: llvm.store {{.*}} : vector<1xi32>
+    // CHECK: nvvm.bar.warp.sync
+    // CHECK-COUNT-1: llvm.load {{.*}} -> vector<4xi32>
     %cvt = ttg.convert_layout %src : tensor<32xi32, #blocked0> -> tensor<32xi32, #ttg.slice<{dim = 0, parent = #blocked1}>>
     tt.return
   }
@@ -1319,9 +1457,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
   // CHECK-LABEL: convert_blocked1d_to_slice1
   tt.func @convert_blocked1d_to_slice1(%src:tensor<32xi32, #blocked0>) {
-    // CHECK-NOT: llvm.store
-    // CHECK-COUNT-8: nvvm.shfl.sync
-    // CHECK-NOT: llvm.load
+    // CHECK-COUNT-2: llvm.load {{.*}} -> vector<4xi32>
     %cvt = ttg.convert_layout %src : tensor<32xi32, #blocked0> -> tensor<32xi32, #ttg.slice<{dim = 1, parent = #blocked1}>>
     tt.return
   }
@@ -1334,9 +1470,10 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32} {
   // CHECK-LABEL: convert_blocked_to_blocked_ptr
   tt.func @convert_blocked_to_blocked_ptr(%src:tensor<32x!tt.ptr<f32>, #blocked0>) {
-    // CHECK-NOT: llvm.store
-    // CHECK-COUNT-8: nvvm.shfl.sync
-    // CHECK-NOT: nvvm.bar.warp.sync
+    // CHECK: llvm.ptrtoint
+    // CHECK: llvm.store
+    // CHECK: nvvm.bar.warp.sync
+    // CHECK: llvm.inttoptr
     // CHECK-COUNT-4: llvm.insertvalue
     %cvt = ttg.convert_layout %src : tensor<32x!tt.ptr<f32>, #blocked0> -> tensor<32x!tt.ptr<f32>, #blocked1>
     tt.return
@@ -2683,101 +2820,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 32 : i32, ttg.tar
     // CHECK-SAME: mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
     %result = tt.dot %arg0, %arg1, %cst, inputPrecision = tf32 :
       tensor<32x1x32xf16, #dot_operand_a> * tensor<32x32x32xf16, #dot_operand_b> -> tensor<32x1x32xf32, #mma>
-    tt.return
-  }
-}
-
-// -----
-
-#same_warp_src16 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>
-#same_warp_dst16 = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
-#same_warp_src32 = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [4, 1], order = [1, 0]}>
-#same_warp_dst32 = #ttg.blocked<{sizePerThread = [1, 4], threadsPerWarp = [8, 4], warpsPerCTA = [4, 1], order = [1, 0]}>
-
-// CHECK: module attributes {{.*}}ttg.shared = 0 : i32
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
-  // CHECK-LABEL: llvm.func @same_warp_ptr_broadcast_16
-  // CHECK-NOT: llvm.mlir.addressof @global_smem
-  // CHECK-COUNT-2: nvvm.shfl.sync idx
-  // CHECK-COUNT-8: llvm.insertvalue
-  tt.func @same_warp_ptr_broadcast_16(
-      %src: tensor<16x1x!tt.ptr<f32>, #same_warp_src16>) {
-    %cvt = ttg.convert_layout %src
-      : tensor<16x1x!tt.ptr<f32>, #same_warp_src16>
-     -> tensor<16x1x!tt.ptr<f32>, #same_warp_dst16>
-    tt.return
-  }
-
-  // CHECK-LABEL: llvm.func @same_warp_ptr_broadcast_32
-  // CHECK-NOT: llvm.mlir.addressof @global_smem
-  // CHECK-COUNT-2: nvvm.shfl.sync idx
-  // CHECK-COUNT-4: llvm.insertvalue
-  tt.func @same_warp_ptr_broadcast_32(
-      %src: tensor<32x1x!tt.ptr<f32>, #same_warp_src32>) {
-    %cvt = ttg.convert_layout %src
-      : tensor<32x1x!tt.ptr<f32>, #same_warp_src32>
-     -> tensor<32x1x!tt.ptr<f32>, #same_warp_dst32>
-    tt.return
-  }
-}
-
-// -----
-
-#same_warp_replicated = #ttg.linear<{
-  register = [],
-  lane = [[1], [2], [4], [8], [16]],
-  warp = [[1]],
-  block = []
-}>
-#same_warp_canonical = #ttg.linear<{
-  register = [],
-  lane = [[1], [2], [4], [8], [16]],
-  warp = [[0]],
-  block = []
-}>
-
-// CHECK: module attributes {{.*}}ttg.shared = 0 : i32
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32} {
-  // CHECK-LABEL: llvm.func @same_warp_representative
-  // CHECK-NOT: llvm.mlir.addressof @global_smem
-  // CHECK: llvm.xor
-  // CHECK-COUNT-2: nvvm.shfl.sync idx
-  tt.func @same_warp_representative(
-      %src: tensor<32x!tt.ptr<f32>, #same_warp_replicated>) {
-    %cvt = ttg.convert_layout %src
-      : tensor<32x!tt.ptr<f32>, #same_warp_replicated>
-     -> tensor<32x!tt.ptr<f32>, #same_warp_canonical>
-    tt.return
-  }
-}
-
-// -----
-
-#cross_warp_src = #ttg.linear<{
-  register = [],
-  lane = [[1], [2], [4], [8], [16]],
-  warp = [[32]],
-  block = []
-}>
-#cross_warp_dst = #ttg.linear<{
-  register = [],
-  lane = [[32], [2], [4], [8], [16]],
-  warp = [[1]],
-  block = []
-}>
-
-// CHECK: module attributes {{.*}}ttg.shared = {{[1-9][0-9]*}} : i32
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32} {
-  // CHECK-LABEL: llvm.func @cross_warp_required
-  // CHECK-NOT: nvvm.shfl.sync
-  // CHECK: llvm.mlir.addressof @global_smem
-  // CHECK-NOT: nvvm.shfl.sync
-  // CHECK: llvm.return
-  tt.func @cross_warp_required(
-      %src: tensor<64x!tt.ptr<f32>, #cross_warp_src>) {
-    %cvt = ttg.convert_layout %src
-      : tensor<64x!tt.ptr<f32>, #cross_warp_src>
-     -> tensor<64x!tt.ptr<f32>, #cross_warp_dst>
     tt.return
   }
 }

@@ -55,8 +55,8 @@ def get_flagtree_version(git_commit_hash_fn):
             return flagtree_ver
         return flagtree_ver + git_commit_hash_fn().replace("+", ".")
     if flagtree_backend:
-        return "0.6.0+" + flagtree_backend + git_commit_hash_fn().replace("+", ".")
-    return "0.6.0" + git_commit_hash_fn()
+        return "0.7.0+" + flagtree_backend + git_commit_hash_fn().replace("+", ".")
+    return "0.7.0" + git_commit_hash_fn()
 
 
 def get_long_description():
@@ -66,7 +66,7 @@ def get_long_description():
 
 def init_backends(backend_installer):
     if flagtree_backend:
-        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
+        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu", "amd"):
             backends = [
                 *backend_installer.copy(configs.default_backends + tuple(configs.extend_backends)),
                 *backend_installer.copy_externals(),
@@ -181,6 +181,8 @@ def get_backend_cmake_args(*args, **kargs):
         cmake_args = []
     if editable:
         cmake_args += ["-DEDITABLE_MODE=ON"]
+    if flagtree_backend not in configs.default_backends:
+        cmake_args += ["-DFLAGTREE_BACKEND={}".format(flagtree_backend)]
     return cmake_args
 
 
@@ -228,10 +230,7 @@ def get_hook_instance(hook_name):
 
 
 def enable_flagtree_third_party(name):
-    if name in ["triton_shared", "flagcx"]:
-        return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
-    else:
-        return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
+    return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
 
 def download_flagtree_third_party(name, condition, required=False, hook=None):
@@ -263,17 +262,20 @@ class FlagPrismSetup:
     """FlagPrism: manage optional component build and package integration."""
 
     def __init__(self, project_root, dependency_cmake_args):
-        self.project_root = Path(project_root)
+        # FlagPrism: use one source-root base regardless of the caller's cwd.
+        self.project_root = Path(project_root).resolve()
         backend = configs.flagtree_backend or ""
-        supported_backends = {"ascend", "iluvatar"}
+        # FlagPrism: register all supported integration backends together.
+        supported_backends = {"ascend", "iluvatar", "mthreads"}
         default = "ON" if backend in supported_backends else "OFF"
         self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
         self.build_config = None
         self._dependency_cmake_args = dependency_cmake_args
 
         if self.enabled and backend not in supported_backends:
+            # FlagPrism: report the newly supported mthreads backend.
             raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
-                               "FLAGTREE_BACKEND=ascend or iluvatar.")
+                               "FLAGTREE_BACKEND=ascend, iluvatar, or mthreads.")
         if not self.enabled:
             return
         if self._check_env_flag("TRITON_BUILD_PROTON"):
@@ -282,7 +284,15 @@ class FlagPrismSetup:
 
         # FlagPrism replaces Proton for the supported backend builds.
         os.environ["TRITON_BUILD_PROTON"] = "OFF"
-        source_root = self.project_root / "third_party" / "FlagPrism"
+        # FlagPrism: resolve external checkouts relative to the project root.
+        source_override = os.environ.get("FLAGPRISM_SOURCE_DIR", "").strip()
+        source_root = Path(source_override) if source_override else Path("third_party") / "FlagPrism"
+        if not source_root.is_absolute():
+            source_root = self.project_root / source_root
+        source_root = source_root.resolve()
+        # FlagPrism: never download a different checkout for an invalid override.
+        if source_override and not source_root.is_dir():
+            raise RuntimeError(f"FLAGPRISM_SOURCE_DIR must point to an existing directory: {source_root}")
         # Keep FlagPrism as an external checkout. A local directory or symlink
         # is authoritative; only bootstrap the registered dependency when it
         # is absent.
@@ -291,10 +301,14 @@ class FlagPrismSetup:
 
         helper_path = source_root / "python" / "flagprism_build.py"
         if not helper_path.is_file():
+            # FlagPrism: identify incomplete overrides instead of suggesting a download.
+            if source_override:
+                raise RuntimeError(f"FLAGPRISM_SOURCE_DIR does not contain python/flagprism_build.py: {source_root}")
             raise RuntimeError("FlagPrism sources are missing. Run the Python package build "
                                "to download third-party dependencies.")
         policy = runpy.run_path(str(helper_path), run_name="_flagprism_build")
-        self.build_config = policy["create_build_config"](self.project_root)
+        # FlagPrism: keep CMake and setuptools on the same external source tree.
+        self.build_config = policy["create_build_config"](self.project_root, source_root)
 
         legacy_link = self.project_root / "python" / "triton" / "profiler"
         if legacy_link.is_symlink():
@@ -752,7 +766,7 @@ def handle_flagtree_backend():
     global ext_sourcedir
     if flagtree_backend:
         print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
-        configs.extend_backends.append(flagtree_backend)
+        configs.set_extend_backends(flagtree_backend)
         if "editable_wheel" in sys.argv and flagtree_backend not in configs.plugin_backends:
             ext_sourcedir = os.path.abspath(f"./third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
 
@@ -855,9 +869,10 @@ download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro
    refer to https://github.com/flagos-ai/FlagCX
 '''
 
-download_flagtree_third_party("flagcx", condition=(not flagtree_backend), hook="handle_flagcx", required=True)
+download_flagtree_third_party("flagcx", condition=(flagtree_backend == "nvidia" or not flagtree_backend),
+                              hook="handle_flagcx", required=True)
 
-download_flagtree_third_party("tileir", condition=(flagtree_backend == "tileir"), required=True)
+download_flagtree_third_party("cuda-tile", condition=(flagtree_backend == "tileir"), required=True)
 
 handle_flagtree_backend()
 

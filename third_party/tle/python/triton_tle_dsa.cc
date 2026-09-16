@@ -21,8 +21,6 @@
 namespace py = pybind11;
 using namespace mlir;
 
-namespace dsa = mlir::dsa;
-
 // Inject a three-operand dsa binary op builder: create_dsa_<name>(lhs, rhs,
 // out).
 template <typename DsaOpT>
