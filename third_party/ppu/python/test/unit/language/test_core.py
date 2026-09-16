@@ -125,8 +125,10 @@ def check_type_supported(dtype, device):
         cc = torch.cuda.get_device_capability()
         if cc[0] < 8 and (dtype is tl.bfloat16 or dtype == "bfloat16" or dtype is torch.bfloat16):
             pytest.skip("bfloat16 is only supported on NVGPU with cc >= 80")
-        if cc[0] < 9 and dtype in {tl.float8e4nv, "float8e4nv", "float8_e4m3fn"}:
-            pytest.skip("float8e4nv is only supported on NVGPU with cc >= 90")
+        # On PPU, fp8e4nv is declared from cap80 (software cast, FP16-promoted dot)
+        e4nv_min_cc = (8, 0) if is_ppu() else (9, 0)
+        if cc < e4nv_min_cc and dtype in {tl.float8e4nv, "float8e4nv", "float8_e4m3fn"}:
+            pytest.skip(f"float8e4nv is only supported with cc >= {e4nv_min_cc}")
     if is_interpreter():
         if dtype in [tl.bfloat16, "bfloat16", torch.bfloat16]:
             pytest.skip("bfloat16 is not supported in the interpreter")
@@ -1046,8 +1048,10 @@ def test_abs_fp8(in_dtype, device):
         cc = torch.cuda.get_device_capability()
         if in_dtype == tl.float8e4b15 and cc >= (9, 0):
             pytest.skip("float8e4b15 not supported on CUDA >= 9.0")
-        if in_dtype == tl.float8e4nv and cc < (8, 9):
-            pytest.skip("float8e4nv not supported on CUDA < 8.9")
+        # On PPU, fp8e4nv is declared from cap80 (software cast)
+        e4nv_min_cc = (8, 0) if is_ppu() else (8, 9)
+        if in_dtype == tl.float8e4nv and cc < e4nv_min_cc:
+            pytest.skip(f"float8e4nv not supported on CUDA < {e4nv_min_cc}")
 
     @triton.jit
     def abs_kernel(X, Z, SIZE: tl.constexpr):
@@ -3255,8 +3259,10 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
                 if out_dtype == 'float16':
                     # TODO: support out_dtype=float16 for tl.dot on V100
                     pytest.skip("Only test out_dtype=float16 on devices with sm >=80")
-            if capability[0] < 9 and in_dtype == 'float8e4nv':
-                pytest.skip("float8e4nv not supported on sm <= 80")
+            # On PPU, fp8e4nv dot is declared from cap80 (NON_NATIVE FP16-promotion path)
+            e4nv_min_cc = (8, 0) if is_ppu() else (9, 0)
+            if capability < e4nv_min_cc and in_dtype == 'float8e4nv':
+                pytest.skip(f"float8e4nv not supported on sm < {e4nv_min_cc}")
             if in_dtype == 'float64' and input_precision != 'ieee':
                 pytest.skip("Only IEEE precision is supported for float64 dot")
 
@@ -3522,8 +3528,10 @@ def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, nu
     is_SM120 = False
     if is_cuda() or is_ppu():
         cc = torch.cuda.get_device_capability()
-        if cc < (8, 9):
-            pytest.skip("float8e4nv not supported on CUDA < 8.9")
+        # On PPU, dot_scaled decomposes to a promoted dot from cap80 (NON_NATIVE, warns)
+        e4nv_min_cc = (8, 0) if is_ppu() else (8, 9)
+        if cc < e4nv_min_cc:
+            pytest.skip(f"float8e4nv not supported on CUDA < {e4nv_min_cc}")
         is_SM120 = cc >= (12, 0)
     if is_hip():
         if not (is_hip_cdna() or is_hip_gfx11() or is_hip_gfx12()):

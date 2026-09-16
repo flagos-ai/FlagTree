@@ -15,7 +15,6 @@ Covers:
 """
 
 import os
-import re
 import shutil
 import pytest
 import torch
@@ -72,7 +71,7 @@ def _assert_stages_exist(compiled, stages=("ttir", "ttgir", "llir")):
 def _assert_no_tle_residue(compiled):
     llir = compiled.asm["llir"]
     leak = [ln for ln in llir.split("\n") if "tle." in ln]
-    assert not leak, f"residual tle.* ops in LLIR:\n" + "\n".join(leak[:5])
+    assert not leak, "residual tle.* ops in LLIR:\n" + "\n".join(leak[:5])
 
 
 def _assert_uses_ppu_aiu_v1_width(compiled, width):
@@ -435,7 +434,7 @@ def test_gemm_aiu_produces_mma():
     llir = compiled.asm["llir"]
     mma_markers = ("ppu.mma", "mma.sync", "fmuladd", "fma.")
     assert any(m in llir for m in mma_markers), \
-        f"no MMA marker in LLIR — dot may not have lowered through AIU path"
+        "no MMA marker in LLIR — dot may not have lowered through AIU path"
 
 
 @_skip_no_sdk
