@@ -206,6 +206,19 @@ static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
     return srcView;
   }
 
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    // A block argument carries no static offset information. Warp-specialize
+    // partition arguments map positionally to the parent's captures, so the
+    // view can be recovered there; any other block argument must give up so
+    // the caller falls back to the whole allocated interval instead of
+    // wrongly assuming the view starts at the buffer base.
+    if (auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(
+            arg.getOwner()->getParentOp()))
+      return getStaticMemDescView(
+          partitions.getParentOp().getExplicitCaptures()[arg.getArgNumber()]);
+    return std::nullopt;
+  }
+
   SmallVector<int64_t> shape(memDescTy.getShape().begin(),
                              memDescTy.getShape().end());
   return StaticAccessView{value, SmallVector<int64_t>(shape.size(), 0),
@@ -607,16 +620,35 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       // all-shared-memory dependency because one elected lane cannot publish
       // stores performed by other lanes without a preceding barrier.
       if (!arrive.getParticipantArrive()) {
+        // The dependency only orders the arrive against *prior* accesses, so
+        // check it with a transient probe instead of joining it into the
+        // running state; otherwise every later shared-memory op would
+        // spuriously conflict with this arrive until the next barrier.
         Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
-        curBlockInfo.syncWriteIntervals[allIntervals].insert(op);
-        curBlockInfo.syncReadIntervals[allIntervals].insert(op);
+        BlockInfo probeInfo;
+        probeInfo.syncWriteIntervals[allIntervals].insert(op);
+        probeInfo.syncReadIntervals[allIntervals].insert(op);
+        if (blockInfo->isIntersected(probeInfo, filter)) {
+          builder->setInsertionPoint(op);
+          insertBarrier(op, builder);
+          blockInfo->sync();
+        }
       }
     }
 #else
     if (isa<triton::nvidia_gpu::ArriveBarrierOp>(op)) {
+      // Probe against prior unsynced accesses to decide on a pre-arrive
+      // rendezvous, without leaking the all-shared-memory interval into the
+      // running state (see the TLE path above).
       Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
-      curBlockInfo.syncWriteIntervals[allIntervals].insert(op);
-      curBlockInfo.syncReadIntervals[allIntervals].insert(op);
+      BlockInfo probeInfo;
+      probeInfo.syncWriteIntervals[allIntervals].insert(op);
+      probeInfo.syncReadIntervals[allIntervals].insert(op);
+      if (blockInfo->isIntersected(probeInfo, filter)) {
+        builder->setInsertionPoint(op);
+        insertBarrier(op, builder);
+        blockInfo->sync();
+      }
     }
 #endif
     scratchBufferId = allocation->getBufferId(op);
