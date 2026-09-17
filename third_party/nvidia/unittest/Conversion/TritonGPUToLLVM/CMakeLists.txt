@@ -6,3 +6,11 @@ add_triton_ut(
     TritonNVIDIAGPUToLLVM
     NVGPUIR MLIRUBToLLVM
 )
+
+add_dependencies(TestPtxAsmFormat
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
+)

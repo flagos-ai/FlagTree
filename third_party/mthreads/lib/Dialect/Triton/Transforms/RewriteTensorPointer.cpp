@@ -1,3 +1,5 @@
+#include <memory>
+#include <set>
 #include <stack>
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -91,7 +93,49 @@ public:
     return cachedOffsetWithRange[i] = expandedResult;
   }
 
-  Value generatePtr(OpBuilder &builder, const Location &loc) {
+  Value getClampedOffsetWithRange(OpBuilder &builder, const Location &loc,
+                                  unsigned i) {
+    auto indexI32RowType =
+        RankedTensorType::get({tensorShape[i]}, builder.getI32Type());
+    auto indexRowType =
+        RankedTensorType::get({tensorShape[i]}, builder.getI64Type());
+
+    Value splatOffset =
+        triton::SplatOp::create(builder, loc, indexRowType, offsets[i]);
+    Value range = triton::MakeRangeOp::create(builder, loc, indexI32RowType, 0,
+                                              tensorShape[i]);
+    Value i64Range = arith::ExtSIOp::create(builder, loc, indexRowType, range);
+
+    Value offsetWithRange =
+        arith::AddIOp::create(builder, loc, splatOffset, i64Range);
+
+    Value zero = mlir::arith::ConstantIntOp::create(builder, loc,
+                                                    builder.getI64Type(), 0);
+    Value splatZero =
+        triton::SplatOp::create(builder, loc, offsetWithRange.getType(), zero);
+    Value clampedLower =
+        arith::MaxSIOp::create(builder, loc, offsetWithRange, splatZero);
+
+    Value shapeMinusOne =
+        arith::SubIOp::create(builder, loc, shape[i],
+                              mlir::arith::ConstantIntOp::create(
+                                  builder, loc, builder.getI64Type(), 1));
+    Value splatUpper = triton::SplatOp::create(
+        builder, loc, offsetWithRange.getType(), shapeMinusOne);
+    Value clamped =
+        arith::MinSIOp::create(builder, loc, clampedLower, splatUpper);
+
+    for (int j = 0; j < static_cast<int>(tensorShape.size()); ++j) {
+      if (j == static_cast<int>(i))
+        continue;
+      clamped = triton::ExpandDimsOp::create(builder, loc, clamped, j);
+    }
+
+    return clamped;
+  }
+
+  Value generatePtr(OpBuilder &builder, const Location &loc,
+                    const std::optional<ArrayRef<int32_t>> &boundaryCheck) {
     assert(tensorShape.size() == offsets.size() &&
            tensorShape.size() == strides.size());
     auto indexTensorType =
@@ -99,10 +143,22 @@ public:
     auto ptrType = cast<triton::PointerType>(base.getType());
     auto ptrTensorType = RankedTensorType::get(tensorShape, ptrType);
 
+    std::set<int32_t> boundaryDims;
+    if (boundaryCheck.has_value()) {
+      for (auto dim : boundaryCheck.value()) {
+        boundaryDims.insert(dim);
+      }
+    }
+
     // Generate offsets per dimension
     Value ptr = triton::SplatOp::create(builder, loc, ptrTensorType, base);
     for (unsigned i = 0; i < tensorShape.size(); ++i) {
-      auto offsetWithRange = getExpandedOffsetWithRange(builder, loc, i);
+      Value offsetWithRange;
+      if (boundaryDims.count(static_cast<int32_t>(i))) {
+        offsetWithRange = getClampedOffsetWithRange(builder, loc, i);
+      } else {
+        offsetWithRange = getExpandedOffsetWithRange(builder, loc, i);
+      }
 
       // We must splat strides into the expanded shape not a row for retaining
       // the divisibility information given by strides
@@ -305,7 +361,7 @@ public:
     }
 
     // Generate new `ptr`, `mask` and `other`
-    auto newPtr = info.generatePtr(builder, op->getLoc());
+    auto newPtr = info.generatePtr(builder, op->getLoc(), boundaryCheck);
     auto newMask = info.generateMask(builder, op->getLoc(), boundaryCheck);
     Value newOther;
     if (auto loadOp = dyn_cast<triton::LoadOp>(op))

@@ -13,6 +13,15 @@
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace mlir::triton::gpu {
+static bool isCompatibleOrder(ArrayRef<int64_t> contiguity,
+                              ArrayRef<unsigned> order) {
+  for (unsigned i = 1; i < order.size(); ++i) {
+    if (contiguity[order[i - 1]] < contiguity[order[i]])
+      return false;
+  }
+  return true;
+}
+
 BlockedEncodingAttr
 buildCoalescedEncoding(ModuleAxisInfoAnalysis &axisInfoAnalysis, Operation *op,
                        int numWarps, int threadsPerWarp,
@@ -37,21 +46,15 @@ buildCoalescedEncoding(ModuleAxisInfoAnalysis &axisInfoAnalysis, Operation *op,
     return rttType && rttType.getShape() == refTensorType.getShape();
   };
 
-  // The desired divisibility is the maximum divisibility among all dependent
-  // pointers which have the same shape and order as `ptr`.
-  llvm::SmallSetVector<Operation *, 32> memAccessesSameOrder;
-  memAccessesSameOrder.insert(op);
+  llvm::SmallSetVector<Operation *, 32> memAccessesSameShape;
+  memAccessesSameShape.insert(op);
   if (ptr.getDefiningOp()) {
-    for (Operation *use : mlir::getSlice(op)) {
-      Value val = getMemAccessPtr(use);
-      if (!val || !matchesShape(val) || memAccessesSameOrder.contains(use))
+    for (Operation *sliceOp : mlir::getSlice(op)) {
+      Value val = getMemAccessPtr(sliceOp);
+      if (!val || !matchesShape(val) || memAccessesSameShape.contains(sliceOp))
         continue;
-      auto currOrder = getOrderFromContiguity(
-          axisInfoAnalysis.getAxisInfo(val)->getContiguity());
-      if (order == currOrder) {
-        LDBG("multi-root-slice: insert to memAccessesSameOrder " << *use);
-        memAccessesSameOrder.insert(use);
-      }
+      LDBG("multi-root-slice: insert to memAccessesSameShape " << *sliceOp);
+      memAccessesSameShape.insert(sliceOp);
     }
   }
 
@@ -60,19 +63,40 @@ buildCoalescedEncoding(ModuleAxisInfoAnalysis &axisInfoAnalysis, Operation *op,
   int numElems = product<int64_t>(shapePerCTA);
   int numThreads = numWarps * threadsPerWarp;
 
-  unsigned perThread =
-      getNumElementsPerThread(op, order, axisInfoAnalysis, shapePerCTA);
-  LDBG("perThread for op: " << perThread);
-
-  for (Operation *opSameOrder : memAccessesSameOrder) {
-    if (opSameOrder == op)
-      continue;
-    unsigned currPerThread = getNumElementsPerThread(
-        opSameOrder, order, axisInfoAnalysis, shapePerCTA);
-    LDBG("perThread for opSameOrder: " << currPerThread);
-    perThread = std::max(perThread, currPerThread);
+  SmallVector<SmallVector<unsigned>> candidateOrders;
+  for (Operation *access : memAccessesSameShape) {
+    auto accessPtr = getMemAccessPtr(access);
+    auto accessContiguity =
+        axisInfoAnalysis.getAxisInfo(accessPtr)->getContiguity();
+    auto candidate = getOrderFromContiguity(accessContiguity);
+    if (llvm::find(candidateOrders, candidate) == candidateOrders.end())
+      candidateOrders.push_back(std::move(candidate));
   }
 
+  unsigned bestPerThread = 0;
+  for (const auto &candidateOrder : candidateOrders) {
+    if (!isCompatibleOrder(contiguity, candidateOrder))
+      continue;
+    unsigned candidatePerThread = 0;
+    for (Operation *access : memAccessesSameShape) {
+      auto accessPtr = getMemAccessPtr(access);
+      auto accessContiguity =
+          axisInfoAnalysis.getAxisInfo(accessPtr)->getContiguity();
+      if (!isCompatibleOrder(accessContiguity, candidateOrder))
+        continue;
+      SmallVector<unsigned> candidate(candidateOrder);
+      candidatePerThread =
+          std::max(candidatePerThread,
+                   getNumElementsPerThread(access, candidate, axisInfoAnalysis,
+                                           shapePerCTA));
+    }
+    if (candidatePerThread > bestPerThread) {
+      order.assign(candidateOrder.begin(), candidateOrder.end());
+      bestPerThread = candidatePerThread;
+    }
+  }
+
+  unsigned perThread = bestPerThread;
   perThread = std::min<int>(perThread, std::max(numElems / numThreads, 1));
   LDBG("perThread: " << perThread);
 

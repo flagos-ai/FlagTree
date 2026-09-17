@@ -4,6 +4,11 @@ add_triton_library(TritonAMDGPUIR
   DEPENDS
   TritonAMDGPUTableGen
   TritonAMDGPUAttrDefsIncGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRLLVMDialect

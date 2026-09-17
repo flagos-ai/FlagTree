@@ -556,6 +556,53 @@ def make_launcher(constants, signature, ids, metadata):
     # must NOT be passed via the python launcher either.
     signature = {i: ty for i, ty in signature.items() if ty != "constexpr"}
 
+    # TensorDescType is lowered to a single ptr<1> in the LLVM kernel (no
+    # multi-arg expansion). Map "tensordesc<...>" to a pointer type in the
+    # C launcher so it is passed as void*.
+    signature = {i: (f"*{ty}" if ty.startswith("tensordesc") else ty) for i, ty in signature.items()}
+
+    # A tensor descriptor argument reaches the kernel as (4*rank + 2) flat
+    # parameters.  tensor_descriptor_base_type contributes the handle group --
+    # base pointer, shape and strides as i64, then the padding flag -- and
+    # tensor_descriptor_type appends the Python-visible `.shape` (i32) and
+    # `.strides` (i64) tuples on top of it, so shape and strides appear twice.
+    # For rank 2 that is:
+    #   (ptr<1>, i64 x4, i1, i32 x2, i64 x2)  — 10 parameters
+    # The C launcher must declare all of them: passing fewer shifts every later
+    # parameter, including the three grid arguments the LoopGrid pass appends at
+    # the end, which then read as zero and the loop_grid body never runs.
+    def _tensordesc_rank(ty):
+        """Parse rank from tensordesc type string, e.g. '*tensordesc<f32[128]>' → 1, '*tensordesc<f32[128,64]>' → 2."""
+        try:
+            inner = ty.split("[")[1].split("]")[0]
+            return len(inner.split(","))
+        except (IndexError, ValueError):
+            return 1  # default to 1D if parsing fails
+
+    expanded_signature = {}
+    exp_idx = 0
+    for i, ty in signature.items():
+        if ty.startswith("*tensordesc"):
+            rank = _tensordesc_rank(ty)
+            expanded_signature[exp_idx] = ty  # base pointer (void*)
+            exp_idx += 1
+            for _ in range(2 * rank):
+                expanded_signature[exp_idx] = "i64"  # handle shape, then strides
+                exp_idx += 1
+            expanded_signature[exp_idx] = "i1"  # padding == "nan"
+            exp_idx += 1
+            for _ in range(rank):
+                expanded_signature[exp_idx] = "i32"  # .shape
+                exp_idx += 1
+            for _ in range(rank):
+                expanded_signature[exp_idx] = "i64"  # .strides
+                exp_idx += 1
+        else:
+            expanded_signature[exp_idx] = ty
+            exp_idx += 1
+    signature = expanded_signature
+    constants = {}  # constexprs already removed from signature; nothing to skip
+
     # Record the end of regular arguments;
     # subsequent arguments are architecture-specific descriptors, such as tensor descriptors for CUDA.
     arg_decls = ", ".join(f"{ty_to_cpp(ty)} arg{i}" + (f", int64_t arg{i}_numel" if ty[0] == "*" else "")
@@ -921,7 +968,24 @@ class XPULauncher(object):
         fixed = args[:9]
         kernel_args = args[9:]
         filtered = [arg for arg, ty in zip(kernel_args, self._signature.values()) if ty != "constexpr"]
-        self.launch(*fixed, *filtered)
+        # A TensorDescriptor expands to (4*rank + 2) flat arguments, matching
+        # tensor_descriptor_type._flatten_ir: the handle group (base pointer,
+        # shape and strides as i64, padding flag) followed by the Python-visible
+        # `.shape` (i32) and `.strides` (i64) tuples.  Shape and strides are
+        # therefore passed twice, with the same values.
+        from triton.tools.tensor_descriptor import TensorDescriptor
+        expanded = []
+        for arg in filtered:
+            if isinstance(arg, TensorDescriptor):
+                expanded.append(arg.base)  # tensor with data_ptr/numel
+                expanded.extend(arg.shape)  # handle shape, i64
+                expanded.extend(arg.strides)  # handle strides, i64
+                expanded.append(arg.padding == "nan")
+                expanded.extend(arg.shape)  # .shape, i32
+                expanded.extend(arg.strides)  # .strides, i64
+            else:
+                expanded.append(arg)
+        self.launch(*fixed, *expanded)
 
 
 @functools.lru_cache(maxsize=1)
@@ -947,10 +1011,31 @@ class XPUDriver(GPUDriver):
 
     @staticmethod
     def _get_current_xpu_device():
-        return int(os.environ.get("TRITON_XPU_DEVICE", os.environ.get("XPU_VISIBLE_DEVICE", "0")))
+        # torch (torch_xmlir) owns the device/stream state: every kernel launch
+        # and every CUDA-graph capture happens on torch's *current* device, and
+        # torch.cuda.set_device(n) does NOT touch TRITON_XPU_DEVICE.  Reading
+        # the env var here made triton submit to the wrong device/stream
+        # whenever the torch device != the env default (multi-GPU rank != 0:
+        # capture failed with xpuLaunchKernel err -900, or silently recorded an
+        # empty graph).  Device masking itself is done via CUDA_VISIBLE_DEVICES,
+        # so torch's index space IS the runtime's.  Query torch as the source
+        # of truth; keep the env var as a fallback for compile-only/smoke paths
+        # with no usable torch device (the original reason for this override).
+        try:
+            import torch
+            return int(torch.cuda.current_device())
+        except Exception:
+            return int(os.environ.get("TRITON_XPU_DEVICE", os.environ.get("XPU_VISIBLE_DEVICE", "0")))
 
     @staticmethod
     def _set_current_xpu_device(device):
+        # Mirror into torch so the runtime device state and the env marker
+        # cannot disagree; the env var stays for consumers reading it directly.
+        try:
+            import torch
+            torch.cuda.set_device(device)
+        except Exception:
+            pass
         os.environ["TRITON_XPU_DEVICE"] = str(device)
 
     @staticmethod
@@ -974,7 +1059,14 @@ class XPUDriver(GPUDriver):
 
     def get_active_torch_device(self):
         import torch
-        return torch.device("xpu", self.get_current_device())
+        # Must agree with get_device_interface(): on this stack torch is
+        # torch_xmlir, which presents the XPU under the torch.cuda interface
+        # (native torch here is built without USE_XPU, so a torch.device("xpu")
+        # object would be rejected by every torch API).  Mirror native xtriton
+        # 3.0, which also has no "xpu" torch device: only the compilation
+        # GPUTarget is named "xpu".  If this stack ever moves to a torch build
+        # with native XPU support, flip this together with get_device_interface.
+        return torch.device("cuda", self.get_current_device())
 
     def get_device_interface(self):
         import torch

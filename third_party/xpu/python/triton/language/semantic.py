@@ -1,4 +1,5 @@
 from __future__ import annotations  # remove after python 3.11
+import os
 import warnings
 
 from typing import List, Optional, Sequence, Tuple, TypeVar, Generic, Type
@@ -77,8 +78,10 @@ class TritonSemantic(Generic[TensorTy]):
             # Skipping the PyTorch-style "scalar of lower/equal kind doesn't
             # promote" short-circuit for the float-scalar/float-tensor case keeps
             # the comparison and the surrounding select in the same (f32) domain,
-            # which the XPU SDNN select lowering requires.
-            float_scalar_vs_float_tensor = (scalar_ty.is_floating() and tensor_ty.is_floating())
+            # which the XPU SDNN select lowering requires. This is only needed on
+            # TRITON_XPU_ARCH == 3 (SDNN), hence the arch gate below.
+            float_scalar_vs_float_tensor = (int(os.environ.get("TRITON_XPU_ARCH", "3")) == 3
+                                            and scalar_ty.is_floating() and tensor_ty.is_floating())
             if (scalar_ty.kind().value <= tensor_ty.kind().value and not float_scalar_vs_float_tensor):
                 # Upcast because of 3) and 4) below!
                 if div_or_mod and (tensor_ty in (tl.float16, tl.bfloat16)):

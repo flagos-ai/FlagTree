@@ -20,7 +20,7 @@
 
 
 def is_backend_builder(builder) -> bool:
-    # The mthreads-only libtriton can be loaded while backend-independent TLE
+    # The MUSA-only libtriton can be loaded while backend-independent TLE
     # frontend tests use a synthetic builder. Gate the restricted contract on
     # a backend-local native capability so those public tests retain the
     # portable pipe model.
@@ -29,10 +29,4 @@ def is_backend_builder(builder) -> bool:
 
 def validate_pipe_options(scope, readers, one_shot, fields) -> None:
     if scope != "cta":
-        raise ValueError("initial mthreads tle.pipe supports only scope='cta'")
-    if len(fields) != 1:
-        raise ValueError("initial mthreads tle.pipe requires exactly one payload field")
-    if readers is not None:
-        raise ValueError("initial mthreads tle.pipe supports only the default SPSC reader")
-    if one_shot:
-        raise ValueError("initial mthreads tle.pipe does not support one_shot=True")
+        raise ValueError("MUSA TLE pipe supports only scope='cta'")

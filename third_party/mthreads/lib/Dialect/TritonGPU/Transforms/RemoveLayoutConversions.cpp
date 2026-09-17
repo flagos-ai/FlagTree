@@ -15,6 +15,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
+#include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -23,6 +24,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <deque>
+#include <memory>
 
 namespace mlir::triton::gpu {
 
@@ -137,7 +139,9 @@ private:
 
 class LayoutRematerialization {
 public:
-  LayoutRematerialization(FuncOp F) : funcOp(F) {}
+  LayoutRematerialization(FuncOp F,
+                          ModuleAxisInfoAnalysis *axisInfoAnalysis = nullptr)
+      : funcOp(F), axisInfoAnalysis(axisInfoAnalysis) {}
 
   // Map the original value to the remat'ed one.
   void addRematValue(Value old, Attribute encoding, Value newV);
@@ -188,6 +192,7 @@ private:
   FuncOp funcOp;
   DominanceInfo domInfo;
   PostDominanceInfo postDomInfo;
+  ModuleAxisInfoAnalysis *axisInfoAnalysis;
 };
 
 void LayoutRematerialization::addRematValue(Value old, Attribute encoding,
@@ -203,8 +208,49 @@ void LayoutRematerialization::cleanup() {
     op->erase();
 }
 
+static bool isMmaDotLayoutAnchor(Operation *op) {
+  auto dotOp = dyn_cast<mlir::triton::DotOpInterface>(op);
+  if (!dotOp)
+    return false;
+  auto resultType = dyn_cast<RankedTensorType>(dotOp.getD().getType());
+  return resultType && resultType.getEncoding() &&
+         isa<MmaEncodingTrait>(resultType.getEncoding());
+}
+
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
+bool isExpensiveLoadWithAxisInfo(LoadOp loadOp,
+                                 ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  if (loadOp.getIsVolatile())
+    return true;
+  if (!isExpensiveLoadOrStore(loadOp))
+    return false;
+
+  auto ptrType = dyn_cast<RankedTensorType>(loadOp.getPtr().getType());
+  if (!ptrType)
+    return true;
+  AxisInfo *axisInfo = axisInfoAnalysis.getAxisInfo(loadOp.getPtr());
+  if (!axisInfo ||
+      axisInfo->getConstancy().size() != static_cast<size_t>(ptrType.getRank()))
+    return true;
+
+  auto mod = loadOp->getParentOfType<ModuleOp>();
+  int numWarps = triton::gpu::lookupNumWarps(loadOp);
+  int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+  int64_t expensiveThreshold = numWarps * threadsPerWarp;
+
+  int64_t uniqueElements = 1;
+  for (auto [dim, constancy] :
+       llvm::zip(ptrType.getShape(), axisInfo->getConstancy())) {
+    int64_t uniqueAlongDim =
+        llvm::divideCeil(dim, std::max<int64_t>(constancy, 1));
+    if (uniqueAlongDim >= llvm::divideCeil(expensiveThreshold, uniqueElements))
+      return true;
+    uniqueElements *= uniqueAlongDim;
+  }
+  return false;
+}
+
 bool isLayoutAnchor(Operation *op) {
 #ifdef __TLE__
   if (isTleExplicitConvertLayoutOp(op))
@@ -214,6 +260,8 @@ bool isLayoutAnchor(Operation *op) {
     return true;
   if (isa<LoadOp, StoreOp>(op))
     return isExpensiveLoadOrStore(op);
+  if (isMmaDotLayoutAnchor(op))
+    return true;
   if (isa<DotOp, DotScaledOp, nvidia_gpu::WarpGroupDotOp, AtomicRMWOp,
           AtomicCASOp, triton::nvidia_gpu::TMEMLoadOp>(op))
     return true;
@@ -826,12 +874,16 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
   return nullptr;
 }
 
-bool canBeRemat(Operation *op) {
+bool canBeRemat(Operation *op, ModuleAxisInfoAnalysis *axisInfoAnalysis) {
 #ifdef __TLE__
   if (isTleExplicitConvertLayoutOp(op))
     return false;
 #endif // __TLE__
-  if (isa<LoadOp, StoreOp>(op))
+  if (auto loadOp = dyn_cast<LoadOp>(op))
+    return axisInfoAnalysis
+               ? !isExpensiveLoadWithAxisInfo(loadOp, *axisInfoAnalysis)
+               : !isExpensiveLoadOrStore(op);
+  if (isa<StoreOp>(op))
     return !isExpensiveLoadOrStore(op);
   if (isa<AtomicRMWOp, AtomicCASOp, DotOp>(op))
     return false;
@@ -1094,7 +1146,7 @@ LogicalResult LayoutRematerialization::getRematerializableSlice(
   // Check if all the operations in the slice can be rematerialized.
   for (Value v : slice) {
     if (Operation *op = v.getDefiningOp()) {
-      if (!canBeRemat(op))
+      if (!canBeRemat(op, axisInfoAnalysis))
         return failure();
     }
   }
@@ -1681,10 +1733,18 @@ void LayoutRematerialization::hoistConvertIntoConditionals(
   rewriteSlice(slice, layout, convertOp, mapping);
 }
 
+bool supportsAxisInfoAnalysis(ModuleOp module) {
+  auto target = module->getAttrOfType<StringAttr>("ttg.target");
+  return target && target.getValue().starts_with("musa:");
+}
+
 bool backwardRematerialization(ModuleOp module) {
   bool changed = false;
+  std::unique_ptr<ModuleAxisInfoAnalysis> axisInfoAnalysis;
+  if (supportsAxisInfoAnalysis(module))
+    axisInfoAnalysis = std::make_unique<ModuleAxisInfoAnalysis>(module);
   module.walk([&](FuncOp funcOp) {
-    LayoutRematerialization layoutRemat(funcOp);
+    LayoutRematerialization layoutRemat(funcOp, axisInfoAnalysis.get());
     changed |= layoutRemat.backwardRematerialization();
     layoutRemat.cleanup();
   });

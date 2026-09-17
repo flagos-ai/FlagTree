@@ -25,7 +25,8 @@ void populateDotOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
 
 void populateMUSAOpsToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                    RewritePatternSet &patterns,
-                                   PatternBenefit benefit);
+                                   PatternBenefit benefit,
+                                   const TargetInfo &targetInfo);
 
 void populateFp4ToFpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                    RewritePatternSet &patterns,

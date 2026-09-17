@@ -25,6 +25,7 @@
 
 namespace mlir::triton::musa {
 
+namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 
@@ -35,7 +36,82 @@ inline constexpr llvm::StringLiteral kTMEExplicitCompletionAttr =
     "musa.tme.explicit_completion";
 inline constexpr llvm::StringLiteral kTLEExpectBytesAttr =
     "musa_tle.expect_bytes";
+inline constexpr llvm::StringLiteral kTLECompletionGroupAttr =
+    "musa_tle.completion_group";
+inline constexpr llvm::StringLiteral kTLEPipeDeferredArrivalAttr =
+    "musa_tle.pipe_deferred_arrival";
+inline constexpr llvm::StringLiteral kTLEPipeReaderTMEStoreAttr =
+    "musa_tle.pipe_reader_tme_store";
 #endif // __TLE__
+
+inline constexpr int32_t kTMEDescSizeBytes = 64;
+inline constexpr int32_t kTMEDescAlignBytes = 64;
+
+inline std::optional<int32_t> getMUSATMEDataType(Type elemType) {
+  if (tt::type::isFloat8(elemType))
+    return 1;
+  if (elemType.isInteger(8))
+    return elemType.isUnsignedInteger() ? 1 : 0;
+  if (elemType.isInteger(16))
+    return elemType.isUnsignedInteger() ? 3 : 2;
+  if (elemType.isF16())
+    return 4;
+  if (elemType.isBF16())
+    return 5;
+  if (elemType.isInteger(32))
+    return elemType.isUnsignedInteger() ? 7 : 6;
+  if (elemType.isF32())
+    return 8;
+  if (elemType.isInteger(64))
+    return elemType.isUnsignedInteger() ? 11 : 10;
+  if (elemType.isF64())
+    return 12;
+  return std::nullopt;
+}
+
+inline std::optional<uint64_t>
+getMUSATMEConstantFill(int32_t elemType, tt::PaddingOption padding) {
+  if (padding == tt::PaddingOption::PAD_ZERO)
+    return uint64_t{0};
+  switch (elemType) {
+  case 4:
+    return uint64_t{0x7e00};
+  case 5:
+    return uint64_t{0x7fc0};
+  case 8:
+    return uint64_t{0x7fc00000};
+  case 12:
+    return uint64_t{0x7ff8000000000000ULL};
+  default:
+    return std::nullopt;
+  }
+}
+
+template <typename BuilderT>
+LogicalResult createTMEEncodedDescriptor(BuilderT &builder, Value descBuf,
+                                         tt::MakeTensorDescOp op) {
+  Type elemType = op.getType().getBlockType().getElementType();
+  auto elemTypeEnum = getMUSATMEDataType(elemType);
+  if (!elemTypeEnum)
+    return op.emitOpError("unsupported element type for device-side TME "
+                          "descriptor");
+  unsigned elemBitWidth = elemType.getIntOrFloatBitWidth();
+  if ((elemBitWidth % 8) != 0)
+    return op.emitOpError("unsupported element size for device-side TME "
+                          "descriptor; expected 1, 2, 4, or 8 bytes");
+
+  unsigned elemSize = elemBitWidth / 8;
+  if (elemSize != 1 && elemSize != 2 && elemSize != 4 && elemSize != 8)
+    return op.emitOpError("unsupported element size for device-side TME "
+                          "descriptor; expected 1, 2, 4, or 8 bytes");
+
+  TMEEncodeDescriptorOp::create(
+      builder, op.getLoc(), descBuf, op.getBase(), op.getShape(),
+      op.getStrides(), builder.getI32IntegerAttr(elemSize),
+      builder.getI32IntegerAttr(*elemTypeEnum),
+      builder.getI32IntegerAttr(static_cast<int32_t>(op.getPadding())));
+  return success();
+}
 
 enum class TMECopyKind {
   GlobalToLocal,
@@ -611,6 +687,23 @@ resolveTMESwizzleConfigFromEncoding(ttg::MemDescType localType) {
       dyn_cast<ttg::SharedEncodingTrait>(localType.getEncoding());
   if (!localEncoding)
     return failure();
+  // The swizzle pattern is a property of the ALLOCATED buffer, not of a
+  // subslice view of it. Resolving from the view shape can yield a different
+  // (self-consistent but wrong) config -- e.g. a [64,128] column subslice of a
+  // [64,256] bf16 buffer with swizzled<vec=16, maxPhase=8> resolves to SG_32B
+  // while the buffer itself (and the SQMMA hardware) uses SG_16B, so tile
+  // stores through the view scramble the data for every full-view consumer.
+  // Normalize to the physical (alloc) shape before resolving.
+  {
+    auto shape = localType.getShape();
+    auto allocShape = localType.getAllocShape().take_back(shape.size());
+    if (allocShape != shape) {
+      auto physTy = ttg::MemDescType::get(
+          allocShape, localType.getElementType(), localType.getEncoding(),
+          localType.getMemorySpace(), localType.getMutableMemory());
+      return resolveTMESwizzleConfigFromEncoding(physTy);
+    }
+  }
   auto maybeElemBytes = inferElemBytesFromMemDescType(localType);
   if (!maybeElemBytes || *maybeElemBytes <= 0)
     return failure();
@@ -807,6 +900,105 @@ createAsyncTMECopyLocalToGlobal(BuilderT &builder, Location loc, Value desc,
       TMEPersistenceAttr::get(builder.getContext(), config.outerPersistence));
   return cast<AsyncTMECopyLocalToGlobalOp>(builder.create(state));
 }
+
+#ifdef __TLE__
+// A TME transfer is governed by its physical shared layout, not by the
+// eventual consumers of the data (which may reuse the allocation).
+struct TLETMECopySegment {
+  SmallVector<int64_t> shape;
+  SmallVector<int64_t> offsets;
+  int64_t sharedOffset = 0;
+  int64_t rows = 1;
+  int64_t groups = 1;
+  int64_t sharedStride = 0;
+  unsigned rowAxis = 0;
+  unsigned leadingAxis = 0;
+};
+
+inline FailureOr<SmallVector<TLETMECopySegment>>
+getTLETMECopySegments(ttg::MemDescType type, ArrayRef<int32_t> blockShape) {
+  SmallVector<int64_t> shape(blockShape.begin(), blockShape.end());
+  if (!type || shape.size() < type.getRank())
+    return failure();
+  unsigned leadingUnitDims = shape.size() - type.getRank();
+  if (!llvm::all_of(ArrayRef<int64_t>(shape).take_front(leadingUnitDims),
+                    [](int64_t dim) { return dim == 1; }) ||
+      type.getShape() != ArrayRef<int64_t>(shape).drop_front(leadingUnitDims))
+    return failure();
+  if (leadingUnitDims) {
+    // Descriptor coordinates retain their rank when the landing allocation
+    // drops leading unit dimensions. Plan in shared axes, then restore the
+    // descriptor axes without changing the physical shared offsets.
+    auto segments =
+        getTLETMECopySegments(type, blockShape.drop_front(leadingUnitDims));
+    if (failed(segments))
+      return failure();
+    for (auto &segment : *segments) {
+      segment.shape.insert(segment.shape.begin(), leadingUnitDims, 1);
+      segment.offsets.insert(segment.offsets.begin(), leadingUnitDims, 0);
+      segment.rowAxis += leadingUnitDims;
+      segment.leadingAxis += leadingUnitDims;
+    }
+    return segments;
+  }
+  TLETMECopySegment whole{shape, SmallVector<int64_t>(shape.size(), 0), 0};
+  if (shape.size() != 2)
+    return SmallVector<TLETMECopySegment>{whole};
+
+  auto elemBytes = inferElemBytesFromMemDescType(type);
+  auto order = ttg::getOrder(type);
+  auto carrier = resolveCanonicalPH1TMESharedCarrierConfig(type);
+  if (!elemBytes || *elemBytes <= 0 || order.size() != 2 || failed(carrier))
+    return failure();
+  SmallVector<int64_t> physicalShape(type.getShape().begin(),
+                                     type.getShape().end());
+  if (!type.getAllocShape().empty()) {
+    auto allocShape = type.getAllocShape().take_back(2);
+    physicalShape.assign(allocShape.begin(), allocShape.end());
+  }
+  unsigned leadingAxis = order[0];
+  unsigned rowAxis = order[1];
+  whole.rowAxis = rowAxis;
+  whole.leadingAxis = leadingAxis;
+  // A leading-dimension slice needs its origin in the parent's grouping.
+  // Do not silently reinterpret it as a packed, independent allocation.
+  if (shape[leadingAxis] != physicalShape[leadingAxis] ||
+      shape[rowAxis] > physicalShape[rowAxis])
+    return failure();
+  auto grouping = getPH1TMELeadingDimGrouping(physicalShape, order, *elemBytes);
+  if (failed(grouping))
+    return failure();
+
+  SmallVector<TLETMECopySegment> segments;
+  if (carrier->swizzleGranularity == TMESwizzleGranularity::SG_NONE &&
+      grouping->numGroups > 1) {
+    // Ordinary unswizzled TLE pointers retain packed row-major storage.
+    // A 2D group would change the shared row pitch, so split each row instead.
+    // Swizzled SQMMA carriers below already use the PH1 group-major layout.
+    TLETMECopySegment segment = whole;
+    segment.shape[rowAxis] = 1;
+    segment.shape[leadingAxis] = grouping->elemsPerGroupInLeadingDim;
+    segment.rows = shape[rowAxis];
+    segment.groups = grouping->numGroups;
+    segment.sharedStride = grouping->elemsPerGroupInLeadingDim;
+    segments.push_back(std::move(segment));
+    return segments;
+  }
+  for (int64_t start = 0; start < shape[leadingAxis];
+       start += grouping->elemsPerGroupInLeadingDim) {
+    TLETMECopySegment segment = whole;
+    segment.offsets[leadingAxis] = start;
+    segment.shape[leadingAxis] = grouping->elemsPerGroupInLeadingDim;
+    auto offset = linearizePH1TMELinearCoords(segment.offsets, physicalShape,
+                                              order, *elemBytes);
+    if (failed(offset))
+      return failure();
+    segment.sharedOffset = *offset;
+    segments.push_back(std::move(segment));
+  }
+  return segments;
+}
+#endif // __TLE__
 
 } // namespace mlir::triton::musa
 

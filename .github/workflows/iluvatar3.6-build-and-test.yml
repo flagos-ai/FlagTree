@@ -86,10 +86,7 @@ jobs:
         run: |
           set -x
           source ~/env.sh
-
-          for pkg in hypothesis absl-py scipy pytest-forked expecttest; do
-            pip3 list "$pkg" | grep "$pkg" || pip3 install "$pkg"
-          done
+          export LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}
 
           if [[ "$(uname -m)" == "aarch64" ]]; then
             libgomp_path=$(find /usr/lib /usr/lib64 /lib /lib64 -type f -name 'libgomp.so*' 2>/dev/null | head -n 1)
