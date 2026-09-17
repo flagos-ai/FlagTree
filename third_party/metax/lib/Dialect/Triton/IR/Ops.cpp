@@ -97,8 +97,8 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Type result,
                    CacheModifier cache, EvictionPolicy evict, bool isVolatile,
                    ArrayRef<int64_t> contiguityInterConstGroup) {
   LoadOp::build(builder, state, result, ptr, mask, other, boundaryCheck,
-                padding, cache, evict, isVolatile,
-                contiguityInterConstGroup, "");
+                padding, cache, evict, isVolatile, contiguityInterConstGroup,
+                "");
 }
 
 // load(ptr, splat(1), ...)        -> load(ptr, ...)
