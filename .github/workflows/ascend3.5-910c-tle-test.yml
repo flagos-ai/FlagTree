@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   ascend35x-910c-tle-test:
-    runs-on: ascend3.5-910c-tle
+    runs-on: ascend3.5-910c
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
