@@ -95,17 +95,18 @@ jobs:
             ${{ inputs.env-setup-command }} >> "$GITHUB_ENV"
           fi
 
-      - name: Smart Checkout
-        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
-        with:
-          checkout_version: 'v6'
-
       - name: Check if backend-relevant files changed
         id: check_backend
         if: success()
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: ${{ inputs.backend }}
+
+      - name: Smart Checkout
+        if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
 
       - name: Cleanup FlagTree Environment
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}

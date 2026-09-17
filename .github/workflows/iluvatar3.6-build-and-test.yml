@@ -46,16 +46,17 @@ jobs:
           source ~/env.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
 
-      - name: Smart Checkout
-        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
-        with:
-          checkout_version: 'v6'
-
       - name: Check if backend-relevant files changed
         id: check_backend
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: iluvatar
+
+      - name: Smart Checkout
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
 
       - name: Cleanup FlagTree Environment
         if: steps.check_backend.outputs.should_skip != 'true'
