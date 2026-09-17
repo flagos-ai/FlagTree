@@ -1,4 +1,3 @@
-import imp
 import torch
 import triton
 import triton.language as tl
@@ -36,9 +35,10 @@ def dsa_shift_n_gemm_kernel(
     BLOCK_K: tl.constexpr,
     SUB_N: tl.constexpr,
     TILE_NUM: tl.constexpr,
+    mesh: tl.constexpr,
 ):
     # Use tle.shard_id() to obtain the current tile's physical id.
-    pid = tle.shard_id(MESH, axis=0)
+    pid = tle.shard_id(mesh, axis=0)
 
     # ring_index = logical ring position of this physical tile.
     ring_index = tl.load(ring_index_lut_ptr + pid)
@@ -70,8 +70,8 @@ def dsa_shift_n_gemm_kernel(
 
     # Mark recv_buf for remote access.  send_next_tile becomes the DTE
     # target (__Send's tileId).  The recv source is resolved at runtime
-    # by __Send from the topology passed via scope=MESH.
-    remote_recv_buf = tle.remote(recv_buf, send_next_tile, scope=MESH)
+    # by __Send from the topology passed via scope=mesh.
+    remote_recv_buf = tle.remote(recv_buf, send_next_tile, scope=mesh)
     remote_recv_ptr = tle.dsa.local_ptr(remote_recv_buf, [offs_buf_k, offs_buf_n])
 
     tl.store(send_ptr, b_init)
@@ -86,9 +86,9 @@ def dsa_shift_n_gemm_kernel(
 
         if step < TILE_NUM - 1:
             tl.store(remote_recv_ptr, tl.load(send_ptr))
-            tle.distributed_barrier(MESH)
+            tle.distributed_barrier(mesh)
             tl.store(send_ptr, tl.load(recv_ptr))
-            tle.distributed_barrier(MESH)
+            tle.distributed_barrier(mesh)
 
             shard_idx = tl.where(shard_idx == 0, TILE_NUM - 1, shard_idx - 1)
 
@@ -131,6 +131,7 @@ def run():
         BLOCK_K=BLOCK_K,
         SUB_N=SUB_N,
         TILE_NUM=TILE_NUM,
+        mesh=MESH,
     )
     a_f32 = a.cpu().float()
     b_f32 = b.cpu().float()
