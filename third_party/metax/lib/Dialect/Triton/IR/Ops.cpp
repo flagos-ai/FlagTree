@@ -70,8 +70,8 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    Value mask, Value other, ArrayRef<int32_t> boundaryCheck,
                    std::optional<PaddingOption> padding, CacheModifier cache,
                    EvictionPolicy evict, bool isVolatile) {
-  LoadOp::build(builder, state, ptr, mask, other, boundaryCheck, padding,
-                cache, evict, isVolatile, mlir::StringAttr());
+  LoadOp::build(builder, state, ptr, mask, other, boundaryCheck, padding, cache,
+                evict, isVolatile, mlir::StringAttr());
 }
 
 void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
