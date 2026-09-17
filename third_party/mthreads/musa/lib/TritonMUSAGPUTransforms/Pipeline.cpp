@@ -678,7 +678,7 @@ struct LoadGroupInfo {
   Value extractIdx;
   Value phase;
   Value yieldPhase;
-  bool hasTMALoad = false;
+  bool hasTMELoad = false;
   int32_t barrierBase = 0;
 };
 
@@ -908,7 +908,7 @@ static void convertScalarToTensorLoad(Operation *op,
 }
 
 static void
-createMUSATMABarrierAndWait(scf::ForOp forOp,
+createMUSATMEBarrierAndWait(scf::ForOp forOp,
                             llvm::MapVector<Operation *, AsyncLoad> &asyncLoads,
                             llvm::MapVector<int, LoadGroupInfo> &loadGroups,
                             tt::CoarseSchedule &schedule) {
@@ -1292,7 +1292,7 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
     }
     loadGroups.insert({asyncLoad.stageDiff, {}});
     if (tt::isTMALoad(loadOp))
-      loadGroups[asyncLoad.stageDiff].hasTMALoad = true;
+      loadGroups[asyncLoad.stageDiff].hasTMELoad = true;
   }
   IRRewriter builder(forOp);
   builder.setInsertionPoint(forOp);
@@ -1306,7 +1306,7 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
     Value initCounter = minusOne;
     newOperands.push_back(initCounter);
     newOperands.push_back(initCounter);
-    if (loadGroup.hasTMALoad)
+    if (loadGroup.hasTMELoad)
       newOperands.push_back(zero);
   }
 
@@ -1338,7 +1338,7 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
     Value insertIdx = forOp.getBody()->getArgument(argIdx++);
     Value extractIdx = forOp.getBody()->getArgument(argIdx++);
     Value phase;
-    if (loadGroup.hasTMALoad)
+    if (loadGroup.hasTMELoad)
       phase = forOp.getBody()->getArgument(argIdx++);
     loadGroup.phase = phase;
 
@@ -1366,7 +1366,7 @@ lowerLoads(scf::ForOp forOp, tt::CoarseSchedule &schedule,
     }
   }
 
-  createMUSATMABarrierAndWait(forOp, asyncLoads, loadGroups, schedule);
+  createMUSATMEBarrierAndWait(forOp, asyncLoads, loadGroups, schedule);
 
   bool hasAsyncLoads = false;
   for (auto &[op, asyncLoad] : asyncLoads) {
@@ -1465,7 +1465,7 @@ static LogicalResult musaLowerLoops(ModuleOp moduleOp, int defaultNumStages) {
     if (failed(lowered))
       return failure();
     scf::ForOp newForOp =
-        triton::musa::pipeline::lowerTMADescriptors(*lowered, schedule);
+        triton::musa::pipeline::lowerTMEDescriptors(*lowered, schedule);
     schedule.serialize(newForOp);
     return success();
   };

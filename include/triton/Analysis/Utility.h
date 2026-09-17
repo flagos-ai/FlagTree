@@ -197,6 +197,58 @@ private:
   RankedTensorType dstTy;
 };
 
+#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+// Backport from Triton main: triton/pull/11646.
+// For permutation cases, this struct represents the factorization of a
+// warp-local layout conversion into three components: a register-only
+// permutation, a lane-only permutation, and a set of swaps between lane and
+// register basis vectors. Algebraically, it represents the factorization
+// P = P_mixed \circ P_lane \circ P_reg. It is used to aid in the implementation
+// of the layout conversion using warp-shuffles.
+//
+// `pReg` is a square permutation of the padded registers. `shuffleMap` maps
+// register/lane/warp/block coordinates to source lanes for the shuffle stage.
+// `mixedTranspositions` holds the register bit and source/destination lane bits
+// for each exchange, along with 16-bit selectors for byte permute instructions
+// (where each of the four nybbles is in the range [0, 7]). A lane bit of -1
+// denotes a constant-zero predicate for a one-sided exchange.
+// `nPack` gives the number of basis vectors that can be used for register
+// packing while ensuring packed elements arrive at the same destination lane.
+struct DecomposedWarpConversion {
+  struct TranspositionInfo {
+    // Triton main: triton/pull/11646.
+    int regBit;
+    int srcLane;
+    int dstLane;
+    uint16_t topPreSel = 0x3210;
+    uint16_t botPreSel = 0x7654;
+    uint16_t topPostSel = 0x3210;
+    uint16_t botPostSel = 0x7654;
+  };
+
+  // Triton main: triton/pull/11646.
+  triton::LinearLayout pReg, shuffleMap;
+  SmallVector<TranspositionInfo> mixedTranspositions;
+  int nPack;
+};
+
+// Triton main: triton/pull/11646.
+// Produces a warp-local decomposition.
+//
+// For permutation cases, the numbers of register and lane basis vectors may
+// differ between the two layouts. This is handled by padding the smaller
+// dimension(s) with zero vectors, ensuring that the layout conversion can be
+// represented as a permutation.
+//
+// Supports permutation layouts with warp/CTA-dependent lane selection. Source
+// registers must not depend on warp/CTA coordinates.
+// Broadcasted register bases are removed before decomposition.
+// FlagTree adaptation for triton/pull/11646.
+// Retain the tensor-type interface for existing backend callers.
+DecomposedWarpConversion
+getWarpLayoutConvertDecomposition(RankedTensorType srcTy,
+                                  RankedTensorType dstTy, int bitwidth);
+#else  // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
 // This struct represents the factorization of a warp-local layout conversion
 // into three components: a register-only permutation, a lane-only permutation,
 // and a set of swaps between lane and register basis vectors. Algebraically, it
@@ -234,6 +286,7 @@ struct DecomposedWarpConversion {
 DecomposedWarpConversion
 getWarpLayoutConvertDecomposition(RankedTensorType srcTy,
                                   RankedTensorType dstTy, int bitwidth);
+#endif // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
 
 // Decomposes a reshape into simpler pieces.
 //

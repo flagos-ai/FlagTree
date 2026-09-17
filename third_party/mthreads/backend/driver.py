@@ -6,29 +6,73 @@ from collections import OrderedDict
 from pathlib import Path
 
 from triton import knobs
+from flagtree import _flagprism  # FlagPrism
+from triton.backends.mthreads._musa_arch import musa_capability_from_arch, musa_warp_size_from_arch
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import DriverBase
+from triton.runtime import _allocation
 from triton.runtime.build import compile_module_from_src
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 _TENSORDESC_CACHE_LIMIT = 1024
 _DEFAULT_MUSA_PREFIX = "/usr/local/musa"
 
+_MUSA_TME_DTYPE_ENUM = {
+    "i8": 0,
+    "u8": 1,
+    "fp8e4b15": 1,
+    "fp8e4nv": 1,
+    "fp8e4b8": 1,
+    "fp8e5": 1,
+    "fp8e5b16": 1,
+    "i16": 2,
+    "u16": 3,
+    "fp16": 4,
+    "bf16": 5,
+    "i32": 6,
+    "u32": 7,
+    "fp32": 8,
+    "f32": 8,
+    "i64": 10,
+    "u64": 11,
+    "fp64": 12,
+}
+
+_MUSA_TME_NAN_FILL = {
+    "fp16": 0x7e00,
+    "bf16": 0x7fc0,
+    "fp32": 0x7fc00000,
+    "f32": 0x7fc00000,
+    "fp64": 0x7ff8000000000000,
+}
+
+
+def _musa_tme_dtype_enum(dtype):
+    """Return the exact MUSA TensorDescriptor data-type enum for a Triton dtype."""
+    try:
+        return _MUSA_TME_DTYPE_ENUM[dtype]
+    except KeyError:
+        raise ValueError(f"unsupported MUSA TME tensor descriptor dtype: {dtype}") from None
+
+
+def _musa_tme_constant_fill(dtype, padding):
+    """Return the raw descriptor fill bits for Triton's zero/nan options."""
+    if padding == "zero":
+        return 0
+    if padding != "nan":
+        raise ValueError(f"Illegal value for padding: {padding}")
+    try:
+        return _MUSA_TME_NAN_FILL[dtype]
+    except KeyError:
+        raise ValueError("Padding option `nan` is only supported for floating point tensors") from None
+
 
 def _arch_to_musa_capability(arch):
-    if isinstance(arch, int):
-        return arch
-    arch = str(arch).lower()
-    if arch.isdigit():
-        return int(arch)
-    if arch.startswith("ph1"):
-        return 31
-    return None
+    return musa_capability_from_arch(arch)
 
 
 def _warp_size_for_musa_arch(arch):
-    capability = _arch_to_musa_capability(arch)
-    return 128 if capability is not None and capability < 30 else 32
+    return musa_warp_size_from_arch(arch)
 
 
 def _split_paths(value: str):
@@ -318,7 +362,7 @@ def _expand_signature_tree(signature_types, tensordesc_meta=None):
     return expanded_types, expanded_index
 
 
-def _expand_tensordesc_kernel_arg(arg, rank: int, metadata):
+def _expand_tensordesc_kernel_arg(arg, rank: int, metadata, dtype=None):
     if not (hasattr(arg, "base") and hasattr(arg, "shape") and hasattr(arg, "strides")):
         raise TypeError("tensor descriptor argument must provide base/shape/strides")
     shape = [int(v) for v in arg.shape]
@@ -346,7 +390,12 @@ def _expand_tensordesc_kernel_arg(arg, rank: int, metadata):
         fill_fn = getattr(triton.runtime.driver.active.utils, "fill_tme_descriptor", None)
         if fill_fn is None:
             raise RuntimeError("musa driver utils missing fill_tme_descriptor")
-        descriptor = fill_fn(arg.base.data_ptr(), shape, block_shape, elem_size)
+        if dtype is None:
+            raise TypeError("cannot infer tensor descriptor element type")
+        elem_type = _musa_tme_dtype_enum(dtype)
+        padding = getattr(arg, "padding", "zero")
+        constant_fill = _musa_tme_constant_fill(dtype, padding)
+        descriptor = fill_fn(arg.base.data_ptr(), shape, block_shape, elem_size, elem_type, constant_fill)
         return [descriptor, *shape, *strides], descriptor
 
     padding = getattr(arg, "padding", None)
@@ -354,7 +403,7 @@ def _expand_tensordesc_kernel_arg(arg, rank: int, metadata):
     return [arg.base, *shape, *strides, is_padding, *shape, *strides], arg.base
 
 
-def _make_tensordesc_cache_key(arg, rank: int, metadata):
+def _make_tensordesc_cache_key(arg, rank: int, metadata, dtype=None):
     base = getattr(arg, "base", None)
     if base is None or not hasattr(base, "data_ptr"):
         return None
@@ -384,6 +433,9 @@ def _make_tensordesc_cache_key(arg, rank: int, metadata):
     else:
         return None
 
+    if dtype is None:
+        dtype = str(getattr(base, "dtype", ""))
+    padding = getattr(arg, "padding", "zero")
     return (
         int(base.data_ptr()),
         device_type,
@@ -392,6 +444,8 @@ def _make_tensordesc_cache_key(arg, rank: int, metadata):
         strides,
         block_shape,
         elem_size,
+        dtype,
+        padding,
         int(rank),
     )
 
@@ -525,8 +579,12 @@ static muLaunchKernelEx_t getLaunchKernelExHandle() {{
   return muLaunchKernelExHandle;
 }}
 
+static MUdeviceptr _global_scratch_ptr = 0;
+static void set_global_scratch(MUdeviceptr ptr) {{ _global_scratch_ptr = ptr; }}
+
 static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int shared_memory, MUstream stream, MUfunction function{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
-  MUdeviceptr global_scratch_ptr = 0;
+  MUdeviceptr global_scratch_ptr = _global_scratch_ptr;
+  _global_scratch_ptr = 0;
   MUdeviceptr profile_scratch_ptr = 0;
   void *params[] = {{ {', '.join([*(f"&arg{i}" for i in params), "&global_scratch_ptr", "&profile_scratch_ptr"]) } }};
   if (gridX*gridY*gridZ > 0) {{
@@ -715,8 +773,16 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   return Py_None;
 }}
 
+static PyObject* _set_global_scratch_py(PyObject* self, PyObject* args) {{
+  unsigned long long ptr = 0;
+  if (!PyArg_ParseTuple(args, "K", &ptr)) return NULL;
+  set_global_scratch((MUdeviceptr)ptr);
+  Py_RETURN_NONE;
+}}
+
 static PyMethodDef ModuleMethods[] = {{
   {{"launch", launch, METH_VARARGS, "Entry point for all kernels with this signature"}},
+  {{"set_global_scratch", (PyCFunction)_set_global_scratch_py, METH_VARARGS, "Set global scratch pointer"}},
   {{NULL, NULL, 0, NULL}}
 }};
 
@@ -755,6 +821,10 @@ class MusaLauncher(object):
 
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
+        # FlagPrism: preserve user arguments and debugger launch metadata.
+        self.user_arg_count = len(signature)
+        self.metadata = metadata
+        self._debug_enabled = bool(getattr(metadata, "debug_launch_hidden_arg", False))
 
         ordered_sig_keys = sorted(signature.keys())
         self._signature_types = [signature[key] for key in ordered_sig_keys]
@@ -764,11 +834,15 @@ class MusaLauncher(object):
         self._needs_runtime_expansion = self._has_structured_args or self._has_tensordesc
         self._tensordesc_meta = getattr(metadata, "tensordesc_meta", None)
         self._tensordesc_keepalive = []
+        self._global_scratch_keepalive = []
         self._tensordesc_object_cache = OrderedDict()
         self._tensordesc_cache = OrderedDict()
 
         expanded_signature_types, expanded_index = _expand_signature_tree(self._signature_types, self._tensordesc_meta)
         expanded_signature = {idx: ty for idx, ty in enumerate(expanded_signature_types)}
+        # FlagPrism: reserve the final ABI slot for the debugger control pointer.
+        if self._debug_enabled:
+            expanded_signature[len(expanded_signature)] = "*i8"
         expanded_constants = {}
         for key, value in constants.items():
             path = _normalize_arg_path(key)
@@ -797,6 +871,9 @@ class MusaLauncher(object):
             libraries=["musa"],
         )
         self.launch = mod.launch
+        self._set_global_scratch = mod.set_global_scratch
+        self.global_scratch_size = getattr(metadata, "global_scratch_size", 0)
+        self.global_scratch_align = getattr(metadata, "global_scratch_align", 1)
 
     @staticmethod
     def _walk_signature_types(signature_types):
@@ -807,13 +884,13 @@ class MusaLauncher(object):
                 yield ty
 
     def _expand_tensordesc_arg(self, arg, ty, tensordesc_idx):
-        _, rank = _parse_tensordesc_type(ty)
+        dtype, rank = _parse_tensordesc_type(ty)
         desc_meta = None
         if self._tensordesc_meta is not None and tensordesc_idx < len(self._tensordesc_meta):
             desc_meta = self._tensordesc_meta[tensordesc_idx]
 
         cached = None
-        cache_key = _make_tensordesc_cache_key(arg, rank, desc_meta)
+        cache_key = _make_tensordesc_cache_key(arg, rank, desc_meta, dtype)
         object_cache_key = None
         object_ref = None
         try:
@@ -838,7 +915,7 @@ class MusaLauncher(object):
         if cached is None:
             cached = self._tensordesc_cache.get(cache_key) if cache_key is not None else None
         if cached is None:
-            expanded_arg_values, keepalive = _expand_tensordesc_kernel_arg(arg, rank, desc_meta)
+            expanded_arg_values, keepalive = _expand_tensordesc_kernel_arg(arg, rank, desc_meta, dtype)
             expanded_arg_values = tuple(expanded_arg_values)
             if object_cache_key is not None:
                 self._tensordesc_object_cache[object_cache_key] = (
@@ -885,28 +962,111 @@ class MusaLauncher(object):
         expanded_kernel_args.extend(expanded_arg_values)
         launch_keepalive.append(keepalive)
 
-    def __call__(self, *args, **kwargs):
-        if not self._needs_runtime_expansion:
-            self.launch(*args, **kwargs)
+    def _alloc_global_scratch(self, gridX, gridY, gridZ, stream):
+        if self.global_scratch_size is None or self.global_scratch_size == 0:
+            return None
+        grid_size = gridX * gridY * gridZ
+        alloc_size = grid_size * int(self.global_scratch_size)
+        alloc_fn = _allocation._allocator.get()
+        return alloc_fn(alloc_size, int(self.global_scratch_align), stream)
+
+    def _set_and_keep_global_scratch(self, buf):
+        if buf is None:
             return
+        self._global_scratch_keepalive.append(buf)
+        if len(self._global_scratch_keepalive) > 4096:
+            self._global_scratch_keepalive = self._global_scratch_keepalive[-4096:]
+        self._set_global_scratch(buf.data_ptr())
 
-        # launch(gridX, gridY, gridZ, stream, function, kernel_metadata,
-        # launch_metadata, launch_enter_hook, launch_exit_hook, *kernel_args)
-        launch_prefix = args[:9]
-        kernel_args = args[9:]
-        if len(kernel_args) != len(self._signature_types):
-            raise RuntimeError("launcher argument count mismatch while expanding tensor descriptors")
+    # FlagPrism: retain the original MUSA launch path for reference.
+    # def __call__(self, *args, **kwargs):
+    #     if not self._needs_runtime_expansion:
+    #         gridX, gridY, gridZ = args[0], args[1], args[2]
+    #         stream = args[3]
+    #         gs_buf = self._alloc_global_scratch(gridX, gridY, gridZ, stream)
+    #         self._set_and_keep_global_scratch(gs_buf)
+    #         self.launch(*args, **kwargs)
+    #         return
+    #
+    #     # launch(gridX, gridY, gridZ, stream, function, kernel_metadata,
+    #     # launch_metadata, launch_enter_hook, launch_exit_hook, *kernel_args)
+    #     launch_prefix = args[:9]
+    #     kernel_args = args[9:]
+    #     if len(kernel_args) != len(self._signature_types):
+    #         raise RuntimeError("launcher argument count mismatch while expanding tensor descriptors")
+    #
+    #     expanded_kernel_args = []
+    #     launch_keepalive = []
+    #     tensordesc_state = [0]
+    #     for arg, ty in zip(kernel_args, self._signature_types):
+    #         self._expand_runtime_arg(arg, ty, expanded_kernel_args, launch_keepalive, tensordesc_state)
+    #
+    #     self._tensordesc_keepalive.extend(launch_keepalive)
+    #     if len(self._tensordesc_keepalive) > 4096:
+    #         self._tensordesc_keepalive = self._tensordesc_keepalive[-4096:]
+    #     gridX, gridY, gridZ = launch_prefix[0], launch_prefix[1], launch_prefix[2]
+    #     stream = launch_prefix[3]
+    #     gs_buf = self._alloc_global_scratch(gridX, gridY, gridZ, stream)
+    #     self._set_and_keep_global_scratch(gs_buf)
+    #     self.launch(*launch_prefix, *expanded_kernel_args, **kwargs)
+    #
 
-        expanded_kernel_args = []
-        launch_keepalive = []
-        tensordesc_state = [0]
-        for arg, ty in zip(kernel_args, self._signature_types):
-            self._expand_runtime_arg(arg, ty, expanded_kernel_args, launch_keepalive, tensordesc_state)
+    # FlagPrism: append the debugger hidden argument through one launch wrapper.
+    def __call__(self, *args, **kwargs):
 
-        self._tensordesc_keepalive.extend(launch_keepalive)
-        if len(self._tensordesc_keepalive) > 4096:
-            self._tensordesc_keepalive = self._tensordesc_keepalive[-4096:]
-        self.launch(*launch_prefix, *expanded_kernel_args, **kwargs)
+        def launch(hidden_args=()):
+            if not self._needs_runtime_expansion:
+                gridX, gridY, gridZ = args[0], args[1], args[2]
+                stream = args[3]
+                gs_buf = self._alloc_global_scratch(gridX, gridY, gridZ, stream)
+                self._set_and_keep_global_scratch(gs_buf)
+                return self.launch(*args, *hidden_args, **kwargs)
+
+            # launch(gridX, gridY, gridZ, stream, function, kernel_metadata,
+            # launch_metadata, launch_enter_hook, launch_exit_hook, *kernel_args)
+            launch_prefix = args[:9]
+            kernel_args = args[9:]
+            if len(kernel_args) != len(self._signature_types):
+                raise RuntimeError("launcher argument count mismatch while expanding "
+                                   "tensor descriptors")
+
+            expanded_kernel_args = []
+            launch_keepalive = []
+            tensordesc_state = [0]
+            for arg, ty in zip(kernel_args, self._signature_types):
+                self._expand_runtime_arg(
+                    arg,
+                    ty,
+                    expanded_kernel_args,
+                    launch_keepalive,
+                    tensordesc_state,
+                )
+
+            self._tensordesc_keepalive.extend(launch_keepalive)
+            if len(self._tensordesc_keepalive) > 4096:
+                self._tensordesc_keepalive = self._tensordesc_keepalive[-4096:]
+            gridX, gridY, gridZ = launch_prefix[0:3]
+            stream = launch_prefix[3]
+            gs_buf = self._alloc_global_scratch(gridX, gridY, gridZ, stream)
+            self._set_and_keep_global_scratch(gs_buf)
+            return self.launch(*launch_prefix, *expanded_kernel_args, *hidden_args, **kwargs)
+
+        if not self._debug_enabled:
+            return launch()
+
+        user_args = args[-self.user_arg_count:] if self.user_arg_count else ()
+        launch_metadata = args[6] if len(args) > 6 else None
+        # FlagPrism: wrap MUSA launch only for debugger-instrumented kernels.
+        launch_grid = (args[0], args[1], args[2])
+        with _flagprism.debugger_launch_context(
+                "musa",
+                self.metadata,
+                launch_grid,
+                args[3],
+                launch_metadata,
+                user_args,
+        ) as hidden_args:
+            return launch(hidden_args)
 
 
 class MusaDriver(DriverBase):

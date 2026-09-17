@@ -122,6 +122,16 @@ class DependenciesFinder(ast.NodeVisitor):
         if val is None or type(val) is ModuleType:
             return
 
+        # `tle.raw` payload handles are plain globals, but their device source
+        # (e.g. a `.xpu` file) is part of the generated code, so it has to be
+        # part of the hash. The attribute is a callable so an edited payload file
+        # is picked up without restarting the process.
+        tle_raw_source_cache_key = getattr(val, "__triton_tle_raw_source_cache_key__", None)
+        if tle_raw_source_cache_key is not None:
+            part = (tle_raw_source_cache_key() if callable(tle_raw_source_cache_key) else tle_raw_source_cache_key)
+            self.hasher.update(str(part).encode("utf-8"))
+            return
+
         if getattr(val, "__triton_aggregate__", False):
             for attr in val.hash_attrs:
                 self.record_reference(attr)
