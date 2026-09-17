@@ -1,3 +1,9 @@
+flagtree (0.7.0-1) unstable; urgency=medium
+
+  * Align the packaging baseline with the 0.7.0 release line.
+
+ -- FlagOS Contributors <contact@flagos.io>  Fri, 18 Sep 2026 00:11:48 +0900
+
 flagtree (0.6.1-1) unstable; urgency=medium
 
   * New upstream release 0.6.1.

@@ -29,7 +29,7 @@
 %define __requires_exclude libcuda\\.so|libnvidia.*
 
 Name:           python3-flagtree-%{flagtree_backend}
-Version:        0.6.1
+Version:        0.7.0
 Release:        1%{?dist}
 Summary:        FlagTree compiler with %{flagtree_backend} backend
 License:        MIT AND Apache-2.0 WITH LLVM-exception AND BSD-3-Clause AND LicenseRef-NVIDIA-CUDA-EULA
@@ -142,6 +142,9 @@ install -D -m 0644 %{SOURCE0} %{buildroot}%{_licensedir}/%{name}/LICENSE
 %{_bindir}/proton*
 
 %changelog
+* Fri Sep 18 2026 FlagOS Contributors <contact@flagos.io> - 0.7.0-1
+- Align the packaging baseline with the 0.7.0 release line.
+
 * Wed Jul 15 2026 FlagOS Contributors <contact@flagos.io> - 0.6.0-1
 - Sync package version with the flagtree wheel (0.6.0).
 - Fail the install step when the wheel version does not match the spec.
