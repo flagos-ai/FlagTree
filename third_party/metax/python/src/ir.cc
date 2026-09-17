@@ -37,6 +37,9 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
+#ifdef __FLAGTREE_COMMON_IR__
+#include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
+#endif
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 
@@ -385,6 +388,9 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
                     ::mlir::gpu::GPUDialect, cf::ControlFlowDialect,
                     LLVM::LLVMDialect, mlir::ub::UBDialect,
                     mlir::triton::gluon::GluonDialect>();
+#ifdef __FLAGTREE_COMMON_IR__
+    registry.insert<mlir::triton::tile::CommonIRDialect>();
+#endif
     mlir::LLVM::registerInlinerInterface(registry);
     registerBuiltinDialectTranslation(registry);
     registerLLVMDialectTranslation(registry);
