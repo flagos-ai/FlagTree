@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Template Gems-Baseline
+name: Template-Gems-Baseline
 
 on:
   workflow_call:
@@ -40,10 +40,27 @@ on:
         description: 'FlagGems repo tag to test against'
         required: true
         type: string
+      flaggems-pre-command:
+        description: 'Multiline script to run before FlagGems tests (e.g. source env, set LD_LIBRARY_PATH)'
+        required: false
+        type: string
+        default: ''
       flagtree-build-command:
         description: 'Multiline script to build and install FlagTree'
         required: true
         type: string
+      env-setup-command:
+        description: |
+          Multiline bash script executed in the Setup Environment step.
+          Only 'echo KEY=VALUE' output is appended to GITHUB_ENV, so these
+          variables are visible to ALL later steps (build, test, compare).
+          Do NOT use 'export' and do NOT print anything else to stdout.
+          Example:
+            echo "LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}"
+            echo "PATH=/root/bin/:${PATH}"
+        required: false
+        type: string
+        default: ''
     secrets:
       github-token:
         required: true
@@ -74,10 +91,10 @@ jobs:
           echo "GPU devices: $GPU_DEVICES"
           echo "FlagGems tag: ${{ inputs.flaggems-tag }}"
 
-          FLAGGEMS_REPO_DIR="${FLAGGEMS_CI_DIR}/FlagGems/baseline_${GITHUB_RUN_ID}"
+          DATE=$(date +'%Y%m%d_%H%M%S')
+          FLAGGEMS_REPO_DIR="${FLAGGEMS_CI_DIR}/FlagGems/baseline_${DATE}_${GITHUB_RUN_ID}"
           echo "FLAGGEMS_REPO_DIR=$FLAGGEMS_REPO_DIR" >> $GITHUB_OUTPUT
 
-          DATE=$(date +'%Y%m%d_%H%M%S')
           COMMIT_ID="${GITHUB_SHA}"
           BASELINE_DIR="${FLAGGEMS_CI_DIR}/Baseline/${DATE}_${COMMIT_ID}"
           BASELINE_SUMMARY="${BASELINE_DIR}/summary.json"
@@ -90,6 +107,11 @@ jobs:
           echo "baseline_summary=$BASELINE_SUMMARY" >> $GITHUB_OUTPUT
           echo "best_dir=$BEST_DIR" >> $GITHUB_OUTPUT
           echo "best_archive_dir=$BEST_ARCHIVE_DIR" >> $GITHUB_OUTPUT
+
+          # Append KEY=VALUE lines produced by the user-provided setup command to GITHUB_ENV
+          if [ -n '${{ inputs.env-setup-command }}' ]; then
+            ${{ inputs.env-setup-command }} >> "$GITHUB_ENV"
+          fi
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -126,6 +148,7 @@ jobs:
           run-script: 'tools/ci/ci_run_tests.py'
           skip-file: 'tools/ci/skip_list.yaml'
           first-parameter-only: 'true'
+          pre-command: ${{ inputs.flaggems-pre-command }}
 
       - name: Check Best Baseline Exists
         id: check-best

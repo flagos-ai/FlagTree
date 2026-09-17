@@ -18,6 +18,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+add_compile_definitions(__TRITON_VERSION_MAJOR__=3)
+add_compile_definitions(__TRITON_VERSION_MINOR__=6)
+
 macro(flagtree_configure_options)
   set(FLAGTREE_DEFAULT_OPTION ON)
   if(FLAGTREE_BACKEND)

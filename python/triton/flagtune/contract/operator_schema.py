@@ -31,9 +31,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from triton.flagtune._dependencies import require_optional_dependency
 from triton.flagtune.core.interfaces import ParameterField, ParameterSpace
@@ -220,6 +220,9 @@ class VariantInfo:
     param_space: ParameterSpace
     features: List[FeatureSpec]
     operations: Mapping[str, Operation]
+    stage: str = "public"
+    dtype_roles: Mapping[str, str] = dataclass_field(default_factory=dict)
+    route_binding: Optional[str] = None
 
     @property
     def input_names(self) -> List[str]:
@@ -457,6 +460,40 @@ def _parse_params(raw_params: Any, location: str) -> ParameterSpace:
     return ParameterSpace(fields=fields)
 
 
+def _parse_config_space(raw_space: Any, location: str) -> ParameterSpace:
+    """Compile an explicit, non-Cartesian candidate list."""
+    space = _require_mapping(raw_space, location)
+    unknown = set(space) - {"kind", "fields", "configs"}
+    if unknown:
+        raise FlagTuneConfigError(f"{location} has unknown keys: {sorted(unknown)}")
+    if space.get("kind") != "explicit":
+        raise FlagTuneConfigError(f"{location}.kind must be 'explicit'")
+    raw_fields = _require_mapping(space.get("fields"), f"{location}.fields")
+    names = []
+    for raw_name, raw_type in raw_fields.items():
+        name = validate_symbol_name(raw_name, f"{location}.fields key")
+        if raw_type not in {"int", "bool", "str", int, bool, str}:
+            raise FlagTuneConfigError(f"{location}.fields.{name} has unsupported type")
+        names.append(name)
+    configs = space.get("configs")
+    if not isinstance(configs, list) or not configs:
+        raise FlagTuneConfigError(f"{location}.configs must be a non-empty list")
+    normalized = []
+    seen = set()
+    for index, raw_config in enumerate(configs):
+        item = _require_mapping(raw_config, f"{location}.configs[{index}]")
+        if set(item) != set(names):
+            raise FlagTuneConfigError(f"{location}.configs[{index}] must contain exactly fields {names}")
+        config = {name: item[name] for name in names}
+        key = tuple((name, repr(config[name])) for name in names)
+        if key in seen:
+            raise FlagTuneConfigError(f"{location}.configs contains duplicate candidate")
+        seen.add(key)
+        normalized.append(config)
+    fields = [ParameterField(name=name, legal_values=sorted({c[name] for c in normalized}, key=repr)) for name in names]
+    return ParameterSpace(fields=fields, explicit_configs=normalized)
+
+
 def _parse_features(
     raw_features: Any,
     operations: Mapping[str, Operation],
@@ -526,12 +563,17 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
         variant_name = validate_variant_name(raw_variant_name, "config.variants key")
         location = f"config.variants.{variant_name}"
         spec = _require_mapping(raw_variant, location)
-        unknown = set(spec) - {"inputs", "when", "params", "features"}
+        unknown = set(spec) - {
+            "inputs", "when", "params", "config_space", "features", "stage", "dtype_roles", "route_binding"
+        }
         if unknown:
             raise FlagTuneConfigError(f"{location} has unknown keys: {sorted(unknown)}")
 
         inputs = _parse_inputs(spec.get("inputs"), operations, f"{location}.inputs")
-        param_space = _parse_params(spec.get("params"), f"{location}.params")
+        if "config_space" in spec:
+            param_space = _parse_config_space(spec["config_space"], f"{location}.config_space")
+        else:
+            param_space = _parse_params(spec.get("params"), f"{location}.params")
         variables = {field.name for field in inputs} | {"inputs"}
         when = spec.get("when", True)
         _validate_expression(when, operations, variables, f"{location}.when")
@@ -546,8 +588,23 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
             param_space=param_space,
             features=features,
             operations=operations,
+            stage=str(spec.get("stage", "public")),
+            dtype_roles=dict(spec.get("dtype_roles", {})),
+            route_binding=spec.get("route_binding"),
         )
 
+    # A public route may bind to a stage model without duplicating its complete
+    # parameter/feature declaration.  The alias remains an independent model
+    # namespace while sharing the safe candidate contract.
+    for public_name, info in tuple(variants.items()):
+        binding = info.route_binding
+        if binding and binding not in variants:
+            variants[binding] = replace(
+                info,
+                name=binding,
+                stage="partial",
+                route_binding=None,
+            )
     return OperatorInfo(op_id=op_id, variants=variants)
 
 

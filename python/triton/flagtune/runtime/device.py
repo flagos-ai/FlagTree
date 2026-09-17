@@ -34,8 +34,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict
 
+from triton.flagtune.runtime.errors import PlatformProbeError
 
-class FlagTuneDeviceError(RuntimeError):
+
+class FlagTuneDeviceError(PlatformProbeError):
     """Base class for actionable FlagTune device-boundary failures."""
 
 

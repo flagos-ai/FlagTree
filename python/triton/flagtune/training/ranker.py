@@ -292,6 +292,7 @@ def _group_plan(
         for line_number, record in records:
             model_identity = record.get("model_identity")
             dtypes = record.get("dtypes")
+            record_model_dtypes = record.get("model_dtypes")
             device = record.get("device")
             metadata = device.get("metadata") if isinstance(device, Mapping) else None
             architecture = metadata.get("architecture") if isinstance(metadata, Mapping) else None
@@ -311,9 +312,15 @@ def _group_plan(
                     raise TrainingDataError(f"benchmark data line {line_number} has incomplete platform/dtype identity")
                 if not isinstance(input_dtypes, list) or not isinstance(output_dtypes, list):
                     raise TrainingDataError(f"benchmark data line {line_number} must contain dtype lists")
+                if record_model_dtypes is None:
+                    # Backward compatibility for corpora produced before
+                    # partial models exposed their A/B/P identity separately.
+                    record_model_dtypes = [*input_dtypes, *output_dtypes]
+                if not isinstance(record_model_dtypes, list):
+                    raise TrainingDataError(f"benchmark data line {line_number} model_dtypes must be a list")
                 from triton.flagtune.contract.identity import make_dtype_key
 
-                if make_dtype_key([*input_dtypes, *output_dtypes]) != dtype_key:
+                if make_dtype_key(record_model_dtypes) != dtype_key:
                     raise TrainingDataError(f"benchmark data line {line_number} has inconsistent "
                                             "model_identity.dtype_key")
                 ranking_group = record.get("ranking_group")
@@ -407,7 +414,11 @@ def prepare_ranking_data(
         ranking_group = selected[0][1].get("ranking_group")
         if not isinstance(ranking_group, Mapping):
             raise TrainingDataError(f"benchmark data line {selected[0][0]} has no ranking_group mapping")
-        if (ranking_group.get("operator_id") != variant.op_id or ranking_group.get("variant") != variant.name):
+        accepted_variants = {variant.name}
+        route_binding = getattr(variant, "route_binding", None)
+        if route_binding:
+            accepted_variants.add(str(route_binding))
+        if (ranking_group.get("operator_id") != variant.op_id or ranking_group.get("variant") not in accepted_variants):
             raise TrainingDataError(f"benchmark data line {selected[0][0]} ranking_group does not "
                                     f"match {variant.op_id}/{variant.name}")
         if ranking_group.get("dimensions") != first_inputs:
