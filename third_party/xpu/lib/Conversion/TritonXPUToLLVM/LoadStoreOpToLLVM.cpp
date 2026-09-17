@@ -154,6 +154,12 @@ struct LoadStoreConversionBase {
     }
   }
 
+  void createGM2SMOp(ConversionPatternRewriter &rewriter,
+                     mlir::MLIRContext *ctx, mlir::Location &loc, Value src,
+                     Value dst, Value offset, Value size) const {
+    rewriter.create<mlir::LLVM::XPU::GM2SMOp_v3>(loc, src, dst, offset, size);
+  }
+
   void createMemOp(ConversionPatternRewriter &rewriter, mlir::MLIRContext *ctx,
                    mlir::Location &loc, Value bufPtr, Value gmPtr, Value offset,
                    Value size, MemCpyType memCpyType) const {
@@ -172,10 +178,20 @@ struct LoadStoreConversionBase {
     }
   }
 
-  void createMfenceOp(ConversionPatternRewriter &rewriter,
-                      mlir::Location &loc) const {
-    // The magic number 5(101) of MfenceOp means mfencing on LM and GM
-    rewriter.create<mlir::LLVM::XPU::MfenceOp>(loc, i32_val(5));
+  void createMfenceOp(ConversionPatternRewriter &rewriter, mlir::Location &loc,
+                      int32_t mfenceType = 5) const {
+    // Mfence mask bits: bit0=LM(1), bit1=SM(2), bit2=GM(4). 5 fences LM+GM.
+    rewriter.create<mlir::LLVM::XPU::MfenceOp>(loc, i32_val(mfenceType));
+  }
+
+  void createMfenceLMOp(ConversionPatternRewriter &rewriter,
+                        mlir::Location &loc) const {
+    createMfenceOp(rewriter, loc, 1);
+  }
+
+  void createMfenceGMOp(ConversionPatternRewriter &rewriter,
+                        mlir::Location &loc) const {
+    createMfenceOp(rewriter, loc, 4);
   }
 
   Value getStartPtr(ConversionPatternRewriter &rewriter, mlir::MLIRContext *ctx,
@@ -1288,6 +1304,42 @@ struct XPULoadOpConversion : public ConvertOpToLLVMPattern<triton::xpu::LoadOp>,
     return;
   }
 
+  // Escape hatch for the fence below; on by default because without it the
+  // aliased-buffer read is simply wrong (findings 1.74).
+  static bool lmWARFenceEnabled() {
+    static const bool enabled =
+        mlir::triton::tools::isEnvValueBool(
+            mlir::triton::tools::getStrEnvXPU("TRITONXPU_LM_WAR_FENCE"))
+            .value_or(true);
+    return enabled;
+  }
+
+  // How many GM2LM-family ops fill the LM buffer this load reads. More than one
+  // means MemoryInplace aliased several loads onto the same buffer, which is
+  // how a later op comes to rewrite the words being read here. A single filler
+  // inside a loop refills the same buffer on the next iteration, which is the
+  // same hazard at a longer distance; measured and not reproducible
+  // (findings 1.76), because the overwrite either reads the just-loaded
+  // register or sits behind the mfence the loop's own store already emits.
+  static unsigned countBufferFillers(triton::xpu::LoadOp op) {
+    Operation *allocaOp = nullptr;
+    if (Operation *def = op.getPtr().getDefiningOp()) {
+      if (isa<triton::xpu::AllocaOp>(def))
+        allocaOp = def;
+      else if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMOp>(def))
+        allocaOp = gm2lmOp.getBufPtr().getDefiningOp();
+      else if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMMaskOp>(def))
+        allocaOp = gm2lmOp.getBufPtr().getDefiningOp();
+    }
+    if (!allocaOp || !isa<triton::xpu::AllocaOp>(allocaOp))
+      return 0;
+    unsigned fillers = 0;
+    for (Operation *user : allocaOp->getUsers())
+      if (isa<triton::xpu::GM2LMOp, triton::xpu::GM2LMMaskOp>(user))
+        ++fillers;
+    return fillers;
+  }
+
   LogicalResult
   matchAndRewrite(triton::xpu::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -1370,7 +1422,7 @@ struct XPULoadOpConversion : public ConvertOpToLLVMPattern<triton::xpu::LoadOp>,
           {fp16LM, fp32LM, i32_val(ptrNumElems * stride)});
       mlir::LLVM::XPU::createDeviceCall("_ZN3xpu10fp16tofp32EPKNS_7float16EPfi",
                                         rewriter, op, singleOperandRange, loc);
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
       ptrElemScalarTy = resElemScalarTy;
     }
     // bf16Tofp32
@@ -1548,7 +1600,91 @@ struct XPULoadOpConversion : public ConvertOpToLLVMPattern<triton::xpu::LoadOp>,
       }
     }
 
+    // Write-after-read hazard on an *aliased* LM buffer (findings 1.74).
+    // MemoryInplace folds allocas whose IR lifetimes are disjoint into one
+    // buffer, so the words this load just read get rewritten a few instructions
+    // later by the next load's other-fill. On xpu3 that scalar store beats the
+    // in-flight `vload_mask16` to word 0 of the buffer, per core and
+    // nondeterministically: a vectorized three-operand welford reduce lost the
+    // lane-0 contribution of ~55 of 64 cores, while the third operand -- the
+    // one whose buffer is never rewritten afterwards -- was always intact.
+    // Fence the reads so the buffer is free to be rewritten. Only a buffer with
+    // more than one filler can be in that situation, and fencing just those
+    // leaves every other kernel's code byte-identical.
+    if (lmWARFenceEnabled() && countBufferFillers(op) > 1)
+      createMfenceLMOp(rewriter, loc);
+
     Type llvmResultStructTy = typeConverter->convertType(op.getType());
+    Value resultStruct = packLLElements(loc, typeConverter, loadedVals,
+                                        rewriter, llvmResultStructTy);
+    rewriter.replaceOp(op, {resultStruct});
+    return success();
+  }
+};
+
+struct XPULoadScalarIndexedOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::LoadScalarIndexedOp>,
+      public LoadStoreConversionBase {
+  XPULoadScalarIndexedOpConversion(LLVMTypeConverter &converter,
+                                   const xpu::TargetInfo &targetInfo,
+                                   ModuleAxisInfoAnalysis &axisAnalysisPass,
+                                   PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::LoadScalarIndexedOp>(converter,
+                                                                 benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::LoadScalarIndexedOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    Value res = op.getResult();
+    Type resTy = res.getType();
+    Type resElemTy = typeConverter->convertType(getElementTypeOrSelf(resTy));
+    Type resElemScalarTy = getElementTypeOrSelf(resElemTy);
+    resElemScalarTy = typeConverter->convertType(resElemScalarTy);
+
+    unsigned addrSpace = 0;
+    Type ptrTy = op.getPtr().getType();
+    if (auto ptrTensorTy = mlir::dyn_cast<RankedTensorType>(ptrTy)) {
+      if (auto pt =
+              mlir::dyn_cast<triton::PointerType>(ptrTensorTy.getElementType()))
+        addrSpace = pt.getAddressSpace();
+    } else if (auto pt = mlir::dyn_cast<triton::PointerType>(ptrTy)) {
+      addrSpace = pt.getAddressSpace();
+    }
+
+    auto llPtrs = unpackLLElements(loc, adaptor.getPtr(), rewriter);
+    Value basePtr = bitcast(llPtrs[0], ptr_ty(ctx, addrSpace));
+    Value llIndex = adaptor.getIndex();
+    Value elemPtr =
+        gep(ptr_ty(ctx, addrSpace), resElemScalarTy, basePtr, llIndex);
+    Value loaded = load(resElemScalarTy, elemPtr);
+
+    unsigned resNumElems = getTotalElemsPerThread(resTy);
+    bool isVectorized = mlir::isa<mlir::VectorType>(resElemTy);
+    unsigned vecSize = 1u;
+    if (isVectorized) {
+      unsigned elemNbits = 0u;
+      getVectorInfo(resElemTy, vecSize, elemNbits);
+    }
+
+    SmallVector<Value> loadedVals;
+    for (size_t elemIdx = 0; elemIdx < resNumElems; ++elemIdx) {
+      if (isVectorized) {
+        Value newVector = rewriter.create<LLVM::UndefOp>(loc, resElemTy);
+        for (size_t i = 0; i < vecSize; ++i) {
+          newVector = insert_element(resElemTy, newVector, loaded, i32_val(i));
+        }
+        loadedVals.push_back(newVector);
+      } else {
+        loadedVals.push_back(loaded);
+      }
+    }
+
+    Type llvmResultStructTy = typeConverter->convertType(resTy);
     Value resultStruct = packLLElements(loc, typeConverter, loadedVals,
                                         rewriter, llvmResultStructTy);
     rewriter.replaceOp(op, {resultStruct});
@@ -1935,7 +2071,7 @@ struct XPUStoreOpConversion
       }
     }
 
-    createMfenceOp(rewriter, loc);
+    createMfenceLMOp(rewriter, loc);
 
     // fp32 to fp16
     if (fp32Tofp16) {
@@ -1944,7 +2080,7 @@ struct XPUStoreOpConversion
       ValueRange singleOperandRange({fp32LM, fp16LM, i32_val(ptrNumElems)});
       mlir::LLVM::XPU::createDeviceCall("_ZN3xpu10fp32tofp16Ef", rewriter, op,
                                         singleOperandRange, loc);
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
     }
 
     rewriter.eraseOp(op);
@@ -2170,7 +2306,7 @@ struct XPUGM2LMOpConversion
           createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
                         readBytes);
           if (!async)
-            createMfenceOp(rewriter, loc);
+            createMfenceLMOp(rewriter, loc);
         }
 
         resultStruct = packLLElements(loc, typeConverter, llLMPtrs, rewriter,
@@ -2196,6 +2332,30 @@ struct XPUGM2LMOpConversion
       SmallVector<Value> newLmBufPtrs(llLMPtrs.size(), llLMPtrs[0]);
       resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
                                     llLMPtr.getType());
+    } else if (offsetState == OffsetState::LocallyScalar) {
+      int64_t rowLen = op.getRowLen();
+      if (rowLen <= 0)
+        rowLen = static_cast<int64_t>(llLMPtrs.size());
+      readBytes = elemBytes;
+      SmallVector<Value> newLmBufPtrs(llLMPtrs.size());
+      for (size_t start = 0; start < llLMPtrs.size();
+           start += static_cast<size_t>(rowLen)) {
+        Value dstPtr = bitcast(llLMPtrs[start], ptr_ty(ctx, 0));
+        Value srcPtr = bitcast(llGMPtrs[start], ptr_ty(ctx, 1));
+        createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                      readBytes);
+        size_t end = start + static_cast<size_t>(rowLen);
+        if (end > llLMPtrs.size())
+          end = llLMPtrs.size();
+        for (size_t j = start; j < end; ++j)
+          newLmBufPtrs[j] = llLMPtrs[start];
+      }
+      if (!async)
+        createMfenceLMOp(rewriter, loc);
+      resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
+                                    llvmResultStructTy);
+      rewriter.replaceOp(op, {resultStruct});
+      return success();
     } else if (offsetState == OffsetState::LocallyContinuous) {
       int64_t _rowLen = op.getRowLen();
       int64_t _rowStride = op.getRowStride();
@@ -2230,7 +2390,7 @@ struct XPUGM2LMOpConversion
         }
 
         if (!async)
-          createMfenceOp(rewriter, loc);
+          createMfenceLMOp(rewriter, loc);
 
         resultStruct = packLLElements(loc, typeConverter, llLMPtrs, rewriter,
                                       llvmResultStructTy);
@@ -2260,7 +2420,7 @@ struct XPUGM2LMOpConversion
       }
 
       if (!async)
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
 
       rewriter.replaceOp(op, {resultStruct});
       return success();
@@ -2270,9 +2430,84 @@ struct XPUGM2LMOpConversion
     Value srcPtr = bitcast(llGMPtrs[0], ptr_ty(ctx, 1));
     createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes, readBytes);
     if (!async)
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
 
     rewriter.replaceOp(op, {resultStruct});
+    return success();
+  }
+};
+
+struct XPUStageSMOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::StageSMOp>,
+      public LoadStoreConversionBase {
+  XPUStageSMOpConversion(LLVMTypeConverter &converter,
+                         const xpu::TargetInfo &targetInfo,
+                         ModuleAxisInfoAnalysis &axisAnalysisPass,
+                         PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::StageSMOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  Value getGlobalSmemBase(Location loc, ConversionPatternRewriter &rewriter,
+                          Operation *op) const {
+    ModuleOp mod = op->getParentOfType<ModuleOp>();
+    LLVM::GlobalOp globalSmem;
+    mod.walk([&](LLVM::GlobalOp g) {
+      if (g.getSymName() == "global_smem")
+        globalSmem = g;
+    });
+    assert(globalSmem && "global_smem not found; initSharedMemory must run "
+                         "before StageSM lowering");
+    Value addr = rewriter.create<LLVM::AddressOfOp>(loc, globalSmem);
+    return rewriter.create<LLVM::BitcastOp>(
+        loc, LLVM::LLVMPointerType::get(rewriter.getContext(), 2), addr);
+  }
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::StageSMOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    Value ptr = op.getPtr();
+    Type ptrTy = ptr.getType();
+    Type elemTy = mlir::cast<triton::PointerType>(ptrTy).getPointeeType();
+    elemTy = typeConverter->convertType(elemTy);
+    unsigned elemNbits = isa<triton::PointerType, LLVM::LLVMPointerType>(elemTy)
+                             ? 64u
+                             : elemTy.getIntOrFloatBitWidth();
+
+    Value srcPtr = bitcast(adaptor.getPtr(), ptr_ty(ctx, 1));
+    Value smBase = getGlobalSmemBase(loc, rewriter, op);
+    Value smDst = gep(ptr_ty(ctx, 2), i8_ty, smBase, adaptor.getSmOffset());
+
+    Value elemBytes = i32_val(elemNbits / 8u);
+    Value bufElems = adaptor.getBufElems();
+    Value readLen = bufElems;
+    if (op.getLen()) {
+      Value reqLen = smax(adaptor.getLen(), i32_val(0));
+      readLen = smin(reqLen, bufElems);
+    }
+    Value readBytes = mul(readLen, elemBytes);
+
+    Value coreId = mlir::LLVM::XPU::getThreadId(rewriter, loc);
+    Value isCore0 = icmp_eq(coreId, i32_val(0));
+
+    Block *currentBlock = rewriter.getInsertionBlock();
+    Block *afterBlock =
+        rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+    Block *dmaBlock = rewriter.createBlock(afterBlock);
+
+    rewriter.setInsertionPointToEnd(currentBlock);
+    rewriter.create<LLVM::CondBrOp>(loc, isCore0, dmaBlock, afterBlock);
+
+    rewriter.setInsertionPointToStart(dmaBlock);
+    createGM2SMOp(rewriter, ctx, loc, srcPtr, smDst, i32_val(0), readBytes);
+    rewriter.create<LLVM::BrOp>(loc, afterBlock);
+
+    rewriter.setInsertionPointToStart(afterBlock);
+    xpu_barrier();
+    rewriter.replaceOp(op, {smDst});
     return success();
   }
 };
@@ -2425,7 +2660,7 @@ struct XPULM2GMOpConversion
           }
         }
         if (!async)
-          createMfenceOp(rewriter, loc);
+          createMfenceLMOp(rewriter, loc);
         rewriter.eraseOp(op);
         rewriter.create<LLVM::BrOp>(loc, ValueRange{}, newBlock);
         return success();
@@ -2479,7 +2714,7 @@ struct XPULM2GMOpConversion
       break;
     }
     if (!async)
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
     rewriter.eraseOp(op);
 
     return success();
@@ -2618,7 +2853,7 @@ struct XPUGM2LMMaskOpConversion
         createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
                       readBytes);
         if (!async)
-          createMfenceOp(rewriter, loc);
+          createMfenceLMOp(rewriter, loc);
       } else {
         // Unknown
         for (size_t i = 0; i < llGMPtrs.size(); ++i) {
@@ -2636,7 +2871,7 @@ struct XPUGM2LMMaskOpConversion
           createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
                         _readBytes);
           if (!async)
-            createMfenceOp(rewriter, loc);
+            createMfenceLMOp(rewriter, loc);
         }
       }
       resultStruct = packLLElements(loc, typeConverter, llLMPtrs, rewriter,
@@ -2655,7 +2890,7 @@ struct XPUGM2LMMaskOpConversion
       readBytes = mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
       createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes, readBytes);
       if (!async)
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
 
       resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
                                     llvmResultStructTy);
@@ -2664,7 +2899,7 @@ struct XPUGM2LMMaskOpConversion
       readBytes = mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
       createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes, readBytes);
       if (!async)
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
 
       SmallVector<Value> newLmBufPtrs(llLMPtrs.size(), llLMPtrs[0]);
       resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
@@ -2695,7 +2930,7 @@ struct XPUGM2LMMaskOpConversion
         }
       }
       if (!async)
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
       resultStruct = packLLElements(loc, typeConverter, llLMPtrs, rewriter,
                                     llvmResultStructTy);
       rewriter.create<LLVM::BrOp>(loc, ValueRange{}, newBlock);
@@ -2737,7 +2972,7 @@ struct XPUGM2LMMaskOpConversion
     }
 
     if (!async)
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
 
     rewriter.replaceOp(op, {resultStruct});
     return success();
@@ -2900,12 +3135,12 @@ struct XPULM2GMMaskOpConversion
               oldBlock, newBlock);
         }
         if (!async)
-          createMfenceOp(rewriter, loc);
+          createMfenceLMOp(rewriter, loc);
         rewriter.eraseOp(op);
         rewriter.create<LLVM::BrOp>(loc, ValueRange{}, newBlock);
         return success();
       }
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
       rewriter.create<LLVM::BrOp>(loc, ValueRange{}, newBlock);
       break;
     }
@@ -2935,7 +3170,7 @@ struct XPULM2GMMaskOpConversion
         readBytes = mask ? select(_mask, elemBytes, i32_val(0)) : elemBytes;
         createLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
                       readBytes);
-        createMfenceOp(rewriter, loc);
+        createMfenceLMOp(rewriter, loc);
       }
       break;
     }
@@ -2945,7 +3180,7 @@ struct XPULM2GMMaskOpConversion
     }
     }
     if (!async)
-      createMfenceOp(rewriter, loc);
+      createMfenceLMOp(rewriter, loc);
 
     rewriter.eraseOp(op);
     return success();
@@ -3030,13 +3265,1264 @@ struct XPUAtomicRMWOpConversion
 
 } // namespace
 
+//===----------------------------------------------------------------------===//
+// TLE Conversion Patterns
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// Lower ttg::LocalAllocOp to XPU local memory allocation.
+/// This is the TLE equivalent of XPUAllocaOpConversion.
+///
+/// SPMD model (方向 B): the memdesc shape describes the WHOLE tile, but on XPU
+/// each core owns only a contiguous slice of the tile. The tile is partitioned
+/// across `groupSize` (= coresPerGroup = threads-per-warp) cores, so each core
+/// allocates only `ceil(tileElems / groupSize)` elements of private LM. This
+/// matches make_range/local_ptr which index the buffer with per-core-local
+/// indices [0, elemsPerCore).
+struct XPUTLELocalAllocOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalAllocOp>,
+      public LoadStoreConversionBase {
+  XPUTLELocalAllocOpConversion(LLVMTypeConverter &converter,
+                               const xpu::TargetInfo &targetInfo,
+                               ModuleAxisInfoAnalysis &axisAnalysisPass,
+                               PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::gpu::LocalAllocOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalAllocOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    auto memDescTy = op.getType();
+    auto shape = memDescTy.getShape();
+    Type elemTy = memDescTy.getElementType();
+    Type llvmElemTy = getTypeConverter()->convertType(elemTy);
+
+    // Total elements in the whole tile.
+    unsigned tileElems = 1;
+    for (auto dim : shape)
+      tileElems *= dim;
+
+    // Per-core element count: partition the tile across cores in a group.
+    // When tritonxpu-tle-core-tiling stamped a ClusterLayout, size the private
+    // LM from the layout: numElems = Prod_k ceil(shape[k],
+    // coresPerGroup[k]*groupsPerCluster[k]) (== getTotalElemsPerThread, and ==
+    // the legacy flat cut for single-level layouts). Otherwise fall back to the
+    // flat cut ceil(tileElems, groupSize).
+    auto mod = op->getParentOfType<ModuleOp>();
+    unsigned elemsPerCore;
+    if (auto tileLayout = op->getAttrOfType<triton::xpu::ClusterLayoutAttr>(
+            "xpu.tile_layout")) {
+      auto coresPerGroup = tileLayout.getCoresPerGroup();
+      auto groupsPerCluster = tileLayout.getGroupsPerCluster();
+      auto sizePerCore = tileLayout.getSizePerCore();
+      unsigned rank = shape.size();
+      if (rank == 1 && groupsPerCluster[0] > 1) {
+        // LargeN result buffer: distributed over `numGroups` groups only (the
+        // groupSize col-cores replicate the row), so size = ceil(M, numGroups)
+        // = sizePerCore[0].
+        elemsPerCore = sizePerCore[0];
+      } else {
+        elemsPerCore = 1;
+        for (unsigned d = 0; d < rank; ++d) {
+          unsigned coresAlongDim = coresPerGroup[d] * groupsPerCluster[d];
+          assert(coresAlongDim > 0 &&
+                 "cluster layout dim has zero cores (invalid ClusterLayout)");
+          elemsPerCore *= (shape[d] + coresAlongDim - 1) / coresAlongDim;
+        }
+      }
+    } else {
+      unsigned groupSize =
+          triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+      if (groupSize == 0)
+        groupSize = 1;
+      elemsPerCore = (tileElems + groupSize - 1) / groupSize;
+    }
+
+    auto allocNumElems = elemsPerCore;
+    // XPU2 FP16: align to 32 + double space for fp16tofp32
+    if (static_cast<XPUArch>(targetInfo.getXPUArch()) == XPUArch::XPU2 &&
+        llvmElemTy.isF16()) {
+      allocNumElems = (allocNumElems + 31) / 32 * 32;
+      allocNumElems *= 2;
+    }
+
+    // 64 bytes aligned for LM
+    allocNumElems = align(allocNumElems, llvmElemTy, 64);
+
+    auto lmPtrTy = LLVM::LLVMPointerType::get(ctx, 0);
+    auto lmBuf = allocate(lmPtrTy, llvmElemTy, i32_val(allocNumElems));
+
+    // For TLE, we store the base pointer as the lowered result.
+    // The memdesc type will be converted to a struct containing the base ptr.
+    rewriter.replaceOp(op, lmBuf);
+    return success();
+  }
+};
+
+/// Lower ttg::LocalLoadOp: load all elements from LM buffer into a tensor.
+struct XPUTLELocalLoadOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp>,
+      public LoadStoreConversionBase {
+  XPUTLELocalLoadOpConversion(LLVMTypeConverter &converter,
+                              const xpu::TargetInfo &targetInfo,
+                              ModuleAxisInfoAnalysis &axisAnalysisPass,
+                              PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    auto resTy = op.getResult().getType();
+    Type llvmResultTy = typeConverter->convertType(resTy);
+    Type elemTy = cast<RankedTensorType>(resTy).getElementType();
+    Type llvmElemTy = typeConverter->convertType(elemTy);
+    unsigned numElems = getTotalElemsPerThread(resTy);
+
+    // src is lowered memdesc → base LM pointer
+    Value lmBase = adaptor.getSrc();
+    auto lmPtrTy = LLVM::LLVMPointerType::get(ctx, 0);
+
+    SmallVector<Value> loadedVals;
+    for (unsigned i = 0; i < numElems; ++i) {
+      Value elemPtr = gep(lmPtrTy, llvmElemTy, lmBase, i32_val(i));
+      Value val = load(llvmElemTy, elemPtr);
+      loadedVals.push_back(val);
+    }
+
+    Value resultStruct =
+        packLLElements(loc, typeConverter, loadedVals, rewriter, llvmResultTy);
+    rewriter.replaceOp(op, {resultStruct});
+    return success();
+  }
+};
+
+/// Lower ttg::LocalStoreOp: store tensor elements into LM buffer.
+struct XPUTLELocalStoreOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalStoreOp>,
+      public LoadStoreConversionBase {
+  XPUTLELocalStoreOpConversion(LLVMTypeConverter &converter,
+                               const xpu::TargetInfo &targetInfo,
+                               ModuleAxisInfoAnalysis &axisAnalysisPass,
+                               PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::gpu::LocalStoreOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    Value srcVal = adaptor.getSrc();
+    Value dstBuf = adaptor.getDst();
+
+    auto srcTy = op.getSrc().getType();
+    Type elemTy = cast<RankedTensorType>(srcTy).getElementType();
+    Type llvmElemTy = typeConverter->convertType(elemTy);
+    unsigned numElems = getTotalElemsPerThread(srcTy);
+
+    auto lmPtrTy = LLVM::LLVMPointerType::get(ctx, 0);
+    auto srcVals = unpackLLElements(loc, srcVal, rewriter);
+
+    for (unsigned i = 0; i < numElems; ++i) {
+      Value elemPtr = gep(lmPtrTy, llvmElemTy, dstBuf, i32_val(i));
+      store(srcVals[i], elemPtr);
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// One contiguous GM<->LM DMA segment for a single core.
+//   gmElemOffset : element offset from the GM tile base pointer.
+//   lmElemOffset : compile-time element offset into the core's private LM
+//   buffer
+//                  (direction-agnostic: it is the dst offset for G2L and the
+//                  src offset for L2G; 0 for the single-slice case, k*innermost
+//                  for the k-th row of a whole-row-multi copy).
+//   validCount   : i32 number of valid elements to transfer (may be 0 to skip
+//   an
+//                  out-of-bounds row/slice).
+struct TileDmaSeg {
+  Value gmElemOffset;
+  unsigned lmElemOffset;
+  Value validCount;
+};
+
+// Compile-time delinearize: map a linear index to multi-dim coords over
+// `sizes`, iterating dims in `order` with order[0] the fastest-varying (matches
+// mlir::delinearize used by emitOffsetForClusterLayout).
+static SmallVector<unsigned> delinearizeConst(unsigned linear,
+                                              ArrayRef<unsigned> sizes,
+                                              ArrayRef<unsigned> order) {
+  unsigned rank = sizes.size();
+  SmallVector<unsigned> coord(rank, 0);
+  for (unsigned orderIdx = 0; orderIdx < rank && orderIdx < order.size();
+       ++orderIdx) {
+    unsigned d = order[orderIdx];
+    unsigned dimSize = (d < rank && sizes[d]) ? sizes[d] : 1;
+    coord[d] = linear % dimSize;
+    linear /= dimSize;
+  }
+  return coord;
+}
+
+// Runtime delinearize of an i32 Value over `sizes` by `order` (order[0]
+// fastest).
+static SmallVector<Value> delinearizeRT(ConversionPatternRewriter &rewriter,
+                                        Location loc, Value linear,
+                                        ArrayRef<unsigned> sizes,
+                                        ArrayRef<unsigned> order) {
+  unsigned rank = sizes.size();
+  SmallVector<Value> coord(rank);
+  for (unsigned d = 0; d < rank; ++d)
+    coord[d] = i32_val(0);
+  Value cur = linear;
+  for (unsigned orderIdx = 0; orderIdx < rank && orderIdx < order.size();
+       ++orderIdx) {
+    unsigned d = order[orderIdx];
+    unsigned dimSize = (d < rank && sizes[d]) ? sizes[d] : 1;
+    coord[d] = urem(cur, i32_val(dimSize));
+    cur = udiv(cur, i32_val(dimSize));
+  }
+  return coord;
+}
+// Compile-time enumeration of the LM slots a core owns and the per-slot
+// within-tile coordinates, derived PURELY from the ClusterLayout and buffer
+// shape (no rewriter / runtime values -> unit-testable in isolation). For slot
+// n: coords[n][d] = tileId[d]*shapePerCTATile[d] + elemCoord[d], i.e. the
+// nano-tile origin plus the intra-nano-tile element offset -- the SAME space as
+// emitOffsetForClusterLayout (Utility.cpp).
+static SmallVector<SmallVector<unsigned>>
+enumerateSlotCoords(triton::xpu::ClusterLayoutAttr layout,
+                    ArrayRef<int64_t> bufShape) {
+  unsigned rank = bufShape.size();
+  auto sizePerCore = layout.getSizePerCore();
+  auto coresPerGroup = layout.getCoresPerGroup();
+  auto groupsPerCluster = layout.getGroupsPerCluster();
+  auto order = layout.getOrder();
+
+  SmallVector<unsigned> shapePerCTATile(rank), tilesPerDim(rank);
+  unsigned totalSizePerThread = 1, numElems = 1;
+  for (unsigned d = 0; d < rank; ++d) {
+    shapePerCTATile[d] =
+        sizePerCore[d] * coresPerGroup[d] * groupsPerCluster[d];
+    tilesPerDim[d] =
+        shapePerCTATile[d]
+            ? (bufShape[d] + shapePerCTATile[d] - 1) / shapePerCTATile[d]
+            : 1;
+    unsigned coresAlongDim = coresPerGroup[d] * groupsPerCluster[d];
+    assert(coresAlongDim > 0 &&
+           "cluster layout dim has zero cores (invalid ClusterLayout)");
+    numElems *= (bufShape[d] + coresAlongDim - 1) / coresAlongDim;
+    totalSizePerThread *= sizePerCore[d];
+  }
+
+  SmallVector<SmallVector<unsigned>> coords(numElems);
+  for (unsigned n = 0; n < numElems; ++n) {
+    unsigned nanoId = n / totalSizePerThread;
+    unsigned elemId = n % totalSizePerThread;
+    SmallVector<unsigned> tileId = delinearizeConst(nanoId, tilesPerDim, order);
+    SmallVector<unsigned> elemCoord =
+        delinearizeConst(elemId, sizePerCore, order);
+    coords[n].resize(rank);
+    for (unsigned d = 0; d < rank; ++d)
+      coords[n][d] = tileId[d] * shapePerCTATile[d] + elemCoord[d];
+  }
+  return coords;
+}
+
+// Coalesce consecutive owned slots that map to a contiguous GM run (identical
+// within-tile coords in every dim except the innermost, which increments by 1)
+// into single DMA segments. `threadBase64` + `coordRT` describe this core's
+// runtime base; `coords` are the compile-time within-tile slot coordinates from
+// enumerateSlotCoords. Each segment's lmElemOffset is its start slot n (the LM
+// buffer is filled in slot-enumeration order).
+static SmallVector<TileDmaSeg>
+coalesceRuns(ConversionPatternRewriter &rewriter, Location loc,
+             ArrayRef<SmallVector<unsigned>> coords, unsigned rank,
+             Value tileOriginElem64, Value threadBase64,
+             ArrayRef<Value> coordRT, ArrayRef<Value> descStrides,
+             ValueRange offsets, ValueRange realShapes, bool hasRealShape) {
+  SmallVector<TileDmaSeg> segs;
+  Value zeroI32 = i32_val(0);
+  unsigned numElems = coords.size();
+  unsigned last = rank - 1;
+  unsigned n = 0;
+  while (n < numElems) {
+    unsigned runStart = n;
+    unsigned runLen = 1;
+    while (n + runLen < numElems) {
+      bool contiguous = true;
+      for (unsigned d = 0; d < rank; ++d) {
+        unsigned expect = coords[runStart][d] + (d == last ? runLen : 0);
+        if (coords[n + runLen][d] != expect) {
+          contiguous = false;
+          break;
+        }
+      }
+      if (!contiguous)
+        break;
+      ++runLen;
+    }
+    // GM element offset of the run start.
+    Value gmRun = add(tileOriginElem64, threadBase64);
+    for (unsigned d = 0; d < rank; ++d) {
+      Value stride = (d < descStrides.size()) ? descStrides[d] : i64_val(1);
+      gmRun = add(gmRun, mul(i64_val((int64_t)coords[runStart][d]), stride));
+    }
+    // Valid element count: clamp against realShapes on the innermost dim; zero
+    // the whole run if any outer coord is out of the real shape. Global coord
+    // along dim d = offset[d] + coordRT[d] + coords[runStart][d].
+    Value validCount = i32_val(runLen);
+    if (hasRealShape) {
+      Value lastOff = (last < offsets.size()) ? offsets[last] : zeroI32;
+      Value gLastStart =
+          add(add(lastOff, coordRT[last]), i32_val(coords[runStart][last]));
+      validCount =
+          smin(validCount, smax(sub(realShapes[last], gLastStart), zeroI32));
+      for (unsigned d = 0; d + 1 < rank; ++d) {
+        Value dOff = (d < offsets.size()) ? offsets[d] : zeroI32;
+        Value gCoord = add(add(dOff, coordRT[d]), i32_val(coords[runStart][d]));
+        validCount =
+            select(icmp_slt(gCoord, realShapes[d]), validCount, zeroI32);
+      }
+    }
+    segs.push_back({gmRun, runStart, validCount});
+    n += runLen;
+  }
+  return segs;
+}
+
+// LargeN 1D output writeback (rank==1, groupsPerCluster[0] > 1 AND
+// coresPerGroup[0] > 1): the reduce result [M] is distributed cyclically over
+// `numGroups` groups (group grp owns rows grp, grp+numGroups, ...). All
+// `groupSize` col-cores of a group hold the same row-sums after the cross-core
+// reduce, so only col-core 0 of each group (idInGroup == 0) writes them back to
+// avoid redundant DMAs. Slot k of the private buffer maps to global row
+// grp + k*numGroups.
+static SmallVector<TileDmaSeg> planLargeNOutputSegments(
+    ConversionPatternRewriter &rewriter, Location loc,
+    triton::xpu::ClusterLayoutAttr layout, Value tileOriginElem64,
+    ArrayRef<Value> descStrides, ValueRange offsets, ValueRange realShapes,
+    bool hasRealShape, Value idInGroup, Value groupId, unsigned numGroups) {
+  SmallVector<TileDmaSeg> segs;
+  Value zeroI32 = i32_val(0);
+  unsigned rowsPerGroup = layout.getSizePerCore()[0]; // == ceil(M, numGroups)
+  Value writeGate = icmp_eq(idInGroup, zeroI32);
+  Value rowOffsetBase = (offsets.size() > 0) ? offsets[0] : zeroI32;
+  for (unsigned k = 0; k < rowsPerGroup; ++k) {
+    Value globalRow = add(groupId, i32_val(k * numGroups));
+    Value gmElemOffset =
+        add(tileOriginElem64, mul(sext(i64_ty, globalRow), descStrides[0]));
+    Value validCount = i32_val(1);
+    if (hasRealShape) {
+      Value rowIdx = add(rowOffsetBase, globalRow);
+      validCount = select(icmp_slt(rowIdx, realShapes[0]), validCount, zeroI32);
+    }
+    validCount = select(writeGate, validCount, zeroI32);
+    segs.push_back({gmElemOffset, k, validCount});
+  }
+  return segs;
+}
+
+// Layout-driven per-core DMA planning: the ClusterLayout is the SINGLE source
+// of truth for which global (row,col) each LM slot n holds, mirroring
+// emitOffsetForClusterLayout (Utility.cpp) so memory / elementwise / reduce
+// agree. Returns coalesced contiguous GM runs. `coreId` is the FULL physical
+// core id (tid), split into idInGroup (%groupSize) + groupId. Delegates to:
+//   * planLargeNOutputSegments  -- LargeN 1D cyclic result writeback;
+//   * enumerateSlotCoords       -- pure compile-time owned-slot coordinates;
+//   * coalesceRuns              -- merge slots into contiguous GM DMA runs.
+static SmallVector<TileDmaSeg>
+planTileSegmentsFromLayout(ConversionPatternRewriter &rewriter, Location loc,
+                           triton::xpu::ClusterLayoutAttr layout,
+                           ArrayRef<int64_t> bufShape, Value tileOriginElem64,
+                           ArrayRef<Value> descStrides, ValueRange offsets,
+                           ValueRange realShapes, Value coreId) {
+  unsigned rank = bufShape.size();
+  bool hasRealShape = (!realShapes.empty() && realShapes.size() == rank);
+  auto sizePerCore = layout.getSizePerCore();
+  auto coresPerGroup = layout.getCoresPerGroup();
+  auto groupsPerCluster = layout.getGroupsPerCluster();
+  auto order = layout.getOrder();
+  unsigned groupSize = 1, numGroups = 1;
+  for (unsigned d = 0; d < rank; ++d) {
+    groupSize *= coresPerGroup[d];
+    numGroups *= groupsPerCluster[d];
+  }
+  Value idInGroup = urem(coreId, i32_val(groupSize));
+  Value groupId = udiv(coreId, i32_val(groupSize));
+
+  // LargeN output special-case (see planLargeNOutputSegments). The
+  // coresPerGroup[0] > 1 guard distinguishes the g > 1 (LargeN) case from the
+  // g == 1 (RowTiled) 1D output whose layout is cpg=[1]/gpc=[coreNum]: there
+  // groupsPerCluster[0] > 1 but coresPerGroup[0] == 1, so it falls through to
+  // the general BLOCK branch below (which is what RowTiled needs; cyclic would
+  // be wrong for it).
+  if (rank == 1 && groupsPerCluster[0] > 1 && coresPerGroup[0] > 1)
+    return planLargeNOutputSegments(
+        rewriter, loc, layout, tileOriginElem64, descStrides, offsets,
+        realShapes, hasRealShape, idInGroup, groupId, numGroups);
+
+  // ---- General branch: RowTiled / LargeN / 1D / default-1D. ----
+  // Runtime per-core coords: coreCoordInGroup[d] = intra-group core coord
+  // (idInGroup over coresPerGroup), groupCoord[d] = group coord (groupId over
+  // groupsPerCluster), both delinearized by `order`. The per-core thread base
+  // coordinate along dim d is
+  //   coordRT[d] = groupCoord[d]*(sizePerCore[d]*coresPerGroup[d])
+  //                + coreCoordInGroup[d]*sizePerCore[d].
+  SmallVector<Value> coreCoordInGroup =
+      delinearizeRT(rewriter, loc, idInGroup, coresPerGroup, order);
+  SmallVector<Value> groupCoord =
+      delinearizeRT(rewriter, loc, groupId, groupsPerCluster, order);
+  SmallVector<Value> coordRT(rank);
+  Value threadBase64 = i64_val(0);
+  for (unsigned d = 0; d < rank; ++d) {
+    coordRT[d] =
+        add(mul(groupCoord[d], i32_val(sizePerCore[d] * coresPerGroup[d])),
+            mul(coreCoordInGroup[d], i32_val(sizePerCore[d])));
+    Value stride = (d < descStrides.size()) ? descStrides[d] : i64_val(1);
+    threadBase64 = add(threadBase64, mul(sext(i64_ty, coordRT[d]), stride));
+  }
+
+  // Enumerate owned slots (pure compile-time) then coalesce into GM runs.
+  SmallVector<SmallVector<unsigned>> coords =
+      enumerateSlotCoords(layout, bufShape);
+  if (coords.empty())
+    return {};
+  return coalesceRuns(rewriter, loc, coords, rank, tileOriginElem64,
+                      threadBase64, coordRT, descStrides, offsets, realShapes,
+                      hasRealShape);
+}
+
+// ---- Legacy flat row-major cut (used when NO xpu.tile_layout is stamped).
+// ---- Core c owns the flattened element range [c*epc, (c+1)*epc) of the tile.
+// This is the pre-CoreTiling behavior, kept verbatim for TLE kernels that do
+// not run tritonxpu-tle-core-tiling.
+static SmallVector<TileDmaSeg>
+planTileSegmentsLegacy(ConversionPatternRewriter &rewriter, Location loc,
+                       ArrayRef<int64_t> bufShape, Value tileOriginElem64,
+                       ArrayRef<Value> descStrides, ValueRange offsets,
+                       ValueRange realShapes, ArrayRef<Value> coreCoord,
+                       Value coreBase, Value gmElemOffset,
+                       unsigned elemsPerCore, unsigned tileElems) {
+  unsigned rank = bufShape.size();
+  bool hasRealShape = (!realShapes.empty() && realShapes.size() == rank);
+  Value zeroI32 = i32_val(0);
+  SmallVector<TileDmaSeg> segs;
+
+  unsigned innermost = (rank >= 1) ? bufShape[rank - 1] : 0;
+  // Does each core own MULTIPLE WHOLE innermost rows? Those rows are
+  // non-contiguous in GM once realN != innermost or a col offset is applied, so
+  // they need one DMA each; otherwise a single slice suffices.
+  bool wholeRowMulti =
+      (rank == 2 && innermost > 0 && elemsPerCore % innermost == 0 &&
+       elemsPerCore / innermost > 1);
+  if (wholeRowMulti) {
+    unsigned rowsPerCore = elemsPerCore / innermost;
+    Value colOff = (offsets.size() > (rank - 1)) ? offsets[rank - 1] : zeroI32;
+    Value validCols = i32_val(innermost);
+    if (hasRealShape) {
+      Value remCols = smax(sub(realShapes[rank - 1], colOff), zeroI32);
+      validCols = smin(validCols, remCols);
+    }
+    Value rowOffsetBase = (offsets.size() > 0) ? offsets[0] : zeroI32;
+    for (unsigned k = 0; k < rowsPerCore; ++k) {
+      Value rowCoord = add(coreCoord[0], i32_val(k)); // buffer row index
+      Value gmElemOffRow =
+          add(tileOriginElem64, mul(sext(i64_ty, rowCoord), descStrides[0]));
+      Value validCountRow = validCols;
+      if (hasRealShape) {
+        Value globalRow = add(rowOffsetBase, rowCoord);
+        Value inBound = icmp_slt(globalRow, realShapes[0]);
+        validCountRow = select(inBound, validCountRow, zeroI32);
+      }
+      segs.push_back({gmElemOffRow, k * innermost, validCountRow});
+    }
+  } else {
+    // Single per-core slice, staying within one innermost row.
+    Value remainElems = smax(sub(i32_val(tileElems), coreBase), zeroI32);
+    Value validCount = smin(remainElems, i32_val(elemsPerCore));
+    if (hasRealShape) {
+      unsigned last = rank - 1;
+      Value colOff = (last < offsets.size()) ? offsets[last] : zeroI32;
+      Value gColStart = add(colOff, coreCoord[last]);
+      Value remCols = smax(sub(realShapes[last], gColStart), zeroI32);
+      validCount = smin(validCount, remCols);
+      for (unsigned d = 0; d + 1 < rank; ++d) {
+        Value dOff = (d < offsets.size()) ? offsets[d] : zeroI32;
+        Value gCoord = add(dOff, coreCoord[d]);
+        Value inBound = icmp_slt(gCoord, realShapes[d]);
+        validCount = select(inBound, validCount, zeroI32);
+      }
+    }
+    segs.push_back({gmElemOffset, 0, validCount});
+  }
+  return segs;
+}
+
+/// Lower triton_xpu.tle_copy_g2l to GM2LM DMA instruction.
+struct XPUTLECopyG2LOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::TLECopyGlobalToLocalOp>,
+      public LoadStoreConversionBase {
+  XPUTLECopyG2LOpConversion(LLVMTypeConverter &converter,
+                            const xpu::TargetInfo &targetInfo,
+                            ModuleAxisInfoAnalysis &axisAnalysisPass,
+                            PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::TLECopyGlobalToLocalOp>(converter,
+                                                                    benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::TLECopyGlobalToLocalOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    // Get the descriptor (TensorDescType is lowered to ptr<1> = GM base
+    // pointer)
+    Value desc = adaptor.getDesc();
+    // Get dst buffer (LM base pointer)
+    Value dstBuf = adaptor.getDstBuffer();
+    // Get offsets
+    auto offsets = adaptor.getOffsets();
+
+    // desc is already a GM pointer (ptr<1>), no extraction needed.
+    Value gmBasePtr = desc;
+
+    // Strides are passed directly as op operands (desc.strides from Python).
+    SmallVector<Value> descStrides;
+    for (auto s : adaptor.getStrides())
+      descStrides.push_back(s);
+    // Fallback for descriptors without explicit strides: row-major contiguous.
+    if (descStrides.empty()) {
+      auto bufShape2 =
+          cast<triton::gpu::MemDescType>(op.getDstBuffer().getType())
+              .getShape();
+      unsigned rank = bufShape2.size();
+      unsigned s0 = 1;
+      for (unsigned j = 1; j < rank; ++j)
+        s0 *= bufShape2[j];
+      descStrides.push_back(i64_val(s0));
+      if (rank > 1)
+        descStrides.push_back(i64_val(1));
+    }
+
+    // Get the memdesc type to know element type and shape
+    auto memDescTy = op.getDstBuffer().getType();
+    auto bufShape = cast<triton::gpu::MemDescType>(memDescTy).getShape();
+    Type elemTy = cast<triton::gpu::MemDescType>(memDescTy).getElementType();
+    unsigned elemBits = elemTy.getIntOrFloatBitWidth();
+    unsigned elemBytes = elemBits / 8;
+
+    // Support arbitrary rank tensors. The memdesc shape is the WHOLE tile.
+    unsigned rank = bufShape.size();
+    unsigned tileElems = 1;
+    for (unsigned d = 0; d < rank; ++d)
+      tileElems *= bufShape[d];
+
+    // --- SPMD per-core partition (方向 B) ---
+    // The tile is split contiguously across `groupSize` cores. Core `c` owns
+    // the flattened element range [c*elemsPerCore, (c+1)*elemsPerCore) and
+    // copies it into its private LM buffer starting at local index 0.
+    auto mod = op->getParentOfType<ModuleOp>();
+    unsigned groupSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+    if (groupSize == 0)
+      groupSize = 1;
+    unsigned elemsPerCore = (tileElems + groupSize - 1) / groupSize;
+
+    // Tile-origin element offset in GM: sum(offset[i] * stride[i]).
+    Value tileOriginElem64 = i64_val(0);
+    for (unsigned i = 0; i < offsets.size() && i < descStrides.size(); ++i) {
+      Value off_64 = sext(i64_ty, offsets[i]);
+      tileOriginElem64 = add(tileOriginElem64, mul(off_64, descStrides[i]));
+    }
+
+    // Per-core flattened start index within the tile.
+    Value coreId = tid_val();
+    Value idInsideGroup = srem(coreId, i32_val(groupSize));
+    Value coreBase = mul(idInsideGroup, i32_val(elemsPerCore));
+
+    // Decompose coreBase into multi-dim coords (row-major over bufShape) and
+    // compute the GM element offset of the core's first element.
+    Value gmElemOffset = tileOriginElem64;
+    Value rem = coreBase;
+    SmallVector<Value> coreCoord(rank);
+    for (unsigned d = 0; d < rank; ++d) {
+      unsigned innerProd = 1;
+      for (unsigned j = d + 1; j < rank; ++j)
+        innerProd *= bufShape[j];
+      Value coord = (innerProd > 1) ? udiv(rem, i32_val(innerProd)) : rem;
+      if (d + 1 < rank)
+        rem = urem(rem, i32_val(innerProd));
+      coreCoord[d] = coord;
+      Value stride = (d < descStrides.size()) ? descStrides[d] : i64_val(1);
+      gmElemOffset = add(gmElemOffset, mul(sext(i64_ty, coord), stride));
+    }
+    Value zeroI32 = i32_val(0);
+    Value dstPtr = bitcast(dstBuf, ptr_ty(ctx, 0));
+    auto shapesG2L = adaptor.getShapes();
+
+    // Plan the per-core DMA segments. When tritonxpu-tle-core-tiling stamped a
+    // ClusterLayout on this op ("xpu.tile_layout"), the partition is fully
+    // layout-driven; otherwise fall back to the legacy flat row-major cut.
+    auto tileLayout =
+        op->getAttrOfType<triton::xpu::ClusterLayoutAttr>("xpu.tile_layout");
+    SmallVector<TileDmaSeg> segs =
+        tileLayout
+            ? planTileSegmentsFromLayout(rewriter, loc, tileLayout, bufShape,
+                                         tileOriginElem64, descStrides, offsets,
+                                         shapesG2L, coreId)
+            : planTileSegmentsLegacy(rewriter, loc, bufShape, tileOriginElem64,
+                                     descStrides, offsets, shapesG2L, coreCoord,
+                                     coreBase, gmElemOffset, elemsPerCore,
+                                     tileElems);
+
+    for (auto &seg : segs) {
+      Value gmByteOff = mul(seg.gmElemOffset, i64_val(elemBytes));
+      Value gmAddr = gep(ptr_ty(ctx, 1), i8_ty, gmBasePtr, gmByteOff);
+      Value srcPtr = bitcast(gmAddr, ptr_ty(ctx, 1));
+      Value dstPtrSeg =
+          seg.lmElemOffset == 0
+              ? dstPtr
+              : gep(ptr_ty(ctx, 0), elemTy, dstPtr, i32_val(seg.lmElemOffset));
+      Value copyBytes = mul(seg.validCount, i32_val(elemBytes));
+      createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtrSeg, zeroI32, copyBytes);
+    }
+
+    bool isSync = op.getIsSync();
+    if (isSync)
+      createMfenceOp(rewriter, loc);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower triton_xpu.tle_copy_l2g to LM2GM DMA instruction.
+struct XPUTLECopyL2GOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::TLECopyLocalToGlobalOp>,
+      public LoadStoreConversionBase {
+  XPUTLECopyL2GOpConversion(LLVMTypeConverter &converter,
+                            const xpu::TargetInfo &targetInfo,
+                            ModuleAxisInfoAnalysis &axisAnalysisPass,
+                            PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::TLECopyLocalToGlobalOp>(converter,
+                                                                    benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::TLECopyLocalToGlobalOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    Value desc = adaptor.getDesc();
+    Value srcBuf = adaptor.getSrcBuffer();
+    auto offsets = adaptor.getOffsets();
+
+    // desc is a GM pointer (ptr<1>)
+    Value gmBasePtr = desc;
+
+    // Strides are passed directly as op operands (desc.strides from Python).
+    SmallVector<Value> descStrides;
+    for (auto s : adaptor.getStrides())
+      descStrides.push_back(s);
+    // Fallback for descriptors without explicit strides: row-major contiguous.
+    if (descStrides.empty()) {
+      auto bufShape2 =
+          cast<triton::gpu::MemDescType>(op.getSrcBuffer().getType())
+              .getShape();
+      unsigned rank = bufShape2.size();
+      unsigned s0 = 1;
+      for (unsigned j = 1; j < rank; ++j)
+        s0 *= bufShape2[j];
+      descStrides.push_back(i64_val(s0));
+      if (rank > 1)
+        descStrides.push_back(i64_val(1));
+    }
+
+    // Get buffer shape/type info
+    auto memDescTy = op.getSrcBuffer().getType();
+    auto bufShape = cast<triton::gpu::MemDescType>(memDescTy).getShape();
+    Type elemTy = cast<triton::gpu::MemDescType>(memDescTy).getElementType();
+    unsigned elemBytes = elemTy.getIntOrFloatBitWidth() / 8;
+
+    // Support arbitrary rank tensors. The memdesc shape is the WHOLE tile.
+    unsigned rank = bufShape.size();
+    unsigned tileElems = 1;
+    for (unsigned d = 0; d < rank; ++d)
+      tileElems *= bufShape[d];
+
+    // --- SPMD per-core partition (方向 B) ---
+    // Core `c` writes back only the flattened element range
+    // [c*elemsPerCore, (c+1)*elemsPerCore) from its private LM buffer to GM.
+    auto mod = op->getParentOfType<ModuleOp>();
+    unsigned groupSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+    if (groupSize == 0)
+      groupSize = 1;
+    unsigned elemsPerCore = (tileElems + groupSize - 1) / groupSize;
+
+    // Tile-origin element offset in GM: sum(offset[i] * stride[i]).
+    Value tileOriginElem64 = i64_val(0);
+    for (unsigned i = 0; i < offsets.size() && i < descStrides.size(); ++i) {
+      Value off_64 = sext(i64_ty, offsets[i]);
+      tileOriginElem64 = add(tileOriginElem64, mul(off_64, descStrides[i]));
+    }
+
+    // Per-core flattened start index within the tile.
+    Value coreId = tid_val();
+    Value idInsideGroup = srem(coreId, i32_val(groupSize));
+    Value coreBase = mul(idInsideGroup, i32_val(elemsPerCore));
+
+    // Decompose coreBase into multi-dim coords (row-major over bufShape) and
+    // compute the GM element offset of the core's first element.
+    Value gmElemOffset = tileOriginElem64;
+    Value rem = coreBase;
+    SmallVector<Value> coreCoord(rank);
+    for (unsigned d = 0; d < rank; ++d) {
+      unsigned innerProd = 1;
+      for (unsigned j = d + 1; j < rank; ++j)
+        innerProd *= bufShape[j];
+      Value coord = (innerProd > 1) ? udiv(rem, i32_val(innerProd)) : rem;
+      if (d + 1 < rank)
+        rem = urem(rem, i32_val(innerProd));
+      coreCoord[d] = coord;
+      Value stride = (d < descStrides.size()) ? descStrides[d] : i64_val(1);
+      gmElemOffset = add(gmElemOffset, mul(sext(i64_ty, coord), stride));
+    }
+    Value zeroI32 = i32_val(0);
+    Value srcLmPtr = bitcast(srcBuf, ptr_ty(ctx, 0));
+    auto shapesL2G = adaptor.getShapes();
+
+    // Plan the per-core DMA using the SAME layout-driven dispatcher as copy_g2l
+    // (segments are direction-agnostic: {gmElemOffset, lmElemOffset,
+    // validCount}). When absent, the legacy flat cut applies (the reduce OUTPUT
+    // buffer is 1D [XBLOCK], so the layout path enumerates one contiguous
+    // per-core slice too).
+    auto tileLayout =
+        op->getAttrOfType<triton::xpu::ClusterLayoutAttr>("xpu.tile_layout");
+    SmallVector<TileDmaSeg> segs =
+        tileLayout
+            ? planTileSegmentsFromLayout(rewriter, loc, tileLayout, bufShape,
+                                         tileOriginElem64, descStrides, offsets,
+                                         shapesL2G, coreId)
+            : planTileSegmentsLegacy(rewriter, loc, bufShape, tileOriginElem64,
+                                     descStrides, offsets, shapesL2G, coreCoord,
+                                     coreBase, gmElemOffset, elemsPerCore,
+                                     tileElems);
+
+    // Ensure preceding CPU stores to LM are visible to the DMA engine.
+    createMfenceOp(rewriter, loc);
+    for (auto &seg : segs) {
+      Value gmByteOff = mul(seg.gmElemOffset, i64_val(elemBytes));
+      Value gmAddr = gep(ptr_ty(ctx, 1), i8_ty, gmBasePtr, gmByteOff);
+      Value dstPtr = bitcast(gmAddr, ptr_ty(ctx, 1));
+      Value srcPtrSeg = seg.lmElemOffset == 0
+                            ? srcLmPtr
+                            : gep(ptr_ty(ctx, 0), elemTy, srcLmPtr,
+                                  i32_val(seg.lmElemOffset));
+      Value copyBytesVal = mul(seg.validCount, i32_val(elemBytes));
+      createLM2GMOp(rewriter, ctx, loc, srcPtrSeg, dstPtr, zeroI32,
+                    copyBytesVal);
+    }
+    createMfenceOp(rewriter, loc);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower triton_xpu.tle_normcopy_g2l: element-wise (permuted) gather from a GM
+/// pointer tensor into a local memory buffer. Element i of this core's lane set
+/// is copied to local slot i, matching the tle_local_ptr layout.
+struct XPUTLENormCopyG2LOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::TLENormCopyGlobalToLocalOp>,
+      public LoadStoreConversionBase {
+  XPUTLENormCopyG2LOpConversion(LLVMTypeConverter &converter,
+                                const xpu::TargetInfo &targetInfo,
+                                ModuleAxisInfoAnalysis &axisAnalysisPass,
+                                PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::TLENormCopyGlobalToLocalOp>(
+            converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::TLENormCopyGlobalToLocalOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    auto memDescTy =
+        cast<triton::gpu::MemDescType>(op.getDstBuffer().getType());
+    Type elemTy = memDescTy.getElementType();
+    Type llvmElemTy = getTypeConverter()->convertType(elemTy);
+    unsigned elemBytes = elemTy.getIntOrFloatBitWidth() / 8;
+
+    // Per-core GM pointer lanes (same distribution as tle_local_ptr).
+    auto gmPtrs = unpackLLElements(loc, adaptor.getSrcPtrs(), rewriter);
+    Value lmBase = bitcast(adaptor.getDstBuffer(), ptr_ty(ctx, 0));
+    Value zeroI32 = i32_val(0);
+    Value szI32 = i32_val(elemBytes);
+
+    for (unsigned i = 0; i < gmPtrs.size(); ++i) {
+      Value gmPtr = bitcast(gmPtrs[i], ptr_ty(ctx, 1));
+      Value lmSlot = gep(ptr_ty(ctx, 0), llvmElemTy, lmBase, i32_val(i));
+      createGM2LMOp(rewriter, ctx, loc, gmPtr, lmSlot, zeroI32, szI32);
+    }
+    createMfenceOp(rewriter, loc);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower triton_xpu.tle_normcopy_l2g: element-wise (permuted) scatter from a
+/// local memory buffer to a GM pointer tensor. Scatter counterpart of the
+/// gather above.
+struct XPUTLENormCopyL2GOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::TLENormCopyLocalToGlobalOp>,
+      public LoadStoreConversionBase {
+  XPUTLENormCopyL2GOpConversion(LLVMTypeConverter &converter,
+                                const xpu::TargetInfo &targetInfo,
+                                ModuleAxisInfoAnalysis &axisAnalysisPass,
+                                PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::TLENormCopyLocalToGlobalOp>(
+            converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::TLENormCopyLocalToGlobalOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    auto memDescTy =
+        cast<triton::gpu::MemDescType>(op.getSrcBuffer().getType());
+    Type elemTy = memDescTy.getElementType();
+    Type llvmElemTy = getTypeConverter()->convertType(elemTy);
+    unsigned elemBytes = elemTy.getIntOrFloatBitWidth() / 8;
+
+    auto gmPtrs = unpackLLElements(loc, adaptor.getDstPtrs(), rewriter);
+    Value lmBase = bitcast(adaptor.getSrcBuffer(), ptr_ty(ctx, 0));
+    Value zeroI32 = i32_val(0);
+    Value szI32 = i32_val(elemBytes);
+
+    // Ensure preceding CPU stores to LM are visible to the DMA engine.
+    createMfenceOp(rewriter, loc);
+    for (unsigned i = 0; i < gmPtrs.size(); ++i) {
+      Value lmSlot = gep(ptr_ty(ctx, 0), llvmElemTy, lmBase, i32_val(i));
+      Value gmPtr = bitcast(gmPtrs[i], ptr_ty(ctx, 1));
+      createLM2GMOp(rewriter, ctx, loc, lmSlot, gmPtr, zeroI32, szI32);
+    }
+    createMfenceOp(rewriter, loc);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower triton_xpu.tle_local_ptr: compute LM pointers from buffer + indices.
+struct XPUTLELocalPtrOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::TLELocalPtrOp>,
+      public LoadStoreConversionBase {
+  XPUTLELocalPtrOpConversion(LLVMTypeConverter &converter,
+                             const xpu::TargetInfo &targetInfo,
+                             ModuleAxisInfoAnalysis &axisAnalysisPass,
+                             PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::TLELocalPtrOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::TLELocalPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    // Get buffer base pointer (lowered from memdesc)
+    Value lmBase = adaptor.getBuffer();
+
+    // Get the result type to determine shape.
+    // On XPU, local memory lives in addrspace 0 (flat pointer space).
+    // Even though Triton represents shared-memory pointers as addrspace 3,
+    // the XPU backend keeps LM allocations in addrspace 0 and all
+    // loads/stores go through addrspace 0 pointers.
+    auto resTy = op.getResult().getType();
+    auto resTensorTy = cast<RankedTensorType>(resTy);
+    unsigned addrSpace = 0;
+    auto lmPtrTy = LLVM::LLVMPointerType::get(ctx, addrSpace);
+
+    Type llvmResultTy = typeConverter->convertType(resTy);
+
+    // Get buffer element type from the memdesc
+    auto memDescTy = cast<triton::gpu::MemDescType>(op.getBuffer().getType());
+    auto bufShape = memDescTy.getShape();
+    Type elemTy = memDescTy.getElementType();
+    Type llvmElemTy = typeConverter->convertType(elemTy);
+
+    // Get index operands
+    auto indices = adaptor.getIndices();
+    unsigned rank = bufShape.size();
+
+    // Calculate the number of result pointers (per-thread elements).
+    // Since the result type is an unencoded pointer tensor, use the LLVM
+    // struct type from the type converter (which computes proper numElems).
+    auto llvmResTy = cast<LLVM::LLVMStructType>(llvmResultTy);
+    unsigned numElems = llvmResTy.getBody().size();
+
+    // --- SPMD per-core partition (方向 B) ---
+    // The LM buffer is per-core (elemsPerCore elements). make_range distributes
+    // the tile so this core's i-th element is global tile position
+    // coreBase + i, and CopyG2L placed that element at LM-local slot i.
+    // Therefore the i-th pointer is simply lmBase + i (local index). The raw
+    // global index operands are not needed here.
+    (void)indices;
+    (void)rank;
+    auto basePtrTy = LLVM::LLVMPointerType::get(ctx, 0);
+    SmallVector<Value> resultPtrs;
+    for (unsigned i = 0; i < numElems; ++i) {
+      Value ptr = gep(basePtrTy, llvmElemTy, lmBase, i32_val(i));
+      resultPtrs.push_back(ptr);
+    }
+
+    Value resultStruct =
+        packLLElements(loc, typeConverter, resultPtrs, rewriter, llvmResultTy);
+    rewriter.replaceOp(op, {resultStruct});
+    return success();
+  }
+};
+
+/// Lower triton::LoadOp in TLE path: simple element-wise load from LM pointers.
+/// This handles the pattern: tle_local_ptr → tl.load (LM pointer load).
+struct XPUTLETritonLoadOpConversion
+    : public ConvertOpToLLVMPattern<triton::LoadOp>,
+      public LoadStoreConversionBase {
+  XPUTLETritonLoadOpConversion(LLVMTypeConverter &converter,
+                               const xpu::TargetInfo &targetInfo,
+                               ModuleAxisInfoAnalysis &axisAnalysisPass,
+                               PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::LoadOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    Type resTy = op.getResult().getType();
+    Type llvmResultTy = typeConverter->convertType(resTy);
+    Type elemTy = getElementTypeOrSelf(resTy);
+    Type llvmElemTy = typeConverter->convertType(elemTy);
+
+    auto lmPtrTy = LLVM::LLVMPointerType::get(ctx, 0);
+
+    // Unpack pointer values (each is an LM pointer from tle_local_ptr)
+    auto llPtrs = unpackLLElements(loc, adaptor.getPtr(), rewriter);
+    unsigned numElems = llPtrs.size();
+
+    SmallVector<Value> loadedVals;
+    for (unsigned i = 0; i < numElems; ++i) {
+      Value val = load(llvmElemTy, llPtrs[i]);
+      loadedVals.push_back(val);
+    }
+
+    Value resultStruct =
+        packLLElements(loc, typeConverter, loadedVals, rewriter, llvmResultTy);
+    rewriter.replaceOp(op, {resultStruct});
+    return success();
+  }
+};
+
+/// Lower triton::StoreOp in TLE path: simple element-wise store to LM pointers.
+struct XPUTLETritonStoreOpConversion
+    : public ConvertOpToLLVMPattern<triton::StoreOp>,
+      public LoadStoreConversionBase {
+  XPUTLETritonStoreOpConversion(LLVMTypeConverter &converter,
+                                const xpu::TargetInfo &targetInfo,
+                                ModuleAxisInfoAnalysis &axisAnalysisPass,
+                                PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::StoreOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+
+    auto llPtrs = unpackLLElements(loc, adaptor.getPtr(), rewriter);
+    auto llVals = unpackLLElements(loc, adaptor.getValue(), rewriter);
+
+    for (unsigned i = 0; i < llPtrs.size(); ++i) {
+      store(llVals[i], llPtrs[i]);
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Lower triton_xpu.tle_vload: vectorized load from a per-core LM buffer.
+/// The result tensor element type is a VectorType<W x elem>; each struct slot
+/// i loads W contiguous elements from LM[i*W : (i+1)*W] as one <W x elem>.
+struct XPUTLEVLoadOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::TLEVLoadOp>,
+      public LoadStoreConversionBase {
+  XPUTLEVLoadOpConversion(LLVMTypeConverter &converter,
+                          const xpu::TargetInfo &targetInfo,
+                          ModuleAxisInfoAnalysis &axisAnalysisPass,
+                          PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::TLEVLoadOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::TLEVLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    Value lmBase = adaptor.getBuffer();
+
+    auto resTy = op.getResult().getType();
+    auto resTensorTy = cast<RankedTensorType>(resTy);
+    Type vecElemTy = resTensorTy.getElementType(); // vector<W x elem>
+    Type llvmVecTy = typeConverter->convertType(vecElemTy);
+    Type llvmResultTy = typeConverter->convertType(resTy);
+    auto llvmStructTy = cast<LLVM::LLVMStructType>(llvmResultTy);
+    unsigned numVecs = llvmStructTy.getBody().size();
+
+    auto basePtrTy = LLVM::LLVMPointerType::get(ctx, 0);
+    SmallVector<Value> loadedVals;
+    for (unsigned i = 0; i < numVecs; ++i) {
+      Value ptr = gep(basePtrTy, llvmVecTy, lmBase, i32_val(i));
+      Value v = load(llvmVecTy, ptr);
+      loadedVals.push_back(v);
+    }
+    Value resultStruct =
+        packLLElements(loc, typeConverter, loadedVals, rewriter, llvmResultTy);
+    rewriter.replaceOp(op, {resultStruct});
+    return success();
+  }
+};
+
+/// Lower triton_xpu.tle_vstore: vectorized store to a per-core LM buffer.
+struct XPUTLEVStoreOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::TLEVStoreOp>,
+      public LoadStoreConversionBase {
+  XPUTLEVStoreOpConversion(LLVMTypeConverter &converter,
+                           const xpu::TargetInfo &targetInfo,
+                           ModuleAxisInfoAnalysis &axisAnalysisPass,
+                           PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::TLEVStoreOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::TLEVStoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    Value lmBase = adaptor.getBuffer();
+    auto valTensorTy = cast<RankedTensorType>(op.getValue().getType());
+    Type vecElemTy = valTensorTy.getElementType(); // vector<W x elem>
+    Type llvmVecTy = typeConverter->convertType(vecElemTy);
+
+    auto llVals = unpackLLElements(loc, adaptor.getValue(), rewriter);
+    auto basePtrTy = LLVM::LLVMPointerType::get(ctx, 0);
+    for (unsigned i = 0; i < llVals.size(); ++i) {
+      Value ptr = gep(basePtrTy, llvmVecTy, lmBase, i32_val(i));
+      store(llVals[i], ptr);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Shared helper for the vector<->scalar boundary ops: recover the LM base
+/// pointer from the bufPtr operand. XPUAllocaOpConversion materializes an
+/// alloca as a struct of per-element pointers, so the buffer base is the
+/// first element of that struct.
+static Value getBoundaryLMBase(Location loc, Value bufPtr,
+                               ConversionPatternRewriter &rewriter) {
+  if (!bufPtr)
+    return Value();
+  if (isa<LLVM::LLVMStructType>(bufPtr.getType()))
+    return unpackLLElements(loc, bufPtr, rewriter)[0];
+  return bufPtr;
+}
+
+/// Lower triton_xpu.pack: scalar tensor -> vector tensor, through LM.
+/// The scalar elements are stored contiguously into the buffer and read back
+/// as whole vectors, one vector load per result slot. Deliberately no
+/// per-lane insertelement chain: the point of this op is to keep the
+/// reinterpretation at one memory op per slot.
+struct XPUPackOpConversion : public ConvertOpToLLVMPattern<triton::xpu::PackOp>,
+                             public LoadStoreConversionBase {
+  XPUPackOpConversion(LLVMTypeConverter &converter,
+                      const xpu::TargetInfo &targetInfo,
+                      ModuleAxisInfoAnalysis &axisAnalysisPass,
+                      PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::PackOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::PackOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    Value lmBase = getBoundaryLMBase(loc, adaptor.getBufPtr(), rewriter);
+    if (!lmBase)
+      return op.emitError("triton_xpu.pack reached lowering without a bufPtr; "
+                          "tritonxpu-alloca must attach one");
+
+    auto srcTensorTy = cast<RankedTensorType>(op.getSrc().getType());
+    Type llvmScalarTy =
+        typeConverter->convertType(srcTensorTy.getElementType());
+
+    auto resTy = op.getResult().getType();
+    auto resTensorTy = cast<RankedTensorType>(resTy);
+    Type llvmVecTy =
+        typeConverter->convertType(resTensorTy.getElementType()); // <W x elem>
+    Type llvmResultTy = typeConverter->convertType(resTy);
+    unsigned numVecs =
+        cast<LLVM::LLVMStructType>(llvmResultTy).getBody().size();
+
+    auto basePtrTy = LLVM::LLVMPointerType::get(ctx, 0);
+
+    auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    for (unsigned i = 0; i < srcVals.size(); ++i) {
+      Value ptr = gep(basePtrTy, llvmScalarTy, lmBase, i32_val(i));
+      store(srcVals[i], ptr);
+    }
+    // The scalar stores and the vector loads below hit the same LM bytes from
+    // two different pipes, and the hardware does not order them: without this
+    // fence the widest load picks up stale bytes for whichever elements were
+    // stored last. Measured on `add` (8 Mi f32) -- exactly the tail of each
+    // 64-scalar group came back wrong (offsets 61..63 and 125..127 of the
+    // 128-element per-core slice), nondeterministically, ~2% of elements.
+    // Mask 1 is LM only; the GM bit (4) that createMfenceOp uses is not needed
+    // here and would make every boundary pay for a DMA fence it never issues.
+    createMfenceLMOp(rewriter, loc);
+
+    SmallVector<Value> packedVals;
+    for (unsigned i = 0; i < numVecs; ++i) {
+      Value ptr = gep(basePtrTy, llvmVecTy, lmBase, i32_val(i));
+      packedVals.push_back(load(llvmVecTy, ptr));
+    }
+    Value resultStruct =
+        packLLElements(loc, typeConverter, packedVals, rewriter, llvmResultTy);
+    rewriter.replaceOp(op, {resultStruct});
+    return success();
+  }
+};
+
+/// Lower triton_xpu.unpack: vector tensor -> scalar tensor, through LM.
+/// Inverse of XPUPackOpConversion: one vector store per source slot, then a
+/// scalar load per result element.
+struct XPUUnpackOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::UnpackOp>,
+      public LoadStoreConversionBase {
+  XPUUnpackOpConversion(LLVMTypeConverter &converter,
+                        const xpu::TargetInfo &targetInfo,
+                        ModuleAxisInfoAnalysis &axisAnalysisPass,
+                        PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::xpu::UnpackOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::UnpackOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto typeConverter = getTypeConverter();
+
+    Value lmBase = getBoundaryLMBase(loc, adaptor.getBufPtr(), rewriter);
+    if (!lmBase)
+      return op.emitError("triton_xpu.unpack reached lowering without a "
+                          "bufPtr; tritonxpu-alloca must attach one");
+
+    auto srcTensorTy = cast<RankedTensorType>(op.getSrc().getType());
+    Type llvmVecTy =
+        typeConverter->convertType(srcTensorTy.getElementType()); // <W x elem>
+
+    auto resTy = op.getResult().getType();
+    auto resTensorTy = cast<RankedTensorType>(resTy);
+    Type llvmScalarTy =
+        typeConverter->convertType(resTensorTy.getElementType());
+    Type llvmResultTy = typeConverter->convertType(resTy);
+    unsigned numElems =
+        cast<LLVM::LLVMStructType>(llvmResultTy).getBody().size();
+
+    auto basePtrTy = LLVM::LLVMPointerType::get(ctx, 0);
+
+    // Volatile in both directions, and not for ordering -- the fence below does
+    // that. Without it LLVM forwards the vector store into the scalar loads
+    // (the LM buffer SROAs away entirely) and re-expresses the reinterpretation
+    // as `bitcast <16 x i32> to <64 x i8>` + 16 `extractelement`s. The XPU3
+    // backend lowers that by spilling the vector register to the *stack*
+    // (`vstore_mask64.mz vr1{mr1}, -704(r30)`) and reading bytes back out, and
+    // that faults on device: `truncint` at any size died with
+    // cudaErrorLaunchFailure until these accesses became volatile. The LM round
+    // trip is the semantics of this op, not an implementation detail -- it is
+    // also what P4's `N + ceil(N/W) + 1` price counts, so letting it vanish
+    // would make the boundary unmeasurable even where it does not fault.
+    auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    for (unsigned i = 0; i < srcVals.size(); ++i) {
+      Value ptr = gep(basePtrTy, llvmVecTy, lmBase, i32_val(i));
+      store(srcVals[i], ptr, /*alignment=*/0, /*isVolatile=*/true);
+    }
+    // Same hazard as in the pack direction, stores and loads swapped.
+    createMfenceLMOp(rewriter, loc);
+
+    SmallVector<Value> scalarVals;
+    for (unsigned i = 0; i < numElems; ++i) {
+      Value ptr = gep(basePtrTy, llvmScalarTy, lmBase, i32_val(i));
+      scalarVals.push_back(
+          load(llvmScalarTy, ptr, /*alignment=*/0, /*isVolatile=*/true));
+    }
+    Value resultStruct =
+        packLLElements(loc, typeConverter, scalarVals, rewriter, llvmResultTy);
+    rewriter.replaceOp(op, {resultStruct});
+    return success();
+  }
+};
+
+} // namespace
+
 void mlir::triton::xpu::populateLoadStoreOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
     RewritePatternSet &patterns, ModuleAxisInfoAnalysis &axisInfoAnalysis,
     PatternBenefit benefit) {
-  patterns.add<XPULoadOpConversion, XPUStoreOpConversion, XPUAllocaOpConversion,
-               XPUGM2LMMaskOpConversion, XPULM2GMMaskOpConversion,
-               XPUAtomicRMWOpConversion, XPUGM2LMOpConversion,
-               XPULM2GMOpConversion>(typeConverter, targetInfo,
-                                     axisInfoAnalysis, benefit);
+  patterns
+      .add<XPULoadOpConversion, XPUStoreOpConversion, XPUAllocaOpConversion,
+           XPULoadScalarIndexedOpConversion, XPUStageSMOpConversion,
+           XPUGM2LMMaskOpConversion, XPULM2GMMaskOpConversion,
+           XPUAtomicRMWOpConversion, XPUGM2LMOpConversion, XPULM2GMOpConversion,
+           // TLE patterns
+           XPUTLELocalAllocOpConversion, XPUTLECopyG2LOpConversion,
+           XPUTLECopyL2GOpConversion, XPUTLENormCopyG2LOpConversion,
+           XPUTLENormCopyL2GOpConversion, XPUTLELocalPtrOpConversion,
+           XPUTLETritonLoadOpConversion, XPUTLETritonStoreOpConversion,
+           XPUTLEVLoadOpConversion, XPUTLEVStoreOpConversion,
+           // vector<->scalar boundary
+           XPUPackOpConversion, XPUUnpackOpConversion>(
+          typeConverter, targetInfo, axisInfoAnalysis, benefit);
 }

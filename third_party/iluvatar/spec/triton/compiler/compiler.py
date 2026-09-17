@@ -6,6 +6,7 @@ from ..backends import backends
 from ..backends.compiler import Language
 from ..backends.compiler import BaseBackend, GPUTarget
 from .. import __version__, knobs
+from flagtree import _flagprism  # FlagPrism
 from ..runtime.autotuner import OutOfResources
 from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key
 from ..runtime.driver import driver
@@ -121,6 +122,8 @@ class IRSource:
         self.src = path.read_text()
         ir.load_dialects(context)
         backend.load_dialects(context)
+        # FlagPrism: load optional dialects when parsing standalone IR sources.
+        _flagprism.load_dialects(context)
 
         # We don't have a easy-to-use PTX parser that we can use, so keep that regex for now.
         # TODO - replace with a proper parser
@@ -267,7 +270,13 @@ def compile(src, target=None, options=None, _env_vars=None):
         src = IRSource(src, context, backend)
 
     extra_options = src.parse_options()
-    options = backend.parse_options(dict(options or dict(), **extra_options))
+    # FlagPrism: apply profiler/debugger options before backend parsing so they
+    # participate in specialization and cache-key construction.
+    # FlagPrism: retain the original option parsing statement for reference.
+    # options = backend.parse_options(dict(options or dict(), **extra_options))
+    raw_options = dict(options or dict(), **extra_options)
+    _flagprism.apply_compile_options(raw_options)
+    options = backend.parse_options(raw_options)
     # create cache manager
     env_vars = get_cache_invalidating_env_vars() if _env_vars is None else _env_vars
     key = get_cache_key(src, backend, options, env_vars=env_vars)
@@ -324,6 +333,8 @@ def compile(src, target=None, options=None, _env_vars=None):
         context = ir.context()
         ir.load_dialects(context)
         backend.load_dialects(context)
+        # FlagPrism: register optional dialects in every fresh context.
+        _flagprism.load_dialects(context)
 
     codegen_fns = backend.get_codegen_implementation(options)
     module_map = backend.get_module_map()
@@ -358,6 +369,13 @@ def compile(src, target=None, options=None, _env_vars=None):
         elif full_name := fn_override_manager.get_file(ir_filename):
             print(f"\nOverriding kernel with file {full_name}")
             next_module = parse(full_name, ext, context)
+        # FlagPrism: publish the final stage output after any IR override.
+        _flagprism.emit_compiler_event(
+            phase="post_override",
+            ir_kind=ext,
+            module=next_module,
+            metadata=metadata,
+        )
         # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json
         if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
             metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)

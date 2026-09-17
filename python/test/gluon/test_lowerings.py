@@ -558,6 +558,128 @@ def test_convert_mma2mma_layouts(M, N, mma_pair, dtype, device):
     torch.testing.assert_close(y, x, rtol=0, atol=0)
 
 
+# Layout pairs from Triton main: triton/pull/11646.
+# FlagTree extends shape, dtype, and reverse-conversion coverage.
+@pytest.mark.parametrize("M, N", [(16, 1), (64, 1), (64, 32), (128, 64)])
+@pytest.mark.parametrize("dtype", ["int8", "int16", "int32", "int64", "float16", "float32", "float64"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_convert_broadcast_warp_layouts(M, N, dtype, reverse, device):
+    src = ttgl.BlockedLayout([1, 16], [THREADS_PER_WARP, 1], [1, 4], [1, 0])
+    dst = ttgl.BlockedLayout([1, 16], [8, THREADS_PER_WARP // 8], [4, 1], [1, 0])
+    if reverse:
+        src, dst = dst, src
+
+    @gluon.jit
+    def kernel(X, Y, M: ttgl.constexpr, N: ttgl.constexpr, SRC: ttgl.constexpr, DST: ttgl.constexpr):
+        rows = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, SRC))[:, None]
+        cols = ttgl.arange(0, N, layout=ttgl.SliceLayout(0, SRC))[None, :]
+        values = ttgl.load(X + rows * N + cols)
+        values = ttgl.convert_layout(values, DST)
+        rows = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, DST))[:, None]
+        cols = ttgl.arange(0, N, layout=ttgl.SliceLayout(0, DST))[None, :]
+        ttgl.store(Y + rows * N + cols, values)
+
+    x = torch.randint(-100, 100, (M, N), device=device).to(getattr(torch, dtype))
+    y = torch.empty_like(x)
+    kernel[(1, )](x, y, M, N, src, dst, num_warps=4)
+    torch.testing.assert_close(x, y, rtol=0, atol=0)
+
+
+# FlagTree regression coverage for triton/pull/11646.
+# Exercise the 16x1 pointer case from FlagTree #1047.
+@pytest.mark.parametrize("dtype", ["int8", "int16", "int32", "int64", "float16", "float32", "float64", "pointer"])
+def test_convert_broadcast_warp_16x1(dtype, device):
+    # FlagTree #1047: all source warps contain every row; each destination warp
+    # owns four rows. Load pointer values from memory to prevent rematerializing
+    # their address arithmetic in the destination layout.
+    src = ttgl.BlockedLayout([1, 1], [THREADS_PER_WARP, 1], [4, 1], [1, 0])
+    dst = ttgl.BlockedLayout([1, 8], [4, THREADS_PER_WARP // 4], [4, 1], [1, 0])
+
+    @gluon.jit
+    def kernel(X, Y, SRC: ttgl.constexpr, DST: ttgl.constexpr, POINTER: ttgl.constexpr):
+        rows = ttgl.arange(0, 16, layout=ttgl.SliceLayout(1, SRC))[:, None]
+        values = ttgl.load(X + rows)
+        if POINTER:
+            values = values.to(ttgl.pointer_type(ttgl.float32))
+        values = ttgl.convert_layout(values, DST)
+        if POINTER:
+            values = ttgl.load(values)
+        rows = ttgl.arange(0, 16, layout=ttgl.SliceLayout(1, DST))[:, None]
+        ttgl.store(Y + rows, values)
+
+    expected = torch.randint(-100, 100, (16, 1),
+                             device=device).to(getattr(torch, "float32" if dtype == "pointer" else dtype))
+    if dtype == "pointer":
+        x = torch.arange(16, device=device, dtype=torch.int64) * expected.element_size() + expected.data_ptr()
+    else:
+        x = expected
+    y = torch.empty_like(expected)
+    compiled = kernel[(1, )](x, y, src, dst, dtype == "pointer", num_warps=4)
+    torch.testing.assert_close(y, expected, rtol=0, atol=0)
+    if is_cuda():
+        assert compiled.metadata.shared == 0
+        assert "shfl.sync" in compiled.asm["ptx"]
+        assert "bar.sync" not in compiled.asm["ptx"]
+
+
+# FlagTree regression coverage for triton/pull/11646.
+# Run the upstream IR layout cases with data and wave-size adaptation.
+@pytest.mark.parametrize("case", ["mixed", "expanded", "reverse", "warp_register", "register_select", "packed"])
+@pytest.mark.parametrize("dtype", ["int8", "float16", "int32", "float64"])
+def test_convert_broadcast_warp_exchanges(case, dtype, device):
+    # Exercise the shuffle and shared-memory cases from the upstream IR tests
+    # with actual data, including one-sided exchanges and byte permutations.
+    def layout(reg, lane, warp, shape):
+        lanes = [[i, 0] for i in lane]
+        if THREADS_PER_WARP == 64:
+            lanes.append([0, 0])
+        return ttgl.DistributedLinearLayout(reg, lanes, [[i, 0] for i in warp], [], list(shape))
+
+    shape = (128, 4)
+    num_warps = 8
+    src = layout([[0, 1], [0, 2]], [1, 2, 4, 8, 16], [32, 64, 0], shape)
+    dst = layout([[0, 1], [0, 2], [8, 0]], [0, 0, 1, 2, 4], [32, 64, 16], shape)
+    if case == "expanded":
+        dst = layout([[0, 1], [0, 2], [4, 0], [8, 0]], [0, 0, 0, 1, 2], [32, 64, 16], shape)
+    elif case == "reverse":
+        src, dst = dst, src
+    elif case == "warp_register":
+        shape = (128, 1)
+        src = layout([[32, 0]], [1, 2, 4, 8, 16], [0, 64, 0], shape)
+        dst = layout([], [1, 2, 4, 8, 16], [32, 64, 0], shape)
+    elif case == "register_select":
+        shape = (64, 1)
+        num_warps = 2
+        src = layout([[1, 0]], [2, 4, 8, 16, 32], [0], shape)
+        dst = layout([], [1, 2, 4, 8, 16], [32], shape)
+    elif case == "packed":
+        shape = (128, 1)
+        num_warps = 2
+        src = layout([[1, 0], [2, 0]], [4, 8, 16, 32, 64], [0], shape)
+        dst = layout([[4, 0], [1, 0], [2, 0]], [0, 8, 16, 32, 0], [64], shape)
+
+    @gluon.jit
+    def kernel(X, Y, M: ttgl.constexpr, N: ttgl.constexpr, SRC: ttgl.constexpr, DST: ttgl.constexpr):
+        rows = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, SRC))[:, None]
+        cols = ttgl.arange(0, N, layout=ttgl.SliceLayout(0, SRC))[None, :]
+        values = ttgl.load(X + rows * N + cols)
+        values = ttgl.convert_layout(values, DST)
+        rows = ttgl.arange(0, M, layout=ttgl.SliceLayout(1, DST))[:, None]
+        cols = ttgl.arange(0, N, layout=ttgl.SliceLayout(0, DST))[None, :]
+        ttgl.store(Y + rows * N + cols, values)
+
+    x = torch.randint(-100, 100, shape, device=device).to(getattr(torch, dtype))
+    y = torch.empty_like(x)
+    compiled = kernel[(1, )](x, y, *shape, src, dst, num_warps=num_warps)
+    torch.testing.assert_close(y, x, rtol=0, atol=0)
+    if is_cuda():
+        if case in ("expanded", "reverse", "warp_register"):
+            assert compiled.metadata.shared > 0
+        else:
+            assert compiled.metadata.shared == 0
+            assert "shfl.sync" in compiled.asm["ptx"]
+
+
 _warp_local_layouts = _filter_layouts([
     ttgl.BlockedLayout([1, 1], [THREADS_PER_WARP, 1], [1, 1], [1, 0]),
     ttgl.BlockedLayout([1, 1], [THREADS_PER_WARP // 2, 2], [1, 1], [1, 0]),

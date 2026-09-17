@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import inspect
 from types import SimpleNamespace
 
@@ -5,6 +6,8 @@ import pytest
 import triton.testing as triton_testing
 
 from triton.flagtune.runtime import benchmark_protocol as benchmark_module
+from triton.flagtune.runtime import graph_benchmark as graph_benchmark_module
+from triton.flagtune.runtime.graph_benchmark import do_bench_musa_graph
 from triton.testing import do_bench_cudagraph
 
 
@@ -12,6 +15,7 @@ class _FakeDriver:
 
     def __init__(self, backend="cuda"):
         self.backend = backend
+        self.device_interface = object()
         self.observed = {}
 
     def get_current_target(self):
@@ -31,6 +35,9 @@ class _FakeDriver:
 
         return benchmark
 
+    def get_device_interface(self):
+        return self.device_interface
+
 
 def _driver_for(module_name, backend):
     driver_type = type("FakeDriver", (_FakeDriver, ), {"__module__": module_name})
@@ -45,6 +52,152 @@ def test_cudagraph_helper_keeps_ten_retries_as_compatible_default():
     assert list(inspect.signature(do_bench_cudagraph).parameters)[-1] == "n_retries"
 
 
+@pytest.mark.parametrize("use_default_stream", [False, True])
+def test_cudagraph_helper_waits_for_caller_stream(use_default_stream):
+    """Preserve caller-stream work that precedes the benchmark warmup."""
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("requires a CUDA-compatible device")
+    if not hasattr(torch.cuda, "_sleep"):
+        pytest.skip("requires torch.cuda._sleep to widen the ordering window")
+
+    # Initialize lazy graph state before testing stream ordering.
+    scratch = torch.zeros(1024, device="cuda")
+    do_bench_cudagraph(lambda: scratch.zero_(), rep=1, n_retries=1)
+
+    buf = torch.ones(1024, device="cuda")
+    torch.cuda.synchronize()
+    caller_stream = (torch.cuda.default_stream() if use_default_stream else torch.cuda.Stream())
+    with torch.cuda.stream(caller_stream):
+        torch.cuda._sleep(100_000_000)
+        prior_read = buf.clone()
+        do_bench_cudagraph(lambda: buf.fill_(2), rep=1, n_retries=1)
+
+    torch.cuda.synchronize()
+    assert prior_read.unique().tolist() == [1.0]
+
+
+def test_musa_graph_helper_uses_supplied_device_interface():
+    observed = {"captures": 0, "replays": 0, "synchronizes": 0}
+
+    class _Event:
+
+        def record(self):
+            pass
+
+        @staticmethod
+        def elapsed_time(_other):
+            return 5.0
+
+    class _Graph:
+
+        def replay(self):
+            observed["replays"] += 1
+
+    class _Interface:
+        MUSAGraph = _Graph
+        Stream = object
+
+        @staticmethod
+        def stream(_stream):
+            return nullcontext()
+
+        @staticmethod
+        def graph(_graph):
+
+            class _Capture:
+
+                def __enter__(self):
+                    observed["captures"] += 1
+
+                def __exit__(self, _exc_type, _exc, _traceback):
+                    return False
+
+            return _Capture()
+
+        @staticmethod
+        def Event(enable_timing):
+            assert enable_timing is True
+            return _Event()
+
+        @staticmethod
+        def synchronize():
+            observed["synchronizes"] += 1
+
+    result = do_bench_musa_graph(
+        lambda: None,
+        rep=1,
+        n_retries=2,
+        device_interface=_Interface(),
+    )
+
+    # Calibration uses five ordinary launches, so the fake 5.0ms elapsed time
+    # yields a 1.0ms estimate and rep=1 produces a one-launch timing graph.
+    assert result == pytest.approx(5.0)
+    # The implementation performs one formal capture and n_retries replays.
+    # Synchronization occurs after calibration, capture, and each replay.
+    assert observed == {"captures": 1, "replays": 2, "synchronizes": 4}
+
+
+def test_musa_graph_helper_uses_bounded_repeat_for_invalid_calibration():
+    """A zero event estimate must not divide by zero or skip graph capture."""
+    observed = {"captures": 0, "replays": 0}
+
+    class _Event:
+
+        def record(self):
+            pass
+
+        @staticmethod
+        def elapsed_time(_other):
+            return 0.0
+
+    class _Graph:
+
+        def replay(self):
+            observed["replays"] += 1
+
+    class _Interface:
+        MUSAGraph = _Graph
+        Stream = object
+
+        @staticmethod
+        def stream(_stream):
+            return nullcontext()
+
+        @staticmethod
+        def graph(_graph):
+
+            class _Capture:
+
+                def __enter__(self):
+                    observed["captures"] += 1
+
+                def __exit__(self, _exc_type, _exc, _traceback):
+                    return False
+
+            return _Capture()
+
+        @staticmethod
+        def Event(enable_timing):
+            assert enable_timing is True
+            return _Event()
+
+        @staticmethod
+        def synchronize():
+            pass
+
+    result = do_bench_musa_graph(
+        lambda: None,
+        rep=1,
+        n_retries=3,
+        device_interface=_Interface(),
+    )
+
+    assert result == pytest.approx(0.0)
+    assert observed == {"captures": 1, "replays": 3}
+
+
 @pytest.mark.parametrize(
     ("module_name", "backend", "implementation"),
     [
@@ -57,6 +210,21 @@ def test_cudagraph_helper_keeps_ten_retries_as_compatible_default():
             "triton.backends.amd.driver",
             "hip",
             "triton_hip_graph_replay_v1",
+        ),
+        (
+            "triton.backends.metax.driver",
+            "maca",
+            "triton_metax_graph_replay_v1",
+        ),
+        (
+            "triton.backends.ppu.driver",
+            "cuda",
+            "triton_ppu_graph_replay_v1",
+        ),
+        (
+            "triton.backends.hcu.driver",
+            "hip",
+            "triton_hcu_graph_replay_v1",
         ),
     ],
 )
@@ -101,9 +269,55 @@ def test_replay_splits_total_measurement_budget(monkeypatch, module_name, backen
     )
 
 
+def test_mthreads_replay_uses_flagtune_musa_graph_helper(monkeypatch):
+    active = _driver_for("triton.backends.mthreads.driver", "musa")
+    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
+    monkeypatch.setattr(
+        graph_benchmark_module,
+        "do_bench_musa_graph",
+        active.replay_benchmark,
+    )
+    launches = []
+
+    resolved = benchmark_module.resolve_benchmarker(
+        "replay",
+        warmup_ms=25,
+        measurement_ms=100,
+        n_retries=10,
+    )
+    result = resolved.benchmark(lambda: launches.append(True), (0.5, 0.2, 0.8))
+
+    assert result == [1.0, 0.8, 1.2]
+    assert launches == [True]
+    assert active.observed == {
+        "rep": 10.0,
+        "quantiles": (0.5, 0.2, 0.8),
+        "n_retries": 10,
+        "warmup_ms": 25,
+        "device_interface": active.device_interface,
+    }
+    assert resolved.protocol.as_dict() == {
+        "requested_mode": "replay",
+        "resolved_mode": "replay",
+        "implementation": "triton_musa_graph_replay_v1",
+        "cache_policy": "warm_l2",
+        "warmup_ms": 25,
+        "measurement_ms": 100,
+        "n_retries": 10,
+        "per_replay_ms": 10.0,
+        "fallback_reason": None,
+    }
+    assert resolved.protocol.cache_key() == (
+        "triton_musa_graph_replay_v1",
+        25,
+        100,
+        10,
+        10.0,
+    )
+
+
 def test_unsupported_replay_backend_warns_and_resolves_event(monkeypatch):
-    # HCU exposes a HIP target but does not use AMD's graph replay implementation.
-    active = _driver_for("triton.backends.hcu.driver", backend="hip")
+    active = _driver_for("triton.backends.example.driver", backend="example")
     monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
 
     with pytest.warns(RuntimeWarning, match="falling back to event"):
@@ -124,6 +338,35 @@ def test_unsupported_replay_backend_warns_and_resolves_event(monkeypatch):
     assert resolved.protocol.resolved_mode is benchmark_module.BenchmarkMode.EVENT
     assert resolved.protocol.cache_key() == ("triton_do_bench", 5, 20)
     assert resolved.protocol.fallback_reason
+
+
+@pytest.mark.parametrize(
+    ("env_value", "explicit", "expected"),
+    [
+        (None, None, "event"),
+        ("event", None, "event"),
+        ("replay", None, "replay"),
+        ("replay", "event", "event"),
+    ],
+)
+def test_resolve_requested_mode_honors_explicit_or_environment(monkeypatch, env_value, explicit, expected):
+    if env_value is None:
+        monkeypatch.delenv("FLAGTUNE_BENCHMARK_MODE", raising=False)
+    else:
+        monkeypatch.setenv("FLAGTUNE_BENCHMARK_MODE", env_value)
+    assert benchmark_module.resolve_requested_mode(explicit).value == expected
+
+
+def test_resolve_requested_mode_rejects_unknown_environment_value(monkeypatch):
+    monkeypatch.setenv("FLAGTUNE_BENCHMARK_MODE", "protocol")
+    with pytest.raises(ValueError):
+        benchmark_module.resolve_requested_mode()
+
+
+def test_flagtuner_default_mode_preserves_replay(monkeypatch):
+    monkeypatch.delenv("FLAGTUNE_BENCHMARK_MODE", raising=False)
+    assert (benchmark_module.resolve_requested_mode(default=benchmark_module.BenchmarkMode.REPLAY)
+            is benchmark_module.BenchmarkMode.REPLAY)
 
 
 @pytest.mark.parametrize("n_retries", [0, -1, True, 1.5])

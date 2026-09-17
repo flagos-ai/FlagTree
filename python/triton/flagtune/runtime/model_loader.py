@@ -1,5 +1,3 @@
-# Copyright 2018-2020 Philippe Tillet
-# Copyright 2020-2022 OpenAI
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -32,10 +30,14 @@ Environment variables:
   * ``FLAGTUNE_MODEL_DIR``: optional local model root with highest precedence.
     It contains flat ``<platform_key>_v<version>.tar.gz`` packages.
   * ``FLAGTUNE_LOCAL_MANIFEST``: optional path override for the local schema-1
-    Manifest. The default is ``$FLAGTUNE_MODEL_CACHE/manifest.json`` and is
-    generated from the bundled catalog when remote resolution first needs it.
-  * ``FLAGTUNE_MODEL_BASE_URL``: optional base URL used only while generating a
-    missing default Manifest.
+    Manifest. The default cache path is ``$FLAGTUNE_MODEL_CACHE/manifest.json``.
+  * ``FLAGTUNE_MODEL_BASE_URL``: optional HTTPS base URL used for model package
+    URL mirroring.
+  * ``FLAGTUNE_MANIFEST_URL``: optional HTTPS URL of the Manifest tar.gz.
+    Defaults to the FlagOS-hosted FlagTune XGBoost Manifest when no usable
+    local or cached Manifest exists.
+  * ``FLAGTUNE_MANIFEST_TTL``: optional cache lifetime in seconds (default 86400).
+  * ``FLAGTUNE_MANIFEST_REFRESH``: when set to ``1``, refresh the Manifest cache.
   * ``FLAGTUNE_MODEL_CACHE``: writable package-cache root. Defaults to
     ``~/.flagtree/flagtune_models``.
   * ``FLAGTUNE_MODEL_VERSION``: optional strict-SemVer exact version pin. An
@@ -43,8 +45,8 @@ Environment variables:
   * ``FLAGTUNE_MODEL_DOWNLOAD_LATEST``: when set to ``1``, consult the Manifest
     before the package cache and select its highest SemVer for the platform.
     Exact version pins still take precedence.
-  * ``FLAGTUNE_DISABLE_REMOTE``: when set to ``1``, prevent package downloads;
-    the user root, local Manifest, and package cache remain available.
+  * ``FLAGTUNE_DISABLE_REMOTE``: when set to ``1``, prevent Manifest and model
+    package downloads; the user root, cached Manifest, and package cache remain available.
 
 Remote artifacts and redirects must use HTTPS, and artifacts must carry a
 lowercase SHA-256 digest. The digest and complete bundle contract are validated
@@ -79,6 +81,13 @@ from triton.flagtune.contract.archive import (
     validate_model_version,
 )
 from triton.flagtune.contract.identity import ModelIdentity
+from triton.flagtune.runtime.errors import (
+    FlagTuneError,
+    ModelSourceError,
+    ModelUnavailableError,
+    ModelValidationError,
+    flagtune_errors,
+)
 from triton.flagtune.contract.operator_schema import (
     VariantInfo,
     load_model_config_bytes,
@@ -112,8 +121,29 @@ def _user_model_root() -> Optional[Path]:
     return Path(env) if env else None
 
 
-class IncompatibleModelError(RuntimeError):
+class _PlatformPackageNotFoundError(ModelUnavailableError, FileNotFoundError):
+    """An unversioned Manifest miss, also understood by legacy FlagGems."""
+
+
+class IncompatibleModelError(ModelValidationError):
     """Indicate that a resolved archive cannot serve the requested contract."""
+
+
+class ModelBundleMissingError(ModelUnavailableError, IncompatibleModelError):
+    """Report that a resolved platform package carries no bundle for one identity.
+
+    A platform package legitimately covers only the operators, variants, and
+    dtype combinations it was built for, so this is a statement about coverage
+    rather than about the package being wrong. It is raised only when the outer
+    package parsed and validated but has no entry for the requested identity;
+    every other loading failure keeps its own error.
+
+    Integration layers may treat this as "unadapted here" and fall back to their
+    own tuning. Build pipelines should not: they know the identity set they
+    intended to publish and should keep enforcing it at packaging time. It
+    subclasses :class:`IncompatibleModelError` so existing handlers are
+    unaffected.
+    """
 
 
 @dataclass(frozen=True)
@@ -290,6 +320,7 @@ class FlagTuneModelManager:
                 candidates.append((parsed.selection_key, package))
         return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
+    @flagtune_errors(ModelValidationError)
     def load(
         self,
         op_id: str,
@@ -338,7 +369,7 @@ class FlagTuneModelManager:
 
         entry = package.models.get(identity.artifact_key)
         if entry is None:
-            raise IncompatibleModelError(
+            raise ModelBundleMissingError(
                 f"FlagTune platform package {package_path} has no model for {identity.artifact_key!r}")
         member = entry["path"]
         try:
@@ -360,6 +391,7 @@ class FlagTuneModelManager:
             self._implicit_loaded[identity] = loaded
         return loaded
 
+    @flagtune_errors(ModelSourceError)
     def resolve(
         self,
         op_id: str,
@@ -390,7 +422,7 @@ class FlagTuneModelManager:
                 return cached
             if remote_disabled:
                 suffix = f" at version {requested!r}" if requested is not None else ""
-                raise FileNotFoundError(
+                raise ModelUnavailableError(
                     f"FlagTune package for platform {identity.platform_key!r}{suffix} is not cached and "
                     "FLAGTUNE_DISABLE_REMOTE=1 prevents downloading it")
 
@@ -399,7 +431,6 @@ class FlagTuneModelManager:
         package = resolve_package_info(
             identity.platform_key,
             version=requested,
-            generate_default=not remote_disabled,
         )
         if package is not None:
             return self._download_package(
@@ -409,8 +440,15 @@ class FlagTuneModelManager:
             )
 
         suffix = f" at version {requested!r}" if requested is not None else ""
-        raise FileNotFoundError(f"FlagTune Manifest has no package for platform {identity.platform_key!r}{suffix}; "
-                                f"checked flat user packages and package cache {cache_root} first")
+        # FlagGems v5.3.5 probes platform availability before calling the proposer.
+        # It recognizes this exact unversioned miss via FileNotFoundError and
+        # the message prefix below, then selects legacy tuning. Preserve that
+        # protocol without hiding download failures or explicit version misses.
+        # New integrations still see ModelUnavailableError; legacy users should
+        # update FlagGems to its supported Cost Model fallback integration.
+        error_type = _PlatformPackageNotFoundError if requested is None else ModelUnavailableError
+        raise error_type(f"FlagTune Manifest has no package for platform {identity.platform_key!r}{suffix}; "
+                         f"checked flat user packages and package cache {cache_root} first")
 
     def _validate_flagtune_version(self, config: Dict[str, Any], source: str) -> None:
         min_ver = config.get("flagtune_version_min")
@@ -497,24 +535,7 @@ class FlagTuneModelManager:
         package: PlatformPackage,
         source: str,
     ) -> None:
-        """Validate every H20 child and the complete published identity set."""
-        if package.platform_key == "nvidia-h20":
-            required = {
-                ModelIdentity(
-                    "nvidia-h20",
-                    "flaggems/mm",
-                    variant,
-                    "bf16-bf16-bf16",
-                ).artifact_key
-                for variant in ("gemv", "general_tma", "splitk")
-            }
-            actual = set(package.models)
-            missing = sorted(required - actual)
-            unexpected = sorted(actual - required)
-            if missing:
-                raise IncompatibleModelError(f"FlagTune package has missing required H20 models: {missing}")
-            if unexpected:
-                raise IncompatibleModelError(f"FlagTune package has unexpected H20 models: {unexpected}")
+        """Validate only model artifacts requested by the caller."""
         for artifact in sorted(package.models):
             identity_parts = artifact.split("/")
             identity = ModelIdentity(
@@ -576,9 +597,13 @@ class FlagTuneModelManager:
                 logger.info("FlagTune platform package already cached: %s", destination)
                 return destination
             if remote_disabled:
-                raise FileNotFoundError(
+                hint = ""
+                if _download_latest_requested():
+                    hint = (" FLAGTUNE_MODEL_DOWNLOAD_LATEST=1 restricted the cache lookup to this "
+                            "version; unset it to accept an older cached package.")
+                raise ModelUnavailableError(
                     f"FlagTune package {platform_key!r} version {package.version!r} is not cached and "
-                    "FLAGTUNE_DISABLE_REMOTE=1 prevents downloading it")
+                    f"FLAGTUNE_DISABLE_REMOTE=1 prevents downloading it.{hint}")
 
             from urllib.request import Request
 
@@ -609,7 +634,7 @@ class FlagTuneModelManager:
             self._packages[(platform_key, package.version, digest)] = parsed_package
             logger.info("FlagTune platform package cached to %s", destination)
             return destination
-        except (FileNotFoundError, ImportError, IncompatibleModelError, ValueError):
+        except (FlagTuneError, FileNotFoundError, ImportError, ValueError):
             raise
         except Exception as exc:
             raise RuntimeError(

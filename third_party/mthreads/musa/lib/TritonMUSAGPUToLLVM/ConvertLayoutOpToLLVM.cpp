@@ -1,4 +1,5 @@
 #include "PatternTritonGPUOpToLLVM.h"
+#include "TritonMUSACommon/ConvertLayoutUtils.h"
 #include "TritonMUSAGPUToLLVM/Allocation.h"
 #include "TritonMUSAGPUToLLVM/TargetInfo.h"
 #include "TritonMUSAGPUToLLVM/Utility.h"
@@ -17,89 +18,6 @@ namespace {
 using namespace mlir;
 using namespace mlir::triton;
 using namespace mlir::triton::gpu;
-
-static bool isMusaSqmmaLike(Attribute layout) {
-  return isa<MUSASqmmaEncodingAttr>(layout);
-}
-
-static bool useMusaReplicatedScratch(Attribute srcLayout, Attribute dstLayout) {
-  return (isMusaSqmmaLike(srcLayout) || isMusaSqmmaLike(dstLayout)) &&
-         isa<MmaEncodingTrait, BlockedEncodingAttr, SliceEncodingAttr>(
-             srcLayout) &&
-         isa<MmaEncodingTrait, BlockedEncodingAttr, SliceEncodingAttr>(
-             dstLayout);
-}
-
-static bool isSqmmaAccumulatorToBlockedLike(Attribute srcLayout,
-                                            Attribute dstLayout) {
-  return isa<MUSASqmmaEncodingAttr>(srcLayout) &&
-         isa<BlockedEncodingAttr, SliceEncodingAttr>(dstLayout);
-}
-
-static bool useMusaSqmmaBlockSwizzling(RankedTensorType srcTy,
-                                       RankedTensorType dstTy) {
-  if (!(isMusaSqmmaLike(srcTy.getEncoding()) ||
-        isMusaSqmmaLike(dstTy.getEncoding())))
-    return false;
-
-  LinearLayout conversion = minimalCvtLayout(srcTy, dstTy);
-  MLIRContext *ctx = srcTy.getContext();
-  StringAttr kBlock = str_attr("block");
-  StringAttr kWarp = str_attr("warp");
-  StringAttr kLane = str_attr("lane");
-  auto dims = conversion.getInDimNames();
-
-  if (llvm::is_contained(dims, kBlock))
-    return false;
-  if (llvm::is_contained(dims, kWarp))
-    return true;
-  if (llvm::is_contained(dims, kLane))
-    return !cvtNeedsWarpShuffle(srcTy, dstTy);
-  return false;
-}
-
-static bool useConservativeCarrierScratch(RankedTensorType srcTy,
-                                          RankedTensorType dstTy) {
-  MLIRContext *ctx = srcTy.getContext();
-  auto srcElemTy = srcTy.getElementType();
-  auto dstElemTy = dstTy.getElementType();
-
-  auto needsByteCarrier = [](Type ty) {
-    return ty.isIntOrFloat() && ty.getIntOrFloatBitWidth() < 8;
-  };
-  bool isPointerCarrier = isa<triton::PointerType>(srcElemTy) &&
-                          isa<triton::PointerType>(dstElemTy);
-  bool isSubByteCarrier =
-      needsByteCarrier(srcElemTy) && needsByteCarrier(dstElemTy);
-  if (!isPointerCarrier && !isSubByteCarrier)
-    return false;
-
-  if (!isa<BlockedEncodingAttr, SliceEncodingAttr>(srcTy.getEncoding()) ||
-      !isa<BlockedEncodingAttr, SliceEncodingAttr>(dstTy.getEncoding()))
-    return false;
-
-  LinearLayout conversion = minimalCvtLayout(srcTy, dstTy);
-  StringAttr kBlock = str_attr("block");
-  return !llvm::is_contained(conversion.getInDimNames(), kBlock);
-}
-
-static bool isPlainBlockedLike(Attribute layout) {
-  return isa<BlockedEncodingAttr, SliceEncodingAttr>(layout);
-}
-
-static bool useMusaGenericBlockSwizzling(RankedTensorType srcTy,
-                                         RankedTensorType dstTy) {
-  if (isMusaSqmmaLike(srcTy.getEncoding()) ||
-      isMusaSqmmaLike(dstTy.getEncoding()))
-    return false;
-  if (!cvtNeedsSharedMemory(srcTy, dstTy))
-    return false;
-
-  LinearLayout conversion = minimalCvtLayout(srcTy, dstTy);
-  MLIRContext *ctx = srcTy.getContext();
-  StringAttr kBlock = str_attr("block");
-  return !llvm::is_contained(conversion.getInDimNames(), kBlock);
-}
 
 static bool hasOnlyStorageLikeUsers(Value value) {
   SmallVector<Value> worklist{value};
@@ -161,7 +79,7 @@ static FailureOr<Value> getDistributedSharedMemoryBase(
     Location loc, ConversionPatternRewriter &rewriter,
     const MUSA::TargetInfo &targetInfo, triton::gpu::ConvertLayoutOp op,
     Attribute srcLayout) {
-  if (isMusaSqmmaLike(srcLayout))
+  if (musa::isMusaSqmmaLike(srcLayout))
     return LLVM::getSharedMemoryBase(loc, rewriter, targetInfo,
                                      op.getOperation());
 
@@ -196,19 +114,19 @@ public:
     Attribute srcLayout = srcTy.getEncoding();
     Attribute dstLayout = dstTy.getEncoding();
 
-    if (useMusaReplicatedScratch(srcLayout, dstLayout)) {
-      if (isSqmmaAccumulatorToBlockedLike(srcLayout, dstLayout))
+    if (musa::useMusaReplicatedScratch(srcLayout, dstLayout)) {
+      if (musa::isMusaSqmmaAccumulatorToBlockedLike(srcLayout, dstLayout))
         return lowerSqmmaBlockSwizzling(op, adaptor, rewriter);
       return lowerDistributedToDistributed(op, adaptor, rewriter);
     }
 
-    if (useConservativeCarrierScratch(srcTy, dstTy))
+    if (musa::useConservativeCarrierScratch(srcTy, dstTy))
       return lowerDistributedToDistributed(op, adaptor, rewriter);
 
-    if (useMusaSqmmaBlockSwizzling(srcTy, dstTy))
+    if (musa::useMusaSqmmaBlockSwizzling(srcTy, dstTy))
       return lowerSqmmaBlockSwizzling(op, adaptor, rewriter);
 
-    if (useMusaGenericBlockSwizzling(srcTy, dstTy))
+    if (musa::useMusaGenericBlockSwizzling(srcTy, dstTy))
       return lowerGenericBlockSwizzling(op, adaptor, rewriter);
 
     return failure();
@@ -393,7 +311,7 @@ private:
         LLVM::getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
     auto inVals = ::mlir::unpackLLElements(loc, adaptor.getSrc(), rewriter);
 
-    if (isMusaSqmmaLike(srcTy.getEncoding()))
+    if (musa::isMusaSqmmaLike(srcTy.getEncoding()))
       targetInfo.barrier(loc, rewriter, triton::gpu::AddrSpace::Local);
 
     auto outVals = transferWithinBlockSwizzlingImpl(
@@ -473,7 +391,7 @@ private:
         LLVM::UndefOp::create(rewriter, loc, llvmElemStorageTy));
 
     unsigned numTotalReps = product<unsigned>(numReplicates);
-    if (numTotalReps != 0 && isMusaSqmmaLike(srcLayout))
+    if (numTotalReps != 0 && musa::isMusaSqmmaLike(srcLayout))
       targetInfo.barrier(loc, rewriter, triton::gpu::AddrSpace::Local);
     for (unsigned repId = 0; repId < numTotalReps; ++repId) {
       if (repId != 0)

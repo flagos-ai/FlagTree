@@ -293,7 +293,9 @@ void validateMusaMmaLayoutArguments(
   if (version.size() != 2)
     throw py::value_error("mthreads TLE " + layoutName.str() +
                           " version must contain major and minor");
-  if (version[0] != musa::kMusaPH1VersionMajor || version[1] != 1)
+  const auto &ph1Traits = musa::getMusaWmmaArchTraits(musa::MusaArch::PH1);
+  if (version[0] != ph1Traits.versionMajor ||
+      version[1] != ph1Traits.versionMinor)
     throw py::value_error("mthreads TLE " + layoutName.str() +
                           " currently supports only MUSA PH1 version [3, 1]");
   if (warpsPerCTA.size() != 2 && warpsPerCTA.size() != 3)
@@ -337,23 +339,24 @@ bool isSupportedSqmmaInstructionShape(llvm::ArrayRef<unsigned> instrShape) {
   const unsigned m = instrShape[0];
   const unsigned n = instrShape[1];
   const unsigned k = instrShape[2];
+  const auto &sqTraits = *musa::getMusaSqmmaArchTraits(musa::MusaArch::PH1);
   return musa::isSupportedSqmma(musa::SQMMAEltType::f16,
                                 musa::SQMMAEltType::f16,
-                                musa::SQMMAEltType::f32, m, n, k) ||
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
          musa::isSupportedSqmma(musa::SQMMAEltType::bf16,
                                 musa::SQMMAEltType::bf16,
-                                musa::SQMMAEltType::f32, m, n, k) ||
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
          musa::isSupportedSqmma(musa::SQMMAEltType::tf32,
                                 musa::SQMMAEltType::tf32,
-                                musa::SQMMAEltType::f32, m, n, k) ||
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
          musa::isSupportedSqmma(musa::SQMMAEltType::s8, musa::SQMMAEltType::s8,
-                                musa::SQMMAEltType::s32, m, n, k) ||
+                                musa::SQMMAEltType::s32, m, n, k, sqTraits) ||
          musa::isSupportedSqmma(musa::SQMMAEltType::e4m3,
                                 musa::SQMMAEltType::e4m3,
-                                musa::SQMMAEltType::f32, m, n, k) ||
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits) ||
          musa::isSupportedSqmma(musa::SQMMAEltType::e5m2,
                                 musa::SQMMAEltType::e5m2,
-                                musa::SQMMAEltType::f32, m, n, k);
+                                musa::SQMMAEltType::f32, m, n, k, sqTraits);
 }
 
 mlir::Attribute
@@ -677,7 +680,7 @@ void init_triton_musa_tle_ir(py::module m) {
              mlir::BoolAttr oneShotAttr;
              if (oneShot)
                oneShotAttr = builder.getBoolAttr(true);
-             self.create<tle::PipeCreateOp>(
+             self.create<mlir::triton::musa_tle::PipeCreateOp>(
                  fields, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs), readersAttr,
@@ -695,7 +698,7 @@ void init_triton_musa_tle_ir(py::module m) {
              mlir::StringAttr pipeNameAttr;
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
-             self.create<tle::PipeWriterAcquireOp>(
+             self.create<mlir::triton::musa_tle::PipeWriterAcquireOp>(
                  fields, stage, phase, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
@@ -712,7 +715,7 @@ void init_triton_musa_tle_ir(py::module m) {
              mlir::StringAttr pipeNameAttr;
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
-             self.create<tle::PipeWriterCommitOp>(
+             self.create<mlir::triton::musa_tle::PipeWriterCommitOp>(
                  fields, stage, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
@@ -729,7 +732,7 @@ void init_triton_musa_tle_ir(py::module m) {
              mlir::StringAttr pipeNameAttr;
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
-             self.create<tle::PipeWriterCloseOp>(
+             self.create<mlir::triton::musa_tle::PipeWriterCloseOp>(
                  fields, stage, phase, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
@@ -740,42 +743,69 @@ void init_triton_musa_tle_ir(py::module m) {
               const std::string &scope, const std::string &pipeName,
               std::vector<std::string> fieldNames,
               const std::string &readerName,
-              std::vector<std::string>) -> mlir::Value {
+              std::vector<std::string> readerFieldNames) -> mlir::Value {
              auto &builder = self.getBuilder();
              llvm::SmallVector<mlir::Attribute> fieldNameAttrs;
              for (llvm::StringRef name : fieldNames)
                fieldNameAttrs.push_back(builder.getStringAttr(name));
+             bool subscribesAllFields =
+                 readerFieldNames.size() == fieldNames.size() &&
+                 llvm::all_of(readerFieldNames, [&](const std::string &name) {
+                   return llvm::is_contained(fieldNames, name);
+                 });
+             mlir::ArrayAttr readerFieldsAttr;
+             if (!subscribesAllFields) {
+               llvm::SmallVector<mlir::Attribute> readerFieldNameAttrs;
+               for (llvm::StringRef name : readerFieldNames)
+                 readerFieldNameAttrs.push_back(builder.getStringAttr(name));
+               readerFieldsAttr = builder.getArrayAttr(readerFieldNameAttrs);
+             }
              mlir::StringAttr pipeNameAttr;
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
              mlir::StringAttr readerNameAttr;
              if (!readerName.empty())
                readerNameAttr = builder.getStringAttr(readerName);
-             return self.create<tle::PipeReaderWaitOp>(
+             return self.create<mlir::triton::musa_tle::PipeReaderWaitOp>(
                  builder.getI1Type(), fields, stage, phase,
                  builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
-                 builder.getArrayAttr(fieldNameAttrs), readerNameAttr);
+                 builder.getArrayAttr(fieldNameAttrs), readerNameAttr,
+                 readerFieldsAttr);
            })
       .def("create_pipe_reader_release",
            [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
               mlir::Value stage, int32_t capacity, const std::string &scope,
               const std::string &pipeName, std::vector<std::string> fieldNames,
-              const std::string &readerName, std::vector<std::string>) -> void {
+              const std::string &readerName,
+              std::vector<std::string> readerFieldNames) -> void {
              auto &builder = self.getBuilder();
              llvm::SmallVector<mlir::Attribute> fieldNameAttrs;
              for (llvm::StringRef name : fieldNames)
                fieldNameAttrs.push_back(builder.getStringAttr(name));
+             bool subscribesAllFields =
+                 readerFieldNames.size() == fieldNames.size() &&
+                 llvm::all_of(readerFieldNames, [&](const std::string &name) {
+                   return llvm::is_contained(fieldNames, name);
+                 });
+             mlir::ArrayAttr readerFieldsAttr;
+             if (!subscribesAllFields) {
+               llvm::SmallVector<mlir::Attribute> readerFieldNameAttrs;
+               for (llvm::StringRef name : readerFieldNames)
+                 readerFieldNameAttrs.push_back(builder.getStringAttr(name));
+               readerFieldsAttr = builder.getArrayAttr(readerFieldNameAttrs);
+             }
              mlir::StringAttr pipeNameAttr;
              if (!pipeName.empty())
                pipeNameAttr = builder.getStringAttr(pipeName);
              mlir::StringAttr readerNameAttr;
              if (!readerName.empty())
                readerNameAttr = builder.getStringAttr(readerName);
-             self.create<tle::PipeReaderReleaseOp>(
+             self.create<mlir::triton::musa_tle::PipeReaderReleaseOp>(
                  fields, stage, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
-                 builder.getArrayAttr(fieldNameAttrs), readerNameAttr);
+                 builder.getArrayAttr(fieldNameAttrs), readerNameAttr,
+                 readerFieldsAttr);
            })
       .def("create_tle_wgmma",
            [](TritonOpBuilder &self, mlir::Value a, mlir::Value b,
@@ -842,6 +872,17 @@ void init_triton_musa_tle_ir(py::module m) {
              }
 
              return self.create<ttg::MemDescIndexOp>(resultType, src, index);
+           })
+      .def("create_memdesc_alias",
+           [](TritonOpBuilder &self, mlir::Type resultType, mlir::Value src,
+              int64_t offsetBytes) -> mlir::Value {
+             if (offsetBytes < 0)
+               throw py::value_error(
+                   "mthreads TLE memdesc alias requires a non-negative "
+                   "offset");
+             return self.create<tle::MemDescAliasOp>(
+                 resultType, src,
+                 self.getBuilder().getI64IntegerAttr(offsetBytes));
            })
       .def("create_memdesc_trans",
            [](TritonOpBuilder &self, mlir::Value src,

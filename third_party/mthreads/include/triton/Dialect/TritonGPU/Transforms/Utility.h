@@ -68,12 +68,16 @@ bool isNoop(Operation *op);
 const char *getTleExplicitEncodingAttrPrefix();
 std::string getTleExplicitEncodingAttrName(unsigned resultNumber);
 const char *getTleExplicitMemoryEncodingAttrName();
+const char *getTleExplicitSqmmaEncodingAttrName();
 Attribute getTleExplicitResultEncoding(Operation *op, unsigned resultNumber);
 void setTleExplicitResultEncoding(Operation *op, unsigned resultNumber,
                                   Attribute encoding);
 void setTleExplicitResultEncoding(OpResult result, Attribute encoding);
 Attribute getTleExplicitMemoryEncoding(Operation *op);
 void setTleExplicitMemoryEncoding(Operation *op, Attribute encoding);
+Attribute getTleExplicitSqmmaEncoding(Operation *op);
+void setTleExplicitSqmmaEncoding(Operation *op, Attribute encoding);
+void removeTleExplicitSqmmaEncoding(Operation *op);
 Attribute getTleExplicitValueEncoding(Value value);
 LogicalResult inferTleExplicitMemoryEncoding(Operation *op,
                                              Attribute &encoding);

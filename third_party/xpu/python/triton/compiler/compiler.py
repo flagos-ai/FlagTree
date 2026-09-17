@@ -90,6 +90,7 @@ class IRSource:
 
     def __init__(self, path, context, backend):
         self.path = path
+        self.backend = backend
         path = Path(path)
         self.ext = path.suffix[1:]
         self.language = Language.TRITON
@@ -121,9 +122,17 @@ class IRSource:
         return self.module
 
     def parse_options(self):
-        dict_is_sdnn = dict()
-        if "tl.dot" in self.src or "tt.dot" in self.src:
-            dict_is_sdnn["is_sdnn"] = True
+        # Backends that select a whole pipeline from is_sdnn (houyi) have
+        # mutually exclusive intermediate extensions, so the entry extension
+        # pins the pipeline by itself. Scanning the IR text cannot do that job:
+        # a .ttxir has its dots lowered to sdnn/linalg ops already, and picking
+        # the wrong pipeline makes stages.keys().index(src.ext) fail. A .ttir is
+        # produced by both pipelines; it gets classified from the parsed module
+        # by the backend's refine_options_after_ttir hook instead.
+        ext_options = dict()
+        options_from_ir_ext = getattr(self.backend, "options_from_ir_ext", None)
+        if options_from_ir_ext is not None:
+            ext_options.update(options_from_ir_ext(self.ext))
         if self.ext == "ttgir":
             num_warps = self.module.get_int_attr("ttg.num-warps")
             assert num_warps is not None, "Unable to parse ttg.num-warps attribute"
@@ -131,8 +140,8 @@ class IRSource:
             num_ctas = self.module.get_int_attr("ttg.num-ctas")
             if num_ctas is not None:
                 options['num_ctas'] = num_ctas
-            return {**options, **dict_is_sdnn}
-        return dict_is_sdnn
+            return {**options, **ext_options}
+        return ext_options
 
 
 @functools.lru_cache()
@@ -245,7 +254,11 @@ def compile(src, target=None, options=None, _env_vars=None):
         src = IRSource(src, context, backend)
 
     extra_options = src.parse_options()
-    options = backend.parse_options(dict(options or dict(), **extra_options))
+    # Kept around so that a later option change (see refine_options_after_ttir
+    # below) can rebuild the options through the same entry point instead of
+    # patching the frozen dataclass in place.
+    raw_options = dict(options or dict(), **extra_options)
+    options = backend.parse_options(raw_options)
     # create cache manager
     env_vars = get_cache_invalidating_env_vars() if _env_vars is None else _env_vars
     key = get_cache_key(src, backend, options, env_vars=env_vars)
@@ -291,6 +304,10 @@ def compile(src, target=None, options=None, _env_vars=None):
     # run compilation pipeline  and populate metadata
     stages = dict()
     backend.add_stages(stages, options, src.language)
+    if src.ext not in stages:
+        raise RuntimeError(f"cannot compile from .{src.ext}: the selected pipeline is "
+                           f"[{', '.join(stages)}]. Pass the option that selects the other "
+                           f"pipeline (e.g. is_sdnn) explicitly.")
     first_stage = list(stages.keys()).index(src.ext)
     # when the source is an IR file, don't apply the passes related to this stage. This makes it easier to write IR level tests.
     if ir_source:
@@ -355,6 +372,30 @@ def compile(src, target=None, options=None, _env_vars=None):
         if compilation_listener:
             timer.stage_finished(ext)
         return next_module
+
+    # is_sdnn from an AST entry only reflects the entry function's own AST
+    # (ASTSource.parse_options), which misses a tl.dot living in a @triton.jit
+    # helper; a .ttir entry cannot be classified from its extension either,
+    # since both pipelines produce one. Both cases are answered by walking the
+    # inlined ttir, so let the backend re-decide here and re-select the pipeline
+    # when the answer changed.
+    refine = getattr(backend, "refine_options_after_ttir", None)
+    if refine is not None and src.ext == "ttir":
+        if not ir_source:
+            # An AST entry point starts at ttir, so running it here skips nothing.
+            # An IR entry point deliberately skips the passes of its own stage.
+            module = run_stage("ttir", stages["ttir"], module)
+        if extra := refine(module, options):
+            raw_options = {**raw_options, **extra}
+            options = backend.parse_options(raw_options)
+            metadata.update(options.__dict__)
+            stages = dict()
+            backend.add_stages(stages, options, src.language)
+        # Same value the IR-entry path already had. Backends without the hook
+        # keep first_stage untouched, which the xpu retune loop below relies on:
+        # it re-creates the module through src.make_ir and needs to start over
+        # from ttir.
+        first_stage = list(stages.keys()).index("ttir") + 1
 
     if target.backend == "xpu":
         # XPU may overflow the per-core local-memory (stack) budget when the
