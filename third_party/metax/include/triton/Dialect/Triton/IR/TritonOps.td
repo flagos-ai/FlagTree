@@ -281,15 +281,20 @@ def TT_LoadOp : TT_Op<"load", [
                        "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
                        "triton::EvictionPolicy":$evict, "bool":$isVolatile,
-                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
-        // Keep the prebuilt MetaX plugin ABI while defaulting flagtree_hints.
-        OpBuilder<(ins "Type":$result, "Value":$ptr, "Value":$mask,
-                       "Value":$other, "ArrayRef<int32_t>":$boundaryCheck,
-                       "triton::PaddingOptionAttr":$padding,
-                       "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
-                       "ArrayRef<int64_t>":$contiguityInterConstGroup)>
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>
     ];
+
+    // Keep the prebuilt MetaX plugin ABI while defaulting flagtree_hints.
+    // This declaration must not be an OpBuilder: that would generate a
+    // conflicting create() overload alongside the builder with default hints.
+    let extraClassDeclaration = [{
+      static void build(OpBuilder &builder, OperationState &state, Type result,
+                        Value ptr, Value mask, Value other,
+                        ArrayRef<int32_t> boundaryCheck,
+                        PaddingOptionAttr padding, CacheModifier cache,
+                        EvictionPolicy evict, bool isVolatile,
+                        ArrayRef<int64_t> contiguityInterConstGroup);
+    }];
 
     // Specify `cacheModifier` and `evictionPolicy` explicitly in the
     // assemblyFormat instead of as part of attr-dict so that they get printed
