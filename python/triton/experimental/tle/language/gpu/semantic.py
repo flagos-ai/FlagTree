@@ -31,8 +31,31 @@ from typing import List, Optional, Sequence, Tuple, Union
 
 from triton._C.libtriton import ir
 from triton import language as tl
+from triton.language.semantic import TritonSemantic
 from . import types as tle
 from math import prod
+
+
+class TLEFrontendSemantic(TritonSemantic):
+    """Triton frontend with logical descriptor carriers for TLE lowering."""
+
+    def make_tensor_descriptor(self, base, shape, strides, block_shape, padding_option="zero"):
+        block_shape = tl.core._unwrap_shape(block_shape)
+        logical_shape = None
+        if any(dim & (dim - 1) for dim in block_shape):
+            payload = block_shape[-2:]
+            if (len(block_shape) < 2 or any(dim != 1 for dim in block_shape[:-2])
+                    or sum(bool(dim & (dim - 1)) for dim in payload) != 1
+                    or any(dim <= 0 or dim % 16 for dim in payload)):
+                raise ValueError("TLE logical descriptors require unit leading dimensions and a rank-2 payload "
+                                 "with one non-power-of-two axis; payload dimensions must be multiples of 16")
+            logical_shape = block_shape
+            block_shape = [1 << (dim - 1).bit_length() for dim in block_shape]
+        desc = super().make_tensor_descriptor(base, shape, strides, block_shape, padding_option)
+        if logical_shape is not None:
+            self.builder.mark_logical_tensor_descriptor(desc.handle, logical_shape)
+            desc = tle._logical_tensor_descriptor(desc, logical_shape)
+        return desc
 
 
 class TLESemanticError(Exception):

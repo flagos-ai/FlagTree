@@ -29,6 +29,7 @@ include "mlir/IR/OpBase.td"
 def Tle_Dialect : Dialect {
   let name = "tle";
   let cppNamespace = "::mlir::triton::tle";
+  let hasOperationAttrVerify = 1;
   let description = [{
     Triton Language Extension dialect.
   }];

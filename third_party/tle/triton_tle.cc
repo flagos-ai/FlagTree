@@ -41,6 +41,7 @@
 #include "pybind11/pytypes.h"
 #include "pybind11/stl.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/IR/VerifyUtils.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -237,6 +238,29 @@ void init_triton_tle_ir(py::module &&m) {
            [](TritonOpBuilder &self, Type resultTy, Value value) -> Value {
              return self.create<ttg::LocalAllocOp>(resultTy, value);
            })
+      .def("mark_logical_tensor_descriptor",
+           [](TritonOpBuilder &self, Value value,
+              std::vector<int64_t> logicalShape) {
+             cast<triton::MakeTensorDescOp>(value.getDefiningOp())
+                 ->setAttr(
+                     "tle.logical_descriptor_shape",
+                     self.getBuilder().getDenseI64ArrayAttr(logicalShape));
+           })
+      .def("mark_logical_alloc_candidate",
+           [](TritonOpBuilder &self, Value value,
+              std::vector<int64_t> logicalShape, int32_t nonPowerAxis) {
+             Operation *op = value.getDefiningOp();
+             if (!op || !isa<ttg::LocalAllocOp>(op))
+               throw py::value_error(
+                   "logical alloc candidate must be a ttg.local_alloc");
+             auto &builder = self.getBuilder();
+             op->setAttr("tle.logical_alloc_shape",
+                         builder.getDenseI64ArrayAttr(logicalShape));
+             op->setAttr("tle.logical_non_power_axis",
+                         builder.getI32IntegerAttr(nonPowerAxis));
+             op->setAttr("tle.storage_plan",
+                         builder.getStringAttr("candidate"));
+           })
       .def("create_tma_copy",
            [](TritonOpBuilder &self, Value src, Value dst,
               std::vector<Value> &indices) {
@@ -270,6 +294,29 @@ void init_triton_tle_ir(py::module &&m) {
                                          expectBytesAttr);
 #endif
             return;
+          })
+      .def(
+          "create_tma_copy",
+          [](TritonOpBuilder &self, Value src, Value dst,
+             std::vector<Value> &indices, py::object barrier,
+             int32_t expectBytes, std::vector<int64_t> copyShape) {
+#ifdef __HCU__
+            if (!barrier.is_none() || expectBytes > 0)
+              throw py::value_error(
+                  "TMA completion barrier is only supported on NVIDIA backend");
+            auto op = self.create<ttg::TMACopyOp>(src, dst, indices);
+#else
+             Value barrierValue;
+             if (!barrier.is_none())
+               barrierValue = py::cast<Value>(barrier);
+             IntegerAttr expectBytesAttr;
+             if (expectBytes > 0)
+               expectBytesAttr = self.getBuilder().getI32IntegerAttr(expectBytes);
+             auto op = self.create<ttg::TMACopyOp>(
+                 src, dst, indices, barrierValue, expectBytesAttr);
+#endif
+            op->setAttr(tle::kLogicalCopyShapeAttr,
+                        self.getBuilder().getDenseI64ArrayAttr(copyShape));
           })
       .def("create_local_load",
            [](TritonOpBuilder &self, Type resultTy, Value memDesc) -> Value {
@@ -325,10 +372,26 @@ void init_triton_tle_ir(py::module &&m) {
              return self.create<tle::LocalPointersOp>(resultTy, memDesc,
                                                       indices);
            })
+      .def("mark_logical_pointer_copy",
+           [](TritonOpBuilder &self, Value value,
+              std::vector<int64_t> logicalShape) {
+             auto op = value.getDefiningOp<tle::LocalPointersOp>();
+             if (!op)
+               throw py::value_error(
+                   "logical pointer copy marker requires tle.local_pointers");
+             op->setAttr(tle::kLogicalCopyShapeAttr,
+                         self.getBuilder().getDenseI64ArrayAttr(logicalShape));
+           })
       .def("create_memdesc_index",
            [](TritonOpBuilder &self, Type resultType, Value src,
               Value index) -> Value {
              return self.create<ttg::MemDescIndexOp>(resultType, src, index);
+           })
+      .def("create_memdesc_wgmma_view",
+           [](TritonOpBuilder &self, Type resultType, Value src,
+              std::vector<int32_t> order) -> Value {
+             return self.create<tle::MemDescWGMMAViewOp>(resultType, src,
+                                                         order);
            })
       .def("create_memdesc_trans",
            [](TritonOpBuilder &self, Value src,
@@ -909,6 +972,8 @@ void init_triton_tle_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_lower_async_load",
                      tle::createTritonTleLowerAsyncLoad);
   ADD_PASS_WRAPPER_0("add_lower_wgmma", tle::createTritonTleLowerWGMMA);
+  ADD_PASS_WRAPPER_0("add_plan_logical_domains",
+                     tle::createTritonTlePlanLogicalDomains);
   ADD_PASS_WRAPPER_0("add_lower_pipe_to_nvws",
                      tle::createTritonTleLowerPipeToNvws);
   ADD_PASS_WRAPPER_0("add_lower_barriers", tle::createTritonTleLowerBarriers);
@@ -994,9 +1059,8 @@ void init_triton_tle(py::module &&m) {
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
-    // TODO: move our td defines here
-    // registry.insert<mlir::triton::tle::tleDialect>();
-    // context.appendDialectRegistry(registry);
+    registry.insert<mlir::triton::tle::TleDialect>();
+    context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
 

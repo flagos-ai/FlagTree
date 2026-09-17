@@ -29,6 +29,8 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
+#include <optional>
+
 #include "tle/dialect/include/IR/Dialect.h.inc"
 #include "tle/dialect/include/IR/OpsEnums.h.inc"
 
@@ -42,5 +44,22 @@
 #define GET_OP_CLASSES
 #include "tle/dialect/include/IR/FlagCxOps.h.inc"
 #endif
+
+namespace mlir::triton::tle {
+
+/// Register tiles materialized by logical-domain planning. Their pointer and
+/// mask values need precise AxisInfo and matching LLVM/scratch lowering.
+inline constexpr llvm::StringLiteral kPlannedTileAttr("tle.planned_tile");
+
+/// Return the linear tile index when an extract_tile has a compile-time
+/// constant index.
+std::optional<int64_t> getStaticExtractTileIndex(ExtractTileOp op);
+
+/// Return whether a static tile begins on a CTA tile boundary and spans an
+/// integral number of CTA tiles. Such an extract can be lowered as a register
+/// permutation and does not require shared-memory scratch space.
+bool isExtractTileCTAAligned(ExtractTileOp op, int64_t linearIndex);
+
+} // namespace mlir::triton::tle
 
 #endif

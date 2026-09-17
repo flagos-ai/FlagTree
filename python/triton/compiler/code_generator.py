@@ -372,7 +372,12 @@ class CodeGenerator(ast.NodeVisitor):
         else:
             from triton.language.semantic import TritonSemantic
             self.builder = ir.builder(context)
-            self.semantic = TritonSemantic(self.builder)
+            # flagtree tle: keep descriptor carrier rules in the TLE frontend.
+            if hasattr(self.builder, "mark_logical_tensor_descriptor"):
+                from triton.experimental.tle.language.gpu.semantic import TLEFrontendSemantic
+                self.semantic = TLEFrontendSemantic(self.builder)
+            else:
+                self.semantic = TritonSemantic(self.builder)
 
         self.name_loc_as_prefix = None
         self.file_name = file_name
