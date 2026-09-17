@@ -41,7 +41,13 @@ DEB_BASE_IMAGE="${DEB_BASE_IMAGE:-ubuntu:24.04}"
 PYTHON_VERSION="${PYTHON_VERSION:-}"
 MAX_JOBS="${MAX_JOBS:-4}"
 DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX:-auto}"
-echo ">>> Building wheel + .deb for backend=${BACKEND} on ${DEB_BASE_IMAGE} (python ${PYTHON_VERSION:-default}, MAX_JOBS=${MAX_JOBS})"
+
+# Single source of truth for the package version: the Debian changelog's
+# upstream version. Passed into the wheel build so the wheel version matches
+# instead of falling back to setup.py's hardcoded default.
+WHEEL_VERSION="$(head -n1 packaging/debian/changelog | sed -E 's/^[^(]*\(([0-9][^)-]*)-[^)]*\).*$/\1/')"
+
+echo ">>> Building wheel + .deb for backend=${BACKEND} version ${WHEEL_VERSION} on ${DEB_BASE_IMAGE} (python ${PYTHON_VERSION:-default}, MAX_JOBS=${MAX_JOBS})"
 docker build \
     --network=host \
     --build-arg DEB_BASE_IMAGE="${DEB_BASE_IMAGE}" \
@@ -49,6 +55,7 @@ docker build \
     --build-arg MAX_JOBS="${MAX_JOBS}" \
     --build-arg DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX}" \
     -f packaging/debian/build-helpers/Dockerfile.deb \
+    --build-arg FLAGTREE_WHEEL_VERSION="${WHEEL_VERSION}" \
     --target deb-output \
     --output "type=local,dest=${REPO_ROOT}/dist" \
     .
