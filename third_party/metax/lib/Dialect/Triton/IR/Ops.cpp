@@ -82,16 +82,6 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                 evict, isVolatile);
 }
 
-void LoadOp::build(OpBuilder &builder, OperationState &state, Type result,
-                   Value ptr, Value mask, Value other,
-                   ArrayRef<int32_t> boundaryCheck, PaddingOptionAttr padding,
-                   CacheModifier cache, EvictionPolicy evict, bool isVolatile,
-                   ArrayRef<int64_t> contiguityInterConstGroup) {
-  LoadOp::build(builder, state, result, ptr, mask, other, boundaryCheck,
-                padding, cache, evict, isVolatile, contiguityInterConstGroup,
-                "");
-}
-
 // load(ptr, splat(1), ...)        -> load(ptr, ...)
 // load(ptr, splat(0), other, ...) -> other
 struct CanonicalizeMaskedLoadPattern : public OpRewritePattern<LoadOp> {

@@ -14,7 +14,6 @@ include "mlir/Interfaces/ControlFlowInterfaces.td" // BranchOpInterface
 include "mlir/Interfaces/InferTypeOpInterface.td" // SameOperandsAndResultType
 include "mlir/Interfaces/CallInterfaces.td" // CallOpInterface
 include "triton/Dialect/Triton/IR/TritonOpInterfaces.td"
-include "mlir/IR/BuiltinAttributes.td"
 
 
 //
@@ -252,8 +251,7 @@ def TT_LoadOp : TT_Op<"load", [
       DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
       DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict,
       DefaultValuedAttr<BoolAttr, "false">:$isVolatile,
-      DefaultValuedAttr<DenseI64ArrayAttr, "::llvm::ArrayRef<int64_t>{}">:$contiguityInterConstGroup, // USE_MACA
-      DefaultValuedAttr<StrAttr, "\"\"">:$flagtree_hints
+      DefaultValuedAttr<DenseI64ArrayAttr, "::llvm::ArrayRef<int64_t>{}">:$contiguityInterConstGroup // USE_MACA
     );
 
     let results = (outs TT_Type:$result);
@@ -279,16 +277,18 @@ def TT_LoadOp : TT_Op<"load", [
                        "triton::EvictionPolicy":$evict, "bool":$isVolatile)>
     ];
 
-    // Keep the prebuilt MetaX plugin ABI while defaulting flagtree_hints.
-    // This declaration must not be an OpBuilder: that would generate a
-    // conflicting create() overload alongside the builder with default hints.
+    // Keep flagtree_hints discardable so prebuilt plugins retain their
+    // LoadOp property ABI.
     let extraClassDeclaration = [{
-      static void build(OpBuilder &builder, OperationState &state, Type result,
-                        Value ptr, Value mask, Value other,
-                        ArrayRef<int32_t> boundaryCheck,
-                        PaddingOptionAttr padding, CacheModifier cache,
-                        EvictionPolicy evict, bool isVolatile,
-                        ArrayRef<int64_t> contiguityInterConstGroup);
+      mlir::StringAttr getFlagtreeHintsAttr() {
+        return (*this)->getAttrOfType<mlir::StringAttr>("flagtree_hints");
+      }
+
+      llvm::StringRef getFlagtreeHints() {
+        if (auto attr = getFlagtreeHintsAttr())
+          return attr.getValue();
+        return "";
+      }
     }];
 
     // Specify `cacheModifier` and `evictionPolicy` explicitly in the
