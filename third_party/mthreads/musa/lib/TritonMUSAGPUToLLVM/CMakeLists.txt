@@ -30,6 +30,7 @@ add_triton_library(TritonMUSAGPUToLLVM
   MTGPUTypesIncGen
 
   LINK_LIBS PUBLIC
+  TritonMUSACommon
   TritonAnalysis
   TritonGPUToLLVM
   MLIRReconcileUnrealizedCasts

@@ -18,7 +18,7 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonToTritonXPUPass();
 // Create the pass with buffer_size set explicitly.
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonToTritonXPUPass(uint32_t xpu_arch, uint32_t buffer_size,
-                                   uint32_t core_num);
+                                   uint32_t core_num, bool isTLE = false);
 
 } // namespace triton
 } // namespace mlir

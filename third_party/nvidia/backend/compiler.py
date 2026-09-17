@@ -297,6 +297,10 @@ class CUDABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         dump_enabled = pm.enable_debug()
         emuTF32 = (capability // 10 >= 8)
+        # Keep the source pointer DAG visible in TTIR, just like the device
+        # remote path. Fuse node transfers only at the TTIR -> TTGIR boundary,
+        # while pointer provenance and original argument ordinals are intact.
+        tle.passes.add_fuse_node_remote_transfers(pm)
         # flagtree tle distributed
         if DistributedRtContext().is_lite_mode:
             tle.passes.add_params_for_distribution(pm)
@@ -316,9 +320,9 @@ class CUDABackend(BaseBackend):
         tle.passes.add_optimize_local_pointer_async_stores(pm)
         # flagtree pass: fold an ordered join/transpose/reshape K concatenation
         # into a single op before any layout is assigned, so the operand
-        # encodings are chosen as if the concatenation had always been one op.
-        # Left as a join chain the operand would be staged through shared memory
-        # instead of reaching the mma in registers.
+        # encodings are chosen for one wide operand. Left as a join chain, the
+        # operand is staged through shared memory instead of reaching the mma
+        # in registers.
         if hasattr(passes.ttgpuir, "add_concat_dot_operand"):
             passes.ttgpuir.add_concat_dot_operand(pm)
         # optimize TTGIR
@@ -338,8 +342,18 @@ class CUDABackend(BaseBackend):
         # end flagtree tle
         passes.ttgpuir.add_accelerate_matmul(pm)
         tle.passes.add_lower_wgmma(pm)
+        # flagtree pass: merge segmented dot chains whose operands are proven
+        # ordered slices of one wider operand. Runs after accelerate-matmul so
+        # the mma layout is known, and before remove-layout-conversions so the
+        # per-extract converts it leaves behind get folded into the dots.
+        if hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
+            passes.ttgpuir.add_merge_segmented_dot(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
+        # flagtree pass: layout cleanup can expose a chain the first run could
+        # not see, so match once more over the settled register layouts.
+        if hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
+            passes.ttgpuir.add_merge_segmented_dot(pm)
         tle.passes.add_promote_local_store_staging(pm)
         nvidia.passes.ttnvgpuir.add_optimize_descriptor_encoding(pm)
         passes.ttir.add_loop_aware_cse(pm)
@@ -405,13 +419,14 @@ class CUDABackend(BaseBackend):
         passes.common.add_sccp(pm)
         passes.common.add_cse(pm)
         passes.common.add_canonicalizer(pm)
-        # flagtree pass: last chance to undo a concat the layouts did not end up
-        # supporting, so it runs after everything that can still fold or retag
-        # the operand.
+        # flagtree pass: rebuild the join tree for any concat whose operand did
+        # not end up with a layout the register relabel can serve. Runs after
+        # everything that can still fold or retag the operand.
         if hasattr(passes.ttgpuir, "add_expand_concat_dot_operand"):
             passes.ttgpuir.add_expand_concat_dot_operand(pm)
 
         pm.run(mod, 'make_ttgir')
+        metadata["tle_node_buffer_bindings"] = mod.get_operation().get_str_attr("tle.node_buffer_bindings") or ""
         # begin flagtree tle
         # launch_cooperative_grid may be toggled during frontend semantic lowering
         # (e.g. device_mesh + distributed_barrier grid mode), so refresh it here.

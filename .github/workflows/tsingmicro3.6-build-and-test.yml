@@ -1,0 +1,115 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Tsingmicro3.6-Build-And-Test
+
+on:
+  push:
+    branches: [ "main", "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "main", "triton_v3.6.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tsingmicro36x-unit-test:
+    runs-on: tsingmicro3.6
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: tsingmicro
+
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
+      - name: Build FlagTree
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=tsingmicro
+          export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"
+          export TX8_DEPS_ROOT=~/.flagtree/tsingmicro/tx8_deps
+          export LLVM_SYSPATH=~/.flagtree/tsingmicro/tsingmicro-llvm22
+          export LLVM_BINARY_DIR=${LLVM_SYSPATH}/bin
+          export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH
+          export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
+          export PATH=${LLVM_BINARY_DIR}:${PATH}
+          python3 -m pip install . --no-build-isolation -v
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: tsingmicro
+
+      - name: Unit Test
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source ~/env.sh
+          export TX8_DEPS_ROOT=~/.flagtree/tsingmicro/tx8_deps
+          export LLVM_SYSPATH=~/.flagtree/tsingmicro/tsingmicro-llvm22
+          export LLVM_BINARY_DIR=${LLVM_SYSPATH}/bin
+          export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH
+          export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH
+
+          ## examples
+          pushd third_party/tsingmicro/examples
+          python3 bare_matmul_autotune.py
+          python3 embedding.py
+          python3 mult_ir.py
+          python3 profile_matmul.py
+          python3 quant_gptq.py
+          python3 test_cos.py
+          python3 test_embedding.py
+          #python3 test_flip.py
+          python3 test_layernorm.py
+          python3 test_matmul.py
+          python3 test_print.py
+          python3 test_softmax.py
+          python3 test_vec_add.py
+          python3 time1.py
+          popd

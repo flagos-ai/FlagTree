@@ -31,6 +31,7 @@
 
 #define GET_OP_CLASSES
 #include "tle/dialect/include/IR/Ops.cpp.inc"
+#include "tle/dialect/include/IR/OpsEnums.cpp.inc"
 
 #ifdef FLAGCX_ENABLED
 #define GET_OP_CLASSES

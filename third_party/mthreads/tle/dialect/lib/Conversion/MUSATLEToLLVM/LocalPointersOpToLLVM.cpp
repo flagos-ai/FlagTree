@@ -278,6 +278,7 @@ void populateMUSATLEToLLVMPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<LocalPointersOpConversion>(typeConverter, targetInfo, benefit);
   populateMUSATLETileOpToLLVMPatterns(typeConverter, targetInfo, patterns,
                                       benefit);
+  populateMUSATLEMemDescViewToLLVMPatterns(typeConverter, patterns, benefit);
 }
 
 } // namespace mlir::triton::musa_tle

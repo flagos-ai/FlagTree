@@ -46,6 +46,7 @@ selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
                   musa::SQMMAEltType operandType) {
   if (numWarps < 4 || numWarps % 4 != 0)
     return std::nullopt;
+  const auto *sqTraits = musa::getMusaSqmmaArchTraits(musa::MusaArch::PH1);
   static constexpr unsigned kMN[] = {128, 64, 32, 16};
   static constexpr unsigned kK[] = {128, 64, 32, 16};
 
@@ -57,12 +58,13 @@ selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
       continue;
     for (unsigned instN : kMN) {
       if (n % instN != 0 ||
-          !musa::isSupportedSqmmaInstrMN(operandType, instM, instN))
+          !musa::isSupportedSqmmaInstrMN(operandType, instM, instN, *sqTraits))
         continue;
       for (unsigned instK : kK) {
-        if (k % instK != 0 || !musa::isSupportedSqmma(operandType, operandType,
-                                                      musa::SQMMAEltType::f32,
-                                                      instM, instN, instK))
+        if (k % instK != 0 ||
+            !musa::isSupportedSqmma(operandType, operandType,
+                                    musa::SQMMAEltType::f32, instM, instN,
+                                    instK, *sqTraits))
           continue;
         for (unsigned warpsM = 4; warpsM <= numWarps; warpsM *= 2) {
           if (numWarps % warpsM != 0)
@@ -74,8 +76,17 @@ selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
             continue;
           unsigned count = (m / tileM) * (n / tileN) * (k / instK);
           unsigned volume = instM * instN * instK;
+          // On a full tie prefer a pure M-split (warpsN == 1) as long as
+          // the instruction M stays >= 32: attention-style kernels reduce the
+          // dot result along axis=1, and an M-split keeps every output row
+          // inside one squad so the reduction never crosses warps. Finer M
+          // splits (instM 16) measure slower and are never preferred.
+          bool preferMSplit =
+              warpsN == 1 && instM >= 32 && best && best->warpsPerCTA[1] != 1;
           if (!best || count < bestCount ||
-              (count == bestCount && volume > bestVolume)) {
+              (count == bestCount &&
+               (volume > bestVolume ||
+                (volume == bestVolume && preferMSplit)))) {
             best = SelectedSqmmaConfig{{instM, instN, instK}, {warpsM, warpsN}};
             bestCount = count;
             bestVolume = volume;
@@ -209,18 +220,13 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
 
   auto order = ttg::getOrder(operandTy);
   auto cga = ttg::getCGALayout(operandTy.getEncoding());
-  auto dotEncoding = ttg::DotOperandEncodingAttr::get(
-      op.getContext(), operandIdx, mmaEnc, operandTy.getElementType());
-  auto shared = musa::composeMusaOperandSharedLayout(
-      dotEncoding, operandTy.getShape(), order, cga, operandTy.getElementType(),
+  auto shared = mmaEnc.composeSharedLayoutForOperand(
+      cga, operandIdx, operandTy.getShape(), order,
+      /*kWidth=*/0, operandTy.getElementTypeBitWidth(),
       /*needTrans=*/false);
-  if (!shared)
-    return op.emitOpError(
-               "failed to infer PH1 SQMMA shared layout for operand ")
-           << operandIdx;
 
   auto desiredTy = ttg::MemDescType::get(
-      operandTy.getShape(), operandTy.getElementType(), *shared,
+      operandTy.getShape(), operandTy.getElementType(), shared,
       operandTy.getMemorySpace(), operandTy.getMutableMemory(),
       operandTy.getAllocShape());
 

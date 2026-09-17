@@ -12,6 +12,9 @@ add_triton_library(MUSATLETransforms
   OptimizeLocalPointerAsyncStores.cpp
   OptimizeLocalPointerLoads.cpp
   OptimizeLocalPointerStores.cpp
+  PipeAnalysis.cpp
+  PipePartitionUtils.cpp
+  PipeRegionUtils.cpp
   SelectEncodings.cpp
 
   DEPENDS

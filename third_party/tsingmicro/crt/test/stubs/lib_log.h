@@ -1,0 +1,4 @@
+#ifndef TX81_HOST_TEST_LIB_LOG_H
+#define TX81_HOST_TEST_LIB_LOG_H
+
+#endif

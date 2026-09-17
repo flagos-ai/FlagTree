@@ -18,12 +18,13 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+add_compile_definitions(__TRITON_VERSION_MAJOR__=3)
+add_compile_definitions(__TRITON_VERSION_MINOR__=6)
+
 macro(flagtree_configure_options)
-  set(FLAGTREE_BACKEND "$ENV{FLAGTREE_BACKEND}")
   set(FLAGTREE_DEFAULT_OPTION ON)
   if(FLAGTREE_BACKEND)
     set(FLAGTREE_DEFAULT_OPTION OFF)
-    add_definitions(-DFLAGTREE_BACKEND=\"${FLAGTREE_BACKEND}\")
   endif()
 
   set(FLAGCX_ENABLED OFF)
@@ -47,6 +48,7 @@ macro(flagtree_configure_options)
     add_definitions(-D__AMD__)
     add_definitions(-D__FLAGTREE_REORDER_LOOP_LOADS__)
     add_definitions(-D__FLAGTREE_RLC_ENHANCE__)
+    add_definitions(-D__FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__)
     add_definitions(-D__FLAGTREE_CONCAT_DOT_OPERAND__)
     list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_CONCAT_DOT_OPERAND__)
   elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
@@ -91,6 +93,58 @@ macro(flagtree_configure_options)
   set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
   if(FLAGTREE_PLUGIN)
     add_definitions(-D__FLAGTREE_PLUGIN__)
+  endif()
+endmacro()
+
+
+# FlagPrism: configure the external profiler/debugger after base options exist.
+macro(flagtree_configure_flagprism)
+  set(_flagprism_default OFF)
+  # FlagPrism: enable the external tools for the supported mthreads backend.
+  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
+    set(_flagprism_default ON)
+  endif()
+  option(TRITON_BUILD_FLAGPRISM
+         "Build the FlagPrism debugger and profiler"
+         ${_flagprism_default})
+
+  if(TRITON_BUILD_FLAGPRISM)
+    # FlagPrism: accept mthreads as a supported integration backend.
+    if(NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
+      message(FATAL_ERROR
+        "TRITON_BUILD_FLAGPRISM is only supported when "
+        "FLAGTREE_BACKEND is ascend, iluvatar, or mthreads.")
+    endif()
+    if(TRITON_BUILD_PROTON)
+      message(FATAL_ERROR
+        "TRITON_BUILD_FLAGPRISM and TRITON_BUILD_PROTON cannot both be enabled. "
+        "Select exactly one profiler implementation.")
+    endif()
+
+    # FlagPrism: permit a separate local checkout during backend development.
+    if(NOT FLAGPRISM_SOURCE_DIR)
+      set(FLAGPRISM_SOURCE_DIR
+          "${CMAKE_CURRENT_SOURCE_DIR}/third_party/FlagPrism")
+    endif()
+    # FlagPrism: resolve relative overrides against the FlagTree source root.
+    get_filename_component(FLAGPRISM_SOURCE_DIR "${FLAGPRISM_SOURCE_DIR}" ABSOLUTE
+                           BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(FLAGPRISM_CMAKE_FILE "${FLAGPRISM_SOURCE_DIR}/cmake/FlagPrism.cmake")
+    if(EXISTS "${FLAGPRISM_CMAKE_FILE}")
+      include("${FLAGPRISM_CMAKE_FILE}")
+      add_compile_definitions(__FLAGPRISM__=1)
+    else()
+      message(FATAL_ERROR
+        "FlagPrism source is missing. Run the Python package build to download "
+        "third-party dependencies.")
+    endif()
+  endif()
+endmacro()
+
+# FlagPrism: register external profiler/debugger component targets.
+macro(flagtree_add_flagprism_components)
+  if(TRITON_BUILD_FLAGPRISM)
+    flagprism_add_components()
   endif()
 endmacro()
 
@@ -245,6 +299,25 @@ macro(flagtree_python_link_libraries)
 endmacro()
 
 
+macro(flagtree_configure_flir_dependency)
+  if(FLAGTREE_BACKEND STREQUAL "tsingmicro")
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
+      message(FATAL_ERROR "The ${FLAGTREE_BACKEND} backend requires third_party/flir")
+    endif()
+
+    # TsingMicro only consumes FLIR's C++ targets; do not build its Python/CPU plugin.
+    set(TRITON_SHARED_BUILD_CPU_BACKEND OFF)
+    list(REMOVE_ITEM TRITON_CODEGEN_BACKENDS "flir")
+    if(NOT TARGET TritonSharedUtils)
+      add_subdirectory(
+        "${PROJECT_SOURCE_DIR}/third_party/flir"
+        "${PROJECT_BINARY_DIR}/third_party/flir"
+      )
+    endif()
+  endif()
+endmacro()
+
+
 macro(flagtree_configure_tle_plugin append_tle_plugin)
   if(FLAGTREE_TLE)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tle/CMakeLists.txt")
@@ -262,7 +335,11 @@ macro(flagtree_configure_python_plugins)
   # We always build proton dialect because core Triton conversion libraries link
   # ProtonIR. XPU-specific Proton GPU lowering wrappers are disabled inside the
   # Proton plugin instead of skipping the whole dialect.
-  if(FLAGTREE_BACKEND STREQUAL "hcu")
+  # FlagPrism: its external component supplies ProtonIR and dialect registration.
+  # if(FLAGTREE_BACKEND STREQUAL "hcu")
+  if(TRITON_BUILD_FLAGPRISM)
+    # FlagPrism supplies the ProtonIR target and dialect registration.
+  elseif(FLAGTREE_BACKEND STREQUAL "hcu")
     list(APPEND TRITON_PLUGIN_DIRS
       "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")
     include_directories(

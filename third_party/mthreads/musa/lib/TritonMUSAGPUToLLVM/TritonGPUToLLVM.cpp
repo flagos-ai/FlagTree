@@ -7,6 +7,7 @@
 #ifdef __TLE__
 #include "Conversion/MUSATLEToLLVM/LocalPointersOpToLLVM.h"
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "TritonMUSACommon/TMEUtils.h"
 #endif
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -19,6 +20,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/MTVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
@@ -240,19 +242,15 @@ static LogicalResult rewritePredicatedLoad(LLVM::CallOp callOp,
       rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
   afterLoad->addArgument(elemTy, loc);
   Block *trueBlock = rewriter.createBlock(afterLoad);
-  Block *falseBlock =
-      rewriter.splitBlock(trueBlock, rewriter.getInsertionPoint());
 
   rewriter.setInsertionPointToEnd(currentBlock);
-  LLVM::CondBrOp::create(rewriter, loc, pred, trueBlock, falseBlock);
+  LLVM::CondBrOp::create(rewriter, loc, pred, trueBlock, ValueRange{},
+                         afterLoad, ValueRange{falseVal});
 
   rewriter.setInsertionPointToStart(trueBlock);
   Value loaded =
       emitPredicatedLoadBody(ptr, elemTy, useCacheHint, loc, rewriter);
   LLVM::BrOp::create(rewriter, loc, loaded, afterLoad);
-
-  rewriter.setInsertionPointToStart(falseBlock);
-  LLVM::BrOp::create(rewriter, loc, falseVal, afterLoad);
 
   rewriter.setInsertionPointToStart(afterLoad);
   rewriter.replaceOp(callOp, afterLoad->getArgument(0));
@@ -393,6 +391,31 @@ struct ConvertTritonMUSAGPUToLLVM
     ModuleOp mod = getOperation();
     TargetInfo targetInfo(computeCapability);
 
+#ifdef __TLE__
+    auto tmeWalk = mod.walk([&](Operation *op) -> WalkResult {
+      Value shared;
+      ArrayRef<int32_t> shape;
+      if (auto load = dyn_cast<triton::musa::AsyncTMECopyGlobalToLocalOp>(op)) {
+        shared = load.getResult();
+        shape = load.getBlockShape();
+      } else if (auto store =
+                     dyn_cast<triton::musa::AsyncTMECopyLocalToGlobalOp>(op)) {
+        shared = store.getSrc();
+        shape = store.getBlockShape();
+      } else {
+        return WalkResult::advance();
+      }
+      if (failed(triton::musa::getTLETMECopySegments(
+              dyn_cast<triton::gpu::MemDescType>(shared.getType()), shape))) {
+        op->emitError(
+            "unsupported TLE TME physical shared layout or block shape");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (tmeWalk.wasInterrupted())
+      return signalPassFailure();
+#else
     auto groupedTMELoadWalk = mod.walk(
         [&](triton::musa::AsyncTMECopyGlobalToLocalOp op) -> WalkResult {
           if (failed(
@@ -403,6 +426,8 @@ struct ConvertTritonMUSAGPUToLLVM
         });
     if (groupedTMELoadWalk.wasInterrupted())
       return signalPassFailure();
+
+#endif // __TLE__
 
     ModuleAllocation allocation(
         mod, mlir::triton::musa_gpu::getMusaAllocationAnalysisScratchSizeFn(
@@ -429,6 +454,12 @@ struct ConvertTritonMUSAGPUToLLVM
             applyPartialConversion(mod, funcTarget, std::move(funcPatterns))))
       return signalPassFailure();
 
+    if (Attribute maxnregAttr =
+            mod->getAttr(triton::gpu::AttrMaxRegistersName)) {
+      for (auto funcOp : mod.getOps<LLVM::LLVMFuncOp>())
+        funcOp->setAttr(MTVM::MTVMDialect::getMaxnregAttrName(), maxnregAttr);
+    }
+
     initSharedMemory(typeConverter, targetInfo);
     ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
 
@@ -445,7 +476,7 @@ struct ConvertTritonMUSAGPUToLLVM
     mlir::triton::MUSA::populateFp4ToFpToLLVMPatterns(typeConverter, patterns,
                                                       benefit);
     mlir::triton::MUSA::populateMUSAOpsToLLVMPatterns(typeConverter, patterns,
-                                                      benefit);
+                                                      benefit, targetInfo);
     mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
         typeConverter, patterns, axisInfoAnalysis, computeCapability,
         targetInfo, benefit);
