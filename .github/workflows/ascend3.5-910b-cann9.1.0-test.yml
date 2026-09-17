@@ -85,6 +85,7 @@ jobs:
         run: |
           set -x
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          source ~/env.sh
           ## flagtree tle-distributed tutorial
           pushd python/tutorials/tle/dsa
           PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 09-ascend-allgather-gemm.py

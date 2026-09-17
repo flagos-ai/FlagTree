@@ -85,6 +85,7 @@ jobs:
         run: |
           set -x
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          source ~/env.sh
           ## tutorials
           pushd third_party/ascend/tutorials
           python3 01-vector-add.py
