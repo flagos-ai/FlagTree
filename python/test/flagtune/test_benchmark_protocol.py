@@ -131,13 +131,71 @@ def test_musa_graph_helper_uses_supplied_device_interface():
         device_interface=_Interface(),
     )
 
-    # n_repeat is now calibrated from a 256-iteration probe graph instead of
-    # five eager calls, so the fake 5.0ms elapsed time reads as 5.0/256 per
-    # iteration and sizes the timing graph at int(rep / that) == 51.
-    assert result == pytest.approx(5.0 / 51)
-    # one probe capture plus the timing capture; three probe replays plus
-    # n_retries timed replays; one synchronize after each capture and replay.
-    assert observed == {"captures": 2, "replays": 5, "synchronizes": 7}
+    # Calibration uses five ordinary launches, so the fake 5.0ms elapsed time
+    # yields a 1.0ms estimate and rep=1 produces a one-launch timing graph.
+    assert result == pytest.approx(5.0)
+    # The implementation performs one formal capture and n_retries replays.
+    # Synchronization occurs after calibration, capture, and each replay.
+    assert observed == {"captures": 1, "replays": 2, "synchronizes": 4}
+
+
+def test_musa_graph_helper_uses_bounded_repeat_for_invalid_calibration():
+    """A zero event estimate must not divide by zero or skip graph capture."""
+    observed = {"captures": 0, "replays": 0}
+
+    class _Event:
+
+        def record(self):
+            pass
+
+        @staticmethod
+        def elapsed_time(_other):
+            return 0.0
+
+    class _Graph:
+
+        def replay(self):
+            observed["replays"] += 1
+
+    class _Interface:
+        MUSAGraph = _Graph
+        Stream = object
+
+        @staticmethod
+        def stream(_stream):
+            return nullcontext()
+
+        @staticmethod
+        def graph(_graph):
+
+            class _Capture:
+
+                def __enter__(self):
+                    observed["captures"] += 1
+
+                def __exit__(self, _exc_type, _exc, _traceback):
+                    return False
+
+            return _Capture()
+
+        @staticmethod
+        def Event(enable_timing):
+            assert enable_timing is True
+            return _Event()
+
+        @staticmethod
+        def synchronize():
+            pass
+
+    result = do_bench_musa_graph(
+        lambda: None,
+        rep=1,
+        n_retries=3,
+        device_interface=_Interface(),
+    )
+
+    assert result == pytest.approx(0.0)
+    assert observed == {"captures": 1, "replays": 3}
 
 
 @pytest.mark.parametrize(
@@ -280,6 +338,35 @@ def test_unsupported_replay_backend_warns_and_resolves_event(monkeypatch):
     assert resolved.protocol.resolved_mode is benchmark_module.BenchmarkMode.EVENT
     assert resolved.protocol.cache_key() == ("triton_do_bench", 5, 20)
     assert resolved.protocol.fallback_reason
+
+
+@pytest.mark.parametrize(
+    ("env_value", "explicit", "expected"),
+    [
+        (None, None, "event"),
+        ("event", None, "event"),
+        ("replay", None, "replay"),
+        ("replay", "event", "event"),
+    ],
+)
+def test_resolve_requested_mode_honors_explicit_or_environment(monkeypatch, env_value, explicit, expected):
+    if env_value is None:
+        monkeypatch.delenv("FLAGTUNE_BENCHMARK_MODE", raising=False)
+    else:
+        monkeypatch.setenv("FLAGTUNE_BENCHMARK_MODE", env_value)
+    assert benchmark_module.resolve_requested_mode(explicit).value == expected
+
+
+def test_resolve_requested_mode_rejects_unknown_environment_value(monkeypatch):
+    monkeypatch.setenv("FLAGTUNE_BENCHMARK_MODE", "protocol")
+    with pytest.raises(ValueError):
+        benchmark_module.resolve_requested_mode()
+
+
+def test_flagtuner_default_mode_preserves_replay(monkeypatch):
+    monkeypatch.delenv("FLAGTUNE_BENCHMARK_MODE", raising=False)
+    assert (benchmark_module.resolve_requested_mode(default=benchmark_module.BenchmarkMode.REPLAY)
+            is benchmark_module.BenchmarkMode.REPLAY)
 
 
 @pytest.mark.parametrize("n_retries", [0, -1, True, 1.5])
