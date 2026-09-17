@@ -862,8 +862,8 @@ def get_flagtree_version():
             return flagtree_ver + get_git_commit_hash().replace("+", ".")
     backend = os.environ.get("FLAGTREE_BACKEND", "")
     if backend:
-        return "0.6.0+" + backend + get_git_commit_hash().replace("+", ".")
-    return "0.6.0" + get_git_commit_hash()
+        return "0.7.0+" + backend + get_git_commit_hash().replace("+", ".")
+    return "0.7.0" + get_git_commit_hash()
 
 
 # Dynamically define supported Python versions and classifiers
@@ -894,6 +894,8 @@ setup(
     description=
     "A unified compiler supporting multiple AI chip backends for custom Deep Learning operations, which is forked from triton-lang/triton.",
     long_description=long_description,
+    license="MIT",
+    license_files=["LICENSE"],
     long_description_content_type="text/markdown",
     install_requires=[
         "importlib-metadata; python_version < '3.10'",
