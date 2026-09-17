@@ -281,7 +281,14 @@ def TT_LoadOp : TT_Op<"load", [
                        "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
                        "triton::EvictionPolicy":$evict, "bool":$isVolatile,
-                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>
+                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
+        // Keep the prebuilt MetaX plugin ABI while defaulting flagtree_hints.
+        OpBuilder<(ins "Type":$result, "Value":$ptr, "Value":$mask,
+                       "Value":$other, "ArrayRef<int32_t>":$boundaryCheck,
+                       "triton::PaddingOptionAttr":$padding,
+                       "triton::CacheModifier":$cache,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
+                       "ArrayRef<int64_t>":$contiguityInterConstGroup)>
     ];
 
     // Specify `cacheModifier` and `evictionPolicy` explicitly in the
