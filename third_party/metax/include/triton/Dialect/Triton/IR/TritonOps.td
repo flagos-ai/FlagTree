@@ -288,6 +288,26 @@ def TT_LoadOp : TT_Op<"load", [
     // This declaration must not be an OpBuilder: that would generate a
     // conflicting create() overload alongside the builder with default hints.
     let extraClassDeclaration = [{
+      static void build(OpBuilder &builder, OperationState &state, Value ptr,
+                        CacheModifier cache, EvictionPolicy evict,
+                        bool isVolatile);
+      static void build(OpBuilder &builder, OperationState &state, Value ptr,
+                        ArrayRef<int32_t> boundaryCheck,
+                        std::optional<PaddingOption> padding,
+                        CacheModifier cache, EvictionPolicy evict,
+                        bool isVolatile);
+      static void build(OpBuilder &builder, OperationState &state, Value ptr,
+                        Value mask, CacheModifier cache,
+                        EvictionPolicy evict, bool isVolatile);
+      static void build(OpBuilder &builder, OperationState &state, Value ptr,
+                        Value mask, Value other, CacheModifier cache,
+                        EvictionPolicy evict, bool isVolatile);
+      static void build(OpBuilder &builder, OperationState &state, Value ptr,
+                        Value mask, Value other,
+                        ArrayRef<int32_t> boundaryCheck,
+                        std::optional<PaddingOption> padding,
+                        CacheModifier cache, EvictionPolicy evict,
+                        bool isVolatile);
       static void build(OpBuilder &builder, OperationState &state, Type result,
                         Value ptr, Value mask, Value other,
                         ArrayRef<int32_t> boundaryCheck,

@@ -39,6 +39,42 @@ namespace triton {
 
 //-- LoadOp --
 void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
+                   CacheModifier cache, EvictionPolicy evict, bool isVolatile) {
+  LoadOp::build(builder, state, ptr, cache, evict, isVolatile,
+                mlir::StringAttr());
+}
+
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
+                   ArrayRef<int32_t> boundaryCheck,
+                   std::optional<PaddingOption> padding, CacheModifier cache,
+                   EvictionPolicy evict, bool isVolatile) {
+  LoadOp::build(builder, state, ptr, boundaryCheck, padding, cache, evict,
+                isVolatile, mlir::StringAttr());
+}
+
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
+                   Value mask, CacheModifier cache, EvictionPolicy evict,
+                   bool isVolatile) {
+  LoadOp::build(builder, state, ptr, mask, cache, evict, isVolatile,
+                mlir::StringAttr());
+}
+
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
+                   Value mask, Value other, CacheModifier cache,
+                   EvictionPolicy evict, bool isVolatile) {
+  LoadOp::build(builder, state, ptr, mask, other, cache, evict, isVolatile,
+                mlir::StringAttr());
+}
+
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
+                   Value mask, Value other, ArrayRef<int32_t> boundaryCheck,
+                   std::optional<PaddingOption> padding, CacheModifier cache,
+                   EvictionPolicy evict, bool isVolatile) {
+  LoadOp::build(builder, state, ptr, mask, other, boundaryCheck, padding,
+                cache, evict, isVolatile, mlir::StringAttr());
+}
+
+void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    CacheModifier cache, EvictionPolicy evict, bool isVolatile,
                    mlir::StringAttr flagtree_hints) {
   LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{},
