@@ -261,53 +261,28 @@ def TT_LoadOp : TT_Op<"load", [
     let builders = [
         // A tensor of pointers or a pointer to a scalar
         OpBuilder<(ins "Value":$ptr, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
-                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
         // A tensor pointer with boundary check and padding
         OpBuilder<(ins "Value":$ptr, "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
-                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
         // A tensor of pointers or a pointer to a scalar with mask
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
-                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
         // A tensor of pointers or a pointer to a scalar with mask and other
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
-                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>,
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
         // A utility function to build the operation with all attributes
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
                        "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile,
-                       CArg<"mlir::StringAttr", "{}">:$flagtree_hints)>
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>
     ];
 
     // Keep the prebuilt MetaX plugin ABI while defaulting flagtree_hints.
     // This declaration must not be an OpBuilder: that would generate a
     // conflicting create() overload alongside the builder with default hints.
     let extraClassDeclaration = [{
-      static void build(OpBuilder &builder, OperationState &state, Value ptr,
-                        CacheModifier cache, EvictionPolicy evict,
-                        bool isVolatile);
-      static void build(OpBuilder &builder, OperationState &state, Value ptr,
-                        ArrayRef<int32_t> boundaryCheck,
-                        std::optional<PaddingOption> padding,
-                        CacheModifier cache, EvictionPolicy evict,
-                        bool isVolatile);
-      static void build(OpBuilder &builder, OperationState &state, Value ptr,
-                        Value mask, CacheModifier cache,
-                        EvictionPolicy evict, bool isVolatile);
-      static void build(OpBuilder &builder, OperationState &state, Value ptr,
-                        Value mask, Value other, CacheModifier cache,
-                        EvictionPolicy evict, bool isVolatile);
-      static void build(OpBuilder &builder, OperationState &state, Value ptr,
-                        Value mask, Value other,
-                        ArrayRef<int32_t> boundaryCheck,
-                        std::optional<PaddingOption> padding,
-                        CacheModifier cache, EvictionPolicy evict,
-                        bool isVolatile);
       static void build(OpBuilder &builder, OperationState &state, Type result,
                         Value ptr, Value mask, Value other,
                         ArrayRef<int32_t> boundaryCheck,
