@@ -90,7 +90,12 @@ jobs:
           PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 09-ascend-allgather-gemm.py
           PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 10-tle-d2d-barrier.py
           popd
+          ## The next case occasionally reports errors,
+          ## wait for a moment to eliminate the influence of residual processes
+          npu-smi info
+          sleep 30
+          npu-smi info
           ## flagtree tle custom-op tutorial
           pushd python/tutorials/tle/custom
-          # python3 test_custom_ops.py  # failed sometimes
+          python3 test_custom_ops.py  # testing
           popd
