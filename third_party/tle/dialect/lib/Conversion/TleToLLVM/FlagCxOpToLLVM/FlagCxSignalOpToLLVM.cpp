@@ -51,7 +51,7 @@ struct FlagCxSignalOpConversion
     tle::getSignalFuncCall(loc, rewriter, adaptor.getComm(), adaptor.getPeer(),
                            adaptor.getSlotId(), adaptor.getValue(), contextIdx,
                            adaptor.getTeamKind(), adaptor.getCoopKind(),
-                           adaptor.getSignalOp());
+                           adaptor.getSignalOp(), adaptor.getScope());
     rewriter.eraseOp(op);
     return success();
   }
@@ -76,7 +76,8 @@ struct FlagCxSignalWaitOpConversion
     auto context_idx = adaptor.getContextIdx();
 
     tle::getDevNetWaitFuncCallByKind(loc, rewriter, comm, slot_id, wait_kind,
-                                     target, coop_kind, context_idx);
+                                     target, coop_kind, context_idx,
+                                     adaptor.getOrder());
 
     rewriter.eraseOp(op);
     return success();
