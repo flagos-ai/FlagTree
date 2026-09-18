@@ -19,6 +19,7 @@ from triton.language import load as tl_load
         (tle.language.cumsum, "cumsum"),
         (tle.language.gpu.alloc, "gpu.alloc"),
         (tle.language.gpu.buffered_tensor.slot, "gpu.buffered_tensor.slot"),
+        (tle.language.gpu.buffered_tensor.subslice, "gpu.buffered_tensor.subslice"),
         (tle.language.gpu.pipeline, "gpu.pipeline"),
     ],
 )

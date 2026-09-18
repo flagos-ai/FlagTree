@@ -22,6 +22,7 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.alloc",
     "gpu.buffered_tensor.reshape",
     "gpu.buffered_tensor.slot",
+    "gpu.buffered_tensor.subslice",
     "gpu.copy",
     "gpu.local_ptr",
     "gpu.memory_space",
