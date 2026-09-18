@@ -440,12 +440,12 @@ The current version **only supports contiguous data transfer**. Caveats:
 - On the host, `tle.create_dist_tensor(comm_buf)` must register the communication buffer into a FlagCX symmetric memory window first; the returned `DistributedRtContext` is passed to the kernel as an argument. Device-side scatter and inter-node P2P may share one registered window. The local-side buffer must be the same buffer registered by that context and must be passed directly to the kernel as a global-pointer argument.
 - `dtype` is required. **`offset` is not accepted** — add offsets to the returned pointer instead.
 - Transfer shapes are restricted: a scalar copy moves one element; both sides of a tensor copy must reuse the same contiguous range value `tl.arange(0, N)`, with either no mask or the same shared prefix mask `offsets < valid_n` (`1 <= valid_n <= N`).
-- A single transfer is subject to the compiler's tensor size limit: the number of elements N transferred per load/store must be a power of two and no greater than `1048576` (2^20); exceeding it fails at compile time. To transfer more data, split it into chunks and call load/store multiple times in a loop, one chunk per iteration:
+- A single transfer is subject to the compiler's tensor size limit: the number of elements N transferred per load/store must be a power of two and no greater than `33554432` (2^25); exceeding it fails at compile time. To transfer more data, split it into chunks and call load/store multiple times in a loop, one chunk per iteration:
 
 ```python
 for start in range(0, nelems, CHUNK_N):           # transfer one chunk per iteration
     chunk_n = tl.minimum(nelems - start, CHUNK_N) # the last chunk may be shorter than CHUNK_N
-    offsets = tl.arange(0, CHUNK_N)               # CHUNK_N: power of two, <= 1048576
+    offsets = tl.arange(0, CHUNK_N)               # CHUNK_N: power of two, <= 33554432
     mask = offsets < chunk_n                      # must be written as arange result < scalar
     vals = tl.load(comm_buf + src_offset + start + offsets, mask=mask)
     tl.store(remote_dst + dst_offset + start + offsets, vals, mask=mask)
