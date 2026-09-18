@@ -15,6 +15,11 @@ custom_ops/
 │   ├── gather_gm_to_l1.cpp         # GM → L1/CBUF 按索引行 gather
 │   ├── gather_gm_to_ub.cpp         # GM → UB 按索引行 gather
 │   └── gather_mask.cpp             # 以内置固定模式对应的二进制或用户自定义输入的 Tensor 数值对应的二进制为 gather mask, 从源操作数中选取元素写入目的操作数中
+├── cast_ops/
+│   ├── cast_int4_to_fp16.cpp       # packed signed INT4 → FP16
+│   └── cast_int8_to_fp16.cpp       # int8 → FP16
+├── mask_ops/
+│   └── compare_scalar.cpp          # FP16/FP32 EQ/GT/GE → uint16 位掩码
 ├── reduction_ops/
 │   └── pair_reduce_sum.cpp         # 相邻两个（奇偶）元素求和, 暂只支持 mask 连续模式
 └── sort_ops/
@@ -395,3 +400,95 @@ FLAGTREE_BACKEND=ascend MAX_JOBS=32 \
 cd /root/xcs_flagtree/python/triton/experimental/tle/language/dsa/ascend/custom_ops
 ./build_custom_ops.sh
 ```
+
+
+## compare_scalar
+
+`compare_scalar(src, scalar, cmpMode, count, out=mask)` 生成 packed 掩码。
+接口暴露 AscendC `CompareScalar` API 的全部参数：`cmpMode` 为编译期整数，
+取 CANN CMPMODE 枚举值（`utils/kernel_utils_mode.h`，0=LT、1=GT、2=EQ、
+3=LE、4=GE、5=NE）；`count` 为参与比较的元素个数，必须等于 src 的元素数。
+scalar 以 FP32 传入，比较前转换为源类型。src 为一维连续 UB FP16/FP32[N]，
+mask 为 uint16[N/16]，FP32 还支持直接输出 uint32[N/32] 以匹配
+`gather_mask_custom_pattern`，低位对应较早的元素。
+所有缓冲区 32 字节对齐且互不重叠。
+FP32 N 为 256..4096 的 2 的幂；FP16 为 256..32768 的 2 的幂。
+比较遵循 ordered 语义：涉及 NaN 的判定结果一律为 false（包括 NE），与
+vcmpvs_* 硬件行为一致；这与 NumPy 的 `not_equal(NaN, s) == True` 不同。
+
+实现参考 CANN 9.1 `dav_c220/kernel_operator_vec_cmp_impl.h` 中的
+`CompareScalarCompute`（Level 2）和 `VcmpvsIntrinsicsImpl`，直接使用
+`vcmpvs_lt/gt/eq/le/ge/ne` intrinsic，按 252 个 repeat 分段保持掩码对齐，
+默认 repeat 参数 {1, 1, 8, 8}。不调用 AscendC 高层 API，也不在 op 内插入
+pipeline barrier；前后序由调用方保证。
+
+```python
+# CMPMODE::GE = 4
+mask = tle.dsa.ascend.raw("compare_scalar", values, scalar, 4, N,
+                           out=tl.full((N // 16,), 0, tl.uint16))
+```
+
+测试：`python3 python/tutorials/tle/custom/test_compare_scalar.py`。
+
+GatherMask、Sort32 和 MrgSort 复用 [PR #1159](https://github.com/flagos-ai/FlagTree/pull/1159)，
+本 PR 不重复实现或注册。原 `gather_mask` 调用需迁移为 `gather_mask_custom_pattern`：
+FP16 掩码为 uint16，FP32 调用 CompareScalar 时直接分配 uint32[N/32] 输出；
+不对 packed 掩码做数值归约或数值转换。数量输出改为 int64。
+原 `sort32` 需提供 repeat_times，索引接口使用 int32 位模式。
+原 `merge_sort4` 改为 `mrgsort`，显式传入 proposal 偏移、各路长度、valid_bit 和 repeat_times。
+这些是调用接口迁移，不是新增算法。#1159 合并前，组合算子验证需同时包含两个 PR。
+
+## cast_int4_to_fp16
+
+`cast_int4_to_fp16(src, roundMode, count, out=values)` 将 UB 中的 packed
+signed INT4 解包为 FP16。接口暴露 AscendC `Cast` API（Level 2）的全部参数：
+`roundMode` 为编译期整数，但当前设备 int4b_t→half 只支持 `CAST_NONE`（0）；
+`count` 为输出元素个数，必须等于 `2*N`。实现参考 CANN 9.1
+`dav_c220/kernel_operator_vec_vconv_impl.h` 的 `CastImpl`（Level 2）及其
+int4b_t→half 特化，直接使用 `vconv_s42f16` intrinsic，并设置 count mask、
+步长及恢复 mask 状态。不调用 AscendC 高层 API，也不在 op 内插入
+pipeline barrier；前后序由调用方保证。
+
+输入 `src` 是一维 `uint8[N]`，N 为 32 至 8192 的 2 的幂；输出 `out`
+必须是一维 `float16[2*N]`。输入、输出连续、32 字节对齐且互不重叠。
+每个字节先输出低 4 位，再输出高 4 位，均按二进制补码解释为 [-8, 7]。
+例如 `0x78` 输出 `[-8, 7]`，`0xF0` 输出 `[0, -1]`。
+
+```python
+packed = tl.load(X + tl.arange(0, N))  # uint8[N]
+values = tl.full((2 * N,), 0, tl.float16)
+values = tle.dsa.ascend.raw("cast_int4_to_fp16", packed, 0, 2 * N, out=values)  # CAST_NONE
+```
+
+该接口不处理 uint4b8 的零点、不乘 scale、不进行 GM 访问或 MoE 调度。
+若源格式是 uint4b8，需要调用方先转换成这里约定的 signed INT4 编码。
+普通类型转换、广播与乘法可以继续由 Triton 表达。
+
+普通及 mix 两套入口均构建到现有 `custom_ops.bc`。测试入口为
+`python python/tutorials/tle/custom/test_cast_ops.py`，也已接入
+`test_custom_ops.py`。测试包含全部字节编码、不同块大小、图重放以及参数校验。
+
+## cast_int8_to_fp16
+
+`cast_int8_to_fp16(src, roundMode, count, out=values)` 将 UB 中的 int8 逐
+元素转为 FP16。接口暴露 AscendC `Cast` API（Level 2）的全部参数。
+实现参考 CANN 9.1 `dav_c220/kernel_operator_vec_vconv_impl.h` 的 `CastImpl`
+及其 int8_t→half 特化，直接使用 `vconv_s82f16` intrinsic，并设置/恢复
+mask 状态。`roundMode` 只支持 `CAST_NONE`（0）；`count` 为输出元素个数，
+必须等于输入元素数。不在 op 内插入 pipeline barrier；前后序由调用方保证。
+
+输入 `src` 是一维 `int8[N]`，N 为 32 至 8192 的 2 的幂；输出 `out` 必须
+是一维 `float16[N]`。输入、输出连续、32 字节对齐且互不重叠。
+
+```python
+src8 = tl.load(X + tl.arange(0, N))  # int8[N]
+values = tl.full((N,), 0, tl.float16)
+values = tle.dsa.ascend.raw("cast_int8_to_fp16", src8, 0, N, out=values)  # CAST_NONE
+```
+
+## Toolchain requirement
+
+These primitives use the native Ascend custom-op compilation path and the
+prebuilt `custom_ops.bc`. The selected toolchain must support that path,
+including `hivm.hir.custom` lowering and its calling convention. This package
+does not provide CANN 9.0 ABI adapters or IR rewriting.

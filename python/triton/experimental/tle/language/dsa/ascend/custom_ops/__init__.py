@@ -19,6 +19,9 @@ from .registry import (
     merge_exhaust_sort4,
     mrgsort,
     unpack_sort,
+    compare_scalar,
+    cast_int4_to_fp16,
+    cast_int8_to_fp16,
 )
 
 __all__ = [
@@ -36,4 +39,7 @@ __all__ = [
     "merge_exhaust_sort4",
     "mrgsort",
     "unpack_sort",
+    "compare_scalar",
+    "cast_int4_to_fp16",
+    "cast_int8_to_fp16",
 ]

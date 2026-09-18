@@ -43,6 +43,9 @@ CUSTOM_OPS=(
   "sort_ops/merge_pack_sort.cpp:dav-c220-vec"
   "sort_ops/mrgsort.cpp:dav-c220-vec"
   "sort_ops/unpack_sort.cpp:dav-c220-vec"
+  "mask_ops/compare_scalar.cpp:dav-c220-vec"
+  "cast_ops/cast_int4_to_fp16.cpp:dav-c220-vec"
+  "cast_ops/cast_int8_to_fp16.cpp:dav-c220-vec"
 )
 
 if [[ ! -d "${TEMPLATE_INCLUDE}" ]]; then
