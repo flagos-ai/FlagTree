@@ -55,22 +55,22 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
       %desc_b: !tt.tensordesc<tensor<32x64xf32, #nvmma>>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
-    %storage = ttg.local_alloc : () -> !ttg.memdesc<2x96x64xf32, #shared3, #smem, mutable>
-    %a = ttg.memdesc_subslice %storage[0, 0, 0] : !ttg.memdesc<2x96x64xf32, #shared3, #smem, mutable> -> !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>
-    %b = ttg.memdesc_subslice %storage[0, 32, 0] : !ttg.memdesc<2x96x64xf32, #shared3, #smem, mutable> -> !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>
-    %c = ttg.memdesc_subslice %storage[0, 64, 0] : !ttg.memdesc<2x96x64xf32, #shared3, #smem, mutable> -> !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>
-    tle.pipe.create %a, %b, %c {capacity = 2 : i32, pipe_name = "incomplete_subviews", field_names = ["a", "b", "c"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>
+    %storage = ttg.local_alloc : () -> !ttg.memdesc<2x128x64xf32, #shared3, #smem, mutable>
+    %a = ttg.memdesc_subslice %storage[0, 0, 0] : !ttg.memdesc<2x128x64xf32, #shared3, #smem, mutable> -> !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>
+    %b = ttg.memdesc_subslice %storage[0, 32, 0] : !ttg.memdesc<2x128x64xf32, #shared3, #smem, mutable> -> !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>
+    %c = ttg.memdesc_subslice %storage[0, 64, 0] : !ttg.memdesc<2x128x64xf32, #shared3, #smem, mutable> -> !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>
+    tle.pipe.create %a, %b, %c {capacity = 2 : i32, pipe_name = "incomplete_subviews", field_names = ["a", "b", "c"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>
 
-    tle.pipe.writer_acquire %a, %b, %c[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "incomplete_subviews", field_names = ["a", "b", "c"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>
-    %a_slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x96x64>
-    ttg.tma_copy %desc_a, %a_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x96x64>
-    tle.pipe.writer_commit %a, %b, %c[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "incomplete_subviews", field_names = ["a", "b", "c"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>
+    tle.pipe.writer_acquire %a, %b, %c[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "incomplete_subviews", field_names = ["a", "b", "c"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>
+    %a_slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x128x64>
+    ttg.tma_copy %desc_a, %a_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x128x64>
+    tle.pipe.writer_commit %a, %b, %c[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "incomplete_subviews", field_names = ["a", "b", "c"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>
 
-    tle.pipe.writer_acquire %a, %b, %c[%c0, %false] {async_task_id = array<i32: 1>, capacity = 2 : i32, pipe_name = "incomplete_subviews", field_names = ["a", "b", "c"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>
-    %b_slot = ttg.memdesc_index %b[%c0] : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x96x64>
-    ttg.tma_copy %desc_b, %b_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x96x64>
+    tle.pipe.writer_acquire %a, %b, %c[%c0, %false] {async_task_id = array<i32: 1>, capacity = 2 : i32, pipe_name = "incomplete_subviews", field_names = ["a", "b", "c"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>
+    %b_slot = ttg.memdesc_index %b[%c0] : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x128x64>
+    ttg.tma_copy %desc_b, %b_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x128x64>
     // expected-error @+1 {{uses multiple pure-TMA writers whose combined commits do not cover every pipe field}}
-    tle.pipe.writer_commit %a, %b, %c[%c0] {async_task_id = array<i32: 1>, capacity = 2 : i32, pipe_name = "incomplete_subviews", field_names = ["a", "b", "c"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x96x64>
+    tle.pipe.writer_commit %a, %b, %c[%c0] {async_task_id = array<i32: 1>, capacity = 2 : i32, pipe_name = "incomplete_subviews", field_names = ["a", "b", "c"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x128x64>
     tt.return
   }
 }
