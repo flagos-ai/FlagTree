@@ -1,7 +1,7 @@
 #ifndef TRITON_ANALYSIS_MEMBAR_H
 #define TRITON_ANALYSIS_MEMBAR_H
 
-#include "Allocation.h"
+#include "triton/Analysis/Allocation.h"
 
 #include <set>
 
