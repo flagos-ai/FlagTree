@@ -276,7 +276,9 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
     # On HIP, fp8e4nv upcasting to fp32 is only supported on CDNA4, and
     # fp8e4nv upcasting to bf16 and fp16 is only supported on CDNA3 and CDNA4.
     if is_cuda() or is_ppu():
-        if ((src_dtype == 'float8e4nv' and torch.cuda.get_device_capability(0) < (8, 9))
+        # On PPU, fp8e4nv casts are software-lowered from cap80
+        e4nv_error_cc = (8, 0) if is_ppu() else (8, 9)
+        if ((src_dtype == 'float8e4nv' and torch.cuda.get_device_capability(0) < e4nv_error_cc)
             or src_dtype in ('float8e4b8', 'float8e5b16')):
             # If the dtype should error out in the given device, we assert that and return
             with pytest.raises(triton.CompilationError, match="not supported in this architecture"):
@@ -337,7 +339,10 @@ def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
             pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
 
         if dst_dtype in ('float8e5', 'float8e4nv') and rounding == 'rtne' and torch.cuda.get_device_capability(0) < (9, 0):
-            pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on NVGPU with compute capability 9.0+")
+            # On PPU cap80-88, the software fp8e4nv downcast rounds once from f32 with
+            # strict RTNE; cap89+ native cvt may double-round via f16, so keep it skipped
+            if not (is_ppu() and dst_dtype == 'float8e4nv' and (8, 0) <= torch.cuda.get_device_capability(0) < (8, 9)):
+                pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on NVGPU with compute capability 9.0+")
 
         if dst_dtype in ('float8e5b16', 'float8e4b8') and rounding == 'rtne':
             pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on AMDGPU CDNA3")
@@ -371,7 +376,9 @@ def test_typeconvert_downcast_clamping(src_dtype, dst_dtype, mode, device, round
             pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
 
         if dst_dtype in ('float8e5', 'float8e4nv') and rounding == 'rtne' and torch.cuda.get_device_capability(0) < (9, 0):
-            pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on NVGPU with compute capability 9.0+")
+            # On PPU cap80-88, the software fp8e4nv downcast is satfinite with strict RTNE
+            if not (is_ppu() and dst_dtype == 'float8e4nv' and (8, 0) <= torch.cuda.get_device_capability(0) < (8, 9)):
+                pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on NVGPU with compute capability 9.0+")
 
     converter = {
         tl.float8e4nv: torch.float8_e4m3fn,

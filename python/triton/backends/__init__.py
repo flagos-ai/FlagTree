@@ -158,6 +158,9 @@ class _LanguageExtensions:
     def __getattr__(self, name):
         if name in self._symbols:
             return self._symbols[name]
+        # dunder probes (inspect, copy, is_builtin, ...) must get AttributeError
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
         providers = [(backend_name, getattr(module, name))
                      for backend_name, module in self._get_modules()
                      if hasattr(module, name)]
