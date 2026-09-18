@@ -93,8 +93,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
   // LOWER: ttng.barrier_expect {{.*}}, 8192
   // LOWER: ttng.async_tma_copy_global_to_local
   tt.func @multi_tma_writers_shared_allocation_subslices(
-      %desc_a: !tt.tensordesc<tensor<32x64xf32, #shared2>>,
-      %desc_b: !tt.tensordesc<tensor<32x64xf32, #shared2>>) {
+      %desc_a: !tt.tensordesc<tensor<32x64xf32, #nvmma>>,
+      %desc_b: !tt.tensordesc<tensor<32x64xf32, #nvmma>>) {
     %c0 = arith.constant 0 : i32
     %false = arith.constant false
     %storage = ttg.local_alloc : () -> !ttg.memdesc<2x64x64xf32, #shared3, #smem, mutable>
@@ -103,13 +103,13 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
     tle.pipe.create %a, %b {capacity = 2 : i32, pipe_name = "subviews", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>
 
     tle.pipe.writer_acquire %a, %b[%c0, %false] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "subviews", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>
-    %a_slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64> -> !ttg.memdesc<32x64xf32, #shared2, #smem, mutable, 2x64x64>
-    ttg.tma_copy %desc_a, %a_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #shared2>>, !ttg.memdesc<32x64xf32, #shared2, #smem, mutable, 2x64x64>
+    %a_slot = ttg.memdesc_index %a[%c0] : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x64x64>
+    ttg.tma_copy %desc_a, %a_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x64x64>
     tle.pipe.writer_commit %a, %b[%c0] {async_task_id = array<i32: 0>, capacity = 2 : i32, pipe_name = "subviews", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>
 
     tle.pipe.writer_acquire %a, %b[%c0, %false] {async_task_id = array<i32: 1>, capacity = 2 : i32, pipe_name = "subviews", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>
-    %b_slot = ttg.memdesc_index %b[%c0] : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64> -> !ttg.memdesc<32x64xf32, #shared2, #smem, mutable, 2x64x64>
-    ttg.tma_copy %desc_b, %b_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #shared2>>, !ttg.memdesc<32x64xf32, #shared2, #smem, mutable, 2x64x64>
+    %b_slot = ttg.memdesc_index %b[%c0] : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64> -> !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x64x64>
+    ttg.tma_copy %desc_b, %b_slot, [%c0, %c0] : !tt.tensordesc<tensor<32x64xf32, #nvmma>>, !ttg.memdesc<32x64xf32, #nvmma, #smem, mutable, 2x64x64>
     tle.pipe.writer_commit %a, %b[%c0] {async_task_id = array<i32: 1>, capacity = 2 : i32, pipe_name = "subviews", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>
 
     %closed = tle.pipe.reader_wait %a, %b[%c0, %false] {async_task_id = array<i32: 2>, capacity = 2 : i32, pipe_name = "subviews", field_names = ["a", "b"], scope = "cta"} : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>, !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>

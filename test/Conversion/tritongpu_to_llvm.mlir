@@ -529,7 +529,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
 
 // -----
 
-#shared0 = #ttg.swizzled_shared<{vec = 2, perPhase = 2, maxPhase = 4, order = [1, 0]}>
+#shared3 = #ttg.swizzled_shared<{vec = 2, perPhase = 2, maxPhase = 4, order = [2, 1, 0]}>
+#shared2 = #ttg.swizzled_shared<{vec = 2, perPhase = 2, maxPhase = 4, order = [1, 0]}>
 #smem = #ttg.shared_memory
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
   // CHECK: llvm.mlir.global external @global_smem
@@ -580,9 +581,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
     // CHECK: llvm.mul
     // CHECK: llvm.getelementptr
     %c1 = arith.constant 1 : i32
-    %storage = ttg.local_alloc : () -> !ttg.memdesc<2x64x64xf32, #shared0, #smem, mutable>
-    %field = ttg.memdesc_subslice %storage[0, 32, 0] : !ttg.memdesc<2x64x64xf32, #shared0, #smem, mutable> -> !ttg.memdesc<2x32x64xf32, #shared0, #smem, mutable, 2x64x64>
-    %slot = ttg.memdesc_index %field[%c1] : !ttg.memdesc<2x32x64xf32, #shared0, #smem, mutable, 2x64x64> -> !ttg.memdesc<32x64xf32, #shared0, #smem, mutable, 2x64x64>
+    %storage = ttg.local_alloc : () -> !ttg.memdesc<2x64x64xf32, #shared3, #smem, mutable>
+    %field = ttg.memdesc_subslice %storage[0, 32, 0] : !ttg.memdesc<2x64x64xf32, #shared3, #smem, mutable> -> !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64>
+    %slot = ttg.memdesc_index %field[%c1] : !ttg.memdesc<2x32x64xf32, #shared3, #smem, mutable, 2x64x64> -> !ttg.memdesc<32x64xf32, #shared2, #smem, mutable, 2x64x64>
     tt.return
   }
 }
