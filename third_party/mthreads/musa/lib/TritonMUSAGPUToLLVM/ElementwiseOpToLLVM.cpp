@@ -741,6 +741,28 @@ struct SIToFPOpConversion
                                    Location loc) const {
     Type inElemTy = getElementType(op.getIn());
     Type outElemTy = getElementType(op.getOut());
+    if (auto widthAttr = op->getAttrOfType<IntegerAttr>(
+            "ttg.rlc-preserve-int-to-fp-vector-width")) {
+      int64_t width = widthAttr.getInt();
+      if ((width != 2 && width != 4) || !inElemTy.isInteger(32) ||
+          !outElemTy.isF32() || operands.size() < width)
+        return {};
+      TritonLLVMOpBuilder b(loc, rewriter);
+      Type inputVectorType =
+          vec_ty(this->getTypeConverter()->convertType(inElemTy), width);
+      Type outputVectorType = vec_ty(elemTy, width);
+      Value inputVector = b.undef(inputVectorType);
+      for (int64_t i = 0; i < width; ++i)
+        inputVector = b.insert_element(inputVectorType, inputVector,
+                                       operands[i][0], b.i32_val(i));
+      Value outputVector = LLVM::SIToFPOp::create(
+          rewriter, loc, outputVectorType, inputVector);
+      SmallVector<Value> outputs;
+      for (int64_t i = 0; i < width; ++i)
+        outputs.push_back(
+            b.extract_element(elemTy, outputVector, b.i32_val(i)));
+      return outputs;
+    }
     if (outElemTy.isBF16()) {
       Value f32Val =
           LLVM::SIToFPOp::create(rewriter, loc, f32_ty, operands[0][0]);
@@ -748,6 +770,44 @@ struct SIToFPOpConversion
                                                     RoundingMode::RTNE)};
     }
     return {LLVM::SIToFPOp::create(rewriter, loc, elemTy, operands[0][0])};
+  }
+};
+
+struct UIToFPOpConversion
+    : ElementwiseOpConversionBase<arith::UIToFPOp, UIToFPOpConversion> {
+  using Base = ElementwiseOpConversionBase<arith::UIToFPOp, UIToFPOpConversion>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+
+  SmallVector<Value> createDestOps(arith::UIToFPOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    Type inElemTy = getElementType(op.getIn());
+    Type outElemTy = getElementType(op.getOut());
+    if (auto widthAttr = op->getAttrOfType<IntegerAttr>(
+            "ttg.rlc-preserve-int-to-fp-vector-width")) {
+      int64_t width = widthAttr.getInt();
+      if ((width != 2 && width != 4) || !inElemTy.isInteger(32) ||
+          !outElemTy.isF32() || operands.size() < width)
+        return {};
+      TritonLLVMOpBuilder b(loc, rewriter);
+      Type inputVectorType =
+          vec_ty(this->getTypeConverter()->convertType(inElemTy), width);
+      Type outputVectorType = vec_ty(elemTy, width);
+      Value inputVector = b.undef(inputVectorType);
+      for (int64_t i = 0; i < width; ++i)
+        inputVector = b.insert_element(inputVectorType, inputVector,
+                                       operands[i][0], b.i32_val(i));
+      Value outputVector = LLVM::UIToFPOp::create(
+          rewriter, loc, outputVectorType, inputVector);
+      SmallVector<Value> outputs;
+      for (int64_t i = 0; i < width; ++i)
+        outputs.push_back(
+            b.extract_element(elemTy, outputVector, b.i32_val(i)));
+      return outputs;
+    }
+    return {LLVM::UIToFPOp::create(rewriter, loc, elemTy, operands[0][0])};
   }
 };
 
@@ -883,6 +943,8 @@ void mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
   patterns.add<TruncFOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<FPToSIOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis, benefit);
+  patterns.add<UIToFPOpConversion>(typeConverter, axisInfoAnalysis,
+                                   priorityBenefit);
   patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<PreciseSqrtOpConversion>(typeConverter, axisInfoAnalysis,
                                         priorityBenefit);

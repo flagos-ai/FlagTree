@@ -109,6 +109,7 @@ constexpr unsigned kMaxRematSliceSize = 256;
 //   ttg.rlc-atomic-writeback-max-elements-per-thread-ratio
 //   ttg.rlc-allow-atomic-writeback-order-change
 //   ttg.rlc-preserve-int-to-fp-contiguity
+//   ttg.rlc-int-to-fp-vector-width-mask
 //
 // Values must be positive integers; absent or invalid values keep the
 // conservative defaults below.
@@ -130,6 +131,9 @@ struct RlcBackendPolicy {
   // per-thread contiguous width can therefore change deterministic RNG bits.
   // Keep this opt-in so NVIDIA and already-qualified backends are unchanged.
   bool preserveIntToFpContiguity = false;
+  // Bit `1 << width` advertises an explicitly implemented backend lowering for
+  // that integer-to-float vector width. Zero is fail-closed.
+  int64_t intToFpVectorWidthMask = 0;
 
   static RlcBackendPolicy fromOperation(Operation *op) {
     RlcBackendPolicy policy;
@@ -164,6 +168,8 @@ struct RlcBackendPolicy {
     if (auto attr = module->getAttrOfType<IntegerAttr>(
             "ttg.rlc-preserve-int-to-fp-contiguity"))
       policy.preserveIntToFpContiguity = attr.getInt() > 0;
+    overridePositive("ttg.rlc-int-to-fp-vector-width-mask",
+                     policy.intToFpVectorWidthMask);
     return policy;
   }
 };
@@ -858,6 +864,13 @@ bool LayoutPropagation::addProposalValue(Proposal &proposal, Value target,
   return true;
 }
 
+// Defined next to getContigAlongMemoryOrder. Producer-closure collection is
+// earlier in the file, so keep the declaration here with the proposal helpers.
+static bool requiresIntToFpContiguityBoundary(Value value,
+                                               Attribute candidateEncoding);
+static unsigned getPreservedIntToFpVectorWidth(Value value,
+                                                Attribute candidateEncoding);
+
 Attribute LayoutPropagation::getProposalEncoding(const Proposal &proposal,
                                                  Value value) const {
   if (auto it = proposal.find(value); it != proposal.end())
@@ -902,6 +915,29 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
   // and terminates loop-carried cycles (iter arg -> yield -> iter arg).
   if (auto it = proposal.find(target); it != proposal.end())
     return it->second == encoding;
+
+  // A backend may observe different rounding when an inexact integer-to-float
+  // conversion changes its per-thread contiguous width. If the old and proposed
+  // layouts own the same supported number of elements per thread, the backend
+  // can preserve that conversion width explicitly during lowering; keep
+  // collecting the producer chain and mark the conversion only after the
+  // proposal commits. Otherwise treat the result as a proposal boundary.
+  // Integer domains that fit exactly in the destination significand (for
+  // example i1 -> f32) are layout-independent and need neither path.
+  Operation *targetDefOp = target.getDefiningOp();
+  if (targetDefOp &&
+      RlcBackendPolicy::fromOperation(targetDefOp)
+          .preserveIntToFpContiguity &&
+      requiresIntToFpContiguityBoundary(target, encoding)) {
+    if (getPreservedIntToFpVectorWidth(target, encoding) != 0) {
+      traceRlcDecision("2", "preserve", "int-to-fp-vector-width",
+                       targetDefOp);
+    } else {
+      traceRlcDecision("2", "preserve", "int-to-fp-contiguity-boundary",
+                       targetDefOp);
+      return true;
+    }
+  }
   if (!addProposalValue(proposal, target, encoding))
     return false;
 
@@ -1639,8 +1675,18 @@ bool LayoutPropagation::proposalHasRankChangingLayoutBridge(
 
 bool LayoutPropagation::commitProposal(const Proposal &proposal) {
   bool changed = false;
-  for (auto &it : proposal)
+  for (auto &it : proposal) {
     changed |= addSmallComponentEncoding(it.first, it.second);
+    Operation *defOp = it.first.getDefiningOp();
+    if (!defOp || !RlcBackendPolicy::fromOperation(defOp)
+                       .preserveIntToFpContiguity)
+      continue;
+    unsigned width = getPreservedIntToFpVectorWidth(it.first, it.second);
+    if (width != 0)
+      defOp->setAttr("ttg.rlc-preserve-int-to-fp-vector-width",
+                     IntegerAttr::get(IntegerType::get(defOp->getContext(), 32),
+                                      width));
+  }
   return changed;
 }
 
@@ -2004,6 +2050,67 @@ static unsigned getContigAlongMemoryOrder(RankedTensorType type) {
   return dim < contigPerThread.size() ? contigPerThread[dim] : 1;
 }
 
+// True when every integer value admitted by the source type has an exact
+// representation in the destination floating-point type. In that case scalar
+// and vector lowering cannot differ by rounding, so changing layout width is
+// safe even on backends that otherwise request the int-to-fp guard.
+static bool isExactlyRepresentableIntToFp(Operation *op) {
+  if (!op || !isa<arith::SIToFPOp, arith::UIToFPOp>(op) ||
+      op->getNumOperands() != 1 || op->getNumResults() != 1)
+    return false;
+  auto srcType = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+  auto dstType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  if (!srcType || !dstType)
+    return false;
+  auto intType = dyn_cast<IntegerType>(srcType.getElementType());
+  auto floatType = dyn_cast<FloatType>(dstType.getElementType());
+  if (!intType || !floatType)
+    return false;
+  return intType.getWidth() <= floatType.getFPMantissaWidth();
+}
+
+static bool requiresIntToFpContiguityBoundary(
+    Value value, Attribute candidateEncoding) {
+  Operation *defOp = value.getDefiningOp();
+  if (!defOp || !isa<arith::SIToFPOp, arith::UIToFPOp>(defOp) ||
+      isExactlyRepresentableIntToFp(defOp))
+    return false;
+  auto currentType = dyn_cast<RankedTensorType>(value.getType());
+  if (!currentType || !candidateEncoding ||
+      currentType.getEncoding() == candidateEncoding)
+    return false;
+  RankedTensorType candidateType =
+      currentType.cloneWithEncoding(candidateEncoding);
+  return getContigAlongMemoryOrder(currentType) !=
+         getContigAlongMemoryOrder(candidateType);
+}
+
+// Return a vector width the MUSA lowering can preserve explicitly while the
+// producer chain moves to `candidateEncoding`. The contract is deliberately
+// narrow and online: only i32 -> f32, equal old/new elements per thread, and
+// widths already observed in the qualified MUSA paths are admitted. Every
+// other inexact conversion remains a hard proposal boundary.
+static unsigned getPreservedIntToFpVectorWidth(
+    Value value, Attribute candidateEncoding) {
+  if (!requiresIntToFpContiguityBoundary(value, candidateEncoding))
+    return 0;
+  Operation *defOp = value.getDefiningOp();
+  auto srcType = dyn_cast<RankedTensorType>(defOp->getOperand(0).getType());
+  auto dstType = dyn_cast<RankedTensorType>(value.getType());
+  if (!srcType || !dstType || !srcType.getElementType().isInteger(32) ||
+      !dstType.getElementType().isF32())
+    return 0;
+  auto candidateType = dstType.cloneWithEncoding(candidateEncoding);
+  unsigned oldElems = getTotalElemsPerThread(dstType);
+  unsigned newElems = getTotalElemsPerThread(candidateType);
+  if (oldElems != newElems || (oldElems != 2 && oldElems != 4))
+    return 0;
+  RlcBackendPolicy policy = RlcBackendPolicy::fromOperation(defOp);
+  if ((policy.intToFpVectorWidthMask & (int64_t{1} << oldElems)) == 0)
+    return 0;
+  return oldElems;
+}
+
 // A writeback retag (ptr/value/mask onto the value's layout) is profitable only
 // when the layout still writes along the same fastest memory dimension with a
 // reasonable per-thread width; otherwise it trades a convert for a worse global
@@ -2174,22 +2281,15 @@ bool LayoutPropagation::solveSmallComponents() {
   };
 
   // MUSA device evidence shows that changing a Philox chain from
-  // sizePerThread=1 to sizePerThread=2 changes LLVM lowering from vector to
-  // scalar sitofp and can move one FP16 result by one ULP. This is not a legal
-  // layout-only change for deterministic RNG. Backends can request that Phase
-  // 2 preserve the contiguous width of integer-to-float results while leaving
-  // all other proposal kinds and the portable default unchanged.
-  auto proposalChangesIntToFpContiguity = [](const Proposal &proposal) {
+  // sizePerThread=1 to sizePerThread=2 can change LLVM lowering and move one
+  // FP16 result by one ULP. Producer closures isolate those inexact int-to-fp
+  // results as boundaries. Keep this final guard for proposal kinds that add
+  // values directly rather than through collectProducerClosure.
+  auto proposalChangesUnsupportedIntToFpContiguity =
+      [](const Proposal &proposal) {
     for (auto &it : proposal) {
-      Operation *defOp = it.first.getDefiningOp();
-      if (!defOp || !isa<arith::SIToFPOp, arith::UIToFPOp>(defOp))
-        continue;
-      auto currentType = dyn_cast<RankedTensorType>(it.first.getType());
-      if (!currentType || currentType.getEncoding() == it.second)
-        continue;
-      RankedTensorType candidateType = currentType.cloneWithEncoding(it.second);
-      if (getContigAlongMemoryOrder(currentType) !=
-          getContigAlongMemoryOrder(candidateType))
+      if (requiresIntToFpContiguityBoundary(it.first, it.second) &&
+          getPreservedIntToFpVectorWidth(it.first, it.second) == 0)
         return true;
     }
     return false;
@@ -2201,7 +2301,7 @@ bool LayoutPropagation::solveSmallComponents() {
     if (proposal.empty())
       return false;
     if (backendPolicy.preserveIntToFpContiguity &&
-        proposalChangesIntToFpContiguity(proposal))
+        proposalChangesUnsupportedIntToFpContiguity(proposal))
       return false;
 #if defined(__TLE__) && !defined(__FLAGTREE_MTHREADS_RLC__)
     // Skip any component on a TLE cluster remote-address chain; retagging it
