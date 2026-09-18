@@ -80,6 +80,10 @@ macro(flagtree_configure_options)
     if(BUILD_MCTLE)
       list(APPEND TRITON_PLUGIN_NAMES "mctle")
       add_definitions(-D__MCTLE__)
+      # The .td files guard their mctle parts with #ifdef __MCTLE__ too
+      # (TritonOps.td's atomic_rmw / atomic_cas pointer constraint and
+      # shared-memory effects), and add_definitions does not reach mlir-tblgen.
+      list(APPEND LLVM_TABLEGEN_FLAGS -D__MCTLE__)
     endif()
     set(FLAGTREE_TLE OFF)
     remove_definitions(-D__TLE__)
