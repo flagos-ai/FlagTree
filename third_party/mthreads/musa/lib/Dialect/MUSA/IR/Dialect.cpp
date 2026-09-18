@@ -396,6 +396,8 @@ LogicalResult WmmaDotOp::inferReturnTypes(
 LogicalResult WmmaDotOp::verify() {
   auto aTy = cast<RankedTensorType>(getA().getType());
   auto bTy = cast<RankedTensorType>(getB().getType());
+  if (aTy.getElementType() != bTy.getElementType())
+    return emitError("WMMA operands A and B must use the same element type");
   if (aTy.getElementType().getIntOrFloatBitWidth() !=
       bTy.getElementType().getIntOrFloatBitWidth())
     return emitError(

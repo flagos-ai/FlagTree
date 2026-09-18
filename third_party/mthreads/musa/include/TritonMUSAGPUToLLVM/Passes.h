@@ -25,6 +25,9 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonMUSAGPUToLLVMPass();
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonMUSAGPUToLLVMPass(int32_t computeCapability);
 std::unique_ptr<OperationPass<ModuleOp>>
+createConvertTritonMUSAGPUToLLVMPass(int32_t computeCapability,
+                                     bool enableFp8Burst2);
+std::unique_ptr<OperationPass<ModuleOp>>
 createAllocateMUSASharedMemoryPass(int32_t computeCapability);
 
 #define GEN_PASS_REGISTRATION
