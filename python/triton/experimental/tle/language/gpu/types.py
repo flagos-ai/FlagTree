@@ -577,9 +577,16 @@ class buffered_tensor(tl.base_value):
             raise ValueError(f"buffered_tensor.slot stage must be int32, got {stage_ty}")
 
         slot_shape = list(self.shape[1:])
-        slot_layout = _make_slot_layout(self.type.layout, slot_shape)
+        is_subview = self.type.alloc_shape != self.shape
+        # A slot of a subview must retain the complete allocation shape.  The
+        # extra leading dimension records the ring-buffer allocation while
+        # the trailing dimensions provide the physical stride of one stage.
+        # Root allocations keep the legacy compact slot type.
+        slot_alloc_shape = list(self.type.alloc_shape if is_subview else slot_shape)
+        physical_slot_shape = list(self.type.alloc_shape[-len(slot_shape):])
+        slot_layout = _make_slot_layout(self.type.layout, physical_slot_shape)
         slot_ty = buffered_tensor_type(self.dtype, slot_shape, self.type.storage, slot_layout, _semantic,
-                                       alloc_shape=slot_shape)
+                                       alloc_shape=slot_alloc_shape)
         slot_handle = _semantic.builder.create_memdesc_index(slot_ty.to_ir(_semantic.builder), self.handle,
                                                              stage_tensor.handle)
         return buffered_tensor(slot_handle, self.dtype, slot_shape, self.type.storage, slot_layout, _semantic,

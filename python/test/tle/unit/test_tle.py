@@ -495,6 +495,20 @@ class TestBufferedTensor:
             [0, 4, 0],
         )
 
+    @pytest.mark.require_tle("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
+    def test_buffered_tensor_subslice_slot_preserves_backing_allocation_shape(self):
+        buffer, semantic = self._make_buffer([4, 16, 32])
+
+        slot = buffer.subslice(4, 8, 1, _semantic=semantic).slot(1, _semantic=semantic)
+
+        assert slot.shape == [8, 32]
+        assert slot.type.alloc_shape == [4, 16, 32]
+        assert semantic.builder.memdesc_index_args == (
+            ("memdesc", (8, 32), "fp16", "fake_layout", "smem", (4, 16, 32)),
+            "subslice_handle",
+            "stage_1",
+        )
+
     @pytest.mark.parametrize("start,length,dim", [(-1, 1, 0), (0, 0, 0), (12, 8, 1), (0, 1, 3)])
     def test_buffered_tensor_subslice_rejects_invalid_ranges(self, start, length, dim):
         buffer, semantic = self._make_buffer([4, 16, 32])

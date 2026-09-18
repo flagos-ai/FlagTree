@@ -102,7 +102,10 @@ def pipe(
     write disjoint field sets whose union covers the complete stage, and every
     producer must acquire and commit the same stage sequence. The backend then
     makes the reader's full barrier wait for one contribution from each
-    producer. A single producer continues to use the ordinary SPSC lowering.
+    producer. Distinct fields may be static non-overlapping subslices of one
+    shared-memory allocation; overlapping fields, or aliasing that cannot be
+    proven disjoint, are rejected. A single producer continues to use the
+    ordinary SPSC lowering.
 
     one_shot=True models a single ready/full edge. The writer still commits and
     readers still wait, but acquire/release/close are not part of the contract.

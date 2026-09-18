@@ -569,6 +569,26 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
 
 // -----
 
+#shared0 = #ttg.swizzled_shared<{vec = 2, perPhase = 2, maxPhase = 4, order = [1, 0]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
+  // CHECK-LABEL: rank_reducing_subview_of_shared_allocation
+  tt.func @rank_reducing_subview_of_shared_allocation() {
+    // The logical field contains 32x64 elements, but one backing stage is
+    // 64x64 elements. Indexing stage 1 must therefore use a stride of 4096.
+    // CHECK: llvm.mlir.constant(4096 : i32) : i32
+    // CHECK: llvm.mul
+    // CHECK: llvm.getelementptr
+    %c1 = arith.constant 1 : i32
+    %storage = ttg.local_alloc : () -> !ttg.memdesc<2x64x64xf32, #shared0, #smem, mutable>
+    %field = ttg.memdesc_subslice %storage[0, 32, 0] : !ttg.memdesc<2x64x64xf32, #shared0, #smem, mutable> -> !ttg.memdesc<2x32x64xf32, #shared0, #smem, mutable, 2x64x64>
+    %slot = ttg.memdesc_index %field[%c1] : !ttg.memdesc<2x32x64xf32, #shared0, #smem, mutable, 2x64x64> -> !ttg.memdesc<32x64xf32, #shared0, #smem, mutable, 2x64x64>
+    tt.return
+  }
+}
+
+// -----
+
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
   // CHECK-LABEL: basic_async_wait
   tt.func @basic_async_wait() {
