@@ -135,9 +135,10 @@ def pipe(
             raise ValueError(
                 f"tle.pipe field {field_name!r} leading dimension must equal capacity {capacity}, got {field.shape[0]}")
 
-    _semantic.builder.create_pipe_create([field.handle for field in fields.values()], capacity, scope, name or "",
+    value = gpu_types.pipe_value(capacity, scope, name, fields, reader_names, one_shot=one_shot)
+    _semantic.builder.create_pipe_create(value._field_handles(_semantic), capacity, scope, name or "",
                                          list(fields.keys()), list(reader_names or ()), one_shot)
-    return gpu_types.pipe_value(capacity, scope, name, fields, reader_names, one_shot=one_shot)
+    return value
 
 
 pipe_slot = gpu_types.pipe_slot
