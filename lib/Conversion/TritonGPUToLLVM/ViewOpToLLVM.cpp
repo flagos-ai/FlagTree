@@ -537,8 +537,11 @@ struct MemDescIndexOpConversion
     // A subslice may also start at a non-zero position in the leading stage
     // dimension. Fold that origin into the selected stage before dropping the
     // dimension from the result view.
-    Value leadingOffset = prevOffsets[prevOffsets.size() - srcTy.getRank()];
-    Value effectiveIndex = b.add(op.getIndex(), leadingOffset);
+    Value effectiveIndex = op.getIndex();
+    if (srcTy.getAllocShape() != srcTy.getShape()) {
+      Value leadingOffset = prevOffsets[prevOffsets.size() - srcTy.getRank()];
+      effectiveIndex = b.add(effectiveIndex, leadingOffset);
+    }
     Value offset = b.mul(effectiveIndex, b.i32_val(stride));
     SmallVector<Value> offsetVals(prevOffsets.end() - dstTy.getRank(),
                                   prevOffsets.end());
