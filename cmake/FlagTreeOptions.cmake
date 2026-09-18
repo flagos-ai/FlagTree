@@ -27,6 +27,16 @@ macro(flagtree_configure_options)
     set(FLAGTREE_DEFAULT_OPTION OFF)
   endif()
 
+  # CommonIR is an explicit opt-in for the default NVIDIA backend. Keep the
+  # build contract as a C/C++ macro without introducing a CMake cache option.
+  set(FLAGTREE_COMMON_IR_ENABLED "$ENV{FLAGTREE_COMMON_IR}")
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    if(FLAGTREE_BACKEND)
+      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires the default NVIDIA backend")
+    endif()
+    add_compile_definitions(__FLAGTREE_COMMON_IR__)
+  endif()
+
   set(FLAGCX_ENABLED OFF)
   set(FLAGCX_SUPPORT_BACKENDS nvidia)
   if(NOT FLAGTREE_BACKEND OR
@@ -304,6 +314,16 @@ endmacro()
 
 
 macro(flagtree_configure_flir_dependency)
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
+      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires third_party/flir")
+    endif()
+    include_directories(${PROJECT_SOURCE_DIR}/third_party/flir/include)
+    include_directories(${PROJECT_BINARY_DIR}/third_party/flir/include)
+    add_subdirectory(third_party/flir/include/mlir-ext/Dialect/CommonIR)
+    add_subdirectory(third_party/flir/lib/Dialect/CommonIR)
+  endif()
+
   if(FLAGTREE_BACKEND STREQUAL "tsingmicro")
     if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
       message(FATAL_ERROR "The ${FLAGTREE_BACKEND} backend requires third_party/flir")

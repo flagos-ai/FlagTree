@@ -26,6 +26,7 @@ import triton.language.core as tl
 from typing import Optional, Sequence, TYPE_CHECKING
 from enum import Enum
 from . import types as tle
+from . import semantic as tle_semantic
 from .mthreads import common as mthreads_common
 from .mthreads import buffer as mthreads_buffer
 from .mthreads import copy as mthreads_copy
@@ -405,6 +406,11 @@ def alloc(
 
     # Map scope to storage (backward compatibility)
     storage = scope
+    if tle_semantic.COMMON_IR_ENABLED:
+        if storage is not tle.smem:
+            raise ValueError("GPU CommonIR currently supports only shared-memory buffers")
+        if alias is not None:
+            raise ValueError("GPU CommonIR alloc does not yet support alias buffers")
     mthreads_auto_sqmma_shared_layout = (mthreads_common.enabled() and storage == tle.smem
                                          and mthreads_wgmma.use_auto_shared_layout(layout, nv_mma_shared_layout))
 
@@ -456,6 +462,17 @@ def alloc(
         else:
             # Use provided layout
             layout_handle = layout.to_ir(_semantic.builder)
+
+        if tle_semantic.COMMON_IR_ENABLED:
+            return tle_semantic.alloc(
+                unwrapped_shape,
+                dtype,
+                storage,
+                layout,
+                layout_handle,
+                init_value,
+                _semantic,
+            )
 
         if storage == tle.smem:
             if alias is not None:
@@ -768,7 +785,7 @@ def _transpose_wgmma_smem_operand(value: tle.buffered_tensor, name: str,
     _require_rank2_wgmma_operand(value, name)
     order = [1, 0]
     _require_transpose_order(order, len(value.type.shape), name)
-    handle = _semantic.builder.create_memdesc_trans(value.handle, order)
+    handle = _semantic.builder.create_memdesc_trans(tle_semantic.get_memdesc(value, _semantic), order)
     shape = [value.type.shape[i] for i in order]
 
     alloc_shape = value.type.alloc_shape
@@ -935,9 +952,13 @@ def wgmma(
             raise ValueError(f"wgmma acc dtype must be {ret_scalar_ty}, got {acc.dtype}")
         acc_handle = acc.handle
 
+    # A transposed shared operand already holds a native descriptor view.
+    a_handle = tle_semantic.get_memdesc(a,
+                                        _semantic) if isinstance(a, tle.buffered_tensor) and not trans_a else a.handle
+    b_handle = b.handle if trans_b else tle_semantic.get_memdesc(b, _semantic)
     result = builder.create_tle_wgmma(
-        a.handle,
-        b.handle,
+        a_handle,
+        b_handle,
         acc_handle,
         input_precision,
         max_num_imprecise_acc,
@@ -1196,6 +1217,37 @@ def copy(
             shape = tuple(shape)
         else:
             raise ValueError(f"Shape parameter must be tuple or list, but got {type(shape)}")
+    if tle_semantic.COMMON_IR_ENABLED:
+        if mask is not None:
+            raise ValueError("GPU CommonIR copy does not yet support masks")
+        descriptor = src if isinstance(
+            src, tl.tensor_descriptor) else (dst if isinstance(dst, tl.tensor_descriptor) else None)
+        barrier_slot = None
+        if barrier is not None:
+            if descriptor is None or direction != CopyDirection.GM_TO_LOCAL:
+                raise ValueError("TMA copy barrier is only supported for global-to-shared TMA copy")
+            barrier_slot = _tma_completion_barrier_slot(barrier, _semantic)
+        if descriptor is not None:
+            if offsets is None:
+                raise ValueError("TMA copy requires offsets")
+            if not isinstance(offsets, (tuple, list)):
+                if hasattr(offsets, '__iter__'):
+                    offsets = tuple(offsets)
+                else:
+                    raise ValueError(f"Offsets must be tuple or list, but got {type(offsets)}")
+            if len(offsets) != len(descriptor.shape):
+                raise ValueError("Offsets and descriptor shape must have the same rank")
+        elif tl._unwrap_if_constexpr(offsets) is not None:
+            raise ValueError("GPU CommonIR normal copy does not support offsets; offset the global pointers instead")
+        return tle_semantic.copy(
+            src,
+            dst,
+            shape,
+            offsets if descriptor is not None else None,
+            direction,
+            _semantic,
+            completion_barrier=barrier_slot,
+        )
     if is_normcopy:
         if barrier is not None:
             raise ValueError("copy barrier is only supported for TMA global-to-shared copy")
@@ -1338,8 +1390,9 @@ def local_ptr(
     else:
         result_ty = tl.block_type(ptr_dtype, list(view_shape))
         result_ir = result_ty.to_ir(_semantic.builder)
-    handles = [idx.handle for idx in idx_tensors]
-    local_ptr_op = _semantic.builder.create_local_pointers(result_ir, buffer.handle, *handles)
+    if tle_semantic.COMMON_IR_ENABLED and remote_buffer_marker:
+        raise ValueError("GPU CommonIR local_ptr does not yet support remote buffers")
+    local_ptr_op = tle_semantic.local_ptr(result_ir, buffer, idx_tensors, _semantic)
 
     result_tensor = tl.tensor(local_ptr_op.get_result(0), result_ty)
 
