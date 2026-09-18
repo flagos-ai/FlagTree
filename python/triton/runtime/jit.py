@@ -756,6 +756,12 @@ class JITFunction(JITCallable, KernelInterface[T]):
         bound_args, specialization, options = binder(*args, **kwargs)
 
         key = compute_cache_key(kernel_key_cache, specialization, options)
+        # binder options are launch kwargs (num_warps, ...), not backend.hash().
+        # Fold the live backend identity in so FLAGTREE_*_RLC_* flips cannot
+        # reuse an in-memory CompiledKernel compiled under a different policy.
+        # MThreads install overlays this file at
+        # site/triton/spec/mthreads/triton/runtime/jit.py; that copy must match.
+        key = f"{key}-{backend.hash()}"
         kernel = kernel_cache.get(key, None)
 
         # Kernel is not cached; we have to compile.

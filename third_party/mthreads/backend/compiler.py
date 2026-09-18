@@ -199,6 +199,46 @@ def _max_static_shared_memory_from_arch(arch: object) -> Optional[int]:
     return None
 
 
+def _apply_musa_rlc_policy(mod) -> None:
+    """Set optional ttg.rlc-* module attrs. Zero keeps C++ conservative defaults."""
+    if not knobs.musa.rlc_enhance:
+        return
+    builder = ir.builder(mod.context)
+    musa = knobs.musa
+    overrides = (
+        ("ttg.rlc-minimum-writeback-bits", getattr(musa, "rlc_minimum_writeback_bits", 0)),
+        ("ttg.rlc-convert-minimum-elements", getattr(musa, "rlc_convert_minimum_elements", 0)),
+        ("ttg.rlc-convert-minimum-element-bits", getattr(musa, "rlc_convert_minimum_element_bits", 0)),
+        ("ttg.rlc-convert-cost-per-byte", getattr(musa, "rlc_convert_cost_per_byte", 0)),
+        ("ttg.rlc-cached-load-cost-per-byte", getattr(musa, "rlc_cached_load_cost_per_byte", 0)),
+        ("ttg.rlc-expensive-math-cost-per-byte", getattr(musa, "rlc_expensive_math_cost_per_byte", 0)),
+        ("ttg.rlc-inter-warp-reduce-cost", getattr(musa, "rlc_inter_warp_reduce_cost", 0)),
+    )
+    for name, value in overrides:
+        if value and int(value) > 0:
+            mod.set_attr(name, builder.get_int32_attr(int(value)))
+
+
+def _rlc_policy_signature() -> str:
+    """Live RLC identity for disk and in-memory compile keys.
+
+    Must be read on every compile. Do not cache this string across
+    FLAGTREE_MUSA_RLC_* environment changes in the same process.
+    """
+    musa = knobs.musa
+    return "-".join([
+        str(int(bool(musa.rlc_enhance))),
+        str(int(musa.rlc_phase_mask)),
+        str(int(getattr(musa, "rlc_minimum_writeback_bits", 0) or 0)),
+        str(int(getattr(musa, "rlc_convert_minimum_elements", 0) or 0)),
+        str(int(getattr(musa, "rlc_convert_minimum_element_bits", 0) or 0)),
+        str(int(getattr(musa, "rlc_convert_cost_per_byte", 0) or 0)),
+        str(int(getattr(musa, "rlc_cached_load_cost_per_byte", 0) or 0)),
+        str(int(getattr(musa, "rlc_expensive_math_cost_per_byte", 0) or 0)),
+        str(int(getattr(musa, "rlc_inter_warp_reduce_cost", 0) or 0)),
+    ])
+
+
 def _check_static_shared_memory(metadata: Dict[str, Any], arch: object) -> None:
     required = metadata.get("shared")
     if required is None:
@@ -679,6 +719,10 @@ class MUSAOptions:
     arch: Optional[str] = None
     instrumentation_mode: str = ""
     inplace_alias_pairs: str = ""
+    # Compile-key fragment for FLAGTREE_MUSA_RLC_*. Stamped from knobs in
+    # parse_options so JITFunction.device_caches (which keys on str(options))
+    # cannot reuse an incumbent binary after an in-process enhance flip.
+    rlc_policy: str = ""
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / "lib"
@@ -875,6 +919,7 @@ class MUSABackend(BaseBackend):
         args.update({k: opts[k] for k in MUSAOptions.__dataclass_fields__.keys() if k in opts and opts[k] is not None})
         if "warp_size" not in args:
             args["warp_size"] = _warp_size_from_capability(capability)
+        args["rlc_policy"] = _rlc_policy_signature()
         return MUSAOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -929,6 +974,7 @@ class MUSABackend(BaseBackend):
     def make_ttgir(mod, metadata, opt, arch, capability):
         if opt.maxnreg is not None:
             mod.set_attr("ttg.maxnreg", ir.builder(mod.context).get_int32_attr(opt.maxnreg))
+        _apply_musa_rlc_policy(mod)
 
         pm = ir.pass_manager(mod.context)
         dump_enabled = pm.enable_debug()
@@ -937,7 +983,8 @@ class MUSABackend(BaseBackend):
         passes.ttir.add_convert_to_ttgpuir(pm, f"musa:{arch}", opt.num_warps, opt.warp_size, opt.num_ctas)
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_f32_dot_tc(pm, emu_tf32)
-        passes.ttgpuir.add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_remove_layout_conversions(
+            pm, knobs.musa.rlc_enhance, knobs.musa.rlc_phase_mask)
         passes.ttgpuir.add_optimize_thread_locality(pm)
 
         if hasattr(mthreads.passes.ttgpuir, "add_tle_optimize_local_pointer_async_stores"):
@@ -959,7 +1006,8 @@ class MUSABackend(BaseBackend):
         if hasattr(mthreads.passes.ttgpuir, "add_tle_lower_pipe"):
             mthreads.passes.ttgpuir.add_tle_lower_pipe(pm)
         mthreads.passes.ttgpuir.add_accelerate_matmul(pm)
-        passes.ttgpuir.add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_remove_layout_conversions(
+            pm, knobs.musa.rlc_enhance, knobs.musa.rlc_phase_mask)
         mthreads.passes.ttgpuir.add_optimize_dot_operands(pm)
         mthreads.passes.ttgpuir.add_optimize_descriptor_encoding(pm)
         passes.ttir.add_loop_aware_cse(pm)
@@ -986,7 +1034,8 @@ class MUSABackend(BaseBackend):
         passes.ttgpuir.add_coalesce_async_copy(pm)
         mthreads.passes.ttgpuir.add_tme_lowering(pm)
         mthreads.passes.ttgpuir.add_canonicalize_sqmma_result_conversions(pm)
-        passes.ttgpuir.add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_remove_layout_conversions(
+            pm, knobs.musa.rlc_enhance, knobs.musa.rlc_phase_mask)
         mthreads.passes.ttgpuir.add_issue_barrier_insertion(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
         passes.ttgpuir.add_reorder_instructions(pm)
@@ -1225,7 +1274,9 @@ class MUSABackend(BaseBackend):
         if knobs.runtime.add_stages_inspection_hook is not None:
             knobs.runtime.add_stages_inspection_hook(self, stages, options, language, arch)
 
-    @functools.lru_cache()
     def hash(self):
+        # Do not lru_cache: RLC knobs are process environment. A no-arg cache
+        # freezes the first FLAGTREE_MUSA_RLC_ENHANCE value for the backend
+        # instance and makes later enhance flips a disk-cache no-op.
         version = get_musa_version()
-        return f"{version}-{self.target.arch}"
+        return f"{version}-{self.target.arch}-rlc{_rlc_policy_signature()}"

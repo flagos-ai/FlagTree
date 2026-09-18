@@ -261,6 +261,14 @@ def TritonGPURemoveLayoutConversions : Pass<"tritongpu-remove-layout-conversions
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
 
+  let options = [
+    Option<"enableRlcPhaseTesting", "enable-rlc-enhance",
+           "bool", /*default*/"false",
+           "Enable the enhanced RLC phases for IR attribution tests">,
+    Option<"rlcPhaseTestMask", "rlc-phase-mask",
+           "uint32_t", /*default*/"15",
+           "Bit mask for enhanced RLC phases 1a, 1b, 2, and 3">
+  ];
 }
 
 def TritonGPUOptimizeThreadLocality : Pass<"tritongpu-optimize-thread-locality", "mlir::ModuleOp"> {

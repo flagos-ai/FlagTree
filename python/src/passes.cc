@@ -45,7 +45,8 @@ namespace py = pybind11;
 #ifdef __FLAGTREE_RLC_ENHANCE__
 namespace mlir::triton::gpu {
 std::unique_ptr<mlir::Pass>
-createTritonGPURemoveLayoutConversionsEnhanced(bool enhance);
+createTritonGPURemoveLayoutConversionsEnhanced(bool enhance,
+                                               unsigned phaseMask);
 } // namespace mlir::triton::gpu
 #endif
 
@@ -117,15 +118,18 @@ void init_triton_passes_ttgpuir(py::module &&m) {
                             createTritonGPUOptimizeDotOperands, bool);
   m.def(
       "add_remove_layout_conversions",
-      [](mlir::PassManager &pm, bool enhance) {
+      [](mlir::PassManager &pm, bool enhance, unsigned phaseMask) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
-        pm.addPass(createTritonGPURemoveLayoutConversionsEnhanced(enhance));
+        pm.addPass(
+            createTritonGPURemoveLayoutConversionsEnhanced(enhance, phaseMask));
 #else
         (void)enhance;
+        (void)phaseMask;
         pm.addPass(createTritonGPURemoveLayoutConversions());
 #endif
       },
-      py::arg("pm"), py::arg("enable_rlc_enhance") = false);
+      py::arg("pm"), py::arg("enable_rlc_enhance") = false,
+      py::arg("phase_mask") = 15u);
   ADD_PASS_WRAPPER_0("add_reduce_data_duplication",
                      createTritonGPUReduceDataDuplication);
   ADD_PASS_WRAPPER_0("add_allocate_warp_groups",

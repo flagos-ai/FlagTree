@@ -152,6 +152,21 @@ def test_read_env(truthy, falsey, fresh_knobs, monkeypatch):
     assert fresh_knobs.build.backend_dirs == {"/tmp/cuda/crt", "/tmp/cuda/rt"}
 
 
+def test_musa_rlc_knobs(fresh_knobs, monkeypatch):
+    assert not fresh_knobs.musa.rlc_enhance
+    assert fresh_knobs.musa.rlc_phase_mask == 0xF
+
+    monkeypatch.setenv("FLAGTREE_MUSA_RLC_ENHANCE", "1")
+    monkeypatch.setenv("FLAGTREE_MUSA_RLC_PHASE_MASK", "5")
+    assert fresh_knobs.musa.rlc_enhance
+    assert fresh_knobs.musa.rlc_phase_mask == 5
+
+    fresh_knobs.musa.rlc_enhance = False
+    fresh_knobs.musa.rlc_phase_mask = 9
+    assert os.environ["FLAGTREE_MUSA_RLC_ENHANCE"] == "0"
+    assert os.environ["FLAGTREE_MUSA_RLC_PHASE_MASK"] == "9"
+
+
 def test_triton_home(fresh_knobs, monkeypatch):
     initial_home = fresh_knobs.cache.home_dir
     assert initial_home == os.path.expanduser("~/")

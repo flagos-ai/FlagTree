@@ -62,6 +62,10 @@ macro(flagtree_configure_options)
     set(ENV{PATH} "$ENV{LLVM_SYSPATH}/bin:$ENV{PATH}")
     set(CMAKE_C_COMPILER clang)
     set(CMAKE_CXX_COMPILER clang++)
+    # Build the portable phased RLC implementation for MThreads. The MUSA
+    # runtime knob remains default-off until IR, device, and performance gates
+    # are qualified on S5000.
+    add_definitions(-D__FLAGTREE_RLC_ENHANCE__)
     set(FLAGTREE_TLE OFF)
     set(FLAGTREE_MTHREADS_TLE ON)
   elseif(FLAGTREE_BACKEND STREQUAL "aipu")
