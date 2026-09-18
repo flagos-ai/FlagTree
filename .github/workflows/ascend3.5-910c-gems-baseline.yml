@@ -1,0 +1,57 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Ascend3.5-910C-Gems-Baseline
+
+on:
+  push:
+    branches: ["triton_v3.5.x"]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  # Group by commit SHA for push events to allow parallel runs from different merges.
+  # Fall back to run_id for other events (e.g., schedule) to ensure each run is independent.
+  group: ${{ github.workflow }}-${{
+    github.event_name == 'push' && github.event.head_commit.id ||
+    github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ascend35x-910c:
+    if: ${{ github.event_name == 'push' }}
+    uses: flagos-ai/FlagTree/.github/workflows/template-gems-baseline.yml@main
+    with:
+      runner: ascend3.5-910c
+      backend: ascend
+      gpu-env-var: ASCEND_RT_VISIBLE_DEVICES
+      flaggems-tag: 'v5.3.5'
+      flagtree-build-command: |-
+        set -x
+        export FLAGTREE_BACKEND=ascend
+        source ~/env.sh
+        export PATH=~/.flagtree/ascend/llvm-7d5de303-ubuntu-aarch64-python311-compat/bin/:${PATH}
+        MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+      flaggems-pre-command: |-
+        source /usr/local/Ascend/ascend-toolkit/set_env.sh
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
