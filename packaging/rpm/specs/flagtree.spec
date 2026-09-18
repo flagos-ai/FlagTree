@@ -29,7 +29,7 @@
 %define __requires_exclude libcuda\\.so|libnvidia.*
 
 Name:           python3-flagtree-%{flagtree_backend}
-Version:        0.6.0
+Version:        0.6.1
 Release:        1%{?dist}
 Summary:        FlagTree compiler with %{flagtree_backend} backend
 License:        MIT AND Apache-2.0 WITH LLVM-exception AND BSD-3-Clause AND LicenseRef-NVIDIA-CUDA-EULA
