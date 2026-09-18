@@ -414,6 +414,22 @@ static void assignMemoryLayouts(tt::FuncOp func) {
                                                newEncoding));
   }
 
+#ifdef __TLE__
+  // Descriptor encodings may be inferred from a use in only one static
+  // partition. Normalize every explicit-capture block argument after the
+  // inference pass so unused captures in sibling partitions remain type
+  // consistent as well.
+  func.walk([&](ttg::WarpSpecializePartitionsOp partitions) {
+    for (auto [index, capture] :
+         llvm::enumerate(partitions.getExplicitCaptures())) {
+      for (Region &partition : partitions.getPartitionRegions()) {
+        if (index < partition.getNumArguments())
+          partition.getArgument(index).setType(capture.getType());
+      }
+    }
+  });
+#endif // __TLE__
+
   SmallVector<Type> argTys(func.getBody().front().getArgumentTypes());
   SmallVector<Type> resultTys(func.getResultTypes());
   for (auto [i, resultTy] : llvm::enumerate(resultTys)) {

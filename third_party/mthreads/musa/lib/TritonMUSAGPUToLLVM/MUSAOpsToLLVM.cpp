@@ -257,6 +257,7 @@ struct TMELoadSegment {
   Value blockPos;
 };
 
+#ifndef __TLE__
 SmallVector<TMELoadSegment>
 buildTMELoadSegments(triton::musa::AsyncTMECopyGlobalToLocalOp op,
                      std::optional<triton::musa::RecoveredSqmmaConsumerContract>
@@ -346,6 +347,76 @@ buildTMELoadSegments(triton::musa::AsyncTMECopyGlobalToLocalOp op,
 
   return segments;
 }
+#else
+// Keep generated code size independent of the tile's row count. All segments
+// retain the caller's issue predicate and completion protocol.
+template <typename EmitT>
+void emitTLETMECopySegments(ArrayRef<triton::musa::TLETMECopySegment> plan,
+                            ttg::MemDescType type, Value sharedAddr,
+                            Value blockPos, Location loc,
+                            ConversionPatternRewriter &rewriter,
+                            const LLVMTypeConverter *typeConverter,
+                            EmitT emit) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  Type elemTy = typeConverter->convertType(type.getElementType());
+  for (const auto &segment : plan) {
+    Block *loop = nullptr;
+    Block *after = nullptr;
+    Value iteration;
+    Value row;
+    Value group;
+    int64_t repeats = segment.rows * segment.groups;
+    if (repeats > 1) {
+      Block *before = rewriter.getInsertionBlock();
+      after = rewriter.splitBlock(before, rewriter.getInsertionPoint());
+      loop = rewriter.createBlock(after);
+      iteration = loop->addArgument(rewriter.getI32Type(), loc);
+      rewriter.setInsertionPointToEnd(before);
+      LLVM::BrOp::create(rewriter, loc, ValueRange{b.i32_val(0)}, loop);
+      rewriter.setInsertionPointToStart(loop);
+      row = b.udiv(iteration, b.i32_val(segment.groups));
+      group = b.urem(iteration, b.i32_val(segment.groups));
+    }
+    Value offset = b.i32_val(segment.sharedOffset);
+    if (row)
+      offset = b.add(offset, b.mul(iteration, b.i32_val(segment.sharedStride)));
+    Value address =
+        b.gep(ptr_ty(rewriter.getContext(), 3), elemTy, sharedAddr, offset);
+    Value position = blockPos;
+    for (unsigned axis = 0; axis < segment.offsets.size(); ++axis) {
+      if (!segment.offsets[axis] && !(row && axis == segment.rowAxis) &&
+          !(group && axis == segment.leadingAxis))
+        continue;
+      Value index = b.i32_val(segment.offsets.size() - 1 - axis);
+      Value coordinate = b.extract_element(blockPos, index);
+      coordinate = b.add(coordinate, b.i32_val(segment.offsets[axis]));
+      if (row && axis == segment.rowAxis)
+        coordinate = b.add(coordinate, row);
+      else if (group && axis == segment.leadingAxis)
+        coordinate =
+            b.add(coordinate, b.mul(group, b.i32_val(segment.shape[axis])));
+      position = b.insert_element(position, coordinate, index);
+    }
+    emit(TMELoadSegment{address,
+                        materializeTMEBlockShape(
+                            loc, ArrayRef<int64_t>(segment.shape), rewriter),
+                        position});
+    if (loop) {
+      Value next = b.add(iteration, b.i32_val(1));
+      Value more = b.icmp_slt(next, b.i32_val(repeats));
+      auto branch = LLVM::CondBrOp::create(
+          rewriter, loc, more, loop, ValueRange{next}, after, ValueRange{});
+      auto unroll = LLVM::LoopUnrollAttr::get(rewriter.getContext(),
+                                              rewriter.getBoolAttr(true), {},
+                                              {}, {}, {}, {}, {});
+      branch.setLoopAnnotationAttr(LLVM::LoopAnnotationAttr::get(
+          rewriter.getContext(), {}, {}, {}, unroll, {}, {}, {}, {}, {}, {}, {},
+          {}, {}, {}, {}));
+      rewriter.setInsertionPointToStart(after);
+    }
+  }
+}
+#endif // __TLE__
 
 struct SquadDotOpConversion
     : public ConvertOpToLLVMPattern<triton::musa::SquadDotOp> {
@@ -632,6 +703,12 @@ struct AsyncTMECopyGlobalToLocalOpConversion
 #else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
 #endif // __TLE__
+#ifdef __TLE__
+    auto plannedSegments = triton::musa::getTLETMECopySegments(
+        dyn_cast<ttg::MemDescType>(op.getResult().getType()), blockShape);
+    if (failed(plannedSegments))
+      return op.emitError("unsupported TLE TME load physical shared layout");
+#else
     auto recoveredContract =
         triton::musa::recoverAndVerifyGroupedTMELoadConsumerContract(op);
     if (failed(recoveredContract))
@@ -642,6 +719,7 @@ struct AsyncTMECopyGlobalToLocalOpConversion
     if (loadSegments.empty()) {
       return op.emitError("unable to materialize grouped TME load segments");
     }
+#endif // __TLE__
 
     Block *currentBlock = rewriter.getInsertionBlock();
     Block *afterCall =
@@ -652,7 +730,11 @@ struct AsyncTMECopyGlobalToLocalOpConversion
     rewriter.setInsertionPointToStart(trueBlock);
     Value descAddr = normalizeTMEDescriptorAddr(
         adaptor.getDesc(), op.getDesc().getType(), loc, rewriter);
+#ifdef __TLE__
+    auto emit = [&](const TMELoadSegment &segment) {
+#else
     for (const auto &segment : loadSegments) {
+#endif // __TLE__
       SmallVector<Value> operands = {
           adaptor.getBarId(), segment.dstAddr,  descAddr,
           segment.blockDim,   segment.blockPos, swizzleGranularity,
@@ -662,7 +744,14 @@ struct AsyncTMECopyGlobalToLocalOpConversion
                                              operands);
       LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic, TypeRange{},
                                       operands);
+#ifdef __TLE__
+    };
+    emitTLETMECopySegments(
+        *plannedSegments, cast<ttg::MemDescType>(op.getResult().getType()),
+        dstAddr, blockPos, loc, rewriter, this->getTypeConverter(), emit);
+#else
     }
+#endif // __TLE__
     LLVM::BrOp::create(rewriter, loc, afterCall);
     rewriter.setInsertionPointToStart(afterCall);
     rewriter.eraseOp(op);
@@ -737,6 +826,13 @@ struct AsyncTMECopyLocalToGlobalOpConversion
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
 #endif // __TLE__
 
+#ifdef __TLE__
+    auto storeSegments = triton::musa::getTLETMECopySegments(
+        dyn_cast<ttg::MemDescType>(op.getSrc().getType()), blockShape);
+    if (failed(storeSegments))
+      return op.emitError("unsupported TLE TME store physical shared layout");
+#endif // __TLE__
+
     Block *currentBlock = rewriter.getInsertionBlock();
     Block *afterCall =
         rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
@@ -746,6 +842,20 @@ struct AsyncTMECopyLocalToGlobalOpConversion
     rewriter.setInsertionPointToStart(trueBlock);
     Value descAddr = normalizeTMEDescriptorAddr(
         adaptor.getDesc(), op.getDesc().getType(), loc, rewriter);
+#ifdef __TLE__
+    emitTLETMECopySegments(
+        *storeSegments, cast<ttg::MemDescType>(op.getSrc().getType()), srcAddr,
+        blockPos, loc, rewriter, this->getTypeConverter(),
+        [&](const TMELoadSegment &segment) {
+          SmallVector<Value> operands = {segment.dstAddr,    descAddr,
+                                         segment.blockDim,   segment.blockPos,
+                                         swizzleGranularity, swizzleStride,
+                                         swizzleLine,        innerPersistence,
+                                         outerPersistence,   cachePolicy};
+          LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic, TypeRange{},
+                                          operands);
+        });
+#else
     SmallVector<Value> operands = {
         srcAddr,     descAddr,           blockDim,
         blockPos,    swizzleGranularity, swizzleStride,
@@ -753,6 +863,7 @@ struct AsyncTMECopyLocalToGlobalOpConversion
         cachePolicy};
     LLVM::createLLVMIntrinsicCallOp(rewriter, loc, intrinsic, TypeRange{},
                                     operands);
+#endif // __TLE__
     LLVM::BrOp::create(rewriter, loc, afterCall);
     rewriter.setInsertionPointToStart(afterCall);
     rewriter.eraseOp(op);

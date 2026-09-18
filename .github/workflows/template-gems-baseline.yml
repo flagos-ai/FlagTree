@@ -1,0 +1,230 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Template-Gems-Baseline
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'Self-hosted runner label, e.g. nvidia3.6'
+        required: true
+        type: string
+      backend:
+        description: 'Backend name, e.g. nvidia, mthreads, ppu'
+        required: true
+        type: string
+      gpu-env-var:
+        description: 'GPU device environment variable name'
+        required: false
+        type: string
+        default: 'CUDA_VISIBLE_DEVICES'
+      flaggems-tag:
+        description: 'FlagGems repo tag to test against'
+        required: true
+        type: string
+      flaggems-pre-command:
+        description: 'Multiline script to run before FlagGems tests (e.g. source env, set LD_LIBRARY_PATH)'
+        required: false
+        type: string
+        default: ''
+      flagtree-build-command:
+        description: 'Multiline script to build and install FlagTree'
+        required: true
+        type: string
+      env-setup-command:
+        description: |
+          Multiline bash script executed in the Setup Environment step.
+          Only 'echo KEY=VALUE' output is appended to GITHUB_ENV, so these
+          variables are visible to ALL later steps (build, test, compare).
+          Do NOT use 'export' and do NOT print anything else to stdout.
+          Example:
+            echo "LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}"
+            echo "PATH=/root/bin/:${PATH}"
+        required: false
+        type: string
+        default: ''
+    secrets:
+      github-token:
+        required: true
+
+env:
+  FLAGGEMS_CI_DIR: '/root/flaggems_ci'
+  GPU_ENV_VAR: ${{ inputs.gpu-env-var }}
+
+jobs:
+  # generate FlagGems baseline (only on push)
+  gems-baseline:
+    runs-on: ${{ inputs.runner }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event_name == 'push' }}
+    concurrency:
+      group: ${{ github.workflow }}-${{ inputs.runner }}-${{ github.ref }}
+      cancel-in-progress: false
+    outputs:
+      commit_id: ${{ steps.setup.outputs.commit_id }}
+    steps:
+      - name: Setup Environment and Paths
+        id: setup
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E "^(http_proxy|https_proxy|all_proxy|no_proxy|${GPU_ENV_VAR})=" >> $GITHUB_ENV || true
+          GPU_DEVICES="${!GPU_ENV_VAR:-0}"
+          echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
+          echo "GPU devices: $GPU_DEVICES"
+          echo "FlagGems tag: ${{ inputs.flaggems-tag }}"
+
+          DATE=$(date +'%Y%m%d_%H%M%S')
+          FLAGGEMS_REPO_DIR="${FLAGGEMS_CI_DIR}/FlagGems/baseline_${DATE}_${GITHUB_RUN_ID}"
+          echo "FLAGGEMS_REPO_DIR=$FLAGGEMS_REPO_DIR" >> $GITHUB_OUTPUT
+
+          COMMIT_ID="${GITHUB_SHA}"
+          BASELINE_DIR="${FLAGGEMS_CI_DIR}/Baseline/${DATE}_${COMMIT_ID}"
+          BASELINE_SUMMARY="${BASELINE_DIR}/summary.json"
+          BEST_DIR="${FLAGGEMS_CI_DIR}/Baseline/best_FlagGems_${{ inputs.flaggems-tag }}"
+          BEST_ARCHIVE_DIR="${FLAGGEMS_CI_DIR}/Baseline/best_archive"
+
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+          echo "commit_id=$COMMIT_ID" >> $GITHUB_OUTPUT
+          echo "baseline_dir=$BASELINE_DIR" >> $GITHUB_OUTPUT
+          echo "baseline_summary=$BASELINE_SUMMARY" >> $GITHUB_OUTPUT
+          echo "best_dir=$BEST_DIR" >> $GITHUB_OUTPUT
+          echo "best_archive_dir=$BEST_ARCHIVE_DIR" >> $GITHUB_OUTPUT
+
+          # Append KEY=VALUE lines produced by the user-provided setup command to GITHUB_ENV
+          if [ -n '${{ inputs.env-setup-command }}' ]; then
+            ${{ inputs.env-setup-command }} >> "$GITHUB_ENV"
+          fi
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Cleanup FlagTree Environment
+        if: success()
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
+      - name: Build FlagTree
+        if: success()
+        shell: bash
+        run: |
+          ${{ inputs.flagtree-build-command }}
+
+      - name: Clone FlagGems Repo
+        if: success()
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        with:
+          repo-url: 'https://github.com/flagos-ai/FlagGems.git'
+          ref: ${{ inputs.flaggems-tag }}
+          clone-dir: ${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}
+
+      - name: Run FlagGems Test for Baseline
+        id: run-flaggems-test
+        if: success()
+        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        with:
+          flaggems-path: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
+          gpus: '${{ steps.setup.outputs.gpus }}'
+          output-base-dir: '${{ env.FLAGGEMS_CI_DIR }}/Baseline'
+          output-subdir: '${{ steps.setup.outputs.date }}_${{ steps.setup.outputs.commit_id }}'
+          run-script: 'tools/ci/ci_run_tests.py'
+          skip-file: 'tools/ci/skip_list.yaml'
+          first-parameter-only: 'true'
+          pre-command: ${{ inputs.flaggems-pre-command }}
+
+      - name: Check Best Baseline Exists
+        id: check-best
+        if: success()
+        shell: bash
+        run: |
+          BEST_SUMMARY="${{ steps.setup.outputs.best_dir }}/summary.json"
+          if [[ -f "$BEST_SUMMARY" ]] && [[ -s "$BEST_SUMMARY" ]]; then
+            echo "best_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "best_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compare with Best Baseline
+        id: compare-with-best
+        if: ${{ success() && steps.check-best.outputs.best_exists == 'true' }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
+        with:
+          baseline-dir: '${{ steps.setup.outputs.best_dir }}'
+          candidate-dir: '${{ steps.run-flaggems-test.outputs.test-output-dir }}'
+          compare-script: 'tools/ci/compare_test_result.py'
+          working-directory: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
+          fail-on-missing-baseline: 'true'
+
+      - name: Update Best Baseline
+        id: update-best
+        if: ${{ success() && (steps.check-best.outputs.best_exists == 'false' || steps.compare-with-best.outputs.compare-exit-code == '0') }}
+        shell: bash
+        run: |
+          DATE="${{ steps.setup.outputs.date }}"
+          COMMIT_ID="${{ steps.setup.outputs.commit_id }}"
+          BASELINE_DIR="${{ steps.setup.outputs.baseline_dir }}"
+          BASELINE_SUMMARY="${{ steps.setup.outputs.baseline_summary }}"
+          BEST_DIR="${{ steps.setup.outputs.best_dir }}"
+          ARCHIVE_DIR="${{ steps.setup.outputs.best_archive_dir }}/${DATE}"
+
+          if [[ -f "$BASELINE_SUMMARY" ]] && [[ -s "$BASELINE_SUMMARY" ]]; then
+            if [[ -d "$BEST_DIR" ]]; then
+              mkdir -p "$ARCHIVE_DIR"
+              mv "$BEST_DIR" "$ARCHIVE_DIR"
+            fi
+            mkdir -p "$BEST_DIR"
+            cp -raf "$BASELINE_DIR"/* "$BEST_DIR/"
+            echo "$DATE : $COMMIT_ID" > "${BEST_DIR}/commit_id.txt"
+            echo "baseline_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Baseline generation failed - summary.json not found or empty"
+            echo "baseline_exists=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Cleanup FlagGems Repo
+        if: always()
+        shell: bash
+        env:
+          REPO_DIR: ${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}
+        run: |
+          set -u
+
+          if [[ -z "${REPO_DIR}" || "${REPO_DIR}" == "/" || "${REPO_DIR}" == "/root" || "${REPO_DIR}" == "/data" ]]; then
+            echo "REPO_DIR is empty or unsafe (${REPO_DIR}), skip cleanup"
+            exit 0
+          fi
+
+          for i in 1 2 3; do
+            if rm -rf "${REPO_DIR}"; then
+              echo "Cleanup succeeded on attempt $i"
+              exit 0
+            fi
+            if [[ $i -lt 3 ]]; then
+              echo "Cleanup attempt $i failed, retrying in 30s..."
+              sleep 30
+            fi
+          done
+
+          echo "::warning::Failed to remove ${REPO_DIR} after 3 attempts, dumping contents"
+          ls -la "${REPO_DIR}" 2>/dev/null | head -50 || true
+          exit 0

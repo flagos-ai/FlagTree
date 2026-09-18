@@ -77,6 +77,12 @@ test-proton: all
 	$(PYTEST) --tb=short -s third_party/proton/test/test_override.py
 	$(PYTEST) --tb=short -s third_party/proton/test/test_instrumentation.py::test_overhead
 
+# FlagPrism: run the external profiler/debugger suite independently of Proton.
+.PHONY: test-flagprism
+test-flagprism: all
+	$(PYTEST) -s -n 8 third_party/FlagPrism/Profiler/test --ignore=third_party/FlagPrism/Profiler/test/test_override.py
+	$(PYTEST) -s third_party/FlagPrism/Profiler/test/test_override.py
+
 .PHONY: test-python
 test-python: test-unit test-regression test-interpret test-proton
 

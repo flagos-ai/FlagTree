@@ -1,5 +1,5 @@
 set(FLAGCX_TO_LLVM_SRC
-    DeviceIntraBarrierOpToLLVM.cpp
+    FlagCxBarrierOpToLLVM.cpp
     GetLocalRankOpToLLVM.cpp
     FlagCxSignalOpToLLVM.cpp
     GetWorldRankOpToLLVM.cpp
@@ -11,7 +11,11 @@ add_triton_library(FlagCxToLLVM
 
     DEPENDS
     TleTableGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    ${TLE_TRITON_GPU_ATTR_DEPENDS}
     TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
     TleTools
 
     LINK_LIBS PUBLIC

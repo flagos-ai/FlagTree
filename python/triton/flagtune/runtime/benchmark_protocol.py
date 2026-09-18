@@ -1,5 +1,3 @@
-# Copyright 2018-2020 Philippe Tillet
-# Copyright 2020-2022 OpenAI
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -28,6 +26,8 @@ driver module name so backend driver implementations remain unchanged.
 
 from __future__ import annotations
 
+import inspect
+import os
 import warnings
 from dataclasses import dataclass
 from enum import Enum
@@ -41,6 +41,22 @@ class BenchmarkMode(str, Enum):
 
     EVENT = "event"
     REPLAY = "replay"
+
+
+def resolve_requested_mode(
+    mode: BenchmarkMode | str | None = None,
+    *,
+    default: BenchmarkMode = BenchmarkMode.EVENT,
+) -> BenchmarkMode:
+    """Resolve an explicit mode or ``FLAGTUNE_BENCHMARK_MODE``.
+
+    ``default`` lets protocol owners preserve their historical behavior while
+    still honoring the explicit environment override.
+    """
+    requested = mode if mode is not None else os.environ.get("FLAGTUNE_BENCHMARK_MODE")
+    if requested is None or requested == "":
+        return BenchmarkMode(default)
+    return BenchmarkMode(requested)
 
 
 @dataclass(frozen=True)
@@ -96,12 +112,25 @@ class ResolvedBenchmarker:
 _REPLAY_IMPLEMENTATIONS = {
     "triton.backends.nvidia.driver": "triton_cuda_graph_replay_v1",
     "triton.backends.amd.driver": "triton_hip_graph_replay_v1",
+    "triton.backends.metax.driver": "triton_metax_graph_replay_v1",
+    "triton.backends.ppu.driver": "triton_ppu_graph_replay_v1",
+    "triton.backends.mthreads.driver": "triton_musa_graph_replay_v1",
+    "triton.backends.hcu.driver": "triton_hcu_graph_replay_v1",
 }
+_OFFICIAL_TRITON_REPLAY_COUNT = 10
 
 
 def _replay_implementation(active: Any) -> str | None:
     """Return the stable replay identity for a supported Triton driver."""
     return _REPLAY_IMPLEMENTATIONS.get(type(active).__module__)
+
+
+def _supports_configurable_retries(benchmarker: Callable[..., Any]) -> bool:
+    """Return whether a Triton graph helper accepts ``n_retries``."""
+    try:
+        return "n_retries" in inspect.signature(benchmarker).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _validate_request(
@@ -143,16 +172,46 @@ def resolve_benchmarker(
     if selected is BenchmarkMode.REPLAY:
         implementation = _replay_implementation(active)
         if implementation is not None:
-            per_replay_ms = float(measurement_ms) / n_retries
-            from triton.testing import do_bench_cudagraph
+            effective_retries = n_retries
+            per_replay_ms = float(measurement_ms) / effective_retries
 
-            def replay_benchmark(kernel_call, quantiles):
-                return do_bench_cudagraph(
-                    kernel_call,
-                    rep=per_replay_ms,
-                    quantiles=quantiles,
-                    n_retries=n_retries,
-                )
+            if type(active).__module__ == "triton.backends.mthreads.driver":
+                from triton.flagtune.runtime.graph_benchmark import (
+                    do_bench_musa_graph, )
+
+                def replay_benchmark(kernel_call, quantiles):
+                    return do_bench_musa_graph(
+                        kernel_call,
+                        rep=per_replay_ms,
+                        quantiles=quantiles,
+                        n_retries=n_retries,
+                        warmup_ms=warmup_ms,
+                        device_interface=active.get_device_interface(),
+                    )
+
+            else:
+                from triton.testing import do_bench_cudagraph
+
+                configurable_retries = _supports_configurable_retries(do_bench_cudagraph)
+                effective_retries = (n_retries if configurable_retries else _OFFICIAL_TRITON_REPLAY_COUNT)
+                if not configurable_retries and n_retries != effective_retries:
+                    warnings.warn(
+                        "official Triton's graph benchmark uses a fixed replay "
+                        f"count of {effective_retries}; ignoring "
+                        f"n_retries={n_retries}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                per_replay_ms = float(measurement_ms) / effective_retries
+
+                def replay_benchmark(kernel_call, quantiles):
+                    kwargs = {
+                        "rep": per_replay_ms,
+                        "quantiles": quantiles,
+                    }
+                    if configurable_retries:
+                        kwargs["n_retries"] = effective_retries
+                    return do_bench_cudagraph(kernel_call, **kwargs)
 
             return ResolvedBenchmarker(
                 protocol=BenchmarkProtocol(
@@ -162,14 +221,15 @@ def resolve_benchmarker(
                     cache_policy="warm_l2",
                     warmup_ms=warmup_ms,
                     measurement_ms=measurement_ms,
-                    n_retries=n_retries,
+                    n_retries=effective_retries,
                     per_replay_ms=per_replay_ms,
                 ),
                 benchmark=replay_benchmark,
             )
+        reason = "active Triton backend does not provide a registered replay benchmarker"
         if not allow_fallback:
-            raise RuntimeError("active Triton backend does not provide a replay benchmarker")
-        fallback_reason = ("active Triton backend does not provide a replay benchmarker")
+            raise RuntimeError(reason)
+        fallback_reason = reason
         warnings.warn(
             f"{fallback_reason}; falling back to event timing",
             RuntimeWarning,

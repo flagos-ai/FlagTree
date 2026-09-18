@@ -25,10 +25,11 @@ vLLM 性能测试脚本
 - 返回 vllm bench serve 的所有指标
 """
 
+import argparse
+import os
+import re
 import subprocess
 import sys
-import re
-import argparse
 from datetime import datetime
 from pathlib import Path
 
@@ -39,7 +40,7 @@ sys.stderr.reconfigure(line_buffering=True)
 # 服务配置（按需修改）
 # =============================================================================
 SERVER_HOST = "127.0.0.1"
-SERVER_PORT = 8000
+SERVER_PORT = int(os.environ["VLLM_QWEN3_PORT"])
 MODEL_NAME = "qwen36"
 TOKENIZER_PATH = "/root/flagrelease/qwen3.6/Qwen3.6-27B"
 

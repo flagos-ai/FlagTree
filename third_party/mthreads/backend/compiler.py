@@ -1037,9 +1037,9 @@ class MUSABackend(BaseBackend):
         mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, capability)
         mthreads.passes.ttgpuir.add_to_llvmir(pm, capability)
         if has_static_ws:
-            # The retained operation still owns the producer and consumer
-            # regions here.  Lower their hardware barriers once, then emit the
-            # final two independent static CFG branches without control SMEM.
+            # The retained operation still owns the default and static worker
+            # regions here. Lower their hardware barriers once, then emit
+            # direct static CFG dispatch without control shared memory.
             mthreads.passes.ttgpuir.add_tle_lower_warp_specialize(pm)
             passes.convert.add_scf_to_cf(pm)
         passes.common.add_canonicalizer(pm)

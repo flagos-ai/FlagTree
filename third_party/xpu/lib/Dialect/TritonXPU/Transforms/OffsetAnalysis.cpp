@@ -8,6 +8,9 @@
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 
+#include <climits>
+#include <limits>
+
 #define DEBUG_TYPE "tritonxpu-offset-analysis"
 
 namespace mlir {
@@ -33,6 +36,11 @@ public:
     this->dumpFlag = dumpFlag;
     this->bufferSize = bufferSize;
   }
+
+  // Program ids walked by the offset mock: the physical cluster count, plus a
+  // few tiles picked for the wraps that fall outside that dense range.
+  static constexpr int numMockProgramIds = 12;
+  static constexpr size_t maxExtraProgramIds = 4;
 
   struct MockData {
     Operation *mockOp;
@@ -207,10 +215,125 @@ public:
     }
   }
 
+  // Constant integer behind `v`, either a scalar or a splatted tensor. 0 when
+  // `v` is not a constant.
+  int64_t getConstIntVal(Value v) {
+    auto constOp = v.getDefiningOp<arith::ConstantOp>();
+    if (!constOp)
+      return 0;
+    if (auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue()))
+      return splatAttr.getSplatValue<APInt>().getSExtValue();
+    if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+      return intAttr.getInt();
+    return 0;
+  }
+
+  // True when `v` is the program id itself, up to the casts that may wrap it.
+  // Deliberately not transitive: an index rebuilt from the program id (e.g.
+  // `(pid * tile + lane) / D`) is scaled by a stride of the tensor, not by the
+  // distance between two program ids.
+  bool isProgramId(Value v) {
+    Operation *op = v.getDefiningOp();
+    while (op && isa<arith::IndexCastOp, arith::ExtSIOp, arith::TruncIOp>(op))
+      op = op->getOperand(0).getDefiningOp();
+    return op && isa<triton::GetProgramIdOp>(op);
+  }
+
+  // Linear-index distance between two consecutive program ids: the constant the
+  // program id is scaled by in `pid * tile_size + tl.arange(0, tile_size)`, or
+  // the range width when that multiply is not a constant.
+  int64_t getProgramIdStride(const SetVector<Operation *> &opChain) {
+    int64_t rangeSpan = 0;
+    for (auto *op : opChain) {
+      if (auto rangeOp = dyn_cast<triton::MakeRangeOp>(op))
+        rangeSpan =
+            std::max<int64_t>(rangeSpan, rangeOp.getEnd() - rangeOp.getStart());
+    }
+    for (auto *op : opChain) {
+      auto mulOp = dyn_cast<arith::MulIOp>(op);
+      if (!mulOp)
+        continue;
+      int64_t scale = getConstIntVal(mulOp.getRhs());
+      Value scaled = mulOp.getLhs();
+      if (scale == 0) {
+        scale = getConstIntVal(mulOp.getLhs());
+        scaled = mulOp.getRhs();
+      }
+      if (scale > 0 && isProgramId(scaled))
+        return scale;
+    }
+    return rangeSpan;
+  }
+
+  // Linear-index positions where a multi-dimensional index reconstruction can
+  // break the offset sequence. `i = (idx / D) % C` holds still for D
+  // consecutive indices, so the offsets it feeds can only jump at a multiple of
+  // D -- or of D * C, where the next dimension out advances.
+  SmallVector<int64_t> getWrapPeriods(const SetVector<Operation *> &opChain) {
+    SmallVector<int64_t> periods;
+    for (auto *op : opChain) {
+      if (!isa<arith::DivSIOp, arith::RemSIOp>(op))
+        continue;
+      int64_t modulus = getConstIntVal(op->getOperand(1));
+      if (modulus <= 1)
+        continue;
+      // Divisors already applied to the value this op consumes: the index
+      // reconstruction divides the linear index down one dimension at a time.
+      int64_t divisor = 1;
+      Operation *lhsOp = op->getOperand(0).getDefiningOp();
+      while (auto divOp = dyn_cast_or_null<arith::DivSIOp>(lhsOp)) {
+        int64_t step = getConstIntVal(divOp.getRhs());
+        if (step <= 1)
+          break;
+        divisor *= step;
+        lhsOp = divOp.getLhs().getDefiningOp();
+      }
+      periods.emplace_back(divisor);
+      periods.emplace_back(divisor * modulus);
+    }
+    return periods;
+  }
+
   SmallVector<MockData> getMockDataItems(SetVector<Operation *> opChain) {
-    auto getProgramIdMockVals = []() {
-      SmallVector<int> mockVals(12);
+    // The mocked program ids cover the physical cluster count, so the sampled
+    // linear index only reaches numMockProgramIds * <program id stride>. The
+    // launcher wraps the kernel in a cluster loop, which makes
+    // tt.get_program_id the *logical* tile id, so a wider grid can wrap an
+    // index reconstruction outside that window: every sampled tile then looks
+    // perfectly continuous and the gm2lm burst keeps reading past the wrap
+    // instead of restarting at the row the wrap points at. Sample the tiles
+    // that hold such a wrap too.
+    auto getExtraProgramIdMockVals = [&]() {
+      SmallVector<int> extraVals;
+      int64_t pidStride = getProgramIdStride(opChain);
+      if (pidStride <= 0)
+        return extraVals;
+      // Keep the mocked offsets far away from the int32 the mock walks them in.
+      int64_t maxPeriod = std::numeric_limits<int32_t>::max() / 4;
+      for (int64_t period : getWrapPeriods(opChain)) {
+        if (period <= 0 || period > maxPeriod)
+          continue;
+        int pid = period / pidStride;
+        if (pid < numMockProgramIds || llvm::is_contained(extraVals, pid))
+          continue; // already sampled by the dense range below
+        extraVals.emplace_back(pid);
+        if (extraVals.size() == maxExtraProgramIds)
+          break;
+      }
+      llvm::sort(extraVals);
+      return extraVals;
+    };
+
+    auto getProgramIdMockVals = [&]() {
+      SmallVector<int> mockVals(numMockProgramIds);
       std::iota(mockVals.begin(), mockVals.end(), 0);
+      for (int extraVal : getExtraProgramIdMockVals())
+        mockVals.emplace_back(extraVal);
+      return mockVals;
+    };
+
+    auto getNumProgramsMockVals = []() {
+      SmallVector<int> mockVals(1, 1);
       return mockVals;
     };
 
@@ -273,6 +396,10 @@ public:
           .Case<triton::GetProgramIdOp>([&](auto getProgramIdOp) {
             SmallVector<int> mockVals = getProgramIdMockVals();
             mockDataItems.emplace_back(MockData(getProgramIdOp, 0, mockVals));
+          })
+          .Case<triton::GetNumProgramsOp>([&](auto getNumProgramsOp) {
+            SmallVector<int> mockVals = getNumProgramsMockVals();
+            mockDataItems.emplace_back(MockData(getNumProgramsOp, 0, mockVals));
           })
           .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) {
             SmallVector<int> mockVals = getGM2LMOpMockVals();
@@ -500,12 +627,16 @@ public:
 
     for (size_t i = 0; i < srcShape.size(); ++i) {
       if (srcShape[i] != resShape[i]) {
-        if (srcShape[i] == 1) { // [1x1xf32 -> 1xNxf32]
+        if (srcShape[i] == 1) { // [1xNxf32 -> MxNxf32] or [Mx1xf32 -> MxNxf32]
           unsigned numElems = resShape[resShape.size() - 1];
-          if (i == srcShape[srcShape.size() - 1])
-            return SmallVector<int>(numElems, op2OffsetVal[operandOp][0]);
-          else
+          if (i == srcShape.size() - 1) {
+            SmallVector<int> res;
+            for (int v : op2OffsetVal[operandOp])
+              res.append(numElems, v);
+            return res;
+          } else {
             return op2OffsetVal[operandOp];
+          }
         } else { // [1x2xf32 -> 1xNxf32]
           llvm_unreachable("[broadcastOpCalFunc] Only support broadcast 1->N");
         }
@@ -625,7 +756,7 @@ public:
     auto hasDynamicInput = [](Operation *op) -> bool {
       for (auto operand : op->getOperands()) {
         if (mlir::isa<BlockArgument>(operand)) {
-          continue;
+          return true;
         }
         auto operandOp = operand.getDefiningOp();
         if (!operandOp) {
@@ -680,6 +811,10 @@ public:
               op2OffsetVal[getProgramIdOp] =
                   getProgramIdOpCalFunc(getProgramIdOp, op2OffsetVal, mockVal);
             })
+            .Case<triton::GetNumProgramsOp>([&](auto getNumProgramsOp) {
+              auto mockVal = op2MockVal[getNumProgramsOp];
+              op2OffsetVal[getNumProgramsOp] = SmallVector<int>(1, mockVal);
+            })
             .Case<triton::xpu::GM2LMOp>([&](auto xpuGm2lmOp) {
               auto mockVal = op2MockVal[xpuGm2lmOp];
               op2OffsetVal[xpuGm2lmOp] =
@@ -709,7 +844,20 @@ public:
                   makeRangeOpCalFunc(makeRangeOp, op2OffsetVal);
             })
             .Case<triton::SplatOp>([&](auto splatOp) {
-              if (hasDynamicInput(splatOp)) {
+              auto operand = splatOp.getOperand();
+              if (mlir::isa<BlockArgument>(operand)) {
+                bool usedInMul = false;
+                for (auto user : splatOp.getResult().getUsers()) {
+                  if (isa<arith::MulIOp>(user)) {
+                    usedInMul = true;
+                    break;
+                  }
+                }
+                if (usedInMul) {
+                  findUnsupportedOp = true;
+                  return;
+                }
+              } else if (hasDynamicInput(splatOp)) {
                 findUnsupportedOp = true;
                 return;
               }
@@ -821,7 +969,7 @@ public:
             LLVM_DEBUG(llvm::dbgs()
                        << "[OffsetState]: The 0th Address Is Not the Beginning "
                           "of the Bank.\n");
-            fixedStride = -1;
+            fixedStride = INT32_MIN;
             return OffsetState::Unknown;
           }
         }
@@ -839,7 +987,7 @@ public:
       } else {
         LLVM_DEBUG(llvm::dbgs()
                    << "[OffsetState]: Addresses Are Not in the Same Bank.\n");
-        fixedStride = -1;
+        fixedStride = INT32_MIN;
         return OffsetState::Unknown;
       }
     }
@@ -947,13 +1095,30 @@ public:
       int64_t currRowLen = 2;
       int64_t currRowStride = 1;
       bool isFirst = true;
+      const int64_t base = res[0];
+      auto gcd = [](int64_t a, int64_t b) {
+        while (b != 0) {
+          int64_t t = b;
+          b = a % b;
+          a = t;
+        }
+        return a;
+      };
       for (int64_t i = 2; i < res.size(); i++) {
+        if (res[i] < base) {
+          rowLen = -1;
+          return false;
+        }
         if (res[i] - res[i - 1] == 1) {
           currRowLen++;
         } else {
           currRowStride = res[i] - res[i - 1] + currRowLen - 1;
           if (currRowStride < 0) {
-            return false;
+            rowStride = -1;
+            rowLen = gcd(rowLen, currRowLen);
+            currRowLen = 1;
+            currRowStride = 1;
+            continue;
           }
 
           if (isFirst) {
@@ -968,15 +1133,6 @@ public:
             if (currRowStride != rowStride) {
               rowStride = -1;
             }
-
-            auto gcd = [](int64_t a, int64_t b) {
-              while (b != 0) {
-                int t = b;
-                b = a % b;
-                a = t;
-              }
-              return a;
-            };
             rowLen = gcd(rowLen, currRowLen);
           }
           currRowLen = 1;
@@ -1004,6 +1160,39 @@ public:
       return OffsetState::LocallyContinuous;
     }
     return OffsetState::Unknown;
+  }
+
+  template <class T, std::enable_if_t<is_xpu_memory_op<T>::value, bool> = true>
+  int64_t findForcedRowLen(T memoryOp) {
+    Value ptr = memoryOp.getPtr();
+    Operation *ptrOp = ptr.getDefiningOp();
+    while (ptrOp &&
+           (isa<triton::BitcastOp>(ptrOp) || isa<triton::SplatOp>(ptrOp)))
+      ptrOp = ptrOp->getOperand(0).getDefiningOp();
+    auto addPtrOp = dyn_cast_or_null<triton::AddPtrOp>(ptrOp);
+    if (!addPtrOp)
+      return -1;
+    Operation *offsetDefineOp = addPtrOp.getOperand(1).getDefiningOp();
+    if (!offsetDefineOp)
+      return -1;
+    llvm::SetVector<Operation *> opChain;
+    getOpChainBwdBFS(opChain, offsetDefineOp);
+    for (auto *op : opChain) {
+      auto remOp = dyn_cast<arith::RemSIOp>(op);
+      if (!remOp)
+        continue;
+      auto constOp = remOp.getRhs().getDefiningOp<arith::ConstantOp>();
+      if (!constOp)
+        continue;
+      int64_t remConst = 0;
+      if (auto splatAttr = dyn_cast<SplatElementsAttr>(constOp.getValue()))
+        remConst = splatAttr.getSplatValue<APInt>().getSExtValue();
+      else if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+        remConst = intAttr.getInt();
+      if (remConst > 1)
+        return remConst;
+    }
+    return -1;
   }
 
   // -1         for Unknown
@@ -1128,48 +1317,54 @@ public:
           memoryStateTransfer(memoryState, allOffsetStateResult[token]);
     }
 
-    // Step 3.3. Guard Discrete against a wrapping offset chain.
-    // The offsets above are mocked over a small program-id range, so a `remsi`
-    // by a large constant in the chain never wraps during the analysis. A
-    // gather offset such as `(xindex % C) // K` therefore looks like a
-    // well-behaved Discrete access, whose invariant is that every lane of a
-    // core lies within [base, base + numElems) of that core's first lane (see
-    // the multiBank / negative-offset guards in checkOffset).
-    // UnrollControl::findDiscretePtrChain relies on that invariant and rewrites
-    // the gather into a contiguous gm2lm plus `lmPtr[offset - offset0]`. At the
-    // real wrap the offset jumps backwards by C, the LM index goes far out of
-    // range and the kernel traps. Fall back to Unknown so the safe per-element
-    // gather path is used instead.
-    if (memoryState == OffsetState::Discrete &&
+    // Monkey patch: if memoryState is Continuous/Discrete but the offset chain
+    // contains remsi by a constant, the mock pid range (0-11) may not have
+    // observed the wrap.
+    //   - Continuous: model x % C as LocallyContinuous with an unfixed row
+    //     stride so the lowering splits DMA by the actual pointer sequence at
+    //     wrap boundaries.
+    //   - Discrete: its invariant is that every lane of a core lies within
+    //     [base, base + numElems) of that core's first lane (see checkOffset's
+    //     multiBank / negative-offset guards). At the wrap the sequence jumps
+    //     backwards by C, so the invariant breaks for the tiles the mock never
+    //     visited. UnrollControl::findDiscretePtrChain trusts it and rewrites
+    //     the gather into `contiguous gm2lm + lmPtr[offset - offset0]`, which
+    //     then indexes far outside the LM buffer and traps the kernel
+    //     (err_code -714). Fall back to Unknown so the safe per-element gather
+    //     path is used instead.
+    // Only apply to gm2lm — for lm2gm the LocallyContinuous unfixed-stride
+    // lowering path does not handle all patterns correctly yet.
+    if ((memoryState == OffsetState::Continuous ||
+         memoryState == OffsetState::Discrete) &&
         isa<triton::xpu::GM2LMOp>(memoryOp)) {
       for (auto *op : opChain) {
-        auto remOp = dyn_cast<arith::RemSIOp>(op);
-        if (!remOp)
-          continue;
-        auto constOp = remOp.getRhs().getDefiningOp<arith::ConstantOp>();
-        if (!constOp)
-          continue;
-        int64_t remConst = 0;
-        if (auto denseAttr =
-                mlir::dyn_cast<DenseElementsAttr>(constOp.getValue())) {
-          if (!denseAttr.isSplat())
-            continue;
-          remConst = denseAttr.getSplatValue<APInt>().getSExtValue();
-        } else if (auto intAttr =
-                       mlir::dyn_cast<IntegerAttr>(constOp.getValue())) {
-          remConst = intAttr.getValue().getSExtValue();
-        } else {
-          continue;
-        }
-        if (remConst > static_cast<int64_t>(numElems)) {
-          fixedStride = -1;
-          rowLen = -1;
-          rowStride = -1;
-          LLVM_DEBUG(llvm::dbgs()
-                     << "[OffsetState]: Detected remsi pattern, override "
-                        "Discrete to Unknown (wrap period "
-                     << remConst << ")\n");
-          return OffsetState::Unknown;
+        if (auto remOp = dyn_cast<arith::RemSIOp>(op)) {
+          if (auto constOp =
+                  remOp.getRhs().getDefiningOp<arith::ConstantOp>()) {
+            int64_t remConst = 0;
+            if (auto splatAttr =
+                    dyn_cast<SplatElementsAttr>(constOp.getValue()))
+              remConst = splatAttr.getSplatValue<APInt>().getSExtValue();
+            else if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+              remConst = intAttr.getInt();
+            if (remConst > 0 && remConst > (int64_t)numElems) {
+              if (memoryState == OffsetState::Discrete) {
+                fixedStride = INT32_MIN;
+                rowLen = -1;
+                rowStride = -1;
+                LLVM_DEBUG(llvm::dbgs()
+                           << "[OffsetState]: Detected remsi pattern, override "
+                              "Discrete to Unknown (wrap period "
+                           << remConst << ")\n");
+                return OffsetState::Unknown;
+              }
+              rowLen = remConst;
+              rowStride = -1;
+              fixedStride = 1;
+              memoryState = OffsetState::LocallyContinuous;
+              break;
+            }
+          }
         }
       }
     }
@@ -1212,49 +1407,95 @@ public:
 
     mod.walk([&](mlir::Operation *op) { op2Line[op] = line++; });
 
+    auto recoverForcedOffsetState =
+        [&](auto memoryOp, bool handwritten, OffsetState &offsetState,
+            int32_t &opFixedStride, int64_t &opRowLen, int64_t &opRowStride,
+            int32_t &opLrie) {
+          if (!handwritten)
+            return;
+          if (offsetState == OffsetState::Continuous) {
+            if (opFixedStride == INT32_MIN)
+              opFixedStride = 1;
+            if (opLrie <= 0)
+              opLrie = 1;
+            return;
+          }
+          if (offsetState != OffsetState::LocallyContinuous || opRowLen > 0)
+            return;
+          int64_t modLen = findForcedRowLen(memoryOp);
+          if (modLen > 1) {
+            opRowLen = modLen;
+            opRowStride = -1;
+            opFixedStride = 1;
+            return;
+          }
+          OffsetState inferred = getOffsetState(memoryOp);
+          opFixedStride = fixedStride;
+          opRowLen = rowLen;
+          opRowStride = rowStride;
+          opLrie = lrie;
+          if (inferred != OffsetState::LocallyContinuous)
+            offsetState = inferred;
+          fixedStride = INT32_MIN;
+          rowLen = -1;
+          rowStride = -1;
+        };
+
     mod.walk([&](triton::xpu::GM2LMOp gm2lmOp) {
       if (dumpFlag)
         LLVM_DEBUG(llvm::dbgs()
                    << "\n=======================================\n");
+      bool handwritten = gm2lmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
-          gm2lmOp.getHandwrittenOffsetState()
-              ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
-              : getOffsetState(gm2lmOp);
+          handwritten ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
+                      : getOffsetState(gm2lmOp);
+      int32_t opFixedStride =
+          handwritten ? gm2lmOp.getFixedStride() : fixedStride;
+      int64_t opRowLen = handwritten ? gm2lmOp.getRowLen() : rowLen;
+      int64_t opRowStride = handwritten ? gm2lmOp.getRowStride() : rowStride;
+      int32_t opLrie = handwritten ? gm2lmOp.getLrie() : lrie;
+      recoverForcedOffsetState(gm2lmOp, handwritten, offsetState, opFixedStride,
+                               opRowLen, opRowStride, opLrie);
       if (dumpFlag) {
         LLVM_DEBUG(llvm::dbgs()
                    << "\n"
                    << gm2lmOp << "\n[OffsetState]: " << offsetState
                    << "\n=======================================\n");
       }
-      // In case `fixedStride` being modified by cluster(s) whose
-      // OffsetState is Continuous.
-      if (offsetState == OffsetState::Discrete) {
-        fixedStride = -1;
-      } else if (offsetState == OffsetState::Unknown &&
-                 (fixedStride == 1 | fixedStride == 0)) {
-        // Multi Memory State Like (Unknown & Continuous)
-        fixedStride = -1;
+      if (!handwritten) {
+        if (offsetState == OffsetState::Discrete) {
+          opFixedStride = INT32_MIN;
+        } else if (offsetState == OffsetState::Unknown &&
+                   (opFixedStride == 1 | opFixedStride == 0)) {
+          opFixedStride = INT32_MIN;
+        }
       }
 
       OpBuilder builder(gm2lmOp);
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
       gm2lmOp->setAttr("offsetState",
                        builder.getSI32IntegerAttr(offsetStateInt));
-      gm2lmOp->setAttr("fixedStride", builder.getSI32IntegerAttr(fixedStride));
-      gm2lmOp->setAttr("rowLen", builder.getIntegerAttr(
-                                     builder.getIntegerType(64, true), rowLen));
+      gm2lmOp->setAttr("fixedStride",
+                       builder.getSI32IntegerAttr(opFixedStride));
       gm2lmOp->setAttr(
-          "rowStride",
-          builder.getIntegerAttr(builder.getIntegerType(64, true), rowStride));
-      gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(lrie));
+          "rowLen",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowLen));
+      gm2lmOp->setAttr("rowStride",
+                       builder.getIntegerAttr(builder.getIntegerType(64, true),
+                                              opRowStride));
+      gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(opLrie));
       auto loadOp = cast<triton::xpu::LoadOp>(gm2lmOp->getNextNode());
       loadOp->setOperand(0, gm2lmOp);
-      loadOp->setAttr("stride", builder.getSI32IntegerAttr(fixedStride));
-      loadOp->setAttr("isDiscrete", builder.getBoolAttr(offsetState ==
-                                                        OffsetState::Discrete));
-      fixedStride = -1; // reset
-      rowLen = -1;
-      rowStride = -1;
+      loadOp->setAttr("stride", builder.getSI32IntegerAttr(opFixedStride));
+      loadOp->setAttr(
+          "isDiscrete",
+          builder.getBoolAttr(offsetState == OffsetState::Discrete ||
+                              offsetState == OffsetState::LocallyScalar));
+      if (!handwritten) {
+        fixedStride = INT32_MIN;
+        rowLen = -1;
+        rowStride = -1;
+      }
       findUnsupportedOp = false;
     });
 
@@ -1262,15 +1503,16 @@ public:
       if (dumpFlag)
         LLVM_DEBUG(llvm::dbgs()
                    << "\n=======================================\n");
+      bool handwritten = lm2gmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
-          lm2gmOp.getHandwrittenOffsetState()
-              ? static_cast<OffsetState>(lm2gmOp.getOffsetState())
-              : getOffsetState(lm2gmOp);
-      // Only able to handle continuous and unknown cases.
+          handwritten ? static_cast<OffsetState>(lm2gmOp.getOffsetState())
+                      : getOffsetState(lm2gmOp);
       if (offsetState != OffsetState::Continuous &&
           offsetState != OffsetState::LocallyContinuous) {
         offsetState = OffsetState::Unknown;
       }
+      int64_t opRowLen = handwritten ? lm2gmOp.getRowLen() : rowLen;
+      int64_t opRowStride = handwritten ? lm2gmOp.getRowStride() : rowStride;
       if (dumpFlag) {
         LLVM_DEBUG(llvm::dbgs()
                    << "\n"
@@ -1278,18 +1520,20 @@ public:
                    << "\n=======================================\n");
       }
       OpBuilder builder(lm2gmOp);
-      // offsetState = OffsetState::Continuous;
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
       lm2gmOp->setAttr("offsetState",
                        builder.getSI32IntegerAttr(offsetStateInt));
-      lm2gmOp->setAttr("rowLen", builder.getIntegerAttr(
-                                     builder.getIntegerType(64, true), rowLen));
       lm2gmOp->setAttr(
-          "rowStride",
-          builder.getIntegerAttr(builder.getIntegerType(64, true), rowStride));
-      findUnsupportedOp = false; // reset
-      rowLen = -1;
-      rowStride = -1;
+          "rowLen",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowLen));
+      lm2gmOp->setAttr("rowStride",
+                       builder.getIntegerAttr(builder.getIntegerType(64, true),
+                                              opRowStride));
+      findUnsupportedOp = false;
+      if (!handwritten) {
+        rowLen = -1;
+        rowStride = -1;
+      }
     });
 
     mod.walk([&](triton::xpu::SM2GMOp sm2gmOp) {
@@ -1314,45 +1558,57 @@ public:
       if (dumpFlag)
         LLVM_DEBUG(llvm::dbgs()
                    << "\n=======================================\n");
+      bool handwritten = gm2lmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
-          gm2lmOp.getHandwrittenOffsetState()
-              ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
-              : getOffsetState(gm2lmOp);
+          handwritten ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
+                      : getOffsetState(gm2lmOp);
+      int32_t opFixedStride =
+          handwritten ? gm2lmOp.getFixedStride() : fixedStride;
+      int64_t opRowLen = handwritten ? gm2lmOp.getRowLen() : rowLen;
+      int64_t opRowStride = handwritten ? gm2lmOp.getRowStride() : rowStride;
+      int32_t opLrie = handwritten ? gm2lmOp.getLrie() : lrie;
+      recoverForcedOffsetState(gm2lmOp, handwritten, offsetState, opFixedStride,
+                               opRowLen, opRowStride, opLrie);
       if (dumpFlag) {
         LLVM_DEBUG(llvm::dbgs()
                    << "\n"
                    << gm2lmOp << "\n[OffsetState]: " << offsetState
                    << "\n=======================================\n");
       }
-      // In case `fixedStride` being modified by cluster(s) whose
-      // OffsetState is Continuous.
-      if (offsetState == OffsetState::Discrete) {
-        fixedStride = -1;
-      } else if (offsetState == OffsetState::Unknown &&
-                 (fixedStride == 1 | fixedStride == 0)) {
-        // Multi Memory State Like (Unknown & Continuous)
-        fixedStride = -1;
+      if (!handwritten) {
+        if (offsetState == OffsetState::Discrete) {
+          opFixedStride = INT32_MIN;
+        } else if (offsetState == OffsetState::Unknown &&
+                   (opFixedStride == 1 | opFixedStride == 0)) {
+          opFixedStride = INT32_MIN;
+        }
       }
 
       OpBuilder builder(gm2lmOp);
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
       gm2lmOp->setAttr("offsetState",
                        builder.getSI32IntegerAttr(offsetStateInt));
-      gm2lmOp->setAttr("fixedStride", builder.getSI32IntegerAttr(fixedStride));
-      gm2lmOp->setAttr("rowLen", builder.getIntegerAttr(
-                                     builder.getIntegerType(64, true), rowLen));
+      gm2lmOp->setAttr("fixedStride",
+                       builder.getSI32IntegerAttr(opFixedStride));
       gm2lmOp->setAttr(
-          "rowStride",
-          builder.getIntegerAttr(builder.getIntegerType(64, true), rowStride));
-      gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(lrie));
+          "rowLen",
+          builder.getIntegerAttr(builder.getIntegerType(64, true), opRowLen));
+      gm2lmOp->setAttr("rowStride",
+                       builder.getIntegerAttr(builder.getIntegerType(64, true),
+                                              opRowStride));
+      gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(opLrie));
       auto loadOp = cast<triton::xpu::LoadOp>(gm2lmOp->getNextNode());
       loadOp->setOperand(0, gm2lmOp);
-      loadOp->setAttr("stride", builder.getSI32IntegerAttr(fixedStride));
-      loadOp->setAttr("isDiscrete", builder.getBoolAttr(offsetState ==
-                                                        OffsetState::Discrete));
-      fixedStride = -1; // reset
-      rowLen = -1;
-      rowStride = -1;
+      loadOp->setAttr("stride", builder.getSI32IntegerAttr(opFixedStride));
+      loadOp->setAttr(
+          "isDiscrete",
+          builder.getBoolAttr(offsetState == OffsetState::Discrete ||
+                              offsetState == OffsetState::LocallyScalar));
+      if (!handwritten) {
+        fixedStride = INT32_MIN;
+        rowLen = -1;
+        rowStride = -1;
+      }
       findUnsupportedOp = false;
     });
 

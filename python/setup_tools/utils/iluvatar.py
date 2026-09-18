@@ -44,7 +44,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     cache.store(
         file="iluvatar-llvm22-x86_64",
         condition=("iluvatar" == flagtree_backend),
-        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm22-x86_64_v0.6.0.tar.gz",
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/iluvatar-llvm22-x86_64_v0.6.1.tar.gz",
         pre_hook=lambda: check_env("LLVM_SYSPATH"),
         post_hook=set_llvm_env,
     )

@@ -1,4 +1,6 @@
 S5000 * 4
+harbor.baai.ac.cn/flagtree/flagtree-mthreads-py310-torch2.7.1-musa4.3.5-mcc5.1.0-ubuntu22.04:202607-3.6-vllm0.20.2
+Driver Version: 4.3
 vllm==0.20.2+empty
 torch==2.7.1
 torch_musa==2.7.1

@@ -3,6 +3,8 @@
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
+// DLTI: pulled in by the `triton_xpu.raw` payload import (see Passes.td).
+#include "mlir/Dialect/DLTI/DLTI.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "PatternTritonXPUOpToLLVM.h"
@@ -172,6 +174,10 @@ struct ConvertTritonXPUToLLVM
     //                                             patterns, benefit);
     mlir::triton::xpu::populateMakeRangeOpToLLVMPattern(
         typeConverter, targetInfo, patterns, benefit);
+
+    // tle.raw on the cluster path: splice the payload in and call it.
+    mlir::triton::xpu::populateRawOpToLLVMPatterns(typeConverter, patterns,
+                                                   benefit);
 
     // TODO(thomas): this should probably be done in a separate step to not
     // interfere with our own lowering of arith ops. Add arith/math's patterns

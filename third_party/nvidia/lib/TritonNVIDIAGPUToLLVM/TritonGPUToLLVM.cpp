@@ -28,6 +28,7 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/NodeTransferOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/SignalOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
@@ -112,7 +113,7 @@ public:
           }
           return hasLegalRegions && typeConverter.isLegal(op);
         });
-    addLegalOp<tle::RemotePointersOp>();
+    addLegalOp<tle::RemotePointersOp, tle::NodePutOp, tle::NodeGetOp>();
     // Allow non-TLE ops to remain during this partial conversion.
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
@@ -226,6 +227,8 @@ struct ConvertTritonGPUToLLVM
 #ifdef __TLE__
     mlir::triton::tle::populateRemotePointersOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit + 1);
+    mlir::triton::tle::populateNodeTransferOpToLLVMPatterns(typeConverter,
+                                                            patterns, benefit);
 #endif
     mlir::triton::populateReduceOpToLLVMPatterns(typeConverter, patterns,
                                                  targetInfo, benefit);

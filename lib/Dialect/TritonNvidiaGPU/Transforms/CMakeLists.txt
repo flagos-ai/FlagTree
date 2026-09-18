@@ -15,6 +15,11 @@ add_triton_library(TritonNvidiaGPUTransforms
 
   DEPENDS
   TritonNvidiaGPUTransformsIncGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   TritonIR

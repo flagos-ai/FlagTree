@@ -122,6 +122,32 @@ emitOffsetForSliceLayoutXPU(const triton::gpu::SliceEncodingAttr &sliceLayout,
   auto parentEncoding = sliceLayout.getParent();
   unsigned dim = sliceLayout.getDim();
   auto parentShape = sliceLayout.paddedShape(type.getShape());
+
+  // TLE row-tiled reduce fix: paddedShape sets the sliced (collapsed) dim to 1.
+  // When that dim is the FASTEST dim of a col-fastest cluster layout
+  // (order[0] == dim, e.g. the row-tiled reduce source order == [1, 0] whose
+  // reduce axis == 1 is fastest), emitOffsetForClusterLayout below fills the
+  // fast dim first up to sizePerCore, but `% shapePerCTA[dim] == % 1 == 0`
+  // pins every offset to index 0, so the SLOWER (surviving result-row) dim
+  // never advances -- all rowsPerCore result slots collapse onto row 0
+  // (the rpc>1 result-packing bug). Reconstruct the full per-CTA extent of the
+  // sliced dim so the slower dim enumerates its distinct rows.
+  //
+  // No-op for the default order == [0, 1] paths: there the reduce axis (dim 1)
+  // is the SLOW dim (order[0] == 0 != 1), so `dim != order[0]` and this is
+  // skipped, preserving today's non-TLE behavior. For rowsPerCore == 1 the
+  // slice has one elem/core, so the expansion changes nothing observable.
+  if (auto cl =
+          mlir::dyn_cast<triton::xpu::ClusterLayoutAttr>(parentEncoding)) {
+    auto ord = cl.getOrder();
+    if (parentShape.size() == 2 && ord.size() == 2 && dim == ord[0]) {
+      auto spc = cl.getSizePerCore();
+      auto cpg = cl.getCoresPerGroup();
+      auto gpc = cl.getGroupsPerCluster();
+      parentShape[dim] = spc[dim] * cpg[dim] * gpc[dim];
+    }
+  }
+
   RankedTensorType parentTy =
       RankedTensorType::get(parentShape, type.getElementType(), parentEncoding);
   auto parentOffsets = emitOffsetForLayoutXPU(parentEncoding, parentTy);

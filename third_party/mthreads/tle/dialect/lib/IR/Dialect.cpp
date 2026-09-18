@@ -4,10 +4,13 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
+#include <cctype>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -93,7 +96,155 @@ static LogicalResult verifyStaticTileIndex(Operation *op, Value index,
            << *staticIndex << ", total_tiles=" << totalTiles;
   return success();
 }
+
+static bool isAsciiIdentStart(char c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+static bool isAsciiIdentChar(char c) {
+  return isAsciiIdentStart(c) || (c >= '0' && c <= '9') || c == '_';
+}
+
+static bool isValidPublicPipeName(StringRef name) {
+  if (name.empty() || name == "fields" || name == "readers" ||
+      name.starts_with("_") || !isAsciiIdentStart(name.front()))
+    return false;
+  return llvm::all_of(name.drop_front(), isAsciiIdentChar);
+}
+
+static LogicalResult verifyPipeNameArray(Operation *op, ArrayAttr names,
+                                         StringRef description,
+                                         bool allowEmpty) {
+  if (!allowEmpty && names.empty())
+    return op->emitOpError("expects ")
+           << description << " to contain at least one name";
+  llvm::SmallSet<StringRef, 8> seen;
+  for (Attribute attr : names) {
+    auto name = dyn_cast<StringAttr>(attr);
+    if (!name)
+      return op->emitOpError("expects ")
+             << description << " to contain only strings";
+    if (!isValidPublicPipeName(name.getValue()))
+      return op->emitOpError("expects valid public MUSA TLE pipe ")
+             << description << " names";
+    if (!seen.insert(name.getValue()).second)
+      return op->emitOpError("expects unique MUSA TLE pipe ")
+             << description << " names";
+  }
+  return success();
+}
+
+static LogicalResult verifyPipeAttrs(Operation *op, OperandRange fields) {
+  auto capacity = op->getAttrOfType<IntegerAttr>("capacity");
+  if (!capacity || capacity.getInt() <= 0)
+    return op->emitOpError("requires positive capacity");
+  auto scope = op->getAttrOfType<StringAttr>("scope");
+  if (!scope || scope.getValue() != "cta")
+    return op->emitOpError("supports only scope = \"cta\"");
+
+  auto fieldNames = op->getAttrOfType<ArrayAttr>("field_names");
+  if (!fieldNames || fieldNames.size() != fields.size())
+    return op->emitOpError("expects field_names size to match field operands");
+  if (failed(verifyPipeNameArray(op, fieldNames, "field", false)))
+    return failure();
+  if (fields.empty())
+    return op->emitOpError("expects at least one pipe field");
+  for (Value field : fields) {
+    auto type = cast<ttg::MemDescType>(field.getType());
+    if (!isa<ttg::SharedMemorySpaceAttr>(type.getMemorySpace()))
+      return op->emitOpError("expects only shared-memory pipe fields");
+    if (type.getRank() < 2 || type.getShape().front() != capacity.getInt())
+      return op->emitOpError(
+          "expects field leading dimension to equal pipe capacity");
+  }
+
+  if (auto readers = op->getAttrOfType<ArrayAttr>("readers")) {
+    if (!isa<PipeCreateOp>(op))
+      return op->emitOpError("readers is only valid on musa_tle.pipe.create");
+    if (failed(verifyPipeNameArray(op, readers, "reader", false)))
+      return failure();
+  }
+  if (auto readerName = op->getAttrOfType<StringAttr>("reader_name")) {
+    if (!isa<PipeReaderWaitOp, PipeReaderReleaseOp>(op))
+      return op->emitOpError(
+          "reader_name is only valid on MUSA TLE pipe reader operations");
+    if (!isValidPublicPipeName(readerName.getValue()))
+      return op->emitOpError("expects valid public MUSA TLE pipe reader_name");
+  }
+  if (auto readerFields = op->getAttrOfType<ArrayAttr>("reader_fields")) {
+    if (!isa<PipeReaderWaitOp, PipeReaderReleaseOp>(op))
+      return op->emitOpError(
+          "reader_fields is only valid on MUSA TLE pipe reader operations");
+    if (failed(verifyPipeNameArray(op, readerFields, "reader field", false)))
+      return failure();
+    for (Attribute readerField : readerFields) {
+      if (!llvm::is_contained(fieldNames, readerField))
+        return op->emitOpError(
+            "expects reader_fields to reference payload field_names");
+    }
+  }
+  return success();
+}
+
+static LogicalResult verifyPipeStage(Operation *op, Value stage) {
+  if (!stage.getType().isInteger(32))
+    return op->emitOpError("expects stage to be i32");
+  return success();
+}
+
+static LogicalResult verifyPipeStagePhase(Operation *op, Value stage,
+                                          Value phase) {
+  if (failed(verifyPipeStage(op, stage)))
+    return failure();
+  if (!phase.getType().isInteger(1))
+    return op->emitOpError("expects phase to be i1");
+  return success();
+}
 } // namespace
+
+LogicalResult PipeCreateOp::verify() {
+  return verifyPipeAttrs(getOperation(), getFields());
+}
+
+LogicalResult PipeWriterAcquireOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStagePhase(getOperation(), getStage(), getPhase());
+}
+
+LogicalResult PipeWriterCommitOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStage(getOperation(), getStage());
+}
+
+LogicalResult PipeWriterCloseOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStagePhase(getOperation(), getStage(), getPhase());
+}
+
+LogicalResult PipeReaderWaitOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStagePhase(getOperation(), getStage(), getPhase());
+}
+
+LogicalResult PipeReaderReleaseOp::verify() {
+  if (failed(verifyPipeAttrs(getOperation(), getFields())))
+    return failure();
+  return verifyPipeStage(getOperation(), getStage());
+}
+
+void PipeReaderReleaseOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get());
+  MutableOperandRange fields = getFieldsMutable();
+  for (unsigned index = 0; index < fields.size(); ++index)
+    effects.emplace_back(MemoryEffects::Free::get(), &fields[index],
+                         ttg::SharedMemory::get());
+}
 
 void ExtractTileOp::build(OpBuilder &builder, OperationState &state, Value src,
                           Value index, ArrayRef<int64_t> tileShape) {

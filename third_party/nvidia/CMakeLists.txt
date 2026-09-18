@@ -7,13 +7,37 @@ if(FLAGTREE_TLE)
 endif()
 if(TRITON_BUILD_PYTHON_MODULE)
   add_triton_plugin(TritonNVIDIA ${CMAKE_CURRENT_SOURCE_DIR}/triton_nvidia.cc LINK_LIBS TritonNVIDIAGPUToLLVM NVGPUToLLVM)
+  add_dependencies(TritonNVIDIA
+    NVGPUTableGen
+    NVGPUAttrDefsIncGen
+    NVWSTableGen
+    NVWSAttrDefsIncGen
+    NVWSTransformsIncGen
+    TritonNVIDIAGPUConversionPassIncGen
+    NVGPUConversionPassIncGen
+    TritonNvidiaGPUTableGen
+    TritonNvidiaGPUAttrDefsIncGen
+    TritonNvidiaGPUOpInterfacesIncGen
+    TritonNvidiaGPUTransformsIncGen
+    TritonGPUTableGen
+    TritonGPUAttrDefsIncGen
+    TritonGPUCTAAttrIncGen
+    TritonGPUTypeInterfacesIncGen
+    TritonGPUOpInterfacesIncGen
+  )
   target_link_libraries(TritonNVIDIA PRIVATE Python3::Module pybind11::headers)
   if(FLAGTREE_TLE)
     target_link_libraries(TritonNVIDIA PRIVATE NvidiaTLERawTransforms)
-    add_dependencies(TritonNVIDIA NvidiaTLERawTransformsIncGen)
+    add_dependencies(TritonNVIDIA
+      NvidiaTLERawTransformsIncGen
+      TleTableGen
+    )
   endif()
 endif()
 if(TRITON_BUILD_UT)
   add_subdirectory(unittest)
 endif()
 add_subdirectory(hopper)
+if(TARGET TritonNVIDIA)
+  add_dependencies(TritonNVIDIA NVHopperTransformsIncGen)
+endif()

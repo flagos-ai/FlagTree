@@ -46,12 +46,14 @@ from .distributed import (
     MeshConfig,
     BarrierKind,
     MemoryOrder,
+    MemoryScope,
     GroupKind,
     signal,
     signal_wait,
     distributed_barrier,
     distributed_dot,
     _infer_submesh_barrier_group,
+    _is_cluster_submesh,
     _mesh_to_cluster_dims,
     make_sharded_tensor,
     _normalize_remote_shard_id,
@@ -62,7 +64,15 @@ from .distributed import (
     sharding,
 )
 from . import communication
-from .communication import get_mem_pool, create_dist_tensor, cleanup_communicator
+from .communication import get_mem_pool, cleanup_communicator
+
+
+def create_dist_tensor(buf_tensor):
+    """Create a distributed tensor context and bind it to ``buf_tensor``."""
+    ctx = communication.create_dist_tensor(buf_tensor)
+    ctx.register_buffer(buf_tensor)
+    return ctx
+
 
 _EXTENSION_APIS = frozenset({
     "make_tensor_view",
@@ -115,6 +125,7 @@ __all__ = [
     "distributed_dot",
     "distributed",
     "gpu",
+    "dsa",
     "raw",
     "mem_pool",
     "get_mem_pool",
@@ -122,10 +133,11 @@ __all__ = [
     "cleanup_communicator",
     "BarrierKind",
     "MemoryOrder",
+    "MemoryScope",
     "GroupKind",
 ]
 
-from . import distributed, gpu, raw
+from . import distributed, dsa, gpu, raw
 
 # TLE-specific loop iterator: tl.range plus the `reorder` extension hint.
 from .gpu import range
