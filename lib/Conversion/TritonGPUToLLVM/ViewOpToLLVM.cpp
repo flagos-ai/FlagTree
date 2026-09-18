@@ -527,6 +527,10 @@ struct MemDescIndexOpConversion
         dstTy.getAllocShape().take_back(dstTy.getRank());
     auto stride = product(
         getAllocationShapePerCTA(dstTy.getEncoding(), allocationShape));
+    bool isSubview = srcTy.getAllocShape() != srcTy.getShape();
+    Value offset;
+    if (!isSubview)
+      offset = b.mul(op.getIndex(), b.i32_val(stride));
     auto smemObj = getSharedMemoryObjectFromStruct(loc, adaptor.getSrc(),
                                                    llvmElemTy, rewriter);
     auto base = smemObj.getBase();
@@ -537,12 +541,11 @@ struct MemDescIndexOpConversion
     // A subslice may also start at a non-zero position in the leading stage
     // dimension. Fold that origin into the selected stage before dropping the
     // dimension from the result view.
-    Value effectiveIndex = op.getIndex();
-    if (srcTy.getAllocShape() != srcTy.getShape()) {
+    if (isSubview) {
       Value leadingOffset = prevOffsets[prevOffsets.size() - srcTy.getRank()];
-      effectiveIndex = b.add(effectiveIndex, leadingOffset);
+      Value effectiveIndex = b.add(op.getIndex(), leadingOffset);
+      offset = b.mul(effectiveIndex, b.i32_val(stride));
     }
-    Value offset = b.mul(effectiveIndex, b.i32_val(stride));
     SmallVector<Value> offsetVals(prevOffsets.end() - dstTy.getRank(),
                                   prevOffsets.end());
 
