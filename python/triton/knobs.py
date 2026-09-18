@@ -678,6 +678,15 @@ class musa_knobs(base_knobs):
     rlc_cached_load_cost_per_byte: env_int = env_int("FLAGTREE_MUSA_RLC_CACHED_LOAD_COST_PER_BYTE", 0)
     rlc_expensive_math_cost_per_byte: env_int = env_int("FLAGTREE_MUSA_RLC_EXPENSIVE_MATH_COST_PER_BYTE", 0)
     rlc_inter_warp_reduce_cost: env_int = env_int("FLAGTREE_MUSA_RLC_INTER_WARP_REDUCE_COST", 0)
+    # MUSA scalarizes atomic tensor elements in one thread. Keep Phase 2 from
+    # increasing that per-thread atomic count; the RLC master switch remains
+    # default-off, and Phase 3 MMA atomic rematerialization is unaffected.
+    rlc_atomic_writeback_max_elements_per_thread_ratio: env_int = env_int(
+        "FLAGTREE_MUSA_RLC_ATOMIC_WRITEBACK_MAX_ELEMS_PER_THREAD_RATIO", 1)
+    # MUSA scalar and vector int-to-fp paths are not bit-identical at every
+    # rounding boundary. Phase 2 must not change that per-thread vector width.
+    rlc_preserve_int_to_fp_contiguity: env_bool = env_bool(
+        "FLAGTREE_MUSA_RLC_PRESERVE_INT_TO_FP_CONTIGUITY", True)
 
 
 # flagtree ppu
@@ -686,6 +695,8 @@ class ppu_knobs(base_knobs):
     ppu_llc_options: env_opt_str = env_opt_str("PPU_LLC_OPTIONS")
     dump_compile_log: env_bool = env_bool("TRITON_DUMP_COMPILE_LOG")
     libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
+
+
 class proton_knobs(base_knobs):
     disable: env_bool = env_bool("TRITON_PROTON_DISABLE", False)
     cupti_lib_dir: env_str = env_str(

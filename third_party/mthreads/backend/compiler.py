@@ -199,6 +199,22 @@ def _max_static_shared_memory_from_arch(arch: object) -> Optional[int]:
     return None
 
 
+def _effective_atomic_writeback_ratio() -> int:
+    """Return the atomic policy only when its owning RLC phase can run."""
+    musa = knobs.musa
+    if not musa.rlc_enhance or not (int(musa.rlc_phase_mask) & 0b0100):
+        return 0
+    return int(getattr(musa, "rlc_atomic_writeback_max_elements_per_thread_ratio", 0) or 0)
+
+
+def _effective_preserve_int_to_fp_contiguity() -> bool:
+    """Return the Phase 2 int-to-fp guard only while its owner can run."""
+    musa = knobs.musa
+    if not musa.rlc_enhance or not (int(musa.rlc_phase_mask) & 0b0100):
+        return False
+    return bool(getattr(musa, "rlc_preserve_int_to_fp_contiguity", True))
+
+
 def _apply_musa_rlc_policy(mod) -> None:
     """Set optional ttg.rlc-* module attrs. Zero keeps C++ conservative defaults."""
     if not knobs.musa.rlc_enhance:
@@ -213,10 +229,15 @@ def _apply_musa_rlc_policy(mod) -> None:
         ("ttg.rlc-cached-load-cost-per-byte", getattr(musa, "rlc_cached_load_cost_per_byte", 0)),
         ("ttg.rlc-expensive-math-cost-per-byte", getattr(musa, "rlc_expensive_math_cost_per_byte", 0)),
         ("ttg.rlc-inter-warp-reduce-cost", getattr(musa, "rlc_inter_warp_reduce_cost", 0)),
+        ("ttg.rlc-atomic-writeback-max-elements-per-thread-ratio",
+         _effective_atomic_writeback_ratio()),
     )
     for name, value in overrides:
         if value and int(value) > 0:
             mod.set_attr(name, builder.get_int32_attr(int(value)))
+    if _effective_preserve_int_to_fp_contiguity():
+        mod.set_attr("ttg.rlc-preserve-int-to-fp-contiguity",
+                     builder.get_int32_attr(1))
 
 
 def _rlc_policy_signature() -> str:
@@ -236,6 +257,8 @@ def _rlc_policy_signature() -> str:
         str(int(getattr(musa, "rlc_cached_load_cost_per_byte", 0) or 0)),
         str(int(getattr(musa, "rlc_expensive_math_cost_per_byte", 0) or 0)),
         str(int(getattr(musa, "rlc_inter_warp_reduce_cost", 0) or 0)),
+        str(_effective_atomic_writeback_ratio()),
+        str(int(_effective_preserve_int_to_fp_contiguity())),
     ])
 
 

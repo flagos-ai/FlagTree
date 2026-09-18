@@ -13,6 +13,7 @@ from rlc_gate_common import (
     count_convert_layout,
     launch_flaggems_pad,
     launch_flaggems_rand,
+    launch_flaggems_uniform,
     rlc_compile_env,
 )
 from test_tle_utils import require_mthreads_libtriton
@@ -88,3 +89,31 @@ def test_flaggems_rlc_off_vs_on_match(tmp_path):
         torch.musa.synchronize()
         on_cpu = on.cpu()
     torch.testing.assert_close(off_cpu, on_cpu, atol=0, rtol=0)
+
+
+def test_flaggems_uniform_phase2_preserves_int_to_fp_contiguity(tmp_path):
+    """Regression for S5000 n=1025 seed=11 offset=12 flat index 479."""
+    import torch
+
+    if not hasattr(torch, "musa") or not torch.musa.is_available():
+        pytest.skip("MUSA device is not available")
+
+    n = 1025
+    with rlc_compile_env(False, 15, cache_dir=str(tmp_path / "uniform-off")):
+        off = torch.empty((n, ), device="musa", dtype=torch.float16)
+        off_kernel = launch_flaggems_uniform(
+            off, philox_seed=11, philox_offset=12, from_=-1.0, to=1.0
+        )
+        torch.musa.synchronize()
+        off_cpu = off.cpu()
+    with rlc_compile_env(True, 15, cache_dir=str(tmp_path / "uniform-on")):
+        on = torch.empty((n, ), device="musa", dtype=torch.float16)
+        on_kernel = launch_flaggems_uniform(
+            on, philox_seed=11, philox_offset=12, from_=-1.0, to=1.0
+        )
+        torch.musa.synchronize()
+        on_cpu = on.cpu()
+
+    torch.testing.assert_close(off_cpu, on_cpu, atol=0, rtol=0)
+    assert count_convert_layout(off_kernel.asm["ttgir"]) == 4
+    assert count_convert_layout(on_kernel.asm["ttgir"]) == 4

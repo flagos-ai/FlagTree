@@ -57,6 +57,8 @@ _POLICY_ENV = (
     ("FLAGTREE_MUSA_RLC_CACHED_LOAD_COST_PER_BYTE", "ttg.rlc-cached-load-cost-per-byte"),
     ("FLAGTREE_MUSA_RLC_EXPENSIVE_MATH_COST_PER_BYTE", "ttg.rlc-expensive-math-cost-per-byte"),
     ("FLAGTREE_MUSA_RLC_INTER_WARP_REDUCE_COST", "ttg.rlc-inter-warp-reduce-cost"),
+    ("FLAGTREE_MUSA_RLC_ATOMIC_WRITEBACK_MAX_ELEMS_PER_THREAD_RATIO",
+     "ttg.rlc-atomic-writeback-max-elements-per-thread-ratio"),
 )
 
 
@@ -142,6 +144,34 @@ def flaggems_rand_kernel(out_ptr, N, philox_seed, philox_offset, BLOCK: tl.const
     r1 = r1.to(tl.float32) * scale
     r2 = r2.to(tl.float32) * scale
     r3 = r3.to(tl.float32) * scale
+    off0 = tl.program_id(0) * BLOCK * 4 + tl.arange(0, BLOCK)
+    off1 = off0 + BLOCK
+    off2 = off1 + BLOCK
+    off3 = off2 + BLOCK
+    tl.store(out_ptr + off0, r0, mask=off0 < N)
+    tl.store(out_ptr + off1, r1, mask=off1 < N)
+    tl.store(out_ptr + off2, r2, mask=off2 < N)
+    tl.store(out_ptr + off3, r3, mask=off3 < N)
+
+
+@triton.jit
+def flaggems_uniform_kernel(
+    out_ptr, N, philox_seed, philox_offset, from_, to, BLOCK: tl.constexpr
+):
+    philox_seed = philox_seed.to(tl.int64)
+    philox_offset = philox_offset.to(tl.int64)
+    c0 = (philox_offset & 0xFFFFFFFF).to(tl.uint32)
+    c1 = ((philox_offset >> 32) & 0xFFFFFFFF).to(tl.uint32)
+    i4 = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    c0 = c0 + i4
+    z = c0 * 0
+    r0, r1, r2, r3 = tl.philox(philox_seed, c0, c1, z, z)
+    scale = 2.3283064365386963e-10
+    width = to - from_
+    r0 = r0.to(tl.float32) * scale * width + from_
+    r1 = r1.to(tl.float32) * scale * width + from_
+    r2 = r2.to(tl.float32) * scale * width + from_
+    r3 = r3.to(tl.float32) * scale * width + from_
     off0 = tl.program_id(0) * BLOCK * 4 + tl.arange(0, BLOCK)
     off1 = off0 + BLOCK
     off2 = off1 + BLOCK
@@ -240,6 +270,25 @@ def launch_flaggems_rand(out, philox_seed=1234, philox_offset=0):
         n,
         philox_seed,
         philox_offset,
+        FLAGGEMS_RAND_BLOCK,
+        num_warps=FLAGGEMS_RAND_WARPS,
+        num_stages=1,
+    )
+    return kernel
+
+
+def launch_flaggems_uniform(
+    out, philox_seed=1234, philox_offset=0, from_=-1.0, to=1.0
+):
+    n = out.numel()
+    grid = (triton.cdiv(n, FLAGGEMS_RAND_BLOCK * 4), )
+    kernel = flaggems_uniform_kernel[grid](
+        out,
+        n,
+        philox_seed,
+        philox_offset,
+        from_,
+        to,
         FLAGGEMS_RAND_BLOCK,
         num_warps=FLAGGEMS_RAND_WARPS,
         num_stages=1,
