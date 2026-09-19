@@ -277,6 +277,20 @@ def TT_LoadOp : TT_Op<"load", [
                        "triton::EvictionPolicy":$evict, "bool":$isVolatile)>
     ];
 
+    // Keep flagtree_hints discardable so prebuilt plugins retain their
+    // LoadOp property ABI.
+    let extraClassDeclaration = [{
+      mlir::StringAttr getFlagtreeHintsAttr() {
+        return (*this)->getAttrOfType<mlir::StringAttr>("flagtree_hints");
+      }
+
+      llvm::StringRef getFlagtreeHints() {
+        if (auto attr = getFlagtreeHintsAttr())
+          return attr.getValue();
+        return "";
+      }
+    }];
+
     // Specify `cacheModifier` and `evictionPolicy` explicitly in the
     // assemblyFormat instead of as part of attr-dict so that they get printed
     // as strings rather than opaque integers.
