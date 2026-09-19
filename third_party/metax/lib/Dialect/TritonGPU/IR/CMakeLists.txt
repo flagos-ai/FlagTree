@@ -1,6 +1,6 @@
 add_triton_library(TritonGPUIR
-  Dialect.cpp
-  LinearLayoutConversions.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Dialect/TritonGPU/IR/Dialect.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Dialect/TritonGPU/IR/LinearLayoutConversions.cpp
   Ops.cpp
   Types.cpp
 
