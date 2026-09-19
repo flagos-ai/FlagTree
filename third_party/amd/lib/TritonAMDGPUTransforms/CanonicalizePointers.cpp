@@ -470,6 +470,24 @@ struct FatPointers {
       return !(lhs == rhs);
     }
 
+    // Conservatively merge the fat-pointer attributes coming from the two arms
+    // of an scf.if. The then/else pointers may legitimately differ (e.g. one
+    // canNarrow, the other not); keep a property only when both arms agree.
+    static FatPtrAttrs intersect(const FatPtrAttrs &lhs,
+                                 const FatPtrAttrs &rhs) {
+      FatPtrAttrs result;
+      result.canNarrow = lhs.canNarrow && rhs.canNarrow;
+      result.smallTensorBase = (lhs.smallTensorBase == rhs.smallTensorBase)
+                                   ? lhs.smallTensorBase
+                                   : Value();
+      for (const auto &attr : lhs.attributes) {
+        auto it = rhs.attributes.find(attr.first);
+        if (it != rhs.attributes.end() && it->second == attr.second)
+          result.attributes[attr.first] = attr.second;
+      }
+      return result;
+    }
+
     llvm::DenseMap<StringRef, Attribute> attributes;
     // If the fat-pointer points to somewhere in a small-tensor, keep track the
     // base of the tensor.
@@ -1423,14 +1441,9 @@ public:
           assert(i < ifOp.thenYield().getNumOperands() &&
                  i + 1 < ifOp.thenYield().getNumOperands() &&
                  "expected idx to be within bounds of IfOp's results");
-          Value thenFatPtrBase = ifOp.thenYield().getOperand(i);
-          Value thenFatPtrOffset = ifOp.thenYield().getOperand(i + 1);
-          Value elseFatPtrBase = ifOp.elseYield().getOperand(i);
-          Value elseFatPtrOffset = ifOp.elseYield().getOperand(i + 1);
-          assert((fatPtrs.at({thenFatPtrBase, thenFatPtrOffset}) ==
-                  fatPtrs.at({elseFatPtrBase, elseFatPtrOffset})) &&
-                 "expected then fat ptr canNarrow and else fat ptr canNarrow "
-                 "to be equal");
+          // Note: the then/else fat pointers may legitimately have different
+          // attributes (e.g. canNarrow); they are merged conservatively below
+          // via FatPtrAttrs::intersect rather than required to be equal.
         }
       }
     }
@@ -1456,8 +1469,17 @@ public:
     for (int64_t idx : yieldPtrOffsets) {
       Value thenFatPtrBase = newIfOp.thenYield().getOperand(idx);
       Value thenFatPtrOffset = newIfOp.thenYield().getOperand(idx + 1);
-      fatPtrs[{newIfOp.getResult(idx), newIfOp.getResult(idx + 1)}] =
-          fatPtrs.at({thenFatPtrBase, thenFatPtrOffset});
+      const auto &thenAttrs = fatPtrs.at({thenFatPtrBase, thenFatPtrOffset});
+      if (withElseRegion) {
+        Value elseFatPtrBase = newIfOp.elseYield().getOperand(idx);
+        Value elseFatPtrOffset = newIfOp.elseYield().getOperand(idx + 1);
+        const auto &elseAttrs = fatPtrs.at({elseFatPtrBase, elseFatPtrOffset});
+        fatPtrs[{newIfOp.getResult(idx), newIfOp.getResult(idx + 1)}] =
+            FatPointers::FatPtrAttrs::intersect(thenAttrs, elseAttrs);
+      } else {
+        fatPtrs[{newIfOp.getResult(idx), newIfOp.getResult(idx + 1)}] =
+            thenAttrs;
+      }
     }
 
     ResultRange results = newIfOp.getResults();
