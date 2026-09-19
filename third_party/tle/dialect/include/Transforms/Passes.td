@@ -44,6 +44,10 @@ def TritonTleFuseNodeRemoteTransfers
     is replaced with the existing result-less node transfer form, and local
     pointer argument ordinals are recorded as module metadata for host-side
     registered-buffer validation.
+    After fusion and dead-address cleanup, all surviving ranked tensors,
+    including those in functions without node transfers, are limited to 2^20
+    elements. Larger node transfer descriptions (up to the IR construction
+    limit of 2^25) are legal only if they are eliminated before this check.
   }];
 
   let dependentDialects = ["mlir::arith::ArithDialect",

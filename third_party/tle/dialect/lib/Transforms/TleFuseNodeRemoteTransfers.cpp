@@ -437,6 +437,43 @@ static void eraseDeadAddressOps(ModuleOp module) {
   }
 }
 
+// Large tensors are permitted only as temporary descriptions of node copies.
+// Once fusion has removed those descriptions, ordinary GPU computation retains
+// the original limit. Check all operations, not just Triton ops or functions
+// containing node markers, including values carried through nested regions.
+static LogicalResult verifySurvivingTensorSizes(ModuleOp module) {
+  constexpr int64_t maxComputeTensorNumElements = 1048576;
+  auto result = module.walk([&](Operation *op) -> WalkResult {
+    auto checkType = [&](Type type) -> LogicalResult {
+      auto tensorType = dyn_cast<RankedTensorType>(type);
+      if (!tensorType || !tensorType.hasStaticShape())
+        return success();
+      int64_t numElements = tensorType.getNumElements();
+      if (numElements <= maxComputeTensorNumElements)
+        return success();
+      return op->emitOpError()
+             << "tensor with " << numElements
+             << " elements exceeds the maximum allowed number of elements "
+             << maxComputeTensorNumElements
+             << " after node remote transfer fusion; only node transfer "
+                "tensors eliminated by fusion may exceed this limit";
+    };
+    for (Type type : op->getOperandTypes())
+      if (failed(checkType(type)))
+        return WalkResult::interrupt();
+    for (Type type : op->getResultTypes())
+      if (failed(checkType(type)))
+        return WalkResult::interrupt();
+    for (Region &region : op->getRegions())
+      for (Block &block : region)
+        for (BlockArgument arg : block.getArguments())
+          if (failed(checkType(arg.getType())))
+            return WalkResult::interrupt();
+    return WalkResult::advance();
+  });
+  return failure(result.wasInterrupted());
+}
+
 static std::optional<int64_t> getConstantI64(Value value) {
   auto constant = value.getDefiningOp<arith::ConstantOp>();
   if (!constant)
@@ -759,6 +796,11 @@ struct TritonTleFuseNodeRemoteTransfers
       }
     });
     if (hasUnfusedMarker) {
+      signalPassFailure();
+      return;
+    }
+
+    if (failed(verifySurvivingTensorSizes(module))) {
       signalPassFailure();
       return;
     }
