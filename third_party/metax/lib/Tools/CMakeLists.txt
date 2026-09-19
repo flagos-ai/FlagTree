@@ -1,5 +1,5 @@
 add_triton_library(TritonTools
-  GenericSwizzling.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Tools/GenericSwizzling.cpp
   LayoutUtils.cpp
   LinearLayout.cpp
 
