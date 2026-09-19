@@ -123,6 +123,10 @@ function(flagtree_apply_backend_source_overrides backend_root)
     set(_spec_sources_in_core_root)
     # ${_core_roots}: all core root directories
     set(_core_roots "${PROJECT_SOURCE_DIR}")
+    # ${backend_root}: backend root that may own the active core targets
+    if(IS_DIRECTORY "${backend_root}")
+      list(PREPEND _core_roots "${backend_root}")
+    endif()
     # ${TRITON_CORE_SOURCE_DIR}: third_party/iluvatar
     if(DEFINED TRITON_CORE_SOURCE_DIR)
       list(PREPEND _core_roots "${TRITON_CORE_SOURCE_DIR}")
