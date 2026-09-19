@@ -107,9 +107,9 @@ private:
       return false;
     if (!isa<ttg::DistributedEncodingTrait>(srcEncoding) || rank <= 1)
       return false;
-    // The rewrite assumes the reduction is on the innermost dim.
-    if (reduce.getAxis() != rank - 1)
-      return false;
+    // Any reduce axis is supported: the split always moves the register-driven
+    // bits into a new trailing dim, and the rescale is broadcast back along the
+    // reduce axis. FlashAttention with a ColMajor S reduces along axis 0.
     // Must admit a register-isolating free-view split of the reduce axis.
     if (!getThreadLocalityOptimizedEncoding(reduce).has_value())
       return false;
@@ -136,11 +136,16 @@ private:
     if (!forOp || forOp.getBody() != yieldOp->getBlock())
       return false;
     Value oldAccum = forOp.getInitArgs()[argNum];
-    if (!oldAccum.getDefiningOp<arith::ConstantOp>())
-      return false;
-
     Value blockArg = forOp.getRegionIterArgs()[argNum];
     Value reduceResult = reduce->getResult(0);
+    // Init may be a zero constant (typical) or a prior-region running sum
+    // (FA causal second loop). Non-constant inits must match the reduce
+    // result shape so the 1D accum can be rescaled in-loop and combined
+    // with the post-loop partial reduce.
+    if (!oldAccum.getDefiningOp<arith::ConstantOp>() &&
+        !isLiftable(oldAccum, reduceResult))
+      return false;
+
     Value accumOperand = (update->getOperand(0) == reduceResult)
                              ? update->getOperand(1)
                              : update->getOperand(0);
@@ -233,22 +238,56 @@ private:
         builder, forOp, ValueRange{newAccum->getResult(0)});
     auto newReduce = createReduce(builder, reduce, viewOpTensorType);
     Value reduceResult = reduce->getResult(0);
-    auto newUpdate = createUpdate(builder, newLoop, newReduce, oldUpdate,
-                                  blockArg, reduceResult, partialType);
+    int reduceAxis = reduce.getAxis();
+    Value accumOperand = (oldUpdate->getOperand(0) == reduceResult)
+                             ? oldUpdate->getOperand(1)
+                             : oldUpdate->getOperand(0);
+    // Keep the 1D running sum live and apply the same *alpha rescale each
+    // iteration. The split partial only absorbs new thread-local contributions
+    // (starts at zero). This is required when `oldAccum` is a non-zero prior
+    // sum (FA causal second loop); for the usual zero init it is a no-op.
+    builder.setInsertionPoint(oldUpdate);
+    Value scaledOneD =
+        rebuildOneDScale(builder, accumOperand, blockArg, reduceResult);
+    auto newUpdate =
+        createUpdate(builder, newLoop, newReduce, oldUpdate, blockArg,
+                     reduceResult, partialType, reduceAxis);
     createYield(builder, newLoop, oldYield, newUpdate->getResult(0),
-                blockArgNum);
+                blockArgNum, scaledOneD);
     auto newReduce2 = createPostLoopReduce(builder, newLoop, reduce);
     Type destType = oldAccum.getType();
     auto cvtLayout = createConvertLayout(builder, destType, newReduce2);
+    // final = scaled_1d_loop_result + reduce(partial). Do not fold the loop
+    // *init* here: non-zero inits are already represented by the scaled 1D
+    // result (zero inits stay zero).
+    Value loopOneD = newLoop.getResult(argNum);
     auto finalOp = incorporateOriginalAccumulatorValue(builder, oldUpdate,
-                                                       cvtLayout, oldAccum);
-    // The loop-carried accumulator result (now a passthrough constant) may have
-    // multiple post-loop uses (e.g. FA `acc / l_i` and the store of `l_i`);
-    // route all of them to the reduced+rescaled final value.
-    newLoop.getResult(argNum).replaceAllUsesWith(finalOp->getResult(0));
+                                                       cvtLayout, loopOneD);
+    // Exclude the incorporate op itself so we don't form a use-def cycle.
+    loopOneD.replaceAllUsesExcept(finalOp->getResult(0), finalOp);
 
     oldYield.erase();
     forOp.erase();
+  }
+
+  // Rebuild the accumulator-side `mulf` chain on the original 1D layout
+  // (no lift/broadcast). Used to keep the prior running sum correctly
+  // rescaled across iterations.
+  Value rebuildOneDScale(OpBuilder &builder, Value v, Value blockArg,
+                         Value reduceResult) const {
+    if (v == blockArg)
+      return blockArg;
+    assert(v != reduceResult &&
+           "1D scale chain must not include the reduce result");
+    Operation *def = v.getDefiningOp();
+    if (def && isa<arith::MulFOp>(def) &&
+        dependsOn(v, blockArg, reduceResult)) {
+      IRMapping mapping;
+      for (Value o : def->getOperands())
+        mapping.map(o, rebuildOneDScale(builder, o, blockArg, reduceResult));
+      return cloneWithInferType(builder, def, mapping)->getResult(0);
+    }
+    return v;
   }
 
   // Rebuild the accumulator-side value chain on the split partial. `blockArg`
@@ -257,7 +296,7 @@ private:
   // the partial layout.
   Value rebuildPartial(OpBuilder &builder, Value v, Value blockArg,
                        Value newArg, Value reduceResult, Value newReduce,
-                       RankedTensorType partialType) const {
+                       RankedTensorType partialType, int reduceAxis) const {
     if (v == blockArg)
       return newArg;
     if (v == reduceResult)
@@ -267,34 +306,52 @@ private:
         dependsOn(v, blockArg, reduceResult)) {
       IRMapping mapping;
       for (Value o : def->getOperands())
-        mapping.map(o, rebuildPartial(builder, o, blockArg, newArg,
-                                      reduceResult, newReduce, partialType));
+        mapping.map(o,
+                    rebuildPartial(builder, o, blockArg, newArg, reduceResult,
+                                   newReduce, partialType, reduceAxis));
       return cloneWithInferType(builder, def, mapping)->getResult(0);
     }
-    return liftToPartial(builder, v, partialType);
+    return liftToPartial(builder, v, partialType, reduceAxis);
   }
 
-  // Broadcast a per-row value `v` (shape [M], 1D) to the partial accumulator
-  // shape/layout ([M, lanePart], slice2d) via expand_dims + broadcast +
-  // convert_layout.
-  Value liftToPartial(OpBuilder &builder, Value v,
-                      RankedTensorType partialType) const {
+  // Broadcast a per-row value `v` (1D, the reduce's own result shape) up to the
+  // partial accumulator shape/layout (slice2d).
+  //
+  // Stay inside the partial's encoding family: convert the 1D value to
+  // `#slice<{dim = reduceAxis, parent = partialEnc}>`, then expand_dims +
+  // broadcast. Do NOT expand through the original `#mma` parent -- that would
+  // materialize an `8x128xf32, #mma` intermediate which RemoveLayoutConversions
+  // prefers over `#slice<#linear>`, forcing a per-iteration shared-memory
+  // convert of the thread-local reduce result (the +4KB FA shared regression).
+  Value liftToPartial(OpBuilder &builder, Value v, RankedTensorType partialType,
+                      int reduceAxis) const {
     Location loc = v.getLoc();
-    int64_t newDimAxis = partialType.getRank() - 1;
-    auto expanded = triton::ExpandDimsOp::create(builder, loc, v, newDimAxis);
-    auto expandedTy = cast<RankedTensorType>(expanded.getType());
-    auto bType = RankedTensorType::get(partialType.getShape(),
-                                       partialType.getElementType(),
-                                       expandedTy.getEncoding());
-    Value bcast = triton::BroadcastOp::create(builder, loc, bType, expanded);
-    return triton::gpu::ConvertLayoutOp::create(builder, loc, partialType,
-                                                bcast);
+    auto *ctx = partialType.getContext();
+    auto partialEnc = cast<ttg::SliceEncodingAttr>(partialType.getEncoding());
+    auto elemTy = partialType.getElementType();
+    ArrayRef<int64_t> partialShape = partialType.getShape();
+
+    // 1D view of the partial with the shrunk reduce-axis dim sliced away.
+    // expand_dims(reduceAxis) on this encoding recovers `partialEnc`.
+    auto vTargetEnc = ttg::SliceEncodingAttr::get(
+        ctx, reduceAxis, cast<ttg::DistributedEncodingTrait>(partialEnc));
+    SmallVector<int64_t> vTargetShape;
+    vTargetShape.reserve(partialShape.size() - 1);
+    for (int i = 0, e = partialShape.size(); i < e; ++i)
+      if (i != reduceAxis)
+        vTargetShape.push_back(partialShape[i]);
+    auto vTargetTy = RankedTensorType::get(vTargetShape, elemTy, vTargetEnc);
+    Value converted = ttg::ConvertLayoutOp::create(builder, loc, vTargetTy, v);
+
+    Value expanded =
+        triton::ExpandDimsOp::create(builder, loc, converted, reduceAxis);
+    return triton::BroadcastOp::create(builder, loc, partialType, expanded);
   }
 
   Operation *createUpdate(OpBuilder &builder, scf::ForOp &loop,
                           Operation *newReduce, Operation *oldUpdate,
                           Value blockArg, Value reduceResult,
-                          RankedTensorType partialType) const {
+                          RankedTensorType partialType, int reduceAxis) const {
     auto newArgNum = loop.getBody()->getNumArguments() - 1;
     auto newArg = loop.getBody()->getArgument(newArgNum);
     // Insert at `oldUpdate`, not after `newReduce`. The rescale operand
@@ -307,11 +364,11 @@ private:
     builder.setInsertionPoint(oldUpdate);
     IRMapping mapping;
     for (Value operand : oldUpdate->getOperands()) {
-      Value mapped =
-          (operand == reduceResult)
-              ? newReduce->getResult(0)
-              : rebuildPartial(builder, operand, blockArg, newArg, reduceResult,
-                               newReduce->getResult(0), partialType);
+      Value mapped = (operand == reduceResult)
+                         ? newReduce->getResult(0)
+                         : rebuildPartial(builder, operand, blockArg, newArg,
+                                          reduceResult, newReduce->getResult(0),
+                                          partialType, reduceAxis);
       mapping.map(operand, mapped);
     }
     return cloneWithInferType(builder, oldUpdate, mapping);
@@ -365,11 +422,12 @@ private:
 
   Operation *createYield(OpBuilder &builder, scf::ForOp &loop,
                          scf::YieldOp &oldYield, Value newUpdate,
-                         int oldAccumBlockArgNum) const {
+                         int oldAccumBlockArgNum, Value scaledOneD) const {
     builder.setInsertionPoint(oldYield);
     SmallVector<Value> yieldValues = llvm::to_vector(oldYield.getOperands());
-    yieldValues[oldAccumBlockArgNum - 1] =
-        loop.getBody()->getArgument(oldAccumBlockArgNum);
+    // Carry the 1D running sum after the same *alpha rescale applied to the
+    // split partial (not a plain passthrough of the block arg).
+    yieldValues[oldAccumBlockArgNum - 1] = scaledOneD;
     yieldValues.push_back(newUpdate);
     return scf::YieldOp::create(builder, oldYield.getLoc(), yieldValues);
   }

@@ -69,7 +69,11 @@ jobs:
           export FLAGTREE_BACKEND=iluvatar
           export TRITON_OFFLINE_BUILD=1
           export TRITON_BUILD_PROTON=OFF
-          export TRITON_ILU_BUILD_GLUON=OFF
+          export USE_FLAGCX=ON
+          export FLAGCX_RECOMPILE=ON
+          export FLAGCX_CACHE=clean
+          export FLAGCX_ILUVATAR_CLANG="${FLAGCX_ILUVATAR_CLANG:-$(command -v clang)}"
+          export FLAGCX_ILUVATAR_SDK="${FLAGCX_ILUVATAR_SDK:-$(dirname "$(dirname "$(realpath "$FLAGCX_ILUVATAR_CLANG")")")}"
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
       - name: Clear cache if ClearCache label present
@@ -87,6 +91,10 @@ jobs:
           set -x
           source ~/env.sh
           export LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}
+
+          for pkg in pytest hypothesis absl-py scipy lit pytest-forked expecttest; do
+            pip3 list "$pkg" | grep "$pkg" || pip3 install "$pkg"
+          done
 
           if [[ "$(uname -m)" == "aarch64" ]]; then
             libgomp_path=$(find /usr/lib /usr/lib64 /lib /lib64 -type f -name 'libgomp.so*' 2>/dev/null | head -n 1)
@@ -122,6 +130,7 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/operators/test_cross_entropy.py
           pytest third_party/iluvatar/python/test/unit/operators/test_dot_trans.py
           pytest third_party/iluvatar/python/test/unit/operators/test_flash_attention.py
+          pytest third_party/iluvatar/python/test/unit/operators/test_flash_attention_forward.py
           pytest third_party/iluvatar/python/test/unit/operators/test_inductor.py
           pytest third_party/iluvatar/python/test/unit/operators/test_matmul.py
           pytest third_party/iluvatar/python/test/unit/operators/test_sme.py
@@ -133,7 +142,7 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/runtime/test_cache.py
           pytest third_party/iluvatar/python/test/unit/runtime/test_compilation_listener.py
           pytest third_party/iluvatar/python/test/unit/runtime/test_driver.py
-          pytest third_party/iluvatar/python/test/unit/runtime/test_launch.py
+          USE_FLAGCX=0 pytest third_party/iluvatar/python/test/unit/runtime/test_launch.py
           pytest third_party/iluvatar/python/test/unit/runtime/test_specialize.py
           pytest third_party/iluvatar/python/test/unit/runtime/test_subproc.py
           pytest third_party/iluvatar/python/test/unit/runtime/test_iluvatar_loop_unroll_warning.py
@@ -167,6 +176,12 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/integrations/sglang/flash_mla/test_flash_mla_ut.py
           pytest third_party/iluvatar/python/test/unit/integrations/inductor/test_bucketize_matmul.py
           pytest third_party/iluvatar/python/test/unit/integrations/inductor/test_swfw3103_flex_attention_precision.py
+          pytest third_party/iluvatar/python/test/unit/integrations/inductor/test_swfw3436_var_mean_reshape_reduce.py
+
+          # triton gluon unit test
+          pytest third_party/iluvatar/python/test/gluon/test_core.py
+          pytest third_party/iluvatar/python/test/gluon/test_lowerings.py
+          pytest third_party/iluvatar/python/test/gluon/test_frontend.py
 
           # TLE unit test
           pytest python/test/tle/integration/test_tle_local_store.py
@@ -176,6 +191,12 @@ jobs:
           pytest python/test/tle/unit/test_insert_tile_static_index.py
           pytest python/test/tle/unit/test_insert_tile_dynamic_index.py
           pytest python/test/tle/unit/test_tle.py
+          pytest python/test/tle/unit/test_tle_distributed.py
+          pytest python/test/tle/unit/test_tle_raw_cache_key.py --deselect python/test/tle/unit/test_tle_raw_cache_key.py::test_mlir_dialect_cache_key_changes_with_edsl_source
+          pytest python/test/tle/unit/test_tle_gpu_slot.py
+          pytest python/test/tle/integration/test_tle_gemm.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_gemm.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_alloc.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_copy.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_async_load.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_memory_space.py
@@ -184,7 +205,29 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_pipeline_e2e.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_warp_specialize.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_pipe.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_get_device_id.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_distributed.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_n_pes.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_distributed_barrier.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_remote_pointers.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_raw.py
+
+          if (( $(ixsmi -L 2>/dev/null | grep -c "^GPU") >= 2 )); then
+            DIST_ENV="CUDA_VISIBLE_DEVICES=0,1 UMD_CUDAMODULELOADING=0 FLAGCX_MEM_ENABLE=1 NCCL_CUMEM_ENABLE=0 FLAGCX_USE_HETERO_COMM=1"
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29531 python/test/tle/unit/test_tle_get_local_pe.py
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29532 third_party/iluvatar/python/test/unit/tle/test_tle_get_device_id_multi_gpu.py
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29533 third_party/iluvatar/python/test/unit/tle/test_tle_n_pes_multi_gpu.py
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29534 third_party/iluvatar/python/test/unit/tle/test_tle_distributed_barrier_multi_gpu.py
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29535 third_party/iluvatar/python/test/unit/tle/test_tle_remote_pointers_multi_gpu.py
+            env ${DIST_ENV} torchrun --nproc_per_node=2 --master_port=29536 python/test/tle/unit/test_tle_distributed_d2d.py
+          fi
 
           # TLE tutorials unit tests
+          python3 python/tutorials/tle/raw/cuda/01-vector-add.py
+          python3 third_party/iluvatar/python/tutorials/tle/raw/cuda/02-fused-softmax.py
+          python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
+          python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
+          python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem-defered.py
           python3 third_party/iluvatar/python/tutorials/tle/01-fft.py --only_unit_test
+          python3 third_party/iluvatar/python/tutorials/tle/02-moe_align_block_size.py
           python3 third_party/iluvatar/python/tutorials/tle/03-topk.py --only_unit_test

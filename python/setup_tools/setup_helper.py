@@ -38,6 +38,7 @@ from .utils.tools import flagtree_configs as configs
 downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
+FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar"}
 
 
 def get_console_colors() -> Tuple[str, str]:
@@ -187,10 +188,7 @@ def get_backend_cmake_args(*args, **kargs):
 
 
 def customize_gluon_cmake_args():
-    if flagtree_backend != "iluvatar":
-        return []
-    enabled = os.getenv("TRITON_ILU_BUILD_GLUON", "").upper() in ["ON", "1", "YES", "TRUE", "Y"]
-    return [f"-DTRITON_BUILD_GLUON={'ON' if enabled else 'OFF'}"]
+    return []
 
 
 def get_device_name():
@@ -390,12 +388,12 @@ def write_flagtree_backend_file(triton_pkg_dir=None):
 
 
 def write_backend_file_to_build_lib(build_lib):
-    # xpu-only: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
+    # xpu/iluvatar: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
     # copies .py by default, so this extension-less marker (read by
     # triton._flagtree_backend to make XPUDriver.is_active() return True
     # without any env var) was missing from the install, causing
     # "0 active drivers". Write it into build_lib/triton so it is packaged.
-    if flagtree_backend == "xpu":
+    if flagtree_backend in ("xpu", "iluvatar"):
         try:
             write_flagtree_backend_file(os.path.join(build_lib, "triton"))
         except Exception as exc:  # noqa: BLE001
@@ -869,7 +867,10 @@ download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro
    refer to https://github.com/flagos-ai/FlagCX
 '''
 
-download_flagtree_third_party("flagcx", condition=(flagtree_backend == "nvidia" or not flagtree_backend),
+relocate_flagcx = get_hook_instance("relocate_flagcx")
+if relocate_flagcx:
+    relocate_flagcx()
+download_flagtree_third_party("flagcx", condition=(flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS,
                               hook="handle_flagcx", required=True)
 
 download_flagtree_third_party("cuda-tile", condition=(flagtree_backend == "tileir"), required=True)

@@ -200,8 +200,12 @@ struct FuncOpConversion : public ConvertOpToLLVMPattern<triton::FuncOp> {
 
     // Set an attribute for reqntidx, it could be used in latter LLVM codegen
     // for `nvvm.annotation` metadata.
-    newFuncOp->setAttr(NVVM::NVVMDialect::getReqntidAttrName(),
-                       rewriter.getDenseI32ArrayAttr(32 * numWarps));
+    auto module = funcOp->getParentOfType<ModuleOp>();
+    int threadsPerWarp =
+        triton::gpu::TritonGPUDialect::getThreadsPerWarp(module);
+    newFuncOp->setAttr(
+        NVVM::NVVMDialect::getReqntidAttrName(),
+        rewriter.getDenseI32ArrayAttr(threadsPerWarp * numWarps));
 
     rewriter.eraseOp(funcOp);
     rewriter.eraseOp(amendedFuncOp);
