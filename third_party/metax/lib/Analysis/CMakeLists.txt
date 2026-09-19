@@ -12,11 +12,11 @@ if (TRITON_BUILD_DISTRIBUTED)
 endif()
 
 add_triton_library(TritonAnalysis
-  AxisInfo.cpp
-  Allocation.cpp
-  Membar.cpp
-  Alias.cpp
-  Utility.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Analysis/AxisInfo.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Analysis/Allocation.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Analysis/Membar.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Analysis/Alias.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Analysis/Utility.cpp
 
   DEPENDS
   TritonTableGen
