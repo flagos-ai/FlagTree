@@ -5,7 +5,7 @@ add_public_tablegen_target(TritonCanonicalizeIncGen)
 add_triton_library(TritonIR
   Dialect.cpp
   DiscardableAttributes.cpp
-  Ops.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Dialect/Triton/IR/Ops.cpp
   Traits.cpp
   Types.cpp
   OpInterfaces.cpp
