@@ -1728,9 +1728,10 @@ struct AtomicCASOpConversion
             rewriter, loc, casPtr, casCmp, casVal, successOrdering,
             failureOrdering, StringRef(scopeStr.value()));
 
-        // Extract the new_loaded value (field 0) from the {value, success} pair.
-        Value ret = b.extract_val(
-            valueElemIntTy ? valueElemIntTy : valueElemTy, cmpxchg, 0);
+        // Extract the new_loaded value (field 0) from the {value, success}
+        // pair.
+        Value ret = b.extract_val(valueElemIntTy ? valueElemIntTy : valueElemTy,
+                                  cmpxchg, 0);
         if (valueElemIntTy)
           ret = LLVM::BitcastOp::create(rewriter, loc, valueElemTy, ret);
         resultVals[i] = ret;
