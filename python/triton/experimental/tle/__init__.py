@@ -2,12 +2,28 @@ from . import backends
 
 from . import language
 
-try:
-    from . import raw
-except ModuleNotFoundError:
-    raw = None
+if backends._detect_backend() == "ascend":
+    # Unified raw entry: op names carry a "<backend>_<op>" prefix, which is
+    # stripped before dispatching to the custom op registered for that backend.
+    # For example, on Ascend:
+    #     pair = tle.raw("ascend_sort32", src0, src1, repeat_times, out=pair)
+    # is equivalent to tle.dsa.ascend.raw("sort32", src0, src1, repeat_times,
+    # out=pair) with identical IR; the old entry remains available.
+    from triton.experimental.tle.language.dsa.ascend.core import raw as _ascend_raw
+    from triton.language.extra.cann.extension import builtin as _ascend_builtin
 
-# Copyright 2026- Xcoresigma Technology Co., Ltd
+    @_ascend_builtin
+    def raw(op_name, *args, out=(), _semantic=None):
+        op_name = getattr(op_name, "value", op_name)
+        backend, _, name = op_name.partition("_")
+        if backend != "ascend":
+            raise ValueError(f"unknown raw backend prefix in {op_name!r}")
+        return _ascend_raw(name, *args, out=out, _semantic=_semantic)
+else:
+    try:
+        from . import raw
+    except ModuleNotFoundError:
+        raw = None
 
 import ast
 import importlib
