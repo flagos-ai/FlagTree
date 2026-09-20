@@ -13,6 +13,7 @@ from triton.flagtune.runtime.model_loader import FlagTuneModelManager
 
 RUN_REMOTE_ENV = "FLAGTUNE_RUN_REMOTE_INTEGRATION"
 MODEL_VERSION = "1.0.0"
+THEAD_MM_VERSION = "1.1.0"
 REMOTE_BASE_URL = "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans"
 REMOTE_MANIFEST_URL = f"{REMOTE_BASE_URL}/flagtune-xgb-manifest.tar.gz"
 PUBLISHED_PACKAGES = (
@@ -41,6 +42,11 @@ PUBLISHED_PACKAGES = (
         "flagtune-xgb-thead-zw810e_v1.0.0.tar.gz",
         "78858b99a2b2252385f2a8624aff4391d0235bfc270beeb07a8cb7e0c7174942",
     ),
+    (
+        "thead-zw810e",
+        "flagtune-xgb-thead-zw810e_v1.1.0.tar.gz",
+        "0a089ab5cba39867a0ce57992a65e7991e33ca26549dcf893e736bcff3feb0cc",
+    ),
 )
 
 pytestmark = [
@@ -60,7 +66,7 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def _expected_models(platform_key):
+def _expected_models(platform_key, model_version):
     models = {
         f"{platform_key}/flaggems/mul/broadcast_2d/bf16-bf16-bf16": {
             "path": "flaggems/mul/broadcast_2d/bf16-bf16-bf16/model.tar.gz",
@@ -81,6 +87,20 @@ def _expected_models(platform_key):
                 "path": "flaggems/mm/splitk/bf16-bf16-bf16/model.tar.gz",
             },
         })
+    if platform_key == "thead-zw810e" and model_version == THEAD_MM_VERSION:
+        for variant in (
+                "gemv_ppu",
+                "mm_ppu",
+                "mm_ppu_mid_m",
+                "mm_ppu_multi_row_gemv",
+                "mm_ppu_narrow_columns",
+                "mm_ppu_narrow_n",
+                "mm_ppu_small_m",
+                "mm_ppu_split_k",
+        ):
+            models[f"thead-zw810e/flaggems/mm/{variant}/bf16-bf16-bf16"] = {
+                "path": f"flaggems/mm/{variant}/bf16-bf16-bf16/model.tar.gz",
+            }
     return models
 
 
@@ -92,6 +112,7 @@ def test_ksyun_package_download_validation_and_cache_reuse(
     filename,
     package_sha256,
 ):
+    model_version = THEAD_MM_VERSION if filename.endswith("v1.1.0.tar.gz") else MODEL_VERSION
     cache_root = tmp_path / "model-cache"
     for name in (
             "FLAGTUNE_DISABLE_REMOTE",
@@ -113,8 +134,9 @@ def test_ksyun_package_download_validation_and_cache_reuse(
         "broadcast_2d",
         platform_key=platform_key,
         dtype_key="bf16-bf16-bf16",
+        model_version=model_version,
     )
-    expected = (cache_root / "packages" / platform_key / MODEL_VERSION / f"{platform_key}_v{MODEL_VERSION}.tar.gz")
+    expected = (cache_root / "packages" / platform_key / model_version / f"{platform_key}_v{model_version}.tar.gz")
     remote_url = f"{REMOTE_BASE_URL}/{filename}"
 
     assert downloaded == expected
@@ -123,7 +145,7 @@ def test_ksyun_package_download_validation_and_cache_reuse(
 
     manifest_path = cache_root / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    assert manifest["packages"][platform_key]["versions"][MODEL_VERSION] == {
+    assert manifest["packages"][platform_key]["versions"][model_version] == {
         "url": remote_url,
         "sha256": package_sha256,
     }
@@ -131,11 +153,11 @@ def test_ksyun_package_download_validation_and_cache_reuse(
     parsed = read_platform_package(
         downloaded,
         expected_platform_key=platform_key,
-        expected_version=MODEL_VERSION,
+        expected_version=model_version,
     )
     assert parsed.platform_key == platform_key
-    assert parsed.package_version == MODEL_VERSION
-    assert parsed.models == _expected_models(platform_key)
+    assert parsed.package_version == model_version
+    assert parsed.models == _expected_models(platform_key, model_version)
 
     monkeypatch.setenv("FLAGTUNE_DISABLE_REMOTE", "1")
     reused = FlagTuneModelManager().resolve(
@@ -143,6 +165,7 @@ def test_ksyun_package_download_validation_and_cache_reuse(
         "broadcast_2d",
         platform_key=platform_key,
         dtype_key="bf16-bf16-bf16",
+        model_version=model_version,
     )
     assert reused == downloaded
     assert not list(cache_root.rglob("*.tmp"))

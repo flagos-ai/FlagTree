@@ -152,6 +152,28 @@ def test_parse_operator_builds_inputs_params_and_ordered_features():
     })
 
 
+def test_explicit_configs_preserve_linked_parameter_candidates():
+    """Enumerate only exact configs when two parameter axes are linked."""
+    config = _config()
+    variant_config = config["variants"]["general"]
+    variant_config["params"]["PIPE_STAGES"] = {"values": [2, 3]}
+    variant_config["params"]["num_stages"] = {"values": [2, 3]}
+    variant_config["configs"] = [
+        {"BLOCK_M": 16, "num_warps": 4, "PIPE_STAGES": 2, "num_stages": 2},
+        {"BLOCK_M": 32, "num_warps": 8, "PIPE_STAGES": 3, "num_stages": 3},
+    ]
+
+    variant = parse_operator_config(config).get_variant("general")
+
+    assert list(variant.iter_configs()) == variant_config["configs"]
+    assert variant.param_space.validate(variant_config["configs"][0])
+    assert not variant.param_space.validate({"BLOCK_M": 16, "num_warps": 4, "PIPE_STAGES": 2, "num_stages": 3})
+
+    exported = variant_to_model_config(variant, _identity(), DTYPES, GPU, MODEL_VERSION)
+    loaded = parse_model_config(exported)
+    assert list(loaded.iter_configs()) == variant_config["configs"]
+
+
 def test_when_rejects_wrong_variant_shape():
     variant = parse_operator_config(_config()).get_variant("general")
     assert not variant.matches({"M": 32, "N": 1, "K": 64})
