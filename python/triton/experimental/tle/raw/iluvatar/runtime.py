@@ -17,6 +17,14 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
+"""CoreX-backed tle_raw runtime.
+
+Device sources are compiled by the corex clang for the Iluvatar GPGPU target,
+not by the NVIDIA CUDA toolchain. ``@dialect(name="cuda")`` is accepted as a
+frontend spelling because the source language is CUDA-like, but nothing here
+guarantees NVIDIA CUDA semantics, so the region dialect carried through the IR
+is ``corex``.
+"""
 
 from __future__ import annotations
 
@@ -27,6 +35,7 @@ import shlex
 import shutil
 import struct
 import subprocess
+import warnings
 from pathlib import Path
 from typing import Any, Final
 
@@ -106,7 +115,7 @@ def _resolve_clang() -> str:
             return candidate
 
     detail = ", ".join(tried) if tried else "<none>"
-    raise RuntimeError(f"TLE raw CUDA on iluvatar requires a corex clang >= {_MIN_CLANG_MAJOR} "
+    raise RuntimeError(f"TLE raw corex requires a corex clang >= {_MIN_CLANG_MAJOR} "
                        f"with the '{_ILUVATAR_LLVM_TARGET}' target registered. "
                        f"Tried: {detail}. Source the corex SDK or set CLANG to its clang.")
 
@@ -125,7 +134,7 @@ def _get_iluvatar_gpu_arch() -> str:
     major, minor = torch.cuda.get_device_capability()
     capability = major * 10 + minor
     if capability not in _CAPABILITY_TO_ARCH:
-        raise RuntimeError(f"TLE raw CUDA on iluvatar does not know the gpu-arch for "
+        raise RuntimeError(f"TLE raw corex does not know the gpu-arch for "
                            f"capability {capability}; set TLE_ILUVATAR_ARCH explicitly.")
     return f"--cuda-gpu-arch={_CAPABILITY_TO_ARCH[capability]}"
 
@@ -140,11 +149,15 @@ def _clang_flags() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _sanitize_clang_ir(ir: str) -> str:
-    # Newer clang emits attributes that this Triton branch's LLVM parser does
-    # not understand yet. They are not needed by TLE raw device function import.
-    ir = ir.replace(" nocreateundeforpoison", "")
-    ir = ir.replace(" contract", "")
+def _sanitize_clang_ir(ir: str) -> tuple[str, list[str]]:
+    """Rewrite clang syntax that this Triton branch's LLVM parser rejects.
+    """
+    applied: list[str] = []
+
+    for attribute in (" nocreateundeforpoison", " contract"):
+        ir, dropped = re.subn(re.escape(attribute), "", ir)
+        if dropped:
+            applied.append(f"dropped {dropped}x '{attribute.strip()}'")
 
     def _replace_hex_float(match: re.Match[str]) -> str:
         hex_digits = match.group(1)
@@ -157,7 +170,11 @@ def _sanitize_clang_ir(ir: str) -> str:
             return match.group(0)
         return repr(value)
 
-    return re.sub(r"f0x([0-9A-Fa-f]+)", _replace_hex_float, ir)
+    ir, rewritten = re.subn(r"f0x([0-9A-Fa-f]+)", _replace_hex_float, ir)
+    if rewritten:
+        applied.append(f"decoded {rewritten}x 'f0x...' float literal")
+
+    return ir, applied
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +190,10 @@ class CorexJITFunction(RawJITFunction):
             raise RuntimeError(f"tle_raw library={self.library!r} is not supported on iluvatar; "
                                "only plain corex device sources are.")
         self.code: Final[str] = file.read_text()
-        self.region_dialect: Final[str] = "cuda"
+        # The frontend spelling may be name="cuda", but everything downstream
+        # (dsl_region, deferred source store, materialize dispatch) names the
+        # corex toolchain that actually compiles the source.
+        self.region_dialect: Final[str] = "corex"
         self.lowered_region_dialect: Final[str] = "llvm"
         self.arg_dialect: Final[str] = "llvm"
         self.source_file: Final[str] = str(file)
@@ -205,37 +225,71 @@ class CorexJITFunction(RawJITFunction):
         )
 
     def make_llvm(self, mlir_context) -> str:
-        build = subprocess.run(
-            [
-                _resolve_clang(),
-                "-x",
-                "ivcore",
-                "--cuda-device-only",
-                _get_iluvatar_gpu_arch(),
-                "-emit-llvm",
-                "-O2",
-                "-S",
-                "-",
-                "-o",
-                "-",
-                *_clang_flags(),
-            ],
-            input=self.code.encode(),
-            capture_output=True,
-        )
-        assert build.returncode == 0, (f"clang failed\nstderr:\n{build.stderr.decode()}")
+        command = [
+            _resolve_clang(),
+            "-x",
+            "ivcore",
+            "--cuda-device-only",
+            _get_iluvatar_gpu_arch(),
+            "-emit-llvm",
+            "-O2",
+            "-S",
+            "-",
+            "-o",
+            "-",
+            *_clang_flags(),
+        ]
+        build = subprocess.run(command, input=self.code.encode(), capture_output=True)
+        if build.returncode != 0:
+            raise RuntimeError(f"corex clang failed to compile the tle_raw source "
+                               f"{self.source_file} (exit {build.returncode}).\n"
+                               f"command: {shlex.join(command)}\n"
+                               f"stderr:\n{build.stderr.decode(errors='replace')}")
+
+        clang_ir = build.stdout.decode()
+        ir, rewrites = _sanitize_clang_ir(clang_ir)
         llvm_context = llvm.context()
-        module = parse_llvm_ir(_sanitize_clang_ir(build.stdout.decode()), llvm_context, mlir_context)
+        try:
+            module = parse_llvm_ir(ir, llvm_context, mlir_context)
+        except Exception as exc:
+            applied = "; ".join(rewrites) if rewrites else "none"
+            raise RuntimeError(f"failed to import the corex clang IR of {self.source_file}.\n"
+                               f"parser-compatibility rewrites applied: {applied}.\n"
+                               f"IR as emitted by clang:\n{clang_ir}") from exc
         return f"{module}"
+
+
+class CorexCudaAliasJITFunction(CorexJITFunction):
+    """What ``@dialect(name="cuda")`` resolves to on iluvatar.
+
+    The spelling is kept so sources shared with the other backends keep working,
+    but the toolchain underneath is the corex clang. Warn once so the name is not
+    read as a promise of NVIDIA CUDA compatibility.
+    """
+
+    _warned = False
+
+    def __init__(self, fn: Any, file: Path, *args, **kwargs) -> None:
+        if not CorexCudaAliasJITFunction._warned:
+            CorexCudaAliasJITFunction._warned = True
+            warnings.warn(
+                '@dialect(name="cuda") resolves to the CoreX JIT on the iluvatar backend: the source '
+                "is compiled by the corex clang, not the NVIDIA CUDA toolchain, and full CUDA "
+                'compatibility is not guaranteed. Use @dialect(name="corex") for CoreX-native sources.', stacklevel=3)
+        super().__init__(fn, file, *args, **kwargs)
 
 
 def compile_deferred_pending_source(entry: dict, *, context) -> str:
     source_text = entry["source"]
+    source_file = entry.get("source_file", "<deferred corex source>")
 
     class _CorexSourceFile:
 
         def read_text(self):
             return source_text
+
+        def __str__(self):
+            return source_file
 
     corex_fn = CorexJITFunction(
         fn=None,

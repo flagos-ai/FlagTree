@@ -18,6 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from .runtime import CorexJITFunction
+from .runtime import CorexCudaAliasJITFunction, CorexJITFunction
 
-__all__ = ["CorexJITFunction"]
+__all__ = ["CorexCudaAliasJITFunction", "CorexJITFunction"]

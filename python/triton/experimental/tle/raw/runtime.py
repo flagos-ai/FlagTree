@@ -84,9 +84,13 @@ except ImportError:
 try:
     from triton._flagtree_backend import FLAGTREE_BACKEND
     if FLAGTREE_BACKEND == "iluvatar":
-        from .iluvatar import CorexJITFunction
+        from .iluvatar import CorexJITFunction, CorexCudaAliasJITFunction
         registry["corex"] = CorexJITFunction
-        registry["cuda"] = CorexJITFunction
+        # CUDA-like raw sources are accepted under "cuda" as well, but they are
+        # built by the corex clang for the Iluvatar GPGPU target rather than by
+        # the NVIDIA CUDA toolchain, so the alias warns on first use and the
+        # region dialect that reaches the IR stays "corex".
+        registry["cuda"] = CorexCudaAliasJITFunction
 except ImportError:
     pass
 

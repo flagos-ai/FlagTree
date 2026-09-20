@@ -9,6 +9,10 @@ that broke while bringing tle_raw up on corex -- that no dsl_region reaches the
 LLVM conversion, and that the raw device function does not steal the kernel's
 calling convention. The deferred path is pinned here too, since its stub is
 filled by the corex-local IluvatarMaterializeDeferredRaw pass.
+
+TestCorexNative goes past the CUDA-portable sources and pins what tle_raw is
+for on this backend: a region that reaches corex-only hardware. It drives the
+SME global->shared engine through the corex clang builtins.
 """
 import re
 from pathlib import Path
@@ -27,6 +31,10 @@ RAW_DIR = Path(__file__).parent / "raw"
 
 BLOCK = 16
 
+# One SME transfer is a 16 row x 64 byte hardware tile, so 16 fp32 columns.
+SME_TILE_ROWS = 16
+SME_TILE_COLS = 16
+
 
 @dialect(name="cuda", file=RAW_DIR / "vector_add.cu")
 def vector_add_edsl(*args, **kwargs):
@@ -40,6 +48,12 @@ def smem_accumulate_edsl(*args, **kwargs):
 
 @dialect(name="cuda", file=RAW_DIR / "smem_accumulate.cu", deferred=True, extern_func_name="SmemAccumulate")
 def smem_accumulate_deferred_edsl(*args, **kwargs):
+    ...
+
+
+# The corex-native spelling of the same JIT; "cuda" is only an alias for it.
+@dialect(name="corex", file=RAW_DIR / "sme_load_tile.cu")
+def sme_load_tiles_edsl(*args, **kwargs):
     ...
 
 
@@ -93,6 +107,16 @@ def _call_smem_deferred_kernel(x_ptr, out_ptr, SIZE: tl.constexpr):
     tl.store(out_ptr + offs, tl.load(acc_ptrs))
 
 
+@triton.jit
+def _sme_load_kernel(src_ptr, out_ptr, stride_bytes, ROWS: tl.constexpr, COLS: tl.constexpr):
+    rows = tl.broadcast_to(tl.arange(0, ROWS)[:, None], (ROWS, COLS))
+    cols = tl.broadcast_to(tl.arange(0, COLS)[None, :], (ROWS, COLS))
+    smem = tle_gpu.alloc(shape=[ROWS, COLS], dtype=tl.float32, layout=None, scope=tle_gpu.smem,
+                         nv_mma_shared_layout=True)
+    smem = tle_raw.call_smem(sme_load_tiles_edsl, [smem, src_ptr, stride_bytes])
+    tl.store(out_ptr + rows * COLS + cols, tl.load(tle_gpu.local_ptr(smem, (rows, cols))))
+
+
 def _compile_vector_add():
     return compile_iluvatar(
         _vector_add_kernel,
@@ -122,6 +146,24 @@ def _compile_call_smem_deferred():
         signature={"x_ptr": "*fp32", "out_ptr": "*fp32", "SIZE": "constexpr"},
         constexprs={"SIZE": BLOCK},
     )
+
+
+def _compile_sme_load(rows=SME_TILE_ROWS):
+    return compile_iluvatar(
+        _sme_load_kernel,
+        signature={
+            "src_ptr": "*fp32", "out_ptr": "*fp32", "stride_bytes": "i32", "ROWS": "constexpr", "COLS": "constexpr"
+        },
+        constexprs={"ROWS": rows, "COLS": SME_TILE_COLS},
+    )
+
+
+def _run_sme_load(rows=SME_TILE_ROWS):
+    device = triton.runtime.driver.active.get_active_torch_device()
+    src = torch.randn((rows, SME_TILE_COLS), device=device)
+    out = torch.empty_like(src)
+    _sme_load_kernel[(1, )](src, out, src.stride(0) * src.element_size(), rows, SME_TILE_COLS)
+    return src, out
 
 
 class TestDialectPrefix:
@@ -255,6 +297,30 @@ class TestDeferred:
         _call_smem_deferred_kernel[(1, )](x, deferred_out, SIZE=BLOCK)
         torch.testing.assert_close(deferred_out, eager_out)
         torch.testing.assert_close(deferred_out, x)
+
+
+class TestCorexNative:
+    """A raw region that only corex can compile: the SME G2S engine."""
+
+    # The builtins lower to sl_sme_load_16x1b64 / sl_wait g2scnt, so seeing the
+    # intrinsics in llir is what proves the region reached corex hardware
+    # instead of a portable CUDA subset.
+    def test_sme_builtins_reach_llir(self):
+        llir = _compile_sme_load().asm["llir"]
+        assert "llvm.bi.sme.load.16x1b64" in llir, llir
+        assert "llvm.bi.sl.waitcnt" in llir, llir
+        assert "iluvatar_tle" not in llir, llir
+
+    # name="corex" is the native spelling, so the dsl_region it stamps has to
+    # carry the corex dialect rather than the "cuda" frontend alias.
+    def test_region_is_tagged_corex(self):
+        ttir = _compile_sme_load().asm["ttir"]
+        assert 'region_dialect = "corex"' in ttir, ttir
+
+    @pytest.mark.parametrize("rows", [SME_TILE_ROWS, 2 * SME_TILE_ROWS])
+    def test_sme_load_matches_source(self, rows):
+        src, out = _run_sme_load(rows)
+        torch.testing.assert_close(out, src, atol=0, rtol=0)
 
 
 class TestUnsupported:

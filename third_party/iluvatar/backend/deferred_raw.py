@@ -4,9 +4,10 @@ Mirrors third_party/nvidia/backend/deferred_raw.py: trace registers pending
 sources, make_llir compiles them and runs the C++ pass to fill stub dsl_region
 bodies before dsl_region_inline.
 
-corex only ships the CUDA dialect (compiled by the corex clang); the MLIR
-dialect needs the MLIR python bindings, which the corex LLVM distribution does
-not build, so it is rejected here rather than silently mis-compiled.
+corex only ships its own region dialect, "corex": CUDA-like sources compiled by
+the corex clang, not by the NVIDIA CUDA toolchain. The MLIR dialect needs the
+MLIR python bindings, which the corex LLVM distribution does not build, so it is
+rejected here rather than silently mis-compiled.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ def _compile_pending_raw_sources(mod: Any, pending: dict[str, dict[str, Any]]) -
     for source_id, entry in pending.items():
         payload = dict(entry)
         region_dialect = payload.get("region_dialect")
-        if region_dialect == "cuda":
+        if region_dialect == "corex":
             from triton.experimental.tle.raw.iluvatar.runtime import compile_deferred_pending_source
             payload["llvm_ir"] = compile_deferred_pending_source(payload, context=context)
         else:
