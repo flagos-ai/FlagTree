@@ -899,6 +899,7 @@ setup(
     long_description_content_type="text/markdown",
     install_requires=[
         "importlib-metadata; python_version < '3.10'",
+        *helper.get_extra_install_requires(),
     ],
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
