@@ -53,6 +53,15 @@ def get_extra_packages():
     return packages
 
 
+def get_extra_install_requires():
+    # Backend-specific runtime deps, e.g. Ascend's `cann-shmem`. Backends that
+    # do not define the hook contribute nothing.
+    try:
+        return configs.activated_module.get_extra_install_requires()
+    except Exception:
+        return []
+
+
 def get_package_data_tools():
     package_data = ["compile.h", "compile.c"]
     try:
