@@ -6,21 +6,21 @@ add_triton_library(TritonGPUToLLVM
     AllocateWarpGroups.cpp
     AssertOpToLLVM.cpp
     ControlFlowOpToLLVM.cpp
-    ConvertLayoutOpToLLVM.cpp
+    ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonGPUToLLVM/ConvertLayoutOpToLLVM.cpp
     ElementwiseOpToLLVM.cpp
-    FuncOpToLLVM.cpp
+    ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonGPUToLLVM/FuncOpToLLVM.cpp
     GatherOpToLLVM.cpp
     GlobalScratchMemoryAllocation.cpp
     HistogramOpToLLVM.cpp
     MakeRangeOpToLLVM.cpp
     MemoryOpToLLVM.cpp
     PrintOpToLLVM.cpp
-    ReduceOpToLLVM.cpp
+    ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonGPUToLLVM/ReduceOpToLLVM.cpp
     ScanOpToLLVM.cpp
     SPMDOpToLLVM.cpp
-    TypeConverter.cpp
-    Utility.cpp
-    ViewOpToLLVM.cpp
+    ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonGPUToLLVM/TypeConverter.cpp
+    ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonGPUToLLVM/Utility.cpp
+    ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonGPUToLLVM/ViewOpToLLVM.cpp
 
     DEPENDS
     TritonGPUConversionPassIncGen
