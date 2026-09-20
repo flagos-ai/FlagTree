@@ -1163,8 +1163,12 @@ class TritonSemantic(Generic[TensorTy]):
         return self.tensor(self.builder.create_descriptor_reduce(kind, desc.handle, value.handle, offsets), tl.void)
 
     def _has_native_tma(self, ):
-        target = driver.active.get_current_target()
-        return (target.backend == "cuda" and target.arch >= 90)
+        # The XPU stack reports backend "cuda" for ecosystem compatibility, but
+        # it has no native TMA. Previously this was implicitly False because the
+        # target backend string was "xpu"; keep that behavior explicitly so the
+        # `target.backend == "cuda"` check does not enable nvidia descriptor
+        # lowering on XPU hardware.
+        return False
 
     def _descriptor_atomic_min_max_supported(self, dtype):
         assert dtype in {tl.uint32, tl.int32, tl.uint64, tl.int64, tl.float16, tl.bfloat16}, "Unsupported dtype"

@@ -467,10 +467,10 @@ struct DistributedBarrierOpConversion
                           ConversionPatternRewriter &rewriter) const {
     auto spaceAttr = op->getAttrOfType<StringAttr>(kSpaceAttr);
     auto kindAttr = op->getAttrOfType<StringAttr>(kGroupKindAttr);
-    auto orderAttr = op->getAttrOfType<StringAttr>(kOrderAttr);
+    auto orderAttr = op.getOrderAttr();
     auto indexAttr = op->getAttrOfType<IntegerAttr>(kIndexAttr);
     auto contextIdAttr = op->getAttrOfType<IntegerAttr>(kContextIdAttr);
-    auto memoryScopeAttr = op->getAttrOfType<StringAttr>(kMemoryScopeAttr);
+    auto memoryScopeAttr = op.getMemoryScopeAttr();
     auto loc = op.getLoc();
     SmallVector<Value> srcElems;
     auto getTeamKind =
@@ -489,35 +489,13 @@ struct DistributedBarrierOpConversion
           .Case("block", tle::FlagCXCoopKind::BLOCK)
           .Default(std::nullopt);
     };
-    auto getOrderValue = [](StringRef order) -> int32_t {
-      return llvm::StringSwitch<int32_t>(order)
-          .Case("relaxed", 0)
-          .Case("acquire", 1)
-          .Case("release", 2)
-          .Case("acqrel", 3)
-          .Default(-1);
-    };
-    auto getMemoryScopeValue = [](StringRef scope) -> int32_t {
-      return llvm::StringSwitch<int32_t>(scope)
-          .Case("system", 0)
-          .Case("device", 1)
-          .Case("block", 2)
-          .Case("thread", 3)
-          .Default(-1);
-    };
 
     auto teamKind = getTeamKind(spaceAttr.getValue());
     auto coopKind = getCoopKind(kindAttr.getValue());
-    int32_t order = getOrderValue(orderAttr.getValue());
-    int32_t memoryScope = getMemoryScopeValue(memoryScopeAttr.getValue());
     if (!teamKind)
       return rewriter.notifyMatchFailure(op, "invalid FlagCX team space");
     if (!coopKind)
       return rewriter.notifyMatchFailure(op, "invalid coop_kind");
-    if (order < 0)
-      return rewriter.notifyMatchFailure(op, "invalid order");
-    if (memoryScope < 0)
-      return rewriter.notifyMatchFailure(op, "invalid memory scope");
 
     if (auto src = adaptor.getSrc())
       srcElems = unpackLLElements(loc, src, rewriter);
@@ -527,13 +505,11 @@ struct DistributedBarrierOpConversion
         tle::FlagCXTeamKindAttr::get(rewriter.getContext(), *teamKind);
     auto coopKindAttr =
         tle::FlagCXCoopKindAttr::get(rewriter.getContext(), *coopKind);
-    auto newOrderAttr = rewriter.getI32IntegerAttr(order);
-    auto scopeAttr = rewriter.getI32IntegerAttr(memoryScope);
     auto barrierTypeAttr = op.getBarrierTypeAttr();
 #ifdef FLAGCX_ENABLED
     rewriter.replaceOpWithNewOp<tle::FlagCxBarrierOp>(
         op, comm, barrierTypeAttr, teamKindAttr, coopKindAttr, indexAttr,
-        contextIdAttr, newOrderAttr, scopeAttr);
+        contextIdAttr, orderAttr, memoryScopeAttr);
     return success();
 #else
     return rewriter.notifyMatchFailure(

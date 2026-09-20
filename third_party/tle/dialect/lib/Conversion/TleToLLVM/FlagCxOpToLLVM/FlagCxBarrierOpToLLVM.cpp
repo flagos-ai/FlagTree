@@ -48,8 +48,8 @@ struct FlagCxBarrierOpConversion
         static_cast<int32_t>(op.getIndexAttr().getInt()),
         static_cast<int32_t>(op.getContextIdAttr().getInt()),
         static_cast<int32_t>(op.getCoopKind()),
-        static_cast<int32_t>(op.getOrderAttr().getInt()),
-        static_cast<int32_t>(op.getScopeAttr().getInt()),
+        static_cast<int32_t>(op.getOrder()),
+        static_cast<int32_t>(op.getScope()),
         op.getBarrierTypeAttr().getValue());
     rewriter.eraseOp(op);
     return success();

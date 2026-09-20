@@ -911,7 +911,7 @@ LogicalResult DistributedBarrierOp::verify() {
       return emitOpError()
              << "FlagCX space must be 'device', 'inter', or 'world', got '"
              << space << "'";
-    return DistributedBarrier::verifyFlagCxSpace(op, getSrc());
+    return DistributedBarrier::verifyFlagCxSpace(*this, getSrc());
   }
 
   auto kindAttr = op->getAttrOfType<StringAttr>("group_kind");
@@ -1127,13 +1127,14 @@ LogicalResult RemotePointersOp::verify() {
 }
 
 LogicalResult SignalOp::verify() {
-  if (auto err = Signal::verifySignalOp(getSignalOp(), getValue()))
+  if (auto err = Signal::verifySignalOp(getSignalOp(), getValue(), getScope()))
     return emitOpError() << *err;
   return success();
 }
 
 LogicalResult SignalWaitOp::verify() {
-  if (auto err = Signal::verifySignalWaitOp(getWaitKind(), getTarget()))
+  if (auto err =
+          Signal::verifySignalWaitOp(getWaitKind(), getTarget(), getOrder()))
     return emitOpError() << *err;
   return success();
 }
