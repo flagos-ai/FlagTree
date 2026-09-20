@@ -5,7 +5,7 @@ add_triton_library(TritonGPUToLLVM
     AllocateSharedMemoryUtility.cpp
     AllocateWarpGroups.cpp
     AssertOpToLLVM.cpp
-    ControlFlowOpToLLVM.cpp
+    ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonGPUToLLVM/ControlFlowOpToLLVM.cpp
     ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonGPUToLLVM/ConvertLayoutOpToLLVM.cpp
     ElementwiseOpToLLVM.cpp
     ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonGPUToLLVM/FuncOpToLLVM.cpp
