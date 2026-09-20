@@ -64,6 +64,14 @@ def _storage_to_memdesc_space(storage: scope) -> str:
     raise ValueError(f"Unsupported TLE buffered_tensor storage: {storage}")
 
 
+def _storage_to_tile_space(storage: scope) -> str:
+    if storage is smem:
+        return "shared"
+    if storage is tmem:
+        return "local"
+    raise ValueError(f"Unsupported TLE CommonIR storage: {storage}")
+
+
 class layout:
 
     def __init__(self):
@@ -561,6 +569,21 @@ class buffered_tensor(tl.base_value):
         handles.append(self.handle)
 
     @tl.builtin
+    def load(self, writable: bool = True, target_shape=None, _semantic=None) -> tl.tensor:
+        """Load the full buffer into a tensor value, on either compilation path."""
+        from . import semantic as tle_semantic
+        target_shape = tl._unwrap_if_constexpr(target_shape)
+        shape = list(self.shape if target_shape is None else target_shape)
+        writable = tl._unwrap_if_constexpr(writable)
+        return tle_semantic.to_tensor(self, bool(writable), tl.block_type(self.dtype, shape), _semantic)
+
+    @tl.builtin
+    def store(self, value: tl.tensor, _semantic=None) -> None:
+        """Store a tensor value into the full buffer."""
+        from . import semantic as tle_semantic
+        tle_semantic.store_tensor(value, self, _semantic)
+
+    @tl.builtin
     def slot(self, stage, _semantic: TLESemantic | None = None):
         if len(self.shape) < 2:
             raise ValueError("buffered_tensor.slot requires a rank >= 2 buffer")
@@ -580,8 +603,18 @@ class buffered_tensor(tl.base_value):
         slot_layout = _make_slot_layout(self.type.layout, slot_shape)
         slot_ty = buffered_tensor_type(self.dtype, slot_shape, self.type.storage, slot_layout, _semantic,
                                        alloc_shape=slot_shape)
-        slot_handle = _semantic.builder.create_memdesc_index(slot_ty.to_ir(_semantic.builder), self.handle,
-                                                             stage_tensor.handle)
+        offsets = [stage_tensor]
+        for _ in range(len(self.shape) - 1):
+            offsets.append(_semantic.to_tensor(0))
+        from . import semantic as tle_semantic
+        slot_handle = tle_semantic.subview(
+            self,
+            offsets,
+            slot_shape,
+            [1] * len(slot_shape),
+            slot_layout,
+            _semantic,
+        )
         return buffered_tensor(slot_handle, self.dtype, slot_shape, self.type.storage, slot_layout, _semantic,
                                alloc_shape=slot_ty.alloc_shape)
 
@@ -699,8 +732,19 @@ class buffered_tensor_type(tl.block_type):
     def to_ir(self, builder: ir.builder) -> None:
         shape = self.shape
         builder = self.semantic.builder
+        from .semantic import COMMON_IR_ENABLED
+        if COMMON_IR_ENABLED:
+            memory_space = builder.tile_get_string_attr(_storage_to_tile_space(self.storage))
+            return builder.tile_get_buffer_type(
+                [int(tl._unwrap_if_constexpr(dim)) for dim in shape],
+                self.element_ty.to_ir(builder),
+                memory_space,
+            )
+        return self.to_memdesc_ir(builder)
+
+    def to_memdesc_ir(self, builder: ir.builder):
         return builder.get_memdesc_type(
-            shape,
+            self.shape,
             self.element_ty.to_ir(builder),
             self.layout.to_ir(builder),
             _storage_to_memdesc_space(self.storage),
@@ -1053,8 +1097,11 @@ class pipe_value(tl.base_value):
                                [(name, value.type) for name, value in self.fields.items()], self.readers,
                                one_shot=self.one_shot)
 
-    def _field_handles(self):
-        return [field.handle for field in self.fields.values()]
+    def _field_handles(self, _semantic=None):
+        if _semantic is None:
+            return [field.handle for field in self.fields.values()]
+        from . import semantic as tle_semantic
+        return [tle_semantic.get_memdesc(field, _semantic) for field in self.fields.values()]
 
     def _field_names(self):
         return list(self.fields.keys())
@@ -1180,7 +1227,7 @@ class pipe_writer(_pipe_endpoint):
     @tl.builtin
     def acquire(self, iter, _semantic: TLESemantic | None = None):
         stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
-        _semantic.builder.create_pipe_writer_acquire(self.pipe._field_handles(), stage.handle, phase.handle,
+        _semantic.builder.create_pipe_writer_acquire(self.pipe._field_handles(_semantic), stage.handle, phase.handle,
                                                      self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
                                                      self.pipe._field_names())
         return self.pipe._make_slot(stage, _semantic=_semantic)
@@ -1188,15 +1235,16 @@ class pipe_writer(_pipe_endpoint):
     @tl.builtin
     def commit(self, iter, _semantic: TLESemantic | None = None):
         stage, _ = self.pipe._stage_phase(iter, _semantic=_semantic)
-        _semantic.builder.create_pipe_writer_commit(self.pipe._field_handles(), stage.handle, self.pipe.capacity,
-                                                    self.pipe.scope, self.pipe._ir_name(), self.pipe._field_names())
+        _semantic.builder.create_pipe_writer_commit(self.pipe._field_handles(_semantic), stage.handle,
+                                                    self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
+                                                    self.pipe._field_names())
 
     @tl.builtin
     def close(self, iter, _semantic: TLESemantic | None = None):
         if self.pipe.one_shot:
             raise ValueError("tle.pipe one_shot pipes do not support close")
         stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
-        _semantic.builder.create_pipe_writer_close(self.pipe._field_handles(), stage.handle, phase.handle,
+        _semantic.builder.create_pipe_writer_close(self.pipe._field_handles(_semantic), stage.handle, phase.handle,
                                                    self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
                                                    self.pipe._field_names())
 
@@ -1213,17 +1261,17 @@ class pipe_reader(_pipe_endpoint):
     @tl.builtin
     def wait(self, iter, _semantic: TLESemantic | None = None):
         stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
-        is_closed = _semantic.builder.create_pipe_reader_wait(self.pipe._field_handles(), stage.handle, phase.handle,
-                                                              self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
-                                                              self.pipe._field_names(), self.reader_name or "",
-                                                              self._reader_field_names())
+        is_closed = _semantic.builder.create_pipe_reader_wait(self.pipe._field_handles(_semantic), stage.handle,
+                                                              phase.handle, self.pipe.capacity, self.pipe.scope,
+                                                              self.pipe._ir_name(), self.pipe._field_names(),
+                                                              self.reader_name or "", self._reader_field_names())
         slot = self.pipe._make_slot(stage, _semantic=_semantic, field_names=self.field_names)
         return pipe_wait_result(slot, tl.tensor(is_closed, tl.int1))
 
     @tl.builtin
     def release(self, iter, _semantic: TLESemantic | None = None):
         stage, _ = self.pipe._stage_phase(iter, _semantic=_semantic)
-        _semantic.builder.create_pipe_reader_release(self.pipe._field_handles(), stage.handle,
+        _semantic.builder.create_pipe_reader_release(self.pipe._field_handles(_semantic), stage.handle,
                                                      self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
                                                      self.pipe._field_names(), self.reader_name or "",
                                                      self._reader_field_names())

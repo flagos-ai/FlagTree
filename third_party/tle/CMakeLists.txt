@@ -38,6 +38,16 @@ endif()
 add_subdirectory(dialect)
 add_subdirectory(utils)
 if(TRITON_BUILD_PYTHON_MODULE)
+  set(TLE_COMMON_IR_LINK_LIBS "")
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    if(TARGET CommonIRIR)
+      list(APPEND TLE_COMMON_IR_LINK_LIBS CommonIRIR)
+    endif()
+    if(TARGET CommonIRTransforms)
+      list(APPEND TLE_COMMON_IR_LINK_LIBS CommonIRTransforms)
+    endif()
+  endif()
+
   add_triton_plugin(TritonTLE
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle_raw.cc
@@ -46,6 +56,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     TritonTLERawUtils
     TritonTLETransforms
     TritonIR
+    ${TLE_COMMON_IR_LINK_LIBS}
     )
 
   target_link_libraries(TritonTLE PRIVATE Python3::Module pybind11::headers MLIRTargetLLVMIRImport)
@@ -58,6 +69,13 @@ if(TRITON_BUILD_PYTHON_MODULE)
     TritonGPUTypeInterfacesIncGen
     TritonGPUOpInterfacesIncGen
   )
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    add_dependencies(TritonTLE
+      CommonIRTableGen
+      CommonIRAttrDefsIncGen
+      CommonIRTypesIncGen
+    )
+  endif()
 endif()
 
 add_subdirectory(test)

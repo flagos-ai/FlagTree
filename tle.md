@@ -92,6 +92,83 @@ Lowering paths:
 - TLE-Raw lowers to LLVM IR via language-specific pipelines (e.g., vendor private compilers).
 - All parts are finally linked into a complete kernel loaded/executed by runtime.
 
+#### 3.1.1 Optional GPU CommonIR lowering
+
+The default NVIDIA build keeps the native TLE GPU lowering path. An opt-in
+build can instead preserve the structured buffer operations as CommonIR TileIR
+before converting them to native TTGIR:
+
+```text
+tle.gpu.* -> tile.* / !tile.buf -> CommonIRToTTGIR -> native TTGIR
+```
+
+This path makes the frontend buffer semantics explicit without changing the
+final NVIDIA backend contract. The `CommonIRToTTGIR` pass must eliminate all
+`tile.*`, `!tile.buf`, and temporary buffer-to-memdesc bridges before the
+remaining TTGIR pipeline runs.
+
+The path is selected at build time and is disabled by default. It currently
+supports only the default NVIDIA backend. Place a compatible checkout of the
+official [FLIR](https://github.com/flagos-ai/flir) `main` branch at
+`third_party/flir`, then build FlagTree with:
+
+```bash
+git clone https://github.com/flagos-ai/flir.git third_party/flir
+FLAGTREE_COMMON_IR=1 python -m pip install -e . --no-build-isolation
+```
+
+The environment variable `FLAGTREE_COMMON_IR` sets the internal CMake variable
+`FLAGTREE_COMMON_IR_ENABLED`. When enabled, the C++ build defines
+`__FLAGTREE_COMMON_IR__`, exposes one capability query to Python, and registers
+the CommonIR dialect and conversion pass only for this build. Do not set
+`FLAGTREE_BACKEND` at the same time. Rebuild FlagTree when
+switching between the native and CommonIR paths; this is not a per-kernel
+runtime option.
+
+Supported GPU buffer forms are:
+
+| TLE/frontend form | CommonIR form | Native TTGIR result |
+| --- | --- | --- |
+| `tle.gpu.alloc` (SMEM, no alias) | `tile.alloc` / `!tile.buf<..., #shared>` | `ttg.local_alloc` / `!ttg.memdesc` |
+| `tle.gpu.copy` (full-buffer pointer copy) | `tile.copy` | synchronous or asynchronous TTGIR copy operations |
+| `buf.load()` | `tile.to_tensor` | `ttg.local_load` |
+| `buf.store(value)` | `tile.store_tensor` | `ttg.local_store` |
+| buffered-tensor slot/view | `tile.subview` | memdesc subview |
+| `tle.gpu.local_ptr` on a local buffer | temporary `!tile.buf` to `!ttg.memdesc` bridge | existing TLE local-pointer operations |
+| `tle.gpu.wgmma` shared operands, including transpose | buffer-to-memdesc bridge | existing descriptor views and WGMMA lowering |
+
+`buf` is a `tle.gpu.buffered_tensor`. Its `load()` / `store(value)` methods use
+the same spelling in native and CommonIR builds. Native builds lower them through
+`tle.gpu.local_ptr` and `tl.load` / `tl.store`; CommonIR builds preserve the
+full-buffer TileIR operations until conversion. The former experimental
+`tle.gpu.to_tensor(buf)` / `tle.gpu.store_tensor(value, buf)` entry points are
+replaced by these methods, not retained as aliases.
+
+TMA descriptor copies retain the existing TMA operation after the buffer-to-memdesc
+bridge. Global-to-shared TMA copies also preserve a user-provided completion
+barrier and its expected byte count; barrier validation follows the native path.
+
+The CommonIR build currently rejects the following forms with an explicit
+frontend diagnostic instead of silently bypassing CommonIR:
+
+- aliased `tle.gpu.alloc` buffers;
+- `tle.gpu.copy` with a mask, or a completion barrier outside global-to-shared TMA copy;
+- remote-buffer `tle.gpu.local_ptr`;
+- normal pointer copies with offsets (offset the pointer operands instead).
+
+After building, the focused checks are:
+
+```bash
+python -m pytest -q test/CommonIR/test_gpu_semantics.py
+python -m pytest -q test/CommonIR/test_gpu_wgmma_bridge.py python/test/tle/integration/test_tle_tma_copy.py
+python -m pytest -q python/test/tle/unit/test_tle_whitelist.py
+python -m pytest -q python/test/tle/unit/test_tle_gpu_buffer_access.py
+lit -sv --filter='gpu-tileir' build/cmake.*/test
+```
+
+The lit tests check both the intermediate TileIR contract and the absence of
+CommonIR operations or unresolved bridge casts in final TTGIR.
+
 ### 3.2 TLE-Lite
 
 - Design philosophy: write once, run anywhere.
