@@ -165,10 +165,10 @@ def make_config_proposer(
         ``op_id`` or exact ``op_id/variant``; a disabled model returns an empty proposer so
         integration layers can use their normal fallback.
 
-        The returned callable currently ignores ``initial_configs`` and
-        ``meta``.  They remain part of the stable proposer interface for Triton
-        integration. Candidate enumeration materializes the full
-        parameter Cartesian product before prediction.
+        On T-head PPU, ``meta['candidate_pruner']`` can restrict the complete
+        parameter space before prediction and GA benchmarking. Other platforms
+        retain the original proposer behavior. Candidate enumeration
+        materializes the full parameter Cartesian product.
     """
     identity = ModelIdentity(platform_key, op_id, variant, dtype_key)
     if _disabled(identity):
@@ -220,14 +220,25 @@ def make_config_proposer(
         if not variant_info.matches(inputs):
             return []
 
-        predicted = _predict_config_dicts(variant_info, model, inputs, top_k)
+        candidates = list(variant_info.iter_configs())
+        candidate_pruner = (_meta.get("candidate_pruner") if identity.platform_key.startswith("thead-") else None)
+        if candidate_pruner is not None:
+            allowed = candidate_pruner(candidates)
+            allowed_keys = {_config_key(config, fields) for config in allowed}
+            candidates = [config for config in candidates if _config_key(config, fields) in allowed_keys]
+        else:
+            allowed_keys = None
+
+        predicted = _predict_config_dicts(variant_info, model, inputs, top_k, candidates)
         if fn is None:
             return predicted
 
         history: List[Dict[str, Any]] = []
         for rank, config in enumerate(predicted, start=1):
             stripped = _strip_config(config, fields)
-            if len(stripped) != len(fields) or _in_history(history, stripped, fields):
+            if (len(stripped) != len(fields)
+                    or (allowed_keys is not None and _config_key(stripped, fields) not in allowed_keys)
+                    or _in_history(history, stripped, fields)):
                 continue
             try:
                 samples = fn(stripped, None)
@@ -248,7 +259,9 @@ def make_config_proposer(
 
         for entry in generated:
             stripped = _strip_config(entry.get("config", entry), fields)
-            if len(stripped) != len(fields) or _in_history(history, stripped, fields):
+            if (len(stripped) != len(fields)
+                    or (allowed_keys is not None and _config_key(stripped, fields) not in allowed_keys)
+                    or _in_history(history, stripped, fields)):
                 continue
             try:
                 samples = fn(stripped, None)
@@ -292,9 +305,11 @@ def _predict_config_dicts(
     model: Any,
     inputs: Dict[str, Any],
     top_k: int,
+    configs: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Enumerate all legal configs, score their ordered feature matrix, and rank Top-K."""
-    configs = list(variant.iter_configs())
+    if configs is None:
+        configs = list(variant.iter_configs())
     if not configs:
         return []
 

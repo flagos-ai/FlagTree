@@ -208,7 +208,12 @@ class VariantInfo:
         name: Variant name, such as ``"general_tma"``.
         inputs: Ordered input specifications.
         when: Eligibility expression evaluated from normalized inputs.
-        param_space: Cartesian tunable-parameter space for this variant.
+        param_space: Tunable-parameter domain and legality validator for this
+            variant.
+        explicit_configs: Optional exact candidate list.  It takes precedence
+            over Cartesian enumeration and is useful when parameters are
+            linked (for example a kernel PIPE_STAGES value tied to Triton's
+            launch ``num_stages``).
         features: Ordered XGBoost feature specifications.
         operations: Built-in expression operation table.
     """
@@ -218,6 +223,7 @@ class VariantInfo:
     inputs: List[InputSpec]
     when: Expression
     param_space: ParameterSpace
+    explicit_configs: tuple[Dict[str, Any], ...]
     features: List[FeatureSpec]
     operations: Mapping[str, Operation]
 
@@ -295,9 +301,11 @@ class VariantInfo:
     def iter_configs(self) -> Iterable[Dict[str, Any]]:
         """Yield every legal parameter combination in deterministic order.
 
-        The underlying space is a Cartesian product and is generated lazily.
-        Its size therefore grows multiplicatively with each parameter field.
+        Exact configs preserve linked parameter choices; otherwise generate
+        the Cartesian parameter space lazily.
         """
+        if self.explicit_configs:
+            return (dict(config) for config in self.explicit_configs)
         return self.param_space.iter_configs()
 
     def build_feature_rows(
@@ -457,6 +465,34 @@ def _parse_params(raw_params: Any, location: str) -> ParameterSpace:
     return ParameterSpace(fields=fields)
 
 
+def _parse_explicit_configs(
+    raw_configs: Any,
+    param_space: ParameterSpace,
+    location: str,
+) -> tuple[Dict[str, Any], ...]:
+    """Compile an optional exact, ordered list of complete configurations."""
+    if raw_configs is None:
+        return ()
+    if not isinstance(raw_configs, list) or not raw_configs:
+        raise FlagTuneConfigError(f"{location} must be a non-empty list")
+    names = param_space.all_field_names
+    legal_values = param_space.field_values()
+    result: List[Dict[str, Any]] = []
+    seen = set()
+    for index, raw_config in enumerate(raw_configs):
+        config = dict(_require_mapping(raw_config, f"{location}[{index}]"))
+        if list(config) != names:
+            raise FlagTuneConfigError(f"{location}[{index}] fields must exactly match params in declaration order")
+        for name, value in config.items():
+            if value not in legal_values[name]:
+                raise FlagTuneConfigError(f"{location}[{index}].{name}={value!r} is outside params")
+        key = param_space.config_key(config)
+        if key not in seen:
+            seen.add(key)
+            result.append(config)
+    return tuple(result)
+
+
 def _parse_features(
     raw_features: Any,
     operations: Mapping[str, Operation],
@@ -526,12 +562,17 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
         variant_name = validate_variant_name(raw_variant_name, "config.variants key")
         location = f"config.variants.{variant_name}"
         spec = _require_mapping(raw_variant, location)
-        unknown = set(spec) - {"inputs", "when", "params", "features"}
+        unknown = set(spec) - {"inputs", "when", "params", "configs", "features"}
         if unknown:
             raise FlagTuneConfigError(f"{location} has unknown keys: {sorted(unknown)}")
 
         inputs = _parse_inputs(spec.get("inputs"), operations, f"{location}.inputs")
         param_space = _parse_params(spec.get("params"), f"{location}.params")
+        explicit_configs = _parse_explicit_configs(spec.get("configs"), param_space, f"{location}.configs")
+        if explicit_configs:
+            legal_keys = {param_space.config_key(config) for config in explicit_configs}
+            param_space.constraints.append(lambda config, keys=legal_keys, space=param_space:
+                                           (space.config_key(config) in keys))
         variables = {field.name for field in inputs} | {"inputs"}
         when = spec.get("when", True)
         _validate_expression(when, operations, variables, f"{location}.when")
@@ -544,6 +585,7 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
             inputs=inputs,
             when=when,
             param_space=param_space,
+            explicit_configs=explicit_configs,
             features=features,
             operations=operations,
         )
@@ -619,6 +661,7 @@ def variant_to_model_config(
             spec["max"] = field.maximum
         inputs[field.name] = spec
     params = {field.name: {"values": list(field.legal_values)} for field in variant.param_space.fields}
+    explicit_configs = [dict(config) for config in variant.explicit_configs]
     features: List[Any] = []
     for feature in variant.features:
         if feature.expression == feature.name:
@@ -653,7 +696,7 @@ def variant_to_model_config(
         raise FlagTuneConfigError(f"unsupported GPU backend: {backend!r}")
     from triton.flagtune.contract.archive import validate_model_version
 
-    return {
+    result = {
         "format_version": 5,
         "model_version": validate_model_version(model_version),
         "platform_key": identity.platform_key,
@@ -667,6 +710,9 @@ def variant_to_model_config(
         "params": params,
         "features": features,
     }
+    if explicit_configs:
+        result["configs"] = explicit_configs
+    return result
 
 
 def parse_model_config(config: Mapping[str, Any]) -> VariantInfo:
@@ -702,6 +748,7 @@ def parse_model_config(config: Mapping[str, Any]) -> VariantInfo:
         "inputs",
         "when",
         "params",
+        "configs",
         "features",
     }
     unknown = set(root) - allowed
@@ -725,6 +772,7 @@ def parse_model_config(config: Mapping[str, Any]) -> VariantInfo:
                 "inputs": root.get("inputs"),
                 "when": root.get("when", True),
                 "params": root.get("params"),
+                "configs": root.get("configs"),
                 "features": root.get("features"),
             }
         },
