@@ -6,8 +6,8 @@ endif()
 
 add_triton_library(TritonToTritonGPU
     RelayoutTritonGPU.cpp
-    TritonGPUConversion.cpp
-    TritonToTritonGPUPass.cpp
+    ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonToTritonGPU/TritonGPUConversion.cpp
+    ${PROJECT_SOURCE_DIR}/lib/Conversion/TritonToTritonGPU/TritonToTritonGPUPass.cpp
 
     DEPENDS
     TritonConversionPassIncGen
