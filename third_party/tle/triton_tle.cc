@@ -901,8 +901,8 @@ void init_triton_tle_ir(py::module &&m) {
                          : tle::FlagCXCoopKindAttr();
             return self.create<tle::RemotePointersOp>(
                 resultTy, src.value_or(Value()), comm.value_or(Value()),
-                shardId, spaceAttr, offset.value_or(Value()),
-                contextIdAttr, coopKindAttr);
+                shardId, spaceAttr, offset.value_or(Value()), contextIdAttr,
+                coopKindAttr);
           },
           py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
           py::arg("space"), py::arg("offset") = py::none(),

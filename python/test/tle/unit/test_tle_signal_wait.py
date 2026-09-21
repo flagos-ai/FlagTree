@@ -149,8 +149,7 @@ def _signal_wait_verifier_kernel(
     wait_kind: tl.constexpr,
     target: tl.constexpr,
 ):
-    tle.signal(device_dptr, peer, slot_id=0, op=signal_op, value=value, space="world", group_kind="block",
-               context_id=0)
+    tle.signal(device_dptr, peer, slot_id=0, op=signal_op, value=value, space="world", group_kind="block", context_id=0)
     tle.signal_wait(device_dptr, slot_id=0, wait_kind=wait_kind, target=target, group_kind="block", context_id=0)
 
 

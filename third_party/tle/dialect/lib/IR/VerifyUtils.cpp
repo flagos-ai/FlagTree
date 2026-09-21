@@ -127,8 +127,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
 LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
                                  Value comm, Value peer, Value srcOffset,
                                  Value dstOffset, Value nelems,
-                                 IntegerAttr contextId,
-                                 IntegerAttr elemBytes,
+                                 IntegerAttr contextId, IntegerAttr elemBytes,
                                  FlagCXCoopKind coopKind) {
   auto emitError = [&]() { return op->emitOpError(); };
 
