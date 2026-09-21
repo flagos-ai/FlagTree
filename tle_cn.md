@@ -462,7 +462,7 @@ def remote(
                                # cluster/node 路径不支持（省略）
     coopkind=None,             # node 路径可选："thread" | "warp" | "block" 或 GroupKind；
                                # 缺省为 GroupKind.BLOCK；cluster/device 路径不支持（省略）
-    netidx=0,                  # node 路径可选：[0, INT32_MAX] 内的编译期整数，缺省为 0；
+    context_id=0,              # node 路径可选：[0, INT32_MAX] 内的编译期整数，缺省为 0；
                                # cluster/device 路径不支持（省略）
 ):
     """
@@ -479,7 +479,7 @@ cluster 路径面向同一线程块 cluster（CTA cluster）内跨 Block 的共�
 - shared-memory 指针（标量或 tensor）：直接返回 cluster 地址空间的远端指针，可参与 `tl.load` / `tl.store`，输入为 block tensor 时保留 shape；
 - tle buffered_tensor：返回 remote-marked buffer，再用 `tle.gpu.local_ptr(...)` 物化远端指针视图。
 
-`shard_id` 是 cluster 内目标 Block 的 id；传 `scope` 时由 mesh 线性化坐标，并会按 mesh 推断 launch cluster 维度（要求 `num_ctas=1`，一个 program 映射一个 Block）。对已是 cluster-shared 空间的指针，`shard_id=0` 时直接返回本地访问。cluster / device 路径不支持 node 专用参数 `coopkind` / `netidx`。
+`shard_id` 是 cluster 内目标 Block 的 id；传 `scope` 时由 mesh 线性化坐标，并会按 mesh 推断 launch cluster 维度（要求 `num_ctas=1`，一个 program 映射一个 Block）。对已是 cluster-shared 空间的指针，`shard_id=0` 时直接返回本地访问。cluster / device 路径不支持 node 专用参数 `coopkind` / `context_id`。
 
 示例（读邻居 Block 的 SMEM tile）：
 
@@ -531,7 +531,7 @@ for start in range(0, nelems, CHUNK_N):           # 每次循环传输一块
   循环时需要注意：mask 必须写成 `offsets < 标量` 的形式——`offsets` 就是 `tl.arange` 的结果本身，不要写成 `start + offsets < nelems` 这类表达式，否则编译失败；标量可以是运行期计算的值（如上面用 `tl.minimum` 处理最后不满的一块）。
 - load 的结果必须直接且仅供配对的 store 使用；二者必须位于同一 basic block，load 在前、store 在后，期间不能插入访存、原子操作、barrier 或其他通信操作；并且恰好一侧使用 node remote pointer。
 - 不支持稀疏访问、多维 tiled load/store、strided 访问、非零起点区间、两侧范围不一致——编译期直接拒绝，动态违规则触发 device assert。
-- `coopkind` 支持 `thread` / `warp` / `block`，默认 `block`（整个 CTA 收敛地发出一次传输）；`netidx` 为网络 context 索引，编译期整数必须在 `[0, 4)`，运行时值必须是标量 `tl.int32`。
+- `coopkind` 支持 `thread` / `warp` / `block`，默认 `block`（整个 CTA 收敛地发出一次传输）；`context_id` 遵循上面的网络 context 规则。
 - 由于 device 侧没有 `rank()` / `num_ranks()`，拓扑由 host 以 constexpr 传入 kernel；`shard_id` 推荐直接传 host 预计算的 world rank int，也可以传 mesh 坐标 tuple + `scope`（经 `physical_ids` 解析为 world rank）。node 路径下 `scope` 不影响 launch 配置。
 
 使用方式：先用 `tle.remote` 拿到指向对端节点的远端指针，再用一对 load/store 完成传输，传输方向由 load/store 的位置决定：
@@ -543,7 +543,8 @@ PUT 示例（本地 load + 远端 store）：
 
 ```python
 remote_dst = tle.remote(ctx, space="node", dtype=DTYPE,
-                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK)
+                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK,
+                        context_id=0)
 offsets = tl.arange(0, BLOCK_SIZE)
 mask = offsets < nelems
 vals = tl.load(comm_buf + src_offset + offsets, mask=mask)     # 本地 load
@@ -554,7 +555,8 @@ GET 示例（远端 load + 本地 store），用法与 PUT 相同，只是 load/
 
 ```python
 remote_src = tle.remote(ctx, space="node", dtype=DTYPE,
-                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK)
+                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK,
+                        context_id=0)
 offsets = tl.arange(0, BLOCK_SIZE)
 mask = offsets < nelems
 vals = tl.load(remote_src + src_offset + offsets, mask=mask)   # 远端 load = GET：从远程节点读数据

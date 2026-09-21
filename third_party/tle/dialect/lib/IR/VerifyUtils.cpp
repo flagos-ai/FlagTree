@@ -31,7 +31,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 #include <cctype>
-#include <limits>
 
 #include "tle/dialect/include/IR/VerifyUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -51,14 +50,12 @@ std::optional<int64_t> getConstantIntValue(Value value) {
   return integer.getInt();
 }
 
-LogicalResult verifyNodeNetIdx(Operation *op, Value netIdx) {
-  if (!netIdx.getType().isSignlessInteger(32))
-    return op->emitOpError() << "expects net_idx to be i32";
-  std::optional<int64_t> value = getConstantIntValue(netIdx);
-  if (!value)
-    return op->emitOpError() << "expects net_idx to be a compile-time constant";
-  if (*value < 0 || *value > std::numeric_limits<int32_t>::max())
-    return op->emitOpError() << "expects net_idx to be in range [0, INT32_MAX]";
+LogicalResult verifyNodeContextId(Operation *op, IntegerAttr contextId) {
+  if (!contextId)
+    return op->emitOpError() << "requires context_id";
+  if (contextId.getInt() < 0)
+    return op->emitOpError()
+           << "expects context_id to be in range [0, INT32_MAX]";
   return success();
 }
 } // namespace
@@ -87,8 +84,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
       return success();
     };
     if (failed(requireMarkerOperand(op.getSrc(), "src")) ||
-        failed(requireMarkerOperand(op.getComm(), "comm")) ||
-        failed(requireMarkerOperand(op.getNetIdx(), "net_idx")))
+        failed(requireMarkerOperand(op.getComm(), "comm")))
       return failure();
     if (op.getOffset())
       return op.emitOpError()
@@ -97,7 +93,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
         !op.getComm().getType().isSignlessInteger(64))
       return op.emitOpError()
              << "expects node marker src and comm to be i64 handles";
-    if (failed(verifyNodeNetIdx(op, op.getNetIdx())))
+    if (failed(verifyNodeContextId(op, op.getContextIdAttr())))
       return failure();
     if (!op.getCoopKindAttr())
       return op.emitOpError() << "node marker requires coop_kind";
@@ -130,7 +126,8 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
 
 LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
                                  Value comm, Value peer, Value srcOffset,
-                                 Value dstOffset, Value nelems, Value netIdx,
+                                 Value dstOffset, Value nelems,
+                                 IntegerAttr contextId,
                                  IntegerAttr elemBytes,
                                  FlagCXCoopKind coopKind) {
   auto emitError = [&]() { return op->emitOpError(); };
@@ -150,7 +147,7 @@ LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
     return emitError() << "expects source and destination offsets to be i64";
   if (!nelems.getType().isSignlessInteger(64))
     return emitError() << "expects nelems to be i64";
-  if (failed(verifyNodeNetIdx(op, netIdx)))
+  if (failed(verifyNodeContextId(op, contextId)))
     return failure();
   if (!elemBytes || elemBytes.getInt() <= 0)
     return emitError() << "expects elem_bytes to be > 0";

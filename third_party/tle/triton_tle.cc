@@ -881,7 +881,7 @@ void init_triton_tle_ir(py::module &&m) {
           [](TritonOpBuilder &self, Type resultTy, std::optional<Value> src,
              Value shardId, const std::string &space,
              std::optional<Value> offset, std::optional<Value> comm,
-             std::optional<Value> netIdx,
+             std::optional<int32_t> contextId,
              std::optional<tle::FlagCXCoopKind> coopKind) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
@@ -893,17 +893,20 @@ void init_triton_tle_ir(py::module &&m) {
             }
 
             auto spaceAttr = builder.getStringAttr(space);
+            IntegerAttr contextIdAttr =
+                contextId ? builder.getI32IntegerAttr(*contextId)
+                          : IntegerAttr();
             tle::FlagCXCoopKindAttr coopKindAttr =
                 coopKind ? builder.getAttr<tle::FlagCXCoopKindAttr>(*coopKind)
                          : tle::FlagCXCoopKindAttr();
             return self.create<tle::RemotePointersOp>(
                 resultTy, src.value_or(Value()), comm.value_or(Value()),
                 shardId, spaceAttr, offset.value_or(Value()),
-                netIdx.value_or(Value()), coopKindAttr);
+                contextIdAttr, coopKindAttr);
           },
           py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
           py::arg("space"), py::arg("offset") = py::none(),
-          py::arg("comm") = py::none(), py::arg("net_idx") = py::none(),
+          py::arg("comm") = py::none(), py::arg("context_id") = py::none(),
           py::arg("coop_kind") = py::none())
       .def("get_device_id",
            [](TritonOpBuilder &self, Type resultTy,

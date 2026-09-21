@@ -409,8 +409,7 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
     TT_Int:$shard_id,
     StrAttr:$space,
     Optional<TT_IntLike>:$offset,
-    // Node space requires a constant in [0, INT32_MAX].
-    Optional<I32>:$net_idx,
+    OptionalAttr<I32Attr>:$context_id,
     OptionalAttr<Tle_FlagCXCoopKindAttr>:$coop_kind
   );
 
@@ -436,7 +435,7 @@ class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     tle.remote_pointers marker and its load/store users have been fused.
     Offsets and nelems are expressed in elements; elem_bytes is applied during
     lowering to form byte offsets and the byte count passed to FlagCX. Nelems
-    must be greater than zero. net_idx must be a compile-time i32 constant in
+    must be greater than zero. context_id must be an i32 attribute in
     [0, INT32_MAX] selecting an existing network context.
   }];
 
@@ -448,7 +447,7 @@ class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     I64:$src_offset,
     I64:$dst_offset,
     I64:$nelems,
-    I32:$net_idx,
+    I32Attr:$context_id,
     I64Attr:$elem_bytes,
     Tle_FlagCXCoopKindAttr:$coop_kind
   );

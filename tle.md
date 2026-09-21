@@ -478,7 +478,7 @@ def remote(
                                # unsupported on cluster/node paths (omit)
     coopkind=None,             # optional on node path: "thread" | "warp" | "block" or GroupKind;
                                # default GroupKind.BLOCK; unsupported on cluster/device paths (omit)
-    netidx=0,                  # optional on node path: compile-time int in [0, INT32_MAX], default 0;
+    context_id=0,              # optional on node path: compile-time int in [0, INT32_MAX], default 0;
                                # unsupported on cluster/device paths (omit)
 ):
     """
@@ -496,7 +496,7 @@ The cluster path targets shared-memory access across blocks within one thread bl
 - A shared-memory pointer (scalar or tensor): returns a remote pointer in the cluster address space directly, usable in `tl.load` / `tl.store`; a block-tensor input keeps its shape.
 - A tle buffered_tensor: returns a remote-marked buffer; materialize remote pointer views with `tle.gpu.local_ptr(...)`.
 
-`shard_id` is the id of the target block inside the cluster; with `scope`, coordinates are linearized through the mesh, and launch cluster dimensions are inferred from that mesh (requiring `num_ctas=1`, one program per block). For pointers already in cluster-shared space, `shard_id=0` returns the local access as-is. The cluster / device paths do not support the node-only arguments `coopkind` / `netidx`.
+`shard_id` is the id of the target block inside the cluster; with `scope`, coordinates are linearized through the mesh, and launch cluster dimensions are inferred from that mesh (requiring `num_ctas=1`, one program per block). For pointers already in cluster-shared space, `shard_id=0` returns the local access as-is. The cluster / device paths do not support the node-only arguments `coopkind` / `context_id`.
 
 Example (read a SMEM tile from a neighbor block):
 
@@ -529,6 +529,15 @@ tl.store(scatter_ptrs, values, mask=scatter_row_mask & col_mask)
 
 The node path targets cross-node point-to-point transfers, using FlagCX registered memory (symmetric window) for the data plane.
 
+`context_id` has the same user-level meaning as
+`tle.distributed_barrier(..., context_id=...)`: it selects a pre-created
+FlagCX network context. It is neither a peer rank nor a transfer/barrier
+sequence number. The value is emitted as an `i32` operation attribute rather
+than a runtime operand. The compiler validates that it is a compile-time
+integer in `[0, INT32_MAX]`; the selected context must also exist in the
+runtime communicator, and corresponding peers must use compatible context
+assignments. The default is context `0`.
+
 The current version **only supports contiguous data transfer**. Caveats:
 
 - On the host, `tle.create_dist_tensor(comm_buf)` must register the communication buffer into a FlagCX symmetric memory window first; the returned `DistributedRtContext` is passed to the kernel as an argument. Device-side scatter and inter-node P2P may share one registered window. The local-side buffer must be the same buffer registered by that context and must be passed directly to the kernel as a global-pointer argument.
@@ -548,7 +557,7 @@ for start in range(0, nelems, CHUNK_N):           # transfer one chunk per itera
   When looping, note: the mask must be written as `offsets < scalar` — where `offsets` is the bare `tl.arange` result, not an expression like `start + offsets < nelems`, otherwise compilation fails. The scalar may be computed at runtime (e.g. the `tl.minimum` above handles the last, possibly shorter chunk).
 - The load result must be consumed directly and exclusively by its paired store. Both operations must be in the same basic block, with the load before the store and no intervening memory access, atomic operation, barrier, or other communication operation; exactly one side must use a node remote pointer.
 - Sparse access, multi-dimensional tiled load/store, strided access, non-zero-start ranges, and mismatched ranges on the two sides are rejected at compile time; dynamic violations trigger a device assertion.
-- `coopkind` supports `thread` / `warp` / `block` (default `block`: the whole CTA convergently issues one transfer); `netidx` selects a network context. A compile-time integer must be in `[0, 4)`, while a runtime value must be a scalar `tl.int32`.
+- `coopkind` supports `thread` / `warp` / `block` (default `block`: the whole CTA convergently issues one transfer). `context_id` follows the network-context rules above.
 - Since device code has no `rank()` / `num_ranks()`, topology is passed into the kernel as constexpr by the host. Pass `shard_id` as a host-precomputed world rank int (recommended), or as a mesh coordinate tuple with `scope` (resolved to a world rank via `physical_ids`). On the node path, `scope` does not affect launch configuration.
 
 Usage: first obtain a remote pointer to the peer node with `tle.remote`, then complete the transfer with a load/store pair — the transfer direction is determined by which side of the pair is remote:
@@ -560,7 +569,8 @@ PUT example (local load + remote store):
 
 ```python
 remote_dst = tle.remote(ctx, space="node", dtype=DTYPE,
-                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK)
+                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK,
+                        context_id=0)
 offsets = tl.arange(0, BLOCK_SIZE)
 mask = offsets < nelems
 vals = tl.load(comm_buf + src_offset + offsets, mask=mask)     # local load
@@ -571,7 +581,8 @@ GET example (remote load + local store) — same usage as PUT, with the load/sto
 
 ```python
 remote_src = tle.remote(ctx, space="node", dtype=DTYPE,
-                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK)
+                        shard_id=remote_rank, coopkind=tle.GroupKind.BLOCK,
+                        context_id=0)
 offsets = tl.arange(0, BLOCK_SIZE)
 mask = offsets < nelems
 vals = tl.load(remote_src + src_offset + offsets, mask=mask)   # remote load = GET: data read from the remote node

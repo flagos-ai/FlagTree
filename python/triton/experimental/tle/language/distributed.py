@@ -1423,15 +1423,15 @@ def _normalize_node_peer(shard_id, scope, _semantic) -> tl.tensor:
     return _normalize_runtime_remote_shard_id_tensor(shard_id)
 
 
-def _normalize_node_netidx(netidx, _semantic) -> tl.tensor:
-    netidx = tl._unwrap_if_constexpr(netidx)
-    if isinstance(netidx, bool):
-        raise TypeError("node space netidx must be an integer, not bool")
-    if not isinstance(netidx, int):
-        raise TypeError(f"node space netidx must be a compile-time int, got {type(netidx).__name__}")
-    if netidx < 0 or netidx > 0x7FFFFFFF:
-        raise ValueError(f"node space netidx must be in int32 range, got {netidx}")
-    return _semantic.to_tensor(netidx)
+def _normalize_node_context_id(context_id) -> int:
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if isinstance(context_id, bool):
+        raise TypeError("node space context_id must be an integer, not bool")
+    if not isinstance(context_id, int):
+        raise TypeError(f"node space context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"node space context_id must be in int32 range, got {context_id}")
+    return context_id
 
 
 def _parse_node_context(builder, value, label: str, index: int):
@@ -1442,7 +1442,7 @@ def _parse_node_context(builder, value, label: str, index: int):
     return _parse_src_arg(builder, value, index)
 
 
-def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _semantic) -> tl.tensor:
+def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, context_id, _semantic) -> tl.tensor:
     if dtype is None:
         raise TypeError('tle.remote(..., space="node") requires dtype')
 
@@ -1453,7 +1453,7 @@ def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _
     peer = _normalize_node_peer(shard_id, scope, _semantic)
     dtype = tl._unwrap_if_constexpr(dtype)
     _normalize_node_elem_bytes(dtype)
-    net_idx = _normalize_node_netidx(netidx, _semantic)
+    context_id = _normalize_node_context_id(context_id)
     coop_kind = tl._unwrap_if_constexpr(coopkind)
     coop_kind = coop_kind.value if isinstance(coop_kind, GroupKind) else str(coop_kind).lower()
     coop_kind = attr.FlagCXCoopKind.from_str(coop_kind)
@@ -1471,7 +1471,7 @@ def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _
         "node",
         None,
         comm,
-        net_idx.handle,
+        context_id,
         coop_kind,
     )
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
@@ -1486,7 +1486,7 @@ def remote(
     dtype: tl.dtype = None,
     offset: int | tl.tensor | None = None,
     coopkind: GroupKind | str | None = None,
-    netidx: int = 0,
+    context_id: int = 0,
     _semantic: TLESemantic | None = None,
 ):
     """
@@ -1522,7 +1522,7 @@ def remote(
     strided, non-zero-start, or mismatched ranges are rejected.
 
     `dtype` is required. `coopkind` defaults to `GroupKind.BLOCK`, and
-    `netidx` defaults to zero and must be a compile-time integer in
+    `context_id` defaults to zero and must be a compile-time integer in
     `[0, INT32_MAX]`, selecting an existing network context. `shard_id` may be a world rank
     or, with `scope=device_mesh`, a compile-time mesh coordinate.
 
@@ -1545,11 +1545,11 @@ def remote(
         # BLOCK as documented.
         if coopkind is None:
             coopkind = GroupKind.BLOCK
-        return _create_node_remote_pointer(tensor, shard_id, scope, dtype, coopkind, netidx, _semantic)
+        return _create_node_remote_pointer(tensor, shard_id, scope, dtype, coopkind, context_id, _semantic)
     node_only_args = ["coopkind"] if coopkind is not None else []
-    unwrapped_netidx = tl._unwrap_if_constexpr(netidx)
-    if not isinstance(unwrapped_netidx, int) or unwrapped_netidx != 0:
-        node_only_args.append("netidx")
+    unwrapped_context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(unwrapped_context_id, int) or unwrapped_context_id != 0:
+        node_only_args.append("context_id")
     if node_only_args:
         raise TypeError(f'{space} space does not accept node-only argument(s): '
                         f'{", ".join(node_only_args)}')
