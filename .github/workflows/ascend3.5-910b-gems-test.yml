@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Ascend3.5-910C-Gems-Test
+name: Ascend3.5-910B-Gems-Test
 
 on:
   pull_request:
@@ -38,7 +38,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ascend35x-910c:
+  ascend35x-910b:
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
     uses: flagos-ai/FlagTree/.github/workflows/template-gems-test.yml@main
     with:

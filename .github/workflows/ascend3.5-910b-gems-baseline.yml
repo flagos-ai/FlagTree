@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Ascend3.5-910C-Gems-Baseline
+name: Ascend3.5-910B-Gems-Baseline
 
 on:
   push:
@@ -37,7 +37,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ascend35x-910c:
+  ascend35x-910b:
     if: ${{ github.event_name == 'push' }}
     uses: flagos-ai/FlagTree/.github/workflows/template-gems-baseline.yml@main
     with:
