@@ -8,7 +8,10 @@ mlir_tablegen(Ops.cpp.inc -gen-op-defs)
 mlir_tablegen(Types.h.inc -gen-typedef-decls -typedefs-dialect=ttg)
 mlir_tablegen(Types.cpp.inc -gen-typedef-defs -typedefs-dialect=ttg)
 add_mlir_doc(TritonGPUDialect TritonGPUDialect dialects/ -gen-dialect-doc)
-add_mlir_doc(TritonGPUOps TritonGPUOps dialects/ -gen-op-doc)
+string(REGEX REPLACE "\\.td$" "" _flagtree_ttg_ops_doc_stem
+  "${LLVM_TARGET_DEFINITIONS}")
+add_mlir_doc(
+  "${_flagtree_ttg_ops_doc_stem}" TritonGPUOps dialects/ -gen-op-doc)
 add_public_tablegen_target(TritonGPUTableGen)
 
 flagtree_spec_td_set(LLVM_TARGET_DEFINITIONS TritonGPUAttrDefs.td)
