@@ -23,6 +23,7 @@
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -147,11 +148,15 @@ struct PendingState {
     return changed;
   }
 
-  void wait(unsigned pendings) {
+  // Roots whose groups this wait completes are appended to `completed`.
+  void wait(unsigned pendings, SmallVectorImpl<Value> *completed = nullptr) {
     for (auto it = ages.begin(); it != ages.end();) {
       auto current = it++;
-      if (current->second >= pendings)
-        ages.erase(current);
+      if (current->second < pendings)
+        continue;
+      if (completed && current->first)
+        completed->push_back(current->first);
+      ages.erase(current);
     }
     groups = std::min(groups, pendings);
   }
@@ -203,7 +208,8 @@ static Region *getSourceRegion(Value value) {
   while (auto arg = dyn_cast<BlockArgument>(value)) {
     if (!visited.insert(value).second)
       break;
-    auto loop = dyn_cast_or_null<LoopLikeOpInterface>(arg.getOwner()->getParentOp());
+    auto loop =
+        dyn_cast_or_null<LoopLikeOpInterface>(arg.getOwner()->getParentOp());
     if (!loop)
       break;
     OpOperand *init = loop.getTiedLoopInit(arg);
@@ -223,8 +229,8 @@ static bool isControlFlow(Operation *op) {
 static bool allocatesSharedBuffer(Operation *op) {
   for (Value result : op->getResults()) {
     auto memDescTy = dyn_cast<ttg::MemDescType>(result.getType());
-    if (!memDescTy ||
-        !isa_and_nonnull<ttg::SharedMemorySpaceAttr>(memDescTy.getMemorySpace()))
+    if (!memDescTy || !isa_and_nonnull<ttg::SharedMemorySpaceAttr>(
+                          memDescTy.getMemorySpace()))
       continue;
     if (getMemDescRoot(result) == result)
       return true;
@@ -259,7 +265,7 @@ public:
       worklist.pop_front();
       queued.erase(op);
       PendingState output = lookupInput(op);
-      transfer(op, output);
+      transfer(op, output, /*completed=*/nullptr);
       for (Operation *successor : successors[op]) {
         auto [it, inserted] = inputs.try_emplace(successor, emptyState());
         bool changed = it->second.join(output);
@@ -272,14 +278,26 @@ public:
     // ages, so the finite lattice converges without a fixed iteration budget.
     // Transfer can strengthen a wait and drop output facts; retaining earlier
     // facts at successor joins is a conservative over-approximation.
+    DominanceInfo dominance(module);
     for (Operation *op : operations) {
       auto it = inputs.find(op);
       if (it == inputs.end())
         continue;
       PendingState state = it->second;
-      if (auto wait = transfer(op, state)) {
+      SmallVector<Value> completed;
+      auto wait = transfer(op, state, &completed);
+      if (auto existing = dyn_cast<ttng::TMAStoreWaitOp>(op)) {
+        SmallVector<Value> sources = getWaitSources(op, completed, dominance);
+        llvm::erase_if(sources, [&](Value source) {
+          return llvm::is_contained(existing.getSources(), source);
+        });
+        existing->insertOperands(existing->getNumOperands(), sources);
+        continue;
+      }
+      if (wait) {
         OpBuilder builder(op);
-        ttng::TMAStoreWaitOp::create(builder, op->getLoc(), *wait);
+        ttng::TMAStoreWaitOp::create(builder, op->getLoc(), *wait,
+                                     getWaitSources(op, completed, dominance));
       }
     }
     return success();
@@ -351,16 +369,47 @@ private:
     return roots;
   }
 
-  std::optional<unsigned> transfer(Operation *op, PendingState &state) const {
+  // Sources completed by a wait placed before `op`, as operands of that wait.
+  // Allocation derives live ranges from SSA uses, so a source whose last use is
+  // the store would be dead while the TMA engine still reads it, and any later
+  // buffer or scratch could take its offset. Naming it on the wait extends its
+  // live range to the wait. Only values visible at `op` can be named.
+  SmallVector<Value> getWaitSources(Operation *op, ArrayRef<Value> completed,
+                                    const DominanceInfo &dominance) const {
+    Operation *isolated = op->getParentOp();
+    while (isolated && !isolated->hasTrait<OpTrait::IsIsolatedFromAbove>())
+      isolated = isolated->getParentOp();
+    SmallVector<Value> sources;
+    for (Value root : completed) {
+      if (!isa<ttg::MemDescType>(root.getType()) ||
+          !dominance.properlyDominates(root, op))
+        continue;
+      Operation *owner = root.getDefiningOp();
+      if (!owner)
+        owner = root.getParentBlock()->getParentOp();
+      if (isolated && !isolated->isAncestor(owner))
+        continue;
+      sources.push_back(root);
+    }
+    // Pending roots live in a hash map; order the operands by definition so
+    // the output is deterministic.
+    llvm::sort(sources, [&](Value lhs, Value rhs) {
+      return valueOrder.lookup(lhs) < valueOrder.lookup(rhs);
+    });
+    return sources;
+  }
+
+  std::optional<unsigned> transfer(Operation *op, PendingState &state,
+                                   SmallVectorImpl<Value> *completed) const {
     std::optional<unsigned> required;
     auto wait = [&](unsigned n) {
       if (!state.groups)
         return;
       required = required ? std::min(*required, n) : n;
-      state.wait(n);
+      state.wait(n, completed);
     };
     if (auto existing = dyn_cast<ttng::TMAStoreWaitOp>(op)) {
-      state.wait(existing.getPendings());
+      state.wait(existing.getPendings(), completed);
       return required;
     }
     if (auto group = groups.find(op); group != groups.end()) {
@@ -483,6 +532,12 @@ private:
       if (!op->getBlock())
         return;
       operations.push_back(op);
+      for (Value result : op->getResults())
+        valueOrder.try_emplace(result, valueOrder.size());
+      for (Region &region : op->getRegions())
+        for (Block &block : region)
+          for (BlockArgument arg : block.getArguments())
+            valueOrder.try_emplace(arg, valueOrder.size());
       auto add = [&](Operation *next) {
         if (next)
           successors[op].push_back(next);
@@ -530,6 +585,7 @@ private:
   DenseMap<Operation *, StoreGroup> groups;
   DenseSet<Operation *> groupStarts;
   SmallVector<Operation *> operations;
+  DenseMap<Value, unsigned> valueOrder;
   DenseMap<Operation *, SmallVector<Operation *, 2>> successors;
   DenseMap<Operation *, PendingState> inputs;
   std::deque<Operation *> worklist;
@@ -544,7 +600,8 @@ public:
       TritonTleScheduleTmaStoreSyncPass>::TritonTleScheduleTmaStoreSyncBase;
 
   void runOnOperation() override {
-    unsigned groups = std::clamp<int32_t>(maxPendingGroups, 1, kPendingGroupsLimit);
+    unsigned groups =
+        std::clamp<int32_t>(maxPendingGroups, 1, kPendingGroupsLimit);
     if (failed(StoreScheduler(getOperation(), groups).run()))
       signalPassFailure();
   }

@@ -8,11 +8,9 @@ import triton.language as tl
 import triton.experimental.tle.language as tle
 from triton.tools.tensor_descriptor import TensorDescriptor
 
-
 pytestmark = [
     pytest.mark.skipif(
-        not torch.cuda.is_available() or torch.version.hip is not None
-        or torch.cuda.get_device_capability()[0] < 9,
+        not torch.cuda.is_available() or torch.version.hip is not None or torch.cuda.get_device_capability()[0] < 9,
         reason="TMA store dataflow requires NVIDIA Hopper or newer",
     ),
 ]
@@ -57,8 +55,7 @@ def nested_store(desc, outer, inner, BM: tl.constexpr, BN: tl.constexpr, USE_WHI
 
 
 @triton.jit(do_not_specialize=["phase"])
-def branch_store(desc, phase, ITERS: tl.constexpr, MODE: tl.constexpr,
-                 BM: tl.constexpr, BN: tl.constexpr):
+def branch_store(desc, phase, ITERS: tl.constexpr, MODE: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr):
     a = tle.gpu.alloc([BM, BN], tl.float32, scope=tle.gpu.smem)
     b = tle.gpu.alloc([BM, BN], tl.float32, scope=tle.gpu.smem)
     c = tle.gpu.alloc([BM, BN], tl.float32, scope=tle.gpu.smem)
@@ -112,6 +109,7 @@ def store_across_wgmma(desc, outer, inner, BM: tl.constexpr, BN: tl.constexpr):
 
 
 def check_replays(launch, output, reference):
+
     def check():
         torch.cuda.synchronize()
         torch.testing.assert_close(output, reference, rtol=0, atol=0, equal_nan=True)
@@ -132,8 +130,8 @@ def check_replays(launch, output, reference):
 def make_output(tiles, bm, bn):
     output = torch.empty(max(tiles, 1) * bm, bn, device="cuda", dtype=torch.float32)
     if tiles:
-        reference = (torch.arange(tiles, device="cuda")[:, None]
-                     + torch.arange(bm * bn, device="cuda")[None, :]).float().view_as(output)
+        reference = (torch.arange(tiles, device="cuda")[:, None] +
+                     torch.arange(bm * bn, device="cuda")[None, :]).float().view_as(output)
     else:
         reference = torch.full_like(output, float("nan"))
     return output, reference, TensorDescriptor.from_tensor(output, block_shape=[bm, bn])
@@ -148,8 +146,7 @@ def test_nested_store_dataflow(outer, inner, bn, use_while, with_allocator):
     bm = 64
     sms = torch.cuda.get_device_properties(0).multi_processor_count
     output, reference, desc = make_output(sms * outer * (inner + 2), bm, bn)
-    check_replays(lambda: nested_store[(sms,)](desc, outer, inner, bm, bn, use_while, num_warps=4),
-                  output, reference)
+    check_replays(lambda: nested_store[(sms, )](desc, outer, inner, bm, bn, use_while, num_warps=4), output, reference)
 
 
 @pytest.mark.parametrize("mode", [0, 1, 2], ids=["unequal", "equal", "reversed"])
@@ -164,8 +161,7 @@ def test_branch_store_dataflow(mode, phase, bn, with_allocator):
         step = torch.arange(sms * iters, device="cuda")
         missing = ((step // iters + step % iters + phase) % 2) == 0
         reference.view(sms * iters, 4, bm, bn)[missing, 1] = float("nan")
-    check_replays(lambda: branch_store[(sms,)](desc, phase, iters, mode, bm, bn, num_warps=4),
-                  output, reference)
+    check_replays(lambda: branch_store[(sms, )](desc, phase, iters, mode, bm, bn, num_warps=4), output, reference)
 
 
 @pytest.mark.parametrize("outer", [0, 1, 8])
@@ -182,13 +178,12 @@ def test_store_across_wgmma(outer, inner, bn, with_allocator):
         reference[:tiles * bm].view(tiles, bm, bn).copy_(
             (torch.arange(tiles, device="cuda", dtype=torch.float32) + 16 * inner)[:, None, None])
     desc = TensorDescriptor.from_tensor(output, block_shape=[bm, bn])
-    check_replays(lambda: store_across_wgmma[(sms,)](desc, outer, inner, bm, bn, num_warps=4),
-                  output, reference)
+    check_replays(lambda: store_across_wgmma[(sms, )](desc, outer, inner, bm, bn, num_warps=4), output, reference)
 
 
 @triton.jit(do_not_specialize=["flag"])
-def source_offset_reuse(desc, sink, flag, BM: tl.constexpr, BN: tl.constexpr, GROUPS: tl.constexpr,
-                        IN_REGION: tl.constexpr):
+def source_offset_reuse(desc, sink, x_ptr, flag, BM: tl.constexpr, BN: tl.constexpr, GROUPS: tl.constexpr,
+                        IN_REGION: tl.constexpr, SCRATCH_REUSER: tl.constexpr):
     pid = tl.program_id(0)
     if IN_REGION:
         # The source dies with the region; the allocator may hand its offset on.
@@ -200,23 +195,33 @@ def source_offset_reuse(desc, sink, flag, BM: tl.constexpr, BN: tl.constexpr, GR
         src = tle.gpu.alloc([BM, BN], tl.float32, init_value=tl.full((BM, BN), 1.0, tl.float32))
         for g in tl.static_range(GROUPS):
             tle.gpu.copy(src, desc, [BM, BN], [pid * BM, g * BN])
-    # A new buffer may land on the dead source's offset while the TMA engine
-    # still reads it, so its initialization must not race the stores.
-    dst = tle.gpu.alloc([BM, BN], tl.float32, init_value=tl.zeros((BM, BN), tl.float32))
     rows = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, BN))
     cols = tl.broadcast_to(tl.arange(0, BN)[None, :], (BM, BN))
-    tl.store(sink + rows * BN + cols, tl.load(tle.gpu.local_ptr(dst, (rows, cols))))
+    if SCRATCH_REUSER:
+        # No new buffer, but the transposed store needs a layout conversion,
+        # and its scratch shared memory may land on the dead source's offset.
+        x = tl.load(x_ptr + rows * BN + cols)
+        rows_t = tl.broadcast_to(tl.arange(0, BN)[:, None], (BN, BM))
+        cols_t = tl.broadcast_to(tl.arange(0, BM)[None, :], (BN, BM))
+        tl.store(sink + rows_t * BM + cols_t, tl.trans(x))
+    else:
+        # A new buffer may land on the dead source's offset while the TMA engine
+        # still reads it, so its initialization must not race the stores.
+        dst = tle.gpu.alloc([BM, BN], tl.float32, init_value=tl.zeros((BM, BN), tl.float32))
+        tl.store(sink + rows * BN + cols, tl.load(tle.gpu.local_ptr(dst, (rows, cols))))
 
 
 @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+@pytest.mark.parametrize("scratch_reuser", [False, True], ids=["local_alloc", "convert_layout"])
 @pytest.mark.parametrize("in_region", [False, True], ids=["straight_line", "in_region"])
-def test_store_source_offset_reuse(in_region, with_allocator):
+def test_store_source_offset_reuse(in_region, scratch_reuser, with_allocator):
     bm, bn, groups = 128, 32, 8
     sms = torch.cuda.get_device_properties(0).multi_processor_count
     output = torch.empty(sms * bm, groups * bn, device="cuda", dtype=torch.float32)
     reference = torch.ones_like(output)
     sink = torch.empty(bm * bn, device="cuda", dtype=torch.float32)
+    x = torch.randn(bm * bn, device="cuda", dtype=torch.float32)
     desc = TensorDescriptor.from_tensor(output, block_shape=[bm, bn])
     check_replays(
-        lambda: source_offset_reuse[(sms, )](desc, sink, 3, bm, bn, groups, in_region, num_warps=4),
+        lambda: source_offset_reuse[(sms, )](desc, sink, x, 3, bm, bn, groups, in_region, scratch_reuser, num_warps=4),
         output, reference)
