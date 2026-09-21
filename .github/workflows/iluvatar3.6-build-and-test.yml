@@ -106,6 +106,7 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/language/test_libdevice.py
           pytest third_party/iluvatar/python/test/unit/language/test_iluvatar_math_fp16_bf16.py
           pytest third_party/iluvatar/python/test/unit/language/test_iluvatar_int8_upcast_dot_pipeline.py
+          pytest third_party/iluvatar/python/test/unit/language/test_iluvatar_mma_reduce_thread_locality.py
           pytest third_party/iluvatar/python/test/unit/language/test_matmul.py
           pytest third_party/iluvatar/python/test/unit/language/test_mxfp.py
           pytest third_party/iluvatar/python/test/unit/language/test_pipeliner.py

@@ -46,6 +46,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -144,6 +145,12 @@ private:
     Value accumOperand = (update->getOperand(0) == reduceResult)
                              ? update->getOperand(1)
                              : update->getOperand(0);
+    // The partial accumulator starts at zero, and the original initial value
+    // is added after the loop. A nonzero initial value must undergo every
+    // rescale too, so leave such recurrences unchanged.
+    if (accumOperand != blockArg && !matchPattern(oldAccum, m_AnyZeroFloat()))
+      return false;
+
     // The accumulator operand must reach the loop-carried block arg through a
     // multiplicative rescale chain whose other operands are liftable.
     return isRebuildableChain(accumOperand, blockArg, reduceResult, oldAccum);
