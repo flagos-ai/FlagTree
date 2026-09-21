@@ -376,18 +376,29 @@ All participants in one barrier instance must execute matching barrier calls in 
 
 ```python
 def distributed_barrier(
-    mesh=None,
-    device_dptr=None,
-    space=None,
-    group_kind="block",
-    barrier_kind="sync",
-    order="acqrel",
-    index=0,
-    context_id=0,
-    memory_scope="system",
+    mesh=None,                    # optional device_mesh; omitted -> full-cluster barrier;
+                                  # required with space; a sliced cluster mesh selects sub-mesh first
+    device_dptr=None,             # optional normally; required with space;
+                                  # DistributedRtContext returned by create_dist_tensor
+    space=None,                   # optional FlagCX team selector; None -> mesh/local barrier path;
+                                  # "device" | "inter" | "world" (aliases described below)
+    group_kind="block",           # optional, FlagCX path only; "thread" | "warp" | "block"
+    barrier_kind="sync",          # optional, FlagCX path only; "arrive" | "wait" | "sync"
+    order="acqrel",               # optional, FlagCX path only;
+                                  # "relaxed" | "acquire" | "release" | "acqrel"
+    index=0,                      # optional, FlagCX path only; non-negative barrier channel
+    context_id=0,                 # optional, FlagCX path only; compile-time int32 context index
+    memory_scope="system",        # optional, FlagCX path only;
+                                  # "system" | "device" | "block" | "thread"
 ):
     ...
 ```
+
+Every public argument has a default, so none is unconditionally required. The requirements depend on the selected path:
+
+- `tle.distributed_barrier()` is valid and emits the default full-cluster barrier.
+- `tle.distributed_barrier(mesh)` uses `mesh` to select/infer a cluster, cluster sub-mesh, or cooperative-grid barrier; no `device_dptr` is needed.
+- An explicit FlagCX communicator barrier requires all three of `space`, `mesh`, and `device_dptr`. The remaining arguments are optional and use the defaults shown above.
 
 `mesh` and `space` select the synchronization mode in the following order:
 
@@ -416,7 +427,9 @@ Because `row_mesh` is a sliced cluster mesh, this call follows the 'submesh' dis
 
 For the FlagCX communicator path:
 
+- `mesh` is required and validates the selected communicator topology. The `"device"` team requires a `device` launch axis; the `"inter"` and `"world"` teams require a `node` launch axis.
 - `device_dptr` is the distributed runtime context returned by `tle.create_dist_tensor(...)`.
+- `space` selects the participants: `"device"`/`"intra"`/`"intra_node"` for the intra-node team, `"inter"`/`"inter_node"` for the inter-node team, or `"world"` for the world team.
 - `group_kind` is the collective execution scope: `"thread"`, `"warp"`, or `"block"` (default).
 - `barrier_kind` is `"arrive"`, `"wait"`, or `"sync"` (default). `"arrive"` only reports arrival; `"wait"` waits for the matching arrivals; `"sync"` performs both.
 - `order` controls the memory order: `"relaxed"`, `"acquire"`, `"release"`, or `"acqrel"` (default). `memory_scope` controls its scope: `"system"` (default), `"device"`, `"block"`, or `"thread"`. These two parameters apply only to the FlagCX path.
@@ -645,7 +658,7 @@ Open question: what additional distributed primitives are needed?
 
 ```python
 def signal(device_dptr, peer, slot_id, value=None, op="inc",
-          space="intra_node", group_kind="block", context_idx=0,
+          space="intra_node", group_kind="block", context_id=0,
           scope="system"):
     """
     Atomically update a remote peer's synchronization slot.
@@ -657,13 +670,13 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc",
     :param op: optional; "inc" to increment by one, "add" to add value; default "inc"
     :param space: optional; "intra_node", "inter_node", or "world"; default "intra_node"
     :param group_kind: optional; "thread", "warp", or "block"; default "block"
-    :param context_idx: optional; compile-time int selecting a pre-allocated network context; default 0
+    :param context_id: optional; compile-time int selecting a pre-allocated network context; default 0
     :param scope: optional; visibility scope of the operation ("system" or "device"); default "system"
     """
     pass
 ```
 
-`op="inc"` increments the selected signal slot by one. `op="add"` adds `value` to the selected signal slot; `value` is required in that case and must be omitted otherwise. `space` selects the communication scope (`intra_node`, `inter_node`, or `world`), and `peer` is a rank within that scope. `context_idx` selects a pre-allocated network context.
+`op="inc"` increments the selected signal slot by one. `op="add"` adds `value` to the selected signal slot; `value` is required in that case and must be omitted otherwise. `space` selects the communication scope (`intra_node`, `inter_node`, or `world`), and `peer` is a rank within that scope. `context_id` selects a pre-allocated network context.
 
 `scope` controls the visibility of the signal operation to the threads on the node: `"system"` means visible to all threads on all devices, and `"device"` means only visible to the threads on the current device. `"device"` may only be meaningful when working on a single node, and most of the time `"system"` is the correct choice.
 
@@ -675,7 +688,7 @@ For `group_kind="block"` (the default), every thread in the CTA must execute thi
 
 ```python
 def signal_wait(device_dptr, slot_id, wait_kind, target=None,
-               group_kind="block", context_idx=0, order="acquire"):
+               group_kind="block", context_id=0, order="acquire"):
     """
     Wait until a local synchronization slot reaches its target.
 
@@ -684,13 +697,13 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None,
     :param wait_kind: "signal", "counter", or "shadow" (required)
     :param target: optional; required for "signal"/"counter", must be omitted for "shadow"
     :param group_kind: optional; "thread", "warp", or "block"; default "block"
-    :param context_idx: optional; compile-time int selecting a pre-allocated network context; default 0
+    :param context_id: optional; compile-time int selecting a pre-allocated network context; default 0
     :param order: optional; memory ordering constraint ("relaxed" or "acquire"); default "acquire"
     """
     pass
 ```
 
-`wait_kind` selects the waiting mode: `"signal"` waits until the slot value reaches `target`; `"counter"` waits until a counter at the slot reaches `target`; `"shadow"` reads the target from the runtime's locally maintained shadow buffer, so `target` must be omitted. `slot_id` is interpreted in the same signal slot namespace as `tle.signal`. `group_kind` and `context_idx` have the same semantics as in `tle.signal`.
+`wait_kind` selects the waiting mode: `"signal"` waits until the slot value reaches `target`; `"counter"` waits until a counter at the slot reaches `target`; `"shadow"` reads the target from the runtime's locally maintained shadow buffer, so `target` must be omitted. `slot_id` is interpreted in the same signal slot namespace as `tle.signal`. `group_kind` and `context_id` have the same semantics as in `tle.signal`.
 
 `order` constrains the memory order of the wait operation. As `tle.signal_wait` is a read operation, only `"relaxed"` and `"acquire"` are allowed, and most of the time the default value `"acquire"` is the correct choice.
 

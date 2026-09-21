@@ -360,18 +360,29 @@ x = tle.make_sharded_tensor(x_ptr, sharding=x_shard, shape=[4, 4])
 
 ```python
 def distributed_barrier(
-    mesh=None,
-    device_dptr=None,
-    space=None,
-    group_kind="block",
-    barrier_kind="sync",
-    order="acqrel",
-    index=0,
-    context_id=0,
-    memory_scope="system",
+    mesh=None,                    # 可选 device_mesh；省略时为完整 cluster barrier；
+                                  # 显式传 space 时必填；cluster 切片 mesh 会优先选择 sub-mesh
+    device_dptr=None,             # 通常可选；显式传 space 时必填；
+                                  # create_dist_tensor 返回的 DistributedRtContext
+    space=None,                   # 可选 FlagCX 通信组；None 表示 mesh/本地 barrier 路径；
+                                  # "device" | "inter" | "world"（别名见下文）
+    group_kind="block",           # 可选，仅 FlagCX 路径；"thread" | "warp" | "block"
+    barrier_kind="sync",          # 可选，仅 FlagCX 路径；"arrive" | "wait" | "sync"
+    order="acqrel",               # 可选，仅 FlagCX 路径；
+                                  # "relaxed" | "acquire" | "release" | "acqrel"
+    index=0,                      # 可选，仅 FlagCX 路径；非负 barrier 通道编号
+    context_id=0,                 # 可选，仅 FlagCX 路径；编译期 int32 context 索引
+    memory_scope="system",        # 可选，仅 FlagCX 路径；
+                                  # "system" | "device" | "block" | "thread"
 ):
     ...
 ```
+
+所有公开参数都有缺省值，因此不存在无条件必填参数；必填关系由所选路径决定：
+
+- `tle.distributed_barrier()` 是合法调用，生成缺省的完整 cluster barrier。
+- `tle.distributed_barrier(mesh)` 用 `mesh` 选择或推导 cluster、cluster sub-mesh 或 cooperative-grid barrier，不需要 `device_dptr`。
+- 显式使用 FlagCX 通信组 barrier 时，`space`、`mesh` 和 `device_dptr` 三者都必须提供；其他参数可省略并采用上面列出的缺省值。
 
 `mesh` 和 `space` 按以下优先级选择同步模式：
 
@@ -400,7 +411,9 @@ tle.distributed_barrier(row_mesh, device_dptr=device_dptr, space = "device")
 
 FlagCX 通信组路径的参数含义如下：
 
+- `mesh`：必填，用于校验所选通信组的拓扑。`"device"` 通信组要求 launch mesh 有 `device` 轴；`"inter"` 和 `"world"` 通信组要求有 `node` 轴。
 - `device_dptr`：`tle.create_dist_tensor(...)` 返回的分布式运行时上下文。
+- `space`：选择参与者；`"device"`/`"intra"`/`"intra_node"` 表示节点内通信组，`"inter"`/`"inter_node"` 表示跨节点通信组，`"world"` 表示 world 通信组。
 - `group_kind`：集合式调用的执行粒度，可为 `"thread"`、`"warp"` 或 `"block"`（默认）。
 - `barrier_kind`：可为 `"arrive"`、`"wait"` 或 `"sync"`（默认）。`"arrive"` 只报告已到达，不等待；`"wait"` 等待匹配的到达；`"sync"` 同时完成到达和等待。
 - `order`：内存序，可为 `"relaxed"`、`"acquire"`、`"release"` 或 `"acqrel"`（默认）。`memory_scope`：内存作用域，可为 `"system"`（默认）、`"device"`、`"block"` 或 `"thread"`。这两个参数仅用于 FlagCX 路径。
@@ -624,7 +637,7 @@ def distributed_dot(a, b, c=None):
 
 ```python
 def signal(device_dptr, peer, slot_id, value=None, op="inc",
-          space="intra_node", group_kind="block", context_idx=0,
+          space="intra_node", group_kind="block", context_id=0,
           scope="system"):
     """
     原子更新远端 peer 的同步 slot。
@@ -636,13 +649,13 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc",
     :param op: 可选；"inc" 加一，"add" 加上 value；默认 "inc"
     :param space: 可选；"intra_node"、"inter_node" 或 "world"；默认 "intra_node"
     :param group_kind: 可选；"thread"、"warp" 或 "block"；默认 "block"
-    :param context_idx: 可选；编译期 int，选择预分配的网络上下文；默认 0
+    :param context_id: 可选；编译期 int，选择预分配的网络上下文；默认 0
     :param scope: 可选；操作的可见性作用域（"system" 或 "device"）；默认 "system"
     """
     pass
 ```
 
-`op="inc"` 将目标信号 slot 加一。`op="add"` 将 `value` 加到目标信号 slot；后者必须提供 `value`，前者必须省略。`space` 选择通信范围（`intra_node`、`inter_node` 或 `world`），`peer` 是该范围内的 rank。`context_idx` 选择预分配的网络上下文。
+`op="inc"` 将目标信号 slot 加一。`op="add"` 将 `value` 加到目标信号 slot；后者必须提供 `value`，前者必须省略。`space` 选择通信范围（`intra_node`、`inter_node` 或 `world`），`peer` 是该范围内的 rank。`context_id` 选择预分配的网络上下文。
 
 `scope` 控制信号操作对节点上线程的可见性：`"system"` 表示对所有设备上的所有线程可见，`"device"` 表示仅对当前设备上的线程可见。`"device"` 仅在单节点场景下有意义，大多数情况下 `"system"` 是正确选择。
 
@@ -654,7 +667,7 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc",
 
 ```python
 def signal_wait(device_dptr, slot_id, wait_kind, target=None,
-               group_kind="block", context_idx=0, order="acquire"):
+               group_kind="block", context_id=0, order="acquire"):
     """
     等待本地同步 slot 达到目标值。
 
@@ -663,7 +676,7 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None,
     :param wait_kind: "signal"、"counter" 或 "shadow"（必填）
     :param target: 可选；"signal"/"counter" 时必填，"shadow" 时必须省略
     :param group_kind: 可选；"thread"、"warp" 或 "block"；默认 "block"
-    :param context_idx: 可选；编译期 int，选择预分配的网络上下文；默认 0
+    :param context_id: 可选；编译期 int，选择预分配的网络上下文；默认 0
     :param order: 可选；内存序约束（"relaxed" 或 "acquire"）；默认 "acquire"
     """
     pass
@@ -671,7 +684,7 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None,
 
 `order` 约束等待操作的内存序。由于 `tle.signal_wait` 是读取操作，仅允许 `"relaxed"` 和 `"acquire"`，大多数情况下默认值 `"acquire"` 是正确选择。
 
-`wait_kind` 选择等待模式：`"signal"` 等待 slot 值达到 `target`；`"counter"` 等待 slot 中的计数器达到 `target`；`"shadow"` 从运行时本地维护的 shadow buffer 读取目标值，因此必须省略 `target`。`slot_id` 与 `tle.signal` 共享同一信号 slot 命名空间。`group_kind` 和 `context_idx` 的语义与 `tle.signal` 一致。
+`wait_kind` 选择等待模式：`"signal"` 等待 slot 值达到 `target`；`"counter"` 等待 slot 中的计数器达到 `target`；`"shadow"` 从运行时本地维护的 shadow buffer 读取目标值，因此必须省略 `target`。`slot_id` 与 `tle.signal` 共享同一信号 slot 命名空间。`group_kind` 和 `context_id` 的语义与 `tle.signal` 一致。
 
 #### 3.2.5 API 说明与实战示例
 
