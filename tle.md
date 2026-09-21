@@ -376,18 +376,29 @@ All participants in one barrier instance must execute matching barrier calls in 
 
 ```python
 def distributed_barrier(
-    mesh=None,
-    device_dptr=None,
-    space=None,
-    group_kind="block",
-    barrier_kind="sync",
-    order="acqrel",
-    index=0,
-    context_id=0,
-    memory_scope="system",
+    mesh=None,                    # optional device_mesh; omitted -> full-cluster barrier;
+                                  # required with space; a sliced cluster mesh selects sub-mesh first
+    device_dptr=None,             # optional normally; required with space;
+                                  # DistributedRtContext returned by create_dist_tensor
+    space=None,                   # optional FlagCX team selector; None -> mesh/local barrier path;
+                                  # "device" | "inter" | "world" (aliases described below)
+    group_kind="block",           # optional, FlagCX path only; "thread" | "warp" | "block"
+    barrier_kind="sync",          # optional, FlagCX path only; "arrive" | "wait" | "sync"
+    order="acqrel",               # optional, FlagCX path only;
+                                  # "relaxed" | "acquire" | "release" | "acqrel"
+    index=0,                      # optional, FlagCX path only; non-negative barrier channel
+    context_id=0,                 # optional, FlagCX path only; compile-time int32 context index
+    memory_scope="system",        # optional, FlagCX path only;
+                                  # "system" | "device" | "block" | "thread"
 ):
     ...
 ```
+
+Every public argument has a default, so none is unconditionally required. The requirements depend on the selected path:
+
+- `tle.distributed_barrier()` is valid and emits the default full-cluster barrier.
+- `tle.distributed_barrier(mesh)` uses `mesh` to select/infer a cluster, cluster sub-mesh, or cooperative-grid barrier; no `device_dptr` is needed.
+- An explicit FlagCX communicator barrier requires all three of `space`, `mesh`, and `device_dptr`. The remaining arguments are optional and use the defaults shown above.
 
 `mesh` and `space` select the synchronization mode in the following order:
 
@@ -416,7 +427,9 @@ Because `row_mesh` is a sliced cluster mesh, this call follows the 'submesh' dis
 
 For the FlagCX communicator path:
 
+- `mesh` is required and validates the selected communicator topology. The `"device"` team requires a `device` launch axis; the `"inter"` and `"world"` teams require a `node` launch axis.
 - `device_dptr` is the distributed runtime context returned by `tle.create_dist_tensor(...)`.
+- `space` selects the participants: `"device"`/`"intra"`/`"intra_node"` for the intra-node team, `"inter"`/`"inter_node"` for the inter-node team, or `"world"` for the world team.
 - `group_kind` is the collective execution scope: `"thread"`, `"warp"`, or `"block"` (default).
 - `barrier_kind` is `"arrive"`, `"wait"`, or `"sync"` (default). `"arrive"` only reports arrival; `"wait"` waits for the matching arrivals; `"sync"` performs both.
 - `order` controls the memory order: `"relaxed"`, `"acquire"`, `"release"`, or `"acqrel"` (default). `memory_scope` controls its scope: `"system"` (default), `"device"`, `"block"`, or `"thread"`. These two parameters apply only to the FlagCX path.

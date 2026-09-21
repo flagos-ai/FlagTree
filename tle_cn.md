@@ -360,18 +360,29 @@ x = tle.make_sharded_tensor(x_ptr, sharding=x_shard, shape=[4, 4])
 
 ```python
 def distributed_barrier(
-    mesh=None,
-    device_dptr=None,
-    space=None,
-    group_kind="block",
-    barrier_kind="sync",
-    order="acqrel",
-    index=0,
-    context_id=0,
-    memory_scope="system",
+    mesh=None,                    # 可选 device_mesh；省略时为完整 cluster barrier；
+                                  # 显式传 space 时必填；cluster 切片 mesh 会优先选择 sub-mesh
+    device_dptr=None,             # 通常可选；显式传 space 时必填；
+                                  # create_dist_tensor 返回的 DistributedRtContext
+    space=None,                   # 可选 FlagCX 通信组；None 表示 mesh/本地 barrier 路径；
+                                  # "device" | "inter" | "world"（别名见下文）
+    group_kind="block",           # 可选，仅 FlagCX 路径；"thread" | "warp" | "block"
+    barrier_kind="sync",          # 可选，仅 FlagCX 路径；"arrive" | "wait" | "sync"
+    order="acqrel",               # 可选，仅 FlagCX 路径；
+                                  # "relaxed" | "acquire" | "release" | "acqrel"
+    index=0,                      # 可选，仅 FlagCX 路径；非负 barrier 通道编号
+    context_id=0,                 # 可选，仅 FlagCX 路径；编译期 int32 context 索引
+    memory_scope="system",        # 可选，仅 FlagCX 路径；
+                                  # "system" | "device" | "block" | "thread"
 ):
     ...
 ```
+
+所有公开参数都有缺省值，因此不存在无条件必填参数；必填关系由所选路径决定：
+
+- `tle.distributed_barrier()` 是合法调用，生成缺省的完整 cluster barrier。
+- `tle.distributed_barrier(mesh)` 用 `mesh` 选择或推导 cluster、cluster sub-mesh 或 cooperative-grid barrier，不需要 `device_dptr`。
+- 显式使用 FlagCX 通信组 barrier 时，`space`、`mesh` 和 `device_dptr` 三者都必须提供；其他参数可省略并采用上面列出的缺省值。
 
 `mesh` 和 `space` 按以下优先级选择同步模式：
 
@@ -400,7 +411,9 @@ tle.distributed_barrier(row_mesh, device_dptr=device_dptr, space = "device")
 
 FlagCX 通信组路径的参数含义如下：
 
+- `mesh`：必填，用于校验所选通信组的拓扑。`"device"` 通信组要求 launch mesh 有 `device` 轴；`"inter"` 和 `"world"` 通信组要求有 `node` 轴。
 - `device_dptr`：`tle.create_dist_tensor(...)` 返回的分布式运行时上下文。
+- `space`：选择参与者；`"device"`/`"intra"`/`"intra_node"` 表示节点内通信组，`"inter"`/`"inter_node"` 表示跨节点通信组，`"world"` 表示 world 通信组。
 - `group_kind`：集合式调用的执行粒度，可为 `"thread"`、`"warp"` 或 `"block"`（默认）。
 - `barrier_kind`：可为 `"arrive"`、`"wait"` 或 `"sync"`（默认）。`"arrive"` 只报告已到达，不等待；`"wait"` 等待匹配的到达；`"sync"` 同时完成到达和等待。
 - `order`：内存序，可为 `"relaxed"`、`"acquire"`、`"release"` 或 `"acqrel"`（默认）。`memory_scope`：内存作用域，可为 `"system"`（默认）、`"device"`、`"block"` 或 `"thread"`。这两个参数仅用于 FlagCX 路径。
