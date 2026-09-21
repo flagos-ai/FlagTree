@@ -364,6 +364,7 @@ bool NVIDIA::canSkipBarSync(Operation *before, Operation *after) {
       isa<triton::nvidia_gpu::WaitBarrierOp>(after))
     return false;
 
+#ifdef __TLE__
   // An arrive followed by a wait or another arrive only touches mbarrier
   // objects, which the mbarrier hardware orders by itself; the rendezvous
   // inserted before the first arrive already covers its publication, so no
@@ -372,6 +373,7 @@ bool NVIDIA::canSkipBarSync(Operation *before, Operation *after) {
       isa<triton::nvidia_gpu::WaitBarrierOp,
           triton::nvidia_gpu::ArriveBarrierOp>(after))
     return true;
+#endif
 
   // Even though WaitBarrierOp, AsyncTMACopyGlobalToLocalOp and
   // AsyncTMACopyGlobalToLocalOp read and write to the mbarrier allocation it is

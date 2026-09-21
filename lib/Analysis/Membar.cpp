@@ -677,18 +677,9 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     }
 #else
     if (isa<triton::nvidia_gpu::ArriveBarrierOp>(op)) {
-      // Probe against prior unsynced accesses to decide on a pre-arrive
-      // rendezvous, without leaking the all-shared-memory interval into the
-      // running state (see the TLE path above).
       Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
-      BlockInfo probeInfo;
-      probeInfo.syncWriteIntervals[allIntervals].insert(op);
-      probeInfo.syncReadIntervals[allIntervals].insert(op);
-      if (blockInfo->isIntersected(probeInfo, filter)) {
-        builder->setInsertionPoint(op);
-        insertBarrier(op, builder);
-        blockInfo->sync();
-      }
+      curBlockInfo.syncWriteIntervals[allIntervals].insert(op);
+      curBlockInfo.syncReadIntervals[allIntervals].insert(op);
     }
 #endif
     scratchBufferId = allocation->getBufferId(op);
