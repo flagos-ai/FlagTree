@@ -366,13 +366,13 @@ def distributed_barrier(
                                   # create_dist_tensor 返回的 DistributedRtContext
     space=None,                   # 可选 FlagCX 通信组；None 表示 mesh/本地 barrier 路径；
                                   # "device" | "inter" | "world"（别名见下文）
-    group_kind="block",           # 可选，仅 FlagCX 路径；"thread" | "warp" | "block"
-    barrier_kind="sync",          # 可选，仅 FlagCX 路径；"arrive" | "wait" | "sync"
-    order="acqrel",               # 可选，仅 FlagCX 路径；
+    group_kind="block",           # 可选，仅跨设备/跨节点通信组路径生效；"thread" | "warp" | "block"
+    barrier_kind="sync",          # 可选，仅跨设备/跨节点通信组路径生效；"arrive" | "wait" | "sync"
+    order="acqrel",               # 可选，仅跨设备/跨节点通信组路径生效；
                                   # "relaxed" | "acquire" | "release" | "acqrel"
-    index=0,                      # 可选，仅 FlagCX 路径；非负 barrier 通道编号
-    context_id=0,                 # 可选，仅 FlagCX 路径；编译期 int32 context 索引
-    memory_scope="system",        # 可选，仅 FlagCX 路径；
+    index=0,                      # 可选，仅跨设备/跨节点通信组路径生效；非负 barrier 通道编号
+    context_id=0,                 # 可选，仅跨设备/跨节点通信组路径生效；编译期 int32 context 索引
+    memory_scope="system",        # 可选，仅跨设备/跨节点通信组路径生效；
                                   # "system" | "device" | "block" | "thread"
 ):
     ...
@@ -409,14 +409,28 @@ tle.distributed_barrier(row_mesh, device_dptr=device_dptr, space = "device")
 
 由于 `row_mesh` 是由 cluster mesh 切出的子 mesh，该调用会命中 submesh 分派规则，生成 cluster sub-mesh barrier。`device_dptr` 虽可传入，但不会被这条 barrier 路径使用；即使额外传入 `space=...`，该调用也不会变成 FlagCX 通信组 barrier。
 
-FlagCX 通信组路径的参数含义如下：
+跨设备/跨节点通信组路径（由 FlagCX 实现）的参数含义如下：
 
 - `mesh`：必填，用于校验所选通信组的拓扑。`"device"` 通信组要求 launch mesh 有 `device` 轴；`"inter"` 和 `"world"` 通信组要求有 `node` 轴。
 - `device_dptr`：`tle.create_dist_tensor(...)` 返回的分布式运行时上下文。
 - `space`：选择参与者；`"device"`/`"intra"`/`"intra_node"` 表示节点内通信组，`"inter"`/`"inter_node"` 表示跨节点通信组，`"world"` 表示 world 通信组。
 - `group_kind`：集合式调用的执行粒度，可为 `"thread"`、`"warp"` 或 `"block"`（默认）。
 - `barrier_kind`：可为 `"arrive"`、`"wait"` 或 `"sync"`（默认）。`"arrive"` 只报告已到达，不等待；`"wait"` 等待匹配的到达；`"sync"` 同时完成到达和等待。
-- `order`：内存序，可为 `"relaxed"`、`"acquire"`、`"release"` 或 `"acqrel"`（默认）。`memory_scope`：内存作用域，可为 `"system"`（默认）、`"device"`、`"block"` 或 `"thread"`。这两个参数仅用于 FlagCX 路径。
+- `order`：控制 barrier 前后访存的内存序，仅跨设备/跨节点通信组路径生效。各可选值的含义如下：
+
+  - `"relaxed"`：只执行 barrier 操作，不额外提供 barrier 前后访存的 acquire/release 排序约束。
+  - `"acquire"`：阻止 barrier 之后的访存被重排到 barrier 之前；通常用于等待方，使其能观察到释放方在 barrier 之前发布的数据。
+  - `"release"`：阻止 barrier 之前的访存被重排到 barrier 之后；通常用于到达方，在通知其他 rank 前发布本 rank 已完成的写入。
+  - `"acqrel"`：同时提供 acquire 和 release 语义，是默认值，通常与完整的 `"sync"` barrier 配合使用。
+
+  常用搭配是 `barrier_kind="arrive"` 配 `order="release"`、`barrier_kind="wait"` 配 `order="acquire"`、`barrier_kind="sync"` 配 `order="acqrel"`。这些是语义上的推荐搭配，并非参数组合限制。
+- `memory_scope`：指定内存序保证的可见范围，仅跨设备/跨节点通信组路径生效；它不决定哪些 rank 参与同步，参与者由 `space` 指定。各可选值的接口语义如下：
+
+  - `"system"`：系统级作用域，对系统内所有线程可见；这是默认值，也是分布式 barrier 的常用选择。
+  - `"device"`：设备级作用域，对当前设备内的所有线程可见。
+  - `"block"`：线程块（CTA）级作用域，只对当前线程块内的线程可见。
+  - `"thread"`：线程级作用域，只对当前线程可见。
+
 - `index`：非负的 barrier 通道编号。`context_id`：预创建的 FlagCX context 编号（尤其用于 `"inter"` 和 `"world"` 的网络 context），必须是非负的编译期 int32。所有参与者的这两个值必须一致。
 
 示例：用 node/device mesh 同步 FlagCX world 通信组：

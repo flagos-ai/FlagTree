@@ -382,13 +382,13 @@ def distributed_barrier(
                                   # DistributedRtContext returned by create_dist_tensor
     space=None,                   # optional FlagCX team selector; None -> mesh/local barrier path;
                                   # "device" | "inter" | "world" (aliases described below)
-    group_kind="block",           # optional, FlagCX path only; "thread" | "warp" | "block"
-    barrier_kind="sync",          # optional, FlagCX path only; "arrive" | "wait" | "sync"
-    order="acqrel",               # optional, FlagCX path only;
+    group_kind="block",           # optional; effective only on the cross-device/cross-node communicator path; "thread" | "warp" | "block"
+    barrier_kind="sync",          # optional; effective only on the cross-device/cross-node communicator path; "arrive" | "wait" | "sync"
+    order="acqrel",               # optional; effective only on the cross-device/cross-node communicator path;
                                   # "relaxed" | "acquire" | "release" | "acqrel"
-    index=0,                      # optional, FlagCX path only; non-negative barrier channel
-    context_id=0,                 # optional, FlagCX path only; compile-time int32 context index
-    memory_scope="system",        # optional, FlagCX path only;
+    index=0,                      # optional; effective only on the cross-device/cross-node communicator path; non-negative barrier channel
+    context_id=0,                 # optional; effective only on the cross-device/cross-node communicator path; compile-time int32 context index
+    memory_scope="system",        # optional; effective only on the cross-device/cross-node communicator path;
                                   # "system" | "device" | "block" | "thread"
 ):
     ...
@@ -425,14 +425,29 @@ tle.distributed_barrier(row_mesh, device_dptr=device_dptr, space = "device")
 
 Because `row_mesh` is a sliced cluster mesh, this call follows the 'submesh' dispatch rule and emits a cluster sub-mesh barrier. `device_dptr` is accepted but is not consumed by this barrier path; adding `space=...` does not turn this call into a FlagCX communicator barrier.
 
-For the FlagCX communicator path:
+For the cross-device/cross-node communicator path (implemented with FlagCX):
 
 - `mesh` is required and validates the selected communicator topology. The `"device"` team requires a `device` launch axis; the `"inter"` and `"world"` teams require a `node` launch axis.
 - `device_dptr` is the distributed runtime context returned by `tle.create_dist_tensor(...)`.
 - `space` selects the participants: `"device"`/`"intra"`/`"intra_node"` for the intra-node team, `"inter"`/`"inter_node"` for the inter-node team, or `"world"` for the world team.
 - `group_kind` is the collective execution scope: `"thread"`, `"warp"`, or `"block"` (default).
 - `barrier_kind` is `"arrive"`, `"wait"`, or `"sync"` (default). `"arrive"` only reports arrival; `"wait"` waits for the matching arrivals; `"sync"` performs both.
-- `order` controls the memory order: `"relaxed"`, `"acquire"`, `"release"`, or `"acqrel"` (default). `memory_scope` controls its scope: `"system"` (default), `"device"`, `"block"`, or `"thread"`. These two parameters apply only to the FlagCX path.
+- `order` controls the memory ordering of accesses around the barrier and is effective only on the cross-device/cross-node communicator path. Its accepted values are:
+
+  - `"relaxed"`: performs the barrier operation without adding acquire/release ordering constraints to memory accesses around it.
+  - `"acquire"`: prevents memory accesses after the barrier from being reordered before it; it is typically used by a waiter so that it can observe data published before a matching release.
+  - `"release"`: prevents memory accesses before the barrier from being reordered after it; it is typically used by an arriver to publish completed writes before notifying other ranks.
+  - `"acqrel"`: provides both acquire and release semantics. This is the default and is typically paired with a full `"sync"` barrier.
+
+  Common pairings are `barrier_kind="arrive"` with `order="release"`, `barrier_kind="wait"` with `order="acquire"`, and `barrier_kind="sync"` with `order="acqrel"`. These are semantic recommendations, not parameter-combination restrictions.
+- `memory_scope` specifies the visibility scope of the memory-ordering guarantee and is effective only on the cross-device/cross-node communicator path. It does not select the participating ranks; `space` selects them. The API semantics of its accepted values are:
+
+  - `"system"`: system scope, visible to all threads in the system. This is the default and the usual choice for a distributed barrier.
+  - `"device"`: device scope, visible to all threads on the current device.
+  - `"block"`: thread-block (CTA) scope, visible only to threads in the current block.
+  - `"thread"`: thread scope, visible only to the current thread.
+
+  The bundled FlagCX unified-barrier API currently accepts this argument, but its `flagcxDevBarrierArrive`, `flagcxDevBarrierWait`, and `flagcxDevBarrierSync` implementations do not yet use it to change barrier behavior. Consequently, the four values currently have no behavioral difference for `distributed_barrier`; the definitions above describe the API semantics.
 - `index` selects a non-negative barrier channel. `context_id` selects a pre-created FlagCX context (notably the network context for `"inter"` and `"world"`) and must be a non-negative compile-time int32. Both values must match across all participants.
 
 Example: synchronize the FlagCX world team represented by a node/device mesh:
