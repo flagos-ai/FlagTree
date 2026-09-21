@@ -26,6 +26,7 @@
 #include "triton/Analysis/Membar.h"
 #ifdef __TLE__
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
@@ -156,13 +157,32 @@ matchStaticIndexCoverage(Value index) {
   return matchRangeWithStaticOffset(current);
 }
 
-static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
+// Bounding box of two views of the same buffer; the caller falls back to the
+// whole allocation when they cannot be combined.
+static std::optional<StaticAccessView>
+mergeStaticViews(std::optional<StaticAccessView> lhs,
+                 std::optional<StaticAccessView> rhs) {
+  if (!lhs || !rhs || lhs->root != rhs->root || lhs->rank != rhs->rank ||
+      lhs->offsets.size() != rhs->offsets.size())
+    return std::nullopt;
+  StaticAccessView merged = *lhs;
+  for (auto [i, offset, size] : llvm::enumerate(rhs->offsets, rhs->sizes)) {
+    int64_t low = std::min(merged.offsets[i], offset);
+    int64_t high = std::max(merged.offsets[i] + merged.sizes[i], offset + size);
+    merged.offsets[i] = low;
+    merged.sizes[i] = high - low;
+  }
+  return merged;
+}
+
+static std::optional<StaticAccessView>
+getStaticMemDescView(Value value, SmallPtrSetImpl<Value> &visited) {
   auto memDescTy = dyn_cast<ttg::MemDescType>(value.getType());
   if (!memDescTy)
     return std::nullopt;
 
   if (auto index = value.getDefiningOp<ttg::MemDescIndexOp>()) {
-    auto srcView = getStaticMemDescView(index.getSrc());
+    auto srcView = getStaticMemDescView(index.getSrc(), visited);
     if (!srcView)
       return std::nullopt;
     auto cstIndex = getConstantIntLike(index.getIndex());
@@ -186,7 +206,7 @@ static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
   }
 
   if (auto subslice = value.getDefiningOp<ttg::MemDescSubsliceOp>()) {
-    auto srcView = getStaticMemDescView(subslice.getSrc());
+    auto srcView = getStaticMemDescView(subslice.getSrc(), visited);
     if (!srcView)
       return std::nullopt;
 
@@ -207,22 +227,42 @@ static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
   }
 
   if (auto arg = dyn_cast<BlockArgument>(value)) {
-    // A block argument carries no static offset information. Warp-specialize
-    // partition arguments map positionally to the parent's captures, so the
-    // view can be recovered there; any other block argument must give up so
-    // the caller falls back to the whole allocated interval instead of
-    // wrongly assuming the view starts at the buffer base.
+    // A block argument carries no static offset information of its own. Warp-
+    // specialize partition arguments map positionally to the parent's
+    // captures, and a loop-carried argument is either the value the loop was
+    // entered with or the one yielded back, so both can be recovered. Any
+    // other block argument must give up, so that the caller falls back to the
+    // whole allocated interval instead of wrongly assuming the view starts at
+    // the buffer base.
     if (auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(
             arg.getOwner()->getParentOp()))
       return getStaticMemDescView(
-          partitions.getParentOp().getExplicitCaptures()[arg.getArgNumber()]);
-    return std::nullopt;
+          partitions.getParentOp().getExplicitCaptures()[arg.getArgNumber()],
+          visited);
+    auto loop =
+        dyn_cast_or_null<LoopLikeOpInterface>(arg.getOwner()->getParentOp());
+    if (!loop || !visited.insert(value).second)
+      return std::nullopt;
+    OpOperand *init = loop.getTiedLoopInit(arg);
+    OpOperand *yielded = loop.getTiedLoopYieldedValue(arg);
+    if (!init || !yielded)
+      return std::nullopt;
+    auto initView = getStaticMemDescView(init->get(), visited);
+    if (yielded->get() == value)
+      return initView;
+    return mergeStaticViews(initView,
+                            getStaticMemDescView(yielded->get(), visited));
   }
 
   SmallVector<int64_t> shape(memDescTy.getShape().begin(),
                              memDescTy.getShape().end());
   return StaticAccessView{value, SmallVector<int64_t>(shape.size(), 0),
                           std::move(shape), memDescTy.getRank()};
+}
+
+static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
+  SmallPtrSet<Value, 4> visited;
+  return getStaticMemDescView(value, visited);
 }
 
 static std::optional<StaticAccessView> getStaticLocalPointerView(Value value) {
