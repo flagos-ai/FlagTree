@@ -1,6 +1,6 @@
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
-set(LLVM_TARGET_DEFINITIONS TritonGPUOps.td)
+flagtree_spec_td_set(LLVM_TARGET_DEFINITIONS TritonGPUOps.td)
 mlir_tablegen(Dialect.h.inc -gen-dialect-decls -dialect=ttg)
 mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs -dialect=ttg)
 mlir_tablegen(Ops.h.inc -gen-op-decls)
