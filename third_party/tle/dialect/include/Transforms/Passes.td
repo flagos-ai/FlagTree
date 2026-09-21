@@ -391,6 +391,13 @@ def TritonTleScheduleTmaStoreSync
                            "mlir::triton::nvws::NVWSDialect",
                            "mlir::triton::TritonDialect",
                            "mlir::triton::tle::TleDialect"];
+
+  let options = [
+    Option<"maxPendingGroups", "max-pending-groups", "int32_t", /*default*/"1",
+           "upper bound on TMA store groups kept in flight, at most 8. The "
+           "default lets a group cross the back edge but waits for it before "
+           "the next group is committed.">
+  ];
 }
 
 def TritonTleLowerPipeToNvws

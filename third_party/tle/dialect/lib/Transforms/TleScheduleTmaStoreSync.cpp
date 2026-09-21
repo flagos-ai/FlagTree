@@ -54,7 +54,7 @@ namespace ttnvws = mlir::triton::nvws;
 namespace {
 
 // Keep the lattice finite, and restrict generated waits to small immediates.
-static constexpr unsigned kDefaultMaxPendingGroups = 8;
+static constexpr unsigned kDefaultMaxPendingGroups = 1;
 static constexpr unsigned kPendingGroupsLimit = 8;
 
 static Value canonicalizeWarpSpecializeCapture(Value value) {
