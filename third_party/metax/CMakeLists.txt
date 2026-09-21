@@ -40,5 +40,9 @@ endif()
 
 if(BUILD_MCTLE)
   add_dependencies(TritonAnalysis McTleTableGen)
+  add_dependencies(TritonLLVMIR McTleTableGen)
+  target_sources(TritonLLVMIR INTERFACE
+    $<TARGET_OBJECTS:McTleIR>
+  )
   target_link_libraries(TritonToTritonGPU PUBLIC McTleIR)
 endif()
