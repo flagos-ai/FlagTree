@@ -282,6 +282,7 @@ def _inter_node_p2p_kernel(
         dtype=DTYPE,
         shard_id=remote_rank,
         coopkind=tle.GroupKind.BLOCK,
+        context_id=0,
     )
 
     offsets = tl.arange(0, BLOCK_SIZE)
