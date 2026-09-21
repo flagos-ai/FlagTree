@@ -339,3 +339,44 @@ def test_permutation_ptxas_bug(device):
     )
     ref = torch.matmul(X.float(), W.float()).to(dtype)
     torch.testing.assert_close(Out.to(torch.float32), ref.to(torch.float32), rtol=0.25, atol=0.0625)
+
+
+@pytest.mark.parametrize("block_m", [8, 16, 32, 64])
+def test_matmul_small_block_m(block_m, device):
+    # Regression test for issue #1232. A BLOCK_SIZE_M smaller than the MACA MMA
+    # thread tile (16) could not be tiled by
+    # MACAMmaEncodingAttr::composeSharedLayoutForOperand, which aborted the
+    # process that was compiling the kernel. Such dots are now compiled with
+    # the blocked (FMA) layout instead.
+    @triton.jit
+    def _matmul(a_ptr, b_ptr, c_ptr, M, N, K,  #
+                sam, sak, sbn, sbk, scm, scn,  #
+                BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr):
+        pid_m = tl.program_id(0)
+        pid_n = tl.program_id(1)
+        rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+        rk = tl.arange(0, BLOCK_K)
+        a_ptrs = a_ptr + rm[:, None] * sam + rk[None, :] * sak
+        b_ptrs = b_ptr + rk[:, None] * sbk + rn[None, :] * sbn
+        acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+        for _ in range(0, tl.cdiv(K, BLOCK_K)):
+            acc = tl.dot(tl.load(a_ptrs), tl.load(b_ptrs), acc)
+            a_ptrs += BLOCK_K * sak
+            b_ptrs += BLOCK_K * sbk
+        tl.store(c_ptr + rm[:, None] * scm + rn[None, :] * scn, acc.to(tl.bfloat16))
+
+    M = N = 128
+    K = 512
+    block_n, block_k = 64, 32
+
+    a = torch.randn((M, K), device=device, dtype=torch.bfloat16)
+    b = torch.randn((K, N), device=device, dtype=torch.bfloat16)
+    c = torch.empty((M, N), device=device, dtype=torch.bfloat16)
+
+    _matmul[(triton.cdiv(M, block_m), triton.cdiv(N, block_n))](
+        a, b, c, M, N, K, a.stride(0), a.stride(1), b.stride(1), b.stride(0), c.stride(0), c.stride(1),  #
+        BLOCK_M=block_m, BLOCK_N=block_n, BLOCK_K=block_k, num_warps=4, num_stages=3)
+
+    ref = torch.matmul(a.float(), b.float())
+    torch.testing.assert_close(c.float(), ref, rtol=1e-2, atol=1e-2)

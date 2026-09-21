@@ -123,6 +123,46 @@ SmallVector<unsigned, 2> warpsPerTileMACA(triton::DotOp dotOp,
   return ret;
 }
 
+// The MACA MMA thread tile spans 16 elements along M and N and 4 along K (see
+// getMmaThreadShape), scaled by the elements each thread holds. The swizzled
+// shared layout of a dot operand can only be composed for shapes that tile
+// divides: there is no tiling for the others, and composeSharedLayoutForOperand
+// asserts to say so, which aborts the process that is JIT-compiling the kernel.
+// Decode-shaped GEMMs ask for exactly such tiles (BLOCK_SIZE_M == 8), so keep
+// those dots in the blocked (FMA) layout the way the 0.6.x backends did.
+//
+// Two flags decide which tiling the encoding will actually carry, and the
+// operand has to tile in every reading they leave open: `needTrans`, which
+// swaps which operand dimension the M/N half of the tile covers, and the
+// lds-trans path, which swaps the halves themselves ({4, 4, 16}) and moves
+// ldsTransVec elements between them. Requiring all of them leaves the asserts
+// in composeSharedLayoutForOperand unreachable; a dot that fails one only loses
+// the MMA layout.
+//
+// https://github.com/flagos-ai/FlagTree/issues/1232
+static bool macaMmaThreadTileDivides(int64_t mn, int64_t k, int64_t elemsMN,
+                                     int64_t elemsK, int64_t ldsTransVec,
+                                     bool enableLdsTrans) {
+  if (mn <= 0 || k <= 0 || elemsMN <= 0 || elemsK <= 0)
+    return false;
+  // Both assignments of the two halves: as stored, and with `needTrans`
+  // swapping the roles. Elems are per-thread counts; the thread half is the
+  // shape they are scaled by.
+  auto divides = [&](int64_t threadMN, int64_t threadK, int64_t mnElems,
+                     int64_t kElems) {
+    return mn % (threadMN * mnElems) == 0 && k % (threadK * kElems) == 0 &&
+           k % (threadMN * mnElems) == 0 && mn % (threadK * kElems) == 0;
+  };
+  if (!divides(16, 4, elemsMN, elemsK))
+    return false;
+  if (!enableLdsTrans)
+    return true;
+  // getElemsPerThreadOrTrans requires this much to rescale the counts.
+  if (elemsK < ldsTransVec || elemsK % ldsTransVec != 0)
+    return false;
+  return divides(4, 16, elemsMN * ldsTransVec, elemsK / ldsTransVec);
+}
+
 class BlockedToMMA : public mlir::RewritePattern {
   int computeCapability;
   mutable int mmaV1Counter{}; // used to generate ID for MMAv1 encoding
@@ -255,6 +295,15 @@ public:
         elementsStride[0] = elemStride;
       if (enableBLdsTrans)
         elementsStride[1] = elemStride;
+      // The shared layout of each operand is composed from these very counts
+      // (getElemsPerThreadOrTrans), so a dot whose operands this layout cannot
+      // tile must keep the blocked layout -- the pattern fails here, before the
+      // encoding exists. A's M/N half covers M, B's covers N.
+      if (!macaMmaThreadTileDivides(m, k, elemsPerThread[0], elemsPerThread[2],
+                                    elemStride, enableALdsTrans) ||
+          !macaMmaThreadTileDivides(n, k, elemsPerThread[1], elemsPerThread[2],
+                                    elemStride, enableBLdsTrans))
+        return failure();
       mmaEnc = triton::gpu::MACAMmaEncodingAttr::get(
           oldRetType.getContext(), versionMajor_, versionMinor_, warpsPerTile,
           elemsPerThread, 0, enableALdsTrans, enableBLdsTrans, elementsStride);
