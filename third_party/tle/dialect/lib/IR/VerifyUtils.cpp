@@ -50,6 +50,17 @@ std::optional<int64_t> getConstantIntValue(Value value) {
     return std::nullopt;
   return integer.getInt();
 }
+
+LogicalResult verifyNodeNetIdx(Operation *op, Value netIdx) {
+  if (!netIdx.getType().isSignlessInteger(32))
+    return op->emitOpError() << "expects net_idx to be i32";
+  std::optional<int64_t> value = getConstantIntValue(netIdx);
+  if (!value)
+    return op->emitOpError() << "expects net_idx to be a compile-time constant";
+  if (*value < 0 || *value > std::numeric_limits<int32_t>::max())
+    return op->emitOpError() << "expects net_idx to be in range [0, INT32_MAX]";
+  return success();
+}
 } // namespace
 
 namespace RemotePointers {
@@ -86,8 +97,8 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
         !op.getComm().getType().isSignlessInteger(64))
       return op.emitOpError()
              << "expects node marker src and comm to be i64 handles";
-    if (!op.getNetIdx().getType().isSignlessInteger(32))
-      return op.emitOpError() << "expects node marker net_idx to be i32";
+    if (failed(verifyNodeNetIdx(op, op.getNetIdx())))
+      return failure();
     if (!op.getCoopKindAttr())
       return op.emitOpError() << "node marker requires coop_kind";
     auto ptrTy = dyn_cast<triton::PointerType>(result.getType());
@@ -108,9 +119,6 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
     if (std::optional<int64_t> peer = getConstantIntValue(op.getShardId());
         peer && *peer < 0)
       return op.emitOpError() << "expects constant peer to be >= 0";
-    if (std::optional<int64_t> netIdx = getConstantIntValue(op.getNetIdx());
-        netIdx && *netIdx < 0)
-      return op.emitOpError() << "expects constant net_idx to be >= 0";
     return success();
   }
 
@@ -142,8 +150,8 @@ LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
     return emitError() << "expects source and destination offsets to be i64";
   if (!nelems.getType().isSignlessInteger(64))
     return emitError() << "expects nelems to be i64";
-  if (!netIdx.getType().isSignlessInteger(32))
-    return emitError() << "expects net_idx to be i32";
+  if (failed(verifyNodeNetIdx(op, netIdx)))
+    return failure();
   if (!elemBytes || elemBytes.getInt() <= 0)
     return emitError() << "expects elem_bytes to be > 0";
   if (coopKind != FlagCXCoopKind::THREAD && coopKind != FlagCXCoopKind::WARP &&
@@ -164,8 +172,7 @@ LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
 
   if (failed(verifyNonNegativeConstant(peer, "peer")) ||
       failed(verifyNonNegativeConstant(srcOffset, "src_offset")) ||
-      failed(verifyNonNegativeConstant(dstOffset, "dst_offset")) ||
-      failed(verifyNonNegativeConstant(netIdx, "net_idx")))
+      failed(verifyNonNegativeConstant(dstOffset, "dst_offset")))
     return failure();
   return success();
 }

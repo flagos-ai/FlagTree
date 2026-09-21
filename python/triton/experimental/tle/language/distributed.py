@@ -1423,25 +1423,15 @@ def _normalize_node_peer(shard_id, scope, _semantic) -> tl.tensor:
     return _normalize_runtime_remote_shard_id_tensor(shard_id)
 
 
-_NODE_INTER_CONTEXT_COUNT = 4
-
-
 def _normalize_node_netidx(netidx, _semantic) -> tl.tensor:
     netidx = tl._unwrap_if_constexpr(netidx)
     if isinstance(netidx, bool):
         raise TypeError("node space netidx must be an integer, not bool")
-    if isinstance(netidx, int):
-        if netidx < 0 or netidx >= _NODE_INTER_CONTEXT_COUNT:
-            raise ValueError(f"node space netidx must be in range [0, {_NODE_INTER_CONTEXT_COUNT}), got {netidx}")
-        netidx = _semantic.to_tensor(netidx)
-    elif not isinstance(netidx, tl.tensor):
-        netidx = _semantic.to_tensor(netidx)
-
-    if netidx.shape != ():
-        raise ValueError(f"node space netidx must be scalar, got shape {netidx.shape}")
-    if netidx.dtype != tl.int32:
-        raise TypeError(f"node space runtime netidx must be tl.int32; got {netidx.dtype}")
-    return netidx
+    if not isinstance(netidx, int):
+        raise TypeError(f"node space netidx must be a compile-time int, got {type(netidx).__name__}")
+    if netidx < 0 or netidx > 0x7FFFFFFF:
+        raise ValueError(f"node space netidx must be in int32 range, got {netidx}")
+    return _semantic.to_tensor(netidx)
 
 
 def _parse_node_context(builder, value, label: str, index: int):
@@ -1496,7 +1486,7 @@ def remote(
     dtype: tl.dtype = None,
     offset: int | tl.tensor | None = None,
     coopkind: GroupKind | str | None = None,
-    netidx: int | tl.tensor = 0,
+    netidx: int = 0,
     _semantic: TLESemantic | None = None,
 ):
     """
@@ -1532,8 +1522,8 @@ def remote(
     strided, non-zero-start, or mismatched ranges are rejected.
 
     `dtype` is required. `coopkind` defaults to `GroupKind.BLOCK`, and
-    `netidx` defaults to zero. Compile-time `netidx` must be in `[0, 4)`;
-    runtime values must be scalar `tl.int32`. `shard_id` may be a world rank
+    `netidx` defaults to zero and must be a compile-time integer in
+    `[0, INT32_MAX]`, selecting an existing network context. `shard_id` may be a world rank
     or, with `scope=device_mesh`, a compile-time mesh coordinate.
 
     For `space="device"`, `offset` is the remote-memory element offset and
