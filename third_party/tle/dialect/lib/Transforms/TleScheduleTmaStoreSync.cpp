@@ -26,6 +26,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
@@ -53,8 +54,8 @@ namespace ttnvws = mlir::triton::nvws;
 namespace {
 
 // Keep the lattice finite, and restrict generated waits to small immediates.
-static constexpr unsigned kMaxPendingGroups = 8;
-static constexpr unsigned kMaxAge = kMaxPendingGroups - 1;
+static constexpr unsigned kDefaultMaxPendingGroups = 8;
+static constexpr unsigned kPendingGroupsLimit = 8;
 
 static Value canonicalizeWarpSpecializeCapture(Value value) {
   while (auto blockArg = dyn_cast<BlockArgument>(value)) {
@@ -128,6 +129,7 @@ static bool isNonTLEStoreGroupBoundary(Operation *op) {
 struct PendingState {
   DenseMap<Value, unsigned> ages;
   unsigned groups = 0;
+  unsigned maxGroups = kDefaultMaxPendingGroups;
 
   bool join(const PendingState &other) {
     bool changed = false;
@@ -156,10 +158,10 @@ struct PendingState {
 
   void commit(ArrayRef<Value> roots) {
     for (auto &entry : ages)
-      entry.second = std::min(entry.second + 1, kMaxAge);
+      entry.second = std::min(entry.second + 1, maxGroups - 1);
     for (Value root : roots)
       ages[root] = 0;
-    groups = std::min(groups + 1, kMaxPendingGroups);
+    groups = std::min(groups + 1, maxGroups);
   }
 };
 
@@ -190,15 +192,50 @@ static bool isSequentialRegion(Operation *op) {
              scf::IndexSwitchOp>(op);
 }
 
+// True for an operation that introduces a new shared-memory buffer rather than
+// a view of an existing one.
+static bool allocatesSharedBuffer(Operation *op);
+
+// The region a buffer is allocated in, resolving loop-carried block arguments
+// to the value the loop was entered with.
+static Region *getSourceRegion(Value value) {
+  SmallPtrSet<Value, 4> visited;
+  while (auto arg = dyn_cast<BlockArgument>(value)) {
+    if (!visited.insert(value).second)
+      break;
+    auto loop = dyn_cast_or_null<LoopLikeOpInterface>(arg.getOwner()->getParentOp());
+    if (!loop)
+      break;
+    OpOperand *init = loop.getTiedLoopInit(arg);
+    if (!init)
+      break;
+    value = init->get();
+  }
+  return value.getParentRegion();
+}
+
 static bool isControlFlow(Operation *op) {
   return isa<BranchOpInterface>(op) || isSequentialRegion(op) ||
          (isa<RegionBranchTerminatorOpInterface>(op) &&
           isSequentialRegion(op->getParentOp()));
 }
 
+static bool allocatesSharedBuffer(Operation *op) {
+  for (Value result : op->getResults()) {
+    auto memDescTy = dyn_cast<ttg::MemDescType>(result.getType());
+    if (!memDescTy ||
+        !isa_and_nonnull<ttg::SharedMemorySpaceAttr>(memDescTy.getMemorySpace()))
+      continue;
+    if (getMemDescRoot(result) == result)
+      return true;
+  }
+  return false;
+}
+
 class StoreScheduler {
 public:
-  explicit StoreScheduler(ModuleOp module) : module(module) {}
+  StoreScheduler(ModuleOp module, unsigned maxPendingGroups)
+      : module(module), maxPendingGroups(maxPendingGroups) {}
 
   LogicalResult run() {
     SmallVector<Block *> blocks;
@@ -221,10 +258,10 @@ public:
       Operation *op = worklist.front();
       worklist.pop_front();
       queued.erase(op);
-      PendingState output = inputs.lookup(op);
+      PendingState output = lookupInput(op);
       transfer(op, output);
       for (Operation *successor : successors[op]) {
-        auto [it, inserted] = inputs.try_emplace(successor);
+        auto [it, inserted] = inputs.try_emplace(successor, emptyState());
         bool changed = it->second.join(output);
         if (inserted || changed)
           enqueue(successor);
@@ -332,8 +369,8 @@ private:
     }
     if (auto store = dyn_cast<ttng::AsyncTMACopyLocalToGlobalOp>(op)) {
       if (isTLEExplicitTMAStore(store)) {
-        if (groupStarts.contains(op) && state.groups == kMaxPendingGroups)
-          wait(kMaxPendingGroups - 1);
+        if (groupStarts.contains(op) && state.groups == maxPendingGroups)
+          wait(maxPendingGroups - 1);
         return required;
       }
     }
@@ -352,6 +389,24 @@ private:
       state.commit({});
       return required;
     }
+    if (auto terminator = dyn_cast<RegionBranchTerminatorOpInterface>(op);
+        terminator && isSequentialRegion(op->getParentOp())) {
+      // Buffers allocated inside this region die when it exits. Allocation may
+      // then hand their offsets to later buffers, whose writes race with the
+      // TMA engine still reading the source; no barrier can order that. Such
+      // groups must complete before the region exits, unless the terminator
+      // carries the buffer out and keeps it live.
+      Region *region = op->getParentRegion();
+      std::optional<unsigned> escaping;
+      for (auto [root, age] : state.ages) {
+        if (root && (llvm::is_contained(op->getOperands(), root) ||
+                     !region->isAncestor(getSourceRegion(root))))
+          continue;
+        escaping = escaping ? std::min(*escaping, age) : age;
+      }
+      if (escaping)
+        wait(*escaping);
+    }
     if (isControlFlow(op))
       return required;
     if (op->hasTrait<OpTrait::IsTerminator>() || op->getNumRegions() ||
@@ -366,6 +421,12 @@ private:
     // intact for other passes, but do not treat them as unknown shared writes.
     if (isa<ttng::WarpGroupDotCommitOp, ttng::WarpGroupDotWaitOp>(op))
       return required;
+
+    // Allocation may give a new buffer the offset of one whose live range has
+    // just ended, a source still being read by the TMA engine among them, so
+    // reuse is not visible as an alias of any pending root.
+    if (allocatesSharedBuffer(op))
+      wait(0);
 
     auto reuse = [&](Value value) {
       auto roots = getRoots(value);
@@ -399,6 +460,17 @@ private:
       wait(0);
     }
     return required;
+  }
+
+  PendingState emptyState() const {
+    PendingState state;
+    state.maxGroups = maxPendingGroups;
+    return state;
+  }
+
+  PendingState lookupInput(Operation *op) const {
+    auto it = inputs.find(op);
+    return it == inputs.end() ? emptyState() : it->second;
   }
 
   void enqueue(Operation *op) {
@@ -444,7 +516,7 @@ private:
         for (Region &region : op->getRegions()) {
           if (!region.empty() && !region.front().empty()) {
             Operation *entry = &region.front().front();
-            inputs.try_emplace(entry);
+            inputs.try_emplace(entry, emptyState());
             enqueue(entry);
           }
         }
@@ -453,6 +525,7 @@ private:
   }
 
   ModuleOp module;
+  unsigned maxPendingGroups;
   std::unique_ptr<DataFlowSolver> solver;
   DenseMap<Operation *, StoreGroup> groups;
   DenseSet<Operation *> groupStarts;
@@ -471,7 +544,8 @@ public:
       TritonTleScheduleTmaStoreSyncPass>::TritonTleScheduleTmaStoreSyncBase;
 
   void runOnOperation() override {
-    if (failed(StoreScheduler(getOperation()).run()))
+    unsigned groups = std::clamp<int32_t>(maxPendingGroups, 1, kPendingGroupsLimit);
+    if (failed(StoreScheduler(getOperation(), groups).run()))
       signalPassFailure();
   }
 };
