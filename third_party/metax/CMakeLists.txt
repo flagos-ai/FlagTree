@@ -37,3 +37,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
     set(CMAKE_BUILD_RPATH "${CMAKE_BUILD_RPATH}" PARENT_SCOPE)
   endif()
 endif()
+
+if(BUILD_MCTLE)
+  add_dependencies(TritonAnalysis McTleTableGen)
+  target_link_libraries(TritonToTritonGPU PUBLIC McTleIR)
+endif()
