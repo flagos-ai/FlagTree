@@ -14,10 +14,15 @@ class NvidiaHintHandler(BaseHintHandler):
         line_flagtree_hints = getattr(code_generator, 'flagtree_line_hints', {})
         return line_flagtree_hints.get(node.lineno)
 
+    # Operations that accept a flagtree_hints keyword, and the label used when
+    # reporting the annotation.
+    HINTED_OPERATIONS = {"load": "tl.load", "copy": "tle.gpu.copy"}
+
     @staticmethod
     def inject_kwargs_with_hints(fn, flagtree_hints, line_num, kws):
-        if fn.__name__ == "load" and flagtree_hints is not None:
-            print(f"[FLAGTREE] tl.load at line {line_num} has annotation {flagtree_hints}")
+        label = NvidiaHintHandler.HINTED_OPERATIONS.get(fn.__name__)
+        if label is not None and flagtree_hints is not None:
+            print(f"[FLAGTREE] {label} at line {line_num} has annotation {flagtree_hints}")
             if 'flagtree_hints' not in kws:
                 kws['flagtree_hints'] = ""
             if flagtree_hints not in kws['flagtree_hints']:

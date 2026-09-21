@@ -276,3 +276,27 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+#shared = #ttg.nvmma_shared<{swizzlingByteWidth = 128, transposed = false, elementBitWidth = 32}>
+#smem = #ttg.shared_memory
+
+// A kernel that declared how many groups it may keep in flight (from
+// tle.gpu.tma_store_pending) overrides the pipeline default.
+module attributes {tle.tma_store_pending = 8 : i32, "ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: @declared_pending_groups
+  tt.func public @declared_pending_groups(%desc: !tt.tensordesc<tensor<16x16xf32, #shared>>, %src: !ttg.memdesc<16x16xf32, #shared, #smem, mutable>, %n: i32) {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    // CHECK: scf.for
+    // CHECK-NEXT: ttng.async_tma_store_wait {pendings = 7 : i32}
+    // CHECK-NEXT: ttng.async_tma_copy_local_to_global
+    scf.for %i = %c0 to %n step %c1 : i32 {
+      ttng.async_tma_copy_local_to_global %desc[%i, %c0] %src {tle.tma_store_explicit_commit} : !tt.tensordesc<tensor<16x16xf32, #shared>>, !ttg.memdesc<16x16xf32, #shared, #smem, mutable>
+      tle.tma_store.commit_group
+      ttng.async_tma_store_wait {pendings = 0 : i32}
+    }
+    tt.return
+  }
+}

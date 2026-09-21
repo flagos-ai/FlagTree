@@ -63,6 +63,49 @@ def _mark_wgmma_user_promise(_semantic: TLESemantic | None, _generator):
     )
 
 
+_TMA_STORE_PENDING_ATTR = "tle.tma_store_pending"
+_TMA_STORE_PENDING_HINT = "tma_store_pending"
+_TMA_STORE_PENDING_LIMIT = 8
+
+
+def _parse_tma_store_pending_hint(hints):
+    """Read ``tma_store_pending=<n>`` out of a ``# @hint:`` comment."""
+    if not hints:
+        return None
+    pending = None
+    for entry in str(hints).split(","):
+        name, _, value = entry.partition("=")
+        if name.strip() != _TMA_STORE_PENDING_HINT:
+            continue
+        try:
+            pending = int(value)
+        except ValueError:
+            raise ValueError(f"{_TMA_STORE_PENDING_HINT} hint expects an integer, got {value!r}")
+        if not 1 <= pending <= _TMA_STORE_PENDING_LIMIT:
+            raise ValueError(f"{_TMA_STORE_PENDING_HINT} hint must be between 1 "
+                             f"and {_TMA_STORE_PENDING_LIMIT}, got {pending}")
+    return pending
+
+
+def _mark_tma_store_pending(hints, _semantic, _generator):
+    """Raise the module-wide bound on TMA store groups in flight.
+
+    The hint is a property of the whole compilation rather than of one copy: the
+    scheduler is a dataflow analysis over the entire kernel, and a store group
+    can be committed in one region and completed in another. Several hints
+    therefore combine into one bound, the largest value any of them asks for.
+    """
+    pending = _parse_tma_store_pending_hint(hints)
+    if pending is None or _generator is None or _semantic is None:
+        return
+    # This module attribute is NVIDIA-specific and must not leak into mthreads IR.
+    if mthreads_common.enabled():
+        return
+    current = _generator.module.get_int_attr(_TMA_STORE_PENDING_ATTR)
+    if current is None or pending > current:
+        _generator.module.set_attr(_TMA_STORE_PENDING_ATTR, _semantic.builder.get_int32_attr(pending))
+
+
 def _is_wgmma_user_promise_marked(_generator):
     if _generator is None:
         return False
@@ -978,7 +1021,9 @@ def copy(
     offsets: Sequence[constexpr | tensor] = None,
     barrier=None,
     mask=None,
+    flagtree_hints=None,
     _semantic: TLESemantic | None = None,
+    _generator=None,
 ) -> None:
     """
     High-performance data copy operation supporting TMA (Tensor Memory Accelerator) transfers.
@@ -1014,7 +1059,22 @@ def copy(
             global-to-local copies, masked elements are written to local memory
             as zero. For local-to-global copies, masked elements are not stored.
             TMA descriptor copies do not accept a mask.
+        flagtree_hints: Filled in from a ``# @hint:`` comment on the call, not
+            passed by hand. ``tma_store_pending=<1..8>`` raises how many TMA
+            store groups this kernel may keep in flight; without it the
+            scheduler waits for a group before the next one is committed.
+
+            **The value applies to the whole compilation, not to this copy.**
+            The store scheduler is a dataflow analysis over the entire kernel,
+            and a group committed in one region can complete in another, so a
+            per-operation bound would have no meaning where the two meet. Hints
+            on different copies, including copies on opposite sides of a branch,
+            therefore combine into a single module-wide bound: the largest value
+            any of them asks for. Correctness never depends on it — a group
+            still completes before its source is rewritten or can lose its
+            shared-memory offset — so a hint only changes performance.
         _semantic: Internal semantic analyzer for validation and compilation (user-provided)
+        _generator: Internal code generator, used to record ``flagtree_hints``
 
     Raises:
         ValueError: When parameter types are incompatible or offsets missing for TMA operations
@@ -1035,7 +1095,13 @@ def copy(
 
         Masked global -> local copy with zero fill:
             tle.copy(global_ptrs, local_buf, [64, 128], mask=valid)
+
+        TMA store that may keep several groups in flight:
+            for i in tl.range(0, n):
+                tle.copy(local_buf, tma_desc, [64, 128], [i * 64, 0])  # @hint: tma_store_pending=8
     """
+    _mark_tma_store_pending(flagtree_hints, _semantic, _generator)
+
     mthreads_enabled = mthreads_common.enabled()
     iluvatar_enabled = iluvatar_copy.enabled()
 

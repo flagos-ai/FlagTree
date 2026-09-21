@@ -600,9 +600,15 @@ public:
       TritonTleScheduleTmaStoreSyncPass>::TritonTleScheduleTmaStoreSyncBase;
 
   void runOnOperation() override {
-    unsigned groups =
-        std::clamp<int32_t>(maxPendingGroups, 1, kPendingGroupsLimit);
-    if (failed(StoreScheduler(getOperation(), groups).run()))
+    ModuleOp module = getOperation();
+    // A kernel that declared how many groups it may keep in flight overrides
+    // the pipeline default.
+    int32_t requested = maxPendingGroups;
+    if (auto declared =
+            module->getAttrOfType<IntegerAttr>(kTleTMAStorePendingAttr))
+      requested = declared.getInt();
+    unsigned groups = std::clamp<int32_t>(requested, 1, kPendingGroupsLimit);
+    if (failed(StoreScheduler(module, groups).run()))
       signalPassFailure();
   }
 };

@@ -1,6 +1,8 @@
 # flagtree tle
 """TMA store source lifetime across loops, branches, and shared-memory reuse."""
 
+import re
+
 import pytest
 import torch
 import triton
@@ -225,3 +227,67 @@ def test_store_source_offset_reuse(in_region, scratch_reuser, with_allocator):
     check_replays(
         lambda: source_offset_reuse[(sms, )](desc, sink, x, 3, bm, bn, groups, in_region, scratch_reuser, num_warps=4),
         output, reference)
+
+
+@triton.jit(do_not_specialize=["iters"])
+def hinted_pending_store(desc, iters, BM: tl.constexpr, BN: tl.constexpr, HINTED: tl.constexpr):
+    staging = tle.gpu.alloc([BM, BN], tl.float32, scope=tle.gpu.smem)
+    pid = tl.program_id(0)
+    base = (tl.arange(0, BM)[:, None] * BN + tl.arange(0, BN)[None, :]).to(tl.float32)
+    tl.store(tle.gpu.local_ptr(staging), base + pid)
+    for i in tl.range(0, iters, disable_licm=True, loop_unroll_factor=1):
+        if HINTED:
+            tle.gpu.copy(staging, desc, [BM, BN], [(pid * iters + i) * BM, 0])  # @hint: tma_store_pending=8
+        else:
+            tle.gpu.copy(staging, desc, [BM, BN], [(pid * iters + i) * BM, 0])
+
+
+@triton.jit(do_not_specialize=["iters"])
+def conflicting_hint_store(desc, iters, flag, BM: tl.constexpr, BN: tl.constexpr):
+    staging = tle.gpu.alloc([BM, BN], tl.float32, scope=tle.gpu.smem)
+    pid = tl.program_id(0)
+    base = (tl.arange(0, BM)[:, None] * BN + tl.arange(0, BN)[None, :]).to(tl.float32)
+    tl.store(tle.gpu.local_ptr(staging), base + pid)
+    for i in tl.range(0, iters, disable_licm=True, loop_unroll_factor=1):
+        # Both sides of the branch ask for a different bound; the larger one
+        # applies to the whole kernel.
+        if flag != 0:
+            tle.gpu.copy(staging, desc, [BM, BN], [(pid * iters + i) * BM, 0])  # @hint: tma_store_pending=2
+        else:
+            tle.gpu.copy(staging, desc, [BM, BN], [(pid * iters + i) * BM, 0])  # @hint: tma_store_pending=4
+
+
+def pending_waits(binary):
+    return sorted(int(n) for n in re.findall(r"cp\.async\.bulk\.wait_group\.read\s+(\d+)", binary.asm["ptx"]))
+
+
+@pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+@pytest.mark.parametrize("hinted", [False, True])
+def test_tma_store_pending_hint(hinted, with_allocator):
+    bm, bn, iters = 64, 128, 8
+    sms = torch.cuda.get_device_properties(0).multi_processor_count
+    output = torch.empty(sms * iters * bm, bn, device="cuda", dtype=torch.float32)
+    reference = (torch.arange(sms, device="cuda", dtype=torch.float32).repeat_interleave(iters)[:, None, None] +
+                 torch.arange(bm * bn, device="cuda", dtype=torch.float32).view(1, bm, bn)).view_as(output)
+    desc = TensorDescriptor.from_tensor(output, block_shape=[bm, bn])
+    output.fill_(float("nan"))
+    binary = hinted_pending_store[(sms, )](desc, iters, bm, bn, hinted, num_warps=4)
+    torch.testing.assert_close(output, reference, rtol=0, atol=0)
+    # Without the hint every group is waited for before the next commit.
+    assert pending_waits(binary) == ([0, 7] if hinted else [0, 0])
+    check_replays(lambda: hinted_pending_store[(sms, )](desc, iters, bm, bn, hinted, num_warps=4), output, reference)
+
+
+@pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+def test_tma_store_pending_hint_takes_the_maximum(with_allocator):
+    bm, bn, iters = 64, 128, 8
+    sms = torch.cuda.get_device_properties(0).multi_processor_count
+    output = torch.empty(sms * iters * bm, bn, device="cuda", dtype=torch.float32)
+    reference = (torch.arange(sms, device="cuda", dtype=torch.float32).repeat_interleave(iters)[:, None, None] +
+                 torch.arange(bm * bn, device="cuda", dtype=torch.float32).view(1, bm, bn)).view_as(output)
+    desc = TensorDescriptor.from_tensor(output, block_shape=[bm, bn])
+    output.fill_(float("nan"))
+    binary = conflicting_hint_store[(sms, )](desc, iters, 3, bm, bn, num_warps=4)
+    torch.testing.assert_close(output, reference, rtol=0, atol=0)
+    # Hints of 2 and 4 combine into 4, so the loop waits with three groups left.
+    assert pending_waits(binary) == [0, 3]
