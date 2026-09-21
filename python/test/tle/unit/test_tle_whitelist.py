@@ -18,6 +18,8 @@ from triton.language import load as tl_load
         ("triton.experimental.tle.language.raw.core.call", "raw.call"),
         (tle.language.cumsum, "cumsum"),
         (tle.language.gpu.alloc, "gpu.alloc"),
+        (tle.language.gpu.buffered_tensor.load, "gpu.buffered_tensor.load"),
+        (tle.language.gpu.buffered_tensor.store, "gpu.buffered_tensor.store"),
         (tle.language.gpu.buffered_tensor.slot, "gpu.buffered_tensor.slot"),
         (tle.language.gpu.pipeline, "gpu.pipeline"),
     ],
@@ -29,6 +31,15 @@ def test_primitive_name(primitive, expected):
 def test_non_tle_callable_is_rejected():
     with pytest.raises(ValueError, match="not listed in TLE_PRIMITIVES"):
         tle.primitive_name(len)
+
+
+def test_buffer_access_uses_methods():
+    for name in ("to_tensor", "store_tensor"):
+        assert not hasattr(tle.language.gpu, name)
+        assert f"gpu.{name}" not in tle.TLE_PRIMITIVES
+    for name in ("load", "store"):
+        primitive = getattr(tle.language.gpu.buffered_tensor, name)
+        assert tle.primitive_name(primitive) == f"gpu.buffered_tensor.{name}"
 
 
 def test_backend_extension_is_resolved_from_total(monkeypatch):

@@ -18,10 +18,23 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+add_compile_definitions(__TRITON_VERSION_MAJOR__=3)
+add_compile_definitions(__TRITON_VERSION_MINOR__=6)
+
 macro(flagtree_configure_options)
   set(FLAGTREE_DEFAULT_OPTION ON)
   if(FLAGTREE_BACKEND)
     set(FLAGTREE_DEFAULT_OPTION OFF)
+  endif()
+
+  # CommonIR is an explicit opt-in for the default NVIDIA backend. Keep the
+  # build contract as a C/C++ macro without introducing a CMake cache option.
+  set(FLAGTREE_COMMON_IR_ENABLED "$ENV{FLAGTREE_COMMON_IR}")
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    if(FLAGTREE_BACKEND)
+      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires the default NVIDIA backend")
+    endif()
+    add_compile_definitions(__FLAGTREE_COMMON_IR__)
   endif()
 
   set(FLAGCX_ENABLED OFF)
@@ -77,6 +90,10 @@ macro(flagtree_configure_options)
     if(BUILD_MCTLE)
       list(APPEND TRITON_PLUGIN_NAMES "mctle")
       add_definitions(-D__MCTLE__)
+      # The .td files guard their mctle parts with #ifdef __MCTLE__ too
+      # (TritonOps.td's atomic_rmw / atomic_cas pointer constraint and
+      # shared-memory effects), and add_definitions does not reach mlir-tblgen.
+      list(APPEND LLVM_TABLEGEN_FLAGS -D__MCTLE__)
     endif()
     set(FLAGTREE_TLE OFF)
     remove_definitions(-D__TLE__)
@@ -297,6 +314,16 @@ endmacro()
 
 
 macro(flagtree_configure_flir_dependency)
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
+      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires third_party/flir")
+    endif()
+    include_directories(${PROJECT_SOURCE_DIR}/third_party/flir/include)
+    include_directories(${PROJECT_BINARY_DIR}/third_party/flir/include)
+    add_subdirectory(third_party/flir/include/mlir-ext/Dialect/CommonIR)
+    add_subdirectory(third_party/flir/lib/Dialect/CommonIR)
+  endif()
+
   if(FLAGTREE_BACKEND STREQUAL "tsingmicro")
     if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
       message(FATAL_ERROR "The ${FLAGTREE_BACKEND} backend requires third_party/flir")

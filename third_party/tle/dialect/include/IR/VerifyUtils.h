@@ -52,16 +52,18 @@ llvm::LogicalResult verifyNodeTransfer(mlir::Operation *op, mlir::Value src,
                                        FlagCXCoopKind coopKind);
 
 namespace DistributedBarrier {
-llvm::LogicalResult verifyFlagCxSpace(mlir::Operation *op, mlir::Value src);
+llvm::LogicalResult verifyFlagCxSpace(tle::DistributedBarrierOp op,
+                                      mlir::Value src);
 }
 
 namespace Signal {
 /// Shared constraint checks for the signal op family.
 /// Returns nullopt when the (kind, operand) combination is valid, otherwise
 /// an error description (used both by MLIR verifiers and the Python binding).
-std::optional<std::string> verifySignalOp(SignalOpKind kind, mlir::Value value);
-std::optional<std::string> verifySignalWaitOp(SignalWaitKind kind,
-                                              mlir::Value target);
+std::optional<std::string> verifySignalOp(SignalOpKind kind, mlir::Value value,
+                                          SyncScope scope);
+std::optional<std::string>
+verifySignalWaitOp(SignalWaitKind kind, mlir::Value target, MemoryOrder order);
 } // namespace Signal
 
 } // namespace mlir::triton::tle
