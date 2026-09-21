@@ -1,11 +1,18 @@
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
-flagtree_spec_td_set(LLVM_TARGET_DEFINITIONS TritonOps.td)
+set(_flagtree_metax_triton_spec_dir
+  "${PROJECT_SOURCE_DIR}/third_party/metax/spec_cpp/include/triton/Dialect/Triton/IR")
+
+set(LLVM_TARGET_DEFINITIONS
+  "${_flagtree_metax_triton_spec_dir}/TritonOps.td")
 mlir_tablegen(Ops.h.inc -gen-op-decls)
 mlir_tablegen(Ops.cpp.inc -gen-op-defs)
 mlir_tablegen(OpsEnums.h.inc -gen-enum-decls)
 mlir_tablegen(OpsEnums.cpp.inc -gen-enum-defs)
-add_mlir_doc(TritonOps TritonOps dialects/ -gen-op-doc)
+string(REGEX REPLACE "\\.td$" "" _flagtree_metax_triton_ops_doc_stem
+  "${_flagtree_metax_triton_spec_dir}/TritonOps.td")
+add_mlir_doc(
+  "${_flagtree_metax_triton_ops_doc_stem}" TritonOps dialects/ -gen-op-doc)
 
 set(LLVM_TARGET_DEFINITIONS TritonDialect.td)
 mlir_tablegen(Dialect.h.inc -gen-dialect-decls)
