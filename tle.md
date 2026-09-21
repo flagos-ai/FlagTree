@@ -450,19 +450,23 @@ Cluster/sub-mesh and cooperative-grid modes currently use the NVIDIA lowering. T
 
 ```python
 def remote(
-    tensor,                    # cluster: shared-memory pointer or buffered_tensor;
-                               # device/node: DistributedRtContext from create_dist_tensor
-    shard_id,                  # accepts a compile-time int: target block id for cluster,
-                               # intra-node peer rank for device, or world rank for node;
-                               # also accepts a runtime int32 scalar; a compile-time mesh
-                               # coordinate tuple requires scope
-    scope=None,                # device_mesh; on the node path only maps coordinates
-                               # to world ranks
-    space="cluster",           # "cluster" | "device" | "node"
-    dtype=None,                # required on the device/node paths
-    offset=None,               # only supported with space="device"
-    coopkind=None,             # node only: thread/warp/block; defaults to GroupKind.BLOCK
-    netidx=0,                  # node only: FlagCX network context index [0, 4)
+    tensor,                    # required; cluster path: shared-memory pointer or buffered_tensor;
+                               # device/node paths: DistributedRtContext from create_dist_tensor
+    shard_id,                  # required; compile-time int or runtime int32 scalar;
+                               # cluster path: target block id; device path: intra-node peer rank;
+                               # node path: world rank; a compile-time mesh coordinate requires scope
+    scope=None,                # device_mesh; required for a mesh-coordinate shard_id;
+                               # otherwise optional; also sets cluster/device launch dimensions
+    space="cluster",           # optional string; "cluster" | "device" | "node";
+                               # defaults to "cluster"
+    dtype=None,                # tl.dtype; optional on cluster path, inferred when omitted;
+                               # required on device/node paths
+    offset=None,               # Python int or scalar integer tensor; required on device path;
+                               # unsupported on cluster/node paths (omit)
+    coopkind=None,             # optional on node path: "thread" | "warp" | "block" or GroupKind;
+                               # default GroupKind.BLOCK; unsupported on cluster/device paths (omit)
+    netidx=0,                  # optional on node path: compile-time int in [0, INT32_MAX], default 0;
+                               # unsupported on cluster/device paths (omit)
 ):
     """
     For cluster, a pointer input returns a cluster remote pointer and a buffered_tensor

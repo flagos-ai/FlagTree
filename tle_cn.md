@@ -434,17 +434,23 @@ cluster/sub-mesh 和 cooperative-grid 模式当前使用 NVIDIA lowering。FlagC
 
 ```python
 def remote(
-    tensor,                    # cluster: shared-memory 指针或 buffered_tensor；
-                               # device/node: create_dist_tensor 返回的 DistributedRtContext
-    shard_id,                  # 支持编译期 int 常量：cluster 表示目标 Block id，
-                               # device 表示节点内 peer rank，node 表示 world rank；
-                               # 也支持运行时 int32 标量；编译期 mesh 坐标 tuple 需配合 scope
-    scope=None,                # device_mesh；node 路径下仅用于把坐标解析为 world rank
-    space="cluster",           # "cluster" | "device" | "node"
-    dtype=None,                # device/node 路径必填
-    offset=None,               # 仅 space="device" 支持
-    coopkind=None,             # 仅 node：thread/warp/block；缺省时为 GroupKind.BLOCK
-    netidx=0,                  # 仅 node：FlagCX 网络 context 索引 [0, 4)
+    tensor,                    # 必填；cluster 路径：shared-memory 指针或 buffered_tensor；
+                               # device/node 路径：create_dist_tensor 返回的 DistributedRtContext
+    shard_id,                  # 必填；编译期 int 或运行时 int32 标量；
+                               # cluster 路径：目标 Block id；device 路径：节点内 peer rank；
+                               # node 路径：world rank；编译期 mesh 坐标必须配合 scope
+    scope=None,                # device_mesh；mesh 坐标形式的 shard_id 必填；
+                               # 其他情况可选；还可设置 cluster/device launch 维度
+    space="cluster",           # 可选字符串；"cluster" | "device" | "node"；
+                               # 缺省为 "cluster"
+    dtype=None,                # tl.dtype；cluster 路径可选，省略时从输入推导；
+                               # device/node 路径必填
+    offset=None,               # Python int 或整数标量 tensor；device 路径必填；
+                               # cluster/node 路径不支持（省略）
+    coopkind=None,             # node 路径可选："thread" | "warp" | "block" 或 GroupKind；
+                               # 缺省为 GroupKind.BLOCK；cluster/device 路径不支持（省略）
+    netidx=0,                  # node 路径可选：[0, INT32_MAX] 内的编译期整数，缺省为 0；
+                               # cluster/device 路径不支持（省略）
 ):
     """
     cluster 指针输入返回 cluster remote pointer，buffered_tensor 输入返回
