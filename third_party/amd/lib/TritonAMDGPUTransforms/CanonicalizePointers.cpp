@@ -470,9 +470,14 @@ struct FatPointers {
       return !(lhs == rhs);
     }
 
-    // Conservatively merge the fat-pointer attributes coming from the two arms
-    // of an scf.if. The then/else pointers may legitimately differ (e.g. one
-    // canNarrow, the other not); keep a property only when both arms agree.
+    // Conservatively merge the fat-pointer attributes from the two arms of an
+    // scf.if: keep a property only when both arms agree (they may legitimately
+    // differ, e.g. one canNarrow and the other not).
+    //
+    // Mirrors upstream PR #9891 / issue #9859: don't promote/narrow a merged
+    // pointer when the other arm isn't promotable. The 3.6.0 base asserted the
+    // arms were equal (debug-only), crashing assert-enabled builds on FlagGems
+    // cat/concatenate/div_tensor.
     static FatPtrAttrs intersect(const FatPtrAttrs &lhs,
                                  const FatPtrAttrs &rhs) {
       FatPtrAttrs result;

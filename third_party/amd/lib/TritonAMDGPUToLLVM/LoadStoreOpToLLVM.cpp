@@ -1703,6 +1703,10 @@ struct AtomicCASOpConversion
     // llvm.cmpxchg only accepts integer/pointer operands, so non-integer
     // element types (e.g. f16/bf16) must be bitcast to an integer of the same
     // width around the atomic.
+    //
+    // Aligns with upstream Triton fixes the 3.6.0 base predates: PR #9116
+    // (bitcast non-integer cmpxchg operands) and PR #8867 (read field 0 of
+    // {value, success}). Hit by FlagGems scatter_reduce(reduce="multiply").
     Type valueElemIntTy{};
     if (!valueElemTy.isSignlessInteger())
       valueElemIntTy = rewriter.getIntegerType(valueElemNBits);
