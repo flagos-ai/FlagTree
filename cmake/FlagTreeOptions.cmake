@@ -670,6 +670,8 @@ function(flagtree_spec_td_set output_td td_filename)
   file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
   get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)
   set(BACKEND_SPEC_TD ${BACKEND_SPEC_ROOT}/${relative_path}/${td_filename})
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+               "${BACKEND_SPEC_TD}")
   if(EXISTS ${BACKEND_SPEC_TD})
     set(ret ${BACKEND_SPEC_TD})
   endif()
