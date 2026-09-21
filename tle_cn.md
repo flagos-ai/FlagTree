@@ -629,15 +629,15 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc",
     """
     原子更新远端 peer 的同步 slot。
 
-    :param device_dptr: 分布式通信器句柄
-    :param peer: 目标 peer rank（int32 标量）
-    :param slot_id: 信号 slot 索引（uint32 标量）
+    :param device_dptr: 分布式通信器句柄（必填）
+    :param peer: 目标 peer rank（int32 标量）（必填）
+    :param slot_id: 信号 slot 索引（uint32 标量）（必填）
     :param value: 可选 uint64 标量；op="add" 时必填，其他情况必须省略
-    :param op: "inc" 加一，"add" 加上 value
-    :param space: "intra_node"、"inter_node" 或 "world"
-    :param group_kind: "thread"、"warp" 或 "block"（默认）
-    :param context_idx: 编译期 int，选择预分配的网络上下文
-    :param scope: 操作的可见性作用域（"system" 或 "device"，默认 "system"）
+    :param op: 可选；"inc" 加一，"add" 加上 value；默认 "inc"
+    :param space: 可选；"intra_node"、"inter_node" 或 "world"；默认 "intra_node"
+    :param group_kind: 可选；"thread"、"warp" 或 "block"；默认 "block"
+    :param context_idx: 可选；编译期 int，选择预分配的网络上下文；默认 0
+    :param scope: 可选；操作的可见性作用域（"system" 或 "device"）；默认 "system"
     """
     pass
 ```
@@ -658,13 +658,13 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None,
     """
     等待本地同步 slot 达到目标值。
 
-    :param device_dptr: 分布式通信器句柄
-    :param slot_id: 信号 slot 索引（int32 标量）
-    :param wait_kind: "signal"、"counter" 或 "shadow"
-    :param target: "signal"/"counter" 时必填，"shadow" 时必须省略
-    :param group_kind: "thread"、"warp" 或 "block"（默认）
-    :param context_idx: 编译期 int，选择预分配的网络上下文
-    :param order: 内存序约束（"relaxed" 或 "acquire"，默认 "acquire"）
+    :param device_dptr: 分布式通信器句柄（必填）
+    :param slot_id: 信号 slot 索引（int32 标量）（必填）
+    :param wait_kind: "signal"、"counter" 或 "shadow"（必填）
+    :param target: 可选；"signal"/"counter" 时必填，"shadow" 时必须省略
+    :param group_kind: 可选；"thread"、"warp" 或 "block"；默认 "block"
+    :param context_idx: 可选；编译期 int，选择预分配的网络上下文；默认 0
+    :param order: 可选；内存序约束（"relaxed" 或 "acquire"）；默认 "acquire"
     """
     pass
 ```

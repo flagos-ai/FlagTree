@@ -650,15 +650,15 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc",
     """
     Atomically update a remote peer's synchronization slot.
 
-    :param device_dptr: distributed communicator handle
-    :param peer: target peer rank (int32 scalar)
-    :param slot_id: signal slot index (uint32 scalar)
+    :param device_dptr: distributed communicator handle (required)
+    :param peer: target peer rank (int32 scalar) (required)
+    :param slot_id: signal slot index (uint32 scalar) (required)
     :param value: optional uint64 scalar; required when op="add", must be omitted otherwise
-    :param op: "inc" to increment by one, "add" to add value
-    :param space: "intra_node", "inter_node", or "world"
-    :param group_kind: "thread", "warp", or "block" (default)
-    :param context_idx: compile-time int selecting a pre-allocated network context
-    :param scope: visibility scope of the operation ("system" or "device", default "system")
+    :param op: optional; "inc" to increment by one, "add" to add value; default "inc"
+    :param space: optional; "intra_node", "inter_node", or "world"; default "intra_node"
+    :param group_kind: optional; "thread", "warp", or "block"; default "block"
+    :param context_idx: optional; compile-time int selecting a pre-allocated network context; default 0
+    :param scope: optional; visibility scope of the operation ("system" or "device"); default "system"
     """
     pass
 ```
@@ -679,13 +679,13 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None,
     """
     Wait until a local synchronization slot reaches its target.
 
-    :param device_dptr: distributed communicator handle
-    :param slot_id: signal slot index (int32 scalar)
-    :param wait_kind: "signal", "counter", or "shadow"
-    :param target: required for "signal"/"counter", must be omitted for "shadow"
-    :param group_kind: "thread", "warp", or "block" (default)
-    :param context_idx: compile-time int selecting a pre-allocated network context
-    :param order: memory ordering constraint ("relaxed" or "acquire", default "acquire")
+    :param device_dptr: distributed communicator handle (required)
+    :param slot_id: signal slot index (int32 scalar) (required)
+    :param wait_kind: "signal", "counter", or "shadow" (required)
+    :param target: optional; required for "signal"/"counter", must be omitted for "shadow"
+    :param group_kind: optional; "thread", "warp", or "block"; default "block"
+    :param context_idx: optional; compile-time int selecting a pre-allocated network context; default 0
+    :param order: optional; memory ordering constraint ("relaxed" or "acquire"); default "acquire"
     """
     pass
 ```
