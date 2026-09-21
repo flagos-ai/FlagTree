@@ -62,7 +62,20 @@ if enabled:
     import atexit
     atexit.register(_cleanup_flagcx_mem_pool)
     atexit.register(_cleanup_flagcx_allocator_wrapper)
-    flagcx = FLAGCXLibrary(so_file=_libflagcx_path())
+    try:
+        flagcx = FLAGCXLibrary(so_file=_libflagcx_path())
+    except OSError as e:
+        # The bundled libflagcx.so is linked against the CUDA runtime of the
+        # machine the wheel was built on, so a machine with a different one --
+        # CUDA 13 has no libcudart.so.12 -- cannot dlopen it. Report that as
+        # ImportError: the callers that probe for TLE guard with
+        # `except ImportError` (flag_gems' has_triton_tle, test_launch.py,
+        # code_generator.py), and an OSError escapes them, which turns an
+        # unusable TLE into a broken `import flag_gems`.
+        # https://github.com/flagos-ai/FlagTree/issues/1234
+        raise ImportError(f"cannot load the FlagCX library {_libflagcx_path()}: {e}. "
+                          "TLE communication needs a FlagCX build for this machine's CUDA runtime, and the "
+                          "library shipped with the wheel is built against CUDA 12.") from e
     global comm, rank, dev_mem, dev_comm, win
 
     flagcx_allocator_source = """
