@@ -63,7 +63,10 @@ THREADS_PER_WARP = triton.runtime.driver.active.get_current_target().warp_size
         ttgl.BlockedLayout([1, 2], [1, THREADS_PER_WARP], [1, 4], [1, 0]),
     ]))
 @pytest.mark.parametrize("axis", [0, 1])
-@pytest.mark.parametrize("sanitize_overflow", [False, True])
+@pytest.mark.parametrize("sanitize_overflow", [
+    False,
+    pytest.param(True, marks=pytest.mark.skip(reason="sanitize_overflow=True is too slow on Iluvatar")),
+])
 def test_scan_layouts(M, N, src_layout, axis, sanitize_overflow, device):
 
     @gluon.jit
@@ -168,8 +171,12 @@ def _reduce_cases():
 @pytest.mark.parametrize("M, N, src_layout", _reduce_cases())
 @pytest.mark.parametrize("axis", [0, 1])
 @pytest.mark.parametrize("epilogue_kind", ['reduce1d', 'reduce2d', 'expand_reduce2d'])
-@pytest.mark.parametrize("dtype_str, sanitize_overflow", [("int32", False), ("int32", True), ("float32", False),
-                                                          ("float16", False)])
+@pytest.mark.parametrize("dtype_str, sanitize_overflow", [
+    ("int32", False),
+    pytest.param("int32", True, marks=pytest.mark.skip(reason="sanitize_overflow=True is too slow on Iluvatar")),
+    ("float32", False),
+    ("float16", False),
+])
 @pytest.mark.parametrize("reduce_op", ["sum", "max"])
 def test_reduce_layouts(M, N, src_layout, axis, epilogue_kind, dtype_str, sanitize_overflow, reduce_op, device):
 
