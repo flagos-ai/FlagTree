@@ -173,7 +173,7 @@ def signal(
     op: str | attr.SignalOpKind = "inc",
     space: str | attr.FlagCXTeamKind = "intra_node",
     group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
-    context_idx: int = 0,
+    context_id: int = 0,
     scope: MemoryScope | str = MemoryScope.SYSTEM,
     _semantic=None,
 ):
@@ -185,7 +185,7 @@ def signal(
     waits for completion on the receiving peer.
 
     ``space`` selects the FlagCX team (``intra_node``, ``inter_node``, or
-    ``world``), while ``peer`` is a rank within that team. ``context_idx``
+    ``world``), while ``peer`` is a rank within that team. ``context_id``
     selects a pre-allocated FlagCX network context. ``slot_id`` selects the
     signal slot to update.
 
@@ -214,11 +214,11 @@ def signal(
         expected = "thread, warp, or block"
         raise ValueError(f"group_kind must be {expected}, got {group_kind!r}")
 
-    context_idx = tl._unwrap_if_constexpr(context_idx)
-    if not isinstance(context_idx, int):
-        raise TypeError(f"context_idx must be a compile-time int, got {type(context_idx).__name__}")
-    if context_idx < 0 or context_idx > 0x7FFFFFFF:
-        raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(context_id, int):
+        raise TypeError(f"context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"context_id must be in int32 range, got {context_id}")
 
     scope = tl._unwrap_if_constexpr(scope)
     scope = scope if isinstance(scope, attr.SyncScope) else attr.SyncScope.from_str(scope)
@@ -242,7 +242,7 @@ def signal(
         signal_op,
         signal_space,
         group_kind,
-        context_idx,
+        context_id,
         scope,
     )
     return None
@@ -255,7 +255,7 @@ def signal_wait(
     wait_kind: str | attr.SignalWaitKind,
     target: int | None = None,
     group_kind: str | GroupKind = GroupKind.BLOCK,
-    context_idx: int = 0,
+    context_id: int = 0,
     order: MemoryOrder | str = MemoryOrder.ACQUIRE,
     _semantic=None,
 ):
@@ -282,11 +282,11 @@ def signal_wait(
         expected = "thread, warp, or block"
         raise ValueError(f"group kind must be {expected}, got {group_kind!r}")
 
-    context_idx = tl._unwrap_if_constexpr(context_idx)
-    if not isinstance(context_idx, int):
-        raise TypeError(f"context_idx must be a compile-time int, got {type(context_idx).__name__}")
-    if context_idx < 0 or context_idx > 0x7FFFFFFF:
-        raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(context_id, int):
+        raise TypeError(f"context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"context_id must be in int32 range, got {context_id}")
 
     order = tl._unwrap_if_constexpr(order)
     order = order if isinstance(order, attr.MemoryOrder) else attr.MemoryOrder.from_str(order)
@@ -307,7 +307,7 @@ def signal_wait(
         wait_kind_val,
         None if target_tensor is None else target_tensor.handle,
         group_kind,
-        context_idx,
+        context_id,
         order,
     )
 

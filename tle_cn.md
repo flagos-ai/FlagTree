@@ -637,7 +637,7 @@ def distributed_dot(a, b, c=None):
 
 ```python
 def signal(device_dptr, peer, slot_id, value=None, op="inc",
-          space="intra_node", group_kind="block", context_idx=0,
+          space="intra_node", group_kind="block", context_id=0,
           scope="system"):
     """
     原子更新远端 peer 的同步 slot。
@@ -649,13 +649,13 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc",
     :param op: "inc" 加一，"add" 加上 value
     :param space: "intra_node"、"inter_node" 或 "world"
     :param group_kind: "thread"、"warp" 或 "block"（默认）
-    :param context_idx: 编译期 int，选择预分配的网络上下文
+    :param context_id: 编译期 int，选择预分配的网络上下文
     :param scope: 操作的可见性作用域（"system" 或 "device"，默认 "system"）
     """
     pass
 ```
 
-`op="inc"` 将目标信号 slot 加一。`op="add"` 将 `value` 加到目标信号 slot；后者必须提供 `value`，前者必须省略。`space` 选择通信范围（`intra_node`、`inter_node` 或 `world`），`peer` 是该范围内的 rank。`context_idx` 选择预分配的网络上下文。
+`op="inc"` 将目标信号 slot 加一。`op="add"` 将 `value` 加到目标信号 slot；后者必须提供 `value`，前者必须省略。`space` 选择通信范围（`intra_node`、`inter_node` 或 `world`），`peer` 是该范围内的 rank。`context_id` 选择预分配的网络上下文。
 
 `scope` 控制信号操作对节点上线程的可见性：`"system"` 表示对所有设备上的所有线程可见，`"device"` 表示仅对当前设备上的线程可见。`"device"` 仅在单节点场景下有意义，大多数情况下 `"system"` 是正确选择。
 
@@ -667,7 +667,7 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc",
 
 ```python
 def signal_wait(device_dptr, slot_id, wait_kind, target=None,
-               group_kind="block", context_idx=0, order="acquire"):
+               group_kind="block", context_id=0, order="acquire"):
     """
     等待本地同步 slot 达到目标值。
 
@@ -676,7 +676,7 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None,
     :param wait_kind: "signal"、"counter" 或 "shadow"
     :param target: "signal"/"counter" 时必填，"shadow" 时必须省略
     :param group_kind: "thread"、"warp" 或 "block"（默认）
-    :param context_idx: 编译期 int，选择预分配的网络上下文
+    :param context_id: 编译期 int，选择预分配的网络上下文
     :param order: 内存序约束（"relaxed" 或 "acquire"，默认 "acquire"）
     """
     pass
@@ -684,7 +684,7 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None,
 
 `order` 约束等待操作的内存序。由于 `tle.signal_wait` 是读取操作，仅允许 `"relaxed"` 和 `"acquire"`，大多数情况下默认值 `"acquire"` 是正确选择。
 
-`wait_kind` 选择等待模式：`"signal"` 等待 slot 值达到 `target`；`"counter"` 等待 slot 中的计数器达到 `target`；`"shadow"` 从运行时本地维护的 shadow buffer 读取目标值，因此必须省略 `target`。`slot_id` 与 `tle.signal` 共享同一信号 slot 命名空间。`group_kind` 和 `context_idx` 的语义与 `tle.signal` 一致。
+`wait_kind` 选择等待模式：`"signal"` 等待 slot 值达到 `target`；`"counter"` 等待 slot 中的计数器达到 `target`；`"shadow"` 从运行时本地维护的 shadow buffer 读取目标值，因此必须省略 `target`。`slot_id` 与 `tle.signal` 共享同一信号 slot 命名空间。`group_kind` 和 `context_id` 的语义与 `tle.signal` 一致。
 
 #### 3.2.5 API 说明与实战示例
 
