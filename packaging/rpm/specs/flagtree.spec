@@ -138,6 +138,9 @@ install -D -m 0644 %{SOURCE0} %{buildroot}%{_licensedir}/%{name}/LICENSE
 %files
 %license %{_licensedir}/%{name}/LICENSE
 %{python3_sitearch}/triton
+# The flagtree package itself, alongside the triton one it wraps. Absent from
+# this list the build fails on unpackaged files, which is how it was found.
+%{python3_sitearch}/flagtree
 %{python3_sitearch}/flagtree-*.dist-info
 %{_bindir}/proton*
 
