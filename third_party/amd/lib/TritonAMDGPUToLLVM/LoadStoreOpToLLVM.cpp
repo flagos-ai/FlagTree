@@ -1700,6 +1700,16 @@ struct AtomicCASOpConversion
         tensorTy ? getTypeConverter()->convertType(tensorTy.getElementType())
                  : valueTy;
     auto valueElemNBits = valueElemTy.getIntOrFloatBitWidth();
+    // llvm.cmpxchg only accepts integer/pointer operands, so non-integer
+    // element types (e.g. f16/bf16) must be bitcast to an integer of the same
+    // width around the atomic.
+    //
+    // Aligns with upstream Triton fixes the 3.6.0 base predates: PR #9116
+    // (bitcast non-integer cmpxchg operands) and PR #8867 (read field 0 of
+    // {value, success}). Hit by FlagGems scatter_reduce(reduce="multiply").
+    Type valueElemIntTy{};
+    if (!valueElemTy.isSignlessInteger())
+      valueElemIntTy = rewriter.getIntegerType(valueElemNBits);
     auto elemsPerThread = getTotalElemsPerThread(op.getVal().getType());
     SmallVector<Value> resultVals(elemsPerThread);
 
@@ -1708,6 +1718,10 @@ struct AtomicCASOpConversion
       Value casVal = valElements[i];
       Value casCmp = cmpElements[i];
       Value casPtr = ptrElements[i];
+      if (valueElemIntTy) {
+        casVal = LLVM::BitcastOp::create(rewriter, loc, valueElemIntTy, casVal);
+        casCmp = LLVM::BitcastOp::create(rewriter, loc, valueElemIntTy, casCmp);
+      }
       // use op
       if (tensorTy) { // for tensor
         auto retType = valueElemTy;
@@ -1718,8 +1732,12 @@ struct AtomicCASOpConversion
             rewriter, loc, casPtr, casCmp, casVal, successOrdering,
             failureOrdering, StringRef(scopeStr.value()));
 
-        // Extract the new_loaded value from the pair.
-        Value ret = b.extract_val(valueElemTy, cmpxchg, i);
+        // Extract the new_loaded value (field 0) from the {value, success}
+        // pair.
+        Value ret = b.extract_val(valueElemIntTy ? valueElemIntTy : valueElemTy,
+                                  cmpxchg, 0);
+        if (valueElemIntTy)
+          ret = LLVM::BitcastOp::create(rewriter, loc, valueElemTy, ret);
         resultVals[i] = ret;
       } else { // for scalar
         // Build blocks to bypass the atomic instruction for ~rmwMask.
@@ -1745,7 +1763,11 @@ struct AtomicCASOpConversion
 
         if (!op.getResult().use_empty()) {
           // Extract the new_loaded value from the pair.
-          Value newLoaded = b.extract_val(valueElemTy, cmpxchg, 0);
+          Value newLoaded = b.extract_val(
+              valueElemIntTy ? valueElemIntTy : valueElemTy, cmpxchg, 0);
+          if (valueElemIntTy)
+            newLoaded =
+                LLVM::BitcastOp::create(rewriter, loc, valueElemTy, newLoaded);
           Value atomPtr =
               getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
           b.store(newLoaded, atomPtr);
