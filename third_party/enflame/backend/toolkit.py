@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+import functools
 import os
 from pathlib import Path
 import subprocess
@@ -218,6 +219,44 @@ def get_bool_env(env, defaultValue=False):
     if (s == "0" or s == "false" or s == "off"):
         return False
     return defaultValue
+
+
+# The pass options make_llir hands to gcu-compiler-opt for a kernel that needs
+# 64-bit integers. 'enable_i64' is newer than some toolkits still in the field:
+# the tops1.9.10 toolkit answers with the marker below, and since the error is
+# raised while the pass is being constructed it fails every kernel, not only the
+# ones that use i64.
+_ENABLE_I64_PROBE_OPTIONS = "--convert-gpu-to-gcu=chipset=gcu300 vector-bit-width=4096 enable_i64=true"
+_UNKNOWN_ENABLE_I64_MARKER = "no such option enable_i64"
+
+
+@functools.lru_cache(maxsize=None)
+def toolkit_supports_enable_i64():
+    """Whether the toolkit's pass-options parser knows 'enable_i64'.
+
+    Asked of the toolkit rather than inferred from its version, because whether
+    the option exists is an implementation detail of whichever gcu-compiler-opt
+    the user installed. A pass-options error is reported while the pass is being
+    constructed, before any IR is visited, so an empty module is enough to get an
+    answer. The exit status is deliberately ignored: a toolkit that knows the
+    option may still object to an empty module.
+
+    An inconclusive probe (no toolkit, timeout, crash) reports True. Dropping the
+    option for a kernel that needs it would run 64-bit code through passes that
+    cannot handle it, which is worse than letting the toolkit reject the command.
+
+    Set TRITON_GCU_ENABLE_I64 to 0 or 1 to skip the probe.
+    """
+    override = os.getenv("TRITON_GCU_ENABLE_I64")
+    if override is not None:
+        return get_bool_env("TRITON_GCU_ENABLE_I64")
+
+    cmd = [os.path.join(TOOLKIT_PATH, "gcu-compiler-opt"), _ENABLE_I64_PROBE_OPTIONS]
+    try:
+        result = subprocess.run(cmd, input="module {}\n", capture_output=True, text=True, encoding="utf-8", timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return _UNKNOWN_ENABLE_I64_MARKER not in (result.stderr or "")
 
 
 def compile_llir_to_fatbin_gcu500(llir_str: str, kernel_name: str = "kernel") -> dict[str, bytes | str | None]:
