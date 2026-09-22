@@ -59,8 +59,9 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
     StringRef arch = target.getValue();
     int capability = 0;
     if (arch.consume_front("musa:"))
-      needsLmaCompletion = arch.starts_with("ph1") ||
-                           (!arch.getAsInteger(10, capability) && capability >= 31);
+      needsLmaCompletion =
+          arch.starts_with("ph1") ||
+          (!arch.getAsInteger(10, capability) && capability >= 31);
   }
 
   SmallVector<PartitionSync> syncs;
@@ -92,7 +93,8 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
     Value one = arith::ConstantIntOp::create(rewriter, ws.getLoc(), 1, 32);
     Value zero = arith::ConstantIntOp::create(rewriter, ws.getLoc(), 0, 32);
     phaseSlot = LLVM::AllocaOp::create(
-        rewriter, ws.getLoc(), LLVM::LLVMPointerType::get(module.getContext(), 5),
+        rewriter, ws.getLoc(),
+        LLVM::LLVMPointerType::get(module.getContext(), 5),
         rewriter.getI32Type(), one, 4);
     LLVM::StoreOp::create(rewriter, ws.getLoc(), zero, phaseSlot);
   }
@@ -176,8 +178,8 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
     // loads are still outstanding as the shared buffer is reused.
     if (needsLmaCompletion)
       LLVM::CallOp::create(rewriter, sync.op.getLoc(), lmaWait, ValueRange{});
-    Value arrived = LLVM::LoadOp::create(
-        rewriter, sync.op.getLoc(), rewriter.getI32Type(), phaseSlot);
+    Value arrived = LLVM::LoadOp::create(rewriter, sync.op.getLoc(),
+                                         rewriter.getI32Type(), phaseSlot);
     LLVM::CallIntrinsicOp::create(
         rewriter, sync.op.getLoc(),
         rewriter.getStringAttr("llvm.musa.async.arrive.none.phaseid"),
@@ -187,7 +189,8 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
         rewriter.getStringAttr("llvm.musa.async.wait"),
         ValueRange{id, arrived});
     Value one = arith::ConstantIntOp::create(rewriter, sync.op.getLoc(), 1, 32);
-    Value nextPhase = arith::XOrIOp::create(rewriter, sync.op.getLoc(), arrived, one);
+    Value nextPhase =
+        arith::XOrIOp::create(rewriter, sync.op.getLoc(), arrived, one);
     LLVM::StoreOp::create(rewriter, sync.op.getLoc(), nextPhase, phaseSlot);
     rewriter.eraseOp(sync.op);
   }

@@ -207,13 +207,15 @@ struct LocalPointersOpConversion
         // once a row spans multiple 256-byte physical slices.
         if (bufferRank == 2) {
           auto swizzle = musa::resolveTMESwizzleConfigFromEncoding(memDescTy);
-          if (succeeded(swizzle) &&
-              swizzle->swizzleGranularity != musa::TMESwizzleGranularity::SG_NONE) {
-            auto physicalShape = memDescTy.getAllocShape().take_back(bufferRank);
+          if (succeeded(swizzle) && swizzle->swizzleGranularity !=
+                                        musa::TMESwizzleGranularity::SG_NONE) {
+            auto physicalShape =
+                memDescTy.getAllocShape().take_back(bufferRank);
             auto physicalType = ttg::MemDescType::get(
                 physicalShape, memDescTy.getElementType(), sharedEnc,
                 memDescTy.getMemorySpace(), memDescTy.getMutableMemory());
-            sharedLayout = musa::getMUSASharedLinearLayoutOrGeneric(physicalType);
+            sharedLayout =
+                musa::getMUSASharedLinearLayoutOrGeneric(physicalType);
           }
         }
         sharedLayout = sharedLayout.sublayout({kOffset}, dimNames);

@@ -36,8 +36,7 @@ def _marker(out, INDEX: tl.constexpr):
 @triton.jit
 def _kernel(out, markers, WS: tl.constexpr):
     if WS:
-        tle.gpu.warp_specialize([(_marker, (markers, 0)), (_matrix, (out, 8)),
-                                 (_marker, (markers, 1))],
+        tle.gpu.warp_specialize([(_marker, (markers, 0)), (_matrix, (out, 8)), (_marker, (markers, 1))],
                                 worker_num_warps=[8, 4], worker_num_regs=[32, 32])
     else:
         _matrix(out, 4)
@@ -45,8 +44,7 @@ def _kernel(out, markers, WS: tl.constexpr):
 
 @pytest.mark.parametrize('ws', [False, True])
 def test_expand_dims_layout_compile(ws):
-    source = ASTSource(_kernel, {'out': '*i32', 'markers': '*i32', 'WS': 'constexpr'},
-                       constexprs={'WS': ws})
+    source = ASTSource(_kernel, {'out': '*i32', 'markers': '*i32', 'WS': 'constexpr'}, constexprs={'WS': ws})
     compiled = triton.compile(source, target=musa_target(), options={'num_warps': 8 if ws else 4})
     assert compiled.metadata.num_warps == (20 if ws else 4)
 
@@ -55,13 +53,13 @@ def test_expand_dims_layout_compile(ws):
 @pytest.mark.parametrize('ws', [False, True])
 def test_expand_dims_layout_runtime(ws):
     out = torch.empty((64, 64), dtype=torch.int32, device='musa')
-    markers = torch.zeros((2,), dtype=torch.int32, device='musa')
+    markers = torch.zeros((2, ), dtype=torch.int32, device='musa')
     expected = torch.arange(64)[:, None] * 1024 + torch.arange(64)[None, :]
     sums = expected.sum(1)
     expected = sums[None, :].expand(64, 64)
     for _ in range(3):
         out.fill_(-1)
-        _kernel[(1,)](out, markers, ws, num_warps=8 if ws else 4)
+        _kernel[(1, )](out, markers, ws, num_warps=8 if ws else 4)
         torch.musa.synchronize()
         torch.testing.assert_close(out.cpu().long(), expected, atol=0, rtol=0)
         if ws:

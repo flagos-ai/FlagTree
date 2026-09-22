@@ -57,6 +57,6 @@ def test_sqmma_accumulator_layout_runtime(input_n):
     out = torch.empty_like(c)
     for _ in range(3):
         out.fill_(float('nan'))
-        _accumulator_layout[(3,)](a, b, c, out, _layout(input_n), num_warps=8, num_stages=1)
+        _accumulator_layout[(3, )](a, b, c, out, _layout(input_n), num_warps=8, num_stages=1)
         torch.musa.synchronize()
         torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)

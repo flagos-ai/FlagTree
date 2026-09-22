@@ -47,7 +47,6 @@ def test_local_ptr_ph1_layout_runtime(cols, write):
     expected = x_cpu[:, index]
     for _ in range(3):
         out.fill_(float('nan'))
-        _work[(1,)](x, out, cols, write, num_warps=8)
+        _work[(1, )](x, out, cols, write, num_warps=8)
         torch.musa.synchronize()
         torch.testing.assert_close(out.cpu(), expected, atol=0, rtol=0)
-

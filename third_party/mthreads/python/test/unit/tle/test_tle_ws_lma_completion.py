@@ -26,34 +26,36 @@ def _marker(markers, SLOT: tl.constexpr):
 def _exchange(x, out, shared, ITERS: tl.constexpr):
     index = tle.gpu.set_layout(tl.arange(0, 2048), _LAYOUT)
     values = tl.load(x + tl.program_id(0) * 2048 + index)
-    total = tl.full((2048,), 0, tl.int32)
+    total = tl.full((2048, ), 0, tl.int32)
     for step in range(ITERS):
         tl.store(tle.gpu.set_layout(tle.gpu.local_ptr(shared), _LAYOUT), values + step)
         # Exchange across warps; the compiler must synchronize shared stores.
-        value = tl.load(tle.gpu.local_ptr(shared, (index ^ 128,)))
+        value = tl.load(tle.gpu.local_ptr(shared, (index ^ 128, )))
         total += value
     tl.store(out + tl.program_id(0) * 2048 + index, total)
 
 
 @triton.jit
 def _kernel(x, out, markers, WORKER: tl.constexpr, ITERS: tl.constexpr):
-    shared = tle.gpu.alloc((2048,), tl.int32, nv_mma_shared_layout=False)
+    shared = tle.gpu.alloc((2048, ), tl.int32, nv_mma_shared_layout=False)
     if WORKER:
         tle.gpu.warp_specialize([
-            (_marker, (markers, 0)), (_exchange, (x, out, shared, ITERS)),
+            (_marker, (markers, 0)),
+            (_exchange, (x, out, shared, ITERS)),
             (_marker, (markers, 1)),
         ], worker_num_warps=[8, 4], worker_num_regs=[64, 32])
     else:
         tle.gpu.warp_specialize([
-            (_exchange, (x, out, shared, ITERS)), (_marker, (markers, 0)),
+            (_exchange, (x, out, shared, ITERS)),
+            (_marker, (markers, 0)),
             (_marker, (markers, 1)),
         ], worker_num_warps=[8, 4], worker_num_regs=[64, 32])
 
 
 @pytest.mark.parametrize('worker', [False, True], ids=['default', 'worker'])
 def test_ws_shared_completion_compile(worker):
-    source = ASTSource(_kernel, {'x': '*i32', 'out': '*i32', 'markers': '*i32',
-                                'WORKER': 'constexpr', 'ITERS': 'constexpr'},
+    source = ASTSource(_kernel,
+                       {'x': '*i32', 'out': '*i32', 'markers': '*i32', 'WORKER': 'constexpr', 'ITERS': 'constexpr'},
                        constexprs={'WORKER': worker, 'ITERS': 17})
     compiled = triton.compile(source, target=musa_target(), options={'num_warps': 8})
     llir = compiled.asm['llir']
@@ -76,8 +78,7 @@ def test_ws_shared_completion_runtime(worker):
     iters = 257
     expected = cpu[:, torch.arange(2048) ^ 128] * iters + iters * (iters - 1) // 2
     for _ in range(5):
-        _kernel[(3,)](x, out, markers, worker, iters, num_warps=8)
+        _kernel[(3, )](x, out, markers, worker, iters, num_warps=8)
         torch.musa.synchronize()
         torch.testing.assert_close(out.cpu(), expected, atol=0, rtol=0)
-        torch.testing.assert_close(markers.cpu(), torch.tensor([7, 8], dtype=torch.int32).expand(3, 2),
-                                   atol=0, rtol=0)
+        torch.testing.assert_close(markers.cpu(), torch.tensor([7, 8], dtype=torch.int32).expand(3, 2), atol=0, rtol=0)

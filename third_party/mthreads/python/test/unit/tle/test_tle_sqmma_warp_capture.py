@@ -43,16 +43,18 @@ def _captured_sqmma(a, b, out, markers, N: tl.constexpr, K: tl.constexpr, TRANS_
     sb = tle.gpu.alloc((N, K) if TRANS_B else (K, N), tl.bfloat16)
     ready = tle.gpu.alloc_barrier(arrive_count=8)
     tle.gpu.warp_specialize(
-        [(_marker, (markers, 0)), (_consumer, (a, b, out, sa, sb, ready, N, K, TRANS_B)),
-         (_marker, (markers, 1))],
-        worker_num_warps=[8, 4], worker_num_regs=[128, 32],
+        [(_marker, (markers, 0)), (_consumer, (a, b, out, sa, sb, ready, N, K, TRANS_B)), (_marker, (markers, 1))],
+        worker_num_warps=[8, 4],
+        worker_num_regs=[128, 32],
     )
 
 
 @pytest.mark.parametrize('n,k,trans_b', [(64, 256, True), (128, 64, False)], ids=['qk', 'pv'])
 def test_sqmma_worker_capture_compile(n, k, trans_b):
-    signature = {'a': '*bf16', 'b': '*bf16', 'out': '*fp32', 'markers': '*i32',
-                 'N': 'constexpr', 'K': 'constexpr', 'TRANS_B': 'constexpr'}
+    signature = {
+        'a': '*bf16', 'b': '*bf16', 'out': '*fp32', 'markers': '*i32', 'N': 'constexpr', 'K': 'constexpr', 'TRANS_B':
+        'constexpr'
+    }
     source = ASTSource(_captured_sqmma, signature, constexprs={'N': n, 'K': k, 'TRANS_B': trans_b})
     compiled = triton.compile(source, target=musa_target(), options={'num_warps': 8, 'num_stages': 1})
     assert compiled.metadata.num_warps == 20
@@ -75,8 +77,8 @@ def test_sqmma_worker_capture_runtime(n, k, trans_b):
     for _ in range(3):
         out.fill_(float('nan'))
         markers.fill_(-1)
-        _captured_sqmma[(ctas,)](a, b, out, markers, n, k, trans_b, num_warps=8, num_stages=1)
+        _captured_sqmma[(ctas, )](a, b, out, markers, n, k, trans_b, num_warps=8, num_stages=1)
         torch.musa.synchronize()
         torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
-        torch.testing.assert_close(markers.cpu(), torch.tensor([31, 32], dtype=torch.int32).expand(ctas, 2),
-                                   rtol=0, atol=0)
+        torch.testing.assert_close(markers.cpu(),
+                                   torch.tensor([31, 32], dtype=torch.int32).expand(ctas, 2), rtol=0, atol=0)
