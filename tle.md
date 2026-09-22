@@ -558,7 +558,7 @@ x = x.insert_tile(sub, index=[1, 0])
   - `name`: optional pipe name for IR/diagnostics; if provided, it must be a string.
   - `readers`: optional reader-name list. Omit it for the default SPSC reader; pass values such as `("left", "right")` for SPMC.
   - `one_shot`: whether the pipe is a single ready/full edge, useful for one-time broadcast data. `one_shot=True` does not support `close`.
-  - `**fields`: one or more payload buffers. Each field must be a shared-memory buffered tensor returned by `tle.gpu.alloc(..., scope=tle.gpu.smem)`, with rank >= 2.
+  - `**fields`: one or more payload buffers. Each field must be a shared-memory buffered tensor returned by `tle.gpu.alloc(..., scope=tle.gpu.smem)` or a static `subslice` of one, with rank >= 2.
 - Endpoint API:
   - `pipe.writer() -> pipe_writer`
   - `pipe.reader(name=None, fields=None) -> pipe_reader`
@@ -573,6 +573,7 @@ x = x.insert_tile(sub, index=[1, 0])
   - `reader.wait` returns `{slot, is_closed}`. Normal reads use `wait.slot`; close-aware flows inspect `is_closed`.
   - `reader(..., fields=("kv_r",))` subscribes to only a subset of fields, reducing unnecessary dependencies.
   - Current lowering maps CTA-scoped SMEM pipes to GPU NVWS token/mbarrier synchronization.
+  - The NVIDIA lowering recognizes a restricted multi-writer form when each writer contributes pure-TMA copies to a disjoint field set and all writers follow the same acquire/commit cadence. The union must cover every field. Static non-overlapping field subslices may share one backing SMEM allocation; overlapping fields or aliases that cannot be proven disjoint are rejected.
 
 Example 1: SPSC double-buffered load/compute
 

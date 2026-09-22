@@ -135,12 +135,22 @@ def copy(src, dst, shape, offsets, direction, _semantic, completion_barrier=None
         _semantic.store(dst, value, mask, boundary_check, cache_modifier, eviction_policy)
 
 
-def subview(src, offsets, shape, strides, layout, _semantic):
+def subview(src, offsets, shape, strides, layout, _semantic, alloc_shape=None):
     builder = _semantic.builder
+    raw_offsets = list(offsets)
+    offsets = [_semantic.to_tensor(offset) for offset in raw_offsets]
+    alloc_shape = shape if alloc_shape is None else alloc_shape
     if not COMMON_IR_ENABLED:
         result_type = tle.buffered_tensor_type(src.dtype, shape, src.type.storage, layout, _semantic,
-                                               alloc_shape=shape).to_ir(builder)
-        return builder.create_memdesc_index(result_type, src.handle, offsets[0].handle)
+                                               alloc_shape=alloc_shape).to_ir(builder)
+        if len(shape) == len(src.shape):
+            static_offsets = [tl._unwrap_if_constexpr(offset) for offset in raw_offsets]
+            if not all(isinstance(offset, int) for offset in static_offsets):
+                raise ValueError("same-rank buffered_tensor subviews require static offsets")
+            return builder.create_memdesc_subslice(result_type, src.handle, static_offsets)
+        if len(shape) == len(src.shape) - 1:
+            return builder.create_memdesc_index(result_type, src.handle, offsets[0].handle)
+        raise ValueError("buffered_tensor subviews must preserve rank or drop exactly one leading dimension")
     return builder.create_tile_subview(
         src.handle,
         [offset.handle for offset in offsets],
