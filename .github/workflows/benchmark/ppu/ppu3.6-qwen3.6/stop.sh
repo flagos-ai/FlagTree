@@ -37,7 +37,7 @@ if ! kill -0 "$pid" 2>/dev/null; then
     exit 1
 fi
 
-CURRENT_DIR="$(pwd)"
+CURRENT_DIR="$(pwd -P)"
 process_dir=$(pwdx "$pid" 2>/dev/null); process_dir=${process_dir#*: }
 if [[ "$process_dir" != "$CURRENT_DIR" ]]; then
     echo "[ERROR] Process $pid started in '$process_dir', not '$CURRENT_DIR', refuse to stop."
