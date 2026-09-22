@@ -54,7 +54,7 @@ class FlagcxRuntimeConfig:
 
     def _get_flagcx_wheel_path(self):
         spec = PathFinder.find_spec("flagcx", sys.path)
-        return Path(spec.origin).parent
+        return Path(spec.origin).parent if spec is not None else None
 
     def _is_available(self):
         env_keys = ("USE_FLAGCX", "USE_DIST", "USE_DISTRIBUTED", "USE_TLE_DIST", "USE_TLE_DISTRIBUTED")
