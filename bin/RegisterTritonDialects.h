@@ -56,7 +56,6 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #ifdef __MCTLE__
 #include "mctle/dialect/include/IR/Dialect.h"
-#include "mctle/dialect/include/Transforms/Passes.h"
 #endif
 
 // Below headers will allow registration to ROCm passes
@@ -111,9 +110,6 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::nvidia_gpu::registerTritonNvidiaGPUPasses();
   mlir::triton::instrument::registerTritonInstrumentPasses();
   mlir::triton::gluon::registerGluonPasses();
-#ifdef __MCTLE__
-  mlir::triton::mctle::registerPasses();
-#endif
 #ifdef __TLE__
   mlir::triton::tle::registerPasses(); // flagtree tle
 #endif
