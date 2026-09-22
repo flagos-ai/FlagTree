@@ -54,6 +54,14 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
         "MUSA TLE default partition requires a positive int32 "
         "ttg.num-warps");
   int32_t defaultWarps = static_cast<int32_t>(defaultWarpsAttr.getInt());
+  bool needsLmaCompletion = false;
+  if (auto target = module->getAttrOfType<StringAttr>(ttg::AttrTargetName)) {
+    StringRef arch = target.getValue();
+    int capability = 0;
+    if (arch.consume_front("musa:"))
+      needsLmaCompletion = arch.starts_with("ph1") ||
+                           (!arch.getAsInteger(10, capability) && capability >= 31);
+  }
 
   SmallVector<PartitionSync> syncs;
   auto collect = [&](Region &region, int32_t warps) {
@@ -72,6 +80,37 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
     partitions.insert(sync.partition);
   if (syncs.empty())
     return success();
+
+  // Each thread executes exactly one static partition, which reuses one
+  // hardware barrier. Track its phase explicitly across every rendezvous,
+  // including loops and request boundaries. LLVM promotes this private slot
+  // to SSA, matching MATE's explicit phase protocol on PH1.
+  Value phaseSlot;
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&func.getBody().front());
+    Value one = arith::ConstantIntOp::create(rewriter, ws.getLoc(), 1, 32);
+    Value zero = arith::ConstantIntOp::create(rewriter, ws.getLoc(), 0, 32);
+    phaseSlot = LLVM::AllocaOp::create(
+        rewriter, ws.getLoc(), LLVM::LLVMPointerType::get(module.getContext(), 5),
+        rewriter.getI32Type(), one, 4);
+    LLVM::StoreOp::create(rewriter, ws.getLoc(), zero, phaseSlot);
+  }
+
+  // The bundled LLVM does not register this newer MCC intrinsic. Declare it
+  // as an external call, as for memcpy.g2s; MCC resolves the intrinsic later.
+  LLVM::LLVMFuncOp lmaWait;
+  if (needsLmaCompletion) {
+    StringRef name = "llvm.musa.lma.wait";
+    lmaWait = module.lookupSymbol<LLVM::LLVMFuncOp>(name);
+    if (!lmaWait) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      auto type = LLVM::LLVMFunctionType::get(
+          LLVM::LLVMVoidType::get(module.getContext()), {});
+      lmaWait = LLVM::LLVMFuncOp::create(rewriter, ws.getLoc(), name, type);
+    }
+  }
 
   auto reserved = ttmg::reserveBarrierIdRange(
       syncs.front().op, static_cast<int32_t>(partitions.size()));
@@ -132,17 +171,24 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
   for (PartitionSync &sync : syncs) {
     rewriter.setInsertionPoint(sync.op);
     Value id = barrierIds.lookup(sync.partition);
-    // A partition reuses this resource at every rendezvous. Use the phase
-    // returned by arrival, not a fixed phase that only works on the first use.
-    Value arrived =
-        LLVM::CallIntrinsicOp::create(
-            rewriter, sync.op.getLoc(), rewriter.getI32Type(),
-            rewriter.getStringAttr("llvm.musa.async.arrive"), ValueRange{id})
-            .getResult(0);
+    // syncthreads.lm also completes preceding local-memory accesses. A named
+    // arrival/wait alone loses that ordering on PH1, including when vector
+    // loads are still outstanding as the shared buffer is reused.
+    if (needsLmaCompletion)
+      LLVM::CallOp::create(rewriter, sync.op.getLoc(), lmaWait, ValueRange{});
+    Value arrived = LLVM::LoadOp::create(
+        rewriter, sync.op.getLoc(), rewriter.getI32Type(), phaseSlot);
+    LLVM::CallIntrinsicOp::create(
+        rewriter, sync.op.getLoc(),
+        rewriter.getStringAttr("llvm.musa.async.arrive.none.phaseid"),
+        ValueRange{id});
     LLVM::CallIntrinsicOp::create(
         rewriter, sync.op.getLoc(),
         rewriter.getStringAttr("llvm.musa.async.wait"),
         ValueRange{id, arrived});
+    Value one = arith::ConstantIntOp::create(rewriter, sync.op.getLoc(), 1, 32);
+    Value nextPhase = arith::XOrIOp::create(rewriter, sync.op.getLoc(), arrived, one);
+    LLVM::StoreOp::create(rewriter, sync.op.getLoc(), nextPhase, phaseSlot);
     rewriter.eraseOp(sync.op);
   }
 
