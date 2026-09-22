@@ -173,7 +173,7 @@ def signal(
     op: str | attr.SignalOpKind = "inc",
     space: str | attr.FlagCXTeamKind = "intra_node",
     group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
-    context_idx: int = 0,
+    context_id: int = 0,
     scope: MemoryScope | str = MemoryScope.SYSTEM,
     _semantic=None,
 ):
@@ -185,7 +185,7 @@ def signal(
     waits for completion on the receiving peer.
 
     ``space`` selects the FlagCX team (``intra_node``, ``inter_node``, or
-    ``world``), while ``peer`` is a rank within that team. ``context_idx``
+    ``world``), while ``peer`` is a rank within that team. ``context_id``
     selects a pre-allocated FlagCX network context. ``slot_id`` selects the
     signal slot to update.
 
@@ -214,11 +214,11 @@ def signal(
         expected = "thread, warp, or block"
         raise ValueError(f"group_kind must be {expected}, got {group_kind!r}")
 
-    context_idx = tl._unwrap_if_constexpr(context_idx)
-    if not isinstance(context_idx, int):
-        raise TypeError(f"context_idx must be a compile-time int, got {type(context_idx).__name__}")
-    if context_idx < 0 or context_idx > 0x7FFFFFFF:
-        raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(context_id, int):
+        raise TypeError(f"context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"context_id must be in int32 range, got {context_id}")
 
     scope = tl._unwrap_if_constexpr(scope)
     scope = scope if isinstance(scope, attr.SyncScope) else attr.SyncScope.from_str(scope)
@@ -242,7 +242,7 @@ def signal(
         signal_op,
         signal_space,
         group_kind,
-        context_idx,
+        context_id,
         scope,
     )
     return None
@@ -255,7 +255,7 @@ def signal_wait(
     wait_kind: str | attr.SignalWaitKind,
     target: int | None = None,
     group_kind: str | GroupKind = GroupKind.BLOCK,
-    context_idx: int = 0,
+    context_id: int = 0,
     order: MemoryOrder | str = MemoryOrder.ACQUIRE,
     _semantic=None,
 ):
@@ -282,11 +282,11 @@ def signal_wait(
         expected = "thread, warp, or block"
         raise ValueError(f"group kind must be {expected}, got {group_kind!r}")
 
-    context_idx = tl._unwrap_if_constexpr(context_idx)
-    if not isinstance(context_idx, int):
-        raise TypeError(f"context_idx must be a compile-time int, got {type(context_idx).__name__}")
-    if context_idx < 0 or context_idx > 0x7FFFFFFF:
-        raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(context_id, int):
+        raise TypeError(f"context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"context_id must be in int32 range, got {context_id}")
 
     order = tl._unwrap_if_constexpr(order)
     order = order if isinstance(order, attr.MemoryOrder) else attr.MemoryOrder.from_str(order)
@@ -307,7 +307,7 @@ def signal_wait(
         wait_kind_val,
         None if target_tensor is None else target_tensor.handle,
         group_kind,
-        context_idx,
+        context_id,
         order,
     )
 
@@ -1423,25 +1423,15 @@ def _normalize_node_peer(shard_id, scope, _semantic) -> tl.tensor:
     return _normalize_runtime_remote_shard_id_tensor(shard_id)
 
 
-_NODE_INTER_CONTEXT_COUNT = 4
-
-
-def _normalize_node_netidx(netidx, _semantic) -> tl.tensor:
-    netidx = tl._unwrap_if_constexpr(netidx)
-    if isinstance(netidx, bool):
-        raise TypeError("node space netidx must be an integer, not bool")
-    if isinstance(netidx, int):
-        if netidx < 0 or netidx >= _NODE_INTER_CONTEXT_COUNT:
-            raise ValueError(f"node space netidx must be in range [0, {_NODE_INTER_CONTEXT_COUNT}), got {netidx}")
-        netidx = _semantic.to_tensor(netidx)
-    elif not isinstance(netidx, tl.tensor):
-        netidx = _semantic.to_tensor(netidx)
-
-    if netidx.shape != ():
-        raise ValueError(f"node space netidx must be scalar, got shape {netidx.shape}")
-    if netidx.dtype != tl.int32:
-        raise TypeError(f"node space runtime netidx must be tl.int32; got {netidx.dtype}")
-    return netidx
+def _normalize_node_context_id(context_id) -> int:
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if isinstance(context_id, bool):
+        raise TypeError("node space context_id must be an integer, not bool")
+    if not isinstance(context_id, int):
+        raise TypeError(f"node space context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"node space context_id must be in int32 range, got {context_id}")
+    return context_id
 
 
 def _parse_node_context(builder, value, label: str, index: int):
@@ -1452,7 +1442,7 @@ def _parse_node_context(builder, value, label: str, index: int):
     return _parse_src_arg(builder, value, index)
 
 
-def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _semantic) -> tl.tensor:
+def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, context_id, _semantic) -> tl.tensor:
     if dtype is None:
         raise TypeError('tle.remote(..., space="node") requires dtype')
 
@@ -1463,7 +1453,7 @@ def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _
     peer = _normalize_node_peer(shard_id, scope, _semantic)
     dtype = tl._unwrap_if_constexpr(dtype)
     _normalize_node_elem_bytes(dtype)
-    net_idx = _normalize_node_netidx(netidx, _semantic)
+    context_id = _normalize_node_context_id(context_id)
     coop_kind = tl._unwrap_if_constexpr(coopkind)
     coop_kind = coop_kind.value if isinstance(coop_kind, GroupKind) else str(coop_kind).lower()
     coop_kind = attr.FlagCXCoopKind.from_str(coop_kind)
@@ -1481,7 +1471,7 @@ def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _
         "node",
         None,
         comm,
-        net_idx.handle,
+        context_id,
         coop_kind,
     )
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
@@ -1496,7 +1486,7 @@ def remote(
     dtype: tl.dtype = None,
     offset: int | tl.tensor | None = None,
     coopkind: GroupKind | str | None = None,
-    netidx: int | tl.tensor = 0,
+    context_id: int = 0,
     _semantic: TLESemantic | None = None,
 ):
     """
@@ -1532,8 +1522,8 @@ def remote(
     strided, non-zero-start, or mismatched ranges are rejected.
 
     `dtype` is required. `coopkind` defaults to `GroupKind.BLOCK`, and
-    `netidx` defaults to zero. Compile-time `netidx` must be in `[0, 4)`;
-    runtime values must be scalar `tl.int32`. `shard_id` may be a world rank
+    `context_id` defaults to zero and must be a compile-time integer in
+    `[0, INT32_MAX]`, selecting an existing network context. `shard_id` may be a world rank
     or, with `scope=device_mesh`, a compile-time mesh coordinate.
 
     For `space="device"`, `offset` is the remote-memory element offset and
@@ -1555,11 +1545,11 @@ def remote(
         # BLOCK as documented.
         if coopkind is None:
             coopkind = GroupKind.BLOCK
-        return _create_node_remote_pointer(tensor, shard_id, scope, dtype, coopkind, netidx, _semantic)
+        return _create_node_remote_pointer(tensor, shard_id, scope, dtype, coopkind, context_id, _semantic)
     node_only_args = ["coopkind"] if coopkind is not None else []
-    unwrapped_netidx = tl._unwrap_if_constexpr(netidx)
-    if not isinstance(unwrapped_netidx, int) or unwrapped_netidx != 0:
-        node_only_args.append("netidx")
+    unwrapped_context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(unwrapped_context_id, int) or unwrapped_context_id != 0:
+        node_only_args.append("context_id")
     if node_only_args:
         raise TypeError(f'{space} space does not accept node-only argument(s): '
                         f'{", ".join(node_only_args)}')
