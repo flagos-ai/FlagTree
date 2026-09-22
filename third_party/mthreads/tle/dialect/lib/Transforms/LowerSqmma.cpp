@@ -356,12 +356,6 @@ static LogicalResult verifyAsyncUses(musa_tle::SqmmaOp op) {
   return success();
 }
 
-static bool isMmaEncoded(Value value) {
-  auto type = dyn_cast<RankedTensorType>(value.getType());
-  return type &&
-         isa_and_nonnull<ttg::MUSASqmmaEncodingAttr>(type.getEncoding());
-}
-
 } // namespace
 
 namespace mlir {
@@ -426,13 +420,14 @@ struct TritonMUSAGPUTLELowerSqmmaPass
         auto nativeTy = RankedTensorType::get(
             oldAccTy.getShape(), oldAccTy.getElementType(), encodings[dot]);
         Value nativeAcc = nativeAccumulators.lookup(dot.getC());
-        if (!nativeAcc) {
-          if (isMmaEncoded(dot.getC()))
-            nativeAcc = dot.getC();
-          else
-            nativeAcc = ttg::ConvertLayoutOp::create(builder, dot.getLoc(),
-                                                     nativeTy, dot.getC());
-        }
+        if (!nativeAcc)
+          nativeAcc = dot.getC();
+        // An explicit SQMMA layout can describe another instruction shape.
+        // Being MMA-encoded alone does not make its register distribution
+        // compatible with this dot's selected accumulator type.
+        if (nativeAcc.getType() != nativeTy)
+          nativeAcc = ttg::ConvertLayoutOp::create(builder, dot.getLoc(),
+                                                   nativeTy, nativeAcc);
         Value useC = arith::ConstantIntOp::create(builder, dot.getLoc(), 1, 1);
         auto config = cast<ttg::MUSASqmmaEncodingAttr>(nativeTy.getEncoding());
         auto instr = config.getInstrShape();
