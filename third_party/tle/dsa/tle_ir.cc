@@ -484,13 +484,22 @@ void init_tle_dsa_ir(py::module &&m) {
            })
       // tile.to_tensor — result is a standard ranked tensor (so tt.dot etc.
       // accept it), mirroring the source buffer's shape and element type.
+      // `writable` records that the caller (e.g. tle.dsa.to_tensor, which
+      // defaults to writable=True) expects an in-place view: custom ops write
+      // their results back into the source buffer. CommonIRToHIVM lowers the
+      // attribute to `bufferization.to_tensor ... restrict writable`; without
+      // it One-Shot Bufferization treats every custom out as a value and
+      // copies it into a fresh, unplannable UB allocation.
       .def("create_tile_to_tensor",
-           [](TritonOpBuilder &self, Value &src, bool /*writable*/) -> Value {
+           [](TritonOpBuilder &self, Value &src, bool writable) -> Value {
              auto srcBuf =
                  mlir::cast<mlir::triton::tile::BufType>(src.getType());
              auto resTy = mlir::RankedTensorType::get(srcBuf.getShape(),
                                                       srcBuf.getElementType());
              auto op = self.create<mlir::triton::tile::ToTensorOp>(resTy, src);
+             if (writable)
+               op->setAttr("writable",
+                           UnitAttr::get(self.getBuilder().getContext()));
              return op.getResult();
            })
       // tile.store_tensor

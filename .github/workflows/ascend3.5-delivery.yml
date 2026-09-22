@@ -24,9 +24,9 @@ on:
   workflow_dispatch:
     inputs:
       WHL_VER:
-        description: '0.6.0.dev1 < 0.6.0a1 < 0.6.0b1 < 0.6.0rc1 < 0.6.0 < 0.6.0.post1'
+        description: '0.7.0.dev1 < 0.7.0a1 < 0.7.0b1 < 0.7.0rc1 < 0.7.0 < 0.7.0.post1'
         required: true
-        default: '0.6.0'
+        default: '0.7.0'
       PYTHON_VER:
         required: true
         default: '3.11'
@@ -49,7 +49,7 @@ on:
       WHL_VER:
         type: string
         required: true
-        default: '0.6.0'
+        default: '0.7.0'
       PYTHON_VER:
         type: string
         required: true

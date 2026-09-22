@@ -10,6 +10,7 @@ graft test
 graft third_party
 graft unittest
 include CMakeLists.txt
+include LICENSE
 include Makefile
 include python/build_helpers.py
 include python/requirements.txt

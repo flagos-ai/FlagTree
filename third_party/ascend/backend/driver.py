@@ -858,7 +858,8 @@ static void _launch(const char* kernelName, const void* func, rtStream_t stream,
   uint32_t blockNum4Workspace = gridX * gridY * gridZ;
   {get_backend_func("pre_launch", True)}
   {f'''
-  uint64_t totalWorkSpaceSize = {workspace_size} * blockNum4Workspace;
+  // Widen before multiplication to avoid wrapping workspace sizes at 4 GiB.
+  uint64_t totalWorkSpaceSize = static_cast<uint64_t>({workspace_size}) * blockNum4Workspace;
   {get_backend_func("allocate_memory", "totalWorkSpaceSize", "stream")}
   ''' if workspace_size > 0 else ''}
   {'auto launch_call = [=]() -> rtError_t' if enable_taskqueue else ''} {{

@@ -343,6 +343,19 @@ struct TileToTensorEliminate : OpRewritePattern<tile::ToTensorOp> {
     // Bridge the gap with UnrealizedConversionCast: memref → tensor.
     Value src = op.getOperand();
     auto resultTy = op.getResult().getType();
+    if (op->getAttr("writable")) {
+      // The caller (tle.dsa.to_tensor defaults to writable=True) expects an
+      // in-place view: custom ops use such a tensor as a DPS out and write
+      // the results back into the source buffer. Lower it to a writable
+      // bufferization.to_tensor; a plain cast would make One-Shot
+      // Bufferization copy the out into a fresh UB allocation that
+      // hivm-plan-memory cannot plan, which ends up as a `call @malloc` in
+      // the device code (AICore link failure) and a broken dataflow.
+      rewriter.replaceOpWithNewOp<bufferization::ToTensorOp>(
+          op, cast<RankedTensorType>(resultTy), src,
+          /*restrict=*/true, /*writable=*/true);
+      return success();
+    }
     if (src.getType() != resultTy) {
       auto cast = rewriter.create<UnrealizedConversionCastOp>(op.getLoc(),
                                                               resultTy, src);

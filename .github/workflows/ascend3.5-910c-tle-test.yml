@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   ascend35x-910c-tle-test:
-    runs-on: ascend3.5-910c-tle
+    runs-on: ascend3.5-910c
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment
@@ -85,6 +85,7 @@ jobs:
         run: |
           set -x
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          source ~/env.sh
           ## flagtree tle test
           pushd python/test/tle
           python3 test_vec_add.py
