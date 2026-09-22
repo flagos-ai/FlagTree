@@ -1,0 +1,6 @@
+add_subdirectory(TritonToTritonGPU)
+add_subdirectory(TritonGPUToLLVM)
+add_subdirectory(TritonInstrumentToLLVM)
+if(FLAGTREE_COMMON_IR_ENABLED)
+  add_subdirectory(CommonIRToTTGIR)
+endif()

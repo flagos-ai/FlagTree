@@ -762,6 +762,10 @@ macro(flagtree_added_python_src)
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ascend/python/triton/extension/buffer/src/buffer_ir.cc)
   endif()
 
+  if(FLAGTREE_BACKEND STREQUAL "metax" AND FLAGTREE_COMMON_IR_ENABLED)
+    target_sources(triton PRIVATE ${BACKEND_PYTHON_SRC_PATH}/autolayout.cc)
+  endif()
+
   if(FLAGTREE_BACKEND STREQUAL "xpu")
     target_sources(triton PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xpu/python/src/mlir_pass_abi_shim.cc)
     add_dependencies(triton TritonAMDGPUTableGen TritonAMDGPUAttrDefsIncGen)

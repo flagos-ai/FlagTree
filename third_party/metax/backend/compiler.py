@@ -17,6 +17,7 @@ try:
 except ImportError:
     enable_mctle = False
 from triton import knobs
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 from . import gluon_layout
 
 from dataclasses import dataclass, field
@@ -121,6 +122,7 @@ def get_lld_version():
 
 @dataclass(frozen=True)
 class MACAOptions:
+    autolayout: bool = False
     num_warps: int = 4
     num_ctas: int = 1
     num_stages: int = 3
@@ -243,8 +245,8 @@ class MACABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
-        if COMMON_IR_ENABLED and tle is not None:
-            tle.passes.commonir.add_to_ttgir(pm, False)  # CommonIR(tile.*) -> ttg.local_*
+        if COMMON_IR_ENABLED:
+            passes.commonir.add_to_ttgir(pm, False)
         passes.ttir.add_rewrite_tensor_pointer(pm)
         passes.ttir.add_combine(pm)
         passes.common.add_canonicalizer(pm)
@@ -493,6 +495,11 @@ class MACABackend(BaseBackend):
         if language == Language.TRITON:
             stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
             stages["ttgir"] = lambda src, metadata: self.make_ttgir(src, metadata, options, capability)
+            if options.autolayout:
+                from .autolayout import make_ttgir_candidates
+                stages["ttgir"] = lambda src, metadata: make_ttgir_candidates(
+                    src, metadata, options, capability, self
+                )
         elif language == Language.GLUON:
             stages["ttgir"] = lambda src, metadata: self.gluon_to_ttgir(src, metadata, options, capability)
         # Cached candidate sources must already be closed by the C++ bundle.

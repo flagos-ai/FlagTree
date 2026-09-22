@@ -957,6 +957,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int | str]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    autolayout: bool = False,
 ) -> Callable[[T], JITFunction[T]]:
     ...
 
@@ -971,6 +972,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int | str]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    autolayout: bool = False,
 ) -> KernelInterface[T]:
     """
     Decorator for JIT-compiling a function using the Triton compiler.
@@ -988,17 +990,27 @@ def jit(
 
     :param fn: the function to be jit-compiled
     :type fn: Callable
+    :param autolayout: opt into MetaX CommonIR layout candidate tuning at launch.
     """
+
+    if not isinstance(autolayout, bool):
+        raise TypeError("autolayout must be a bool")
 
     def decorator(fn: T) -> JITFunction[T]:
         assert callable(fn)
         if knobs.runtime.interpret:
+            if autolayout:
+                raise ValueError("autolayout requires GPU compilation")
             from .interpreter import InterpretedFunction
             return InterpretedFunction(fn, version=version, do_not_specialize=do_not_specialize,
                                        do_not_specialize_on_alignment=do_not_specialize_on_alignment, debug=debug,
                                        noinline=noinline, repr=repr, launch_metadata=launch_metadata)
         else:
-            return JITFunction(
+            jit_class = JITFunction
+            if autolayout:
+                from ._commonir_autolayout import CommonIRAutolayoutJITFunction
+                jit_class = CommonIRAutolayoutJITFunction
+            return jit_class(
                 fn,
                 version=version,
                 do_not_specialize=do_not_specialize,
