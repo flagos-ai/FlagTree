@@ -83,6 +83,8 @@ runs:
           "setup.py"
           ".github/actions"
           ".github/workflows/code-format-check.yml"
+          ".github/workflows/template-gems-baseline.yml"
+          ".github/workflows/template-gems-test.yml"
         )
 
         # ============================================================
