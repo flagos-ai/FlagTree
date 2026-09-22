@@ -50,6 +50,13 @@ class FlagcxRuntimeConfig:
     flagcx_cache_dir = Path.home() / ".flagtree" / "flagcx"
     triton_path = Path(__file__).parent.parent.parent
 
+    def _get_flagcx_wheel_path(self):
+        try:
+            import flagcx
+            return Path(flagcx.__file__).parent
+        except ImportError:
+            return None
+
     def _is_available(self):
         env_keys = ("USE_FLAGCX", "USE_DIST", "USE_DISTRIBUTED", "USE_TLE_DIST", "USE_TLE_DISTRIBUTED")
         user_action = True
@@ -67,6 +74,7 @@ class FlagcxRuntimeConfig:
 
     def __init__(self, path_order=0):
         self.is_available = self._is_available()
+        self.flagcx_whl_path = self._get_flagcx_wheel_path()
         if self.is_available:
             self._find_flagcx_module_path()
             self.bitcode_path = self._get_bitcode_paths()[path_order]
@@ -96,6 +104,7 @@ class FlagcxRuntimeConfig:
     def _get_bitcode_paths(self):
         paths = (
             os.environ.get("FLAGCX_BITCODE_PATH"),
+            self.flagcx_whl_path / "lib" / self.bt_name,
             Path(__file__).parent / "lib" / self.bt_name,
             self.flagcx_cache_dir / self.bt_name,
         )
@@ -104,6 +113,7 @@ class FlagcxRuntimeConfig:
     def _get_shared_lib_paths(self):
         paths = (
             os.environ.get("FLAGCX_LIB_PATH"),
+            self.flagcx_whl_path / "lib" / self.shared_name,
             self.triton_path / "_C" / self.shared_name,
             self.flagcx_cache_dir / self.shared_name,
         )
@@ -113,6 +123,7 @@ class FlagcxRuntimeConfig:
 
         paths = (
             os.environ.get("FLAGCX_INCLUDE_PATH"),
+            self.flagcx_whl_path / self.include_name,
             self.triton_path / "experimental" / "tle" / "language" / "include",
             self.flagcx_cache_dir / self.include_name,
         )

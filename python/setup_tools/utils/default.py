@@ -140,7 +140,11 @@ class FlagCXRegistrar:
         printinfo(f"FlagCX headers copied from {src} to {dst}")
 
     def run(self):
-        self._compile_and_cache()
+        try:
+            import flagcx  # noqa: F401
+            printinfo("FlagCX is already installed, skipping compilation...")
+        except ImportError:
+            self._compile_and_cache()
         self._copy_required_files()
 
 
