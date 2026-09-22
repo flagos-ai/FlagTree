@@ -941,6 +941,8 @@ setup(
     version=helper.get_flagtree_version(get_git_commit_hash),
     author="FlagOS",
     author_email="contact@flagos.io",
+    license="MIT",
+    license_files=["LICENSE"],
     description=
     "A unified compiler supporting multiple AI chip backends for custom Deep Learning operations, which is forked from triton-lang/triton.",
     long_description=helper.get_long_description(),

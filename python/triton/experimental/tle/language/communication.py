@@ -19,7 +19,13 @@
 # SOFTWARE.
 
 try:
-    from triton.backends.nvidia.distributed import flagcx_rt_conf
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+except ImportError:
+    FLAGTREE_BACKEND = "nvidia"
+try:
+    import importlib
+    flagcx_rt_conf = importlib.import_module(
+        f"triton.backends.{FLAGTREE_BACKEND or 'nvidia'}.distributed").flagcx_rt_conf
     enabled = flagcx_rt_conf.is_available
 except Exception:
     enabled = False
@@ -227,9 +233,9 @@ def create_dist_tensor(buf_tensor):
     # Create DevComm with 1 intra barrier
     reqs = flagcxDevCommRequirements()
     reqs.intraMulticast = False
-    reqs.barrierCount = 0
-    reqs.intraBarrierCount = 1
-    reqs.interBarrierCount = 0
+    reqs.barrierCount = 8
+    reqs.intraBarrierCount = 8
+    reqs.interBarrierCount = 8
     reqs.intraLLA2ABlockCount = 0
     reqs.intraLLA2ASlotCount = 0
     reqs.interForceEnable = False

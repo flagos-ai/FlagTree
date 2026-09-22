@@ -44,12 +44,21 @@ large parameter spaces can consume substantial memory and time.
 from __future__ import annotations
 
 import os
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from triton.flagtune._dependencies import require_optional_dependency
 from triton.flagtune.core.interfaces import BenchmarkFn, ConfigProposer
 from triton.flagtune.contract.identity import ModelIdentity
 from triton.flagtune.contract.operator_schema import VariantInfo
+from triton.flagtune.runtime.errors import (
+    BenchmarkError,
+    ContractExecutionError,
+    ModelValidationError,
+    ProposerError,
+    flagtune_error_boundary,
+    flagtune_errors,
+)
 
 np = require_optional_dependency(
     "numpy",
@@ -107,6 +116,7 @@ def _disabled(identity: ModelIdentity) -> bool:
     return ("*" in disabled or identity.op_id in disabled or pair in disabled or identity.artifact_key in disabled)
 
 
+@flagtune_errors(ModelValidationError)
 def load_model_bundle(
     op_id: str,
     variant: str,
@@ -131,6 +141,7 @@ def load_model_bundle(
     )
 
 
+@flagtune_errors(ModelValidationError)
 def make_config_proposer(
     op_id: str,
     variant: str,
@@ -153,11 +164,12 @@ def make_config_proposer(
         benchmarks those, and returns the lowest-latency unique Top-K.
 
     Raises:
-        FileNotFoundError: If the model bundle cannot be resolved locally or
-            remotely.
+        ModelUnavailableError: If the model bundle cannot be resolved locally
+            or remotely.
         IncompatibleModelError: If the model and bundled config identity, digest,
             version, feature names, or feature count are inconsistent.
-        ImportError: If a required model dependency such as XGBoost is missing.
+        ModelValidationError: If a required model dependency or configuration
+            fails to load; the original exception is retained as its cause.
 
     Notes:
         ``FLAGTUNE_TOP_K`` is parsed once per process on first use and
@@ -165,10 +177,12 @@ def make_config_proposer(
         ``op_id`` or exact ``op_id/variant``; a disabled model returns an empty proposer so
         integration layers can use their normal fallback.
 
-        The returned callable currently ignores ``initial_configs`` and
-        ``meta``.  They remain part of the stable proposer interface for Triton
-        integration. Candidate enumeration materializes the full
-        parameter Cartesian product before prediction.
+        ``initial_configs`` is the caller-filtered legal candidate domain.  The
+        proposer scores that complete domain before selecting Top-K and keeps GA
+        generation inside it.  An empty domain is rejected rather than expanded
+        to the variant's parameter Cartesian product: runtime configuration
+        sources are authoritative. ``meta`` remains part of the stable proposer
+        interface for Triton integration.
     """
     identity = ModelIdentity(platform_key, op_id, variant, dtype_key)
     if _disabled(identity):
@@ -189,38 +203,39 @@ def make_config_proposer(
 
     from triton.flagtune.core.ga_search import GAParams, GASearcher
 
-    ga_searcher = GASearcher(
-        variant_info.param_space,
-        GAParams(
-            generations=5,
-            population_size=20,
-            elite_size=5,
-            offspring_per_generation=10,
-            mutation_rate=0.3,
-            random_rate=0.2,
-        ),
-        seed=42,
+    ga_params = GAParams(
+        generations=5,
+        population_size=20,
+        elite_size=5,
+        offspring_per_generation=10,
+        mutation_rate=0.3,
+        random_rate=0.2,
     )
 
+    @flagtune_errors(ProposerError)
     def propose(
         fn: Optional[BenchmarkFn],
         shape: Dict[str, Any],
-        _initial_configs: List[Dict[str, Any]],
+        initial_configs: List[Dict[str, Any]],
         _meta: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         """Propose ranked candidates for one runtime shape.
 
         ``shape`` may contain unrelated kernel arguments; variant input
         normalization selects declared inputs and evaluates defaults.  A shape
-        failing ``when`` returns an empty list.  Benchmark exceptions and empty
-        sample lists are recorded as infinite latency rather than propagated.
-        GA failures are likewise treated as no generated candidates.
+        failing ``when`` returns an empty list. Contract, GA and benchmark
+        failures propagate through stable error categories to the caller.
         """
-        inputs = variant_info.normalize_inputs(shape)
-        if not variant_info.matches(inputs):
-            return []
+        with flagtune_error_boundary(ContractExecutionError):
+            inputs = variant_info.normalize_inputs(shape)
+            if not variant_info.matches(inputs):
+                return []
 
-        predicted = _predict_config_dicts(variant_info, model, inputs, top_k)
+        with flagtune_error_boundary(ContractExecutionError):
+            candidates = _candidate_domain(variant_info, initial_configs)
+        if not candidates:
+            return []
+        predicted = _predict_config_dicts(variant_info, model, inputs, top_k, candidates)
         if fn is None:
             return predicted
 
@@ -230,10 +245,9 @@ def make_config_proposer(
             if len(stripped) != len(fields) or _in_history(history, stripped, fields):
                 continue
             try:
-                samples = fn(stripped, None)
-                latency = float(samples[0]) if samples else float("inf")
-            except Exception:
-                latency = float("inf")
+                latency = _benchmark_candidate(fn, stripped)
+            except BenchmarkError:
+                continue
             history.append({
                 "config": stripped,
                 "latency_ms": latency,
@@ -241,28 +255,41 @@ def make_config_proposer(
                 "candidate_rank": rank,
             })
 
-        try:
-            generated = ga_searcher.generate(history) if history else []
-        except Exception:
-            generated = []
+        ga_searcher = GASearcher(
+            variant_info.param_space,
+            ga_params,
+            seed=42,
+            legal_configs=candidates,
+        )
+        generated = ga_searcher.generate(history) if history else []
 
         for entry in generated:
             stripped = _strip_config(entry.get("config", entry), fields)
             if len(stripped) != len(fields) or _in_history(history, stripped, fields):
                 continue
             try:
-                samples = fn(stripped, None)
-                latency = float(samples[0]) if samples else float("inf")
-            except Exception:
-                latency = float("inf")
+                latency = _benchmark_candidate(fn, stripped)
+            except BenchmarkError:
+                continue
             entry["config"] = stripped
             entry["latency_ms"] = latency
             entry["ga_latency_ms"] = latency
             history.append(entry)
 
+        if not history:
+            raise BenchmarkError(f"all Cost Model candidates have invalid benchmark latency: "
+                                 f"count={len(predicted)}")
         return _best_from_history(history, fields, top_k)
 
     return propose
+
+
+def _benchmark_candidate(fn, config):
+    with flagtune_error_boundary(BenchmarkError):
+        samples = fn(config, None)
+        if not samples or not all(math.isfinite(float(value)) for value in samples):
+            raise BenchmarkError(f"candidate has no finite latency: {config}")
+        return float(samples[0])
 
 
 def _best_from_history(history: List[Dict[str, Any]], fields: List[str], top_k: int) -> List[Dict[str, Any]]:
@@ -292,9 +319,12 @@ def _predict_config_dicts(
     model: Any,
     inputs: Dict[str, Any],
     top_k: int,
+    candidates: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Enumerate all legal configs, score their ordered feature matrix, and rank Top-K."""
-    configs = list(variant.iter_configs())
+    """Score the supplied runtime candidate domain and rank Top-K."""
+    if candidates is None:
+        raise ValueError("runtime candidate domain is required; pass initial_configs explicitly")
+    configs = list(candidates)
     if not configs:
         return []
 
@@ -306,3 +336,24 @@ def _predict_config_dicts(
 
     order = np.argsort(-scores, kind="stable")[:top_k]
     return [configs[int(index)] for index in order]
+
+
+def _candidate_domain(
+    variant: VariantInfo,
+    initial_configs: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return a validated, deduplicated caller-supplied legal candidate domain."""
+    if not initial_configs:
+        return []
+    result: List[Dict[str, Any]] = []
+    seen = set()
+    for raw in initial_configs:
+        config = _strip_config(raw, variant.param_names)
+        if not variant.param_space.validate(config):
+            raise ContractExecutionError(f"invalid runtime candidate: {config}")
+        key = variant.param_space.config_key(config)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(config)
+    return result

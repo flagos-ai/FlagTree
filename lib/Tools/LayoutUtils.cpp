@@ -60,6 +60,66 @@ bool squareSublayoutIsIdentity(const LinearLayout &ll,
       ll, dimNames, [](int b, int32_t basis) { return basis == (1 << b); });
 }
 
+#ifdef __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+// Backport from Triton main: triton/pull/11646.
+LinearLayout invertAndComposeLocal(const LinearLayout &A, const LinearLayout &B,
+                                   ArrayRef<StringAttr> localDims) {
+  auto cvt = B.invertAndCompose(A);
+  auto bases = cvt.getBases();
+  for (StringAttr dim : localDims) {
+    assert(A.hasInDim(dim) && B.hasInDim(dim));
+    assert(A.getInDimSize(dim) == B.getInDimSize(dim));
+    // A zero source basis leaves its output coordinate free. Choose the
+    // corresponding input bit to keep the replicated value local.
+    int outIdx = cvt.getOutDimIndex(dim);
+    uint64_t nonZeroBases =
+        getInputBasisMask(A, dim, llvm::to_vector(A.getOutDimNames()));
+    for (auto &inDimBases : llvm::make_second_range(bases))
+      for (auto &basis : inDimBases)
+        basis[outIdx] &= nonZeroBases;
+    for (auto [i, basis] : llvm::enumerate(bases[dim]))
+      basis[outIdx] |= (uint64_t{1} << i) & ~nonZeroBases;
+  }
+  return LinearLayout(std::move(bases), cvt.getOutDims(),
+                      /*requireSurjective=*/false);
+}
+
+// Upstream prerequisite: triton@af85fc304db5 (before triton/pull/11646).
+uint32_t getOutputBasisMask(const LinearLayout &layout,
+                            ArrayRef<StringAttr> inDims, StringAttr outDim) {
+  assert(layout.hasOutDim(outDim));
+  unsigned outIdx = layout.getOutDimIndex(outDim);
+  uint32_t mask = 0;
+  for (StringAttr inDim : inDims) {
+    assert(layout.hasInDim(inDim));
+    for (const auto &basis : layout.getBases().lookup(inDim))
+      mask |= uint32_t(basis[outIdx]);
+  }
+  return mask;
+}
+
+// Upstream prerequisite: triton@af85fc304db5 (before triton/pull/11646).
+uint64_t getInputBasisMask(const LinearLayout &layout, StringAttr inDim,
+                           ArrayRef<StringAttr> outDims) {
+  assert(layout.hasInDim(inDim));
+  SmallVector<unsigned> outIndices;
+  for (StringAttr outDim : outDims) {
+    assert(layout.hasOutDim(outDim));
+    outIndices.push_back(layout.getOutDimIndex(outDim));
+  }
+
+  uint64_t mask = 0;
+  for (const auto &indexedBasis :
+       llvm::enumerate(layout.getBases().lookup(inDim))) {
+    const auto &basis = indexedBasis.value();
+    if (llvm::any_of(outIndices,
+                     [&](unsigned outIdx) { return basis[outIdx] != 0; }))
+      mask |= uint64_t{1} << indexedBasis.index();
+  }
+  return mask;
+}
+#endif // __FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__
+
 LinearLayout
 ensureLayoutNotLargerThan(const LinearLayout &layout,
                           const llvm::SmallDenseMap<StringAttr, int64_t> &shape,

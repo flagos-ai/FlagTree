@@ -19,13 +19,109 @@
 # SOFTWARE.
 
 import inspect
+import os
+import shutil
+import subprocess
 import sys
+from pathlib import Path
 
 from setuptools import find_packages
+
+from python.setup_tools.utils.default import FlagCXRegistrar, printinfo
 
 OPS_PYTHON_ROOT = "third_party/iluvatar/python"
 OPS_DISCOVERY_ROOT = f"{OPS_PYTHON_ROOT}/triton"
 OPS_PACKAGE = "triton.ops"
+
+__all__ = ["handle_flagcx", "relocate_flagcx"]
+
+_FLAGCX_RELATIVE_PATH = os.path.join("iluvatar", "tle", "third_party", "flagcx")
+
+
+def relocate_flagcx(*args, **kwargs):
+    from python.setup_tools.utils import flagtree_submodules
+    from python.setup_tools.utils.tools import flagtree_configs
+
+    flagcx = flagtree_submodules.get("flagcx")
+    if flagcx is None:
+        return
+    flagcx.dst_path = os.path.join(flagtree_configs.flagtree_submodule_dir, _FLAGCX_RELATIVE_PATH)
+
+
+def _first_existing_file(candidates):
+    for candidate in candidates:
+        if candidate:
+            path = Path(candidate).expanduser()
+            if path.is_file():
+                return str(path)
+    return None
+
+
+def _has_corex_device_compile_support(path):
+    """Check for the files required by CoreX device compilation."""
+    path = Path(path).expanduser()
+    return ((path / "include" / "cuda_runtime.h").is_file()
+            and (path / "nvvm" / "libdevice" / "libdevice.compute_bi.10.bc").is_file())
+
+
+def _resolve_corex_clang():
+    llvm_path = os.environ.get("LLVM_SYSPATH")
+    return _first_existing_file((
+        os.environ.get("FLAGCX_ILUVATAR_CLANG"),
+        str(Path(llvm_path) / "bin" / "clang") if llvm_path else None,
+        shutil.which("clang"),
+        "/usr/local/corex/bin/clang",
+        "/home/corex/sw_home/local/corex/bin/clang",
+    ))
+
+
+def _resolve_corex_sdk(clang_path):
+    clang_sdk = None
+    if clang_path:
+        clang_sdk = Path(clang_path).expanduser().resolve().parent.parent
+    return next(
+        (str(Path(candidate).expanduser()) for candidate in (
+            os.environ.get("FLAGCX_ILUVATAR_SDK"),
+            os.environ.get("COREX_HOME"),
+            os.environ.get("COREX_SDK"),
+            str(clang_sdk) if clang_sdk else None,
+            "/usr/local/corex",
+            "/home/corex/sw_home/local/corex",
+        ) if candidate and _has_corex_device_compile_support(candidate)),
+        None,
+    )
+
+
+def _is_ccl_home(path):
+    path = Path(path).expanduser()
+    include_dir = path / "include"
+    lib_dirs = (path / "lib", path / "lib64")
+    has_header = (include_dir / "nccl.h").is_file()
+    has_library = any(
+        list(lib_dir.glob("libnccl.so*")) + list(lib_dir.glob("libixccl.so*"))
+        for lib_dir in lib_dirs
+        if lib_dir.is_dir())
+    return has_header and has_library
+
+
+def _resolve_ccl_home(sdk_path):
+    return next(
+        (str(Path(candidate).expanduser()) for candidate in (
+            os.environ.get("FLAGCX_ILUVATAR_CCL_HOME"),
+            os.environ.get("CCL_HOME"),
+            os.environ.get("NCCL_HOME"),
+            os.environ.get("IXCCL_HOME"),
+            sdk_path,
+        ) if candidate and _is_ccl_home(candidate)),
+        None,
+    )
+
+
+def _resolve_flagcx_toolchain():
+    clang_path = _resolve_corex_clang()
+    sdk_path = _resolve_corex_sdk(clang_path)
+    ccl_path = _resolve_ccl_home(sdk_path)
+    return sdk_path, clang_path, ccl_path
 
 
 def _ops_packages():
@@ -93,6 +189,97 @@ def _patch_setup(wrap_setup):
 
     if not patched:
         raise RuntimeError("iluvatar setup hook could not find setup() to patch")
+
+
+class IluvatarFlagCXRegistrar(FlagCXRegistrar):
+    """Iluvatar-specific FlagCX build and runtime file handling."""
+
+    SUPPORTED_ARCHES = ("ivcore11", )
+
+    def _get_iluvatar_arch(self):
+        arch = os.environ.get("FLAGCX_ILUVATAR_ARCH", "ivcore11").strip().lower()
+        if arch not in self.SUPPORTED_ARCHES:
+            raise RuntimeError(f"Unsupported Iluvatar FlagCX device target {arch!r}; "
+                               f"supported targets: {', '.join(self.SUPPORTED_ARCHES)}")
+        return arch
+
+    def _set_path(self, external):
+        relocate_flagcx()
+        super()._set_path(external)
+        self.iluvatar_arch = self._get_iluvatar_arch()
+        self.cache_lib_dir = Path(external["cache"].dir_path) / "flagcx" / self.iluvatar_arch
+        self.cache_lib_dir.mkdir(parents=True, exist_ok=True)
+        for lib_name in (self.bitcode_name, self.shared_lib_name):
+            setattr(self, f"{lib_name.split('.')[0]}_cache_path", self.cache_lib_dir / lib_name)
+
+    def get_compile_cmds(self):
+        device_dir = Path(self.flagcx_src_dir) / "bindings" / "ir" / "iluvatar"
+        if not device_dir.is_dir():
+            raise FileNotFoundError(f"FlagCX Iluvatar device IR build entry not found: {device_dir}. "
+                                    "The pinned FlagCX revision must provide bindings/ir/iluvatar.")
+
+        sdk_path, clang_path, ccl_path = _resolve_flagcx_toolchain()
+        if not sdk_path or not clang_path:
+            raise RuntimeError("Unable to locate the Iluvatar CoreX SDK and clang. "
+                               "Set FLAGCX_ILUVATAR_SDK/FLAGCX_ILUVATAR_CLANG or expose "
+                               "the CoreX toolchain through LLVM_SYSPATH/PATH.")
+
+        device_cmd = [
+            "make",
+            "-C",
+            str(device_dir),
+            f"ILUVATAR_ARCH={self.iluvatar_arch}",
+            f"DEVICE_HOME={sdk_path}",
+            f"COREX_CLANG={clang_path}",
+        ]
+
+        host_cmd = ["make", "USE_ILUVATAR=1", "-j", str(os.cpu_count())]
+        host_cmd.append(f"DEVICE_HOME={sdk_path}")
+        if ccl_path:
+            host_cmd.append(f"CCL_HOME={ccl_path}")
+
+        return {
+            self.bitcode_name: device_cmd,
+            self.shared_lib_name: host_cmd,
+        }
+
+    def _init_submodules(self):
+        if getattr(self, "_submodules_ready", False):
+            return
+        printinfo(f"Initializing FlagCX submodules in {self.flagcx_src_dir}...")
+        subprocess.run(
+            ["git", "submodule", "update", "--init", "--recursive"],
+            cwd=self.flagcx_src_dir,
+            check=True,
+        )
+        self._submodules_ready = True
+
+    def _compile_and_cache(self):
+        self._init_submodules()
+        return super()._compile_and_cache()
+
+    def _copy_required_files(self):
+        src = Path(self.flagcx_src_dir) / "plugin" / "interservice" / "flagcx_wrapper.py"
+        dst = Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "flagcx_wrapper.py"
+        shutil.copy(src, dst)
+        printinfo(f"flagcx_wrapper.py copied from {src} to {dst}")
+
+        dst = Path(self.flagtree_dir) / "third_party" / self.backend_name / "backend" / "flagcx_wrapper.py"
+        shutil.copy(src, dst)
+        printinfo(f"flagcx_wrapper.py copied from {src} to {dst}")
+
+        dst = Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "include"
+        src = Path(self.flagcx_src_dir) / "flagcx" / "include"
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        printinfo(f"FlagCX headers copied from {src} to {dst}")
+
+
+def handle_flagcx(*args, **kwargs):
+    global registrar
+    registrar = IluvatarFlagCXRegistrar(kwargs)
+    registrar.run()
 
 
 _patch_setup(_build_setup_hook())

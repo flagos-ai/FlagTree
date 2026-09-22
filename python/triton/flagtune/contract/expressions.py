@@ -106,13 +106,19 @@ def compile_expression(
 ) -> CompiledExpression:
     """Compile one YAML value under a location-specific capability set.
 
-    Strings must name a member of ``symbols``.  Mapping calls may use only an
-    operation in ``operations`` and the keys ``name``, ``op``, and ``args``;
+    Strings must name a member of ``symbols``.  ``{literal: value}`` represents
+    an inert scalar data value, including a string. Mapping calls may use only
+    an operation in ``operations`` and the keys ``name``, ``op``, and ``args``;
     numeric, boolean, and null literals are optional.  The returned tree can
     be reused without reparsing YAML.  ``name`` is currently accepted for the
     surrounding feature schema but is not interpreted by this evaluator.
     """
     if isinstance(expr, Mapping):
+        if set(expr) == {"literal"}:
+            value = expr["literal"]
+            if not allow_literals or not (value is None or isinstance(value, (str, int, float, bool))):
+                raise SafeExpressionError(f"{location}.literal must be a scalar string, number, boolean, or null")
+            return Literal(value)
         if not allow_calls:
             raise SafeExpressionError(f"{location} does not allow operation expressions")
         unknown = set(expr) - {"name", "op", "args"}
@@ -191,6 +197,8 @@ def evaluate_expression(
 ) -> Any:
     """Evaluate an already validated raw expression without executing Python source."""
     if isinstance(expr, Mapping):
+        if set(expr) == {"literal"}:
+            return expr["literal"]
         return operations[str(expr["op"])](*(evaluate_expression(arg, context, operations)
                                              for arg in expr.get("args", [])))
     if isinstance(expr, str):

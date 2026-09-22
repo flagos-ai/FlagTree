@@ -111,6 +111,13 @@ class MemoryOrder(str, Enum):
     ACQ_REL = "acqrel"
 
 
+class MemoryScope(str, Enum):
+    SYSTEM = "system"
+    DEVICE = "device"
+    BLOCK = "block"
+    THREAD = "thread"
+
+
 class GroupKind(str, Enum):
     THREAD = "thread"
     WARP = "warp"
@@ -120,13 +127,12 @@ class GroupKind(str, Enum):
     GRID = "grid"
 
 
-_SIGNAL_SPACE_TO_TEAM_KIND = {
+_SPACE_TO_TEAM_KIND = {
     "intra": 0,
     "intra_node": 0,
     "device": 0,
     "inter": 1,
     "inter_node": 1,
-    "node": 1,
     "world": 2,
 }
 
@@ -167,7 +173,8 @@ def signal(
     op: str | attr.SignalOpKind = "inc",
     space: str | attr.FlagCXTeamKind = "intra_node",
     group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
-    context_idx: int = 0,
+    context_id: int = 0,
+    scope: MemoryScope | str = MemoryScope.SYSTEM,
     _semantic=None,
 ):
     """Atomically update a synchronization slot owned by a remote FlagCX peer.
@@ -178,7 +185,7 @@ def signal(
     waits for completion on the receiving peer.
 
     ``space`` selects the FlagCX team (``intra_node``, ``inter_node``, or
-    ``world``), while ``peer`` is a rank within that team. ``context_idx``
+    ``world``), while ``peer`` is a rank within that team. ``context_id``
     selects a pre-allocated FlagCX network context. ``slot_id`` selects the
     signal slot to update.
 
@@ -195,10 +202,10 @@ def signal(
         raise ValueError(f"op must be 'inc' or 'add', got {signal_op!r}")
 
     signal_space = str(tl._unwrap_if_constexpr(space)).lower()
-    if signal_space not in _SIGNAL_SPACE_TO_TEAM_KIND:
+    if signal_space not in _SPACE_TO_TEAM_KIND:
         expected = "intra_node, inter_node, or world"
         raise ValueError(f"space must be {expected}, got {signal_space!r}")
-    signal_space = attr.FlagCXTeamKind.from_int(_SIGNAL_SPACE_TO_TEAM_KIND[signal_space])
+    signal_space = attr.FlagCXTeamKind.from_int(_SPACE_TO_TEAM_KIND[signal_space])
 
     group_kind = tl._unwrap_if_constexpr(group_kind)
     group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
@@ -207,11 +214,16 @@ def signal(
         expected = "thread, warp, or block"
         raise ValueError(f"group_kind must be {expected}, got {group_kind!r}")
 
-    context_idx = tl._unwrap_if_constexpr(context_idx)
-    if not isinstance(context_idx, int):
-        raise TypeError(f"context_idx must be a compile-time int, got {type(context_idx).__name__}")
-    if context_idx < 0 or context_idx > 0x7FFFFFFF:
-        raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(context_id, int):
+        raise TypeError(f"context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"context_id must be in int32 range, got {context_id}")
+
+    scope = tl._unwrap_if_constexpr(scope)
+    scope = scope if isinstance(scope, attr.SyncScope) else attr.SyncScope.from_str(scope)
+    if scope is None:
+        raise ValueError(f"scope must be 'system' or 'device', got {scope!r}")
 
     peer_tensor = _normalize_signal_scalar(peer, "peer", tl.int32, _semantic)
     slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.uint32, _semantic)
@@ -219,7 +231,7 @@ def signal(
     value_tensor = (_normalize_signal_scalar(value_value, "value", tl.uint64, _semantic)
                     if value_value is not None else None)
 
-    utils.verify_signal(signal_op, None if value_tensor is None else value_tensor.handle)
+    utils.verify_signal(signal_op, None if value_tensor is None else value_tensor.handle, scope)
 
     comm = _parse_src_arg(builder, device_dptr, 1)
     builder.create_signal(
@@ -230,9 +242,74 @@ def signal(
         signal_op,
         signal_space,
         group_kind,
-        context_idx,
+        context_id,
+        scope,
     )
     return None
+
+
+@tl.builtin
+def signal_wait(
+    device_dptr,
+    slot_id,
+    wait_kind: str | attr.SignalWaitKind,
+    target: int | None = None,
+    group_kind: str | GroupKind = GroupKind.BLOCK,
+    context_id: int = 0,
+    order: MemoryOrder | str = MemoryOrder.ACQUIRE,
+    _semantic=None,
+):
+    """Wait until a local FlagCX synchronization slot reaches its target.
+
+    ``target`` is required for ``wait_kind="signal"`` and
+    ``wait_kind="counter"``.  ``wait_kind="shadow"`` instead reads the target
+    from FlagCX's locally maintained shadow buffer, so ``target`` must be
+    omitted. ``slot_id`` is interpreted in the signal slot namespace.
+    """
+    builder = _semantic.builder
+
+    wait_kind = tl._unwrap_if_constexpr(wait_kind)
+    wait_kind_val = (wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else attr.SignalWaitKind.from_str(
+        str(wait_kind).lower()))
+    if wait_kind_val is None:
+        expected = "signal, counter, or shadow"
+        raise ValueError(f"wait kind must be {expected}, got {wait_kind!r}")
+
+    group_kind = tl._unwrap_if_constexpr(group_kind)
+    group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
+    group_kind = attr.FlagCXCoopKind.from_str(group_kind)
+    if group_kind is None:
+        expected = "thread, warp, or block"
+        raise ValueError(f"group kind must be {expected}, got {group_kind!r}")
+
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(context_id, int):
+        raise TypeError(f"context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"context_id must be in int32 range, got {context_id}")
+
+    order = tl._unwrap_if_constexpr(order)
+    order = order if isinstance(order, attr.MemoryOrder) else attr.MemoryOrder.from_str(order)
+    if order is None:
+        raise ValueError(f"order must be 'relaxed' or 'acquire', got {order!r}")
+
+    comm = _parse_src_arg(builder, device_dptr, 1)
+    slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
+    target_value = target.value if isinstance(target, tl.constexpr) else target
+    target_tensor = (_normalize_signal_scalar(target_value, "target", tl.int64, _semantic)
+                     if target_value is not None else None)
+
+    utils.verify_signal_wait(wait_kind_val, None if target_tensor is None else target_tensor.handle, order)
+
+    builder.create_signal_wait(
+        comm,
+        slot_tensor.handle,
+        wait_kind_val,
+        None if target_tensor is None else target_tensor.handle,
+        group_kind,
+        context_id,
+        order,
+    )
 
 
 @dataclass
@@ -333,6 +410,11 @@ class device_mesh:
             shape.append(_as_positive_int(dim_size, f"{level_name}.{dim_name}"))
             names.append(dim_name)
         return shape, names
+
+    def __deepcopy__(self, memo):
+        # device_mesh is an immutable topology descriptor; sharing the instance
+        # keeps JIT global-change checks (which capture deepcopy'd values) stable.
+        return self
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -637,12 +719,66 @@ def _mesh_to_cluster_dims(mesh: device_mesh) -> tuple[int, int, int]:
     return _shape_to_cluster_dims(cluster_axes)
 
 
-def _mesh_has_cluster_axes(mesh: device_mesh) -> bool:
-    return any("cluster" in name for name in mesh.dim_names)
+def _mesh_has_axis(mesh: device_mesh, axis_token: str, *, use_launch_dims: bool = False) -> bool:
+    dim_names = mesh.launch_dim_names if use_launch_dims else mesh.dim_names
+    return any(axis_token in name for name in dim_names)
 
 
-def _mesh_has_block_axes(mesh: device_mesh) -> bool:
-    return any("block" in name for name in mesh.dim_names)
+def _collect_cluster_members_by_outer_coord(
+    mesh: device_mesh, ) -> tuple[tuple[int, ...], dict[tuple[int, ...], set[tuple[int, ...]]]]:
+    launch_shape = tuple(int(size) for size in mesh.launch_shape)
+    cluster_axes = tuple(axis for axis, name in enumerate(mesh.launch_dim_names) if "cluster" in name)
+    if not cluster_axes:
+        return cluster_axes, {}
+
+    cluster_axis_set = set(cluster_axes)
+    outer_axes = tuple(axis for axis in range(len(launch_shape)) if axis not in cluster_axis_set)
+    launch_size = _prod(launch_shape)
+    cluster_members_by_outer_coord: dict[tuple[int, ...], set[tuple[int, ...]]] = {}
+
+    # Inspect membership in the original launch domain so reshape()/flatten()
+    # cannot turn an outer-axis slice into a false cluster-axis slice.
+    for raw_physical_id in mesh.physical_ids:
+        physical_id = int(raw_physical_id)
+        if physical_id < 0 or physical_id >= launch_size:
+            raise ValueError(f"mesh physical id {physical_id} is out of range for launch shape {launch_shape}")
+
+        coords = [0] * len(launch_shape)
+        remainder = physical_id
+        for axis in range(len(launch_shape) - 1, -1, -1):
+            coords[axis] = remainder % launch_shape[axis]
+            remainder //= launch_shape[axis]
+
+        outer_coord = tuple(coords[axis] for axis in outer_axes)
+        cluster_coord = tuple(coords[axis] for axis in cluster_axes)
+        cluster_members_by_outer_coord.setdefault(outer_coord, set()).add(cluster_coord)
+
+    return cluster_axes, cluster_members_by_outer_coord
+
+
+@dataclass(frozen=True)
+class _ClusterMeshAnalysis:
+    cluster_axes: tuple[int, ...]
+    cluster_members_by_outer_coord: dict[tuple[int, ...], set[tuple[int, ...]]]
+
+
+def _is_cluster_submesh(mesh: device_mesh) -> _ClusterMeshAnalysis | None:
+    """Return the cluster-submesh analysis, or ``None`` if this is not one."""
+    if _mesh_uses_grid_barrier(mesh):
+        return None
+
+    cluster_axes, cluster_members_by_outer_coord = _collect_cluster_members_by_outer_coord(mesh)
+    if not cluster_axes:
+        return None
+
+    cluster_size = _prod(mesh.launch_shape[axis] for axis in cluster_axes)
+    if not any(len(cluster_members) < cluster_size for cluster_members in cluster_members_by_outer_coord.values()):
+        return None
+
+    return _ClusterMeshAnalysis(
+        cluster_axes=cluster_axes,
+        cluster_members_by_outer_coord=cluster_members_by_outer_coord,
+    )
 
 
 def _mesh_uses_grid_barrier(mesh: device_mesh) -> bool:
@@ -650,10 +786,9 @@ def _mesh_uses_grid_barrier(mesh: device_mesh) -> bool:
     # - explicit cluster axes in the barrier mesh => cluster/submesh barrier
     # - block-only axes in the barrier mesh => grid barrier
     # - empty mesh dims (scalar) fallback to launch mesh naming
-    if mesh.dim_names:
-        return (not _mesh_has_cluster_axes(mesh)) and _mesh_has_block_axes(mesh)
-    return ((not any("cluster" in name for name in mesh.launch_dim_names))
-            and any("block" in name for name in mesh.launch_dim_names))
+    use_launch_dims = not mesh.dim_names
+    return (not _mesh_has_axis(mesh, "cluster", use_launch_dims=use_launch_dims)
+            and _mesh_has_axis(mesh, "block", use_launch_dims=use_launch_dims))
 
 
 @dataclass(frozen=True)
@@ -668,41 +803,74 @@ class _BarrierGroupDescriptor:
 def _infer_submesh_barrier_group(
     mesh: device_mesh,
     cluster_dims: Sequence[int],
-) -> _BarrierGroupDescriptor | None:
-    cluster_size = _prod(cluster_dims)
-    if mesh.size == cluster_size:
-        return None
-    if mesh.size > cluster_size:
-        raise ValueError(f"mesh size ({mesh.size}) exceeds inferred cluster size ({cluster_size})")
-
-    launch_size = _prod(mesh.launch_shape)
-    if launch_size != cluster_size:
-        raise NotImplementedError(
-            "sub-mesh distributed_barrier currently requires launch mesh domain "
-            f"to match inferred cluster size; launch_size={launch_size}, cluster_size={cluster_size}")
+    analysis: _ClusterMeshAnalysis | None = None,
+) -> _BarrierGroupDescriptor:
+    if not mesh.physical_ids:
+        raise ValueError("cannot infer barrier group from an empty mesh")
 
     if not mesh.dim_names:
         raise NotImplementedError("scalar sub-mesh barrier is not implemented yet; provide at least one sliced axis")
+
+    if analysis is None:
+        cluster_axes, cluster_members_by_outer_coord = _collect_cluster_members_by_outer_coord(mesh)
+    else:
+        cluster_axes = analysis.cluster_axes
+        cluster_members_by_outer_coord = analysis.cluster_members_by_outer_coord
 
     launch_name_to_axis = {name: i for i, name in enumerate(mesh.launch_dim_names)}
     if any(name not in launch_name_to_axis for name in mesh.dim_names):
         raise NotImplementedError("sub-mesh barrier currently supports slicing-derived meshes with "
                                   "axis names inherited from launch mesh")
 
-    axes = tuple(int(launch_name_to_axis[name]) for name in mesh.dim_names)
+    cluster_axis_to_local = {axis: i for i, axis in enumerate(cluster_axes)}
+    axes = tuple(
+        int(cluster_axis_to_local[launch_name_to_axis[name]])
+        for name in mesh.dim_names
+        if launch_name_to_axis[name] in cluster_axis_to_local)
     if len(set(axes)) != len(axes):
-        raise ValueError(f"invalid subgroup axes (duplicate launch axes): {axes}")
+        raise ValueError(f"invalid subgroup axes (duplicate cluster axes): {axes}")
 
-    shape = tuple(int(v) for v in mesh.shape)
+    shape = tuple(
+        int(size)
+        for name, size in zip(mesh.dim_names, mesh.shape)
+        if launch_name_to_axis[name] in cluster_axis_to_local)
     if not shape or any(v <= 0 for v in shape):
-        raise ValueError(f"invalid subgroup shape inferred from mesh: {shape}")
+        raise NotImplementedError(
+            "scalar sub-mesh barrier is not implemented yet; provide at least one sliced cluster axis")
 
-    mask = tuple(int(v) for v in mesh.physical_ids)
+    member_sets = list(cluster_members_by_outer_coord.values())
+    reference_members = member_sets[0]
+    if any(members != reference_members for members in member_sets[1:]):
+        members_by_outer_coord = {
+            outer_coord: tuple(sorted(members))
+            for outer_coord, members in cluster_members_by_outer_coord.items()
+        }
+        raise ValueError("sub-mesh barrier cannot use one mask for different cluster member selections "
+                         "at different outer mesh positions (the non-cluster dimensions): "
+                         f"{members_by_outer_coord}")
+
+    cluster_shape = tuple(int(mesh.launch_shape[axis]) for axis in cluster_axes)
+
+    def _flatten_cluster_coord(coord: tuple[int, ...]) -> int:
+        member_id = 0
+        for value, extent in zip(coord, cluster_shape):
+            member_id = member_id * extent + int(value)
+        return member_id
+
+    # physical_ids are linear ids in the full launch mesh. The lowering
+    # compares group_mask with the CTA id inside one cluster, so convert the
+    # common cluster-coordinate set into cluster-local linear ids first.
+    mask = tuple(sorted(_flatten_cluster_coord(coord) for coord in reference_members))
     if not mask:
         raise ValueError("sub-mesh barrier group mask cannot be empty")
+
+    cluster_size = _prod(cluster_dims)
     if any(v < 0 or v >= cluster_size for v in mask):
         raise ValueError("sub-mesh barrier group mask contains out-of-range cluster member ids: "
                          f"mask={mask}, cluster_size={cluster_size}")
+    if _prod(shape) != len(mask):
+        raise ValueError("sub-mesh barrier group shape does not match the number of cluster members: "
+                         f"shape={shape}, mask={mask}")
 
     return _BarrierGroupDescriptor(
         kind="submesh",
@@ -720,7 +888,9 @@ def _apply_mesh_cluster_launch(mesh: device_mesh, _semantic: TLESemantic | None)
         return cluster_dims
 
     num_ctas = int(getattr(options, "num_ctas", 1))
-    if num_ctas != 1:
+    # Backends may report num_ctas=0 as "unset / default single CTA"; only
+    # actively-multi-CTA launches conflict with mesh-inferred cluster dims.
+    if num_ctas > 1:
         raise ValueError("mesh-driven cluster launch requires num_ctas=1; cluster size is inferred from mesh")
 
     existing = tuple(getattr(options, "cluster_dims", (1, 1, 1)))
@@ -736,7 +906,7 @@ def _apply_mesh_grid_launch(mesh: device_mesh, _semantic: TLESemantic | None) ->
         return
 
     num_ctas = int(getattr(options, "num_ctas", 1))
-    if num_ctas != 1:
+    if num_ctas > 1:
         raise ValueError("mesh-driven grid distributed_barrier requires num_ctas=1")
 
     cluster_dims = tuple(getattr(options, "cluster_dims", (1, 1, 1)))
@@ -811,57 +981,197 @@ def shard_id(
     return coord
 
 
-def _parse_device_barrier_args(argType) -> str:
-    argType = tl._unwrap_if_constexpr(argType)
-    argTypes = (BarrierKind, GroupKind, MemoryOrder)
-    if isinstance(argType, argTypes):
-        return argType.value
+def _normalize_barrier_space(space: str | attr.FlagCXTeamKind | None) -> str | None:
+    space = tl._unwrap_if_constexpr(space)
+    if space is None:
+        return None
+    if isinstance(space, str):
+        normalized = space.lower()
+        if normalized not in _SPACE_TO_TEAM_KIND:
+            expected = ", ".join(sorted(_SPACE_TO_TEAM_KIND))
+            raise ValueError(f"space must be one of {expected}, got {space!r}")
+        team_kind_value = _SPACE_TO_TEAM_KIND[normalized]
+    elif isinstance(space, attr.FlagCXTeamKind):
+        team_kind_value = int(space)
     else:
-        return str(argType).lower()
+        raise TypeError(f"space must be str, attr.FlagCXTeamKind, or None, got {type(space).__name__}")
+    if attr.FlagCXTeamKind.from_int(team_kind_value) is None:
+        raise ValueError(f"space {space!r} is outside the FlagCX team-kind range")
+    return ("device", "inter", "world")[team_kind_value]
 
 
-def check_and_handle_device_intra_barrier(space: str = None, device_dptr=None,
-                                          barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-                                          group_kind: str | GroupKind = GroupKind.BLOCK, index: int | None = 0,
-                                          order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-                                          _semantic: TLESemantic | None = None):
-    if space and space in ("device", "node"):
-        builder = _semantic.builder
-        ptr = _parse_src_arg(builder, device_dptr, 1)
-        builder.create_distributed_barrier(
-            src=ptr,
-            barrier_index=index or 0,
-            space=_parse_device_barrier_args("device"),
-            group_kind=_parse_device_barrier_args(group_kind),
-            order=_parse_device_barrier_args(order),
-            barrier_kind=_parse_device_barrier_args(barrier_kind),
+def _validate_barrier_space_mesh(mesh: device_mesh | None, space: str, device_dptr=None) -> None:
+    if mesh is None:
+        raise ValueError(f"space={space!r}: mesh is required")
+    required_axis = "device" if space == "device" else "node"
+    if not _mesh_has_axis(mesh, required_axis, use_launch_dims=True):
+        raise ValueError(f"space={space!r} requires mesh to define a '{required_axis}' topology axis")
+    if device_dptr is None:
+        raise ValueError(f"space={space!r}: device_dptr is required")
+
+
+def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.FlagCXTeamKind | None, device_dptr=None,
+                                   barrier_kind: BarrierKind | str = BarrierKind.SYNC,
+                                   group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
+                                   index: int | None = 0, context_id: int = 0,
+                                   order: attr.MemoryOrder | MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+                                   memory_scope: attr.SyncScope | MemoryScope | str = MemoryScope.SYSTEM,
+                                   _semantic=None) -> bool:
+    space = _normalize_barrier_space(space)
+    if space is None:
+        return False
+    _validate_barrier_space_mesh(mesh, space, device_dptr=device_dptr)
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(context_id, int):
+        raise TypeError(f"context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"context_id must be in int32 range, got {context_id}")
+    builder = _semantic.builder
+    ptr = _parse_src_arg(builder, device_dptr, 1)
+
+    group_kind = tl._unwrap_if_constexpr(group_kind)
+    if isinstance(group_kind, attr.FlagCXCoopKind):
+        group_kind = ("thread", "warp", "block")[int(group_kind)]
+    elif isinstance(group_kind, GroupKind):
+        group_kind = group_kind.value
+    else:
+        group_kind = str(group_kind).lower()
+
+    order = tl._unwrap_if_constexpr(order)
+    if isinstance(order, attr.MemoryOrder):
+        pass
+    elif isinstance(order, MemoryOrder):
+        order = attr.MemoryOrder.from_str(order.value)
+    else:
+        order = attr.MemoryOrder.from_str(str(order).lower())
+    if order is None:
+        raise ValueError(f"order must be 'relaxed', 'acquire', 'release', or 'acqrel', got {order!r}")
+
+    barrier_kind = tl._unwrap_if_constexpr(barrier_kind)
+    if isinstance(barrier_kind, BarrierKind):
+        barrier_kind = barrier_kind.value
+    else:
+        barrier_kind = str(barrier_kind).lower()
+
+    memory_scope = tl._unwrap_if_constexpr(memory_scope)
+    if isinstance(memory_scope, attr.SyncScope):
+        pass
+    elif isinstance(memory_scope, MemoryScope):
+        memory_scope = attr.SyncScope.from_str(memory_scope.value)
+    else:
+        memory_scope = attr.SyncScope.from_str(str(memory_scope).lower())
+    if memory_scope is None:
+        raise ValueError(f"memory_scope must be 'system', 'device', 'block', or 'thread', got {memory_scope!r}")
+
+    builder.create_distributed_barrier(
+        src=ptr,
+        barrier_index=index or 0,
+        space=space,
+        group_kind=group_kind,
+        order=order,
+        barrier_kind=barrier_kind,
+        context_id=context_id,
+        memory_scope=memory_scope,
+    )
+    return True
+
+
+def _use_dsa_barrier(builder) -> bool:
+    # The tsingmicro backend consumes dsa::DistributedBarrierOp in its TLEToMK
+    # pass; the tle-dialect barrier only lowers on NVIDIA backends.
+    try:
+        from triton._flagtree_backend import get_active_backend_name
+        if get_active_backend_name() != "tsingmicro":
+            return False
+    except Exception:
+        return False
+    return hasattr(builder, "create_dsa_distributed_barrier")
+
+
+def _emit_cluster_submesh_barrier(subgroup: _BarrierGroupDescriptor, builder) -> None:
+    if _use_dsa_barrier(builder):
+        builder.create_dsa_distributed_barrier(
+            subgroup.kind,
+            list(subgroup.shape),
+            list(subgroup.axes),
+            list(subgroup.mask),
         )
-        return True
-    return False
+        return
+    if not hasattr(builder, "create_distributed_barrier"):
+        raise NotImplementedError("sub-mesh distributed_barrier requires TLE builder support; "
+                                  f"inferred subgroup descriptor: rank={subgroup.rank}, "
+                                  f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}")
+    try:
+        builder.create_distributed_barrier(
+            subgroup.kind,
+            list(subgroup.shape),
+            list(subgroup.axes),
+            list(subgroup.mask),
+        )
+    except TypeError as exc:
+        raise NotImplementedError(
+            "sub-mesh distributed_barrier requires rebuilt TLE extension with "
+            "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask); "
+            f"inferred subgroup descriptor: rank={subgroup.rank}, "
+            f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}") from exc
+
+
+def _handle_cluster_submesh_barrier(
+    mesh: device_mesh,
+    _semantic,
+    analysis: _ClusterMeshAnalysis | None = None,
+) -> None:
+    cluster_dims = _mesh_to_cluster_dims(mesh)
+    subgroup = _infer_submesh_barrier_group(mesh, cluster_dims, analysis)
+    _apply_mesh_cluster_launch(mesh, _semantic)
+    _emit_cluster_submesh_barrier(subgroup, _semantic.builder)
 
 
 @tl.builtin
-def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space: str = None,
-                        group_kind: str | GroupKind = GroupKind.BLOCK,
+def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
+                        space: str | attr.FlagCXTeamKind | None = None,
+                        group_kind: str | GroupKind | attr.FlagCXCoopKind = GroupKind.BLOCK,
                         barrier_kind: BarrierKind | str = BarrierKind.SYNC,
-                        order: MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
-                        _semantic: TLESemantic | None = None, index: int | None = 0):
+                        order: attr.MemoryOrder | MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
+                        _semantic: TLESemantic | None = None, index: int | None = 0, context_id: int = 0,
+                        memory_scope: attr.SyncScope | MemoryScope | str = MemoryScope.SYSTEM):
     """
     M3 entrypoint: distributed synchronization primitive.
+    Dispatch order:
+    - sliced cluster mesh: cluster submesh synchronization
+    - explicit space: intra/device, inter/node, world synchronization
+    - block-only mesh: cooperative grid synchronization
+    - otherwise: full cluster synchronization
 
-    - cluster mesh: cluster/submesh synchronization
-    - block mesh: cooperative grid synchronization
+
+    For an explicit-space FlagCX barrier, ``space`` accepts any alias in
+    ``_SPACE_TO_TEAM_KIND`` (``intra``/``intra_node``/``device``,
+    ``inter``/``inter_node``/``node``, ``world``) or an
+    ``attr.FlagCXTeamKind``, and is canonicalized to
+    ``device``/``inter``/``world``. ``group_kind`` accepts
+    ``thread``/``warp``/``block`` or an ``attr.FlagCXCoopKind``.
+    ``memory_scope`` accepts ``system``/``device``/``block``/``thread`` or a
+    ``MemoryScope`` value and controls the FlagCX memory scope. It is used only
+    for explicit-space barriers.
+    ``index`` selects the barrier channel and ``context_id`` selects the
+    pre-created FlagCX device context.
+    Both values must agree across all participants in the barrier.
     """
     mesh = tl._unwrap_if_constexpr(mesh)
     if mesh is not None and not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
-    subgroup = None
-    use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
 
-    if check_and_handle_device_intra_barrier(space=space, device_dptr=device_dptr, barrier_kind=barrier_kind,
-                                             group_kind=group_kind, index=index, order=order, _semantic=_semantic):
+    if mesh is not None:
+        cluster_analysis = _is_cluster_submesh(mesh)
+        if cluster_analysis is not None:
+            return _handle_cluster_submesh_barrier(mesh, _semantic, cluster_analysis)
+
+    if _handle_explicit_space_barrier(mesh, space, device_dptr=device_dptr, barrier_kind=barrier_kind,
+                                      group_kind=group_kind, index=index, context_id=context_id, order=order,
+                                      memory_scope=memory_scope, _semantic=_semantic):
         return None
 
+    use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
     if use_grid:
         if mesh is not None:
             _apply_mesh_grid_launch(mesh, _semantic)
@@ -877,28 +1187,12 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None, space
                 "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask)") from exc
 
     if mesh is not None:
-        cluster_dims = _apply_mesh_cluster_launch(mesh, _semantic)
-        subgroup = _infer_submesh_barrier_group(mesh, cluster_dims)
+        _apply_mesh_cluster_launch(mesh, _semantic)
+
     builder = _semantic.builder
-    if subgroup is not None:
-        if not hasattr(builder, "create_distributed_barrier"):
-            raise NotImplementedError("sub-mesh distributed_barrier requires TLE builder support; "
-                                      f"inferred subgroup descriptor: rank={subgroup.rank}, "
-                                      f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}")
-        try:
-            builder.create_distributed_barrier(
-                subgroup.kind,
-                list(subgroup.shape),
-                list(subgroup.axes),
-                list(subgroup.mask),
-            )
-            return None
-        except TypeError as exc:
-            raise NotImplementedError(
-                "sub-mesh distributed_barrier requires rebuilt TLE extension with "
-                "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask); "
-                f"inferred subgroup descriptor: rank={subgroup.rank}, "
-                f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}") from exc
+    if _use_dsa_barrier(builder):
+        builder.create_dsa_distributed_barrier("", [], [], [])
+        return None
     if hasattr(builder, "create_distributed_barrier"):
         builder.create_distributed_barrier()
     else:
@@ -1129,25 +1423,15 @@ def _normalize_node_peer(shard_id, scope, _semantic) -> tl.tensor:
     return _normalize_runtime_remote_shard_id_tensor(shard_id)
 
 
-_NODE_INTER_CONTEXT_COUNT = 4
-
-
-def _normalize_node_netidx(netidx, _semantic) -> tl.tensor:
-    netidx = tl._unwrap_if_constexpr(netidx)
-    if isinstance(netidx, bool):
-        raise TypeError("node space netidx must be an integer, not bool")
-    if isinstance(netidx, int):
-        if netidx < 0 or netidx >= _NODE_INTER_CONTEXT_COUNT:
-            raise ValueError(f"node space netidx must be in range [0, {_NODE_INTER_CONTEXT_COUNT}), got {netidx}")
-        netidx = _semantic.to_tensor(netidx)
-    elif not isinstance(netidx, tl.tensor):
-        netidx = _semantic.to_tensor(netidx)
-
-    if netidx.shape != ():
-        raise ValueError(f"node space netidx must be scalar, got shape {netidx.shape}")
-    if netidx.dtype != tl.int32:
-        raise TypeError(f"node space runtime netidx must be tl.int32; got {netidx.dtype}")
-    return netidx
+def _normalize_node_context_id(context_id) -> int:
+    context_id = tl._unwrap_if_constexpr(context_id)
+    if isinstance(context_id, bool):
+        raise TypeError("node space context_id must be an integer, not bool")
+    if not isinstance(context_id, int):
+        raise TypeError(f"node space context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"node space context_id must be in int32 range, got {context_id}")
+    return context_id
 
 
 def _parse_node_context(builder, value, label: str, index: int):
@@ -1158,7 +1442,7 @@ def _parse_node_context(builder, value, label: str, index: int):
     return _parse_src_arg(builder, value, index)
 
 
-def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _semantic) -> tl.tensor:
+def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, context_id, _semantic) -> tl.tensor:
     if dtype is None:
         raise TypeError('tle.remote(..., space="node") requires dtype')
 
@@ -1169,7 +1453,7 @@ def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _
     peer = _normalize_node_peer(shard_id, scope, _semantic)
     dtype = tl._unwrap_if_constexpr(dtype)
     _normalize_node_elem_bytes(dtype)
-    net_idx = _normalize_node_netidx(netidx, _semantic)
+    context_id = _normalize_node_context_id(context_id)
     coop_kind = tl._unwrap_if_constexpr(coopkind)
     coop_kind = coop_kind.value if isinstance(coop_kind, GroupKind) else str(coop_kind).lower()
     coop_kind = attr.FlagCXCoopKind.from_str(coop_kind)
@@ -1187,7 +1471,7 @@ def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, netidx, _
         "node",
         None,
         comm,
-        net_idx.handle,
+        context_id,
         coop_kind,
     )
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
@@ -1202,7 +1486,7 @@ def remote(
     dtype: tl.dtype = None,
     offset: int | tl.tensor | None = None,
     coopkind: GroupKind | str | None = None,
-    netidx: int | tl.tensor = 0,
+    context_id: int = 0,
     _semantic: TLESemantic | None = None,
 ):
     """
@@ -1238,8 +1522,8 @@ def remote(
     strided, non-zero-start, or mismatched ranges are rejected.
 
     `dtype` is required. `coopkind` defaults to `GroupKind.BLOCK`, and
-    `netidx` defaults to zero. Compile-time `netidx` must be in `[0, 4)`;
-    runtime values must be scalar `tl.int32`. `shard_id` may be a world rank
+    `context_id` defaults to zero and must be a compile-time integer in
+    `[0, INT32_MAX]`, selecting an existing network context. `shard_id` may be a world rank
     or, with `scope=device_mesh`, a compile-time mesh coordinate.
 
     For `space="device"`, `offset` is the remote-memory element offset and
@@ -1261,11 +1545,11 @@ def remote(
         # BLOCK as documented.
         if coopkind is None:
             coopkind = GroupKind.BLOCK
-        return _create_node_remote_pointer(tensor, shard_id, scope, dtype, coopkind, netidx, _semantic)
+        return _create_node_remote_pointer(tensor, shard_id, scope, dtype, coopkind, context_id, _semantic)
     node_only_args = ["coopkind"] if coopkind is not None else []
-    unwrapped_netidx = tl._unwrap_if_constexpr(netidx)
-    if not isinstance(unwrapped_netidx, int) or unwrapped_netidx != 0:
-        node_only_args.append("netidx")
+    unwrapped_context_id = tl._unwrap_if_constexpr(context_id)
+    if not isinstance(unwrapped_context_id, int) or unwrapped_context_id != 0:
+        node_only_args.append("context_id")
     if node_only_args:
         raise TypeError(f'{space} space does not accept node-only argument(s): '
                         f'{", ".join(node_only_args)}')
@@ -1318,63 +1602,6 @@ def remote(
         return remote_buffer
 
     raise TypeError(f"tensor must be tle.buffered_tensor, got {type(tensor).__name__}")
-
-
-@tl.builtin
-def signal_wait(
-    device_dptr,
-    slot_id,
-    wait_kind: str | attr.SignalWaitKind,
-    target: int | None = None,
-    group_kind: str | GroupKind = GroupKind.BLOCK,
-    context_idx: int = 0,
-    _semantic=None,
-):
-    """Wait until a local FlagCX synchronization slot reaches its target.
-
-    ``target`` is required for ``wait_kind="signal"`` and
-    ``wait_kind="counter"``.  ``wait_kind="shadow"`` instead reads the target
-    from FlagCX's locally maintained shadow buffer, so ``target`` must be
-    omitted. ``slot_id`` is interpreted in the signal slot namespace.
-    """
-    builder = _semantic.builder
-
-    wait_kind = tl._unwrap_if_constexpr(wait_kind)
-    wait_kind_val = (wait_kind if isinstance(wait_kind, attr.SignalWaitKind) else attr.SignalWaitKind.from_str(
-        str(wait_kind).lower()))
-    if wait_kind_val is None:
-        expected = "signal, counter, or shadow"
-        raise ValueError(f"wait kind must be {expected}, got {wait_kind!r}")
-
-    group_kind = tl._unwrap_if_constexpr(group_kind)
-    group_kind = group_kind.value if isinstance(group_kind, GroupKind) else str(group_kind).lower()
-    group_kind = attr.FlagCXCoopKind.from_str(group_kind)
-    if group_kind is None:
-        expected = "thread, warp, or block"
-        raise ValueError(f"group kind must be {expected}, got {group_kind!r}")
-
-    context_idx = tl._unwrap_if_constexpr(context_idx)
-    if not isinstance(context_idx, int):
-        raise TypeError(f"context_idx must be a compile-time int, got {type(context_idx).__name__}")
-    if context_idx < 0 or context_idx > 0x7FFFFFFF:
-        raise ValueError(f"context_idx must be in int32 range, got {context_idx}")
-
-    comm = _parse_src_arg(builder, device_dptr, 1)
-    slot_tensor = _normalize_signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
-    target_value = target.value if isinstance(target, tl.constexpr) else target
-    target_tensor = (_normalize_signal_scalar(target_value, "target", tl.int64, _semantic)
-                     if target_value is not None else None)
-
-    utils.verify_signal_wait(wait_kind_val, None if target_tensor is None else target_tensor.handle)
-
-    builder.create_signal_wait(
-        comm,
-        slot_tensor.handle,
-        wait_kind_val,
-        None if target_tensor is None else target_tensor.handle,
-        group_kind,
-        context_idx,
-    )
 
 
 def distributed_dot(a: ShardedTensor, b: ShardedTensor, c: ShardedTensor | None = None):
