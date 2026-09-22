@@ -22,7 +22,7 @@ name: Nvidia3.6-Gems-Baseline
 
 on:
   push:
-    branches: ["main", "triton_v3.6.x"]
+    branches: ["main", "triton_v3.6.x", "fix/my-bug-fix-main-optimize-v1"]
 
 permissions:
   contents: read
