@@ -540,7 +540,7 @@ x = x.insert_tile(sub, index=[1, 0])
   - `name`: 可选 pipe 名称，用于 IR/诊断；传入时必须是字符串。
   - `readers`: 可选 reader 名称列表；省略时是默认 SPSC reader，传入如 `("left", "right")` 时表示 SPMC。
   - `one_shot`: 是否为单次 ready/full 边；适合一次性广播的启动数据。`one_shot=True` 不支持 `close`。
-  - `**fields`: 一个或多个 payload buffer，必须是 `tle.gpu.alloc(..., scope=tle.gpu.smem)` 返回的 shared-memory buffered tensor，rank 必须 >= 2。
+  - `**fields`: 一个或多个 payload buffer，必须是 `tle.gpu.alloc(..., scope=tle.gpu.smem)` 返回的 shared-memory buffered tensor，或其静态 `subslice`，rank 必须 >= 2。
 - Endpoint API:
   - `pipe.writer() -> pipe_writer`
   - `pipe.reader(name=None, fields=None) -> pipe_reader`
@@ -555,6 +555,7 @@ x = x.insert_tile(sub, index=[1, 0])
   - `reader.wait` 返回 `{slot, is_closed}`；正常读写使用 `wait.slot`，需要处理 producer close 时检查 `is_closed`。
   - `reader(..., fields=("kv_r",))` 可只订阅部分 field，降低不必要的依赖。
   - 当前 lowering 将 CTA-scoped SMEM pipe 转成 GPU NVWS token/mbarrier 同步。
+  - NVIDIA lowering 可识别一种受限的 multi-writer 形式：每个 writer 只通过 TMA 写入互不重叠的 field 集合，所有 writer 使用相同的 acquire/commit 节奏，并且这些集合的并集覆盖全部 field。不同 field 可以是同一 SMEM allocation 上可静态证明互不重叠的 `subslice`；若 subview 重叠或无法证明不重叠，编译器会拒绝。
 
 示例 1：SPSC 双缓冲加载-计算
 

@@ -3,6 +3,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -150,21 +151,49 @@ private:
     }
   }
 
-  // Apply warp reduction across the given number of contiguous lanes using op
-  // region and the accumulator values as source.
+  // Apply warp reduction across the lanes selected by `reduceLaneIdMask` using
+  // op region and the accumulator values as source. Every lane-id bit set in
+  // the mask is a bit along which the reduction axis varies; the set bits need
+  // not be contiguous.
+  //
+  // Subset of upstream #9192 / #9219: keep the existing ReduceOp lowering and
+  // TargetInfo::warpReduce(numLaneToReduce, interleave) API, but drive
+  // shuffleXor from an explicit lane-id bit mask.
   void warpReduce(ConversionPatternRewriter &rewriter, Location loc,
                   SmallVector<Value> &acc, triton::ReduceOp op,
-                  unsigned numLaneToReduce, unsigned interleave,
-                  Value pred = {}) const {
-    auto success = targetInfo.warpReduce(rewriter, loc, acc, op,
-                                         numLaneToReduce, interleave);
-    if (success)
+                  unsigned reduceLaneIdMask, Value pred = {}) const {
+    if (reduceLaneIdMask == 0)
       return;
 
-    for (unsigned N = numLaneToReduce / 2; N > 0; N >>= 1) {
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    unsigned warpSize =
+        triton::gpu::TritonGPUDialect::getThreadsPerWarp(moduleOp);
+    assert(reduceLaneIdMask < warpSize &&
+           "expected reduce lane ID mask to be strictly less than warp size");
+
+    // TargetInfo still describes a contiguous run of lane bits as
+    // (numLaneToReduce, interleave). Only call into it when the mask is such a
+    // run; otherwise fall through to the generic shuffleXor path. Iluvatar's
+    // TargetInfo::warpReduce always returns false.
+    if (llvm::isShiftedMask_32(reduceLaneIdMask)) {
+      unsigned interleave = 1u << llvm::countr_zero(reduceLaneIdMask);
+      unsigned numLaneToReduce = reduceLaneIdMask / interleave + 1;
+      if (targetInfo.warpReduce(rewriter, loc, acc, op, numLaneToReduce,
+                                interleave))
+        return;
+    }
+
+    // Not that it matters a lot, but a more reasonable iteration order would be
+    // from bit 0 to bit llvm::Log2_32(warpSize) - 1. Changing this breaks a ton
+    // of bitwise comparisons so we stick with the legacy inverse order
+    // (same as upstream #9219).
+    for (int bit = llvm::Log2_32(warpSize) - 1; bit >= 0; --bit) {
+      unsigned mask = 1u << bit;
+      if ((reduceLaneIdMask & mask) == 0)
+        continue;
       SmallVector<Value> shfl(acc.size());
       for (unsigned i = 0; i < acc.size(); ++i) {
-        shfl[i] = targetInfo.shuffleXor(rewriter, loc, acc[i], N * interleave);
+        shfl[i] = targetInfo.shuffleXor(rewriter, loc, acc[i], mask);
       }
       accumulate(op.getLoc(), rewriter, op.getCombineOp(), acc, shfl, pred);
     }
@@ -176,14 +205,20 @@ private:
                     std::map<SmallVector<unsigned>, SmallVector<Value>> &accs,
                     ConversionPatternRewriter &rewriter) const {
     triton::ReduceOp op = helper.getOperation();
-    unsigned sizeIntraWarps = helper.getIntraWarpSizeWithUniqueData();
-    unsigned threadOffsetOnReductionAxis =
-        helper.getThreadOffsetOnReductionAxis();
+    auto *ctx = op.getContext();
+    auto srcTy = cast<RankedTensorType>(op.getInputTypes()[0]);
+    auto linearLayout = triton::gpu::toLinearLayout(srcTy);
+    auto kLane = StringAttr::get(ctx, "lane");
+    const auto &laneBases = linearLayout.getBases().lookup(kLane);
+    unsigned reduceLaneIdMask = 0;
+    for (unsigned bit = 0; bit < laneBases.size(); ++bit) {
+      if (laneBases[bit][op.getAxis()] != 0)
+        reduceLaneIdMask |= 1u << bit;
+    }
     for (auto it : accs) {
       const SmallVector<unsigned> &key = it.first;
       SmallVector<Value> &acc = accs[key];
-      warpReduce(rewriter, op.getLoc(), acc, op, sizeIntraWarps,
-                 threadOffsetOnReductionAxis);
+      warpReduce(rewriter, op.getLoc(), acc, op, reduceLaneIdMask);
     }
   }
 
@@ -299,8 +334,9 @@ private:
         acc[i] = targetInfo.loadShared(rewriter, loc, readPtr, elemTy,
                                        threadIsNeeded);
       }
-      warpReduce(rewriter, loc, acc, op, sizeInterWarps, 1 /* interleave */,
-                 threadIsNeeded);
+      // The partial reductions were laid out contiguously in shared memory, so
+      // they occupy the low lane-id bits.
+      warpReduce(rewriter, loc, acc, op, sizeInterWarps - 1, threadIsNeeded);
       // only the first thread in each sizeInterWarps is writing
       Value writeOffset = readOffset;
       SmallVector<Value> writePtrs(op.getNumOperands());

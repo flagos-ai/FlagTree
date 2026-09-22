@@ -196,6 +196,19 @@ bool isLayoutAnchor(Operation *op) {
         blocked && blocked.getSmeMask())
       return true;
   }
+  // Pin MMAReduceThreadLocality's loop-carried partial (constant init typed as
+  // #slice<#linear>). Without this, forward propagation from #mma alpha/dot
+  // values rewrites the partial to #mma and re-introduces a per-iteration
+  // shared-memory convert of the thread-local reduce result.
+  if (auto constant = dyn_cast<arith::ConstantOp>(op)) {
+    if (auto tensorTy = dyn_cast<RankedTensorType>(constant.getType())) {
+      Attribute encoding = tensorTy.getEncoding();
+      while (auto slice = dyn_cast<SliceEncodingAttr>(encoding))
+        encoding = slice.getParent();
+      if (isa<LinearEncodingAttr>(encoding))
+        return true;
+    }
+  }
 #endif
   if (isa<DescriptorOpInterface>(op))
     return true;
@@ -365,6 +378,25 @@ void LayoutPropagation::resolveConflicts() {
     Attribute encoding = *info.encodings.begin();
     bool isLoadOrStore =
         op && isa<LoadOp, StoreOp, AtomicRMWOp, AtomicCASOp>(op);
+#ifdef __ILUVATAR__
+    // MMAReduceThreadLocality carries its running-sum partial as
+    // `#slice<#linear>`. The "prefer MmaEncodingTrait" rule below would rewrite
+    // it to `#mma`, which costs a per-iteration shared-memory convert of the
+    // thread-local reduce result (+4KB on the fp32 flash-attention tiles).
+    // Keep the value's own encoding when it is already linear-derived.
+    auto isLinearDerived = [](Attribute e) -> bool {
+      while (auto slice = dyn_cast<SliceEncodingAttr>(e))
+        e = slice.getParent();
+      return isa<LinearEncodingAttr>(e);
+    };
+    auto valueTy = dyn_cast<RankedTensorType>(it.first.getType());
+    if (valueTy && isLinearDerived(valueTy.getEncoding()) &&
+        info.encodings.contains(valueTy.getEncoding())) {
+      info.encodings.clear();
+      info.encodings.insert(valueTy.getEncoding());
+      continue;
+    }
+#endif
     for (Attribute e : info.encodings) {
       if ((isLoadOrStore && isa<BlockedEncodingAttr>(e)) ||
           (!isLoadOrStore && isa<MmaEncodingTrait>(e))) {

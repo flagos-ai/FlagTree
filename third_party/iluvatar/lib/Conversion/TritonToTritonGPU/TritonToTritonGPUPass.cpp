@@ -797,13 +797,54 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
 }
 
 #ifdef __ILUVATAR_TLE__
+// TLE-Raw. Unlike the other TLE ops, dsl_region carries a region whose block
+// arguments mirror the operands, so the region signature has to be converted
+// alongside the op itself.
+class TleDSLRegionOpPattern
+    : public OpConversionPattern<triton::iluvatar_tle::DSLRegionOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::iluvatar_tle::DSLRegionOp op,
+                  triton::iluvatar_tle::DSLRegionOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto newOp =
+        rewriter.cloneWithoutRegions<triton::iluvatar_tle::DSLRegionOp>(op);
+    Region &body = op.getBody(), &newBody = newOp.getBody();
+    rewriter.inlineRegionBefore(body, newBody, newBody.end());
+
+    if (failed(rewriter.convertRegionTypes(&newBody, *getTypeConverter()))) {
+      return rewriter.notifyMatchFailure(op, "could not convert body types");
+    }
+    newOp->setOperands(adaptor.getOperands());
+    for (OpResult result : newOp->getResults()) {
+      result.setType(getTypeConverter()->convertType(result.getType()));
+    }
+
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+
 void populateIluvatarTlePatterns(TritonGPUTypeConverter &typeConverter,
                                  RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
+  patterns.add<TleDSLRegionOpPattern>(typeConverter, context);
+  patterns.add<GenericOpPattern<triton::iluvatar_tle::YieldOp>,
+               GenericOpPattern<triton::iluvatar_tle::ExtractAllocatedPtrOp>,
+               GenericOpPattern<triton::iluvatar_tle::ExtractAlignedPtrOp>,
+               GenericOpPattern<triton::iluvatar_tle::ExtractOffsetOp>,
+               GenericOpPattern<triton::iluvatar_tle::ExtractSizesOp>,
+               GenericOpPattern<triton::iluvatar_tle::ExtractStridesOp>,
+               GenericOpPattern<triton::iluvatar_tle::ExtractPtrOp>,
+               GenericOpPattern<triton::iluvatar_tle::PackOp>>(typeConverter,
+                                                               context);
   patterns.add<GenericOpPattern<triton::iluvatar_tle::ExtractTileOp>,
                GenericOpPattern<triton::iluvatar_tle::InsertTileOp>,
                GenericOpPattern<triton::iluvatar_tle::ExclusiveCumsumOp>,
                GenericOpPattern<triton::iluvatar_tle::LocalPointersOp>,
+               GenericOpPattern<triton::iluvatar_tle::RemotePointersOp>,
                GenericOpPattern<triton::iluvatar_tle::PipeCreateOp>,
                GenericOpPattern<triton::iluvatar_tle::PipeWriterAcquireOp>,
                GenericOpPattern<triton::iluvatar_tle::PipeWriterCommitOp>,
