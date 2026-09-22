@@ -90,7 +90,7 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
   addIllegalOp<scf::ExecuteRegionOp, scf::ParallelOp, scf::ReduceOp,
                scf::ReduceReturnOp>();
 
-#ifdef __MCTLE__
+#if defined(__MCTLE__) || defined(__FLAGTREE_COMMON_IR__)
   addDynamicallyLegalOp<triton::gpu::LocalAllocOp, triton::gpu::LocalStoreOp,
                         triton::gpu::LocalLoadOp>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });

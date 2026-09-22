@@ -642,6 +642,10 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       TritonFuncOpPattern
       // clang-format on
       >(typeConverter, context);
+#ifdef __FLAGTREE_COMMON_IR__
+  patterns.add<GenericOpPattern<LocalAllocOp>, GenericOpPattern<LocalStoreOp>,
+               GenericOpPattern<LocalLoadOp>>(typeConverter, context);
+#endif
 }
 //
 // SCF patterns

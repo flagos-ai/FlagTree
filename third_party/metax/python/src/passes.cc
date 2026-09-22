@@ -7,6 +7,10 @@
 #include "triton/Analysis/Membar.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#ifdef __FLAGTREE_COMMON_IR__
+#include "triton/Conversion/CommonIRToTTGIR/DotLayoutPlanner.h"
+#include "triton/Conversion/CommonIRToTTGIR/Passes.h"
+#endif
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
@@ -14,6 +18,8 @@
 #include "triton/Target/LLVMIR/Passes.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <array>
+#include <map>
 
 namespace py = pybind11;
 
@@ -117,6 +123,25 @@ void init_triton_passes_llvmir(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_di_local_variable", mlir::createLLVMDILocalVariable);
 }
 
+#ifdef __FLAGTREE_COMMON_IR__
+void init_triton_passes_commonir(py::module &&m) {
+  ADD_PASS_OPTION_WRAPPER_1("add_to_ttgir",
+                          mlir::triton::metax::createCommonIRToTTGIR, bool);
+  ADD_PASS_OPTION_WRAPPER_2("add_inject_dot_plan",
+                            mlir::triton::metax::createCommonIRInjectDotPlan,
+                            int, int);
+  m.def("add_inject_dot_plan",
+        [](mlir::PassManager &pm, int capability, int numWarps,
+           const std::map<std::string, std::array<mlir::Attribute, 3>> &layouts) {
+          llvm::StringMap<mlir::triton::metax::DotLayoutPlan> plans;
+          for (const auto &[dotId, encodings] : layouts)
+            plans[dotId] = {encodings[0], encodings[1], encodings[2]};
+          pm.addPass(mlir::triton::metax::createCommonIRInjectDotPlan(
+              {capability, numWarps}, std::move(plans)));
+        });
+}
+#endif
+
 void init_gluon_passes(py::module &&m) {
   using namespace mlir;
   namespace gluon = mlir::triton::gluon;
@@ -136,4 +161,7 @@ PLUGIN_EXPORT void init_triton_passes(py::module &&m) {
   init_triton_passes_ttgpuir(m.def_submodule("ttgpuir"));
   init_triton_passes_llvmir(m.def_submodule("llvmir"));
   init_gluon_passes(m.def_submodule("gluon"));
+#ifdef __FLAGTREE_COMMON_IR__
+  init_triton_passes_commonir(m.def_submodule("commonir"));
+#endif
 }

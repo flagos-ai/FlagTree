@@ -39,6 +39,9 @@
 #include "triton/Tools/Sys/GetEnv.hpp"
 #ifdef __FLAGTREE_COMMON_IR__
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include <algorithm>
+#include <cctype>
 #endif
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
@@ -82,6 +85,40 @@ llvm::raw_ostream &mlir_dumps_or_dbgs() {
     return llvm::dbgs();
   }
 }
+
+#ifdef __FLAGTREE_COMMON_IR__
+// Lower-case textual form of an attribute, used to map a spelled memory space
+// (e.g. #ttg.shared / "shared") onto a CommonIR MemorySpace enum case.
+static std::string attrToLowerString(Attribute attr) {
+  if (!attr)
+    return "";
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  attr.print(os);
+  os.flush();
+  std::transform(text.begin(), text.end(), text.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return text;
+}
+
+// Resolve an arbitrary attribute (string or dialect attr) to a CommonIR
+// MemorySpace. Kept string-based so the shared TLE Python layer can pass the
+// spelling produced by tile_get_string_attr without knowing enum values.
+static mlir::triton::tile::MemorySpace
+attrToCommonIRMemorySpace(Attribute attr) {
+  auto text = attrToLowerString(attr);
+  if (text.find("register") != std::string::npos)
+    return mlir::triton::tile::MemorySpace::Register;
+  if (text.find("shared") != std::string::npos ||
+      text.find("smem") != std::string::npos)
+    return mlir::triton::tile::MemorySpace::Shared;
+  if (text.find("global") != std::string::npos)
+    return mlir::triton::tile::MemorySpace::Global;
+  if (text.find("local") != std::string::npos)
+    return mlir::triton::tile::MemorySpace::Local;
+  return mlir::triton::tile::MemorySpace::Shared;
+}
+#endif
 
 // Function to parse a comma-separated string into a vector of C-style strings
 llvm::SmallVector<const char *, 3>
@@ -280,6 +317,16 @@ py::list getTensorDescMetadata(ModuleOp &mod) {
 PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
   using ret = py::return_value_policy;
   using namespace pybind11::literals;
+
+  // MetaX does not build the tle Python module, so the shared TLE layer reads
+  // the CommonIR opt-in from libtriton.ir instead of libtriton.tle.
+  m.def("is_common_ir_enabled", []() {
+#ifdef __FLAGTREE_COMMON_IR__
+    return true;
+#else
+    return false;
+#endif
+  });
 
   py::enum_<PaddingOption>(m, "PADDING_OPTION", py::module_local())
       .value("PAD_ZERO", PaddingOption::PAD_ZERO)
@@ -558,7 +605,13 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
       .def("erase", [](Block &self) { self.erase(); })
       .def("id", [](Block &self) { return (uint64_t)&self; });
 
-  py::class_<Attribute>(m, "attribute", py::module_local());
+  py::class_<Attribute>(m, "attribute", py::module_local())
+      .def("__str__", [](Attribute self) {
+        std::string text;
+        llvm::raw_string_ostream os(text);
+        self.print(os);
+        return os.str();
+      });
   py::class_<IntegerAttr, Attribute>(m, "integer_attr", py::module_local());
   py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
   py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
@@ -677,6 +730,11 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
   py::class_<ModuleOp, OpState>(m, "module", py::module_local(),
                                 py::dynamic_attr())
       .def("dump", &ModuleOp::dump)
+      .def("clone", [](py::object self) {
+        auto result = py::cast(self.cast<ModuleOp>().clone());
+        result.attr("context") = self.attr("context");
+        return result;
+      })
       .def("str",
            [](ModuleOp &self) -> std::string {
              std::string str;
@@ -1884,7 +1942,123 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
              return self.create<MakeTensorDescOp>(base, shape, strides,
                                                   tensorShape, isSignedInteger,
                                                   paddingOption);
-           });
+           })
+#ifdef __FLAGTREE_COMMON_IR__
+      // Builder methods mirror third_party/tle/triton_tle.cc so the shared TLE
+      // Python layer (semantic.py / types.py) drives the CommonIR path
+      // identically on the MetaX backend, which does not build the tle module.
+      .def("tile_get_string_attr",
+           [](TritonOpBuilder &self, const std::string &name) -> Attribute {
+             return self.getBuilder().getStringAttr(name);
+           })
+      .def("tile_get_buffer_type",
+           [](TritonOpBuilder &self, std::vector<int64_t> &shape,
+              Type &elementType, const Attribute &memorySpace) -> Type {
+             auto memSpace = attrToCommonIRMemorySpace(memorySpace);
+             return mlir::triton::tile::BufType::get(
+                 self.getBuilder().getContext(), shape, elementType, memSpace);
+           })
+      .def("create_tile_alloc",
+           [](TritonOpBuilder &self, Type tileBufType,
+              Attribute targetLayout) -> Value {
+             auto bufType = mlir::cast<mlir::triton::tile::BufType>(tileBufType);
+             auto op = self.create<mlir::triton::tile::AllocOp>(
+                 tileBufType, bufType.getMemorySpace(),
+                 /*shape=*/mlir::ArrayAttr(), /*dtype=*/mlir::TypeAttr(),
+                 /*policy=*/mlir::triton::tile::PolicyAttr(),
+                 /*layout=*/
+                 mlir::triton::tile::LayoutAttr::get(
+                     self.getBuilder().getContext(),
+                     mlir::triton::tile::Layout::ND),
+                 /*lifetime=*/mlir::triton::tile::LifetimeAttr(),
+                 /*comment=*/mlir::StringAttr());
+             op->setAttr("tle.gpu_layout", targetLayout);
+             return op.getResult();
+           })
+      .def("create_tile_copy",
+           [](TritonOpBuilder &self, Value &src, Value &dst,
+              bool interNoAlias) -> void {
+             auto op = self.create<mlir::triton::tile::CopyOp>(
+                 src, dst, /*engine=*/mlir::triton::tile::EngineAttr(),
+                 /*src_layout=*/
+                 mlir::triton::tile::LayoutAttr::get(
+                     self.getBuilder().getContext(),
+                     mlir::triton::tile::Layout::ND),
+                 /*dst_nz_layout=*/mlir::triton::tile::NZLayoutAttr(),
+                 /*transpose=*/mlir::UnitAttr(),
+                 /*comment=*/mlir::StringAttr());
+             if (interNoAlias)
+               op->setAttr("inter_no_alias",
+                           self.getBuilder().getBoolAttr(true));
+           })
+      .def("create_tile_get_memdesc",
+           [](TritonOpBuilder &self, Type resultTy, Value source) -> Value {
+             return self
+                 .create<UnrealizedConversionCastOp>(TypeRange{resultTy},
+                                                     ValueRange{source})
+                 .getResult(0);
+           })
+      .def("create_tile_subview",
+           [](TritonOpBuilder &self, Value source, std::vector<Value> &offsets,
+              const std::vector<int64_t> &sizes,
+              const std::vector<int64_t> &strides,
+              Attribute targetLayout) -> Value {
+             SmallVector<Value> indexOffsets;
+             auto &builder = self.getBuilder();
+             auto indexType = builder.getIndexType();
+             for (Value offset : offsets) {
+               if (offset.getType() != indexType)
+                 offset = self.create<arith::IndexCastOp>(indexType, offset);
+               indexOffsets.push_back(offset);
+             }
+             auto srcBuf =
+                 mlir::cast<mlir::triton::tile::BufType>(source.getType());
+             auto resTy = mlir::triton::tile::BufType::get(
+                 builder.getContext(), sizes, srcBuf.getElementType(),
+                 srcBuf.getMemorySpace());
+             auto op = self.create<mlir::triton::tile::SubViewOp>(
+                 resTy, source, indexOffsets, builder.getI64ArrayAttr(sizes),
+                 builder.getI64ArrayAttr(strides));
+             op->setAttr("tle.gpu_layout", targetLayout);
+             return op.getResult();
+           })
+      .def("create_tile_to_tensor",
+           [](TritonOpBuilder &self, Value &src, bool /*writable*/) -> Value {
+             auto srcBuf =
+                 mlir::cast<mlir::triton::tile::BufType>(src.getType());
+             auto resTy = RankedTensorType::get(srcBuf.getShape(),
+                                                srcBuf.getElementType());
+             return self.create<mlir::triton::tile::ToTensorOp>(resTy, src)
+                 .getResult();
+           })
+      .def("create_tile_store_tensor",
+           [](TritonOpBuilder &self, Value &src, Value &dst) -> void {
+             self.create<mlir::triton::tile::StoreTensorOp>(src, dst);
+           })
+      .def("create_tile_gm_offset",
+           [](TritonOpBuilder &self, Value &base, std::vector<Value> &indices,
+              std::vector<Value> &strides) -> Value {
+             SmallVector<Value> indexValues;
+             SmallVector<Value> strideValues;
+             auto &builder = self.getBuilder();
+             auto indexType = builder.getIndexType();
+             for (Value index : indices) {
+               if (index.getType() != indexType)
+                 index = self.create<arith::IndexCastOp>(indexType, index);
+               indexValues.push_back(index);
+             }
+             for (Value stride : strides) {
+               if (stride.getType() != indexType)
+                 stride = self.create<arith::IndexCastOp>(indexType, stride);
+               strideValues.push_back(stride);
+             }
+             return self
+                 .create<mlir::triton::tile::GmOffsetOp>(
+                     base.getType(), base, indexValues, strideValues)
+                 .getResult();
+           })
+#endif
+      ;
 
   py::class_<PassManager>(m, "pass_manager", py::module_local())
       .def(py::init<MLIRContext *>())
