@@ -22,6 +22,8 @@ import subprocess
 import os
 from pathlib import Path
 import shutil
+import sys
+from importlib.machinery import PathFinder
 
 global registrar
 
@@ -140,10 +142,10 @@ class FlagCXRegistrar:
         printinfo(f"FlagCX headers copied from {src} to {dst}")
 
     def run(self):
-        try:
-            import flagcx  # noqa: F401
+        spec = PathFinder.find_spec("flagcx", sys.path)
+        if spec is not None:
             printinfo("FlagCX is already installed, skipping compilation...")
-        except ImportError:
+        else:
             self._compile_and_cache()
         self._copy_required_files()
 

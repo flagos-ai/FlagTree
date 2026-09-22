@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass
+from importlib.machinery import PathFinder
+import sys
 '''
 FlagCX distributed runtime configuration module.
 
@@ -51,11 +53,8 @@ class FlagcxRuntimeConfig:
     triton_path = Path(__file__).parent.parent.parent
 
     def _get_flagcx_wheel_path(self):
-        try:
-            import flagcx
-            return Path(flagcx.__file__).parent
-        except ImportError:
-            return None
+        spec = PathFinder.find_spec("flagcx", sys.path)
+        return Path(spec.origin).parent
 
     def _is_available(self):
         env_keys = ("USE_FLAGCX", "USE_DIST", "USE_DISTRIBUTED", "USE_TLE_DIST", "USE_TLE_DISTRIBUTED")
