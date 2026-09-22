@@ -56,3 +56,4 @@ jobs:
         source /usr/local/Ascend/ascend-toolkit/set_env.sh
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+
