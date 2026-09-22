@@ -99,7 +99,7 @@ jobs:
           BASELINE_DIR="${FLAGGEMS_CI_DIR}/Baseline/${DATE}_${COMMIT_ID}"
           BASELINE_SUMMARY="${BASELINE_DIR}/summary.json"
           BEST_DIR="${FLAGGEMS_CI_DIR}/Baseline/best_FlagGems_${{ inputs.flaggems-tag }}"
-          BEST_ARCHIVE_DIR="${FLAGGEMS_CI_DIR}/Baseline/best_archive"
+          BEST_ARCHIVE_DIR="${FLAGGEMS_CI_DIR}/Baseline/best_archive_${{ inputs.runner }}"
 
           echo "date=$DATE" >> $GITHUB_OUTPUT
           echo "commit_id=$COMMIT_ID" >> $GITHUB_OUTPUT
