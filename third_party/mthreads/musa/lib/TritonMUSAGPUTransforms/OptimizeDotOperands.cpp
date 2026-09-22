@@ -3,6 +3,7 @@
 #include "TritonMUSACommon/MemDescUtils.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
 #include "TritonMUSACommon/SqmmaOperandPlan.h"
+#include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Pass/PassManager.h"
@@ -25,6 +26,17 @@ namespace mlir {
 #include "TritonMUSAGPUTransforms/Passes.h.inc"
 
 namespace {
+
+static Value stripConvertLayouts(Value value) {
+  while (auto cvtOp = value.getDefiningOp<ttg::ConvertLayoutOp>())
+    value = cvtOp.getSrc();
+  return value;
+}
+
+static bool isDescriptorFedTranspose(tt::TransOp trans) {
+  return stripConvertLayouts(trans.getSrc())
+      .getDefiningOp<tt::DescriptorLoadOp>();
+}
 
 static bool isDescriptorTensorViewChain(Value value) {
   while (value) {
@@ -79,10 +91,7 @@ static void resetWmmaLayoutForMaterializedTranspose(Value dotOperand,
 }
 
 static RankedTensorType getSharedLayoutSourceType(tt::TransOp trans) {
-  RankedTensorType srcTy = trans.getSrc().getType();
-  if (auto srcCvt = trans.getSrc().getDefiningOp<ttg::ConvertLayoutOp>())
-    srcTy = srcCvt.getSrc().getType();
-  return srcTy;
+  return cast<RankedTensorType>(stripConvertLayouts(trans.getSrc()).getType());
 }
 
 static FailureOr<Value> createSwizzledTransLocalLoad(
@@ -98,9 +107,13 @@ static FailureOr<Value> createSwizzledTransLocalLoad(
   auto newLl =
       transposeLinearLayout(oldCGALayout.getLinearLayout(), trans.getOrder());
   auto newCGALayout = ttg::CGAEncodingAttr::get(ctx, std::move(newLl));
+  SmallVector<unsigned> sharedOrder =
+      isDescriptorFedTranspose(trans)
+          ? triton::musa::getDefaultTMEOrder(
+                static_cast<unsigned>(srcTy.getRank()))
+          : ttg::getOrderForMemory(srcTy);
   auto newInnerCvtEnc = triton::musa::composeMusaOperandSharedLayout(
-      cvtEncoding, srcTy.getShape(),
-      /*order=*/ttg::getOrderForMemory(srcTy), newCGALayout,
+      cvtEncoding, srcTy.getShape(), sharedOrder, newCGALayout,
       srcTy.getElementType(),
       /*needTrans=*/true);
   if (!newInnerCvtEnc)
@@ -126,6 +139,10 @@ public:
 
   LogicalResult matchAndRewrite(ttg::ConvertLayoutOp cvtOp,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(cvtOp))
+      return failure();
+#endif // __TLE__
     if (!cvtOp->hasOneUse() ||
         !isDotLikeUserForSwizzle(cvtOp->use_begin()->getOwner()))
       return failure();
@@ -156,6 +173,10 @@ public:
 
   LogicalResult matchAndRewrite(tt::TransOp trans,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    if (getTleExplicitValueEncoding(trans.getResult()))
+      return failure();
+#endif // __TLE__
     if (!trans->hasOneUse() ||
         !isDotLikeUserForSwizzle(trans->use_begin()->getOwner()))
       return failure();
@@ -205,6 +226,10 @@ public:
         continue;
       }
       if (auto cvtOp = dyn_cast<ttg::ConvertLayoutOp>(defOp)) {
+#ifdef __TLE__
+        if (isTleExplicitConvertLayoutOp(cvtOp))
+          return failure();
+#endif // __TLE__
         reverseChain.push_back(
             {triton::musa::SqmmaTensorViewKind::ConvertLayout, defOp});
         base = cvtOp.getSrc();

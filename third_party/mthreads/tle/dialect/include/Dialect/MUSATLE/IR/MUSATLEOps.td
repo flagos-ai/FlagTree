@@ -62,6 +62,96 @@ def MUSATLE_BarrierArriveOp : MUSATLE_Op<"barrier.arrive"> {
   let hasVerifier = 1;
 }
 
+def MUSATLE_PipeCreateOp : MUSATLE_Op<"pipe.create"> {
+  let summary = "create a typed MUSA TLE pipe";
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<ArrayAttr>:$readers,
+    OptionalAttr<BoolAttr>:$one_shot
+  );
+  let assemblyFormat = "$fields attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_PipeWriterAcquireOp : MUSATLE_Op<"pipe.writer_acquire"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_PipeWriterCommitOp : MUSATLE_Op<"pipe.writer_commit"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_PipeWriterCloseOp : MUSATLE_Op<"pipe.writer_close"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names
+  );
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_PipeReaderWaitOp : MUSATLE_Op<"pipe.reader_wait"> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I1:$phase,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<StrAttr>:$reader_name,
+    OptionalAttr<ArrayAttr>:$reader_fields
+  );
+  let results = (outs I1:$is_closed);
+  let assemblyFormat = "$fields `[` $stage `,` $phase `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
+def MUSATLE_PipeReaderReleaseOp : MUSATLE_Op<"pipe.reader_release", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let arguments = (ins
+    Variadic<TTG_MemDescType>:$fields,
+    I32:$stage,
+    I32Attr:$capacity,
+    StrAttr:$scope,
+    OptionalAttr<StrAttr>:$pipe_name,
+    ArrayAttr:$field_names,
+    OptionalAttr<StrAttr>:$reader_name,
+    OptionalAttr<ArrayAttr>:$reader_fields
+  );
+  let assemblyFormat = "$fields `[` $stage `]` attr-dict `:` type($fields)";
+  let hasVerifier = 1;
+}
+
 def MUSATLE_ExtractTileOp : MUSATLE_Op<"extract_tile", [Pure]> {
   let arguments = (ins TT_Tensor:$src, TT_IntLike:$index,
       DenseI64ArrayAttr:$tile_shape);
@@ -85,6 +175,24 @@ def MUSATLE_InsertTileOp
   let assemblyFormat = [{
     $src `[` $index `]` `=` $tile attr-dict `:` qualified(type($src)) `,` qualified(type($index)) `,` qualified(type($tile)) `->` qualified(type($result))
   }];
+  let hasVerifier = 1;
+}
+
+def MUSATLE_SetLayoutOp : MUSATLE_Op<"set_layout", [
+    Pure,
+    SameOperandsAndResultShape,
+    SameOperandsAndResultElementType
+]> {
+  let summary = "Attach a requested distributed encoding to a tensor value";
+  let description = [{
+    Carries a user-requested TritonGPU distributed encoding through the
+    mthreads TLE frontend. The op is lowered during Triton-to-TritonGPU
+    conversion after encoding propagation has selected legal layouts for
+    dependent values.
+  }];
+  let arguments = (ins TT_Tensor:$src, AnyAttr:$target_encoding);
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
   let hasVerifier = 1;
 }
 

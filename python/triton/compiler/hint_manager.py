@@ -23,6 +23,8 @@
 import sys
 import importlib
 
+from triton._flagtree_backend import FLAGTREE_BACKEND
+
 
 class BaseHintHandler:
     # dynamicly find method
@@ -62,7 +64,7 @@ class HintManager:
         self.handler = self._load_handler(backend_name)
 
     def _load_handler(self, backend):
-        if backend == 'npu':
+        if backend == 'ascend':
             try:
                 module = importlib.import_module("triton.backends.ascend.ascend_hint_handler")
                 return module.AscendHintHandler()
@@ -76,7 +78,7 @@ class HintManager:
             except ImportError as e:
                 print(f"[FlagTree] Warning: Failed to load aipu Hint Handler: {e}", file=sys.stderr)
                 return BaseHintHandler()
-        elif backend == 'cuda':
+        elif backend == 'nvidia':
             try:
                 module = importlib.import_module("triton.backends.nvidia.nvidia_hint_handler")
                 return module.NvidiaHintHandler()
@@ -94,66 +96,6 @@ class HintManager:
             return BaseHintHandler()
 
 
-# supported backend with matched version
-SUPPORTED_BACKENDS = ["aipu", "npu", "cuda", "sunrise"]
-
-# TODO : npu will have conflicts if more backend involved
-# mapping name
-BACKEND_ALIASES = {
-    "ascend": "npu",
-    "huawei": "npu",
-    "nvidia": "cuda",
-    # sunrise: GPUTarget backend name is "tang", torch device type is "ptpu".
-    "tang": "sunrise",
-    "ptpu": "sunrise",
-}
-
-
-def normalize_backend_name(name: str) -> str:
-    if not name:
-        return ""
-    name = name.lower()
-    return BACKEND_ALIASES.get(name, name)
-
-
-def hint_get_flagtree_backend() -> str:
-    detected_backend = ""
-
-    # Priority 1: Triton Driver
-    try:
-        import torch
-        from triton.runtime import driver
-        if hasattr(driver, 'active') and hasattr(driver.active, 'get_active_torch_device'):
-            device = driver.active.get_active_torch_device()
-            if isinstance(device, torch.device):
-                detected_backend = device.type
-            # unimplemented support
-            elif isinstance(device, str):
-                detected_backend = device
-    except ImportError:
-        return ""
-
-    # TODO : some backend may not support priority 1, so keep priority 2 is necessary
-    # Priority 2: Torch Global State
-    if not detected_backend:
-        check_priority = ["aipu", "npu", "cuda"]
-
-        # 3. parse according to benefit
-        for candidate in check_priority:
-            module = getattr(torch, candidate, None)
-            if module and hasattr(module, "is_available") and module.is_available():
-                detected_backend = candidate
-                break
-
-    # (Normalization and Validation)
-    canonical_backend = normalize_backend_name(detected_backend)
-
-    if not canonical_backend or canonical_backend not in SUPPORTED_BACKENDS:
-        return ""
-
-    return canonical_backend
-
-
 # lazy load after first call hint trigger
 _global_hint_manager = None
 
@@ -162,5 +104,7 @@ def hint_trigger(hook_name, *args, **kwargs):
     global _global_hint_manager
 
     if _global_hint_manager is None:
-        _global_hint_manager = HintManager(hint_get_flagtree_backend())
+        # NVIDIA builds have no FlagTree backend marker.
+        backend_name = FLAGTREE_BACKEND or "nvidia"
+        _global_hint_manager = HintManager(backend_name)
     return _global_hint_manager.handler.trigger(hook_name, *args, **kwargs)

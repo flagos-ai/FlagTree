@@ -27,7 +27,6 @@ from typing import Any, Final, List, Optional
 import hashlib
 from triton._C.libtriton import llvm
 from triton._C.libtriton.tle.llvm import parse_llvm_ir
-from triton.backends.enflame.gcu_intrinsics import rewrite_intrinsics_to_placeholders
 from triton.experimental.tle.raw.runtime import RawJITFunction
 
 
@@ -194,26 +193,6 @@ class TOPSJITFunction(RawJITFunction):
             if os.path.exists(src_path):
                 os.unlink(src_path)
 
-    @staticmethod
-    def _rewrite_gcu_intrinsics(llvm_ir: str) -> str:
-        """Replace GCU-specific LLVM intrinsics with plain external function calls.
-
-        mlir::translateLLVMIRToModule requires every LLVM intrinsic to have a
-        registered LLVMImportDialectInterface. GCU intrinsics (@llvm.tcle.*)
-        don't have one, so we rewrite them to ordinary external function
-        declarations that MLIR can import as llvm.call ops.
-        """
-        if os.environ.get("MLIR_ENABLE_DUMP"):
-            print("// ---- TLE-Raw: LLVM IR before intrinsic rewrite ----")
-            print(llvm_ir)
-            print("// ---- end ----")
-        result = rewrite_intrinsics_to_placeholders(llvm_ir)
-        if os.environ.get("MLIR_ENABLE_DUMP"):
-            print("// ---- TLE-Raw: LLVM IR after intrinsic rewrite ----")
-            print(result)
-            print("// ---- end ----")
-        return result
-
     def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
                               extern_func_name: str = ""):
         return super().create_region_by_llvm(builder, llvm, handles, alias_indices, hint, extern_func_name)
@@ -239,7 +218,6 @@ class TOPSJITFunction(RawJITFunction):
 
     def make_llvm(self, mlir_context) -> str:
         llvm_ir_text = self._compile_tops_to_llvm_ir()
-        llvm_ir_text = self._rewrite_gcu_intrinsics(llvm_ir_text)
         llvm_ctx = llvm.context()
         module = parse_llvm_ir(llvm_ir_text, llvm_ctx, mlir_context)
         return f"{module}"

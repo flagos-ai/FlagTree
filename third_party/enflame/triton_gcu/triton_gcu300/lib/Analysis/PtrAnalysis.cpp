@@ -1688,16 +1688,18 @@ bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads) {
           [&](auto op) { bypass = isPtrFromLoad(op.getIn(), valueFromLoads); })
       .Case<arith::SelectOp, arith::DivSIOp, arith::SubIOp, arith::RemSIOp,
             arith::RemUIOp, arith::MinSIOp, arith::FPToSIOp, arith::FPToUIOp,
-            arith::XOrIOp, triton::DotOp, triton::ReduceOp, triton::ReshapeOp,
-            triton::gpu::ConvertLayoutOp, triton::ScanOp, triton::HistogramOp,
-            triton::CatOp, triton::IntToPtrOp>([&](auto op) {
-        (void)op;
-        // Now bypass SelectOP, SubIOp, DivSIOp, RemSIOp and RemUIOp.
-        // Optimization will be considered in subsequent steps
-        LLVM_DEBUG(llvm::dbgs() << "bypass from :"
-                                << op->getName().getStringRef().str() << "\n");
-        bypass = true;
-      })
+            arith::XOrIOp, arith::AndIOp, triton::DotOp, triton::ReduceOp,
+            triton::ReshapeOp, triton::gpu::ConvertLayoutOp, triton::ScanOp,
+            triton::HistogramOp, triton::CatOp, triton::IntToPtrOp>(
+          [&](auto op) {
+            (void)op;
+            // Now bypass SelectOP, SubIOp, DivSIOp, RemSIOp and RemUIOp.
+            // Optimization will be considered in subsequent steps
+            LLVM_DEBUG(llvm::dbgs()
+                       << "bypass from :" << op->getName().getStringRef().str()
+                       << "\n");
+            bypass = true;
+          })
       .Case<scf::ForOp, scf::IfOp, scf::WhileOp>([&](auto op) {
         (void)op;
         // Now bypass ForOp, WhileOp, IfOp op

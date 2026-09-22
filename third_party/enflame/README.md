@@ -11,8 +11,14 @@ The Flagtree third-party backend includes the backend implementation for Enflame
 ## Environment Preparation
 ### 1. Version Definition
 ```bash
-# Software package
-SDK=TopsRider_Triton_gcu-3.6.0-1.0.20260722.cc.1.10.6_deb_amd64.run
+# Software packages (GCU300 and GCU400 use different software stacks, pick the one matching your target platform)
+# For GCU400 platform:
+SDK400=TopsRider_Triton_gcu-3.6.0+1.0.20260826.cc.1.10.25_deb_amd64.run
+# For GCU300 platform:
+SDK300=TopsRider_Triton_gcu-3.6.0+1.0.20260826.cc.1.9.29_deb_amd64.run
+# Set the SDK variable according to your platform (choose one):
+SDK=${SDK400}   # GCU400 platform
+# SDK=${SDK300} # GCU300 platform
 # Toolchain
 LLVM=enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
 # Container image
@@ -34,12 +40,16 @@ git checkout main
 ### 3. Download Software Package
 ```bash
 cd ~
+# Download the package matching your target platform (keep consistent with the SDK setting above)
+# GCU400 platform: wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${SDK400}
+# GCU300 platform: wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${SDK300}
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${SDK}
 ```
 
 ### 4. Install Driver
 ```bash
 cd ~
+# Install the driver using the package matching your target platform (SDK400 for GCU400, SDK300 for GCU300)
 bash ${SDK} --driver -y
 # Verify driver installation
 efsmi
@@ -61,6 +71,8 @@ Sample valid `efsmi` output for reference:
 | 35℃    LP1      68W / 300W  | 147456MiB Disable | 0%          A098Q50610048 |
 +-----------------------------+-------------------+---------------------------+
 ```
+
+> Note: The device model shown in the NAME column of the `efsmi` output varies by platform — GCU300 platforms report `Enflame S60`, while GCU400 platforms report `Enflame L300/L600`. The example above is an L300 device on a GCU400 platform.
 
 ### 5. Prepare Docker Image
 ```bash
@@ -103,6 +115,7 @@ tar -xzf ${LLVM}
 ### 2. Install Software Package
 ```bash
 cd ~
+# Install the in-container software stack using the package matching your target platform (SDK400 for GCU400, SDK300 for GCU300)
 bash ${SDK} --container -y
 ```
 

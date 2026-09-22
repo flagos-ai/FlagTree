@@ -19,5 +19,16 @@
 # SOFTWARE.
 
 from . import buffer, common, copy, pipe, warp_specialize, wgmma
+from .types import MusaDotOperandEncoding, MusaSqmmaEncoding, MusaWmmaEncoding
 
-__all__ = ["buffer", "common", "copy", "pipe", "warp_specialize", "wgmma"]
+__all__ = [
+    "buffer",
+    "common",
+    "copy",
+    "pipe",
+    "warp_specialize",
+    "wgmma",
+    "MusaDotOperandEncoding",
+    "MusaSqmmaEncoding",
+    "MusaWmmaEncoding",
+]

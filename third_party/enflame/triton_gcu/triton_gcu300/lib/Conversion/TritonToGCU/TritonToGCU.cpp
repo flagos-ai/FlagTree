@@ -40,6 +40,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -89,13 +90,13 @@ struct ConvertTritonToGCUPass
   void runOnOperation() override;
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<triton::TritonDialect, triton::gpu::TritonGPUDialect,
-                affine::AffineDialect, arith::ArithDialect,
-                memref::MemRefDialect, vector::VectorDialect, scf::SCFDialect,
-                func::FuncDialect, math::MathDialect, gpu::GPUDialect,
-                gcu::GCUDialect, triton::gcu::TritonGCUDialect,
-                memref_ext::MemrefExtDialect, math_ext::MathExtDialect>();
+    registry.insert<triton::TritonDialect, triton::gpu::TritonGPUDialect,
+                    affine::AffineDialect, arith::ArithDialect,
+                    memref::MemRefDialect, vector::VectorDialect,
+                    scf::SCFDialect, func::FuncDialect, math::MathDialect,
+                    gpu::GPUDialect, gcu::GCUDialect,
+                    triton::gcu::TritonGCUDialect, memref_ext::MemrefExtDialect,
+                    math_ext::MathExtDialect, cf::ControlFlowDialect>();
   }
 };
 
@@ -494,6 +495,50 @@ struct TTSCFConditionLowering : SharedConversionPattern<scf::ConditionOp> {
     auto conditionOp = rewriter.create<scf::ConditionOp>(
         loc, adaptor.getCondition(), adaptor.getArgs());
     rewriter.replaceOp(op, conditionOp);
+    return success();
+  }
+};
+
+/// Convert cf::BranchOp to handle type-converted block arguments.
+/// When tensor types are converted to memref by the TypeConverter, the
+/// destination block's argument types must be updated accordingly.
+struct TTCFBranchOpLowering : SharedConversionPattern<cf::BranchOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cf::BranchOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Block *dest = op.getSuccessor();
+    rewriter.replaceOpWithNewOp<cf::BranchOp>(op, dest,
+                                              adaptor.getDestOperands());
+    if (failed(rewriter.convertRegionTypes(dest->getParent(),
+                                           *getTypeConverter())))
+      return failure();
+    return success();
+  }
+};
+
+/// Convert cf::CondBranchOp to handle type-converted block arguments.
+/// Same as TTCFBranchOpLowering but for conditional branches.
+struct TTCFCondBranchOpLowering : SharedConversionPattern<cf::CondBranchOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(cf::CondBranchOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Block *trueDest = op.getTrueDest();
+    Block *falseDest = op.getFalseDest();
+    rewriter.replaceOpWithNewOp<cf::CondBranchOp>(
+        op, adaptor.getCondition(), trueDest, adaptor.getTrueDestOperands(),
+        falseDest, adaptor.getFalseDestOperands());
+    if (failed(rewriter.convertRegionTypes(trueDest->getParent(),
+                                           *getTypeConverter())))
+      return failure();
+    if (trueDest->getParent() != falseDest->getParent()) {
+      if (failed(rewriter.convertRegionTypes(falseDest->getParent(),
+                                             *getTypeConverter())))
+        return failure();
+    }
     return success();
   }
 };
@@ -1490,6 +1535,12 @@ struct TTExternElemwiseOpLowering
       return success();
     } else if (name == "__nv_floorf") {
       rewriter.replaceOpWithNewOp<math::FloorOp>(op, adaptor.getOperands());
+      return success();
+    } else if (name == "__nv_nearbyintf") {
+      rewriter.replaceOpWithNewOp<math::RoundEvenOp>(op, adaptor.getOperands());
+      return success();
+    } else if (name == "__nv_rintf") {
+      rewriter.replaceOpWithNewOp<math::RoundEvenOp>(op, adaptor.getOperands());
       return success();
     } else if (name == "__nv_min") {
       rewriter.replaceOpWithNewOp<arith::MinSIOp>(op, adaptor.getOperands());
@@ -3043,28 +3094,28 @@ void ConvertTritonToGCUPass::runOnOperation() {
   mlir::triton::populateElementwiseFusionOpToGCUPatterns(
       converter, patterns, userAnalysis, replaced2Origin, pTagPool, enable_i64);
 
-  patterns
-      .add<TTFuncOpLowering, TTReturnOpLowering, TTCallOpLowering,
-           TTSCFForOpLowering, TTSCFIfOpLowering, TTSCFWhileOpLowering,
-           TTSCFConditionLowering,
-           TTIntrinsicOpLowering<triton::GetNumProgramsOp, gpu::GridDimOp>,
-           TTIntrinsicOpLowering<triton::GetProgramIdOp, gpu::BlockIdOp>,
-           TTPrintOpLowering, TTAssertOpLowering, TTAddPtrOpLowering,
-           TTLoadOpLowering, TTStoreOpLowering, TTConstantOpLowering,
-           TTReduceReturnOpLowering, TTScanReturnOpLowering,
-           TTExternElemwiseOpLowering,
-           TTElementwiseOpLowering<triton::PtrToIntOp, gcu::PtrToIntOp>,
-           TTElementwiseOpLowering<triton::IntToPtrOp, gcu::IntToPtrOp>,
-           TTElementwiseOpLowering<triton::gcu::PtrToIntOp, gcu::PtrToIntOp>,
-           TTElementwiseOpLowering<triton::gcu::IntToPtrOp, gcu::IntToPtrOp>,
-           TTElementwiseOpLowering<triton::MulhiUIOp, math_ext::UmulhiOp>,
-           TTArithSelectOpLowering, TTBitcastOpLowering, TTBroadcastOpLowering,
-           TTCatOpLowering, TTHistogramOpLowering, TTExpandDimsOpLowering,
-           TTReshapeOpLowering, TTSplitOpLowering, TTJoinOpLowering,
-           GCUMatmulLowering, TTGAssertOpLowering, TTTransOpLowering,
-           TTGConvertLayoutOpLowering, GCULoadOpLowering, GCUStoreOpLowering,
-           TTDotOpLowering, TTSplatOpLowering, TTUnsplatOpLowering>(
-          converter, ctx, userAnalysis, replaced2Origin, pTagPool);
+  patterns.add<
+      TTFuncOpLowering, TTReturnOpLowering, TTCallOpLowering,
+      TTSCFForOpLowering, TTSCFIfOpLowering, TTSCFWhileOpLowering,
+      TTSCFConditionLowering, TTCFBranchOpLowering, TTCFCondBranchOpLowering,
+      TTIntrinsicOpLowering<triton::GetNumProgramsOp, gpu::GridDimOp>,
+      TTIntrinsicOpLowering<triton::GetProgramIdOp, gpu::BlockIdOp>,
+      TTPrintOpLowering, TTAssertOpLowering, TTAddPtrOpLowering,
+      TTLoadOpLowering, TTStoreOpLowering, TTConstantOpLowering,
+      TTReduceReturnOpLowering, TTScanReturnOpLowering,
+      TTExternElemwiseOpLowering,
+      TTElementwiseOpLowering<triton::PtrToIntOp, gcu::PtrToIntOp>,
+      TTElementwiseOpLowering<triton::IntToPtrOp, gcu::IntToPtrOp>,
+      TTElementwiseOpLowering<triton::gcu::PtrToIntOp, gcu::PtrToIntOp>,
+      TTElementwiseOpLowering<triton::gcu::IntToPtrOp, gcu::IntToPtrOp>,
+      TTElementwiseOpLowering<triton::MulhiUIOp, math_ext::UmulhiOp>,
+      TTArithSelectOpLowering, TTBitcastOpLowering, TTBroadcastOpLowering,
+      TTCatOpLowering, TTHistogramOpLowering, TTExpandDimsOpLowering,
+      TTReshapeOpLowering, TTSplitOpLowering, TTJoinOpLowering,
+      GCUMatmulLowering, TTGAssertOpLowering, TTTransOpLowering,
+      TTGConvertLayoutOpLowering, GCULoadOpLowering, GCUStoreOpLowering,
+      TTDotOpLowering, TTSplatOpLowering, TTUnsplatOpLowering>(
+      converter, ctx, userAnalysis, replaced2Origin, pTagPool);
 
   patterns.add<TTMakeRangeOpLowering>(converter, ctx, userAnalysis,
                                       replaced2Origin, pTagPool, vectorLength,
@@ -3110,6 +3161,31 @@ void ConvertTritonToGCUPass::runOnOperation() {
                         triton::gpu::MemDescType, triton::gpu::AsyncTokenType>(
                  t);
            });
+  });
+
+  // cf ops are legal only when operands and successor block args have no
+  // unconverted types (tensor, triton pointer, etc.). This ensures that
+  // cf::BranchOp / cf::CondBranchOp passing tensor values through block
+  // arguments get properly converted alongside their destination blocks.
+  auto hasUnconvertedType = [](Type t) {
+    return isa<TensorType, triton::PointerType, triton::gpu::MemDescType,
+               triton::gpu::AsyncTokenType>(t);
+  };
+  target.addDynamicallyLegalOp<cf::BranchOp>(
+      [hasUnconvertedType](cf::BranchOp op) {
+        if (llvm::any_of(op->getOperandTypes(), hasUnconvertedType))
+          return false;
+        return llvm::none_of(op.getSuccessor()->getArgumentTypes(),
+                             hasUnconvertedType);
+      });
+  target.addDynamicallyLegalOp<cf::CondBranchOp>([hasUnconvertedType](
+                                                     cf::CondBranchOp op) {
+    if (llvm::any_of(op->getOperandTypes(), hasUnconvertedType))
+      return false;
+    if (llvm::any_of(op.getTrueDest()->getArgumentTypes(), hasUnconvertedType))
+      return false;
+    return llvm::none_of(op.getFalseDest()->getArgumentTypes(),
+                         hasUnconvertedType);
   });
 
   if (failed(applyPartialConversion(moduleOp, target, std::move(patterns))))

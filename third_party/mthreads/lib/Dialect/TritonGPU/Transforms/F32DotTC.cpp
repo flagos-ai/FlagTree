@@ -4,6 +4,9 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#ifdef __TLE__
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#endif
 
 namespace mlir::triton::gpu {
 
@@ -91,6 +94,10 @@ struct BF16xN : public OpRewritePattern<DotOp> {
 
   LogicalResult matchAndRewrite(DotOp dotOp,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    if (getTleExplicitSqmmaEncoding(dotOp.getOperation()))
+      return failure();
+#endif // __TLE__
     // BF16 indices and count
     const unsigned hi = 0;
     const unsigned mid = 1;
@@ -159,6 +166,10 @@ public:
 
   LogicalResult matchAndRewrite(DotOp dotOp,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    if (getTleExplicitSqmmaEncoding(dotOp.getOperation()))
+      return failure();
+#endif // __TLE__
     if (!(dotOp.getInputPrecision() == InputPrecision::TF32x3 &&
           isF32(dotOp.getA()) && isF32(dotOp.getB()))) {
       return failure();

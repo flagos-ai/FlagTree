@@ -455,7 +455,7 @@ public:
     auto defOp = lhs.getDefiningOp();
     if (!defOp || !(isa<math::ExpOp>(defOp) || [](auto op) {
           auto o = dyn_cast<triton::ExternElementwiseOp>(op);
-          return o.getSymbol() == "__nv_expf";
+          return o && o.getSymbol() == "__nv_expf";
         }(defOp))) {
       return failure();
     }
@@ -524,7 +524,7 @@ public:
     auto defOp = lhs.getDefiningOp();
     if (!defOp || !(isa<math::ExpOp>(defOp) || [](auto op) {
           auto o = dyn_cast<triton::ExternElementwiseOp>(op);
-          return o.getSymbol() == "__nv_expf";
+          return o && o.getSymbol() == "__nv_expf";
         }(defOp))) {
       return failure();
     }
@@ -575,10 +575,22 @@ public:
     if (!dotOp)
       return failure();
 
+    if (!dotOp.getResult().hasOneUse())
+      return failure();
+
     // Update oacc store mode
     const char *const kAccStore = "acc_store";
     if (!dotOp->hasAttr(kAccStore))
       return failure();
+
+    if (dotOp->hasAttr("acc_reuse_candidate")) {
+      if (mlir::cast<StringAttr>(dotOp->getAttr("acc_reuse_candidate"))
+              .getValue() != "acc_reuse_oacc")
+        return failure();
+    } else if (dotOp->getBlock() != cvtOp->getBlock()) {
+      return failure();
+    }
+
     dotOp->setAttr(kAccStore,
                    StringAttr::get(dotOp.getContext(), "cvt_global"));
 

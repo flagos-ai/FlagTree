@@ -68,7 +68,13 @@ COPY CMakeLists.txt pyproject.toml setup.py MANIFEST.in LICENSE README.md /src/
 # The trailing rm keeps only /wheels in this layer: the CMake build
 # tree and the LLVM tarball cache (~/.triton) would otherwise add
 # several GB and push CI runners into ENOSPC.
+# The wheel version: setup.py falls back to a stale hardcoded version when
+# FLAGTREE_WHEEL_VERSION is unset, so the build script passes the spec's
+# Version here. Declared right before the wheel RUN so that only this layer
+# is invalidated when the version bumps.
+ARG FLAGTREE_WHEEL_VERSION=
 RUN unset FLAGTREE_BACKEND && \
+    FLAGTREE_WHEEL_VERSION="${FLAGTREE_WHEEL_VERSION}" \
     JSON_SYSPATH=/usr \
     MAX_JOBS=4 python3 -m pip wheel . --no-build-isolation --no-deps -w /wheels -v && \
     ls -lh /wheels/ && \

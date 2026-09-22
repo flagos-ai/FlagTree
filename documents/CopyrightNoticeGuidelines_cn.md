@@ -1,14 +1,14 @@
 ## 版权声明标注规则
 
-### 非代码文件
+### 1. 非代码文件
 
-#### Dockerfile
+#### 1.1 Dockerfile
 
 通常在文件名中含 Dockerfile，但可能有遗漏需要人工标注。
 
 规则：文件头部使用标注方案 A
 
-#### Github workflow \& actions
+#### 1.2 Github workflow & actions
 
 满足以下任一条件属于本分类：
 
@@ -16,7 +16,7 @@
 
 规则：文件头部使用标注方案 A
 
-#### 其他非代码文件
+#### 1.3 其他非代码文件
 
 不属于上述任意一小节，且满足以下任一条件属于本分类（文档、脚本类文件）：
 
@@ -42,9 +42,9 @@
 
 规则：不修改文件，不做任何标注
 
-### python 文件
+### 2. python 文件
 
-#### 教程、测试类文件
+#### 2.1 教程、测试类文件
 
 满足以下任一条件属于本分类：
 
@@ -58,7 +58,7 @@
 
 规则：不修改文件，不做任何标注
 
-#### FlagTree 新增的文件
+#### 2.2 FlagTree 新增的文件
 
 满足以下任一条件属于本分类：
 
@@ -67,7 +67,7 @@
 
 规则：文件头部使用标注方案 A
 
-#### 核心代码文件
+#### 2.3 核心代码文件
 
 不属于上述教程、测试类文件，且满足以下任一条件属于本分类：
 
@@ -79,25 +79,35 @@
 
 `third_party` 目录规则：仅对 `third_party/tle` 目录中的文件使用标注方案 A
 
-### C/C++、MLIR 文件
+### 3. C/C++、MLIR 文件
 
-#### 测试类文件
+#### 3.1 测试类文件
 
 满足以下任一条件属于本分类：
 
 - `python/test/**/*.c`
 
-#### 核心代码文件
+规则：不修改文件，不做任何标注
+
+#### 3.2 .mlir 文件
+
+- `*.mlir`
+
+规则：不修改文件，不做任何标注
+
+`third_party` 目录规则：仅对 `third_party/tle` 目录中的文件使用标注方案 E
+
+#### 3.3 核心代码文件
 
 不属于上述测试类文件，且满足以下任一条件属于本分类：
 
-- `*.mlir、*.td、*.h、*.hpp、*.cpp、*.cc、*.c`
+- `*.td、*.h、*.hpp、*.cpp、*.cc、*.c`
 
 主目录规则：文件头部使用标注方案 D
 
 `third_party` 目录规则：仅对 `third_party/tle` 目录中的文件使用标注方案 C
 
-### 单独标注其他协议的文件
+### 4. 单独标注其他协议的文件
 
 - OpenAI 已在头部标注版权声明的文件
 
@@ -113,7 +123,7 @@
 `include/triton/Dialect/TritonGPU/Transforms/PipelineExpander.h`
 `lib/Dialect/TritonGPU/Transforms/Pipeliner/PipelineExpander.cpp`
 
-头部已有 OpenAI 标注的版权声明，维持原状。
+头部已有 OpenAI 标注的版权声明，在原版权声明后添加 `Copyright 2025-     FlagOS Contributors`。
 
 - `python/tutorials/tle/01-fft.py`
 
@@ -138,11 +148,11 @@ OpenAI 对该文件单独标注
 
 规则：不修改该文件
 
-### 标注方案
+### 5. 标注方案
 
 这里统一展示上文提到的各类标注方案
 
-#### 标注方案 A
+#### 5.1 标注方案 A
 
 ```Python
 # Copyright 2025-     FlagOS Contributors
@@ -167,7 +177,7 @@ OpenAI 对该文件单独标注
 
 ```
 
-#### 标注方案 B
+#### 5.2 标注方案 B
 
 ```Python
 # Copyright 2018-2020 Philippe Tillet
@@ -194,7 +204,7 @@ OpenAI 对该文件单独标注
 
 ```
 
-#### 标注方案 C
+#### 5.3 标注方案 C
 
 ```C++
 /*
@@ -221,7 +231,7 @@ OpenAI 对该文件单独标注
  */
 ```
 
-#### 标注方案 D
+#### 5.4 标注方案 D
 
 ```C++
 /*
@@ -248,4 +258,29 @@ OpenAI 对该文件单独标注
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+```
+
+#### 5.5 标注方案 E
+
+```C++
+// Copyright 2025-     FlagOS Contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining
+// a copy of this software and associated documentation files
+// (the "Software"), to deal in the Software without restriction,
+// including without limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of the Software,
+// and to permit persons to whom the Software is furnished to do so,
+// subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+// IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+// TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+// SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```

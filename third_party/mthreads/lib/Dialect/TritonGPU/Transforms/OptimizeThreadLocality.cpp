@@ -22,6 +22,14 @@ namespace gpu {
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
 
 namespace {
+#ifdef __TLE__
+static bool hasTleExplicitResultEncoding(Operation *op) {
+  return llvm::any_of(op->getResults(), [&](OpResult result) {
+    return getTleExplicitResultEncoding(op, result.getResultNumber());
+  });
+}
+#endif // __TLE__
+
 // Change the destination layout of reshape ops allowing reorder when used by a
 // reduction in order to minimize the amount of cross thread communication for
 // the reduction.
@@ -33,6 +41,10 @@ struct OptimizeReshapeLayoutPattern : public OpRewritePattern<ReshapeOp> {
                                 PatternRewriter &rewriter) const override {
     if (!viewOp.getAllowReorder())
       return failure();
+#ifdef __TLE__
+    if (hasTleExplicitResultEncoding(viewOp))
+      return failure();
+#endif // __TLE__
     std::optional<int> reductionAxis;
     for (Operation *user : viewOp.getResult().getUsers()) {
       if (auto reduceOp = dyn_cast<triton::ReduceOp>(user)) {
@@ -230,6 +242,10 @@ struct OptimizeGatherLayoutPattern : public mlir::OpRewritePattern<GatherOp> {
                                 PatternRewriter &rewriter) const override {
     if (op.getEfficientLayout())
       return failure();
+#ifdef __TLE__
+    if (hasTleExplicitResultEncoding(op))
+      return failure();
+#endif // __TLE__
     return setOptimizedGatherLayout(op, rewriter);
   }
 };
@@ -281,6 +297,11 @@ class TritonGPUOptimizeThreadLocalityPass
       if (!reduce->hasOneUse())
         return;
       Operation *user = *(reduce->getUsers().begin());
+#ifdef __TLE__
+      if (hasTleExplicitResultEncoding(reduce) ||
+          hasTleExplicitResultEncoding(user))
+        return;
+#endif // __TLE__
       if (!user->hasOneUse())
         return;
       OpOperand &yieldOpOperand = *(user->getUses().begin());

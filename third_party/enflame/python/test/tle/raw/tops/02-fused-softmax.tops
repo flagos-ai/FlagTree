@@ -1,44 +1,173 @@
-extern "C"  __device__ void
+#include "tcle.h"
+#include "tops.h"
+using namespace tcle;
+#include <cstdio>
+extern "C" __device__ __alwaysinline__  __TCLE_DEVICE_TYPE__  __attribute__((
+    no_mem_alias_in_vldst_tar, enable_software_pipeliner)) void
 SoftmaxKernel(__attribute__((address_space(1))) float *output,
-              __attribute__((address_space(1))) const float *input,
+              __attribute__((address_space(9))) const float *input,
+              const int A_dim0,
+              const int A_stride0,
               const int n_rows,
               const int n_cols,
               const int input_row_stride,
               const int output_row_stride) {
   const int row_idx = blockIdx.x;
   if (row_idx >= n_rows) return;
-
-  const float *in_row = input + row_idx * input_row_stride;
+  //const float *in_row = input + row_idx * input_row_stride;
+  const float *in_row = input;
   float *out_row = output + row_idx * output_row_stride;
+  using float_vtype = typename tcle::altivector<float, 128>::VT;
+  const int vlen = tcle::altivector_step<float_vtype>();
+  set_vl(vlen);
 
-  float max_val = in_row[0];
-  for (int i = 1; i < n_cols; i++) {
-    float v = in_row[i];
-    if (v > max_val) max_val = v;
+  const int full_loop_count = n_cols / vlen;
+  const int remaining = n_cols % vlen;
+
+  // ---------- step 1: find max ----------
+  tcle::leaptr<float_vtype> in_ptr =
+      tcle::simple_leaptr<float_vtype>(const_cast<float *>(in_row));
+  float_vtype v_max = (float_vtype)(-3.40282e+38f);
+  int step_32_loop_count = full_loop_count/32;
+  float_vtype a_group[16];
+  float_vtype b_group[16];
+  if (step_32_loop_count > 0 ) {
+    #pragma clang loop unroll_count(16)
+    for(int j=0; j<16; j++) {
+      a_group[j] = in_ptr.load();
+    }
+    for (int i = 1; i < step_32_loop_count*2; i++) {
+      #pragma clang loop unroll_count(16)
+      for(int j=0; j<16; j++) {
+        b_group[j] = in_ptr.load();
+      }
+      #pragma clang loop unroll_count(16)
+      for(int j=0; j<16; j++) {
+        a_group[j] =  tcle::max(a_group[j], b_group[j]);
+      }
+    }
+    #pragma clang loop unroll_count(8)
+    for(int j=0; j < 8; j++) {
+      b_group[j] = tcle::max(a_group[j*2], a_group[j*2+1]);
+    }
+    #pragma clang loop unroll_count(4)
+    for(int j=0; j < 4; j++) {
+      a_group[j] =  tcle::max(b_group[j*2], b_group[j*2+1]);
+    }
+    #pragma clang loop unroll_count(2)
+    for(int j=0; j < 2; j++) {
+      b_group[j] =  tcle::max(a_group[j*2], a_group[j*2+1]);
+    }
+    for(int j=0; j < 2; j++) {
+      v_max =  tcle::max(b_group[j], v_max);
+    }
   }
-
-  float sum_val = 0.0f;
-  for (int i = 0; i < n_cols; i++) {
-    float x = in_row[i] - max_val;
-    // exp(x) via range reduction: exp(x) = exp(x/16)^16
-    // Taylor for small |y| where y = x/16, |y| <= ~0.7
-    float y = x * 0.0625f;
-    float y2 = y * y;
-    float y3 = y2 * y;
-    float y4 = y2 * y2;
-    float p = 1.0f + y + y2 * 0.5f + y3 * 0.16666667f + y4 * 0.04166667f;
-    // Square 4 times: p^2 -> p^4 -> p^8 -> p^16
-    p = p * p;
-    p = p * p;
-    p = p * p;
-    p = p * p;
-    if (p < 0.0f) p = 0.0f;
-    out_row[i] = p;
-    sum_val += p;
+  int remain_loop = full_loop_count - 32 * step_32_loop_count;
+  #pragma clang loop unroll_count(32)
+  for (int i = 0; i < remain_loop; i++) {
+    float_vtype v = in_ptr.load();
+    v_max = tcle::max(v_max, v);
   }
+  if (remaining > 0) {
+    set_vl(remaining);
+    float_vtype v = in_ptr.load();
+    v_max = tcle::max(v_max, v);
+    set_vl(vlen);
+  }
+  // reduce vector max to scalar and broadcast
+  float_vtype v_max_bcast = tcle::redmax<1>(v_max);
+  // ---------- step 2: exp(x - max) and sum ----------
+  // reuse output buffer as temporary exp storage
+  in_ptr = tcle::simple_leaptr<float_vtype>(const_cast<float *>(in_row));
+  __local__ float dsm_buf[256*16+32];
+  float_vtype v_sum = (float_vtype)(0.0f);
+  tcle::leaptr<float_vtype> dsm_ptr =
+      tcle::simple_leaptr<float_vtype>(dsm_buf);
+    if (step_32_loop_count > 0 ) {
+    #pragma clang loop unroll_count(16)
+    for(int j=0; j<16; j++) {
+      a_group[j] = in_ptr.load();
+    }
+    #pragma clang loop unroll_count(16)
+    for(int j=0; j<16; j++) {
+      a_group[j] = a_group[j]-v_max_bcast;
+    }
+    #pragma clang loop unroll_count(16)
+    for(int j=0; j<16; j++) {
+      a_group[j] = tcle::exp(a_group[j]);
+    }
+    #pragma clang loop unroll_count(16)
+    for(int j=0; j<16; j++) {
+      dsm_ptr.store(a_group[j]);
+    }
+    for (int i = 1; i < step_32_loop_count*2; i++) {
+      #pragma clang loop unroll_count(16)
+      for(int j=0; j<16; j++) {
+        b_group[j] = in_ptr.load();
+      }
+      #pragma clang loop unroll_count(16)
+      for(int j=0; j<16; j++) {
+        b_group[j] = b_group[j]-v_max_bcast;
+      }
+      #pragma clang loop unroll_count(16)
+      for(int j=0; j<16; j++) {
+        b_group[j] = tcle::exp(b_group[j]);
+      }
+      #pragma clang loop unroll_count(16)
+      for(int j=0; j<16; j++) {
+        dsm_ptr.store(b_group[j]);
+      }
+      #pragma clang loop unroll_count(16)
+      for(int j=0; j<16; j++) {
+        a_group[j] = a_group[j] +  b_group[j];
+      }
+    }
+    #pragma clang loop unroll_count(8)
+    for(int j=0; j < 8; j++) {
+      b_group[j] = a_group[j*2] + a_group[j*2+1];
+    }
+    #pragma clang loop unroll_count(4)
+    for(int j=0; j < 4; j++) {
+      a_group[j] = b_group[j*2] + b_group[j*2+1];
+    }
+    #pragma clang loop unroll_count(2)
+    for(int j=0; j < 2; j++) {
+      b_group[j] = a_group[j*2] + a_group[j*2+1];
+    }
+    for(int j=0; j < 2; j++) {
+      v_sum =  b_group[j] + v_sum;
+    }
+  }
+  #pragma clang loop unroll_count(32)
+  for (int i = 0; i < remain_loop; i++) {
+    float_vtype v = in_ptr.load();
+    float_vtype e = tcle::exp(v - v_max_bcast);
+    dsm_ptr.store(e);
+    v_sum = v_sum + e;
+  }
+  if (remaining > 0) {
+    set_vl(remaining);
+    float_vtype v = in_ptr.load();
+    float_vtype e = tcle::exp(v - v_max_bcast);
+    dsm_ptr.store(e);
+    v_sum = v_sum + e;
+    set_vl(vlen);
+  }
+  // reduce vector sum to scalar and broadcast
+  float_vtype v_sum_bcast = tcle::redsum<1>(v_sum);
 
-  float inv_sum = 1.0f / sum_val;
-  for (int i = 0; i < n_cols; i++) {
-    out_row[i] = out_row[i] * inv_sum;
+  // ---------- step 3: normalize ----------
+  tcle::leaptr<float_vtype> out_ptr = tcle::simple_leaptr<float_vtype>(out_row);
+  dsm_ptr = tcle::simple_leaptr<float_vtype>(dsm_buf);
+  #pragma clang loop unroll_count(16)
+  for (int i = 0; i < full_loop_count; i++) {
+    float_vtype e = dsm_ptr.load();
+    out_ptr.store(e / v_sum_bcast);
+  }
+  if (remaining > 0) {
+    set_vl(remaining);
+    float_vtype e = dsm_ptr.load();
+    out_ptr.store(e / v_sum_bcast);
+    set_vl(vlen);
   }
 }

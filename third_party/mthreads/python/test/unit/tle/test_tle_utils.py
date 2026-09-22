@@ -32,8 +32,20 @@ def mthreads_backend():
     return target, backends["mthreads"].compiler(target)
 
 
+def tme_descriptor_attrs(signature):
+    """Mark ASTSource tensor descriptors as satisfying the TME 4-byte tail rule."""
+    return {(index, ): [["musa.tme_tail_divisibility", 4]]
+            for index, ty in enumerate(signature.values())
+            if isinstance(ty, str) and ty.startswith("tensordesc<")}
+
+
 def compile_musa(fn, signature, constexprs=None):
-    src = ASTSource(fn=fn, signature=signature, constexprs=constexprs or {})
+    src = ASTSource(
+        fn=fn,
+        signature=signature,
+        constexprs=constexprs or {},
+        attrs=tme_descriptor_attrs(signature),
+    )
     return triton.compile(src, target=musa_target())
 
 
@@ -47,5 +59,10 @@ def compile_to_ttir(fn, signature, constexprs=None):
     options = backend.parse_options({})
     module_map = backend.get_module_map()
     codegen_fns = backend.get_codegen_implementation(options)
-    src = ASTSource(fn=fn, signature=signature, constexprs=constexprs or {})
+    src = ASTSource(
+        fn=fn,
+        signature=signature,
+        constexprs=constexprs or {},
+        attrs=tme_descriptor_attrs(signature),
+    )
     return src.make_ir(target, options, codegen_fns, module_map, context).str_nodebug()

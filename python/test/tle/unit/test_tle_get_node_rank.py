@@ -1,15 +1,16 @@
 import os
 
+import pytest
 import torch
 import torch.distributed as dist
 import triton
 import triton.experimental.tle.language as tle
 import triton.language as tl
 
-LOCAL_WORLD_SIZE = int(os.environ["LOCAL_WORLD_SIZE"])
-WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-if WORLD_SIZE % LOCAL_WORLD_SIZE != 0:
-    raise ValueError("WORLD_SIZE must be divisible by LOCAL_WORLD_SIZE")
+LOCAL_WORLD_SIZE = int(os.environ.get("LOCAL_WORLD_SIZE", "0"))
+WORLD_SIZE = int(os.environ.get("WORLD_SIZE", "0"))
+if LOCAL_WORLD_SIZE <= 0 or WORLD_SIZE % LOCAL_WORLD_SIZE != 0:
+    pytest.skip("multi-node distributed environment (LOCAL_WORLD_SIZE/WORLD_SIZE) is required", allow_module_level=True)
 
 DEVICE_MESH = tle.device_mesh(tle.MeshConfig(node=WORLD_SIZE // LOCAL_WORLD_SIZE, device=LOCAL_WORLD_SIZE))
 
@@ -21,6 +22,7 @@ def _tle_node_rank_kernel(out_ptr, device_dptr: tl.constexpr, mesh: tl.constexpr
     tl.store(out_ptr + pid, node_rank)
 
 
+@pytest.mark.require_tle("shard_id")
 def test_tle_get_node_rank():
     grid = 2
     with torch.cuda.use_mem_pool(tle.get_mem_pool()):

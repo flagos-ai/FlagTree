@@ -101,7 +101,7 @@ set_target_properties(triton-gcu400-opt PROPERTIES
 target_link_libraries(triton-gcu400-opt PRIVATE triton_gcu400_core)
 
 # Install tools (omit from gcu300-only deb; still built for the wheel).
-if(NOT KURAMA_GCU300_ONLY)
+if(ENABLE_GCU400)
 install(TARGETS triton-gcu400-opt RUNTIME DESTINATION bin)
 endif()
 

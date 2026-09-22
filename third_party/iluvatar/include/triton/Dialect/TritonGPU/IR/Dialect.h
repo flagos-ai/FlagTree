@@ -288,6 +288,13 @@ expandMatrixOrderWithBatch(llvm::ArrayRef<unsigned> o);
 bool areLayoutsEquivalent(ArrayRef<int64_t> shape, LayoutEncodingTrait lhs,
                           LayoutEncodingTrait rhs);
 
+#ifdef __ILUVATAR__
+// The smeMask flag marks the cloned mask DAG of an SME load. Two encodings that
+// disagree on it must stay distinct even when they describe the same mapping,
+// otherwise the clone collapses back onto the pointer DAG.
+bool hasSmeMask(Attribute encoding);
+#endif
+
 // Return true if the innermost numElems are contiguous.
 bool isInnermostContiguous(MemDescType type, unsigned numElems);
 

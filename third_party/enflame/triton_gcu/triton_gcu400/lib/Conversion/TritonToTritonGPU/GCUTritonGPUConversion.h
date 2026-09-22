@@ -33,7 +33,8 @@ public:
   GCUTritonGPUTypeConverter(
       MLIRContext *context, int numWarps, int threadsPerWarp, int numCTAs,
       ArrayRef<unsigned> defaultOrder,
-      const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq);
+      const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq,
+      bool hasDotOp = false);
 
   int getNumWarps() const { return numWarps; }
   int getThreadsPerWarp() const { return threadsPerWarp; }
@@ -51,6 +52,7 @@ private:
   int numCTAs;
   SmallVector<unsigned> defaultOrder;
   llvm::SmallDenseMap<unsigned, unsigned> axisFreq;
+  bool hasDotOp;
 };
 
 class GCUTritonGPUConversionTarget : public ConversionTarget {
@@ -67,6 +69,9 @@ triton::gpu::BlockedEncodingAttr getBlockedEncodingWithOrder(
     const llvm::SmallDenseMap<unsigned, unsigned> &axisFreq, int numWarps,
     int threadsPerWarp, int numCTAs);
 
+SmallVector<unsigned>
+computeDotWarpsPerCTA(const triton::gpu::BlockedEncodingAttr &encoding,
+                      ArrayRef<int64_t> shape, unsigned numWarps);
 } // namespace mlir
 
 #endif // GCU_CONVERSION_TRITONTOTRITONGPU_GCUTRITONGPUCONVERSION_H

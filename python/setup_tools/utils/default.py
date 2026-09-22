@@ -60,6 +60,9 @@ class FlagCXRegistrar:
             return False
         return True
 
+    def is_available(self):
+        return Path(self.flagcx_src_dir).exists()
+
     def _set_path(self, external):
         submodule = external['backend']
         flagtree_cache = external['cache']
@@ -144,4 +147,10 @@ class FlagCXRegistrar:
 def handle_flagcx(*args, **kwargs):
     global registrar
     registrar = FlagCXRegistrar(kwargs)
-    registrar.run()
+    if not registrar.is_available():
+        printinfo("FlagCX is not available, skipping compilation...")
+    try:
+        registrar.run()
+    except Exception as e:
+        printinfo(f"Error compiling FlagCX: {e}")
+        printinfo("IF you are using AMD backend, please set the FLAGTREE_BACKEND=amd")

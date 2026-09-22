@@ -103,7 +103,8 @@ def estimate_matmul_time(
         zero_ms = M * N * 2 / (1024 * 1024) / store_bw
         store_ms += zero_ms
 
-    total_time_ms = max(compute_ms, load_ms) + store_ms
+    # total_time_ms = max(compute_ms, load_ms) + store_ms
+    total_time_ms = compute_ms + load_ms + store_ms
     if debug:
         print(f'Total time: {total_time_ms}ms, compute time: {compute_ms}ms, '
               f'loading time: {load_ms}ms, store time: {store_ms}ms, '
@@ -175,11 +176,12 @@ def early_config_prune(configs, named_args, **kwargs):
                         pruned_configs.append(random_config)
                     if capability[0] == 8:
                         blocks = BLOCK_M + BLOCK_N + BLOCK_K
-                        if blocks <= 256 and dtype is not torch.int8:
+                        if dtsize == 1:
+                            if v[stage][1] >= 3 and min(BLOCK_M, BLOCK_N, BLOCK_K) >= 64:
+                                pruned_configs.append(random_config)
+                        elif blocks <= 256:
                             pruned_configs.append(random_config)
                         elif v[stage][1] > 2 and blocks > 256:
-                            pruned_configs.append(random_config)
-                        elif dtype is torch.int8 and v[stage][1] > 2:
                             pruned_configs.append(random_config)
             else:
                 random_config = v[0][0]

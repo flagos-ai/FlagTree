@@ -21,6 +21,26 @@ static Value convertValueLayout(Value src, Attribute enc,
   return cvt.getResult();
 }
 
+#ifdef __TLE__
+static FailureOr<bool>
+hasTleExplicitAsyncCopyEncoding(AsyncCopyGlobalToLocalOp copyOp) {
+  Attribute explicitEncoding;
+  if (failed(inferTleExplicitMemoryEncoding(copyOp, explicitEncoding)))
+    return failure();
+  if (!explicitEncoding)
+    return false;
+
+  auto srcTy = cast<RankedTensorType>(copyOp.getSrc().getType());
+  if (srcTy.getEncoding() != explicitEncoding) {
+    copyOp.emitOpError("has explicit MUSA TLE memory encoding that conflicts "
+                       "with the async-copy source encoding:\n  ")
+        << explicitEncoding << "\nand\n  " << srcTy.getEncoding();
+    return failure();
+  }
+  return true;
+}
+#endif // __TLE__
+
 static void retargetCopyOperandsToEncoding(
     AsyncCopyGlobalToLocalOp copyOp, Attribute newEncoding,
     ModuleAxisInfoAnalysis &axisInfoAnalysis, PatternRewriter &rewriter) {
@@ -79,6 +99,11 @@ struct ClipAsyncCopySizePerThread
 
   LogicalResult matchAndRewrite(AsyncCopyGlobalToLocalOp copyOp,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    FailureOr<bool> explicitEncoding = hasTleExplicitAsyncCopyEncoding(copyOp);
+    if (failed(explicitEncoding) || *explicitEncoding)
+      return failure();
+#endif // __TLE__
     Value src = copyOp.getSrc();
     Value mask = copyOp.getMask();
     Value other = copyOp.getOther();
@@ -147,6 +172,11 @@ struct CoalesceCheapAsyncCopyGlobalToLocal
 
   LogicalResult matchAndRewrite(AsyncCopyGlobalToLocalOp copyOp,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    FailureOr<bool> explicitEncoding = hasTleExplicitAsyncCopyEncoding(copyOp);
+    if (failed(explicitEncoding) || *explicitEncoding)
+      return failure();
+#endif // __TLE__
     Value src = copyOp.getSrc();
     Value mask = copyOp.getMask();
     Value other = copyOp.getOther();
@@ -185,7 +215,22 @@ struct CoalesceAsyncCopyPass
     // Collect the coalesced encoding first as changing the IR invalidates the
     // axis analysis.
     DenseMap<AsyncCopyGlobalToLocalOp, Attribute> coalescedAsyncCopyMap;
+#ifdef __TLE__
+    bool failedExplicitEncoding = false;
+#endif // __TLE__
     m.walk([&](AsyncCopyGlobalToLocalOp copyOp) {
+#ifdef __TLE__
+      if (failedExplicitEncoding)
+        return;
+      FailureOr<bool> explicitEncoding =
+          hasTleExplicitAsyncCopyEncoding(copyOp);
+      if (failed(explicitEncoding)) {
+        failedExplicitEncoding = true;
+        return;
+      }
+      if (*explicitEncoding)
+        return;
+#endif // __TLE__
       auto dstTy = cast<MemDescType>(copyOp.getResult().getType());
       int numWarps = triton::gpu::lookupNumWarps(copyOp);
       int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(m);
@@ -196,6 +241,12 @@ struct CoalesceAsyncCopyPass
           buildCoalescedEncoding(axisInfoAnalysis, copyOp, numWarps,
                                  threadsPerWarp, cgaLayout, shapePerCTA);
     });
+#ifdef __TLE__
+    if (failedExplicitEncoding) {
+      signalPassFailure();
+      return;
+    }
+#endif // __TLE__
 
     MLIRContext *context = &getContext();
 

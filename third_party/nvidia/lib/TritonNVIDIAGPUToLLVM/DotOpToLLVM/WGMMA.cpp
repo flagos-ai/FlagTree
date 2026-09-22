@@ -61,8 +61,35 @@ triton::nvgpu::WGMMAEltType getMmaRetType(Value d) {
   }
 }
 
+#ifdef __TLE__
+static std::optional<triton::nvgpu::WGMMAEltType>
+getSupportedMmaOperandType(Type aTy, bool allowTF32) {
+  if (aTy.isF16()) {
+    return triton::nvgpu::WGMMAEltType::f16;
+  } else if (aTy.isBF16()) {
+    return triton::nvgpu::WGMMAEltType::bf16;
+  } else if (aTy.isF32() && allowTF32) {
+    return triton::nvgpu::WGMMAEltType::tf32;
+  } else if (aTy.isInteger(8)) {
+    return triton::nvgpu::WGMMAEltType::s8;
+  } else if (llvm::isa<Float8E5M2Type>(aTy)) {
+    return triton::nvgpu::WGMMAEltType::e5m2;
+  } else if (llvm::isa<Float8E4M3FNType>(aTy)) {
+    return triton::nvgpu::WGMMAEltType::e4m3;
+  } else {
+    return std::nullopt;
+  }
+}
+#endif // __TLE__
+
 triton::nvgpu::WGMMAEltType getMmaOperandType(Value a, bool allowTF32) {
   auto aTy = cast<triton::gpu::TensorOrMemDesc>(a.getType()).getElementType();
+#ifdef __TLE__
+  auto type = getSupportedMmaOperandType(aTy, allowTF32);
+  if (!type)
+    llvm::report_fatal_error("Unsupported mma operand type found");
+  return *type;
+#else
   if (aTy.isF16()) {
     return triton::nvgpu::WGMMAEltType::f16;
   } else if (aTy.isBF16()) {
@@ -78,7 +105,26 @@ triton::nvgpu::WGMMAEltType getMmaOperandType(Value a, bool allowTF32) {
   } else {
     llvm::report_fatal_error("Unsupported mma operand type found");
   }
+#endif // __TLE__
 }
+
+#ifdef __TLE__
+static std::optional<unsigned> getHopperInstructionK(Type aTy, Type bTy,
+                                                     bool allowTF32) {
+  auto aType = getSupportedMmaOperandType(aTy, allowTF32);
+  auto bType = getSupportedMmaOperandType(bTy, allowTF32);
+  if (!aType || !bType)
+    return std::nullopt;
+  auto isFp8 = [](triton::nvgpu::WGMMAEltType type) {
+    return type == triton::nvgpu::WGMMAEltType::e4m3 ||
+           type == triton::nvgpu::WGMMAEltType::e5m2;
+  };
+  if (aType != bType && !(isFp8(*aType) && isFp8(*bType)))
+    return std::nullopt;
+  // Match mmaVersionToInstrShape's Hopper K without reselecting C's M/N.
+  return 256 / aTy.getIntOrFloatBitWidth();
+}
+#endif
 
 // Return a vector of Value of the accumulator start at startIndex and pack the
 // values into 32bits in case the accumulator is fp16.
@@ -216,7 +262,36 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   auto baseB = getOffsetedBase(loadedB, cast<MemDescType>(bTensorTy),
                                typeConverter, rewriter, loc);
   auto dShapePerCTA = getShapePerCTA(dTensorTy);
+#ifdef __TLE__
+  SmallVector<unsigned> instrMNK(mmaEncoding.getInstrShape());
+
+  // C ownership depends on M/N and warp/CTA distribution, not K. The
+  // register-A layout only depends on kWidth, warpsPerCTA, and CTALayout, so
+  // an accumulator encoding with different instrShape M/N distributes A the
+  // same way. Register A must agree with that layout even after
+  // FenceInsertion removes the async accumulator-chain marker.
+  if (!aInShared) {
+    auto aDotEncoding = cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
+    auto aMmaEncoding =
+        dyn_cast<NvidiaMmaEncodingAttr>(aDotEncoding.getParent());
+    if (!aMmaEncoding || !aMmaEncoding.isHopper() ||
+        mmaEncoding.getWarpsPerCTA() != aMmaEncoding.getWarpsPerCTA() ||
+        mmaEncoding.getCTALayout() != aMmaEncoding.getCTALayout()) {
+      return op->emitError("incompatible register-A and accumulator layouts "
+                           "for Hopper WGMMA");
+    }
+  }
+  // Both register and shared operands select K from the current dtype. Keep
+  // the accumulator's M/N when its encoding came from a preceding dtype.
+  auto instructionK = getHopperInstructionK(
+      aTensorTy.getElementType(), bTensorTy.getElementType(), allowTF32);
+  if (!instructionK)
+    return op->emitError("unsupported operand types or precision for Hopper "
+                         "WGMMA instruction shape");
+  instrMNK[2] = *instructionK;
+#else
   auto instrMNK = mmaEncoding.getInstrShape();
+#endif // __TLE__
   auto accSize = 2 * (instrMNK[1] / 4);
   unsigned M = 4 * instrMNK[0];
   unsigned N = instrMNK[1];

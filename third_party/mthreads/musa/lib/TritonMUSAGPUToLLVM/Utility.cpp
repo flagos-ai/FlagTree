@@ -1,4 +1,5 @@
 #include "TritonMUSAGPUToLLVM/Utility.h"
+#include "TritonMUSACommon/MMAEncodingUtils.h"
 #include "mlir/IR/Matchers.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "llvm/ADT/StringRef.h"
@@ -26,7 +27,7 @@ buildSqmmaAccumulatorCarrierInfo(Type type) {
       tensorTy
           ? dyn_cast<triton::gpu::MUSASqmmaEncodingAttr>(tensorTy.getEncoding())
           : triton::gpu::MUSASqmmaEncodingAttr();
-  if (!tensorTy || !mmaEnc || !mmaEnc.isPH1())
+  if (!tensorTy || !musa::supportsMusaSqmmaEncoding(mmaEnc))
     return failure();
 
   auto instrShape = mmaEnc.getInstrShape();

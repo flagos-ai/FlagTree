@@ -19,6 +19,7 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
 
+#include <climits>
 #include <optional>
 #include <type_traits>
 
@@ -49,7 +50,7 @@ public:
   typedef ArrayRef<int64_t> DimRefT;
   constexpr static int64_t kInitDivisibility = 1;
   constexpr static int64_t kDefaultContinueSize = 1;
-  constexpr static int64_t kDefaultContinualInterval = -1;
+  constexpr static int64_t kDefaultContinualInterval = INT32_MIN + 1;
 
 public:
   AxisInfoEx() : AxisInfoEx({}, {}, {}) {}

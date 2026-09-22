@@ -1,4 +1,5 @@
 import triton.experimental.tle.language as tle
+import pytest
 import torch
 import triton
 import triton.language as tl
@@ -24,7 +25,7 @@ def _barrier_d2d_kernel(out_ptr, device_dptr: tl.constexpr, mesh: tl.constexpr):
     )
     val = tl.load(remote_mem)
     tl.store(out_ptr + pid, val)
-    tle.distributed_barrier(device_dptr=device_dptr, space="device")
+    tle.distributed_barrier(mesh, device_dptr=device_dptr, space="device")
 
 
 def _ir_verify(output, device_dptr, grid):
@@ -38,7 +39,7 @@ def _ir_verify(output, device_dptr, grid):
     )
     assert "distributed_barrier" in compiled.asm["ttgir"]
     assert "remote_pointer" in compiled.asm["ttgir"]
-    assert "flagcxIntraBarrier" in compiled.asm['ptx']
+    assert "flagcxDevBarrierSync" in compiled.asm['ptx']
     assert "flagcxGetIntraPointerC" in compiled.asm['ptx']
     assert "flagcxDevCommGetIntraRank" in compiled.asm['ptx']
 
@@ -66,6 +67,7 @@ def _runtime_verify(output, device_dptr, grid, rank, world_size):
 
 class TestD2DBarrier:
 
+    @pytest.mark.require_tle("shard_id", "remote", "distributed_barrier")
     def test_tle_d2d_barrier(self):
         grid = (N, )
 

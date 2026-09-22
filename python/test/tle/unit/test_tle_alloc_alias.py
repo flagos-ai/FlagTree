@@ -77,6 +77,7 @@ class TestAllocAlias:
             semantic,
         )
 
+    @pytest.mark.require_tle("gpu.alloc")
     def test_alloc_alias_creates_typed_memdesc_alias_view(self):
         """alloc(alias=...) returns a typed view without creating a new allocation."""
         buffer, semantic = self._make_buffer([4, 16, 32])
@@ -100,6 +101,7 @@ class TestAllocAlias:
             64,
         )
 
+    @pytest.mark.require_tle("gpu.alloc")
     def test_alloc_alias_skips_mthreads_auto_layout_marker(self, monkeypatch):
         """The mthreads auto-layout marker only accepts local allocations."""
         from triton.experimental.tle.language.gpu import core as gpu_core
@@ -117,6 +119,7 @@ class TestAllocAlias:
         assert alias.handle == "alias_handle"
         assert semantic.builder.auto_shared_layout_handles == []
 
+    @pytest.mark.require_tle("gpu.alloc")
     def test_alloc_alias_rejects_init_value(self):
         buffer, semantic = self._make_buffer([4, 16, 32])
         init = self._FakeTensor("init", tl.float16)
@@ -131,6 +134,7 @@ class TestAllocAlias:
                 _semantic=semantic,
             )
 
+    @pytest.mark.require_tle("gpu.alloc")
     def test_alloc_alias_rejects_non_smem_buffer(self):
         """alias source must be a shared-memory buffered_tensor."""
         semantic = self._FakeSemantic()
@@ -144,6 +148,7 @@ class TestAllocAlias:
                 _semantic=semantic,
             )
 
+    @pytest.mark.require_tle("gpu.alloc")
     def test_alloc_alias_invalid_offset_type(self):
         """Bytes are a compile-time argument."""
         buffer, semantic = self._make_buffer([4, 16, 32])

@@ -35,6 +35,7 @@ using namespace mlir;
 namespace {
 
 enum class ReduceExecutionMode {
+  kFusionMode,
   kScalar,
   kVectorized,
 };
@@ -402,6 +403,10 @@ private:
       OpBuilder &builder, Location loc, ArrayRef<Value> outputs,
       ArrayRef<Value> inputs, const Reduction3DContext &context,
       const VectorizationPolicy &policy) const;
+
+  void applyFusionImpl(OpBuilder &builder, Location loc,
+                       ArrayRef<Value> outputs, ArrayRef<Value> inputs,
+                       const Reduction3DContext &context) const;
 
   void applyScalarImpl(OpBuilder &builder, Location loc,
                        ArrayRef<Value> outputs, ArrayRef<Value> inputs,
@@ -1652,6 +1657,93 @@ void ReduceGenerator::applyScalarImpl(OpBuilder &builder, Location loc,
       });
 }
 
+void ReduceGenerator::applyFusionImpl(OpBuilder &builder, Location loc,
+                                      ArrayRef<Value> outputs,
+                                      ArrayRef<Value> inputs,
+                                      const Reduction3DContext &context) const {
+  assert(inputs.size() == 1 &&
+         "Only reductions with a single parameter are supported");
+  if (context.reductionAxis == 2) {
+    auto defOp = inputs[0].getDefiningOp();
+    while (isa<memref::ReinterpretCastOp>(defOp)) {
+      defOp = defOp->getOperand(0).getDefiningOp();
+    }
+    assert(isa<memref::AllocaOp>(defOp));
+    Value inputBuffer = defOp->getResult(0);
+    auto memrefTy = cast<MemRefType>(inputBuffer.getType());
+    auto elementTy = memrefTy.getElementType();
+    unsigned vectorLength = kOaccSizeInBytes / triton::gcu::getBpe(elementTy);
+    auto loadType = VectorType::get({vectorLength}, elementTy);
+    assert(context.inputDims[0] == 1 && "input dim 0 must be 1");
+    SmallVector<int64_t> dims = {context.inputDims[1], context.inputDims[2]};
+    if (dims[1] < vectorLength) {
+      assert(combineOpDesc.supportsStagedFastLaneReduction());
+      dims[1] = vectorLength;
+    }
+    inputBuffer = builder.create<memref::ReinterpretCastOp>(
+        loc, MemRefType::get(dims, elementTy), inputBuffer, 0,
+        ArrayRef<int64_t>{dims}, ArrayRef<int64_t>{dims[1], 1});
+    auto ctx = builder.getContext();
+    auto loopUnrollAttr = LLVM::LoopUnrollAttr::get(
+        ctx, {}, {}, {}, BoolAttr::get(ctx, true), {}, {}, {});
+
+    auto loopAnnotationAttr =
+        LLVM::LoopAnnotationAttr::get(ctx, {}, {}, {}, loopUnrollAttr, {}, {},
+                                      {}, {}, {}, {}, {}, {}, {}, {}, {});
+
+    auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+    auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
+    auto loop0 = builder.create<scf::ForOp>(
+        loc, zero, builder.create<arith::ConstantIndexOp>(loc, dims[0]), one,
+        ValueRange{},
+        [&](OpBuilder &builder, Location loc, Value iter0,
+            ValueRange iterArgs) {
+          Value value = builder.create<vector::LoadOp>(
+              loc, loadType, inputBuffer, ValueRange{iter0, zero});
+          Value mask =
+              context.inputDims[2] < vectorLength
+                  ? builder
+                        .create<vector::ConstantMaskOp>(
+                            loc,
+                            VectorType::get(ArrayRef<int64_t>{vectorLength},
+                                            builder.getIntegerType(1)),
+                            DenseI64ArrayAttr::get(
+                                builder.getContext(),
+                                ArrayRef<int64_t>{context.inputDims[2]}))
+                        .getResult()
+                  : nullptr;
+          auto loop1 = builder.create<scf::ForOp>(
+              loc, builder.create<arith::ConstantIndexOp>(loc, vectorLength),
+              builder.create<arith::ConstantIndexOp>(loc, dims[1]),
+              builder.create<arith::ConstantIndexOp>(loc, vectorLength),
+              ValueRange{value},
+              [&](OpBuilder &builder, Location loc, Value iter1,
+                  ValueRange iterArgs) {
+                Value cur = builder.create<vector::LoadOp>(
+                    loc, loadType, inputBuffer, ValueRange{iter0, iter1});
+                SmallVector<Value> combineOperands = {iterArgs[0], cur};
+                builder.create<scf::YieldOp>(
+                    loc, combineOpDesc.applyVectorizedCombine(
+                             builder, loc, combineOperands, vectorLength)[0]);
+              });
+          loop1->setAttr(
+              StringAttr::get(ctx, LLVM::LoopAnnotationAttr::getMnemonic()),
+              loopAnnotationAttr);
+          auto result = triton::gcu::reduceVectorLanes(
+              builder, loc, combineOpDesc, loop1->getResult(0), mask)[0];
+          builder.create<memref::StoreOp>(loc, result, outputs[0],
+                                          ValueRange{zero, iter0, zero});
+          builder.create<scf::YieldOp>(loc);
+        });
+    loop0->setAttr(
+        StringAttr::get(ctx, LLVM::LoopAnnotationAttr::getMnemonic()),
+        loopAnnotationAttr);
+  } else {
+    llvm_unreachable(
+        "The current implementation only supports reduction axis 2");
+  }
+}
+
 std::optional<VectorizationPolicy>
 ReduceGenerator::tryBuildReduceAxis2WithPaddingPolicy(
     OpBuilder &builder, ArrayRef<Value> inputs,
@@ -1785,6 +1877,13 @@ ReduceGenerator::buildDispatchPlan(OpBuilder &builder, ArrayRef<Value> inputs,
   }
   std::optional<VectorizationPolicy> policy;
   if (context.reductionAxis == 2) {
+    if (llvm::any_of(inputs, [](auto input) {
+          return mlir::triton::gcu::isAllocaInputValue(input);
+        })) {
+      assert(inputs.size() == 1 &&
+             "Only reductions with a single parameter are supported");
+      return DispatchPlan{ReduceExecutionMode::kFusionMode, std::nullopt};
+    }
     policy = tryBuildReduceAxis2Policy(builder, inputs, context);
   } else if (context.reductionAxis == 1) {
     policy = tryBuildReduceAxis1Policy(builder, inputs, context);
@@ -1806,6 +1905,10 @@ void ReduceGenerator::applyReduce(OpBuilder &builder, Location loc,
                                   const DispatchPlan &dispatchPlan) const {
   if (dispatchPlan.executionMode == ReduceExecutionMode::kScalar) {
     applyScalarImpl(builder, loc, outputs, inputs, context);
+    return;
+  }
+  if (dispatchPlan.executionMode == ReduceExecutionMode::kFusionMode) {
+    applyFusionImpl(builder, loc, outputs, inputs, context);
     return;
   }
   assert(dispatchPlan.executionMode == ReduceExecutionMode::kVectorized &&

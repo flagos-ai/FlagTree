@@ -15,12 +15,12 @@
 #
 import re
 import os
+import subprocess
 import tempfile
-from pathlib import Path
 from triton.backends.compiler import BaseBackend, GPUTarget
-from triton.backends.enflame.backend import GCUBackend, _version_key, _triton_version
+from triton.backends.enflame.backend import GCUBackend, _version_key, _triton_version, collect_ptr_int_args
 from triton.backends.enflame import toolkit
-from triton.backends.enflame.toolkit import *
+from triton.backends.enflame.toolkit import resolve_gcu500_tool, PY_TOOLS_PATH, get_tops_home
 
 from dataclasses import dataclass
 import functools
@@ -99,6 +99,7 @@ def _patch_kernel_for_llir(kernel, arch):
 
 
 def make_ttir(mod, metadata, options):
+    metadata['ptr_int_args'] = sorted(collect_ptr_int_args(str(mod)))
     # Validate num_warps constraints
     if options.arch in ("gcu400", "gcu410") and options.num_warps > 4:
         print(mod)
@@ -179,14 +180,12 @@ def make_gcuir(mod, metadata, options):
     if options.arch == "gcu300":
         if not options.enable_i64:
             gcu_passes.gcu300.add_gcu64_type_verifier(pm)
-        if metadata['tle_raw']:
-            gcu_passes.gcu300.add_tle_convert_arg_to_memdesc(pm)
-            gcu_passes.gcu300.add_tle_remove_redundant_copy(pm)
         support_stride0 = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_BROADCAST")
-
         gcu_passes.gcu300.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
                                                               options.num_ctas, f'gcu:{options.arch}')
         gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
+        if metadata['tle_raw']:
+            gcu_passes.gcu300.add_tle_remove_redundant_copy(pm)
         gcu_passes.gcu300.add_tle_to_triton_gcu(pm, getattr(options, 'cluster_dims', (1, 1, 1)))
         gcu_passes.gcu300.add_triton_gpu_to_triton_gcu(pm)
         gcu_passes.gcu300.add_convert_tensor_pointer(pm)
@@ -208,18 +207,17 @@ def make_gcuir(mod, metadata, options):
     elif options.arch == "gcu400" or options.arch == "gcu410":
         if toolkit.get_bool_env("ENABLE_I64_CHECK"):
             gcu_passes.gcu400.add_gcu64_type_verifier(pm)
+        gcu_passes.gcu400.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
+                                                              options.num_ctas, f'gcu:{options.arch}')
+        gcu_passes.gcu400.add_triton_gcu_remove_layout_conversions(pm)
         if metadata['tle_raw']:
-            gcu_passes.gcu400.add_tle_convert_arg_to_memdesc(pm)
             gcu_passes.gcu400.add_tle_remove_redundant_copy(pm)
             if not metadata['tle_raw_deferred']:
                 gcu_passes.gcu400.add_tle_dslregion_inline(pm)
-        gcu_passes.gcu400.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
-                                                              options.num_ctas, f'gcu:{options.arch}')
-        gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
-        # customer Materialize tle_raw_deferred
         gcu_passes.gcu400.add_tle_to_triton_gcu(pm, getattr(options, 'cluster_dims', (1, 1, 1)))
         gcu_passes.gcu400.add_triton_gpu_to_triton_gcu(pm)
         gcu_passes.gcu400.add_tle_lower_pipe_to_gcuws(pm)
+        gcu_passes.gcu400.add_triton_gcu_optimize_dot_operands(pm)
         gcu_passes.gcu400.add_tritongcu_accelerate_matmul(pm)
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.gcu400.add_gcu_warp_specialization(pm, options.num_stages, dump_enabled, ws_inner_barrier_enabled)
@@ -228,14 +226,14 @@ def make_gcuir(mod, metadata, options):
         gcu_passes.gcu400.add_convert_triton_load_store_to_gcu_dma(pm, options.enable_stride0, options.redundant_sip)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.gcu400.add_triton_wgdot_to_gcu(pm)
-        gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
+        gcu_passes.gcu400.add_triton_gcu_remove_layout_conversions(pm)
         gcu_passes.gcu400.add_triton_gcu_data_layout_optimize(pm)
         gcu_passes.mlir.add_loop_invariant_code_motion(pm)
         gcu_passes.gcu400.add_annotate_dot_acc_reuse(pm)
         gcu_passes.gcu400.add_gcu_combine_ops(pm)
         gcu_passes.gcu400.add_gcu_triton_fusion(pm, options.arch)
         gcu_passes.gcu400.add_annotate_dot_fusion(pm)
-        gcu_passes.gcu400.add_annotate_dot_alloca_reuse(pm)
+        # gcu_passes.gcu400.add_annotate_dot_alloca_reuse(pm)
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.gcu400.add_flatten_triton_func(pm)
@@ -410,48 +408,72 @@ def _make_llir_gcu500(mod, metadata, options):
 
     llir = pipeline.translate_to_llvmir(result_mlir)
 
+    opt_bin = resolve_gcu500_tool('opt')
+
+    # Run opt to simplify LLVM IR before passing to llc.
+    # Use -simplifycfg + -instcombine instead of -O3: -O3 is too aggressive
+    # and can break control flow in kernels using tl.atomic_add + conditional
+    # return patterns (e.g. test_constexpr_if_return). These two passes are
+    # sufficient to transform nested br i1 (generated by scf.if elif chains)
+    # into switch, which llc EFGCU can handle correctly (COMPILER-313).
+    with tempfile.NamedTemporaryFile(suffix='.ll', mode='w', delete=False) as f:
+        f.write(llir)
+        kernel_ll = f.name
+    try:
+        optimized_ll = kernel_ll + '.opt.ll'
+        cp = subprocess.run([
+            opt_bin, '-S', '-simplifycfg', '-instcombine', '-vectorize-slp=false', '--vectorize-loops=false', kernel_ll,
+            '-o', optimized_ll
+        ], capture_output=True, text=True, timeout=60)
+        if cp.returncode == 0 and os.path.isfile(optimized_ll):
+            with open(optimized_ll, 'r') as f:
+                llir = f.read()
+    finally:
+        for p in [kernel_ll, optimized_ll]:
+            if os.path.isfile(p):
+                os.remove(p)
+
     if options.extern_libs:
-        import subprocess, shutil
         libdevice_path = None
         for name, path in options.extern_libs:
             if name == 'libdevice' and os.path.isfile(path):
                 libdevice_path = path
                 break
         if libdevice_path and ('@__ef_' in llir or '@__efvm_reflect' in llir):
-            llvm_link = shutil.which('llvm-link') or '/opt/tops/bin/llvm-link'
-            opt_bin = shutil.which('opt') or '/opt/tops/bin/opt'
-            reflect_stub = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib', 'efvm_reflect.ll')
+            llvm_link = resolve_gcu500_tool('llvm-link')
+            reflect_stub = str(PY_TOOLS_PATH / 'lib' / 'efvm_reflect.ll')
             link_inputs = [libdevice_path]
             if os.path.isfile(reflect_stub):
                 link_inputs.append(reflect_stub)
             with tempfile.NamedTemporaryFile(suffix='.ll', mode='w', delete=False) as f:
                 f.write(llir)
-                kernel_ll = f.name
+                linked_input_ll = f.name
             try:
-                linked_ll = kernel_ll + '.linked.ll'
-                optimized_ll = kernel_ll + '.opt.ll'
-                cp = subprocess.run([llvm_link, kernel_ll] + link_inputs + ['-S', '--only-needed', '-o', linked_ll],
-                                    capture_output=True, text=True, timeout=30)
+                linked_ll = linked_input_ll + '.linked.ll'
+                inline_optimized_ll = linked_input_ll + '.inline_opt.ll'
+                cp = subprocess.run([llvm_link, linked_input_ll] + link_inputs +
+                                    ['-S', '--only-needed', '-o', linked_ll], capture_output=True, text=True,
+                                    timeout=30)
                 if cp.returncode == 0 and os.path.isfile(linked_ll):
                     kernel_name_for_opt = metadata.get("name", "")
                     cp2 = subprocess.run([
                         opt_bin, '-S', '-O3', '-passes=always-inline,default<O3>', '-vectorize-slp=false',
                         '--vectorize-loops=false', '-internalize-public-api-list=' + kernel_name_for_opt, linked_ll,
-                        '-o', optimized_ll
+                        '-o', inline_optimized_ll
                     ], capture_output=True, text=True, timeout=60)
-                    if cp2.returncode != 0 or not os.path.isfile(optimized_ll):
+                    if cp2.returncode != 0 or not os.path.isfile(inline_optimized_ll):
                         cp2 = subprocess.run([
                             opt_bin, '-S', '-O3', '-vectorize-slp=false', '--vectorize-loops=false',
-                            '-internalize-public-api-list=' + kernel_name_for_opt, linked_ll, '-o', optimized_ll
+                            '-internalize-public-api-list=' + kernel_name_for_opt, linked_ll, '-o', inline_optimized_ll
                         ], capture_output=True, text=True, timeout=60)
-                    if cp2.returncode == 0 and os.path.isfile(optimized_ll):
-                        with open(optimized_ll, 'r') as f:
+                    if cp2.returncode == 0 and os.path.isfile(inline_optimized_ll):
+                        with open(inline_optimized_ll, 'r') as f:
                             llir = f.read()
                     else:
                         with open(linked_ll, 'r') as f:
                             llir = f.read()
             finally:
-                for p in [kernel_ll, linked_ll, optimized_ll]:
+                for p in [linked_input_ll, linked_ll, inline_optimized_ll]:
                     if os.path.isfile(p):
                         os.remove(p)
 
@@ -553,18 +575,13 @@ class GCUOptions:
                           f"Triton-gcu automatically resets num_warps to 8!")
 
         ## register the libdevice
-        default_libdir = Path(__file__).parent / 'lib'
+        default_libdir = os.path.join(get_tops_home(), 'lib', 'gcu')
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         if not extern_libs.get('libdevice', None):
             libdevice_path = os.getenv("TRITON_LIBDEVICE_PATH", "")
             if self.arch == "gcu500":
                 if not libdevice_path or not os.path.isfile(libdevice_path):
-                    _sys_libdir = '/opt/tops/lib/gcu'
-                    candidates = [
-                        str(default_libdir / 'libdevice.bc'),
-                        f'{_sys_libdir}/gculibdevice.efgcu_tops.bc',
-                        f'{_sys_libdir}/gculibdevice.gcu500.bc',
-                    ]
+                    candidates = [f'{default_libdir}/gculibdevice.efgcu_tops.bc']
                     libdevice_path = next((p for p in candidates if os.path.isfile(p)), candidates[0])
                     extern_libs['libdevice'] = libdevice_path
 

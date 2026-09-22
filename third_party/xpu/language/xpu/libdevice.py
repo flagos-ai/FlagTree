@@ -1383,7 +1383,7 @@ def rcbrt(arg0, _semantic=None):
 def j0(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("Unsupported", core.dtype("fp32")),
+            (core.dtype("fp32"), ): ("_ZN3xpu3j0fEf", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("Unsupported", core.dtype("fp64")),
         }, is_pure=True, _semantic=_semantic)
 
@@ -1392,7 +1392,7 @@ def j0(arg0, _semantic=None):
 def j1(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("Unsupported", core.dtype("fp32")),
+            (core.dtype("fp32"), ): ("_ZN3xpu3j1fEf", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("Unsupported", core.dtype("fp64")),
         }, is_pure=True, _semantic=_semantic)
 
@@ -1401,7 +1401,7 @@ def j1(arg0, _semantic=None):
 def y0(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("Unsupported", core.dtype("fp32")),
+            (core.dtype("fp32"), ): ("_ZN3xpu3y0fEf", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("Unsupported", core.dtype("fp64")),
         }, is_pure=True, _semantic=_semantic)
 
@@ -1410,7 +1410,7 @@ def y0(arg0, _semantic=None):
 def y1(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("Unsupported", core.dtype("fp32")),
+            (core.dtype("fp32"), ): ("_ZN3xpu3y1fEf", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("Unsupported", core.dtype("fp64")),
         }, is_pure=True, _semantic=_semantic)
 

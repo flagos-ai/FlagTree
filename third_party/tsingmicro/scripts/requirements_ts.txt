@@ -1,0 +1,7 @@
+gitpython
+nanobind
+torch==2.11.0
+torchvision
+pytest
+pyyaml
+pybind11

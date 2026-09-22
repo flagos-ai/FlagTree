@@ -1,10 +1,14 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #ifdef __TLE__
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/PriorityWorklist.h"
 #endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -32,6 +36,645 @@ static void addNamedAttrs(Operation *op, DictionaryAttr dictAttrs) {
     if (!op->hasAttr(attr.getName()))
       op->setAttr(attr.getName(), attr.getValue());
 }
+
+#ifdef __TLE__
+struct MusaTleEncodingInfo {
+  Attribute encoding;
+  // A varying hint may be replaced by a hard hint. Hard hints represent an
+  // explicit set_layout result and must not be silently changed.
+  bool mayVary = false;
+
+  explicit operator bool() const { return bool(encoding); }
+};
+
+static bool musaTleEncodingsMayVary(Operation *op) {
+  return isa<triton::JoinOp, triton::SplitOp, triton::ReshapeOp, triton::CatOp,
+             triton::TransOp>(op);
+}
+
+static LogicalResult mergeMusaTleEncodingInfo(MusaTleEncodingInfo oldInfo,
+                                              MusaTleEncodingInfo newInfo,
+                                              Operation *op,
+                                              MusaTleEncodingInfo &merged) {
+  if (!oldInfo) {
+    merged = newInfo;
+    return success();
+  }
+  if (!newInfo) {
+    merged = oldInfo;
+    return success();
+  }
+  if (oldInfo.encoding == newInfo.encoding) {
+    merged = oldInfo;
+    merged.mayVary = oldInfo.mayVary && newInfo.mayVary;
+    return success();
+  }
+  if (oldInfo.mayVary && !newInfo.mayVary) {
+    merged = newInfo;
+    return success();
+  }
+  if (!oldInfo.mayVary && newInfo.mayVary) {
+    merged = oldInfo;
+    return success();
+  }
+  if (oldInfo.mayVary && newInfo.mayVary) {
+    merged = oldInfo;
+    return success();
+  }
+
+  op->emitOpError("found conflicting MUSA TLE encoding hints for value:\n  ")
+      << oldInfo.encoding << "\nand\n  " << newInfo.encoding;
+  return failure();
+}
+
+using MusaTleEncodingMap = llvm::MapVector<Value, MusaTleEncodingInfo>;
+using MusaTleEncodingWorklist = llvm::PriorityWorklist<Value>;
+
+struct MusaTleLayoutDomainMember {
+  Attribute encoding;
+  Operation *op;
+};
+
+struct MusaTleLayoutProducerFamily {
+  SmallVector<Value> originalOperands;
+  SmallVector<MusaTleLayoutDomainMember> members;
+};
+
+using MusaTleLayoutProducerFamilies =
+    llvm::MapVector<Operation *, MusaTleLayoutProducerFamily>;
+
+static bool isMusaTleLayoutPolymorphicProducer(Operation *op) {
+  if (op->getNumRegions() != 0 || op->getNumSuccessors() != 0 ||
+      op->getNumResults() != 1 || !isPure(op) ||
+      op->hasTrait<OpTrait::IsTerminator>() ||
+      isa<mlir::triton::musa_tle::SetLayoutOp, triton::CallOp>(op) ||
+      getMemAccessPtr(op))
+    return false;
+
+  auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+  return resultType && !resultType.getEncoding();
+}
+
+static Value
+materializeMusaTleLayoutDomain(Value value, Attribute encoding,
+                               MusaTleLayoutProducerFamilies &families) {
+  Operation *producer = value.getDefiningOp();
+  if (!producer || !isMusaTleLayoutPolymorphicProducer(producer))
+    return value;
+
+  auto [it, inserted] = families.insert(
+      {producer, MusaTleLayoutProducerFamily{
+                     llvm::to_vector(producer->getOperands()), {}}});
+  MusaTleLayoutProducerFamily &family = it->second;
+  for (const MusaTleLayoutDomainMember &member : family.members)
+    if (member.encoding == encoding)
+      return member.op->getResult(0);
+
+  Operation *member = producer;
+  if (!family.members.empty()) {
+    OpBuilder builder(producer);
+    builder.setInsertionPointAfter(family.members.back().op);
+    member = builder.clone(*producer);
+    member->setOperands(family.originalOperands);
+  }
+  family.members.push_back({encoding, member});
+  SmallVector<Value> originalOperands = family.originalOperands;
+
+  Attribute operandEncoding = inferSrcEncoding(producer, encoding);
+  if (!operandEncoding)
+    return member->getResult(0);
+
+  for (auto [index, operand] : llvm::enumerate(originalOperands)) {
+    if (!isa<RankedTensorType>(operand.getType()))
+      continue;
+    member->setOperand(index, materializeMusaTleLayoutDomain(
+                                  operand, operandEncoding, families));
+  }
+  return member->getResult(0);
+}
+
+static void mergeMusaTleLayoutProducerDomains(
+    const MusaTleLayoutProducerFamilies &families) {
+  for (const auto &[_, family] : families) {
+    llvm::MapVector<Type, Operation *> representatives;
+    for (const MusaTleLayoutDomainMember &domain : family.members) {
+      Operation *member = domain.op;
+      Type resultType = member->getResult(0).getType();
+      auto [it, inserted] = representatives.insert({resultType, member});
+      if (inserted)
+        continue;
+      member->getResult(0).replaceAllUsesWith(it->second->getResult(0));
+      member->erase();
+    }
+  }
+}
+
+static LogicalResult updateMusaTleEncoding(ArrayRef<Value> values,
+                                           MusaTleEncodingInfo info,
+                                           FuncOp func,
+                                           MusaTleEncodingMap &valueToEncoding,
+                                           MusaTleEncodingWorklist &worklist) {
+  for (Value value : values) {
+    if (!isa<RankedTensorType>(value.getType()))
+      continue;
+
+    auto [it, inserted] = valueToEncoding.insert({value, info});
+    if (!inserted) {
+      Operation *diagOp = value.getDefiningOp();
+      if (!diagOp)
+        if (auto blockArg = dyn_cast<BlockArgument>(value))
+          diagOp = blockArg.getOwner()->getParentOp();
+      if (!diagOp)
+        diagOp = func.getOperation();
+      MusaTleEncodingInfo merged;
+      if (failed(mergeMusaTleEncodingInfo(it->second, info, diagOp, merged)))
+        return failure();
+      if (merged.encoding == it->second.encoding &&
+          merged.mayVary == it->second.mayVary)
+        continue;
+      it->second = merged;
+    }
+    worklist.insert(value);
+  }
+  return success();
+}
+
+static LogicalResult propagateMusaTleEncodingHints(
+    FuncOp func, const MusaTleEncodingMap &boundarySeeds, bool &changed) {
+  SmallVector<mlir::triton::musa_tle::SetLayoutOp> setLayoutOps;
+  func.walk([&](mlir::triton::musa_tle::SetLayoutOp op) {
+    setLayoutOps.push_back(op);
+  });
+  if (setLayoutOps.empty() && boundarySeeds.empty())
+    return success();
+
+  MusaTleLayoutProducerFamilies producerFamilies;
+  for (mlir::triton::musa_tle::SetLayoutOp op : setLayoutOps) {
+    Value source = materializeMusaTleLayoutDomain(
+        op.getSrc(), op.getTargetEncoding(), producerFamilies);
+    op->setOperand(0, source);
+  }
+
+  SmallVector<std::pair<Value, MusaTleEncodingInfo>> seedEncodings;
+  for (mlir::triton::musa_tle::SetLayoutOp op : setLayoutOps) {
+    // The source is allowed to serve multiple explicit layout domains. The
+    // result is the hard user contract introduced by set_layout.
+    seedEncodings.push_back(
+        {op.getSrc(), MusaTleEncodingInfo{op.getTargetEncoding(), true}});
+    seedEncodings.push_back(
+        {op.getResult(), MusaTleEncodingInfo{op.getTargetEncoding(), false}});
+  }
+  for (const auto &[value, info] : boundarySeeds)
+    seedEncodings.push_back({value, info});
+
+  MusaTleEncodingMap valueToEncoding;
+  MusaTleEncodingWorklist worklist;
+  for (auto &[value, info] : seedEncodings) {
+    if (failed(updateMusaTleEncoding({value}, info, func, valueToEncoding,
+                                     worklist)))
+      return failure();
+  }
+
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    MusaTleEncodingInfo info = valueToEncoding[value];
+    assert(info && "worklist value must have a MUSA TLE encoding");
+
+    for (OpOperand &use : value.getUses()) {
+      Operation *op = use.getOwner();
+
+      if (isa<scf::ForOp, scf::WhileOp>(op)) {
+        int offset = 3 * isa<scf::ForOp>(op);
+        int tiedIndex = static_cast<int>(use.getOperandNumber()) - offset;
+        if (tiedIndex < 0)
+          continue;
+        auto tiedArgs = getTiedArgs(op, tiedIndex);
+        if (failed(updateMusaTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                         worklist)))
+          return failure();
+        continue;
+      }
+
+      if (isa<scf::YieldOp, scf::ConditionOp>(op)) {
+        Operation *parentOp = op->getParentOp();
+        if (!isa_and_nonnull<scf::ForOp, scf::WhileOp, scf::IfOp>(parentOp))
+          continue;
+        int offset = isa<scf::ConditionOp>(op);
+        int tiedIndex = static_cast<int>(use.getOperandNumber()) - offset;
+        if (tiedIndex < 0)
+          continue;
+        auto tiedArgs = getTiedArgs(parentOp, tiedIndex);
+        if (failed(updateMusaTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                         worklist)))
+          return failure();
+        continue;
+      }
+
+      if (auto wait = dyn_cast<mlir::triton::musa_tle::SqmmaWaitOp>(op)) {
+        if (failed(updateMusaTleEncoding({wait.getOutput()}, info, func,
+                                         valueToEncoding, worklist)))
+          return failure();
+        continue;
+      }
+
+      if (auto sqmma = dyn_cast<mlir::triton::musa_tle::SqmmaOp>(op)) {
+        if (use.get() == sqmma.getC() &&
+            failed(updateMusaTleEncoding({sqmma.getD()}, info, func,
+                                         valueToEncoding, worklist)))
+          return failure();
+        continue;
+      }
+
+      if (auto dot = dyn_cast<triton::DotOpInterface>(op)) {
+        // A/B use dot-operand encodings, while C and D use the parent MMA
+        // encoding. Only C and D are layout-equivalent across a dot.
+        if (use.getOperandNumber() == 2 &&
+            failed(updateMusaTleEncoding({dot.getD()}, info, func,
+                                         valueToEncoding, worklist)))
+          return failure();
+        continue;
+      }
+
+      if (isa<mlir::triton::musa_tle::SetLayoutOp>(op))
+        continue;
+
+      if (isa<mlir::triton::musa_tle::LocalPointersOp>(op)) {
+        if (failed(updateMusaTleEncoding(
+                llvm::to_vector_of<Value>(op->getResults()), info, func,
+                valueToEncoding, worklist)))
+          return failure();
+        continue;
+      }
+
+      Attribute dstEncoding = inferDstEncoding(op, info.encoding);
+      if (!dstEncoding)
+        continue;
+      MusaTleEncodingInfo dstInfo{dstEncoding,
+                                  info.mayVary || musaTleEncodingsMayVary(op)};
+      if (failed(
+              updateMusaTleEncoding(llvm::to_vector_of<Value>(op->getResults()),
+                                    dstInfo, func, valueToEncoding, worklist)))
+        return failure();
+    }
+
+    if (auto opResult = dyn_cast<OpResult>(value)) {
+      Operation *definingOp = opResult.getOwner();
+      if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(definingOp)) {
+        auto tiedArgs = getTiedArgs(definingOp, opResult.getResultNumber());
+        if (failed(updateMusaTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                         worklist)))
+          return failure();
+      } else if (auto wait = dyn_cast<mlir::triton::musa_tle::SqmmaWaitOp>(
+                     definingOp)) {
+        if (failed(updateMusaTleEncoding({wait.getInput()}, info, func,
+                                         valueToEncoding, worklist)))
+          return failure();
+      } else if (auto sqmma =
+                     dyn_cast<mlir::triton::musa_tle::SqmmaOp>(definingOp)) {
+        if (failed(updateMusaTleEncoding({sqmma.getC()}, info, func,
+                                         valueToEncoding, worklist)))
+          return failure();
+      } else if (isa<triton::DotOpInterface>(definingOp)) {
+        if (failed(updateMusaTleEncoding({definingOp->getOperand(2)}, info,
+                                         func, valueToEncoding, worklist)))
+          return failure();
+      } else if (auto localPointers =
+                     dyn_cast<mlir::triton::musa_tle::LocalPointersOp>(
+                         definingOp)) {
+        SmallVector<Value> tensorIndices;
+        for (Value index : localPointers.getIndices())
+          if (isa<RankedTensorType>(index.getType()))
+            tensorIndices.push_back(index);
+        if (failed(updateMusaTleEncoding(tensorIndices, info, func,
+                                         valueToEncoding, worklist)))
+          return failure();
+      } else if (!isa<mlir::triton::musa_tle::SetLayoutOp>(definingOp)) {
+        Attribute srcEncoding = inferSrcEncoding(definingOp, info.encoding);
+        if (srcEncoding) {
+          MusaTleEncodingInfo srcInfo{
+              srcEncoding, info.mayVary || musaTleEncodingsMayVary(definingOp)};
+          SmallVector<Value> tensorOperands;
+          for (Value operand : definingOp->getOperands())
+            if (isa<RankedTensorType>(operand.getType()))
+              tensorOperands.push_back(operand);
+          if (failed(updateMusaTleEncoding(tensorOperands, srcInfo, func,
+                                           valueToEncoding, worklist)))
+            return failure();
+        }
+      }
+    } else if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+      Operation *parentOp = blockArg.getOwner()->getParentOp();
+      if (isa<scf::ForOp, scf::WhileOp>(parentOp)) {
+        int offset = isa<scf::ForOp>(parentOp);
+        int tiedIndex = static_cast<int>(blockArg.getArgNumber()) - offset;
+        if (tiedIndex < 0)
+          continue;
+        auto tiedArgs = getTiedArgs(parentOp, tiedIndex);
+        if (failed(updateMusaTleEncoding(tiedArgs, info, func, valueToEncoding,
+                                         worklist)))
+          return failure();
+      }
+    }
+  }
+
+  for (auto &[value, info] : valueToEncoding) {
+    auto existingType = cast<RankedTensorType>(value.getType());
+    if (existingType.getEncoding() != info.encoding) {
+      auto newType = existingType.cloneWithEncoding(info.encoding);
+      value.setType(newType);
+      changed = true;
+      if (auto opResult = dyn_cast<OpResult>(value)) {
+        if (auto constant = dyn_cast<arith::ConstantOp>(opResult.getOwner())) {
+          if (auto elements =
+                  dyn_cast<DenseElementsAttr>(constant.getValueAttr()))
+            constant.setValueAttr(elements.reshape(newType));
+        }
+      }
+    }
+
+    if (auto opResult = dyn_cast<OpResult>(value))
+      setTleExplicitResultEncoding(opResult, info.encoding);
+  }
+
+  mergeMusaTleLayoutProducerDomains(producerFamilies);
+
+  WalkResult memoryWalk = func.walk([&](Operation *op) {
+    if (!getMemAccessPtr(op))
+      return WalkResult::advance();
+
+    Attribute explicitEncoding;
+    if (failed(inferTleExplicitMemoryEncoding(op, explicitEncoding)))
+      return WalkResult::interrupt();
+    if (explicitEncoding)
+      setTleExplicitMemoryEncoding(op, explicitEncoding);
+    return WalkResult::advance();
+  });
+  if (memoryWalk.wasInterrupted())
+    return failure();
+
+  return success();
+}
+
+using MusaTleFunctionSeeds = llvm::MapVector<Operation *, MusaTleEncodingMap>;
+
+struct MusaTleCallSite {
+  triton::CallOp call;
+  FuncOp caller;
+  FuncOp callee;
+};
+
+static LogicalResult addMusaTleBoundarySeed(MusaTleFunctionSeeds &seeds,
+                                            FuncOp func, Value value,
+                                            Attribute encoding) {
+  if (!encoding || !isa<RankedTensorType>(value.getType()))
+    return success();
+
+  auto [funcIt, _] = seeds.insert({func.getOperation(), MusaTleEncodingMap{}});
+  MusaTleEncodingMap &funcSeeds = funcIt->second;
+  MusaTleEncodingInfo info{encoding, false};
+  auto [valueIt, inserted] = funcSeeds.insert({value, info});
+  if (inserted)
+    return success();
+
+  MusaTleEncodingInfo merged;
+  if (failed(mergeMusaTleEncodingInfo(valueIt->second, info,
+                                      func.getOperation(), merged)))
+    return failure();
+  valueIt->second = merged;
+  return success();
+}
+
+static bool hasSameMusaTleAbiTensorType(RankedTensorType lhs,
+                                        RankedTensorType rhs) {
+  return lhs.getShape() == rhs.getShape() &&
+         lhs.getElementType() == rhs.getElementType();
+}
+
+static LogicalResult
+resolveMusaTleAbiSlot(FuncOp callee, StringRef slotKind, unsigned slotIndex,
+                      Type signatureType,
+                      ArrayRef<std::pair<FuncOp, Value>> members,
+                      MusaTleFunctionSeeds &nextSeeds) {
+  auto signatureTensor = dyn_cast<RankedTensorType>(signatureType);
+  if (!signatureTensor) {
+    for (const auto &[_, value] : members) {
+      if (value.getType() != signatureType)
+        return callee.emitOpError()
+               << "found incompatible MUSA TLE " << slotKind << " #"
+               << slotIndex << " ABI type: expected " << signatureType
+               << " but found " << value.getType();
+    }
+    return success();
+  }
+
+  Attribute encoding = signatureTensor.getEncoding();
+  for (const auto &[_, value] : members) {
+    auto valueType = dyn_cast<RankedTensorType>(value.getType());
+    if (!valueType || !hasSameMusaTleAbiTensorType(signatureTensor, valueType))
+      return callee.emitOpError()
+             << "found incompatible MUSA TLE " << slotKind << " #" << slotIndex
+             << " ABI type: expected tensor shape and element "
+                "type "
+             << signatureTensor << " but found " << value.getType();
+
+    Attribute valueEncoding = valueType.getEncoding();
+    if (!valueEncoding)
+      continue;
+    if (encoding && encoding != valueEncoding)
+      return callee.emitOpError()
+             << "found conflicting MUSA TLE ABI encodings for " << slotKind
+             << " #" << slotIndex << ":\n  " << encoding << "\nand\n  "
+             << valueEncoding;
+    encoding = valueEncoding;
+  }
+
+  if (!encoding)
+    return success();
+  for (const auto &[func, value] : members) {
+    auto valueType = cast<RankedTensorType>(value.getType());
+    if (!valueType.getEncoding() &&
+        failed(addMusaTleBoundarySeed(nextSeeds, func, value, encoding)))
+      return failure();
+  }
+  return success();
+}
+
+static LogicalResult
+collectMusaTleCallSites(ModuleOp mod,
+                        SmallVectorImpl<MusaTleCallSite> &callSites) {
+  for (FuncOp caller : mod.getOps<FuncOp>()) {
+    WalkResult result = caller.walk([&](triton::CallOp call) {
+      FuncOp callee = mod.lookupSymbol<FuncOp>(call.getCallee());
+      if (!callee) {
+        call.emitOpError("could not resolve callee while propagating MUSA "
+                         "TLE ABI encodings");
+        return WalkResult::interrupt();
+      }
+      callSites.push_back({call, caller, callee});
+      return WalkResult::advance();
+    });
+    if (result.wasInterrupted())
+      return failure();
+  }
+  return success();
+}
+
+static SmallVector<ReturnOp> collectMusaTleReturns(FuncOp func) {
+  SmallVector<ReturnOp> returns;
+  func.walk([&](ReturnOp op) { returns.push_back(op); });
+  return returns;
+}
+
+static LogicalResult
+resolveMusaTleAbiBoundaries(ArrayRef<FuncOp> funcs,
+                            ArrayRef<MusaTleCallSite> callSites,
+                            MusaTleFunctionSeeds &nextSeeds) {
+  for (FuncOp callee : funcs) {
+    SmallVector<MusaTleCallSite> calleeCalls;
+    for (const MusaTleCallSite &callSite : callSites)
+      if (callSite.callee == callee)
+        calleeCalls.push_back(callSite);
+
+    for (unsigned index = 0; index < callee.getNumArguments(); ++index) {
+      SmallVector<std::pair<FuncOp, Value>> members;
+      if (!callee.isExternal())
+        members.push_back({callee, callee.getArgument(index)});
+      for (MusaTleCallSite callSite : calleeCalls) {
+        if (index >= callSite.call.getNumOperands())
+          return callSite.call.emitOpError()
+                 << "has too few operands for MUSA TLE ABI argument #" << index;
+        members.push_back({callSite.caller, callSite.call.getOperand(index)});
+      }
+      if (failed(resolveMusaTleAbiSlot(callee, "argument", index,
+                                       callee.getArgumentTypes()[index],
+                                       members, nextSeeds)))
+        return failure();
+    }
+
+    SmallVector<ReturnOp> returns = collectMusaTleReturns(callee);
+    for (ReturnOp returnOp : returns)
+      if (returnOp.getNumOperands() != callee.getNumResults())
+        return returnOp.emitOpError()
+               << "has a result count inconsistent with function @"
+               << callee.getName();
+
+    for (unsigned index = 0; index < callee.getNumResults(); ++index) {
+      SmallVector<std::pair<FuncOp, Value>> members;
+      for (ReturnOp returnOp : returns)
+        members.push_back({callee, returnOp.getOperand(index)});
+      for (MusaTleCallSite callSite : calleeCalls) {
+        if (index >= callSite.call.getNumResults())
+          return callSite.call.emitOpError()
+                 << "has too few results for MUSA TLE ABI result #" << index;
+        members.push_back({callSite.caller, callSite.call.getResult(index)});
+      }
+      if (failed(resolveMusaTleAbiSlot(callee, "result", index,
+                                       callee.getResultTypes()[index], members,
+                                       nextSeeds)))
+        return failure();
+    }
+  }
+  return success();
+}
+
+static LogicalResult
+synchronizeMusaTleFunctionTypes(ArrayRef<FuncOp> funcs,
+                                ArrayRef<MusaTleCallSite> callSites) {
+  for (FuncOp func : funcs) {
+    SmallVector<Type> argumentTypes(func.getArgumentTypes());
+    SmallVector<Type> resultTypes(func.getResultTypes());
+    if (!func.isExternal()) {
+      argumentTypes.assign(func.getBlocks().front().getArgumentTypes().begin(),
+                           func.getBlocks().front().getArgumentTypes().end());
+      SmallVector<ReturnOp> returns = collectMusaTleReturns(func);
+      if (!returns.empty()) {
+        resultTypes.assign(returns.front().getOperandTypes().begin(),
+                           returns.front().getOperandTypes().end());
+        for (ReturnOp returnOp : llvm::drop_begin(returns))
+          if (!llvm::equal(returnOp.getOperandTypes(), resultTypes))
+            return returnOp.emitOpError()
+                   << "does not match the converged MUSA TLE result ABI of "
+                      "function @"
+                   << func.getName();
+      }
+    }
+    func.setFunctionType(
+        FunctionType::get(func.getContext(), argumentTypes, resultTypes));
+  }
+
+  for (MusaTleCallSite callSite : callSites) {
+    FunctionType calleeType = callSite.callee.getFunctionType();
+    if (!llvm::equal(callSite.call.getOperandTypes(), calleeType.getInputs()))
+      return callSite.call.emitOpError()
+             << "operands do not match the converged MUSA TLE ABI for @"
+             << callSite.callee.getName();
+    if (callSite.call.getNumResults() != calleeType.getNumResults())
+      return callSite.call.emitOpError()
+             << "result count does not match the converged MUSA TLE ABI for @"
+             << callSite.callee.getName();
+    for (auto [result, type] :
+         llvm::zip(callSite.call.getResults(), calleeType.getResults()))
+      result.setType(type);
+  }
+  return success();
+}
+
+static LogicalResult applyMusaTleEncodingHints(ModuleOp mod) {
+  bool hasSetLayout = false;
+  mod.walk([&](mlir::triton::musa_tle::SetLayoutOp) {
+    hasSetLayout = true;
+    return WalkResult::interrupt();
+  });
+  if (!hasSetLayout)
+    return success();
+
+  SmallVector<FuncOp> funcs(llvm::to_vector(mod.getOps<FuncOp>()));
+  SmallVector<MusaTleCallSite> callSites;
+  if (failed(collectMusaTleCallSites(mod, callSites)))
+    return failure();
+
+  unsigned tensorValueCount = 0;
+  mod.walk([&](Operation *op) {
+    tensorValueCount += llvm::count_if(op->getResults(), [](Value value) {
+      return isa<RankedTensorType>(value.getType());
+    });
+    for (Region &region : op->getRegions())
+      for (Block &block : region)
+        tensorValueCount +=
+            llvm::count_if(block.getArguments(), [](BlockArgument argument) {
+              return isa<RankedTensorType>(argument.getType());
+            });
+  });
+
+  MusaTleFunctionSeeds boundarySeeds;
+  for (unsigned iteration = 0; iteration <= tensorValueCount + 1; ++iteration) {
+    bool changed = false;
+    for (FuncOp func : funcs) {
+      auto it = boundarySeeds.find(func.getOperation());
+      MusaTleEncodingMap emptySeeds;
+      const MusaTleEncodingMap &funcSeeds =
+          it == boundarySeeds.end() ? emptySeeds : it->second;
+      if (failed(propagateMusaTleEncodingHints(func, funcSeeds, changed)))
+        return failure();
+    }
+
+    MusaTleFunctionSeeds nextSeeds;
+    if (failed(resolveMusaTleAbiBoundaries(funcs, callSites, nextSeeds)))
+      return failure();
+    if (nextSeeds.empty())
+      return synchronizeMusaTleFunctionTypes(funcs, callSites);
+    if (!boundarySeeds.empty() && !changed) {
+      mod.emitError("MUSA TLE function ABI propagation did not make "
+                    "progress");
+      return failure();
+    }
+    boundarySeeds = std::move(nextSeeds);
+  }
+
+  mod.emitError("MUSA TLE function ABI propagation did not converge");
+  return failure();
+}
+#endif // __TLE__
 
 template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
   using OpConversionPattern<Op>::OpConversionPattern;
@@ -274,6 +917,34 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
                                                b);
     }
     c = triton::gpu::ConvertLayoutOp::create(rewriter, c.getLoc(), retType, c);
+
+#ifdef __TLE__
+    Attribute explicitEncoding =
+        getTleExplicitResultEncoding(op.getOperation(), 0);
+    auto explicitSqmma =
+        dyn_cast_or_null<triton::gpu::MUSASqmmaEncodingAttr>(explicitEncoding);
+    auto resultSqmma = dyn_cast_or_null<triton::gpu::MUSASqmmaEncodingAttr>(
+        origType.getEncoding());
+    if (resultSqmma && explicitSqmma != resultSqmma)
+      return op.emitOpError(
+          "has an SQMMA result encoding without a matching explicit MUSA "
+          "TLE layout contract");
+
+    if (explicitSqmma) {
+      auto newDot = triton::DotOp::create(rewriter, op.getLoc(), retType, a, b,
+                                          c, adaptor.getInputPrecision(),
+                                          adaptor.getMaxNumImpreciseAcc());
+      addNamedAttrs(newDot, adaptor.getAttributes());
+      newDot->removeAttr(getTleExplicitEncodingAttrName(0));
+      setTleExplicitSqmmaEncoding(newDot.getOperation(), explicitSqmma);
+
+      auto boundary = triton::gpu::ConvertLayoutOp::create(
+          rewriter, op.getLoc(), origType, newDot.getResult());
+      setTleExplicitResultEncoding(boundary.getOperation(), 0, explicitSqmma);
+      rewriter.replaceOp(op, boundary.getResult());
+      return success();
+    }
+#endif // __TLE__
 
     addNamedAttrs(rewriter.replaceOpWithNewOp<triton::DotOp>(
                       op, retType, a, b, c, adaptor.getInputPrecision(),
@@ -850,17 +1521,46 @@ struct MUSATLEInsertTilePattern
   }
 };
 
+struct MUSATLESetLayoutPattern
+    : public OpConversionPattern<mlir::triton::musa_tle::SetLayoutOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(mlir::triton::musa_tle::SetLayoutOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedType = getTypeConverter()->convertType(op.getResult());
+    auto resultType = dyn_cast<RankedTensorType>(convertedType);
+    if (!resultType)
+      return rewriter.notifyMatchFailure(op, "expected ranked tensor result");
+
+    Value src = adaptor.getSrc();
+    if (src.getType() == resultType) {
+      if (auto srcResult = dyn_cast<OpResult>(src))
+        setTleExplicitResultEncoding(srcResult, op.getTargetEncoding());
+      rewriter.replaceOp(op, src);
+      return success();
+    }
+
+    auto convert = rewriter.replaceOpWithNewOp<triton::gpu::ConvertLayoutOp>(
+        op, resultType, src);
+    setTleExplicitResultEncoding(convert.getOperation(), 0,
+                                 op.getTargetEncoding());
+    return success();
+  }
+};
+
 void populateMUSATlePatterns(TritonGPUTypeConverter &typeConverter,
                              RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
-  patterns.add<GenericOpPattern<mlir::triton::musa_tle::LocalPointersOp>,
+  patterns.add<MUSATLESetLayoutPattern,
+               GenericOpPattern<mlir::triton::musa_tle::LocalPointersOp>,
                GenericOpPattern<mlir::triton::musa_tle::ExclusiveCumsumOp>,
                GenericOpPattern<mlir::triton::musa_tle::SqmmaOp>,
                GenericOpPattern<mlir::triton::musa_tle::SqmmaWaitOp>,
                MUSATLEExtractTilePattern, MUSATLEInsertTilePattern>(
       typeConverter, context);
 }
-#endif
+#endif // __TLE__
 
 class ConvertTritonToTritonGPU
     : public triton::impl::ConvertTritonToTritonGPUBase<
@@ -903,8 +1603,15 @@ public:
     mod->setAttr(AttrNumCTAsName, b.getI32IntegerAttr(numCTAs));
     mod->setAttr(AttrTargetName, b.getStringAttr(this->target.getValue()));
 
+#ifdef __TLE__
+    if (failed(applyMusaTleEncodingHints(mod)))
+      return signalPassFailure();
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
+#else
+    if (failed(applyPartialConversion(mod, target, std::move(patterns))))
+      return signalPassFailure();
+#endif // __TLE__
   }
 };
 

@@ -7,7 +7,11 @@ add_subdirectory(Transforms)
 # -----------------------------------------------------------------------------
 # Core Library (libtriton_gcu300_core.so)
 # -----------------------------------------------------------------------------
-# Link the top-level in-tree Triton and MLIR/LLVM targets.
+# Use Triton's MLIR/LLVM libraries (from tritonlang_llvm_build)
+# NOT gcu_compiler's LLVM to avoid conflicts.
+# The Triton .o files embedded in this shared library reference many MLIR
+# symbols (registrations, translations, conversion patterns), so we must
+# link all the MLIR static libraries they depend on.
 set(_core_dialect_libs
   GCUIR_gcu300
   TritonGCUIR_gcu300
@@ -76,8 +80,4 @@ set_target_properties(triton_gcu300_core PROPERTIES
 
 message(STATUS "[gcu300] Built core library: libtriton_gcu300_core.so")
 
-# Install core library
-install(TARGETS triton_gcu300_core
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION lib
-)
+# libtriton_gcu300_core.so is built for the wheel, but intentionally NOT installed.

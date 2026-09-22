@@ -289,26 +289,22 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     int numCTAs = typeConverter->getNumCTAs();
     auto rank = origShape.size();
     SmallVector<unsigned> retSizePerThread(rank, 1);
-    auto numElements = product<int64_t>(origShape);
-    if (numElements / (numWarps * threadsPerWarp) >= 4) {
-      retSizePerThread[rank - 1] = 2;
-      retSizePerThread[rank - 2] = 2;
-    }
-    if (numElements / (numWarps * threadsPerWarp) >= 16) {
-      retSizePerThread[rank - 1] = 4;
-      retSizePerThread[rank - 2] = 4;
-    }
-    retSizePerThread[rank - 1] = std::min(
-        retSizePerThread[rank - 1], static_cast<unsigned>(origShape[rank - 1]));
-    retSizePerThread[rank - 2] = std::min(
-        retSizePerThread[rank - 2], static_cast<unsigned>(origShape[rank - 2]));
-
     SmallVector<unsigned> retOrder(rank);
     for (unsigned i = 0; i < rank; ++i)
       retOrder[i] = rank - 1 - i;
     Attribute dEncoding = triton::gpu::BlockedEncodingAttr::get(
         getContext(), origShape, retSizePerThread, retOrder, numWarps,
         threadsPerWarp, numCTAs);
+
+    // Refine warpsPerCTA
+    auto blocked = cast<BlockedEncodingAttr>(dEncoding);
+    SmallVector<unsigned> warpsPerCTA =
+        computeDotWarpsPerCTA(blocked, origShape, numWarps);
+    dEncoding = BlockedEncodingAttr::get(
+        getContext(), blocked.getSizePerThread(), blocked.getThreadsPerWarp(),
+        warpsPerCTA, blocked.getOrder(),
+        triton_gcu::compat::getCGALayout(blocked));
+
     RankedTensorType retType = origType.cloneWithEncoding(dEncoding);
     auto aType = cast<RankedTensorType>(adaptor.getA().getType());
     auto bType = cast<RankedTensorType>(adaptor.getB().getType());
@@ -1066,6 +1062,15 @@ public:
     if (maxRank == 0)
       maxRank = 1;
 
+    bool hasDotOp = false;
+    mod.walk([&](Operation *op) -> WalkResult {
+      if (isa<triton::DotOp>(op)) {
+        hasDotOp = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+
     bool orderIncompatible = false;
     mod.walk([&](Operation *op) -> WalkResult {
       if (isa<triton::DotOp>(op) || isa<triton::ReshapeOp>(op) ||
@@ -1097,41 +1102,33 @@ public:
     if (!this->target.getValue().empty())
       mod->setAttr(AttrTargetName, b.getStringAttr(this->target.getValue()));
 
-    // Worker functions (e.g. TLE warp-specialization workers) may carry a
-    // different ttg.num-warps attribute than the kernel-level numWarps (e.g.
-    // producer-default: kernel num_warps=1, consumer worker num_warps=4).
+    // Worker functions (e.g. TLE warp-specialization workers) and
+    // warp_specialize partition regions may carry a different numWarps than
+    // the kernel-level numWarps (e.g. producer-default: kernel num_warps=1,
+    // consumer partition num_warps=4).
     //
     // The MLIR conversion framework's reconciliation phase uses
     // convertType(Type) (context-unaware) which can only read the module-level
     // ttg.num-warps attribute. If the module-level value doesn't match the
-    // function being processed, incorrect encodings are generated.
+    // region being processed, incorrect encodings are generated.
     //
-    // To handle this generically, we run applyPartialConversion per-function,
-    // setting the module-level ttg.num-warps to match each function's
-    // attribute before processing it.
+    // To handle this generically, we run applyPartialConversion per-region,
+    // setting the module-level ttg.num-warps to match each region's numWarps
+    // before processing it. For warp_specialize partition regions whose
+    // numWarps differs from the enclosing function, we process them first
+    // (before the function) so their operations obtain correct encodings;
+    // when the function is subsequently processed, those already-legal
+    // operations are skipped by the framework.
     {
-      // Collect all functions in the module.
-      SmallVector<triton::FuncOp, 4> funcs;
-      mod.walk([&](triton::FuncOp func) { funcs.push_back(func); });
-
-      for (triton::FuncOp func : funcs) {
-        // Determine the numWarps for this function.
-        int funcNumWarps = numWarps;
-        if (auto attr = func->getAttrOfType<IntegerAttr>(AttrNumWarpsName))
-          funcNumWarps = attr.getInt();
-
-        // Set module-level ttg.num-warps to match this function so that
-        // convertType(Type) (used by the framework's reconciliation) uses
-        // the correct numWarps.
-        mod->setAttr(AttrNumWarpsName, b.getI32IntegerAttr(funcNumWarps));
-
-        // Build type converter and target for this function's numWarps.
-        GCUTritonGPUTypeConverter typeConverter(context, funcNumWarps,
-                                                threadsPerWarp, numCTAs,
-                                                defaultOrder, axisFreq);
+      // Helper: set module-level numWarps, build converter/target/patterns,
+      // and run applyPartialConversion on the given operations.
+      auto runConversion = [&](int convNumWarps,
+                               ArrayRef<Operation *> ops) -> LogicalResult {
+        mod->setAttr(AttrNumWarpsName, b.getI32IntegerAttr(convNumWarps));
+        GCUTritonGPUTypeConverter typeConverter(
+            context, convNumWarps, threadsPerWarp, numCTAs, defaultOrder,
+            axisFreq, hasDotOp);
         GCUTritonGPUConversionTarget target(*context, typeConverter);
-
-        // Populate patterns (must be done per type converter).
         RewritePatternSet patterns(context);
         populateArithPatternsAndLegality(typeConverter, patterns, target);
         populateMathPatternsAndLegality(typeConverter, patterns, target);
@@ -1146,10 +1143,40 @@ public:
 #ifdef ENABLE_TLE
         populateTlePatterns(typeConverter, patterns);
 #endif
+        return applyPartialConversion(ops, target, std::move(patterns));
+      };
 
-        if (failed(applyPartialConversion(
-                ArrayRef<Operation *>{func.getOperation()}, target,
-                std::move(patterns))))
+      // Collect all functions in the module.
+      SmallVector<triton::FuncOp, 4> funcs;
+      mod.walk([&](triton::FuncOp func) { funcs.push_back(func); });
+      for (triton::FuncOp func : funcs) {
+        int funcNumWarps = numWarps;
+        if (auto attr = func->getAttrOfType<IntegerAttr>(AttrNumWarpsName))
+          funcNumWarps = attr.getInt();
+
+        // Process warp_specialize partition regions whose numWarps differs
+        // from the enclosing function BEFORE the function itself.
+        SmallVector<triton::gpu::WarpSpecializeOp, 4> wsOps;
+        func.walk(
+            [&](triton::gpu::WarpSpecializeOp wsOp) { wsOps.push_back(wsOp); });
+        for (auto wsOp : wsOps) {
+          auto partNumWarps = wsOp.getPartitionNumWarps();
+          auto partRegions = wsOp.getPartitionRegions();
+          for (auto [idx, pNumWarps] : llvm::enumerate(partNumWarps)) {
+            if (pNumWarps == funcNumWarps)
+              continue;
+            SmallVector<Operation *> partOps;
+            if (idx < partRegions.size()) {
+              for (Operation &op : partRegions[idx]->getOps())
+                partOps.push_back(&op);
+            }
+            if (failed(runConversion(pNumWarps, partOps)))
+              return signalPassFailure();
+          }
+        }
+
+        // Process the function (partition ops are already legal, skipped).
+        if (failed(runConversion(funcNumWarps, {func.getOperation()})))
           return signalPassFailure();
       }
 

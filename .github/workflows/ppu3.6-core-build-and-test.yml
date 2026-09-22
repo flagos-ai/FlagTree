@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   ppu36x-core-test:
-    runs-on: ppu3.6-core
+    runs-on: ppu3.6
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment

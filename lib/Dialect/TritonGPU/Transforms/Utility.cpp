@@ -528,9 +528,10 @@ static Attribute inferSrcEncoding(GatherOp op, Attribute dstEnc) {
 }
 
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
-// Backward propagation only: the op is deliberately absent from
-// RemoveLayoutConversions' propagateToUsers and rewriteOp lists, which assume a
-// shape-preserving op and would report a fatal error on this one.
+// The op is absent from RemoveLayoutConversions' propagateToUsers and rewriteOp
+// lists, which assume a shape-preserving op and would report a fatal error on
+// this one. These two only answer what encoding crosses the op, which is dot_op
+// or nothing in either direction.
 static Attribute inferSrcEncoding(ttg::ConcatDotOperandOp op,
                                   Attribute dstEnc) {
   // dot_op carries no K extent, so it is the only encoding a concat shares

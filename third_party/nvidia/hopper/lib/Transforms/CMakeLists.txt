@@ -20,6 +20,11 @@ add_triton_library(NVHopperTransforms
 
   DEPENDS
   NVHopperTransformsIncGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCTAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   ${NVHopperTransformsTleLibs}

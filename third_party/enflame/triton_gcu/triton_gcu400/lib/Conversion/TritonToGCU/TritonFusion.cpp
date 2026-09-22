@@ -556,47 +556,6 @@ static bool canFuseReshapeOp(triton::ReshapeOp op) {
   return !triton::gcu::isExpensiveView(op.getSrc().getType(), op.getType());
 }
 
-static bool canFuseBroadcast(triton::BroadcastOp op) {
-  auto srcType = op.getSrc().getType();
-  auto resultType = op.getType();
-  auto rank = srcType.getRank();
-
-  std::optional<unsigned> broadcastAxis;
-  for (unsigned i = 0; i < rank; ++i) {
-    if (srcType.getDimSize(i) != resultType.getDimSize(i)) {
-      if (broadcastAxis) {
-        return false;
-      }
-      broadcastAxis = i;
-    }
-  }
-  if (!broadcastAxis || (*broadcastAxis != 0 && *broadcastAxis != rank - 1)) {
-    return false;
-  }
-
-  auto bpe = triton::gcu::getBpe(getElementTypeOrSelf(srcType));
-
-  if (getElementTypeOrSelf(srcType).isInteger(1)) {
-    auto defOp = op.getSrc().getDefiningOp();
-    if (!defOp || !isa<arith::CmpIOp, arith::CmpFOp>(defOp)) {
-      return false;
-    }
-    bpe =
-        triton::gcu::getBpe(getElementTypeOrSelf(defOp->getOperandTypes()[0]));
-  }
-
-  auto elemsPerThread = broadcastAxis == 0
-                            ? triton::gcu::getElemsPerThread(srcType)
-                            : triton::gcu::getElemsPerThread(resultType);
-  auto sizeInBytes =
-      std::accumulate(elemsPerThread.begin() + *broadcastAxis,
-                      elemsPerThread.end(), 1, std::multiplies<int64_t>()) *
-      bpe;
-  auto numOacc = sizeInBytes / kOaccSizeInBytes;
-  // TODO(peng.tian): need to support general implementation
-  return numOacc >= 1 && numOacc <= 4 * kLoopUnrollTimes;
-}
-
 static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
   auto srcTy = op.getSrc().getType();
   auto dstTy = op.getType();
@@ -627,6 +586,111 @@ static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
                triton::gcu::getWarpsPerCTA(dstEnc);
   }
   return false;
+}
+
+static bool isZeroCopyView(Operation *op) {
+  if (!op) {
+    return false;
+  }
+  if (auto expandDimsOp = dyn_cast<triton::ExpandDimsOp>(op)) {
+    return !triton::gcu::isExpensiveView(expandDimsOp);
+  } else if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(op)) {
+    return !triton::gcu::isExpensiveView(reshapeOp.getSrc().getType(),
+                                         reshapeOp.getType());
+  } else if (auto convertLayoutOp =
+                 dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
+    return canFuseConvertLayout(convertLayoutOp);
+  } else {
+    return false;
+  }
+}
+static bool canFuse(Operation *op);
+static bool canFuseBroadcast(triton::BroadcastOp op) {
+  auto srcType = op.getSrc().getType();
+  auto resultType = op.getType();
+  auto rank = srcType.getRank();
+
+  std::optional<unsigned> broadcastAxis;
+  for (unsigned i = 0; i < rank; ++i) {
+    if (srcType.getDimSize(i) != resultType.getDimSize(i)) {
+      if (broadcastAxis) {
+        return false;
+      }
+      broadcastAxis = i;
+    }
+  }
+  if (!broadcastAxis || (*broadcastAxis != 0 && *broadcastAxis != rank - 1)) {
+    return false;
+  }
+
+  auto bpe = triton::gcu::getBpe(getElementTypeOrSelf(srcType));
+
+  if (getElementTypeOrSelf(srcType).isInteger(1)) {
+    auto defOp = op.getSrc().getDefiningOp();
+    while (isZeroCopyView(defOp)) {
+      defOp = defOp->getOperand(0).getDefiningOp();
+    }
+    if (!defOp) {
+      return false;
+    }
+    if (isa<arith::AndIOp, arith::XOrIOp, arith::OrIOp>(defOp)) {
+      if (llvm::any_of(defOp->getOperands(), [](auto operand) {
+            auto defOp = operand.getDefiningOp();
+            return !defOp || !isa<arith::CmpIOp, arith::CmpFOp>(defOp);
+          })) {
+        return false;
+      }
+      defOp = defOp->getOperand(0).getDefiningOp();
+    } else if (!isa<arith::CmpIOp, arith::CmpFOp>(defOp)) {
+      return false;
+    }
+    for (auto user : op->getUsers()) {
+      if (isa<arith::AndIOp, arith::XOrIOp, arith::OrIOp>(user)) {
+        if (llvm::any_of(user->getUsers(),
+                         [](auto innerUser) { return !canFuse(innerUser); })) {
+          return false;
+        }
+        auto defOp =
+            (op.getResult() == user->getOperand(0) ? user->getOperand(1)
+                                                   : user->getOperand(0))
+                .getDefiningOp();
+        if (isa<triton::BroadcastOp>(defOp) &&
+            llvm::count_if(defOp->getUsers(), [](auto user) {
+              return isa<arith::AndIOp, arith::XOrIOp, arith::OrIOp>(user);
+            }) == 1) {
+          while (isZeroCopyView(defOp)) {
+            defOp = defOp->getOperand(0).getDefiningOp();
+          }
+          if (!defOp) {
+            return false;
+          }
+          if (llvm::any_of(defOp->getOperands(), [](auto operand) {
+                auto defOp = operand.getDefiningOp();
+                return !defOp || !isa<arith::CmpIOp, arith::CmpFOp>(defOp);
+              })) {
+            return false;
+          }
+        } else if (!isa<arith::CmpIOp, arith::CmpFOp>(defOp)) {
+          return false;
+        }
+      } else if (!canFuse(user)) {
+        return false;
+      }
+    }
+    bpe =
+        triton::gcu::getBpe(getElementTypeOrSelf(defOp->getOperandTypes()[0]));
+  }
+
+  auto elemsPerThread = broadcastAxis == 0
+                            ? triton::gcu::getElemsPerThread(srcType)
+                            : triton::gcu::getElemsPerThread(resultType);
+  auto sizeInBytes =
+      std::accumulate(elemsPerThread.begin() + *broadcastAxis,
+                      elemsPerThread.end(), 1, std::multiplies<int64_t>()) *
+      bpe;
+  auto numOacc = sizeInBytes / kOaccSizeInBytes;
+  // TODO(peng.tian): need to support general implementation
+  return numOacc >= 1 && numOacc <= 4 * kLoopUnrollTimes;
 }
 
 static bool canFuse(Operation *op) {
@@ -795,32 +859,34 @@ static void preProcessMaskedLoadStore(triton::FuncOp func,
 
 static void sinkFusibleProducersToUses(triton::FuncOp func,
                                        DominanceInfo &dominanceInfo) {
-  func.walk([&](Operation *op) {
-    if (!canFuse(op)) {
-      return;
-    }
-    auto operands = llvm::to_vector(op->getOperands());
-    for (auto operand : operands) {
-      auto defOp = operand.getDefiningOp();
-      if (!isa_and_nonnull<arith::ConstantOp, triton::SplatOp,
-                           triton::MakeRangeOp, triton::BroadcastOp>(defOp)) {
+  func.walk([&](Block *block) {
+    for (auto &op : llvm::make_early_inc_range(block->getOperations())) {
+      if (!canFuse(&op)) {
         continue;
       }
-      if (isa<triton::BroadcastOp>(defOp) &&
-          !canFuseBroadcast(cast<triton::BroadcastOp>(defOp))) {
-        continue;
-      }
-      if (defOp->isAncestor(op)) {
-        continue;
-      }
-      if (llvm::all_of(defOp->getOperands(), [&](auto operand) {
-            return dominanceInfo.dominates(operand, op);
-          })) {
-        if (operand.hasOneUse()) {
-          defOp->moveBefore(op);
-        } else {
-          OpBuilder builder(op);
-          op->replaceUsesOfWith(operand, builder.clone(*defOp)->getResult(0));
+      auto operands = llvm::to_vector(op.getOperands());
+      for (auto operand : operands) {
+        auto defOp = operand.getDefiningOp();
+        if (!isa_and_nonnull<arith::ConstantOp, triton::SplatOp,
+                             triton::MakeRangeOp, triton::BroadcastOp>(defOp)) {
+          continue;
+        }
+        if (isa<triton::BroadcastOp>(defOp) &&
+            !canFuseBroadcast(cast<triton::BroadcastOp>(defOp))) {
+          continue;
+        }
+        if (defOp->isAncestor(&op)) {
+          continue;
+        }
+        if (llvm::all_of(defOp->getOperands(), [&](auto operand) {
+              return dominanceInfo.dominates(operand, &op);
+            })) {
+          if (operand.hasOneUse()) {
+            defOp->moveBefore(&op);
+          } else {
+            OpBuilder builder(&op);
+            op.replaceUsesOfWith(operand, builder.clone(*defOp)->getResult(0));
+          }
         }
       }
     }
@@ -936,6 +1002,13 @@ struct FusionGroup {
     return firstUser;
   }
   bool contains(Operation *op) const {
+    if (ops.empty()) {
+      return false;
+    }
+    auto block = ops.front()->getBlock();
+    if (block != op->getBlock()) {
+      return false;
+    }
     return op == ops.front() || op == ops.back() ||
            (op->isBeforeInBlock(ops.back()) &&
             ops.front()->isBeforeInBlock(op));
@@ -988,11 +1061,93 @@ struct FusionGroup {
     other.resolveOperandsAndResults();
   }
 
+  SmallVector<Operation *> scheduleFusionRegion();
+
   SmallVector<Operation *> ops;
   SetVector<Value> operands;
   SetVector<Value> results;
   SmallVector<FusionTensorDesc> tensorDescs;
 };
+
+SmallVector<Operation *> FusionGroup::scheduleFusionRegion() {
+  if (ops.size() <= 2) {
+    return llvm::to_vector(ops);
+  }
+  if (llvm::any_of(ops,
+                   [](Operation *op) { return !isMemoryEffectFree(op); })) {
+    return llvm::to_vector(ops);
+  }
+  auto hasInRegionDependency = [this](Operation *op) {
+    return llvm::any_of(op->getOperands(), [this](auto operand) {
+      auto defOp = operand.getDefiningOp();
+      return defOp && contains(defOp);
+    });
+  };
+  SmallVector<Operation *> ordered;
+  DenseSet<Operation *> emitted;
+  std::function<void(Operation *)> emit;
+
+  auto isLeaf = [&](Operation *op) { return !hasInRegionDependency(op); };
+
+  auto tryEmitConsumer = [&](Operation *op) {
+    if (!op || !contains(op) || emitted.contains(op)) {
+      return;
+    }
+    if (!llvm::all_of(op->getOperands(), [&](auto operand) {
+          auto defOp = operand.getDefiningOp();
+          if (!defOp || !contains(defOp) || isLeaf(defOp)) {
+            return true;
+          }
+          return emitted.contains(defOp);
+        })) {
+      return;
+    }
+    for (auto operand : op->getOperands()) {
+      auto *defOp = operand.getDefiningOp();
+      if (!defOp || !contains(defOp)) {
+        continue;
+      }
+      if (isLeaf(defOp)) {
+        emit(defOp);
+      }
+    }
+    emit(op);
+  };
+
+  emit = [&](Operation *op) {
+    if (!op || !contains(op) || !emitted.insert(op).second) {
+      return;
+    }
+    for (bool emitLeaf : {false, true}) {
+      for (auto operand : op->getOperands()) {
+        auto *defOp = operand.getDefiningOp();
+        if (!defOp || !contains(defOp))
+          continue;
+        if (isLeaf(defOp) == emitLeaf)
+          emit(defOp);
+      }
+    }
+    ordered.push_back(op);
+    for (bool emitResult : {false, true}) {
+      for (auto user : op->getUsers()) {
+        if (llvm::all_of(user->getResults(), [&](auto result) {
+              return results.contains(result);
+            }) == emitResult) {
+          tryEmitConsumer(user);
+        }
+      }
+    }
+  };
+
+  for (auto result : results) {
+    if (auto *defOp = result.getDefiningOp())
+      emit(defOp);
+  }
+  for (auto *op : ops) {
+    emit(op);
+  }
+  return ordered;
+}
 
 struct GCUTritonFusionPass
     : public mlir::impl::GCUTritonFusionPassBase<GCUTritonFusionPass> {
@@ -1035,6 +1190,7 @@ private:
   void runFuse(Block *block);
   void fuseOps(std::unique_ptr<FusionGroup> fusionGroup);
   bool tryDeepFuse(SmallVector<std::unique_ptr<FusionGroup>> &fusionGroups);
+  void splitFusion(SmallVector<std::unique_ptr<FusionGroup>> &fusionGroups);
   void fuseReduceOps(Block *block);
 };
 } // namespace
@@ -1116,6 +1272,86 @@ bool GCUTritonFusionPass::tryDeepFuse(
   return false;
 }
 
+void GCUTritonFusionPass::splitFusion(
+    SmallVector<std::unique_ptr<FusionGroup>> &fusionGroups) {
+  SmallVector<std::unique_ptr<FusionGroup>> newGroups;
+  for (auto &fusionGroup : fusionGroups) {
+    if (fusionGroup->operands.size() <= 1) {
+      newGroups.emplace_back(std::move(fusionGroup));
+      continue;
+    }
+    DenseMap<Operation *, SmallVector<Operation *>> dependenceInfo;
+    DenseMap<Value, SmallVector<Operation *>> operandUsers;
+    for (auto op : fusionGroup->ops) {
+      for (auto operand : op->getOperands()) {
+        auto defOp = operand.getDefiningOp();
+        if (defOp && fusionGroup->contains(defOp)) {
+          dependenceInfo[op].push_back(defOp);
+          dependenceInfo[defOp].push_back(op);
+        } else {
+          operandUsers[operand].push_back(op);
+        }
+      }
+    }
+    for (const auto &users : operandUsers.values()) {
+      for (unsigned i = 0; i < users.size(); ++i) {
+        for (unsigned j = i + 1; j < users.size(); ++j) {
+          dependenceInfo[users[i]].push_back(users[j]);
+          dependenceInfo[users[j]].push_back(users[i]);
+        }
+      }
+    }
+    SmallVector<SmallVector<Operation *>> splitFusionGroups;
+    DenseSet<Operation *> visited;
+    for (auto op : fusionGroup->ops) {
+      if (visited.contains(op)) {
+        continue;
+      }
+      visited.insert(op);
+      SmallVector<Operation *> worklist{op};
+      SmallVector<Operation *> group;
+      while (!worklist.empty()) {
+        auto cur = worklist.pop_back_val();
+        group.push_back(cur);
+        for (auto dependency : dependenceInfo[cur]) {
+          if (visited.insert(dependency).second) {
+            worklist.push_back(dependency);
+          }
+        }
+      }
+      splitFusionGroups.emplace_back(std::move(group));
+    }
+    if (splitFusionGroups.size() == 1) {
+      newGroups.emplace_back(std::move(fusionGroup));
+      continue;
+    }
+    auto back = fusionGroup->back();
+    auto iter = ++back->getIterator();
+    auto block = back->getBlock();
+    for (auto splitFusionGroup : splitFusionGroups) {
+      auto newGroup = std::make_unique<FusionGroup>();
+      llvm::sort(splitFusionGroup, [](Operation *a, Operation *b) {
+        return a->isBeforeInBlock(b);
+      });
+      for (auto op : splitFusionGroup) {
+        newGroup->ops.push_back(op);
+        op->moveBefore(block, iter);
+        auto tensorType =
+            isa<triton::gcu::MaskedStoreOp>(op)
+                ? cast<triton::gcu::MaskedStoreOp>(op).getValue().getType()
+                : cast<RankedTensorType>(op->getResultTypes().front());
+        auto tensorDesc = getFusionTensorDesc(tensorType);
+        if (!llvm::is_contained(newGroup->tensorDescs, tensorDesc)) {
+          newGroup->tensorDescs.push_back(tensorDesc);
+        }
+      }
+      newGroup->resolveOperandsAndResults();
+      newGroups.emplace_back(std::move(newGroup));
+    }
+  }
+  fusionGroups = std::move(newGroups);
+}
+
 void GCUTritonFusionPass::runFuse(Block *block) {
   SmallVector<std::unique_ptr<FusionGroup>> fusionGroups;
   auto startNewGroup = [&]() {
@@ -1168,6 +1404,7 @@ void GCUTritonFusionPass::runFuse(Block *block) {
   do {
     changed = tryDeepFuse(fusionGroups);
   } while (changed);
+  splitFusion(fusionGroups);
   for (auto &fusionGroup : fusionGroups) {
     fuseOps(std::move(fusionGroup));
   }
@@ -1182,7 +1419,7 @@ void GCUTritonFusionPass::fuseOps(std::unique_ptr<FusionGroup> fusionGroup) {
   fusionGroup->resolveOperandsAndResults();
   auto operands = fusionGroup->operands.takeVector();
   auto results = fusionGroup->results.takeVector();
-
+  auto orderedOps = fusionGroup->scheduleFusionRegion();
   auto resultTypes = llvm::to_vector(
       llvm::map_range(results, [](auto result) { return result.getType(); }));
   auto fusedOp = builder.create<mlir::triton::gcu::ElementwiseFusionRegionOp>(
@@ -1196,7 +1433,7 @@ void GCUTritonFusionPass::fuseOps(std::unique_ptr<FusionGroup> fusionGroup) {
     }
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(&entryBlock);
-    for (auto op : ops) {
+    for (auto op : orderedOps) {
       Operation *cloneOp = builder.clone(*op, mapper);
       // clone() may update mapper internally in some MLIR versions;
       // explicit mapping here for compatibility and clarity.
