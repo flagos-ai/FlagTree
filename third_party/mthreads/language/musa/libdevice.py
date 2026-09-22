@@ -386,15 +386,20 @@ def add_ru(arg0, arg1, _semantic=None):
 
 @core.extern
 def mul_rn(arg0, arg1, _semantic=None):
-    return core.extern_elementwise("", "", [
-        arg0,
-        arg1,
-    ], {
-        (
-            core.dtype("fp64"),
-            core.dtype("fp64"),
-        ): ("__mt_mul_rte_f64", core.dtype("fp64")),
-    }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise(
+        "", "", [
+            arg0,
+            arg1,
+        ], {
+            (
+                core.dtype("fp64"),
+                core.dtype("fp64"),
+            ): ("__mt_mul_rte_f64", core.dtype("fp64")),
+            (
+                core.dtype("fp32"),
+                core.dtype("fp32"),
+            ): ("__mt_fmul_rn_f32", core.dtype("fp32")),
+        }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
