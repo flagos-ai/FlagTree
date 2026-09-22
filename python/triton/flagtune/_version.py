@@ -1,5 +1,3 @@
-# Copyright 2018-2020 Philippe Tillet
-# Copyright 2020-2022 OpenAI
 # Copyright 2025-     FlagOS Contributors
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -28,4 +26,4 @@ It is the runtime implementation compatibility version, not the independently
 versioned model artifact revision stored in each archive path.
 """
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"

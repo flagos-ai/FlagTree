@@ -17,6 +17,7 @@
 #include <map>
 
 #include "Analysis/FirstLastUserAnalysis.h"
+#include "Analysis/OpFoldResultUtils.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "PatternTritonGPUOpToGCU.h"
@@ -66,49 +67,91 @@ struct TritonLoadOpLowering : SharedConversionPattern<triton::LoadOp> {
       Value other = triton::gcu::createConstantZero(
           rewriter, loc, resultType.getElementType());
       if (adaptor.getOther()) {
-        auto otherOp = loadOp.getOther().getDefiningOp();
+        // Try to extract a scalar default value from the tensor 'other'.
+        // The value may be produced by a constant, splat, sitofp, arith.select,
+        // or wrapped inside an elementwise fusion region.
+        auto otherValue = loadOp.getOther();
+        auto otherOp = otherValue.getDefiningOp();
+
+        // Helper: create a scalar select from an (external) condition and two
+        // tensor splat/constant values. Returns nullptr if the operands are not
+        // supported.
+        auto makeScalarSelect = [&](Value cond, Value trueValue,
+                                    Value falseValue) -> Value {
+          auto trueScalar =
+              triton::gcu::getScalarValue(rewriter, loc, trueValue);
+          if (!trueScalar.has_value() || !*trueScalar)
+            return nullptr;
+          auto falseScalar =
+              triton::gcu::getScalarValue(rewriter, loc, falseValue);
+          if (!falseScalar.has_value() || !*falseScalar)
+            return nullptr;
+          return rewriter
+              .create<arith::SelectOp>(loc, cond, *trueScalar, *falseScalar)
+              .getResult();
+        };
+
         if (auto elementwiseFusionOp =
                 dyn_cast_or_null<triton::gcu::ElementwiseFusionRegionOp>(
                     otherOp)) {
-          unsigned resultIndex =
-              cast<OpResult>(loadOp.getOther()).getResultNumber();
+          // The fusion region may produce a tensor select from an external
+          // scalar condition. We need to remap the internal block argument
+          // condition to the external operand so that the generated scalar
+          // arith.select is valid outside the fusion region.
+          unsigned resultIndex = cast<OpResult>(otherValue).getResultNumber();
           auto yieldOp = elementwiseFusionOp.getRegion().back().getTerminator();
-          if (resultIndex < yieldOp->getNumOperands() &&
-              dyn_cast_or_null<arith::ConstantOp>(
-                  yieldOp->getOperand(resultIndex).getDefiningOp())) {
-            otherOp = yieldOp->getOperand(resultIndex).getDefiningOp();
+          if (resultIndex >= yieldOp->getNumOperands()) {
+            llvm_unreachable(
+                "Invalid result index for elementwise fusion other op");
+            return failure();
+          }
+          auto yieldValue = yieldOp->getOperand(resultIndex);
+          if (auto selectOp = dyn_cast_or_null<arith::SelectOp>(
+                  yieldValue.getDefiningOp())) {
+            auto cond = selectOp.getCondition();
+            if (auto blockArg = dyn_cast_or_null<BlockArgument>(cond)) {
+              unsigned argNum = blockArg.getArgNumber();
+              if (argNum >= elementwiseFusionOp.getOperands().size()) {
+                llvm_unreachable(
+                    "Invalid block argument for fused select condition");
+                return failure();
+              }
+              other = makeScalarSelect(
+                  elementwiseFusionOp.getOperands()[argNum],
+                  selectOp.getTrueValue(), selectOp.getFalseValue());
+            } else {
+              // The condition is already usable outside (e.g., a constant).
+              other = makeScalarSelect(cond, selectOp.getTrueValue(),
+                                       selectOp.getFalseValue());
+            }
+          } else {
+            auto maybeScalar =
+                triton::gcu::getScalarValue(rewriter, loc, yieldValue);
+            if (maybeScalar.has_value() && *maybeScalar) {
+              other = *maybeScalar;
+            } else {
+              llvm_unreachable("Unsupported elementwise fusion other op in "
+                               "TritonLoadOpLowering");
+              return failure();
+            }
+          }
+        } else if (auto selectOp = dyn_cast_or_null<arith::SelectOp>(otherOp)) {
+          other =
+              makeScalarSelect(selectOp.getCondition(), selectOp.getTrueValue(),
+                               selectOp.getFalseValue());
+        } else {
+          auto maybeScalar =
+              triton::gcu::getScalarValue(rewriter, loc, otherValue);
+          if (maybeScalar.has_value() && *maybeScalar) {
+            other = *maybeScalar;
+          } else {
+            llvm_unreachable("Unsupported other op in TritonLoadOpLowering");
+            return failure();
           }
         }
 
-        if (auto cstOther = dyn_cast_or_null<arith::ConstantOp>(otherOp)) {
-          if (auto splatAttr =
-                  llvm::dyn_cast<SplatElementsAttr>(cstOther.getValue())) {
-            mlir::Type elementType = splatAttr.getElementType();
-            if (elementType.isIntOrIndex()) {
-              other = rewriter.create<arith::ConstantIntOp>(
-                  loc, elementType,
-                  splatAttr.getSplatValue<APInt>().getSExtValue());
-            } else if (elementType.isBF16() || elementType.isF16() ||
-                       elementType.isTF32() || elementType.isF32() ||
-                       elementType.isF64() ||
-                       llvm::isa<Float8E4M3B11FNUZType>(elementType) ||
-                       llvm::isa<Float8E4M3FNUZType>(elementType) ||
-                       llvm::isa<Float8E5M2FNUZType>(elementType) ||
-                       llvm::isa<Float8E4M3FNType>(elementType) ||
-                       llvm::isa<Float8E5M2Type>(elementType)) {
-              // float v =
-              //   splatAttr.getSplatValue<APFloat>()
-              other = rewriter.create<arith::ConstantFloatOp>(
-                  loc, llvm::cast<mlir::FloatType>(elementType),
-                  splatAttr.getSplatValue<APFloat>());
-            }
-          } else {
-            llvm_unreachable(
-                "Unsupported constant other op in TritonLoadOpLowering");
-            return failure();
-          }
-        } else {
-          llvm_unreachable("Unsupported other op in TritonLoadOpLowering");
+        if (!other) {
+          llvm_unreachable("Failed to extract scalar other value");
           return failure();
         }
       }

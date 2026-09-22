@@ -4,6 +4,7 @@
 
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 #include <climits>
 
 #define DEBUG_TYPE "tritonxpu-lm-inplace"
@@ -201,9 +202,42 @@ public:
     }
   }
 
+  // Report-only LM accounting, third and last observation point (step 2.5).
+  // This is the only one whose number is comparable to what XTDK sees: the
+  // `[Alloca]` line runs before the tile decision, and the
+  // `[UnrollControl][lm]` line runs before the reuse below folds aliasable
+  // buffers together. Measured: tiling does not add buffers beyond the
+  // pre-decision bound, it *defeats the reuse* -- once the row is split, two
+  // buffers that were live on disjoint lines become live across the same loop,
+  // so `lmInplace` can no longer alias them (findings.md 1.43). Never a veto:
+  // no LM capacity check exists in this pipeline, and the ceiling
+  // (KERNEL_STACK_SIZE, 8000 B) is enforced pipeline-level by the
+  // buffer_size_limit halving in compiler.py, on a quantity that is not this
+  // one.
+  void reportLM(ModuleOp &m) {
+    int64_t totalBytes = 0;
+    int64_t inLoopBytes = 0;
+    unsigned numAllocas = 0;
+    m.walk([&](triton::xpu::AllocaOp allocaOp) {
+      auto ty = allocaOp.getResult().getType();
+      int64_t bytes =
+          getTotalElemsPerThread(ty) * triton::getPointeeBitWidth(ty) / 8;
+      bytes = (bytes + 63) / 64 * 64; // LM allocas are 64-byte aligned
+      totalBytes += bytes;
+      ++numAllocas;
+      if (allocaOp->getParentOfType<scf::ForOp>())
+        inLoopBytes += bytes;
+    });
+    llvm::errs() << "[MemoryInplace][lm] allocas=" << numAllocas
+                 << " lmBytes=" << totalBytes << " inLoopBytes=" << inLoopBytes
+                 << " (post-reuse, per core, 64B-aligned)\n";
+  }
+
   void runOnOperation() override {
     ModuleOp m = getOperation();
     lmInplace(m);
+    if (mlir::triton::tools::getBoolEnvXPU("TRITONXPU_LM_REPORT"))
+      reportLM(m);
   }
 };
 

@@ -2,9 +2,29 @@
 
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Support/LLVM.h"
+#ifdef __MCTLE__
+#include "triton/Dialect/Triton/IR/Types.h"
+#include "llvm/ADT/STLExtras.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 namespace mlir {
+
+#ifdef __MCTLE__
+// mctle.local_pointers turns a shared buffer into plain !tt.ptr values, and
+// every later tt.load/tt.store/tt.atomic_rmw reaches the buffer through
+// those pointers. Without the cases below the pointers carry no alias, so
+// Allocation sees the buffer's last use at local_pointers itself and hands
+// its bytes to reduction/scan scratch and to other local_alloc buffers.
+// Ported from lib/Analysis/Alias.cpp (#ifdef __TLE__, tle.local_pointers).
+static bool isTritonPtrLikeType(Type type) {
+  if (isa<triton::PointerType>(type))
+    return true;
+  if (auto tensorTy = dyn_cast<RankedTensorType>(type))
+    return isa<triton::PointerType>(tensorTy.getElementType());
+  return false;
+}
+#endif
 
 AliasInfo AliasInfo::join(const AliasInfo &lhs, const AliasInfo &rhs) {
   if (lhs == rhs)
@@ -42,9 +62,35 @@ LogicalResult SharedMemoryAliasAnalysis::visitOperation(
   } else if (isa<ub::PoisonOp>(op)) {
     aliasInfo = AliasInfo();
     pessimistic = false;
+#ifdef __MCTLE__
+  } else if (op->getName().getStringRef() == "mctle.local_pointers" &&
+             !operands.empty()) {
+    // Local pointer views alias their source memdesc (operand 0).
+    aliasInfo = operands[0]->getValue();
+    pessimistic = false;
+  } else {
+    // Pointer-producing ops (tt.splat / tt.broadcast / tt.addptr chains, and
+    // any op with a pointer among several results) inherit the aliases of all
+    // operands, result by result: an op whose FIRST result is not a pointer
+    // may still return one later. Other results keep the entry state.
+    for (auto *operand : operands)
+      aliasInfo = AliasInfo::join(aliasInfo, operand->getValue());
+    for (auto [idx, res] : llvm::enumerate(results)) {
+      Value value = op->getResult(idx);
+      if (isTritonPtrLikeType(value.getType())) {
+        propagateIfChanged(res, res->join(aliasInfo));
+      } else {
+        assert(!isa<triton::gpu::MemDescType>(value.getType()) &&
+               "unknown operation creating memory descriptor");
+        setToEntryState(res);
+      }
+    }
+    return success();
+#else
   } else {
     assert(!isa<triton::gpu::MemDescType>(result.getType()) &&
            "unknown operation creating memory descriptor");
+#endif
   }
 
   if (pessimistic) {

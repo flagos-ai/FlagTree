@@ -147,6 +147,7 @@ def _entry_block(ptx: str) -> str:
     raise AssertionError("failed to parse PTX entry block")
 
 
+@pytest.mark.require_tle("cumsum")
 @pytest.mark.parametrize(
     "dtype, n, block, reverse, num_warps",
     [
@@ -164,6 +165,10 @@ def _entry_block(ptx: str) -> str:
 def test_tle_cumsum_exclusive_and_total(dtype, n, block, reverse, num_warps):
     if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
         pytest.skip("bfloat16 is not supported on this GPU")
+    if reverse and FLAGTREE_BACKEND == "tsingmicro":
+        pytest.skip("reverse cumsum is not supported on tsingmicro yet")
+    if (FLAGTREE_BACKEND == "tsingmicro" and dtype not in (torch.float16, torch.bfloat16, torch.float32)):
+        pytest.skip("integer cumsum not supported by the tsingmicro hardware scan")
 
     x = _make_input(dtype, block)
     out_dtype = _pick_expected_dtype(dtype)
@@ -203,6 +208,7 @@ def test_tle_cumsum_exclusive_and_total(dtype, n, block, reverse, num_warps):
         torch.testing.assert_close(total[0], expected_total)
 
 
+@pytest.mark.require_tle("cumsum")
 @pytest.mark.skipif(
     not is_cuda(),
     reason="PTX-specific regression guard requires NVIDIA CUDA backend",
@@ -239,6 +245,7 @@ def test_tle_cumsum_ptx_fastpath_regression_guard():
     assert len(re.findall(r"\bselp\b", ptx)) == 0
 
 
+@pytest.mark.require_tle("cumsum")
 @pytest.mark.skipif(not _is_hcu_backend(),
                     reason="HCU ISA-specific regression guard not applicable on non-HCU backends")
 def test_tle_cumsum_amdgcn_fastpath_regression_guard():
@@ -276,6 +283,7 @@ def test_tle_cumsum_amdgcn_fastpath_regression_guard():
         "Detected predicated ds_write: possible regression to generic path"
 
 
+@pytest.mark.require_tle("cumsum", "gpu.alloc", "gpu.local_ptr")
 def test_tle_cumsum_helper_preserves_adjacent_sentinel():
     block = 512
     num_warps = block // threads_per_warp
@@ -297,6 +305,7 @@ def test_tle_cumsum_helper_preserves_adjacent_sentinel():
     torch.testing.assert_close(sentinel, expected_sentinel)
 
 
+@pytest.mark.require_tle("cumsum", "gpu.alloc", "gpu.local_ptr")
 def test_tle_cumsum_scalar_base_addptr_alias_regression():
     block = 512
     num_warps = block // threads_per_warp

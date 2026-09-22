@@ -2190,7 +2190,8 @@ CTAEncodingAttr DotOperandEncodingAttr::getCTALayout() const {
 }
 LogicalResult DotOperandEncodingAttr::verify(
     ::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
-    unsigned opIdx, Attribute parent, unsigned kWidth, unsigned useSme) {
+    unsigned opIdx, Attribute parent, unsigned kWidth, unsigned useSme,
+    unsigned kRotate) {
   if (opIdx != 0 && opIdx != 1) {
     return emitError() << "ttg.dot_op opIdx parameter can be 0 or 1, got: "
                        << opIdx;
@@ -2198,6 +2199,19 @@ LogicalResult DotOperandEncodingAttr::verify(
   if (!parent) {
     return emitError() << "ttg.dot_op parent parameter cannot be null";
   }
+#ifdef __ILUVATAR__
+  // The K rotation is only derived for the fp16/bf16 TCU tile (kWidth == 2);
+  // int8 (kWidth == 4) and fp32 (kWidth == 1) pack K differently and would need
+  // their own derivation.
+  if (kRotate != 0 &&
+      !(mlir::isa<IluvatarMmaEncodingAttr>(parent) && kWidth == 2))
+    return emitError()
+           << "ttg.dot_op kRotate is only supported for an Iluvatar "
+              "MMA parent with kWidth == 2";
+#else
+  if (kRotate != 0)
+    return emitError() << "ttg.dot_op kRotate is Iluvatar-only";
+#endif
   if (auto parentAttr = mlir::dyn_cast<NvidiaMmaEncodingAttr>(parent)) {
     if (kWidth != 0 && !(parentAttr.isAmpere() || parentAttr.isHopper()))
       return emitError() << "ttg.dot_op kWidth parameter can only be "
@@ -3652,18 +3666,21 @@ int triton::gpu::lookupNumCTAs(OpBuilder &rewriter) {
   return triton::gpu::TritonGPUDialect::getNumCTAs(cast<ModuleOp>(op));
 }
 
+#ifdef __ILUVATAR__
+bool triton::gpu::hasSmeMask(Attribute encoding) {
+  if (auto slice = dyn_cast<SliceEncodingAttr>(encoding))
+    encoding = slice.getParent();
+  if (auto blocked = dyn_cast<BlockedEncodingAttr>(encoding))
+    return blocked.getSmeMask();
+  return false;
+}
+#endif
+
 bool triton::gpu::areLayoutsEquivalent(ArrayRef<int64_t> shape,
                                        LayoutEncodingTrait lhs,
                                        LayoutEncodingTrait rhs) {
 #ifdef __ILUVATAR__
-  auto getSmeMask = [](Attribute encoding) -> std::optional<bool> {
-    if (auto slice = dyn_cast<SliceEncodingAttr>(encoding))
-      encoding = slice.getParent();
-    if (auto blocked = dyn_cast<BlockedEncodingAttr>(encoding))
-      return blocked.getSmeMask();
-    return std::nullopt;
-  };
-  if (getSmeMask(lhs).value_or(false) != getSmeMask(rhs).value_or(false))
+  if (hasSmeMask(lhs) != hasSmeMask(rhs))
     return false;
 #endif
   auto lhsLL = triton::gpu::toLinearLayout(shape, lhs);

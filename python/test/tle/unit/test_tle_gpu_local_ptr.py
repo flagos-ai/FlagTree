@@ -340,6 +340,7 @@ def _local_pointer_full_view_dot_kernel(
 class TestTLELocalPointerKernel:
     """Ensure kernels can perform load/compute/store entirely via local pointers."""
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_axpy_matches_torch(self):
         torch.manual_seed(0)
         numel = BLOCK_SIZE * 4
@@ -355,6 +356,7 @@ class TestTLELocalPointerKernel:
         expected = alpha * x + y
         torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_store_populates_constant(self):
         numel = BLOCK_SIZE * 4
         value = 2.25
@@ -366,6 +368,7 @@ class TestTLELocalPointerKernel:
         expected = torch.full_like(out, value)
         torch.testing.assert_close(out, expected, atol=1e-7, rtol=0)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_none_generates_full_view_1d(self):
         block = 128
         numel = block - 9
@@ -411,6 +414,7 @@ class TestTLELocalPointerKernel:
         expected[numel:] = -1
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_local_pointer_none_generates_full_view_2d(self):
         rows = 16
         cols = 32
@@ -429,6 +433,7 @@ class TestTLELocalPointerKernel:
         )
         torch.testing.assert_close(out, x, atol=1e-6, rtol=1e-6)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_none_load_rewrites_to_local_load(self):
         block = 64
         out = torch.empty((block, ), device="cuda", dtype=torch.int32)
@@ -447,6 +452,7 @@ class TestTLELocalPointerKernel:
         expected = torch.arange(block, device="cuda", dtype=torch.int32) + 3
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_full_indices_load_rewrites_to_local_load(self):
         block = 64
         out = torch.empty((block, ), device="cuda", dtype=torch.int32)
@@ -465,6 +471,7 @@ class TestTLELocalPointerKernel:
         expected = torch.arange(block, device="cuda", dtype=torch.int32) + 5
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_conditional_mask_store_compiles(self):
         block = 512
         numel = block - 7
@@ -489,6 +496,7 @@ class TestTLELocalPointerKernel:
         expected[numel:] = -1
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_looped_elementwise_matches_torch(self):
         chunks = 4
         numel = BLOCK_SIZE * chunks * 3
@@ -506,6 +514,7 @@ class TestTLELocalPointerKernel:
         expected = alpha * x + y
         torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_local_pointer_tiled_matmul_matches_torch(self):
         block_m = 32
         block_n = 32
@@ -543,6 +552,7 @@ class TestTLELocalPointerKernel:
         expected = (a.float()) @ (b.float())
         torch.testing.assert_close(c, expected, atol=5e-3, rtol=5e-3)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_local_pointer_axis_gather_matches_torch(self):
         rows = 8
         cols = 8
@@ -566,6 +576,7 @@ class TestTLELocalPointerKernel:
         expected = x[:, 1:1 + slice_width]
         torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_scalar_dynamic_index_inserts_barrier(self):
         block = 64
         out = torch.empty((block, ), device="cuda", dtype=torch.int32)
@@ -593,6 +604,7 @@ class TestTLELocalPointerKernel:
             rtol=0,
         )
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_full_view_dot_avoids_pointer_convert_layout(self):
         block = 32
         a = torch.randn((block, block), device="cuda", dtype=torch.float16)

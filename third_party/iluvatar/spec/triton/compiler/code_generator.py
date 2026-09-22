@@ -11,11 +11,8 @@ from types import ModuleType
 from typing import Any, Callable, Dict, Optional, Tuple, Type, Union, Iterable, List
 
 from .. import knobs, language
-from .._C.libtriton import ir
-try:
-    from .._C.libtriton import gluon_ir
-except ImportError:
-    gluon_ir = None
+from flagtree import _flagprism  # FlagPrism
+from .._C.libtriton import ir, gluon_ir
 from ..language import constexpr, str_to_ty, tensor, tuple as tl_tuple
 from ..language.core import _unwrap_if_constexpr, base_value, base_type
 # ideally we wouldn't need any runtime component
@@ -299,10 +296,6 @@ class CodeGenerator(ast.NodeVisitor):
         self.context = context
         self.is_gluon = is_gluon
         if is_gluon:
-            if gluon_ir is None:
-                raise RuntimeError("Gluon kernels are not supported in this build: the gluon_ir "
-                                   "bindings were not compiled. Rebuild with the cmake option "
-                                   "TRITON_BUILD_GLUON=ON to enable Gluon support.")
             from triton.experimental.gluon.language._semantic import GluonSemantic
             self.builder = gluon_ir.GluonOpBuilder(context)
             self.semantic = GluonSemantic(self.builder)
@@ -703,6 +696,8 @@ class CodeGenerator(ast.NodeVisitor):
                 values = _sanitize_value(self.visit(node.value))
         else:
             values = _sanitize_value(self.visit(node.value))
+        # FlagPrism: emit normalized statement data before symbol binding.
+        _flagprism.emit_statement_event("assignment", self, node, target, values)
         self.assignTarget(target, values)
 
     def visit_AugAssign(self, node):
@@ -1506,7 +1501,11 @@ class CodeGenerator(ast.NodeVisitor):
 
     def visit_Expr(self, node):
         node.value._is_unused = True
-        ast.NodeVisitor.generic_visit(self, node)
+        # FlagPrism: retain the original traversal behavior for reference.
+        # ast.NodeVisitor.generic_visit(self, node)
+        value = self.visit(node.value)
+        # FlagPrism: retain the operation created by a void expression.
+        _flagprism.emit_statement_event("expression", self, node, None, value)
 
     def visit_NoneType(self, node):
         return None

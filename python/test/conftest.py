@@ -12,6 +12,37 @@ def pytest_configure(config):
 
 def pytest_addoption(parser):
     parser.addoption("--device", action="store", default="cuda")
+    # flagtree
+    parser.addoption(
+        "--first-parameter-only",
+        action="store_true",
+        help="Only run the first parameter combination for each test function",
+    )
+
+
+# flagtree: only run the first parameter combination for each test function
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--first-parameter-only"):
+        selected = []
+        deselected = []
+        seen_parameterized_tests = set()
+
+        for item in items:
+            # Non-parameterized tests have no callspec and should always run.
+            if not hasattr(item, "callspec"):
+                selected.append(item)
+                continue
+
+            test_key = (item.parent.nodeid, item.originalname)
+            if test_key in seen_parameterized_tests:
+                deselected.append(item)
+            else:
+                seen_parameterized_tests.add(test_key)
+                selected.append(item)
+
+        items[:] = selected
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
 
 
 @pytest.fixture

@@ -636,6 +636,9 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
     int elementSizeInBytes =
         op.getResult().getType().getElementType().getIntOrFloatBitWidth() / 8;
+    assert((elementSizeInBytes == 2 || elementSizeInBytes == 1) &&
+           "AIU load only supports b16 and b8 element type on PPU0010");
+
     int totalNumElements = product(op.getResult().getType().getShape());
     int64_t size = totalNumElements * elementSizeInBytes;
     int rank = op.getCoord().size();
@@ -689,15 +692,16 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
     unsigned numCopies = tileC / channelElemsPerCTA;
     //@$0
+    std::string dtype = (elementSizeInBytes == 2) ? ".b16" : ".b8";
     std::string aiuInst =
         "ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
-        std::to_string(rank) +
-        "d.b16 [$0], [$1], {$2, $3, $4, $5, $6, $7}, {$8, $9, $10, $11};";
+        std::to_string(rank) + "d" + dtype +
+        " [$0], [$1], {$2, $3, $4, $5, $6, $7}, {$8, $9, $10, $11};";
     if (isNeedPred) {
       aiuInst =
           "@$0 ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
-          std::to_string(rank) +
-          "d.b16 [$1], [$2], {$3, $4, $5, $6, $7, $8}, {$9, $10, $11, $12};";
+          std::to_string(rank) + "d" + dtype +
+          " [$1], [$2], {$3, $4, $5, $6, $7, $8}, {$9, $10, $11, $12};";
     }
     for (int copyIdx = 0; copyIdx < numCopies; copyIdx++) {
       Value xOffset = b.add(xCoord, b.mul(warpIdxM, b.i32_val(cubeWElems)));

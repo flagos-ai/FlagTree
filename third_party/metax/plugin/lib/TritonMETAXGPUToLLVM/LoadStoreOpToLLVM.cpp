@@ -7,9 +7,12 @@
 #include "Utility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#include <optional>
 
 using namespace mlir;
 using namespace mlir::triton;
+
+namespace ttg = mlir::triton::gpu;
 
 using ::mlir::LLVM::delinearize;
 using ::mlir::LLVM::getSharedMemoryBase;
@@ -30,6 +33,25 @@ Value maybeAnd(RewriterBase &rewriter, Location loc, Value a, Value b) {
   }
   return a ? a : b;
 }
+
+#ifdef __MCTLE__
+std::optional<unsigned> inferPtrAddrSpace(llvm::ArrayRef<Value> ptrElems) {
+  for (Value elem : ptrElems) {
+    if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
+      return ptrTy.getAddressSpace();
+  }
+  return std::nullopt;
+}
+
+bool isSharedFamilyAddressSpace(unsigned addressSpace) {
+  return addressSpace == 3;
+}
+
+bool isSharedPointerValue(llvm::ArrayRef<Value> ptrElems,
+                          unsigned defaultAddrSpace = 1) {
+  return inferPtrAddrSpace(ptrElems).value_or(defaultAddrSpace) == 3;
+}
+#endif
 
 // Return a predicate that is true only if the current thread holds unique data,
 // according to freeVarsMask. The predicate may be null to indicate no
@@ -205,6 +227,31 @@ struct LoadStoreConversionBase {
     return std::min<unsigned>(128 / pointeeBitWidth, contiguity);
   }
 
+#ifdef __MCTLE__
+  unsigned getMaxVectorSizeByAlignment(Value ptr) const {
+    auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
+    if (!tensorTy)
+      return 1;
+    auto *axisInfo = axisAnalysisPass.getAxisInfo(ptr);
+    if (!axisInfo || axisInfo->getRank() == 0)
+      return 1;
+
+    auto linAttr = ttg::toLinearEncoding(tensorTy);
+    auto order = linAttr.getOrder();
+    if (order.empty() || order[0] >= axisInfo->getRank())
+      return 1;
+
+    unsigned pointeeBitWidth = triton::getPointeeBitWidth(tensorTy);
+    if (pointeeBitWidth == 0)
+      return 1;
+    unsigned elemBytes = std::max<unsigned>(pointeeBitWidth / 8, 1);
+    unsigned maxMultipleBytes = axisInfo->getDivisibility(order[0]);
+    unsigned maxMultiple = std::max<unsigned>(maxMultipleBytes / elemBytes, 1);
+
+    return std::min<unsigned>(128 / pointeeBitWidth, maxMultiple);
+  }
+#endif
+
   unsigned getMaskAlignment(Value mask) const {
     return axisAnalysisPass.getMaskAlignment(mask);
   }
@@ -258,6 +305,23 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     } else {
       vec = getVectorSize(ptr);
     }
+#ifdef __MCTLE__
+    auto ptrTensorTy = dyn_cast<RankedTensorType>(ptr.getType());
+    auto ptrElemTy = ptrTensorTy
+                         ? dyn_cast<PointerType>(ptrTensorTy.getElementType())
+                         : PointerType();
+    bool isSharedTensorPtr =
+        ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
+    if (!llMask && isSharedTensorPtr) {
+      // For TLE local/shared pointer chains, AxisInfo contiguity can be
+      // conservative on packed contiguous lanes. The layout hint may recover
+      // the lane grouping, but it is only legal up to the vector width whose
+      // first element alignment is proven by AxisInfo divisibility.
+      // unsigned hint = ttg::inferTilePointerLayoutVectorHint(ptr);
+      unsigned alignmentBound = getMaxVectorSizeByAlignment(ptr);
+      vec = std::max(vec, alignmentBound);
+    }
+#endif
     unsigned numElems = getTotalElemsPerThread(ptr.getType());
     unsigned constRepeatPerThread = getThreadConstRepeatTimes(ptr);
     if (llMask) {
@@ -272,6 +336,9 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     // Get the LLVM values for pointers
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     assert(ptrElems.size() == numElems);
+#ifdef __MCTLE__
+    const bool isSharedPtr = isSharedPointerValue(ptrElems);
+#endif
 
     // Get the LLVM values for mask
     SmallVector<Value> maskElems;
@@ -358,6 +425,30 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       assert(wordNElems * nWords * numVecs == numElems);
       Value pred = mask ? maskElems[vecStart] : b.int_val(1, 1);
       Value zeroVal = b.bitcast(b.int_val(valueElemNBits, 0), valueElemTy);
+#ifdef __MCTLE__
+      if (isSharedPtr) {
+        Value addrVal = ptrElems[vecStart];
+        Type retTy = vec > 1 ? vec_ty(valueElemTy, vec) : valueElemTy;
+        Value lds_values =
+            targetInfo.loadDShared(rewriter, loc, addrVal, std::nullopt, retTy,
+                                   /*pred=*/pred);
+
+        if (vec == 1) {
+          for (int i = 0; i < constRepeatPerThread; i++) {
+            loadedVals.push_back(lds_values);
+          }
+        } else {
+          for (size_t elemIndex = 0; elemIndex < vec; elemIndex++) {
+            Value curr = b.extract_element(valueElemTy, lds_values,
+                                           b.i32_val(elemIndex));
+            for (int i = 0; i < constRepeatPerThread; i++) {
+              loadedVals.push_back(curr);
+            }
+          }
+        }
+        continue;
+      }
+#endif
       if (!disableOptFlag && !op.getIsVolatile()) {
         if (!disableLdgPred && isOtherValid &&
             (totalWidth == 128 || totalWidth == 64 || totalWidth == 32 ||
@@ -534,6 +625,9 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
 
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     auto valueElems = unpackLLElements(loc, llValue, rewriter);
+#ifdef __MCTLE__
+    const bool isSharedPtr = isSharedPointerValue(ptrElems);
+#endif
     assert(ptrElems.size() == valueElems.size());
 
     if (valueElemTy.isFloat(8)) {
@@ -603,6 +697,26 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
 
       // TODO(Superjomn) Add cache policy fields to StoreOp.
       // TODO(Superjomn) Deal with cache policy here.
+
+#ifdef __MCTLE__
+      if (isSharedPtr) {
+        Value pred = threadPred;
+        if (llMask) {
+          auto mask = maskElems[vecStart];
+          pred = maybeAnd(rewriter, loc, pred, mask);
+        }
+        Type retTy = vec_ty(valueElemTy, vec);
+        Value vec_values = b.undef(retTy);
+        for (size_t elemIndex = 0; elemIndex < vec; elemIndex++) {
+          Value elem = valueElems[vecStart + elemIndex];
+          vec_values =
+              b.insert_element(retTy, vec_values, elem, b.i32_val(elemIndex));
+        }
+        targetInfo.storeDShared(rewriter, loc, ptrElems[vecStart], std::nullopt,
+                                vec_values, pred);
+        continue;
+      }
+#endif
 
       Type valArgTy = IntegerType::get(ctx, width);
       auto wordTy = vec_ty(valueElemTy, wordNElems);

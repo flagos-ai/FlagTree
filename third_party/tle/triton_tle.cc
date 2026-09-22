@@ -24,6 +24,10 @@
 #include "Python.h"
 #include "Transforms/Passes.h"
 #include "ir.h" // TritonOpBuilder
+#ifdef __FLAGTREE_COMMON_IR__
+#include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#endif
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
@@ -41,23 +45,62 @@
 #include "pybind11/pytypes.h"
 #include "pybind11/stl.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/VerifyUtils.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVectorExtras.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 
 namespace py = pybind11;
 using namespace mlir;
+namespace tt = triton;
 namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
+#ifdef __FLAGTREE_COMMON_IR__
+namespace tile = triton::tile;
+#endif
+
+#ifdef __FLAGTREE_COMMON_IR__
+static std::string attrToLowerString(Attribute attr) {
+  if (!attr)
+    return "";
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  attr.print(os);
+  os.flush();
+  std::transform(text.begin(), text.end(), text.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return text;
+}
+
+static tile::MemorySpace attrToCommonIRMemorySpace(Attribute attr) {
+  auto text = attrToLowerString(attr);
+  if (text.find("register") != std::string::npos)
+    return tile::MemorySpace::Register;
+  if (text.find("shared") != std::string::npos ||
+      text.find("smem") != std::string::npos)
+    return tile::MemorySpace::Shared;
+  if (text.find("global") != std::string::npos)
+    return tile::MemorySpace::Global;
+  if (text.find("local") != std::string::npos)
+    return tile::MemorySpace::Local;
+  return tile::MemorySpace::Shared;
+}
+#endif
 
 extern std::vector<int64_t>
 computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
@@ -147,6 +190,23 @@ void init_triton_tle_ir(py::module &&m) {
                    /*transposed=*/order[0] == 0,
                    elemType.getIntOrFloatBitWidth(), fp4Padded, CTALayout));
              }
+           })
+      .def("make_shared_linear_encoding_attr",
+           [](TritonOpBuilder &self,
+              std::vector<std::vector<int32_t>> offsetBases,
+              std::vector<std::vector<int32_t>> blockBases, unsigned alignment,
+              unsigned rank) {
+             if (rank == 0)
+               throw py::value_error(
+                   "shared linear layout requires a positive rank");
+             auto context = self.getBuilder().getContext();
+             auto kOffset = StringAttr::get(context, "offset");
+             auto kBlock = StringAttr::get(context, "block");
+             tt::LinearLayout layout({{kOffset, std::move(offsetBases)},
+                                      {kBlock, std::move(blockBases)}},
+                                     tt::standardOutDimNames(context, rank));
+             return mlir::cast<Attribute>(ttg::SharedLinearEncodingAttr::get(
+                 context, std::move(layout), alignment));
            })
       .def("make_tensor_memory_encoding_attr",
            [](TritonOpBuilder &self, unsigned blockM, unsigned blockN,
@@ -304,6 +364,113 @@ void init_triton_tle_ir(py::module &&m) {
              return self.create<tle::LocalPointersOp>(resultTy, memDesc,
                                                       indices);
            })
+#ifdef __FLAGTREE_COMMON_IR__
+      .def("tile_get_string_attr",
+           [](TritonOpBuilder &self, const std::string &name) -> Attribute {
+             return self.getBuilder().getStringAttr(name);
+           })
+      .def("tile_get_buffer_type",
+           [](TritonOpBuilder &self, std::vector<int64_t> &shape,
+              Type &elementType, const Attribute &memorySpace) -> Type {
+             auto memSpace = attrToCommonIRMemorySpace(memorySpace);
+             return tile::BufType::get(self.getBuilder().getContext(), shape,
+                                       elementType, memSpace);
+           })
+      .def("create_tile_alloc",
+           [](TritonOpBuilder &self, Type tileBufType,
+              Attribute targetLayout) -> Value {
+             auto bufType = mlir::cast<tile::BufType>(tileBufType);
+             auto op = self.create<tile::AllocOp>(
+                 tileBufType, bufType.getMemorySpace(),
+                 /*shape=*/mlir::ArrayAttr(), /*dtype=*/mlir::TypeAttr(),
+                 /*policy=*/tile::PolicyAttr(),
+                 /*layout=*/
+                 tile::LayoutAttr::get(self.getBuilder().getContext(),
+                                       tile::Layout::ND),
+                 /*lifetime=*/tile::LifetimeAttr(),
+                 /*comment=*/mlir::StringAttr());
+             op->setAttr("tle.gpu_layout", targetLayout);
+             return op.getResult();
+           })
+      .def("create_tile_copy",
+           [](TritonOpBuilder &self, Value &src, Value &dst,
+              bool interNoAlias) -> void {
+             auto op = self.create<tile::CopyOp>(
+                 src, dst, /*engine=*/tile::EngineAttr(),
+                 /*src_layout=*/
+                 tile::LayoutAttr::get(self.getBuilder().getContext(),
+                                       tile::Layout::ND),
+                 /*dst_nz_layout=*/tile::NZLayoutAttr(),
+                 /*transpose=*/mlir::UnitAttr(),
+                 /*comment=*/mlir::StringAttr());
+             if (interNoAlias)
+               op->setAttr("inter_no_alias",
+                           self.getBuilder().getBoolAttr(true));
+           })
+      .def("create_tile_get_memdesc",
+           [](TritonOpBuilder &self, Type resultTy, Value source) -> Value {
+             return self
+                 .create<UnrealizedConversionCastOp>(TypeRange{resultTy},
+                                                     ValueRange{source})
+                 .getResult(0);
+           })
+      .def("create_tile_subview",
+           [](TritonOpBuilder &self, Value source, std::vector<Value> &offsets,
+              const std::vector<int64_t> &sizes,
+              const std::vector<int64_t> &strides,
+              Attribute targetLayout) -> Value {
+             SmallVector<Value> indexOffsets;
+             auto &builder = self.getBuilder();
+             auto indexType = builder.getIndexType();
+             for (Value offset : offsets) {
+               if (offset.getType() != indexType)
+                 offset = self.create<arith::IndexCastOp>(indexType, offset);
+               indexOffsets.push_back(offset);
+             }
+             auto srcBuf = mlir::cast<tile::BufType>(source.getType());
+             auto resTy = tile::BufType::get(builder.getContext(), sizes,
+                                             srcBuf.getElementType(),
+                                             srcBuf.getMemorySpace());
+             auto op = self.create<tile::SubViewOp>(
+                 resTy, source, indexOffsets, builder.getI64ArrayAttr(sizes),
+                 builder.getI64ArrayAttr(strides));
+             op->setAttr("tle.gpu_layout", targetLayout);
+             return op.getResult();
+           })
+      .def("create_tile_to_tensor",
+           [](TritonOpBuilder &self, Value &src, bool /*writable*/) -> Value {
+             auto srcBuf = mlir::cast<tile::BufType>(src.getType());
+             auto resTy = RankedTensorType::get(srcBuf.getShape(),
+                                                srcBuf.getElementType());
+             return self.create<tile::ToTensorOp>(resTy, src).getResult();
+           })
+      .def("create_tile_store_tensor",
+           [](TritonOpBuilder &self, Value &src, Value &dst) -> void {
+             self.create<tile::StoreTensorOp>(src, dst);
+           })
+      .def("create_tile_gm_offset",
+           [](TritonOpBuilder &self, Value &base, std::vector<Value> &indices,
+              std::vector<Value> &strides) -> Value {
+             SmallVector<Value> indexValues;
+             SmallVector<Value> strideValues;
+             auto &builder = self.getBuilder();
+             auto indexType = builder.getIndexType();
+             for (Value index : indices) {
+               if (index.getType() != indexType)
+                 index = self.create<arith::IndexCastOp>(indexType, index);
+               indexValues.push_back(index);
+             }
+             for (Value stride : strides) {
+               if (stride.getType() != indexType)
+                 stride = self.create<arith::IndexCastOp>(indexType, stride);
+               strideValues.push_back(stride);
+             }
+             return self
+                 .create<tile::GmOffsetOp>(base.getType(), base, indexValues,
+                                           strideValues)
+                 .getResult();
+           })
+#endif
       .def("create_memdesc_index",
            [](TritonOpBuilder &self, Type resultType, Value src,
               Value index) -> Value {
@@ -314,6 +481,56 @@ void init_triton_tle_ir(py::module &&m) {
               std::vector<int> &order) -> Value {
              return self.create<ttg::MemDescTransOp>(src, order);
            })
+      .def("create_memdesc_reshape",
+           [](TritonOpBuilder &self, Value src,
+              std::vector<int64_t> &shape) -> Value {
+             return self.create<ttg::MemDescReshapeOp>(src, shape);
+           })
+      .def(
+          "get_tle_shared_layout_from_memdesc",
+          [](TritonOpBuilder &self, Value memdesc) -> py::dict {
+            auto type = dyn_cast<ttg::MemDescType>(memdesc.getType());
+            if (!type || !type.getEncoding())
+              throw py::value_error(
+                  "expected a memdesc with a shared-memory encoding");
+
+            py::dict result;
+            Attribute encoding = type.getEncoding();
+            if (auto nvmma = dyn_cast<ttg::NVMMASharedEncodingAttr>(encoding)) {
+              auto ctaLayout = nvmma.getCTALayout();
+              auto ctasPerCGA = ctaLayout.getCTAsPerCGA();
+              auto ctaSplitNum = ctaLayout.getCTASplitNum();
+              auto ctaOrder = ctaLayout.getCTAOrder();
+              result["kind"] = "nv_mma";
+              result["transposed"] = nvmma.getTransposed();
+              result["fp4_padded"] = nvmma.getFp4Padded();
+              result["swizzled"] = nvmma.getSwizzlingByteWidth() != 0;
+              result["ctas_per_cga"] =
+                  std::vector<unsigned>(ctasPerCGA.begin(), ctasPerCGA.end());
+              result["cta_split_num"] =
+                  std::vector<unsigned>(ctaSplitNum.begin(), ctaSplitNum.end());
+              result["cta_order"] =
+                  std::vector<unsigned>(ctaOrder.begin(), ctaOrder.end());
+              return result;
+            }
+
+            if (auto sharedLinear =
+                    dyn_cast<ttg::SharedLinearEncodingAttr>(encoding)) {
+              const auto &layout = sharedLinear.getLinearLayout();
+              auto context = encoding.getContext();
+              auto kOffset = StringAttr::get(context, "offset");
+              auto kBlock = StringAttr::get(context, "block");
+              result["kind"] = "shared_linear";
+              result["offset_bases"] = layout.getBases().lookup(kOffset);
+              result["block_bases"] = layout.getBases().lookup(kBlock);
+              result["alignment"] = sharedLinear.getAlignment();
+              result["rank"] = layout.getNumOutDims();
+              return result;
+            }
+
+            throw py::value_error(
+                "unsupported inferred shared-memory reshape encoding");
+          })
       .def("create_barrier_alloc",
            [](TritonOpBuilder &self, Type resultType, int32_t numBarriers,
               int32_t arriveCount, int32_t initPolarity,
@@ -535,37 +752,89 @@ void init_triton_tle_ir(py::module &&m) {
       .def("create_distributed_barrier",
            [](TritonOpBuilder &self) -> void {
              self.create<tle::DistributedBarrierOp>(
-                 Value(), StringAttr(), StringAttr(), StringAttr(),
+                 Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(),
                  StringAttr(), IntegerAttr(), IntegerAttr(),
-                 DenseI32ArrayAttr(), DenseI32ArrayAttr(), DenseI32ArrayAttr());
+                 tle::SyncScopeAttr(), IntegerAttr(), DenseI32ArrayAttr(),
+                 DenseI32ArrayAttr(), DenseI32ArrayAttr());
            })
       .def(
           "create_distributed_barrier",
           [](TritonOpBuilder &self, std::optional<Value> src,
              size_t barrier_index = 0, const std::string &space = "device",
              const std::string &group_kind = "block",
-             const std::string &order = "acqrel",
-             const std::string &barrier_kind = "sync") -> void {
+             tle::MemoryOrder order = tle::MemoryOrder::ACQ_REL,
+             const std::string &barrier_kind = "sync", size_t context_id = 0,
+             tle::SyncScope memory_scope = tle::SyncScope::SYSTEM) -> void {
             auto &builder = self.getBuilder();
-            auto *ctx = builder.getContext();
             auto getOptStrAttr = [&](const std::string &s) -> StringAttr {
               return s.empty() ? StringAttr() : builder.getStringAttr(s);
             };
             auto spaceAttr = getOptStrAttr(space);
             auto kindAttr = getOptStrAttr(group_kind);
-            auto orderAttr = getOptStrAttr(order);
+            auto orderAttr = builder.getAttr<tle::MemoryOrderAttr>(order);
             auto barrierTypeAttr = getOptStrAttr(barrier_kind);
+            auto memoryScopeAttr =
+                builder.getAttr<tle::SyncScopeAttr>(memory_scope);
             auto barrierIndexAttr =
                 builder.getI32IntegerAttr(static_cast<int32_t>(barrier_index));
+            auto contextIdAttr =
+                builder.getI32IntegerAttr(static_cast<int32_t>(context_id));
 
             self.create<tle::DistributedBarrierOp>(
                 src.value_or(Value()), spaceAttr, barrierTypeAttr, orderAttr,
-                kindAttr, barrierIndexAttr, IntegerAttr(), DenseI32ArrayAttr(),
-                DenseI32ArrayAttr(), DenseI32ArrayAttr());
+                kindAttr, barrierIndexAttr, contextIdAttr, memoryScopeAttr,
+                IntegerAttr(), DenseI32ArrayAttr(), DenseI32ArrayAttr(),
+                DenseI32ArrayAttr());
           },
           py::arg("src") = py::none(), py::arg("barrier_index"),
           py::arg("space"), py::arg("group_kind"), py::arg("order"),
-          py::arg("barrier_kind"))
+          py::arg("barrier_kind"), py::arg("context_id") = 0,
+          py::arg("memory_scope") = "system")
+      .def(
+          "create_signal",
+          [](TritonOpBuilder &self, Value comm, Value peer, Value slotId,
+             std::optional<Value> value, tle::SignalOpKind signalOp,
+             tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
+             int32_t contextId, tle::SyncScope scope) -> void {
+            auto &builder = self.getBuilder();
+            if (auto err = tle::Signal::verifySignalOp(
+                    signalOp, value.value_or(Value()), scope))
+              throw py::value_error(*err);
+            self.create<tle::SignalOp>(
+                comm, peer, slotId, value.value_or(Value()),
+                builder.getAttr<tle::SignalOpKindAttr>(signalOp),
+                builder.getAttr<tle::FlagCXTeamKindAttr>(teamKind),
+                builder.getAttr<tle::FlagCXCoopKindAttr>(coopKind),
+                builder.getI32IntegerAttr(contextId),
+                builder.getAttr<tle::SyncScopeAttr>(scope));
+          },
+          py::arg("comm"), py::arg("peer"), py::arg("slot_id"),
+          py::arg("value"), py::arg("signal_op"), py::arg("team_kind"),
+          py::arg("coop_kind"), py::arg("context_id"), py::arg("scope"),
+          "Create a standalone remote signal operation")
+      .def(
+          "create_signal_wait",
+          [](TritonOpBuilder &self, Value comm_dev_ptr, Value slot_id,
+             tle::SignalWaitKind wait_kind, std::optional<Value> target,
+             tle::FlagCXCoopKind coop_kind, int32_t contextId,
+             tle::MemoryOrder order) -> void {
+            auto &builder = self.getBuilder();
+            if (auto err = tle::Signal::verifySignalWaitOp(
+                    wait_kind, target.value_or(Value()), order))
+              throw py::value_error(*err);
+            auto wait_kind_attr =
+                builder.getAttr<tle::SignalWaitKindAttr>(wait_kind);
+            auto coop_kind_attr =
+                builder.getAttr<tle::FlagCXCoopKindAttr>(coop_kind);
+            auto contextIdAttr = builder.getI32IntegerAttr(contextId);
+            auto order_attr = builder.getAttr<tle::MemoryOrderAttr>(order);
+            self.create<tle::SignalWaitOp>(
+                comm_dev_ptr, slot_id, wait_kind_attr, target.value_or(Value()),
+                coop_kind_attr, contextIdAttr, order_attr);
+          },
+          py::arg("comm"), py::arg("slot_id"), py::arg("wait_kind"),
+          py::arg("target"), py::arg("coop_kind"), py::arg("context_id"),
+          py::arg("order"), "Create a standalone remote signal_wait operation")
       .def(
           "create_distributed_barrier",
           [](TritonOpBuilder &self, const std::string &groupKind,
@@ -601,16 +870,19 @@ void init_triton_tle_ir(py::module &&m) {
             }
 
             self.create<tle::DistributedBarrierOp>(
-                Value(), StringAttr(), StringAttr(), StringAttr(), kindAttr,
-                IntegerAttr(), rankAttr, shapeAttr, axesAttr, maskAttr);
+                Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(),
+                kindAttr, IntegerAttr(), IntegerAttr(), tle::SyncScopeAttr(),
+                rankAttr, shapeAttr, axesAttr, maskAttr);
           },
           py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
           py::arg("group_mask"))
       .def(
           "create_remote_pointers",
-          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> &src,
+          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> src,
              Value shardId, const std::string &space,
-             std::optional<Value> &offset) -> OpState {
+             std::optional<Value> offset, std::optional<Value> comm,
+             std::optional<int32_t> contextId,
+             std::optional<tle::FlagCXCoopKind> coopKind) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
                 "cluster", "device", "node"};
@@ -619,14 +891,23 @@ void init_triton_tle_ir(py::module &&m) {
                   "Invalid space: " + space +
                   ". Expected one of: cluster, device, node.");
             }
-            auto space_attr = builder.getStringAttr(space);
 
+            auto spaceAttr = builder.getStringAttr(space);
+            IntegerAttr contextIdAttr =
+                contextId ? builder.getI32IntegerAttr(*contextId)
+                          : IntegerAttr();
+            tle::FlagCXCoopKindAttr coopKindAttr =
+                coopKind ? builder.getAttr<tle::FlagCXCoopKindAttr>(*coopKind)
+                         : tle::FlagCXCoopKindAttr();
             return self.create<tle::RemotePointersOp>(
-                resultTy, src.value_or(Value()), shardId, space_attr,
-                offset.value_or(Value()));
+                resultTy, src.value_or(Value()), comm.value_or(Value()),
+                shardId, spaceAttr, offset.value_or(Value()), contextIdAttr,
+                coopKindAttr);
           },
           py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
-          py::arg("space"), py::arg("offset") = py::none())
+          py::arg("space"), py::arg("offset") = py::none(),
+          py::arg("comm") = py::none(), py::arg("context_id") = py::none(),
+          py::arg("coop_kind") = py::none())
       .def("get_device_id",
            [](TritonOpBuilder &self, Type resultTy,
               std::optional<Value> src) -> Value {
@@ -679,7 +960,99 @@ void init_triton_tle_ir(py::module &&m) {
            });
 }
 
+void init_triton_tle_attr(py::module &&m) {
+  py::enum_<tle::SignalOpKind>(m, "SignalOpKind")
+      .value("Inc", tle::SignalOpKind::INC)
+      .value("Add", tle::SignalOpKind::ADD)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeSignalOpKind(name); },
+          py::arg("name"));
+  py::enum_<tle::FlagCXTeamKind>(m, "FlagCXTeamKind")
+      .value("Intra", tle::FlagCXTeamKind::INTRA)
+      .value("Inter", tle::FlagCXTeamKind::INTER)
+      .value("World", tle::FlagCXTeamKind::WORLD)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeFlagCXTeamKind(name); },
+          py::arg("name"))
+      .def_static(
+          "from_int",
+          [](int value) -> std::optional<tle::FlagCXTeamKind> {
+            if (value < 0 || value > tle::getMaxEnumValForFlagCXTeamKind())
+              return std::nullopt;
+            else
+              return static_cast<tle::FlagCXTeamKind>(value);
+          },
+          py::arg("value"));
+  py::enum_<tle::FlagCXCoopKind>(m, "FlagCXCoopKind")
+      .value("Thread", tle::FlagCXCoopKind::THREAD)
+      .value("Warp", tle::FlagCXCoopKind::WARP)
+      .value("Block", tle::FlagCXCoopKind::BLOCK)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeFlagCXCoopKind(name); },
+          py::arg("name"));
+  py::enum_<tle::SignalWaitKind>(m, "SignalWaitKind")
+      .value("Signal", tle::SignalWaitKind::SIGNAL)
+      .value("Shadow", tle::SignalWaitKind::SHADOW)
+      .value("Counter", tle::SignalWaitKind::COUNTER)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeSignalWaitKind(name); },
+          py::arg("name"));
+  py::enum_<tle::SyncScope>(m, "SyncScope")
+      .value("System", tle::SyncScope::SYSTEM)
+      .value("Device", tle::SyncScope::DEVICE)
+      .value("Block", tle::SyncScope::BLOCK)
+      .value("Thread", tle::SyncScope::THREAD)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeSyncScope(name); },
+          py::arg("name"));
+  py::enum_<tle::MemoryOrder>(m, "MemoryOrder")
+      .value("Relaxed", tle::MemoryOrder::RELAXED)
+      .value("Acquire", tle::MemoryOrder::ACQUIRE)
+      .value("Release", tle::MemoryOrder::RELEASE)
+      .value("AcqRel", tle::MemoryOrder::ACQ_REL)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::parseMemoryOrder(name); },
+          py::arg("name"));
+}
+
+void init_triton_tle_utils(py::module &&m) {
+  m.def(
+      "verify_signal",
+      [](tle::SignalOpKind kind, std::optional<Value> value,
+         tle::SyncScope scope) {
+        if (auto err = tle::Signal::verifySignalOp(
+                kind, value.value_or(Value()), scope)) {
+          throw py::value_error(*err);
+        }
+      },
+      py::arg("kind"), py::arg("value") = py::none(),
+      py::arg("scope") = tle::SyncScope::SYSTEM,
+      "Validate a signal op's (kind, value, scope) combination; returns an "
+      "error message or None");
+  m.def(
+      "verify_signal_wait",
+      [](tle::SignalWaitKind kind, std::optional<Value> target,
+         tle::MemoryOrder order) {
+        if (auto err = tle::Signal::verifySignalWaitOp(
+                kind, target.value_or(Value()), order)) {
+          throw py::value_error(*err);
+        }
+      },
+      py::arg("kind"), py::arg("target") = py::none(),
+      py::arg("order") = tle::MemoryOrder::ACQUIRE,
+      "Validate a signal_wait op's (kind, target, order) combination; "
+      "returns an error message or None");
+}
+
 void init_triton_tle_passes(py::module &&m) {
+  ADD_PASS_WRAPPER_0("add_fuse_node_remote_transfers",
+                     tle::createTritonTleFuseNodeRemoteTransfers);
   ADD_PASS_WRAPPER_0("add_params_for_distribution",
                      tle::createTritonTleAddDistributedParams);
   ADD_PASS_WRAPPER_0("add_early_assign_memory_space",
@@ -791,7 +1164,17 @@ void init_llvm(py::module &&m) {
         });
 }
 
+void init_triton_tle_dsa(py::module m);
+
 void init_triton_tle(py::module &&m) {
+  m.def("is_common_ir_enabled", []() {
+#ifdef __FLAGTREE_COMMON_IR__
+    return true;
+#else
+    return false;
+#endif
+  });
+
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
@@ -800,10 +1183,21 @@ void init_triton_tle(py::module &&m) {
     // context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
+#ifdef __FLAGTREE_COMMON_IR__
+  m.def("load_tile_dialects", [](mlir::MLIRContext &context) {
+    mlir::DialectRegistry registry;
+    registry.insert<mlir::triton::tile::CommonIRDialect>();
+    context.appendDialectRegistry(registry);
+    context.loadAllAvailableDialects();
+  });
+#endif
 
+  init_triton_tle_attr(m.def_submodule("attr"));
+  init_triton_tle_utils(m.def_submodule("utils"));
   init_triton_tle_ir(m.def_submodule("ir"));
   init_triton_tle_passes(m.def_submodule("passes"));
   init_tle_raw_ir(m.def_submodule("raw_ir"));
   init_tle_raw_passes(m.def_submodule("raw_passes"));
   init_llvm(m.def_submodule("llvm"));
+  init_triton_tle_dsa(m.def_submodule("dsa"));
 }

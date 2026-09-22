@@ -8,6 +8,7 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   TritonToGCU.cpp
   ReduceOpToGCU.cpp
   AccelerateMatmul.cpp
+  OptimizeDotOperands.cpp
   TritonWGDotToGCU.cpp
   ScanOpToGCU.cpp
   ElementwiseFusionOpToGCU.cpp
@@ -16,8 +17,8 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   TritonFuncOpFlatten.cpp
   TritonFusion.cpp
   TritonLoadStoreToDma.cpp
+  TritonGCURemoveLayoutConversions.cpp
   TritonGCULayoutOptimize.cpp
-  OptimizeDotLayout.cpp
   TritonConvertTensorPointer.cpp
   Utility.cpp
   TritonGPUtoTrtionGCU.cpp

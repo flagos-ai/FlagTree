@@ -122,4 +122,10 @@ def TritonTleLowerInsertTile
                            "mlir::triton::gpu::TritonGPUDialect"];
 }
 
+def TritonTleRejectDotOp
+    : Pass<"triton-tle-reject-dot-op", "mlir::ModuleOp"> {
+  let summary = "reject tt.dot in TLE kernels";
+  let dependentDialects = ["mlir::triton::TritonDialect"];
+}
+
 #endif // TRITON_TLE_PASSES

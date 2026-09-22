@@ -150,7 +150,7 @@ bool IsStaticStride(SmallVector<int32_t> &candidateHints) {
   bool bStaticStride = true;
   int32_t rank = candidateHints.size();
   for (int32_t i = 0; i < rank; ++i) {
-    if (candidateHints[i] == -1) {
+    if (candidateHints[i] == Dynamic_stride_symbol) {
       bStaticStride = false;
       break;
     }
@@ -159,12 +159,26 @@ bool IsStaticStride(SmallVector<int32_t> &candidateHints) {
   return bStaticStride;
 }
 
-bool IsStaticReshape(SmallVector<int32_t> &candidateHints) {
+static bool isConstantOne(Value v) {
+  if (!v)
+    return false;
+  if (auto cstOp = v.getDefiningOp<arith::ConstantIndexOp>())
+    return cstOp.value() == 1;
+  if (auto cstOp = v.getDefiningOp<arith::ConstantIntOp>())
+    return cstOp.value() == 1;
+  if (auto castOp = v.getDefiningOp<arith::IndexCastOp>())
+    return isConstantOne(castOp.getIn());
+  return false;
+}
+
+bool IsStaticReshape(SmallVector<int32_t> &candidateHints,
+                     const SmallVector<Value, 4> &shape) {
   bool isReshape = true;
   int32_t rank = candidateHints.size();
   if (IsStaticStride(candidateHints)) {
     for (int32_t i = 0; i < rank; ++i) {
-      if (candidateHints[i] == 1 || candidateHints[i] == 0) {
+      if (candidateHints[i] == 1 ||
+          (candidateHints[i] == 0 && !isConstantOne(shape[i]))) {
         isReshape = false;
         break;
       }
@@ -289,7 +303,11 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
 
     auto rank = pstate.getRank();
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto ptrInfo = pstate.getPtrInfo(rewriter, loc, mstate);
+    // Loads must keep the DMA offsets at zero (the mask start is a within-tile
+    // placement, not a memory offset); stores expose it as the source slice
+    // offset so the value tile is read from the valid region.
+    auto ptrInfo = pstate.getPtrInfo(rewriter, loc, mstate,
+                                     /*exposeMaskStartOffset=*/false);
     bool bNeedBroadCast = false;
     auto resultShape = tType.getShape();
     auto elemType = tType.getElementType();
@@ -364,7 +382,7 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
       for (int i = 0; i < rank; ++i)
         staticDefaultOrder.push_back(staticOrder[i]);
 
-      if (IsStaticReshape(opHint)) {
+      if (IsStaticReshape(opHint, ptrInfo.shape)) {
         for (int i = 0; i < rank; ++i)
           staticDefaultOrder[i]++;
       }
@@ -543,7 +561,8 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
       return success();
     auto rank = pstate.getRank();
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto ptrInfo = pstate.getPtrInfo(rewriter, loc, mstate);
+    auto ptrInfo = pstate.getPtrInfo(rewriter, loc, mstate,
+                                     /*exposeMaskStartOffset=*/true);
 
     SmallVector<Value> vSliceShape;
     for (unsigned int i = 0; i < rank; i++) {
@@ -591,7 +610,7 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
         // staticDefaultOrder.push_back(i);
         staticDefaultOrder.push_back(staticOrder[i]);
 
-      if (IsStaticReshape(opHint)) {
+      if (IsStaticReshape(opHint, ptrInfo.shape)) {
         for (int i = 0; i < rank; ++i)
           staticDefaultOrder[i]++;
       }

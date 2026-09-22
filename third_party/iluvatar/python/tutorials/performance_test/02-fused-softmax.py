@@ -25,7 +25,10 @@ import torch
 
 import triton
 import triton.language as tl
-from triton.common.build import is_corex
+
+
+def is_corex():
+    return triton.runtime.driver.active.get_current_target().backend == "corex"
 
 
 @torch.jit.script

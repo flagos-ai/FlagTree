@@ -42,6 +42,20 @@ def libdevice_kernel(lhs, rhs, dst, n_elements: tl.constexpr, BLOCK: tl.constexp
     tl.store(dst + offsets, value, mask=mask)
 
 
+@triton.jit
+def index_copy_scatter_kernel(src_ptr, index_ptr, out_ptr, SRC_ROW: tl.constexpr, INNER: tl.constexpr,
+                              DST_ROW: tl.constexpr, BLOCK: tl.constexpr):
+    offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    outer = offs // SRC_ROW
+    row_offset = offs % SRC_ROW
+    index_offset = row_offset // INNER
+    inner_offset = row_offset % INNER
+    value = tl.load(src_ptr + offs)
+    index = tl.load(index_ptr + index_offset).to(tl.int32)
+    dst = outer.to(tl.int64) * DST_ROW + index.to(tl.int64) * INNER + inner_offset
+    tl.store(out_ptr + dst, value)
+
+
 def _extern_functions():
     tree = ast.parse(_libdevice_path().read_text())
     return [
@@ -163,3 +177,28 @@ def test_xpu_representative_libdevice_externs(device):
     dst = torch.empty_like(lhs)
     libdevice_kernel[(1, )](lhs, rhs, dst, n_elements=lhs.numel(), BLOCK=8)
     assert torch.isfinite(dst).all()
+
+
+def test_xpu_index_copy_scatter_wrapping_gather(device):
+    # The gather offset `(offs % SRC_ROW) // INNER` wraps back to 0 once offs
+    # crosses SRC_ROW. OffsetAnalysis mocks a small program-id range that never
+    # observes the wrap, so the access used to be classified Discrete and the
+    # gather was rewritten into a contiguous DMA plus `lmPtr[offset - offset0]`,
+    # which indexes far outside the LM buffer and traps the kernel.
+    outer, dst_dim, index_len, inner, block = 8, 4099, 2049, 3, 1024
+    src_row = index_len * inner
+    grid = (2 * src_row // block, )
+
+    torch.manual_seed(0)
+    out = torch.zeros((outer, dst_dim, inner), dtype=torch.float32, device=device)
+    src = torch.randn((outer, index_len, inner), dtype=torch.float32, device=device)
+    index = torch.randperm(index_len, dtype=torch.int64, device=device)
+
+    offs = torch.arange(grid[0] * block, device=device)
+    row = offs % src_row
+    dst_offs = (offs // src_row) * (dst_dim * inner) + index[row // inner] * inner + row % inner
+    expected = out.clone()
+    expected.reshape(-1)[dst_offs] = src.reshape(-1)[offs]
+
+    index_copy_scatter_kernel[grid](src, index, out, SRC_ROW=src_row, INNER=inner, DST_ROW=dst_dim * inner, BLOCK=block)
+    torch.testing.assert_close(out, expected, rtol=0, atol=0)

@@ -3,26 +3,19 @@
 # the top-level enflame CMakeLists.txt. Keep this file byte-identical in both
 # trees.
 
-# TRITON_VERSION: upstream Triton version selector (e.g. 3.5/3.6/3.7).
+# TRITON_VERSION: upstream Triton version selector (e.g. 35/36/37).
 # Overridable via the TRITON_VERSION environment variable.
 if(NOT DEFINED TRITON_VERSION)
   if(NOT "$ENV{TRITON_VERSION}" STREQUAL "")
     set(TRITON_VERSION "$ENV{TRITON_VERSION}")
   else()
-    set(TRITON_VERSION "3.6")
+    set(TRITON_VERSION "36")
   endif()
 endif()
+#unify TRITON_VERSION, remove dot
+string(REPLACE "." "" TRITON_VERSION "${TRITON_VERSION}")
 message(STATUS "TRITON_VERSION = ${TRITON_VERSION}")
-
-# Numeric form (e.g. 36) for C++ #if guards and cmake version dispatch.
-# NOTE: the matching add_compile_definitions(TRITON_VERSION=${TRITON_VERSION_NUMERIC})
-# is intentionally NOT emitted here. kurama compiles the gcu_compiler subproject
-# (which uses its own, older LLVM) as a regular target in the main build and must
-# keep it free of this define so its version guards stay on the pre-3.7 path.
-# Each consumer therefore adds the compile definition itself, after any such
-# version-isolated subproject.
-string(REPLACE "." "" TRITON_VERSION_NUMERIC "${TRITON_VERSION}")
-set(TRITON_VERDIR "triton${TRITON_VERSION_NUMERIC}")
+set(TRITON_VERDIR "triton${TRITON_VERSION}")
 
 # TARGET_PROFILE: build profile (e.g. default/gcu300_legacy/gcu300).
 # Overridable via the TARGET_PROFILE environment variable.

@@ -21,7 +21,6 @@ python/triton/_C/*.pdb
 python/triton/_C/*.exe
 python/triton/_C/*.ilk
 python/triton/FileCheck
-python/triton/FLAGTREE_BACKEND
 
 third_party/mthreads/python/triton/_C/*.so
 third_party/mthreads/python/triton/FileCheck
@@ -37,6 +36,9 @@ third_party/nvidia/backend/lib/libflagcx*
 third_party/iluvatar/python/*.egg-info
 third_party/iluvatar/.triton/
 third_party/iluvatar/bin/FileCheck
+third_party/iluvatar/backend/flagcx*
+third_party/iluvatar/backend/lib/libflagcx*
+third_party/iluvatar/tle/third_party
 third_party/iluvatar/logs/
 
 # Backends copied from submodules
@@ -135,3 +137,11 @@ third_party/mthreads/backend/bin/
 third_party/xpu.bak/
 third_party/xpu/backend/xpu3/
 .comate/
+
+# tsingmicro backend build artifacts and runtime logs
+python/lib/
+third_party/tsingmicro/backend/bin/
+third_party/tsingmicro/backend/lib/
+third_party/flir
+tsingmicro_launch.log
+python/tsingmicro_launch.log

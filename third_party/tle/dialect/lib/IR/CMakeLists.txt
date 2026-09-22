@@ -4,7 +4,7 @@
 set(TLE_IR_SRC
   Dialect.cpp
   Ops.cpp
-  VerfiyUtils.cpp
+  VerifyUtils.cpp
 )
 
 if(FLAGCX_ENABLED)
@@ -18,6 +18,11 @@ add_triton_library(TleIR
 
   DEPENDS
   TleTableGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  ${TLE_TRITON_GPU_ATTR_DEPENDS}
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   TritonIR

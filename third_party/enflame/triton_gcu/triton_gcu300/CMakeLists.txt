@@ -101,8 +101,10 @@ set_target_properties(triton-gcu300-opt PROPERTIES
 
 target_link_libraries(triton-gcu300-opt PRIVATE triton_gcu300_core)
 
-# Install tools
+# Install tools (omit from gcu400-only deb; still built for the wheel).
+if(ENABLE_GCU300)
 install(TARGETS triton-gcu300-opt RUNTIME DESTINATION bin)
+endif()
 
 add_custom_target(triton-gcu300-tools ALL DEPENDS triton-gcu300-opt)
 set(triton_gcu_source_dir ${CMAKE_CURRENT_SOURCE_DIR})

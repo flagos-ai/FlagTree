@@ -83,6 +83,56 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
     // the pointers should have for best memory coalescing
     llvm::MapVector<Operation *, Attribute> layoutMap;
     int threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(moduleOp);
+#ifdef __TLE__
+    bool failedExplicitEncoding = false;
+    moduleOp.walk([&](Operation *curr) {
+      if (failedExplicitEncoding)
+        return;
+      Value ptr = getMemAccessPtr(curr);
+      if (!ptr)
+        return;
+      // We only convert `tensor<tt.ptr<>>` load/store
+      bool isPtrTensor = false;
+      if (auto tensorType = dyn_cast<RankedTensorType>(ptr.getType()))
+        isPtrTensor = isa<PointerType>(tensorType.getElementType());
+      if (!isPtrTensor)
+        return;
+
+      Attribute explicitEncoding;
+      if (failed(inferTleExplicitMemoryEncoding(curr, explicitEncoding))) {
+        failedExplicitEncoding = true;
+        return;
+      }
+      auto tensorType = cast<RankedTensorType>(ptr.getType());
+      if (explicitEncoding) {
+        if (tensorType.getEncoding() != explicitEncoding) {
+          curr->emitOpError(
+              "has explicit MUSA TLE memory encoding that does not match "
+              "the pointer tensor encoding:\n  pointer: ")
+              << tensorType.getEncoding()
+              << "\n  explicit memory: " << explicitEncoding;
+          failedExplicitEncoding = true;
+          return;
+        }
+        LDBG(
+            "skip coalescing memory op with hard MUSA TLE encoding: " << *curr);
+        return;
+      }
+
+      int numWarps = lookupNumWarps(curr);
+      CGAEncodingAttr cgaLayout = getCGALayout(tensorType.getEncoding());
+      SmallVector<int64_t> shapePerCTA = getShapePerCTA(tensorType);
+      auto layout =
+          buildCoalescedEncoding(axisInfoAnalysis, curr, numWarps,
+                                 threadsPerWarp, cgaLayout, shapePerCTA);
+      layoutMap[curr] = layout;
+    });
+
+    if (failedExplicitEncoding) {
+      signalPassFailure();
+      return;
+    }
+#else
     moduleOp.walk([&](Operation *curr) {
       Value ptr = getMemAccessPtr(curr);
       if (!ptr)
@@ -103,6 +153,7 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
                                  threadsPerWarp, cgaLayout, shapePerCTA);
       layoutMap[curr] = layout;
     });
+#endif // __TLE__
 
     // Also pick a layout for descriptor load/store ops.
     pickDescriptorLoadStoreLayout(moduleOp, layoutMap);

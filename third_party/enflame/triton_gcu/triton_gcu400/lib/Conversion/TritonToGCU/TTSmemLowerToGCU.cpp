@@ -201,7 +201,8 @@ struct TTSmemCopyGlobalToLocalOpLowering
           WaitGcuLoadStore(builder, loc, tag, total_size);
           builder.create<scf::YieldOp>(loc);
         });
-    if (!loadOp->getParentOfType<gcu::WarpSpecializeOp>())
+    if (!loadOp->getParentOfType<gcu::WarpSpecializeOp>() &&
+        triton::gcu::getNumWarps(loadOp.getOperation()) > 1)
       rewriter.create<gpu::BarrierOp>(loc);
     rewriter.restoreInsertionPoint(ip);
 
@@ -936,10 +937,89 @@ struct TTLocalLoadOpLowering
     // share to Distributed
     if (mlir::isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
         isa<triton::gpu::BlockedEncodingAttr>(dstLayout)) {
-      // copy to local
-      auto output = loadFromSharedMem(rewriter, tag, op.getResult().getType(),
-                                      adaptor.getSrc(), false, lastUser,
-                                      firstUser, userAnalysis, replaced2Origin);
+      auto loc = op.getLoc();
+      auto srcMemRef = dyn_cast<MemRefType>(adaptor.getSrc().getType());
+      if (!srcMemRef)
+        return failure();
+
+      auto numElems = triton::gcu::getElemsPerThread(op.getType());
+      unsigned rank = srcMemRef.getRank();
+
+      bool onlyHighestDimSplit = true;
+      for (unsigned i = 1; i < rank; ++i) {
+        if (numElems[i] != srcMemRef.getShape()[i]) {
+          onlyHighestDimSplit = false;
+          break;
+        }
+      }
+      if (!onlyHighestDimSplit) {
+        // Strided per-warp data: fall back to DTE-based load.
+        auto output = loadFromSharedMem(
+            rewriter, tag, op.getResult().getType(), adaptor.getSrc(), false,
+            lastUser, firstUser, userAnalysis, replaced2Origin);
+        leaveTritionOp(rewriter, op.getOperation());
+        rewriter.replaceOp(op, output);
+        return success();
+      }
+
+      // Blocked layout: pure alias of SMEM, no DTE data movement.
+      // Fold the per-warp offset into the base address, keep offset = 0.
+      // Compute linear per-warp offset in elements:
+      //   offset_elems = sum_i(numElems[i] * warpIds[i] * srcStrides[i])
+      auto warpIds = getWarpIds(rewriter, loc, op.getType());
+      auto [srcStrides, srcOffset] = srcMemRef.getStridesAndOffset();
+      (void)srcOffset;
+      Value offsetElems = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+      for (unsigned i = 0; i < rank; ++i) {
+        Value dimOffset = rewriter.create<arith::MulIOp>(
+            loc,
+            rewriter.create<arith::MulIOp>(
+                loc, rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]),
+                warpIds[i]),
+            rewriter.create<arith::ConstantIndexOp>(loc, srcStrides[i]));
+        offsetElems =
+            rewriter.create<arith::AddIOp>(loc, offsetElems, dimOffset);
+      }
+
+      // Convert element offset to byte offset
+      auto elemType = srcMemRef.getElementType();
+      auto bpe = elemType.getIntOrFloatBitWidth() / 8;
+      Value offsetBytes = rewriter.create<arith::MulIOp>(
+          loc, offsetElems, rewriter.create<arith::ConstantIndexOp>(loc, bpe));
+
+      // Get SMEM base pointer and fold the offset into the base address
+      auto ptrType = gcu::PtrType::get(op.getContext(), elemType);
+      Value basePtr =
+          rewriter.create<gcu::MemRefToPtrOp>(loc, ptrType, adaptor.getSrc());
+      Value baseAddr =
+          rewriter.create<gcu::PtrToIntOp>(loc, rewriter.getI64Type(), basePtr);
+      Value offsetBytesI64 = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getI64Type(), offsetBytes);
+      Value adjustedAddr =
+          rewriter.create<arith::AddIOp>(loc, baseAddr, offsetBytesI64);
+      Value adjustedPtr =
+          rewriter.create<gcu::IntToPtrOp>(loc, ptrType, adjustedAddr);
+
+      // Wrap pointer into a 1D i8 memref
+      MemRefType memType1D =
+          MemRefType::get({ShapedType::kDynamic}, rewriter.getI8Type());
+      auto buffer1D =
+          rewriter.create<gcu::PtrToMemRefOp>(loc, memType1D, adjustedPtr);
+
+      // Change to the result memory space (metadata only, address preserved)
+      auto resultType =
+          cast<MemRefType>(getTypeConverter()->convertType(op.getType()));
+      auto bufferWithSpace = rewriter.create<memref::MemorySpaceCastOp>(
+          loc,
+          MemRefType::get({ShapedType::kDynamic}, rewriter.getI8Type(),
+                          AffineMap{}, resultType.getMemorySpace()),
+          buffer1D);
+
+      // Final view with offset 0 (offset already folded into base address)
+      auto output = rewriter.create<memref::ViewOp>(
+          loc, resultType, bufferWithSpace,
+          rewriter.create<arith::ConstantIndexOp>(loc, 0), ValueRange{});
+
       leaveTritionOp(rewriter, op.getOperation());
       rewriter.replaceOp(op, output);
       return success();

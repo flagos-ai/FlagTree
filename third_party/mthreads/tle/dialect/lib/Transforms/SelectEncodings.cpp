@@ -2,6 +2,7 @@
 
 #include "Dialect/MUSATLE/IR/Dialect.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
+#include "tle/dialect/include/IR/Dialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -11,6 +12,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
@@ -30,9 +32,50 @@ constexpr StringLiteral kTTConstancyAttr = "tt.constancy";
 
 static Value stripConvertLayouts(Value value) {
   Value current = value;
-  while (auto convert = current.getDefiningOp<triton::gpu::ConvertLayoutOp>())
+  while (auto convert = current.getDefiningOp<triton::gpu::ConvertLayoutOp>()) {
+    if (isTleExplicitConvertLayoutOp(convert))
+      break;
     current = convert.getSrc();
+  }
   return current;
+}
+
+static Value getMemDescRoot(Value value) {
+  Value current = value;
+  while (true) {
+    if (auto index = current.getDefiningOp<triton::gpu::MemDescIndexOp>()) {
+      current = index.getSrc();
+      continue;
+    }
+    if (auto subslice =
+            current.getDefiningOp<triton::gpu::MemDescSubsliceOp>()) {
+      current = subslice.getSrc();
+      continue;
+    }
+    if (auto alias = current.getDefiningOp<triton::tle::MemDescAliasOp>()) {
+      current = alias.getSrc();
+      continue;
+    }
+    if (auto transpose = current.getDefiningOp<triton::gpu::MemDescTransOp>()) {
+      current = transpose.getSrc();
+      continue;
+    }
+    if (auto reshape = current.getDefiningOp<triton::gpu::MemDescReshapeOp>()) {
+      current = reshape.getSrc();
+      continue;
+    }
+    if (auto reinterpret =
+            current.getDefiningOp<triton::gpu::MemDescReinterpretOp>()) {
+      current = reinterpret.getSrc();
+      continue;
+    }
+    if (auto wgmmaView =
+            current.getDefiningOp<triton::tle::MemDescWGMMAViewOp>()) {
+      current = wgmmaView.getSrc();
+      continue;
+    }
+    return current;
+  }
 }
 
 static Attribute getStrippedTensorEncoding(Value value) {
@@ -61,6 +104,8 @@ static Value stripIndexValueWrappers(Value value) {
   Value current = value;
   while (true) {
     if (auto convert = current.getDefiningOp<triton::gpu::ConvertLayoutOp>()) {
+      if (isTleExplicitConvertLayoutOp(convert))
+        break;
       current = convert.getSrc();
       continue;
     }
@@ -201,6 +246,8 @@ static bool valueFeedsDot(Value root) {
       if (isa<triton::DotOpInterface>(owner))
         return true;
       if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(owner)) {
+        if (isTleExplicitConvertLayoutOp(convert))
+          continue;
         enqueue(convert.getResult());
         continue;
       }
@@ -282,6 +329,8 @@ static Operation *peelAxisInfoCarrier(Value value) {
     if (!def)
       break;
     if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(def)) {
+      if (isTleExplicitConvertLayoutOp(convert))
+        return def;
       current = convert.getSrc();
       continue;
     }
@@ -424,6 +473,8 @@ collectConsumerEncodingVotes(Value root,
         continue;
       }
       if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(owner)) {
+        if (isTleExplicitConvertLayoutOp(convert))
+          continue;
         enqueue(convert.getResult());
         continue;
       }
@@ -441,6 +492,99 @@ collectConsumerEncodingVotes(Value root,
       }
     }
   }
+}
+
+static LogicalResult
+mergeHardEncoding(triton::musa_tle::LocalPointersOp localPointers,
+                  Attribute candidate, Attribute &hardEncoding) {
+  if (!candidate)
+    return success();
+  if (!hardEncoding) {
+    hardEncoding = candidate;
+    return success();
+  }
+  if (hardEncoding == candidate)
+    return success();
+
+  localPointers.emitOpError(
+      "has conflicting explicit MUSA TLE local pointer encodings:\n  ")
+      << hardEncoding << "\nand\n  " << candidate;
+  return failure();
+}
+
+static LogicalResult
+mergeExplicitValueEncoding(triton::musa_tle::LocalPointersOp localPointers,
+                           Value value, Attribute &hardEncoding) {
+  Attribute candidate = getTleExplicitValueEncoding(value);
+  if (!candidate)
+    return success();
+
+  auto tensorTy = dyn_cast<RankedTensorType>(value.getType());
+  if (!tensorTy || tensorTy.getEncoding() != candidate) {
+    Operation *def = value.getDefiningOp();
+    return (def ? def : localPointers.getOperation())
+        ->emitOpError("has explicit MUSA TLE result encoding that does not "
+                      "match the tensor type encoding");
+  }
+  return mergeHardEncoding(localPointers, candidate, hardEncoding);
+}
+
+static LogicalResult
+resolveHardEncoding(triton::musa_tle::LocalPointersOp localPointers,
+                    Attribute &hardEncoding) {
+  hardEncoding = nullptr;
+  if (failed(mergeExplicitValueEncoding(
+          localPointers, localPointers.getResult(), hardEncoding)))
+    return failure();
+  for (Value index : localPointers.getIndices())
+    if (failed(mergeExplicitValueEncoding(localPointers, index, hardEncoding)))
+      return failure();
+
+  llvm::SmallVector<Value> worklist;
+  llvm::DenseSet<Value> visited;
+  auto enqueue = [&](Value value) {
+    if (value && visited.insert(value).second)
+      worklist.push_back(value);
+  };
+  enqueue(localPointers.getResult());
+
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    if (failed(
+            mergeExplicitValueEncoding(localPointers, current, hardEncoding)))
+      return failure();
+
+    for (OpOperand &use : current.getUses()) {
+      Operation *owner = use.getOwner();
+      if (isa<triton::LoadOp, triton::StoreOp, triton::AtomicRMWOp,
+              triton::AtomicCASOp>(owner)) {
+        Attribute memoryEncoding;
+        if (failed(inferTleExplicitMemoryEncoding(owner, memoryEncoding)) ||
+            failed(
+                mergeHardEncoding(localPointers, memoryEncoding, hardEncoding)))
+          return failure();
+        continue;
+      }
+      if (auto convert = dyn_cast<triton::gpu::ConvertLayoutOp>(owner)) {
+        if (!isTleExplicitConvertLayoutOp(convert))
+          enqueue(convert.getResult());
+        continue;
+      }
+      if (auto bcast = dyn_cast<triton::BroadcastOp>(owner)) {
+        enqueue(bcast.getResult());
+        continue;
+      }
+      if (auto expand = dyn_cast<triton::ExpandDimsOp>(owner)) {
+        enqueue(expand.getResult());
+        continue;
+      }
+      if (auto reshape = dyn_cast<triton::ReshapeOp>(owner)) {
+        enqueue(reshape.getResult());
+        continue;
+      }
+    }
+  }
+  return success();
 }
 
 static Attribute pickDominantEncoding(ArrayRef<EncodingVote> votes,
@@ -503,6 +647,9 @@ static void bridgeResultTypeToOldEncoding(Value result, Type oldType,
 static bool tryFoldPointerConvertLayout(triton::gpu::ConvertLayoutOp convert,
                                         OpBuilder &builder,
                                         CachedConversionMap &cache) {
+  if (isTleExplicitConvertLayoutOp(convert))
+    return false;
+
   auto srcTy = dyn_cast<RankedTensorType>(convert.getSrc().getType());
   auto dstTy = dyn_cast<RankedTensorType>(convert.getType());
   if (!srcTy || !dstTy)
@@ -618,6 +765,21 @@ class SelectEncodingsPass
     OpBuilder builder(module.getContext());
     CachedConversionMap userOperandConversionCache;
     CachedConversionMap indexOperandConversionCache;
+    llvm::DenseMap<Operation *, Attribute> hardEncodings;
+    WalkResult preflight =
+        module.walk([&](triton::musa_tle::LocalPointersOp op) -> WalkResult {
+          Attribute hardEncoding;
+          if (failed(resolveHardEncoding(op, hardEncoding)))
+            return WalkResult::interrupt();
+          if (hardEncoding)
+            hardEncodings[op.getOperation()] = hardEncoding;
+          return WalkResult::advance();
+        });
+    if (preflight.wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
+
     module.walk([&](triton::musa_tle::LocalPointersOp op) {
       // Always tag local pointer ops so barrier insertion can track hazards
       // across different pointer views of the same alloc.
@@ -649,38 +811,46 @@ class SelectEncodingsPass
       }
 
       auto encoding = tensorTy.getEncoding();
-      SmallVector<EncodingVote> votes;
-      collectConsumerEncodingVotes(op.getResult(), votes);
-      for (Value index : op.getIndices()) {
-        Attribute indexEncoding = getStrippedTensorEncoding(index);
-        if (!indexEncoding)
-          continue;
-        const bool constantLike = isConstantLikeTensorValue(index);
-        int64_t elemCount = 1;
-        if (auto indexTy = dyn_cast<RankedTensorType>(index.getType())) {
-          for (int64_t dim : indexTy.getShape()) {
-            if (dim <= 0) {
-              elemCount = 0;
-              break;
+      Attribute hardEncoding = hardEncodings.lookup(op.getOperation());
+      if (hardEncoding) {
+        if (encoding != hardEncoding) {
+          encoding = hardEncoding;
+          updated = true;
+        }
+      } else {
+        SmallVector<EncodingVote> votes;
+        collectConsumerEncodingVotes(op.getResult(), votes);
+        for (Value index : op.getIndices()) {
+          Attribute indexEncoding = getStrippedTensorEncoding(index);
+          if (!indexEncoding)
+            continue;
+          const bool constantLike = isConstantLikeTensorValue(index);
+          int64_t elemCount = 1;
+          if (auto indexTy = dyn_cast<RankedTensorType>(index.getType())) {
+            for (int64_t dim : indexTy.getShape()) {
+              if (dim <= 0) {
+                elemCount = 0;
+                break;
+              }
+              elemCount *= dim;
             }
-            elemCount *= dim;
           }
+          const int64_t depthFactor = 1 + getScfLoopDepth(op.getOperation());
+          int64_t baseScore = constantLike ? 1 : 12;
+          if (!constantLike) {
+            if (elemCount >= 1024)
+              baseScore = 192;
+            else if (elemCount >= 256)
+              baseScore = 64;
+          }
+          const int64_t score = baseScore * depthFactor;
+          votes.push_back({indexEncoding, score});
         }
-        const int64_t depthFactor = 1 + getScfLoopDepth(op.getOperation());
-        int64_t baseScore = constantLike ? 1 : 12;
-        if (!constantLike) {
-          if (elemCount >= 1024)
-            baseScore = 192;
-          else if (elemCount >= 256)
-            baseScore = 64;
+        Attribute userEncoding = pickDominantEncoding(votes, encoding);
+        if (userEncoding && userEncoding != encoding) {
+          encoding = userEncoding;
+          updated = true;
         }
-        const int64_t score = baseScore * depthFactor;
-        votes.push_back({indexEncoding, score});
-      }
-      Attribute userEncoding = pickDominantEncoding(votes, encoding);
-      if (userEncoding && userEncoding != encoding) {
-        encoding = userEncoding;
-        updated = true;
       }
       if (!encoding) {
         OpBuilder::InsertionGuard guard(builder);
@@ -721,8 +891,9 @@ class SelectEncodingsPass
           for (OpOperand &use : ptrVal.getUses()) {
             Operation *owner = use.getOwner();
             if (auto load = dyn_cast<triton::LoadOp>(owner)) {
-              if (isRewritableFullViewLocalPointerLoad(load))
-                continue;
+              // Full-view loads do not participate in encoding inference
+              // because they are rewritten to local_load later. Until that
+              // rewrite, their result type must still match the pointer type.
               if (Value mask = load.getMask()) {
                 Value convertedMask =
                     convertOperandEncoding(owner, mask, ptrEncoding);
@@ -739,14 +910,9 @@ class SelectEncodingsPass
                   dyn_cast<RankedTensorType>(load.getResult().getType());
               if (oldLoadTy != loadTy) {
                 load.getResult().setType(loadTy);
-                if (oldLoadTy) {
-                  OpBuilder::InsertionGuard guard(builder);
-                  builder.setInsertionPointAfter(load);
-                  auto bridge = triton::gpu::ConvertLayoutOp::create(
-                      builder, load.getLoc(), oldLoadTy, load.getResult());
-                  load.getResult().replaceAllUsesExcept(bridge.getResult(),
-                                                        bridge.getOperation());
-                }
+                if (oldLoadTy)
+                  bridgeResultTypeToOldEncoding(load.getResult(), oldLoadTy,
+                                                builder);
               }
               continue;
             }
@@ -878,7 +1044,8 @@ class SelectEncodingsPass
 
   void tagDependencyGroup(triton::musa_tle::LocalPointersOp op,
                           OpBuilder &builder) {
-    auto alloc = op.getSrc().getDefiningOp<triton::gpu::LocalAllocOp>();
+    auto alloc =
+        getMemDescRoot(op.getSrc()).getDefiningOp<triton::gpu::LocalAllocOp>();
     if (!alloc)
       return;
     auto groupAttr = alloc->getAttrOfType<IntegerAttr>(kBarrierGroupAttr);

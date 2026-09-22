@@ -29,6 +29,7 @@ def insert_tile_kernel(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for this test")
+@pytest.mark.require_tle("insert_tile")
 def test_insert_tile_static_index():
     M, N = 512, 512
     TM, TN = 128, 128

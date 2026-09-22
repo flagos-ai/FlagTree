@@ -519,17 +519,44 @@ struct MemDescIndexOpConversion
     auto dstTy = op.getResult().getType();
     auto llvmElemTy = getTypeConverter()->convertType(srcTy.getElementType());
 
+#ifdef __TLE__
+    // A rank-reduced subview retains the complete backing allocation shape.
+    // Use its trailing dimensions for the stage stride rather than the
+    // logical subview shape; otherwise adjacent stages of sibling subviews
+    // overlap. getAllocationShapePerCTA also accounts for fp4 padding.
+    ArrayRef<int64_t> allocationShape =
+        dstTy.getAllocShape().take_back(dstTy.getRank());
+    auto stride =
+        product(getAllocationShapePerCTA(dstTy.getEncoding(), allocationShape));
+    bool isSubview = srcTy.getAllocShape() != srcTy.getShape();
+    Value offset;
+    if (!isSubview)
+      offset = b.mul(op.getIndex(), b.i32_val(stride));
+#else
     // getAllocationShapePerCTA returns the correct number fp4 elements that we
     // need to skip when we have fp4Padded=True. getShapePerCTA does not account
     // for this
     auto stride = product(
         getAllocationShapePerCTA(dstTy.getEncoding(), dstTy.getShape()));
     Value offset = b.mul(op.getIndex(), b.i32_val(stride));
+#endif
     auto smemObj = getSharedMemoryObjectFromStruct(loc, adaptor.getSrc(),
                                                    llvmElemTy, rewriter);
     auto base = smemObj.getBase();
     auto elemPtrTy = base.getType();
     auto prevOffsets = smemObj.getOffsets();
+#ifdef __TLE__
+    assert(prevOffsets.size() >= static_cast<size_t>(srcTy.getRank()) &&
+           "shared-memory object must carry one offset per logical dimension");
+    // A subslice may also start at a non-zero position in the leading stage
+    // dimension. Fold that origin into the selected stage before dropping the
+    // dimension from the result view.
+    if (isSubview) {
+      Value leadingOffset = prevOffsets[prevOffsets.size() - srcTy.getRank()];
+      Value effectiveIndex = b.add(op.getIndex(), leadingOffset);
+      offset = b.mul(effectiveIndex, b.i32_val(stride));
+    }
+#endif
     SmallVector<Value> offsetVals(prevOffsets.end() - dstTy.getRank(),
                                   prevOffsets.end());
 
@@ -619,10 +646,13 @@ struct ConcatDotOperandOpConversion
   matchAndRewrite(ConcatDotOperandOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<std::pair<unsigned, unsigned>> resultRegToFragmentReg;
-    if (failed(getConcatDotOperandRegisterMap(op, resultRegToFragmentReg)))
+    auto reason = DotOperandRelabelFailure::MalformedConcat;
+    if (failed(getConcatDotOperandRegisterMap(op, resultRegToFragmentReg,
+                                              &reason)))
       return op.emitError("concat_dot_operand: operand layout does not allow a "
                           "per-thread register relabel; it should have been "
-                          "expanded by tritongpu-expand-concat-dot-operand");
+                          "expanded by tritongpu-expand-concat-dot-operand: ")
+             << getDotOperandRelabelFailureMessage(reason);
 
     Location loc = op->getLoc();
     SmallVector<SmallVector<Value>> fragVals;
@@ -635,6 +665,34 @@ struct ConcatDotOperandOpConversion
     for (auto [fragIdx, fragReg] : resultRegToFragmentReg)
       resultVals.push_back(fragVals[fragIdx][fragReg]);
 
+    rewriter.replaceOp(op, packLLElements(loc, getTypeConverter(), resultVals,
+                                          rewriter, op.getType()));
+    return success();
+  }
+};
+
+// extract_dot_operand: the inverse per-thread register subset.
+// getExtractDotOperandRegisterMap says which source register feeds each result
+// register; the values are then just copied over.
+struct ExtractDotOperandOpConversion
+    : public ConvertOpToLLVMPattern<ExtractDotOperandOp> {
+  using ConvertOpToLLVMPattern<ExtractDotOperandOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(ExtractDotOperandOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<unsigned> resultRegToSrcReg;
+    if (failed(getExtractDotOperandRegisterMap(op, resultRegToSrcReg)))
+      return op.emitError("extract_dot_operand: operand layout does not allow "
+                          "a per-thread register subset");
+
+    Location loc = op->getLoc();
+    SmallVector<Value> srcVals =
+        unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    SmallVector<Value> resultVals;
+    resultVals.reserve(resultRegToSrcReg.size());
+    for (unsigned srcReg : resultRegToSrcReg)
+      resultVals.push_back(srcVals[srcReg]);
     rewriter.replaceOp(op, packLLElements(loc, getTypeConverter(), resultVals,
                                           rewriter, op.getType()));
     return success();
@@ -656,7 +714,8 @@ void mlir::triton::populateViewOpToLLVMPatterns(
   patterns.add<CatOpConversion>(typeConverter, benefit);
   patterns.add<JoinOpConversion>(typeConverter, benefit);
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
-  patterns.add<ConcatDotOperandOpConversion>(typeConverter, benefit);
+  patterns.add<ConcatDotOperandOpConversion, ExtractDotOperandOpConversion>(
+      typeConverter, benefit);
 #endif // __FLAGTREE_CONCAT_DOT_OPERAND__
   patterns.add<SplitOpConversion>(typeConverter, benefit);
   patterns.add<MemDescTransOpConversion, MemDescReshapeOpConversion>(

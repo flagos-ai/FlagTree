@@ -42,7 +42,7 @@ struct UseInfo {
   ttg::CGAEncodingAttr cgaLayout;
 };
 
-static bool isTMACompatibleEncoding(Attribute enc) {
+static bool isTMECompatibleEncoding(Attribute enc) {
   if (isa_and_nonnull<ttg::SwizzledSharedEncodingAttr>(enc))
     return true;
   if (auto nvmma = dyn_cast_or_null<ttg::NVMMASharedEncodingAttr>(enc))
@@ -54,12 +54,12 @@ static Attribute findDirectLoadEncodingFromUsers(Operation *op) {
   for (Operation *user : op->getUsers()) {
     if (auto alloc = dyn_cast<ttg::LocalAllocOp>(user)) {
       auto enc = alloc.getType().getEncoding();
-      if (isTMACompatibleEncoding(enc))
+      if (isTMECompatibleEncoding(enc))
         return enc;
     } else if (auto store = dyn_cast<ttg::LocalStoreOp>(user)) {
       auto dstTy = dyn_cast<ttg::MemDescType>(store.getDst().getType());
       auto enc = dstTy ? dstTy.getEncoding() : Attribute();
-      if (isTMACompatibleEncoding(enc))
+      if (isTMECompatibleEncoding(enc))
         return enc;
     }
   }
@@ -89,7 +89,7 @@ static Attribute findDescriptorLoadEncoding(tt::DescriptorLoadOp loadOp) {
   if (!landingTy)
     return {};
   Attribute enc = landingTy->getEncoding();
-  if (isTMACompatibleEncoding(enc))
+  if (isTMECompatibleEncoding(enc))
     return enc;
   return {};
 }
@@ -346,8 +346,8 @@ static void assignMemoryLayouts(tt::FuncOp func) {
       return;
     }
 
-    bool forcedToDefault =
-        isa<tt::CallOp, tt::ReturnOp, ttng::ReinterpretTensorDescOp>(op);
+    bool forcedToDefault = isa<tt::CallOp, tt::ReturnOp>(op) ||
+                           isa<triton::musa::ReinterpretTensorDescOp>(op);
     auto *einfo = internEncoding(encodings,
                                  EncodingInfo{{}, {}, {}, {}, forcedToDefault});
 
@@ -413,6 +413,22 @@ static void assignMemoryLayouts(tt::FuncOp func) {
     desc.setType(getTensorDescTypeWithEncoding(desc.getDefiningOp(), existingTy,
                                                newEncoding));
   }
+
+#ifdef __TLE__
+  // Descriptor encodings may be inferred from a use in only one static
+  // partition. Normalize every explicit-capture block argument after the
+  // inference pass so unused captures in sibling partitions remain type
+  // consistent as well.
+  func.walk([&](ttg::WarpSpecializePartitionsOp partitions) {
+    for (auto [index, capture] :
+         llvm::enumerate(partitions.getExplicitCaptures())) {
+      for (Region &partition : partitions.getPartitionRegions()) {
+        if (index < partition.getNumArguments())
+          partition.getArgument(index).setType(capture.getType());
+      }
+    }
+  });
+#endif // __TLE__
 
   SmallVector<Type> argTys(func.getBody().front().getArgumentTypes());
   SmallVector<Type> resultTys(func.getResultTypes());
@@ -515,6 +531,10 @@ public:
 
   LogicalResult matchAndRewrite(ttg::ConvertLayoutOp cvt,
                                 PatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    if (isTleExplicitConvertLayoutOp(cvt))
+      return failure();
+#endif // __TLE__
     auto dstTy = dyn_cast<RankedTensorType>(cvt.getType());
     if (!dstTy)
       return failure();
@@ -524,6 +544,10 @@ public:
     auto fpToFp = cvt.getSrc().getDefiningOp<tt::FpToFpOp>();
     if (!fpToFp)
       return failure();
+#ifdef __TLE__
+    if (getTleExplicitValueEncoding(fpToFp.getResult()))
+      return failure();
+#endif // __TLE__
 
     auto midTy = dyn_cast<RankedTensorType>(fpToFp.getType());
     auto srcTy = dyn_cast<RankedTensorType>(fpToFp.getSrc().getType());

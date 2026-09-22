@@ -6,6 +6,9 @@
 #include "mlir/IR/PatternMatch.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#endif // __TLE__
 
 using namespace mlir;
 namespace tt = mlir::triton;
@@ -23,6 +26,10 @@ static bool preservesSqmmaOperandBoundary(arith::TruncFOp trunc) {
 
 static bool sinkTruncAfterMmaConvert(ttg::ConvertLayoutOp cvt,
                                      RewriterBase &rewriter) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(cvt))
+    return false;
+#endif // __TLE__
   auto srcTy = dyn_cast<RankedTensorType>(cvt.getSrc().getType());
   auto dstTy = dyn_cast<RankedTensorType>(cvt.getType());
   if (!srcTy || !dstTy)
@@ -47,6 +54,10 @@ static bool sinkTruncAfterMmaConvert(ttg::ConvertLayoutOp cvt,
 
   bool changed = false;
   for (arith::TruncFOp trunc : truncUsers) {
+#ifdef __TLE__
+    if (getTleExplicitValueEncoding(trunc.getResult()))
+      continue;
+#endif // __TLE__
     if (preservesSqmmaOperandBoundary(trunc))
       continue;
     auto truncDstTy = dyn_cast<RankedTensorType>(trunc.getType());

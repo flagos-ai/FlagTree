@@ -176,7 +176,8 @@ std::function<void(int, int, int)> getLoadMatrixFn(
     unsigned replicaMN = a >> 1;
     unsigned replicaK = b >> 1;
     unsigned replicaMNElements = shapePerWarpM * warpsPerTile;
-    unsigned replicaKElements = 16;
+    assert(elemBytes > 0 && "elemBytes must be greater than 0");
+    unsigned replicaKElements = 32 / elemBytes;
     unsigned replicaMNOff = replicaMNElements * replicaMN;
     unsigned replicaKOff = replicaKElements * replicaK;
 
@@ -191,6 +192,9 @@ std::function<void(int, int, int)> getLoadMatrixFn(
         mlir::LLVM::PPU::getStrides(smemObj, descTy, loc, rewriter)[order[1]];
 
     auto needTrans = kOrder != order[0];
+    if (elemBytes == 1) {
+      assert(!needTrans && "needTrans should be false for fp8/int8 aiu");
+    }
     if (!needTrans) {
       // w/x offset of the origin aiu load tile
       Value tileWOff = builder.add(builder.i32_val(replicaMNOff), warpOff);

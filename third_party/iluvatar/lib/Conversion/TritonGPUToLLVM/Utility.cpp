@@ -623,8 +623,11 @@ bool isIluvatarRowXfb8LocalLoad(Operation *op) {
   auto shared =
       dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(srcTy.getEncoding());
   auto dot = dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstTy.getEncoding());
+  // Auto SME marks a dot operand. A non-dot load from this useTcu rowxfb8
+  // shared layout is the explicit Gluon SME path.
+  bool isSmeConsumer = !dot || dot.getUseSme() != 0;
   return srcTy.getElementType().isInteger(8) && shared && shared.getUseTcu() &&
-         shared.getOrder()[0] != 0 && dot && dot.getUseSme() != 0;
+         shared.getOrder()[0] != 0 && isSmeConsumer;
 }
 #endif
 

@@ -20,6 +20,9 @@ include "triton/Dialect/Triton/IR/TritonOpInterfaces.td"
 // Interfaces
 //
 def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
+#ifdef __MCTLE__
+def SharedMemory : Resource<"::mlir::triton::SharedMemory">;
+#endif
 
 //
 // Op Base
@@ -351,8 +354,13 @@ def TT_StoreOp : TT_Op<"store", [
 def TT_AtomicRMWOp : TT_Op<"atomic_rmw", [
   SameOperandsAndResultShape,
   SameOperandsAndResultEncoding,
+#ifdef __MCTLE__
+  TypesMatchWith<"value type matches ptr type", "ptr", "val",
+                 "getPointeeType($_self)">,
+#else
   TypesMatchWith<"ptr type matches value type", "val", "ptr",
                  "getPointerTypeSameShape($_self)">,
+#endif
   TypesMatchWith<"mask type matches value type",
                  "val", "mask", "getI1SameShape($_self)",
                  "($_op.getOperands().size() <= 2) || std::equal_to<>()">
@@ -367,7 +375,12 @@ def TT_AtomicRMWOp : TT_Op<"atomic_rmw", [
 
     let arguments = (ins
       TT_AtomicRMWAttr:$atomic_rmw_op,
+#ifdef __MCTLE__
+      Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>,
+                           MemRead<SharedMemory>, MemWrite<SharedMemory>]>:$ptr,
+#else
       Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$ptr,
+#endif
       TT_Type:$val,
       Optional<TT_BoolLike>:$mask,
       TT_MemSemanticAttr:$sem,
@@ -387,10 +400,17 @@ def TT_AtomicRMWOp : TT_Op<"atomic_rmw", [
 def TT_AtomicCASOp : TT_Op<"atomic_cas", [
   SameOperandsAndResultShape,
   SameOperandsAndResultEncoding,
+#ifdef __MCTLE__
+  TypesMatchWith<"cmp type matches ptr type", "ptr", "cmp",
+                 "getPointeeType($_self)">,
+  TypesMatchWith<"value type matches ptr type", "ptr", "val",
+                 "getPointeeType($_self)">
+#else
   TypesMatchWith<"ptr type matches cmp type", "cmp", "ptr",
                   "getPointerTypeSameShape($_self)">,
   TypesMatchWith<"ptr type matches value type", "val", "ptr",
                   "getPointerTypeSameShape($_self)">
+#endif
 ]> {
     let summary = "atomic cas";
 
@@ -405,7 +425,12 @@ def TT_AtomicCASOp : TT_Op<"atomic_cas", [
     }];
 
     let arguments = (ins
+#ifdef __MCTLE__
+      Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>,
+                           MemRead<SharedMemory>, MemWrite<SharedMemory>]>:$ptr,
+#else
       Arg<TT_PtrLike, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$ptr,
+#endif // __MCTLE__
       TT_Type:$cmp,
       TT_Type:$val,
       TT_MemSemanticAttr:$sem,

@@ -30,6 +30,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "tle/dialect/include/IR/Dialect.h.inc"
+#include "tle/dialect/include/IR/OpsEnums.h.inc"
 
 #define GET_ATTRDEF_CLASSES
 #include "tle/dialect/include/IR/TleAttrDefs.h.inc"
@@ -41,5 +42,11 @@
 #define GET_OP_CLASSES
 #include "tle/dialect/include/IR/FlagCxOps.h.inc"
 #endif
+
+namespace mlir::triton::tle {
+// Helper function that accepts both "acq_rel" and the legacy "acqrel"
+// spelling.
+std::optional<MemoryOrder> parseMemoryOrder(::llvm::StringRef str);
+} // namespace mlir::triton::tle
 
 #endif

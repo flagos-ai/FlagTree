@@ -16,8 +16,14 @@ Flagtree 第三方后端包含针对燧原加速器后端，提供核心组件�
 ### 1. 版本定义
 
 ```bash
-# 软件包
-SDK=TopsRider_Triton_gcu-3.6.0-1.0.20260722.cc.1.10.6_deb_amd64.run
+# 软件包（GCU300 与 GCU400 使用不同的软件栈，请按目标平台选择）
+# GCU400 平台使用：
+SDK400=TopsRider_Triton_gcu-3.6.0+1.0.20260826.cc.1.10.25_deb_amd64.run
+# GCU300 平台使用：
+SDK300=TopsRider_Triton_gcu-3.6.0+1.0.20260826.cc.1.9.29_deb_amd64.run
+# 根据实际平台设置 SDK 变量（二选一）：
+SDK=${SDK400}   # GCU400 平台
+# SDK=${SDK300} # GCU300 平台
 # 工具链
 LLVM=enflame-llvm23-fc83c68-gcc9-x64_v0.4.0.tar.gz
 # 镜像
@@ -41,6 +47,9 @@ git checkout main
 
 ```bash
 cd ~
+# 按目标平台拉取对应的软件包（与上方 SDK 设置保持一致）
+# GCU400 平台：wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${SDK400}
+# GCU300 平台：wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${SDK300}
 wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${SDK}
 ```
 
@@ -48,6 +57,7 @@ wget https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/${SDK}
 
 ```bash
 cd ~
+# 使用目标平台对应的软件包安装驱动（GCU400 用 SDK400，GCU300 用 SDK300）
 bash ${SDK} --driver -y
 # 检查驱动是否正常安装
 efsmi
@@ -70,6 +80,8 @@ efsmi
 | 35℃    LP1      68W / 300W  | 147456MiB Disable | 0%          A098Q50610048 |
 +-----------------------------+-------------------+---------------------------+
 ```
+
+> 说明：efsmi 输出的设备型号（NAME 列）因平台而异 —— GCU300 平台显示 `Enflame S60`，GCU400 平台显示 `Enflame L300/L600`。以上示例为 GCU400 平台的 L300 设备。
 
 ### 5. 准备 Docker 镜像
 
@@ -118,6 +130,7 @@ tar -xzf ${LLVM}
 ### 2. 安装软件包
 ```bash
 cd ~
+# 使用目标平台对应的软件包安装容器内软件栈（GCU400 用 SDK400，GCU300 用 SDK300）
 bash ${SDK} --container -y
 ```
 

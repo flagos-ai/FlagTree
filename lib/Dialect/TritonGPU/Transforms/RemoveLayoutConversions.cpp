@@ -45,6 +45,7 @@
 #endif // __FLAGTREE_RLC_ENHANCE__
 #include "triton/Analysis/Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif // __TLE__
@@ -455,6 +456,8 @@ static int64_t getByteCount(Value result, int64_t minElementCount,
 // propagate the layout starting from anchor ops.
 bool isLayoutAnchor(Operation *op) {
 #ifdef __TLE__
+  if (isa<triton::tle::ExtractTileOp, triton::tle::InsertTileOp>(op))
+    return true;
   if (isTleExplicitConvertLayoutOp(op))
     return true;
 #endif
@@ -4196,8 +4199,8 @@ void LayoutRematerialization::hoistConvertDotOperand(
   // threads We do views and elementwise pure ops for now
   auto noDataMovement = [](Operation *op) {
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
-    // ConcatDotOperandOp grows the tensor along K but keeps every element on
-    // the thread that already held it, so hoisting a convert over it is free.
+    // ConcatDotOperandOp is defined on logical indices, i.e. which fragment
+    // element each result element is, so it commutes with a layout convert.
     return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
            isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface,
                ConcatDotOperandOp>(op) ||
