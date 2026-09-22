@@ -127,6 +127,17 @@ static ttg::LocalAllocOp findRootAlloc(Value value) {
   while (value && visited.insert(value.getAsOpaquePointer()).second) {
     if (auto alloc = value.getDefiningOp<ttg::LocalAllocOp>())
       return alloc;
+    // A worker's shared descriptor is an explicit capture, not a new
+    // allocation. Follow it back across the isolated partition boundary.
+    if (auto argument = dyn_cast<BlockArgument>(value)) {
+      auto partitions = dyn_cast_or_null<ttg::WarpSpecializePartitionsOp>(
+          argument.getOwner()->getParentOp());
+      if (!partitions ||
+          argument.getArgNumber() >= partitions.getExplicitCaptures().size())
+        break;
+      value = partitions.getExplicitCaptures()[argument.getArgNumber()];
+      continue;
+    }
     Operation *def = value.getDefiningOp();
     if (auto index = dyn_cast_or_null<ttg::MemDescIndexOp>(def))
       value = index.getSrc();
