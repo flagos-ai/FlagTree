@@ -44,6 +44,8 @@ CORE:
           - 'setup.py'
           - '.github/actions/**'
           - '.github/workflows/code-format-check.yml'
+          - '.github/workflows/template-gems-baseline.yml'
+          - '.github/workflows/template-gems-test.yml'
       - all-globs-to-any-file:
           - 'python/**'
           - '!python/setup_tools/utils/cambricon.py'
