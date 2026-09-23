@@ -1605,8 +1605,8 @@ class TritonSemantic(Generic[TensorTy]):
             acc_handle = self.builder.create_splat(ret_ty.to_ir(self.builder), _0)
         else:
             acc_handle = acc.handle
-            # the accumulator must match the actual result element type, which
-            # for integer dot is int32 regardless of out_dtype
+            # flagtree: the accumulator must match the actual result element type,
+            # which for integer dot is int32 regardless of out_dtype
             if acc.type.shape != ret_ty.shape or acc.type.element_ty != ret_scalar_ty:
                 raise ValueError(f"tl.dot: accumulator type {acc.type} is incompatible with the dot "
                                  f"result type {ret_ty}")
@@ -1716,8 +1716,8 @@ class TritonSemantic(Generic[TensorTy]):
             acc_handle = self.builder.create_splat(ret_ty.to_ir(self.builder), _0)
         else:
             acc_handle = acc.handle
-            # same accumulator check as tl.dot: a bare assert would surface as an
-            # empty AssertionError instead of naming the mismatching types
+            # flagtree: same accumulator check as tl.dot: a bare assert would surface
+            # as an empty AssertionError instead of naming the mismatching types
             if acc.type.shape != ret_ty.shape or acc.type.element_ty != out_dtype:
                 raise ValueError(f"tl.dot_scaled: accumulator type {acc.type} is incompatible with the "
                                  f"dot_scaled result type {ret_ty}")
