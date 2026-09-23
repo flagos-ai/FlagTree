@@ -1052,7 +1052,20 @@ class XPUDriver(GPUDriver):
         device = self.get_current_device()
         arch = self.utils.get_device_properties(device)["device_model"]
         warp_size = 1  # we don't have warp
-        return GPUTarget("xpu", arch, warp_size)
+        # Backend string reported in GPUTarget, configurable for ecosystem
+        # compatibility:
+        #   default "cuda": this stack's torch presents the XPU under the
+        #       torch.cuda interface, and downstream projects (sglang / vLLM /
+        #       FlagGems-style kernels) key their device dispatch on
+        #       target.backend == "cuda".
+        #   TRITON_XPU_TARGET_BACKEND=xpu restores the pre-3.6-migration string
+        #       (Intel-xtriton heritage).
+        #   Any other string (e.g. "kunlun") is accepted too; XPUBackend
+        #       .supports_target accepts the configured string plus the
+        #       "cuda"/"xpu" aliases so kernels cached under any prior setting
+        #       still deserialize and route here.
+        backend_str = os.environ.get("TRITON_XPU_TARGET_BACKEND", "cuda")
+        return GPUTarget(backend_str, arch, warp_size)
 
     def map_python_to_cpp_type(self, ty: str) -> str:
         return ty_to_cpp(ty)

@@ -103,7 +103,9 @@ def get_hip_lds_size():
 
 def is_xpu():
     target = get_current_target()
-    return False if target is None else target.backend == "xpu"
+    if target is None:
+        return False
+    return target.backend in ("cuda", "xpu", os.environ.get("TRITON_XPU_TARGET_BACKEND", "cuda"))
 
 
 def get_arch():
