@@ -52,7 +52,7 @@ def duplicate_bitwise_mask_kernel(src, dst):
     neg_inf = tl.full([1], float("-inf"), dtype=tl.float32)
     mask = tl.zeros([2], dtype=tl.int64)
     mask = tl.where(tl.arange(0, 2) == 0, (-1) << NUM_GROUPS, mask)
-    src_tensor = tle.dsa.ascend.raw("duplicate_bitwise_mask", neg_inf, mask, 1, 1, 8, out=src_tensor)
+    src_tensor = tle.raw("ascend_duplicate_bitwise_mask", neg_inf, mask, 1, 1, 8, out=src_tensor)
     #out_tensor = tle.dsa.to_tensor(tle.dsa.subview(src_ub, offsets=[0], sizes=[ONE_REPEAT_SORT_NUM], strides=[1]))
     tl.store(dst + dst_offs, src_tensor, mask=dst_offs < ONE_REPEAT_SORT_NUM)
 
@@ -85,8 +85,8 @@ def gather_gm_to_l1_dot_kernel(
         order=(1, 0),
     )
     tile_k = tl.full((TILE_SIZE, D), 0, DTYPE)
-    tile_k = tle.dsa.ascend.raw(
-        "gather_gm_to_l1",
+    tile_k = tle.raw(
+        "ascend_gather_gm_to_l1",
         src_2d,
         src_index_2d,
         TILE_SIZE,
@@ -143,8 +143,8 @@ def gather_gm_to_ub_store_kernel(
         order=(1, 0),
     )
     tile_v = tl.full((TILE_SIZE, D), 0, DTYPE)
-    tile_v = tle.dsa.ascend.raw(
-        "gather_gm_to_ub",
+    tile_v = tle.raw(
+        "ascend_gather_gm_to_ub",
         src_2d,
         src_index_2d,
         TILE_SIZE,
@@ -180,9 +180,9 @@ def gather_mask_builtin_pattern_kernel(src, dst, rsvd_cnt):
     src1_repeat_stride = 0
     out0 = tl.zeros([ONE_REPEAT_SORT_NUM], dtype=tl.float32)
     out1 = tl.zeros([1], dtype=tl.int64)
-    out0, out1 = tle.dsa.ascend.raw("gather_mask_builtin_pattern", tle.dsa.to_tensor(src_ub), src1_pattern, reduce_mode,
-                                    mask, src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride,
-                                    out=[out0, out1])
+    out0, out1 = tle.raw("ascend_gather_mask_builtin_pattern", tle.dsa.to_tensor(src_ub), src1_pattern, reduce_mode,
+                         mask, src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride,
+                         out=[out0, out1])
     tl.store(dst + dst_offs, out0)
     tl.store(rsvd_cnt + tl.arange(0, 1), out1)
 
@@ -206,9 +206,8 @@ def gather_mask_custom_pattern_kernel(src, dst, rsvd_cnt):
     src1_repeat_stride = 0
     out0 = tl.zeros([NUM_GROUPS * 2], dtype=tl.float32)
     out1 = tl.zeros([1], dtype=tl.int64)
-    out0, out1 = tle.dsa.ascend.raw("gather_mask_custom_pattern", tle.dsa.to_tensor(src_ub), src1, reduce_mode, mask,
-                                    src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride,
-                                    out=[out0, out1])
+    out0, out1 = tle.raw("ascend_gather_mask_custom_pattern", tle.dsa.to_tensor(src_ub), src1, reduce_mode, mask,
+                         src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride, out=[out0, out1])
     tl.store(dst + dst_offs, out0)
     tl.store(rsvd_cnt + tl.arange(0, 1), out1)
 
@@ -221,8 +220,8 @@ def pair_reduce_sum_continuous_mask_kernel(src, dst):
     src_ub = tle.dsa.alloc([NUM_GROUPS * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     tle.dsa.copy(src + src_offs, src_ub, [NUM_GROUPS * 2])
     out = tl.zeros([NUM_GROUPS], dtype=tl.float32)
-    out = tle.dsa.ascend.raw("pair_reduce_sum_continuous_mask", tle.dsa.to_tensor(src_ub), 1, NUM_GROUPS * 2, 1, 1, 1,
-                             out=out)
+    out = tle.raw("ascend_pair_reduce_sum_continuous_mask", tle.dsa.to_tensor(src_ub), 1, NUM_GROUPS * 2, 1, 1, 1,
+                  out=out)
     tl.store(dst + dst_offs, out)
 
 
@@ -238,7 +237,7 @@ def sort32_kernel(src0, src1, repeat_times: tl.constexpr, dst, BLOCK_SIZE: tl.co
     tle.dsa.copy(src0 + src_offs, src0_ub, [BLOCK_SIZE])
     tle.dsa.copy(src1 + src_offs, src1_ub, [BLOCK_SIZE])
     pair = tl.zeros([DST_SIZE], dtype=tl.float32)
-    pair = tle.dsa.ascend.raw("sort32", tle.dsa.to_tensor(src0_ub), tle.dsa.to_tensor(src1_ub), repeat_times, out=pair)
+    pair = tle.raw("ascend_sort32", tle.dsa.to_tensor(src0_ub), tle.dsa.to_tensor(src1_ub), repeat_times, out=pair)
     tl.store(dst + dst_offs, pair)
 
 
@@ -253,8 +252,7 @@ def sort_pack_kernel(X, OutGM, N: tl.constexpr, K: tl.constexpr, INDEX_OFFSET: t
     src_ub = tle.dsa.alloc([N], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     tle.dsa.copy(X + tl.arange(0, NP2), src_ub, [N])
     props = tl.zeros([KP2], dtype=tl.float32)
-    props = tle.dsa.ascend.raw("sort_1d_pack", tle.dsa.to_tensor(src_ub), tmp, True, K, INDEX_OFFSET, SORT_IMPL,
-                               out=props)
+    props = tle.raw("ascend_sort_1d_pack", tle.dsa.to_tensor(src_ub), tmp, True, K, INDEX_OFFSET, SORT_IMPL, out=props)
     tl.store(OutGM + tl.arange(0, KP2), props)
 
 
@@ -272,8 +270,8 @@ def merge_exhaust_kernel(SrcGM, OutGM, ConsGM, WAY_CAP: tl.constexpr, WAYS: tl.c
     cons = tl.zeros([4], dtype=tl.int32)
 
     tle.dsa.copy(SrcGM + tl.arange(0, IN_P2), in_ub, [IN_LEN])
-    out_t, cons = tle.dsa.ascend.raw("merge_exhaust_sort4", tle.dsa.to_tensor(in_ub), WAYS, 0 * WAY_CAP, 1 * WAY_CAP,
-                                     2 * WAY_CAP, 3 * WAY_CAP, L0, L1, L2, L3, out=[out_t, cons])
+    out_t, cons = tle.raw("ascend_merge_exhaust_sort4", tle.dsa.to_tensor(in_ub), WAYS, 0 * WAY_CAP, 1 * WAY_CAP,
+                          2 * WAY_CAP, 3 * WAY_CAP, L0, L1, L2, L3, out=[out_t, cons])
 
     tl.store(OutGM + tl.arange(0, OUT_P2), out_t)
     tl.store(ConsGM + tl.arange(0, 4), cons)
@@ -292,8 +290,8 @@ def mrgsort_kernel(src, dst, TOP_K: tl.constexpr):
     src_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     tle.dsa.copy(src + offs, src_ub, [BLOCK_SIZE])
     pair = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
-    pair = tle.dsa.ascend.raw("mrgsort", tle.dsa.to_tensor(src_ub), 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3,
-                              TOP_K, TOP_K, TOP_K, TOP_K, IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
+    pair = tle.raw("ascend_mrgsort", tle.dsa.to_tensor(src_ub), 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3, TOP_K,
+                   TOP_K, TOP_K, TOP_K, IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
     tl.store(dst + offs, pair, mask=offs < TOP_K * 2)
 
 
@@ -307,7 +305,7 @@ def unpack_sort_kernel(SrcGM, Yv, Yi, K: tl.constexpr):
     didx = tl.zeros([K], dtype=tl.int32)
     offs = tl.arange(0, K)
     tle.dsa.copy(SrcGM + tl.arange(0, KP2), s_ub, [K * 2])
-    dval, didx = tle.dsa.ascend.raw("unpack_sort", tle.dsa.to_tensor(s_ub), K, out=[dval, didx])
+    dval, didx = tle.raw("ascend_unpack_sort", tle.dsa.to_tensor(s_ub), K, out=[dval, didx])
     tl.store(Yv + offs, dval)
     tl.store(Yi + offs, didx)
 
