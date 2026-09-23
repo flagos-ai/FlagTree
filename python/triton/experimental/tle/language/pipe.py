@@ -91,11 +91,21 @@ def pipe(
     """
     Create a typed pipe descriptor.
 
-    Pipe is a hardware-independent TLE dataflow edge. Without readers= it is an
-    SPSC pipe with one default reader. With readers=("name", ...) it is an
-    explicit SPMC pipe with named reader endpoints. The current MVP accepts GPU
-    shared-memory buffered tensors as fields and lowers CTA-scoped pipes to the
-    GPU NVWS backend.
+    Pipe is a hardware-independent TLE dataflow edge. Without readers= it has
+    one default reader. With readers=("name", ...) it is an explicit SPMC pipe
+    with named reader endpoints. The current MVP accepts GPU shared-memory
+    buffered tensors as fields and lowers CTA-scoped pipes to the GPU NVWS
+    backend.
+
+    The NVIDIA backend also recognizes a restricted multi-producer form after
+    warp specialization. Each producer must use only TMA copies, producers must
+    write disjoint field sets whose union covers the complete stage, and every
+    producer must acquire and commit the same stage sequence. The backend then
+    makes the reader's full barrier wait for one contribution from each
+    producer. Distinct fields may be static non-overlapping subslices of one
+    shared-memory allocation; overlapping fields, or aliasing that cannot be
+    proven disjoint, are rejected. A single producer continues to use the
+    ordinary SPSC lowering.
 
     one_shot=True models a single ready/full edge. The writer still commits and
     readers still wait, but acquire/release/close are not part of the contract.
@@ -135,9 +145,10 @@ def pipe(
             raise ValueError(
                 f"tle.pipe field {field_name!r} leading dimension must equal capacity {capacity}, got {field.shape[0]}")
 
-    _semantic.builder.create_pipe_create([field.handle for field in fields.values()], capacity, scope, name or "",
+    value = gpu_types.pipe_value(capacity, scope, name, fields, reader_names, one_shot=one_shot)
+    _semantic.builder.create_pipe_create(value._field_handles(_semantic), capacity, scope, name or "",
                                          list(fields.keys()), list(reader_names or ()), one_shot)
-    return gpu_types.pipe_value(capacity, scope, name, fields, reader_names, one_shot=one_shot)
+    return value
 
 
 pipe_slot = gpu_types.pipe_slot

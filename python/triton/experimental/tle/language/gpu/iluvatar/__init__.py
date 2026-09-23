@@ -19,5 +19,6 @@
 # SOFTWARE.
 
 from . import copy
+from . import layout
 
-__all__ = ["copy"]
+__all__ = ["copy", "layout"]

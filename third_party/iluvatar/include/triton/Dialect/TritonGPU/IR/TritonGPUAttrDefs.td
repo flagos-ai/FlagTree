@@ -1250,7 +1250,14 @@ vecIdx (index of the element in the quad; this is always along the k-dim)
     "unsigned":$opIdx,
     "Attribute":$parent,
     DefaultValuedParameter<"unsigned", "0">:$kWidth,
-    "unsigned":$useSme
+    "unsigned":$useSme,
+    // Iluvatar only. Non-zero relabels the K axis of the TCU dot operand tile by
+    // rotating its low three bits, so that the opIdx=1 tile coincides with the
+    // accumulator tile (iluvatarMmaTile) and a chain-dot's #mma -> #dot_op
+    // convert becomes an identity. Because a dot reduces over K, this is exact
+    // only when BOTH operands of the same dot carry the flag; the pass that sets
+    // it is responsible for that pairing. See iluvatarDotTile.
+    DefaultValuedParameter<"unsigned", "0">:$kRotate
   );
 
   let builders = [
@@ -1267,18 +1274,26 @@ vecIdx (index of the element in the quad; this is always along the k-dim)
           && !iluvatarParentAttr
 #endif
       )
-        return $_get(context, opIdx, parent, 0, 0);
+        return $_get(context, opIdx, parent, 0, 0, /*kRotate=*/0);
       // For MMAV2 and V3
       unsigned bitwidth = eltTy.getIntOrFloatBitWidth();
       unsigned kWidth = std::max(32 / bitwidth, 1u);
-      return $_get(context, opIdx, parent, kWidth, 0);
+      return $_get(context, opIdx, parent, kWidth, 0, /*kRotate=*/0);
     }]>,
 
     // Backward-compatible builder (opIdx, parent, kWidth) without useSme
     AttrBuilder<(ins "unsigned":$opIdx,
                      "Attribute":$parent,
                      "unsigned":$kWidth), [{
-      return $_get(context, opIdx, parent, kWidth, 0);
+      return $_get(context, opIdx, parent, kWidth, 0, /*kRotate=*/0);
+    }]>,
+
+    // Backward-compatible builder (opIdx, parent, kWidth, useSme) without kRotate
+    AttrBuilder<(ins "unsigned":$opIdx,
+                     "Attribute":$parent,
+                     "unsigned":$kWidth,
+                     "unsigned":$useSme), [{
+      return $_get(context, opIdx, parent, kWidth, useSme, /*kRotate=*/0);
     }]>,
 
     // Specially for MR/BI150
@@ -1289,7 +1304,7 @@ vecIdx (index of the element in the quad; this is always along the k-dim)
       IluvatarMmaEncodingAttr parentAttr = mlir::dyn_cast<IluvatarMmaEncodingAttr>(parent);
       unsigned bitwidth = eltTy.getIntOrFloatBitWidth();
       unsigned kWidth = 32 / bitwidth;
-      return $_get(context, opIdx, parent, kWidth, useSme);
+      return $_get(context, opIdx, parent, kWidth, useSme, /*kRotate=*/0);
     }]>
   ];
 

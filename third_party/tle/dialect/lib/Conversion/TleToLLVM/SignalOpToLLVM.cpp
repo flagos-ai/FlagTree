@@ -39,16 +39,16 @@ struct SignalOpConversion : public ConvertOpToLLVMPattern<tle::SignalOp> {
   LogicalResult
   matchAndRewrite(tle::SignalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto contextIdx = op.getContextIdx();
+    auto contextId = op.getContextId();
 
-    if (contextIdx < 0 || contextIdx > std::numeric_limits<int32_t>::max())
-      return rewriter.notifyMatchFailure(op, "invalid context_idx");
+    if (contextId < 0 || contextId > std::numeric_limits<int32_t>::max())
+      return rewriter.notifyMatchFailure(op, "invalid context_id");
 
 #ifdef FLAGCX_ENABLED
     rewriter.replaceOpWithNewOp<tle::FlagCxSignalOp>(
         op, adaptor.getComm(), adaptor.getPeer(), adaptor.getSlotId(),
         adaptor.getValue(), adaptor.getSignalOp(), adaptor.getTeamKind(),
-        adaptor.getCoopKind(), contextIdx, adaptor.getScope());
+        adaptor.getCoopKind(), contextId, adaptor.getScope());
 #endif // FLAGCX_ENABLED
     return success();
   }
@@ -66,7 +66,7 @@ struct SignalWaitOpConversion
 #ifdef FLAGCX_ENABLED
     rewriter.replaceOpWithNewOp<tle::FlagCxSignalWaitOp>(
         op, adaptor.getComm(), adaptor.getSlotId(), adaptor.getWaitKind(),
-        adaptor.getTarget(), adaptor.getCoopKind(), adaptor.getContextIdx(),
+        adaptor.getTarget(), adaptor.getCoopKind(), adaptor.getContextId(),
         adaptor.getOrder());
 #endif // FLAGCX_ENABLED
     return success();

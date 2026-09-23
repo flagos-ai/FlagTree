@@ -716,13 +716,13 @@ struct TritonTleFuseNodeRemoteTransfers
         builder.create<tle::NodePutOp>(
             loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
             marker.getShardId(), srcOffset, dstOffset, nelems,
-            marker.getNetIdx(), builder.getI64IntegerAttr(elemBytes),
+            marker.getContextIdAttr(), builder.getI64IntegerAttr(elemBytes),
             marker.getCoopKindAttr());
       } else {
         builder.create<tle::NodeGetOp>(
             loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
             marker.getShardId(), srcOffset, dstOffset, nelems,
-            marker.getNetIdx(), builder.getI64IntegerAttr(elemBytes),
+            marker.getContextIdAttr(), builder.getI64IntegerAttr(elemBytes),
             marker.getCoopKindAttr());
       }
 

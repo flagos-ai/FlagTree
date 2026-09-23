@@ -25,6 +25,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
     TritonGPUTypeInterfacesIncGen
     TritonGPUOpInterfacesIncGen
   )
+  if(FLAGTREE_COMMON_IR_ENABLED AND TARGET CommonIRToTTGIR)
+    target_link_libraries(TritonNVIDIA PRIVATE CommonIRToTTGIR)
+  endif()
   target_link_libraries(TritonNVIDIA PRIVATE Python3::Module pybind11::headers)
   if(FLAGTREE_TLE)
     target_link_libraries(TritonNVIDIA PRIVATE NvidiaTLERawTransforms)

@@ -159,6 +159,10 @@ static void convertLoopCarriedAccumulator(OpOperand &use, Value encodedInit,
   encodedAccs[forOp.getResult(initIndex)] = forOp.getResult(initIndex);
 }
 
+// The accumulator keeps the first dot's MMA encoding for the whole chain.
+// Its instrShape K may contradict the current operand dtype, and its
+// register-A parent may differ from the result encoding; the instruction K is
+// re-selected from the operand types at lowering (see WGMMA.cpp).
 static Value materializeMMAAccumulator(OpBuilder &builder, WGMMAOp op,
                                        RankedTensorType mmaType,
                                        DenseMap<Value, Value> &encodedAccs) {
