@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: Ascend3.5-910B-Gems-Test
+name: Ascend3.5-910B-FlagGems-Test
 
 on:
   pull_request:
