@@ -1700,27 +1700,78 @@ struct AtomicCASOpConversion
         tensorTy ? getTypeConverter()->convertType(tensorTy.getElementType())
                  : valueTy;
     auto valueElemNBits = valueElemTy.getIntOrFloatBitWidth();
+    // llvm.cmpxchg only accepts integer/pointer operands, so non-integer
+    // element types (e.g. f16/bf16) must be bitcast to an integer of the same
+    // width around the atomic.
+    //
+    // Aligns with upstream Triton fixes the 3.6.0 base predates: PR #9116
+    // (bitcast non-integer cmpxchg operands) and PR #8867 (read field 0 of
+    // {value, success}). Hit by FlagGems scatter_reduce(reduce="multiply").
+    Type valueElemIntTy{};
+    if (!valueElemTy.isSignlessInteger())
+      valueElemIntTy = rewriter.getIntegerType(valueElemNBits);
     auto elemsPerThread = getTotalElemsPerThread(op.getVal().getType());
     SmallVector<Value> resultVals(elemsPerThread);
 
+    // Redundant threads mapped to the same address via layout broadcasting must
+    // not run the non-idempotent cmpxchg: the first swap changes the memory
+    // word, so later attempts by redundant threads observe a different
+    // comparison value and return a stale result. Compute a proper thread
+    // predicate and skip register-redundant elements.
+    // Ported from upstream Triton PR #9605 (triton-lang/triton).
+    auto freeVarMasks = getFreeVariableMasks(op.getPtr().getType());
+    Value threadPred =
+        emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
+    uint32_t regMask = freeVarMasks[str_attr("reg")];
+
     // atomic ops
     for (size_t i = 0; i < elemsPerThread; i += 1) {
+      if (tensorTy && (i & ~regMask) != i) {
+        resultVals[i] = resultVals[i & ~regMask];
+        continue;
+      }
+
       Value casVal = valElements[i];
       Value casCmp = cmpElements[i];
       Value casPtr = ptrElements[i];
+      if (valueElemIntTy) {
+        casVal = LLVM::BitcastOp::create(rewriter, loc, valueElemIntTy, casVal);
+        casCmp = LLVM::BitcastOp::create(rewriter, loc, valueElemIntTy, casCmp);
+      }
       // use op
       if (tensorTy) { // for tensor
-        auto retType = valueElemTy;
-        // TODO: USE ATOMIC CAS OP on Tensor
         auto successOrdering = *atomicMemOrdering;
         auto failureOrdering = LLVM::AtomicOrdering::monotonic;
+
+        // Only canonical threads execute the CAS; redundant ones branch past it
+        // and yield undef, later overwritten by the broadcast in
+        // finalizeTensorAtomicResults. Ported from upstream Triton PR #9605.
+        Value undefVal = b.undef(valueElemTy);
+        auto *curBlock = rewriter.getInsertionBlock();
+        auto *endBlock = curBlock->splitBlock(rewriter.getInsertionPoint());
+        auto *atomicBlock = rewriter.createBlock(
+            curBlock->getParent(), std::next(Region::iterator(curBlock)));
+        endBlock->addArgument({valueElemTy}, {loc});
+
+        rewriter.setInsertionPointToEnd(curBlock);
+        LLVM::CondBrOp::create(rewriter, loc, threadPred, atomicBlock, endBlock,
+                               undefVal);
+
+        rewriter.setInsertionPointToEnd(atomicBlock);
         auto cmpxchg = LLVM::AtomicCmpXchgOp::create(
             rewriter, loc, casPtr, casCmp, casVal, successOrdering,
             failureOrdering, StringRef(scopeStr.value()));
 
-        // Extract the new_loaded value from the pair.
-        Value ret = b.extract_val(valueElemTy, cmpxchg, i);
-        resultVals[i] = ret;
+        // Extract the new_loaded value from field 0 of the {value, success}
+        // pair, bitcast back for non-integer types (upstream #8867).
+        Value ret = b.extract_val(valueElemIntTy ? valueElemIntTy : valueElemTy,
+                                  cmpxchg, 0);
+        if (valueElemIntTy)
+          ret = LLVM::BitcastOp::create(rewriter, loc, valueElemTy, ret);
+
+        LLVM::BrOp::create(rewriter, loc, ret, endBlock);
+        rewriter.setInsertionPointToStart(endBlock);
+        resultVals[i] = endBlock->getArgument(0);
       } else { // for scalar
         // Build blocks to bypass the atomic instruction for ~rmwMask.
         auto *curBlock = rewriter.getInsertionBlock();
@@ -1745,7 +1796,11 @@ struct AtomicCASOpConversion
 
         if (!op.getResult().use_empty()) {
           // Extract the new_loaded value from the pair.
-          Value newLoaded = b.extract_val(valueElemTy, cmpxchg, 0);
+          Value newLoaded = b.extract_val(
+              valueElemIntTy ? valueElemIntTy : valueElemTy, cmpxchg, 0);
+          if (valueElemIntTy)
+            newLoaded =
+                LLVM::BitcastOp::create(rewriter, loc, valueElemTy, newLoaded);
           Value atomPtr =
               getSharedMemoryBase(loc, rewriter, targetInfo, op.getOperation());
           b.store(newLoaded, atomPtr);
@@ -1773,10 +1828,8 @@ struct AtomicCASOpConversion
       }
     }
 
-    // FIXME: threadPred = b.true_val() is buggy
     finalizeTensorAtomicResults(op, tensorTy, rewriter, resultVals, valueElemTy,
-                                b, b.true_val(), targetInfo,
-                                getTypeConverter());
+                                b, threadPred, targetInfo, getTypeConverter());
     return success();
   }
 };

@@ -588,6 +588,74 @@ LinearLayout nvidiaDotToLinearLayout(ArrayRef<int64_t> shape,
 }
 
 #ifdef __ILUVATAR__
+// v3.2 made the TCU warp offsets deliberately asymmetric:
+//
+//   offWarpM = warp0 * spw[0]              // warp stride == one 16-row tile
+//   offWarpN = warp1 * spw[1] * rep[1]     // warp stride == the whole N slab
+//
+// so every warp owns a *contiguous* run of columns. That asymmetry is what
+// makes a 64B coalesced epilogue store reachable with warp shuffles alone. With
+// the upstream symmetric `identityStandardND` the N repeats instead become high
+// register bits and warps interleave every 16 columns, which caps a warp's
+// contiguous run at 16 elements (32B for fp16) and costs ~1.5% on fp16 matmul.
+//
+// Folding the N repeats into `register` *before* multiplying in the warp
+// identity reproduces v3.2's arrangement: the register N bases land at colTile,
+// 2*colTile,
+// ... (inside the warp's own slab) while the warp N bases move out to
+// colTile * fold, so each warp owns `colTile * fold` adjacent columns.
+//
+// Keep this in one place: the accumulator, the B dot operand and the epilogue
+// store layout must agree on the warp->column mapping, otherwise the mma->store
+// convert stops being a within-warp shuffle (or, worse, the operands no longer
+// match the tiles the warp computes).
+
+// A 64B coalesced fp16 store is 16 lanes x 4B, so one warp needs a contiguous
+// run of 32 columns. Folding *every* N repeat would also work, but then the
+// replicated tile would grow with the tensor's N (sizePerThread [4, N/64] and
+// shapePerCTATile [64, N]) instead of staying a fixed block, which breaks the
+// distributed-layout convention that a shape-independent tile is replicated
+// over the tensor. Stopping at 32 keeps the tile fixed and loses nothing: the
+// extra contiguity is unusable.
+static constexpr int64_t kContigColsPerWarp = 32;
+
+// How many N repeats to fold into `register` for a `colTile`-wide tile.
+static int64_t nRepsToFold(int64_t colTile, int64_t colShape,
+                           unsigned colWarps) {
+  // With a single warp along N nothing interleaves the columns, so every repeat
+  // already stays inside the warp and there is nothing to fix.
+  if (colWarps < 2 || colTile == 0)
+    return 1;
+  int64_t colPerWarp = colTile * colWarps;
+  if (colShape <= colPerWarp || colShape % colPerWarp != 0)
+    return 1;
+  int64_t nRep = colShape / colPerWarp;
+  // A non-power-of-2 leftover would be appended by ensureLayoutNotSmallerThan
+  // after the M repeats, breaking the register order the TCU lowering derives.
+  if (!llvm::isPowerOf2_64(nRep))
+    return 1;
+  return std::min(nRep, std::max<int64_t>(1, kContigColsPerWarp / colTile));
+}
+
+// Contiguous columns a single warp owns once the N repeats have been folded.
+static int64_t contigColsPerWarp(int64_t colTile, int64_t colShape,
+                                 unsigned colWarps) {
+  if (colWarps < 2)
+    return colShape;
+  return colTile * nRepsToFold(colTile, colShape, colWarps);
+}
+
+static LinearLayout foldNRepsIntoRegister(LinearLayout ctaLayout,
+                                          StringAttr colDim, int64_t colShape,
+                                          unsigned colWarps) {
+  int64_t colTile = ctaLayout.getOutDimSize(colDim);
+  int64_t fold = nRepsToFold(colTile, colShape, colWarps);
+  if (fold < 2)
+    return ctaLayout;
+  MLIRContext *ctx = colDim.getContext();
+  return ctaLayout * LinearLayout::identity1D(fold, S("register"), colDim);
+}
+
 static LinearLayout iluvatarMmaTile(MLIRContext *ctx, StringAttr rowDim,
                                     StringAttr colDim) {
   // Iluvatar TCU results map lane bits to contiguous columns first, then to the
@@ -617,6 +685,29 @@ static LinearLayout iluvatarDotTile(MLIRContext *ctx,
          {S("lane"), {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {4, 0}, {8, 0}}}},
         {rowDim, colDim});
   } else if (dot.getKWidth() == 2) {
+    // Chain-dot variant (kRotate). A dot reduces over K, so relabeling K by any
+    // bijection leaves the result unchanged as long as BOTH operands use the
+    // same one. Rotating the low three K bits -- hardware k-slot 0/1/2 reads
+    // logical K bit 2/0/1, i.e. K is visited as 0,4,1,5,2,6,3,7 -- turns the
+    // opIdx=1 tile into exactly iluvatarMmaTile. That makes a chain-dot's
+    // #mma -> #dot_op<opIdx=1> convert an identity, so it costs nothing instead
+    // of the ~17 warp shuffles per tile the generic transferWithinWarp needs,
+    // every iteration of a flash-attention KV loop. This is the LinearLayout
+    // form of the v3.2 `kSwizzle` + `isMmaToDotShortcutForB` pair; expressing
+    // it as a layout means the A operand's shared-memory read addresses follow
+    // automatically via LocalLoadOpConversion, with no lowering changes.
+    //
+    // A pays for the rotation only in its K read order, which for the flash
+    // attention PxV dot is the strided shared-memory dim anyway (V is loaded
+    // transposed), so the vectorization along M is preserved.
+    if (dot.getKRotate()) {
+      if (dot.getOpIdx() == 1)
+        return iluvatarMmaTile(ctx, rowDim, colDim);
+      return LinearLayout(
+          {{S("register"), {{1, 0}, {8, 0}}},
+           {S("lane"), {{0, 4}, {0, 1}, {0, 2}, {0, 8}, {2, 0}, {4, 0}}}},
+          {rowDim, colDim});
+    }
     return LinearLayout(
         {{S("register"), {{1, 0}, {8, 0}}},
          {S("lane"), {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {2, 0}, {4, 0}}}},
@@ -641,6 +732,10 @@ IluvatarMmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
   // vector uses register bits for the high M offsets, while consecutive lane
   // bits first cover N and then the low M offsets.
   LinearLayout ctaLayout = iluvatarMmaTile(ctx, dimM, dimN);
+
+  auto shapePerCTA = getShapePerCTA(*this, shape);
+  ctaLayout = foldNRepsIntoRegister(ctaLayout, dimN, shapePerCTA[rank - 1],
+                                    getWarpsPerCTA()[rank - 1]);
 
   auto warpOrder = getDefaultMmaOrder(*this);
   ctaLayout *= identityStandardND(S("warp"), getWarpsPerCTA(), warpOrder)
@@ -674,6 +769,16 @@ LinearLayout iluvatarDotToLinearLayout(ArrayRef<int64_t> shape,
   for (auto dim : repOrder)
     repDimNames.push_back(dimNames[dim]);
   ctaLayout = ctaLayout.transposeOuts(repDimNames);
+
+  // B carries the N dimension, so it has to use the same warp->column mapping
+  // as the accumulator (see foldNRepsIntoRegister): warp w must hold exactly
+  // the B columns of the C tiles it computes. A carries M, whose warp/rep bit
+  // order is unchanged, so it needs no folding.
+  if (dot.getOpIdx() == 1) {
+    auto shapePerCTA = getShapePerCTA(mma, shape);
+    ctaLayout = foldNRepsIntoRegister(ctaLayout, dimNonK, shapePerCTA[rank - 1],
+                                      mma.getWarpsPerCTA()[rank - 1]);
+  }
 
   auto kDim = dot.getOpIdx() == 0 ? rank - 1 : rank - 2;
   auto warpOrder = getDefaultMmaOrder(mma);
@@ -1247,12 +1352,16 @@ LinearLayout chooseScaledMfmaScaleLayout(MLIRContext *ctx, int dotOperandIdx,
 //
 // Relative to iluvatarMmaTile this requires TWO register<->lane bit
 // transpositions (N+1 moves lane->register, M+4 moves register->lane) plus a
-// lane permutation. The generic transferWithinWarp path implements exactly this
-// (multiple disjoint transpositions + lane permutation) entirely with warp
-// shuffles and register selects, so no shared-memory round-trip is needed. This
-// is gated by relaxing cvtNeedsWarpShuffle for Iluvatar (allowing two mixed
-// transpositions), and is the v3.6-idiomatic equivalent of the v3.2 lib's
-// hand-written mma->mma1 (lowerMmaToMma) store path.
+// lane permutation. The generic transferWithinWarp path can express exactly
+// that (multiple disjoint transpositions + lane permutation) with warp shuffles
+// and register selects alone, but reaching it needs cvtNeedsWarpShuffle to
+// admit two mixed transpositions. That relaxation is gone: SWFW-3217 dropped
+// the Iluvatar
+// `< 3` branch in favour of iluvatarStoreTile2TCU below, which needs only one
+// transposition and so clears the upstream `< 2` gate. This tile therefore
+// keeps the wide coalesced store but converts through shared memory. Either way
+// it is the v3.6-idiomatic equivalent of the v3.2 lib's hand-written mma->mma1
+// (lowerMmaToMma) store path.
 static LinearLayout iluvatarStoreTile(MLIRContext *ctx, StringAttr rowDim,
                                       StringAttr colDim) {
   return LinearLayout(
@@ -1272,7 +1381,8 @@ static LinearLayout iluvatarStoreTile(MLIRContext *ctx, StringAttr rowDim,
 // the warp-shuffle path even under the default cvtNeedsWarpShuffle gate (<2),
 // and it keeps register pressure close to the mma baseline -- unlike the
 // single-16x16-tile iluvatarStoreTile, which must evict an M register bit to
-// lane (TWO transpositions, higher register pressure, needs the relaxed gate).
+// lane (TWO transpositions, higher register pressure, and no longer reaches the
+// shuffle path at all).
 //
 // Only valid when the warp does NOT split N (warpsPerCTA[N] == 1); otherwise
 // the adjacent 16-col tile (N+16) lives in another warp and the swap is
@@ -1311,14 +1421,24 @@ chooseIluvatarStoreLayout(RankedTensorType valType) {
   auto dimM = dimNames[0];
   auto dimN = dimNames[1];
 
-  // When the warp does not split N, use the 2-TCU (16x32) scanline tile: it
-  // reaches a coalesced 32-bit store with a single transposition and near-mma
-  // register pressure. Otherwise fall back to the single-16x16-tile layout.
+  // Use the 2-TCU (16x32) scanline tile whenever a warp owns at least two
+  // adjacent 16-column tiles: it reaches a 64B coalesced store with a single
+  // register<->lane transposition and near-mma register pressure. This mirrors
+  // v3.2's `rowBytesPerWarp >= 64` gate and is only sound because
+  // foldNRepsIntoRegister gives each warp a contiguous column slab -- with the
+  // upstream interleaved warp order the N+16 bit would live in another warp.
   auto warpsPerCTA = mma.getWarpsPerCTA();
+  int64_t colsPerCTA = getShapePerCTA(mma, shape)[1];
+  // Ask the accumulator's own fold (16-wide mma tile) how many adjacent columns
+  // a warp ends up owning: the 16x32 tile is only reachable if that is at
+  // least 32.
   bool canUse2TCU =
-      warpsPerCTA.size() == 2 && warpsPerCTA[1] == 1 && shape[1] % 32 == 0;
+      warpsPerCTA.size() == 2 && colsPerCTA % 32 == 0 &&
+      contigColsPerWarp(16, colsPerCTA, warpsPerCTA[1]) >= kContigColsPerWarp;
   LinearLayout ctaLayout = canUse2TCU ? iluvatarStoreTile2TCU(ctx, dimM, dimN)
                                       : iluvatarStoreTile(ctx, dimM, dimN);
+  ctaLayout =
+      foldNRepsIntoRegister(ctaLayout, dimN, colsPerCTA, warpsPerCTA[1]);
   auto warpOrder = getDefaultMmaOrder(mma);
   ctaLayout *= identityStandardND(S("warp"), mma.getWarpsPerCTA(), warpOrder)
                    .transposeOuts(llvm::to_vector(ctaLayout.getOutDimNames()));

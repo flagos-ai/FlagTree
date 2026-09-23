@@ -185,16 +185,6 @@ namespace mlir {
 namespace triton {
 
 //-- LoadOp --
-static Type getLoadOpResultType(OpBuilder &builder, Type ptrType) {
-  auto ptrTensorType = mlir::dyn_cast<RankedTensorType>(ptrType);
-  if (!ptrTensorType)
-    return mlir::cast<PointerType>(ptrType).getPointeeType();
-  auto shape = ptrTensorType.getShape();
-  Type elementType =
-      mlir::cast<PointerType>(ptrTensorType.getElementType()).getPointeeType();
-  return RankedTensorType::get(shape, elementType);
-}
-
 void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
                    CacheModifier cache, EvictionPolicy evict, bool isVolatile) {
   LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{},
@@ -258,9 +248,9 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
   state.addAttribute(getIsVolatileAttrName(state.name),
                      builder.getBoolAttr(isVolatile));
 
-  // Result type
-  Type resultType = getLoadOpResultType(builder, ptr.getType());
-  state.addTypes({resultType});
+  // Same as the op's `result`/`ptr` constraint: keeps the pointer tensor's
+  // encoding, which matters for IR that already carries layouts (e.g. Gluon).
+  state.addTypes({getPointeeType(ptr.getType())});
 }
 
 // Iluvatar SME load: ptr + inputStride (single-segment optional operand).
@@ -320,9 +310,9 @@ void LoadOp::build(OpBuilder &builder, OperationState &state, Value ptr,
   state.addAttribute(getIsVolatileAttrName(state.name),
                      builder.getBoolAttr(isVolatile));
 
-  // Result type
-  Type resultType = getLoadOpResultType(builder, ptr.getType());
-  state.addTypes({resultType});
+  // Same as the non-stride builder above: reuse getPointeeType so result keeps
+  // the pointer tensor's encoding (required by the op's type constraint).
+  state.addTypes({getPointeeType(ptr.getType())});
 }
 
 // load(ptr, splat(1), ...)        -> load(ptr, ...)

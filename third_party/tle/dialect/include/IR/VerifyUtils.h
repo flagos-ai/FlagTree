@@ -43,13 +43,12 @@ llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result);
 llvm::LogicalResult verifyNodeSpace(RemotePointersOp op);
 } // namespace RemotePointers
 
-llvm::LogicalResult verifyNodeTransfer(mlir::Operation *op, mlir::Value src,
-                                       mlir::Value dstMem, mlir::Value comm,
-                                       mlir::Value peer, mlir::Value srcOffset,
-                                       mlir::Value dstOffset,
-                                       mlir::Value nelems, mlir::Value netIdx,
-                                       mlir::IntegerAttr elemBytes,
-                                       FlagCXCoopKind coopKind);
+llvm::LogicalResult
+verifyNodeTransfer(mlir::Operation *op, mlir::Value src, mlir::Value dstMem,
+                   mlir::Value comm, mlir::Value peer, mlir::Value srcOffset,
+                   mlir::Value dstOffset, mlir::Value nelems,
+                   mlir::IntegerAttr contextId, mlir::IntegerAttr elemBytes,
+                   FlagCXCoopKind coopKind);
 
 namespace DistributedBarrier {
 llvm::LogicalResult verifyFlagCxSpace(tle::DistributedBarrierOp op,
