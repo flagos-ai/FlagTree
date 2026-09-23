@@ -857,6 +857,15 @@ static bool isFreeConvert(Operation *op) {
   auto convertOp = dyn_cast<triton::gpu::ConvertLayoutOp>(op);
   if (!convertOp)
     return false;
+#ifdef __ILUVATAR__
+  // A conversion across the smeMask boundary is free in the codegen sense, but
+  // callers use this to decide whether layout propagation may walk *through*
+  // the op. Propagating here would rewrite the cloned mask DAG back into the
+  // SME pointer encoding and collapse the clone, so keep it opaque.
+  if (triton::gpu::hasSmeMask(convertOp.getSrc().getType().getEncoding()) !=
+      triton::gpu::hasSmeMask(convertOp.getType().getEncoding()))
+    return false;
+#endif
   return cvtReordersRegisters(convertOp.getSrc().getType(),
                               convertOp.getType());
 }
@@ -1488,6 +1497,24 @@ void replaceUsesAndPropagateType(
     op->erase();
 }
 
+#ifdef __ILUVATAR_TLE__
+// Reads of a memdesc, looking through the view ops replaceUsesAndPropagateType
+// recreates, that carry no async token yet.
+static void collectTokenlessLocalLoads(Value memDesc,
+                                       SmallVectorImpl<ttg::LocalLoadOp> &out) {
+  for (Operation *user : memDesc.getUsers()) {
+    if (auto load = dyn_cast<ttg::LocalLoadOp>(user)) {
+      if (!load.getToken())
+        out.push_back(load);
+      continue;
+    }
+    if (user->hasTrait<OpTrait::MemDescViewTrait>() &&
+        user->getNumResults() == 1)
+      collectTokenlessLocalLoads(user->getResult(0), out);
+  }
+}
+#endif
+
 ttg::LocalLoadOp
 replaceUsesWithLocalLoad(OpBuilder &builder, OpResult old,
                          TypedValue<ttg::MemDescType> alloc,
@@ -1495,14 +1522,22 @@ replaceUsesWithLocalLoad(OpBuilder &builder, OpResult old,
   //  Remove redundant local_load -> local_alloc
   auto allocTy = alloc.getType();
   SmallVector<ttg::LocalAllocOp> allocsToErase;
+  SmallVector<ttg::LocalLoadOp> stagedLoads;
   for (Operation *user : old.getUsers()) {
     if (auto userAlloc = dyn_cast<ttg::LocalAllocOp>(user)) {
       if (allocTy.getEncoding() == userAlloc.getType().getEncoding()) {
+#ifdef __ILUVATAR_TLE__
+        collectTokenlessLocalLoads(userAlloc.getResult(), stagedLoads);
+#endif
         replaceUsesAndPropagateType(builder, userAlloc, alloc);
         allocsToErase.push_back(userAlloc);
       }
     }
   }
+#ifdef __ILUVATAR_TLE__
+  for (ttg::LocalLoadOp load : stagedLoads)
+    load.getTokenMutable().assign(token);
+#endif
 
   // If there are some uses that were not local_allocs, we need to create a
   // local_load for them.

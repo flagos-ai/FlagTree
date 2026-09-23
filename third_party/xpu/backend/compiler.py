@@ -230,7 +230,14 @@ class XPUBackend(BaseBackend):
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == "xpu"
+        # Accept the target string configured via TRITON_XPU_TARGET_BACKEND
+        # (see XPUDriver.get_current_target), plus "cuda"/"xpu" aliases so
+        # CompiledKernel metadata cached under any prior setting still
+        # deserializes and routes here. Only one backend is ever discovered in
+        # this stack (FLAGTREE_BACKEND restriction), so the wide alias set
+        # cannot cause cross-backend routing conflicts.
+        configured = os.environ.get("TRITON_XPU_TARGET_BACKEND", "cuda")
+        return target.backend in (configured, "cuda", "xpu")
 
     @staticmethod
     def path_to_xpu_compile_tool(opt):

@@ -38,6 +38,7 @@ from .utils.tools import flagtree_configs as configs
 downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
+FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar"}
 
 
 def get_console_colors() -> Tuple[str, str]:
@@ -66,7 +67,7 @@ def get_long_description():
 
 def init_backends(backend_installer):
     if flagtree_backend:
-        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
+        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu", "amd"):
             backends = [
                 *backend_installer.copy(configs.default_backends + tuple(configs.extend_backends)),
                 *backend_installer.copy_externals(),
@@ -181,14 +182,13 @@ def get_backend_cmake_args(*args, **kargs):
         cmake_args = []
     if editable:
         cmake_args += ["-DEDITABLE_MODE=ON"]
+    if flagtree_backend not in configs.default_backends:
+        cmake_args += ["-DFLAGTREE_BACKEND={}".format(flagtree_backend)]
     return cmake_args
 
 
 def customize_gluon_cmake_args():
-    if flagtree_backend != "iluvatar":
-        return []
-    enabled = os.getenv("TRITON_ILU_BUILD_GLUON", "").upper() in ["ON", "1", "YES", "TRUE", "Y"]
-    return [f"-DTRITON_BUILD_GLUON={'ON' if enabled else 'OFF'}"]
+    return []
 
 
 def get_device_name():
@@ -228,10 +228,7 @@ def get_hook_instance(hook_name):
 
 
 def enable_flagtree_third_party(name):
-    if name in ["triton_shared", "flagcx"]:
-        return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
-    else:
-        return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
+    return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
 
 def download_flagtree_third_party(name, condition, required=False, hook=None):
@@ -263,17 +260,20 @@ class FlagPrismSetup:
     """FlagPrism: manage optional component build and package integration."""
 
     def __init__(self, project_root, dependency_cmake_args):
-        self.project_root = Path(project_root)
+        # FlagPrism: use one source-root base regardless of the caller's cwd.
+        self.project_root = Path(project_root).resolve()
         backend = configs.flagtree_backend or ""
-        supported_backends = {"ascend", "iluvatar"}
+        # FlagPrism: register all supported integration backends together.
+        supported_backends = {"ascend", "iluvatar", "mthreads"}
         default = "ON" if backend in supported_backends else "OFF"
         self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
         self.build_config = None
         self._dependency_cmake_args = dependency_cmake_args
 
         if self.enabled and backend not in supported_backends:
+            # FlagPrism: report the newly supported mthreads backend.
             raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
-                               "FLAGTREE_BACKEND=ascend or iluvatar.")
+                               "FLAGTREE_BACKEND=ascend, iluvatar, or mthreads.")
         if not self.enabled:
             return
         if self._check_env_flag("TRITON_BUILD_PROTON"):
@@ -282,7 +282,15 @@ class FlagPrismSetup:
 
         # FlagPrism replaces Proton for the supported backend builds.
         os.environ["TRITON_BUILD_PROTON"] = "OFF"
-        source_root = self.project_root / "third_party" / "FlagPrism"
+        # FlagPrism: resolve external checkouts relative to the project root.
+        source_override = os.environ.get("FLAGPRISM_SOURCE_DIR", "").strip()
+        source_root = Path(source_override) if source_override else Path("third_party") / "FlagPrism"
+        if not source_root.is_absolute():
+            source_root = self.project_root / source_root
+        source_root = source_root.resolve()
+        # FlagPrism: never download a different checkout for an invalid override.
+        if source_override and not source_root.is_dir():
+            raise RuntimeError(f"FLAGPRISM_SOURCE_DIR must point to an existing directory: {source_root}")
         # Keep FlagPrism as an external checkout. A local directory or symlink
         # is authoritative; only bootstrap the registered dependency when it
         # is absent.
@@ -291,10 +299,14 @@ class FlagPrismSetup:
 
         helper_path = source_root / "python" / "flagprism_build.py"
         if not helper_path.is_file():
+            # FlagPrism: identify incomplete overrides instead of suggesting a download.
+            if source_override:
+                raise RuntimeError(f"FLAGPRISM_SOURCE_DIR does not contain python/flagprism_build.py: {source_root}")
             raise RuntimeError("FlagPrism sources are missing. Run the Python package build "
                                "to download third-party dependencies.")
         policy = runpy.run_path(str(helper_path), run_name="_flagprism_build")
-        self.build_config = policy["create_build_config"](self.project_root)
+        # FlagPrism: keep CMake and setuptools on the same external source tree.
+        self.build_config = policy["create_build_config"](self.project_root, source_root)
 
         legacy_link = self.project_root / "python" / "triton" / "profiler"
         if legacy_link.is_symlink():
@@ -376,12 +388,12 @@ def write_flagtree_backend_file(triton_pkg_dir=None):
 
 
 def write_backend_file_to_build_lib(build_lib):
-    # xpu-only: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
+    # xpu/iluvatar: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
     # copies .py by default, so this extension-less marker (read by
     # triton._flagtree_backend to make XPUDriver.is_active() return True
     # without any env var) was missing from the install, causing
     # "0 active drivers". Write it into build_lib/triton so it is packaged.
-    if flagtree_backend == "xpu":
+    if flagtree_backend in ("xpu", "iluvatar"):
         try:
             write_flagtree_backend_file(os.path.join(build_lib, "triton"))
         except Exception as exc:  # noqa: BLE001
@@ -752,7 +764,7 @@ def handle_flagtree_backend():
     global ext_sourcedir
     if flagtree_backend:
         print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
-        configs.extend_backends.append(flagtree_backend)
+        configs.set_extend_backends(flagtree_backend)
         if "editable_wheel" in sys.argv and flagtree_backend not in configs.plugin_backends:
             ext_sourcedir = os.path.abspath(f"./third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
 
@@ -855,7 +867,11 @@ download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro
    refer to https://github.com/flagos-ai/FlagCX
 '''
 
-download_flagtree_third_party("flagcx", condition=(not flagtree_backend), hook="handle_flagcx", required=True)
+relocate_flagcx = get_hook_instance("relocate_flagcx")
+if relocate_flagcx:
+    relocate_flagcx()
+download_flagtree_third_party("flagcx", condition=(flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS,
+                              hook="handle_flagcx", required=True)
 
 download_flagtree_third_party("cuda-tile", condition=(flagtree_backend == "tileir"), required=True)
 

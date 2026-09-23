@@ -29,6 +29,7 @@ from triton.flagtune.contract.archive import (
 from triton.flagtune.contract.identity import ModelIdentity
 from triton.flagtune.contract.operator_schema import model_config_sha256
 from triton.flagtune.runtime import model_loader, model_sources
+from triton.flagtune.runtime.errors import ModelSourceError, ModelUnavailableError
 from triton.flagtune.runtime.model_loader import (FlagTuneModelManager, IncompatibleModelError, ModelBundleMissingError)
 
 IDENTITY_PATH = ("nvidia-h800", "vendor", "mm", "general", "bf16-bf16-f32")
@@ -773,7 +774,7 @@ def test_remote_disabled_cache_miss_does_not_fetch_manifest(tmp_path, monkeypatc
     monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
     monkeypatch.setenv("FLAGTUNE_DISABLE_REMOTE", "1")
 
-    with pytest.raises(FileNotFoundError, match="FLAGTUNE_DISABLE_REMOTE=1"):
+    with pytest.raises(ModelUnavailableError, match="FLAGTUNE_DISABLE_REMOTE=1"):
         FlagTuneModelManager().resolve(
             "flaggems/mm",
             "gemv",
@@ -800,7 +801,7 @@ def test_resolve_rejects_invalid_environment_switch_before_local_hit(tmp_path, m
         monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
     monkeypatch.setenv(name, "true")
 
-    with pytest.raises(ValueError, match=f"{name} must be 0 or 1"):
+    with pytest.raises(ModelSourceError, match=f"{name} must be 0 or 1"):
         FlagTuneModelManager().resolve(
             "flaggems/mm",
             "gemv",
@@ -997,7 +998,7 @@ def test_download_latest_fails_when_manifest_highest_is_not_cached_and_remote_is
     monkeypatch.setenv("FLAGTUNE_MODEL_DOWNLOAD_LATEST", "1")
     monkeypatch.setenv("FLAGTUNE_DISABLE_REMOTE", "1")
 
-    with pytest.raises(FileNotFoundError, match="FLAGTUNE_DISABLE_REMOTE=1"):
+    with pytest.raises(ModelUnavailableError, match="FLAGTUNE_DISABLE_REMOTE=1"):
         FlagTuneModelManager().resolve(
             "flaggems/mm",
             "gemv",
@@ -1062,6 +1063,21 @@ def test_exact_version_pin_precedes_download_latest_without_manifest_lookup(tmp_
     assert selected == cached
 
 
+@pytest.mark.parametrize("version", [None, "3.0.0"])
+def test_platform_manifest_miss_preserves_legacy_exception_protocol(tmp_path, monkeypatch, version):
+    monkeypatch.delenv("FLAGTUNE_MODEL_DIR", raising=False)
+    monkeypatch.delenv("FLAGTUNE_MODEL_VERSION", raising=False)
+    monkeypatch.delenv("FLAGTUNE_DISABLE_REMOTE", raising=False)
+    monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(model_sources, "resolve_package_info", lambda *_args, **_kwargs: None)
+    with pytest.raises(ModelUnavailableError) as caught:
+        FlagTuneModelManager().resolve("flaggems/platform-package-probe", "availability", platform_key="nvidia-h800",
+                                       dtype_key="f32", model_version=version)
+    assert isinstance(caught.value, FileNotFoundError) is (version is None)
+    if version is None:
+        assert str(caught.value).startswith("FlagTune Manifest has no package for platform 'nvidia-h800';")
+
+
 def test_manifest_missing_requested_version_fails(tmp_path, monkeypatch):
     local = _install_platform_package(tmp_path / "local", "1.0.0")
     _configure_platform_manifest(
@@ -1074,7 +1090,7 @@ def test_manifest_missing_requested_version_fails(tmp_path, monkeypatch):
     monkeypatch.delenv("FLAGTUNE_MODEL_DIR", raising=False)
     monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
 
-    with pytest.raises(FileNotFoundError, match="Manifest has no package"):
+    with pytest.raises(ModelUnavailableError, match="Manifest has no package"):
         FlagTuneModelManager().resolve(
             "flaggems/mm",
             "gemv",
@@ -1107,7 +1123,7 @@ def test_old_nested_single_model_layout_is_ignored(tmp_path, monkeypatch):
     monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
     monkeypatch.setenv("FLAGTUNE_DISABLE_REMOTE", "1")
 
-    with pytest.raises(FileNotFoundError, match="FLAGTUNE_DISABLE_REMOTE=1"):
+    with pytest.raises(ModelUnavailableError, match="FLAGTUNE_DISABLE_REMOTE=1"):
         FlagTuneModelManager().resolve(
             "flaggems/mm",
             "gemv",

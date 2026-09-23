@@ -397,8 +397,12 @@ def compile(src, target=None, options=None, _env_vars=None):
         # from ttir.
         first_stage = list(stages.keys()).index("ttir") + 1
 
-    if target.backend == "xpu":
-        # XPU may overflow the per-core local-memory (stack) budget when the
+    if target.backend in ("cuda", "xpu", os.environ.get("TRITON_XPU_TARGET_BACKEND", "cuda")):
+        # Match the same set as XPUBackend.supports_target (configured string
+        # via TRITON_XPU_TARGET_BACKEND plus the "cuda"/"xpu" aliases) so the
+        # retune protection below cannot be silently skipped when a custom
+        # target string is configured. "xpu" kept for cached-kernel metadata
+        # compiled before the target string changed to "cuda". XPU may overflow the per-core local-memory (stack) budget when the
         # buffer/block chosen for a kernel is too large (e.g. i16 pointwise
         # kernels launched with buffer_size_limit=2048). In that case the ELF
         # KERNEL_STACK_SIZE exceeds the hardware limit and the kernel spills

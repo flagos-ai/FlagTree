@@ -31,7 +31,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 #include <cctype>
-#include <limits>
 
 #include "tle/dialect/include/IR/VerifyUtils.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -49,6 +48,15 @@ std::optional<int64_t> getConstantIntValue(Value value) {
   if (!integer)
     return std::nullopt;
   return integer.getInt();
+}
+
+LogicalResult verifyNodeContextId(Operation *op, IntegerAttr contextId) {
+  if (!contextId)
+    return op->emitOpError() << "requires context_id";
+  if (contextId.getInt() < 0)
+    return op->emitOpError()
+           << "expects context_id to be in range [0, INT32_MAX]";
+  return success();
 }
 } // namespace
 
@@ -76,8 +84,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
       return success();
     };
     if (failed(requireMarkerOperand(op.getSrc(), "src")) ||
-        failed(requireMarkerOperand(op.getComm(), "comm")) ||
-        failed(requireMarkerOperand(op.getNetIdx(), "net_idx")))
+        failed(requireMarkerOperand(op.getComm(), "comm")))
       return failure();
     if (op.getOffset())
       return op.emitOpError()
@@ -86,8 +93,8 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
         !op.getComm().getType().isSignlessInteger(64))
       return op.emitOpError()
              << "expects node marker src and comm to be i64 handles";
-    if (!op.getNetIdx().getType().isSignlessInteger(32))
-      return op.emitOpError() << "expects node marker net_idx to be i32";
+    if (failed(verifyNodeContextId(op, op.getContextIdAttr())))
+      return failure();
     if (!op.getCoopKindAttr())
       return op.emitOpError() << "node marker requires coop_kind";
     auto ptrTy = dyn_cast<triton::PointerType>(result.getType());
@@ -108,9 +115,6 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
     if (std::optional<int64_t> peer = getConstantIntValue(op.getShardId());
         peer && *peer < 0)
       return op.emitOpError() << "expects constant peer to be >= 0";
-    if (std::optional<int64_t> netIdx = getConstantIntValue(op.getNetIdx());
-        netIdx && *netIdx < 0)
-      return op.emitOpError() << "expects constant net_idx to be >= 0";
     return success();
   }
 
@@ -122,8 +126,8 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
 
 LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
                                  Value comm, Value peer, Value srcOffset,
-                                 Value dstOffset, Value nelems, Value netIdx,
-                                 IntegerAttr elemBytes,
+                                 Value dstOffset, Value nelems,
+                                 IntegerAttr contextId, IntegerAttr elemBytes,
                                  FlagCXCoopKind coopKind) {
   auto emitError = [&]() { return op->emitOpError(); };
 
@@ -142,8 +146,8 @@ LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
     return emitError() << "expects source and destination offsets to be i64";
   if (!nelems.getType().isSignlessInteger(64))
     return emitError() << "expects nelems to be i64";
-  if (!netIdx.getType().isSignlessInteger(32))
-    return emitError() << "expects net_idx to be i32";
+  if (failed(verifyNodeContextId(op, contextId)))
+    return failure();
   if (!elemBytes || elemBytes.getInt() <= 0)
     return emitError() << "expects elem_bytes to be > 0";
   if (coopKind != FlagCXCoopKind::THREAD && coopKind != FlagCXCoopKind::WARP &&
@@ -164,77 +168,61 @@ LogicalResult verifyNodeTransfer(Operation *op, Value src, Value dstMem,
 
   if (failed(verifyNonNegativeConstant(peer, "peer")) ||
       failed(verifyNonNegativeConstant(srcOffset, "src_offset")) ||
-      failed(verifyNonNegativeConstant(dstOffset, "dst_offset")) ||
-      failed(verifyNonNegativeConstant(netIdx, "net_idx")))
+      failed(verifyNonNegativeConstant(dstOffset, "dst_offset")))
     return failure();
   return success();
 }
 
 namespace DistributedBarrier {
-llvm::LogicalResult verifyFlagCxSpace(mlir::Operation *op, mlir::Value src) {
+llvm::LogicalResult verifyFlagCxSpace(tle::DistributedBarrierOp op,
+                                      mlir::Value src) {
   if (!src)
-    return op->emitOpError()
+    return op.emitOpError()
            << "expects src to be present for a FlagCX distributed barrier";
 
-  auto kindAttr = op->getAttrOfType<StringAttr>("group_kind");
-  auto barrierTypeAttr = op->getAttrOfType<StringAttr>("barrier_type");
-  auto orderAttr = op->getAttrOfType<StringAttr>("order");
-  auto indexAttr = op->getAttrOfType<IntegerAttr>("barrier_index");
-  auto contextIdAttr = op->getAttrOfType<IntegerAttr>("context_id");
-  auto scopeAttr = op->getAttrOfType<StringAttr>("memory_scope");
+  auto kindAttr = op.getGroupKindAttr();
+  auto barrierTypeAttr = op.getBarrierTypeAttr();
+  auto orderAttr = op.getOrderAttr();
+  auto indexAttr = op.getBarrierIndexAttr();
+  auto contextIdAttr = op.getContextIdAttr();
+  auto scopeAttr = op.getMemoryScopeAttr();
 
-  if (op->hasAttr("group_rank") || op->hasAttr("group_shape") ||
-      op->hasAttr("group_axes") || op->hasAttr("group_mask"))
-    return op->emitOpError()
+  if (op.getGroupRank() || op.getGroupShape() || op.getGroupAxes() ||
+      op.getGroupMask())
+    return op.emitOpError()
            << "FlagCX distributed barriers do not accept mesh group metadata";
 
   if (!kindAttr || !barrierTypeAttr || !orderAttr || !indexAttr ||
       !contextIdAttr || !scopeAttr)
-    return op->emitOpError()
+    return op.emitOpError()
            << "expects src, group_kind, barrier_type, order, barrier_index, "
               "context_id and memory_scope to be present for a FlagCX "
               "distributed barrier";
 
   StringRef kind = kindAttr.getValue();
   if (kind != "thread" && kind != "warp" && kind != "block")
-    return op->emitOpError()
+    return op.emitOpError()
            << "FlagCX group_kind must be 'thread', 'warp', or 'block', got '"
            << kind << "'";
 
   StringRef barrierType = barrierTypeAttr.getValue();
   if (barrierType != "arrive" && barrierType != "wait" && barrierType != "sync")
-    return op->emitOpError()
+    return op.emitOpError()
            << "FlagCX barrier_type must be 'arrive', 'wait', or 'sync', got '"
            << barrierType << "'";
 
-  StringRef order = orderAttr.getValue();
-  if (order != "relaxed" && order != "acquire" && order != "release" &&
-      order != "acqrel")
-    return op->emitOpError()
-           << "FlagCX order must be 'relaxed', 'acquire', 'release', or "
-              "'acqrel', got '"
-           << order << "'";
-
-  StringRef scope = scopeAttr.getValue();
-  if (scope != "system" && scope != "device" && scope != "block" &&
-      scope != "thread")
-    return op->emitOpError()
-           << "FlagCX memory_scope must be 'system', 'device', 'block', or "
-              "'thread', got '"
-           << scope << "'";
-
   if (indexAttr.getInt() < 0)
-    return op->emitOpError() << "barrier_index must be non-negative";
+    return op.emitOpError() << "barrier_index must be non-negative";
   if (contextIdAttr.getInt() < 0)
-    return op->emitOpError() << "context_id must be non-negative";
+    return op.emitOpError() << "context_id must be non-negative";
   return success();
 }
 
 } // namespace DistributedBarrier
 
 namespace Signal {
-std::optional<std::string> verifySignalOp(SignalOpKind kind,
-                                          mlir::Value value) {
+std::optional<std::string> verifySignalOp(SignalOpKind kind, mlir::Value value,
+                                          SyncScope scope) {
   switch (kind) {
   case SignalOpKind::INC:
     if (value)
@@ -245,11 +233,14 @@ std::optional<std::string> verifySignalOp(SignalOpKind kind,
       return "value must be provided when op is 'add'";
     break;
   }
+  if (scope != SyncScope::SYSTEM && scope != SyncScope::DEVICE)
+    return "signal scope must be 'system' or 'device', got '" +
+           stringifySyncScope(scope).str() + "'";
   return std::nullopt;
 }
 
-std::optional<std::string> verifySignalWaitOp(SignalWaitKind kind,
-                                              mlir::Value target) {
+std::optional<std::string>
+verifySignalWaitOp(SignalWaitKind kind, mlir::Value target, MemoryOrder order) {
   switch (kind) {
   case SignalWaitKind::SIGNAL:
   case SignalWaitKind::COUNTER:
@@ -261,8 +252,13 @@ std::optional<std::string> verifySignalWaitOp(SignalWaitKind kind,
       return "target shouldn't be provided when wait_kind is shadow";
     break;
   }
+  if (order != MemoryOrder::RELAXED && order != MemoryOrder::ACQUIRE)
+    return "signal_wait order must be 'relaxed' or 'acquire' for atomic loads, "
+           "got '" +
+           stringifyMemoryOrder(order).str() + "'";
   return std::nullopt;
 }
+
 } // namespace Signal
 
 } // namespace mlir::triton::tle

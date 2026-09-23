@@ -107,7 +107,7 @@ static std::optional<int64_t> getConstantInt(Value value) {
 static LogicalResult
 lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
                   Value commHandle, Value peer, Value srcOffset,
-                  Value dstOffset, Value nelems, Value netIdx,
+                  Value dstOffset, Value nelems, int32_t contextId,
                   int64_t elemBytes, int64_t coopKindValue,
                   NodeTransferKind kind, std::optional<int64_t> constantNelems,
                   ConversionPatternRewriter &rewriter) {
@@ -137,9 +137,11 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
 
   auto emitTransfer = [&]() {
     LLVM::LLVMFuncOp getNet = getOrInsertNetFromComm(module, ctx);
+    Value contextIdValue = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(contextId));
     auto getNetCall = rewriter.create<LLVM::CallOp>(
         loc, TypeRange{ptrTy}, FlatSymbolRefAttr::get(getNet),
-        ValueRange{comm, netIdx});
+        ValueRange{comm, contextIdValue});
     Value teamKind = rewriter.create<LLVM::ConstantOp>(
         loc, i32Ty, rewriter.getI32IntegerAttr(2));
     Value coopKind = rewriter.create<LLVM::ConstantOp>(
@@ -190,7 +192,8 @@ struct NodePutOpConversion : public ConvertOpToLLVMPattern<tle::NodePutOp> {
             op.getLoc(), op.getOperation(), adaptor.getSrc(),
             adaptor.getDstMem(), adaptor.getComm(), adaptor.getPeer(),
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
-            adaptor.getNetIdx(), op.getElemBytesAttr().getInt(),
+            static_cast<int32_t>(op.getContextIdAttr().getInt()),
+            op.getElemBytesAttr().getInt(),
             static_cast<int32_t>(op.getCoopKind()), NodeTransferKind::Put,
             getConstantInt(op.getNelems()), rewriter)))
       return failure();
@@ -210,7 +213,8 @@ struct NodeGetOpConversion : public ConvertOpToLLVMPattern<tle::NodeGetOp> {
             op.getLoc(), op.getOperation(), adaptor.getSrc(),
             adaptor.getDstMem(), adaptor.getComm(), adaptor.getPeer(),
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
-            adaptor.getNetIdx(), op.getElemBytesAttr().getInt(),
+            static_cast<int32_t>(op.getContextIdAttr().getInt()),
+            op.getElemBytesAttr().getInt(),
             static_cast<int32_t>(op.getCoopKind()), NodeTransferKind::Get,
             getConstantInt(op.getNelems()), rewriter)))
       return failure();

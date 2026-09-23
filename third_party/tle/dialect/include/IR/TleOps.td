@@ -386,11 +386,11 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
     Optional<AnyType>:$src,
     OptionalAttr<StrAttr>:$space,
     OptionalAttr<StrAttr>:$barrier_type,
-    OptionalAttr<StrAttr>:$order,
+    OptionalAttr<Tle_MemoryOrderAttr>:$order,
     OptionalAttr<StrAttr>:$group_kind,
     OptionalAttr<I32Attr>:$barrier_index,
     OptionalAttr<I32Attr>:$context_id,
-    OptionalAttr<StrAttr>:$memory_scope,
+    OptionalAttr<Tle_SyncScopeAttr>:$memory_scope,
     OptionalAttr<I32Attr>:$group_rank,
     OptionalAttr<DenseI32ArrayAttr>:$group_shape,
     OptionalAttr<DenseI32ArrayAttr>:$group_axes,
@@ -409,7 +409,7 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
     TT_Int:$shard_id,
     StrAttr:$space,
     Optional<TT_IntLike>:$offset,
-    Optional<I32>:$net_idx,
+    OptionalAttr<I32Attr>:$context_id,
     OptionalAttr<Tle_FlagCXCoopKindAttr>:$coop_kind
   );
 
@@ -435,7 +435,8 @@ class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     tle.remote_pointers marker and its load/store users have been fused.
     Offsets and nelems are expressed in elements; elem_bytes is applied during
     lowering to form byte offsets and the byte count passed to FlagCX. Nelems
-    must be greater than zero.
+    must be greater than zero. context_id must be an i32 attribute in
+    [0, INT32_MAX] selecting an existing network context.
   }];
 
   let arguments = (ins
@@ -446,7 +447,7 @@ class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     I64:$src_offset,
     I64:$dst_offset,
     I64:$nelems,
-    I32:$net_idx,
+    I32Attr:$context_id,
     I64Attr:$elem_bytes,
     Tle_FlagCXCoopKindAttr:$coop_kind
   );
@@ -569,8 +570,16 @@ def Tle_SignalOp : Tle_Op<"signal", [MemoryEffects<[MemRead, MemWrite]>]> {
     Tle_SignalOpKindAttr:$signal_op,
     Tle_FlagCXTeamKindAttr:$team_kind,
     Tle_FlagCXCoopKindAttr:$coop_kind,
-    I32Attr:$context_idx
+    I32Attr:$context_id,
+    Tle_SyncScopeAttr:$scope
   );
+
+  let results = (outs);
+
+  let assemblyFormat = [{
+    `(` $signal_op `,` $team_kind `,` $coop_kind `,` $scope `)` $comm `,` $peer `,` $slot_id (`,` $value^)?  attr-dict `:`
+    functional-type(operands, results)
+  }];
 
   let hasVerifier = true;
 }
@@ -589,13 +598,14 @@ def Tle_SignalWaitOp : Tle_Op<"signal_wait"> {
     Tle_SignalWaitKindAttr:$wait_kind,
     Optional<I64>:$target,
     Tle_FlagCXCoopKindAttr:$coop_kind,
-    I32Attr:$context_idx
+    I32Attr:$context_id,
+    Tle_MemoryOrderAttr:$order
   );
 
   let results = (outs);
 
   let assemblyFormat = [{
-    `(` $wait_kind `,` $coop_kind `)` $comm `,` $slot_id (`,` $target^)?  attr-dict `:`
+    `(` $wait_kind `,` $coop_kind `,` $order `)` $comm `,` $slot_id (`,` $target^)?  attr-dict `:`
     functional-type(operands, results)
   }];
 

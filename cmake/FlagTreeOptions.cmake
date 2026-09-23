@@ -18,16 +18,27 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+add_compile_definitions(__TRITON_VERSION_MAJOR__=3)
+add_compile_definitions(__TRITON_VERSION_MINOR__=6)
+
 macro(flagtree_configure_options)
-  set(FLAGTREE_BACKEND "$ENV{FLAGTREE_BACKEND}")
   set(FLAGTREE_DEFAULT_OPTION ON)
   if(FLAGTREE_BACKEND)
     set(FLAGTREE_DEFAULT_OPTION OFF)
-    add_definitions(-DFLAGTREE_BACKEND=\"${FLAGTREE_BACKEND}\")
+  endif()
+
+  # CommonIR is an explicit opt-in for the default NVIDIA backend. Keep the
+  # build contract as a C/C++ macro without introducing a CMake cache option.
+  set(FLAGTREE_COMMON_IR_ENABLED "$ENV{FLAGTREE_COMMON_IR}")
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    if(FLAGTREE_BACKEND)
+      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires the default NVIDIA backend")
+    endif()
+    add_compile_definitions(__FLAGTREE_COMMON_IR__)
   endif()
 
   set(FLAGCX_ENABLED OFF)
-  set(FLAGCX_SUPPORT_BACKENDS nvidia)
+  set(FLAGCX_SUPPORT_BACKENDS nvidia iluvatar)
   if(NOT FLAGTREE_BACKEND OR
      "${FLAGTREE_BACKEND}" IN_LIST FLAGCX_SUPPORT_BACKENDS)
     add_compile_definitions(FLAGCX_ENABLED)
@@ -79,6 +90,10 @@ macro(flagtree_configure_options)
     if(BUILD_MCTLE)
       list(APPEND TRITON_PLUGIN_NAMES "mctle")
       add_definitions(-D__MCTLE__)
+      # The .td files guard their mctle parts with #ifdef __MCTLE__ too
+      # (TritonOps.td's atomic_rmw / atomic_cas pointer constraint and
+      # shared-memory effects), and add_definitions does not reach mlir-tblgen.
+      list(APPEND LLVM_TABLEGEN_FLAGS -D__MCTLE__)
     endif()
     set(FLAGTREE_TLE OFF)
     remove_definitions(-D__TLE__)
@@ -99,7 +114,8 @@ endmacro()
 # FlagPrism: configure the external profiler/debugger after base options exist.
 macro(flagtree_configure_flagprism)
   set(_flagprism_default OFF)
-  if(FLAGTREE_BACKEND STREQUAL "ascend" OR FLAGTREE_BACKEND STREQUAL "iluvatar")
+  # FlagPrism: enable the external tools for the supported mthreads backend.
+  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
     set(_flagprism_default ON)
   endif()
   option(TRITON_BUILD_FLAGPRISM
@@ -107,10 +123,11 @@ macro(flagtree_configure_flagprism)
          ${_flagprism_default})
 
   if(TRITON_BUILD_FLAGPRISM)
-    if(NOT (FLAGTREE_BACKEND STREQUAL "ascend" OR FLAGTREE_BACKEND STREQUAL "iluvatar"))
+    # FlagPrism: accept mthreads as a supported integration backend.
+    if(NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
       message(FATAL_ERROR
         "TRITON_BUILD_FLAGPRISM is only supported when "
-        "FLAGTREE_BACKEND is ascend or iluvatar.")
+        "FLAGTREE_BACKEND is ascend, iluvatar, or mthreads.")
     endif()
     if(TRITON_BUILD_PROTON)
       message(FATAL_ERROR
@@ -118,8 +135,15 @@ macro(flagtree_configure_flagprism)
         "Select exactly one profiler implementation.")
     endif()
 
-    set(FLAGPRISM_CMAKE_FILE
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/FlagPrism/cmake/FlagPrism.cmake")
+    # FlagPrism: permit a separate local checkout during backend development.
+    if(NOT FLAGPRISM_SOURCE_DIR)
+      set(FLAGPRISM_SOURCE_DIR
+          "${CMAKE_CURRENT_SOURCE_DIR}/third_party/FlagPrism")
+    endif()
+    # FlagPrism: resolve relative overrides against the FlagTree source root.
+    get_filename_component(FLAGPRISM_SOURCE_DIR "${FLAGPRISM_SOURCE_DIR}" ABSOLUTE
+                           BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(FLAGPRISM_CMAKE_FILE "${FLAGPRISM_SOURCE_DIR}/cmake/FlagPrism.cmake")
     if(EXISTS "${FLAGPRISM_CMAKE_FILE}")
       include("${FLAGPRISM_CMAKE_FILE}")
       add_compile_definitions(__FLAGPRISM__=1)
@@ -237,15 +261,13 @@ macro(flagtree_configure_core_source)
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iluvatar)
     set(TRITON_CORE_BINARY_DIR
       ${CMAKE_CURRENT_BINARY_DIR}/third_party/iluvatar)
-    option(TRITON_BUILD_GLUON
-      "Build the Gluon IR Python bindings (gluon_ir.cc)" OFF)
     include_directories(${TRITON_CORE_SOURCE_DIR}/include)
     include_directories(${TRITON_CORE_BINARY_DIR}/include)
     include_directories(${TRITON_CORE_SOURCE_DIR}/backend/include)
     include_directories(${TRITON_CORE_BINARY_DIR}/backend/include)
     if(FLAGTREE_ILUVATAR_TLE)
-      include_directories(${TRITON_CORE_SOURCE_DIR}/tle/include)
-      include_directories(${TRITON_CORE_BINARY_DIR}/tle/include)
+      include_directories(${TRITON_CORE_SOURCE_DIR}/tle/dialect/include)
+      include_directories(${TRITON_CORE_BINARY_DIR}/tle/dialect/include)
     endif()
     add_subdirectory(
       ${TRITON_CORE_SOURCE_DIR}/include ${TRITON_CORE_BINARY_DIR}/include)
@@ -290,6 +312,16 @@ endmacro()
 
 
 macro(flagtree_configure_flir_dependency)
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
+      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires third_party/flir")
+    endif()
+    include_directories(${PROJECT_SOURCE_DIR}/third_party/flir/include)
+    include_directories(${PROJECT_BINARY_DIR}/third_party/flir/include)
+    add_subdirectory(third_party/flir/include/mlir-ext/Dialect/CommonIR)
+    add_subdirectory(third_party/flir/lib/Dialect/CommonIR)
+  endif()
+
   if(FLAGTREE_BACKEND STREQUAL "tsingmicro")
     if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
       message(FATAL_ERROR "The ${FLAGTREE_BACKEND} backend requires third_party/flir")
@@ -608,14 +640,7 @@ macro(flagtree_added_python_src)
     get_filename_component(_python_source_name "${_flagtree_python_source}" NAME)
     set(_python_source "${BACKEND_PYTHON_SRC_PATH}/${_python_source_name}")
     if(IS_DIRECTORY "${BACKEND_PYTHON_SRC_PATH}" AND EXISTS "${_python_source}")
-      if(FLAGTREE_BACKEND STREQUAL "iluvatar" AND "${_python_source_name}" STREQUAL "gluon_ir.cc")
-        if(TRITON_BUILD_GLUON)
-          list(APPEND _flagtree_python_sources "${_python_source}")
-          target_compile_definitions(triton PRIVATE TRITON_BUILD_GLUON)
-        endif()
-      else()
-        list(APPEND _flagtree_python_sources "${_python_source}")
-      endif()
+      list(APPEND _flagtree_python_sources "${_python_source}")
     else()
       list(APPEND _flagtree_python_sources "${_flagtree_python_source}")
     endif()

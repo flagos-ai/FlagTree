@@ -35,33 +35,40 @@ fi
 if ! kill -0 "$pid" 2>/dev/null; then
     echo "[ERROR] Process $pid does not exist, no need to stop."
     exit 1
-else
-    echo "[INFO] Stopping process: $pid"
+fi
 
-    if kill "$pid"; then
-        # Wait for process to exit, up to 60 seconds.
-        for ((i=1; i<=6; i++)); do
-            if ! kill -0 "$pid" 2>/dev/null; then
-                echo "[INFO] Process $pid has been successfully terminated."
-                break
-            fi
-            sleep 10
-        done
+CURRENT_DIR="$(pwd -P)"
+process_dir=$(pwdx "$pid" 2>/dev/null); process_dir=${process_dir#*: }
+if [[ "$process_dir" != "$CURRENT_DIR" ]]; then
+    echo "[ERROR] Process $pid started in '$process_dir', not '$CURRENT_DIR', refuse to stop."
+    exit 1
+fi
 
-        # Process still exists, force kill.
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "[WARNING] Process $pid did not exit, force kill!"
-            kill -9 "$pid"
-            sleep 5
-            if kill -0 "$pid" 2>/dev/null; then
-                echo "[FATAL] Failed to terminate process $pid!"
-            else
-                echo "[INFO] Process $pid has been force terminated."
-            fi
+echo "[INFO] Stopping process: $pid"
+
+if kill "$pid"; then
+    # Wait for process to exit, up to 60 seconds.
+    for ((i=1; i<=6; i++)); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "[INFO] Process $pid has been successfully terminated."
+            break
         fi
-    else
-        echo "[ERROR] Failed to kill process $pid!"
+        sleep 10
+    done
+
+    # Process still exists, force kill.
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "[WARNING] Process $pid did not exit, force kill!"
+        kill -9 "$pid"
+        sleep 5
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "[FATAL] Failed to terminate process $pid!"
+        else
+            echo "[INFO] Process $pid has been force terminated."
+        fi
     fi
+else
+    echo "[ERROR] Failed to kill process $pid!"
 fi
 
 echo
