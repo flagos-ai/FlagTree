@@ -130,6 +130,8 @@ def convert_custom_float8(arg, dst_ty, fp_downcast_rounding=None, _semantic=None
 # ordinary integer/float ops. Rounding is strict RTNE (ties-to-even, with the
 # mantissa carry propagating into the exponent) or RTZ, saturation is
 # satfinite (|x| > 448 -> 0x7E), NaN maps to 0x7F, and 0x7F/0xFF decode to NaN.
+# Every source rounds exactly once: f16/bf16 widen to f32 exactly and an fp64
+# source is narrowed to f32 with round-to-odd before the fp8 rounding.
 
 
 def _rounding_is_rtz(fp_downcast_rounding):
@@ -159,6 +161,30 @@ def _upcast_e4nv_to_f16(arg, _semantic=None):
     body = sem.where(sem.equal(e, 0), sub_bits, normal)
     body = sem.where(sem.equal(em, 0x007F), 0x7E00, body)  # NaN codes 0x7F/0xFF
     return sem.or_(body, s).to(core.float16, bitcast=True, _semantic=sem)
+
+
+@core.builtin
+def _f64_to_f32_round_to_odd(arg, _semantic=None):
+    """Software fp64 -> fp32 with round-to-odd: truncate and fold every
+    discarded bit into the lsb (sticky bit). fp32 keeps at least two significand
+    bits more than fp8, so the RTNE/RTZ rounding to fp8 that follows gives the
+    same result as rounding the fp64 value once (no double rounding)."""
+    sem = _semantic
+    b = arg.to(core.int64, bitcast=True, _semantic=sem)
+    sign = sem.shl(sem.and_(sem.lshr(b, 63), 1), 31)
+    e64 = sem.and_(sem.lshr(b, 52), 0x7FF)
+    m64 = sem.and_(b, (1 << 52) - 1)
+    is_nan = sem.and_(sem.equal(e64, 0x7FF), sem.not_equal(m64, 0))
+    e32 = sem.sub(e64, 1023 - 127, False)
+    sticky = sem.not_equal(sem.and_(m64, (1 << 29) - 1), 0).to(core.int64, _semantic=sem)
+    m32 = sem.or_(sem.lshr(m64, 29), sticky)
+    bits = sem.or_(sem.shl(e32, 23), m32)
+    # |x| >= 2^128 saturates in fp8 exactly like inf; |x| < 2^-126 is far below
+    # half the smallest fp8 subnormal and rounds to zero under RTNE and RTZ
+    bits = sem.where(sem.greater_equal(e32, 0xFF), 0x7F800000, bits)
+    bits = sem.where(sem.less_equal(e32, 0), 0, bits)
+    bits = sem.where(is_nan, 0x7FC00000, bits)
+    return sem.or_(bits, sign).to(core.int32, _semantic=sem).to(core.float32, bitcast=True, _semantic=sem)
 
 
 @core.builtin
@@ -216,7 +242,14 @@ def convert_custom_float8_sub89(arg, dst_ty, fp_downcast_rounding=None, _semanti
     if dst_sca.is_fp8e4nv():
         if not src_sca.is_floating():
             raise ValueError(f"cast from {src_sca} to fp8e4nv is not supported on this product")
-        # f16/bf16 widen exactly (single rounding); an fp64 source rounds twice
-        x = arg if src_sca.is_fp32() else arg.to(core.float32, _semantic=_semantic)
+        if src_sca.is_fp32():
+            x = arg
+        elif src_sca.is_fp64():
+            # narrowing with RTNE first would decide fp8 ties on already-rounded
+            # bits; round-to-odd keeps the single fp8 rounding exact
+            x = _f64_to_f32_round_to_odd(arg, _semantic=_semantic)
+        else:
+            # f16 / bf16 / fp8e5 widen to f32 exactly, the fp8 rounding is the only one
+            x = arg.to(core.float32, _semantic=_semantic)
         return _downcast_f32_to_e4nv(x, _rounding_is_rtz(fp_downcast_rounding), _semantic=_semantic)
     raise ValueError(f"unsupported custom fp8 conversion from {src_sca} to {dst_sca}")
