@@ -22,7 +22,7 @@ name: Ascend3.5-910B-Gems-Baseline
 
 on:
   push:
-    branches: ["triton_v3.5.x"]
+    branches: ["triton_v3.5.x", "fix/my-bug-fix-3.5.x-test"]
 
 permissions:
   contents: read

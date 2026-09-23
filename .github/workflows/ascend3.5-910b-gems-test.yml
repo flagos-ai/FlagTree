@@ -22,7 +22,7 @@ name: Ascend3.5-910B-Gems-Test
 
 on:
   pull_request:
-    branches: ["triton_v3.5.x"]
+    branches: ["triton_v3.5.x", "fix/my-bug-fix-3.5.x-test"]
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
