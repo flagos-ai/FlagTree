@@ -72,6 +72,13 @@ def _is_constexpr(o: Any) -> bool:
     return o is None or isinstance(o, (constexpr, language.core.dtype, JITCallable))
 
 
+def _is_native_nontensor_value(value):
+    native_nontensor_types = (language.dtype, language.tuple)
+    # TLE descriptors such as pipes are Python compile-time objects; they opt in
+    # explicitly so unrelated objects with common attributes are not misclassified.
+    return isinstance(value, native_nontensor_types) or getattr(value, "__triton_compile_time_value__", False)
+
+
 def _is_non_scalar_tensor(o: Any) -> bool:
     return _is_triton_tensor(o) and (o.type.is_block() and o.type.numel != 1)
 
@@ -545,11 +552,12 @@ class CodeGenerator(ast.NodeVisitor):
         if not _is_list_like(stmts):
             stmts = [stmts]
         for stmt in stmts:
-            self.visit(stmt)
+            ret = self.visit(stmt)
             # Stop parsing as soon as we hit a `return` statement; everything
             # after this is dead code.
             if isinstance(stmt, ast.Return):
-                break
+                return ret
+        return None
 
     def visit_Module(self, node):
         ast.NodeVisitor.generic_visit(self, node)
@@ -557,7 +565,7 @@ class CodeGenerator(ast.NodeVisitor):
     def visit_List(self, node):
         ctx = self.visit(node.ctx)
         assert ctx is None
-        elts = language.tuple([self.visit(elt) for elt in node.elts])
+        elts = language.tuple([self._wrap_tuple_element(self.visit(elt)) for elt in node.elts])
         return elts
 
     def visit_ListComp(self, node: ast.ListComp):
@@ -578,6 +586,8 @@ class CodeGenerator(ast.NodeVisitor):
     # By design, only non-kernel functions can return
     def visit_Return(self, node):
         ret_value = self.visit(node.value)
+        if getattr(self, "is_inline_jit_function", False):
+            return ret_value
         handles = []
 
         def decay(value):
@@ -712,11 +722,10 @@ class CodeGenerator(ast.NodeVisitor):
         def _sanitize_value(value):
             if isinstance(value, language.tuple):
                 return _apply_to_tuple_values(value, _sanitize_value)
-            native_nontensor_types = (language.dtype, language.tuple)
             value = _unwrap_if_constexpr(value)
             if value is not None and \
                 not _is_triton_value(value) and \
-                not isinstance(value, native_nontensor_types):
+                not _is_native_nontensor_value(value):
                 value = self.semantic.to_tensor(value)
             return value
 
@@ -752,8 +761,17 @@ class CodeGenerator(ast.NodeVisitor):
         ast.NodeVisitor.generic_visit(self, node)
 
     def visit_Tuple(self, node):
-        args = [self.visit(x) for x in node.elts]
+        args = [self._wrap_tuple_element(self.visit(x)) for x in node.elts]
         return language.tuple(args)
+
+    def _wrap_tuple_element(self, value):
+        # Compile-time descriptors (TLE pipes, workspaces) and JIT functions carry
+        # no IR type; wrap them as constexpr so tuple type construction still works.
+        if _is_triton_value(value):
+            return value
+        if getattr(value, "__triton_compile_time_value__", False) or isinstance(value, JITCallable):
+            return language.core.constexpr(value)
+        return value
 
     def _apply_binary_method(self, method_name, lhs, rhs):
         # TODO: raise something meaningful if getattr fails below, esp for reverse method
@@ -1333,11 +1351,30 @@ class CodeGenerator(ast.NodeVisitor):
         msg = self.visit(node.msg) if node.msg is not None else ""
         return language.core.device_assert(test, msg, _semantic=self.semantic)
 
+    def inline_JitFunction(self, fn: JITFunction, args, kwargs):
+        # Inline a JIT function's body at the current insertion point. Ordering
+        # and synchronization stay explicit in the inlined pipe calls.
+        bound_args = inspect.getcallargs(fn.fn, *args, **kwargs)
+        fn_module = fn.parse()
+        fn_node = fn_module.body[0] if isinstance(fn_module, ast.Module) else fn_module
+        saved_lscope = self.lscope.copy()
+        saved_local_defs = self.local_defs.copy()
+        saved_inline_jit_function = getattr(self, "is_inline_jit_function", False)
+        try:
+            self.is_inline_jit_function = True
+            for name in fn.arg_names:
+                self.set_value(name, bound_args[name])
+            return self.visit_compound_statement(fn_node.body)
+        finally:
+            self.is_inline_jit_function = saved_inline_jit_function
+            self.lscope = saved_lscope
+            self.local_defs = saved_local_defs
+
     def call_JitFunction(self, fn: JITFunction, args, kwargs, caller_context=None):
         args = inspect.getcallargs(fn.fn, *args, **kwargs)
         args = [args[name] for name in fn.arg_names]
         for i, arg in enumerate(args):
-            if isinstance(arg, (language.dtype, float, int, bool, JITFunction)):
+            if isinstance(arg, (language.dtype, float, int, bool, JITFunction)) or _is_native_nontensor_value(arg):
                 args[i] = language.core.constexpr(arg)
         args_cst = find_paths_if(args, lambda _, x: _is_constexpr(x))
         args_cst = {path: get_iterable_path(args, path) for path in args_cst}

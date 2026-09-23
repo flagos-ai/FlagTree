@@ -394,3 +394,116 @@ def tile_cube_launch(a: buffer, b: buffer, acc: buffer, stage_a: buffer, stage_b
 def tile_cube_wait(_semantic=None, _generator=None):
     """Wait for CommonIR Cube work using tile.cube_wait."""
     tle_semantic.tile_cube_wait(_semantic.builder)
+
+
+class Workspace:
+    __triton_compile_time_value__ = True
+
+    def __init__(self, base, capacity, shape, dtype, strides=None, stage_stride=None):
+        self.base = base
+        self.capacity = _unwrap_if_constexpr(capacity)
+        if not isinstance(self.capacity, int):
+            raise TypeError("workspace capacity must be a compile-time integer")
+        if self.capacity < 1:
+            raise ValueError("workspace capacity must be positive")
+        self.shape = tl._unwrap_shape(shape)
+        if not isinstance(self.shape, (tuple, list)):
+            raise TypeError("workspace shape must be list/tuple")
+        self.shape = list(self.shape)
+        self.dtype = _unwrap_if_constexpr(dtype)
+        if strides is None:
+            stride = 1
+            computed_strides = []
+            for dim in reversed(self.shape):
+                computed_strides.insert(0, stride)
+                stride *= dim
+            self.strides = computed_strides
+        else:
+            self.strides = list(tl._unwrap_shape(strides))
+        if stage_stride is None:
+            stage_stride_value = 1
+            for dim in self.shape:
+                stage_stride_value *= dim
+            self.stage_stride = stage_stride_value
+        else:
+            self.stage_stride = _unwrap_if_constexpr(stage_stride)
+
+    def slot(self, stage, _semantic=None):
+        # A workspace slot is pointer arithmetic over the caller-provided GM ring buffer.
+        if isinstance(stage, tensor):
+            stage_offset = stage.__mul__(self.stage_stride, _semantic=_semantic)
+        else:
+            stage_offset = stage * self.stage_stride
+        if len(self.shape) == 1:
+            offs = tl.arange(0, self.shape[0], _semantic=_semantic)
+            elem_offset = offs.__mul__(self.strides[0], _semantic=_semantic)
+            if isinstance(stage_offset, tensor):
+                offset = stage_offset.__add__(elem_offset, _semantic=_semantic)
+            else:
+                offset = elem_offset.__add__(stage_offset, _semantic=_semantic)
+            if isinstance(self.base, tensor):
+                return self.base.__add__(offset, _semantic=_semantic)
+            return self.base + offset
+        if len(self.shape) == 2:
+            offs_m = tl.arange(0, self.shape[0], _semantic=_semantic).__getitem__((slice(None), None),
+                                                                                  _semantic=_semantic)
+            offs_n = tl.arange(0, self.shape[1], _semantic=_semantic).__getitem__((None, slice(None)),
+                                                                                  _semantic=_semantic)
+            m_offset = offs_m.__mul__(self.strides[0], _semantic=_semantic)
+            n_offset = offs_n.__mul__(self.strides[1], _semantic=_semantic)
+            if isinstance(stage_offset, tensor):
+                row_offset = stage_offset.__add__(m_offset, _semantic=_semantic)
+            else:
+                row_offset = m_offset.__add__(stage_offset, _semantic=_semantic)
+            if isinstance(self.base, tensor):
+                rows = self.base.__add__(row_offset, _semantic=_semantic)
+            else:
+                rows = self.base + row_offset
+            if isinstance(rows, tensor):
+                return rows.__add__(n_offset, _semantic=_semantic)
+            return rows + n_offset
+        raise NotImplementedError("workspace supports rank 1 or rank 2 payloads")
+
+
+def workspace(base, capacity, shape, dtype, strides=None, stage_stride=None, _semantic=None):
+    return Workspace(base, capacity, shape, dtype, strides, stage_stride)
+
+
+# Descriptor constructor: pure Python with no builder work, so it stays callable from
+# host code (tests construct workspaces outside kernels); only the builtin marker is
+# needed to satisfy JIT reference checks.
+setattr(workspace, TRITON_BUILTIN, True)
+setattr(workspace, TLE_BUILTIN, True)
+
+
+@builtin
+def pipeline_scheduler(functions_and_args, _semantic=None, _generator=None):
+    if _generator is None:
+        raise ValueError("pipeline_scheduler requires code generator context")
+
+    # The scheduler only expands role functions; ordering and synchronization stay explicit in pipe calls.
+    # Elements arrive either as constexpr-wrapped compile-time descriptors or as language.tuple
+    # values; unwrap them one by one (never whole tuples: rebuilding a language.tuple
+    # around bare descriptors re-triggers tuple type construction).
+    def _ct_unwrap(x):
+        # language.tuple exposes .values (a real attribute); touch that first,
+        # because probing any other attribute on it raises ValueError.
+        if hasattr(x, "values") or hasattr(x, "handle"):
+            return x
+        value = getattr(x, "value", None)
+        return value if value is not None else x
+
+    entries = getattr(functions_and_args, "values", functions_and_args)
+    for item in entries:
+        item = _ct_unwrap(item)
+        if hasattr(item, "values"):
+            item = item.values
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise TypeError("pipeline_scheduler entries must be (fn, args)")
+        fn, args = _ct_unwrap(item[0]), _ct_unwrap(item[1])
+        if hasattr(args, "values"):
+            args = args.values
+        if not isinstance(args, (list, tuple)):
+            raise TypeError("pipeline_scheduler args must be a tuple")
+        args = [_ct_unwrap(arg) for arg in args]
+        _generator.inline_JitFunction(fn, list(args), {})
