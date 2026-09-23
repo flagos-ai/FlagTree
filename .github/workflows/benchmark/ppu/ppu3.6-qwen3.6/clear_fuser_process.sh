@@ -22,6 +22,11 @@
 
 set -euo pipefail
 
+source ~/env.sh
+TARGET_CWD=$(readlink -f "/proc/$(head -n1 pid.txt 2>/dev/null | tr -d '[:space:]')/cwd" 2>/dev/null || echo "")
+[[ -z "$TARGET_CWD" ]] && { echo "[WARNING] Can't get a valid directory from pid.txt"; exit 1; }
+echo "[INFO] Target Filter Directory: $TARGET_CWD"
+
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   echo "[WARNING] CUDA_VISIBLE_DEVICES is unset; skipping GPU cleanup."
   exit 0
@@ -41,9 +46,13 @@ done
 
 # Find PIDs using the devices.
 mapfile -t PIDS < <(
-  fuser -vm "${DEVICES[@]}" 2>/dev/null \
-  | grep -oE '[0-9]+' \
-  | sort -u
+  fuser -vm "${DEVICES[@]}" 2>&1 \
+  | awk '$2 ~ /^[0-9]+$/ {print $2}' \
+  | while read -r pid; do
+      [[ "$(cat /proc/$pid/comm 2>/dev/null)" != *"kdev"* ]] \
+      && [[ "$(readlink -f /proc/$pid/cwd 2>/dev/null)" == "$TARGET_CWD" ]] \
+      && echo "$pid"
+    done | sort -u
 )
 
 if ((${#PIDS[@]} == 0)); then
@@ -58,9 +67,13 @@ sleep 5
 
 # Force-kill remaining processes.
 mapfile -t REMAINING < <(
-  fuser -vm "${DEVICES[@]}" 2>/dev/null \
-  | grep -oE '[0-9]+' \
-  | sort -u
+  fuser -vm "${DEVICES[@]}" 2>&1 \
+  | awk '$2 ~ /^[0-9]+$/ {print $2}' \
+  | while read -r pid; do
+      [[ "$(cat /proc/$pid/comm 2>/dev/null)" != *"kdev"* ]] \
+      && [[ "$(readlink -f /proc/$pid/cwd 2>/dev/null)" == "$TARGET_CWD" ]] \
+      && echo "$pid"
+    done | sort -u
 )
 
 if ((${#REMAINING[@]} > 0)); then

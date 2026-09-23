@@ -4,20 +4,48 @@
 #include "Transforms/Passes.h"
 #include "ir.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Target/LLVMIR/Import.h"
 #include "passes.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/SourceMgr.h"
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace py = pybind11;
 namespace ttg = mlir::triton::gpu;
 namespace iluvatar_tle = mlir::triton::iluvatar_tle;
+
+// Defined in triton_iluvatar_tle_raw.cc.
+extern std::vector<int64_t>
+computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
+                           const std::vector<mlir::Value> &args,
+                           std::string_view funcName);
+
+extern iluvatar_tle::DSLRegionOp
+createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             std::string_view regionDialect,
+                             std::string_view argDialect,
+                             const std::vector<mlir::Value> &args,
+                             const std::vector<int64_t> &aliasOperandIndices,
+                             std::string_view hint, std::string_view funcName);
+
+extern iluvatar_tle::DSLRegionOp createTLERawRegionDeferred(
+    TritonOpBuilder &self, std::string_view sourceId,
+    std::string_view regionDialect, std::string_view argDialect,
+    const std::vector<mlir::Value> &args,
+    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint,
+    std::string_view dsl_file_name, std::string_view extern_func_name);
 
 namespace {
 
@@ -51,19 +79,24 @@ void init_triton_iluvatar_tle_ir(py::module m) {
 
   auto &builderCls = *builderClsPtr;
   builderCls
-      .def("make_swizzled_shared_encoding_attr",
-           [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
-              unsigned maxPhase, std::vector<unsigned> order,
-              std::vector<unsigned> CTAsPerCGA,
-              std::vector<unsigned> CTASplitNum,
-              std::vector<unsigned> CTAOrder) -> mlir::Attribute {
-             checkCtaRank(order, CTAsPerCGA, CTASplitNum, CTAOrder);
-             auto *context = self.getBuilder().getContext();
-             auto ctaLayout = ttg::CTAEncodingAttr::fromSplitParams(
-                 context, CTAsPerCGA, CTASplitNum, CTAOrder);
-             return ttg::SwizzledSharedEncodingAttr::get(
-                 context, vectorSize, perPhase, maxPhase, order, ctaLayout);
-           })
+      .def(
+          "make_swizzled_shared_encoding_attr",
+          [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
+             unsigned maxPhase, std::vector<unsigned> order,
+             std::vector<unsigned> CTAsPerCGA,
+             std::vector<unsigned> CTASplitNum, std::vector<unsigned> CTAOrder,
+             bool useTcu) -> mlir::Attribute {
+            checkCtaRank(order, CTAsPerCGA, CTASplitNum, CTAOrder);
+            auto *context = self.getBuilder().getContext();
+            auto ctaLayout = ttg::CTAEncodingAttr::fromSplitParams(
+                context, CTAsPerCGA, CTASplitNum, CTAOrder);
+            return ttg::SwizzledSharedEncodingAttr::get(
+                context, vectorSize, perPhase, maxPhase, order, ctaLayout,
+                useTcu);
+          },
+          py::arg("vectorSize"), py::arg("perPhase"), py::arg("maxPhase"),
+          py::arg("order"), py::arg("CTAsPerCGA"), py::arg("CTASplitNum"),
+          py::arg("CTAOrder"), py::arg("use_tcu") = false)
       .def("make_nv_mma_shared_encoding_attr",
            [](TritonOpBuilder &, std::vector<int64_t>, std::vector<unsigned>,
               mlir::Type &, std::vector<unsigned>, std::vector<unsigned>,
@@ -143,6 +176,28 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              return self.create<iluvatar_tle::LocalPointersOp>(
                  resultTy, memDesc, indices);
            })
+      .def(
+          "create_remote_pointers",
+          [](TritonOpBuilder &self, mlir::Type resultTy,
+             std::optional<mlir::Value> &src, mlir::Value shardId,
+             const std::string &space,
+             std::optional<mlir::Value> &offset) -> mlir::OpState {
+            auto &builder = self.getBuilder();
+            static const std::unordered_set<std::string> valid = {
+                "cluster", "device", "node"};
+            if (valid.find(space) == valid.end()) {
+              throw std::invalid_argument(
+                  "Invalid space: " + space +
+                  ". Expected one of: cluster, device, node.");
+            }
+            auto space_attr = builder.getStringAttr(space);
+
+            return self.create<iluvatar_tle::RemotePointersOp>(
+                resultTy, src.value_or(mlir::Value()), shardId, space_attr,
+                offset.value_or(mlir::Value()));
+          },
+          py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
+          py::arg("space"), py::arg("offset") = py::none())
       .def("create_memdesc_index",
            [](TritonOpBuilder &self, mlir::Type resultType, mlir::Value src,
               mlir::Value index) -> mlir::Value {
@@ -156,6 +211,105 @@ void init_triton_iluvatar_tle_ir(py::module m) {
                  mlir::TypeRange{exclusiveTy, totalTy}, src,
                  builder.getI32IntegerAttr(axis), builder.getBoolAttr(reverse));
            })
+      .def("get_device_id",
+           [](TritonOpBuilder &self, mlir::Type resultTy,
+              std::optional<mlir::Value> src) -> mlir::Value {
+             return self.create<iluvatar_tle::GetDeviceIdOp>(
+                 resultTy, src.value_or(mlir::Value()));
+           })
+      .def("get_n_pes",
+           [](TritonOpBuilder &self, mlir::Type resultTy,
+              mlir::Value src) -> mlir::Value {
+             return self.create<iluvatar_tle::GetNumPesOp>(resultTy, src);
+           })
+      .def("create_distributed_barrier",
+           [](TritonOpBuilder &self) -> void {
+             self.create<iluvatar_tle::DistributedBarrierOp>(
+                 mlir::Value(), mlir::StringAttr(), mlir::StringAttr(),
+                 iluvatar_tle::MemoryOrderAttr(), mlir::StringAttr(),
+                 mlir::IntegerAttr(), mlir::IntegerAttr(),
+                 iluvatar_tle::SyncScopeAttr(), mlir::IntegerAttr(),
+                 mlir::DenseI32ArrayAttr(), mlir::DenseI32ArrayAttr(),
+                 mlir::DenseI32ArrayAttr());
+           })
+      .def(
+          "create_distributed_barrier",
+          [](TritonOpBuilder &self, std::optional<mlir::Value> src,
+             size_t barrier_index = 0, const std::string &space = "device",
+             const std::string &group_kind = "block",
+             iluvatar_tle::MemoryOrder order =
+                 iluvatar_tle::MemoryOrder::ACQ_REL,
+             const std::string &barrier_kind = "sync", size_t context_id = 0,
+             iluvatar_tle::SyncScope memory_scope =
+                 iluvatar_tle::SyncScope::SYSTEM) -> void {
+            auto &builder = self.getBuilder();
+            auto getOptStrAttr = [&](const std::string &s) -> mlir::StringAttr {
+              return s.empty() ? mlir::StringAttr() : builder.getStringAttr(s);
+            };
+            auto spaceAttr = getOptStrAttr(space);
+            auto kindAttr = getOptStrAttr(group_kind);
+            auto orderAttr =
+                builder.getAttr<iluvatar_tle::MemoryOrderAttr>(order);
+            auto barrierTypeAttr = getOptStrAttr(barrier_kind);
+            auto memoryScopeAttr =
+                builder.getAttr<iluvatar_tle::SyncScopeAttr>(memory_scope);
+            auto barrierIndexAttr =
+                builder.getI32IntegerAttr(static_cast<int32_t>(barrier_index));
+            auto contextIdAttr =
+                builder.getI32IntegerAttr(static_cast<int32_t>(context_id));
+
+            self.create<iluvatar_tle::DistributedBarrierOp>(
+                src.value_or(mlir::Value()), spaceAttr, barrierTypeAttr,
+                orderAttr, kindAttr, barrierIndexAttr, contextIdAttr,
+                memoryScopeAttr, mlir::IntegerAttr(), mlir::DenseI32ArrayAttr(),
+                mlir::DenseI32ArrayAttr(), mlir::DenseI32ArrayAttr());
+          },
+          py::arg("src") = py::none(), py::arg("barrier_index"),
+          py::arg("space"), py::arg("group_kind"), py::arg("order"),
+          py::arg("barrier_kind"), py::arg("context_id") = 0,
+          py::arg("memory_scope") = "system")
+      .def(
+          "create_distributed_barrier",
+          [](TritonOpBuilder &self, const std::string &groupKind,
+             const std::vector<int32_t> &groupShape,
+             const std::vector<int32_t> &groupAxes,
+             const std::vector<int32_t> &groupMask) -> void {
+            auto &builder = self.getBuilder();
+            auto *ctx = builder.getContext();
+            mlir::StringAttr kindAttr;
+            mlir::IntegerAttr rankAttr;
+            mlir::DenseI32ArrayAttr shapeAttr;
+            mlir::DenseI32ArrayAttr axesAttr;
+            mlir::DenseI32ArrayAttr maskAttr;
+
+            if (!groupKind.empty()) {
+              kindAttr = builder.getStringAttr(groupKind);
+            }
+            // Only materialize subgroup metadata when provided.
+            // This allows kind-only barriers (e.g. group_kind="grid").
+            if (!groupShape.empty() || !groupAxes.empty() ||
+                !groupMask.empty()) {
+              rankAttr = builder.getI32IntegerAttr(
+                  static_cast<int32_t>(groupShape.size()));
+              if (!groupShape.empty()) {
+                shapeAttr = mlir::DenseI32ArrayAttr::get(ctx, groupShape);
+              }
+              if (!groupAxes.empty()) {
+                axesAttr = mlir::DenseI32ArrayAttr::get(ctx, groupAxes);
+              }
+              if (!groupMask.empty()) {
+                maskAttr = mlir::DenseI32ArrayAttr::get(ctx, groupMask);
+              }
+            }
+
+            self.create<iluvatar_tle::DistributedBarrierOp>(
+                mlir::Value(), mlir::StringAttr(), mlir::StringAttr(),
+                iluvatar_tle::MemoryOrderAttr(), kindAttr, mlir::IntegerAttr(),
+                mlir::IntegerAttr(), iluvatar_tle::SyncScopeAttr(), rankAttr,
+                shapeAttr, axesAttr, maskAttr);
+          },
+          py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
+          py::arg("group_mask"))
       .def("create_pipe_create",
            [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
               int32_t capacity, const std::string &scope,
@@ -305,30 +459,160 @@ void init_triton_iluvatar_tle_ir(py::module m) {
                                           memorySpace,
                                           /*mutableMemory=*/true, allocShape);
            });
+}
 
-  // Expose the ttg.warp_specialize op accessors used by the shared TLE
-  // frontend (tle.gpu.warp_specialize). Registered module-local so it does not
-  // clash with the (optional) Gluon binding of the same op.
+void init_triton_iluvatar_tle_raw_ir(py::module m) {
   using ret = py::return_value_policy;
-  py::class_<ttg::WarpSpecializeOp, mlir::OpState>(m, "WarpSpecializeOp",
-                                                   py::module_local())
-      .def("get_default_region", &ttg::WarpSpecializeOp::getDefaultRegion,
-           ret::reference)
-      .def("get_partition_op_holder",
-           &ttg::WarpSpecializeOp::getPartitionOpHolder, ret::reference)
-      .def("set_requested_registers", [](ttg::WarpSpecializeOp &self,
-                                         std::vector<int> &requestedRegisters) {
-        self.setRequestedRegisters(requestedRegisters);
-      });
+
+  py::class_<iluvatar_tle::DSLRegionOp>(m, "DSLRegionOp", py::module_local(),
+                                        py::dynamic_attr())
+      .def(
+          "get_results",
+          [](iluvatar_tle::DSLRegionOp &op) -> std::vector<mlir::OpResult> {
+            auto results_range = op->getResults();
+            return std::vector<mlir::OpResult>(results_range.begin(),
+                                               results_range.end());
+          },
+          ret::reference)
+      .def("dump", &iluvatar_tle::DSLRegionOp::dump);
+
+  py::class_<iluvatar_tle::YieldOp>(m, "YieldOp", py::module_local(),
+                                    py::dynamic_attr())
+      .def("dump", &iluvatar_tle::YieldOp::dump);
+
+  auto *builder_cls = ir::getBuilderClass();
+  if (!builder_cls)
+    throw std::runtime_error("triton IR builder class is not initialized");
+  builder_cls->def("compute_alias_operand_indices", &computeAliasOperandIndices,
+                   py::arg("text"), py::arg("args"), py::arg("func_name") = "");
+  builder_cls->def("create_tle_raw_region_by_llvm_func",
+                   &createTLERawRegionByLLVMFunc, py::arg("text"),
+                   py::arg("region_dialect"), py::arg("arg_dialect"),
+                   py::arg("args"), py::arg("output_operand_indices"),
+                   py::arg("hint") = "", py::arg("func_name") = "");
+  builder_cls->def(
+      "create_tle_raw_region_deferred", &createTLERawRegionDeferred,
+      py::arg("source_id"), py::arg("region_dialect"), py::arg("arg_dialect"),
+      py::arg("args"), py::arg("output_operand_indices"), py::arg("hint") = "",
+      py::arg("dsl_file_name") = "", py::arg("extern_func_name") = "");
+  builder_cls->def("get_context", &TritonOpBuilder::getContext);
+}
+
+// The shared TLE frontend (python/triton/experimental/tle/language/
+// distributed.py) opens with `from triton._C.libtriton.tle import attr, utils`.
+// That module comes from the trunk TLE plugin, which an iluvatar build does not
+// compile (FLAGTREE_TLE is OFF, FLAGTREE_ILUVATAR_TLE is ON), so the import
+// silently fails and every `attr` use raises NameError at kernel compile time.
+// Registering the module here keeps the fix inside third_party/iluvatar instead
+// of patching the shared frontend.
+//
+// Only the enums the barrier path needs are exposed. The signal enums
+// (SignalOpKind, SignalWaitKind) are deliberately absent: iluvatar implements
+// no signal op, so binding them would be dead code. `utils` holds the trunk
+// signal verifiers and is empty here for the same reason; it exists because the
+// import above names it.
+void init_triton_iluvatar_tle_compat(py::module &&m) {
+  auto attr = m.def_submodule("attr");
+
+  py::enum_<iluvatar_tle::FlagCXTeamKind>(attr, "FlagCXTeamKind")
+      .value("Intra", iluvatar_tle::FlagCXTeamKind::INTRA)
+      .value("Inter", iluvatar_tle::FlagCXTeamKind::INTER)
+      .value("World", iluvatar_tle::FlagCXTeamKind::WORLD)
+      .def_static(
+          "from_str",
+          [](std::string name) {
+            return iluvatar_tle::symbolizeFlagCXTeamKind(name);
+          },
+          py::arg("name"))
+      .def_static(
+          "from_int",
+          [](int value) -> std::optional<iluvatar_tle::FlagCXTeamKind> {
+            if (value < 0 ||
+                value > iluvatar_tle::getMaxEnumValForFlagCXTeamKind())
+              return std::nullopt;
+            return static_cast<iluvatar_tle::FlagCXTeamKind>(value);
+          },
+          py::arg("value"));
+  py::enum_<iluvatar_tle::FlagCXCoopKind>(attr, "FlagCXCoopKind")
+      .value("Thread", iluvatar_tle::FlagCXCoopKind::THREAD)
+      .value("Warp", iluvatar_tle::FlagCXCoopKind::WARP)
+      .value("Block", iluvatar_tle::FlagCXCoopKind::BLOCK)
+      .def_static(
+          "from_str",
+          [](std::string name) {
+            return iluvatar_tle::symbolizeFlagCXCoopKind(name);
+          },
+          py::arg("name"));
+
+  py::enum_<iluvatar_tle::SyncScope>(attr, "SyncScope")
+      .value("System", iluvatar_tle::SyncScope::SYSTEM)
+      .value("Device", iluvatar_tle::SyncScope::DEVICE)
+      .value("Block", iluvatar_tle::SyncScope::BLOCK)
+      .value("Thread", iluvatar_tle::SyncScope::THREAD)
+      .def_static(
+          "from_str",
+          [](std::string name) {
+            return iluvatar_tle::symbolizeSyncScope(name);
+          },
+          py::arg("name"));
+  py::enum_<iluvatar_tle::MemoryOrder>(attr, "MemoryOrder")
+      .value("Relaxed", iluvatar_tle::MemoryOrder::RELAXED)
+      .value("Acquire", iluvatar_tle::MemoryOrder::ACQUIRE)
+      .value("Release", iluvatar_tle::MemoryOrder::RELEASE)
+      .value("AcqRel", iluvatar_tle::MemoryOrder::ACQ_REL)
+      .def_static(
+          "from_str",
+          [](std::string name) { return iluvatar_tle::parseMemoryOrder(name); },
+          py::arg("name"));
+
+  m.def_submodule("utils");
+}
+
+void init_triton_iluvatar_tle_llvm(py::module m) {
+  m.def("parse_llvm_ir",
+        [](std::string_view text, llvm::LLVMContext &llvmContext,
+           mlir::MLIRContext &mlirContext) -> mlir::ModuleOp {
+          std::unique_ptr<llvm::MemoryBuffer> buffer =
+              llvm::MemoryBuffer::getMemBuffer(text);
+          llvm::SMDiagnostic error;
+          std::unique_ptr<llvm::Module> llvmModule =
+              llvm::parseIR(buffer->getMemBufferRef(), error, llvmContext);
+          if (!llvmModule) {
+            llvm::report_fatal_error(
+                "failed to parse IR: " + error.getMessage() +
+                "lineno: " + std::to_string(error.getLineNo()));
+          }
+          return mlir::translateLLVMIRToModule(std::move(llvmModule),
+                                               &mlirContext)
+              ->clone();
+        });
+}
+
+void init_triton_iluvatar_tle_raw_passes(py::module m) {
+  ADD_PASS_WRAPPER_0("add_tle_convert_arg_to_memdesc",
+                     iluvatar_tle::createTritonIluvatarTleConvertArgToMemDesc);
+  ADD_PASS_WRAPPER_0("add_tle_remove_redundant_copy",
+                     iluvatar_tle::createTritonIluvatarTleRemoveRedundantCopy);
+  ADD_PASS_WRAPPER_0("add_tle_dsl_region_inline",
+                     iluvatar_tle::createTritonIluvatarTleDSLRegionInline);
 }
 
 void init_triton_iluvatar_tle_passes(py::module m) {
+  ADD_PASS_WRAPPER_0("add_params_for_distribution",
+                     iluvatar_tle::createTritonIluvatarTleAddDistributedParams);
   ADD_PASS_WRAPPER_0(
       "add_early_assign_memory_space",
       iluvatar_tle::createTritonIluvatarTleEarlyAssignMemorySpace);
-  ADD_PASS_WRAPPER_0(
+  ADD_PASS_OPTION_WRAPPER_2(
       "add_optimize_local_pointer_async_stores",
-      iluvatar_tle::createTritonIluvatarTleOptimizeLocalPointerAsyncStores);
+      iluvatar_tle::createTritonIluvatarTleOptimizeLocalPointerAsyncStores,
+      unsigned, int64_t);
+  ADD_PASS_OPTION_WRAPPER_1(
+      "add_mark_sme_dot_operands",
+      iluvatar_tle::createTritonIluvatarTleMarkSmeDotOperands, unsigned);
+  ADD_PASS_OPTION_WRAPPER_1(
+      "add_promote_local_store_staging",
+      iluvatar_tle::createTritonIluvatarTlePromoteLocalStoreStaging, int64_t);
   ADD_PASS_WRAPPER_0(
       "add_insert_local_pointer_barriers",
       iluvatar_tle::createTritonIluvatarTleInsertLocalPointerBarriers);

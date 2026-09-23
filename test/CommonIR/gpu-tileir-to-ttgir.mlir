@@ -3,6 +3,7 @@
 
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #shared1 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+#shared3 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [2, 1, 0]}>
 #smem = #ttg.shared_memory
 
 module {
@@ -64,5 +65,36 @@ module {
       : <[16], f32, shared> -> <[8], f32, shared>
     %value = tile.to_tensor %view : <[8], f32, shared> -> tensor<8xf32>
     tt.return %value : tensor<8xf32>
+  }
+}
+
+// CHECK-LABEL: tt.func public @shared_allocation_subslice_slot
+// CHECK: %[[ALLOC:.*]] = ttg.local_alloc : () -> !ttg.memdesc<2x16x16xf16, #shared3, #smem, mutable>
+// CHECK: %[[LEFT:.*]] = ttg.memdesc_subslice %[[ALLOC]][0, 0, 0] : !ttg.memdesc<2x16x16xf16, #shared3, #smem, mutable> -> !ttg.memdesc<2x8x16xf16, #shared3, #smem, mutable, 2x16x16>
+// CHECK: %[[RIGHT:.*]] = ttg.memdesc_subslice %[[ALLOC]][0, 8, 0] : !ttg.memdesc<2x16x16xf16, #shared3, #smem, mutable> -> !ttg.memdesc<2x8x16xf16, #shared3, #smem, mutable, 2x16x16>
+// CHECK: %[[SLOT:.*]] = ttg.memdesc_index %[[RIGHT]][%{{.*}}] : !ttg.memdesc<2x8x16xf16, #shared3, #smem, mutable, 2x16x16> -> !ttg.memdesc<8x16xf16, #shared, #smem, mutable, 2x16x16>
+// CHECK: "tle.local_pointers"(%[[LEFT]])
+// CHECK: "tle.local_pointers"(%[[SLOT]])
+module {
+  tt.func public @shared_allocation_subslice_slot() {
+    %buf = tile.alloc {layout = 0 : i64, space = 7 : i64, tle.gpu_layout = #shared3}
+      : <[2, 16, 16], f16, shared>
+    %c0 = arith.constant 0 : index
+    %c8 = arith.constant 8 : index
+    %left = tile.subview %buf[%c0, %c0, %c0] [[2, 8, 16]] [[1, 1, 1]] {tle.gpu_layout = #shared3}
+      : <[2, 16, 16], f16, shared> -> <[2, 8, 16], f16, shared>
+    %right = tile.subview %buf[%c0, %c8, %c0] [[2, 8, 16]] [[1, 1, 1]] {tle.gpu_layout = #shared3}
+      : <[2, 16, 16], f16, shared> -> <[2, 8, 16], f16, shared>
+    %slot = tile.subview %right[%c0, %c0, %c0] [[8, 16]] [[1, 1]] {tle.gpu_layout = #shared}
+      : <[2, 8, 16], f16, shared> -> <[8, 16], f16, shared>
+    %left_desc = builtin.unrealized_conversion_cast %left
+      : !tile.buf<[2, 8, 16], f16, shared> to !ttg.memdesc<2x8x16xf16, #shared3, #smem, mutable, 2x16x16>
+    %slot_desc = builtin.unrealized_conversion_cast %slot
+      : !tile.buf<[8, 16], f16, shared> to !ttg.memdesc<8x16xf16, #shared, #smem, mutable, 2x16x16>
+    %left_ptr = "tle.local_pointers"(%left_desc)
+      : (!ttg.memdesc<2x8x16xf16, #shared3, #smem, mutable, 2x16x16>) -> tensor<2x8x16x!tt.ptr<f16, 3>>
+    %slot_ptr = "tle.local_pointers"(%slot_desc)
+      : (!ttg.memdesc<8x16xf16, #shared, #smem, mutable, 2x16x16>) -> tensor<8x16x!tt.ptr<f16, 3>>
+    tt.return
   }
 }

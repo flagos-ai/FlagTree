@@ -20,6 +20,7 @@ from .driver import driver
 from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
 from .cache import get_cache_key
+from ._distributed import DistributedRtContext
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl
 
 TRITON_MODULE = "triton.language"
@@ -163,6 +164,12 @@ class DependenciesFinder(ast.NodeVisitor):
         # helps keep the list of vars we have to check small.
         if val is None or type(val) is ModuleType:
             return
+
+        # flagtree tle raw
+        tle_raw_source_cache_key = getattr(val, "__triton_tle_raw_source_cache_key__", None)
+        if tle_raw_source_cache_key is not None:
+            part = (tle_raw_source_cache_key() if callable(tle_raw_source_cache_key) else tle_raw_source_cache_key)
+            self.hasher.update(str(part).encode("utf-8"))
 
         if getattr(val, "__triton_aggregate__", False):
             for attr in val.hash_attrs:
@@ -786,8 +793,14 @@ class JITFunction(JITCallable, KernelInterface[T]):
                 kernel = kernel.result()
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
-            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
-                       knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *bound_args.values())
+            # flagtree tle distributed: Add dist_param to kernel.run
+            dist_param = []
+            ctx = DistributedRtContext()
+            if ctx.is_lite_mode:
+                dist_param += [ctx.comm_ptr, ctx.mem_ptr]
+            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata,
+                       launch_metadata, knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *dist_param,
+                       *bound_args.values())
         return kernel
 
     def repr(self, _):

@@ -16,6 +16,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
@@ -1559,9 +1560,15 @@ struct AsyncWaitOpConversion
   matchAndRewrite(triton::gpu::AsyncWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+    // WaitCount layout (MR): bit3 = G2S enable, bits 23-28 = G2S_CNT.
+    // After tritoniluvatargpu-update-async-wait-count, op.num is outstanding
+    // SME loads; clamp to the 6-bit HW field. Lower values wait more
+    // (conservative). Base value 8 enables G2S with G2S_CNT=0.
+    unsigned g2sCnt = std::min(63u, static_cast<unsigned>(op.getNum()));
+    int64_t waitCntValue = 8 + (static_cast<int64_t>(g2sCnt) << 23);
     auto cntTy = rewriter.getIntegerType(64);
-    Value waitCnt = LLVM::ConstantOp::create(rewriter, loc, cntTy,
-                                             IntegerAttr::get(cntTy, 8));
+    Value waitCnt = LLVM::ConstantOp::create(
+        rewriter, loc, cntTy, IntegerAttr::get(cntTy, waitCntValue));
     LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.bi.sl.waitcnt", {},
                                     {waitCnt});
     TritonLLVMOpBuilder b(loc, rewriter);

@@ -33,6 +33,7 @@ from .mthreads import copy as mthreads_copy
 from .mthreads import warp_specialize as mthreads_warp_specialize
 from .mthreads import wgmma as mthreads_wgmma
 from .iluvatar import copy as iluvatar_copy
+from .iluvatar import layout as iluvatar_layout
 from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
 
 from triton.language.core import (
@@ -349,6 +350,10 @@ def alloc(
         nv_mma_shared_layout: Select an MMA-consumer-defined shared layout when
             ``layout`` is None. On mthreads this is materialized by the SQMMA
             lowering rather than as an NVIDIA encoding.
+            On iluvatar, ``True`` emits ``#ttg.swizzled_shared`` with ``useTcu``
+            when the tile is a TCU-eligible 2D operand; otherwise it uses the
+            generic swizzled encoding. An explicit ``nv_mma_shared_layout``
+            object is still rejected.
         _semantic: Semantic analyzer (internal use)
 
     Returns:
@@ -426,7 +431,10 @@ def alloc(
 
         if layout is None:
             if storage == tle.smem:
-                if mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
+                if iluvatar_copy.enabled():
+                    layout, layout_handle = iluvatar_layout.select_default_smem_layout(
+                        _semantic.builder, unwrapped_shape, dtype, nv_mma_shared_layout)
+                elif mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
                     layout = tle.swizzled_shared_layout.make_default(rank=len(shape))
                     layout_handle = _semantic.builder.make_swizzled_shared_encoding_attr(
                         layout.vectorSize,
