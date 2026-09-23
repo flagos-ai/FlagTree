@@ -113,6 +113,10 @@ class TleCodeGenerator(code_generator.CodeGenerator):
         else:
             self.tle_builder = None
 
+        if backends.BACKEND == "ascend":
+            from .language.dsa.ascend.pipe import reset_pipe_event_allocator
+            reset_pipe_event_allocator()
+
     @override
     def visit_With(self, node):
         assert len(node.items) == 1
@@ -183,6 +187,10 @@ def __getattr__(name):
         from .language import dsa
         globals()[name] = dsa
         return dsa
+    if name == "pipe":
+        from .language.pipe import pipe
+        globals()[name] = pipe
+        return pipe
     try:
         return getattr(backends, name)
     except AttributeError:
@@ -192,6 +200,7 @@ def __getattr__(name):
 __all__ = [
     "language",
     "dsa",
+    "pipe",
     "scope",
     *backends.ops(),
 ]
