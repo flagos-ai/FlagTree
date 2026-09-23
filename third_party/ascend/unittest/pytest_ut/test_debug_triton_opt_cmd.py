@@ -43,6 +43,7 @@ def _make_metadata():
         "auto_blockify_size": 1,
         "add_auto_scheduling": False,
         "enable_dynamic_cv_pipeline": False,
+        "enable_reduce_sum_strength": False,
         "hash": "deadbeef",
     }
 
