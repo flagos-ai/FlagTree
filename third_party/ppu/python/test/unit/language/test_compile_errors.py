@@ -357,15 +357,22 @@ def test_where_warning(fresh_triton_cache):
 def test_fp8_support(fresh_triton_cache, dtype):
     warning_dtypes = []
     supported_dtypes = [tl.float8e5]
-    if is_cuda() or is_ppu():
+    if is_cuda():
         cc = torch.cuda.get_device_capability(0)
         supported_dtypes.append(tl.float8e4b15)
         if cc >= (9, 0):
             warning_dtypes.append(tl.float8e4b15)
         if cc >= (8, 9):
             supported_dtypes.append(tl.float8e4nv)
-        elif is_ppu() and cc >= (8, 0):
-            # On PPU cap80-88, fp8e4nv compiles but tl.dot takes the non-native FP16 promotion path
+    elif is_ppu():
+        cc = torch.cuda.get_device_capability(0)
+        supported_dtypes.append(tl.float8e4b15)
+        if cc >= (9, 0):
+            warning_dtypes.append(tl.float8e4b15)
+        if cc >= (8, 9):
+            supported_dtypes.append(tl.float8e4nv)
+        elif cc >= (8, 0):
+            # cap80-88: fp8e4nv compiles but tl.dot takes the non-native FP16 promotion path
             supported_dtypes.append(tl.float8e4nv)
             warning_dtypes.append(tl.float8e4nv)
     elif is_hip():
@@ -379,11 +386,15 @@ def test_fp8_support(fresh_triton_cache, dtype):
         tl.dot(a, a)
 
     if dtype in warning_dtypes:
-        if dtype == tl.float8e4nv:
-            ctx = pytest.warns(UserWarning, match=r"non-native FP16 promotion path")
-        elif is_cuda() or is_ppu():
+        if is_cuda():
             ctx = pytest.warns(UserWarning,
                                match=r"the use of fp8e4b15 is deprecated on Hopper and later architectures")
+        elif is_ppu():
+            if dtype == tl.float8e4nv:
+                ctx = pytest.warns(UserWarning, match=r"non-native FP16 promotion path")
+            else:
+                ctx = pytest.warns(UserWarning,
+                                   match=r"the use of fp8e4b15 is deprecated on Hopper and later architectures")
         elif is_hip_cdna4():
             ctx = pytest.warns(UserWarning, match=r"AMD gfx942 specific and not supported on gfx950")
     elif dtype in supported_dtypes:
