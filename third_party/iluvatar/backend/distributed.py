@@ -73,6 +73,7 @@ class FlagcxRuntimeConfig:
 
     def __init__(self, path_order=0):
         self.is_available = self._is_available()
+        self.flagcx_whl_path = self._get_flagcx_wheel_path()
         self.bitcode_path = None
         if self.is_available:
             self._find_flagcx_module_path()
