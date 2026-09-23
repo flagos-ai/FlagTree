@@ -1,0 +1,162 @@
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Packed scalar comparison correctness and signature checks."""
+import numpy as np
+import torch
+import torch_npu  # noqa: F401
+import triton
+import triton.language as tl
+from triton.experimental import tle
+from triton.experimental.tle.language.dsa.ascend.custom_ops import compare_scalar
+
+
+def _hardware_ne(values, scalar):
+    # vcmpvs_ne follows ordered semantics: a comparison involving NaN is
+    # false, whereas np.not_equal(NaN, s) is true.
+    return np.not_equal(values, scalar) & (values == values) & np.asarray(scalar == scalar)
+
+
+# CANN CMPMODE (impl/basic_api/utils/kernel_utils_mode.h).
+MODES = {
+    0: np.less,
+    1: np.greater,
+    2: np.equal,
+    3: np.less_equal,
+    4: np.greater_equal,
+    5: _hardware_ne,
+}
+
+
+@triton.jit
+def compare_kernel(X, Mask, scalar, N: tl.constexpr, MODE: tl.constexpr):
+    values = tl.load(X + tl.arange(0, N))
+    mask = tl.full((N // 16, ), 0, tl.uint16)
+    mask = tle.dsa.ascend.raw("compare_scalar", values, scalar, MODE, N, out=mask)
+    tl.store(Mask + tl.arange(0, N // 16), mask)
+
+
+def _pack(bits):
+    words = bits.reshape(-1, 16).astype(np.uint32)
+    return np.sum(words << np.arange(16, dtype=np.uint32), axis=1).astype(np.uint16)
+
+
+def test_compare_scalar():
+    rng = np.random.default_rng(17)
+    cases = 0
+    for n in (256, 512, 1024, 2048, 4096):
+        values = rng.integers(-4, 5, size=n).astype(np.float32) * 0.5
+        values[:6] = [0.0, -0.0, np.inf, -np.inf, np.nan, 1.5]
+        x = torch.from_numpy(values).to("npu")
+        mask = torch.empty(n // 16, dtype=torch.uint16, device="npu")
+        for scalar in (0.0, -0.0, 1.5, np.inf, -np.inf, np.nan, 32.0):
+            compare_kernel[(1, )](x, mask, float(scalar), N=n, MODE=2)
+            np.testing.assert_array_equal(mask.cpu().numpy(), _pack(values == scalar))
+            cases += 1
+    print(f"[PASS] compare_scalar EQ: {cases} size/scalar cases")
+
+
+def _tensor(dtype, shape):
+    return tl.tensor(None, tl.block_type(dtype, shape))
+
+
+def _init(cls, *args, **kwargs):
+    # Match the custom-op dispatcher initialization without generating IR.
+    op = cls.__new__(cls)
+    op.arg_type = {}
+    cls.__init__(op, *args, **kwargs)
+    return op
+
+
+@triton.jit
+def compare_mode(X, Y, scalar, N: tl.constexpr, MODE: tl.constexpr):
+    x = tl.load(X + tl.arange(0, N))
+    y = tle.dsa.ascend.raw("compare_scalar", x, scalar, MODE, N, out=tl.full((N // 16, ), 0, tl.uint16))
+    tl.store(Y + tl.arange(0, N // 16), y)
+
+
+def test_modes():
+    rng = np.random.default_rng(11)
+    for dtype, sizes in ((np.float16, (256, 4096, 8192, 32768)), (np.float32, (256, 4096))):
+        for n in sizes:
+            values = rng.integers(-10, 11, n).astype(dtype)
+            values[:7] = [0., -0., np.inf, -np.inf, np.nan, 1., 1.001]
+            x = torch.from_numpy(values).npu()
+            out = torch.empty(n // 16, dtype=torch.uint16, device="npu")
+            for scalar in (0., 1.0003, np.inf, -np.inf, np.nan):
+                for mode, op in MODES.items():
+                    compare_mode[(1, )](x, out, float(scalar), n, mode)
+                    np.testing.assert_array_equal(out.cpu().numpy(), _pack(op(values, dtype(scalar))))
+    print("[PASS] FP16/FP32 LT/GT/EQ/LE/GE/NE, including the 252-repeat boundary")
+
+
+def test_validation():
+    src = _tensor(tl.float32, [256])
+    mask = _tensor(tl.uint16, [16])
+    invalid = [
+        # cmpMode out of CANN CMPMODE range
+        (src, 0., 6, 256),
+        (src, 0., -1, 256),
+        # count not matching the source size
+        (src, 0., 2, 128),
+        # unsupported source dtype
+        (_tensor(tl.int32, [256]), 0., 2, 256),
+        # source size below the 256 minimum
+        (_tensor(tl.float32, [128]), 0., 2, 128),
+    ]
+    for args in invalid:
+        try:
+            _init(compare_scalar, *args, out=mask)
+        except AssertionError:
+            continue
+        raise AssertionError("compare_scalar accepted an invalid signature")
+    # FP16 source with a uint32 mask
+    try:
+        _init(compare_scalar, _tensor(tl.float16, [256]), 0., 2, 256, out=_tensor(tl.uint32, [8]))
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("compare_scalar accepted a uint32 mask for an FP16 source")
+    try:
+        _init(compare_scalar, src, 0., 2, 256, out=None)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("compare_scalar accepted a missing out")
+    # valid signatures
+    _init(compare_scalar, src, 0., 2, 256, out=mask)
+    _init(compare_scalar, _tensor(tl.float16, [256]), 0., 5, 256, out=_tensor(tl.uint16, [16]))
+    _init(compare_scalar, src, 0., 4, 256, out=_tensor(tl.uint32, [8]))
+    print("[PASS] compare_scalar registration validation")
+
+
+@triton.jit
+def compare_mask32(X, Y, scalar, N: tl.constexpr, MODE: tl.constexpr):
+    x = tl.load(X + tl.arange(0, N))
+    y = tle.dsa.ascend.raw("compare_scalar", x, scalar, MODE, N, out=tl.full((N // 32, ), 0, tl.uint32))
+    tl.store(Y + tl.arange(0, N // 32), y)
+
+
+def test_mask32():
+    rng = np.random.default_rng(32)
+    for n in (256, 512, 1024, 2048, 4096):
+        values = rng.integers(-3, 4, n).astype(np.float32)
+        values[:5] = [0., -0., np.inf, -np.inf, np.nan]
+        x = torch.from_numpy(values).npu()
+        y = torch.empty(n // 32, dtype=torch.uint32, device="npu")
+        for mode, op in MODES.items():
+            for scalar in (0., 1., np.inf, np.nan):
+                compare_mask32[(1, )](x, y, scalar, n, mode)
+                np.testing.assert_array_equal(y.cpu().numpy(), _pack(op(values, scalar)).view(np.uint32))
+    print("[PASS] uint32 masks for FP32 GatherMask consumers")
+
+
+def main():
+    test_validation()
+    test_compare_scalar()
+    test_modes()
+    test_mask32()
+    print("All comparison tests passed.")
+
+
+if __name__ == "__main__":
+    main()

@@ -20,12 +20,12 @@ import numpy as np
 import torch
 import torch_npu
 import triton
-import triton.experimental.tle as tle
 import triton.language as tl
+from triton.experimental import tle
 from triton.experimental.tle.language.dsa.ascend.custom_ops import (
     SORT_IMPL_BASE,
-    SORT_IMPL_S4096_K129_512,
     SORT_IMPL_S4096_K1_128_K2048,
+    SORT_IMPL_S4096_K129_512,
 )
 
 DEVICE = "npu"
@@ -678,12 +678,17 @@ def test_duplicate():
 
 
 def main():
+    from test_cast_ops import main as test_cast_ops
+    from test_compare_scalar import main as test_compare_scalar
+
     for torch_dtype, tol in ((torch.float16, 1e-3), (torch.bfloat16, 1e-2)):
         test_gather_gm_to_l1(torch_dtype, tol)
         test_gather_gm_to_ub(torch_dtype)
     test_sort_1d_pack()
     test_merge_exhaust_sort4()
     test_unpack_sort()
+    test_compare_scalar()
+    test_cast_ops()
     test_sort32()
     test_mrgsort()
     test_gather_mask()
