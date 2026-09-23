@@ -836,6 +836,7 @@ class TritonSemantic(Generic[TensorTy]):
                                  "Source scalar type is " + str(src_sca_ty) + " and destination type is " +
                                  str(dst_sca_ty))
 
+        # flagtree fp8 cast declaration routing
         if src_sca_ty.is_fp8() or dst_sca_ty.is_fp8():
             options = self.builder.options
             cast_whitelist = getattr(options, "supported_fp8_cast_dtypes", None)
@@ -1519,12 +1520,12 @@ class TritonSemantic(Generic[TensorTy]):
             max_num_imprecise_acc: int, out_dtype: tl.dtype) -> TensorTy:
         assert lhs.type.is_block() and rhs.type.is_block()
 
-        # resolve_dot backends own the dtype rules (queried once shapes are known)
+        # flagtree: resolve_dot backends own the dtype rules (queried once shapes are known)
         resolve_dot = self.builder.codegen_fns.get("resolve_dot")
         if lhs.dtype.is_fp8() and rhs.dtype.is_fp8():
             # All combinations of supported fp8 x fp8 are permitted
             pass
-        elif resolve_dot is None:
+        elif resolve_dot is None:  # flagtree
             assert lhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16, tl.float32,
                                  tl.float64), f"Unsupported lhs dtype {lhs.dtype}"
             assert rhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16, tl.float32,
@@ -1564,7 +1565,7 @@ class TritonSemantic(Generic[TensorTy]):
             -2].value, f"First input shape ({lhs.shape}) and second input shape {rhs.shape} are not compatible for matmul (second index of first shape ({lhs.shape[-1].value}) must be equal to first index of second shape ({rhs.shape[-2].value})"
         assert self.builder.codegen_fns.get(
             "min_dot_size") is not None, "target doesn't provide lower shape bounds for dot."
-        if resolve_dot is not None:
+        if resolve_dot is not None:  # flagtree
             # queried after the legacy e4b15/fnuz upcasts above so rules see the effective dtypes
             dot_cap = resolve_dot(lhs.dtype.name, rhs.dtype.name, out_dtype.name, lhs.shape[-2].value,
                                   rhs.shape[-1].value, lhs.shape[-1].value)
@@ -1672,7 +1673,7 @@ class TritonSemantic(Generic[TensorTy]):
         allowed_formats = {"e2m1", "e4m3", "e5m2", "bf16", "fp16"}
         assert lhs_format in allowed_formats, f"NYI: lhs_format {lhs_format}"
         assert rhs_format in allowed_formats, f"NYI: rhs_format {rhs_format}"
-        # non-native (decomposed) format combinations warn at compile time
+        # flagtree: non-native (decomposed) format combinations warn at compile time
         resolve_dot_scaled = self.builder.codegen_fns.get("resolve_dot_scaled")
         if resolve_dot_scaled is not None:
             scaled_cap = resolve_dot_scaled(lhs_format, rhs_format)

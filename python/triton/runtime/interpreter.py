@@ -221,6 +221,7 @@ def _get_np_dtype(tt_dtype):
     return np_types[tt_dtype]
 
 
+# flagtree: upstream _convert_float, kept as the FLAGTREE_LOW_PRECISION_FLOAT=0 fallback
 def _convert_float_legacy(input, input_dtype, output_dtype, rounding_mode):
     input_uint_dtype = getattr(np, f"uint{input_dtype.primitive_bitwidth}")
     output_unint_dtype = getattr(np, f"uint{output_dtype.primitive_bitwidth}")
@@ -285,6 +286,7 @@ def _convert_float_legacy(input, input_dtype, output_dtype, rounding_mode):
     return output.reshape(input.shape)
 
 
+# flagtree fp conversion baseline (exact fp64 decode, strict RTNE/RTZ encode)
 def _float_special_kind(dtype):
     """Special-value convention of a float format:
     "ieee": inf at e=max/m=0, nan at e=max/m!=0 (fp16/bf16/fp32/fp64/fp8e5)
@@ -583,7 +585,7 @@ class InterpreterBuilder:
         return TensorHandle(np.array([self.grid_dim[axis]], dtype=np.int32), tl.int32)
 
     # memory ops
-    def create_load(self, ptr, _0, _1, is_volatile, flagtree_hints=None):
+    def create_load(self, ptr, _0, _1, is_volatile, flagtree_hints=None):  # flagtree
         mask = TensorHandle(np.ones_like(ptr.data, dtype=bool), tl.int1)
         other = None
         return self.create_masked_load(ptr, mask, other, _0, _1, is_volatile)
@@ -592,7 +594,8 @@ class InterpreterBuilder:
         mask = TensorHandle(np.ones_like(ptr.data, dtype=bool), tl.int1)
         return self.create_masked_store(ptr, val, mask, None, None)
 
-    def create_masked_load(self, ptrs, mask, other, cache_modifier, eviction_policy, is_volatile, flagtree_hints=None):
+    def create_masked_load(self, ptrs, mask, other, cache_modifier, eviction_policy, is_volatile,
+                           flagtree_hints=None):  # flagtree
         dtype_tt = ptrs.get_element_ty()
         dtype_np = _get_np_dtype(dtype_tt)
         if other is None:

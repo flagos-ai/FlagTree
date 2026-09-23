@@ -36,6 +36,7 @@ class GPUTarget(object):
     warp_size: int
 
 
+# flagtree dot capability contract
 class DotSupport(Enum):
     """How a backend supports a dot dtype/format combination."""
     NATIVE = "native"
