@@ -781,8 +781,7 @@ void LoopPipeliner::emitPrologue() {
               lookupOrDefault(loadOp.getPtr(), stage), newMask,
               lookupOrDefault(loadOp.getOther(), stage),
               loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
-              loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
-              loadOp.getContiguityInterConstGroup());
+              loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
           loadStage[loadOp].push_back(newOp->getResult(0));
           if (stage > 1) {
             auto newLoadOp = llvm::dyn_cast<triton::LoadOp>(newOp);
@@ -810,10 +809,9 @@ void LoopPipeliner::emitPrologue() {
               lookupOrDefault(loadOp.getPtr(), stage), newMask,
               lookupOrDefault(loadOp.getOther(), stage),
               loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
-              loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
-              loadOp.getContiguityInterConstGroup());
+              loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
 #ifdef USE_MACA
-          addNamedAttrs(newOp, op->getDiscardableAttrDictionary());
+          addNamedAttrs(newOp, op->getAttrDictionary());
 #else
           addNamedAttrs(newOp, op->getDiscardableAttrDictionary());
 #endif
@@ -1240,10 +1238,9 @@ void LoopPipeliner::prefetchNextIteration(scf::ForOp newForOp,
             curMapping.lookupOrDefault(loadOp.getPtr()), newMask,
             curMapping.lookupOrDefault(loadOp.getOther()),
             loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
-            loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
-            loadOp.getContiguityInterConstGroup());
+            loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
 #ifdef USE_MACA
-        addNamedAttrs(nextOp, op->getDiscardableAttrDictionary());
+        addNamedAttrs(nextOp, op->getAttrDictionary());
 #else
         addNamedAttrs(nextOp, op->getDiscardableAttrDictionary());
 #endif
@@ -1284,8 +1281,7 @@ void LoopPipeliner::prefetchNextIteration(scf::ForOp newForOp,
           nextMapping.lookupOrDefault(loadOp.getPtr()), newMask,
           nextMapping.lookupOrDefault(loadOp.getOther()),
           loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
-          loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
-          loadOp.getContiguityInterConstGroup());
+          loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
       nextLoads.push_back(newLoadOp->getResult(0));
       genLoads.push_back(newLoadOp->getResult(0));
       auto curLoadOp = *nextLoads.begin();
