@@ -23,8 +23,6 @@ def test_op(Z, H, N_CTX, D_HEAD, dtype, causal, seq_par, device):
         pytest.skip("Flash attention only supported for compute capability >= 80")
     if dtype == torch.bfloat16 and os.environ.get("TRITON_INTERPRET", "0") == "1":
         pytest.skip("Flash attention bfloat16 not supported in interpreter mode")
-    if is_corex() and D_HEAD == 128:
-        pytest.skip("FIXME: out of resource, fix latter")
     torch.manual_seed(20)
     q = torch.empty((Z, H, N_CTX, D_HEAD), dtype=dtype, device=device).normal_(mean=0., std=0.5).requires_grad_()
     k = torch.empty((Z, H, N_CTX, D_HEAD), dtype=dtype, device=device).normal_(mean=0., std=0.5).requires_grad_()
@@ -53,9 +51,6 @@ def test_op(Z, H, N_CTX, D_HEAD, dtype, causal, seq_par, device):
     atol = 1e-1 if dtype == torch.bfloat16 else 1e-2
     torch.testing.assert_close(torch.nn.functional.normalize(torch.flatten(ref_out), dim=0),
                                torch.nn.functional.normalize(torch.flatten(tri_out), dim=0), atol=atol, rtol=0)
-    # FIXME: bwd not supported
-    if is_corex():
-        return
     torch.testing.assert_close(torch.nn.functional.normalize(torch.flatten(ref_dv), dim=0),
                                torch.nn.functional.normalize(torch.flatten(tri_dv), dim=0), atol=atol, rtol=0)
     torch.testing.assert_close(torch.nn.functional.normalize(torch.flatten(ref_dk), dim=0),

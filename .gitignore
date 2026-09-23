@@ -36,6 +36,9 @@ third_party/nvidia/backend/lib/libflagcx*
 third_party/iluvatar/python/*.egg-info
 third_party/iluvatar/.triton/
 third_party/iluvatar/bin/FileCheck
+third_party/iluvatar/backend/flagcx*
+third_party/iluvatar/backend/lib/libflagcx*
+third_party/iluvatar/tle/third_party
 third_party/iluvatar/logs/
 
 # Backends copied from submodules

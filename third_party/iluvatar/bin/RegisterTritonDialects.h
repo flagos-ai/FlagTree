@@ -79,6 +79,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::registerTritonILUVATARGPUMMAReduceThreadLocality();
   mlir::registerTritonILUVATARGPUOptimizeEpilogue();
   mlir::registerTritonILUVATARGPUSmeLoad();
+  mlir::registerTritonILUVATARGPUUpdateAsyncWaitCount();
   mlir::test::registerTestAliasPass();
   mlir::test::registerTestAlignmentPass();
   mlir::test::registerAMDTestAlignmentPass();

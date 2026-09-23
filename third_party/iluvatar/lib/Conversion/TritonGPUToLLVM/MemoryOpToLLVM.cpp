@@ -281,9 +281,13 @@ lowerSmeStore(Location loc, MLIRContext *ctx, Value regVal,
       return failure();
   }
 
-  // A CTA barrier only synchronizes threads; it does not drain the hardware
-  // G2S queue. Synchronous local_alloc/local_load users must wait before the
-  // shared-memory value can be consumed or reused by a later K iteration.
+  // Unmasked/all-true loads are synchronized by the existing CTA barrier at
+  // their local_load consumer.
+  if (!mask || (constantMask && *constantMask))
+    return success();
+
+  // Dynamic/partial masks consume the G2S result immediately while patching
+  // shared memory, so they must drain G2S before the fixup.
   if (emittedSmeLoad) {
     auto i64Ty = rewriter.getIntegerType(64);
     Value waitCnt = LLVM::ConstantOp::create(rewriter, loc, i64Ty,
@@ -291,8 +295,6 @@ lowerSmeStore(Location loc, MLIRContext *ctx, Value regVal,
     LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.bi.sl.waitcnt", {},
                                     {waitCnt});
   }
-  if (!mask || (constantMask && *constantMask))
-    return success();
 
   Value llvmMask = rewriter.getRemappedValue(mask);
   if (!llvmMask)

@@ -982,19 +982,6 @@ LinearLayout minimalCvtLayout(Type srcTy_, Type dstTy_) {
 }
 
 bool cvtReordersRegisters(RankedTensorType srcTy, RankedTensorType dstTy) {
-#ifdef __ILUVATAR__
-  auto getSmeMask = [](Attribute encoding) -> std::optional<bool> {
-    if (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(encoding))
-      encoding = slice.getParent();
-    if (auto blocked = dyn_cast<triton::gpu::BlockedEncodingAttr>(encoding))
-      return blocked.getSmeMask();
-    return std::nullopt;
-  };
-  auto srcSmeMask = getSmeMask(srcTy.getEncoding());
-  auto dstSmeMask = getSmeMask(dstTy.getEncoding());
-  if (srcSmeMask.value_or(false) != dstSmeMask.value_or(false))
-    return false;
-#endif
   auto layout = minimalCvtLayout(srcTy, dstTy);
   MLIRContext *ctx = srcTy.getContext();
   auto kRegister = StringAttr::get(ctx, "register");
@@ -1010,18 +997,6 @@ bool cvtNeedsWarpShuffle(RankedTensorType srcTy, RankedTensorType dstTy) {
   if (to_vector(layout.getOutDimNames()) ==
       SmallVector<StringAttr, 2>{kRegister, kLane}) {
     auto factors = getWarpLayoutConvertDecomposition(srcTy, dstTy, 32);
-#ifdef __ILUVATAR__
-    // transferWithinWarp handles multiple disjoint mixed transpositions plus a
-    // lane permutation entirely with warp shuffles + register selects. On
-    // Iluvatar a coalesced 32-bit epilogue store relayout from the TCU mma
-    // layout needs two mixed transpositions, and doing it via shuffles avoids
-    // the shared-memory round-trip of the mma->blocked conversion. Allow up to
-    // two mixed transpositions here (NVIDIA/AMD keep the stricter < 2 cost
-    // cap).
-    if (mlir::isa<IluvatarMmaEncodingAttr>(srcTy.getEncoding()) &&
-        mlir::isa<LinearEncodingAttr>(dstTy.getEncoding()))
-      return (factors.mixedTranspositions.size() < 3);
-#endif
     return (factors.mixedTranspositions.size() < 2);
   }
   return false;

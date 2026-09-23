@@ -2,6 +2,7 @@ from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, iluvatar
 from triton import knobs
 from triton.runtime.errors import PTXASError
+from triton.runtime._distributed import DistributedRtContext
 
 from dataclasses import dataclass
 import functools
@@ -18,15 +19,20 @@ from pathlib import Path
 # Align with JIRA SWCOMP-2985 / ixcc a6c311d91fc: a public release corex only
 # prints assembly text for ivcore11.
 ASM_PRINTABLE_ARCH = "ivcore11"
+tle = iluvatar.tle
 
 
 def has_tle_pass(pass_name: Optional[str] = None) -> bool:
-    tle_passes = getattr(iluvatar.passes, "tle", None)
-    if tle_passes is None:
+    tle_passes = getattr(tle, "passes", None)
+    tle_raw_passes = getattr(tle, "raw_passes", None)
+    iluvatar_tle_raw = getattr(getattr(iluvatar, "passes", None), "tle_raw", None)
+    if tle_passes is None and tle_raw_passes is None and iluvatar_tle_raw is None:
         return False
     if pass_name is None:
         return True
-    return hasattr(tle_passes, pass_name)
+    return ((tle_passes is not None and hasattr(tle_passes, pass_name))
+            or (tle_raw_passes is not None and hasattr(tle_raw_passes, pass_name))
+            or (iluvatar_tle_raw is not None and hasattr(iluvatar_tle_raw, pass_name)))
 
 
 def min_dot_size(target: GPUTarget):
@@ -156,6 +162,12 @@ class CorexOptions:
             extern_libs[
                 'libdevice'] = knobs.iluvatar.libdevice_path or knobs.iluvatar.libcuda_path + '/nvvm/libdevice/libdevice.compute_bi.10.bc'
 
+        try:
+            from .distributed import Distributed
+            extern_libs.update(Distributed().get_extern_libs())
+        except Exception:
+            pass
+
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
                "num_warps must be a power of 2"
@@ -271,7 +283,14 @@ class CorexBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         dump_enabled = pm.enable_debug()
         emuTF32 = (capability // 10 >= 8)
+        # flagtree tle distributed
+        if has_tle_pass("add_params_for_distribution") and DistributedRtContext().is_lite_mode:
+            tle.passes.add_params_for_distribution(pm)
         passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, opt.warp_size, opt.num_ctas)
+        # flagtree tle raw
+        if has_tle_pass("add_tle_convert_arg_to_memdesc"):
+            tle.raw_passes.add_tle_convert_arg_to_memdesc(pm)
+            tle.raw_passes.add_tle_remove_redundant_copy(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
@@ -279,23 +298,29 @@ class CorexBackend(BaseBackend):
         passes.ttgpuir.add_optimize_thread_locality(pm)
         if has_tle_pass():
             if has_tle_pass("add_optimize_local_pointer_async_stores"):
-                iluvatar.passes.tle.add_optimize_local_pointer_async_stores(pm)
+                tle.passes.add_optimize_local_pointer_async_stores(pm, opt.use_sme, opt.num_stages)
             if has_tle_pass("add_early_assign_memory_space"):
-                iluvatar.passes.tle.add_early_assign_memory_space(pm)
+                tle.passes.add_early_assign_memory_space(pm)
             if has_tle_pass("add_optimize_exclusive_cumsum_layouts"):
-                iluvatar.passes.tle.add_optimize_exclusive_cumsum_layouts(pm)
+                tle.passes.add_optimize_exclusive_cumsum_layouts(pm)
             if has_tle_pass("add_lower_exclusive_cumsum"):
-                iluvatar.passes.tle.add_lower_exclusive_cumsum(pm)
-            iluvatar.passes.tle.add_insert_local_pointer_barriers(pm)
-            iluvatar.passes.tle.add_optimize_local_pointer_loads(pm)
-            iluvatar.passes.tle.add_optimize_local_pointer_stores(pm)
+                tle.passes.add_lower_exclusive_cumsum(pm)
+            tle.passes.add_insert_local_pointer_barriers(pm)
+            tle.passes.add_optimize_local_pointer_loads(pm)
+            tle.passes.add_optimize_local_pointer_stores(pm)
             if has_tle_pass("add_lower_pipe_to_barriers"):
-                iluvatar.passes.tle.add_lower_pipe_to_barriers(pm)
+                tle.passes.add_lower_pipe_to_barriers(pm)
         iluvatar.passes.ttgpuir.add_accelerate_matmul(pm, opt.use_sme)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         iluvatar.passes.ttgpuir.add_mma_reduce_thread_locality(pm)
         iluvatar.passes.ttgpuir.add_optimize_epilogue(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 71)
+        if has_tle_pass("add_promote_local_store_staging"):
+            tle.passes.add_promote_local_store_staging(pm, opt.num_stages)
+            # Before SmeLoad: promote leaves load->local_alloc->local_load,
+            # which AccelerateMatmul cannot mark useSme through. SmeLoad
+            # refuses G2S unless that flag is already on the local_load.
+            tle.passes.add_mark_sme_dot_operands(pm, opt.use_sme)
         iluvatar.passes.ttgpuir.add_matmul_smeload(pm, capability)
         passes.ttir.add_loop_aware_cse(pm)
         if capability // 10 in [7, 8, 9]:
@@ -329,11 +354,23 @@ class CorexBackend(BaseBackend):
         passes.ttgpuir.add_prefetch(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 71)
         if has_tle_pass("add_lower_async_load"):
-            iluvatar.passes.tle.add_lower_async_load(pm)
+            tle.passes.add_lower_async_load(pm)
         passes.ttgpuir.add_coalesce_async_copy(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
+        # Layouts are final here, and the local_load ops feeding the dots exist,
+        # so the chain-dot convert can be measured and collapsed. Must precede
+        # reduce_data_duplication, which would otherwise price that convert as
+        # expensive and route it through shared memory.
+        iluvatar.passes.ttgpuir.add_chain_dot_krotate(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
+        if has_tle_pass("add_mark_sme_dot_operands"):
+            # After layouts are final: pipeline / optimize_dot_operands may
+            # have rewritten encodings and dropped the early useSme. Re-mark
+            # so LocalLoadOpConversion still applies the rowxfb8 S2R fix.
+            tle.passes.add_mark_sme_dot_operands(pm, opt.use_sme)
         passes.ttgpuir.add_reorder_instructions(pm)
+        if capability == 71:
+            iluvatar.passes.ttgpuir.add_fa_pipeline(pm, opt.num_stages)
         passes.ttir.add_loop_aware_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_sccp(pm)
@@ -362,13 +399,29 @@ class CorexBackend(BaseBackend):
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
         return mod
 
+    @staticmethod
+    def _find_kernel_func(llvm_mod, entry_name):
+        fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration()]
+        if entry_name:
+            for fn in fns:
+                if fn.name == entry_name:
+                    return fn
+        return fns[0] if fns else None
+
     def make_llir(self, src, metadata, options, capability):
         mod = src
+        # Recorded before lowering: the pipeline below rewrites tt.func into the
+        # LLVM dialect, so the tt.func visibility that marks the kernel entry is
+        # gone by the time the corex calling convention has to be stamped on.
+        entry_name = mod.get_entry_func_name()
         # TritonGPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
 
         passes.ttgpuir.add_combine_tensor_select_and_if(pm)
+        # Convert wait_group(N commit-groups) into outstanding SME G2S counts
+        # before LLVM lowering encodes llvm.bi.sl.waitcnt(G2S_CNT).
+        iluvatar.passes.ttgpuir.add_update_async_wait_count(pm)
         passes.ttgpuir.add_allocate_warp_groups(pm)
         passes.convert.add_scf_to_cf(pm)
         passes.gluon.add_inliner(pm)
@@ -377,6 +430,17 @@ class CorexBackend(BaseBackend):
             # Call ConcurrencySanitizerPass here, before allocating global scratch memory but after allocating tensor and shared
             passes.ttgpuir.add_concurrency_sanitizer(pm)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
+        # flagtree tle raw: Materialize deferred tle_raw sources before inlining DSL regions.
+        if has_tle_pass("deferred_raw_materialize"):
+            from .deferred_raw import (
+                finish_deferred_raw_materialize,
+                deferred_raw_materialize,
+            )
+            deferred_raw_materialize(pm, mod)
+        # Inline TLE DSL regions before TritonGPU->LLVM lowering so no
+        # `tle.dsl_region` op survives into the conversion pipeline.
+        if has_tle_pass("add_tle_dsl_region_inline"):
+            tle.raw_passes.add_tle_dsl_region_inline(pm)
         if CorexBackend.instrumentation:
             CorexBackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
         proc = sm_arch_from_capability(capability)
@@ -398,6 +462,8 @@ class CorexBackend(BaseBackend):
             CorexBackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
 
         pm.run(mod, 'make_llir')
+        if has_tle_pass("deferred_raw_materialize"):
+            finish_deferred_raw_materialize()
 
         if knobs.compilation.dump_ir_extract_di_local_variables:
             # comments below on why separate it
@@ -426,11 +492,14 @@ class CorexBackend(BaseBackend):
         triple = iluvatar.TARGET_TRIPLE
         llvm.attach_datalayout(llvm_mod, triple, proc, target_features)
 
-        fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration()]
-        if fns:
-            fns[0].set_calling_conv(iluvatar.CALLING_CONV_ILUVATAR_KERNEL)
-        if options.maxnreg and options.maxnreg > 0:
-            fns[0].add_fn_attr("iluvatar-num-vgpr", f"{options.maxnreg}")
+        # Looked up by name rather than by position: tle_raw clones its device
+        # functions into this module, so the kernel is not necessarily the first
+        # definition in the function list.
+        kernel_fn = self._find_kernel_func(llvm_mod, entry_name)
+        if kernel_fn is not None:
+            kernel_fn.set_calling_conv(iluvatar.CALLING_CONV_ILUVATAR_KERNEL)
+            if options.maxnreg and options.maxnreg > 0:
+                kernel_fn.add_fn_attr("iluvatar-num-vgpr", f"{options.maxnreg}")
 
         if options.enable_reflect_ftz:
             iluvatar.set_nvvm_reflect_ftz(llvm_mod)

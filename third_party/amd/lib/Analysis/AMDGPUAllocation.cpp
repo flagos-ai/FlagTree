@@ -1,8 +1,11 @@
 #include "Analysis/AMDGPUAllocation.h"
+#include "Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "triton/Analysis/Allocation.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
 #include "third_party/amd/include/Dialect/TritonAMDGPU/Utility/CommonUtils.h"
 
@@ -135,6 +138,33 @@ unsigned getConvertLayoutScratchInBytes(RankedTensorType srcTy,
   return elems * getBitwidth(srcTy) / 8;
 }
 
+// AMD lowers tensor atomics to buffer ops before the allocation pass runs, so
+// the default analysis never sees tt.atomic_cas/rmw for these. When the result
+// has broadcast dimensions the canonical thread's value must be broadcast
+// through shared memory; reserve that scratch here (mirrors the standard atomic
+// handling in defaultAllocationAnalysisScratchSizeFn).
+// Ported from upstream Triton PR #9605 (triton-lang/triton).
+static unsigned getBufferAtomicScratchSizeInBytes(Operation *op) {
+  Value result = op->getResult(0);
+  if (result.use_empty())
+    return 0;
+  auto tensorTy = dyn_cast<RankedTensorType>(result.getType());
+  if (!tensorTy)
+    return 0;
+  auto freeVariableMasks = gpu::toLinearLayout(tensorTy).getFreeVariableMasks();
+  bool hasBroadcast = llvm::any_of(freeVariableMasks,
+                                   [](auto mask) { return mask.second != 0; });
+  if (!hasBroadcast)
+    return 0;
+  auto smemShape =
+      convertType<unsigned, int64_t>(gpu::getShapePerCTA(tensorTy));
+  auto elems = getNumScratchElements(smemShape);
+  if (elems == 0)
+    return 0;
+  auto elemTy = tensorTy.getElementType();
+  return elems * std::max<int>(8, elemTy.getIntOrFloatBitWidth()) / 8;
+}
+
 unsigned AMDAllocationAnalysisScratchSizeFn(Operation *op) {
 
   if (auto cvtLayout = dyn_cast<mlir::triton::gpu::ConvertLayoutOp>(op)) {
@@ -180,6 +210,9 @@ unsigned AMDAllocationAnalysisScratchSizeFn(Operation *op) {
                                  (getBitwidth(tileTy) / 8));
   }
 #endif
+
+  if (isa<amdgpu::BufferAtomicCASOp, amdgpu::BufferAtomicRMWOp>(op))
+    return getBufferAtomicScratchSizeInBytes(op);
 
   return defaultAllocationAnalysisScratchSizeFn(op);
 }

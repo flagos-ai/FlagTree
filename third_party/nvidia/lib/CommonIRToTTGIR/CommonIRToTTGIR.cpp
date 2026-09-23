@@ -322,6 +322,16 @@ static LogicalResult convertSubviews(ModuleOp module,
 
     OpBuilder builder(op);
     auto sourceType = cast<ttg::MemDescType>((*source).getType());
+#ifdef __TLE__
+    auto convertedResultType = *resultType;
+    bool sourceIsSubview = sourceType.getAllocShape() != sourceType.getShape();
+    if (sourceType.getRank() == resultType->getRank() || sourceIsSubview) {
+      convertedResultType = ttg::MemDescType::get(
+          resultType->getShape(), resultType->getElementType(),
+          resultType->getEncoding(), resultType->getMemorySpace(),
+          resultType->getMutableMemory(), sourceType.getAllocShape());
+    }
+#endif
     if (op.getOffsets().size() != sourceType.getRank() ||
         op.getSizes().size() != resultType->getRank() ||
         op.getStrides().size() != resultType->getRank()) {
@@ -364,8 +374,13 @@ static LogicalResult convertSubviews(ModuleOp module,
       auto index = castToI32(builder, op.getLoc(), op.getOffsets().front());
       if (failed(index))
         return WalkResult::interrupt();
+#ifdef __TLE__
+      converted = builder.create<ttg::MemDescIndexOp>(
+          op.getLoc(), convertedResultType, *source, *index);
+#else
       converted = builder.create<ttg::MemDescIndexOp>(op.getLoc(), *resultType,
                                                       *source, *index);
+#endif
     } else if (sourceType.getRank() == resultType->getRank()) {
       SmallVector<int32_t> offsets;
       offsets.reserve(op.getOffsets().size());
@@ -384,9 +399,15 @@ static LogicalResult convertSubviews(ModuleOp module,
         }
         offsets.push_back(static_cast<int32_t>(*constant));
       }
+#ifdef __TLE__
+      converted = builder.create<ttg::MemDescSubsliceOp>(
+          op.getLoc(), convertedResultType, *source,
+          builder.getDenseI32ArrayAttr(offsets));
+#else
       converted = builder.create<ttg::MemDescSubsliceOp>(
           op.getLoc(), *resultType, *source,
           builder.getDenseI32ArrayAttr(offsets));
+#endif
     } else {
       op.emitError("unsupported tile.subview rank change");
       return WalkResult::interrupt();
