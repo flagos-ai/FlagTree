@@ -601,12 +601,12 @@ public:
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    // A kernel that declared how many groups it may keep in flight overrides
-    // the pipeline default.
+    // A kernel that asked for more groups in flight, through a store hint,
+    // overrides the pipeline default.
     int32_t requested = maxPendingGroups;
-    if (auto declared =
+    if (auto hinted =
             module->getAttrOfType<IntegerAttr>(kTleTMAStorePendingAttr))
-      requested = declared.getInt();
+      requested = hinted.getInt();
     unsigned groups = std::clamp<int32_t>(requested, 1, kPendingGroupsLimit);
     if (failed(StoreScheduler(module, groups).run()))
       signalPassFailure();

@@ -46,8 +46,9 @@ inline constexpr llvm::StringLiteral
 inline constexpr llvm::StringLiteral
     kTleTMAStoreExplicitCommitAttr("tle.tma_store_explicit_commit");
 
-// Set by tle.gpu.tma_store_pending on the module: the number of TMA store
-// groups this kernel may keep in flight. Consumed by the TLE TMA store
+// Set on the module from a `# @hint: tma_store_pending=<n>` comment on a TLE
+// TMA store: the number of store groups this kernel may keep in flight, the
+// largest value any hint in it asks for. Consumed by the TLE TMA store
 // scheduler, which otherwise waits for a group before committing the next.
 inline constexpr llvm::StringLiteral
     kTleTMAStorePendingAttr("tle.tma_store_pending");
