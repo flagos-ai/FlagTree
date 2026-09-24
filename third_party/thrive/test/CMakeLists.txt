@@ -13,3 +13,4 @@ add_custom_target(thrive_install_test ALL
 
 add_subdirectory(examples)
 add_subdirectory(unit)
+add_subdirectory(chiplet)

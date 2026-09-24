@@ -101,7 +101,7 @@ class ThriveSemantic(TritonSemantic):
 
 
 def get_thrive_semantic(_semantic):
-    from triton._C.libtriton.triton_thrive import ThriveBuilder
+    from triton._C.libtriton.thrive import ThriveBuilder
 
     dummy_val = _semantic.builder.get_int32(0)
     ctx = dummy_val.get_context()
