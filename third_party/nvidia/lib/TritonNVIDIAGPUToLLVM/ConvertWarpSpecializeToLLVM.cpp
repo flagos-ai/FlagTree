@@ -391,6 +391,149 @@ static void disableLICM(LLVM::BrOp latchBr) {
   latchBr.setLoopAnnotationAttr(loopMD);
 }
 
+// TLE named barriers are converted to LLVM intrinsic calls before this pass.
+// Keep them in the reuse boundary-sync decision so a later reuse region cannot
+// observe the same hardware barrier ID while the preceding region is still
+// using it.  NVVM::BarrierOp is accepted as the already-lowered equivalent;
+// Barrier0Op remains handled separately because a one-warp barrier lowers to
+// warp sync and does not consume a reusable CTA barrier ID.
+static bool hasReusedBoundaryBarrier(Region *partition) {
+  bool found = false;
+  partition->walk([&](Operation *op) {
+    if (isa<NVVM::BarrierOp>(op)) {
+      found = true;
+      return;
+    }
+    auto intrinsic = dyn_cast<LLVM::CallIntrinsicOp>(op);
+    if (!intrinsic)
+      return;
+    llvm::StringRef name = intrinsic.getIntrin();
+    if (name == "llvm.nvvm.barrier.cta.sync.aligned.count" ||
+        name == "llvm.nvvm.barrier.cta.arrive.aligned.count")
+      found = true;
+  });
+  return found;
+}
+
+// Lower a warp-specialize op whose partitions reuse the enclosing CTA warps.
+// The default region is empty; each partition is selected by the physical warp
+// ID and runs without allocating persistent worker warps. Kernels with shared
+// allocations or multi-warp barriers synchronize at the partition boundaries
+// to protect scratch storage and named barrier IDs reused by later regions.
+static LogicalResult
+lowerReusedWarpSpecialize(LLVM::LLVMFuncOp func,
+                          const NVIDIA::TargetInfo &targetInfo) {
+  SmallVector<WarpSpecializeOp> wsOps;
+  func.walk([&](WarpSpecializeOp op) {
+    // This lowering is also built against backend WS definitions that do not
+    // declare reuseDefaultWarps yet. Keep the compatibility read local here.
+    auto reuse = op->getAttrOfType<BoolAttr>("reuseDefaultWarps");
+    if (reuse && reuse.getValue())
+      wsOps.push_back(op);
+  });
+  if (wsOps.empty())
+    return success();
+
+  ModuleOp module = func->getParentOfType<ModuleOp>();
+  unsigned threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(module);
+  unsigned numWarps = lookupNumWarps(func);
+  auto sharedMemory = module->getAttrOfType<IntegerAttr>("ttg.shared");
+  bool needsSharedMemorySync = sharedMemory && sharedMemory.getInt() != 0;
+
+  for (WarpSpecializeOp ws : wsOps) {
+    Location loc = ws.getLoc();
+    if (ws.getNumResults() != 0)
+      return ws.emitError("in-place warp specialization cannot return values");
+    auto startIds = ws.getWarpGroupStartIds();
+    if (!startIds)
+      return ws.emitError(
+          "in-place warp specialization has no physical warp assignment");
+
+    unsigned coveredWarps = 0;
+    for (int32_t partitionWarps : ws.getPartitionNumWarps())
+      coveredWarps += partitionWarps;
+    if (coveredWarps != numWarps)
+      return ws.emitError("in-place warp partitions cover ")
+             << coveredWarps << " warps, expected " << numWarps;
+
+    Block *before = ws->getBlock();
+    Block *after = before->splitBlock(ws->getIterator());
+    SmallVector<APInt> caseValues;
+    SmallVector<Block *> caseBlocks;
+    unsigned nextBarrierId = kNumReservedBarriers;
+    bool needsBoundarySync = needsSharedMemorySync;
+
+    for (auto [partition, partitionWarps, startId] : llvm::zip(
+             ws.getPartitionRegions(), ws.getPartitionNumWarps(), *startIds)) {
+      Block &entry = partition->front();
+      if (entry.getNumArguments() != ws.getNumOperands())
+        return ws.emitError("in-place partition capture arity mismatch");
+      for (auto [arg, capture] :
+           llvm::zip(entry.getArguments(), ws.getOperands()))
+        arg.replaceAllUsesWith(capture);
+      entry.eraseArguments([](auto) { return true; });
+
+      SmallVector<NVVM::Barrier0Op> barriers;
+      partition->walk([&](NVVM::Barrier0Op bar) { barriers.push_back(bar); });
+      if (hasReusedBoundaryBarrier(partition))
+        needsBoundarySync = true;
+      unsigned barrierId = kDefaultWarpGroupBarrierIdx;
+      if (partitionWarps > 1 && !barriers.empty()) {
+        if (nextBarrierId == kNumBarriers)
+          return ws.emitError(
+                     "too many in-place partitions using named barriers; "
+                     "maximum is ")
+                 << (kNumBarriers - kNumReservedBarriers);
+        barrierId = nextBarrierId++;
+        needsBoundarySync = true;
+      }
+      for (NVVM::Barrier0Op bar : barriers) {
+        TritonLLVMIRRewriter b(bar.getLoc(), bar);
+        createBarrier(b, barrierId, partitionWarps * threadsPerWarp);
+        bar.erase();
+      }
+
+      SmallVector<WarpReturnOp> returns;
+      partition->walk([&](WarpReturnOp ret) { returns.push_back(ret); });
+      for (WarpReturnOp ret : returns) {
+        TritonLLVMIRRewriter b(ret.getLoc(), ret);
+        b.replaceOpWithNewOp<LLVM::BrOp>(ret, after);
+      }
+
+      for (unsigned wid = startId; wid < startId + partitionWarps; ++wid) {
+        caseValues.push_back(APInt(32, wid));
+        caseBlocks.push_back(&entry);
+      }
+    }
+
+    Region::BlockListType &funcBlocks = func.getBody().getBlocks();
+    for (Region *partition : ws.getPartitionRegions())
+      funcBlocks.splice(after->getIterator(), partition->getBlocks());
+
+    TritonLLVMIRRewriter dispatch(loc, OpBuilder::atBlockEnd(before));
+    if (needsBoundarySync)
+      createBarrier(dispatch, kDefaultWarpGroupBarrierIdx,
+                    numWarps * threadsPerWarp);
+    Value tid = NVVM::ThreadIdXOp::create(
+        dispatch, loc, IntegerType::get(func.getContext(), 32));
+    Value wid = dispatch.udiv(tid, dispatch.i32_val(threadsPerWarp));
+    wid = targetInfo.shuffleIdx(dispatch, loc, wid, 0);
+    LLVM::SwitchOp::create(dispatch, loc, wid, after, ValueRange(), caseValues,
+                           caseBlocks,
+                           SmallVector<ValueRange>(caseBlocks.size()));
+
+    if (needsBoundarySync) {
+      TritonLLVMIRRewriter join(loc, OpBuilder::atBlockBegin(after));
+      // Only the enclosing default warps participate. Persistent worker warps
+      // from an ordinary warp_specialize elsewhere in the kernel stay idle.
+      createBarrier(join, kDefaultWarpGroupBarrierIdx,
+                    numWarps * threadsPerWarp);
+    }
+    ws.erase();
+  }
+  return success();
+}
+
 static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
                                          const NVIDIA::TargetInfo &targetInfo) {
   SmallVector<WarpSpecializeOp> wsOps;
@@ -658,9 +801,12 @@ struct ConvertWarpSpecializeToLLVM
       if (func.isPublic())
         kernels.push_back(func);
     }
-    for (LLVM::LLVMFuncOp kernel : kernels)
+    for (LLVM::LLVMFuncOp kernel : kernels) {
+      if (failed(lowerReusedWarpSpecialize(kernel, targetInfo)))
+        return signalPassFailure();
       if (failed(lowerWarpSpecialize(kernel, targetInfo)))
         return signalPassFailure();
+    }
   }
 };
 } // namespace

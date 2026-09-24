@@ -16,6 +16,7 @@
 #include "triton/Tools/LayoutUtils.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
 #endif
 
 using namespace mlir;
@@ -130,6 +131,8 @@ getNvidiaAllocationAnalysisScratchSizeFn(TargetInfoBase &targetInfo) {
     }
 #ifdef __TLE__
     if (auto extractTileOp = dyn_cast<triton::tle::ExtractTileOp>(op)) {
+      if (triton::tle::getStaticExtractTileRegisterIndex(extractTileOp))
+        return 0;
       auto dstTy = dyn_cast<RankedTensorType>(extractTileOp.getType());
       if (!dstTy)
         return 0;

@@ -319,7 +319,11 @@ struct OptimizePartitionWarps
 
 void OptimizePartitionWarps::runOnOperation() {
   SmallVector<WarpSpecializeOp> wsOps;
-  getOperation().walk([&](WarpSpecializeOp wsOp) { wsOps.push_back(wsOp); });
+  getOperation().walk([&](WarpSpecializeOp wsOp) {
+    // Reused partitions must preserve the physical warps that own their data.
+    if (!wsOp.getReuseDefaultWarps())
+      wsOps.push_back(wsOp);
+  });
 
   if (wsOps.empty()) {
     return;

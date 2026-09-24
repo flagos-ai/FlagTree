@@ -38,9 +38,11 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_CONVERTTRITONTOTRITONGPU
@@ -136,8 +138,18 @@ updateTleEncoding(ArrayRef<Value> values, TleEncodingInfo info, FuncOp func,
 static LogicalResult propagateTleEncodingHints(FuncOp func) {
   llvm::SmallVector<std::pair<Value, TleEncodingInfo>> seedEncodings;
   func.walk([&](tle::SetLayoutOp op) {
+    // A set_layout is a real layout boundary when its source already has an
+    // encoding.  Keep that source encoding fixed so the conversion pattern can
+    // materialize the requested layout change.  Values without an encoding
+    // are still seeded with the target, which preserves the existing hint
+    // propagation optimization for unencoded TLE values.
+    Attribute srcEncoding;
+    if (auto srcType = dyn_cast<RankedTensorType>(op.getSrc().getType()))
+      srcEncoding = srcType.getEncoding();
     seedEncodings.push_back(
-        {op.getSrc(), TleEncodingInfo{op.getTargetEncoding(), true}});
+        {op.getSrc(),
+         TleEncodingInfo{srcEncoding ? srcEncoding : op.getTargetEncoding(),
+                         true}});
     seedEncodings.push_back(
         {op.getResult(), TleEncodingInfo{op.getTargetEncoding(), false}});
   });
@@ -159,6 +171,20 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
 
     for (OpOperand &use : value.getUses()) {
       Operation *op = use.getOwner();
+      if (auto ws = dyn_cast<WarpSpecializeOp>(op);
+          ws && ws.getReuseDefaultWarps()) {
+        // Captures are represented by one block argument per reused
+        // partition. Propagate the explicit fragment layout into those
+        // arguments so extract_tile/set_layout boundaries remain local to
+        // the consuming subwarp.
+        SmallVector<Value> args;
+        for (Region *partition : ws.getPartitionRegions())
+          args.push_back(partition->getArgument(use.getOperandNumber()));
+        if (failed(
+                updateTleEncoding(args, info, func, valueToEncoding, worklist)))
+          return failure();
+        continue;
+      }
       if (isa<scf::ForOp, scf::WhileOp>(op)) {
         int offset = 3 * isa<scf::ForOp>(op);
         auto tiedArgs = getTiedArgs(op, use.getOperandNumber() - offset);
@@ -269,6 +295,15 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
       setTleExplicitResultEncoding(opResult, info.encoding);
   }
 
+  func.walk([&](WarpSpecializeOp op) {
+    if (!op.getReuseDefaultWarps())
+      return;
+    for (Region *partition : op.getPartitionRegions())
+      for (auto [arg, capture] :
+           llvm::zip_equal(partition->front().getArguments(), op.getOperands()))
+        arg.setType(capture.getType());
+  });
+
   WalkResult memoryWalk = func.walk([&](Operation *op) {
     if (!getMemAccessPtr(op))
       return WalkResult::advance();
@@ -291,7 +326,20 @@ static LogicalResult applyTleEncodingHints(ModuleOp mod) {
   for (FuncOp func : mod.getOps<FuncOp>())
     if (failed(propagateTleEncodingHints(func)))
       return failure();
-  return success();
+
+  // Validate before dialect conversion so an unsupported explicit layout
+  // cannot fall back to the generic dot pattern and lose its constraint.
+  WalkResult result = mod.walk([](triton::DotOp op) {
+    Attribute encoding = getTleExplicitValueEncoding(op.getD());
+    if (!encoding || !isa<MmaEncodingTrait>(encoding))
+      return WalkResult::advance();
+    auto mma = dyn_cast<NvidiaMmaEncodingAttr>(encoding);
+    if (mma && mma.isAmpere())
+      return WalkResult::advance();
+    op.emitOpError("explicit MMA dot layout currently requires NVIDIA MMA v2");
+    return WalkResult::interrupt();
+  });
+  return failure(result.wasInterrupted());
 }
 #endif
 
@@ -493,7 +541,11 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     RankedTensorType origType = op.getType();
     auto origShape = origType.getShape();
     auto typeConverter = getTypeConverter<TritonGPUTypeConverter>();
+#ifdef __TLE__
+    int numWarps = typeConverter->getNumWarps(op.getResult());
+#else
     int numWarps = typeConverter->getNumWarps();
+#endif
     int threadsPerWarp = typeConverter->getThreadsPerWarp();
     int numCTAs = typeConverter->getNumCTAs();
     auto rank = origShape.size();
@@ -645,8 +697,12 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
       auto defaultEnc = getDefaultBlockedEncoding(
           getContext(),
           cast<RankedTensorType>(op.getResult(0).getType()).getShape(),
-          typeConverter->getNumWarps(), typeConverter->getThreadsPerWarp(),
-          typeConverter->getNumCTAs());
+#ifdef __TLE__
+          typeConverter->getNumWarps(op.getResult(0)),
+#else
+          typeConverter->getNumWarps(),
+#endif
+          typeConverter->getThreadsPerWarp(), typeConverter->getNumCTAs());
 
       auto append = [&](ArrayRef<unsigned> vals, unsigned val) {
         SmallVector<unsigned> res(vals);
@@ -1100,6 +1156,75 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
 }
 
 #ifdef __TLE__
+// Explicit fragment layouts constrain a store's value, pointers and mask
+// together. Ordinary stores continue through the generic conversion pattern.
+class TleExplicitStorePattern : public OpConversionPattern<triton::StoreOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Attribute encoding = getTleExplicitMemoryEncoding(op);
+    if (!encoding) {
+      auto originalType = dyn_cast<RankedTensorType>(op.getValue().getType());
+      if (originalType)
+        encoding = originalType.getEncoding();
+    }
+    if (!encoding)
+      return rewriter.notifyMatchFailure(op, "no explicit tensor layout");
+
+    SmallVector<Value> operands(adaptor.getOperands());
+    for (Value &operand : operands) {
+      auto type = dyn_cast<RankedTensorType>(operand.getType());
+      if (type && type.getEncoding() != encoding)
+        operand = rewriter.create<ConvertLayoutOp>(
+            op.getLoc(), type.cloneWithEncoding(encoding), operand);
+    }
+    rewriter.replaceOpWithNewOp<triton::StoreOp>(op, TypeRange{}, operands,
+                                                 op->getAttrs());
+    return success();
+  }
+};
+
+class TleExplicitDotPattern : public OpConversionPattern<triton::DotOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::DotOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Attribute encoding = getTleExplicitValueEncoding(op.getD());
+    if (!encoding || !isa<MmaEncodingTrait>(encoding))
+      return rewriter.notifyMatchFailure(op, "no explicit MMA result layout");
+
+    auto resultType = op.getType().cloneWithEncoding(encoding);
+    SmallVector<Value> inputs;
+    for (auto [index, input] :
+         llvm::enumerate(SmallVector<Value>{adaptor.getA(), adaptor.getB()})) {
+      auto type = cast<RankedTensorType>(input.getType());
+      if (!type.getEncoding())
+        return failure();
+      Attribute operandEncoding = DotOperandEncodingAttr::get(
+          getContext(), index, encoding, type.getElementType());
+      if (type.getEncoding() != operandEncoding)
+        input = rewriter.create<ConvertLayoutOp>(
+            op.getLoc(), type.cloneWithEncoding(operandEncoding), input);
+      inputs.push_back(input);
+    }
+    Value accumulator = adaptor.getC();
+    if (accumulator.getType() != resultType)
+      accumulator = rewriter.create<ConvertLayoutOp>(op.getLoc(), resultType,
+                                                     accumulator);
+    addNamedAttrs(rewriter.replaceOpWithNewOp<triton::DotOp>(
+                      op, resultType, inputs[0], inputs[1], accumulator,
+                      adaptor.getInputPrecision(),
+                      adaptor.getMaxNumImpreciseAcc()),
+                  adaptor.getAttributes());
+    return success();
+  }
+};
+
 class TleDSLRegionOpPattern : public OpConversionPattern<tle::DSLRegionOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -1145,16 +1270,38 @@ public:
       return op.emitError("source tensor must have encoding attribute");
     }
 
-    Type retType = op.getType().cloneWithEncoding(srcEnc);
+    auto originalResultType = cast<RankedTensorType>(op.getType());
+    Attribute retEncoding = originalResultType.getEncoding();
+    auto warp = StringAttr::get(op.getContext(), "warp");
+    bool needsLayoutConversion =
+        retEncoding && retEncoding != srcEnc &&
+        toLinearLayout(srcType).getInDimSize(warp) ==
+            toLinearLayout(originalResultType).getInDimSize(warp);
+    // Ordinary extraction preserves its source layout. Keep the requested
+    // result layout as an explicit conversion, rather than reinterpreting the
+    // source registers. Cross-warp views are validated by the warp-slice proof.
+    if (!retEncoding || needsLayoutConversion)
+      retEncoding = srcEnc;
+    auto retType = op.getType().cloneWithEncoding(retEncoding);
 
-    auto newOp = rewriter.replaceOpWithNewOp<tle::ExtractTileOp>(
-        op, retType, adaptor.getSrc(), adaptor.getIndex());
+    auto newOp = rewriter.create<tle::ExtractTileOp>(
+        op.getLoc(), retType, adaptor.getSrc(), adaptor.getIndex());
 
     if (auto tileShapeAttr = op->getAttr("tile_shape"))
       newOp->setAttr("tile_shape", tileShapeAttr);
 
     addNamedAttrs(newOp, adaptor.getAttributes());
 
+    Value result = newOp.getResult();
+    if (needsLayoutConversion) {
+      newOp->removeAttr(getTleExplicitEncodingAttrName(0));
+      auto convert = rewriter.create<ConvertLayoutOp>(
+          op.getLoc(), originalResultType, result);
+      setTleExplicitResultEncoding(convert, 0,
+                                   originalResultType.getEncoding());
+      result = convert.getResult();
+    }
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -1211,6 +1358,7 @@ public:
     auto resultType = dyn_cast<RankedTensorType>(convertedType);
     if (!resultType)
       return rewriter.notifyMatchFailure(op, "expected ranked tensor result");
+    resultType = resultType.cloneWithEncoding(op.getTargetEncoding());
 
     Value src = adaptor.getSrc();
     if (src.getType() == resultType) {
@@ -1251,6 +1399,8 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
       GenericOpPattern<tle::ExtractStridesOp>,
       GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
       typeConverter, context);
+  patterns.add<TleExplicitStorePattern, TleExplicitDotPattern>(
+      typeConverter, context, PatternBenefit(2));
 }
 #endif
 
@@ -1290,6 +1440,21 @@ public:
     populateCFPatterns(typeConverter, patterns);
 #ifdef __TLE__
     populateTleRawPatterns(typeConverter, patterns);
+    // Encoding hints can make an extract type-legal before its conversion
+    // pattern runs. Still normalize ordinary layout changes into an explicit
+    // convert_layout so set_layout remains a fixed layout boundary.
+    target.addDynamicallyLegalOp<tle::ExtractTileOp>(
+        [&](tle::ExtractTileOp op) {
+          if (!typeConverter.isLegal(op.getOperation()))
+            return false;
+          auto srcType = cast<RankedTensorType>(op.getSrc().getType());
+          auto dstType = cast<RankedTensorType>(op.getType());
+          if (srcType.getEncoding() == dstType.getEncoding())
+            return true;
+          auto warp = StringAttr::get(op.getContext(), "warp");
+          return toLinearLayout(srcType).getInDimSize(warp) !=
+                 toLinearLayout(dstType).getInDimSize(warp);
+        });
 #endif
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
 

@@ -51,4 +51,25 @@ def UpcastFpOpInterface : OpInterface<"UpcastFpOpInterface"> {
     ];
 }
 
+#define TRITON_GPU_WARP_SLICE_INTERFACE
+
+def WarpSliceOpInterface : OpInterface<"WarpSliceOpInterface"> {
+    let description = [{
+        A register view whose result is held by a contiguous subset of the
+        source's warps. The view preserves lane and CTA ownership. Its register
+        mapping and warp range are proven from the layouts and logical offsets,
+        independently of the operation that will dispatch those warps.
+    }];
+    let cppNamespace = "::mlir::triton::gpu";
+    let methods = [
+        InterfaceMethod<"Source of the register view", "mlir::Value",
+                        "getWarpSliceSource">,
+        InterfaceMethod<"Result of the register view", "mlir::Value",
+                        "getWarpSliceResult">,
+        InterfaceMethod<"Prove the warp range and per-thread register mapping",
+                        "std::optional<::mlir::triton::gpu::WarpSlice>",
+                        "getWarpSlice">
+    ];
+}
+
 #endif // TRITONGPU_OP_INTERFACES

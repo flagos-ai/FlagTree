@@ -35,6 +35,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/LogicalResult.h"
 
@@ -91,6 +92,16 @@ bool isConvertTrivial(ConvertLayoutOp op) {
       .succeeded();
 }
 
+// A conversion carrying set_layout's explicit constraint is a layout boundary,
+// including when surrounding operations could otherwise absorb it.
+bool canElideLayoutConversion(ConvertLayoutOp op) {
+#ifdef __TLE__
+  return !isTleExplicitConvertLayoutOp(op);
+#else
+  return true;
+#endif
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -106,7 +117,7 @@ struct CanonicalizeConvertFromTMEMStore
   matchAndRewrite(nvidia_gpu::TMEMStoreOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || !canElideLayoutConversion(convert))
       return failure();
 
     // bail for incompatible layouts
@@ -131,7 +142,7 @@ struct CanonicalizeConvertFromReshape
   matchAndRewrite(triton::ReshapeOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || !canElideLayoutConversion(convert))
       return failure();
     // If the layouts are structurally the same, the convert is trivial
     if (isConvertTrivial(convert)) {
@@ -175,7 +186,8 @@ struct CanonicalizeConvertFromTranspose
 
     // If the layouts are structurally the same, the convert is trivial
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert || !isConvertTrivial(convert))
+    if (!convert || !canElideLayoutConversion(convert) ||
+        !isConvertTrivial(convert))
       return failure();
 
     rewriter.replaceOpWithNewOp<triton::TransOp>(
@@ -194,7 +206,7 @@ struct CanonicalizeConvertFromHistogram
                   PatternRewriter &rewriter) const override {
     auto src = op.getSrc();
     auto convert = src.getDefiningOp<ConvertLayoutOp>();
-    if (!convert) {
+    if (!convert || !canElideLayoutConversion(convert)) {
       return failure();
     }
     src = convert.getSrc();
@@ -229,7 +241,7 @@ struct CanonicalizeConvertFromGatherSource : public OpRewritePattern<GatherOp> {
       return failure();
 
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || !canElideLayoutConversion(convert))
       return failure();
 
     rewriter.replaceOpWithNewOp<GatherOp>(op, convert.getSrc(), op.getIndices(),
@@ -249,7 +261,7 @@ struct CanonicalizeConvertFromAlloc
     if (!op.getSrc())
       return failure();
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || !canElideLayoutConversion(convert))
       return failure();
     rewriter.replaceOpWithNewOp<triton::gpu::LocalAllocOp>(
         op, op->getResult(0).getType(), convert.getSrc());
@@ -266,7 +278,7 @@ struct CanonicalizeConvertFromLocalStore
   matchAndRewrite(triton::gpu::LocalStoreOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || !canElideLayoutConversion(convert))
       return failure();
     rewriter.replaceOpWithNewOp<triton::gpu::LocalStoreOp>(op, convert.getSrc(),
                                                            op.getDst());
@@ -282,7 +294,7 @@ struct CanonicalizeConvertFromSplit
   matchAndRewrite(triton::SplitOp op,
                   PatternRewriter &rewriter) const override {
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || !canElideLayoutConversion(convert))
       return failure();
     auto srcEncoding = convert.getSrc().getType().getEncoding();
     // Multiple source layout can give the same output layout, if the source
@@ -303,11 +315,18 @@ struct CanonicalizeConvertFromConvert
   mlir::LogicalResult
   matchAndRewrite(ConvertLayoutOp op,
                   PatternRewriter &rewriter) const override {
+    if (!canElideLayoutConversion(op))
+      return failure();
+
     // Convert to the same layout is redundant.
     if (op->getResultTypes() == op->getOperandTypes()) {
       rewriter.replaceOp(op, op->getOperands());
       return success();
     }
+#ifdef __TLE__
+    if (getTleExplicitValueEncoding(op.getSrc()))
+      return failure();
+#endif
 
     // We don't handle conversions to DotOperandEncodingAttr.  This is a
     // heuristic to accommodate fused attention.
@@ -1148,6 +1167,20 @@ LogicalResult WarpSpecializeOp::verify() {
                                << " partitions but `partitionNumWarps` has "
                                << getPartitionNumWarps().size() << " elements";
   }
+  bool reusesDefaultWarps = getReuseDefaultWarps();
+  if (reusesDefaultWarps && getNumResults() != 0)
+    return emitOpError(
+        "in-place warp specialization cannot produce default-region results");
+  if (reusesDefaultWarps &&
+      (!llvm::hasSingleElement(getDefaultRegion()) ||
+       !llvm::hasSingleElement(getDefaultRegion().front()) ||
+       !isa<WarpYieldOp>(getDefaultRegion().front().front())))
+    return emitOpError(
+        "reuseDefaultWarps requires a default region containing only "
+        "ttg.warp_yield");
+  if (reusesDefaultWarps && getPartitionNumWarps().empty())
+    return emitOpError(
+        "in-place warp specialization requires at least one partition");
   for (auto [i, numWarps] : llvm::enumerate(getPartitionNumWarps())) {
     if (llvm::isPowerOf2_32(numWarps))
       continue;
@@ -1185,7 +1218,95 @@ LogicalResult WarpSpecializeOp::verify() {
   }
 
   std::optional<int> numWarps = maybeLookupNumWarps(*this);
-  if (numWarps && *numWarps % 4 != 0) {
+  if (reusesDefaultWarps && numWarps &&
+      (*numWarps <= 0 || !llvm::isPowerOf2_32(*numWarps))) {
+    return mlir::emitError(getLoc())
+           << "in-place warp partitions require enclosing num_warps to be a "
+              "positive power of 2, but got "
+           << *numWarps;
+  }
+  if (reusesDefaultWarps && numWarps) {
+    int64_t coveredWarps = 0;
+    for (int32_t partitionWarps : getPartitionNumWarps())
+      coveredWarps += partitionWarps;
+    if (coveredWarps != *numWarps)
+      return emitOpError("in-place partitions cover ")
+             << coveredWarps << " warps, expected " << *numWarps;
+
+    auto startIds = getWarpGroupStartIds();
+    llvm::SmallBitVector occupied(*numWarps);
+    auto warp = StringAttr::get(getContext(), "warp");
+    for (auto [partitionIdx, region] : llvm::enumerate(getPartitionRegions())) {
+      unsigned originalStart = getReusedWarpGroupStart(partitionIdx);
+      int64_t start = startIds ? (*startIds)[partitionIdx] : originalStart;
+      unsigned count = getPartitionNumWarps()[partitionIdx];
+      if (start < 0 || start + count > *numWarps)
+        return emitOpError("reuse partition #")
+               << partitionIdx << " physical warp range is outside the CTA";
+      for (unsigned wid = start; wid < start + count; ++wid) {
+        if (occupied[wid])
+          return emitOpError("reuse partition #")
+                 << partitionIdx << " overlaps another physical warp range";
+        occupied.set(wid);
+      }
+      if (startIds && start % 4 != 0) {
+        WalkResult result = region->walk([&](nvidia_gpu::WarpGroupDotOp dot) {
+          dot.emitOpError("requires a physical warp group start aligned to 4; ")
+              << "reuse partition #" << partitionIdx << " starts at " << start;
+          return WalkResult::interrupt();
+        });
+        if (result.wasInterrupted())
+          return failure();
+      }
+
+      for (auto [arg, capture] : llvm::zip_equal(region->front().getArguments(),
+                                                 getExplicitCaptures())) {
+        // Each region has the whole capture list. Unused arguments do not
+        // consume the tensor and therefore impose no ownership requirement.
+        if (arg.use_empty())
+          continue;
+        auto type = dyn_cast<RankedTensorType>(capture.getType());
+        if (!type || !type.getEncoding())
+          continue;
+        if (start != originalStart)
+          return emitOpError("reuse partition #")
+                 << partitionIdx << " with tensor captures must start at warp "
+                 << originalStart;
+        if (toLinearLayout(type).getInDimSize(warp) != count)
+          return emitOpError("reuse partition #")
+                 << partitionIdx << " capture layout must use " << count
+                 << " warps";
+        if (count == *numWarps)
+          continue;
+
+        // LLVM conversion lowers register views before converting the WS
+        // region signatures. Their checked register tuples are temporarily
+        // materialized back to tensor types until WS conversion consumes them.
+        if (!(*this)->getParentOfType<triton::FuncOp>() &&
+            capture.getDefiningOp<UnrealizedConversionCastOp>())
+          continue;
+
+        auto view =
+            dyn_cast_or_null<WarpSliceOpInterface>(capture.getDefiningOp());
+        auto slice = view && view.getWarpSliceResult() == capture
+                         ? view.getWarpSlice()
+                         : std::nullopt;
+        if (!slice)
+          return emitOpError("reuse partition #")
+                 << partitionIdx
+                 << " requires a proven register-local warp slice capture";
+        if (slice->startWarp != start || slice->numWarps != count)
+          return emitOpError(
+                     "warp slice ownership does not match reuse partition #")
+                 << partitionIdx << ": capture belongs to warps ["
+                 << slice->startWarp << ", "
+                 << slice->startWarp + slice->numWarps
+                 << "), partition executes warps [" << start << ", "
+                 << start + count << ")";
+      }
+    }
+  }
+  if (!reusesDefaultWarps && numWarps && *numWarps % 4 != 0) {
     return mlir::emitError(getLoc()) << "warp-specialized kernels requires "
                                         "num_warps to be a multiple of 4";
   }
@@ -1319,6 +1440,9 @@ ParseResult WarpSpecializeOp::parse(OpAsmParser &p, OperationState &result) {
   result.addTypes(types.getResults());
   result.addAttribute(getPartitionNumWarpsAttrName(result.name),
                       p.getBuilder().getDenseI32ArrayAttr(partitionNumWarps));
+  if (failed(verifyInherentAttrs(result.name, result.attributes,
+                                 [&]() { return p.emitError(operandLoc); })))
+    return failure();
 
   Block &holder = result.addRegion()->emplaceBlock();
   OpBuilder b(p.getContext());
@@ -1331,8 +1455,10 @@ void WarpSpecializeOp::print(OpAsmPrinter &p) {
   p << '(';
   p.printOperands(getOperands());
   p << ')';
-  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(),
-                                     {getPartitionNumWarpsAttrName()});
+  SmallVector<StringRef> elidedAttrs{getPartitionNumWarpsAttrName()};
+  if (!getReuseDefaultWarps())
+    elidedAttrs.push_back(getReuseDefaultWarpsAttrName());
+  p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elidedAttrs);
 
   p.printNewline();
   p << "default ";
@@ -1386,6 +1512,8 @@ static size_t getSharedMemorySize(Type type) {
 }
 
 std::pair<uint64_t, uint64_t> WarpSpecializeOp::getCaptureSizeAlign() {
+  if (getReuseDefaultWarps())
+    return {0, 8};
   uint64_t captureSize = 0;
   // Tightly pack the captures in memory.
   for (Type type : getOperandTypes()) {

@@ -26,6 +26,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/SmallBitVector.h"
 
 namespace mlir::triton::gpu {
 #define GEN_PASS_DEF_TRITONGPUALLOCATEWARPGROUPS
@@ -95,6 +96,8 @@ struct AllocateWarpGroups
     // First determine the maximum number of extra warps.
     int maxExtraWarps = 0;
     mod.walk([&](WarpSpecializeOp op) {
+      if (op.getReuseDefaultWarps())
+        return;
       maxExtraWarps = std::max<int>(maxExtraWarps, op.getTotalPartitionWarps());
     });
 
@@ -102,6 +105,8 @@ struct AllocateWarpGroups
     // `ttg.warp_specialize` to the nearest warpgroup.
     int numExtraWarpGroups = llvm::divideCeil(maxExtraWarps, 4);
     mod.walk([&](WarpSpecializeOp op) {
+      if (op.getReuseDefaultWarps())
+        return;
       padToMaxWarpGroups(op, numExtraWarpGroups);
     });
 
@@ -136,22 +141,86 @@ struct AllocateWarpGroups
     mod.walk([&](WarpSpecializeOp op) {
       ArrayRef<int32_t> arr = op.getPartitionNumWarps();
 
+      bool reuse = op.getReuseDefaultWarps();
+      SmallVector<int32_t> startIds(arr.size(), -1);
+      llvm::SmallBitVector occupied(baseNumWarps);
+      if (reuse) {
+        if (op.getTotalPartitionWarps() != baseNumWarps) {
+          op.emitError("in-place warp partitions cover ")
+              << op.getTotalPartitionWarps()
+              << " warps, but the enclosing CTA has " << baseNumWarps;
+          signalPassFailure();
+          return;
+        }
+        // Register captures already reside in their consuming physical warps.
+        // Pin those partitions; scalar/pointer-only partitions can use the
+        // same largest-first allocation as ordinary warp specialization.
+        for (auto [i, partition] : llvm::enumerate(op.getPartitionRegions())) {
+          bool hasTensorCapture =
+              llvm::any_of(partition->getArguments(), [](BlockArgument arg) {
+                return !arg.use_empty() && isa<RankedTensorType>(arg.getType());
+              });
+          if (!hasTensorCapture)
+            continue;
+          int start = op.getReusedWarpGroupStart(i);
+          startIds[i] = start;
+          occupied.set(start, start + arr[i]);
+        }
+      }
+
       // Allocate the start IDs such that the largest warpgroups have lower
       // starting warp IDs.
       // FIXME: Handle aligning warp group IDs to 4 for TMEM.
       SmallVector<std::pair<unsigned, int32_t>> idxAndSize;
       for (auto [i, size] : llvm::enumerate(arr))
         idxAndSize.emplace_back(i, size);
-      llvm::sort(idxAndSize,
-                 [&](auto lhs, auto rhs) { return lhs.second > rhs.second; });
+      auto largerFirst = [](auto lhs, auto rhs) {
+        return lhs.second > rhs.second;
+      };
+      if (reuse)
+        llvm::stable_sort(idxAndSize, largerFirst);
+      else
+        llvm::sort(idxAndSize, largerFirst);
 
-      SmallVector<int32_t> startIds(arr.size());
       int startId = baseNumWarps;
       for (auto [i, size] : idxAndSize) {
-        startIds[i] = startId;
-        startId += size;
+        if (!reuse) {
+          startIds[i] = startId;
+          startId += size;
+          continue;
+        }
+        if (startIds[i] >= 0)
+          continue;
+        // Prefer the same power-of-two alignment as ordinary WS. Pinned
+        // captures may leave only an unaligned interval; ordinary computation
+        // can use it, while the verifier rejects misaligned WGMMA groups.
+        for (int alignment : {size, 1}) {
+          for (int start = 0; start + size <= baseNumWarps;
+               start += alignment) {
+            bool available =
+                llvm::all_of(llvm::seq(start, start + size),
+                             [&](int warp) { return !occupied[warp]; });
+            if (!available)
+              continue;
+            startIds[i] = start;
+            occupied.set(start, start + size);
+            break;
+          }
+          if (startIds[i] >= 0)
+            break;
+        }
+        if (startIds[i] < 0) {
+          // Alignment can fragment the free intervals around pinned captures.
+          // Keep the original valid partitioning in that case; the verifier
+          // still rejects any WGMMA group that cannot meet its alignment.
+          for (unsigned j = 0; j < arr.size(); ++j)
+            startIds[j] = op.getReusedWarpGroupStart(j);
+          break;
+        }
       }
       op.setWarpGroupStartIds(startIds);
+      if (reuse)
+        return;
 
       // Require that an estimate has been set and that we have even warpgroups.
       auto regsAttr = op.getRequestedRegisters();

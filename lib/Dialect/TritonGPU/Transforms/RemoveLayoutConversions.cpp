@@ -458,9 +458,27 @@ bool isLayoutAnchor(Operation *op) {
 #ifdef __TLE__
   if (isa<triton::tle::ExtractTileOp, triton::tle::InsertTileOp>(op))
     return true;
-  if (isTleExplicitConvertLayoutOp(op))
+  // A no-op set_layout can leave its constraint on any producer, not just
+  // on a convert_layout. These result layouts remain fixed anchors.
+  if (llvm::any_of(op->getResults(), [](OpResult result) {
+        return bool(getTleExplicitValueEncoding(result));
+      }))
     return true;
 #endif
+  // A warp slice changes the execution domain without moving data. Preserve
+  // both layouts; propagating an equality across the view changes ownership.
+  if (auto view = dyn_cast<WarpSliceOpInterface>(op)) {
+    auto srcType =
+        dyn_cast<RankedTensorType>(view.getWarpSliceSource().getType());
+    auto dstType =
+        dyn_cast<RankedTensorType>(view.getWarpSliceResult().getType());
+    if (srcType && dstType && srcType.getEncoding() && dstType.getEncoding()) {
+      auto kWarp = StringAttr::get(op->getContext(), "warp");
+      if (toLinearLayout(srcType).getInDimSize(kWarp) !=
+          toLinearLayout(dstType).getInDimSize(kWarp))
+        return true;
+    }
+  }
   if (isa<DescriptorOpInterface>(op))
     return true;
   if (isa<LoadOp, StoreOp>(op))
@@ -521,11 +539,9 @@ void LayoutPropagation::initAnchorLayout() {
     if (isLayoutAnchor(op)) {
       for (auto result : op->getResults()) {
 #ifdef __TLE__
-        bool hard = isTleExplicitConvertLayoutOp(op);
         Attribute explicitEncoding =
-            hard ? getTleExplicitResultEncoding(op, result.getResultNumber())
-                 : nullptr;
-        addAnchor(result, explicitEncoding, hard);
+            getTleExplicitResultEncoding(op, result.getResultNumber());
+        addAnchor(result, explicitEncoding, bool(explicitEncoding));
 #else
         addAnchor(result);
 #endif
@@ -551,6 +567,11 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
         dstEncoding = inferDstEncoding(op, encoding);
       }
       if (dstEncoding) {
+#ifdef __TLE__
+        if (Attribute fixed = getTleExplicitValueEncoding(value);
+            fixed && fixed != dstEncoding)
+          continue;
+#endif
         auto &layoutInfo = layouts[value];
         hasChanged |= layoutInfo.encodings.insert(dstEncoding);
 #ifdef __TLE__
@@ -2653,6 +2674,21 @@ bool LayoutPropagation::isExtensionTouchedValue(Value value) const {
 
 void LayoutPropagation::resolveConflicts() {
   for (auto &it : layouts) {
+#ifdef __TLE__
+    // Explicit layout constraints take precedence over both baseline and
+    // enhanced cost heuristics. Propagated preferences cannot retag an anchor.
+    if (Attribute fixed = getTleExplicitValueEncoding(it.first)) {
+      it.second.encodings.clear();
+      it.second.encodings.insert(fixed);
+      continue;
+    }
+    if (!it.second.hardEncodings.empty()) {
+      Attribute encoding = *it.second.hardEncodings.begin();
+      it.second.encodings.clear();
+      it.second.encodings.insert(encoding);
+      continue;
+    }
+#endif
 #ifdef __FLAGTREE_RLC_ENHANCE__
     Value value = it.first;
     Operation *defOp = value.getDefiningOp();
@@ -2729,21 +2765,11 @@ void LayoutPropagation::resolveConflicts() {
     }
     info.encodings.clear();
     info.encodings.insert(bestEncoding);
-#else // __FLAGTREE_RLC_ENHANCE__
+#else  // __FLAGTREE_RLC_ENHANCE__
     Operation *op = it.first.getDefiningOp();
     LayoutInfo &info = it.second;
     if (info.encodings.size() <= 1)
       continue;
-#ifdef __TLE__
-    if (!info.hardEncodings.empty()) {
-      Attribute encoding = *info.hardEncodings.begin();
-      info.encodings.clear();
-      info.encodings.insert(encoding);
-      info.hardEncodings.clear();
-      info.hardEncodings.insert(encoding);
-      continue;
-    }
-#endif
     // Hacky resolve, prefer block encoding.
     // TODO: add a proper heuristic.
     Attribute encoding = *info.encodings.begin();

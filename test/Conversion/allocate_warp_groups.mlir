@@ -6,6 +6,57 @@ module attributes {"ttg.num-warps" = 4 : i32} {
 
 // -----
 
+// Reused partitions cover the enclosing CTA and must not allocate extra warps.
+// CHECK: module attributes {"ttg.num-warps" = 4 : i32, "ttg.total-num-warps" = 4 : i32}
+module attributes {"ttg.num-warps" = 4 : i32} {
+tt.func @reuse_default_warps() {
+  // CHECK: ttg.warp_specialize() attributes {reuseDefaultWarps = true, warpGroupStartIds = array<i32: 0, 1, 2, 3>}
+  ttg.warp_specialize() attributes {reuseDefaultWarps = true}
+  default { ttg.warp_yield }
+  partition0() num_warps(1) { ttg.warp_return }
+  partition1() num_warps(1) { ttg.warp_return }
+  partition2() num_warps(1) { ttg.warp_return }
+  partition3() num_warps(1) { ttg.warp_return }
+  : () -> ()
+  tt.return
+}
+}
+
+// -----
+
+// Reuse the largest-first assignment without allocating extra worker warps.
+// CHECK: module attributes {"ttg.num-warps" = 8 : i32, "ttg.total-num-warps" = 8 : i32}
+module attributes {"ttg.num-warps" = 8 : i32} {
+tt.func @reuse_aligned_groups() {
+  // CHECK: ttg.warp_specialize() attributes {reuseDefaultWarps = true, warpGroupStartIds = array<i32: 4, 0, 6>}
+  ttg.warp_specialize() attributes {reuseDefaultWarps = true}
+  default { ttg.warp_yield }
+  partition0() num_warps(2) { ttg.warp_return }
+  partition1() num_warps(4) { ttg.warp_return }
+  partition2() num_warps(2) { ttg.warp_return }
+  : () -> ()
+  tt.return
+}
+}
+
+// -----
+
+// An explicitly disabled mode still allocates extra worker warps.
+// CHECK: module attributes {"ttg.num-warps" = 4 : i32, "ttg.total-num-warps" = 8 : i32}
+module attributes {"ttg.num-warps" = 4 : i32} {
+tt.func @reuse_default_warps_disabled() {
+  // CHECK: ttg.warp_specialize() attributes {warpGroupStartIds = array<i32: 4, 6>}
+  ttg.warp_specialize() attributes {reuseDefaultWarps = false}
+  default { ttg.warp_yield }
+  partition0() num_warps(2) { ttg.warp_return }
+  partition1() num_warps(2) { ttg.warp_return }
+  : () -> ()
+  tt.return
+}
+}
+
+// -----
+
 // CHECK: module attributes {"ttg.num-warps" = 4 : i32, "ttg.total-num-warps" = 20 : i32}
 module attributes {"ttg.num-warps" = 4 : i32} {
 
