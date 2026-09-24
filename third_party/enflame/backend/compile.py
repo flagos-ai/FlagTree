@@ -214,5 +214,8 @@ if __name__ == "__main__":
         assert h in [1, 16], f"Only 1 and 16 are valid hints, got {h}"
     attrs = {k: [["tt.divisibility", 16]] for k, v in hints.items() if v == 16}
     src = triton.compiler.ASTSource(fn=kernel, constexprs=constants, signature=signature, attrs=attrs)
-    opts = {"num_warps": args.num_warps, "num_stages": args.num_stages, "enable_i64": False}
+    # enable_i64 is deliberately left out: parse_options derives it from
+    # ENABLE_I64_CHECK, which --enable-i64-check sets above. Passing it here
+    # would pin it to False and override that flag.
+    opts = {"num_warps": args.num_warps, "num_stages": args.num_stages}
     ccinfo = triton.compile(src, options=opts)
