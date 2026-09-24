@@ -40,6 +40,19 @@ override_dh_auto_install:
 	# Strip *.dist-info/RECORD entries that reference removed bin/ paths,
 	# otherwise dh_python3 warns. Easiest: drop RECORD; pip doesn't need it.
 	rm -f $(PYDIR)/flagtree-*.dist-info/RECORD
+	# triton computes its compile-cache key by hashing _C/libtriton.so
+	# (python/triton/runtime/cache.py, triton_key). The wheel built for the
+	# deb line names the module libtriton.cpython-3XY-<arch>.so, so every
+	# kernel compile fails with FileNotFoundError on the installed package.
+	# Normalise to the name upstream wheels ship (the import system accepts
+	# both).
+	@c="$(PYDIR)/triton/_C"; \
+	if [ ! -e "$$c/libtriton.so" ]; then \
+		suffixed="$$(ls -1 "$$c"/libtriton.cpython-*.so 2>/dev/null | head -1)"; \
+		test -n "$$suffixed"; \
+		mv "$$suffixed" "$$c/libtriton.so"; \
+	fi; \
+	test -f "$$c/libtriton.so"
 
 # The wheel is CPython-minor specific (cpXY tag); depend on exactly that
 # interpreter package (python3.12 exists on 22.04 via deadsnakes and on 24.04
