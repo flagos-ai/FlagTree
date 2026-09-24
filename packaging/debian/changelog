@@ -1,3 +1,11 @@
+flagtree (0.6.1-2) unstable; urgency=medium
+
+  * Name the triton module _C/libtriton.so after unpacking the wheel; the
+    compile-cache key hashes that file, so kernel compiles failed on the
+    installed package.
+
+ -- FlagOS Contributors <contact@flagos.io>  Thu, 24 Sep 2026 12:00:00 +0900
+
 flagtree (0.6.1-1) unstable; urgency=medium
 
   * New upstream release 0.6.1.

@@ -30,7 +30,7 @@
 
 Name:           python3-flagtree-%{flagtree_backend}
 Version:        0.6.1
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        FlagTree compiler with %{flagtree_backend} backend
 License:        MIT AND Apache-2.0 WITH LLVM-exception AND BSD-3-Clause AND LicenseRef-NVIDIA-CUDA-EULA
 URL:            https://github.com/flagos-ai/FlagTree
@@ -153,6 +153,9 @@ install -D -m 0644 %{SOURCE0} %{buildroot}%{_licensedir}/%{name}/LICENSE
 %{_bindir}/proton*
 
 %changelog
+* Thu Sep 24 2026 FlagOS Contributors <contact@flagos.io> - 0.6.1-2
+- Guarantee triton/_C/libtriton.so exists after unpacking the wheel (compile-cache key hashes it)
+
 * Wed Jul 15 2026 FlagOS Contributors <contact@flagos.io> - 0.6.0-1
 - Sync package version with the flagtree wheel (0.6.0).
 - Fail the install step when the wheel version does not match the spec.
