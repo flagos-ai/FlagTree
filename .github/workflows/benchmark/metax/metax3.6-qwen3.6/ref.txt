@@ -1,6 +1,7 @@
 harbor.baai.ac.cn/flagrelease-public/metax-vllm-0.24.0-pluginfl-tree3.6:xingchen4-0907
 Driver Version: 3.8.1
 vllm==0.24.0+empty
+flaggems-vllm==0.1.0
 torch==2.8.0+metax3.7.0.7
 
 [2026/09/11] vllm-plugin-fl==0.3.0rc2.post1 (2026/09/11), flag_gems==5.3.4 (2026/08/10), flagtree===0.7.0rc2+metax3.6 (2026/09/17)
