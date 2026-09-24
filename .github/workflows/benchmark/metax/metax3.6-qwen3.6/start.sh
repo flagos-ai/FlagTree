@@ -48,11 +48,7 @@ start=$(date +%s)
 
 export VLLM_PLUGINS=fl
 export VLLM_CONFIGURE_LOGGING=1
-
 export GEMS_VENDOR=metax
-export FLAGTREE_AABS=0
-export USE_FLAGTUNE=0
-export VLLM_FL_FLAGOS_BLACKLIST=masked_fill,masked_fill_
 
 nohup vllm serve ./Qwen3.6-27B/  \
     --tensor-parallel-size 2 \

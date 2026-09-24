@@ -1,32 +1,33 @@
-harbor.baai.ac.cn/flagrelease-public/metax-vllm-0.24.0-pluginfl-tree3.6:xingchen4-0907
-Driver Version: 3.8.1
+C550 * 2
+harbor.baai.ac.cn/flagtree/flagtree-metax-py312-torch2.8.0-metax3.7.0.7-ubuntu22.04:202609-3.6-vllm0.24.0
+Kernel Mode Driver Version: 3.8.1
+MACA Version: 3.7.0.38
 vllm==0.24.0+empty
-flaggems-vllm==0.1.0
 torch==2.8.0+metax3.7.0.7
 
-[2026/09/11] vllm-plugin-fl==0.3.0rc2.post1 (2026/09/11), flag_gems==5.3.4 (2026/08/10), flagtree===0.7.0rc2+metax3.6 (2026/09/17)
-# 服务冷启动时间: 13分31秒, 服务热启动时间: 3分30秒
+[2026/09/24] vllm-plugin-fl==0.3.0rc2.post3 (2026/09/22), flag_gems==5.3.4 (2026/08/10), flaggems_vllm==0.1.0 (2026/07/24), flagtree===0.7.0rc2+metax3.6 (2026/09/17)
+# 服务冷启动时间: 13分31秒, 服务热启动时间: 3分40秒
 # 输入长度: 1024, 输出长度: 1024, 并发数: 4
-  Output token throughput (tok/s): 56.16
-  Total token throughput (tok/s): 112.33
-  Median TTFT (ms): 2510.61
-  Median TPOT (ms): 68.80
-  Median ITL (ms): 68.34
+  Output token throughput (tok/s): 56.10
+  Total token throughput (tok/s): 112.20
+  Median TTFT (ms): 2497.38
+  Median TPOT (ms): 68.90
+  Median ITL (ms): 68.46
 # 输入长度: 512, 输出长度: 512, 并发数: 4
-  Output token throughput (tok/s): 55.84
-  Total token throughput (tok/s): 111.67
-  Median TTFT (ms): 1402.02
-  Median TPOT (ms): 68.97
-  Median ITL (ms): 68.23
+  Output token throughput (tok/s): 55.50
+  Total token throughput (tok/s): 110.99
+  Median TTFT (ms): 1398.94
+  Median TPOT (ms): 69.42
+  Median ITL (ms): 68.62
 # 输入长度: 256, 输出长度: 256, 并发数: 4
-  Output token throughput (tok/s): 54.94
-  Total token throughput (tok/s): 109.89
-  Median TTFT (ms): 946.39
-  Median TPOT (ms): 69.22
-  Median ITL (ms): 68.14
+  Output token throughput (tok/s): 54.57
+  Total token throughput (tok/s): 109.14
+  Median TTFT (ms): 993.18
+  Median TPOT (ms): 69.56
+  Median ITL (ms): 68.57
 # 输入长度: 128, 输出长度: 128, 并发数: 4
-  Output token throughput (tok/s): 51.34
-  Total token throughput (tok/s): 102.69
-  Median TTFT (ms): 1151.67
-  Median TPOT (ms): 69.80
-  Median ITL (ms): 68.60
+  Output token throughput (tok/s): 52.97
+  Total token throughput (tok/s): 105.94
+  Median TTFT (ms): 829.31
+  Median TPOT (ms): 69.44
+  Median ITL (ms): 68.79
