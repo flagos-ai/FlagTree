@@ -18,7 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-name: CD-Metax3.6
+name: CD-Enflame3.6-GCU300
 
 permissions:
   contents: write
@@ -44,7 +44,7 @@ on:
         default: '3.6'
       BACKEND:
         required: true
-        default: 'metax'
+        default: 'enflame'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -72,7 +72,7 @@ on:
       BACKEND:
         type: string
         required: true
-        default: 'metax'
+        default: 'enflame'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -83,7 +83,7 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: metax3.6-cd
+    runs-on: "enflame3.6-gcu300-cd"
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
