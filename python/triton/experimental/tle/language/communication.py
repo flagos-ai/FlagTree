@@ -103,7 +103,6 @@ def compile_flagcx_allocator():
         lib_path = os.path.join(out_dir, f"{lib_name}.so")
 
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-
         if local_rank == 0 and not os.path.isfile(lib_path):
             print(
                 f"[INFO] FlagCX allocator not found, compiling: {lib_path}",

@@ -32,6 +32,7 @@ from . import utils
 import importlib.util
 import importlib.metadata
 from typing import List, Tuple
+from importlib.machinery import PathFinder
 from setuptools import find_packages
 from .utils.tools import flagtree_configs as configs
 
@@ -870,8 +871,11 @@ download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro
 relocate_flagcx = get_hook_instance("relocate_flagcx")
 if relocate_flagcx:
     relocate_flagcx()
-download_flagtree_third_party("flagcx", condition=(flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS,
-                              hook="handle_flagcx", required=True)
+
+flagcx_wheel = PathFinder.find_spec("flagcx", sys.path)
+download_flagtree_third_party("flagcx", condition=not flagcx_wheel
+                              and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS, hook="handle_flagcx",
+                              required=True)
 
 download_flagtree_third_party("cuda-tile", condition=(flagtree_backend == "tileir"), required=True)
 
