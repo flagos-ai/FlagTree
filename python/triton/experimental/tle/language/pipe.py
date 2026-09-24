@@ -21,14 +21,12 @@ def _pipe_backend(ready_sync, free_sync):
 
 @builtin
 def pipe(*, capacity, scope="cta", name=None, ready_sync=None, free_sync=None, event_base=None, _semantic=None,
-          _generator=None, **fields):
+         _generator=None, **fields):
     if ready_sync is None or free_sync is None:
         raise ValueError("ready_sync and free_sync must be provided")
     backend = _pipe_backend(ready_sync, free_sync)
     if backend == "ascend":
-        return ascend_pipe.pipe(capacity=capacity, scope=scope, name=name,
-                                ready_sync=_unwrap_if_constexpr(ready_sync),
-                                free_sync=_unwrap_if_constexpr(free_sync),
-                                event_base=event_base, _semantic=_semantic,
+        return ascend_pipe.pipe(capacity=capacity, scope=scope, name=name, ready_sync=_unwrap_if_constexpr(ready_sync),
+                                free_sync=_unwrap_if_constexpr(free_sync), event_base=event_base, _semantic=_semantic,
                                 _generator=_generator, **fields)
     raise ValueError(f"unsupported pipe backend: {backend!r}")

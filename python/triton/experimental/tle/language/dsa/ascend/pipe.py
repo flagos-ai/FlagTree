@@ -96,8 +96,7 @@ class PipeEndpoint:
             raise ValueError("acquire is only valid on a pipe writer")
         event_id = self._event_id(iteration, _semantic)
         sync = self.pipe.free_sync
-        sync_block_wait(sync.sender, sync.receiver, event_id, sync.sender_pipe, sync.receiver_pipe,
-                        _semantic=_semantic)
+        sync_block_wait(sync.sender, sync.receiver, event_id, sync.sender_pipe, sync.receiver_pipe, _semantic=_semantic)
         return self._slot(iteration, _semantic)
 
     @builtin
@@ -106,8 +105,7 @@ class PipeEndpoint:
             raise ValueError("commit is only valid on a pipe writer")
         event_id = self._event_id(iteration, _semantic)
         sync = self.pipe.ready_sync
-        sync_block_set(sync.sender, sync.receiver, event_id, sync.sender_pipe, sync.receiver_pipe,
-                       _semantic=_semantic)
+        sync_block_set(sync.sender, sync.receiver, event_id, sync.sender_pipe, sync.receiver_pipe, _semantic=_semantic)
 
     @builtin
     def wait(self, iteration, _semantic=None, _generator=None):
@@ -115,8 +113,7 @@ class PipeEndpoint:
             raise ValueError("wait is only valid on a pipe reader")
         event_id = self._event_id(iteration, _semantic)
         sync = self.pipe.ready_sync
-        sync_block_wait(sync.sender, sync.receiver, event_id, sync.sender_pipe, sync.receiver_pipe,
-                        _semantic=_semantic)
+        sync_block_wait(sync.sender, sync.receiver, event_id, sync.sender_pipe, sync.receiver_pipe, _semantic=_semantic)
         return PipeWaitResult(self._slot(iteration, _semantic))
 
     @builtin
@@ -125,8 +122,7 @@ class PipeEndpoint:
             raise ValueError("release is only valid on a pipe reader")
         event_id = self._event_id(iteration, _semantic)
         sync = self.pipe.free_sync
-        sync_block_set(sync.sender, sync.receiver, event_id, sync.sender_pipe, sync.receiver_pipe,
-                       _semantic=_semantic)
+        sync_block_set(sync.sender, sync.receiver, event_id, sync.sender_pipe, sync.receiver_pipe, _semantic=_semantic)
 
 
 class Pipe:
@@ -171,7 +167,7 @@ class Pipe:
 
 
 def pipe(*, capacity, scope="cta", name=None, ready_sync=None, free_sync=None, event_base=None, _semantic=None,
-          _generator=None, **fields):
+         _generator=None, **fields):
     result = Pipe(capacity, scope, name, ready_sync, free_sync, event_base, fields)
     result.init(_semantic=_semantic, _generator=_generator)
     return result
