@@ -275,10 +275,17 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 
     # On HIP, fp8e4nv upcasting to fp32 is only supported on CDNA4, and
     # fp8e4nv upcasting to bf16 and fp16 is only supported on CDNA3 and CDNA4.
-    if is_cuda() or is_ppu():
+    if is_cuda():
         if ((src_dtype == 'float8e4nv' and torch.cuda.get_device_capability(0) < (8, 9))
             or src_dtype in ('float8e4b8', 'float8e5b16')):
             # If the dtype should error out in the given device, we assert that and return
+            with pytest.raises(triton.CompilationError, match="not supported in this architecture"):
+                launch_exhaustive_populate(getattr(tl, src_dtype), 0, 65536, False, 8, 0x7f, device=device)
+            return
+    elif is_ppu():
+        # fp8e4nv casts are software-lowered from cap80; fp8e4b8 / fp8e5b16 are AMD-only formats
+        if ((src_dtype == 'float8e4nv' and torch.cuda.get_device_capability(0) < (8, 0))
+            or src_dtype in ('float8e4b8', 'float8e5b16')):
             with pytest.raises(triton.CompilationError, match="not supported in this architecture"):
                 launch_exhaustive_populate(getattr(tl, src_dtype), 0, 65536, False, 8, 0x7f, device=device)
             return
@@ -332,12 +339,26 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 ])
 def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
 
-    if is_cuda() or is_ppu():
+    if is_cuda():
         if src_dtype != 'float32' and torch.cuda.get_device_capability(0) < (9, 0):
             pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
 
         if dst_dtype in ('float8e5', 'float8e4nv') and rounding == 'rtne' and torch.cuda.get_device_capability(0) < (9, 0):
             pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on NVGPU with compute capability 9.0+")
+
+        if dst_dtype in ('float8e5b16', 'float8e4b8') and rounding == 'rtne':
+            pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on AMDGPU CDNA3")
+
+    elif is_ppu():
+        cc = torch.cuda.get_device_capability(0)
+        if src_dtype != 'float32' and cc < (9, 0):
+            pytest.skip("non-float32 downcast tests only supported with compute capability 9.0+")
+
+        # cap80-88: the software fp8e4nv downcast rounds once from f32 with strict RTNE and is
+        # tested here; cap89+ native cvt may double-round via f16, so it stays skipped there
+        sw_e4nv_rtne = dst_dtype == 'float8e4nv' and (8, 0) <= cc < (8, 9)
+        if dst_dtype in ('float8e5', 'float8e4nv') and rounding == 'rtne' and cc < (9, 0) and not sw_e4nv_rtne:
+            pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported with compute capability 9.0+")
 
         if dst_dtype in ('float8e5b16', 'float8e4b8') and rounding == 'rtne':
             pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on AMDGPU CDNA3")
@@ -366,12 +387,22 @@ def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
 @pytest.mark.parametrize("dst_dtype", ["float8e4nv", "float8e5"])
 @pytest.mark.parametrize("src_dtype", ["float32", "float16", "bfloat16"])
 def test_typeconvert_downcast_clamping(src_dtype, dst_dtype, mode, device, rounding="rtne"):
-    if is_cuda() or is_ppu():
+    if is_cuda():
         if src_dtype != 'float32' and torch.cuda.get_device_capability(0) < (9, 0):
             pytest.skip("non-float32 downcast tests only supported on NVGPU with compute capability 9.0+")
 
         if dst_dtype in ('float8e5', 'float8e4nv') and rounding == 'rtne' and torch.cuda.get_device_capability(0) < (9, 0):
             pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on NVGPU with compute capability 9.0+")
+
+    elif is_ppu():
+        cc = torch.cuda.get_device_capability(0)
+        if src_dtype != 'float32' and cc < (9, 0):
+            pytest.skip("non-float32 downcast tests only supported with compute capability 9.0+")
+
+        # cap80-88: the software fp8e4nv downcast is satfinite with strict RTNE and is tested here
+        sw_e4nv_rtne = dst_dtype == 'float8e4nv' and (8, 0) <= cc < (8, 9)
+        if dst_dtype in ('float8e5', 'float8e4nv') and rounding == 'rtne' and cc < (9, 0) and not sw_e4nv_rtne:
+            pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported with compute capability 9.0+")
 
     converter = {
         tl.float8e4nv: torch.float8_e4m3fn,
@@ -420,3 +451,69 @@ def test_typeconvert_downcast_clamping(src_dtype, dst_dtype, mode, device, round
         assert(torch.all(torch.isnan(dst)))
     else:
         torch.testing.assert_close(dst, torch.full_like(dst, expected_result))
+
+
+# ----- PPU cap80-88 software fp8e4nv cast: fp64 sources -----
+# The software path narrows an fp64 source to fp32 with round-to-odd before the
+# single fp8 rounding; narrowing with RTNE first would decide fp8 ties on
+# already-rounded bits.
+
+def _skip_unless_ppu_software_e4nv():
+    if not is_ppu():
+        pytest.skip("software fp8e4nv cast is PPU-only")
+    if not triton.knobs.language.low_precision_float:
+        pytest.skip("FLAGTREE_LOW_PRECISION_FLOAT=0 does not declare the software fp8e4nv cast")
+    if not ((8, 0) <= torch.cuda.get_device_capability(0) < (8, 9)):
+        pytest.skip("fp8e4nv casts are lowered in software on PPU cap80-88 only")
+
+
+def _fp64_to_e4nv_triton(values, rounding, device, BLOCK_SIZE=1024):
+    # the kernel has no mask: pad the input to a whole number of blocks
+    n = -(-len(values) // BLOCK_SIZE) * BLOCK_SIZE
+    src = torch.zeros(n, dtype=torch.float64, device=device)
+    src[:len(values)] = torch.from_numpy(np.ascontiguousarray(values, dtype=np.float64))
+    dst = launch_type_convert_triton(src, tl.float64, tl.float8e4nv, device=device, rounding=rounding, BLOCK_SIZE=BLOCK_SIZE)
+    return dst.view(torch.uint8)[:len(values)].cpu().numpy()
+
+
+@pytest.mark.parametrize("rounding, value, expected", [
+    # just above the 1.0 / 1.125 tie: RTNE must round up, not to the even neighbour
+    ('rtne', 1.0625 + 2**-30, 0x39),
+    # just below 1.125: RTZ must truncate to 1.0
+    ('rtz', 1.125 - 2**-30, 0x38),
+])
+def test_typeconvert_downcast_fp64_e4nv_tie(rounding, value, expected, device):
+    _skip_unless_ppu_software_e4nv()
+    actual = int(_fp64_to_e4nv_triton(np.array([value]), rounding, device)[0])
+    assert actual == expected, f"{rounding}: actual=0x{actual:02x}, expected=0x{expected:02x}"
+
+
+@pytest.mark.parametrize("rounding", ['rtne', 'rtz'])
+def test_typeconvert_downcast_fp64_e4nv(rounding, device):
+    _skip_unless_ppu_software_e4nv()
+    from triton._C.libtriton import ir
+    from triton.runtime.interpreter import _decode_float_to_fp64, _encode_fp64_to_float
+
+    # every finite fp8e4nv magnitude, the midpoints between neighbours, the
+    # saturation and underflow thresholds, and the closest fp64 values on both
+    # sides of each of them (the tightest possible tie-breakers)
+    codes = _decode_float_to_fp64(np.arange(256, dtype=np.uint8), tl.float8e4nv)
+    reps = np.unique(np.abs(codes[np.isfinite(codes)]))
+    mids = (reps[:-1] + reps[1:]) / 2
+    anchors = np.concatenate([reps, mids, [448.0, 464.0, 480.0, 512.0, 2.0**-10, 2.0**-11]])
+    probes = np.concatenate([anchors, np.nextafter(anchors, np.inf), np.nextafter(anchors, -np.inf),
+                             anchors * (1 + 2.0**-30), anchors * (1 - 2.0**-30)])
+    specials = np.array([0.0, 2.0**-126, 2.0**-127, 2.0**-1000, 5e-324, 1e308, np.inf, np.nan])
+    rng = np.random.default_rng(0)
+    random_uniform = rng.uniform(-600.0, 600.0, 1 << 14)
+    random_log = rng.uniform(-1.0, 1.0, 1 << 14) * 2.0**rng.uniform(-14.0, 10.0, 1 << 14)
+    values = np.concatenate([probes, -probes, specials, -specials, random_uniform, random_log])
+
+    # the interpreter routine is the exact fp64 -> fp8 reference (single rounding)
+    rounding_mode = ir.ROUNDING_MODE.RTZ if rounding == 'rtz' else ir.ROUNDING_MODE.RTNE
+    expected = _encode_fp64_to_float(values, tl.float8e4nv, rounding_mode)
+    actual = _fp64_to_e4nv_triton(values, rounding, device)
+
+    mismatch = np.nonzero(actual != expected)[0]
+    assert mismatch.size == 0, (f"{mismatch.size} mismatches, first at x={values[mismatch[0]]!r}: "
+                                f"actual=0x{actual[mismatch[0]]:02x}, expected=0x{expected[mismatch[0]]:02x}")
