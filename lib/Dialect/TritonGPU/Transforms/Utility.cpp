@@ -1043,6 +1043,11 @@ LogicalResult getConvertBackwardSlice(
     queue.pop_back();
     if (!isa<RankedTensorType>(currentValue.getType()))
       continue;
+#ifdef __TLE__
+    if (Attribute fixed = getTleExplicitValueEncoding(currentValue);
+        fixed && fixed != encoding)
+      return failure();
+#endif
     // Skip propagating through for op/while op results for now.
     // TODO: enable this based on needs.
     if (currentValue.getDefiningOp<scf::ForOp>() ||

@@ -28,6 +28,47 @@
 
 #include "mlir/IR/OpDefinition.h"
 #include "triton/Dialect/TritonGPU/IR/CTAEncodingAttr.h"
+#include <optional>
+
+// TLE is also built with older backend IR overlays. They keep their existing
+// extraction behavior until they provide this interface and its layout proof.
+#define TRITON_GPU_WARP_SLICE_INTERFACE
+
+namespace mlir::triton::gpu {
+// A per-thread register view held by one consecutive, aligned range of warps.
+// registers[i] is the root-source register containing destination register i;
+// lane and block IDs are unchanged, and the destination warp ID is relative
+// to startWarp. No communication between threads is needed to create the
+// view. For a nested view, localRegisters keeps the mapping relative to the
+// immediate source value so LLVM lowering can consume the already-packed
+// parent result without reinterpreting it as the root register tuple.
+struct WarpSlice {
+  unsigned startWarp;
+  unsigned numWarps;
+  SmallVector<unsigned> registers;
+  SmallVector<unsigned> localRegisters;
+};
+
+// Infer a register-only view of the rectangular tile at offsets in src.
+// Shapes must be powers of two and offsets must be aligned to dst's shape.
+// Returns nullopt if the layouts require communication, do not select a unique
+// consecutive warp range, or cannot be represented by one per-thread register
+// mapping. In particular, this does not select an arbitrary owner when the
+// source replicates the tile across multiple possible warp ranges.
+std::optional<WarpSlice> inferWarpSlice(RankedTensorType src,
+                                        RankedTensorType dst,
+                                        ArrayRef<int64_t> offsets);
+
+// Compose a child view mapping with the mapping of its immediate source.
+// `child.registers` are indexed in the parent's result register tuple, while
+// the returned `registers` are expressed in the original root source
+// registers and `localRegisters` retains the child mapping. The physical warp
+// ranges must be nested; otherwise the two views cannot be represented as one
+// register-local slice.
+std::optional<WarpSlice> composeWarpSlices(const WarpSlice &parent,
+                                           const WarpSlice &child);
+
+} // namespace mlir::triton::gpu
 
 // clang-format off
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"

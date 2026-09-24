@@ -566,8 +566,25 @@ def TTG_WarpSpecializeOp : TTG_Op<"warp_specialize", [
     must be isolated because these regions represent different layout domains,
     as the number of warps is different.
 
-    Semantically, execution of each region starts simultaneously for each warp
+    By default, execution of each region starts simultaneously for each warp
     group, and all warp groups are joined at the end of the op.
+
+    When `reuseDefaultWarps` is true, the partitions divide the enclosing warp
+    group instead of using additional worker warps. Their warp counts must sum
+    to the enclosing number of warps. Each partition occupies a consecutive
+    physical warp range. Tensor captures pin their partitions to region-order
+    ranges; the remaining partitions use the ordinary largest-first allocation
+    within the enclosing warps. This aligns warp groups without moving captures.
+
+    In this mode the default region contains only `ttg.warp_yield`, and the op
+    has no results. Captures retain each thread's existing values; no capture
+    transfer is performed. Regions without shared-memory allocations or
+    multi-warp barriers need no implicit synchronization. Otherwise, the
+    enclosing warps synchronize before and after the partitions so temporary
+    storage and named barrier IDs can be safely reused across the operation.
+    Distributed captures must match the data already held by their consuming
+    warps. Explicit synchronization inside a partition remains supported.
+    This mode currently has an implementation in the NVIDIA backend.
 
     Example:
 
@@ -593,7 +610,8 @@ def TTG_WarpSpecializeOp : TTG_Op<"warp_specialize", [
     DenseI32ArrayAttr:$partitionNumWarps,
     OptionalAttr<DenseI32ArrayAttr>:$warpGroupStartIds,
     OptionalAttr<DenseI32ArrayAttr>:$requestedRegisters,
-    OptionalAttr<DenseI32ArrayAttr>:$actualRegisters
+    OptionalAttr<DenseI32ArrayAttr>:$actualRegisters,
+    DefaultValuedAttr<BoolAttr, "false">:$reuseDefaultWarps
   );
   let results = (outs Variadic<AnyType>:$defaultPassthrough);
 
@@ -605,9 +623,21 @@ def TTG_WarpSpecializeOp : TTG_Op<"warp_specialize", [
   let extraClassDeclaration = [{
     RegionRange getPartitionRegions();
 
+    // Tensor captures pin a reuse partition to this region-order range.
+    // Other partitions may be reassigned by allocate-warp-groups.
+    unsigned getReusedWarpGroupStart(unsigned partition) {
+      assert(getReuseDefaultWarps() && "expected reuse-default specialization");
+      auto sizes = getPartitionNumWarps();
+      assert(partition < sizes.size());
+      unsigned start = 0;
+      for (int32_t size : sizes.take_front(partition))
+        start += size;
+      return start;
+    }
+
     // Get the size and alignment of the capture list.
     std::pair<uint64_t, uint64_t> getCaptureSizeAlign();
-    // Get the total number of extra warps required.
+    // Get the total number of warps in the non-default partitions.
     unsigned getTotalPartitionWarps();
   }];
 

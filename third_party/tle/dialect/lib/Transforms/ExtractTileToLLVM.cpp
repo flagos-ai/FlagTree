@@ -404,11 +404,46 @@ struct ExtractTileOpConversion : public ConvertOpToLLVMPattern<ExtractTileOp> {
       return op.emitError("extract_tile operands must be ranked tensors");
     if (!srcTy.getEncoding() || !dstTy.getEncoding())
       return op.emitError("extract_tile requires tensors with encoding");
+#ifdef TRITON_GPU_WARP_SLICE_INTERFACE
+    auto warp = StringAttr::get(op.getContext(), "warp");
+    bool differentWarps = ttg::toLinearLayout(srcTy).getInDimSize(warp) !=
+                          ttg::toLinearLayout(dstTy).getInDimSize(warp);
+    bool nestedViewSource =
+        dyn_cast_or_null<ttg::WarpSliceOpInterface>(op.getSrc().getDefiningOp())
+            .operator bool();
+    // A cross-warp extract is the owner-view fast path. A nested view with
+    // the same reduced warp count also needs its local mapping, while an
+    // ordinary same-warp extract keeps the original CTA-alignment and SMEM
+    // decisions below.
+    if (differentWarps || nestedViewSource) {
+      auto slice = op.getWarpSlice();
+      if (slice) {
+        auto srcValues =
+            unpackLLElements(op.getLoc(), adaptor.getSrc(), rewriter);
+        SmallVector<Value> dstValues;
+        ArrayRef<unsigned> registers =
+            slice->localRegisters.empty()
+                ? ArrayRef<unsigned>(slice->registers)
+                : ArrayRef<unsigned>(slice->localRegisters);
+        dstValues.reserve(registers.size());
+        for (unsigned reg : registers) {
+          if (reg >= srcValues.size())
+            return op.emitError("warp slice register index out of bounds");
+          dstValues.push_back(srcValues[reg]);
+        }
+        rewriter.replaceOp(op, packLLElements(op.getLoc(), getTypeConverter(),
+                                              dstValues, rewriter, dstTy));
+        return success();
+      }
+    }
+#endif
     if (!isa<ttg::BlockedEncodingAttr>(srcTy.getEncoding()))
       return op.emitError("extract_tile only supports BlockedEncodingAttr");
 
-    auto staticIndex = getStaticIndex(op);
-    if (staticIndex.has_value() && isCTATileAligned(op, staticIndex.value()))
+    // Register slicing assumes identical thread layouts. An explicit result
+    // layout can change lane ownership even when the warp count is unchanged;
+    // use the existing shared-memory path to perform that redistribution.
+    if (auto staticIndex = getStaticExtractTileRegisterIndex(op))
       return lowerExtractTileStatic(
           op, adaptor, rewriter, this->getTypeConverter(), staticIndex.value());
     return lowerExtractTileViaSMEM(op, adaptor, rewriter,
@@ -422,6 +457,19 @@ private:
 } // anonymous namespace
 
 namespace mlir::triton::tle {
+std::optional<int64_t> getStaticExtractTileRegisterIndex(ExtractTileOp op) {
+  auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType());
+  auto dstTy = dyn_cast<RankedTensorType>(op.getType());
+  if (!srcTy || !dstTy || !srcTy.getEncoding() ||
+      !isa<ttg::BlockedEncodingAttr>(srcTy.getEncoding()) ||
+      srcTy.getEncoding() != dstTy.getEncoding())
+    return std::nullopt;
+  auto staticIndex = getStaticIndex(op);
+  if (staticIndex && isCTATileAligned(op, *staticIndex))
+    return staticIndex;
+  return std::nullopt;
+}
+
 void populateExtractTileOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                          RewritePatternSet &patterns,
                                          const TargetInfoBase &targetInfo,

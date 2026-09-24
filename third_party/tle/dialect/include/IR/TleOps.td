@@ -35,13 +35,18 @@ include "triton/Dialect/Triton/IR/TritonInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td"
 include "triton/Dialect/TritonGPU/IR/TritonGPUTypes.td"
+include "triton/Dialect/TritonGPU/IR/TritonGPUOpInterfaces.td"
 
 class Tle_Op<string mnemonic, list<Trait> traits = []>
     : Op<Tle_Dialect, mnemonic,
          !listconcat(traits, [VerifyTensorLayoutsTrait])> {}
 
 // Begin TLE-Lite
-def Tle_ExtractTileOp : Tle_Op<"extract_tile", [Pure]> {
+def Tle_ExtractTileOp : Tle_Op<"extract_tile", [Pure
+#ifdef TRITON_GPU_WARP_SLICE_INTERFACE
+    , DeclareOpInterfaceMethods<WarpSliceOpInterface>
+#endif
+]> {
   let summary = "Extract a tile from a tensor with static offsets";
 
   let description = [{
@@ -53,6 +58,14 @@ def Tle_ExtractTileOp : Tle_Op<"extract_tile", [Pure]> {
       1. Offsets must be multiples of CTA tile sizes
       2. Tile shape must be multiples of CTA tile sizes
       3. Source and destination layouts must match at CTA tile level
+
+    A static extraction may also form a register view held by fewer warps.
+    In that case the source layout, tile offset and result layout must prove
+    a contiguous owner warp range with no lane or CTA transfer. The result
+    must be consumed in that warp range (for example by reuse-default WS).
+    If the source is another register view, the local proof is composed with
+    the source view's physical warp range, so repeated extract_tile calls
+    preserve the original owner.
   }];
 
   let arguments = (ins TT_Tensor:$src, TT_IntLike:$index);
@@ -89,6 +102,10 @@ def Tle_SetLayoutOp : Tle_Op<"gpu.set_layout", [
     Carries a user-requested TritonGPU distributed encoding through the TLE
     frontend. The op is lowered during Triton-to-TritonGPU conversion, after
     encoding propagation has selected legal layouts for dependent values.
+    The result encoding is a fixed layout anchor: optimization must preserve
+    it. When the producer cannot directly supply that layout, lowering inserts
+    an explicit layout conversion. A register-only warp slice instead requires
+    a proof that the requested layout preserves data ownership.
   }];
   let arguments = (ins TT_Tensor:$src, AnyAttr:$target_encoding);
   let results = (outs TT_Tensor:$result);

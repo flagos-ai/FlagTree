@@ -72,6 +72,70 @@ void ExtractTileOp::build(OpBuilder &builder, OperationState &state, Value src,
 //
 // For static index: perform full checks (same as original implementation)
 // ============================================================================
+#ifdef TRITON_GPU_WARP_SLICE_INTERFACE
+Value ExtractTileOp::getWarpSliceSource() { return getSrc(); }
+
+Value ExtractTileOp::getWarpSliceResult() { return getResult(); }
+
+std::optional<gpu::WarpSlice> ExtractTileOp::getWarpSlice() {
+  auto srcType = dyn_cast<RankedTensorType>(getSrc().getType());
+  auto dstType = dyn_cast<RankedTensorType>(getType());
+  auto tileShape = (*this)->getAttrOfType<DenseI64ArrayAttr>("tile_shape");
+  auto indexOp = getIndex().getDefiningOp<arith::ConstantOp>();
+  auto index =
+      indexOp ? dyn_cast<IntegerAttr>(indexOp.getValue()) : IntegerAttr();
+  if (!srcType || !dstType || !tileShape || !index ||
+      srcType.getRank() != dstType.getRank() ||
+      tileShape.asArrayRef() != dstType.getShape())
+    return std::nullopt;
+
+  int64_t remaining = index.getInt();
+  if (remaining < 0)
+    return std::nullopt;
+  SmallVector<int64_t> offsets(srcType.getRank());
+  for (int dim = srcType.getRank() - 1; dim >= 0; --dim) {
+    int64_t tile = dstType.getDimSize(dim);
+    int64_t size = srcType.getDimSize(dim);
+    if (tile <= 0 || size < tile || size % tile)
+      return std::nullopt;
+    int64_t tiles = size / tile;
+    offsets[dim] = (remaining % tiles) * tile;
+    remaining /= tiles;
+  }
+  if (remaining)
+    return std::nullopt;
+  // `offsets` are relative to this operation's source.  Keep that local
+  // interpretation even when the source is itself a reduced warp view: the
+  // source layout numbers its owning warps from zero.  If the source came
+  // from another register-local view, compose the two local mappings instead
+  // of trying to turn the nested indices into one root-tensor offset.
+  auto local = gpu::inferWarpSlice(srcType, dstType, offsets);
+  if (!local)
+    return std::nullopt;
+
+  auto parentOp = getSrc().getDefiningOp();
+  auto parentView = dyn_cast_or_null<gpu::WarpSliceOpInterface>(parentOp);
+  if (!parentView || parentView.getWarpSliceResult() != getSrc())
+    return local;
+
+  // An ordinary full-CTA extraction can materialize a new tensor without a
+  // register-local parent proof. A reduced source still requires that proof
+  // to retain its physical warp ownership.
+  auto parent = parentView.getWarpSlice();
+  if (!parent) {
+    auto numWarps = gpu::maybeLookupNumWarps(*this);
+    auto warp = StringAttr::get(getContext(), "warp");
+    if (numWarps &&
+        gpu::toLinearLayout(srcType).getInDimSize(warp) == *numWarps)
+      return local;
+    return std::nullopt;
+  }
+
+  return gpu::composeWarpSlices(*parent, *local);
+}
+
+#endif
+
 LogicalResult ExtractTileOp::verify() {
   auto srcTy = cast<RankedTensorType>(getSrc().getType());
   auto dstTy = cast<RankedTensorType>(getResult().getType());
@@ -120,6 +184,14 @@ LogicalResult ExtractTileOp::verify() {
   // getDefiningOp<arith::ConstantOp>() returns nullptr for dynamic Value
   auto indexConstOp =
       getOperation()->getOperand(1).getDefiningOp<arith::ConstantOp>();
+
+#ifdef TRITON_GPU_WARP_SLICE_INTERFACE
+  // A cross-warp result may either be a proven register-local owner view or a
+  // regular full-CTA extraction that will use the existing shared-memory
+  // relay. The reuse-default-warp verifier requires the former when the value
+  // is captured by a reduced partition; ordinary extract_tile must retain the
+  // latter fallback for compatibility.
+#endif
 
   if (!indexConstOp) {
     // Dynamic index: skip out-of-bounds and offset alignment checks, handled at

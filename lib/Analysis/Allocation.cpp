@@ -201,6 +201,19 @@ private:
   /// Initializes temporary shared memory for a given operation.
   void getScratchValueSize(Operation *op) {
     constexpr size_t scratchAlignment = 128;
+    if (auto view = dyn_cast<gpu::WarpSliceOpInterface>(op)) {
+      auto srcTy = cast<RankedTensorType>(view.getWarpSliceSource().getType());
+      auto dstTy = cast<RankedTensorType>(view.getWarpSliceResult().getType());
+      auto warp = StringAttr::get(op->getContext(), "warp");
+      bool differentWarps = gpu::toLinearLayout(srcTy).getInDimSize(warp) !=
+                            gpu::toLinearLayout(dstTy).getInDimSize(warp);
+      bool nestedViewSource = isa_and_nonnull<gpu::WarpSliceOpInterface>(
+          view.getWarpSliceSource().getDefiningOp());
+      // Nested views may keep the reduced warp count while selecting registers.
+      // Match the register-only lowering even when the encoding is not blocked.
+      if ((differentWarps || nestedViewSource) && view.getWarpSlice())
+        return;
+    }
     if (auto callOp = dyn_cast<CallOpInterface>(op)) {
       auto callable = callOp.resolveCallable();
       auto funcOp = dyn_cast<FunctionOpInterface>(callable);
@@ -223,6 +236,8 @@ private:
       // Warp specialization communicates states over shared memory to each
       // warp. Add space for an i8 for each warpgroup warp.
       func.walk([&](gpu::WarpSpecializeOp op) {
+        if (op.getReuseDefaultWarps())
+          return;
         numWarpIndices = std::max(numWarpIndices, op.getTotalPartitionWarps());
       });
       maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, numWarpIndices);

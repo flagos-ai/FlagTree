@@ -162,6 +162,170 @@ TEST_F(LinearLayoutConversionsTest, SimpleBlocked) {
                           {S("dim0")}));
 }
 
+#ifdef TRITON_GPU_WARP_SLICE_INTERFACE
+TEST_F(LinearLayoutConversionsTest, WarpSliceMma) {
+  auto f32 = Float32Type::get(&ctx);
+  auto src = RankedTensorType::get({32, 16}, f32, mma(2, 0, {16, 8}, {2, 2}));
+  auto dst = RankedTensorType::get({16, 16}, f32, mma(2, 0, {16, 8}, {1, 2}));
+  for (unsigned half = 0; half < 2; ++half) {
+    auto slice = inferWarpSlice(src, dst, {16 * half, 0});
+    ASSERT_TRUE(slice);
+    EXPECT_EQ(slice->startWarp, 2 * half);
+    EXPECT_EQ(slice->numWarps, 2);
+    EXPECT_THAT(slice->registers, ::testing::ElementsAre(0, 1, 2, 3));
+  }
+}
+
+TEST_F(LinearLayoutConversionsTest, WarpSliceMmaSelectsRegisters) {
+  auto f32 = Float32Type::get(&ctx);
+  auto src = RankedTensorType::get({64, 16}, f32, mma(2, 0, {16, 8}, {2, 2}));
+  auto dst = RankedTensorType::get({16, 16}, f32, mma(2, 0, {16, 8}, {1, 2}));
+  for (unsigned half = 0; half < 2; ++half) {
+    auto slice = inferWarpSlice(src, dst, {32 + 16 * half, 0});
+    ASSERT_TRUE(slice);
+    EXPECT_EQ(slice->startWarp, 2 * half);
+    EXPECT_EQ(slice->numWarps, 2);
+    EXPECT_THAT(slice->registers, ::testing::ElementsAre(4, 5, 6, 7));
+  }
+}
+
+TEST_F(LinearLayoutConversionsTest, WarpSliceBlocked) {
+  auto f32 = Float32Type::get(&ctx);
+  auto srcLayout =
+      blocked({1, 1}, {4, 8}, {2, 2}, {1, 1}, {1, 1}, {1, 0}, {1, 0});
+  auto dstLayout =
+      blocked({1, 1}, {4, 8}, {1, 2}, {1, 1}, {1, 1}, {1, 0}, {1, 0});
+  auto src = RankedTensorType::get({8, 64}, f32, srcLayout);
+  auto dst = RankedTensorType::get({4, 16}, f32, dstLayout);
+  auto slice = inferWarpSlice(src, dst, {4, 32});
+  ASSERT_TRUE(slice);
+  EXPECT_EQ(slice->startWarp, 2);
+  EXPECT_EQ(slice->numWarps, 2);
+  EXPECT_THAT(slice->registers, ::testing::ElementsAre(2));
+}
+
+TEST_F(LinearLayoutConversionsTest, WarpSliceRejectsLaneChanges) {
+  auto f32 = Float32Type::get(&ctx);
+  auto src = RankedTensorType::get(
+      {8, 16}, f32,
+      blocked({1, 1}, {4, 8}, {2, 2}, {1, 1}, {1, 1}, {1, 0}, {1, 0}));
+  auto dst = RankedTensorType::get(
+      {4, 16}, f32,
+      blocked({1, 1}, {8, 4}, {1, 2}, {1, 1}, {1, 1}, {1, 0}, {1, 0}));
+  EXPECT_FALSE(inferWarpSlice(src, dst, {0, 0}));
+}
+
+TEST_F(LinearLayoutConversionsTest, WarpSliceRejectsInterleavedWarps) {
+  auto f32 = Float32Type::get(&ctx);
+  auto src = RankedTensorType::get(
+      {8, 16}, f32,
+      blocked({1, 1}, {4, 8}, {2, 2}, {1, 1}, {1, 1}, {0, 1}, {0, 1}));
+  auto dst = RankedTensorType::get(
+      {4, 16}, f32,
+      blocked({1, 1}, {4, 8}, {1, 2}, {1, 1}, {1, 1}, {0, 1}, {0, 1}));
+  // The upper and lower tiles are held by {0, 2} and {1, 3}; neither is an
+  // aligned consecutive range with unchanged local warp numbering.
+  EXPECT_FALSE(inferWarpSlice(src, dst, {0, 0}));
+  EXPECT_FALSE(inferWarpSlice(src, dst, {4, 0}));
+}
+
+TEST_F(LinearLayoutConversionsTest, WarpSliceRejectsBlockChanges) {
+  auto f32 = Float32Type::get(&ctx);
+  auto src = RankedTensorType::get(
+      {8, 64}, f32,
+      blocked({1, 1}, {4, 8}, {2, 2}, {1, 2}, {1, 2}, {1, 0}, {1, 0}));
+  auto dst = RankedTensorType::get(
+      {4, 32}, f32,
+      blocked({1, 1}, {4, 8}, {1, 2}, {1, 2}, {1, 2}, {1, 0}, {1, 0}));
+  EXPECT_FALSE(inferWarpSlice(src, dst, {0, 0}));
+}
+
+TEST_F(LinearLayoutConversionsTest, WarpSliceRejectsInvalidTile) {
+  auto f32 = Float32Type::get(&ctx);
+  auto src = RankedTensorType::get({32, 16}, f32, mma(2, 0, {16, 8}, {2, 2}));
+  auto dst = RankedTensorType::get({16, 16}, f32, mma(2, 0, {16, 8}, {1, 2}));
+  EXPECT_FALSE(inferWarpSlice(src, dst, {32, 0}));
+  EXPECT_FALSE(inferWarpSlice(src, dst, {-16, 0}));
+  EXPECT_FALSE(inferWarpSlice(src, dst, {8, 0}));
+  EXPECT_FALSE(inferWarpSlice(src, dst, {0}));
+  auto noLayout = RankedTensorType::get({16, 16}, f32);
+  EXPECT_FALSE(inferWarpSlice(src, noLayout, {0, 0}));
+  auto nonPowerOfTwo = RankedTensorType::get({48, 16}, f32, src.getEncoding());
+  EXPECT_FALSE(inferWarpSlice(nonPowerOfTwo, dst, {0, 0}));
+}
+
+TEST_F(LinearLayoutConversionsTest, WarpSliceAllowsRegisterReplicas) {
+  auto f32 = Float32Type::get(&ctx);
+  auto srcLayout = LinearEncodingAttr::get(
+      &ctx, LinearLayout({{S("register"), {{1}, {0}}},
+                          {S("lane"), {{2}, {4}, {8}, {16}, {32}}},
+                          {S("warp"), {{64}, {128}}},
+                          {S("block"), {}}},
+                         {S("dim0")}));
+  auto dstLayout = LinearEncodingAttr::get(
+      &ctx, LinearLayout({{S("register"), {{1}}},
+                          {S("lane"), {{2}, {4}, {8}, {16}, {32}}},
+                          {S("warp"), {{64}}},
+                          {S("block"), {}}},
+                         {S("dim0")}));
+  auto slice =
+      inferWarpSlice(RankedTensorType::get({256}, f32, srcLayout),
+                     RankedTensorType::get({128}, f32, dstLayout), {128});
+  ASSERT_TRUE(slice);
+  EXPECT_EQ(slice->startWarp, 2);
+  EXPECT_EQ(slice->numWarps, 2);
+  EXPECT_THAT(slice->registers, ::testing::ElementsAre(0, 1));
+}
+
+TEST_F(LinearLayoutConversionsTest, WarpSliceRejectsAmbiguousWarpReplicas) {
+  auto f32 = Float32Type::get(&ctx);
+  auto srcLayout = LinearEncodingAttr::get(
+      &ctx, LinearLayout({{S("register"), {{1}}},
+                          {S("lane"), {{2}, {4}, {8}, {16}, {32}}},
+                          {S("warp"), {{64}, {0}}},
+                          {S("block"), {}}},
+                         {S("dim0")}));
+  auto dstLayout = LinearEncodingAttr::get(
+      &ctx, LinearLayout({{S("register"), {{1}}},
+                          {S("lane"), {{2}, {4}, {8}, {16}, {32}}},
+                          {S("warp"), {{64}}},
+                          {S("block"), {}}},
+                         {S("dim0")}));
+  // Both {0, 1} and {2, 3} hold the same tile. The proof must not silently
+  // choose one of them as its unique owner.
+  EXPECT_FALSE(inferWarpSlice(RankedTensorType::get({128}, f32, srcLayout),
+                              RankedTensorType::get({128}, f32, dstLayout),
+                              {0}));
+}
+
+TEST_F(LinearLayoutConversionsTest, WarpSliceComposition) {
+  WarpSlice parent{/*startWarp=*/4, /*numWarps=*/4, {10, 11, 12, 13}};
+  WarpSlice child{/*startWarp=*/2, /*numWarps=*/2, {1, 3}};
+  auto composed = composeWarpSlices(parent, child);
+  ASSERT_TRUE(composed);
+  EXPECT_EQ(composed->startWarp, 6);
+  EXPECT_EQ(composed->numWarps, 2);
+  EXPECT_THAT(composed->registers, ::testing::ElementsAre(11, 13));
+  EXPECT_THAT(composed->localRegisters, ::testing::ElementsAre(1, 3));
+
+  WarpSlice grandchild{/*startWarp=*/1, /*numWarps=*/1, {0}};
+  auto nested = composeWarpSlices(*composed, grandchild);
+  ASSERT_TRUE(nested);
+  EXPECT_EQ(nested->startWarp, 7);
+  EXPECT_THAT(nested->registers, ::testing::ElementsAre(11));
+  EXPECT_THAT(nested->localRegisters, ::testing::ElementsAre(0));
+
+  child.startWarp = 3;
+  child.numWarps = 2;
+  EXPECT_FALSE(composeWarpSlices(parent, child));
+  child.startWarp = 0;
+  child.numWarps = 1;
+  child.registers = {4};
+  EXPECT_FALSE(composeWarpSlices(parent, child));
+}
+
+#endif
+
 TEST_F(LinearLayoutConversionsTest, CTADuplication) {
   auto layout = toLinearLayout(
       {32}, blocked({1}, {4}, {4}, /*cpg=*/{4}, /*cSplit=*/{2}, {0}, {0}));

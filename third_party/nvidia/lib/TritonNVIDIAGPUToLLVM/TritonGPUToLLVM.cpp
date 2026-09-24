@@ -134,6 +134,23 @@ struct ConvertTritonGPUToLLVM
     ModuleOp mod = getOperation();
     TargetInfo targetInfo(computeCapability, ptxVersion);
 
+    // The existing inliner exposes ordinary helpers before this pass. A
+    // remaining device call cannot inherit a reuse partition's thread range
+    // or named barrier IDs, even when the noinline helper is nested.
+    WalkResult calls = mod.walk([&](triton::CallOp call) {
+      auto ws = call->getParentOfType<triton::gpu::WarpSpecializeOp>();
+      auto reuse =
+          ws ? ws->getAttrOfType<BoolAttr>("reuseDefaultWarps") : BoolAttr();
+      if (!reuse || !reuse.getValue())
+        return WalkResult::advance();
+      call.emitOpError(
+          "device calls in reuse_default_warps partitions must be ")
+          << "inlined; remove noinline from the worker or its helper";
+      return WalkResult::interrupt();
+    });
+    if (calls.wasInterrupted())
+      return signalPassFailure();
+
     // Allocate shared memory and set barrier
     ModuleAllocation allocation(
         mod, mlir::triton::nvidia_gpu::getNvidiaAllocationAnalysisScratchSizeFn(

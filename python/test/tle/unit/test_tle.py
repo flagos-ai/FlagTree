@@ -76,6 +76,28 @@ def _masked_copy_zero_fill_kernel(src, dst):
     tl.store(dst + offsets, values)
 
 
+@triton.jit
+def _reuse_default_warps_worker(fragment, cid: tl.constexpr):
+    value = fragment + cid  # noqa: F841
+
+
+@triton.jit
+def _reuse_default_warps_kernel(pair_layout: tl.constexpr, half_layout: tl.constexpr):
+    pair = tle.gpu.set_layout(tl.zeros((32, 16), tl.float32), pair_layout)
+    top = tle.extract_tile(pair, index=[0, 0], tile_shape=[16, 16])
+    bottom = tle.extract_tile(pair, index=[1, 0], tile_shape=[16, 16])
+    top = tle.gpu.set_layout(top, half_layout)
+    bottom = tle.gpu.set_layout(bottom, half_layout)
+    tle.gpu.warp_specialize(
+        (
+            (_reuse_default_warps_worker, (top, 0)),
+            (_reuse_default_warps_worker, (bottom, 1)),
+        ),
+        worker_num_warps=(2, 2),
+        reuse_default_warps=True,
+    )
+
+
 _HAS_TLE_EXPLICIT_LAYOUT = hasattr(libtriton.ir.builder, "ensure_ttg_layout_attrs")
 
 
@@ -239,6 +261,21 @@ class TestWarpSpecializeFrontend:
         assert captures == [shared_k, shared_tail, unique_q]
         assert items[0][3] == [0, 1, 2, 0]
         assert items[1][3] == [1, 0]
+
+    @pytest.mark.skipif(not _HAS_TLE_EXPLICIT_LAYOUT, reason="requires __TLE__ build")
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    def test_reuse_default_warps_is_an_opt_in_warp_specialize_mode(self):
+        module = run_parser(
+            _reuse_default_warps_kernel,
+            kwargs={
+                "pair_layout": tle.gpu.MmaEncoding([2, 0], [2, 2], [16, 8]),
+                "half_layout": tle.gpu.MmaEncoding([2, 0], [1, 2], [16, 8]),
+                "num_warps": 4,
+            },
+            target=GPUTarget("cuda", 90, 32),
+        )
+        ir = module.str_nodebug()
+        assert 'reuseDefaultWarps = true' in ir
 
 
 @pytest.mark.skipif(TLESemantic is None, reason="tle.gpu is not available on this backend")

@@ -95,3 +95,56 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+// Reused single-warp partitions use warp sync, so reserve only IDs 0 and 1.
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 16 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @remap_virtual_id_after_sixteen_reused_warps
+  tt.func @remap_virtual_id_after_sixteen_reused_warps() {
+    ttg.warp_specialize() attributes {reuseDefaultWarps = true}
+    default { ttg.warp_yield }
+    partition0() num_warps(1) { ttg.warp_return }
+    partition1() num_warps(1) { ttg.warp_return }
+    partition2() num_warps(1) { ttg.warp_return }
+    partition3() num_warps(1) { ttg.warp_return }
+    partition4() num_warps(1) { ttg.warp_return }
+    partition5() num_warps(1) { ttg.warp_return }
+    partition6() num_warps(1) { ttg.warp_return }
+    partition7() num_warps(1) { ttg.warp_return }
+    partition8() num_warps(1) { ttg.warp_return }
+    partition9() num_warps(1) { ttg.warp_return }
+    partition10() num_warps(1) { ttg.warp_return }
+    partition11() num_warps(1) { ttg.warp_return }
+    partition12() num_warps(1) { ttg.warp_return }
+    partition13() num_warps(1) { ttg.warp_return }
+    partition14() num_warps(1) { ttg.warp_return }
+    partition15() num_warps(1) { ttg.warp_return } : () -> ()
+    %virtual = arith.constant 16 : i32
+    %threads = arith.constant 512 : i32
+    // CHECK: %[[ID2:.+]] = arith.constant 2 : i32
+    // CHECK: ttng.wait_barrier_named %[[ID2]], {{.*}} : i32, i32
+    ttng.wait_barrier_named %virtual, %threads : i32, i32
+    tt.return
+  }
+}
+
+// -----
+
+// Reserve the multi-warp partition's ID even before LLVM inserts barriers.
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @reserve_reused_multi_warp_barrier
+  tt.func @reserve_reused_multi_warp_barrier() {
+    ttg.warp_specialize() attributes {reuseDefaultWarps = true}
+    default { ttg.warp_yield }
+    partition0() num_warps(1) { ttg.warp_return }
+    partition1() num_warps(2) { ttg.warp_return }
+    partition2() num_warps(1) { ttg.warp_return } : () -> ()
+    %virtual = arith.constant 16 : i32
+    %threads = arith.constant 128 : i32
+    // CHECK: %[[ID3:.+]] = arith.constant 3 : i32
+    // CHECK: ttng.wait_barrier_named %[[ID3]], {{.*}} : i32, i32
+    ttng.wait_barrier_named %virtual, %threads : i32, i32
+    tt.return
+  }
+}

@@ -47,6 +47,7 @@
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
 #include "triton/Tools/StrUtil.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/MathExtras.h"
@@ -63,6 +64,35 @@ using namespace mlir::triton::gpu;
 static SmallVector<unsigned>
 basesPerDimImpl(const LinearLayout::BasesT &namedBases, StringAttr dimName,
                 size_t rank, bool skipBroadcast = true);
+
+#ifdef TRITON_GPU_WARP_SLICE_INTERFACE
+// A reduced layout may be produced by another reduced view. Validate the
+// complete register-local chain instead of requiring the immediate source to
+// carry the module's full warp count. Every link must provide its own proof;
+// a conversion or materialization terminates the chain.
+static bool hasFullWarpSliceRoot(WarpSliceOpInterface view,
+                                 unsigned moduleWarps) {
+  Value source = view.getWarpSliceSource();
+  auto warp = StringAttr::get(source.getContext(), "warp");
+  llvm::SmallPtrSet<Operation *, 8> visited;
+
+  while (true) {
+    auto sourceType = dyn_cast<RankedTensorType>(source.getType());
+    if (!sourceType || !sourceType.getEncoding())
+      return false;
+    if (toLinearLayout(sourceType).getInDimSize(warp) == moduleWarps)
+      return true;
+
+    Operation *def = source.getDefiningOp();
+    auto parent =
+        def ? dyn_cast<WarpSliceOpInterface>(def) : WarpSliceOpInterface();
+    if (!parent || parent.getWarpSliceResult() != source ||
+        !parent.getWarpSlice() || !visited.insert(def).second)
+      return false;
+    source = parent.getWarpSliceSource();
+  }
+}
+#endif
 
 // Utility
 namespace mlir {
@@ -3327,7 +3357,42 @@ struct TritonGPUVerifyTensorLayoutInterface
                 "is not in a context with `ttg.num-warps`.";
     }
     auto kWarp = StringAttr::get(module.getContext(), "warp");
-    if (ll.getInDimSize(kWarp) != *moduleWarpsPerCTA) {
+    int layoutWarpsPerCTA = ll.getInDimSize(kWarp);
+    bool isWarpSliceTensor = false;
+    if (auto view = dyn_cast<WarpSliceOpInterface>(op);
+        view &&
+        (view.getWarpSliceResult().getType() == rankedTy ||
+         view.getWarpSliceSource().getType() == rankedTy) &&
+        layoutWarpsPerCTA != *moduleWarpsPerCTA) {
+      auto slice = view.getWarpSlice();
+      if (!slice && op->getName().getStringRef() == "tle.extract_tile") {
+        // Full-CTA extract_tile may materialize a cross-warp result through
+        // the legacy shared-memory relay. Reduced warp-specialize captures
+        // are checked separately by WarpSpecializeOp::verify.
+        // A reduced source, however, is valid only in its owning warps. The
+        // relay does not predicate stores on that ownership and would let
+        // other warps overwrite the tile with unrelated register values.
+        auto sourceType =
+            cast<RankedTensorType>(view.getWarpSliceSource().getType());
+        if (toLinearLayout(sourceType).getInDimSize(kWarp) !=
+            *moduleWarpsPerCTA)
+          return makeErr()
+                 << "cannot materialize a reduced warp slice outside its "
+                    "owning partition; extract_tile must preserve a "
+                    "register-local view";
+      } else if (!slice || !hasFullWarpSliceRoot(view, *moduleWarpsPerCTA))
+        return makeErr() << "cannot prove a register-local warp slice for "
+                         << rankedTy;
+      isWarpSliceTensor = true;
+    }
+    bool isInPlacePartitionCapture = false;
+    if (auto ws = dyn_cast<WarpSpecializeOp>(op);
+        ws && ws.getReuseDefaultWarps()) {
+      isInPlacePartitionCapture =
+          llvm::is_contained(ws.getPartitionNumWarps(), layoutWarpsPerCTA);
+    }
+    if (layoutWarpsPerCTA != *moduleWarpsPerCTA && !isWarpSliceTensor &&
+        !isInPlacePartitionCapture) {
       return makeErr() << layout << ".\nLayout has " << ll.getInDimSize(kWarp)
                        << " warps per CTA, but the context requires "
                        << *moduleWarpsPerCTA << " warps per CTA.";
