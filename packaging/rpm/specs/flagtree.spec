@@ -30,7 +30,7 @@
 
 Name:           python3-flagtree-%{flagtree_backend}
 Version:        0.6.1
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        FlagTree compiler with %{flagtree_backend} backend
 License:        MIT AND Apache-2.0 WITH LLVM-exception AND BSD-3-Clause AND LicenseRef-NVIDIA-CUDA-EULA
 URL:            https://github.com/flagos-ai/FlagTree
@@ -132,6 +132,14 @@ sed -i "1s|^#!.*python3$|#!%{__python3}|" %{buildroot}%{_bindir}/proton*
 # RECORD references absolute paths under --target which become wrong after
 # rpmbuild relocates them. Drop it; pip doesn't need RECORD to function.
 rm -f "$PYDIR"/flagtree-*.dist-info/RECORD
+# triton hashes _C/libtriton.so for its compile-cache key (triton_key); make
+# sure the module carries that name whatever suffix the wheel build used.
+if [ ! -e "$PYDIR"/triton/_C/libtriton.so ]; then
+    suffixed="$(ls -1 "$PYDIR"/triton/_C/libtriton.cpython-*.so 2>/dev/null | head -1)"
+    test -n "$suffixed"
+    mv "$suffixed" "$PYDIR"/triton/_C/libtriton.so
+fi
+test -f "$PYDIR"/triton/_C/libtriton.so
 
 install -D -m 0644 %{SOURCE0} %{buildroot}%{_licensedir}/%{name}/LICENSE
 
@@ -145,6 +153,9 @@ install -D -m 0644 %{SOURCE0} %{buildroot}%{_licensedir}/%{name}/LICENSE
 %{_bindir}/proton*
 
 %changelog
+* Thu Sep 24 2026 FlagOS Contributors <contact@flagos.io> - 0.6.1-2
+- Guarantee triton/_C/libtriton.so exists after unpacking the wheel (compile-cache key hashes it)
+
 * Wed Jul 15 2026 FlagOS Contributors <contact@flagos.io> - 0.6.0-1
 - Sync package version with the flagtree wheel (0.6.0).
 - Fail the install step when the wheel version does not match the spec.
