@@ -27,6 +27,7 @@
 #ifdef __TLE__
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
@@ -157,6 +158,23 @@ matchStaticIndexCoverage(Value index) {
   return matchRangeWithStaticOffset(current);
 }
 
+static bool sameStaticView(const StaticAccessView &lhs,
+                          const StaticAccessView &rhs) {
+  return lhs.root == rhs.root && lhs.rank == rhs.rank &&
+         lhs.offsets == rhs.offsets && lhs.sizes == rhs.sizes;
+}
+
+// State carried while resolving a loop-carried view. While the value yielded
+// back to an iteration argument is analyzed, the argument itself stands for the
+// view the loop was entered with, so a view derived from the argument keeps its
+// offsets instead of giving up. `uses` counts how often that stand-in was
+// needed, and `active` stops genuine cycles.
+struct LoopCarriedViews {
+  DenseMap<Value, StaticAccessView> bound;
+  SmallPtrSet<Value, 4> active;
+  unsigned uses = 0;
+};
+
 // Bounding box of two views of the same buffer; the caller falls back to the
 // whole allocation when they cannot be combined.
 static std::optional<StaticAccessView>
@@ -176,13 +194,13 @@ mergeStaticViews(std::optional<StaticAccessView> lhs,
 }
 
 static std::optional<StaticAccessView>
-getStaticMemDescView(Value value, SmallPtrSetImpl<Value> &visited) {
+getStaticMemDescView(Value value, LoopCarriedViews &carried) {
   auto memDescTy = dyn_cast<ttg::MemDescType>(value.getType());
   if (!memDescTy)
     return std::nullopt;
 
   if (auto index = value.getDefiningOp<ttg::MemDescIndexOp>()) {
-    auto srcView = getStaticMemDescView(index.getSrc(), visited);
+    auto srcView = getStaticMemDescView(index.getSrc(), carried);
     if (!srcView)
       return std::nullopt;
     auto cstIndex = getConstantIntLike(index.getIndex());
@@ -206,7 +224,7 @@ getStaticMemDescView(Value value, SmallPtrSetImpl<Value> &visited) {
   }
 
   if (auto subslice = value.getDefiningOp<ttg::MemDescSubsliceOp>()) {
-    auto srcView = getStaticMemDescView(subslice.getSrc(), visited);
+    auto srcView = getStaticMemDescView(subslice.getSrc(), carried);
     if (!srcView)
       return std::nullopt;
 
@@ -234,24 +252,45 @@ getStaticMemDescView(Value value, SmallPtrSetImpl<Value> &visited) {
     // other block argument must give up, so that the caller falls back to the
     // whole allocated interval instead of wrongly assuming the view starts at
     // the buffer base.
+    if (auto bound = carried.bound.find(value); bound != carried.bound.end()) {
+      ++carried.uses;
+      return bound->second;
+    }
     if (auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(
             arg.getOwner()->getParentOp()))
       return getStaticMemDescView(
           partitions.getParentOp().getExplicitCaptures()[arg.getArgNumber()],
-          visited);
+          carried);
     auto loop =
         dyn_cast_or_null<LoopLikeOpInterface>(arg.getOwner()->getParentOp());
-    if (!loop || !visited.insert(value).second)
+    if (!loop || !carried.active.insert(value).second)
       return std::nullopt;
+    auto leave = llvm::make_scope_exit([&] { carried.active.erase(value); });
     OpOperand *init = loop.getTiedLoopInit(arg);
     OpOperand *yielded = loop.getTiedLoopYieldedValue(arg);
     if (!init || !yielded)
       return std::nullopt;
-    auto initView = getStaticMemDescView(init->get(), visited);
-    if (yielded->get() == value)
+    auto initView = getStaticMemDescView(init->get(), carried);
+    if (yielded->get() == value || !initView)
       return initView;
-    return mergeStaticViews(initView,
-                            getStaticMemDescView(yielded->get(), visited));
+
+    // Resolve the yielded value with the argument standing for the view the
+    // loop was entered with.
+    carried.bound.insert({value, *initView});
+    unsigned uses = carried.uses;
+    auto yieldView = getStaticMemDescView(yielded->get(), carried);
+    bool derived = carried.uses != uses;
+    carried.bound.erase(value);
+
+    // A yielded view derived from the argument is applied again on every
+    // iteration, so it is only known when it comes back unchanged; otherwise it
+    // moves with the iteration count and the whole allocation is the only safe
+    // answer. A yielded view that does not depend on the argument holds from
+    // the second iteration on, so the two views bound the argument.
+    if (derived)
+      return yieldView && sameStaticView(*yieldView, *initView) ? initView
+                                                                : std::nullopt;
+    return mergeStaticViews(initView, yieldView);
   }
 
   SmallVector<int64_t> shape(memDescTy.getShape().begin(),
@@ -261,8 +300,8 @@ getStaticMemDescView(Value value, SmallPtrSetImpl<Value> &visited) {
 }
 
 static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
-  SmallPtrSet<Value, 4> visited;
-  return getStaticMemDescView(value, visited);
+  LoopCarriedViews carried;
+  return getStaticMemDescView(value, carried);
 }
 
 static std::optional<StaticAccessView> getStaticLocalPointerView(Value value) {

@@ -131,3 +131,38 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
     tt.return %r#0 : tensor<16x16xf32, #blocked>
   }
 }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 1], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [2, 1, 0]}>
+#view = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // The value yielded back is a view of the carried slot rather than the slot
+  // itself. It resolves through the view the loop was entered with, so the
+  // interval survives and the read of the other slot still does not rendezvous.
+  // CHECK-LABEL: @carried_disjoint_derived_view
+  // CHECK: scf.for
+  // CHECK-NEXT: ttg.memdesc_subslice
+  // CHECK-NEXT: ttg.local_barrier
+  // CHECK-NEXT: ttg.local_store
+  // CHECK-NEXT: ttg.local_load
+  tt.func public @carried_disjoint_derived_view(%v: tensor<16x16xf32, #blocked>, %n: i32) -> tensor<16x16xf32, #blocked> {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %init = arith.constant dense<0.000000e+00> : tensor<16x16xf32, #blocked>
+    %buf = ttg.local_alloc : () -> !ttg.memdesc<2x16x16xf32, #shared, #smem, mutable>
+    %s0 = ttg.memdesc_index %buf[%c0] : !ttg.memdesc<2x16x16xf32, #shared, #smem, mutable> -> !ttg.memdesc<16x16xf32, #view, #smem, mutable>
+    %s1 = ttg.memdesc_index %buf[%c1] : !ttg.memdesc<2x16x16xf32, #shared, #smem, mutable> -> !ttg.memdesc<16x16xf32, #view, #smem, mutable>
+    %r:2 = scf.for %i = %c0 to %n step %c1 iter_args(%acc = %init, %cur = %s1) -> (tensor<16x16xf32, #blocked>, !ttg.memdesc<16x16xf32, #view, #smem, mutable>) : i32 {
+      %sub = ttg.memdesc_subslice %cur [0, 0] : !ttg.memdesc<16x16xf32, #view, #smem, mutable> -> !ttg.memdesc<16x16xf32, #view, #smem, mutable>
+      ttg.local_store %v, %sub : tensor<16x16xf32, #blocked> -> !ttg.memdesc<16x16xf32, #view, #smem, mutable>
+      %x = ttg.local_load %s0 : !ttg.memdesc<16x16xf32, #view, #smem, mutable> -> tensor<16x16xf32, #blocked>
+      %y = arith.addf %acc, %x : tensor<16x16xf32, #blocked>
+      scf.yield %y, %sub : tensor<16x16xf32, #blocked>, !ttg.memdesc<16x16xf32, #view, #smem, mutable>
+    }
+    tt.return %r#0 : tensor<16x16xf32, #blocked>
+  }
+}
