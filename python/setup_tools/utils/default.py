@@ -22,6 +22,8 @@ import subprocess
 import os
 from pathlib import Path
 import shutil
+import sys
+from importlib.machinery import PathFinder
 
 global registrar
 
@@ -45,6 +47,10 @@ class FlagCXRegistrar:
                 printinfo(f"Recompiling FlagCX due to {env}={env_value}\n ")
                 return env_value
         return False
+
+    def _get_flagcx_wheel_path(self):
+        spec = PathFinder.find_spec("flagcx", sys.path)
+        return Path(spec.origin).parent if spec is not None else None
 
     def _is_cache_available(self):
         ENVS = ("FLAGCX_CACHE", "DIST_CACHE")
@@ -124,23 +130,43 @@ class FlagCXRegistrar:
                 printinfo(f"{lib_name} copied from {src_path} to cache at {cache_path}")
                 printinfo(f"{lib_name} copied from {src_path} to cache at {runtime_path}")
 
+    def _get_required_src_files_paths(self):
+        whl_path = self._get_flagcx_wheel_path()
+        if whl_path is None:
+            return {
+                "wrapper": Path(self.flagcx_src_dir) / "plugin" / "interservice" / "flagcx_wrapper.py", "include":
+                Path(self.flagcx_src_dir) / "flagcx" / "include"
+            }
+        return {"wrapper": whl_path / "api.py", "include": whl_path / "include"}
+
+    def _get_required_dst_files_paths(self):
+        return {
+            "wrapper":
+            (Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "flagcx_wrapper.py",
+             Path(self.flagtree_dir) / "third_party" / "nvidia" / "backend" / "flagcx_wrapper.py"), "include":
+            (Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "include", )
+        }
+
     def _copy_required_files(self):
-        dst = Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "flagcx_wrapper.py"
-        src = Path(self.flagcx_src_dir) / "plugin" / "interservice" / "flagcx_wrapper.py"
-        shutil.copy(src, dst)
-        printinfo(f"flagcx_wrapper.py copied from {src} to {dst}")
-        dst = Path(self.flagtree_dir) / "third_party" / "nvidia" / "backend" / "flagcx_wrapper.py"
-        shutil.copy(src, dst)
-        printinfo(f"flagcx_wrapper.py copied from {src} to {dst}")
-        dst = Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "include"
-        src = Path(self.flagcx_src_dir) / "flagcx" / "include"
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
-        printinfo(f"FlagCX headers copied from {src} to {dst}")
+        src_paths = self._get_required_src_files_paths()
+        dst_paths = self._get_required_dst_files_paths()
+        wrapper_src = src_paths["wrapper"]
+        include_src = src_paths["include"]
+        for wrapper_dst in dst_paths["wrapper"]:
+            shutil.copy(wrapper_src, wrapper_dst)
+            printinfo(f"flagcx_wrapper.py copied from {wrapper_src} to {wrapper_dst}")
+        for include_dst in dst_paths["include"]:
+            if include_dst.exists():
+                shutil.rmtree(include_dst)
+            shutil.copytree(include_src, include_dst)
+            printinfo(f"FlagCX headers copied from {include_src} to {include_dst}")
 
     def run(self):
-        self._compile_and_cache()
+        whl = self._get_flagcx_wheel_path()
+        if whl is not None:
+            printinfo("FlagCX is already installed, skipping compilation...")
+        else:
+            self._compile_and_cache()
         self._copy_required_files()
 
 
