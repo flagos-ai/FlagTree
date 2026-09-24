@@ -291,3 +291,24 @@ def test_tma_store_pending_hint_takes_the_maximum(with_allocator):
     torch.testing.assert_close(output, reference, rtol=0, atol=0)
     # Hints of 2 and 4 combine into 4, so the loop waits with three groups left.
     assert pending_waits(binary) == [0, 3]
+
+
+@triton.jit
+def hinted_load_copy(in_desc, out, BM: tl.constexpr, BN: tl.constexpr):
+    staging = tle.gpu.alloc([BM, BN], tl.float32, scope=tle.gpu.smem)
+    pid = tl.program_id(0)
+    # The hint only belongs on a store; the compiler must not accept it here.
+    tle.gpu.copy(in_desc, staging, [BM, BN], [pid * BM, 0])  # @hint: tma_store_pending=8
+    rows = tl.broadcast_to(tl.arange(0, BM)[:, None], (BM, BN))
+    cols = tl.broadcast_to(tl.arange(0, BN)[None, :], (BM, BN))
+    tl.store(out + rows * BN + cols, tl.load(tle.gpu.local_ptr(staging, (rows, cols))))
+
+
+@pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+def test_tma_store_pending_hint_rejected_on_load(with_allocator):
+    bm, bn = 64, 128
+    source = torch.zeros(bm, bn, device="cuda", dtype=torch.float32)
+    out = torch.empty(bm * bn, device="cuda", dtype=torch.float32)
+    desc = TensorDescriptor.from_tensor(source, block_shape=[bm, bn])
+    with pytest.raises(Exception, match="tma_store_pending"):
+        hinted_load_copy[(1, )](desc, out, bm, bn, num_warps=4)

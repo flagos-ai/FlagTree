@@ -1091,7 +1091,10 @@ def copy(
         flagtree_hints: Filled in from a ``# @hint:`` comment on the call, not
             passed by hand. ``tma_store_pending=<1..8>`` raises how many TMA
             store groups this kernel may keep in flight; without it the
-            scheduler waits for a group before the next one is committed.
+            scheduler waits for a group before the next one is committed. It is
+            accepted on local-to-global TMA copies only, the copies that pass
+            schedules, and rejected elsewhere so that a hint on a TMA load or a
+            pointer copy cannot quietly move waits somewhere else.
 
             **The value applies to the whole compilation, not to this copy.**
             The store scheduler is a dataflow analysis over the entire kernel,
@@ -1129,8 +1132,6 @@ def copy(
             for i in tl.range(0, n):
                 tle.copy(local_buf, tma_desc, [64, 128], [i * 64, 0])  # @hint: tma_store_pending=8
     """
-    _mark_tma_store_pending(flagtree_hints, _semantic, _generator)
-
     mthreads_enabled = mthreads_common.enabled()
     iluvatar_enabled = iluvatar_copy.enabled()
 
@@ -1291,6 +1292,15 @@ def copy(
             shape = tuple(shape)
         else:
             raise ValueError(f"Shape parameter must be tuple or list, but got {type(shape)}")
+    # Only a TMA store is scheduled by the TLE TMA store pass, so a hint on any
+    # other copy would silently change waits elsewhere in the kernel.
+    is_tma_store = not is_normcopy and direction == CopyDirection.LOCAL_TO_GM
+    if not is_tma_store and _parse_tma_store_pending_hint(flagtree_hints) is not None:
+        raise ValueError(f"{_TMA_STORE_PENDING_HINT} hint is only supported for "
+                         "local-to-global TMA copies")
+    if is_tma_store:
+        _mark_tma_store_pending(flagtree_hints, _semantic, _generator)
+
     if tle_semantic.COMMON_IR_ENABLED:
         if mask is not None:
             raise ValueError("GPU CommonIR copy does not yet support masks")
