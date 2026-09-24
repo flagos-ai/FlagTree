@@ -92,7 +92,7 @@ def test_enable_i64_option_follows_the_toolkit(tmp_path, monkeypatch, capsys):
 
     # ... and the string make_llir appends follows the probe. The warning is
     # printed once: a serving process compiles many kernels.
-    asks_for_i64 = types.SimpleNamespace(enable_i64=True)
+    asks_for_i64 = types.SimpleNamespace(enable_i64=True, arch="gcu300")
     monkeypatch.setattr(toolkit, "toolkit_supports_enable_i64", lambda: False)
     assert compiler._enable_i64_pass_option(asks_for_i64) == ""
     assert "does not support enable_i64" in capsys.readouterr().out
@@ -101,7 +101,20 @@ def test_enable_i64_option_follows_the_toolkit(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(toolkit, "toolkit_supports_enable_i64", lambda: True)
     assert compiler._enable_i64_pass_option(asks_for_i64) == " enable_i64=true"
-    assert compiler._enable_i64_pass_option(types.SimpleNamespace(enable_i64=False)) == ""
+    assert compiler._enable_i64_pass_option(types.SimpleNamespace(enable_i64=False, arch="gcu300")) == ""
+
+
+@pytest.mark.parametrize("arch", ["gcu400", "gcu410"])
+def test_only_gcu300_is_probed(arch, monkeypatch):
+    """Later targets always know the option, so they are not probed for it."""
+    _, compiler, toolkit = _backend_and_modules()
+
+    def _unexpected():
+        raise AssertionError(f"{arch} must not be probed for enable_i64")
+
+    monkeypatch.setattr(toolkit, "toolkit_supports_enable_i64", _unexpected)
+    assert compiler._enable_i64_pass_option(types.SimpleNamespace(enable_i64=True, arch=arch)) == " enable_i64=true"
+    assert compiler._enable_i64_pass_option(types.SimpleNamespace(enable_i64=False, arch=arch)) == ""
 
 
 def test_enable_i64_probe_can_be_overridden(monkeypatch):

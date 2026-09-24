@@ -125,14 +125,15 @@ def _warn_enable_i64_dropped():
 def _enable_i64_pass_option(options):
     """The trailing ' enable_i64=true' for --convert-gpu-to-gcu, when it is usable.
 
-    The option is only emitted when the toolkit's parser knows it. A toolkit that
-    does not (tops1.9.10, for one) rejects the whole command, so every kernel
-    fails to compile, whether or not it uses 64-bit integers.
+    gcu300 is the only target whose toolkits can predate the option (tops1.9.10,
+    for one); such a toolkit rejects the whole command, so every kernel fails to
+    compile, whether or not it uses 64-bit integers. Later targets always know
+    the option, so they are not probed.
     See toolkit.toolkit_supports_enable_i64.
     """
     if not options.enable_i64:
         return ''
-    if not toolkit.toolkit_supports_enable_i64():
+    if options.arch == "gcu300" and not toolkit.toolkit_supports_enable_i64():
         _warn_enable_i64_dropped()
         return ''
     return ' enable_i64=true'

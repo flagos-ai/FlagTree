@@ -225,7 +225,8 @@ def get_bool_env(env, defaultValue=False):
 # 64-bit integers. 'enable_i64' is newer than some toolkits still in the field:
 # the tops1.9.10 toolkit answers with the marker below, and since the error is
 # raised while the pass is being constructed it fails every kernel, not only the
-# ones that use i64.
+# ones that use i64. Only the gcu300 toolkits can be that old, so only a gcu300
+# kernel asks this question; the probe uses gcu300 passes for the same reason.
 _ENABLE_I64_PROBE_OPTIONS = "--convert-gpu-to-gcu=chipset=gcu300 vector-bit-width=4096 enable_i64=true"
 _UNKNOWN_ENABLE_I64_MARKER = "no such option enable_i64"
 
@@ -240,6 +241,9 @@ def toolkit_supports_enable_i64():
     constructed, before any IR is visited, so an empty module is enough to get an
     answer. The exit status is deliberately ignored: a toolkit that knows the
     option may still object to an empty module.
+
+    Only gcu300 kernels ask, since no later target is served by a toolkit old
+    enough to predate the option.
 
     An inconclusive probe (no toolkit, timeout, crash) reports True. Dropping the
     option for a kernel that needs it would run 64-bit code through passes that
