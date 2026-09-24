@@ -607,7 +607,10 @@ class CMakeBuild(build_ext):
         ]
         cmake_args += [f"-D{option}={os.getenv(option)}" for option in passthrough_args if option in os.environ]
 
-        if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
+        # FlagPrism: its CUDA/CUPTI runtime shares the original profiler
+        # dependency discovery, even though FlagPrism and Proton are mutually
+        # exclusive implementations.
+        if (check_env_flag("TRITON_BUILD_PROTON", "ON") or FLAGPRISM_SETUP.enabled):  # Default Proton ON
             cmake_args += self.get_proton_cmake_args()
         cmake_args += FLAGPRISM_SETUP.cmake_args(self.build_lib)  # FlagPrism
         cmake_args += FLAGPRISM_SETUP.dependency_cmake_args(self)  # FlagPrism

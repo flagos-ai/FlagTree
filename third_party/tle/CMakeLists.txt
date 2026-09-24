@@ -78,4 +78,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endif()
 endif()
 
-add_subdirectory(test)
+# FlagPrism: package builds disable Triton C++ unit tests, so do not register
+# TLE lit tests that depend on the test-only triton-opt targets in that mode.
+if(TRITON_BUILD_UT)
+  add_subdirectory(test)
+endif()

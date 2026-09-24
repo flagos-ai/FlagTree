@@ -186,6 +186,9 @@ def test_build_helper_prefers_resolved_source_root(build_helper, monkeypatch, tm
         (None, False),
         ("ascend", True),
         ("iluvatar", True),
+        # FlagPrism: NVIDIA follows the CUDA/CUPTI path and is enabled by
+        # default when its backend is selected.
+        ("nvidia", True),
         ("enflame", False),
         ("tsingmicro", False),
         ("cambricon", False),
@@ -281,8 +284,7 @@ def test_non_ascend_explicit_flagprism_is_rejected_before_side_effects(flagprism
     # FlagPrism: retain the former diagnostic assertion for reference.
     # with pytest.raises(RuntimeError, match="ascend or iluvatar"):
     #     create("enflame")
-    # FlagPrism: include mthreads in the supported-backend diagnostic.
-    with pytest.raises(RuntimeError, match="ascend, iluvatar, or mthreads"):
+    with pytest.raises(RuntimeError, match="unset, ascend, iluvatar, mthreads, or nvidia"):
         create("enflame")
 
     assert not downloads

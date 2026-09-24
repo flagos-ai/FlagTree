@@ -10,6 +10,8 @@ from triton.runtime import _allocation
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver
 from triton.runtime._distributed import DistributedRtContext
+# FlagPrism: load the backend-neutral debugger launch gateway for CUDA kernels.
+from flagtree import _flagprism
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 include_dirs = [os.path.join(dirname, "include")]
@@ -792,6 +794,12 @@ class CudaLauncher(object):
         arg_idx = lambda x: (src.fn.arg_names.index(x), ) if isinstance(x, str) else x
         constants = {arg_idx(idx): value for idx, value in constants.items()}
         signature = {idx: value for idx, value in src.signature.items()}
+        # FlagPrism: reserve one trailing pointer only for instrumented CUDA
+        # kernels; stock CUDA kernels retain their original launcher ABI.
+        self.user_arg_count = len(signature)
+        self.metadata = metadata
+        if bool(getattr(metadata, "debug_launch_hidden_arg", False)):
+            signature[len(signature)] = "*i8"
         tensordesc_meta = getattr(metadata, "tensordesc_meta", None)
         src = make_launcher(constants, signature, tensordesc_meta)
         mod = compile_module_from_src(
@@ -821,25 +829,60 @@ class CudaLauncher(object):
                 return alloc_fn(alloc_size, align, stream)
             return None
 
-        global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align, _allocation._allocator)
-        # begin flagtree tle
-        # Grid distributed_barrier lowering follows CUDA cooperative_groups sync
-        # counter protocol, which assumes a well-defined initial counter state.
-        # Runtime scratch allocators may return uninitialized storage; for
-        # cooperative launches, clear scratch before kernel launch.
-        if self.launch_cooperative_grid and global_scratch is not None:
-            zero_ = getattr(global_scratch, "zero_", None)
-            if callable(zero_):
-                zero_()
-            else:
-                fill_ = getattr(global_scratch, "fill_", None)
-                if callable(fill_):
-                    fill_(0)
-        # end flagtree tle
-        profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
-                                           _allocation._profile_allocator)
-        self.launch(gridX, gridY, gridZ, stream, function, self.launch_cooperative_grid, self.launch_pdl,
-                    global_scratch, profile_scratch, *args)
+        # FlagPrism: the original scratch allocation block is intentionally
+        # kept commented for reference. Allocation moved into ``launch`` so a
+        # debugger prepare/launch cycle has exactly one allocation per launch.
+        # global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align, _allocation._allocator)
+        # # begin flagtree tle
+        # # Grid distributed_barrier lowering follows CUDA cooperative_groups
+        # # sync counter protocol, which assumes a well-defined initial counter
+        # # state. Runtime scratch allocators may return uninitialized storage;
+        # # for cooperative launches, clear scratch before kernel launch.
+        # if self.launch_cooperative_grid and global_scratch is not None:
+        #     zero_ = getattr(global_scratch, "zero_", None)
+        #     if callable(zero_):
+        #         zero_()
+        #     else:
+        #         fill_ = getattr(global_scratch, "fill_", None)
+        #         if callable(fill_):
+        #             fill_(0)
+        # # end flagtree tle
+        # profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
+        #                                    _allocation._profile_allocator)
+        # FlagPrism: keep allocation and the stock CUDA call in one wrapper so
+        # debugger-owned hidden arguments are appended after user arguments.
+        def launch(hidden_args=()):
+            global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align,
+                                              _allocation._allocator)
+            if self.launch_cooperative_grid and global_scratch is not None:
+                zero_ = getattr(global_scratch, "zero_", None)
+                if callable(zero_):
+                    zero_()
+                else:
+                    fill_ = getattr(global_scratch, "fill_", None)
+                    if callable(fill_):
+                        fill_(0)
+            profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
+                                               _allocation._profile_allocator)
+            self.launch(gridX, gridY, gridZ, stream, function, self.launch_cooperative_grid, self.launch_pdl,
+                        global_scratch, profile_scratch, *args, *hidden_args)
+
+        if not bool(getattr(self.metadata, "debug_enabled", False)):
+            return launch()
+
+        user_args = args[-self.user_arg_count:] if self.user_arg_count else ()
+        launch_metadata = args[1] if len(args) > 1 else None
+        # FlagPrism: route NVIDIA launches through the backend-neutral debugger
+        # gateway; the CUDA runtime adapter owns the device transfer.
+        with _flagprism.debugger_launch_context(
+                "cuda",
+                self.metadata,
+            (gridX, gridY, gridZ),
+                stream,
+                launch_metadata,
+                user_args,
+        ) as hidden_args:
+            return launch(hidden_args)
 
 
 class CudaDriver(GPUDriver):
@@ -866,9 +909,13 @@ class CudaDriver(GPUDriver):
 
     @staticmethod
     def is_active():
-        # flagtree nvidia
+        # FlagPrism: a specialized NVIDIA package records its backend in the
+        # marker file; that marker must not disable the NVIDIA driver itself.
         from triton._flagtree_backend import FLAGTREE_BACKEND
-        if FLAGTREE_BACKEND and FLAGTREE_BACKEND != "tileir":
+        # FlagPrism: replace Triton's original single-backend guard so the
+        # NVIDIA marker remains active for the CUDA backend.
+        # if FLAGTREE_BACKEND and FLAGTREE_BACKEND != "tileir":
+        if FLAGTREE_BACKEND and FLAGTREE_BACKEND not in {"tileir", "nvidia"}:
             return False
 
         try:

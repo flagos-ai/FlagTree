@@ -51,6 +51,22 @@ Some backends support multiple Triton versions; only the latest version is shown
 
 FlagTree extension components are currently available on some backends:
 
+When building the optional FlagPrism component from a separate checkout, the
+source directory and fork revision can be selected without embedding a
+machine-specific path in the repository:
+
+```bash
+FLAGTREE_BACKEND=nvidia FLAGPRISM_BACKEND=nvidia \
+TRITON_BUILD_FLAGPRISM=ON \
+FLAGPRISM_SOURCE_DIR=/path/to/FlagPrism \
+FLAGPRISM_REPOSITORY_URL=https://github.com/Jacob-yen/FlagPrism.git \
+FLAGPRISM_REPOSITORY_REF=nvidia-dev-202609 \
+python -m pip install . --no-build-isolation
+```
+
+`FLAGPRISM_REPOSITORY_URL` and `FLAGPRISM_REPOSITORY_REF` are used only when
+the configured source checkout is absent.
+
 |Branch  |Backend|Triton version|Extension components|
 |:-------|:------|:-------------|:-------------------|
 |[main](https://github.com/flagos-ai/flagtree/tree/main)|[nvidia](/third_party/nvidia/)<br>[enflame](/third_party/enflame/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct GPU](https://github.com/flagos-ai/FlagTree/wiki/TLE#331-gpu)<br>[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|

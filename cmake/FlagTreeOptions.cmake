@@ -114,8 +114,8 @@ endmacro()
 # FlagPrism: configure the external profiler/debugger after base options exist.
 macro(flagtree_configure_flagprism)
   set(_flagprism_default OFF)
-  # FlagPrism: enable the external tools for the supported mthreads backend.
-  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
+  # FlagPrism: enable the external tools for every supported vendor backend.
+  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|nvidia)$")
     set(_flagprism_default ON)
   endif()
   option(TRITON_BUILD_FLAGPRISM
@@ -123,11 +123,15 @@ macro(flagtree_configure_flagprism)
          ${_flagprism_default})
 
   if(TRITON_BUILD_FLAGPRISM)
-    # FlagPrism: accept mthreads as a supported integration backend.
-    if(NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads)$")
+    # FlagPrism: accept all vendor integrations and an explicit generic build.
+    if(NOT (NOT FLAGTREE_BACKEND OR
+            FLAGTREE_BACKEND STREQUAL "ascend" OR
+            FLAGTREE_BACKEND STREQUAL "iluvatar" OR
+            FLAGTREE_BACKEND STREQUAL "mthreads" OR
+            FLAGTREE_BACKEND STREQUAL "nvidia"))
       message(FATAL_ERROR
         "TRITON_BUILD_FLAGPRISM is only supported when "
-        "FLAGTREE_BACKEND is ascend, iluvatar, or mthreads.")
+        "FLAGTREE_BACKEND is unset, ascend, iluvatar, mthreads, or nvidia.")
     endif()
     if(TRITON_BUILD_PROTON)
       message(FATAL_ERROR
@@ -225,14 +229,24 @@ macro(flagtree_configure_core_source)
     include_directories(${PROJECT_BINARY_DIR}/third_party/metax/plugin)
   endif()
 
+  # FlagPrism: NVIDIA's backend is an in-tree codegen extension and still
+  # depends on Triton's core dialect/tablegen targets. Keep those targets in
+  # the specialized NVIDIA package build so the documented wheel path can
+  # configure from a clean CMake directory.
   if(FLAGTREE_BACKEND MATCHES
-     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu|spacemit)$")
+     "^(nvidia|xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu|spacemit)$")
     include_directories(${PROJECT_SOURCE_DIR}/include)
     include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
     if(FLAGTREE_BACKEND STREQUAL "xpu")
       include_directories(${PROJECT_SOURCE_DIR}/third_party/nvidia/include)
       include_directories(${PROJECT_BINARY_DIR}/third_party/nvidia/include) # Tablegen'd files
       add_subdirectory(third_party/nvidia/include)
+    endif()
+    # FlagPrism: the shared Gluon Python binding references AMD layout types
+    # even in the NVIDIA wheel, so generate the lightweight AMD IR dependency
+    # for NVIDIA package builds as well.
+    if(FLAGTREE_BACKEND STREQUAL "xpu" OR
+       FLAGTREE_BACKEND STREQUAL "nvidia")
       include_directories(${PROJECT_SOURCE_DIR}/third_party/amd/include)
       include_directories(${PROJECT_BINARY_DIR}/third_party/amd/include) # Tablegen'd files
       add_subdirectory(third_party/amd/include)
@@ -255,6 +269,8 @@ macro(flagtree_configure_core_source)
             NVWSTransformsIncGen)
         endif()
       endforeach()
+    elseif(FLAGTREE_BACKEND STREQUAL "nvidia")
+      add_subdirectory(third_party/amd/lib/Dialect/TritonAMDGPU)
     endif()
   elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
     set(TRITON_CORE_SOURCE_DIR
@@ -354,13 +370,10 @@ endmacro()
 
 
 macro(flagtree_configure_python_plugins)
-  # We always build proton dialect because core Triton conversion libraries link
-  # ProtonIR. XPU-specific Proton GPU lowering wrappers are disabled inside the
-  # Proton plugin instead of skipping the whole dialect.
-  # FlagPrism: its external component supplies ProtonIR and dialect registration.
-  # if(FLAGTREE_BACKEND STREQUAL "hcu")
+  # FlagPrism: the external component supplies ProtonIR and dialect
+  # registration, so FlagTree must not register a duplicate Proton plugin.
   if(TRITON_BUILD_FLAGPRISM)
-    # FlagPrism supplies the ProtonIR target and dialect registration.
+    # FlagPrism: keep the built-in Proton plugin disabled for this build.
   elseif(FLAGTREE_BACKEND STREQUAL "hcu")
     list(APPEND TRITON_PLUGIN_DIRS
       "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")
@@ -649,6 +662,11 @@ macro(flagtree_added_python_src)
 
   if(FLAGTREE_BACKEND STREQUAL "xpu")
     target_sources(triton PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xpu/python/src/mlir_pass_abi_shim.cc)
+  endif()
+  # FlagPrism: gluon_ir.cc exposes shared AMD layout helpers, so the NVIDIA
+  # package links the generated AMD dialect definitions used by that file.
+  if(FLAGTREE_BACKEND STREQUAL "xpu" OR
+     FLAGTREE_BACKEND STREQUAL "nvidia")
     add_dependencies(triton TritonAMDGPUTableGen TritonAMDGPUAttrDefsIncGen)
     target_link_libraries(triton PRIVATE TritonAMDGPUIR TritonAMDUtils)
   endif()

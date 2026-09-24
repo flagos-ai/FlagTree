@@ -145,7 +145,10 @@ struct GluonOpBuilder : public TritonOpBuilder {
   }
 };
 
-struct GluonLayouts {
+// FlagPrism: pybind11 intentionally hides its C++ namespace.  This holder is
+// only used by the shared Gluon binding, so keep its visibility consistent
+// when NVIDIA package builds also instantiate the AMD layout types.
+struct __attribute__((visibility("hidden"))) GluonLayouts {
   py::handle AutoLayout;
   py::handle CoalescedLayout;
   py::handle BlockedLayout;

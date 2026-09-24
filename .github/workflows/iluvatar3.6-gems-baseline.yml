@@ -46,7 +46,23 @@ jobs:
       gpu-env-var: CUDA_VISIBLE_DEVICES
       flaggems-tag: 'v5.3.5'
       flagtree-build-command: |-
+        # FlagPrism: offline Iluvatar builds must receive the nlohmann/json
+        # root explicitly; the root contains include/nlohmann/json.hpp.
+        source ~/env.sh
         set -x
+        if [[ -z "${JSON_SYSPATH:-}" ]]; then
+          for json_root in /usr /usr/local "$HOME/.triton/json" /opt/deps/json; do
+            if [[ -f "$json_root/include/nlohmann/json.hpp" ]]; then
+              export JSON_SYSPATH="$json_root"
+              break
+            fi
+          done
+        fi
+        if [[ -z "${JSON_SYSPATH:-}" ]] ||
+           [[ ! -f "$JSON_SYSPATH/include/nlohmann/json.hpp" ]]; then
+          echo "::error::FlagPrism: JSON_SYSPATH must point to a directory containing include/nlohmann/json.hpp"
+          exit 1
+        fi
         export FLAGTREE_BACKEND=iluvatar
         export TRITON_OFFLINE_BUILD=1
         export TRITON_BUILD_PROTON=OFF

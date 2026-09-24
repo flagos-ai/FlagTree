@@ -264,17 +264,22 @@ class FlagPrismSetup:
         # FlagPrism: use one source-root base regardless of the caller's cwd.
         self.project_root = Path(project_root).resolve()
         backend = configs.flagtree_backend or ""
-        # FlagPrism: register all supported integration backends together.
-        supported_backends = {"ascend", "iluvatar", "mthreads"}
-        default = "ON" if backend in supported_backends else "OFF"
+        # FlagPrism: include the upstream mthreads integration and NVIDIA's
+        # CUDA/CUPTI integration in the supported component builds.
+        supported_backends = {"", "ascend", "iluvatar", "mthreads", "nvidia"}
+        # FlagPrism: keep the generic build opt-in, while vendor builds retain
+        # the existing automatic-enable behavior.
+        default_backends = {"ascend", "iluvatar", "mthreads", "nvidia"}
+        default = "ON" if backend in default_backends else "OFF"
         self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
         self.build_config = None
         self._dependency_cmake_args = dependency_cmake_args
 
         if self.enabled and backend not in supported_backends:
-            # FlagPrism: report the newly supported mthreads backend.
+            # FlagPrism: report all supported backend choices in diagnostics.
             raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
-                               "FLAGTREE_BACKEND=ascend, iluvatar, or mthreads.")
+                               "FLAGTREE_BACKEND is unset, ascend, iluvatar, "
+                               "mthreads, or nvidia.")
         if not self.enabled:
             return
         if self._check_env_flag("TRITON_BUILD_PROTON"):
@@ -389,11 +394,11 @@ def write_flagtree_backend_file(triton_pkg_dir=None):
 
 
 def write_backend_file_to_build_lib(build_lib):
-    # xpu/iluvatar: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
-    # copies .py by default, so this extension-less marker (read by
-    # triton._flagtree_backend to make XPUDriver.is_active() return True
-    # without any env var) was missing from the install, causing
-    # "0 active drivers". Write it into build_lib/triton so it is packaged.
+    # xpu/iluvatar: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py
+    # only copies .py by default, so this extension-less marker (read by
+    # triton._flagtree_backend to make the specialized driver's is_active()
+    # return True without any env var) was missing from the install, causing
+    # "0 active drivers". Keep this limited to the backends that require it.
     if flagtree_backend in ("xpu", "iluvatar"):
         try:
             write_flagtree_backend_file(os.path.join(build_lib, "triton"))
