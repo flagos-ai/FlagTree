@@ -149,6 +149,53 @@ module {
 
 // -----
 
+module attributes {"ttg.num-warps" = 4 : i32} {
+  llvm.func @_sink(!llvm.ptr)
+
+  // A regionful helper remains a call in frontend TTIR, but the module inliner
+  // must clone it into both warp-specialize execution regions before register
+  // allocation and partition lowering.
+  // CHECK-LABEL: tt.func public @inline_dsl_region_helper_in_warp_specialize
+  // CHECK: ttg.warp_specialize
+  // CHECK: default
+  // CHECK-NOT: tt.call @dsl_region_ws_worker
+  // CHECK: "tle.dsl_region"
+  // CHECK: llvm.call @_sink
+  // CHECK: partition0
+  // CHECK-NOT: tt.call @dsl_region_ws_worker
+  // CHECK: "tle.dsl_region"
+  // CHECK: llvm.call @_sink
+  // CHECK-NOT: tt.func private @dsl_region_ws_worker
+  tt.func public @inline_dsl_region_helper_in_warp_specialize(
+      %arg0: !tt.ptr<i32>) {
+    ttg.warp_specialize(%arg0) attributes {requestedRegisters = array<i32: 48>}
+    default {
+      tt.call @dsl_region_ws_worker(%arg0) : (!tt.ptr<i32>) -> ()
+      ttg.warp_yield
+    }
+    partition0(%capture: !tt.ptr<i32>) num_warps(2) {
+      tt.call @dsl_region_ws_worker(%capture) : (!tt.ptr<i32>) -> ()
+      ttg.warp_return
+    } : (!tt.ptr<i32>) -> ()
+    tt.return
+  }
+
+  tt.func private @dsl_region_ws_worker(%arg0: !tt.ptr<i32>)
+      attributes {noinline = false, "ttg.num-warps" = 2 : i32} {
+    %ptr = "tle.dsl_region"(%arg0) ({
+    ^bb0(%input: !tt.ptr<i32>):
+      %raw = "tle.extract_ptr"(%input) : (!tt.ptr<i32>) -> !llvm.ptr
+      "tle.yield"(%raw) : (!llvm.ptr) -> ()
+    }) {arg_dialect = "llvm", output_operand_indices = array<i32: 0>,
+        region_dialect = "llvm", tle_raw.source_id = "inline-ws-test"}
+        : (!tt.ptr<i32>) -> !llvm.ptr
+    llvm.call @_sink(%ptr) : (!llvm.ptr) -> ()
+    tt.return
+  }
+}
+
+// -----
+
 module {
   // TLE does not opt calls nested in its isolated region into generic
   // inlining.
