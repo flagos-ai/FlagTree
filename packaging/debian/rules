@@ -40,19 +40,6 @@ override_dh_auto_install:
 	# Strip *.dist-info/RECORD entries that reference removed bin/ paths,
 	# otherwise dh_python3 warns. Easiest: drop RECORD; pip doesn't need it.
 	rm -f $(PYDIR)/flagtree-*.dist-info/RECORD
-	# triton computes its compile-cache key by hashing _C/libtriton.so
-	# (python/triton/runtime/cache.py, triton_key). The wheel built for the
-	# deb line names the module libtriton.cpython-3XY-<arch>.so, so every
-	# kernel compile fails with FileNotFoundError on the installed package.
-	# Normalise to the name upstream wheels ship (the import system accepts
-	# both).
-	@c="$(PYDIR)/triton/_C"; \
-	if [ ! -e "$$c/libtriton.so" ]; then \
-		suffixed="$$(ls -1 "$$c"/libtriton.cpython-*.so 2>/dev/null | head -1)"; \
-		test -n "$$suffixed"; \
-		mv "$$suffixed" "$$c/libtriton.so"; \
-	fi; \
-	test -f "$$c/libtriton.so"
 
 # The wheel is CPython-minor specific (cpXY tag); depend on exactly that
 # interpreter package (python3.12 exists on 22.04 via deadsnakes and on 24.04
@@ -71,6 +58,15 @@ override_dh_shlibdeps:
 	# at packaging time and cannot be expressed via shlibs anyway, so skip
 	# automatic ${shlibs:Depends} lookup for them.
 	dh_shlibdeps -- --ignore-missing-info
+
+# triton computes its compile-cache key by hashing _C/libtriton.so
+# (python/triton/runtime/cache.py, triton_key). The wheel ships that name,
+# but dh_python3 renames extension modules to libtriton.cpython-3XY-<arch>.so,
+# after which every kernel compile on the installed package fails with
+# FileNotFoundError. Keep the upstream file names.
+override_dh_python3:
+	dh_python3 --no-ext-rename
+	test -f debian/$(PKG)/usr/lib/python3/dist-packages/triton/_C/libtriton.so
 
 override_dh_strip:
 	# libtriton/libproton must keep their symbol tables (Triton's JIT does
