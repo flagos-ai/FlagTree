@@ -98,47 +98,6 @@ def _patch_kernel_for_llir(kernel, arch):
     return kernel
 
 
-def _default_enable_i64():
-    """Whether the passes should handle 64-bit integers when the caller is silent.
-
-    ENABLE_I64_CHECK=0 switches the i64 verifier off, which is the same thing as
-    telling the passes to deal with i64 themselves; that is what enable_i64 means
-    to make_gcuir and make_llir.
-    """
-    return not toolkit.get_bool_env("ENABLE_I64_CHECK", True)
-
-
-_warned_enable_i64_dropped = False
-
-
-def _warn_enable_i64_dropped():
-    global _warned_enable_i64_dropped
-    if _warned_enable_i64_dropped:
-        return
-    _warned_enable_i64_dropped = True
-    print("warning: the GCU toolkit in " + toolkit.TOOLKIT_PATH +
-          " does not support enable_i64, dropping it from --convert-gpu-to-gcu. "
-          "Kernels that rely on 64-bit integer handling may be miscompiled; "
-          "set TRITON_GCU_ENABLE_I64=1 to send the option anyway.")
-
-
-def _enable_i64_pass_option(options):
-    """The trailing ' enable_i64=true' for --convert-gpu-to-gcu, when it is usable.
-
-    gcu300 is the only target whose toolkits can predate the option (tops1.9.10,
-    for one); such a toolkit rejects the whole command, so every kernel fails to
-    compile, whether or not it uses 64-bit integers. Later targets always know
-    the option, so they are not probed.
-    See toolkit.toolkit_supports_enable_i64.
-    """
-    if not options.enable_i64:
-        return ''
-    if options.arch == "gcu300" and not toolkit.toolkit_supports_enable_i64():
-        _warn_enable_i64_dropped()
-        return ''
-    return ' enable_i64=true'
-
-
 def make_ttir(mod, metadata, options):
     metadata['ptr_int_args'] = sorted(collect_ptr_int_args(str(mod)))
     # Validate num_warps constraints
@@ -309,9 +268,9 @@ def make_llir(mod, metadata, options):
         ' num-warps=' + str(options.num_warps), '-convert-warp-specialize-to-scf', '-loop-invariant-code-motion',
         '-convert-scf-to-cf', '-canonicalize', '-cse', '--symbol-dce', '-gcu-remove-transform-ir',
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
-        '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse', '--convert-gpu-to-gcu=chipset=' +
-        options.arch + ' vector-bit-width=' + str(options.vector_length * 8) + _enable_i64_pass_option(options),
-        '--gcu-attach-target=arch=' + options.arch +
+        '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse',
+        '--convert-gpu-to-gcu=chipset=' + options.arch + ' vector-bit-width=' + str(options.vector_length * 8) +
+        (' enable_i64=true' if options.enable_i64 else ''), '--gcu-attach-target=arch=' + options.arch +
         ''.join([f' l={path}' for name, path in (options.extern_libs or []) if path]), '-convert-index-to-llvm',
         '-gpu-to-llvm', '-convert-llvm-to-gcu', '-alloca-to-entry', '-canonicalize'
     ]
@@ -668,19 +627,10 @@ class _GCUBackend(BaseBackend):
         else:
             args["enable_stride0"] = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_GATHER")
 
-        # enable_i64 comes from ENABLE_I64 when the caller asks for it, and from
-        # the environment otherwise. Derive the environment default only when the
-        # key is absent, because triton parses these options twice: _pack_args
-        # parses the kernel's keyword arguments, then _do_compile hands the
-        # resolved dataclass back to compile() as a dict (options.__dict__), so
-        # the second parse always finds the key present. Re-deriving it there is
-        # what turned a resolved False into True under ENABLE_I64_CHECK=0 and made
-        # make_llir emit an option the toolkit then rejected.
-        # https://github.com/flagos-ai/FlagTree/issues/1233
         if "ENABLE_I64" in opts:
             args["enable_i64"] = opts["ENABLE_I64"]
-        elif "enable_i64" not in opts:
-            args["enable_i64"] = _default_enable_i64()
+        elif "enable_i64" in opts and not opts["enable_i64"]:
+            args["enable_i64"] = not toolkit.get_bool_env("ENABLE_I64_CHECK", True)
 
         return GCUOptions(**args)
 
