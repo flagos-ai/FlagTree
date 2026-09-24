@@ -610,6 +610,21 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
   int computeCapability;
 };
 
+// Element-width suffix of the AIU bulk copy instruction.
+std::string getAIUElemTypeSuffix(int elementSizeInBytes) {
+  switch (elementSizeInBytes) {
+  case 1:
+    return ".b8";
+  case 2:
+    return ".b16";
+  case 4:
+    return ".b32";
+  default:
+    assert(false && "AIU copy only supports b8, b16 and b32 element types");
+    return "";
+  }
+}
+
 struct AsyncAIUCopyGlobalToLocalOpConversion
     : public ConvertOpToLLVMPattern<
           triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp> {
@@ -636,8 +651,9 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
     int elementSizeInBytes =
         op.getResult().getType().getElementType().getIntOrFloatBitWidth() / 8;
-    assert((elementSizeInBytes == 2 || elementSizeInBytes == 1) &&
-           "AIU load only supports b16 and b8 element type on PPU0010");
+    assert((elementSizeInBytes == 4 || elementSizeInBytes == 2 ||
+            elementSizeInBytes == 1) &&
+           "AIU load only supports b32, b16 and b8 element type on PPU0010");
 
     int totalNumElements = product(op.getResult().getType().getShape());
     int64_t size = totalNumElements * elementSizeInBytes;
@@ -692,7 +708,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
 
     unsigned numCopies = tileC / channelElemsPerCTA;
     //@$0
-    std::string dtype = (elementSizeInBytes == 2) ? ".b16" : ".b8";
+    std::string dtype = getAIUElemTypeSuffix(elementSizeInBytes);
     std::string aiuInst =
         "ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
         std::to_string(rank) + "d" + dtype +
@@ -838,7 +854,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     }
     //@$0
     std::string aiuInst;
-    std::string dtype = (elementSizeInBytes == 2) ? ".b16" : ".b8";
+    std::string dtype = getAIUElemTypeSuffix(elementSizeInBytes);
     aiuInst = "ppu.cp.async.aiu.bulk.tensor.shared.global.2d.tile.padz.swzl" +
               dtype +
               "[$0], [$1], {$2, $3, $4}, {$5, $6, $7}, {$8, $9}, {$10, $11, "
