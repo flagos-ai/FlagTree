@@ -571,6 +571,10 @@ struct ConvertTritonLoadToBufferLoad : public mlir::OpRewritePattern<SourceOp> {
   mlir::LogicalResult
   matchAndRewrite(SourceOp op, PatternRewriter &rewriter) const override {
     LDBG("Try to convert: " << op);
+    // Temporarily skip buffer conversion to preserve volatile semantics.
+    if (op.getIsVolatile())
+      return rewriter.notifyMatchFailure(
+          op, "temporarily skipping buffer conversion for volatile loads");
     Value ptr = op.getOperand(0);
 
     if (toDodgeBug(op)) {
