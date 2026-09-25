@@ -485,6 +485,29 @@ def TTNG_AsyncTMAScatterOp : TTNG_Op<"async_tma_scatter"> {
   let hasVerifier = 1;
 }
 
+#ifdef __TLE__
+def TTNG_TMAStoreWaitOp : TTNG_Op<"async_tma_store_wait"> {
+  let summary = "wait until all the inputs are read.";
+  let arguments = (ins I32Attr:$pendings, Variadic<TTG_MemDescType>:$sources);
+  let description = [{
+    Wait until all the read operations are done from the associated store operations.
+    This is needed before the shared memory can be written to.
+
+    `sources` optionally names the shared-memory buffers whose reads this wait
+    completes. The wait itself is not buffer-specific; the operands keep those
+    buffers live until the wait, so that shared-memory allocation cannot hand
+    their offsets to a later allocation or scratch buffer while the TMA engine
+    may still be reading them.
+  }];
+
+  let assemblyFormat = "($sources^ `:` type($sources))? attr-dict";
+
+  let builders = [
+    OpBuilder<(ins "uint32_t":$pendings),
+              [{ build($_builder, $_state, pendings, ValueRange()); }]>
+  ];
+}
+#else
 def TTNG_TMAStoreWaitOp : TTNG_Op<"async_tma_store_wait"> {
   let summary = "wait until all the inputs are read.";
   let arguments = (ins I32Attr:$pendings);
@@ -495,6 +518,7 @@ def TTNG_TMAStoreWaitOp : TTNG_Op<"async_tma_store_wait"> {
 
   let assemblyFormat = "attr-dict";
 }
+#endif // __TLE__
 
 def TTNG_TCGen5MMAOp : TTNG_Op<"tc_gen5_mma", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
