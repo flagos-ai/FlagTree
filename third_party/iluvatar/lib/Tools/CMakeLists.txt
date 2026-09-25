@@ -1,4 +1,4 @@
-add_triton_library(TritonTools
+flagtree_add_iluvatar_library(TritonTools
   GenericSwizzling.cpp
   LayoutUtils.cpp
   LinearLayout.cpp

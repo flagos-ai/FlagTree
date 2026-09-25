@@ -1,4 +1,4 @@
-add_triton_library(TritonNvidiaGPUIR
+flagtree_add_iluvatar_library(TritonNvidiaGPUIR
   Dialect.cpp
   TensorMemoryUtils.cpp
   Ops.cpp

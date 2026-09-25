@@ -10,7 +10,7 @@ else()
     set(_ILUVATAR_PROTON_LIBS "")
 endif()
 
-add_triton_library(TritonToTritonGPU
+flagtree_add_iluvatar_library(TritonToTritonGPU
     RelayoutTritonGPU.cpp
     TritonGPUConversion.cpp
     TritonToTritonGPUPass.cpp

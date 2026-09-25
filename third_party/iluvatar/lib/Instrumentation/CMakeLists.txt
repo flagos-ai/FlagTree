@@ -3,7 +3,7 @@ set(GPU_INSTRUMENTATION_PASSES
     )
 
 set(PrintLoadStoreMemSpaces_SOURCES
-    PrintLoadStoreMemSpaces.cpp
+    ${PROJECT_SOURCE_DIR}/lib/Instrumentation/PrintLoadStoreMemSpaces.cpp
     )
 
 

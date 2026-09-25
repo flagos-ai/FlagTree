@@ -1,4 +1,4 @@
-add_triton_library(TritonInstrumentIR
+flagtree_add_iluvatar_library(TritonInstrumentIR
   Dialect.cpp
   FunctionBuilder.cpp
   Ops.cpp

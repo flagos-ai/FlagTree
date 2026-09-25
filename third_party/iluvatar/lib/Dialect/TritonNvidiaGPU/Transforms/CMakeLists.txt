@@ -1,4 +1,4 @@
-add_triton_library(TritonNvidiaGPUTransforms
+flagtree_add_iluvatar_library(TritonNvidiaGPUTransforms
   CheckMatmulTwoCTAs.cpp
   FenceInsertion.cpp
   InterleaveTMem.cpp

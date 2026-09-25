@@ -1,4 +1,4 @@
-add_triton_library(TritonGPUToLLVM
+flagtree_add_iluvatar_library(TritonGPUToLLVM
     DotOpToLLVM/FMA.cpp
     DotOpToLLVM/FMADotUtility.cpp
     AllocateSharedMemory.cpp
