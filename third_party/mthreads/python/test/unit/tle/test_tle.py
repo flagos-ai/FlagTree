@@ -37,8 +37,10 @@ def test_tle_language_import_exports_load_signature():
         "alias",
         "alias_offset_bytes",
         "nv_mma_shared_layout",
+        "capacity",
         "_semantic",
     ]
+    assert inspect.signature(tle.gpu.alloc).parameters["capacity"].default is None
     assert list(inspect.signature(tle.gpu.copy).parameters) == [
         "src",
         "dst",

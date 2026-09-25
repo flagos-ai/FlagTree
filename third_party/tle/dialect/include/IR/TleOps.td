@@ -288,6 +288,13 @@ def Tle_WGMMAOp : Tle_Op<"wgmma", [
     descriptor, and the accumulator/result are ordinary tensor values in the
     surrounding IR layout. `triton-tle-lower-wgmma` rewrites this op to
     `ttg.convert_layout` plus `ttng.warp_group_dot`.
+
+    Logical-domain planning infers `active_n` and `active_k` from allocation
+    shapes and tensor dataflow. These internal attributes record static logical
+    extents inside the physical carrier. They do not change tensor or memdesc
+    types. `active_n` defines only result columns `[0, active_n)`; the remaining
+    physical carrier columns are unspecified. `active_k` reduces only over K
+    `[0, active_k)`.
   }];
 
   let arguments = (ins
@@ -296,10 +303,31 @@ def Tle_WGMMAOp : Tle_Op<"wgmma", [
     TT_FpIntTensor:$c,
     DefaultValuedAttr<TT_InputPrecisionAttr, "::mlir::triton::InputPrecision::IEEE">:$inputPrecision,
     DefaultValuedAttr<I32Attr, "0">:$maxNumImpreciseAcc,
-    DefaultValuedAttr<BoolAttr, "true">:$isAsync
+    DefaultValuedAttr<BoolAttr, "true">:$isAsync,
+    OptionalAttr<I32Attr>:$active_n,
+    OptionalAttr<I32Attr>:$active_k
   );
 
   let results = (outs TT_FpIntTensor:$d);
+
+  // Preserve the pre-active-extent C++ builder API. The generated full builder
+  // additionally accepts active_n/active_k attributes.
+  let builders = [
+    OpBuilder<(ins
+      "::mlir::Type":$d,
+      "::mlir::Value":$a,
+      "::mlir::Value":$b,
+      "::mlir::Value":$c,
+      CArg<"::mlir::triton::InputPrecision",
+           "::mlir::triton::InputPrecision::IEEE">:$inputPrecision,
+      CArg<"uint32_t", "0">:$maxNumImpreciseAcc,
+      CArg<"bool", "true">:$isAsync
+    ), [{
+      build($_builder, $_state, d, a, b, c, inputPrecision,
+            maxNumImpreciseAcc, isAsync, /*active_n=*/IntegerAttr(),
+            /*active_k=*/IntegerAttr());
+    }]>
+  ];
 
   let assemblyFormat = [{
     $a`,` $b`,` $c attr-dict `:` type($a) `*`
@@ -310,6 +338,7 @@ def Tle_WGMMAOp : Tle_Op<"wgmma", [
 }
 
 def Tle_WGMMAWaitOp : Tle_Op<"wgmma_wait", [
+    SameOperandsAndResultEncoding,
     TypesMatchWith<"result's type matches input's type", "output", "input", "$_self">
 ]> {
   let summary = "wait for TLE dialect-level asynchronous Hopper WGMMA";

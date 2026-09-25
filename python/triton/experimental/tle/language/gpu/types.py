@@ -532,6 +532,36 @@ def _layout_from_reshaped_memdesc(handle, shape, element_ty, builder) -> shared_
     raise ValueError(f"unsupported inferred shared-memory reshape encoding: {kind}")
 
 
+class _logical_tensor_descriptor_type(tl.tensor_descriptor_type):
+    """Logical block metadata with the ordinary descriptor IR representation."""
+
+    def __init__(self, carrier_type, logical_shape):
+        super().__init__(carrier_type.block_type, carrier_type.shape_type, carrier_type.strides_type)
+        self.logical_shape = tuple(logical_shape)
+
+    def __eq__(self, other):
+        return super().__eq__(other) and self.logical_shape == other.logical_shape
+
+    def mangle(self):
+        return super().mangle() + "_TLE" + "_".join(map(str, self.logical_shape))
+
+    def _unflatten_ir(self, handles, cursor):
+        descriptor, cursor = super()._unflatten_ir(handles, cursor)
+        return _logical_tensor_descriptor(descriptor, self.logical_shape), cursor
+
+
+class _logical_tensor_descriptor(tl.tensor_descriptor):
+    """Python descriptor exposing a logical block over a power-of-two carrier."""
+
+    def __init__(self, descriptor, logical_shape):
+        super().__init__(descriptor.handle, descriptor.shape.values, descriptor.strides.values, descriptor.block_type)
+        self.type = _logical_tensor_descriptor_type(self.type, logical_shape)
+
+    @property
+    def block_shape(self):
+        return self.type.logical_shape
+
+
 class buffered_tensor(tl.base_value):
     """
     A symbolic type representing a tensor allocated in a manually managed buffer
@@ -599,8 +629,10 @@ class buffered_tensor(tl.base_value):
         if stage_ty != tl.int32:
             raise ValueError(f"buffered_tensor.slot stage must be int32, got {stage_ty}")
 
+        # A slot is an ordinary carrier view. Logical extents are seeded on
+        # local_alloc and propagated through memdesc_index in TTIR.
         slot_shape = list(self.shape[1:])
-        is_subview = self.type.alloc_shape != self.shape
+        is_subview = self.type.alloc_shape != list(self.shape)
         # A slot of a subview must retain the complete allocation shape.  The
         # extra leading dimension records the ring-buffer allocation while
         # the trailing dimensions provide the physical stride of one stage.
@@ -697,21 +729,29 @@ class buffered_tensor(tl.base_value):
 
     def make_permute(self, handle, dims):
         permuted_layout = self.type.layout.make_permute(dims)
+        alloc_shape = self.type.alloc_shape
+        prefix_len = len(alloc_shape) - len(self.shape)
+        permuted_alloc_shape = alloc_shape[:prefix_len] + [alloc_shape[prefix_len + d] for d in dims]
         return buffered_tensor(
             handle,
             self.dtype,
             [self.shape[d] for d in dims],
-            self.type.num,
             self.type.storage,
             permuted_layout,
+            self.type.semantic,
+            alloc_shape=permuted_alloc_shape,
         )
 
 
-class buffered_tensor_type(tl.block_type):
+class buffered_tensor_type(tl.base_type):
+    """Type of a memory-backed buffer, represented by a memdesc in IR."""
 
     def __init__(self, element_ty: tl.dtype, shape: List, storage: scope, layout: Optional[shared_layout] = None,
                  semantic: TritonSemantic = None, alloc_shape: List = None):
-        super().__init__(element_ty, shape)
+        self.element_ty = element_ty
+        self.shape = tuple(tl._unwrap_shape(shape))
+        self.numel = math.prod(self.shape)
+        self.name = f"<{self.shape}, {self.element_ty}>"
         # Storage
         self.storage = storage
         # layout encoding
@@ -720,6 +760,17 @@ class buffered_tensor_type(tl.block_type):
         # Buffer number. 0 means a single buffer, 1+ means a buffer array.
         assert semantic, "buffered_tensor array must be created with a builder"
         self.semantic = semantic
+
+    @property
+    def scalar(self):
+        return self.element_ty
+
+    @property
+    def nbytes(self):
+        return self.numel * (self.element_ty.primitive_bitwidth // 8)
+
+    def __repr__(self):
+        return self.__str__()
 
     def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[buffered_tensor, int]:
         value = buffered_tensor(handles[cursor], self.scalar, self.shape, self.storage, self.layout, self.semantic,
@@ -737,7 +788,7 @@ class buffered_tensor_type(tl.block_type):
         elt = self.scalar.mangle()
         shape = '_'.join(map(str, self.shape))
         alloc_suffix = ""
-        if self.alloc_shape != self.shape:
+        if self.alloc_shape != list(self.shape):
             alloc_shape = '_'.join(map(str, self.alloc_shape))
             alloc_suffix = f"A{alloc_shape}"
         remote_suffix = ""
@@ -753,8 +804,8 @@ class buffered_tensor_type(tl.block_type):
         return f"buffered_tensor_<{self.element_ty}, {self.shape}, {self.layout}, {self.alloc_shape}, >"
 
     def __eq__(self, other) -> bool:
-        if not (type(self) is type(other) and self.shape == other.shape and self.layout == other.layout
-                and self.alloc_shape == other.alloc_shape):
+        if not (type(self) is type(other) and self.element_ty == other.element_ty and self.storage == other.storage and
+                self.shape == other.shape and self.layout == other.layout and self.alloc_shape == other.alloc_shape):
             return False
         self_shard = getattr(self, "_tle_remote_shard_id", None)
         other_shard = getattr(other, "_tle_remote_shard_id", None)

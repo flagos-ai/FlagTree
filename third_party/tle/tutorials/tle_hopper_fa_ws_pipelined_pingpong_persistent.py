@@ -1,28 +1,51 @@
 #!/usr/bin/env python3
-"""Experimental TLE FA3-style forward attention.
+"""Persistent Hopper attention with explicit-barrier and pipe implementations.
 
-* one producer partition issues TMA loads for Q/K/V into shared memory
-* two explicit consumer partitions split the query block along M
-* mbarriers coordinate producer/consumer ownership of TMA buffers
-* named barriers serialize the two consumer WGMMA issue streams in a ping-pong pattern
-* K uses WGMMA descriptor transposition via ``wgmma(..., trans_b=True)``
-* PV uses a register/tensor A operand, avoiding an intermediate P shared tile
+Both use one TMA producer and two ping-pong WGMMA consumers and accept the
+same BLOCK_N values. K/V ownership is expressed with explicit full/empty
+barriers or tle.pipe. Q and consumer ping-pong still use explicit barriers.
+The implementations retain their output-store and tail-scheduling strategies;
+benchmark rows report these differences alongside the resource settings.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Callable, Iterable, Optional
 
 import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
-from triton.tools.tensor_descriptor import TensorDescriptor
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
+
+# ptxas 12.8.93 can sink an invariant descriptor into a zero-trip KV loop.
+# Only N_CTX <= BLOCK_N needs the newer toolchain; longer sequences execute
+# the KV loop and can use the ptxas bundled with Triton.
+_MIN_PTXAS_VERSION = (13, 1)
+
+
+@lru_cache(maxsize=None)
+def _require_supported_ptxas(arch: int) -> None:
+    try:
+        # get_ptxas() uses Triton's configured, cached NvidiaTool. Its parsed
+        # release version is the same tool selection used by lowering.
+        from triton.backends.nvidia.compiler import get_ptxas
+        tool = get_ptxas(arch)
+        version = tuple(int(part) for part in tool.version.split("."))
+    except (ImportError, RuntimeError, AttributeError, ValueError) as exc:
+        raise RuntimeError("Unable to query the ptxas selected by Triton for the Hopper FA tutorial") from exc
+
+    if version < _MIN_PTXAS_VERSION:
+        required = ".".join(map(str, _MIN_PTXAS_VERSION))
+        found = ".".join(map(str, version))
+        raise RuntimeError(f"The Hopper FA tutorial requires ptxas >= {required} when N_CTX <= BLOCK_N; "
+                           f"Triton selected {found} at {tool.path}. Upgrade CUDA/ptxas before running it.")
 
 
 def alloc_fn(size: int, align: int, stream: Optional[int]):
@@ -50,7 +73,7 @@ def _compute_offsets(tile_idx, H, N_CTX, BLOCK_M: tl.constexpr):
 
 
 @triton.jit
-def _attn_fwd_tle_ws_pipelined_pingpong_producer(
+def _attn_fwd_tle_ws_barrier_producer(
     Z,
     H,
     desc_q,
@@ -155,7 +178,7 @@ def _attn_fwd_tle_ws_pipelined_pingpong_producer(
 
 
 @triton.jit
-def _attn_fwd_tle_ws_pipelined_pingpong_consumer(
+def _attn_fwd_tle_ws_barrier_consumer(
     sm_scale,
     m_ptr,
     Z,
@@ -176,6 +199,7 @@ def _attn_fwd_tle_ws_pipelined_pingpong_consumer(
     HEAD_DIM: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    EVEN_N: tl.constexpr,
     NUM_BUFFERS_Q: tl.constexpr,
     NUM_BUFFERS_KV: tl.constexpr,
     BM_SPLIT: tl.constexpr,
@@ -225,16 +249,25 @@ def _attn_fwd_tle_ws_pipelined_pingpong_consumer(
         qk = tle.gpu.wgmma_wait(0, qk)
         tle.gpu.barrier_arrive(k_empties[kv_buf], phaseIdx=kv_phase_idx)
 
+        # A sequence shorter than BLOCK_N ends in the prologue tile.
+        if not EVEN_N:
+            if N_CTX < BLOCK_N:
+                cols = tl.arange(0, triton.next_power_of_2(BLOCK_N))
+                qk = tl.where(cols[None, :] < N_CTX, qk, float("-inf"))
+
         m_ij = tl.maximum(m_i, tl.max(qk, 1) * qk_scale)
         qk = qk * qk_scale - m_ij[:, None]
         p = tl.math.exp2(qk)
         alpha = tl.math.exp2(m_i - m_ij)
         l_ij = tl.sum(p, 1)
         l_i = l_i * alpha + l_ij
+        # Finish the FP32 reduction before carrying P into the next
+        # overlapped QK/PV iteration in its FP16 operand type.
+        p = p.to(tl.float16)
         m_i = m_ij
         accum_cnt_kv += 1
 
-        for _ in range(BLOCK_N, N_CTX, BLOCK_N):
+        for kv_idx in range(BLOCK_N, N_CTX, BLOCK_N):
             kv_buf, kv_phase_idx = _buf_phase(accum_cnt_kv, NUM_BUFFERS_KV)
             tle.gpu.barrier_wait(k_fulls[kv_buf], phaseIdx=kv_phase_idx)
 
@@ -255,10 +288,16 @@ def _attn_fwd_tle_ws_pipelined_pingpong_consumer(
 
             v_buf, v_phase_idx = _buf_phase(accum_cnt_kv - 1, NUM_BUFFERS_KV)
             tle.gpu.barrier_wait(v_fulls[v_buf], phaseIdx=v_phase_idx)
-            acc = tle.gpu.wgmma(p.to(tl.float16), v_smem.slot(v_buf), acc)
+            acc = tle.gpu.wgmma(p, v_smem.slot(v_buf), acc)
 
             qk = tle.gpu.wgmma_wait(1, qk)
             tle.gpu.barrier_arrive(k_empties[kv_buf], phaseIdx=kv_phase_idx)
+
+            # Mask before softmax: the flattened descriptor can read the next head.
+            if not EVEN_N:
+                if kv_idx + BLOCK_N > N_CTX:
+                    cols = kv_idx + tl.arange(0, triton.next_power_of_2(BLOCK_N))
+                    qk = tl.where(cols[None, :] < N_CTX, qk, float("-inf"))
 
             m_ij = tl.maximum(m_i, tl.max(qk, 1) * qk_scale)
             qk = qk * qk_scale - m_ij[:, None]
@@ -266,6 +305,7 @@ def _attn_fwd_tle_ws_pipelined_pingpong_consumer(
             alpha = tl.math.exp2(m_i - m_ij)
             l_ij = tl.sum(p, 1)
             l_i = l_i * alpha + l_ij
+            p = p.to(tl.float16)
             m_i = m_ij
 
             acc = tle.gpu.wgmma_wait(0, acc)
@@ -275,7 +315,7 @@ def _attn_fwd_tle_ws_pipelined_pingpong_consumer(
 
         v_buf, v_phase_idx = _buf_phase(accum_cnt_kv - 1, NUM_BUFFERS_KV)
         tle.gpu.barrier_wait(v_fulls[v_buf], phaseIdx=v_phase_idx)
-        acc = tle.gpu.wgmma(p.to(tl.float16), v_smem.slot(v_buf), acc)
+        acc = tle.gpu.wgmma(p, v_smem.slot(v_buf), acc)
 
         acc = tle.gpu.wgmma_wait(1, acc)
         tle.gpu.barrier_arrive(q_empties[q_idx], phaseIdx=q_phase_idx)
@@ -297,46 +337,56 @@ def _attn_fwd_tle_ws_pipelined_pingpong_consumer(
 
 
 @triton.jit
-def _attn_fwd_tle_ws_pipelined_pingpong_persistent(
+def _attn_fwd_tle_ws_persistent_barrier(
     sm_scale,
     M,
     Z,
     H,
-    desc_q,
-    desc_k,
-    desc_v,
-    desc_o,
+    Q,
+    K,
+    V,
+    O,
     N_CTX,
     HEAD_DIM: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
+    EVEN_N: tl.constexpr,
     NUM_BUFFERS_Q: tl.constexpr,
     NUM_BUFFERS_KV: tl.constexpr,
     NUM_MMA_WARPS: tl.constexpr,
     NUM_MMA_GROUPS: tl.constexpr,
     Q_STAGE_CAPACITY: tl.constexpr,
     KV_STAGE_CAPACITY: tl.constexpr,
+    CONSUMER_MAX_NREG: tl.constexpr,
 ):
     BM_SPLIT: tl.constexpr = BLOCK_M // NUM_MMA_GROUPS
     THREADS_IN_MMA_GROUPS: tl.constexpr = NUM_MMA_WARPS * 32
 
+    desc_q = tl.make_tensor_descriptor(Q, [Z * H * N_CTX, HEAD_DIM], [HEAD_DIM, 1], [BM_SPLIT, HEAD_DIM])
+    desc_k = tl.make_tensor_descriptor(K, [Z * H * N_CTX, HEAD_DIM], [HEAD_DIM, 1], [BLOCK_N, HEAD_DIM])
+    desc_v = tl.make_tensor_descriptor(V, [Z * H * N_CTX, HEAD_DIM], [HEAD_DIM, 1], [BLOCK_N, HEAD_DIM])
+    desc_o = tl.make_tensor_descriptor(O, [Z * H * N_CTX, HEAD_DIM], [HEAD_DIM, 1], [BM_SPLIT, HEAD_DIM])
+
     q_smem = tle.gpu.alloc(
-        [Q_STAGE_CAPACITY, BM_SPLIT, HEAD_DIM],
+        [BM_SPLIT, HEAD_DIM],
         dtype=tl.float16,
         layout=None,
         scope=tle.gpu.smem,
+        capacity=Q_STAGE_CAPACITY,
     )
     k_smem = tle.gpu.alloc(
-        [KV_STAGE_CAPACITY, BLOCK_N, HEAD_DIM],
+        [BLOCK_N, HEAD_DIM],
         dtype=tl.float16,
         layout=None,
         scope=tle.gpu.smem,
+        capacity=KV_STAGE_CAPACITY,
     )
     v_smem = tle.gpu.alloc(
-        [KV_STAGE_CAPACITY, BLOCK_N, HEAD_DIM],
+        [BLOCK_N, HEAD_DIM],
         dtype=tl.float16,
         layout=None,
         scope=tle.gpu.smem,
+        capacity=KV_STAGE_CAPACITY,
     )
     q_empties = tle.gpu.alloc_barriers(num_barriers=Q_STAGE_CAPACITY, arrive_count=1, init=tle.gpu.READY)
     q_fulls = tle.gpu.alloc_barriers(
@@ -376,7 +426,7 @@ def _attn_fwd_tle_ws_pipelined_pingpong_persistent(
     tle.gpu.warp_specialize(
         [
             (
-                _attn_fwd_tle_ws_pipelined_pingpong_producer,
+                _attn_fwd_tle_ws_barrier_producer,
                 (
                     Z,
                     H,
@@ -403,7 +453,7 @@ def _attn_fwd_tle_ws_pipelined_pingpong_persistent(
                 ),
             ),
             (
-                _attn_fwd_tle_ws_pipelined_pingpong_consumer,
+                _attn_fwd_tle_ws_barrier_consumer,
                 (
                     sm_scale,
                     M,
@@ -425,6 +475,7 @@ def _attn_fwd_tle_ws_pipelined_pingpong_persistent(
                     HEAD_DIM,
                     BLOCK_M,
                     BLOCK_N,
+                    EVEN_N,
                     NUM_BUFFERS_Q,
                     NUM_BUFFERS_KV,
                     BM_SPLIT,
@@ -432,7 +483,7 @@ def _attn_fwd_tle_ws_pipelined_pingpong_persistent(
                 ),
             ),
             (
-                _attn_fwd_tle_ws_pipelined_pingpong_consumer,
+                _attn_fwd_tle_ws_barrier_consumer,
                 (
                     sm_scale,
                     M,
@@ -454,6 +505,7 @@ def _attn_fwd_tle_ws_pipelined_pingpong_persistent(
                     HEAD_DIM,
                     BLOCK_M,
                     BLOCK_N,
+                    EVEN_N,
                     NUM_BUFFERS_Q,
                     NUM_BUFFERS_KV,
                     BM_SPLIT,
@@ -462,7 +514,442 @@ def _attn_fwd_tle_ws_pipelined_pingpong_persistent(
             ),
         ],
         [mma_warps, mma_warps],
-        [232, 232],
+        [CONSUMER_MAX_NREG, CONSUMER_MAX_NREG],
+    )
+
+
+@triton.jit
+def _attn_fwd_tle_ws_pipe_producer(
+    Z,
+    H,
+    desc_q,
+    desc_k,
+    desc_v,
+    N_CTX,
+    q_smem,
+    k_writer,
+    v_writer,
+    q_empties,
+    q_fulls,
+    HEAD_DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    NUM_BUFFERS_Q: tl.constexpr,
+    BM_SPLIT: tl.constexpr,
+    CID: tl.constexpr,
+):
+    prog_id = tl.program_id(0)
+    num_progs = tl.num_programs(0)
+    num_pid_m = tl.cdiv(N_CTX, BLOCK_M)
+    total_tiles = num_pid_m * Z * H
+
+    tile_idx = prog_id
+    tile_count = 0
+    accum_cnt_kv = 0
+    while tile_idx < total_tiles:
+        start_m, off_hz, qo_offset_y, kv_offset_y = _compute_offsets(tile_idx, H, N_CTX, BLOCK_M)
+
+        q_buf, q_phase_idx = _buf_phase(tile_count, NUM_BUFFERS_Q)
+        q0_idx = q_buf
+        q1_idx = q_buf + NUM_BUFFERS_Q
+
+        tle.gpu.barrier_wait(q_empties[q0_idx], phaseIdx=q_phase_idx)
+        tle.gpu.copy(
+            desc_q,
+            q_smem.slot(q0_idx),
+            [BM_SPLIT, HEAD_DIM],
+            [qo_offset_y, 0],
+            barrier=q_fulls[q0_idx],
+        )
+
+        k_slot = k_writer.acquire(accum_cnt_kv)
+        tle.gpu.copy(
+            desc_k,
+            k_slot.k,
+            [BLOCK_N, HEAD_DIM],
+            [kv_offset_y, 0],
+        )
+        k_writer.commit(accum_cnt_kv)
+
+        tle.gpu.barrier_wait(q_empties[q1_idx], phaseIdx=q_phase_idx)
+        tle.gpu.copy(
+            desc_q,
+            q_smem.slot(q1_idx),
+            [BM_SPLIT, HEAD_DIM],
+            [qo_offset_y + BM_SPLIT, 0],
+            barrier=q_fulls[q1_idx],
+        )
+
+        v_slot = v_writer.acquire(accum_cnt_kv)
+        tle.gpu.copy(
+            desc_v,
+            v_slot.v,
+            [BLOCK_N, HEAD_DIM],
+            [kv_offset_y, 0],
+        )
+        v_writer.commit(accum_cnt_kv)
+        accum_cnt_kv += 1
+
+        for kv_idx in range(BLOCK_N, N_CTX, BLOCK_N):
+            kv_offset = kv_offset_y + kv_idx
+
+            k_slot = k_writer.acquire(accum_cnt_kv)
+            tle.gpu.copy(
+                desc_k,
+                k_slot.k,
+                [BLOCK_N, HEAD_DIM],
+                [kv_offset, 0],
+            )
+            k_writer.commit(accum_cnt_kv)
+
+            v_slot = v_writer.acquire(accum_cnt_kv)
+            tle.gpu.copy(
+                desc_v,
+                v_slot.v,
+                [BLOCK_N, HEAD_DIM],
+                [kv_offset, 0],
+            )
+            v_writer.commit(accum_cnt_kv)
+            accum_cnt_kv += 1
+
+        tile_idx += num_progs
+        tile_count += 1
+
+
+@triton.jit
+def _attn_fwd_tle_ws_pipe_consumer(
+    sm_scale,
+    m_ptr,
+    o_ptr,
+    Z,
+    H,
+    N_CTX,
+    q_smem,
+    k_reader,
+    v_reader,
+    q_empties,
+    q_fulls,
+    ping_to_c0,
+    ping_to_c1,
+    HEAD_DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    EVEN_N: tl.constexpr,
+    HAS_FULL_KV_LOOP: tl.constexpr,
+    NUM_BUFFERS_Q: tl.constexpr,
+    BM_SPLIT: tl.constexpr,
+    EARLY_CAST_P: tl.constexpr,
+    CID: tl.constexpr,
+):
+    prog_id = tl.program_id(0)
+    num_progs = tl.num_programs(0)
+    num_pid_m = tl.cdiv(N_CTX, BLOCK_M)
+    total_tiles = num_pid_m * Z * H
+    consumer_idx: tl.constexpr = CID - 1
+
+    if consumer_idx == 1:
+        tle.gpu.barrier_arrive(ping_to_c0)
+
+    tile_idx = prog_id
+    tile_count = 0
+    accum_cnt_kv = 0
+    while tile_idx < total_tiles:
+        start_m, off_hz, qo_offset_y, kv_offset_y = _compute_offsets(tile_idx, H, N_CTX, BLOCK_M)
+
+        m_i = tl.zeros([BM_SPLIT], dtype=tl.float32) - float("inf")
+        l_i = tl.zeros([BM_SPLIT], dtype=tl.float32) + 1.0
+        acc = tl.zeros([BM_SPLIT, HEAD_DIM], dtype=tl.float32)
+        qk_scale = sm_scale * 1.44269504
+
+        q_buf, q_phase_idx = _buf_phase(tile_count, NUM_BUFFERS_Q)
+        q_idx = q_buf + consumer_idx * NUM_BUFFERS_Q
+        tle.gpu.barrier_wait(q_fulls[q_idx], phaseIdx=q_phase_idx)
+
+        k_wait = k_reader.wait(accum_cnt_kv)
+        if consumer_idx == 0:
+            tle.gpu.barrier_wait(ping_to_c0)
+        else:
+            tle.gpu.barrier_wait(ping_to_c1)
+        qk = tle.gpu.wgmma(
+            q_smem.slot(q_idx),
+            k_wait.slot.k,
+            out_dtype=tl.float32,
+            trans_b=True,
+        )
+        if consumer_idx == 0:
+            tle.gpu.barrier_arrive(ping_to_c1)
+        else:
+            tle.gpu.barrier_arrive(ping_to_c0)
+        qk = tle.gpu.wgmma_wait(0, qk)
+        k_reader.release(accum_cnt_kv)
+
+        # A sequence shorter than BLOCK_N ends in the prologue tile.
+        if not EVEN_N:
+            if N_CTX < BLOCK_N:
+                cols = tl.arange(0, triton.next_power_of_2(BLOCK_N))
+                qk = tl.where(cols[None, :] < N_CTX, qk, float("-inf"))
+
+        m_ij = tl.maximum(m_i, tl.max(qk, 1) * qk_scale)
+        qk = qk * qk_scale - m_ij[:, None]
+        p = tl.math.exp2(qk)
+        alpha = tl.math.exp2(m_i - m_ij)
+        l_ij = tl.sum(p, 1)
+        l_i = l_i * alpha + l_ij
+        # Carry P across the overlapped QK/PV iteration in FP16.  Keeping the
+        # FP32 value alive until the following PV consumes it substantially
+        # increases register pressure for large active N.
+        if EARLY_CAST_P:
+            p = p.to(tl.float16)
+        m_i = m_ij
+        accum_cnt_kv += 1
+
+        # Specialize full tiles and the final partial tile separately so
+        # the hot loop contains no tail test or softmax mask.
+        for phase in tl.static_range(0 if HAS_FULL_KV_LOOP else 1, 1 if EVEN_N else 2):
+            if phase == 0:
+                lo = BLOCK_N
+                hi = N_CTX if EVEN_N else N_CTX // BLOCK_N * BLOCK_N
+            else:
+                lo = tl.maximum(BLOCK_N, N_CTX // BLOCK_N * BLOCK_N)
+                hi = N_CTX
+            for kv_idx in range(lo, hi, BLOCK_N):
+                k_wait = k_reader.wait(accum_cnt_kv)
+
+                if consumer_idx == 0:
+                    tle.gpu.barrier_wait(ping_to_c0)
+                else:
+                    tle.gpu.barrier_wait(ping_to_c1)
+                qk = tle.gpu.wgmma(
+                    q_smem.slot(q_idx),
+                    k_wait.slot.k,
+                    out_dtype=tl.float32,
+                    trans_b=True,
+                )
+                if consumer_idx == 0:
+                    tle.gpu.barrier_arrive(ping_to_c1)
+                else:
+                    tle.gpu.barrier_arrive(ping_to_c0)
+
+                v_iter = accum_cnt_kv - 1
+                v_wait = v_reader.wait(v_iter)
+                acc = tle.gpu.wgmma(p.to(tl.float16), v_wait.slot.v, acc)
+
+                qk = tle.gpu.wgmma_wait(1, qk)
+                k_reader.release(accum_cnt_kv)
+
+                if phase == 1:
+                    cols = kv_idx + tl.arange(0, triton.next_power_of_2(BLOCK_N))
+                    qk = tl.where(cols[None, :] < N_CTX, qk, float("-inf"))
+
+                m_ij = tl.maximum(m_i, tl.max(qk, 1) * qk_scale)
+                qk = qk * qk_scale - m_ij[:, None]
+                p = tl.math.exp2(qk)
+                alpha = tl.math.exp2(m_i - m_ij)
+                l_ij = tl.sum(p, 1)
+                l_i = l_i * alpha + l_ij
+                if EARLY_CAST_P:
+                    p = p.to(tl.float16)
+                m_i = m_ij
+
+                acc = tle.gpu.wgmma_wait(0, acc)
+                v_reader.release(v_iter)
+                acc = acc * alpha[:, None]
+                accum_cnt_kv += 1
+
+        v_iter = accum_cnt_kv - 1
+        v_wait = v_reader.wait(v_iter)
+        acc = tle.gpu.wgmma(p.to(tl.float16), v_wait.slot.v, acc)
+
+        acc = tle.gpu.wgmma_wait(1, acc)
+        tle.gpu.barrier_arrive(q_empties[q_idx], phaseIdx=q_phase_idx)
+
+        acc = tle.gpu.wgmma_wait(0, acc)
+        v_reader.release(v_iter)
+
+        m_i += tl.math.log2(l_i)
+        acc = acc / l_i[:, None]
+
+        offs_m = start_m * BLOCK_M + consumer_idx * BM_SPLIT + tl.arange(0, BM_SPLIT)
+        m_ptrs = m_ptr + off_hz * N_CTX + offs_m
+        tl.store(m_ptrs, m_i)
+        offs_n = tl.arange(0, HEAD_DIM)
+        o_rows = qo_offset_y + consumer_idx * BM_SPLIT + tl.arange(0, BM_SPLIT)
+        # A descriptor store would allocate one implicit BM_SPLIT x HEAD_DIM
+        # SMEM epilogue tile per consumer.  Store the contiguous output from
+        # registers so the explicit Q/K/V allocation remains the whole budget.
+        tl.store(o_ptr + o_rows[:, None] * HEAD_DIM + offs_n[None, :], acc.to(tl.float16))
+
+        tile_idx += num_progs
+        tile_count += 1
+
+
+@triton.jit
+def _attn_fwd_tle_ws_persistent_pipe(
+    sm_scale,
+    M,
+    O,
+    Z,
+    H,
+    Q,
+    K,
+    V,
+    N_CTX,
+    HEAD_DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    EVEN_N: tl.constexpr,
+    HAS_FULL_KV_LOOP: tl.constexpr,
+    NUM_BUFFERS_Q: tl.constexpr,
+    NUM_BUFFERS_KV: tl.constexpr,
+    NUM_MMA_WARPS: tl.constexpr,
+    NUM_MMA_GROUPS: tl.constexpr,
+    Q_STAGE_CAPACITY: tl.constexpr,
+    KV_STAGE_CAPACITY: tl.constexpr,
+    EARLY_CAST_P: tl.constexpr,
+    CONSUMER_MAX_NREG: tl.constexpr,
+):
+    BM_SPLIT: tl.constexpr = BLOCK_M // NUM_MMA_GROUPS
+    THREADS_IN_MMA_GROUPS: tl.constexpr = NUM_MMA_WARPS * 32
+
+    desc_q = tl.make_tensor_descriptor(Q, [Z * H * N_CTX, HEAD_DIM], [HEAD_DIM, 1], [BM_SPLIT, HEAD_DIM])
+    desc_k = tl.make_tensor_descriptor(K, [Z * H * N_CTX, HEAD_DIM], [HEAD_DIM, 1], [BLOCK_N, HEAD_DIM])
+    desc_v = tl.make_tensor_descriptor(V, [Z * H * N_CTX, HEAD_DIM], [HEAD_DIM, 1], [BLOCK_N, HEAD_DIM])
+
+    q_smem = tle.gpu.alloc(
+        [BM_SPLIT, HEAD_DIM],
+        dtype=tl.float16,
+        layout=None,
+        scope=tle.gpu.smem,
+        capacity=Q_STAGE_CAPACITY,
+    )
+    k_smem = tle.gpu.alloc(
+        [BLOCK_N, HEAD_DIM],
+        dtype=tl.float16,
+        layout=None,
+        scope=tle.gpu.smem,
+        capacity=KV_STAGE_CAPACITY,
+    )
+    v_smem = tle.gpu.alloc(
+        [BLOCK_N, HEAD_DIM],
+        dtype=tl.float16,
+        layout=None,
+        scope=tle.gpu.smem,
+        capacity=KV_STAGE_CAPACITY,
+    )
+
+    q_empties = tle.gpu.alloc_barriers(num_barriers=Q_STAGE_CAPACITY, arrive_count=1, init=tle.gpu.READY)
+    q_fulls = tle.gpu.alloc_barriers(
+        num_barriers=Q_STAGE_CAPACITY,
+        arrive_count=1,
+        expect_bytes=BM_SPLIT * HEAD_DIM * 2,
+    )
+
+    k_pipe = tle.pipe(
+        capacity=KV_STAGE_CAPACITY,
+        scope="cta",
+        name="persistent_k",
+        readers=("c0", "c1"),
+        k=k_smem,
+    )
+    v_pipe = tle.pipe(
+        capacity=KV_STAGE_CAPACITY,
+        scope="cta",
+        name="persistent_v",
+        readers=("c0", "c1"),
+        v=v_smem,
+    )
+    k_writer = k_pipe.writer()
+    v_writer = v_pipe.writer()
+
+    pingpong = tle.gpu.alloc_barriers(num_barriers=2, arrive_count=THREADS_IN_MMA_GROUPS)
+    ping_to_c0 = pingpong[0]
+    ping_to_c1 = pingpong[1]
+
+    mma_warps: tl.constexpr = NUM_MMA_WARPS // NUM_MMA_GROUPS
+    tle.gpu.warp_specialize(
+        [
+            (
+                _attn_fwd_tle_ws_pipe_producer,
+                (
+                    Z,
+                    H,
+                    desc_q,
+                    desc_k,
+                    desc_v,
+                    N_CTX,
+                    q_smem,
+                    k_writer,
+                    v_writer,
+                    q_empties,
+                    q_fulls,
+                    HEAD_DIM,
+                    BLOCK_M,
+                    BLOCK_N,
+                    NUM_BUFFERS_Q,
+                    BM_SPLIT,
+                    0,
+                ),
+            ),
+            (
+                _attn_fwd_tle_ws_pipe_consumer,
+                (
+                    sm_scale,
+                    M,
+                    O,
+                    Z,
+                    H,
+                    N_CTX,
+                    q_smem,
+                    k_pipe.reader("c0"),
+                    v_pipe.reader("c0"),
+                    q_empties,
+                    q_fulls,
+                    ping_to_c0,
+                    ping_to_c1,
+                    HEAD_DIM,
+                    BLOCK_M,
+                    BLOCK_N,
+                    EVEN_N,
+                    HAS_FULL_KV_LOOP,
+                    NUM_BUFFERS_Q,
+                    BM_SPLIT,
+                    EARLY_CAST_P,
+                    1,
+                ),
+            ),
+            (
+                _attn_fwd_tle_ws_pipe_consumer,
+                (
+                    sm_scale,
+                    M,
+                    O,
+                    Z,
+                    H,
+                    N_CTX,
+                    q_smem,
+                    k_pipe.reader("c1"),
+                    v_pipe.reader("c1"),
+                    q_empties,
+                    q_fulls,
+                    ping_to_c0,
+                    ping_to_c1,
+                    HEAD_DIM,
+                    BLOCK_M,
+                    BLOCK_N,
+                    EVEN_N,
+                    HAS_FULL_KV_LOOP,
+                    NUM_BUFFERS_Q,
+                    BM_SPLIT,
+                    EARLY_CAST_P,
+                    2,
+                ),
+            ),
+        ],
+        [mma_warps, mma_warps],
+        # 224 registers per consumer leaves 56 for the producer.  Both this
+        # split and 232/40 are spill-free with the N80 storage-tile plan;
+        # 224 is the faster setting for the default H100 benchmark.
+        [CONSUMER_MAX_NREG, CONSUMER_MAX_NREG],
     )
 
 
@@ -479,65 +966,59 @@ def tle_attention(
     num_mma_warps: int = 8,
     num_mma_groups: int = 2,
     producer_num_warps: int = 4,
+    implementation: str = "barrier",
+    early_cast_p: bool = True,
+    consumer_max_nreg: int | None = None,
     return_kernel: bool = False,
     out: torch.Tensor | None = None,
     m_out: torch.Tensor | None = None,
 ):
-    assert q.is_cuda and k.is_cuda and v.is_cuda
-    assert q.dtype == torch.float16 and k.dtype == torch.float16 and v.dtype == torch.float16
-    assert q.is_contiguous() and k.is_contiguous() and v.is_contiguous()
-    assert q.shape == k.shape == v.shape
-    assert q.ndim == 4
-    assert num_mma_groups == 2
-    assert block_m % num_mma_groups == 0
-    assert producer_num_warps % 4 == 0
+    """Run persistent attention with explicit K/V barriers or K/V pipes.
 
+    Both implementations accept the same BLOCK_N values. Barrier keeps its
+    descriptor output store and conditional tail handling; pipe keeps its
+    direct output store and split tail loop. The default consumer register
+    budgets remain 232 and 224 respectively. ``early_cast_p`` is a pipe-only
+    experiment option; barrier retains its established P conversion schedule.
+    """
+    if implementation not in ("barrier", "pipe"):
+        raise ValueError("implementation must be 'barrier' or 'pipe'")
+    if implementation == "barrier" and not early_cast_p:
+        raise ValueError("early_cast_p=False is only supported by the pipe implementation")
+    if consumer_max_nreg is None:
+        consumer_max_nreg = 232 if implementation == "barrier" else 224
+    if consumer_max_nreg < 24 or consumer_max_nreg > 256 or consumer_max_nreg % 8:
+        raise ValueError("consumer_max_nreg must be a multiple of 8 in [24, 256]")
+    assert q.is_cuda and k.is_cuda and v.is_cuda
+    assert q.device == k.device == v.device
+    assert q.dtype == k.dtype == v.dtype == torch.float16
+    assert q.is_contiguous() and k.is_contiguous() and v.is_contiguous()
+    assert q.shape == k.shape == v.shape and q.ndim == 4
+    assert num_mma_groups == 2 and block_m > 0 and block_m % num_mma_groups == 0
+    assert producer_num_warps > 0 and producer_num_warps % 4 == 0
+    if num_buffers_q <= 0 or num_buffers_kv <= 0:
+        raise ValueError("buffer counts must be positive")
     z, h, n_ctx, head_dim = q.shape
     if head_dim not in (16, 32, 64, 128, 256):
         raise ValueError("HEAD_DIM must be one of 16, 32, 64, 128, 256")
-    if n_ctx % block_m != 0 or n_ctx % block_n != 0:
-        raise ValueError("this prototype expects N_CTX to be a multiple of BLOCK_M and BLOCK_N")
-
+    if block_n <= 0 or block_n > 256 or block_n % 16:
+        raise ValueError("BLOCK_N must be a positive multiple of 16 no greater than 256")
+    if n_ctx % block_m:
+        raise ValueError("N_CTX must be a multiple of BLOCK_M")
+    if n_ctx <= block_n:
+        major, minor = torch.cuda.get_device_capability(q.device)
+        _require_supported_ptxas(major * 10 + minor)
     triton.set_allocator(alloc_fn)
-
-    if out is None:
-        o = torch.empty_like(q)
-    else:
-        assert out.shape == q.shape
-        assert out.device == q.device and out.dtype == q.dtype
-        assert out.is_contiguous()
-        o = out
-    if m_out is None:
-        m = torch.empty((z, h, n_ctx), device=q.device, dtype=torch.float32)
-    else:
-        assert m_out.shape == (z, h, n_ctx)
-        assert m_out.device == q.device and m_out.dtype == torch.float32
-        assert m_out.is_contiguous()
-        m = m_out
-    y_dim = z * h * n_ctx
-    block_m_split = block_m // num_mma_groups
-
-    desc_q = TensorDescriptor(q, shape=[y_dim, head_dim], strides=[head_dim, 1], block_shape=[block_m_split, head_dim])
-    desc_k = TensorDescriptor(k, shape=[y_dim, head_dim], strides=[head_dim, 1], block_shape=[block_n, head_dim])
-    desc_v = TensorDescriptor(v, shape=[y_dim, head_dim], strides=[head_dim, 1], block_shape=[block_n, head_dim])
-    desc_o = TensorDescriptor(o, shape=[y_dim, head_dim], strides=[head_dim, 1], block_shape=[block_m_split, head_dim])
+    o = torch.empty_like(q) if out is None else out
+    m = torch.empty((z, h, n_ctx), device=q.device, dtype=torch.float32) if m_out is None else m_out
+    if o.shape != q.shape or o.device != q.device or o.dtype != q.dtype or not o.is_contiguous():
+        raise ValueError("out must be contiguous with the same shape, device and dtype as q")
+    if (m.shape != (z, h, n_ctx) or m.device != q.device or m.dtype != torch.float32 or not m.is_contiguous()):
+        raise ValueError("m_out must be a contiguous float32 [Z, H, N_CTX] tensor on q.device")
 
     num_sms = torch.cuda.get_device_properties(q.device).multi_processor_count
-    total_tiles = triton.cdiv(n_ctx, block_m) * z * h
-    grid = (min(num_sms, total_tiles), )
-    q_stage_capacity = _next_power_of_2(num_buffers_q * num_mma_groups)
-    kv_stage_capacity = _next_power_of_2(num_buffers_kv)
-
-    kernel = _attn_fwd_tle_ws_pipelined_pingpong_persistent[grid](
-        sm_scale,
-        m,
-        z,
-        h,
-        desc_q,
-        desc_k,
-        desc_v,
-        desc_o,
-        n_ctx,
+    grid = (min(num_sms, triton.cdiv(n_ctx, block_m) * z * h), )
+    options = dict(
         HEAD_DIM=head_dim,
         BLOCK_M=block_m,
         BLOCK_N=block_n,
@@ -545,10 +1026,17 @@ def tle_attention(
         NUM_BUFFERS_KV=num_buffers_kv,
         NUM_MMA_WARPS=num_mma_warps,
         NUM_MMA_GROUPS=num_mma_groups,
-        Q_STAGE_CAPACITY=q_stage_capacity,
-        KV_STAGE_CAPACITY=kv_stage_capacity,
+        Q_STAGE_CAPACITY=_next_power_of_2(num_buffers_q * num_mma_groups),
+        KV_STAGE_CAPACITY=_next_power_of_2(num_buffers_kv),
+        CONSUMER_MAX_NREG=consumer_max_nreg,
         num_warps=producer_num_warps,
     )
+    options["EVEN_N"] = n_ctx % block_n == 0
+    if implementation == "barrier":
+        kernel = _attn_fwd_tle_ws_persistent_barrier[grid](sm_scale, m, z, h, q, k, v, o, n_ctx, **options)
+    else:
+        kernel = _attn_fwd_tle_ws_persistent_pipe[grid](sm_scale, m, o, z, h, q, k, v, n_ctx, EARLY_CAST_P=early_cast_p,
+                                                        HAS_FULL_KV_LOOP=n_ctx >= 2 * block_n, **options)
     if return_kernel:
         return o, m, kernel
     return o
@@ -678,137 +1166,154 @@ def write_rows(rows: Iterable[dict[str, object]], out: str | None) -> None:
     writer.writerows(rows)
 
 
+def _count_pattern(text: str, pattern: str) -> int:
+    return len(re.findall(pattern, text))
+
+
+def kernel_stats(
+    kernel,
+    problem: AttentionProblem,
+    block_n: int,
+    num_buffers_kv: int,
+    early_cast_p: bool,
+    consumer_max_nreg: int,
+    implementation: str,
+) -> dict[str, object]:
+    ttgir = kernel.asm.get("ttgir", "")
+    ptx = kernel.asm.get("ptx", "")
+    # K and V can select different storage tiles. Read their physical plans
+    # instead of inferring a descriptor box from the requested logical shape.
+    plans = []
+    for box_r, box_c, tile_r, tile_c in re.findall(
+            r"tt.make_tensor_descriptor[^\n]*tle.tma_box_shape = array<i64: (\d+), (\d+)>"
+            r"[^\n]*tensor<(\d+)x(\d+)xf16>", kernel.asm.get("ttir", "")):
+        box_r, box_c, tile_r, tile_c = map(int, (box_r, box_c, tile_r, tile_c))
+        plan = {
+            "storage_tile_shape": [tile_r, tile_c],
+            "tma_box_shape": [box_r, box_c],
+            "storage_tiles_per_stage": block_n * problem.head_dim // (tile_r * tile_c),
+            "tma_messages_per_stage": block_n * problem.head_dim // (box_r * box_c),
+            "tma_bytes_per_message": box_r * box_c * 2,
+        }
+        if plan not in plans:
+            plans.append(plan)
+    carrier_rows = _next_power_of_2(block_n)
+    return {
+        "implementation": implementation,
+        "output_store": "descriptor" if implementation == "barrier" else "direct",
+        "tail_strategy": "conditional" if implementation == "barrier" else "split",
+        "kv_active_buffers": num_buffers_kv if implementation == "barrier" else _next_power_of_2(num_buffers_kv),
+        "n_regs": kernel.n_regs,
+        "n_spills": kernel.n_spills,
+        "kv_iterations": triton.cdiv(problem.n_ctx, block_n),
+        "kv_requested_buffers": num_buffers_kv,
+        "kv_stage_capacity": _next_power_of_2(num_buffers_kv),
+        "kv_tma_plans": plans,
+        "kv_carrier_rows": carrier_rows,
+        "kv_exact_rows_saved_per_buffer": carrier_rows - block_n,
+        "early_cast_p": early_cast_p if implementation == "pipe" else True,
+        "consumer_max_nreg": consumer_max_nreg,
+        "shared_bytes": getattr(kernel.metadata, "shared", ""),
+        # TTGIR is captured before the backend Membar analysis runs.
+        "pre_membar_ttgir_local_barriers": ttgir.count("ttg.local_barrier"),
+        "ptx_bar_sync": _count_pattern(ptx, r"\bbar(?:rier)?\.sync\b"),
+        "ptx_mbarrier_ops": _count_pattern(ptx, r"\bmbarrier\."),
+        "ptx_tma_load_ops": _count_pattern(ptx, r"\bcp\.async\.bulk\.tensor\.\w+\.shared::cluster\.global"),
+        "ptx_wgmma_ops": _count_pattern(ptx, r"\bwgmma\.mma_async\."),
+        "ttgir_len": len(ttgir),
+        "ptx_len": len(ptx),
+    }
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--problem", action="append", type=parse_problem, default=[],
-                        help="attention problem ZxHxN_CTXxHEAD_DIM; may be repeated")
-    parser.add_argument("--sm-scale", type=float, default=None)
+                        help="ZxHxN_CTXxHEAD_DIM; may be repeated")
+    parser.add_argument("--implementation", choices=("barrier", "pipe", "both"), default="barrier",
+                        help="K/V synchronization implementation; both uses the same inputs and tile options")
     parser.add_argument("--block-m", type=int, default=128)
-    parser.add_argument("--block-n", type=int, default=128)
+    parser.add_argument("--block-n", action="append", type=int, default=[],
+                        help="K/V block width for either implementation; may be repeated")
+    parser.add_argument("--num-buffers-kv", type=int, default=2)
+    parser.add_argument("--consumer-max-nreg", type=int, default=None,
+                        help="consumer budget; defaults to barrier=232, pipe=224")
+    parser.add_argument("--late-cast-p", action="store_true", help="pipe-only P conversion experiment")
+    parser.add_argument("--sm-scale", type=float, default=None)
     parser.add_argument("--warmup", type=int, default=25)
     parser.add_argument("--rep", type=int, default=100)
-    parser.add_argument("--cuda-graph", action="store_true",
-                        help="benchmark by capturing the workload once and timing CUDA Graph replay")
+    parser.add_argument("--cuda-graph", action="store_true")
     parser.add_argument("--out", default=None)
     parser.add_argument("--check", action="store_true")
-    parser.add_argument("--include-sdpa", action="store_true", help="also benchmark torch SDPA on the same inputs")
-    parser.add_argument("--sdpa-requires-grad", action="store_true",
-                        help="set q/k/v.requires_grad_() to match the TLX SDPA perf test")
-    parser.add_argument("--continue-on-tle-error", action="store_true",
-                        help="record a CSV error row instead of aborting if the TLE kernel fails")
+    parser.add_argument("--include-sdpa", action="store_true")
+    parser.add_argument("--sdpa-requires-grad", action="store_true")
+    parser.add_argument("--continue-on-tle-error", action="store_true")
     parser.add_argument("--dump-summary", action="store_true")
     args = parser.parse_args()
-
+    if args.late_cast_p and args.implementation != "pipe":
+        parser.error("--late-cast-p requires --implementation pipe")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
         raise RuntimeError("Hopper or newer CUDA GPU is required")
-
     problems = args.problem or [AttentionProblem(1, 1, 1024, 64)]
+    block_ns = args.block_n or [128]
+    implementations = ("barrier", "pipe") if args.implementation == "both" else (args.implementation, )
     rows = []
     for problem in problems:
         q = torch.randn((problem.z, problem.h, problem.n_ctx, problem.head_dim), device=DEVICE, dtype=torch.float16)
-        k = torch.randn_like(q)
-        v = torch.randn_like(q)
+        k, v = torch.randn_like(q), torch.randn_like(q)
         if args.sdpa_requires_grad:
             q.requires_grad_()
             k.requires_grad_()
             v.requires_grad_()
-        sm_scale = args.sm_scale
-        if sm_scale is None:
-            sm_scale = problem.head_dim**-0.5
-
+        sm_scale = problem.head_dim**-0.5 if args.sm_scale is None else args.sm_scale
+        ref = reference_attention(q, k, v, sm_scale) if args.check else None
         if args.include_sdpa:
-            sdpa_out = sdpa_attention(q, k, v, sm_scale)
-            torch.cuda.synchronize()
-
-            def run_sdpa():
-                sdpa_attention(q, k, v, sm_scale)
-
-            ms, p20, p80 = bench_ms(run_sdpa, args.warmup, args.rep, cuda_graph=args.cuda_graph)
+            ms, p20, p80 = bench_ms(lambda: sdpa_attention(q, k, v, sm_scale), args.warmup, args.rep,
+                                    cuda_graph=args.cuda_graph)
             rows.append(
-                make_row(
-                    "SDPA",
-                    problem,
-                    ms,
-                    p20,
-                    p80,
-                    args.block_m,
-                    args.block_n,
-                    {
-                        "output_dtype": str(sdpa_out.dtype).replace("torch.", ""),
-                        "has_warp_specialize": False,
-                        "has_wgmma": False,
-                        "baseline_source": "torch.nn.functional.scaled_dot_product_attention",
-                        "requires_grad": args.sdpa_requires_grad,
-                        "status": "ok",
-                    },
-                    cuda_graph=args.cuda_graph,
-                ))
+                make_row("SDPA", problem, ms, p20, p80, args.block_m, 0,
+                         {"status": "ok", "requires_grad": args.sdpa_requires_grad}, cuda_graph=args.cuda_graph))
+        for block_n in block_ns:
+            for implementation in implementations:
+                variant = "flagtree.tle.fa3.ws_persistent_" + implementation
+                budget = args.consumer_max_nreg
+                if budget is None:
+                    budget = 232 if implementation == "barrier" else 224
+                config = dict(block_m=args.block_m, block_n=block_n, num_buffers_kv=args.num_buffers_kv,
+                              implementation=implementation, consumer_max_nreg=budget,
+                              early_cast_p=not args.late_cast_p)
+                try:
+                    o, _, kernel = tle_attention(q, k, v, sm_scale, return_kernel=True, **config)
+                    torch.cuda.synchronize()
+                    max_abs_error = ""
+                    if ref is not None:
+                        max_abs_error = float((o.float() - ref.float()).abs().max())
+                        torch.testing.assert_close(o, ref, atol=5e-2, rtol=5e-2)
+                    bench_o = torch.empty_like(q)
+                    bench_m = torch.empty((problem.z, problem.h, problem.n_ctx), device=q.device, dtype=torch.float32)
 
-        try:
-            o, m, kernel = tle_attention(
-                q,
-                k,
-                v,
-                sm_scale,
-                block_m=args.block_m,
-                block_n=args.block_n,
-                return_kernel=True,
-            )
-            torch.cuda.synchronize()
+                    def run():
+                        tle_attention(q, k, v, sm_scale, out=bench_o, m_out=bench_m, **config)
 
-            if args.check:
-                ref = reference_attention(q, k, v, sm_scale)
-                torch.testing.assert_close(o, ref, atol=5e-2, rtol=5e-2)
-
-            bench_o = torch.empty_like(q)
-            bench_m = torch.empty((problem.z, problem.h, problem.n_ctx), device=q.device, dtype=torch.float32)
-
-            def run():
-                tle_attention(
-                    q,
-                    k,
-                    v,
-                    sm_scale,
-                    block_m=args.block_m,
-                    block_n=args.block_n,
-                    out=bench_o,
-                    m_out=bench_m,
-                )
-
-            ms, p20, p80 = bench_ms(run, args.warmup, args.rep, cuda_graph=args.cuda_graph)
-            extra = {
-                "output_dtype": str(o.dtype).replace("torch.", ""),
-                "has_warp_specialize": "ttg.warp_specialize" in kernel.asm["ttgir"],
-                "has_wgmma": "ttng.warp_group_dot" in kernel.asm["ttgir"],
-                "status": "ok",
-            }
-            if args.dump_summary:
-                extra["ttgir_len"] = len(kernel.asm.get("ttgir", ""))
-                extra["ptx_len"] = len(kernel.asm.get("ptx", ""))
-            rows.append(
-                make_row(
-                    "flagtree.tle.fa3.ws_pipelined_pingpong_persistent",
-                    problem,
-                    ms,
-                    p20,
-                    p80,
-                    args.block_m,
-                    args.block_n,
-                    extra,
-                    cuda_graph=args.cuda_graph,
-                ))
-        except Exception as exc:
-            if not args.continue_on_tle_error:
-                raise
-            rows.append(
-                make_error_row(
-                    "flagtree.tle.fa3.ws_pipelined_pingpong_persistent",
-                    problem,
-                    args.block_m,
-                    args.block_n,
-                    exc,
-                ))
-
+                    ms, p20, p80 = bench_ms(run, args.warmup, args.rep, cuda_graph=args.cuda_graph)
+                    extra = kernel_stats(kernel, problem, block_n, args.num_buffers_kv, not args.late_cast_p, budget,
+                                         implementation)
+                    extra.update(output_dtype=str(o.dtype).replace("torch.",
+                                                                   ""), has_warp_specialize="ttg.warp_specialize"
+                                 in kernel.asm["ttgir"], has_wgmma="ttng.warp_group_dot" in kernel.asm["ttgir"],
+                                 max_abs_error=max_abs_error, status="ok")
+                    if not args.dump_summary:
+                        extra.pop("ttgir_len")
+                        extra.pop("ptx_len")
+                    rows.append(
+                        make_row(variant, problem, ms, p20, p80, args.block_m, block_n, extra,
+                                 cuda_graph=args.cuda_graph))
+                except Exception as exc:
+                    if not args.continue_on_tle_error:
+                        raise
+                    row = make_error_row(variant, problem, args.block_m, block_n, exc)
+                    row.update(implementation=implementation, consumer_max_nreg=budget,
+                               kv_requested_buffers=args.num_buffers_kv)
+                    rows.append(row)
     write_rows(rows, args.out)
 
 
