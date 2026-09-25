@@ -1,4 +1,5 @@
-set(LLVM_TARGET_DEFINITIONS Combine.td)
+set(LLVM_TARGET_DEFINITIONS
+  ${PROJECT_SOURCE_DIR}/lib/Dialect/Triton/Transforms/Combine.td)
 mlir_tablegen(TritonCombine.inc -gen-rewriters)
 add_public_tablegen_target(TritonCombineIncGen)
 
