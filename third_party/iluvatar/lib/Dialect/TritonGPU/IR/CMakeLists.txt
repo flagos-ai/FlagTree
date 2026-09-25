@@ -1,4 +1,4 @@
-add_triton_library(TritonGPUIR
+flagtree_add_iluvatar_library(TritonGPUIR
   Dialect.cpp
   LinearLayoutConversions.cpp
   Ops.cpp

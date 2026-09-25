@@ -1,4 +1,4 @@
-add_triton_library(TritonGPUTransforms
+flagtree_add_iluvatar_library(TritonGPUTransforms
   AccelerateMatmul.cpp
   Coalesce.cpp
   F32DotTC.cpp

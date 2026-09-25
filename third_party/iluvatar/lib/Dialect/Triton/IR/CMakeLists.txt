@@ -2,7 +2,7 @@ set(LLVM_TARGET_DEFINITIONS Canonicalize.td)
 mlir_tablegen(TritonCanonicalize.inc -gen-rewriters)
 add_public_tablegen_target(TritonCanonicalizeIncGen)
 
-add_triton_library(TritonIR
+flagtree_add_iluvatar_library(TritonIR
   Dialect.cpp
   DiscardableAttributes.cpp
   Ops.cpp
