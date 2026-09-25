@@ -704,6 +704,14 @@ class GcuLauncher(object):
         cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
+        # FlagPrism: retain launch metadata and the original user-argument count.
+        self.metadata = metadata
+        self.user_arg_count = len(signature)
+        # FlagPrism: metadata-only capture uses the gateway without extending the ABI.
+        self._debug_enabled = bool(getattr(metadata, 'debug_enabled', False))
+        # FlagPrism: append the control-buffer pointer only when instrumentation requires it.
+        if getattr(metadata, 'debug_launch_hidden_arg', False):
+            signature[len(signature)] = '*i8'
         redundant_sip = getattr(metadata, 'redundant_sip', False)
         if isinstance(metadata, dict):
             ptr_int_args = set(metadata.get('ptr_int_args', ()))
@@ -724,7 +732,16 @@ class GcuLauncher(object):
             raise OutOfResources(grid_1, 255, "grid.y")
         if grid_2 > 255:
             raise OutOfResources(grid_2, 255, "grid.z")
-        self.launch(*args, **kwargs)
+        # FlagPrism: preserve the direct launch path when debugging is disabled.
+        if not self._debug_enabled:
+            return self.launch(*args, **kwargs)
+        # FlagPrism: prepare capture and finalize it through the launch context.
+        from flagtree import _flagprism
+        # FlagPrism: exclude launcher arguments, including for zero-argument kernels.
+        user_args = args[-self.user_arg_count:] if self.user_arg_count else ()
+        with _flagprism.debugger_launch_context("gcu", self.metadata, args[:3], args[3], args[6],
+                                                user_args) as hidden_args:
+            return self.launch(*args, *hidden_args, **kwargs)
 
 
 class GCUDriver(object):
