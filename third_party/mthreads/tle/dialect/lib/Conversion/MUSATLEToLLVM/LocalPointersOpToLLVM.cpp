@@ -3,6 +3,7 @@
 #include "Conversion/MUSATLEToLLVM/LocalPointersOpToLLVM.h"
 
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "TritonMUSACommon/TMEUtils.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
@@ -201,6 +202,22 @@ struct LocalPointersOpConversion
         for (auto [dim, offset] : llvm::zip_equal(dimNames, idxCoords))
           logicalOffsets.push_back({dim, offset});
         LinearLayout sharedLayout = ttg::toLinearLayout(memDescTy);
+        // Bulk PH1 loads/stores and SQMMA use the physical, allocation-shaped
+        // carrier layout. Generic XOR swizzling gives different addresses
+        // once a row spans multiple 256-byte physical slices.
+        if (bufferRank == 2) {
+          auto swizzle = musa::resolveTMESwizzleConfigFromEncoding(memDescTy);
+          if (succeeded(swizzle) && swizzle->swizzleGranularity !=
+                                        musa::TMESwizzleGranularity::SG_NONE) {
+            auto physicalShape =
+                memDescTy.getAllocShape().take_back(bufferRank);
+            auto physicalType = ttg::MemDescType::get(
+                physicalShape, memDescTy.getElementType(), sharedEnc,
+                memDescTy.getMemorySpace(), memDescTy.getMutableMemory());
+            sharedLayout =
+                musa::getMUSASharedLinearLayoutOrGeneric(physicalType);
+          }
+        }
         sharedLayout = sharedLayout.sublayout({kOffset}, dimNames);
         LinearLayout invSharedLayout = sharedLayout.invert();
 
