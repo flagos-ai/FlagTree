@@ -26,6 +26,8 @@ namespace mlir::triton {
 namespace {
 
 static bool isMusaSqmmaLike(Attribute layout) {
+  while (auto slice = dyn_cast<SliceEncodingAttr>(layout))
+    layout = slice.getParent();
   return isa<MUSASqmmaEncodingAttr>(layout);
 }
 
@@ -39,7 +41,7 @@ static bool useMusaReplicatedScratch(Attribute srcLayout, Attribute dstLayout) {
 
 static bool isSqmmaAccumulatorToBlockedLike(Attribute srcLayout,
                                             Attribute dstLayout) {
-  return isa<MUSASqmmaEncodingAttr>(srcLayout) &&
+  return isMusaSqmmaLike(srcLayout) &&
          isa<BlockedEncodingAttr, SliceEncodingAttr>(dstLayout);
 }
 

@@ -1444,6 +1444,17 @@ LogicalResult MUSASqmmaEncodingAttr::verify(
     return emitError() << "SQMMA expects warpsPerCTA rank >= 2";
   if (warpsPerCTA[0] % 4 != 0)
     return emitError() << "SQMMA expects warpsPerCTA[0] to be a multiple of 4";
+  // The PH1 SQMMA layout is lowered through LinearLayout::identity1D for each
+  // warp-domain basis.  LinearLayout currently requires every output
+  // dimension to be a power of two, so accepting e.g. [4, 6] (six squads)
+  // here would defer the failure to an unchecked assertion in
+  // MUSASqmmaEncodingAttr::toLinearLayout.  Keep this verifier fail-closed
+  // until a non-power-of-two squad mapping is implemented end to end.
+  if (llvm::any_of(warpsPerCTA,
+                   [](unsigned count) { return !llvm::isPowerOf2_32(count); }))
+    return emitError()
+           << "SQMMA warpsPerCTA elements must be powers of two for the "
+              "LinearLayout-based PH1 lowering";
   // Keep instrShape in logical (M, N, K). PH1 still executes with 4-warp
   // squads, but the public encoding should not expose the historical M/4
   // compression used by older lowering paths.

@@ -113,7 +113,9 @@ def pipe(
         raise ValueError("tle.pipe requires at least one payload field")
 
     if mthreads_common.enabled() and mthreads_pipe.is_backend_builder(_semantic.builder):
-        mthreads_pipe.validate_pipe_options(scope, reader_names, one_shot, fields)
+        mthreads_pipe.validate_pipe_options(
+            scope, reader_names, one_shot, fields, builder=_semantic.builder
+        )
 
     for field_name, field in fields.items():
         _validate_public_name("field", field_name)
@@ -128,8 +130,39 @@ def pipe(
             raise ValueError(
                 f"tle.pipe field {field_name!r} leading dimension must equal capacity {capacity}, got {field.shape[0]}")
 
-    _semantic.builder.create_pipe_create([field.handle for field in fields.values()], capacity, scope, name or "",
-                                         list(fields.keys()), list(reader_names or ()), one_shot)
+    builder = _semantic.builder
+    field_handles = [field.handle for field in fields.values()]
+    field_names = list(fields.keys())
+    reader_names_list = list(reader_names or ())
+    # ``one_shot`` was added to the native pipe-create binding after the
+    # original mthreads TLE release.  Old mthreads builders have no capability
+    # marker and still accept the legacy seven-argument call; keep cyclic pipes
+    # source-compatible with those builders while one-shot has already been
+    # rejected by ``validate_pipe_options`` above.
+    legacy_mthreads_builder = (
+        mthreads_common.enabled()
+        and mthreads_pipe.is_backend_builder(builder)
+        and not hasattr(builder, "mthreads_tle_one_shot_pipe_version")
+    )
+    if legacy_mthreads_builder:
+        builder.create_pipe_create(
+            field_handles,
+            capacity,
+            scope,
+            name or "",
+            field_names,
+            reader_names_list,
+        )
+    else:
+        builder.create_pipe_create(
+            field_handles,
+            capacity,
+            scope,
+            name or "",
+            field_names,
+            reader_names_list,
+            one_shot,
+        )
     return gpu_types.pipe_value(capacity, scope, name, fields, reader_names, one_shot=one_shot)
 
 

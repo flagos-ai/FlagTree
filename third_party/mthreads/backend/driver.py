@@ -21,6 +21,12 @@ def _arch_to_musa_capability(arch):
     arch = str(arch).lower()
     if arch.isdigit():
         return int(arch)
+    if arch in {"mp31", "mp_31"}:
+        return 31
+    if arch in {"mp32", "mp_32"}:
+        return 32
+    if arch.startswith("ph1s"):
+        return 32
     if arch.startswith("ph1"):
         return 31
     return None

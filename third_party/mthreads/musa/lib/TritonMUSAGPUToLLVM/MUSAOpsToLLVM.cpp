@@ -455,7 +455,9 @@ struct InitArrivalOpConversion
                           .i32_val(static_cast<int32_t>(*numWarps));
     }
 
-    Value launchPred = buildTMEIssueOnlyPredicate(loc, rewriter);
+    Value truePred = arith::ConstantIntOp::create(rewriter, loc, 1, 1);
+    Value launchPred =
+        buildTMEIssuePredicate(truePred, loc, rewriter, op);
     SmallVector<Value> operands = {adaptor.getBarId(), arriveCount,
                                    adaptor.getPhaseId()};
     emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,
@@ -480,9 +482,28 @@ struct BarrierAddTransOpConversion
 #else
     Value launchPred = buildTMEIssuePredicate(adaptor.getPred(), loc, rewriter);
 #endif // __TLE__
-    SmallVector<Value> operands = {adaptor.getBarId(), adaptor.getTransBytes()};
-    emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,
-                                "llvm.musa.async.add.trans", operands);
+    SmallVector<int32_t> parts;
+#ifdef __TLE__
+    if (auto partsAttr = op->getAttrOfType<DenseI32ArrayAttr>(
+            triton::musa::kTLEExpectBytesPartsAttr))
+      parts.append(partsAttr.asArrayRef().begin(), partsAttr.asArrayRef().end());
+#endif // __TLE__
+    if (parts.empty()) {
+      SmallVector<Value> operands = {adaptor.getBarId(), adaptor.getTransBytes()};
+      emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,
+                                  "llvm.musa.async.add.trans", operands);
+    } else {
+      // Keep one IR op while splitting the hardware byte updates into the
+      // payload-sized chunks attached by the TLE lowering.
+      for (int32_t part : parts) {
+        Value bytes = LLVM::ConstantOp::create(
+            rewriter, loc, rewriter.getI32Type(),
+            rewriter.getI32IntegerAttr(part));
+        SmallVector<Value> operands = {adaptor.getBarId(), bytes};
+        emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,
+                                    "llvm.musa.async.add.trans", operands);
+      }
+    }
     rewriter.eraseOp(op);
     return success();
   }

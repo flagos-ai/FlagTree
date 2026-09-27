@@ -293,6 +293,32 @@ getTensorDescTypeWithEncoding(Operation *op, RankedTensorType blockTy,
                                  blockTy.cloneWithEncoding(updatedEncoding));
 }
 
+#ifdef __TLE__
+static SmallVector<Value> getWarpSpecializeTiedDescValues(
+    ttg::WarpSpecializePartitionsOp partitions, unsigned operandNumber) {
+  SmallVector<Value> values;
+  Value capture = partitions.getExplicitCaptures()[operandNumber];
+  if (isa<tt::TensorDescType>(capture.getType()))
+    values.push_back(capture);
+  for (Region &region : partitions.getPartitionRegions()) {
+    Value argument = region.getArgument(operandNumber);
+    if (isa<tt::TensorDescType>(argument.getType()))
+      values.push_back(argument);
+  }
+  return values;
+}
+
+static void syncWarpSpecializePartitionArgTypes(tt::FuncOp func) {
+  func.walk([](ttg::WarpSpecializePartitionsOp partitions) {
+    ValueRange captures = partitions.getExplicitCaptures();
+    for (Region &region : partitions.getPartitionRegions()) {
+      for (auto [index, capture] : llvm::enumerate(captures))
+        region.getArgument(index).setType(capture.getType());
+    }
+  });
+}
+#endif
+
 static void updateFunctionType(tt::FuncOp func) {
   SmallVector<Type> argTys(func.getBody().front().getArgumentTypes());
   SmallVector<Type> resultTys(func.getResultTypes());
@@ -351,6 +377,18 @@ static void assignMemoryLayouts(tt::FuncOp func) {
     auto *einfo = internEncoding(encodings,
                                  EncodingInfo{{}, {}, {}, {}, forcedToDefault});
 
+#ifdef __TLE__
+    if (auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(op)) {
+      for (auto [index, capture] :
+           llvm::enumerate(partitions.getExplicitCaptures())) {
+        if (isa<tt::TensorDescType>(capture.getType()))
+          updateEncoding(
+              getWarpSpecializeTiedDescValues(partitions, index),
+              EncodingInfo{});
+      }
+    }
+#endif
+
     auto seedEncoding = [&](Value value) {
       auto typedVal = cast<TypedValue<tt::TensorDescType>>(value);
       valueToEncodingInfo.try_emplace(typedVal, einfo);
@@ -381,6 +419,13 @@ static void assignMemoryLayouts(tt::FuncOp func) {
         updateEncoding(
             triton::getTiedArgs(op->getParentOp(), use.getOperandNumber()),
             EncodingInfo{});
+#ifdef __TLE__
+      } else if (auto partitions =
+                     dyn_cast<ttg::WarpSpecializePartitionsOp>(op)) {
+        updateEncoding(getWarpSpecializeTiedDescValues(
+                           partitions, use.getOperandNumber()),
+                       EncodingInfo{});
+#endif
       }
     }
 
@@ -397,6 +442,13 @@ static void assignMemoryLayouts(tt::FuncOp func) {
         updateEncoding(
             triton::getTiedArgs(parentOp, blockArg.getArgNumber() - offset),
             EncodingInfo{});
+#ifdef __TLE__
+      } else if (auto partitions =
+                     dyn_cast<ttg::WarpSpecializePartitionsOp>(parentOp)) {
+        updateEncoding(getWarpSpecializeTiedDescValues(
+                           partitions, blockArg.getArgNumber()),
+                       EncodingInfo{});
+#endif
       }
     }
   }
@@ -425,6 +477,9 @@ static void assignMemoryLayouts(tt::FuncOp func) {
     resultTys[i] =
         getTensorDescTypeWithEncoding(nullptr, descTy.getBlockType(), encoding);
   }
+#ifdef __TLE__
+  syncWarpSpecializePartitionArgTypes(func);
+#endif
   func.setFunctionType(FunctionType::get(func.getContext(), argTys, resultTys));
 }
 

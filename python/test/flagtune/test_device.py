@@ -71,13 +71,34 @@ def test_probe_hip_preserves_gfx_architecture(monkeypatch):
     assert descriptor.architecture == "gfx942"
 
 
+@pytest.mark.parametrize(
+    ("raw_arch", "expected_arch"),
+    [(31, "ph1"), ("ph1", "ph1"), (22, "mp22")],
+)
+def test_probe_musa_uses_mthreads_identity(monkeypatch, raw_arch, expected_arch):
+    from triton.flagtune.runtime import device
+
+    monkeypatch.setattr(
+        device,
+        "_active_driver",
+        lambda: _FakeActive("musa", raw_arch, ("MTT S5000", )),
+    )
+    descriptor = probe_flagtune_device()
+
+    assert descriptor.backend == "musa"
+    assert descriptor.vendor == "mthreads"
+    assert descriptor.torch_device_type == "musa"
+    assert descriptor.device_name == "MTT S5000"
+    assert descriptor.architecture == expected_arch
+
+
 def test_probe_unknown_backend_fails_at_device_boundary(monkeypatch):
     from triton.flagtune.runtime import device
 
     monkeypatch.setattr(device, "_active_driver", lambda: _FakeActive("xpu", "pvc"))
     with pytest.raises(
             UnsupportedFlagTuneDeviceError,
-            match="does not support Triton backend 'xpu'.*cuda, hip",
+            match="does not support Triton backend 'xpu'.*cuda, hip, musa",
     ):
         probe_flagtune_device()
 

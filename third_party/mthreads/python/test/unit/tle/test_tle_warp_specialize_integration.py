@@ -6,6 +6,7 @@ import pytest
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton.experimental.tle.language.gpu.mthreads import common as mthreads_common
 from triton._C import libtriton
 from triton._C.libtriton import ir
 from triton.backends.compiler import Language
@@ -252,15 +253,17 @@ def _ws_dot_integration_kernel(
     dynamic_k,
     K_TILES: tl.constexpr,
     STAGES: tl.constexpr,
+    BF16: tl.constexpr,
 ):
+    dtype = tl.bfloat16 if BF16 else tl.float16
     a_smem = tle.gpu.alloc(
         (STAGES, 256, 64),
-        dtype=tl.float16,
+        dtype=dtype,
         nv_mma_shared_layout=False,
     )
     b_smem = tle.gpu.alloc(
         (STAGES, 64, 256),
-        dtype=tl.float16,
+        dtype=dtype,
         nv_mma_shared_layout=False,
     )
     full_a = tle.gpu.alloc_barriers(
@@ -317,6 +320,61 @@ def _ws_dot_integration_kernel(
     )
 
 
+@triton.jit
+def _ws_partition_tensor_consumer(out):
+    values = tl.zeros((256, 64), dtype=tl.float32)
+    offsets_m = tl.arange(0, 256)
+    offsets_n = tl.arange(0, 64)
+    tl.store(out + offsets_m[:, None] * 64 + offsets_n[None, :], values)
+
+
+@triton.jit
+def _ws_partition_default(out):
+    tl.store(out, 1.0)
+
+
+@triton.jit
+def _ws_partition_producer(out):
+    tl.store(out + 1, 2.0)
+
+
+@triton.jit
+def _ws_explicit_sync_consumer(out):
+    tl.store(out, 1.0)
+    mthreads_common.local_barrier()
+
+
+@triton.jit
+def _ws_explicit_sync_producer(out):
+    tl.store(out + 1, 2.0)
+    mthreads_common.local_barrier()
+
+
+@triton.jit
+def _ws_explicit_sync_kernel(out):
+    tle.gpu.warp_specialize(
+        [
+            (_ws_explicit_sync_consumer, (out, )),
+            (_ws_explicit_sync_producer, (out, )),
+        ],
+        worker_num_warps=[4],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
+def _ws_partition_tensor_kernel(out):
+    tle.gpu.warp_specialize(
+        [
+            (_ws_partition_default, (out, )),
+            (_ws_partition_tensor_consumer, (out, )),
+            (_ws_partition_producer, (out, )),
+        ],
+        worker_num_warps=[8, 4],
+        worker_num_regs=[168, 24],
+    )
+
+
 def _compile_ws_integration(stages, k_tiles):
     target, backend = mthreads_backend()
     options = backend.parse_options({"num_warps": 16, "num_stages": 1})
@@ -360,7 +418,81 @@ def _compile_ws_integration(stages, k_tiles):
     return ttir, ttgir, module.str_nodebug()
 
 
-def _compile_ws_dot_integration(stages):
+def _compile_ws_partition_tensor():
+    target, backend = mthreads_backend()
+    options = backend.parse_options({"num_warps": 16, "num_stages": 1})
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+
+    src = ASTSource(
+        fn=_ws_partition_tensor_kernel,
+        signature={"out": "*fp32"},
+    )
+    module = src.make_ir(
+        target,
+        options,
+        backend.get_codegen_implementation(options),
+        backend.get_module_map(),
+        context,
+    )
+    compiler_stages = {}
+    backend.add_stages(compiler_stages, options, Language.TRITON)
+    metadata = {}
+    module = compiler_stages["ttir"](module, metadata)
+    module = compiler_stages["ttgir"](module, metadata)
+    ttgir = module.str_nodebug()
+
+    pm = ir.pass_manager(context)
+    libtriton.mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, 31)
+    pm.run(module, "allocate_ws_partition_tensor_shared_memory")
+
+    pm = ir.pass_manager(context)
+    libtriton.passes.convert.add_scf_to_cf(pm)
+    libtriton.passes.convert.add_index_to_llvmir(pm)
+    libtriton.mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_to_llvmir(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_tle_lower_warp_specialize(pm)
+    libtriton.passes.convert.add_scf_to_cf(pm)
+    pm.run(module, "lower_ws_partition_tensor_to_llvm_cfg")
+    return ttgir, module.str_nodebug()
+
+
+def _compile_ws_explicit_sync():
+    target, backend = mthreads_backend()
+    options = backend.parse_options({"num_warps": 4, "num_stages": 1})
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+
+    src = ASTSource(fn=_ws_explicit_sync_kernel, signature={"out": "*fp32"})
+    module = src.make_ir(
+        target,
+        options,
+        backend.get_codegen_implementation(options),
+        backend.get_module_map(),
+        context,
+    )
+    compiler_stages = {}
+    backend.add_stages(compiler_stages, options, Language.TRITON)
+    metadata = {}
+    module = compiler_stages["ttir"](module, metadata)
+    module = compiler_stages["ttgir"](module, metadata)
+    ttgir = module.str_nodebug()
+
+    pm = ir.pass_manager(context)
+    libtriton.mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, 31)
+    libtriton.passes.convert.add_scf_to_cf(pm)
+    libtriton.passes.convert.add_index_to_llvmir(pm)
+    libtriton.mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_to_llvmir(pm, 31)
+    libtriton.mthreads.passes.ttgpuir.add_tle_lower_warp_specialize(pm)
+    libtriton.passes.convert.add_scf_to_cf(pm)
+    pm.run(module, "lower_ws_explicit_sync_to_llvm_cfg")
+    return ttgir, module.str_nodebug()
+
+
+def _compile_ws_dot_integration(stages, dtype=tl.float16):
     target, backend = mthreads_backend()
     options = backend.parse_options({"num_warps": 16, "num_stages": 1})
     assert options.num_warps == 16
@@ -369,17 +501,19 @@ def _compile_ws_dot_integration(stages):
     ir.load_dialects(context)
     backend.load_dialects(context)
 
+    dtype_name = "bf16" if dtype is tl.bfloat16 else "fp16"
     src = ASTSource(
         fn=_ws_dot_integration_kernel,
         signature={
-            "a_desc": "tensordesc<fp16[256, 64]>",
-            "b_desc": "tensordesc<fp16[64, 256]>",
-            "out": "*fp16",
+            "a_desc": f"tensordesc<{dtype_name}[256, 64]>",
+            "b_desc": f"tensordesc<{dtype_name}[64, 256]>",
+            "out": f"*{dtype_name}",
             "dynamic_k": "i32",
             "K_TILES": "constexpr",
             "STAGES": "constexpr",
+            "BF16": "constexpr",
         },
-        constexprs={"K_TILES": 16, "STAGES": stages},
+        constexprs={"K_TILES": 16, "STAGES": stages, "BF16": dtype is tl.bfloat16},
     )
     module = src.make_ir(
         target,
@@ -794,6 +928,8 @@ def _assert_explicit_shared_allocations(allocated, stages):
     assert "musa_tle.barrier.alloc" not in allocated, allocated
     assert "musa_tle.barrier.index" not in allocated, allocated
     assert allocated.count("ttmg.init_arrival") == 4 * stages, allocated
+    init_lines = [line for line in allocated.splitlines() if "ttmg.init_arrival" in line]
+    assert all("musa.tme.issue_thread = 0 : i32" in line for line in init_lines), allocated
     assert f"musa.max_bar_id = {4 * stages}" in allocated, allocated
     assert f"!ttg.memdesc<{stages}x256x64xf16" in local_allocs[0], local_allocs
     assert f"!ttg.memdesc<{stages}x64x256xf16" in local_allocs[1], local_allocs
@@ -908,7 +1044,8 @@ def _assert_late_ws_dot_cfg(late, stages):
 
     # The pre-existing post-initialization CTA rendezvous is reused.  The
     # static dispatch and partition barriers must not allocate control SMEM.
-    assert late.count('"llvm.musa.syncthreads.lm"') == 1, late
+    # One initialization rendezvous and one partition-exit rendezvous.
+    assert late.count('"llvm.musa.syncthreads.lm"') == 2, late
     initialized_barriers = late.count('"llvm.musa.async.init.arrival"')
     record = re.search(
         r'llvm\.call_intrinsic\s+"llvm\.musa\.async\.bar\.record"'
@@ -919,6 +1056,17 @@ def _assert_late_ws_dot_cfg(late, stages):
     recorded_barriers = constants[record.group(1)]
     assert recorded_barriers == initialized_barriers, (record.group(1), constants, late)
     assert recorded_barriers > 4 * stages, (recorded_barriers, stages, late)
+
+    dynamic_phase = re.search(
+        r"(%[-\w.]+)\s*=\s*arith\.andi\s+(%[-\w.]+),\s*(%[-\w.]+)\s*:\s*i32",
+        late,
+    )
+    assert dynamic_phase, late
+    assert re.search(
+        rf'llvm\.call_intrinsic\s+"llvm\.musa\.async\.wait"'
+        rf'\(%[-\w.]+,\s*{re.escape(dynamic_phase.group(1))}\)',
+        late,
+    ), late
 
 
 @pytest.mark.parametrize("stages,k_tiles", [(1, 16), (2, 16), (2, 10)])
@@ -934,6 +1082,34 @@ def test_mthreads_tle_warp_specialize_dot_pipeline_resources(stages):
     ttir, ttgir, allocated, late = _compile_ws_dot_integration(stages)
     _assert_dot_pipeline_resources(ttir, ttgir, allocated, stages)
     _assert_late_ws_dot_cfg(late, stages)
+
+
+def test_mthreads_tle_warp_specialize_bf16_partition_sync():
+    _, _, _, late = _compile_ws_dot_integration(1, tl.bfloat16)
+    assert "llvm.musa.sqmma.bfmma." in late, late
+    _assert_late_ws_dot_cfg(late, 1)
+
+
+def test_mthreads_tle_partition_tensor_uses_partition_warp_count():
+    ttgir, late = _compile_ws_partition_tensor()
+    partition = re.search(
+        r"partition0\(.*?\)\s*num_warps\(8\)\s*\{(?P<body>.*?)ttg\.warp_return",
+        ttgir,
+        re.DOTALL,
+    )
+    assert partition, ttgir
+    assert "warpsPerCTA = [4, 2]" in ttgir, ttgir
+    assert "warpGroupStartIds = array<i32: 16, 24>" in ttgir, ttgir
+    assert '"ttg.total-num-warps" = 28 : i32' in ttgir, ttgir
+    assert late.count('"llvm.musa.syncthreads.lm"') == 1, late
+    assert late.index('"llvm.musa.syncthreads.lm"') < late.index("llvm.return"), late
+
+
+def test_mthreads_tle_explicit_cta_sync_survives_static_partition_lowering():
+    ttgir, late = _compile_ws_explicit_sync()
+    assert ttgir.count("ttg.barrier local") == 2, ttgir
+    assert late.count('"llvm.musa.syncthreads.lm"') == 3, late
+    assert "musa_tle.explicit_cta_sync" not in late, late
 
 
 def test_mthreads_tle_warp_specialize_stage_three_remains_deferred():

@@ -204,14 +204,31 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
     // do not allocate a hidden per-copy barrier here.
     if (Value completionBarrier = op.getCompletionBarrier()) {
       auto expectBytes = op->getAttrOfType<IntegerAttr>("expect_bytes");
-      if (!expectBytes || expectBytes.getInt() <= 0)
+      bool groupedCompletion =
+          op->hasAttr(triton::musa::kTLEGroupedCompletionAttr);
+      if ((!expectBytes || expectBytes.getInt() <= 0) && !groupedCompletion)
         return op.emitOpError(
-            "completion barrier requires positive expect_bytes");
+            "completion barrier requires positive expect_bytes or a grouped "
+            "completion marker");
       auto asyncCopy = triton::musa::createAsyncTMECopyGlobalToLocal(
           rewriter, loc, op.getSrc(), *coord, completionBarrier, op.getDst(),
           pred, *config);
-      asyncCopy->setAttr("musa_tle.expect_bytes",
-                         rewriter.getI32IntegerAttr(expectBytes.getInt()));
+      if (expectBytes)
+        asyncCopy->setAttr(triton::musa::kTLEExpectBytesAttr,
+                           rewriter.getI32IntegerAttr(expectBytes.getInt()));
+      if (groupedCompletion)
+        asyncCopy->setAttr(triton::musa::kTLEGroupedCompletionAttr,
+                           rewriter.getUnitAttr());
+      // Pipe lowering annotates the final payload of a multi-field commit so
+      // LowerTMETransactions can place the single producer arrival after all
+      // fields.  Preserve this protocol marker while converting ttg.tma_copy
+      // to the async TME operation.
+      if (op->hasAttr(triton::musa::kTLEGroupedCompletionFinalAttr))
+        asyncCopy->setAttr(triton::musa::kTLEGroupedCompletionFinalAttr,
+                           rewriter.getUnitAttr());
+      if (auto parts = op->getAttrOfType<DenseI32ArrayAttr>(
+              triton::musa::kTLEExpectBytesPartsAttr))
+        asyncCopy->setAttr(triton::musa::kTLEExpectBytesPartsAttr, parts);
       rewriter.eraseOp(op);
       return success();
     }

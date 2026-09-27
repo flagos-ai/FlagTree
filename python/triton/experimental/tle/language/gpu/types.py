@@ -512,6 +512,47 @@ class buffered_tensor(tl.base_value):
         return buffered_tensor(slot_handle, self.dtype, slot_shape, self.type.storage, slot_layout, _semantic,
                                alloc_shape=slot_ty.alloc_shape)
 
+    @tl.builtin
+    def slice(self, start, length, dim, _semantic=None):
+        start = tl._unwrap_if_constexpr(start)
+        length = tl._unwrap_if_constexpr(length)
+        dim = tl._unwrap_if_constexpr(dim)
+        for name, value in (("start", start), ("length", length), ("dim", dim)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"buffered_tensor.slice {name} must be a compile-time integer")
+        if dim < 0 or dim >= len(self.shape):
+            raise ValueError(f"buffered_tensor.slice dim {dim} is out of range for rank {len(self.shape)}")
+        if start < 0 or length <= 0 or start + length > self.shape[dim]:
+            raise ValueError(
+                f"buffered_tensor.slice [{start}:{start + length}] is out of range for dimension {dim} "
+                f"with size {self.shape[dim]}"
+            )
+
+        offsets = [0] * len(self.shape)
+        offsets[dim] = start
+        slice_shape = list(self.shape)
+        slice_shape[dim] = length
+        slice_ty = buffered_tensor_type(
+            self.dtype,
+            slice_shape,
+            self.type.storage,
+            self.type.layout,
+            _semantic,
+            alloc_shape=self.type.alloc_shape,
+        )
+        slice_handle = _semantic.builder.create_memdesc_subslice(
+            slice_ty.to_ir(_semantic.builder), self.handle, offsets
+        )
+        return buffered_tensor(
+            slice_handle,
+            self.dtype,
+            slice_shape,
+            self.type.storage,
+            self.type.layout,
+            _semantic,
+            alloc_shape=slice_ty.alloc_shape,
+        )
+
     def make_permute(self, handle, dims):
         permuted_layout = self.type.layout.make_permute(dims)
         return buffered_tensor(

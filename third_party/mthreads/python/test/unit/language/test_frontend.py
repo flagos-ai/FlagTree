@@ -203,6 +203,20 @@ def test_call_in_loop():
         acc = accumulate(acc, i)
 
 
+@filecheck_test
+@triton.jit
+def test_static_range_index_can_be_reused_by_dynamic_range():
+    # A static expansion must not leak its constexpr induction variable into
+    # the following dynamic loop, where the same source name is a tensor.
+    # CHECK-LABEL: test_static_range_index_can_be_reused_by_dynamic_range
+    value = tl.zeros((1,), dtype=tl.int32)
+    for k_iter in tl.static_range(2):
+        value += k_iter
+    for k_iter in tl.range(0, 2):
+        value += k_iter
+    anchor(value)
+
+
 @tl.core._aggregate
 class FunctionParent:
 

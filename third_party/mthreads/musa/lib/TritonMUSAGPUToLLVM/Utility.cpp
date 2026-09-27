@@ -61,8 +61,26 @@ buildSqmmaAccumulatorCarrierInfo(Type type) {
   unsigned fragmentElems = totalAccElems / fragmentCount;
   Type fragmentType = VectorType::get({static_cast<int64_t>(fragmentElems)},
                                       tensorTy.getElementType());
-  Type carrierType = VectorType::get({static_cast<int64_t>(totalAccElems)},
-                                     tensorTy.getElementType());
+  // Keep each SQMMA fragment as an independent aggregate field.  The old
+  // representation used one long vector for all fragments, so every update
+  // lowered to a chain of extractelement/insertelement operations over the
+  // complete accumulator.  Large rolling tiles consequently kept many
+  // intermediate vectors live and could exhaust the MTGPU register allocator
+  // before it had an opportunity to reuse a fragment's registers.
+  //
+  // A single-fragment carrier remains a vector for the common fast path.  For
+  // multi-fragment accumulators, a literal struct makes fragment boundaries
+  // explicit to LLVM; extractvalue/insertvalue then update only the fragment
+  // being consumed while preserving the custom MTGPU carrier type at the IR
+  // level.
+  Type carrierType;
+  if (fragmentCount == 1) {
+    carrierType = fragmentType;
+  } else {
+    SmallVector<Type> fields(fragmentCount, fragmentType);
+    carrierType = LLVM::LLVMStructType::getLiteral(tensorTy.getContext(),
+                                                   fields);
+  }
 
   return LLVM::MUSA::SqmmaAccumulatorCarrierInfo{
       tensorTy, fragmentCount, fragmentElems, fragmentType, carrierType};
@@ -210,6 +228,10 @@ Value extractSqmmaAccumulatorCarrierFragment(Location loc, Value carrier,
   if (info->fragmentCount == 1)
     return carrier;
 
+  auto carrierStructTy = dyn_cast<LLVM::LLVMStructType>(info->carrierType);
+  if (carrierStructTy)
+    return LLVM::ExtractValueOp::create(rewriter, loc, carrier, fragmentIdx);
+
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   Value fragment = LLVM::UndefOp::create(rewriter, loc, info->fragmentType);
   for (unsigned i = 0; i < info->fragmentElems; ++i) {
@@ -230,6 +252,13 @@ Value insertSqmmaAccumulatorCarrierFragment(Location loc, Value carrier,
 
   if (info->fragmentCount == 1)
     return fragment;
+
+  if (isa<LLVM::LLVMStructType>(info->carrierType)) {
+    if (!carrier)
+      carrier = LLVM::UndefOp::create(rewriter, loc, info->carrierType);
+    return LLVM::InsertValueOp::create(rewriter, loc, carrier, fragment,
+                                       fragmentIdx);
+  }
 
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   if (!carrier)

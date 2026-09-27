@@ -106,6 +106,33 @@ def _tma_completion_copy_kernel(
 
 
 @triton.jit
+def _tma_grouped_completion_copy_kernel(a_desc, b_desc):
+    a_smem = tle.gpu.alloc(
+        (256, 64), dtype=tl.float16, nv_mma_shared_layout=False
+    )
+    b_smem = tle.gpu.alloc(
+        (64, 256), dtype=tl.float16, nv_mma_shared_layout=False
+    )
+    full = tle.gpu.alloc_barrier(expect_bytes=65536)
+    tle.gpu.copy(
+        a_desc,
+        a_smem,
+        (256, 64),
+        (0, 0),
+        barrier=full,
+        completion_group_leader=True,
+    )
+    tle.gpu.copy(
+        b_desc,
+        b_smem,
+        (64, 256),
+        (0, 0),
+        barrier=full,
+        completion_group_leader=False,
+    )
+
+
+@triton.jit
 def _tma_implicit_completion_copy_kernel(desc):
     smem = tle.gpu.alloc((256, 64), dtype=tl.float16, nv_mma_shared_layout=False)
     tle.gpu.copy(desc, smem, (256, 64), (0, 0))
@@ -248,6 +275,33 @@ def test_tle_tma_completion_barrier_preserves_mthreads_contract(
     assert f"musa.max_bar_id = {stages}" in ttgir, ttgir
 
     assert f"ttg.shared = {stages * 32768} : i32" in allocated, allocated
+
+
+def test_tle_tma_grouped_completion_uses_one_transaction_and_arrival():
+    ttir, ttgir, allocated = _compile_tma_completion_ir(
+        _tma_grouped_completion_copy_kernel,
+        signature={
+            "a_desc": "tensordesc<fp16[256, 64]>",
+            "b_desc": "tensordesc<fp16[64, 256]>",
+        },
+    )
+
+    copy_lines = [line for line in ttir.splitlines() if "ttg.tma_copy" in line]
+    assert len(copy_lines) == 2, ttir
+    assert all("musa_tle.grouped_completion" in line for line in copy_lines), ttir
+    assert sum("expect_bytes = 65536 : i32" in line for line in copy_lines) == 1, ttir
+
+    async_lines = [
+        line
+        for line in ttgir.splitlines()
+        if "ttmg.async_tme_copy_global_to_local" in line
+    ]
+    assert len(async_lines) == 2, ttgir
+    assert all("musa.tme.explicit_completion" in line for line in async_lines), ttgir
+    assert ttgir.count("ttmg.barrier_add_trans") == 1, ttgir
+    assert ttgir.count("ttmg.arrive_barrier_noret") == 1, ttgir
+    assert "ttmg.wait_barrier" not in ttgir, ttgir
+    assert "ttg.shared = 65536 : i32" in allocated, allocated
 
 
 def test_tle_tma_copy_without_completion_barrier_keeps_implicit_sync():

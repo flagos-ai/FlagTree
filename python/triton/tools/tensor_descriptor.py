@@ -20,6 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import os
 from dataclasses import dataclass
 from typing import List, Any
 from triton._utils import validate_block_shape
@@ -44,8 +45,16 @@ class TensorDescriptor:
             assert self.base.data_ptr() % 16 == 0, "base must be 16-byte aligned"
         validate_block_shape(self.block_shape)
         elem_bytes = self.base.dtype.itemsize
+        # The 16-byte rule is the NVIDIA TMA requirement.  The MThreads TME
+        # engine accepts any 4-byte aligned row stride: a descriptor built over
+        # e.g. a bf16 [M, 538] tensor (1076-byte stride) transfers correctly,
+        # while an odd element count (2 mod 4) is rejected by the driver with
+        # "invalid argument".  Opting in trades a small amount of transfer
+        # throughput for not having to materialize a padded copy.
+        stride_alignment = 4 if os.environ.get("TRITON_TMA_ALLOW_UNALIGNED_STRIDE", "0") == "1" else 16
         for stride in self.strides[:-1]:
-            assert (stride * elem_bytes) % 16 == 0, "strides must be 16-byte aligned"
+            assert (stride * elem_bytes) % stride_alignment == 0, \
+                f"strides must be {stride_alignment}-byte aligned"
         for shape_dim in self.shape:
             assert shape_dim > 0, "shape must be positive"
         assert self.strides[-1] == 1, "Last dimension must be contiguous"

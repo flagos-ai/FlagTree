@@ -1,6 +1,7 @@
 #ifdef __TLE__
 
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 #include "ir.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -11,6 +12,7 @@
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
 #include <pybind11/pybind11.h>
@@ -121,7 +123,40 @@ void init_triton_musa_tle_ir(py::module m) {
     throw std::runtime_error("triton IR builder class is not initialized");
 
   auto &builderCls = *builderClsPtr;
+  // Keep the marker on the native builder type so a newer Python package
+  // paired with an older libtriton fails closed in downstream dispatch guards.
+  builderCls.attr("mthreads_tle_pipe_sqmma_version") = py::int_(2);
+  // Version 2 permits three payload fields in one grouped-completion pipe.
+  builderCls.attr("mthreads_tle_multifield_pipe_version") = py::int_(2);
+  // Version 1 implements the single ready/full edge form of one_shot pipes:
+  // no empty-barrier ring is allocated and acquire/release are erased.
+  builderCls.attr("mthreads_tle_one_shot_pipe_version") = py::int_(1);
+  // PipelineExpander keeps runtime-bounded K loops as scf.for and predicates
+  // their prologue/epilogue.  Expose this independently so FlagGems can guard
+  // kernels that rely on the dynamic-loop lowering when paired with an older
+  // libtriton.
+  builderCls.attr("mthreads_tle_dynamic_loops_version") = py::int_(1);
+  builderCls.attr("mthreads_tle_split_m_sqmma_version") = py::int_(1);
+  builderCls.attr("mthreads_tle_split128_sqmma_version") = py::int_(1);
+  builderCls.attr("mthreads_tle_local_barrier_version") = py::int_(1);
+  builderCls.attr("mthreads_tle_persistent_ordered_sqmma_version") =
+      py::int_(1);
+  builderCls.attr("mthreads_tle_dynamic_partition_sync_version") =
+      py::int_(1);
+  builderCls.attr("mthreads_tle_grouped_completion_version") = py::int_(1);
+  builderCls.attr("mthreads_tle_16_warp_persistent_version") = py::int_(1);
+  builderCls.attr("mthreads_tle_fused_pipe_consumer_version") = py::int_(1);
+  builderCls.attr("mthreads_tle_default_producer_version") = py::int_(1);
   builderCls
+      .def("create_mthreads_local_barrier", [](TritonOpBuilder &self) {
+        auto barrier = self.create<ttg::BarrierOp>(ttg::AddrSpace::Local);
+        // Automatic SQMMA synchronization uses the same TTG operation.  Keep
+        // an explicit frontend barrier distinguishable until late static warp
+        // specialization has decided which synchronizations are partition
+        // local and which must rendezvous the complete CTA.
+        barrier->setAttr("musa_tle.explicit_cta_sync",
+                         self.getBuilder().getUnitAttr());
+      })
       .def("make_swizzled_shared_encoding_attr",
            [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
               unsigned maxPhase, std::vector<unsigned> order,
@@ -205,7 +240,7 @@ void init_triton_musa_tle_ir(py::module m) {
           "create_tma_copy",
           [](TritonOpBuilder &self, mlir::Value src, mlir::Value dst,
              std::vector<mlir::Value> indices, py::object completionBarrier,
-             int32_t expectBytes) -> void {
+             int32_t expectBytes, bool groupedCompletion) -> void {
             mlir::Value barrier;
             if (!completionBarrier.is_none())
               barrier = py::cast<mlir::Value>(completionBarrier);
@@ -213,10 +248,14 @@ void init_triton_musa_tle_ir(py::module m) {
             if (expectBytes >= 0)
               op->setAttr("expect_bytes",
                           self.getBuilder().getI32IntegerAttr(expectBytes));
+            if (groupedCompletion)
+              op->setAttr(mlir::triton::musa::kTLEGroupedCompletionAttr,
+                          self.getBuilder().getUnitAttr());
           },
           py::arg("src"), py::arg("dst"), py::arg("indices"),
           py::arg("completionBarrier") = py::none(),
-          py::arg("expectBytes") = -1)
+          py::arg("expectBytes") = -1,
+          py::arg("groupedCompletion") = false)
       .def("create_pipe_create",
            [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
               int32_t capacity, const std::string &scope,
@@ -404,6 +443,30 @@ void init_triton_musa_tle_ir(py::module m) {
 
              return self.create<ttg::MemDescIndexOp>(resultType, src, index);
            })
+      .def("create_memdesc_subslice",
+           [](TritonOpBuilder &self, mlir::Type resultType, mlir::Value src,
+              std::vector<int32_t> offsets) -> mlir::Value {
+             auto srcType = mlir::dyn_cast<ttg::MemDescType>(src.getType());
+             auto resultTypeMemDesc =
+                 mlir::dyn_cast<ttg::MemDescType>(resultType);
+             if (!srcType || !resultTypeMemDesc)
+               throw py::value_error(
+                   "mthreads TLE memdesc subslice requires memdesc types");
+             if (offsets.size() != srcType.getRank() ||
+                 resultTypeMemDesc.getRank() != srcType.getRank())
+               throw py::value_error(
+                   "mthreads TLE memdesc subslice requires rank-matched offsets");
+             for (auto [dim, offset] : llvm::enumerate(offsets)) {
+               int64_t length = resultTypeMemDesc.getShape()[dim];
+               if (offset < 0 || length <= 0 ||
+                   static_cast<int64_t>(offset) + length >
+                       srcType.getShape()[dim])
+                 throw py::value_error(
+                     "mthreads TLE memdesc subslice is out of bounds");
+             }
+             return self.create<ttg::MemDescSubsliceOp>(resultType, src,
+                                                        offsets);
+           })
       .def("create_memdesc_trans",
            [](TritonOpBuilder &self, mlir::Value src,
               std::vector<int> order) -> mlir::Value {
@@ -475,14 +538,19 @@ void init_triton_musa_tle_ir(py::module m) {
            })
       .def("create_warp_specialize",
            [](TritonOpBuilder &self, std::vector<mlir::Type> resultTypes,
-              std::vector<int32_t> partitionNumWarps) -> TLEWarpSpecializeOp {
+              std::vector<int32_t> partitionNumWarps,
+              bool defaultIsProducer) -> TLEWarpSpecializeOp {
              auto &builder = self.getBuilder();
              auto op = self.create<ttg::WarpSpecializeOp>(resultTypes,
                                                           partitionNumWarps);
              op->setAttr("musa_tle.static_warp_specialize",
                          builder.getUnitAttr());
+             if (defaultIsProducer)
+               op->setAttr("musa_tle.default_producer", builder.getUnitAttr());
              return TLEWarpSpecializeOp(op);
-           })
+           },
+           py::arg("result_types"), py::arg("partition_num_warps"),
+           py::arg("default_is_producer") = false)
       .def("create_exclusive_cumsum",
            [](TritonOpBuilder &self, mlir::Type exclusiveTy, mlir::Type totalTy,
               mlir::Value src, int axis, bool reverse) -> mlir::OpState {

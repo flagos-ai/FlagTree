@@ -8,8 +8,11 @@ import triton.language as tl
 from triton._C import libtriton
 from pathlib import Path
 
-if not hasattr(libtriton, "musa"):
-    pytest.skip("musa backend not built in libtriton", allow_module_level=True)
+# The in-tree MTT plugin is registered as ``mthreads`` even though its Python
+# backend package is exposed as ``musa``.  Accept both names so compiler tests
+# actually run against the supported in-tree build instead of being skipped.
+if not (hasattr(libtriton, "musa") or hasattr(libtriton, "mthreads")):
+    pytest.skip("mthreads/musa backend not built in libtriton", allow_module_level=True)
 
 from triton.backends import backends
 from triton.backends.compiler import GPUTarget
@@ -17,11 +20,25 @@ from triton.compiler import ASTSource
 from triton._C.libtriton import ir
 
 
+@pytest.mark.parametrize(
+    ("arch", "expected"),
+    [("ph1", 31), ("ph1s", 32), ("mp31", 31), ("mp_31", 31),
+     ("mp32", 32), ("mp_32", 32)],
+)
+def test_musa_056_arch_alias_capability(arch, expected):
+    from triton.backends.mthreads.compiler import _capability_from_arch
+
+    assert _capability_from_arch(arch) == expected
+
+
 def _get_musa_backend():
-    if "musa" not in backends:
+    backend_name = "musa" if "musa" in backends else "mthreads"
+    if backend_name not in backends:
         pytest.skip("musa backend not discovered")
+    # ``mthreads`` is the plugin registry key, while the backend contract and
+    # driver still use the canonical target name ``musa``.
     target = GPUTarget("musa", "ph1", 32)
-    return backends["musa"].compiler(target)
+    return backends[backend_name].compiler(target)
 
 
 def _compile_to_llir(fn, signature, constexprs=None):
@@ -49,7 +66,7 @@ def _compile_to_llir(fn, signature, constexprs=None):
 
 def test_musa_056_default_libdevice_path(fresh_knobs):
     backend = _get_musa_backend()
-    from triton.backends.musa import compiler as musa_compiler
+    from triton.backends.mthreads import compiler as musa_compiler
 
     with fresh_knobs.musa.scope():
         del fresh_knobs.musa.libdevice_path
@@ -69,6 +86,109 @@ def test_musa_056_libdevice_path_override(fresh_knobs, tmp_path):
         options = backend.parse_options({})
 
     assert dict(options.extern_libs)["libdevice"] == str(override)
+
+
+def test_musa_056_can_disable_max_ilp_scheduler():
+    backend = _get_musa_backend()
+    from triton.backends.mthreads.compiler import _llc_extra_options
+
+    enabled = backend.parse_options({"enable_backend_opt": True})
+    enabled_args = _llc_extra_options({"uses_sqmma": True}, enabled)
+    assert "-misched=mtgpu-max-ilp" in enabled_args
+
+    disabled = backend.parse_options(
+        {
+            "enable_backend_opt": True,
+            "disable_max_ilp_scheduler": True,
+        }
+    )
+    disabled_args = _llc_extra_options({"uses_sqmma": True}, disabled)
+    assert "-misched=mtgpu-max-ilp" not in disabled_args
+    assert "-mtgpu-opt-level=1" in disabled_args
+
+
+def test_musa_056_llc_user_scheduler_option_overrides_backend_default():
+    backend = _get_musa_backend()
+    from triton.backends.mthreads.compiler import _llc_extra_options
+
+    options = backend.parse_options(
+        {
+            "enable_backend_opt": True,
+            "llc_options": "-misched=mtgpu-max-occupancy -mtgpu-opt-level=2",
+        }
+    )
+    args = _llc_extra_options({"uses_sqmma": True}, options)
+    assert args.count("-misched=mtgpu-max-occupancy") == 1
+    assert not any(arg == "-misched=mtgpu-max-ilp" for arg in args)
+    assert args.count("-mtgpu-opt-level=2") == 1
+    assert not any(arg == "-mtgpu-opt-level=1" for arg in args)
+
+
+def test_musa_056_llc_user_opt_level_replaces_default():
+    backend = _get_musa_backend()
+    from triton.backends.mthreads.compiler import _llc_extra_options, _llc_opt_level
+
+    default = backend.parse_options({})
+    assert _llc_opt_level(default) == "-O2"
+
+    options = backend.parse_options({"llc_options": "-O3 -O1"})
+    assert _llc_opt_level(options) == "-O1"
+    args = _llc_extra_options({"uses_sqmma": True}, options)
+    assert not any(arg in ("-O0", "-O1", "-O2", "-O3") for arg in args)
+
+
+def test_musa_056_llc_register_allocator_failure_is_recoverable(monkeypatch, tmp_path):
+    """Known MTT llc allocator aborts must be prunable by autotuning."""
+    from triton.backends.mthreads import compiler as musa_compiler
+    from triton.runtime.errors import PTXASError
+
+    class FailedProcess:
+        returncode = 134
+        stdout = ""
+        stderr = "LLVM ERROR: no registers from class available to allocate"
+
+    monkeypatch.setattr(musa_compiler.subprocess, "run", lambda *args, **kwargs: FailedProcess())
+    with pytest.raises(PTXASError, match="MTGPU register allocation"):
+        musa_compiler._run_tool_command(
+            "llc",
+            ["llc", "kernel.ll", "-O2"],
+            repro_dir=tmp_path,
+        )
+
+
+def test_musa_056_unknown_llc_error_is_not_swallowed(monkeypatch, tmp_path):
+    from triton.backends.mthreads import compiler as musa_compiler
+
+    class FailedProcess:
+        returncode = 134
+        stdout = ""
+        stderr = "LLVM ERROR: unexpected backend failure"
+
+    monkeypatch.setattr(musa_compiler.subprocess, "run", lambda *args, **kwargs: FailedProcess())
+    with pytest.raises(RuntimeError, match="`llc` failed with error code 134"):
+        musa_compiler._run_tool_command(
+            "llc",
+            ["llc", "kernel.ll", "-O2"],
+            repro_dir=tmp_path,
+        )
+
+
+def test_musa_056_llc_post_ra_allocator_crash_is_recoverable(monkeypatch, tmp_path):
+    from triton.backends.mthreads import compiler as musa_compiler
+    from triton.runtime.errors import PTXASError
+
+    class FailedProcess:
+        returncode = 139
+        stdout = ""
+        stderr = "MTGPU Post-RA Internal Registers Related Optimization"
+
+    monkeypatch.setattr(musa_compiler.subprocess, "run", lambda *args, **kwargs: FailedProcess())
+    with pytest.raises(PTXASError, match="MTGPU register allocation"):
+        musa_compiler._run_tool_command(
+            "llc",
+            ["llc", "kernel.ll", "-O0"],
+            repro_dir=tmp_path,
+        )
 
 
 def test_musa_056_cast_compile_only():

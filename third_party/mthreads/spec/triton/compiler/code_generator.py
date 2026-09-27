@@ -668,7 +668,17 @@ class CodeGenerator(ast.NodeVisitor):
 
     def visit_arg(self, node):
         ast.NodeVisitor.generic_visit(self, node)
-        param = next(p for p in self.jit_fn.params if p.name == node.arg)
+        param = next((p for p in self.jit_fn.params if p.name == node.arg), None)
+        if param is None:
+            # Keep malformed/inlined signatures from leaking a bare
+            # StopIteration out of the frontend.  This usually indicates a
+            # stale JITFunction parameter list; report it at the argument
+            # source location so the caller can diagnose the mismatch.
+            raise CompilationError(
+                self.jit_fn.src,
+                node,
+                f"unable to resolve JIT function parameter '{node.arg}'",
+            )
         if param.is_constexpr and (param.do_not_specialize or param.do_not_specialize_on_alignment):
             raise CompilationError(
                 self.jit_fn.src, node,
@@ -1166,11 +1176,44 @@ class CodeGenerator(ast.NodeVisitor):
         if IteratorClass == language.static_range:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             static_range = range(iterator.start.value, iterator.end.value, iterator.step.value)
+            # A static_range is expanded in the frontend.  Its induction
+            # variable is a constexpr binding local to the expanded loop;
+            # leaking the last body assignment into the enclosing scope makes
+            # a later dynamic range incorrectly look like a type-changing
+            # loop-carried variable (for example, ``k_iter`` in a pipelined
+            # K loop).  Preserve an existing binding while allowing a new
+            # induction variable to retain the usual final constexpr value.
+            target_name = node.target.id
+            saved_lscope = dict(self.lscope)
+            saved_local_defs = dict(self.local_defs)
+            had_binding = target_name in self.lscope
+            saved_binding = self.lscope.get(target_name)
+            had_local_def = target_name in self.local_defs
+            saved_local_def = self.local_defs.get(target_name)
             for i in static_range:
                 self.lscope[node.target.id] = constexpr(i)
                 self.visit_compound_statement(node.body)
                 for stmt in node.orelse:
                     ast.NodeVisitor.generic_visit(self, stmt)
+            # Restore constexpr bindings modified by the unrolled body.  Such
+            # names are compile-time locals of the static expansion (the
+            # common case is assigning a dynamic expression to a temporary
+            # named after the static index), and must not become carries of a
+            # surrounding dynamic loop.
+            for name, saved_value in saved_lscope.items():
+                if _is_constexpr(saved_value) and not _is_constexpr(self.lscope.get(name)):
+                    self.lscope[name] = saved_value
+                if _is_constexpr(saved_value):
+                    if name in saved_local_defs:
+                        self.local_defs[name] = saved_local_defs[name]
+                    else:
+                        self.local_defs.pop(name, None)
+            if had_binding:
+                self.lscope[target_name] = saved_binding
+            if had_local_def:
+                self.local_defs[target_name] = saved_local_def
+            else:
+                self.local_defs.pop(target_name, None)
             return
         num_stages = None
         loop_unroll_factor = None
@@ -1353,7 +1396,26 @@ class CodeGenerator(ast.NodeVisitor):
         args_val = flatten_values_to_ir(args)
         call_op = self.builder.call(symbol, args_val)
         handles = [call_op.get_result(i) for i in range(call_op.get_num_results())]
-        return next(unflatten_ir_values(handles, [callee_ret_type]))
+        # A JIT helper used for side effects may legitimately have no return
+        # value (for example a TLE pipe producer).  The old unconditional
+        # ``next`` raised an opaque StopIteration during frontend generation;
+        # preserve the void call contract instead of leaking an iterator error.
+        if callee_ret_type is None:
+            if handles:
+                raise CompilationError(
+                    self.jit_fn.src,
+                    self.cur_node,
+                    "JIT function returned no value but produced IR results",
+                )
+            return None
+        values = list(unflatten_ir_values(handles, [callee_ret_type]))
+        if not values:
+            raise CompilationError(
+                self.jit_fn.src,
+                self.cur_node,
+                "JIT function return type has no materialized IR value",
+            )
+        return values[0]
 
     def inline_JitFunction(self, fn: JITFunction, args, kwargs, caller_context=None):
         """Inline a JITFunction body into the current insertion block.

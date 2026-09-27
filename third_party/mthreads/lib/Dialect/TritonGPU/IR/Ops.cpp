@@ -915,9 +915,12 @@ LogicalResult TMACopyOp::verify() {
       return emitOpError(
           "completion barrier is only supported for global-to-shared copy");
     auto expectBytes = (*this)->getAttrOfType<IntegerAttr>("expect_bytes");
-    if (!expectBytes || expectBytes.getInt() <= 0)
+    bool groupedCompletion =
+        (*this)->hasAttr("musa_tle.grouped_completion");
+    if ((!expectBytes || expectBytes.getInt() <= 0) && !groupedCompletion)
       return emitOpError(
-          "completion barrier requires a positive expect_bytes attribute");
+          "completion barrier requires a positive expect_bytes attribute or "
+          "a grouped completion marker");
   } else if ((*this)->getAttr("expect_bytes")) {
     return emitOpError("expect_bytes requires a completion barrier operand");
   }

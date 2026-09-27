@@ -58,10 +58,12 @@ def partition_function_caller(generator):
     return generator.inline_JitFunction
 
 
-def create_op(builder, result_types, worker_num_warps):
+def create_op(builder, result_types, worker_num_warps, default_is_producer=False):
     # Mthreads keeps explicit captures on the isolated partitions holder rather
     # than on the outer ttg.warp_specialize operation.
-    return builder.create_warp_specialize(result_types, worker_num_warps)
+    return builder.create_warp_specialize(
+        result_types, worker_num_warps, default_is_producer
+    )
 
 
 def create_partitions(builder, explicit_captures, num_partitions):

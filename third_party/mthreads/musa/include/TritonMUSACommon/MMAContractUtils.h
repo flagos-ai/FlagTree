@@ -13,6 +13,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <cstdlib>
 #include <optional>
 #include <string>
 
@@ -326,6 +327,69 @@ inline bool isSupportedSqmma(SQMMAEltType eltTypeA, SQMMAEltType eltTypeB,
   default:
     return false;
   }
+}
+
+// PH1 (mp_31) exposes two narrow FP16/BF16 K=128 forms.  PH1S (mp_32)
+// instead exposes the wider K=128 forms; the common predicate above keeps
+// the architecture-independent intersection deliberately conservative.
+inline bool isSupportedSqmmaForCapability(
+    SQMMAEltType eltTypeA, SQMMAEltType eltTypeB, SQMMAEltType eltTypeC,
+    unsigned m, unsigned n, unsigned k, int capability) {
+  if (isSupportedSqmma(eltTypeA, eltTypeB, eltTypeC, m, n, k))
+    return true;
+  if (eltTypeA != eltTypeB || eltTypeC != SQMMAEltType::f32 || k != 128)
+    return false;
+  if (eltTypeA != SQMMAEltType::f16 && eltTypeA != SQMMAEltType::bf16)
+    return false;
+  if (!isSupportedSqmmaInstrMN(eltTypeA, m, n))
+    return false;
+
+  // The PH1 native K=128 intrinsic is present in the MUSA headers, but the
+  // bundled llc currently crashes while expanding it. The LLVM lowering
+  // splits this logical operation into stable K=64 calls; keep the capability
+  // exception opt-in so older FlagTree builds continue to reject K=128
+  // candidates instead of reaching an unsupported code path.
+  const char *enableK128 = std::getenv("TRITON_MUSA_ENABLE_K128_SQMMA");
+  // Keep this experiment explicitly opt-in.  Prefix matching would silently
+  // enable the compatibility path for values such as "10" or "1debug", and
+  // would make an inherited environment behave differently across toolchains.
+  if (!enableK128 || StringRef(enableK128) != "1")
+    return false;
+
+  if (capability == 31)
+    return (m == 16 && n == 64) || (m == 64 && n == 16);
+  // Only PH1S (mp_32) has been validated with the wider K=128 contract.
+  // Do not infer support for future/unknown architectures from a numeric
+  // capability ordering: the intrinsic set and lowering contract may differ.
+  if (capability == 32)
+    return (m >= 32 && n >= 32);
+  return false;
+}
+
+inline int getMusaComputeCapability(Operation *op) {
+  auto module = op ? op->getParentOfType<ModuleOp>() : ModuleOp();
+  if (!module)
+    return -1;
+  auto target = module->getAttrOfType<StringAttr>(gpu::AttrTargetName);
+  if (!target || !target.strref().starts_with("musa:"))
+    return -1;
+  StringRef arch = target.strref().drop_front(5);
+  // Keep the C++ capability query in sync with the Python backend's accepted
+  // target aliases.  Depending on which spelling reaches TTGIR, either the
+  // PH1 name or the LLVM processor name may be present.
+  if (arch == "mp31" || arch == "mp_31")
+    return 31;
+  if (arch == "mp32" || arch == "mp_32")
+    return 32;
+  // PH1S (mp_32) must be checked before the PH1 prefix (mp_31).
+  if (arch.starts_with("ph1s"))
+    return 32;
+  if (arch.starts_with("ph1"))
+    return 31;
+  int capability = -1;
+  if (arch.getAsInteger(10, capability))
+    return -1;
+  return capability;
 }
 
 inline std::string lookupSqmmaIntrinsic(SQMMAEltType type, unsigned m,

@@ -69,6 +69,16 @@ def _ws_simple_kernel(out):
 
 
 @triton.jit
+def _ws_default_producer_kernel(out):
+    tle.gpu.warp_specialize(
+        [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
+        worker_num_warps=[16],
+        worker_num_regs=[160],
+        default_is_producer=True,
+    )
+
+
+@triton.jit
 def _ws_dynamic_warps_kernel(out, worker_warps):
     tle.gpu.warp_specialize(
         [(_ws_simple_default, (out, )), (_ws_simple_worker, (out, ))],
@@ -342,30 +352,40 @@ def _assert_prepared_ws_ttgir(ir_text, consumer_warps=16, producer_warps=4):
     assert "musa_tle.static_ws.split_candidate" not in ir_text, ir_text
 
 
-def _assert_static_ws_late_ir(ir_text, consumer_warps=16, producer_warps=4):
+def _assert_static_ws_late_ir(
+    ir_text, consumer_warps=16, producer_warps=4, default_producer=False
+):
     producer_begin = consumer_warps * 32
     assert "ttg.warp_specialize" not in ir_text, ir_text
     assert "ttg.warp_yield" not in ir_text, ir_text
     assert "ttg.warp_return" not in ir_text, ir_text
     assert "musa_tle.static_warp_specialize" not in ir_text, ir_text
+    producer_predicate = "ult" if default_producer else "uge"
+    consumer_predicate = "uge" if default_producer else "ult"
     dispatch = re.search(
         rf'(?P<tid>%[-\w.]+) = llvm\.call_intrinsic '
         rf'"llvm\.musa\.read\.ptx\.sreg\.tid\.x"\(\).*?'
         rf'arith\.constant {producer_begin} : i32.*?'
-        rf'arith\.cmpi uge, (?P=tid),',
+        rf'arith\.cmpi {producer_predicate}, (?P=tid),',
         ir_text,
         re.DOTALL,
     )
     assert dispatch, ir_text
-    assert re.search(rf"arith\.cmpi ult, {re.escape(dispatch.group('tid'))},", ir_text), ir_text
+    assert re.search(
+        rf"arith\.cmpi {consumer_predicate}, {re.escape(dispatch.group('tid'))},",
+        ir_text,
+    ), ir_text
     assert ir_text.count("arith.cmpi uge") == 1, ir_text
     assert ir_text.count("arith.cmpi ult") == 1, ir_text
     assert ir_text.count("cf.cond_br") == 2, ir_text
     assert re.search(rf"arith\.constant {producer_begin} : i32", ir_text), ir_text
-    assert ir_text.index("arith.cmpi uge") < ir_text.index("arith.cmpi ult"), ir_text
+    assert ir_text.index(f"arith.cmpi {producer_predicate}") < ir_text.index(
+        f"arith.cmpi {consumer_predicate}"
+    ), ir_text
     assert "llvm.switch" not in ir_text, ir_text
     assert "musa_tle.static_ws." not in ir_text, ir_text
     assert "builtin.unrealized_conversion_cast" not in ir_text, ir_text
+    assert ir_text.count('"llvm.musa.syncthreads.lm"') == 1, ir_text
 
 
 def test_tle_warp_specialize_mthreads_container_contract():
@@ -412,6 +432,7 @@ def test_tle_warp_specialize_static_two_branch_runtime(consumer_warps, producer_
 
 def test_tle_warp_specialize_builder_bindings_are_available():
     builder = libtriton.ir.builder
+    assert builder.mthreads_tle_default_producer_version >= 1
     for method in (
             "create_warp_specialize",
             "create_warp_specialize_partitions",
@@ -420,6 +441,49 @@ def test_tle_warp_specialize_builder_bindings_are_available():
     ):
         assert hasattr(builder, method)
     assert hasattr(libtriton.mthreads.ir, "WarpSpecializeOp")
+
+
+def test_tle_warp_specialize_default_producer_contract():
+    ttir, ttgir, late_ir = _compile_ws_ir(
+        _ws_default_producer_kernel,
+        {"out": "*i32"},
+        constexprs={},
+        consumer_warps=4,
+        include_late=True,
+    )
+    for ir_text in (ttir, ttgir):
+        assert "musa_tle.default_producer" in ir_text, ir_text
+        assert "num_warps(16)" in ir_text, ir_text
+        assert re.search(
+            r"requestedRegisters\s*=\s*array<i32:\s*160>", ir_text
+        ), ir_text
+    _assert_prepared_ws_ttgir(ttgir, consumer_warps=4, producer_warps=16)
+    _assert_static_ws_late_ir(
+        late_ir,
+        consumer_warps=4,
+        producer_warps=16,
+        default_producer=True,
+    )
+
+
+def test_tle_warp_specialize_default_producer_dispatch_roles():
+    """The late lowering must keep default-producer roles in the CFG.
+
+    The ordinary static warp-specialize path dispatches worker warps with
+    ``tid >= boundary``.  ``default_is_producer=True`` intentionally reverses
+    both predicates, while retaining the same numerical boundary.
+    """
+    _, _, late_ir = _compile_ws_ir(
+        _ws_default_producer_kernel,
+        {"out": "*i32"},
+        constexprs={},
+        consumer_warps=4,
+        include_late=True,
+    )
+    assert "arith.constant 128 : i32" in late_ir, late_ir
+    assert late_ir.count("arith.cmpi ult") == 1, late_ir
+    assert late_ir.count("arith.cmpi uge") == 1, late_ir
+    assert late_ir.index("arith.cmpi ult") < late_ir.index("arith.cmpi uge"), late_ir
 
 
 @pytest.mark.parametrize("producer_warps", [1, 2, 4, 8])

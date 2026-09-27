@@ -272,6 +272,36 @@ def test_single_model_config_round_trip_preserves_contract(tmp_path):
     assert model_config_sha256(other_version) != model_config_sha256(config)
 
 
+def test_musa_model_config_round_trip_preserves_backend_identity():
+    variant = parse_operator_config(_config()).get_variant("general")
+    musa_gpu = dict(
+        gpu_metadata(
+            backend="musa",
+            vendor="mthreads",
+            device_name="MTT S5000",
+            architecture="ph1",
+        )
+    )
+    identity = ModelIdentity(
+        musa_gpu["platform_key"],
+        variant.op_id,
+        variant.name,
+        DTYPE_KEY,
+    )
+
+    config = variant_to_model_config(
+        variant,
+        identity,
+        DTYPES,
+        musa_gpu,
+        MODEL_VERSION,
+    )
+
+    loaded = parse_model_config(config)
+    assert (loaded.op_id, loaded.name) == (variant.op_id, variant.name)
+    assert config["gpu"] == musa_gpu
+
+
 def test_model_config_rejects_unknown_custom_operation():
     """Keep exported bundles independent from external Python callables."""
     config = variant_to_model_config(

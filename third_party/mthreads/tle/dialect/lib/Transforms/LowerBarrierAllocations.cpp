@@ -3,6 +3,7 @@
 #include "Dialect/MUSA/IR/Dialect.h"
 #include "Dialect/MUSATLE/IR/Dialect.h"
 #include "TritonMUSACommon/BarrierUtils.h"
+#include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -141,6 +142,13 @@ class LowerBarrierAllocationsPass
             arith::ConstantIntOp::create(rewriter, loc, nextBase + slot, 32);
         lastInitArrival = triton::musa::InitArrivalOp::create(
             rewriter, loc, barId, arriveCount, initPolarity);
+        // This initialization is CTA-wide and precedes static partition
+        // dispatch.  Force the physical CTA leader: the generic logical
+        // thread id wraps at the consumer partition width and would also
+        // select the producer leader in a warp-specialized kernel.
+        lastInitArrival->setAttr(
+            triton::musa::kTMEIssueThreadAttr,
+            rewriter.getI32IntegerAttr(0));
       }
 
       rewriter.replaceAllUsesWith(alloc.getBaseId(), base);

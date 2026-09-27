@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <numeric>
+#ifdef __TLE__
+#include <optional>
+#endif
 
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -29,6 +32,11 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
 
   // Add encoding for tensor
   addConversion([this](RankedTensorType tensorType) -> RankedTensorType {
+#ifdef __TLE__
+    if (tensorType.getEncoding())
+      return tensorType;
+    return convertRankedTensorType(tensorType, this->numWarps);
+#else
     // types with encoding are already in the right format
     // TODO: check for layout encodings more specifically
     if (tensorType.getEncoding())
@@ -38,6 +46,7 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
         getDefaultBlockedEncoding(this->context, shape, this->numWarps,
                                   this->threadsPerWarp, this->numCTAs);
     return tensorType.cloneWithEncoding(encoding);
+#endif
   });
 
   // Add encoding for tensor pointer
@@ -53,6 +62,26 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
     return triton::PointerType::get(convertedTensorType,
                                     ptrType.getAddressSpace());
   });
+
+#ifdef __TLE__
+  addConversion([this](Value value) -> std::optional<Type> {
+    Type type = value.getType();
+    int valueNumWarps = getNumWarps(value);
+    if (auto tensorType = dyn_cast<RankedTensorType>(type))
+      return convertRankedTensorType(tensorType, valueNumWarps);
+
+    if (auto ptrType = dyn_cast<triton::PointerType>(type)) {
+      auto pointeeTensorType =
+          dyn_cast<RankedTensorType>(ptrType.getPointeeType());
+      if (pointeeTensorType)
+        return triton::PointerType::get(
+            convertRankedTensorType(pointeeTensorType, valueNumWarps),
+            ptrType.getAddressSpace());
+    }
+
+    return std::nullopt;
+  });
+#endif
 
   // If the origValue still has live user(s), use this to
   // convert origValue to newValue
@@ -75,6 +104,46 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
     return cast.getResult();
   });
 }
+
+#ifdef __TLE__
+int TritonGPUTypeConverter::getNumWarps(Value value) const {
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    if (Block *owner = blockArg.getOwner()) {
+      if (Region *region = owner->getParent()) {
+        if (Operation *parent = region->getParentOp()) {
+          int contextualNumWarps = lookupNumWarps(region);
+          return contextualNumWarps;
+        }
+      }
+    }
+  }
+  if (Operation *op = value.getDefiningOp()) {
+    if (std::optional<int> contextualNumWarps = maybeLookupNumWarps(op))
+      return *contextualNumWarps;
+  }
+  return numWarps;
+}
+
+RankedTensorType
+TritonGPUTypeConverter::convertRankedTensorType(RankedTensorType tensorType,
+                                                int contextualNumWarps) const {
+  if (tensorType.getEncoding()) {
+    auto blockedEncoding =
+        dyn_cast<triton::gpu::BlockedEncodingAttr>(tensorType.getEncoding());
+    if (!blockedEncoding)
+      return tensorType;
+    int encodedNumWarps = 1;
+    for (unsigned warps : blockedEncoding.getWarpsPerCTA())
+      encodedNumWarps *= warps;
+    if (encodedNumWarps == contextualNumWarps)
+      return tensorType;
+  }
+  ArrayRef<int64_t> shape = tensorType.getShape();
+  triton::gpu::BlockedEncodingAttr encoding = getDefaultBlockedEncoding(
+      context, shape, contextualNumWarps, threadsPerWarp, numCTAs);
+  return tensorType.cloneWithEncoding(encoding);
+}
+#endif
 
 //
 // TritonGPUConversion
@@ -132,10 +201,30 @@ bool TritonGPUConversionTarget::isDynamicallyLegal(
   for (auto &region : op->getRegions()) {
     hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
   }
-  if (hasLegalRegions && typeConverter.isLegal(op)) {
+  if (!hasLegalRegions || !typeConverter.isLegal(op))
+    return false;
+#ifdef __TLE__
+  std::optional<int> contextualNumWarps = maybeLookupNumWarps(op);
+  if (!contextualNumWarps)
     return true;
-  }
-  return false;
+  auto hasMatchingWarpCount = [&](Type type) {
+    auto tensorType = dyn_cast<RankedTensorType>(type);
+    if (!tensorType || !tensorType.getEncoding())
+      return true;
+    auto blockedEncoding =
+        dyn_cast<triton::gpu::BlockedEncodingAttr>(tensorType.getEncoding());
+    if (!blockedEncoding)
+      return true;
+    int encodedNumWarps = 1;
+    for (unsigned warps : blockedEncoding.getWarpsPerCTA())
+      encodedNumWarps *= warps;
+    return encodedNumWarps == *contextualNumWarps;
+  };
+  return llvm::all_of(op->getOperandTypes(), hasMatchingWarpCount) &&
+         llvm::all_of(op->getResultTypes(), hasMatchingWarpCount);
+#else
+  return true;
+#endif
 }
 
 // This function returns the layout to use for gather/scatter indices. The
@@ -191,8 +280,13 @@ LogicalResult impl::convertGatherScatterOp(
   rewriter.modifyOpInPlace(op, [&] {
     for (auto [operand, value] : llvm::zip(op->getOpOperands(), operands))
       operand.set(value);
-    for (OpResult result : op->getOpResults())
+    for (OpResult result : op->getOpResults()) {
+#ifdef __TLE__
+      result.setType(typeConverter.convertType(result));
+#else
       result.setType(typeConverter.convertType(result.getType()));
+#endif
+    }
     result = convertGatherScatterIndices(op, xOffsetsMutable, rewriter);
   });
   return result;

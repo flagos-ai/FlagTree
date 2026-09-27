@@ -1254,11 +1254,33 @@ class CodeGenerator(ast.NodeVisitor):
         if IteratorClass == language.static_range:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             static_range = range(iterator.start.value, iterator.end.value, iterator.step.value)
-            for i in static_range:
-                self.lscope[node.target.id] = constexpr(i)
-                self.visit_compound_statement(node.body)
-                for stmt in node.orelse:
-                    ast.NodeVisitor.generic_visit(self, stmt)
+            # ``static_range`` is expanded in the frontend, but its induction
+            # variable must remain scoped to the expanded body.  Leaving the
+            # final constexpr in ``lscope`` makes a later dynamic loop that
+            # reuses the source name look like a reassignment of a constexpr
+            # loop-carried value (and triggers _find_carries' type assertion).
+            # Preserve any outer binding so nested/reused loops behave like a
+            # normal lexical loop while still allowing the body to see the
+            # constexpr induction value.
+            target_name = node.target.id
+            missing = object()
+            old_lscope = self.lscope.get(target_name, missing)
+            old_local_def = self.local_defs.get(target_name, missing)
+            try:
+                for i in static_range:
+                    self.lscope[target_name] = constexpr(i)
+                    self.visit_compound_statement(node.body)
+                    for stmt in node.orelse:
+                        ast.NodeVisitor.generic_visit(self, stmt)
+            finally:
+                if old_lscope is missing:
+                    self.lscope.pop(target_name, None)
+                else:
+                    self.lscope[target_name] = old_lscope
+                if old_local_def is missing:
+                    self.local_defs.pop(target_name, None)
+                else:
+                    self.local_defs[target_name] = old_local_def
             return
         num_stages = None
         loop_unroll_factor = None

@@ -16,6 +16,18 @@ import triton
 import inspect
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton.experimental.tle.language.gpu.mthreads import (
+    MTHREADS_TLE_16_WARP_PERSISTENT_VERSION,
+    MTHREADS_TLE_DYNAMIC_PARTITION_SYNC_VERSION,
+    MTHREADS_TLE_FUSED_PIPE_CONSUMER_VERSION,
+    MTHREADS_TLE_GROUPED_COMPLETION_VERSION,
+    MTHREADS_TLE_LOCAL_BARRIER_VERSION,
+    MTHREADS_TLE_PIPE_SQMMA_VERSION,
+    MTHREADS_TLE_MULTIFIELD_PIPE_VERSION,
+    MTHREADS_TLE_PERSISTENT_ORDERED_SQMMA_VERSION,
+    MTHREADS_TLE_SPLIT128_SQMMA_VERSION,
+    MTHREADS_TLE_SPLIT_M_SQMMA_VERSION,
+)
 #import triton.experimental.tle.mega as tlem
 from triton._filecheck import run_parser
 from triton.backends.compiler import GPUTarget
@@ -283,6 +295,10 @@ class TestBufferedTensor:
             self.memdesc_index_args = (result_ty, src, index)
             return "slot_handle"
 
+        def create_memdesc_subslice(self, result_ty, src, offsets):
+            self.memdesc_subslice_args = (result_ty, src, list(offsets))
+            return "slice_handle"
+
         def create_tma_copy(self, src, dst, offsets, barrier=None, expect_bytes=-1):
             self.tma_copy_args = (src, dst, list(offsets), barrier, expect_bytes)
 
@@ -351,6 +367,87 @@ class TestBufferedTensor:
         assert hasattr(tle.gpu.buffered_tensor, '_flatten_ir')
         assert hasattr(tle.gpu.buffered_tensor, 'make_permute')
         assert hasattr(tle.gpu.buffered_tensor, 'slot')
+        assert hasattr(tle.gpu.buffered_tensor, 'slice')
+
+    def test_mthreads_pipe_sqmma_version_matches_native_builder(self):
+        expected = getattr(
+            libtriton.ir.builder, "mthreads_tle_pipe_sqmma_version", 0
+        )
+        assert expected == 2
+        assert MTHREADS_TLE_PIPE_SQMMA_VERSION == expected
+
+    def test_mthreads_multifield_pipe_version_matches_native_extension(self):
+        expected = getattr(
+            libtriton.ir.builder, "mthreads_tle_multifield_pipe_version", 0
+        )
+        assert expected == 2
+        assert MTHREADS_TLE_MULTIFIELD_PIPE_VERSION == expected
+
+    def test_mthreads_split_m_sqmma_version_matches_native_extension(self):
+        expected = getattr(
+            libtriton.ir.builder, "mthreads_tle_split_m_sqmma_version", 0
+        )
+        assert expected == 1
+        assert MTHREADS_TLE_SPLIT_M_SQMMA_VERSION == expected
+
+    def test_mthreads_split128_sqmma_version_matches_native_extension(self):
+        expected = getattr(
+            libtriton.ir.builder, "mthreads_tle_split128_sqmma_version", 0
+        )
+        assert expected == 1
+        assert MTHREADS_TLE_SPLIT128_SQMMA_VERSION == expected
+
+    def test_mthreads_local_barrier_version_matches_native_extension(self):
+        expected = getattr(
+            libtriton.ir.builder, "mthreads_tle_local_barrier_version", 0
+        )
+        assert expected == 1
+        assert MTHREADS_TLE_LOCAL_BARRIER_VERSION == expected
+
+    def test_mthreads_persistent_ordered_sqmma_version_matches_native_extension(self):
+        expected = getattr(
+            libtriton.ir.builder,
+            "mthreads_tle_persistent_ordered_sqmma_version",
+            0,
+        )
+        assert expected == 1
+        assert MTHREADS_TLE_PERSISTENT_ORDERED_SQMMA_VERSION == expected
+
+    def test_mthreads_dynamic_partition_sync_version_matches_native_extension(self):
+        expected = getattr(
+            libtriton.ir.builder,
+            "mthreads_tle_dynamic_partition_sync_version",
+            0,
+        )
+        assert expected == 1
+        assert MTHREADS_TLE_DYNAMIC_PARTITION_SYNC_VERSION == expected
+
+    def test_mthreads_grouped_completion_version_matches_native_extension(self):
+        expected = getattr(
+            libtriton.ir.builder,
+            "mthreads_tle_grouped_completion_version",
+            0,
+        )
+        assert expected == 1
+        assert MTHREADS_TLE_GROUPED_COMPLETION_VERSION == expected
+
+    def test_mthreads_16_warp_persistent_version_matches_native_extension(self):
+        expected = getattr(
+            libtriton.ir.builder,
+            "mthreads_tle_16_warp_persistent_version",
+            0,
+        )
+        assert expected == 1
+        assert MTHREADS_TLE_16_WARP_PERSISTENT_VERSION == expected
+
+    def test_mthreads_fused_pipe_consumer_version_matches_native_extension(self):
+        expected = getattr(
+            libtriton.ir.builder,
+            "mthreads_tle_fused_pipe_consumer_version",
+            0,
+        )
+        assert expected == 1
+        assert MTHREADS_TLE_FUSED_PIPE_CONSUMER_VERSION == expected
 
     def test_buffered_tensor_slot_indexes_leading_dimension(self):
         """slot(stage) returns a typed view with the leading stage dimension removed."""
@@ -395,6 +492,21 @@ class TestBufferedTensor:
 
         with pytest.raises(ValueError, match="int32"):
             buffer.slot(stage, _semantic=semantic)
+
+    def test_buffered_tensor_slice_creates_shared_memory_subview(self):
+        buffer, semantic = self._make_buffer([64, 512])
+
+        view = buffer.slice(256, 256, dim=1, _semantic=semantic)
+
+        assert isinstance(view, tle.gpu.buffered_tensor)
+        assert view.handle == "slice_handle"
+        assert view.shape == [64, 256]
+        assert view.type.alloc_shape == [64, 512]
+        assert semantic.builder.memdesc_subslice_args == (
+            ("memdesc", (64, 256), "fp16", "fake_layout", "smem", (64, 512)),
+            "base",
+            [0, 256],
+        )
 
 
 class TestTmaCopyBarrierFrontend:

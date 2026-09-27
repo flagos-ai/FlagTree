@@ -4,6 +4,7 @@
 #include "Dialect/MTGPU/IR/Dialect.h"
 #include "Dialect/MUSA/IR/Dialect.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
+#include "TritonMUSACommon/TMEUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -573,6 +574,29 @@ struct ResolvedSharedOperand {
   SmallVector<int64_t> physicalShape;
 };
 
+inline Value resolveMUSASharedAffineBase(
+    const LLVM::SharedMemoryObject &sharedMemObj, ttg::MemDescType memDescTy,
+    Location loc, ConversionPatternRewriter &rewriter) {
+  if (!LLVM::SharedMemoryObject::isAffineSharedMemoryAccess(memDescTy))
+    return sharedMemObj.getBase();
+
+  LinearLayout layout = getMUSASharedLinearLayoutOrGeneric(memDescTy);
+  auto dimNames = triton::standardOutDimNames(
+      memDescTy.getContext(), sharedMemObj.getOffsets().size());
+  SmallVector<std::pair<StringAttr, Value>> logicalOffsets;
+  for (auto [dim, offset] : llvm::zip(dimNames, sharedMemObj.getOffsets()))
+    logicalOffsets.push_back({dim, offset});
+
+  auto offsetDim = StringAttr::get(memDescTy.getContext(), "offset");
+  layout = layout.sublayout({offsetDim}, dimNames);
+  Value offset =
+      applyLinearLayout(loc, rewriter, layout.invert(), logicalOffsets)[0]
+          .second;
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  return b.gep(sharedMemObj.getBase().getType(), sharedMemObj.getBaseElemType(),
+               sharedMemObj.getBase(), offset);
+}
+
 inline FailureOr<ResolvedSharedOperand>
 resolveSharedOperandWithAffineBase(Value operand, Value adaptorOperand,
                                    Location loc,
@@ -603,7 +627,8 @@ resolveSharedOperandWithAffineBase(Value operand, Value adaptorOperand,
   Type llvmElemTy = typeConverter->convertType(memDescTy.getElementType());
   auto sharedMemObj = LLVM::getSharedMemoryObjectFromStruct(
       loc, llvmMemDesc, llvmElemTy, rewriter);
-  Value affineBase = sharedMemObj.getShmemAffineBase(loc, rewriter, memDescTy);
+  Value affineBase =
+      resolveMUSASharedAffineBase(sharedMemObj, memDescTy, loc, rewriter);
   return ResolvedSharedOperand{memDesc,    llvmMemDesc,
                                memDescTy,  sharedMemObj,
                                affineBase, getMemDescPhysicalShape(memDescTy)};

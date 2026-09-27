@@ -35,6 +35,21 @@ inline constexpr llvm::StringLiteral kTMEExplicitCompletionAttr =
     "musa.tme.explicit_completion";
 inline constexpr llvm::StringLiteral kTLEExpectBytesAttr =
     "musa_tle.expect_bytes";
+// Optional decomposition of one logical TME transaction into hardware-sized
+// byte additions.  Kept as a shared symbol so downstream lowering variants
+// can consume the attribute without depending on frontend-private strings.
+inline constexpr llvm::StringLiteral kTLEExpectBytesPartsAttr =
+    "musa_tle.expect_bytes_parts";
+inline constexpr llvm::StringLiteral kTLEGroupedCompletionAttr =
+    "musa_tle.grouped_completion";
+// Experimental pipe protocol: every payload contributes one transaction to
+// the same barrier, while the final payload performs the sole producer
+// arrival.  Keep this separate from kTLEGroupedCompletionAttr, whose legacy
+// semantics use one aggregate transaction recorded by the group leader.
+inline constexpr llvm::StringLiteral kTLEGroupedPerCopyCompletionAttr =
+    "musa_tle.grouped_per_copy_completion";
+inline constexpr llvm::StringLiteral kTLEGroupedCompletionFinalAttr =
+    "musa_tle.grouped_completion_final";
 #endif // __TLE__
 
 enum class TMECopyKind {
@@ -331,11 +346,33 @@ getPH1TMELeadingDimGrouping(ArrayRef<int64_t> shape, ArrayRef<unsigned> order,
   int64_t maxColsPerGroup = 256 / static_cast<int64_t>(elemBytes);
   if (maxColsPerGroup <= 0)
     return failure();
-  int64_t numGroups = (leadingDim + maxColsPerGroup - 1) / maxColsPerGroup;
-  if (numGroups <= 0 || (leadingDim % numGroups) != 0)
-    return failure();
 
-  int64_t elemsPerGroupInLeadingDim = leadingDim / numGroups;
+  // A TME descriptor addresses one contiguous group at a time.  The old
+  // implementation picked ceil(leadingDim / maxColsPerGroup) groups and
+  // rejected the shape if that count did not divide the leading dimension.
+  // This needlessly rejects valid tiles such as 320 BF16 elements: five
+  // groups of 64 elements produce a 128B (power-of-two) leading stride.  Try
+  // the small divisor range starting at the minimum group count and retain
+  // the first group whose byte width is encodable by PH1 SQMMA/TME.
+  int64_t minGroups =
+      (leadingDim + maxColsPerGroup - 1) / maxColsPerGroup;
+  int64_t numGroups = 0;
+  int64_t elemsPerGroupInLeadingDim = 0;
+  for (int64_t candidate = std::max<int64_t>(1, minGroups);
+       candidate <= leadingDim; ++candidate) {
+    if ((leadingDim % candidate) != 0)
+      continue;
+    int64_t elems = leadingDim / candidate;
+    int64_t groupBytes = elems * static_cast<int64_t>(elemBytes);
+    if (groupBytes <= 0 || groupBytes > 256 ||
+        !llvm::isPowerOf2_64(static_cast<uint64_t>(groupBytes)))
+      continue;
+    numGroups = candidate;
+    elemsPerGroupInLeadingDim = elems;
+    break;
+  }
+  if (numGroups <= 0 || elemsPerGroupInLeadingDim <= 0)
+    return failure();
   int64_t totalElems = 1;
   for (int64_t dim : shape) {
     if (dim <= 0)
@@ -547,7 +584,18 @@ resolveCanonicalPH1TMESharedCarrierConfig(ttg::MemDescType localType) {
 
   constexpr int64_t kLineBytes = 256;
   int64_t elemBytes = *maybeElemBytes;
-  int64_t leadingWidthBytes = localType.getShape()[order.front()] * elemBytes;
+  ArrayRef<int64_t> physicalShape = localType.getAllocShape();
+  if (physicalShape.empty())
+    physicalShape = localType.getShape();
+  else {
+    // allocShape may include a leading staging dimension, but it must still
+    // contain the complete logical rank.  Treat malformed descriptor types as
+    // unsupported instead of letting ArrayRef::take_back assert in lowering.
+    if (physicalShape.size() < localType.getShape().size())
+      return failure();
+    physicalShape = physicalShape.take_back(localType.getShape().size());
+  }
+  int64_t leadingWidthBytes = physicalShape[order.front()] * elemBytes;
   if (leadingWidthBytes <= 0)
     return failure();
 
@@ -675,7 +723,8 @@ inline FailureOr<ResolvedTMESwizzleConfig>
 resolveTMESwizzleConfigFromMatrixView(ttg::MemDescType localType,
                                       ArrayRef<int64_t> matrixPhysicalShape,
                                       ArrayRef<unsigned> matrixOrder) {
-  if (localType.getShape().size() == 2)
+  if (localType.getShape().size() == 2 &&
+      localType.getShape() == matrixPhysicalShape)
     return resolveTMESwizzleConfigFromEncoding(localType);
 
   auto swizzled =

@@ -420,7 +420,7 @@ def test_mthreads_tle_barrier_rendezvous_lowers_to_local_cta_sync(tmp_path):
     %c0 = arith.constant 0 : i32
     %c1 = arith.constant 1 : i32
     ttmg.bar_record %c1 : i32
-    ttmg.init_arrival %c1, %c1, %c0 : i32
+    ttmg.init_arrival %c1, %c1, %c0 {musa.tme.issue_thread = 512 : i32} : i32
     ttg.barrier local
     tt.return
   }
@@ -453,6 +453,8 @@ def test_mthreads_tle_barrier_rendezvous_lowers_to_local_cta_sync(tmp_path):
     assert llir.count('llvm.call_intrinsic "llvm.musa.async.init.arrival"') == 1, llir
     assert llir.count('llvm.call_intrinsic "llvm.musa.syncthreads.lm"') == 1, llir
     assert "llvm.musa.barrier0" not in llir, llir
+    issue_constant = re.search(r"(%\d+) = llvm\.mlir\.constant\(512 : i32\) : i32", llir).group(1)
+    assert len(re.findall(rf'llvm\.icmp "eq" %\d+, {re.escape(issue_constant)} : i32', llir)) == 1, llir
     assert (llir.index("llvm.musa.async.bar.record") < llir.index("llvm.musa.async.init.arrival") <
             llir.index("llvm.musa.syncthreads.lm")), llir
 

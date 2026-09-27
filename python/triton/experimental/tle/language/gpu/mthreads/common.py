@@ -20,6 +20,8 @@
 
 import os
 
+import triton.language.core as tl
+
 try:
     from triton._flagtree_backend import FLAGTREE_BACKEND
 except ModuleNotFoundError:
@@ -36,3 +38,14 @@ def _has_mthreads_libtriton() -> bool:
 
 def enabled() -> bool:
     return FLAGTREE_BACKEND == "mthreads" or _has_mthreads_libtriton()
+
+
+@tl.builtin
+def local_barrier(_semantic=None) -> None:
+    """Synchronize a CTA and make shared-memory accesses visible."""
+    builder = _semantic.builder
+    if not hasattr(builder, "create_mthreads_local_barrier"):
+        raise RuntimeError(
+            "mthreads TLE local barrier requires a newer native libtriton"
+        )
+    builder.create_mthreads_local_barrier()

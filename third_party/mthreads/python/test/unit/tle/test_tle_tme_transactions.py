@@ -96,7 +96,15 @@ def test_mthreads_tle_completion_transaction_is_single_and_idempotent(stages, sl
     assert ttgir.count("ttmg.async_tme_copy_global_to_local") == 1, ttgir
     assert ttgir.count("ttmg.arrive_barrier_noret") == 1, ttgir
     assert ttgir.count("musa.tme.explicit_completion") == 3, ttgir
-    assert ttgir.count("musa.tme.issue_thread = 0 : i32") == 3, ttgir
+    # Barrier initialization is also explicitly pinned to the CTA leader;
+    # count issue-thread annotations on the three completion operations only.
+    completion_ops = re.findall(
+        r"(?:ttmg\.barrier_add_trans|ttmg\.async_tme_copy_global_to_local|"
+        r"ttmg\.arrive_barrier_noret)[^\n]*",
+        ttgir,
+    )
+    assert len(completion_ops) == 3, ttgir
+    assert all("musa.tme.issue_thread = 0 : i32" in op for op in completion_ops)
     assert "musa_tle.expect_bytes" not in ttgir, ttgir
     assert "ttmg.wait_barrier" not in ttgir, ttgir
 
@@ -142,9 +150,61 @@ def test_mthreads_tle_explicit_completion_uses_raw_issue_thread_without_barrier0
     assert llir.count('llvm.call_intrinsic "llvm.musa.tme.ld.tile.2d"') == 1, llir
     assert llir.count('llvm.call_intrinsic "llvm.musa.async.arrive.none.phaseid"') == 1, llir
     issue_constant = re.search(r"(%\d+) = llvm\.mlir\.constant\(512 : i32\) : i32", llir).group(1)
-    assert len(re.findall(rf'llvm\.icmp "eq" %\d+, {re.escape(issue_constant)} : i32', llir)) == 3, llir
+    # One additional comparison comes from the CTA-leader barrier
+    # initialization; completion itself still uses the three expected checks.
+    assert len(re.findall(rf'llvm\.icmp "eq" %\d+, {re.escape(issue_constant)} : i32', llir)) == 4, llir
     assert (llir.index("llvm.musa.async.add.trans") < llir.index("llvm.musa.tme.ld.tile.2d") <
             llir.index("llvm.musa.async.arrive.none.phaseid")), llir
+
+
+def test_mthreads_tle_per_copy_grouped_completion_is_not_reprocessed(tmp_path):
+    """Per-copy lowering must not fall through to the legacy second pass."""
+    fixture = """#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 16 : i32,
+    ttg.target = "musa:ph1", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func public @per_copy_group(%desc_a: !tt.tensordesc<tensor<256x64xf16, #shared>>,
+      %desc_b: !tt.tensordesc<tensor<256x64xf16, #shared>>) {
+    %c0 = arith.constant 0 : i32
+    %true = arith.constant true
+    %smem_a = ttg.local_alloc : () -> !ttg.memdesc<256x64xf16, #shared, #smem, mutable>
+    %smem_b = ttg.local_alloc : () -> !ttg.memdesc<256x64xf16, #shared, #smem, mutable>
+    %bar = arith.constant 1 : i32
+    ttmg.async_tme_copy_global_to_local %desc_a[%c0, %c0], %bar, %smem_a, %true {
+      blockShape = array<i32: 256, 64>, cachePolicy = 0 : i32,
+      innerPersistence = 2 : i32, musa_tle.expect_bytes = 32768 : i32,
+      musa_tle.grouped_per_copy_completion,
+      outerPersistence = 2 : i32, prefetchSize = 0 : i32,
+      swizzleGranularity = 0 : i32, swizzleLine = 1 : i32,
+      swizzleStride = 3 : i32
+    } : !tt.tensordesc<tensor<256x64xf16, #shared>>, !ttg.memdesc<256x64xf16, #shared, #smem, mutable>
+    ttmg.async_tme_copy_global_to_local %desc_b[%c0, %c0], %bar, %smem_b, %true {
+      blockShape = array<i32: 256, 64>, cachePolicy = 0 : i32,
+      innerPersistence = 2 : i32, musa_tle.expect_bytes = 32768 : i32,
+      musa_tle.grouped_per_copy_completion,
+      musa_tle.grouped_completion_final,
+      outerPersistence = 2 : i32, prefetchSize = 0 : i32,
+      swizzleGranularity = 0 : i32, swizzleLine = 1 : i32,
+      swizzleStride = 3 : i32
+    } : !tt.tensordesc<tensor<256x64xf16, #shared>>, !ttg.memdesc<256x64xf16, #shared, #smem, mutable>
+    tt.return
+  }
+}
+"""
+    fixture_path = tmp_path / "per_copy_group.ttgir"
+    fixture_path.write_text(fixture)
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    module = ir.parse_mlir_module(str(fixture_path), context)
+    pm = ir.pass_manager(context)
+    libtriton.mthreads.passes.ttgpuir.add_tle_lower_tme_transactions(pm)
+    pm.run(module, "lower_per_copy_grouped_completion")
+    lowered = module.str_nodebug()
+    assert lowered.count("ttmg.barrier_add_trans") == 2, lowered
+    assert lowered.count("ttmg.arrive_barrier_noret") == 1, lowered
+    assert "musa_tle.grouped_per_copy_completion" not in lowered, lowered
 
 
 def test_mthreads_tle_completion_copy_rejects_consumer_partition(tmp_path, capfd):

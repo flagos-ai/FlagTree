@@ -39,6 +39,15 @@ static int getMusaComputeCapability(ModuleOp mod) {
   if (!ref.starts_with("musa:"))
     return -1;
   StringRef arch = ref.drop_front(5);
+  // TTGIR may carry either the user-facing PH1/PH1S spelling or the LLVM
+  // processor alias. Keep this pass in lockstep with the shared capability
+  // query so aliases do not silently disable all matrix-multiply rewrites.
+  if (arch == "mp31" || arch == "mp_31")
+    return 31;
+  if (arch == "mp32" || arch == "mp_32")
+    return 32;
+  if (arch.starts_with("ph1s"))
+    return 32;
   if (arch.starts_with("ph1"))
     return 31;
   int computeCapability = -1;
@@ -155,7 +164,8 @@ static FailureOr<DotMatrixShape> getDotMatrixShape(tt::DotOp dotOp) {
 }
 
 static bool isKnownBrokenSqmmaConfig(Type elemTy, bool allowTF32,
-                                     ArrayRef<unsigned> instrShape) {
+                                     ArrayRef<unsigned> instrShape,
+                                     int computeCapability) {
   auto eltTypeA = toSqmmaOperandEltType(elemTy, allowTF32);
   if (!eltTypeA || instrShape.size() != 3)
     return false;
@@ -163,9 +173,9 @@ static bool isKnownBrokenSqmmaConfig(Type elemTy, bool allowTF32,
   triton::musa::SQMMAEltType eltTypeC = elemTy.isInteger(8)
                                             ? triton::musa::SQMMAEltType::s32
                                             : triton::musa::SQMMAEltType::f32;
-  return !triton::musa::isSupportedSqmma(*eltTypeA, *eltTypeA, eltTypeC,
-                                         instrShape[0], instrShape[1],
-                                         instrShape[2]);
+  return !triton::musa::isSupportedSqmmaForCapability(
+      *eltTypeA, *eltTypeA, eltTypeC, instrShape[0], instrShape[1],
+      instrShape[2], computeCapability);
 }
 
 static SmallVector<unsigned, 2>
@@ -599,7 +609,7 @@ static Value getSharedMemorySqmmaOperand(Value v, PatternRewriter &rewriter,
 
 static std::optional<SelectedConfig>
 selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
-                  Type elemTy, bool allowTF32) {
+                  Type elemTy, bool allowTF32, int computeCapability) {
   if (numWarps < 4 || (numWarps % 4) != 0)
     return std::nullopt;
   auto sqmmaEltType = toSqmmaOperandEltType(elemTy, allowTF32);
@@ -632,13 +642,22 @@ selectSqmmaConfig(unsigned m, unsigned n, unsigned k, unsigned numWarps,
           continue;
         if ((instM % 4) != 0)
           continue;
-        if (isKnownBrokenSqmmaConfig(elemTy, allowTF32, {instM, instN, instK}))
+        if (isKnownBrokenSqmmaConfig(elemTy, allowTF32,
+                                     {instM, instN, instK}, computeCapability))
           continue;
 
         for (unsigned warpsM = 4; warpsM <= numWarps; warpsM *= 2) {
           if (numWarps % warpsM != 0)
             continue;
           unsigned warpsN = numWarps / warpsM;
+          // PH1 SQMMA layout lowering uses LinearLayout::identity1D for both
+          // warp axes.  Until non-power-of-two mappings are implemented,
+          // reject these candidates here so the selector falls back cleanly
+          // instead of constructing an encoding that the verifier rejects
+          // after all other dot rewrites have already committed.
+          if (!llvm::isPowerOf2_32(warpsM) ||
+              !llvm::isPowerOf2_32(warpsN))
+            continue;
 
           unsigned squadsM = warpsM / 4;
           unsigned tileM = instM * squadsM;
@@ -837,7 +856,8 @@ public:
     unsigned n = matrixShape->n;
     unsigned k = matrixShape->k;
     unsigned numWarps = ttg::lookupNumWarps(dotOp);
-    auto config = selectSqmmaConfig(m, n, k, numWarps, aElemTy, allowTF32);
+    auto config = selectSqmmaConfig(m, n, k, numWarps, aElemTy, allowTF32,
+                                    computeCapability);
     if (!config)
       return failure();
 
@@ -851,9 +871,9 @@ public:
     auto eltTypeB = toSqmmaOperandEltType(bElemTy, allowTF32);
     if (!eltTypeC || !eltTypeA || !eltTypeB)
       return failure();
-    if (!triton::musa::isSupportedSqmma(
+    if (!triton::musa::isSupportedSqmmaForCapability(
             *eltTypeA, *eltTypeB, *eltTypeC, config->instrShape[0],
-            config->instrShape[1], config->instrShape[2]))
+            config->instrShape[1], config->instrShape[2], computeCapability))
       return failure();
 
     auto cgaLayout = ttg::getCGALayout(oldEncoding);

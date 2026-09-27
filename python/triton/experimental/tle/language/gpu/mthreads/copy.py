@@ -85,7 +85,16 @@ def normalize_offsets(offsets, rank: int):
     return offsets_tuple
 
 
-def tmacopy(src, dst, direction, shape, offsets, barrier=None, _semantic=None) -> None:
+def tmacopy(
+    src,
+    dst,
+    direction,
+    shape,
+    offsets,
+    barrier=None,
+    completion_group_leader=None,
+    _semantic=None,
+) -> None:
     shape = normalize_copy_shape(shape)
     desc = src if direction.name == "GM_TO_LOCAL" else dst
     buffer = dst if direction.name == "GM_TO_LOCAL" else src
@@ -108,7 +117,39 @@ def tmacopy(src, dst, direction, shape, offsets, barrier=None, _semantic=None) -
             raise ValueError("TMA copy barrier must be an indexed tle.gpu barrier slot")
         if barrier.expect_bytes is None or int(barrier.expect_bytes) <= 0:
             raise ValueError("TMA copy barrier must have positive expect_bytes")
-        _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, barrier.handle,
-                                          int(barrier.expect_bytes))
+        completion_group_leader = tl._unwrap_if_constexpr(completion_group_leader)
+        if completion_group_leader is not None and not isinstance(completion_group_leader, bool):
+            raise ValueError("completion_group_leader must be a compile-time bool or None")
+        expect_bytes = int(barrier.expect_bytes) if completion_group_leader is not False else -1
+        # The grouped-completion boolean was added after the original
+        # five-argument native binding.  Keep the call ABI-compatible with an
+        # older libtriton; the native capability marker is also what gates
+        # multi-field grouped pipes in ``pipe.py``.
+        grouped_version = getattr(
+            _semantic.builder, "mthreads_tle_grouped_completion_version", 0
+        )
+        if completion_group_leader is not None and grouped_version < 1:
+            raise ValueError(
+                "grouped TME completion requires native grouped-completion capability"
+            )
+        if grouped_version >= 1:
+            _semantic.builder.create_tma_copy(
+                src.handle,
+                dst.handle,
+                offset_values,
+                barrier.handle,
+                expect_bytes,
+                completion_group_leader is not None,
+            )
+        else:
+            _semantic.builder.create_tma_copy(
+                src.handle,
+                dst.handle,
+                offset_values,
+                barrier.handle,
+                expect_bytes,
+            )
         return
+    if completion_group_leader is not None:
+        raise ValueError("completion_group_leader requires a TMA completion barrier")
     _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values)

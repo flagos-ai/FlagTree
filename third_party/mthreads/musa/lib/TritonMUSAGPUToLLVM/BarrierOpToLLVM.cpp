@@ -18,7 +18,16 @@ struct TTGBarrierOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::BarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    targetInfo.barrier(op.getLoc(), rewriter, op.getAddrSpace());
+    if (op->hasAttr("musa_tle.explicit_cta_sync")) {
+      if (op.getAddrSpace() != triton::gpu::AddrSpace::Local)
+        return op.emitOpError(
+            "mthreads TLE explicit CTA sync must target local memory");
+      auto call = LLVM::createLLVMIntrinsicCallOp(
+          rewriter, op.getLoc(), "llvm.musa.syncthreads.lm", TypeRange{}, {});
+      call->setAttr("musa_tle.explicit_cta_sync", rewriter.getUnitAttr());
+    } else {
+      targetInfo.barrier(op.getLoc(), rewriter, op.getAddrSpace());
+    }
     rewriter.eraseOp(op);
     return success();
   }

@@ -138,6 +138,8 @@ def TritonMUSAGPUConvertSqmmaToMTGPU
     Rewrite guarded SQMMA hot loops from tensor-carried ttmg.squad_dot chains
     to backend-private mtgpu.sqmma chains so compact accumulator carriers stay
     alive across scf.for boundaries without leaking into public interfaces.
+    Materialize a final carrier wait when an explicit TLE loop omits any
+    completion boundary before its ordinary post-loop consumer.
   }];
   let dependentDialects = [
     "mlir::scf::SCFDialect",

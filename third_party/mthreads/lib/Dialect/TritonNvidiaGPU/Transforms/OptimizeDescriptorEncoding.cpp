@@ -243,6 +243,32 @@ TensorDescType getTensorDescTypeWithEncoding(Operation *op,
   return TensorDescType::get(existingTy.getContext(), blockTy);
 }
 
+#ifdef __TLE__
+SmallVector<Value> getWarpSpecializeTiedDescValues(ttg::WarpSpecializeOp wsOp,
+                                                   unsigned operandNumber) {
+  SmallVector<Value> values;
+  Value capture =
+      wsOp.getPartitionOp().getExplicitCaptures()[operandNumber];
+  if (isa<TensorDescType>(capture.getType()))
+    values.push_back(capture);
+  for (Region *region : wsOp.getPartitionRegions()) {
+    Value argument = region->getArgument(operandNumber);
+    if (isa<TensorDescType>(argument.getType()))
+      values.push_back(argument);
+  }
+  return values;
+}
+
+void syncWarpSpecializePartitionArgTypes(FuncOp func) {
+  func.walk([](ttg::WarpSpecializePartitionsOp partitions) {
+    OperandRange captures = partitions.getExplicitCaptures();
+    for (Region &region : partitions.getPartitionRegions())
+      for (auto [index, capture] : llvm::enumerate(captures))
+        region.getArgument(index).setType(capture.getType());
+  });
+}
+#endif
+
 void assignMemoryLayouts(FuncOp &func) {
   std::unordered_set<EncodingInfo> encodings;
   llvm::MapVector<TypedValue<TensorDescType>, const EncodingInfo *>
@@ -289,6 +315,18 @@ void assignMemoryLayouts(FuncOp &func) {
       auto einfo =
           internEncoding(encodings, EncodingInfo{{}, {}, {}, forcedToDefault});
 
+#ifdef __TLE__
+      if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(op)) {
+        for (auto [index, capture] :
+             llvm::enumerate(
+                 wsOp.getPartitionOp().getExplicitCaptures())) {
+          if (isa<TensorDescType>(capture.getType()))
+            updateEncoding(getWarpSpecializeTiedDescValues(wsOp, index),
+                           EncodingInfo{});
+        }
+      }
+#endif
+
       auto setEncoding = [&](Value v) {
         auto typedVal = cast<TypedValue<TensorDescType>>(v);
         valueToEncodingInfo.try_emplace(typedVal, einfo);
@@ -319,6 +357,12 @@ void assignMemoryLayouts(FuncOp &func) {
       } else if (isa<scf::YieldOp>(op)) {
         auto vals = getTiedArgs(op->getParentOp(), use.getOperandNumber());
         updateEncoding(vals, EncodingInfo{});
+#ifdef __TLE__
+      } else if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(op)) {
+        updateEncoding(
+            getWarpSpecializeTiedDescValues(wsOp, use.getOperandNumber()),
+            EncodingInfo{});
+#endif
       }
     }
 
@@ -335,6 +379,14 @@ void assignMemoryLayouts(FuncOp &func) {
         auto offset = isa<scf::ForOp>(parentOp);
         auto vals = getTiedArgs(parentOp, blockArg.getArgNumber() - offset);
         updateEncoding(vals, EncodingInfo{});
+#ifdef __TLE__
+      } else if (auto partitions =
+                     dyn_cast<ttg::WarpSpecializePartitionsOp>(parentOp)) {
+        auto wsOp = cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
+        updateEncoding(
+            getWarpSpecializeTiedDescValues(wsOp, blockArg.getArgNumber()),
+            EncodingInfo{});
+#endif
       }
     }
   }
@@ -367,6 +419,9 @@ void assignMemoryLayouts(FuncOp &func) {
           nullptr, descTy.getBlockType(), encoding);
     }
   }
+#ifdef __TLE__
+  syncWarpSpecializePartitionArgTypes(func);
+#endif
   func.setFunctionType(FunctionType::get(ctx, argTys, resultTys));
 }
 

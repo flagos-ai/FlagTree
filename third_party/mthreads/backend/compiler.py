@@ -1,7 +1,7 @@
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, mthreads
 from triton import knobs
-from triton.runtime.errors import OutOfResources
+from triton.runtime.errors import OutOfResources, PTXASError
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +14,12 @@ import shutil
 import shlex
 import subprocess
 import tempfile
+
+# Feature level consumed by FlagGems capability guards.  Keep this separate
+# from Triton/TLE language versions: the recovery path is a backend compiler
+# behavior, and older FlagTree installations may provide the same TLE Python
+# API without handling the MTGPU llc allocator abort safely.
+MTHREADS_REGISTER_FAILURE_RECOVERY_VERSION = 1
 
 _DEFAULT_MUSA_PREFIX = "/usr/local/musa"
 
@@ -91,6 +97,18 @@ def _capability_from_arch(arch: object) -> int:
     arch_str = _normalize_arch(arch)
     if arch_str.isdigit():
         return int(arch_str)
+    # MUSA toolchains and device queries use both the marketing-style PH1
+    # names and the LLVM processor spelling (mp_31/mp_32).  Normalize the
+    # latter here so capability guards remain architecture-consistent.
+    if arch_str in {"mp31", "mp_31"}:
+        return 31
+    if arch_str in {"mp32", "mp_32"}:
+        return 32
+    # PH1S is a distinct ISA generation (mp_32), not a PH1 alias (mp_31).
+    # Check the longer name first so resource limits and SQMMA contracts are
+    # selected correctly for S-series devices exposing the PH1S target.
+    if arch_str.startswith("ph1s"):
+        return 32
     if arch_str.startswith("ph1"):
         return 31
     raise ValueError(f"Unsupported MUSA arch: {arch}")
@@ -202,6 +220,35 @@ def _tool_output(stdout: Optional[str], stderr: Optional[str]) -> str:
     return "\n".join(chunks)
 
 
+def _is_known_mtgpu_register_failure(
+    tool_name: str, output: str, returncode: Optional[int] = None
+) -> bool:
+    """Recognize recoverable register-allocation failures from MTT ``llc``.
+
+    The shipped MTGPU backend aborts instead of returning a normal diagnostic
+    for a few register-pressure cases.  They are invalid autotuning
+    candidates, rather than fatal errors for the whole tuning run.  Keep this
+    predicate deliberately narrow: unknown LLVM errors must continue to
+    surface as ``RuntimeError`` so compiler regressions are not hidden.
+    """
+    if tool_name != "llc":
+        return False
+    text = output.lower()
+    if "no registers from class available to allocate" in text:
+        return True
+    # With -O0, the same backend limitation reaches the post-RA helper and
+    # currently manifests as a SIGSEGV instead of the allocator diagnostic.
+    # Require the pass name plus an explicit crash marker to avoid matching a
+    # normal debug dump that merely names the pass.
+    post_ra = "mtgpu post-ra internal registers related optimization" in text
+    crash_markers = ("segmentation fault", "sigsegv", "signal 11", "exit code 139")
+    # ``subprocess`` reports a signal termination as -11, while a shell
+    # wrapper exposes the equivalent exit status as 139.
+    return post_ra and (
+        returncode in (-11, 139) or any(marker in text for marker in crash_markers)
+    )
+
+
 def _run_tool_command(tool_name: str, cmd: list[str], *, repro_dir: Path, dump_log: bool = False) -> None:
     proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
     output = _tool_output(proc.stdout, proc.stderr)
@@ -210,6 +257,16 @@ def _run_tool_command(tool_name: str, cmd: list[str], *, repro_dir: Path, dump_l
         print(output)
     if proc.returncode == 0:
         return
+    if _is_known_mtgpu_register_failure(tool_name, output, proc.returncode):
+        # PTXASError is part of Triton's autotuner recoverable-error contract.
+        # Unlike OutOfResources, it does not invent a numeric hardware limit,
+        # and its diagnostic retains the llc output and repro command.
+        raise PTXASError(
+            "MTGPU register allocation rejected this candidate.\n"
+            f"{output or '<empty>'}\n"
+            f"Repro command: {shlex.join(cmd)}\n"
+            f"Artifacts kept in: {repro_dir}"
+        )
     error = (f"`{tool_name}` failed with error code {proc.returncode}\n"
              f"`{tool_name}` output:\n{output or '<empty>'}\n"
              f"Repro command: {shlex.join(cmd)}\n"
@@ -586,9 +643,53 @@ def _llc_extra_options(metadata: Dict[str, object], options: "MUSAOptions") -> l
         ],
     }
     opts = list(llc_options_map[(uses_sqmma, enable_backend_opt)])
+    if options.disable_max_ilp_scheduler:
+        opts = [opt for opt in opts if opt != "-misched=mtgpu-max-ilp"]
     if options.llc_options:
-        opts.extend(shlex.split(options.llc_options))
+        # User supplied options are commonly used by autotuning.  llc treats
+        # repeated scheduler/optimization switches as an error (and some
+        # versions abort rather than selecting the last value), so make the
+        # explicit override replace the backend default instead of appending
+        # a conflicting duplicate.  Keep unrelated flags in their original
+        # order and de-duplicate exact boolean options.
+        user_opts = shlex.split(options.llc_options)
+        filtered_user_opts = []
+        override_prefixes = ("-misched=", "-mtgpu-opt-level=")
+        for user_opt in user_opts:
+            # ``-O`` is consumed by ``_llc_opt_level`` and inserted at the
+            # canonical position in the llc command.  Do not append it here,
+            # otherwise the tool sees two pass-manager levels.
+            if re.fullmatch(r"-O[0-3]", user_opt):
+                continue
+            if user_opt.startswith(override_prefixes):
+                opts = [
+                    opt
+                    for opt in opts
+                    if not opt.startswith(user_opt.split("=", 1)[0] + "=")
+                ]
+            elif user_opt in opts:
+                continue
+            filtered_user_opts.append(user_opt)
+        opts.extend(filtered_user_opts)
     return opts
+
+
+def _llc_opt_level(options: "MUSAOptions") -> str:
+    """Return the effective llc pass-manager level.
+
+    The backend historically hard-coded ``-O2`` in ``make_mubin`` while
+    ``llc_options`` was appended afterwards.  That made an expanded-config
+    candidate containing ``-O3`` ambiguous (and some MTT llc versions reject
+    duplicate optimization switches).  Keep the default stable, but let an
+    explicitly supplied ``-O0`` through ``-O3`` replace it.
+    """
+    level = "-O2"
+    if not options.llc_options:
+        return level
+    for option in shlex.split(options.llc_options):
+        if re.fullmatch(r"-O[0-3]", option):
+            level = option
+    return level
 
 
 @dataclass(frozen=True)
@@ -615,6 +716,7 @@ class MUSAOptions:
     llc_options: Optional[str] = None
     enable_llc_opt: bool = False
     enable_backend_opt: bool = False
+    disable_max_ilp_scheduler: bool = False
     enable_fp8_burst2: bool = False
     enable_llvm_compat: bool = True
     extern_libs: Optional[tuple] = None
@@ -622,8 +724,16 @@ class MUSAOptions:
     backend_name: str = "musa"
     supports_noinline: bool = True
     arch: Optional[str] = None
+    # Capture this environment-controlled lowering switch in the options
+    # object so cache keys remain stable for the lifetime of a backend.
+    k128_sqmma_opt_in: str = ""
     instrumentation_mode: str = ""
     inplace_alias_pairs: str = ""
+    # Experimental v37-only membar proofs.  Both switches are default-off,
+    # independently hashed by the frozen dataclass, and materialized as TTGIR
+    # module attributes only when explicitly requested.
+    experimental_v37_membar_filter_raw: bool = False
+    experimental_v37_membar_filter_war: bool = False
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / "lib"
@@ -646,6 +756,12 @@ class MUSAOptions:
         hash_dict["llc_tool_signature"] = _tool_version_signature(llc_path)
         hash_dict["lld_tool_signature"] = _tool_version_signature(lld_path)
         hash_dict["llc_asm_tool_signature"] = _tool_version_signature(llc_asm_path or "")
+        # Also read the live environment here.  Triton may retain an options
+        # object across compilations, while this switch is intentionally a
+        # process-level capability guard.
+        hash_dict["musa_k128_sqm_opt_in_live"] = os.getenv(
+            "TRITON_MUSA_ENABLE_K128_SQMMA", ""
+        )
         if hash_dict["extern_libs"]:
             hash_dict["extern_libs"] = tuple((k, file_hash(v)) for k, v in sorted(hash_dict["extern_libs"]))
         key = "_".join([f"{name}-{val}" for name, val in sorted(hash_dict.items())])
@@ -667,6 +783,15 @@ class MUSABackend(BaseBackend):
         arch = knobs.runtime.override_arch or opts.get("arch", None) or self.target.arch
         args = {"arch": _normalize_arch(arch)}
         capability = _capability_from_arch(args["arch"])
+        # The bundled MTGPU llc currently only ships processors through mp_32.
+        # Reject newer/unknown numeric targets before code generation instead
+        # of passing an unrecognised -mcpu to llc (which aborts in instruction
+        # selection and used to surface as a SIGABRT).
+        if capability > 32:
+            raise ValueError(
+                f"Unsupported MUSA arch {args['arch']}: "
+                "this FlagTree toolchain supports capabilities up to 32"
+            )
         if opts.get("num_ctas", 1) > 1 and capability == 31:
             raise ValueError("num_ctas > 1 requires MUSA cluster launch support. "
                              f"Current target is {args['arch']} (capability {capability}).")
@@ -703,6 +828,10 @@ class MUSABackend(BaseBackend):
             args["enable_fp8_burst2"] = knobs.musa.enable_fp8_burst2
         if "enable_llvm_compat" not in opts:
             args["enable_llvm_compat"] = knobs.musa.enable_llvm_compat
+        if "k128_sqmma_opt_in" not in opts:
+            args["k128_sqmma_opt_in"] = os.getenv(
+                "TRITON_MUSA_ENABLE_K128_SQMMA", ""
+            )
         args.update({k: opts[k] for k in MUSAOptions.__dataclass_fields__.keys() if k in opts and opts[k] is not None})
         if "warp_size" not in args:
             args["warp_size"] = _warp_size_from_capability(capability)
@@ -836,6 +965,17 @@ class MUSABackend(BaseBackend):
         if hasattr(mthreads.passes.ttgpuir, "add_tle_prepare_warp_specialize"):
             mthreads.passes.ttgpuir.add_tle_prepare_warp_specialize(pm)
         pm.run(mod, "make_ttgir")
+        attr_builder = ir.builder(mod.context)
+        if opt.experimental_v37_membar_filter_raw:
+            mod.set_attr(
+                "musa_tle.experimental_v37_membar_filter_raw",
+                attr_builder.get_int32_attr(1),
+            )
+        if opt.experimental_v37_membar_filter_war:
+            mod.set_attr(
+                "musa_tle.experimental_v37_membar_filter_war",
+                attr_builder.get_int32_attr(1),
+            )
         metadata["uses_sqmma"] = _module_uses_sqmma(mod)
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
         return mod
@@ -924,7 +1064,7 @@ class MUSABackend(BaseBackend):
             print(ir_text)
 
         capability = _capability_from_arch(arch)
-        llc_opt_level = "-O2"
+        llc_opt_level = _llc_opt_level(opt)
         llc_opts = [
             "-march=mtgpu",
             f"-mcpu=mp_{capability}",
