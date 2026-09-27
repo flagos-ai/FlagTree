@@ -20,6 +20,10 @@ from triton.compiler import ASTSource
 from triton._C.libtriton import ir
 
 
+def test_musa_ir_function_binding_exposes_finalize():
+    assert hasattr(ir.function, "finalize")
+
+
 @pytest.mark.parametrize(
     ("arch", "expected"),
     [("ph1", 31), ("ph1s", 32), ("mp31", 31), ("mp_31", 31),
