@@ -126,11 +126,18 @@ void init_triton_musa_tle_ir(py::module m) {
   // Keep the marker on the native builder type so a newer Python package
   // paired with an older libtriton fails closed in downstream dispatch guards.
   builderCls.attr("mthreads_tle_pipe_sqmma_version") = py::int_(2);
-  // Version 2 permits three payload fields in one grouped-completion pipe.
-  builderCls.attr("mthreads_tle_multifield_pipe_version") = py::int_(2);
+  // Version 3 permits four payload fields in one grouped-completion pipe.
+  builderCls.attr("mthreads_tle_multifield_pipe_version") = py::int_(3);
   // Version 1 implements the single ready/full edge form of one_shot pipes:
   // no empty-barrier ring is allocated and acquire/release are erased.
   builderCls.attr("mthreads_tle_one_shot_pipe_version") = py::int_(1);
+  // Version 1 lowers cyclic named-reader SPMC pipes onto one shared full
+  // barrier ring and an empty ring whose arrival count is the sum of all
+  // reader execution partitions.  Keep this independent from multifield and
+  // one-shot capabilities so mixed Python/native installations fail closed.
+  // Version 2 additionally segments a logical multi-field commit across
+  // several <=64-KiB full-barrier rings and joins all rings at reader.wait.
+  builderCls.attr("mthreads_tle_spmc_pipe_version") = py::int_(2);
   // PipelineExpander keeps runtime-bounded K loops as scf.for and predicates
   // their prologue/epilogue.  Expose this independently so FlagGems can guard
   // kernels that rely on the dynamic-loop lowering when paired with an older

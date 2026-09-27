@@ -40,6 +40,12 @@ namespace tle = triton::tle;
 namespace musa_tle = triton::musa_tle;
 namespace ttmg = triton::musa;
 
+// MTT's async transaction barrier accepts at most 64 KiB for one logical
+// transaction.  A pipe may own more payload than that, but it must publish the
+// payload through several full-barrier rings and make every reader wait for
+// every ring before exposing the slot.
+static constexpr int32_t kMaxAsyncTransactionBytes = 64 * 1024;
+
 static int64_t getCapacity(Operation *op) {
   return op->getAttrOfType<IntegerAttr>("capacity").getInt();
 }
@@ -242,15 +248,12 @@ static LogicalResult verifyCommonContract(Operation *op) {
         "initial mthreads tle.pipe supports only scope='cta'");
   if (getFields(op).empty())
     return op->emitOpError("requires at least one payload field");
-  if (getFields(op).size() > 3)
+  if (getFields(op).size() > 4)
     return op->emitOpError(
-        "mthreads tle.pipe supports at most three payload fields");
+        "mthreads tle.pipe supports at most four payload fields");
   auto fieldNames = op->getAttrOfType<ArrayAttr>("field_names");
   if (!fieldNames || fieldNames.size() != getFields(op).size())
     return op->emitOpError("requires one field name per payload field");
-  if (op->getAttr("reader_name"))
-    return op->emitOpError(
-        "initial mthreads tle.pipe supports only the default SPSC reader");
   return success();
 }
 
@@ -382,11 +385,59 @@ struct PipeState {
   std::optional<bool> warpSpecialized;
   SmallVector<Value> fullBases;
   SmallVector<Value> emptyBases;
+  SmallVector<SmallVector<unsigned>> fullBarrierFieldGroups;
+  SmallVector<int32_t> fullBarrierTransactionBytes;
   SmallVector<tle::PipeWriterAcquireOp> acquires;
   SmallVector<tle::PipeWriterCommitOp> commits;
   SmallVector<tle::PipeReaderWaitOp> waits;
   SmallVector<tle::PipeReaderReleaseOp> releases;
+  SmallVector<std::string> readerNames;
+  SmallVector<std::pair<std::string, Region *>> readerRegions;
 };
+
+static StringRef getReaderName(Operation *op) {
+  if (auto name = op->getAttrOfType<StringAttr>("reader_name"))
+    return name.getValue();
+  return {};
+}
+
+static bool sameReader(Operation *lhs, Operation *rhs) {
+  return getReaderName(lhs) == getReaderName(rhs);
+}
+
+static LogicalResult recordReaderEndpoint(PipeState &state, Operation *op) {
+  StringRef name = getReaderName(op);
+  if (state.readerNames.empty()) {
+    if (!name.empty())
+      return op->emitOpError(
+          "named reader endpoint requires pipe.create readers");
+    return success();
+  }
+  if (name.empty())
+    return op->emitOpError(
+        "named-reader pipe requires reader_name on every endpoint");
+  if (!llvm::any_of(state.readerNames,
+                    [&](const std::string &declared) {
+                      return StringRef(declared) == name;
+                    }))
+    return op->emitOpError("reader_name is not declared by pipe.create");
+
+  Region *region = getConsumerExecutionRegion(op);
+  if (!region)
+    return op->emitOpError("cannot identify the reader execution region");
+  for (auto &[recordedName, recordedRegion] : state.readerRegions) {
+    if (recordedName == name && recordedRegion != region)
+      return op->emitOpError(
+          "one named reader cannot span multiple execution partitions");
+    if (recordedRegion == region && recordedName != name)
+      return op->emitOpError(
+          "one execution partition cannot host multiple named readers");
+    if (recordedName == name && recordedRegion == region)
+      return success();
+  }
+  state.readerRegions.emplace_back(name.str(), region);
+  return success();
+}
 
 static LogicalResult recordConsumerWarps(PipeState &state, Operation *op) {
   FailureOr<int32_t> warps = getConsumerWarps(op);
@@ -456,9 +507,6 @@ class LowerPipePass
       std::string key = getPipeKey(op);
 
       if (auto create = dyn_cast<tle::PipeCreateOp>(op)) {
-        if (create->getAttrOfType<ArrayAttr>("readers"))
-          return create.emitOpError(
-              "initial mthreads tle.pipe does not support named readers");
         if (!create->getParentOfType<tt::FuncOp>() ||
             create->getParentOfType<ttg::WarpSpecializeOp>())
           return create.emitOpError(
@@ -476,6 +524,13 @@ class LowerPipePass
         }
         state.capacity = static_cast<int32_t>(getCapacity(op));
         state.oneShot = isOneShotPipe(create);
+        if (auto readers = create->getAttrOfType<ArrayAttr>("readers")) {
+          if (state.oneShot)
+            return create.emitOpError(
+                "mthreads SPMC pipe version 1 supports only cyclic pipes");
+          for (Attribute attr : readers)
+            state.readerNames.push_back(cast<StringAttr>(attr).getValue().str());
+        }
         pipes.emplace(key, std::move(state));
         continue;
       }
@@ -587,7 +642,8 @@ class LowerPipePass
         if (state.oneShot && isConstantTrue(wait.getPhase()))
           return wait.emitOpError(
               "one_shot pipe requires the initial (phase=false) edge");
-        if (failed(recordConsumerWarps(state, op)))
+        if (failed(recordReaderEndpoint(state, op)) ||
+            failed(recordConsumerWarps(state, op)))
           return failure();
         state.waits.push_back(wait);
         continue;
@@ -598,6 +654,8 @@ class LowerPipePass
                                      PipeRole::Consumer, "reader",
                                      /*allowProducerConsumer=*/true)))
         return failure();
+      if (failed(recordReaderEndpoint(state, op)))
+        return failure();
       bool matchingWait = false;
       auto &usedWaits = matchedReaderWaits[key];
       for (Operation *previous = release->getPrevNode(); previous;
@@ -605,6 +663,7 @@ class LowerPipePass
         if (auto wait = dyn_cast<tle::PipeReaderWaitOp>(previous)) {
           if (getPipeKey(previous) == key &&
               sameIndex(wait.getStage(), release.getStage()) &&
+              sameReader(wait.getOperation(), release.getOperation()) &&
               !usedWaits.contains(wait.getOperation())) {
             matchingWait = true;
             usedWaits.insert(wait.getOperation());
@@ -622,6 +681,8 @@ class LowerPipePass
              ++waitIt) {
           tle::PipeReaderWaitOp wait = *waitIt;
           if (usedWaits.contains(wait.getOperation()))
+            continue;
+          if (!sameReader(wait.getOperation(), release.getOperation()))
             continue;
           if (!canMatchReaderWait(wait, release, key, dominance,
                                   postDominance))
@@ -644,7 +705,8 @@ class LowerPipePass
           for (tle::PipeReaderWaitOp wait : state.waits) {
             if (usedWaits.contains(wait.getOperation()) ||
                 getPipeKey(wait.getOperation()) != key ||
-                !sameIndexExpr(wait.getStage(), release.getStage()))
+                !sameIndexExpr(wait.getStage(), release.getStage()) ||
+                !sameReader(wait.getOperation(), release.getOperation()))
               continue;
             if (wait->getParentRegion() != release->getParentRegion()) {
               hasCrossRegionCandidate = true;
@@ -676,6 +738,50 @@ class LowerPipePass
       if (state.transactionBytes <= 0 || state.consumerWarps <= 0)
         return state.create.emitOpError(
             "could not infer transaction bytes or consumer warp count");
+
+      // Greedily partition payload fields into hardware-sized full
+      // transactions.  Field order is stable, so the same grouping applies
+      // to every commit already proven to have identical per-field sizes.
+      // The empty ring stays shared: a slot is reusable only after all named
+      // readers release the complete logical payload.
+      SmallVector<unsigned> currentGroup;
+      int32_t currentBytes = 0;
+      for (auto [fieldIndex, fieldBytes] :
+           llvm::enumerate(state.fieldTransactionBytes)) {
+        if (fieldBytes <= 0 || fieldBytes > kMaxAsyncTransactionBytes)
+          return state.create.emitOpError()
+                 << "payload field " << fieldIndex << " transaction size "
+                 << fieldBytes << " exceeds the 64-KiB hardware barrier limit";
+        if (!currentGroup.empty() &&
+            currentBytes > kMaxAsyncTransactionBytes - fieldBytes) {
+          state.fullBarrierFieldGroups.push_back(currentGroup);
+          state.fullBarrierTransactionBytes.push_back(currentBytes);
+          currentGroup.clear();
+          currentBytes = 0;
+        }
+        currentGroup.push_back(static_cast<unsigned>(fieldIndex));
+        currentBytes += fieldBytes;
+      }
+      if (!currentGroup.empty()) {
+        state.fullBarrierFieldGroups.push_back(currentGroup);
+        state.fullBarrierTransactionBytes.push_back(currentBytes);
+      }
+      if (state.fullBarrierFieldGroups.empty())
+        return state.create.emitOpError(
+            "could not form a hardware-sized full-barrier payload group");
+
+      for (const std::string &readerName : state.readerNames) {
+        bool hasWait = llvm::any_of(state.waits, [&](auto wait) {
+          return getReaderName(wait.getOperation()) == readerName;
+        });
+        bool hasRelease = llvm::any_of(state.releases, [&](auto release) {
+          return getReaderName(release.getOperation()) == readerName;
+        });
+        if (!hasWait || !hasRelease)
+          return state.create.emitOpError()
+                 << "named reader '" << readerName
+                 << "' requires at least one wait/release pair";
+      }
     }
     return success();
   }
@@ -716,9 +822,10 @@ class LowerPipePass
         auto one = builder.getI32IntegerAttr(1);
         auto pending = builder.getI32IntegerAttr(0);
         auto ready = builder.getI32IntegerAttr(1);
-        state.fullBases.push_back(musa_tle::BarrierAllocOp::create(
-            builder, loc, capacity, one, pending,
-            builder.getI32IntegerAttr(state.transactionBytes)));
+        for (int32_t transactionBytes : state.fullBarrierTransactionBytes)
+          state.fullBases.push_back(musa_tle::BarrierAllocOp::create(
+              builder, loc, capacity, one, pending,
+              builder.getI32IntegerAttr(transactionBytes)));
         // A one-shot edge transitions only once from empty to full.  There is
         // no producer-side acquire or consumer-side release, so allocating an
         // empty barrier ring would add initialization and synchronization that
@@ -750,44 +857,48 @@ class LowerPipePass
         auto copies = commitCopies.lookup(op);
         if (copies.size() != state.fieldRoots.size())
           return commit.emitOpError("lost the analyzed pipe TME copies");
-        // All payload fields in one commit represent a single logical pipe
-        // transaction.  Materialize one indexed full-barrier value and reuse
-        // it for every replacement copy; creating an index per field produces
-        // distinct SSA barriers that the grouped-completion lowering cannot
-        // safely join later.
-        OpBuilder barrierBuilder(copies.front());
-        Value barrier = createIndex(barrierBuilder, copies.front().getLoc(),
-                                    copies.front(), state.fullBases.front(),
-                                    commit.getStage());
-        for (auto [index, copy] : llvm::enumerate(copies)) {
-          OpBuilder copyBuilder(copy);
-          auto replacement = ttg::TMACopyOp::create(
-              copyBuilder, copy.getLoc(), copy.getSrc(), copy.getDst(),
-              copy.getIndices(), barrier);
-          replacement->setDiscardableAttrs(
-              copy->getDiscardableAttrDictionary());
-          // Keep the established single-field lowering unchanged.  The
-          // grouped marker is only meaningful when several payload copies
-          // share one barrier and the final arrival must be deferred.
-          if (state.fieldRoots.size() > 1)
-            replacement->setAttr(ttmg::kTLEGroupedCompletionAttr,
-                                 copyBuilder.getUnitAttr());
-          if (index == 0)
-            replacement->setAttr(
-                "expect_bytes",
-                copyBuilder.getI32IntegerAttr(state.transactionBytes));
-          if (index + 1 == state.fieldRoots.size())
-            replacement->setAttr(ttmg::kTLEGroupedCompletionFinalAttr,
-                                 copyBuilder.getUnitAttr());
-          // Keep the logical aggregate byte count for barrier accounting, but
-          // also expose the individual payload sizes so the LLVM lowering can
-          // issue hardware-sized add.trans updates.  This avoids forcing the
-          // MTT barrier unit through a large multi-field transaction path.
-          if (index == 0 && state.fieldTransactionBytes.size() > 1)
-            replacement->setAttr(
-                ttmg::kTLEExpectBytesPartsAttr,
-                copyBuilder.getDenseI32ArrayAttr(state.fieldTransactionBytes));
-          copy.erase();
+        // A logical pipe commit may exceed one hardware transaction barrier.
+        // Publish each <=64-KiB field group on its own full-barrier ring.  A
+        // reader wait below joins all rings before exposing any payload field.
+        for (auto [groupIndex, fieldGroup] :
+             llvm::enumerate(state.fullBarrierFieldGroups)) {
+          unsigned firstField = fieldGroup.front();
+          OpBuilder barrierBuilder(copies[firstField]);
+          Value barrier = createIndex(
+              barrierBuilder, copies[firstField].getLoc(), copies[firstField],
+              state.fullBases[groupIndex], commit.getStage());
+          SmallVector<int32_t> groupParts;
+          for (unsigned fieldIndex : fieldGroup)
+            groupParts.push_back(state.fieldTransactionBytes[fieldIndex]);
+
+          for (auto [indexInGroup, fieldIndex] :
+               llvm::enumerate(fieldGroup)) {
+            ttg::TMACopyOp copy = copies[fieldIndex];
+            OpBuilder copyBuilder(copy);
+            auto replacement = ttg::TMACopyOp::create(
+                copyBuilder, copy.getLoc(), copy.getSrc(), copy.getDst(),
+                copy.getIndices(), barrier);
+            replacement->setDiscardableAttrs(
+                copy->getDiscardableAttrDictionary());
+            if (fieldGroup.size() > 1)
+              replacement->setAttr(ttmg::kTLEGroupedCompletionAttr,
+                                   copyBuilder.getUnitAttr());
+            if (indexInGroup == 0) {
+              replacement->setAttr(
+                  "expect_bytes",
+                  copyBuilder.getI32IntegerAttr(
+                      state.fullBarrierTransactionBytes[groupIndex]));
+              if (fieldGroup.size() > 1)
+                replacement->setAttr(
+                    ttmg::kTLEExpectBytesPartsAttr,
+                    copyBuilder.getDenseI32ArrayAttr(groupParts));
+            }
+            if (fieldGroup.size() > 1 &&
+                indexInGroup + 1 == fieldGroup.size())
+              replacement->setAttr(ttmg::kTLEGroupedCompletionFinalAttr,
+                                   copyBuilder.getUnitAttr());
+            copy.erase();
+          }
         }
         commit.erase();
         continue;
@@ -795,9 +906,11 @@ class LowerPipePass
 
       if (auto wait = dyn_cast<tle::PipeReaderWaitOp>(op)) {
         Value phase = toI32Phase(builder, loc, wait.getPhase(), false);
-        Value barrier = createIndex(builder, loc, op, state.fullBases.front(),
-                                    wait.getStage());
-        musa_tle::BarrierWaitOp::create(builder, loc, barrier, phase);
+        for (Value fullBase : state.fullBases) {
+          Value barrier =
+              createIndex(builder, loc, op, fullBase, wait.getStage());
+          musa_tle::BarrierWaitOp::create(builder, loc, barrier, phase);
+        }
         if (!wait.getIsClosed().use_empty()) {
           Value notClosed = arith::ConstantIntOp::create(builder, loc, 0, 1);
           wait.getIsClosed().replaceAllUsesWith(notClosed);

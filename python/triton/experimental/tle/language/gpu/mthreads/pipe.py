@@ -32,23 +32,39 @@ def validate_pipe_options(scope, readers, one_shot, fields, builder=None) -> Non
         raise ValueError("initial mthreads tle.pipe supports only scope='cta'")
     if not fields:
         raise ValueError("mthreads tle.pipe requires at least one payload field")
-    # Version 2 extends the grouped-completion contract to three payloads.
+    # Version 3 extends the grouped-completion contract to four payloads.
     # Keep the version check at the Python boundary so a newer package paired
     # with an older native libtriton fails closed before emitting IR that the
     # old LowerPipe pass cannot consume.
     multifield_version = getattr(builder, "mthreads_tle_multifield_pipe_version", 0)
     # The original mthreads LowerPipe accepted exactly one payload.  Version
-    # 1 adds grouped completion for two fields; version 2 extends that to
-    # three.  Treat an absent marker as version 0 so a newer Python frontend
+    # 1 adds grouped completion for two fields; versions 2 and 3 extend that
+    # to three and four fields.  Treat an absent marker as version 0 so a newer Python frontend
     # cannot emit multi-field IR for an old native pass.
-    max_fields = 3 if multifield_version >= 2 else 2 if multifield_version >= 1 else 1
+    max_fields = (
+        4
+        if multifield_version >= 3
+        else 3
+        if multifield_version >= 2
+        else 2
+        if multifield_version >= 1
+        else 1
+    )
     if len(fields) > max_fields:
-        max_fields_name = {1: "one", 2: "two", 3: "three"}[max_fields]
+        max_fields_name = {1: "one", 2: "two", 3: "three", 4: "four"}[max_fields]
         raise ValueError(
             f"mthreads tle.pipe supports at most {max_fields_name} payload fields"
         )
     if readers is not None:
-        raise ValueError("initial mthreads tle.pipe supports only the default SPSC reader")
+        spmc_version = getattr(builder, "mthreads_tle_spmc_pipe_version", 0)
+        if spmc_version < 1:
+            raise ValueError(
+                "mthreads named-reader pipes require native SPMC pipe capability"
+            )
+        if one_shot:
+            raise ValueError(
+                "mthreads SPMC pipe version 1 supports only cyclic pipes"
+            )
     if one_shot:
         one_shot_version = getattr(builder, "mthreads_tle_one_shot_pipe_version", 0)
         if one_shot_version < 1:

@@ -39,6 +39,8 @@ static constexpr StringLiteral kExplicitCtaSyncAttr =
     "musa_tle.explicit_cta_sync";
 static constexpr StringLiteral kLayoutConversionSyncAttr =
     "musa_tle.layout_conversion_sync";
+static constexpr StringLiteral kConsumerEpochSyncAttr =
+    "musa_tle.consumer_epoch_sync";
 static constexpr StringLiteral kBarRecordIntrinsic =
     "llvm.musa.async.bar.record";
 static constexpr StringLiteral kDefaultProducerAttr =
@@ -47,6 +49,7 @@ static constexpr StringLiteral kDefaultProducerAttr =
 struct PartitionSync {
   LLVM::CallIntrinsicOp op;
   int32_t numWarps;
+  int32_t sharedGroup = -1;
 };
 
 static bool isSqmmaMmaIntrinsic(StringRef name) {
@@ -194,6 +197,15 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
         return WalkResult::advance();
       if (call->hasAttr(kExplicitCtaSyncAttr))
         return WalkResult::advance();
+      if (auto group = call->getAttrOfType<IntegerAttr>(
+              kConsumerEpochSyncAttr)) {
+        if (group.getInt() < 0 ||
+            group.getInt() > std::numeric_limits<int32_t>::max())
+          return WalkResult::interrupt();
+        syncs.push_back(
+            {call, numWarps, static_cast<int32_t>(group.getInt())});
+        return WalkResult::advance();
+      }
       if (seenSqmma || call->hasAttr(kLayoutConversionSyncAttr))
         syncs.push_back({call, numWarps});
       else
@@ -216,8 +228,49 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
   if (syncs.empty())
     return success();
 
+  llvm::DenseMap<int32_t, int32_t> sharedGroupWarps;
+  SmallVector<int32_t> sharedGroupOrder;
+  int64_t requiredBarrierIds = 0;
+  for (PartitionSync &sync : syncs) {
+    if (sync.sharedGroup < 0) {
+      ++requiredBarrierIds;
+      continue;
+    }
+    auto it = sharedGroupWarps.find(sync.sharedGroup);
+    if (it == sharedGroupWarps.end()) {
+      sharedGroupWarps[sync.sharedGroup] = sync.numWarps;
+      sharedGroupOrder.push_back(sync.sharedGroup);
+      ++requiredBarrierIds;
+      continue;
+    }
+    if (it->second > std::numeric_limits<int32_t>::max() - sync.numWarps)
+      return sync.op.emitOpError(
+          "mthreads TLE shared consumer epoch warp count overflow");
+    it->second += sync.numWarps;
+  }
+  int64_t expectedConsumerWarps = defaultProducer ? 0 : consumerWarps;
+  if (defaultProducer) {
+    for (int32_t warps : partitionNumWarps)
+      expectedConsumerWarps += warps;
+  } else {
+    for (unsigned index = 0; index + 1 < partitionNumWarps.size(); ++index)
+      expectedConsumerWarps += partitionNumWarps[index];
+  }
+  if (expectedConsumerWarps <= 0 ||
+      expectedConsumerWarps > std::numeric_limits<int32_t>::max())
+    return syncs.front().op.emitOpError(
+        "mthreads TLE total consumer warp count overflow");
+  for (int32_t group : sharedGroupOrder)
+    if (sharedGroupWarps.lookup(group) != expectedConsumerWarps)
+      return syncs.front().op.emitOpError(
+          "mthreads TLE consumer epoch sync must cover every consumer warp");
+  if (requiredBarrierIds <= 0 ||
+      requiredBarrierIds > std::numeric_limits<int32_t>::max())
+    return syncs.front().op.emitOpError(
+        "mthreads TLE partition synchronization barrier count overflow");
+
   auto reserved = ttmg::reserveBarrierIdRange(
-      syncs.front().op, static_cast<int32_t>(syncs.size()));
+      syncs.front().op, static_cast<int32_t>(requiredBarrierIds));
   if (failed(reserved))
     return syncs.front().op.emitOpError(
         "mthreads TLE partition synchronization exhausted hardware barrier "
@@ -241,15 +294,29 @@ static LogicalResult lowerWarpGroupBarriers(LLVM::LLVMFuncOp func,
   Value phase = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
   DominanceInfo dominance(func);
   llvm::DenseMap<Operation *, Value> barrierIds;
+  llvm::DenseMap<int32_t, Value> sharedGroupIds;
   SmallVector<std::pair<Value, Value>> initializationArgs;
   int32_t nextId = *reserved;
   for (PartitionSync &sync : syncs) {
+    if (sync.sharedGroup >= 0)
+      continue;
     Value id = arith::ConstantIntOp::create(rewriter, loc, nextId++, 32);
     Value count =
         arith::ConstantIntOp::create(rewriter, loc, sync.numWarps, 32);
     initializationArgs.push_back({id, count});
     barrierIds[sync.op.getOperation()] = id;
   }
+  for (int32_t group : sharedGroupOrder) {
+    Value id = arith::ConstantIntOp::create(rewriter, loc, nextId++, 32);
+    Value count = arith::ConstantIntOp::create(
+        rewriter, loc, sharedGroupWarps.lookup(group), 32);
+    initializationArgs.push_back({id, count});
+    sharedGroupIds[group] = id;
+  }
+  for (PartitionSync &sync : syncs)
+    if (sync.sharedGroup >= 0)
+      barrierIds[sync.op.getOperation()] =
+          sharedGroupIds.lookup(sync.sharedGroup);
 
   Value tid =
       LLVM::CallIntrinsicOp::create(

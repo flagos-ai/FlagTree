@@ -4,7 +4,9 @@
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
@@ -12,6 +14,8 @@
 #include "llvm/ADT/SmallVector.h"
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <tuple>
 
 namespace mlir {
 
@@ -26,6 +30,90 @@ static constexpr StringLiteral kStaticWarpSpecializeAttr =
     "musa_tle.static_warp_specialize";
 static constexpr StringLiteral kDefaultProducerAttr =
     "musa_tle.default_producer";
+static constexpr StringLiteral kConsumerEpochSyncAttr =
+    "musa_tle.consumer_epoch_sync";
+
+static bool containsAsyncSqmmaAndGlobalStore(scf::ForOp loop) {
+  bool hasAsyncSqmma = false;
+  bool hasGlobalStore = false;
+  loop.walk([&](Operation *op) {
+    if (op->getName().getStringRef() == "mtgpu.sqmma") {
+      auto isAsync = op->getAttrOfType<BoolAttr>("isAsync");
+      hasAsyncSqmma |= isAsync && isAsync.getValue();
+    }
+    hasGlobalStore |= isa<triton::StoreOp>(op);
+  });
+  return hasAsyncSqmma && hasGlobalStore;
+}
+
+static FailureOr<std::tuple<int64_t, int64_t, int64_t>>
+getConstantLoopBounds(scf::ForOp loop) {
+  APInt lower;
+  APInt upper;
+  APInt step;
+  if (!matchPattern(loop.getLowerBound(), m_ConstantInt(&lower)) ||
+      !matchPattern(loop.getUpperBound(), m_ConstantInt(&upper)) ||
+      !matchPattern(loop.getStep(), m_ConstantInt(&step)))
+    return failure();
+  return std::make_tuple(lower.getSExtValue(), upper.getSExtValue(),
+                         step.getSExtValue());
+}
+
+// Multiple SQMMA consumer partitions may otherwise start the next output
+// epoch at different times.  The target's wait-all retires one partition's
+// SQMMA work, but it is not a cross-partition completion edge.  Mark one
+// canonical outer-loop latch per consumer so late warp-specialize lowering
+// can merge the markers into one shared hardware barrier.
+static LogicalResult markConsumerEpochRendezvous(
+    ttg::WarpSpecializeOp ws, IRRewriter &rewriter) {
+  if (ws->hasAttr(kDefaultProducerAttr))
+    return success();
+
+  SmallVector<Region *> consumers{&ws.getDefaultRegion()};
+  SmallVector<Region *> partitions(ws.getPartitionRegions().begin(),
+                                   ws.getPartitionRegions().end());
+  // In the normal static layout the final worker partition is the producer.
+  for (unsigned index = 0; index + 1 < partitions.size(); ++index)
+    consumers.push_back(partitions[index]);
+  if (consumers.size() < 2)
+    return success();
+
+  SmallVector<scf::ForOp> epochLoops;
+  std::optional<std::tuple<int64_t, int64_t, int64_t>> commonBounds;
+  for (Region *consumer : consumers) {
+    SmallVector<scf::ForOp> candidates;
+    consumer->walk([&](scf::ForOp loop) {
+      if (containsAsyncSqmmaAndGlobalStore(loop))
+        candidates.push_back(loop);
+    });
+    // A nested K loop contains SQMMA but no output store.  Requiring exactly
+    // one SQMMA+store loop keeps this transform deliberately conservative.
+    if (candidates.size() != 1)
+      return success();
+    FailureOr<std::tuple<int64_t, int64_t, int64_t>> bounds =
+        getConstantLoopBounds(candidates.front());
+    if (failed(bounds))
+      return success();
+    auto [lower, upper, step] = *bounds;
+    if (lower != 0 || step != 1 || upper <= 1)
+      return success();
+    if (commonBounds && *commonBounds != *bounds)
+      return success();
+    commonBounds = *bounds;
+    epochLoops.push_back(candidates.front());
+  }
+
+  for (scf::ForOp loop : epochLoops) {
+    auto yield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
+    rewriter.setInsertionPoint(yield);
+    auto barrier = ttg::BarrierOp::create(rewriter, yield.getLoc(),
+                                          ttg::AddrSpace::Local);
+    barrier->setAttr(kConsumerEpochSyncAttr,
+                     rewriter.getI32IntegerAttr(0));
+  }
+  return success();
+}
+
 class PrepareWarpSpecializePass
     : public impl::TritonMUSAGPUTLEPrepareWarpSpecializeBase<
           PrepareWarpSpecializePass> {
@@ -142,6 +230,9 @@ class PrepareWarpSpecializePass
       mod->setAttr("ttg.total-num-warps",
                    rewriter.getI32IntegerAttr(totalNumWarps));
     }
+
+    if (failed(markConsumerEpochRendezvous(ws, rewriter)))
+      return failure();
 
     return success();
   }

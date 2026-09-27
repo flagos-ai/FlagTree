@@ -36,6 +36,9 @@ MTHREADS_TLE_MULTIFIELD_PIPE_VERSION = getattr(
 MTHREADS_TLE_ONE_SHOT_PIPE_VERSION = getattr(
     libtriton.ir.builder, "mthreads_tle_one_shot_pipe_version", 0
 )
+MTHREADS_TLE_SPMC_PIPE_VERSION = getattr(
+    libtriton.ir.builder, "mthreads_tle_spmc_pipe_version", 0
+)
 MTHREADS_TLE_DYNAMIC_LOOPS_VERSION = getattr(
     libtriton.ir.builder, "mthreads_tle_dynamic_loops_version", 0
 )
@@ -82,6 +85,7 @@ __all__ = [
     "MTHREADS_TLE_PIPE_SQMMA_VERSION",
     "MTHREADS_TLE_MULTIFIELD_PIPE_VERSION",
     "MTHREADS_TLE_ONE_SHOT_PIPE_VERSION",
+    "MTHREADS_TLE_SPMC_PIPE_VERSION",
     "MTHREADS_TLE_SPLIT128_SQMMA_VERSION",
     "MTHREADS_TLE_SPLIT_M_SQMMA_VERSION",
     "buffer",

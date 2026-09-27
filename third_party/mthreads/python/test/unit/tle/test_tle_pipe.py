@@ -588,9 +588,83 @@ def _too_many_fields_kernel(
 
 
 @triton.jit
-def _named_reader_kernel(desc, out, STAGES: tl.constexpr, BLOCK: tl.constexpr, ITERATIONS: tl.constexpr):
-    smem = tle.gpu.alloc((STAGES, BLOCK), dtype=tl.float16, nv_mma_shared_layout=False)
-    tle.pipe(capacity=STAGES, readers=("consumer", ), data=smem)
+def _named_pipe_consumer(
+    reader, out, OUT_OFFSET: tl.constexpr, ITERATIONS: tl.constexpr
+):
+    for iteration in tl.static_range(0, ITERATIONS):
+        wait = reader.wait(iteration)
+        tl.store(
+            out + OUT_OFFSET + iteration,
+            iteration + tl.where(wait.is_closed, 1000, 0),
+        )
+        reader.release(iteration)
+
+
+@triton.jit
+def _named_reader_kernel(
+    desc,
+    out,
+    STAGES: tl.constexpr,
+    BLOCK: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+):
+    smem = tle.gpu.alloc(
+        (STAGES, BLOCK), dtype=tl.float16, nv_mma_shared_layout=False
+    )
+    pipe = tle.pipe(
+        capacity=STAGES, readers=("left", "right"), data=smem
+    )
+    tle.gpu.warp_specialize(
+        [
+            (
+                _named_pipe_consumer,
+                (pipe.reader("left"), out, 0, ITERATIONS),
+            ),
+            (
+                _named_pipe_consumer,
+                (pipe.reader("right"), out, ITERATIONS, ITERATIONS),
+            ),
+            (_pipe_producer, (pipe.writer(), desc, BLOCK, ITERATIONS)),
+        ],
+        worker_num_warps=[4, 4],
+        worker_num_regs=[24, 24],
+    )
+
+
+@triton.jit
+def _mismatched_named_consumer(left, right, out):
+    left.wait(0)
+    tl.store(out, 0)
+    # A release belongs to the endpoint that performed the matching wait.
+    # Using another declared reader must fail closed in LowerPipe.
+    right.release(0)
+
+
+@triton.jit
+def _mismatched_named_reader_kernel(
+    desc,
+    out,
+    STAGES: tl.constexpr,
+    BLOCK: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+):
+    smem = tle.gpu.alloc(
+        (STAGES, BLOCK), dtype=tl.float16, nv_mma_shared_layout=False
+    )
+    pipe = tle.pipe(
+        capacity=STAGES, readers=("left", "right"), data=smem
+    )
+    tle.gpu.warp_specialize(
+        [
+            (
+                _mismatched_named_consumer,
+                (pipe.reader("left"), pipe.reader("right"), out),
+            ),
+            (_pipe_producer, (pipe.writer(), desc, BLOCK, 1)),
+        ],
+        worker_num_warps=[4],
+        worker_num_regs=[24],
+    )
 
 
 @triton.jit
@@ -899,11 +973,30 @@ def test_mthreads_three_field_pipe_groups_completion_transaction(stages):
     ), ttgir
 
 
+@pytest.mark.parametrize("stages", [1, 2, 3])
+def test_mthreads_named_reader_pipe_lowers_to_shared_full_and_empty_rings(stages):
+    ttir, ttgir, _ = _compile_pipeline(_named_reader_kernel, stages)
+
+    assert 'readers = ["left", "right"]' in ttir, ttir
+    assert ttir.count('reader_name = "left"') == 4 * stages, ttir
+    assert ttir.count('reader_name = "right"') == 4 * stages, ttir
+    assert "tle.pipe." not in ttgir, ttgir
+    constants = _i32_constants(ttgir)
+    arrivals = re.findall(
+        r"ttmg\.init_arrival\s+(%[-\w.]+),\s+(%[-\w.]+),\s+(%[-\w.]+)",
+        ttgir,
+    )
+    # The producer publishes one full transaction.  Slot reuse waits for all
+    # 16 default-partition warps plus the four right-reader worker warps.
+    assert [constants[count] for _, count, _ in arrivals] == (
+        [1] * stages + [20] * stages
+    )
+
+
 @pytest.mark.parametrize(
     "kernel,diagnostic",
     [
         (_too_many_fields_kernel, "supports at most three payload fields"),
-        (_named_reader_kernel, "supports only the default SPSC reader"),
     ],
 )
 def test_mthreads_pipe_rejects_unsupported_frontend_options(kernel, diagnostic):
@@ -930,6 +1023,15 @@ def test_mthreads_pipe_rejects_writer_in_default_partition(capfd):
         _compile_invalid_pipeline(_misplaced_pipe_kernel)
     assert "requires writer operations either outside warp_specialize or in the final worker partition" in capfd.readouterr(
     ).err
+
+
+def test_mthreads_named_reader_release_cannot_match_another_reader(capfd):
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        _compile_invalid_pipeline(_mismatched_named_reader_kernel)
+    assert (
+        "one execution partition cannot host multiple named readers"
+        in capfd.readouterr().err
+    )
 
 
 def test_mthreads_pipe_rejects_sibling_if_wait_release(capfd):
@@ -1039,6 +1141,49 @@ def test_mthreads_ws_pipe_mm_runtime(stages):
         )
         torch.musa.synchronize()
         torch.testing.assert_close(out.to(torch.float32), reference, rtol=1.25e-1, atol=1.25e-1)
+
+
+@pytest.mark.parametrize("stages", [1, 2, 3], ids=["stage1", "stage2", "stage3"])
+def test_mthreads_named_reader_pipe_runtime(stages):
+    block = 128
+    iterations = 2 * stages
+    src = torch.arange(
+        iterations * block, dtype=torch.float16, device="musa"
+    )
+    out = torch.full(
+        (2 * iterations,), -1, dtype=torch.int32, device="musa"
+    )
+    desc = TensorDescriptor.from_tensor(src, [block])
+    expected = torch.arange(iterations, dtype=torch.int32, device="musa")
+    expected = torch.cat((expected, expected))
+
+    compiled = _named_reader_kernel.warmup(
+        desc,
+        out,
+        STAGES=stages,
+        BLOCK=block,
+        ITERATIONS=iterations,
+        grid=(1,),
+        num_warps=16,
+        num_stages=1,
+    )
+    assert compiled.metadata.num_warps == 24
+    assert 'readers = ["left", "right"]' in compiled.asm["ttir"]
+    assert "tle.pipe." not in compiled.asm["ttgir"]
+
+    for _ in range(10):
+        out.fill_(-1)
+        _named_reader_kernel[(1,)](
+            desc,
+            out,
+            STAGES=stages,
+            BLOCK=block,
+            ITERATIONS=iterations,
+            num_warps=16,
+            num_stages=1,
+        )
+    torch.musa.synchronize()
+    torch.testing.assert_close(out, expected, rtol=0, atol=0)
 
 
 def test_mthreads_pipe_bindings_are_optional_and_backend_local():
