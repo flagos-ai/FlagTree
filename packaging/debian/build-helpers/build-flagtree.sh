@@ -46,6 +46,8 @@ DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX:-auto}"
 # upstream version. Passed into the wheel build so the wheel version matches
 # instead of falling back to setup.py's hardcoded default.
 WHEEL_VERSION="$(head -n1 packaging/debian/changelog | sed -E 's/^[^(]*\(([0-9][^)-]*)-[^)]*\).*$/\1/')"
+# Debian spells a pre-release 0.7.0~rc2; the wheel needs PEP 440, 0.7.0rc2.
+WHEEL_VERSION="${WHEEL_VERSION//\~/}"
 
 echo ">>> Building wheel + .deb for backend=${BACKEND} version ${WHEEL_VERSION} on ${DEB_BASE_IMAGE} (python ${PYTHON_VERSION:-default}, MAX_JOBS=${MAX_JOBS})"
 docker build \
