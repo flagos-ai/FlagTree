@@ -21,7 +21,6 @@
 import inspect
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -243,19 +242,7 @@ class IluvatarFlagCXRegistrar(FlagCXRegistrar):
             self.shared_lib_name: host_cmd,
         }
 
-    def _init_submodules(self):
-        if getattr(self, "_submodules_ready", False):
-            return
-        printinfo(f"Initializing FlagCX submodules in {self.flagcx_src_dir}...")
-        subprocess.run(
-            ["git", "submodule", "update", "--init", "--recursive"],
-            cwd=self.flagcx_src_dir,
-            check=True,
-        )
-        self._submodules_ready = True
-
     def _compile_and_cache(self):
-        self._init_submodules()
         return super()._compile_and_cache()
 
     def _copy_required_files(self):
