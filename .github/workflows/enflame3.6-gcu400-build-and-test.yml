@@ -102,7 +102,6 @@ jobs:
               --ignore=third_party/enflame/python/test/unit/language/test_core.py
 
           ## tle unit test
-
           python3 -m pytest python/test/tle \
               --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
               --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
