@@ -81,7 +81,7 @@ jobs:
           python3 -m pip uninstall -y triton --break-system-packages
           python3 -m pip uninstall -y triton_gcu --break-system-packages
           export FLAGTREE_BACKEND=enflame
-          MAX_JOBS=4 python3 -m pip install . --no-build-isolation -v --break-system-packages
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v --break-system-packages
 
       - name: Clear cache if ClearCache label present
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -96,5 +96,6 @@ jobs:
         shell: bash
         run: |
           set -x
+          source ~/env.sh
           python3 -m pytest third_party/enflame/python/test/unit \
               --ignore=third_party/enflame/python/test/unit/language/test_core.py
