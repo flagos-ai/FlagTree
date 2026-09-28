@@ -142,10 +142,16 @@ def test_i64_kernel_compiles_and_runs(device):
         mask = offs < n
         tl.store(o_ptr + offs, tl.load(x_ptr + offs, mask=mask) + tl.load(y_ptr + offs, mask=mask), mask=mask)
 
+    # One program per BLOCK-wide tile. The reproducer in the issue used a single
+    # program spanning four tiles and got garbage on gcu300 (768/1024
+    # mismatched, values ~1e38 -- loads never landed); a grid of cdiv tiles is
+    # the idiom every other kernel test in this suite uses, and it is not what
+    # the option is about.
     n = 1024
     x = torch.randn(n, device=device, dtype=torch.float32)
     y = torch.randn(n, device=device, dtype=torch.float32)
+    grid = lambda META: (triton.cdiv(n, META['BLOCK']), )
     for flag in (False, True):
         out = torch.empty(n, device=device, dtype=torch.float32)
-        add_kernel[(1, )](x, y, out, n, BLOCK=256, ENABLE_I64=flag)
+        add_kernel[grid](x, y, out, n, BLOCK=256, ENABLE_I64=flag)
         torch.testing.assert_close(out, x + y)
