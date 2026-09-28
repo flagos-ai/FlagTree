@@ -216,8 +216,14 @@ def _deduplicate_warp_specialize_captures(worker_items):
 
 
 @tl.builtin
-def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _semantic: TLESemantic | None = None,
-                    _generator=None):
+def warp_specialize(
+    functions_and_args,
+    worker_num_warps,
+    worker_num_regs=None,
+    reuse_default_warps=False,
+    _semantic: TLESemantic | None = None,
+    _generator=None,
+):
     """
     Create an explicit GPU warp-specialized region.
 
@@ -225,11 +231,78 @@ def warp_specialize(functions_and_args, worker_num_warps, worker_num_regs, _sema
     entries are emitted into worker partitions, with their warp counts and
     requested register counts provided by ``worker_num_warps`` and
     ``worker_num_regs``.
+
+    When ``reuse_default_warps`` is true, every entry is emitted as a
+    partition of the enclosing CTA. The operation keeps the regular
+    ``ttg.warp_specialize`` representation, but its partitions cover the
+    enclosing warps instead of allocating worker warps. This mode has no
+    default-region results and is intended for register-local sub-tile
+    computations whose results are written by the partitions.
+    Shared-memory allocations or multi-warp barriers require synchronization
+    before and after the partitions to protect temporary storage and barrier IDs.
+    In this mode, ``worker_num_regs`` does not assign per-partition budgets;
+    the compiler allocates registers under the kernel-wide ``maxnreg`` limit,
+    if one is set.
     """
     if _generator is None:
         raise ValueError("warp_specialize requires a Triton code generator")
     functions_and_args = tl._unwrap_if_constexpr(functions_and_args)
+    reuse_default_warps = tl._unwrap_if_constexpr(reuse_default_warps)
     mthreads_enabled = mthreads_common.enabled()
+
+    if reuse_default_warps:
+        if mthreads_enabled:
+            raise ValueError("reuse_default_warps is only supported by the NVIDIA warp-specialize lowering")
+        partition_num_warps = [tl._unwrap_if_constexpr(w) for w in tl._unwrap_if_constexpr(worker_num_warps)]
+        if len(functions_and_args) != len(partition_num_warps):
+            raise ValueError("reuse_default_warps requires one warp count per partition")
+
+        builder = _semantic.builder
+        insert_pt = builder.get_insertion_point()
+        if _is_wgmma_user_promise_marked(_generator):
+            call_jit_function = _generator.inline_JitFunction
+        else:
+            call_jit_function = _generator.call_JitFunction
+
+        partition_items = []
+        for idx, entry in enumerate(functions_and_args):
+            worker_fn, worker_args = _as_warp_specialize_entry(entry, idx)
+            worker_args = _as_call_args(worker_args)
+            flattened = flatten_values_to_ir(worker_args)
+            partition_items.append((worker_fn, worker_args, flattened))
+        capture_handles, partition_items = _deduplicate_warp_specialize_captures(partition_items)
+
+        builder.restore_insertion_point(insert_pt)
+        ws_op = builder.create_warp_specialize([], capture_handles, partition_num_warps)
+        ws_op.set_attr("reuseDefaultWarps", builder.get_bool_attr(True))
+        default_block = builder.create_block_with_parent(ws_op.get_default_region(), [])
+        builder.set_insertion_point_to_end(default_block)
+        builder.create_warp_yield([])
+
+        builder.create_block_with_parent(ws_op.get_partition_op_holder(), [])
+        partitions_op = builder.create_warp_specialize_partitions(len(partition_items))
+        partition_arg_types = [arg.get_type() for arg in capture_handles]
+        for idx, (worker_fn, worker_args, flattened, remapped) in enumerate(partition_items):
+            block = builder.create_block_with_parent(partitions_op.get_region(idx), partition_arg_types)
+            block_args = [block.get_argument(remapped[j]) for j in builtins.range(len(flattened))]
+            block_values = tuple(unflatten_ir_values(block_args, [arg.type for arg in worker_args]))
+            caller_context = WarpSpecializeCallerContext(partition_num_warps[idx])
+            results = call_jit_function(
+                worker_fn,
+                block_values,
+                kwargs={},
+                caller_context=caller_context,
+            )
+            if _as_result_values(results):
+                raise ValueError("reuse_default_warps partitions cannot return values")
+            builder.set_insertion_point_to_end(block)
+            builder.create_warp_return()
+
+        builder.set_insertion_point_after(ws_op.get_operation())
+        return None
+
+    if worker_num_regs is None:
+        raise ValueError("warp_specialize requires worker_num_regs")
     if mthreads_enabled:
         worker_num_warps, worker_num_regs = mthreads_warp_specialize.normalize_config(worker_num_warps, worker_num_regs)
     else:

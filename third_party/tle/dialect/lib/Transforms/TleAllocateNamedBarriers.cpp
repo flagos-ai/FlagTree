@@ -77,12 +77,21 @@ static std::optional<int64_t> getConstantI32(Value value) {
 static void reserveWarpSpecializeBarrierIds(triton::FuncOp func,
                                             llvm::SmallBitVector &reserved) {
   int64_t maxPartitions = 0;
+  bool hasWarpSpecialize = false;
   func.walk([&](ttg::WarpSpecializeOp ws) {
-    maxPartitions =
-        std::max<int64_t>(maxPartitions, ws.getPartitionRegions().size());
+    hasWarpSpecialize = true;
+    int64_t partitions = ws.getPartitionRegions().size();
+    auto reuse = ws->getAttrOfType<BoolAttr>("reuseDefaultWarps");
+    if (reuse && reuse.getValue())
+      // LLVM lowering compacts IDs for multi-warp partitions with barriers.
+      // Reserve their upper bound: later lowering may introduce barriers, but
+      // single-warp partitions can only need bar.warp.sync.
+      partitions = llvm::count_if(ws.getPartitionNumWarps(),
+                                  [](int32_t warps) { return warps > 1; });
+    maxPartitions = std::max(maxPartitions, partitions);
   });
 
-  if (maxPartitions == 0)
+  if (!hasWarpSpecialize)
     return;
 
   reserved.set(kDefaultWarpGroupBarrierIdx);

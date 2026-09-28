@@ -23,6 +23,8 @@
 
 #pragma once
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
+#include <cstdint>
+#include <optional>
 
 namespace mlir {
 class LLVMTypeConverter;
@@ -30,6 +32,11 @@ class RewritePatternSet;
 } // namespace mlir
 
 namespace mlir::triton::tle {
+
+class ExtractTileOp;
+
+/// Shared scratch/lowering decision for ordinary static register extraction.
+std::optional<int64_t> getStaticExtractTileRegisterIndex(ExtractTileOp op);
 
 /// Populate patterns to convert tle.extract_tile to LLVM
 void populateExtractTileOpToLLVMPatterns(
