@@ -25,6 +25,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source ~/env.sh
 source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
+export VLLM_PLUGINS=fl
+
 if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
   echo "[FATAL] CUDA_VISIBLE_DEVICES is unset." >&2
   exit 1

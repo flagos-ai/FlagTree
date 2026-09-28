@@ -22,6 +22,8 @@
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+export VLLM_PLUGINS=fl
+
 source ~/env.sh
 source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
