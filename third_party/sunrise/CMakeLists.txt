@@ -30,10 +30,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     add_triton_plugin(TritonSunrise
       SHARED_LIB ${sunriseTritonPluginLib}
     )
+    list(APPEND CMAKE_BUILD_RPATH "$ORIGIN")
+    set(CMAKE_BUILD_RPATH "${CMAKE_BUILD_RPATH}" PARENT_SCOPE)
   endif()
 endif()
-
-add_subdirectory(${PROJECT_SOURCE_DIR}/include
-                 ${PROJECT_BINARY_DIR}/include)
-add_subdirectory(${PROJECT_SOURCE_DIR}/lib
-                 ${PROJECT_BINARY_DIR}/lib)

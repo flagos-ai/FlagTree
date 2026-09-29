@@ -43,7 +43,7 @@ done
 
 # Find PIDs using the devices.
 mapfile -t PIDS < <(
-  fuser "${DEVICES[@]}" 2>/dev/null \
+  fuser -vm "${DEVICES[@]}" 2>/dev/null \
   | grep -oE '[0-9]+' \
   | sort -u
 )
@@ -60,7 +60,7 @@ sleep 5
 
 # Force-kill remaining processes.
 mapfile -t REMAINING < <(
-  fuser "${DEVICES[@]}" 2>/dev/null \
+  fuser -vm "${DEVICES[@]}" 2>/dev/null \
   | grep -oE '[0-9]+' \
   | sort -u
 )
@@ -71,4 +71,4 @@ if ((${#REMAINING[@]} > 0)); then
 fi
 
 echo "[INFO] Current usage:"
-fuser -v "${DEVICES[@]}" || true
+fuser -vm "${DEVICES[@]}" || true
