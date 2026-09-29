@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/Dialect/Index/IR/IndexDialect.h"
 #endif
+#include "flagtree/Common/EnvVars.h"
 #include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
@@ -2060,7 +2061,13 @@ void init_triton_env_vars(py::module &m) {
   m.def("get_cache_invalidating_env_vars",
         []() -> std::map<std::string, std::string> {
           std::map<std::string, std::string> ret;
-          for (const auto &envVar : CACHE_INVALIDATING_ENV_VARS) {
+          // Upstream variables plus the FlagTree-owned ones
+          // (include/flagtree/Common/EnvVars.h), so toggling a FlagTree feature
+          // still invalidates the JIT cache.
+          std::set<std::string> envVars = CACHE_INVALIDATING_ENV_VARS;
+          envVars.insert(flagtree::CACHE_INVALIDATING_ENV_VARS.begin(),
+                         flagtree::CACHE_INVALIDATING_ENV_VARS.end());
+          for (const auto &envVar : envVars) {
             auto strVal = triton::tools::getStrEnv(envVar);
             if (strVal.empty())
               continue;
