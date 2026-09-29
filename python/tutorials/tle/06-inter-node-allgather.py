@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Two-node TLE all-gather tutorial using a push-2d topology.
 
 The topology is fixed to two nodes with four GPUs per node.  Every rank owns
