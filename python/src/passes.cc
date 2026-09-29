@@ -1,4 +1,7 @@
 #include "mlir/Transforms/Passes.h"
+#ifdef FLAGTREE_BACKEND_ASCEND
+#include "triton-shared/Transforms/LaneVectorize/Passes.h"
+#endif
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
@@ -47,6 +50,9 @@ void init_triton_passes_ttir(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_loop_unroll", createTritonLoopUnroll);
   ADD_PASS_WRAPPER_0("add_triton_licm", createTritonLoopInvariantCodeMotion);
   ADD_PASS_WRAPPER_0("add_loop_aware_cse", createTritonLoopAwareCSE);
+#ifdef FLAGTREE_BACKEND_ASCEND
+  ADD_PASS_WRAPPER_0("add_lane_vectorize", createTritonLaneVectorize);
+#endif
   ADD_PASS_OPTION_WRAPPER_4("add_convert_to_ttgpuir",
                             createConvertTritonToTritonGPU, const std::string &,
                             int, int, int);
