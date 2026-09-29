@@ -7,8 +7,6 @@ try:
 except ModuleNotFoundError:
     raw = None
 
-# Copyright 2026- Xcoresigma Technology Co., Ltd
-
 import ast
 import importlib
 from typing import Dict, Optional
