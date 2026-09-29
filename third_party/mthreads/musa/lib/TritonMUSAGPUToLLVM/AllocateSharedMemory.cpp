@@ -198,6 +198,23 @@ static unsigned getMusaScratchSizeInBytes(Operation *op,
 #ifdef __TLE__
   if (auto extract = dyn_cast<triton::musa_tle::ExtractTileOp>(op)) {
     auto resultTy = cast<RankedTensorType>(extract.getResult().getType());
+    auto srcTy = cast<RankedTensorType>(extract.getSrc().getType());
+    auto blocked = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
+    auto index = extract.getIndex().getDefiningOp<arith::ConstantOp>();
+    if (blocked && index && isa<IntegerAttr>(index.getValue())) {
+      // Match TileOpsToLLVM's static CTA-aligned register-only path. Tile
+      // origins are multiples of the tile extent, so divisibility also
+      // guarantees alignment for every static tile index.
+      bool aligned = true;
+      for (unsigned dim = 0; dim < srcTy.getRank(); ++dim) {
+        auto ctaExtent = blocked.getSizePerThread()[dim] *
+                         blocked.getThreadsPerWarp()[dim] *
+                         blocked.getWarpsPerCTA()[dim];
+        aligned &= resultTy.getShape()[dim] % ctaExtent == 0;
+      }
+      if (aligned)
+        return 0;
+    }
     return product<int64_t>(resultTy.getShape()) * getBitwidth(resultTy) / 8;
   }
   if (auto insert = dyn_cast<triton::musa_tle::InsertTileOp>(op)) {
