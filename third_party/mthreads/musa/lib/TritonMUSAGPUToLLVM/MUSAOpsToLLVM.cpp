@@ -418,6 +418,32 @@ void emitTLETMECopySegments(ArrayRef<triton::musa::TLETMECopySegment> plan,
 }
 #endif // __TLE__
 
+// Explicit SQMMA (tle.gpu.wgmma) uses TCE commit/wait groups, the same model
+// as wgmma on NVIDIA: every async issue closes its own group
+// (tce.commit.group, as wgmma.commit_group) and wgmma_wait(N) lowers to
+// tce.wait.group(N) (as wgmma.wait_group N), which leaves at most N groups in
+// flight.  sqmma.wait, kept for the other SQMMA paths, has no group count.
+constexpr llvm::StringLiteral kExplicitSqmmaAttr("musa_tle.explicit_sqmma");
+constexpr llvm::StringLiteral
+    kExplicitSqmmaPendingsAttr("musa_tle.explicit_sqmma_pendings");
+
+// The bundled LLVM does not register these intrinsics, so they are declared
+// as external functions and resolved when the module is compiled by MCC.
+static void callTceIntrinsic(ConversionPatternRewriter &rewriter, Operation *op,
+                             StringRef name, ValueRange args) {
+  auto module = op->getParentOfType<ModuleOp>();
+  auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(name);
+  if (!fn) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(module.getBody());
+    SmallVector<Type> argTypes(args.getTypes());
+    auto type = LLVM::LLVMFunctionType::get(
+        LLVM::LLVMVoidType::get(module.getContext()), argTypes);
+    fn = LLVM::LLVMFuncOp::create(rewriter, op->getLoc(), name, type);
+  }
+  LLVM::CallOp::create(rewriter, op->getLoc(), fn, args);
+}
+
 struct SquadDotOpConversion
     : public ConvertOpToLLVMPattern<triton::musa::SquadDotOp> {
   using ConvertOpToLLVMPattern<
@@ -427,10 +453,13 @@ struct SquadDotOpConversion
   matchAndRewrite(triton::musa::SquadDotOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+    bool commit = op.getIsAsync() && op->hasAttr(kExplicitSqmmaAttr);
     Value threadId = getThreadId(rewriter, loc);
     if (failed(mlir::triton::MUSA::convertSQMMADot(
             op, adaptor, this->getTypeConverter(), rewriter, threadId)))
       return op.emitError("MUSA SQMMA: ttmg direct lowering failed");
+    if (commit)
+      callTceIntrinsic(rewriter, op, "llvm.musa.tce.commit.group", {});
     return success();
   }
 };
@@ -443,8 +472,16 @@ struct SquadDotWaitOpConversion
   LogicalResult
   matchAndRewrite(triton::musa::SquadDotWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    LLVM::createLLVMIntrinsicCallOp(rewriter, op.getLoc(),
-                                    "llvm.musa.sqmma.wait", TypeRange{}, {});
+    if (auto pendings =
+            op->getAttrOfType<IntegerAttr>(kExplicitSqmmaPendingsAttr)) {
+      Value count = LLVM::ConstantOp::create(
+          rewriter, op.getLoc(), rewriter.getI32Type(),
+          rewriter.getI32IntegerAttr(pendings.getInt()));
+      callTceIntrinsic(rewriter, op, "llvm.musa.tce.wait.group", {count});
+    } else {
+      LLVM::createLLVMIntrinsicCallOp(rewriter, op.getLoc(),
+                                      "llvm.musa.sqmma.wait", TypeRange{}, {});
+    }
     rewriter.replaceOp(op, adaptor.getInputs());
     return success();
   }
