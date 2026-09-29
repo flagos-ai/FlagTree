@@ -23,7 +23,6 @@ import triton
 import triton.experimental.tle as tle
 import triton.experimental.tle.language.raw as tle_raw
 import triton.language as tl
-from triton.experimental import tle
 from triton.experimental.tle.language.dsa.ascend.custom_ops import (
     SORT_IMPL_BASE,
     SORT_IMPL_S4096_K1_128_K2048,
@@ -182,9 +181,9 @@ def gather_mask_builtin_pattern_kernel(src, dst, rsvd_cnt):
     src1_repeat_stride = 0
     out0 = tl.zeros([ONE_REPEAT_SORT_NUM], dtype=tl.float32)
     out1 = tl.zeros([1], dtype=tl.int64)
-    out0, out1 = tle_raw.call("ascend_gather_mask_builtin_pattern", tle.dsa.to_tensor(src_ub), src1_pattern, reduce_mode,
-                         mask, src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride,
-                         out=[out0, out1])
+    out0, out1 = tle_raw.call("ascend_gather_mask_builtin_pattern", tle.dsa.to_tensor(src_ub), src1_pattern,
+                              reduce_mode, mask, src0_block_stride, repeat_times, src0_repeat_stride,
+                              src1_repeat_stride, out=[out0, out1])
     tl.store(dst + dst_offs, out0)
     tl.store(rsvd_cnt + tl.arange(0, 1), out1)
 
@@ -209,7 +208,7 @@ def gather_mask_custom_pattern_kernel(src, dst, rsvd_cnt):
     out0 = tl.zeros([NUM_GROUPS * 2], dtype=tl.float32)
     out1 = tl.zeros([1], dtype=tl.int64)
     out0, out1 = tle_raw.call("ascend_gather_mask_custom_pattern", tle.dsa.to_tensor(src_ub), src1, reduce_mode, mask,
-                         src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride, out=[out0, out1])
+                              src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride, out=[out0, out1])
     tl.store(dst + dst_offs, out0)
     tl.store(rsvd_cnt + tl.arange(0, 1), out1)
 
@@ -223,7 +222,7 @@ def pair_reduce_sum_continuous_mask_kernel(src, dst):
     tle.dsa.copy(src + src_offs, src_ub, [NUM_GROUPS * 2])
     out = tl.zeros([NUM_GROUPS], dtype=tl.float32)
     out = tle_raw.call("ascend_pair_reduce_sum_continuous_mask", tle.dsa.to_tensor(src_ub), 1, NUM_GROUPS * 2, 1, 1, 1,
-                  out=out)
+                       out=out)
     tl.store(dst + dst_offs, out)
 
 
@@ -254,7 +253,8 @@ def sort_pack_kernel(X, OutGM, N: tl.constexpr, K: tl.constexpr, INDEX_OFFSET: t
     src_ub = tle.dsa.alloc([N], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     tle.dsa.copy(X + tl.arange(0, NP2), src_ub, [N])
     props = tl.zeros([KP2], dtype=tl.float32)
-    props = tle_raw.call("ascend_sort_1d_pack", tle.dsa.to_tensor(src_ub), tmp, True, K, INDEX_OFFSET, SORT_IMPL, out=props)
+    props = tle_raw.call("ascend_sort_1d_pack", tle.dsa.to_tensor(src_ub), tmp, True, K, INDEX_OFFSET, SORT_IMPL,
+                         out=props)
     tl.store(OutGM + tl.arange(0, KP2), props)
 
 
@@ -273,7 +273,7 @@ def merge_exhaust_kernel(SrcGM, OutGM, ConsGM, WAY_CAP: tl.constexpr, WAYS: tl.c
 
     tle.dsa.copy(SrcGM + tl.arange(0, IN_P2), in_ub, [IN_LEN])
     out_t, cons = tle_raw.call("ascend_merge_exhaust_sort4", tle.dsa.to_tensor(in_ub), WAYS, 0 * WAY_CAP, 1 * WAY_CAP,
-                          2 * WAY_CAP, 3 * WAY_CAP, L0, L1, L2, L3, out=[out_t, cons])
+                               2 * WAY_CAP, 3 * WAY_CAP, L0, L1, L2, L3, out=[out_t, cons])
 
     tl.store(OutGM + tl.arange(0, OUT_P2), out_t)
     tl.store(ConsGM + tl.arange(0, 4), cons)
@@ -292,8 +292,8 @@ def mrgsort_kernel(src, dst, TOP_K: tl.constexpr):
     src_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     tle.dsa.copy(src + offs, src_ub, [BLOCK_SIZE])
     pair = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
-    pair = tle_raw.call("ascend_mrgsort", tle.dsa.to_tensor(src_ub), 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3, TOP_K,
-                   TOP_K, TOP_K, TOP_K, IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
+    pair = tle_raw.call("ascend_mrgsort", tle.dsa.to_tensor(src_ub), 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3,
+                        TOP_K, TOP_K, TOP_K, TOP_K, IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
     tl.store(dst + offs, pair, mask=offs < TOP_K * 2)
 
 
