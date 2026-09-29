@@ -20,7 +20,6 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
-
 ELEMENTS_PER_RANK = 4 * 1024 * 1024  # 16 MiB of float32 per rank.
 BLOCK = 4096
 NODE_BLOCK = 1 * 1024 * 1024  # 4 MiB of float32 per node PUT.
@@ -185,17 +184,13 @@ def main() -> None:
     local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
 
     if local_world_size <= 0 or world_size % local_world_size:
-        raise RuntimeError(
-            f"invalid topology: world_size={world_size}, "
-            f"local_world_size={local_world_size}"
-        )
+        raise RuntimeError(f"invalid topology: world_size={world_size}, "
+                           f"local_world_size={local_world_size}")
     node_rank = rank // local_world_size
     expected_rank = node_rank * local_world_size + local_rank
     if rank != expected_rank:
-        raise RuntimeError(
-            f"rank mapping mismatch: rank={rank}, node_rank={node_rank}, "
-            f"local_rank={local_rank}"
-        )
+        raise RuntimeError(f"rank mapping mismatch: rank={rank}, node_rank={node_rank}, "
+                           f"local_rank={local_rank}")
 
     local_input = torch.full(
         (ELEMENTS_PER_RANK, ),
