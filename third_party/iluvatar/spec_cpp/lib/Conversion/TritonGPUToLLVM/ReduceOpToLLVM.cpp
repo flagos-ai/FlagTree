@@ -1,4 +1,4 @@
-#include "ReduceScanCommon.h"
+#include "lib/Conversion/TritonGPUToLLVM/ReduceScanCommon.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
