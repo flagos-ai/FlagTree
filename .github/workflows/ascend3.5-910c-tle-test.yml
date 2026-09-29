@@ -21,6 +21,8 @@
 name: Ascend3.5-910C-TLE
 
 on:
+  schedule:
+    - cron: '10 15 * * *'
   push:
     branches: [ "triton_v3.5.x" ]
   pull_request:
@@ -53,6 +55,7 @@ jobs:
 
       - name: Check if backend-relevant files changed
         id: check_backend
+        if: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: ascend
