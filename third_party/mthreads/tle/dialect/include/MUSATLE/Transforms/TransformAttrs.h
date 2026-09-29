@@ -25,6 +25,8 @@ inline constexpr llvm::StringLiteral
     kMUSATLEPipePayloadCopyAttr("musa_tle.pipe_payload_copy");
 inline constexpr llvm::StringLiteral
     kMUSATLEExplicitSqmmaAttr("musa_tle.explicit_sqmma");
+inline constexpr llvm::StringLiteral
+    kMUSATLEExplicitSqmmaPendingsAttr("musa_tle.explicit_sqmma_pendings");
 inline constexpr llvm::StringLiteral kMUSATLEPipeLocalStoreWaitGroupsAttr(
     "musa_tle.pipe_local_store_wait_groups");
 inline constexpr llvm::StringLiteral

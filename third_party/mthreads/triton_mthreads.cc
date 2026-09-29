@@ -14,6 +14,8 @@
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
@@ -111,6 +113,88 @@ bool moduleUsesMulhiHelper(const llvm::Module &module) {
     }
   }
   return false;
+}
+
+// llc accepts tce.wait.group(N) only where N+1 groups are still outstanding
+// in the same basic block: a commit adds one, a wait leaves N behind, and a
+// block boundary resets the count.  wgmma_wait(N) promises less than that - it
+// returns once at most N groups are in flight, however many were issued - so
+// the shapes llc rejects fall back to the parameterless sqmma.wait, which
+// drains everything and is accepted anywhere.  An issue whose result nothing
+// reads is dropped by llc, which would leave its commit with nothing to
+// commit, so such an issue and its commit are removed here instead.
+bool relaxTceWaitGroups(llvm::Module &module) {
+  constexpr llvm::StringLiteral kCommit = "llvm.musa.tce.commit.group";
+  constexpr llvm::StringLiteral kWait = "llvm.musa.tce.wait.group";
+  constexpr llvm::StringLiteral kSqmmaPrefix = "llvm.musa.sqmma.";
+  constexpr llvm::StringLiteral kSqmmaWait = "llvm.musa.sqmma.wait";
+
+  llvm::Function *commitFn = module.getFunction(kCommit);
+  llvm::Function *waitFn = module.getFunction(kWait);
+  if (!commitFn && !waitFn)
+    return false;
+
+  llvm::Function *sqmmaWaitFn = module.getFunction(kSqmmaWait);
+  bool changed = false;
+  for (llvm::Function &fn : module) {
+    if (fn.isDeclaration())
+      continue;
+    for (llvm::BasicBlock &block : fn) {
+      // Matrix instructions of the issue the next commit closes.
+      llvm::SmallVector<llvm::CallBase *, 4> issue;
+      llvm::SmallVector<llvm::Instruction *, 8> erase;
+      unsigned outstanding = 0;
+      for (llvm::Instruction &inst : block) {
+        auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+        llvm::Function *callee = call ? call->getCalledFunction() : nullptr;
+        if (!callee)
+          continue;
+        llvm::StringRef name = callee->getName();
+        if (name == kCommit) {
+          bool dead = !issue.empty() &&
+                      llvm::all_of(issue, [](llvm::CallBase *mma) {
+                        return mma->use_empty();
+                      });
+          if (dead) {
+            erase.push_back(call);
+            erase.append(issue.begin(), issue.end());
+          } else {
+            ++outstanding;
+          }
+          issue.clear();
+          continue;
+        }
+        if (name == kWait) {
+          auto *pendings = llvm::cast<llvm::ConstantInt>(call->getArgOperand(0));
+          unsigned groups = pendings->getZExtValue();
+          if (outstanding > groups) {
+            outstanding = groups;
+            continue;
+          }
+          if (!sqmmaWaitFn) {
+            auto *type = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(module.getContext()), false);
+            sqmmaWaitFn = llvm::Function::Create(
+                type, llvm::GlobalValue::ExternalLinkage, kSqmmaWait, module);
+          }
+          // The wait takes a group count and sqmma.wait does not, so the call
+          // is replaced rather than retargeted.
+          llvm::CallInst::Create(sqmmaWaitFn, {}, "", call->getIterator())
+              ->setDebugLoc(call->getDebugLoc());
+          erase.push_back(call);
+          outstanding = 0;
+          changed = true;
+          continue;
+        }
+        if (name.starts_with(kSqmmaPrefix) && name.ends_with(".mma"))
+          issue.push_back(call);
+      }
+      for (llvm::Instruction *inst : erase)
+        inst->eraseFromParent();
+      changed |= !erase.empty();
+    }
+  }
+  return changed;
 }
 
 constexpr llvm::StringLiteral kTMETailDivisibilityAttr =
@@ -338,4 +422,7 @@ void init_triton_mthreads(py::module &&m) {
 
   m.def("module_uses_mulhi_helper",
         [](llvm::Module &module) { return moduleUsesMulhiHelper(module); });
+
+  m.def("relax_tce_wait_groups",
+        [](llvm::Module &module) { return relaxTceWaitGroups(module); });
 }
