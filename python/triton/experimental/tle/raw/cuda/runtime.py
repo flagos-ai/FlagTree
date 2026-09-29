@@ -28,6 +28,7 @@ import shlex
 import shutil
 import struct
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final, Callable
 
@@ -146,6 +147,30 @@ def _get_cuda_gpu_arch() -> str:
     return f"--cuda-gpu-arch=sm_{major}{minor}"
 
 
+def _apply_cuda_defines(source: str, defines: Mapping[str, Any] | None) -> str:
+    if defines is None:
+        return source
+    if not isinstance(defines, Mapping):
+        raise TypeError("tle_raw CUDA defines must be a mapping of macro names to values")
+
+    directives: list[str] = []
+    for name, value in sorted(defines.items()):
+        if not isinstance(name, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+            raise ValueError(f"invalid tle_raw CUDA macro name: {name!r}")
+        if value is None:
+            rendered = ""
+        elif isinstance(value, bool):
+            rendered = "1" if value else "0"
+        elif isinstance(value, (str, int)):
+            rendered = str(value)
+            if "\n" in rendered or "\r" in rendered:
+                raise ValueError(f"tle_raw CUDA macro value must be a single line: {name}")
+        else:
+            raise TypeError(f"tle_raw CUDA macro {name} must be a string, integer, boolean, or None")
+        directives.append(f"#define {name}{' ' if rendered else ''}{rendered}\n")
+    return "".join(directives) + source
+
+
 # ---------------------------------------------------------------------------
 # Sanitize clang LLVM IR for this Triton's parser
 # ---------------------------------------------------------------------------
@@ -229,7 +254,7 @@ class CUDAJITFunction(RawJITFunction):
 
     def __init__(self, fn: Any, file: Path, *args, **kwargs) -> None:
         super().__init__(fn, **kwargs)
-        self.code: Final[str] = file.read_text()
+        self.code: Final[str] = _apply_cuda_defines(file.read_text(), kwargs.get("defines"))
         self.region_dialect: Final[str] = "cuda"
         self.lowered_region_dialect: Final[str] = "llvm"
         self.arg_dialect: Final[str] = "llvm"
