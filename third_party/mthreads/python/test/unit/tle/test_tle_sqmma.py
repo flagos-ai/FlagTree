@@ -744,6 +744,64 @@ def test_mthreads_tle_sqmma_staged_transpose_runtime_precision(stages):
     assert "llvm.musa.sqmma.fmma." in kernel.asm["llir"]
 
 
+@triton.jit
+def _tle_sqmma_zero_init_loop_kernel(out, k_tiles):
+    a = tle.gpu.alloc((128, 64), dtype=tl.float16, layout=None)
+    b = tle.gpu.alloc((64, 128), dtype=tl.float16, layout=None)
+    acc = tl.zeros((128, 128), dtype=tl.float32)
+    for _ in range(0, k_tiles):
+        acc = tle.gpu.wgmma(a, b, acc)
+        acc = tle.gpu.wgmma_wait(0, acc)
+    offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _dot_zero_init_loop_kernel(a_ptr, b_ptr, c_ptr, k_tiles):
+    rm = tl.arange(0, 64)
+    rk = tl.arange(0, 64)
+    acc = tl.zeros((64, 64), dtype=tl.float32)
+    for kt in range(0, k_tiles):
+        a = tl.load(a_ptr + rm[:, None] * 64 + rk[None, :] + kt * 4096)
+        b = tl.load(b_ptr + rk[:, None] * 64 + rm[None, :] + kt * 4096)
+        acc = tl.dot(a, b, acc)
+    tl.store(c_ptr + rm[:, None] * 64 + rm[None, :], acc)
+
+
+@pytest.mark.parametrize(
+    "kernel,signature",
+    [
+        pytest.param(_tle_sqmma_zero_init_loop_kernel, {"out": "*fp32", "k_tiles": "i32"}, id="wgmma"),
+        pytest.param(_dot_zero_init_loop_kernel,
+                     {"a_ptr": "*fp16", "b_ptr": "*fp16", "c_ptr": "*fp32", "k_tiles": "i32"}, id="dot"),
+    ],
+)
+def test_mthreads_sqmma_zero_init_accumulator_keeps_constant_use_c(kernel, signature):
+    # A zero accumulator entering the loop stays a zero fill before the loop:
+    # no loop-carried use-C flag, which would be a non-constant flag on every
+    # SQMMA issue.
+    ttgir = compile_musa(kernel, signature).asm["ttgir"]
+    loops = re.findall(r"scf\.for .*?iter_args\(([^)]*)\)", ttgir)
+    assert loops, ttgir
+    assert not any("= %false" in args for args in loops), loops
+
+
+def test_mthreads_sqmma_zero_init_accumulator_runtime_precision():
+    if not hasattr(torch, "musa") or not torch.musa.is_available():
+        pytest.skip("MUSA device is not available")
+
+    k_tiles = 4
+    torch.manual_seed(1234)
+    a = torch.randn((k_tiles, 64, 64), dtype=torch.float16)
+    b = torch.randn((k_tiles, 64, 64), dtype=torch.float16)
+    out = torch.empty((64, 64), device="musa", dtype=torch.float32)
+    _dot_zero_init_loop_kernel[(1, )](a.to("musa"), b.to("musa"), out, k_tiles, num_warps=4, num_stages=1)
+    torch.musa.synchronize()
+
+    expected = sum(torch.matmul(a[k].float(), b[k].float()) for k in range(k_tiles))
+    torch.testing.assert_close(out.cpu(), expected, atol=1e-1, rtol=5e-2)
+
+
 def test_mthreads_tle_sqmma_for_loop_runtime_precision():
     import torch
     from triton.tools.tensor_descriptor import TensorDescriptor
