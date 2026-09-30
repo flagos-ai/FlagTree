@@ -233,10 +233,11 @@ def _bytes_io_for(args, kernel, B, S, N, D, dtype):
     if kernel == "mhc_post":
         elem = dtype.itemsize
         T = B * S
-        read = (T * N * D * elem  # x
-                + T * N * N * 4  # h_res (fp32)
-                + T * D * elem  # h_out
-                + T * N * 4)  # h_post (fp32)
+        read = (
+            T * N * D * elem  # x
+            + T * N * N * 4  # h_res (fp32)
+            + T * D * elem  # h_out
+            + T * N * 4)  # h_post (fp32)
         write = T * N * D * elem  # out
         return read + write
     return _bytes_io(B, S, N, D, dtype)
@@ -255,8 +256,7 @@ def _load_kernel(kernel):
         from mhc_post import mhc_post as kernel_fn, mhc_post_ref as ref_fn
         return kernel_fn, ref_fn
     from mhc_pre_clamp_sinkhorn import (  # noqa: E402
-        mhc_pre_clamp_sinkhorn as kernel_fn,
-        mhc_pre_clamp_sinkhorn_ref as ref_fn,
+        mhc_pre_clamp_sinkhorn as kernel_fn, mhc_pre_clamp_sinkhorn_ref as ref_fn,
     )
     return kernel_fn, ref_fn
 
