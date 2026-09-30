@@ -31,6 +31,7 @@ from .types import (
     buffered_tensor_type,
 )
 from . import tsingmicro
+from . import thrive
 from .semantic import DSASemantic, DSASemanticError
 
 __all__ = [
@@ -52,6 +53,7 @@ __all__ = [
     "scope",
     "local",
     "tsingmicro",
+    "thrive",
     "buffered_tensor",
     "buffered_tensor_type",
     "DSASemantic",
