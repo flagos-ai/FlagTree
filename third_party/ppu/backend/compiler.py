@@ -554,6 +554,9 @@ class PPUBackend(BaseBackend):
         # symbols so the build-time LLVM could round-trip the TLE raw-DSL region
         # (see triton/experimental/tle/raw/cuda/runtime.py)
         src = src.replace("__flagtree_ppu_intrinsic__", "llvm.ppu.")
+        # The PPU SDK accepts this prefix only for target-specific instructions.
+        # Keep ordinary PTX load, move, and store opcodes unprefixed.
+        src = re.sub(r"(?<!llvm\.)ppu\.(?=(?:ld|mov|st)\.)", "", src)
         with tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".tix") as fsrc:
             fsrc.write(src)
             fsrc.flush()
