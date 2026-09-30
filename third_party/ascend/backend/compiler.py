@@ -52,7 +52,6 @@ from triton.backends.ascend.utils import (
     _get_bishengir_opt_path,
     _is_ascend_sanitizer_enabled,
     _is_debug_line_info_disabled,
-    _is_lane_vectorize_disabled,
     _is_auto_map_parallel_blocks_enabled,
     downgrade_llir,
     force_disable_ffts,
@@ -90,8 +89,7 @@ def make_ttir(mod, metadata, opt):
     passes.ttir.add_combine(pm)
     passes.common.add_canonicalizer(pm)
     passes.ttir.add_reorder_broadcast(pm)
-    if not _is_lane_vectorize_disabled():
-        passes.ttir.add_lane_vectorize(pm)
+    passes.ttir.add_lane_vectorize(pm)
     passes.common.add_cse(pm)
     # commonir: NOTE: LICM is intentionally omitted — it hoists tile.to_tensor above
     # tile.copy in loops, breaking the read-after-write ordering required by

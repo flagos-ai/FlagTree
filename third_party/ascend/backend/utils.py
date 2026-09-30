@@ -30,7 +30,6 @@ import logging
 import platform
 from triton.tools.get_ascend_devices import is_compile_on_910_95
 from triton.backends.ascend.backend_register import backend_strategy_registry
-from triton.flagtree_env import is_lane_vectorize_disabled
 
 import pybind11
 
@@ -315,13 +314,6 @@ def _is_ascend_sanitizer_enabled() -> bool:
 
 def _is_debug_line_info_disabled() -> bool:
     return os.getenv("TRITON_DISABLE_LINE_INFO", "true").lower() in ("true", "1")
-
-
-def _is_lane_vectorize_disabled() -> bool:
-    # Gate the triton-lane-vectorize TTIR pass (see LaneVectorize.cpp). Used by
-    # benchmarks to measure the pass's impact; off by default. Delegates to the
-    # shared toggle so the pass can be disabled in one place.
-    return is_lane_vectorize_disabled()
 
 
 def _is_auto_map_parallel_blocks_enabled() -> bool:
