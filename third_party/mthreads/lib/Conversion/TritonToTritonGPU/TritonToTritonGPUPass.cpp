@@ -790,6 +790,29 @@ struct TritonExpandDimsPattern
     Attribute _argEncoding = argType.getEncoding();
     if (!_argEncoding)
       return failure();
+#ifdef __TLE__
+    // Explicit TLE layout propagation can assign the input its final slice
+    // encoding before conversion. Reinsert that axis without rebuilding a
+    // blocked encoding (or casting a SliceEncodingAttr to one).
+    if (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(_argEncoding)) {
+      if (slice.getDim() == op.getAxis()) {
+        auto resultType = op.getType().cloneWithEncoding(slice.getParent());
+        addNamedAttrs(rewriter.replaceOpWithNewOp<triton::ExpandDimsOp>(
+                          op, resultType, adaptor.getSrc(), op.getAxis()),
+                      adaptor.getAttributes());
+        return success();
+      }
+    }
+    if (!isa<triton::gpu::BlockedEncodingAttr>(_argEncoding)) {
+      // Expanding a reduction along a different axis requires a layout
+      // conversion. The conversion below preserves values; choose its
+      // blocked target using the enclosing WS partition's warp count.
+      auto converter = getTypeConverter<TritonGPUTypeConverter>();
+      _argEncoding = getDefaultBlockedEncoding(
+          getContext(), argType.getShape(), triton::gpu::lookupNumWarps(op),
+          converter->getThreadsPerWarp(), converter->getNumCTAs());
+    }
+#endif
     auto argEncoding = cast<triton::gpu::BlockedEncodingAttr>(_argEncoding);
     // return shape
     auto retShape = argType.getShape().vec();

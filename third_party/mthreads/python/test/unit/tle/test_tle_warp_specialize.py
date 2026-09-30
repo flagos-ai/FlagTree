@@ -13,7 +13,7 @@ from triton.backends.compiler import Language
 from triton.compiler import ASTSource
 from triton.compiler.errors import CompilationError
 
-from test_tle_utils import compile_musa, mthreads_backend, require_mthreads_libtriton
+from test_tle_utils import compile_musa, mthreads_backend, musa_target, require_mthreads_libtriton
 
 require_mthreads_libtriton()
 
@@ -596,3 +596,62 @@ def test_unknown_cta_barrier_in_partition_rejected(mode, capfd):
 def test_cta_barrier_before_dispatch_preserved():
     compiled = compile_musa(_ws_cta_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": 2})
     assert "call void @llvm.musa.barrier0()" in compiled.asm["llir"]
+
+
+# Partition synchronization must retain local-memory completion semantics.
+# Every partition exchanges data across its own warps at the same time; with
+# a named arrival alone, PH1 lets the next store overtake pending shared loads.
+
+
+@triton.jit
+def _ws_lma_exchange(x, out, shared, SLOT: tl.constexpr, WARPS: tl.constexpr, ITERS: tl.constexpr):
+    layout: tl.constexpr = tle.gpu.BlockEncoding([4], [32], [WARPS], [0])
+    index = tle.gpu.set_layout(tl.arange(0, 2048), layout)
+    base = (tl.program_id(0) * 3 + SLOT) * 2048
+    values = tl.load(x + base + index)
+    total = tl.full((2048, ), 0, tl.int32)
+    for step in range(ITERS):
+        tl.store(tle.gpu.set_layout(tle.gpu.local_ptr(shared), layout), values + step)
+        # Exchange across warps; the compiler must synchronize shared stores.
+        value = tl.load(tle.gpu.local_ptr(shared, (index ^ 128, )))
+        total += value
+    tl.store(out + base + index, total)
+
+
+@triton.jit
+def _ws_lma_kernel(x, out, ITERS: tl.constexpr):
+    s0 = tle.gpu.alloc((2048, ), tl.int32, nv_mma_shared_layout=False)
+    s1 = tle.gpu.alloc((2048, ), tl.int32, nv_mma_shared_layout=False)
+    s2 = tle.gpu.alloc((2048, ), tl.int32, nv_mma_shared_layout=False)
+    tle.gpu.warp_specialize([
+        (_ws_lma_exchange, (x, out, s0, 0, 8, ITERS)),
+        (_ws_lma_exchange, (x, out, s1, 1, 8, ITERS)),
+        (_ws_lma_exchange, (x, out, s2, 2, 4, ITERS)),
+    ], worker_num_warps=[8, 4], worker_num_regs=[64, 64])
+
+
+def test_ws_shared_completion_compile():
+    source = ASTSource(_ws_lma_kernel, {'x': '*i32', 'out': '*i32', 'ITERS': 'constexpr'}, constexprs={'ITERS': 17})
+    compiled = triton.compile(source, target=musa_target(), options={'num_warps': 8})
+    llir = compiled.asm['llir']
+    arrivals = re.findall(r'^.*\bcall\b.*@llvm\.musa\.async\.arrive(?:\.none\.phaseid)?\(.*$', llir, re.MULTILINE)
+    assert arrivals, 'test must exercise compiler-generated partition barriers'
+    fenced = re.findall(r'call void @llvm\.musa\.lma\.wait\(\)', llir)
+    assert len(fenced) == len(arrivals), 'partition barrier lost local-memory completion'
+    assert not re.search(r'call i32 @llvm\.musa\.async\.arrive\(', llir), 'phase must persist explicitly'
+    assert 'alloca ' not in llir, 'phase state must be promoted to registers'
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason='MUSA device required')
+def test_ws_shared_completion_runtime():
+    torch.manual_seed(1041)
+    cpu = torch.randint(-100, 100, (3, 3, 2048), dtype=torch.int32)
+    x = cpu.to('musa')
+    out = torch.empty_like(x)
+    iters = 257
+    expected = cpu[:, :, torch.arange(2048) ^ 128] * iters + iters * (iters - 1) // 2
+    for _ in range(5):
+        out.fill_(-1)
+        _ws_lma_kernel[(3, )](x, out, iters, num_warps=8)
+        torch.musa.synchronize()
+        torch.testing.assert_close(out.cpu(), expected, atol=0, rtol=0)
