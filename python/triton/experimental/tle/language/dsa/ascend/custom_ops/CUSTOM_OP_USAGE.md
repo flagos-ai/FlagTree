@@ -37,11 +37,13 @@ custom_ops/
 
 ## 调用约定
 
-在 Triton kernel 中通过 `tle.dsa.ascend.raw` 调用：
+在 Triton kernel 中通过统一入口 `tle_raw.call` 调用，op 名带 `ascend_` 前缀：
 
 ```python
-result = tle.dsa.ascend.raw(
-    "op_name",
+import triton.experimental.tle.language.raw as tle_raw
+
+result = tle_raw.call(
+    "ascend_op_name",
     input0,
     input1,
     out=result_buffer,
@@ -51,14 +53,18 @@ result = tle.dsa.ascend.raw(
 多输出写成：
 
 ```python
-output0, output1 = tle.dsa.ascend.raw(
-    "op_name",
+output0, output1 = tle_raw.call(
+    "ascend_op_name",
     input0,
     out=[output0, output1],
 )
 ```
 
 普通位置参数对应 custom op inputs，`out=` 对应 outputs。纯输出 buffer 只应在 `out=` 中出现一次，不要同时作为普通参数重复传入。
+
+`tle_raw.call` 按第一个下划线前的后缀分发（当前支持 `ascend`），剥前缀后转发到后端
+custom op 入口，与旧写法 `tle.dsa.ascend.raw("<op_name>", ...)` 生成的 IR 完全一致；
+旧入口仍可使用，便于渐进迁移。
 
 ## 已注册算子
 
@@ -81,8 +87,8 @@ output0, output1 = tle.dsa.ascend.raw(
 ### `duplicate_bitwise_mask`
 
 ```python
-dst = tle.dsa.ascend.raw(
-    "duplicate_bitwise_mask",
+dst = tle_raw.call(
+    "ascend_duplicate_bitwise_mask",
     scalar_value,
     mask,
     repeat_times,
@@ -104,8 +110,8 @@ dst = tle.dsa.ascend.raw(
 ### `gather_gm_to_l1`
 
 ```python
-tile_k = tle.dsa.ascend.raw(
-    "gather_gm_to_l1",
+tile_k = tle_raw.call(
+    "ascend_gather_gm_to_l1",
     src,
     src_index,
     tile_size,
@@ -131,8 +137,8 @@ tile_k = tle.dsa.ascend.raw(
 ### `gather_gm_to_ub`
 
 ```python
-tile_v = tle.dsa.ascend.raw(
-    "gather_gm_to_ub",
+tile_v = tle_raw.call(
+    "ascend_gather_gm_to_ub",
     src,
     src_index,
     tile_size,
@@ -152,8 +158,8 @@ tile_v = tle.dsa.ascend.raw(
 ### `gather_mask_builtin_pattern`
 
 ```python
-[dst, rsvd_cnt] = tle.dsa.ascend.raw(
-    "gather_mask_builtin_pattern",
+[dst, rsvd_cnt] = tle_raw.call(
+    "ascend_gather_mask_builtin_pattern",
     src0,
     src1_pattern,
     reduce_mode,
@@ -182,8 +188,8 @@ tile_v = tle.dsa.ascend.raw(
 ### `gather_mask_custom_pattern`
 
 ```python
-[dst, rsvd_cnt] = tle.dsa.ascend.raw(
-    "gather_mask_custom_pattern",
+[dst, rsvd_cnt] = tle_raw.call(
+    "ascend_gather_mask_custom_pattern",
     src0,
     src1_pattern,
     reduce_mode,
@@ -212,8 +218,8 @@ tile_v = tle.dsa.ascend.raw(
 ### `pair_reduce_sum_continuous_mask`
 
 ```python
-dst = tle.dsa.ascend.raw(
-    "pair_reduce_sum_continuous_mask",
+dst = tle_raw.call(
+    "ascend_pair_reduce_sum_continuous_mask",
     src,
     repeat_times,
     mask,
@@ -237,8 +243,8 @@ dst = tle.dsa.ascend.raw(
 ### `sort32`
 
 ```python
-dst = tle.dsa.ascend.raw(
-    "sort32",
+dst = tle_raw.call(
+    "ascend_sort32",
     src0,
     src1,
     repeat_times,
@@ -256,8 +262,8 @@ dst = tle.dsa.ascend.raw(
 ### `sort_1d_pack`
 
 ```python
-proposals = tle.dsa.ascend.raw(
-    "sort_1d_pack",
+proposals = tle_raw.call(
+    "ascend_sort_1d_pack",
     src,
     tmp_buf,
     descending,
@@ -306,8 +312,8 @@ seg_len == 4096 且 K == 2048      → S4096_K1_128_K2048
 ### `merge_exhaust_sort4`
 
 ```python
-out_buf, consumed = tle.dsa.ascend.raw(
-    "merge_exhaust_sort4",
+out_buf, consumed = tle_raw.call(
+    "ascend_merge_exhaust_sort4",
     src_proposals,
     ways,
     off0, off1, off2, off3,
@@ -328,8 +334,8 @@ out_buf, consumed = tle.dsa.ascend.raw(
 ### `mrgsort`
 
 ```python
-dst = tle.dsa.ascend.raw(
-    "mrgsort",
+dst = tle_raw.call(
+    "ascend_mrgsort",
     src_proposals,
     off0,
     off1,
@@ -359,8 +365,8 @@ dst = tle.dsa.ascend.raw(
 ### `unpack_sort`
 
 ```python
-values, indices = tle.dsa.ascend.raw(
-    "unpack_sort",
+values, indices = tle_raw.call(
+    "ascend_unpack_sort",
     src_proposals,
     topk,
     out=[values, indices],
