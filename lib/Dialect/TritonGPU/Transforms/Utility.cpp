@@ -40,6 +40,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/Twine.h"
 #endif
@@ -1761,6 +1762,17 @@ void replaceUsesAndPropagateType(
       newVal = ttg::MemDescTransOp::create(builder, trans.getLoc(), val,
                                            trans.getOrder());
 #ifdef __TLE__
+    } else if (auto reinterpret = dyn_cast<ttg::MemDescReinterpretOp>(user);
+               reinterpret && reinterpret->hasAttr(tle::kExactSMEMStageAttr)) {
+      ttg::MemDescType oldType = reinterpret.getType();
+      bool isMutable = cast<ttg::MemDescType>(val.getType()).getMutableMemory();
+      Type newDstType = ttg::MemDescType::get(
+          oldType.getShape(), oldType.getElementType(), oldType.getEncoding(),
+          oldType.getMemorySpace(), isMutable, oldType.getAllocShape());
+      newVal = ttg::MemDescReinterpretOp::create(builder, reinterpret.getLoc(),
+                                                 newDstType, val);
+      newVal.getDefiningOp()->setAttr(tle::kExactSMEMStageAttr,
+                                      builder.getUnitAttr());
     } else if (auto view = dyn_cast<triton::tle::MemDescWGMMAViewOp>(user)) {
       ttg::MemDescType oldType = view.getType();
       bool isMutable = cast<ttg::MemDescType>(val.getType()).getMutableMemory();

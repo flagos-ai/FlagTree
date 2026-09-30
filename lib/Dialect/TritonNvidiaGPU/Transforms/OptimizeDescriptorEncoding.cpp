@@ -85,6 +85,19 @@ SmallVector<int64_t> expandToRank(ArrayRef<int64_t> shape, int rank) {
 std::optional<UseInfo> getUseInfo(Operation *op) {
   UseInfo info;
   info.use = op;
+#ifdef __TLE__
+  if (auto copy = dyn_cast<ttg::TMACopyOp>(op)) {
+    if (op->hasAttr("tle.logical_tma_copy_bytes")) {
+      auto dst = cast<ttg::MemDescType>(copy.getDst().getType());
+      info.descriptor = cast<TypedValue<TensorDescType>>(copy.getSrc());
+      info.desiredSharedEncoding = dst.getEncoding();
+      info.ctaLayout = ttg::getCTALayout(dst.getEncoding());
+      info.shape = expandToRank(
+          dst.getShape(), info.descriptor.getType().getBlockType().getRank());
+      return info;
+    }
+  }
+#endif
   if (auto load = dyn_cast<DescriptorLoadOp>(op)) {
     info.descriptor = load.getDesc();
     info.desiredSharedEncoding = findLoadEncodingFromUsers(op);

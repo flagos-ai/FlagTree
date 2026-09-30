@@ -340,11 +340,20 @@ def alloc(
     Allocate local memory buffer
 
     Args:
-        shape: Buffer shape
+        shape: Complete logical buffer shape. A 2D shape describes one matrix;
+            a 3D shape includes an explicit leading pipeline stage dimension.
+            NVIDIA SMEM supports one non-power-of-two matrix dimension (a
+            multiple of 16) through the logical-domain storage planner.
         dtype: Data type
         layout: Memory layout encoding (optional)
         scope: Storage type (default to shared memory)
-        init_value: Optional initial register tensor for a new allocation
+        init_value: Optional initial register tensor with the padded matrix shape.
+            For a 3D allocation, a matrix initializes every slot with the same
+            values. A tensor with a leading stage dimension initializes slots
+            independently; it must contain at least as many stages as shape[0].
+            Extra stages are ignored. Register tensors retain Triton's
+            power-of-two shape requirements. Their logical payload domain
+            must agree with the declared buffer.
         alias: Optional source shared-memory buffer to alias instead of allocating
         alias_offset_bytes: Static byte offset from alias source view base
         nv_mma_shared_layout: Select an MMA-consumer-defined shared layout when
@@ -357,7 +366,9 @@ def alloc(
         _semantic: Semantic analyzer (internal use)
 
     Returns:
-        Allocated buffer tensor
+        Allocated buffer tensor exposing the padded carrier shape. Logical
+        matrix extents are recorded on the allocation for storage planning;
+        an explicit leading stage count is never padded.
 
     Raises:
         ValueError: When parameters are invalid
@@ -371,6 +382,7 @@ def alloc(
         else:
             raise ValueError(f"Shape parameter must be tuple or list, but got {type(shape)}")
 
+    dtype = tl._unwrap_if_constexpr(dtype)
     if not isinstance(dtype, tl.dtype):
         raise ValueError(f"Data type must be tl.dtype, but got {type(dtype)}")
 
@@ -421,12 +433,61 @@ def alloc(
 
     try:
         unwrapped_shape = [tl._unwrap_if_constexpr(dim) for dim in shape]
-        full_shape = unwrapped_shape
+        if not unwrapped_shape or any(
+                isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0 for dim in unwrapped_shape):
+            raise ValueError("tle.gpu.alloc shape must contain positive compile-time integers")
+        # Only a rank-3 allocation has a stage dimension for a 2D matrix.
+        # Existing power-of-two allocations, including [STAGES, BLOCK], keep
+        # their original slot semantics.
+        payload_offset = 1 if len(unwrapped_shape) == 3 else 0
+        payload_shape = unwrapped_shape[payload_offset:]
+        if payload_offset and unwrapped_shape[0] > (1 << 31) - 1:
+            raise ValueError("tle.gpu.alloc stage count must fit a positive i32 index")
         use_mthreads_buffer = (mthreads_common.enabled() and mthreads_buffer.needs_non_power_of_two_leading_dim(
             _semantic.builder, unwrapped_shape))
         if use_mthreads_buffer:
             mthreads_buffer.validate_shape(unwrapped_shape)
-        dtype = tl._unwrap_if_constexpr(dtype)
+        non_power_payload_axes = ([] if use_mthreads_buffer else
+                                  [axis for axis, dim in enumerate(payload_shape, payload_offset) if dim & (dim - 1)])
+        if len(non_power_payload_axes) > 1:
+            raise ValueError("tle.gpu.alloc permits at most one non-power-of-two matrix dimension")
+        logical_candidate = bool(non_power_payload_axes)
+        logical_non_power_axis = non_power_payload_axes[0] if logical_candidate else None
+        if logical_candidate and unwrapped_shape[logical_non_power_axis] % 16 != 0:
+            raise ValueError("tle.gpu.alloc non-power-of-two payload dimension must be a multiple of 16")
+        if logical_candidate:
+            from triton._flagtree_backend import get_active_backend_name
+            if get_active_backend_name() != "nvidia":
+                raise ValueError("logical non-power-of-two alloc requires the NVIDIA backend")
+            if not hasattr(_semantic.builder, "mark_logical_alloc_candidate"):
+                raise ValueError("non-power-of-two alloc requires a build with __TLE_TILED_SMEM__ enabled")
+            if storage != tle.smem:
+                raise ValueError("logical non-power-of-two alloc is supported only in NVIDIA SMEM")
+            if alias is not None:
+                raise ValueError("logical non-power-of-two alloc cannot alias another allocation")
+        if logical_candidate:
+            if len(payload_shape) != 2:
+                raise ValueError("logical non-power-of-two alloc currently requires a rank-2 payload")
+            if layout is not None:
+                raise ValueError("logical non-power-of-two alloc requires layout=None")
+            if not nv_mma_shared_layout:
+                raise ValueError("logical non-power-of-two alloc requires nv_mma_shared_layout=True")
+            logical_dtypes = (
+                tl.float16,
+                tl.bfloat16,
+                tl.float32,
+                tl.float8e4nv,
+                tl.float8e5,
+                tl.int8,
+            )
+            if dtype not in logical_dtypes:
+                raise ValueError("logical non-power-of-two alloc requires a Hopper "
+                                 "WGMMA-compatible dtype: tl.float16, tl.bfloat16, "
+                                 "tl.float32 (TF32), tl.float8e4nv, tl.float8e5, or tl.int8")
+        storage_shape = list(unwrapped_shape)
+        if logical_candidate:
+            logical_extent = storage_shape[logical_non_power_axis]
+            storage_shape[logical_non_power_axis] = 1 << (logical_extent - 1).bit_length()
         elem_type = dtype.to_ir(_semantic.builder)
 
         if layout is None:
@@ -435,7 +496,7 @@ def alloc(
                     layout, layout_handle = iluvatar_layout.select_default_smem_layout(
                         _semantic.builder, unwrapped_shape, dtype, nv_mma_shared_layout)
                 elif mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
-                    layout = tle.swizzled_shared_layout.make_default(rank=len(shape))
+                    layout = tle.swizzled_shared_layout.make_default(rank=len(unwrapped_shape))
                     layout_handle = _semantic.builder.make_swizzled_shared_encoding_attr(
                         layout.vectorSize,
                         layout.perPhase,
@@ -446,7 +507,7 @@ def alloc(
                         layout.numCTAOrder,
                     )
                 else:
-                    layout = tle.nv_mma_shared_layout.make_default(shape, dtype)
+                    layout = tle.nv_mma_shared_layout.make_default(storage_shape, dtype)
                     layout_handle = _semantic.builder.make_nv_mma_shared_encoding_attr(
                         [int(x) for x in layout.shape],
                         layout.order,
@@ -484,15 +545,41 @@ def alloc(
 
         if storage == tle.smem:
             if alias is not None:
-                alias_ty = _semantic.builder.get_memdesc_type(full_shape, elem_type, layout_handle, "smem")
+                alias_ty = _semantic.builder.get_memdesc_type(storage_shape, elem_type, layout_handle, "smem")
                 tensor_handle = _semantic.builder.create_memdesc_alias(alias_ty, alias.handle, alias_offset_bytes)
-            elif init_value is not None:
-                mutable_ty = _semantic.builder.get_memdesc_type(full_shape, elem_type, layout_handle, "smem")
-                tensor_handle = _semantic.builder.create_local_alloc(mutable_ty, init_value.handle)
             else:
-                tensor_handle = _semantic.builder.create_local_alloc(full_shape, elem_type, layout_handle)
+                if init_value is None:
+                    tensor_handle = _semantic.builder.create_local_alloc(storage_shape, elem_type, layout_handle)
+                elif not isinstance(init_value, tl.tensor):
+                    raise ValueError("init_value must be a register tensor")
+                elif len(unwrapped_shape) != 3 or list(init_value.type.shape) == storage_shape:
+                    mutable_ty = _semantic.builder.get_memdesc_type(storage_shape, elem_type, layout_handle, "smem")
+                    tensor_handle = _semantic.builder.create_local_alloc(mutable_ty, init_value.handle)
+                else:
+                    initializer_shape = list(init_value.type.shape)
+                    broadcast = initializer_shape == storage_shape[1:]
+                    per_stage = (len(initializer_shape) == 3 and initializer_shape[1:] == storage_shape[1:]
+                                 and initializer_shape[0] >= unwrapped_shape[0])
+                    if init_value.dtype != dtype or not (broadcast or per_stage):
+                        raise ValueError("init_value must match the dtype and padded matrix shape, "
+                                         "with an optional leading dimension containing at least shape[0] stages")
+                    tensor_handle = _semantic.builder.create_local_alloc(storage_shape, elem_type, layout_handle)
+                    buffer = tle.buffered_tensor(tensor_handle, dtype, storage_shape, storage, layout, _semantic)
+                    for stage in builtins.range(unwrapped_shape[0]):
+                        value = init_value
+                        if per_stage:
+                            stage_shape = [1, *storage_shape[1:]]
+                            handle = _semantic.builder.create_extract_tile(value.handle,
+                                                                           _semantic.to_tensor(stage).handle,
+                                                                           stage_shape)
+                            value = tl.tensor(handle, tl.block_type(dtype, stage_shape))
+                            value = _semantic.reshape(value, storage_shape[1:], False)
+                        slot = buffer.slot(stage, _semantic=_semantic)
+                        _semantic.builder.create_local_store(slot.handle, value.handle)
             if mthreads_auto_sqmma_shared_layout and alias is None:
                 mthreads_wgmma.mark_auto_shared_layout(_semantic.builder, tensor_handle)
+            if logical_candidate:
+                _semantic.builder.mark_logical_alloc_candidate(tensor_handle, unwrapped_shape, logical_non_power_axis)
         else:
             raise ValueError(f"Storage type {storage} not yet supported")
 
@@ -505,7 +592,7 @@ def alloc(
                 layout,
                 _semantic,
             )
-        return tle.buffered_tensor(tensor_handle, dtype, unwrapped_shape, storage, layout, _semantic)
+        return tle.buffered_tensor(tensor_handle, dtype, storage_shape, storage, layout, _semantic)
 
     except Exception as e:
         raise RuntimeError(f"Memory allocation failed: {str(e)}") from e
@@ -793,7 +880,6 @@ def _transpose_wgmma_smem_operand(value: tle.buffered_tensor, name: str,
     _require_rank2_wgmma_operand(value, name)
     order = [1, 0]
     _require_transpose_order(order, len(value.type.shape), name)
-    handle = _semantic.builder.create_memdesc_trans(tle_semantic.get_memdesc(value, _semantic), order)
     shape = [value.type.shape[i] for i in order]
 
     alloc_shape = value.type.alloc_shape
@@ -802,6 +888,7 @@ def _transpose_wgmma_smem_operand(value: tle.buffered_tensor, name: str,
     transposed_alloc_shape = alloc_shape[:leading_rank] + [alloc_tail[i] for i in order]
 
     layout = value.type.layout.make_permute(order)
+    handle = _semantic.builder.create_memdesc_trans(tle_semantic.get_memdesc(value, _semantic), order)
     return tle.buffered_tensor(
         handle,
         value.dtype,
@@ -890,10 +977,15 @@ def wgmma(
     The returned accumulator is an async WGMMA dependency value. Use
     ``tle.gpu.wgmma_wait(pendings, acc)`` before consuming it with ordinary
     tensor operations or storing it.
+
+    Logical N/K extents are not user-facing WGMMA parameters. The early
+    logical-domain planner derives them from fragment dataflow and attaches
+    the internal active extent attributes required by lowering.
     """
     trans_a = _require_wgmma_bool(trans_a, "trans_a")
     trans_b = _require_wgmma_bool(trans_b, "trans_b")
     mthreads_enabled = mthreads_common.enabled()
+
     if mthreads_enabled:
         a, b = mthreads_wgmma.prepare_operands(a, b, acc, trans_a, trans_b, _semantic)
     else:
@@ -910,8 +1002,11 @@ def wgmma(
             raise ValueError("wgmma result M dimension must be divisible by 64")
         if n < 8 or n % 8 != 0:
             raise ValueError("wgmma result N dimension must be divisible by 8")
-    if k < 16:
-        raise ValueError("wgmma K dimension must be at least 16")
+    # The instruction's K quantum depends on dtype, not on whether operand B
+    # came from a logical allocation. In particular TF32 permits a K=8 carrier.
+    min_k = 16 if mthreads_enabled else 256 // a.dtype.primitive_bitwidth
+    if k < min_k:
+        raise ValueError(f"wgmma K dimension must be at least {min_k}")
 
     if not (a.dtype.is_fp8() and b.dtype.is_fp8()):
         if a.dtype != b.dtype:
@@ -1064,6 +1159,10 @@ def copy(
 
         Masked global -> local copy with zero fill:
             tle.copy(global_ptrs, local_buf, [64, 128], mask=valid)
+
+        Logical tensor-descriptor -> automatic exact tiled buffer:
+            local_buf = tle.alloc([80, 256], dtype=tl.float16, scope=tle.smem)
+            tle.copy(desc_80x256, local_buf, [80, 256], [0, 0])
     """
     mthreads_enabled = mthreads_common.enabled()
     iluvatar_enabled = iluvatar_copy.enabled()
@@ -1118,6 +1217,12 @@ def copy(
                 # represented by the loaded zero rather than by suppressing
                 # the shared-memory store.
                 _semantic.store(local_ptrs, tt_load, None, boundary_check, cache_modifier, eviction_policy)
+                if hasattr(_semantic.builder, "mark_logical_pointer_copy"):
+                    # Preserve the requested copy extent independently of the
+                    # Python value type. TTIR checks it against the destination
+                    # domain after inlining and plans the actual storage tiles.
+                    _semantic.builder.mark_logical_pointer_copy(local_ptrs.handle,
+                                                                [int(tl._unwrap_if_constexpr(dim)) for dim in shape])
             else:
                 local_ptrs = local_ptr(src, _make_full_indices(src, _semantic), _semantic=_semantic)
                 load = tl.load(local_ptrs, _semantic=_semantic)
@@ -1180,12 +1285,28 @@ def copy(
             barrier_slot = _tma_completion_barrier_slot(barrier, _semantic)
             expect_bytes = barrier_slot.expect_bytes
 
-        # Note: Skip shape assertion at this level since it requires _semantic context
-        # assert desc.shape == shape, "Shape mismatch between descriptor and provided shape"
+        logical_desc = isinstance(desc, tle._logical_tensor_descriptor)
+        copy_shape_args = ()
+        if logical_desc and (not isinstance(src, tle._logical_tensor_descriptor)
+                             or not isinstance(dst, tle.buffered_tensor)):
+            raise ValueError("logical TMA descriptors are only supported as global-memory sources")
+        if logical_desc:
+            shape = [int(tl._unwrap_if_constexpr(dim)) for dim in shape]
+            if shape != list(desc.block_shape):
+                raise ValueError("TMA copy shape must match descriptor.block_shape; "
+                                 "declare the full logical block in the descriptor")
+            _semantic.builder.mark_logical_tensor_descriptor(desc.handle, shape)
+            copy_shape_args = (shape, )
         assert len(offsets) == len(desc.shape), "Offsets and shape must have the same length"
         offsets = _semantic._convert_to_ir_values(offsets, require_i64=False)
-        _semantic.builder.create_tma_copy(src.handle, dst.handle, offsets,
-                                          None if barrier_slot is None else barrier_slot.handle, expect_bytes)
+        _semantic.builder.create_tma_copy(
+            src.handle,
+            dst.handle,
+            offsets,
+            None if barrier_slot is None else barrier_slot.handle,
+            expect_bytes,
+            *copy_shape_args,
+        )
         return
 
     # Parameter validation
@@ -1317,7 +1438,6 @@ def local_ptr(
     """
     if not isinstance(buffer, tle.buffered_tensor):
         raise ValueError(f"Buffer parameter must be tle.buffered_tensor, but got {type(buffer)}")
-
     # Preferred metadata source: buffered_tensor.type (survives JIT value
     # reconstruction). Keep value attrs as backward-compatibility fallback.
     remote_shard_id = getattr(buffer.type, "_tle_remote_shard_id", None)

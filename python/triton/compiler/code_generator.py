@@ -372,7 +372,11 @@ class CodeGenerator(ast.NodeVisitor):
         else:
             from triton.language.semantic import TritonSemantic
             self.builder = ir.builder(context)
-            self.semantic = TritonSemantic(self.builder)
+            if hasattr(self.builder, "mark_logical_tensor_descriptor"):
+                from triton.experimental.tle.language.gpu.semantic import TLEFrontendSemantic
+                self.semantic = TLEFrontendSemantic(self.builder)
+            else:
+                self.semantic = TritonSemantic(self.builder)
 
         self.name_loc_as_prefix = None
         self.file_name = file_name
@@ -1874,6 +1878,8 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
     generator.flagtree_line_hints = getattr(tree.body[0], 'line_flagtree_hints', {}) or {}
     generator.visit(tree)
     module = generator.module
+    if hasattr(generator.builder, "validate_logical_tensor_descriptors"):
+        generator.builder.validate_logical_tensor_descriptors(module)
     # module takes ownership of the context
     module.context = context
     if not module.verify():

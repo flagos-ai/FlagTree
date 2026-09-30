@@ -413,6 +413,30 @@ def TritonTleLowerPipeToNvws
                            "mlir::triton::nvws::NVWSDialect"];
 }
 
+#ifdef __TLE_TILED_SMEM__
+def TritonTlePlanLogicalDomains
+    : Pass<"triton-tle-plan-logical-domains", "mlir::ModuleOp"> {
+  let summary =
+      "plan and materialize exact storage for logical non-power-of-two domains";
+
+  let description = [{
+    Validates complete memdesc and tensor def-use domains rooted at padded
+    candidate allocations, then atomically rewrites them to descriptor-driven
+    exact tiled SMEM
+    storage.  The pass runs after TTIR inlining/unrolling and before TTGPU
+    conversion, so unsupported escapes fail before layout selection or shared
+    memory allocation observes an unresolved carrier.
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::math::MathDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+#endif // __TLE_TILED_SMEM__
+
 def TritonTleLowerExtractTile
     : Pass<"triton-tle-lower-extract-tile", "mlir::ModuleOp"> {
   let summary = "Lower TLE extract_tile operations";

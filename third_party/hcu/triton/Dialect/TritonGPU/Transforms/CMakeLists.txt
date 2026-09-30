@@ -55,3 +55,12 @@ add_triton_library(TritonGPUTransforms
   MLIRTransformUtils
   DistributedIR
 )
+
+# HCU replaces the common TritonGPUTransforms source list. TLE's logical
+# pointer-copy lowering also uses the shared encoding rematerializer.
+if(FLAGTREE_TLE)
+  target_sources(TritonGPUTransforms PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/lib/Transforms/EncodingRematerialization.cpp
+  )
+  add_dependencies(TritonGPUTransforms TleTableGen)
+endif()
