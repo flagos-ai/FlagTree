@@ -261,6 +261,8 @@ macro(flagtree_configure_core_source)
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iluvatar)
     set(TRITON_CORE_BINARY_DIR
       ${CMAKE_CURRENT_BINARY_DIR}/third_party/iluvatar)
+    include_directories(${PROJECT_SOURCE_DIR}/include)
+    include_directories(${PROJECT_BINARY_DIR}/include)
     include_directories(${TRITON_CORE_SOURCE_DIR}/include)
     include_directories(${TRITON_CORE_BINARY_DIR}/include)
     include_directories(${TRITON_CORE_SOURCE_DIR}/backend/include)
@@ -270,7 +272,7 @@ macro(flagtree_configure_core_source)
       include_directories(${TRITON_CORE_BINARY_DIR}/tle/dialect/include)
     endif()
     add_subdirectory(
-      ${TRITON_CORE_SOURCE_DIR}/include ${TRITON_CORE_BINARY_DIR}/include)
+      ${PROJECT_SOURCE_DIR}/include ${PROJECT_BINARY_DIR}/include)
     add_subdirectory(
       ${TRITON_CORE_SOURCE_DIR}/lib ${TRITON_CORE_BINARY_DIR}/lib)
   endif()

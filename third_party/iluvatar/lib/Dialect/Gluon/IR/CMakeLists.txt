@@ -1,4 +1,4 @@
-add_triton_library(GluonIR
+flagtree_add_iluvatar_library(GluonIR
   Dialect.cpp
 
   DEPENDS

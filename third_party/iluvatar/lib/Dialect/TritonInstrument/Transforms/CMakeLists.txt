@@ -1,4 +1,4 @@
-add_triton_library(TritonInstrumentTransforms
+flagtree_add_iluvatar_library(TritonInstrumentTransforms
   ConcurrencySanitizer.cpp
 
   DEPENDS
