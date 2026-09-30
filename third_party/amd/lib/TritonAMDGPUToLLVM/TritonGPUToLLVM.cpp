@@ -82,6 +82,18 @@ public:
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
 };
+
+// Capability gate for TLE on the AMD/RDNA backend: the set of TLE ops that
+// currently have an AMD LLVM lowering. Ops outside this set are reported with a
+// precise, actionable diagnostic (instead of a generic "failed to legalize"
+// error) so partial support degrades cleanly. Extend this list as the
+// FlagMega-on-Radeon primitives (pipe / warp_specialize / distributed_barrier /
+// ...) gain RDNA lowerings.
+static bool isAMDLoweredTleOp(Operation *op) {
+  StringRef name = op->getName().getStringRef();
+  return name == "tle.local_pointers" || name == "tle.extract_tile" ||
+         name == "tle.insert_tile" || name == "tle.exclusive_cumsum";
+}
 #endif
 
 class TritonAMDGPUToLLVMTypeConverter : public TritonGPUToLLVMTypeConverter {
@@ -129,6 +141,29 @@ struct ConvertTritonAMDGPUToLLVM
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
+
+#ifdef __TLE__
+    // Capability gate (run first, before any conversion/analysis): TLE ops that
+    // do not yet have an AMD/RDNA lowering get a precise, actionable diagnostic
+    // here instead of a downstream crash or a generic legalization failure.
+    // Extend isAMDLoweredTleOp() as FlagMega-on-Radeon primitives land.
+    {
+      bool hasUnsupportedTleOp = false;
+      mod.walk([&](Operation *op) {
+        if (op->getName().getDialectNamespace() == "tle" &&
+            !isAMDLoweredTleOp(op)) {
+          op->emitOpError()
+              << "has no AMD/RDNA lowering yet (arch " << this->arch.getValue()
+              << "); only tle.local_pointers / extract_tile / insert_tile / "
+                 "exclusive_cumsum are supported on this backend today "
+                 "(FlagMega-on-Radeon roadmap).";
+          hasUnsupportedTleOp = true;
+        }
+      });
+      if (hasUnsupportedTleOp)
+        return signalPassFailure();
+    }
+#endif
 
     AMD::TargetInfo targetInfo(this->arch.getValue());
     if (targetInfo.getISAFamily() == AMD::ISAFamily::Unknown) {
