@@ -5,9 +5,9 @@
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 
 namespace mlir::triton::iluvatar_tle {
-void populateMemDescAliasOpToLLVMPatterns(mlir::LLVMTypeConverter &typeConverter,
-                                  RewritePatternSet &patterns,
-                                  PatternBenefit benefit);
+void populateMemDescAliasOpToLLVMPatterns(
+    mlir::LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
+    PatternBenefit benefit);
 }
 
 #endif
