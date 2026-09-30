@@ -22,4 +22,5 @@ target_include_directories(TritonTLERawUtils PUBLIC
   ${CMAKE_SOURCE_DIR}/python/src
 )
 
-target_compile_options(TritonTLERawUtils PRIVATE -U__TLE__)
+# Match the TLE definitions used to generate the dialect and interface headers.
+# Undefining __TLE__ here hides types referenced by those generated headers.

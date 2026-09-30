@@ -35,6 +35,10 @@ public:
   bool supportLdMatrix() const override { return computeCapability >= 75; }
   bool supportStMatrix() const override { return computeCapability >= 90; }
   bool supportLdStMatrixB8() const override { return computeCapability >= 100; }
+  // movmatrix was introduced in PTX 7.8 for SM75 and newer.
+  bool supportMovMatrix() const {
+    return computeCapability >= 75 && ptxVersion >= 78;
+  }
 
   Value shuffleXor(RewriterBase &rewriter, Location loc, Value val,
                    int i) const override;

@@ -29,9 +29,10 @@
 #include <memory>
 
 #ifdef __TLE__
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include <pybind11/stl_bind.h>
+// Native compiler utilities also use this builder without Python bindings.
+namespace pybind11 {
+template <typename type_, typename... options> class class_;
+}
 namespace py = pybind11;
 #endif
 

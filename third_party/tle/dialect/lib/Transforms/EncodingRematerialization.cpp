@@ -30,6 +30,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 
@@ -699,6 +700,12 @@ EncodingRematerializer::rematerialize(Value value, Attribute targetEncoding,
       return failure();
     return value;
   }
+
+  // Rematerializing an explicitly laid-out value in another encoding would
+  // bypass the user's set_layout boundary.
+  if (Attribute fixed = getTleExplicitValueEncoding(value);
+      fixed && fixed != targetEncoding)
+    return failure();
 
   if (Value cached = lookupCached(value, targetEncoding, *this, cache))
     return cached;

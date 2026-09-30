@@ -26,6 +26,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "llvm/ADT/SmallBitVector.h"
+#endif
 
 namespace mlir::triton::gpu {
 #define GEN_PASS_DEF_TRITONGPUALLOCATEWARPGROUPS
@@ -85,6 +88,70 @@ static void padToMaxWarpGroups(WarpSpecializeOp op, int numExtraWarpGroups) {
   partitions.erase();
 }
 
+#ifdef __TLE__
+static LogicalResult allocateReusedWarpGroups(WarpSpecializeOp op,
+                                              int baseNumWarps) {
+  ArrayRef<int32_t> sizes = op.getPartitionNumWarps();
+  if (op.getTotalPartitionWarps() != baseNumWarps)
+    return op.emitError("in-place warp partitions cover ")
+           << op.getTotalPartitionWarps()
+           << " warps, but the enclosing CTA has " << baseNumWarps;
+
+  SmallVector<int32_t> startIds(sizes.size(), -1);
+  llvm::SmallBitVector occupied(baseNumWarps);
+  // Captured registers already reside in their consuming physical warps.
+  // Pin those partitions before assigning the remaining warp ranges.
+  for (auto [i, partition] : llvm::enumerate(op.getPartitionRegions())) {
+    bool hasTensorCapture =
+        llvm::any_of(partition->getArguments(), [](BlockArgument arg) {
+          return !arg.use_empty() && isa<RankedTensorType>(arg.getType());
+        });
+    if (!hasTensorCapture)
+      continue;
+    int start = op.getReusedWarpGroupStart(i);
+    startIds[i] = start;
+    occupied.set(start, start + sizes[i]);
+  }
+
+  SmallVector<std::pair<unsigned, int32_t>> idxAndSize;
+  for (auto [i, size] : llvm::enumerate(sizes))
+    idxAndSize.emplace_back(i, size);
+  llvm::stable_sort(idxAndSize,
+                    [](auto lhs, auto rhs) { return lhs.second > rhs.second; });
+
+  for (auto [i, size] : idxAndSize) {
+    if (startIds[i] >= 0)
+      continue;
+    // Prefer the same power-of-two alignment as ordinary WS. Pinned captures
+    // may leave only an unaligned interval; the verifier checks WGMMA
+    // alignment.
+    for (int alignment : {size, 1}) {
+      for (int start = 0; start + size <= baseNumWarps; start += alignment) {
+        bool available =
+            llvm::all_of(llvm::seq(start, start + size),
+                         [&](int warp) { return !occupied[warp]; });
+        if (!available)
+          continue;
+        startIds[i] = start;
+        occupied.set(start, start + size);
+        break;
+      }
+      if (startIds[i] >= 0)
+        break;
+    }
+    if (startIds[i] < 0) {
+      // Alignment can fragment the intervals around pinned captures. Fall back
+      // to the original partitioning, subject to the verifier's WGMMA checks.
+      for (unsigned j = 0; j < sizes.size(); ++j)
+        startIds[j] = op.getReusedWarpGroupStart(j);
+      break;
+    }
+  }
+  op.setWarpGroupStartIds(startIds);
+  return success();
+}
+#endif
+
 namespace {
 struct AllocateWarpGroups
     : public mlir::triton::gpu::impl::TritonGPUAllocateWarpGroupsBase<
@@ -95,6 +162,10 @@ struct AllocateWarpGroups
     // First determine the maximum number of extra warps.
     int maxExtraWarps = 0;
     mod.walk([&](WarpSpecializeOp op) {
+#ifdef __TLE__
+      if (op.getReuseDefaultWarps())
+        return;
+#endif
       maxExtraWarps = std::max<int>(maxExtraWarps, op.getTotalPartitionWarps());
     });
 
@@ -102,6 +173,10 @@ struct AllocateWarpGroups
     // `ttg.warp_specialize` to the nearest warpgroup.
     int numExtraWarpGroups = llvm::divideCeil(maxExtraWarps, 4);
     mod.walk([&](WarpSpecializeOp op) {
+#ifdef __TLE__
+      if (op.getReuseDefaultWarps())
+        return;
+#endif
       padToMaxWarpGroups(op, numExtraWarpGroups);
     });
 
@@ -135,6 +210,14 @@ struct AllocateWarpGroups
     // Compute the total number of warps required at any given time.
     mod.walk([&](WarpSpecializeOp op) {
       ArrayRef<int32_t> arr = op.getPartitionNumWarps();
+
+#ifdef __TLE__
+      if (op.getReuseDefaultWarps()) {
+        if (failed(allocateReusedWarpGroups(op, baseNumWarps)))
+          signalPassFailure();
+        return;
+      }
+#endif
 
       // Allocate the start IDs such that the largest warpgroups have lower
       // starting warp IDs.

@@ -1,5 +1,6 @@
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TargetInfo.h"
+#include "TritonNVIDIAGPUToLLVM/PTXAsmFormat.h"
 #include "Utility.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
@@ -263,6 +264,9 @@ public:
   LogicalResult
   matchAndRewrite(triton::gpu::ConvertLayoutOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (succeeded(lowerMmaCToDotBWithMovmatrix(op, adaptor, rewriter)))
+      return success();
+
     RankedTensorType srcTy = op.getSrc().getType();
     RankedTensorType dstTy = op.getType();
     Attribute srcLayout = srcTy.getEncoding();
@@ -279,6 +283,102 @@ public:
   }
 
 private:
+  // Match the warp-local MMA-v2 -> dot-B register permutation. TargetInfo
+  // checks instruction availability; these checks describe the layout subset
+  // handled by this lowering. isAmpere() denotes MMA version 2, including the
+  // Turing variant, rather than the device's compute capability.
+  bool canLowerMmaCToDotBWithMovmatrix(RankedTensorType srcTy,
+                                       RankedTensorType dstTy) const {
+    auto srcMma = dyn_cast<NvidiaMmaEncodingAttr>(srcTy.getEncoding());
+    auto dstDot = dyn_cast<DotOperandEncodingAttr>(dstTy.getEncoding());
+    if (!targetInfo.supportMovMatrix() || !srcMma || !dstDot ||
+        !srcMma.isAmpere() || dstDot.getOpIdx() != 1 ||
+        dstDot.getKWidth() != 2 || dstDot.getParent() != srcMma ||
+        !(srcTy.getElementType().isBF16() || srcTy.getElementType().isF16()) ||
+        srcTy.getRank() != 2 || cvtNeedsSharedMemory(srcTy, dstTy))
+      return false;
+
+    auto shape = srcTy.getShape();
+    return srcMma.getInstrShape() == ArrayRef<unsigned>({16, 8}) &&
+           shape[0] % 16 == 0 && shape[1] % 16 == 0;
+  }
+
+  LogicalResult
+  lowerMmaCToDotBWithMovmatrix(triton::gpu::ConvertLayoutOp op,
+                               OpAdaptor adaptor,
+                               ConversionPatternRewriter &rewriter) const {
+    auto srcTy = op.getSrc().getType();
+    auto dstTy = op.getType();
+    if (!canLowerMmaCToDotBWithMovmatrix(srcTy, dstTy))
+      return failure();
+
+    auto loc = op.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto inVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    if (inVals.size() != getTotalElemsPerThread(dstTy) ||
+        inVals.size() % 2 != 0)
+      return failure();
+
+    Type elemTy = getTypeConverter()->convertType(srcTy.getElementType());
+    Type pairTy = vec_ty(elemTy, 2);
+    auto pairLocations = [&](const LinearLayout &layout) {
+      StringAttr kRegister = str_attr("register");
+      StringAttr kLane = str_attr("lane");
+      StringAttr kWarp = str_attr("warp");
+      StringAttr kBlock = str_attr("block");
+      SmallVector<std::pair<uint64_t, unsigned>> locations;
+      for (unsigned i = 0; i < inVals.size(); i += 2) {
+        auto indices = layout.apply({{kRegister, static_cast<int32_t>(i)},
+                                     {kLane, 0},
+                                     {kWarp, 0},
+                                     {kBlock, 0}});
+        uint64_t tileRow = indices[0].second / 16;
+        uint64_t tileCol = indices[1].second / 8;
+        uint64_t tile = (tileRow << 32) | tileCol;
+        unsigned ordinal = llvm::count_if(locations, [tile](auto location) {
+          return location.first == tile;
+        });
+        locations.push_back({tile, ordinal});
+      }
+      return locations;
+    };
+    auto srcLocations = pairLocations(toLinearLayout(srcTy));
+    auto dstLocations = pairLocations(toLinearLayout(dstTy));
+
+    SmallVector<unsigned> dstPairForSrc(srcLocations.size());
+    for (auto [srcIndex, srcLocation] : llvm::enumerate(srcLocations)) {
+      auto dstIt = llvm::find(dstLocations, srcLocation);
+      if (dstIt == dstLocations.end())
+        return failure();
+      dstPairForSrc[srcIndex] = std::distance(dstLocations.begin(), dstIt);
+    }
+
+    SmallVector<Value> outVals(inVals.size());
+    for (unsigned i = 0; i < inVals.size(); i += 2) {
+      Value pair = packLLVector(loc, ArrayRef(inVals).slice(i, 2), rewriter);
+      Value packed = b.bitcast(pair, i32_ty);
+
+      PTXBuilder ptxBuilder;
+      auto *dst = ptxBuilder.newOperand("=r", /*init=*/false);
+      auto *src = ptxBuilder.newOperand(packed, "r");
+      auto &movmatrix =
+          *ptxBuilder.create("movmatrix.sync.aligned.m8n8.trans.b16 $0, $1;");
+      movmatrix({dst, src}, /*onlyAttachMLIRArgs=*/true);
+      Value moved = ptxBuilder.launch(rewriter, loc, i32_ty);
+
+      Value movedPair = b.bitcast(moved, pairTy);
+      unsigned dstPair = dstPairForSrc[i / 2];
+      outVals[2 * dstPair] = b.extract_element(movedPair, b.i32_val(0));
+      outVals[2 * dstPair + 1] = b.extract_element(movedPair, b.i32_val(1));
+    }
+
+    Value result =
+        packLLElements(loc, getTypeConverter(), outVals, rewriter, dstTy);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+
   LogicalResult
   lowerDistToDistWithDistSmem(triton::gpu::ConvertLayoutOp op,
                               OpAdaptor adaptor,
