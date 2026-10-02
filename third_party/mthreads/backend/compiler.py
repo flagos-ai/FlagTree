@@ -31,7 +31,10 @@ def min_dot_size(target: GPUTarget):
 
 
 # Whole-byte dtypes covered by the inherited async-copy/descriptor movement
-# paths; the fp8 portion follows the per-capability storage whitelist
+# paths; the fp8 portion follows the per-capability storage whitelist. The
+# async-copy path additionally gates on a >= 4-byte per-thread copy vector
+# (cp.async-style, dtype-agnostic); narrower copies fall back to ordinary
+# tt.load.
 _MOVEMENT_DTYPES = ("int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "fp16", "bf16", "fp32",
                     "fp64")
 

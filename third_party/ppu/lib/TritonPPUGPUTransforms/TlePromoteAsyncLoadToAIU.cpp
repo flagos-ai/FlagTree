@@ -33,6 +33,15 @@ namespace mlir {
 
 namespace {
 
+// The AIU bulk copy only moves 1/2/4-byte elements (.b8/.b16/.b32); other
+// widths stay ordinary tt.load.
+static bool isAIULoadElementType(Type elemTy) {
+  if (!elemTy.isIntOrFloat())
+    return false;
+  unsigned bitWidth = elemTy.getIntOrFloatBitWidth();
+  return bitWidth == 8 || bitWidth == 16 || bitWidth == 32;
+}
+
 class TlePromoteAsyncLoadToAIUPass
     : public impl::TlePromoteAsyncLoadToAIUPassBase<
           TlePromoteAsyncLoadToAIUPass> {
@@ -51,6 +60,9 @@ public:
       if (!asyncAttr || !asyncAttr.getValue())
         return;
       if (!triton::isTensorPointerType(loadOp.getPtr().getType()))
+        return;
+      auto resultTy = dyn_cast<RankedTensorType>(loadOp.getType());
+      if (!resultTy || !isAIULoadElementType(resultTy.getElementType()))
         return;
       toPromote.push_back(loadOp);
     });
