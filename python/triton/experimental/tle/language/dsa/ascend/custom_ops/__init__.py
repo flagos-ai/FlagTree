@@ -9,6 +9,7 @@ from .common import (
 # 面向用户的 custom op
 from .registry import (
     duplicate_bitwise_mask,
+    data_copy_gm_to_l1_nd2nz_int8,
     gather_gm_to_l1,
     gather_gm_to_ub,
     gather_mask_builtin_pattern,
@@ -28,6 +29,7 @@ __all__ = [
     "SORT_IMPL_S4096_K129_512",
     "SORT_IMPL_S4096_K1_128_K2048",
     "duplicate_bitwise_mask",
+    "data_copy_gm_to_l1_nd2nz_int8",
     "gather_gm_to_l1",
     "gather_gm_to_ub",
     "gather_mask_builtin_pattern",

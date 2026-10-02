@@ -67,6 +67,60 @@ class duplicate_bitwise_mask:
 
 
 @al.register_custom_op
+class data_copy_gm_to_l1_nd2nz_int8:
+    """One signed INT8 GM-to-L1 DataCopy with all dav_c220 Nd2NzParams.
+
+    The caller owns source bounds, ND/NZ layouts and pipeline ordering.
+    A following tl.dot anchors the logical rank-two output's rank-four L1
+    NZ layout. A standalone raw-output-to-store graph is not supported.
+    Static parameters follow CANN CheckNd2NzParamsCommon; dynamic parameters
+    must satisfy those same bounds at runtime.
+    """
+
+    core = al.CORE.CUBE
+    pipe = al.PIPE.PIPE_MTE2
+    mode = al.MODE.SIMD
+
+    def __init__(self, src, nd_num: tl.uint16, n_value: tl.uint16, d_value: tl.uint16, src_nd_matrix_stride: tl.uint16,
+                 src_d_value: tl.uint16, dst_nz_c0_stride: tl.uint16, dst_nz_n_stride: tl.uint16,
+                 dst_nz_matrix_stride: tl.uint16, out=None):
+        assert out is not None, "data_copy_gm_to_l1_nd2nz_int8 requires an output buffer"
+        assert _element_dtype(src) == tl.int8, "src must contain signed INT8"
+        assert _element_dtype(out) == tl.int8, "out must contain signed INT8"
+        assert src.dtype.is_ptr() and src.dtype.element_ty.is_block(), (
+            "src must be a two-dimensional GM block pointer")
+        assert len(src.dtype.element_ty.shape) == 2, "src must have rank two"
+        assert len(out.shape) == 2, "out must have logical rank two"
+        # CANN 9.1 kernel_operator_data_copy_check.h, CheckNd2NzParamsCommon.
+        fields = (
+            ("nd_num", nd_num, 0, 4095),
+            ("n_value", n_value, 0, 16384),
+            ("d_value", d_value, 0, 65535),
+            ("src_nd_matrix_stride", src_nd_matrix_stride, 0, 65535),
+            ("src_d_value", src_d_value, 1, 65535),
+            ("dst_nz_c0_stride", dst_nz_c0_stride, 1, 16384),
+            ("dst_nz_n_stride", dst_nz_n_stride, 1, 16384),
+            ("dst_nz_matrix_stride", dst_nz_matrix_stride, 0, 65535),
+        )
+        for name, value, lower, upper in fields:
+            assert not isinstance(value, bool), f"{name} must be an integer scalar, not bool"
+            if isinstance(value, int):
+                assert lower <= value <= upper, f"{name} must be in [{lower}, {upper}] on dav_c220"
+            else:
+                assert isinstance(value, tl.tensor) and not value.type.is_block() and value.dtype.is_int(), (
+                    f"{name} must be an integer scalar")
+        if all(isinstance(value, int) for _, value, _, _ in fields) and nd_num and n_value and d_value:
+            # Match CANN's CheckDataCopyTensorSizeOverflow for signed INT8.
+            dst_bytes = ((nd_num - 1) * dst_nz_matrix_stride + (n_value - 1) * dst_nz_n_stride * 32 +
+                         ((d_value + 31) // 32 - 1) * dst_nz_c0_stride * 32 + 32)
+            rows, cols = (int(dim) for dim in out.shape)
+            nz_bytes = ((rows + 15) // 16 * 16) * ((cols + 31) // 32 * 32)
+            assert dst_bytes <= nz_bytes, "ND2NZ destination strides exceed the output NZ buffer"
+        self.symbol = "custom_data_copy_gm_to_l1_nd2nz_int8"
+        self.bitcode = CUSTOM_OPS_BITCODE
+
+
+@al.register_custom_op
 class gather_gm_to_l1:
     """
     /*
