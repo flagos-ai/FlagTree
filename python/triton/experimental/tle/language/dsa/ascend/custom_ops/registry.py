@@ -109,7 +109,8 @@ class data_copy_gm_to_l1_nd2nz_int8:
             else:
                 assert isinstance(value, tl.tensor) and not value.type.is_block() and value.dtype.is_int(), (
                     f"{name} must be an integer scalar")
-        if all(isinstance(value, int) for _, value, _, _ in fields) and nd_num and n_value and d_value:
+        dst_fields = (nd_num, n_value, d_value, dst_nz_c0_stride, dst_nz_n_stride, dst_nz_matrix_stride)
+        if all(isinstance(value, int) for value in dst_fields) and nd_num and n_value and d_value:
             # Match CANN's CheckDataCopyTensorSizeOverflow for signed INT8.
             dst_bytes = ((nd_num - 1) * dst_nz_matrix_stride + (n_value - 1) * dst_nz_n_stride * 32 +
                          ((d_value + 31) // 32 - 1) * dst_nz_c0_stride * 32 + 32)

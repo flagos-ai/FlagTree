@@ -109,6 +109,12 @@ def test_validation():
         changed = args.copy()
         changed[position] = value
         invalid.append((changed, dst))
+    # A dynamic source stride must not bypass an entirely static output bound.
+    for position in (4, 5):
+        changed = args.copy()
+        changed[position] = tl.tensor(None, tl.uint16)
+        changed[6] = 256
+        invalid.append((changed, dst))
     # The custom-op argument converter lowers Python bool to i1 before applying
     # its declared type, which cannot match this primitive's uint16 ABI.
     for position in range(1, 9):
