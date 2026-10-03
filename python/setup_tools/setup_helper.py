@@ -265,16 +265,16 @@ class FlagPrismSetup:
         self.project_root = Path(project_root).resolve()
         backend = configs.flagtree_backend or ""
         # FlagPrism: register all supported integration backends together.
-        supported_backends = {"ascend", "iluvatar", "mthreads"}
+        supported_backends = {"ascend", "iluvatar", "mthreads", "enflame"}
         default = "ON" if backend in supported_backends else "OFF"
         self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
         self.build_config = None
         self._dependency_cmake_args = dependency_cmake_args
 
         if self.enabled and backend not in supported_backends:
-            # FlagPrism: report the newly supported mthreads backend.
+            # FlagPrism: report the supported integration backends.
             raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
-                               "FLAGTREE_BACKEND=ascend, iluvatar, or mthreads.")
+                               "FLAGTREE_BACKEND=ascend, iluvatar, mthreads, or enflame.")
         if not self.enabled:
             return
         if self._check_env_flag("TRITON_BUILD_PROTON"):
