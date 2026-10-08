@@ -163,36 +163,62 @@ runs:
 
         # ------------------------------------------------------------------
         # Helper: measure the size (in bytes) of the cloned repo directory
+        # No dependency on `cut`; uses bash parameter expansion instead.
         # ------------------------------------------------------------------
         measure_repo_bytes() {
           if [ ! -d "$REPO_NAME" ]; then
             echo 0
             return 0
           fi
-          if du -sb "$REPO_NAME" >/dev/null 2>&1; then
-            du -sb "$REPO_NAME" 2>/dev/null | cut -f1
-          else
-            # macOS fallback: du -sk returns KB
-            local kb
-            kb=$(du -sk "$REPO_NAME" 2>/dev/null | cut -f1)
-            echo $(( ${kb:-0} * 1024 ))
+
+          local out
+          if out=$(du -sb "$REPO_NAME" 2>/dev/null); then
+            # du -sb output: "<bytes>\t<path>"
+            out="${out%%[[:space:]]*}"
+            echo "${out:-0}"
+            return 0
           fi
+
+          if out=$(du -sk "$REPO_NAME" 2>/dev/null); then
+            out="${out%%[[:space:]]*}"
+            echo $(( ${out:-0} * 1024 ))
+            return 0
+          fi
+
+          echo 0
         }
 
         # ------------------------------------------------------------------
-        # Helper: human-readable byte size
+        # Helper: human-readable byte size (pure bash, no awk/cut)
         # ------------------------------------------------------------------
         human_bytes() {
           local b=$1
+          case "$b" in
+            ''|*[!0-9]*) b=0 ;;
+          esac
+
+          local unit="B"
+          local divisor=1
+
           if [ "$b" -ge 1073741824 ]; then
-            awk "BEGIN{printf \"%.2f GiB\", $b/1073741824}"
+            unit="GiB"; divisor=1073741824
           elif [ "$b" -ge 1048576 ]; then
-            awk "BEGIN{printf \"%.2f MiB\", $b/1048576}"
+            unit="MiB"; divisor=1048576
           elif [ "$b" -ge 1024 ]; then
-            awk "BEGIN{printf \"%.2f KiB\", $b/1024}"
+            unit="KiB"; divisor=1024
           else
             echo "${b} B"
+            return 0
           fi
+
+          local int_part=$(( b / divisor ))
+          local remainder=$(( b % divisor ))
+          local frac=$(( remainder * 100 / divisor ))
+          if [ "$frac" -lt 10 ]; then
+            frac="0${frac}"
+          fi
+
+          echo "${int_part}.${frac} ${unit}"
         }
 
         # ------------------------------------------------------------------
