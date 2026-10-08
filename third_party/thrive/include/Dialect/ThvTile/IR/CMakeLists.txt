@@ -1,0 +1,22 @@
+set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
+
+set(LLVM_TARGET_DEFINITIONS ThvTileOps.td)
+mlir_tablegen(Dialect.h.inc -gen-dialect-decls -dialect=thvtile)
+mlir_tablegen(Dialect.cpp.inc -gen-dialect-defs -dialect=thvtile)
+mlir_tablegen(Ops.h.inc -gen-op-decls)
+mlir_tablegen(Ops.cpp.inc -gen-op-defs)
+add_mlir_doc(ThvTileDialect ThvTileDialect dialects/ -gen-dialect-doc)
+add_mlir_doc(ThvTileOps ThvTileOps dialects/ -gen-op-doc)
+add_public_tablegen_target(ThvTileTableGen)
+
+set(LLVM_TARGET_DEFINITIONS ThvTileTypes.td)
+mlir_tablegen(Types.h.inc -gen-typedef-decls -typedefs-dialect=thvtile)
+mlir_tablegen(Types.cpp.inc -gen-typedef-defs -typedefs-dialect=thvtile)
+add_public_tablegen_target(ThvTileTypesIncGen)
+
+set(LLVM_TARGET_DEFINITIONS ThvTileAttrDefs.td)
+mlir_tablegen(ThvTileAttrDefs.h.inc -gen-attrdef-decls)
+mlir_tablegen(ThvTileAttrDefs.cpp.inc -gen-attrdef-defs)
+mlir_tablegen(ThvTileEnums.h.inc -gen-enum-decls)
+mlir_tablegen(ThvTileEnums.cpp.inc -gen-enum-defs)
+add_public_tablegen_target(ThvTileAttrDefsIncGen)
