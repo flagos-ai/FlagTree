@@ -162,6 +162,64 @@ runs:
         }
 
         # ------------------------------------------------------------------
+        # Helper: measure the size (in bytes) of the cloned repo directory
+        # ------------------------------------------------------------------
+        measure_repo_bytes() {
+          if [ ! -d "$REPO_NAME" ]; then
+            echo 0
+            return 0
+          fi
+          if du -sb "$REPO_NAME" >/dev/null 2>&1; then
+            du -sb "$REPO_NAME" 2>/dev/null | cut -f1
+          else
+            # macOS fallback: du -sk returns KB
+            local kb
+            kb=$(du -sk "$REPO_NAME" 2>/dev/null | cut -f1)
+            echo $(( ${kb:-0} * 1024 ))
+          fi
+        }
+
+        # ------------------------------------------------------------------
+        # Helper: human-readable byte size
+        # ------------------------------------------------------------------
+        human_bytes() {
+          local b=$1
+          if [ "$b" -ge 1073741824 ]; then
+            awk "BEGIN{printf \"%.2f GiB\", $b/1073741824}"
+          elif [ "$b" -ge 1048576 ]; then
+            awk "BEGIN{printf \"%.2f MiB\", $b/1048576}"
+          elif [ "$b" -ge 1024 ]; then
+            awk "BEGIN{printf \"%.2f KiB\", $b/1024}"
+          else
+            echo "${b} B"
+          fi
+        }
+
+        # ------------------------------------------------------------------
+        # Helper: print elapsed time and average rate for one attempt
+        # ------------------------------------------------------------------
+        print_clone_metrics() {
+          local attempt=$1
+          local reason=$2        # "killed" or "succeeded"
+          local duration=$3
+          local bytes
+          bytes=$(measure_repo_bytes)
+          bytes=${bytes:-0}
+
+          local rate=0
+          if [ "$duration" -gt 0 ]; then
+            rate=$(( bytes / duration ))
+          fi
+
+          local partial=""
+          if [ "$reason" = "killed" ]; then
+            partial=" (partial)"
+          fi
+
+          echo "📊 [Attempt $attempt/$MAX_ATTEMPTS] ${reason}: elapsed=${duration}s, size=$(human_bytes "$bytes")${partial}, avg-rate=$(human_bytes "$rate")/s"
+        }
+
+        # ------------------------------------------------------------------
         # Prepare target directory
         # ------------------------------------------------------------------
         mkdir -p "$CLONE_DIR"
@@ -216,6 +274,8 @@ runs:
               echo "[Attempt $attempt/$MAX_ATTEMPTS] total time limit (${MAX_TOTAL_SECONDS}s) reached, killing git clone..."
               kill_tree "$clone_pid"
               wait "$clone_pid" 2>/dev/null || true
+              kill_duration=$(( $(date +%s) - attempt_start ))
+              print_clone_metrics "$attempt" "killed" "$kill_duration"
               echo "🚨 FATAL: Total time limit (${MAX_TOTAL_SECONDS}s) exceeded. Giving up."
               exit 1
             fi
@@ -242,6 +302,7 @@ runs:
           attempt_duration=$(( attempt_end - attempt_start ))
 
           if [ "$was_slow_killed" -eq 0 ] && [ "$clone_exit" -eq 0 ]; then
+            print_clone_metrics "$attempt" "succeeded" "$attempt_duration"
             echo "✅ [Attempt $attempt/$MAX_ATTEMPTS] git clone succeeded in ${attempt_duration}s."
             clone_succeeded=1
             break
@@ -249,6 +310,7 @@ runs:
 
           # Failure handling
           if [ "$was_slow_killed" -eq 1 ]; then
+            print_clone_metrics "$attempt" "killed" "$attempt_duration"
             echo "⏱️ [Attempt $attempt/$MAX_ATTEMPTS] slow-speed interruption after ${attempt_duration}s. Retrying immediately (no sleep)."
             # No sleep on slow-speed interruption
           else
