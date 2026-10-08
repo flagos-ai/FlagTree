@@ -121,7 +121,7 @@ from .core import (
     where,
 )
 from .math import (umulhi, exp, exp2, fma, log, log2, cos, rsqrt, sin, sqrt, sqrt_rn, abs, fdiv, div_rn, erf, floor,
-                   ceil)
+                   ceil, gelu)
 from .random import (
     pair_uniform_to_normal,
     philox,
@@ -203,6 +203,7 @@ __all__ = [
     "fma",
     "full",
     "gather",
+    "gelu",
     "histogram",
     "inline_asm_elementwise",
     "interleave",

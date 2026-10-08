@@ -51,6 +51,7 @@ template <typename OP> struct VLibOp;
 
 VLibOp2DevCall(triton::xpu::VSinFOp, "_ZN3xpu5vsinfEDv16_f");
 VLibOp2DevCall(triton::xpu::VCosFOp, "_ZN3xpu5vcosfEDv16_f");
+VLibOp2DevCall(triton::xpu::VSigmoidFOp, "_ZN3xpu9vsigmoidfEDv16_f");
 
 template <typename OP, int ARCH> struct VLibOpFP16;
 
@@ -64,6 +65,8 @@ VLibOpFP162DevCall(triton::xpu::VSinFOp, 2, "_ZN3xpu5vsinfEDv32_t");
 VLibOpFP162DevCall(triton::xpu::VCosFOp, 2, "_ZN3xpu5vcosfEDv32_t");
 VLibOpFP162DevCall(triton::xpu::VSinFOp, 3, "_ZN3xpu5vsinfEDv32_DF16_");
 VLibOpFP162DevCall(triton::xpu::VCosFOp, 3, "_ZN3xpu5vcosfEDv32_DF16_");
+VLibOpFP162DevCall(triton::xpu::VSigmoidFOp, 2, "_ZN3xpu9vsigmoidfEDv32_t");
+VLibOpFP162DevCall(triton::xpu::VSigmoidFOp, 3, "_ZN3xpu9vsigmoidfEDv32_DF16_");
 
 } // namespace
 
@@ -87,8 +90,10 @@ struct XPUVectorizedOpsConversionBase {
       break;
     }
     default:
-      llvm_unreachable(
-          "Failed to create GM2LMOp with unsupported xpu architecture.");
+      // Pattern constructors also run for SDNN-only modules on newer
+      // architectures.
+      xpuArch = targetInfo.getXPUArch();
+      break;
     }
   }
 
@@ -572,19 +577,36 @@ struct VSelectOpConversion : public ConvertOpToLLVMPattern<SrcOp>,
 
     for (size_t elemIter = 0; elemIter < numElems; ++elemIter) {
       // Step 1. Convert Condition To v32i1/v16i1 Mask
-      Value orV = i32_val(0);
-      for (size_t conditionIter = 0; conditionIter < vecSize; ++conditionIter) {
-        Value boolVal =
-            isa<VectorType>(conditionElems[0].getType())
-                ? extract_element(i1_ty, conditionElems[elemIter],
-                                  i32_val(conditionIter))
-                : conditionElems[elemIter * vecSize + conditionIter];
-        Value extV = zext(i32_ty, boolVal);
-        Value shlV = shl(extV, i32_val(conditionIter));
-        orV = or_(orV, shlV);
-      }
       VectorType maskTy = VectorType::get(32, i1_ty);
-      Value maskV = bitcast(orV, maskTy);
+      Value maskV;
+
+      if (isa<VectorType>(conditionElems[elemIter].getType())) {
+        auto condTy =
+            mlir::cast<VectorType>(conditionElems[elemIter].getType());
+        unsigned condSize = condTy.getNumElements();
+        if (condSize == 32) {
+          // Already vector<32xi1>, can use directly
+          maskV = conditionElems[elemIter];
+        } else {
+          // Optimized: bitcast vector<Nxi1> -> iN -> i32 -> vector<32xi1>
+          // Replaces 4*N scalar ops (extractelement+zext+shl+or) with 3 ops
+          IntegerType intTy = IntegerType::get(ctx, condSize);
+          Value intVal = bitcast(conditionElems[elemIter], intTy);
+          Value i32Val = zext(i32_ty, intVal);
+          maskV = bitcast(i32Val, maskTy);
+        }
+      } else {
+        // Fallback: scalar i1 packing for non-vector conditions
+        Value orV = i32_val(0);
+        for (size_t conditionIter = 0; conditionIter < vecSize;
+             ++conditionIter) {
+          Value boolVal = conditionElems[elemIter * vecSize + conditionIter];
+          Value extV = zext(i32_ty, boolVal);
+          Value shlV = shl(extV, i32_val(conditionIter));
+          orV = or_(orV, shlV);
+        }
+        maskV = bitcast(orV, maskTy);
+      }
 
       if (elemTy.isF32()) {
         // Step 2. vset_zero()
@@ -648,6 +670,89 @@ struct VSelectOpConversion : public ConvertOpToLLVMPattern<SrcOp>,
     rewriter.replaceOp(op, {llStruct});
 
     return success();
+  }
+};
+
+// Integer twin of VCmpFOpConversion, for the vcmpi UnrollControl rewrites an
+// inlined select(cmpi) combine into. The result elements are i1 (packed into
+// the caller's mask by VSelectOpConversion), so one vector ICmpOp per slice
+// is the whole lowering.
+struct VCmpIOpConversion : public ConvertOpToLLVMPattern<triton::xpu::VCmpIOp>,
+                           public XPUVectorizedOpsConversionBase {
+
+  using ConvertOpToLLVMPattern<triton::xpu::VCmpIOp>::ConvertOpToLLVMPattern;
+  using ConvertOpToLLVMPattern<triton::xpu::VCmpIOp>::getTypeConverter;
+  using OpAdaptor = typename triton::xpu::VCmpIOp::Adaptor;
+
+  VCmpIOpConversion(LLVMTypeConverter &converter, PatternBenefit benefit,
+                    const triton::xpu::TargetInfo &targetInfo)
+      : ConvertOpToLLVMPattern<triton::xpu::VCmpIOp>(converter, benefit),
+        XPUVectorizedOpsConversionBase(targetInfo) {}
+
+  LogicalResult matchAndRewrite(triton::xpu::VCmpIOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const {
+    Value lhs = op.getLhs();
+    Value rhs = op.getRhs();
+    Value res = op.getResult();
+
+    Value lllhs = adaptor.getLhs();
+    Value llrhs = adaptor.getRhs();
+
+    auto loc = op->getLoc();
+
+    auto lhsTy = lhs.getType();
+    auto rhsTy = rhs.getType();
+    assert(lhsTy == rhsTy);
+    auto lhsElemTy = getElementTypeOrSelf(getElementTypeOrSelf(lhsTy));
+    (void)lhsElemTy;
+    auto resTy = res.getType();
+    auto resVecTy = getElementTypeOrSelf(resTy);
+    auto resElemTy = getElementTypeOrSelf(resVecTy);
+    assert(resElemTy.isInteger(1) &&
+           "vcmpi result must be i1 lanes for vselect's mask packing");
+    auto llResVecTy = getTypeConverter()->convertType(resVecTy);
+
+    unsigned numVecs = getTotalElemsPerThread(lhsTy);
+    auto lhsVecs = unpackLLElements(loc, lllhs, rewriter);
+    auto rhsVecs = unpackLLElements(loc, llrhs, rewriter);
+    assert(lhsVecs.size() == rhsVecs.size());
+
+    SmallVector<Value> calculatedVals;
+    for (size_t i = 0; i < numVecs; ++i) {
+      calculatedVals.push_back(rewriter.create<LLVM::ICmpOp>(
+          loc, llResVecTy, ArithCmpIPredicateToLLVM(op.getPredicate()),
+          lhsVecs[i], rhsVecs[i]));
+    }
+
+    Type llvmResultStructTy = getTypeConverter()->convertType(resTy);
+    Value resultStruct = packLLElements(loc, getTypeConverter(), calculatedVals,
+                                        rewriter, llvmResultStructTy);
+    rewriter.replaceOp(op, {resultStruct});
+
+    return success();
+  }
+
+  static LLVM::ICmpPredicate
+  ArithCmpIPredicateToLLVM(arith::CmpIPredicate predicate) {
+    switch (predicate) {
+#define __PRED_ENUM(item__, item1__)                                           \
+  case arith::CmpIPredicate::item__:                                           \
+    return LLVM::ICmpPredicate::item1__
+
+      __PRED_ENUM(eq, eq);
+      __PRED_ENUM(ne, ne);
+      __PRED_ENUM(sgt, sgt);
+      __PRED_ENUM(sge, sge);
+      __PRED_ENUM(slt, slt);
+      __PRED_ENUM(sle, sle);
+      __PRED_ENUM(ugt, ugt);
+      __PRED_ENUM(uge, uge);
+      __PRED_ENUM(ult, ult);
+      __PRED_ENUM(ule, ule);
+
+#undef __PRED_ENUM
+    }
+    llvm_unreachable("Unknown arith::CmpIPredicate");
   }
 };
 
@@ -925,6 +1030,90 @@ struct VTruncFOpConversion
   }
 };
 
+// vsitofp widens an integer element into a wider float element. When the
+// source is narrower than f32 the byte count expands (i8 -> f32 is 1:4), so a
+// single source VREG (512 bits) must be spread over several result VREGs: an
+// i8 register holds 64 lanes while an f32 register holds 16, so the four
+// 16-lane segments of the source become four f32 registers. The generic
+// UnaryOpConversion assumes a 1:1 element-count mapping and packs only
+// getTotalElemsPerThread(value) results into a struct sized by the result
+// type -- that mismatch is the crash this pattern replaces. llc has no i8
+// vector pattern for a bare LLVM::SIToFPOp (it scalarizes), so each segment
+// goes through the dedicated vfix82float_{ll,lh,hl,hh} instructions; the lane
+// order mirrors the device-side primitive_cast in
+// xpu/kernel/cluster_primitive.h (ll = lanes 0-15 ... hh = lanes 48-63).
+struct VSIToFPOpConversion
+    : public ConvertOpToLLVMPattern<triton::xpu::VSIToFPOp>,
+      public XPUVectorizedOpsConversionBase {
+
+  using ConvertOpToLLVMPattern<triton::xpu::VSIToFPOp>::ConvertOpToLLVMPattern;
+  using ConvertOpToLLVMPattern<triton::xpu::VSIToFPOp>::getTypeConverter;
+  using OpAdaptor = typename triton::xpu::VSIToFPOp::Adaptor;
+
+  VSIToFPOpConversion(LLVMTypeConverter &converter, PatternBenefit benefit,
+                      const triton::xpu::TargetInfo &targetInfo)
+      : ConvertOpToLLVMPattern<triton::xpu::VSIToFPOp>(converter, benefit),
+        XPUVectorizedOpsConversionBase(targetInfo) {}
+
+  LogicalResult
+  matchAndRewrite(triton::xpu::VSIToFPOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    auto loc = op->getLoc();
+    auto val = op.getValue();
+    auto res = op.getResult();
+    auto llVal = adaptor.getValue();
+
+    Type valTy = val.getType();
+    Type resTy = res.getType();
+    auto valElemTy = getElementTypeOrSelf(valTy);
+    auto _valElemTy = getElementTypeOrSelf(valElemTy);
+    auto resElemTy = getElementTypeOrSelf(resTy);
+    auto ctx = rewriter.getContext();
+
+    auto llVals = unpackLLElements(loc, llVal, rewriter);
+    unsigned numElems = getTotalElemsPerThread(valTy);
+    unsigned numResElems = getTotalElemsPerThread(resTy);
+
+    SmallVector<Value, 8> fp32Vecs;
+    if (_valElemTy.isInteger(8)) {
+      // i8 -> f32 expands 1:4: each source VREG carries four 16-lane segments
+      // that map one-to-one onto four f32 VREGs.
+      static const char *kSegAsm[4] = {
+          "vfix82float_ll.rn $0, $1", "vfix82float_lh.rn $0, $1",
+          "vfix82float_hl.rn $0, $1", "vfix82float_hh.rn $0, $1"};
+      for (unsigned i = 0; i < numElems && fp32Vecs.size() < numResElems; ++i) {
+        for (unsigned j = 0; j < 4 && fp32Vecs.size() < numResElems; ++j) {
+          auto asmOp = rewriter.create<LLVM::InlineAsmOp>(
+              loc, resElemTy, ValueRange{llVals[i]}, kSegAsm[j], "=&v,v",
+              /*has_side_effects=*/false, /*is_align_stack=*/false,
+              LLVM::tailcallkind::TailCallKind::None,
+              LLVM::AsmDialectAttr::get(ctx, LLVM::AsmDialect::AD_ATT),
+              ArrayAttr::get(ctx, {}));
+          fp32Vecs.push_back(asmOp.getRes());
+        }
+      }
+    } else if (_valElemTy.isInteger(32)) {
+      // i32 -> f32 keeps the lane count (both sides are 4 bytes wide) and llc
+      // selects vfix2float.rn for the plain op.
+      for (unsigned i = 0; i < numElems && fp32Vecs.size() < numResElems; ++i) {
+        auto cast = rewriter.create<LLVM::SIToFPOp>(
+            loc, convertVectorType(resElemTy), llVals[i]);
+        fp32Vecs.push_back(cast);
+      }
+    } else {
+      assert(0 && "Only support i8/i32 as source dtype in VSIToFPOp!");
+    }
+
+    Type llvmResultStructTy = getTypeConverter()->convertType(resTy);
+    Value resultStruct = packLLElements(loc, getTypeConverter(), fp32Vecs,
+                                        rewriter, llvmResultStructTy);
+    rewriter.replaceOp(op, {resultStruct});
+
+    return success();
+  }
+};
+
 struct VCmpFOpConversion : public ConvertOpToLLVMPattern<triton::xpu::VCmpFOp>,
                            public XPUVectorizedOpsConversionBase {
 
@@ -993,11 +1182,60 @@ struct VCmpFOpConversion : public ConvertOpToLLVMPattern<triton::xpu::VCmpFOp>,
                          "as Input Type");
       }
     } else {
-      for (size_t vecStart = 0; vecStart < numVecs; vecStart += 1) {
-        Value vcmpfOp = rewriter.create<LLVM::FCmpOp>(
-            loc, llResVecTy, ArithCmpFPredicateToLLVM(op.getPredicate()),
-            lhsVecs[vecStart], rhsVecs[vecStart]);
-        calculatedVals.push_back(vcmpfOp);
+      // Self-compare NaN checks (lhs == rhs) must NOT become a raw vector
+      // llvm.fcmp: LLVM canonicalizes `fcmp une x, x` into `fcmp uno x, 0`
+      // and `fcmp oeq x, x` into `fcmp ord x, 0`, and the XPU backend has no
+      // ISel pattern for vector SETUO/SETORD -> "Cannot select" abort
+      // (flaggems xlogy.py:32 `y != y`, measured 2026-09-11). The six common
+      // predicates (oeq/une/ogt/oge/olt/ole, non-self) select fine (they
+      // lower to vneq.f.mz & friends), so only the self-compare family needs
+      // a rewrite. Express the NaN test with ops from proven-selectable
+      // families -- vector bitcast, llvm.and, and the integer icmp path
+      // validated end-to-end by vcmpi:
+      //   isNaN(x)  <=> (bitcast<i32>(x) & 0x7fffffff) >s 0x7f800000
+      //   !isNaN(x) <=> (bitcast<i32>(x) & 0x7fffffff) <=s 0x7f800000
+      // (the mask clears the sign bit, so signed and unsigned agree on the
+      // non-negative remainder). Python's `x != x` / `x == x` are the only
+      // Triton-reachable producers of this family. F16/BF16 self-compares
+      // keep the raw fcmp below and remain unsupported (no known kernel:
+      // frontends convert to f32 first, as flaggems does).
+      arith::CmpFPredicate pred = op.getPredicate();
+      bool selfCmp = (op.getLhs() == op.getRhs());
+      bool nanCheck = selfCmp && (pred == arith::CmpFPredicate::UNE ||
+                                  pred == arith::CmpFPredicate::UNO ||
+                                  pred == arith::CmpFPredicate::UEQ);
+      bool notNanCheck = selfCmp && (pred == arith::CmpFPredicate::OEQ ||
+                                     pred == arith::CmpFPredicate::ORD);
+      if ((nanCheck || notNanCheck) && lhsElemTy.isF32() && numVecs > 0) {
+        auto srcVecTy = mlir::cast<mlir::VectorType>(lhsVecs[0].getType());
+        auto i32VecTy =
+            mlir::VectorType::get(srcVecTy.getShape(), rewriter.getI32Type());
+        Value absMask = rewriter.create<LLVM::ConstantOp>(
+            loc, i32VecTy,
+            DenseElementsAttr::get(cast<ShapedType>(i32VecTy),
+                                   rewriter.getI32IntegerAttr(0x7fffffff)));
+        Value nanBound = rewriter.create<LLVM::ConstantOp>(
+            loc, i32VecTy,
+            DenseElementsAttr::get(cast<ShapedType>(i32VecTy),
+                                   rewriter.getI32IntegerAttr(0x7f800000)));
+        for (size_t i = 0; i < numVecs; ++i) {
+          Value bits =
+              rewriter.create<LLVM::BitcastOp>(loc, i32VecTy, lhsVecs[i]);
+          Value absBits =
+              rewriter.create<LLVM::AndOp>(loc, i32VecTy, bits, absMask);
+          Value nanMask = rewriter.create<LLVM::ICmpOp>(
+              loc, llResVecTy,
+              nanCheck ? LLVM::ICmpPredicate::sgt : LLVM::ICmpPredicate::sle,
+              absBits, nanBound);
+          calculatedVals.push_back(nanMask);
+        }
+      } else {
+        for (size_t vecStart = 0; vecStart < numVecs; vecStart += 1) {
+          Value vcmpfOp = rewriter.create<LLVM::FCmpOp>(
+              loc, llResVecTy, ArithCmpFPredicateToLLVM(op.getPredicate()),
+              lhsVecs[vecStart], rhsVecs[vecStart]);
+          calculatedVals.push_back(vcmpfOp);
+        }
       }
     }
 
@@ -1093,7 +1331,13 @@ void mlir::triton::xpu::populateTTXPUVectorizedOpToLLVMConversionPatterns(
                VVBinOpsConversion<triton::xpu::VvandIOp, LLVM::AndOp>,
                VVBinOpsConversion<triton::xpu::VvaddIOp, LLVM::AddOp>,
                VVBinOpsConversion<triton::xpu::VvsubIOp, LLVM::SubOp>,
-               VVBinOpsConversion<triton::xpu::VvmulIOp, LLVM::MulOp>>(
+               VVBinOpsConversion<triton::xpu::VvmulIOp, LLVM::MulOp>,
+               VVBinOpsConversion<triton::xpu::VvmaxSIOp, LLVM::SMaxOp>,
+               VVBinOpsConversion<triton::xpu::VvminSIOp, LLVM::SMinOp>,
+               VVBinOpsConversion<triton::xpu::VvmaxUIOp, LLVM::UMaxOp>,
+               VVBinOpsConversion<triton::xpu::VvminUIOp, LLVM::UMinOp>,
+               VVBinOpsConversion<triton::xpu::VvdivSIOp, LLVM::SDivOp>,
+               VVBinOpsConversion<triton::xpu::VvdivUIOp, LLVM::UDivOp>>(
       typeConverter, benefit, targetInfo);
   patterns.add<SVBinOpsConversion<triton::xpu::SvaddFOp>,
                SVBinOpsConversion<triton::xpu::SvmulFOp>,
@@ -1104,12 +1348,16 @@ void mlir::triton::xpu::populateTTXPUVectorizedOpToLLVMConversionPatterns(
   patterns.add<UnaryOpConversion<triton::xpu::VExpFOp, LLVM::Exp2Op>,
                UnaryOpConversion<triton::xpu::VSqrtFOp, LLVM::SqrtOp>,
                UnaryOpConversion<triton::xpu::VAbsFOp, LLVM::FAbsOp>,
-               UnaryOpConversion<triton::xpu::VLogFOp, LLVM::Log2Op>,
-               UnaryOpConversion<triton::xpu::VSIToFPOp, LLVM::SIToFPOp>>(
+               UnaryOpConversion<triton::xpu::VLogFOp, LLVM::Log2Op>>(
       typeConverter, benefit, targetInfo);
+  // vsitofp needs its own pattern: it is the only unary op above whose
+  // element count can change across the op (narrow -> wide), so the generic
+  // 1:1 UnaryOpConversion cannot pack its result.
+  patterns.add<VSIToFPOpConversion>(typeConverter, benefit, targetInfo);
   patterns.add<VOpConversionLibCall<triton::xpu::VSinFOp>,
-               VOpConversionLibCall<triton::xpu::VCosFOp>>(typeConverter,
-                                                           benefit, targetInfo);
+               VOpConversionLibCall<triton::xpu::VCosFOp>,
+               VOpConversionLibCall<triton::xpu::VSigmoidFOp>>(
+      typeConverter, benefit, targetInfo);
   patterns.add<VConstOpConversion<triton::xpu::VConstOp, LLVM::ConstantOp>>(
       typeConverter, benefit, targetInfo);
   patterns.add<VSplatOpConversion<triton::xpu::VSplatOp>>(typeConverter,
@@ -1121,4 +1369,5 @@ void mlir::triton::xpu::populateTTXPUVectorizedOpToLLVMConversionPatterns(
   patterns.add<VExtFOpConversion>(typeConverter, benefit, targetInfo);
   patterns.add<VTruncFOpConversion>(typeConverter, benefit, targetInfo);
   patterns.add<VCmpFOpConversion>(typeConverter, benefit, targetInfo);
+  patterns.add<VCmpIOpConversion>(typeConverter, benefit, targetInfo);
 }

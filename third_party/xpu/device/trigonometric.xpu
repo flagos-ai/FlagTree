@@ -1262,6 +1262,40 @@ __device__ inline float32x16_t vtanhf(float32x16_t input) {
   return res;
 }
 
+// vsigmoidf: sigmoid(x) = 1/(1+exp2(x))
+// Input is -x*log2(e), so exp2(input) = exp(-x).
+__device__ inline float32x16_t vsigmoidf(float32x16_t input) {
+  int len = 16;
+  __simd__ float in_lm[len];
+  __simd__ float out_lm[len];
+  vstore_lm_float32x16(in_lm, input);
+  mfence_lm();
+  for (int k = 0; k < len; k += 4) {
+    float x0 = *(in_lm + k);
+    float x1 = *(in_lm + k + 1);
+    float x2 = *(in_lm + k + 2);
+    float x3 = *(in_lm + k + 3);
+    float e0 = __builtin_xpu_exp2f(x0);
+    float e1 = __builtin_xpu_exp2f(x1);
+    float e2 = __builtin_xpu_exp2f(x2);
+    float e3 = __builtin_xpu_exp2f(x3);
+    *(out_lm + k)     = 1.0f / (1.0f + e0);
+    *(out_lm + k + 1) = 1.0f / (1.0f + e1);
+    *(out_lm + k + 2) = 1.0f / (1.0f + e2);
+    *(out_lm + k + 3) = 1.0f / (1.0f + e3);
+  }
+  mfence_lm();
+  return vload_lm_float32x16(out_lm);
+}
+
+__device__ inline float16x32_t vsigmoidf(float16x32_t input) {
+  float32x16_t vl_input = vfp162float_l(input);
+  float32x16_t vh_input = vfp162float_h(input);
+  float32x16_t vl_sig = vsigmoidf(vl_input);
+  float32x16_t vh_sig = vsigmoidf(vh_input);
+  return vfloat2fp16_lh(vl_sig, vh_sig);
+}
+
 __device__ inline float16x32_t hvtanh(float16x32_t input) {
   float32x16_t vl_input = vfp162float_l(input);
   float32x16_t vh_input = vfp162float_h(input);
@@ -2092,6 +2126,7 @@ __device__ inline uint32_t vveqfp32(float32x16_t vx, float32x16_t vy) {
       (static_cast<uint32_t>(vveq_float32x16(vy, vx)) & 0x0000FFFF);
   return mask;
 }
+
 __device__ inline uint32_t vveqfp16(float16x32_t vx, float16x32_t vy) {
   uint32_t mask = static_cast<uint32_t>(vveq_float16x32(vy, vx));
   return mask;

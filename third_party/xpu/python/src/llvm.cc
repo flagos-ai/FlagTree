@@ -1,11 +1,14 @@
 #include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
+#include "triton/Target/LLVMIR/IntrinsicAttrTable.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MIRParser/MIRParser.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
@@ -20,7 +23,12 @@
 #include "llvm/Pass.h"
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
+#if __has_include("llvm/Passes/PassPlugin.h")
 #include "llvm/Passes/PassPlugin.h"
+#else
+// LLVM >= 22.1.x moved PassPlugin.h under llvm/Plugins/.
+#include "llvm/Plugins/PassPlugin.h"
+#endif
 #include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Signals.h"
@@ -31,9 +39,21 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
+// XTDK LLVM22 ships the private XPU printf/assert lowering pass; public
+// LLVM22 does not.  The XPU backends lower asserts/printfs
+// themselves (TargetInfo::assertFail is a no-op and printf goes through the
+// printf runtime helpers), so the pass is compiled out for public
+// builds rather than reimplemented.
+#if __has_include("llvm/Transforms/Utils/XPULowerPrintfAssert.h")
+#define TRITON_HAVE_XPU_PRINTF_ASSERT 1
 #include "llvm/Transforms/Utils/XPULowerPrintfAssert.h"
+#else
+#define TRITON_HAVE_XPU_PRINTF_ASSERT 0
+#endif
+#include "llvm/Transforms/Scalar/InferAddressSpaces.h"
 #include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <pybind11/gil.h>
 #include <pybind11/pybind11.h>
@@ -75,10 +95,21 @@ initObjectFileByMemory(unsigned char *ObjArray, uint64_t ObjLen) {
   return ObjOrErr;
 }
 
-static bool isElfStackSizeOOB(std::string ElfObject) {
+// True for the XPU-family target triples (xpu3-, xpu4-, ...).  Public-LLVM
+// builds do not link those XTDK-private targets, so several LLVM lookups have
+// to fall back for them -- but only for them, so that a genuine lookup failure
+// on a target we *do* link (x86/nvptx/amdgpu) still surfaces as an error.
+static bool isXpuFamilyTriple(const llvm::Triple &triple) {
+  llvm::StringRef arch = triple.getArchName();
+  return arch.starts_with("xpu") || arch.starts_with("xcn");
+}
+
+// `Margin` bytes are held back from the budget: a caller that wants headroom
+// asks with a margin, and the hard limit is the same call with Margin = 0.
+static bool isElfStackSizeOOB(std::string ElfObject, uint32_t Margin = 0) {
   uint32_t StackSizeLimit = DEFAULTLOCALLIMIT;
-  const char *_lmSizeEnv = std::getenv("TRITON_TUNE_BUFFER_LM_SIZE");
-  std::string StackSizeLimitStr = _lmSizeEnv ? std::string(_lmSizeEnv) : "";
+  std::string StackSizeLimitStr =
+      mlir::triton::tools::getStrEnv("TRITON_TUNE_BUFFER_LM_SIZE");
   if (!StackSizeLimitStr.empty()) {
     llvm::StringRef StackSizeLimitSRf = StackSizeLimitStr;
     if (StackSizeLimitSRf.getAsInteger(10, StackSizeLimit)) {
@@ -125,22 +156,30 @@ static bool isElfStackSizeOOB(std::string ElfObject) {
     if (SymbolSize.second != 4) {
       llvm::report_fatal_error("Symbol Size Error");
     }
-    if (SymSectionOrErr.get()->getSize() != 8) {
+    // The XPU.KERNEL_STACK_SIZE section is 4 bytes in LLVM 19 XTDK llc objects
+    // and 8 bytes in XTDK LLVM 22 ones; the u32 stack size is the first 4
+    // bytes in both cases.  The public-LLVM22 libtriton parses the LLVM 19
+    // backend's objects, so accept either size.
+    uint64_t SectionSize = SymSectionOrErr.get()->getSize();
+    if (SectionSize != 4 && SectionSize != 8) {
       llvm::report_fatal_error("Section Size Error");
     }
+    if (ContentsOrErr->size() < sizeof(uint32_t)) {
+      llvm::report_fatal_error("KERNEL_STACK_SIZE section contents too short");
+    }
 
-    StackSize = *((uint32_t *)(ContentsOrErr->data()));
+    // memcpy rather than a pointer cast: the section contents are not
+    // guaranteed to be 4-byte aligned in the mapped object.
+    std::memcpy(&StackSize, ContentsOrErr->data(), sizeof(StackSize));
     break;
   }
-  return StackSize > StackSizeLimit;
+  return StackSize + Margin > StackSizeLimit;
 }
 
 static void applyXpuErrorLmSizeEnv() {
   uint32_t LMSizeLimit = -1;
   std::string LMSizeLimitStr =
-      (std::getenv("LLVM_ERROR_LM_SIZE")
-           ? std::string(std::getenv("LLVM_ERROR_LM_SIZE"))
-           : "");
+      mlir::triton::tools::getStrEnv("LLVM_ERROR_LM_SIZE");
   if (!LMSizeLimitStr.empty()) {
     llvm::StringRef LMSizeLimitSRf = LMSizeLimitStr;
     if (LMSizeLimitSRf.getAsInteger(10, LMSizeLimit)) {
@@ -148,7 +187,9 @@ static void applyXpuErrorLmSizeEnv() {
                                LMSizeLimitSRf);
     }
   }
-  llvm::StringMap<llvm::cl::Option *> optMap = llvm::cl::getRegisteredOptions();
+  // The container type returned by getRegisteredOptions() differs between
+  // public LLVM (DenseMap-like) and XTDK (StringMap); use auto.
+  auto optMap = llvm::cl::getRegisteredOptions();
   auto optIt = optMap.find("xpu-error-lm-size");
   if (optIt != optMap.end()) {
     llvm::cl::opt<uint64_t> *optPtr =
@@ -161,13 +202,52 @@ std::unique_ptr<TargetMachine>
 createTargetMachine(llvm::Module *module, std::string proc,
                     bool enable_fp_fusion, const std::string &features) {
   std::string error;
-  auto target =
-      llvm::TargetRegistry::lookupTarget(module->getTargetTriple(), error);
+  const llvm::Triple &triple = module->getTargetTriple();
+  auto target = llvm::TargetRegistry::lookupTarget(triple, error);
+  if (!target && isXpuFamilyTriple(triple)) {
+    // Public-LLVM builds: the XPU-family targets are XTDK-private and unlinked,
+    // so their triples cannot resolve.  The TargetMachine here only feeds the
+    // optimization pipeline below; the actual codegen runs through the staged
+    // LLVM 19 toolchain (see python/triton/backends/llvm19_toolchain.py).
+    // Substitute a host machine so optimization can proceed.
+    //
+    // Caveat: the optimizer then sees x86's TargetTransformInfo, so its
+    // vectorization/unrolling cost model is not the XPU one.  Accepted
+    // deliberately -- the alternative is no O3 at all, since llc 19 runs at
+    // -O0.  The XPU-specific decisions that do matter are made explicitly
+    // (SLPVectorization off, InferAddressSpaces forced, see optimize_module).
+    //
+    // The module's functions may still carry GPU-style
+    // "target-features" attributes (e.g. from libdevice bitcode: +sm_75,
+    // +16-bit-insts); the X86 subtarget rejects those ("64-bit code requested
+    // on a subtarget that doesn't support it"), so scrub them.  The LLVM 19
+    // backend re-derives features from its own target tables anyway.
+    for (auto &fn : *module) {
+      if (fn.hasFnAttribute("target-features"))
+        fn.removeFnAttr("target-features");
+      if (fn.hasFnAttribute("target-cpu"))
+        fn.removeFnAttr("target-cpu");
+    }
+    llvm::Triple fallback("x86_64-unknown-linux-gnu");
+    target = llvm::TargetRegistry::lookupTarget(fallback, error);
+    if (!target)
+      throw std::runtime_error("target lookup error (x86 fallback for " +
+                               triple.str() + "): " + error);
+    llvm::TargetOptions fopt;
+    std::unique_ptr<llvm::TargetMachine> fmachine{target->createTargetMachine(
+        fallback, "generic", "", fopt, llvm::Reloc::PIC_, std::nullopt,
+        llvm::CodeGenOptLevel::Aggressive)};
+    return fmachine;
+  }
+  if (!target)
+    throw std::runtime_error("target lookup error: " + error);
   llvm::TargetOptions opt;
   bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
   if (enable_fp_fusion)
     opt.AllowFPOpFusion = llvm::FPOpFusion::Fast;
+#if defined(TRITON_HAVE_XTDK_TUNING_OPTIONS)
   opt.UnsafeFPMath = false;
+#endif
   opt.NoInfsFPMath = false;
   opt.NoNaNsFPMath = true;
   opt.TrapUnreachable = true;
@@ -496,6 +576,72 @@ std::string translateLLVMIRToASM(llvm::Module &module,
 
 using ret = py::return_value_policy;
 
+// Expand constant-size llvm.memset calls into straight-line scalar stores.
+//
+// Rationale (see optimize_module): public-LLVM O3's MemCpyOptPass folds the
+// SDNN buffer-counter init stores (CounterOpConversion emits
+// `alloca [cacheNum x i32]` + per-element `store i32 -1`) into llvm.memset
+// calls, which the LLVM 19 backend then lowers to byte loops.  On tiny shapes
+// (grid=1 tile) that byte loop dominates the kernel prologue (~4x slowdown
+// vs the XTDK pipeline, whose private MemCpyOptXPU=false keeps the stores
+// scalar).  The XTDK knobs are unavailable in public LLVM, so undo the fold
+// after the pipeline: constant-size, non-volatile memsets only, elements
+// sized by the memset's alignment, value replicated bytewise.
+static void expandConstMemSets(llvm::Module &M) {
+  using namespace llvm;
+  SmallVector<CallInst *, 8> MemSets;
+  for (Function &F : M.functions())
+    for (BasicBlock &BB : F)
+      for (Instruction &I : llvm::make_early_inc_range(BB))
+        if (auto *CI = dyn_cast<CallInst>(&I))
+          if (CI->getCalledFunction() &&
+              CI->getCalledFunction()->getIntrinsicID() == Intrinsic::memset)
+            MemSets.push_back(CI);
+
+  for (CallInst *CI : MemSets) {
+    if (CI->use_empty() == false) // memset returns void; defensive
+      continue;
+    auto *II = cast<MemSetInst>(CI);
+    if (II->isVolatile())
+      continue;
+    ConstantInt *Len = dyn_cast<ConstantInt>(II->getLength());
+    ConstantInt *Val = dyn_cast<ConstantInt>(II->getValue());
+    if (!Len || !Val)
+      continue; // dynamic size/value: leave for llc19
+    uint64_t Size = Len->getZExtValue();
+    if (Size == 0)
+      continue;
+    Align Al = II->getDestAlign().valueOrOne();
+    Value *Dst = II->getDest();
+
+    unsigned ElemBits = 8;
+    if (Al >= Align(4) && Size % 4 == 0)
+      ElemBits = 32;
+    else if (Al >= Align(2) && Size % 2 == 0)
+      ElemBits = 16;
+    Type *ElemTy = Type::getIntNTy(M.getContext(), ElemBits);
+    uint64_t Rep = Size / (ElemBits / 8);
+    // Cap the expansion so pathological large memsets do not explode IR size.
+    if (Rep > 4096)
+      continue;
+    APInt FillVal(ElemBits, 0);
+    uint64_t B = (uint64_t)Val->getZExtValue() & 0xFF;
+    for (unsigned i = 0; i < ElemBits / 8; ++i)
+      FillVal = (FillVal << 8) | B;
+
+    IRBuilder<> Bld(CI);
+    for (uint64_t i = 0; i < Rep; ++i) {
+      Value *Ptr =
+          i == 0 ? Dst
+                 : Bld.CreateConstInBoundsGEP1_32(ElemTy, Dst, (unsigned)i);
+      Bld.CreateAlignedStore(ConstantInt::get(ElemTy, FillVal), Ptr, Al);
+    }
+    CI->eraseFromParent();
+  }
+}
+
+using ret = py::return_value_policy;
+
 void init_triton_llvm(py::module &&m) {
 
   py::class_<llvm::LLVMContext>(m, "context", py::module_local())
@@ -534,6 +680,15 @@ void init_triton_llvm(py::module &&m) {
 #if !defined(TRITON_CONCEAL_IR) || (TRITON_CONCEAL_IR == 0)
             os << *self;
 #endif
+            return os.str();
+          },
+          ret::take_ownership)
+      .def(
+          "_ir_for_lowering",
+          [](llvm::Module *self) {
+            std::string str;
+            llvm::raw_string_ostream os(str);
+            os << *self;
             return os.str();
           },
           ret::take_ownership)
@@ -616,6 +771,41 @@ void init_triton_llvm(py::module &&m) {
       },
       py::keep_alive<0, 2>(), py::call_guard<py::gil_scoped_release>());
 
+  // Landing B' (plan v3 §4-D1): the same table landing B stamps, applied to the
+  // *translated* module instead of the MLIR one.  Landing B walks `llvm.func`
+  // ops, so it can only reach a declaration that exists in MLIR; the XPU
+  // dialect's ops (`llvm.xpu.core_id` and friends) create their
+  // `llvm::Function` inside `to_module`, after B has run, and would otherwise
+  // reach the in-process O3 carrying no attribute at all.  The payload is
+  // `intrinsic_tables.stamp_payload(stamp_tag())`; the sweep leaves a name the
+  // linked LLVM already knows alone -- on the fallback leg XTDK's own table has
+  // already spoken (see IntrinsicAttrTable.h).
+  m.def("add_intrinsic_attrs", [](llvm::Module *mod,
+                                  const std::string &payload) {
+    std::string error;
+    unsigned stamped =
+        mlir::intrinsic_attr_table::applyPayloadToModule(*mod, payload, error);
+    if (!error.empty())
+      throw std::runtime_error("intrinsic attribute stamp (LLVM IR): " + error);
+    return stamped;
+  });
+
+  // The same table, for the emitters: they consult it while *creating* a
+  // declaration, so a fact does not have to be patched up later (and cannot
+  // drift from what the `llc` that reads the same table will assert).  Set once
+  // per process before the pipeline runs --
+  // `llvm19_toolchain.install_intrinsic_attr_table` hands it the same payload
+  // landing B' sweeps with.  `setPayload` refuses a second, *different* table
+  // (one process = one table; the refusal travels as data because the util is
+  // compiled with exceptions off) and that refusal is surfaced here as a Python
+  // `RuntimeError`.
+  m.def("set_intrinsic_attr_table", [](const std::string &payload) {
+    mlir::intrinsic_attr_table::setPayload(payload);
+    std::string error = mlir::intrinsic_attr_table::takePayloadError();
+    if (!error.empty())
+      throw std::runtime_error(error);
+  });
+
   m.def("attach_datalayout", [](llvm::Module *mod, const std::string triple,
                                 const std::string proc,
                                 const std::string features) {
@@ -623,6 +813,30 @@ void init_triton_llvm(py::module &&m) {
     llvm::Triple targetTriple(triple);
     auto target = llvm::TargetRegistry::lookupTarget(targetTriple, error);
     if (!target) {
+      // Public-LLVM builds do not link the XTDK-private XPU targets, so
+      // the XPU-family triples cannot resolve.  Fall back to the data layout
+      // the XTDK 19 target machine produces for them (identical for all of
+      // them; verbatim from its emitted .ll: "e-m:e-p:32:32-p1:64:64-..."). The
+      // generic pointer MUST be 32-bit (p:32:32) to match the staged LLVM 19
+      // llc, otherwise the LLVM 22 optimizer materializes i32->i64 zexts
+      // around every generic-pointer inttoptr and the address math in the
+      // inner loop gets ~50% slower (CI fc_fusion perf regression).  The
+      // actual codegen runs through the staged LLVM 19 toolchain, which
+      // derives the layout from its own target tables -- this string only has
+      // to keep the LLVM 22 optimization pipeline's view consistent with it.
+      //
+      // If XTDK ever changes the layout this string silently diverges.  It is
+      // covered by docs/pub-llvm22-frontend-knowledge-base.md §2.4 and by the
+      // two-leg IR diff described in §4.3, which is where a mismatch would
+      // show up.
+      static const char *kFallbackLayout =
+          "e-m:e-p:32:32-p1:64:64-p2:32:32-p4:32:32-p135:64:64-p134:64:64-"
+          "p133:32:32-p131:64:64-i1:8:32-i8:8:32-i16:16:32-i64:64:64-"
+          "f64:64:64-v512:512-a:0:32-n32-S32";
+      if (isXpuFamilyTriple(targetTriple)) {
+        mod->setDataLayout(kFallbackLayout);
+        return;
+      }
       throw std::runtime_error("target lookup error: " + error);
     }
     llvm::TargetOptions opt;
@@ -651,6 +865,19 @@ void init_triton_llvm(py::module &&m) {
         auto it = options.find("slp-copyable-elements");
         if (it != options.end())
           *static_cast<llvm::cl::opt<bool> *>(it->second) = false;
+        // Disable XPUAddRangeMeta (the "add-range-meta" PipelineStartEP pass).
+        // It stamps tight !range metadata on xpu.core_id/xpu.load_param, which
+        // lets CorrelatedValuePropagation/InstCombine narrow strided scatter
+        // address math to i8/i32 (srem i8, trunc nuw, nuw nsw). On the XPU LLVM
+        // 22 backend that narrowing miscompiles the last-dim torch.cat copy
+        // kernel, producing an out-of-bounds lm2gm_v3 and a -714 illegal-memory
+        // fault at runtime (DISABLE_LLVM_OPT=1 makes it pass). Turn it off
+        // here, mirroring the slp-copyable-elements hack above. As with that
+        // hack, DISABLE_LLVM_OPT=add-range-meta re-enables it via the loop
+        // below.
+        auto rangeMetaIt = options.find("add-range-meta");
+        if (rangeMetaIt != options.end())
+          *static_cast<llvm::cl::opt<bool> *>(rangeMetaIt->second) = false;
         // Check to see if we are passing a list of flags to disable
         // optimizations.
         auto flagList = mlir::triton::tools::getStrEnv("DISABLE_LLVM_OPT");
@@ -720,12 +947,16 @@ void init_triton_llvm(py::module &&m) {
         tuningOptions.LoopVectorization = true;
         tuningOptions.SLPVectorization =
             false; // TODO[dyq]: wait for xtdk adaptation
+#if defined(TRITON_HAVE_XTDK_TUNING_OPTIONS)
+        // XTDK-private pipeline tuning knobs (absent from public LLVM); the
+        // defaults there already disable these XPU-specific transforms.
         tuningOptions.SimpleLoopUnswitchingXPU =
             false; // To Avoid Copying When If Else is in For
         tuningOptions.MemCpyOptXPU =
             false; // To Void Selecting Memset Instruction
         tuningOptions.VectorCombineXPU =
             false; // To Void Selecting ShuffleVector Instruction
+#endif
         //===-----------------------------------------------------------===//
 
         std::string pluginFile =
@@ -770,7 +1001,35 @@ void init_triton_llvm(py::module &&m) {
         ModulePassManager mpm;
         pb.registerPipelineStartEPCallback(
             [](ModulePassManager &PM, OptimizationLevel) {
+#if TRITON_HAVE_XPU_PRINTF_ASSERT
               PM.addPass(XPULowerPrintfAssert());
+#endif
+#if !defined(TRITON_HAVE_XTDKDL)
+              // Public-LLVM builds run the optimizer on an x86 fallback
+              // TargetMachine (the XPU-family targets are XTDK-private).  The
+              // x86 target exposes no address-space assumption map, so the
+              // pipeline's InferAddressSpacesPass never fires and
+              // `load (addrspacecast p1 -> p0)` survives the pub22 optimizer.
+              // Run the pass explicitly with the flat address space (0, per
+              // the cluster data layout) so the generic-pointer loads/stores
+              // are inferred back to their pointee address space, matching the
+              // XTDK pipeline's codegen.
+              //
+              // NOTE (2026-09-07): the earlier claim that the cast would
+              // otherwise reach the LLVM 19 backend and select flat_load
+              // instead of global_load was NOT borne out empirically -- the
+              // XTDK 19 llc folds `addrspacecast p1->p0` in ISel (emits
+              // global_load, identical to a direct AS1 load) for both the
+              // xpu3 and the cluster triples.  The XTDK pipeline handles this
+              // cast in codegen, not in the IR-level pass.  This explicit pass
+              // is therefore redundant under the reopt path (pub22
+              // translate-only
+              // + XTDK19 opt -O3 + llc19 -O3) and is kept only while the pub22
+              // O3 pipeline still runs.  See
+              // CI146-FC-FUSION-PERF-ROOT-CAUSE.md §5 (dead-end 4).
+              PM.addPass(createModuleToFunctionPassAdaptor(
+                  InferAddressSpacesPass(/*AddressSpace=*/0)));
+#endif
             });
         pb.registerVectorizerStartEPCallback(
             [&](llvm::FunctionPassManager &fpm, llvm::OptimizationLevel level) {
@@ -788,6 +1047,12 @@ void init_triton_llvm(py::module &&m) {
         }
         mpm.addPass(pb.buildPerModuleDefaultPipeline(opt));
         mpm.run(*mod, mam);
+#if !defined(TRITON_HAVE_XTDK_TUNING_OPTIONS)
+        // Undo the MemCpyOpt memset folding for public-LLVM builds (see
+        // expandConstMemSets above for the rationale).  Runs after the O3
+        // pipeline so it only rewrites what the pipeline itself produced.
+        expandConstMemSets(*mod);
+#endif
       },
       // Mandatory parameters
       py::arg("mod"), py::arg("opt"),
@@ -829,10 +1094,13 @@ void init_triton_llvm(py::module &&m) {
       },
       ret::take_ownership);
 
-  m.def("is_elf_stack_size_oob", [](std::string ElfObj) -> py::bool_ {
-    bool StackSizeOutofBound = isElfStackSizeOOB(ElfObj);
-    return StackSizeOutofBound;
-  });
+  m.def(
+      "is_elf_stack_size_oob",
+      [](std::string ElfObj, uint32_t Margin) -> py::bool_ {
+        bool StackSizeOutofBound = isElfStackSizeOOB(ElfObj, Margin);
+        return StackSizeOutofBound;
+      },
+      py::arg("elf_obj"), py::arg("margin") = 0);
 
   m.def("dump_sched_dag", [](std::string llvmIR, std::string triple,
                              std::string proc, std::string features,
@@ -886,15 +1154,25 @@ void init_triton_llvm(py::module &&m) {
   m.def("init_targets", []() {
     static std::once_flag init_flag;
     std::call_once(init_flag, []() {
-      // Only initialize targets we actually link against.
-      // InitializeAllTargets() would also pull in XCN which is not linked
-      // (trust LLVM does not provide libLLVMXCNCodeGen.a), causing
-      // "undefined symbol: LLVMInitializeXCNTargetInfo" at dlopen time.
+    // Only initialize targets we actually link against.  On the XTDK leg
+    // the trust LLVM's Targets.h does not list XPU, so InitializeAll*
+    // would silently initialize nothing for XPU (target lookup fails at
+    // runtime); there we keep the explicit XPU init.  On the public-LLVM
+    // leg there is no XPU target at all, so the InitializeAll* set is the
+    // only thing that works.
+#if defined(TRITON_HAVE_XTDKDL)
       LLVMInitializeXPUTargetInfo();
       LLVMInitializeXPUTarget();
       LLVMInitializeXPUTargetMC();
       LLVMInitializeXPUAsmParser();
       LLVMInitializeXPUAsmPrinter();
+#else
+      llvm::InitializeAllTargetInfos();
+      llvm::InitializeAllTargets();
+      llvm::InitializeAllTargetMCs();
+      llvm::InitializeAllAsmParsers();
+      llvm::InitializeAllAsmPrinters();
+#endif
 #if defined(__x86_64__)
       LLVMInitializeX86TargetInfo();
       LLVMInitializeX86Target();

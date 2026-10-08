@@ -21,7 +21,13 @@ namespace impl {
 // of size up to 256K elements. It will spill for datatypes wider than 1B,
 // but we probably should limit number of elements (rather than bytes) to
 // keep specs simple
+//===-------------------- For Triton XPU -----------------------===//
+// Triton XPU don't need the maxTensorNumElements (legalize pass). Matches the
+// 3.0 fork (include/triton/Dialect/Triton/IR/Traits.h:27 => INT_MAX) so
+// kernels like layernorm forward (512x8192 = 4194304 elems) are not rejected
+// by verifyTensorSize.
 int constexpr maxTensorNumElements = INT_MAX;
+//===-----------------------------------------------------------===//
 
 LogicalResult verifyTensorSize(Operation *op);
 LogicalResult verifyTensorLayouts(Operation *op);

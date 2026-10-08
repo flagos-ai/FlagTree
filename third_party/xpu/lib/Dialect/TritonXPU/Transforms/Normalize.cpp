@@ -12,13 +12,10 @@
 // state analysis can move ahead of it (step 1.5c).
 //
 // Position: immediately before tritonxpu-vectorize, i.e. exactly where the
-// code used to run, with one difference -- Vectorize's own `vectorizeTLE` now
-// runs *after* these rewrites instead of before them. That can only matter for
-// a TLE kernel whose local-buffer store chain contains the NaN-aware max/min
-// select pattern: `doMaximumFusion` folds it to arith.maximumf, which *is* in
-// ARITH_BINARY_FLOAT_OP, so such a chain would newly vectorize. `vectorizeTLE`
-// stays behind because it needs Vectorize.cpp's VOp<T> table; no probe covers
-// the TLE path (golden.py has none), so this is stated, not measured.
+// code used to run. The note that used to sit here -- about the private TLE
+// walk running after these rewrites rather than before -- is moot: that walk is
+// gone, and TLE store chains now go through the same per-op machinery as
+// everything else, so they see these rewrites the way every other chain does.
 //===----------------------------------------------------------------------===//
 
 // clang-format off

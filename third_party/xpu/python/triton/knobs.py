@@ -464,6 +464,10 @@ class runtime_knobs(base_knobs):
     # debug is on critical path for kernel launches
     # avoid repeated reads from env-var by calling get directly
     debug: bool = env_bool("TRITON_DEBUG").get()
+    # Also on the critical path: JITFunction.__getitem__ memoizes a launcher per
+    # grid that skips the part of run() which cannot change once a kernel has been
+    # compiled. Set to send every launch through run() instead.
+    disable_launch_fast_path: bool = env_bool("TRITON_DISABLE_LAUNCH_FAST_PATH").get()
     override_arch: env_opt_str = env_opt_str("TRITON_OVERRIDE_ARCH")
 
     launch_enter_hook: HookChain[LaunchHook] = HookChain()

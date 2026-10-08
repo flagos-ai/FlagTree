@@ -36,8 +36,8 @@ def TTX_AllocaOp : TTX_Op<"alloca"> {
 def TTX_GM2LMOp : TTX_Op<"gm2lm", [AttrSizedOperandSegments,
                                    MemoryEffects<[MemRead<GlobalMemory>]>]> {
   let summary = "gm2lm";
-  // [internal bc5e33a6] LayerNorm vectorization can turn `other` into a
-  // tensor<vector<T>>. Internal widened shared TT_Type, but FlagTree keeps
+  // [sync source bc5e33a6] LayerNorm vectorization can turn `other` into a
+  // tensor<vector<T>>. The sync source widened shared TT_Type, but FlagTree keeps
   // main-tree TableGen definitions pristine. TTX_Type is the XPU-local
   // equivalent and already admits vectors/tensors of vectors.
   let arguments = (ins TT_PtrLike:$ptr, Optional<TT_IntLike>:$len,
@@ -104,8 +104,8 @@ def TTX_LoadOp
     : TTX_Op<"load", [AttrSizedOperandSegments, MemoryEffects<[MemRead]>]> {
   let summary = "load";
   let arguments = (ins TT_PtrLike:$ptr, Optional<TT_BoolLike>:$mask,
-      // [internal bc5e33a6] Same as TTX_GM2LMOp.$other: vectorize
-      // can widen `other` to tensor<vector<T>>. Internal relied on
+      // [sync source bc5e33a6] Same as TTX_GM2LMOp.$other: vectorize
+      // can widen `other` to tensor<vector<T>>. The sync source relied on
       // its widened shared TT_Type; FlagTree keeps main-tree TT_Type
       // pristine and uses the XPU-local TTX_Type (= TT_Type | vector).
       Optional<TTX_Type>:$other, Optional<TT_Int>:$index, SI32Attr:$stride,
@@ -150,7 +150,7 @@ def TTX_StoreOp
 def TTX_StoreSMOp
     : TTX_Op<"storeSM", [MemoryEffects<[MemWrite]>, AttrSizedOperandSegments]> {
   let summary = "store to SM";
-  // [internal bc5e33a6] `value` may be a vectorized tensor<vector<T>>; use the
+  // [sync source bc5e33a6] `value` may be a vectorized tensor<vector<T>>; use the
   // XPU-local TTX_Type (= TT_Type | vector) instead of pristine main-tree
   // TT_Type.
   let arguments = (ins TT_PtrLike:$ptr, TTX_Type:$value,
@@ -319,6 +319,15 @@ def TTX_VvandIOp : TTX_VVIntBinaryOp<"vvandi">;
 def TTX_VvaddIOp : TTX_VVIntBinaryOp<"vvaddi">;
 def TTX_VvsubIOp : TTX_VVIntBinaryOp<"vvsubi">;
 def TTX_VvmulIOp : TTX_VVIntBinaryOp<"vvmuli">;
+// The signed/unsigned min-max and division forms exist for the combine
+// regions UnrollControl inlines (tensor-of-vector operands): an
+// arith.maxsi-style combine has no other vector form to be rewritten into.
+def TTX_VvmaxSIOp : TTX_VVIntBinaryOp<"vvmaxsi">;
+def TTX_VvminSIOp : TTX_VVIntBinaryOp<"vvminsi">;
+def TTX_VvmaxUIOp : TTX_VVIntBinaryOp<"vvmaxui">;
+def TTX_VvminUIOp : TTX_VVIntBinaryOp<"vvminui">;
+def TTX_VvdivSIOp : TTX_VVIntBinaryOp<"vvdivsi">;
+def TTX_VvdivUIOp : TTX_VVIntBinaryOp<"vvdivui">;
 
 def TTX_VMacFOp : TTX_Op<"vmacf", [SameOperandsAndResultType]> {
   let summary = "vmacf";
@@ -367,11 +376,30 @@ def TTX_VCmpFOp : TTX_Op<"vcmpf"> {
   let results = (outs TTX_UIVectorLike:$result);
 }
 
-def TTX_CmpFOp : TTX_Op<"cmpf"> {
-  let summary = "cmpf";
-  let arguments = (ins Arith_CmpFPredicateAttr:$predicate, TTX_Type:$lhs,
-      TTX_Type:$rhs);
-  let results = (outs TTX_Type:$res);
+// Integer counterpart of vcmpf. Without it, UnrollControl's inlined
+// select(cmpi(...)) combine keeps an arith.cmpi on tensor-of-vector
+// operands, which the verifier rejects (operand must be integer-like).
+def TTX_VCmpIOp : TTX_Op<"vcmpi", [Pure]> {
+    let summary = "vcmpi";
+    let arguments = (ins Arith_CmpIPredicateAttr:$predicate,
+                        TTX_VectorLike:$lhs,
+                        TTX_VectorLike:$rhs);
+    let results = (outs TTX_UIVectorLike:$result);
+}
+
+def TTX_CmpFOp : TTX_Op<"cmpf", [Pure]> {
+    let summary = "cmpf";
+    // The result is TTX_UIVectorType, not TTX_Type: the compare fusion in
+    // tritonxpu-normalize builds this op with a ui32 result (the shape
+    // TTX_StoreOp's $value already accepts) and tritonxpu-vectorize later
+    // retypes it into a vcmpf, whose result constraint allows ui32 too. While
+    // both halves lived in one pass the verifier never saw the intermediate;
+    // splitting them (step 1.5) exposed it. Widening only what the verifier
+    // accepts cannot change emitted code.
+    let arguments = (ins Arith_CmpFPredicateAttr:$predicate,
+                     TTX_Type:$lhs,
+                     TTX_Type:$rhs);
+    let results = (outs TTX_UIVectorType:$res);
 }
 
 //===----------------------------------------------------------------------===//
@@ -495,7 +523,7 @@ def TTX_XPUPrintOp
       Arguments<(ins I32:$pidx, I32:$pidy, I32:$pidz, I64:$outerIndex,
           I64:$innerIndex, I64:$ucIndex, I64:$innerBound, I64:$ucBound,
           StrAttr:$prefix, BoolAttr:$hex,
-          Variadic<AnyTypeOf<[TTX_Type]>>:$args)> {
+          Variadic<AnyTypeOf<[TTX_Type]>>:$args, DenseI32ArrayAttr:$isSigned)> {
   let summary = "Device-side print, as in XPU for debugging";
   let description = [{
     Compared with TT_PrintOP, the pid and index parameters are added here.
@@ -510,7 +538,7 @@ def TTX_XPUPrintOp
 }
 
 //[FlagTree-klx-sync] ops referenced by per-op vectorization / Vectorize,
-// synced from internal d116bdf4 (were omitted from the #992 baseline).
+// synced from the sync source d116bdf4 (were omitted from the #992 baseline).
 def TTX_VSigmoidFOp : TTX_VUnaryFOp<"vsigmoidf">;
 def TTX_PackOp : TTX_Op<"pack", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "scalar tensor -> vector tensor, through an LM buffer";
@@ -557,18 +585,29 @@ def TTX_TLECopyGlobalToLocalOp : TTX_Op<"tle_copy_g2l", [AttrSizedOperandSegment
     // tritonxpu-tle-core-tiling stamps as a discardable attribute
     // "xpu.tile_layout". Absent => legacy default cluster encoding (flat
     // row-major cut, unchanged behavior).
+    //
+    // is_sync=false leaves the DMA in flight (the underlying gm2lm_v3 is always
+    // asynchronous; is_sync only controls whether a fence follows it), so the
+    // caller must tle_dma_wait before reading the destination buffer.
 }
 
-def TTX_TLELocalPtrOp : TTX_Op<"tle_local_ptr", [Pure]> {
+def TTX_TLELocalPtrOp : TTX_Op<"tle_local_ptr", [AttrSizedOperandSegments,
+                                                 Pure]> {
     let summary = "Materialize LM pointers from buffer + multi-dim indices";
     let description = [{
       Given a local memory buffer (memdesc) and index tensors, compute a tensor
       of LM pointers: base_ptr + linearize(indices). The result is used with
       tl.load/tl.store for element-wise access to local memory.
+
+      $loopIndex is the tile loop's induction variable, present only on a segment
+      unroll control sliced: the i-th pointer of slice s is
+      base_ptr + s * numElems + i. See tle_vload, which slices the same buffer
+      the same way.
     }];
     let arguments = (ins
         TTG_MemDescType:$buffer,
-        Variadic<TT_IntLike>:$indices
+        Variadic<TT_IntLike>:$indices,
+        Optional<TT_Int>:$loopIndex
     );
     let results = (outs TT_Type:$result);
 }
@@ -586,11 +625,33 @@ def TTX_TLECopyLocalToGlobalOp : TTX_Op<"tle_copy_l2g", [AttrSizedOperandSegment
         Variadic<I32>:$offsets,
         TTG_MemDescType:$src_buffer,
         Variadic<I64>:$strides,
-        Variadic<I32>:$shapes
+        Variadic<I32>:$shapes,
+        DefaultValuedAttr<BoolAttr, "true">:$is_sync
     );
     // Per-core partition driven by the tile's ClusterLayout ("xpu.tile_layout"
     // discardable attr, stamped by tritonxpu-tle-core-tiling). Absent => legacy
     // default cluster encoding (flat row-major cut).
+    //
+    // is_sync=false drops only the fence that WAITS for the DMA to land in GM;
+    // the fence that flushes the preceding LM writes (so the DMA engine reads
+    // the finished tile) is unconditional. The caller must then issue a
+    // tle_dma_wait before reusing the source buffer or before the kernel ends.
+}
+
+def TTX_TLEDmaWaitOp : TTX_Op<"tle_dma_wait", []> {
+    let summary = "Wait for outstanding TLE DMA transfers";
+    let description = [{
+      Barrier for in-flight asynchronous DMA issued by tle_copy_g2l /
+      tle_copy_l2g with is_sync=false. Lowers to a single `mfence` whose mask
+      selects the memory classes to drain: bit0=LM(1), bit1=SM(2), bit2=GM(4).
+
+      Used to build software-pipelined loops: issue the copy for tile i+1 into
+      the alternate buffer (is_sync=false), compute on tile i out of the current
+      buffer, then tle_dma_wait before the buffers swap roles. The DMA and the
+      compute overlap inside that window.
+    }];
+    let arguments = (ins DefaultValuedAttr<I32Attr, "5">:$mask);
+    let assemblyFormat = "attr-dict";
 }
 
 def TTX_TLENormCopyGlobalToLocalOp : TTX_Op<"tle_normcopy_g2l", [MemoryEffects<[MemRead<GlobalMemory>, MemWrite]>]> {
@@ -604,7 +665,8 @@ def TTX_TLENormCopyGlobalToLocalOp : TTX_Op<"tle_normcopy_g2l", [MemoryEffects<[
     }];
     let arguments = (ins
         TT_Type:$src_ptrs,
-        TTG_MemDescType:$dst_buffer
+        TTG_MemDescType:$dst_buffer,
+        DefaultValuedAttr<BoolAttr, "true">:$is_sync
     );
 }
 
@@ -613,11 +675,31 @@ def TTX_TLENormCopyLocalToGlobalOp : TTX_Op<"tle_normcopy_l2g", [MemoryEffects<[
     let description = [{
       Copy elements from a local memory buffer (memdesc) to global memory addressed
       by a tensor of pointers. The scatter counterpart of tle_normcopy_g2l.
+
+      `is_sync = false` drops only the TRAILING fence. The leading fence is a RAW
+      hazard guard -- it makes the CPU-side LM stores visible to the DMA engine --
+      and is kept unconditionally.
     }];
     let arguments = (ins
         TTG_MemDescType:$src_buffer,
-        TT_Type:$dst_ptrs
+        TT_Type:$dst_ptrs,
+        DefaultValuedAttr<BoolAttr, "true">:$is_sync
     );
+}
+
+def TTX_TLEWaitOp : TTX_Op<"tle_wait"> {
+    let summary = "Drain in-flight TLE DMA traffic in the named memory spaces.";
+    let description = [{
+      Bulk drain, not a counting wait: the XPU cluster ISA has no per-transfer or
+      counting wait, so this drains everything outstanding in the spaces named by
+      `mask` (bit0=LM, bit1=SM, bit2=GM). Pairs with an is_sync=false copy.
+
+      The masks are NOT monotonic in their bits, so never derive one by inclusion:
+      name only the LM/SM-side bit of the transfer (GM->LM and LM->GM = 1,
+      GM->SM and SM->GM = 2), never the GM bit.
+    }];
+    let arguments = (ins DefaultValuedAttr<I32Attr, "1">:$mask);
+    let assemblyFormat = "attr-dict";
 }
 
 // Vectorized local-memory load/store for the TLE compute segment. Unlike
@@ -625,13 +707,39 @@ def TTX_TLENormCopyLocalToGlobalOp : TTX_Op<"tle_normcopy_l2g", [MemoryEffects<[
 // value tensor element type can be a VectorType<W x elem> produced by the
 // tritonxpu-vectorize TLE branch. They read/write W contiguous elements per
 // slot directly from the per-core LM buffer (no GM2LMOp / DMA involved).
-def TTX_TLEVLoadOp : TTX_Op<"tle_vload", [Pure]> {
+//
+// tle_vload declares MemRead (NOT Pure): the LM buffer it reads is refilled by
+// tle_copy_g2l and overwritten by tle_vstore, so a Pure marking let CSE merge
+// two reads of the same buffer across an intervening reload. That silently
+// corrupted the double-buffered layernorm kernel, whose manual 2x unroll reads
+// the weight buffers twice per loop body with a copy_g2l in between.
+def TTX_TLEVLoadOp : TTX_Op<"tle_vload", [AttrSizedOperandSegments,
+                                          MemoryEffects<[MemRead]>]> {
     let summary = "TLE vectorized load from a local-memory buffer";
     let description = [{
       Load a per-core local-memory buffer as a tensor whose element type is a
-      VectorType<W x elem>. Element i maps to LM[i*W : (i+1)*W].
+      VectorType<W x elem>. Element i maps to
+      buffer[(base + i)*W : (base + i + 1)*W], where `base` comes from the
+      optional `$loopIndex` (0 when absent).
+
+      `$loopIndex` is named and used the way xpu::MakeRangeOp, xpu::LoadOp,
+      xpu::ReduceOp and xpu::ScanOp carry theirs -- the tile loop's induction
+      variable, put there by unroll control when it slices a segment, so
+      base = loopIndex * numVecs; without it every iteration would re-read
+      slice 0. Applies to both scopes.
+
+      `$smElemOffset` is the separate, cluster-shared-buffer quantity: the
+      uniform ELEMENT addend the `tle_local_ptr` index tensor carried
+      (`[roff +] arange(0, n)`, admitted by `tleSmemSliceOffset`). It is its own
+      operand rather than sharing `$loopIndex` because a scope=smem read can be
+      BOTH sliced by unroll control AND offset by its index: one operand for two
+      quantities got them added as if they were one number and read another
+      core's columns (silent max_diff 8.69 on layernorm 1024x4096 XB16 RI4).
+      Absent for an LM read, whose index tensor the lowering ignores.
     }];
-    let arguments = (ins TTG_MemDescType:$buffer);
+    let arguments = (ins TTG_MemDescType:$buffer,
+                         Optional<TT_Int>:$loopIndex,
+                         Optional<TT_Int>:$smElemOffset);
     let results = (outs TT_Type:$result);
 }
 
@@ -639,9 +747,12 @@ def TTX_TLEVStoreOp : TTX_Op<"tle_vstore"> {
     let summary = "TLE vectorized store to a local-memory buffer";
     let description = [{
       Store a tensor whose element type is a VectorType<W x elem> back into a
-      per-core local-memory buffer. Element i maps to LM[i*W : (i+1)*W].
+      per-core local-memory buffer. Element i maps to
+      LM[(loopIndex * numVecs + i)*W : (loopIndex * numVecs + i + 1)*W]; see
+      tle_vload for $loopIndex.
     }];
-    let arguments = (ins TTG_MemDescType:$buffer, TT_Type:$value);
+    let arguments = (ins TTG_MemDescType:$buffer, TT_Type:$value,
+                         Optional<TT_Int>:$loopIndex);
 }
 
 //===----------------------------------------------------------------------===//
@@ -652,15 +763,14 @@ def TTX_RawOp : TTX_Op<"raw", []> {
     let summary = "call a user-provided LLVM IR payload from a cluster kernel";
 
     let description = [{
-      `triton_xpu.raw` calls the function `$callee`, whose definition is carried
-      as LLVM-dialect IR text (or textual LLVM IR, what `xpu-clang -S
-      -emit-llvm` produces) in the `$llvm_ir` attribute. Late binding: the
-      payload is only spliced into the module during TritonXPU->LLVM conversion,
-      so the arch is known by then and a deferred payload can be filled in first
-      by `tritonxpu-materialize-deferred-raw`.
+      `triton_xpu.raw` calls the function `$callee`, which `tle.raw.call` names by
+      its payload's `$source_id`: the payload is LLVM 19 IR text that the backend
+      compiles for the arch it is building for and merges into the kernel module
+      at the LLVM 19 stage (see `tle/raw/merge.py`), after TritonXPU->LLVM
+      conversion has turned this op into an `always_inline` call.
 
-      This is the xpu3 cluster counterpart of `sdnn.raw`, and mirrors
-      `txcn.raw` on the houyi cluster path. The cluster path never sees
+      This is the xpu3 cluster counterpart of `sdnn.raw`, and mirrors the
+      alternate cluster path's raw op. The cluster path never sees
       memrefs, so the calling convention is much simpler: every operand is
       passed through as-is after type conversion -- `tt.ptr<T>` becomes an
       `!llvm.ptr` in the global address space and scalars stay scalars. Tensor
@@ -670,7 +780,7 @@ def TTX_RawOp : TTX_Op<"raw", []> {
       Example:
       ```mlir
       triton_xpu.raw "my_add"(%out, %in, %n)
-        {llvm_ir = "llvm.func @my_add(...) {...}"}
+        {source_id = "8f14e45fceea167a5a36dedd4bea2543"}
         : (!tt.ptr<f32>, !tt.ptr<f32>, i32) -> ()
       ```
 
@@ -681,7 +791,7 @@ def TTX_RawOp : TTX_Op<"raw", []> {
 
     let arguments = (ins
         StrAttr:$callee,
-        StrAttr:$llvm_ir,
+        StrAttr:$source_id,
         Variadic<AnyType>:$args
     );
 

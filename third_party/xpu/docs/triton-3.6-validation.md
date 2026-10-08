@@ -2,13 +2,13 @@
 
 This document records the clean-build and FlagGems validation performed for
 the XPU Triton 3.6 migration. It separates FlagTree-only differences from
-failures that also reproduce with the pristine internal Triton baseline.
+failures that also reproduce with the pristine reference baseline.
 
 ## Validated revisions
 
 - FlagTree migration head: `8202eb4de3cd1a77acccc945a77e9bed0f2e76dc`
 - Clean-build source base: `6691ecb62b1a4caeed56e2d17e755c53b1b2a1ed`
-- Pristine internal Triton baseline:
+- Pristine reference baseline:
   `d3c64dd65e401239608164d6be4d893b261b4869`
 - SDNN prebuilt objects: `v0.3.6.6.0`
 
@@ -78,13 +78,13 @@ used only when no matching test file existed.
 All 150 entries have a final status and independent log. There are no missing
 statuses, collection errors, or runner failures in the final result.
 
-## Internal comparison
+## Baseline comparison
 
-All 23 non-passing unique markers were rerun with pristine internal Triton
+All 23 non-passing unique markers were rerun with the pristine reference baseline
 using the same FlagGems source, test selection, runtime settings, device
 isolation, and timeout.
 
-Eighteen markers also failed or timed out with internal Triton and are not
+Eighteen markers also failed or timed out with the reference baseline and are not
 FlagTree-only regressions:
 
 | Category | Markers |
@@ -92,7 +92,7 @@ FlagTree-only regressions:
 | Functional or runtime failures | `div`, `smooth_l1_loss`, `kthvalue`, `lgamma_`, `baddbmm`, `index_reduce`, `mm`, `mode`, `sort`, `normed_cumsum`, `reflection_pad1d_backward`, `upsample_linear1d`, `unique_consecutive`, `grid_sample`, `tril`, `digamma` |
 | 300-second timeout | `median`, `pad` |
 
-Five markers passed with pristine internal Triton but failed with FlagTree:
+Five markers passed with the pristine reference baseline but failed with FlagTree:
 
 | Marker | FlagTree symptom | Status |
 | --- | --- | --- |
@@ -115,7 +115,7 @@ environments instead of rerunning only the initial FlagTree failures:
 | Environment | Pass | Fail | Timeout |
 | --- | ---: | ---: | ---: |
 | FlagTree | 127/150 | 20/150 | 3/150 |
-| Pristine internal Triton | 130/150 | 18/150 | 2/150 |
+| Pristine reference baseline | 130/150 | 18/150 | 2/150 |
 
 There were 126 entries passing in both environments and 19 shared non-passing
 entries. `rms_norm` and `replication_pad3d` passed the final manifest after the
@@ -130,15 +130,15 @@ cache, but later controlled testing ruled out a simple cache-hit artifact. The
 failing unweighted backward case failed 6/20 times with one shared warm cache
 and 3/10 times with independent cold caches. A single byte-identical compiled
 binary alternates between pass and fail, and failures leave contiguous
-zero-valued holes in the second gradient row. Pristine internal Triton then
+zero-valued holes in the second gradient row. The pristine reference baseline then
 reproduced the same failure during an isolated IR-dump run. FlagTree and
-internal TTIR have the same computational graph; TTXIR differs only in debug
+reference TTIR have the same computational graph; TTXIR differs only in debug
 paths and lowers the output identically through `GM2LM -> select -> LM2GM`.
 Cross entropy is therefore classified as a shared XPU nondeterministic
 correctness issue. The masked-memory simulation settings used for `grid_sample`
 did not resolve it (5/20 failures).
 
-`instance_norm` failed in the first internal run but passed with a fresh cache.
+`instance_norm` failed in the first reference run but passed with a fresh cache.
 Follow-up fixed-input testing passed 50/50 times in each tree for shape
 `(2,1,2,1)`. A 200-seed deterministic comparison produced the same 17 small
 input-gradient tolerance mismatches in each tree. It is classified as shared
@@ -155,11 +155,11 @@ The presence of `triton.language.atomic_mul` does not imply correct atomic
 multiply semantics on XPU:
 
 - FlagTree rejects FP16 `tl.atomic_mul` during semantic type checking.
-- Internal Triton accepts FP16, but both trees lower FP16/FP32 multiply through
+- The reference baseline accepts FP16, but both trees lower FP16/FP32 multiply through
   synchronous `GM2LM -> mul -> LM2GM`, without a hardware atomic instruction or
   CAS retry loop.
 - Duplicate-address contention tests produce nondeterministic incorrect results
-  in internal FP16/FP32 and FlagTree FP32.
+  in the reference baseline's FP16/FP32 and FlagTree FP32.
 
 Do not resolve the FlagTree frontend difference by only allowing FP16. A valid
 fix requires a native atomic lowering or a correct CAS loop and must be tested
@@ -187,7 +187,7 @@ fallback is not evidence that the adjusted configuration compiles correctly.
   `grid_sample` masked-memory lowering, 3D `grid_sample` vectorize failures, and
   FlagTree-only `grid_sample` timeout difference remain open.
 - `cross_entropy_loss` is a shared XPU nondeterministic correctness issue, not a
-  cache-hit artifact. Its FlagTree/internal TTIR and TTXIR output lowering is
+  cache-hit artifact. Its FlagTree/reference TTIR and TTXIR output lowering is
   semantically identical.
 - `instance_norm` is classified as shared small-shape numerical sensitivity;
   fixed-input and deterministic-seed tests match between both trees.
@@ -195,7 +195,7 @@ fallback is not evidence that the adjusted configuration compiles correctly.
 ## Shared XPU `grid_sample` limitation
 
 Follow-up A/B investigation confirmed that the 2D `grid_sample` failure is
-shared by FlagTree and pristine internal Triton. It is not a FlagTree migration
+shared by FlagTree and the pristine reference baseline. It is not a FlagTree migration
 regression.
 
 The failing path uses the medium/large-output tiled kernels. Small 2D kernels
@@ -229,7 +229,7 @@ the runtime prerequisites. The backend warns that it requires XRE newer than
 
 Validation evidence:
 
-- FlagTree and internal each passed 100 repeated nearest and bilinear tiled
+- FlagTree and the reference baseline each passed 100 repeated nearest and bilinear tiled
   invocations, 205 cases per tree, with `TRITONXPU_IS_USE_MASK_ZERO=1` and zero
   mismatches.
 - FlagTree's 4D `grid_sample` quick suite passed 82 tests with that setting.
@@ -238,7 +238,7 @@ Validation evidence:
 
 The separate 3D result is now fully classified. Zeros-padding nearest and
 trilinear small cases pass in both trees. Border and reflection kernels fail in
-the same `TritonXPUVectorize` pass in FlagTree and pristine internal for all
+the same `TritonXPUVectorize` pass in FlagTree and the pristine reference baseline for all
 five configs, including `BLOCK_SIZE=256`. Diagnostic closure of vectorization
 allows compilation and execution; the reference comparison then reaches the
 independent XPU `XDNN_UNIMPLEMENTED grid_sampler_3d` limitation. This is a
@@ -249,7 +249,7 @@ shared compiler task.
 The FlagTree-only full quick-suite timeout is also explained rather than
 unclassified. `256x256 border bicubic` spends 64.38 seconds in AABS dependency
 analysis without adjusting any config. Its total autotune time is 78.49 seconds
-versus 14.07 seconds in internal; `FLAGTREE_AABS=0` reduces FlagTree to 13.52
+versus 14.07 seconds in the reference baseline; `FLAGTREE_AABS=0` reduces FlagTree to 13.52
 seconds with the same selected `BLOCK_SIZE=512`. AABS optimization is deferred,
 and the disable flag remains diagnostic-only.
 
@@ -259,14 +259,14 @@ IR comparison found a real but non-blocking codegen difference in reduction
 scratch layout:
 
 - FlagTree uses cumulative non-overlapping regions such as `0/1040/2080`.
-- Internal reuses the `1040` region for later sequential reductions.
+- The reference baseline reuses the `1040` region for later sequential reductions.
 
 This difference is not the cause of the cross-entropy gradient-hole failure:
-FlagTree fails with the conservative non-overlapping layout, and internal fails
+FlagTree fails with the conservative non-overlapping layout, and the reference baseline fails
 with the reused layout. The policies have different tradeoffs rather than both
 being known-bad. FlagTree avoids reuse hazards but consumes more scratch memory;
-internal is more resource-efficient. FlagTree has now been aligned with the
-internal reuse behavior in `ReduceOpHelper` and `ScanLoweringHelper`. Fresh
+the reference baseline is more resource-efficient. FlagTree has now been aligned with the
+the reference reuse behavior in `ReduceOpHelper` and `ScanLoweringHelper`. Fresh
 codegen validation shows the expected `0/1040` reuse instead of cumulative
 `0/1040/2080` bases. The cross-entropy quick repeated run was `21 pass / 9
 fail`, consistent with the earlier intermittent baseline, and RMS norm remained

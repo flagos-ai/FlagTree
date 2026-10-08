@@ -56,7 +56,7 @@ namespace ttng = triton::nvidia_gpu;
 
 // FlagTree XPU: attach the XPU memory-access hints (offset_state_policy /
 // mem_sync_mode) as generic discardable attributes on a freshly created
-// load/store op. These attributes carry the internal-Triton XPU performance
+// load/store op. These attributes carry the sync source's XPU performance
 // hints (continuous/discrete DMA, sync/async) WITHOUT adding any attribute to
 // the shared main-tree TritonOps.td/TritonAttrDefs.td (Q0a: no new main-tree
 // attr). The XPU CreateGM2LM pass reads `xpu.offset_state_policy` (already) and
@@ -816,6 +816,32 @@ void init_triton_ir(py::module &&m) {
                return py::none();
              return py::int_(ret.getInt());
            })
+      // Every `(callee, source_id)` a `tle.raw` op in this module refers to.
+      //
+      // The raw ops (one dialect per cluster stack) name a
+      // payload by content-addressed id instead of carrying its text; a backend
+      // records these refs before the module is lowered to LLVM, then compiles
+      // and merges the payloads at the LLVM 19 stage (see
+      // triton/experimental/tle/raw/merge.py). Matching on the op name keeps
+      // this dialect-agnostic: the SDNN and cluster paths share the shape.
+      .def("get_raw_payload_refs",
+           [](ModuleOp &self)
+               -> std::vector<std::pair<std::string, std::string>> {
+             std::vector<std::pair<std::string, std::string>> refs;
+             self.walk([&](Operation *op) {
+               llvm::StringRef name = op->getName().getStringRef();
+               if (name != "txcn.raw" && name != "triton_xpu.raw" &&
+                   name != "sdnn.raw")
+                 return;
+               auto callee = op->getAttrOfType<StringAttr>("callee");
+               auto sourceId = op->getAttrOfType<StringAttr>("source_id");
+               if (!callee || !sourceId)
+                 return;
+               refs.emplace_back(callee.getValue().str(),
+                                 sourceId.getValue().str());
+             });
+             return refs;
+           })
       .def("get_tensordesc_metadata", getTensorDescMetadata)
       .def("create_location_snapshot",
            [](ModuleOp &self, const std::string &fileName) -> void {
@@ -1549,7 +1575,7 @@ void init_triton_ir(py::module &&m) {
            })
       // Input/Output
       // NOTE: flagtree_hints is a unified string attribute that replaces the
-      // internal triton's (offset_state, sync_mode) pair for load/store ops.
+      // the sync source's (offset_state, sync_mode) pair for load/store ops.
       // It is attached as an mlir::StringAttr on the op for backend-specific
       // optimizations (e.g. XPU async memory, offset continuity hints).
       .def(
@@ -2093,12 +2119,13 @@ void init_triton_ir(py::module &&m) {
             // into a plain `failure()` with no diagnostic. That is good for
             // users and terrible for debugging, so allow turning it off to get
             // the real signal (and a usable gdb backtrace / core file).
-            // FlagTree XPU: internal reads this via tools::getBoolEnv, but this
-            // vendored ir.cc compiles against the *main-tree* GetEnv.hpp (the
-            // XPU shadow header only takes effect in xpu-lib targets), whose
-            // whitelist does not carry this var -- reading it through
-            // getBoolEnv would trip assertIsRecognized. Read it directly with
-            // the same semantics (unset/false -> keep crash recovery on).
+            // FlagTree XPU: the sync source reads this via tools::getBoolEnv,
+            // but this vendored ir.cc compiles against the *main-tree*
+            // GetEnv.hpp (the XPU shadow header only takes effect in xpu-lib
+            // targets), whose whitelist does not carry this var -- reading it
+            // through getBoolEnv would trip assertIsRecognized. Read it
+            // directly with the same semantics (unset/false -> keep crash
+            // recovery on).
             bool crashRecovery = [] {
               const char *s = std::getenv("TRITON_DISABLE_CRASH_RECOVERY");
               std::string str(s ? s : "");
