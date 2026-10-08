@@ -1,4 +1,4 @@
-name: Aut-Rerun
+name: Auto-Rerun
 
 on:
   workflow_run:
