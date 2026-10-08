@@ -61,6 +61,7 @@ from .distributed import (
     reshard,
     _resolve_launch_axis,
     shard_id,
+    n_pes,
     sharding,
 )
 from . import communication
