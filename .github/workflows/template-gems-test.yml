@@ -119,7 +119,7 @@ jobs:
 
       - name: Clone FlagGems Repo
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        uses: ./.github/actions/git-clone-retry
         with:
           repo-url: 'https://github.com/flagos-ai/FlagGems.git'
           ref: ${{ inputs.flaggems-tag }}
