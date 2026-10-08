@@ -67,6 +67,8 @@ runs:
     - name: Clone and Checkout Repository
       shell: bash
       run: |
+        set +e
+
         # ------------------------------------------------------------------
         # Configuration from inputs
         # ------------------------------------------------------------------
