@@ -48,8 +48,7 @@ def _find_ccec() -> str:
     for candidate in candidates:
         if candidate.is_file():
             return str(candidate.resolve())
-    raise RuntimeError(
-        "ccec not found: source the CANN environment first, or set $CCEC / $TRITON_NPU_COMPILER_PATH")
+    raise RuntimeError("ccec not found: source the CANN environment first, or set $CCEC / $TRITON_NPU_COMPILER_PATH")
 
 
 def _find_llvm_link(ccec: str) -> str:
@@ -83,8 +82,8 @@ def _template_include_dirs(extra: Sequence[Path] = ()) -> List[str]:
         import triton
         # triton.__file__ = <repo>/python/triton/__init__.py under an editable
         # install; the AscendC Template headers live in the source tree.
-        default = (Path(triton.__file__).resolve().parent.parent.parent / "third_party" / "ascend" /
-                   "AscendNPU-IR" / "bishengir" / "lib" / "Template" / "include")
+        default = (Path(triton.__file__).resolve().parent.parent.parent / "third_party" / "ascend" / "AscendNPU-IR" /
+                   "bishengir" / "lib" / "Template" / "include")
         if default.is_dir():
             dirs.append(default)
     dirs.extend(Path(p) for p in extra)
@@ -117,9 +116,17 @@ def _compile_bitcode(src: Path, arch: str, includes: Sequence[str]) -> str:
         return cached
 
     common = [
-        "-O2", "-x", "cce", "--cce-auto-sync=off", "--cce-aicore-only",
-        "--cce-generic-addrspace=off", "-mllvm", "-disable-llvm-optzns",
-        f"--cce-aicore-arch={arch}", "--cce-enable-print", "--cce-enable-sanitizer",
+        "-O2",
+        "-x",
+        "cce",
+        "--cce-auto-sync=off",
+        "--cce-aicore-only",
+        "--cce-generic-addrspace=off",
+        "-mllvm",
+        "-disable-llvm-optzns",
+        f"--cce-aicore-arch={arch}",
+        "--cce-enable-print",
+        "--cce-enable-sanitizer",
         "-std=c++17",
     ]
     for include in includes:
@@ -173,8 +180,8 @@ class CANNJITFunction(object):
     """
 
     def __init__(self, fn: Any, file, format: Optional[str] = None, extern_func_name: str = "",
-                 pipeline: Optional[Dict[str, str]] = None, arch: Optional[str] = None,
-                 includes: Sequence = (), extra_buffers=None, *args, **kwargs) -> None:
+                 pipeline: Optional[Dict[str, str]] = None, arch: Optional[str] = None, includes: Sequence = (),
+                 extra_buffers=None, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.fn: Final[Any] = fn
         self.format: Final[Optional[str]] = format

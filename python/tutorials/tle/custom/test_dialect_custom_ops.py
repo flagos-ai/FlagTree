@@ -27,7 +27,6 @@ import torch_npu
 import triton
 import triton.experimental.tle.language.raw as tle_raw
 import triton.language as tl
-from triton.experimental import tle
 from triton.experimental.tle.raw import dialect
 
 DEVICE = "npu"
@@ -38,6 +37,7 @@ CUSTOM_OPS_DIR = Path(__file__).resolve().parents[3] / "triton" / "experimental"
 # ══════════════════════════════════════════════════════════════════════════
 # Dialect-bound custom ops
 # ══════════════════════════════════════════════════════════════════════════
+
 
 # format="bitcode": invoke the prebuilt custom_ops.bc directly. CUBE core,
 # so the extern symbol is the dav-c220-cube variant.
@@ -99,9 +99,7 @@ def gather_gm_to_l1_dot_kernel(
     tile_k = tl.full((TILE_SIZE, D), 0, tl.float16)
     # args[4] (`tile_k`) is the output/aliased operand; the exported extern
     # function takes (src, index, tile_size, D, dst).
-    tile_k = tle_raw.call(gather_gm_to_l1,
-                          [src_2d, src_index_2d, TILE_SIZE, D, tile_k],
-                          output_indices=[4])
+    tile_k = tle_raw.call(gather_gm_to_l1, [src_2d, src_index_2d, TILE_SIZE, D, tile_k], output_indices=[4])
 
     query_2d = tl.make_block_ptr(
         base=query,
@@ -153,9 +151,7 @@ def gather_gm_to_ub_store_kernel(
     tile_v = tl.full((TILE_SIZE, D), 0, tl.float16)
     # args[4] (`tile_v`) is the output/aliased operand; the exported extern
     # function takes (src, index, tile_size, D, dst).
-    tile_v = tle_raw.call(gather_gm_to_ub,
-                          [src_2d, src_index_2d, TILE_SIZE, D, tile_v],
-                          output_indices=[4])
+    tile_v = tle_raw.call(gather_gm_to_ub, [src_2d, src_index_2d, TILE_SIZE, D, tile_v], output_indices=[4])
 
     output_2d = tl.make_block_ptr(
         base=output,
