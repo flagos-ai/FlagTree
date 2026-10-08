@@ -59,6 +59,7 @@ nohup vllm serve ./Qwen3.6-27B/  \
     --port "${VLLM_QWEN3_PORT}" \
     --served-model-name qwen36 \
     --gpu-memory-utilization 0.8 \
+    --disable-custom-all-reduce \
     --trust-remote-code \
     --dtype bfloat16 2>&1 >vllm.log &
 echo "$!" >pid.txt
