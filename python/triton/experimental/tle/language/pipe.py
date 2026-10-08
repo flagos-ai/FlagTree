@@ -2,31 +2,30 @@
 
 from triton.language.core import _unwrap_if_constexpr
 
-from .dsa.core import builtin
-from .dsa.ascend import pipe as ascend_pipe
+from .dsa.core import Workspace, builtin
+from .dsa.ascend.pipe import (_deferred_pipe, pipe_reader, pipe_slot, pipe_value, pipe_wait_result,
+                              pipe_writer)
 
 
-def _pipe_backend(ready_sync, free_sync):
-    # Fallback codegen paths may hand compile-time descriptors wrapped in constexpr.
-    ready_sync = _unwrap_if_constexpr(ready_sync)
-    free_sync = _unwrap_if_constexpr(free_sync)
-    ready_backend = getattr(ready_sync, "backend", None)
-    free_backend = getattr(free_sync, "backend", None)
-    if ready_backend is None or free_backend is None:
-        raise ValueError("ready_sync and free_sync must identify a pipe backend")
-    if ready_backend != free_backend:
-        raise ValueError("ready_sync and free_sync must use the same pipe backend")
-    return ready_backend
+def _pipe_backend(fields):
+    # GPU-aligned dispatch: the payload kind selects the backend, mirroring how
+    # tle.gpu.buffered_tensor fields select the GPU backend on the NVIDIA path.
+    for field in fields.values():
+        field = _unwrap_if_constexpr(field)
+        if not isinstance(field, Workspace):
+            raise ValueError(
+                f"tle.pipe field must be a tle.dsa.workspace payload, got {type(field).__name__}")
+    return "ascend"
 
 
 @builtin
-def pipe(*, capacity, scope="cta", name=None, ready_sync=None, free_sync=None, event_base=None, _semantic=None,
-         _generator=None, **fields):
-    if ready_sync is None or free_sync is None:
-        raise ValueError("ready_sync and free_sync must be provided")
-    backend = _pipe_backend(ready_sync, free_sync)
+def pipe(*, capacity, scope="cta", name=None, readers=None, one_shot=False, _semantic=None, **fields):
+    backend = _pipe_backend(fields)
     if backend == "ascend":
-        return ascend_pipe.pipe(capacity=capacity, scope=scope, name=name, ready_sync=_unwrap_if_constexpr(ready_sync),
-                                free_sync=_unwrap_if_constexpr(free_sync), event_base=event_base, _semantic=_semantic,
-                                _generator=_generator, **fields)
+        return _deferred_pipe(capacity=capacity, scope=scope, name=name, readers=readers, one_shot=one_shot,
+                              _semantic=_semantic, **fields)
     raise ValueError(f"unsupported pipe backend: {backend!r}")
+
+
+# GPU-shaped re-exports mirroring tle.language.pipe on the NVIDIA path.
+__all__ = ["pipe", "pipe_value", "pipe_writer", "pipe_reader", "pipe_slot", "pipe_wait_result"]

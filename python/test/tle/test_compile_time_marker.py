@@ -5,7 +5,7 @@ from pathlib import Path
 
 from triton.experimental.tle.language.dsa.ascend.core import PIPE, SyncSpec
 from triton.experimental.tle.language.dsa.core import Workspace
-from triton.experimental.tle.language.dsa.ascend.pipe import PipeEndpoint, PipeSlot, PipeWaitResult
+from triton.experimental.tle.language.dsa.ascend.pipe import _pipe_endpoint, pipe_slot, pipe_wait_result
 
 
 class FakeLanguage:
@@ -48,9 +48,9 @@ def test_compile_time_marker_is_required_for_non_tensor_values():
 
 
 def test_tle_pipe_objects_are_compile_time_values():
-    slot = PipeSlot({})
-    wait_result = PipeWaitResult(slot)
-    endpoint = PipeEndpoint(object(), "writer")
+    slot = pipe_slot({})
+    wait_result = pipe_wait_result(slot)
+    endpoint = _pipe_endpoint(object(), "writer")
     sync = SyncSpec("cube", "vector", PIPE.PIPE_FIX, PIPE.PIPE_MTE2)
     workspace = Workspace("base", capacity=2, shape=[4, 8], dtype="float32")
 

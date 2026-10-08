@@ -474,36 +474,3 @@ def workspace(base, capacity, shape, dtype, strides=None, stage_stride=None, _se
 # needed to satisfy JIT reference checks.
 setattr(workspace, TRITON_BUILTIN, True)
 setattr(workspace, TLE_BUILTIN, True)
-
-
-@builtin
-def pipeline_scheduler(functions_and_args, _semantic=None, _generator=None):
-    if _generator is None:
-        raise ValueError("pipeline_scheduler requires code generator context")
-
-    # The scheduler only expands role functions; ordering and synchronization stay explicit in pipe calls.
-    # Elements arrive either as constexpr-wrapped compile-time descriptors or as language.tuple
-    # values; unwrap them one by one (never whole tuples: rebuilding a language.tuple
-    # around bare descriptors re-triggers tuple type construction).
-    def _ct_unwrap(x):
-        # language.tuple exposes .values (a real attribute); touch that first,
-        # because probing any other attribute on it raises ValueError.
-        if hasattr(x, "values") or hasattr(x, "handle"):
-            return x
-        value = getattr(x, "value", None)
-        return value if value is not None else x
-
-    entries = getattr(functions_and_args, "values", functions_and_args)
-    for item in entries:
-        item = _ct_unwrap(item)
-        if hasattr(item, "values"):
-            item = item.values
-        if not isinstance(item, (list, tuple)) or len(item) != 2:
-            raise TypeError("pipeline_scheduler entries must be (fn, args)")
-        fn, args = _ct_unwrap(item[0]), _ct_unwrap(item[1])
-        if hasattr(args, "values"):
-            args = args.values
-        if not isinstance(args, (list, tuple)):
-            raise TypeError("pipeline_scheduler args must be a tuple")
-        args = [_ct_unwrap(arg) for arg in args]
-        _generator.inline_JitFunction(fn, list(args), {})

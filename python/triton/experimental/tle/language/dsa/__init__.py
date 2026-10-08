@@ -29,7 +29,6 @@ from .core import (
     tile_cube_launch,
     tile_cube_wait,
     workspace,
-    pipeline_scheduler,
 )
 
 from . import ascend
@@ -63,6 +62,5 @@ __all__ = [
     "tile_cube_launch",
     "tile_cube_wait",
     "workspace",
-    "pipeline_scheduler",
     "ascend",
 ]

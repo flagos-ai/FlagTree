@@ -238,32 +238,27 @@ def cv_mix_matmul_add_pipe_kernel(
         dtype=tl.float32,
     )
 
+    # 公共 tle.pipe 签名与后端无关（与 GPU 侧逐字一致）：默认即 cube->vector 的 CV-mix 握手。
+    # 需要显式控制同步方向或 event id 布局时，把调度器传给编排入口）：
+    #   scheduler = tle.dsa.ascend.pipe_scheduler(
+    #       ready_sync=tle.dsa.ascend.SyncSpec(...),
+    #       free_sync=tle.dsa.ascend.SyncSpec(...),
+    #       event_base=0,  # 缺省自动分配
+    #   )
+    #   tle.dsa.ascend.run_pipeline([...], scheduler=scheduler)
+    #   # 多条 pipe 各自配置时传 (pipe_name, scheduler) 对的 tuple
     c_pipe = tle.pipe(
         capacity=2,
         scope="cta",
         name="cv_mix_c_pipe",
-        ready_sync=tle.dsa.ascend.SyncSpec(
-            sender="cube",
-            receiver="vector",
-            sender_pipe=pipe.PIPE_FIX,
-            receiver_pipe=pipe.PIPE_MTE2,
-        ),
-        free_sync=tle.dsa.ascend.SyncSpec(
-            sender="vector",
-            receiver="cube",
-            sender_pipe=pipe.PIPE_MTE2,
-            receiver_pipe=pipe.PIPE_FIX,
-        ),
         c=c_workspace,
     )
     c_writer = c_pipe.writer()
     c_reader = c_pipe.reader()
-    # 构造时 pipe.init() 已把两个 stage 的 free event 全部置位，
-    # 等价于手写版的 sync_block_set('vector','cube',0/1,MTE2,FIX)
 
     for block_idx in range(num_blocks):
-        # pipeline_scheduler 把 producer/consumer 两个函数按序 inline 展开
-        tle.dsa.pipeline_scheduler([
+        # run_pipeline 把 producer/consumer 两个函数按序 inline 展开
+        tle.dsa.ascend.run_pipeline([
             (
                 _cv_mix_cube_producer,
                 (

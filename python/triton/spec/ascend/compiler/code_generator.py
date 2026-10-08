@@ -1713,6 +1713,14 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
     generator = CodeGenerator(context, prototype, gscope=fn.get_capture_scope(), function_name=fn.repr(proxy),
                               jit_fn=fn, is_kernel=True, file_name=file_name, begin_line=begin_line, options=options,
                               codegen_fns=codegen_fns, module_map=module_map, module=module, is_gluon=fn.is_gluon())
+    # Per-kernel pipe event ids: the allocator must not carry ranges across
+    # compilations (16 ids total), and inline role expansion reuses this
+    # generator, so reset exactly once at the kernel entry.
+    try:
+        from triton.experimental.tle.language.dsa.ascend.pipe import reset_pipe_event_allocator
+        reset_pipe_event_allocator()
+    except Exception:
+        pass
     generator.visit(fn.parse())
     module = generator.module
     # module takes ownership of the context
