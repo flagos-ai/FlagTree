@@ -205,9 +205,10 @@ class TestTLEAddNormalizePerf:
         addnormalize_tle(a, b, y)
         torch.testing.assert_close(y, torch_addnormalize(a, b), atol=1e-4, rtol=1e-4)
 
-    @pytest.mark.skipif(not (torch.cuda.is_available() and is_hopper_or_newer()) or is_h20(),
-                        reason="Requires Hopper or newer NVIDIA GPU (TMA); perf target validated on H100, "
-                               "skipped on H20 (HBM3 bandwidth narrows the traffic-reduction win)")
+    @pytest.mark.skipif(
+        not (torch.cuda.is_available() and is_hopper_or_newer()) or is_h20(),
+        reason="Requires Hopper or newer NVIDIA GPU (TMA); perf target validated on H100, "
+        "skipped on H20 (HBM3 bandwidth narrows the traffic-reduction win)")
     def test_perf_tle_vs_native(self):
         """TLE kernel must be at least 20% faster than the native kernel"""
         torch.manual_seed(42)
