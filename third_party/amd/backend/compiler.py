@@ -230,6 +230,10 @@ class HIPBackend(BaseBackend):
             tle.passes.add_optimize_local_pointer_loads(pm)
             tle.passes.add_optimize_local_pointer_stores(pm)
         amd.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack)
+        if tle is not None:
+            # Rematerialize local-pointer loads after WMMA/matmul layout
+            # selection so tiled TLE matmul does not stage shared operands twice.
+            tle.passes.add_optimize_local_pointer_loads(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         amd.passes.ttgpuir.add_optimize_epilogue(pm)
         amd.passes.ttgpuir.add_optimize_dot_operands(pm, options.arch)
