@@ -90,7 +90,7 @@ jobs:
         shell: bash
         run: |
           set -x
-          source ~/env-3.6.sh
+          source ~/env.sh
           rm -rf /tmp/flagtree_tileir_ci_01_cache /tmp/flagtree_tileir_ci_02_cache
           TRITON_CACHE_DIR=/tmp/flagtree_tileir_ci_01_cache \
             python3 python/tutorials/tileir/01-load-view-token-ordering.py
