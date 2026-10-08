@@ -42,13 +42,6 @@
 
 namespace py = pybind11;
 
-#ifdef __FLAGTREE_RLC_ENHANCE__
-namespace mlir::triton::gpu {
-std::unique_ptr<mlir::Pass>
-createTritonGPURemoveLayoutConversionsEnhanced(bool enhance);
-} // namespace mlir::triton::gpu
-#endif
-
 void init_triton_analysis(py::module &&m) {
   py::class_<mlir::ModuleAllocation>(m, "allocation", py::module_local())
       .def(py::init<mlir::ModuleOp>());
@@ -119,7 +112,9 @@ void init_triton_passes_ttgpuir(py::module &&m) {
       "add_remove_layout_conversions",
       [](mlir::PassManager &pm, bool enhance) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
-        pm.addPass(createTritonGPURemoveLayoutConversionsEnhanced(enhance));
+        TritonGPURemoveLayoutConversionsOptions options;
+        options.enableRlcEnhance = enhance;
+        pm.addPass(createTritonGPURemoveLayoutConversions(options));
 #else
         (void)enhance;
         pm.addPass(createTritonGPURemoveLayoutConversions());

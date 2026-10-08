@@ -71,16 +71,6 @@ namespace mlir::triton::gpu {
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
-#ifdef __FLAGTREE_RLC_ENHANCE__
-// Per-phase switches, AND-ed with the runtime master switch (rlcEnhance).
-// Backward-propagation and small-component solving depend on cost-based
-// resolution (disabling it forces both off); store-layout remat is independent.
-static constexpr bool kEnableCostBasedResolution = true;
-static constexpr bool kEnableBackwardPropagation = true;
-static constexpr bool kEnableSmallComponentSolving = true;
-static constexpr bool kEnableStoreLayoutRematerialization = true;
-#endif // __FLAGTREE_RLC_ENHANCE__
-
 namespace {
 
 #ifdef __TLE__
@@ -176,7 +166,8 @@ static bool allResultsHaveNoUses(Operation *op) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
 //
 // On top of this baseline we add four optional phases, each guarded by a pass
-// option; with every option off the pass is identical to the original.
+// option that only takes effect under the master option enable-rlc-enhance;
+// with enable-rlc-enhance off the pass is identical to the original.
 //
 //   Phase 1a (enable-cost-based-resolution): resolve conflicts by estimated
 //     convert cost instead of the fixed "blocked for load/store, mma
@@ -280,6 +271,7 @@ public:
 private:
 #ifdef __FLAGTREE_RLC_ENHANCE__
   bool hasLayoutPropagationExtensions() const;
+  bool conflictsWithHardEncoding(Value value, Attribute encoding) const;
   LayoutInfo *getOrCreateBackwardLayout(Value value);
   bool addBackwardEncoding(Value target, Attribute encoding);
   bool isCompatibleWithEncoding(Value value, Attribute encoding) const;
@@ -361,8 +353,6 @@ public:
   // any writeback was rewritten.
   bool rematerializeStoreLayout();
   bool rematerializeWritebackLayout(Operation *writebackOp);
-  bool rematerializeLocalStoreLayout();
-  bool rematerializeLocalStoreLayout(LocalStoreOp storeOp);
 #endif // __FLAGTREE_RLC_ENHANCE__
   // TODO: Merge the three hoistConvert*(); functions as they are duplicate code
   void hoistConvertDotOperand();
@@ -487,6 +477,19 @@ bool LayoutPropagation::hasLayoutPropagationExtensions() const {
   return enableCostBasedResolution || enableBackwardPropagation ||
          enableSmallComponentSolving;
 }
+
+// True if `value` carries an explicit (tle.gpu.set_layout) encoding other than
+// `encoding`; resolveConflicts always keeps the explicit one.
+bool LayoutPropagation::conflictsWithHardEncoding(Value value,
+                                                  Attribute encoding) const {
+#ifdef __TLE__
+  auto it = layouts.find(value);
+  return it != layouts.end() && !it->second.hardEncodings.empty() &&
+         !it->second.hardEncodings.contains(encoding);
+#else  // __TLE__
+  return false;
+#endif // __TLE__
+}
 #endif // __FLAGTREE_RLC_ENHANCE__
 
 void LayoutPropagation::initAnchorLayout() {
@@ -495,18 +498,16 @@ void LayoutPropagation::initAnchorLayout() {
                        bool hard = false) {
     if (auto tensorType = dyn_cast<RankedTensorType>(v.getType())) {
       Attribute anchorEncoding = encoding ? encoding : tensorType.getEncoding();
+#ifdef __FLAGTREE_RLC_ENHANCE__
+      if (hasLayoutPropagationExtensions() && !anchorEncoding)
+        return;
+#endif // __FLAGTREE_RLC_ENHANCE__
       auto &info = layouts[v];
 #ifdef __TLE__
       info.add(anchorEncoding, hard);
 #else
       info.add(anchorEncoding);
 #endif
-#ifdef __FLAGTREE_RLC_ENHANCE__
-      if (!hasLayoutPropagationExtensions() || tensorType.getEncoding())
-        layouts.insert({v, LayoutInfo(tensorType.getEncoding())});
-#else  // __FLAGTREE_RLC_ENHANCE__
-      layouts.insert({v, LayoutInfo(tensorType.getEncoding())});
-#endif // __FLAGTREE_RLC_ENHANCE__
     }
   };
 
@@ -728,7 +729,7 @@ LayoutPropagation::getOrCreateBackwardLayout(Value value) {
 }
 
 bool LayoutPropagation::addBackwardEncoding(Value target, Attribute encoding) {
-  if (!encoding)
+  if (!encoding || conflictsWithHardEncoding(target, encoding))
     return false;
   LayoutInfo *entry = getOrCreateBackwardLayout(target);
   if (!entry)
@@ -2080,9 +2081,11 @@ bool LayoutPropagation::solveSmallComponents() {
       return false;
 #ifdef __TLE__
     // Skip any component on a TLE cluster remote-address chain; retagging it
-    // corrupts the remote access (see valueOnTleRemotePointerPath).
+    // corrupts the remote access (see valueOnTleRemotePointerPath). Nor retag
+    // an explicit (tle.gpu.set_layout) value away from its encoding.
     for (auto &it : proposal)
-      if (valueOnTleRemotePointerPath(it.first))
+      if (valueOnTleRemotePointerPath(it.first) ||
+          conflictsWithHardEncoding(it.first, it.second))
         return false;
 #endif // __TLE__
     int removedConverts = countConvertsRemovedByProposal(proposal);
@@ -2653,12 +2656,23 @@ bool LayoutPropagation::isExtensionTouchedValue(Value value) const {
 
 void LayoutPropagation::resolveConflicts() {
   for (auto &it : layouts) {
-#ifdef __FLAGTREE_RLC_ENHANCE__
-    Value value = it.first;
-    Operation *defOp = value.getDefiningOp();
     LayoutInfo &info = it.second;
     if (info.encodings.size() <= 1)
       continue;
+#ifdef __TLE__
+    // An explicit (tle.gpu.set_layout) encoding wins over every rule below.
+    if (!info.hardEncodings.empty()) {
+      Attribute encoding = *info.hardEncodings.begin();
+      info.encodings.clear();
+      info.encodings.insert(encoding);
+      info.hardEncodings.clear();
+      info.hardEncodings.insert(encoding);
+      continue;
+    }
+#endif // __TLE__
+#ifdef __FLAGTREE_RLC_ENHANCE__
+    Value value = it.first;
+    Operation *defOp = value.getDefiningOp();
     if (auto preferred = smallComponentPreferredEncoding.lookup(value)) {
       if (info.encodings.contains(preferred)) {
         info.encodings.clear();
@@ -2729,21 +2743,8 @@ void LayoutPropagation::resolveConflicts() {
     }
     info.encodings.clear();
     info.encodings.insert(bestEncoding);
-#else // __FLAGTREE_RLC_ENHANCE__
+#else  // __FLAGTREE_RLC_ENHANCE__
     Operation *op = it.first.getDefiningOp();
-    LayoutInfo &info = it.second;
-    if (info.encodings.size() <= 1)
-      continue;
-#ifdef __TLE__
-    if (!info.hardEncodings.empty()) {
-      Attribute encoding = *info.hardEncodings.begin();
-      info.encodings.clear();
-      info.encodings.insert(encoding);
-      info.hardEncodings.clear();
-      info.hardEncodings.insert(encoding);
-      continue;
-    }
-#endif
     // Hacky resolve, prefer block encoding.
     // TODO: add a proper heuristic.
     Attribute encoding = *info.encodings.begin();
@@ -4086,50 +4087,6 @@ bool LayoutRematerialization::rematerializeStoreLayout() {
     changed |= rematerializeWritebackLayout(op);
   return changed;
 }
-
-bool LayoutRematerialization::rematerializeLocalStoreLayout(
-    LocalStoreOp storeOp) {
-  auto valueConvert = storeOp.getSrc().getDefiningOp<ConvertLayoutOp>();
-  if (!valueConvert || !hasSingleUse(valueConvert.getResult()))
-    return false;
-
-  auto targetType = dyn_cast<RankedTensorType>(valueConvert.getSrc().getType());
-  if (!targetType || !targetType.getEncoding())
-    return false;
-
-  SetVector<Value> slice;
-  DenseMap<Value, Attribute> layout;
-  if (failed(getRematerializableSlice(storeOp.getSrcMutable(),
-                                      targetType.getEncoding(), slice, layout)))
-    return false;
-  if (slice.empty())
-    return false;
-
-  for (Value value : slice) {
-    Operation *defOp = value.getDefiningOp();
-    if (!defOp || isLayoutAnchor(defOp) ||
-        isa<LocalLoadOp, LocalStoreOp, ReduceOp, ConvertLayoutOp>(defOp))
-      return false;
-  }
-
-  OpBuilder builder(storeOp);
-  auto storeSrcType = cast<RankedTensorType>(storeOp.getSrc().getType());
-  auto tmpType = storeSrcType.cloneWithEncoding(targetType.getEncoding());
-  auto tmpConvert = ConvertLayoutOp::create(builder, storeOp.getLoc(), tmpType,
-                                            storeOp.getSrc());
-  storeOp.getSrcMutable().assign(tmpConvert.getResult());
-  rewriteSlice(slice, layout, tmpConvert);
-  return true;
-}
-
-bool LayoutRematerialization::rematerializeLocalStoreLayout() {
-  bool changed = false;
-  SmallVector<LocalStoreOp> stores;
-  funcOp.walk([&](LocalStoreOp storeOp) { stores.push_back(storeOp); });
-  for (LocalStoreOp storeOp : stores)
-    changed |= rematerializeLocalStoreLayout(storeOp);
-  return changed;
-}
 #endif // __FLAGTREE_RLC_ENHANCE__
 
 void LayoutRematerialization::hoistConvertDotOperand() {
@@ -4519,7 +4476,7 @@ bool backwardRematerialization(ModuleOp module) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
 // Phase 3 driver: rematerialize writeback address/mask chains in the written
 // value's layout to drop writeback conversions (see
-// rematerializeWritebackLayout and rematerializeLocalStoreLayout).
+// rematerializeWritebackLayout).
 bool rematerializeStoreLayout(ModuleOp module) {
   bool changed = false;
   // Writeback rematerialization consults the store's real address contiguity to
@@ -4531,7 +4488,6 @@ bool rematerializeStoreLayout(ModuleOp module) {
                                         &axisInfoAnalysis,
                                         /*storeLayoutRemat=*/true);
     changed |= layoutRemat.rematerializeStoreLayout();
-    changed |= layoutRemat.rematerializeLocalStoreLayout();
     layoutRemat.cleanup();
   });
   return changed;
@@ -4685,9 +4641,9 @@ class TritonGPURemoveLayoutConversionsPass
           TritonGPURemoveLayoutConversionsPass> {
 public:
 #ifdef __FLAGTREE_RLC_ENHANCE__
-  TritonGPURemoveLayoutConversionsPass() = default;
-  explicit TritonGPURemoveLayoutConversionsPass(bool enhance)
-      : rlcEnhance(enhance) {}
+  using impl::TritonGPURemoveLayoutConversionsBase<
+      TritonGPURemoveLayoutConversionsPass>::
+      TritonGPURemoveLayoutConversionsBase;
 #endif // __FLAGTREE_RLC_ENHANCE__
   // Cleanup convert ops.
   void cleanupConvertOps() {
@@ -4710,10 +4666,15 @@ public:
     ModuleOp m = getOperation();
 
 #ifdef __FLAGTREE_RLC_ENHANCE__
-    bool costBased = rlcEnhance && kEnableCostBasedResolution;
-    bool backwardProp = rlcEnhance && kEnableBackwardPropagation;
-    bool smallComponentSolving = rlcEnhance && kEnableSmallComponentSolving;
-    bool storeLayoutRemat = rlcEnhance && kEnableStoreLayoutRematerialization;
+    // Per-phase options are AND-ed with the master option. Backward-propagation
+    // and small-component solving depend on cost-based resolution (disabling it
+    // forces both off); store-layout remat is independent.
+    bool costBased = enableRlcEnhance && enableCostBasedResolution;
+    bool backwardProp = enableRlcEnhance && enableBackwardPropagation;
+    bool smallComponentSolving =
+        enableRlcEnhance && enableSmallComponentSolving;
+    bool storeLayoutRemat =
+        enableRlcEnhance && enableStoreLayoutRematerialization;
 
     if (!costBased) {
       backwardProp = false;
@@ -4837,19 +4798,6 @@ public:
       m.dump();
     });
   }
-#ifdef __FLAGTREE_RLC_ENHANCE__
-private:
-  bool rlcEnhance = false;
-#endif // __FLAGTREE_RLC_ENHANCE__
 };
-#ifdef __FLAGTREE_RLC_ENHANCE__
-// FlagTree entry point that injects the runtime master switch. The NVIDIA
-// backend calls this with FLAGTREE_RLC_ENHANCE (see passes.cc / compiler.py);
-// other callers use the plain 0-arg factory and keep the original behavior.
-std::unique_ptr<::mlir::Pass>
-createTritonGPURemoveLayoutConversionsEnhanced(bool enhance) {
-  return std::make_unique<TritonGPURemoveLayoutConversionsPass>(enhance);
-}
-#endif // __FLAGTREE_RLC_ENHANCE__
 
 } // namespace mlir::triton::gpu
