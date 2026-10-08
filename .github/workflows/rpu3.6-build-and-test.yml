@@ -21,6 +21,8 @@
 name: Rpu3.6-Build-And-Test
 
 on:
+  schedule:
+    - cron: '0 19 * * *'
   push:
     branches: [ "main", "triton_v3.6.x" ]
   pull_request:
@@ -69,6 +71,7 @@ jobs:
 
       - name: Check if backend-relevant files changed
         id: check_backend
+        if: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
         uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
         with:
           backend: rpu

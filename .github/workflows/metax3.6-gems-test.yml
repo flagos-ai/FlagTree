@@ -18,32 +18,37 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+name: Metax3.6-Gems-Test
 
-def skip_package_dir(package):
-    return package == "triton" or package.startswith("triton.")
+on:
+  pull_request:
+    branches: ["main", "triton_v3.6.x"]
+    types: [opened, synchronize, reopened, ready_for_review]
 
+permissions:
+  contents: read
+  pull-requests: read
 
-def get_package_dir():
-    return {}
+concurrency:
+  # Group by PR number for pull_request events to cancel outdated runs from the same PR.
+  # Fall back to run_id for other events (e.g., schedule) to ensure each run is independent.
+  group: ${{ github.workflow }}-${{
+    github.event_name == 'pull_request' && github.event.pull_request.number ||
+    github.run_id }}
+  cancel-in-progress: true
 
-
-def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
-    is_mthreads = "mthreads" == flagtree_backend
-    cache.store(
-        file="mthreads-llvm22",
-        condition=is_mthreads,
-        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads-llvm22-x64_v0.6.1.tar.gz",
-        pre_hook=lambda: check_env("LLVM_SYSPATH"),
-        post_hook=set_llvm_env,
-    )
-    cache.store(
-        file="mthreads_local_binary",
-        condition=is_mthreads,
-        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/mthreads_local_binary_v0.7.0.tar.gz",
-    )
-    cache.store(
-        files=("ld.lld", "llc"),
-        condition=is_mthreads,
-        copy_src_path=f"{cache.dir_path}/{flagtree_backend}/mthreads_local_binary",
-        copy_dst_path=f"third_party/{flagtree_backend}/backend/bin",
-    )
+jobs:
+  metax36x:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
+    uses: flagos-ai/FlagTree/.github/workflows/template-gems-test.yml@main
+    with:
+      runner: metax3.6
+      backend: metax
+      gpu-env-var: MACA_VISIBLE_DEVICES
+      flaggems-tag: 'v5.3.5'
+      flagtree-build-command: |
+        set -x
+        export FLAGTREE_BACKEND=metax
+        MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
