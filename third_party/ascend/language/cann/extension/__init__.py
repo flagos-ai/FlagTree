@@ -46,6 +46,7 @@ from .scope import scope
 
 from .custom_op import (
     custom,
+    custom_object_semantic,
     custom_semantic,
     register_custom_op,
 )
@@ -121,6 +122,7 @@ __all__ = [
 
     # custom op
     "custom",
+    "custom_object_semantic",
     "custom_semantic",
     "register_custom_op",
 
