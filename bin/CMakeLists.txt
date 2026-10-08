@@ -80,6 +80,12 @@ target_link_libraries(triton-llvm-opt PRIVATE
   LLVMOption
   LLVMCodeGen
   )
+if(BUILD_MCTLE)
+  add_dependencies(triton-llvm-opt McTleIR)
+  target_sources(triton-llvm-opt PRIVATE
+    $<TARGET_OBJECTS:McTleIR>
+  )
+endif()
 export_executable_symbols_for_plugins(triton-llvm-opt)
 
 

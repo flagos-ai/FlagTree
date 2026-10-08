@@ -44,6 +44,8 @@ CORE:
           - 'setup.py'
           - '.github/actions/**'
           - '.github/workflows/code-format-check.yml'
+          - '.github/workflows/template-gems-baseline.yml'
+          - '.github/workflows/template-gems-test.yml'
       - all-globs-to-any-file:
           - 'python/**'
           - '!python/setup_tools/utils/cambricon.py'
@@ -54,8 +56,12 @@ CORE:
           - '!python/setup_tools/utils/mthreads.py'
           - '!python/setup_tools/utils/ppu.py'
           - '!python/setup_tools/utils/rpu.py'
+          - '!python/setup_tools/utils/spacemit.py'
           - '!python/setup_tools/utils/sunrise.py'
           - '!python/setup_tools/utils/thrive.py'
+          - '!python/setup_tools/utils/tileir.py'
+          - '!python/setup_tools/utils/tle_arm64.py'
+          - '!python/setup_tools/utils/tsingmicro.py'
           - '!python/setup_tools/utils/xpu.py'
 
 # ==========================================
@@ -119,6 +125,7 @@ aipu:
           - 'third_party/aipu/**'
           - '.github/workflows/aipu*'
           - '.github/workflows/benchmark/aipu/**'
+          - 'python/setup_tools/utils/aipu.py'
 
 amd:
   - changed-files:
@@ -126,6 +133,7 @@ amd:
           - 'third_party/amd/**'
           - '.github/workflows/amd*'
           - '.github/workflows/benchmark/amd/**'
+          - 'python/setup_tools/utils/amd.py'
 
 ascend:
   - changed-files:
@@ -133,6 +141,7 @@ ascend:
           - 'third_party/ascend/**'
           - '.github/workflows/ascend*'
           - '.github/workflows/benchmark/ascend/**'
+          - 'python/setup_tools/utils/ascend.py'
 
 cambricon:
   - changed-files:
@@ -148,6 +157,7 @@ cpu:
           - 'third_party/cpu/**'
           - '.github/workflows/cpu*'
           - '.github/workflows/benchmark/cpu/**'
+          - 'python/setup_tools/utils/cpu.py'
 
 enflame:
   - changed-files:
@@ -195,6 +205,7 @@ nvidia:
           - 'third_party/nvidia/**'
           - '.github/workflows/nvidia*'
           - '.github/workflows/benchmark/nvidia/**'
+          - 'python/setup_tools/utils/nvidia.py'
 
 ppu:
   - changed-files:
@@ -218,6 +229,7 @@ spacemit:
           - 'third_party/spacemit/**'
           - '.github/workflows/spacemit*'
           - '.github/workflows/benchmark/spacemit/**'
+          - 'python/setup_tools/utils/spacemit.py'
 
 sunrise:
   - changed-files:
@@ -241,6 +253,7 @@ tileir:
           - 'third_party/tileir/**'
           - '.github/workflows/tileir*'
           - '.github/workflows/benchmark/tileir/**'
+          - 'python/setup_tools/utils/tileir.py'
 
 tle_arm64:
   - changed-files:
@@ -248,6 +261,7 @@ tle_arm64:
           - 'third_party/tle_arm64/**'
           - '.github/workflows/tle_arm64*'
           - '.github/workflows/benchmark/tle_arm64/**'
+          - 'python/setup_tools/utils/tle_arm64.py'
 
 tsingmicro:
   - changed-files:
@@ -255,6 +269,7 @@ tsingmicro:
           - 'third_party/tsingmicro/**'
           - '.github/workflows/tsingmicro*'
           - '.github/workflows/benchmark/tsingmicro/**'
+          - 'python/setup_tools/utils/tsingmicro.py'
 
 xpu:
   - changed-files:
