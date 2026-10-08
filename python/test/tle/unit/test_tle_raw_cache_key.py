@@ -62,6 +62,26 @@ def test_compute_tle_raw_source_cache_key_includes_dialect_kwargs(tmp_path):
     assert bc_key != llvm_key
 
 
+def test_compute_tle_raw_source_cache_key_includes_defines(tmp_path):
+    cu_file = tmp_path / "kernel.cu"
+    cu_file.write_text("template <typename T> __device__ void foo(T *) {}\n")
+
+    float_key = compute_tle_raw_source_cache_key({
+        "name": "cuda",
+        "file": cu_file,
+        "extern_func_name": "foo",
+        "defines": {"VECTOR_ELEM_TYPE": "float"},
+    })
+    half_key = compute_tle_raw_source_cache_key({
+        "name": "cuda",
+        "file": cu_file,
+        "extern_func_name": "foo",
+        "defines": {"VECTOR_ELEM_TYPE": "half"},
+    })
+
+    assert float_key != half_key
+
+
 def test_bind_tle_raw_source_cache_key_rereads_source_file(tmp_path):
     cu_file = tmp_path / "kernel.cu"
     cu_file.write_text("__device__ void foo() {}\n")
