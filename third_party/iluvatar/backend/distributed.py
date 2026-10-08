@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass
+from importlib.machinery import PathFinder
+import sys
 '''
 FlagCX distributed runtime configuration module (Iluvatar backend).
 
@@ -50,6 +52,10 @@ class FlagcxRuntimeConfig:
     flagcx_cache_dir = Path.home() / ".flagtree" / "flagcx"
     triton_path = Path(__file__).parent.parent.parent
 
+    def _get_flagcx_wheel_path(self):
+        spec = PathFinder.find_spec("flagcx", sys.path)
+        return Path(spec.origin).parent if spec is not None else None
+
     def _is_available(self):
         env_keys = ("USE_FLAGCX", "USE_DIST", "USE_DISTRIBUTED", "USE_TLE_DIST", "USE_TLE_DISTRIBUTED")
         user_action = True
@@ -67,6 +73,7 @@ class FlagcxRuntimeConfig:
 
     def __init__(self, path_order=0):
         self.is_available = self._is_available()
+        self.flagcx_whl_path = self._get_flagcx_wheel_path()
         self.bitcode_path = None
         if self.is_available:
             self._find_flagcx_module_path()
@@ -97,9 +104,16 @@ class FlagcxRuntimeConfig:
                 str(module_path / self.shared_name), "FLAGCX_INCLUDE_PATH": str(module_path / self.include_name)
             })
 
+    def _get_flagcx_package_paths(self, pkg_name):
+        if self.flagcx_whl_path is None:
+            return None
+        pkg_path = self.flagcx_whl_path / "lib" / pkg_name
+        return pkg_path if pkg_path.exists() else None
+
     def _get_bitcode_paths(self, required=True):
         paths = (
             os.environ.get("FLAGCX_BITCODE_PATH"),
+            self._get_flagcx_package_paths(self.bt_name),
             Path(__file__).parent / "lib" / self.bt_name,
             self.flagcx_cache_dir / self.bt_name,
         )
@@ -108,6 +122,7 @@ class FlagcxRuntimeConfig:
     def _get_shared_lib_paths(self):
         paths = (
             os.environ.get("FLAGCX_LIB_PATH"),
+            self._get_flagcx_package_paths(self.shared_name),
             self.triton_path / "_C" / self.shared_name,
             self.flagcx_cache_dir / self.shared_name,
         )
@@ -117,6 +132,7 @@ class FlagcxRuntimeConfig:
 
         paths = (
             os.environ.get("FLAGCX_INCLUDE_PATH"),
+            self._get_flagcx_package_paths(self.include_name),
             self.triton_path / "experimental" / "tle" / "language" / "include",
             self.flagcx_cache_dir / self.include_name,
         )
