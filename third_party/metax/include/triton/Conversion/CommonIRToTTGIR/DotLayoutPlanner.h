@@ -10,6 +10,7 @@
 #include "mlir/Support/LogicalResult.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 
 #include <string>
 
@@ -22,9 +23,9 @@ struct DotLayoutPlan {
 };
 
 // Enumerate MACA MMA layout plans passing the per-dot geometry checks.
-// The first entry is the conservative fallback. Multi-dot coordination (picking
-// a mutually compatible plan across chained dots) and full-kernel lowering
-// validation are separate steps.
+// The first entry is the default chosen by ordering the same candidate domain.
+// Multi-dot coordination (picking compatible plans across chained dots) and
+// full-kernel lowering validation are separate steps.
 FailureOr<SmallVector<DotLayoutPlan>>
 generateDotLayoutPlans(triton::DotOp dot, int computeCapability, int numWarps);
 
@@ -34,6 +35,18 @@ struct DotLayoutDomain {
   unsigned dotIndex;
   SmallVector<DotLayoutPlan> plans;
 };
+
+struct DotLayoutChoice {
+  triton::DotOp dot;
+  DotLayoutPlan plan;
+};
+
+// Validate the supplied per-dot geometry and encodings without regenerating
+// domains. Layout application checks BSM hardware and use constraints before
+// modifying any IR.
+FailureOr<SmallVector<DotLayoutChoice>>
+selectDotLayouts(ModuleOp module, int capability, int numWarps,
+                 const llvm::StringMap<DotLayoutPlan> &selection);
 
 // Read-only module query. Dots are visited in preorder, numbered separately
 // within each function. These coordinates identify the current IR snapshot,

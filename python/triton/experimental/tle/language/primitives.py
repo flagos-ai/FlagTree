@@ -68,6 +68,16 @@ TLE_PRIMITIVES = frozenset({
     "gpu.wgmma",
     "gpu.wgmma_wait",
 
+    # TLE-Struct GPU: MetaX
+    "gpu.metax.async_copy_global_to_local",
+    "gpu.metax.gvm_arrive",
+    "gpu.metax.barrier",
+    "gpu.metax.barrier_shared",
+    "gpu.metax.sched_bound",
+    "gpu.metax.iglp",
+    "gpu.metax.local_load",
+    "gpu.metax.bsm_perm",
+
     ## TLE-Struct DSA
     "dsa.alloc",
     "dsa.copy",

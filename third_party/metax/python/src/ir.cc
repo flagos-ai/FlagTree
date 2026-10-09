@@ -1916,6 +1916,56 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
       .def("create_gather",
            [](TritonOpBuilder &self, Value src, Value indices, int axis)
                -> Value { return self.create<GatherOp>(src, indices, axis); })
+      .def("get_memdesc_type",
+           [](TritonOpBuilder &self, const std::vector<int64_t> &shape,
+              Type elementType, Attribute encoding, const std::string &storage,
+              const std::vector<int64_t> &allocShape) -> Type {
+             if (storage != "smem")
+               throw py::value_error("MetaX TLE buffers require shared memory");
+             auto space = ttg::SharedMemorySpaceAttr::get(self.getContext());
+             return ttg::MemDescType::get(shape, elementType, encoding, space,
+                                          /*mutableMemory=*/true, allocShape);
+           })
+      .def("create_memdesc_index",
+           [](TritonOpBuilder &self, Type resultType, Value source,
+              Value index) -> Value {
+             return self.create<ttg::MemDescIndexOp>(resultType, source, index);
+           })
+      .def("create_metax_async_copy_global_to_local",
+           [](TritonOpBuilder &self, Value src, Value dst, Value mask,
+              Value other) {
+             self.create<ttg::AsyncCopyGlobalToLocalOp>(
+                 src, dst, mask, other, tt::CacheModifier::NONE,
+                 tt::EvictionPolicy::NORMAL, /*isVolatile=*/false,
+                 /*intrinsic=*/true);
+           })
+      .def("create_metax_local_load",
+           [](TritonOpBuilder &self, Type resultType, Value source,
+              bool intrinsic, bool isConstantOffs, int mmaMode) -> Value {
+             return self.create<ttg::LocalLoadOp>(resultType, source, Value(),
+                                                  intrinsic, isConstantOffs,
+                                                  mmaMode);
+           })
+      .def("create_metax_bsm_perm",
+           [](TritonOpBuilder &self, Type resultType, Value source) -> Value {
+             return self.create<ttg::BsmPermOp>(resultType, source);
+           })
+      .def("create_gvm_arrive",
+           [](TritonOpBuilder &self, int num) {
+             self.create<ttg::GVMArriveOp>(num);
+           })
+      .def("create_maca_barrier",
+           [](TritonOpBuilder &self) { self.create<ttg::BarrierOp>(); })
+      .def("create_maca_barrier_shared",
+           [](TritonOpBuilder &self) { self.create<ttg::BarrierSharedOp>(); })
+      .def("create_maca_sched_bound",
+           [](TritonOpBuilder &self) { self.create<ttg::SchedBoundOp>(); })
+      .def("create_maca_iglp",
+           [](TritonOpBuilder &self, int config0, int config1, int config2,
+              int config3, int config4, int config5, int config6, int config7) {
+             self.create<ttg::IGLPOp>(config0, config1, config2, config3,
+                                      config4, config5, config6, config7);
+           })
       // Force GPU barrier
       .def("create_barrier",
            [](TritonOpBuilder &self) { self.create<mlir::gpu::BarrierOp>(); })
@@ -1960,7 +2010,7 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
            })
       .def("create_tile_alloc",
            [](TritonOpBuilder &self, Type tileBufType,
-              Attribute targetLayout) -> Value {
+              std::optional<Attribute> targetLayout) -> Value {
              auto bufType = mlir::cast<mlir::triton::tile::BufType>(tileBufType);
              auto op = self.create<mlir::triton::tile::AllocOp>(
                  tileBufType, bufType.getMemorySpace(),
@@ -1972,7 +2022,8 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
                      mlir::triton::tile::Layout::ND),
                  /*lifetime=*/mlir::triton::tile::LifetimeAttr(),
                  /*comment=*/mlir::StringAttr());
-             op->setAttr("tle.gpu_layout", targetLayout);
+             if (targetLayout)
+               op->setAttr("tle.gpu_layout", *targetLayout);
              return op.getResult();
            })
       .def("create_tile_copy",
@@ -2034,6 +2085,25 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
       .def("create_tile_store_tensor",
            [](TritonOpBuilder &self, Value &src, Value &dst) -> void {
              self.create<mlir::triton::tile::StoreTensorOp>(src, dst);
+           })
+      .def("create_tile_extract_tile",
+           [](TritonOpBuilder &self, Value source, Value index,
+              const std::vector<int64_t> &tileShape) -> Value {
+             auto srcTy = mlir::cast<RankedTensorType>(source.getType());
+             auto resTy = RankedTensorType::get(
+                 tileShape, srcTy.getElementType(), srcTy.getEncoding());
+             return self
+                 .create<mlir::triton::tile::ExtractTileOp>(resTy, source,
+                                                            index)
+                 .getResult();
+           })
+      .def("create_tile_insert_tile",
+           [](TritonOpBuilder &self, Value base, Value update,
+              Value index) -> Value {
+             return self
+                 .create<mlir::triton::tile::InsertTileOp>(base.getType(), base,
+                                                           update, index)
+                 .getResult();
            })
       .def("create_tile_gm_offset",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &indices,

@@ -44,7 +44,8 @@ def apply_dot_layout_candidate(module, candidate, capability, num_warps):
     layouts = {dot_id: [plan[key] for key in ("mma", "operand_a", "operand_b")] for dot_id, plan in candidate.items()}
     pm = ir.pass_manager(module.context)
     pm.enable_debug()
-    passes.commonir.add_inject_dot_plan(pm, capability, num_warps, layouts)
+    passes.commonir.add_apply_layout_plan(pm, capability, num_warps, layouts)
+    passes.commonir.add_lower_tensor_tiles(pm)
     pm.run(module, "apply_dot_layout_candidate")
     return module
 
@@ -97,8 +98,6 @@ def make_ttgir_candidates(module, metadata, options, capability, backend):
             apply_dot_layout_candidate(variant, assignment, capability, options.num_warps)
             finalize_dot_layouts(variant, capability)
         except Exception as error:
-            if index == 0:
-                raise
             failures.append({"plans": selection, "error": str(error)})
             logging.getLogger(__name__).warning("CommonIR layout candidate %d failed: %s", index, error)
             continue
@@ -107,8 +106,12 @@ def make_ttgir_candidates(module, metadata, options, capability, backend):
         filename = f"commonir-{digest}.ttgir"
         cache.put(source, filename, binary=False)
         variants.append({"id": digest, "file": filename, "plans": selection})
-        if index == 0:
+        if fallback is None:
             fallback = variant
+
+    if fallback is None:
+        details = "; ".join(item["error"] for item in failures)
+        raise RuntimeError(f"CommonIR autolayout: all layout candidates failed. {details}")
 
     entry = fallback.get_function(fallback.get_entry_func_name())
     metadata["commonir_layout_candidates"] = {

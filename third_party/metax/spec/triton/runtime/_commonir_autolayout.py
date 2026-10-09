@@ -4,15 +4,18 @@ import hashlib
 import json
 import logging
 import math
+import os
 import statistics
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from triton.runtime.cache import get_cache_manager
 from triton.runtime.jit import JITFunction
 
 _LOGGER = logging.getLogger(__name__)
-_PROTOCOL = "commonir-autolayout-v1"
+# Measurement policy: flush L2, five warmups and 32 samples.
+_PROTOCOL = "commonir-autolayout-v3"
 
 
 def _fast_launch_key(kernel, grid, stream, args):
@@ -111,19 +114,25 @@ def _scratch_arguments(args):
 
 def _benchmark(kernel, grid, stream, args, reset):
     import torch
+    from triton.runtime.driver import driver
 
     launch = kernel.run  # Load binary and build the launcher before timing.
+    active = driver.active
+    cache = active.get_empty_cache_for_benchmark()
 
     def run():
         launch(*grid, stream, kernel.function, kernel.packed_metadata, None, None, None, *args)
 
     for _ in range(5):
         reset()
+        active.clear_cache(cache)
         run()
-    starts = [torch.cuda.Event(enable_timing=True) for _ in range(40)]
+    starts = [torch.cuda.Event(enable_timing=True) for _ in range(32)]
     ends = [torch.cuda.Event(enable_timing=True) for _ in starts]
     for start, end in zip(starts, ends):
         reset()
+        # Scratch restoration touches inputs; flush afterward, outside timing.
+        active.clear_cache(cache)
         start.record()
         run()
         end.record()
@@ -179,6 +188,51 @@ class CommonIRAutolayoutJITFunction(JITFunction):
         self._layout_kernels[identity] = kernel
         return kernel
 
+    def _compile_candidates(self, fallback, manifest):
+        """Compile independently, then load on the caller's GPU thread in order."""
+        fallback_id = manifest["variants"][0]["id"]
+        compiled, failures = {}, {}
+        try:
+            fallback._init_handles()
+            compiled[fallback_id] = fallback
+        except Exception as error:
+            failures[fallback_id] = f"compilation/loading: {error}"
+            _LOGGER.warning("CommonIR candidate %s failed compilation/loading: %s", fallback_id, error)
+        variants = {v["id"]: v for v in manifest["variants"][1:] if v["id"] != fallback_id}
+        if not variants:
+            return compiled, failures
+
+        workers = int(os.getenv("TRITON_COMMONIR_AUTOLAYOUT_COMPILE_WORKERS", "4"))
+        if workers < 1:
+            raise ValueError("TRITON_COMMONIR_AUTOLAYOUT_COMPILE_WORKERS must be positive")
+        with ThreadPoolExecutor(max_workers=min(workers, len(variants)),
+                                thread_name_prefix="commonir-layout-compile") as executor:
+            futures = {
+                identity: executor.submit(self._compile_variant, fallback, manifest, variant)
+                for identity, variant in variants.items()
+            }
+            # Completion order must not change benchmark order or tie-breaking.
+            # Device loading stays on the caller's thread/current device.
+            for identity, future in futures.items():
+                try:
+                    candidate = future.result()
+                    candidate._init_handles()
+                    compiled[identity] = candidate
+                except Exception as error:
+                    failures[identity] = f"compilation/loading: {error}"
+                    _LOGGER.warning("CommonIR candidate %s failed compilation/loading: %s", identity, error)
+        return compiled, failures
+
+    def _benchmark_candidates(self, compiled, failures, grid, stream, args, reset):
+        timings = {}
+        for identity, candidate in compiled.items():
+            try:
+                timings[identity] = _benchmark(candidate, grid, stream, args, reset)
+            except Exception as error:
+                failures[identity] = f"benchmark: {error}"
+                _LOGGER.warning("CommonIR candidate %s failed benchmarking: %s", identity, error)
+        return timings
+
     def _remember_fast_winner(self, launch_key, workload_key, winner):
         if launch_key is not None:
             # Do not retain every tensor allocation identity in a long run.
@@ -221,8 +275,9 @@ class CommonIRAutolayoutJITFunction(JITFunction):
                     if record["version"] != 1:
                         raise ValueError("stale autolayout record")
                     winner = self._compile_variant(kernel, manifest, selected)
-                except (ValueError, KeyError, TypeError, StopIteration):
-                    pass
+                    winner._init_handles()
+                except Exception as error:
+                    _LOGGER.warning("CommonIR cached candidate could not be reused: %s", error)
                 else:
                     self._layout_winners[key] = winner
                     self.autolayout_results[key] = dict(record, source="disk")
@@ -230,17 +285,7 @@ class CommonIRAutolayoutJITFunction(JITFunction):
 
             # Materialize all binaries before benchmarking, keeping compiler
             # and launcher setup out of the timed regions.
-            compiled, failures = {}, {}
-            for index, variant in enumerate(manifest["variants"]):
-                try:
-                    candidate = self._compile_variant(kernel, manifest, variant)
-                    candidate._init_handles()
-                    compiled[variant["id"]] = candidate
-                except Exception as error:
-                    if index == 0:
-                        raise
-                    failures[variant["id"]] = str(error)
-                    _LOGGER.warning("CommonIR candidate %s failed compilation/loading: %s", variant["id"], error)
+            compiled, failures = self._compile_candidates(kernel, manifest)
 
             def validate_pointer(value, signature):
                 if isinstance(signature, tuple):
@@ -257,11 +302,14 @@ class CommonIRAutolayoutJITFunction(JITFunction):
                 replay_stream = torch.cuda.ExternalStream(stream)
             with torch.no_grad(), torch.cuda.stream(replay_stream):
                 replay, reset = _scratch_arguments(args)
-                timings = {
-                    identity: _benchmark(candidate, grid, stream, replay, reset)
-                    for identity, candidate in compiled.items()
+                timings = self._benchmark_candidates(compiled, failures, grid, stream, replay, reset)
+            if not timings:
+                self.autolayout_results[key] = {
+                    "version": 1, "selected": None, "timings_ms": {}, "failures": failures, "source": "failed"
                 }
-            # Insertion order keeps the fallback on ties.
+                details = "; ".join(f"{identity}: {reason}" for identity, reason in failures.items())
+                raise RuntimeError(f"CommonIR autolayout: all candidates failed. {details}")
+            # Manifest order breaks ties among the successful candidates.
             selected = min(timings, key=timings.get)
             record = {"version": 1, "selected": selected, "timings_ms": timings, "failures": failures}
             cache.put(json.dumps(record), "commonir-autolayout.json", binary=False)

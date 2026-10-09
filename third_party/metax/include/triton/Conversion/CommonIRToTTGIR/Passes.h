@@ -11,8 +11,8 @@ namespace mlir::triton::metax {
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
 
 std::unique_ptr<Pass>
-createCommonIRInjectDotPlan(CommonIRInjectDotPlanOptions options,
-                            llvm::StringMap<DotLayoutPlan> selectedPlans);
+createCommonIRApplyLayoutPlan(CommonIRApplyLayoutPlanOptions options,
+                              llvm::StringMap<DotLayoutPlan> selectedPlans);
 
 #define GEN_PASS_REGISTRATION
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
