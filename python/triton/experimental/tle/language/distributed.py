@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import dataclass, asdict
 from itertools import product
 from typing import Any, Iterable, Mapping, Sequence, List, Tuple, Union, Optional, Dict, TYPE_CHECKING
@@ -37,6 +38,11 @@ if TYPE_CHECKING:
 
 Axis = Tuple[str, int]
 AxesLike = Union[int, List[Axis]]
+
+try:
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+except ModuleNotFoundError:
+    FLAGTREE_BACKEND = os.environ.get("FLAGTREE_BACKEND", "nvidia")
 
 
 def _prod(values: Iterable[int]) -> int:
@@ -320,6 +326,7 @@ class MeshConfig:
     Fields:
         node:          Inter-node topology (e.g., multi-host layout)
         device:        Intra-node device topology (e.g., GPUs per node)
+        chiplet:       Inter-die topology within a device
         block_cluster: Cluster-level partitioning within a device
         block:         Finest-grained block-level partitioning
 
@@ -327,6 +334,7 @@ class MeshConfig:
     """
     node: Optional[AxesLike] = None
     device: Optional[AxesLike] = None
+    chiplet: Optional[AxesLike] = None
     block_cluster: Optional[AxesLike] = None
     block: Optional[AxesLike] = None
 
@@ -679,6 +687,9 @@ def make_sharded_tensor(
 ) -> ShardedTensor:
     if not isinstance(sharding, ShardingSpec):
         raise TypeError(f"sharding must be ShardingSpec, got {type(sharding).__name__}")
+    if FLAGTREE_BACKEND == "thrive":
+        from .dsa.thrive.distributed import make_sharded_tensor_impl
+        return make_sharded_tensor_impl(handle, sharding, shape)
     normalized_shape = None
     if shape is not None:
         if not isinstance(shape, (tuple, list)):
@@ -951,7 +962,7 @@ def shard_id(
     if axis in ("device", "node") and device_dptr is None:
         raise ValueError(f"device_dptr is required for axis {axis!r}")
 
-    if axis == "device":
+    if axis in ("chiplet", "device"):
         return _get_local_rank(device_dptr, _semantic=_semantic, ret_dtype=tl.int32)
     if axis == "node":
         world_rank = _get_world_rank(device_dptr, _semantic=_semantic, ret_dtype=tl.int32)
@@ -1000,6 +1011,32 @@ def _normalize_barrier_space(space: str | attr.FlagCXTeamKind | None) -> str | N
     return ("device", "inter", "world")[team_kind_value]
 
 
+def _parse_barrier_enum_arg(arg) -> str:
+    # Successor of the base _parse_device_barrier_args: normalize
+    # BarrierKind/GroupKind/MemoryOrder enums or raw strings to lowercase str.
+    arg = tl._unwrap_if_constexpr(arg)
+    if isinstance(arg, (BarrierKind, GroupKind, MemoryOrder)):
+        return arg.value
+    return str(arg).lower()
+
+
+def _normalize_barrier_order(order) -> attr.MemoryOrder:
+    # Normalize MemoryOrder enum / raw string to the builder-side enum attr.
+    order = tl._unwrap_if_constexpr(order)
+    if isinstance(order, attr.MemoryOrder):
+        return order
+    if isinstance(order, MemoryOrder):
+        return attr.MemoryOrder.from_str(order.value)
+    return attr.MemoryOrder.from_str(str(order).lower())
+
+
+def _require_barrier_order(order) -> attr.MemoryOrder:
+    normalized = _normalize_barrier_order(order)
+    if normalized is None:
+        raise ValueError(f"order must be 'relaxed', 'acquire', 'release', or 'acqrel', got {order!r}")
+    return normalized
+
+
 def _validate_barrier_space_mesh(mesh: device_mesh | None, space: str, device_dptr=None) -> None:
     if mesh is None:
         raise ValueError(f"space={space!r}: mesh is required")
@@ -1017,6 +1054,27 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
                                    order: attr.MemoryOrder | MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
                                    memory_scope: attr.SyncScope | MemoryScope | str = MemoryScope.SYSTEM,
                                    _semantic=None) -> bool:
+    space = tl._unwrap_if_constexpr(space)
+    # Thrive chiplet barrier: bypass FlagCX normalization and lower through the
+    # device-space create_distributed_barrier path. Same permissiveness as the
+    # pre-refactor chiplet path: mesh/device_dptr are optional (None src) so
+    # tle.distributed_barrier(space="chiplet") works without a mesh.
+    if isinstance(space, str) and space.lower() == "chiplet":
+        if mesh is not None and not _mesh_has_axis(mesh, "chiplet", use_launch_dims=True):
+            raise ValueError("space='chiplet' requires mesh to define a 'chiplet' topology axis")
+        builder = _semantic.builder
+        ptr = _parse_src_arg(builder, device_dptr, 1) if device_dptr is not None else None
+        builder.create_distributed_barrier(
+            src=ptr,
+            barrier_index=index or 0,
+            space="chiplet",
+            group_kind=_parse_barrier_enum_arg(group_kind),
+            order=_require_barrier_order(order),
+            barrier_kind=_parse_barrier_enum_arg(barrier_kind),
+            context_id=tl._unwrap_if_constexpr(context_id),
+            memory_scope=attr.SyncScope.from_str("system"),
+        )
+        return True
     space = _normalize_barrier_space(space)
     if space is None:
         return False
@@ -1037,15 +1095,7 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
     else:
         group_kind = str(group_kind).lower()
 
-    order = tl._unwrap_if_constexpr(order)
-    if isinstance(order, attr.MemoryOrder):
-        pass
-    elif isinstance(order, MemoryOrder):
-        order = attr.MemoryOrder.from_str(order.value)
-    else:
-        order = attr.MemoryOrder.from_str(str(order).lower())
-    if order is None:
-        raise ValueError(f"order must be 'relaxed', 'acquire', 'release', or 'acqrel', got {order!r}")
+    order = _require_barrier_order(order)
 
     barrier_kind = tl._unwrap_if_constexpr(barrier_kind)
     if isinstance(barrier_kind, BarrierKind):
@@ -1290,6 +1340,7 @@ def _create_remote_pointers_tensor(
 
     remote_ptr_dtype = tl.pointer_type(*{
         "cluster": (dtype, 7),
+        "chiplet": (dtype, 1),
         "device": (dtype, 1),
     }.get(space))
     if space == 'cluster' and tensor and tensor.type.is_block():
@@ -1355,6 +1406,14 @@ def _check_device_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, .
     ...
 
 
+def _check_chiplet_remote_pointer(tensor: tl.tensor, shard_id: int | tuple[int, ...] | list[int],
+                                  scope: device_mesh | None) -> None:
+    if not isinstance(tensor, tl.tensor):
+        raise TypeError(f"tensor must be tl.tensor, got {type(tensor).__name__}")
+    if not tensor.dtype.is_ptr():
+        raise TypeError(f"{tensor.dtype}, chiplet remote pointer requires a pointer tensor")
+
+
 def _remote_pointer(
     tensor: tl.tensor,
     shard_id,
@@ -1365,12 +1424,13 @@ def _remote_pointer(
     _semantic: TLESemantic | None = None,
 ) -> tl.tensor:
 
-    if not isinstance(tensor, tl.tensor) and space != "device":
+    if not isinstance(tensor, tl.tensor) and space not in ("chiplet", "device"):
         raise TypeError(f"tensor must be tl.tensor, got {type(tensor).__name__}")
 
     space = tl._unwrap_if_constexpr(space)
     res = {
         "cluster": _check_cluster_remote_pointer,
+        "chiplet": _check_chiplet_remote_pointer,
         "device": _check_device_remote_pointer,
     }[space](tensor, shard_id, scope)
     if isinstance(res, tl.tensor):
@@ -1532,8 +1592,8 @@ def remote(
     space = tl._unwrap_if_constexpr(space)
     if not isinstance(space, str):
         raise TypeError(f"space must be str, got {type(space).__name__}")
-    if space not in ("cluster", "device", "node"):
-        raise ValueError(f"space must be 'cluster', 'device', or 'node', got {space!r}")
+    if space not in ("cluster", "chiplet", "device", "node"):
+        raise ValueError(f"space must be 'cluster', 'chiplet', 'device', or 'node', got {space!r}")
     shard_id = _unwrap_remote_shard_id(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
     if space == "node":
@@ -1555,12 +1615,12 @@ def remote(
                         f'{", ".join(node_only_args)}')
     if scope is not None and not isinstance(scope, device_mesh):
         raise TypeError(f"scope must be device_mesh or None, got {type(scope).__name__}")
-    if scope is not None:
+    if scope is not None and space != "chiplet":
         _apply_mesh_cluster_launch(scope, _semantic)
 
     # Direct pointer path: support local_ptr scalar/tensor values and return
     # remote pointer with preserved shape.
-    if isinstance(tensor, tl.tensor) or space == "device":
+    if isinstance(tensor, tl.tensor) or (space in ("chiplet", "device")):
         return _remote_pointer(tensor, shard_id, scope=scope, space=space, _semantic=_semantic, dtype=dtype,
                                offset=offset)
 

@@ -79,7 +79,7 @@ def _all_gather_signal_kernel(
             op="inc",
             space="intra_node",
             group_kind="block",
-            context_idx=0,
+            context_id=0,
         )
 
 
@@ -95,7 +95,7 @@ def _all_gather_wait_kernel(
         wait_kind="signal",
         target=signal_target,
         group_kind="block",
-        context_idx=0,
+        context_id=0,
     )
 
 

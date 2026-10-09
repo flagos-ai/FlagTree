@@ -1,10 +1,20 @@
 #pragma once
+#include "Dialect/ThvTile/IR/Dialect.h"
 #include "ir.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include <pybind11/pybind11.h>
 
 struct ThriveOpBuilder : public TritonOpBuilder {
   using TritonOpBuilder::TritonOpBuilder;
+
+  mlir::Value createExternCallOp(const std::string &symbol,
+                                 std::vector<mlir::Value> &argList,
+                                 const std::vector<mlir::Type> &retType,
+                                 bool isPure) {
+    return create<mlir::thvtile::LibdeviceCallOp>(retType, symbol, argList,
+                                                  isPure)
+        .getResult(0);
+  }
 };
 
 void init_thrive_ir(py::module &m) {
@@ -98,8 +108,10 @@ void init_thrive_ir(py::module &m) {
            [](ThriveOpBuilder &self, Value &base, Value &exponent) -> Value {
              return self.create<math::PowFOp>(base, exponent);
            })
-      // TODO(thrive): bind to thrive::ExternCallOp once the dialect lands.
-      .def("create_extern_call", [](ThriveOpBuilder &self) -> Value {
-        throw py::value_error("create_extern_call: not implemented yet");
-      });
+      .def("create_extern_call",
+           [](ThriveOpBuilder &self, const std::string &symbol,
+              std::vector<mlir::Value> &argList,
+              const std::vector<mlir::Type> &retType, bool isPure) -> Value {
+             return self.createExternCallOp(symbol, argList, retType, isPure);
+           });
 }

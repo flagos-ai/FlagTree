@@ -36,13 +36,19 @@ def alias_e2e_kernel(in_ptr, out_ptr, N, BLOCK: tl.constexpr):
 
 
 if __name__ == "__main__":
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    DEVICE = ({
+        "nvidia": "cuda",
+        "mthreads": "musa",
+    }).get(FLAGTREE_BACKEND, "cuda")
+
     N = 2048  # enough for two BLOCK-sized chunks
-    x = torch.randn(N, device="cuda", dtype=torch.float32)
-    y = torch.zeros(1024, device="cuda", dtype=torch.float32)  # only first 1024
+    x = torch.randn(N, device=DEVICE, dtype=torch.float32)
+    y = torch.zeros(1024, device=DEVICE, dtype=torch.float32)  # only first 1024
 
     grid = (triton.cdiv(1024, BLOCK), )
     alias_e2e_kernel[grid](x, y, 1024, BLOCK=BLOCK)
-    torch.cuda.synchronize()
+    torch.get_device_module().synchronize()
 
     # Verify: y should equal x[128:1152] (second batch), not x[0:1024] (first batch).
     # This confirms that v_smem's overwrite was observed by o_smem.
