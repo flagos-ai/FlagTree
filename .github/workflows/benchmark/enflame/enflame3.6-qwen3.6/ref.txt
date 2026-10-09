@@ -1,0 +1,20 @@
+ZIXIAOC200 * 4
+harbor.baai.ac.cn/plugin/enflame001-gems5.4.0.dev0-treenone-triton3.6.0-cx0.13.0-pluginnone-vllm0.24.0-cp312-pt211-x64-1.9.10:202609081745
+Driver Version: 1.9.29
+vllm==0.24.0+empty
+torch==2.11.0
+
+[2026/10/09] vllm-plugin-fl==0.3.0rc2.post1+g3a27a6fb2 (2026/09/25), flag_gems==5.4.0.dev0 (2026/08/20), flagtree===0.7.0+enflame3.6 (2026/09/28)
+# 服务冷启动时间: 3分51秒, 服务热启动时间: 2分20秒
+# 输入长度: 1K, 输出长度: 1K, 并发数: 4
+  Output token throughput (tok/s): 7.67
+  Total token throughput (tok/s): 15.33
+  Median TTFT (ms): 8989.77
+  Median TPOT (ms): 513.35
+  Median ITL (ms): 512.23
+# 输入长度: 128, 输出长度: 128, 并发数: 4
+  Output token throughput (tok/s): 7.40
+  Total token throughput (tok/s): 14.80
+  Median TTFT (ms): 2952.42
+  Median TPOT (ms): 518.84
+  Median ITL (ms): 515.48
