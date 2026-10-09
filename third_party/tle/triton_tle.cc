@@ -64,10 +64,25 @@ namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 
+extern std::vector<int64_t>
+computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
+                           const std::vector<Value> &args,
+                           std::string_view funcName);
+
 extern tle::DSLRegionOp
 createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
-                             const std::vector<Value> &outputs,
-                             const std::vector<Value> &inputs);
+                             std::string_view regionDialect,
+                             std::string_view argDialect,
+                             const std::vector<Value> &args,
+                             const std::vector<int64_t> &aliasOperandIndices,
+                             std::string_view hint, std::string_view funcName);
+
+extern tle::DSLRegionOp createTLERawRegionDeferred(
+    TritonOpBuilder &self, std::string_view sourceId,
+    std::string_view regionDialect, std::string_view argDialect,
+    const std::vector<Value> &args,
+    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint,
+    std::string_view dsl_file_name, std::string_view extern_func_name);
 
 void init_triton_tle_ir(py::module &&m) {
   using ret = py::return_value_policy;
@@ -239,6 +254,12 @@ void init_triton_tle_passes(py::module &&m) {
                      tle::createTritonTleAssignLocalPointersEncoding);
   ADD_PASS_WRAPPER_0("add_insert_local_pointer_barriers",
                      tle::createTritonTleInsertLocalPointerBarriers);
+  ADD_PASS_WRAPPER_0("add_optimize_local_pointer_loads",
+                     tle::createTritonTleOptimizeLocalPointerLoads);
+  ADD_PASS_WRAPPER_0("add_optimize_local_pointer_stores",
+                     tle::createTritonTleOptimizeLocalPointerStores);
+  ADD_PASS_WRAPPER_0("add_optimize_local_pointer_async_stores",
+                     tle::createTritonTleOptimizeLocalPointerAsyncStores);
   ADD_PASS_WRAPPER_0("add_lower_async_load",
                      tle::createTritonTleLowerAsyncLoad);
   ADD_PASS_WRAPPER_0("add_lower_tma_copy", tle::createTritonTleLowerTmaCopy);
@@ -263,8 +284,18 @@ void init_tle_raw_ir(py::module &&m) {
       .def("dump", &tle::YieldOp::dump);
 
   auto *builder_cls = ir::getBuilderClass();
+  builder_cls->def("compute_alias_operand_indices", &computeAliasOperandIndices,
+                   py::arg("text"), py::arg("args"), py::arg("func_name") = "");
   builder_cls->def("create_tle_raw_region_by_llvm_func",
-                   &createTLERawRegionByLLVMFunc);
+                   &createTLERawRegionByLLVMFunc, py::arg("text"),
+                   py::arg("region_dialect"), py::arg("arg_dialect"),
+                   py::arg("args"), py::arg("output_operand_indices"),
+                   py::arg("hint") = "", py::arg("func_name") = "");
+  builder_cls->def(
+      "create_tle_raw_region_deferred", &createTLERawRegionDeferred,
+      py::arg("source_id"), py::arg("region_dialect"), py::arg("arg_dialect"),
+      py::arg("args"), py::arg("output_operand_indices"), py::arg("hint") = "",
+      py::arg("dsl_file_name") = "", py::arg("extern_func_name") = "");
   builder_cls->def("get_context", &TritonOpBuilder::getContext);
 }
 

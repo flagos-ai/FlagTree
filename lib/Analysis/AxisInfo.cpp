@@ -1228,11 +1228,20 @@ unsigned ModuleAxisInfoAnalysis::getContiguity(Value offsetsValue,
   auto tensorTy = cast<RankedTensorType>(offsetsValue.getType());
   auto linAttr = gpu::toLinearEncoding(tensorTy);
   auto order = linAttr.getOrder();
+#ifdef __TLE__
+  if (order.empty())
+    return 1;
+#endif
   unsigned align = getAlignment(offsetsValue, elementBitWidth);
 
   auto uniqueContigPerThread = linAttr.getContigPerThread();
+#ifdef __TLE__
+  if (order[0] >= uniqueContigPerThread.size())
+    return align;
+#else
   assert(order[0] < uniqueContigPerThread.size() &&
          "Unexpected uniqueContigPerThread size");
+#endif
   unsigned contiguity = uniqueContigPerThread[order[0]];
   LDBG("getContiguity uniqueContigPerThread = " << contiguity);
   contiguity = std::min(align, contiguity);
@@ -1261,6 +1270,13 @@ unsigned ModuleAxisInfoAnalysis::getAlignment(Value offsetsValue,
     return 1;
   auto linAttr = gpu::toLinearEncoding(tensorTy);
   auto order = linAttr.getOrder();
+#ifdef __TLE__
+  if (order.empty())
+    return 1;
+  if (order[0] >= axisInfo->getRank()) {
+    return 1;
+  }
+#endif
 
   auto divisibility = axisInfo->getDivisibility(order[0]);
   auto elemNumBytes = std::max<unsigned>(elementBitWidth / 8, 1);
@@ -1293,6 +1309,12 @@ unsigned ModuleAxisInfoAnalysis::getMaskAlignment(Value mask) {
     return 1;
   auto linAttr = gpu::toLinearEncoding(tensorTy);
   auto maskOrder = linAttr.getOrder();
+#ifdef __TLE__
+  if (maskOrder.empty())
+    return 1;
+  if (maskOrder[0] >= axisInfo->getRank())
+    return 1;
+#endif
   auto alignment = std::max<unsigned>(axisInfo->getConstancy(maskOrder[0]), 1);
   LDBG("getMaskAlignment maskOrder[0] " << maskOrder[0] << " alignment "
                                         << alignment);

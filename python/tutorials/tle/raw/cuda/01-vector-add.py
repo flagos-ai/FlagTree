@@ -22,7 +22,7 @@ def add_kernel(
     n_elements,
     BLOCK_SIZE: tl.constexpr,
 ):
-    tle_raw.call(edsl, [], [output_ptr, x_ptr, y_ptr, n_elements])
+    tle_raw.call(edsl, [output_ptr, x_ptr, y_ptr, n_elements])
 
 
 def add(x: torch.Tensor, y: torch.Tensor):

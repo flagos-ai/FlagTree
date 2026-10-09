@@ -485,6 +485,12 @@ class nvidia_knobs(base_knobs):
     libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
     libcuda_path: env_opt_str = env_opt_str("TRITON_LIBCUDA_PATH")
 
+    # flagtree tle-raw cuda
+    tle_raw_clang: env_opt_str = env_opt_str("CLANG")
+    tle_raw_clang_flags: env_opt_str = env_opt_str("CLANG_FLAGS")
+    # flagtree tle-raw cuda nvshmem
+    nvshmem_home: env_opt_str = env_opt_str("NVSHMEM_HOME")
+
 
 class amd_knobs(base_knobs):
     use_buffer_ops: env_bool = env_bool("AMDGCN_USE_BUFFER_OPS")

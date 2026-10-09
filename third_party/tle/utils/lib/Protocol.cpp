@@ -1,3 +1,26 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "tle/utils/include/Protocol.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -31,6 +54,34 @@ SmallVector<Value> RankedTensorPattern::apply(TritonOpBuilder &builder,
                                               TypeRange &tgts,
                                               TypedValue<E> src) {
   const size_t rank = src.getType().getRank();
+  SmallVector<Value> rets;
+  Type tgt = tgts[0];
+  COND_CHECK(isa<LLVM::LLVMPointerType>(tgt));
+  LLVM::LLVMPointerType ty = cast<LLVM::LLVMPointerType>(tgt);
+  rets.push_back(builder.create<ExtractAllocatedPtrOp>(ty, src));
+  tgt = tgts[1];
+  ty = cast<LLVM::LLVMPointerType>(tgt);
+  rets.push_back(builder.create<ExtractAlignedPtrOp>(ty, src));
+  tgt = tgts[2];
+  COND_CHECK(tgt.isInteger(64));
+  rets.push_back(builder.create<ExtractOffsetOp>(src));
+  for (size_t i = 3; i < 3 + 2 * rank; ++i) {
+    tgt = tgts[i];
+    COND_CHECK(tgt.isInteger(64));
+  }
+  ExtractSizesOp sizesOp = builder.create<ExtractSizesOp>(rank, src);
+  ExtractStridesOp stridesOp = builder.create<ExtractStridesOp>(rank, src);
+  for (const auto &result :
+       llvm::concat<OpResult>(sizesOp.getResults(), stridesOp.getResults())) {
+    rets.push_back(result);
+  }
+  tgts = tgts.drop_front(3 + 2 * rank);
+  return rets;
+}
+
+SmallVector<Value> MemDescPattern::apply(TritonOpBuilder &builder,
+                                         TypeRange &tgts, TypedValue<E> src) {
+  const size_t rank = src.getType().getShape().size();
   SmallVector<Value> rets;
   Type tgt = tgts[0];
   LLVM::LLVMPointerType ty = cast<LLVM::LLVMPointerType>(tgt);
@@ -71,9 +122,18 @@ SmallVector<Value> LLVMStructurePattern::apply(TritonOpBuilder &builder,
                                                TypeRange &tgts,
                                                TypedValue<E> src) {
   COND_CHECK(!tgts.empty());
-  RankedTensorType tgt = dyn_cast<RankedTensorType>(tgts.front());
+  mlir::Type tgt;
+  size_t rank;
+  if (auto tensorTy = dyn_cast<RankedTensorType>(tgts.front())) {
+    tgt = tensorTy;
+    rank = tensorTy.getRank();
+  } else if (auto memdescTy = dyn_cast<ttg::MemDescType>(tgts.front())) {
+    tgt = memdescTy;
+    rank = memdescTy.getShape().size();
+  } else {
+    llvm_unreachable("Unsupported LLVM return type");
+  }
   COND_CHECK(tgt);
-  const size_t rank = tgt.getRank();
   LLVM::LLVMStructType structTy = src.getType();
   ArrayRef<Type> types = structTy.getBody();
   const size_t size = types.size();
