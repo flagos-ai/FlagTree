@@ -74,8 +74,24 @@ def create_target(*, glu_reduction_group: int = 32) -> AmdGfx1201Target:
         model, implementations=tuple(configure(value) for value in model.implementations)))
 
 
+def _split_k_logits_choice(points):
+    """Pick a split-K logits candidate: split the hidden reduction over the y axis
+    (partial_p_sum_h0) AND shard the 152K vocab over x (s_c/s_bc_h1) -> the gemv
+    runs on all 128 CTAs instead of the 16 that own a single x-row. ~3x faster
+    lm_head on R9700 (the default output-only x-shard under-floods the CUs)."""
+    point = points.get("distribution.logits.vectorized.compute")
+    if point is None:
+        return {}
+    for cand in point.candidates:
+        cid = cand.id
+        if "partial_p_sum_h0" in cid and ("_s_c_h1" in cid or "_s_bc_h1" in cid):
+            return {"logits.vectorized.compute": cid}
+    return {}
+
+
 def select_distribution(module, target, *, residual_layout="sharded-casts",
-                        norm_layout="replicated-residual", exclusive_axes=(0, 1)):
+                        norm_layout="replicated-residual", exclusive_axes=(0, 1),
+                        split_k_logits=True):
     """Apply the (mesh-agnostic) Qwen3-1.7B distribution recipe for an RDNA mesh."""
     points = {point.id: point for point in module.selection_points if point.kind == "distribution"}
     choices = []
@@ -104,6 +120,8 @@ def select_distribution(module, target, *, residual_layout="sharded-casts",
             exclusive=norm_layout in {"exclusive", "exclusive-residual"},
             exclusive_axes=exclusive_axes,
         ))
+    if split_k_logits:
+        fixed.update(_split_k_logits_choice(points))
     result = solve_search_graph(graph, fixed_selections=fixed)
     _, records = distribution_selection_state(result, policy=target.distribution_policy.identity)
     return override_plan(
