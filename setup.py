@@ -496,7 +496,7 @@ class CMakeBuild(build_ext):
         # with an actionable message otherwise. Done here (build_ext) rather than at
         # import so non-build commands don't run the check.
         helper.check_pybind11_abi()
-        if active_backend not in ("xpu", ):
+        if active_backend not in ("xpu", "spacemit"):
             download_and_copy_dependencies()
 
         try:
