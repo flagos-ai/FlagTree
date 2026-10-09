@@ -763,9 +763,11 @@ static bool hasOnlyPureOpsBetween(Operation *from, Operation *to) {
     // Async WGMMA ordering operations are semantically significant even
     // though they do not model ordinary memory effects. Do not move a merged
     // dot across a wait/commit boundary.
-    if (isa<ttng::WarpGroupDotWaitOp, ttng::WarpGroupDotCommitOp>(op))
+    if (isa<ttng::WarpGroupDotWaitOp>(op))
       return false;
 #ifdef __TLE__
+    if (isa<ttng::WarpGroupDotCommitOp>(op))
+      return false;
     // A shared-operand fence is an ordering boundary too: it establishes
     // visibility from generic-proxy writes to the async WGMMA proxy.
     if (isa<mlir::triton::tle::WGMMASharedOperandFenceOp>(op))

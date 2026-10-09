@@ -3,6 +3,9 @@
 #include <gtest/gtest.h>
 
 #include "mlir/AsmParser/AsmParser.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Parser/Parser.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/StrUtil.h"
@@ -28,6 +31,49 @@ void PrintTo(const Attribute &attr, std::ostream *os) {
 
 namespace mlir::triton::gpu {
 namespace {
+
+TEST(WarpSpecializeOpTest, ReuseDefaultWarpsAttribute) {
+  MLIRContext ctx;
+  ctx.loadDialect<TritonDialect, TritonGPUDialect>();
+  std::string diagnostics;
+  ScopedDiagnosticHandler handler(
+      &ctx, [&](Diagnostic &diag) { diagnostics += diag.str(); });
+  auto parse = [&](StringRef attributes) {
+    diagnostics.clear();
+    std::string source = R"mlir(
+      module attributes {"ttg.num-warps" = 4 : i32} {
+        tt.func @test() {
+          ttg.warp_specialize()
+    )mlir";
+    source += attributes.str();
+    source += R"mlir(
+          default { ttg.warp_yield }
+          partition0() num_warps(4) { ttg.warp_return }
+          : () -> ()
+          tt.return
+        }
+      }
+    )mlir";
+    return parseSourceString<ModuleOp>(source, &ctx);
+  };
+
+  EXPECT_TRUE(parse("")) << diagnostics;
+  EXPECT_TRUE(parse("attributes {reuseDefaultWarps = false}")) << diagnostics;
+
+  auto enabled = parse("attributes {reuseDefaultWarps = true}");
+#ifdef __TLE__
+  EXPECT_TRUE(enabled) << diagnostics;
+#else
+  EXPECT_FALSE(enabled);
+  EXPECT_THAT(diagnostics,
+              ::testing::HasSubstr("reuseDefaultWarps requires a TLE-enabled "
+                                   "compiler"));
+#endif
+
+  EXPECT_FALSE(parse("attributes {reuseDefaultWarps = 1 : i32}"));
+  EXPECT_THAT(diagnostics, ::testing::HasSubstr("reuseDefaultWarps"));
+  EXPECT_THAT(diagnostics, ::testing::HasSubstr("bool"));
+}
 
 std::vector<DistributedEncodingTrait>
 createDistributedEncodings(MLIRContext &ctx) {
