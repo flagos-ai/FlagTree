@@ -92,7 +92,8 @@ public:
 static bool isAMDLoweredTleOp(Operation *op) {
   StringRef name = op->getName().getStringRef();
   return name == "tle.local_pointers" || name == "tle.extract_tile" ||
-         name == "tle.insert_tile" || name == "tle.exclusive_cumsum";
+         name == "tle.insert_tile" || name == "tle.exclusive_cumsum" ||
+         name == "tle.distributed_barrier";
 }
 #endif
 
@@ -249,6 +250,9 @@ struct ConvertTritonAMDGPUToLLVM
           typeConverter, tlePatterns, targetInfo, commonBenefit);
       mlir::triton::tle::populateExclusiveCumsumOpToLLVMPatterns(
           typeConverter, targetInfo, tlePatterns, commonBenefit);
+      // RDNA grid barrier (tle.distributed_barrier, group_kind grid/grid_axis).
+      AMD::populateDistributedBarrierOpToLLVMPatterns(
+          typeConverter, tlePatterns, targetInfo, commonBenefit);
       if (failed(
               applyPartialConversion(mod, tleTarget, std::move(tlePatterns))))
         return signalPassFailure();

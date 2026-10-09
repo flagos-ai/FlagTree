@@ -65,6 +65,12 @@ void populateBarrierOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                      RewritePatternSet &patterns,
                                      const TargetInfo &targetInfo,
                                      PatternBenefit benefit);
+
+// RDNA lowering of tle.distributed_barrier (group_kind grid / grid_axis).
+// Defined only when the TLE plugin is built (__TLE__).
+void populateDistributedBarrierOpToLLVMPatterns(
+    LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
+    const TargetInfo &targetInfo, PatternBenefit benefit);
 } // namespace mlir::triton::AMD
 
 #endif // TRITON_THIRD_PARTY_AMD_LIB_TRITONAMDGPUTOLLVM_PATTERNTRITONGPUOPTOLLVM_H_
