@@ -44,3 +44,35 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     tt.return %e : tensor<64x64xf32, #blocked>
   }
 }
+
+// -----
+
+// An explicit layout on a vector expanded inside a loop stays local: the
+// synthesized expand_dims parent the RLC phases derive from it is only a
+// candidate, so the loop accumulator keeps its layout.
+
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 4], order = [1, 0]}>
+#blocked1 = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func public @explicit_vector_in_loop
+  // CHECK: scf.for {{.*}} -> (tensor<16x512xf32, #blocked>)
+  // CHECK: tt.expand_dims %{{.*}} {axis = 0 : i32} : tensor<512xf32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<1x512xf32, #blocked>
+  // CHECK-NOT: ttg.convert_layout
+  // CHECK: tt.return
+  tt.func public @explicit_vector_in_loop(%v: tensor<512xf32, #ttg.slice<{dim = 0, parent = #blocked}>>, %n: i32) -> tensor<16x512xf32, #blocked> {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %zero = arith.constant dense<0.000000e+00> : tensor<16x512xf32, #blocked>
+    %r = scf.for %i = %c0 to %n step %c1 iter_args(%acc = %zero) -> (tensor<16x512xf32, #blocked>) : i32 {
+      %h = ttg.convert_layout %v {tle.explicit_encoding.0 = #blocked1} : tensor<512xf32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<512xf32, #blocked1>
+      %e0 = math.exp %h : tensor<512xf32, #blocked1>
+      %s = ttg.convert_layout %e0 : tensor<512xf32, #blocked1> -> tensor<512xf32, #ttg.slice<{dim = 0, parent = #blocked}>>
+      %x = tt.expand_dims %s {axis = 0 : i32} : tensor<512xf32, #ttg.slice<{dim = 0, parent = #blocked}>> -> tensor<1x512xf32, #blocked>
+      %b = tt.broadcast %x : tensor<1x512xf32, #blocked> -> tensor<16x512xf32, #blocked>
+      %next = arith.addf %acc, %b : tensor<16x512xf32, #blocked>
+      scf.yield %next : tensor<16x512xf32, #blocked>
+    }
+    tt.return %r : tensor<16x512xf32, #blocked>
+  }
+}
