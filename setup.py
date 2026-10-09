@@ -141,7 +141,7 @@ class BackendInstaller:
         tools_dir = os.path.join(backend_src_dir, "tools")
         if not os.path.exists(tools_dir):
             tools_dir = None
-        
+
         helper.prepare_backend_runtime_files(backend_name, backend_src_dir, get_cmake_dir())
 
         for file in ["compiler.py", "driver.py"]:

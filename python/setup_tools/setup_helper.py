@@ -106,9 +106,8 @@ def prepare_backend_runtime_files(backend_name, backend_src_dir, cmake_dir):
 
         # spine-triton-opt is built by this backend rather than shipped in
         # SPINE_MLIR_INSTALL_DIR. Copy it when reusing an existing build tree.
-        spine_triton_opt_src = os.path.join(
-            str(cmake_dir), "third_party", "spacemit", "tools",
-            "spine-triton-opt", "spine-triton-opt")
+        spine_triton_opt_src = os.path.join(str(cmake_dir), "third_party", "spacemit", "tools", "spine-triton-opt",
+                                            "spine-triton-opt")
         if os.path.exists(spine_triton_opt_src):
             dst = os.path.join(bin_dir, "spine-triton-opt")
             shutil.copy(spine_triton_opt_src, dst)
@@ -121,15 +120,11 @@ def prepare_backend_runtime_files(backend_name, backend_src_dir, cmake_dir):
         spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR")
         if spine_mlir_install_dir:
             for pattern in ("libSpeIR*.so*", "libspine_tcm.so*"):
-                so_file_list.extend(
-                    glob.glob(os.path.join(spine_mlir_install_dir, "lib", pattern))
-                )
+                so_file_list.extend(glob.glob(os.path.join(spine_mlir_install_dir, "lib", pattern)))
 
         spine_runtime_install_dir = os.environ.get("SPINE_RUNTIME_INSTALL_DIR")
         if spine_runtime_install_dir:
-            so_file_list.extend(
-                glob.glob(os.path.join(spine_runtime_install_dir, "lib", "libspert.so*"))
-            )
+            so_file_list.extend(glob.glob(os.path.join(spine_runtime_install_dir, "lib", "libspert.so*")))
 
         lib_groups = defaultdict(list)
         for so_file in so_file_list:
