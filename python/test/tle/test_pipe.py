@@ -35,8 +35,7 @@ def make_sync_specs():
 
 
 def make_scheduler(ready_sync=None, free_sync=None, event_base=None):
-    return tle.dsa.ascend.pipe_scheduler(
-        ready_sync=ready_sync, free_sync=free_sync, event_base=event_base)
+    return tle.dsa.ascend.pipe_scheduler(ready_sync=ready_sync, free_sync=free_sync, event_base=event_base)
 
 
 def make_workspace(capacity=2, name="base"):
@@ -126,8 +125,8 @@ def test_scheduler_normalization_and_addressing():
     single = _normalize_scheduler(make_scheduler())
     assert single is not None and isinstance(single, tle.dsa.ascend.PipeScheduler)
 
-    pairs = _normalize_scheduler((("p0", make_scheduler(ready_sync, free_sync, event_base=4)),
-                                  ("p1", make_scheduler())))
+    pairs = _normalize_scheduler((("p0", make_scheduler(ready_sync, free_sync,
+                                                        event_base=4)), ("p1", make_scheduler())))
     assert set(pairs) == {"p0", "p1"}
     assert pairs["p0"].event_base == 4
 
@@ -153,11 +152,10 @@ def test_apply_scheduler_rebinds_directions_and_event_range():
     assert pipe._auto_event_range is True
 
     reversed_sync = tle.dsa.ascend.pipe_scheduler(
-        ready_sync=tle.dsa.ascend.SyncSpec(
-            sender="vector", receiver="cube", sender_pipe=PIPE.PIPE_MTE3, receiver_pipe=PIPE.PIPE_MTE2),
-        free_sync=tle.dsa.ascend.SyncSpec(
-            sender="cube", receiver="vector", sender_pipe=PIPE.PIPE_FIX, receiver_pipe=PIPE.PIPE_MTE3),
-        event_base=8)
+        ready_sync=tle.dsa.ascend.SyncSpec(sender="vector", receiver="cube", sender_pipe=PIPE.PIPE_MTE3,
+                                           receiver_pipe=PIPE.PIPE_MTE2),
+        free_sync=tle.dsa.ascend.SyncSpec(sender="cube", receiver="vector", sender_pipe=PIPE.PIPE_FIX,
+                                          receiver_pipe=PIPE.PIPE_MTE3), event_base=8)
     pipe._apply_scheduler(reversed_sync)
 
     assert pipe.ready_sync == reversed_sync.ready_sync

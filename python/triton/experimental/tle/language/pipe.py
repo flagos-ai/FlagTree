@@ -3,8 +3,7 @@
 from triton.language.core import _unwrap_if_constexpr
 
 from .dsa.core import Workspace, builtin
-from .dsa.ascend.pipe import (_deferred_pipe, pipe_reader, pipe_slot, pipe_value, pipe_wait_result,
-                              pipe_writer)
+from .dsa.ascend.pipe import (_deferred_pipe, pipe_reader, pipe_slot, pipe_value, pipe_wait_result, pipe_writer)
 
 
 def _pipe_backend(fields):
@@ -13,8 +12,7 @@ def _pipe_backend(fields):
     for field in fields.values():
         field = _unwrap_if_constexpr(field)
         if not isinstance(field, Workspace):
-            raise ValueError(
-                f"tle.pipe field must be a tle.dsa.workspace payload, got {type(field).__name__}")
+            raise ValueError(f"tle.pipe field must be a tle.dsa.workspace payload, got {type(field).__name__}")
     return "ascend"
 
 

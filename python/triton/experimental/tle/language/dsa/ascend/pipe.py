@@ -53,10 +53,9 @@ def _validate_readers(readers):
         if reader in seen:
             raise ValueError(f"tle.pipe readers must be unique, got duplicate {reader!r}")
         seen.add(reader)
-    raise ValueError(
-        "tle.pipe readers= is not supported on Ascend yet: cross-core events are directed "
-        "single-cast set/wait primitives, so multi-reader pipes would need an event fan-out "
-        "or arrival-count mechanism")
+    raise ValueError("tle.pipe readers= is not supported on Ascend yet: cross-core events are directed "
+                     "single-cast set/wait primitives, so multi-reader pipes would need an event fan-out "
+                     "or arrival-count mechanism")
 
 
 def _default_sync_specs():
@@ -305,9 +304,8 @@ class pipe_value:
         if scheduler is None:
             scheduler = pipe_scheduler()
         if not isinstance(scheduler, PipeScheduler):
-            raise ValueError(
-                "tle.pipe scheduler must be built by tle.dsa.ascend.pipe_scheduler, "
-                f"got {type(scheduler).__name__}")
+            raise ValueError("tle.pipe scheduler must be built by tle.dsa.ascend.pipe_scheduler, "
+                             f"got {type(scheduler).__name__}")
         self.scope = scope
         self.name = name
         self.scheduler = scheduler
@@ -341,15 +339,13 @@ class pipe_value:
     def _apply_scheduler(self, scheduler):
         """Rebind this pipe to scheduler; only allowed before the pre-arm is emitted."""
         if not isinstance(scheduler, PipeScheduler):
-            raise ValueError(
-                f"scheduler must be a tle.dsa.ascend.pipe_scheduler value, got {type(scheduler).__name__}")
+            raise ValueError(f"scheduler must be a tle.dsa.ascend.pipe_scheduler value, got {type(scheduler).__name__}")
         if self._inited:
             raise ValueError("pipe is already initialized and cannot take a new scheduler")
         if scheduler.event_base is not None and scheduler.event_base != self.event_base:
             if not self._auto_event_range:
-                raise ValueError(
-                    f"pipe event_base {self.event_base} was pinned explicitly and cannot move to "
-                    f"{scheduler.event_base}")
+                raise ValueError(f"pipe event_base {self.event_base} was pinned explicitly and cannot move to "
+                                 f"{scheduler.event_base}")
             _release_event_range(self.event_base, self.capacity)
             _reserve_event_range(scheduler.event_base, self.capacity)
             self.event_base = scheduler.event_base
@@ -359,8 +355,7 @@ class pipe_value:
         self.free_sync = scheduler.free_sync
 
     def _scheduler_compatible(self, scheduler):
-        return (scheduler.ready_sync == self.ready_sync
-                and scheduler.free_sync == self.free_sync
+        return (scheduler.ready_sync == self.ready_sync and scheduler.free_sync == self.free_sync
                 and (scheduler.event_base is None or scheduler.event_base == self.event_base))
 
     def ensure_initialized(self, _semantic=None, _generator=None):
@@ -399,8 +394,7 @@ class pipe_value:
         return pipe_reader(self, field_names=field_names)
 
 
-def _validated_pipe_value(*, capacity, scope="cta", name=None, readers=None, one_shot=False, scheduler=None,
-                          **fields):
+def _validated_pipe_value(*, capacity, scope="cta", name=None, readers=None, one_shot=False, scheduler=None, **fields):
     capacity = _unwrap_constexpr(capacity)
     if not isinstance(capacity, int):
         raise ValueError(f"tle.pipe capacity must be a compile-time int, got {type(capacity).__name__}")
@@ -473,9 +467,8 @@ def _normalize_scheduler(scheduler):
         if not isinstance(name, str):
             raise ValueError("scheduler pair name must be a compile-time string")
         if not isinstance(sched, PipeScheduler):
-            raise ValueError(
-                f"scheduler pair for {name!r} must be a tle.dsa.ascend.pipe_scheduler value, "
-                f"got {type(sched).__name__}")
+            raise ValueError(f"scheduler pair for {name!r} must be a tle.dsa.ascend.pipe_scheduler value, "
+                             f"got {type(sched).__name__}")
         if name in mapping:
             raise ValueError(f"scheduler pairs must have unique pipe names, got duplicate {name!r}")
         mapping[name] = sched
@@ -487,15 +480,13 @@ def _resolve_scheduler(scheduler, pipe, valid_names):
     if scheduler is None or isinstance(scheduler, PipeScheduler):
         return scheduler
     if pipe.name is None:
-        raise ValueError(
-            "scheduler pairs require named pipes: an unnamed pipe cannot be addressed "
-            f"(named pipes: {sorted(valid_names)})")
+        raise ValueError("scheduler pairs require named pipes: an unnamed pipe cannot be addressed "
+                         f"(named pipes: {sorted(valid_names)})")
     try:
         return scheduler[pipe.name]
     except KeyError:
-        raise ValueError(
-            f"scheduler pairs have no entry for pipe {pipe.name!r} "
-            f"(provided: {sorted(scheduler)}, pipes: {sorted(valid_names)})") from None
+        raise ValueError(f"scheduler pairs have no entry for pipe {pipe.name!r} "
+                         f"(provided: {sorted(scheduler)}, pipes: {sorted(valid_names)})") from None
 
 
 def _collect_pipes(entries):
@@ -556,9 +547,8 @@ def run_pipeline(functions_and_args, scheduler=None, _semantic=None, _generator=
         pipe_scheduler_cfg = _resolve_scheduler(scheduler, pipe, valid_names)
         if pipe._inited:
             if pipe_scheduler_cfg is not None and not pipe._scheduler_compatible(pipe_scheduler_cfg):
-                raise ValueError(
-                    f"pipe {pipe.name!r} is already initialized; pass the scheduler on the first "
-                    "run_pipeline call")
+                raise ValueError(f"pipe {pipe.name!r} is already initialized; pass the scheduler on the first "
+                                 "run_pipeline call")
             continue
         if pipe_scheduler_cfg is not None:
             pipe._apply_scheduler(pipe_scheduler_cfg)
