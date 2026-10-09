@@ -6,6 +6,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/SmallVector.h"
@@ -30,6 +31,7 @@
 // P1-A LDS mbarriers (count-scoped), never a CTA-wide gpu.barrier.
 
 namespace ttg = mlir::triton::gpu;
+namespace tt = mlir::triton;
 
 namespace mlir {
 
@@ -38,14 +40,38 @@ namespace mlir {
 
 namespace {
 
+// A rank-1 LDS slot (memdesc<1xT>) used to broadcast a scalar warp_yield result
+// from the default waves to all waves.
+static ttg::MemDescType scalarSlotType(MLIRContext *ctx, Type elemTy) {
+  Attribute enc = ttg::SwizzledSharedEncodingAttr::get(
+      ctx, 1, 1, 1, SmallVector<unsigned>{0},
+      ttg::CTAEncodingAttr::getDefault(ctx, 1));
+  return ttg::MemDescType::get({1}, elemTy, enc,
+                               ttg::SharedMemorySpaceAttr::get(ctx),
+                               /*mutableMemory=*/true);
+}
+
+static RankedTensorType scalarTensorType(Operation *op, Type elemTy) {
+  MLIRContext *ctx = op->getContext();
+  auto module = op->getParentOfType<ModuleOp>();
+  int nw = ttg::lookupNumWarps(op);
+  int tpw = ttg::TritonGPUDialect::getThreadsPerWarp(module);
+  int nctas = ttg::TritonGPUDialect::getNumCTAs(module);
+  Attribute enc = ttg::getDefaultBlockedEncoding(ctx, {1}, nw, tpw, nctas);
+  return RankedTensorType::get({1}, elemTy, enc);
+}
+
 static LogicalResult lowerWarpSpecialize(ttg::WarpSpecializeOp ws) {
-  // Yielded result values would have to be broadcast from the default waves to
-  // the partition waves through LDS; not supported in this correctness-first
-  // increment.
-  if (ws->getNumResults() != 0)
-    return ws.emitOpError(
-        "warp_specialize that returns values is unsupported on the RDNA backend "
-        "yet; warp_yield must return no values");
+  // warp_yield results only the default waves produce; broadcast scalar results
+  // to all waves through LDS (store at warp_yield, load after the rejoin
+  // barrier). Non-scalar (tensor/memdesc) results need layout-aware
+  // redistribution and are not supported yet.
+  for (Type rt : ws->getResultTypes())
+    if (!rt.isIntOrIndexOrFloat())
+      return ws.emitOpError(
+          "warp_specialize returning a non-scalar value is unsupported on the "
+          "RDNA backend yet (only uniform scalar warp_yield results are "
+          "broadcast via LDS)");
 
   MLIRContext *ctx = ws.getContext();
   Location loc = ws.getLoc();
@@ -86,6 +112,14 @@ static LogicalResult lowerWarpSpecialize(ttg::WarpSpecializeOp ws) {
 
   // Wave id + entry barrier, emitted before the op.
   OpBuilder b(ws);
+  // LDS slots to broadcast scalar warp_yield results to all waves.
+  SmallVector<Value> yieldSlots;
+  SmallVector<RankedTensorType> yieldTensorTys;
+  for (Type rt : ws->getResultTypes()) {
+    yieldSlots.push_back(
+        ttg::LocalAllocOp::create(b, loc, scalarSlotType(ctx, rt)));
+    yieldTensorTys.push_back(scalarTensorType(ws, rt));
+  }
   Value tid = ROCDL::ThreadIdXOp::create(b, loc, i32ty);
   Value wsz = arith::ConstantIntOp::create(b, loc, warpSize, 32);
   Value wid = arith::DivUIOp::create(b, loc, tid, wsz);
@@ -94,20 +128,31 @@ static LogicalResult lowerWarpSpecialize(ttg::WarpSpecializeOp ws) {
   // Everything after the op becomes the post-join continuation.
   Block *afterBlk = predBlock->splitBlock(std::next(ws->getIterator()));
 
-  // Rejoin block: CTA-wide barrier then fall into the continuation.
+  // Rejoin block: CTA-wide barrier, then (after the stores are visible) load the
+  // broadcast yield results and fall into the continuation.
   Block *rejoin = new Block();
   fnRegion->getBlocks().insert(Region::iterator(afterBlk), rejoin);
   {
     OpBuilder rb(rejoin, rejoin->end());
     gpu::BarrierOp::create(rb, loc);
+    for (auto [i, slot] : llvm::enumerate(yieldSlots)) {
+      Value t = ttg::LocalLoadOp::create(rb, loc, yieldTensorTys[i], slot);
+      Value v = tt::UnsplatOp::create(rb, loc, ws->getResultTypes()[i], t);
+      ws.getResult(i).replaceAllUsesWith(v);
+    }
     cf::BranchOp::create(rb, loc, afterBlk);
   }
 
-  // Inline the default region; its warp_yield becomes a branch to rejoin.
+  // Inline the default region; its warp_yield stores its results to LDS and
+  // becomes a branch to rejoin.
   Region &defReg = ws.getDefaultRegion();
   Block *defEntry = &defReg.front();
   defReg.walk([&](ttg::WarpYieldOp y) {
     OpBuilder yb(y);
+    for (auto [i, operand] : llvm::enumerate(y.getOperands())) {
+      Value splat = tt::SplatOp::create(yb, y.getLoc(), yieldTensorTys[i], operand);
+      ttg::LocalStoreOp::create(yb, y.getLoc(), splat, yieldSlots[i]);
+    }
     cf::BranchOp::create(yb, y.getLoc(), rejoin);
     y.erase();
   });

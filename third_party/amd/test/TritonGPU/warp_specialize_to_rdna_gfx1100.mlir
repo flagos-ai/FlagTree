@@ -59,3 +59,32 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+// A scalar warp_yield result is broadcast to all waves through an LDS slot:
+// the default waves store it at warp_yield, all waves load it after rejoin.
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: @ws_yields_scalar
+  // CHECK: %[[SLOT:.*]] = ttg.local_alloc : () -> !ttg.memdesc<1xi32
+  // default stores the yielded value:
+  // CHECK: ttg.local_store %{{.*}}, %[[SLOT]]
+  // all waves reload after the rejoin barrier:
+  // CHECK: gpu.barrier
+  // CHECK: ttg.local_load %[[SLOT]]
+  // CHECK: tt.unsplat
+  // CHECK-NOT: ttg.warp_specialize
+  tt.func public @ws_yields_scalar(%arg0: i32, %ptr: !tt.ptr<i32>) {
+    %r = ttg.warp_specialize(%arg0) attributes {warpGroupStartIds = array<i32: 4>}
+    default {
+      %c = arith.addi %arg0, %arg0 : i32
+      ttg.warp_yield %c : i32
+    }
+    partition0(%a: i32) num_warps(4) {
+      ttg.warp_return
+    } : (i32) -> i32
+    tt.store %ptr, %r : !tt.ptr<i32>
+    tt.return
+  }
+}
