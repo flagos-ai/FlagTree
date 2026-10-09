@@ -17,8 +17,8 @@ namespace {
 // parameters only to reuse the existing slot/transpose projection rules.
 llvm::DenseMap<Value, Attribute>
 collectWriterOrders(ModuleOp module,
-                    const tile::TensorLayoutRequirements &requirements,
-                    const tile::TTGIRBufferLayoutAdapter &buffers) {
+                    const TensorLayoutRequirements &requirements,
+                    const TTGIRBufferLayoutAdapter &buffers) {
   llvm::DenseMap<Value, Attribute> orders;
   auto collect = [&](OpOperand &source, Value destination) {
     Value root = tile::getBufferLayoutRoot(destination, buffers);
@@ -139,11 +139,9 @@ bool isLegalCopyMapping(RankedTensorType source, ttg::MemDescType destination,
          conversion.getNumConsecutiveInOut() >= width;
 }
 
-LogicalResult
-collectSharedCopyRequirement(ttg::AsyncCopyGlobalToLocalOp copy,
-                             ttg::MemDescType destination,
-                             ModuleAxisInfoAnalysis &axisInfo,
-                             tile::TensorLayoutRequirements &requirements) {
+LogicalResult collectSharedCopyRequirement(
+    ttg::AsyncCopyGlobalToLocalOp copy, ttg::MemDescType destination,
+    ModuleAxisInfoAnalysis &axisInfo, TensorLayoutRequirements &requirements) {
   auto shared =
       dyn_cast<ttg::SwizzledSharedEncodingAttr>(destination.getEncoding());
   auto source = copy.getSrc().getType();
@@ -210,16 +208,16 @@ collectSharedCopyRequirement(ttg::AsyncCopyGlobalToLocalOp copy,
 
 FailureOr<tile::BufferLayoutPlan>
 planSharedLayouts(ModuleOp module, ArrayRef<DotLayoutChoice> choices,
-                  tile::TensorLayoutRequirements &requirements) {
-  tile::TTGIRBufferLayoutAdapter buffers;
-  tile::TTGIRLayoutAdapter tensors;
+                  TensorLayoutRequirements &requirements) {
+  TTGIRBufferLayoutAdapter buffers;
+  TTGIRLayoutAdapter tensors;
   auto writerOrders = collectWriterOrders(module, requirements, buffers);
   SmallVector<tile::BufferLayoutRequirement> sharedRequirements;
   for (auto [dot, plan] : choices) {
     for (unsigned index : {0u, 1u}) {
       Attribute encoding = index == 0 ? plan.operandA : plan.operandB;
-      for (Value value : tile::collectTensorLayoutComponent(
-               dot->getOperand(index), tensors)) {
+      for (Value value :
+           collectTensorLayoutComponent(dot->getOperand(index), tensors)) {
         auto load = value.getDefiningOp<ttg::LocalLoadOp>();
         if (!load)
           continue;

@@ -212,7 +212,7 @@ std::optional<std::string> checkBsmLayout(BsmLayoutChain chain,
 
 LogicalResult
 collectBsmLayoutRequirements(ModuleOp module, ArrayRef<DotLayoutChoice> choices,
-                             tile::TensorLayoutRequirements &requirements) {
+                             TensorLayoutRequirements &requirements) {
   llvm::MapVector<Value, Attribute> assignments;
   llvm::SetVector<OpOperand *> coveredUses;
   for (auto [dot, plan] : choices) {

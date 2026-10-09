@@ -33,16 +33,15 @@ bool canLoadDirectly(ttg::LocalLoadOp load, RankedTensorType target,
 
 } // namespace
 
-void collectLocalLoadLayoutRequirements(
-    ArrayRef<DotLayoutChoice> choices,
-    tile::TensorLayoutRequirements &requirements,
-    const tile::BufferLayoutPlan &buffers) {
+void collectLocalLoadLayoutRequirements(ArrayRef<DotLayoutChoice> choices,
+                                        TensorLayoutRequirements &requirements,
+                                        const tile::BufferLayoutPlan &buffers) {
   DenseMap<OpOperand *, Attribute> ports;
   for (auto [dot, plan] : choices) {
     ports[&dot->getOpOperand(0)] = plan.operandA;
     ports[&dot->getOpOperand(1)] = plan.operandB;
   }
-  tile::TTGIRLayoutAdapter adapter;
+  TTGIRLayoutAdapter adapter;
   DenseSet<Value> visited;
   for (auto [dot, plan] : choices) {
     for (unsigned index : {0u, 1u}) {
@@ -54,11 +53,12 @@ void collectLocalLoadLayoutRequirements(
         continue;
       auto target =
           cast<RankedTensorType>(seed.getType()).cloneWithEncoding(encoding);
-      auto values = tile::collectTensorLayoutComponent(seed, adapter);
+      auto values = collectTensorLayoutComponent(seed, adapter);
       DenseSet<Value> members(values.begin(), values.end());
       bool valid = true, hasLoad = false;
       // This rule stays conservative: unknown uses or fixed producers keep
-      // the existing layouts. Loops/conversions are traversed by CommonIR.
+      // the existing layouts. The propagation helper traverses
+      // loops/conversions.
       for (Value value : values) {
         auto type = dyn_cast<RankedTensorType>(value.getType());
         if (!type || type.getShape() != target.getShape() ||

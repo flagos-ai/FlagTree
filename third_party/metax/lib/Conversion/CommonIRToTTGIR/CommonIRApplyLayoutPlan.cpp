@@ -12,9 +12,8 @@ namespace mlir::triton::metax {
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
 
 namespace {
-void collectDotLayoutRequirements(
-    ArrayRef<DotLayoutChoice> choices,
-    tile::TensorLayoutRequirements &requirements) {
+void collectDotLayoutRequirements(ArrayRef<DotLayoutChoice> choices,
+                                  TensorLayoutRequirements &requirements) {
   for (auto [dot, plan] : choices) {
     requirements.assignments[dot.getResult()] = plan.mma;
     // Hardware port requirements alone do not rematerialize their inputs.
@@ -27,7 +26,7 @@ void collectDotLayoutRequirements(
 
 // Only the hardware legality of logical tiles is target-specific. C uses the
 // same producer rematerialization, loop planning and boundaries as copy.
-struct MetaxLayoutAdapter final : tile::TTGIRLayoutAdapter {
+struct MetaxLayoutAdapter final : TTGIRLayoutAdapter {
   Attribute inferOperandEncoding(Operation *op,
                                  Attribute encoding) const override {
     if (isa<tile::ExtractTileOp, tile::InsertTileOp>(op) &&
@@ -68,10 +67,10 @@ struct CommonIRApplyLayoutPlanPass
       });
     }
 
-    tile::TensorLayoutRequirements requirements;
+    TensorLayoutRequirements requirements;
     collectDotLayoutRequirements(choices, requirements);
-    tile::collectCopyLayoutRequirements(module, requirements);
-    tile::collectLoadStoreLayoutRequirements(module, requirements);
+    collectCopyLayoutRequirements(module, requirements);
+    collectLoadStoreLayoutRequirements(module, requirements);
     auto buffers = planSharedLayouts(module, choices, requirements);
     if (failed(buffers))
       return signalPassFailure();
@@ -89,7 +88,7 @@ struct CommonIRApplyLayoutPlanPass
     if (!requirements.uses.empty() || !requirements.assignments.empty()) {
       MetaxLayoutAdapter adapter;
       buffers->apply();
-      tile::applyLayoutRequirements(module, requirements, adapter);
+      applyLayoutRequirements(module, requirements, adapter);
     }
   }
 

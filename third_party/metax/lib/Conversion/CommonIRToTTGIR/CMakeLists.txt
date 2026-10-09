@@ -26,18 +26,24 @@ endif()
 # Layout planning uses TTGIR transforms. Keep it separate from the conversion
 # library consumed by TritonToTritonGPU, which those transforms depend on.
 add_triton_library(MetaxCommonIRLayouts
+  BufferLayoutRules.cpp
   CommonIRApplyLayoutPlan.cpp
   CommonIRBsmLayout.cpp
   CommonIRDotLoadLayouts.cpp
   CommonIRSharedLayouts.cpp
   DotLayoutPlanner.cpp
+  TensorLayoutPropagation.cpp
+  TensorLayoutRules.cpp
 
   DEPENDS
   MetaxCommonIRToTTGIRPassIncGen
 
   LINK_LIBS PUBLIC
-  CommonIRToTritonGPU
+  CommonIRAxisInfo
+  CommonIRTransforms
   MLIRSCFDialect
+  MLIRTransforms
   TritonGPUIR
+  TritonGPUTransforms
   TritonTools
 )
