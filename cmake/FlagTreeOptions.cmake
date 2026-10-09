@@ -363,6 +363,7 @@ macro(flagtree_configure_flir_dependency)
     include_directories(${PROJECT_BINARY_DIR}/third_party/flir/include)
     add_subdirectory(third_party/flir/include/mlir-ext/Dialect/CommonIR)
     add_subdirectory(third_party/flir/lib/Dialect/CommonIR)
+    add_subdirectory(third_party/flir/lib/Conversion/CommonIRToTritonGPU)
   endif()
 
   if(FLAGTREE_BACKEND STREQUAL "tsingmicro")

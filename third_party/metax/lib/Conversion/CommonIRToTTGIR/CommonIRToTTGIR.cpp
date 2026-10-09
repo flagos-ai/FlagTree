@@ -6,14 +6,12 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include <limits>
 
 namespace mlir::triton::metax {
@@ -35,8 +33,13 @@ static FailureOr<ttg::MemDescType> getMemDescType(Operation *op,
 
   Attribute layout = op->getAttr("tle.gpu_layout");
   if (!layout) {
-    op->emitError("is missing the preserved tle.gpu_layout attribute");
-    return failure();
+    unsigned rank = bufferType.getShape().size();
+    SmallVector<unsigned> order;
+    for (unsigned i = rank; i > 0; --i)
+      order.push_back(i - 1);
+    layout = ttg::SwizzledSharedEncodingAttr::get(
+        op->getContext(), 1, 1, 1, order,
+        ttg::CTAEncodingAttr::getDefault(op->getContext(), rank));
   }
   if (!isa<ttg::SharedEncodingTrait>(layout)) {
     op->emitError("requires a preserved TritonGPU shared-memory layout");
@@ -240,8 +243,11 @@ convertAllocations(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     if (failed(memDescType))
       return WalkResult::interrupt();
     OpBuilder builder(op);
-    mapped[op.getResult()] =
+    auto allocation =
         builder.create<ttg::LocalAllocOp>(op.getLoc(), *memDescType);
+    if (Attribute fixed = op->getAttr("tle.gpu_layout"))
+      allocation->setAttr("tle.gpu_layout", fixed);
+    mapped[op.getResult()] = allocation.getResult();
     eraseOps.push_back(op);
     return WalkResult::advance();
   });
@@ -399,10 +405,9 @@ static LogicalResult convertSubviews(ModuleOp module,
   return failure(result.wasInterrupted());
 }
 
-static LogicalResult
-convertTileUsers(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
-                 SmallVectorImpl<Operation *> &eraseOps, bool enableAsyncCopy,
-                 SmallVectorImpl<ttg::AsyncCopyGlobalToLocalOp> &copies) {
+static LogicalResult convertTileUsers(ModuleOp module,
+                                      llvm::DenseMap<Value, Value> &mapped,
+                                      SmallVectorImpl<Operation *> &eraseOps) {
   bool failedConversion = false;
   OpBuilder builder(module.getContext());
 
@@ -474,23 +479,10 @@ convertTileUsers(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
           failedConversion = true;
           return;
         }
-        if (enableAsyncCopy) {
-          auto copy = builder.create<ttg::AsyncCopyGlobalToLocalOp>(
-              op.getLoc(), src, dst, Value(), Value(),
-              triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL,
-              false);
-          auto commit = builder.create<ttg::AsyncCommitGroupOp>(
-              op.getLoc(), ValueRange{copy.getToken()});
-          copies.push_back(copy);
-          // tile.copy is synchronous to its users. Keep the completion token
-          // explicit so later GPU passes can reason about shared-memory reads.
-          builder.create<ttg::AsyncWaitOp>(op.getLoc(), commit.getResult(), 0);
-        } else {
-          Value value = builder.create<triton::LoadOp>(
-              op.getLoc(), src, triton::CacheModifier::NONE,
-              triton::EvictionPolicy::NORMAL, false);
-          builder.create<ttg::LocalStoreOp>(op.getLoc(), value, dst);
-        }
+        Value value = builder.create<triton::LoadOp>(
+            op.getLoc(), src, triton::CacheModifier::NONE,
+            triton::EvictionPolicy::NORMAL, false);
+        builder.create<ttg::LocalStoreOp>(op.getLoc(), value, dst);
       } else if (isa<ttg::MemDescType>(src.getType()) &&
                  isPointerLike(dst.getType())) {
         if (failed(checkCopy(op, dst, cast<ttg::MemDescType>(src.getType())))) {
@@ -529,66 +521,6 @@ convertTileUsers(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
   return failure(failedConversion);
 }
 
-static Value getSharedAllocation(Value value) {
-  while (value) {
-    if (value.getDefiningOp<ttg::LocalAllocOp>())
-      return value;
-    if (auto index = value.getDefiningOp<ttg::MemDescIndexOp>())
-      value = index.getSrc();
-    else if (auto slice = value.getDefiningOp<ttg::MemDescSubsliceOp>())
-      value = slice.getSrc();
-    else
-      return {};
-  }
-  return {};
-}
-
-static void combineCopyWaits(ArrayRef<ttg::AsyncCopyGlobalToLocalOp> copies) {
-  llvm::SmallPtrSet<Operation *, 16> generated;
-  for (auto copy : copies)
-    generated.insert(copy);
-  for (auto copy : copies) {
-    auto commit =
-        dyn_cast_or_null<ttg::AsyncCommitGroupOp>(copy->getNextNode());
-    if (!commit || commit.getInputTokens().size() != 1)
-      continue;
-    auto wait = dyn_cast_or_null<ttg::AsyncWaitOp>(commit->getNextNode());
-    Value allocation = getSharedAllocation(copy.getResult());
-    if (!wait || !wait.getResult().use_empty() || !allocation)
-      continue;
-    SmallVector<Value> allocations{allocation};
-    while (true) {
-      Operation *next = wait->getNextNode();
-      // Only cross pure, region-free address/value computations. A read,
-      // write, barrier or control-flow boundary must observe the earlier copy.
-      while (next && !next->getNumRegions() && isMemoryEffectFree(next))
-        next = next->getNextNode();
-      if (!next || !generated.contains(next))
-        break;
-      auto nextCopy = cast<ttg::AsyncCopyGlobalToLocalOp>(next);
-      Value nextAllocation = getSharedAllocation(nextCopy.getResult());
-      if (!nextAllocation || llvm::is_contained(allocations, nextAllocation))
-        break;
-      auto nextCommit =
-          dyn_cast_or_null<ttg::AsyncCommitGroupOp>(next->getNextNode());
-      auto nextWait =
-          nextCommit
-              ? dyn_cast_or_null<ttg::AsyncWaitOp>(nextCommit->getNextNode())
-              : ttg::AsyncWaitOp();
-      if (!nextWait || !nextWait.getResult().use_empty())
-        break;
-      SmallVector<Value> tokens(commit.getInputTokens());
-      llvm::append_range(tokens, nextCommit.getInputTokens());
-      nextCommit.getInputTokensMutable().assign(tokens);
-      wait.erase();
-      commit.erase();
-      commit = nextCommit;
-      wait = nextWait;
-      allocations.push_back(nextAllocation);
-    }
-  }
-}
-
 class CommonIRToTTGIRPass
     : public impl::CommonIRToTTGIRBase<CommonIRToTTGIRPass> {
 public:
@@ -599,7 +531,6 @@ public:
     llvm::DenseMap<Value, Value> mapped;
     llvm::DenseMap<Value, Type> convertedArgumentTypes;
     SmallVector<Operation *> eraseOps;
-    SmallVector<ttg::AsyncCopyGlobalToLocalOp> copies;
     SmallVector<UnrealizedConversionCastOp> argumentCasts;
 
     if (failed(convertAllocations(module, mapped, eraseOps)) ||
@@ -609,8 +540,7 @@ public:
                                         argumentCasts)) ||
         failed(convertSubviews(module, mapped, eraseOps)) ||
         failed(convertBufferBridges(module, mapped, argumentCasts, eraseOps)) ||
-        failed(convertTileUsers(module, mapped, eraseOps, enableAsyncCopy,
-                                copies))) {
+        failed(convertTileUsers(module, mapped, eraseOps))) {
       signalPassFailure();
       return;
     }
@@ -628,11 +558,14 @@ public:
     }
 
     finalizeConvertedArguments(module, convertedArgumentTypes, argumentCasts);
-    combineCopyWaits(copies);
 
     bool hasRemainingGpuTileOps = false;
     module.walk([&](Operation *op) {
       if (op->getName().getDialectNamespace() == "tile") {
+        // Preserve tensor tile ops for type conversion and lowering after
+        // TTIR -> TTGIR assigns concrete layouts.
+        if (isa<tile::ExtractTileOp, tile::InsertTileOp>(op))
+          return;
         op->emitError("was not eliminated by GPU TileIR conversion");
         hasRemainingGpuTileOps = true;
         return;

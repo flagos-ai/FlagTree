@@ -7,6 +7,9 @@
 #include "mctle/dialect/include/IR/Dialect.h"
 #endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#ifdef __FLAGTREE_COMMON_IR__
+#include "triton/Conversion/CommonIRToTTGIR/TensorOps.h"
+#endif
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -643,9 +646,13 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       // clang-format on
       >(typeConverter, context);
 #ifdef __FLAGTREE_COMMON_IR__
-  patterns.add<GenericOpPattern<LocalAllocOp>, GenericOpPattern<LocalStoreOp>,
-               GenericOpPattern<LocalLoadOp>>(typeConverter, context);
+  patterns.add<GenericOpPattern<LocalAllocOp>, GenericOpPattern<LocalStoreOp>>(
+      typeConverter, context);
 #endif
+  patterns.add<GenericOpPattern<LocalLoadOp>, GenericOpPattern<BsmPermOp>>(
+      typeConverter, context);
+  patterns.add<GenericOpPattern<AsyncCopyGlobalToLocalOp>>(typeConverter,
+                                                           context);
 }
 //
 // SCF patterns
@@ -942,6 +949,10 @@ public:
     //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
+#ifdef __FLAGTREE_COMMON_IR__
+    triton::metax::populateCommonIRTensorPatternsAndLegality(typeConverter,
+                                                             patterns, target);
+#endif
 #ifdef __MCTLE__
     populateTileRawPatterns(typeConverter, patterns);
 #endif

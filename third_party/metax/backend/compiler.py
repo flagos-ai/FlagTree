@@ -246,7 +246,7 @@ class MACABackend(BaseBackend):
         pm.enable_debug()
         passes.common.add_inliner(pm)
         if COMMON_IR_ENABLED:
-            passes.commonir.add_to_ttgir(pm, False)
+            passes.commonir.add_to_ttgir(pm)
         passes.ttir.add_rewrite_tensor_pointer(pm)
         passes.ttir.add_combine(pm)
         passes.common.add_canonicalizer(pm)
@@ -282,6 +282,9 @@ class MACABackend(BaseBackend):
         passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 64, opt.num_ctas)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
+        if COMMON_IR_ENABLED:
+            passes.commonir.add_apply_layout_plan(pm, capability, opt.num_warps)
+            passes.commonir.add_lower_tensor_tiles(pm)
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)

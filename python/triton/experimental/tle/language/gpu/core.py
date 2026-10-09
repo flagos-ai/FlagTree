@@ -477,6 +477,8 @@ def alloc(
             raise ValueError("GPU CommonIR alloc does not yet support alias buffers")
     mthreads_auto_sqmma_shared_layout = (mthreads_common.enabled() and storage == tle.smem
                                          and mthreads_wgmma.use_auto_shared_layout(layout, nv_mma_shared_layout))
+    compiler_shared_layout = (tle_semantic.COMMON_IR_ENABLED and storage == tle.smem and layout is None
+                              and hasattr(_semantic.builder, "create_metax_async_copy_global_to_local"))
 
     try:
         unwrapped_shape = [tl._unwrap_if_constexpr(dim) for dim in shape]
@@ -547,7 +549,7 @@ def alloc(
                 if iluvatar_copy.enabled():
                     layout, layout_handle = iluvatar_layout.select_default_smem_layout(
                         _semantic.builder, unwrapped_shape, dtype, nv_mma_shared_layout)
-                elif mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
+                elif compiler_shared_layout or mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
                     layout = tle.swizzled_shared_layout.make_default(rank=len(unwrapped_shape))
                     layout_handle = _semantic.builder.make_swizzled_shared_encoding_attr(
                         layout.vectorSize,
@@ -590,7 +592,7 @@ def alloc(
                 dtype,
                 storage,
                 layout,
-                layout_handle,
+                None if compiler_shared_layout else layout_handle,
                 init_value,
                 _semantic,
             )
