@@ -245,12 +245,40 @@ runs:
         }
 
         # ------------------------------------------------------------------
+        # Helper: print the last few lines of the git --progress log
+        # The log contains \r-separated progress updates, so convert to \n
+        # and print the last few meaningful lines.
+        # ------------------------------------------------------------------
+        print_git_progress_tail() {
+          local attempt=$1
+          local progress_log=$2
+
+          if [ ! -f "$progress_log" ]; then
+            return 0
+          fi
+
+          echo "📄 [Attempt $attempt/$MAX_ATTEMPTS] git progress (last lines):"
+
+          if command -v tr >/dev/null 2>&1; then
+            if command -v sed >/dev/null 2>&1; then
+              tail -c 800 "$progress_log" 2>/dev/null | tr '\r' '\n' | tail -n 3 | sed 's/^/    /' || true
+            else
+              tail -c 800 "$progress_log" 2>/dev/null | tr '\r' '\n' | tail -n 3 || true
+            fi
+          else
+            tail -c 300 "$progress_log" 2>/dev/null || true
+            echo ""
+          fi
+        }
+
+        # ------------------------------------------------------------------
         # Prepare target directory
         # ------------------------------------------------------------------
         mkdir -p "$CLONE_DIR"
         cd "$CLONE_DIR"
 
         REPO_NAME=$(basename "$REPO_URL" .git)
+        progress_log="$CLONE_DIR/clone-progress.log"
 
         # ------------------------------------------------------------------
         # Main retry loop with slow-speed watchdog
@@ -275,14 +303,17 @@ runs:
           echo "===== [Attempt $attempt/$MAX_ATTEMPTS] slow-threshold = ${current_threshold}s ====="
           echo "============================================================"
 
-          # Clean up any leftover directory from a previous attempt
+          # Clean up leftover from previous attempt and stale progress log,
+          # then take the baseline measurement BEFORE the new log is created.
           rm -rf "$REPO_NAME" || true
+          rm -f "$progress_log" || true
 
           before_bytes=$(measure_clone_dir_bytes)
 
-          # Start git clone in background
+          # Start git clone in background, with --progress to a log file
+          # inside CLONE_DIR.
           attempt_start=$(date +%s)
-          git clone "$REPO_URL" &
+          git clone --progress "$REPO_URL" 2>"$progress_log" &
           clone_pid=$!
           echo "[Attempt $attempt/$MAX_ATTEMPTS] git clone started (pid=$clone_pid)"
 
@@ -310,6 +341,7 @@ runs:
               fi
 
               print_clone_metrics "$attempt" "killed" "$kill_duration" "$attempt_bytes"
+              print_git_progress_tail "$attempt" "$progress_log"
               echo "🚨 FATAL: Total time limit (${MAX_TOTAL_SECONDS}s) exceeded. Giving up."
               exit 1
             fi
@@ -346,6 +378,7 @@ runs:
 
           if [ "$was_slow_killed" -eq 0 ] && [ "$clone_exit" -eq 0 ]; then
             print_clone_metrics "$attempt" "succeeded" "$attempt_duration" "$attempt_bytes"
+            print_git_progress_tail "$attempt" "$progress_log"
             echo "✅ [Attempt $attempt/$MAX_ATTEMPTS] git clone succeeded in ${attempt_duration}s."
             clone_succeeded=1
             break
@@ -354,10 +387,12 @@ runs:
           # Failure handling
           if [ "$was_slow_killed" -eq 1 ]; then
             print_clone_metrics "$attempt" "killed" "$attempt_duration" "$attempt_bytes"
+            print_git_progress_tail "$attempt" "$progress_log"
             echo "⏱️ [Attempt $attempt/$MAX_ATTEMPTS] slow-speed interruption after ${attempt_duration}s. Retrying immediately (no sleep)."
             # No sleep on slow-speed interruption
           else
             echo "❌ [Attempt $attempt/$MAX_ATTEMPTS] git clone failed with exit code $clone_exit after ${attempt_duration}s."
+            print_git_progress_tail "$attempt" "$progress_log"
             # Only git errors get the retry delay
             if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
               # Check we still have time budget for sleeping
