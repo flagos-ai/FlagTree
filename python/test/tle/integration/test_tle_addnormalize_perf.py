@@ -9,10 +9,11 @@ Compares two implementations of the fused add + row-normalize operator
   The two passes over the row (statistics + normalize) re-read ``a`` and ``b``
   from global memory, i.e. 5 global-memory tensor passes in total.
 - TLE kernel: built from TLE primitives (``tle.alloc``, ``tle.copy``,
-  ``tle.local_ptr``, ``tle.pipeline``). TMA copies stage tiles through shared
+  ``tle.local_ptr``). TMA copies stage tiles through shared
   memory, and the whole-row intermediate ``s = a + b`` is kept in a shared
   memory buffer allocated with ``tle.alloc`` across both passes, so global
   memory only sees 3 tensor passes (read a, read b, write y).
+
 
 The shared-memory-resident intermediate is the fusion win: vanilla Triton
 cannot keep a loop-carried tile in shared memory across loop iterations, while
@@ -128,7 +129,7 @@ def addnormalize_tle_kernel(a_desc, b_desc, y_desc, M, N: tl.constexpr,  #
     # Pass 1: statistics of s = a + b (reads a, b; stashes s in shared memory)
     sum_acc = tl.zeros((BLOCK_M, ), dtype=tl.float32)
     sq_acc = tl.zeros((BLOCK_M, ), dtype=tl.float32)
-    for n_start in tle.pipeline(0, N, BLOCK_N, num_stages=2):
+    for n_start in range(0, N, BLOCK_N):
         tle.copy(a_desc, a_smem, [BLOCK_M, BLOCK_N], [row_off, n_start])
         tle.copy(b_desc, b_smem, [BLOCK_M, BLOCK_N], [row_off, n_start])
         s_tile = tl.load(a_smem_ptrs) + tl.load(b_smem_ptrs)
@@ -143,7 +144,7 @@ def addnormalize_tle_kernel(a_desc, b_desc, y_desc, M, N: tl.constexpr,  #
     rstd = 1.0 / tl.sqrt(sq_acc / N - mean * mean + EPS)
 
     # Pass 2: normalize from shared memory (only writes y to global memory)
-    for n_start in tle.pipeline(0, N, BLOCK_N, num_stages=2):
+    for n_start in range(0, N, BLOCK_N):
         col_off = tl.broadcast_to((n_start + tl.arange(0, BLOCK_N))[None, :], (BLOCK_M, BLOCK_N))
         s_tile = tl.load(tle.local_ptr(s_smem, (row_ids, col_off)))
         y = (s_tile - mean[:, None]) * rstd[:, None]
@@ -194,6 +195,7 @@ class TestTLEAddNormalizePerf:
         torch.testing.assert_close(y, torch_addnormalize(a, b), atol=1e-4, rtol=1e-4)
 
     @pytest.mark.parametrize("M, N", [(512, 1024), (256, 512), (100, 1024), (2048, 2048)])
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     @pytest.mark.skipif(not (torch.cuda.is_available() and is_hopper_or_newer()),
                         reason="Requires Hopper or newer NVIDIA GPU (TMA)")
     def test_correctness_tle(self, M, N):
@@ -205,6 +207,7 @@ class TestTLEAddNormalizePerf:
         addnormalize_tle(a, b, y)
         torch.testing.assert_close(y, torch_addnormalize(a, b), atol=1e-4, rtol=1e-4)
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     @pytest.mark.skipif(
         not (torch.cuda.is_available() and is_hopper_or_newer()) or is_h20(),
         reason="Requires Hopper or newer NVIDIA GPU (TMA); perf target validated on H100, "

@@ -95,6 +95,7 @@ def tle_normalize(X, Y, BLOCK_M=64, BLOCK_N=64, eps=1e-5):
 class TestTLENormalize:
     """TLE Normalize Integration Tests"""
 
+    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
     def test_normalize_basic(self):
         """Test basic row-wise normalize functionality"""
