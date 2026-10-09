@@ -185,6 +185,8 @@ def get_backend_cmake_args(*args, **kargs):
         cmake_args += ["-DEDITABLE_MODE=ON"]
     if flagtree_backend not in configs.default_backends:
         cmake_args += ["-DFLAGTREE_BACKEND={}".format(flagtree_backend)]
+    if flagtree_backend != "spacemit":
+        cmake_args += ["-DLLVM_ENABLE_WERROR=ON"]
     return cmake_args
 
 
