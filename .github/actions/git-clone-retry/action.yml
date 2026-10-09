@@ -19,7 +19,7 @@
 # SOFTWARE.
 
 name: 'Git Clone with Retry'
-description: 'Clones a git repository and optionally checks out a specific branch/tag, with a robust retry mechanism.'
+description: 'Clones a git repository and optionally checks out a specific branch/tag, with a slow-speed watchdog and a robust retry mechanism.'
 
 inputs:
   repo-url:
@@ -32,14 +32,34 @@ inputs:
   clone-dir:
     description: 'Directory where the repository will be cloned'
     required: true
-  max-retries:
-    description: 'Maximum number of retries for network operations'
+  max-attempts:
+    description: 'Maximum number of total clone attempts (including the first one). All failure reasons are counted together.'
     required: false
-    default: '3'
+    default: '100'
   retry-delay:
-    description: 'Delay in seconds between retries'
+    description: 'Delay in seconds between retries after a git error. NOT applied to slow-speed interruptions (those retry immediately).'
     required: false
     default: '60'
+  slow-threshold-initial:
+    description: 'Initial slow-speed threshold in seconds. If a clone attempt exceeds this, it is killed and retried immediately.'
+    required: false
+    default: '10'
+  slow-threshold-step:
+    description: 'Number of attempts after which the slow-speed threshold increases.'
+    required: false
+    default: '5'
+  slow-threshold-increment:
+    description: 'Seconds added to the slow-speed threshold every slow-threshold-step attempts.'
+    required: false
+    default: '5'
+  max-total-seconds:
+    description: 'Maximum total time in seconds for all attempts combined. Action fails if exceeded.'
+    required: false
+    default: '3600'
+  checkout-max-retries:
+    description: 'Maximum number of retries for the checkout step (local operation, usually 1 attempt is enough).'
+    required: false
+    default: '3'
 
 runs:
   using: "composite"
@@ -47,15 +67,34 @@ runs:
     - name: Clone and Checkout Repository
       shell: bash
       run: |
-        # 1. Define the generic retry function
+        set +e
+
+        # ------------------------------------------------------------------
+        # Configuration from inputs
+        # ------------------------------------------------------------------
+        REPO_URL="${{ inputs.repo-url }}"
+        REF="${{ inputs.ref }}"
+        CLONE_DIR="${{ inputs.clone-dir }}"
+        MAX_ATTEMPTS="${{ inputs.max-attempts }}"
+        RETRY_DELAY="${{ inputs.retry-delay }}"
+        SLOW_THRESHOLD_INITIAL="${{ inputs.slow-threshold-initial }}"
+        SLOW_THRESHOLD_STEP="${{ inputs.slow-threshold-step }}"
+        SLOW_THRESHOLD_INCREMENT="${{ inputs.slow-threshold-increment }}"
+        MAX_TOTAL_SECONDS="${{ inputs.max-total-seconds }}"
+        CHECKOUT_MAX_RETRIES="${{ inputs.checkout-max-retries }}"
+
+        # ------------------------------------------------------------------
+        # Generic retry function (used for checkout only)
+        # ------------------------------------------------------------------
         retry_command() {
           local max_retries=$1
           local delay=$2
-          shift 2
+          local label=$3
+          shift 3
           local attempt=1
 
           while [ "$attempt" -le "$max_retries" ]; do
-            echo "===== [Attempt $attempt/$max_retries] Executing: $* ====="
+            echo "===== [$label Attempt $attempt/$max_retries] Executing: $* ====="
             if "$@"; then
               echo "✅ Command succeeded on attempt $attempt."
               return 0
@@ -74,19 +113,320 @@ runs:
           return 1
         }
 
-        # 2. Prepare the target directory
-        mkdir -p "${{ inputs.clone-dir }}"
-        cd "${{ inputs.clone-dir }}"
+        # ------------------------------------------------------------------
+        # Helper: compute slow threshold for a given attempt number
+        # ------------------------------------------------------------------
+        compute_slow_threshold() {
+          local attempt=$1
+          # threshold = initial + floor((attempt - 1) / step) * increment
+          local bucket=$(( (attempt - 1) / SLOW_THRESHOLD_STEP ))
+          echo $(( SLOW_THRESHOLD_INITIAL + bucket * SLOW_THRESHOLD_INCREMENT ))
+        }
 
-        # 3. Extract repository name and clean up any existing directory
-        REPO_NAME=$(basename "${{ inputs.repo-url }}" .git)
-        rm -rf "$REPO_NAME" || true
+        # ------------------------------------------------------------------
+        # Helper: kill a process and its children as thoroughly as possible
+        # ------------------------------------------------------------------
+        kill_tree() {
+          local pid=$1
+          if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+            return 0
+          fi
 
-        # 4. Execute git clone with retry
-        retry_command ${{ inputs.max-retries }} ${{ inputs.retry-delay }} git clone "${{ inputs.repo-url }}"
+          # Collect children first (before killing the parent)
+          local children
+          children=$(pgrep -P "$pid" 2>/dev/null || true)
 
-        # 5. If a specific ref is provided, checkout the branch/tag
-        if [ -n "${{ inputs.ref }}" ]; then
+          # Try graceful termination of the whole tree
+          if [ -n "$children" ]; then
+            # shellcheck disable=SC2086
+            kill $children 2>/dev/null || true
+          fi
+          kill "$pid" 2>/dev/null || true
+
+          # Wait up to 5 seconds for graceful exit
+          local waited=0
+          while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 5 ]; do
+            sleep 1
+            waited=$((waited + 1))
+          done
+
+          # Force kill if still alive
+          if kill -0 "$pid" 2>/dev/null; then
+            if [ -n "$children" ]; then
+              # shellcheck disable=SC2086
+              kill -9 $children 2>/dev/null || true
+            fi
+            kill -9 "$pid" 2>/dev/null || true
+          fi
+
+          # Best-effort cleanup of any remaining git-remote-* children
+          pkill -9 -P "$pid" 2>/dev/null || true
+        }
+
+        # ------------------------------------------------------------------
+        # Helper: measure the size (in bytes) of the $CLONE_DIR directory
+        # No dependency on `cut`; uses bash parameter expansion instead.
+        # ------------------------------------------------------------------
+        measure_clone_dir_bytes() {
+          if [ ! -d "$CLONE_DIR" ]; then
+            echo 0
+            return 0
+          fi
+          local out
+          if out=$(du -sb "$CLONE_DIR" 2>/dev/null); then
+            out="${out%%[[:space:]]*}"
+            echo "${out:-0}"
+            return 0
+          fi
+
+          if out=$(du -sk "$CLONE_DIR" 2>/dev/null); then
+            out="${out%%[[:space:]]*}"
+            echo $(( ${out:-0} * 1024 ))
+            return 0
+          fi
+
+          echo 0
+        }
+
+        # ------------------------------------------------------------------
+        # Helper: human-readable byte size (pure bash, no awk/cut)
+        # ------------------------------------------------------------------
+        human_bytes() {
+          local b=$1
+          case "$b" in
+            ''|*[!0-9]*) b=0 ;;
+          esac
+
+          local unit="B"
+          local divisor=1
+
+          if [ "$b" -ge 1073741824 ]; then
+            unit="GiB"; divisor=1073741824
+          elif [ "$b" -ge 1048576 ]; then
+            unit="MiB"; divisor=1048576
+          elif [ "$b" -ge 1024 ]; then
+            unit="KiB"; divisor=1024
+          else
+            echo "${b} B"
+            return 0
+          fi
+
+          local int_part=$(( b / divisor ))
+          local remainder=$(( b % divisor ))
+          local frac=$(( remainder * 100 / divisor ))
+          if [ "$frac" -lt 10 ]; then
+            frac="0${frac}"
+          fi
+
+          echo "${int_part}.${frac} ${unit}"
+        }
+
+        # ------------------------------------------------------------------
+        # Helper: print elapsed time and average rate for one attempt
+        # ------------------------------------------------------------------
+        print_clone_metrics() {
+          local attempt=$1
+          local reason=$2
+          local duration=$3
+          local bytes=$4
+          bytes=${bytes:-0}
+
+          local rate=0
+          if [ "$duration" -gt 0 ]; then
+            rate=$(( bytes / duration ))
+          fi
+
+          local partial=""
+          if [ "$reason" = "killed" ]; then
+            partial=" (partial)"
+          fi
+
+          echo "📊 [Attempt $attempt/$MAX_ATTEMPTS] ${reason}: elapsed=${duration}s, size=$(human_bytes "$bytes")${partial}, avg-rate=$(human_bytes "$rate")/s"
+        }
+
+        # ------------------------------------------------------------------
+        # Helper: print the last few lines of the git --progress log
+        # The log contains \r-separated progress updates, so convert to \n
+        # and print the last few meaningful lines.
+        # ------------------------------------------------------------------
+        print_git_progress_tail() {
+          local attempt=$1
+          local progress_log=$2
+
+          if [ ! -f "$progress_log" ]; then
+            return 0
+          fi
+
+          echo "📄 [Attempt $attempt/$MAX_ATTEMPTS] git progress (last lines):"
+
+          if command -v tr >/dev/null 2>&1; then
+            if command -v sed >/dev/null 2>&1; then
+              tail -c 800 "$progress_log" 2>/dev/null | tr '\r' '\n' | tail -n 3 | sed 's/^/    /' || true
+            else
+              tail -c 800 "$progress_log" 2>/dev/null | tr '\r' '\n' | tail -n 3 || true
+            fi
+          else
+            tail -c 300 "$progress_log" 2>/dev/null || true
+            echo ""
+          fi
+        }
+
+        # ------------------------------------------------------------------
+        # Prepare target directory
+        # ------------------------------------------------------------------
+        mkdir -p "$CLONE_DIR"
+        cd "$CLONE_DIR"
+
+        REPO_NAME=$(basename "$REPO_URL" .git)
+        progress_log="$CLONE_DIR/clone-progress.log"
+
+        # ------------------------------------------------------------------
+        # Main retry loop with slow-speed watchdog
+        # ------------------------------------------------------------------
+        overall_start=$(date +%s)
+        attempt=1
+        clone_succeeded=0
+
+        while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+          # Check total time budget before starting a new attempt
+          now=$(date +%s)
+          elapsed_total=$(( now - overall_start ))
+          if [ "$elapsed_total" -ge "$MAX_TOTAL_SECONDS" ]; then
+            echo "🚨 FATAL: Total time limit (${MAX_TOTAL_SECONDS}s) exceeded before attempt $attempt. Giving up."
+            exit 1
+          fi
+
+          current_threshold=$(compute_slow_threshold "$attempt")
+
+          echo ""
+          echo "============================================================"
+          echo "===== [Attempt $attempt/$MAX_ATTEMPTS] slow-threshold = ${current_threshold}s ====="
+          echo "============================================================"
+
+          # Clean up leftover from previous attempt and stale progress log,
+          # then take the baseline measurement BEFORE the new log is created.
+          rm -rf "$REPO_NAME" || true
+          rm -f "$progress_log" || true
+
+          before_bytes=$(measure_clone_dir_bytes)
+
+          # Start git clone in background, with --progress to a log file
+          # inside CLONE_DIR.
+          attempt_start=$(date +%s)
+          git clone --progress "$REPO_URL" 2>"$progress_log" &
+          clone_pid=$!
+          echo "[Attempt $attempt/$MAX_ATTEMPTS] git clone started (pid=$clone_pid)"
+
+          was_slow_killed=0
+
+          # Watchdog loop: check every second
+          while kill -0 "$clone_pid" 2>/dev/null; do
+            sleep 1
+
+            now=$(date +%s)
+            attempt_elapsed=$(( now - attempt_start ))
+            total_elapsed=$(( now - overall_start ))
+
+            # Global total-time guard
+            if [ "$total_elapsed" -ge "$MAX_TOTAL_SECONDS" ]; then
+              echo "[Attempt $attempt/$MAX_ATTEMPTS] total time limit (${MAX_TOTAL_SECONDS}s) reached, killing git clone..."
+              kill_tree "$clone_pid"
+              wait "$clone_pid" 2>/dev/null || true
+              kill_duration=$(( $(date +%s) - attempt_start ))
+
+              after_bytes=$(measure_clone_dir_bytes)
+              attempt_bytes=$(( after_bytes - before_bytes ))
+              if [ "$attempt_bytes" -lt 0 ]; then
+                attempt_bytes=0
+              fi
+
+              print_clone_metrics "$attempt" "killed" "$kill_duration" "$attempt_bytes"
+              print_git_progress_tail "$attempt" "$progress_log"
+              echo "🚨 FATAL: Total time limit (${MAX_TOTAL_SECONDS}s) exceeded. Giving up."
+              exit 1
+            fi
+
+            # Slow-speed guard
+            if [ "$attempt_elapsed" -ge "$current_threshold" ]; then
+              echo "[Attempt $attempt/$MAX_ATTEMPTS] exceeded slow-threshold (${current_threshold}s), killing git clone..."
+              kill_tree "$clone_pid"
+              was_slow_killed=1
+              break
+            fi
+          done
+
+          # Reap the process
+          if [ "$was_slow_killed" -eq 0 ]; then
+            if wait "$clone_pid"; then
+              clone_exit=0
+            else
+              clone_exit=$?
+            fi
+          else
+            wait "$clone_pid" 2>/dev/null || true
+            clone_exit=143  # SIGTERM-ish placeholder; treated as failure
+          fi
+
+          attempt_end=$(date +%s)
+          attempt_duration=$(( attempt_end - attempt_start ))
+
+          after_bytes=$(measure_clone_dir_bytes)
+          attempt_bytes=$(( after_bytes - before_bytes ))
+          if [ "$attempt_bytes" -lt 0 ]; then
+            attempt_bytes=0
+          fi
+
+          if [ "$was_slow_killed" -eq 0 ] && [ "$clone_exit" -eq 0 ]; then
+            print_clone_metrics "$attempt" "succeeded" "$attempt_duration" "$attempt_bytes"
+            print_git_progress_tail "$attempt" "$progress_log"
+            echo "✅ [Attempt $attempt/$MAX_ATTEMPTS] git clone succeeded in ${attempt_duration}s."
+            clone_succeeded=1
+            break
+          fi
+
+          # Failure handling
+          if [ "$was_slow_killed" -eq 1 ]; then
+            print_clone_metrics "$attempt" "killed" "$attempt_duration" "$attempt_bytes"
+            print_git_progress_tail "$attempt" "$progress_log"
+            echo "⏱️ [Attempt $attempt/$MAX_ATTEMPTS] slow-speed interruption after ${attempt_duration}s. Retrying immediately (no sleep)."
+            # No sleep on slow-speed interruption
+          else
+            echo "❌ [Attempt $attempt/$MAX_ATTEMPTS] git clone failed with exit code $clone_exit after ${attempt_duration}s."
+            print_git_progress_tail "$attempt" "$progress_log"
+            # Only git errors get the retry delay
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              # Check we still have time budget for sleeping
+              now=$(date +%s)
+              elapsed_total=$(( now - overall_start ))
+              remaining=$(( MAX_TOTAL_SECONDS - elapsed_total ))
+              if [ "$remaining" -le 0 ]; then
+                echo "🚨 FATAL: Total time limit (${MAX_TOTAL_SECONDS}s) exceeded. Giving up."
+                exit 1
+              fi
+              sleep_for="$RETRY_DELAY"
+              if [ "$sleep_for" -gt "$remaining" ]; then
+                sleep_for="$remaining"
+              fi
+              echo "⏳ Sleeping ${sleep_for}s before next attempt (git error path)..."
+              sleep "$sleep_for"
+            fi
+          fi
+
+          attempt=$((attempt + 1))
+        done
+
+        # ------------------------------------------------------------------
+        # Final result of clone phase
+        # ------------------------------------------------------------------
+        if [ "$clone_succeeded" -ne 1 ]; then
+          echo "🚨 FATAL: git clone failed after $MAX_ATTEMPTS attempts."
+          exit 1
+        fi
+
+        # ------------------------------------------------------------------
+        # Optional checkout of a specific ref
+        # ------------------------------------------------------------------
+        if [ -n "$REF" ]; then
           cd "$REPO_NAME"
-          retry_command ${{ inputs.max-retries }} ${{ inputs.retry-delay }} git checkout "${{ inputs.ref }}"
+          retry_command "$CHECKOUT_MAX_RETRIES" "$RETRY_DELAY" "Checkout" git checkout "$REF"
         fi
