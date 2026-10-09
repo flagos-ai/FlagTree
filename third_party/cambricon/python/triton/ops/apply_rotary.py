@@ -32,7 +32,7 @@ def apply_cross_rotary_kernel(
         end_idx = tl.load(cu_seqlens + pid_bs + 1)
         seqlen = end_idx - start_idx
         input = input + start_idx * stride_input_seqlen + pid_head * stride_input_headnum
-        output = output + start_idx + stride_out_seqlen + pid_head * stride_out_headnum
+        output = output + start_idx * stride_out_seqlen + pid_head * stride_out_headnum
 
     if m_begin >= seqlen:
         return
@@ -175,7 +175,7 @@ def apply_fold_rotary_kernel(
         end_idx = tl.load(cu_seqlens + pid_bs + 1)
         seqlen = end_idx - start_idx
         input = input + start_idx * stride_input_seqlen + pid_head * stride_input_headnum
-        output = output + start_idx + stride_out_seqlen + pid_head * stride_out_headnum
+        output = output + start_idx * stride_out_seqlen + pid_head * stride_out_headnum
 
     if m_begin >= seqlen:
         return
@@ -244,7 +244,7 @@ def apply_cross_rotary_2d_kernel(
         end_idx = tl.load(cu_seqlens + pid_bs + 1)
         seqlen = end_idx - start_idx
         input = input + start_idx * stride_input_seqlen + pid_head * stride_input_headnum
-        output = output + start_idx + stride_out_seqlen + pid_head * stride_out_headnum
+        output = output + start_idx * stride_out_seqlen + pid_head * stride_out_headnum
 
     if m_begin >= seqlen:
         return
@@ -338,7 +338,7 @@ def apply_fold_rotary_2d_kernel(
         end_idx = tl.load(cu_seqlens + pid_bs + 1)
         seqlen = end_idx - start_idx
         input = input + start_idx * stride_input_seqlen + pid_head * stride_input_headnum
-        output = output + start_idx + stride_out_seqlen + pid_head * stride_out_headnum
+        output = output + start_idx * stride_out_seqlen + pid_head * stride_out_headnum
 
     if m_begin >= seqlen:
         return
