@@ -164,24 +164,22 @@ runs:
         }
 
         # ------------------------------------------------------------------
-        # Helper: measure the size (in bytes) of the cloned repo directory
+        # Helper: measure the size (in bytes) of the $CLONE_DIR directory
         # No dependency on `cut`; uses bash parameter expansion instead.
         # ------------------------------------------------------------------
-        measure_repo_bytes() {
-          if [ ! -d "$REPO_NAME" ]; then
+        measure_clone_dir_bytes() {
+          if [ ! -d "$CLONE_DIR" ]; then
             echo 0
             return 0
           fi
-
           local out
-          if out=$(du -sb "$REPO_NAME" 2>/dev/null); then
-            # du -sb output: "<bytes>\t<path>"
+          if out=$(du -sb "$CLONE_DIR" 2>/dev/null); then
             out="${out%%[[:space:]]*}"
             echo "${out:-0}"
             return 0
           fi
 
-          if out=$(du -sk "$REPO_NAME" 2>/dev/null); then
+          if out=$(du -sk "$CLONE_DIR" 2>/dev/null); then
             out="${out%%[[:space:]]*}"
             echo $(( ${out:-0} * 1024 ))
             return 0
@@ -228,10 +226,9 @@ runs:
         # ------------------------------------------------------------------
         print_clone_metrics() {
           local attempt=$1
-          local reason=$2        # "killed" or "succeeded"
+          local reason=$2
           local duration=$3
-          local bytes
-          bytes=$(measure_repo_bytes)
+          local bytes=$4
           bytes=${bytes:-0}
 
           local rate=0
@@ -281,6 +278,8 @@ runs:
           # Clean up any leftover directory from a previous attempt
           rm -rf "$REPO_NAME" || true
 
+          before_bytes=$(measure_clone_dir_bytes)
+
           # Start git clone in background
           attempt_start=$(date +%s)
           git clone "$REPO_URL" &
@@ -303,7 +302,14 @@ runs:
               kill_tree "$clone_pid"
               wait "$clone_pid" 2>/dev/null || true
               kill_duration=$(( $(date +%s) - attempt_start ))
-              print_clone_metrics "$attempt" "killed" "$kill_duration"
+
+              after_bytes=$(measure_clone_dir_bytes)
+              attempt_bytes=$(( after_bytes - before_bytes ))
+              if [ "$attempt_bytes" -lt 0 ]; then
+                attempt_bytes=0
+              fi
+
+              print_clone_metrics "$attempt" "killed" "$kill_duration" "$attempt_bytes"
               echo "🚨 FATAL: Total time limit (${MAX_TOTAL_SECONDS}s) exceeded. Giving up."
               exit 1
             fi
@@ -319,8 +325,11 @@ runs:
 
           # Reap the process
           if [ "$was_slow_killed" -eq 0 ]; then
-            wait "$clone_pid"
-            clone_exit=$?
+            if wait "$clone_pid"; then
+              clone_exit=0
+            else
+              clone_exit=$?
+            fi
           else
             wait "$clone_pid" 2>/dev/null || true
             clone_exit=143  # SIGTERM-ish placeholder; treated as failure
@@ -329,8 +338,14 @@ runs:
           attempt_end=$(date +%s)
           attempt_duration=$(( attempt_end - attempt_start ))
 
+          after_bytes=$(measure_clone_dir_bytes)
+          attempt_bytes=$(( after_bytes - before_bytes ))
+          if [ "$attempt_bytes" -lt 0 ]; then
+            attempt_bytes=0
+          fi
+
           if [ "$was_slow_killed" -eq 0 ] && [ "$clone_exit" -eq 0 ]; then
-            print_clone_metrics "$attempt" "succeeded" "$attempt_duration"
+            print_clone_metrics "$attempt" "succeeded" "$attempt_duration" "$attempt_bytes"
             echo "✅ [Attempt $attempt/$MAX_ATTEMPTS] git clone succeeded in ${attempt_duration}s."
             clone_succeeded=1
             break
@@ -338,7 +353,7 @@ runs:
 
           # Failure handling
           if [ "$was_slow_killed" -eq 1 ]; then
-            print_clone_metrics "$attempt" "killed" "$attempt_duration"
+            print_clone_metrics "$attempt" "killed" "$attempt_duration" "$attempt_bytes"
             echo "⏱️ [Attempt $attempt/$MAX_ATTEMPTS] slow-speed interruption after ${attempt_duration}s. Retrying immediately (no sleep)."
             # No sleep on slow-speed interruption
           else
