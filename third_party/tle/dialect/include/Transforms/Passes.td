@@ -386,8 +386,11 @@ def TritonTleScheduleTmaStoreSync
     by ``triton-tle-lower-tma-copy``. It groups adjacent TLE TMA stores behind a
     single explicit ``tle.tma_store.commit_group`` and sinks
     ``ttng.async_tma_store_wait`` to the first operation that can reuse or
-    release the source shared-memory buffer. Native Triton TMA stores keep their
-    standard implicit commit behavior.
+    release the source shared-memory buffer. Each wait names the source buffers
+    it completes, which keeps them live until the wait, so shared-memory
+    allocation cannot place a later buffer at their offset while the TMA engine
+    may still read them. Native Triton TMA stores keep their standard implicit
+    commit behavior.
   }];
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
@@ -395,6 +398,13 @@ def TritonTleScheduleTmaStoreSync
                            "mlir::triton::nvws::NVWSDialect",
                            "mlir::triton::TritonDialect",
                            "mlir::triton::tle::TleDialect"];
+
+  let options = [
+    Option<"maxPendingGroups", "max-pending-groups", "int32_t", /*default*/"1",
+           "upper bound on TMA store groups kept in flight, at most 8. The "
+           "default lets a group cross the back edge but waits for it before "
+           "the next group is committed.">
+  ];
 }
 
 def TritonTleLowerPipeToNvws
