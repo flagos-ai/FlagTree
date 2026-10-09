@@ -1,5 +1,5 @@
 // RUN: triton-opt %s -split-input-file -tritonamdgpu-convert-warp-specialize | FileCheck %s
-// RUN: triton-opt %s -tritonamdgpu-convert-warp-specialize -convert-triton-amdgpu-to-llvm=arch=gfx1100 | FileCheck %s --check-prefix=LLVM
+// RUN: triton-opt %s -split-input-file -tritonamdgpu-convert-warp-specialize -allocate-shared-memory -convert-triton-amdgpu-to-llvm=arch=gfx1100 | FileCheck %s --check-prefix=LLVM
 
 // FlagMega-on-Radeon P1-B: ttg.warp_specialize lowers to a static wave-id
 // partition — wave id = workitem.id.x / warpSize, a cf branch chain dispatches
@@ -7,6 +7,9 @@
 // gpu.barrier rejoins. No ttg.warp_specialize / warp_yield / warp_return survive.
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  // The worker waves sit above the 4 default waves, so the CTA must launch
+  // 4 + 4 = 8 waves; the pass records that for the backend launch count.
+  // CHECK: "ttg.total-num-warps" = 8 : i32
   // CHECK-LABEL: @ws_basic
   // CHECK: %[[TID:.*]] = rocdl.workitem.id.x
   // CHECK: arith.divui %[[TID]]
@@ -39,6 +42,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 // Two partitions at wave ranges [4,8) and [8,10); start ids assigned here.
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  // Waves span [0,4) default, [4,8), [8,10) -> launch 10 waves.
+  // CHECK: "ttg.total-num-warps" = 10 : i32
   // CHECK-LABEL: @ws_two_partitions
   // CHECK: rocdl.workitem.id.x
   // CHECK-COUNT-3: cf.cond_br
@@ -66,6 +71,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 // the default waves store it at warp_yield, all waves load it after rejoin.
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK: "ttg.total-num-warps" = 8 : i32
   // CHECK-LABEL: @ws_yields_scalar
   // CHECK: %[[SLOT:.*]] = ttg.local_alloc : () -> !ttg.memdesc<1xi32
   // default stores the yielded value:

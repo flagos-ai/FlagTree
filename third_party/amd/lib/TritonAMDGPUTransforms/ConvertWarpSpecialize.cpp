@@ -220,9 +220,40 @@ struct TritonAMDGPUConvertWarpSpecializePass
   void runOnOperation() override {
     SmallVector<ttg::WarpSpecializeOp> wsOps;
     getOperation().walk([&](ttg::WarpSpecializeOp op) { wsOps.push_back(op); });
+    if (wsOps.empty())
+      return;
+
+    // The worker partitions occupy waves above the default group, so the CTA
+    // must be launched with (default + workers) waves -- otherwise the worker
+    // waves are never spawned and the default group deadlocks waiting on an
+    // mbarrier arrive that never happens. Publish the total via the shared
+    // ttg.total-num-warps attribute, which the backend reads to set the launch
+    // warp count (mirrors NVIDIA's AllocateWarpGroups).
+    int64_t totalNumWarps = 0;
+    for (ttg::WarpSpecializeOp ws : wsOps) {
+      int64_t defaultNumWarps = ttg::lookupNumWarps(ws);
+      SmallVector<int64_t> nw(ws.getPartitionNumWarps().begin(),
+                              ws.getPartitionNumWarps().end());
+      int64_t total = defaultNumWarps;
+      if (std::optional<ArrayRef<int32_t>> ids = ws.getWarpGroupStartIds()) {
+        for (size_t i = 0; i < nw.size(); ++i)
+          total = std::max<int64_t>(total, (*ids)[i] + nw[i]);
+      } else {
+        int64_t cur = defaultNumWarps;
+        for (int64_t w : nw)
+          cur += w;
+        total = std::max(total, cur);
+      }
+      totalNumWarps = std::max(totalNumWarps, total);
+    }
+
     for (ttg::WarpSpecializeOp ws : wsOps)
       if (failed(lowerWarpSpecialize(ws)))
         return signalPassFailure();
+
+    getOperation()->setAttr(
+        "ttg.total-num-warps",
+        Builder(&getContext()).getI32IntegerAttr(totalNumWarps));
   }
 };
 

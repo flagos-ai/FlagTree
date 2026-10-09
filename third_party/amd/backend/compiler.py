@@ -403,7 +403,11 @@ class HIPBackend(BaseBackend):
         fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration()]
         # The public kernel should be kernel 0.
         fns[0].set_calling_conv(amd.CALLING_CONV_AMDGPU_KERNEL)
-        fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{options.num_warps*options.warp_size}")
+        # warp_specialize launches worker waves above the default group; the flat
+        # work-group size must admit them (ttg.total-num-warps, else num_warps).
+        _ws_total_num_warps = src.get_int_attr("ttg.total-num-warps")
+        _launch_num_warps = _ws_total_num_warps if _ws_total_num_warps is not None else options.num_warps
+        fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{_launch_num_warps*options.warp_size}")
         if "memory-bound-attention" in options.schedule_hint.split(','):
             fns[0].add_fn_attr("amdgpu-sched-strategy", "iterative-ilp")
         fns[0].add_fn_attr("uniform-work-group-size", "true")
@@ -461,6 +465,12 @@ class HIPBackend(BaseBackend):
         metadata["global_scratch_align"] = src.get_int_attr("ttg.global_scratch_memory_alignment") or 1
         metadata["profile_scratch_size"] = src.get_int_attr("ttg.profile_scratch_memory_size") or 0
         metadata["profile_scratch_align"] = src.get_int_attr("ttg.profile_scratch_memory_alignment") or 1
+        # warp_specialize carves worker waves above the default group, so the CTA
+        # must launch (default + workers) waves. add_convert_warp_specialize
+        # records that total here (mirrors the NVIDIA backend).
+        total_num_warps = src.get_int_attr("ttg.total-num-warps")
+        if total_num_warps is not None:
+            metadata["num_warps"] = total_num_warps
 
         amd.cleanup_bitcode_metadata(llvm_mod)
         # Disable inlining of print related functions,
