@@ -11,7 +11,14 @@ using namespace mlir;
 using namespace mlir::triton;
 
 constexpr int kBarrierCountBitWidth = 29;
-constexpr int kBarrierPhaseMask = ((1ULL << (32 - kBarrierCountBitWidth)) - 1);
+// The phase field occupies bits [kBarrierCountBitWidth : 31] of the i64 word, but
+// the emulated arrive/wait path uses only a single toggling bit (0<->1). This
+// matches the i1 parity carried by `tle.pipe` (writer/reader $phase), so a pipe
+// wait can pass that parity straight into WaitBarrier. A wider decrementing phase
+// would break stage reuse: after one flip the field would read 7 and a wait on
+// parity 1 would return immediately. The gfx1250 hardware-arrive branch below is
+// not used by any Radeon part, so narrowing this read is inconsequential there.
+constexpr int kBarrierPhaseMask = 1;
 constexpr int kInitCountPos = 32;
 
 namespace {
@@ -133,6 +140,8 @@ struct ArriveBarrierOpConversion
     Value underP = b.add(b.add(reload, b.i64_val(1)), subP);
     Value newPending =
         b.and_(b.select(isUnderflow, underP, subP), b.i64_val(pendingMask));
+    // With kBarrierPhaseMask == 1 this `(phase - 1) & mask` is a single-bit
+    // toggle (0 -> 1 -> 0), keeping the phase compatible with tle.pipe parity.
     Value phaseDec = b.and_(b.sub(phase, b.i64_val(1)),
                             b.i64_val((uint64_t)kBarrierPhaseMask));
     Value newPhase = b.select(isUnderflow, phaseDec, phase);

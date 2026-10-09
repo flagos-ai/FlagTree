@@ -227,6 +227,12 @@ class HIPBackend(BaseBackend):
             tle.passes.add_early_assign_memory_space(pm)
             tle.passes.add_select_encodings(pm)
             tle.passes.add_insert_local_pointer_barriers(pm)
+            # Lower tle.pipe.* to AMD mbarrier ops, then outline the pipe helper
+            # calls again (mirrors the NVWS path). Runs before allocate-shared-
+            # memory (which happens later, in make_llir) so the fresh barrier
+            # local_allocs get LDS offsets.
+            tle.passes.add_lower_pipe_to_rdna(pm)
+            tle.passes.add_restore_pipe_function_calls(pm)
             tle.passes.add_optimize_local_pointer_loads(pm)
             tle.passes.add_optimize_local_pointer_stores(pm)
         amd.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack)
