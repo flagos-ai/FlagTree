@@ -210,16 +210,31 @@ static LogicalResult inlinePipeHelperCalls(ModuleOp module) {
 }
 
 //===----------------------------------------------------------------------===//
-// Pipe identity key (mirrors TleLowerPipeToNvws.cpp, minus warp-spec captures:
-// this correctness-first pass runs before any warp specialization).
+// Pipe identity key (mirrors TleLowerPipeToNvws.cpp). A pipe endpoint inside a
+// warp_specialize partition sees the identity/fields as isolated block-args, so
+// resolve those back to the captured value — otherwise a writer in a partition
+// and a reader in the default region key to different pipes.
 //===----------------------------------------------------------------------===//
 
 static Value canonicalizePipeField(Value field) {
-  while (auto result = dyn_cast<OpResult>(field)) {
-    auto begin = dyn_cast<PipeCallBeginOp>(result.getOwner());
-    if (!begin)
-      break;
-    field = begin.getArguments()[result.getResultNumber()];
+  while (true) {
+    if (auto result = dyn_cast<OpResult>(field)) {
+      if (auto begin = dyn_cast<PipeCallBeginOp>(result.getOwner())) {
+        field = begin.getArguments()[result.getResultNumber()];
+        continue;
+      }
+    }
+    if (auto blockArg = dyn_cast<BlockArgument>(field)) {
+      if (auto partitions = dyn_cast_or_null<ttg::WarpSpecializePartitionsOp>(
+              blockArg.getOwner()->getParentOp())) {
+        if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(
+                partitions->getParentOp())) {
+          field = wsOp.getExplicitCaptures()[blockArg.getArgNumber()];
+          continue;
+        }
+      }
+    }
+    break;
   }
   return field;
 }
@@ -248,10 +263,12 @@ static bool isOneShotPipe(PipeCreateOp op) {
 // Shared-memory helpers
 //===----------------------------------------------------------------------===//
 
-// Count of CTA threads that participate in each pipe endpoint. Correctness-first:
-// the whole CTA is one producer and one consumer, so init counts equal this and
-// each thread arrives with count 1 (threadCnt single arrivals => one phase flip).
-static FailureOr<int32_t> getCTAThreadCount(Operation *op) {
+// Thread count of the partition (or the whole CTA, with no warp specialization)
+// that `op` runs in. lookupNumWarps is warp-specialization-aware: inside a
+// warp_specialize partition it returns that partition's num_warps. Each thread
+// arrives with count 1, so a barrier sized to this count flips after exactly the
+// partition's threads arrive.
+static FailureOr<int32_t> getThreadCount(Operation *op) {
   auto module = op->getParentOfType<ModuleOp>();
   int numWarps = ttg::lookupNumWarps(op);
   int threadsPerWarp = ttg::TritonGPUDialect::getThreadsPerWarp(module);
@@ -300,12 +317,74 @@ struct RDNAPipeState {
   ttg::MemDescType closeTagSlotType; // {1} i32 (null for one-shot)
   int64_t capacity = 0;
   bool oneShot = false;
-  int32_t threadCnt = 0;
 };
 
-// Index one i64 mbarrier slot out of a {C,1} barrier array.
+// Per-endpoint thread counts for a pipe. With warp specialization the producer
+// and consumer live in different partitions, so each barrier is sized by the
+// partition that actually arrives on it (via lookupNumWarps on that endpoint's
+// op), not by the whole CTA.
+struct PipeCounts {
+  int32_t producerCnt = 0; // threads that arrive on `full` (writer partition)
+  int32_t consumerCnt = 0; // threads that arrive on `empty` (reader partition)
+  int32_t drainCnt = 0;    // threads that rendezvous at drain
+  bool hasDrain = false;
+};
+
+//===----------------------------------------------------------------------===//
+// warp_specialize capture plumbing. Barrier/close-tag/drain allocations live in
+// the enclosing scope, but a writer/reader inside an isolated-from-above
+// partition cannot reference them directly — the value must be threaded in as a
+// warp_specialize capture. These mirror TleLowerPipeToNvws.cpp.
+//===----------------------------------------------------------------------===//
+
+static std::optional<std::pair<ttg::WarpSpecializeOp, Region *>>
+getEnclosingWarpSpecializePartition(Operation *op) {
+  for (Region *region = op->getParentRegion(); region;) {
+    Operation *parent = region->getParentOp();
+    if (!parent)
+      break;
+    if (auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(parent))
+      return std::make_pair(
+          cast<ttg::WarpSpecializeOp>(partitions->getParentOp()), region);
+    region = parent->getParentRegion();
+  }
+  return std::nullopt;
+}
+
+static bool isDefinedInsideRegion(Value value, Region *region) {
+  if (auto blockArg = dyn_cast<BlockArgument>(value))
+    return region->isAncestor(blockArg.getOwner()->getParent());
+  Operation *def = value.getDefiningOp();
+  return def && region->isAncestor(def->getParentRegion());
+}
+
+// If `useOp` is inside a warp_specialize partition and `value` is defined
+// outside it, find-or-add `value` as an explicit capture and return the
+// partition's block argument for it; otherwise return `value` unchanged.
+static Value getWarpSpecializeCaptureForUse(Operation *useOp, Value value) {
+  auto partition = getEnclosingWarpSpecializePartition(useOp);
+  if (!partition)
+    return value;
+  ttg::WarpSpecializeOp wsOp = partition->first;
+  Region *region = partition->second;
+  if (isDefinedInsideRegion(value, region))
+    return value;
+  for (auto indexed : llvm::enumerate(wsOp.getExplicitCaptures()))
+    if (indexed.value() == value)
+      return region->getArgument(indexed.index());
+  wsOp->insertOperands(wsOp.getNumOperands(), value);
+  unsigned captureIndex = wsOp.getNumOperands() - 1;
+  for (Region *partitionRegion : wsOp.getPartitionRegions())
+    partitionRegion->addArgument(value.getType(), value.getLoc());
+  return region->getArgument(captureIndex);
+}
+
+// Index one i64 mbarrier slot out of a {C,1} barrier array, threading the array
+// through a warp_specialize capture when `source` is inside a partition.
 static Value barrierSlot(OpBuilder &builder, Location loc,
-                         const RDNAPipeState &st, Value array, Value stage) {
+                         const RDNAPipeState &st, Value array, Value stage,
+                         Operation *source) {
+  array = getWarpSpecializeCaptureForUse(source, array);
   return ttg::MemDescIndexOp::create(builder, loc, st.barSlotType, array, stage);
 }
 
@@ -345,8 +424,9 @@ static Value closeTagSplat(OpBuilder &builder, Location loc,
 static void storeCloseTag(OpBuilder &builder, Location loc,
                           const RDNAPipeState &st, Value stage, bool value,
                           Operation *source) {
+  Value closeTags = getWarpSpecializeCaptureForUse(source, st.closeTags);
   Value slot = ttg::MemDescIndexOp::create(builder, loc, st.closeTagSlotType,
-                                           st.closeTags, stage);
+                                           closeTags, stage);
   RankedTensorType tagType = closeTagTensorType(source, builder, {1});
   Value tag = closeTagSplat(builder, loc, tagType, value);
   ttg::LocalStoreOp::create(builder, loc, tag, slot);
@@ -355,8 +435,9 @@ static void storeCloseTag(OpBuilder &builder, Location loc,
 static Value loadCloseTag(OpBuilder &builder, Location loc,
                           const RDNAPipeState &st, Value stage,
                           Operation *source) {
+  Value closeTags = getWarpSpecializeCaptureForUse(source, st.closeTags);
   Value slot = ttg::MemDescIndexOp::create(builder, loc, st.closeTagSlotType,
-                                           st.closeTags, stage);
+                                           closeTags, stage);
   RankedTensorType tagType = closeTagTensorType(source, builder, {1});
   Value tagTensor = ttg::LocalLoadOp::create(builder, loc, tagType, slot);
   Value tagI32 =
@@ -370,19 +451,14 @@ static Value loadCloseTag(OpBuilder &builder, Location loc,
 //===----------------------------------------------------------------------===//
 
 static FailureOr<RDNAPipeState> createPipeState(PipeCreateOp op,
-                                                bool needsDrain) {
+                                                const PipeCounts &counts) {
   OpBuilder builder(op);
   Location loc = op.getLoc();
   MLIRContext *context = op->getContext();
 
-  FailureOr<int32_t> threadCnt = getCTAThreadCount(op);
-  if (failed(threadCnt))
-    return failure();
-
   RDNAPipeState st;
   st.capacity = getPipeCapacity(op);
   st.oneShot = isOneShotPipe(op);
-  st.threadCnt = *threadCnt;
   st.barSlotType = getBarrierSlotType(context);
 
   st.fullArray =
@@ -390,19 +466,18 @@ static FailureOr<RDNAPipeState> createPipeState(PipeCreateOp op,
   st.emptyArray =
       ttg::LocalAllocOp::create(builder, loc, getBarrierArrayType(context, st.capacity));
 
-  // Init every stage's full/empty mbarrier with the participant count, then
-  // pre-arrive each `empty` once so the slots start free (the first
-  // writer_acquire, which waits on parity 0, sees the flipped parity 1 and
-  // proceeds). Pre-arrive assumes pipe.create executes on the whole CTA, which
-  // holds before warp specialization. InitBarrier ends in a CTA barrier, so all
-  // threads observe the init before pre-arriving.
+  // Init each stage's `full` with the producer count (phase 0: the producer
+  // arrives to publish) and `empty` with the consumer count but already flipped
+  // (init_phase = 1: slots start free, so the first writer_acquire on parity 0
+  // proceeds). Seeding the phase at init replaces an all-waves pre-arrive, which
+  // would miscount once producer/consumer are warp-specialized sub-groups.
   for (int64_t s = 0; s < st.capacity; ++s) {
     Value idx = i32Const(builder, loc, s);
-    Value full = barrierSlot(builder, loc, st, st.fullArray, idx);
-    Value empty = barrierSlot(builder, loc, st, st.emptyArray, idx);
-    amdg::InitBarrierOp::create(builder, loc, full, st.threadCnt);
-    amdg::InitBarrierOp::create(builder, loc, empty, st.threadCnt);
-    amdg::ArriveBarrierOp::create(builder, loc, empty, /*count=*/1);
+    Value full = barrierSlot(builder, loc, st, st.fullArray, idx, op);
+    Value empty = barrierSlot(builder, loc, st, st.emptyArray, idx, op);
+    amdg::InitBarrierOp::create(builder, loc, full, counts.producerCnt);
+    amdg::InitBarrierOp::create(builder, loc, empty, counts.consumerCnt,
+                                /*init_phase=*/1);
   }
 
   if (!st.oneShot) {
@@ -428,10 +503,10 @@ static FailureOr<RDNAPipeState> createPipeState(PipeCreateOp op,
         ttg::LocalAllocOp::create(builder, loc, closeTagArrayType, init);
   }
 
-  if (needsDrain) {
+  if (counts.hasDrain) {
     st.drainBar =
         ttg::LocalAllocOp::create(builder, loc, getBarrierSlotType(context));
-    amdg::InitBarrierOp::create(builder, loc, st.drainBar, st.threadCnt);
+    amdg::InitBarrierOp::create(builder, loc, st.drainBar, counts.drainCnt);
     mlir::gpu::BarrierOp::create(builder, loc);
   }
   return st;
@@ -466,11 +541,43 @@ struct TritonTleLowerPipeToRDNA
     if (ops.empty())
       return;
 
-    // Pipes that have a drain need the extra rendezvous barrier.
-    std::set<std::string> drainKeys;
-    for (Operation *op : ops)
-      if (isa<PipeDrainOp>(op))
-        drainKeys.insert(getPipeKey(op));
+    // Pre-scan: size each pipe's barriers by the partition each endpoint runs
+    // in. The producer/consumer may be different warp_specialize partitions, so
+    // `full` is sized by a writer op's thread count and `empty` by a reader
+    // op's; a drain adds its own rendezvous barrier.
+    std::map<std::string, PipeCounts> countsByKey;
+    for (Operation *op : ops) {
+      PipeCounts &c = countsByKey[getPipeKey(op)];
+      int32_t *slot = nullptr;
+      if (isa<PipeWriterCommitOp, PipeWriterAcquireOp, PipeWriterCloseOp>(op))
+        slot = &c.producerCnt;
+      else if (isa<PipeReaderWaitOp, PipeReaderReleaseOp>(op))
+        slot = &c.consumerCnt;
+      else if (isa<PipeDrainOp>(op)) {
+        slot = &c.drainCnt;
+        c.hasDrain = true;
+      } else {
+        continue; // create: fallback filled below
+      }
+      FailureOr<int32_t> cnt = getThreadCount(op);
+      if (failed(cnt))
+        return signalPassFailure();
+      *slot = *cnt;
+    }
+    // Degenerate pipes (missing a writer or reader) fall back to the create op's
+    // own thread count.
+    for (Operation *op : ops) {
+      if (!isa<PipeCreateOp>(op))
+        continue;
+      FailureOr<int32_t> cnt = getThreadCount(op);
+      if (failed(cnt))
+        return signalPassFailure();
+      PipeCounts &c = countsByKey[getPipeKey(op)];
+      if (c.producerCnt == 0)
+        c.producerCnt = *cnt;
+      if (c.consumerCnt == 0)
+        c.consumerCnt = *cnt;
+    }
 
     std::map<std::string, RDNAPipeState> states;
     SmallVector<PipeCreateOp> creates;
@@ -479,7 +586,7 @@ struct TritonTleLowerPipeToRDNA
       std::string key = getPipeKey(op);
       if (auto create = dyn_cast<PipeCreateOp>(op)) {
         FailureOr<RDNAPipeState> st =
-            createPipeState(create, drainKeys.count(key) != 0);
+            createPipeState(create, countsByKey[key]);
         if (failed(st))
           return signalPassFailure();
         states[key] = *st;
@@ -498,23 +605,24 @@ struct TritonTleLowerPipeToRDNA
       Location loc = op->getLoc();
 
       if (auto acq = dyn_cast<PipeWriterAcquireOp>(op)) {
-        Value slot = barrierSlot(builder, loc, st, st.emptyArray, acq.getStage());
+        Value slot =
+            barrierSlot(builder, loc, st, st.emptyArray, acq.getStage(), op);
         amdg::WaitBarrierOp::create(builder, loc, slot,
                                     phaseToI32(builder, loc, acq.getPhase()));
       } else if (auto commit = dyn_cast<PipeWriterCommitOp>(op)) {
         Value slot =
-            barrierSlot(builder, loc, st, st.fullArray, commit.getStage());
+            barrierSlot(builder, loc, st, st.fullArray, commit.getStage(), op);
         amdg::ArriveBarrierOp::create(builder, loc, slot, /*count=*/1);
       } else if (auto close = dyn_cast<PipeWriterCloseOp>(op)) {
         if (!st.oneShot)
           storeCloseTag(builder, loc, st, close.getStage(), /*value=*/true, op);
         // Publish so a waiting reader wakes and observes the close tag.
         Value slot =
-            barrierSlot(builder, loc, st, st.fullArray, close.getStage());
+            barrierSlot(builder, loc, st, st.fullArray, close.getStage(), op);
         amdg::ArriveBarrierOp::create(builder, loc, slot, /*count=*/1);
       } else if (auto wait = dyn_cast<PipeReaderWaitOp>(op)) {
         Value slot =
-            barrierSlot(builder, loc, st, st.fullArray, wait.getStage());
+            barrierSlot(builder, loc, st, st.fullArray, wait.getStage(), op);
         amdg::WaitBarrierOp::create(builder, loc, slot,
                                     phaseToI32(builder, loc, wait.getPhase()));
         Value closed;
@@ -525,11 +633,12 @@ struct TritonTleLowerPipeToRDNA
         wait.getIsClosed().replaceAllUsesWith(closed);
       } else if (auto rel = dyn_cast<PipeReaderReleaseOp>(op)) {
         Value slot =
-            barrierSlot(builder, loc, st, st.emptyArray, rel.getStage());
+            barrierSlot(builder, loc, st, st.emptyArray, rel.getStage(), op);
         amdg::ArriveBarrierOp::create(builder, loc, slot, /*count=*/1);
       } else if (isa<PipeDrainOp>(op)) {
-        amdg::ArriveBarrierOp::create(builder, loc, st.drainBar, /*count=*/1);
-        amdg::WaitBarrierOp::create(builder, loc, st.drainBar,
+        Value drainBar = getWarpSpecializeCaptureForUse(op, st.drainBar);
+        amdg::ArriveBarrierOp::create(builder, loc, drainBar, /*count=*/1);
+        amdg::WaitBarrierOp::create(builder, loc, drainBar,
                                     i32Const(builder, loc, 0));
       }
       op->erase();

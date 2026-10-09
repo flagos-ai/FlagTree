@@ -51,6 +51,10 @@ struct InitBarrierOpConversion
     // when pending count reaches zero, so make the adjustment here.
     Value count = b.i64_val(op.getCount() - 1);
     Value val = b.or_(b.shl(count, b.i64_val(kInitCountPos)), count);
+    // Seed the phase bit so a barrier can start already "flipped" (free).
+    uint64_t initPhase = (uint64_t)(op.getInitPhase() & kBarrierPhaseMask);
+    if (initPhase)
+      val = b.or_(val, b.i64_val(initPhase << kBarrierCountBitWidth));
     b.store(val, smemObj.getBase());
     LLVM::BrOp::create(rewriter, loc, ValueRange(), endBlock);
     rewriter.setInsertionPointToStart(endBlock);
