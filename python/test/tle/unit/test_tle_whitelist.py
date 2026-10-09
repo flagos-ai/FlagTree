@@ -105,6 +105,38 @@ def test_active_backend_name_prefers_flagtree_backend(monkeypatch):
     assert _flagtree_backend.get_active_backend_name() == "hcu"
 
 
+@pytest.mark.parametrize("backend_name", ["hcu", "amd", "mthreads", "iluvatar"])
+def test_tle_logical_descriptor_frontend_gate_rejects_other_backends(monkeypatch, backend_name):
+    from triton.experimental.tle.language.gpu.semantic import TLEFrontendSemantic
+
+    monkeypatch.setattr(_flagtree_backend, "get_active_backend_name", lambda: backend_name)
+    semantic = object.__new__(TLEFrontendSemantic)
+    with pytest.raises(ValueError, match=r"TLE logical descriptors.*NVIDIA backend"):
+        semantic.make_tensor_descriptor(None, [], [], [80, 256])
+
+
+def test_tle_logical_descriptor_frontend_gate_propagates_unknown_backend(monkeypatch):
+    from triton.experimental.tle.language.gpu.semantic import TLEFrontendSemantic
+
+    def unknown_backend():
+        raise RuntimeError("backend is not configured")
+
+    monkeypatch.setattr(_flagtree_backend, "get_active_backend_name", unknown_backend)
+    semantic = object.__new__(TLEFrontendSemantic)
+    with pytest.raises(ValueError, match=r"active backend could not be determined"):
+        semantic.make_tensor_descriptor(None, [], [], [80, 256])
+
+
+def test_tle_power_of_two_descriptor_is_forwarded(monkeypatch):
+    from triton.experimental.tle.language.gpu.semantic import TLEFrontendSemantic
+    from triton.language.semantic import TritonSemantic
+
+    forwarded = object()
+    monkeypatch.setattr(TritonSemantic, "make_tensor_descriptor", lambda self, *args: forwarded)
+    semantic = object.__new__(TLEFrontendSemantic)
+    assert semantic.make_tensor_descriptor(None, [], [], [128, 256]) is forwarded
+
+
 @pytest.mark.parametrize("backend_name", ["nvidia", "amd"])
 def test_active_backend_name_falls_back_for_default_backends(monkeypatch, backend_name):
     monkeypatch.setattr(_flagtree_backend, "FLAGTREE_BACKEND", "")
