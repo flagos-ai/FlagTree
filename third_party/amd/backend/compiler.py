@@ -235,6 +235,10 @@ class HIPBackend(BaseBackend):
             tle.passes.add_restore_pipe_function_calls(pm)
             tle.passes.add_optimize_local_pointer_loads(pm)
             tle.passes.add_optimize_local_pointer_stores(pm)
+        # Lower ttg.warp_specialize (wave-id partition) after the TLE pipe block,
+        # so any tle.pipe inside partitions is already an mbarrier. No-op when no
+        # warp_specialize is present.
+        amd.passes.ttgpuir.add_convert_warp_specialize(pm)
         amd.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         amd.passes.ttgpuir.add_optimize_epilogue(pm)
