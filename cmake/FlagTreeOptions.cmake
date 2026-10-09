@@ -164,7 +164,7 @@ endmacro()
 
 
 macro(flagtree_configure_codegen_backends)
-  if(FLAGTREE_BACKEND STREQUAL "metax")
+  if(FLAGTREE_BACKEND MATCHES "^(metax|spacemit)$")
     list(APPEND TRITON_CODEGEN_BACKENDS "nvidia")
     list(APPEND TRITON_CODEGEN_BACKENDS "amd")
   endif()
