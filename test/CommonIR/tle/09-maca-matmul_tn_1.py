@@ -4,7 +4,7 @@ Keeps the four shared slots, sixteen 32x32 dot accumulators and explicit
 MetaX copy/wait/scheduling sequence. Inputs use complete 128x128x128 tiles;
 copy masks are uniform over a whole tile, avoiding element-mask limitations.
 
-    MACA_VISIBLE_DEVICES=6 python test/CommonIR/metax/09-maca-matmul_tn_1.py
+    MACA_VISIBLE_DEVICES=6 python test/CommonIR/tle/09-maca-matmul_tn_1.py
 """
 
 import argparse
