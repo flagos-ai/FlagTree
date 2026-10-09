@@ -49,6 +49,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <map>
 #include <set>
@@ -405,16 +406,23 @@ static FailureOr<RDNAPipeState> createPipeState(PipeCreateOp op,
   }
 
   if (!st.oneShot) {
+    // The close ring is initialized from a ranked tensor splat, whose element
+    // count must be a power of two (Triton tensor invariant). Pad the ring to
+    // PowerOf2Ceil(capacity); the extra slots are never indexed (stage < C).
+    // The i64 barrier arrays above are memdescs, not tensors, so they can stay
+    // at the logical capacity.
+    int64_t controlCapacity = llvm::PowerOf2Ceil(st.capacity);
     st.closeTagSlotType =
         ttg::MemDescType::get({1}, builder.getI32Type(), getSharedEncoding(context, 1),
                               ttg::SharedMemorySpaceAttr::get(context),
                               /*mutableMemory=*/true);
     auto closeTagArrayType =
-        ttg::MemDescType::get({st.capacity, 1}, builder.getI32Type(),
+        ttg::MemDescType::get({controlCapacity, 1}, builder.getI32Type(),
                               getSharedEncoding(context, 2),
                               ttg::SharedMemorySpaceAttr::get(context),
                               /*mutableMemory=*/true);
-    RankedTensorType initType = closeTagTensorType(op, builder, {st.capacity, 1});
+    RankedTensorType initType =
+        closeTagTensorType(op, builder, {controlCapacity, 1});
     Value init = closeTagSplat(builder, loc, initType, /*value=*/false);
     st.closeTags =
         ttg::LocalAllocOp::create(builder, loc, closeTagArrayType, init);
