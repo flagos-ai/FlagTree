@@ -59,6 +59,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <deque>
 #ifdef __FLAGTREE_RLC_ENHANCE__
+#include "llvm/ADT/EquivalenceClasses.h"
 #include <optional>
 #endif // __FLAGTREE_RLC_ENHANCE__
 
@@ -70,16 +71,6 @@ namespace mlir::triton::gpu {
 #define DEBUG_TYPE "tritongpu-remove-layout-conversions"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
-
-#ifdef __FLAGTREE_RLC_ENHANCE__
-// Per-phase switches, AND-ed with the runtime master switch (rlcEnhance).
-// Backward-propagation and small-component solving depend on cost-based
-// resolution (disabling it forces both off); store-layout remat is independent.
-static constexpr bool kEnableCostBasedResolution = true;
-static constexpr bool kEnableBackwardPropagation = true;
-static constexpr bool kEnableSmallComponentSolving = true;
-static constexpr bool kEnableStoreLayoutRematerialization = true;
-#endif // __FLAGTREE_RLC_ENHANCE__
 
 namespace {
 
@@ -149,6 +140,53 @@ static bool allResultsHaveNoUses(Operation *op) {
   return llvm::all_of(op->getResults(),
                       [](Value result) { return result.use_empty(); });
 }
+
+// The blocked parent whose slice along the expand_dims axis distributes the
+// source exactly like the blocked `encoding` (the new dimension gets one
+// element, lane and warp), so the expansion needs no data movement. Lets a
+// layout chosen for a vector, e.g. by a coalesced load, flow into the tensor
+// it is broadcast to.
+static Attribute getExpandDimsParentEncoding(ExpandDimsOp op,
+                                             Attribute encoding) {
+  auto blocked = dyn_cast<BlockedEncodingAttr>(encoding);
+  if (!blocked)
+    return {};
+  unsigned axis = op.getAxis();
+  auto insertOne = [&](ArrayRef<unsigned> values) {
+    SmallVector<unsigned> result(values);
+    result.insert(result.begin() + axis, 1);
+    return result;
+  };
+  auto insertSlowest = [&](ArrayRef<unsigned> order) {
+    SmallVector<unsigned> result;
+    for (unsigned d : order)
+      result.push_back(d >= axis ? d + 1 : d);
+    result.push_back(axis);
+    return result;
+  };
+  CTAEncodingAttr cta = blocked.getCTALayout();
+  auto parentCta = CTAEncodingAttr::fromSplitParams(
+      op.getContext(), insertOne(cta.getCTAsPerCGA()),
+      insertOne(cta.getCTASplitNum()), insertSlowest(cta.getCTAOrder()));
+  return BlockedEncodingAttr::get(op.getContext(),
+                                  insertOne(blocked.getSizePerThread()),
+                                  insertOne(blocked.getThreadsPerWarp()),
+                                  insertOne(blocked.getWarpsPerCTA()),
+                                  insertSlowest(blocked.getOrder()), parentCta);
+}
+
+// True if `a` and `b` place every element of `value`'s tensor on the same
+// register, lane, warp and block, i.e. converting between them is free.
+static bool isEquivalentEncoding(Value value, Attribute a, Attribute b) {
+  if (a == b)
+    return true;
+  auto type = dyn_cast<RankedTensorType>(value.getType());
+  if (!type || !a || !b || !isa<DistributedEncodingTrait>(a) ||
+      !isa<DistributedEncodingTrait>(b))
+    return false;
+  return toLinearLayout(type.cloneWithEncoding(a)) ==
+         toLinearLayout(type.cloneWithEncoding(b));
+}
 #endif // __FLAGTREE_RLC_ENHANCE__
 
 // -----------------------------------------------------------------------------
@@ -176,11 +214,14 @@ static bool allResultsHaveNoUses(Operation *op) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
 //
 // On top of this baseline we add four optional phases, each guarded by a pass
-// option; with every option off the pass is identical to the original.
+// option that only takes effect under the master option enable-rlc-enhance;
+// with enable-rlc-enhance off the pass is identical to the original.
 //
 //   Phase 1a (enable-cost-based-resolution): resolve conflicts by estimated
 //     convert cost instead of the fixed "blocked for load/store, mma
-//     otherwise" heuristic.
+//     otherwise" heuristic, and move whole components of tied blocked values
+//     (e.g. a loop accumulator) onto a shared encoding when that removes
+//     loop-resident converts (see resolveConflictsByComponent).
 //
 //   Phase 1b (enable-backward-propagation): push an encoding preference
 //     backward from single-use writeback converts into their producer chains.
@@ -202,7 +243,7 @@ public:
     LayoutInfo(Attribute encoding) { encodings.insert(encoding); }
 #ifdef __TLE__
     LayoutInfo(Attribute encoding, bool hard) { add(encoding, hard); }
-#endif
+#endif // __TLE__
     LayoutInfo() {}
     void add(Attribute encoding) { encodings.insert(encoding); }
 #ifdef __TLE__
@@ -214,11 +255,16 @@ public:
     bool isHard(Attribute encoding) const {
       return hardEncodings.contains(encoding);
     }
-#endif
+#endif // __TLE__
     llvm::SmallSetVector<Attribute, 8> encodings;
 #ifdef __TLE__
     llvm::SmallSetVector<Attribute, 8> hardEncodings;
-#endif
+#endif // __TLE__
+#ifdef __FLAGTREE_RLC_ENHANCE__
+    // Encodings that only reach the value through a synthesized expand_dims
+    // parent; only the cost-based resolution may pick them.
+    llvm::SmallSetVector<Attribute, 2> derivedEncodings;
+#endif // __FLAGTREE_RLC_ENHANCE__
   };
 #ifdef __FLAGTREE_RLC_ENHANCE__
   LayoutPropagation(FuncOp F, bool costBased = true, bool backwardProp = true,
@@ -280,6 +326,7 @@ public:
 private:
 #ifdef __FLAGTREE_RLC_ENHANCE__
   bool hasLayoutPropagationExtensions() const;
+  bool conflictsWithHardEncoding(Value value, Attribute encoding) const;
   LayoutInfo *getOrCreateBackwardLayout(Value value);
   bool addBackwardEncoding(Value target, Attribute encoding);
   bool isCompatibleWithEncoding(Value value, Attribute encoding) const;
@@ -289,6 +336,8 @@ private:
                                int64_t cvtUnitCost) const;
   bool shouldUseCostBasedResolution(const LayoutInfo &info) const;
   bool isExtensionTouchedValue(Value value) const;
+  void resolveConflictsByComponent(
+      const llvm::MapVector<Value, SmallVector<Attribute>> &candidates);
   bool addSmallComponentEncoding(Value target, Attribute encoding);
   using Proposal = llvm::MapVector<Value, Attribute>;
   bool addProposalValue(Proposal &proposal, Value target,
@@ -361,8 +410,6 @@ public:
   // any writeback was rewritten.
   bool rematerializeStoreLayout();
   bool rematerializeWritebackLayout(Operation *writebackOp);
-  bool rematerializeLocalStoreLayout();
-  bool rematerializeLocalStoreLayout(LocalStoreOp storeOp);
 #endif // __FLAGTREE_RLC_ENHANCE__
   // TODO: Merge the three hoistConvert*(); functions as they are duplicate code
   void hoistConvertDotOperand();
@@ -460,7 +507,7 @@ bool isLayoutAnchor(Operation *op) {
     return true;
   if (isTleExplicitConvertLayoutOp(op))
     return true;
-#endif
+#endif // __TLE__
   if (isa<DescriptorOpInterface>(op))
     return true;
   if (isa<LoadOp, StoreOp>(op))
@@ -487,6 +534,19 @@ bool LayoutPropagation::hasLayoutPropagationExtensions() const {
   return enableCostBasedResolution || enableBackwardPropagation ||
          enableSmallComponentSolving;
 }
+
+// True if `value` carries an explicit (tle.gpu.set_layout) encoding other than
+// `encoding`; resolveConflicts always keeps the explicit one.
+bool LayoutPropagation::conflictsWithHardEncoding(Value value,
+                                                  Attribute encoding) const {
+#ifdef __TLE__
+  auto it = layouts.find(value);
+  return it != layouts.end() && !it->second.hardEncodings.empty() &&
+         !it->second.hardEncodings.contains(encoding);
+#else  // __TLE__
+  return false;
+#endif // __TLE__
+}
 #endif // __FLAGTREE_RLC_ENHANCE__
 
 void LayoutPropagation::initAnchorLayout() {
@@ -495,18 +555,16 @@ void LayoutPropagation::initAnchorLayout() {
                        bool hard = false) {
     if (auto tensorType = dyn_cast<RankedTensorType>(v.getType())) {
       Attribute anchorEncoding = encoding ? encoding : tensorType.getEncoding();
+#ifdef __FLAGTREE_RLC_ENHANCE__
+      if (hasLayoutPropagationExtensions() && !anchorEncoding)
+        return;
+#endif // __FLAGTREE_RLC_ENHANCE__
       auto &info = layouts[v];
 #ifdef __TLE__
       info.add(anchorEncoding, hard);
-#else
+#else  // __TLE__
       info.add(anchorEncoding);
-#endif
-#ifdef __FLAGTREE_RLC_ENHANCE__
-      if (!hasLayoutPropagationExtensions() || tensorType.getEncoding())
-        layouts.insert({v, LayoutInfo(tensorType.getEncoding())});
-#else  // __FLAGTREE_RLC_ENHANCE__
-      layouts.insert({v, LayoutInfo(tensorType.getEncoding())});
-#endif // __FLAGTREE_RLC_ENHANCE__
+#endif // __TLE__
     }
   };
 
@@ -526,9 +584,9 @@ void LayoutPropagation::initAnchorLayout() {
             hard ? getTleExplicitResultEncoding(op, result.getResultNumber())
                  : nullptr;
         addAnchor(result, explicitEncoding, hard);
-#else
+#else  // __TLE__
         addAnchor(result);
-#endif
+#endif // __TLE__
       }
     }
   });
@@ -543,20 +601,50 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
     bool hasChanged = false;
     for (auto encoding : info.encodings) {
       Attribute dstEncoding;
+#ifdef __FLAGTREE_RLC_ENHANCE__
+      bool derived = info.derivedEncodings.contains(encoding);
+#endif // __FLAGTREE_RLC_ENHANCE__
       if (isa<ConvertLayoutOp>(op)) {
         // Try to remove the convert by making the dst encoding match the source
         // encoding.
         dstEncoding = encoding;
       } else {
         dstEncoding = inferDstEncoding(op, encoding);
+#ifdef __FLAGTREE_RLC_ENHANCE__
+        // inferDstEncoding cannot expand a blocked (non-slice) source. Directly
+        // inside a loop body, where the convert this avoids would run every
+        // iteration, synthesize the parent the source is a slice of.
+        if (auto expandOp = dyn_cast<ExpandDimsOp>(op);
+            expandOp && !dstEncoding && enableCostBasedResolution &&
+            isa<scf::ForOp, scf::WhileOp>(op->getParentOp())) {
+          dstEncoding = getExpandDimsParentEncoding(expandOp, encoding);
+          derived = true;
+        }
+#endif // __FLAGTREE_RLC_ENHANCE__
       }
       if (dstEncoding) {
         auto &layoutInfo = layouts[value];
+#ifdef __FLAGTREE_RLC_ENHANCE__
+        // An encoding is derived only while every path to it is derived.
+        if (layoutInfo.encodings.insert(dstEncoding)) {
+          hasChanged = true;
+          if (derived)
+            layoutInfo.derivedEncodings.insert(dstEncoding);
+        } else if (!derived) {
+          hasChanged |= layoutInfo.derivedEncodings.remove(dstEncoding);
+        }
+#else  // __FLAGTREE_RLC_ENHANCE__
         hasChanged |= layoutInfo.encodings.insert(dstEncoding);
+#endif // __FLAGTREE_RLC_ENHANCE__
 #ifdef __TLE__
+#ifdef __FLAGTREE_RLC_ENHANCE__
+        // A synthesized parent is only a candidate, never an explicit layout.
+        if (info.isHard(encoding) && !derived)
+#else  // __FLAGTREE_RLC_ENHANCE__
         if (info.isHard(encoding))
+#endif // __FLAGTREE_RLC_ENHANCE__
           hasChanged |= layoutInfo.hardEncodings.insert(dstEncoding);
-#endif
+#endif // __TLE__
       }
     }
     if (hasChanged)
@@ -706,6 +794,9 @@ static bool preservesWritebackMemoryAccess(RankedTensorType ptrType,
 static unsigned getContigAlongMemoryOrder(RankedTensorType type);
 static bool isOrderIndifferentAccess(ModuleAxisInfoAnalysis *axisInfo,
                                      Value ptr);
+static bool widensPastVectorAccess(ModuleAxisInfoAnalysis *axisInfo, Value ptr,
+                                   Value mask, Type elementType,
+                                   Attribute targetEncoding);
 static bool convertResultReachesAnotherConvert(ConvertLayoutOp convertOp);
 
 // Seed backward propagation onto `value`; only non-frozen local producers with
@@ -728,7 +819,7 @@ LayoutPropagation::getOrCreateBackwardLayout(Value value) {
 }
 
 bool LayoutPropagation::addBackwardEncoding(Value target, Attribute encoding) {
-  if (!encoding)
+  if (!encoding || conflictsWithHardEncoding(target, encoding))
     return false;
   LayoutInfo *entry = getOrCreateBackwardLayout(target);
   if (!entry)
@@ -887,6 +978,10 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
           (inLoop ||
            !isOrderIndifferentAccess(axisInfoAnalysis, loadOp.getPtr())))
         return false;
+      if (resultType && widensPastVectorAccess(
+                            axisInfoAnalysis, loadOp.getPtr(), loadOp.getMask(),
+                            resultType.getElementType(), encoding))
+        return false;
     }
     Attribute srcEncoding = inferSrcEncoding(defOp, encoding);
     if (!srcEncoding)
@@ -990,20 +1085,12 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
   return false;
 }
 
-// Execution-frequency weight for a convert of `value`, by the loop depth of its
-// definition (converts are inserted next to the definition). This makes the
-// cost model favor removing hot in-loop converts over one-shot ones.
-static int64_t getLoopFrequencyWeight(Value value) {
+// Execution-frequency weight of code nested in `enclosing` (inclusive), by its
+// loop depth. This makes the cost model favor removing hot in-loop converts
+// over one-shot ones.
+static int64_t getScopeLoopFrequencyWeight(Operation *enclosing) {
   constexpr int64_t kLoopIterationWeight = 8;
   constexpr int kMaxWeightedLoopDepth = 3;
-  // For an op result the convert lands in the same region as the defining op;
-  // for a loop-carried block argument it lands inside the loop itself.
-  Operation *enclosing;
-  if (Operation *defOp = value.getDefiningOp())
-    enclosing = defOp->getParentOp();
-  else
-    enclosing = cast<BlockArgument>(value).getOwner()->getParentOp();
-
   int depth = 0;
   for (Operation *op = enclosing; op && depth < kMaxWeightedLoopDepth;
        op = op->getParentOp())
@@ -1014,6 +1101,28 @@ static int64_t getLoopFrequencyWeight(Value value) {
   for (int i = 0; i < depth; ++i)
     weight *= kLoopIterationWeight;
   return weight;
+}
+
+// Execution-frequency weight for a convert of `value` (converts are inserted
+// next to the definition). For an op result the convert lands in the same
+// region as the defining op; for a loop-carried block argument it lands inside
+// the loop itself.
+static int64_t getLoopFrequencyWeight(Value value) {
+  if (Operation *defOp = value.getDefiningOp())
+    return getScopeLoopFrequencyWeight(defOp->getParentOp());
+  return getScopeLoopFrequencyWeight(
+      cast<BlockArgument>(value).getOwner()->getParentOp());
+}
+
+// Execution-frequency weight of a convert inserted right before `op`.
+static int64_t getOpLoopFrequencyWeight(Operation *op) {
+  return getScopeLoopFrequencyWeight(op->getParentOp());
+}
+
+// Cost of one convert of `value`: its smem round-trip byte estimate (>= 1).
+static int64_t getConvertUnitCost(Value value) {
+  int64_t cost = 32 * getByteCount(value, 32, 32);
+  return cost == 0 ? 1 : cost;
 }
 
 // Cost-model gate for a Phase 2 proposal: sum the convert cost across every
@@ -1045,8 +1154,7 @@ bool LayoutPropagation::shouldAcceptProposal(const Proposal &proposal) const {
   };
 
   auto getCvtCost = [](Value value) -> int64_t {
-    int64_t cost = 32 * getByteCount(value, 32, 32);
-    return (cost == 0 ? 1 : cost) * getLoopFrequencyWeight(value);
+    return getConvertUnitCost(value) * getLoopFrequencyWeight(value);
   };
 
   auto countUseCvtCost = [&](Value value, Attribute encoding,
@@ -1945,6 +2053,42 @@ static bool preservesWritebackMemoryAccess(RankedTensorType ptrType,
   return targetContig * elementBits >= 32;
 }
 
+// True if retagging the coalesced access at `ptr` to `targetEncoding` widens
+// each thread's run of contiguous addresses while the access already issues
+// full 128-bit vectors. The wider run is split into several vectors strided by
+// the run length, so every instruction coalesces only partially across the
+// warp without vectorizing any better. An access that cannot vectorize (a
+// scatter, or a misaligned address or mask) is element-granular either way,
+// so widening it only saves the convert.
+static bool widensPastVectorAccess(ModuleAxisInfoAnalysis *axisInfo, Value ptr,
+                                   Value mask, Type elementType,
+                                   Attribute targetEncoding) {
+  constexpr unsigned kMaxAccessBits = 128;
+  auto ptrType = dyn_cast<RankedTensorType>(ptr.getType());
+  if (!ptrType || !ptrType.getEncoding() || !elementType.isIntOrFloat())
+    return false;
+  unsigned bits = elementType.getIntOrFloatBitWidth();
+  unsigned current = getContigAlongMemoryOrder(ptrType);
+  unsigned target =
+      getContigAlongMemoryOrder(ptrType.cloneWithEncoding(targetEncoding));
+  if (target <= current || current * bits < kMaxAccessBits)
+    return false;
+  SmallVector<unsigned> order = getOrderForMemory(ptrType);
+  AxisInfo *info = axisInfo ? axisInfo->getAxisInfo(ptr) : nullptr;
+  if (!info || order.empty())
+    return true;
+  // The vector width the lowering issues today (as LoadStoreConversionBase::
+  // getVectorSize computes it).
+  unsigned vec = std::min(current, axisInfo->getContiguity(ptr));
+  if (mask)
+    vec = std::min(vec, axisInfo->getMaskAlignment(mask));
+  if (vec * bits < kMaxAccessBits)
+    return false;
+  int64_t contiguity = std::min<int64_t>(info->getContiguity(order.front()),
+                                         ptrType.getDimSize(order.front()));
+  return contiguity > current;
+}
+
 static bool preservesStoreMemoryAccess(StoreOp storeOp,
                                        Attribute targetEncoding) {
   return preservesWritebackMemoryAccess(
@@ -2080,9 +2224,11 @@ bool LayoutPropagation::solveSmallComponents() {
       return false;
 #ifdef __TLE__
     // Skip any component on a TLE cluster remote-address chain; retagging it
-    // corrupts the remote access (see valueOnTleRemotePointerPath).
+    // corrupts the remote access (see valueOnTleRemotePointerPath). Nor retag
+    // an explicit (tle.gpu.set_layout) value away from its encoding.
     for (auto &it : proposal)
-      if (valueOnTleRemotePointerPath(it.first))
+      if (valueOnTleRemotePointerPath(it.first) ||
+          conflictsWithHardEncoding(it.first, it.second))
         return false;
 #endif // __TLE__
     int removedConverts = countConvertsRemovedByProposal(proposal);
@@ -2180,7 +2326,10 @@ bool LayoutPropagation::solveSmallComponents() {
       return collectStoreAddressOperand(proposal, operand, encoding);
     };
     if (auto storeOp = dyn_cast<StoreOp>(user)) {
-      if (!preservesStoreMemoryAccess(storeOp, encoding))
+      if (!preservesStoreMemoryAccess(storeOp, encoding) ||
+          widensPastVectorAccess(
+              axisInfoAnalysis, storeOp.getPtr(), storeOp.getMask(),
+              getElementTypeOrSelf(storeOp.getValue().getType()), encoding))
         return false;
       if (!storeRetagCoalesces(
               dyn_cast<RankedTensorType>(storeOp.getPtr().getType()), encoding))
@@ -2200,7 +2349,10 @@ bool LayoutPropagation::solveSmallComponents() {
     if (!ptrType || !valType)
       return false;
     if (!preservesWritebackMemoryAccess(ptrType, valType, encoding,
-                                        /*allowNarrowerContiguity=*/false))
+                                        /*allowNarrowerContiguity=*/false) ||
+        widensPastVectorAccess(axisInfoAnalysis, atomicOp.getPtr(),
+                               atomicOp.getMask(), valType.getElementType(),
+                               encoding))
       return false;
     if (!collectOperand(atomicOp.getVal()) ||
         !collectOperand(atomicOp.getPtr()))
@@ -2555,8 +2707,7 @@ int64_t LayoutPropagation::getValueConversionCost(Value value,
   auto tensorType = dyn_cast<RankedTensorType>(value.getType());
   if (!tensorType || tensorType.getEncoding() == encoding)
     return 0;
-  int64_t cost = 32 * getByteCount(value, 32, 32);
-  return cost == 0 ? 1 : cost;
+  return getConvertUnitCost(value);
 }
 
 // Cost charged on the producer side if `value` is chosen in `encoding`:
@@ -2649,16 +2800,336 @@ bool LayoutPropagation::isExtensionTouchedValue(Value value) const {
   return backwardTouchedValues.contains(value) ||
          smallComponentPreferredEncoding.contains(value);
 }
+
+// A cheap op that backward rematerialization re-derives in another layout
+// instead of converting its result, moving the convert onto its operands.
+static bool isLayoutTransparentProducer(Operation *op) {
+  if (isLayoutAnchor(op) || op->getNumRegions() != 0 || isExpensiveMathOp(op))
+    return false;
+  if (isa<BroadcastOp, ExpandDimsOp, ConvertLayoutOp>(op))
+    return true;
+  return (op->hasTrait<OpTrait::Elementwise>() ||
+          op->hasTrait<OpTrait::SameOperandsAndResultEncoding>()) &&
+         isMemoryEffectFree(op);
+}
+
+// Depth of the producer chain getRematConversionCost walks.
+static constexpr int kMaxRematDepth = 6;
+
+// Cost of making `value` available in `required` when values carry the
+// encodings `encodingOf`, converting at the cheapest point of a chain of
+// layout-transparent producers (backward rematerialization re-derives the
+// rest). A convert between equivalent encodings is free, but rematerialization
+// only stops at an identical one, so equivalence counts only at the starting
+// edge (depth == kMaxRematDepth).
+static int64_t
+getRematConversionCost(Value value, Attribute required, int depth,
+                       function_ref<Attribute(Value)> encodingOf) {
+  if (depth == kMaxRematDepth
+          ? isEquivalentEncoding(value, encodingOf(value), required)
+          : encodingOf(value) == required)
+    return 0;
+  int64_t full = getConvertUnitCost(value);
+  Operation *def = value.getDefiningOp();
+  if (!def || depth <= 0)
+    return full;
+  if (isa<arith::ConstantOp, SplatOp, MakeRangeOp>(def))
+    return 0;
+  if (!isLayoutTransparentProducer(def))
+    return full;
+  Attribute srcRequired =
+      isa<ConvertLayoutOp>(def) ? required : inferSrcEncoding(def, required);
+  if (!srcRequired)
+    return full;
+  int64_t sum = 0;
+  for (Value operand : def->getOperands()) {
+    if (!isa<RankedTensorType>(operand.getType()))
+      continue;
+    sum += getRematConversionCost(operand, srcRequired, depth - 1, encodingOf);
+    if (sum >= full)
+      return full;
+  }
+  return sum;
+}
+
+// Component-level conflict resolution. Values with several blocked (or blocked
+// slice) candidates that are tied by layout-preserving ops (elementwise ops,
+// broadcasts, loop-carried and conditionally yielded values) must share one
+// encoding to avoid converts between them, so they are resolved together: each
+// candidate shared by the whole component is priced by the converts it needs
+// at the component boundary (operands rematerialized through cheap producers,
+// users that cannot follow), weighted by loop depth. A shared candidate
+// replaces the per-value resolution only when it removes loop-resident
+// converts without adding converts overall.
+void LayoutPropagation::resolveConflictsByComponent(
+    const llvm::MapVector<Value, SmallVector<Attribute>> &candidates) {
+  llvm::EquivalenceClasses<Value> tied;
+  // Edges below only join values that carry the same encoding attribute (a
+  // broadcast keeps it across shapes).
+  auto unite = [&](Value a, Value b) {
+    if (candidates.count(a) && candidates.count(b))
+      tied.unionSets(a, b);
+  };
+  for (auto &it : candidates)
+    tied.insert(it.first);
+  for (auto &it : candidates) {
+    Value v = it.first;
+    if (auto arg = dyn_cast<BlockArgument>(v)) {
+      auto forOp = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp());
+      if (!forOp || arg.getArgNumber() < forOp.getNumInductionVars())
+        continue;
+      unsigned i = arg.getArgNumber() - forOp.getNumInductionVars();
+      unite(v, forOp.getResult(i));
+      unite(v, forOp.getInitArgs()[i]);
+      unite(v, forOp.getYieldedValues()[i]);
+      continue;
+    }
+    Operation *def = v.getDefiningOp();
+    if (auto forOp = dyn_cast<scf::ForOp>(def)) {
+      unsigned i = cast<OpResult>(v).getResultNumber();
+      unite(v, forOp.getRegionIterArg(i));
+    } else if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+      unsigned i = cast<OpResult>(v).getResultNumber();
+      unite(v, ifOp.thenYield().getOperand(i));
+      if (!ifOp.getElseRegion().empty())
+        unite(v, ifOp.elseYield().getOperand(i));
+    } else if ((def->hasTrait<OpTrait::Elementwise>() ||
+                def->hasTrait<OpTrait::SameOperandsAndResultEncoding>()) &&
+               def->getNumRegions() == 0 && !isLayoutAnchor(def)) {
+      for (Value operand : def->getOperands())
+        if (isa<RankedTensorType>(operand.getType()))
+          unite(v, operand);
+    }
+  }
+
+  llvm::MapVector<Value, SmallVector<Value>> components;
+  for (auto &it : candidates)
+    components[tied.getLeaderValue(it.first)].push_back(it.first);
+
+  auto resolvedEncoding = [&](Value v) -> Attribute {
+    auto it = layouts.find(v);
+    if (it != layouts.end() && !it->second.encodings.empty())
+      return *it->second.encodings.begin();
+    return getTensorEncoding(v);
+  };
+
+  // Convert cost of an assignment and its loop-resident part.
+  struct AssignmentCost {
+    int64_t total = 0;
+    int64_t inLoop = 0;
+  };
+  // A second pass re-prices components next to one moved in the first.
+  constexpr int kNumPasses = 2;
+  DenseSet<Value> moved;
+  for (int pass = 0; pass < kNumPasses; ++pass) {
+    for (auto &[root, members] : components) {
+      DenseSet<Value> inComponent(members.begin(), members.end());
+      SmallVector<Attribute> shared(candidates.lookup(members.front()));
+      bool skip = false;
+      for (Value m : members) {
+        const SmallVector<Attribute> &cands = candidates.lookup(m);
+        llvm::erase_if(shared, [&](Attribute enc) {
+          return !llvm::is_contained(cands, enc);
+        });
+        // Anchors and loads keep their layout, and loop-carried values are
+        // priced through scf.for only, so a component holding any of them (or
+        // an scf.while value) is left alone.
+        if (Operation *def = m.getDefiningOp())
+          skip |= isLayoutAnchor(def) || isa<LoadOp, scf::WhileOp>(def);
+        else
+          skip |= !isa<scf::ForOp>(
+              cast<BlockArgument>(m).getOwner()->getParentOp());
+      }
+      if (skip || shared.size() < 2)
+        continue;
+
+      // Price an assignment of the members (`assignment`): the converts needed
+      // on every edge it leaves inconsistent, inside or at the boundary.
+      auto priceAssignment = [&](function_ref<Attribute(Value)> assignment) {
+        AssignmentCost result;
+        auto charge = [&](int64_t weight, int64_t c) {
+          result.total += weight * c;
+          if (weight > 1)
+            result.inLoop += weight * c;
+        };
+        auto assignedEncoding = [&](Value v) {
+          return inComponent.contains(v) ? assignment(v) : resolvedEncoding(v);
+        };
+        auto operandCost = [&](Value operand, Attribute req, Operation *at) {
+          charge(getOpLoopFrequencyWeight(at),
+                 getRematConversionCost(operand, req, kMaxRematDepth,
+                                        assignedEncoding));
+        };
+        for (Value m : members) {
+          Attribute enc = assignment(m);
+          if (auto arg = dyn_cast<BlockArgument>(m)) {
+            auto forOp = cast<scf::ForOp>(arg.getOwner()->getParentOp());
+            unsigned i = arg.getArgNumber() - forOp.getNumInductionVars();
+            operandCost(forOp.getInitArgs()[i], enc, forOp);
+            Value yielded = forOp.getYieldedValues()[i];
+            operandCost(yielded, enc,
+                        yielded.getParentBlock()->getTerminator());
+          } else if (Operation *def = m.getDefiningOp()) {
+            if (auto forOp = dyn_cast<scf::ForOp>(def)) {
+              unsigned i = cast<OpResult>(m).getResultNumber();
+              Value arg = forOp.getRegionIterArg(i);
+              if (!isEquivalentEncoding(m, assignedEncoding(arg), enc))
+                charge(getOpLoopFrequencyWeight(forOp), getConvertUnitCost(m));
+            } else if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+              unsigned i = cast<OpResult>(m).getResultNumber();
+              operandCost(ifOp.thenYield().getOperand(i), enc,
+                          ifOp.thenYield());
+              if (!ifOp.getElseRegion().empty())
+                operandCost(ifOp.elseYield().getOperand(i), enc,
+                            ifOp.elseYield());
+            } else {
+              Attribute srcReq =
+                  isa<ConvertLayoutOp>(def) ? enc : inferSrcEncoding(def, enc);
+              for (Value operand : def->getOperands()) {
+                if (!isa<RankedTensorType>(operand.getType()))
+                  continue;
+                if (!srcReq)
+                  charge(getOpLoopFrequencyWeight(def),
+                         getConvertUnitCost(operand));
+                else
+                  operandCost(operand, srcReq, def);
+              }
+            }
+          }
+          // Users outside the component (users inside are priced as
+          // operands above).
+          for (OpOperand &use : m.getUses()) {
+            Operation *user = use.getOwner();
+            int64_t weight = getOpLoopFrequencyWeight(user);
+            SmallVector<std::pair<Value, Attribute>> targets;
+            collectUseTargets(use, enc, targets);
+            if (targets.empty()) {
+              // A user that does not follow keeps the operand encoding it has
+              // today; cheap producers can be re-derived in it instead.
+              charge(weight,
+                     getRematConversionCost(m, getTensorEncoding(m),
+                                            kMaxRematDepth, assignedEncoding));
+              continue;
+            }
+            for (auto &[target, dstEnc] : targets) {
+              if (inComponent.contains(target) ||
+                  isEquivalentEncoding(target, resolvedEncoding(target),
+                                       dstEnc))
+                continue;
+              int64_t c = getConvertUnitCost(m);
+              // A user that may still follow converts on its smaller side.
+              auto it = candidates.find(target);
+              if (it != candidates.end() &&
+                  llvm::is_contained(it->second, dstEnc))
+                c = std::min(c, getConvertUnitCost(target));
+              charge(weight, c);
+            }
+          }
+        }
+        return result;
+      };
+
+      // Keep the per-value resolution unless a shared encoding lowers the
+      // loop-resident converts without raising the total. The boundary prices
+      // are estimates (later backward rematerialization may still remove a
+      // one-shot convert the per-value result leaves), so savings outside
+      // loops alone do not justify deviating from it, except next to a
+      // component already moved here, whose new boundary must be priced.
+      DenseMap<Value, Attribute> resolved;
+      bool adjacentToMoved = false;
+      for (Value m : members) {
+        resolved[m] = resolvedEncoding(m);
+        if (Operation *def = m.getDefiningOp())
+          for (Value operand : def->getOperands())
+            adjacentToMoved |= moved.contains(operand);
+        for (Operation *user : m.getUsers())
+          for (Value result : user->getResults())
+            adjacentToMoved |= moved.contains(result);
+      }
+      auto bestCost =
+          priceAssignment([&](Value v) { return resolved.lookup(v); });
+      Attribute best;
+      for (Attribute enc : shared) {
+        auto cost = priceAssignment([&](Value) { return enc; });
+        bool better = adjacentToMoved ? cost.total < bestCost.total
+                                      : cost.inLoop < bestCost.inLoop &&
+                                            cost.total <= bestCost.total;
+        if (better) {
+          bestCost = cost;
+          best = enc;
+        }
+      }
+      if (!best)
+        continue;
+      LDBG("component of " << members.size() << " values moved to " << best
+                           << ", convert cost " << bestCost.total);
+      for (Value m : members) {
+        LayoutInfo &info = layouts[m];
+        info.encodings.clear();
+        info.encodings.insert(best);
+        moved.insert(m);
+      }
+    }
+  }
+}
 #endif // __FLAGTREE_RLC_ENHANCE__
 
 void LayoutPropagation::resolveConflicts() {
-  for (auto &it : layouts) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
-    Value value = it.first;
-    Operation *defOp = value.getDefiningOp();
+  // A value reached only through synthesized parents keeps its own encoding
+  // as an option, so it stays as it is unless a component finds a synthesized
+  // parent cheaper.
+  for (auto &it : layouts) {
+    LayoutInfo &info = it.second;
+    if (info.derivedEncodings.empty() ||
+        !llvm::all_of(info.encodings, [&](Attribute enc) {
+          return info.derivedEncodings.contains(enc);
+        }))
+      continue;
+    if (Attribute original = getTensorEncoding(it.first))
+      info.encodings.insert(original);
+  }
+  // Candidate sets for component-level resolution, captured before the
+  // per-value rules below collapse them.
+  llvm::MapVector<Value, SmallVector<Attribute>> componentCandidates;
+  if (enableCostBasedResolution) {
+    for (auto &it : layouts) {
+      const LayoutInfo &info = it.second;
+      if (info.encodings.size() <= 1 ||
+          smallComponentPreferredEncoding.contains(it.first) ||
+          !isa<RankedTensorType>(it.first.getType()))
+        continue;
+#ifdef __TLE__
+      if (!info.hardEncodings.empty())
+        continue;
+#endif // __TLE__
+      bool blockedOnly = llvm::all_of(info.encodings, [](Attribute enc) {
+        return isBlockedOrBlockedSliceEncoding(enc);
+      });
+      if (blockedOnly)
+        componentCandidates[it.first] = SmallVector<Attribute>(
+            info.encodings.begin(), info.encodings.end());
+    }
+  }
+#endif // __FLAGTREE_RLC_ENHANCE__
+  for (auto &it : layouts) {
     LayoutInfo &info = it.second;
     if (info.encodings.size() <= 1)
       continue;
+#ifdef __TLE__
+    // An explicit (tle.gpu.set_layout) encoding wins over every rule below.
+    if (!info.hardEncodings.empty()) {
+      Attribute encoding = *info.hardEncodings.begin();
+      info.encodings.clear();
+      info.encodings.insert(encoding);
+      info.hardEncodings.clear();
+      info.hardEncodings.insert(encoding);
+      continue;
+    }
+#endif // __TLE__
+#ifdef __FLAGTREE_RLC_ENHANCE__
+    Value value = it.first;
+    Operation *defOp = value.getDefiningOp();
     if (auto preferred = smallComponentPreferredEncoding.lookup(value)) {
       if (info.encodings.contains(preferred)) {
         info.encodings.clear();
@@ -2668,10 +3139,18 @@ void LayoutPropagation::resolveConflicts() {
     }
     if (!enableCostBasedResolution || !isExtensionTouchedValue(value) ||
         !shouldUseCostBasedResolution(info)) {
-      Attribute encoding = *info.encodings.begin();
+      // Derived (synthesized-parent) encodings are left to the cost-based
+      // component resolution below.
+      SmallVector<Attribute> legacy;
+      for (Attribute e : info.encodings)
+        if (!info.derivedEncodings.contains(e))
+          legacy.push_back(e);
+      if (legacy.empty())
+        legacy.assign(info.encodings.begin(), info.encodings.end());
+      Attribute encoding = legacy.front();
       bool isLoadOrStore =
           defOp && isa<LoadOp, StoreOp, AtomicRMWOp, AtomicCASOp>(defOp);
-      for (Attribute e : info.encodings) {
+      for (Attribute e : legacy) {
         if ((isLoadOrStore && isa<BlockedEncodingAttr>(e)) ||
             (!isLoadOrStore && isa<MmaEncodingTrait>(e))) {
           encoding = e;
@@ -2683,9 +3162,7 @@ void LayoutPropagation::resolveConflicts() {
       continue;
     }
 
-    int64_t cvtUnitCost = 32 * getByteCount(value, 32, 32);
-    if (cvtUnitCost == 0)
-      cvtUnitCost = 1;
+    int64_t cvtUnitCost = getConvertUnitCost(value);
 
     SmallVector<std::pair<Attribute, int64_t>> candidateCosts;
     for (Attribute enc : info.encodings) {
@@ -2729,21 +3206,8 @@ void LayoutPropagation::resolveConflicts() {
     }
     info.encodings.clear();
     info.encodings.insert(bestEncoding);
-#else // __FLAGTREE_RLC_ENHANCE__
+#else  // __FLAGTREE_RLC_ENHANCE__
     Operation *op = it.first.getDefiningOp();
-    LayoutInfo &info = it.second;
-    if (info.encodings.size() <= 1)
-      continue;
-#ifdef __TLE__
-    if (!info.hardEncodings.empty()) {
-      Attribute encoding = *info.hardEncodings.begin();
-      info.encodings.clear();
-      info.encodings.insert(encoding);
-      info.hardEncodings.clear();
-      info.hardEncodings.insert(encoding);
-      continue;
-    }
-#endif
     // Hacky resolve, prefer block encoding.
     // TODO: add a proper heuristic.
     Attribute encoding = *info.encodings.begin();
@@ -2760,6 +3224,10 @@ void LayoutPropagation::resolveConflicts() {
     info.encodings.insert(encoding);
 #endif // __FLAGTREE_RLC_ENHANCE__
   }
+#ifdef __FLAGTREE_RLC_ENHANCE__
+  if (!componentCandidates.empty())
+    resolveConflictsByComponent(componentCandidates);
+#endif // __FLAGTREE_RLC_ENHANCE__
 }
 
 void LayoutPropagation::dump() {
@@ -2774,7 +3242,7 @@ void LayoutPropagation::dump() {
 #ifdef __TLE__
       if (it.second.hardEncodings.contains(encoding))
         llvm::errs() << " [hard]";
-#endif
+#endif // __TLE__
       llvm::errs() << "\n";
     }
     llvm::errs() << "--\n";
@@ -3210,7 +3678,7 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
 #ifdef __TLE__
     if (Attribute explicitEncoding = getTleExplicitResultEncoding(op, 0))
       cvt->setAttr(getTleExplicitEncodingAttrName(0), explicitEncoding);
-#endif
+#endif // __TLE__
     map(op->getResult(0), cvt.getResult());
     return cvt.getOperation();
   }
@@ -3961,6 +4429,29 @@ static bool isGlobalWritebackOp(Operation *op) {
   return false;
 }
 
+// True if the atomic lowers to vector (.v2/.v4/.v8) instructions, i.e. an fadd
+// on f16/bf16/f32 on sm90+ (see AtomicRMWOpConversion::supportsVectorized).
+// Such an atomic loses width like a store when its per-thread contiguity
+// narrows; any other atomic is element-granular. The target is parsed here
+// rather than via getNVIDIAComputeCapability, which asserts on non-CUDA
+// modules.
+static bool lowersToVectorAtomic(AtomicRMWOp atomicOp) {
+  if (atomicOp.getAtomicRmwOp() != RMWOp::FADD)
+    return false;
+  Type elementType = getElementTypeOrSelf(atomicOp.getVal().getType());
+  if (!elementType.isF16() && !elementType.isBF16() && !elementType.isF32())
+    return false;
+  auto moduleOp = atomicOp->getParentOfType<ModuleOp>();
+  auto target = moduleOp ? moduleOp->getAttrOfType<StringAttr>(AttrTargetName)
+                         : StringAttr();
+  if (!target)
+    return false;
+  StringRef ref = target.strref();
+  unsigned capability = 0;
+  return ref.consume_front("cuda:") && !ref.getAsInteger(10, capability) &&
+         capability >= 90;
+}
+
 bool LayoutRematerialization::rematerializeWritebackLayout(
     Operation *writebackOp) {
   // The written value must be produced by a convert_layout, otherwise there is
@@ -3991,11 +4482,13 @@ bool LayoutRematerialization::rematerializeWritebackLayout(
     return false;
   // Trading per-thread store width for the removed convert only pays off on a
   // hot path: a writeback inside a loop (the convert serializes every
-  // iteration) or an atomic (element-granular anyway). One-shot epilogues must
-  // keep the store's contiguity, else the decoalesced write costs more.
-  bool allowNarrowerContiguity = isa<AtomicRMWOp>(writebackOp) ||
-                                 writebackOp->getParentOfType<scf::ForOp>() ||
-                                 writebackOp->getParentOfType<scf::WhileOp>();
+  // iteration) or an element-granular atomic. One-shot epilogues must keep the
+  // store's contiguity, else the decoalesced write costs more.
+  auto atomicOp = dyn_cast<AtomicRMWOp>(writebackOp);
+  bool allowNarrowerContiguity =
+      (atomicOp && !lowersToVectorAtomic(atomicOp)) ||
+      writebackOp->getParentOfType<scf::ForOp>() ||
+      writebackOp->getParentOfType<scf::WhileOp>();
   if (!preservesWritebackMemoryAccess(ptrType, valueType, targetEncoding,
                                       allowNarrowerContiguity))
     return false;
@@ -4084,50 +4577,6 @@ bool LayoutRematerialization::rematerializeStoreLayout() {
   });
   for (Operation *op : writebacks)
     changed |= rematerializeWritebackLayout(op);
-  return changed;
-}
-
-bool LayoutRematerialization::rematerializeLocalStoreLayout(
-    LocalStoreOp storeOp) {
-  auto valueConvert = storeOp.getSrc().getDefiningOp<ConvertLayoutOp>();
-  if (!valueConvert || !hasSingleUse(valueConvert.getResult()))
-    return false;
-
-  auto targetType = dyn_cast<RankedTensorType>(valueConvert.getSrc().getType());
-  if (!targetType || !targetType.getEncoding())
-    return false;
-
-  SetVector<Value> slice;
-  DenseMap<Value, Attribute> layout;
-  if (failed(getRematerializableSlice(storeOp.getSrcMutable(),
-                                      targetType.getEncoding(), slice, layout)))
-    return false;
-  if (slice.empty())
-    return false;
-
-  for (Value value : slice) {
-    Operation *defOp = value.getDefiningOp();
-    if (!defOp || isLayoutAnchor(defOp) ||
-        isa<LocalLoadOp, LocalStoreOp, ReduceOp, ConvertLayoutOp>(defOp))
-      return false;
-  }
-
-  OpBuilder builder(storeOp);
-  auto storeSrcType = cast<RankedTensorType>(storeOp.getSrc().getType());
-  auto tmpType = storeSrcType.cloneWithEncoding(targetType.getEncoding());
-  auto tmpConvert = ConvertLayoutOp::create(builder, storeOp.getLoc(), tmpType,
-                                            storeOp.getSrc());
-  storeOp.getSrcMutable().assign(tmpConvert.getResult());
-  rewriteSlice(slice, layout, tmpConvert);
-  return true;
-}
-
-bool LayoutRematerialization::rematerializeLocalStoreLayout() {
-  bool changed = false;
-  SmallVector<LocalStoreOp> stores;
-  funcOp.walk([&](LocalStoreOp storeOp) { stores.push_back(storeOp); });
-  for (LocalStoreOp storeOp : stores)
-    changed |= rematerializeLocalStoreLayout(storeOp);
   return changed;
 }
 #endif // __FLAGTREE_RLC_ENHANCE__
@@ -4519,7 +4968,7 @@ bool backwardRematerialization(ModuleOp module) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
 // Phase 3 driver: rematerialize writeback address/mask chains in the written
 // value's layout to drop writeback conversions (see
-// rematerializeWritebackLayout and rematerializeLocalStoreLayout).
+// rematerializeWritebackLayout).
 bool rematerializeStoreLayout(ModuleOp module) {
   bool changed = false;
   // Writeback rematerialization consults the store's real address contiguity to
@@ -4531,7 +4980,6 @@ bool rematerializeStoreLayout(ModuleOp module) {
                                         &axisInfoAnalysis,
                                         /*storeLayoutRemat=*/true);
     changed |= layoutRemat.rematerializeStoreLayout();
-    changed |= layoutRemat.rematerializeLocalStoreLayout();
     layoutRemat.cleanup();
   });
   return changed;
@@ -4685,9 +5133,9 @@ class TritonGPURemoveLayoutConversionsPass
           TritonGPURemoveLayoutConversionsPass> {
 public:
 #ifdef __FLAGTREE_RLC_ENHANCE__
-  TritonGPURemoveLayoutConversionsPass() = default;
-  explicit TritonGPURemoveLayoutConversionsPass(bool enhance)
-      : rlcEnhance(enhance) {}
+  using impl::TritonGPURemoveLayoutConversionsBase<
+      TritonGPURemoveLayoutConversionsPass>::
+      TritonGPURemoveLayoutConversionsBase;
 #endif // __FLAGTREE_RLC_ENHANCE__
   // Cleanup convert ops.
   void cleanupConvertOps() {
@@ -4710,10 +5158,15 @@ public:
     ModuleOp m = getOperation();
 
 #ifdef __FLAGTREE_RLC_ENHANCE__
-    bool costBased = rlcEnhance && kEnableCostBasedResolution;
-    bool backwardProp = rlcEnhance && kEnableBackwardPropagation;
-    bool smallComponentSolving = rlcEnhance && kEnableSmallComponentSolving;
-    bool storeLayoutRemat = rlcEnhance && kEnableStoreLayoutRematerialization;
+    // Per-phase options are AND-ed with the master option. Backward-propagation
+    // and small-component solving depend on cost-based resolution (disabling it
+    // forces both off); store-layout remat is independent.
+    bool costBased = enableRlcEnhance && enableCostBasedResolution;
+    bool backwardProp = enableRlcEnhance && enableBackwardPropagation;
+    bool smallComponentSolving =
+        enableRlcEnhance && enableSmallComponentSolving;
+    bool storeLayoutRemat =
+        enableRlcEnhance && enableStoreLayoutRematerialization;
 
     if (!costBased) {
       backwardProp = false;
@@ -4837,19 +5290,6 @@ public:
       m.dump();
     });
   }
-#ifdef __FLAGTREE_RLC_ENHANCE__
-private:
-  bool rlcEnhance = false;
-#endif // __FLAGTREE_RLC_ENHANCE__
 };
-#ifdef __FLAGTREE_RLC_ENHANCE__
-// FlagTree entry point that injects the runtime master switch. The NVIDIA
-// backend calls this with FLAGTREE_RLC_ENHANCE (see passes.cc / compiler.py);
-// other callers use the plain 0-arg factory and keep the original behavior.
-std::unique_ptr<::mlir::Pass>
-createTritonGPURemoveLayoutConversionsEnhanced(bool enhance) {
-  return std::make_unique<TritonGPURemoveLayoutConversionsPass>(enhance);
-}
-#endif // __FLAGTREE_RLC_ENHANCE__
 
 } // namespace mlir::triton::gpu
