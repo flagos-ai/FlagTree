@@ -63,9 +63,12 @@ class _AmdRdnaMachine:
         self._implementation_model = implementation_model
 
     def default_ntt_options(self) -> NttTargetOptions:
-        # Single-GPU: a degenerate 1-device mesh (NVIDIA uses an 8x16 cluster).
+        # The placement is the on-chip physical block hierarchy ("bb") that tiles
+        # a megakernel across the block grid of a single GPU -- not a device mesh.
+        # It must stay non-degenerate (at least one block axis extent > 1) or the
+        # paged-attention decomposition has no block axis to split across.
         return NttTargetOptions(
-            placements=(Placement((1, 1), "yx", "bb"),),
+            placements=(Placement((8, 16), "yx", "bb"),),
             vector_lane_bytes=16,
             vector_max_axes=1,
             packing_vector_bytes=16,
