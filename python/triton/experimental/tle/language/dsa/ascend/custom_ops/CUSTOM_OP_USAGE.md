@@ -1,5 +1,18 @@
 # Ascend Custom Ops 使用说明
 
+## 两种接入机制
+
+本目录的 AscendC 算子有两种接入 Triton 的机制，定位不同：
+
+| | OP扩展框架 | 算子层面混合语言编程 |
+| --- | --- | --- |
+| 定位 | 给 Triton **扩展 custom-op 算子**的基础设施 | 在 Triton kernel 里**混写 AscendC 算子**的能力 |
+| 入口 | `tle_raw.call("ascend_<op>", ..., out=...)`，字符串名分发 | `@dialect(name="cann", file=...)` 装饰 + `tle_raw.call(op, [操作数], output_indices=...)` |
+| 算子来源 | 仓库集中注册（`registry.py`），统一编译进预编译 `custom_ops.bc` | 用户自备 AscendC 源码（ccec JIT 编译，缓存在 Triton cache）或 bitcode |
+| 视角 | "库"：调用一个已注册的库算子 | "语言"：同一份 kernel 源码里 Triton（Python）与 AscendC（C++）混写 |
+
+两种机制的 ABI 约定和 pipeline 元数据语义一致，最终都 lowering 为 `hivm.custom`。
+
 ## 目录结构
 
 ```text
@@ -35,13 +48,15 @@ custom_ops/
 
 `registry.py` 中的所有算子均引用同一个 `custom_ops.bc`。每个算子的 `.cpp` 分别用对应 ccec 架构（`dav-c220-cube` 或 `dav-c220-vec`）编译为自己的 `.bc`，再与 Template bitcode 一起 `llvm-link` 成 `custom_ops.bc`。
 
-## 调用约定
+## 调用约定（OP扩展框架）
 
-在 Triton kernel 中通过 `tle.dsa.ascend.raw` 调用：
+在 Triton kernel 中通过统一入口 `tle_raw.call` 调用，op 名带 `ascend_` 前缀：
 
 ```python
-result = tle.dsa.ascend.raw(
-    "op_name",
+import triton.experimental.tle.language.raw as tle_raw
+
+result = tle_raw.call(
+    "ascend_op_name",
     input0,
     input1,
     out=result_buffer,
@@ -51,14 +66,18 @@ result = tle.dsa.ascend.raw(
 多输出写成：
 
 ```python
-output0, output1 = tle.dsa.ascend.raw(
-    "op_name",
+output0, output1 = tle_raw.call(
+    "ascend_op_name",
     input0,
     out=[output0, output1],
 )
 ```
 
 普通位置参数对应 custom op inputs，`out=` 对应 outputs。纯输出 buffer 只应在 `out=` 中出现一次，不要同时作为普通参数重复传入。
+
+`tle_raw.call` 按第一个下划线前的后缀分发（当前支持 `ascend`），剥前缀后转发到后端
+custom op 入口，与旧写法 `tle.dsa.ascend.raw("<op_name>", ...)` 生成的 IR 完全一致；
+旧入口仍可使用，便于渐进迁移。
 
 ## 已注册算子
 
@@ -81,8 +100,8 @@ output0, output1 = tle.dsa.ascend.raw(
 ### `duplicate_bitwise_mask`
 
 ```python
-dst = tle.dsa.ascend.raw(
-    "duplicate_bitwise_mask",
+dst = tle_raw.call(
+    "ascend_duplicate_bitwise_mask",
     scalar_value,
     mask,
     repeat_times,
@@ -104,8 +123,8 @@ dst = tle.dsa.ascend.raw(
 ### `gather_gm_to_l1`
 
 ```python
-tile_k = tle.dsa.ascend.raw(
-    "gather_gm_to_l1",
+tile_k = tle_raw.call(
+    "ascend_gather_gm_to_l1",
     src,
     src_index,
     tile_size,
@@ -131,8 +150,8 @@ tile_k = tle.dsa.ascend.raw(
 ### `gather_gm_to_ub`
 
 ```python
-tile_v = tle.dsa.ascend.raw(
-    "gather_gm_to_ub",
+tile_v = tle_raw.call(
+    "ascend_gather_gm_to_ub",
     src,
     src_index,
     tile_size,
@@ -152,8 +171,8 @@ tile_v = tle.dsa.ascend.raw(
 ### `gather_mask_builtin_pattern`
 
 ```python
-[dst, rsvd_cnt] = tle.dsa.ascend.raw(
-    "gather_mask_builtin_pattern",
+[dst, rsvd_cnt] = tle_raw.call(
+    "ascend_gather_mask_builtin_pattern",
     src0,
     src1_pattern,
     reduce_mode,
@@ -182,8 +201,8 @@ tile_v = tle.dsa.ascend.raw(
 ### `gather_mask_custom_pattern`
 
 ```python
-[dst, rsvd_cnt] = tle.dsa.ascend.raw(
-    "gather_mask_custom_pattern",
+[dst, rsvd_cnt] = tle_raw.call(
+    "ascend_gather_mask_custom_pattern",
     src0,
     src1_pattern,
     reduce_mode,
@@ -212,8 +231,8 @@ tile_v = tle.dsa.ascend.raw(
 ### `pair_reduce_sum_continuous_mask`
 
 ```python
-dst = tle.dsa.ascend.raw(
-    "pair_reduce_sum_continuous_mask",
+dst = tle_raw.call(
+    "ascend_pair_reduce_sum_continuous_mask",
     src,
     repeat_times,
     mask,
@@ -237,8 +256,8 @@ dst = tle.dsa.ascend.raw(
 ### `sort32`
 
 ```python
-dst = tle.dsa.ascend.raw(
-    "sort32",
+dst = tle_raw.call(
+    "ascend_sort32",
     src0,
     src1,
     repeat_times,
@@ -256,8 +275,8 @@ dst = tle.dsa.ascend.raw(
 ### `sort_1d_pack`
 
 ```python
-proposals = tle.dsa.ascend.raw(
-    "sort_1d_pack",
+proposals = tle_raw.call(
+    "ascend_sort_1d_pack",
     src,
     tmp_buf,
     descending,
@@ -306,8 +325,8 @@ seg_len == 4096 且 K == 2048      → S4096_K1_128_K2048
 ### `merge_exhaust_sort4`
 
 ```python
-out_buf, consumed = tle.dsa.ascend.raw(
-    "merge_exhaust_sort4",
+out_buf, consumed = tle_raw.call(
+    "ascend_merge_exhaust_sort4",
     src_proposals,
     ways,
     off0, off1, off2, off3,
@@ -328,8 +347,8 @@ out_buf, consumed = tle.dsa.ascend.raw(
 ### `mrgsort`
 
 ```python
-dst = tle.dsa.ascend.raw(
-    "mrgsort",
+dst = tle_raw.call(
+    "ascend_mrgsort",
     src_proposals,
     off0,
     off1,
@@ -359,8 +378,8 @@ dst = tle.dsa.ascend.raw(
 ### `unpack_sort`
 
 ```python
-values, indices = tle.dsa.ascend.raw(
-    "unpack_sort",
+values, indices = tle_raw.call(
+    "ascend_unpack_sort",
     src_proposals,
     topk,
     out=[values, indices],
@@ -467,6 +486,52 @@ values = tle.dsa.ascend.raw("cast_int4_to_fp16", packed, 0, 2 * N, out=values)  
 `python python/tutorials/tle/custom/test_cast_ops.py`，也已接入
 `test_custom_ops.py`。测试包含全部字节编码、不同块大小和参数校验，以及
 4096 字节 tile 与 Triton `tl.interleave` 拆 nibble 再 `.to(tl.float16)` 的耗时对比。
+
+## @dialect(name="cann")：算子层面混合语言编程
+
+除上面的 OP扩展框架 字符串注册表入口外，用户自备的 AscendC 源码/bitcode 可通过
+TLE Raw 抽象（`triton.experimental.tle.raw.dialect`）接入，实现算子层面的混合
+语言编程。调用形态与 GPU 侧 `@dialect(name="cuda"/"mlir")` 一致，但混写粒度
+不同：GPU 上可做到 kernel 级混写（如 MLIR EDSL 整段内联为 kernel 的计算
+region）；Ascend 上 ccec 产物是私有 aicore target 的 bitcode，无法走
+`tle.dsl_region` 内联路径，只能在单个算子粒度上以 extern function 形式混入：
+
+```python
+from triton.experimental.tle.raw import dialect
+import triton.experimental.tle.language.raw as tle_raw
+
+# 方式一：format="bitcode"，直接引用预编译 custom_ops.bc
+@dialect(
+    name="cann",
+    format="bitcode",                                    # 省略则默认输入为源码
+    file=CUSTOM_OPS_DIR / "custom_ops.bc",               # bitcode 文件路径
+    extern_func_name="custom_gather_gm_to_ub_half",      # .bc 内的导出符号名
+    pipeline={"core": "vector", "pipe": "PIPE_MTE2"},    # 结构化 pipeline 元数据
+)
+def gather_gm_to_ub_bc(*args, **kwargs):
+    ...
+
+# 方式二：省略 format，同一算子改由 AscendC 源码接入，首次调用时由 ccec
+# JIT 编译为 bitcode 并缓存在 ~/.triton/cache 下；vector core 对应 ccec
+# 目标 dav-c220-vec
+@dialect(
+    name="cann",
+    file=CUSTOM_OPS_DIR / "mem_ops" / "gather_gm_to_ub.cpp",
+    extern_func_name="custom_gather_gm_to_ub_half",
+    pipeline={"core": "vector", "pipe": "PIPE_MTE2"},
+)
+def gather_gm_to_ub(*args, **kwargs):
+    ...
+
+@triton.jit
+def gather_kernel(src, src_index, dst, TILE_SIZE: tl.constexpr, D: tl.constexpr):
+    ...
+    # 导出函数 ABI 为 (src, index, tile_size, D, dst)，输出参数殿后，
+    # dst 对应 output_indices=[4]；传 gather_gm_to_ub_bc 或 gather_gm_to_ub
+    # 均可，二者生成相同的 custom op IR
+    dst = tle_raw.call(gather_gm_to_ub, [src, src_index, TILE_SIZE, D, dst],
+                       output_indices=[4])
+```
 
 ## Toolchain requirement
 

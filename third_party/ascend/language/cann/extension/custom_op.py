@@ -315,6 +315,31 @@ def custom_semantic(name: str, *args, _semantic=None, **kwargs):
     return _to_result(res, res_types)
 
 
+def custom_object_semantic(op, args, output_indices=(), _semantic=None):
+    """Create a custom op from a pre-built op-like object.
+
+    Unlike custom_semantic, this entry takes an already-constructed object
+    exposing the custom-op attributes (core / pipe / mode / symbol / bitcode,
+    e.g. a @dialect(name="cann") CANNJITFunction) instead of a registry name.
+    ``args`` is the full operand list in call order; ``output_indices`` marks
+    the output/aliased operands by position. Operands are regrouped into
+    hivm.custom's inputs/outputs ranges, so the exported extern function is
+    expected to take the non-output arguments in order first and the output
+    arguments last.
+    """
+    args = _unwrap_constexpr(list(args))
+    output_indices = set(_unwrap_constexpr(list(output_indices)))
+    outs = [value for index, value in enumerate(args) if index in output_indices]
+    ins = [value for index, value in enumerate(args) if index not in output_indices]
+    outputs = _to_operands(outs, _semantic)
+    inputs = _to_operands(ins, _semantic)
+    builder = getattr(_semantic.builder, '_ascend_builder')
+    attrs = _make_attrs(op, builder)
+    res = builder.create_custom_op(op.name, attrs, inputs, outputs, [])
+    res_types = [out.type for out in outs]
+    return _to_result(res, res_types)
+
+
 @core.builtin
 def custom(name: str, *args, _semantic=None, **kwargs):
     """Invoke a custom operation with the given name and arguments."""
