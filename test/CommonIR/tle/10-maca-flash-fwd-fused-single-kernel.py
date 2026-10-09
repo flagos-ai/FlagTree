@@ -7,7 +7,7 @@ Unlike the Gluon arena, Q/K/V/O use separate buffers: physical memory reuse
 is left to the compiler. Supports FP16/BF16, D64/D128 and bottom-right causal
 masking, including unequal or non-tile-aligned query/key lengths.
 
-    MACA_VISIBLE_DEVICES=6 python test/CommonIR/metax/10-maca-flash-fwd-fused-single-kernel.py
+    MACA_VISIBLE_DEVICES=6 python test/CommonIR/tle/10-maca-flash-fwd-fused-single-kernel.py
 """
 
 import argparse
