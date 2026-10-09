@@ -32,7 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SPACEMIT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FLAGTREE_ROOT="$(cd "${SPACEMIT_DIR}/../.." && pwd)"
 PATCH_FILE="${SPACEMIT_DIR}/patch/flagtree.patch"
-PATCH_EXCLUDES=""
+PATCH_EXCLUDES=()
 # PATCH_EXCLUDES=(--exclude=python/setup_tools/utils/spacemit.py)
 
 echo "[spacemit] FlagTree root : ${FLAGTREE_ROOT}"
