@@ -21,7 +21,10 @@ def compilation_options(contract: ResourceContract, target: str = "nvidia-sm90")
         if stages < 1 or stages > 8:
             raise ValueError(f"FLAGMEGA_NUM_STAGES must be in [1, 8], got {stages}")
         options["num_stages"] = stages
-    if target != "iluvatar-bi-v150":
+    # The ptxas occupancy flag (--minnctapersm) is NVIDIA-only; COREX has no
+    # equivalent and the AMD/RDNA backend rejects it. RDNA compiles correctly
+    # with just the warp count (occupancy tuning is a later performance pass).
+    if target != "iluvatar-bi-v150" and not target.startswith("amd-"):
         options["ptx_options"] = f"--minnctapersm={contract.resident_blocks_per_sm}"
     # BI-V150 does not implement the CUDA cooperative-launch admission API.
     # Its grid barriers use the backend global-atomic protocol and ordinary

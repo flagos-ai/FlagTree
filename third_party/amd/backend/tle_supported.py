@@ -6,6 +6,9 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.local_ptr",
     # FlagMega-on-Radeon primitives with RDNA lowerings:
     "device_mesh",
+    # shard_id on a block/grid launch mesh lowers to plain tl.program_id + integer
+    # math (no tle op), so it is portable to RDNA with no backend lowering.
+    "shard_id",
     "distributed_barrier",
     "pipe",
     "pipe.reader",

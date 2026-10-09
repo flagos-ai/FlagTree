@@ -84,6 +84,18 @@ def _resource_contract(codegen, target, *, requires_grid_wide_sync: bool = False
             # a future kernel change) will still raise.
             spill_tolerance_bytes=128,
         )
+    if target.startswith("amd-"):
+        # RDNA register allocation differs from ptxas; a small spill does not
+        # affect correctness, so the no-spill residency gate is NVIDIA-only for
+        # this bring-up (occupancy tuning is a later performance pass). The
+        # RDNA assembler also reports only the aggregate n_spills count, not
+        # ptxas' per-function stack/spill breakdown.
+        return ResourceContract(
+            compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
+            requires_grid_wide_sync=requires_grid_wide_sync,
+            forbid_spills=False,
+            reports_ptxas_resource_fields=False,
+        )
     return ResourceContract(
         compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
         requires_grid_wide_sync=requires_grid_wide_sync,
@@ -1347,6 +1359,12 @@ def _validate_artifact_device(torch, device: str, target: object) -> None:
     target = str(target or "")
     if not device.startswith("cuda") or not torch.cuda.is_available():
         raise RuntimeContractError(f"Executable target {target!r} requires a CUDA-compatible device, got {device!r}.")
+    # ROCm/HIP GPUs report through the "cuda" device namespace; the capability
+    # contract for RDNA is a HIP-build check, not a fixed compute capability.
+    if target.startswith("amd-"):
+        if getattr(torch.version, "hip", None) is None:
+            raise RuntimeContractError(f"Artifact target {target!r} requires a ROCm/HIP torch build.")
+        return
     capability = tuple(torch.cuda.get_device_capability(torch.device(device)))
     expected = {"nvidia-sm90": (9, 0), "nvidia-sm120": (12, 0), "iluvatar-bi-v150": (7, 1)}.get(target)
     if expected is None:
