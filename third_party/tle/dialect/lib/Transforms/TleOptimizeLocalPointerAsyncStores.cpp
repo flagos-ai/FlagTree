@@ -309,8 +309,7 @@ static bool canInterleaveBeforeGroupedWait(Operation *op) {
   return false;
 }
 
-static bool
-markPipeCommitsForAsyncCopies(ArrayRef<AsyncStoreCandidate *>) {
+static bool markPipeCommitsForAsyncCopies(ArrayRef<AsyncStoreCandidate *>) {
   // 3.5 has no tle.pipe_writer_commit, so copies always take the explicit
   // async_commit_group + async_wait path below.
   return false;

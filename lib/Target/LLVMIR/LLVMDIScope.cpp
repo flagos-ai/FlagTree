@@ -144,10 +144,12 @@ struct LLVMDIScopePass : public impl::LLVMDIScopeBase<LLVMDIScopePass> {
     if (fileLine.getLine() == 0)
       fileLine = FileLineColLoc::get(StringAttr::get(ctx, "<unknown>"), 1, 1);
     StringRef inputFilePath = fileLine.getFilename().getValue();
-    auto fileAttr = LLVM::DIFileAttr::get(ctx, llvm::sys::path::filename(inputFilePath),
-                                          llvm::sys::path::parent_path(inputFilePath));
-    auto lexicalBlock = LLVM::DILexicalBlockFileAttr::get(ctx, scopeAttr, fileAttr,
-                                                          /*discriminator=*/0);
+    auto fileAttr =
+        LLVM::DIFileAttr::get(ctx, llvm::sys::path::filename(inputFilePath),
+                              llvm::sys::path::parent_path(inputFilePath));
+    auto lexicalBlock =
+        LLVM::DILexicalBlockFileAttr::get(ctx, scopeAttr, fileAttr,
+                                          /*discriminator=*/0);
     op->setLoc(FusedLoc::get(ctx, {fileLine}, lexicalBlock));
   }
 
