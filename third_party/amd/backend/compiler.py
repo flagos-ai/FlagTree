@@ -323,6 +323,10 @@ class HIPBackend(BaseBackend):
         passes.gluon.add_inliner(pm)
         passes.convert.add_index_to_llvmir(pm)
 
+        # Assign global (device-memory) scratch offsets before the function
+        # conversion adds the global_scratch argument; the grid distributed_barrier
+        # counter lives in this scratch.
+        passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         amd.passes.ttgpuir.add_allocate_shared_memory(pm)
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         if HIPBackend.instrumentation:
@@ -453,6 +457,8 @@ class HIPBackend(BaseBackend):
 
         # Get some metadata
         metadata["shared"] = src.get_int_attr("ttg.shared")
+        metadata["global_scratch_size"] = src.get_int_attr("ttg.global_scratch_memory_size") or 0
+        metadata["global_scratch_align"] = src.get_int_attr("ttg.global_scratch_memory_alignment") or 1
         metadata["profile_scratch_size"] = src.get_int_attr("ttg.profile_scratch_memory_size") or 0
         metadata["profile_scratch_align"] = src.get_int_attr("ttg.profile_scratch_memory_alignment") or 1
 
