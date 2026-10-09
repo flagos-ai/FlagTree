@@ -15,8 +15,8 @@ FlagTree should let a Triton kernel work with **custom data structures that are
 defined in C** and are shared with the surrounding software stack (C/C++ and
 Python). The concrete goal is to take a small C struct such as Meta's MTIA
 `TensorView` (tensor metadata: shape, strides, base pointer, rank), hand it to a
-kernel **by reference**, and read its fields inside the kernel — with the kernel
-and the host seeing exactly the same bytes in memory.
+kernel **by reference**, and read — or write — its fields inside the kernel,
+with the kernel and the host seeing exactly the same bytes in memory.
 
 Today Triton cannot do this. Its only nearby feature, `@triton.language.core._aggregate`,
 models Python objects whose fields are Triton values. It has no concept of a C
@@ -28,23 +28,24 @@ This document specifies the following design:
    - `!tt.struct<{...}, #layout>` — a C-style record whose **byte layout**
      (field offsets, total size, alignment) is recorded explicitly in the type.
    - `!tt.array<T, N>` — a fixed-size C array of `N` elements of type `T`.
+   Both types are used **only as the target of a pointer** (or as a field nested
+   inside another struct). They are never SSA values. A struct is always
+   accessed through a pointer to it.
 2. **A Python-facing API built on `ctypes`.** A user declares a struct with the
    familiar `ctypes.Structure` syntax and marks it with `@tl.struct_type`. Field
    access (`x_view.base`), nested structs, and array fields (`x_view.shape[0]`)
-   all work inside a `@triton.jit` kernel.
-3. **A small, fixed set of IR operations** to read/write fields and elements,
-   plus the ability to load/store a whole struct or array.
-4. **An "early lowering" strategy.** The new types are first-class in the
-   frontend and in early Triton IR. A single shared compiler pass then
-   **removes them entirely** before any backend-specific lowering begins. This
-   pass turns struct/array values into ordinary scalar values and turns
-   field/element access into byte-offset address arithmetic plus normal
-   loads/stores. As a result, no backend — including Ascend — needs to learn
-   about the new types.
+   all work inside a `@triton.jit` kernel, and fields can be written.
+3. **Two new IR operations** to compute the address of a struct field or an
+   array element. Reading and writing a field or element then uses Triton's
+   existing scalar/pointer load and store.
+4. **A minimal early-lowering pass.** Because structs and arrays never exist as
+   values, the only thing to lower is address computation: each new operation is
+   rewritten into ordinary byte-offset address arithmetic. The new types then
+   disappear. There is **no** scalar-replacement of aggregates, no rewriting of
+   control flow, and no aggregate load/store.
 5. **A host-side wrapper object** (`StructView`, produced by `tl.to_device`)
-   that pairs a `ctypes` type with a device buffer. In the first version, structs
-   cross the kernel launch boundary **by reference (as a pointer)**; by-value
-   structs are available for in-kernel and device-function use.
+   that pairs a `ctypes` type with a device buffer. Structs cross the kernel
+   launch boundary **by reference (as a pointer)**.
 
 **Why early lowering matters:** the Ascend backend does not use Triton's common
 GPU-to-LLVM lowering path. It lowers kernels through its own passes into
@@ -52,7 +53,15 @@ Huawei's "HIVM" intermediate representation and then into a proprietary
 `bishengir` compiler toolchain. Teaching that toolchain about brand-new types is
 risky and expensive. Removing the new types *before* those passes keeps the
 feature backend-agnostic, small, and low-risk, while still giving the frontend
-and the IR a real, checkable type.
+and the early IR a real, checkable type.
+
+**Why reference-only is enough:** the motivating use case passes a metadata
+structure to a kernel by pointer and reads (or updates) its fields. Supporting
+structs as first-class SSA values would additionally require scalar replacement
+of aggregates, value-manipulation operations, whole-aggregate loads/stores, and
+rewriting of control flow and function calls — a much larger change. Those
+capabilities are not needed here and are explicitly out of scope for the first
+version (see §15).
 
 ---
 
@@ -84,10 +93,10 @@ alternatives that were considered. It assumes no prior discussion.
 | **MLIR** | The multi-level IR framework Triton is built on. |
 | **SSA** | Static single assignment: every value is assigned exactly once, which is how MLIR represents data flow. |
 | **Lowering** | Translating a program from a higher-level IR to a lower-level one, gradually removing abstraction. |
-| **SROA** | "Scalar replacement of aggregates": replacing a struct/array value with its individual fields/elements. |
 | **GEP** | "Get element pointer": address arithmetic that computes the address of a field or element. |
 | **ABI** | Application binary interface: the concrete rules for how values are passed between caller and callee (host and kernel). |
 | **ctypes** | Python's standard library module for defining C-compatible data types (e.g. `ctypes.Structure`, `ctypes.c_uint64`). |
+| **Pointer pointee** | The type that a pointer points at. For example, in `!tt.ptr<!tt.struct<...>>` the pointee is the struct. |
 | **HIVM** | Huawei's intermediate representation used by the Ascend backend. |
 | **bishengir** | Ascend's proprietary compiler toolchain that consumes HIVM. |
 | **TritonGPU / TTGIR** | Triton's GPU-specific dialect, used by the CUDA/AMD backends between Triton IR and LLVM. Ascend does **not** use it. |
@@ -120,36 +129,38 @@ class TensorView(ctypes.Structure):
     ]
 
 @triton.jit
-def example_kernel(x_view):        # x_view arrives as a pointer to a TensorView
+def example_kernel(x_view):        # x_view is a pointer to a TensorView
     base  = x_view.base            # read a field
     n     = x_view.ndim
     s0    = x_view.shape[0]        # read an array element
+    x_view.ndim = n - 1            # write a field (mutation)
     ...
 ```
 
 The host creates a `TensorView` (in Python or C++), uploads its bytes to device
 memory, and launches the kernel with a pointer to those bytes. Because both
-sides agree on the C layout, the kernel reads the correct fields.
+sides agree on the C layout, the kernel reads and writes the correct fields.
 
 ### 2.1 Goals
 
 - Define C-layout structs and arrays in Triton and share their **exact bytes**
   with host C++/Python.
-- Support both **value semantics** (a struct as a normal SSA value, usable in
-  device functions and control flow) and **reference semantics** (a pointer to a
-  struct, with field reads and writes).
+- Support **reference semantics**: a pointer to a struct, with field reads and
+  writes. Structs are always accessed through a pointer.
 - Support nested structs and fixed-size arrays.
-- Keep the compiler change confined to the frontend plus one shared lowering
-  pass; do not modify Ascend's HIVM/`bishengir` pipeline.
+- Keep the compiler change confined to the frontend plus one small shared
+  lowering pass; do not modify Ascend's HIVM/`bishengir` pipeline.
 
 ### 2.2 Non-goals (first version)
 
+- **Value semantics**: a struct as a normal SSA value, usable as a
+  device-function return or a loop-carried variable. (See §15.)
+- Passing a struct **by value** as a kernel launch argument (the first version
+  passes structs to kernels by reference only).
 - C unions, bitfields, function pointers, `long double`, complex numbers.
 - Platform-dependent integer types (`c_long`, `c_ulong`, `c_size_t`,
   `c_ssize_t`) and ambiguous character types (`c_char`, `c_wchar`, `c_char_p`,
   `c_wchar_p`).
-- Passing a struct **by value** as a kernel launch argument (the first version
-  passes structs to kernels by reference only).
 - Merging with, or deprecating, the existing `_aggregate` feature.
 - Keeping the new types alive all the way down to LLVM/HIVM (see
   §15, "Alternatives considered").
@@ -170,7 +181,7 @@ its own SSA value. It has two limitations that matter here:
 - It has no notion of a byte representation, so it cannot be shared with C.
 - It works for device functions but not as a kernel launch argument.
 
-Keeping it unchanged is an explicit decision (§5, "Existing `_aggregate`").
+Keeping it unchanged is an explicit decision (§5.5, "Existing `_aggregate`").
 
 ### 3.2 How a kernel argument gets its type
 
@@ -229,15 +240,15 @@ summarizes why it was chosen.
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Semantics | Support **both** value and reference semantics | The motivating use case needs by-reference passing; value semantics are needed for device functions and control flow. |
+| Semantics | **Reference only**: a struct is always accessed through a pointer | Covers the motivating use case; avoids the large machinery needed for value semantics. |
+| Mutability | Field **writes** are supported | In the reference model a write is just a store to a computed address, so it costs almost nothing and supports "exchange" with the host. |
 | Memory layout | Store an **explicit byte layout** in the type | The C/`ctypes` layout is authoritative for sharing memory; a target's own layout rules may differ silently. |
 | Type identity | **Structural**: identity is (field names, field types, layout) | Types must be reconstructible from a signature string, which has no access to the defining Python class. |
 | Field types | **Basic C types only** (plus nesting and arrays) | Keeps the feature well-scoped; every field maps to a Triton scalar/pointer/composite. |
 | Composition | Nested structs (inline) and fixed-size arrays | The motivating `TensorView` requires array fields. |
-| Struct as a value | A struct is a **single IR value**, not field-flattened | Lets existing control-flow and function-call machinery carry structs unchanged. |
-| Arrays as a value | Add a full first-class `!tt.array` type | Needed for array fields inside value structs and whole-array load/store. |
-| Operations | A small fixed op set for field/element access and whole-struct/array load/store | Minimal surface; easy to verify; lowers to ordinary operations. |
-| Lowering strategy | **Early lowering**: first-class in the frontend/early IR, removed by a shared pass | Ascend cannot consume the types downstream; avoids touching HIVM/`bishengir`. |
+| Type position | Struct and array types appear **only as pointer pointees** or nested fields | They are never SSA values, which removes all value-manipulation machinery. |
+| Operations | **Two new ops**: `tt.struct_gep` and `tt.array_gep`; reads/writes use existing load/store | Minimal surface; easy to verify; lowers to ordinary address arithmetic. |
+| Lowering strategy | **Early lowering**: a small shared pass rewrites the new ops and removes the types | Ascend cannot consume the types downstream; avoids touching HIVM/`bishengir`. |
 | Code placement | A **shared frontend module** for both `core.py` copies | Avoids divergence between the main and Ascend frontends. |
 | Kernel boundary | Structs cross the kernel boundary **by reference** in v1 | Matches the use case; avoids inventing a by-value C-struct launch ABI. |
 | Host API | A `StructView` wrapper plus `tl.to_device` | The kernel needs the struct type, which a bare pointer would not convey. |
@@ -248,17 +259,20 @@ summarizes why it was chosen.
 
 ## 5. Type-system decisions in detail
 
-### 5.1 Value and reference semantics
+### 5.1 Reference semantics and mutability
 
-A struct can appear in two forms:
+In this design a struct is always addressed through a pointer:
+`!tt.ptr<!tt.struct<...>>`. Reading a field loads from memory at a known byte
+offset; writing a field stores to it. This is exactly what is needed to share a
+C metadata structure with a kernel.
 
-- **By value**, as an SSA value of type `!tt.struct<...>`. This is useful for
-  device functions that take or return a struct, and for loop-carried variables.
-- **By reference**, as a pointer `!tt.ptr<!tt.struct<...>>`. Reading a field
-  loads from memory at a known offset; writing a field stores to it.
-
-Both are supported. The paper's use case ("passing them by reference") is the
-by-reference form.
+Value semantics — where a struct is itself an SSA value that can be returned
+from a device function, carried by a loop, or copied as a whole — are
+intentionally **not** supported in the first version. Adding them would require
+scalar replacement of aggregates, value-manipulation operations, whole-aggregate
+loads/stores, and rewriting of function calls and control flow. The motivating
+use case does not need any of that, so omitting it removes a large amount of
+compiler machinery (see §15).
 
 ### 5.2 Explicit memory layout
 
@@ -327,18 +341,18 @@ purposes and remain independent.
 
 ```
               ┌──────────────── shared frontend module ─────────────────┐
-  @tl.struct_type ──▶ struct_type / array_type + values + ops + host API   │
+  @tl.struct_type ──▶ struct_type / array_type + address ops + host API    │
               │      (python/triton/language/_custom_types.py)            │
               └──────────────────────────────────────────────────────────┘
                       │ imported by both core.py copies
                       ▼
-   Triton IR: `!tt.struct` / `!tt.array` first-class SSA values + new ops
-                      │
-        ┌─────────────┴───────────────────────────────┐
+   Triton IR: pointer types `!tt.ptr<!tt.struct<...>>` / `!tt.ptr<!tt.array<...>>`
+                      │  with `tt.struct_gep` / `tt.array_gep` address ops
+                      ▼
+        ┌─────────────────────────────────────────────┐
         │        shared `tt-lower-structs` pass        │
-        │  • scalarize aggregate values (SROA)         │
-        │  • pointer field access → byte addptr         │
-        │  • aggregate load/store → field-wise          │
+        │  • struct_gep / array_gep → byte `addptr`     │
+        │  • ptr<struct> / ptr<array> → opaque pointer  │
         └─────────────┬───────────────────────────────┘
                       │  (aggregate types fully removed)
         ┌─────────────┴─────────────┐
@@ -346,6 +360,10 @@ purposes and remain independent.
   Ascend passes → HIVM        (future) TritonGPU → LLVM
   → bishengir (unmodified)
 ```
+
+Because structs are never values, there is no data to scalarize and no
+control-flow or call rewriting to perform: the pass only rewrites address
+computations and pointer types.
 
 ### 6.1 Shared frontend module
 
@@ -380,9 +398,17 @@ this feature.
   exact encoding is a minor implementation choice, as long as it is explicit and
   verifiable.)
 
+These types appear in only two positions:
+
+- as the pointee of a pointer, e.g. `!tt.ptr<!tt.struct<...>>` (a struct passed
+  by reference) or `!tt.ptr<!tt.array<...>>`; and
+- as a field of another struct, e.g. a nested struct field or an array field.
+
+They are **never** SSA values. In particular, there is no "load a whole struct"
+operation; instead, individual fields are loaded and stored.
+
 Both types are defined in `TritonTypes.td`, following the existing patterns for
-the pointer type and the tensor-descriptor type, and are added to the set of
-types that generic Triton operations understand (`TT_Type`).
+the pointer type and the tensor-descriptor type.
 
 ### 7.2 Signature strings
 
@@ -427,7 +453,8 @@ The `@tl.struct_type` decorator:
 
 ### 8.2 Using a struct inside a kernel
 
-By reference (the kernel parameter is a pointer to the struct):
+The kernel parameter is a pointer to the struct. Fields are read and written
+through it:
 
 ```python
 @triton.jit
@@ -435,15 +462,15 @@ def example(x_view):              # pointer to a TensorView
     base = x_view.base           # read a field
     n    = x_view.ndim
     s0   = x_view.shape[0]       # read an array element
+    x_view.ndim = n - 1          # write a field
+    x_view.shape[0] = s0 + 1     # write an array element
     ...
 ```
 
-By value (for device functions and in-kernel values):
+Nested structs are accessed by chaining field accesses:
 
 ```python
-@triton.jit
-def use_value(v):                 # v is a struct value
-    return v.ndim
+    inner = x_view.meta.inner     # address arithmetic through nested fields
 ```
 
 ### 8.3 Using a struct from the host
@@ -466,32 +493,41 @@ passing.
 ### 8.4 Public surface
 
 - `tl.struct_type` — the decorator.
-- `tl.array_type` — construct `!tt.array` types directly (optional).
 - `tl.to_device(instance) -> StructView` — upload a host struct to device memory.
 - `StructView` — the host wrapper type.
+
+Array fields are declared with ordinary `ctypes` syntax (`T * N`), so no separate
+public array helper is required.
 
 ---
 
 ## 9. IR operations
 
+Only two new operations are introduced. Both compute an address; the actual read
+or write is performed by Triton's existing `tt.load` and `tt.store`.
+
 | Operation | Meaning | Lowered form (after the pass) |
 |---|---|---|
-| `tt.struct_extract` | read a named field of a struct value | field selection |
-| `tt.struct_insert` | produce a new struct value with one field replaced | re-pairing of fields |
 | `tt.struct_gep` | address of a named field through a struct pointer | `tt.addptr` by the field's byte offset |
-| `tt.array_extract` | read element `i` of an array value | direct select (static index) or select chain (dynamic) |
-| `tt.array_insert` | produce a new array value with element `i` replaced | re-pairing of elements |
 | `tt.array_gep` | address of element `i` through an array pointer | byte `addptr` by `i * sizeof(T)` |
-| `tt.load` / `tt.store` | load/store a whole struct or array | field-wise / element-wise access |
 
-**Dynamic indexing of an array value** (i.e. indexing by a runtime value inside
-a value struct) is lowered to a chain of `extractvalue` + `select` operations,
-which is acceptable because C arrays are small. Indexing through a pointer
-(reference form) uses byte arithmetic and supports dynamic indices directly.
+For example, reading `x_view.shape[i]`:
 
-**Operations not permitted on structs or arrays:** arithmetic, comparisons,
-reductions/scans, `select`/`where`, bitcasts, masked load/store, and pointer
-casts between unrelated struct types.
+```
+%p0 = tt.struct_gep %x_view["shape"] : !tt.ptr<!tt.struct<...>> -> !tt.ptr<!tt.array<i64,4>>
+%p1 = tt.array_gep  %p0[%i]          : !tt.ptr<!tt.array<i64,4>> -> !tt.ptr<i64>
+%v  = tt.load %p1 : !tt.ptr<i64>
+```
+
+A write uses the same address computation followed by `tt.store`. Dynamic
+indices (a runtime `i`) are naturally supported because `tt.array_gep` performs
+byte-offset arithmetic; there is no need for select chains or scalarization.
+
+**Operations not permitted with struct or array types:** arithmetic,
+comparisons, reductions/scans, `select`/`where`, bitcasts, masked loads/stores,
+and pointer casts between unrelated struct types. Struct and array types are
+also not allowed as the element type of a Triton tensor or as function
+arguments/results by value.
 
 ### 9.1 Type verification rules
 
@@ -503,31 +539,30 @@ The compiler verifies the following for every `!tt.struct`:
 - each field's offset is a multiple of that field's alignment;
 - the struct's alignment is the maximum of its fields' alignments, and its size
   is a multiple of its alignment;
+- an array's element count is at least 1;
 - a struct may not contain itself by value (that would be infinitely large);
-  self-reference is allowed only through a pointer;
-- an array's element count is at least 1.
+  self-reference is allowed only through a pointer.
 
 ---
 
 ## 10. The `tt-lower-structs` lowering pass
 
-A single shared Triton IR pass removes the new types before backend-specific
+A small shared Triton IR pass removes the new types before backend-specific
 lowering. It is registered as `triton-lower-structs` and lives in
 `lib/Dialect/Triton/Transforms/LowerStructs.cpp`.
 
-It performs four jobs:
+It performs two jobs:
 
-1. **Scalarize aggregate values.** Each `!tt.struct` value becomes its
-   constituent fields; each `!tt.array` value becomes its elements. The
-   field/element access operations are rewritten accordingly.
-2. **Lower aggregate pointers.** `tt.struct_gep` becomes `tt.addptr` by the
-   field's byte offset; `tt.array_gep` becomes a byte `tt.addptr`. Whole-struct
-   and whole-array loads/stores become field-wise or element-wise loads/stores.
-3. **Rewrite structural control flow.** Aggregate operands are expanded wherever
-   values flow across a boundary: function signatures, function calls,
-   `scf.for` loop-carried values, `scf.if`/`scf.while` results and yields, and
-   function returns.
-4. **Verify elimination.** The pass fails if any struct or array type remains.
+1. **Rewrite address computations.** Each `tt.struct_gep` becomes a `tt.addptr`
+   by the field's byte offset; each `tt.array_gep` becomes a byte `tt.addptr`.
+2. **Rewrite pointer types and verify elimination.** Pointer types whose pointee
+   is a struct or array are rewritten to an opaque pointer type (e.g.
+   `!tt.ptr<i8>`), and the pass fails if any struct or array type remains.
+
+Because structs and arrays are never SSA values, the pass does **not** need to
+scalarize values, rewrite function signatures or calls, or touch `scf.for` /
+`scf.if` loop-carried values or function returns. Those operations only carry
+pointers, which are already ordinary values.
 
 The pass is inserted at the end of `make_ttir` for Ascend (before the Ascend
 passes begin) and, for future backends, before the GPU conversion. After it
@@ -551,12 +586,11 @@ runs, no backend ever sees the new types.
 
 ### 11.2 Other backends (future, not in the first version)
 
-If first-class structs are later wanted all the way to LLVM on the CUDA/AMD
-backends, the common GPU-to-LLVM type converter would need cases mapping
-`!tt.struct` to `!llvm.struct` and `!tt.array` to `!llvm.array`, with care taken
-to preserve the explicit layout (for example, by verifying the LLVM layout
-against the recorded offsets and inserting padding if they differ). This is
-explicitly out of scope for the first version.
+Because the new types are removed before backend-specific lowering, no backend
+needs to learn about them. If value semantics are added later (§15), keeping
+struct values all the way to LLVM on the CUDA/AMD backends would require
+additional type conversions (`!tt.struct` → `!llvm.struct`, `!tt.array` →
+`!llvm.array`) in the common GPU-to-LLVM path. That is out of scope here.
 
 ### 11.3 Layout correctness
 
@@ -576,7 +610,7 @@ compiler adds two safety checks:
 |---|---|---|
 | 0 | Shared frontend module: `ctypes` mapping, layout computation, `struct_type`/`array_type`, decorator, signature serialization, `StructView`/`to_device` | `python/triton/language/_custom_types.py`; imports in both `core.py` copies |
 | 1 | Python plumbing: allow `pointer_type` to point at composite types; extend `str_to_ty`; add the `StructView` case to `specialize_impl` | `core.py`, `language/__init__.py`, `runtime/jit.py`, `spec/ascend/runtime/jit.py` |
-| 2 | C++ types and operations, verification rules, Python builder bindings | `TritonTypes.td`, `Types.h/.cpp`, `TritonOps.td`, `Ops.cpp`, `python/src/ir.cc` |
+| 2 | C++ types and the two address operations, verification rules, Python builder bindings | `TritonTypes.td`, `Types.h/.cpp`, `TritonOps.td`, `Ops.cpp`, `python/src/ir.cc` |
 | 3 | The `tt-lower-structs` pass and its registration | `Passes.td`, `LowerStructs.cpp`, `python/src/passes.cc`, Ascend `make_ttir` |
 | 4 | Ascend host/runtime wiring; interpreter behavior | `third_party/ascend/backend/driver.py` (verify pointer path), `spec/ascend/runtime/interpreter.py` |
 | 5 | Tests and documentation | `python/test/unit/language/...`, pass tests, end-to-end test |
@@ -584,13 +618,12 @@ compiler adds two safety checks:
 **Recommended order (vertical slices)**
 
 1. **Slice 1 — by-reference, scalar fields.** Implement all phases for structs
-   with scalar fields only, and get one Ascend kernel reading `x_view.base`
-   working end to end. This proves the whole chain before adding breadth.
-2. **Slice 2 — arrays and nesting.** Add `array_type`, `array_gep`/`array_extract`,
-   nested structs, and `TensorView.shape[0]`.
-3. **Slice 3 — value structs and control flow.** Add SROA, `scf.for`, calls and
-   returns, and `struct_extract`/`struct_insert`.
-4. **Slice 4 — polish.** Verification-failure tests, interpreter support,
+   with scalar fields only, and get one Ascend kernel that reads and writes
+   `x_view.ndim` working end to end. This proves the whole chain before adding
+   breadth.
+2. **Slice 2 — arrays and nesting.** Add array fields, `array_gep`, nested
+   structs, and `TensorView.shape[i]` (static and dynamic indices).
+3. **Slice 3 — polish.** Verification-failure tests, interpreter behavior,
    documentation, and clear error messages.
 
 ---
@@ -600,15 +633,14 @@ compiler adds two safety checks:
 - **Layout unit tests:** the computed offsets, size, and alignment must equal
   `ctypes.offsetof`, `ctypes.sizeof`, and `ctypes.alignment` for nested, array,
   and packed structs; rejected field types must raise clear errors.
-- **Frontend/lit tests:** field reads and writes; nested access; array indexing
-  (static and dynamic); by-reference access; value structs passing through
-  `scf.for` and function calls.
-- **Verification tests (negative):** malformed layouts, by-value recursion, and
-  out-of-range indices must be rejected with clear messages.
+- **Frontend/lit tests:** field reads and writes; nested access; array element
+  access (static and dynamic indices); by-reference passing.
+- **Verification tests (negative):** malformed layouts and out-of-range indices
+  must be rejected with clear messages.
 - **Pass tests:** the `tt-lower-structs` pass must leave no struct/array type
-  behind.
-- **End-to-end test:** a `TensorView`-style kernel on Ascend, validated against a
-  host-computed reference.
+  behind and must rewrite the address operations to `addptr`.
+- **End-to-end test:** a `TensorView`-style kernel on Ascend that reads and
+  writes fields, validated against a host-computed reference.
 
 ---
 
@@ -616,38 +648,49 @@ compiler adds two safety checks:
 
 1. **Ascend pointer lowering for `ptr<struct>`.** Ascend's memref-tuple handling
    of pointers must be checked early; this is the highest integration risk.
-2. **Python bindings.** The new operations need builder bindings in
+2. **Python bindings.** The two new operations need builder bindings in
    `python/src/ir.cc` before the frontend can emit them.
 3. **Frontend module resolution.** Both `core.py` copies must import the shared
    module, and the Ascend path-injection mechanism must not shadow it.
-4. **Dynamic array indexing cost.** Value-form dynamic indexing is lowered to a
-   select chain; a size threshold may be needed.
-5. **Coexistence with `_aggregate`.** The two features are independent by
+4. **Coexistence with `_aggregate`.** The two features are independent by
    decision, but they should not collide on shared names or markers.
 
 ---
 
 ## 15. Alternatives considered
 
+**Semantics.**
+
+- *Full value + reference semantics.* A struct could additionally be an SSA
+  value, returned from device functions and carried by loops. This requires
+  scalar replacement of aggregates, value-manipulation operations
+  (`struct_extract`/`struct_insert`, `array_extract`/`array_insert`),
+  whole-aggregate loads/stores, dynamic-index select chains, and rewriting of
+  function calls and control flow. It is deferred because the motivating use
+  case does not need it.
+- **Reference-only (chosen).** Structs are always accessed through a pointer;
+  field reads and writes are supported; no value-manipulation machinery is
+  needed. Mutability is essentially free in this model (a field write is a store
+  to a computed address).
+
 **How to represent a struct.**
 
 - *Frontend-only flattening (no new IR type).* The struct would exist only in
-  the Python frontend; the IR would see loose scalar values and pointers. This
-  is the simplest and most backend-agnostic option, but there would be no struct
-  type in the IR, so the compiler could not verify or reason about it. Rejected
-  in favor of a real IR type.
-- *Struct type only behind pointers.* A middle ground that adds a real type only
-  in pointer position. Rejected because value semantics (struct values and
-  device-function returns) are also required.
-- **First-class struct type (chosen).**
+  the Python frontend; the IR would see only `addptr` and loads/stores. This is
+  the smallest option, but there would be no struct type in the IR, so the
+  compiler could not verify or reason about it.
+- **A real struct type used in pointer position (chosen).** The type is
+  verifiable and drives signature parsing, while still being removed before
+  backend lowering.
+- *A full first-class value type.* See "Full value + reference semantics" above.
 
 **How deep to keep the type.**
 
 - *Keep the type all the way to LLVM/HIVM.* This would require new type
   conversions and operation lowerings in every backend and, for Ascend, changes
   to the proprietary `bishengir` toolchain. High risk; deferred.
-- **Keep the type first-class in the frontend and early IR, then remove it with
-  a shared pass (chosen).** Backend-agnostic and low-risk.
+- **Keep the type in the frontend and early IR, then remove it with a small
+  shared pass (chosen).** Backend-agnostic and low-risk.
 
 **Memory layout.**
 
@@ -659,8 +702,8 @@ compiler adds two safety checks:
 **Kernel boundary.**
 
 - *Allow by-value struct launch arguments.* This requires implementing C-struct
-  ABI marshalling in every backend launcher; deferred. By-value structs remain
-  fully available inside the kernel and for device functions.
+  ABI marshalling in every backend launcher; deferred. Note that in this design
+  a struct parameter is a pointer regardless.
 - **Pass structs to kernels by reference in v1 (chosen).**
 
 **Type identity.**
@@ -690,15 +733,22 @@ Kernel:
 @triton.jit
 def example_kernel(x_view):
     x_ptr = x_view.base
+    n = x_view.ndim
+    x_view.ndim = n - 1
     ...
 ```
 
 After the `tt-lower-structs` pass, reading `base` becomes byte address
-arithmetic followed by a load (conceptual form):
+arithmetic followed by a load, and writing `ndim` becomes address arithmetic
+followed by a store (conceptual form):
 
 ```
 %p    = tt.addptr %x_view, 64          ; byte offset of the "base" field
 %raw  = tt.load %p : !tt.ptr<i64>      ; the stored pointer value
+
+%q    = tt.addptr %x_view, 72          ; byte offset of the "ndim" field
+tt.store %q, %new : !tt.ptr<i32>       ; write the field
 ```
 
-No `!tt.struct` remains, so Ascend's downstream pipeline is unaffected.
+The kernel parameter's pointee type is rewritten to an opaque pointer, and no
+`!tt.struct` remains, so Ascend's downstream pipeline is unaffected.
