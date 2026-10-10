@@ -323,8 +323,7 @@ class HCUJITFunction(RawJITFunction):
             src_file.write(self.code)
             src_path = src_file.name
         try:
-            command = _clang_command(clang, self.arch, src_path, "-", bitcode=False,
-                                      dushmem=self.library == "dushmem")
+            command = _clang_command(clang, self.arch, src_path, "-", bitcode=False, dushmem=self.library == "dushmem")
             return _sanitize_clang_ir(_run_clang(command, self.source_file))
         finally:
             Path(src_path).unlink(missing_ok=True)

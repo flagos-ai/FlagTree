@@ -3,7 +3,6 @@
 # unset DUSHMEM_BOOTSTRAP
 # torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 \
 #   --master_addr=127.0.0.1 --master_port=29502 gemm-ar.py
-
 """K-split SGEMM, then a sum allreduce on a DUSHMEM stream."""
 
 import ctypes
@@ -41,22 +40,37 @@ def gemm_partial_kernel(c_ptr, a_ptr, b_ptr, m, n, k):
 def _load_host():
     host = compile_host_library(HERE / "gemm-ar-host.hip", Path("/tmp/dushmem-gemm-ar-host.so"))
     host.gemm_ar_prepare.argtypes = [
-        ctypes.c_int, ctypes.c_int, ctypes.c_int,
-        ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
         ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
     ]
     host.gemm_ar_prepare.restype = ctypes.c_int
     host.gemm_ar_copy_on_stream.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.c_int, ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_int,
     ]
     host.gemm_ar_copy_on_stream.restype = ctypes.c_int
     host.gemm_ar_sum_reduce_on_stream.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
     host.gemm_ar_sum_reduce_on_stream.restype = ctypes.c_int
     host.gemm_ar_finish.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
     ]
     host.gemm_ar_finish.restype = ctypes.c_int
     return host
@@ -80,10 +94,17 @@ def main() -> None:
         raise SystemExit(f"K={K} is not divisible by npes={world}")
     k_local = K // world
     status = host.gemm_ar_prepare(
-        M, k_local, N,
-        ctypes.byref(mype), ctypes.byref(npes), ctypes.byref(mype_node),
+        M,
+        k_local,
+        N,
+        ctypes.byref(mype),
+        ctypes.byref(npes),
+        ctypes.byref(mype_node),
         ctypes.byref(stream_ptr),
-        ctypes.byref(a_ptr), ctypes.byref(b_ptr), ctypes.byref(partial), ctypes.byref(reduced),
+        ctypes.byref(a_ptr),
+        ctypes.byref(b_ptr),
+        ctypes.byref(partial),
+        ctypes.byref(reduced),
     )
     if status != 0:
         raise SystemExit(f"gemm_ar_prepare failed: {status}")
@@ -101,9 +122,13 @@ def main() -> None:
     torch.cuda.synchronize()
 
     rc = host.gemm_ar_copy_on_stream(
-        stream_ptr, a_ptr, b_ptr,
-        ctypes.c_void_p(a_shard.data_ptr()), ctypes.c_void_p(b_shard.data_ptr()),
-        M * k_local, k_local * N,
+        stream_ptr,
+        a_ptr,
+        b_ptr,
+        ctypes.c_void_p(a_shard.data_ptr()),
+        ctypes.c_void_p(b_shard.data_ptr()),
+        M * k_local,
+        k_local * N,
     )
     if rc != 0:
         raise SystemExit(f"copy failed: {rc}")
@@ -116,7 +141,9 @@ def main() -> None:
             partial_view,
             tensor_from_pointer(a_ptr, (M, k_local), torch.float32, device),
             tensor_from_pointer(b_ptr, (k_local, N), torch.float32, device),
-            M, N, k_local,
+            M,
+            N,
+            k_local,
             num_warps=4,
         )
     rc = host.gemm_ar_sum_reduce_on_stream(stream_ptr, reduced, partial, M * N)

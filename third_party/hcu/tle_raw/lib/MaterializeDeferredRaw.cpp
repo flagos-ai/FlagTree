@@ -13,7 +13,8 @@ namespace mlir {
 #include "hcu/tle_raw/include/Passes.h.inc"
 
 class HcuMaterializeDeferredRawPass
-    : public impl::HcuMaterializeDeferredRawBase<HcuMaterializeDeferredRawPass> {
+    : public impl::HcuMaterializeDeferredRawBase<
+          HcuMaterializeDeferredRawPass> {
 public:
   using impl::HcuMaterializeDeferredRawBase<
       HcuMaterializeDeferredRawPass>::HcuMaterializeDeferredRawBase;

@@ -897,8 +897,8 @@ class HIPBackend(BaseBackend):
                 if match:
                     target_id = match.group(1)
                 asm_command = [
-                    clang_path, "-c", "-target", hcu.TARGET_TRIPLE, f"-mcpu={target_id}", "-x", "assembler",
-                    asm_file, "-o", obj_file
+                    clang_path, "-c", "-target", hcu.TARGET_TRIPLE, f"-mcpu={target_id}", "-x", "assembler", asm_file,
+                    "-o", obj_file
                 ]
                 subprocess.run(asm_command, check=True, capture_output=True, text=True)
                 lld = Path(clang_path).with_name("ld.lld")

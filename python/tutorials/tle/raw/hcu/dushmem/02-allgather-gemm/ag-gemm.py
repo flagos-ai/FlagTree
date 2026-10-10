@@ -3,7 +3,6 @@
 # unset DUSHMEM_BOOTSTRAP
 # torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 \
 #   --master_addr=127.0.0.1 --master_port=29501 ag-gemm.py
-
 """Allgather each rank's A shard on a DUSHMEM stream, then SGEMM."""
 
 import ctypes
@@ -40,15 +39,25 @@ def ag_gemm_kernel(c_ptr, a_ptr, b_ptr, m, n, k):
 def _load_host():
     host = compile_host_library(HERE / "ag-gemm-host.hip", Path("/tmp/dushmem-ag-gemm-host.so"))
     host.ag_gemm_prepare.argtypes = [
-        ctypes.c_int, ctypes.c_int, ctypes.c_int,
-        ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
         ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
     ]
     host.ag_gemm_prepare.restype = ctypes.c_int
     host.ag_gemm_allgather_on_stream.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_int,
     ]
     host.ag_gemm_allgather_on_stream.restype = ctypes.c_int
     host.ag_gemm_copy_b_on_stream.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
@@ -72,10 +81,17 @@ def main() -> None:
     b_ptr = ctypes.c_void_p()
     c_ptr = ctypes.c_void_p()
     status = host.ag_gemm_prepare(
-        M_LOCAL, K, N,
-        ctypes.byref(mype), ctypes.byref(npes), ctypes.byref(mype_node),
+        M_LOCAL,
+        K,
+        N,
+        ctypes.byref(mype),
+        ctypes.byref(npes),
+        ctypes.byref(mype_node),
         ctypes.byref(stream_ptr),
-        ctypes.byref(a_local), ctypes.byref(a_full), ctypes.byref(b_ptr), ctypes.byref(c_ptr),
+        ctypes.byref(a_local),
+        ctypes.byref(a_full),
+        ctypes.byref(b_ptr),
+        ctypes.byref(c_ptr),
     )
     if status != 0:
         raise SystemExit(f"ag_gemm_prepare failed: {status}")
@@ -104,7 +120,9 @@ def main() -> None:
             c,
             tensor_from_pointer(a_full, (m, K), torch.float32, device),
             tensor_from_pointer(b_ptr, (K, N), torch.float32, device),
-            m, N, K,
+            m,
+            N,
+            K,
             num_warps=4,
         )
     stream.synchronize()

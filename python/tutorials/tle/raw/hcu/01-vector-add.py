@@ -12,8 +12,7 @@ BLOCK = 256
 
 
 # deferred=True is the fast path: clang bitcode is linked with its target attributes.
-@dialect(name="hcu", file=Path(__file__).parent / "01-vector-add.hip", extern_func_name="hcu_vector_add",
-         deferred=True)
+@dialect(name="hcu", file=Path(__file__).parent / "01-vector-add.hip", extern_func_name="hcu_vector_add", deferred=True)
 def edsl(*args, **kwargs):
     ...
 

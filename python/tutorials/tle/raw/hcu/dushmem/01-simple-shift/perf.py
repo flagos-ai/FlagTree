@@ -76,8 +76,8 @@ def _raw_ms() -> None:
         init_torch_distributed,
         load_common_host,
     )
-    simple_shift = importlib.machinery.SourceFileLoader(
-        "hcu_dushmem_simple_shift", str(HERE / "simple-shift.py")).load_module()
+    simple_shift = importlib.machinery.SourceFileLoader("hcu_dushmem_simple_shift",
+                                                        str(HERE / "simple-shift.py")).load_module()
 
     group = init_torch_distributed()
     init_dushmem_by_torch_pg(load_common_host(), group)
