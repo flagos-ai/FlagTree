@@ -81,4 +81,3 @@ jobs:
         run: |
           echo "should_rerun=${{ steps.check.outputs.should_rerun }}"
           echo "dry_run=${{ inputs.dry_run }}"
-
