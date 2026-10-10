@@ -137,12 +137,13 @@ unsigned getNumElementsPerThread(Operation *op, SmallVector<unsigned> order,
   unsigned maxContig =
       std::min(valInfo.getContiguity(order[0]), shapePerCTA[order[0]]);
   unsigned alignment = std::min(maxMultiple, maxContig);
+  // The historical 32-bit global access cap is stale for BI-V150 (the
+  // LSA path supports 128-bit vector accesses; C++ float4 microbench
+  // 366 GB/s vs 167 GB/s, perf-iteration/ITERATION.md Trials 74/76/77).
+  // It capped bf16 loads at 2 elements/thread (4-byte loads) in the
+  // coalesced layout itself, so the backend-side getVectorSize lift
+  // alone could never produce wider accesses.
   unsigned currPerThread = std::min(alignment, 128 / elemNumBits);
-#ifdef __ILUVATAR__
-  // Global memory ld/st with 32 bit
-  if (elemNumBits <= 32)
-    currPerThread = std::min(alignment, 32 / elemNumBits);
-#endif
   LDBG("elemNumBytes: " << elemNumBytes
                         << ", divisibility: " << maxMultipleBytes
                         << ", contig: " << valInfo.getContiguity(order[0])

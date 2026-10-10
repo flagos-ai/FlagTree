@@ -1,8 +1,16 @@
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/backend/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/backend/include)
 if(FLAGTREE_ILUVATAR_TLE)
+  # Reuse the backend-neutral distributed-barrier dialect.  Iluvatar supplies
+  # its own lowering below, while sharing the TLE Python builder contract.
+  add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/tle/dialect/include
+                   ${PROJECT_BINARY_DIR}/third_party/tle/dialect/include)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/tle/dialect/lib/IR
+                   ${PROJECT_BINARY_DIR}/third_party/tle/dialect/lib/IR)
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/tle/include)
   include_directories(${CMAKE_CURRENT_BINARY_DIR}/tle/include)
+  include_directories(${PROJECT_SOURCE_DIR}/third_party/tle/dialect/include)
+  include_directories(${PROJECT_BINARY_DIR})
   add_subdirectory(tle)
 endif()
 add_subdirectory(backend/include)
@@ -14,8 +22,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
   if(FLAGTREE_ILUVATAR_TLE)
     set(_ILUVATAR_TLE_PLUGIN_SOURCES
       ${CMAKE_CURRENT_SOURCE_DIR}/tle/triton_iluvatar_tle.cc)
-    set(_ILUVATAR_TLE_PLUGIN_LIBS IluvatarTleIR IluvatarTleTransforms)
-    set(_ILUVATAR_TLE_PLUGIN_DEPS IluvatarTleTableGen IluvatarTleTransformsIncGen)
+    set(_ILUVATAR_TLE_PLUGIN_LIBS IluvatarTleIR IluvatarTleTransforms TleIR)
+    set(_ILUVATAR_TLE_PLUGIN_DEPS IluvatarTleTableGen IluvatarTleTransformsIncGen TleTableGen)
   else()
     set(_ILUVATAR_TLE_PLUGIN_SOURCES "")
     set(_ILUVATAR_TLE_PLUGIN_LIBS "")

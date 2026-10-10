@@ -23,6 +23,7 @@ using namespace mlir;
 using namespace mlir::triton::gpu;
 
 using ::mlir::LLVM::getSharedMemoryBase;
+using ::mlir::LLVM::ILUVATAR::getLoadVectorSize;
 using ::mlir::LLVM::ILUVATAR::getVectorSize;
 using ::mlir::LLVM::ILUVATAR::llLoad;
 using ::mlir::LLVM::ILUVATAR::llStore;
@@ -680,9 +681,13 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
   LoadOpConversion(LLVMTypeConverter &converter,
                    const ILUVATAR::TargetInfo &targetInfo,
                    ModuleAxisInfoAnalysis &axisAnalysisPass,
-                   PatternBenefit benefit)
+                   PatternBenefit benefit, bool disableLoadVectorize)
       : ConvertOpToLLVMPattern(converter, benefit),
-        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass),
+        disableLoadVectorize(disableLoadVectorize) {}
+
+  // Caller-requested scalar global loads; see getLoadVectorSize().
+  bool disableLoadVectorize;
 
   LogicalResult
   matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
@@ -706,7 +711,8 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     Type valueTy = op.getType();
     Type valueElemTy =
         typeConverter->convertType(getElementTypeOrSelf(valueTy));
-    unsigned vec = getVectorSize(ptr, axisAnalysisPass);
+    unsigned vec =
+        getLoadVectorSize(ptr, axisAnalysisPass, disableLoadVectorize);
     unsigned numElems = getTotalElemsPerThread(ptr.getType());
     unsigned vecOrig = vec;
 
@@ -718,7 +724,9 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     SmallVector<Value> maskElems =
         getMaskElemsAndUpdateVeclen(rewriter, loc, llMask, mask, vec);
 
-    if (vec == 1 && numElems > 1) {
+    // Scalar loads are the requested outcome when the caller opted out of load
+    // vectorization, so do not report that as an analysis failure.
+    if (vec == 1 && numElems > 1 && !disableLoadVectorize) {
       int maskValue = !llMask ? -1 : getMaskAlignment(mask);
       op->emitRemark() << "Warning: vectorization fails vec = " << vec
                        << " origin vec = " << vecOrig
@@ -823,11 +831,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
 };
 
 static bool isExplicitSmeAsyncCopy(triton::gpu::AsyncCopyGlobalToLocalOp op) {
-  auto srcTy = mlir::dyn_cast<RankedTensorType>(op.getSrc().getType());
-  if (!srcTy)
-    return false;
-  auto srcEnc = mlir::dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
-  return srcEnc && srcEnc.getIsSme();
+  return op.isIluvatarSmeAsyncCopy();
 }
 
 static LogicalResult
@@ -905,7 +909,8 @@ emitStaticSmeAsyncCopy(triton::gpu::AsyncCopyGlobalToLocalOp op,
   if (!constantMask || *constantMask)
     result = emitIluvatarSmeTileLoads(loc, ctx, smeTy, elemTy,
                                       smemObj.getBase(), gPtr, llvmStride,
-                                      rewriter, validContiguousElems);
+                                      rewriter, targetInfo, srcTy.getEncoding(),
+                                      validContiguousElems);
   if (afterPredBlock)
     rewriter.setInsertionPointToStart(afterPredBlock);
   if (failed(result) || !op.getMask() || (constantMask && *constantMask))
@@ -1560,8 +1565,22 @@ struct AsyncWaitOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto cntTy = rewriter.getIntegerType(64);
+    uint64_t waitCountValue = 8;
+    if (int32_t num = op.getNum(); num > 0) {
+      auto transactions = op->getAttrOfType<IntegerAttr>(
+          "iluvatar.g2s_transactions_per_group");
+      if (transactions && transactions.getInt() > 0) {
+        uint64_t pending = static_cast<uint64_t>(transactions.getInt()) * num;
+        // G2S_CNT is a six-bit field in WaitCount.  If the static group
+        // exceeds it, retain the full drain rather than encoding a wrapped
+        // counter value.
+        if (pending <= 63)
+          waitCountValue = 8ull | (pending << 23);
+      }
+    }
     Value waitCnt = LLVM::ConstantOp::create(rewriter, loc, cntTy,
-                                             IntegerAttr::get(cntTy, 8));
+                                             IntegerAttr::get(cntTy,
+                                                              waitCountValue));
     LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.bi.sl.waitcnt", {},
                                     {waitCnt});
     TritonLLVMOpBuilder b(loc, rewriter);
@@ -1577,8 +1596,8 @@ struct AsyncCommitGroupOpConversion
   LogicalResult
   matchAndRewrite(AsyncCommitGroupOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Drop the result AsyncToken
     auto loc = op->getLoc();
+    // Drop the result AsyncToken.
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     rewriter.replaceOp(op, b.i32_val(0));
     return success();
@@ -1592,11 +1611,16 @@ void populateLoadStoreOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                        const TargetInfo &targetInfo,
                                        RewritePatternSet &patterns,
                                        ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                                       PatternBenefit benefit) {
+                                       PatternBenefit benefit,
+                                       bool disableLoadVectorize) {
   patterns.add<AtomicCASOpConversion, AtomicRMWOpConversion,
-               AsyncCopyGlobalToLocalOpConversion, LoadOpConversion,
-               StoreOpConversion>(typeConverter, targetInfo, axisInfoAnalysis,
-                                  benefit);
+               AsyncCopyGlobalToLocalOpConversion, StoreOpConversion>(
+      typeConverter, targetInfo, axisInfoAnalysis, benefit);
+
+  // Only tt.load honors disableLoadVectorize; stores, atomics and async
+  // global-to-shared copies keep their analysis-derived width.
+  patterns.add<LoadOpConversion>(typeConverter, targetInfo, axisInfoAnalysis,
+                                 benefit, disableLoadVectorize);
 
   patterns.add<AsyncCommitGroupOpConversion, AsyncWaitOpConversion>(
       typeConverter, benefit);

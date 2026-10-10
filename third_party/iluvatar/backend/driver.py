@@ -316,7 +316,11 @@ static cuLaunchKernelEx_t getLaunchKernelExHandle() {{
 static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int launch_cooperative_grid, int launch_pdl, int shared_memory, CUstream stream, CUfunction function, CUdeviceptr global_scratch, CUdeviceptr profile_scratch{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
   void *params[] = {{ {', '.join(params)} }};
   if (gridX*gridY*gridZ > 0) {{
-    if (num_ctas == 1) {{
+    // BI-V150 has no cooperative-launch admission support.  Grid barriers
+    // are lowered to global atomics, so a single-CTA-group launch must use
+    // the ordinary entry point even when the compiler metadata records a
+    // cooperative grid requirement.
+    if (num_ctas == 1 && launch_pdl == 0) {{
       CUDA_CHECK(cuLaunchKernel(function, gridX, gridY, gridZ, 64*num_warps, 1, 1, shared_memory, stream, params, 0));
       return;
     }}

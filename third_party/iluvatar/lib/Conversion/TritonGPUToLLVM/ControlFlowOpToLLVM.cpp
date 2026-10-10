@@ -1,5 +1,8 @@
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#ifdef __ILUVATAR_TLE__
+#include "tle/dialect/include/Conversion/TleToLLVM/GlobalScratchBase.h"
+#endif
 
 namespace {
 
@@ -101,8 +104,13 @@ private:
       opOffsetVal = b.i32_val(opOffset);
     }
 
+#ifdef __ILUVATAR_TLE__
+    promotedOperands.push_back(
+        tle::getGlobalScratchBase(loc, rewriter, caller, opOffsetVal));
+#else
     promotedOperands.push_back(LLVM::getGlobalScratchPtr(
         loc, rewriter, targetInfo, caller, opOffsetVal));
+#endif
     promotedOperands.push_back(
         LLVM::getProfileScratchPtr(loc, rewriter, caller));
     return promotedOperands;

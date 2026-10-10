@@ -2,6 +2,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/PatternMatch.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
@@ -25,6 +26,15 @@ lowerSmeStore(Location loc, MLIRContext *ctx, Value regVal,
               ArrayRef<Value> inVals, const LLVMTypeConverter *typeConverter,
               ConversionPatternRewriter &rewriter,
               const TargetInfoBase &targetInfo, triton::LoadOp loadOp);
+
+static constexpr StringLiteral kDeferredSmePublication =
+    "sme_deferred_publication";
+
+static void emitDeferredSmePublication(ConversionPatternRewriter &rewriter,
+                                       Location loc) {
+  auto marker = NVVM::Barrier0Op::create(rewriter, loc);
+  marker->setAttr("sme_async_payload", UnitAttr::get(rewriter.getContext()));
+}
 #endif
 
 LogicalResult lowerLocalStore(Location loc, MLIRContext *ctx, Value regVal,
@@ -222,6 +232,14 @@ public:
     auto outVals = lowerLocalLdSt(loc, ctx, cvt, {}, llvmElemTy, memDescTy,
                                   smemObj, rewriter, targetInfo, op);
 
+    if (op->hasAttr(kDeferredSmePublication)) {
+      bool hasLayoutConversion = llvm::any_of(
+          op.getResult().getUsers(),
+          [](Operation *user) { return isa<ConvertLayoutOp>(user); });
+      if (!hasLayoutConversion)
+        emitDeferredSmePublication(rewriter, loc);
+    }
+
     Value result = packLLElements(loc, typeConverter, outVals, rewriter, regTy);
     rewriter.replaceOp(op, result);
 
@@ -277,7 +295,8 @@ lowerSmeStore(Location loc, MLIRContext *ctx, Value regVal,
   if (emittedSmeLoad) {
     if (failed(emitIluvatarSmeTileLoads(
             loc, ctx, regTy, elemTy, smemObj.getBase(), inVals[0],
-            loadOp.getInputStride(), rewriter, validContiguousElems)))
+            loadOp.getInputStride(), rewriter, targetInfo, regTy.getEncoding(),
+            validContiguousElems)))
       return failure();
   }
 

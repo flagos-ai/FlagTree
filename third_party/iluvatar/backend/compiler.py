@@ -144,6 +144,18 @@ class CorexOptions:
     arch: str = None
     instrumentation_mode: str = ""
     use_sme: int = 0
+    # Emit scalar global loads instead of vectorized ones. Wide loads on this
+    # target are bound by load-instruction issue rate (roughly one per cycle
+    # per MP) rather than by HBM bandwidth, so a read-bound kernel at high
+    # occupancy can be markedly faster with scalar loads, while a kernel pinned
+    # to one CTA per SM (e.g. one using in-kernel grid barriers) is faster with
+    # wide ones. The crossover depends on CTAs-per-SM, which the lowering
+    # cannot see, hence an explicit opt-out rather than a heuristic. Applied
+    # only when lowering to LLVM: contiguity/AxisInfo analysis and every
+    # earlier pass are unaffected, as are stores, atomics and SME async copies.
+    # See skills/flagmega-developer/references/hardware/iluvatar-bi-v150/
+    # memory-bandwidth.md for the measured numbers.
+    disable_load_vectorize: bool = False
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / 'lib'
@@ -376,7 +388,8 @@ class CorexBackend(BaseBackend):
         if CorexBackend.instrumentation:
             CorexBackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
         proc = sm_arch_from_capability(capability)
-        iluvatar.passes.ttgpuir.add_to_llvmir(pm, proc, options.enable_reflect_ftz)
+        iluvatar.passes.ttgpuir.add_to_llvmir(pm, proc, options.enable_reflect_ftz,
+                                              options.disable_load_vectorize)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         # [WA] On ivcore11 this relies on a shared-memory software barrier

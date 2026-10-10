@@ -490,8 +490,21 @@ using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
 using ::mlir::triton::gpu::SliceEncodingAttr;
 
 #ifdef __ILUVATAR__
+SmallVector<SmallVector<Value>>
+emitIndices(Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
+            Attribute layout, RankedTensorType type, bool withCTAOffset);
+
 inline StringRef getIluvatarSmeLoadIntrinsicName(unsigned bitwidth,
-                                                 bool isRowMajor) {
+                                                 bool isRowMajor,
+                                                 unsigned tileRows = 16) {
+  if (tileRows == 4) {
+    if (bitwidth == 16)
+      return isRowMajor ? "llvm.bi.sme.load.4x1b64.rowxfb16"
+                        : "llvm.bi.sme.load.4x1b64.colxfb16";
+    llvm_unreachable("4-row SME intrinsic only supports fp16/bf16");
+  }
+  if (tileRows != 16)
+    llvm_unreachable("unsupported SME tile row count");
   if (isRowMajor) {
     if (bitwidth == 8)
       return "llvm.bi.sme.load.16x1b64.rowxfb8";
@@ -510,12 +523,15 @@ inline StringRef getIluvatarSmeLoadIntrinsicName(unsigned bitwidth,
   llvm_unreachable("SME intrinsic only supports i8/fp16/bf16/fp32");
 }
 
-// Emit Iluvatar SME global->shared loads for a full CTA tile.  Each SME
-// intrinsic transfers one hardware tile: 16 rows x 64 contiguous bytes.
+// Emit Iluvatar SME global->shared loads for a full CTA tile.  The 16-row
+// instruction is the normal form; fp16/bf16 also provide a 4-row form for
+// skinny row-major tiles.
 inline LogicalResult
 emitIluvatarSmeTileLoads(Location loc, MLIRContext *ctx,
                          RankedTensorType tensorTy, Type elemTy, Value smemBase,
                          Value gPtr, Value stride, RewriterBase &rewriter,
+                         const TargetInfoBase &targetInfo,
+                         Attribute gPtrLayout,
                          std::optional<unsigned> validContiguousElems = {}) {
   auto smeEnc = dyn_cast<BlockedEncodingAttr>(tensorTy.getEncoding());
   if (!smeEnc || !smeEnc.getIsSme())
@@ -526,11 +542,38 @@ emitIluvatarSmeTileLoads(Location loc, MLIRContext *ctx,
   auto shape = tensorTy.getShape();
   unsigned elemBytes = elemTy.getIntOrFloatBitWidth() / 8;
   bool isRowMajor = order[0] != 0;
+  unsigned bitwidth = elemTy.getIntOrFloatBitWidth();
+  unsigned tileRows = 16;
+  if (isRowMajor && bitwidth == 16 && shape[0] >= 4 && shape[0] < 16)
+    tileRows = 4;
+  if ((isRowMajor && shape[0] < tileRows) ||
+      (!isRowMajor && shape[1] < tileRows))
+    return failure();
 
   // Row-major: dim1 is contiguous. Col-major: dim0 is contiguous.
-  unsigned offset0 = isRowMajor ? 16 : 64 / elemBytes;
-  unsigned offset1 = isRowMajor ? 64 / elemBytes : 16;
+  unsigned offset0 = isRowMajor ? tileRows : 64 / elemBytes;
+  unsigned offset1 = isRowMajor ? 64 / elemBytes : tileRows;
   SmallVector<unsigned> shapePerCTA({smeWpt[0] * offset0, smeWpt[1] * offset1});
+  if (shape[0] % shapePerCTA[0] != 0 || shape[1] % shapePerCTA[1] != 0)
+    return mlir::emitError(loc)
+           << "SME tile shape [" << shape[0] << ", " << shape[1]
+           << "] must be divisible by the CTA tile [" << shapePerCTA[0]
+           << ", " << shapePerCTA[1] << "]";
+
+  // The hardware descriptor carries the row stride in bytes.  The TLE API
+  // validates its static form; keep the LLVM lowering defensive for direct
+  // TTGIR producers that bypass that API.
+  if (auto strideConst = stride.getDefiningOp<LLVM::ConstantOp>()) {
+    auto strideAttr = dyn_cast<IntegerAttr>(strideConst.getValueAttr());
+    if (strideAttr) {
+      APInt strideElems = strideAttr.getValue();
+      uint64_t strideBytes = strideElems.getZExtValue() * elemBytes;
+      if (strideElems.isZero() || strideElems.isNegative() ||
+          strideBytes % 64 != 0)
+        return mlir::emitError(loc)
+               << "SME row stride must be a positive multiple of 64 bytes";
+    }
+  }
 
   TritonLLVMOpBuilder b(loc, rewriter);
   auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
@@ -556,6 +599,7 @@ emitIluvatarSmeTileLoads(Location loc, MLIRContext *ctx,
   Value gPtrAsInt = b.ptrtoint(i64_ty, gPtr);
   Value strideBytes = b.mul(stride, b.i32_val(static_cast<int32_t>(elemBytes)));
   auto i32x4Ty = vec_ty(i32_ty, 4);
+  Type elemPtrTy = ptr_ty(ctx, 1);
   Value abaseVal = b.undef(i32x4Ty);
   abaseVal = b.insert_element(i32x4Ty, abaseVal, b.trunc(i32_ty, gPtrAsInt),
                               b.i32_val(0));
@@ -565,7 +609,29 @@ emitIluvatarSmeTileLoads(Location loc, MLIRContext *ctx,
   abaseVal = b.insert_element(i32x4Ty, abaseVal, b.i32_val(-1), b.i32_val(2));
   abaseVal = b.insert_element(i32x4Ty, abaseVal, strideBytes, b.i32_val(3));
 
-  Type elemPtrTy = ptr_ty(ctx, 1);
+  // The pointer tensor and the destination SME tensor can have different
+  // layouts after warp specialization.  Normalize the descriptor from the
+  // pointer tensor's layout; using the SME destination layout here shifts the
+  // producer's source base when the worker partition has a different
+  // register distribution.
+  auto srcIndices = emitIndices(loc, rewriter, targetInfo, gPtrLayout, tensorTy,
+                                /*withCTAOffset=*/false);
+  if (srcIndices.empty() || srcIndices[0].size() != 2)
+    return failure();
+  Value logicalRow = srcIndices[0][0];
+  Value logicalCol = srcIndices[0][1];
+  Value logicalOffset = isRowMajor
+                            ? b.add(b.mul(logicalRow, stride), logicalCol)
+                            : b.add(logicalRow, b.mul(logicalCol, stride));
+  Value baseOffset = b.sub(b.i32_val(0), logicalOffset);
+  Value basePtr = b.gep(elemPtrTy, elemTy, gPtr, baseOffset);
+  gPtrAsInt = b.ptrtoint(i64_ty, basePtr);
+  abaseVal = b.insert_element(i32x4Ty, abaseVal,
+                              b.trunc(i32_ty, gPtrAsInt), b.i32_val(0));
+  abaseVal = b.insert_element(i32x4Ty, abaseVal,
+                              b.trunc(i32_ty, b.lshr(gPtrAsInt, b.i64_val(32))),
+                              b.i32_val(1));
+
   for (unsigned m = 0; m < shape[0] / shapePerCTA[0]; m++) {
     for (unsigned k = 0; k < shape[1] / shapePerCTA[1]; k++) {
       unsigned contiguousGroupStart =
@@ -615,7 +681,7 @@ emitIluvatarSmeTileLoads(Location loc, MLIRContext *ctx,
       mlir::LLVM::createLLVMIntrinsicCallOp(
           rewriter, loc,
           getIluvatarSmeLoadIntrinsicName(elemTy.getIntOrFloatBitWidth(),
-                                          isRowMajor),
+                                          isRowMajor, tileRows),
           TypeRange{}, args);
     }
   }

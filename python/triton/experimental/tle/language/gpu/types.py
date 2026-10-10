@@ -135,6 +135,47 @@ class BlockEncoding(distributed_encoding):
                      tuple(self.order), tuple(tuple(basis) for basis in self.cga_layout)))
 
 
+class IluvatarSmeBlockEncoding(BlockEncoding):
+    """Explicit Iluvatar SME blocked encoding for a static tensor shape."""
+
+    def __init__(self, shape, dtype, size_per_thread, threads_per_warp, warps_per_cta, order, cga_layout=None):
+        super().__init__(size_per_thread, threads_per_warp, warps_per_cta, order, cga_layout)
+        self.shape = [int(tl._unwrap_if_constexpr(x)) for x in shape]
+        self.dtype = tl._unwrap_if_constexpr(dtype)
+        if len(self.shape) != self.rank:
+            raise ValueError("IluvatarSmeBlockEncoding shape rank must match encoding rank")
+        if not isinstance(self.dtype, tl.dtype):
+            raise ValueError(f"IluvatarSmeBlockEncoding dtype must be tl.dtype, got {type(self.dtype)}")
+        if any(dim <= 0 for dim in self.shape):
+            raise ValueError("IluvatarSmeBlockEncoding shape must be positive")
+
+    def to_ir(self, builder: ir.builder) -> None:
+        if not hasattr(builder, "get_iluvatar_sme_blocked_encoding"):
+            raise RuntimeError("Iluvatar SME encoding requires the Iluvatar TLE builder")
+        return builder.get_iluvatar_sme_blocked_encoding(
+            self.size_per_thread,
+            self.threads_per_warp,
+            self.warps_per_cta,
+            self.order,
+            self.cga_layout,
+            self.shape,
+            self.dtype.to_ir(builder),
+            int(getattr(builder.options, "num_ctas", 1)),
+        )
+
+    def __repr__(self):
+        return (f"IluvatarSmeBlockEncoding(shape={self.shape}, dtype={self.dtype}, "
+                f"size_per_thread={self.size_per_thread}, threads_per_warp={self.threads_per_warp}, "
+                f"warps_per_cta={self.warps_per_cta}, order={self.order}, cga_layout={self.cga_layout})")
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.shape == other.shape and self.dtype == other.dtype
+                and super().__eq__(other))
+
+    def __hash__(self):
+        return hash((tuple(self.shape), self.dtype, super().__hash__()))
+
+
 class MmaEncoding(distributed_encoding):
     """Explicit #ttg.nvidia_mma encoding for a dot result or accumulator."""
 
@@ -351,6 +392,66 @@ class tensor_memory_layout(shared_layout):
         )
 
 
+class iluvatar_sme_shared_layout(shared_layout):
+    """TCU shared layout matching Iluvatar SME global-to-shared stores."""
+
+    def __init__(self, shape, elemType, order, numCTAsPerCGA, numCTASplit, numCTAOrder):
+        super().__init__()
+        self.shape = [int(tl._unwrap_if_constexpr(x)) for x in shape]
+        self.elemType = tl._unwrap_if_constexpr(elemType)
+        self.order = [int(tl._unwrap_if_constexpr(x)) for x in order]
+        self.numCTAsPerCGA = [int(tl._unwrap_if_constexpr(x)) for x in numCTAsPerCGA]
+        self.numCTASplit = [int(tl._unwrap_if_constexpr(x)) for x in numCTASplit]
+        self.numCTAOrder = [int(tl._unwrap_if_constexpr(x)) for x in numCTAOrder]
+        rank = len(self.shape)
+        if not (len(self.order) == len(self.numCTAsPerCGA) == len(self.numCTASplit) ==
+                len(self.numCTAOrder) == rank):
+            raise ValueError("iluvatar_sme_shared_layout fields must have the same rank")
+        if sorted(self.order) != list(range(rank)):
+            raise ValueError(f"iluvatar_sme_shared_layout order must be a permutation of 0..{rank - 1}")
+        if not isinstance(self.elemType, tl.dtype):
+            raise ValueError(f"iluvatar_sme_shared_layout dtype must be tl.dtype, got {type(self.elemType)}")
+
+    @classmethod
+    def make_default(cls, shape, elemType):
+        rank = len(shape)
+        return cls(
+            shape=shape,
+            elemType=elemType,
+            order=list(reversed(range(rank))),
+            numCTAsPerCGA=[1] * rank,
+            numCTASplit=[1] * rank,
+            numCTAOrder=list(reversed(range(rank))),
+        )
+
+    def make_permute(self, dims):
+        return iluvatar_sme_shared_layout(
+            [self.shape[d] for d in dims],
+            self.elemType,
+            [self.order[d] for d in dims],
+            [self.numCTAsPerCGA[d] for d in dims],
+            [self.numCTASplit[d] for d in dims],
+            [self.numCTAOrder[d] for d in dims],
+        )
+
+    def to_ir(self, builder: ir.builder) -> None:
+        if not hasattr(builder, "make_iluvatar_sme_shared_encoding_attr"):
+            raise RuntimeError("Iluvatar SME shared layout requires the Iluvatar TLE builder")
+        return builder.make_iluvatar_sme_shared_encoding_attr(
+            self.shape,
+            self.order,
+            self.elemType.to_ir(builder),
+            self.numCTAsPerCGA,
+            self.numCTASplit,
+            self.numCTAOrder,
+        )
+
+    def __repr__(self):
+        return (f"iluvatar_sme_shared_layout(shape={self.shape}, elemType={self.elemType}, "
+                f"order={self.order}, numCTAsPerCGA={self.numCTAsPerCGA}, "
+                f"numCTASplit={self.numCTASplit}, numCTAOrder={self.numCTAOrder})")
+
+
 class nv_mma_shared_layout(shared_layout):
 
     def __init__(self, shape, order, elemType, numCTAsPerCGA, numCTASplit, numCTAOrder, fp4Padded, swizzled):
@@ -434,6 +535,15 @@ def _drop_leading_dim_values(values):
 
 
 def _make_slot_layout(src_layout: shared_layout, slot_shape: List[int]) -> shared_layout:
+    if isinstance(src_layout, iluvatar_sme_shared_layout):
+        return iluvatar_sme_shared_layout(
+            list(slot_shape),
+            src_layout.elemType,
+            _drop_leading_dim_order(src_layout.order),
+            _drop_leading_dim_values(src_layout.numCTAsPerCGA),
+            _drop_leading_dim_values(src_layout.numCTASplit),
+            _drop_leading_dim_order(src_layout.numCTAOrder),
+        )
     if isinstance(src_layout, swizzled_shared_layout):
         return swizzled_shared_layout(
             src_layout.vectorSize,
@@ -460,6 +570,15 @@ def _make_slot_layout(src_layout: shared_layout, slot_shape: List[int]) -> share
 
 
 def _make_subslice_layout(src_layout: shared_layout, subslice_shape: List[int]) -> shared_layout:
+    if isinstance(src_layout, iluvatar_sme_shared_layout):
+        return iluvatar_sme_shared_layout(
+            list(subslice_shape),
+            src_layout.elemType,
+            list(src_layout.order),
+            list(src_layout.numCTAsPerCGA),
+            list(src_layout.numCTASplit),
+            list(src_layout.numCTAOrder),
+        )
     if isinstance(src_layout, swizzled_shared_layout):
         return swizzled_shared_layout(
             src_layout.vectorSize,

@@ -15,7 +15,9 @@ def smid(_semantic=None):
 
 @core.builtin
 def num_threads(_semantic=None):
-    return core.constexpr(_semantic.builder.options.num_warps * 32)
+    return core.constexpr(
+        _semantic.builder.options.num_warps * _semantic.builder.options.warp_size
+    )
 
 
 @core.builtin

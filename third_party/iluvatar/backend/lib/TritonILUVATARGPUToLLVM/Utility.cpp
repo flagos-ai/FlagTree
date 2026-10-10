@@ -319,11 +319,11 @@ unsigned getVectorSize(Value ptr, ModuleAxisInfoAnalysis &axisAnalysisPass) {
     return 1;
   auto contiguity = getContiguity(ptr, axisAnalysisPass);
   auto pointeeBitWidth = triton::getPointeeBitWidth(tensorTy);
-#ifdef __ILUVATAR__
-  // Global memory ld/st with 32 bit
-  if (pointeeBitWidth <= 32)
-    return std::min<unsigned>(32 / pointeeBitWidth, contiguity);
-#endif
+  // The historical 32-bit global load cap is stale for BI-V150: the LSA
+  // path supports 128-bit vector loads (C++ float4 microbenchmark,
+  // perf-iteration/ITERATION.md Trial 74: 366 GB/s vs 167 GB/s at 16
+  // CTAs), and the packed-weight GEMV kernels were capped at 32-bit
+  // (i8 x4), a major share of their 25 GB/s effective streaming rate.
   return std::min<unsigned>(128 / pointeeBitWidth, contiguity);
 }
 
@@ -331,12 +331,14 @@ unsigned getVectorSize(Value ptr, Value offset,
                        ModuleAxisInfoAnalysis &axisAnalysisPass) {
   auto contiguity = getContiguity(ptr, offset, axisAnalysisPass);
   auto pointeeBitWidth = triton::getPointeeBitWidth(ptr.getType());
-#ifdef __ILUVATAR__
-  // Global memory ld/st with 32 bit
-  if (pointeeBitWidth <= 32)
-    return std::min<unsigned>(32 / pointeeBitWidth, contiguity);
-#endif
   return std::min<unsigned>(128 / pointeeBitWidth, contiguity);
+}
+
+unsigned getLoadVectorSize(Value ptr, ModuleAxisInfoAnalysis &axisAnalysisPass,
+                           bool disableLoadVectorize) {
+  if (disableLoadVectorize)
+    return 1;
+  return getVectorSize(ptr, axisAnalysisPass);
 }
 
 Type scaleDotElemTypeToMLIRType(MLIRContext *ctx, triton::ScaleDotElemType t) {

@@ -1,6 +1,9 @@
 #include "mlir/Analysis/Liveness.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __ILUVATAR_TLE__
+#include "tle/dialect/include/Transforms/GridBarrierScratch.h"
+#endif
 
 using namespace mlir;
 using namespace triton;
@@ -54,6 +57,10 @@ static void allocateGMem(Operation *parentOp,
 
       nbytes = nbytes_attr.getValue().getZExtValue();
       align = align_attr.getValue().getZExtValue();
+#ifdef __ILUVATAR_TLE__
+    } else if ((nbytes = tle::getGridBarrierScratchBytes(op)) != 0) {
+      align = 4;
+#endif
     }
     if (nbytes > 0) {
       offset = roundUp(offset, align);

@@ -87,19 +87,19 @@ class BaseBackend(metaclass=ABCMeta):
         assert isinstance(desc, str)
         ret = []
         if "D" in desc:
-            ret += [["tt.divisibility", 4 if _is_corex() else 16]]
+            ret += [["tt.divisibility", 16]]
         return ret
 
     @staticmethod
     def get_int_specialization(arg, **kwargs):
-        divisibility = 4 if _is_corex() else 16
+        divisibility = 16
         if arg % divisibility == 0 and kwargs.get("align", False):
             return "D"
         return ""
 
     @staticmethod
     def get_tensor_specialization(arg, **kwargs):
-        divisibility = 4 if _is_corex() else 16
+        divisibility = 16
         if arg.data_ptr() % divisibility == 0 and kwargs.get("align", False):
             return "D"
         return ""

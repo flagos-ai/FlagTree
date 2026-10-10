@@ -416,7 +416,7 @@ static LogicalResult downgradeAsyncCopy(IRRewriter &rewriter,
   }
   auto load = tt::LoadOp::create(
       rewriter, copyOp.getLoc(), src, mask, other, copyOp.getCache(),
-      copyOp.getEvict(), copyOp.getIsVolatile(), rewriter.getStringAttr(""));
+      copyOp.getEvict(), copyOp.getIsVolatile());
   Value storeValue = load.getResult();
   auto loadTy = cast<RankedTensorType>(storeValue.getType());
   if (loadTy.getEncoding() != originalSrcTy.getEncoding()) {
@@ -450,6 +450,13 @@ struct DowngradeInvalidAsyncCopyPass
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> invalidCopies;
     module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
       dropUnsafeLoopFreePartitionCachePolicy(copyOp);
+#ifdef __ILUVATAR__
+      // Iluvatar SME async copies use inputStride plus an SME source
+      // encoding.  Their transaction shape is defined by the SME lowering,
+      // not by the NVIDIA cp.async byte-width table below.
+      if (copyOp.isIluvatarSmeAsyncCopy())
+        return;
+#endif
       if (hasLegalCpAsyncWidth(copyOp, axisInfo))
         return;
       invalidCopies.push_back(copyOp);

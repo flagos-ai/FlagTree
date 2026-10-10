@@ -420,7 +420,7 @@ LogicalResult verifyPipeAttrs(Operation *op, OperandRange fields) {
       static_cast<int64_t>(fields.size()))
     return op->emitOpError("expects field_names size to match field operands");
 
-  if (failed(verifyPipeNameArray(op, fieldNamesAttr, "field", false)))
+  if (failed(verifyPipeNameArray(op, fieldNamesAttr, "field", true)))
     return failure();
 
   if (auto readersAttr = op->getAttrOfType<ArrayAttr>("readers")) {
@@ -433,8 +433,6 @@ LogicalResult verifyPipeAttrs(Operation *op, OperandRange fields) {
       return op->emitOpError("expects valid public pipe reader_name");
   }
 
-  if (fields.empty())
-    return op->emitOpError("expects at least one pipe field");
   for (Value field : fields) {
     auto type = cast<ttg::MemDescType>(field.getType());
     if (!isa<ttg::SharedMemorySpaceAttr>(type.getMemorySpace()))
@@ -463,6 +461,38 @@ LogicalResult verifyPipeStage(Operation *op, Value stage) {
 }
 
 } // namespace
+
+LogicalResult MemDescAliasOp::verify() {
+  auto src = getSrc().getType();
+  auto dst = getType();
+  int64_t offset = getOffsetBytes();
+  if (src.getMemorySpace() != dst.getMemorySpace() ||
+      !isa<ttg::SharedMemorySpaceAttr>(src.getMemorySpace()))
+    return emitOpError("requires matching shared memory spaces");
+  if (dst.getMutableMemory() && !src.getMutableMemory())
+    return emitOpError("cannot create mutable view of immutable storage");
+  int64_t srcBytes = (src.getElementTypeBitWidth() + 7) / 8;
+  int64_t dstBytes = (dst.getElementTypeBitWidth() + 7) / 8;
+  if (offset < 0 || offset > std::numeric_limits<int32_t>::max() || offset % dstBytes)
+    return emitOpError("requires nonnegative aligned i32 byte offset");
+  for (int64_t dim : src.getShape()) {
+    if (dim <= 0 || srcBytes > std::numeric_limits<int64_t>::max() / dim)
+      return emitOpError("requires bounded static source size");
+    srcBytes *= dim;
+  }
+  for (int64_t dim : dst.getShape()) {
+    if (dim <= 0 || dstBytes > std::numeric_limits<int64_t>::max() / dim)
+      return emitOpError("requires bounded static result size");
+    dstBytes *= dim;
+  }
+  if (dstBytes > srcBytes || offset > srcBytes - dstBytes)
+    return emitOpError("alias must fit within source view");
+  return success();
+}
+
+LogicalResult PipeDrainOp::verify() {
+  return verifyPipeAttrs(getOperation(), getFields());
+}
 
 LogicalResult PipeCreateOp::verify() {
   return verifyPipeAttrs(getOperation(), getFields());

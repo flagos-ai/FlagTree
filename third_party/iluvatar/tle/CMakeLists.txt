@@ -42,10 +42,12 @@ add_triton_library(IluvatarTleTransforms
   lib/Transforms/IluvatarTleOptimizeLocalPointerLoads.cpp
   lib/Transforms/IluvatarTleOptimizeLocalPointerStores.cpp
   lib/Transforms/IluvatarTleLowerPipeToBarriers.cpp
+  ${PROJECT_SOURCE_DIR}/third_party/tle/dialect/lib/Transforms/TleDowngradeInvalidAsyncCopy.cpp
 
   DEPENDS
   IluvatarTleTableGen
   IluvatarTleTransformsIncGen
+  TritonTLETransformsIncGen
 
   LINK_LIBS PUBLIC
   IluvatarTleIR
