@@ -15,6 +15,10 @@
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+{% if call.local_m_capacity != 1 %}
+    for dense_local_m in tl.range(0, {{ call.local_m_capacity }}):
+{% endif %}
+{% filter indent(4 if call.local_m_capacity != 1 else 0, first=True) %}
     dense_stats_square_sum = tl.zeros(({{ call.tile_n }},), tl.float32)
     for dense_local_n_start in tl.range(
         0, {{ call.local_n_capacity }}, {{ call.tile_n }}
@@ -72,6 +76,7 @@ def {{ call.symbol }}({{ call.signature }}):
         tl.sum(dense_stats_square_sum, axis=0),
         mask={{ call.stats_writer_active }},
     )
+{% endfilter %}
 
 
 {% endif %}

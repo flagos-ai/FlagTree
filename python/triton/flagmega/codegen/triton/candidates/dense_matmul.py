@@ -613,12 +613,9 @@ class MatMulNormStatsCandidateProvider:
         ):
             return None
         value_type = output_type.fields[0]
-        if (
-            any(not dimension.is_fixed for dimension in value_type.shape[:-1])
-            or prod(
-                dimension.fixed_value for dimension in value_type.shape[:-1]
-            ) != 1
-        ):
+        # M==1 (decode) reduces one row; M>1 (prefill) iterates an explicit row
+        # loop with per-row RMS statistics (the fused template owns the loop).
+        if any(not dimension.is_fixed for dimension in value_type.shape[:-1]):
             return None
         axis = int(node.attrs["axis"])
         axis = axis + value_type.rank if axis < 0 else axis

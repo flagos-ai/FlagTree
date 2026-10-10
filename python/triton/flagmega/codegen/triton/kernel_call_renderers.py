@@ -3271,29 +3271,37 @@ def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
     value_scalar_strides = _static_shape(
         value_abi, "scalar_storage_strides"
     )
-    if (
-        prod(value_shape[:-1], start=1) != 1
-        or not value_scalar_strides
-        or value_scalar_strides[-1] != value_lane_count
-    ):
+    value_rows = prod(value_shape[:-1], start=1)
+    if not value_scalar_strides or value_scalar_strides[-1] != value_lane_count:
         raise CodegenError(
-            "Packed MatMulNormStats statistics reduction requires one row in "
-            "a contiguous result backing."
+            "Packed MatMulNormStats statistics reduction requires a contiguous "
+            "result backing."
         )
+    stats_shape = _static_shape(stats_abi, "local_capacity_shape")
     if (
         int(stats_abi.get("scalar_lane_count", 1)) != 1
-        or prod(_static_shape(stats_abi, "local_capacity_shape"), start=1) != 1
+        or prod(stats_shape, start=1) != value_rows
         or str(stats_abi.get("scalar_dtype")) != "float32"
     ):
         raise CodegenError(
-            "Packed MatMulNormStats requires one scalar F32 statistics result."
+            "Packed MatMulNormStats requires one scalar F32 statistic per "
+            "result row."
         )
+    # M>1 (prefill) iterates the matmul's own row loop (dense_local_m); each row
+    # addresses its residual slice and writes its own statistic.
+    local_m = int(result.get("local_m_capacity", 1))
+    row_coordinate = "dense_local_m" if local_m != 1 else None
     residual_domain = _scalar_last_axis_domain(
         residual_abi,
         "dense_local_n_offsets",
         owner="MatMulNormStats residual",
+        row_coordinate=row_coordinate,
     )
-    stats_shape = _static_shape(stats_abi, "local_capacity_shape")
+    stats_coordinates = (
+        _unflattened_coordinates(stats_shape, "dense_local_m")
+        if local_m != 1
+        else ("0",) * len(stats_shape)
+    )
     result.update({
         "residual": _pointer(residual),
         # Projection precision belongs to the matmul, not the epilogue ABI.
@@ -3302,9 +3310,7 @@ def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
         "addend_cast_types": tuple(_triton_dtype(dtype) for dtype in attrs.get("addend_cast_dtypes", ())),
         "residual_offset": residual_domain["offset"],
         "stats": _pointer(stats),
-        "stats_offset": emit_local_scalar_offset(
-            stats_abi, ("0",) * len(stats_shape)
-        ),
+        "stats_offset": emit_local_scalar_offset(stats_abi, stats_coordinates),
         "result_writer_active": _canonical_writer_active(value_abi),
         "stats_writer_active": _canonical_writer_active(stats_abi),
     })

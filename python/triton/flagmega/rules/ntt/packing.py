@@ -94,17 +94,23 @@ class NttPackingPolicy:
                 users.setdefault(input_id, []).append(consumer)
 
         def feeds_norm(node: Node) -> bool:
-            # A projection fused with a residual+RMS-norm epilogue keeps its own
-            # efficient packed fused kernel; its output layout also feeds the
-            # norm-stats partial materialization, which a logical (tensor-core)
-            # layout cannot satisfy. Walk a few hops (matmul -> add -> norm,
-            # allowing boxing/reshard adapters) and keep such matmuls packed.
+            # A projection feeding a residual add + RMS-norm epilogue keeps its
+            # packed layout: it either fuses into the packed matmul_norm_stats
+            # microkernel or stays a packed gemv whose residual add is loop
+            # carried to a later norm (that add may be a function output with no
+            # in-function consumer, so treat a residual math.add as norm-bound).
+            # A logical (tensor-core) layout cannot satisfy that partial. Walk a
+            # few hops through boxing/reshard adapters; lm_head feeds a cast (no
+            # residual add) and still flips to the WMMA path.
             frontier = [node.id]
             for _ in range(4):
                 nxt: list[str] = []
                 for value_id in frontier:
                     for consumer in users.get(value_id, ()):
-                        if "norm" in consumer.op:
+                        if (
+                            "norm" in consumer.op
+                            or consumer.op in {"math.add", "math.vectorized_binary"}
+                        ):
                             return True
                         nxt.append(consumer.id)
                 frontier = nxt
