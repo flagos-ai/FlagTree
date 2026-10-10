@@ -3,57 +3,64 @@
 {% if render_calls is defined %}
 {% for call in render_calls %}
 {% if call.family == "qkv_parallel_linear" and call.variant == "packed_fused_gemv" %}
-{{ entry.kernel_decorator(call) }}
+{{ entry.kernel_decorator(call) }}  {#- prefer_inline=true re-tested in Trial 55; see dense_matmul/_function.py.jinja's matching note -- kept reverted, no net performance win under current conditions even though Trial 15's stability mystery is now explained (Trial 49). #}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
 {% for output in call.outputs %}
     for qkv_local_n_start in tl.range(
         0, {{ output.local_n_capacity }}, {{ call.tile_n }}
     ):
-        qkv_local_n_offsets = qkv_local_n_start + tl.arange(0, {{ call.tile_n }})
-        qkv_n_mask = (
-            (qkv_local_n_offsets < {{ output.local_n_capacity }})
-            & ({{ output.active }})
+        {# A packed K group stores N rows of k_lane contiguous elements.
+           Keep that physical order through the multiply and accumulate;
+           reducing the two K axes at loop exit avoids converting each load
+           to a logical (N, K) layout, which needs shared-memory exchanges. #}
+        qkv_payload = tl.arange(0, {{ call.tile_n * call.k_lane }})
+        qkv_n = qkv_local_n_start + qkv_payload // {{ call.k_lane }}
+        qkv_k_groups = tl.arange(0, {{ call.block_k // call.k_lane }})
+        qkv_accumulator = tl.zeros(
+            ({{ call.block_k // call.k_lane }}, {{ call.tile_n * call.k_lane }}),
+            tl.float32,
         )
-        qkv_accumulator = tl.zeros(({{ call.tile_n }},), tl.float32)
         for qkv_local_k_start in tl.range(
             0, {{ call.local_k_capacity }}, {{ call.block_k }}
         ):
-            qkv_local_k_offsets = qkv_local_k_start + tl.arange(0, {{ call.block_k }})
-            qkv_k_mask = (
-                (qkv_local_k_offsets < {{ call.local_k_capacity }})
-                & ({{ call.source_active }})
+            qkv_local_k_offsets = (
+                qkv_local_k_start + qkv_k_groups[:, None] * {{ call.k_lane }}
+                + qkv_payload[None, :] % {{ call.k_lane }}
             )
             qkv_source = tl.load(
                 {{ call.source }} + ({{ call.source_offset }}),
-                mask=qkv_k_mask,
-                other=0.0,
-            ).to(tl.float32)
+                mask=(qkv_local_k_offsets < {{ call.local_k_capacity }})
+                & ({{ call.source_active }}), other=0.0,
+            )
+            qkv_local_n_offsets = qkv_n[None, :]
             qkv_weight_offsets = (
                 shard_index * {{ call.weight_owner_stride }}
-                + (qkv_local_k_offsets[None, :] // {{ call.k_lane }})
+                + (qkv_local_k_start // {{ call.k_lane }} + qkv_k_groups[:, None])
                     * {{ call.weight_k_group_stride }}
-                + ({{ output.weight_group_start }}
-                   + qkv_local_n_offsets[:, None] // {{ call.n_lane }})
+                + ({{ output.weight_group_start }} + qkv_n[None, :] // {{ call.n_lane }})
                     * {{ call.weight_n_group_stride }}
-                + (qkv_local_n_offsets[:, None] % {{ call.n_lane }})
-                    * {{ call.k_lane }}
-                + ((qkv_local_k_offsets[None, :] % {{ call.k_lane }})
-                    // {{ call.k_vector }}) * {{ call.k_vector }}
-                + qkv_local_k_offsets[None, :] % {{ call.k_vector }}
+                + (qkv_n[None, :] % {{ call.n_lane }}) * {{ call.k_lane }}
+                + qkv_payload[None, :] % {{ call.k_lane }}
             )
             qkv_weight = tl.load(
                 {{ call.weight }} + qkv_weight_offsets,
-                mask=qkv_n_mask[:, None] & qkv_k_mask[None, :],
-                other=0.0,
-            ).to(tl.float32)
-            qkv_accumulator += tl.sum(
-                qkv_weight * qkv_source[None, :], axis=1
+                mask=(qkv_n[None, :] < {{ output.local_n_capacity }})
+                & ({{ output.active }})
+                & (qkv_local_k_offsets < {{ call.local_k_capacity }})
+                & ({{ call.source_active }}), other=0.0,
             )
+            qkv_accumulator += qkv_weight.to(tl.float32) * qkv_source.to(tl.float32)
+        qkv_result = tl.sum(tl.sum(tl.reshape(
+            qkv_accumulator,
+            ({{ call.block_k // call.k_lane }}, {{ call.tile_n }}, {{ call.k_lane }}),
+        ), axis=2), axis=0)
+        qkv_local_n_offsets = qkv_local_n_start + tl.arange(0, {{ call.tile_n }})
         tl.store(
             {{ output.result }} + ({{ output.result_offset }}),
-            qkv_accumulator.to({{ call.output_type }}),
-            mask=qkv_n_mask,
+            qkv_result.to({{ call.output_type }}),
+            mask=(qkv_local_n_offsets < {{ output.local_n_capacity }})
+                & ({{ output.active }}),
         )
 {% endfor %}
 

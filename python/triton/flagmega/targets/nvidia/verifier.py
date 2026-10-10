@@ -35,7 +35,7 @@ def candidate_requirements(candidate) -> tuple[str, ...]:
 
 def verify_sm90_module(
     module: IRModule,
-    capability: Sm90Capability,
+    capability,
     *,
     target_name: str,
     policy_version: str,
@@ -120,7 +120,7 @@ def verify_sm90_module(
         snapshot = module.metadata.get("target_capability")
         try:
             snapshot_capability = (
-                Sm90Capability.from_data(snapshot)
+                type(capability).from_data(snapshot)
                 if isinstance(snapshot, Mapping)
                 else None
             )

@@ -1,7 +1,7 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul" and call.variant == dense_matmul_variant %}
-{{ entry.kernel_decorator(call) }}
+{{ entry.kernel_decorator(call) }}  {#- prefer_inline=true re-tested in Trial 55 (perf-iteration/ITERATION.md): Trial 15's stability mystery IS explained by Trial 49's CUDA-lazy-loading root cause (no hang/ValueError reproduces now), but the performance benefit Trial 14 originally measured does not hold up under current conditions -- projection_wide regressed 6.6% with this enabled. Kept reverted; the earlier inline-vs-helper-call template body below is left in place (inert while prefer_inline defaults to false) per the skill's "don't discard rejected trials" guidance, not because it was wrong to write. #}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
 {% if call.local_m_capacity != 1 %}
@@ -13,20 +13,41 @@ def {{ call.symbol }}({{ call.signature }}):
     ):
         dense_local_n_offsets = dense_local_n_start + tl.arange(0, {{ call.tile_n }})
         dense_global_n = {{ call.global_n }}
+        {# Mask elision when bounds divide exactly and the active
+           predicate folded to literal True -- see the matching note in
+           qkv_parallel_linear/packed_fused_gemv.py.jinja (Trial 65). #}
+        {% set dense_n_masked = (call.local_n_capacity % call.tile_n != 0) or (call.result_active != "True") %}
+        {% if dense_n_masked %}
         dense_n_mask = (
             (dense_local_n_offsets < {{ call.local_n_capacity }})
             & ({{ call.result_active }})
         )
+        {% endif %}
+{% if dense_matmul_uses_descriptor %}
         dense_accumulator = tl.zeros(({{ call.tile_n }},), tl.float32)
+{% else %}
+        {# 2D accumulator with the k-axis reduce deferred to loop exit:
+           see qkv_parallel_linear/packed_fused_gemv.py.jinja (Trial 60)
+           -- deferring broke the per-iteration reduce->add->reload
+           serial chain and measured -25.7% on BI-V150. The descriptor
+           path keeps the 1D form because its accumulate helper already
+           returns per-k-block reduced vectors. #}
+        dense_accumulator = tl.zeros(
+            ({{ call.tile_n }}, {{ call.block_k }}), tl.float32
+        )
+{% endif %}
         for dense_local_k_start in tl.range(
             0, {{ call.local_k_capacity }}, {{ call.block_k }}
         ):
             dense_local_k_offsets = dense_local_k_start + tl.arange(0, {{ call.block_k }})
             dense_global_k = {{ call.global_k }}
+            {% set dense_k_masked = (call.local_k_capacity % call.block_k != 0) or (call.source_active != "True") %}
+            {% if dense_k_masked or dense_matmul_uses_descriptor %}
             dense_k_mask = (
                 (dense_local_k_offsets < {{ call.local_k_capacity }})
                 & ({{ call.source_active }})
             )
+            {% endif %}
 {% if dense_matmul_uses_descriptor %}
             dense_accumulator += {{ call.accumulate_helper }}(
                 {{ call.source }}, {{ call.weight_descriptor }},
@@ -35,17 +56,57 @@ def {{ call.symbol }}({{ call.signature }}):
                 dense_k_mask, {{ call.transpose_b }},
             )
 {% else %}
-            dense_accumulator += {{ call.accumulate_helper }}(
-                {{ call.source }}, {{ call.weight }},
-                {{ call.source_offset }}, {{ call.weight_offset }},
-                dense_k_mask, dense_n_mask,
+{# Preserve FP32 products while deferring the K reduction. #}
+            {% if dense_k_masked %}
+            dense_source_value = tl.load(
+                {{ call.source }} + ({{ call.source_offset }}),
+                mask=dense_k_mask, other=0.0,
             )
+            {% else %}
+            dense_source_value = tl.load({{ call.source }} + ({{ call.source_offset }}))
+            {% endif %}
+            {% if dense_n_masked and dense_k_masked %}
+            dense_weight_value = tl.load(
+                {{ call.weight }} + ({{ call.weight_offset }}),
+                mask=dense_n_mask[:, None] & dense_k_mask[None, :],
+                other=0.0,
+            )
+            {% elif dense_n_masked %}
+            dense_weight_value = tl.load(
+                {{ call.weight }} + ({{ call.weight_offset }}),
+                mask=dense_n_mask[:, None],
+                other=0.0,
+            )
+            {% elif dense_k_masked %}
+            dense_weight_value = tl.load(
+                {{ call.weight }} + ({{ call.weight_offset }}),
+                mask=dense_k_mask[None, :],
+                other=0.0,
+            )
+            {% else %}
+            dense_weight_value = tl.load({{ call.weight }} + ({{ call.weight_offset }}))
+            {% endif %}
+            dense_accumulator += (
+                dense_weight_value.to(tl.float32) * dense_source_value[None, :].to(tl.float32)
+            ).to(tl.float32)
 {% endif %}
+{% if dense_matmul_uses_descriptor %}
+        dense_result = dense_accumulator
+{% else %}
+        dense_result = tl.sum(dense_accumulator, axis=1)
+{% endif %}
+        {% if dense_n_masked %}
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
-            dense_accumulator.to({{ call.output_type }}),
+            dense_result.to({{ call.output_type }}),
             mask=dense_n_mask,
         )
+        {% else %}
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            dense_result.to({{ call.output_type }}),
+        )
+        {% endif %}
 {% endfilter %}
 
 

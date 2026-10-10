@@ -12,8 +12,8 @@ from triton.flagmega.ir import IRModule, Placement
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.targets.ntt_options import NttTargetOptions
 from triton.flagmega.targets.nvidia.capability import Sm90Capability
-from triton.flagmega.targets.nvidia.implementations import (
-    sm90_triton_implementation_model,
+from triton.flagmega.targets.portable_triton_implementations import (
+    portable_triton_implementation_model,
 )
 from triton.flagmega.targets.nvidia.launch import sm90_launch_parameters
 from triton.flagmega.targets.nvidia.memory import sm90_bufferization_options
@@ -61,7 +61,7 @@ class NvidiaSm90Machine:
         )
 
     def triton_implementation_model(self):
-        return self._implementation_model or sm90_triton_implementation_model()
+        return self._implementation_model or portable_triton_implementation_model()
 
     def bufferization_options(self):
         return sm90_bufferization_options(self.capability)

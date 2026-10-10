@@ -2,7 +2,7 @@
 def {{ dense_matmul_accumulate_helper }}(
     source, weight, source_offsets, weight_offsets, k_mask, n_mask,
 ):
-    """Accumulate one ABI-addressed local M=1 GEMV tile."""
+    """Multiply in FP32 so BF16 products retain their full precision."""
     source_value = tl.load(
         source + source_offsets, mask=k_mask, other=0.0,
     ).to(tl.float32)

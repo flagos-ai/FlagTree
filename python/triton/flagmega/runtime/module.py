@@ -41,6 +41,62 @@ from triton.flagmega.runtime.workspace_diagnostics import (
 )
 
 
+def _resource_contract(codegen, target, *, requires_grid_wide_sync: bool = False, device: str | None = None):
+    target = str(target or "")
+    if target == "iluvatar-bi-v150":
+        # BI-V150's driver has no CUDA cooperative-launch admission API, so a
+        # grid-wide barrier is only safe when the launch grid cannot exceed
+        # the physical SM count (see ResourceContract.requires_grid_wide_sync
+        # and _validate_resources). Query the live device this artifact was
+        # loaded on rather than assume a fixed SM count or the process-wide
+        # default device, so this stays correct for multi-GPU processes and
+        # across BI-V150 variants.
+        available_sm_count = None
+        if requires_grid_wide_sync:
+            torch = _torch()
+            target_device = device if device is not None else torch.cuda.current_device()
+            available_sm_count = int(
+                torch.cuda.get_device_properties(target_device).multi_processor_count
+            )
+        return ResourceContract(
+            compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
+            # COREX/BI-V150 accepts a 256-register kernel. This is different
+            # from the generic NVIDIA-compatible default of 255; see the
+            # direct launch evidence in perf-iteration/ITERATION.md Trial 129.
+            registers_per_thread_limit=256, register_file_capacity_per_sm=262144,
+            shared_memory_capacity_bytes=131072, warp_size=64,
+            requires_grid_wide_sync=requires_grid_wide_sync,
+            cooperative_launch_admission=False,
+            available_sm_count=available_sm_count,
+            # COREX's compiler reports only the aggregate n_spills count, not
+            # ptxas' per-function stack/spill-store/spill-load breakdown --
+            # see ResourceContract.reports_ptxas_resource_fields.
+            reports_ptxas_resource_fields=False,
+            # BI-V150's backend emits a small, fixed, content- and
+            # maxnreg-independent local-memory footprint (measured up to 96
+            # bytes / 24 words on the full flagmega_main artifact; verified
+            # unrelated to kernel source -- neutering every Triton op between
+            # the barrier that introduces it and the prior one leaves the
+            # spill unchanged) once a force-inlined callee accumulates 3+
+            # internal grid barriers. It doesn't grow with kernel size or
+            # maxnreg, so tolerate it here rather than disable the spill
+            # check outright -- a genuinely new, much larger spill (e.g. from
+            # a future kernel change) will still raise.
+            spill_tolerance_bytes=128,
+        )
+    return ResourceContract(
+        compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
+        requires_grid_wide_sync=requires_grid_wide_sync,
+    )
+
+
+def _requires_grid_wide_sync(ir_module) -> bool:
+    launch_contract = ir_module.metadata.get("launch_contract")
+    if not isinstance(launch_contract, Mapping):
+        return False
+    return bool(launch_contract.get("cooperative_grid", False))
+
+
 class GeneratedElementwiseModule(RuntimeModule):
     def __init__(self, artifact: Path, manifest: dict[str, object], ir_module, kernel) -> None:
         super().__init__()
@@ -68,11 +124,7 @@ class GeneratedElementwiseModule(RuntimeModule):
 
     def load(self, device: str = "cuda:0") -> GeneratedElementwiseModule:
         torch = _torch()
-        if not device.startswith("cuda") or not torch.cuda.is_available():
-            raise RuntimeContractError(f"Executable target nvidia-sm90 requires a CUDA device, got {device!r}.")
-        capability = torch.cuda.get_device_capability(torch.device(device))
-        if capability != (9, 0):
-            raise RuntimeContractError(f"Artifact target nvidia-sm90 requires capability (9, 0), got {capability}.")
+        _validate_artifact_device(torch, device, self.manifest.get("target"))
         self._mark_loaded(device)
         return self
 
@@ -85,14 +137,18 @@ class GeneratedElementwiseModule(RuntimeModule):
         self._validate_tensor("output", output, self._output_type)
         if str(output.device) != self._device:
             raise RuntimeContractError(f"Output must be on prepared device {self._device}, got {output.device}.")
-        contract = ResourceContract(compute_num_warps=int(self.codegen["num_warps"]), resident_blocks_per_sm=1)
+        contract = _resource_contract(
+            self.codegen, self.manifest.get("target"),
+            requires_grid_wide_sync=_requires_grid_wide_sync(self.ir_module),
+            device=self._device,
+        )
         self._prepared = prepare_jit_kernel(
             self.kernel,
             (*inputs, output),
             tuple(int(value) for value in self.codegen["dynamic_argument_indices"]),
             grid=tuple(int(value) for value in self.codegen["grid"]),
             contract=contract,
-            **compilation_options(contract),
+            **compilation_options(contract, self.manifest.get("target", "")),
         )
         self.prepare_count += 1
         self._mark_prepared()
@@ -173,14 +229,27 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         self.artifact = artifact
         self.manifest = manifest
         self.ir_module = ir_module
-        self.kernel = kernel
+        # `kernel` is either a single JITFunction (the only shape every
+        # existing caller/artifact uses today) or a tuple of JITFunctions:
+        # a sequence launched in order on one stream, replacing in-kernel
+        # grid barriers with launch boundaries for targets that opt in via
+        # `codegen["kernels"]` (see perf-iteration/ITERATION.md Trial
+        # 31-32). `self.kernel` stays a single JITFunction for backward
+        # compatibility with every reader of that attribute.
+        self.kernels: tuple = kernel if isinstance(kernel, tuple) else (kernel,)
+        self.kernel = self.kernels[0]
         self.codegen = manifest["codegen"]
         binding = self.codegen.get("runtime_binding")
         if not isinstance(binding, Mapping):
             raise ArtifactError("TIR call-graph artifact has no runtime binding.")
         self.runtime_binding = binding
         self.buffer_plan = verify_buffer_plan(ir_module)
-        self._prepared = None
+        # A tuple of PreparedKernel, one per entry in self.kernels, built by
+        # _prepare_external. None (not an empty tuple) means "not prepared
+        # yet" -- kept as a single None/tuple union, not a tuple that's
+        # sometimes empty, so `self._prepared is None` stays a reliable
+        # prepared-state check exactly as it was for the single-kernel case.
+        self._prepared: tuple | None = None
         self._pool_values: dict[str, object] = {}
         self._tensor_descriptors = TensorDescriptorCache()
         self.prepare_count = 0
@@ -248,7 +317,18 @@ class GeneratedTirCallGraphModule(RuntimeModule):
 
     @property
     def resource_report(self):
-        return None if self._prepared is None else self._prepared.resource_report
+        # Single-kernel case (every artifact today): identical to before --
+        # the first (only) prepared kernel's report, same dict shape every
+        # existing caller depends on (e.g. report["spill_bytes"]).
+        # Multi-kernel case: no artifact exercises this yet; reporting a
+        # tuple of per-kernel reports here rather than silently picking one
+        # is the safer default until a real caller defines what "the"
+        # resource report of a kernel sequence should mean.
+        if self._prepared is None:
+            return None
+        if len(self._prepared) == 1:
+            return self._prepared[0].resource_report
+        return tuple(prepared.resource_report for prepared in self._prepared)
 
     @property
     def external_arguments(self) -> tuple[Mapping[str, object], ...]:
@@ -256,7 +336,7 @@ class GeneratedTirCallGraphModule(RuntimeModule):
 
     def load(self, device: str = "cuda:0") -> "GeneratedTirCallGraphModule":
         torch = _torch()
-        _validate_sm90_device(torch, device)
+        _validate_artifact_device(torch, device, self.manifest.get("target"))
         pools: dict[str, object] = {}
         for pool in self.runtime_binding["pools"]:
             name = str(pool["name"])
@@ -379,6 +459,47 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                 ) from error
         return tuple(values)
 
+    def _kernel_launch_specs(self) -> tuple[dict[str, object], ...]:
+        """Per-kernel (dynamic_argument_indices, grid) for each entry in
+        self.kernels, in launch order.
+
+        Single-kernel artifacts (every one today) have no `codegen["kernels"]`
+        key: this returns exactly the one spec built from the existing
+        top-level `codegen["dynamic_argument_indices"]`/`["grid"]`, unchanged
+        from before this method existed. Multi-kernel artifacts (opt-in via
+        `codegen["kernels"]`, see ITERATION.md Trial 31-32) get one spec per
+        list entry instead.
+        """
+        raw_kernels = self.codegen.get("kernels")
+        if raw_kernels is None:
+            if len(self.kernels) != 1:
+                raise ArtifactError(
+                    "Runtime module has multiple kernels but the manifest's "
+                    "codegen has no 'kernels' list describing them."
+                )
+            return (
+                {
+                    "dynamic_argument_indices": tuple(
+                        int(value) for value in self.codegen["dynamic_argument_indices"]
+                    ),
+                    "grid": tuple(int(value) for value in self.codegen["grid"]),
+                },
+            )
+        if len(raw_kernels) != len(self.kernels):
+            raise ArtifactError(
+                f"Manifest describes {len(raw_kernels)} kernel(s) but "
+                f"{len(self.kernels)} were resolved from the generated source."
+            )
+        return tuple(
+            {
+                "dynamic_argument_indices": tuple(
+                    int(value) for value in spec["dynamic_argument_indices"]
+                ),
+                "grid": tuple(int(value) for value in spec["grid"]),
+            }
+            for spec in raw_kernels
+        )
+
     def _prepare_external(self, external_arguments: tuple[object, ...]) -> None:
         self._require_loaded()
         self._validate_external_arguments(external_arguments)
@@ -390,17 +511,22 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             external_arguments
         )
         arguments = (*external_arguments, *pool_arguments, *descriptors)
-        contract = ResourceContract(
-            compute_num_warps=int(self.codegen["num_warps"]),
-            resident_blocks_per_sm=1,
+        contract = _resource_contract(
+            self.codegen, self.manifest.get("target"),
+            requires_grid_wide_sync=_requires_grid_wide_sync(self.ir_module),
+            device=self._device,
         )
-        self._prepared = prepare_jit_kernel(
-            self.kernel,
-            arguments,
-            tuple(int(value) for value in self.codegen["dynamic_argument_indices"]),
-            grid=tuple(int(value) for value in self.codegen["grid"]),
-            contract=contract,
-            **compilation_options(contract),
+        specs = self._kernel_launch_specs()
+        self._prepared = tuple(
+            prepare_jit_kernel(
+                kernel,
+                arguments,
+                spec["dynamic_argument_indices"],
+                grid=spec["grid"],
+                contract=contract,
+                **compilation_options(contract, self.manifest.get("target", "")),
+            )
+            for kernel, spec in zip(self.kernels, specs, strict=True)
         )
         self.prepare_count += 1
         self._mark_prepared()
@@ -418,11 +544,21 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         dynamic_descriptors = tuple(
             descriptors[index] for index in self._dynamic_descriptor_indices
         )
-        self._prepared.launch(
-            *external_arguments,
-            *dynamic_descriptors,
-            stream=stream,
-        )
+        # Launched in order on the caller's stream (or the current stream,
+        # when `stream` is None -- see PreparedKernel.launch). CUDA/CoreX
+        # serializes kernel launches on one stream by construction: by the
+        # time a later launch's CTAs start, every earlier launch's CTAs have
+        # retired and their global-memory writes (workspace, external
+        # buffers) are visible. For the multi-kernel case, this is exactly
+        # the cross-CTA visibility guarantee an in-kernel grid barrier would
+        # have provided, via a mechanism this backend actually supports
+        # (see ITERATION.md Trial 31's hardware-measured validation).
+        for prepared in self._prepared:
+            prepared.launch(
+                *external_arguments,
+                *dynamic_descriptors,
+                stream=stream,
+            )
 
     def _materialize_tensor_descriptors(
         self, external_arguments: tuple[object, ...]
@@ -472,7 +608,9 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             raise ArtifactError(
                 "Executable TIR artifact requires a packed rdata image."
             )
-        index = verify_rdata(self.artifact / "assets", module=self.ir_module)
+        index = self.manifest.get("_verified_rdata_index")
+        if not isinstance(index, Mapping):
+            index = verify_rdata(self.artifact / "assets", module=self.ir_module)
         if int(index["nbytes"]) != expected_nbytes:
             raise ArtifactError(
                 "TIR rdata pool size does not match its runtime binding."
@@ -1198,12 +1336,18 @@ def _torch_dtype(torch, dtype):
         ) from error
 
 
-def _validate_sm90_device(torch, device: str) -> None:
+def _validate_artifact_device(torch, device: str, target: object) -> None:
+    target = str(target or "")
     if not device.startswith("cuda") or not torch.cuda.is_available():
-        raise RuntimeContractError(f"Executable target nvidia-sm90 requires a CUDA device, got {device!r}.")
-    capability = torch.cuda.get_device_capability(torch.device(device))
-    if capability != (9, 0):
-        raise RuntimeContractError(f"Artifact target nvidia-sm90 requires capability (9, 0), got {capability}.")
+        raise RuntimeContractError(f"Executable target {target!r} requires a CUDA-compatible device, got {device!r}.")
+    capability = tuple(torch.cuda.get_device_capability(torch.device(device)))
+    expected = {"nvidia-sm90": (9, 0), "iluvatar-bi-v150": (7, 1)}.get(target)
+    if expected is None:
+        raise RuntimeContractError(f"Unsupported executable FlagMega target {target!r}.")
+    if capability != expected:
+        raise RuntimeContractError(f"Artifact target {target} requires capability {expected}, got {capability}.")
+    if target == "iluvatar-bi-v150" and not getattr(torch, "corex", False):
+        raise RuntimeContractError("Artifact target iluvatar-bi-v150 requires COREX PyTorch.")
 
 
 def _typed_byte_view(storage, offset: int, nbytes: int, dtype: object, shape: tuple[int, ...]):

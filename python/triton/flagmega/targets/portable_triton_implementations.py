@@ -1,6 +1,16 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""SM90 Triton implementation catalog and preference order."""
+"""Portable Triton implementation catalog and preference order.
+
+Despite living next to the `nvidia/` package historically, this catalog
+is not NVIDIA-exclusive: `targets/iluvatar_bi_v150.py`'s
+`corex_triton_implementation_model()` builds COREX's own implementation
+model by taking this same catalog and filtering it down to the
+candidates that survive without a CUDA-TMA/tensor-descriptor ABI (see
+that function's docstring). Keep new implementations here
+target-neutral (portable Triton, no target-specific codegen) unless
+they genuinely only make sense on NVIDIA hardware.
+"""
 
 from dataclasses import replace
 
@@ -57,7 +67,7 @@ def _implementation(
     )
 
 
-def sm90_triton_implementation_model() -> TritonImplementationModel:
+def portable_triton_implementation_model() -> TritonImplementationModel:
     """Describe implemented SM90 variants without putting machine knobs in rules."""
 
     cooperative = ("cooperative_grid",)
@@ -493,6 +503,76 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             },
         ),
         _implementation(
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn64",
+            "dense_matmul",
+            "split_k_n_packed_k_major_gemv",
+            {
+                "block_k": 256,
+                "split_k_block_k": 64,
+                "tile_n": 64,
+                "compute_num_warps": 16,
+            },
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "packed_layout": "k_major_n8_k16",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "output_reduction_split",
+                "supports_masked_tiles": True,
+            },
+            facts={
+                "chip_visible_partial_owners": True,
+                "portable_triton": True,
+            },
+        ),
+        _implementation(
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn64_bk128",
+            "dense_matmul",
+            "split_k_n_packed_k_major_gemv",
+            {
+                "block_k": 256,
+                "split_k_block_k": 128,
+                "tile_n": 64,
+            },
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "packed_layout": "k_major_n8_k16",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "output_reduction_split",
+                "supports_masked_tiles": True,
+            },
+            facts={
+                "chip_visible_partial_owners": True,
+                "portable_triton": True,
+            },
+        ),
+        _implementation(
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn128",
+            "dense_matmul",
+            "split_k_n_packed_k_major_gemv",
+            {
+                "block_k": 256,
+                "split_k_block_k": 64,
+                "tile_n": 128,
+            },
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "packed_layout": "k_major_n8_k16",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "output_reduction_split",
+                "supports_masked_tiles": True,
+            },
+            facts={
+                "chip_visible_partial_owners": True,
+                "portable_triton": True,
+            },
+        ),
+        _implementation(
             "tir.dense_matmul."
             "split_k_n_packed_tensor_descriptor_smem_pipeline_gemv",
             "dense_matmul",
@@ -638,6 +718,38 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "dense_matmul",
             "packed_k_major_gemv",
             {"block_k": 256, "tile_n": 64},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "supports_masked_tiles": True,
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_gemv_tn128_bk128",
+            "dense_matmul",
+            "packed_k_major_gemv",
+            {"block_k": 128, "tile_n": 128},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "supports_masked_tiles": True,
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_gemv_tn128_bk256",
+            "dense_matmul",
+            "packed_k_major_gemv",
+            {"block_k": 256, "tile_n": 128},
             contract={
                 "supports_local_row_loop": True,
                 "input_kind": "packed",
@@ -1398,7 +1510,31 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "tir.dense_matmul_glu.packed_k_major_gemv_tn64",
             "dense_matmul_glu",
             "packed_k_major_gemv",
-            {"block_k": 128, "tile_n": 64},
+            {"block_k": 128, "tile_n": 64, "compute_num_warps": 16},
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.packed_k_major_gemv_tn128",
+            "dense_matmul_glu",
+            "packed_k_major_gemv",
+            {"block_k": 128, "tile_n": 128},
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.packed_k_major_gemv_tn256",
+            "dense_matmul_glu",
+            "packed_k_major_gemv",
+            {"block_k": 128, "tile_n": 256},
             contract={
                 "input_kind": "packed",
                 "fusion": "none",
@@ -1730,10 +1866,42 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             contract={"input_kind": "fused_rhs", "rhs_layout": "k_major"},
             facts={"portable_triton": True},
         ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn64",
+            "qkv_parallel_linear",
+            "packed_fused_gemv",
+            {"block_k": 64, "tile_n": 64},
+            contract={"input_kind": "fused_rhs", "rhs_layout": "k_major"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn128",
+            "qkv_parallel_linear",
+            "packed_fused_gemv",
+            {"block_k": 64, "tile_n": 128},
+            contract={"input_kind": "fused_rhs", "rhs_layout": "k_major"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn256",
+            "qkv_parallel_linear",
+            "packed_fused_gemv",
+            {"block_k": 64, "tile_n": 256, "compute_num_warps": 16},
+            contract={"input_kind": "fused_rhs", "rhs_layout": "k_major"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn512",
+            "qkv_parallel_linear",
+            "packed_fused_gemv",
+            {"block_k": 64, "tile_n": 512},
+            contract={"input_kind": "fused_rhs", "rhs_layout": "k_major"},
+            facts={"portable_triton": True},
+        ),
     )
-    from .sparse_experts import sparse_experts_pipeline_implementations
+    from .nvidia.sparse_experts import sparse_experts_pipeline_implementations
     implementations += sparse_experts_pipeline_implementations()
-    from .packed_qkv import packed_qkv_n_tiled_implementations
+    from .nvidia.packed_qkv import packed_qkv_n_tiled_implementations
     implementations += packed_qkv_n_tiled_implementations(next(
         value for value in implementations if value.id == "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"))
     # A separate, explicit transport choice. The synchronous candidate keeps
@@ -1787,6 +1955,9 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
         "dense_matmul": (
             "tir.dense_matmul."
             "split_k_n_packed_tensor_descriptor_smem_pipeline_gemv",
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn64",
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn128",
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn64_bk128",
             "tir.dense_matmul.split_k_n_packed_k_major_gemv",
             "tir.dense_matmul.split_k_packed_k_major_gemv",
             "tir.dense_matmul.split_k_gemv",
@@ -1797,6 +1968,8 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv",
             "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_tn64_bk512",
             "tir.dense_matmul.packed_k_major_gemv_tn64_bk256",
+            "tir.dense_matmul.packed_k_major_gemv_tn128_bk128",
+            "tir.dense_matmul.packed_k_major_gemv_tn128_bk256",
             "tir.dense_matmul.packed_k_major_gemv_tn32_bk128",
             "tir.dense_matmul.packed_k_major_gemv_tn16_bk128",
             "tir.dense_matmul.packed_k_major_gemv",
@@ -1832,7 +2005,16 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
             "tir.qkv_parallel_linear."
             "packed_partial_mma_descriptor_table_smem_pipeline",
             "tir.qkv_parallel_linear.packed_mma_smem_pipeline",
+            # tn512 stays registered but is deliberately NOT preferred over
+            # tn512: it reaches the 256-register boundary at prepare() on
+            # BI-V150 (perf-iteration/ITERATION.md Trial 58), so keep the
+            # lower-register tn256 choice as the default until full serving
+            # validation establishes that the boundary has sufficient margin.
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn256",
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn128",
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn64",
             "tir.qkv_parallel_linear.packed_fused_gemv",
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn512",
         ),
         "paged_attention_partial": (
             "tir.paged_attention_partial.mma_tma_smem_pipeline",
@@ -1842,4 +2024,4 @@ def sm90_triton_implementation_model() -> TritonImplementationModel:
     return TritonImplementationModel(implementations, preferences, "nvidia-sm90/v45")
 
 
-__all__ = ["sm90_triton_implementation_model"]
+__all__ = ["portable_triton_implementation_model"]

@@ -54,13 +54,23 @@ def {{ call.symbol }}({{ call.signature }}):
 {% else %}    tl.debug_barrier()
 {% endif %}{%- endmacro %}
 
-{% macro kernel_decorator(call) -%}
+{% macro kernel_decorator(call, prefer_inline=false) -%}
 {# Actual op execution functions own their index/value live ranges, regardless
    of local-shard or collective placement. Address/math helpers remain inline
    inside these boundaries. A schedule with an internal grid barrier still
    uses entry-relative scratch: it must be phase-split before it can move into
-   a device function. This condition is an ABI constraint, not a cost policy. #}
-{% if (call.internal_grid_barriers | default(0)) == 0 %}
+   a device function. This condition is an ABI constraint, not a cost policy.
+
+   For barrier-free calls, noinline=True (below) is itself a cost policy
+   (code-size/compile-time reuse across repeated call sites), not an ABI
+   requirement -- callers may pass prefer_inline=true to opt out where
+   per-call latency matters more than shared code size. Measured on
+   BI-V150 (ITERATION.md Trial 13-15): this backend does not carry a
+   bf16-native-multiply/late-fp32-upcast micro-optimization across a
+   noinline=True call boundary (0.119ms), but does when the same callee is
+   force-inlinable (0.098ms) -- a ~17% win on that operator alone, with the
+   two forms measured bitwise-identical in output. #}
+{% if (call.internal_grid_barriers | default(0)) == 0 and not prefer_inline %}
 @triton.jit(noinline=True)
 {% else %}
 @triton.jit

@@ -1,0 +1,8 @@
+{# Diagnostic BI-V150 layout experiment.  The launch still uses the global
+   num_warps contract; the shared [token, head_dim] values use four logical
+   warps so each token row's 128-wide reduction stays within one warp. #}
+{% set paged_attention_partial_variant = "decode_layout4" %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_partial/_function.py.jinja" %}
+{% endif %}

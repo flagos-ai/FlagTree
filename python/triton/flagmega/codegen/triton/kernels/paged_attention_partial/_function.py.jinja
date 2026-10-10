@@ -19,7 +19,7 @@ def {{ call.symbol }}({{ call.signature }}):
                 {{ call.block_size }}, {{ call.scale }},
                 {{ call.token_tile }}, {{ call.context_shards }},
                 {{ call.query_dim_stride }}, {{ call.query_lanes }},
-                {{ call.accumulator_dim_stride }},
+                {{ call.accumulator_dim_stride }}, {{ call.num_blocks }},
             )
 
 
