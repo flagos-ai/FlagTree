@@ -46,6 +46,8 @@ collectBsmLayoutRequirements(ModuleOp module, ArrayRef<DotLayoutChoice> choices,
 void collectLocalLoadLayoutRequirements(ArrayRef<DotLayoutChoice> choices,
                                         TensorLayoutRequirements &requirements,
                                         const tile::BufferLayoutPlan &buffers);
+void collectDotSliceLayoutRequirements(ArrayRef<DotLayoutChoice> choices,
+                                      TensorLayoutRequirements &requirements);
 FailureOr<tile::BufferLayoutPlan>
 planSharedLayouts(ModuleOp module, ArrayRef<DotLayoutChoice> choices,
                   TensorLayoutRequirements &requirements);

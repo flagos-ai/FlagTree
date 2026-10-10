@@ -78,6 +78,7 @@ struct CommonIRApplyLayoutPlanPass
         failed(collectBsmLayoutRequirements(module, choices, requirements)))
       return signalPassFailure();
     collectLocalLoadLayoutRequirements(choices, requirements, *buffers);
+    collectDotSliceLayoutRequirements(choices, requirements);
     // The dot fixes C's layout; propagate it through legal logical tiles and
     // loop carriers. Incompatible producers remain explicit conversions.
     for (auto [dot, plan] : choices)
