@@ -127,7 +127,35 @@ struct LLVMDIScopePass : public impl::LLVMDIScopeBase<LLVMDIScopePass> {
     return FusedLoc::get(context, {loc}, lexicalBlockFileAttr);
   }
 
+  void attachDebugLoc(Operation *op) {
+    auto funcOp = op->getParentOfType<LLVM::LLVMFuncOp>();
+    if (!funcOp)
+      return;
+    auto funcOpLoc = dyn_cast<FusedLoc>(funcOp.getLoc());
+    if (!funcOpLoc)
+      return;
+    auto scopeAttr = dyn_cast<LLVM::DISubprogramAttr>(funcOpLoc.getMetadata());
+    if (!scopeAttr)
+      return;
+    if (op->getLoc()->findInstanceOf<mlir::FusedLocWith<LLVM::DINodeAttr>>())
+      return;
+    MLIRContext *ctx = op->getContext();
+    FileLineColLoc fileLine = extractFileLoc(op->getLoc());
+    if (fileLine.getLine() == 0)
+      fileLine = FileLineColLoc::get(StringAttr::get(ctx, "<unknown>"), 1, 1);
+    StringRef inputFilePath = fileLine.getFilename().getValue();
+    auto fileAttr =
+        LLVM::DIFileAttr::get(ctx, llvm::sys::path::filename(inputFilePath),
+                              llvm::sys::path::parent_path(inputFilePath));
+    auto lexicalBlock =
+        LLVM::DILexicalBlockFileAttr::get(ctx, scopeAttr, fileAttr,
+                                          /*discriminator=*/0);
+    op->setLoc(FusedLoc::get(ctx, {fileLine}, lexicalBlock));
+  }
+
   void setLexicalBlockFileAttr(Operation *op) {
+    if (isa<LLVM::CallOp>(op))
+      attachDebugLoc(op);
     auto opLoc = op->getLoc();
     if (auto callSiteLoc = dyn_cast<CallSiteLoc>(opLoc)) {
       auto callerLoc = callSiteLoc.getCaller();

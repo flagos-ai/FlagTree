@@ -48,6 +48,68 @@ def TritonTleInsertLocalPointerBarriers
                            "mlir::triton::TritonDialect"];
 }
 
+def TritonTleOptimizeLocalPointerLoads
+    : Pass<"triton-tle-optimize-local-pointer-loads", "mlir::ModuleOp"> {
+  let summary = "rewrite full-view tle.local_pointers loads into ttg.local_load";
+
+  let description = [{
+    This pass matches ``tl.load`` operations whose pointer operand is produced
+    by ``tle.local_pointers`` with full-view indexing (including zero-indices
+    form) and rewrites them into ``ttg.local_load`` directly from the backing
+    memdesc. The transform is conservative and only fires when the load has no
+    mask/other operands.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+
+def TritonTleOptimizeLocalPointerStores
+    : Pass<"triton-tle-optimize-local-pointer-stores", "mlir::ModuleOp"> {
+  let summary = "rewrite tle.local_pointers stores into ttg.local_store";
+
+  let description = [{
+    This pass rewrites ``tl.store`` operations that target pointers produced by
+    ``tle.local_pointers`` into ``ttg.local_store`` to avoid pointer-based
+    shared-memory stores in the backend.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+
+def TritonTleOptimizeLocalPointerAsyncStores
+    : Pass<"triton-tle-optimize-local-pointer-async-stores", "mlir::ModuleOp"> {
+  let summary =
+      "rewrite gmem load -> tle.local_pointers subview store into async_copy";
+
+  let description = [{
+    This pass matches conservative staging patterns of the form:
+
+      %v = tt.load %gptr ...
+      tt.store %local_ptr_subview, %v ...
+
+    where ``%local_ptr_subview`` is produced by ``tle.local_pointers`` and
+    denotes a static full subview of a backing shared memdesc. The pass
+    rewrites the pair into:
+
+      %sub = ttg.memdesc_subslice %base[...]
+      %tok = ttg.async_copy_global_to_local %gptr, %sub ...
+      %grp = ttg.async_commit_group %tok
+      ttg.async_wait %grp {num = 0}
+
+    The transform is conservative and only fires when the store value is
+    produced by a single-use global load and the subview offsets are static.
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::tle::TleDialect"];
+}
+
 def TritonTleLowerAsyncLoad : Pass<"triton-tle-lower-async-load", "mlir::ModuleOp"> {
   let summary = "Lower TLE async load operations";
 

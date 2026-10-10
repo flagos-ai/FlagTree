@@ -123,6 +123,12 @@ class DependenciesFinder(ast.NodeVisitor):
         if val is None or type(val) is ModuleType:
             return
 
+        # flagtree tle raw
+        tle_raw_source_cache_key = getattr(val, "__triton_tle_raw_source_cache_key__", None)
+        if tle_raw_source_cache_key is not None:
+            part = (tle_raw_source_cache_key() if callable(tle_raw_source_cache_key) else tle_raw_source_cache_key)
+            self.hasher.update(str(part).encode("utf-8"))
+
         if getattr(val, "__triton_builtin__", False):
             return
 
@@ -865,6 +871,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
             def finalize_compile(kernel):
                 kernel_cache[key] = kernel
+                # flagtree tle raw
+                try:
+                    from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+                except ImportError:
+                    pass
+                else:
+                    run_kernel_init_hooks(kernel)
                 self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options,
                                 [attrs], warmup)
 
@@ -872,6 +885,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
         else:
             kernel = self.compile(src, target=target, options=options.__dict__)
             kernel_cache[key] = kernel
+            # flagtree tle raw
+            try:
+                from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+            except ImportError:
+                pass
+            else:
+                run_kernel_init_hooks(kernel)
             self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options, [attrs],
                             warmup)
         return kernel

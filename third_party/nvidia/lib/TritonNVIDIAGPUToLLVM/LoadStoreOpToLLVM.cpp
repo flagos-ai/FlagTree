@@ -75,10 +75,19 @@ std::optional<unsigned> inferPtrAddrSpace(llvm::ArrayRef<Value> ptrElems) {
 #endif
 }
 
+#ifdef __TLE__
+bool isSharedFamilyAddressSpace(unsigned addressSpace) {
+  return addressSpace == 3 ||
+         addressSpace == static_cast<unsigned>(
+                             NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
+}
+#endif
+
 bool isSharedPointerValue(llvm::ArrayRef<Value> ptrElems,
                           unsigned defaultAddrSpace = 1) {
 #ifdef __TLE__
-  return inferPtrAddrSpace(ptrElems).value_or(defaultAddrSpace) == 3;
+  return isSharedFamilyAddressSpace(
+      inferPtrAddrSpace(ptrElems).value_or(defaultAddrSpace));
 #else
   return inferPtrAddrSpace(ptrElems).value_or(defaultAddrSpace) == 3;
 #endif
@@ -211,6 +220,51 @@ struct LoadStoreConversionBase {
     return std::min<unsigned>(128 / pointeeBitWidth, contiguity);
   }
 
+#ifdef __TLE__
+  bool isTleSharedTensorPtr(Value ptr) const {
+    auto ptrTensorTy = dyn_cast<RankedTensorType>(ptr.getType());
+    auto ptrElemTy = ptrTensorTy
+                         ? dyn_cast<PointerType>(ptrTensorTy.getElementType())
+                         : PointerType();
+    return ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
+  }
+
+  unsigned getMaxVectorSizeByAlignment(Value ptr) const {
+    auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
+    if (!tensorTy)
+      return 1;
+    auto *axisInfo = axisAnalysisPass.getAxisInfo(ptr);
+    if (!axisInfo || axisInfo->getRank() == 0)
+      return 1;
+
+    auto linAttr = ttg::toLinearEncoding(tensorTy);
+    auto order = linAttr.getOrder();
+    if (order.empty() || order[0] >= axisInfo->getRank())
+      return 1;
+
+    unsigned pointeeBitWidth = triton::getPointeeBitWidth(tensorTy);
+    if (pointeeBitWidth == 0)
+      return 1;
+    unsigned elemBytes = std::max<unsigned>(pointeeBitWidth / 8, 1);
+    unsigned maxMultipleBytes = axisInfo->getDivisibility(order[0]);
+    unsigned maxMultiple = std::max<unsigned>(maxMultipleBytes / elemBytes, 1);
+
+    return std::min<unsigned>(128 / pointeeBitWidth, maxMultiple);
+  }
+
+  unsigned getTleSharedPointerVectorSize(Value ptr, unsigned vec) const {
+    if (!isTleSharedTensorPtr(ptr))
+      return vec;
+
+    // AxisInfo contiguity and TLE layout hints may both propose vectorized
+    // shared-memory accesses. They are legal only up to the width whose first
+    // element alignment is proven by AxisInfo divisibility.
+    unsigned hint = tte::inferTlePointerLayoutVectorHint(ptr);
+    unsigned alignmentBound = getMaxVectorSizeByAlignment(ptr);
+    return std::min(std::max(vec, hint), alignmentBound);
+  }
+#endif
+
   unsigned getMaskAlignment(Value mask) const {
     return axisAnalysisPass.getMaskAlignment(mask);
   }
@@ -271,6 +325,8 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         vec = std::max(vec, getVectorSize(remoteCTAInfo.vectorHintPtr));
       }
     }
+    if (!llMask)
+      vec = getTleSharedPointerVectorSize(ptr, vec);
 #endif
     unsigned numElems = getTotalElemsPerThread(ptr.getType());
     unsigned vecOrig = vec;
@@ -632,6 +688,9 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
         typeConverter->convertType(getElementTypeOrSelf(valueTy));
 
     unsigned vec = getVectorSize(ptr);
+#ifdef __TLE__
+    vec = getTleSharedPointerVectorSize(ptr, vec);
+#endif
     unsigned elemsPerThread = getTotalElemsPerThread(ptr.getType());
 
 #ifdef __TLE__

@@ -99,8 +99,11 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   if (!hasConversion) {
     return failure();
   }
-  tle::DSLRegionOp newOp =
-      rewriter.create<tle::DSLRegionOp>(op.getLoc(), newRetTys, newOperands);
+  tle::DSLRegionOp newOp = rewriter.create<tle::DSLRegionOp>(
+      op.getLoc(), newRetTys, newOperands, op.getRegionDialectAttr(),
+      op.getArgDialectAttr(), op.getOutputOperandIndicesAttr(),
+      op->getAttrOfType<StringAttr>("hint"));
+  newOp->setAttrs(op->getAttrs());
   PatternRewriter::InsertionGuard guard(rewriter);
   for (auto [idx, oldBlock] : llvm::enumerate(op.getBody().getBlocks())) {
     Block *newBlock = nullptr;

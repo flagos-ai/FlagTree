@@ -1,5 +1,6 @@
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -12,6 +13,15 @@ namespace {
 // Triton shared-memory pointers map to LLVM address space 3 (NVVM shared).
 constexpr int kSharedMemoryAddressSpace = 3;
 } // namespace
+
+void DSLRegionOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  // Conservative memory effects so an empty deferred body is not DCE'd
+  // before materialize. Same as the main branch.
+  effects.emplace_back(MemoryEffects::Read::get());
+  effects.emplace_back(MemoryEffects::Write::get());
+}
 
 LogicalResult DSLRegionOp::verify() {
   Region &body = getBody();

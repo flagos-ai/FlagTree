@@ -137,6 +137,19 @@ class CUDAOptions:
         if not extern_libs.get('libdevice', None):
             extern_libs['libdevice'] = knobs.nvidia.libdevice_path or str(default_libdir / 'libdevice.10.bc')
 
+        # flagtree tle raw: libnvshmem_device when @dialect(library="nvshmem") enabled in utils.
+        try:
+            from triton.experimental.tle.raw.nvshmem.utils import (
+                is_nvshmem_device_bc_enabled,
+                resolve_nvshmem_device_bitcode,
+            )
+            if is_nvshmem_device_bc_enabled():
+                nvshmem_bc = resolve_nvshmem_device_bitcode(arch=self.arch)
+                if nvshmem_bc is not None:
+                    extern_libs.update({"libnvshmem_device": str(nvshmem_bc)})
+        except Exception:
+            pass
+
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
                "num_warps must be a power of 2"
@@ -244,6 +257,10 @@ class CUDABackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, opt, capability):
+        # flagtree tle raw
+        kernel_init_hooks = mod.get_operation().get_str_attr("tle.raw.kernel_init_hooks")
+        metadata["kernel_init_hooks"] = kernel_init_hooks.split(",") if kernel_init_hooks else []
+
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
@@ -275,6 +292,9 @@ class CUDABackend(BaseBackend):
         passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 32, opt.num_ctas)
         # flagtree tle raw
         tle.raw_passes.add_tle_convert_arg_to_memdesc(pm)
+        # Rewrite gmem load -> local_ptr store into async_copy before coalesce,
+        # same position as the main branch.
+        tle.passes.add_optimize_local_pointer_async_stores(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_process_shared_memory_hint(pm)  # flagtree hints
@@ -288,6 +308,8 @@ class CUDABackend(BaseBackend):
         # begin flagtree tle
         tle.passes.add_assign_local_pointers_encoding(pm)
         tle.passes.add_insert_local_pointer_barriers(pm)
+        tle.passes.add_optimize_local_pointer_loads(pm)
+        tle.passes.add_optimize_local_pointer_stores(pm)
         # end flagtree tle
         passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
@@ -390,6 +412,15 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_concurrency_sanitizer(pm)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         nvidia.passes.ttnvgpuir.add_proxy_fence_insertion(pm, capability)
+        # flagtree tle raw: Materialize deferred tle_raw sources before inlining DSL regions.
+        from .deferred_raw import (
+            finish_deferred_raw_materialize,
+            deferred_raw_materialize,
+        )
+        deferred_raw_materialize(pm, mod)
+        # Inline TLE DSL regions before TritonGPU->LLVM lowering so no
+        # `tle.dsl_region` op survives into the conversion pipeline.
+        tle.raw_passes.add_tle_dsl_region_inline(pm)
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
         if CUDABackend.instrumentation:
             CUDABackend.instrumentation.patch("ttgpuir_to_llvmir", pm, mod.context)
@@ -406,10 +437,9 @@ class CUDABackend(BaseBackend):
             passes.llvmir.add_di_scope(pm)
         if CUDABackend.instrumentation:
             CUDABackend.instrumentation.patch("llvmir_to_llvm", pm, mod.context)
-        # flagtree tle raw
-        tle.raw_passes.add_tle_dsl_region_inline(pm)
 
         pm.run(mod)
+        finish_deferred_raw_materialize()
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
         llvm.init_targets()
         context = llvm.context()
