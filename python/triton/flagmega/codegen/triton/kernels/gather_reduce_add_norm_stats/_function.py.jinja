@@ -105,10 +105,10 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
         )
 {% endif %}
     if {{ call.stats_store_active }}:
-{% if call.local_m != 1 %}
-        for gather_stats_row in tl.range(0, {{ call.local_m }}):
+{% if call.stats_local_m != 1 %}
+        for gather_stats_row in tl.range(0, {{ call.stats_local_m }}):
 {% endif %}
-{% filter indent(4 if call.local_m != 1 else 0, first=True) %}
+{% filter indent(4 if call.stats_local_m != 1 else 0, first=True) %}
         gather_stats = 0.0
         for gather_stats_start in tl.range(
             0, {{ call.stats_reduction_count }},
@@ -123,7 +123,7 @@ def {{ call.symbol }}__finalize({{ call.signature }}):
             gather_stats_owner = {{ call.stats_partial_owner }}
             gather_stats += tl.sum(
                 tl.load(
-                    {{ call.stats_partials }} + gather_stats_owner{% if call.local_m != 1 %} * {{ call.stats_partials_owner_stride }} + gather_stats_row{% endif %},
+                    {{ call.stats_partials }} + gather_stats_owner{% if call.stats_local_m != 1 %} * {{ call.stats_partials_owner_stride }} + ({{ call.stats_partial_token }}){% endif %},
                     mask=gather_stats_mask,
                     other=0.0,
                 ),

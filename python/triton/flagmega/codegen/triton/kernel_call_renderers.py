@@ -1175,6 +1175,22 @@ def _unflattened_coordinates(shape: tuple[int, ...], flat: str) -> tuple[str, ..
     return tuple(result)
 
 
+def _flatten_leading_logical_row(
+    global_shape: tuple[int, ...], logical_coordinates: tuple[str, ...]
+) -> str:
+    """Flatten the leading (non-last) logical coordinates into a single global
+    row index, matching a token-replicated per-owner partials workspace whose
+    row dimension counts the flattened leading extents of the logical shape."""
+    leading = global_shape[:-1]
+    terms = []
+    stride = 1
+    for axis in range(len(leading) - 1, -1, -1):
+        if leading[axis] != 1:
+            terms.append(f"(({logical_coordinates[axis]}) * {stride})")
+        stride *= leading[axis]
+    return " + ".join(terms) if terms else "0"
+
+
 def _gdn_convolution_call(raw) -> dict[str, object]:
     qkv = _buffer(raw, "inputs", "qkv")
     state = _buffer(raw, "inputs", "state", 0)
@@ -1474,6 +1490,21 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
     partial_local_shape = _static_shape(partial_abi, "local_capacity_shape")
     local_m = prod(partial_local_shape[:-1], start=1)
     row_coordinate = "gather_row" if local_m != 1 else None
+    # The partials workspace holds one RMS partial per (owner, global token):
+    # the partial input is token-replicated, so its local_m rows span the full
+    # token axis. The statistics OUTPUT, however, is token-sharded, with only
+    # stats_local_m local tokens per owner. The finalize must therefore iterate
+    # the OUTPUT's local tokens and, for each, read the partial at that token's
+    # global index -- not reuse the partial's row count (which would wrap).
+    stats_local_shape = _static_shape(stats_abi, "local_capacity_shape")
+    stats_local_m = prod(stats_local_shape[:-1], start=1)
+    stats_finalize_domain = _scalar_local_domain(
+        stats_abi, "0", row_coordinate="gather_stats_row"
+    )
+    stats_partial_token = _flatten_leading_logical_row(
+        _static_shape(stats_abi, "logical_shape"),
+        stats_finalize_domain["logical_coordinates"],
+    )
     if bool(raw.get("semantic_attrs", {}).get("use_mean", False)):
         raise CodegenError("GatherReduceAddNormStats sum_rms does not implement mean.")
     if str(partial_abi.get("storage_kind")) != "compact_per_owner":
@@ -1621,6 +1652,8 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
         "work_partition_count": work_partition_count,
         "local_capacity": scalar_capacity,
         "local_m": local_m,
+        "stats_local_m": stats_local_m,
+        "stats_partial_token": stats_partial_token,
         "stats_partials_store_offset": (
             "shard_index" if local_m == 1
             else f"shard_index * {local_m} + gather_row"
@@ -1646,11 +1679,19 @@ def _gather_reduce_add_norm_stats_call(raw) -> dict[str, object]:
             logical_coordinates,
             lane_coordinate=lane_coordinate,
         ),
-        "stats_offset": emit_global_scalar_offset(
-            stats_abi,
-            (("0",) * len(_static_shape(stats_abi, "logical_shape")))
-            if local_m == 1
-            else ("gather_stats_row", *(("0",) * (len(_static_shape(stats_abi, "logical_shape")) - 1))),
+        "stats_offset": (
+            emit_global_scalar_offset(
+                stats_abi, ("0",) * len(_static_shape(stats_abi, "logical_shape"))
+            )
+            if stats_local_m == 1
+            # M>1: write the per-row loop variable into the statistics OUTPUT's
+            # own (token-sharded) local slot. The row is the output-local token
+            # index, mapped to its physical offset via the output's own domain.
+            else emit_local_scalar_offset(
+                stats_abi,
+                stats_finalize_domain["local_coordinates"],
+                lane_coordinate=stats_finalize_domain["lane_coordinate"],
+            )
         ),
         "tile": work_tile,
         "partial_reduction_width": _bounded_vector_tile(
