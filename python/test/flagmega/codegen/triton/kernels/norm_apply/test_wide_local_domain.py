@@ -8,11 +8,11 @@ from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.runtime import load
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 def test_catalog_does_not_serialize_wide_norm_domains_into_half_cta_tiles():
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     for name in ("tir.norm_apply.local", "tir.gather_reduce_norm_apply.sum"):
         assert model.implementation(name).parameters["block_size"] == 1024
 

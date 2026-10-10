@@ -6,7 +6,7 @@ from dataclasses import replace
 
 from triton.flagmega import ir as fm
 from triton.flagmega.targets import NvidiaSm90Target
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 _IMPLEMENTATION = (
@@ -100,7 +100,7 @@ def test_packed_glu_complete_lhs_pipeline_is_available_but_paired_table_is_defau
     assert candidate.facts["transfer_pipeline"] is True
     assert candidate.facts["complete_consumer_lhs_stage"] is True
     assert candidate.parameters["lhs_stage_extent"] == 2048
-    implementation = sm90_triton_implementation_model().implementation(
+    implementation = portable_triton_implementation_model().implementation(
         _IMPLEMENTATION
     )
     assert implementation is not None
@@ -121,7 +121,7 @@ def test_packed_glu_inline_consumer_remains_an_explicit_candidate():
     assert "inline_consumer_stage" not in candidate.parameters
     assert candidate.parameters["block_k"] == 1024
     assert candidate.parameters["tile_n"] == 16
-    implementation = sm90_triton_implementation_model().implementation(
+    implementation = portable_triton_implementation_model().implementation(
         _INLINE_IMPLEMENTATION
     )
     assert implementation is not None
@@ -142,7 +142,7 @@ def test_packed_glu_paired_weight_pipeline_is_a_typed_candidate():
     assert candidate.parameters["paired_weight_fields"] is True
     assert "inline_consumer_stage" not in candidate.parameters
     assert candidate.facts["paired_weight_transfer"] is True
-    implementation = sm90_triton_implementation_model().implementation(
+    implementation = portable_triton_implementation_model().implementation(
         _PAIRED_INLINE_IMPLEMENTATION
     )
     assert implementation is not None
@@ -170,7 +170,7 @@ def test_packed_glu_owner_descriptor_table_is_an_explicit_candidate():
     assert candidate.parameters["descriptor_kind"] == "table"
     assert candidate.parameters["paired_weight_fields"] is True
     assert candidate.facts["host_tensor_descriptor_table"] is True
-    implementation = sm90_triton_implementation_model().implementation(
+    implementation = portable_triton_implementation_model().implementation(
         _PAIRED_TABLE_INLINE_IMPLEMENTATION
     )
     assert implementation is not None
@@ -191,7 +191,7 @@ def test_packed_glu_paired_full_lhs_matches_the_typed_nncase_geometry():
     assert candidate.parameters["lhs_stage_extent"] == 2048
     assert candidate.parameters["num_stages"] == 4
     assert "inline_consumer_stage" not in candidate.parameters
-    implementation = sm90_triton_implementation_model().implementation(
+    implementation = portable_triton_implementation_model().implementation(
         _PAIRED_FULL_LHS_IMPLEMENTATION
     )
     assert implementation is not None
@@ -216,7 +216,7 @@ def test_packed_glu_full_lhs_inline_pipeline_is_an_explicit_candidate():
     assert candidate.parameters["lhs_stage_extent"] == 2048
     assert candidate.facts["complete_consumer_lhs_stage"] is True
     assert "inline_consumer_stage" not in candidate.facts
-    implementation = sm90_triton_implementation_model().implementation(
+    implementation = portable_triton_implementation_model().implementation(
         _FULL_LHS_INLINE_IMPLEMENTATION
     )
     assert implementation is not None

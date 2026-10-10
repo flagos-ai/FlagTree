@@ -7,8 +7,8 @@ from triton.flagmega.codegen.triton.templates import (
     KernelTemplateSpec,
     TritonTemplateRegistry,
 )
-from triton.flagmega.targets.nvidia.implementations import (
-    sm90_triton_implementation_model,
+from triton.flagmega.targets.portable_triton_implementations import (
+    portable_triton_implementation_model,
 )
 
 
@@ -28,7 +28,7 @@ from triton.flagmega.targets.nvidia.implementations import (
 def test_registered_dense_glu_variant_defines_its_local_accumulate_abi(
     implementation_id, helper,
 ):
-    implementation = sm90_triton_implementation_model().implementation(
+    implementation = portable_triton_implementation_model().implementation(
         implementation_id
     )
     assert implementation is not None

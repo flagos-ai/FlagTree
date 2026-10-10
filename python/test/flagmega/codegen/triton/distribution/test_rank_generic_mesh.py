@@ -62,6 +62,7 @@ def _elementwise_call():
         "result": "result",
         "result_offset": "0",
         "output_type": "tl.float32",
+        "fusion_lines": (),
     }
 
 

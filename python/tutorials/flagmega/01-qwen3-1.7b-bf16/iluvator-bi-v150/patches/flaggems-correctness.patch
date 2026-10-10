@@ -1,0 +1,39 @@
+diff --git a/src/flag_gems/fused/rotary_embedding.py b/src/flag_gems/fused/rotary_embedding.py
+index 1e5c3e2..fa95271 100644
+--- a/src/flag_gems/fused/rotary_embedding.py
++++ b/src/flag_gems/fused/rotary_embedding.py
+@@ -178,6 +178,9 @@ def apply_rotary_pos_emb_inplace_kernel(
+         q = tl.load(q_ptr + ordered_cols, mask=mask, other=0.0)
+         rotated_q = tl.load(q_ptr + rotated_cols, mask=mask, other=0.0)
+         y = q * cos + rotated_q * sin
++        # A partner can belong to another warp. Every original element must
++        # have been loaded before any warp overwrites this head in-place.
++        tl.debug_barrier()
+         tl.store(q_ptr + ordered_cols, y, mask=mask)  # In-place update
+ 
+     k_ptr += s_id * k_stride_s
+@@ -189,6 +192,7 @@ def apply_rotary_pos_emb_inplace_kernel(
+         k = tl.load(k_ptr + ordered_cols, mask=mask, other=0.0)
+         rotated_k = tl.load(k_ptr + rotated_cols, mask=mask, other=0.0)
+         y = k * cos + rotated_k * sin
++        tl.debug_barrier()
+         tl.store(k_ptr + ordered_cols, y, mask=mask)  # In-place update
+ 
+ 
+diff --git a/src/flag_gems/ops/unique.py b/src/flag_gems/ops/unique.py
+index 66e6262..7d3825c 100644
+--- a/src/flag_gems/ops/unique.py
++++ b/src/flag_gems/ops/unique.py
+@@ -791,6 +791,12 @@ def _unique2(
+     return_counts: bool = False,
+ ):
+     logger.debug("GEMS _UNIQUE2")
++    if in0.numel() == 0:
++        return (
++            torch.empty((0,), dtype=in0.dtype, device=in0.device),
++            torch.empty_like(in0, dtype=torch.int64) if return_inverse else None,
++            torch.empty((0,), dtype=torch.int64, device=in0.device) if return_counts else None,
++        )
+     if in0.numel() <= 8192:
+         sorted_data, sorted_indices = torch.sort(in0.ravel())
+         data_out, inverse_indices, counts = simple_unique_flat(

@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.targets import NvidiaSm90Target
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 SINGLE = "tir.dense_matmul_glu.packed_tensor_descriptor_paired_smem_pipeline_inline_gemv"
@@ -44,7 +44,7 @@ def test_tma_tail_candidates_preserve_local_owner_extent(local_n):
 
 
 def test_mask_capability_is_required_for_partial_output_tile():
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     model = replace(model, implementations=tuple(replace(value, contract={**value.contract, "supports_masked_output_tiles": False})
         if value.id in {SINGLE, TABLE} else value for value in model.implementations))
     assert not {SINGLE, TABLE} & _candidates(_projection(24), model)

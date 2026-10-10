@@ -5,13 +5,13 @@ from triton.flagmega.codegen.triton.templates import (
     KernelTemplateSpec,
     TritonTemplateRegistry,
 )
-from triton.flagmega.targets.nvidia.implementations import (
-    sm90_triton_implementation_model,
+from triton.flagmega.targets.portable_triton_implementations import (
+    portable_triton_implementation_model,
 )
 
 
 def test_simt_fallback_has_a_complete_parameter_and_template_contract():
-    implementation = sm90_triton_implementation_model().implementation(
+    implementation = portable_triton_implementation_model().implementation(
         "tir.block_fp8.simt"
     )
 

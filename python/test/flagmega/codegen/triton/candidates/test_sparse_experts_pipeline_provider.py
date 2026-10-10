@@ -12,9 +12,9 @@ from python.test.flagmega.codegen.triton.kernels.sparse_experts.helpers import s
 
 
 def test_pipeline_catalog_declares_shared_alignment_before_injection():
-    from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+    from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
     from triton.flagmega.targets.nvidia.shared_layout import verify_shared_workspaces
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     verify_shared_workspaces(model)
     NvidiaSm90Target(triton_implementation_model=model)
 

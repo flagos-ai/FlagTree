@@ -22,7 +22,7 @@ from triton.flagmega.runtime import (
     load as load_runtime,
     package_registry,
 )
-from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
 
 def _elementwise_module(architecture: str) -> fm.IRModule:
@@ -71,7 +71,7 @@ def test_codegen_dispatch_is_independent_of_model_architecture(tmp_path):
 
 
 def test_codegen_catalog_and_package_boundary_have_no_model_identity():
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     identifiers = {
         *default_triton_candidate_registry().op_names,
         *(implementation.id for implementation in model.implementations),
@@ -83,6 +83,9 @@ def test_codegen_catalog_and_package_boundary_have_no_model_identity():
         ("bufferized-tir", "tir_call_graph/v1"),
     )
     assert tuple((spec.kind, spec.target) for spec in package_registry.specs) == (
+        ("elementwise/v2", "iluvatar-bi-v150"),
+        ("elementwise_add/v1", "iluvatar-bi-v150"),
+        ("tir_call_graph/v1", "iluvatar-bi-v150"),
         ("elementwise/v2", "nvidia-sm90"),
         ("elementwise_add/v1", "nvidia-sm90"),
         ("tir_call_graph/v1", "nvidia-sm90"),
@@ -98,7 +101,7 @@ def test_codegen_catalog_and_package_boundary_have_no_model_identity():
 
 def test_every_architecture_template_is_reachable_from_catalog_roots():
     registry = TritonTemplateRegistry()
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     roots = {
         registry.resolve(KernelTemplateSpec(
             value.family,

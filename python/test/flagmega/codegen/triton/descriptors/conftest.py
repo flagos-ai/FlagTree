@@ -471,9 +471,9 @@ def _packed_qkv_mma_pipeline_module(
 def packed_qkv_mma_aligned_pipeline_module():
     from dataclasses import replace
     from triton.flagmega.targets import NvidiaSm90Target
-    from triton.flagmega.targets.nvidia import sm90_triton_implementation_model
+    from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
-    model = sm90_triton_implementation_model()
+    model = portable_triton_implementation_model()
     model = replace(model, implementations=tuple(replace(implementation, shared_workspaces=tuple(
         replace(value, alignment_bytes=max(value.alignment_bytes, 2048))
         if value.matrix_compatible else value for value in implementation.shared_workspaces))

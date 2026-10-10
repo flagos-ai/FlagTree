@@ -115,6 +115,29 @@ chains, also read [Representation optimization](references/representation-optimi
 It covers producer-owned layouts, packet geometry, conversion semantics, and
 the difference between removing an IR node and removing runtime work.
 
+Before tuning a bandwidth-bound kernel, check for target-specific memory
+characteristics under `references/hardware/<target>/memory-bandwidth.md` — e.g.
+[Iluvatar BI-V150](references/hardware/iluvatar-bi-v150/memory-bandwidth.md)
+records that vectorized loads should be avoided on that target (vendor-confirmed):
+128-bit loads reach only 46% of HBM peak against 82% for scalar loads, because
+wide loads are capped at ~1 load instruction per cycle per MP. That file also
+explains why the backend's own 128-bit load cap is correct for grid-barrier
+megakernels (pinned to one CTA per SM) yet costs up to 1.8x read bandwidth for
+ordinary kernels at higher occupancy. Do not port NVIDIA vectorization habits
+to a new target without checking its measured load-width behavior, and do not
+attribute a read-bound shortfall to HBM before ruling out the issue-rate limit.
+
+Before attributing a hang, fault, or crash to FlagMega logic (especially
+anything touching in-kernel grid barriers), check for a target-specific
+known issue under `references/hardware/<target>/known-issues.md` — e.g.
+[Iluvatar BI-V150](references/hardware/iluvatar-bi-v150/known-issues.md)
+documents a CUDA lazy-module-loading fault that looks exactly like a
+probabilistic barrier livelock but is a driver/environment issue with a
+required one-line workaround, not a compiler or kernel defect. Add a new
+file under `references/hardware/<target>/` when a future investigation roots
+out another hardware- or driver-level issue or performance characteristic on
+any target.
+
 Use an immutable trial per hypothesis: inspect the costly boundary, make a
 scoped change, resume from the earliest affected stage, verify, and measure.
 Include local TIR/kernel overrides in the trial's reproducible inputs. Keep

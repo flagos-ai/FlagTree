@@ -75,3 +75,28 @@ def test_available_lhs_row_policy_survives_rhs_reduction_alignment():
     context = replace(context, available_input_types=((lhs,), *context.available_input_types[1:]))
     assert any(c.input_types[0] == lhs and c.return_type.axis_policies[0] == lhs.axis_policies[0]
                for c in _candidates(context))
+
+
+def test_exclusive_lhs_never_publishes_split_or_broadcast_results_without_boxing():
+    context = _context()
+    lhs = fm.DistributedType(context.module.node_map["lhs"].type,
+        (fm.SBP.broadcast(), fm.SBP.broadcast()), context.placement,
+        exclusive=fm.SBP.exclusive((0, 1)))
+    context = replace(context, available_input_types=((lhs,), *context.available_input_types[1:]))
+    candidates = [c for c in _candidates(context) if c.input_types[0] == lhs]
+    assert candidates, "Owner-local matmul must remain a legal implementation"
+    assert all(c.return_type.exclusive == lhs.exclusive for c in candidates)
+    assert all(c.return_type.partial is None for c in candidates)
+
+
+def test_rhs_alignment_does_not_erase_exclusive_ownership():
+    from triton.flagmega.passes.auto_distributed.packed_matmul_provider import align_rhs_reduction_policy
+    context = _context()
+    lhs = fm.DistributedType(context.module.node_map["lhs"].type,
+        (fm.SBP.broadcast(), fm.SBP.broadcast()), context.placement)
+    rhs = fm.DistributedType(context.module.node_map["rhs"].type,
+        (fm.SBP.broadcast(), fm.SBP.broadcast()), context.placement,
+        exclusive=fm.SBP.exclusive((0, 1)))
+    assert align_rhs_reduction_policy(lhs, rhs) == rhs
+    split_lhs = replace(lhs, axis_policies=(fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 768)))
+    assert align_rhs_reduction_policy(split_lhs, rhs) is None
