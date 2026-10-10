@@ -225,6 +225,34 @@ def TT_AdvanceOp : TT_Op<"advance",
 }
 
 //
+// Custom-type (struct/array) address ops
+//
+// These compute an address only; the actual read/write uses tt.load/tt.store.
+def TT_StructGepOp : TT_Op<"struct_gep", [Pure]> {
+    let summary = "Compute the address of a named field of a struct pointer";
+
+    let arguments = (ins TT_Ptr:$ptr, StrAttr:$field);
+
+    let results = (outs TT_Ptr:$result);
+
+    let assemblyFormat = "$ptr `,` $field attr-dict `:` type($result)";
+
+    let hasVerifier = 1;
+}
+
+def TT_ArrayGepOp : TT_Op<"array_gep", [Pure]> {
+    let summary = "Compute the address of an element of an array pointer";
+
+    let arguments = (ins TT_Ptr:$ptr, TT_Int:$index);
+
+    let results = (outs TT_Ptr:$result);
+
+    let assemblyFormat = "$ptr `,` $index attr-dict `:` type($result) `,` type($index)";
+
+    let hasVerifier = 1;
+}
+
+//
 // Load/Store Ops
 //
 def TT_LoadOp : TT_Op<"load", [
