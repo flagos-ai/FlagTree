@@ -10,6 +10,7 @@
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
 #include "ascend/include/AutoBlockify/Passes.h"
+#include "ascend/include/CommonIRToHIVM/ReduceSumStrengthPass.h"
 #ifdef __TLE_DSA__
 #include "ascend/include/CommonIRToHIVM/Passes.h"
 #endif
@@ -347,7 +348,7 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
 
   m.def("add_reduce_sum_strength",
         [](mlir::PassManager &pm, bool enable, int32_t splitFactor) {
-          pm.addPass(mlir::triton::Incubated::createReduceSumStrengthPass(
+          pm.addPass(mlir::triton::createReduceSumStrengthPass(
               enable, splitFactor));
         });
 
