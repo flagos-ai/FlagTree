@@ -88,14 +88,39 @@ class NttPackingPolicy:
     ) -> tuple[SelectionPoint, ...]:
         """Enumerate only the candidates registered by portable PyNTT rules."""
 
+        users: dict[str, list[Node]] = {}
+        for consumer in module.nodes:
+            for input_id in consumer.inputs:
+                users.setdefault(input_id, []).append(consumer)
+
+        def feeds_norm(node: Node) -> bool:
+            # A projection fused with a residual+RMS-norm epilogue keeps its own
+            # efficient packed fused kernel; its output layout also feeds the
+            # norm-stats partial materialization, which a logical (tensor-core)
+            # layout cannot satisfy. Walk a few hops (matmul -> add -> norm,
+            # allowing boxing/reshard adapters) and keep such matmuls packed.
+            frontier = [node.id]
+            for _ in range(4):
+                nxt: list[str] = []
+                for value_id in frontier:
+                    for consumer in users.get(value_id, ()):
+                        if "norm" in consumer.op:
+                            return True
+                        nxt.append(consumer.id)
+                frontier = nxt
+            return False
+
         def matmul_default(node: Node, packed_layout: str) -> str:
             # M==1 is gemv (packed k-major floods CUs via split-K); M>1 is GEMM,
             # where a logical layout exposes a tensor-core tl.dot kernel. Only
-            # prefer logical when the target can actually do WMMA.
+            # prefer logical when the target can do WMMA and the matmul does not
+            # feed a norm-stats fused epilogue (which needs the packed layout).
             if not prefer_logical_matmul:
                 return packed_layout
             rows = _matmul_leading_rows(node, module)
-            return "packing.logical" if rows is not None and rows > 1 else packed_layout
+            if rows is None or rows <= 1 or feeds_norm(node):
+                return packed_layout
+            return "packing.logical"
 
         existing = {point.id for point in module.selection_points}
         points: list[SelectionPoint] = []
