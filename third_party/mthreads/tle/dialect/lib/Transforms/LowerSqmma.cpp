@@ -33,6 +33,8 @@ namespace {
 constexpr llvm::StringLiteral
     kAutoSharedLayoutAttr("musa_tle.auto_shared_layout");
 constexpr llvm::StringLiteral kExplicitSqmmaAttr("musa_tle.explicit_sqmma");
+constexpr llvm::StringLiteral
+    kExplicitSqmmaPendingsAttr("musa_tle.explicit_sqmma_pendings");
 constexpr llvm::StringLiteral kEnableEncodingRematerializationAttr(
     "tle.enable_encoding_rematerialization");
 
@@ -450,6 +452,9 @@ struct TritonMUSAGPUTLELowerSqmmaPass
       auto nativeWait =
           musa::SquadDotWaitOp::create(builder, wait.getLoc(), nativeInput);
       nativeWait->setAttr(kExplicitSqmmaAttr, builder.getUnitAttr());
+      // Explicit SQMMA waits lower to tce.wait.group(pendings).
+      nativeWait->setAttr(kExplicitSqmmaPendingsAttr,
+                          builder.getI32IntegerAttr(wait.getPendings()));
       Value released = ttg::ConvertLayoutOp::create(builder, wait.getLoc(),
                                                     wait.getOutput().getType(),
                                                     nativeWait.getResult(0));

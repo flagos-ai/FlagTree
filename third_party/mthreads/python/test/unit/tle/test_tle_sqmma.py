@@ -529,9 +529,9 @@ def test_mthreads_tle_sqmma_ttir_uses_backend_local_names():
     assert "musa_tle.auto_shared_layout" in ttir
 
 
-def test_mthreads_tle_sqmma_rejects_nonzero_pending_groups():
-    with pytest.raises(CompilationError, match="requires pendings=0"):
-        compile_to_ttir(_tle_sqmma_nonzero_wait_kernel, {"out": "*fp32"})
+def test_mthreads_tle_sqmma_accepts_nonzero_pending_groups():
+    ttir = compile_to_ttir(_tle_sqmma_nonzero_wait_kernel, {"out": "*fp32"})
+    assert re.search(r"musa_tle\.sqmma_wait .*pendings = 1", ttir), ttir
 
 
 def test_mthreads_tle_sqmma_requires_auto_shared_layout(capfd):
@@ -541,9 +541,10 @@ def test_mthreads_tle_sqmma_requires_auto_shared_layout(capfd):
     assert "requires layout=None and nv_mma_shared_layout=True" in captured.err
 
 
-def test_mthreads_tle_sqmma_lowers_to_parameterless_wait():
-    compiled = compile_musa(_tle_sqmma_kernel, {"out": "*fp32"})
-    assert "call void @llvm.musa.sqmma.wait()" in compiled.asm["llir"]
+def test_mthreads_tle_sqmma_lowers_to_tce_groups():
+    llir = compile_musa(_tle_sqmma_kernel, {"out": "*fp32"}).asm["llir"]
+    assert "@llvm.musa.sqmma.wait" not in llir
+    assert _tce_calls(llir) == ["commit.group()", "wait.group(i32 0)"]
 
 
 @pytest.mark.parametrize("trans_a,trans_b,layout_a,layout_b", _SQMMA_TRANSPOSE_CASES)
@@ -742,6 +743,88 @@ def test_mthreads_tle_sqmma_staged_transpose_runtime_precision(stages):
     expected = torch.matmul(a_cpu.T.float(), b_cpu.T.float())
     torch.testing.assert_close(out.cpu(), expected, atol=7.0e-2, rtol=5.0e-2)
     assert "llvm.musa.sqmma.fmma." in kernel.asm["llir"]
+
+
+@triton.jit
+def _tle_sqmma_pending_groups_kernel(out):
+    a = tle.gpu.alloc((2, 128, 64), dtype=tl.float16, layout=None)
+    b = tle.gpu.alloc((2, 64, 128), dtype=tl.float16, layout=None)
+    zero = tl.zeros((128, 128), dtype=tl.float32)
+    first = tle.gpu.wgmma(a.slot(0), b.slot(0), zero)
+    second = tle.gpu.wgmma(a.slot(1), b.slot(1), zero)
+    acc = tle.gpu.wgmma_wait(1, first)
+    acc = acc + tle.gpu.wgmma_wait(0, second)
+    offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out + offsets, acc)
+
+
+@triton.jit
+def _tle_sqmma_pending_groups_runtime_kernel(a_desc, b_desc, out, k_tiles: tl.constexpr):
+    block_m: tl.constexpr = 128
+    block_n: tl.constexpr = 128
+    block_k: tl.constexpr = 64
+    a = tle.gpu.alloc((k_tiles, block_m, block_k), dtype=tl.float16, layout=None, nv_mma_shared_layout=True)
+    b = tle.gpu.alloc((k_tiles, block_k, block_n), dtype=tl.float16, layout=None, nv_mma_shared_layout=True)
+    a_full = tle.gpu.alloc_barriers(k_tiles, arrive_count=1, init=tle.gpu.PENDING, expect_bytes=block_m * block_k * 2)
+    b_full = tle.gpu.alloc_barriers(k_tiles, arrive_count=1, init=tle.gpu.PENDING, expect_bytes=block_k * block_n * 2)
+    for k in tl.static_range(0, k_tiles):
+        tle.gpu.copy(a_desc, a.slot(k), (block_m, block_k), (0, k * block_k), barrier=a_full[k])
+        tle.gpu.copy(b_desc, b.slot(k), (block_k, block_n), (k * block_k, 0), barrier=b_full[k])
+
+    # Each K tile gets a fresh accumulator in its own group; tile k-1 is
+    # waited for only after tile k has been issued.
+    zero = tl.zeros((block_m, block_n), dtype=tl.float32)
+    acc = zero
+    prev = zero
+    for k in tl.static_range(0, k_tiles):
+        tle.gpu.barrier_wait(a_full[k], phaseIdx=0)
+        tle.gpu.barrier_wait(b_full[k], phaseIdx=0)
+        cur = tle.gpu.wgmma(a.slot(k), b.slot(k), zero)
+        if k > 0:
+            acc = acc + tle.gpu.wgmma_wait(1, prev)
+        prev = cur
+    acc = acc + tle.gpu.wgmma_wait(0, prev)
+
+    offsets = tl.arange(0, block_m)[:, None] * block_n + tl.arange(0, block_n)[None, :]
+    tl.store(out + offsets, acc)
+
+
+def _tce_calls(llir):
+    return re.findall(r"call void @llvm\.musa\.tce\.(commit\.group\(\)|wait\.group\(i32 \d+\))", llir)
+
+
+def test_mthreads_tle_sqmma_commits_each_issue_and_waits_pending_groups():
+    llir = compile_musa(_tle_sqmma_pending_groups_kernel, {"out": "*fp32"}).asm["llir"]
+    assert "@llvm.musa.sqmma.wait" not in llir
+    # One group per issue; wait(1) leaves the newest one in flight.
+    assert _tce_calls(llir) == ["commit.group()", "commit.group()", "wait.group(i32 1)", "wait.group(i32 0)"]
+
+
+def test_mthreads_tle_sqmma_pending_groups_runtime_precision():
+    from triton.tools.tensor_descriptor import TensorDescriptor
+
+    if not hasattr(torch, "musa") or not torch.musa.is_available():
+        pytest.skip("MUSA device is not available")
+
+    k_tiles = 4
+    torch.manual_seed(1234)
+    a_cpu = torch.randn((128, 64 * k_tiles), dtype=torch.float16)
+    b_cpu = torch.randn((64 * k_tiles, 128), dtype=torch.float16)
+    a = a_cpu.to("musa")
+    b = b_cpu.to("musa")
+    out = torch.empty((128, 128), device="musa", dtype=torch.float32)
+    a_desc = TensorDescriptor.from_tensor(a, block_shape=[128, 64])
+    b_desc = TensorDescriptor.from_tensor(b, block_shape=[64, 128])
+
+    kernel = _tle_sqmma_pending_groups_runtime_kernel[(1, )](a_desc, b_desc, out, k_tiles, num_warps=4, num_stages=1)
+    torch.musa.synchronize()
+
+    expected = torch.matmul(a_cpu.float(), b_cpu.float())
+    torch.testing.assert_close(out.cpu(), expected, atol=1e-1, rtol=5e-2)
+    calls = _tce_calls(kernel.asm["llir"])
+    assert calls.count("commit.group()") == k_tiles
+    assert calls.count("wait.group(i32 1)") == k_tiles - 1
+    assert calls.count("wait.group(i32 0)") == 1
 
 
 def test_mthreads_tle_sqmma_for_loop_runtime_precision():
