@@ -1017,6 +1017,45 @@ OpFoldResult AddPtrOp::fold(FoldAdaptor adaptor) {
   return {};
 }
 
+//-- StructGepOp --
+LogicalResult StructGepOp::verify() {
+  auto ptrTy = dyn_cast<PointerType>(getPtr().getType());
+  if (!ptrTy)
+    return emitOpError("expected a pointer operand");
+  auto structTy = dyn_cast<StructType>(ptrTy.getPointeeType());
+  if (!structTy)
+    return emitOpError("expected a pointer to a struct type, got ")
+           << ptrTy.getPointeeType();
+  int64_t index = structTy.getFieldIndex(getField());
+  if (index < 0)
+    return emitOpError() << "struct has no field '" << getField() << "'";
+  auto expectedTy = PointerType::get(structTy.getFieldTypes()[index],
+                                     ptrTy.getAddressSpace());
+  if (getResult().getType() != expectedTy)
+    return emitOpError("result type ")
+           << getResult().getType() << " does not match field pointer type "
+           << expectedTy;
+  return success();
+}
+
+//-- ArrayGepOp --
+LogicalResult ArrayGepOp::verify() {
+  auto ptrTy = dyn_cast<PointerType>(getPtr().getType());
+  if (!ptrTy)
+    return emitOpError("expected a pointer operand");
+  auto arrTy = dyn_cast<ArrayType>(ptrTy.getPointeeType());
+  if (!arrTy)
+    return emitOpError("expected a pointer to an array type, got ")
+           << ptrTy.getPointeeType();
+  auto expectedTy =
+      PointerType::get(arrTy.getElementType(), ptrTy.getAddressSpace());
+  if (getResult().getType() != expectedTy)
+    return emitOpError("result type ")
+           << getResult().getType() << " does not match element pointer type "
+           << expectedTy;
+  return success();
+}
+
 //-- AdvanceOp --
 OpFoldResult AdvanceOp::fold(FoldAdaptor adaptor) {
   // advance(ptr, 0, 0) -> ptr
