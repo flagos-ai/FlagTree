@@ -30,6 +30,7 @@ add_triton_library(MetaxCommonIRLayouts
   CommonIRApplyLayoutPlan.cpp
   CommonIRBsmLayout.cpp
   CommonIRDotLoadLayouts.cpp
+  CommonIRDotSliceLayouts.cpp
   CommonIRSharedLayouts.cpp
   DotLayoutPlanner.cpp
   TensorLayoutPropagation.cpp
