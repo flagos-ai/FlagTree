@@ -261,6 +261,29 @@ def TritonGPURemoveLayoutConversions : Pass<"tritongpu-remove-layout-conversions
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
 
+  let options = [
+    Option<"rlcPhaseMask", "rlc-phase-mask", "uint32_t", /*default=*/"15",
+           "Bit mask for enhanced RLC phases 1a, 1b, 2, and 3">,
+    Option<"enableRlcEnhance", "enable-rlc-enhance",
+           "bool", /*default=*/"false",
+           "Master switch for the MThreads phases (FLAGTREE_MUSA_RLC_ENHANCE); the "
+           "other enable-* options only take effect when it is set">,
+    Option<"enableCostBasedResolution", "enable-cost-based-resolution",
+           "bool", /*default=*/"true",
+           "Use cost-based conflict resolution instead of heuristic rules; "
+           "required by the backward-propagation and small-component phases">,
+    Option<"enableBackwardPropagation", "enable-backward-propagation",
+           "bool", /*default=*/"true",
+           "Enable backward layout propagation from convert_layout ops">,
+    Option<"enableSmallComponentSolving", "enable-small-component-solving",
+           "bool", /*default=*/"true",
+           "Enable small local layout component solving">,
+    Option<"enableStoreLayoutRematerialization",
+           "enable-store-layout-rematerialization",
+           "bool", /*default=*/"true",
+           "Drop store/atomic writeback convert_layout ops by rematerializing "
+           "their address/mask chains in the value's layout">
+  ];
 }
 
 def TritonGPUOptimizeThreadLocality : Pass<"tritongpu-optimize-thread-locality", "mlir::ModuleOp"> {
