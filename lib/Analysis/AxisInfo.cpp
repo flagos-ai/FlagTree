@@ -245,8 +245,12 @@ public:
               ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
     auto start = op.getStart();
     auto end = op.getEnd();
+    // Upstream semantics: gcd(start, span). For start=0 (every tl.arange
+    // in practice) the old highestPowOf2Divisor(0) collapsed divisibility
+    // and capped coalesced-load widths at 4 bytes (perf-iteration/
+    // ITERATION.md Trial 77); mirrored in third_party/iluvatar's copy.
     return AxisInfo(/*contiguity=*/{end - start},
-                    /*divisibility=*/{highestPowOf2Divisor(start)},
+                    /*divisibility=*/{gcd(start, end - start)},
                     /*constancy=*/{1});
   }
 };

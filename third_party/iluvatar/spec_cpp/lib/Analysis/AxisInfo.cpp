@@ -220,8 +220,14 @@ public:
               ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
     auto start = op.getStart();
     auto end = op.getEnd();
+    // Upstream semantics: divisibility of a range is gcd(start, span).
+    // This matters for start=0 (every tl.arange in practice), where the
+    // old rule's highestPowOf2Divisor(0) collapsed divisibility and, via
+    // the addptr/add chains, capped the coalesced-load width at 4 bytes
+    // despite both 32-bit caps being lifted (perf-iteration/ITERATION.md
+    // Trial 77).
     return AxisInfo(/*contiguity=*/{end - start},
-                    /*divisibility=*/{highestPowOf2Divisor(start)},
+                    /*divisibility=*/{gcd(start, end - start)},
                     /*constancy=*/{1});
   }
 };

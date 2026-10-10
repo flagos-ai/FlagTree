@@ -73,6 +73,27 @@ unsigned getVectorSize(Value ptr, ModuleAxisInfoAnalysis &axisAnalysisPass);
 unsigned getVectorSize(Value ptr, Value offset,
                        ModuleAxisInfoAnalysis &axisAnalysisPass);
 
+// Vector size for `tt.load` lowering: getVectorSize(), or 1 when the caller
+// requested scalar loads via the `disable-load-vectorize` pass option.
+//
+// Wide global loads on this target are bound by load-instruction issue rate
+// (roughly one per cycle per MP) rather than by HBM, so at high occupancy a
+// 128-bit load can deliver well under half the read bandwidth of scalar loads.
+// The best width depends on how many CTAs per SM the kernel actually runs
+// with, which is not visible here, so this is a user-supplied opt-out rather
+// than a heuristic. See skills/flagmega-developer/references/hardware/
+// iluvatar-bi-v150/memory-bandwidth.md for the measured crossover.
+//
+// Applies only while lowering to LLVM; contiguity and AxisInfo results are
+// untouched, so every analysis and earlier pass sees exactly what it saw
+// before. Deliberately scoped to LSU global loads: stores keep using
+// getVectorSize() directly because store bandwidth here is width-insensitive,
+// atomics because their vectorization is correctness-relevant, and async
+// global-to-shared copies because they ride the SME engine, which does not
+// share the LSU issue limit and reaches ~89% of peak at full width.
+unsigned getLoadVectorSize(Value ptr, ModuleAxisInfoAnalysis &axisAnalysisPass,
+                           bool disableLoadVectorize);
+
 Type scaleDotElemTypeToMLIRType(MLIRContext *ctx, triton::ScaleDotElemType t);
 
 // Returns true if we can perform coalesced write from the source encoding to

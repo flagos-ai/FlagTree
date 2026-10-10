@@ -10,6 +10,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
@@ -702,6 +703,68 @@ void init_triton_llvm(py::module &&m) {
       py::arg("flags") = std::vector<std::string>{},
       py::arg("enable_fp_fusion") = false,
       py::call_guard<py::gil_scoped_release>());
+
+  m.def(
+      "coalesce_adjacent_cta_membars",
+      [](llvm::Module *mod) {
+        unsigned removed = 0;
+        for (llvm::Function &function : *mod) {
+          for (llvm::BasicBlock &block : function) {
+            llvm::Instruction *previous = nullptr;
+            for (auto it = block.begin(); it != block.end();) {
+              llvm::Instruction *instruction = &*it++;
+              auto *call = llvm::dyn_cast<llvm::CallBase>(instruction);
+              auto *callee = call ? call->getCalledFunction() : nullptr;
+              bool isCtaMembar =
+                  callee && callee->getName() == "llvm.nvvm.membar.cta";
+              if (!isCtaMembar) {
+                previous = nullptr;
+                continue;
+              }
+              if (previous) {
+                instruction->eraseFromParent();
+                ++removed;
+                continue;
+              }
+              previous = instruction;
+            }
+          }
+        }
+        return removed;
+      },
+      py::arg("mod"), py::call_guard<py::gil_scoped_release>());
+
+  m.def(
+      "coalesce_adjacent_cta_barriers",
+      [](llvm::Module *mod) {
+        unsigned removed = 0;
+        for (llvm::Function &function : *mod) {
+          for (llvm::BasicBlock &block : function) {
+            llvm::Instruction *previous = nullptr;
+            for (auto it = block.begin(); it != block.end();) {
+              llvm::Instruction *instruction = &*it++;
+              auto *call = llvm::dyn_cast<llvm::CallBase>(instruction);
+              auto *callee = call ? call->getCalledFunction() : nullptr;
+              bool isCtaBarrier =
+                  callee &&
+                  callee->getName() ==
+                      "llvm.nvvm.barrier.cta.sync.aligned.all";
+              if (!isCtaBarrier) {
+                previous = nullptr;
+                continue;
+              }
+              if (previous) {
+                instruction->eraseFromParent();
+                ++removed;
+                continue;
+              }
+              previous = instruction;
+            }
+          }
+        }
+        return removed;
+      },
+      py::arg("mod"), py::call_guard<py::gil_scoped_release>());
 
   m.def(
       "translate_to_asm",

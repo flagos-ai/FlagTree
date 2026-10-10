@@ -3,6 +3,8 @@
 #ifdef __ILUVATAR_TLE__
 #include "Conversion/TleToLLVM.h"
 #include "Dialect.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
 #endif
 #include "Dialect/TritonILUVATARGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
@@ -18,6 +20,10 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#ifdef __ILUVATAR_TLE__
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#endif
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Analysis/Allocation.h"
@@ -28,8 +34,8 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
-
 #include <cstdlib>
+#include <optional>
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_CONVERTTRITONILUVATARGPUTOLLVM
@@ -64,6 +70,7 @@ public:
     addIllegalDialect<mlir::gpu::GPUDialect>();
 #ifdef __ILUVATAR_TLE__
     mlir::triton::iluvatar_tle::addIllegalDialects(*this);
+    addIllegalDialect<triton::tle::TleDialect>();
 #endif
     addLegalOp<triton::gpu::WarpSpecializeOp>();
     addLegalOp<triton::gpu::WarpYieldOp>();
@@ -73,12 +80,142 @@ public:
   }
 };
 
+#ifdef __ILUVATAR_TLE__
+// MembarAnalysis inserts the SME async-wait rendezvous immediately after each
+// branch-local ttg.async_wait. SCF has already been converted to CFG when this
+// pass runs. When both successor blocks of a cf.cond_br end in the same
+// barrier.alu and branch to one common block, keeping two copies creates two
+// hardware rendezvous program points even though both paths reconverge. Factor
+// the barrier into the common successor so every path still executes it once.
+static void coalesceSmeIfAluBarriers(ModuleOp mod) {
+  SmallVector<cf::CondBranchOp> candidates;
+  mod.walk([&](cf::CondBranchOp cond) {
+    Block *thenBlock = cond.getTrueDest();
+    Block *elseBlock = cond.getFalseDest();
+    auto thenBranch = dyn_cast<cf::BranchOp>(thenBlock->getTerminator());
+    auto elseBranch = dyn_cast<cf::BranchOp>(elseBlock->getTerminator());
+    if (!thenBranch || !elseBranch ||
+        thenBranch.getDest() != elseBranch.getDest())
+      return;
+    Block *commonBlock = thenBranch.getDest();
+    SmallVector<Block *> predecessors(commonBlock->getPredecessors());
+    if (predecessors.size() != 2 ||
+        !llvm::is_contained(predecessors, thenBlock) ||
+        !llvm::is_contained(predecessors, elseBlock))
+      return;
+    Operation *thenBarrier = thenBlock->getTerminator()->getPrevNode();
+    Operation *elseBarrier = elseBlock->getTerminator()->getPrevNode();
+    auto isAluBarrier = [](Operation *op) {
+      auto call = dyn_cast_or_null<LLVM::CallIntrinsicOp>(op);
+      return call && call.getIntrin() == "llvm.bi.sl.barrier.alu";
+    };
+    if (isAluBarrier(thenBarrier) && isAluBarrier(elseBarrier))
+      candidates.push_back(cond);
+  });
+
+  for (cf::CondBranchOp cond : candidates) {
+    Block *thenBlock = cond.getTrueDest();
+    Block *elseBlock = cond.getFalseDest();
+    auto thenBranch = cast<cf::BranchOp>(thenBlock->getTerminator());
+    Block *commonBlock = thenBranch.getDest();
+    Operation *thenBarrier = thenBlock->getTerminator()->getPrevNode();
+    Operation *elseBarrier = elseBlock->getTerminator()->getPrevNode();
+    thenBarrier->moveBefore(&commonBlock->front());
+    elseBarrier->erase();
+  }
+}
+
+// ivcore11 exposes only a transaction-level G2S wait counter.  Preserve the
+// width of a statically uniform SME producer group so AsyncWaitOpConversion
+// can leave one group outstanding without using ivcore40-only wait-commit.
+static std::optional<unsigned>
+getIluvatarSmeTransactionsPerGroup(triton::gpu::AsyncWaitOp wait) {
+  auto func = wait->getParentOfType<triton::FuncOp>();
+  if (!func)
+    return std::nullopt;
+
+  std::optional<unsigned> transactions;
+  bool sawSmeCopy = false;
+  bool valid = true;
+  func.walk([&](triton::gpu::AsyncCopyGlobalToLocalOp copy) {
+    if (!copy.isIluvatarSmeAsyncCopy())
+      return;
+    sawSmeCopy = true;
+    if (!valid)
+      return;
+    auto dstTy = dyn_cast<triton::gpu::MemDescType>(copy.getResult().getType());
+    auto enc = copy->getAttrOfType<triton::gpu::BlockedEncodingAttr>(
+        "tle.explicit_memory_encoding");
+    if (!enc && dstTy)
+      enc = dyn_cast<triton::gpu::BlockedEncodingAttr>(dstTy.getEncoding());
+    if (!dstTy || !enc || !enc.getIsSme()) {
+      valid = false;
+      return;
+    }
+
+    unsigned bitwidth = dstTy.getElementType().getIntOrFloatBitWidth();
+    auto shape = dstTy.getShape();
+    auto order = enc.getOrder();
+    if (shape.size() != 2 || order.size() != 2 ||
+        (bitwidth != 8 && bitwidth != 16 && bitwidth != 32)) {
+      valid = false;
+      return;
+    }
+    unsigned elemBytes = bitwidth / 8;
+    bool isRowMajor = order[0] != 0;
+    unsigned tileRows = 16;
+    if (isRowMajor && bitwidth == 16 && shape[0] >= 4 && shape[0] < 16)
+      tileRows = 4;
+    auto warps = enc.getSmeWarpsPerCTA();
+    if (warps.size() != 2) {
+      valid = false;
+      return;
+    }
+
+    unsigned offset0 = isRowMajor ? tileRows : 64 / elemBytes;
+    unsigned offset1 = isRowMajor ? 64 / elemBytes : tileRows;
+    unsigned ctaRows = warps[0] * offset0;
+    unsigned ctaCols = warps[1] * offset1;
+    if (ctaRows == 0 || ctaCols == 0 || shape[0] % ctaRows != 0 ||
+        shape[1] % ctaCols != 0) {
+      valid = false;
+      return;
+    }
+    unsigned count = (shape[0] / ctaRows) * (shape[1] / ctaCols);
+    if (!count || (transactions && *transactions != count)) {
+      valid = false;
+      return;
+    }
+    transactions = count;
+  });
+  if (!sawSmeCopy || !valid)
+    return std::nullopt;
+  return transactions;
+}
+
+static void annotateIluvatarSmeAsyncWaitTransactions(ModuleOp mod) {
+  mod.walk([&](triton::gpu::AsyncWaitOp wait) {
+    if (!wait->hasAttr("tle.explicit_async_wait") || wait.getNum() <= 0)
+      return;
+    auto transactions = getIluvatarSmeTransactionsPerGroup(wait);
+    if (transactions) {
+      wait->setAttr(
+          "iluvatar.g2s_transactions_per_group",
+          IntegerAttr::get(IntegerType::get(mod.getContext(), 32),
+                           *transactions));
+    }
+  });
+}
+#endif
+
 struct ConvertTritonILUVATARGPUToLLVM
     : public triton::impl::ConvertTritonILUVATARGPUToLLVMBase<
           ConvertTritonILUVATARGPUToLLVM> {
-  explicit ConvertTritonILUVATARGPUToLLVM(StringRef targetArch, bool ftz) {
+  explicit ConvertTritonILUVATARGPUToLLVM(StringRef targetArch, bool ftz,
+                                          bool disableLoadVectorize) {
     this->arch = targetArch.str();
     this->ftz = ftz;
+    this->disableLoadVectorize = disableLoadVectorize;
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -87,6 +224,7 @@ struct ConvertTritonILUVATARGPUToLLVM
                 mlir::triton::iluvatargpu::TritonILUVATARGPUDialect>();
 #ifdef __ILUVATAR_TLE__
     mlir::triton::iluvatar_tle::registerDialects(registry);
+    registry.insert<mlir::triton::tle::TleDialect>();
 #endif
   }
 
@@ -108,6 +246,10 @@ struct ConvertTritonILUVATARGPUToLLVM
     // preprocess
     decomposeSmeLoadOp(
         mod); // change resultType to ptr in order to pass ABase.x
+#ifdef __ILUVATAR_TLE__
+    if (targetInfo.getArch() == "ivcore11")
+      annotateIluvatarSmeAsyncWaitTransactions(mod);
+#endif
 
     // Allocate shared memory and set barrier
     ModuleAllocation allocation(mod);
@@ -115,6 +257,10 @@ struct ConvertTritonILUVATARGPUToLLVM
     ModuleMembarAnalysis membarPass(&allocation,
                                     triton::ILUVATAR::membarFilter);
     membarPass.run();
+#ifdef __ILUVATAR_TLE__
+    if (targetInfo.getArch() == "ivcore11")
+      coalesceSmeIfAluBarriers(mod);
+#endif
 
     // Lower functions
     {
@@ -178,6 +324,8 @@ struct ConvertTritonILUVATARGPUToLLVM
 #ifdef __ILUVATAR_TLE__
     mlir::triton::iluvatar_tle::populateTleToLLVMPatterns(
         typeConverter, targetInfo, patterns, commonBenefit);
+    mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
+        typeConverter, patterns, commonBenefit);
 #endif
     mlir::triton::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, commonBenefit);
@@ -187,7 +335,8 @@ struct ConvertTritonILUVATARGPUToLLVM
                                                   axisInfoAnalysis, allocation,
                                                   targetInfo, ILUVATARBenefit);
     ILUVATAR::populateLoadStoreOpToLLVMPatterns(
-        typeConverter, targetInfo, patterns, axisInfoAnalysis, ILUVATARBenefit);
+        typeConverter, targetInfo, patterns, axisInfoAnalysis, ILUVATARBenefit,
+        disableLoadVectorize);
     ILUVATAR::populateMaskedOpsToLLVMPatterns(patterns, targetInfo);
     ILUVATAR::populateBarrierOpToLLVMPatterns(typeConverter, patterns,
                                               ILUVATARBenefit, targetInfo);
@@ -302,8 +451,10 @@ private:
 namespace mlir::triton {
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertTritonILUVATARGPUToLLVMPass(StringRef targetArch, bool ftz) {
-  return std::make_unique<ConvertTritonILUVATARGPUToLLVM>(targetArch, ftz);
+createConvertTritonILUVATARGPUToLLVMPass(StringRef targetArch, bool ftz,
+                                        bool disableLoadVectorize) {
+  return std::make_unique<ConvertTritonILUVATARGPUToLLVM>(targetArch, ftz,
+                                                          disableLoadVectorize);
 }
 
 } // namespace mlir::triton

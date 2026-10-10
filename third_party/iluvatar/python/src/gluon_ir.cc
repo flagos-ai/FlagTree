@@ -16,6 +16,9 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#ifdef __ILUVATAR_TLE__
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
+#endif
 #include "triton/Tools/GenericSwizzling.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
@@ -28,6 +31,9 @@ namespace tt = triton;
 namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
 namespace gluon = mlir::triton::gluon;
+#ifdef __ILUVATAR_TLE__
+namespace tle = mlir::triton::tle;
+#endif
 
 static ttg::CTAEncodingAttr
 buildCtaLayoutAttr(MLIRContext *ctx,
@@ -571,9 +577,11 @@ void init_gluon_ir(py::module &&m) {
            [](GluonOpBuilder &self, Value smem, Value pointer, Value mask,
               Value other, tt::CacheModifier cacheModifier,
               tt::EvictionPolicy evictionPolicy, bool isVolatile) {
-             self.create<ttg::AsyncCopyGlobalToLocalOp>(
+             auto copy = self.create<ttg::AsyncCopyGlobalToLocalOp>(
                  pointer, smem, mask, other, cacheModifier, evictionPolicy,
                  isVolatile);
+             copy->setAttr(tle::kTleRequiredAsyncCopyAttr,
+                           mlir::UnitAttr::get(self.getContext()));
            })
       .def("create_iluvatar_sme_async_copy_global_to_local",
            [](GluonOpBuilder &self, Value smem, Value pointer, Value mask,
@@ -596,7 +604,9 @@ void init_gluon_ir(py::module &&m) {
       .def("create_async_wait_group",
            [](GluonOpBuilder &self, int num) {
              ValueRange tokens;
-             self.create<ttg::AsyncWaitOp>(tokens, num);
+             auto wait = self.create<ttg::AsyncWaitOp>(tokens, num);
+             wait->setAttr("tle.explicit_async_wait",
+                           mlir::UnitAttr::get(self.getContext()));
            })
       .def("create_convert_layout",
            [](GluonOpBuilder &self, Type resultTy, Value value) -> Value {

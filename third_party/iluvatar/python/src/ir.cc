@@ -27,6 +27,12 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Transforms/LocationSnapshot.h"
 
+#ifdef __ILUVATAR_TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
+#include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
+#endif
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Gluon/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -57,6 +63,23 @@ using namespace triton;
 namespace tt = triton;
 namespace ttg = triton::gpu;
 namespace ttng = triton::nvidia_gpu;
+#ifdef __ILUVATAR_TLE__
+namespace tle = triton::tle;
+#endif
+
+#ifdef __ILUVATAR_TLE__
+static ttg::CTAEncodingAttr
+buildIluvatarTleCtaLayoutAttr(
+    MLIRContext *ctx, const std::vector<std::vector<int32_t>> &layout,
+    unsigned rank) {
+  auto kBlock = StringAttr::get(ctx, "block");
+  tt::LinearLayout::BasesT bases;
+  bases[kBlock] = layout;
+  auto outDims = mlir::triton::standardOutDimNames(ctx, rank);
+  tt::LinearLayout linearLayout(std::move(bases), outDims);
+  return ttg::CTAEncodingAttr::get(ctx, std::move(linearLayout));
+}
+#endif
 
 llvm::raw_fd_ostream &mlir_dumps() {
   std::error_code EC;
@@ -815,6 +838,123 @@ void init_triton_ir(py::module &&m) {
 #endif
   builderClass.def(py::init<MLIRContext *>())
       .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
+#ifdef __ILUVATAR_TLE__
+      // TLE transport async-copy ops are also legal in the standard Triton
+      // frontend. The Gluon builder exposed these methods first, but the
+      // normal `ir.builder` used by tle.gpu.copy did not, making the API
+      // reject Iluvatar async GEMV staging before lowering.
+      .def("create_async_copy_global_to_local",
+           [](TritonOpBuilder &self, Value smem, Value pointer, Value mask,
+              Value other, tt::CacheModifier cacheModifier,
+              tt::EvictionPolicy evictionPolicy, bool isVolatile) {
+             auto copy = self.create<ttg::AsyncCopyGlobalToLocalOp>(
+                 pointer, smem, mask, other, cacheModifier, evictionPolicy,
+                 isVolatile);
+             copy->setAttr(tle::kTleRequiredAsyncCopyAttr,
+                           mlir::UnitAttr::get(self.getContext()));
+           })
+      .def("create_async_copy_global_to_local_with_stride",
+           [](TritonOpBuilder &self, Value smem, Value pointer, Value mask,
+              Value other, Value inputStride, tt::CacheModifier cacheModifier,
+              tt::EvictionPolicy evictionPolicy, bool isVolatile) {
+             auto copy = self.create<ttg::AsyncCopyGlobalToLocalOp>(
+                 pointer, smem, mask, other, inputStride, cacheModifier,
+                 evictionPolicy, isVolatile, /*contiguity=*/1);
+             copy->setAttr(tle::kTleRequiredAsyncCopyAttr,
+                           mlir::UnitAttr::get(self.getContext()));
+           })
+      .def("create_async_commit_group", [](TritonOpBuilder &self) {
+        ValueRange tokens;
+        self.create<ttg::AsyncCommitGroupOp>(tokens);
+      })
+      .def("create_async_wait_group", [](TritonOpBuilder &self, int num) {
+        ValueRange tokens;
+        auto wait = self.create<ttg::AsyncWaitOp>(tokens, num);
+        wait->setAttr("tle.explicit_async_wait",
+                      mlir::UnitAttr::get(self.getContext()));
+      })
+      // Explicit TLE layout hints are used by the BI-V150 attention
+      // reduction experiment.  Keep these APIs behind the Iluvatar TLE gate;
+      // they are not part of the ordinary upstream builder ABI.
+      .def("get_blocked_encoding",
+           [](TritonOpBuilder &self, std::vector<unsigned> &sizePerThread,
+              std::vector<unsigned> &threadsPerWarp,
+              std::vector<unsigned> &warpsPerCta,
+              std::vector<unsigned> &order,
+              std::vector<std::vector<int32_t>> &cgaBases) -> Attribute {
+             auto ctx = self.getContext();
+             auto ctaLayout = buildIluvatarTleCtaLayoutAttr(
+                 ctx, cgaBases, order.size());
+             // Iluvatar's BlockedEncodingAttr has a legacy five-argument
+             // builder whose smeWarpsPerCTA field is left empty.  Regular
+             // type inference, however, materializes a zero SME tile for
+             // every rank (e.g. [0, 0] for the attention tile).  Keeping the
+             // fields identical is important: an explicit set_layout must
+             // describe the requested register/warp mapping, not silently
+             // switch the backend into its "unspecified SME" path.
+             std::vector<unsigned> smeWarpsPerCta(order.size(), 0);
+             return ttg::BlockedEncodingAttr::get(
+                 ctx, sizePerThread, threadsPerWarp, warpsPerCta, order,
+                 ctaLayout, /*isSme=*/false, /*smeMask=*/false,
+                 smeWarpsPerCta);
+           })
+      .def("get_iluvatar_sme_blocked_encoding",
+           [](TritonOpBuilder &self, std::vector<unsigned> &sizePerThread,
+              std::vector<unsigned> &threadsPerWarp,
+              std::vector<unsigned> &warpsPerCta,
+              std::vector<unsigned> &order,
+              std::vector<std::vector<int32_t>> &cgaBases,
+              std::vector<int64_t> &shape, Type &elementType,
+              unsigned numCtas) -> Attribute {
+             if (shape.size() != order.size() ||
+                 sizePerThread.size() != order.size() ||
+                 threadsPerWarp.size() != order.size() ||
+                 warpsPerCta.size() != order.size())
+               throw std::invalid_argument(
+                   "Iluvatar SME encoding rank mismatch");
+             unsigned numWarps = 1;
+             for (unsigned warps : warpsPerCta)
+               numWarps *= warps;
+             auto ctx = self.getContext();
+             auto ctaLayout = buildIluvatarTleCtaLayoutAttr(
+                 ctx, cgaBases, order.size());
+             auto inferred = ttg::BlockedEncodingAttr::get(
+                 ctx, /*isSme=*/true, /*smeMask=*/false, numWarps, elementType,
+                 shape, order, sizePerThread, threadsPerWarp, warpsPerCta,
+                 numCtas);
+             return ttg::BlockedEncodingAttr::get(
+                 ctx, sizePerThread, threadsPerWarp, warpsPerCta, order,
+                 ctaLayout, /*isSme=*/true, /*smeMask=*/false,
+                 inferred.getSmeWarpsPerCTA());
+           })
+      .def("ensure_ttg_layout_attrs",
+           [](TritonOpBuilder &self, int numWarps, int threadsPerWarp,
+              int numCtas) {
+             auto *block = self.getBuilder().getInsertionBlock();
+             if (!block)
+               throw std::invalid_argument(
+                   "cannot set ttg layout attributes without an insertion block");
+             Operation *op = block->getParentOp();
+             while (op && !isa<ModuleOp>(op))
+               op = op->getParentOp();
+             auto module = dyn_cast_or_null<ModuleOp>(op);
+             if (!module)
+               throw std::invalid_argument(
+                   "cannot find parent module for ttg layout attributes");
+             auto i32 = IntegerType::get(self.getContext(), 32);
+             module->setAttr("ttg.num-warps", IntegerAttr::get(i32, numWarps));
+             module->setAttr("ttg.threads-per-warp",
+                             IntegerAttr::get(i32, threadsPerWarp));
+             module->setAttr("ttg.num-ctas",
+                             IntegerAttr::get(i32, numCtas));
+           })
+      .def("create_tle_gpu_set_layout",
+           [](TritonOpBuilder &self, Value value,
+              Attribute targetEncoding) -> Value {
+             return self.create<triton::tle::SetLayoutOp>(
+                 value.getType(), value, targetEncoding);
+           })
+#endif
       // getters
       .def("create_module",
            [](TritonOpBuilder &self) -> ModuleOp {
