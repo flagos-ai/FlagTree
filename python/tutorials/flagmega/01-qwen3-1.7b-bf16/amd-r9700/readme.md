@@ -36,8 +36,33 @@ things differ (see `recipe.py`):
 | --- | --- | --- |
 | Qwen3-1.7B, 28 layers | ~17 ms/token | ~59 tok/s |
 
-This is a correctness-first bring-up baseline; the decode path is GEMV
-(memory-bandwidth) bound. Remaining performance work: RDNA-coalesced/vectorized
-weight loads (`buffer_load`), occupancy / waves-per-eu tuning, re-enabling the
-no-spill residency gate, and an AMD-specific cost model. Matrix-core (WMMA)
-kernels help prefill (M>1), not single-token decode.
+## Decode optimization (split-K)
+
+Batch-1 decode is GEMV (memory-bandwidth) bound. The lm_head (152K vocab) and the
+wide per-layer projections were under-parallelized: their output was sharded on a
+single mesh axis, so the GEMV ran on only 16 of the 128 CTAs. `recipe.py` pins
+**split-K** candidates (split the reduction over y + shard the output over x = all
+128 CTAs), flooding the CUs as the amd_radeon_kernels / FreeToken RDNA GEMV
+references do. Measured gain on real Qwen3-1.7B / R9700:
+
+| config | latency | throughput |
+| --- | --- | --- |
+| baseline | 16999 us/token | 58.8 tok/s |
+| + lm_head split-K | 14913 us/token | 67.1 tok/s |
+| + per-layer split-K | 10452 us/token | **95.7 tok/s** |
+
+**1.63x throughput**, identical next token.
+
+## Prefill (WMMA, M>1)
+
+`prefill_wmma.py` is the tuned RDNA bf16 WMMA GEMM microkernel (`tl.dot`,
+`num_stages=1`). FlagMega renders M>1 matmuls as a loop of GEMVs (~3% of peak at
+M=128); the WMMA GEMM is **~10x faster at M=128 and ~30x at M=512 (84.6 TFLOP/s,
+~89% of the bf16 WMMA peak)**. It is the kernel body intended for a
+`tir.dense_matmul.mma` candidate; the remaining work is wiring it into the
+catalog (`implementations.py`) + the distributed/packed-ABI renderer
+(`kernel_call_renderers.py`), since FlagMega's Qwen3 path is currently decode-only.
+
+Remaining perf work: integrate the WMMA candidate for a prefill graph,
+occupancy / waves-per-eu tuning, re-enabling the no-spill residency gate, and an
+AMD-specific cost model.
