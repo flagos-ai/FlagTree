@@ -1,3 +1,9 @@
+# source /opt/dtk/env.sh
+# export LD_LIBRARY_PATH="/opt/dtk/lib/dushmem:${LD_LIBRARY_PATH:-}"
+# unset DUSHMEM_BOOTSTRAP
+# torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 \
+#   --master_addr=127.0.0.1 --master_port=29502 gemm-ar.py
+
 """K-split SGEMM, then a sum allreduce on a DUSHMEM stream."""
 
 import ctypes
@@ -8,6 +14,13 @@ import torch
 import triton
 import triton.experimental.tle.language.raw as tle_raw
 from triton.experimental.tle.raw import dialect
+from triton.experimental.tle.raw.hcu.utils import (
+    compile_host_library,
+    init_dushmem_by_torch_pg,
+    init_torch_distributed,
+    load_common_host,
+    tensor_from_pointer,
+)
 
 HERE = Path(__file__).parent
 TILE = 16
@@ -26,33 +39,7 @@ def gemm_partial_kernel(c_ptr, a_ptr, b_ptr, m, n, k):
 
 
 def _load_host():
-    library = Path("/tmp/dushmem-gemm-ar-host.so")
-    command = [
-        "/opt/dtk/bin/hipcc",
-        "-shared",
-        "-fPIC",
-        "-fgpu-rdc",
-        "--offload-arch=gfx936",
-        "-O3",
-        "-DHIP_ENABLE_WARP_SYNC_BUILTINS",
-        "-mcode-object-version=4",
-        "-I/opt/dtk/include",
-        "-I/opt/dtk/include/dushmem",
-        "-I/opt/mpi/include",
-        "-L/opt/dtk/lib/dushmem",
-        "-L/opt/mpi/lib",
-        str(HERE / "gemm-ar-host.hip"),
-        "-o",
-        str(library),
-        "-ldushmem_host",
-        "-ldushmem_device",
-        "-lmpi",
-    ]
-    import subprocess
-    build = subprocess.run(command, capture_output=True, text=True)
-    if build.returncode != 0:
-        raise RuntimeError(f"host library build failed:\n{build.stderr}")
-    host = ctypes.CDLL(str(library))
+    host = compile_host_library(HERE / "gemm-ar-host.hip", Path("/tmp/dushmem-gemm-ar-host.so"))
     host.gemm_ar_prepare.argtypes = [
         ctypes.c_int, ctypes.c_int, ctypes.c_int,
         ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
@@ -75,17 +62,9 @@ def _load_host():
     return host
 
 
-def _view(ptr, shape, device):
-    nbytes = 4
-    for dim in shape:
-        nbytes *= dim
-    storage = torch._C._construct_storage_from_data_pointer(ptr, device, nbytes)
-    return torch.empty(0, dtype=torch.float32, device=device).set_(storage).view(*shape)
-
-
 def main() -> None:
-    local_rank = int(os.environ.get("OMPI_COMM_WORLD_LOCAL_RANK", "0"))
-    torch.cuda.set_device(local_rank)
+    group = init_torch_distributed()
+    init_dushmem_by_torch_pg(load_common_host(), group)
     host = _load_host()
 
     mype = ctypes.c_int()
@@ -96,8 +75,7 @@ def main() -> None:
     b_ptr = ctypes.c_void_p()
     partial = ctypes.c_void_p()
     reduced = ctypes.c_void_p()
-    # k_local is filled after we know npes. Prepare needs it, so init with K // world from MPI.
-    world = int(os.environ.get("OMPI_COMM_WORLD_SIZE", "1"))
+    world = int(os.environ["WORLD_SIZE"])
     if K % world != 0:
         raise SystemExit(f"K={K} is not divisible by npes={world}")
     k_local = K // world
@@ -130,14 +108,14 @@ def main() -> None:
     if rc != 0:
         raise SystemExit(f"copy failed: {rc}")
 
-    partial_view = _view(partial.value, (M, N), device)
+    partial_view = tensor_from_pointer(partial, (M, N), torch.float32, device)
     stream = torch.cuda.ExternalStream(stream_ptr.value)
     grid = (triton.cdiv(N, TILE), triton.cdiv(M, TILE))
     with torch.cuda.stream(stream):
         gemm_partial_kernel[grid](
             partial_view,
-            _view(a_ptr.value, (M, k_local), device),
-            _view(b_ptr.value, (k_local, N), device),
+            tensor_from_pointer(a_ptr, (M, k_local), torch.float32, device),
+            tensor_from_pointer(b_ptr, (k_local, N), torch.float32, device),
             M, N, k_local,
             num_warps=4,
         )
@@ -146,13 +124,13 @@ def main() -> None:
         raise SystemExit(f"sum reduce failed: {rc}")
     stream.synchronize()
 
-    got = _view(reduced.value, (M, N), device)
+    got = tensor_from_pointer(reduced, (M, N), torch.float32, device)
     ref = a_ref @ b_ref
     err = (got - ref).abs().max().item()
     ok = torch.allclose(got, ref, rtol=1e-3, atol=1e-3)
     print(f"gemm-ar pe={mype.value} allclose={bool(ok)} max_abs_err={err}")
     host.gemm_ar_finish(stream_ptr, a_ptr, b_ptr, partial, reduced)
-    host.gemm_ar_finalize()
+    torch.distributed.destroy_process_group()
     raise SystemExit(0 if ok else 1)
 
 

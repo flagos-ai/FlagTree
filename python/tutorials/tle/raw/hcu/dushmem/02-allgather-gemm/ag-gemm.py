@@ -1,13 +1,25 @@
+# source /opt/dtk/env.sh
+# export LD_LIBRARY_PATH="/opt/dtk/lib/dushmem:${LD_LIBRARY_PATH:-}"
+# unset DUSHMEM_BOOTSTRAP
+# torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 \
+#   --master_addr=127.0.0.1 --master_port=29501 ag-gemm.py
+
 """Allgather each rank's A shard on a DUSHMEM stream, then SGEMM."""
 
 import ctypes
-import os
 from pathlib import Path
 
 import torch
 import triton
 import triton.experimental.tle.language.raw as tle_raw
 from triton.experimental.tle.raw import dialect
+from triton.experimental.tle.raw.hcu.utils import (
+    compile_host_library,
+    init_dushmem_by_torch_pg,
+    init_torch_distributed,
+    load_common_host,
+    tensor_from_pointer,
+)
 
 HERE = Path(__file__).parent
 TILE = 16
@@ -26,33 +38,7 @@ def ag_gemm_kernel(c_ptr, a_ptr, b_ptr, m, n, k):
 
 
 def _load_host():
-    library = Path("/tmp/dushmem-ag-gemm-host.so")
-    command = [
-        "/opt/dtk/bin/hipcc",
-        "-shared",
-        "-fPIC",
-        "-fgpu-rdc",
-        "--offload-arch=gfx936",
-        "-O3",
-        "-DHIP_ENABLE_WARP_SYNC_BUILTINS",
-        "-mcode-object-version=4",
-        "-I/opt/dtk/include",
-        "-I/opt/dtk/include/dushmem",
-        "-I/opt/mpi/include",
-        "-L/opt/dtk/lib/dushmem",
-        "-L/opt/mpi/lib",
-        str(HERE / "ag-gemm-host.hip"),
-        "-o",
-        str(library),
-        "-ldushmem_host",
-        "-ldushmem_device",
-        "-lmpi",
-    ]
-    import subprocess
-    build = subprocess.run(command, capture_output=True, text=True)
-    if build.returncode != 0:
-        raise RuntimeError(f"host library build failed:\n{build.stderr}")
-    host = ctypes.CDLL(str(library))
+    host = compile_host_library(HERE / "ag-gemm-host.hip", Path("/tmp/dushmem-ag-gemm-host.so"))
     host.ag_gemm_prepare.argtypes = [
         ctypes.c_int, ctypes.c_int, ctypes.c_int,
         ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
@@ -72,18 +58,9 @@ def _load_host():
     return host
 
 
-def _view(ptr, shape, device):
-    nbytes = 1
-    for dim in shape:
-        nbytes *= dim
-    nbytes *= 4
-    storage = torch._C._construct_storage_from_data_pointer(ptr, device, nbytes)
-    return torch.empty(0, dtype=torch.float32, device=device).set_(storage).view(*shape)
-
-
 def main() -> None:
-    local_rank = int(os.environ.get("OMPI_COMM_WORLD_LOCAL_RANK", "0"))
-    torch.cuda.set_device(local_rank)
+    group = init_torch_distributed()
+    init_dushmem_by_torch_pg(load_common_host(), group)
     host = _load_host()
 
     mype = ctypes.c_int()
@@ -119,12 +96,17 @@ def main() -> None:
     if rc != 0:
         raise SystemExit(f"copy B failed: {rc}")
 
-    c = _view(c_ptr.value, (m, N), device)
+    c = tensor_from_pointer(c_ptr, (m, N), torch.float32, device)
     stream = torch.cuda.ExternalStream(stream_ptr.value)
     grid = (triton.cdiv(N, TILE), triton.cdiv(m, TILE))
     with torch.cuda.stream(stream):
-        ag_gemm_kernel[grid](c, _view(a_full.value, (m, K), device), _view(b_ptr.value, (K, N), device), m, N, K,
-                             num_warps=4)
+        ag_gemm_kernel[grid](
+            c,
+            tensor_from_pointer(a_full, (m, K), torch.float32, device),
+            tensor_from_pointer(b_ptr, (K, N), torch.float32, device),
+            m, N, K,
+            num_warps=4,
+        )
     stream.synchronize()
 
     ref = a_ref @ b_ref
@@ -132,7 +114,7 @@ def main() -> None:
     ok = torch.allclose(c, ref, rtol=1e-3, atol=1e-3)
     print(f"ag-gemm pe={mype.value} allclose={bool(ok)} max_abs_err={err}")
     host.ag_gemm_finish(stream_ptr, a_local, a_full, b_ptr, c_ptr)
-    host.ag_gemm_finalize()
+    torch.distributed.destroy_process_group()
     raise SystemExit(0 if ok else 1)
 
 

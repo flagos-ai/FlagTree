@@ -14,11 +14,10 @@ if [[ -f /opt/dtk/env.sh ]]; then
 fi
 set -u
 
-export OMPI_ALLOW_RUN_AS_ROOT=1
-export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
-export DUSHMEM_BOOTSTRAP=MPI
-export OMPI_MCA_coll='^hcoll'
 export LD_LIBRARY_PATH="/opt/dtk/lib/dushmem:${LD_LIBRARY_PATH:-}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/hcu-ag-gemm}"
+unset DUSHMEM_BOOTSTRAP
 
-mpirun --allow-run-as-root -n "$NPES" python3 "$ROOT/ag-gemm.py"
+torchrun --nproc_per_node="$NPES" --nnodes=1 --node_rank=0 \
+  --master_addr=127.0.0.1 --master_port="${MASTER_PORT:-29501}" \
+  "$ROOT/ag-gemm.py"

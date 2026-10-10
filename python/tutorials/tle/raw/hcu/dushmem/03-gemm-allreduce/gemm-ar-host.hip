@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <mpi.h>
 #include <hip/hip_runtime.h>
 #include <dushmem.h>
 #include <dushmemx.h>
@@ -21,7 +20,6 @@ extern "C" int gemm_ar_prepare(int m, int k_local, int n, int *mype, int *npes, 
                                float **reduced) {
   if (m <= 0 || k_local <= 0 || n <= 0)
     return -1;
-  dushmem_init();
   *mype = dushmem_my_pe();
   *npes = dushmem_n_pes();
   *mype_node = dushmem_team_my_pe(DUSHMEMX_TEAM_NODE);
@@ -61,5 +59,3 @@ extern "C" int gemm_ar_finish(hipStream_t stream, float *a, float *b, float *par
   dushmem_free(reduced);
   return 0;
 }
-
-extern "C" void gemm_ar_finalize(void) { MPI_Finalize(); }

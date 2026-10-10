@@ -1,11 +1,23 @@
+# source /opt/dtk/env.sh
+# export LD_LIBRARY_PATH="/opt/dtk/lib/dushmem:${LD_LIBRARY_PATH:-}"
+# unset DUSHMEM_BOOTSTRAP
+# torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 \
+#   --master_addr=127.0.0.1 --master_port=29500 simple-shift.py
+
 import ctypes
-import os
 from pathlib import Path
 
 import torch
 import triton
 import triton.experimental.tle.language.raw as tle_raw
 from triton.experimental.tle.raw import dialect
+from triton.experimental.tle.raw.hcu.utils import (
+    compile_host_library,
+    init_dushmem_by_torch_pg,
+    init_torch_distributed,
+    load_common_host,
+    tensor_from_pointer,
+)
 
 HERE = Path(__file__).parent
 
@@ -28,39 +40,10 @@ def simple_shift_kernel(destination_ptr):
 
 
 def _load_host():
-    library = Path("/tmp/dushmem-simple-shift-host.so")
-    command = [
-        "/opt/dtk/bin/hipcc",
-        "-shared",
-        "-fPIC",
-        "-fgpu-rdc",
-        "--offload-arch=gfx936",
-        "-O3",
-        "-DHIP_ENABLE_WARP_SYNC_BUILTINS",
-        "-mcode-object-version=4",
-        "-I/opt/dtk/include",
-        "-I/opt/dtk/include/dushmem",
-        "-I/opt/mpi/include",
-        "-L/opt/dtk/lib/dushmem",
-        "-L/opt/mpi/lib",
-        str(HERE / "simple-shift-host.hip"),
-        "-o",
-        str(library),
-        "-ldushmem_host",
-        "-ldushmem_device",
-        "-lmpi",
-    ]
-    import subprocess
-    build = subprocess.run(command, capture_output=True, text=True)
-    if build.returncode != 0:
-        raise RuntimeError(f"host library build failed:\n{build.stderr}")
-    return ctypes.CDLL(str(library))
+    return compile_host_library(HERE / "simple-shift-host.hip", Path("/tmp/dushmem-simple-shift-host.so"))
 
 
 def run_once(host, iters: int = 1):
-    local_rank = int(os.environ.get("OMPI_COMM_WORLD_LOCAL_RANK", "0"))
-    torch.cuda.set_device(local_rank)
-
     mype = ctypes.c_int()
     npes = ctypes.c_int()
     mype_node = ctypes.c_int()
@@ -77,9 +60,8 @@ def run_once(host, iters: int = 1):
         raise RuntimeError(f"simple_shift_before_launch failed: {status}")
     torch.cuda.set_device(mype_node.value)
 
-    address = destination_ptr.value
-    storage = torch._C._construct_storage_from_data_pointer(address, torch.device("cuda", mype_node.value), 4)
-    destination = torch.empty(0, dtype=torch.int32, device="cuda").set_(storage).view(1)
+    device = torch.device("cuda", mype_node.value)
+    destination = tensor_from_pointer(destination_ptr, (1, ), torch.int32, device)
     stream = torch.cuda.ExternalStream(stream_ptr.value)
 
     with torch.cuda.stream(stream):
@@ -89,12 +71,14 @@ def run_once(host, iters: int = 1):
 
 
 def main() -> None:
+    group = init_torch_distributed()
+    init_dushmem_by_torch_pg(load_common_host(), group)
     host = _load_host()
     host, stream, stream_ptr, destination, destination_ptr, mype, npes = run_once(host)
     result = host.simple_shift_after_launch(stream_ptr, destination_ptr, mype, npes)
     if result != 0:
         raise SystemExit(f"PE {mype.value}: shift mismatch")
-    host.simple_shift_finalize()
+    torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":

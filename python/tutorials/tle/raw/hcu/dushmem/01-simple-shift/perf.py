@@ -1,7 +1,7 @@
 """Compare deferred tle.raw simple_shift with the same HIP function.
 
-Both sides launch one wave (64 threads). Outside mpirun this script starts
-the two jobs; under mpirun it only times the raw kernel.
+Both sides launch one wave (64 threads). The pure HIP job still uses mpirun.
+The raw job uses torchrun.
 """
 
 import os
@@ -71,9 +71,16 @@ def _parse_ms(stdout: str, key: str) -> float:
 
 def _raw_ms() -> None:
     import importlib.machinery
+    from triton.experimental.tle.raw.hcu.utils import (
+        init_dushmem_by_torch_pg,
+        init_torch_distributed,
+        load_common_host,
+    )
     simple_shift = importlib.machinery.SourceFileLoader(
         "hcu_dushmem_simple_shift", str(HERE / "simple-shift.py")).load_module()
 
+    group = init_torch_distributed()
+    init_dushmem_by_torch_pg(load_common_host(), group)
     host = simple_shift._load_host()
     host, stream, stream_ptr, destination, destination_ptr, mype, npes = simple_shift.run_once(host, iters=10)
     start = torch.cuda.Event(enable_timing=True)
@@ -89,11 +96,11 @@ def _raw_ms() -> None:
     result = host.simple_shift_after_launch(stream_ptr, destination_ptr, mype, npes)
     if result != 0:
         raise SystemExit(f"PE {mype.value}: shift mismatch")
-    host.simple_shift_finalize()
+    torch.distributed.destroy_process_group()
 
 
 def main() -> None:
-    if "OMPI_COMM_WORLD_RANK" in os.environ:
+    if os.environ.get("DUSHMEM_PERF_RAW") == "1":
         _raw_ms()
         return
     env = _mpi_env()
@@ -101,7 +108,25 @@ def main() -> None:
     pure = _mpirun([str(binary), str(ITERS)], env)
     if pure.returncode != 0 and "pure_ms" not in pure.stdout:
         raise RuntimeError(f"pure run failed ({pure.returncode}):\n{pure.stdout}\n{pure.stderr}")
-    raw = _mpirun(["python3", str(HERE / "perf.py")], env)
+    raw_env = os.environ.copy()
+    raw_env.pop("DUSHMEM_BOOTSTRAP", None)
+    raw_env["DUSHMEM_PERF_RAW"] = "1"
+    raw_env["LD_LIBRARY_PATH"] = "/opt/dtk/lib/dushmem:" + raw_env.get("LD_LIBRARY_PATH", "")
+    raw_env.setdefault("TRITON_CACHE_DIR", "/tmp/hcu-dushmem-perf-cache")
+    raw = subprocess.run(
+        [
+            "torchrun",
+            "--nproc_per_node=2",
+            "--nnodes=1",
+            "--node_rank=0",
+            "--master_addr=127.0.0.1",
+            "--master_port=29521",
+            str(HERE / "perf.py"),
+        ],
+        capture_output=True,
+        text=True,
+        env=raw_env,
+    )
     if "raw_ms" not in raw.stdout:
         raise RuntimeError(f"raw run failed ({raw.returncode}):\n{raw.stdout}\n{raw.stderr}")
     pure_ms = _parse_ms(pure.stdout, "pure_ms")

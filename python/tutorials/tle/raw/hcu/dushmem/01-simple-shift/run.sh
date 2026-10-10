@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch the DUSHMEM simple_shift example.
-#   ./run.sh        raw kernel, 2 PEs
+#   ./run.sh        raw kernel via torchrun, 2 PEs
 #   ./run.sh pure   the manual HIP source
 #   ./run.sh perf   raw versus pure HIP
 #   NPES=4 ./run.sh
@@ -19,15 +19,18 @@ set -u
 
 export OMPI_ALLOW_RUN_AS_ROOT=1
 export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
-export DUSHMEM_BOOTSTRAP=MPI
 export OMPI_MCA_coll='^hcoll'
 export LD_LIBRARY_PATH="/opt/dtk/lib/dushmem:${LD_LIBRARY_PATH:-}"
+unset DUSHMEM_BOOTSTRAP
 
 case "$MODE" in
   run)
-    mpirun --allow-run-as-root -n "$NPES" python3 "$ROOT/simple-shift.py"
+    torchrun --nproc_per_node="$NPES" --nnodes=1 --node_rank=0 \
+      --master_addr=127.0.0.1 --master_port="${MASTER_PORT:-29500}" \
+      "$ROOT/simple-shift.py"
     ;;
   pure)
+    export DUSHMEM_BOOTSTRAP=MPI
     hipcc -fgpu-rdc --offload-arch=gfx936 -O3 \
       -DHIP_ENABLE_WARP_SYNC_BUILTINS -mcode-object-version=4 \
       -I/opt/dtk/include -I/opt/dtk/include/dushmem \
