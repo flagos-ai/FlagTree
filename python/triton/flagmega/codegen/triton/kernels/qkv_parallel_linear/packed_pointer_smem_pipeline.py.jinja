@@ -1,0 +1,102 @@
+{# Raw-pointer packed GEMV. #}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "qkv_parallel_linear" and call.variant == "packed_pointer_smem_pipeline" %}
+{% set writer = call.pipeline_channels[0].writer_parameter %}
+{% set reader = call.pipeline_channels[0].reader_parameter %}
+{% set pipeline_stages = call.num_stages %}
+@triton.jit(noinline=True)
+def {{ call.symbol }}__producer({{ (call.pipeline_producer_parameters + (call.signature,)) | join(", ") }}):
+{{ entry.mesh_coordinates() }}
+    # The typed transfer contract proves 16-byte alignment of the packed RHS.
+    weight_base = tl.multiple_of({{ call.weight }}, 16)
+    kg = tl.arange(0, {{ call.block_k // call.k_lane }})[:, None]
+    payload = tl.arange(0, {{ call.block_n * call.k_lane }})[None, :]
+    {# Prime the configured async groups before the steady-state loop. Keeping every
+       writer.commit at one unconditional lexical site avoids making the SME
+       rendezvous a predecessor of the loop-carried induction value. #}
+    for step in range({{ pipeline_stages }}):
+        nt = step // {{ call.num_k_tiles }}
+        kt = step % {{ call.num_k_tiles }}
+        slot = {{ writer }}.acquire(step)
+        offsets = (shard_index * {{ call.weight_owner_stride }}
+                   + (kt * {{ call.block_k // call.k_lane }} + kg) * {{ call.weight_k_group_stride }}
+                   + nt * {{ call.block_n * call.k_lane }} + payload)
+        sme_source = tle.gpu.set_layout(
+            weight_base + offsets,
+            tle.gpu.IluvatarSmeBlockEncoding(
+                [{{ call.block_k // call.k_lane }}, {{ call.block_n * call.k_lane }}],
+                tl.bfloat16,
+                [2, 4],
+                [2, 32],
+                [1, {{ call.producer_warps }}],
+                [1, 0],
+            ),
+        )
+        tle.gpu.copy(sme_source, slot.weight,
+                     [{{ call.block_k // call.k_lane }}, {{ call.block_n * call.k_lane }}],
+                     is_async=True, input_stride={{ call.weight_k_group_stride }})
+        tle.gpu.async_commit_group()
+    for step in range({{ pipeline_stages }}, {{ call.num_n_tiles * call.num_k_tiles + pipeline_stages }}):
+        if step < {{ call.num_n_tiles * call.num_k_tiles }}:
+            tle.gpu.async_wait_group({{ pipeline_stages - 1 }})
+        else:
+            tle.gpu.async_wait_group(0)
+        {{ writer }}.commit(step - {{ pipeline_stages }})
+        if step < {{ call.num_n_tiles * call.num_k_tiles }}:
+            nt = step // {{ call.num_k_tiles }}
+            kt = step % {{ call.num_k_tiles }}
+            slot = {{ writer }}.acquire(step)
+            offsets = (shard_index * {{ call.weight_owner_stride }}
+                       + (kt * {{ call.block_k // call.k_lane }} + kg) * {{ call.weight_k_group_stride }}
+                       + nt * {{ call.block_n * call.k_lane }} + payload)
+            sme_source = tle.gpu.set_layout(
+                weight_base + offsets,
+                tle.gpu.IluvatarSmeBlockEncoding(
+                    [{{ call.block_k // call.k_lane }}, {{ call.block_n * call.k_lane }}],
+                    tl.bfloat16,
+                    [2, 4],
+                    [2, 32],
+                    [1, {{ call.producer_warps }}],
+                    [1, 0],
+                ),
+            )
+            tle.gpu.copy(sme_source, slot.weight,
+                         [{{ call.block_k // call.k_lane }}, {{ call.block_n * call.k_lane }}],
+                         is_async=True, input_stride={{ call.weight_k_group_stride }})
+            tle.gpu.async_commit_group()
+    {{ writer }}.close({{ call.num_n_tiles * call.num_k_tiles }})
+
+@triton.jit(noinline=True)
+def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.signature,)) | join(", ") }}):
+{{ entry.mesh_coordinates() }}
+    kg = tl.arange(0, {{ call.block_k // call.k_lane }})[:, None]
+    payload = tl.arange(0, {{ call.block_n * call.k_lane }})[None, :]
+    source_payload = tl.arange(0, {{ call.k_lane }})[None, :]
+    for nt in range({{ call.num_n_tiles }}):
+        acc = tl.zeros(({{ call.block_k // call.k_lane }}, {{ call.block_n * call.k_lane }}), tl.float32)
+        for kt in range({{ call.num_k_tiles }}):
+            step = nt * {{ call.num_k_tiles }} + kt
+            qkv_local_k_offsets = kt * {{ call.block_k }} + kg * {{ call.k_lane }} + source_payload
+            source = tl.load({{ call.source }} + ({{ call.source_offset }}),
+                             eviction_policy="evict_last").to(tl.float32)
+            ready = {{ reader }}.wait(step)
+            weight = tl.reshape(tl.load(tle.gpu.local_ptr(ready.slot.weight,
+                (kg, payload),
+                [{{ call.block_k // call.k_lane }}, {{ call.block_n * call.k_lane }}])),
+                [{{ call.block_k // call.k_lane }}, {{ call.block_n }}, {{ call.k_lane }}])
+            acc += tl.reshape(weight.to(tl.float32) * source[:, None, :],
+                              [{{ call.block_k // call.k_lane }}, {{ call.block_n * call.k_lane }}])
+            {{ reader }}.release(step)
+        value = tl.sum(tl.sum(tl.reshape(acc,
+             ({{ call.block_k // call.k_lane }}, {{ call.block_n }}, {{ call.k_lane }})), axis=2), axis=0)
+        logical_n = nt * {{ call.block_n }} + tl.arange(0, {{ call.block_n }})
+{% for output in call.outputs %}
+        qkv_local_n_offsets = logical_n - {{ output.projection_start }}
+        tl.store({{ output.result }} + ({{ output.result_offset }}), value.to({{ call.output_type }}),
+                 mask=(logical_n >= {{ output.projection_start }})
+                      & (logical_n < {{ output.projection_start + output.local_n_capacity }})
+                      & ({{ output.active }}))
+{% endfor %}
+{% endif %}
+{% endfor %}

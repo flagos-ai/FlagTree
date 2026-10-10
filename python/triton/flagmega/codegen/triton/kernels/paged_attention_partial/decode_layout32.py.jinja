@@ -1,0 +1,6 @@
+{# BI-V150 legal layout experiment: 32 token rows, one warp per reduction row. #}
+{% set paged_attention_partial_variant = "decode_layout32" %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_partial/_function.py.jinja" %}
+{% endif %}

@@ -184,5 +184,6 @@ def {{ symbol }}(
 def {{ symbol }}(
     {{ signature }}
 ):
+{{ entry.mesh_coordinates() }}
 {{ pipeline_role_events(entry_events) }}
 {% endif %}

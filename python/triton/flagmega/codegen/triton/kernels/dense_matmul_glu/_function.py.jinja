@@ -1,7 +1,7 @@
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul_glu" and call.variant == dense_matmul_glu_variant %}
-{{ entry.kernel_decorator(call) }}
+{{ entry.kernel_decorator(call) }}  {#- prefer_inline=true re-tested in Trial 55; see dense_matmul/_function.py.jinja's matching note -- kept reverted, no net performance win under current conditions even though Trial 15's stability mystery is now explained (Trial 49). #}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     for dense_glu_local_n_start in tl.range(
@@ -11,12 +11,27 @@ def {{ call.symbol }}({{ call.signature }}):
             dense_glu_local_n_start + tl.arange(0, {{ call.tile_n }})
         )
         dense_glu_global_n = {{ call.global_n }}
+        {# Mask elision when bounds divide exactly and the active
+           predicate folded to literal True -- see the matching note in
+           qkv_parallel_linear/packed_fused_gemv.py.jinja (Trial 65). #}
+        {% set dense_glu_n_masked = (call.local_n_capacity % call.tile_n != 0) or (call.result_active != "True") %}
+        {% if dense_glu_n_masked %}
         dense_glu_n_mask = (
             (dense_glu_local_n_offsets < {{ call.local_n_capacity }})
             & ({{ call.result_active }})
         )
-        dense_glu_gate = tl.zeros(({{ call.tile_n }},), tl.float32)
-        dense_glu_up = tl.zeros(({{ call.tile_n }},), tl.float32)
+        {% endif %}
+        {# 2D accumulators with the k-axis reduce deferred to loop exit:
+           same transformation and rationale as
+           qkv_parallel_linear/packed_fused_gemv.py.jinja (Trial 60,
+           -25.7% on BI-V150 by breaking the per-iteration
+           reduce->add->reload serial chain). #}
+        dense_glu_gate = tl.zeros(
+            ({{ call.tile_n }}, {{ call.block_k }}), tl.float32
+        )
+        dense_glu_up = tl.zeros(
+            ({{ call.tile_n }}, {{ call.block_k }}), tl.float32
+        )
         for dense_glu_local_k_start in tl.range(
             0, {{ call.local_k_capacity }}, {{ call.block_k }}
         ):
@@ -24,21 +39,47 @@ def {{ call.symbol }}({{ call.signature }}):
                 dense_glu_local_k_start + tl.arange(0, {{ call.block_k }})
             )
             dense_glu_global_k = {{ call.global_k }}
+            {% set dense_glu_k_masked = (call.local_k_capacity % call.block_k != 0) or (call.source_active != "True") %}
+            {% if dense_glu_k_masked %}
             dense_glu_k_mask = (
                 (dense_glu_local_k_offsets < {{ call.local_k_capacity }})
                 & ({{ call.source_active }})
             )
-            dense_glu_gate_partial, dense_glu_up_partial = (
-                {{ call.accumulate_helper }}(
-                    {{ call.source }},
-                    {{ call.gate_weight }}, {{ call.up_weight }},
-                    {{ call.source_offset }},
-                    {{ call.gate_weight_offset }}, {{ call.up_weight_offset }},
-                    dense_glu_k_mask, dense_glu_n_mask,
-                )
+            {% endif %}
+{# Inlined rather than calling the accumulate helper: see the
+   matching note in dense_matmul/_function.py.jinja -- this backend does not
+   carry the deferred-upcast optimization across a noinline call boundary,
+   so the accumulate logic must live directly in this (now force-inlinable,
+   prefer_inline=true) function body to benefit from it. #}
+            {% if dense_glu_k_masked %}
+            dense_glu_source_value = tl.load(
+                {{ call.source }} + ({{ call.source_offset }}), mask=dense_glu_k_mask, other=0.0,
             )
-            dense_glu_gate += dense_glu_gate_partial
-            dense_glu_up += dense_glu_up_partial
+            {% else %}
+            dense_glu_source_value = tl.load({{ call.source }} + ({{ call.source_offset }}))
+            {% endif %}
+            {% if dense_glu_n_masked and dense_glu_k_masked %}
+            dense_glu_matrix_mask = dense_glu_n_mask[:, None] & dense_glu_k_mask[None, :]
+            {% elif dense_glu_n_masked %}
+            dense_glu_matrix_mask = dense_glu_n_mask[:, None]
+            {% elif dense_glu_k_masked %}
+            dense_glu_matrix_mask = dense_glu_k_mask[None, :]
+            {% endif %}
+            {% if dense_glu_n_masked or dense_glu_k_masked %}
+            dense_glu_gate_value = tl.load(
+                {{ call.gate_weight }} + ({{ call.gate_weight_offset }}), mask=dense_glu_matrix_mask, other=0.0,
+            )
+            dense_glu_up_value = tl.load(
+                {{ call.up_weight }} + ({{ call.up_weight_offset }}), mask=dense_glu_matrix_mask, other=0.0,
+            )
+            {% else %}
+            dense_glu_gate_value = tl.load({{ call.gate_weight }} + ({{ call.gate_weight_offset }}))
+            dense_glu_up_value = tl.load({{ call.up_weight }} + ({{ call.up_weight_offset }}))
+            {% endif %}
+            dense_glu_gate += (dense_glu_gate_value.to(tl.float32) * dense_glu_source_value[None, :].to(tl.float32)).to(tl.float32)
+            dense_glu_up += (dense_glu_up_value.to(tl.float32) * dense_glu_source_value[None, :].to(tl.float32)).to(tl.float32)
+        dense_glu_gate = tl.sum(dense_glu_gate, axis=1)
+        dense_glu_up = tl.sum(dense_glu_up, axis=1)
         dense_glu_gate = dense_glu_gate.to({{ call.output_type }}).to(tl.float32)
         dense_glu_up = dense_glu_up.to({{ call.output_type }}).to(tl.float32)
         dense_glu_activated = (
@@ -48,11 +89,18 @@ def {{ call.symbol }}({{ call.signature }}):
         dense_glu_activated = dense_glu_activated.to({{ call.output_type }}).to(tl.float32)
 {% endif %}
         dense_glu_value = dense_glu_activated * dense_glu_up
+        {% if dense_glu_n_masked %}
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
             dense_glu_value.to({{ call.output_type }}),
             mask=dense_glu_n_mask,
         )
+        {% else %}
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            dense_glu_value.to({{ call.output_type }}),
+        )
+        {% endif %}
 
 
 {% endif %}

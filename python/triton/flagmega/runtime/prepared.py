@@ -25,7 +25,35 @@ class ResourceContract:
     registers_per_thread_limit: int = 255
     register_file_capacity_per_sm: int = 65536
     shared_memory_capacity_bytes: int = 227328
+    warp_size: int = 32
     forbid_spills: bool = True
+    # Spills at or below this many bytes are tolerated even when
+    # forbid_spills is True. Default 0 preserves the original all-or-nothing
+    # behavior. Backends whose compiler has a known, bounded, content- and
+    # maxnreg-independent baseline spill (see _spill_resource_report and the
+    # investigation this documents) can raise this instead of disabling the
+    # check outright, so a *new*, much larger spill still raises.
+    spill_tolerance_bytes: int = 0
+    # Whether this kernel synchronizes across its entire launch grid (e.g. via
+    # a distributed/grid-wide barrier), and whether the backend's launcher can
+    # get the driver's cooperative-launch admission guarantee for that grid.
+    # A backend without admission (`cooperative_launch_admission=False`) must
+    # instead prove the launch grid physically fits without oversubscription
+    # by comparing it against ``available_sm_count`` -- see NOTE below.
+    requires_grid_wide_sync: bool = False
+    cooperative_launch_admission: bool = True
+    available_sm_count: int | None = None
+    # Whether the compiled kernel's assembler resource report carries
+    # NVIDIA ptxas' per-function ``ptxas_stack_frame_bytes`` /
+    # ``ptxas_spill_store_bytes`` / ``ptxas_spill_load_bytes`` fields. False
+    # for backends (e.g. COREX) whose compiler only reports the aggregate
+    # ``n_spills`` count -- see _spill_resource_report. This must be an
+    # explicit, backend-declared fact, not inferred from ``hasattr(compiled,
+    # "n_spills")``: every Triton CompiledKernel has that attribute, so a
+    # bare presence check can't tell "this backend genuinely only reports
+    # n_spills" apart from "this ptxas-reporting backend's metadata is
+    # missing/broken" -- which is exactly the case that must still raise.
+    reports_ptxas_resource_fields: bool = True
 
     def __post_init__(self) -> None:
         positive = (
@@ -34,9 +62,14 @@ class ResourceContract:
             self.registers_per_thread_limit,
             self.register_file_capacity_per_sm,
             self.shared_memory_capacity_bytes,
+            self.warp_size,
         )
         if any(value <= 0 for value in positive):
             raise RuntimeContractError("Prepared launch resource requirements and capacities must be positive.")
+        if self.available_sm_count is not None and self.available_sm_count <= 0:
+            raise RuntimeContractError("Prepared launch available_sm_count must be positive.")
+        if self.spill_tolerance_bytes < 0:
+            raise RuntimeContractError("Prepared launch spill_tolerance_bytes must not be negative.")
 
 
 class PreparedKernel:
@@ -88,9 +121,9 @@ class PreparedKernel:
             "num_warps": int(compiled.metadata.num_warps),
             "registers_per_thread": registers,
             "shared_memory_bytes": shared,
-            **_spill_resource_report(compiled),
+            **_spill_resource_report(compiled, self.contract),
             "required_resident_blocks_per_sm": self.contract.resident_blocks_per_sm,
-            "resident_registers": registers * int(compiled.metadata.num_warps) * 32
+            "resident_registers": registers * int(compiled.metadata.num_warps) * self.contract.warp_size
             * self.contract.resident_blocks_per_sm,
             "resident_shared_memory_bytes": shared * self.contract.resident_blocks_per_sm,
             "global_scratch_bytes": 0 if self._global_scratch is None else self._global_scratch.nbytes,
@@ -262,7 +295,7 @@ def prepare_jit_kernel(
         raise RuntimeContractError("Triton compilation returned no compiled kernel.")
     if hasattr(compiled, "result"):
         compiled = compiled.result()
-    _validate_resources(compiled, contract)
+    _validate_resources(compiled, contract, normalized_grid)
     return PreparedKernel(
         compiled,
         arguments,
@@ -272,9 +305,32 @@ def prepare_jit_kernel(
     )
 
 
-def _validate_resources(compiled, contract: ResourceContract) -> None:
+def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int] = (1,)) -> None:
     # Materialize the module/function and resource counters without launching.
     _ = compiled.run
+    if contract.requires_grid_wide_sync and not contract.cooperative_launch_admission:
+        # NOTE: without cooperative-launch admission, the driver gives no
+        # guarantee that every CTA in the grid is resident at once. A
+        # grid-wide barrier (global-atomic sense-reversing counter, not a
+        # cluster/cooperative-group primitive) deadlocks if any CTA is stuck
+        # waiting for SM space that a still-unscheduled CTA would free only
+        # after passing the same barrier. The one case this is provably safe
+        # without admission is launching no more CTAs than there are SMs --
+        # every CTA is guaranteed a physical slot, so none can block another.
+        if contract.available_sm_count is None:
+            raise RuntimeContractError(
+                "Kernel requires grid-wide barrier synchronization and this backend has no "
+                "cooperative-launch admission API, but no available_sm_count was supplied to "
+                "validate that the launch grid fits without oversubscription.")
+        num_ctas = int(getattr(compiled.metadata, "num_ctas", 1) or 1)
+        total_ctas = prod(int(value) for value in grid) * num_ctas
+        if total_ctas > contract.available_sm_count:
+            raise RuntimeContractError(
+                f"Kernel launches {total_ctas} CTA(s) using grid-wide barrier synchronization, "
+                f"but this backend has no cooperative-launch admission API and only "
+                f"{contract.available_sm_count} SM(s) are available. Without admission, "
+                "oversubscribed CTAs are not guaranteed co-resident and the barrier can deadlock; "
+                "reduce the launch grid to at most one CTA per SM.")
     actual_warps = int(compiled.metadata.num_warps)
     if actual_warps < contract.compute_num_warps:
         raise RuntimeContractError(
@@ -283,7 +339,7 @@ def _validate_resources(compiled, contract: ResourceContract) -> None:
     if registers > contract.registers_per_thread_limit:
         raise RuntimeContractError(
             f"Compiled kernel uses {registers} registers/thread; limit is {contract.registers_per_thread_limit}.")
-    resident_registers = registers * actual_warps * 32 * contract.resident_blocks_per_sm
+    resident_registers = registers * actual_warps * contract.warp_size * contract.resident_blocks_per_sm
     if resident_registers > contract.register_file_capacity_per_sm:
         raise RuntimeContractError(
             f"Compiled kernel needs at least {resident_registers} registers for "
@@ -299,18 +355,38 @@ def _validate_resources(compiled, contract: ResourceContract) -> None:
             f"Compiled kernel needs {resident_shared} shared-memory bytes for "
             f"{contract.resident_blocks_per_sm} resident block(s); SM capacity is "
             f"{contract.shared_memory_capacity_bytes}.")
-    resources = _spill_resource_report(compiled)
-    if contract.forbid_spills and resources["spill_bytes"]:
+    resources = _spill_resource_report(compiled, contract)
+    if contract.forbid_spills and resources["spill_bytes"] > contract.spill_tolerance_bytes:
         raise RuntimeContractError(
             f"Compiled kernel has {resources['spill_store_bytes']} spill-store bytes and "
             f"{resources['spill_load_bytes']} spill-load bytes with {registers} registers/thread, "
             f"{shared} shared-memory bytes, {resources['stack_frame_bytes']} stack-frame bytes, and "
-            f"{resources['local_memory_bytes']} local-memory bytes; the contract forbids spills.")
+            f"{resources['local_memory_bytes']} local-memory bytes; the contract forbids spills "
+            f"beyond {contract.spill_tolerance_bytes} tolerated byte(s).")
 
 
-def _spill_resource_report(compiled) -> dict[str, int]:
+def _spill_resource_report(compiled, contract: ResourceContract) -> dict[str, int]:
     metadata = compiled.metadata
     fields = ("stack_frame_bytes", "spill_store_bytes", "spill_load_bytes")
+    if not contract.reports_ptxas_resource_fields:
+        # COREX's compiler exposes register/shared usage but does not attach
+        # NVIDIA ptxas' per-function stack/spill fields; only the aggregate
+        # n_spills count is available through the common Triton
+        # compiled-kernel wrapper. There is no separate stack-frame/spill
+        # breakdown to report, so attribute all of it to spills -- treating
+        # it as call-stack usage (like the ptxas path's stack_frame_bytes)
+        # would silently exempt genuine COREX register spills from the
+        # contract's forbid_spills check.
+        if not hasattr(compiled, "n_spills"):
+            raise RuntimeContractError(
+                "Compiled kernel lacks assembler resource metadata; recompile with a TLE backend "
+                "that records per-function stack and spill usage.")
+        local_memory_bytes = int(compiled.n_spills) * 4
+        report = {field: 0 for field in fields}
+        report["spill_store_bytes"] = local_memory_bytes
+        report["local_memory_bytes"] = local_memory_bytes
+        report["spill_bytes"] = local_memory_bytes
+        return report
     if any(not hasattr(metadata, f"ptxas_{field}") for field in fields):
         raise RuntimeContractError(
             "Compiled kernel lacks assembler resource metadata; recompile with a TLE backend "

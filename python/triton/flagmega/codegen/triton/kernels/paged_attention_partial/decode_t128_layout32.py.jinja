@@ -1,0 +1,4 @@
+{# Keep the 128-token memory tile while using one 64-lane warp per token row. #}
+{% set paged_attention_partial_variant = "decode_t128_layout32" %}
+{% include "kernels/paged_attention_partial/decode.py.jinja" %}
+{% include "kernels/paged_attention_partial/_function.py.jinja" %}
