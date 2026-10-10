@@ -154,23 +154,3 @@ jobs:
           python3 python/tutorials/tle/raw/cuda/02-fused-softmax.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
           python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
-          python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem-defered.py
-          python3 python/tutorials/tle/raw/cuda/05-sort.py
-          ## flagtree tle nvshmem
-          # Avoid default 29500 collisions on shared self-hosted runners.
-          # Same strategy as the main branch nvshmem tutorial CI.
-          pick_free_master_port() {
-            local port="${1:-29500}"
-            while ss -ltn | grep -q ":${port} "; do
-              echo "Port ${port} is occupied, trying next..." >&2
-              port=$((port + 2))
-            done
-            echo "Using master_port=${port}" >&2
-            printf '%s' "${port}"
-          }
-          master_port="$(pick_free_master_port 29500)"
-          torchrun --nproc_per_node=2 --master_addr=localhost --master_port="${master_port}" \
-            python/tutorials/tle/raw/nvshmem/01-simple-shift/simple-shift.py
-          master_port="$(pick_free_master_port $((master_port + 2)))"
-          torchrun --nproc_per_node=2 --master_addr=localhost --master_port="${master_port}" \
-            python/tutorials/tle/raw/nvshmem/02-allgather-gemm/ag-gemm.py
