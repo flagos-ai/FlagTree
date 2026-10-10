@@ -8,6 +8,7 @@ from triton.runtime import driver
 
 from .._C.libtriton import ir
 from . import core as tl
+from . import _custom_types
 
 from . import is_compile_on_910_95
 
@@ -1357,6 +1358,33 @@ class TritonSemantic(Generic[TensorTy]):
             raise ValueError("Mask must have boolean scalar type")
         return self.tensor(self.builder.create_masked_store(ptr.handle, val.handle, mask.handle, cache, eviction),
                            tl.void)
+
+    def struct_field(self, ptr, name: str):
+        """Read a struct pointer's field, or return a nested struct/array pointer."""
+        struct_ty = ptr.type.element_ty
+        if not isinstance(struct_ty, _custom_types._struct_type):
+            raise ValueError(f"expected a pointer to a struct, got {ptr.type}")
+        _, field_ty, _ = struct_ty.field(name)
+        res_ptr_handle = self.builder.create_struct_gep(ptr.handle, name)
+        res_ptr_ty = tl.pointer_type(field_ty)
+        if isinstance(field_ty, _custom_types._struct_type):
+            return _custom_types.struct_pointer(res_ptr_handle, res_ptr_ty)
+        if isinstance(field_ty, _custom_types._array_type):
+            return _custom_types.array_pointer(res_ptr_handle, res_ptr_ty)
+        res_ptr = self.tensor(res_ptr_handle, res_ptr_ty)
+        return self.load(res_ptr, None, None, (), "", "", "", False, "")
+
+    def struct_field_store(self, ptr, name: str, value) -> None:
+        """Write a scalar/pointer field of a struct pointer."""
+        struct_ty = ptr.type.element_ty
+        if not isinstance(struct_ty, _custom_types._struct_type):
+            raise ValueError(f"expected a pointer to a struct, got {ptr.type}")
+        _, field_ty, _ = struct_ty.field(name)
+        if isinstance(field_ty, (_custom_types._struct_type, _custom_types._array_type)):
+            raise ValueError(f"cannot assign to aggregate struct field '{name}'")
+        res_ptr_handle = self.builder.create_struct_gep(ptr.handle, name)
+        res_ptr = self.tensor(res_ptr_handle, tl.pointer_type(field_ty))
+        self.store(res_ptr, value, None, (), "", "")
 
     def store(self, ptr: TensorTy, val: TensorTy, mask: Optional[TensorTy], boundary_check, cache_modifier: str,
               eviction_policy: str) -> TensorTy:
