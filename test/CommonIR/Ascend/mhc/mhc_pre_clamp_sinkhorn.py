@@ -140,22 +140,38 @@ def _rms_scale_kernel_tle(
 #
 # One program per token. The 24 mixes + 24 base are staged in UB then moved to
 # registers (tl.tensor scalars). The 16 comb-logits live in registers for the
-# whole clamp -> row-softmax -> (iter_times-1) x (row-norm, col-norm) loop,
+# whole clamp -> row/col-softmax -> (iter_times-1) x (row-norm, col-norm) loop,
 # exactly like the AscendC FourUnfold path that keeps mix1..mix4 in registers
 # across the iteration loop.
 # ===========================================================================
+
+# NOTE: the Sinkhorn body below is written fully inline (no @triton.jit
+# helper). In this fork the frontend lowers every @triton.jit callee to a
+# separate tt.func + tt.call (code_generator.call_JitFunction), so a helper is
+# only visible to LaneVectorize once the common inliner has run. Inlining by
+# hand keeps this pass independent of that pipeline ordering.
+
+
 @triton.jit
-def _heads_sinkhorn_kernel_tle(mixes_ptr,  # (T, 24) fp32
-                               alpha_ptr,  # (3,)   fp32
-                               base_ptr,  # (24,)  fp32
-                               pre_ptr,  # (T, 4)        fp32  OUT
-                               post_ptr,  # (T, 4)        fp32  OUT
-                               comb_ptr,  # (T, 4, 4)     fp32  OUT
-                               logits_ptr,  # (T, 4, 4)     fp32  OUT (pre-clamp logits, for bwd)
-                               HC_EPS: tl.constexpr, CLAMP_MIN: tl.constexpr, CLAMP_MAX: tl.constexpr,
-                               APPLY_CLAMP: tl.constexpr, ITERS: tl.constexpr, SAVE_INTERMEDIATES: tl.constexpr,
-                               NUM_TOKENS: tl.constexpr,  # tokens per program (pipeline depth)
-                               ):
+def _heads_sinkhorn_kernel_tle(
+    mixes_ptr,  # (T, 24) fp32
+    alpha_ptr,  # (3,)   fp32
+    base_ptr,  # (24,)  fp32
+    pre_ptr,  # (T, 4)        fp32  OUT
+    post_ptr,  # (T, 4)        fp32  OUT
+    comb_ptr,  # (T, 4, 4)     fp32  OUT
+    logits_ptr,  # (T, 4, 4)     fp32  OUT (pre-clamp logits, for bwd)
+    HC_EPS: tl.constexpr,
+    CLAMP_MIN: tl.constexpr,
+    CLAMP_MAX: tl.constexpr,
+    APPLY_CLAMP: tl.constexpr,
+    ITERS: tl.constexpr,
+    SAVE_INTERMEDIATES: tl.constexpr,
+    NUM_TOKENS: tl.constexpr,  # tokens per program (pipeline depth)
+    USE_STATIC_RANGE: tl.constexpr = False,
+    APPLY_EPS: tl.constexpr = True,
+    NORM_ORDER: tl.constexpr = 0,
+):
     """Pipeline version: each program processes NUM_TOKENS tokens sequentially.
 
     Uses tle.dsa.pipeline(num_stages=2) to overlap MTE2 DMA (loading next
@@ -235,50 +251,140 @@ def _heads_sinkhorn_kernel_tle(mixes_ptr,  # (T, 24) fp32
             r2 = tl.minimum(tl.maximum(r2, CLAMP_MIN), CLAMP_MAX)
             r3 = tl.minimum(tl.maximum(r3, CLAMP_MIN), CLAMP_MAX)
 
-        # ---- row-softmax: max -> sub -> exp -> sum -> div ---- vectorized (4,)
-        m0 = tl.max(r0, axis=0)
-        m1 = tl.max(r1, axis=0)
-        m2 = tl.max(r2, axis=0)
-        m3 = tl.max(r3, axis=0)
-        e0 = tl.exp(r0 - m0)
-        e1 = tl.exp(r1 - m1)
-        e2 = tl.exp(r2 - m2)
-        e3 = tl.exp(r3 - m3)
-        s0 = tl.sum(e0, axis=0)
-        s1 = tl.sum(e1, axis=0)
-        s2 = tl.sum(e2, axis=0)
-        s3 = tl.sum(e3, axis=0)
-        r0 = e0 / s0
-        r1 = e1 / s1
-        r2 = e2 / s2
-        r3 = e3 / s3
+        # APPLY_EPS emits/omits the sinkhorn +HC_EPS ops (the pre-head
+        # + HC_EPS above is unaffected). NORM_ORDER: 0 = row first, 1 = col
+        # first, applied to the initial softmax and to the iterations.
+        if NORM_ORDER == 0:
+            # ---- row-softmax: max -> sub -> exp -> sum -> div ---- (4,)
+            m0 = tl.max(r0, axis=0)
+            m1 = tl.max(r1, axis=0)
+            m2 = tl.max(r2, axis=0)
+            m3 = tl.max(r3, axis=0)
+            e0 = tl.exp(r0 - m0)
+            e1 = tl.exp(r1 - m1)
+            e2 = tl.exp(r2 - m2)
+            e3 = tl.exp(r3 - m3)
+            s0 = tl.sum(e0, axis=0)
+            s1 = tl.sum(e1, axis=0)
+            s2 = tl.sum(e2, axis=0)
+            s3 = tl.sum(e3, axis=0)
+            r0 = e0 / s0
+            r1 = e1 / s1
+            r2 = e2 / s2
+            r3 = e3 / s3
 
-        # ---- iter 0 col-norm: M = softmax + hc_eps; M /= (colsum + hc_eps) ----
-        r0 = r0 + HC_EPS
-        r1 = r1 + HC_EPS
-        r2 = r2 + HC_EPS
-        r3 = r3 + HC_EPS
-        col_sum = r0 + r1 + r2 + r3 + HC_EPS
-        r0 = r0 / col_sum
-        r1 = r1 / col_sum
-        r2 = r2 / col_sum
-        r3 = r3 / col_sum
+            # ---- initial col-norm ----
+            if APPLY_EPS:
+                r0 = r0 + HC_EPS
+                r1 = r1 + HC_EPS
+                r2 = r2 + HC_EPS
+                r3 = r3 + HC_EPS
+            col_sum = r0 + r1 + r2 + r3
+            if APPLY_EPS:
+                col_sum = col_sum + HC_EPS
+            r0 = r0 / col_sum
+            r1 = r1 / col_sum
+            r2 = r2 / col_sum
+            r3 = r3 / col_sum
+        else:
+            # ---- col-softmax: elementwise max/sum across the four rows ----
+            cm = tl.maximum(tl.maximum(r0, r1), tl.maximum(r2, r3))
+            e0 = tl.exp(r0 - cm)
+            e1 = tl.exp(r1 - cm)
+            e2 = tl.exp(r2 - cm)
+            e3 = tl.exp(r3 - cm)
+            csum = e0 + e1 + e2 + e3
+            r0 = e0 / csum
+            r1 = e1 / csum
+            r2 = e2 / csum
+            r3 = e3 / csum
 
-        # ---- remaining (ITERS-1) Sinkhorn iterations ----
-        for _ in tl.static_range(ITERS - 1):
-            rs0 = tl.sum(r0, axis=0) + HC_EPS
-            rs1 = tl.sum(r1, axis=0) + HC_EPS
-            rs2 = tl.sum(r2, axis=0) + HC_EPS
-            rs3 = tl.sum(r3, axis=0) + HC_EPS
+            # ---- initial row-norm ----
+            if APPLY_EPS:
+                r0 = r0 + HC_EPS
+                r1 = r1 + HC_EPS
+                r2 = r2 + HC_EPS
+                r3 = r3 + HC_EPS
+            rs0 = tl.sum(r0, axis=0)
+            rs1 = tl.sum(r1, axis=0)
+            rs2 = tl.sum(r2, axis=0)
+            rs3 = tl.sum(r3, axis=0)
+            if APPLY_EPS:
+                rs0 = rs0 + HC_EPS
+                rs1 = rs1 + HC_EPS
+                rs2 = rs2 + HC_EPS
+                rs3 = rs3 + HC_EPS
             r0 = r0 / rs0
             r1 = r1 / rs1
             r2 = r2 / rs2
             r3 = r3 / rs3
-            cs = r0 + r1 + r2 + r3 + HC_EPS
-            r0 = r0 / cs
-            r1 = r1 / cs
-            r2 = r2 / cs
-            r3 = r3 / cs
+
+        # ---- remaining (ITERS-1) Sinkhorn iterations ----
+        # Each iteration does a row-norm and a col-norm and NORM_ORDER only
+        # swaps the two, so one body covers both: the col-norm runs first only
+        # for col-first, and last only for row-first.
+        if USE_STATIC_RANGE:
+            for _ in tl.static_range(ITERS - 1):
+                if NORM_ORDER == 1:
+                    cs = r0 + r1 + r2 + r3
+                    if APPLY_EPS:
+                        cs = cs + HC_EPS
+                    r0 = r0 / cs
+                    r1 = r1 / cs
+                    r2 = r2 / cs
+                    r3 = r3 / cs
+                rs0 = tl.sum(r0, axis=0)
+                rs1 = tl.sum(r1, axis=0)
+                rs2 = tl.sum(r2, axis=0)
+                rs3 = tl.sum(r3, axis=0)
+                if APPLY_EPS:
+                    rs0 = rs0 + HC_EPS
+                    rs1 = rs1 + HC_EPS
+                    rs2 = rs2 + HC_EPS
+                    rs3 = rs3 + HC_EPS
+                r0 = r0 / rs0
+                r1 = r1 / rs1
+                r2 = r2 / rs2
+                r3 = r3 / rs3
+                if NORM_ORDER == 0:
+                    cs = r0 + r1 + r2 + r3
+                    if APPLY_EPS:
+                        cs = cs + HC_EPS
+                    r0 = r0 / cs
+                    r1 = r1 / cs
+                    r2 = r2 / cs
+                    r3 = r3 / cs
+        else:
+            for _ in tl.range(ITERS - 1):
+                if NORM_ORDER == 1:
+                    cs = r0 + r1 + r2 + r3
+                    if APPLY_EPS:
+                        cs = cs + HC_EPS
+                    r0 = r0 / cs
+                    r1 = r1 / cs
+                    r2 = r2 / cs
+                    r3 = r3 / cs
+                rs0 = tl.sum(r0, axis=0)
+                rs1 = tl.sum(r1, axis=0)
+                rs2 = tl.sum(r2, axis=0)
+                rs3 = tl.sum(r3, axis=0)
+                if APPLY_EPS:
+                    rs0 = rs0 + HC_EPS
+                    rs1 = rs1 + HC_EPS
+                    rs2 = rs2 + HC_EPS
+                    rs3 = rs3 + HC_EPS
+                r0 = r0 / rs0
+                r1 = r1 / rs1
+                r2 = r2 / rs2
+                r3 = r3 / rs3
+                if NORM_ORDER == 0:
+                    cs = r0 + r1 + r2 + r3
+                    if APPLY_EPS:
+                        cs = cs + HC_EPS
+                    r0 = r0 / cs
+                    r1 = r1 / cs
+                    r2 = r2 / cs
+                    r3 = r3 / cs
 
         # ---- store results via vectorized store ----
         offs4 = tl.arange(0, 4)
@@ -419,6 +525,9 @@ def mhc_pre_clamp_sinkhorn(
     clamp_max: float = 0.0,
     iter_times: int = 20,
     need_backward: bool = False,
+    use_static_range: bool = True,
+    apply_eps: bool = True,
+    norm_order: int = 0,
 ):
     """Fused MHC pre + clamp + Sinkhorn forward (aclnn semantic).
 
@@ -498,6 +607,9 @@ def mhc_pre_clamp_sinkhorn(
         ITERS=int(iter_times),
         SAVE_INTERMEDIATES=1 if need_backward else 0,
         NUM_TOKENS=NUM_TOKENS_PER_PROG,
+        USE_STATIC_RANGE=bool(use_static_range),
+        APPLY_EPS=bool(apply_eps),
+        NORM_ORDER=int(norm_order),
     )
 
     y = torch.empty(T, D, dtype=xf.dtype, device=xf.device)
@@ -540,6 +652,8 @@ def mhc_pre_clamp_sinkhorn_ref(
     clamp_min=0.0,
     clamp_max=0.0,
     iter_times=20,
+    apply_eps=True,
+    norm_order=0,
 ):
     """PyTorch reference implementation (aclnn semantic).
 
@@ -565,13 +679,27 @@ def mhc_pre_clamp_sinkhorn_ref(
         logits_c = torch.clamp(logits, clamp_min, clamp_max)
     else:
         logits_c = logits
-    row_max = logits_c.max(dim=-1, keepdim=True).values
-    M = (logits_c - row_max).exp()
-    M = M / M.sum(dim=-1, keepdim=True) + hc_eps
-    M = M / (M.sum(dim=-2, keepdim=True) + hc_eps)
-    for _ in range(iter_times - 1):
-        M = M / (M.sum(dim=-1, keepdim=True) + hc_eps)
-        M = M / (M.sum(dim=-2, keepdim=True) + hc_eps)
+    # Sinkhorn eps is toggled by apply_eps; norm_order 0 = row first, 1 = col
+    # first (affects both the initial softmax/norm and the iteration order).
+    def _add_eps(t):
+        return t + hc_eps if apply_eps else t
+
+    if norm_order == 0:
+        row_max = logits_c.max(dim=-1, keepdim=True).values
+        M = (logits_c - row_max).exp()
+        M = _add_eps(M / M.sum(dim=-1, keepdim=True))
+        M = M / _add_eps(M.sum(dim=-2, keepdim=True))
+        for _ in range(iter_times - 1):
+            M = M / _add_eps(M.sum(dim=-1, keepdim=True))
+            M = M / _add_eps(M.sum(dim=-2, keepdim=True))
+    else:
+        col_max = logits_c.max(dim=-2, keepdim=True).values
+        M = (logits_c - col_max).exp()
+        M = _add_eps(M / M.sum(dim=-2, keepdim=True))
+        M = M / _add_eps(M.sum(dim=-1, keepdim=True))
+        for _ in range(iter_times - 1):
+            M = M / _add_eps(M.sum(dim=-2, keepdim=True))
+            M = M / _add_eps(M.sum(dim=-1, keepdim=True))
 
     # hin = sum_n (x * pre) -> (T, D)
     y = (xf.float() * pre.unsqueeze(-1)).sum(dim=-2).to(orig_dtype)
